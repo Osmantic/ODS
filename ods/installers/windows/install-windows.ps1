@@ -51,6 +51,7 @@ param(
     [switch]$Recommended,
     [switch]$NoRecommended,
     [switch]$Hermes,
+    [switch]$Pixel,
     [switch]$NoHermes,
     [switch]$OpenClaw,
     [switch]$All,
@@ -66,6 +67,10 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+
+if ($Pixel) {
+    throw "Portal requires the ODS Linux installer inside a supported WSL2 distribution with systemd. Run bash install.sh --pixel from that distribution. The native Windows installer provides Hermes and cannot provision Portal. No installation changes were made. See ods/docs/PIXEL.md."
+}
 
 # ── Locate directories ────────────────────────────────────────────────────────
 $ScriptDir  = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -2585,6 +2590,8 @@ try {
 }
 
 # ── Summary JSON (for CI / automation) ───────────────────────────────────────
+Write-AIWarn "Portal was not provisioned by this native Windows installation."
+Write-AI "  Portal requires the Linux installer inside supported WSL2 with systemd. See ods/docs/PIXEL.md."
 if ($SummaryJsonPath) {
     $windowsEnvMap = Get-WindowsODSEnvMap -InstallDir $installDir
     $activeModel = Get-WindowsActiveModelSelection -EnvMap $windowsEnvMap `
@@ -2604,6 +2611,7 @@ if ($SummaryJsonPath) {
             rag          = $enableRag
             recommended  = $enableRecommended
             hermes       = $enableHermes
+            portal       = $false
             openclaw     = $enableOpenClaw
             comfyui      = $enableComfyui
             deepResearch = $enableDeepResearch

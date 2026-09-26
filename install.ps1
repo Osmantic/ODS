@@ -12,6 +12,7 @@ param(
     [switch]$Recommended,
     [switch]$NoRecommended,
     [switch]$Hermes,
+    [switch]$Pixel,
     [switch]$NoHermes,
     [switch]$OpenClaw,
     [switch]$All,

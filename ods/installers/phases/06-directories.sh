@@ -104,8 +104,11 @@ _phase06_pixel_runtime_layout() {
     docker_os="$(timeout 10s "${docker_command[@]}" info --format '{{.OperatingSystem}}' 2>/dev/null)" || return 1
     [[ "$docker_os" == "Docker Desktop" ]] || return 0
     [[ -d "$wsl_mount" && "$(findmnt -n -o PROPAGATION -T "$wsl_mount")" == shared ]] || return 1
-    PIXEL_INGRESS_RUNTIME_DIR_VALUE=/mnt/host/wsl/ods-portal-runtime/ingress
-    PIXEL_PREVIEW_RUNTIME_DIR_VALUE=/mnt/host/wsl/ods-portal-runtime/preview
+    # Compose runs in the owner's distro. Docker Desktop translates this
+    # client-visible path into its daemon namespace; supplying /mnt/host/wsl
+    # directly skips that translation and can select a private root mount.
+    PIXEL_INGRESS_RUNTIME_DIR_VALUE=/mnt/wsl/ods-portal-runtime/ingress
+    PIXEL_PREVIEW_RUNTIME_DIR_VALUE=/mnt/wsl/ods-portal-runtime/preview
     PIXEL_RUNTIME_BIND_PROPAGATION_VALUE=rshared
 }
 

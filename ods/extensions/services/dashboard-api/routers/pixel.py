@@ -573,7 +573,7 @@ async def pixel_status(http_response: Response = None) -> dict[str, object]:
         http_response.headers["Cache-Control"] = "no-store"
     config = _pixel_config()
     if config is None:
-        return {"available": False, "model": None, "detail": "Portal is not enabled"}
+        return {"available": False, "model": None, "state": "not_configured", "detail": "Portal is not enabled"}
     host_status = await _host_model_status()
     readiness_issue = await _model_readiness_issue_for_status(host_status)
     if readiness_issue is not None:

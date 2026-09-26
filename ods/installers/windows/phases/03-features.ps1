@@ -32,6 +32,9 @@
 # ============================================================================
 
 Write-Phase -Phase 3 -Total 13 -Name "FEATURE SELECTION" -Estimate "interactive"
+Write-AIWarn "Portal is not installed by the native Windows installer."
+Write-AI "  To use Portal, run the ODS Linux installer inside Ubuntu/WSL2 with systemd: bash install.sh --pixel"
+Write-AI "  This installation provides Hermes when selected; Docker Desktop's WSL backend alone does not install Portal."
 
 # ── Defaults from CLI flags ────────────────────────────────────────────────────
 $enableVoice         = $voiceFlag -or $allFlag

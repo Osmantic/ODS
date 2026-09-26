@@ -813,6 +813,8 @@ export default function Pixel({ systemStatus = null }) {
           ? 'available'
           : data.state === 'model_switching'
             ? 'switching'
+            : data.state === 'not_configured'
+              ? 'not_configured'
             : 'unavailable')
         setStatusDetail(typeof data.detail === 'string' ? data.detail : '')
       } catch (error) {
@@ -1399,6 +1401,8 @@ export default function Pixel({ systemStatus = null }) {
         ? 'Switching model...'
       : status === 'loading'
         ? 'Connecting...'
+        : status === 'not_configured'
+          ? 'Not configured'
         : 'Degraded'
 
   return (
@@ -1512,15 +1516,18 @@ export default function Pixel({ systemStatus = null }) {
             <p>Connecting to {displayName}...</p>
           </div>
         )}
-        {status === 'unavailable' && messages.length === 0 && (
+        {['unavailable', 'not_configured'].includes(status) && messages.length === 0 && (
           <div className="pixel-welcome mx-auto text-theme-text-muted">
             <PixelMascot className="pixel-welcome-character" />
             <h2>What do you want to work on?</h2>
             <p className="pixel-welcome-description">Start a private task, explore an idea, or create something new.</p>
             <div className="pixel-offline-notice" role="status">
-            <p className="font-medium text-theme-text">{displayName} is currently unavailable</p>
+            <p className="font-medium text-theme-text">{status === 'not_configured' ? `${displayName} needs setup` : `${displayName} is currently unavailable`}</p>
             {statusDetail && <p className="mt-1 text-sm">{statusDetail}</p>}
-            <p className="mt-4 text-xs">Your other ODS applications remain available while the agent reconnects.</p>
+            {status === 'not_configured' ? <>
+              <p className="mt-4 text-xs">Portal has no configured connection in this installation. Reloading or switching models will not enable it. On Windows, install Portal inside a supported WSL2 distribution with systemd; the native Windows installer provides Hermes.</p>
+              <a className="mt-2 inline-block text-sm underline" href="https://github.com/Osmantic/ODS/blob/main/ods/docs/PIXEL.md" target="_blank" rel="noopener noreferrer">Portal setup instructions</a>
+            </> : <p className="mt-4 text-xs">Your other ODS applications remain available while the agent reconnects.</p>}
             </div>
           </div>
         )}

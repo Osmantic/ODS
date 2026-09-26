@@ -726,6 +726,17 @@ describe('Pixel', () => {
     expect(screen.getAllByText(/Edge unreachable/).length).toBeGreaterThan(0)
   })
 
+  it('explains missing Portal setup without promising reconnection', async () => {
+    globalThis.fetch.mockResolvedValue(response({ available: false, state: 'not_configured', detail: 'Portal is not enabled' }))
+    render(<Pixel />)
+    await waitFor(() => expect(screen.getByText('Not configured')).toBeInTheDocument())
+    expect(screen.getByText('Portal needs setup')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Portal setup instructions' })).toHaveAttribute('href', 'https://github.com/Osmantic/ODS/blob/main/ods/docs/PIXEL.md')
+    expect(screen.getByPlaceholderText('Portal is unavailable')).toBeDisabled()
+    expect(screen.queryByText('Degraded')).not.toBeInTheDocument()
+    expect(screen.queryByText(/while the agent reconnects/)).not.toBeInTheDocument()
+  })
+
   it('shows available state when status succeeds', async () => {
     globalThis.fetch.mockResolvedValue(response({ available: true, model: 'pixel/default', detail: 'local' }))
 

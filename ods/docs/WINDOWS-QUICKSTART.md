@@ -2,7 +2,63 @@
 
 ## Getting Started
 
-ODS is fully supported on Windows 10 2004+ and Windows 11 (NVIDIA and AMD). The installer detects your GPU, selects the right model, downloads it, starts all Docker services, and creates a Desktop shortcut.
+Portal is ODS's core agent, built on Pixel / OpenClaw. On Windows, use its
+supported Ubuntu/WSL2 installer. The native PowerShell stack is an alternative
+with optional Hermes; it does not install Portal. Choose one installation path
+and do not run both against the same Docker project or ports.
+
+## Portal / OpenClaw (recommended)
+
+1. Install Ubuntu 24.04 under WSL2 from PowerShell if it is not already installed:
+
+   ```powershell
+   wsl --install -d Ubuntu-24.04
+   ```
+
+   Complete any Windows restart requested by WSL, open Ubuntu, and create its
+   ordinary Linux user. The Ubuntu password is used for `sudo` during setup.
+
+2. Start Docker Desktop with its WSL2 backend and enable integration for that
+   Ubuntu distribution in **Settings → Resources → WSL Integration**.
+
+3. In the **Ubuntu terminal**, verify the prerequisites:
+
+   ```bash
+   ps -p 1 -o comm=
+   docker info
+   ```
+
+   PID 1 must be `systemd`, and Docker must be reachable by the ordinary user.
+   A missing prerequisite is a setup error; do not switch silently to Hermes.
+
+4. Install from the public ODS repository in the Linux filesystem:
+
+   ```bash
+   sudo apt-get update
+   sudo apt-get install -y git
+   git clone https://github.com/Osmantic/ODS.git ~/ODS-source
+   cd ~/ODS-source
+   bash install.sh --pixel
+   ```
+
+   `--pixel` requires Portal to be installed successfully. The installer uses
+   the bundled Pixel source; no private repository is needed. Wait for its
+   health checks to finish, then open **http://localhost:3001** in Windows.
+
+GPU support depends on the Linux/WSL inference backend, not just the presence of
+a Windows GPU. A working Windows-hosted model can instead be reused through the
+[external model route](PIXEL.md#linux-and-wsl2-eligibility); the endpoint must be
+reachable from Ubuntu and Docker. Do not copy another PC's WSL IP address.
+
+These steps describe a fresh installation. For an existing native installation,
+stop its ODS containers and host services before migrating; preserve model files
+you intend to reuse. The installer does not adopt an unrelated Pixel deployment.
+
+## Alternative: native Windows stack
+
+The native installer supports Windows 10 2004+ and Windows 11 (NVIDIA and AMD).
+It detects the GPU, selects a model, starts Docker services, and creates a
+Desktop shortcut. It does not provision the Portal host runtime.
 
 **Prerequisites:** [Docker Desktop](https://www.docker.com/products/docker-desktop/) with WSL2 backend enabled. NVIDIA GPU or AMD Strix Halo recommended (CPU-only works with smaller models). 4GB+ RAM minimum, 16GB+ recommended.
 
