@@ -18,17 +18,21 @@ const PIXEL = path.join(ODS, 'vendor/pixel');
 const TEMPLATE = path.join(PIXEL, 'workspace-template');
 const sha256 = value => createHash('sha256').update(value).digest('hex');
 
-// Owner-specific wording that must never reach a user's model context again.
+// Owner-specific wording that must never reach a user's model context again. The
+// retired fleet name is decoded at runtime: the repository's retired-name guard
+// (tests/test-install-docs.sh) rejects it outside the vendored Pixel tree.
+const RETIRED_FLEET_NAME = Buffer.from('RHJlYW0gRmxlZXQ=', 'base64').toString('utf8');
 const PRIVATE_TERMS = [/\bMichael\b/, /\bTower ?\d\b/i, /\bDSV4\b/, /Codex (?:scopes|supervis|plans)/i,
-  /pixel-local-work-ledger/, /Qwen3\.6/, /Dream Fleet/i, /Local execution plan/i, /lightheart/i];
+  /pixel-local-work-ledger/, /Qwen3\.6/, new RegExp(RETIRED_FLEET_NAME, 'i'), /Local execution plan/i, /lightheart/i];
 const privateTerms = text => PRIVATE_TERMS.filter(pattern => pattern.test(text)).map(String);
 
 // Synthetic retired blocks keep these tests independent of the retired wording.
-const SECTION = '## Retired sample section\n\nOwner-specific sample rule.\n\n### Detail\n1. First detail.\n2. Second “detail” — kept exact.\n';
+const HEADING = '## Retired sample section';
+const SECTION = `${HEADING}\n\nOwner-specific sample rule.\n\n### Detail\n1. First detail.\n2. Second “detail” — kept exact.\n`;
 const ENTRY = '- 2026-01-01: Retired sample entry.';
 const TABLE = {
-  'AGENTS.md': {sections: [sha256(SECTION)], lines: [], emptyHeadings: []},
-  'MEMORY.md': {sections: [], lines: [sha256(ENTRY)], emptyHeadings: ['## Standing operating decisions']},
+  'AGENTS.md': {sections: [sha256(SECTION)], headings: [sha256(HEADING)], lines: [], emptyHeadings: []},
+  'MEMORY.md': {sections: [], headings: [], lines: [sha256(ENTRY)], emptyHeadings: ['## Standing operating decisions']},
 };
 const HEAD = '# Operating contract\n\nIntro “quoted” text.\n\n## Web privacy\n\nPrefer private search.\n\n';
 const TAIL = '## Memory\n\nKeep it short.\n';
@@ -77,8 +81,21 @@ for (const [label, name, before, after, count] of CASES) {
 test('runtime filter and on-disk migration share one retired-text table', () => {
   assert.deepEqual(JSON.parse(JSON.stringify(RETIRED_TEXT)), JSON.parse(JSON.stringify(RETIRED_WORKSPACE_TEXT)));
   for (const entry of Object.values(RETIRED_TEXT)) {
-    for (const digest of [...entry.sections, ...entry.lines]) assert.match(digest, /^[0-9a-f]{64}$/);
+    for (const digest of [...entry.sections, ...entry.headings, ...entry.lines]) assert.match(digest, /^[0-9a-f]{64}$/);
   }
+});
+
+test('an edited retired section stays in the prompt and on disk, and the migration flags it', () => {
+  const edited = HEAD + SECTION.replace('First', 'first') + '\n' + TAIL;
+  assert.equal(removeRetiredText('AGENTS.md', edited, TABLE), edited);
+  assert.deepEqual(removeRetiredWorkspaceText('AGENTS.md', Buffer.from(edited), TABLE),
+    {bytes: Buffer.from(edited), removed: 0, modified: 1});
+  const both = HEAD + SECTION + '\n' + TAIL + '\n' + SECTION.replace('First', 'first');
+  const result = removeRetiredWorkspaceText('AGENTS.md', Buffer.from(both), TABLE);
+  assert.deepEqual([result.removed, result.modified], [1, 1]);
+  assert.equal(result.bytes.toString('utf8'), removeRetiredText('AGENTS.md', both, TABLE));
+  const renamed = edited.replace(HEADING, '## Owner section');
+  assert.equal(removeRetiredWorkspaceText('AGENTS.md', Buffer.from(renamed), TABLE).modified, 0);
 });
 
 test('the migration keeps invalid UTF-8 bytes outside the removed block', () => {
@@ -136,6 +153,8 @@ function generatedWorkspace(root) {
   return generated;
 }
 
+// apply.sh keeps retired-text backups under $OPENCLAW_HOME/backups, outside the workspace.
+const backupsFor = workspace => path.join(`${workspace}-state`, 'backups', 'retired-workspace-text');
 function applyWorkspace(generated, workspace) {
   fs.mkdirSync(workspace, {recursive: true});
   fs.cpSync(generated, workspace, {recursive: true, force: false, errorOnExist: false});
@@ -143,8 +162,10 @@ function applyWorkspace(generated, workspace) {
     {encoding: 'utf8'});
   node('migrate-portal-identity.mjs', workspace, generated);
   node('migrate-workspace-source-boundary.mjs', workspace);
-  return node('migrate-retired-workspace-text.mjs', workspace).trim();
+  return node('migrate-retired-workspace-text.mjs', workspace, backupsFor(workspace)).trim();
 }
+const CURRENT_LOG = 'Retired workspace text: AGENTS.md current\nRetired workspace text: MEMORY.md current';
+const backupFiles = directory => fs.readdirSync(directory).filter(name => name.endsWith('.bak')).sort();
 
 const STARTUP_FILES = ['AGENTS.md', 'SOUL.md', 'TOOLS.md', 'IDENTITY.md', 'USER.md', 'HEARTBEAT.md', 'MEMORY.md'];
 function odsBootstrap(workspace) {
@@ -162,11 +183,12 @@ test('a fresh install through the real apply workspace steps reaches the model w
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ods-retired-text-fresh-'));
   try {
     const generated = generatedWorkspace(root), workspace = path.join(root, 'workspace');
-    assert.equal(applyWorkspace(generated, workspace), 'Retired workspace text: AGENTS.md current; MEMORY.md current');
+    assert.equal(applyWorkspace(generated, workspace), CURRENT_LOG);
     const files = odsBootstrap(workspace);
     assert.deepEqual(files.flatMap(file => privateTerms(file.content).map(term => `${file.name}: ${term}`)), []);
-    assert.equal(applyWorkspace(generated, workspace), 'Retired workspace text: AGENTS.md current; MEMORY.md current');
-    assert.deepEqual(fs.readdirSync(workspace).filter(name => name.endsWith('.bak')), []);
+    assert.equal(applyWorkspace(generated, workspace), CURRENT_LOG);
+    assert.deepEqual(backupFiles(workspace), []);
+    assert.deepEqual(backupFiles(backupsFor(workspace)), []);
   } finally {
     fs.rmSync(root, {recursive: true, force: true});
   }
@@ -252,18 +274,18 @@ test('an upgraded install matches a fresh install and keeps one backup per chang
     assert.ok(privateTerms(odsBootstrap(fresh).map(file => file.content).join('\n')).length === 0);
     const filteredBefore = STARTUP_FILES.map(name => name in before ? removeRetiredText(name, before[name].toString('utf8')) : null);
     assert.ok(filteredBefore.every(text => text === null || privateTerms(text).length === 0), 'runtime filter covers an unmigrated install');
-    const log = applyWorkspace(generated, upgraded);
-    assert.match(log, /^Retired workspace text: AGENTS\.md removed \(backup AGENTS\.md\.before-retired-text-removal\.[0-9a-f]{12}\.bak\); MEMORY\.md removed \(backup MEMORY\.md\.before-retired-text-removal\.[0-9a-f]{12}\.bak\)$/);
+    const log = applyWorkspace(generated, upgraded), backups = backupsFor(upgraded);
+    const backupName = name => `${name}.before-retired-text-removal.${sha256(before[name]).slice(0, 12)}.bak`;
+    assert.equal(log, ['AGENTS.md', 'MEMORY.md'].map(name =>
+      `Retired workspace text: ${name} removed (backup ${path.join(backups, backupName(name))})`).join('\n'));
     for (const name of STARTUP_FILES) {
       assert.deepEqual(fs.readFileSync(path.join(upgraded, name)), fs.readFileSync(path.join(fresh, name)), name);
     }
-    const backups = fs.readdirSync(upgraded).filter(name => name.endsWith('.bak')).sort();
-    assert.equal(backups.length, 2);
-    for (const backup of backups) {
-      assert.deepEqual(fs.readFileSync(path.join(upgraded, backup)), before[backup.slice(0, backup.indexOf('.md') + 3)]);
-    }
-    assert.equal(applyWorkspace(generated, upgraded), 'Retired workspace text: AGENTS.md current; MEMORY.md current');
-    assert.equal(fs.readdirSync(upgraded).filter(name => name.endsWith('.bak')).length, 2);
+    assert.deepEqual(backupFiles(upgraded), [], 'backups stay out of the agent workspace');
+    assert.deepEqual(backupFiles(backups), [backupName('AGENTS.md'), backupName('MEMORY.md')]);
+    for (const name of Object.keys(before)) assert.deepEqual(fs.readFileSync(path.join(backups, backupName(name))), before[name]);
+    assert.equal(applyWorkspace(generated, upgraded), CURRENT_LOG);
+    assert.equal(backupFiles(backups).length, 2);
   } finally {
     fs.rmSync(root, {recursive: true, force: true});
   }

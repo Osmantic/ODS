@@ -171,8 +171,8 @@ _ods_pixel_secure_owner_directory() {
 
 # The public ODS release carries Pixel source and a one-commit local bundle.
 # Owner-controlled local checkouts remain explicit developer overrides.
-ODS_PIXEL_BUNDLED_REF='ec0e015fa1c469d61908fbd5c016f5e9272c5e50'
-ODS_PIXEL_BUNDLED_SHA256='47bfa1e729637e28f979f4041bf8704bc0e040cacfa223bc7a29277bc8d7515e'
+ODS_PIXEL_BUNDLED_REF='560150f2d18264a03427d513be5bd6ed39989e2d'
+ODS_PIXEL_BUNDLED_SHA256='095cd34d5e12f41fc9e8fa923b02f979dd585eaf6648a750bb66083603650da5'
 
 ods_pixel_bundled_source() {
     local bundle="${INSTALL_DIR:?}/vendor/pixel.bundle"

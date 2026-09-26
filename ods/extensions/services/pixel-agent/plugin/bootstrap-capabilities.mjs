@@ -10,12 +10,15 @@ const DEFAULT_DIGESTS = Object.freeze({
 });
 // Retired template text that earlier ODS Pixel bundles copied into workspaces (#6156).
 // The upgrade migration (vendor/pixel/scripts/migrate-retired-workspace-text.mjs) removes
-// it from disk; until it has run, an exact copy is also left out of the prompt here.
-// Same SHA-256 table as that migration: canonical LF text, never the retired wording.
+// it from disk. Where that step did not run or could not change a file, an exact copy
+// is also left out of the prompt here. Same SHA-256 table as that migration: canonical
+// LF text, never the retired wording. `headings` only lets the migration report an
+// edited copy for review; an edited copy stays in the prompt.
 export const RETIRED_TEXT = Object.freeze({
   'AGENTS.md': Object.freeze({sections: Object.freeze(['a79b56d5d9f5d76a1bb643bc53d37b97104ccc628182ec013edde8ed865b683f']),
+    headings: Object.freeze(['17cb8a4a9627a915ba26fc2eb152d64d297bfba35f014e1a0770c96fc7f3cce9']),
     lines: Object.freeze([]), emptyHeadings: Object.freeze([])}),
-  'MEMORY.md': Object.freeze({sections: Object.freeze([]),
+  'MEMORY.md': Object.freeze({sections: Object.freeze([]), headings: Object.freeze([]),
     lines: Object.freeze(['73195176060dcedc9a4ac7f0abf1590f3c275a9c743aa7bf562303207819ccf3']),
     emptyHeadings: Object.freeze(['## Standing operating decisions'])}),
 });

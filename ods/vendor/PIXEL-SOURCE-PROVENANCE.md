@@ -12,8 +12,8 @@ The visible source is duplicated into `vendor/pixel.bundle` solely so existing
 Pixel installation code can use exact-commit Git verification without network
 or private credentials. The bundle contains one new synthetic root commit with
 public Osmantic release identity and no ancestors. Its commit is
-`ec0e015fa1c469d61908fbd5c016f5e9272c5e50`, and its SHA-256 is
-`47bfa1e729637e28f979f4041bf8704bc0e040cacfa223bc7a29277bc8d7515e`.
+`560150f2d18264a03427d513be5bd6ed39989e2d`, and its SHA-256 is
+`095cd34d5e12f41fc9e8fa923b02f979dd585eaf6648a750bb66083603650da5`.
 Run `python3 scripts/verify-pixel-bundle.py` to check the bundle against the
 visible source, tracked executable modes, and those pins. The `pixel` launcher
 and the install/bootstrap scripts must retain executable Git modes.
@@ -42,11 +42,12 @@ section from `workspace-template/AGENTS.md` and its matching `MEMORY.md` entry,
 which the first export had carried from the private repository. Both files now equal
 the private repository's pre-2026-08-17 template. `scripts/migrate-retired-workspace-text.mjs`,
 run by `apply.sh` and the macOS native update, removes only byte-exact shipped
-copies from existing workspaces, keeps a backup next to each changed file, and
-identifies the retired text by SHA-256 so the wording is not republished. The
-same pass replaces owner names, hosts and paths in documentation and test
-fixtures with neutral placeholders, and keeps the trial-corpus denylist only as
-salted SHA-256 digests. The bundle keeps its public synthetic identity
+copies from existing workspaces, keeps a private backup of each changed file under
+the OpenClaw state directory outside the workspace, reports an edited copy for
+review, and identifies the retired text by SHA-256 so the wording is not
+republished. The same pass replaces owner names, hosts and paths in documentation
+and test fixtures with neutral placeholders, and keeps the trial-corpus denylist
+only as salted SHA-256 digests. The bundle keeps its public synthetic identity
 and timestamp and one root commit; regenerations with Git 2.43 on Linux and Git
 2.53 on Windows were byte-identical. Earlier Git history still contains the
 removed text.

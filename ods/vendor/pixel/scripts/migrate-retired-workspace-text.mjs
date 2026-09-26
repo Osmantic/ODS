@@ -1,19 +1,25 @@
 #!/usr/bin/env node
 // Remove retired shipped template text from an existing Pixel workspace.
 // Only byte-exact shipped copies are removed; owner edits are never changed.
-// Each changed file keeps a backup of its original bytes next to it.
+// Each changed file keeps a private backup of its original bytes in
+// BACKUP_DIRECTORY, outside the workspace. Exit status 1: a file needs review.
 import { isAbsolute, resolve } from "node:path";
 import { removeRetiredWorkspaceFiles } from "./lib/retired-workspace-text.mjs";
 
-const [workspaceArgument] = process.argv.slice(2);
-if (process.argv.length !== 3 || !workspaceArgument || !isAbsolute(workspaceArgument)) {
-  throw new Error("Usage: migrate-retired-workspace-text.mjs ABSOLUTE_WORKSPACE");
+const [workspaceArgument, backupArgument] = process.argv.slice(2);
+if (process.argv.length !== 4 || !isAbsolute(workspaceArgument) || !isAbsolute(backupArgument)) {
+  throw new Error("Usage: migrate-retired-workspace-text.mjs ABSOLUTE_WORKSPACE ABSOLUTE_BACKUP_DIRECTORY");
 }
-const results = await removeRetiredWorkspaceFiles(resolve(workspaceArgument));
-const describe = result => {
-  if (result.status === "removed") return `${result.name} removed (backup ${result.backup})`;
-  if (result.status === "failed") return `${result.name} failed (${result.code})`;
-  return `${result.name} ${result.status}`;
+const results = await removeRetiredWorkspaceFiles(resolve(workspaceArgument), resolve(backupArgument));
+const REVIEW = "; review";
+const describe = ({ name, status, backup, code, modified }) => {
+  if (status === "current" || status === "missing") return `${name} ${status}`;
+  if (status === "removed") return `${name} removed (backup ${backup})${modified ? `; modified retired section present${REVIEW}` : ""}`;
+  if (status === "modified-retired-section") return `${name} modified retired section present${REVIEW}`;
+  if (status === "skipped-backup-conflict") return `${name} ${status} (backup ${backup})${REVIEW}`;
+  if (status === "failed") return `${name} failed (${code})${REVIEW}`;
+  return `${name} ${status}${REVIEW}`;
 };
-console.log(`Retired workspace text: ${results.map(describe).join("; ")}`);
-if (results.some(result => result.status === "failed")) process.exitCode = 1;
+const lines = results.map(describe);
+for (const line of lines) console.log(`Retired workspace text: ${line}`);
+if (lines.some(line => line.endsWith(REVIEW))) process.exitCode = 1;

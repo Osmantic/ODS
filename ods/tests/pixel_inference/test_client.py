@@ -23,7 +23,7 @@ def test_bundled_pixel_pin_tracks_parent_installer():
     phase = (root/'installers/phases/06-directories.sh').read_text()
     integration = (root/'installers/lib/pixel-integration.sh').read_text()
     verifier = (root/'scripts/verify-pixel-bundle.py').read_text()
-    bundled_ref = 'ec0e015fa1c469d61908fbd5c016f5e9272c5e50'
+    bundled_ref = '560150f2d18264a03427d513be5bd6ed39989e2d'
     assert f"ODS_PIXEL_BUNDLED_REF='{bundled_ref}'" in integration
     assert 'PIXEL_SOURCE_REF "$ODS_PIXEL_BUNDLED_REF"' in phase
     assert f'PIXEL_SOURCE_REF={bundled_ref}' in (root/'.env.example').read_text()
