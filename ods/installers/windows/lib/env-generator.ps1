@@ -1283,6 +1283,34 @@ litellm_settings:
     }
 }
 
+function Get-SearxngDefaultLanguage {
+    <#
+    .SYNOPSIS
+        Map a culture name (en-US, de-DE, zh-Hant-TW) to a SearXNG locale tag.
+    .DESCRIPTION
+        Mirrors ods_searxng_default_lang in installers/lib/searxng-locale.sh.
+        SearXNG refuses to start when search.default_lang is not one of its
+        locale tags, so only listed tags are returned; anything else is "en".
+    #>
+    param([string]$Locale = (Get-Culture).Name)
+
+    # searxng/searxng:2026.3.8-a563127a2 searx/sxng_locales.py
+    $tags = "af ar ar-SA be bg bg-BG ca cs cs-CZ cy da da-DK de de-AT de-CH de-DE el el-GR en en-AU en-CA en-GB en-IE en-IN en-NZ en-PH en-PK en-SG en-US en-ZA es es-AR es-CL es-CO es-ES es-MX es-PE et et-EE eu fa fi fi-FI fr fr-BE fr-CA fr-CH fr-FR ga gd gl he hi hr hu hu-HU id id-ID is it it-CH it-IT ja ja-JP kn ko ko-KR lt lv ml mr nb nb-NO nl nl-BE nl-NL pl pl-PL pt pt-BR pt-PT ro ro-RO ru ru-RU sk sl sq sv sv-SE ta te th th-TH tr tr-TR uk ur vi vi-VN zh zh-CN zh-HK zh-TW" -split ' '
+
+    $raw = (("$Locale" -split '[.@]')[0]) -replace '_', '-'
+    $parts = @($raw -split '-' | Where-Object { $_ })
+    if ($parts.Count -eq 0) { return "en" }
+    $lang = $parts[0].ToLowerInvariant()
+    if ($lang -cnotmatch '^[a-z]{2,3}$') { return "en" }
+    $region = $parts | Select-Object -Skip 1 | Where-Object { $_ -match '^[A-Za-z]{2}$' } | Select-Object -First 1
+    if ($region) {
+        $tag = "$lang-$($region.ToUpperInvariant())"
+        if ($tags -ccontains $tag) { return $tag }
+    }
+    if ($tags -ccontains $lang) { return $lang }
+    return "en"
+}
+
 function New-SearxngConfig {
     <#
     .SYNOPSIS
@@ -1290,11 +1318,26 @@ function New-SearxngConfig {
     #>
     param(
         [string]$InstallDir,
-        [string]$SecretKey
+        [string]$SecretKey,
+        [string]$SearchLanguage = (Get-SearxngDefaultLanguage)
     )
 
     $configDir = Join-Path (Join-Path $InstallDir "config") "searxng"
     New-Item -ItemType Directory -Path $configDir -Force | Out-Null
+
+    # Seznam stays the general-web fallback for when major engines refuse the
+    # household IP; keep its Czech-market .cz shops out unless the owner is
+    # Czech. Mirrors ods_searxng_hostnames_yaml in installers/lib/searxng-locale.sh.
+    $hostnames = ""
+    if (($SearchLanguage -split '-')[0] -ne "cs") {
+        $hostnames = @'
+hostnames:
+  # Seznam (below) is a Czech-market fallback; keep its .cz shops out of
+  # results unless the install locale is Czech.
+  remove:
+    - '\.cz$'
+'@
+    }
 
     $config = @"
 use_default_settings: true
@@ -1305,9 +1348,12 @@ server:
   limiter: false
 search:
   safe_search: 0
+  # Install locale. API clients send no language, so "auto" would mean "all".
+  default_lang: "$SearchLanguage"
   formats:
     - html
     - json
+$hostnames
 engines:
   - name: bing
     # Requalify before enabling: https://github.com/searxng/searxng/pull/6671

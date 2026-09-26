@@ -305,6 +305,9 @@ jobs:
       - name: brave-search searxng Compat Tests
         run: bash tests/test-brave-search-searxng-compat.sh
 
+      - name: SearXNG Factory Config Contract
+        run: bash tests/test-searxng-config-contract.sh
+
       - name: OpenCode Bun Temp Confinement Tests
         run: bash tests/test-opencode-bun-tmpdir.sh
 
