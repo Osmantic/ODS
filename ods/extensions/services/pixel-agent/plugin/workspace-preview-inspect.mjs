@@ -155,7 +155,7 @@ function transitionIncompleteFeedback(request, requirement) {
         : basis === 'heading'
           ? `The target is the heading ${JSON.stringify(locator.name ?? locator.selector)} of the requested ${JSON.stringify(target)} element, read from the published source; if that heading is not inside the element that hides, use a unique CSS selector such as an id of that element for both target steps instead.`
           : `The target is a heading named ${JSON.stringify(target)} from the owner's request; if your heading text differs, copy it exactly from your source, or use a unique CSS selector such as an id of the affected element for both target steps.`;
-  return `${why} Next step: call pixel_ods_workspace_preview_inspect again (through tool_call if that is how you called it) with exactly these args: ${JSON.stringify(args)} ${about} Keep this click step and use the same target locator in both assertions. ${keep}`;
+  return `${why} Next step: call pixel_ods_workspace_preview_inspect directly again with exactly these args: ${JSON.stringify(args)} ${about} Keep this click step and use the same target locator in both assertions. ${keep}`;
 }
 
 // Page exception text is untrusted author output. Quote it as data and give
@@ -218,6 +218,38 @@ export function normalizeWorkspacePreviewInspectionParams(params) {
   const request={schemaVersion:1,action:'inspect',...params};
   if(Buffer.byteLength(canonical(request))>8192) throw Error('inspection request too large');
   return request;
+}
+// A rejected plan whose only defect is where its locators sit: a selector or
+// role/name beside action instead of inside locator (strixy round 107 calls
+// 8, 11 and 12), or a role/name locator without exact:true (laptop round 107
+// call 4). Returns the same identifiers, viewport and steps with each locator
+// nested, only when that alone makes the plan valid; else undefined. It never
+// guesses a locator, an action or an identifier.
+export function correctedInspectionArgs(params) {
+  if(!exact(params,['siteId','sha256','viewport','steps']) || !Array.isArray(params.steps)) return undefined;
+  const steps=params.steps.map(step=>{
+    if(!step || typeof step!=='object' || Array.isArray(step)) return undefined;
+    const {action,locator,...flat}=step;
+    const source=locator===undefined ? flat : Object.keys(flat).length===0 ? locator : undefined;
+    if(exact(source,['selector'])) return {action,locator:{selector:source.selector}};
+    if(exact(source,['role','name']) || (exact(source,['role','name','exact']) && source.exact===true))
+      return {action,locator:{role:source.role,name:source.name,exact:true}};
+    return undefined;
+  });
+  if(steps.includes(undefined)) return undefined;
+  const args={siteId:params.siteId,sha256:params.sha256,viewport:params.viewport,steps};
+  if(isDeepStrictEqual(args,params)) return undefined;
+  try { normalizeWorkspacePreviewInspectionParams(args); } catch { return undefined; }
+  return args;
+}
+// Next step after rejected arguments. This tool is directly visible to Pixel;
+// the former "retry through tool_call" advice preceded strixy round 107's
+// tool_call {id:"tool_describe"}, which OpenClaw cannot resolve.
+function invalidRequestNextStep(params) {
+  const corrected=correctedInspectionArgs(params);
+  return corrected
+    ? 'Each step is {action, locator}, with the selector, or the role, name and exact:true, inside locator. Next step: call pixel_ods_workspace_preview_inspect directly with exactly these args, your own steps with each locator nested: ' + JSON.stringify(corrected) + '.'
+    : 'Next step: call pixel_ods_workspace_preview_inspect directly with the exact published siteId and full sha256, viewport {width,height}, and steps. Each step is {action, locator}; a locator is {"selector":"..."} or {"role":"...","name":"...","exact":true}. Use a CSS selector for elements whose role is not supported. Do not guess snapshot identifiers.';
 }
 function stateValid(s) {
   if(exact(s,['count'])) return Number.isSafeInteger(s.count)&&s.count>=0&&s.count<=100000;
@@ -297,7 +329,7 @@ export function createWorkspacePreviewInspectTool({request,transport='unix',tran
       if (!signal?.aborted) {
         try { normalized=normalizeWorkspacePreviewInspectionParams(params); }
         catch (error) { return {
-          content:[{type:'text',text:'Preview inspection request rejected before execution: invalid arguments. ' + (INPUT_HINTS.get(error?.message) ?? 'Check the tool schema.') + ' The inspector was not contacted; this does not establish service unavailability. Call tool_describe with id "pixel_ods_workspace_preview_inspect", then retry through tool_call with the exact published siteId and full sha256, viewport {width,height}, and valid steps. Use a CSS selector for elements whose role is not supported. Do not guess snapshot identifiers. Requested behavior remains unverified.'}],
+          content:[{type:'text',text:'Preview inspection request rejected before execution: invalid arguments. ' + (INPUT_HINTS.get(error?.message) ?? 'Check the tool schema.') + ' The inspector was not contacted; this does not establish service unavailability. ' + invalidRequestNextStep(params) + ' Requested behavior remains unverified.'}],
           details:{schemaVersion:1,kind:INSPECTION_KIND,status:'failed',errorCode:'invalid_request',scope:INSPECTION_SCOPE},isError:true,
         }; }
       }
