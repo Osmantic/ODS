@@ -97,3 +97,48 @@ ods_default_nvidia_llama_memory_limit() {
     (( usable_gb > 64 )) && usable_gb=64
     printf '%sG\n' "$usable_gb"
 }
+
+# A Docker memory limit (LLAMA_SERVER_MEMORY_LIMIT: 12G, 512m, 12gb or plain
+# bytes) in MiB. Prints nothing for a value it cannot read.
+ods_memory_limit_mib() {
+    local value="${1:-}" number unit
+    [[ "$value" =~ ^([0-9]+)([kKmMgGtT]?)[bB]?$ ]] || return 0
+    number="${BASH_REMATCH[1]}"
+    unit="${BASH_REMATCH[2]}"
+    case "$unit" in
+        t|T) printf '%s\n' "$((number * 1024 * 1024))" ;;
+        g|G) printf '%s\n' "$((number * 1024))" ;;
+        m|M) printf '%s\n' "$number" ;;
+        k|K) printf '%s\n' "$((number / 1024))" ;;
+        *) printf '%s\n' "$((number / 1048576))" ;;
+    esac
+}
+
+# Default llama.cpp --cache-ram (LLAMA_ARG_CACHE_RAM) in MiB for a llama-server
+# ODS runs in Docker. llama.cpp keeps earlier prompts, with their context
+# checkpoints, in host RAM so a conversation that lost the slot resumes without
+# re-processing its prompt. b9014 caps that cache at 8192 MiB, outside every
+# ODS memory check, and a 16 GB WSL VM OOM-killed llama-server at ~10 GB RSS
+# with it. The default is a quarter of the memory left after 6 GiB for the rest
+# of ODS and the OS, and at most a quarter of the llama-server container limit
+# (so weights, KV and checkpoints keep the rest). 512 MiB is the floor; b9014
+# always keeps the newest cached prompt even when it alone exceeds the cap.
+# Arguments: effective memory in whole GiB (0 when unknown) and the container
+# memory limit. Prints nothing when llama.cpp's own 8192 MiB default fits.
+ods_default_llama_cache_ram_mib() {
+    local memory_gb="${1:-0}" limit_mib cache_mib=8192
+    [[ "$memory_gb" =~ ^[0-9]+$ ]] || memory_gb=0
+    limit_mib="$(ods_memory_limit_mib "${2:-}")"
+
+    if (( memory_gb > 0 )); then
+        local headroom_gb=$((memory_gb - 6))
+        (( headroom_gb < 0 )) && headroom_gb=0
+        (( headroom_gb * 256 < cache_mib )) && cache_mib=$((headroom_gb * 256))
+    fi
+    if [[ -n "$limit_mib" ]] && (( limit_mib / 4 < cache_mib )); then
+        cache_mib=$((limit_mib / 4))
+    fi
+    (( cache_mib < 512 )) && cache_mib=512
+    (( cache_mib < 8192 )) && printf '%s\n' "$cache_mib"
+    return 0
+}

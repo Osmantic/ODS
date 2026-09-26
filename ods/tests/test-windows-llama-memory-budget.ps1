@@ -22,6 +22,24 @@ Assert-Equal (Get-ODSDefaultNvidiaLlamaMemoryLimit -AvailableRamGB 32) "28G" "32
 Assert-Equal (Get-ODSDefaultNvidiaLlamaMemoryLimit -AvailableRamGB 64) "60G" "64 GiB"
 Assert-Equal (Get-ODSDefaultNvidiaLlamaMemoryLimit -AvailableRamGB 128) "64G" "Absolute cap"
 
+Assert-Equal (ConvertTo-ODSMemoryLimitMiB -Value "12G") 12288 "12G in MiB"
+Assert-Equal (ConvertTo-ODSMemoryLimitMiB -Value "12gb") 12288 "12gb in MiB"
+Assert-Equal (ConvertTo-ODSMemoryLimitMiB -Value "512m") 512 "512m in MiB"
+Assert-Equal (ConvertTo-ODSMemoryLimitMiB -Value "12884901888") 12288 "Plain bytes in MiB"
+Assert-Equal (ConvertTo-ODSMemoryLimitMiB -Value "1.5G") 0 "Decimal is not read"
+
+# Same table as tests/test-llama-memory-budget.sh.
+Assert-Equal (Get-ODSDefaultLlamaCacheRamMiB -AvailableRamGB 15 -ContainerMemoryLimit "12G") "2304" "16 GB WSL VM cache"
+Assert-Equal (Get-ODSDefaultLlamaCacheRamMiB -AvailableRamGB 16 -ContainerMemoryLimit "12G") "2560" "16 GiB cache"
+Assert-Equal (Get-ODSDefaultLlamaCacheRamMiB -AvailableRamGB 31 -ContainerMemoryLimit "27G") "6400" "32 GB host cache"
+Assert-Equal (Get-ODSDefaultLlamaCacheRamMiB -AvailableRamGB 62 -ContainerMemoryLimit "12G") "3072" "Container limit bounds the cache"
+Assert-Equal (Get-ODSDefaultLlamaCacheRamMiB -AvailableRamGB 38 -ContainerMemoryLimit "34G") "" "38 GiB keeps the llama.cpp default"
+Assert-Equal (Get-ODSDefaultLlamaCacheRamMiB -AvailableRamGB 125 -ContainerMemoryLimit "64G") "" "Tower keeps the llama.cpp default"
+Assert-Equal (Get-ODSDefaultLlamaCacheRamMiB -AvailableRamGB 64 -ContainerMemoryLimit "6G") "1536" "CPU compose limit"
+Assert-Equal (Get-ODSDefaultLlamaCacheRamMiB -AvailableRamGB 8 -ContainerMemoryLimit "5G") "512" "Floor"
+Assert-Equal (Get-ODSDefaultLlamaCacheRamMiB -AvailableRamGB 0 -ContainerMemoryLimit "12G") "3072" "Unknown memory"
+Assert-Equal (Get-ODSDefaultLlamaCacheRamMiB -AvailableRamGB 0 -ContainerMemoryLimit "") "" "Nothing known"
+
 function Write-AIWarn { param([string]$Message) }
 function Get-LlamaCpuBudget {
     return @{ Limit = "4.0"; Reservation = "1.0"; Available = "4.0" }
@@ -49,6 +67,9 @@ try {
     if ($nvidiaEnv -notmatch '(?m)^LLAMA_SERVER_MEMORY_LIMIT=5G\r?$') {
         throw "Fresh NVIDIA install did not use Docker's lower 8 GiB memory reading"
     }
+    if ($nvidiaEnv -notmatch '(?m)^LLAMA_ARG_CACHE_RAM=512\r?$') {
+        throw "Fresh NVIDIA install did not size the prompt cache for Docker's 8 GiB"
+    }
 
     $nvidiaEnv = $nvidiaEnv -replace '(?m)^LLAMA_SERVER_MEMORY_LIMIT=.*$', 'LLAMA_SERVER_MEMORY_LIMIT=7G'
     [IO.File]::WriteAllText($nvidiaEnvPath, $nvidiaEnv)
@@ -59,6 +80,52 @@ try {
     if ($rerunEnv -notmatch '(?m)^LLAMA_SERVER_MEMORY_LIMIT=7G\r?$') {
         throw "NVIDIA reinstall discarded the explicit memory-limit override"
     }
+
+    # An owner's prompt-cache size survives a rerun.
+    [IO.File]::WriteAllText($nvidiaEnvPath, ($rerunEnv -replace '(?m)^LLAMA_ARG_CACHE_RAM=.*$', 'LLAMA_ARG_CACHE_RAM=4096'))
+    New-ODSEnv -InstallDir $nvidiaDir -TierConfig $tier -Tier "1" `
+        -GpuBackend "nvidia" -ODSMode "local" -SystemRamGB 64 | Out-Null
+    if ((Get-Content -LiteralPath $nvidiaEnvPath -Raw) -notmatch '(?m)^LLAMA_ARG_CACHE_RAM=4096\r?$') {
+        throw "NVIDIA reinstall discarded the owner's LLAMA_ARG_CACHE_RAM"
+    }
+
+    # A 16 GB Docker VM with the 12G 8 GB-GPU profile, and a profile's own size.
+    $script:dockerRamGB = 15
+    $wslDir = Join-Path $testRoot "wsl16"
+    New-Item -ItemType Directory -Path $wslDir -Force | Out-Null
+    $profileTier = $tier.Clone()
+    $profileTier.LLAMA_SERVER_MEMORY_LIMIT = "12G"
+    New-ODSEnv -InstallDir $wslDir -TierConfig $profileTier -Tier "1" `
+        -GpuBackend "nvidia" -ODSMode "local" -SystemRamGB 31 | Out-Null
+    if ((Get-Content -LiteralPath (Join-Path $wslDir ".env") -Raw) -notmatch '(?m)^LLAMA_ARG_CACHE_RAM=2304\r?$') {
+        throw "A 15 GiB Docker VM did not get a 2304 MiB prompt cache"
+    }
+    $profileDir = Join-Path $testRoot "profile-cache"
+    New-Item -ItemType Directory -Path $profileDir -Force | Out-Null
+    $cappedTier = $tier.Clone()
+    $cappedTier.LLAMA_ARG_CACHE_RAM = "1024"
+    New-ODSEnv -InstallDir $profileDir -TierConfig $cappedTier -Tier "1" `
+        -GpuBackend "nvidia" -ODSMode "local" -SystemRamGB 31 | Out-Null
+    if ((Get-Content -LiteralPath (Join-Path $profileDir ".env") -Raw) -notmatch '(?m)^LLAMA_ARG_CACHE_RAM=1024\r?$') {
+        throw "A runtime profile's LLAMA_ARG_CACHE_RAM was not written"
+    }
+    $profileEnvPath = Join-Path $profileDir ".env"
+    $profileEnv = Get-Content -LiteralPath $profileEnvPath -Raw
+    [IO.File]::WriteAllText($profileEnvPath, ($profileEnv -replace '(?m)^LLAMA_ARG_CACHE_RAM=.*$', 'LLAMA_ARG_CACHE_RAM=4096'))
+    New-ODSEnv -InstallDir $profileDir -TierConfig $cappedTier -Tier "1" `
+        -GpuBackend "nvidia" -ODSMode "local" -SystemRamGB 31 | Out-Null
+    if ((Get-Content -LiteralPath $profileEnvPath -Raw) -notmatch '(?m)^LLAMA_ARG_CACHE_RAM=1024\r?$') {
+        throw "A runtime profile's LLAMA_ARG_CACHE_RAM must win over .env, as on Linux"
+    }
+    $script:dockerRamGB = 128
+    $towerDir = Join-Path $testRoot "tower"
+    New-Item -ItemType Directory -Path $towerDir -Force | Out-Null
+    New-ODSEnv -InstallDir $towerDir -TierConfig $tier -Tier "1" `
+        -GpuBackend "nvidia" -ODSMode "local" -SystemRamGB 128 | Out-Null
+    if ((Get-Content -LiteralPath (Join-Path $towerDir ".env") -Raw) -match '(?m)^LLAMA_ARG_CACHE_RAM=') {
+        throw "A 128 GiB host must keep llama.cpp's own prompt-cache default"
+    }
+    $script:dockerRamGB = 4
 
     foreach ($case in @(
         @{ Name = "cloud"; Backend = "nvidia"; Mode = "cloud" },
@@ -73,6 +140,15 @@ try {
         if ($caseEnv -match '(?m)^LLAMA_SERVER_MEMORY_LIMIT=') {
             throw "$($case.Name) mode unexpectedly received the NVIDIA Docker memory limit"
         }
+        $hasCache = $caseEnv -match '(?m)^LLAMA_ARG_CACHE_RAM='
+        if ($case.Name -eq "cpu") {
+            # 4 GiB Docker VM under the 6G CPU compose limit: the floor.
+            if ($caseEnv -notmatch '(?m)^LLAMA_ARG_CACHE_RAM=512\r?$') {
+                throw "CPU install did not size the prompt cache"
+            }
+        } elseif ($hasCache) {
+            throw "$($case.Name) mode unexpectedly received a llama-server prompt-cache size"
+        }
     }
 } finally {
     Remove-Item -LiteralPath $testRoot -Recurse -Force -ErrorAction SilentlyContinue
@@ -86,4 +162,4 @@ if ($source -notmatch 'LLAMA_SERVER_MEMORY_LIMIT=\$llamaServerMemoryLimit') {
     throw "Windows generator must write the effective NVIDIA memory limit"
 }
 
-Write-Host "[PASS] Windows NVIDIA llama-server memory budget contract"
+Write-Host "[PASS] Windows NVIDIA llama-server memory budget and prompt-cache contract"

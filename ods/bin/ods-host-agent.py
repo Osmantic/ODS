@@ -114,6 +114,13 @@ if _model_stores_spec is None or _model_stores_spec.loader is None:
 _model_stores = importlib.util.module_from_spec(_model_stores_spec)
 _model_stores_spec.loader.exec_module(_model_stores)
 
+_llama_cache_budget_spec = importlib.util.spec_from_file_location(
+    "_ods_llama_cache_budget", _MODEL_MEMORY_PATH.with_name("llama_cache_budget.py"))
+if _llama_cache_budget_spec is None or _llama_cache_budget_spec.loader is None:
+    raise ImportError("Cannot load shared llama.cpp prompt-cache budget")
+_llama_cache_budget = importlib.util.module_from_spec(_llama_cache_budget_spec)
+_llama_cache_budget_spec.loader.exec_module(_llama_cache_budget)
+
 
 def _installed_model_file(filename: str) -> Path | None:
     return _model_stores.resolve_model_file(INSTALL_DIR / "data", filename, container=bool(os.environ.get("ODS_HOST_INSTALL_DIR")))
@@ -2325,6 +2332,56 @@ def _uses_lemonade_runtime(env: dict) -> bool:
         or str(env.get("LLM_BACKEND") or "").strip().casefold() == "lemonade"
         or str(env.get("AMD_INFERENCE_RUNTIME") or "").strip().casefold()
         == "lemonade"
+    )
+
+
+def _docker_memory_gb() -> int:
+    """Memory the Docker engine reports in whole GiB (a Docker Desktop VM can
+    hold less than the host); 0 when Docker does not answer."""
+    try:
+        result = subprocess.run(
+            ["docker", "info", "--format", "{{.MemTotal}}"],
+            capture_output=True, text=True, timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return 0
+    value = result.stdout.strip()
+    if result.returncode != 0 or not value.isdigit():
+        return 0
+    return int(value) // (1024 ** 3)
+
+
+def _default_llama_cache_ram_mib(env: dict, memory_limit: str) -> int | None:
+    """Default LLAMA_ARG_CACHE_RAM for a Docker llama-server, or None.
+
+    None leaves llama.cpp's 8192 MiB default: the host is large enough, or
+    ODS does not launch llama.cpp in Docker here (Lemonade, native macOS or
+    native Windows llama-server).
+    """
+    backend = _normalize_key(env.get("GPU_BACKEND"))
+    if backend in {"", "unknown"}:
+        # The installer's selector treats these as the cpu backend too.
+        backend = "cpu"
+    compose_limit = _llama_cache_budget.COMPOSE_MEMORY_LIMITS.get(backend)
+    if (
+        compose_limit is None
+        or _uses_lemonade_runtime(env)
+        or _is_windows_host_llama_server(env)
+        or _normalize_key(env.get("ODS_MODE")) == "cloud"
+    ):
+        return None
+    try:
+        configured_ram_gb = int(env.get("SYSTEM_RAM_GB") or 0)
+    except (TypeError, ValueError):
+        configured_ram_gb = 0
+    readings = [
+        value
+        for value in (configured_ram_gb, _system_ram_gb(), _docker_memory_gb())
+        if value > 0
+    ]
+    return _llama_cache_budget.default_cache_ram_mib(
+        min(readings) if readings else 0,
+        memory_limit or compose_limit,
     )
 
 
@@ -12944,6 +13001,24 @@ class AgentHandler(BaseHTTPRequestHandler):
                                         "LLAMA_ARG_SPEC_DRAFT_TYPE_K":"q4_0", "LLAMA_ARG_SPEC_DRAFT_TYPE_V":"q4_0"})
                 remove_keys.update({"LLAMA_ARG_SPEC_DRAFT_TYPE_K", "LLAMA_ARG_SPEC_DRAFT_TYPE_V"})
                 remove_keys.difference_update(updates)
+                # llama.cpp's RAM prompt cache (b9014 default 8192 MiB) is
+                # outside the container limit and the VRAM fit. When neither
+                # the profile nor .env sizes it, size it for this host and the
+                # container limit; a value already in .env is kept.
+                if (
+                    "LLAMA_ARG_CACHE_RAM" not in updates
+                    and not str(env_pre.get("LLAMA_ARG_CACHE_RAM") or "").strip()
+                ):
+                    cache_ram_mib = _default_llama_cache_ram_mib(
+                        env_pre,
+                        str(
+                            updates.get("LLAMA_SERVER_MEMORY_LIMIT")
+                            or env_pre.get("LLAMA_SERVER_MEMORY_LIMIT")
+                            or ""
+                        ),
+                    )
+                    if cache_ram_mib is not None:
+                        updates["LLAMA_ARG_CACHE_RAM"] = str(cache_ram_mib)
                 # Only update LLAMA_SERVER_IMAGE on Docker backends.
                 # macOS runs llama-server natively (no Docker image to pull).
                 if llama_server_image and gpu_backend != "apple":

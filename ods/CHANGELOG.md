@@ -197,6 +197,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   does work on b9014 (any value disables prompt caching), and
   `LLAMA_ARG_CHECKPOINT_EVERY_N_TOKENS` never existed in llama.cpp; the flag's
   env name is `LLAMA_ARG_CHECKPOINT_EVERY_NT`.
+- The Docker llama-server's RAM prompt cache (`LLAMA_ARG_CACHE_RAM`) is now
+  sized to the host when no model profile or existing `.env` value sets it.
+  llama.cpp's 8192 MiB default is outside every ODS memory check, and in a
+  16 GB WSL VM the kernel OOM-killed llama-server at about 10 GB resident,
+  which dropped in-flight Pixel requests while the model reloaded. The Linux
+  and Windows installers and dashboard model switches write a quarter of the
+  memory left after 6 GiB for the rest of ODS, at most a quarter of
+  `LLAMA_SERVER_MEMORY_LIMIT`, at least 512 MiB (2304 MiB in a 16 GB WSL VM;
+  hosts with about 38 GiB or more keep the default). Installer reruns fill in
+  a missing value; an existing one is kept. Lemonade and native macOS are
+  unchanged.
 
 ## [3.0.0] - 2026-09-24
 

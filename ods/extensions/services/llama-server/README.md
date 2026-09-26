@@ -37,6 +37,7 @@ Environment variables (set in `.env`):
 | `LLAMA_ARG_SPEC_TYPE` | unset | Optional per-model speculative decoding mode (`--spec-type`), normally written by a runtime profile. Overrides `LLAMA_SPEC_TYPE`. Use only with supported GGUF/runtime combinations |
 | `LLAMA_ARG_SPEC_DRAFT_N_MAX` | unset | Optional speculative draft token cap (`--spec-draft-n-max`; `--draft-max` on native macOS b8210) |
 | `LLAMA_SERVER_MEMORY_LIMIT` | `64G` | Docker memory limit for the container |
+| `LLAMA_ARG_CACHE_RAM` | sized to the host | RAM prompt cache in MiB (`--cache-ram`). See [RAM prompt cache](#ram-prompt-cache) |
 
 ### Long-context profile
 
@@ -60,6 +61,30 @@ LLAMA_ARG_N_CPU_MOE=25
 ```
 
 Tune this value per machine. Lower values keep more work on GPU and can be faster if enough VRAM is available; higher values reduce VRAM pressure. Leave this unset for dense models.
+
+### RAM prompt cache
+
+llama.cpp keeps earlier prompts, with their context checkpoints, in host RAM (`--cache-ram`, `LLAMA_ARG_CACHE_RAM`). When another client (Talk, Hermes, Open WebUI, a second Pixel chat) takes the slot, the conversation it replaced resumes from this cache instead of re-processing its whole prompt. b9014 lets the cache grow to 8192 MiB. The container memory limit, the VRAM fit check and the catalog profiles do not count it, and on a 16 GB machine it is most of the memory left: in a 16 GB WSL VM the kernel OOM-killed llama-server at about 10 GB resident, with about 4 GiB of other ODS containers running.
+
+When neither the model's runtime profile nor `.env` sets it, the Linux and Windows installers and a dashboard model switch write a size for the Docker llama-server:
+
+- a quarter of the memory left after 6 GiB for the rest of ODS and the OS (Docker's memory when it is smaller than the host's, as in WSL or Docker Desktop),
+- at most a quarter of `LLAMA_SERVER_MEMORY_LIMIT` (or the backend's compose default), so weights, KV cache and checkpoints keep the rest of the container,
+- at least 512 MiB.
+
+From 8192 MiB up the key stays unset and llama.cpp's default applies.
+
+| Memory Docker can use | Container limit | `LLAMA_ARG_CACHE_RAM` |
+|---|---|---|
+| 15 GiB (16 GB WSL VM) | 12G | 2304 |
+| 31 GiB | 27G | 6400 |
+| 62 GiB | 12G (8 GB GPU profile) | 3072 |
+| 64 GiB | 6G (CPU default) | 1536 |
+| 38 GiB and more | 34G and more | unset (8192) |
+
+A value already in `.env` is kept. Set `LLAMA_ARG_CACHE_RAM=8192` for llama.cpp's default, or `0` to turn the cache off. Lemonade (AMD) and native macOS start llama.cpp themselves and are not changed.
+
+The trade-off, measured with Qwen3.5-9B Q4_K_M at 64K context and q8_0 KV cache on an RTX 5070 Laptop GPU (b9014): a 29,855-token conversation took 798 MiB in the cache (546 MiB of KV and recurrent state plus five 50 MiB checkpoints). Saving it took 0.7 s; re-processing it took 17–23 s. 2304 MiB holds about three such conversations. On an RTX 5090 with Qwen3.5-27B, returning to a displaced 24k-token conversation took 1.4 s with the cache and 7.9 s with `--cache-ram 0`. With `0` the memory is free, but every return to a conversation another client displaced re-processes its whole prompt. b9014 always keeps the newest cached prompt, even when it alone is larger than the limit.
 
 ### N-gram speculative decoding
 
