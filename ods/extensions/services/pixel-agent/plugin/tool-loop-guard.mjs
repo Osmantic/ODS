@@ -9827,10 +9827,10 @@ export function createToolLoopGuard({
       const inspected = toolName === PREVIEW_INSPECTION_TOOL ? event
         : toolSearchEventEnvelope(event, PREVIEW_INSPECTION_TOOL, 'pixel-ods');
       if (inspected && isDeepStrictEqual(inspected.params, pendingToolRun.selectedParams)) {
-        // A later passing check of the same snapshot, with or without a click,
-        // keeps an earlier transition unless something it asserted after a
-        // click may be a proved target in the other state, under any locator.
-        // Failed, incomplete or unbound receipts still revoke it.
+        // A later passing check of the same snapshot keeps an earlier
+        // transition unless it may show a proved change not happening; with
+        // a click, only at the proof's viewport. Failed, incomplete or
+        // unbound receipts still revoke it.
         const proof = !failedToolOutcome(event)
           ? boundVisibilityInspection(inspected.params, inspected.result, state.workspacePreview) : undefined;
         const priorProof = pendingToolRun.priorVisibilityInspection;

@@ -274,15 +274,117 @@ for (const transport of TRANSPORTS) {
   });
 }
 
-// H. Static and round-108-shaped later plans keep the new proof shapes (no
-// regression of the fix itself).
+// H. Static plans at any viewport, and round-108-shaped plans at the proof's
+// viewport, keep the new proof shapes (no regression of the fix itself). A
+// plan with a click at another viewport revokes like main, even on this page,
+// where the change works at every width (see I).
 for (const transport of TRANSPORTS) {
-  test(`H keeps: round-108 shape and static plans after a one-click proof (${transport})`, async () => {
-    await scenario('H1-r108-shape', {expect: 'passed', owner: OWNER_TOGGLE, page: togglePage, transport, laterWidth: 1280,
+  test(`H keeps: round-108 shape at the proof's viewport and static plans after a one-click proof (${transport})`, async () => {
+    await scenario('H1-r108-shape', {expect: 'passed', owner: OWNER_TOGGLE, page: togglePage, transport, laterWidth: 800,
       proof: [step('assert-hidden', D), step('click', TOGGLE), step('assert-visible', D)],
       later: [step('assert-visible', sel('h1')), step('click', TOGGLE), step('assert-visible', D)]});
     await scenario('H2-static-later', {expect: 'passed', owner: OWNER_TOGGLE, page: togglePage, transport, laterWidth: 1280,
       proof: [step('assert-hidden', D), step('click', TOGGLE), step('assert-visible', D)],
       later: [step('assert-visible', sel('h1')), step('assert-hidden', D)]});
+    await scenario('H3-r108-shape-other-viewport', {expect: 'failed', owner: OWNER_TOGGLE, page: togglePage, transport, laterWidth: 1280,
+      proof: [step('assert-hidden', D), step('click', TOGGLE), step('assert-visible', D)],
+      later: [step('assert-visible', sel('h1')), step('click', TOGGLE), step('assert-visible', D)]});
+  });
+}
+
+// I. Review of #6754 at 2af6b12f: before the click, a locator rule cannot tell
+// the proved target under another name from an unrelated element (round 108
+// asserted "h1"), and the one click is itself a locator the proof may cover.
+// At 375 each page below already shows the proved target in its proved state
+// at load, and the later plan passes while its own receipt shows that, so a
+// plan with a click keeps a proof only at the proof's viewport.
+// #details (a <p class="details"> whose heading is "Details") starts hidden at
+// >= 768px; below 768px a media query shows it at load, so "Show details"
+// never reveals it there. Every alias names the same element.
+const DETAILS_HEADING = {role: 'heading', name: 'Details', exact: true};
+const DETAILS = [D, sel('p#details'), sel('.details'), DETAILS_HEADING];
+const all = (s, group, v) => set(s, group.map(l => [l, v]));
+const mobileShownPage = {
+  initial: w => all(new Map([[key(sel('h1')), 'visible'], [key(SHOW), 'visible']]), DETAILS, w >= 768 ? 'hidden' : 'visible'),
+  click: (s, k) => k === key(SHOW) ? all(s, DETAILS, 'visible') : s,
+};
+const OWNER_DETAILS = 'Create and publish a website in a new workspace directory site. Add a "Show details" button that reveals the hidden details.';
+const REVEAL = [step('assert-hidden', D), step('click', SHOW), step('assert-visible', D)];
+for (const transport of TRANSPORTS) {
+  test(`I1 before-click CSS alias of the proved target, already in its proved state at 375 (${transport})`, async () => {
+    await scenario('I1-alias-css', {expect: 'failed', owner: OWNER_DETAILS, page: mobileShownPage, transport, proof: REVEAL,
+      later: [step('assert-visible', sel('p#details')), step('click', SHOW), step('assert-visible', D)]});
+  });
+  test(`I2 before-click role/name alias of the proved target, already in its proved state at 375 (${transport})`, async () => {
+    await scenario('I2-alias-role', {expect: 'failed', owner: OWNER_DETAILS, page: mobileShownPage, transport, proof: REVEAL,
+      later: [step('assert-visible', DETAILS_HEADING), step('click', SHOW), step('assert-visible', D)]});
+  });
+  test(`I3 the one click is on the proved target, so it was rendered at load at 375 (${transport})`, async () => {
+    await scenario('I3-click-target', {expect: 'failed', owner: OWNER_DETAILS, page: mobileShownPage, transport, proof: REVEAL,
+      later: [step('click', D), step('assert-visible', D)]});
+    await scenario('I3-click-alias', {expect: 'failed', owner: OWNER_DETAILS, page: mobileShownPage, transport, proof: REVEAL,
+      later: [step('click', sel('.details'))]});
+  });
+  test(`I4 control: the same observation with the exact proved locator (${transport})`, async () => {
+    await scenario('I4-exact', {expect: 'failed', owner: OWNER_DETAILS, page: mobileShownPage, transport, proof: REVEAL,
+      later: [step('assert-visible', D), step('click', SHOW), step('assert-visible', D)]});
+  });
+}
+// Conceal mirror: "Close promo" hides #promo; below 768px #promo is hidden at load.
+const PROMOS = [sel('#promo'), sel('.promo')];
+const mobileHiddenPromo = {
+  initial: w => all(new Map([[key(sel('h1')), 'visible'], [key(CLOSE), 'visible']]), PROMOS, w >= 768 ? 'visible' : 'hidden'),
+  click: (s, k) => k === key(CLOSE) ? all(s, PROMOS, 'hidden') : s,
+};
+const OWNER_CLOSE = 'Create and publish a website in a new workspace directory site. Add a "Close promo" button that hides the promo banner when clicked.';
+// Two proved changes: "Show details" reveals #details and hides #summary;
+// below 768px #summary is hidden at load.
+const SUMMARIES = [SUMMARY, sel('p#summary')];
+const mobileHiddenSummary = {
+  initial: w => all(set(new Map([[key(sel('h1')), 'visible'], [key(SHOW), 'visible']]), [[D, 'hidden']]), SUMMARIES, w >= 768 ? 'visible' : 'hidden'),
+  click: (s, k) => k === key(SHOW) ? all(set(s, [[D, 'visible']]), SUMMARIES, 'hidden') : s,
+};
+for (const transport of TRANSPORTS) {
+  test(`I5 conceal: before-click alias of the proved target, already hidden at 375 (${transport})`, async () => {
+    await scenario('I5-conceal-alias', {expect: 'failed', owner: OWNER_CLOSE, page: mobileHiddenPromo, transport,
+      proof: [step('assert-visible', PROMO), step('click', CLOSE), step('assert-hidden', PROMO)],
+      later: [step('assert-hidden', sel('.promo')), step('click', CLOSE), step('assert-hidden', PROMO)]});
+  });
+  test(`I6 two proved changes: alias of the second target, already hidden at 375 (${transport})`, async () => {
+    await scenario('I6-two-targets-alias', {expect: 'failed', owner: OWNER_TWO, page: mobileHiddenSummary, transport,
+      proof: [step('assert-hidden', D), step('assert-visible', SUMMARY), step('click', SHOW), step('assert-visible', D), step('assert-hidden', SUMMARY)],
+      later: [step('assert-hidden', sel('p#summary')), step('click', SHOW), step('assert-visible', D), step('assert-hidden', SUMMARY)]});
+  });
+}
+
+// G2. Lifecycle revocations of a one-click proof, against a later plan in the
+// round-108 shape at the proof's viewport that keeps it when nothing is wrong.
+const workingPage = {initial: () => new Map([[key(sel('h1')), 'visible'], [key(SHOW), 'visible'], [key(D), 'hidden']]),
+  click: (s, k) => k === key(SHOW) ? set(s, [[D, 'visible']]) : s};
+for (const transport of TRANSPORTS) {
+  test(`G2 lifecycle revocations after a one-click proof (${transport})`, async () => {
+    const later = [step('assert-visible', sel('h1')), step('click', SHOW), step('assert-visible', D)];
+    const out = [];
+    const faults = ['none', 'failed', 'unavailable', 'page-errors', 'incomplete', 'blocked', 'is-error', 'republish', 'session'];
+    for (const fault of faults) {
+      const {guard, preview} = setup(OWNER_DETAILS);
+      await inspect(guard, preview, workingPage, REVEAL, 'proof', {transport});
+      const start = status(guard);
+      let target = preview, request, mutate;
+      if (fault === 'failed') request = async r => { const v = capsule(workingPage)(r); v.status = 'failed'; v.steps.at(-1).status = 'failed'; v.steps.at(-1).errorCode = 'visibility_mismatch'; return v; };
+      if (fault === 'unavailable') request = async () => { throw Error('down'); };
+      if (fault === 'page-errors') request = async r => capsule(workingPage, {pageErrors: {count: 1, messages: ['TypeError: x is undefined']}})(r);
+      if (fault === 'blocked') request = async r => { const v = capsule(workingPage)(r); v.blockedRequests = ['navigation']; v.status = 'failed'; return v; };
+      // A proof suppresses the tool's own INCOMPLETE, so craft the exact shape it returns.
+      if (fault === 'incomplete') mutate = r => ({content: r.content, isError: true, details: {schemaVersion: 1, kind: INSPECTION_KIND,
+        status: 'incomplete', errorCode: 'transition_untested', siteId: r.details.siteId, sha256: r.details.sha256,
+        planSha256: r.details.planSha256, scope: INSPECTION_SCOPE, receipt: r.details}});
+      if (fault === 'is-error') mutate = r => ({...r, isError: true});
+      if (fault === 'republish') target = publish(guard, '<!doctype html><h1>Site v2</h1><button>Show details</button><p id="details" hidden>Details</p>', 'republish', preview.relativeDirectory);
+      if (fault === 'session') guard.observeRun({...context, sessionId: 'other'}, 'pixel', {prompt: OWNER_DETAILS});
+      if (fault !== 'session') await inspect(guard, target, workingPage, later, 'later', {transport, request, mutate});
+      out.push(`${fault}: start=${start} final=${status(guard)}`);
+    }
+    assert.deepEqual(out, faults.map(fault => `${fault}: start=passed final=${fault === 'none' ? 'passed' : 'failed'}`));
   });
 }

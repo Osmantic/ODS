@@ -376,17 +376,18 @@ test('bounded session preview eviction also evicts the associated obligation',()
   assert.doesNotMatch(guard.verificationForRun(next.ctx.runId).text,/show\/hide interaction/);
 });
 
-// A plan without a click, or one click whose later assertions all name a
-// proved target exactly in its proved state (tower2 round 108) or none, cannot
-// show the proved change failing. Any other assertion after a click can: it may
-// be the proved target under another locator, or another element the change
-// was meant to reach, even in the proved state.
+// A plan without a click, or, at the proof's viewport, one click whose later
+// assertions all name a proved target exactly in its proved state (round 108)
+// or none, cannot show the proved change failing. Any other assertion after a
+// click can: it may be the proved target under another locator, or another
+// element the change was meant to reach, even in the proved state. So can any
+// click at another viewport, where the page may show the target at load.
 const KEEPS_PROOF=new Set(['none','click-without-transition','target-visible-at-load']);
 for (const wrapped of [false,true]) for (const fault of [
   'none','no-prior-proof','failed','unavailable','inner-error','outer-error','receipt-sha','receipt-plan',
   'params','session','session-key','source','changed-bytes','click-without-transition','failed-click',
   'target-unchanged-by-click','target-visible-at-load','other-control-unchanged','other-control-proved-state',
-  'aliased-target-unchanged','aliased-control-unchanged',
+  'aliased-target-unchanged','aliased-control-unchanged','click-other-viewport',
 ]) test(`a later passing inspection preserves only existing bound interaction: wrapped=${wrapped}, fault=${fault}`,()=>{
   const {guard,preview}=setup();
   if (fault!=='no-prior-proof') {
@@ -400,13 +401,14 @@ for (const wrapped of [false,true]) for (const fault of [
     {action:'assert-hidden',locator:{selector:'#details'}},
   ]};
   const control={action:'click',locator:{role:'button',name:'Show details',exact:true}};
-  if (['click-without-transition','failed-click'].includes(fault)) params.steps.push(control);
+  if (['click-without-transition','failed-click','click-other-viewport'].includes(fault)) params.steps.push(control);
   if (fault==='target-unchanged-by-click') params.steps.push(control,{action:'assert-hidden',locator:{selector:'#details'}});
   if (fault==='target-visible-at-load') params.steps[1].action='assert-visible';
   if (fault==='other-control-unchanged') params.steps.push({action:'click',locator:{selector:'#other'}},{action:'assert-hidden',locator:{selector:'#details'}});
   if (fault==='other-control-proved-state') params.steps.push({action:'click',locator:{selector:'#other'}},{action:'assert-visible',locator:{selector:'button'}});
   if (fault==='aliased-target-unchanged') params.steps.push(control,{action:'assert-hidden',locator:{selector:'p#details'}});
   if (fault==='aliased-control-unchanged') params.steps.push({action:'click',locator:{selector:'#show'}},{action:'assert-hidden',locator:{selector:'#details'}});
+  if (params.steps.some(step=>step.action==='click')&&fault!=='click-other-viewport') params.viewport=plan(preview).viewport;
   const next=inspection(guard,params,{wrapped,id:'desktop-static'});
   const result=structuredClone(next.result),event={...next.event},ctx={...next.ctx};
   const inner=wrapped?result.details.result:result;
@@ -429,14 +431,17 @@ for (const wrapped of [false,true]) for (const fault of [
 // Review of #6754: which proofs a later passing plan with a click keeps. A
 // change the proof saw only after a preparatory or second click names no
 // clicked control, so any later click can test it. A later plan with two
-// clicks keeps nothing. With one click, each assertion must be one proved
-// target, exactly: before the click in its load state, after it in its proved
-// state. Another element in the proved state is not the proved target: it can
-// be one the requested change failed to reach (a card a self-hiding button
-// never revealed, a summary a reveal never hid, a panel a tab never replaced).
+// clicks keeps nothing, and one click keeps nothing at another viewport. At the
+// proof's viewport, a proved target named before the click must be in its load
+// state, and every assertion after it must be one proved target, exactly, in
+// its proved state. Another element in the proved state is not the proved
+// target: it can be one the requested change failed to reach (a card a
+// self-hiding button never revealed, a summary a reveal never hid, a panel a
+// tab never replaced). `keeps` is the outcome at the proof's viewport; a later
+// plan that is itself a transition proof replaces the proof at any viewport.
 {
   const SHOW={role:'button',name:'Show details',exact:true},D={selector:'#details'},S={selector:'#summary'};
-  const step=(action,locator)=>({action,locator});
+  const step=(action,locator)=>({action,locator}),PROOF_VIEWPORT=plan({}).viewport;
   const PROOFS={
     reveal:[step('assert-hidden',D),step('click',SHOW),step('assert-visible',D)],
     conceal:[step('assert-visible',D),step('click',SHOW),step('assert-hidden',D)],
@@ -450,7 +455,7 @@ for (const wrapped of [false,true]) for (const fault of [
     ['reveal',[step('click',{selector:'button'}),step('assert-hidden',D)],false],
     ['reveal',[step('assert-visible',{selector:'h1'}),step('click',{selector:'#show'}),step('assert-visible',{selector:'p#details'})],false],
     ['reveal',[step('assert-visible',{selector:'h1'}),step('click',{selector:'#show'}),step('assert-visible',D)],true],
-    ['reveal',[step('assert-hidden',D),step('click',SHOW),step('assert-visible',D)],true],
+    ['reveal',[step('assert-hidden',D),step('click',SHOW),step('assert-visible',D)],'replaces'],
     ['reveal',[step('assert-visible',D),step('click',SHOW),step('assert-visible',D)],false],
     ['reveal',[step('click',SHOW),step('assert-visible',S)],false],
     ['reveal',[step('assert-visible',D),step('click',SHOW)],false],
@@ -469,15 +474,16 @@ for (const wrapped of [false,true]) for (const fault of [
     ['double-click',[step('assert-hidden',D),step('click',SHOW),step('assert-hidden',D)],false],
     ['preparatory-click',[step('click',SHOW)],false],
     ['preparatory-click',[step('assert-visible',{selector:'button'})],true],
-  ]) for (const wrapped of [false,true]) for (const width of [800,1280]) {
-    test(`a later passing plan ${keeps?'keeps':'revokes'} a ${proof} proof: wrapped=${wrapped}, width=${width}, ${JSON.stringify(later)}`,()=>{
+  ]) for (const wrapped of [false,true]) for (const viewport of [PROOF_VIEWPORT,{width:800,height:720},{width:1280,height:720}]) {
+    const kept=keeps==='replaces'||keeps&&(viewport===PROOF_VIEWPORT||later.every(({action})=>action!=='click'));
+    test(`a later passing plan ${kept?'keeps':'revokes'} a ${proof} proof: wrapped=${wrapped}, viewport=${viewport.width}x${viewport.height}, ${JSON.stringify(later)}`,()=>{
       const {guard,preview}=setup();
       const first=inspection(guard,{...plan(preview),steps:PROOFS[proof]},{wrapped,id:'proof'});
       guard.afterToolCall({...first.event,result:first.result},first.ctx);
       assert.equal(guard.verificationForRun('run').status,'passed');
-      const next=inspection(guard,{...plan(preview),viewport:{width,height:720},steps:later},{wrapped,id:'later'});
+      const next=inspection(guard,{...plan(preview),viewport,steps:later},{wrapped,id:'later'});
       guard.afterToolCall({...next.event,result:next.result},next.ctx);
-      assert.equal(guard.verificationForRun('run').status,keeps?'passed':'failed');
+      assert.equal(guard.verificationForRun('run').status,kept?'passed':'failed');
     });
   }
 }

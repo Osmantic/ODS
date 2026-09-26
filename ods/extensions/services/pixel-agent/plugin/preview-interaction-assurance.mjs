@@ -101,7 +101,7 @@ function boundInspection(params, result, preview, acceptsPlan) {
     const {request, receipt} = boundReceipt(params, result, preview) ?? {};
     if (receipt?.status !== 'passed' || inspectionPageErrors(receipt) || !acceptsPlan(request)) return undefined;
     return Object.freeze({siteId: receipt.siteId, sha256: receipt.sha256, planSha256: receipt.planSha256,
-      transitions: oneClickTransitions(request)});
+      viewport: Object.freeze({...request.viewport}), transitions: oneClickTransitions(request)});
   } catch { return undefined; }
 }
 
@@ -121,18 +121,24 @@ function oneClickTransitions(request) {
 // Whether a later passing plan may have seen a proved change not happen. A
 // plan without a click cannot (#6626). A plan with more than one click can: a
 // toggle's second click or a preparatory click changes what the next
-// assertion means. With one click, each assertion must name a proved target
-// exactly: before the click in the state the proof saw at load, after it in
-// the state the proved change produced (tower2 round 108 re-asserted the
-// proved heading after clicking its button by id). Any other locator may be
-// the proved target under another name, or another element the requested
-// change was meant to reach, so it keeps nothing; the proof is then taken
-// again, as before retention existed. A proof without a one-click change
-// keeps nothing across a click.
-function mayContradictTransitions(request, transitions) {
+// assertion means. So can one click at another viewport than the proof's: the
+// page may show the proved target at load there, and a plan that asserts it
+// under another locator, or clicks it (only a rendered element is clicked),
+// passes; no locator rule tells that alias from the unrelated "h1" round 108
+// asserted before its click. At the proof's viewport the page loads as the
+// proof saw it. A proved target named before the click must be in its load
+// state; after the click each assertion must name a proved target exactly, in
+// the state the proved change produced (round 108 re-asserted the proved
+// heading after clicking its button by id). Any other locator after the click
+// may be the proved target under another name, or another element the
+// requested change was meant to reach. A revoked proof is taken again, as
+// before retention existed; a proof without a one-click change keeps nothing
+// across a click.
+function mayContradictTransitions(request, proof) {
   const clicks = request.steps.filter(step => step.action === 'click').length;
   if (!clicks) return false;
-  if (clicks > 1 || !transitions.length) return true;
+  const transitions = proof.transitions ?? [];
+  if (clicks > 1 || !transitions.length || !isDeepStrictEqual(request.viewport, proof.viewport)) return true;
   let clicked = false;
   return request.steps.some(step => {
     if (step.action === 'click') { clicked = true; return false; }
@@ -168,16 +174,17 @@ export function boundVisibilityInspection(params, result, preview) {
   return boundInspection(params, result, preview, hasVisibilityTransitionPlan);
 }
 
-// A later passing inspection of the proof's snapshot keeps that proof unless an
-// assertion after a click may show a proved change not happening. Tower2 round
-// 108 passed assert-hidden(heading), click("#soldOutBtn"), assert-visible(heading),
-// then assert-visible("h1"), click("#soldOutBtn"), assert-visible(heading), and
-// the second pass dropped the first. A plan without a click keeps it (#6626).
-// It never establishes a proof; a failed or incomplete receipt, another
-// snapshot or page errors keep none.
+// A later passing inspection of the proof's snapshot keeps that proof unless it
+// may show a proved change not happening. Round 108 passed, at one viewport,
+// assert-hidden(heading), click("#soldOutBtn"), assert-visible(heading), then
+// assert-visible("h1"), click("#soldOutBtn"), assert-visible(heading), and the
+// second pass dropped the first. A plan without a click keeps it (#6626); a
+// plan with a click keeps it only at the proof's viewport. It never
+// establishes a proof; a failed or incomplete receipt, another snapshot or
+// page errors keep none.
 export function preservesVisibilityInspection(proof, params, result, preview) {
   return visibilityInspectionMatches(proof, preview) && Boolean(boundInspection(params, result, preview,
-    request => !mayContradictTransitions(request, proof.transitions ?? [])));
+    request => !mayContradictTransitions(request, proof)));
 }
 
 export function visibilityInspectionMatches(proof, preview) {
