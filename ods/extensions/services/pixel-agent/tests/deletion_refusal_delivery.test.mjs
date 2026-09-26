@@ -178,8 +178,11 @@ test('tower2 replay through the registered hooks: the refused cleanup keeps the 
   const run = await replay(t, CALLS);
   const {guard, context, decisions, prepared, signalled, aborted} = run;
   // #1 is the recorded path correction; #10 and #11 are the recorded refusals.
-  assert.equal(decisions[0]?.blockReason, CALLS[0].result.text);
-  assert.match(decisions[0].blockReason, /^For a new project, use a workspace-relative path/);
+  // The correction is the Playground routing guard's text, which #6751
+  // extended after this session was recorded, so only its recorded sentence
+  // is pinned here.
+  assert.ok(decisions[0]?.blockReason.includes(CALLS[0].result.text), decisions[0]?.blockReason);
+  assert.match(decisions[0].blockReason, /For a new project, use a workspace-relative path/);
   assert.deepEqual(decisions.map(decision => decision?.block === true),
     [true, false, false, false, false, false, false, false, false, true, true]);
   assert.equal(decisions[9].blockReason, RECURSIVE_DELETE_REQUIRES_OWNER_REASON);
