@@ -353,6 +353,58 @@ ARCH = {
 }
 
 
+# ---------------------------------------------------------------------------
+# Catalog rows against llama.cpp's own KV allocation
+#
+# "llama_kv_cache: CUDA0 KV buffer size" lines from the fleet's model-UI
+# switch runs (each run's gpu-residency load log; llama.cpp b9014, f16 cache,
+# one slot, ubatch 512) at the context the runtime reported serving. A
+# sliding-window model logs its full-attention cache and its window cache as
+# two lines; the second is MemoryEstimate.swa_kv_gib.
+# ---------------------------------------------------------------------------
+
+LLAMA_KV_BUFFERS_MIB = {
+    # catalog id: (served context, full-context KV, window KV, run)
+    "gemma4-26b-a4b-q4": (32768, 640.0, 300.0, "20260925T194808Z-tower3-r29"),
+    "gemma4-e2b-q4": (65536, 384.0, 12.0, "20260925T201654Z-tower3-r30"),
+    "qwen3.5-27b-q4": (65536, 4096.0, 0.0, "20260925T201654Z-tower3-r30"),
+    "qwen3.6-27b-ud-q4-k-xl": (65536, 4096.0, 0.0, "20260926T064046Z-tower3-r33-int4-bfb62a2b"),
+    "qwen3.5-4b-q4": (131072, 4096.0, 0.0, "20260925T154726Z-tower1-r21"),
+    "nvidia-nemotron3-nano-4b-q4": (65536, 1024.0, 0.0, "20260926T020450Z-tower1-r32b-main-d4a61f33"),
+    "deepseek-r1-14b-q4": (65536, 12288.0, 0.0, "20260925T205447Z-tower3-r31"),
+}
+
+
+class TestCatalogRowsMatchLlamaAllocation:
+
+    @pytest.mark.parametrize("model_id", sorted(LLAMA_KV_BUFFERS_MIB))
+    def test_kv_matches_the_logged_buffers(self, model_id):
+        context, full_mib, window_mib, _run = LLAMA_KV_BUFFERS_MIB[model_id]
+        row = next(item for item in _catalog_entries() if item["id"] == model_id)
+        mib = 1024 ** 2
+        assert kv_bytes_per_token(row) * context / mib == full_mib, model_id
+        window = sliding_window_kv_bytes_per_cell(row) * sliding_window_cells(row, context)
+        assert window / mib == window_mib, model_id
+
+    def test_gemma4_31b_charges_only_its_full_attention_layers(self):
+        # No fleet load of gemma4-31b yet. Its row carries the same layout
+        # formula the 26B-A4B and E2B loads above confirm: at the catalog's
+        # 131072, 10 layers x 4 heads x (512+512) x f16 grow with the context
+        # (10240 MiB) and 50 layers x 16 heads x (256+256) hold the 1024 + 512
+        # window cells (1200 MiB). Read as dense (every layer, 512 dims) the
+        # dashboard charged 227.1 GB and disabled Run on a 32 GB RTX 5090
+        # (tower1 UI r33, 2026-09-26).
+        row = next(item for item in _catalog_entries() if item["id"] == "gemma4-31b-q4")
+        estimate = estimate_model_memory(row, context_length=131072)
+        assert estimate.method == "architecture"
+        assert round((estimate.kv_gib - estimate.swa_kv_gib) * 1024) == 10240
+        assert round(estimate.swa_kv_gib * 1024) == 1200
+        assert estimate.device_gib == 28.84
+        # The RTX 5090 reports 32607 MiB; the architecture fit leaves 3% free.
+        assert memory_fits(estimate.device_gib, 32607 / 1024, "discrete", architecture_estimate=True)
+        assert required_model_memory_gb(row) == 28.84
+
+
 class TestArchitectureEstimator:
 
     @pytest.mark.parametrize("name,expected", [

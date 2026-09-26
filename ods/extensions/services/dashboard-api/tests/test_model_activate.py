@@ -4667,6 +4667,24 @@ def test_curated_model_preserves_validated_vram_contract(tmp_path):
     ) == 24 * 1024
 
 
+def test_gemma4_31b_budget_matches_the_models_row(tmp_path):
+    # The host agent budgets the catalog row; the dashboard's Models row and
+    # switch plan charge 28.84 GiB for it at 131072 (sliding-window layout,
+    # test_performance_oracle), so activation reserves the same.
+    catalog_path = Path(__file__).resolve().parents[4] / "config" / "model-library.json"
+    raw = next(
+        item for item in json.loads(catalog_path.read_text(encoding="utf-8"))["models"]
+        if item["id"] == "gemma4-31b-q4"
+    )
+    target = tmp_path / raw["gguf_file"]
+    target.write_bytes(b"model")
+
+    budget_mb = _mod._target_model_vram_budget_mb(raw, target, context_length=131072)
+
+    assert budget_mb == int(28.84 * 1024 + 0.999)
+    assert budget_mb < 32607
+
+
 def test_model_weight_size_counts_complete_split_gguf(tmp_path):
     first = tmp_path / "model-00001-of-00002.gguf"
     second = tmp_path / "model-00002-of-00002.gguf"

@@ -5,9 +5,9 @@ The installer ranks models by curated priority and checks fit with
 model_memory.estimate_model_memory(), which is only as good as the layout the
 catalog declares. These checks keep the catalog and the estimator honest:
 
-* every installable entry (except Gemma 4 31B) declares its attention
-  layout, recurrent state, pinned GGUF size and the config.json revision it
-  came from, and so does every other entry that declares a layout;
+* every installable entry declares its attention layout, recurrent state,
+  pinned GGUF size and the config.json revision it came from, and so does
+  every other entry that declares a layout;
 * operating contexts fit inside the model's native maximum and meet the 64K
   Hermes floor; an entry below the floor is one whose native maximum is
   below it, and its app compatibility says ODS Talk cannot run it;
@@ -37,10 +37,6 @@ from model_memory import (  # noqa: E402
 )
 
 HERMES_CONTEXT_FLOOR = 65536
-# Gemma 4 31B already runs above the Hermes floor (131K) and its layout was
-# not reviewed; it keeps the legacy estimate. The other Gemma 4 entries
-# declare their sliding-window layout.
-GEMMA_EXEMPT = {"gemma4-31b-q4"}
 LAYOUT_FIELDS = (
     "block_count", "attention_head_count_kv",
     "attention_key_length", "attention_value_length", "recurrent_state_bytes",
@@ -68,7 +64,6 @@ def _selected_models() -> list[dict]:
     return [
         model for model in _models()
         if _installable(model) and str(model.get("source") or "") in {"", "curated"}
-        and model["id"] not in GEMMA_EXEMPT
     ]
 
 
@@ -85,13 +80,19 @@ def _ids(models):
     return [model["id"] for model in models]
 
 
-def test_gemma_exemption_is_explicit():
-    gemma = {
-        model["id"] for model in _models()
+def test_gemma4_entries_declare_their_sliding_window_layout():
+    """Most Gemma 4 layers attend over a sliding window, not the context.
+
+    Read as dense, Gemma 4 31B at 131072 needs ~227 GB and the dashboard
+    disabled Run for it on a 32 GB card (tower1 UI r33, 2026-09-26).
+    """
+    gemma = [
+        model for model in _models()
         if model.get("family") == "gemma4" and _installable(model)
-        and "recurrent_state_bytes" not in model
-    }
-    assert gemma == GEMMA_EXEMPT
+    ]
+    assert gemma
+    for model in gemma:
+        assert "sliding_window" in model and "recurrent_state_bytes" in model, model["id"]
 
 
 @pytest.mark.parametrize("model", _reviewed_models(), ids=_ids(_reviewed_models()))
@@ -173,7 +174,7 @@ def test_selection_priorities_cover_every_memory_class():
         for memory_class in ("discrete", "unified", "cpu"):
             assert isinstance(selection[memory_class], int) and selection[memory_class] >= 0, model["id"]
         assert set(selection) <= {"discrete", "unified", "cpu", "min_capacity_gib"}, model["id"]
-        if model["id"] not in GEMMA_EXEMPT and any(selection[c] for c in ("discrete", "unified", "cpu")):
+        if any(selection[c] for c in ("discrete", "unified", "cpu")):
             assert _installable(model), model["id"]
 
 
