@@ -558,6 +558,9 @@ jobs:
       - name: Atomic Environment Write Tests
         run: bash tests/test-atomic-env-writes.sh
 
+      - name: Model Upgrade Compose Stack Tests
+        run: bash tests/test-upgrade-model-compose-stack.sh
+
       - name: Installer mode dotenv compatibility
         run: python3 -m pytest -q tests/test_installer_mode_dotenv.py
 

@@ -38,12 +38,33 @@ INFERENCE_PORT="$OLLAMA_PORT"
 INFERENCE_CONTAINER="$LLAMA_SERVER_CONTAINER"
 MODEL_ENV_KEY="LLM_MODEL"
 
+# Every GPU overlay file ships on every install, so which overlay files exist
+# says nothing about this host. Prefer the stack the installer recorded in
+# .compose-flags (base + GPU overlay + enabled extensions); otherwise pick the
+# overlay named by GPU_BACKEND.
 detect_compose_file() {
     COMPOSE_FILE_ARGS=()
-    if [[ -f "$ODS_DIR/docker-compose.base.yml" && -f "$ODS_DIR/docker-compose.amd.yml" ]]; then
-        COMPOSE_FILE_ARGS=(-f "$ODS_DIR/docker-compose.base.yml" -f "$ODS_DIR/docker-compose.amd.yml")
-    elif [[ -f "$ODS_DIR/docker-compose.base.yml" && -f "$ODS_DIR/docker-compose.nvidia.yml" ]]; then
-        COMPOSE_FILE_ARGS=(-f "$ODS_DIR/docker-compose.base.yml" -f "$ODS_DIR/docker-compose.nvidia.yml")
+    if [[ -s "$ODS_DIR/.compose-flags" ]]; then
+        local -a recorded=()
+        local token previous=""
+        read -ra recorded < "$ODS_DIR/.compose-flags"
+        for token in "${recorded[@]}"; do
+            if [[ "$previous" == "-f" ]]; then
+                [[ "$token" == /* ]] || token="$ODS_DIR/$token"
+                COMPOSE_FILE_ARGS+=(-f "$token")
+            fi
+            previous="$token"
+        done
+    elif [[ -f "$ODS_DIR/docker-compose.base.yml" ]]; then
+        local backend="" overlay
+        if [[ -f "$ODS_DIR/.env" ]]; then
+            backend="$(sed -n 's/^GPU_BACKEND=//p' "$ODS_DIR/.env" | tail -n 1 | tr -d '\r"')"
+        fi
+        overlay="$ODS_DIR/docker-compose.${backend:-nvidia}.yml"
+        COMPOSE_FILE_ARGS=(-f "$ODS_DIR/docker-compose.base.yml")
+        if [[ -f "$overlay" ]]; then
+            COMPOSE_FILE_ARGS+=(-f "$overlay")
+        fi
     elif [[ -f "$ODS_DIR/docker-compose.yml" ]]; then
         COMPOSE_FILE_ARGS=(-f "$ODS_DIR/docker-compose.yml")
     fi

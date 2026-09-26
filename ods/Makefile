@@ -123,6 +123,9 @@ test: ## Run unit and contract tests
 	@echo "=== atomic .env writes ==="
 	@bash tests/test-atomic-env-writes.sh
 	@echo ""
+	@echo "=== upgrade-model compose stack ==="
+	@bash tests/test-upgrade-model-compose-stack.sh
+	@echo ""
 	@echo "=== brave-search searxng compat contract ==="
 	@bash tests/test-brave-search-searxng-compat.sh
 	@echo ""
