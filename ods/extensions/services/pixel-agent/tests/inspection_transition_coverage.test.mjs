@@ -546,7 +546,7 @@ test('the registered inspection tool asks the run guard about exactly its own ca
   const end = source.indexOf(close, start);
   assert.ok(start >= 0 && end > start, 'expected the inspection tool registration block');
   let registered;
-  const asked = [];
+  const asked = [], recorded = [];
   const run = capsule(TOWER2, TOWER2_PAGE);
   vm.runInNewContext(source.slice(start, end + close.length), {
     api: {pluginConfig: {workspacePreviewInspectionTransport: 'unix'}},
@@ -555,11 +555,14 @@ test('the registered inspection tool asks the run guard about exactly its own ca
     toolLoopGuard: {previewInspectionTransition: (id, params) => {
       asked.push([id, params]);
       return {target: OWNER_PHRASE, outline: outlineOf(TOWER2, TOWER2_PUBLISH).outline, initiallyHidden: true};
-    }},
+    }, recordPreviewInspectionResult: (id, params, result) => recorded.push([id, params, result])},
   });
   assert.deepEqual(registered.names, [PREVIEW_INSPECTION_TOOL]);
   const result = await registered.tool.execute('call-1', TOWER2_INSPECT.arguments);
   assert.deepEqual(asked, [['call-1', TOWER2_INSPECT.arguments]]);
+  // The run budget gets the tool's own result for exactly this call.
+  assert.deepEqual(recorded, [['call-1', TOWER2_INSPECT.arguments, result]]);
+  assert.equal(recorded[0][2], result);
   assert.ok(result.content[0].text.startsWith(INCOMPLETE), result.content[0].text);
   assert.deepEqual(nextArgs(result.content[0].text).steps, transition(TOWER2_TARGET));
 });

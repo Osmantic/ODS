@@ -1,4 +1,6 @@
 import {
+  INSPECTION_KIND,
+  TRANSITION_UNTESTED,
   hasVisibilityTransitionPlan,
   inspectionPageErrors,
   normalizeWorkspacePreviewInspectionParams,
@@ -119,6 +121,35 @@ export function boundStaticPreviewInspection(params, result, preview) {
 
 export function visibilityInspectionMatches(proof, preview) {
   return Boolean(proof && preview && proof.siteId === preview.siteId && proof.sha256 === preview.sha256);
+}
+
+// A failed inspection whose result already tells the model how to correct the
+// same check, and whose failure measured nothing: arguments rejected before the
+// broker ran, a requested transition that was never tested (INCOMPLETE, with
+// its next steps), or a final step whose locator matched no element, several
+// elements, or was not valid CSS. Only its run-budget charge may wait for one
+// corrected attempt (run-progress-budget.mjs); it is never evidence or a pass.
+// Page errors, blocked requests, visibility mismatches, click failures,
+// unstable steps and unavailable, timed-out or cancelled inspections are not
+// correctable.
+const UNMEASURED_LOCATOR = new Set(['no_match', 'selector_not_unique', 'invalid_selector']);
+export function correctableInspectionFailure(result) {
+  const details = result?.details;
+  if (result?.isError !== true || details?.kind !== INSPECTION_KIND) return false;
+  if (details.errorCode === 'invalid_request') return details.status === 'failed';
+  if (details.status === 'incomplete') return details.errorCode === TRANSITION_UNTESTED;
+  return details.status === 'failed' && details.errorCode === undefined && details.pageErrors === undefined &&
+    Array.isArray(details.blockedRequests) && details.blockedRequests.length === 0 &&
+    Array.isArray(details.steps) && UNMEASURED_LOCATOR.has(details.steps.at(-1)?.errorCode);
+}
+
+// The corrected attempt that forgives such a failure's waiting charge: an
+// inspection whose steps all passed without page script errors. Any other
+// result, including an unrelated success, is not that attempt.
+export function passedInspection(result) {
+  const details = result?.details;
+  return result?.isError !== true && details?.kind === INSPECTION_KIND && details.status === 'passed' &&
+    !inspectionPageErrors(details);
 }
 
 export const PAGE_ERROR_REPAIR_INSTRUCTION = `The published preview is available, but the latest browser inspection of this snapshot recorded uncaught page script errors, so its interactions are not verified. Fix the script so it does not throw (for example, guard every localStorage/sessionStorage access with try/catch and an in-memory fallback, per the preview storage contract), republish, then call ${PREVIEW_INSPECTION_TOOL} on the new snapshot with the same checks. Do not claim the interactions work while the page throws.`;
