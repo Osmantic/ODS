@@ -24,7 +24,18 @@ Every locator must match exactly one element, including hidden assertions.
 
 A CSS locator matches through the isolated world's `querySelectorAll`, hidden
 elements included. An exact role/name locator for `assert-visible` or `click`
-matches Chromium's accessibility tree, which contains only rendered elements.
+matches only rendered elements: Chromium's accessibility tree, united by
+element identity with Playwright's default
+`getByRole(role, {name, exact: true})` role and name rules in the isolated
+world. Chromium's names apply CSS `text-transform` (an uppercase-styled
+"Show sold out" button is "SHOW SOLD OUT" there); Playwright's names, which the
+capsule's own click and the owner's checks use, are the source text. Either
+name matches. The rendered-only rules leave out every element hidden for ARIA
+(Playwright's `isElementHiddenForAria`: `display: none` or
+`aria-hidden="true"` on the element or an ancestor across shadow hosts, an
+unslotted shadow-host child, or the element's own `visibility` or
+`content-visibility`; opacity does not matter, as in the accessibility tree)
+and hidden descendants from a name. Uniqueness counts the union.
 
 That tree omits hidden elements and computes no name for them, so for
 `assert-hidden` an exact role/name locator also matches hidden elements. The
@@ -271,16 +282,21 @@ page-error receipt shaping through a scripted browser double, the PNG decoder
 and palette buckets, the separate palette capture, and control-name capture
 order, sanitization and bounds.
 Set `ODS_PREVIEW_BROWSER_TESTS=1` only for the fixture Chromium suite; it also
-checks the hidden-inclusive role/name matcher against Playwright's own
-`includeHidden` engine, and replays the fleet round 069 page
-(`tests/fixtures/preview-palette/tower1-r069`) and its amber repair, and the
-fleet round 100 page (`tests/fixtures/preview-controls/tower2-r100`), its repair,
-four variants of the repaired page whose button carries hidden decorations, and
-four small pages for load-time control names, and a page of hidden-descendant,
+checks the hidden-inclusive and rendered-only role/name matchers against
+Playwright's own `includeHidden` and default `getByRole` engines, and replays
+the fleet round 069 page (`tests/fixtures/preview-palette/tower1-r069`) and its
+amber repair, the fleet round 100 page
+(`tests/fixtures/preview-controls/tower2-r100`), its repair, four variants of
+the repaired page whose button carries hidden decorations, and four small pages
+for load-time control names, and a page of hidden-descendant,
 `aria-labelledby`, `<label>`, SVG `<title>` and hidden-control cases. Each
 reported name is checked per element against Playwright's own name: the default
 `getByRole` engine for a control in the accessibility tree, `includeHidden` for
-a hidden one. Set
+a hidden one. It also replays two laptop pages whose uppercase-styled
+"Show sold out" buttons Chromium named "SHOW SOLD OUT"
+(`tests/fixtures/preview-inspection-laptop-round101.html`,
+`tests/fixtures/preview-inspection-laptop-round107-site-1f5f2cf8.html`), and
+counts the matchers' style and label reads to keep their work linear. Set
 `ODS_INSPECTION_TEST_IMAGE=sha256:<candidate>` for real isolated-container
 smoke, observed hidden-flex regression, hung-script, and cancellation cleanup.
 These test-only variables never select a production image or grant authority.

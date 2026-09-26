@@ -67,8 +67,16 @@ SELECTOR_COUNT = r"""function(selector) {
 # isolated world, so page script cannot replace the DOM or style APIs it reads.
 # Chromium's own rendered matches are passed in and kept, so a rendered element
 # is matched exactly as before; the union is de-duplicated by identity. The
-# role and name rules are shared with CONTROL_NAMES below, which alone also
-# uses their includeHidden:false mode (`rendered`).
+# role and name rules are shared with ROLE_NAME_RENDERED and CONTROL_NAMES
+# below, which also use their includeHidden:false mode (`rendered`).
+#
+# Chromium's accessibility names also apply CSS text-transform: a button whose
+# source text is "Show sold out", styled uppercase, is named "SHOW SOLD OUT"
+# there, while Playwright's getByRole names (the capsule's own click and the
+# owner's check) use the source text. So assert-visible and click use the same
+# rules in their rendered-only form, ROLE_NAME_RENDERED: Playwright's default
+# getByRole(role, {name, exact: true}), which keeps only elements not hidden
+# for ARIA and leaves hidden descendants out of a name.
 ACCESSIBLE_NAME_RULES = r"""  const VALID = new Set(('alert alertdialog application article banner blockquote button caption cell checkbox code ' +
     'columnheader combobox complementary contentinfo definition deletion dialog directory document emphasis feed figure ' +
     'form generic grid gridcell group heading img insertion link list listbox listitem log main mark marquee math meter ' +
@@ -183,7 +191,15 @@ ACCESSIBLE_NAME_RULES = r"""  const VALID = new Set(('alert alertdialog applicat
     const box = range.getBoundingClientRect();
     return box.width > 0 && box.height > 0;
   };
+  // One result per element per call, like Playwright's cacheIsHidden: the name
+  // walk asks again for every descendant, and a display:contents chain would
+  // otherwise be re-walked from each of its levels (quadratic in its depth).
+  const hiddenCache = new Map();
   const hiddenForAria = e => {
+    if (!hiddenCache.has(e)) hiddenCache.set(e, hiddenUncached(e));
+    return hiddenCache.get(e);
+  };
+  const hiddenUncached = e => {
     const t = tag(e), s = style(e);
     if (IGNORED.has(t)) return true;
     if (s && s.display === 'contents' && t !== 'slot') {
@@ -202,7 +218,28 @@ ACCESSIBLE_NAME_RULES = r"""  const VALID = new Set(('alert alertdialog applicat
   // <label> or SVG <title> reference that is itself hidden; without it (the
   // hidden-inclusive matcher, a hidden control) nothing is skipped.
   const reference = (o, e, kind) => o.rendered ? {rendered: true, [kind]: hiddenForAria(e)} : {};
-  const labels = e => { try { return [...(e.labels || [])]; } catch { return []; } };
+  // The labels whose control is e, in tree order: what e.labels returns. A
+  // label and its control share a tree, so each tree's labels are indexed once
+  // per call; e.labels itself scans the whole tree on each element's first
+  // read, which made a page of many buttons cost buttons x elements.
+  const labelIndex = new Map();
+  const labels = e => {
+    try {
+      const root = e.getRootNode();
+      let index = labelIndex.get(root);
+      if (!index) {
+        index = new Map();
+        for (const label of root.querySelectorAll('label')) {
+          const control = label.control;
+          if (!control) continue;
+          if (!index.has(control)) index.set(control, []);
+          index.get(control).push(label);
+        }
+        labelIndex.set(root, index);
+      }
+      return index.get(e) || [];
+    } catch { return []; }
+  };
   const fromLabels = (list, o) => list.map(label =>
     alternative(label, {visited: o.visited, label: true, ...reference(o, label, 'hiddenLabel')})).filter(Boolean).join(' ');
   const inner = (e, o) => {
@@ -307,19 +344,27 @@ ACCESSIBLE_NAME_RULES = r"""  const VALID = new Set(('alert alertdialog applicat
     .replace(/\s\s*/g, ' ')).join(' ').trim();
   const normal = s => s.replace(/[​­]/g, '').trim().replace(/\s+/g, ' ');
 """
-ROLE_NAME_INCLUDING_HIDDEN = "function(role, name, ...rendered) {\n" + ACCESSIBLE_NAME_RULES + r"""  const want = normal(name), out = [...new Set(rendered)];
+# The exact role/name match on those rules. renderedOnly selects Playwright's
+# default getByRole (assert-visible, click) or includeHidden (assert-hidden).
+ROLE_NAME_MATCH = r"""  const want = normal(name), out = [...new Set(rendered)];
   const walk = root => {
     for (const e of root.querySelectorAll('*')) {
-      if (roleOf(e) === role && !out.includes(e) &&
-          normal(flat(alternative(e, {visited: new Set(), target: 'self'}))) === want) out.push(e);
+      if (roleOf(e) === role && !out.includes(e) && !(renderedOnly && hiddenForAria(e)) &&
+          normal(flat(alternative(e, {visited: new Set(), target: 'self', rendered: renderedOnly}))) === want) out.push(e);
       if (e.shadowRoot) walk(e.shadowRoot);
     }
   };
   walk(document);
   return out;
 }"""
-# Bounds Chromium matches carried into the hidden-inclusive union; more than
-# one match already fails uniqueness.
+ROLE_NAME_INCLUDING_HIDDEN = (
+    "function(role, name, ...rendered) {\n  const renderedOnly = false;\n" + ACCESSIBLE_NAME_RULES + ROLE_NAME_MATCH
+)
+ROLE_NAME_RENDERED = (
+    "function(role, name, ...rendered) {\n  const renderedOnly = true;\n" + ACCESSIBLE_NAME_RULES + ROLE_NAME_MATCH
+)
+# Bounds Chromium matches carried into either union; more than one match
+# already fails uniqueness.
 MAX_RENDERED_MATCHES = 32
 
 # Load-time accessible names of every button and link, computed after the
@@ -916,9 +961,10 @@ def run_browser(bundle, playwright_factory=None):
                 "Runtime.evaluate", {"expression": "document", "contextId": world}
             )["result"]["objectId"]
 
-            def including_hidden(locator, nodes, owned):
+            def including_hidden(locator, nodes, owned, rendered_only=False):
                 # Carry Chromium's rendered matches into the isolated world and
-                # add hidden-inclusive exact role/name matches by identity.
+                # add Playwright-rule exact role/name matches by identity:
+                # hidden-inclusive, or rendered-only (source-text names).
                 unresolved = max(0, len(nodes) - MAX_RENDERED_MATCHES)
                 rendered = []
                 for n in nodes[:MAX_RENDERED_MATCHES]:
@@ -936,7 +982,9 @@ def run_browser(bundle, playwright_factory=None):
                     "Runtime.callFunctionOn",
                     {
                         "executionContextId": world,
-                        "functionDeclaration": ROLE_NAME_INCLUDING_HIDDEN,
+                        "functionDeclaration": ROLE_NAME_RENDERED
+                        if rendered_only
+                        else ROLE_NAME_INCLUDING_HIDDEN,
                         "arguments": [{"value": locator["role"]}, {"value": locator["name"]},
                                       *({"objectId": h} for h in rendered)],
                         "returnByValue": False,
@@ -1012,20 +1060,12 @@ def run_browser(bundle, playwright_factory=None):
                         and n.get("name", {}).get("value") == locator["name"]
                         and n.get("backendDOMNodeId")
                     ]
-                    if include_hidden:
-                        count, node = including_hidden(locator, nodes, owned)
-                        if count != 1:
-                            return {"count": count}
-                    elif len(nodes) != 1:
-                        return {"count": len(nodes)}
-                    else:
-                        node = cdp.send(
-                            "DOM.resolveNode",
-                            {
-                                "backendNodeId": nodes[0]["backendDOMNodeId"],
-                                "executionContextId": world,
-                            },
-                        )["object"]["objectId"]
+                    # Chromium's names apply text-transform; the matcher's
+                    # Playwright names use the source text. A rendered step
+                    # therefore unions both, rendered-only on either side.
+                    count, node = including_hidden(locator, nodes, owned, rendered_only=not include_hidden)
+                    if count != 1:
+                        return {"count": count}
                 owned.append(node)
                 result = cdp.send(
                     "Runtime.callFunctionOn",
@@ -1056,7 +1096,8 @@ def run_browser(bundle, playwright_factory=None):
             for index, step in enumerate(request["steps"]):
                 try:
                     # Only a hidden assertion may address a hidden element by
-                    # role/name; assert-visible and click stay rendered-only.
+                    # role/name; assert-visible and click stay rendered-only,
+                    # and they match Playwright's source-text names too.
                     before, stable = observe(
                         step["locator"], step["action"] == "assert-hidden"
                     )

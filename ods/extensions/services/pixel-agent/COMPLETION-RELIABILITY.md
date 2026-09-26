@@ -273,9 +273,12 @@ inspect the new snapshot." The inspection tool's own locator feedback for an
 exact-name miss says the same from the receipt, instead of blaming hidden
 elements. When a rendered control of that role was named exactly the locator's
 name at load and no click ran before the step, the feedback says the name is
-on the page and asks for a CSS locator for that step: role/name steps match
-Chromium's own name verbatim, which keeps the space beside an `aria-hidden`
-icon (`" Show sold out"`), while load-time names follow `getByRole`. An
+on the page and asks for a CSS locator for that step. It was written for
+role/name steps that matched only Chromium's own name, which keeps the space
+beside an `aria-hidden` icon (`" Show sold out"`) while load-time names follow
+`getByRole`. Role/name steps now also match the `getByRole` name (the same
+rules as the load-time names), so that icon page matches, and the feedback
+remains for a page whose control changed between load and the step. An
 untested show/hide change prescribes the owner's exact name as the click when
 the plan had none, so a correct icon page would otherwise be sent back to the
 same unmatchable name. When no inspection covered the snapshot and no show/hide check
