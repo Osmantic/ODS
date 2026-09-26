@@ -869,3 +869,31 @@ def load_templates() -> list[dict]:
 
 
 TEMPLATES = load_templates()
+
+
+# ── config guard: infer_mime_type ─────────────────────────────
+_MIME_MAP = {
+    ".json"   : "application/json",
+    ".yaml"   : "application/yaml",
+    ".yml"    : "application/yaml",
+    ".toml"   : "application/toml",
+    ".txt"    : "text/plain",
+    ".md"     : "text/markdown",
+    ".html"   : "text/html",
+    ".png"    : "image/png",
+    ".jpg"    : "image/jpeg",
+    ".jpeg"   : "image/jpeg",
+    ".gguf"   : "application/octet-stream",
+    ".safetensors": "application/octet-stream",
+}
+
+def infer_mime_type(filename: Any, fallback: str = "application/octet-stream") -> str:
+    """Return the MIME type inferred from the extension of *filename*.
+
+    Uses a curated map of project-relevant extensions.  Returns
+    *fallback* for None, non-string, extensionless, or unknown inputs.
+    """
+    if not filename or not isinstance(filename, str):
+        return fallback
+    ext = os.path.splitext(filename.strip())[1].lower()
+    return _MIME_MAP.get(ext, fallback)
