@@ -2,6 +2,20 @@
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot '../../installers/windows/lib/wsl-portal-setup.ps1')
 $originalOS = $env:OS
+if ($IsLinux) {
+    # Real Invoke-ODSPortalWsl: stderr warnings never reach parsed Output.
+    $fake = Join-Path ([IO.Path]::GetTempPath()) ('ods-fake-wsl-' + [guid]::NewGuid().ToString('N'))
+    $null = New-Item -ItemType Directory -Path $fake
+    try {
+        Set-Content -LiteralPath (Join-Path $fake 'wsl.exe') -Value "#!/bin/sh`necho 'your 131072x1 screen size is bogus. expect trouble' >&2`necho systemd`nexit 0" -NoNewline
+        chmod +x (Join-Path $fake 'wsl.exe')
+        $previousPath = $env:PATH
+        $env:PATH = $fake + [IO.Path]::PathSeparator + $env:PATH
+        try { $warned = Invoke-ODSPortalWsl -Arguments @('--distribution', 'Ubuntu-24.04', '--exec', 'cat', '/proc/1/comm') } finally { $env:PATH = $previousPath }
+        if ($warned.Output -ne 'systemd' -or $warned.Error -notmatch 'screen size is bogus' -or $warned.Code -ne 0) { throw 'WSL stderr warnings leak into parsed output' }
+        Write-Host 'PASS WSL stderr warnings stay out of parsed output'
+    } finally { Remove-Item -LiteralPath $fake -Recurse -Force }
+}
 $env:OS = 'Windows_NT'
 $script:checks = 0
 function Check([bool]$Condition, [string]$Message) {
@@ -9,6 +23,26 @@ function Check([bool]$Condition, [string]$Message) {
     $script:checks++
     Write-Host "PASS $Message"
 }
+# Real Invoke-ODSPortalLinuxInstaller: the delegate runs in a child PowerShell
+# on this console (not through this pipeline), gets its arguments intact and
+# its exit code is the only value returned.
+$delegateRoot = Join-Path ([IO.Path]::GetTempPath()) ('ods-portal-delegate-' + [guid]::NewGuid().ToString('N'))
+$null = New-Item -ItemType Directory -Path $delegateRoot
+try {
+    $record = Join-Path $delegateRoot 'args.json'
+    Set-Content -LiteralPath (Join-Path $delegateRoot 'windows.ps1') -Encoding UTF8 -Value @"
+param([string]`$Distro, [string]`$InstallRoot, [string[]]`$PassthroughArgs)
+Write-Output 'delegate stdout'
+[IO.File]::WriteAllText('$record', (ConvertTo-Json -Compress @{ d = `$Distro; r = `$InstallRoot; a = `$PassthroughArgs }))
+exit 23
+"@
+    $returned = @(Invoke-ODSPortalLinuxInstaller $delegateRoot 'Ubuntu-24.04' @('--pixel', "it's `$(x)", 'two words') "/home/o'brien/ODS data")
+    $seen = Get-Content -LiteralPath $record -Raw | ConvertFrom-Json
+    Check ($returned.Count -eq 1 -and $returned[0] -eq 23) 'delegate exit code is the only returned value'
+    Check ($seen.d -eq 'Ubuntu-24.04' -and $seen.r -eq "/home/o'brien/ODS data" -and (@($seen.a) -join '|') -eq "--pixel|it's `$(x)|two words") 'delegate receives arguments intact'
+    Set-Content -LiteralPath (Join-Path $delegateRoot 'windows.ps1') -Encoding UTF8 -Value "throw 'delegate failed'"
+    Check ((Invoke-ODSPortalLinuxInstaller $delegateRoot 'Ubuntu-24.04' @() '') -ne 0) 'delegate that throws is a failure'
+} finally { Remove-Item -LiteralPath $delegateRoot -Recurse -Force }
 function Reset-Scenario {
     $script:calls = [Collections.Generic.List[string]]::new()
     $script:scenario = 'ready'
@@ -55,11 +89,11 @@ function Invoke-ODSPortalWsl([string[]]$Arguments) {
         '^--list --verbose$' { $output='* Ubuntu-24.04    Em Execucao   2'; if ($script:scenario -eq 'wsl1') { $output=$output -replace '2$', '1' }; if ($script:scenario -eq 'existing-ubuntu') { $output='* Ubuntu    Stopped    2' }; break }
         '^--distribution Ubuntu --exec id -u$' { $output='1000'; break }
         '^--distribution Ubuntu --exec cat /etc/os-release$' { $output="NAME=`"Ubuntu`"`nID=ubuntu`nVERSION_ID=`"24.04`""; if ($script:releaseOverride) { $output=$script:releaseOverride }; break }
-        '^--distribution Ubuntu-24.04 --exec cat /etc/os-release$' { $output="NAME=`"Ubuntu`"`nID=ubuntu`nVERSION_ID=`"24.04`""; break }
-        '^--distribution Ubuntu --exec ps -p 1 -o comm=$' { $output='systemd'; break }
+        '^--distribution Ubuntu-24.04 --exec cat /etc/os-release$' { $output="NAME=`"Ubuntu`"`nID=ubuntu`nVERSION_ID=`"24.04`""; if ($script:scenario -eq 'distro-broken') { $code=-1; $output='Catastrophic failure' }; break }
+        '^--distribution Ubuntu --exec cat /proc/1/comm$' { $output='systemd'; break }
         '^--distribution Ubuntu --exec docker (info|compose version)$' { break }
         '^--distribution Ubuntu-24.04 --exec id -u$' { $output='1000'; if ($script:scenario -in @('root','resume-user')) { $output='0' }; break }
-        '^--distribution Ubuntu-24.04 --exec ps -p 1 -o comm=$' { $output='systemd'; if ($script:scenario -eq 'init') { $output='init' }; break }
+        '^--distribution Ubuntu-24.04 --exec cat /proc/1/comm$' { $output='systemd'; if ($script:scenario -eq 'init') { $output='init' }; break }
         '^--distribution Ubuntu-24.04 --exec docker info$' { if ($script:scenario -eq 'docker') { $code=1 }; break }
         '^--distribution Ubuntu-24.04 --exec docker compose version$' { if ($script:scenario -eq 'compose') { $code=1 }; break }
         '^--distribution Ubuntu-24.04 --exec /usr/lib/wsl/lib/nvidia-smi -L$' { $output='GPU 0: NVIDIA GeForce RTX 4060 (UUID: GPU-00000000)'; if ($script:scenario -eq 'gpu-hidden') { $code=1; $output='command not found' }; break }
@@ -90,6 +124,11 @@ try {
         try { $null = Invoke-ODSPortalSetup @{} 'unused' } catch { $message = $_.Exception.Message }
         Check ($message -match '-Distro Ubuntu-24.04' -and -not $script:calls.Contains('install:Ubuntu')) "unqualified release under the Ubuntu name stops before ODS ($($release -replace '\s+', ' '))"
     }
+    Reset-Scenario
+    $script:scenario='distro-broken'
+    $message=''
+    try { $null = Invoke-ODSPortalSetup @{} 'unused' } catch { $message = $_.Exception.Message }
+    Check ($message -match 'did not start' -and $message -match 'Catastrophic failure' -and $message -notmatch 'Pixel requires') 'a distro that fails to start reports the WSL error, not a wrong release'
     Reset-Scenario
     Check ((Invoke-ODSPortalSetup @{DryRun=$true} 'unused') -eq 0) 'dry run succeeds'
     Check ($script:calls.Count -eq 0) 'dry run performs no native calls'
