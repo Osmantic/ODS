@@ -290,7 +290,9 @@ function Test-ODSComposeFlagsFilesAvailable {
 function Remove-ODSDockerProjectByLabel {
     param([switch]$RemoveVolumes)
 
-    $containers = Get-ODSDockerProjectResourceNames -Kind "container"
+    # @() keeps a single name an array; splatting a bare string would pass
+    # each character to docker as a separate argument.
+    $containers = @(Get-ODSDockerProjectResourceNames -Kind "container")
     if ($containers.Count -gt 0) {
         Write-AI "Removing ODS containers by Docker label..."
         & docker rm -f @containers | Out-Host
@@ -299,7 +301,7 @@ function Remove-ODSDockerProjectByLabel {
         }
     }
 
-    $networks = Get-ODSDockerProjectResourceNames -Kind "network"
+    $networks = @(Get-ODSDockerProjectResourceNames -Kind "network")
     if ($networks.Count -gt 0) {
         Write-AI "Removing ODS Docker networks by label..."
         & docker network rm @networks | Out-Host
@@ -309,7 +311,7 @@ function Remove-ODSDockerProjectByLabel {
     }
 
     if ($RemoveVolumes) {
-        $volumes = Get-ODSDockerProjectResourceNames -Kind "volume"
+        $volumes = @(Get-ODSDockerProjectResourceNames -Kind "volume")
         if ($volumes.Count -gt 0) {
             Write-AI "Removing ODS Docker volumes by label..."
             & docker volume rm @volumes | Out-Host
@@ -425,7 +427,7 @@ function Invoke-Uninstall {
     $hasInstallDir = Test-Path -LiteralPath $InstallDir
     $hasProjectContainers = $false
     if ($dockerAvailable) {
-        $hasProjectContainers = ((Get-ODSDockerProjectResourceNames -Kind "container").Count -gt 0)
+        $hasProjectContainers = (@(Get-ODSDockerProjectResourceNames -Kind "container").Count -gt 0)
     }
 
     if (-not $dockerAvailable) {
@@ -498,20 +500,29 @@ function Invoke-Uninstall {
         }
     }
 
-    if (-not $composeDownSucceeded -or (Get-ODSDockerProjectResourceNames -Kind "container").Count -gt 0) {
+    # compose down only knows the services in the saved compose files. Volumes
+    # and networks created by an older release or a since-disabled extension
+    # still carry the ods project label, so sweep by label whenever anything
+    # labelled remains, not only when compose down failed.
+    $labelledLeftovers = @(Get-ODSDockerProjectResourceNames -Kind "container").Count +
+        @(Get-ODSDockerProjectResourceNames -Kind "network").Count
+    if ($removeVolumes) { $labelledLeftovers += @(Get-ODSDockerProjectResourceNames -Kind "volume").Count }
+    if (-not $composeDownSucceeded -or $labelledLeftovers -gt 0) {
         Remove-ODSDockerProjectByLabel -RemoveVolumes:$removeVolumes
     }
 
-    $remainingContainers = (Get-ODSDockerProjectResourceNames -Kind "container").Count
-    $remainingNetworks = (Get-ODSDockerProjectResourceNames -Kind "network").Count
+    $remainingContainers = @(Get-ODSDockerProjectResourceNames -Kind "container")
+    $remainingNetworks = @(Get-ODSDockerProjectResourceNames -Kind "network")
     $remainingVolumes = if ($removeVolumes) {
-        (Get-ODSDockerProjectResourceNames -Kind "volume").Count
+        @(Get-ODSDockerProjectResourceNames -Kind "volume")
     } else {
-        0
+        @()
     }
-    if ($remainingContainers -gt 0 -or $remainingNetworks -gt 0 -or $remainingVolumes -gt 0) {
+    if ($remainingContainers.Count -gt 0 -or $remainingNetworks.Count -gt 0 -or $remainingVolumes.Count -gt 0) {
         Write-AIError "Docker cleanup is incomplete; runtime files were left in place for recovery."
-        Write-AI "Remaining resources: containers=$remainingContainers networks=$remainingNetworks volumes=$remainingVolumes"
+        Write-AI "Remaining resources: containers=$($remainingContainers.Count) networks=$($remainingNetworks.Count) volumes=$($remainingVolumes.Count)"
+        foreach ($name in @($remainingNetworks + $remainingVolumes)) { Write-AI "  still present: $name" }
+        Write-AI "A resource that is still in use by a container outside ODS cannot be removed; stop that container, then rerun uninstall."
         throw "ODS_UNINSTALL_DOCKER_CLEANUP_INCOMPLETE"
     }
 
