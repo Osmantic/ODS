@@ -833,7 +833,11 @@ The opt-in `pixel-runtime-bundle.py --stream-progress-fix` stages a narrow
 OpenClaw 2026.6.33 correction before computing the bundle manifest. It accepts
 only the reviewed SHA256 of `dist/selection-BEwSQKM-.js`; different upstream
 bytes fail closed. Both idle and diagnostic observers move before tool-call
-repair/buffering wrappers. Tool normalization and output are preserved.
+repair/buffering wrappers. Tool normalization and output are preserved only
+with the shared `openclaw-diagnostic-stream-writes.json` repair, which the
+bundle composes when shared repairs are selected: the pinned diagnostic
+observer's proxy discards the iterator and result replacements of every
+wrapper applied outside it (see `docs/pixel/ODS-RUNTIME-REPAIRS.md`).
 `ods-runtime-patches.json`, including original and patched hashes, is covered
 by the same content manifest. The input runtime and published bundles are not
 modified in place.

@@ -1,0 +1,73 @@
+# ods-langfuse-minio:RELEASE.2025-09-07T16-13-09Z
+# Source-built MinIO server, upstream release tag pinned and commit-verified.
+# Upstream minio/minio is archived (source-only distribution); official images
+# and binary checksum URLs are gone, so we build the SAME source version.
+# Verified: release tag RELEASE.2025-09-07T16-13-09Z peels to
+#   commit 07c3a429bfed433e49018cb0f78a52145d4bedeb
+#   (annotated tag object 01ce918d8279a20e4706b96a64396146894adee4)
+
+FROM golang:1.27.1-bookworm@sha256:69a7b9788769bec032d238959b61854e9ae87f57be9029ec04e9885fabf99195 AS build
+
+ARG MINIO_RELEASE=RELEASE.2025-09-07T16-13-09Z
+ARG MINIO_COMMIT=07c3a429bfed433e49018cb0f78a52145d4bedeb
+
+# Fixed compiler, no floating toolchain downloads.
+ENV GOTOOLCHAIN=local \
+    CGO_ENABLED=0 \
+    GOPATH=/go \
+    GOMODCACHE=/go/pkg/mod
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends git ca-certificates curl \
+ && rm -rf /var/lib/apt/lists/*
+
+# Fetch the exact release tag over HTTPS, then hard-verify the peeled commit.
+RUN git clone --depth 1 --branch "${MINIO_RELEASE}" \
+      https://github.com/minio/minio.git /src/minio
+RUN cd /src/minio \
+ && actual="$(git rev-parse HEAD)" \
+ && echo "peeled commit: ${actual}" \
+ && test "${actual}" = "${MINIO_COMMIT}"
+
+WORKDIR /src/minio
+
+RUN mkdir -p /out/licenses \
+ && cp LICENSE /out/licenses/LICENSE \
+ && for notice in NOTICE CREDITS; do if [ ! -f "$notice" ]; then continue; fi; cp "$notice" /out/licenses/; done
+
+# Bounded parallelism for 16GB host; go.sum verification stays on (GONOSUMDB
+# untouched, GONOSUMCHECK/GONOSUMDB not set, GOFLAGS empty => sumdb enforced).
+RUN go build -p 2 -trimpath -tags kqueue \
+      -ldflags "$(MINIO_RELEASE=RELEASE go run buildscripts/gen-ldflags.go "${MINIO_RELEASE#RELEASE.}")" \
+      -o /out/minio .
+
+# Sanity: binary runs and reports the pinned release identity.
+RUN /out/minio --version | grep -q "${MINIO_RELEASE}"
+
+FROM alpine:3.24@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6
+
+ARG MINIO_RELEASE=RELEASE.2025-09-07T16-13-09Z
+ARG MINIO_COMMIT=07c3a429bfed433e49018cb0f78a52145d4bedeb
+
+LABEL org.opencontainers.image.title="ods-langfuse-minio" \
+      org.opencontainers.image.version="${MINIO_RELEASE}" \
+      org.opencontainers.image.revision="${MINIO_COMMIT}" \
+      org.opencontainers.image.source="https://github.com/minio/minio" \
+      org.opencontainers.image.licenses="AGPL-3.0"
+
+# curl for the Compose HTTP healthcheck; /bin/sh is provided by alpine.
+RUN apk add --no-cache curl ca-certificates \
+ && addgroup -S minio \
+ && adduser -S -G minio minio \
+ && mkdir -p /data /licenses \
+ && chown -R minio:minio /data
+
+COPY --from=build /out/minio /usr/bin/minio
+COPY --from=build /out/licenses/ /licenses/
+
+RUN chmod +x /usr/bin/minio
+
+EXPOSE 9000 9001
+VOLUME ["/data"]
+ENTRYPOINT ["minio"]
+CMD ["--help"]

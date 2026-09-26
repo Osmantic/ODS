@@ -29,7 +29,7 @@ pass() {
 
 # Static guard: the podman arm must sit between the docker-found arm and the
 # Docker CE install branch.
-docker_line="$(grep -n 'elif command -v docker &> /dev/null; then' "$PHASE" | head -1 | cut -d: -f1)"
+docker_line="$(grep -n 'elif command -v docker &> /dev/null' "$PHASE" | head -1 | cut -d: -f1)"
 podman_line="$(grep -n 'elif command -v podman &> /dev/null; then' "$PHASE" | head -1 | cut -d: -f1)"
 install_line="$(grep -n 'ods_progress 31 "docker" "Installing Docker engine"' "$PHASE" | head -1 | cut -d: -f1)"
 [[ -n "$docker_line" && -n "$podman_line" && -n "$install_line" \

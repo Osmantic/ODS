@@ -110,10 +110,39 @@ grep -q 'DBUS_SESSION_BUS_ADDRESS=unix:path=$_upgrade_runtime_dir/bus' "$linux_p
     || fail "linux phase 11: service launch must reconstruct the owner user-bus address"
 grep -q "trap .*exit 75.*HUP TERM INT" "$ROOT_DIR/scripts/bootstrap-upgrade.sh" \
     || fail "bootstrap upgrade must identify session interruption as supervisor-retryable"
-grep -q 'DBUS_SESSION_BUS_ADDRESS="unix:path=$_ods_uninstall_runtime_dir/bus"' "$uninstaller" \
-    || fail "uninstaller: model-upgrade cleanup must reach the owner user manager without login-session variables"
-grep -q 'systemctl --user stop ods-model-upgrade.service' "$uninstaller" \
+# Exercise the actual helper with a stub user manager. SSH sessions often lack
+# login environment variables; explicitly configured sessions must keep theirs.
+user_manager_tmp="$(mktemp -d "${TMPDIR:-/tmp}/ods-user-manager.XXXXXX")"
+trap 'rm -rf "$user_manager_tmp"' EXIT
+mkdir "$user_manager_tmp/bin"
+cat > "$user_manager_tmp/bin/systemctl" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$XDG_RUNTIME_DIR" "$DBUS_SESSION_BUS_ADDRESS" "$@"
+SH
+chmod +x "$user_manager_tmp/bin/systemctl"
+awk '
+    /^ods_uninstall_systemctl_user\(\)/ { in_helper=1 }
+    in_helper { print }
+    in_helper && /^}/ { exit }
+' "$uninstaller" > "$user_manager_tmp/invoke.sh"
+printf '%s\n' 'ods_uninstall_systemctl_user stop ods-model-upgrade.service' >> "$user_manager_tmp/invoke.sh"
+user_uid="$(id -u)"
+actual="$(env -u XDG_RUNTIME_DIR -u DBUS_SESSION_BUS_ADDRESS \
+    PATH="$user_manager_tmp/bin:$PATH" bash "$user_manager_tmp/invoke.sh")"
+expected="$(printf '%s\n' "/run/user/$user_uid" "unix:path=/run/user/$user_uid/bus" \
+    --user stop ods-model-upgrade.service)"
+[[ "$actual" == "$expected" ]] \
+    || fail "uninstaller: missing login environment must reach the owner user manager"
+actual="$(env XDG_RUNTIME_DIR=/tmp/ods-test-runtime \
+    DBUS_SESSION_BUS_ADDRESS=unix:path=/tmp/ods-test-runtime/custom-bus \
+    PATH="$user_manager_tmp/bin:$PATH" bash "$user_manager_tmp/invoke.sh")"
+expected="$(printf '%s\n' /tmp/ods-test-runtime unix:path=/tmp/ods-test-runtime/custom-bus \
+    --user stop ods-model-upgrade.service)"
+[[ "$actual" == "$expected" ]] \
+    || fail "uninstaller: explicit user-manager environment must be preserved"
+grep -q 'ods_uninstall_systemctl_user stop ods-model-upgrade.service' "$uninstaller" \
     || fail "uninstaller: transient model upgrade service must stop before install-tree removal"
+pass "uninstaller reaches the owner user manager with missing or explicit login environment"
 systemd_line="$(grep -n 'systemd-run --user --unit=' "$linux_phase" | head -1 | cut -d: -f1)"
 nohup_line="$(grep -n 'exec nohup bash "$SCRIPT_DIR/scripts/bootstrap-upgrade.sh"' "$linux_phase" | tail -1 | cut -d: -f1)"
 [[ "$systemd_line" =~ ^[0-9]+$ && "$nohup_line" =~ ^[0-9]+$ && "$systemd_line" -lt "$nohup_line" ]] \

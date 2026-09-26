@@ -224,6 +224,148 @@ generates"). The names bind to the published directory's name and are checked
 against the receipt's complete published path list.
 `tests/requested_published_files.test.mjs` replays that case.
 
+### Owner-requested control names
+
+A quotation right after a button or link noun and a naming cue ("an accessible
+button named exactly "Show sold out"", "a link called "Docs"", "a button with
+the label "Close"") is also a control name: some button (or link) must have
+exactly that accessible name after the page scripts ran. The text itself is
+still an ordinary requested literal. Bytes cannot show this: tower2 round 100
+had the right button text, but `script.js` ran
+`setAttribute('aria-label', 'Show the sold out midnight concert card')` on
+load. The model's exact-name click matched nothing, it switched to a CSS
+selector, that inspection passed, and the fleet's
+`getByRole('button', {name: 'Show sold out', exact: true})` click failed.
+
+Every inspection receipt now carries the load-time names of the page's buttons
+and links (`controls`, see `host/preview-inspection-protocol.md`), captured
+before any step, hidden ones included. A rendered control is named as the
+fleet's default `getByRole(role, {name, exact: true})` names it, so hidden
+descendants (an `aria-hidden` icon or chevron, a hidden alternate label, a
+`display: none` badge) never turn a correct name into a missing one; a hidden
+control keeps its hidden-inclusive name. The latest receipt bound to the current
+snapshot decides, whether its steps passed or failed or it came back incomplete
+for an untested show/hide change (its `details.receipt`, below). That holds
+whatever `error` the harness attaches to the `after_tool_call` event: OpenClaw
+2026.6.33 sets one on every error result of a direct call (tower2's transport),
+and a thrown call has no receipt to bind. "Named exactly" compares
+case-sensitively after whitespace and typographic normalization, "named"
+without "exactly" ignores case. A name counts as missing only when the receipt
+lists every button and link of the page. A snapshot without such a receipt
+(no inspection yet, or a capsule built before `controls`) is unverified, never
+failed. The miss keeps the most telling control: the one whose own text is the
+requested name while an `aria-label` or `aria-labelledby` replaced it, one
+named the same except for letter case, or a control of the other role with
+that name. At publication the plugin also records, from the snapshot bytes,
+which published files set `aria-label`/`aria-labelledby` from script and which
+`aria-label` values the HTML markup carries, only to say where the replacing
+name came from.
+
+The repair step travels on that inspection's own result, failed or passed,
+because the pinned harness drops finalization revisions after plugin tool
+calls. For round 100 it reads: "The owner requested a button named exactly
+"Show sold out", but after the page scripts ran no button has that accessible
+name: the button whose text is "Show sold out" is named "Show the sold out
+midnight concert card" by an aria-label that a published script sets when the
+page loads (["script.js"]), which replaces its text as the accessible name.
+Remove that override or make it exactly "Show sold out", republish, then
+inspect the new snapshot." The inspection tool's own locator feedback for an
+exact-name miss says the same from the receipt, instead of blaming hidden
+elements. When a rendered control of that role was named exactly the locator's
+name at load and no click ran before the step, the feedback says the name is
+on the page and asks for a CSS locator for that step. It was written for
+role/name steps that matched only Chromium's own name, which keeps the space
+beside an `aria-hidden` icon (`" Show sold out"`) while load-time names follow
+`getByRole`. Role/name steps now also match the `getByRole` name (the same
+rules as the load-time names), so that icon page matches, and the feedback
+remains for a page whose control changed between load and the step. An
+untested show/hide change prescribes the owner's exact name as the click when
+the plan had none, so a correct icon page would otherwise be sent back to the
+same unmatchable name. When no inspection covered the snapshot and no show/hide check
+already asks for one, the next step asks for an inspection by that exact role
+and name. Finalization requests one bounded revision
+(`pixel-ods-workspace-preview-control-name`), and delivery stays `failed` with
+a fixed statement of the missing name. `tests/requested_control_names.test.mjs`
+replays round 100 with the recorded snapshot bytes
+(`ods/tests/fixtures/preview-controls/tower2-r100`), the model's two recorded
+inspection plans and the names this capsule reports for those bytes, and four
+variants of the repaired page whose correct button carries hidden decorations:
+no name repair, and delivery passes.
+
+## Show/hide inspection coverage
+
+When the owner asks for show/hide behavior, delivery needs a passing
+`pixel_ods_workspace_preview_inspect` plan that asserts one locator with
+opposite visibility before and after a click. Two fleet runs passed every step
+without that:
+
+- Laptop round 100 (Qwen3.5-9B) inspected `assert-visible(button "Show sold
+  out")`, `click(button)`, `assert-visible(".event-card.sold-out.revealed")`.
+  It never asserted the card before the click.
+- Tower2 round 102 (Qwen3-Coder-Next) inspected
+  `assert-hidden(".sold-out-card.hidden")`, `click(button)`,
+  `assert-visible(".sold-out-card:not(.hidden)")`. Each locator includes the
+  state it checks, so the two can match different elements.
+
+In both runs the tool said "Preview inspection passed" with a caveat, the
+model claimed the card was verified, and finalization then failed the
+delivery. The pinned harness drops a `before_agent_finalize` revision after
+any plugin tool call, so only the inspection result can steer the model.
+
+For such a request the run guard binds a requirement to the exact pending
+inspection call: a direct call, or the Tool Search child of a pending
+`tool_call`. A passing receipt whose plan has no such transition then returns
+`isError: true` with `details.status: "incomplete"` and
+`errorCode: "transition_untested"`. The capsule receipt stays in
+`details.receipt`.
+
+The text starts `Preview inspection INCOMPLETE - not verified.` and says what
+is missing. That is no affected element asserted before the click, or
+different locators on the two sides. It then gives ready-to-send arguments:
+
+- **Control.** The model's own first click step, unchanged. If the plan has no
+  click, the owner's quoted control name.
+- **Target.** One locator, used in both assertions
+  (`inspection-target.mjs`). It is chosen against an outline of the published
+  `index.html`, read from the same digest-bound bytes as the requested-text
+  check (`publishedElementOutline`). The outline holds tags, ids, classes,
+  parents, heading names, and the classes the published scripts add, remove or
+  toggle. In order:
+  1. The model's own locator with its state qualifiers removed from the
+     subject: state classes, `:not(.state)`, and hidden/open/aria-hidden
+     attributes. It is used only if it names exactly one element that contains
+     the heading the owner named. That element's id is preferred:
+     `#midnight-card` for tower2, `.event-card.sold-out` for laptop, which has
+     no id.
+  2. The owner-named heading, with its exact published accessible name.
+  3. The owner's phrase as a heading name.
+  Without a usable outline, the model's state-free locator is offered with a
+  caveat.
+- **Direction.** Hidden first, unless the owner asked the click to hide
+  something.
+
+A later turn that preserves the behavior keeps the earlier wording.
+
+These stay unchanged: a passing transition of the same snapshot earlier in the
+run, failed receipts (returned byte for byte), page errors, and requests
+without show/hide behavior. Incomplete is never interaction evidence. A Tool
+Search child inspection also keeps its parent's earlier proof, so a later
+read-only check still preserves it.
+
+The fleet prompt asks for a show/hide change and an exactly named button at
+once. The load-time control names of an incomplete result's receipt still
+count (see "Owner-requested control names"), so on the round 100 snapshot the
+same result carries the corrected steps and then the name repair, and delivery
+stays `failed` for the name. `tests/control_names_transition.test.mjs` replays
+that combination with the round 100 bytes, the repaired page and its four
+hidden-decoration variants, on direct calls (harness `error` set) and through
+Tool Search: correct pages are never sent a name repair and are certified by
+the corrected steps.
+
+`tests/inspection_transition_coverage.test.mjs` replays both runs' create and
+update turns, with the recorded bytes, receipts and refusals. It sends the
+suggested arguments back through the guard until delivery passes.
+
 ## Saved project delivery
 
 A model can successfully write an HTML project and then stop without calling

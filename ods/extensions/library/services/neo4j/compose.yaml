@@ -9,8 +9,8 @@ services:
     security_opt:
     - no-new-privileges:true
     ports:
-    - 127.0.0.1:${NEO4J_PORT:-11139}:7474
-    - 127.0.0.1:${NEO4J_BOLT_PORT:-11140}:7687
+    - "${BIND_ADDRESS:-127.0.0.1}:${NEO4J_PORT:-11139}:7474"
+    - "${BIND_ADDRESS:-127.0.0.1}:${NEO4J_BOLT_PORT:-11140}:7687"
     environment:
       ODS_NEO4J_PASSWORD: ${NEO4J_PASSWORD:?Set a random 64-hex initial neo4j password}
       NEO4J_server_default__listen__address: 0.0.0.0

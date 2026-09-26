@@ -6,7 +6,7 @@ services:
     security_opt:
     - no-new-privileges:true
     ports:
-    - 127.0.0.1:${NODE_RED_PORT:-11088}:1880
+    - "${BIND_ADDRESS:-127.0.0.1}:${NODE_RED_PORT:-11088}:1880"
     healthcheck:
       test:
       - CMD

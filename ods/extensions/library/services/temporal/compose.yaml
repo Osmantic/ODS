@@ -6,8 +6,8 @@ services:
     security_opt:
     - no-new-privileges:true
     ports:
-    - 127.0.0.1:${TEMPORAL_PORT:-11111}:8233
-    - 127.0.0.1:${TEMPORAL_GRPC_PORT:-11112}:7233
+    - "${BIND_ADDRESS:-127.0.0.1}:${TEMPORAL_PORT:-11111}:8233"
+    - "${BIND_ADDRESS:-127.0.0.1}:${TEMPORAL_GRPC_PORT:-11112}:7233"
     healthcheck:
       test:
       - CMD

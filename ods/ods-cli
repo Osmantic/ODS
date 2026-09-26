@@ -782,6 +782,10 @@ _regenerate_compose_flags() {
             rm -f "$INSTALL_DIR/.compose-flags"
             warn "Could not regenerate the compose stack cache. 'ods start' will fail until this is resolved:"
             [[ -n "$resolver_err" ]] && printf '%s\n' "$resolver_err" >&2
+        elif [[ "$resolver_err" == *WARNING:* ]]; then
+            # The stack resolved, but refused extension files (and anything
+            # that depends on them) were left out. Say which, and why.
+            printf '%s\n' "$resolver_err" | grep '^WARNING:' >&2 || true
         fi
     else
         rm -f "$INSTALL_DIR/.compose-flags"

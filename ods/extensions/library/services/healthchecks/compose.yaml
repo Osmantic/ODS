@@ -6,7 +6,7 @@ services:
     security_opt:
     - no-new-privileges:true
     ports:
-    - 127.0.0.1:${HEALTHCHECKS_PORT:-11123}:8000
+    - "${BIND_ADDRESS:-127.0.0.1}:${HEALTHCHECKS_PORT:-11123}:8000"
     healthcheck:
       test:
       - CMD

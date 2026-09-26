@@ -6,8 +6,8 @@ services:
     security_opt:
     - no-new-privileges:true
     ports:
-    - 127.0.0.1:${MUMBLE_PORT:-11131}:64738/tcp
-    - 127.0.0.1:${MUMBLE_PORT:-11131}:64738/udp
+    - "${BIND_ADDRESS:-127.0.0.1}:${MUMBLE_PORT:-11131}:64738/tcp"
+    - "${BIND_ADDRESS:-127.0.0.1}:${MUMBLE_PORT:-11131}:64738/udp"
     healthcheck:
       test:
       - CMD

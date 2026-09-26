@@ -191,13 +191,23 @@
       "id": "langfuse.minio",
       "type": "image",
       "path": "extensions/services/langfuse/compose.yaml.disabled",
-      "value": "quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z"
+      "value": "ods-langfuse-minio:RELEASE.2025-09-07T16-13-09Z",
+      "source": {
+        "repository": "https://github.com/minio/minio",
+        "tag": "RELEASE.2025-09-07T16-13-09Z",
+        "commit": "07c3a429bfed433e49018cb0f78a52145d4bedeb"
+      }
     },
     {
       "id": "langfuse.minio-client",
       "type": "image",
       "path": "extensions/services/langfuse/compose.yaml.disabled",
-      "value": "quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z"
+      "value": "ods-langfuse-mc:RELEASE.2025-08-13T08-35-41Z",
+      "source": {
+        "repository": "https://github.com/minio/mc",
+        "tag": "RELEASE.2025-08-13T08-35-41Z",
+        "commit": "7394ce0dd2a80935aded936b09fa12cbb3cb8096"
+      }
     },
     {
       "id": "litellm.proxy",
@@ -304,6 +314,30 @@
       "type": "image",
       "path": "extensions/services/fooocus/compose.yaml.disabled",
       "value": "ghcr.io/lllyasviel/fooocus@sha256:a1c3251054a38c22f783b680600050bedf7fe547d0239a8d772d0d372a98a5ce"
+    },
+    {
+      "id": "langfuse.minio.compiler",
+      "type": "image",
+      "path": "extensions/services/langfuse/Dockerfile.minio",
+      "value": "golang:1.27.1-bookworm@sha256:69a7b9788769bec032d238959b61854e9ae87f57be9029ec04e9885fabf99195"
+    },
+    {
+      "id": "langfuse.minio.runtime",
+      "type": "image",
+      "path": "extensions/services/langfuse/Dockerfile.minio",
+      "value": "alpine:3.24@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6"
+    },
+    {
+      "id": "langfuse.mc.compiler",
+      "type": "image",
+      "path": "extensions/services/langfuse/Dockerfile.mc",
+      "value": "golang:1.27.1-bookworm@sha256:69a7b9788769bec032d238959b61854e9ae87f57be9029ec04e9885fabf99195"
+    },
+    {
+      "id": "langfuse.mc.runtime",
+      "type": "image",
+      "path": "extensions/services/langfuse/Dockerfile.mc",
+      "value": "alpine:3.24@sha256:294b683cb724975bec92580e1e685676bd4b50bda910ddb8c51d4cabeaec77e6"
     }
   ],
   "allow_latest": [
@@ -353,6 +387,16 @@
       "path": "docker-compose.base.yml",
       "value": "ods-remote-provider-ssh-tunnel:local",
       "reason": "Core internal SSH tunnel service image is built from extensions/services/remote-provider-ssh-tunnel/Dockerfile."
+    },
+    {
+      "path": "extensions/services/langfuse/compose.yaml.disabled",
+      "value": "ods-langfuse-minio:RELEASE.2025-09-07T16-13-09Z",
+      "reason": "Built locally from immutable upstream minio source commit 07c3a429bfed433e49018cb0f78a52145d4bedeb; required release image is unavailable."
+    },
+    {
+      "path": "extensions/services/langfuse/compose.yaml.disabled",
+      "value": "ods-langfuse-mc:RELEASE.2025-08-13T08-35-41Z",
+      "reason": "Built locally from immutable upstream mc source commit 7394ce0dd2a80935aded936b09fa12cbb3cb8096; required release image is unavailable."
     }
   ],
   "allow_variable_refs": [

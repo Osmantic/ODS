@@ -55,6 +55,16 @@ printf 'Linux\n'
 EOF
 chmod +x "$fakebin/uname"
 
+# This fixture has no managed Pixel. Isolate getent from the real test host's
+# owner marker so bootstrap never mistakes its temporary tree for that install.
+mkdir -p "$tmp/owner-home"
+cat > "$fakebin/getent" <<'EOF'
+#!/usr/bin/env bash
+[[ "${1:-}" == passwd ]] || exit 1
+printf '%s:x:%s:%s::%s:/bin/bash\n' "$2" "$(id -u)" "$(id -g)" "${ODS_TEST_OWNER_HOME:?}"
+EOF
+chmod +x "$fakebin/getent"
+
 # Docker is "up" with a running llama-server so the restart branch is taken.
 # inspect reports a restarting container so the health wait aborts quickly.
 cat > "$fakebin/docker" <<'EOF'
@@ -118,7 +128,7 @@ printf 'full-model\n' > "$install_dir/data/models/Full.gguf"
 # The upgrade itself is expected to fail (the container never goes healthy);
 # we only care that the recovery invoked the resolver correctly beforehand.
 set +e
-PATH="$fakebin:$PATH" bash "$TARGET" \
+ODS_TEST_OWNER_HOME="$tmp/owner-home" PATH="$fakebin:$PATH" bash "$TARGET" \
     "$install_dir" \
     "Full.gguf" \
     "https://example.invalid/Full.gguf" \

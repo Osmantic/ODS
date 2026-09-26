@@ -6,8 +6,8 @@ services:
     security_opt:
     - no-new-privileges:true
     ports:
-    - 127.0.0.1:${SFTPGO_PORT:-11113}:8080
-    - 127.0.0.1:${SFTPGO_SFTP_PORT:-11114}:2022
+    - "${BIND_ADDRESS:-127.0.0.1}:${SFTPGO_PORT:-11113}:8080"
+    - "${BIND_ADDRESS:-127.0.0.1}:${SFTPGO_SFTP_PORT:-11114}:2022"
     healthcheck:
       test:
       - CMD

@@ -1,4 +1,5 @@
-"""Table-driven fixtures for the curated-library accelerator policy (PR #6717).
+"""Table-driven fixtures for the extension compose policy (PRs #6717 and the
+shared-policy hardening that closed its open gaps).
 
 Every case is raw Compose YAML (not a dict passed through yaml.safe_dump), so
 the tables can hold the structural YAML/Compose forms a validator can
@@ -10,6 +11,8 @@ inside scripts/resolve-compose-stack.sh:_scan_user_compose_content.
 Where Docker Compose is available, a second check renders each negative
 fixture with `docker compose config` (never `up`): a fixture that a
 validator accepts must at least be one that Compose itself refuses to load.
+Every negative fixture below was rendered by Docker Compose v5.1.0 before the
+fix, i.e. each was a real route to the listed privilege.
 """
 
 import json
@@ -51,7 +54,10 @@ def _accelerator(compose_name):
 def _verdicts(tmp_path, compose_name, trusted, text, extra_files=None):
     """(resolver accepts?, dashboard accepts?) for one raw compose file."""
     compose = tmp_path / compose_name
-    compose.write_text(text, encoding="utf-8")
+    if isinstance(text, bytes):
+        compose.write_bytes(text)
+    else:
+        compose.write_text(text, encoding="utf-8")
     for name, content in (extra_files or {}).items():
         (tmp_path / name).write_text(content, encoding="utf-8")
     accelerator = _accelerator(compose_name)
@@ -81,202 +87,445 @@ AMD = """\
       - /dev/dri:/dev/dri
       - /dev/kfd:/dev/kfd
 """
+ODS_NETWORK = "networks:\n  ods-network:\n    external: true\n    name: ods-network\n"
 
 
-def svc(body, head=""):
-    return f"{head}services:\n  recipe:\n    image: example:fixture\n{body}"
+def svc(body, head="", tail=""):
+    return f"{head}services:\n  recipe:\n    image: example:fixture\n{body}{tail}"
 
 
-# Open gaps observed on PR head e1e0d32d (tower2, Docker Compose v5.1.0).
-# Each is a strict xfail: the test fails loudly once a validator starts
-# rejecting the case, so the entry must then be deleted here.
-_STRING_BOOL = "PyYAML sees a string; Compose casts it and renders privileged: true"
-_INTERP = "value hidden behind ${VAR:-default}; Compose renders the default"
-_UNCHECKED = "key is not inspected by either validator; Compose renders it"
-BOTH_ACCEPT = {
-    "tag-str-privileged": _STRING_BOOL,
-    "quoted-string-privileged": _STRING_BOOL,
-    "interp-privileged": _INTERP,
-    "interp-network-mode": _INTERP,
-    "interp-cap-add": _INTERP,
-    "bind-dev-interpolated-source": _INTERP,
-    "reservation-generic-resources": "sibling of reservations.devices is not inspected",
-    "device-cgroup-rules": _UNCHECKED,
-    "group-add-root": _UNCHECKED,
-    "group-add-gid-0": _UNCHECKED,
-    "group-add-disk": _UNCHECKED,
-    "group-add-docker": _UNCHECKED,
-    "security-opt-systempaths": "not in the security_opt denylist",
-    "include-sibling-file": "top-level include: is not followed or rejected",
-    "extends-sibling-file": "service extends: is not followed or rejected",
-    "cap-add-prefixed": "resolver does not strip CAP_ (dashboard does)",
-}
-# Accepted by both validators (PyYAML keeps the last duplicate) but Compose
-# refuses to load the file, so these do not reach the rendered project.
-COMPOSE_REFUSES = {
-    "duplicate-key-privileged-last-false": "PyYAML keeps the last duplicate key; Compose rejects the file",
-    "duplicate-key-devices-in-nvidia": "PyYAML keeps the last duplicate key; Compose rejects the file",
-}
-VALIDATORS_DISAGREE = {"cap-add-prefixed": "dashboard strips CAP_ before the denylist; resolver does not"}
-TRUST_DISAGREE = {
-    "oversized-curated": "resolver fails closed above 512 KiB; dashboard staging has no size check",
-}
-
-
-def _xfail(reasons, case_id):
-    reason = reasons.get(case_id)
-    return (pytest.mark.xfail(strict=True, reason=reason),) if reason else ()
-
-
-# (id, compose file, curated recipe?, raw YAML, extra sibling files, marks)
-# Every case MUST be rejected by BOTH validators.
+# (id, compose file, curated recipe?, raw YAML, extra sibling files)
+# Every case MUST be rejected by BOTH validators. Before the shared policy,
+# the cases marked "was: both accepted" passed both validators and Docker
+# Compose rendered the privilege (tower2, Compose v5.1.0).
 MUST_REJECT = [
     # --- anchors, aliases and merge keys -----------------------------------
     ("anchor-merge-privileged", "compose.nvidia.yaml", True,
-     svc(NV + "    <<: *extra\n", head="x-extra: &extra\n  privileged: true\n"), None, ()),
+     svc(NV + "    <<: *extra\n", head="x-extra: &extra\n  privileged: true\n"), None),
     ("anchor-merge-devices-into-nvidia", "compose.nvidia.yaml", True,
-     svc("    <<: *amd\n", head="x-amd: &amd\n  devices: [/dev/dri:/dev/dri]\n"), None, ()),
+     svc("    <<: *amd\n", head="x-amd: &amd\n  devices: [/dev/dri:/dev/dri]\n"), None),
     ("anchor-merge-extra-key-into-reservation", "compose.nvidia.yaml", True,
      "x-opt: &opt\n  options: {virtualization: 'true'}\n" + svc(
          "    deploy:\n      resources:\n        reservations:\n          devices:\n"
          "            - <<: *opt\n              driver: nvidia\n              count: 1\n"
-         "              capabilities: [gpu]\n"), None, ()),
+         "              capabilities: [gpu]\n"), None),
     ("alias-list-merge-cap-add", "compose.amd.yaml", True,
      svc(AMD + "    <<: [*a, *b]\n",
-         head="x-a: &a\n  group_add: ['44']\nx-b: &b\n  cap_add: [SYS_ADMIN]\n"), None, ()),
-    # --- duplicate keys -----------------------------------------------------
+         head="x-a: &a\n  group_add: ['44']\nx-b: &b\n  cap_add: [SYS_ADMIN]\n"), None),
+    ("recursive-alias", "compose.amd.yaml", True, "x-a: &a [*a]\n" + svc(AMD + "    cap_add: *a\n"), None),
+    ("recursive-mapping-alias", "compose.yaml", True, "x-a: &a {b: *a}\n" + svc("    labels: *a\n"), None),
+    # Nine levels of ten aliases expand to 10^9 nodes (used to exhaust memory
+    # in the resolver and abort the whole stack, not just this extension).
+    ("alias-bomb", "compose.yaml", True,
+     "x-0: &x0 [a, a, a, a, a, a, a, a, a, a]\n"
+     + "".join(f"x-{level}: &x{level} [{', '.join([f'*x{level - 1}'] * 10)}]\n" for level in range(1, 9))
+     + svc("    labels: *x8\n"), None),
+    # --- duplicate keys (was: both accepted, PyYAML keeps the last) --------
     ("duplicate-key-privileged-last-false", "compose.nvidia.yaml", True,
-     svc(NV + "    privileged: true\n    privileged: false\n"), None, ()),
+     svc(NV + "    privileged: true\n    privileged: false\n"), None),
     ("duplicate-key-devices-in-nvidia", "compose.nvidia.yaml", True,
-     svc(NV + "    devices: [/dev/sda:/dev/sda]\n    devices: []\n"), None, ()),
-    # --- explicit tags ------------------------------------------------------
+     svc(NV + "    devices: [/dev/sda:/dev/sda]\n    devices: []\n"), None),
+    ("duplicate-key-quoted-spelling", "compose.yaml", True,
+     svc("    privileged: false\n    'privileged': true\n"), None),
+    ("duplicate-service", "compose.yaml", True,
+     "services:\n  recipe:\n    image: example:fixture\n  recipe:\n    image: example:other\n", None),
+    ("duplicate-key-inline-merge", "compose.yaml", True,
+     svc("    <<: {privileged: false, privileged: true}\n"), None),
+    ("duplicate-key-in-layered-anchor", "compose.yaml", True,
+     "x-a: &a {init: true}\nx-b: &b {<<: *a, privileged: false, privileged: true}\n" + svc("    <<: *b\n"), None),
+    # --- explicit tags and Compose booleans (was: both accepted) -----------
     ("tag-bool-privileged", "compose.nvidia.yaml", True,
-     svc(NV + "    privileged: !!bool 'true'\n"), None, ()),
+     svc(NV + "    privileged: !!bool 'true'\n"), None),
     ("tag-str-privileged", "compose.nvidia.yaml", True,
-     svc(NV + "    privileged: !!str true\n"), None, ()),
+     svc(NV + "    privileged: !!str true\n"), None),
     ("quoted-string-privileged", "compose.nvidia.yaml", True,
-     svc(NV + "    privileged: 'true'\n"), None, ()),
+     svc(NV + "    privileged: 'true'\n"), None),
+    ("compose-bool-y", "compose.yaml", False, svc("    privileged: y\n"), None),
+    ("compose-bool-On-quoted", "compose.yaml", False, svc("    privileged: 'On'\n"), None),
+    ("privileged-int", "compose.yaml", False, svc("    privileged: 1\n"), None),
+    ("use-api-socket", "compose.yaml", True, svc("    use_api_socket: true\n"), None),
+    ("use-api-socket-string", "compose.yaml", False, svc("    use_api_socket: 'yes'\n"), None),
     ("compose-reset-tag", "compose.amd.yaml", True,
-     svc(AMD + "    cap_add: !reset []\n"), None, ()),
+     svc(AMD + "    cap_add: !reset []\n"), None),
     ("compose-override-tag", "compose.amd.yaml", True,
-     svc("    devices: !override [/dev/sda:/dev/sda]\n"), None, ()),
-    # --- multiple documents -------------------------------------------------
+     svc("    devices: !override [/dev/sda:/dev/sda]\n"), None),
+    # --- multiple documents and unparseable files ---------------------------
     ("multi-document", "compose.nvidia.yaml", True,
-     svc(NV) + "---\n" + svc("    privileged: true\n"), None, ()),
-    # --- ${VAR} interpolation -----------------------------------------------
+     svc(NV) + "---\n" + svc("    privileged: true\n"), None),
+    ("invalid-utf8", "compose.yaml", True,
+     b"services:\n  recipe:\n    image: \xff\xfe\n", None),
+    ("deeply-nested", "compose.yaml", True,
+     svc("    labels: " + "[" * 5000 + "]" * 5000 + "\n"), None),
+    # --- ${VAR} interpolation (was: both accepted, except the GPU fields) ---
     ("interp-amd-device-path", "compose.amd.yaml", True,
-     svc("    devices: ['${GPU_DEV:-/dev/kfd}:/dev/kfd']\n"), None, ()),
+     svc("    devices: ['${GPU_DEV:-/dev/kfd}:/dev/kfd']\n"), None),
     ("interp-nvidia-driver", "compose.nvidia.yaml", True,
-     svc(NV.replace("driver: nvidia", "driver: ${GPU_DRIVER:-nvidia}")), None, ()),
+     svc(NV.replace("driver: nvidia", "driver: ${GPU_DRIVER:-nvidia}")), None),
     ("interp-nvidia-capabilities", "compose.nvidia.yaml", True,
-     svc(NV.replace("[gpu]", "['${GPU_CAP:-gpu}']")), None, ()),
+     svc(NV.replace("[gpu]", "['${GPU_CAP:-gpu}']")), None),
     ("interp-nvidia-count", "compose.nvidia.yaml", True,
-     svc(NV.replace("count: 1", "count: ${GPU_COUNT:-1}")), None, ()),
+     svc(NV.replace("count: 1", "count: ${GPU_COUNT:-1}")), None),
     ("interp-privileged", "compose.nvidia.yaml", True,
-     svc(NV + "    privileged: ${RECIPE_PRIVILEGED:-true}\n"), None, ()),
+     svc(NV + "    privileged: ${RECIPE_PRIVILEGED:-true}\n"), None),
+    ("interp-privileged-plain-var", "compose.yaml", False,
+     svc("    privileged: $RECIPE_PRIVILEGED\n"), None),
     ("interp-network-mode", "compose.nvidia.yaml", True,
-     svc(NV + "    network_mode: ${RECIPE_NET:-host}\n"), None, ()),
+     svc(NV + "    network_mode: ${RECIPE_NET:-host}\n"), None),
+    ("interp-pid", "compose.yaml", False, svc("    pid: '${RECIPE_PID:-host}'\n"), None),
     ("interp-cap-add", "compose.amd.yaml", True,
-     svc(AMD + "    cap_add: ['${RECIPE_CAP:-SYS_ADMIN}']\n"), None, ()),
+     svc(AMD + "    cap_add: ['${RECIPE_CAP:-SYS_ADMIN}']\n"), None),
+    ("interp-security-opt", "compose.yaml", False,
+     svc("    security_opt: ['${RECIPE_OPT:-seccomp=unconfined}']\n"), None),
+    ("interp-group-add-default-0", "compose.amd.yaml", True,
+     svc(AMD + "    group_add: ['${VIDEO_GID:-0}']\n"), None),
+    ("interp-user-root-default", "compose.yaml", False, svc("    user: '${RECIPE_UID:-0}'\n"), None),
+    ("interp-user-other-variable", "compose.yaml", False, svc("    user: '${RECIPE_UID:-1000}:1000'\n"), None),
+    ("interp-label-key", "compose.yaml", False,
+     svc("    labels: ['${RECIPE_LABEL:-com.docker.compose.project}=ods']\n"), None),
+    ("bind-dev-interpolated-source", "compose.amd.yaml", True,
+     svc(AMD + "    volumes: ['${HOST_DEV:-/dev}:/host-dev']\n"), None),
+    ("bind-home-variable", "compose.yaml", False, svc("    volumes: ['${HOME}:/owner-home']\n"), None),
+    ("bind-relative-prefix-interpolated", "compose.yaml", False,
+     svc("    volumes: ['./data/${RECIPE_DIR:-../../..}:/escape']\n"), None),
+    ("bind-long-form-interpolated", "compose.yaml", False,
+     svc("    volumes:\n      - {type: bind, source: '${RECIPE_SRC:-/}', target: /host}\n"), None),
+    ("named-volume-interpolated-device", "compose.yaml", False,
+     svc("    volumes: ['disk:/mnt']\n", tail="volumes:\n  disk:\n    driver_opts: {type: none, o: bind, device: '${X:-/}'}\n"),
+     None),
+    ("network-name-interpolated", "compose.yaml", False,
+     svc("    networks: [net]\n", tail="networks:\n  net:\n    external: true\n    name: '${RECIPE_NET:-host}'\n"), None),
     # --- extra keys next to an allowed reservation --------------------------
     ("reservation-entry-options", "compose.nvidia.yaml", True,
-     svc(NV + "              options: {x: y}\n"), None, ()),
+     svc(NV + "              options: {x: y}\n"), None),
     ("reservation-generic-resources", "compose.nvidia.yaml", True,
      svc(NV + "          generic_resources:\n            - discrete_resource_spec: {kind: gpu, value: 1}\n"),
-     None, ()),
+     None),
     # --- device and host access outside the allowance -----------------------
     ("device-cgroup-rules", "compose.amd.yaml", True,
-     svc(AMD + "    device_cgroup_rules: ['c 1:1 rwm']\n"), None, ()),
+     svc(AMD + "    device_cgroup_rules: ['c 1:1 rwm']\n"), None),
     ("bind-dev-short", "compose.amd.yaml", True,
-     svc(AMD + "    volumes: ['/dev:/dev']\n"), None, ()),
+     svc(AMD + "    volumes: ['/dev:/dev']\n"), None),
     ("bind-dev-long", "compose.nvidia.yaml", True,
-     svc(NV + "    volumes:\n      - {type: bind, source: /dev/dri, target: /dev/dri}\n"), None, ()),
-    ("bind-dev-interpolated-source", "compose.amd.yaml", True,
-     svc(AMD + "    volumes: ['${HOST_DEV:-/dev}:/host-dev']\n"), None, ()),
+     svc(NV + "    volumes:\n      - {type: bind, source: /dev/dri, target: /dev/dri}\n"), None),
+    ("bind-home-tilde", "compose.yaml", True, svc("    volumes: ['~/.ssh:/stolen:ro']\n"), None),
+    # Relative binds resolve against the ODS install directory (the first -f
+    # file), not the extension's own directory.
+    ("bind-install-env", "compose.yaml", True, svc("    volumes: ['./.env:/secrets/.env:ro']\n"), None),
+    ("bind-install-env-long-form", "compose.yaml", True,
+     svc("    volumes:\n      - {type: bind, source: ./.env, target: /secrets/.env}\n"), None),
+    ("bind-install-dir", "compose.yaml", True, svc("    volumes: ['.:/install']\n"), None),
+    ("bind-all-service-data", "compose.yaml", True, svc("    volumes: ['./data:/all-data']\n"), None),
+    ("bind-parent-escape", "compose.yaml", True, svc("    volumes: ['../../..:/escape']\n"), None),
+    ("bind-windows-drive", "compose.yaml", True, svc("    volumes: ['C:\\\\Users:/users']\n"), None),
+    ("bind-docker-npipe", "compose.yaml", True,
+     svc("    volumes:\n      - {type: npipe, source: '\\\\\\\\.\\\\pipe\\\\docker_engine', target: /pipe}\n"), None),
     ("named-volume-bind-dev", "compose.amd.yaml", True,
      svc(AMD + "    volumes: ['devs:/host-dev']\n")
-     + "volumes:\n  devs:\n    driver_opts: {type: none, o: bind, device: /dev}\n", None, ()),
-    ("group-add-root", "compose.amd.yaml", True, svc(AMD + "    group_add: [root]\n"), None, ()),
-    ("group-add-gid-0", "compose.amd.yaml", True, svc(AMD + "    group_add: ['0']\n"), None, ()),
-    ("group-add-disk", "compose.amd.yaml", True, svc(AMD + "    group_add: [disk]\n"), None, ()),
-    ("group-add-docker", "compose.nvidia.yaml", True, svc(NV + "    group_add: [docker]\n"), None, ()),
+     + "volumes:\n  devs:\n    driver_opts: {type: none, o: bind, device: /dev}\n", None),
+    ("named-volume-block-device", "compose.yaml", True,
+     svc("    volumes: ['disk:/mnt']\n", tail="volumes:\n  disk:\n    driver_opts: {type: ext4, device: /dev/sda1}\n"),
+     None),
+    ("named-volume-other-project", "compose.yaml", True,
+     svc("    volumes: ['core:/mnt']\n", tail="volumes:\n  core:\n    external: true\n    name: ods_lemonade-cache\n"),
+     None),
+    ("group-add-root", "compose.amd.yaml", True, svc(AMD + "    group_add: [root]\n"), None),
+    ("group-add-gid-0", "compose.amd.yaml", True, svc(AMD + "    group_add: ['0']\n"), None),
+    ("group-add-disk", "compose.amd.yaml", True, svc(AMD + "    group_add: [disk]\n"), None),
+    ("group-add-docker", "compose.nvidia.yaml", True, svc(NV + "    group_add: [docker]\n"), None),
+    ("group-add-gpu-groups-outside-amd-overlay", "compose.yaml", True,
+     svc("    group_add: ['${VIDEO_GID:-44}', '${RENDER_GID:-992}']\n"), None),
+    ("group-add-gpu-groups-imported", "compose.amd.yaml", False,
+     svc("    group_add: ['${VIDEO_GID:-44}', '${RENDER_GID:-992}']\n"), None),
     ("security-opt-seccomp", "compose.amd.yaml", True,
-     svc(AMD + "    security_opt: ['seccomp=unconfined']\n"), None, ()),
+     svc(AMD + "    security_opt: ['seccomp=unconfined']\n"), None),
     ("security-opt-systempaths", "compose.amd.yaml", True,
-     svc(AMD + "    security_opt: ['systempaths=unconfined']\n"), None, ()),
-    ("privileged", "compose.nvidia.yaml", True, svc(NV + "    privileged: true\n"), None, ()),
-    ("cap-add-sys-admin", "compose.amd.yaml", True, svc(AMD + "    cap_add: [SYS_ADMIN]\n"), None, ()),
-    ("cap-add-prefixed", "compose.amd.yaml", True, svc(AMD + "    cap_add: [CAP_SYS_ADMIN]\n"), None, ()),
-    ("network-mode-host", "compose.amd.yaml", True, svc(AMD + "    network_mode: host\n"), None, ()),
-    ("pid-host", "compose.nvidia.yaml", True, svc(NV + "    pid: host\n"), None, ()),
-    ("ipc-host", "compose.nvidia.yaml", True, svc(NV + "    ipc: host\n"), None, ()),
-    # --- other files pulled in by Compose -----------------------------------
+     svc(AMD + "    security_opt: ['systempaths=unconfined']\n"), None),
+    ("security-opt-apparmor-colon", "compose.yaml", True, svc("    security_opt: ['apparmor:unconfined']\n"), None),
+    ("security-opt-label-disable", "compose.yaml", True, svc("    security_opt: ['label=disable']\n"), None),
+    ("security-opt-spc-t", "compose.yaml", True, svc("    security_opt: ['label=type:spc_t']\n"), None),
+    ("security-opt-seccomp-profile", "compose.yaml", True,
+     svc("    security_opt: ['seccomp=./allow-all.json']\n"),
+     {"allow-all.json": '{"defaultAction": "SCMP_ACT_ALLOW"}'}),
+    ("security-opt-writable-cgroups", "compose.yaml", True,
+     svc("    security_opt: ['writable-cgroups=true']\n"), None),
+    ("privileged", "compose.nvidia.yaml", True, svc(NV + "    privileged: true\n"), None),
+    ("cap-add-sys-admin", "compose.amd.yaml", True, svc(AMD + "    cap_add: [SYS_ADMIN]\n"), None),
+    ("cap-add-prefixed", "compose.amd.yaml", True, svc(AMD + "    cap_add: [CAP_SYS_ADMIN]\n"), None),
+    ("cap-add-lower-prefixed", "compose.yaml", True, svc("    cap_add: [cap_sys_admin]\n"), None),
+    ("cap-add-dac-read-search", "compose.yaml", True, svc("    cap_add: [DAC_READ_SEARCH]\n"), None),
+    ("cap-add-bpf", "compose.yaml", True, svc("    cap_add: [BPF]\n"), None),
+    ("cap-add-not-a-list", "compose.yaml", True, svc("    cap_add: SYS_ADMIN\n"), None),
+    ("user-root-zero-padded", "compose.yaml", False, svc("    user: '00'\n"), None),
+    ("user-root-signed", "compose.yaml", False, svc("    user: '+0:0'\n"), None),
+    ("user-root-int", "compose.yaml", False, svc("    user: 0\n"), None),
+    ("label-io-docker", "compose.yaml", True, svc("    labels: {io.docker.example: x}\n"), None),
+    ("label-compose-upper", "compose.yaml", True, svc("    labels: ['COM.DOCKER.COMPOSE.PROJECT=ods']\n"), None),
+    # --- namespaces ----------------------------------------------------------
+    ("network-mode-host", "compose.amd.yaml", True, svc(AMD + "    network_mode: host\n"), None),
+    ("pid-host", "compose.nvidia.yaml", True, svc(NV + "    pid: host\n"), None),
+    ("ipc-host", "compose.nvidia.yaml", True, svc(NV + "    ipc: host\n"), None),
+    ("uts-host", "compose.yaml", True, svc("    uts: host\n"), None),
+    ("cgroup-host", "compose.yaml", True, svc("    cgroup: host\n"), None),
+    ("userns-host", "compose.yaml", True, svc("    userns_mode: host\n"), None),
+    ("pid-core-container", "compose.yaml", True, svc("    pid: 'container:ods-dashboard-api'\n"), None),
+    ("network-mode-core-container", "compose.yaml", True, svc("    network_mode: 'container:ods-litellm'\n"), None),
+    ("ipc-core-service", "compose.yaml", True, svc("    ipc: 'service:dashboard-api'\n"), None),
+    ("network-mode-core-service", "compose.yaml", True, svc("    network_mode: 'service:litellm'\n"), None),
+    # --- networks ------------------------------------------------------------
+    ("external-host-network", "compose.yaml", True,
+     svc("    networks: [hostnet]\n", tail="networks:\n  hostnet:\n    external: true\n    name: host\n"), None),
+    ("named-host-network", "compose.yaml", True,
+     svc("    networks: [hostnet]\n", tail="networks:\n  hostnet:\n    name: host\n"), None),
+    ("external-network-key-host", "compose.yaml", True,
+     svc("    networks: [host]\n", tail="networks:\n  host:\n    external: true\n"), None),
+    ("default-bridge-network", "compose.yaml", True,
+     svc("    networks: [legacy]\n", tail="networks:\n  legacy:\n    external: true\n    name: bridge\n"), None),
+    ("project-default-network-redefined", "compose.yaml", True,
+     svc("", tail="networks:\n  default:\n    name: host\n"), None),
+    ("macvlan-network", "compose.yaml", True,
+     svc("    networks: [lan]\n", tail="networks:\n  lan:\n    driver: macvlan\n    driver_opts: {parent: eth0}\n"),
+     None),
+    ("network-alias-core-name", "compose.yaml", True,
+     svc("    networks:\n      ods-network:\n        aliases: [litellm, ods-dashboard-api]\n", tail=ODS_NETWORK), None),
+    # --- other files, containers and host code pulled in by Compose ----------
     ("include-sibling-file", "compose.nvidia.yaml", True,
      "include:\n  - extra.yml\n" + svc(NV),
-     {"extra.yml": "services:\n  helper:\n    image: example:fixture\n    privileged: true\n"}, ()),
+     {"extra.yml": "services:\n  helper:\n    image: example:fixture\n    privileged: true\n"}),
     ("extends-sibling-file", "compose.nvidia.yaml", True,
      svc(NV + "    extends: {file: base.yml, service: base}\n"),
-     {"base.yml": "services:\n  base:\n    image: example:fixture\n    privileged: true\n"}, ()),
+     {"base.yml": "services:\n  base:\n    image: example:fixture\n    privileged: true\n"}),
+    ("extends-same-file", "compose.yaml", True,
+     svc("    extends: {service: helper}\n", tail="  helper:\n    image: example:fixture\n"), None),
+    ("env-file", "compose.yaml", True, svc("    env_file: ['./recipe.env']\n"), {"recipe.env": "SECRET=x\n"}),
+    ("label-file", "compose.yaml", True, svc("    label_file: ['./labels']\n"),
+     {"labels": "com.docker.compose.project=ods\n"}),
+    ("volumes-from-core-container", "compose.yaml", True,
+     svc("    volumes_from: ['container:ods-dashboard-api']\n"), None),
+    ("top-level-secrets-host-file", "compose.yaml", True,
+     svc("    secrets: [hostfile]\n", tail="secrets:\n  hostfile:\n    file: /etc/hostname\n"), None),
+    ("top-level-configs-host-file", "compose.yaml", True,
+     svc("    configs: [hostfile]\n", tail="configs:\n  hostfile:\n    file: /etc/hostname\n"), None),
+    ("top-level-name", "compose.yaml", True, svc("", head="name: renamed-project\n"), None),
+    ("top-level-models", "compose.yaml", True,
+     svc("    models: [m]\n", tail="models:\n  m:\n    model: ai/smollm2\n"), None),
+    ("post-start-privileged", "compose.yaml", True,
+     svc("    post_start:\n      - command: id\n        user: root\n        privileged: true\n"), None),
+    ("pre-stop-privileged", "compose.yaml", True,
+     svc("    pre_stop:\n      - command: id\n        privileged: true\n"), None),
+    ("develop-watch-host-root", "compose.yaml", True,
+     svc("    develop:\n      watch:\n        - {action: sync, path: /, target: /host}\n"), None),
+    ("provider-plugin", "compose.yaml", True, svc("    provider: {type: example}\n"), None),
+    ("annotations-cdi", "compose.yaml", True, svc("    annotations: {cdi.k8s.io/gpu: nvidia.com/gpu=all}\n"), None),
+    ("cgroup-parent", "compose.yaml", True, svc("    cgroup_parent: /\n"), None),
+    ("sysctls", "compose.yaml", True, svc("    sysctls: {net.ipv4.ip_forward: 1}\n"), None),
     # --- profiles do not exempt a service from the scan ---------------------
     ("profiled-service-privileged", "compose.nvidia.yaml", True,
-     svc(NV + "    profiles: [debug]\n    privileged: true\n"), None, ()),
+     svc(NV + "    profiles: [debug]\n    privileged: true\n"), None),
     # --- allowance in the wrong file ----------------------------------------
-    ("nvidia-in-compose-yaml", "compose.yaml", True, svc(NV), None, ()),
-    ("amd-in-compose-yaml", "compose.yaml", True, svc(AMD), None, ()),
-    ("nvidia-in-amd-overlay", "compose.amd.yaml", True, svc(NV), None, ()),
-    ("amd-in-nvidia-overlay", "compose.nvidia.yaml", True, svc(AMD), None, ()),
-    ("nvidia-in-multigpu-nvidia-overlay", "compose.multigpu-nvidia.yaml", True, svc(NV), None, ()),
+    ("nvidia-in-compose-yaml", "compose.yaml", True, svc(NV), None),
+    ("amd-in-compose-yaml", "compose.yaml", True, svc(AMD), None),
+    ("nvidia-in-amd-overlay", "compose.amd.yaml", True, svc(NV), None),
+    ("amd-in-nvidia-overlay", "compose.nvidia.yaml", True, svc(AMD), None),
+    ("nvidia-in-multigpu-nvidia-overlay", "compose.multigpu-nvidia.yaml", True, svc(NV), None),
     # --- service-level gpus: and runtime: -----------------------------------
-    ("gpus-all-trusted-compose-yaml", "compose.yaml", True, svc("    gpus: all\n"), None, ()),
-    ("gpus-all-trusted-amd-overlay", "compose.amd.yaml", True, svc("    gpus: all\n"), None, ()),
-    ("gpus-all-imported", "compose.yaml", False, svc("    gpus: all\n"), None, ()),
-    ("runtime-nvidia-trusted-compose-yaml", "compose.yaml", True, svc("    runtime: nvidia\n"), None, ()),
-    ("runtime-nvidia-imported", "compose.yaml", False, svc("    runtime: nvidia\n"), None, ()),
+    ("gpus-all-trusted-compose-yaml", "compose.yaml", True, svc("    gpus: all\n"), None),
+    ("gpus-all-trusted-amd-overlay", "compose.amd.yaml", True, svc("    gpus: all\n"), None),
+    ("gpus-all-imported", "compose.yaml", False, svc("    gpus: all\n"), None),
+    ("runtime-nvidia-trusted-compose-yaml", "compose.yaml", True, svc("    runtime: nvidia\n"), None),
+    ("runtime-nvidia-imported", "compose.yaml", False, svc("    runtime: nvidia\n"), None),
     # --- imported recipes get no allowance at all ---------------------------
-    ("nvidia-imported", "compose.nvidia.yaml", False, svc(NV), None, ()),
-    ("amd-imported", "compose.amd.yaml", False, svc(AMD), None, ()),
+    ("nvidia-imported", "compose.nvidia.yaml", False, svc(NV), None),
+    ("amd-imported", "compose.amd.yaml", False, svc(AMD), None),
 ]
 
-# Every case MUST be accepted by BOTH validators (trusted recipe, own overlay).
+# The legitimate shapes the repository's recipes and ODS core use, each of
+# which MUST pass BOTH validators. (id, compose file, curated recipe?, raw YAML)
+_HARDENED = """\
+    container_name: ods-recipe
+    restart: unless-stopped
+    user: "1000:1000"
+    read_only: true
+    init: true
+    tmpfs: ["/tmp:rw,noexec,nosuid,size=64m"]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    privileged: false
+    environment:
+      - TZ=${TZ:-UTC}
+      - RECIPE_URL=http://localhost:${RECIPE_PORT:-8080}
+    command: ["sh", "-c", "echo $$HOME && exec recipe"]
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${RECIPE_PORT:-8080}:8080"
+      - "127.0.0.1:9090:9090/udp"
+    volumes:
+      - ./data/recipe:/data
+      - ./config/recipe/settings.yaml:/etc/recipe/settings.yaml:ro
+      - recipe-cache:/cache
+      - {type: bind, source: ./data/recipe/uploads, target: /uploads}
+      - {type: tmpfs, target: /run}
+    networks: [ods-network, recipe-internal]
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080/"]
+      interval: 30s
+    deploy:
+      resources:
+        limits: {cpus: "2.0", memory: 2G}
+        reservations: {cpus: "0.5", memory: 512M}
+    logging:
+      driver: json-file
+      options: {max-size: 10m, max-file: "3"}
+    ulimits:
+      nofile: {soft: 262144, hard: 262144}
+    shm_size: 256m
+    platform: linux/amd64
+    stop_grace_period: 30s
+"""
+_HARDENED_TAIL = """\
+networks:
+  ods-network:
+    external: true
+    name: ods-network
+  recipe-internal:
+    internal: true
+volumes:
+  recipe-cache: {}
+  recipe-other:
+"""
 MUST_ACCEPT = [
-    ("nvidia-count-1", "compose.nvidia.yaml", svc(NV)),
-    ("nvidia-count-all", "compose.nvidia.yaml", svc(NV.replace("count: 1", "count: all"))),
-    ("nvidia-device-ids-interp", "compose.nvidia.yaml",
+    # Accelerator shapes (curated recipe, its own backend overlay).
+    ("nvidia-count-1", "compose.nvidia.yaml", True, svc(NV)),
+    ("nvidia-count-all", "compose.nvidia.yaml", True, svc(NV.replace("count: 1", "count: all"))),
+    ("nvidia-device-ids-interp", "compose.nvidia.yaml", True,
      svc(NV.replace("count: 1", "device_ids: ['${RECIPE_GPU_UUID:-0}']"))),
-    ("nvidia-flow-style", "compose.nvidia.yaml", svc(
+    ("nvidia-flow-style", "compose.nvidia.yaml", True, svc(
         "    deploy: {resources: {reservations: {devices: "
         "[{driver: nvidia, count: 1, capabilities: [gpu]}]}}}\n")),
-    ("nvidia-via-anchor", "compose.nvidia.yaml",
+    ("nvidia-via-anchor", "compose.nvidia.yaml", True,
      "x-gpu: &gpu\n  driver: nvidia\n  count: 1\n  capabilities: [gpu]\n" + svc(
          "    deploy:\n      resources:\n        reservations:\n          devices: [*gpu]\n")),
-    ("amd-kfd-dri", "compose.amd.yaml", svc(AMD)),
-    ("amd-with-group-add-interp", "compose.amd.yaml",
+    ("amd-kfd-dri", "compose.amd.yaml", True, svc(AMD)),
+    ("amd-with-group-add-interp", "compose.amd.yaml", True,
      svc(AMD + "    group_add: ['${VIDEO_GID:-44}', '${RENDER_GID:-992}']\n")),
-    ("amd-dri-only", "compose.amd.yaml", svc("    devices: [/dev/dri:/dev/dri]\n")),
+    ("amd-dri-only", "compose.amd.yaml", True, svc("    devices: [/dev/dri:/dev/dri]\n")),
+    ("amd-overlay-hsa-env", "compose.amd.yaml", True,
+     svc(AMD + "    group_add: ['${VIDEO_GID:-44}', '${RENDER_GID:-992}']\n"
+         "    environment:\n      - HSA_OVERRIDE_GFX_VERSION=${HSA_OVERRIDE_GFX_VERSION:-}\n")),
+    # The hardened baseline every curated recipe follows, curated or imported.
+    ("hardened-curated", "compose.yaml", True, svc(_HARDENED, tail=_HARDENED_TAIL)),
+    ("hardened-imported", "compose.yaml", False, svc(_HARDENED, tail=_HARDENED_TAIL)),
+    ("version-and-x-fields", "compose.yaml", False,
+     "version: '3.8'\nx-logging: &logging\n  driver: json-file\n" + svc("    logging: *logging\n")),
+    ("merge-key-then-explicit-override", "compose.yaml", False,
+     "x-defaults: &defaults\n  restart: always\n  privileged: false\n"
+     + svc("    <<: *defaults\n    restart: unless-stopped\n")),
+    # PyYAML flattens a merged mapping in place; a layered anchor merged
+    # again is not a duplicate key (Compose renders these).
+    ("layered-merge-then-override", "compose.yaml", False,
+     "x-a: &a {restart: 'no', init: true}\nx-b: &b {<<: *a, restart: always}\n" + svc("    <<: *b\n")),
+    ("layered-merge-three-deep", "compose.yaml", False,
+     "x-a: &a {restart: 'no'}\nx-b: &b {<<: *a, restart: always}\nx-c: &c {<<: *b, restart: on-failure}\n"
+     + svc("    <<: *c\n    restart: unless-stopped\n")),
+    ("environment-anchor-reused", "compose.yaml", False,
+     "x-common: &common {TZ: UTC}\nservices:\n  recipe:\n    image: example:fixture\n"
+     "    environment: &env\n      <<: *common\n      LOG: debug\n"
+     "  recipe-worker:\n    image: example:fixture\n    environment: *env\n"),
+    ("service-template-reused-twice", "compose.yaml", False,
+     "x-svc: &svc\n  image: example:fixture\n  restart: unless-stopped\n"
+     "services:\n  recipe: {<<: *svc}\n  recipe-worker: {<<: *svc, restart: always}\n"),
+    ("ods-network-external-without-name", "compose.yaml", False,
+     svc("    networks: [ods-network]\n", tail="networks:\n  ods-network:\n    external: true\n")),
+    ("project-default-network-is-ods", "compose.yaml", False,
+     svc("    networks: [default]\n", tail="networks:\n  default:\n    name: ods-network\n")),
+    ("service-networks-mapping-without-options", "compose.yaml", False,
+     svc("    networks:\n      ods-network: {}\n      recipe-internal:\n",
+         tail=ODS_NETWORK + "  recipe-internal:\n    internal: true\n")),
+    ("extra-hosts-host-gateway-curated", "compose.yaml", True,
+     svc("    extra_hosts: ['host.docker.internal:host-gateway']\n")),
+    ("owner-user-interpolated", "compose.yaml", False, svc("    user: '${ODS_UID:-1000}:${ODS_GID:-1000}'\n")),
+    ("owner-uid-only-interpolated", "compose.yaml", False, svc("    user: '${ODS_UID:-1000}'\n")),
+    ("user-root-group", "compose.yaml", False, svc("    user: '1000:0'\n")),
+    ("user-named", "compose.yaml", False, svc("    user: www-data\n")),
+    ("user-numeric", "compose.yaml", False, svc("    user: 65532\n")),
+    ("privileged-false-forms", "compose.yaml", False,
+     "services:\n"
+     "  a: {image: example:fixture, privileged: 'false'}\n"
+     "  b: {image: example:fixture, privileged: no}\n"
+     "  c: {image: example:fixture, privileged: 'off', use_api_socket: false}\n"),
+    ("cap-add-default-capabilities", "compose.yaml", False,
+     svc("    cap_drop: [ALL]\n    cap_add: [CHOWN, FOWNER, NET_BIND_SERVICE, CAP_KILL, sys_chroot]\n")),
+    ("security-opt-no-new-privileges-forms", "compose.yaml", False,
+     svc("    security_opt: [no-new-privileges, 'no-new-privileges=true', 'NO-NEW-PRIVILEGES:true']\n")),
+    ("network-mode-own-service", "compose.yaml", False,
+     svc("    network_mode: 'service:recipe-vpn'\n", tail="  recipe-vpn:\n    image: example:vpn\n")),
+    ("network-mode-none", "compose.yaml", False, svc("    network_mode: none\n")),
+    ("ipc-private", "compose.yaml", False, svc("    ipc: private\n")),
+    ("labels-plain", "compose.yaml", False,
+     svc("    labels: {org.opencontainers.image.title: recipe, com.example.tier: web}\n")),
+    ("escaped-dollar-in-command", "compose.yaml", False,
+     svc("    entrypoint: [sh, -c, 'CONFIG=$$(cat /etc/recipe) && exec recipe \"$$CONFIG\"']\n")),
 ]
 
 
-def _cases(*gap_tables):
-    return [pytest.param(*entry[1:5], id=entry[0],
-                         marks=[mark for table in gap_tables for mark in _xfail(table, entry[0])])
-            for entry in MUST_REJECT]
+def _reject_cases():
+    return [pytest.param(*entry[1:], id=entry[0]) for entry in MUST_REJECT]
 
 
-@pytest.mark.parametrize("compose_name, trusted, text, extra_files", _cases(BOTH_ACCEPT, COMPOSE_REFUSES))
+@pytest.mark.parametrize("compose_name, trusted, text, extra_files", _reject_cases())
 def test_both_validators_reject(tmp_path, compose_name, trusted, text, extra_files):
     assert _verdicts(tmp_path, compose_name, trusted, text, extra_files) == (False, False)
 
 
-@pytest.mark.parametrize("compose_name, text", [pytest.param(*entry[1:], id=entry[0]) for entry in MUST_ACCEPT])
-def test_both_validators_accept(tmp_path, compose_name, text):
-    assert _verdicts(tmp_path, compose_name, True, text) == (True, True)
+@pytest.mark.parametrize("compose_name, trusted, text",
+                         [pytest.param(*entry[1:], id=entry[0]) for entry in MUST_ACCEPT])
+def test_both_validators_accept(tmp_path, compose_name, trusted, text):
+    assert _verdicts(tmp_path, compose_name, trusted, text) == (True, True)
 
 
-@pytest.mark.parametrize("compose_name, trusted, text, extra_files", _cases(VALIDATORS_DISAGREE))
-def test_validators_agree(tmp_path, compose_name, trusted, text, extra_files):
-    """Whatever the verdict, the install scan and the resolver give the same one."""
-    resolver_ok, dashboard_ok = _verdicts(tmp_path, compose_name, trusted, text, extra_files)
-    assert resolver_ok is dashboard_ok
+# An imported recipe (untrusted) installed as extension "recipe". Its relative
+# binds resolve against the ODS install directory, where ./.env holds the
+# owner's secrets, ./scripts is code the ods CLI runs on the host and ./data
+# holds every other service's state. (volume, curated?, allowed)
+RECIPE_BINDS = [
+    ("./data/recipe:/data", False, True),
+    ("./data/recipe/uploads:/uploads", False, True),
+    ("./config/recipe/app.yaml:/etc/app.yaml:ro", False, True),
+    ("./data/n8n:/n8n", False, False),
+    ("./data/recipe-other:/other", False, False),
+    ("./data/token_counter.json:/counter.json", False, False),
+    ("./scripts:/host-scripts", False, False),
+    ("./docker-compose.base.yml:/core.yml", False, False),
+    ("./upload:/upload", False, False),
+    ("./config:/config", False, False),
+    # Curated recipes keep their reviewed binds (label-studio's ./upload).
+    ("./upload:/upload", True, True),
+    ("./data/paperless/data:/data", True, True),
+]
+
+
+@pytest.mark.parametrize("volume, curated, allowed", RECIPE_BINDS,
+                         ids=[f"{'curated' if c else 'imported'}:{v.split(':')[0]}" for v, c, _ in RECIPE_BINDS])
+@pytest.mark.parametrize("long_form", [False, True], ids=["short", "long"])
+def test_imported_recipe_binds_only_its_own_data_and_config(tmp_path, volume, curated, allowed, long_form):
+    source, target = volume.split(":")[:2]
+    entry = (f"      - {{type: bind, source: '{source}', target: '{target}'}}\n" if long_form
+             else f"      - '{volume}'\n")
+    compose = tmp_path / "compose.yaml"
+    compose.write_text(svc("    volumes:\n" + entry), encoding="utf-8")
+    scan, _ = _resolver_scan(tmp_path)
+    resolver_ok, warnings = scan(compose, curated, None, extension_id="recipe")
+    assert resolver_ok is allowed, warnings
+    try:
+        extensions._scan_compose_content(compose, trusted=curated, extension_id="recipe")
+        dashboard_ok = True
+    except HTTPException as rejected:
+        assert rejected.status_code == 400
+        dashboard_ok = False
+    assert dashboard_ok is allowed
+
+
+def test_fixture_ids_are_unique():
+    ids = [entry[0] for entry in MUST_REJECT + MUST_ACCEPT]
+    assert len(ids) == len(set(ids))
 
 
 def _compose_loads(directory, compose_name):
@@ -289,7 +538,7 @@ def _compose_loads(directory, compose_name):
 
 
 @pytest.mark.skipif(shutil.which("docker") is None, reason="needs the Docker CLI")
-@pytest.mark.parametrize("compose_name, trusted, text, extra_files", _cases(BOTH_ACCEPT))
+@pytest.mark.parametrize("compose_name, trusted, text, extra_files", _reject_cases())
 def test_no_negative_fixture_passes_a_validator_and_compose(tmp_path, compose_name, trusted, text,
                                                             extra_files):
     """`docker compose config` only (no containers). A negative fixture that a
@@ -319,43 +568,72 @@ TRUST_MARKERS = [
     ("invalid-json", '{"origin": '),
     ("oversized-curated", '{"origin": "curated", "pad": "' + "x" * 600000 + '"}'),
 ]
+# Markers publish_package never writes: the resolver treats them as untrusted
+# and library staging refuses the install with a clean 400.
+INVALID_MARKERS = [
+    ("duplicate-origin-last-curated", '{"origin": "github-proposal", "origin": "curated"}'),
+    ("duplicate-origin-last-proposal", '{"origin": "curated", "origin": "github-proposal"}'),
+    ("invalid-json", '{"origin": '),
+    ("oversized-curated", '{"origin": "curated", "pad": "' + "x" * 600000 + '"}'),
+    ("not-utf8", b'{"origin": "\xff"}'),
+]
 
 
 def _resolver_trust(tmp_path, marker):
     _, trusted = _resolver_scan(tmp_path)
     extension = tmp_path / "data/user-extensions/recipe"
     extension.mkdir(parents=True)
-    if marker is not None:
+    if isinstance(marker, bytes):
+        (extension / "upstream.json").write_bytes(marker)
+    elif marker is not None:
         (extension / "upstream.json").write_text(marker, encoding="utf-8")
     return trusted(extension)
 
 
-def _dashboard_stages_gpu_overlay(tmp_path, monkeypatch, marker, symlink=False):
-    """True when library staging accepts ollama with its compose.nvidia.yaml GPU overlay."""
+def _stage_ollama(tmp_path, monkeypatch, marker, symlink=False):
+    """Stage the curated ollama recipe (with its compose.nvidia.yaml GPU overlay)
+    under the given upstream.json marker. Returns None or the HTTPException."""
     library = tmp_path / "library"
     recipe = library / "ollama"
     shutil.copytree(LIBRARY / "ollama", recipe)
     (recipe / "upstream.json").unlink(missing_ok=True)
     if marker is not None:
         target = tmp_path / "upstream-target.json" if symlink else recipe / "upstream.json"
-        target.write_text(marker, encoding="utf-8")
+        if isinstance(marker, bytes):
+            target.write_bytes(marker)
+        else:
+            target.write_text(marker, encoding="utf-8")
         if symlink:
             (recipe / "upstream.json").symlink_to(target)
     monkeypatch.setattr(extensions, "EXTENSIONS_LIBRARY_DIR", library)
     monkeypatch.setattr(extensions, "USER_EXTENSIONS_DIR", tmp_path / "user")
     try:
         with extensions._staged_library_extension("ollama", tmp_path / "user" / "ollama"):
-            return True
-    except (HTTPException, ValueError):
-        return False
+            return None
+    except HTTPException as rejected:
+        return rejected
 
 
-@pytest.mark.parametrize("marker", [pytest.param(m, id=i, marks=_xfail(TRUST_DISAGREE, i))
-                                    for i, m in TRUST_MARKERS])
+def _dashboard_stages_gpu_overlay(tmp_path, monkeypatch, marker, symlink=False):
+    """True when library staging accepts ollama with its compose.nvidia.yaml GPU overlay."""
+    return _stage_ollama(tmp_path, monkeypatch, marker, symlink) is None
+
+
+@pytest.mark.parametrize("marker", [pytest.param(m, id=i) for i, m in TRUST_MARKERS])
 def test_trust_marker_is_decided_the_same_way(tmp_path, monkeypatch, marker):
     resolver = _resolver_trust(tmp_path / "resolver", marker)
     dashboard = _dashboard_stages_gpu_overlay(tmp_path / "dashboard", monkeypatch, marker)
     assert resolver is dashboard
+
+
+@pytest.mark.parametrize("marker", [pytest.param(m, id=i) for i, m in INVALID_MARKERS])
+def test_invalid_trust_marker_fails_closed_with_a_clean_rejection(tmp_path, monkeypatch, marker):
+    """Never curated, never a 500: staging answers 400 (it used to raise
+    JSONDecodeError for invalid JSON and trust an oversized marker)."""
+    assert _resolver_trust(tmp_path / "resolver", marker) is False
+    rejected = _stage_ollama(tmp_path / "dashboard", monkeypatch, marker)
+    assert rejected is not None and rejected.status_code == 400
+    assert "upstream.json" in rejected.detail
 
 
 def test_github_proposal_marker_is_never_trusted(tmp_path, monkeypatch):
@@ -364,9 +642,9 @@ def test_github_proposal_marker_is_never_trusted(tmp_path, monkeypatch):
     assert _dashboard_stages_gpu_overlay(tmp_path / "dashboard", monkeypatch, marker) is False
 
 
-@pytest.mark.xfail(strict=True, reason="staging skips the symlink, so the installed copy has no "
-                                       "marker and both layers then treat it as curated")
 def test_symlinked_upstream_json_is_decided_the_same_way(tmp_path, monkeypatch):
+    """Staging's copy drops links, so a linked marker used to vanish and the
+    installed copy read as curated. Both layers now fail closed."""
     marker = '{"origin": "github-proposal"}'
     root = tmp_path / "resolver"
     _, trusted = _resolver_scan(root)
@@ -377,9 +655,21 @@ def test_symlinked_upstream_json_is_decided_the_same_way(tmp_path, monkeypatch):
         (extension / "upstream.json").symlink_to(root / "target.json")
     except OSError:
         pytest.skip("symlink privilege unavailable")
-    resolver = trusted(extension)
-    dashboard = _dashboard_stages_gpu_overlay(tmp_path / "dashboard", monkeypatch, marker, symlink=True)
-    assert resolver is dashboard
+    assert trusted(extension) is False
+    rejected = _stage_ollama(tmp_path / "dashboard", monkeypatch, marker, symlink=True)
+    assert rejected is not None and rejected.status_code == 400
+    assert not (tmp_path / "dashboard" / "user" / "ollama").exists()
+
+
+@pytest.mark.parametrize("marker", ['{"origin": "curated"}', '{"origin": "github-proposal"}'],
+                         ids=["curated", "proposal"])
+def test_symlinked_marker_is_refused_whatever_it_points_at(tmp_path, monkeypatch, marker):
+    try:
+        (tmp_path / "probe").symlink_to(tmp_path)
+    except OSError:
+        pytest.skip("symlink privilege unavailable")
+    rejected = _stage_ollama(tmp_path / "dashboard", monkeypatch, marker, symlink=True)
+    assert rejected is not None and rejected.status_code == 400
 
 
 # --- multi-GPU overlay naming ----------------------------------------------

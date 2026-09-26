@@ -6,8 +6,8 @@ services:
     security_opt:
     - no-new-privileges:true
     ports:
-    - 127.0.0.1:${SYNCTHING_PORT:-11095}:8384
-    - 127.0.0.1:${SYNCTHING_SYNC_PORT:-11096}:22000
+    - "${BIND_ADDRESS:-127.0.0.1}:${SYNCTHING_PORT:-11095}:8384"
+    - "${BIND_ADDRESS:-127.0.0.1}:${SYNCTHING_SYNC_PORT:-11096}:22000"
     healthcheck:
       test:
       - CMD

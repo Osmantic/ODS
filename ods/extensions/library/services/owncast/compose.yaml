@@ -6,8 +6,8 @@ services:
     security_opt:
     - no-new-privileges:true
     ports:
-    - 127.0.0.1:${OWNCAST_PORT:-11129}:8080
-    - 127.0.0.1:${OWNCAST_RTMP_PORT:-11130}:1935
+    - "${BIND_ADDRESS:-127.0.0.1}:${OWNCAST_PORT:-11129}:8080"
+    - "${BIND_ADDRESS:-127.0.0.1}:${OWNCAST_RTMP_PORT:-11130}:1935"
     healthcheck:
       test:
       - CMD

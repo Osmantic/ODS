@@ -9,7 +9,7 @@ services:
     security_opt:
     - no-new-privileges:true
     ports:
-    - 127.0.0.1:${FLARUM_PORT:-11133}:8000
+    - "${BIND_ADDRESS:-127.0.0.1}:${FLARUM_PORT:-11133}:8000"
     environment:
       PUID: '1000'
       PGID: '1000'

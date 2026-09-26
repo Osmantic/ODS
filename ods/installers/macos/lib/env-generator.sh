@@ -42,6 +42,8 @@ read_env_value() {
 # shellcheck source=../../../lib/dotenv-quote.sh
 _ODS_MACOS_ENV_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 . "$_ODS_MACOS_ENV_ROOT/lib/dotenv-quote.sh"
+# shellcheck source=../../lib/searxng-locale.sh
+. "$_ODS_MACOS_ENV_ROOT/installers/lib/searxng-locale.sh"
 unset _ODS_MACOS_ENV_ROOT
 
 env_key_exists() {
@@ -790,6 +792,10 @@ generate_searxng_config() {
         return 0
     fi
 
+    # Terminal sessions usually export LANG; otherwise use the macOS locale.
+    local search_lang
+    search_lang="$(ods_searxng_default_lang "${LC_ALL:-${LC_MESSAGES:-${LANG:-$(defaults read -g AppleLocale 2>/dev/null || true)}}}")"
+
     cat > "$settings_path" << SEARXEOF
 use_default_settings: true
 server:
@@ -799,9 +805,12 @@ server:
   limiter: false
 search:
   safe_search: 0
+  # Install locale. API clients send no language, so "auto" would mean "all".
+  default_lang: "${search_lang}"
   formats:
     - html
     - json
+$(ods_searxng_hostnames_yaml "$search_lang")
 engines:
   - name: bing
     # Requalify before enabling: https://github.com/searxng/searxng/pull/6671

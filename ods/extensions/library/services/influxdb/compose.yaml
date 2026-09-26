@@ -9,7 +9,7 @@ services:
     security_opt:
     - no-new-privileges:true
     ports:
-    - 127.0.0.1:${INFLUXDB_PORT:-11135}:8086
+    - "${BIND_ADDRESS:-127.0.0.1}:${INFLUXDB_PORT:-11135}:8086"
     environment:
       DOCKER_INFLUXDB_INIT_MODE: setup
       DOCKER_INFLUXDB_INIT_USERNAME: ods

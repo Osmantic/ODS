@@ -99,3 +99,22 @@ grep -q -- '-f extensions/services/ods-proxy/compose.yaml' \
     || fail "dual-marker repair did not add ods-proxy to the active stack"
 
 pass "Linux enable normalizes a dual compose-marker state"
+
+warn_dir="$TMP_DIR/resolver-warning"
+make_install "$warn_dir"
+cat > "$warn_dir/scripts/resolve-compose-stack.sh" <<'RESOLVER'
+#!/usr/bin/env bash
+echo "WARNING: fx-provider: service 'fx-provider' reads an env_file from the host" >&2
+echo "resolver debug line" >&2
+printf '%s\n' '-f docker-compose.base.yml'
+RESOLVER
+chmod +x "$warn_dir/scripts/resolve-compose-stack.sh"
+warn_stderr="$(ODS_HOME="$warn_dir" bash "$warn_dir/ods-cli" enable ods-proxy 2>&1 >/dev/null)"
+[[ "$warn_stderr" == *"WARNING: fx-provider: service 'fx-provider' reads an env_file from the host"* ]] \
+    || fail "enable hid the resolver's refused-extension warning: $warn_stderr"
+[[ "$warn_stderr" != *"resolver debug line"* ]] \
+    || fail "enable echoed resolver output that is not a warning"
+grep -q -- '-f docker-compose.base.yml' "$warn_dir/.compose-flags" \
+    || fail "a resolver warning must not discard the regenerated compose cache"
+
+pass "Linux enable reports extension files the resolver left out"

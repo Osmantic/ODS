@@ -6,7 +6,7 @@ services:
     security_opt:
     - no-new-privileges:true
     ports:
-    - 127.0.0.1:${MOSQUITTO_PORT:-11087}:1883
+    - "${BIND_ADDRESS:-127.0.0.1}:${MOSQUITTO_PORT:-11087}:1883"
     healthcheck:
       test:
       - CMD
