@@ -284,4 +284,36 @@ grep -q 'Model activation request failed before the host agent completed' \
     <<< "$transport_output"
 grep -qx 'LLM_MODEL=old-model' "$INSTALL_DIR/.env"
 
+# The install's persisted MODEL_PROFILE selects the model family for the tier,
+# not whatever the caller's shell happens to export. A Gemma 4 (or auto,
+# which resolves to Gemma 4 above tier 0) install only has the Gemma GGUF.
+printf 'model\n' > "$INSTALL_DIR/data/models/gemma-4-E2B-it-Q4_K_M.gguf"
+for profile in gemma4 auto; do
+    awk -v profile="$profile" \
+        '/^MODEL_PROFILE=/ { print "MODEL_PROFILE=" profile; next } { print }' \
+        "$INSTALL_DIR/.env" > "$INSTALL_DIR/.env.next"
+    mv "$INSTALL_DIR/.env.next" "$INSTALL_DIR/.env"
+    rm -f "$CAPTURE_DIR/request.json"
+    env -u MODEL_PROFILE \
+        ODS_HOME="$INSTALL_DIR" \
+        CAPTURE_DIR="$CAPTURE_DIR" \
+        FAKE_DOCKER_GATEWAY=172.31.0.1 \
+        HOST_ARCH=amd64 \
+        NO_COLOR=1 \
+        PATH="$FAKE_BIN:$PATH" \
+        "$ROOT_DIR/ods-cli" model swap T1 >/dev/null 2>&1
+    "$PYTHON_BIN" - "$CAPTURE_DIR/request.json" "$profile" <<'VERIFY_PROFILE'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    request = json.load(handle)
+assert request == {
+    "model_id": "gemma4-e2b-q4",
+    "tier": "1",
+    "context_length": 16384,
+}, (sys.argv[2], request)
+VERIFY_PROFILE
+done
+
 echo "[PASS] ods model swap uses transactional host-agent activation"

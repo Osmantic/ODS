@@ -3764,6 +3764,14 @@ cmd_model() {
             TIER="$tier"
             [[ "$TIER" =~ ^T([0-9]+)$ ]] && TIER="${BASH_REMATCH[1]}"
             [[ "$TIER" == "SH" ]] && TIER="SH_COMPACT"
+            # The install's persisted profile picks the model family; without
+            # it tier-map falls back to qwen and a gemma4/auto install looks
+            # for a GGUF it never downloaded.
+            MODEL_PROFILE="$(_env_get_raw MODEL_PROFILE)"
+            case "$MODEL_PROFILE" in
+                \"*\") MODEL_PROFILE="${MODEL_PROFILE:1:${#MODEL_PROFILE}-2}" ;;
+                \'*\') MODEL_PROFILE="${MODEL_PROFILE:1:${#MODEL_PROFILE}-2}" ;;
+            esac
             resolve_tier_config
 
             local model_path="$INSTALL_DIR/data/models/$GGUF_FILE"
