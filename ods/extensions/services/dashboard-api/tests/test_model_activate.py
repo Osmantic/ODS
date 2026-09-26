@@ -7717,6 +7717,133 @@ class TestModelActivateRollback:
         assert "LLAMA_ARG_SPEC_TYPE=draft-mtp" in env_text
         assert "LLAMA_ARG_SPEC_DRAFT_N_MAX=3" in env_text
 
+    def _activate_with_host_memory(
+        self, tmp_path, monkeypatch, *, env_extra="", profile_env=None,
+        host_ram_gb=31, docker_mem_total="16469123072",
+    ):
+        """Activate target-model on NVIDIA with the given host and Docker memory.
+
+        The default Docker MemTotal is a 16 GB WSL VM's (15.3 GiB) on a
+        31 GiB Windows host.
+        """
+        install_dir, env_path, _env_text, _models_ini, _ini_text, _yaml, _yaml_text = (
+            _write_model_activation_fixture(tmp_path)
+        )
+        env_path.write_text(env_path.read_text(encoding="utf-8") + env_extra, encoding="utf-8")
+        monkeypatch.setattr(_mod, "INSTALL_DIR", install_dir)
+        monkeypatch.delenv("ODS_HOST_INSTALL_DIR", raising=False)
+        monkeypatch.setattr(
+            _mod,
+            "_select_runtime_profile",
+            lambda _model, _env: {
+                "id": "nvidia-8gb-64k-q8-kv",
+                "context_length": 4096,
+                "env": dict(profile_env or {}),
+            },
+        )
+        monkeypatch.setattr(_mod, "_system_ram_gb", lambda: host_ram_gb)
+        monkeypatch.setattr(_mod.time, "sleep", lambda _seconds: None)
+        monkeypatch.setattr(_mod, "_compose_restart_llama_server", lambda _env: None)
+        docker_info_calls = []
+
+        def fake_run(cmd, **_kwargs):
+            if cmd[:2] == ["docker", "info"]:
+                docker_info_calls.append(cmd)
+                return subprocess.CompletedProcess(cmd, 0, stdout=docker_mem_total + "\n", stderr="")
+            stdout = _llama_identity_response("new-model.gguf") if cmd and cmd[0] == "curl" else ""
+            return subprocess.CompletedProcess(cmd, 0, stdout=stdout, stderr="")
+
+        monkeypatch.setattr(_mod.subprocess, "run", fake_run)
+        handler = _ResponseHandler()
+
+        _mod.AgentHandler._do_model_activate(handler, "target-model")
+
+        assert handler.response_code == 200
+        return _mod.load_env(env_path), docker_info_calls
+
+    def test_activation_sizes_llama_cache_ram_to_the_docker_vm(self, tmp_path, monkeypatch):
+        # llama.cpp's 8192 MiB default prompt cache OOM-killed llama-server in
+        # a 16 GB WSL VM. The VM (15 GiB) is smaller than the host (31 GiB):
+        # (15 - 6) / 3 GiB, which is also a quarter of the profile's 12G.
+        env, docker_info_calls = self._activate_with_host_memory(
+            tmp_path, monkeypatch, profile_env={"LLAMA_SERVER_MEMORY_LIMIT": "12G"},
+        )
+        assert env["LLAMA_SERVER_MEMORY_LIMIT"] == "12G"
+        assert env["LLAMA_ARG_CACHE_RAM"] == "3072"
+        assert docker_info_calls
+
+    def test_activation_cache_ram_follows_the_container_limit(self, tmp_path, monkeypatch):
+        env, _calls = self._activate_with_host_memory(
+            tmp_path, monkeypatch,
+            env_extra="SYSTEM_RAM_GB=64\n",
+            profile_env={"LLAMA_SERVER_MEMORY_LIMIT": "8G"},
+            host_ram_gb=64, docker_mem_total=str(64 * 1024 ** 3),
+        )
+        assert env["LLAMA_ARG_CACHE_RAM"] == "2048"
+
+    def test_activation_keeps_llama_cache_ram_already_in_env(self, tmp_path, monkeypatch):
+        env, docker_info_calls = self._activate_with_host_memory(
+            tmp_path, monkeypatch,
+            env_extra="LLAMA_ARG_CACHE_RAM=4096\n",
+            profile_env={"LLAMA_SERVER_MEMORY_LIMIT": "12G"},
+        )
+        assert env["LLAMA_ARG_CACHE_RAM"] == "4096"
+        assert docker_info_calls == []
+
+    def test_activation_profile_cache_ram_wins_over_env(self, tmp_path, monkeypatch):
+        env, docker_info_calls = self._activate_with_host_memory(
+            tmp_path, monkeypatch,
+            env_extra="LLAMA_ARG_CACHE_RAM=4096\n",
+            profile_env={"LLAMA_ARG_CACHE_RAM": "1024"},
+        )
+        assert env["LLAMA_ARG_CACHE_RAM"] == "1024"
+        assert docker_info_calls == []
+
+    def test_activation_leaves_llama_cache_default_on_large_host(self, tmp_path, monkeypatch):
+        env, _calls = self._activate_with_host_memory(
+            tmp_path, monkeypatch,
+            host_ram_gb=125, docker_mem_total=str(125 * 1024 ** 3),
+        )
+        assert "LLAMA_ARG_CACHE_RAM" not in env
+
+    def test_activation_cache_ram_uses_host_ram_when_docker_is_silent(
+        self, tmp_path, monkeypatch,
+    ):
+        env, _calls = self._activate_with_host_memory(
+            tmp_path, monkeypatch, host_ram_gb=15, docker_mem_total="",
+        )
+        # 64G NVIDIA compose limit; (15 - 6) / 3 GiB of host RAM.
+        assert env["LLAMA_ARG_CACHE_RAM"] == "3072"
+
+    @pytest.mark.parametrize(
+        "env",
+        [
+            {"GPU_BACKEND": "apple"},
+            {"GPU_BACKEND": "amd"},
+            {"GPU_BACKEND": "nvidia", "LLM_BACKEND": "lemonade"},
+            {"GPU_BACKEND": "nvidia", "ODS_MODE": "cloud"},
+        ],
+    )
+    def test_default_cache_ram_skips_runtimes_ods_does_not_run_in_docker(
+        self, monkeypatch, env,
+    ):
+        monkeypatch.setattr(_mod, "_system_ram_gb", lambda: 15)
+        monkeypatch.setattr(_mod, "_docker_memory_gb", lambda: 15)
+        assert _mod._default_llama_cache_ram_mib(env, "12G") is None
+
+    def test_default_cache_ram_skips_windows_native_llama_server(self, monkeypatch):
+        monkeypatch.setattr(_mod, "_system_ram_gb", lambda: 15)
+        monkeypatch.setattr(_mod, "_docker_memory_gb", lambda: 15)
+        monkeypatch.setattr(_mod, "_is_windows_host_llama_server", lambda _env: True)
+        assert _mod._default_llama_cache_ram_mib({"GPU_BACKEND": "amd"}, "") is None
+
+    @pytest.mark.parametrize("backend", ["nvidia", "cpu", "none", "", "intel", "sycl"])
+    def test_default_cache_ram_covers_docker_llama_cpp_backends(self, monkeypatch, backend):
+        monkeypatch.setattr(_mod, "_system_ram_gb", lambda: 15)
+        monkeypatch.setattr(_mod, "_docker_memory_gb", lambda: 0)
+        expected = 1536 if backend in {"cpu", "none", ""} else 3072
+        assert _mod._default_llama_cache_ram_mib({"GPU_BACKEND": backend}, "") == expected
+
     def test_explicit_context_overrides_profile_and_installer_recommendation(
         self, tmp_path, monkeypatch,
     ):

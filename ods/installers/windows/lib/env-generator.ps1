@@ -100,6 +100,52 @@ function Get-ODSDefaultNvidiaLlamaMemoryLimit {
     return "${usableGB}G"
 }
 
+# A Docker memory limit (12G, 512m, 12gb or plain bytes) in MiB; 0 when the
+# value cannot be read. Mirrors ods_memory_limit_mib in
+# installers/lib/llama-memory-budget.sh.
+function ConvertTo-ODSMemoryLimitMiB {
+    param([string]$Value)
+
+    if ([string]$Value -notmatch '^([0-9]+)([kKmMgGtT]?)[bB]?$') {
+        return 0
+    }
+    $number = [int64]$Matches[1]
+    switch ($Matches[2].ToUpperInvariant()) {
+        "T" { return [int64]($number * 1024 * 1024) }
+        "G" { return [int64]($number * 1024) }
+        "M" { return $number }
+        "K" { return [int64][Math]::Floor($number / 1024) }
+        default { return [int64][Math]::Floor($number / 1048576) }
+    }
+}
+
+# Default llama.cpp --cache-ram (LLAMA_ARG_CACHE_RAM) in MiB for the Docker
+# llama-server: a third of the memory left after 6 GiB for the rest of ODS
+# and the OS, at most a quarter of the container limit, at least 512. Returns
+# "" when llama.cpp's own 8192 MiB default fits. Mirrors
+# ods_default_llama_cache_ram_mib in installers/lib/llama-memory-budget.sh.
+function Get-ODSDefaultLlamaCacheRamMiB {
+    param(
+        [int]$AvailableRamGB,
+        [string]$ContainerMemoryLimit = ""
+    )
+
+    $cacheMiB = [int64]8192
+    if ($AvailableRamGB -gt 0) {
+        $headroomGB = [Math]::Max(0, $AvailableRamGB - 6)
+        $cacheMiB = [Math]::Min($cacheMiB, [int64][Math]::Floor($headroomGB * 1024 / 3))
+    }
+    $limitMiB = ConvertTo-ODSMemoryLimitMiB -Value $ContainerMemoryLimit
+    if ($limitMiB -gt 0) {
+        $cacheMiB = [Math]::Min($cacheMiB, [int64][Math]::Floor($limitMiB / 4))
+    }
+    $cacheMiB = [Math]::Max([int64]512, $cacheMiB)
+    if ($cacheMiB -ge 8192) {
+        return ""
+    }
+    return [string]$cacheMiB
+}
+
 function Write-Utf8NoBom {
     <#
     .SYNOPSIS
@@ -849,6 +895,22 @@ function New-ODSEnv {
         # one the CPU compose default (6G) applies as before.
         $llamaServerMemoryLimit = Get-EnvOrNew "LLAMA_SERVER_MEMORY_LIMIT" $TierConfig.LLAMA_SERVER_MEMORY_LIMIT
     }
+    # llama.cpp's RAM prompt cache (b9014 default 8192 MiB) sits outside the
+    # memory limits above. The runtime profile's value wins, then the one
+    # already in .env; otherwise the Docker llama-server gets a size that fits
+    # the Docker VM and its container limit, as on Linux (phase 06). AMD runs
+    # inference on the host through Lemonade or native llama-server.
+    $llamaCacheRam = [string]$TierConfig.LLAMA_ARG_CACHE_RAM
+    if (-not $llamaCacheRam) {
+        $llamaCacheRam = Get-EnvOrNew "LLAMA_ARG_CACHE_RAM" ""
+    }
+    if (-not $llamaCacheRam -and $GpuBackend -in @("nvidia", "none", "cpu") -and $effectiveODSMode -ne "cloud") {
+        $cacheContainerLimit = $(if ($llamaServerMemoryLimit) { $llamaServerMemoryLimit } elseif ($GpuBackend -eq "nvidia") { "64G" } else { "6G" })
+        $cacheMemoryGB = Get-ODSEffectiveContainerMemoryGB `
+            -SystemRamGB $SystemRamGB -DockerRamGB (Get-ODSDockerMemoryGB)
+        $llamaCacheRam = Get-ODSDefaultLlamaCacheRamMiB `
+            -AvailableRamGB $cacheMemoryGB -ContainerMemoryLimit $cacheContainerLimit
+    }
     $existingLemonadeModel = Get-EnvOrNew "LEMONADE_MODEL" ""
     $existingGgufFile = Get-EnvOrNew "GGUF_FILE" ""
     $existingModelStore = ([string](Get-EnvOrNew "ODS_ACTIVE_MODEL_STORE" "default")).Trim().Trim('"').Trim("'")
@@ -1083,7 +1145,7 @@ $(if ($TierConfig.LLAMA_ARG_N_CPU_MOE) { "LLAMA_ARG_N_CPU_MOE=$($TierConfig.LLAM
 $(if ($TierConfig.LLAMA_ARG_NO_CACHE_PROMPT) { "LLAMA_ARG_NO_CACHE_PROMPT=$($TierConfig.LLAMA_ARG_NO_CACHE_PROMPT)" })
 $(if ($TierConfig.LLAMA_ARG_CHECKPOINT_EVERY_NT) { "LLAMA_ARG_CHECKPOINT_EVERY_NT=$($TierConfig.LLAMA_ARG_CHECKPOINT_EVERY_NT)" })
 $(if ($TierConfig.LLAMA_ARG_CTX_CHECKPOINTS) { "LLAMA_ARG_CTX_CHECKPOINTS=$($TierConfig.LLAMA_ARG_CTX_CHECKPOINTS)" })
-$(if ($TierConfig.LLAMA_ARG_CACHE_RAM) { "LLAMA_ARG_CACHE_RAM=$($TierConfig.LLAMA_ARG_CACHE_RAM)" })
+$(if ($llamaCacheRam) { "LLAMA_ARG_CACHE_RAM=$llamaCacheRam" })
 # NVIDIA/CPU llama.cpp images default to lossless n-gram speculation (ngram-mod).
 # LLAMA_SPEC_TYPE=none turns it off; unset keeps the default.
 $(if ($llamaSpecType) { "LLAMA_SPEC_TYPE=$llamaSpecType" })

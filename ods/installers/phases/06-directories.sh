@@ -898,6 +898,31 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
         # so docker-compose.cpu.yml's 6G default applies as before.
         LLAMA_SERVER_MEMORY_LIMIT_VALUE="$(_env_get LLAMA_SERVER_MEMORY_LIMIT "${LLAMA_SERVER_MEMORY_LIMIT:-}")"
     fi
+    # llama.cpp's RAM prompt cache (b9014 default 8192 MiB) sits outside every
+    # memory check above. The runtime profile's (or preserved) value wins, then
+    # the one already in .env; otherwise size it to this host and the
+    # llama-server container limit (installers/lib/llama-memory-budget.sh).
+    # Lemonade (AMD) and native macOS launch llama.cpp themselves.
+    LLAMA_ARG_CACHE_RAM="${LLAMA_ARG_CACHE_RAM:-$(_env_get LLAMA_ARG_CACHE_RAM "")}"
+    if [[ -z "$LLAMA_ARG_CACHE_RAM" && "$EXTERNAL_LLM_ACTIVE" != "true" \
+        && "$LEMONADE_EXTERNAL_VALUE" != "true" && "${ODS_MODE:-local}" != "cloud" ]]; then
+        case "$GPU_BACKEND" in
+            nvidia) _llama_compose_memory_limit="64G" ;;
+            cpu|none) _llama_compose_memory_limit="6G" ;;
+            intel|sycl) _llama_compose_memory_limit="24G" ;;
+            *) _llama_compose_memory_limit="" ;;
+        esac
+        if [[ -n "$_llama_compose_memory_limit" ]]; then
+            _cache_docker_memory_gb="$(ods_docker_memory_gb 2>/dev/null || true)"
+            _cache_memory_gb="$(ods_effective_container_memory_gb "${RAM_GB:-0}" "$_cache_docker_memory_gb")"
+            LLAMA_ARG_CACHE_RAM="$(ods_default_llama_cache_ram_mib "$_cache_memory_gb" \
+                "${LLAMA_SERVER_MEMORY_LIMIT_VALUE:-$_llama_compose_memory_limit}")"
+            [[ -z "$LLAMA_ARG_CACHE_RAM" ]] \
+                || log "llama.cpp RAM prompt cache: ${LLAMA_ARG_CACHE_RAM} MiB (${_cache_memory_gb} GiB memory, container limit ${LLAMA_SERVER_MEMORY_LIMIT_VALUE:-$_llama_compose_memory_limit})"
+            unset _cache_docker_memory_gb _cache_memory_gb
+        fi
+        unset _llama_compose_memory_limit
+    fi
     ODS_MODE_VALUE="$(if [[ "$EXTERNAL_LLM_ACTIVE" == "true" ]]; then echo "local"; elif [[ "$LEMONADE_EXTERNAL_VALUE" == "true" ]]; then echo "lemonade"; elif [[ "$GPU_BACKEND" == "amd" && "${ODS_MODE:-local}" == "local" ]]; then echo "lemonade"; else echo "${ODS_MODE:-local}"; fi)"
     ODS_MODEL_SWITCHBOARD_VALUE=$(_env_get ODS_MODEL_SWITCHBOARD "${ODS_MODEL_SWITCHBOARD:-enabled}")
     case "$ODS_MODEL_SWITCHBOARD_VALUE" in

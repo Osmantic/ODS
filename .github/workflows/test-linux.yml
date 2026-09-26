@@ -371,6 +371,9 @@ jobs:
       - name: Safe Env Loading Tests
         run: bash tests/test-safe-env.sh
 
+      - name: llama-server Memory Budget and Prompt Cache Tests
+        run: bash tests/test-llama-memory-budget.sh
+
       - name: Installer Rerun .env Quoting Tests
         run: bash tests/test-phase06-env-rerun-quoting.sh
 
