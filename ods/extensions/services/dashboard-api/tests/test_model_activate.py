@@ -9273,3 +9273,34 @@ def test_router_publication_rejects_unverified_context(tmp_path, monkeypatch):
     with pytest.raises(RuntimeError, match="unverified"):
         _mod._publish_activation_route({}, "target", {"identity": "target", "contextVerified": False}, {})
     assert not (tmp_path / "data/model-state.json").exists()
+
+
+def test_recommended_context_replay_is_capped_at_the_native_maximum():
+    """An older install recorded MODEL_RECOMMENDED_CONTEXT=131072 for the
+    40960-token Qwen3-30B-A3B. llama.cpp caps the slot at 40960, so the replay
+    carries the native maximum instead of a context the proof can never pass."""
+    model = {
+        "id": "qwen3-30b-a3b-q4",
+        "gguf_file": "Qwen3-30B-A3B-Q4_K_M.gguf",
+        "llm_model_name": "qwen3-30b-a3b",
+        "context_length": 40960,
+        "max_context_length": 40960,
+    }
+    env = {
+        "MODEL_RECOMMENDED_MODEL": "qwen3-30b-a3b",
+        "MODEL_RECOMMENDED_GGUF": "Qwen3-30B-A3B-Q4_K_M.gguf",
+        "MODEL_RECOMMENDED_CONTEXT": "131072",
+    }
+    assert _mod._recommended_activation_context("qwen3-30b-a3b-q4", model, env) == 40960
+    # A record within the native maximum is replayed exactly.
+    assert _mod._recommended_activation_context(
+        "qwen3-30b-a3b-q4", model, {**env, "MODEL_RECOMMENDED_CONTEXT": "32768"},
+    ) == 32768
+    # Without a declared native maximum there is no ceiling to apply.
+    undeclared = {key: value for key, value in model.items() if key != "max_context_length"}
+    assert _mod._recommended_activation_context("qwen3-30b-a3b-q4", undeclared, env) == 131072
+    # Another model's record is still not replayed.
+    assert _mod._recommended_activation_context(
+        "qwen3-30b-a3b-q4", model,
+        {**env, "MODEL_RECOMMENDED_MODEL": "other", "MODEL_RECOMMENDED_GGUF": "other.gguf"},
+    ) is None

@@ -121,33 +121,61 @@ $realCatalog = Get-Content (Join-Path $repoRoot "config/model-library.json") -Ra
 $idByGguf = @{}
 foreach ($entry in $realCatalog.models) { if ($entry.gguf_file) { $idByGguf[[string]$entry.gguf_file] = [string]$entry.id } }
 $savedHostArch = $env:HOST_ARCH
-$checked = 0
+# Both model profiles: the gemma4 pass exercises the sliding-window KV terms
+# (Gemma 4 E2B/E4B/26B-A4B), which the qwen pass never reaches.
+$checked = @{ qwen = 0; gemma4 = 0 }
 try {
-    foreach ($envelope in $envelopes) {
-        if ([string]$envelope.ceiling -ne "0") { continue }
-        # macOS picks go through select-model.py on the Mac; its unified-memory
-        # coder-next swap for any tier is not a Windows policy.
-        if ($envelope.backend -eq "apple") { continue }
-        $expected = $golden.($envelope.id)
-        $backend = if ($envelope.backend -eq "cpu") { "none" } else { [string]$envelope.backend }
-        $gpuInfo = @{ Backend = $backend; MemoryType = [string]$envelope.memory_type; VramMB = [int]$envelope.vram_mb }
-        $env:HOST_ARCH = [string]$envelope.host_arch
-        $tierConfig = @{ ModelProfileEffective = "qwen"; LlmModel = "fallback"; GgufFile = "fallback.gguf"; MaxContext = 8192 }
-        $resolved = Resolve-CatalogModelRecommendation -TierConfig $tierConfig -Tier ([string]$envelope.tier) `
-            -GpuInfo $gpuInfo -SystemRamGB ([int]$envelope.ram_gb) -SourceRoot $repoRoot -MinContext 65536
-        $pick = $idByGguf[[string]$resolved.GgufFile]
-        $profile = if ($resolved.RuntimeProfile) { [string]$resolved.RuntimeProfile } else { $null }
-        if ($pick -ne $expected.pick -or [int]$resolved.MaxContext -ne [int]$expected.context_length -or
-            $profile -ne $expected.runtime_profile -or [string]$resolved.RecommendationPolicy -ne [string]$expected.policy) {
-            throw "Windows selector diverges on $($envelope.id): $pick/$($resolved.MaxContext)/$profile/$($resolved.RecommendationPolicy); golden $($expected.pick)/$($expected.context_length)/$($expected.runtime_profile)/$($expected.policy)"
+    foreach ($modelProfile in @("qwen", "gemma4")) {
+        foreach ($envelope in $envelopes) {
+            if ([string]$envelope.ceiling -ne "0") { continue }
+            # macOS picks go through select-model.py on the Mac; its unified-memory
+            # coder-next swap for any tier is not a Windows policy.
+            if ($envelope.backend -eq "apple") { continue }
+            $expected = $golden.($envelope.id)
+            if ($modelProfile -eq "gemma4") {
+                $expected = $expected.gemma4
+                if (-not $expected) { throw "Golden file has no gemma4 pick for $($envelope.id); run simulate-model-selection.py --update-golden" }
+            }
+            $backend = if ($envelope.backend -eq "cpu") { "none" } else { [string]$envelope.backend }
+            $gpuInfo = @{ Backend = $backend; MemoryType = [string]$envelope.memory_type; VramMB = [int]$envelope.vram_mb }
+            $env:HOST_ARCH = [string]$envelope.host_arch
+            $tierConfig = @{ ModelProfileEffective = $modelProfile; LlmModel = "fallback"; GgufFile = "fallback.gguf"; MaxContext = 8192 }
+            $resolved = Resolve-CatalogModelRecommendation -TierConfig $tierConfig -Tier ([string]$envelope.tier) `
+                -GpuInfo $gpuInfo -SystemRamGB ([int]$envelope.ram_gb) -SourceRoot $repoRoot -MinContext 65536
+            $pick = $idByGguf[[string]$resolved.GgufFile]
+            $profile = if ($resolved.RuntimeProfile) { [string]$resolved.RuntimeProfile } else { $null }
+            if ($pick -ne $expected.pick -or [int]$resolved.MaxContext -ne [int]$expected.context_length -or
+                $profile -ne $expected.runtime_profile -or [string]$resolved.RecommendationPolicy -ne [string]$expected.policy) {
+                throw "Windows $modelProfile selector diverges on $($envelope.id): $pick/$($resolved.MaxContext)/$profile/$($resolved.RecommendationPolicy); golden $($expected.pick)/$($expected.context_length)/$($expected.runtime_profile)/$($expected.policy)"
+            }
+            $checked[$modelProfile]++
         }
-        $checked++
     }
 } finally {
     $env:HOST_ARCH = $savedHostArch
 }
-if ($checked -lt 30) { throw "Windows parity covered only $checked envelopes" }
-Write-Host "[PASS] Windows selector matches select-model.py on $checked envelopes"
+foreach ($modelProfile in @("qwen", "gemma4")) {
+    if ($checked[$modelProfile] -lt 30) { throw "Windows $modelProfile parity covered only $($checked[$modelProfile]) envelopes" }
+}
+Write-Host "[PASS] Windows selector matches select-model.py on $($checked.qwen) envelopes (qwen) and $($checked.gemma4) (gemma4)"
+
+# Sliding-window terms (model_memory.sliding_window_kv_bytes_per_cell /
+# sliding_window_cells): Gemma 3 4B holds full-context KV on 5 of 34 layers
+# and a 1024-token window on the other 29, so 128K fits an 8 GB card.
+# Expected values are model_memory.estimate_model_memory's for the same inputs.
+$swaCases = @(
+    @{ Id = "gemma3-4b-it-q4"; Context = 131072; Cache = "f16"; Parallel = 1; SwaKv = 0.17; Kv = 2.67; Device = 5.37; Total = 10.81 },
+    @{ Id = "gemma4-e4b-q4"; Context = 65536; Cache = "q8_0"; Parallel = 2; SwaKv = 0.031; Kv = 0.562; Device = 5.62; Total = 6.95 }
+)
+foreach ($case in $swaCases) {
+    $swaModel = $realCatalog.models | Where-Object { $_.id -eq $case.Id } | Select-Object -First 1
+    $estimate = Get-CatalogMemoryEstimate -Model $swaModel -ContextLength $case.Context -CacheTypeK $case.Cache -CacheTypeV $case.Cache -Parallel $case.Parallel
+    if ($estimate.Method -ne "architecture" -or $estimate.SwaKvGiB -ne $case.SwaKv -or $estimate.KvGiB -ne $case.Kv -or
+        $estimate.DeviceGiB -ne $case.Device -or $estimate.TotalGiB -ne $case.Total) {
+        throw "Sliding-window estimate for $($case.Id) diverges from model_memory: $($estimate.Method) swa $($estimate.SwaKvGiB) kv $($estimate.KvGiB) device $($estimate.DeviceGiB) total $($estimate.TotalGiB); expected swa $($case.SwaKv) kv $($case.Kv) device $($case.Device) total $($case.Total)"
+    }
+}
+Write-Host "[PASS] Windows sliding-window KV matches model_memory (Gemma 3 4B at 128K: 5.37 GiB; Gemma 4 E4B, 2 slots, Q8 KV)"
 
 # Hermes floor re-check (phases/03-features.ps1): the configured model's fit at 64K.
 $gpu27 = @{ Backend = "nvidia"; MemoryType = "discrete"; VramMB = 20475 }

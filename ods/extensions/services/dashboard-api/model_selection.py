@@ -40,6 +40,10 @@ from model_memory import (
     MemoryEstimate,
     authored_profile_estimate,
     context_candidates,
+    # The native-context ceiling lives in model_memory so the host agent
+    # (which loads only that file) applies the same one; callers import it
+    # from either module.
+    declared_max_context,
     estimate_for_runtime,
     estimate_model_memory,
     fit_margin_gib,
@@ -509,22 +513,6 @@ def _int_or_zero(value: Any) -> int:
         return max(int(value or 0), 0)
     except (TypeError, ValueError):
         return 0
-
-
-def declared_max_context(model: dict[str, Any]) -> int:
-    """The catalog's declared native maximum context, or 0 when undeclared.
-
-    ``max_context_length`` is the model's native (config.json / GGUF
-    training) context; tests/test_model_library_native_context.py keeps it
-    at or below the GGUF header value. The dashboard's normalized entries
-    (performance_oracle.normalize_catalog_entry) fill ``max_context_length``
-    from ``context_length`` when the catalog declares none and mark that with
-    ``native_context_declared: False``; such an entry has no known ceiling
-    here, so an owner's larger context is not clamped to the catalog default.
-    """
-    if model.get("native_context_declared") is False:
-        return 0
-    return _int_or_zero(model.get("max_context_length"))
 
 
 def rank_key(candidate: Candidate, profile: str, *,

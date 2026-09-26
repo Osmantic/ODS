@@ -434,6 +434,10 @@ $script:KV_CACHE_BYTES_PER_ELEMENT = @{
 $script:OVERHEAD_BASE_GIB = 0.35
 $script:OVERHEAD_PER_WEIGHT_GIB = 0.015
 $script:LLAMA_DEFAULT_CTX_CHECKPOINTS = 32
+# llama.cpp b9014 sizes a sliding-window cache at n_swa * n_seq + n_ubatch
+# cells, padded to 256 and capped at the context (default --ubatch-size 512).
+$script:SWA_UBATCH_CELLS = 512
+$script:SWA_CELL_PADDING = 256
 $script:DISCRETE_FIT_MARGIN_MIN_GIB = 0.25
 $script:DISCRETE_FIT_MARGIN_FRACTION = 0.03
 $script:LEGACY_FIT_TOLERANCE_GIB = 0.25
@@ -561,6 +565,31 @@ function Get-CatalogKvBytesPerToken {
     return $headLayers * ($dims[0] * (Get-CatalogCacheElementBytes $CacheTypeK) + $dims[1] * (Get-CatalogCacheElementBytes $CacheTypeV))
 }
 
+function Get-CatalogSlidingWindowKvBytesPerCell {
+    # model_memory.sliding_window_kv_bytes_per_cell: KV bytes per cached cell
+    # summed over the sliding-window layers (0 when the entry declares none).
+    param([object]$Model, [string]$CacheTypeK = "f16", [string]$CacheTypeV = "f16")
+    $window = Get-CatalogPositiveNumber (Get-CatalogProperty $Model "sliding_window")
+    $layers = Get-CatalogPositiveNumber (Get-CatalogProperty $Model "sliding_window_layer_count")
+    $heads = Get-CatalogPositiveNumber (Get-CatalogProperty $Model "sliding_window_head_count_kv")
+    $keyDimension = Get-CatalogPositiveNumber (Get-CatalogProperty $Model "sliding_window_key_length")
+    $valueDimension = Get-CatalogPositiveNumber (Get-CatalogProperty $Model "sliding_window_value_length")
+    if ($valueDimension -le 0) { $valueDimension = $keyDimension }
+    if ($window -le 0 -or $layers -le 0 -or $heads -le 0 -or $keyDimension -le 0) { return 0.0 }
+    return $layers * $heads * ($keyDimension * (Get-CatalogCacheElementBytes $CacheTypeK) + $valueDimension * (Get-CatalogCacheElementBytes $CacheTypeV))
+}
+
+function Get-CatalogSlidingWindowCells {
+    # model_memory.sliding_window_cells: cells llama.cpp allocates for the
+    # sliding-window cache at this context.
+    param([object]$Model, [int]$ContextLength, [int]$Parallel = 1)
+    $window = [int](Get-CatalogPositiveNumber (Get-CatalogProperty $Model "sliding_window"))
+    if ($window -le 0) { return 0 }
+    $cells = $window * [Math]::Max($Parallel, 1) + $script:SWA_UBATCH_CELLS
+    $padded = [int]([Math]::Ceiling($cells / [double]$script:SWA_CELL_PADDING) * $script:SWA_CELL_PADDING)
+    return [Math]::Min($ContextLength, $padded)
+}
+
 function Get-CatalogWeightsBytes {
     param([object]$Model)
     $sizeBytes = Get-CatalogPositiveNumber (Get-CatalogProperty $Model "size_bytes")
@@ -662,19 +691,25 @@ function Get-CatalogMemoryEstimate {
     if (Test-CatalogArchitectureMetadata -Model $Model) {
         $perToken = Get-CatalogKvBytesPerToken -Model $Model -CacheTypeK $CacheTypeK -CacheTypeV $CacheTypeV
         $weights = (Get-CatalogWeightsBytes -Model $Model) / 1GB
-        $kv = $perToken * $context / 1GB
-        $stateBytes = [double](Get-CatalogProperty $Model "recurrent_state_bytes")
         $sequences = [Math]::Max($Parallel, 1)
+        # Sliding-window layers hold only the window, not the context.
+        $swaPerCell = Get-CatalogSlidingWindowKvBytesPerCell -Model $Model -CacheTypeK $CacheTypeK -CacheTypeV $CacheTypeV
+        $swaKv = $swaPerCell * (Get-CatalogSlidingWindowCells -Model $Model -ContextLength $context -Parallel $sequences) / 1GB
+        $kv = $perToken * $context / 1GB + $swaKv
+        $stateBytes = [double](Get-CatalogProperty $Model "recurrent_state_bytes")
         $recurrent = $stateBytes * $sequences / 1GB
         $overhead = $script:OVERHEAD_BASE_GIB + $script:OVERHEAD_PER_WEIGHT_GIB * $weights
         $checkpoints = if ($null -eq $CtxCheckpoints) { $script:LLAMA_DEFAULT_CTX_CHECKPOINTS } else { [Math]::Max([int]$CtxCheckpoints, 0) }
-        $hostState = $checkpoints * $stateBytes * $sequences / 1GB
+        # Context checkpoints copy each sequence's recurrent and sliding-window state.
+        $swaStateBytes = $swaPerCell * (Get-CatalogSlidingWindowCells -Model $Model -ContextLength $context -Parallel 1)
+        $hostState = $checkpoints * ($stateBytes + $swaStateBytes) * $sequences / 1GB
         $device = $weights + $kv + $recurrent + $overhead
         return @{
             ContextLength = $context
             Method = "architecture"
             WeightsGiB = [Math]::Round($weights, 3)
             KvGiB = [Math]::Round($kv, 3)
+            SwaKvGiB = [Math]::Round($swaKv, 3)
             RecurrentStateGiB = [Math]::Round($recurrent, 3)
             OverheadGiB = [Math]::Round($overhead, 3)
             HostCheckpointGiB = [Math]::Round($hostState, 3)

@@ -300,5 +300,35 @@ def test_the_hermes_recheck_refuses_a_raise_above_the_native_context():
     assert qwen3_30b["fits"] is False and qwen3_30b["above_native_max"] is True, qwen3_30b
 
 
+def test_gemma3_4b_plans_the_hermes_floor_on_the_windows_laptop():
+    """windows-laptop (RTX 5070 Laptop, 8151 MiB) landed Gemma 3 4B at 32K.
+
+    Its sliding-window layout (5 global layers carry the context, 29 hold a
+    1024-token window) fits the full 128K there, as a switch and a restore
+    from a 32K record both plan.
+    """
+    from model_memory import estimate_model_memory
+
+    gemma3 = _catalog()["gemma3-4b-it-q4"]
+    estimate = estimate_model_memory(gemma3, context_length=131072)
+    assert estimate.method == "architecture"
+    assert 5.0 < estimate.device_gib < 5.6, estimate
+    assert estimate.swa_kv_gib < 0.2, estimate
+    assert _plan_on_nvidia("gemma3-4b-it-q4", 8151, None)["context_length"] == 131072
+    assert _plan_on_nvidia("gemma3-4b-it-q4", 8151, 32768)["context_length"] == 65536
+
+
+def test_every_unbounded_envelope_pins_the_gemma4_pick():
+    """installers/windows/lib/tier-map.ps1 checks its Gemma path against these."""
+    golden = json.loads(GOLDEN.read_text(encoding="utf-8"))
+    unbounded = [envelope["id"] for envelope in _envelopes() if envelope["ceiling"] == 0]
+    assert unbounded and all("gemma4" in golden[envelope_id] for envelope_id in unbounded)
+    for envelope_id in unbounded:
+        pick = golden[envelope_id]["gemma4"]
+        model = _catalog()[pick["pick"]]
+        assert model["install_recommendation"] is True, (envelope_id, pick)
+        assert pick["context_length"] <= int(model.get("max_context_length") or model["context_length"])
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))
