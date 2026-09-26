@@ -59,6 +59,29 @@ another model turn; otherwise verified pages count as read and the rest follow
 the revision below. `tests/host_citation_verification.test.mjs` replays the
 tower3 and tower1 fleet cases.
 
+Event pages often show the day without its year (Lincoln Financial Field's
+"October 18 @ 1:00 pm"). Such a page date supports a claim dated in a given
+year only as an upcoming date the page does not contradict: the claimed day
+lies between the owner's stated date (when within three days of the host's,
+else the host's date: pages are read now) and the end of the owner's
+requested window (120 days when none is stated, never more than 183), unless
+the page's schema.org Event data gives that exact date; nothing on the page
+gives the same day in another year (a visible date such as "October 18,
+2025" or "10/18/25", Event data, or a weekday beside the date that fits only
+another year, "Saturday, October 18" when October 18 is a Sunday); neither
+the cited nor the final URL names another year (`/2025/`, `-2025`); no other
+year stands beside the title or the date (a "Fest 2025" or "Fest '25"
+heading, a "2025 season" label, an earlier-year row); and the page does not
+mark the event as past or archived ("This event has passed", "Past event",
+"See you next year!", "Archive", "recap"). Without a reference date such a
+page date never counts. A claim without a year that falls inside the owner's
+requested window ("next 45 days", "upcoming") is read as that window's date,
+so last year's dated page does not support it either. The guarded reader takes
+the Event start dates from the page's JSON-LD in one bounded pass; they are
+never evidence on their own. `tests/citation_yearless_dates.test.mjs`
+replays tower1 round 092, where this rule would have kept both cited
+Lincoln Financial Field pages.
+
 An answer that cites unread URLs gets one revision (idempotency key
 `ods-opened-source-attribution`). Its fixed instruction names exactly those
 URLs and asks the model to replace each with a page it actually read in this

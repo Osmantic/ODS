@@ -11654,7 +11654,8 @@ export function createToolLoopGuard({
     const cancellation = new AbortController();
     state.hostCitationAbort = cancellation;
     try {
-      outcome = await hostCitationVerifier.verify({answer, urls, portuguese, signal: cancellation.signal});
+      outcome = await hostCitationVerifier.verify({answer, urls, portuguese, owner: state.playgroundOwnerIntent,
+        signal: cancellation.signal});
     } catch (error) {
       // Best effort: a verifier fault leaves the ordinary citation checks.
       warn(`Pixel host citation verification failed for run ${runId}: ${String(error)}`);
