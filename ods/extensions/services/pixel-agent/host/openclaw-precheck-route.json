@@ -1,0 +1,12 @@
+{
+  "version": "2026.6.33",
+  "sourceSha256": "9ef51ff261f610709d45bca6e1d73b7a71d4426ff0f9974ff4dcb0f02a544d57",
+  "patchedSha256": "a953664717cb6f862b3c0dfaddeedf7af7c6f42126aae88e6b3e4d4a3348bad3",
+  "replacements": [
+    [
+      "\tconst overflowChars = overflowTokens * ESTIMATED_CHARS_PER_TOKEN;\n\tconst truncateOnlyThresholdChars = Math.max(overflowChars + TRUNCATION_ROUTE_BUFFER_TOKENS * ESTIMATED_CHARS_PER_TOKEN, Math.ceil(overflowChars * 1.5));",
+      "\t// ODS: reducible chars are tool-result text, which this estimate prices at\n\t// SAFETY_MARGIN / TOOL_RESULT_CHARS_PER_TOKEN tokens per char. Price the\n\t// overflow and route buffer at that rate, so tool-result truncation is chosen\n\t// whenever removing that text alone fits the budget, and summary compaction\n\t// only when it cannot.\n\tconst overflowChars = Math.ceil((overflowTokens + TRUNCATION_ROUTE_BUFFER_TOKENS) * TOOL_RESULT_CHARS_PER_TOKEN / SAFETY_MARGIN);\n\tconst truncateOnlyThresholdChars = overflowChars;"
+    ]
+  ],
+  "previousReplacements": {}
+}

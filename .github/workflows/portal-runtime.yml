@@ -48,6 +48,7 @@ jobs:
       - run: node --test ods/extensions/services/pixel-agent/tests/compaction_lock.test.mjs
       - run: node --test ods/extensions/services/pixel-agent/tests/read_range.test.mjs
       - run: node --test ods/extensions/services/pixel-agent/tests/tool_result_projection.test.mjs
+      - run: node --test ods/extensions/services/pixel-agent/tests/precheck_route.test.mjs
       - run: node --test ods/extensions/services/pixel-agent/tests/persisted_tool_model_projection.test.mjs ods/extensions/services/pixel-agent/tests/exec_completion_feedback.test.mjs
       - name: Verify bounded preview delivery across platforms
         run: |
@@ -66,6 +67,11 @@ jobs:
         env:
           OPENCLAW_PACKAGE_DIR: ${{ runner.temp }}/read-runtime/node_modules/openclaw
         run: node --test ods/extensions/services/pixel-agent/tests/runtime_tool_result_projection.integration.mjs
+      - name: Verify owner-turn overflows take the tool-output trim whenever it fits
+        shell: bash
+        env:
+          OPENCLAW_PACKAGE_DIR: ${{ runner.temp }}/read-runtime/node_modules/openclaw
+        run: node --test ods/extensions/services/pixel-agent/tests/runtime_precheck_route.integration.mjs
       - name: Verify native compaction lock and abort ownership
         shell: bash
         env:
@@ -100,6 +106,12 @@ jobs:
         env:
           OPENCLAW_PACKAGE: ${{ runner.temp }}/read-runtime/node_modules/openclaw
         run: node --test ods/extensions/services/pixel-agent/tests/runtime_tool_result_delivery.integration.mjs
+      - name: Verify a real owner-turn overflow is recovered without a summary when the trim fits
+        if: runner.os != 'Windows'
+        shell: bash
+        env:
+          OPENCLAW_PACKAGE: ${{ runner.temp }}/read-runtime/node_modules/openclaw
+        run: node --test ods/extensions/services/pixel-agent/tests/runtime_precheck_route_gateway.integration.mjs
       - name: Verify an owner cancel leaves the next message clean with the real runtime
         if: runner.os != 'Windows'
         shell: bash

@@ -46,7 +46,7 @@ def run(installation, **kwargs):
 
 @pytest.mark.parametrize("module_name", [repair_module.COMPLETION_MODULE, repair_module.IMAGE_MODULE,
                                          repair_module.COMPACTION_IDLE_MODULE, repair_module.COMPACTION_BUDGET_MODULE,
-                                         repair_module.TOOL_RESULT_PROJECTION_MODULE])
+                                         repair_module.TOOL_RESULT_PROJECTION_MODULE, repair_module.PRECHECK_ROUTE_MODULE])
 def test_additional_module_has_separate_exact_byte_custody(installation, module_name):
     runtime, state, manifest, module, original, patched = installation
     completion = module.with_name(module_name)
@@ -504,6 +504,7 @@ def test_unchanged_compaction_repair_checks_its_dependency(compaction_installati
     ('OPENCLAW_SELECTION_MODULE', 'openclaw-compaction-budget.json', repair_module.COMPACTION_BUDGET_MODULE),
     ('OPENCLAW_READ_MODULE', 'openclaw-read-range.json', repair_module.READ_RANGE_MODULE),
     ('OPENCLAW_TRUNCATION_MODULE', 'openclaw-tool-result-projection.json', repair_module.TOOL_RESULT_PROJECTION_MODULE),
+    ('OPENCLAW_ATTEMPT_CONTEXT_MODULE', 'openclaw-precheck-route.json', repair_module.PRECHECK_ROUTE_MODULE),
     ('OPENCLAW_COMPACTION_RESUME_MODULE', 'openclaw-compaction-resume.json', repair_module.COMPACTION_RESUME_MODULE),
 ])
 def test_reviewed_runtime_migrations_round_trip(tmp_path, environment, manifest_name, module_name):
