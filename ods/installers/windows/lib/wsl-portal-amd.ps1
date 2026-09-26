@@ -15,6 +15,9 @@ $script:ODSPortalLemonadeTaskName = 'ODSLemonadeRuntime'
 $script:ODSPortalLemonadeHealthSeconds = 60
 # The first load also downloads Lemonade's llama.cpp Vulkan runtime.
 $script:ODSPortalLemonadeLoadSeconds = 900
+# Tried in order when AMD_INFERENCE_PORT is unset: the pinned port, Lemonade's
+# own defaults, then two quiet ports. 8080 is often taken by other programs.
+$script:ODSPortalLemonadePortCandidates = @(8080, 13305, 8000, 18080, 28080)
 
 function Get-ODSPortalStateDir {
     return (Join-Path $env:LOCALAPPDATA 'ODS\lemonade')
@@ -134,20 +137,45 @@ function Wait-ODSPortalLemonadeHealth([int]$Port, [int]$Seconds) {
     return $false
 }
 
-function Register-ODSPortalLemonadeTask($Contract) {
-    # One task for this Windows user: starts at sign-in (so the model survives a
-    # restart) and now. It binds 127.0.0.1 only.
+function Stop-ODSPortalLemonade([string]$ExecutablePath) {
+    # A rerun (or a Lemonade the user started) must release its port before a
+    # port is chosen, so the same port is picked again.
     $existing = Get-ScheduledTask -TaskName $script:ODSPortalLemonadeTaskName -ErrorAction SilentlyContinue
     if ($existing -and $existing.State -eq 'Running') { Stop-ScheduledTask -TaskName $script:ODSPortalLemonadeTaskName }
-    $exeDir = Split-Path -Parent $Contract.ExecutablePath
+    $exeDir = Split-Path -Parent $ExecutablePath
     Get-Process -ErrorAction SilentlyContinue |
         Where-Object { $_.Path -and $_.Path.StartsWith($exeDir, [StringComparison]::OrdinalIgnoreCase) } |
         Stop-Process -Force
-    $listener = Get-NetTCPConnection -LocalPort $Contract.Port -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
-    if ($listener) {
-        $owner = (Get-Process -Id $listener.OwningProcess -ErrorAction SilentlyContinue).ProcessName
-        throw "Port $($Contract.Port) is already used by '$owner'. Close that program and rerun, or set AMD_INFERENCE_PORT to a free port before running the command."
+}
+
+function Get-ODSPortalPortOwner([int]$Port) {
+    # Process name listening on the port, or $null when it is free.
+    $listener = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $listener) { return $null }
+    $process = Get-Process -Id $listener.OwningProcess -ErrorAction SilentlyContinue
+    if ($process) { return $process.ProcessName }
+    return "process $($listener.OwningProcess)"
+}
+
+function Select-ODSPortalLemonadePort {
+    if ($env:AMD_INFERENCE_PORT) {
+        $port = [int]$env:AMD_INFERENCE_PORT
+        $owner = Get-ODSPortalPortOwner $port
+        if ($owner) { throw "AMD_INFERENCE_PORT $port is already used by '$owner'. Choose a free port or remove AMD_INFERENCE_PORT, then rerun." }
+        return $port
     }
+    $taken = @()
+    foreach ($port in $script:ODSPortalLemonadePortCandidates) {
+        $owner = Get-ODSPortalPortOwner $port
+        if (-not $owner) { return $port }
+        $taken += "$port ($owner)"
+    }
+    throw "No free port for Lemonade Server; all are in use: $($taken -join ', '). Set AMD_INFERENCE_PORT to a free port, then rerun."
+}
+
+function Register-ODSPortalLemonadeTask($Contract) {
+    # One task for this Windows user: starts at sign-in (so the model survives a
+    # restart) and now. It binds 127.0.0.1 only.
     $action = New-ODSLemonadeScheduledTaskAction -Contract $Contract `
         -DiagnosticLogPath (Join-Path (Get-ODSPortalStateDir) 'lemonade-launch.log')
     $trigger = New-ScheduledTaskTrigger -AtLogOn -User ([Security.Principal.WindowsIdentity]::GetCurrent().Name)
@@ -167,16 +195,18 @@ function Initialize-ODSPortalAmdLemonade($Plan, [string]$SourceRoot, [bool]$NonI
         return @()
     }
     $modelsDir = Get-ODSPortalLemonadeModel $Plan
-    $runtime = Get-ODSAmdLemonadeRuntime -RootPath $SourceRoot
-    $port = if ($env:AMD_INFERENCE_PORT) { [int]$env:AMD_INFERENCE_PORT } else { [int]$runtime.api_port }
+    Stop-ODSPortalLemonade $exe
+    $port = Select-ODSPortalLemonadePort
     $contract = Get-ODSLemonadeLaunchContract -ExecutablePath $exe -Port $port -ModelsDir $modelsDir -ContextSize $Plan.ContextSize
-    if ($contract.Modern) {
-        throw "Lemonade Server $($contract.Version) is newer than the $($runtime.windows_version) release ODS configures here. Uninstall it from Windows Settings > Apps, then rerun this command."
-    }
-    Write-Host "         Starting Lemonade Server on 127.0.0.1:$port..."
+    Write-Host "         Starting Lemonade Server $($contract.Version) on 127.0.0.1:$port..."
     Register-ODSPortalLemonadeTask $contract
     if (-not (Wait-ODSPortalLemonadeHealth $port $script:ODSPortalLemonadeHealthSeconds)) {
         throw "Lemonade Server did not answer on http://127.0.0.1:$port/api/v1/health within $($script:ODSPortalLemonadeHealthSeconds) seconds. Check $env:TEMP\lemonade-server.log."
+    }
+    if ($contract.Modern) {
+        # Lemonade 10.7+ takes the models folder, Vulkan backend and context
+        # through its local API instead of startup flags (loopback needs no key).
+        Set-ODSLemonadeModernRuntimeConfig -Port $port -ModelsDir $modelsDir -ContextSize $Plan.ContextSize
     }
     $modelId = Resolve-ODSLemonadeModelId -Port $port -GgufFile $Plan.GgufFile
     Write-Host "         Loading $modelId on $($Plan.GpuName) (the first load also downloads the GPU runtime)..."
