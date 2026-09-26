@@ -157,6 +157,22 @@ test('bfb62a2b replay: call 6 still trips the fuse, and call 7, the write the re
   }
 });
 
+test('the Tool Search route to the same write is the remedy too', () => {
+  const h = harness({runId: 'tool-search-write'});
+  replayToFuse(h);
+  const content = synthesized(recordedWrite.args.contentChars);
+  const wrapped = h.call('tool_call', {id: 'openclaw:core:write', args: {path: recordedWrite.args.path, content}}, (executed) => {
+    const target = path.join(h.root, ...executed.args.path.split('/'));
+    fs.mkdirSync(path.dirname(target), {recursive: true});
+    fs.writeFileSync(target, executed.args.content);
+    return {content: [{type: 'text', text: `Successfully wrote ${content.length} bytes to ${executed.args.path}`}], details: {}};
+  });
+  assert.notEqual(wrapped.decision?.block, true, wrapped.decision?.blockReason);
+  assert.equal(projectRecord(h.root), 'Playground/photo-renamer');
+  const run = h.exec({command: 'python3 rename_photos.py --help'});
+  assert.equal(run.executed.workdir, '/workspace/Playground/photo-renamer');
+});
+
 test('a model that ignores the refusal is stopped exactly as on main: the first call after the fuse spends the correction', () => {
   for (const order of ['after-first', 'persist-first']) {
     const h = harness({order, runId: `ignore-${order}`});
@@ -184,6 +200,18 @@ test('a forfeited answer turn admits no remedy: the next tool call ends the run 
   assert.equal(late.decision.blockReason, RUN_PROGRESS_STOP_REASON);
   assert.equal(forfeited.aborts.length, 1);
   assert.equal(fs.existsSync(path.join(forfeited.root, 'Playground')), false);
+});
+
+test('an owner cancel after the fuse leaves routing off, so the remedy is not admitted', async () => {
+  const h = harness({runId: 'cancelled'});
+  replayToFuse(h);
+  h.modelRound();
+  assert.equal(await h.guard.abortUserRun(`ods-${'c'.repeat(64)}`), true);
+  const id = 'write-after-cancel';
+  const decision = h.guard.beforeToolCall({toolName: 'write', toolCallId: id,
+    params: {path: recordedWrite.args.path, content: 'x'}}, {...h.context, toolName: 'write', toolCallId: id});
+  assert.deepEqual(decision, {block: true, blockReason: PROGRESS_FINALIZATION_INSTRUCTION}, 'the stop, as on main');
+  assert.equal(fs.existsSync(path.join(h.root, 'Playground')), false);
 });
 
 test('only a write the router binds as the project is the remedy; any other first call keeps the stop', () => {
@@ -271,7 +299,7 @@ test('the total and round caps are unchanged: a refusal that reaches either gran
   }
 });
 
-test('the other correctable refusal: a bare-filename write that trips the fuse admits the suggested write once', () => {
+test('the other correctable refusal: a bare-filename write that trips the fuse admits the suggested write', () => {
   const h = harness({runId: 'project-path'});
   for (const recorded of [probeAll, probeEach, probeEachRoot]) refusedProbe(h, recorded);
   const refused = h.write({path: 'rename_photos.py', content: 'x'});
@@ -321,6 +349,15 @@ test('run budget: a correctable refusal that trips the global fuse leaves exactl
   corrected.observeResult({callId: 'again', tool: 'exec', failed: true, correctableRefusal: 'first-write'});
   assert.equal(corrected.exhausted, true);
   assert.equal(corrected.pendingCorrection, undefined, 'no second grant for the same kind');
+
+  // A lane-classified refusal is never granted, even while the global count
+  // stands at the fuse after an admission.
+  const laneAfter = createRunProgressBudget();
+  trip(laneAfter, 'first-write', 'g');
+  assert.equal(laneAfter.correctFuse(true), true);
+  laneAfter.observeResult({callId: 'lane-0', tool: 'write', lane: 'workspace', failed: true, correctableRefusal: 'project-path'});
+  assert.equal(laneAfter.exhausted, true);
+  assert.equal(laneAfter.pendingCorrection, undefined);
 
   const kinds = createRunProgressBudget();
   trip(kinds, 'first-write', 'a');
