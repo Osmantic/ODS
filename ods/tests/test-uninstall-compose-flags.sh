@@ -37,11 +37,23 @@ emit_filtered() {
         esac
     done
     for name in $NAMES; do
+        # A removed container no longer exists, as with a real daemon; the
+        # uninstaller re-lists containers before deleting the install tree.
+        if grep -qxF -- "$name" "$DOCKER_LOG.removed" 2>/dev/null; then
+            continue
+        fi
         if [[ -z "$expr" || "$name" =~ $expr ]]; then
             printf '%s\n' "$name"
         fi
     done
 }
+
+if [[ "${1:-}" == "rm" ]]; then
+    shift
+    [[ "${1:-}" == "-f" ]] && shift
+    printf '%s\n' "$@" >> "$DOCKER_LOG.removed"
+    exit 0
+fi
 
 if [[ "${1:-}" == "ps" ]]; then
     NAMES="ods-litellm ods-llama-server kube-pods-proxy methods-runner ods-pixel-retired-0123456789abcdef"

@@ -248,6 +248,24 @@ if $NON_INTERACTIVE && ! $KEEP_DATA && [[ "$(id -u)" -ne 0 ]] && command -v sudo
     prepare_sudo_credential || exit 1
 fi
 
+# Containers this script cannot reach keep running, and restart with Docker,
+# bound to the tree it deletes. Prove the daemon is reachable before any
+# mutation; use sudo only when the socket refuses this user, as the installer
+# does for a user outside the docker group.
+DOCKER_CMD=()
+if command -v docker >/dev/null 2>&1; then
+    if docker_error="$(docker info 2>&1 >/dev/null)"; then
+        DOCKER_CMD=(docker)
+    elif [[ "$docker_error" == *"permission denied"* ]] && run_sudo docker info >/dev/null 2>&1; then
+        DOCKER_CMD=(run_sudo docker)
+    else
+        log_error "Cannot reach the Docker daemon, so ODS containers and volumes cannot be removed; installation untouched."
+        log_error "Start Docker (or add $(id -un) to the docker group) and run the uninstaller again."
+        exit 1
+    fi
+    unset docker_error
+fi
+
 # Check system-unit custody without stopping a recovery service or removing
 # Pixel. A foreign unit must fail before either independent cleanup begins.
 if [[ "$(uname -s)" == "Linux" && -f "$SCRIPT_DIR/lib/system-uninstall.sh" ]]; then
@@ -315,7 +333,7 @@ fi
 # 1. Stop and remove Docker containers
 log_info "Stopping Docker containers..."
 cd "$INSTALL_DIR" 2>/dev/null || true
-if command -v docker &>/dev/null; then
+if (( ${#DOCKER_CMD[@]} )); then
     # Use ODS's resolved compose stack. The repo does not ship a
     # top-level docker-compose.yml, so bare `docker compose down` can fail with
     # "no configuration file provided" even from the correct install dir.
@@ -328,7 +346,7 @@ if command -v docker &>/dev/null; then
 
     if [[ -n "$compose_flags" ]]; then
         read -ra compose_args <<< "$compose_flags"
-        docker compose "${compose_args[@]}" "${compose_down_args[@]}" 2>/dev/null || \
+        "${DOCKER_CMD[@]}" compose "${compose_args[@]}" "${compose_down_args[@]}" 2>/dev/null || \
             log_warn "docker compose cleanup failed; falling back to container/volume discovery"
     else
         log_warn "No compose files resolved; falling back to container/volume discovery"
@@ -339,11 +357,28 @@ if command -v docker &>/dev/null; then
     # printed names instead: only this project's ods-<service> containers.
     # Native Pixel retirement already stopped and receipt-bound these archived
     # sandboxes. Keep their writable layers available for rollback.
-    ods_containers=$(docker ps -a --format "{{.Names}}" 2>/dev/null | grep -E '^ods-' |
-        grep -Ev '^ods-pixel-retired-[a-f0-9]{16}$' || true)
+    list_ods_containers() {
+        local names
+        names="$("${DOCKER_CMD[@]}" ps -a --format "{{.Names}}")" || return 1
+        printf '%s\n' "$names" | grep -E '^ods-' | grep -Ev '^ods-pixel-retired-[a-f0-9]{16}$' || true
+    }
+    ods_containers="$(list_ods_containers)" || {
+        log_error "Could not list Docker containers; installation retained"
+        exit 1
+    }
     if [[ -n "$ods_containers" ]]; then
         log_info "Removing ODS containers..."
-        echo "$ods_containers" | xargs docker rm -f 2>/dev/null || true
+        while IFS= read -r container; do
+            "${DOCKER_CMD[@]}" rm -f "$container" >/dev/null 2>&1 || true
+        done <<< "$ods_containers"
+    fi
+    # Deleting the tree under a container that is still present would leave it
+    # running (or restarting with Docker) against paths that no longer exist.
+    ods_containers="$(list_ods_containers)" || ods_containers="(listing failed)"
+    if [[ -n "$ods_containers" ]]; then
+        log_error "ODS containers are still present: $(printf '%s' "$ods_containers" | tr '\n' ' ')"
+        log_error "Installation retained; remove them and run the uninstaller again."
+        exit 1
     fi
 
     # Remove ods-specific Docker volumes unless data preservation was requested.
@@ -355,10 +390,12 @@ if command -v docker &>/dev/null; then
         # An unanchored "ods" filter would additionally select unrelated
         # volumes that merely contain it (pods, methods, ...) and this branch
         # removes what it finds, so anchor on the project prefix.
-        ods_volumes=$(docker volume ls --format "{{.Name}}" 2>/dev/null | grep -E '^ods[_-]' || true)
+        ods_volumes=$("${DOCKER_CMD[@]}" volume ls --format "{{.Name}}" 2>/dev/null | grep -E '^ods[_-]' || true)
         if [[ -n "$ods_volumes" ]]; then
             log_info "Removing Docker volumes..."
-            echo "$ods_volumes" | xargs docker volume rm 2>/dev/null || true
+            while IFS= read -r volume; do
+                "${DOCKER_CMD[@]}" volume rm "$volume" >/dev/null 2>&1 || true
+            done <<< "$ods_volumes"
         fi
     fi
 
