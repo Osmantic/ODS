@@ -13,6 +13,14 @@ SKIP_GPU_OVERLAYS="${ODS_SKIP_GPU_OVERLAYS:-${ODS_SKIP_GPU_OVERLAYS_FOR:-}}"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
+        --script-dir|--tier|--gpu-backend|--profile-overlays|--gpu-count|--ods-mode|--skip-gpu-overlays|--skip-gpu-overlays-for)
+            if [[ $# -lt 2 || -z "${2:-}" || "$2" == -* ]]; then
+                echo "Option $1 requires an argument" >&2
+                exit 1
+            fi
+            ;;
+    esac
+    case "$1" in
         --script-dir)
             SCRIPT_DIR="${2:-$SCRIPT_DIR}"
             shift 2
