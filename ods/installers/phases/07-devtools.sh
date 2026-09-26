@@ -327,9 +327,15 @@ OPENCODE_EOF
             fi
 
             # Enable lingering so service survives logout
-            loginctl enable-linger "$(whoami)" 2>/dev/null || \
-                sudo -n loginctl enable-linger "$(whoami)" 2>/dev/null || \
-                ai_warn "Could not enable linger. OpenCode may stop after logout. Run: loginctl enable-linger $(whoami)"
+            # Enable lingering so service survives logout (non-blocking)
+            local _current_user
+            _current_user="$(whoami)"
+
+            if ! loginctl show-user "$_current_user" 2>/dev/null | grep -q "Linger=yes"; then
+                loginctl enable-linger "$_current_user" 2>/dev/null || \
+                    ods_sudo loginctl enable-linger "$_current_user" 2>/dev/null || \
+                    ai_warn "Could not enable linger automatically. Run: loginctl enable-linger $_current_user"
+            fi
         fi
     fi
     else
