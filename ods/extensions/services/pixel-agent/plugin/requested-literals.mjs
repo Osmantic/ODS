@@ -6,7 +6,8 @@
 // is skipped, never reported, and dynamic script content counts as present.
 // A listed item name that is present, but whose card heading only contains it
 // while the other listed items are exact headings, is reported the same way,
-// as is a listed card name that is no heading at all beside such headings.
+// as is a listed card name that is no heading at all beside such headings, or
+// that is several same-markup headings while each other listed name is one.
 // File names the owner lists for a named, published directory are checked
 // against the receipt's complete published path list. A quotation that names
 // a button or link ("a button named exactly ...") is also a control name: the
@@ -89,6 +90,12 @@ const ITEM_ARTICLE = /^(?:a|an|one|some|um|uma|uns|umas)\s/i;
 // Lists of cards or headings ("three event cards") name items that each carry
 // a heading; words after the noun ("tabs with titles") do not.
 const HEADED_ITEMS = words(String.raw`cards?|headings?|headlines?|titles?|cart[õo]es|cart[ãa]o|t[íi]tulos?`);
+// Anywhere in the message, a request to show content more than once
+// ("feature Dawn jazz at the top", "repeat it in the footer") lets a listed
+// name head more than one item.
+const REPEAT_CUE = words(String.raw`featur(?:e|es|ed|ing)|highlight(?:s|ed|ing)?|spotlight(?:s|ed|ing)?|pinned|` +
+  String.raw`repeat(?:s|ed|ing)?|again|twice|duplicat(?:e|es|ed|ing)|(?:also|both)\s+(?:in|on|at|as|under)|` +
+  String.raw`destaque|destacad[oa]s?|destacar|rep[ei]t\p{L}*|novamente|de\s+novo|duas\s+vezes|duplicad[oa]s?`);
 
 // "create a public directory with index.html, ..." or "publish a folder
 // containing ...": a named directory, or the publication itself.
@@ -205,6 +212,7 @@ function enumerationItems(list, count) {
 // a name comes only from the other names of the same list.
 function enumeratedLiterals(prose) {
   const found = [];
+  const repeats = REPEAT_CUE.test(prose) ? {repeats: true} : {};
   let list = 0;
   for (const match of prose.matchAll(ENUMERATION)) {
     const count = COUNTS[match[1].toLowerCase()] ?? Number(match[1]);
@@ -214,7 +222,7 @@ function enumeratedLiterals(prose) {
     // The noun phrase ends before a connector: "event cards", not "tabs with titles".
     const noun = `${match[2]}${match[3]}${match[4].replace(new RegExp(`\\s+(?:with|that|which|for|of|in|on|to|as|having|com|de|do|da|para|que|em)${E}[\\s\\S]*$`, 'iu'), '')}`;
     const targets = HEADED_ITEMS.test(noun) ? ['heading'] : [];
-    if (items) found.push(...items.map(text => ({text, match: 'item', targets, list})));
+    if (items) found.push(...items.map(text => ({text, match: 'item', targets, list, ...repeats})));
     if (items) list += 1;
   }
   return found;
@@ -325,6 +333,8 @@ const withoutComments = (source, kind) => kind === 'style'
   : source.replace(/^[ \t]*\/\*[\s\S]*?(?:\*\/|(?![\s\S]))/gm, ' ').replace(/^[ \t]*\/\/[^\n]*/gm, ' ');
 
 const VOID_ELEMENTS = new Set(['area','base','br','col','embed','hr','img','input','link','meta','param','source','track','wbr']);
+// Markup a script may clone or that renders only without scripts.
+const INERT_ELEMENTS = new Set(['template', 'noscript']);
 const TEXT_ATTRIBUTE = /^(?:aria-label|title|alt|placeholder|value|label|data-[\w-]+)$/i;
 
 // A bounded static reading of authored HTML: element and text-node strings,
@@ -352,7 +362,9 @@ function readHtml(source, corpus) {
       if (element.name === 'title') corpus.titles.push(...values);
       if (element.name === 'h1') corpus.h1s.push(...values);
       if (/^h[1-6]$/.test(element.name) && values.length && corpus.headings.length <= MAX_HEADINGS) {
-        corpus.headings.push({level: Number(element.name[1]), family: element.family, forms: values});
+        // The remaining stack holds this heading's open ancestors.
+        corpus.headings.push({level: Number(element.name[1]), family: element.family, forms: values,
+          inert: stack.some(open => INERT_ELEMENTS.has(open.name))});
       }
     }
   };
@@ -407,7 +419,7 @@ function textCorpus(files) {
     titles: corpus.titles, h1s: corpus.h1s,
     // Every hN element in document order, with its level and relaxed forms.
     headings: () => form('headings', () => corpus.headings.length > MAX_HEADINGS ? []
-      : corpus.headings.map(({level, family, forms}) => ({level, family, forms, keys: forms.map(relaxed)}))),
+      : corpus.headings.map(heading => ({...heading, keys: heading.forms.map(relaxed)}))),
     opaque: exact => form(`opaque:${exact}`, () => corpus.opaque.map(exact ? canonicalText : folded)),
     visible: exact => form(`visible:${exact}`, () => [...corpus.visible, ...corpus.attributes].map(exact ? canonicalText : folded)),
     elements: () => form('elements', () => new Set(corpus.elements.map(relaxed))),
@@ -462,9 +474,25 @@ function unheadedItem(key, corpus, siblings) {
     family.some(heading => heading.keys.some(value => others.includes(value))));
 }
 
+// A listed card name that is the whole text of two or more headings of one tag
+// and class list, none inside a template or noscript, while each other name of
+// the same list is the whole text of exactly one heading: the item was
+// published more than once. Returns that heading count. Fleet round 114
+// (Qwen3.5-9B): the hidden "Midnight Sold-Out Concert" card and a full copy in
+// the section its button revealed were both h2.event-title.
+function duplicatedItem(key, corpus, siblings) {
+  const headings = corpus.headings();
+  const named = value => headings.filter(heading => heading.keys.includes(value));
+  const copies = named(key);
+  if (copies.length < 2 || copies.some(heading => heading.inert) ||
+      new Set(copies.map(heading => heading.family)).size > 1) return 0;
+  return siblings.every(other => other === key || named(other).length === 1) ? copies.length : 0;
+}
+
 // Each miss is {} (absent), {target} (not the page title or h1), {heading}
-// (a listed item only inside a longer heading) or {unheaded} (a listed card
-// name that is no heading beside its sibling cards' headings).
+// (a listed item only inside a longer heading), {unheaded} (a listed card
+// name that is no heading beside its sibling cards' headings) or {duplicated}
+// (the number of headings a listed card name is, where its siblings are one).
 function literalMisses(literal, corpus, items, siblings) {
   const exact = literal.match === 'exact';
   const needle = exact ? canonicalText(literal.text) : folded(literal.text);
@@ -477,7 +505,11 @@ function literalMisses(literal, corpus, items, siblings) {
     if (siblings.length < 2) return [];
     const heading = headingOnlyMatch(key, corpus, siblings, items);
     if (heading) return [{heading}];
-    return literal.targets.includes('heading') && unheadedItem(key, corpus, siblings) ? [{unheaded: true}] : [];
+    if (!literal.targets.includes('heading')) return [];
+    if (unheadedItem(key, corpus, siblings)) return [{unheaded: true}];
+    // Unless the owner asked for content to repeat.
+    const duplicated = literal.repeats ? 0 : duplicatedItem(key, corpus, siblings);
+    return duplicated ? [{duplicated}] : [];
   }
   if (literal.targets.length) {
     const equals = value => exact ? value === needle : relaxed(value) === relaxed(needle);
@@ -836,28 +868,34 @@ function controlDeliveryNote(miss) {
     (overridden(miss) ? ` (the ${miss.role} with that text is named ${JSON.stringify(miss.candidate.name)})` : '') + '.';
 }
 
-const absent = check => check.missing.filter(miss => !miss.heading && !miss.unheaded && !miss.file);
+const absent = check => check.missing.filter(miss => !miss.heading && !miss.unheaded && !miss.file && !miss.duplicated);
 const inHeadings = check => check.missing.filter(miss => miss.heading);
 const unheaded = check => check.missing.filter(miss => miss.unheaded);
 const unpublished = check => check.missing.filter(miss => miss.file);
+const duplicated = check => check.missing.filter(miss => miss.duplicated);
 const missingList = misses => misses
   .map(miss => JSON.stringify(miss.text) + (miss.target ? ` (${miss.target})` : '')).join(', ');
+const copiesList = misses => misses.map(miss => `${JSON.stringify(miss.text)} (${miss.duplicated} headings)`).join(', ');
 const nameList = misses => JSON.stringify([...new Set(misses.map(miss => miss.text))]);
 const boundMisses = (preview, check) => Boolean(check?.missing?.length && preview &&
   check.siteId === preview.siteId && check.sha256 === preview.sha256);
 const sentences = parts => parts.filter(Boolean).join(' ');
 
 // Byte-stable apart from the quoted owner literals, fixed target labels and
-// the snapshot's own heading text and directory, so per-slot coaching dedupe applies.
+// the snapshot's own heading text, heading counts and directory, so per-slot
+// coaching dedupe applies.
 export function requestedTextInstruction(preview, check) {
   if (!boundMisses(preview, check)) return undefined;
-  const missing = absent(check), names = unheaded(check), files = unpublished(check);
+  const missing = absent(check), names = unheaded(check), files = unpublished(check), copies = duplicated(check);
   return sentences([
     missing.length && `Requested text not found: ${missingList(missing)}. Use the owner's exact wording, republish and re-inspect.`,
     ...inHeadings(check).map(miss => `${JSON.stringify(miss.text)} appears only inside a longer heading ` +
       `(${JSON.stringify(miss.heading)}); use the exact name as the heading, then republish and re-inspect.`),
     names.length && `Requested names are on the page but not as headings, while other listed items are: ${nameList(names)}. ` +
       'Use each exact name as the heading of its item, then republish and re-inspect.',
+    copies.length && `Requested names head more than one item, while each other listed item has one heading: ${copiesList(copies)}. ` +
+      'Keep one item per name and remove the extra copies (a control that reveals a hidden item must show that item, ' +
+      'not a second copy), then republish and re-inspect.',
     files.length && `Requested files are not in the published directory ${JSON.stringify(preview.relativeDirectory)}: ` +
       `${nameList(files)}. Put each one inside that directory, then republish it.`,
   ]);
@@ -886,6 +924,13 @@ export const REQUESTED_ITEM_HEADING_REVISION_INSTRUCTION = [
   'put extra detail in body text, republish with pixel_ods_workspace_preview, and keep everything else unchanged.',
 ];
 
+// The same for listed card names that head more than one item.
+export const REQUESTED_DUPLICATE_HEADING_REVISION_INSTRUCTION = [
+  'Requested names still head more than one item on the published page: ',
+  '. Keep exactly one item for each requested name and remove the extra copies (a control that reveals a hidden item ' +
+  'must show that item, not a second copy), republish with pixel_ods_workspace_preview, and keep everything else unchanged.',
+];
+
 // The same for owner-listed files missing from the published directory.
 export const REQUESTED_FILE_REVISION_INSTRUCTION = [
   'Requested files are still missing from the published directory: ',
@@ -896,10 +941,12 @@ export const REQUESTED_FILE_REVISION_INSTRUCTION = [
 export function requestedTextRevisionInstruction(preview, check) {
   if (!boundMisses(preview, check)) return undefined;
   const missing = absent(check), headings = inHeadings(check), names = unheaded(check), files = unpublished(check);
+  const copies = duplicated(check);
   return sentences([
     missing.length && REQUESTED_TEXT_REVISION_INSTRUCTION.join(nameList(missing)),
     headings.length && REQUESTED_HEADING_REVISION_INSTRUCTION.join(nameList(headings)),
     names.length && REQUESTED_ITEM_HEADING_REVISION_INSTRUCTION.join(nameList(names)),
+    copies.length && REQUESTED_DUPLICATE_HEADING_REVISION_INSTRUCTION.join(nameList(copies)),
     files.length && REQUESTED_FILE_REVISION_INSTRUCTION.join(nameList(files)),
   ]);
 }
@@ -910,11 +957,13 @@ export function requestedTextDeliveryNote(preview, check, controls) {
   if (!text && !controlNames.length) return undefined;
   const missing = text ? absent(check) : [], headings = text ? inHeadings(check) : [];
   const names = text ? unheaded(check) : [], files = text ? unpublished(check) : [];
+  const copies = text ? duplicated(check) : [];
   return sentences([
     missing.length && `The published page does not contain text the owner requested: ${missingList(missing)}.`,
     headings.length && 'The published page uses requested names only inside longer headings: ' +
       `${headings.map(miss => `${JSON.stringify(miss.text)} (${JSON.stringify(miss.heading)})`).join(', ')}.`,
     names.length && `The published page shows requested names, but not as headings like the other listed items: ${missingList(names)}.`,
+    copies.length && `The published page shows requested items more than once, while each other listed item appears once: ${copiesList(copies)}.`,
     files.length && `The published directory does not contain files the owner requested: ${missingList(files)}.`,
     ...controlNames.map(controlDeliveryNote),
     'The preview is available, but that requirement is not met.',

@@ -209,6 +209,22 @@ only. Comments, scripts and styles are never heading text; a script that may
 render the name still keeps the check silent.
 `tests/requested_item_heading_presence.test.mjs` replays that page.
 
+A listed card name can also head more than one item (fleet round 114,
+Qwen3.5-9B: the owner asked for the Midnight card to start hidden behind a
+"Show sold out" button; the model published that hidden card and a full copy
+in the section the button revealed, both `h2.event-title`, so the click showed
+the card twice while the show/hide inspection of the hidden card passed). This
+is reported the same way, with its own fixed text and the heading count, only
+when the owner listed cards or headings, the name is the whole text of at
+least two headings that all share one tag and class list, none of them inside
+a `template` or `noscript` element, and every other name of the same list is
+the whole text of exactly one heading. Text the owner asked to start hidden
+still counts, since every copy is published. A script that may render the name
+keeps the check silent, and so does any request in the owner's message to
+feature, highlight, repeat or duplicate content.
+`tests/requested_duplicate_heading.test.mjs` replays that page and the
+legitimate repetitions it must not report.
+
 The same path covers files the owner lists for a named directory that is then
 published (tower2 round 082 coding-v1: "create a public directory with
 index.html, test-results.txt ..." was published without `test-results.txt`,
