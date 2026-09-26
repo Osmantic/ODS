@@ -1655,6 +1655,20 @@ function toolSearchChildPrefix(parentId) {
   return `tool_search_code:${String(parentId).trim().replace(/[^A-Za-z0-9_.:-]+/g, "_").slice(0, 120) || "call"}:`;
 }
 
+// Whether a call ran while another admitted call that could change the
+// workspace also ran. A Tool Search child reads its parent's record. Without a
+// record (no call ID, or more calls in flight than are tracked) this cannot be
+// excluded, so it counts as overlapped.
+function workspaceCallOverlapped(inFlight, callId) {
+  if (typeof callId !== "string" || !callId) return true;
+  const own = inFlight.get(callId);
+  if (own) return own.overlapped;
+  for (const [id, parent] of inFlight) {
+    if (callId.startsWith(toolSearchChildPrefix(id))) return parent.overlapped;
+  }
+  return true;
+}
+
 function toolCallFailed(event) {
   if (event?.error) return true;
   const result = event?.result;
@@ -4916,9 +4930,10 @@ function verificationReceiptTarget(params) {
 }
 
 // Whether a test directory contains one of these workspace-relative files. The
-// workspace root contains only its own top-level files here: a test run from
-// the root of a Playground project's files may have tested another project
-// (`python3 -m unittest discover -s Playground/old-project`). A command that
+// workspace root and the Playground folder, which hold other projects, contain
+// only their own top-level files here: a test run from either may have tested
+// another project (`python3 -m unittest discover -s Playground/old-project`,
+// `cd /workspace/Playground && python3 -m pytest old-project`). A command that
 // names a parent, home or absolute path outside its directory can also test
 // something else, so it covers nothing.
 function receiptTargetCovers(target, entries) {
@@ -4928,7 +4943,9 @@ function receiptTargetCovers(target, entries) {
     if (/^~|(?:^|[=/])\.\.(?:\/|$)/.test(word)) return false;
     if (/^\//.test(word) && word !== directory && !word.startsWith(`${directory}/`)) return false;
   }
-  if (directory === "/workspace") return entries.some(({file}) => !file.includes("/"));
+  if (directory === "/workspace" || directory === "/workspace/Playground") {
+    return entries.some(({file}) => `/workspace/${file}`.replace(/\/[^/]*$/, "") === directory);
+  }
   if (typeof directory !== "string" || !directory.startsWith("/workspace/")) return false;
   const relative = directory.slice("/workspace/".length);
   return entries.some(({file}) => file.startsWith(`${relative}/`));
@@ -4978,7 +4995,7 @@ function recursiveDeleteRefusalReceipt({ files, target, testState, running, pass
   const testLine = {
     passed: `${latest} passed, and no tool call that could change the workspace ran after it.`,
     stale: `${latest} passed, but a later tool call or command could have changed the workspace, so that result is not current.`,
-    overlapped: `${latest} passed, but another command was running in the background while it ran, so that result is not current.`,
+    overlapped: `${latest} passed, but another tool call or command ran at the same time, so that result is not current.`,
     skipped: `${latest} exited successfully, but no test it reported passed: each was skipped, not run or an expected failure.`,
     failed: `${latest} failed.`,
     pending: `${latest} had not finished, so its result is unknown.`,
@@ -7535,6 +7552,10 @@ export function createToolLoopGuard({
         // not been observed yet, and whether any exec went to the background.
         execCallsInFlight: new Set(),
         backgroundExecStarted: false,
+        // Admitted calls that could change the workspace and whose receipt
+        // has not been observed yet, by call ID, and whether another such call
+        // ran at the same time (sibling calls from one model response).
+        workspaceCallsInFlight: new Map(),
         // Budget-free corrective answers used so far, by kind.
         freeCorrections: new Map(),
         // Destinations whose re-typed write was already refused once.
@@ -7688,6 +7709,14 @@ export function createToolLoopGuard({
       return decision;
     }
     state.previewVerificationGeneration = (state.previewVerificationGeneration ?? 0) + 1;
+    // Sibling calls from one model response run at the same time, so a test
+    // may not have seen a sibling's change. A Tool Search child runs inside
+    // its parent call and is not a sibling.
+    if (typeof callId === 'string' && callId && !callId.startsWith('tool_search_code:')) {
+      const inFlight = state.workspaceCallsInFlight;
+      for (const other of inFlight.values()) other.overlapped = true;
+      if (inFlight.size < MAX_PENDING_EXEC_SESSIONS) inFlight.set(callId, {overlapped: inFlight.size > 0});
+    }
     const selected = toolName === 'tool_call'
       ? /^(?:openclaw:core:)?(?:exec|read|write|edit|apply_patch)$/.test(event?.params?.id ?? '')
         ? {name:event.params.id.split(':').at(-1),params:event.params.args} : undefined
@@ -10140,6 +10169,11 @@ export function createToolLoopGuard({
         : undefined;
     if (runningExecSessionId(phantomExecReceipt)) rememberBackgroundExec(state, agentId);
     state.execCallsInFlight.delete(toolCallId);
+    // Whether another call that could change the workspace ran while this one
+    // ran. A Tool Search child reads its parent's record; a call without a
+    // record counts as overlapped.
+    const concurrentCall = workspaceCallOverlapped(state.workspaceCallsInFlight, toolCallId);
+    state.workspaceCallsInFlight.delete(toolCallId);
     const pendingToolRun = pendingToolRuns.get(toolCallId);
     if (workspacePreviewInspectionAvailable && pendingToolRun?.selectedToolName === PREVIEW_INSPECTION_TOOL &&
         pendingToolRun.runId === runId && pendingToolRun.transport === toolName &&
@@ -11011,7 +11045,7 @@ export function createToolLoopGuard({
         verificationFingerprint,
         target: verificationTarget,
         generation: state.previewVerificationGeneration,
-        overlapped: state.pendingExecSessions.size > 0,
+        overlapped: state.pendingExecSessions.size > 0 || concurrentCall,
       });
       if (verificationFingerprint) state.latestVerificationStatus = "pending";
       return;
@@ -11079,9 +11113,9 @@ export function createToolLoopGuard({
         state.latestVerificationStatus = "passed";
         state.latestVerificationPassedGeneration = state.previewVerificationGeneration;
         state.latestVerificationSkippedOnly = execResultReportsOnlySkippedTests(execEvent);
-        // A background command that had not been observed to end was running
-        // while this test ran.
-        state.latestVerificationOverlapped = state.pendingExecSessions.size > 0;
+        // A background command that had not been observed to end, or a
+        // sibling call, was running while this test ran.
+        state.latestVerificationOverlapped = state.pendingExecSessions.size > 0 || concurrentCall;
       }
     }
   }
@@ -11893,7 +11927,7 @@ export function createToolLoopGuard({
       if (!result || !valid()) return false;
       afterToolCall({toolName: WORKSPACE_PREVIEW_TOOL, toolCallId: callId, params, result}, ctx, agentId);
       return Boolean(state.workspacePreview);
-    } finally { pendingToolRuns.delete(callId); }
+    } finally { pendingToolRuns.delete(callId); state.workspaceCallsInFlight.delete(callId); }
   }
 
   async function revalidateWorkspacePreview(event, context, agentId = 'pixel') {
@@ -12253,9 +12287,9 @@ export function createToolLoopGuard({
   //   directory containing a file this run changed without naming a path
   //   outside it, and is still current: no call that could change the
   //   workspace was admitted after it (refused calls never advance the
-  //   generation; agent_end keeps a current pass current), no other
-  //   background command ran while it ran or ended after it, and none is
-  //   running;
+  //   generation; agent_end keeps a current pass current), no sibling call
+  //   and no other background command ran while it ran or ended after it,
+  //   and none is running;
   // - the rest of the task evaluation passed without a publication receipt.
   // Receipt-based work (Operations, exact downloads, previews, managed
   // extension or team work) and every other state stay 'failed'.

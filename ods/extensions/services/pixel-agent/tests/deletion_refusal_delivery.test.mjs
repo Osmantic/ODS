@@ -294,7 +294,7 @@ test('a background test pass is dated from its start, and a background command e
 
 // Re-review, probes N01-N03: a background command that ran while the test
 // ran, or ended after it, could have changed what the test saw.
-const OVERLAPPED = ' passed, but another command was running in the background while it ran, so that result is not current.\n';
+const OVERLAPPED = ' passed, but another tool call or command ran at the same time, so that result is not current.\n';
 test('a background command that ran while the passing test ran keeps the refusal failed', async t => {
   const params = {command: 'python3 -m unittest -v', workdir: `/workspace/${PROJECT}`};
   const generator = {command: 'python3 make_fixture_photos.py', workdir: `/workspace/${PROJECT}`};
@@ -359,6 +359,92 @@ test('a background command that ran while the passing test ran keeps the refusal
     await refuse(run, 'rm -rf /tmp/x');
     assert.equal((await run.delivered()).status, 'failed');
   }
+});
+
+// Sibling calls from one model response run at the same time: OpenClaw runs
+// every before_tool_call, then the calls, then each after_tool_call and
+// tool_result_persist. A test that ran beside a write may not have seen it,
+// whichever receipt arrives first.
+async function siblings(run, calls) {
+  const {guard, hooks, context} = run;
+  const modelCall = `${context.runId}:model:siblings-${calls.length}-${calls[0][0]}`;
+  guard.observeModelCall({callId: modelCall}, context);
+  guard.observeModelEnd({callId: modelCall, outcome: 'completed'}, context);
+  const admitted = [];
+  for (const [index, [tool, params, result]] of calls.entries()) {
+    const id = `${modelCall}:${index}`, ctx = {...context, toolName: tool, toolCallId: id};
+    const event = {toolName: tool, toolCallId: id, runId: context.runId, params: structuredClone(params)};
+    admitted.push({id, ctx, tool, event, result, decision: await hooks.before_tool_call(event, ctx)});
+  }
+  for (const {id, ctx, tool, event, result, decision} of admitted) {
+    const outcome = decision?.block
+      ? {isError: true, content: [{type: 'text', text: decision.blockReason}],
+        details: {status: 'blocked', deniedReason: 'plugin-before-tool-call', reason: decision.blockReason}}
+      : result;
+    hooks.after_tool_call({toolName: tool, toolCallId: id, runId: context.runId,
+      params: decision?.block ? event.params : {...event.params, ...decision?.params}, result: outcome,
+      ...(outcome.isError ? {error: outcome.content[0].text} : {})}, ctx);
+    guard.toolResultPersist({toolName: tool, toolCallId: id, message: {role: 'toolResult', toolName: tool,
+      toolCallId: id, isError: outcome.isError === true, ...structuredClone(outcome)}}, ctx);
+  }
+  return admitted.map(({decision}) => decision);
+}
+
+test('a test that ran beside a sibling call that could change the workspace keeps the refusal failed', async t => {
+  const params = {command: 'python3 -m unittest -v', workdir: `/workspace/${PROJECT}`};
+  const rewrite = ['write', {path: `${PROJECT}/rename_photos.py`, content: 'def rename(p):\n    raise SystemExit(1)\n'},
+    text('Successfully wrote 40 bytes')];
+  const outcome = async (steps) => {
+    const run = session(t, {prompt: RECORDED.prompt});
+    await writeProject(run);
+    await steps(run);
+    assert.equal(run.guard.verificationStatus(run.context.runId), 'passed');
+    await refuse(run, 'rm -rf /tmp/x');
+    return run.delivered();
+  };
+  // The write's receipt arrives first, so no call was admitted after the pass.
+  assert.deepEqual(await outcome(run => siblings(run, [rewrite, ['exec', params, done(0, UNITTEST_OK)]])),
+    {status: 'failed', text: LEAD + FILES + `- ${UNITTEST}${OVERLAPPED}` + INCOMPLETE});
+  // The test's receipt arrives first.
+  assert.equal((await outcome(run => siblings(run, [['exec', params, done(0, UNITTEST_OK)], rewrite]))).status, 'failed');
+  // A background test started beside the write, then polled.
+  assert.deepEqual(await outcome(async run => {
+    await siblings(run, [rewrite, ['exec', params, running('t1')]]);
+    await run.call('process', {action: 'poll', sessionId: 't1'}, polled('t1', 0, UNITTEST_OK));
+  }), {status: 'failed', text: LEAD + FILES + `- ${UNITTEST}${OVERLAPPED}` + INCOMPLETE});
+  // Controls: a read-only sibling changes nothing, and a sibling this guard
+  // refused ran nothing.
+  const current = {status: 'passed', text: LEAD + FILES + `- ${UNITTEST}${CURRENT}` + COMPLETE};
+  assert.deepEqual(await outcome(run => siblings(run, [['read', {path: `${PROJECT}/rename_photos.py`},
+    text('def rename(p):\n    return p\n')], ['exec', params, done(0, UNITTEST_OK)]])), current);
+  const refusedSibling = session(t, {prompt: RECORDED.prompt});
+  await writeProject(refusedSibling);
+  const decisions = await siblings(refusedSibling, [['exec', params, done(0, UNITTEST_OK)], ['exec', {command: 'rm -rf /tmp/x'}, done(0, '')]]);
+  assert.equal(decisions[1]?.blockReason, RECURSIVE_DELETE_REQUIRES_OWNER_REASON);
+  assert.deepEqual(await refusedSibling.delivered(), current);
+  // A Tool Search call's nested child runs inside it and is not a sibling.
+  assert.deepEqual(await outcome(async run => {
+    const {guard, hooks, context} = run;
+    const parent = 'wrapped-test', child = `tool_search_code:${parent}:exec:1`;
+    const envelope = {tool: {id: 'openclaw:core:exec', name: 'exec', source: 'openclaw', sourceName: 'core'},
+      result: done(0, UNITTEST_OK)};
+    const wrapped = {content: [{type: 'text', text: JSON.stringify(envelope)}], details: envelope};
+    guard.observeModelCall({callId: 'wrapped-model'}, context);
+    guard.observeModelEnd({callId: 'wrapped-model', outcome: 'completed'}, context);
+    const outer = {...context, toolName: 'tool_call', toolCallId: parent};
+    const outerParams = {id: 'openclaw:core:exec', args: structuredClone(params)};
+    const admittedOuter = {...outerParams, ...(await hooks.before_tool_call(
+      {toolName: 'tool_call', toolCallId: parent, runId: context.runId, params: outerParams}, outer))?.params};
+    const inner = {...context, toolName: 'exec', toolCallId: child};
+    const admittedInner = {...admittedOuter.args, ...(await hooks.before_tool_call(
+      {toolName: 'exec', toolCallId: child, runId: context.runId, params: structuredClone(admittedOuter.args)}, inner))?.params};
+    hooks.after_tool_call({toolName: 'exec', toolCallId: child, runId: context.runId, params: admittedInner,
+      result: done(0, UNITTEST_OK)}, inner);
+    hooks.after_tool_call({toolName: 'tool_call', toolCallId: parent, runId: context.runId, params: admittedOuter,
+      result: wrapped}, outer);
+    guard.toolResultPersist({toolName: 'tool_call', toolCallId: parent, message: {role: 'toolResult',
+      toolName: 'tool_call', toolCallId: parent, isError: false, ...structuredClone(wrapped)}}, outer);
+  }), current);
 });
 
 test('a still-running test keeps the refusal failed', async t => {
@@ -561,6 +647,11 @@ test('a pass counts only for a test that stays in a directory with this run\'s c
   // The workspace root contains only its own top-level files.
   assert.equal(await outcome({command: 'python3 -m unittest -v', workdir: '/workspace'}, 'rename_photos.py'), 'passed');
   assert.equal(await outcome({command: 'python3 -m unittest -v', workdir: '/workspace'}, `${PROJECT}/rename_photos.py`), 'failed');
+  // So does the Playground folder, which holds the other projects: the first
+  // command runs old-project's tests only. A run from there that names this
+  // project is refused the same way (a false failure, never a false pass).
+  assert.equal(await outcome({command: 'cd /workspace/Playground && python3 -m pytest old-project'}), 'failed');
+  assert.equal(await outcome({command: `cd /workspace/Playground && python3 -m pytest ${PROJECT.split('/')[1]}`}), 'failed');
 });
 
 // Probe G: edit and apply_patch changes are listed; probe H: a pass in a
