@@ -39,7 +39,9 @@ for _arg in "$@"; do
     esac
     BOOTSTRAP_INSTALL_ARGS+=("$_arg")
 done
-set -- "${BOOTSTRAP_INSTALL_ARGS[@]}"
+# macOS runs this with /bin/bash 3.2 (curl ... | bash), where expanding an
+# empty array under `set -u` is an "unbound variable" error.
+set -- ${BOOTSTRAP_INSTALL_ARGS[@]+"${BOOTSTRAP_INSTALL_ARGS[@]}"}
 
 # Colors
 RED='\033[0;31m'
