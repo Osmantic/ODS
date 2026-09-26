@@ -84,7 +84,27 @@ $script:foundExe = $null
 $script:accept = $false
 Check ($null -eq (Install-ODSPortalLemonade $sourceRoot $false) -and $script:confirmed -eq 1) 'declining the Lemonade install changes nothing'
 
-# --- Orchestration: load before Linux, CPU fallback, newer Lemonade ------------
+# --- Port: a busy 8080 moves to the next free port ----------------------------
+$script:busy = @{}
+function Get-ODSPortalPortOwner([int]$Port) { return $script:busy[$Port] }
+$env:AMD_INFERENCE_PORT = ''
+Check ((Select-ODSPortalLemonadePort) -eq 8080) 'free machine uses the pinned Lemonade port 8080'
+$script:busy = @{ 8080 = 'AgentService' }
+Check ((Select-ODSPortalLemonadePort) -eq 13305) 'port 8080 used by another program moves Lemonade to the next free port'
+$script:busy = @{ 8080 = 'a'; 13305 = 'b'; 8000 = 'c'; 18080 = 'd'; 28080 = 'e' }
+$message = ''
+try { $null = Select-ODSPortalLemonadePort } catch { $message = $_.Exception.Message }
+Check ($message -match '8080 \(a\).+28080 \(e\)' -and $message -match 'AMD_INFERENCE_PORT') 'no free port names every busy port and the override'
+$script:busy = @{ 9999 = 'Other' }
+$env:AMD_INFERENCE_PORT = '9999'
+$message = ''
+try { $null = Select-ODSPortalLemonadePort } catch { $message = $_.Exception.Message }
+Check ($message -match "9999 is already used by 'Other'") 'a busy AMD_INFERENCE_PORT stops with its owner'
+$script:busy = @{}
+Check ((Select-ODSPortalLemonadePort) -eq 9999) 'a free AMD_INFERENCE_PORT is used as given'
+$env:AMD_INFERENCE_PORT = ''
+
+# --- Orchestration: load before Linux, CPU fallback, Lemonade 10.7+ ------------
 $script:calls = [Collections.Generic.List[string]]::new()
 $script:installResult = 'C:\lemonade\bin\lemonade-server.exe'
 $script:modern = $false
@@ -93,20 +113,27 @@ function Install-ODSPortalLemonade([string]$SourceRoot, [bool]$NonInteractive) {
 function Get-ODSPortalLemonadeModel($Plan) { $script:calls.Add('model'); return 'C:\models' }
 function Get-ODSLemonadeLaunchContract { param($ExecutablePath, $Port, $ModelsDir, $ContextSize) return [pscustomobject]@{ Modern=$script:modern; Version=[Version]'10.0.0'; Port=$Port; ContextSize=$ContextSize } }
 function Register-ODSPortalLemonadeTask($Contract) { $script:calls.Add('task:' + $Contract.Port) }
+function Stop-ODSPortalLemonade([string]$ExecutablePath) { $script:calls.Add('stop') }
+function Set-ODSLemonadeModernRuntimeConfig { param($Port, $ModelsDir, $AdminApiKey, $ContextSize) $script:calls.Add("modern:${Port}:${ModelsDir}:${ContextSize}") }
 function Wait-ODSPortalLemonadeHealth([int]$Port, [int]$Seconds) { $script:calls.Add('health'); return $script:healthy }
 function Resolve-ODSLemonadeModelId { param($Port, $GgufFile) return 'extra.' + $GgufFile }
 function Set-ODSLemonadeLoadedModel { param($Port, $ModelId, $ContextSize, $TimeoutSec) $script:calls.Add("load:${ModelId}:${ContextSize}:${TimeoutSec}") }
 $env:AMD_INFERENCE_PORT = ''
 $result = @(Initialize-ODSPortalAmdLemonade $plan $sourceRoot $false)
 Check (($result -join ' ') -eq "--lemonade-url http://localhost:8080 --lemonade-model extra.$($plan.GgufFile) --lemonade-gpu-name AMD Radeon RX 9070 XT --lemonade-gpu-vram-mb 16304") 'ready Lemonade returns the Linux route arguments'
-Check (($script:calls -join ',') -eq "model,task:8080,health,load:extra.$($plan.GgufFile):$($plan.ContextSize):900") 'model is downloaded, served, and loaded with its context before Linux runs'
+Check (($script:calls -join ',') -eq "model,stop,task:8080,health,load:extra.$($plan.GgufFile):$($plan.ContextSize):900") 'old Lemonade is released before the port is chosen; the model is served and loaded before Linux runs'
+$script:calls.Clear()
+$script:busy = @{ 8080 = 'AgentService' }
+$result = @(Initialize-ODSPortalAmdLemonade $plan $sourceRoot $false)
+Check (($result -join ' ') -match '^--lemonade-url http://localhost:13305 ' -and $script:calls.Contains('task:13305')) 'Lemonade and Linux use the port chosen when 8080 is busy'
+$script:busy = @{}
 $script:installResult = $null
 Check (@(Initialize-ODSPortalAmdLemonade $plan $sourceRoot $false).Count -eq 0) 'declined Lemonade returns no Linux arguments (CPU route)'
 $script:installResult = 'C:\lemonade\bin\lemonade-server.exe'
 $script:modern = $true
-$message = ''
-try { $null = Initialize-ODSPortalAmdLemonade $plan $sourceRoot $false } catch { $message = $_.Exception.Message }
-Check ($message -match 'newer than') 'a newer Lemonade release stops with instructions'
+$script:calls.Clear()
+$result = @(Initialize-ODSPortalAmdLemonade $plan $sourceRoot $false)
+Check ($result.Count -gt 0 -and ($script:calls -join ',') -eq "model,stop,task:8080,health,modern:8080:C:\models:$($plan.ContextSize),load:extra.$($plan.GgufFile):$($plan.ContextSize):900") 'Lemonade 10.7+ is reused and configured through its local API before loading'
 $script:modern = $false
 $script:healthy = $false
 $message = ''
