@@ -659,7 +659,13 @@ fi
 # Display hardware summary with nice formatting
 CPU_INFO=$(grep "model name" /proc/cpuinfo 2>/dev/null | head -1 | cut -d: -f2 | xargs || echo "Unknown")
 if [[ "$INTERACTIVE" == "true" ]]; then
-    show_hardware_summary "$GPU_NAME" "$((GPU_VRAM / 1024))" "$CPU_INFO" "$RAM_GB" "$DISK_AVAIL"
+    # An external Lemonade (Windows under WSL) runs the model on a GPU this
+    # Linux probe cannot see; show that GPU instead of "None".
+    if [[ "${LEMONADE_EXTERNAL:-false}" == "true" && -n "${LEMONADE_GPU_NAME:-}" ]]; then
+        show_hardware_summary "${LEMONADE_GPU_NAME} (Lemonade)" "$(( ${LEMONADE_GPU_VRAM_MB:-0} / 1024 ))" "$CPU_INFO" "$RAM_GB" "$DISK_AVAIL"
+    else
+        show_hardware_summary "$GPU_NAME" "$((GPU_VRAM / 1024))" "$CPU_INFO" "$RAM_GB" "$DISK_AVAIL"
+    fi
 
     if [[ "$TIER" == "CLOUD" ]]; then
         SPEED_EST="cloud API"
