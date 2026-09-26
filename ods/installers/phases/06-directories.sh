@@ -387,9 +387,9 @@ else
     # Ensure we can write to config/data subtrees (rsync will fail otherwise)
     if [[ "$SCRIPT_DIR" != "$INSTALL_DIR" ]]; then
         _cant_write=""
-        _phase06_write_roots="config data"
-        $_phase06_rootless && _phase06_write_roots="config"
-        for _root in $_phase06_write_roots; do
+        local -a _phase06_write_roots=("config" "data")
+        $_phase06_rootless && _phase06_write_roots=("config")
+        for _root in "${_phase06_write_roots[@]}"; do
             [[ -d "$INSTALL_DIR/$_root" ]] || continue
             for _d in "$INSTALL_DIR/$_root"/*/; do
                 [[ "${ENABLE_HERMES:-false}" == "true" && "$_d" == "$INSTALL_DIR/data/hermes/" ]] && continue
