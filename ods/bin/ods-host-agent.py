@@ -3962,8 +3962,13 @@ class _PixelModelTransaction:
             # replay begin/apply/finish after a timeout.
             try:
                 value = _runtime_model_control('model-status', config=self.config)
-            except Exception as exc:
+            except _PixelModelTransactionRejected as exc:
                 raise _PixelModelTransactionUncertain('Managed model transaction ownership or completion is unconfirmed; recovery is required') from exc
+            except Exception as exc:
+                # The status read that would resolve the mutation got no
+                # answer: a transport failure that proves nothing about the
+                # hold. Callers that fail closed still see it as uncertain.
+                raise _PixelModelOwnershipUnavailable('Managed model transaction ownership or completion is unconfirmed; recovery is required') from exc
             if (operation=='model-begin' and isinstance(error,_PixelModelTransactionRejected)
                     and value['transactionId']!=self.id):
                 self._save('completed','rollback')
@@ -4115,16 +4120,24 @@ def _recover_pixel_model_transaction(config: dict) -> dict:
         return {'pending':False,'phase':'idle','transactionId':None}
     pending = {'pending':True,'phase':journal['phase'],'transactionId':journal['transactionId'],
                'reason':'model-recovery-proof-required'}
+    # A transport failure (for example the relay's docker CLI timing out)
+    # proves nothing about the switch. It is reported as unavailable, never as
+    # missing proof, so the owner retries Repair instead of being offered a
+    # restore that the next answer may show is unnecessary.
+    unavailable = {**pending, 'reason':'model-recovery-unavailable'}
     try:
         try:
             status = _runtime_model_control('model-status',config=config)
-        except Exception:
+        except Exception as exc:
             # A finish can release one gate before its final reply is lost.
             # The coordinator intentionally cannot report a complete hold in
             # that state. A prepared begin can also have acquired only one
             # gate; its exact rollback is safe if all host state is unchanged.
             if journal['phase'] not in {'prepared','committing','rolling-back'}:
-                return pending
+                if isinstance(exc, _PixelModelTransactionRejected):
+                    return pending
+                logger.warning('Managed model recovery deferred: native model status is unreadable; nothing was changed')
+                return unavailable
             status = None
         if status is not None and status['transactionId']!=journal['transactionId']:
             # A refused/unreceived begin is provably harmless only while all
@@ -4149,6 +4162,14 @@ def _recover_pixel_model_transaction(config: dict) -> dict:
             # after the native hold, target contract, host files, and live
             # inference all agree.  This never replays model-apply (or any
             # other inference mutation).
+            #
+            # Host files byte-identical to the journal's `before` are exact
+            # rollback evidence and always win: the host restored (or never
+            # left) the previous state. The target can still answer a live
+            # proof there, for example the local model llama-server keeps
+            # serving while a remote->local deactivation's rollback restored
+            # the cloud route, so a commit would publish a contract that
+            # .env, cloud.yaml and LiteLLM contradict.
             if not (status is None or status['status'] not in {'applied','completed'}
                     or status['contract']!=journal['target']
                     or (status['status']=='applied' and (
@@ -4156,6 +4177,7 @@ def _recover_pixel_model_transaction(config: dict) -> dict:
                     or (status['status']=='completed' and (
                         status['pending'] is not False or status['outcome']!='commit'))
                     or 'unavailable' in current.values()
+                    or current==journal['before']
                     or not _prove_pixel_model_contract(config,journal['target'])
                     or _pixel_model_config_digests()!=current):
                 transaction=_PixelModelTransaction(config)
@@ -4222,6 +4244,10 @@ def _recover_pixel_model_transaction(config: dict) -> dict:
                 return pending
             transaction.finish(outcome)
         return {'pending':False,'phase':'completed','transactionId':journal['transactionId'],'outcome':outcome}
+    except _PixelModelOwnershipUnavailable:
+        logger.warning('Managed model recovery remains pending: native model status became unreadable; '
+                       'no inference mutation was replayed')
+        return unavailable
     except Exception:
         logger.warning('Managed model recovery remains pending; no inference mutation was replayed')
         return pending
@@ -4242,27 +4268,32 @@ def _pixel_model_recovery_status() -> dict:
 _PIXEL_MODEL_RESTORABLE_PHASES = frozenset({'held', 'applying', 'applied', 'rolling-back'})
 
 
-def _pixel_model_restore_offer(journal: dict | None = None) -> dict | None:
+def _pixel_model_restore_offer(journal: dict | None) -> dict | None:
     """Describe the owner action that restores a pending switch's previous model.
 
-    Read-only and cheap: it consults only the journal and the local model
-    catalog/stores, never the coordinator or inference. The restore itself
-    must prove native ownership and the restored runtime before it finishes.
+    Read-only and cheap: it consults only the given journal and the local
+    model catalog/stores, never the coordinator or inference. The restore
+    itself must prove native ownership and the restored runtime before it
+    finishes. Every pending switch that gets no offer logs why, because the
+    Portal then tells the owner to check the host agent log.
     """
-    if journal is None:
-        journal = _read_pixel_model_journal()
     if journal is None or journal['phase'] not in _PIXEL_MODEL_RESTORABLE_PHASES:
         return None
+    transaction = journal['transactionId'][:12]
     previous = journal['previous']
     if 'routeFingerprint' in previous:
         # A remote route is restored by remote deactivation, not a local load.
+        logger.info('No previous-model restore for model transaction %s: the previous route is a remote '
+                    'provider, which remote deactivation restores', transaction)
         return None
     identity = str(previous['model'])
     name = PureWindowsPath(identity).name if '\\' in identity else Path(identity).name
     try:
         library = _load_model_library_records()
-    except RuntimeError:
-        library = []
+    except RuntimeError as exc:
+        logger.warning('No previous-model restore for model transaction %s: the model catalog is '
+                       'unreadable: %s', transaction, exc)
+        return None
     candidates = [item for item in library if str(item.get('gguf_file') or '') == name]
     if not candidates:
         candidates = [item for item in library if _runtime_model_identity_matches(
@@ -4274,22 +4305,46 @@ def _pixel_model_restore_offer(journal: dict | None = None) -> dict | None:
     elif not candidates:
         model_id = gguf_file = name
     else:
+        logger.info('No previous-model restore for model transaction %s: %d catalog models match %s',
+                    transaction, len(candidates), identity)
         return None
     try:
         installed = _valid_gguf_filename(gguf_file) and _installed_model_file(gguf_file) is not None
-    except (OSError, RuntimeError, ValueError):
-        installed = False
+    except (OSError, RuntimeError, ValueError) as exc:
+        logger.warning('No previous-model restore for model transaction %s: the model stores could not '
+                       'be checked for %s: %s', transaction, gguf_file, exc)
+        return None
     if not installed:
+        logger.info('No previous-model restore for model transaction %s: %s is no longer installed',
+                    transaction, gguf_file)
         return None
     return {'modelId': model_id, 'model': identity, 'contextLength': previous['contextLength']}
 
 
-def _public_pixel_model_restore_offer() -> dict | None:
-    try:
-        offer = _pixel_model_restore_offer()
-    except Exception:
-        return None
+# What reading the recovery journal can raise: an unsafe or invalid journal
+# (RuntimeError), file I/O (OSError), and undecodable bytes (ValueError).
+_PIXEL_MODEL_JOURNAL_READ_ERRORS = (OSError, RuntimeError, ValueError)
+
+
+def _public_pixel_model_restore_offer(journal: dict | None) -> dict | None:
+    """The owner-visible part of an offer: the previous identity and context."""
+    offer = _pixel_model_restore_offer(journal)
     return None if offer is None else {'model': offer['model'], 'contextLength': offer['contextLength']}
+
+
+def _with_pixel_model_restore_offer(value: dict) -> dict:
+    """Attach the restore offer to a pending recovery answer.
+
+    Raises one of _PIXEL_MODEL_JOURNAL_READ_ERRORS when the journal cannot be
+    read; the route maps that to its own unavailable answer.
+    """
+    if not value['pending']:
+        return value
+    journal = _read_pixel_model_journal()
+    if journal is None or journal['transactionId'] != value['transactionId']:
+        return value
+    offer = _public_pixel_model_restore_offer(journal)
+    return value if offer is None else {**value, 'restore': offer}
 
 
 class _CapturedJsonResponse:
@@ -4329,6 +4384,11 @@ def _restore_previous_pixel_model(transaction_id: str) -> tuple[int, dict]:
     previous inference identity and context and committed every consumer.
     Any failure leaves the same transaction pending. The caller cannot choose
     a model, context, or transaction; no second transaction is ever begun.
+
+    Recovery can resolve the switch on its own. A rollback is the restore the
+    owner asked for. A commit means the switch had in fact finished and the
+    new model was kept; that answer carries `model-restore-target-kept` so it
+    is never presented as a restored previous model.
     """
     journal = _read_pixel_model_journal()
     if journal is None or journal['phase'] == 'completed' or journal['transactionId'] != transaction_id:
@@ -4336,10 +4396,15 @@ def _restore_previous_pixel_model(transaction_id: str) -> tuple[int, dict]:
     config = load_env(INSTALL_DIR / '.env')
     recovery = _recover_pixel_model_transaction(config)
     if not recovery['pending']:
-        return 200, recovery
+        return 200, _restore_resolution(recovery)
     journal = _read_pixel_model_journal()
     offer = (_pixel_model_restore_offer(journal)
              if journal is not None and journal['transactionId'] == transaction_id else None)
+    if recovery['reason'] == 'model-recovery-unavailable':
+        # The coordinator did not answer, so its hold cannot be proved;
+        # nothing is loaded. The same restore can be retried.
+        return 503, (recovery if offer is None else {
+            **recovery, 'restore': {'model': offer['model'], 'contextLength': offer['contextLength']}})
     if offer is None:
         return 409, {**recovery, 'reason': 'model-restore-unavailable'}
     transaction = _PixelModelTransaction(config)
@@ -4365,11 +4430,21 @@ def _restore_previous_pixel_model(transaction_id: str) -> tuple[int, dict]:
     final = _read_pixel_model_journal()
     status = _pixel_model_recovery_status()
     if not status['pending'] and final is not None and final['transactionId'] == transaction_id:
-        return 200, {**status, 'outcome': final['outcome']}
+        return 200, _restore_resolution({**status, 'outcome': final['outcome']})
     detail = ' '.join(str(response.payload().get('error') or 'The previous model could not be restored').split())
     result = {**status, 'reason': 'model-restore-failed', 'detail': detail[:300]}
-    retry = _public_pixel_model_restore_offer()
+    retry = _public_pixel_model_restore_offer(
+        final if final is not None and final['transactionId'] == transaction_id else None)
     return 409, ({**result, 'restore': retry} if retry is not None else result)
+
+
+def _restore_resolution(value: dict) -> dict:
+    """Mark a resolved restore whose transaction committed its target instead."""
+    if value.get('outcome') != 'commit':
+        return value
+    logger.warning('Previous model restore did not load it: recovery proved that model transaction %s '
+                   'had committed its target, so the new model was kept', str(value['transactionId'])[:12])
+    return {**value, 'reason': 'model-restore-target-kept'}
 
 
 def _read_remote_provider_activation_state() -> dict | None:
@@ -11904,13 +11979,12 @@ class AgentHandler(BaseHTTPRequestHandler):
     def _handle_model_recovery_status(self):
         if not check_auth(self):return
         try:
-            value=_pixel_model_recovery_status()
-        except Exception:
+            value=_with_pixel_model_restore_offer(_pixel_model_recovery_status())
+        except _PIXEL_MODEL_JOURNAL_READ_ERRORS:
+            logger.warning('Managed model recovery status is unavailable: the journal could not be read',
+                           exc_info=True)
             json_response(self,503,{'pending':True,'phase':'unavailable','transactionId':None},no_store=True)
             return
-        if value['pending']:
-            offer=_public_pixel_model_restore_offer()
-            if offer is not None:value['restore']=offer
         json_response(self,200,value,no_store=True)
 
     def _handle_model_recover(self):
@@ -11926,12 +12000,15 @@ class AgentHandler(BaseHTTPRequestHandler):
             json_response(self,409,{'error':'Model lifecycle is busy'})
             return
         try:
-            result=_recover_pixel_model_transaction(load_env(INSTALL_DIR/'.env'))
-            if result['pending']:
-                offer=_public_pixel_model_restore_offer()
-                if offer is not None:result={**result,'restore':offer}
-            json_response(self,409 if result['pending'] else 200,result,no_store=True)
-        except Exception:
+            result=_with_pixel_model_restore_offer(_recover_pixel_model_transaction(load_env(INSTALL_DIR/'.env')))
+            # 503: the coordinator did not answer (retry); 409: it answered
+            # but neither outcome is proved (the restore offer applies).
+            code=(200 if not result['pending']
+                  else 503 if result.get('reason')=='model-recovery-unavailable' else 409)
+            json_response(self,code,result,no_store=True)
+        except _PIXEL_MODEL_JOURNAL_READ_ERRORS:
+            logger.warning('Managed model recovery is unavailable: its journal or environment could not be read',
+                           exc_info=True)
             json_response(self,503,{'pending':True,'phase':'unavailable','reason':'model-recovery-unavailable'},no_store=True)
         finally:
             _end_model_lifecycle('model_recovery')
@@ -11948,9 +12025,17 @@ class AgentHandler(BaseHTTPRequestHandler):
             json_response(self,400,{'error':'Restore accepts only the pending transaction ID'})
             return
         try:
-            offer=_pixel_model_restore_offer()
-        except Exception:
-            offer=None
+            journal=_read_pixel_model_journal()
+        except _PIXEL_MODEL_JOURNAL_READ_ERRORS:
+            logger.warning('Previous model restore is unavailable: the recovery journal could not be read; '
+                           'nothing was changed', exc_info=True)
+            json_response(self,503,{'pending':True,'phase':'unavailable','transactionId':None,
+                                    'reason':'model-recovery-unavailable'},no_store=True)
+            return
+        # The offer only names the lifecycle; the restore re-reads everything
+        # under the lock and refuses a stale transaction without an offer.
+        offer=(_pixel_model_restore_offer(journal)
+               if journal is not None and journal['transactionId']==transaction_id else None)
         acquired,_active=_begin_model_activation(offer['modelId'] if offer else 'previous-model')
         if not acquired:
             json_response(self,409,{'error':'Model lifecycle is busy'})

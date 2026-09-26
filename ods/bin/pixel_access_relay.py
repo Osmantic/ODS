@@ -137,7 +137,9 @@ def request_runtime_access(operation, request=None, *, config):
 # lifecycle call (status, begin, apply, finish) is rare and decides whether a
 # rollback can prove its hold, so its single inspect gets the same 60-second
 # budget as the host's other read-only docker calls on the activation path:
-# at load ~198 a 5-second inspect timed out although Edge was healthy.
+# at load ~198 a 5-second inspect timed out although Edge was healthy. The
+# Dashboard's recovery and restore deadlines are derived from this budget
+# (docs/MODEL-MANAGEMENT.md); change them together.
 _EDGE_INSPECT_TIMEOUT_SECONDS = 5
 _MODEL_CONTROL_EDGE_INSPECT_TIMEOUT_SECONDS = 60
 

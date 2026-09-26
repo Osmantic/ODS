@@ -49,7 +49,9 @@ are excluded from the response.
 
 Recovery may finish an already committed or applied switch, or release a
 verified unchanged or fully restored previous state. It checks configuration
-digests and actual inference evidence. It does not choose or load another model.
+digests and actual inference evidence. Host configuration that is byte-identical
+to the state before the switch always means rollback, even if the target model
+also answers a live proof. It does not choose or load another model.
 An intermediate crash without sufficient proof remains pending and needs
 explicit repair. There is no generic reset that discards the saved state or
 silently unlocks an unverified model.
@@ -57,10 +59,11 @@ silently unlocks an unverified model.
 A rollback whose native status read fails because of a transport problem, such
 as docker CLI timeouts on an overloaded host, still restores and proves the
 host's previous state. Its `rolling-back` receipt lets recovery finish once the
-coordinator answers again.
+coordinator answers again. While the coordinator does not answer, recovery
+reports `model-recovery-unavailable` with HTTP 503 and loads nothing.
 
 The explicit repair is **Restore <previous model>**, which the model menu shows
-after recovery reports `model-recovery-proof-required`.
+only after recovery reports `model-recovery-proof-required` with HTTP 409.
 `POST /api/models/recovery/restore` accepts only `{"transactionId": ...}` for
 the pending transaction. The host runs recovery first. If recovery cannot
 resolve the switch, the host reads the native hold and requires the same
@@ -69,7 +72,10 @@ rollback will undo. It then loads the journal's previous model at its previous
 context through the normal activation path and sends `model-finish` with
 `rollback` only after proving that exact model and context. It never sends
 `model-begin` or `model-apply`. A failed restore rolls the host back to what it
-was serving before the restore and leaves the transaction pending.
+was serving before the restore and leaves the transaction pending. If the
+restore's recovery step commits the switch instead, the previous model is not
+loaded; the response has `outcome: "commit"` and
+`reason: "model-restore-target-kept"`, and the menu says the new model was kept.
 
 Windows `/runtime/lemonade/ensure` remains a bootstrap operation outside this
 transaction. The launcher may need it before Edge and the agent have started.

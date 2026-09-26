@@ -138,12 +138,21 @@ through inference changes leave recovery pending and require explicit repair.
 If a late failure's rollback cannot read native status because the relay's
 docker CLI calls time out on an overloaded host, the host still restores its
 own previous files and runtime, proves the previous model, and then asks the
-coordinator to finish the rollback. Status reads (never mutations) are retried
-briefly. If the coordinator still cannot be reached, the journal keeps a
+coordinator to finish the rollback. Each native call is made once and is never
+retried. If the coordinator does not answer, the journal keeps a
 `rolling-back` receipt with the restored configuration hashes, so **Recover
 model switch** can finish it later. Recovery can also commit an applied target
 when the native hold, host configuration, and live inference all prove that
-target.
+target. It never commits while the host configuration is byte-identical to the
+journal's state before the switch. That is exact rollback evidence, and it
+takes precedence: for example, a remote-provider deactivation whose rollback
+restored the cloud route while llama-server kept serving the local target.
+Recovery then finishes the rollback, after proving the previous route.
+
+When the coordinator does not answer, recovery loads nothing and reports
+`model-recovery-unavailable` (HTTP 503). The menu asks the owner to try again,
+and the next answer settles the switch. Only an answer that proves neither outcome reports
+`model-recovery-proof-required` (HTTP 409) and leads to a restore offer.
 
 When recovery cannot prove either outcome, for example when an interrupted
 switch left the new model loaded while the coordinator still holds the previous
@@ -156,7 +165,27 @@ without starting a new transaction, and finishes the hold as a rollback only
 after the previous model, context, and every consumer are proved. The caller
 cannot choose the model or context. A failure leaves the switch pending, and the
 owner can retry. Remote-route contracts and previous models that are no longer
-installed are not offered a restore.
+installed are not offered a restore, and the host agent log records why no
+restore is offered. If the restore's recovery step proves that the switch had
+finished, it commits the new model and does not load the previous one. The
+response then carries `outcome: "commit"` with
+`reason: "model-restore-target-kept"`, and the menu says the new model was
+kept.
+
+Every native model-control call first resolves the Edge container with one
+`docker inspect`. That call gets 60 seconds, the budget of the host's other
+read-only docker calls on the activation path; access-mode polls keep 5 seconds.
+On a host at load ~198 a 5-second inspect timed out although Edge was healthy.
+The call itself then gets 25 seconds for `model-status` and 313 seconds for
+`model-begin`, `model-apply`, or `model-finish`. One status read can therefore
+take 85 seconds and one mutation 373 seconds. Recovery makes at most three
+status reads and one finish (628 seconds) plus one live proof of the chosen
+contract, which takes up to 382 seconds through a LiteLLM route. The Dashboard
+API therefore waits 1020 seconds for recovery, the browser 1025 seconds, and
+nginx 1040 seconds. A restore adds one ownership read and a model activation
+with the 2700-second model-load budget: 3805 seconds in the API, 3810 in the
+browser, and 3830 in nginx. A timeout inside these budgets is reported as
+unconfirmed, never retried, and the journal stays authoritative.
 
 An ODS-managed Pixel route supports OpenClaw's 4096-token minimum. Below 16K it
 uses a deliberately constrained adaptive prompt, so complex-task reliability

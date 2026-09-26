@@ -19,6 +19,7 @@ function recovery(value) {
   return restore ? {...result,restore} : result
 }
 const unconfirmed='Recovery could not be confirmed. Reopen the model menu to read the current state.'
+const controllerSilent='The model controller did not answer, so the switch could not be verified. No model was loaded. Try again shortly.'
 const context=tokens=>tokens%1024===0 ? `${tokens/1024}K` : tokens.toLocaleString()
 
 /**
@@ -29,7 +30,7 @@ const context=tokens=>tokens%1024===0 ? `${tokens/1024}K` : tokens.toLocaleStrin
  */
 export default function PortalModelRecovery({onPendingChange,onBusyChange,onRecovered,refreshKey=0,active=true}) {
   const [state,setState]=useState(null),[busy,setBusy]=useState(''),[error,setError]=useState('')
-  const [offerRestore,setOfferRestore]=useState(false)
+  const [offerRestore,setOfferRestore]=useState(false),[notice,setNotice]=useState('')
   const mounted=useRef(false),request=useRef(null),locked=useRef(false)
   const callbacks=useRef({onPendingChange,onBusyChange,onRecovered})
   callbacks.current={onPendingChange,onBusyChange,onRecovered}
@@ -39,6 +40,7 @@ export default function PortalModelRecovery({onPendingChange,onBusyChange,onReco
   },[])
   useEffect(()=>{
     if(!active || locked.current)return
+    setNotice('')
     const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),6000)
     void fetch('/api/models/recovery',{signal:controller.signal}).then(async response=>{
       // The API also projects validated pending receipts on 409/503. Other
@@ -49,9 +51,9 @@ export default function PortalModelRecovery({onPendingChange,onBusyChange,onReco
     }).catch(()=>{}).finally(()=>clearTimeout(timer))
     return ()=>{controller.abort();clearTimeout(timer)}
   },[refreshKey,active])
-  async function submit(kind,url,body,deadline,explain) {
+  async function submit(kind,url,body,deadline,explain,resolved=()=>'') {
     if(locked.current || !state?.pending)return
-    locked.current=true;setBusy(kind);setError('');callbacks.current.onBusyChange?.(true)
+    locked.current=true;setBusy(kind);setError('');setNotice('');callbacks.current.onBusyChange?.(true)
     const controller=new AbortController();request.current=controller
     const timer=setTimeout(()=>controller.abort(),deadline)
     try {
@@ -59,7 +61,9 @@ export default function PortalModelRecovery({onPendingChange,onBusyChange,onReco
       const value=recovery(await response.json())
       if(!mounted.current || controller.signal.aborted)return
       if(value){setState(value);callbacks.current.onPendingChange?.(value.pending)}
-      if(response.ok && value && !value.pending){setOfferRestore(false);callbacks.current.onRecovered?.();return}
+      if(response.ok && value && !value.pending){
+        setOfferRestore(false);setNotice(resolved(value));callbacks.current.onRecovered?.();return
+      }
       setError(explain(value))
     } catch {
       if(mounted.current)setError(unconfirmed)
@@ -69,7 +73,9 @@ export default function PortalModelRecovery({onPendingChange,onBusyChange,onReco
     }
   }
   function recover() {
-    return submit('recover','/api/models/recovery','{}',405000,value=>{
+    // The API waits up to 1020 s for the host; this deadline stays just past it.
+    return submit('recover','/api/models/recovery','{}',1025000,value=>{
+      if(value?.reason==='model-recovery-unavailable')return controllerSilent
       if(value?.reason!=='model-recovery-proof-required')return unconfirmed
       setOfferRestore(true)
       return 'The interrupted switch still needs repair. The saved state has been preserved.'
@@ -78,17 +84,22 @@ export default function PortalModelRecovery({onPendingChange,onBusyChange,onReco
   function restore() {
     const offer=state?.restore
     if(!offer)return
-    return submit('restore','/api/models/recovery/restore',JSON.stringify({transactionId:state.transactionId}),2705000,value=>{
+    // The API waits up to 3805 s (recovery, an ownership read, and a model load).
+    return submit('restore','/api/models/recovery/restore',JSON.stringify({transactionId:state.transactionId}),3810000,value=>{
       if(value?.reason==='model-restore-failed')
         return `Restoring ${offer.model} did not finish${value.detail?`: ${value.detail}`:'.'} The switch is still pending; you can try again.`
       if(value?.reason==='model-restore-unavailable')
         return 'The previous model can no longer be restored automatically. The switch is still pending.'
+      if(value?.phase==='unavailable')
+        return 'The host could not confirm the restore, so the switch state is unknown. Reopen the model menu to read it, and check the host agent log.'
       if(value?.reason==='model-recovery-unavailable' && value.restore)
-        return 'The model controller did not answer, so nothing was changed. Try the restore again shortly.'
+        return 'The model controller did not answer, so no model was loaded. Try the restore again shortly.'
       return unconfirmed
-    })
+    },value=>value.outcome==='commit'
+      ? `The interrupted switch had already finished, so the new model was kept. ${offer.model} was not restored; choose it from the model list to switch back.`
+      : '')
   }
-  if(!state?.pending)return null
+  if(!state?.pending)return notice ? <div className="portal-model-notice"><p role="alert">{notice}</p></div> : null
   const offer=state.restore
   return <div className="portal-model-notice">
     <p>A previous model switch was interrupted. Verify it before continuing.</p>
@@ -99,6 +110,7 @@ export default function PortalModelRecovery({onPendingChange,onBusyChange,onReco
           <p>Repair could not prove that the switch finished or was undone. Restoring reloads {offer.model} at {context(offer.contextLength)} context, the model that was active before the switch, and then releases it.</p>
           <button type="button" disabled={Boolean(busy)} onClick={restore}>{busy==='restore'?'Restoring…':`Restore ${offer.model}`}</button>
         </>
-      : <p>The previous model cannot be restored automatically on this installation. Keep this switch pending and check the host agent log.</p>)}
+      : state.phase!=='unavailable'
+        && <p>The previous model cannot be restored automatically on this installation. Keep this switch pending and check the host agent log.</p>)}
   </div>
 }

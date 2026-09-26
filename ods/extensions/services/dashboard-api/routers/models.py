@@ -2112,6 +2112,10 @@ def _model_recovery_projection(value):
     if value.get('reason') in ('model-recovery-proof-required', 'model-recovery-unavailable',
                                'model-restore-unavailable', 'model-restore-failed'):
         result['reason'] = value['reason']
+    # A restore that recovery resolved by committing the switch kept the new
+    # model; the browser must be able to tell that apart from a restore.
+    if value.get('reason') == 'model-restore-target-kept' and result.get('outcome') == 'commit':
+        result['reason'] = value['reason']
     restore = value.get('restore')
     # The owner-visible restore names only the journal's own previous model
     # identity and context; anything else is not projected.
@@ -2127,11 +2131,23 @@ def _model_recovery_projection(value):
     return result
 
 
+# Host-side worst case of Repair, bounded by the Pixel relay (see
+# docs/MODEL-MANAGEMENT.md): each model-control call first runs one docker
+# inspect (60 s), then model-status gets 25 s and model-finish 313 s. Repair
+# makes at most three status reads and one finish, 3 * 85 + 373 = 628 s, plus
+# one live proof of the chosen contract, at most 382 s for a LiteLLM route
+# (12 completion probes of 30 s, 2 s apart): 1010 s.
+MODEL_RECOVERY_TIMEOUT_SECONDS = 1020
+# Restore runs Repair, one more ownership read (85 s), then a normal model
+# activation, which has the model-load budget (2700 s).
+MODEL_RESTORE_TIMEOUT_SECONDS = MODEL_RECOVERY_TIMEOUT_SECONDS + 85 + 2700
+
+
 def _model_recovery_request(method, path=None, payload=None, timeout=None):
     if path is None:
         path = '/v1/model/recovery' if method == 'GET' else '/v1/model/recover'
         payload = None if method == 'GET' else {}
-        timeout = 5 if method == 'GET' else 400
+        timeout = 5 if method == 'GET' else MODEL_RECOVERY_TIMEOUT_SECONDS
     try:
         value = request_agent_json(method, path, payload=payload, timeout=timeout)
         return _model_recovery_projection(value)
@@ -2174,7 +2190,7 @@ def restore_previous_model(body: dict | None = Body(default=None), api_key: str 
         raise HTTPException(status_code=400, detail='Restore accepts only the pending transaction ID.')
     try:
         value = _model_recovery_request('POST', '/v1/model/recover/restore-previous',
-                                        {'transactionId': body['transactionId']}, 2700)
+                                        {'transactionId': body['transactionId']}, MODEL_RESTORE_TIMEOUT_SECONDS)
     finally:
         # The restore reloads inference; drop any status cached while it ran.
         _invalidate_agent_model_status_cache()

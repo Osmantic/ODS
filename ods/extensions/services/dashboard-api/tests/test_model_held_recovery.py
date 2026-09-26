@@ -40,6 +40,7 @@ class Coordinator:
         self.state = dict(schemaVersion=1, status="ready", revision="a" * 64,
                           contract=copy.deepcopy(PREVIOUS), pending=False,
                           transactionId=None, outcome=None)
+        self.held_contract = None
         self.delivered = []
         self.unavailable = []
         self.down = False
@@ -57,6 +58,8 @@ class Coordinator:
             raise host._PixelModelTransactionRejected("model-transaction-conflict")
         if operation == "model-begin":
             assert not state["pending"]
+            # The native hold saves the exact contract a rollback restores.
+            self.held_contract = copy.deepcopy(state["contract"])
             state.update(status="held", pending=True, transactionId=request["transactionId"], outcome=None)
         elif operation == "model-apply":
             state.update(status="applied", contract=copy.deepcopy(request["target"]))
@@ -64,7 +67,8 @@ class Coordinator:
             if request["outcome"] == "commit" and state["status"] != "applied":
                 raise host._PixelModelTransactionRejected("model-apply-unverified")
             if request["outcome"] == "rollback":
-                state["contract"] = copy.deepcopy(PREVIOUS)
+                # A hold seeded without model-begin restores the module default.
+                state["contract"] = copy.deepcopy(PREVIOUS if self.held_contract is None else self.held_contract)
             state.update(status="completed", pending=False, outcome=request["outcome"])
         return dict(state)
 
@@ -168,6 +172,22 @@ def _restore(transaction_id):
     return handler.response_code, handler.parse_response()
 
 
+def _recover_http():
+    handler = fixtures._ResponseHandler(request_body={})
+    host.AgentHandler._handle_model_recover(handler)
+    return handler.response_code, handler.parse_response()
+
+
+def _status_http():
+    handler = fixtures._ResponseHandler(request_body={})
+    host.AgentHandler._handle_model_recovery_status(handler)
+    return handler.response_code, handler.parse_response()
+
+
+def _offer():
+    return host._public_pixel_model_restore_offer(host._read_pixel_model_journal())
+
+
 def _stuck_after_post_check_and_rollback_timeouts(world):
     """Activation post-check timeout, then the rollback's runtime restart times out."""
     world["inference"].fail_restart_to = "old-model.gguf"
@@ -202,9 +222,15 @@ def test_rollback_with_unreadable_native_status_restores_host_and_repair_finishe
     assert "model-finish" not in coordinator.delivered
     assert coordinator.state["status"] == "held"
 
-    # Repair is idempotent: while the relay still cannot answer it changes
+    # Repair is idempotent: while the relay still cannot answer it loads
     # nothing and stays pending; the owner simply invokes it again later.
-    assert _repair()["pending"] is True
+    # The rollback evidence is exact, but its finish gets no answer and
+    # neither does the status read behind it: that is a transport outage,
+    # reported as unavailable rather than as missing proof.
+    unavailable_before = len(coordinator.unavailable)
+    assert _repair() == {"pending": True, "phase": "rolling-back",
+                         "transactionId": journal["transactionId"], "reason": "model-recovery-unavailable"}
+    assert coordinator.unavailable[unavailable_before:] == ["model-status", "model-finish", "model-status"]
     assert "model-finish" not in coordinator.delivered
     coordinator.down = False
     result = _repair()
@@ -258,7 +284,7 @@ def test_held_after_rollback_timeouts_repair_offers_and_restore_releases_previou
     assert host._pixel_model_config_digests() == journal["before"]
     result = _repair()
     assert result["pending"] is True and result["reason"] == "model-recovery-proof-required"
-    assert host._public_pixel_model_restore_offer() == {"model": "old-model.gguf", "contextLength": 65536}
+    assert _offer() == {"model": "old-model.gguf", "contextLength": 65536}
 
     code, payload = _restore(journal["transactionId"])
 
@@ -292,10 +318,9 @@ def test_exact_fleet_state_is_restored_by_the_owner_action(world):
     coordinator, inference = world["coordinator"], world["inference"]
     transaction = _legacy_stuck_state(world)
     assert _repair()["pending"] is True
-    handler = fixtures._ResponseHandler(request_body={})
-    host.AgentHandler._handle_model_recover(handler)
-    assert handler.response_code == 409
-    assert handler.parse_response()["restore"] == {"model": "old-model.gguf", "contextLength": 65536}
+    code, body = _recover_http()
+    assert code == 409 and body["reason"] == "model-recovery-proof-required"
+    assert body["restore"] == {"model": "old-model.gguf", "contextLength": 65536}
 
     code, payload = _restore(transaction.id)
 
@@ -340,6 +365,7 @@ def test_restore_never_loads_without_proved_ownership(world, problem):
     else:
         coordinator.down = True
     restarts = list(inference.restarts)
+    delivered = list(coordinator.delivered)
 
     code, payload = _restore(requested)
 
@@ -347,8 +373,15 @@ def test_restore_never_loads_without_proved_ownership(world, problem):
     if problem == "unreadable":
         assert code == 503 and payload["reason"] == "model-recovery-unavailable"
         assert payload["restore"] == {"model": "old-model.gguf", "contextLength": 65536}
+        # One status read answered nothing; it is not repeated as an
+        # ownership check, and nothing else is attempted.
+        assert coordinator.unavailable == ["model-status"]
     else:
         assert code == 409 and payload["reason"] == "model-restore-unavailable"
+    if problem == "stale-id":
+        # A transaction ID the journal does not hold never reaches recovery
+        # or the coordinator at all.
+        assert coordinator.delivered == delivered and coordinator.unavailable == []
     assert inference.restarts == restarts and inference.gguf == "new-model.gguf"
     assert "model-finish" not in coordinator.delivered
 
@@ -357,18 +390,18 @@ def test_restore_never_loads_without_proved_ownership(world, problem):
 def test_restore_is_not_offered_where_it_could_contradict_the_native_outcome(world, phase):
     transaction = _legacy_stuck_state(world)
     transaction._save(phase)
-    assert host._pixel_model_restore_offer() is None
+    assert host._pixel_model_restore_offer(host._read_pixel_model_journal()) is None
 
 
 def test_restore_is_not_offered_for_remote_or_missing_previous_model(world):
     transaction = _legacy_stuck_state(world)
     transaction.previous = {**PREVIOUS, "routeFingerprint": "d" * 64}
     transaction._save("held")
-    assert host._pixel_model_restore_offer() is None
+    assert host._pixel_model_restore_offer(host._read_pixel_model_journal()) is None
     transaction.previous = copy.deepcopy(PREVIOUS)
     transaction._save("held")
     (world["install"] / "data" / "models" / "old-model.gguf").unlink()
-    assert host._pixel_model_restore_offer() is None
+    assert host._pixel_model_restore_offer(host._read_pixel_model_journal()) is None
 
 
 def test_restore_endpoint_requires_owner_auth_and_exact_body(world):
@@ -429,3 +462,195 @@ def test_applied_target_without_live_proof_stays_pending(world):
     inference.gguf = "crashed.gguf"
     assert _repair()["pending"] is True
     assert "model-finish" not in coordinator.delivered
+
+
+TARGET = {"model": "new-model.gguf", "contextLength": 65536, "maxTokens": 8192, "reasoning": False}
+REMOTE_PREVIOUS = {"model": "remote-model", "contextLength": 131072, "maxTokens": 8192, "reasoning": False,
+                   "routeFingerprint": "d" * 64}
+
+
+@pytest.mark.parametrize("remote_route_restored", [True, False])
+def test_repair_never_commits_a_local_target_over_an_exactly_restored_remote_route(
+        world, monkeypatch, remote_route_restored):
+    """Turning a remote provider off (remote -> local) must not end as a silent local commit.
+
+    The deactivation applied the local contract natively, then failed late.
+    Its host rollback restored every captured file (cloud mode again), and
+    only the final remote proof or the LiteLLM restore failed. llama-server
+    still serves the local model, so the target answers a live proof, but
+    .env, cloud.yaml and LiteLLM route remote. Exact rollback evidence wins.
+    """
+    coordinator, inference = world["coordinator"], world["inference"]
+    coordinator.state["contract"] = copy.deepcopy(REMOTE_PREVIOUS)
+    transaction = host._begin_pixel_model_transaction(host.load_env(world["env"]))
+    assert transaction.previous == REMOTE_PREVIOUS
+    env = world["env"]
+    cloud = env.read_bytes()
+    env.write_text(env.read_text(encoding="utf-8") + "ODS_MODE=local\n", encoding="utf-8")
+    local_target = copy.deepcopy(PREVIOUS)  # the local model llama-server serves throughout
+    transaction.apply(local_target)
+    env.write_bytes(cloud)  # the deactivation's rollback restored every captured file
+    journal = host._read_pixel_model_journal()
+    assert journal["phase"] == "applied" and host._pixel_model_config_digests() == journal["before"]
+    assert host._prove_pixel_model_contract(host.load_env(env), local_target)  # the target still answers
+
+    remote_route = {"route": "restored-remote-provider"}
+    monkeypatch.setattr(host, "_read_remote_provider_route_state_for_update", lambda: remote_route)
+    monkeypatch.setattr(host, "_remote_provider_runtime_contract",
+                        lambda route: copy.deepcopy(REMOTE_PREVIOUS) if route is remote_route else {})
+    litellm = []
+
+    def verify_litellm_route(_config, *, model="default"):
+        litellm.append(model)
+        if not remote_route_restored:
+            raise RuntimeError("LiteLLM did not serve a completion through the active ods/current route")
+
+    monkeypatch.setattr(host, "_verify_litellm_route", verify_litellm_route)
+
+    result = _repair()
+
+    if remote_route_restored:
+        assert result == {"pending": False, "phase": "completed",
+                          "transactionId": transaction.id, "outcome": "rollback"}
+        assert coordinator.state["contract"] == REMOTE_PREVIOUS
+        assert coordinator.state["outcome"] == "rollback"
+        assert host._read_pixel_model_journal()["outcome"] == "rollback"
+    else:
+        # Neither outcome is proved: stay pending; never publish the local contract.
+        assert result == {"pending": True, "phase": "applied", "transactionId": transaction.id,
+                          "reason": "model-recovery-proof-required"}
+        assert "model-finish" not in coordinator.delivered
+        assert coordinator.state["status"] == "applied"
+    assert litellm == ["ods/current"]  # only the previous (remote) contract was proved
+    assert inference.restarts == []
+
+
+def test_relay_outage_is_unavailable_and_a_later_restore_reports_the_kept_target(world):
+    """A transport failure is not missing proof, and a commit is never shown as a restore."""
+    coordinator, inference = world["coordinator"], world["inference"]
+    transaction = _legacy_stuck_state(world)
+    transaction.apply(copy.deepcopy(TARGET))
+    coordinator.down = True
+
+    code, body = _recover_http()
+
+    assert code == 503 and body["pending"] is True and body["phase"] == "applied"
+    assert body["reason"] == "model-recovery-unavailable"
+    assert coordinator.unavailable == ["model-status"]  # one read, never a retry loop
+    assert "model-finish" not in coordinator.delivered
+
+    # The relay answers again. Recovery inside the restore proves the switch
+    # finished: the new model is kept and the answer says so.
+    coordinator.down = False
+    code, payload = _restore(transaction.id)
+
+    assert code == 200, payload
+    assert payload == {"pending": False, "phase": "completed", "transactionId": transaction.id,
+                       "outcome": "commit", "reason": "model-restore-target-kept"}
+    assert inference.gguf == "new-model.gguf" and inference.restarts == []
+    assert coordinator.state["contract"] == TARGET and coordinator.state["outcome"] == "commit"
+
+
+def test_restore_finishes_nothing_unless_the_reloaded_runtime_is_the_exact_previous_identity(
+        world, monkeypatch):
+    coordinator, inference = world["coordinator"], world["inference"]
+    # The hold saved an identity that names the same file name from another
+    # store; reloading the catalog model cannot prove that exact identity.
+    elsewhere = {**PREVIOUS, "model": "other-store/old-model.gguf"}
+    coordinator.state["contract"] = copy.deepcopy(elsewhere)
+    transaction = _legacy_stuck_state(world)
+    assert transaction.previous == elsewhere
+    assert _offer() == {"model": "other-store/old-model.gguf", "contextLength": 65536}
+    reconciled = []
+    monkeypatch.setattr(host, "_reconcile_ods_managed_pixel_model",
+                        lambda *args, **kwargs: reconciled.append(args) or "reconciled")
+
+    code, payload = _restore(transaction.id)
+
+    assert code == 409 and payload["reason"] == "model-restore-failed", payload
+    assert "does not match the interrupted switch's previous model contract" in payload["detail"]
+    # Loaded, refused before any finish, then rolled back to what it served.
+    assert inference.restarts == ["old-model.gguf", "new-model.gguf"] and inference.gguf == "new-model.gguf"
+    assert "model-finish" not in coordinator.delivered and coordinator.state["status"] == "held"
+    # A restore never reconciles Pixel directly, not even in its own rollback:
+    # only finishing the native hold may restore the saved contract.
+    assert reconciled == []
+    assert host._read_pixel_model_journal()["phase"] == "held"
+
+
+def test_restore_rechecks_ownership_immediately_before_its_first_write(world, monkeypatch):
+    coordinator, inference = world["coordinator"], world["inference"]
+    transaction = _legacy_stuck_state(world)
+    env_before = world["env"].read_text(encoding="utf-8")
+    capture = host._capture_container_state
+
+    def another_owner_takes_the_hold(name):
+        # Runs inside the restore's activation, after the restore's own
+        # ownership check and before the activation writes anything.
+        coordinator.state["transactionId"] = "f" * 64
+        return capture(name)
+
+    monkeypatch.setattr(host, "_capture_container_state", another_owner_takes_the_hold)
+
+    code, payload = _restore(transaction.id)
+
+    assert code == 409 and payload["reason"] == "model-restore-failed", payload
+    assert "ownership changed" in payload["detail"]
+    assert inference.restarts == [] and inference.gguf == "new-model.gguf"
+    assert world["env"].read_text(encoding="utf-8") == env_before
+    assert "model-finish" not in coordinator.delivered
+
+
+def test_restore_reloads_the_journal_context_not_the_catalog_default(world):
+    library_path = world["install"] / "config" / "model-library.json"
+    library = json.loads(library_path.read_text(encoding="utf-8"))
+    for item in library["models"]:
+        if item["id"] == "previous-model":
+            item["context_length"] = 32768  # differs from the context the hold saved
+    library_path.write_text(json.dumps(library), encoding="utf-8")
+    coordinator, inference = world["coordinator"], world["inference"]
+    transaction = _legacy_stuck_state(world)
+
+    code, payload = _restore(transaction.id)
+
+    assert code == 200 and payload["outcome"] == "rollback", payload
+    assert inference.gguf == "old-model.gguf" and inference.context == 65536
+    assert "CTX_SIZE=65536" in world["env"].read_text(encoding="utf-8")
+    assert coordinator.state["contract"] == PREVIOUS
+
+
+def test_no_restore_offer_is_always_logged_for_the_owner(world, caplog):
+    _legacy_stuck_state(world)
+    caplog.set_level("INFO")
+    imports = world["install"] / "data" / "model-imports.json"
+    imports.write_text("{not json", encoding="utf-8")
+
+    assert _offer() is None
+    assert "the model catalog is unreadable" in caplog.text
+
+    imports.unlink()
+    (world["install"] / "data" / "models" / "old-model.gguf").unlink()
+    caplog.clear()
+    assert _offer() is None
+    assert "old-model.gguf is no longer installed" in caplog.text
+
+
+@pytest.mark.parametrize("route", ["status", "recover", "restore"])
+def test_unreadable_journal_is_a_logged_unavailable_answer(world, caplog, route):
+    coordinator, inference = world["coordinator"], world["inference"]
+    transaction = _legacy_stuck_state(world)
+    host._pixel_model_journal_path().write_text("{", encoding="utf-8")
+    delivered = list(coordinator.delivered)
+    caplog.set_level("WARNING")
+
+    code, body = {"status": _status_http, "recover": _recover_http,
+                  "restore": lambda: _restore(transaction.id)}[route]()
+
+    assert code == 503 and body["pending"] is True and body["phase"] == "unavailable"
+    assert "restore" not in body
+    assert any(record.levelname == "WARNING" and record.exc_info for record in caplog.records)
+    assert coordinator.delivered == delivered and inference.restarts == []
+    # The lifecycle lock was released.
+    acquired, _active = host._begin_model_lifecycle("model_download", "probe")
+    assert acquired
+    host._end_model_lifecycle("model_download")
