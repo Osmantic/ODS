@@ -203,7 +203,9 @@ else
         esac
 
         # Add the invoking user (not root) to the docker group
-        target_user="${SUDO_USER:-$USER}"
+        target_user="${SUDO_USER:-$(id -un)}"
+        # Ensure group exists before modifying
+        getent group docker >/dev/null 2>&1 || ods_sudo groupadd docker
         ods_sudo usermod -aG docker "$target_user"
 
         # In most cases group membership won't take effect until a new login shell.
