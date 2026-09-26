@@ -89,6 +89,13 @@ Setup detects native runtimes at `ODS_HOME` or `%USERPROFILE%\ods` and stops to 
 
 Manage existing native installations using their own `ods.ps1`. The native implementation remains at `ods/installers/windows/install-windows.ps1` for maintenance, not the recommended new-install path. Native commands do not manage the WSL runtime.
 
+To remove a native installation completely before switching (containers, Docker volumes, data and models; this cannot be undone), run from its runtime folder:
+
+```powershell
+cd $env:USERPROFILE\ods
+.\ods.ps1 uninstall --force
+```
+
 ## Uninstall WSL ODS
 
 Inside Ubuntu, use your chosen runtime directory:
