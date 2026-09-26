@@ -8,97 +8,151 @@
 // refusal text ("Do not retry ... wait for a new owner instruction") with
 // product outcome failed, although the files and the passing test existed.
 // Hermes and OpenCode delivered the same prompt on the same hardware and model.
+//
+// Every run here goes through the lifecycle callbacks plugin/index.js
+// registers (before_tool_call, after_tool_call, agent_end) around the real
+// guard. agent_end runs endPreviewRevalidation before the ingress reads
+// delivery, as OpenClaw 2026.6 does.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import http from 'node:http';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
+import vm from 'node:vm';
 import {createToolLoopGuard, RECURSIVE_DELETE_REQUIRES_OWNER_REASON} from '../plugin/tool-loop-guard.mjs';
+import {RUN_PROGRESS_STOP_REASON} from '../plugin/run-progress-budget.mjs';
+import {createWorkspaceBundleAdmission} from '../plugin/workspace-bundle.mjs';
+import {withPixelCronDeliveryDefault} from '../plugin/cron-delivery-default.mjs';
 import {AGENT_SKILLS, DERIVED_FILE_CONTRACT, NAMED_ITEM_CONTRACT, RECURSIVE_DELETE_CONTRACT} from '../plugin/agent-skills.mjs';
 import {ODS_SEPTEMBER16_CONVERSATION_CONTRACT, promptContractForAgent} from '../plugin/prompt-contract.mjs';
 import {createIngressServer} from '../host/pixel_ingress.mjs';
 
 const RECORDED = JSON.parse(fs.readFileSync(new URL('./fixtures/photo-renamer-tower2-d4a61f33.json', import.meta.url), 'utf8'));
+const TOWER3 = JSON.parse(fs.readFileSync(new URL('./fixtures/photo-renamer-tower3-d4a61f33.json', import.meta.url), 'utf8'));
 const CALLS = RECORDED.calls;
 const PROJECT = 'Playground/photo-renamer';
+const ELLIPSIS = String.fromCharCode(0x2026);
 const LEAD = 'Pixel stopped using tools because a command included a recursive deletion that you did not ask for. ' +
   "That command was refused and did not run.\nResults recorded by Pixel's tools before that:\n";
 const FILES = '- File written: `/workspace/Playground/photo-renamer/rename_photos.py`.\n' +
   '- File written: `/workspace/Playground/photo-renamer/test_rename.py`.\n';
+const NO_FILES = "- No file was written or changed with Pixel's file tools.\n";
 const TEST = 'The latest recognized test command, `python3 test_rename.py` in `/workspace/Playground/photo-renamer`,';
+const UNITTEST = 'The latest recognized test command, `python3 -m unittest -v` in `/workspace/Playground/photo-renamer`,';
+const CURRENT = ' passed, and no tool call that could change the workspace ran after it.\n';
+const STALE = ' passed, but a later tool call or command could have changed the workspace, so that result is not current.\n';
+const COMPLETE = 'This does not establish complete test coverage or completion of every requested step.';
 const INCOMPLETE = 'This request is not complete. Ask Pixel to continue, or say explicitly if you want a folder deleted.';
-const RECEIPT = LEAD + FILES +
-  `- ${TEST} passed, and no tool call that could change the workspace ran after it.\n` +
-  'This does not establish complete test coverage or completion of every requested step.';
+const RECEIPT = LEAD + FILES + `- ${TEST}${CURRENT}` + COMPLETE;
+const UNITTEST_OK = 'test_a (test_rename.T.test_a) ... ok\n\n' +
+  '----------------------------------------------------------------------\nRan 1 test in 0.001s\n\nOK';
 
-// OpenClaw's hook order for each recorded round: model call start and end,
+// The lifecycle block of plugin/index.js, run with the real guard and inert
+// access, goal and activity collaborators.
+const INDEX = fs.readFileSync(new URL('../plugin/index.js', import.meta.url), 'utf8');
+const LIFECYCLE_START = INDEX.indexOf('    if (!managedRuntime) {');
+const LIFECYCLE = INDEX.slice(LIFECYCLE_START, INDEX.indexOf('    api.registerHttpRoute(', LIFECYCLE_START));
+function registeredHooks(guard) {
+  const hooks = {};
+  vm.runInNewContext(LIFECYCLE, {
+    api: {on: (name, callback) => { hooks[name] = callback; }},
+    toolLoopGuard: guard, AGENT_ID: 'pixel', managedRuntime: false, withPixelCronDeliveryDefault,
+    bundleAdmission: createWorkspaceBundleAdmission(),
+    accessRuntime: {isProbe: () => false, admit() {}, finish() {}, beforeTool() {}, afterTool() {}},
+    goalProgress: {before() {}, update() {}, finish() {}},
+    taskActivity: {before() {}, after() {}, finish() {}},
+  });
+  return hooks;
+}
+
+// OpenClaw's hook order for each round: model call start and end,
 // before_tool_call, the executed result (or the SDK's veto result for a
-// blocked call), after_tool_call and tool_result_persist. Executed results are
-// the recorded tool outputs without the ODS suffix that persistence appended.
-function replay(t, calls, {prompt = RECORDED.submittedUserText} = {}) {
+// blocked call), after_tool_call and tool_result_persist.
+function session(t, {prompt = RECORDED.submittedUserText, runId = RECORDED.runId, sessionId = RECORDED.sessionId} = {}) {
   const root = fs.mkdtempSync(path.join(tmpdir(), 'ods-deletion-refusal-'));
   t.after(() => fs.rmSync(root, {recursive: true, force: true}));
-  const prepared = [], signalled = [], aborted = [];
+  const prepared = [], signalled = [], aborted = [], decisions = [];
   const guard = createToolLoopGuard({
-    abortRun: (sessionId) => { aborted.push(sessionId); return true; },
+    abortRun: (id) => { aborted.push(id); return true; },
     execControl: {
-      signal: (runId) => { signalled.push(runId); return true; },
-      prepare: (runId, command) => {
+      signal: (id) => { signalled.push(id); return true; },
+      prepare: (_runId, command) => {
         prepared.push(command);
         return `/run/pixel-ods-control/cancellable-exec.sh ${'0'.repeat(64)} ${Buffer.from(command).toString('base64')}`;
       },
     },
+    warn() {}, info() {},
   });
-  const context = {agentId: 'pixel', runId: RECORDED.runId, sessionId: RECORDED.sessionId,
-    sessionKey: 'agent:pixel:openai-user:owner'};
+  const hooks = registeredHooks(guard);
+  const context = {agentId: 'pixel', runId, sessionId, sessionKey: 'agent:pixel:openai-user:owner'};
   guard.observeRun(context, 'pixel', {prompt}, {workspaceRoot: root});
-  const decisions = [];
-  let round = 0;
-  for (const call of calls) {
-    const callId = `${context.runId}:model:${++round}`;
-    guard.observeModelCall({callId}, context);
-    guard.observeModelEnd({callId, outcome: 'completed'}, context);
-    const ctx = {...context, toolName: call.tool, toolCallId: call.id};
-    const params = structuredClone(call.arguments);
-    const decision = guard.beforeToolCall({toolName: call.tool, toolCallId: call.id, runId: context.runId, params}, ctx);
+  let round = 0, count = 0;
+  async function call(tool, params, result, id = `call-${++count}`) {
+    const modelCall = `${context.runId}:model:${++round}`;
+    guard.observeModelCall({callId: modelCall}, context);
+    guard.observeModelEnd({callId: modelCall, outcome: 'completed'}, context);
+    const ctx = {...context, toolName: tool, toolCallId: id};
+    const event = {toolName: tool, toolCallId: id, runId: context.runId, params: structuredClone(params)};
+    const decision = await hooks.before_tool_call(event, ctx);
     decisions.push(decision);
-    const admitted = decision?.block ? params : {...params, ...decision?.params};
-    let result;
-    if (decision?.block) {
-      result = {isError: true, content: [{type: 'text', text: decision.blockReason}],
-        details: {status: 'blocked', deniedReason: 'plugin-before-tool-call', reason: decision.blockReason}};
-    } else {
-      const text = call.result.text.split('[ODS Pixel ')[0];
-      result = {content: [{type: 'text', text}], ...(call.result.details ? {details: call.result.details} : {}),
-        ...(call.result.isError ? {isError: true} : {})};
-      if (call.tool === 'write') {
-        fs.mkdirSync(path.dirname(path.join(root, admitted.path)), {recursive: true});
-        fs.writeFileSync(path.join(root, admitted.path), admitted.content);
-      }
+    const admitted = decision?.block ? event.params : {...event.params, ...decision?.params};
+    const outcome = decision?.block
+      ? {isError: true, content: [{type: 'text', text: decision.blockReason}],
+        details: {status: 'blocked', deniedReason: 'plugin-before-tool-call', reason: decision.blockReason}}
+      : result;
+    if (!decision?.block && tool === 'write' && !outcome.isError) {
+      fs.mkdirSync(path.dirname(path.join(root, admitted.path)), {recursive: true});
+      fs.writeFileSync(path.join(root, admitted.path), admitted.content);
     }
-    guard.afterToolCall({toolName: call.tool, toolCallId: call.id, runId: context.runId, params: admitted, result,
-      ...(result.isError ? {error: result.content[0].text} : {})}, ctx);
-    guard.toolResultPersist({toolName: call.tool, toolCallId: call.id, message: {role: 'toolResult',
-      toolName: call.tool, toolCallId: call.id, isError: result.isError === true, ...structuredClone(result)}}, ctx);
+    hooks.after_tool_call({toolName: tool, toolCallId: id, runId: context.runId, params: admitted, result: outcome,
+      ...(outcome.isError ? {error: outcome.content[0].text} : {})}, ctx);
+    guard.toolResultPersist({toolName: tool, toolCallId: id, message: {role: 'toolResult', toolName: tool,
+      toolCallId: id, isError: outcome.isError === true, ...structuredClone(outcome)}}, ctx);
+    return decision;
   }
-  // The recorded final model call was aborted without text.
-  const callId = `${context.runId}:model:${++round}`;
-  guard.observeModelCall({callId}, context);
-  guard.observeModelEnd({callId, outcome: 'error'}, context);
-  return {guard, context, decisions, prepared, signalled, aborted};
+  // The final model call, the registered agent_end, then the plugin's
+  // verification route: settle, then read.
+  async function delivered({outcome = 'error'} = {}) {
+    const modelCall = `${context.runId}:model:${++round}`;
+    guard.observeModelCall({callId: modelCall}, context);
+    guard.observeModelEnd({callId: modelCall, outcome}, context);
+    await hooks.agent_end({runId: context.runId}, context);
+    await guard.settleDelivery(context.runId);
+    return guard.deliveryVerificationForRun(context.runId);
+  }
+  return {guard, hooks, context, call, delivered, decisions, prepared, signalled, aborted};
 }
 
-// The plugin's verification route: agent_end, then settle, then read.
-async function delivered({guard, context}) {
-  guard.observeAgentEnd({}, context);
-  await guard.settleDelivery(context.runId);
-  return guard.deliveryVerificationForRun(context.runId);
+const text = (value) => ({content: [{type: 'text', text: value}]});
+const done = (exitCode, output) => ({content: [{type: 'text', text: output}],
+  details: {status: 'completed', exitCode, aggregated: output}, ...(exitCode ? {isError: true} : {})});
+const running = (sessionId) => ({content: [{type: 'text', text: `Command still running (session ${sessionId}).`}],
+  details: {status: 'running', sessionId}});
+const polled = (sessionId, exitCode, output) => ({content: [{type: 'text', text: output}],
+  details: {status: 'completed', sessionId, exitCode, aggregated: output}, ...(exitCode ? {isError: true} : {})});
+// Executed results are the recorded tool outputs without the ODS suffix that
+// persistence appended.
+const recordedResult = (call) => ({content: [{type: 'text', text: call.result.text.split('[ODS Pixel ')[0]}],
+  ...(call.result.details ? {details: call.result.details} : {}), ...(call.result.isError ? {isError: true} : {})});
+async function replay(t, calls, options) {
+  const run = session(t, options);
+  for (const call of calls) await run.call(call.tool, call.arguments, recordedResult(call), call.id);
+  return run;
 }
-
 const byIndex = (...numbers) => numbers.map(number => CALLS[number - 1]);
 const exec = (id, command, workdir = '/workspace') =>
   ({id, tool: 'exec', arguments: {command, workdir}, result: {isError: false, text: ''}});
+async function writeProject(run, directory = PROJECT) {
+  for (const [file, content] of [['rename_photos.py', 'def rename(p):\n    return p\n'],
+    ['test_rename.py', 'import unittest\nclass T(unittest.TestCase):\n    def test_a(self):\n        self.assertTrue(True)\n']]) {
+    const decision = await run.call('write', {path: `${directory}/${file}`, content}, text(`Successfully wrote ${content.length} bytes`));
+    assert.notEqual(decision?.block, true, decision?.blockReason);
+  }
+}
+async function refuse(run, command = 'rm -rf /workspace/test_manual') {
+  assert.equal((await run.call('exec', {command}, done(0, ''))).blockReason, RECURSIVE_DELETE_REQUIRES_OWNER_REASON);
+}
 
 test('recorded tower2 run: eleven calls, a passing test, then the refused cleanup and the refusal text', () => {
   assert.equal(RECORDED.sessionId, 'fe9ee859-c533-483c-b978-5c4a672dc126');
@@ -117,8 +171,11 @@ test('recorded tower2 run: eleven calls, a passing test, then the refused cleanu
   assert.equal(RECORDED.delivered.productOutcome, 'failed');
 });
 
-test('tower2 replay: the refused cleanup keeps the current passing test and the owner gets a receipt', async t => {
-  const run = replay(t, CALLS);
+test('tower2 replay through the registered hooks: the refused cleanup keeps the current pass and the owner gets a receipt', async t => {
+  // agent_end advances the preview generation before observing the end; the
+  // pass must survive that, because the ingress reads delivery after it.
+  assert.match(LIFECYCLE, /api\.on\("agent_end", \(event, context\) => \{\n\s+toolLoopGuard\.endPreviewRevalidation\(event, context\);\n\s+toolLoopGuard\.observeAgentEnd\(event, context\);/);
+  const run = await replay(t, CALLS);
   const {guard, context, decisions, prepared, signalled, aborted} = run;
   // #1 is the recorded path correction; #10 and #11 are the recorded refusals.
   assert.equal(decisions[0]?.blockReason, CALLS[0].result.text);
@@ -131,19 +188,17 @@ test('tower2 replay: the refused cleanup keeps the current passing test and the 
   assert.deepEqual(prepared, byIndex(4, 5, 7, 9).map(call => call.arguments.command));
   assert.deepEqual(signalled, [context.runId]);
   assert.deepEqual(aborted, [context.sessionId]);
-  assert.equal(guard.verificationStatus(context.runId), 'passed');
   assert.deepEqual(guard.verificationForRun(context.runId), {status: 'passed', text: RECEIPT});
-  assert.deepEqual(await delivered(run), {status: 'passed', text: RECEIPT});
+  assert.deepEqual(await run.delivered(), {status: 'passed', text: RECEIPT});
   // The aborted run's empty final, or any model text, is replaced.
-  for (const text of ['', 'I wrote the script and tested it; the manual folder was cleaned up.']) {
-    assert.equal(guard.replyPayloadSending({runId: context.runId, kind: 'final', payload: {text}}).payload.text, RECEIPT);
+  for (const final of ['', 'I wrote the script and tested it; the manual folder was cleaned up.']) {
+    assert.equal(guard.replyPayloadSending({runId: context.runId, kind: 'final', payload: {text: final}}).payload.text, RECEIPT);
   }
   assert.doesNotMatch(RECEIPT, /Do not retry|wait for a new owner instruction|nothing was deleted/i);
-  assert.ok(RECEIPT.length < 32 * 1024);
   // The latch, finalization and continuation behavior are unchanged.
   assert.equal(guard.beforeAgentFinalize({}, context), undefined);
   assert.equal(guard.continuationAllowed(context.runId), false);
-  assert.deepEqual(guard.beforeToolCall({toolName: 'read', params: {path: `${PROJECT}/test_rename.py`}},
+  assert.deepEqual(await run.hooks.before_tool_call({toolName: 'read', params: {path: `${PROJECT}/test_rename.py`}},
     {...context, toolName: 'read', toolCallId: 'later-read'}),
   {block: true, blockReason: RECURSIVE_DELETE_REQUIRES_OWNER_REASON});
   assert.deepEqual(signalled, [context.runId]);
@@ -151,11 +206,11 @@ test('tower2 replay: the refused cleanup keeps the current passing test and the 
 });
 
 test('tower2 replay: the refused cleanup alone, before any later call, gives the same receipt', async t => {
-  const run = replay(t, CALLS.slice(0, 10));
+  const run = await replay(t, CALLS.slice(0, 10));
   assert.equal(run.decisions[9].blockReason, RECURSIVE_DELETE_REQUIRES_OWNER_REASON);
   assert.deepEqual(run.signalled, []);
   assert.deepEqual(run.aborted, []);
-  assert.deepEqual(await delivered(run), {status: 'passed', text: RECEIPT});
+  assert.deepEqual(await run.delivered(), {status: 'passed', text: RECEIPT});
   // A text-only answer after the refusal is still not accepted.
   assert.equal(run.guard.replyPayloadSending({runId: run.context.runId, kind: 'final',
     payload: {text: 'Done! I removed the temporary folder.'}}).payload.text, RECEIPT);
@@ -164,22 +219,21 @@ test('tower2 replay: the refused cleanup alone, before any later call, gives the
 test('tower2 replay: a later write makes the pass stale, so the refusal stays failed', async t => {
   const write = {id: 'extra-write', tool: 'write', arguments: {path: `${PROJECT}/README.md`, content: '# Photo renamer\n'},
     result: {isError: false, text: `Successfully wrote 16 bytes to ${PROJECT}/README.md`}};
-  const run = replay(t, [...CALLS.slice(0, 9), write, CALLS[9]]);
-  assert.deepEqual(await delivered(run), {status: 'failed', text: LEAD +
-    '- File written: `/workspace/Playground/photo-renamer/README.md`.\n' + FILES +
-    `- ${TEST} passed, but a later tool call could have changed the workspace, so that result is not current.\n` + INCOMPLETE});
+  const run = await replay(t, [...CALLS.slice(0, 9), write, CALLS[9]]);
+  assert.deepEqual(await run.delivered(), {status: 'failed', text: LEAD +
+    '- File written: `/workspace/Playground/photo-renamer/README.md`.\n' + FILES + `- ${TEST}${STALE}` + INCOMPLETE});
 });
 
 test('tower2 replay: a refusal right after the failing test stays failed', async t => {
-  const run = replay(t, [...CALLS.slice(0, 5), CALLS[9]]);
+  const run = await replay(t, [...CALLS.slice(0, 5), CALLS[9]]);
   assert.equal(run.decisions[5].blockReason, RECURSIVE_DELETE_REQUIRES_OWNER_REASON);
-  assert.deepEqual(await delivered(run), {status: 'failed', text: LEAD + FILES + `- ${TEST} failed.\n` + INCOMPLETE});
+  assert.deepEqual(await run.delivered(), {status: 'failed', text: LEAD + FILES + `- ${TEST} failed.\n` + INCOMPLETE});
 });
 
 test('tower2 replay: a refusal before any test ran stays failed with an owner receipt', async t => {
-  const run = replay(t, [...CALLS.slice(0, 4), CALLS[9]]);
+  const run = await replay(t, [...CALLS.slice(0, 4), CALLS[9]]);
   const receipt = LEAD + FILES + '- No recognized test command ran.\n' + INCOMPLETE;
-  assert.deepEqual(await delivered(run), {status: 'failed', text: receipt});
+  assert.deepEqual(await run.delivered(), {status: 'failed', text: receipt});
   assert.equal(run.guard.replyPayloadSending({runId: run.context.runId, kind: 'final',
     payload: {text: 'All tests pass.'}}).payload.text, receipt);
 });
@@ -188,96 +242,302 @@ test('tower2 replay: a refused rerun of the test is not a test result', async t 
   // Every call after the refusal is refused and runs nothing. Its blocked
   // receipt must not turn the real pass into a failure.
   const rerun = exec('refused-rerun', `cd /workspace/${PROJECT} && python3 test_rename.py`);
-  const run = replay(t, [...CALLS.slice(0, 10), rerun]);
+  const run = await replay(t, [...CALLS.slice(0, 10), rerun]);
   assert.equal(run.decisions[10].blockReason, RECURSIVE_DELETE_REQUIRES_OWNER_REASON);
-  assert.deepEqual(await delivered(run), {status: 'passed', text: RECEIPT});
+  assert.deepEqual(await run.delivered(), {status: 'passed', text: RECEIPT});
   // The same holds when the refused deletion itself carries a test command.
   const combined = exec('refused-combined', 'rm -rf /workspace/test_manual && python3 -m unittest -v', `/workspace/${PROJECT}`);
-  const chained = replay(t, [...CALLS.slice(0, 9), combined]);
+  const chained = await replay(t, [...CALLS.slice(0, 9), combined]);
   assert.equal(chained.decisions[9].blockReason, RECURSIVE_DELETE_REQUIRES_OWNER_REASON);
-  assert.deepEqual(await delivered(chained), {status: 'passed', text: RECEIPT});
+  assert.deepEqual(await chained.delivered(), {status: 'passed', text: RECEIPT});
 });
 
 test('owner-authorized recursive deletion is unchanged', async t => {
-  const prompt = 'Delete the directory /workspace/test_manual recursively.';
-  const run = replay(t, [exec('authorized', 'rm -rf /workspace/test_manual')], {prompt});
-  assert.notEqual(run.decisions[0]?.block, true, run.decisions[0]?.blockReason);
-  assert.doesNotMatch(JSON.stringify(await delivered(run)), /recursive deletion/);
+  const run = session(t, {prompt: 'Delete the directory /workspace/test_manual recursively.'});
+  const decision = await run.call('exec', {command: 'rm -rf /workspace/test_manual', workdir: '/workspace'}, done(0, ''));
+  assert.notEqual(decision?.block, true, decision?.blockReason);
+  assert.doesNotMatch(JSON.stringify(await run.delivered()), /recursive deletion/);
 });
 
-test('a still-running test keeps the refusal failed', () => {
-  const guard = createToolLoopGuard();
-  const context = {agentId: 'pixel', runId: 'run-1', sessionId: 'session-1'};
-  guard.observeRun(context, 'pixel', {prompt: RECORDED.prompt});
+// Review of #6753, probes A and B: a background test is current only as of
+// when it started, and a background command that ends after a pass could have
+// changed the workspace until then.
+test('a background test pass is dated from its start, and a background command ending later makes it stale', async t => {
   const params = {command: 'python3 -m unittest -v', workdir: `/workspace/${PROJECT}`};
-  guard.beforeToolCall({toolName: 'exec', toolCallId: 'test', params}, {...context, toolName: 'exec', toolCallId: 'test'});
-  guard.afterToolCall({toolName: 'exec', toolCallId: 'test', params,
-    result: {details: {status: 'running', sessionId: 'tests-1'}, content: [{type: 'text', text: 'running'}]}},
-  {...context, toolName: 'exec', toolCallId: 'test'});
-  assert.equal(guard.verificationStatus('run-1'), 'pending');
-  assert.equal(guard.beforeToolCall({toolName: 'exec', toolCallId: 'rm', params: {command: 'rm -rf /workspace/tmp'}},
-    {...context, toolName: 'exec', toolCallId: 'rm'}).blockReason, RECURSIVE_DELETE_REQUIRES_OWNER_REASON);
-  assert.deepEqual(guard.deliveryVerificationForRun('run-1'), {status: 'failed', text: LEAD + '- No file was written.\n' +
-    '- The latest recognized test command, `python3 -m unittest -v` in `/workspace/Playground/photo-renamer`, had not finished, ' +
-    'so its result is unknown.\n- A command started earlier was still running when tool use stopped.\n' + INCOMPLETE});
+  // Control: nothing ran while the test ran, then a read-only poll.
+  const clean = session(t, {prompt: RECORDED.prompt});
+  await writeProject(clean);
+  await clean.call('exec', params, running('s1'));
+  assert.equal(clean.guard.verificationStatus(clean.context.runId), 'pending');
+  await clean.call('process', {action: 'poll', sessionId: 's1'}, polled('s1', 0, UNITTEST_OK));
+  await refuse(clean);
+  assert.deepEqual(await clean.delivered(), {status: 'passed', text: LEAD + FILES + `- ${UNITTEST}${CURRENT}` + COMPLETE});
+  // A: the module is rewritten while the test still runs.
+  const rewritten = session(t, {prompt: RECORDED.prompt});
+  await writeProject(rewritten);
+  await rewritten.call('exec', params, running('s1'));
+  await rewritten.call('write', {path: `${PROJECT}/rename_photos.py`, content: 'def rename(p):\n    raise SystemExit(1)\n'},
+    text('Successfully wrote 40 bytes'));
+  await rewritten.call('process', {action: 'poll', sessionId: 's1'}, polled('s1', 0, UNITTEST_OK));
+  assert.equal(rewritten.guard.verificationStatus(rewritten.context.runId), 'passed');
+  await refuse(rewritten);
+  assert.deepEqual(await rewritten.delivered(), {status: 'failed', text: LEAD + FILES + `- ${UNITTEST}${STALE}` + INCOMPLETE});
+  // B: a generator started before the test ends after the pass.
+  const generator = session(t, {prompt: RECORDED.prompt});
+  await writeProject(generator);
+  await generator.call('exec', {command: 'python3 make_fixture_photos.py', workdir: `/workspace/${PROJECT}`}, running('s2'));
+  await generator.call('exec', params, done(0, UNITTEST_OK));
+  await generator.call('process', {action: 'poll', sessionId: 's2'}, polled('s2', 0, 'wrote 40 fixtures'));
+  await refuse(generator);
+  assert.deepEqual(await generator.delivered(), {status: 'failed', text: LEAD + FILES + `- ${UNITTEST}${STALE}` + INCOMPLETE});
 });
 
-test('an Operations receipt and a current test pass cannot complete a run after a deletion refusal', () => {
-  const guard = createToolLoopGuard();
-  const context = {agentId: 'pixel', runId: 'run-1', sessionId: 'session-1'};
-  const run = (toolName, params, id, result) => {
-    const ctx = {...context, toolName, toolCallId: id};
-    const decision = guard.beforeToolCall({toolName, toolCallId: id, params}, ctx);
-    if (result) guard.afterToolCall({toolName, toolCallId: id, params, result}, ctx);
-    return decision;
-  };
-  guard.observeRun(context, 'pixel', {prompt: 'Check the ODS host hostname.'});
-  run('pixel_ods_host_observe', {actions: ['host.identity']}, 'observe', {details: {jobId: 'ops-1234567890123-abcdef123456',
+test('a still-running test keeps the refusal failed', async t => {
+  const run = session(t, {prompt: RECORDED.prompt});
+  await writeProject(run);
+  await run.call('exec', {command: 'python3 -m unittest -v', workdir: `/workspace/${PROJECT}`}, running('tests-1'));
+  assert.equal(run.guard.verificationStatus(run.context.runId), 'pending');
+  await refuse(run, 'rm -rf /workspace/tmp');
+  assert.deepEqual(await run.delivered(), {status: 'failed', text: LEAD + FILES +
+    `- ${UNITTEST} had not finished, so its result is unknown.\n` +
+    '- A command started earlier was still running when tool use stopped.\n' + INCOMPLETE});
+});
+
+// Probes C and D: a pass keeps the run only after this run changed files for
+// an owner who asked for a change and for no written answer.
+test('a pass without a change, or for a question, does not complete the run', async t => {
+  const baseline = session(t, {prompt: 'Fix the bug in Playground/photo-renamer/rename_photos.py so PNG files keep their EXIF date, then run the tests.'});
+  await baseline.call('read', {path: `${PROJECT}/rename_photos.py`}, text('def rename(p):\n    return p\n'));
+  await baseline.call('exec', {command: `cd /workspace/${PROJECT} && python3 -m unittest -v`}, done(0, UNITTEST_OK));
+  await refuse(baseline, `rm -rf /workspace/${PROJECT}/__pycache__`);
+  assert.deepEqual(await baseline.delivered(), {status: 'failed', text: LEAD + NO_FILES + `- ${UNITTEST}${CURRENT}` + INCOMPLETE});
+  for (const prompt of ['What does Playground/photo-renamer/rename_photos.py do? Explain it briefly.',
+    'Write a test for Playground/photo-renamer/rename_photos.py and tell me what it covers.']) {
+    const question = session(t, {prompt});
+    await question.call('read', {path: `${PROJECT}/rename_photos.py`}, text('def rename(p):\n    return p\n'));
+    await question.call('write', {path: `${PROJECT}/test_probe.py`, content: 'import unittest\n'}, text('Successfully wrote 16 bytes'));
+    await question.call('exec', {command: 'python3 -m unittest -v', workdir: `/workspace/${PROJECT}`}, done(0, UNITTEST_OK));
+    await refuse(question, 'rm -rf /tmp/x');
+    assert.deepEqual(await question.delivered(), {status: 'failed', text: LEAD +
+      '- File written: `/workspace/Playground/photo-renamer/test_probe.py`.\n' + `- ${UNITTEST}${CURRENT}` + INCOMPLETE}, prompt);
+  }
+  // A polite request is still a request.
+  const polite = session(t, {prompt: 'Can you write a python script that renames all photos in a folder by date taken and test it?'});
+  await writeProject(polite);
+  await polite.call('exec', {command: 'python3 -m unittest -v', workdir: `/workspace/${PROJECT}`}, done(0, UNITTEST_OK));
+  await refuse(polite);
+  assert.equal((await polite.delivered()).status, 'passed');
+});
+
+// Probe Q: research answers and citations are model text, which a refusal
+// never delivers.
+test('research requests and runs that used web results stay failed', async t => {
+  for (const [prompt, web] of [
+    ['Search the web for which EXIF tag stores the date a photo was taken and write a python script that prints it for a file, with a test.', false],
+    [RECORDED.prompt, true],
+    ['Research which EXIF tag stores the date a photo was taken, cite your sources, and write a python script that prints it for a file, with a test.', false],
+  ]) {
+    const run = session(t, {prompt});
+    if (web) await run.call('web_search', {query: 'EXIF DateTimeOriginal tag'}, text('DateTimeOriginal (0x9003) https://exiftool.org/TagNames/EXIF.html'));
+    await writeProject(run);
+    await run.call('exec', {command: 'python3 -m unittest -v', workdir: `/workspace/${PROJECT}`}, done(0, UNITTEST_OK));
+    await refuse(run, 'rm -rf /tmp/x');
+    assert.deepEqual(await run.delivered(), {status: 'failed', text: LEAD + FILES + `- ${UNITTEST}${CURRENT}` + INCOMPLETE}, prompt);
+  }
+});
+
+// Probes E and F: a run that skipped every test proves nothing.
+test('a pass that skipped every test keeps the refusal failed', async t => {
+  for (const [command, output] of [
+    ['python3 -m unittest -v', "test_a (test_rename.T.test_a) ... skipped 'todo'\n\nRan 1 test in 0.000s\n\nOK (skipped=1)"],
+    ['pytest -q', 's                                                                        [100%]\n1 skipped in 0.01s'],
+    ['pytest', '============================== 2 skipped, 1 warning in 0.02s ==============================='],
+  ]) {
+    const run = session(t, {prompt: RECORDED.prompt});
+    await writeProject(run);
+    await run.call('exec', {command, workdir: `/workspace/${PROJECT}`}, done(0, output));
+    assert.equal(run.guard.verificationStatus(run.context.runId), 'passed');
+    await refuse(run, 'rm -rf /tmp/x');
+    assert.deepEqual(await run.delivered(), {status: 'failed', text: LEAD + FILES +
+      `- The latest recognized test command, \`${command}\` in \`/workspace/Playground/photo-renamer\`, exited successfully, ` +
+      'but every test it reported was skipped.\n' + INCOMPLETE}, command);
+  }
+  // Some tests ran: the pass counts.
+  const partial = session(t, {prompt: RECORDED.prompt});
+  await writeProject(partial);
+  await partial.call('exec', {command: 'python3 -m unittest -v', workdir: `/workspace/${PROJECT}`},
+    done(0, 'Ran 2 tests in 0.001s\n\nOK (skipped=1)'));
+  await refuse(partial, 'rm -rf /tmp/x');
+  assert.equal((await partial.delivered()).status, 'passed');
+});
+
+// Probe G: edit and apply_patch changes are listed; probe H: a pass in a
+// directory without this run's changes does not cover them.
+test('the receipt lists edited and patched files, and the pass must cover a changed file', async t => {
+  const MODULE = 'def rename(p):\n    return p\n';
+  const edited = session(t, {prompt: 'Fix the bug in Playground/photo-renamer/rename_photos.py and run the tests.'});
+  await edited.call('read', {path: `${PROJECT}/rename_photos.py`}, text(MODULE));
+  const edit = await edited.call('edit', {path: `${PROJECT}/rename_photos.py`, edits: [{oldText: 'return p', newText: 'return str(p)'}]},
+    text('Successfully replaced 1 block(s)'));
+  assert.notEqual(edit?.block, true, edit?.blockReason);
+  await edited.call('exec', {command: 'python3 -m unittest -v', workdir: `/workspace/${PROJECT}`}, done(0, UNITTEST_OK));
+  await refuse(edited, 'rm -rf /tmp/x');
+  assert.deepEqual(await edited.delivered(), {status: 'passed', text: LEAD +
+    '- File changed: `/workspace/Playground/photo-renamer/rename_photos.py`.\n' + `- ${UNITTEST}${CURRENT}` + COMPLETE});
+
+  const patched = session(t, {prompt: 'Fix the bug in Playground/photo-renamer/rename_photos.py and run the tests.'});
+  await patched.call('read', {path: `${PROJECT}/rename_photos.py`}, text(MODULE));
+  const patch = await patched.call('apply_patch', {input: `*** Begin Patch\n*** Update File: ${PROJECT}/rename_photos.py\n@@\n-    return p\n+    return str(p)\n*** End Patch`},
+    text('Success. Updated the following files:\nM Playground/photo-renamer/rename_photos.py'));
+  assert.notEqual(patch?.block, true, patch?.blockReason);
+  await patched.call('exec', {command: 'python3 -m unittest -v', workdir: `/workspace/${PROJECT}`}, done(0, UNITTEST_OK));
+  await refuse(patched, 'rm -rf /tmp/x');
+  assert.deepEqual(await patched.delivered(), {status: 'passed', text: LEAD +
+    '- File changed: `/workspace/Playground/photo-renamer/rename_photos.py`.\n' + `- ${UNITTEST}${CURRENT}` + COMPLETE});
+
+  const elsewhere = session(t, {prompt: RECORDED.prompt});
+  await writeProject(elsewhere);
+  await elsewhere.call('exec', {command: 'cd /workspace/Playground/old-project && python3 -m unittest'}, done(0, 'Ran 4 tests in 0.01s\n\nOK'));
+  await refuse(elsewhere, 'rm -rf /tmp/x');
+  assert.deepEqual(await elsewhere.delivered(), {status: 'failed', text: LEAD + FILES +
+    '- The latest recognized test command, `python3 -m unittest` in `/workspace/Playground/old-project`,' + CURRENT + INCOMPLETE});
+});
+
+// Probe S: a leading `cd /workspace/...` is where the test ran, whatever
+// workdir the call named.
+test('the receipt names the directory a leading cd chose over the workdir', async t => {
+  const run = session(t, {prompt: RECORDED.prompt});
+  await writeProject(run);
+  await run.call('exec', {command: `cd /workspace/${PROJECT} && python3 -m unittest -v`, workdir: '/workspace/Playground/other'},
+    done(0, UNITTEST_OK));
+  await refuse(run, 'rm -rf /tmp/x');
+  assert.deepEqual(await run.delivered(), {status: 'passed', text: LEAD + FILES + `- ${UNITTEST}${CURRENT}` + COMPLETE});
+});
+
+test('receipt-based and team work stay failed after a deletion refusal', async t => {
+  const operations = session(t, {prompt: 'Check the ODS host hostname.'});
+  await operations.call('pixel_ods_host_observe', {actions: ['host.identity']}, {details: {jobId: 'ops-1234567890123-abcdef123456',
     status: 'succeeded', waitTimedOut: false, steps: [{stepId: 'observe-1', target: 'ods-host', action: 'host.identity',
       exitCode: 0, stdout: 'test-host\n', stderr: '', outputTruncated: {stdout: false, stderr: false}, riskSignals: []}]}});
-  assert.equal(guard.verificationForRun('run-1').status, 'passed');
-  run('exec', {command: 'python3 -m unittest -v'}, 'test',
-    {details: {status: 'completed', exitCode: 0}, content: [{type: 'text', text: 'Ran 1 test\n\nOK'}]});
-  assert.equal(guard.verificationStatus('run-1'), 'passed');
-  assert.equal(run('exec', {command: 'rm -rf /workspace/scratch'}, 'rm').blockReason, RECURSIVE_DELETE_REQUIRES_OWNER_REASON);
-  assert.deepEqual(guard.deliveryVerificationForRun('run-1'), {status: 'failed', text: LEAD + '- No file was written.\n' +
-    '- The latest recognized test command, `python3 -m unittest -v` in `/workspace`, passed, and no tool call that could ' +
-    'change the workspace ran after it.\n' + INCOMPLETE});
+  assert.equal(operations.guard.verificationForRun(operations.context.runId).status, 'passed');
+  await operations.call('exec', {command: 'python3 -m unittest -v'}, done(0, 'Ran 1 test in 0.001s\n\nOK'));
+  assert.equal(operations.guard.verificationStatus(operations.context.runId), 'passed');
+  await refuse(operations, 'rm -rf /workspace/scratch');
+  assert.deepEqual(await operations.delivered(), {status: 'failed', text: LEAD + NO_FILES +
+    '- The latest recognized test command, `python3 -m unittest -v` in `/workspace`,' + CURRENT + INCOMPLETE});
+  // A team builder's outcome drives the team's plan, not the owner's reply.
+  const builder = session(t, {prompt: `You are the Builder in the owner's Portal team. ${RECORDED.prompt}`});
+  await writeProject(builder);
+  await builder.call('exec', {command: 'python3 -m unittest -v', workdir: `/workspace/${PROJECT}`}, done(0, UNITTEST_OK));
+  await refuse(builder, 'rm -rf /tmp/x');
+  assert.deepEqual(await builder.delivered(), {status: 'failed', text: LEAD + FILES + `- ${UNITTEST}${CURRENT}` + INCOMPLETE});
 });
 
-test('the receipt stays bounded and never quotes model text as markup', () => {
-  const guard = createToolLoopGuard();
-  const context = {agentId: 'pixel', runId: 'run-1', sessionId: 'session-1'};
-  guard.observeRun(context, 'pixel', {prompt: RECORDED.prompt});
-  const run = (toolName, params, id, result) => {
-    const ctx = {...context, toolName, toolCallId: id};
-    const decision = guard.beforeToolCall({toolName, toolCallId: id, params}, ctx);
-    assert.notEqual(decision?.block, true, decision?.blockReason);
-    guard.afterToolCall({toolName, toolCallId: id, params: {...params, ...decision?.params}, result}, ctx);
-  };
-  for (let index = 0; index < 25; index++) {
-    const content = `fixture ${index}\n`;
-    run('write', {path: `${PROJECT}/fixture_${String(index).padStart(2, '0')}.txt`, content}, `write-${index}`,
-      {content: [{type: 'text', text: `Successfully wrote ${content.length} bytes`}]});
+// The latch's refusals count as failures; after four in a row the budget is
+// exhausted. The deletion refusal came first and remains the reported cause.
+test('a progress stop caused by the latch keeps the deletion receipt', async t => {
+  const run = session(t, {prompt: RECORDED.prompt});
+  await writeProject(run);
+  await run.call('exec', {command: 'python3 -m unittest -v', workdir: `/workspace/${PROJECT}`}, done(0, UNITTEST_OK));
+  await refuse(run, 'rm -rf /tmp/x');
+  const reasons = [];
+  for (let index = 0; index < 4; index++) {
+    reasons.push((await run.call('exec', {command: `ls /workspace/${PROJECT}`}, done(0, ''))).blockReason);
   }
-  const long = `cd "/workspace/${PROJECT}/a\`b ${'d'.repeat(300)}" && python3 test_rename.py`;
-  run('exec', {command: long}, 'test', {details: {status: 'completed', exitCode: 0}, content: [{type: 'text', text: 'ok'}]});
-  assert.equal(guard.verificationStatus('run-1'), 'passed');
-  guard.beforeToolCall({toolName: 'exec', toolCallId: 'rm', params: {command: 'rm -rf /workspace/tmp'}},
-    {...context, toolName: 'exec', toolCallId: 'rm'});
-  const {status, text} = guard.deliveryVerificationForRun('run-1');
-  assert.equal(status, 'passed');
-  assert.equal(text.match(/^- File written: /gm).length, 20);
-  assert.match(text, /\n- 5 additional files were written\.\n/);
-  const test = text.match(/^- The latest recognized test command, `python3 test_rename\.py` in `([^`\n]*)`, passed/m);
-  assert.ok(test, text);
-  assert.ok(test[1].startsWith(`/workspace/${PROJECT}/a b ddd`));
-  assert.ok(test[1].length <= 160 && test[1].endsWith('\u2026'));
-  assert.doesNotMatch(text, /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/);
-  assert.ok(text.length < 32 * 1024);
+  assert.deepEqual(reasons, [RECURSIVE_DELETE_REQUIRES_OWNER_REASON, RECURSIVE_DELETE_REQUIRES_OWNER_REASON,
+    RECURSIVE_DELETE_REQUIRES_OWNER_REASON, RUN_PROGRESS_STOP_REASON]);
+  // As on main: the latch signals and aborts once, and the progress stop
+  // once more at the next model end.
+  assert.deepEqual(run.signalled, [run.context.runId, run.context.runId]);
+  assert.deepEqual(run.aborted, [run.context.sessionId, run.context.sessionId]);
+  assert.deepEqual(await run.delivered(), {status: 'passed', text: LEAD + FILES + `- ${UNITTEST}${CURRENT}` + COMPLETE});
 });
 
-test('the photo-renamer turn discloses the deletion tripwire in the workspace guide only', () => {
+// Probe R: path depth is unbounded even though each component is bounded.
+test('the receipt stays bounded and never quotes model text as markup', async t => {
+  const deep = Array.from({length: 30}, (_, index) => `d${index}`.padEnd(120, 'x')).join('/');
+  const run = session(t, {prompt: RECORDED.prompt});
+  await writeProject(run);
+  for (let index = 0; index < 23; index++) {
+    const decision = await run.call('write', {path: `${PROJECT}/${deep}/f${String(index).padStart(2, '0')}.py`, content: 'x\n'},
+      text('Successfully wrote 2 bytes'));
+    assert.notEqual(decision?.block, true, decision?.blockReason);
+  }
+  await run.call('exec', {command: 'python3 -m unittest -v', workdir: `/workspace/${PROJECT}`}, done(0, UNITTEST_OK));
+  await refuse(run, 'rm -rf /tmp/x');
+  const verification = await run.delivered();
+  assert.equal(verification.status, 'passed');
+  const lines = verification.text.match(/^- File written: [^\n]*$/gm);
+  assert.equal(lines.length, 20);
+  assert.match(verification.text, /\n- 5 additional files were written\.\n/);
+  for (const line of lines) {
+    assert.ok(line.length <= 220, line);
+    assert.ok(line.startsWith('- File written: `/workspace/Playground/photo-renamer/d0') && line.includes(ELLIPSIS), line);
+    assert.match(line, /xxx\/f[0-9]{2}\.py`\.$/);
+  }
+  assert.ok(verification.text.length < 8 * 1024, String(verification.text.length));
+
+  // A model-chosen directory with a backtick, spaces and length is bounded
+  // inline code. It holds none of this run's changes, so the run stays failed.
+  const hostile = session(t, {prompt: RECORDED.prompt});
+  await writeProject(hostile);
+  const long = `cd "/workspace/${PROJECT}/a\`b ${'d'.repeat(300)}" && python3 test_rename.py`;
+  await hostile.call('exec', {command: long}, done(0, 'ok'));
+  await refuse(hostile, 'rm -rf /workspace/tmp');
+  const {status, text: receipt} = await hostile.delivered();
+  assert.equal(status, 'failed');
+  const test = receipt.match(/^- The latest recognized test command, `python3 test_rename\.py` in `([^`\n]*)`, passed/m);
+  assert.ok(test, receipt);
+  assert.ok(test[1].startsWith(`/workspace/${PROJECT}/a b ddd`));
+  assert.ok(test[1].length <= 160 && test[1].endsWith(ELLIPSIS));
+  assert.doesNotMatch(receipt, /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/);
+});
+
+// tower3 open-prompt 07 (Qwen3.5-27B, main d4a61f33, session 047d3145): the
+// unittest runner reported "Ran 11 tests" and OK with exit 0, then the program
+// under a negative test printed "Error: Folder ... does not exist.". That
+// line was counted as a unittest failure and the owner got the
+// failed-verification text instead of the model's answer.
+test('tower3 replay: a line the tested program printed after a clean unittest verdict is not a failure', async t => {
+  assert.equal(TOWER3.sessionId, '047d3145-2472-4aef-a626-f43b6e712f6b');
+  assert.match(TOWER3.evidence, /sha256 e861b9f0263626593ff7e3966f81d95a901976fdc74e3cc3dfa2f07a70d228f3/);
+  assert.equal(TOWER3.prompt, RECORDED.prompt);
+  assert.deepEqual(TOWER3.calls.map(call => call.tool), ['write', 'write', 'exec', 'edit', 'exec', 'exec', 'exec', 'exec']);
+  const passing = TOWER3.calls[4];
+  assert.equal(passing.arguments.command, 'cd /workspace/Playground/photo-renamer && python3 -m unittest test_photo_renamer -v');
+  assert.equal(passing.result.details.exitCode, 0);
+  assert.match(passing.result.details.aggregated, /\nRan 11 tests in [0-9.]+s\n\nOK\n/);
+  assert.match(passing.result.details.aggregated, /\nError: Folder '\/nonexistent\/folder\/path' does not exist\.$/);
+  assert.equal(TOWER3.delivered.productOutcome, 'failed');
+  assert.match(TOWER3.delivered.text, /latest verification check failed/);
+  const run = await replay(t, TOWER3.calls, {prompt: TOWER3.submittedUserText, runId: TOWER3.runId, sessionId: TOWER3.sessionId});
+  assert.deepEqual(run.decisions.map(decision => decision?.block === true), Array(8).fill(false));
+  assert.equal(run.guard.verificationStatus(run.context.runId), 'passed');
+  assert.equal(run.guard.beforeAgentFinalize({lastAssistantMessage: TOWER3.finalAssistant.text}, run.context, 'pixel'), undefined);
+  const verification = await run.delivered({outcome: 'completed'});
+  assert.equal(verification.status, 'passed');
+  assert.equal(verification.text, undefined);
+  // The model's own answer is delivered unchanged.
+  assert.equal(run.guard.replyPayloadSending({runId: run.context.runId, kind: 'final',
+    payload: {text: TOWER3.finalAssistant.text}}), undefined);
+
+  // Without unittest's verdict, an ad-hoc test script's Error or FAIL line
+  // still fails an exit-zero run, in any case.
+  for (const output of ['Error: negative numbers were accepted', 'fail: rename kept the old name\nDone']) {
+    const adhoc = session(t, {prompt: RECORDED.prompt});
+    await writeProject(adhoc);
+    await adhoc.call('exec', {command: 'python3 test_rename.py', workdir: `/workspace/${PROJECT}`}, done(0, output));
+    assert.equal(adhoc.guard.verificationStatus(adhoc.context.runId), 'failed', output);
+  }
+  // With the verdict, unittest's own upper-case failure lines still count.
+  const reported = session(t, {prompt: RECORDED.prompt});
+  await writeProject(reported);
+  await reported.call('exec', {command: 'python3 -m unittest -v', workdir: `/workspace/${PROJECT}`},
+    done(0, `${UNITTEST_OK}\n${'='.repeat(70)}\nFAIL: test_b (test_rename.T.test_b)\n\nFAILED (failures=1)`));
+  assert.equal(reported.guard.verificationStatus(reported.context.runId), 'failed');
+});
+
+test('turns that can trip the deletion refusal disclose it once; other turns are unchanged', () => {
   assert.equal(RECURSIVE_DELETE_CONTRACT, 'Do not delete directories recursively (rm -rf or equivalents) unless the owner asked; ' +
     'ODS refuses that and may stop tool use for the turn. Keep temporary test inputs inside the project folder and leave cleanup to the owner.');
   for (const contract of [RECURSIVE_DELETE_CONTRACT, NAMED_ITEM_CONTRACT, DERIVED_FILE_CONTRACT]) {
@@ -286,18 +546,37 @@ test('the photo-renamer turn discloses the deletion tripwire in the workspace gu
   for (const other of ['extensions', 'research', 'verification']) assert.ok(!AGENT_SKILLS[other].includes(RECURSIVE_DELETE_CONTRACT));
   assert.ok(!ODS_SEPTEMBER16_CONVERSATION_CONTRACT.includes('rm -rf'));
   assert.equal(ODS_SEPTEMBER16_CONVERSATION_CONTRACT.length, 17751);
-  const system = promptContractForAgent({agentId: 'pixel', contextTokenBudget: 65536}, 'pixel',
-    {prompt: RECORDED.submittedUserText}).appendSystemContext;
-  assert.ok(system.includes(AGENT_SKILLS.workspace));
-  assert.equal(system.split(RECURSIVE_DELETE_CONTRACT).length, 2);
+  const system = (prompt, contextTokenBudget = 65536) =>
+    promptContractForAgent({agentId: 'pixel', contextTokenBudget}, 'pixel', {prompt}).appendSystemContext;
+  for (const budget of [65536, 16384]) {
+    const photo = system(RECORDED.submittedUserText, budget);
+    assert.ok(photo.includes(AGENT_SKILLS.workspace));
+    assert.equal(photo.split(RECURSIVE_DELETE_CONTRACT).length, 2);
+    // An existing-code change needs no "workspace" wording or new project.
+    for (const prompt of [
+      'Fix the bug in Playground/photo-renamer/rename_photos.py so PNG files keep their EXIF date, then run the tests.',
+      'Run the tests in Playground/photo-renamer and fix any failures.',
+      'Add a --dry-run flag to rename_photos.py and update its tests.',
+    ]) {
+      const contract = system(prompt, budget);
+      assert.ok(!contract.includes(AGENT_SKILLS.workspace), prompt);
+      assert.equal(contract.split(RECURSIVE_DELETE_CONTRACT).length, 2, prompt);
+    }
+    for (const prompt of ['What is the capital of France?', 'Check the ODS host hostname.',
+      'What does Playground/photo-renamer/rename_photos.py do? Explain it briefly.',
+      'Research the latest news about local AI models on the web and cite sources.',
+      'Do not edit rename_photos.py; just tell me what it is for.']) {
+      assert.ok(!system(prompt, budget).includes(RECURSIVE_DELETE_CONTRACT), prompt);
+    }
+  }
 });
 
 // The trusted ingress over loopback: the gateway's verification route returns
-// what the plugin route returns for the replayed run, and the aborted model
-// run produced no text.
+// what the plugin route returns for the replayed run after the registered
+// agent_end, and the aborted model run produced no text.
 test('ingress delivers the replay receipt with outcome passed', async t => {
-  const run = replay(t, CALLS);
-  const verification = await delivered(run);
+  const run = await replay(t, CALLS);
+  const verification = await run.delivered();
   const listen = async server => {
     await new Promise((resolve, reject) => { server.once('error', reject); server.listen(0, '127.0.0.1', resolve); });
     t.after(async () => { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); });

@@ -1406,32 +1406,65 @@ function verificationFingerprintIsPythonUnittest(fingerprint) {
   }
 }
 
-function execResultHasNonCleanUnittestOutcome(event) {
+function execResultTexts(event) {
   const result = event?.result;
-  if (!result || typeof result !== "object" || Array.isArray(result)) return false;
-  const values = [
+  if (!result || typeof result !== "object" || Array.isArray(result)) return [];
+  return [
     result?.details?.aggregated,
     result?.details?.stdout,
     result?.details?.stderr,
     ...(Array.isArray(result.content)
       ? result.content.map((item) => item?.type === "text" ? item.text : undefined)
       : []),
-  ];
+  ].filter((value) => typeof value === "string");
+}
+
+// unittest's own clean verdict: "Ran N tests in Xs", a blank line, then OK.
+const UNITTEST_CLEAN_VERDICT = /(?:^|\n)Ran [1-9][0-9]* tests? in [0-9.]+s\r?\n\r?\nOK\b/;
+
+function execResultHasNonCleanUnittestOutcome(event) {
+  const values = execResultTexts(event);
+  // unittest prints its failure headers and FAILED verdict in upper case. With
+  // its clean verdict present, a line the tested program printed is not a
+  // runner failure (tower3 photo-renamer: "Ran 11 tests ... OK", then
+  // "Error: Folder '/nonexistent/folder/path' does not exist." from a
+  // negative test). Without that verdict, an ad-hoc test script's FAIL or
+  // ERROR lines count in any case.
+  const runnerCase = values.some((value) => UNITTEST_CLEAN_VERDICT.test(value)) ? "" : "i";
+  const failureLine = new RegExp(String.raw`(?:^|\n)\s*(?:FAIL|ERROR)(?::|\s|\()`, runnerCase);
+  const failedVerdict = new RegExp(String.raw`(?:^|\n)\s*FAILED\s*\(`, runnerCase);
   return values.some(
     (value) =>
-      typeof value === "string" &&
-      (
-        /\bexpected failures?\s*=\s*[1-9][0-9]*\b/i.test(value) ||
-        /\bunexpected successes?\s*=\s*[1-9][0-9]*\b/i.test(value) ||
-        /\.\.\.\s+expected failure\b/i.test(value) ||
-        /\.\.\.\s+unexpected success\b/i.test(value) ||
-        /(?:^|\n)\s*(?:FAIL|ERROR)(?::|\s|\()/i.test(value) ||
-        /\bAssertionError\b/i.test(value) ||
-        /(?:^|\n)\s*FAILED\s*\(/i.test(value) ||
-        /\bRan\s+0\s+tests?\b/i.test(value) ||
-        /\bNO\s+TESTS?\s+RAN\b/i.test(value)
-      )
+      /\bexpected failures?\s*=\s*[1-9][0-9]*\b/i.test(value) ||
+      /\bunexpected successes?\s*=\s*[1-9][0-9]*\b/i.test(value) ||
+      /\.\.\.\s+expected failure\b/i.test(value) ||
+      /\.\.\.\s+unexpected success\b/i.test(value) ||
+      failureLine.test(value) ||
+      /\bAssertionError\b/i.test(value) ||
+      failedVerdict.test(value) ||
+      /\bRan\s+0\s+tests?\b/i.test(value) ||
+      /\bNO\s+TESTS?\s+RAN\b/i.test(value)
   );
+}
+
+// A test command that exited zero although every test it reported was
+// skipped: unittest "Ran N tests ... OK (skipped=N)", a pytest, Jest or
+// Vitest summary with skips and no pass, node:test "pass 0" with skips, cargo
+// "0 passed" with ignored tests, or go "[no tests to run]". Such a run proves
+// nothing about the code.
+function execResultReportsOnlySkippedTests(event) {
+  return execResultTexts(event).some((value) => {
+    const ran = /(?:^|\n)Ran ([0-9]+) tests? in /.exec(value);
+    const skipped = /(?:^|\n)OK \((?:[^)\n]*, )?skipped=([0-9]+)/.exec(value);
+    if (ran && skipped && Number(skipped[1]) >= Number(ran[1])) return true;
+    const summary = /(?:^|\n)[= ]*((?:[0-9]+ (?:passed|failed|skipped|deselected|xfailed|xpassed|errors?|warnings?)(?:, )?)+) in [0-9.]+s\b/.exec(value)?.[1];
+    if (summary && /\b[1-9][0-9]* skipped\b/.test(summary) && !/\b[1-9][0-9]* (?:passed|xpassed)\b/.test(summary)) return true;
+    const jest = /(?:^|\n)\s*Tests:?\s+([^\n]*)/.exec(value)?.[1];
+    if (jest && /\b[1-9][0-9]* skipped\b/.test(jest) && !/\b[1-9][0-9]* passed\b/.test(jest)) return true;
+    if (/(?:^|\n)(?:#|\u2139) pass 0\b/.test(value) && /(?:^|\n)(?:#|\u2139) skipped [1-9]/.test(value)) return true;
+    if (/(?:^|\n)test result: ok\. 0 passed; 0 failed; [1-9][0-9]* ignored\b/.test(value)) return true;
+    return /\[no tests to run\]/.test(value);
+  });
 }
 
 function execFailed(event) {
@@ -4698,16 +4731,43 @@ function requestsRecursiveForcedDelete(params) {
   return false;
 }
 
-// Workspace files a run wrote, as owner receipts list them (at most 20 named).
-function receiptWrittenFiles(state) {
-  return [...state.successfulWritePaths].filter((file) =>
+// Workspace-relative files as owner receipts list them.
+function receiptFiles(paths) {
+  return [...paths].filter((file) =>
     typeof file === "string" && file.split("/").every((part) => WORKSPACE_PATH_COMPONENT.test(part))
   ).sort();
 }
 
-function receiptWrittenFileLines(files) {
-  return files.slice(0, 20).map((file) => `- File written: \`/workspace/${file}\`.`).join("\n") +
-    (files.length > 20 ? `\n- ${files.length - 20} additional files were written.` : "");
+function receiptWrittenFiles(state) {
+  return receiptFiles(state.successfulWritePaths);
+}
+
+// Files a run wrote, then files it changed with edit or apply_patch (and did
+// not also write), in path order.
+function receiptChangedFiles(state) {
+  const written = receiptWrittenFiles(state);
+  const changed = receiptFiles([...state.successfulEditPaths, ...state.successfulPatchPaths])
+    .filter((file, index, files) => files.indexOf(file) === index && !written.includes(file));
+  return [...written.map((file) => ({file, verb: "written"})), ...changed.map((file) => ({file, verb: "changed"}))]
+    .sort((left, right) => left.file < right.file ? -1 : left.file > right.file ? 1 : 0);
+}
+
+// At most 20 named files, one bounded line each. Each path component is
+// bounded but a path's depth is not, so a long path keeps its start and its
+// file name. Twenty lines stay far below the ingress text bound.
+const RECEIPT_FILE_LIMIT = 20;
+const RECEIPT_TRACKED_PATCH_PATHS = 256;
+const RECEIPT_PATH_CHARS = 200;
+function receiptPath(file) {
+  const text = `/workspace/${file}`;
+  return text.length <= RECEIPT_PATH_CHARS ? text
+    : `${text.slice(0, 60)}\u2026${text.slice(text.length - (RECEIPT_PATH_CHARS - 61))}`;
+}
+
+function receiptFileLines(entries) {
+  const more = entries.length - RECEIPT_FILE_LIMIT;
+  return entries.slice(0, RECEIPT_FILE_LIMIT).map(({file, verb}) => `- File ${verb}: \`${receiptPath(file)}\`.`).join("\n") +
+    (more > 0 ? `\n- ${more} additional files were ${entries.every(({verb}) => verb === "written") ? "written" : "written or changed"}.` : "");
 }
 
 // Model-chosen text shown as inline code in an owner receipt: one bounded
@@ -4717,30 +4777,65 @@ function receiptCode(value) {
   return text.length > 160 ? `${text.slice(0, 159)}\u2026` : text;
 }
 
-// The latest recognized test command and its directory, from the
-// verification fingerprint [command, workdir]. An empty workdir is the
-// workspace root; a leading `cd /workspace/...` supplies the workdir when the
-// call gave no other one.
-function verificationReceiptTarget(fingerprint) {
-  let parsed;
-  try {
-    parsed = JSON.parse(fingerprint);
-  } catch {
-    return undefined;
+// The recognized test command an executed exec call ran and the directory it
+// ran in. A leading `cd /workspace/...` is where the command ran, whatever
+// workdir the call named; otherwise the workdir, or the workspace root.
+function verificationReceiptTarget(params) {
+  let parsed = verificationCommand(params);
+  if (!parsed || !verificationCommandIsAuditable(params)) {
+    params = andChainVerificationParams(params);
+    parsed = params ? verificationCommand(params) : undefined;
   }
-  if (!Array.isArray(parsed) || typeof parsed[0] !== "string" || !receiptCode(parsed[0])) return undefined;
-  const directory = typeof parsed[1] === "string" && receiptCode(parsed[1]) ? receiptCode(parsed[1]) : "/workspace";
-  return `\`${receiptCode(parsed[0])}\` in \`${directory}\``;
+  if (!parsed) return undefined;
+  const workdir = parsed.commandWorkdir ?? normalizeExecWorkdir(params.workdir);
+  const directory = typeof workdir === "string" && workdir.startsWith("/")
+    ? workdir.replace(/(?<=.)\/+$/, "") : "/workspace";
+  const command = parsed.command.replace(/\s+2>&1\s*$/i, "");
+  return receiptCode(command) ? Object.freeze({command, directory}) : undefined;
+}
+
+// Whether a test directory contains one of these workspace-relative files.
+function receiptTargetCovers(target, entries) {
+  const directory = target?.directory;
+  if (directory === "/workspace") return entries.length > 0;
+  if (typeof directory !== "string" || !directory.startsWith("/workspace/")) return false;
+  const relative = directory.slice("/workspace/".length);
+  return entries.some(({file}) => file.startsWith(`${relative}/`));
+}
+
+// After a deletion refusal no model text reaches the owner, so a host receipt
+// can stand for the result only when the owner asked for a change to files and
+// for no written answer: no question, explanation, summary, comparison or
+// citation. "Can you write ...?" is a request, not a question.
+const RECEIPT_CHANGE_REQUEST =
+  /\b(?:create|write|edit|update|build|implement|fix|repair|add|modify|generate|refactor|change|rename|make|patch|convert)\b/i;
+const RECEIPT_POLITE_REQUEST = /^(?:please\s+)?(?:can|could|would|will)\s+you\s+(?:please\s+)?/i;
+const RECEIPT_ANSWER_REQUEST =
+  /^(?:what|why|how|which|who|when|where)\b|\b(?:explain|describe|summari[sz]e|compare|tell\s+me|show\s+me|walk\s+me\s+through|cite|citations?)\b/i;
+function ownerRequestAnswerableByReceipt(text) {
+  const clauses = ownerLaneText(String(text ?? "").replace(/\n\n\[ODS (?:Portal|Pixel) delivery requirement:[\s\S]*$/, ""))
+    .split(/(?<=[!?;\n])|(?<=\.)(?=\s|$)/).map((clause) => clause.trim()).filter(Boolean);
+  let change = false;
+  for (const clause of clauses) {
+    const polite = RECEIPT_POLITE_REQUEST.exec(clause);
+    const body = polite ? clause.slice(polite[0].length) : clause;
+    const request = polite && new RegExp(`^${RECEIPT_CHANGE_REQUEST.source}`, "i").test(body);
+    if (RECEIPT_ANSWER_REQUEST.test(body) || (!request && /\?/.test(clause))) return false;
+    change ||= RECEIPT_CHANGE_REQUEST.test(body);
+  }
+  return change;
 }
 
 // Owner receipt after an unauthorized recursive deletion was refused. Every
 // fact comes from host state. It cannot prove that nothing was ever deleted,
 // so it does not claim that, and it addresses the owner, not the model.
-function recursiveDeleteRefusalReceipt({ files, test, testState, running, passed }) {
+function recursiveDeleteRefusalReceipt({ files, target, testState, running, passed }) {
+  const test = target ? `\`${receiptCode(target.command)}\` in \`${receiptCode(target.directory)}\`` : undefined;
   const latest = test ? `The latest recognized test command, ${test},` : "The latest recognized test command";
   const testLine = {
     passed: `${latest} passed, and no tool call that could change the workspace ran after it.`,
-    stale: `${latest} passed, but a later tool call could have changed the workspace, so that result is not current.`,
+    stale: `${latest} passed, but a later tool call or command could have changed the workspace, so that result is not current.`,
+    skipped: `${latest} exited successfully, but every test it reported was skipped.`,
     failed: `${latest} failed.`,
     pending: `${latest} had not finished, so its result is unknown.`,
   }[testState] ?? "No recognized test command ran.";
@@ -4748,7 +4843,7 @@ function recursiveDeleteRefusalReceipt({ files, test, testState, running, passed
     "Pixel stopped using tools because a command included a recursive deletion that you did not ask for. " +
       "That command was refused and did not run.",
     "Results recorded by Pixel's tools before that:",
-    files.length ? receiptWrittenFileLines(files) : "- No file was written.",
+    files.length ? receiptFileLines(files) : "- No file was written or changed with Pixel's file tools.",
     `- ${testLine}`,
     ...(running ? ["- A command started earlier was still running when tool use stopped."] : []),
     passed
@@ -5671,6 +5766,22 @@ export function userMessageRequestsWorkspaceTools(messages, prompt = undefined) 
 
 export function userMessageRequestsNewPlaygroundProject(messages, prompt = undefined) {
   return requestsNewPlaygroundProject(currentOwnerIntentText(messages,prompt));
+}
+
+// A change or test run for named workspace code, such as "Fix the bug in
+// Playground/photo-renamer/rename_photos.py, then run the tests". These
+// requests need not say "workspace" or ask for a new project, so the workspace
+// guide can be absent from their turn.
+const NAMED_CODE_OPERAND =
+  /(?:^|[\s(`'"])(?:\.\/)?(?:Playground\/[A-Za-z0-9._-]|[A-Za-z0-9_][A-Za-z0-9._/-]*\.(?:py|js|mjs|cjs|ts|tsx|jsx|go|rs|java|kt|rb|php|cs|c|cc|cpp|h|hpp|sh|swift)\b)/;
+const NAMED_CODE_ACTION = "fix|repair|debug|edit|update|change|modify|add|implement|refactor|rewrite|write|create|build|run|test";
+export function userMessageRequestsNamedCodeChange(messages, prompt = undefined) {
+  const text = ownerLaneText(currentOwnerIntentText(messages, prompt));
+  const action = new RegExp(`\\b(?:${NAMED_CODE_ACTION})\\b`, "i");
+  const rejection = new RegExp(
+    `\\b(?:do\\s+not|don't|never|must\\s+not|should\\s+not|avoid|skip|without)\\b[^.!?;\\n]{0,96}\\b(?:${NAMED_CODE_ACTION})\\b`, "i");
+  return text.split(/[!?;\n]+|\.(?=\s|$)/).some((clause) =>
+    NAMED_CODE_OPERAND.test(clause) && action.test(clause) && !rejection.test(clause));
 }
 
 export function userMessageRequestsWorkspaceMutation(messages, prompt = undefined) {
@@ -7155,6 +7266,8 @@ export function createToolLoopGuard({
         successfulWritePaths: new Set(),
         boundPreviewWriteDirectories: new Set(),
         successfulEditPaths: new Set(),
+        successfulPatchPaths: new Set(),
+        workspaceMutationSucceeded: false,
         successfulWriteContentByPath: new Map(),
         compareSwapRepairCounts: new Map(),
         successfulReadPaths: new Set(),
@@ -7264,6 +7377,8 @@ export function createToolLoopGuard({
         latestVerificationStatus: undefined,
         latestVerificationFingerprint: undefined,
         latestVerificationPassedGeneration: undefined,
+        latestVerificationTarget: undefined,
+        latestVerificationSkippedOnly: false,
         wrappedExecFailurePending: false,
         suppressStaleExecWarning: false,
         recursiveDeleteAuthorized: false,
@@ -7281,6 +7396,7 @@ export function createToolLoopGuard({
         derivedWriteRefusedPaths: new Set(),
         execOriginalByWrapped: new Map(),
         verificationOriginalByWrapped: new Map(),
+        verificationTargetByWrapped: new Map(),
         currentSessionId: undefined,
         currentSessionKey: undefined,
         visibleReplyText: undefined,
@@ -9298,6 +9414,9 @@ export function createToolLoopGuard({
         const params = { ...selectedParams };
         const originalFingerprint = execFingerprint(params);
         const originalVerificationFingerprint = verificationExecFingerprint(params);
+        // The command and directory the model gave, before execution control
+        // wraps the command and resolves the workdir to a host path.
+        const originalVerificationTarget = originalVerificationFingerprint ? verificationReceiptTarget(params) : undefined;
         const directory = execControl.resolveWorkdir?.(params.workdir, state?.configuredWorkspaceRoot);
         if (directory?.block) return directory;
         if (directory) params.workdir = directory.workdir;
@@ -9329,6 +9448,7 @@ export function createToolLoopGuard({
             wrappedFingerprint,
             originalVerificationFingerprint
           );
+          state.verificationTargetByWrapped.set(wrappedFingerprint, originalVerificationTarget);
         }
         return {
           params: toolName === "tool_call"
@@ -9404,6 +9524,7 @@ export function createToolLoopGuard({
       if (ownerIntent) state.playgroundOwnerIntent = ownerIntent;
       if (ownerIntent) state.ownerResearchDate = ownerResearchDate(ownerIntent);
       if (ownerIntent) state.ownerQuestionIntent=requestsChoiceQuestion(ownerIntent);
+      if (ownerIntent) state.receiptAnswersOwnerRequest = ownerRequestAnswerableByReceipt(ownerIntent);
       if (teamRole) {state.managedTeamWorker=true;state.managedTeamReadOnly=teamRole!=='Builder';state.managedTeamCoordinator=teamRole==='Coordinator';state.ownerQuestionIntent=teamQuestionIntent;}
       if (capabilities !== undefined) {
         state.configuredWorkspaceRoot = capabilities.workspaceRoot;
@@ -10013,6 +10134,7 @@ export function createToolLoopGuard({
         ? completedMutation
         : undefined;
     if (successfulMutation) {
+      state.workspaceMutationSucceeded = true;
       state.invalidEditCreateBlocks = 0;
       state.oversizedEditBlocks = 0;
       state.noOpEditBlocks = 0;
@@ -10187,6 +10309,13 @@ export function createToolLoopGuard({
       ? editReplacementPairs(successfulMutation.event?.params)
       : [];
     if (completedEditPath) state.successfulEditPaths.add(completedEditPath);
+    if (successfulMutation?.name === "apply_patch") {
+      for (const file of workspaceMutationFiles("apply_patch", successfulMutation.event?.params)) {
+        if (state.successfulPatchPaths.size < RECEIPT_TRACKED_PATCH_PATHS) {
+          state.successfulPatchPaths.add(normalizeWorkspaceFilePath(file));
+        }
+      }
+    }
     const completedVisualMutationPath = completedEditPath ?? completedWritePath;
     const previousVisualDirectory = sessionPreviews.get(state.currentSessionId)?.relativeDirectory;
     const updatesPublishedProject = previousVisualDirectory && completedVisualMutationPath?.startsWith(`${previousVisualDirectory}/`);
@@ -10646,8 +10775,21 @@ export function createToolLoopGuard({
         if (pending.verificationFingerprint) {
           state.failedVerificationAttempts = 0;
           state.latestVerificationStatus = "passed";
-          state.latestVerificationPassedGeneration = state.previewVerificationGeneration;
+          // The test ran against the workspace as it was when it started: a
+          // call that ran while it was still running makes this pass stale.
+          state.latestVerificationPassedGeneration = pending.generation;
+          state.latestVerificationSkippedOnly = execResultReportsOnlySkippedTests(event);
         }
+      }
+      if (pending.verificationFingerprint) {
+        // The receipt names the command whose result this is.
+        state.latestVerificationFingerprint = pending.verificationFingerprint;
+        state.latestVerificationTarget = pending.target;
+      } else {
+        // A background command could change the workspace until it ended, so
+        // no earlier pass is current any more. A read-only poll does not
+        // advance the generation by itself.
+        state.latestVerificationPassedGeneration = undefined;
       }
       return;
     }
@@ -10677,16 +10819,22 @@ export function createToolLoopGuard({
       state.verificationOriginalByWrapped.get(observedFingerprint) ??
       verificationExecFingerprint(execEvent?.params);
     if (observedFingerprint) state.execOriginalByWrapped.delete(observedFingerprint);
+    const wrappedVerificationTarget = state.verificationTargetByWrapped.get(observedFingerprint);
     if (observedFingerprint) {
       state.verificationOriginalByWrapped.delete(observedFingerprint);
+      state.verificationTargetByWrapped.delete(observedFingerprint);
     }
     // After a recursive-deletion refusal, a call this guard refused ran
     // nothing. Its blocked receipt is not a test result or a failed command,
     // so it cannot replace the latest real verification in the owner receipt.
     if (refusedCall && state.recursiveDeleteDenied) return;
     if (!fingerprint && !verificationFingerprint) return;
+    const verificationTarget = verificationFingerprint
+      ? wrappedVerificationTarget ?? verificationReceiptTarget(execEvent?.params) : undefined;
     if (verificationFingerprint) {
       state.latestVerificationFingerprint = verificationFingerprint;
+      state.latestVerificationTarget = verificationTarget;
+      state.latestVerificationSkippedOnly = false;
     }
     const pendingSessionId = runningExecSessionId(execEvent);
     if (pendingSessionId) {
@@ -10697,6 +10845,8 @@ export function createToolLoopGuard({
       state.pendingExecSessions.set(pendingSessionId, {
         fingerprint,
         verificationFingerprint,
+        target: verificationTarget,
+        generation: state.previewVerificationGeneration,
       });
       if (verificationFingerprint) state.latestVerificationStatus = "pending";
       return;
@@ -10761,6 +10911,7 @@ export function createToolLoopGuard({
         state.failedVerificationAttempts = 0;
         state.latestVerificationStatus = "passed";
         state.latestVerificationPassedGeneration = state.previewVerificationGeneration;
+        state.latestVerificationSkippedOnly = execResultReportsOnlySkippedTests(execEvent);
       }
     }
   }
@@ -11801,7 +11952,14 @@ export function createToolLoopGuard({
 
   function endPreviewRevalidation(event, context) {
     const state = runs.get(context?.runId ?? event?.runId);
-    if (state) {state.previewRevalidationCandidate=undefined;state.previewVerificationGeneration=(state.previewVerificationGeneration ?? 0)+1;}
+    if (!state) return;
+    // Ending the attempt voids pending preview revalidation but changes no
+    // workspace file, so a test pass that was current stays current. OpenClaw
+    // runs agent_end before the ingress reads delivery verification.
+    const passCurrent = Number.isInteger(state.latestVerificationPassedGeneration) &&
+      state.latestVerificationPassedGeneration === state.previewVerificationGeneration;
+    state.previewRevalidationCandidate=undefined;state.previewVerificationGeneration=(state.previewVerificationGeneration ?? 0)+1;
+    if (passCurrent) state.latestVerificationPassedGeneration = state.previewVerificationGeneration;
   }
 
   // agent_end: a later cancel for this user can no longer name this run's
@@ -11916,28 +12074,38 @@ export function createToolLoopGuard({
 
   // After an unauthorized recursive deletion was refused, every later tool
   // call in the run is refused and no model text is delivered. The owner gets
-  // a host receipt instead of the model-directed refusal. It keeps a
-  // recognized test pass only when that pass is still current: no call that
-  // could change the workspace ran after it (refused calls never advance the
-  // generation), no command is still running, and the rest of the task
-  // evaluation passed without a publication receipt. Receipt-based work
-  // (Operations, exact downloads, previews, managed extension or team work)
-  // and every other test state stay 'failed'.
+  // a host receipt instead of the model-directed refusal. The run keeps
+  // 'passed' only when the receipt can stand for the whole result:
+  // - the owner asked for a change to files and for no written answer or
+  //   research, and a write, edit or patch succeeded in this run;
+  // - the latest recognized test passed, did not skip every test, ran in a
+  //   directory containing a file this run changed, and is still current: no
+  //   call that could change the workspace was admitted after it (refused
+  //   calls never advance the generation; agent_end keeps a current pass
+  //   current), no background command ended after it, and none is running;
+  // - the rest of the task evaluation passed without a publication receipt.
+  // Receipt-based work (Operations, exact downloads, previews, managed
+  // extension or team work) and every other state stay 'failed'.
   function recursiveDeleteRefusalVerification(state) {
     const verification = workspaceTaskVerification(state);
     const status = state.latestVerificationStatus;
-    const current = status === "passed" &&
+    const current = status === "passed" && Number.isInteger(state.latestVerificationPassedGeneration) &&
       state.latestVerificationPassedGeneration === state.previewVerificationGeneration;
+    const skipped = current && state.latestVerificationSkippedOnly === true;
     const running = state.pendingExecSessions.size > 0;
-    const passed = current && !running && verification.status === "passed" && !verification.preview &&
+    const files = receiptChangedFiles(state);
+    const passed = current && !skipped && !running && state.workspaceMutationSucceeded === true &&
+      receiptTargetCovers(state.latestVerificationTarget, files) &&
+      state.receiptAnswersOwnerRequest === true && !state.completionAssurance.researchInvolved &&
+      verification.status === "passed" && !verification.preview &&
       !state.operationsRequired && !state.exactDownloadRequested && !state.workspacePreviewRequired &&
-      !state.extensionCompletionGate?.active && !state.extensionPendingHandoff && !state.managedTeamCoordinator;
+      !state.extensionCompletionGate?.active && !state.extensionPendingHandoff && !state.managedTeamWorker;
     return {
       status: passed ? "passed" : "failed",
       text: recursiveDeleteRefusalReceipt({
-        files: receiptWrittenFiles(state),
-        test: verificationReceiptTarget(state.latestVerificationFingerprint),
-        testState: current ? "passed" : status === "passed" ? "stale" : status ?? "not-run",
+        files,
+        target: state.latestVerificationTarget,
+        testState: skipped ? "skipped" : current ? "passed" : status === "passed" ? "stale" : status ?? "not-run",
         running,
         passed,
       }),
@@ -12236,7 +12404,7 @@ export function createToolLoopGuard({
             status: "passed",
             text: "Pixel stopped repeating completed work before it could finish its explanation. " +
               "The following results were recorded by its tools:\n" +
-              receiptWrittenFileLines(writtenFiles) +
+              receiptFileLines(writtenFiles.map((file) => ({file, verb: "written"}))) +
               "\n- The latest recognized test command completed successfully.\n" +
               "This does not establish complete test coverage or completion of every requested step. " +
               "The workspace is preserved; ask Pixel to continue from these files.",
@@ -12264,7 +12432,10 @@ export function createToolLoopGuard({
     if (state?.completionAssurance.terminal && verification.status === 'none' && !stopAnswer) {
       return {status:state.completionAssurance.terminalStatus, text:state.completionAssurance.terminal};
     }
-    if (state?.progressBudget.exhausted) {
+    // An exhausted budget refuses every call before the deletion check, so a
+    // deletion refusal always came first; the latch's own refusals then count
+    // as failures. The deletion receipt, not the progress stop, is the cause.
+    if (state?.progressBudget.exhausted && !state.recursiveDeleteDenied) {
       const preview = progressStopPreview(state);
       const receipt = preview ? {preview: {schemaVersion: 1, kind: 'ods-pixel-workspace-preview', ...preview}} : {};
       // The request is still incomplete ('failed'); only the finalization

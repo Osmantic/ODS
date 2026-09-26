@@ -3537,7 +3537,7 @@ const DELETION_REFUSAL_LEAD =
 const DELETION_REFUSAL_INCOMPLETE =
   "This request is not complete. Ask Pixel to continue, or say explicitly if you want a folder deleted.";
 const DELETION_REFUSAL_NO_WORK = DELETION_REFUSAL_LEAD +
-  "- No file was written.\n- No recognized test command ran.\n" + DELETION_REFUSAL_INCOMPLETE;
+  "- No file was written or changed with Pixel's file tools.\n- No recognized test command ran.\n" + DELETION_REFUSAL_INCOMPLETE;
 
 test("post-download analysis still enforces normal destructive-command boundaries", () => {
   const { guard } = verifiedDownloadGuard();
@@ -3560,7 +3560,7 @@ test("a current test pass cannot complete an exact download after a deletion ref
   // The download receipt and a current pass are not the whole exact-download
   // obligation once the run stopped; the status stays failed.
   assert.deepEqual(guard.deliveryVerificationForRun("run-1"), { status: "failed", text: DELETION_REFUSAL_LEAD +
-    "- No file was written.\n- The latest recognized test command, `python3 -m unittest -v` in `/workspace/project`, " +
+    "- No file was written or changed with Pixel's file tools.\n- The latest recognized test command, `python3 -m unittest -v` in `/workspace/project`, " +
     "passed, and no tool call that could change the workspace ran after it.\n" + DELETION_REFUSAL_INCOMPLETE });
 });
 
