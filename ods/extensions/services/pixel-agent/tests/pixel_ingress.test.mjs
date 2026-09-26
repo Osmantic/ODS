@@ -100,6 +100,11 @@ function fakeGateway({
         res.end(JSON.stringify(decisionProof));
         return;
       }
+      if (req.url === "/pixel-ods/output-limit-continuation") {
+        res.writeHead(200,{"Content-Type":"application/json"});
+        res.end(JSON.stringify({schemaVersion:1,kind:'ods-output-limit-continuation',eligible:false}));
+        return;
+      }
       if (onRequest) onRequest(captured);
       if (req.url === "/pixel-ods/abort") {
         res.writeHead(200, { "Content-Type": "application/json" });
