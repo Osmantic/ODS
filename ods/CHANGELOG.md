@@ -58,6 +58,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   for it; it never edits Docker's settings or restarts Docker. It finally opens
   Portal and adds an
   **ODS Portal** desktop shortcut. `-NonInteractive` still installs nothing.
+  A leftover `ODS-WSL-*` scheduled task from another ODS version is named in
+  the error together with the command that removes it.
 - Linux on WSL: an NVIDIA driver older than 570 stops with Windows update
   instructions instead of installing `nvidia-driver-*` inside the distro,
   which breaks WSL GPU passthrough.
