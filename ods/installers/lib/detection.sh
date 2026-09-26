@@ -567,7 +567,12 @@ detect_gpu() {
     GPU_COUNT=0
     GPU_BACKEND="cpu"
     GPU_MEMORY_TYPE="none"
-    warn "No GPU detected. Falling back to CPU-only mode (inference will be slow)."
+    if [[ "${LEMONADE_EXTERNAL:-false}" == "true" && -n "${LEMONADE_GPU_NAME:-}" ]]; then
+        # Windows under WSL: the GPU is used by Lemonade on the host, not here.
+        ai "No GPU inside this Linux environment; the model runs on ${LEMONADE_GPU_NAME} through Lemonade."
+    else
+        warn "No GPU detected. Falling back to CPU-only mode (inference will be slow)."
+    fi
     log "CPU-only mode: llama.cpp will use CPU inference. Consider adding a GPU for better performance."
     return 1
 }
