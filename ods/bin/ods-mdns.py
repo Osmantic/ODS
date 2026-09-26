@@ -170,6 +170,19 @@ def _direct_ports_lan_reachable(env: dict[str, str]) -> bool:
     return bind not in {"", "127.0.0.1", "localhost", "::1"}
 
 
+def _extension_enabled(service_id: str) -> bool:
+    """Whether an optional service is currently enabled.
+
+    Enablement is on-disk state, not an .env flag: 03-features.sh's
+    `_sync_extension_compose` (and the dashboard's enable/disable routes)
+    move `compose.yaml` to `compose.yaml.disabled` and back. ENABLE_ODS_PROXY
+    exists only as an installer shell variable and is never written to .env,
+    so the compose file is the only thing the announcer can consult.
+    """
+    compose = INSTALL_DIR / "extensions" / "services" / service_id / "compose.yaml"
+    return compose.is_file()
+
+
 def _build_services(env: dict[str, str], device_name: str, ip: str) -> list[ServiceInfo]:
     """Build the ServiceInfo records to publish.
 
@@ -204,11 +217,14 @@ def _build_services(env: dict[str, str], device_name: str, ip: str) -> list[Serv
             ("dashboard",     _safe_port(env, "DASHBOARD_PORT", 3001),     "ODS Dashboard", {"path": "/"}),
             ("chat",          _safe_port(env, "WEBUI_PORT", 3000),         "ODS Chat",      {"path": "/"}),
             ("dashboard-api", _safe_port(env, "DASHBOARD_API_PORT", 3002), "ODS API",       {"path": "/health"}),
-            # Announce unconditionally when direct ports are LAN-reachable:
-            # the Hermes extension is opt-in via `ods enable hermes`, but
-            # the failure mode when disabled is the same as any optional
-            # service that is not running.
-            ("hermes",        _safe_port(env, "HERMES_PORT", 9119),        "Hermes Agent",    {"path": "/api/health"}),
+            # Hermes is deliberately absent here. Its compose declares only
+            # `expose: 9119` and binds no host port — "By NOT binding a host
+            # port on the Hermes container itself, we close the door on
+            # direct LAN access that would bypass the magic-link gate."
+            # A direct SRV on 9119 therefore points every LAN client at a
+            # closed port, whether or not the extension is enabled. The
+            # supported LAN path is the hermes.<device>.local proxy record
+            # below, which Caddy forward_auths before reaching Hermes.
         ]
         for suffix, port, label, txt in direct:
             infos.append(ServiceInfo(
@@ -245,6 +261,16 @@ def _build_services(env: dict[str, str], device_name: str, ip: str) -> list[Serv
         # owner experience stalls on a white screen.
         ("talk",      "ODS Talk (mobile owner portal)"),
     )
+    # Every record below resolves to the proxy's listen port and depends on
+    # Caddy being there to route by Host header. With ods-proxy disabled the
+    # port is closed, so publishing them hands LAN clients — and the phones
+    # following magic-link QR codes — a set of hostnames that resolve but
+    # never connect. Same principle as the direct-port gate above: do not
+    # advertise an endpoint that cannot answer.
+    if not _extension_enabled("ods-proxy"):
+        logger.info("Skipping proxy subdomain records because ods-proxy is not enabled")
+        return infos
+
     for suffix, label in subdomain_routes:
         server = f"{device_name}.local." if suffix == "root" else f"{suffix}.{device_name}.local."
         infos.append(ServiceInfo(
