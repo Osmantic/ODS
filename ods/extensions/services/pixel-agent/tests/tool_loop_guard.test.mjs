@@ -15853,21 +15853,24 @@ test("preview testing servers retain process tracking without granting publicati
 });
 
 
-test("later failed preview work retains only the same session's historical publication", () => {
-  for (const sessionId of ["session-1", "other-session"]) {
+test("later failed preview work retains only the same session and project's historical publication", () => {
+  for (const [sessionId, prompt, retained] of [
+    ["session-1", "Update the website you just published to improve the mobile layout.", true],
+    ["session-1", "Build and publish another website in a new directory.", false],
+    ["other-session", "Build and publish another website in a new directory.", false],
+  ]) {
     const guard = createToolLoopGuard();
     const {details} = seedNamedPreview(guard);
-    guard.observeRun({agentId: "pixel", runId: "later-run", sessionId}, "pixel", {
-      prompt: "Build and publish another website in a new directory.",
-    });
+    guard.observeRun({agentId: "pixel", runId: "later-run", sessionId}, "pixel", {prompt});
     const evidence = guard.verificationForRun("later-run");
     assert.equal(evidence.status, "failed", "previous publication does not complete the new request");
-    if (sessionId === "session-1") {
+    if (retained) {
       assert.equal(evidence.preview.url, details.url);
       assert.match(evidence.text, /last published preview/);
       assert.doesNotMatch(evidence.text, /No localhost URL is live/);
     } else {
-      assert.equal(evidence.preview, undefined, "never expose a different session's publication");
+      assert.equal(evidence.preview, undefined, `${sessionId}: never expose another session's or project's publication`);
+      assert.doesNotMatch(evidence.text, /last published preview/, sessionId);
     }
   }
 });
@@ -15878,7 +15881,8 @@ test('progress stops scope historical preview delivery to the current owner requ
     ['Search the live web to compare RTX 5070 and RX 9070 performance and current retail prices. Save the verified comparison as gpu-comparison.json in a new workspace directory.', false],
     ['Research the current GPU prices. Do not publish a preview.', false],
     ['Update the website you just published to improve the mobile layout.', true],
-    ['Build and publish another website in a new directory.', true],
+    // A new project's stop must not present another project's snapshot as its result.
+    ['Build and publish another website in a new directory.', false],
   ];
   for (const [prompt, expectPreview] of cases) {
     const guard = createToolLoopGuard();
@@ -15903,11 +15907,13 @@ test('progress stops scope historical preview delivery to the current owner requ
 });
 
 test("historical preview cannot hide a later coding stop from the final reply", () => {
-  for (const deferred of [false, true]) {
+  // Only the published project's own coding stop offers its snapshot; a new
+  // project's stop reports the same outcomes without another project's link.
+  for (const [deferred, project] of [[false, "code"], [true, "code"], [false, "log-viewer-lab"], [true, "log-viewer-lab"]]) {
     const guard = createToolLoopGuard({ limits: { failedExecRetries: 1, failedVerificationAttempts: 1 } });
     const {details} = seedNamedPreview(guard);
     const context = {agentId: "pixel", runId: "coding-run", sessionId: "session-1"};
-    guard.observeRun(context, "pixel", {prompt: "Build a Python CLI with unittest tests in /workspace/code. Create public/index.html and publish public as a verified Pixel workspace preview."});
+    guard.observeRun(context, "pixel", {prompt: `Build a Python CLI with unittest tests in /workspace/${project}. Create public/index.html and publish public as a verified Pixel workspace preview.`});
     let callNumber = 0;
     const invoke = (name, params) => {
       const event = deferred
@@ -15915,7 +15921,7 @@ test("historical preview cannot hide a later coding stop from the final reply", 
         : {toolName: name, params};
       return guard.beforeToolCall({...event, toolCallId: `coding-${++callNumber}`}, context, "pixel");
     };
-    const params = {command: "python3 -m unittest", workdir: "/workspace/code"};
+    const params = {command: "python3 -m unittest", workdir: `/workspace/${project}`};
     assert.notEqual(invoke("exec", params)?.block, true);
     const result = {
       isError: true, details: {status: "completed", exitCode: 1},
@@ -15929,10 +15935,13 @@ test("historical preview cannot hide a later coding stop from the final reply", 
     const delivered = reply(guard, {event: {runId: "coding-run", payload: {text: ""}}});
     assert.match(delivered.payload.text, /stopped the coding loop/);
     assert.ok(delivered.payload.text.includes(VERIFICATION_FAILED_DELIVERY_PREFIX));
-    assert.ok(delivered.payload.text.includes(details.url));
-    assert.match(delivered.payload.text, /last published preview/);
+    const samePublishedProject = project === details.relativeDirectory;
+    assert.equal(delivered.payload.text.includes(details.url), samePublishedProject, project);
+    assert.equal(/last published preview/.test(delivered.payload.text), samePublishedProject, project);
     assert.doesNotMatch(delivered.payload.text, /publish again to verify/);
-    assert.equal(guard.verificationForRun("coding-run").status, "failed");
+    const verification = guard.verificationForRun("coding-run");
+    assert.equal(verification.status, "failed");
+    assert.equal(verification.preview?.sha256, samePublishedProject ? details.sha256 : undefined, project);
   }
 });
 
@@ -16048,6 +16057,22 @@ for (const [name, options] of [
   assert.notEqual(guard.beforeAgentFinalize({}, context, "pixel")?.retry?.idempotencyKey,
     "pixel-ods-workspace-preview-historical-entry");
   assert.doesNotMatch(persisted?.message?.content?.at(-1)?.text ?? "", /same project's earlier verified publication/);
+});
+
+test("a stop offers the historical publication only for source edits in that project's tree", () => {
+  for (const [mutationPath, retained] of [["expense-report/report.py", true],
+    ["another-project/report.py", false], ["expense-report-v2/report.py", false]]) {
+    const {guard, context, mutationBefore} = historicalCodingProjectGuard({mutationPath});
+    assert.notEqual(mutationBefore?.block, true, mutationPath);
+    for (let i = 0; i < 4; i++) {
+      guard.toolResultPersist({message: {toolCallId: `failed-${i}`, toolName: "exec", isError: true,
+        content: [{type: "text", text: "python3: exit status 1"}]}}, context);
+    }
+    const delivery = guard.deliveryVerificationForRun(context.runId);
+    assert.ok(delivery.text.startsWith(RUN_PROGRESS_STOP_REASON), mutationPath);
+    assert.equal(delivery.preview?.relativeDirectory, retained ? "expense-report/public" : undefined, mutationPath);
+    assert.equal(delivery.text.includes("[Open last published preview]"), retained, mutationPath);
+  }
 });
 
 for (const deferred of [false,true]) test(`trusted final host revalidation restores only unchanged publication: deferred=${deferred}`, async()=>{

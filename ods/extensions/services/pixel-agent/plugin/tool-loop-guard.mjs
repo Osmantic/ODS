@@ -6246,6 +6246,32 @@ function workspacePreviewMissingEntryReason(state, directory) {
   return `${WORKSPACE_PREVIEW_REQUIRES_FILES_REASON} This turn successfully wrote index.html in workspace-relative directory "${directories[0]}", not "${directory}". If that is the intended artifact, use its exact directory for the preview request. Preserve the existing files; no directory was changed or published by this rejection.`;
 }
 
+// A file is in a published project's tree when its directory is the published
+// directory, lies inside it, or contains it (sources beside a generated public
+// output). A root-level file belongs to no project.
+function inPublishedProjectTree(directory, file) {
+  const slash = file.lastIndexOf("/");
+  const parent = slash > 0 ? file.slice(0, slash) : undefined;
+  return Boolean(parent) && (parent === directory || directory.startsWith(`${parent}/`) || parent.startsWith(`${directory}/`));
+}
+
+// Every turn is seeded with the chat's latest publication, which can belong to
+// another project. A new project's stop must not link that snapshot or carry
+// its receipt as this turn's publication. Offer it only when this run published
+// it, or this turn continues that project: its preview target or owner-named
+// directory is that project, or every current mutation lies in its tree.
+function lastVerifiedPreviewForTurn(state) {
+  const preview = state.workspaceLastVerifiedPreview;
+  const directory = preview?.relativeDirectory;
+  if (typeof directory !== "string") return undefined;
+  const named = state.workspaceTaskDirectory;
+  const mutations = [...state.successfulWritePaths, ...state.successfulEditPaths];
+  return state.workspacePreviewVerifiedDirectory === directory || state.workspacePreviewDirectory === directory ||
+    (typeof named === "string" && (named === directory || directory.startsWith(`${named}/`))) ||
+    (mutations.length > 0 && mutations.every(file => inPublishedProjectTree(directory, file)))
+    ? preview : undefined;
+}
+
 function workspacePreviewRequiresAuthoredSnapshot(state, directory) {
   // After a verified snapshot, further checks/repairs operate on an existing
   // artifact. Require a new host receipt without claiming all bytes were
@@ -7305,10 +7331,11 @@ export function createToolLoopGuard({
   }
 
   // Session history can contain an unrelated publication. Preserve it for
-  // current preview work, but do not attach it to a later research failure.
+  // current preview work on its project, but do not attach it to a later
+  // research failure or to another project's stop.
   function progressStopPreview(state) {
     return state.workspacePreview ?? (state.workspacePreviewRequired &&
-      !state.workspacePreviewForbidden ? state.workspaceLastVerifiedPreview : undefined);
+      !state.workspacePreviewForbidden ? lastVerifiedPreviewForTurn(state) : undefined);
   }
 
   function stopExhaustedRun(state, runId) {
@@ -10997,11 +11024,7 @@ export function createToolLoopGuard({
     const named = userMessageWorkspaceDirectoryPath([], owner);
     if (named && named !== directory && !directory.startsWith(`${named}/`)) return undefined;
     const mutations = [...state.successfulWritePaths, ...state.successfulEditPaths];
-    if (!mutations.length || !mutations.every(file => {
-      const slash = file.lastIndexOf("/");
-      const parent = slash > 0 ? file.slice(0, slash) : undefined;
-      return parent && (parent === directory || directory.startsWith(`${parent}/`) || parent.startsWith(`${directory}/`));
-    })) return undefined;
+    if (!mutations.length || !mutations.every(file => inPublishedProjectTree(directory, file))) return undefined;
     return {
       stage: "workspace-preview-historical-entry",
       instruction: `The same project's earlier verified publication used ${JSON.stringify(directory)}. ` +
@@ -11951,19 +11974,21 @@ export function createToolLoopGuard({
         // A command may have changed the workspace, but it cannot change the
         // immutable host publication. Retain its usable link without treating
         // it as verification of the latest workspace or a completed request.
-        if (state.workspaceLastVerifiedPreview) {
-          const preview = state.workspaceLastVerifiedPreview;
-          const checkText = state.latestVerificationStatus === "failed"
-            ? VERIFICATION_FAILED_DELIVERY_PREFIX
-            : state.latestVerificationStatus === "pending" ? VERIFICATION_PENDING_DELIVERY_PREFIX : "";
-          const stopText = state.codingExhausted
-            ? "Pixel stopped the coding loop before the requested work was complete. Saved files are preserved."
-            : "";
+        // Another project's publication is not this request's result; the
+        // stop and check outcomes are reported without its link either way.
+        const checkText = state.latestVerificationStatus === "failed"
+          ? VERIFICATION_FAILED_DELIVERY_PREFIX
+          : state.latestVerificationStatus === "pending" ? VERIFICATION_PENDING_DELIVERY_PREFIX : "";
+        const stopText = state.codingExhausted
+          ? "Pixel stopped the coding loop before the requested work was complete. Saved files are preserved."
+          : "";
+        const outcomeText = (stopText ? `${stopText}\n\n` : "") + (checkText ? `${checkText}\n\n` : "");
+        const preview = lastVerifiedPreviewForTurn(state);
+        if (preview) {
           return {
             status: "failed",
             text:
-              (stopText ? `${stopText}\n\n` : "") +
-              (checkText ? `${checkText}\n\n` : "") +
+              outcomeText +
               "Your last published preview is still available.\n\n" +
               `[Open last published preview](${preview.url})\n\n` +
               "The workspace has not been verified again since later tool activity. " +
@@ -11986,9 +12011,9 @@ export function createToolLoopGuard({
         );
         return {
           status: "failed",
-          text: hasIndexEvidence
+          text: outcomeText + (hasIndexEvidence
             ? WORKSPACE_PREVIEW_UNVERIFIED_DELIVERY_PREFIX
-            : WORKSPACE_PREVIEW_NOT_CREATED_DELIVERY_PREFIX,
+            : WORKSPACE_PREVIEW_NOT_CREATED_DELIVERY_PREFIX),
         };
       }
       // Publication and verification are independent evidence. A successful
