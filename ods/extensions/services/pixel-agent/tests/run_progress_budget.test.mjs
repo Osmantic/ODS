@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createRunProgressBudget, failedToolOutcome, isLiteralEcho, RUN_PROGRESS_LIMITS} from '../plugin/run-progress-budget.mjs';
 import {RUN_PROGRESS_CORRECTED_ATTEMPTS} from '../plugin/run-progress-budget.mjs';
-import {correctableInspectionFailure} from '../plugin/preview-interaction-assurance.mjs';
+import {correctableInspectionFailure, passedInspection} from '../plugin/preview-interaction-assurance.mjs';
 import {INSPECTION_KIND, INSPECTION_SCOPE, TRANSITION_UNTESTED} from '../plugin/workspace-preview-inspect.mjs';
 
 test('outer and nested failure receipts do not masquerade as successful progress', () => {
@@ -147,6 +147,7 @@ test('read-only echo classification excludes substitutions, redirections and com
   for (const command of ['echo "$HOME"', 'echo "$(touch bad)"', 'echo "`touch bad`"', 'echo "ok" > index.html', 'echo "ok"; rm file', 'echo "ok" && run', 'echo "a\\"', undefined]) assert.equal(isLiteralEcho(command), false, command);
 });
 
+
 // Host-guided inspection failures: the result that already carries the
 // correction must not be the one that ends the run before it is sent.
 const SITE = {siteId: `site-${'a'.repeat(24)}`, sha256: 'a'.repeat(64), planSha256: 'b'.repeat(64)};
@@ -157,10 +158,17 @@ const unmeasured = (errorCode, extra = {}) => inspection({status: 'failed', ...S
 const REJECTED = inspection({status: 'failed', errorCode: 'invalid_request'});
 const INCOMPLETE = inspection({status: 'incomplete', errorCode: TRANSITION_UNTESTED, ...SITE});
 const MISMATCH = unmeasured('visibility_mismatch');
+const PASSED = inspection({status: 'passed', ...SITE, blockedRequests: [],
+  steps: [{index: 0, action: 'assert-hidden', status: 'passed'}, {index: 1, action: 'click', status: 'passed'},
+    {index: 2, action: 'assert-visible', status: 'passed'}]}, false);
+const INSPECT = 'pixel_ods_workspace_preview_inspect';
 const fail = (budget, callId, extra = {}) => budget.observeResult({callId, tool: 'tool_call', failed: true, ...extra});
 const inspectFailure = (budget, callId, result, extra = {}) => fail(budget, callId,
-  {tool: 'pixel_ods_workspace_preview_inspect', correctable: correctableInspectionFailure(result), ...extra});
+  {tool: INSPECT, correctable: correctableInspectionFailure(result), ...extra});
 const succeed = (budget, callId, extra = {}) => budget.observeResult({callId, tool: 'read', params: {path: callId}, failed: false, ...extra});
+const inspectPass = (budget, callId, extra = {}) => budget.observeResult({callId, tool: INSPECT, params: {plan: callId},
+  failed: false, corrected: passedInspection(PASSED), ...extra});
+const failTimes = (budget, prefix, count, extra = {}) => { for (let i = 0; i < count; i++) fail(budget, `${prefix}-${i}`, extra); };
 // Consecutive count 0: three more ordinary failures are allowed, the fourth stops.
 function assertConsecutiveReset(budget, prefix) {
   for (let i = 0; i < RUN_PROGRESS_LIMITS.consecutiveFailures; i++) {
@@ -172,13 +180,12 @@ function assertConsecutiveReset(budget, prefix) {
 test('only failures that measured nothing and name their correction are correctable', () => {
   for (const result of [REJECTED, INCOMPLETE, unmeasured('no_match'), unmeasured('selector_not_unique'),
     unmeasured('invalid_selector')]) assert.equal(correctableInspectionFailure(result), true, JSON.stringify(result.details));
-  const passed = inspection({status: 'passed', ...SITE, blockedRequests: [], steps: [{index: 0, action: 'assert-visible', status: 'passed'}]}, false);
   for (const result of [MISMATCH, unmeasured('click_failed'), unmeasured('unstable'),
     unmeasured('no_match', {pageErrors: {count: 1, messages: ['boom']}}), unmeasured('no_match', {blockedRequests: ['navigation']}),
     ...['unavailable', 'timeout', 'cancelled', 'output_limit'].map(errorCode => inspection({status: 'failed', errorCode, ...SITE})),
     inspection({status: 'failed', ...SITE, blockedRequests: ['navigation'], steps: [{index: 0, action: 'assert-visible', status: 'passed'}]}),
     inspection({status: 'passed', errorCode: 'invalid_request'}), inspection({status: 'incomplete', errorCode: 'unavailable'}),
-    passed, {...REJECTED, isError: undefined}, {...unmeasured('no_match'), isError: false},
+    PASSED, {...REJECTED, isError: undefined}, {...unmeasured('no_match'), isError: false},
     {isError: true, details: {...REJECTED.details, kind: 'ods-pixel-workspace-preview'}},
     {isError: true, details: {status: 'blocked', deniedReason: 'plugin-before-tool-call', reason: 'stopped'}},
     {isError: true, details: {persistedDetailsTruncated: true, status: 'failed'}}, undefined, null]) {
@@ -186,100 +193,152 @@ test('only failures that measured nothing and name their correction are correcta
   }
 });
 
-test('at consecutive 3 an INCOMPLETE result waits for its corrected attempt', () => {
-  for (const corrected of ['passes', 'fails']) {
+test('only an inspection whose steps all passed without page errors is the corrected attempt', () => {
+  assert.equal(passedInspection(PASSED), true);
+  for (const result of [REJECTED, INCOMPLETE, MISMATCH, unmeasured('no_match'), {...PASSED, isError: true},
+    inspection({...PASSED.details, pageErrors: {count: 1, messages: ['boom']}}, false),
+    {...PASSED, details: {...PASSED.details, kind: 'ods-pixel-workspace-preview'}},
+    {content: [], details: {status: 'passed'}}, {details: {persistedDetailsTruncated: true, status: 'passed'}}, undefined, null]) {
+    assert.equal(passedInspection(result), false, JSON.stringify(result?.details));
+  }
+});
+
+test('at consecutive 3 an INCOMPLETE result waits for exactly one corrected attempt', () => {
+  for (const next of ['passes', 'fails', 'other success', 'pending process']) {
     const budget = createRunProgressBudget();
-    for (let i = 0; i < 3; i++) fail(budget, `bad-${i}`);
+    failTimes(budget, 'bad', 3);
     inspectFailure(budget, 'incomplete', INCOMPLETE);
     assert.equal(budget.exhausted, false, 'the result carrying the corrected steps does not end the run');
-    if (corrected === 'fails') {
-      inspectFailure(budget, 'corrected', unmeasured('no_match'));
-      assert.equal(budget.exhausted, true, 'a failed corrected attempt is charged with the deferred one');
-    } else {
-      budget.observeResult({callId: 'corrected', tool: 'pixel_ods_workspace_preview_inspect', params: {steps: 3}, failed: false});
+    if (next === 'passes') {
+      inspectPass(budget, 'corrected');
       assert.equal(budget.exhausted, false);
       assertConsecutiveReset(budget, 'later');
+      continue;
     }
+    if (next === 'fails') inspectFailure(budget, 'corrected', unmeasured('no_match'));
+    // Not the corrected attempt: an unrelated read (a new path, so it would
+    // otherwise be progress) or a running-process receipt.
+    else if (next === 'other success') succeed(budget, 'unrelated-read');
+    else budget.observeResult({callId: 'poll', tool: 'process', params: {sessionId: 's'}, failed: false, pending: true});
+    assert.equal(budget.exhausted, true, `${next}: the waiting charge lands and the run stops one result later`);
+  }
+});
+
+test('a correctable failure below the fuse is charged at once and spends no allowance', () => {
+  // Laptop r107 / mac r106 shape: correctable failures early in the run, each
+  // followed by progress, then three ordinary failures and an INCOMPLETE.
+  const budget = createRunProgressBudget();
+  for (let i = 0; i < 2 * RUN_PROGRESS_CORRECTED_ATTEMPTS; i++) {
+    inspectFailure(budget, `early-${i}`, i % 2 ? unmeasured('no_match') : REJECTED);
+    succeed(budget, `progress-${i}`);
+  }
+  failTimes(budget, 'bad', 3);
+  inspectFailure(budget, 'incomplete', INCOMPLETE);
+  assert.equal(budget.exhausted, false, 'the allowance is still there for the failure that would stop the run');
+  inspectPass(budget, 'corrected');
+  assertConsecutiveReset(budget, 'later');
+
+  // Wherever a streak of correctable failures starts, it gets exactly one
+  // more attempt than the unchanged fuse.
+  for (let start = 0; start < RUN_PROGRESS_LIMITS.consecutiveFailures; start++) {
+    const streak = createRunProgressBudget();
+    failTimes(streak, 'bad', start);
+    let attempts = 0;
+    while (!streak.exhausted && attempts < 10) inspectFailure(streak, `rejected-${attempts++}`, REJECTED);
+    assert.equal(attempts, RUN_PROGRESS_LIMITS.consecutiveFailures - start + 1, `streak from consecutive ${start}`);
   }
 });
 
 test('a correctable failure right after a deferred one is charged together with it', () => {
   const budget = createRunProgressBudget();
-  fail(budget, 'bad-0');
-  fail(budget, 'bad-1');
+  failTimes(budget, 'bad', 3);
   inspectFailure(budget, 'rejected', REJECTED);
   assert.equal(budget.exhausted, false);
   inspectFailure(budget, 'rejected-again', REJECTED);
-  assert.equal(budget.exhausted, true, 'consecutive 2 + 2');
+  assert.equal(budget.exhausted, true, 'consecutive 3 + the deferred failure + this one');
 });
 
-test('a third correctable failure in a run is charged at once', () => {
+test('a third deferral in a run is not granted', () => {
   const budget = createRunProgressBudget();
   for (let i = 0; i < RUN_PROGRESS_CORRECTED_ATTEMPTS; i++) {
+    failTimes(budget, `bad-${i}`, 3);
     inspectFailure(budget, `rejected-${i}`, REJECTED);
-    succeed(budget, `corrected-${i}`);
+    assert.equal(budget.exhausted, false, `deferral ${i + 1}`);
+    inspectPass(budget, `corrected-${i}`);
   }
-  for (let i = 0; i < 3; i++) fail(budget, `bad-${i}`);
+  failTimes(budget, 'bad-last', 3);
   inspectFailure(budget, 'rejected-third', REJECTED);
   assert.equal(budget.exhausted, true);
 });
 
-test('correctable failures still count toward the total cap of 12', () => {
-  const budget = createRunProgressBudget();
+test('correctable failures still count toward the total cap of 12, which is never deferred', () => {
+  const spread = createRunProgressBudget();
   for (let i = 0; i < RUN_PROGRESS_LIMITS.totalFailures; i++) {
-    inspectFailure(budget, `unmeasured-${i}`, unmeasured('no_match'));
-    assert.equal(budget.exhausted, i === RUN_PROGRESS_LIMITS.totalFailures - 1, `failure ${i + 1}`);
-    succeed(budget, `progress-${i}`);
+    inspectFailure(spread, `unmeasured-${i}`, unmeasured('no_match'));
+    assert.equal(spread.exhausted, i === RUN_PROGRESS_LIMITS.totalFailures - 1, `failure ${i + 1}`);
+    succeed(spread, `progress-${i}`);
+  }
+  // Failure 12 arrives at consecutive 3 with both allowances unused.
+  const atCap = createRunProgressBudget();
+  for (let i = 0; i < 4; i++) { failTimes(atCap, `pair-${i}`, 2); succeed(atCap, `progress-${i}`); }
+  failTimes(atCap, 'bad', 3);
+  assert.equal(atCap.exhausted, false);
+  inspectFailure(atCap, 'incomplete', INCOMPLETE);
+  assert.equal(atCap.exhausted, true);
+});
+
+test('discovery and free corrections neither charge nor forgive a waiting charge', () => {
+  for (const next of ['failure', 'other success', 'corrected pass']) {
+    const budget = createRunProgressBudget();
+    failTimes(budget, 'bad', 3);
+    inspectFailure(budget, 'rejected', REJECTED);
+    budget.observeResult({callId: 'search', tool: 'tool_search', params: {query: 'inspect'}, failed: false});
+    budget.observeResult({callId: 'describe', tool: 'tool_describe', params: {id: INSPECT}, failed: false});
+    budget.observeResult({callId: 'skill', tool: 'pixel_ods_skill', params: {name: 'web'}, failed: false});
+    budget.observeResult({callId: 'free-correction', tool: 'process', failed: false, discovery: true, corrected: true});
+    assert.equal(budget.exhausted, false);
+    if (next === 'failure') fail(budget, 'bad-after');
+    else if (next === 'other success') succeed(budget, 'read-after');
+    else inspectPass(budget, 'corrected');
+    assert.equal(budget.exhausted, next !== 'corrected pass', next);
   }
 });
 
-test('discovery and free corrections neither charge nor forgive a deferred failure', () => {
-  const budget = createRunProgressBudget();
-  fail(budget, 'bad-0');
-  fail(budget, 'bad-1');
-  inspectFailure(budget, 'rejected', REJECTED);
-  budget.observeResult({callId: 'search', tool: 'tool_search', params: {query: 'inspect'}, failed: false});
-  budget.observeResult({callId: 'describe', tool: 'tool_describe', params: {id: 'inspect'}, failed: false});
-  budget.observeResult({callId: 'free-correction', tool: 'process', failed: false, discovery: true});
-  assert.equal(budget.exhausted, false);
-  fail(budget, 'bad-2');
-  assert.equal(budget.exhausted, true, 'consecutive 2 + the deferred failure + this one');
-});
+test('a lane deferral is forgiven only by a passing corrected check in the same lane', () => {
+  const inspect = {tool: INSPECT, lane: 'workspace'};
+  const waiting = () => {
+    const budget = createRunProgressBudget();
+    failTimes(budget, 'workspace', 3, {lane: 'workspace'});
+    inspectFailure(budget, 'rejected', REJECTED, inspect);
+    assert.equal(budget.laneExhausted('workspace'), false, 'the failure carrying the correction does not stop the lane');
+    return budget;
+  };
 
-test('a lane deferral is forgiven only by a success in the same lane', () => {
-  const inspect = {tool: 'pixel_ods_workspace_preview_inspect', lane: 'workspace'};
-  const other = createRunProgressBudget();
-  for (let i = 0; i < 2; i++) fail(other, `workspace-${i}`, {lane: 'workspace'});
-  inspectFailure(other, 'rejected', REJECTED, inspect);
-  succeed(other, 'extension-progress', {lane: 'extension'});
-  succeed(other, 'unlaned-progress');
-  fail(other, 'workspace-2', {lane: 'workspace'});
-  assert.equal(other.laneExhausted('workspace'), true, '2 + deferred + 1');
-  assert.equal(other.exhausted, false);
+  const forgiven = waiting();
+  inspectPass(forgiven, 'corrected', {lane: 'workspace'});
+  failTimes(forgiven, 'workspace-later', 3, {lane: 'workspace'});
+  assert.equal(forgiven.laneExhausted('workspace'), false);
+  fail(forgiven, 'workspace-last', {lane: 'workspace'});
+  assert.equal(forgiven.laneExhausted('workspace'), true);
 
-  const next = createRunProgressBudget();
-  for (let i = 0; i < 2; i++) fail(next, `workspace-${i}`, {lane: 'workspace'});
-  inspectFailure(next, 'rejected', REJECTED, inspect);
-  fail(next, 'extension-0', {lane: 'extension'});
-  assert.equal(next.laneExhausted('workspace'), false, 'the next failure of any tool charges it to its own lane');
-  fail(next, 'workspace-2', {lane: 'workspace'});
-  assert.equal(next.laneExhausted('workspace'), true, '2 + deferred + 1');
-  assert.equal(next.laneExhausted('extension'), false);
-
-  const same = createRunProgressBudget();
-  for (let i = 0; i < 2; i++) fail(same, `workspace-${i}`, {lane: 'workspace'});
-  inspectFailure(same, 'rejected', REJECTED, inspect);
-  succeed(same, 'workspace-progress', {lane: 'workspace'});
-  for (let i = 0; i < 3; i++) fail(same, `workspace-later-${i}`, {lane: 'workspace'});
-  assert.equal(same.laneExhausted('workspace'), false);
-  fail(same, 'workspace-later-3', {lane: 'workspace'});
-  assert.equal(same.laneExhausted('workspace'), true);
+  for (const [label, next] of [
+    ['a success in the other lane', budget => succeed(budget, 'extension-progress', {lane: 'extension'})],
+    ['an unrelated success in the same lane', budget => succeed(budget, 'workspace-read', {lane: 'workspace'})],
+    ['a passing check in the other lane', budget => inspectPass(budget, 'extension-check', {lane: 'extension'})],
+    ['a failure in the other lane', budget => fail(budget, 'extension-0', {lane: 'extension'})],
+  ]) {
+    const budget = waiting();
+    next(budget);
+    assert.equal(budget.laneExhausted('workspace'), true, label);
+    assert.equal(budget.laneExhausted('extension'), false, label);
+    assert.equal(budget.exhausted, false, `${label}: the other lane remains`);
+  }
 });
 
 test('visibility mismatches and other measured failures are never deferred', () => {
   for (const result of [MISMATCH, unmeasured('click_failed'), inspection({status: 'failed', errorCode: 'unavailable'})]) {
     const budget = createRunProgressBudget();
-    for (let i = 0; i < 3; i++) fail(budget, `bad-${i}`);
+    failTimes(budget, 'bad', 3);
     inspectFailure(budget, 'measured', result);
     assert.equal(budget.exhausted, true, JSON.stringify(result.details));
   }
@@ -287,14 +346,14 @@ test('visibility mismatches and other measured failures are never deferred', () 
 
 test('a duplicate receipt of a deferred failure is ignored and a stop stays sticky', () => {
   const budget = createRunProgressBudget();
-  for (let i = 0; i < 3; i++) fail(budget, `bad-${i}`);
+  failTimes(budget, 'bad', 3);
   inspectFailure(budget, 'rejected', REJECTED);
   inspectFailure(budget, 'rejected', REJECTED);
   fail(budget, 'rejected');
   assert.equal(budget.exhausted, false, 'one call ID is one result');
   fail(budget, 'bad-3');
   assert.equal(budget.exhausted, true);
-  succeed(budget, 'late-progress');
+  inspectPass(budget, 'late-progress');
   inspectFailure(budget, 'late-rejected', REJECTED);
   assert.equal(budget.exhausted, true);
 });
@@ -336,35 +395,59 @@ function previousBudget() {
   };
 }
 
-test('without correctable the budget is unchanged; with it, a model that keeps failing stops one failure later at most', () => {
+test('property: unchanged without correctable; never earlier with it; without a passing correction, one result later at most', () => {
   let seed = 20260925;
   const random = () => (seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648;
   const pick = items => items[Math.floor(random() * items.length)];
-  for (let trial = 0; trial < 400; trial++) {
-    const omitted = createRunProgressBudget(), flagged = createRunProgressBudget(), before = previousBudget();
-    for (let step = 0; step < 80 && !before.exhausted; step++) {
+  // A stopped run ignores every later result, so its lanes no longer matter.
+  const state = budget => budget.exhausted ? 'stopped' : JSON.stringify([...budget.exhaustedLanes].sort());
+  let deferrals = 0, rescued = 0;
+  for (let trial = 0; trial < 600; trial++) {
+    const before = previousBudget(), omitted = createRunProgressBudget(), flagged = createRunProgressBudget(),
+      uncorrected = createRunProgressBudget();
+    const seen = new Set();
+    for (let step = 0; step < 80; step++) {
       const kind = random();
       const callId = random() < 0.05 && step > 0 ? `call-${Math.floor(random() * step)}` : `call-${step}`;
       const lane = pick([undefined, undefined, 'workspace', 'extension', 'fake-lane']);
       let event;
       if (kind < 0.15) {
-        for (const budget of [omitted, flagged, before]) budget.beginModelRound();
-      } else if (kind < 0.55) event = {callId, tool: pick(['tool_call', 'exec', 'pixel_ods_workspace_preview_inspect']), failed: true,
+        for (const budget of [before, omitted, flagged, uncorrected]) budget.beginModelRound();
+      } else if (kind < 0.55) event = {callId, tool: pick(['tool_call', 'exec', INSPECT]), failed: true,
         lane, discovery: random() < 0.1};
-      else event = {callId, tool: pick(['read', 'exec', 'tool_search', 'tool_describe', 'pixel_ods_skill', 'tool_call']),
+      else event = {callId, tool: pick(['read', 'exec', 'tool_search', 'tool_describe', 'pixel_ods_skill', 'tool_call', INSPECT]),
         params: {path: pick(['a', 'b', 'c'])}, failed: false, lane, pending: random() < 0.1, discovery: random() < 0.1};
+      const correctable = random() < 0.5, corrected = random() < 0.5;
+      const lagging = state(uncorrected) !== state(before), flaggedWaits = state(flagged) !== state(before);
       if (event) {
         before.observeResult(event);
-        omitted.observeResult(event);
-        flagged.observeResult({...event, correctable: random() < 0.5});
+        omitted.observeResult({...event, corrected});
+        flagged.observeResult({...event, correctable, corrected});
+        uncorrected.observeResult({...event, correctable});
       }
-      assert.equal(omitted.exhausted, before.exhausted, `trial ${trial} step ${step}`);
-      assert.deepEqual(omitted.exhaustedLanes, before.exhaustedLanes, `trial ${trial} step ${step}`);
-      assert.ok(!flagged.exhausted || before.exhausted, `never stops earlier: trial ${trial} step ${step}`);
-    }
-    if (before.exhausted && !flagged.exhausted) {
-      flagged.observeResult({callId: 'next-failure', tool: 'tool_call', failed: true});
-      assert.equal(flagged.exhausted, true, `trial ${trial}: the next failure charges the deferred one`);
+      const at = `trial ${trial} step ${step}`;
+      assert.equal(state(omitted), state(before), `without correctable: ${at}`);
+      for (const budget of [flagged, uncorrected]) {
+        assert.ok(!budget.exhausted || before.exhausted, `never stops earlier: ${at}`);
+        assert.ok(before.exhausted || budget.exhaustedLanes.every(item => before.exhaustedLanes.includes(item)),
+          `never stops a lane earlier: ${at}`);
+      }
+      // Discovery, a model round or a repeated call ID leaves a waiting charge
+      // waiting; any other result resolves it, and without a passing
+      // correction the budget then matches the unchanged one again.
+      const neutral = !event || seen.has(event.callId) ||
+        (!event.failed && (event.discovery || ['tool_search', 'tool_describe', 'pixel_ods_skill'].includes(event.tool)));
+      if (event) seen.add(event.callId);
+      const differs = state(uncorrected) !== state(before);
+      if (differs && !lagging) {
+        assert.ok(event?.failed && correctable && !neutral, `only a correctable failure opens a wait: ${at}`);
+        deferrals += 1;
+      }
+      if (lagging && differs) assert.ok(neutral, `a waiting charge lasts one result: ${at}`);
+      // A passing correction resolved flagged's wait and kept it going.
+      if (flaggedWaits && !neutral && !event.failed && corrected && state(flagged) !== state(before)) rescued += 1;
     }
   }
+  assert.ok(deferrals > 50, `the property exercised deferrals (${deferrals})`);
+  assert.ok(rescued > 0, 'a passing correction can keep a run going');
 });

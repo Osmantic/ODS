@@ -143,6 +143,15 @@ export function correctableInspectionFailure(result) {
     Array.isArray(details.steps) && UNMEASURED_LOCATOR.has(details.steps.at(-1)?.errorCode);
 }
 
+// The corrected attempt that forgives such a failure's waiting charge: an
+// inspection whose steps all passed without page script errors. Any other
+// result, including an unrelated success, is not that attempt.
+export function passedInspection(result) {
+  const details = result?.details;
+  return result?.isError !== true && details?.kind === INSPECTION_KIND && details.status === 'passed' &&
+    !inspectionPageErrors(details);
+}
+
 export const PAGE_ERROR_REPAIR_INSTRUCTION = `The published preview is available, but the latest browser inspection of this snapshot recorded uncaught page script errors, so its interactions are not verified. Fix the script so it does not throw (for example, guard every localStorage/sessionStorage access with try/catch and an in-memory fallback, per the preview storage contract), republish, then call ${PREVIEW_INSPECTION_TOOL} on the new snapshot with the same checks. Do not claim the interactions work while the page throws.`;
 
 // Stable text (no identifiers or counts) so per-slot coaching dedupe applies.

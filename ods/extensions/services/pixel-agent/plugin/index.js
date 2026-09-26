@@ -754,12 +754,19 @@ export default definePluginEntry({
     });
 
     if (["unix", "native"].includes(api.pluginConfig?.workspacePreviewInspectionTransport)) {
-      registerTool(api, createWorkspacePreviewInspectTool({
+      const inspectTool = createWorkspacePreviewInspectTool({
         transport: api.pluginConfig.workspacePreviewInspectionTransport,
         // Finalize-time revisions do not reach the model after a plugin tool
         // call; an untested requested show/hide change is reported here.
         transitionRequirement: (toolCallId, params) => toolLoopGuard.previewInspectionTransition(toolCallId, params),
-      }), { names: ["pixel_ods_workspace_preview_inspect"] });
+      });
+      registerTool(api, {...inspectTool, execute: async (toolCallId, params, ...rest) => {
+        const result = await inspectTool.execute(toolCallId, params, ...rest);
+        // The run budget classifies this exact result even if the persisted
+        // copy's details are capped (see recordPreviewInspectionResult).
+        toolLoopGuard.recordPreviewInspectionResult(toolCallId, params, result);
+        return result;
+      }}, { names: ["pixel_ods_workspace_preview_inspect"] });
     }
 
   },

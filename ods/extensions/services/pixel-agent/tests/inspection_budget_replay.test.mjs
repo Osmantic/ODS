@@ -6,18 +6,21 @@
 //   inspection (#11) was rejected again and became the fourth consecutive
 //   failure. The response stopped before the model's next attempt (#12).
 // - mac-mini round 106 (direct calls): four inspections whose final locator
-//   matched no element or was not valid CSS; the fourth (call 12) stopped it.
+//   matched no element or was not valid CSS; the fourth (call 12) stopped it
+//   before the model's next inspection (#13).
 // - windows-laptop round 107 (Tool Search): 12 failures in 40 calls with at
 //   most 2 in a row; call 40 (transcript entry 86) reached the total cap.
 // A failure that measured nothing, whose result already hands the model its
-// correction, now waits one result for its corrected attempt; nothing else
+// correction, and whose charge would stop the run, now waits one result for
+// its corrected attempt; only a passing inspection forgives it. Nothing else
 // changes. Both after_tool_call/tool_result_persist orders are replayed.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
+import {isDeepStrictEqual} from 'node:util';
 import {createToolLoopGuard} from '../plugin/tool-loop-guard.mjs';
 import {PREVIEW_INSPECTION_TOOL, correctableInspectionFailure} from '../plugin/preview-interaction-assurance.mjs';
-import {INSPECTION_KIND, INSPECTION_SCOPE, createWorkspacePreviewInspectTool, inspectionPlanHash}
+import {INSPECTION_KIND, INSPECTION_SCOPE, TRANSITION_UNTESTED, createWorkspacePreviewInspectTool, inspectionPlanHash}
   from '../plugin/workspace-preview-inspect.mjs';
 import {RUN_PROGRESS_LIMITS, RUN_PROGRESS_STOP_REASON} from '../plugin/run-progress-budget.mjs';
 
@@ -39,12 +42,27 @@ const offline = createWorkspacePreviewInspectTool({request: async () => { throw 
 // A passing capsule receipt for a show/hide plan on the recorded strixy page.
 const shown = visible => ({count: 1, visible, display: visible ? 'block' : 'none', visibility: 'visible',
   opacity: '1', hidden: !visible, hiddenUntilFound: false, rectCount: visible ? 1 : 0});
-const passing = createWorkspacePreviewInspectTool({request: async request => ({schemaVersion: 1, kind: INSPECTION_KIND,
+const passingReceipt = request => ({schemaVersion: 1, kind: INSPECTION_KIND,
   status: 'passed', siteId: request.siteId, sha256: request.sha256, planSha256: inspectionPlanHash(request),
   viewport: request.viewport, steps: request.steps.map((step, index) => ({index, ...step,
     before: shown(step.action === 'click' || step.action === 'assert-visible'),
     ...(step.action === 'click' ? {after: shown(true)} : {}), stable: true, status: 'passed'})),
-  diagnostics: {renderedHiddenAttributeCount: 0, hiddenUntilFoundCount: 0}, blockedRequests: [], scope: INSPECTION_SCOPE})});
+  diagnostics: {renderedHiddenAttributeCount: 0, hiddenUntilFoundCount: 0}, blockedRequests: [], scope: INSPECTION_SCOPE});
+const passing = createWorkspacePreviewInspectTool({request: async request => passingReceipt(request)});
+
+// The capsule for a never-executed call: each inspection loads the page anew,
+// so a plan whose steps, in order, all passed on the same snapshot and
+// viewport in an executed call's recorded receipt passes again. Any other
+// plan is not reproducible here and fails the replay.
+const recordedCapsule = recording => async request => {
+  const covered = recording.calls.some(call => !call.stopped && (call.selected ?? call.tool) === PREVIEW_INSPECTION_TOOL &&
+    call.args?.siteId === request.siteId && call.args.sha256 === request.sha256 &&
+    isDeepStrictEqual(call.args.viewport, request.viewport) &&
+    request.steps.every((step, index) => isDeepStrictEqual(call.args.steps?.[index], step) &&
+      call.result?.details?.steps?.[index]?.status === 'passed'));
+  assert.ok(covered, `${recording.label}: no recorded receipt passed ${JSON.stringify(request.steps)}`);
+  return passingReceipt(request);
+};
 
 // Drives the recorded calls through the guard hooks (before_tool_call only for
 // inspections, which bind the pending run). Returns the call number after
@@ -52,6 +70,11 @@ const passing = createWorkspacePreviewInspectTool({request: async request => ({s
 // and the guard to continue the same run.
 async function replay(recording, {persistFirst = false, calls = recording.calls} = {}) {
   const guard = createToolLoopGuard({workspacePreviewInspectionAvailable: true, abortRun: () => true});
+  // Registered as in index.js: the guard's show/hide requirement for this
+  // exact call, and the result recorded for the run budget.
+  const tool = createWorkspacePreviewInspectTool({request: recordedCapsule(recording),
+    transitionRequirement: (toolCallId, params) => guard.previewInspectionTransition(toolCallId, params)});
+  const unexecuted = [];
   const context = {agentId: 'pixel', sessionId: recording.sessionId, sessionKey: recording.sessionKey, runId: recording.runId};
   guard.observeRun(context, 'pixel', {prompt: recording.prompt});
   let round, probes = 0;
@@ -63,15 +86,23 @@ async function replay(recording, {persistFirst = false, calls = recording.calls}
       toolName: 'budget_probe', toolCallId: id, content: [{type: 'text', text: 'probe'}]}},
     {...context, toolName: 'budget_probe', toolCallId: id})?.message?.content?.[0]?.text === RUN_PROGRESS_STOP_REASON;
   };
+  // Other calls keep their argument digest: identical successes stay identical.
+  const paramsOf = call => {
+    const args = call.args ?? {argsSha256: call.argsSha256};
+    return call.tool === 'tool_call' ? {id: call.selected, args} : args;
+  };
+  const prepared = new Set();
+  const prepare = call => {
+    if (prepared.has(call.id) || (call.selected !== PREVIEW_INSPECTION_TOOL && call.tool !== PREVIEW_INSPECTION_TOOL)) return;
+    prepared.add(call.id);
+    const ctx = {...context, toolName: call.tool, toolCallId: call.id};
+    const before = guard.beforeToolCall({toolName: call.tool, runId: context.runId, toolCallId: call.id, params: paramsOf(call)}, ctx);
+    assert.notEqual(before?.block, true, `${recording.label} #${call.n} ${before?.blockReason}`);
+  };
   const deliver = (call, result, persistedIsError) => {
     const ctx = {...context, toolName: call.tool, toolCallId: call.id};
-    // Other calls keep their argument digest: identical successes stay identical.
-    const args = call.args ?? {argsSha256: call.argsSha256};
-    const params = call.tool === 'tool_call' ? {id: call.selected, args} : args;
-    if (call.selected === PREVIEW_INSPECTION_TOOL || call.tool === PREVIEW_INSPECTION_TOOL) {
-      const prepared = guard.beforeToolCall({toolName: call.tool, runId: context.runId, toolCallId: call.id, params}, ctx);
-      assert.notEqual(prepared?.block, true, `${recording.label} #${call.n} ${prepared?.blockReason}`);
-    }
+    const params = paramsOf(call);
+    prepare(call);
     const after = () => guard.afterToolCall({toolName: call.tool, runId: context.runId, toolCallId: call.id, params, result}, ctx);
     const persist = () => guard.toolResultPersist({toolName: call.tool, toolCallId: call.id, message: {role: 'toolResult',
       toolName: call.tool, toolCallId: call.id, content: result.content, ...(result.details ? {details: result.details} : {}),
@@ -86,8 +117,11 @@ async function replay(recording, {persistFirst = false, calls = recording.calls}
     if (call.stopped) {
       // Never executed on main: only a model's next inspection can be run here.
       assert.ok(call.selected === PREVIEW_INSPECTION_TOOL || call.tool === PREVIEW_INSPECTION_TOOL, `${recording.label} #${call.n}`);
-      const inner = await offline.execute(call.id, call.args);
-      assert.equal(inner.details.errorCode, 'invalid_request', 'deterministic without a broker');
+      const id = call.tool === 'tool_call' ? `tool_search_code:${call.id}:${PREVIEW_INSPECTION_TOOL}:1` : call.id;
+      prepare(call);
+      const inner = await tool.execute(id, call.args);
+      guard.recordPreviewInspectionResult(id, call.args, inner);
+      unexecuted.push({n: call.n, status: inner.details.status, errorCode: inner.details.errorCode});
       result = call.tool === 'tool_call' ? envelope(PREVIEW_INSPECTION_TOOL, inner) : inner;
       persistedIsError = call.tool !== 'tool_call';
     } else result = call.envelope ? envelope(call.selected, recorded(call)) : recorded(call);
@@ -97,9 +131,9 @@ async function replay(recording, {persistFirst = false, calls = recording.calls}
   };
   for (const call of calls) {
     await run(call);
-    if (exhausted()) return {terminalAt: call.n, correctable, guard, context, exhausted};
+    if (exhausted()) return {terminalAt: call.n, correctable, unexecuted, guard, context, exhausted};
   }
-  return {terminalAt: undefined, correctable, guard, context, exhausted};
+  return {terminalAt: undefined, correctable, unexecuted, guard, context, exhausted};
 }
 
 for (const persistFirst of [false, true]) {
@@ -113,14 +147,23 @@ for (const persistFirst of [false, true]) {
     assert.equal(replayed.terminalAt, 12);
     assert.deepEqual(replayed.correctable, [8, 11, 12]);
     assert.equal(STRIXY.calls.find(call => call.n === 12).stopped, true);
+    assert.deepEqual(replayed.unexecuted, [{n: 12, status: 'failed', errorCode: 'invalid_request'}]);
     const after = await replay(STRIXY, {persistFirst, calls: STRIXY.calls.slice(0, 11)});
     assert.equal(after.terminalAt, undefined, 'the second rejection no longer ends the run before its correction');
   });
 
-  test(`mac-mini round 106: four unmeasured locators still stop the run at call 12 (${order})`, async () => {
+  test(`mac-mini round 106: the fourth unmeasured locator waits for the model's next inspection, which stops the run at call 13 (${order})`, async () => {
+    // #9 to #11 arrive below the fuse and are charged at once; only #12, the
+    // failure main stopped on, waits. #13 repeats the first four steps of #12,
+    // which passed on the same snapshot; with the owner's show/hide change
+    // untested it is INCOMPLETE, a second failure, so the run stops there.
+    assert.equal(MAC.calls.find(call => call.n === 13).stopped, true);
     const replayed = await replay(MAC, {persistFirst});
-    assert.equal(replayed.terminalAt, 12);
-    assert.deepEqual(replayed.correctable, [9, 10, 11, 12]);
+    assert.equal(replayed.terminalAt, 13);
+    assert.deepEqual(replayed.correctable, [9, 10, 11, 12, 13]);
+    assert.deepEqual(replayed.unexecuted, [{n: 13, status: 'incomplete', errorCode: TRANSITION_UNTESTED}]);
+    const beforeNext = await replay(MAC, {persistFirst, calls: MAC.calls.filter(call => call.n <= 12)});
+    assert.equal(beforeNext.terminalAt, undefined, 'the failure main stopped on no longer ends the run before its correction');
   });
 
   test(`windows-laptop round 107: the total failure cap still stops the run at call 40, entry 86 (${order})`, async () => {
@@ -131,6 +174,22 @@ for (const persistFirst of [false, true]) {
     assert.equal(failures.length, RUN_PROGRESS_LIMITS.totalFailures, 'every failure, correctable or not, counts toward the total');
     // visibility_mismatch receipts (#26, #33) are never deferred.
     assert.deepEqual(replayed.correctable, [4, 5, 9, 10, 13, 14, 24, 40]);
+  });
+
+  test(`counterfactual strixy: any other success after #11 is not the corrected attempt and stops the run (${order})`, async () => {
+    const replayed = await replay(STRIXY, {persistFirst, calls: STRIXY.calls.filter(call => call.n <= 11)});
+    assert.equal(replayed.terminalAt, undefined);
+    const {guard, context, exhausted} = replayed;
+    // A successful read of a new path: progress on main, never the correction.
+    const id = 'unrelated-read';
+    const ctx = {...context, toolName: 'read', toolCallId: id};
+    const params = {path: 'fleet-qualification-d16deca55032/styles.css'};
+    const result = {content: [{type: 'text', text: 'body { margin: 0; }'}]};
+    const after = () => guard.afterToolCall({toolName: 'read', runId: context.runId, toolCallId: id, params, result}, ctx);
+    const persist = () => guard.toolResultPersist({toolName: 'read', toolCallId: id, message: {role: 'toolResult',
+      toolName: 'read', toolCallId: id, ...result, isError: false}}, ctx);
+    if (persistFirst) { persist(); after(); } else { after(); persist(); }
+    assert.equal(exhausted(), true, 'one result after main stopped');
   });
 
   // After #8 (the first rejection) and after #11 (the rejection main stopped on).
@@ -183,4 +242,45 @@ test('only an outer inspection call bound before execution gets the allowance', 
     persistFailure(id, toolName, rejected);
     assert.equal(exhausted(), !allowed, variant);
   }
+});
+
+// OpenClaw caps persisted details above 8 KiB (MAX_PERSISTED_TOOL_RESULT_DETAILS_BYTES)
+// before tool_result_persist, which may run before after_tool_call. The
+// fallback keeps status but not the receipt. The tool's own result, recorded
+// when it returned, is classified instead, so both hook orders agree.
+const CAPPED = details => ({persistedDetailsTruncated: true, finalDetailsTruncated: true,
+  originalDetailsBytes: 9000, originalDetailKeys: Object.keys(details), status: details.status});
+for (const transport of ['direct', 'tool_call']) test(`a capped persisted copy is accounted like the live result in both hook orders (${transport})`, async () => {
+  const args = {siteId: 'site-1', sha256: '1', viewport: {width: 375, height: 667}, steps: []};
+  const rejected = await offline.execute('capped', args);
+  assert.equal(correctableInspectionFailure(rejected), true);
+  const outcomes = {};
+  for (const recordResult of [true, false]) for (const persistFirst of [false, true]) {
+    const {guard, context, exhausted} = await replay(STRIXY, {calls: STRIXY.calls.slice(0, 7)});
+    for (let i = 0; i < 3; i++) {
+      const failId = `failed-read-${i}`;
+      guard.toolResultPersist({toolName: 'read', toolCallId: failId, message: {role: 'toolResult', toolName: 'read',
+        toolCallId: failId, content: [{type: 'text', text: 'ENOENT'}], isError: true}}, {...context, toolName: 'read', toolCallId: failId});
+    }
+    const id = `capped-${recordResult}-${persistFirst}`;
+    const toolName = transport === 'direct' ? PREVIEW_INSPECTION_TOOL : 'tool_call';
+    const params = transport === 'direct' ? args : {id: PREVIEW_INSPECTION_TOOL, args};
+    const ctx = {...context, toolName, toolCallId: id};
+    assert.notEqual(guard.beforeToolCall({toolName, runId: context.runId, toolCallId: id, params}, ctx)?.block, true);
+    const executedId = transport === 'direct' ? id : `tool_search_code:${id}:${PREVIEW_INSPECTION_TOOL}:1`;
+    if (recordResult) guard.recordPreviewInspectionResult(executedId, args, rejected);
+    const result = transport === 'direct' ? rejected : envelope(PREVIEW_INSPECTION_TOOL, rejected);
+    const message = {role: 'toolResult', toolName, toolCallId: id, content: result.content,
+      details: CAPPED(result.details), isError: transport === 'direct'};
+    const after = () => guard.afterToolCall({toolName, runId: context.runId, toolCallId: id, params, result}, ctx);
+    const persist = () => guard.toolResultPersist({toolName, toolCallId: id, message}, ctx);
+    if (persistFirst) { persist(); after(); } else { after(); persist(); }
+    outcomes[`${recordResult ? 'recorded' : 'unrecorded'} ${persistFirst ? 'persist first' : 'after first'}`] = exhausted();
+  }
+  assert.deepEqual(outcomes, {
+    'recorded after first': false, 'recorded persist first': false,
+    // Without the recorded result (a tool not registered through index.js),
+    // a capped copy that persistence sees first is charged at once.
+    'unrecorded after first': false, 'unrecorded persist first': true,
+  });
 });
