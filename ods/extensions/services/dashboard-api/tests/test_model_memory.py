@@ -356,12 +356,11 @@ ARCH = {
 # ---------------------------------------------------------------------------
 # Catalog rows against llama.cpp's own KV allocation
 #
-# "llama_kv_cache: CUDA0 KV buffer size" lines from the fleet's model-UI loads
-# (tower2:~/.local/state/dream-fleet/tasks/claude-ui-tooling-20260925/runs/
-# <run>/model-ui/cycle-001/<host>/gpu-residency/*.raw.txt; llama.cpp b9014,
-# f16 cache, one slot, ubatch 512) at the context the runtime reported
-# serving. A sliding-window model logs its full-attention cache and its
-# window cache as two lines; the second is MemoryEstimate.swa_kv_gib.
+# "llama_kv_cache: CUDA0 KV buffer size" lines from the fleet's model-UI
+# switch runs (each run's gpu-residency load log; llama.cpp b9014, f16 cache,
+# one slot, ubatch 512) at the context the runtime reported serving. A
+# sliding-window model logs its full-attention cache and its window cache as
+# two lines; the second is MemoryEstimate.swa_kv_gib.
 # ---------------------------------------------------------------------------
 
 LLAMA_KV_BUFFERS_MIB = {
