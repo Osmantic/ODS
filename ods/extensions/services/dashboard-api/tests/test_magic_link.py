@@ -593,8 +593,39 @@ def test_redeem_sets_cookie_and_redirects(magic_link_client, magic_link_module):
     assert b"ods-session=" in cookie_blob
     assert b"httponly" in cookie_blob
     assert b"samesite=lax" in cookie_blob
+    assert b"; secure" not in cookie_blob
     # Username hint is readable by the chat UI's JS (not HttpOnly).
     assert b"ods-target-user=alice" in cookie_blob
+
+
+@pytest.mark.parametrize("scope,expected_cookies", [
+    ("chat", {b"ods-target-user"}),
+    ("hermes", {b"ods-session", b"ods-target-user"}),
+])
+def test_redeem_sets_secure_cookies_for_forwarded_https(
+    magic_link_client, magic_link_module, scope, expected_cookies
+):
+    gen = magic_link_client.post(
+        "/api/auth/magic-link/generate",
+        json={"target_username": "alice", "scope": scope},
+        headers=magic_link_client.auth_headers,
+    )
+    token = gen.json()["token"]
+
+    resp = magic_link_client.get(
+        f"/auth/magic-link/{token}",
+        headers={"X-Forwarded-Proto": "HTTPS"},
+        follow_redirects=False,
+    )
+
+    assert resp.status_code == 302
+    set_cookies = [
+        value.lower()
+        for key, value in resp.headers.raw
+        if key.lower() == b"set-cookie"
+    ]
+    assert {cookie.split(b"=", 1)[0] for cookie in set_cookies} == expected_cookies
+    assert all(b"; secure" in cookie for cookie in set_cookies)
 
 
 def test_redeem_issues_signed_cookie_that_verifies(

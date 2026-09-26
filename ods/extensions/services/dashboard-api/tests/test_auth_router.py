@@ -159,6 +159,25 @@ class TestAdminSession:
         assert b"ods-session=" in cookie_blob
         assert b"httponly" in cookie_blob
         assert b"samesite=lax" in cookie_blob
+        assert b"; secure" not in cookie_blob
+
+    def test_forwarded_https_sets_secure_cookie(self, test_client):
+        resp = test_client.post(
+            "/api/auth/admin-session",
+            headers={
+                **test_client.auth_headers,
+                "X-Forwarded-Proto": "https, http",
+            },
+        )
+
+        assert resp.status_code == 200
+        cookie_blob = b" ".join(
+            value
+            for key, value in resp.headers.raw
+            if key.lower() == b"set-cookie"
+        ).lower()
+        assert b"ods-session=" in cookie_blob
+        assert b"; secure" in cookie_blob
 
     def test_minted_cookie_verifies(self, test_client):
         """The cookie this endpoint mints must round-trip through

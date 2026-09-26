@@ -136,14 +136,15 @@ def test_launch_rejects_arbitrary_destination(client, monkeypatch):
     login.assert_not_called()
 
 
-def test_launch_only_relays_host_only_secure_allowlisted_cookies(client, monkeypatch):
+@pytest.mark.parametrize("forwarded", ["https", "HTTPS, http"])
+def test_launch_only_relays_host_only_secure_allowlisted_cookies(client, monkeypatch, forwarded):
     client.cookies.set("ods-session", session_signer.issue(ttl_seconds=60))
     monkeypatch.setattr(hermes_auth, "settings", lambda: {"username": "ods", "password": "never-return"})
     cookies = SimpleCookie()
     cookies.load('hermes_session_at=fixture; Domain=evil.example; Path=/unsafe; Max-Age=60; SameSite=Lax')
     cookies['unrelated'] = 'do-not-relay'
     monkeypatch.setattr(hermes_bridge, "login_dashboard", AsyncMock(return_value=list(cookies.values())))
-    response = client.get("/api/auth/hermes-session", headers={"x-forwarded-proto": "https"}, follow_redirects=False)
+    response = client.get("/api/auth/hermes-session", headers={"x-forwarded-proto": forwarded}, follow_redirects=False)
     assert response.status_code == 303 and response.headers['location'] == '/'
     header = response.headers['set-cookie']
     assert 'hermes_session_at=fixture' in header and 'HttpOnly' in header and 'Secure' in header
