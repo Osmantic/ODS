@@ -202,12 +202,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   llama.cpp's 8192 MiB default is outside every ODS memory check, and in a
   16 GB WSL VM the kernel OOM-killed llama-server at about 10 GB resident,
   which dropped in-flight Pixel requests while the model reloaded. The Linux
-  and Windows installers and dashboard model switches write a quarter of the
+  and Windows installers and dashboard model switches write a third of the
   memory left after 6 GiB for the rest of ODS, at most a quarter of
-  `LLAMA_SERVER_MEMORY_LIMIT`, at least 512 MiB (2304 MiB in a 16 GB WSL VM;
-  hosts with about 38 GiB or more keep the default). Installer reruns fill in
-  a missing value; an existing one is kept. Lemonade and native macOS are
-  unchanged.
+  `LLAMA_SERVER_MEMORY_LIMIT`, at least 512 MiB (3072 MiB in a 16 GB WSL VM;
+  hosts from about 30 GiB keep the default unless the container limit is
+  smaller). Installer reruns fill in a missing value; an existing one is kept.
+  Lemonade and native macOS are unchanged.
 
 ## [3.0.0] - 2026-09-24
 

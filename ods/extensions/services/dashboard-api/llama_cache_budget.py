@@ -54,16 +54,17 @@ def memory_limit_mib(value: object) -> int | None:
 def default_cache_ram_mib(memory_gib: int, container_limit: object = None) -> int | None:
     """Return the default --cache-ram in MiB, or None when 8192 MiB fits.
 
-    A quarter of the memory left after ``STACK_RESERVE_GIB`` for the rest of
+    A third of the memory left after ``STACK_RESERVE_GIB`` for the rest of
     ODS and the OS, at most a quarter of the llama-server container limit (the
     rest of the container holds weights, KV cache and checkpoints), and at
-    least ``MIN_CACHE_RAM_MIB``. b9014 always keeps the newest cached prompt
-    even when it alone exceeds the cap, so a small cap still resumes the last
-    other conversation. ``memory_gib`` is 0 when unknown.
+    least ``MIN_CACHE_RAM_MIB``. In a 16 GB WSL VM that is 3 GiB: one
+    64K-token Qwen3.5-9B agent conversation with its 32 checkpoints (~2.5 GiB)
+    plus a few short prompts. b9014 always keeps the newest cached prompt even
+    when it alone exceeds the cap. ``memory_gib`` is 0 when unknown.
     """
     cache_mib = LLAMA_CPP_DEFAULT_CACHE_RAM_MIB
     if memory_gib > 0:
-        cache_mib = min(cache_mib, max(0, memory_gib - STACK_RESERVE_GIB) * 256)
+        cache_mib = min(cache_mib, max(0, memory_gib - STACK_RESERVE_GIB) * 1024 // 3)
     limit_mib = memory_limit_mib(container_limit)
     if limit_mib:
         cache_mib = min(cache_mib, limit_mib // 4)

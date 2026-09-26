@@ -37,17 +37,21 @@ def test_memory_limit_mib(value, expected):
     ("memory_gib", "limit", "expected"),
     [
         # 16 GB WSL VM (MemTotal 15.3 GiB) with the 12G 8 GB-GPU profile.
-        (15, "12G", 2304),
-        (15, "64G", 2304),
-        (16, "12G", 2560),
-        (31, "27G", 6400),
+        (15, "12G", 3072),
+        (15, "64G", 3072),
+        (16, "64G", 3413),
+        (24, "20G", 5120),
+        (29, "64G", 7850),
+        # 32 GB host (31 GiB) with the NVIDIA 27G default: the limit binds.
+        (31, "27G", 6912),
+        (30, "64G", None),
         # A large host whose profile limits the container to 12G.
         (62, "12G", 3072),
-        (38, "34G", None),
         (125, "64G", None),
         # The CPU compose limit bounds any host.
         (64, "6G", 1536),
-        (8, "5G", 512),
+        (8, "5G", 682),
+        (7, "4G", 512),
         (4, "1G", 512),
         (0, "12G", 3072),
         (0, "", None),

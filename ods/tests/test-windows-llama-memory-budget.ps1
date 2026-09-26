@@ -29,14 +29,17 @@ Assert-Equal (ConvertTo-ODSMemoryLimitMiB -Value "12884901888") 12288 "Plain byt
 Assert-Equal (ConvertTo-ODSMemoryLimitMiB -Value "1.5G") 0 "Decimal is not read"
 
 # Same table as tests/test-llama-memory-budget.sh.
-Assert-Equal (Get-ODSDefaultLlamaCacheRamMiB -AvailableRamGB 15 -ContainerMemoryLimit "12G") "2304" "16 GB WSL VM cache"
-Assert-Equal (Get-ODSDefaultLlamaCacheRamMiB -AvailableRamGB 16 -ContainerMemoryLimit "12G") "2560" "16 GiB cache"
-Assert-Equal (Get-ODSDefaultLlamaCacheRamMiB -AvailableRamGB 31 -ContainerMemoryLimit "27G") "6400" "32 GB host cache"
+Assert-Equal (Get-ODSDefaultLlamaCacheRamMiB -AvailableRamGB 15 -ContainerMemoryLimit "12G") "3072" "16 GB WSL VM cache"
+Assert-Equal (Get-ODSDefaultLlamaCacheRamMiB -AvailableRamGB 16 -ContainerMemoryLimit "64G") "3413" "16 GiB cache"
+Assert-Equal (Get-ODSDefaultLlamaCacheRamMiB -AvailableRamGB 24 -ContainerMemoryLimit "20G") "5120" "24 GiB cache"
+Assert-Equal (Get-ODSDefaultLlamaCacheRamMiB -AvailableRamGB 29 -ContainerMemoryLimit "64G") "7850" "29 GiB cache"
+Assert-Equal (Get-ODSDefaultLlamaCacheRamMiB -AvailableRamGB 31 -ContainerMemoryLimit "27G") "6912" "32 GB host cache"
+Assert-Equal (Get-ODSDefaultLlamaCacheRamMiB -AvailableRamGB 30 -ContainerMemoryLimit "64G") "" "30 GiB keeps the llama.cpp default"
 Assert-Equal (Get-ODSDefaultLlamaCacheRamMiB -AvailableRamGB 62 -ContainerMemoryLimit "12G") "3072" "Container limit bounds the cache"
-Assert-Equal (Get-ODSDefaultLlamaCacheRamMiB -AvailableRamGB 38 -ContainerMemoryLimit "34G") "" "38 GiB keeps the llama.cpp default"
 Assert-Equal (Get-ODSDefaultLlamaCacheRamMiB -AvailableRamGB 125 -ContainerMemoryLimit "64G") "" "Tower keeps the llama.cpp default"
 Assert-Equal (Get-ODSDefaultLlamaCacheRamMiB -AvailableRamGB 64 -ContainerMemoryLimit "6G") "1536" "CPU compose limit"
-Assert-Equal (Get-ODSDefaultLlamaCacheRamMiB -AvailableRamGB 8 -ContainerMemoryLimit "5G") "512" "Floor"
+Assert-Equal (Get-ODSDefaultLlamaCacheRamMiB -AvailableRamGB 8 -ContainerMemoryLimit "5G") "682" "8 GiB cache"
+Assert-Equal (Get-ODSDefaultLlamaCacheRamMiB -AvailableRamGB 7 -ContainerMemoryLimit "4G") "512" "Floor"
 Assert-Equal (Get-ODSDefaultLlamaCacheRamMiB -AvailableRamGB 0 -ContainerMemoryLimit "12G") "3072" "Unknown memory"
 Assert-Equal (Get-ODSDefaultLlamaCacheRamMiB -AvailableRamGB 0 -ContainerMemoryLimit "") "" "Nothing known"
 
@@ -67,9 +70,6 @@ try {
     if ($nvidiaEnv -notmatch '(?m)^LLAMA_SERVER_MEMORY_LIMIT=5G\r?$') {
         throw "Fresh NVIDIA install did not use Docker's lower 8 GiB memory reading"
     }
-    if ($nvidiaEnv -notmatch '(?m)^LLAMA_ARG_CACHE_RAM=512\r?$') {
-        throw "Fresh NVIDIA install did not size the prompt cache for Docker's 8 GiB"
-    }
 
     $nvidiaEnv = $nvidiaEnv -replace '(?m)^LLAMA_SERVER_MEMORY_LIMIT=.*$', 'LLAMA_SERVER_MEMORY_LIMIT=7G'
     [IO.File]::WriteAllText($nvidiaEnvPath, $nvidiaEnv)
@@ -79,6 +79,12 @@ try {
     $rerunEnv = Get-Content -LiteralPath $nvidiaEnvPath -Raw
     if ($rerunEnv -notmatch '(?m)^LLAMA_SERVER_MEMORY_LIMIT=7G\r?$') {
         throw "NVIDIA reinstall discarded the explicit memory-limit override"
+    }
+
+    # The fresh install sized the prompt cache for Docker's 8 GiB (a third of
+    # 8 - 6 GiB), and the rerun kept it although Docker now reports 4 GiB.
+    if ($rerunEnv -notmatch '(?m)^LLAMA_ARG_CACHE_RAM=682\r?$') {
+        throw "NVIDIA install did not keep the prompt cache sized for Docker's 8 GiB"
     }
 
     # An owner's prompt-cache size survives a rerun.
@@ -97,8 +103,8 @@ try {
     $profileTier.LLAMA_SERVER_MEMORY_LIMIT = "12G"
     New-ODSEnv -InstallDir $wslDir -TierConfig $profileTier -Tier "1" `
         -GpuBackend "nvidia" -ODSMode "local" -SystemRamGB 31 | Out-Null
-    if ((Get-Content -LiteralPath (Join-Path $wslDir ".env") -Raw) -notmatch '(?m)^LLAMA_ARG_CACHE_RAM=2304\r?$') {
-        throw "A 15 GiB Docker VM did not get a 2304 MiB prompt cache"
+    if ((Get-Content -LiteralPath (Join-Path $wslDir ".env") -Raw) -notmatch '(?m)^LLAMA_ARG_CACHE_RAM=3072\r?$') {
+        throw "A 15 GiB Docker VM did not get a 3072 MiB prompt cache"
     }
     $profileDir = Join-Path $testRoot "profile-cache"
     New-Item -ItemType Directory -Path $profileDir -Force | Out-Null

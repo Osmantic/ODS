@@ -120,7 +120,7 @@ function ConvertTo-ODSMemoryLimitMiB {
 }
 
 # Default llama.cpp --cache-ram (LLAMA_ARG_CACHE_RAM) in MiB for the Docker
-# llama-server: a quarter of the memory left after 6 GiB for the rest of ODS
+# llama-server: a third of the memory left after 6 GiB for the rest of ODS
 # and the OS, at most a quarter of the container limit, at least 512. Returns
 # "" when llama.cpp's own 8192 MiB default fits. Mirrors
 # ods_default_llama_cache_ram_mib in installers/lib/llama-memory-budget.sh.
@@ -133,7 +133,7 @@ function Get-ODSDefaultLlamaCacheRamMiB {
     $cacheMiB = [int64]8192
     if ($AvailableRamGB -gt 0) {
         $headroomGB = [Math]::Max(0, $AvailableRamGB - 6)
-        $cacheMiB = [Math]::Min($cacheMiB, [int64]($headroomGB * 256))
+        $cacheMiB = [Math]::Min($cacheMiB, [int64][Math]::Floor($headroomGB * 1024 / 3))
     }
     $limitMiB = ConvertTo-ODSMemoryLimitMiB -Value $ContainerMemoryLimit
     if ($limitMiB -gt 0) {

@@ -119,10 +119,12 @@ ods_memory_limit_mib() {
 # checkpoints, in host RAM so a conversation that lost the slot resumes without
 # re-processing its prompt. b9014 caps that cache at 8192 MiB, outside every
 # ODS memory check, and a 16 GB WSL VM OOM-killed llama-server at ~10 GB RSS
-# with it. The default is a quarter of the memory left after 6 GiB for the rest
+# with it. The default is a third of the memory left after 6 GiB for the rest
 # of ODS and the OS, and at most a quarter of the llama-server container limit
-# (so weights, KV and checkpoints keep the rest). 512 MiB is the floor; b9014
-# always keeps the newest cached prompt even when it alone exceeds the cap.
+# (so weights, KV and checkpoints keep the rest). In a 16 GB VM that is 3 GiB:
+# one 64K-token Qwen3.5-9B agent conversation with its 32 checkpoints (~2.5
+# GiB) plus a few short prompts. 512 MiB is the floor; b9014 always keeps the
+# newest cached prompt even when it alone exceeds the cap.
 # Arguments: effective memory in whole GiB (0 when unknown) and the container
 # memory limit. Prints nothing when llama.cpp's own 8192 MiB default fits.
 ods_default_llama_cache_ram_mib() {
@@ -133,7 +135,7 @@ ods_default_llama_cache_ram_mib() {
     if (( memory_gb > 0 )); then
         local headroom_gb=$((memory_gb - 6))
         (( headroom_gb < 0 )) && headroom_gb=0
-        (( headroom_gb * 256 < cache_mib )) && cache_mib=$((headroom_gb * 256))
+        (( headroom_gb * 1024 / 3 < cache_mib )) && cache_mib=$((headroom_gb * 1024 / 3))
     fi
     if [[ -n "$limit_mib" ]] && (( limit_mib / 4 < cache_mib )); then
         cache_mib=$((limit_mib / 4))

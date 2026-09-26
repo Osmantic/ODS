@@ -7763,23 +7763,23 @@ class TestModelActivateRollback:
 
     def test_activation_sizes_llama_cache_ram_to_the_docker_vm(self, tmp_path, monkeypatch):
         # llama.cpp's 8192 MiB default prompt cache OOM-killed llama-server in
-        # a 16 GB WSL VM. The profile limits the container to 12G, and the
-        # VM (15 GiB) is smaller than the host (31 GiB): (15 - 6) / 4 GiB.
+        # a 16 GB WSL VM. The VM (15 GiB) is smaller than the host (31 GiB):
+        # (15 - 6) / 3 GiB, which is also a quarter of the profile's 12G.
         env, docker_info_calls = self._activate_with_host_memory(
             tmp_path, monkeypatch, profile_env={"LLAMA_SERVER_MEMORY_LIMIT": "12G"},
         )
         assert env["LLAMA_SERVER_MEMORY_LIMIT"] == "12G"
-        assert env["LLAMA_ARG_CACHE_RAM"] == "2304"
+        assert env["LLAMA_ARG_CACHE_RAM"] == "3072"
         assert docker_info_calls
 
     def test_activation_cache_ram_follows_the_container_limit(self, tmp_path, monkeypatch):
         env, _calls = self._activate_with_host_memory(
             tmp_path, monkeypatch,
             env_extra="SYSTEM_RAM_GB=64\n",
-            profile_env={"LLAMA_SERVER_MEMORY_LIMIT": "12G"},
+            profile_env={"LLAMA_SERVER_MEMORY_LIMIT": "8G"},
             host_ram_gb=64, docker_mem_total=str(64 * 1024 ** 3),
         )
-        assert env["LLAMA_ARG_CACHE_RAM"] == "3072"
+        assert env["LLAMA_ARG_CACHE_RAM"] == "2048"
 
     def test_activation_keeps_llama_cache_ram_already_in_env(self, tmp_path, monkeypatch):
         env, docker_info_calls = self._activate_with_host_memory(
@@ -7812,8 +7812,8 @@ class TestModelActivateRollback:
         env, _calls = self._activate_with_host_memory(
             tmp_path, monkeypatch, host_ram_gb=15, docker_mem_total="",
         )
-        # 64G NVIDIA compose limit; (15 - 6) / 4 GiB of host RAM.
-        assert env["LLAMA_ARG_CACHE_RAM"] == "2304"
+        # 64G NVIDIA compose limit; (15 - 6) / 3 GiB of host RAM.
+        assert env["LLAMA_ARG_CACHE_RAM"] == "3072"
 
     @pytest.mark.parametrize(
         "env",
@@ -7841,7 +7841,7 @@ class TestModelActivateRollback:
     def test_default_cache_ram_covers_docker_llama_cpp_backends(self, monkeypatch, backend):
         monkeypatch.setattr(_mod, "_system_ram_gb", lambda: 15)
         monkeypatch.setattr(_mod, "_docker_memory_gb", lambda: 0)
-        expected = 1536 if backend in {"cpu", "none", ""} else 2304
+        expected = 1536 if backend in {"cpu", "none", ""} else 3072
         assert _mod._default_llama_cache_ram_mib({"GPU_BACKEND": backend}, "") == expected
 
     def test_explicit_context_overrides_profile_and_installer_recommendation(

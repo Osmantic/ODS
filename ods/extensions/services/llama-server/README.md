@@ -64,11 +64,11 @@ Tune this value per machine. Lower values keep more work on GPU and can be faste
 
 ### RAM prompt cache
 
-llama.cpp keeps earlier prompts, with their context checkpoints, in host RAM (`--cache-ram`, `LLAMA_ARG_CACHE_RAM`). When another client (Talk, Hermes, Open WebUI, a second Pixel chat) takes the slot, the conversation it replaced resumes from this cache instead of re-processing its whole prompt. b9014 lets the cache grow to 8192 MiB. The container memory limit, the VRAM fit check and the catalog profiles do not count it, and on a 16 GB machine it is most of the memory left: in a 16 GB WSL VM the kernel OOM-killed llama-server at about 10 GB resident, with about 4 GiB of other ODS containers running.
+llama.cpp keeps earlier prompts, with their context checkpoints, in host RAM (`--cache-ram`, `LLAMA_ARG_CACHE_RAM`). When another client (Talk, Hermes, Open WebUI, a second Pixel chat) takes the slot, the conversation it replaced resumes from this cache instead of re-processing its whole prompt. b9014 lets the cache grow to 8192 MiB. The container memory limit, the VRAM fit check and the catalog profiles do not count it, and on a 16 GB machine it is most of the memory left: in a 16 GB WSL VM the kernel OOM-killed llama-server at about 10 GB resident, while every other process together held 4.6 GiB of RAM and 3.6 GiB of swap.
 
 When neither the model's runtime profile nor `.env` sets it, the Linux and Windows installers and a dashboard model switch write a size for the Docker llama-server:
 
-- a quarter of the memory left after 6 GiB for the rest of ODS and the OS (Docker's memory when it is smaller than the host's, as in WSL or Docker Desktop),
+- a third of the memory left after 6 GiB for the rest of ODS and the OS (Docker's memory when it is smaller than the host's, as in WSL or Docker Desktop),
 - at most a quarter of `LLAMA_SERVER_MEMORY_LIMIT` (or the backend's compose default), so weights, KV cache and checkpoints keep the rest of the container,
 - at least 512 MiB.
 
@@ -76,15 +76,18 @@ From 8192 MiB up the key stays unset and llama.cpp's default applies.
 
 | Memory Docker can use | Container limit | `LLAMA_ARG_CACHE_RAM` |
 |---|---|---|
-| 15 GiB (16 GB WSL VM) | 12G | 2304 |
-| 31 GiB | 27G | 6400 |
+| 15 GiB (16 GB WSL VM) | 12G | 3072 |
+| 16 GiB | 64G | 3413 |
+| 31 GiB | 27G | 6912 |
 | 62 GiB | 12G (8 GB GPU profile) | 3072 |
 | 64 GiB | 6G (CPU default) | 1536 |
-| 38 GiB and more | 34G and more | unset (8192) |
+| 30 GiB and more | 32G and more | unset (8192) |
 
 A value already in `.env` is kept. Set `LLAMA_ARG_CACHE_RAM=8192` for llama.cpp's default, or `0` to turn the cache off. Lemonade (AMD) and native macOS start llama.cpp themselves and are not changed.
 
-The trade-off, measured with Qwen3.5-9B Q4_K_M at 64K context and q8_0 KV cache on an RTX 5070 Laptop GPU (b9014): a 29,855-token conversation took 798 MiB in the cache (546 MiB of KV and recurrent state plus five 50 MiB checkpoints). Saving it took 0.7 s; re-processing it took 17–23 s. 2304 MiB holds about three such conversations. On an RTX 5090 with Qwen3.5-27B, returning to a displaced 24k-token conversation took 1.4 s with the cache and 7.9 s with `--cache-ram 0`. With `0` the memory is free, but every return to a conversation another client displaced re-processes its whole prompt. b9014 always keeps the newest cached prompt, even when it alone is larger than the limit.
+What the cache holds, measured with Qwen3.5-9B Q4_K_M at 64K context on an RTX 5070 Laptop GPU (b9014, one slot): each cached prompt carries its recurrent state (50 MiB), its KV cache and its context checkpoints (50 MiB each, up to 32). A 48,465-token Pixel conversation with 32 checkpoints took 2,464 MiB; a 29,855-token one with 5 checkpoints took 798 MiB; short side requests took 50–60 MiB. 3072 MiB keeps one full agent conversation and a few short ones. llama.cpp saves the slot's prompt, then restores the best match, then evicts the oldest entries over the limit, and it always keeps the newest entry even when it alone is larger than the limit, so two conversations that take turns resume from the cache at any size.
+
+Why not `0`: re-processing that 30k-token conversation took 17–23 s on the laptop GPU; saving it took 0.7 s. On an RTX 5090 with Qwen3.5-27B, returning to a displaced 24k-token conversation took 1.4 s with the cache and 7.9 s with `--cache-ram 0`.
 
 ### N-gram speculative decoding
 
