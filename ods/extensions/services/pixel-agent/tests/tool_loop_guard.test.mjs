@@ -9382,7 +9382,11 @@ test("redundant workspace transport cannot bypass existing execution boundaries"
     [{ id: "tool_call", args: { id: "pixel_ods_host_command_propose", args: { command: "hostname" } } }, nested],
     [{ id: "tool_call", args: { id: "exec", args: { command: "pwd" } }, extra: true },
       "tool_call is its own tool, not a tool_call id. exec is directly available in your tool list; call exec itself."],
-    [{ id: "tool_call", args: { id: "tool_call", args: { id: "exec", args: { command: "pwd" } } } }, nested],
+    // The inner id is itself a control tool, which OpenClaw never resolves.
+    [{ id: "tool_call", args: { id: "tool_call", args: { id: "exec", args: { command: "pwd" } } } },
+      "tool_call is its own tool, not a tool_call id. Control tools cannot be described or called by id; " +
+      "tool_describe and tool_call take only the id of a tool that tool_search found. " +
+      "Call the tool you need directly by its own name from your tool list, or find it with tool_search."],
   ]) assert.deepEqual(call(createToolLoopGuard(), "tool_call", { event: { params } }), { block: true, blockReason });
 });
 
