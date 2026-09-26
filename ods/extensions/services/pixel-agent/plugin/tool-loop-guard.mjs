@@ -4698,6 +4698,65 @@ function requestsRecursiveForcedDelete(params) {
   return false;
 }
 
+// Workspace files a run wrote, as owner receipts list them (at most 20 named).
+function receiptWrittenFiles(state) {
+  return [...state.successfulWritePaths].filter((file) =>
+    typeof file === "string" && file.split("/").every((part) => WORKSPACE_PATH_COMPONENT.test(part))
+  ).sort();
+}
+
+function receiptWrittenFileLines(files) {
+  return files.slice(0, 20).map((file) => `- File written: \`/workspace/${file}\`.`).join("\n") +
+    (files.length > 20 ? `\n- ${files.length - 20} additional files were written.` : "");
+}
+
+// Model-chosen text shown as inline code in an owner receipt: one bounded
+// line without backticks or control characters.
+function receiptCode(value) {
+  const text = String(value).replace(/[`\u0000-\u001f\u007f\u2028\u2029]/g, " ").replace(/\s+/g, " ").trim();
+  return text.length > 160 ? `${text.slice(0, 159)}\u2026` : text;
+}
+
+// The latest recognized test command and its directory, from the
+// verification fingerprint [command, workdir]. An empty workdir is the
+// workspace root; a leading `cd /workspace/...` supplies the workdir when the
+// call gave no other one.
+function verificationReceiptTarget(fingerprint) {
+  let parsed;
+  try {
+    parsed = JSON.parse(fingerprint);
+  } catch {
+    return undefined;
+  }
+  if (!Array.isArray(parsed) || typeof parsed[0] !== "string" || !receiptCode(parsed[0])) return undefined;
+  const directory = typeof parsed[1] === "string" && receiptCode(parsed[1]) ? receiptCode(parsed[1]) : "/workspace";
+  return `\`${receiptCode(parsed[0])}\` in \`${directory}\``;
+}
+
+// Owner receipt after an unauthorized recursive deletion was refused. Every
+// fact comes from host state. It cannot prove that nothing was ever deleted,
+// so it does not claim that, and it addresses the owner, not the model.
+function recursiveDeleteRefusalReceipt({ files, test, testState, running, passed }) {
+  const latest = test ? `The latest recognized test command, ${test},` : "The latest recognized test command";
+  const testLine = {
+    passed: `${latest} passed, and no tool call that could change the workspace ran after it.`,
+    stale: `${latest} passed, but a later tool call could have changed the workspace, so that result is not current.`,
+    failed: `${latest} failed.`,
+    pending: `${latest} had not finished, so its result is unknown.`,
+  }[testState] ?? "No recognized test command ran.";
+  return [
+    "Pixel stopped using tools because a command included a recursive deletion that you did not ask for. " +
+      "That command was refused and did not run.",
+    "Results recorded by Pixel's tools before that:",
+    files.length ? receiptWrittenFileLines(files) : "- No file was written.",
+    `- ${testLine}`,
+    ...(running ? ["- A command started earlier was still running when tool use stopped."] : []),
+    passed
+      ? "This does not establish complete test coverage or completion of every requested step."
+      : "This request is not complete. Ask Pixel to continue, or say explicitly if you want a folder deleted.",
+  ].join("\n");
+}
+
 // Keep status UI elements separate from requests for platform facts.
 function statusKeywordIsUiNounPhrase(clause, keywordIndex, keywordLen) {
   const uiWords =
@@ -10621,6 +10680,10 @@ export function createToolLoopGuard({
     if (observedFingerprint) {
       state.verificationOriginalByWrapped.delete(observedFingerprint);
     }
+    // After a recursive-deletion refusal, a call this guard refused ran
+    // nothing. Its blocked receipt is not a test result or a failed command,
+    // so it cannot replace the latest real verification in the owner receipt.
+    if (refusedCall && state.recursiveDeleteDenied) return;
     if (!fingerprint && !verificationFingerprint) return;
     if (verificationFingerprint) {
       state.latestVerificationFingerprint = verificationFingerprint;
@@ -11847,9 +11910,41 @@ export function createToolLoopGuard({
     if (typeof runId !== "string" || !runId) return { status: "none" };
     const state = runs.get(runId);
     if (!state) return { status: "none" };
-    if (state.recursiveDeleteDenied) {
-      return { status: "failed", text: RECURSIVE_DELETE_REQUIRES_OWNER_REASON };
-    }
+    if (state.recursiveDeleteDenied) return recursiveDeleteRefusalVerification(state);
+    return workspaceTaskVerification(state);
+  }
+
+  // After an unauthorized recursive deletion was refused, every later tool
+  // call in the run is refused and no model text is delivered. The owner gets
+  // a host receipt instead of the model-directed refusal. It keeps a
+  // recognized test pass only when that pass is still current: no call that
+  // could change the workspace ran after it (refused calls never advance the
+  // generation), no command is still running, and the rest of the task
+  // evaluation passed without a publication receipt. Receipt-based work
+  // (Operations, exact downloads, previews, managed extension or team work)
+  // and every other test state stay 'failed'.
+  function recursiveDeleteRefusalVerification(state) {
+    const verification = workspaceTaskVerification(state);
+    const status = state.latestVerificationStatus;
+    const current = status === "passed" &&
+      state.latestVerificationPassedGeneration === state.previewVerificationGeneration;
+    const running = state.pendingExecSessions.size > 0;
+    const passed = current && !running && verification.status === "passed" && !verification.preview &&
+      !state.operationsRequired && !state.exactDownloadRequested && !state.workspacePreviewRequired &&
+      !state.extensionCompletionGate?.active && !state.extensionPendingHandoff && !state.managedTeamCoordinator;
+    return {
+      status: passed ? "passed" : "failed",
+      text: recursiveDeleteRefusalReceipt({
+        files: receiptWrittenFiles(state),
+        test: verificationReceiptTarget(state.latestVerificationFingerprint),
+        testState: current ? "passed" : status === "passed" ? "stale" : status ?? "not-run",
+        running,
+        passed,
+      }),
+    };
+  }
+
+  function workspaceTaskVerification(state) {
     if (state.unrequestedOperationsAborted) {
       return { status: "failed", text: UNREQUESTED_OPERATIONS_LOOP_ABORT_REASON };
     }
@@ -12132,9 +12227,7 @@ export function createToolLoopGuard({
         };
       }
       if (state.codingExhausted && state.workspaceTaskRequested && state.pendingExecSessions.size === 0) {
-        const writtenFiles = [...state.successfulWritePaths].filter((file) =>
-          typeof file === "string" && file.split("/").every((part) => WORKSPACE_PATH_COMPONENT.test(part))
-        ).sort();
+        const writtenFiles = receiptWrittenFiles(state);
         if (writtenFiles.length > 0) {
           // Preserve real work when the model repeats a completed command and
           // cannot produce a final reply. This is a partial tool receipt, not
@@ -12143,8 +12236,7 @@ export function createToolLoopGuard({
             status: "passed",
             text: "Pixel stopped repeating completed work before it could finish its explanation. " +
               "The following results were recorded by its tools:\n" +
-              writtenFiles.slice(0, 20).map((file) => `- File written: \`/workspace/${file}\`.`).join("\n") +
-              (writtenFiles.length > 20 ? `\n- ${writtenFiles.length - 20} additional files were written.` : "") +
+              receiptWrittenFileLines(writtenFiles) +
               "\n- The latest recognized test command completed successfully.\n" +
               "This does not establish complete test coverage or completion of every requested step. " +
               "The workspace is preserved; ask Pixel to continue from these files.",

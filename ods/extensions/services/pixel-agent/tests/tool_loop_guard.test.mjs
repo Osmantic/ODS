@@ -3529,12 +3529,39 @@ for (const [status, result, expected] of [
   });
 }
 
+// Owner receipts after a refused recursive deletion (see
+// deletion_refusal_delivery.test.mjs for the recorded tower2 replay).
+const DELETION_REFUSAL_LEAD =
+  "Pixel stopped using tools because a command included a recursive deletion that you did not ask for. " +
+  "That command was refused and did not run.\nResults recorded by Pixel's tools before that:\n";
+const DELETION_REFUSAL_INCOMPLETE =
+  "This request is not complete. Ask Pixel to continue, or say explicitly if you want a folder deleted.";
+const DELETION_REFUSAL_NO_WORK = DELETION_REFUSAL_LEAD +
+  "- No file was written.\n- No recognized test command ran.\n" + DELETION_REFUSAL_INCOMPLETE;
+
 test("post-download analysis still enforces normal destructive-command boundaries", () => {
   const { guard } = verifiedDownloadGuard();
   assert.equal(call(guard, "exec", {
     event: { params: { command: "rm -rf /workspace/project" } },
   }).blockReason, RECURSIVE_DELETE_REQUIRES_OWNER_REASON);
-  assert.equal(reply(guard).payload.text, RECURSIVE_DELETE_REQUIRES_OWNER_REASON);
+  assert.equal(reply(guard).payload.text, DELETION_REFUSAL_NO_WORK);
+  assert.equal(guard.deliveryVerificationForRun("run-1").status, "failed");
+});
+
+test("a current test pass cannot complete an exact download after a deletion refusal", () => {
+  const { guard } = verifiedDownloadGuard();
+  const params = { command: "python3 -m unittest -v", workdir: "/workspace/project" };
+  assert.notEqual(call(guard, "exec", { event: { toolCallId: "test", params } })?.block, true);
+  afterCall(guard, "exec", { event: { toolCallId: "test", params,
+    result: { details: { status: "completed", exitCode: 0 }, content: [{ type: "text", text: "Ran 2 tests\n\nOK" }] } } });
+  assert.equal(guard.verificationStatus("run-1"), "passed");
+  assert.equal(call(guard, "exec", { event: { toolCallId: "refused",
+    params: { command: "rm -rf /workspace/project" } } }).blockReason, RECURSIVE_DELETE_REQUIRES_OWNER_REASON);
+  // The download receipt and a current pass are not the whole exact-download
+  // obligation once the run stopped; the status stays failed.
+  assert.deepEqual(guard.deliveryVerificationForRun("run-1"), { status: "failed", text: DELETION_REFUSAL_LEAD +
+    "- No file was written.\n- The latest recognized test command, `python3 -m unittest -v` in `/workspace/project`, " +
+    "passed, and no tool call that could change the workspace ran after it.\n" + DELETION_REFUSAL_INCOMPLETE });
 });
 
 test("rejects mismatched or malformed staged-download terminal evidence", () => {
@@ -12196,7 +12223,7 @@ test("deletion refusal stops alternate commands and tools in the same run", () =
   assert.deepEqual(aborted, ["session-1"]);
   assert.equal(guard.beforeAgentFinalize({}, { agentId: "pixel", runId: "run-1" }), undefined);
   assert.deepEqual(guard.deliveryVerificationForRun("run-1"), {
-    status: "failed", text: RECURSIVE_DELETE_REQUIRES_OWNER_REASON,
+    status: "failed", text: DELETION_REFUSAL_NO_WORK,
   });
   // Another owner's ordinary run and a later actual run are not locked.
   assert.notEqual(call(guard, "read", { event: { runId: "run-2", params: { path: "notes.txt" } },
@@ -12215,6 +12242,26 @@ test("deletion refusal still aborts the model when command cancellation throws",
   assert.deepEqual(aborted, ["session-1"]);
   assert.match(warnings[0], /execution signal failed/);
   assert.equal(guard.verificationForRun("run-1").status, "failed");
+});
+
+test("a published preview and a current test pass cannot complete a website after a deletion refusal", () => {
+  const guard = createToolLoopGuard();
+  seedNamedPreview(guard);
+  const params = { command: "python3 -m unittest -v", workdir: "/workspace/log-viewer-lab" };
+  assert.notEqual(call(guard, "exec", { event: { toolCallId: "test", params } })?.block, true);
+  afterCall(guard, "exec", { event: { toolCallId: "test", params,
+    result: { details: { status: "completed", exitCode: 0 }, content: [{ type: "text", text: "Ran 1 test\n\nOK" }] } } });
+  assert.equal(guard.verificationStatus("run-1"), "passed");
+  assert.equal(call(guard, "exec", { event: { toolCallId: "refused",
+    params: { command: "rm -rf /workspace/log-viewer-lab/tmp" } } }).blockReason, RECURSIVE_DELETE_REQUIRES_OWNER_REASON);
+  // A publication is a receipt of its own; the refusal keeps it incomplete.
+  const delivered = guard.deliveryVerificationForRun("run-1");
+  assert.equal(delivered.status, "failed");
+  assert.equal(delivered.preview, undefined);
+  assert.equal(delivered.text, DELETION_REFUSAL_LEAD +
+    "- File written: `/workspace/log-viewer-lab/index.html`.\n" +
+    "- The latest recognized test command, `python3 -m unittest -v` in `/workspace/log-viewer-lab`, " +
+    "passed, and no tool call that could change the workspace ran after it.\n" + DELETION_REFUSAL_INCOMPLETE);
 });
 
 test("ordinary archive and organizer follow-ups do not require a visual artifact", () => {
