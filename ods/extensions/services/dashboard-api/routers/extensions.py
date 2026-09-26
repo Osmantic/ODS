@@ -3163,6 +3163,133 @@ async def extension_logs(
         raise HTTPException(status_code=502, detail=f"Invalid host agent response: {exc}") from exc
 
 
+def _installed_definition_difference(staged: Path, installed: Path, *,
+                                     compose_path: Path | None = None) -> str | None:
+    """The first file a library install writes that changed in installed.
+
+    Compose may build or mount any file shipped by the library, including
+    Dockerfiles and scripts, so every staged path is checked: no link, same
+    type, same executable bit, same bytes. Owner-added data and configuration
+    are not library files and are left alone. ``compose_path`` is the
+    installed file holding the staged compose.yaml (compose.yaml.disabled
+    while the extension is disabled). Returns the installed name of the first
+    changed path, or None when every path is unchanged.
+    """
+    for expected in sorted(staged.rglob('*')):
+        relative = expected.relative_to(staged)
+        actual = installed / relative
+        if compose_path is not None and relative.as_posix() == 'compose.yaml':
+            actual = compose_path
+        if (actual.is_symlink() or (expected.is_dir() and not actual.is_dir())
+                or (expected.is_file() and (not actual.is_file()
+                    or bool(actual.stat().st_mode & 0o111)
+                       != bool(expected.stat().st_mode & 0o111)
+                    or actual.read_bytes() != expected.read_bytes()))):
+            return actual.relative_to(installed).as_posix()
+    return None
+
+
+def _library_recipe_mismatch_cause(service_id: str, difference: str) -> str:
+    """Say why an installed curated recipe no longer matches the library.
+
+    Only for messages: the install receipt (_library_update_state) sits in the
+    writable extension directory, so it tells the owner which side changed
+    but never decides trust.
+    """
+    state = _library_update_state(service_id)
+    library_changed = state["update_available"]
+    edited = state["locally_modified"]
+    if library_changed and edited:
+        return (f"the library recipe changed since install and its installed files were edited "
+                f"after install (first difference: {difference}). Update it from the library, "
+                f"which keeps your edited files as the rollback backup,")
+    if library_changed:
+        return (f"the library recipe changed since install, for example with an ODS update "
+                f"(first difference: {difference}). Update it from the library")
+    if edited:
+        return (f"its installed files were edited after install (first difference: "
+                f"{difference}). Undo the edit, or update it from the library, which keeps your "
+                f"edited files as the rollback backup,")
+    return (f"its installed files differ from the library recipe (first difference: {difference}), "
+            f"and no install receipt shows whether the library or the installed copy changed. "
+            f"Update it from the library")
+
+
+def _installed_library_recipe_trust(service_id: str, ext_dir: Path,
+                                    compose_path: Path) -> tuple[bool, str | None]:
+    """Whether an installed extension keeps its curated-library compose privileges.
+
+    Install grants a curated recipe its local ``build:`` and the host-gateway
+    ``extra_hosts`` entry only after staging it from the library
+    (_staged_library_extension). Enabling it again, or starting it after a
+    stop, reaches the same decision from the same evidence rather than from
+    its name: stage the library recipe of this id through that install path,
+    which re-runs install's trust decision (_compose_policy_library_origin)
+    and every compose scan, and require each file it would install to be
+    unchanged here. An imported recipe, a library recipe that changed since
+    install, or installed files edited after install get the untrusted scan.
+
+    Returns ``(trusted, lost)``. ``lost`` is set only for a curated recipe
+    whose files no longer match its library recipe; it says whether the
+    library or the installed copy changed, and how to restore the privileges.
+    """
+    installed = USER_EXTENSIONS_DIR / service_id
+    if installed.is_symlink() or installed.resolve() != ext_dir.resolve():
+        return False, None
+    if not (EXTENSIONS_LIBRARY_DIR / service_id / 'compose.yaml').is_file():
+        return False, None
+    try:
+        with _staged_library_extension(service_id, ext_dir) as (staged, _source_digest):
+            if _compose_policy_library_origin(staged) != "curated":
+                return False, None
+            difference = _installed_definition_difference(staged, ext_dir, compose_path=compose_path)
+            if difference is None:
+                return True, None
+        cause = _library_recipe_mismatch_cause(service_id, difference)
+    except (HTTPException, OSError, ValueError):
+        return False, None
+    lost = (f"Extension '{service_id}' no longer has its curated-library privileges "
+            f"because {cause} to restore them.")
+    logger.warning(
+        "Installed extension %s no longer matches its curated library recipe; checking it "
+        "without curated-library privileges. %s", service_id, lost,
+    )
+    return False, lost
+
+
+def _scan_installed_compose(service_id: str, ext_dir: Path, compose_path: Path, *,
+                            is_builtin: bool) -> None:
+    """Re-scan an installed extension's compose file before it starts (TOCTOU).
+
+    Built-in extensions legitimately declare their own service name in their
+    compose file, so skip the CORE_SERVICE_IDS name-collision check for them.
+    User extensions still get the full anti-shadowing scan. Some built-ins
+    also legitimately need `user: "0:0"` to perform init-time chown before
+    dropping privileges via setpriv (e.g. openclaw), so skip the root-user
+    check for built-ins only. The `trusted` flag is separate: a curated
+    library recipe keeps install's privileges (local `build:`, the
+    host-gateway route) only while its installed files still match the
+    library recipe it was installed from. When it lost them, a rejection
+    says why, instead of only naming the privilege it no longer has.
+    """
+    trusted, lost = (False, None) if is_builtin else _installed_library_recipe_trust(
+        service_id, ext_dir, compose_path)
+    try:
+        _scan_compose_content(
+            compose_path,
+            trusted=trusted,
+            skip_name_collision=is_builtin,
+            skip_gpu_passthrough_check=is_builtin,
+            skip_root_user_check=is_builtin,
+            builtin=is_builtin,
+            extension_id=_imported_extension_namespace(service_id, ext_dir, is_builtin),
+        )
+    except HTTPException as exc:
+        if lost is None or exc.status_code != 400 or not isinstance(exc.detail, str):
+            raise
+        raise HTTPException(status_code=400, detail=f"{lost} {exc.detail}") from None
+
+
 @contextlib.contextmanager
 def _staged_library_extension(service_id: str, dest: Path):
     """Yield a validated, rewritten library copy on the destination filesystem."""
@@ -3342,18 +3469,9 @@ def _install_from_library(service_id: str, *, operation_id: str | None = None) -
         # preserves curated-library policy without granting those privileges to
         # a modified installed definition or an imported GitHub recipe.
         with _staged_library_extension(service_id, dest) as (staged, _source_digest):
-            # Compose may build or mount any file shipped by the library,
-            # including Dockerfiles and scripts. Check every staged source
-            # path, while leaving owner-added data and configuration intact.
-            for expected in staged.rglob('*'):
-                actual = dest / expected.relative_to(staged)
-                if (actual.is_symlink() or (expected.is_dir() and not actual.is_dir())
-                        or (expected.is_file() and (not actual.is_file()
-                            or bool(actual.stat().st_mode & 0o111)
-                               != bool(expected.stat().st_mode & 0o111)
-                            or actual.read_bytes() != expected.read_bytes()))):
-                    raise HTTPException(status_code=409,
-                        detail='Existing extension definition changed; files were preserved')
+            if _installed_definition_difference(staged, dest) is not None:
+                raise HTTPException(status_code=409,
+                    detail='Existing extension definition changed; files were preserved')
         return
 
     with _staged_library_extension(service_id, dest) as (staged, source_digest):
@@ -4037,11 +4155,11 @@ def _get_missing_deps_transitive(
 def _imported_extension_namespace(service_id: str, ext_dir: Path, is_builtin: bool) -> str | None:
     """The bind-mount namespace the enable/activate re-scan enforces.
 
-    These scans run untrusted for every user extension, so pass the
-    extension id only where the install gate and the compose resolver apply
-    the imported-recipe namespace (./data/<id>, ./config/<id>): not for
-    built-ins or curated library recipes, always for an imported or
-    unclassifiable upstream.json marker.
+    Pass the extension id only where the install gate and the compose
+    resolver apply the imported-recipe namespace (./data/<id>, ./config/<id>):
+    not for built-ins or curated library recipes (whether or not their files
+    still match the library, see _installed_library_recipe_trust), always for
+    an imported or unclassifiable upstream.json marker.
     """
     if is_builtin or _compose_policy_library_origin(ext_dir) == "curated":
         return None
@@ -4071,24 +4189,9 @@ def _activate_service(service_id: str) -> dict:
             status_code=404, detail=f"Extension has no compose file: {service_id}",
         )
 
-    # Re-scan compose content (TOCTOU prevention). Built-in extensions
-    # legitimately declare their own service name in their compose file, so
-    # skip the CORE_SERVICE_IDS name-collision check for them. User extensions
-    # still get the full anti-shadowing scan. Some built-ins also legitimately
-    # need `user: "0:0"` to perform init-time chown before dropping privileges
-    # via setpriv (e.g. openclaw), so skip the root-user check for built-ins
-    # only. The `trusted` flag is separate and controls whether `build:`
-    # directives are allowed (library installs need it, built-in activations
-    # do not).
+    # Re-scan compose content (TOCTOU prevention).
     is_builtin = ext_dir.is_relative_to(EXTENSIONS_DIR.resolve())
-    _scan_compose_content(
-        disabled_compose,
-        skip_name_collision=is_builtin,
-        skip_gpu_passthrough_check=is_builtin,
-        skip_root_user_check=is_builtin,
-        builtin=is_builtin,
-        extension_id=_imported_extension_namespace(service_id, ext_dir, is_builtin),
-    )
+    _scan_installed_compose(service_id, ext_dir, disabled_compose, is_builtin=is_builtin)
 
     # Reject symlinks
     st = os.lstat(disabled_compose)
@@ -4160,18 +4263,9 @@ def enable_extension(
                 raise HTTPException(
                     status_code=400, detail="Compose file is a symlink",
                 )
-            # Built-in extensions legitimately use their own service name which
-            # appears in CORE_SERVICE_IDS â€” skip the name-collision check for
-            # them, mirroring _activate_service's logic.
+            # The same re-scan as _activate_service.
             is_builtin = ext_dir.is_relative_to(EXTENSIONS_DIR.resolve())
-            _scan_compose_content(
-                enabled_compose,
-                skip_name_collision=is_builtin,
-                skip_gpu_passthrough_check=is_builtin,
-                skip_root_user_check=is_builtin,
-                builtin=is_builtin,
-                extension_id=_imported_extension_namespace(service_id, ext_dir, is_builtin),
-            )
+            _scan_installed_compose(service_id, ext_dir, enabled_compose, is_builtin=is_builtin)
     elif not disabled_compose.exists():
         raise HTTPException(
             status_code=404, detail=f"Extension has no compose file: {service_id}",
