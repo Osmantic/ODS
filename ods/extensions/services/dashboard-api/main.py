@@ -45,7 +45,7 @@ from models import (
     GPUInfo, ServiceStatus, DiskUsage, ModelInfo, BootstrapStatus,
     FullStatus, PortCheckRequest,
 )
-from security import verify_api_key
+from security import verify_api_key, persist_generated_key
 from gpu import get_gpu_info
 from helpers import (
     get_all_services, get_cached_services, set_services_cache,
@@ -1062,6 +1062,9 @@ def _prepare_env_save(payload: dict[str, Any]) -> tuple[str, list[dict[str, Any]
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
+    # Persist a generated API key here rather than at import, so importing the
+    # module (a test, a script) never writes a secret to disk.
+    persist_generated_key()
     background_tasks = [
         asyncio.create_task(collect_metrics()),
         asyncio.create_task(_poll_service_health()),
