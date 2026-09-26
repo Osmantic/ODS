@@ -1625,7 +1625,11 @@ async def service_tokens():
 
 @app.get("/api/external-links")
 async def get_external_links(api_key: str = Depends(verify_api_key)):
-    """Return sidebar-ready external links derived from service manifests."""
+    """Return sidebar-ready external links derived from service manifests.
+
+    Built-in services come first; the owner's installed extensions that have
+    a web page follow, each with ``source: "extension"`` and its health.
+    """
     links = []
     for sid, cfg in SERVICES.items():
         ext_port = cfg.get("external_port", cfg.get("port", 0))
@@ -1638,6 +1642,7 @@ async def get_external_links(api_key: str = Depends(verify_api_key)):
             "icon": SIDEBAR_ICONS.get(sid, "ExternalLink"),
             "healthNeedles": [sid, cfg.get("name", sid).lower()],
         })
+    links.extend(await extensions.extension_application_links())
     return links
 
 

@@ -6,6 +6,19 @@ from pathlib import Path
 import jsonschema
 import yaml
 
+from extension_guide import docs_url
+
+
+def _provenance(directory):
+    """The definition's upstream.json, or None; documentation never hides an entry."""
+    path = directory / 'upstream.json'
+    try:
+        if path.is_symlink() or not path.is_file() or path.stat().st_size > 65536:
+            return None
+        return json.loads(path.read_text(encoding='utf-8'))
+    except (OSError, ValueError, RecursionError):
+        return None
+
 
 def merge_local_catalog(catalog, directory, schema_path, *, proposals_only=False):
     """Read definitions only; lifecycle status remains the caller's responsibility."""
@@ -59,6 +72,14 @@ def merge_local_catalog(catalog, directory, schema_path, *, proposals_only=False
             entry['env_vars'] = [{key: value for key, value in field.items()
                                   if key in {'key', 'description', 'required', 'secret'}}
                                  for field in service.get('env_vars', [])]
+            # How the dashboard opens it, as the shipped catalog records it.
+            if isinstance(service.get('ui_path'), str):
+                entry['ui_path'] = service['ui_path']
+            if service.get('external_link') is False:
+                entry['external_link'] = False
+            documentation = docs_url(service, _provenance(child))
+            if documentation:
+                entry['docs_url'] = documentation
             entry['tags'] = document.get('tags', [])
             entry['features'] = document.get('features', [])
             entry['configuration_scope'] = 'declared-environment-keys'

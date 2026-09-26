@@ -61,6 +61,39 @@
 .extensions-refined [role='dialog'] { background:#181a1b; border-color:#343738; box-shadow:0 18px 70px #0006; }
 .extensions-refined [role='dialog'] .sticky { background:#181a1b; }
 .extensions-refined [role='dialog'] h4 { text-transform:none; letter-spacing:0; }
+.extension-actions .extension-open { border:1px solid #3a4145; color:#e6eaed; font-weight:550; }
+.extension-actions .extension-open:hover { border-color:#8f9aa3; }
+.extension-guide { width:min(560px,100%); height:100%; overflow-y:auto; border-left:1px solid #343738; padding:20px 22px 28px; display:flex; flex-direction:column; gap:18px; color:#d8dcdf; }
+.extension-guide > header { display:flex; align-items:flex-start; justify-content:space-between; gap:12px; }
+.extension-guide > header h3 { font-size:17px; font-weight:600; margin-top:4px; overflow-wrap:anywhere; }
+.extension-guide > header button { color:#8e989f; padding:4px; }
+.extension-guide-eyebrow { display:inline-flex; align-items:center; gap:6px; font-size:10px; color:#8e989f; }
+.extension-guide-actions { display:flex; flex-wrap:wrap; gap:8px; }
+.extension-guide-actions a,.extension-guide-actions button { display:inline-flex; align-items:center; gap:6px; font-size:11px; padding:7px 11px; border:1px solid #353c40; border-radius:6px; color:#c0c6cc; }
+.extension-guide-actions a:hover,.extension-guide-actions button:hover { border-color:#6f7a83; color:#e6e9ec; }
+.extension-guide-actions .extension-guide-open { background:#e0e5e9; border-color:#e0e5e9; color:#141516; font-weight:600; }
+.extension-guide-actions .extension-guide-open:hover { background:#fff; color:#141516; }
+.extension-guide-section h4 { font-size:12px; font-weight:600; color:#e6e9ec; margin-bottom:8px; }
+.extension-guide-section p { font-size:12px; line-height:1.7; color:#a9b2b9; margin-bottom:8px; }
+.extension-guide .extension-guide-muted { color:#808b94; font-size:11px; }
+.extension-guide code { font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:11px; color:#d2d8dd; }
+.extension-guide-copy { display:flex; align-items:center; justify-content:space-between; gap:10px; background:#121314; border:1px solid #2b2e30; border-radius:6px; padding:7px 10px; margin-bottom:10px; }
+.extension-guide-copy code { overflow-wrap:anywhere; min-width:0; }
+.extension-guide-copy button { flex-shrink:0; color:#8e989f; }
+.extension-guide-settings { list-style:none; display:flex; flex-direction:column; gap:10px; margin:0 0 10px; padding:0; }
+.extension-guide-settings li > div { display:flex; flex-wrap:wrap; align-items:center; gap:8px; }
+.extension-guide-settings small { display:block; margin-top:3px; font-size:11px; color:#8e989f; line-height:1.6; }
+.extension-guide-role { font-size:10px; color:#9aa4ac; border:1px solid #33383b; border-radius:999px; padding:0 7px; }
+.extension-guide-saved { font-size:10px; color:#86d3a3; }
+.extension-guide-missing { font-size:10px; color:#e5b46e; }
+.extension-guide-readme { border:1px solid #2b2e30; border-radius:8px; padding:12px 14px; max-height:420px; overflow:auto; font-size:12px; line-height:1.7; color:#b3bcc3; }
+.extension-guide-readme :is(h1,h2,h3,h4) { font-size:13px; font-weight:600; color:#e0e4e7; margin:12px 0 6px; }
+.extension-guide-readme :is(p,ul,ol,pre,table) { margin:0 0 8px; }
+.extension-guide-readme ul { list-style:disc; padding-left:18px; }
+.extension-guide-readme ol { list-style:decimal; padding-left:18px; }
+.extension-guide-readme pre { background:#121314; border-radius:6px; padding:8px 10px; overflow-x:auto; }
+.extension-guide-readme :not(pre) > code { background:#121314; padding:1px 4px; border-radius:4px; }
+.extension-guide-readme a { text-decoration:underline; color:#d8dde1; }
 @container (min-width:600px) {
   .fitted-library-page .extension-entry,.collection-entry { min-height:112px; }
   .extensions-refined .extensions-toolbar { align-items:center; }

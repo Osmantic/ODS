@@ -5,12 +5,14 @@ on:
     branches: [main]
     paths:
       - 'ods/extensions/library/services/*/manifest.yaml'
+      - 'ods/extensions/library/services/*/upstream.json'
       - 'ods/scripts/generate-extensions-catalog.py'
       - 'ods/config/extensions-catalog.json'
   pull_request:
     branches: [main]
     paths:
       - 'ods/extensions/library/services/*/manifest.yaml'
+      - 'ods/extensions/library/services/*/upstream.json'
       - 'ods/scripts/generate-extensions-catalog.py'
       - 'ods/config/extensions-catalog.json'
 

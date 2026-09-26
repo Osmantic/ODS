@@ -58,13 +58,19 @@ export function getSidebarExternalLinks(context = {}) {
     linksById.set(link.id, { ...(linksById.get(link.id) || {}), ...link })
   }
   return [...linksById.values()].map(link => {
-    const healthy = link.alwaysHealthy ? true : isServiceHealthy(status, link.healthNeedles || [])
+    // Installed extensions are not in the status poll; the API reports their
+    // health with the link. They stay pinned (shown Offline) while down.
+    const extension = link.source === 'extension'
+    const healthy = link.alwaysHealthy ? true
+      : extension ? link.status === 'healthy'
+      : isServiceHealthy(status, link.healthNeedles || [])
     return {
       key: link.id,
       label: link.label,
       icon: typeof link.icon === 'string' ? (ICON_MAP[link.icon] || ExternalLink) : (link.icon || ExternalLink),
       healthy,
-      alwaysVisible: Boolean(link.alwaysVisible),
+      extension,
+      alwaysVisible: Boolean(link.alwaysVisible) || extension,
       url: link.public_url || appendPath(
         typeof getExternalUrl === 'function' ? getExternalUrl(link.port) : `http://localhost:${link.port}`,
         link.ui_path,

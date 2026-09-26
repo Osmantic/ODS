@@ -32,6 +32,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   tier-map, installer, host-agent and catalog copies. The dependency pin check
   rejects a llama.cpp image without a digest.
 
+### Added
+- An installed extension can be found and used from the dashboard. When an
+  install finishes, its card shows **Open** (for an extension with a web page)
+  and **How to use**, the notification offers the same two actions, and the
+  extension appears under Applications in the sidebar with its health; the
+  owner can unpin it from its guide. Previously an install ended with
+  only a small port number on the card and nothing under Applications.
+- **How to use** explains, from the extension's own definition: what it is
+  for, the address to open (or, for an API such as Kroki, the addresses other
+  ODS services and this computer use, and how to ask Portal to use it), which
+  sign-in settings were saved (names and whether they are set; values stay in
+  `.env` and are read on the host with the command shown), the recipe's own
+  guide, and a link to the upstream documentation. The catalog now carries
+  each recipe's `ui_path`, `external_link` and `docs_url` (from the manifest,
+  else the repository in its `upstream.json`), and a moved host port
+  (for example `KROKI_PORT`) is followed by the links.
+
 ### Changed
 - Every curated catalog download URL now names a Hugging Face commit instead
   of `resolve/main`, so an upstream rewrite cannot change or remove a catalog

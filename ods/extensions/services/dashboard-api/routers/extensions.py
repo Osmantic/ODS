@@ -1591,6 +1591,71 @@ async def _inspect_non_http_user_services(configs: dict, statuses: dict) -> None
         )
 
 
+def _catalog_usage_kind(entry: dict, service_config: dict) -> str:
+    """``web``, ``api`` or ``none`` for one catalog entry.
+
+    An installed extension's own definition decides. A built-in service that
+    /api/external-links never lists (dashboard-api, ``external_link: false``)
+    has no page to open. Otherwise the catalog entry's declarations apply.
+    """
+    from extension_guide import usage_kind
+
+    if service_config.get("kind"):
+        return service_config["kind"]
+    if entry.get("id") == "dashboard-api" or service_config.get("external_link") is False:
+        return "api"
+    return usage_kind(entry, entry.get("features"))
+
+
+async def _user_extension_statuses(configs: dict) -> dict:
+    """Health of enabled user extensions, keyed by service ID.
+
+    Shares the catalog's short per-probe timeout so one slow extension cannot
+    stall the caller.
+    """
+    from helpers import _CATALOG_HEALTH_TIMEOUT, check_service_health
+
+    statuses: dict = {}
+    checkable = {sid: cfg for sid, cfg in configs.items() if cfg.get("health")}
+    results = await asyncio.gather(*[
+        check_service_health(sid, cfg, timeout=_CATALOG_HEALTH_TIMEOUT)
+        for sid, cfg in checkable.items()
+    ], return_exceptions=True)
+    for sid, result in zip(checkable, results):
+        if not isinstance(result, BaseException):
+            statuses[sid] = result
+    await _inspect_non_http_user_services(configs, statuses)
+    return statuses
+
+
+async def extension_application_links() -> list[dict]:
+    """Applications entries for the owner's installed extensions that have a page.
+
+    Built-in services are listed by /api/external-links from SERVICES. This
+    adds every enabled user extension whose definition declares a web page
+    and publishes it (host port or public URL), with its current health, so
+    an installed extension can be opened from Applications like the others.
+    """
+    from user_extensions import get_user_services_cached
+
+    configs = await asyncio.to_thread(get_user_services_cached, USER_EXTENSIONS_DIR)
+    apps = {sid: cfg for sid, cfg in configs.items()
+            if sid not in SERVICES and cfg.get("kind") == "web"
+            and (cfg.get("external_port") or cfg.get("public_url"))}
+    statuses = await _user_extension_statuses(apps)
+    return [{
+        "id": sid,
+        "label": cfg["name"],
+        "port": cfg.get("external_port", 0),
+        "ui_path": cfg.get("ui_path", "/"),
+        "public_url": cfg.get("public_url", ""),
+        "icon": "ExternalLink",
+        "healthNeedles": [],
+        "source": "extension",
+        "status": statuses[sid].status if sid in statuses else "unknown",
+    } for sid, cfg in apps.items()]
+
+
 def _current_extension_catalog():
     from extension_catalog_local import merge_local_catalog
     schema = EXTENSIONS_DIR.parent / 'schema' / 'service-manifest.v1.json'
@@ -1624,28 +1689,14 @@ async def extensions_catalog(
     services_by_id = {s.id: s for s in service_list}
 
     # Health-check user extensions so _compute_extension_status can distinguish
-    # "enabled" (healthy) from "stopped" (unhealthy / not running).
-    from helpers import _CATALOG_HEALTH_TIMEOUT, check_service_health
+    # "enabled" (healthy) from "stopped" (unhealthy / not running). Short
+    # per-probe timeouts keep one slow extension from stalling the catalog
+    # response (frontend aborts at 8 s); extensions without an HTTP health
+    # endpoint are read from one host snapshot.
     from user_extensions import get_user_services_cached
 
     user_svc_configs = await asyncio.to_thread(get_user_services_cached, USER_EXTENSIONS_DIR)
-
-    # Only health-check extensions that declare a health endpoint.  Use a
-    # short per-probe timeout so one slow extension cannot stall the catalog
-    # response (frontend aborts at 8 s).
-    checkable = {sid: cfg for sid, cfg in user_svc_configs.items() if cfg.get("health")}
-    user_health_tasks = [
-        check_service_health(sid, cfg, timeout=_CATALOG_HEALTH_TIMEOUT)
-        for sid, cfg in checkable.items()
-    ]
-    user_health = await asyncio.gather(*user_health_tasks, return_exceptions=True)
-    for (sid, _), result in zip(checkable.items(), user_health):
-        if not isinstance(result, BaseException):
-            services_by_id[sid] = result
-
-    # Extensions without health endpoints â€” assume running if scanned
-    # (presence in user_svc_configs means compose.yaml + manifest exist)
-    await _inspect_non_http_user_services(user_svc_configs, services_by_id)
+    services_by_id.update(await _user_extension_statuses(user_svc_configs))
 
     current_catalog = await asyncio.to_thread(_current_extension_catalog)
     user_extension_ids = [
@@ -1689,6 +1740,13 @@ async def extensions_catalog(
         service_config = user_svc_configs.get(ext_id, SERVICES.get(ext_id, {}))
         if service_config.get("public_url"):
             enriched["public_url"] = service_config["public_url"]
+        # How the owner opens it: the running definition's published port and
+        # page, falling back to the catalog's declarations.
+        enriched["usage_kind"] = _catalog_usage_kind(ext, service_config)
+        if "external_port" in service_config:
+            enriched["external_port"] = service_config["external_port"]
+        if service_config.get("ui_path"):
+            enriched["ui_path"] = service_config["ui_path"]
         # Surface install-failure reason inline. The progress file already
         # records `error` (set by _write_error_progress) but it lives behind
         # a separate /progress endpoint, so a caller seeing `status: "error"`
@@ -1776,8 +1834,11 @@ def _model_safe_runtime_error(error) -> str:
     return error.split(UNTRUSTED_CONTAINER_OUTPUT_MARKER, 1)[0]
 
 
-def _installation_plan_service(service_id: str) -> dict:
-    """Use the installed definition first; never repair it from library metadata."""
+def _extension_definition(service_id: str) -> tuple[Path, dict]:
+    """The installed definition's directory and manifest, else the library's.
+
+    Never repairs an installed definition from library metadata.
+    """
     for root in (USER_EXTENSIONS_DIR, EXTENSIONS_DIR, EXTENSIONS_LIBRARY_DIR):
         directory = root / service_id
         if directory.is_symlink():
@@ -1792,9 +1853,55 @@ def _installation_plan_service(service_id: str) -> dict:
                 if path.stat().st_size > 1024 * 1024:
                     raise ValueError(f"Oversized extension manifest: {service_id}")
                 manifest = yaml.safe_load(path.read_text(encoding="utf-8"))
-                return manifest.get("service") if isinstance(manifest, dict) else None
+                return directory, manifest if isinstance(manifest, dict) else {}
         raise ValueError(f"Missing extension manifest: {service_id}")
     raise ValueError(f"Missing extension definition: {service_id}")
+
+
+def _installation_plan_service(service_id: str) -> dict:
+    """Use the installed definition first; never repair it from library metadata."""
+    return _extension_definition(service_id)[1].get("service")
+
+
+def _extension_provenance(directory: Path) -> dict | None:
+    """The recipe's ``upstream.json`` (where it was built from), when readable."""
+    path = directory / "upstream.json"
+    if path.is_symlink() or not path.is_file() or path.stat().st_size > 65536:
+        return None
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except (UnicodeError, ValueError):
+        return None
+    return document if isinstance(document, dict) else None
+
+
+def _extension_guide(service_id: str) -> dict | None:
+    """How to open and use an extension, from the definition ODS would run.
+
+    Settings are reported by presence only; values never leave the host.
+    """
+    from config import _read_env_value
+    from extension_guide import guide
+    from extension_install_plan import InstallPlanError, configuration_fields
+
+    directory, manifest = _extension_definition(service_id)
+    service = manifest.get("service")
+    if not isinstance(service, dict) or service.get("id") != service_id:
+        return None
+    try:
+        fields = configuration_fields(service_id, service, lambda key: bool(_read_env_value(key)),
+                                      formats=False)
+    except InstallPlanError:
+        fields = []
+    result = guide(service_id, service, manifest.get("features"), _extension_provenance(directory),
+                   fields, _read_env_value)
+    if service_id in SERVICES:
+        # Built-in services publish the port config.py already resolved, and
+        # share the catalog's rule for which of them have a page.
+        result["hostPort"] = SERVICES[service_id].get("external_port") or None
+        result["kind"] = _catalog_usage_kind({"id": service_id, **service, "features": manifest.get("features")},
+                                             SERVICES[service_id])
+    return result
 
 
 # `${NAME:?message}` / `${NAME?message}`: Compose refuses to interpolate the
@@ -3049,13 +3156,12 @@ async def extension_detail(
             (USER_EXTENSIONS_DIR, EXTENSIONS_DIR, EXTENSIONS_LIBRARY_DIR))
     except (ValueError, OSError, TypeError, yaml.YAMLError):
         integration = None
+    try:
+        guide = await asyncio.to_thread(_extension_guide, service_id)
+    except (ValueError, OSError, TypeError, UnicodeError, yaml.YAMLError):
+        guide = None
 
-    from helpers import (
-        _CATALOG_HEALTH_TIMEOUT,
-        check_service_health,
-        get_all_services,
-        get_cached_services,
-    )
+    from helpers import get_all_services, get_cached_services
     from user_extensions import get_user_services_cached
 
     # The background health poll owns the expensive all-service fan-out.  A
@@ -3071,19 +3177,9 @@ async def extension_detail(
 
     user_svc_configs = await asyncio.to_thread(get_user_services_cached, USER_EXTENSIONS_DIR)
 
-    # Same short per-probe timeout as the catalog fan-out â€” one slow user
+    # Same short per-probe timeout as the catalog fan-out: one slow user
     # extension must not block the detail view.
-    checkable = {sid: cfg for sid, cfg in user_svc_configs.items() if cfg.get("health")}
-    user_health_tasks = [
-        check_service_health(sid, cfg, timeout=_CATALOG_HEALTH_TIMEOUT)
-        for sid, cfg in checkable.items()
-    ]
-    user_health = await asyncio.gather(*user_health_tasks, return_exceptions=True)
-    for (sid, _), result in zip(checkable.items(), user_health):
-        if not isinstance(result, BaseException):
-            services_by_id[sid] = result
-
-    await _inspect_non_http_user_services(user_svc_configs, services_by_id)
+    services_by_id.update(await _user_extension_statuses(user_svc_configs))
 
     status = _compute_extension_status(ext, services_by_id)
     installable = _is_installable(service_id)
@@ -3119,6 +3215,9 @@ async def extension_detail(
         "llm": llm_contract,
         "public_url": public_url,
         "integration": integration,
+        "guide": guide,
+        "dependents": sorted(entry["id"] for entry in current_catalog
+                             if isinstance(entry.get("depends_on"), list) and service_id in entry["depends_on"]),
         "manifest": manifest,
         "env_vars": ext.get("env_vars", []),
         "features": ext.get("features", []),

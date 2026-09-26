@@ -14,6 +14,7 @@ import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import yaml
 
@@ -59,6 +60,39 @@ def strip_secrets(env_vars: list[dict]) -> list[dict]:
         entry = {k: v for k, v in var.items() if k != "secret"}
         cleaned.append(entry)
     return cleaned
+
+
+def https_url(value) -> str | None:
+    """A plain https URL without credentials, or None."""
+    if not isinstance(value, str) or not value or len(value) > 512:
+        return None
+    if any(ord(char) <= 32 or ord(char) == 127 for char in value) or "\\" in value:
+        return None
+    parsed = urlsplit(value)
+    try:
+        port = parsed.port
+    except ValueError:
+        return None
+    if (parsed.scheme != "https" or not parsed.hostname or port == 0
+            or parsed.username is not None or parsed.password is not None):
+        return None
+    return value
+
+
+def docs_url(service_dir: Path, service: dict) -> str | None:
+    """The manifest's docs_url, else the repository its upstream.json names.
+
+    Generated from the recipe's own provenance, so a recipe links to the
+    upstream project it was built from without a hand-typed URL.
+    """
+    declared = https_url(service.get("docs_url"))
+    if declared:
+        return declared
+    provenance_path = service_dir / "upstream.json"
+    if not provenance_path.is_file() or provenance_path.is_symlink():
+        return None
+    provenance = json.loads(provenance_path.read_text(encoding="utf-8"))
+    return https_url(provenance.get("repository")) if isinstance(provenance, dict) else None
 
 
 def load_manifest(manifest_path: Path) -> dict | None:
@@ -120,6 +154,12 @@ def extract_entry(manifest: dict) -> dict | None:
     if isinstance(service.get("llm"), dict):
         entry["llm"] = service["llm"]
 
+    # How the dashboard opens it: the page path, and whether it has a page.
+    if isinstance(service.get("ui_path"), str):
+        entry["ui_path"] = service["ui_path"]
+    if service.get("external_link") is False:
+        entry["external_link"] = False
+
     if "startup_check" in service:
         entry["startup_check"] = service.get("startup_check")
     if "startup_timeout" in service:
@@ -170,6 +210,9 @@ def generate_catalog(library_dir: Path, services_dir: Path | None = None) -> lis
                 entry["category"] = entry["category"] or "optional"
                 entry["catalog_source"] = "builtin"
             entry["configuration_scope"] = "declared-environment-keys"
+            documentation = docs_url(service_dir, manifest["service"])
+            if documentation:
+                entry["docs_url"] = documentation
             # The installed native definition takes precedence over a library
             # alternative with the same service ID, matching ODS resolution.
             entries[entry["id"]] = entry
