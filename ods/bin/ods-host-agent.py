@@ -166,6 +166,15 @@ MODEL_ACTIVATION_HEALTH_ATTEMPTS = 60
 # two additional health intervals during model activation while preserving the
 # same bounded, fail-closed health contract.
 HERMES_MODEL_ACTIVATION_HEALTH_ATTEMPTS = 90
+MODEL_ACTIVATION_HEALTH_INTERVAL_SECONDS = 2
+# One health poll's docker CLI timeout. A poll that gets no answer in time is
+# "no answer yet", not a failure: the readiness poll simply continues.
+CONTAINER_HEALTH_POLL_TIMEOUT_SECONDS = 15
+# Read-only one-shot docker CLI calls on the model activation/rollback path.
+# On a heavily loaded host the Docker CLI can take many seconds to answer
+# (fleet: a 15-second ``docker inspect`` timeout at load ~198 on 48 threads
+# rolled back a healthy model swap; the same call took 0.01 s moments later).
+DOCKER_PROBE_TIMEOUT_SECONDS = 60
 # A replaced llama-server container usually serves a small or mid-size model
 # within a few seconds. Probe densely for this window instead of sleeping a
 # fixed initial delay, then fall back to the regular 5-second schedule.
@@ -12530,6 +12539,7 @@ class AgentHandler(BaseHTTPRequestHandler):
         committed = False
         mutation_started = False
         rollback_attempted = False
+        rollback_exception: BaseException | None = None
         runtime_restart_strategy: str | None = None
         readiness_diagnosis: dict = {}
         opencode_restarted = False
@@ -12640,7 +12650,7 @@ class AgentHandler(BaseHTTPRequestHandler):
 
         def rollback_and_prove() -> tuple[bool, str]:
             """Restore config/runtime/dependents and prove the prior route."""
-            nonlocal rollback_attempted
+            nonlocal rollback_attempted, rollback_exception
             rollback_attempted = True
             try:
                 if pixel_transaction is not None:
@@ -12812,7 +12822,8 @@ class AgentHandler(BaseHTTPRequestHandler):
                 return True, ""
             except Exception as rollback_exc:
                 logger.exception("Failed to prove previous model route during rollback")
-                return False, str(rollback_exc)
+                rollback_exception = rollback_exc
+                return False, _failure_clause(rollback_exc)
 
         try:
             # Read current env BEFORE modification — needed for gpu_backend guard
@@ -13724,6 +13735,8 @@ class AgentHandler(BaseHTTPRequestHandler):
                 )
                 if runtime_failure.get("runtime_diagnosis"):
                     error += f". Cause: {runtime_failure['runtime_diagnosis']}"
+                if isinstance(rollback_exception, DockerUnresponsiveError):
+                    error += f". {DOCKER_UNRESPONSIVE_ADVICE}"
                 payload = {"error": error, "rolled_back": rolled_back, **runtime_failure}
                 if pixel_transaction is not None and not pixel_transaction.completed:
                     payload.update(pending=True, code='managed_model_recovery_required')
@@ -13744,11 +13757,17 @@ class AgentHandler(BaseHTTPRequestHandler):
                 runtime_failure = capture_runtime_failure()
                 rolled_back, rollback_error = rollback_and_prove()
             logger.exception("Model activation failed")
-            error = f"Model activation failed: {exc}"
+            # One clause per failure; Docker's owner advice is given once.
+            error = f"Model activation failed: {_failure_clause(exc)}"
             if rollback_error:
                 error += f"; rollback could not be proved: {rollback_error}"
             if runtime_failure.get("runtime_diagnosis"):
                 error += f". Cause: {runtime_failure['runtime_diagnosis']}"
+            if any(
+                isinstance(failure, DockerUnresponsiveError)
+                for failure in (exc, rollback_exception)
+            ):
+                error += f". {DOCKER_UNRESPONSIVE_ADVICE}"
             payload = {"error": error, **runtime_failure}
             if ((pixel_transaction is None and isinstance(exc, _PixelModelTransactionUncertain))
                     or (pixel_transaction is not None and not pixel_transaction.completed)):
@@ -16260,15 +16279,60 @@ def _patch_hermes_model_config(
         return False
 
 
-def _container_exists(container: str) -> bool:
+DOCKER_UNRESPONSIVE_ADVICE = (
+    "The host may be overloaded: if you just switched to a larger model, that "
+    "model may be the cause; otherwise try again once the machine is less busy."
+)
+
+
+class DockerUnresponsiveError(RuntimeError):
+    """The Docker CLI did not answer in time, so the container state is unknown.
+
+    Distinct from a definitive Docker answer (missing, stopped, exited,
+    unhealthy). ``fact`` is the failure without the owner advice, so a message
+    that reports several failures can give the advice once.
+    """
+
+    def __init__(self, fact: str):
+        super().__init__(f"{fact}. {DOCKER_UNRESPONSIVE_ADVICE}")
+        self.fact = fact
+
+
+def _docker_unresponsive_error(subject: str, detail: str) -> DockerUnresponsiveError:
+    return DockerUnresponsiveError(f"Docker did not answer in time while {subject} ({detail})")
+
+
+def _failure_clause(exc: BaseException) -> str:
+    """One failure as a clause of a combined message, without Docker advice."""
+    return exc.fact if isinstance(exc, DockerUnresponsiveError) else str(exc)
+
+
+def _run_docker_probe(argv: list[str], subject: str) -> subprocess.CompletedProcess:
+    """Run one read-only docker CLI call; a timeout means Docker is unresponsive.
+
+    A completed process (any exit code) and ``OSError`` reach the caller
+    unchanged, so definitive Docker answers keep their meaning.
+    """
     try:
-        result = subprocess.run(
-            ["docker", "inspect", "--type", "container", "--format", "{{.Id}}", container],
+        return subprocess.run(
+            argv,
             capture_output=True,
             text=True,
-            timeout=15,
+            timeout=DOCKER_PROBE_TIMEOUT_SECONDS,
         )
-    except (OSError, subprocess.TimeoutExpired) as exc:
+    except subprocess.TimeoutExpired as exc:
+        raise _docker_unresponsive_error(
+            subject, f"no answer within {DOCKER_PROBE_TIMEOUT_SECONDS}s"
+        ) from exc
+
+
+def _container_exists(container: str) -> bool:
+    try:
+        result = _run_docker_probe(
+            ["docker", "inspect", "--type", "container", "--format", "{{.Id}}", container],
+            f"inspecting {container}",
+        )
+    except OSError as exc:
         raise RuntimeError(f"Could not inspect optional container {container}: {exc}") from exc
     if result.returncode == 0:
         return bool(result.stdout.strip())
@@ -16279,17 +16343,17 @@ def _container_exists(container: str) -> bool:
 
 
 def _container_running(container: str) -> bool:
+    # An unresponsive Docker raises DockerUnresponsiveError instead of
+    # reporting a running container as stopped.
     try:
-        result = subprocess.run(
+        result = _run_docker_probe(
             [
                 "docker", "inspect", "--type", "container", "--format",
                 "{{.State.Running}}", container,
             ],
-            capture_output=True,
-            text=True,
-            timeout=15,
+            f"checking whether {container} is running",
         )
-    except (OSError, subprocess.TimeoutExpired):
+    except OSError:
         return False
     return result.returncode == 0 and result.stdout.strip().casefold() == "true"
 
@@ -16299,16 +16363,14 @@ def _capture_container_state(container: str) -> dict[str, bool]:
     if not _container_exists(container):
         return {"exists": False, "running": False}
     try:
-        result = subprocess.run(
+        result = _run_docker_probe(
             [
                 "docker", "inspect", "--type", "container", "--format",
                 "{{.State.Running}}", container,
             ],
-            capture_output=True,
-            text=True,
-            timeout=15,
+            f"capturing the runtime state of {container}",
         )
-    except (OSError, subprocess.TimeoutExpired) as exc:
+    except OSError as exc:
         raise RuntimeError(f"Could not capture runtime state for {container}: {exc}") from exc
     if result.returncode != 0:
         detail = (result.stderr or result.stdout or "").strip()
@@ -16324,13 +16386,27 @@ class ContainerUnhealthyError(RuntimeError):
 
 
 def _wait_for_container_health(container: str, attempts: int | None = None) -> None:
-    """Wait until a restarted dependent is healthy, failing on terminal states."""
+    """Wait until a restarted dependent is healthy, failing on terminal states.
+
+    Polls ``attempts`` times, ``MODEL_ACTIVATION_HEALTH_INTERVAL_SECONDS``
+    apart. A poll whose docker CLI call times out got no answer yet: it is
+    logged and polling continues only while the nominal window
+    (``attempts * MODEL_ACTIVATION_HEALTH_INTERVAL_SECONDS``) is open. If the
+    last poll got no answer, the wait raises :class:`DockerUnresponsiveError`.
+    Worst case when Docker never answers: the window plus one interval plus
+    one poll timeout (180 + 2 + 15 = 197 s for Hermes, 137 s otherwise).
+    Definitive answers keep their meaning: ``unhealthy`` raises
+    :class:`ContainerUnhealthyError` at once.
+    """
     if attempts is None:
         attempts = (
             HERMES_MODEL_ACTIVATION_HEALTH_ATTEMPTS
             if container == "ods-hermes"
             else MODEL_ACTIVATION_HEALTH_ATTEMPTS
         )
+    started = time.monotonic()
+    deadline = started + attempts * MODEL_ACTIVATION_HEALTH_INTERVAL_SECONDS
+    unanswered = 0
     for attempt in range(attempts):
         try:
             result = subprocess.run(
@@ -16341,9 +16417,26 @@ def _wait_for_container_health(container: str, attempts: int | None = None) -> N
                 ],
                 capture_output=True,
                 text=True,
-                timeout=15,
+                timeout=CONTAINER_HEALTH_POLL_TIMEOUT_SECONDS,
             )
-        except (OSError, subprocess.TimeoutExpired) as exc:
+        except subprocess.TimeoutExpired as exc:
+            unanswered += 1
+            if attempt + 1 >= attempts or time.monotonic() >= deadline:
+                checks = "check" if unanswered == 1 else "checks"
+                raise _docker_unresponsive_error(
+                    f"checking {container} health",
+                    f"{unanswered} {checks} timed out over "
+                    f"{time.monotonic() - started:.0f}s",
+                ) from exc
+            logger.warning(
+                "Docker gave no answer within %ss while checking %s health; "
+                "the state is unknown, polling continues",
+                CONTAINER_HEALTH_POLL_TIMEOUT_SECONDS,
+                container,
+            )
+            time.sleep(MODEL_ACTIVATION_HEALTH_INTERVAL_SECONDS)
+            continue
+        except OSError as exc:
             raise RuntimeError(f"Could not inspect health for {container}: {exc}") from exc
         if result.returncode != 0:
             detail = (result.stderr or result.stdout or "").strip()
@@ -16360,7 +16453,7 @@ def _wait_for_container_health(container: str, attempts: int | None = None) -> N
         if status != "starting":
             raise RuntimeError(f"Docker returned invalid health state for {container}: {status!r}")
         if attempt + 1 < attempts:
-            time.sleep(2)
+            time.sleep(MODEL_ACTIVATION_HEALTH_INTERVAL_SECONDS)
     raise RuntimeError(f"{container} did not become healthy after model activation")
 
 
@@ -17350,14 +17443,12 @@ def _verify_litellm_route(env: dict, *, model: str = "default") -> None:
 
 def _verify_openclaw_model_env(expected_model: str) -> None:
     """Verify recreated OpenClaw received the active persisted model identity."""
-    result = subprocess.run(
+    result = _run_docker_probe(
         [
             "docker", "inspect", "--type", "container", "--format",
             "{{range .Config.Env}}{{println .}}{{end}}", "ods-openclaw",
         ],
-        capture_output=True,
-        text=True,
-        timeout=15,
+        "verifying the ods-openclaw model environment",
     )
     if result.returncode != 0:
         detail = (result.stderr or result.stdout or "").strip()
@@ -17386,11 +17477,9 @@ def _verify_openclaw_model_env(expected_model: str) -> None:
 def _read_hermes_container_config() -> str:
     if not _container_running("ods-hermes"):
         raise RuntimeError("Hermes live config is host-inaccessible and ods-hermes is not running")
-    result = subprocess.run(
+    result = _run_docker_probe(
         ["docker", "exec", "ods-hermes", "cat", "/opt/data/config.yaml"],
-        capture_output=True,
-        text=True,
-        timeout=30,
+        "reading the ods-hermes live config",
     )
     if result.returncode != 0:
         detail = (result.stderr or result.stdout or "").strip()
@@ -18666,11 +18755,9 @@ def _llama_recreate_argv(
 def _recreate_llama_server(env: dict, override_image: str = ""):
     """Transactionally recreate llama-server from its inspected runtime state."""
     container = "ods-llama-server"
-    inspect_result = subprocess.run(
+    inspect_result = _run_docker_probe(
         ["docker", "inspect", container],
-        capture_output=True,
-        text=True,
-        timeout=30,
+        f"inspecting {container}",
     )
     if inspect_result.returncode != 0:
         raise RuntimeError(
