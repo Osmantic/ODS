@@ -282,6 +282,26 @@ def architecture_metadata_complete(model: dict[str, Any]) -> bool:
     )
 
 
+def checkpoint_state_bytes(
+    model: dict[str, Any],
+    context_length: int | None = None,
+    cache_type_k: str = "f16",
+    cache_type_v: str = "f16",
+) -> float | None:
+    """Bytes of one llama.cpp context checkpoint for one sequence.
+
+    A checkpoint copies the state that cannot be rolled back: the recurrent
+    state and the sliding-window cache. 0 for a dense model (llama.cpp makes
+    no checkpoints for it); None when the entry has no reviewed layout.
+    """
+    if not architecture_metadata_complete(model):
+        return None
+    context = _context(model, context_length)
+    state = _non_negative_number(model.get("recurrent_state_bytes")) or 0.0
+    swa = sliding_window_kv_bytes_per_cell(model, cache_type_k, cache_type_v)
+    return state + swa * sliding_window_cells(model, context, 1)
+
+
 def _weights_bytes(model: dict[str, Any], weight_size_mb: int | float | None = None) -> float:
     explicit = _positive_number(weight_size_mb)
     if explicit:
@@ -364,8 +384,8 @@ def estimate_model_memory(
             if ctx_checkpoints is None
             else max(int(ctx_checkpoints), 0)
         )
-        swa_state_bytes = swa_per_cell * sliding_window_cells(model, context, 1)
-        host = checkpoints * (state_bytes + swa_state_bytes) * sequences / GIB
+        per_checkpoint = checkpoint_state_bytes(model, context, cache_k, cache_v) or 0.0
+        host = checkpoints * per_checkpoint * sequences / GIB
         device = weights + kv + recurrent + overhead
         return MemoryEstimate(
             context_length=context,

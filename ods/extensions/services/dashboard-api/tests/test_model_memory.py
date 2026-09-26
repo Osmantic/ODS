@@ -283,6 +283,7 @@ from model_memory import (  # noqa: E402
     DISCRETE_FIT_MARGIN_MIN_GIB,
     LLAMA_DEFAULT_CTX_CHECKPOINTS,
     architecture_metadata_complete,
+    checkpoint_state_bytes,
     context_fitting_model,
     estimate_model_memory,
     fit_margin_gib,
@@ -544,3 +545,19 @@ class TestArchitectureEstimator:
         assert sliding_window_kv_bytes_per_cell(ARCH["qwen3.5-9b"]) == 0
         assert sliding_window_cells(ARCH["qwen3.5-9b"], 65536) == 0
         assert estimate_model_memory(ARCH["qwen3.5-9b"], context_length=65536).swa_kv_gib == 0
+
+    def test_checkpoint_state_is_the_state_that_cannot_roll_back(self):
+        # Hybrid: the recurrent state (50.251 MiB per checkpoint in the b9014
+        # log on the Mac mini M4 for Qwen3.5-9B).
+        assert checkpoint_state_bytes(ARCH["qwen3.5-9b"]) == 52690944
+        # Sliding window: the window cells for one sequence.
+        gemma = ARCH["gemma4-26b-a4b"]
+        assert checkpoint_state_bytes(gemma) == 204800 * 1536
+        assert checkpoint_state_bytes(gemma, cache_type_k="q8_0", cache_type_v="q8_0") < 204800 * 1536
+        # Dense: nothing to checkpoint. Unreviewed layout: unknown.
+        assert checkpoint_state_bytes(ARCH["ministral3-8b"]) == 0
+        assert checkpoint_state_bytes({"id": "unreviewed", "size_mb": 5000}) is None
+        # The estimate charges this per checkpoint and per slot.
+        per_gib = checkpoint_state_bytes(gemma) / 1024 ** 3
+        two = estimate_model_memory(gemma, context_length=65536, parallel=2, ctx_checkpoints=64)
+        assert two.host_checkpoint_gib == round(2 * 64 * per_gib, 3)

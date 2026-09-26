@@ -3596,11 +3596,13 @@ elif [[ -f "$INSTALL_DIR/data/.llama-server.pid" ]]; then
             esac
 
             # Spell draft flags for this runtime and add the macOS defaults it
-            # supports (--ctx-checkpoints 32, --spec-type ngram-mod, and
-            # --reasoning on b9014 instead of this --reasoning-format), with the
-            # helper install-macos.sh and ods-macos.sh use, before the bootstrap
-            # model is stopped. A rejected setting must not strand the swap.
-            _llama_tuning_args=(--reasoning-format "$_reasoning_fmt")
+            # supports (--parallel from LLAMA_PARALLEL or the default slot
+            # layout for this model, --ctx-checkpoints, --spec-type ngram-mod,
+            # and --reasoning on b9014 instead of this --reasoning-format), with
+            # the helper install-macos.sh and ods-macos.sh use, before the
+            # bootstrap model is stopped. A rejected setting must not strand the
+            # swap; it starts with one slot, as the other launchers default to.
+            _llama_tuning_args=(--parallel 1 --reasoning-format "$_reasoning_fmt")
             _tuning_helper="$INSTALL_DIR/installers/macos/lib/native-checkpoint-args.py"
             if [[ -f "$_tuning_helper" ]] && _tuning_file="$(mktemp)"; then
                 if "${ODS_PYTHON_CMD:-python3}" "$_tuning_helper" --binary "$LLAMA_SERVER_BIN" \
@@ -3609,6 +3611,7 @@ elif [[ -f "$INSTALL_DIR/data/.llama-server.pid" ]]; then
                     --cache-mib="$(read_env_value LLAMA_ARG_CACHE_RAM)" \
                     --idle-seconds="$(read_env_value LLAMA_ARG_SLEEP_IDLE_SECONDS)" \
                     --min-spacing="$(read_env_value LLAMA_ARG_CHECKPOINT_MIN_SPACING_NT)" \
+                    --parallel="$(read_env_value LLAMA_PARALLEL)" --model="$_model_path" \
                     --explicit-spec-type="$(read_env_value LLAMA_ARG_SPEC_TYPE)" \
                     --spec-default="$(read_env_value LLAMA_SPEC_TYPE)" \
                     --draft-n-max="$(read_env_value LLAMA_ARG_SPEC_DRAFT_N_MAX)" \

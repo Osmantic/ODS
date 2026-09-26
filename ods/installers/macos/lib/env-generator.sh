@@ -640,10 +640,16 @@ LLAMA_ARG_CACHE_TYPE_V=${LLAMA_ARG_CACHE_TYPE_V:-f16}
 # LLAMA_ARG_CHECKPOINT_EVERY_NT=1024
 # Newer runtimes use minimum spacing instead of the legacy interval; never set both.
 # LLAMA_ARG_CHECKPOINT_MIN_SPACING_NT=1024
-# Prompt checkpoints per slot. Unset uses 32 (about 50 MiB each for Qwen3.5-9B);
-# lower it, or set 0, to save memory.
+# Prompt checkpoints per slot. Unset uses 32 (about 50 MiB each for Qwen3.5-9B),
+# or 64 with the shared-slot layout below; lower it, or set 0, to save memory.
 # LLAMA_ARG_CTX_CHECKPOINTS=32
 # LLAMA_ARG_CACHE_RAM=512
+# With LLAMA_PARALLEL, LLAMA_ARG_CTX_CHECKPOINTS and LLAMA_ARG_CACHE_RAM unset, a
+# hybrid catalog model (Qwen3.5) on a Mac with at most 16 GB runs two slots in
+# one unified KV cache (--parallel 2 --kv-unified --ctx-checkpoints 64
+# --cache-ram 0), so another client's request does not evict the conversation
+# in progress. Setting any of the three turns that layout off, e.g. one slot:
+# LLAMA_PARALLEL=1
 # Lossless n-gram speculation (--spec-type ngram-mod) is on by default when the
 # installed llama-server supports it (b8955+; ODS pins b9014). Turn it off with:
 # LLAMA_SPEC_TYPE=none

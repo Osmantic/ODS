@@ -2380,17 +2380,16 @@ else
         if [[ "$MACOS_NATIVE_PROFILE" == true ]]; then
             _llama_args+=(--reasoning-format "$_reasoning_fmt" "${MACOS_NATIVE_PROFILE_ARGS[@]}")
         else
-        _parallel="$(read_env_value "$INSTALL_DIR/.env" "LLAMA_PARALLEL")"
-        _llama_args+=(--parallel "${_parallel:-1}")
         [[ -n "$_flash_attn" ]] && _llama_args+=(--flash-attn "$_flash_attn")
         [[ -n "$_cache_type_k" ]] && _llama_args+=(--cache-type-k "$_cache_type_k")
         [[ -n "$_cache_type_v" ]] && _llama_args+=(--cache-type-v "$_cache_type_v")
         [[ -n "$_n_cpu_moe" ]] && _llama_args+=(--n-cpu-moe "$_n_cpu_moe")
         [[ -n "$_spec_type" ]] && _llama_args+=(--spec-type "$_spec_type")
-        # Draft flags, --ctx-checkpoints 32, the ngram-mod default and the
+        # --parallel (LLAMA_PARALLEL or the default slot layout for this
+        # model), draft flags, --ctx-checkpoints, the ngram-mod default and the
         # reasoning flags (--reasoning on b9014, else this --reasoning-format)
         # are spelled for, and only added when supported by, this runtime.
-        macos_resolve_checkpoint_args "$INSTALL_DIR" "$LLAMA_SERVER_BIN" "$_reasoning_fmt" || exit 1
+        macos_resolve_checkpoint_args "$INSTALL_DIR" "$LLAMA_SERVER_BIN" "$_reasoning_fmt" "$MODEL_FULL_PATH" || exit 1
         _llama_args+=(${MACOS_NATIVE_CHECKPOINT_ARGS[@]+"${MACOS_NATIVE_CHECKPOINT_ARGS[@]}"})
         fi
 
