@@ -1549,6 +1549,7 @@ ENV_EOF
     )
 
     chmod 600 "$INSTALL_DIR/.env"  # Secure secrets file
+    mv "$INSTALL_DIR/.env.tmp" "$INSTALL_DIR/.env"
     ai_ok "Created $INSTALL_DIR"
     ai_ok "Generated secure secrets in .env (permissions: 600)"
 
