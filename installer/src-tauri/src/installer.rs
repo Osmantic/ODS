@@ -339,11 +339,16 @@ fn parse_progress_line(line: &str) -> Option<ProgressEvent> {
 }
 
 fn update_progress(state: &Arc<Mutex<InstallState>>, message: &str, percent: u8) {
-    if let Ok(mut s) = state.lock() {
-        s.progress_pct = percent;
-        s.progress_message = message.to_string();
-        s.phase = InstallPhase::Installing;
-        let _ = s.save();
+    match state.lock() {
+        Ok(mut s) => {
+            s.progress_pct = percent;
+            s.progress_message = message.to_string();
+            s.phase = InstallPhase::Installing;
+            let _ = s.save();
+        }
+        Err(e) => {
+            eprintln!("Warning: Failed to update progress (poisoned mutex): {}", e);
+        }
     }
 }
 
