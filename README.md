@@ -106,7 +106,7 @@ Windows: open a **normal PowerShell window** (not "Run as administrator"), paste
 1. Checks free disk space (40 GB) and that hardware virtualization is on.
 2. Offers to enable WSL2 and install Docker Desktop with winget. Windows asks for administrator permission, then **one restart**; setup continues by itself after you sign in again.
 3. Offers to download Ubuntu 24.04 and asks you, in PowerShell, for a new Ubuntu username and password.
-4. Starts Docker Desktop and connects it to Ubuntu (Docker Desktop restarts once).
+4. Starts Docker Desktop and checks that it is connected to Ubuntu. If not, it shows the one setting to turn on in Docker Desktop and continues as soon as it works.
 5. Installs ODS inside Ubuntu with **`--pixel --no-hermes --no-openclaw`**. When Ubuntu asks for your `[sudo] password`, type the Ubuntu password; nothing appears while you type.
 6. Verifies Pixel and Portal, then opens Portal in your browser and adds an **ODS Portal** shortcut to your desktop.
 
@@ -233,10 +233,9 @@ cd ODS/ods
 <details>
 <summary><b>Windows (PowerShell)</b></summary>
 
-Requires [Docker Desktop](https://www.docker.com/products/docker-desktop/) with WSL2 backend enabled.
-**Install Docker Desktop first and make sure it is running before you start.**
+The installer prepares WSL2, Ubuntu and [Docker Desktop](https://www.docker.com/products/docker-desktop/) when they are missing; nothing needs to be installed first.
 
-Open a normal **PowerShell** session and run:
+Open a normal **PowerShell** session (not "Run as administrator") and run:
 
 ```powershell
 $ProgressPreference = "SilentlyContinue"
