@@ -45,7 +45,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   refuses to run beside them. Keep managing them with their own `ods.ps1`, or
   rerun `ods\installers\windows\install-windows.ps1`. AMD machines that used
   the native Lemonade path now get a GPU backend detected inside WSL, CPU, or
-  an explicitly configured endpoint.
+  an explicitly configured endpoint. The Linux installer runs on the same
+  console (download progress and UTF-8 output stay visible), and warnings WSL
+  prints on stderr no longer turn a passing check into a failure.
 - Linux on WSL: an NVIDIA driver older than 570 stops with Windows update
   instructions instead of installing `nvidia-driver-*` inside the distro,
   which breaks WSL GPU passthrough.
