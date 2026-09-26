@@ -418,10 +418,17 @@ tool calls too) when:
   preview, a passing test run, a host observation) or a `pending` one gets no
   continuation, because only the closing reply was cut or the host decides
   what happens next;
-- its latest test run did not fail and is not still running. The
-  continuation run has no test result of its own, so its reply could claim a
-  pass that no test showed; such a turn keeps its own receipt, reported as
-  below;
+- it carries nothing its own tools established that the continuation would
+  not inherit (`outputLimitToolObligations`). The continuation run is
+  classified only by the owner message and starts with a fresh budget, so
+  without them its reply could claim a pass or a publication that nothing
+  checked, or retry stopped work. A turn is not continued when its latest
+  test run failed or is still running; it attempted a preview (a failed,
+  stale or verified publication); a successful visual write made its preview
+  required where the owner's words did not, or edited the page the chat had
+  already published; a mixed-task lane or its coding loop stopped; or its
+  unrequested-Operations or private-network denial fuse was spent. Such a
+  turn keeps its own receipt, reported as below;
 - OpenClaw answered with its incomplete-turn text, or the request is a
   workspace task (a requested or observed file change). A written answer whose
   own text OpenClaw delivered keeps it (below).
@@ -439,7 +446,9 @@ message. A website request cut before its files exist is still checked as a
 website request; files the cut run wrote into a new Playground project stay
 that project, and count as inspected by the continuation, so it can publish a
 page whose `index.html` the cut run already saved without writing it again
-(OpenClaw ends a run on an identical rewrite). Any other next message, another
+(OpenClaw ends a run on an identical rewrite). That page is continued only
+when the owner's words already asked for its preview, which the continuation
+then requires too. Any other next message, another
 chat or a non-owner run never uses the grant. A Stop that reaches Pixel after
 the grant and before the continuation starts withdraws it: Pixel acknowledges
 the Stop, so the ingress closes the continuation request, and a continuation

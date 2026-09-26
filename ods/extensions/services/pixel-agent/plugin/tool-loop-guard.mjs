@@ -9424,10 +9424,18 @@ export function createToolLoopGuard({
         // A prose-only continuation guess is not a workspace access boundary.
         // With no verified previous preview, ordinary tools must remain usable
         // to locate the requested files. Only a real preview binds its scope.
-        state.workspacePreviewRequired = !state.workspacePreviewForbidden && (
-          Boolean(trustedSessionPreview) || state.workspaceVisualArtifactProduced ||
+        const ownerRequiresPreview = !state.workspacePreviewForbidden && (
+          Boolean(trustedSessionPreview) ||
           ((!visualContinuationRequested || explicitDelivery) && previewRequested)
         );
+        // Whether the owner's words alone required the preview in every
+        // classification of this run, as they do for an output-limit
+        // continuation classified by the same owner message; a successful
+        // visual write adds the run's own requirement (outputLimitToolObligations).
+        state.workspacePreviewRequestedByOwner = ownerRequiresPreview &&
+          state.workspacePreviewRequestedByOwner !== false;
+        state.workspacePreviewRequired = ownerRequiresPreview ||
+          (!state.workspacePreviewForbidden && state.workspaceVisualArtifactProduced);
         const visibilityObligation = sessionPreviewVisibilityObligations.get(sessionId);
         const explicitDirectory = userMessageWorkspaceDirectoryPath(event?.messages, event?.prompt);
         const preservesBoundBehavior = requestsBehaviorPreservation(ownerLaneText(ownerIntent)) &&
@@ -10163,7 +10171,10 @@ export function createToolLoopGuard({
       state.workspacePreviewRequired = true;
       state.workspaceTaskRequested = true;
       state.workspaceMutationRequested = true;
-      if (updatesPublishedProject) state.workspacePreviewDirectory = previousVisualDirectory;
+      if (updatesPublishedProject) {
+        state.workspacePreviewDirectory = previousVisualDirectory;
+        state.workspacePublishedProjectEdited = true;
+      }
     }
     if (
       completedVisualMutationPath &&
@@ -11866,6 +11877,25 @@ export function createToolLoopGuard({
       state.successfulWritePaths.size || state.successfulEditPaths.size);
   }
 
+  // What a cut run's own tools established that its continuation would not
+  // inherit: the continuation run is classified only by the owner message it
+  // continues (outputLimitContinuationEvent) and starts with a fresh budget.
+  // That is a failed or still-running test run; any preview attempt (a failed,
+  // stale or verified publication); a preview that only a successful visual
+  // write required, or that an edit of the chat's published project bound; a
+  // stopped lane or coding loop; a spent Operations or private-network denial
+  // fuse. Without them the continuation's reply could claim what the cut
+  // run's receipt reports as failed, or retry stopped work, so such a turn is
+  // reported instead.
+  function outputLimitToolObligations(state) {
+    return Boolean(state.latestVerificationStatus === 'failed' || state.latestVerificationStatus === 'pending' ||
+      state.workspacePreviewAttempted ||
+      (state.workspaceVisualArtifactProduced &&
+        (!state.workspacePreviewRequestedByOwner || state.workspacePublishedProjectEdited)) ||
+      state.progressBudget.exhaustedLanes.length > 0 || state.codingExhausted ||
+      state.unrequestedOperationsTerminal || state.privateNetworkExhausted);
+  }
+
   function mixedTaskVerificationForRun(runId) {
     let verification = taskVerificationForRun(runId);
     const state = runs.get(runId);
@@ -12405,10 +12435,13 @@ export function createToolLoopGuard({
     // host-operation, extension or exact-download turns get no continuation:
     // their receipts, not a new model turn, decide what happens next. Nor does
     // a turn whose receipt already passed: the host verified its result, and
-    // only the closing reply was cut. Nor does a turn whose latest test run
-    // failed or is still running: the continuation run has no test result of
-    // its own, so its reply could claim a pass that no test showed. That
-    // turn's failed receipt, with the report, is delivered instead.
+    // only the closing reply was cut. Nor does a turn that carries
+    // obligations or stops its own tools established (a failed or running
+    // test run, a preview attempt, a preview only a visual write required, a
+    // stopped lane; outputLimitToolObligations): the continuation run starts
+    // without them, so its reply could claim a pass or a publication that
+    // nothing checked. That turn's own receipt, with the report, is delivered
+    // instead.
     // `incompleteTurn` says whether OpenClaw answered with its incomplete-turn
     // text. When it delivered the cut reply's own text instead (after a tool
     // error), only a workspace task is continued; a written answer keeps its
@@ -12423,7 +12456,7 @@ export function createToolLoopGuard({
           state.progressBudget.exhausted || state.recursiveDeleteDenied || state.webLoopAborted ||
           state.ownerQuestions || state.operationsRequired || state.operationsSubmittedJobs.size > 0 ||
           state.githubExtensionRequest || state.extensionCompletionGate?.active || state.extensionPendingHandoff ||
-          state.latestVerificationStatus === 'failed' || state.latestVerificationStatus === 'pending' ||
+          outputLimitToolObligations(state) ||
           state.exactDownloadRequested || (!incompleteTurn && !outputLimitWorkspaceTask(state)) ||
           !outputLimitReportDue(state, runReceiptForRun(runId)))
         return {schemaVersion:1, kind:'ods-output-limit-continuation', eligible:false};

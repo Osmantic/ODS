@@ -504,6 +504,66 @@ test('a cut after a failed or still-running test run keeps the failed report and
   assert.equal(site.text.split('\n\n')[0], OUTPUT_LIMIT_WORKSPACE_TEXT);
 });
 
+// #6743 re-verification (round 4): the continuation run is classified only by
+// the owner message it continues and starts with a fresh budget, so it lost
+// what the cut run's own tools had established. A publication that failed or
+// went stale, a preview that a visual write (not the owner's words) required,
+// an edit of the chat's published project and a stopped workspace lane each
+// made the cut run's receipt failed; its continuation said the page was
+// published or the work done, and the owner got outcome `none`. Such a turn
+// is not continued: the owner gets the report, followed by the failed receipt
+// the same work gets without the cut.
+const WROTE = {content: [{type: 'text', text: 'ok'}], details: {status: 'completed'}};
+const EDIT = 'Change the background color in Playground/forest/styles.css to dark green.' + DELIVERY;
+const PUBLISHED = 'Done: your page is published and live.';
+const darkGreen = run => run.call('write', {path: 'Playground/forest/styles.css', content: 'body{background:#003300;color:#e8f5e9}'}, WROTE);
+const failedPreview = run => run.call('pixel_ods_workspace_preview', {relativeDirectory: 'Playground/forest'}, {isError: true,
+  content: [{type: 'text', text: 'preview failed: missing_entry'}], details: {schemaVersion: 1, kind: 'ods-pixel-workspace-preview',
+    status: 'failed', errorCode: 'missing_entry', relativeDirectory: 'Playground/forest'}});
+const foxPage = run => run.call('write', {path: 'Playground/fox/index.html', content: '<!doctype html><script src="script.js"></script><h1>Fox</h1>'}, WROTE);
+const foxScript = run => run.call('write', {path: 'Playground/fox/script.js', content: 'document.title = "Fox";'}, WROTE);
+const failedLs = run => { for (let n = 0; n < 4; n++) run.call('exec', {command: `ls /workspace/missing-${n}`, workdir: '/workspace'},
+  {content: [{type: 'text', text: 'No such file\n(Command exited with code 2)'}], details: {status: 'completed', exitCode: 2}}); };
+const publishedForest = run => { publishSplitPage(run); run.reply(said(READY)); return READY; };
+for (const {name, prompt, earlier, work, rest = () => {}, delivered} of [
+  {name: 'a publication a later change made stale', prompt: EDIT,
+    work: run => { publishSplitPage(run); darkGreen(run); }, delivered: [GENERIC_TOOLS]},
+  {name: 'a published website a later change made stale', prompt: SITE,
+    work: run => { publishSplitPage(run); darkGreen(run); }, delivered: [GENERIC_TOOLS]},
+  {name: 'a failed publication', prompt: EDIT, work: run => { darkGreen(run); failedPreview(run); },
+    delivered: [OPENING, GENERIC_TOOLS]},
+  {name: 'a failed publication of a requested website', prompt: SITE, work: run => { darkGreen(run); failedPreview(run); },
+    delivered: [OPENING, GENERIC_TOOLS]},
+  // A written index.html requires this run's preview; these words do not.
+  ...[['fox demo', 'Make me a small interactive fox demo in Playground/fox.' + DELIVERY],
+    ['something fun', 'Make me something fun about foxes.' + DELIVERY], ['styles change', EDIT]].map(([label, words]) => ({
+    name: `a visual write the owner did not ask a preview for (${label})`, prompt: words,
+    work: foxPage, rest: foxScript, delivered: [GENERIC_TOOLS]})),
+  {name: "an edit of the chat's published page", prompt: 'Make the heading bigger.' + DELIVERY, earlier: [SITE, publishedForest],
+    work: run => run.call('write', {path: 'Playground/forest/styles.css', content: 'h1{font-size:4rem}'}, WROTE), delivered: [GENERIC_TOOLS]},
+  {name: 'a stopped workspace lane', prompt: MIXED + DELIVERY, work: failedLs, delivered: [OPENING]},
+]) {
+  test(`a cut after ${name} keeps the failed receipt and is not continued`, {timeout: 20000}, async t => {
+    const deliver = async scripts => {
+      const {seen, chat} = await portal(t, [...earlier ? [earlier[1]] : [], ...scripts]);
+      if (earlier) assert.equal((await chat(earlier[0])).outcome, 'passed');
+      return {seen, result: await chat(prompt)};
+    };
+    const claim = run => { rest(run); run.reply(said(PUBLISHED)); return PUBLISHED; };
+    const control = await deliver([run => { work(run); return claim(run); }]);
+    assert.equal(control.result.status, 200, control.result.body);
+    assert.equal(control.result.outcome, 'failed', control.result.text);
+    for (const text of delivered) {
+      const {seen, result} = await deliver([run => { work(run); run.reply(CUT); return text; }, claim]);
+      assert.equal(result.status, 200, result.body);
+      assert.deepEqual(seen.grants.at(-1), {runId: seen.runs.at(-1), eligible: false, incompleteTurn: text !== OPENING});
+      assert.equal(seen.runs.length, control.seen.runs.length, 'no continuation run');
+      assert.equal(result.outcome, 'failed');
+      assert.equal(result.text, `${OUTPUT_LIMIT_WORKSPACE_TEXT}\n\n${control.result.text}`);
+    }
+  });
+}
+
 // The ingress rejects receipt text over 32 KiB (MAX_VERIFICATION_TEXT).
 test('the report and the receipt it leads stay within the 32 KiB ingress bound', {timeout: 20000}, async t => {
   const RUN = `chatcmpl_${randomUUID()}`;

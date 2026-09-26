@@ -14,7 +14,10 @@
 // incomplete-turn text: a website is still continued, and a written answer
 // keeps its delivered part, followed by the report. A result the host
 // already verified is kept when only the closing reply is cut, and a turn
-// whose test run failed is reported as failed, never continued.
+// whose own tools established what a continuation would not inherit (a failed
+// test run, a failed or stale publication, a preview only a visual write
+// required, an edit of the chat's published page) is reported, never
+// continued.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createServer} from 'node:http';
@@ -203,8 +206,9 @@ net.createConnection=function(options,...rest){if(options&&typeof options==='obj
     };
     await send([{role:'user',content:prompt}],'turn-1');
     const firstTurnRequests=requests.length;
+    // A second owner message: the given one, or a short follow-up question.
     if(followUp)await send([{role:'user',content:prompt},{role:'assistant',content:turns[0].delivered},
-      {role:'user',content:'Thanks. Summarize that in one sentence.'+DELIVERY}],'turn-2');
+      {role:'user',content:typeof followUp==='string'?followUp:'Thanks. Summarize that in one sentence.'+DELIVERY}],'turn-2');
     const ledger=readdirSync(join(root,'chat-state')).filter(name=>name.endsWith('.json'))
       .map(name=>JSON.parse(readFileSync(join(root,'chat-state',name),'utf8')).status);
     const files=readdirSync(workspace,{recursive:true}).map(String).filter(file=>!file.startsWith('.')).sort();
@@ -348,4 +352,51 @@ test('real Pixel output-limit report: a failed test run is not continued into an
   assert.equal(result.contents[BUGGY.path],BUGGY.content,'the cut fix never ran\n'+trace);
   assert.equal(control.turns[0].outcome,'failed',traceOf(control));
   assert.equal(control.turns[0].delivered,VERIFICATION_FAILED_DELIVERY_PREFIX,traceOf(control));
+});
+
+// #6743 re-verification (round 4): the continuation run is classified only by
+// the owner message it continues, so it lost what the cut run's own tools had
+// established, and replied that the page was published with outcome none
+// where the same work uncut is delivered as failed: a written index.html that
+// made this run's preview required (the owner's words did not), a publication
+// that failed, one that a later change made stale, and an edit of the page the
+// chat had already published. Such a turn is not continued: the owner gets the
+// report, followed by the receipt the same work gets without the cut.
+const EDIT='Change the background color in Playground/forest/styles.css to dark green.'+DELIVERY;
+const DARK={path:'Playground/forest/styles.css',content:'body{background:#003300;color:#e8f5e9}\n'};
+const PUBLISHED='Done: the background is dark green now, and your page is published and live.';
+const FOX='Make me a small interactive fox demo in Playground/fox.'+DELIVERY;
+const FOX_PAGE={path:'Playground/fox/index.html',content:'<!doctype html><html><head><title>Fox</title><script src="script.js" defer></script></head><body><h1>Fox</h1></body></html>\n'};
+const FOX_SCRIPT={path:'Playground/fox/script.js',content:'document.title="Fox demo";\n'};
+const FOX_CLAIM='Your fox page is ready and published: open Playground/fox/index.html.';
+const BIGGER='Make the heading bigger.'+DELIVERY;
+const BIGGER_STYLES={path:'Playground/forest/styles.css',content:'body{background:#0b3d20;color:#e8f5e9}\nh1{font-size:4rem}\n'};
+const BIGGER_CLAIM='Done: the heading is bigger and the page is republished.';
+const PUBLISH_FOREST=[write(SPLIT_PAGE),write(STYLES),write(SCRIPT),preview('Playground/forest')];
+const OWN_OBLIGATIONS={
+  'a visual write the owner did not ask a preview for':{prompt:FOX,work:[write(FOX_PAGE)],
+    cut:{cut:true,path:FOX_SCRIPT.path},rest:[write(FOX_SCRIPT),say(FOX_CLAIM)],incompleteTurn:true},
+  // No index.html was read or written, so the publication is refused (a tool
+  // error: OpenClaw delivers the cut reply's own text).
+  'a failed publication':{prompt:EDIT,work:[write(DARK),preview('Playground/forest')],cut,rest:[say(PUBLISHED)],incompleteTurn:false},
+  'a publication a later change made stale':{prompt:EDIT,work:[...PUBLISH_FOREST,write(DARK)],
+    cut:{cut:true,path:SCRIPT.path},rest:[say(PUBLISHED)],incompleteTurn:true},
+  "an edit of the chat's published page":{prompt:SITE,earlier:[...PUBLISH_FOREST,say(READY)],followUp:BIGGER,
+    work:[write(BIGGER_STYLES)],cut,rest:[say(BIGGER_CLAIM)],incompleteTurn:true},
+};
+for (const [name,spec] of Object.entries(OWN_OBLIGATIONS)) test(`real Pixel output-limit report: a cut after ${name} is not continued`,
+  {skip,timeout:300000},async()=>{
+  const earlier=spec.earlier??[];
+  const result=await run(spec.prompt,[...earlier,...spec.work,spec.cut,...spec.rest],{followUp:spec.followUp});
+  const control=await run(spec.prompt,[...earlier,...spec.work,...spec.rest],{followUp:spec.followUp});
+  const trace=traceOf(result);
+  const turn=result.turns.at(-1),expected=control.turns.at(-1);
+  assert.equal(expected.outcome,'failed',traceOf(control));
+  assert.deepEqual(result.grants.map(({eligible,incompleteTurn})=>({eligible,incompleteTurn})).at(-1),
+    {eligible:false,incompleteTurn:spec.incompleteTurn},trace);
+  assert.ok(result.grants.every(grant=>grant.eligible===false),trace);
+  assert.equal(result.requests.length,earlier.length+spec.work.length+1,'no continuation\n'+trace);
+  assert.equal(turn.outcome,'failed',trace);
+  assert.equal(turn.delivered,`${OUTPUT_LIMIT_WORKSPACE_TEXT}\n\n${expected.delivered}`,trace);
+  assert.equal(turn.preview,expected.preview,trace);
 });

@@ -219,6 +219,70 @@ test('a cut closing reply keeps a verified result and gets no continuation', () 
   assert.deepEqual(receipts[1], receipts[0], 'the same receipt as the uncut turn');
 });
 
+// #6743 re-verification (round 4): the continuation run is classified only by
+// the owner message it continues and starts with a fresh budget, so a cut run
+// is not continued when its own tools established what that run would not
+// inherit. output_limit_recovery.test.mjs compares the reviewer's cases (a
+// failed or stale publication, a preview only a visual write required, a
+// stopped lane) with their uncut controls; these are the other stops, each
+// granted without the rule.
+{
+  const ok = {content: [{type: 'text', text: 'ok'}], details: {status: 'completed'}};
+  const call = (guard, context, toolName, params, toolCallId) => {
+    const ctx = toolContext(context, toolName, toolCallId);
+    const decision = guard.beforeToolCall({toolName, params, toolCallId}, ctx);
+    guard.afterToolCall({toolName, params: decision?.params ?? params, toolCallId,
+      ...decision?.block ? {error: decision.blockReason} : {result: ok}}, ctx);
+    return decision;
+  };
+  const STYLES = 'Playground/forest/styles.css';
+  for (const [name, work] of [
+    // The owner's words bind the published page too, but the edit was this
+    // run's own (workspaceVisualContinuationEdited, the bound directory).
+    ['an edit of the published page', guard => {
+      const published = turn(guard, {runId: 'published'});
+      publishSplitPage(guard, published.context);
+      published.reply(DONE);
+      const owner = turn(guard, {runId: 'owner', prompt: 'Make the heading bigger and publish the page again.'});
+      assert.notEqual(call(guard, owner.context, 'read', {path: STYLES}, 'read-styles')?.block, true);
+      assert.notEqual(call(guard, owner.context, 'write', {path: STYLES, content: 'h1{font-size:4rem}'}, 'write-styles')?.block, true);
+      return owner;
+    }],
+    // Two identical-replacement edits stop the coding loop (codingExhausted).
+    ['a stopped coding loop', guard => {
+      const owner = turn(guard, {runId: 'owner'});
+      write(guard, owner.context, SPLIT_PAGE[1], 'write-styles');
+      for (const id of ['noop-1', 'noop-2']) assert.equal(call(guard, owner.context, 'edit',
+        {path: STYLES, edits: [{oldText: 'body', newText: 'body'}]}, id)?.block, true);
+      return owner;
+    }],
+    ['a private-network denial', guard => {
+      const owner = turn(guard, {runId: 'owner'});
+      assert.equal(call(guard, owner.context, 'exec', {command: 'curl http://192.168.1.20/', workdir: '/workspace'}, 'curl')?.block, true);
+      return owner;
+    }],
+    // The second round of unrequested Operations calls leaves one final
+    // answer, and the next tool call aborts the run.
+    ['a spent unrequested-Operations fuse', guard => {
+      const owner = turn(guard, {runId: 'owner', prompt: 'Create /workspace/project/probe.py and inspect the files in that workspace.'});
+      for (const round of [1, 2]) {
+        guard.observeModelCall({runId: 'owner'}, owner.context, 'pixel');
+        assert.equal(call(guard, owner.context, 'pixel_ops_run', {target: 'ods-host', action: 'host.identity'}, `ops-${round}`)?.block, true);
+      }
+      return owner;
+    }],
+  ]) test(`a cut run whose own tools stopped, denied or bound its work gets no continuation (${name})`, () => {
+    const guard = createToolLoopGuard({abortRun: () => true});
+    const owner = work(guard);
+    owner.reply(CUT);
+    assert.deepEqual(owner.grant(), INELIGIBLE);
+    assert.deepEqual(owner.grant({incompleteTurn: false}), INELIGIBLE);
+    const receipt = owner.verification();
+    assert.equal(receipt.status, 'failed');
+    assert.equal(receipt.text.split('\n\n')[0], OUTPUT_LIMIT_WORKSPACE_TEXT);
+  });
+}
+
 // #6743 review: a Stop after the grant, before OpenClaw starts the
 // continuation, found only the ended cut run and aborted nothing.
 test('a Stop after the grant withdraws the continuation before it starts', async () => {
