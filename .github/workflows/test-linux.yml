@@ -421,6 +421,7 @@ jobs:
           bash tests/test-phase03-multigpu-tty.sh
           bash tests/test-pixel-support-services.sh
           bash tests/contracts/test-preflight-fixtures.sh
+          python3 tests/test_linux_install_preflight_options.py
           bash tests/test-preflight-resolver-bug.sh
           bash tests/test-desktop-agent-host-env.sh
           bash tests/test-pixel-uninstall.sh
