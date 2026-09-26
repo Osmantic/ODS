@@ -305,33 +305,49 @@ function segmentRanges(masked, lines, index) {
 // number, never one that also covers a different citation. Occurrences without
 // any anchor (a bare reference list) are omitted.
 export function citationClaims(answer, href, {portuguese = false} = {}) {
-  const text = String(answer ?? '');
   const key = citationKey(href);
   if (!key) return [];
+  return claimSegments(String(answer ?? ''), {key, portuguese}).map(segment => segment.anchors)
+    .filter(chosen => chosen.tokens.length || chosen.date || chosen.numbers);
+}
+
+// The claim segment of each citation occurrence (of `key` only, when given):
+// its anchors, its range and the answer text with every link blanked.
+function claimSegments(text, {key, portuguese = false} = {}) {
   const spans = citationSpans(text);
   // Anchors never come from URLs: every link is blanked, offsets unchanged.
   let masked = text;
   for (const span of spans) masked = masked.slice(0, span.index) + ' '.repeat(span.raw.length) + masked.slice(span.index + span.raw.length);
   const lines = lineTable(masked);
-  const claims = [];
+  const segments = [];
   for (const span of spans) {
-    if (span.key !== key) continue;
+    if (!span.key || (key !== undefined && span.key !== key)) continue;
     const linkText = text.slice(Math.max(0, span.index - 220), span.index).match(/\[([^[\]\n]{1,200})\]\(\s*<?$/)?.[1];
     const ranges = segmentRanges(masked, lines, span.index);
     const within = range => new Set(spans.filter(other => other.key && other.index >= range[0] &&
       other.index < range[1]).map(other => other.key));
     const base = within(ranges[0]);
     const unitText = masked.slice(ranges[0][0], ranges[0][1]);
-    let chosen;
+    let chosen, chosenRange;
     for (const range of ranges) {
       if ([...within(range)].some(other => !base.has(other))) break;
       const anchors = anchorsOf(masked.slice(range[0], range[1]), {portuguese, linkText, unitText});
-      if (anchors.full) { chosen = anchors; break; }
-      chosen ??= anchors;
+      if (anchors.full) { chosen = anchors; chosenRange = range; break; }
+      if (!chosen) { chosen = anchors; chosenRange = range; }
     }
-    if (chosen && (chosen.tokens.length || chosen.date || chosen.numbers)) claims.push(chosen);
+    if (chosen) segments.push({span, anchors: chosen, range: chosenRange, masked});
   }
-  return claims;
+  return segments;
+}
+
+// The items an answer cites sources for: each citation occurrence whose
+// segment (its line, list item, block or section, never one that also cites
+// another page) names a subject and a date or number. `text` is that segment
+// with every link blanked. A bare reference list names no item.
+export function citationItems(answer, {portuguese = false} = {}) {
+  return claimSegments(String(answer ?? ''), {portuguese}).filter(segment => segment.anchors.full)
+    .map(({span, anchors, range, masked}) => ({key: span.key, href: span.href, index: span.index,
+      tokens: anchors.tokens, text: masked.slice(range[0], range[1])}));
 }
 
 const NOT_FOUND = /\b(?:page not found|404 (?:error|not found)|error 404|not found \(404\)|(?:this|the) page (?:could not|cannot|cant|can not) be found|page (?:you requested|you are looking for|you were looking for) (?:could not|cannot|cant|does not|doesnt|is no longer)|(?:event|page) (?:is )?no longer available|no longer available|pagina nao encontrada|nao foi possivel encontrar)\b/;

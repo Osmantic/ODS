@@ -10,7 +10,7 @@ const KINDS = new Map([
   ...['write', 'edit', 'apply_patch', 'pixel_ods_workspace_bundle'].map(name => [name, 'edit']),
   ...['exec', 'process', 'shell', 'bash', 'eval', 'lsp', 'debug'].map(name => [name, 'run']),
   ...['task', 'hub', 'sessions_spawn', 'sessions_send'].map(name => [name, 'agent']),
-  ...['browser', 'web_search', 'web_fetch', 'pixel_ods_web_extract', 'pixel_ods_research'].map(name => [name, 'browser']),
+  ...['browser', 'web_search', 'web_fetch', 'pixel_ods_web_extract', 'pixel_ods_search_read', 'pixel_ods_research'].map(name => [name, 'browser']),
   ['pixel_ods_workspace_preview', 'preview'],
   ...['pixel_ods_status', 'pixel_ods_apps_list', 'pixel_ods_host_observe', 'pixel_ods_extensions'].map(name => [name, 'read']),
   ...['pixel_ops_run', 'pixel_ops_workflow_submit', 'pixel_ods_download_promote'].map(name => [name, 'action']),
