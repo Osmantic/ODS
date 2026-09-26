@@ -6256,12 +6256,15 @@ function indexDirectories(paths) {
 // project, the Playground project, the model's own publication request or an
 // entry this run wrote), in this order: the only entry this run has seen,
 // when it wrote it or the publication check refuses it; the bound directory;
-// the one directory whose entry this run wrote. For a refused (hidden)
-// directory, callers name nothing and ask for a copy. A directory whose
-// index.html was only read, or only produced or copied by a command, is never
-// named or made the default: it may be an earlier round's site, whatever its
-// bytes. The model publishes such a directory, or its copy of a hidden one,
-// by name; publishing an existing site stays supported.
+// the one publishable directory whose entry this run wrote, only beside its
+// own refused (hidden) entry: the only entry it wrote, beside entries it only
+// read, may be an edited source template beside the build output it read.
+// For a refused (hidden) directory, callers name nothing and ask for a copy.
+// A directory whose index.html was only read, or only produced or copied by
+// a command, is never named or made the default: it may be an earlier
+// round's site, whatever its bytes. The model publishes such a directory, or
+// its copy of a hidden one, by name; publishing an existing site stays
+// supported.
 function guidedWorkspacePreviewDirectory(state) {
   const written = indexDirectories([...(state?.successfulWritePaths ?? []), ...(state?.successfulEditPaths ?? [])]);
   const seen = indexDirectories([...written].map((directory) => `${directory}/index.html`)
@@ -6270,7 +6273,7 @@ function guidedWorkspacePreviewDirectory(state) {
   if (only !== undefined && (written.has(only) || !publishableWorkspaceDirectory(only))) return only;
   if (state?.workspacePreviewDirectory) return state.workspacePreviewDirectory;
   const publishable = [...written].filter(publishableWorkspaceDirectory);
-  if (publishable.length === 1) return publishable[0];
+  if (publishable.length === 1 && written.size > 1) return publishable[0];
   return publishable.length === 0 && written.size === 1 ? [...written][0] : undefined;
 }
 

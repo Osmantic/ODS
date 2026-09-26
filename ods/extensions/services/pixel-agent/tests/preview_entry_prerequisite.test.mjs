@@ -265,13 +265,16 @@ function siteRun(t,{prompt=WEBSITE,inspection=true}={}) {
   const disk=(file,content)=>{mkdirSync(path.dirname(path.join(root,file)),{recursive:true});writeFileSync(path.join(root,file),content);};
   const read=file=>hooks('read',{path:file},()=>success(readFileSync(path.join(root,file),'utf8')));
   const write=(file,content)=>hooks('write',{path:file,content},()=>{disk(file,content);return success(`Successfully wrote ${content.length} bytes to ${file}`);});
+  const edit=(file,oldText,newText)=>hooks('edit',{path:file,edits:[{oldText,newText}]},()=>{
+    disk(file,readFileSync(path.join(root,file),'utf8').replace(oldText,newText));return success(`Successfully replaced text in ${file}.`);});
+  const exec=(command,effect)=>hooks('exec',{command},()=>{effect();return success('');});
   const copy=(from,to)=>hooks('exec',{command:`cp -r ${from} ${to}`},()=>{
     disk(`${to}/index.html`,readFileSync(path.join(root,from,'index.html'),'utf8'));return success('');});
   const describePublish=()=>hooks('tool_call',{id:'tool_describe',args:{id:'pixel_ods_workspace_preview'}},()=>assert.fail('must not run')).decision.blockReason;
   const finalize=()=>guard.beforeAgentFinalize({},context)?.retry?.instruction;
   const publish=args=>hooks('pixel_ods_workspace_preview',args,admitted=>({content:[{type:'text',text:'published'}],
     details:receipt(admitted.relativeDirectory,{'index.html':readFileSync(path.join(root,admitted.relativeDirectory,'index.html'),'utf8')})}));
-  return {guard,disk,read,write,copy,describePublish,finalize,publish};
+  return {guard,disk,read,write,edit,exec,copy,describePublish,finalize,publish};
 }
 
 for(const inspection of [true,false]) test(`an earlier round's site that was only read never stands in for a new site written under a hidden directory (inspection ${inspection})`,t=>{
@@ -437,4 +440,41 @@ test('a read-only template beside a hidden build output is never offered for pub
   assert.doesNotMatch(r.finalize(),/"relativeDirectory"/);
   assert.equal(r.describePublish(),`${DESCRIBE_PUBLISH}.`);
   assert.equal(r.publish({}).decision?.block,true);
+});
+
+// Re-verification of #6747 at 65438516: in an existing Vite project the run
+// edits the source template, builds, and reads the build output. The one
+// entry it wrote was named beside the build output it read, and an
+// argumentless publication delivered the unbuilt template as ready. An entry
+// this run wrote is named among other entries seen only beside its own
+// hidden entry; the model publishes the build output by name.
+const VITE_TEMPLATE='<!doctype html><html><head><title>App</title></head><body><div id="root"></div><script type="module" src="/src/main.jsx"></script></body></html>';
+for(const target of ['the built site','myapp/dist'])
+test(`an edited source template is never named beside the build output this run read (publish ${target})`,t=>{
+  const r=siteRun(t,{prompt:`In my existing app in myapp, change the page title in index.html to Harbor, run npm run build, and publish ${target} as a Workbench preview.`,inspection:false});
+  r.disk('myapp/index.html',VITE_TEMPLATE);
+  r.disk('myapp/src/main.jsx','import React from "react";\n');
+  r.disk('myapp/package.json','{"scripts":{"build":"vite build"}}');
+  r.read('myapp/index.html');
+  const edited=r.edit('myapp/index.html','<title>App</title>','<title>Harbor</title>');
+  assert.notEqual(edited.decision?.block,true,edited.text);
+  const built=r.exec('cd myapp && npm run build',()=>{
+    r.disk('myapp/dist/index.html','<!doctype html><html><head><title>Harbor</title><script type="module" src="./assets/index-abc.js"></script></head><body><div id="root"></div></body></html>');
+    r.disk('myapp/dist/assets/index-abc.js','console.log(1);\n');
+  });
+  assert.notEqual(built.decision?.block,true,built.text);
+  const readback=r.read('myapp/dist/index.html');
+  assert.doesNotMatch(readback.text,/"relativeDirectory"/,readback.text);
+  assert.equal(r.describePublish(),`${DESCRIBE_PUBLISH}.`);
+  assert.doesNotMatch(r.finalize(),/"relativeDirectory"/);
+  const argless=r.publish({});
+  assert.equal(argless.decision?.block,true,JSON.stringify(argless.decision));
+  assert.notEqual(r.guard.verificationForRun('guided-run')?.status,'passed');
+  assert.doesNotMatch(String(r.guard.deliveryVerificationForRun('guided-run')?.text),/Your preview is ready/);
+  // Published by name, the build output is admitted and verified.
+  const explicit=r.publish({relativeDirectory:'myapp/dist'});
+  assert.notEqual(explicit.decision?.block,true,explicit.text);
+  const verification=r.guard.verificationForRun('guided-run');
+  assert.equal(verification?.status,'passed');
+  assert.equal(verification.preview?.relativeDirectory,'myapp/dist');
 });
