@@ -1,5 +1,6 @@
 # Prerequisite orchestration; actual installation remains in install-core.sh.
 . (Join-Path $PSScriptRoot 'wsl-portal-prereqs.ps1')
+. (Join-Path $PSScriptRoot 'wsl-portal-amd.ps1')
 
 function Write-ODSPortalStage([int]$Step, [string]$Title, [string]$Detail) {
     Write-Host ''
@@ -273,6 +274,17 @@ function Initialize-ODSPortalDocker([string]$Distro, [System.Collections.IDictio
     return $null
 }
 
+function Add-ODSPortalAmdArguments([string[]]$LinuxArgs, [System.Collections.IDictionary]$Options, [string]$SourceRoot, [bool]$NonInteractive) {
+    # An AMD GPU runs the model through Lemonade Server on Windows; everything
+    # else keeps the in-WSL route. An explicit -Tier stays the user's choice.
+    $plan = Get-ODSPortalAmdPlan $SourceRoot
+    if ($null -eq $plan) { return $LinuxArgs }
+    Write-ODSPortalStage 3 'AMD GPU' "$($plan.GpuName) ($([math]::Round($plan.VramMB / 1024)) GB): model $($plan.Model) runs through Lemonade Server on Windows."
+    $amdArgs = @(Initialize-ODSPortalAmdLemonade $plan $SourceRoot $NonInteractive)
+    if ($amdArgs.Count -gt 0 -and -not $Options['Tier']) { $amdArgs += @('--tier', $plan.LinuxTier) }
+    return @($LinuxArgs + $amdArgs)
+}
+
 function Invoke-ODSPortalSetup([System.Collections.IDictionary]$Options, [string]$InstallerRoot) {
     $linuxArgs = @(Get-ODSPortalLinuxArguments $Options)
     $distro = if ($Options['Distro']) { [string]$Options['Distro'] } else { 'Ubuntu-24.04' }
@@ -284,7 +296,7 @@ function Invoke-ODSPortalSetup([System.Collections.IDictionary]$Options, [string
     Write-Host '  Your workspace runs in Ubuntu. Open Portal from Windows.'
     if ($Options['DryRun']) {
         Write-Host 'Dry run: no features, distributions, tasks, services or files will be changed.'
-        Write-Host 'Plan: check disk space and virtualization; prepare WSL2, Ubuntu and Docker Desktop when missing (continuing after a restart); verify the Ubuntu user, systemd, Docker integration and, with an NVIDIA driver, GPU access; run the Linux installer; verify Pixel ingress and Portal readiness; open Portal.'
+        Write-Host 'Plan: check disk space and virtualization; prepare WSL2, Ubuntu and Docker Desktop when missing (continuing after a restart); verify the Ubuntu user, systemd, Docker integration and, with an NVIDIA driver, GPU access; with an AMD GPU, install Lemonade Server on Windows and load the model on the GPU; run the Linux installer; verify Pixel ingress and Portal readiness; open Portal.'
         Write-Host ('Linux flags: ' + ($linuxArgs -join ' '))
         return 0
     }
@@ -331,7 +343,11 @@ function Invoke-ODSPortalSetup([System.Collections.IDictionary]$Options, [string
     Write-ODSPortalStage 3 'CONTAINER CONNECTION' "Checking Docker Desktop and Compose inside $distro."
     $stop = Initialize-ODSPortalDocker $distro $Options $InstallerRoot $nonInteractive
     if ($null -ne $stop) { return $stop }
-    if (-not $Options['Cloud']) { Assert-ODSPortalNvidiaReady $distro (Get-ODSPortalWindowsNvidiaDriver) }
+    if (-not $Options['Cloud']) {
+        $nvidiaDriver = Get-ODSPortalWindowsNvidiaDriver
+        Assert-ODSPortalNvidiaReady $distro $nvidiaDriver
+        if ($null -eq $nvidiaDriver) { $linuxArgs = @(Add-ODSPortalAmdArguments $linuxArgs $Options (Split-Path -Parent $InstallerRoot) $nonInteractive) }
+    }
     Write-ODSPortalStage 4 'INSTALL PIXEL / PORTAL' "Prerequisites passed for $distro. Starting the Linux installer."
     Write-Host '         When Ubuntu asks for your [sudo] password, type your Ubuntu password and press Enter. Nothing appears while you type.'
     return Invoke-ODSPortalLinuxInstaller $InstallerRoot $distro $linuxArgs ([string]$Options['InstallDir']) (-not $nonInteractive)
