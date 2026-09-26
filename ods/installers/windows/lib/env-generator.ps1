@@ -61,6 +61,64 @@ function Resolve-WindowsODSPort {
     return $DefaultPort
 }
 
+function Test-WindowsLemonadeWhisperPortConflict {
+    <#
+    .SYNOPSIS
+        Side-effect-free probe: does any process listening on host port 9000
+        look like a native Lemonade server/router? Scans ALL listeners, not
+        just the first. Never stops processes or prints command lines.
+    #>
+    param([int]$Port = 9000)
+
+    try {
+        $connections = @(Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue)
+    } catch {
+        return $false
+    }
+    if ($connections.Count -eq 0) { return $false }
+
+    $seenPids = @{}
+    foreach ($conn in $connections) {
+        $listenerPid = $conn.OwningProcess
+        if (-not $listenerPid -or $seenPids.ContainsKey($listenerPid)) { continue }
+        $seenPids[$listenerPid] = $true
+        try {
+            $proc = Get-Process -Id $listenerPid -ErrorAction SilentlyContinue
+        } catch {
+            $proc = $null
+        }
+        if (-not $proc) { continue }
+        $name = [string]$proc.ProcessName
+        if ($name -match '^(?i:lemonadeserver|lemonade-server|lemonade-router)$') {
+            return $true
+        }
+    }
+    return $false
+}
+
+function Resolve-WindowsWhisperHostPort {
+    <#
+    .SYNOPSIS
+        Resolve the Whisper host port. Non-9000 configured ports pass through
+        untouched (no probe). Port 9000 moves to 9100 only for managed
+        AMD/lemonade/host installs or an actual Lemonade listener conflict.
+    #>
+    param(
+        [string]$ConfiguredPort = "9000",
+        [string]$GpuBackend = "",
+        [string]$AmdInferenceRuntime = "",
+        [string]$AmdInferenceLocation = ""
+    )
+
+    if ($ConfiguredPort -ne '9000') { return $ConfiguredPort }
+
+    $managedAmd = ($GpuBackend -eq 'amd' -and $AmdInferenceRuntime -eq 'lemonade' -and $AmdInferenceLocation -eq 'host')
+    if ($managedAmd) { return '9100' }
+
+    if (Test-WindowsLemonadeWhisperPortConflict -Port 9000) { return '9100' }
+    return '9000'
+}
+
 function Get-ODSDockerMemoryGB {
     try {
         $raw = (& docker info --format "{{.MemTotal}}" 2>$null | Select-Object -First 1)
@@ -659,15 +717,13 @@ function New-ODSEnv {
 
     # Lemonade's native Windows router reserves host port 9000 for websockets.
     # Keep Whisper's container port unchanged, but move its host port out of the
-    # way on managed AMD/Lemonade installs. Existing .env choices still win.
-    $whisperPortDefault = "9000"
-    if ($GpuBackend -eq "amd" -and $AmdInferenceRuntime -eq "lemonade" -and $AmdInferenceLocation -eq "host") {
-        $whisperPortDefault = "9100"
-    }
-    $whisperPort = Get-EnvOrNew "WHISPER_PORT" $whisperPortDefault
-    if ($whisperPortDefault -eq "9100" -and $whisperPort -eq "9000") {
-        $whisperPort = "9100"
-    }
+    # way on managed AMD/Lemonade installs or when a Lemonade process actually
+    # listens on 9000 (e.g. Docker publishing Whisper there while an unrelated
+    # LemonadeServer holds loopback 9000). Custom .env ports remain unchanged.
+    $whisperPort = Get-EnvOrNew "WHISPER_PORT" "9000"
+    $whisperPort = Resolve-WindowsWhisperHostPort -ConfiguredPort $whisperPort `
+        -GpuBackend $GpuBackend -AmdInferenceRuntime $AmdInferenceRuntime `
+        -AmdInferenceLocation $AmdInferenceLocation
 
     function Get-ExistingTokenSpyApiKey {
         $tokenSpyKeyFile = Join-Path $InstallDir "data\token-spy\token-spy-api-key.txt"
