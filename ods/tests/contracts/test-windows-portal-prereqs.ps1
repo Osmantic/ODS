@@ -64,6 +64,32 @@ foreach ($case in @(
     Check ($passed -eq $case.ok) $case.name
 }
 
+# WSL integration: stop Docker, release its data disk with a WSL shutdown,
+# edit the settings file, then start Docker. Starting right after the stop
+# left a real host stuck with "disk not found".
+$appData = Join-Path ([IO.Path]::GetTempPath()) ('ods-appdata-' + [guid]::NewGuid().ToString('N'))
+$null = New-Item -ItemType Directory -Path (Join-Path $appData 'Docker')
+$previousAppData = $env:APPDATA
+try {
+    $env:APPDATA = $appData
+    $settingsFile = Join-Path $appData 'Docker/settings-store.json'
+    [IO.File]::WriteAllText($settingsFile, '{"WslEngineEnabled":true}')
+    $script:steps = [Collections.Generic.List[string]]::new()
+    function Invoke-ODSPortalDockerCli([string]$Cli, [string[]]$Arguments) { $script:steps.Add('docker ' + ($Arguments -join ' ')); return [pscustomobject]@{ Code = 0; Output = '' } }
+    function Invoke-ODSPortalWsl([string[]]$Arguments) {
+        $script:steps.Add('wsl ' + ($Arguments -join ' '))
+        $script:settingsAtShutdown = [IO.File]::ReadAllText($settingsFile)
+        return [pscustomobject]@{ Code = 0; Output = ''; Error = '' }
+    }
+    function Start-ODSPortalDockerDesktop($Desktop) { $script:steps.Add('start'); $script:settingsAtStart = [IO.File]::ReadAllText($settingsFile) }
+    Enable-ODSPortalDockerWslIntegration ([pscustomobject]@{ Cli = 'docker.exe'; Exe = 'Docker Desktop.exe' }) 'Ubuntu-24.04'
+    Check (($script:steps -join ' | ') -eq 'docker desktop stop | wsl --shutdown | start') 'integration stops Docker, shuts WSL down, then starts Docker'
+    Check ($script:settingsAtShutdown -notmatch 'Ubuntu-24.04' -and $script:settingsAtStart -match '"IntegratedWslDistros"\s*:\s*\[\s*"Ubuntu-24.04"') 'settings are written after Docker stops and before it starts'
+} finally {
+    $env:APPDATA = $previousAppData
+    Remove-Item -LiteralPath $appData -Recurse -Force
+}
+
 # Password bytes reach the distro exactly: UTF-8, LF only, no console code page.
 # Runnable only where a fake wsl.exe script can execute.
 if ($IsLinux) {
