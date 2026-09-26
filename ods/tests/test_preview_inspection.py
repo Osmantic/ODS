@@ -2076,10 +2076,12 @@ class BrowserTests(unittest.TestCase):
         self.assertEqual(result["steps"][3]["before"]["display"], "none")
         self.assertEqual(recorded["details"]["steps"][3]["before"]["display"], "none")
 
-    def test_laptop_round107_uppercase_control_needs_its_css_locator(self):
+    def test_laptop_round107_uppercase_control_by_source_name_or_css_locator(self):
         # site-ba3eb2f6 repaired to start hidden: .show-sold-out-btn is
-        # text-transform: uppercase, so the exact role/name click matches
-        # nothing, and the published id offered in its place passes.
+        # text-transform: uppercase. #6748 recorded that the exact role/name
+        # click matched nothing there; with #6750 (integration) role/name steps
+        # also match the source-text name, as getByRole does, so that click
+        # passes too. The published id offered in its place still passes.
         files, _ = recorded_site("inspection-recovery-laptop-round107.json", 3)
         html = files["index.html"].decode()
         repaired = html.replace('<article class="event-card sold-out">', '<article class="event-card sold-out hidden">', 1)
@@ -2087,7 +2089,7 @@ class BrowserTests(unittest.TestCase):
         files = {"index.html": repaired.encode()}
         card = ".event-card.sold-out"
         result = self.check(None, [step("assert-hidden", card), step("click", name="Show sold out"), step("assert-visible", card)], files)
-        self.assertEqual(result["steps"][1]["errorCode"], "no_match", result)
+        self.assertEqual(result["status"], "passed", result)
         result = self.check(None, [step("assert-hidden", card), step("click", "#showSoldOutBtn"), step("assert-visible", card)], files)
         self.assertEqual(result["status"], "passed", result)
 
@@ -2106,12 +2108,17 @@ class BrowserTests(unittest.TestCase):
         self.assertEqual(result["steps"][2]["errorCode"], "no_match", result)
 
     def test_laptop_round107_call24_css_control_reaches_the_measurement(self):
-        # site-1f5f2cf8 (call 24): the recorded role/name click matched nothing;
-        # the offered #showSoldOutBtn plan clicks and measures .sold-out-card.
+        # site-1f5f2cf8 (call 24): the recorded role/name click matched nothing
+        # (recorded receipt); with #6750 (integration) it matches the source-text
+        # name and the recorded plan itself reaches the measurement, as call 26
+        # did. The offered #showSoldOutBtn plan clicks and measures .sold-out-card.
         files, fixture = recorded_site("inspection-recovery-laptop-round107.json", 23)
         recorded = next(call for call in fixture["turns"][0]["calls"] if call["call"] == 24)
+        self.assertEqual(recorded["details"]["steps"][2]["errorCode"], "no_match")
         result = self.check(None, recorded["arguments"]["steps"], files)
-        self.assertEqual(result["steps"][2]["errorCode"], "no_match", result)
+        self.assertEqual([s["status"] for s in result["steps"]], ["passed", "passed", "passed", "failed"], result)
+        self.assertEqual(result["steps"][3]["errorCode"], "visibility_mismatch", result)
+        self.assertEqual(result["steps"][3]["before"]["display"], "none")
         card = ".sold-out-card"
         result = self.check(None, [step("assert-hidden", card), step("click", "#showSoldOutBtn"), step("assert-visible", card)], files)
         self.assertEqual([s["status"] for s in result["steps"]], ["passed", "passed", "failed"], result)
