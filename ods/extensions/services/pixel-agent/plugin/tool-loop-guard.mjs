@@ -6791,6 +6791,10 @@ export function createToolLoopGuard({
   // next owner message in that chat must start clean from.
   const sessionKeyRuns = new Map();
   const sessionCancellations = new Map();
+  // Output-limit continuations granted to the ingress, by session key: the
+  // owner message the continuation run is classified by. Only the chat's next
+  // owner turn takes one (outputLimitContinuationEvent).
+  const sessionOutputLimitContinuations = new Map();
   // Process-wide: a failed or timed-out stop synthesis pauses further ones.
   let stopSynthesisFailedAt = -Infinity;
   const pendingToolRuns = new Map();
@@ -6952,6 +6956,36 @@ export function createToolLoopGuard({
     sessionCancellations.delete(sessionKey);
     state.withdrawnOwnerRequest = record;
     state.completionAssurance.followWithdrawnRequest(record.ownerText);
+  }
+
+  // The ingress continuation message, alone or behind OpenClaw 2026.6.33's
+  // timestamp envelope ("[Fri 2026-09-25 18:33 EDT] ODS internal ...").
+  function outputLimitContinuationMessage(text) {
+    return text === OUTPUT_LIMIT_CONTINUATION_PROMPT ||
+      (text.endsWith(` ${OUTPUT_LIMIT_CONTINUATION_PROMPT}`) &&
+        /^\[[^\]\n]{1,80}\]$/.test(text.slice(0, -OUTPUT_LIMIT_CONTINUATION_PROMPT.length - 1)));
+  }
+
+  // The event a run is classified by (observeRun and the prompt contract).
+  // The ingress output-limit continuation carries only a fixed message. When
+  // it is the chat's next owner turn after a grant, it is classified as the
+  // owner message it continues, so it keeps that request's contract, routing
+  // and delivery checks; the model still receives only the fixed message.
+  function outputLimitContinuationEvent(context, agentId, event) {
+    const runId = context?.runId;
+    if (context?.agentId !== agentId || typeof runId !== "string" || !runId) return event;
+    const text = currentUserText(event?.messages, event?.prompt);
+    if (!text) return event;
+    const state = stateFor(runId);
+    if (state.outputLimitContinuation === undefined && ownerInteractiveTurn(context, agentId)) {
+      const granted = sessionOutputLimitContinuations.get(context.sessionKey);
+      sessionOutputLimitContinuations.delete(context.sessionKey);
+      state.outputLimitContinuation = granted && outputLimitContinuationMessage(text) ? granted : null;
+    }
+    const continuation = state.outputLimitContinuation;
+    if (!continuation || !outputLimitContinuationMessage(text)) return event;
+    state.outputLimitRetried = true;
+    return {...event, prompt: continuation.ownerText};
   }
 
   function rememberSessionPreview(sessionId, preview, state) {
@@ -7449,7 +7483,7 @@ export function createToolLoopGuard({
         params:normalizedParams ?? event?.params,root:state.configuredWorkspaceRoot,
         session:state.currentSessionKey ?? state.currentSessionId,intent:state.playgroundOwnerIntent,
         preserveExisting:state.workspaceVisualContinuationRequested && !state.workspaceTaskDirectory?.startsWith('Playground/'),
-        continueProject:state.workspaceVisualContinuationRequested,
+        continueProject:state.workspaceVisualContinuationRequested || state.outputLimitContinuation?.continueProject === true,
         existingPaths:[...state.successfulReadPaths]});
       if (projectRoute?.block) return projectRoute;
       if (projectRoute?.params) normalizedParams = projectRoute.params;
@@ -9326,8 +9360,12 @@ export function createToolLoopGuard({
       // The first attempt carries the owner's message; a later attempt of the
       // same run carries a harness retry prompt instead.
       if (ownerIntent) state.ownerRequestText ??= ownerIntent;
+      const ownerText = currentUserText(event?.messages, event?.prompt);
+      if (ownerText) state.outputLimitOwnerText ??= ownerText;
       takeOwnerCancellation(state, runId, context, agentId);
-      state.ownerChatUser = ownerChatUser(context, agentId);
+      // Tool-call hooks call this without the turn's trigger (OpenClaw
+      // 2026.6.33 buildToolContext has none); they keep the turn's chat user.
+      state.ownerChatUser = ownerChatUser(context, agentId) ?? state.ownerChatUser;
       // The ingress output-limit continuation is itself the owner turn's one
       // output-limit pass; neither route grants it another.
       if (currentUserText(event?.messages, event?.prompt).includes(OUTPUT_LIMIT_CONTINUATION_PROMPT)) {
@@ -12267,6 +12305,7 @@ export function createToolLoopGuard({
     promptContextForRun,
     replyPayloadSending,
     observeRun,
+    outputLimitContinuationEvent,
     observeModelCall,
     observeCompaction,
     observeAssistantMessage,
@@ -12308,9 +12347,12 @@ export function createToolLoopGuard({
     // ran after the cut. Consumed on grant. Cancelled, stopped, waiting and
     // host-operation, extension or exact-download turns keep the honest report:
     // their receipts, not a new model turn, decide what happens next.
+    // The grant is remembered for the chat's next owner turn, which the
+    // continuation run is classified by (outputLimitContinuationEvent).
     outputLimitContinuationForRun: (runId) => {
       const state = typeof runId === 'string' ? runs.get(runId) : undefined;
       if (!state?.outputLimitStop || state.outputLimitRetried || !state.ownerChatUser ||
+          !state.outputLimitOwnerText || typeof state.currentSessionKey !== 'string' || !state.currentSessionKey ||
           !state.ownerIntentObserved || state.managedTeamWorker || state.clientCancelled ||
           state.progressBudget.exhausted || state.recursiveDeleteDenied || state.webLoopAborted ||
           state.ownerQuestions || state.operationsRequired || state.operationsSubmittedJobs.size > 0 ||
@@ -12318,6 +12360,12 @@ export function createToolLoopGuard({
           state.exactDownloadRequested || mixedTaskVerificationForRun(runId).status === 'pending')
         return {schemaVersion:1, kind:'ods-output-limit-continuation', eligible:false};
       state.outputLimitRetried = true;
+      rememberBySessionKey(sessionOutputLimitContinuations, state.currentSessionKey, Object.freeze({
+        ownerText: state.outputLimitOwnerText,
+        // Files the cut run already wrote into its new Playground project stay
+        // the project the continuation writes to.
+        continueProject: Boolean(state.playgroundRouting?.binding),
+      }));
       return {schemaVersion:1, kind:'ods-output-limit-continuation', eligible:true, user:state.ownerChatUser};
     },
     continuationAllowed: (runId) => {

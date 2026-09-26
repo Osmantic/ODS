@@ -347,7 +347,10 @@ export default definePluginEntry({
     // OpenClaw does not replay arbitrary plugin tools after an empty model
     // continuation. Give the Pixel agent an explicit, trusted prompt contract
     // so every ODS lookup is followed by a user-visible answer.
-    api.on("before_prompt_build", async (event, context) => {
+    api.on("before_prompt_build", async (turnEvent, context) => {
+      // An ingress output-limit continuation is classified as the owner
+      // message it continues; the model still receives the fixed message.
+      const event = toolLoopGuard.outputLimitContinuationEvent(context, AGENT_ID, turnEvent);
       const privateBrowserAccess = privateBrowserAccessForAgent(api.config, AGENT_ID);
       const workspaceRoot = api.config?.agents?.list?.find(agent => agent.id === AGENT_ID)?.workspace
         ?? api.config?.agents?.defaults?.workspace;

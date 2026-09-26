@@ -398,23 +398,43 @@ byte-stable per host and sits before every per-request section. It limits one
 reply, not the size of the work.
 
 Recovery: delivery reports a final reply cut at the limit plainly.
-OpenClaw skips `before_agent_finalize` when such a reply is the whole turn, so
-for Portal turns the ingress asks `/pixel-ods/output-limit-continuation` after
-the completion. For an owner chat turn whose final reply was cut, that is not
-cancelled, stopped, waiting on questions or operations, and not a host
-operation, extension or exact-download request, Pixel grants one continuation
-bound to the chat user. The ingress then submits one new turn containing only
-the fixed `OUTPUT_LIMIT_CONTINUATION_PROMPT` (plus the request's trusted system
-messages); it never replays the owner's message or a tool. The continuation's
-run is never granted another pass, and a continuation cut again keeps the
-honest report. An owner turn gets at most one pass of any kind: the finalize
-revision when OpenClaw runs the hook, this continuation otherwise, and no
-output-limit continuation after another ingress continuation. An older plugin
-without the route leaves the report unchanged.
+OpenClaw skips `before_agent_finalize` when such a reply is the whole turn and
+returns its incomplete-turn text ("Agent couldn't generate a response", in
+either form), so for a Portal turn ending that way the ingress asks
+`/pixel-ods/output-limit-continuation`; an ordinary answer never reaches that
+route. For an owner chat turn whose final reply was cut (after earlier tool
+calls too), that is not cancelled, stopped, waiting on questions or
+operations, and not a host operation, extension or exact-download request,
+Pixel grants one continuation bound to the chat user. The ingress then submits
+one new turn containing only the fixed `OUTPUT_LIMIT_CONTINUATION_PROMPT` (plus
+the request's trusted system messages); it never replays the owner's message
+or a tool.
+
+Pixel classifies that continuation run as the owner message it continues
+(`outputLimitContinuationEvent`): the chat's next owner turn takes the grant,
+and when it is the fixed message it gets the owner request's prompt contract,
+routing and delivery checks, while the model still receives only the fixed
+message. A website request cut before its files exist is still checked as a
+website request; files the cut run wrote into a new Playground project stay
+that project. Any other next message, another chat or a non-owner run never
+uses the grant.
+
+The continuation's run is never granted another pass, and a continuation cut
+again keeps the honest report. If the gateway answers the continuation with a
+non-200 status, the owner receives the cut turn's report and a line saying the
+automatic continuation did not complete (it is not retried). A failed grant
+request or an invalid continuation response ends the turn with the ingress
+error, as the other ingress continuations do. An owner turn gets at most one
+pass of any kind: the finalize revision when OpenClaw runs the hook, this
+continuation otherwise, and no output-limit continuation after another ingress
+continuation. An older plugin without the route leaves the report unchanged.
+The continuation shares the owner turn's ingress timeout.
 
 `tests/output_limit_prevention.test.mjs`, `tests/output_limit_recovery.test.mjs`,
 `tests/output_limit_continuation.test.mjs` and the real-harness fixture
-`tests/runtime_output_limit_continuation.integration.mjs` cover these paths.
+`tests/runtime_output_limit_continuation.integration.mjs` (the real plugin and
+ingress, each cut case compared with the same model behaviour uncut) cover
+these paths.
 
 ## Owner cancellation
 

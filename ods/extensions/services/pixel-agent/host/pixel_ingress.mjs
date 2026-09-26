@@ -38,6 +38,11 @@ const MAX_VERIFICATION_TEXT = 32 * 1024;
 const MAX_VERIFICATION_RESPONSE = 1024 * 1024;
 const OPENAI_RUN_ID = /^chatcmpl_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const EMPTY_ASSISTANT_RESPONSE = "⚠️ Agent couldn't generate a response. Please try again.";
+// OpenClaw 2026.6.33's terminal text for an incomplete turn, which includes a
+// final reply cut at the output limit (resolveIncompleteTurnPayloadText). The
+// second form follows tool activity; either may follow a terminal tool summary.
+const INCOMPLETE_TURN_RESPONSES = [EMPTY_ASSISTANT_RESPONSE,
+  "⚠️ Agent couldn't generate a response. Note: some tool actions may have already been executed — please verify before retrying."];
 // One continuation turn after an owner turn whose final reply was cut at the
 // model output limit. Byte-identical to OUTPUT_LIMIT_CONTINUATION_PROMPT in the
 // plugin's output-limit-recovery.mjs, which recognizes the turn by it (tested).
@@ -1192,6 +1197,13 @@ async function maybeContinueUnfinishedExtensionDecision(completion, outgoing, to
   return recovered;
 }
 
+function isIncompleteTurnFailure(completion) {
+  const choice = completion?.choices?.length === 1 ? completion.choices[0] : undefined;
+  const content = choice?.message?.content;
+  return OPENAI_RUN_ID.test(completion?.id ?? '') && choice?.finish_reason === 'stop' && typeof content === 'string' &&
+    INCOMPLETE_TURN_RESPONSES.some(text => content === text || content.endsWith(`\n\n${text}`));
+}
+
 // Asks the plugin whether this completed run ended on a reply cut at the output
 // limit that may be continued once. An older plugin has no such route (404);
 // then, as for any refusal, the run's honest output-limit report stands.
@@ -1209,9 +1221,15 @@ async function outputLimitContinuationGranted(runId, user, token, gatewayPort, s
     Object.keys(proof).sort().join() === 'eligible,kind,schemaVersion,user' && proof.user === user;
 }
 
+// Returns {completion}, or {completion, failedStatus} when the gateway answered
+// the granted continuation with a non-200 status: then the owner turn's own
+// report is delivered, saying so (outputLimitContinuationFailure).
 async function maybeContinueOutputLimitTurn(completion, outgoing, token, gatewayPort, signal, deps) {
-  if (!await outputLimitContinuationGranted(completion?.id, outgoing.user, token, gatewayPort, signal, deps))
-    return completion;
+  // Only OpenClaw's incomplete-turn result can be a cut final reply; an
+  // ordinary answer never reaches the plugin route.
+  if (!isIncompleteTurnFailure(completion) ||
+      !await outputLimitContinuationGranted(completion.id, outgoing.user, token, gatewayPort, signal, deps))
+    return {completion};
   if (signal.aborted) throw new HttpError(503, 'output-limit continuation interrupted');
   // A new turn of the same chat with the same trusted system messages. It never
   // replays the owner's message or a tool; the plugin grants it once per turn
@@ -1223,7 +1241,11 @@ async function maybeContinueOutputLimitTurn(completion, outgoing, token, gateway
     method:'POST', headers:upstreamHeaders(false, token), body:JSON.stringify(continuation),
     redirect:'error', signal,
   });
-  if (upstream.status !== 200 || !String(upstream.headers.get('content-type') || '').toLowerCase().startsWith('application/json')) {
+  if (upstream.status !== 200) {
+    await drain(upstream.body);
+    return {completion, failedStatus:upstream.status};
+  }
+  if (!String(upstream.headers.get('content-type') || '').toLowerCase().startsWith('application/json')) {
     await drain(upstream.body);
     throw new HttpError(502, 'output-limit continuation unavailable');
   }
@@ -1232,7 +1254,19 @@ async function maybeContinueOutputLimitTurn(completion, outgoing, token, gateway
       !Array.isArray(recovered.choices) || recovered.choices.length !== 1 ||
       typeof recovered.choices[0]?.message?.content !== 'string')
     throw new HttpError(502, 'output-limit continuation invalid');
-  return recovered;
+  return {completion:recovered};
+}
+
+// The grant was used but the gateway did not complete the continuation (for
+// example it refused the request or the run failed). Deliver the cut turn's
+// report and say so; the continuation may have acted before failing. A failed
+// receipt carries neither passed-only field (see parseVerificationResponse).
+function outputLimitContinuationFailure(verification, failedStatus) {
+  if (failedStatus === undefined) return verification;
+  const { suppressStaleExecWarning, deliveryMode, ...evidence } = verification;
+  return {...evidence, status:'failed', text:[verification.text,
+    `Pixel's automatic continuation after the output limit did not complete (gateway HTTP ${failedStatus}). ` +
+    'Check the workspace before asking Pixel to continue.'].filter(Boolean).join('\n\n')};
 }
 
 async function forwardChat(res, outgoing, token, gatewayPort, deps = defaultDeps, hooks = {}, activeGatewayTransports = new Map()) {
@@ -1323,19 +1357,20 @@ async function forwardChat(res, outgoing, token, gatewayPort, deps = defaultDeps
           gatewayPort, controller.signal, deps);
         deliveryStage = "output-limit-continuation";
         // At most one continuation of any kind per owner turn.
-        if (completion === originalCompletion) {
-          completion = await maybeContinueOutputLimitTurn(completion, gatewayOutgoing, token,
-            gatewayPort, controller.signal, deps);
-        }
+        const continued = completion === originalCompletion
+          ? await maybeContinueOutputLimitTurn(completion, gatewayOutgoing, token,
+            gatewayPort, controller.signal, deps)
+          : {completion};
+        completion = continued.completion;
         completionRunId = completion?.id;
         deliveryStage = "verification";
-        const verification = deliveryVerification(completion, await verificationForRun(
+        const verification = outputLimitContinuationFailure(deliveryVerification(completion, await verificationForRun(
           completion?.id,
           token,
           gatewayPort,
           controller.signal,
           deps
-        ));
+        )), continued.failedStatus);
         await hooks.onComplete?.(completion,verification);
         deliveryStage = "delivery";
         res.end(completionSse(
@@ -1366,17 +1401,18 @@ async function forwardChat(res, outgoing, token, gatewayPort, deps = defaultDeps
       gatewayPort, controller.signal, deps);
     completion = await maybeContinueUnfinishedExtensionDecision(completion, gatewayOutgoing, token,
       gatewayPort, controller.signal, deps);
-    if (completion === originalCompletion) {
-      completion = await maybeContinueOutputLimitTurn(completion, gatewayOutgoing, token,
-        gatewayPort, controller.signal, deps);
-    }
-    const verification = deliveryVerification(completion, await verificationForRun(
+    const continued = completion === originalCompletion
+      ? await maybeContinueOutputLimitTurn(completion, gatewayOutgoing, token,
+        gatewayPort, controller.signal, deps)
+      : {completion};
+    completion = continued.completion;
+    const verification = outputLimitContinuationFailure(deliveryVerification(completion, await verificationForRun(
       completion?.id,
       token,
       gatewayPort,
       controller.signal,
       deps
-    ));
+    )), continued.failedStatus);
     await hooks.onComplete?.(completion,verification);
     const verifiedCompletion = applyVerificationToCompletion(completion, verification);
     const responseBody = verifiedCompletion === completion && completion === originalCompletion
