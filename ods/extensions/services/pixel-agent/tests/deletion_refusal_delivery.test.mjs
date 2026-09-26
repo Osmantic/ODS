@@ -192,7 +192,7 @@ test('tower2 replay: a refused rerun of the test is not a test result', async t 
   assert.equal(run.decisions[10].blockReason, RECURSIVE_DELETE_REQUIRES_OWNER_REASON);
   assert.deepEqual(await delivered(run), {status: 'passed', text: RECEIPT});
   // The same holds when the refused deletion itself carries a test command.
-  const combined = exec('refused-combined', 'rm -rf test_photos && python3 -m unittest -v', `/workspace/${PROJECT}`);
+  const combined = exec('refused-combined', 'rm -rf /workspace/test_manual && python3 -m unittest -v', `/workspace/${PROJECT}`);
   const chained = replay(t, [...CALLS.slice(0, 9), combined]);
   assert.equal(chained.decisions[9].blockReason, RECURSIVE_DELETE_REQUIRES_OWNER_REASON);
   assert.deepEqual(await delivered(chained), {status: 'passed', text: RECEIPT});
