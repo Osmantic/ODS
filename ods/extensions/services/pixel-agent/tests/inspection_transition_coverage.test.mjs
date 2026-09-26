@@ -571,3 +571,134 @@ test('the registered inspection tool asks the run guard about exactly its own ca
   assert.deepEqual(asked.slice(1), [['publication', 'call-2', flat]]);
   assert.match(rejected.content[0].text, /with exactly these args/);
 });
+
+// Tower2 round 108 (Qwen3-Coder-Next; main d4a61f33 + #6741 + #6747, whose
+// proof retention is main's): assert-hidden(heading), click("#soldOutBtn"),
+// assert-visible(heading) passed on snapshot f120c3cf. The model then inspected
+// that snapshot again with assert-visible("h1"), click("#soldOutBtn"),
+// assert-visible(heading), which passed with a click but no transition. That
+// pass dropped the earlier proof, and the owner got "The requested show/hide
+// interaction has not passed browser inspection."
+const ROUND108 = load('transition-proof-tower2-round108.json');
+const ROUND108_SESSION = {sessionId: '66c4948b-fde8-4720-8066-7f39e195feb1',
+  sessionKey: 'agent:pixel:openai-user:ods-369d55efd865b50e8de53472cfa5e931a5f9108057ceb2d41937838d4ba04483'};
+const [, , ROUND108_PUBLISH] = calls(ROUND108, 'pixel_ods_workspace_preview');
+const [ROUND108_VISIBLE, ROUND108_NO_MATCH, ROUND108_TRANSITION, ROUND108_LATER] = calls(ROUND108, PREVIEW_INSPECTION_TOOL);
+const SOLD_OUT = {selector: '#soldOutBtn'}, CARD = {selector: '#midnightCard'};
+const OWNER_HEADING = {role: 'heading', name: OWNER_PHRASE, exact: true};
+// The republished page: .event-card.hidden {display:none} until the click
+// removes .hidden from #midnightCard; the button then hides itself.
+const ROUND108_PAGE = {
+  before: page([[{selector: 'h1'}, 'visible'], [SOLD_OUT, 'visible'], [CARD, 'hidden'], [OWNER_HEADING, 'hidden']]),
+  after: page([[{selector: 'h1'}, 'visible'], [SOLD_OUT, 'hidden'], [CARD, 'visible'], [OWNER_HEADING, 'visible']]),
+};
+// One recorded read names index.html by its host path; the replay workspace is temporary.
+const HOST_WORKSPACE = /^\/home\/[^/]+\/\.openclaw\/workspace-pixel\//;
+const inReplayWorkspace = call => HOST_WORKSPACE.test(call.arguments.path ?? '')
+  ? {...call, arguments: {...call.arguments, path: call.arguments.path.replace(HOST_WORKSPACE, '')}} : call;
+// Replays the recorded create turn up to (not including) `stop`.
+async function replayRound108(t, stop, model = ROUND108_PAGE) {
+  const r = replay(t, ROUND108, model, ROUND108_SESSION);
+  const [create] = ROUND108.turns;
+  r.begin(create);
+  const results = new Map();
+  for (const call of create.calls) {
+    if (call === stop) break;
+    const result = await r.run(inReplayWorkspace(call));
+    if (result) results.set(call, result);
+  }
+  return {r, create, results};
+}
+
+test('tower2 round 108: a later passing check with a click keeps the transition proof of the same snapshot', async t => {
+  const {r, create, results} = await replayRound108(t, ROUND108_LATER);
+  for (const recorded of [ROUND108_VISIBLE, ROUND108_NO_MATCH, ROUND108_TRANSITION]) {
+    assert.equal(results.get(recorded).content[0].text, recorded.text, `byte-identical to the recorded ${recorded.details.status} result`);
+  }
+  assert.equal(ROUND108_TRANSITION.arguments.sha256, ROUND108_PUBLISH.details.sha256);
+  assert.equal(r.verification().status, 'passed');
+  const later = await r.run(ROUND108_LATER);
+  assert.equal(ROUND108_LATER.arguments.sha256, ROUND108_PUBLISH.details.sha256, 'the same snapshot');
+  assert.equal(later.content[0].text, ROUND108_LATER.text, 'byte-identical to the recorded result');
+  assert.match(later.content[0].text, /^Preview inspection passed\. Only the listed steps passed; no show\/hide transition was tested\./);
+  const outcome = r.verification();
+  assert.equal(outcome.status, 'passed');
+  assert.ok(create.delivered.startsWith('The requested show/hide interaction has not passed browser inspection.'));
+  assert.notEqual(outcome.text, create.delivered, 'not the recorded delivery');
+  assert.ok(outcome.text.startsWith('Browser inspection passed for the submitted show/hide checks only; ' +
+    'this does not verify all requested behavior.\n\n'), outcome.text);
+  assert.equal(outcome.preview.sha256, ROUND108_PUBLISH.details.sha256);
+  assert.equal(r.guard.beforeAgentFinalize({}, {agentId: 'pixel', ...ROUND108_SESSION, runId: create.runId}), undefined);
+});
+
+test('tower2 round 108: a later failed transition of the target, a republication or a new session still revokes that proof', async t => {
+  {
+    // A page on which the click leaves the card hidden at another width.
+    const HEADING_CSS = {selector: '#midnightCard h3'}, BUTTON_CSS = {selector: 'button#soldOutBtn'};
+    const unrevealed = {
+      before: page([[{selector: 'h1'}, 'visible'], [SOLD_OUT, 'visible'], [BUTTON_CSS, 'visible'], [CARD, 'hidden'],
+        [OWNER_HEADING, 'hidden'], [HEADING_CSS, 'hidden']]),
+      after: page([[{selector: 'h1'}, 'visible'], [SOLD_OUT, 'hidden'], [BUTTON_CSS, 'hidden'], [CARD, 'hidden'],
+        [OWNER_HEADING, 'hidden'], [HEADING_CSS, 'hidden']])};
+    const {r} = await replayRound108(t, undefined, unrevealed);
+    assert.equal(r.verification().status, 'passed');
+    const desktop = {...ROUND108_TRANSITION.arguments, viewport: {width: 1280, height: 720}};
+    const failed = await r.inspect({...desktop, steps: [{action: 'assert-hidden', locator: CARD},
+      {action: 'click', locator: SOLD_OUT}, {action: 'assert-visible', locator: CARD}]}, 'failed-transition');
+    assert.equal(failed.details.status, 'failed');
+    assert.equal(failed.details.steps[2].errorCode, 'visibility_mismatch');
+    assert.equal(r.verification().status, 'failed');
+    assert.match(r.verification().text, /^The requested show\/hide interaction has not passed browser inspection\./);
+    // Without a proof, the recorded later plan is incomplete, not a pass.
+    const later = await r.inspect(ROUND108_LATER.arguments, 'later-without-proof');
+    assert.equal(later.details.status, 'incomplete');
+    assert.equal(r.verification().status, 'failed');
+    await r.inspect(ROUND108_TRANSITION.arguments, 'transition-again');
+    assert.equal(r.verification().status, 'passed');
+    // A passing check that the proved click left the proved target hidden
+    // tested that change, and it failed.
+    const unchanged = await r.inspect({...desktop, steps: [{action: 'assert-hidden', locator: OWNER_HEADING},
+      {action: 'click', locator: SOLD_OUT}, {action: 'assert-hidden', locator: OWNER_HEADING}]}, 'unchanged-target');
+    assert.equal(unchanged.details.status, 'passed');
+    assert.equal(r.verification().status, 'failed');
+    // The same failed change under other locators, which the model switches
+    // between plans (role/name, then "#soldOutBtn" here), at either width:
+    // the card that holds the heading, the heading by CSS, the button by
+    // another selector. Review of #6754.
+    const mobile = ROUND108_TRANSITION.arguments;
+    for (const [id, args, steps] of [
+      ['card', desktop, [{action: 'assert-hidden', locator: CARD}, {action: 'click', locator: SOLD_OUT}, {action: 'assert-hidden', locator: CARD}]],
+      ['heading-css', mobile, [{action: 'click', locator: SOLD_OUT}, {action: 'assert-hidden', locator: HEADING_CSS}]],
+      ['button-css', mobile, [{action: 'click', locator: BUTTON_CSS}, {action: 'assert-hidden', locator: OWNER_HEADING}]],
+    ]) {
+      await r.inspect(ROUND108_TRANSITION.arguments, `transition-before-${id}`);
+      assert.equal(r.verification().status, 'passed');
+      const aliased = await r.inspect({...args, steps}, `unchanged-${id}`);
+      assert.equal(aliased.details.status, 'passed', id);
+      assert.equal(r.verification().status, 'failed', id);
+    }
+  }
+  {
+    const {r, create} = await replayRound108(t);
+    const write = create.calls.filter(call => call.tool === 'write').at(-1);
+    const content = write.arguments.content.replace('--sold-out-bg: rgba(220, 20, 60, 0.2);', '--sold-out-bg: rgba(220, 20, 60, 0.25);');
+    assert.notEqual(content, write.arguments.content);
+    await r.run({...write, id: 'rewrite', arguments: {...write.arguments, content}});
+    const sha256 = digest({'index.html': content}), siteId = `site-${sha256.slice(0, 24)}`;
+    await r.run({...ROUND108_PUBLISH, id: 'republish', details: {...ROUND108_PUBLISH.details, sha256, siteId,
+      url: `http://${siteId}.localhost:9437/${siteId}/`, bytes: Buffer.byteLength(content),
+      entrySha256: createHash('sha256').update(content).digest('hex')}});
+    assert.equal(r.verification().status, 'failed');
+    assert.equal(r.verification().preview.sha256, sha256);
+    // The earlier snapshot's proof does not cover the new one.
+    const later = await r.inspect({...ROUND108_LATER.arguments, siteId, sha256}, 'later-new-snapshot');
+    assert.equal(later.details.status, 'incomplete');
+    assert.equal(r.verification().status, 'failed');
+  }
+  {
+    const {r, create} = await replayRound108(t);
+    assert.equal(r.verification().status, 'passed');
+    r.guard.observeRun({agentId: 'pixel', ...ROUND108_SESSION, sessionId: 'another-session', runId: create.runId}, 'pixel', {prompt: create.prompt});
+    assert.equal(r.verification().status, 'failed');
+  }
+});

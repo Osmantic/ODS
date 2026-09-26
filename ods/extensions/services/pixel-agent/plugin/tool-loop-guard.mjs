@@ -37,7 +37,7 @@ import { canonicalWorkspaceParams, extensionlessHtmlWrite, workspaceFileParent, 
 import { routePlaygroundTool, requestsNewPlaygroundProject } from "./playground-projects.mjs";
 import { workspaceMutationFiles } from "./workspace-projects.mjs";
 import {WORKSPACE_BUNDLE_TOOL, normalizeWorkspaceBundle} from './workspace-bundle.mjs';
-import { PREVIEW_INSPECTION_TOOL, requestsVisibilityInteraction, requestsBehaviorPreservation, boundVisibilityInspection, boundStaticPreviewInspection,
+import { PREVIEW_INSPECTION_TOOL, requestsVisibilityInteraction, requestsBehaviorPreservation, boundVisibilityInspection, preservesVisibilityInspection,
   boundInspectionPageErrors, boundInspectionControls, pageErrorRepairInstruction, visibilityInspectionMatches,
   visibilityInspectionInstruction, requestedVisibilityTransition, inheritedVisibilityTransition } from './preview-interaction-assurance.mjs';
 import { correctedInspectionArgs } from './workspace-preview-inspect.mjs';
@@ -10093,15 +10093,17 @@ export function createToolLoopGuard({
       const inspected = toolName === PREVIEW_INSPECTION_TOOL ? event
         : toolSearchEventEnvelope(event, PREVIEW_INSPECTION_TOOL, 'pixel-ods');
       if (inspected && isDeepStrictEqual(inspected.params, pendingToolRun.selectedParams)) {
-        // A successful read-only check of the same snapshot does not erase an
-        // earlier interaction check. Failed or unbound receipts still revoke it.
+        // A later passing check of the same snapshot, with or without a click,
+        // keeps an earlier transition unless something it asserted after a
+        // click may be a proved target in the other state, under any locator.
+        // Failed, incomplete or unbound receipts still revoke it.
         const proof = !failedToolOutcome(event)
           ? boundVisibilityInspection(inspected.params, inspected.result, state.workspacePreview) : undefined;
         const priorProof = pendingToolRun.priorVisibilityInspection;
         const retainInteraction = !failedToolOutcome(event) &&
           visibilityInspectionMatches(priorProof, state.workspacePreview) &&
           priorProof.sessionId === state.currentSessionId && priorProof.sessionKey === state.currentSessionKey &&
-          boundStaticPreviewInspection(inspected.params, inspected.result, state.workspacePreview);
+          preservesVisibilityInspection(priorProof, inspected.params, inspected.result, state.workspacePreview);
         state.workspaceVisibilityInspection = proof ? Object.freeze({...proof,
           sessionId: state.currentSessionId, sessionKey: state.currentSessionKey})
           : retainInteraction ? priorProof : undefined;
