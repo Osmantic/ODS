@@ -43,11 +43,17 @@ function docker {
     $script:dockerCalls.Add($line)
     $global:LASTEXITCODE = 0
     switch -Regex ($line) {
-        '^compose .*down' { $script:containers.Clear(); $script:networks.Remove('ods-network') | Out-Null; foreach ($v in @($script:composeVolumes)) { $script:volumes.Remove($v) | Out-Null }; return }
-        '^ps -aq --filter' { return @($script:containers) }
-        '^network ls -q --filter' { return @($script:networks) }
+        '^compose .*down' { foreach ($c in @($script:containers)) { if ($c -ne $script:composeDownKeeps) { $script:containers.Remove($c) | Out-Null } }; $script:networks.Remove('ods-network') | Out-Null; foreach ($v in @($script:composeVolumes)) { $script:volumes.Remove($v) | Out-Null }; return }
+        '^ps -a --filter \S+ --format \{\{\.Names\}\}$' { return @($script:containers) }
+        '^network ls --filter \S+ --format \{\{\.Name\}\}$' { return @($script:networks) }
         '^volume ls -q --filter' { return @($script:volumes) }
-        '^rm -f ' { $script:containers.Clear(); return }
+        '^rm -f ' {
+            foreach ($c in @($args[2..($args.Count - 1)])) {
+                if ($c -in $script:busyContainers) { $global:LASTEXITCODE = 1; continue }
+                $script:containers.Remove($c) | Out-Null
+            }
+            return
+        }
         '^network rm ' { foreach ($n in @($args[2..($args.Count - 1)])) { $script:networks.Remove($n) | Out-Null }; return }
         '^volume rm ' {
             foreach ($v in @($args[2..($args.Count - 1)])) {
@@ -60,7 +66,7 @@ function docker {
     }
 }
 
-function Reset-Docker([string[]]$ExtraVolumes, [string[]]$Busy = @()) {
+function Reset-Docker([string[]]$ExtraVolumes, [string[]]$Busy = @(), [string[]]$BusyContainers = @()) {
     $script:output = [Collections.Generic.List[string]]::new()
     $script:dockerCalls = [Collections.Generic.List[string]]::new()
     $script:containers = [Collections.Generic.List[string]]::new(); $script:containers.Add('ods-dashboard-api')
@@ -69,6 +75,7 @@ function Reset-Docker([string[]]$ExtraVolumes, [string[]]$Busy = @()) {
     $script:volumes = [Collections.Generic.List[string]]::new()
     foreach ($v in @($script:composeVolumes + $ExtraVolumes)) { if ($v) { $script:volumes.Add($v) } }
     $script:busyVolumes = $Busy
+    $script:busyContainers = $BusyContainers
     $script:dirRemoved = $false
 }
 
@@ -90,6 +97,15 @@ try {
     try { Invoke-Uninstall -UninstallArgs @('--force') } catch { $message = $_.Exception.Message }
     Check ($message -eq 'ODS_UNINSTALL_DOCKER_CLEANUP_INCOMPLETE' -and -not $script:dirRemoved) 'volume that cannot be removed keeps the runtime for recovery'
     Check ($script:output -contains '  still present: ods_open-webui-data') 'incomplete cleanup names the remaining resource'
+
+    # Names, not IDs: a container compose down could not remove is listed by name.
+    Reset-Docker @() @() @('ods-legacy-worker')
+    $script:containers.Add('ods-legacy-worker')
+    $script:composeDownKeeps = 'ods-legacy-worker'
+    $message = ''
+    try { Invoke-Uninstall -UninstallArgs @('--force') } catch { $message = $_.Exception.Message }
+    Check ($message -eq 'ODS_UNINSTALL_DOCKER_CLEANUP_INCOMPLETE' -and $script:output -contains '  still present: ods-legacy-worker') 'a container that cannot be removed is named in the message'
+    $script:composeDownKeeps = $null
 
     Reset-Docker @('ods_open-webui-data')
     Invoke-Uninstall -UninstallArgs @('--force', '--keep-data')
