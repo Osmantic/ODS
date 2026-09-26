@@ -651,10 +651,11 @@ export function routePlaygroundTool({state,tool,params,root,session,intent,exist
       if (value && !value.startsWith('Playground/') && (mutation || !value.includes('/') || LOCAL_FOLDERS.test(value.split('/')[0]))) return `${directory}/${value}`;
       return undefined;
     };
-    // A rooted /<source> spelling of this bound project routes like <source>.
-    // Any other rooted path keeps the ordinary routing below.
+    // A rooted /<source> spelling of this bound project routes like <source>,
+    // unless the model already read that rooted path as written. Any other
+    // rooted path keeps the ordinary routing below.
     const rootedSource = value => {
-      const rooted = rootedProjectPath(value,root);
+      const rooted = existingPaths.includes(value) ? null : rootedProjectPath(value,root);
       return rooted === source || rooted?.startsWith(`${source}/`) ? rooted : null;
     };
     if (selected.tool === 'apply_patch') {

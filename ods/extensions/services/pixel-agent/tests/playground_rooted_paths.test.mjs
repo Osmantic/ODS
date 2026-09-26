@@ -238,6 +238,8 @@ test('later calls route a rooted spelling of the bound project only; other roote
       ['read', {path:`/${collision ? 'snake-game-2' : 'snake-game-x'}/index.html`}], ['pixel_ods_workspace_preview', {relativeDirectory:'/other-game'}],
       ['exec', {command:'ls', workdir:'/tmp'}],
     ]) assert.equal(call(tool, params), undefined, `${tool} ${JSON.stringify(params)}`);
+    // A rooted path the model already read as written stays exact.
+    assert.equal(call('read', {path:'/snake-game/notes.txt'}, {existingPaths:['/snake-game/notes.txt']}), undefined);
     assert.equal(call('apply_patch', {input:'*** Begin Patch\n*** Add File: /other-game/x.js\n+x\n*** End Patch'}).block, true);
     assert.deepEqual(fs.readdirSync(path.join(root, 'Playground')).sort(), collision ? ['snake-game', 'snake-game-2'] : ['snake-game']);
   }
