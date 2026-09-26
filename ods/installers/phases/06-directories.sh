@@ -1749,4 +1749,9 @@ SEARXNG_EOF
     unset _searxng_lang
 fi
 
+# Clean up local phase 06 variables
+unset _phase06_rootless _phase06_rootless_state _env_existing _phase06_compose_uid _phase06_compose_gid
+unset _cant_write _retired_odsforge_dir _ext_lib_src _device_default _raw_hn _hn _default_stt_model
+unset LEMONADE_EXTERNAL_VALUE LEMONADE_API_BASE_PATH_VALUE LEMONADE_BASE_URL_VALUE LEMONADE_CONTAINER_BASE_URL_VALUE
+
 # Documentation, CLI tools, and compose variants already copied by rsync/cp block above
