@@ -480,6 +480,37 @@ test('owner cancellation and terminal fuses keep precedence over the wrapped con
   }
 });
 
+// Reviewer probe rr6747-extra: the full exact-download request. Wrapped
+// discovery is answered with its direct route and aborts nothing; wrapped
+// execution keeps the exact-download refusal and then its loop abort.
+test('an exact-download request answers wrapped discovery and keeps refusing wrapped execution', () => {
+  const url = 'https://raw.githubusercontent.com/psf/requests/dae7ef63b4df6eded86637f251fc4e3a06c3b479/src/requests/api.py';
+  const prompt = `Download the public source file ${url} into release-2663/requests-source/api.py without changing its bytes. ` +
+    'Use the local file to report the exact get() and request() signatures and their starting line numbers in release-2663/requests-source/review.md. ' +
+    'Verify quotations from the saved source. Do not execute repository code or install dependencies. ' +
+    'Keep existing projects untouched; if exact-byte download is unavailable, say so rather than manufacturing a substitute.';
+  const refused = [EXACT_DOWNLOAD_REQUIRES_BROKER_REASON, EXACT_DOWNLOAD_LOOP_ABORT_REASON, EXACT_DOWNLOAD_LOOP_ABORT_REASON];
+  for (const [label, params, expected, abortCount] of [
+    ['describe read', {id: 'tool_describe', args: {id: 'read'}}, null, 0],
+    ['search', {id: 'tool_search', args: {query: 'x'}}, null, 0],
+    ['search code', {id: 'tool_search_code', args: {code: 'return 1'}}, refused, 2],
+    ['nested call', {id: 'tool_call', args: {id: 'tool_call', args: {id: 'read', args: {path: 'x'}}}}, refused, 2],
+  ]) {
+    const aborts = [];
+    const guard = createToolLoopGuard({abortRun: id => { aborts.push(id); return true; }});
+    const context = {agentId: 'pixel', runId: 'run-1', sessionId: 'session-1'};
+    guard.observeRun(context, 'pixel', {prompt});
+    for (let i = 0; i < 3; i++) {
+      const decision = guard.beforeToolCall({toolName: 'tool_call', params, toolCallId: `c${i}`},
+        {...context, toolName: 'tool_call', toolCallId: `c${i}`});
+      assert.equal(decision?.block, true, `${label} ${i}`);
+      if (expected) assert.equal(decision.blockReason, expected[i], `${label} ${i}`);
+      else assert.match(decision.blockReason, / is its own tool, not a tool_call id\. /, `${label} ${i}`);
+    }
+    assert.equal(aborts.length, abortCount, label);
+  }
+});
+
 test('a tool that the owner\'s request excludes is never offered as a direct route', () => {
   const guard = createToolLoopGuard();
   const context = {agentId: 'pixel', runId: 'run-1', sessionId: 'session-1', toolName: 'tool_call'};

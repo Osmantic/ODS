@@ -180,8 +180,10 @@ test('an owner\'s existing hidden directory is copied, never moved, before publi
   assert.doesNotMatch(read.text,/the directory name the owner asked for/);
   assert.ok(read.text.includes("into a directory that meets this rule within the owner's requested scope (for a hidden directory, the same name without its leading dot)"),read.text);
   assert.notEqual(invoke('exec',{command:'cp -r .mysite mysite'},success('')).prepared?.block,true);
+  // A command made the copy, so no step names it; the model publishes it by
+  // name, as the copy step says.
   const copied=invoke('read',{path:'mysite/index.html'},success(PAGE));
-  assert.ok(copied.text.includes('Call pixel_ods_workspace_preview with args {"relativeDirectory":"mysite"}. '),copied.text);
+  assert.doesNotMatch(copied.text,/"relativeDirectory"/);
   assert.notEqual(invoke('pixel_ods_workspace_preview',{relativeDirectory:'mysite'},success('published')).prepared?.block,true);
 });
 
@@ -213,8 +215,8 @@ test('the finalize revision never names an unpublishable directory',()=>{
 // tool_describe answer and the finalize revision each named fleet-site-old,
 // finalize stored it as the publication default, an argumentless publication
 // was admitted as fleet-site-old, and the owner was told "Your preview is
-// ready" for bytes this run never wrote. A visible directory now stands in for
-// a hidden one only as this run's copy of it.
+// ready" for bytes this run never wrote. Guidance now names a directory for
+// publication only when this run wrote its index.html with write or edit.
 const WEBSITE='Create a small static website in fleet-site with an index.html. It has a "Show sold out" button that reveals a hidden card. Publish it as a Workbench preview and check the show/hide interaction.';
 const OLD_SITE='<!doctype html><html><head><title>Harbor Lights</title></head><body><h1>Harbor Lights</h1><p>last round</p></body></html>';
 const NEW_SITE='<!doctype html><html><head><title>Harbor Lights</title></head><body><h1>Harbor Lights</h1><p>this round</p></body></html>';
@@ -297,14 +299,14 @@ for(const inspection of [true,false]) test(`an earlier round's site that was onl
 });
 
 // The same with a finalize revision between the read and the hidden write.
-// At that point the earlier site is the only entry seen and is named, as
-// before; but a directory only read is never stored as the argumentless
-// default, so the later hidden write does not leave it steering publication.
+// The earlier site is then the only entry seen, but this run only read it:
+// it is neither named nor stored as the argumentless default, so the later
+// hidden write does not leave it steering publication.
 test('a finalize revision before the hidden write leaves no earlier site as the publication default',t=>{
   const r=siteRun(t);
   r.disk('fleet-site-old/index.html',OLD_SITE);
   r.read('fleet-site-old/index.html');
-  assert.equal(r.finalize(),FINALIZE_PUBLISH('fleet-site-old'));
+  assert.doesNotMatch(r.finalize(),/"relativeDirectory"|fleet-site-old/);
   const written=r.write('.fleet-site/index.html',NEW_SITE);
   const argless=r.publish({});
   assert.equal(argless.decision?.block,true,JSON.stringify(argless.decision));
@@ -320,56 +322,106 @@ test('a finalize revision before the hidden write leaves no earlier site as the 
   assert.deepEqual(own.publish({}).admitted,{relativeDirectory:'fleet-site'});
 });
 
-test('a visible copy of the hidden site is named once this run writes it or reads back its bytes',t=>{
-  // cp -r, then a read of the copy: the bytes match the hidden entry.
+// Re-verification of #6747 at 869a1dc9: a visible directory counted as this
+// run's copy of the hidden site when its index.html matched the hidden one
+// byte for byte. An earlier round's site with the same index.html (a split
+// page's boilerplate) was named, published and delivered as ready with that
+// round's styles.css. No directory is inferred to be a copy any more: a
+// directory that a command copied, or that was only read, is never named or
+// made the default; the model publishes it by name. One whose index.html this
+// run wrote with write or edit is named, as before.
+test('a visible directory is named for a hidden site only when this run writes its index.html',t=>{
+  // cp -r, then a read of the copy: the copy step stays, and names nothing.
   const copied=siteRun(t);
   copied.disk('fleet-site-old/index.html',OLD_SITE);
   copied.read('fleet-site-old/index.html');
   copied.write('.fleet-site/index.html',NEW_SITE);
   assert.notEqual(copied.copy('.fleet-site','fleet-site').decision?.block,true);
   const readback=copied.read('fleet-site/index.html');
-  assert.ok(readback.text.includes(PUBLISH_STEP('fleet-site')),readback.text);
-  assert.equal(copied.describePublish(),`${DESCRIBE_PUBLISH} with args {"relativeDirectory":"fleet-site"}.`);
-  assert.equal(copied.finalize(),FINALIZE_PUBLISH('fleet-site'));
-  // Finalize names the copy but never stores it as the argumentless default.
+  assert.doesNotMatch(readback.text,/"relativeDirectory"/);
+  assert.equal(copied.describePublish(),`${DESCRIBE_PUBLISH}.`);
+  assert.equal(copied.finalize(),FINALIZE_COPY);
   assert.equal(copied.publish({}).decision?.block,true);
+  // Published by name, the copy is admitted and verified.
   assert.notEqual(copied.publish({relativeDirectory:'fleet-site'}).decision?.block,true);
   assert.equal(copied.guard.verificationForRun('guided-run').preview?.relativeDirectory,'fleet-site');
 
-  // The earlier site overwritten with the new bytes is that copy too.
+  // The earlier site overwritten on disk with the new bytes, then read: not named.
   const overwritten=siteRun(t);
   overwritten.disk('fleet-site-old/index.html',OLD_SITE);
   overwritten.read('fleet-site-old/index.html');
   overwritten.write('.fleet-site/index.html',NEW_SITE);
   overwritten.disk('fleet-site-old/index.html',NEW_SITE);
   const reread=overwritten.read('fleet-site-old/index.html');
-  assert.ok(reread.text.includes(PUBLISH_STEP('fleet-site-old')),reread.text);
+  assert.doesNotMatch(reread.text,/"relativeDirectory"/);
+  assert.equal(overwritten.finalize(),FINALIZE_COPY);
 
-  // Written by this run after the hidden entry: named, whatever its bytes.
+  // Written by this run with write: named, and the default of an
+  // argumentless publication.
   const rewritten=siteRun(t);
   rewritten.disk('fleet-site-old/index.html',OLD_SITE);
   rewritten.read('fleet-site-old/index.html');
   rewritten.write('.fleet-site/index.html',NEW_SITE);
   const own=rewritten.write('fleet-site/index.html',NEW_SITE.replace('this round','today'));
   assert.ok(own.text.includes(PUBLISH_STEP('fleet-site')),own.text);
+  assert.equal(rewritten.describePublish(),`${DESCRIBE_PUBLISH} with args {"relativeDirectory":"fleet-site"}.`);
   assert.equal(rewritten.finalize(),FINALIZE_PUBLISH('fleet-site'));
+  assert.deepEqual(rewritten.publish({}).admitted,{relativeDirectory:'fleet-site'});
 });
 
-test('a copy stops standing in once the hidden site changes after it',t=>{
-  const r=siteRun(t);
-  r.write('.fleet-site/index.html',NEW_SITE);
-  r.copy('.fleet-site','fleet-site');
-  r.read('fleet-site/index.html');
-  // Another visible entry, only read and with other bytes, is never a copy.
-  r.disk('notes/index.html','<!doctype html><title>notes</title>');
-  r.read('notes/index.html');
-  assert.equal(r.finalize(),FINALIZE_PUBLISH('fleet-site'));
-  const changed=r.write('.fleet-site/index.html',NEW_SITE.replace('this round','revised'));
-  assert.ok(changed.text.includes(UNPUBLISHABLE_PREVIEW_DIRECTORY_STEP),changed.text);
-  assert.equal(r.finalize(),FINALIZE_COPY);
-  r.copy('.fleet-site','fleet-site');
-  const recopied=r.read('fleet-site/index.html');
-  assert.ok(recopied.text.includes(PUBLISH_STEP('fleet-site')),recopied.text);
+// The reviewer's probe: the earlier round's site has the same index.html as
+// this run's hidden site but its own styles.css. With the probe's own request
+// the hidden writes are refused (a new project belongs under Playground), so
+// the earlier site is the only entry seen; with WEBSITE they are admitted.
+// Either way, read before or after the hidden writes and with the same or a
+// different index.html, the earlier site is never named, never the default
+// and never delivered as ready. Published by name beside the admitted hidden
+// site, it is still admitted (publishing an existing site is supported).
+const SPLIT_INDEX='<!doctype html><html><head><meta charset="utf-8"><title>Fleet site</title><link rel="stylesheet" href="styles.css"><script src="script.js" defer></script></head><body><main id="app"></main></body></html>\n';
+const PROBE_PROMPTS={refused:'Create a small static website in fleet-site with index.html, styles.css and script.js, with a forest theme. Publish it as a Workbench preview.',
+  admitted:WEBSITE};
+for(const [writes,prompt] of Object.entries(PROBE_PROMPTS)) for(const sameIndex of [true,false]) for(const readLast of [false,true])
+test(`an earlier site is never named for a hidden site (hidden writes ${writes}, same index ${sameIndex}, read ${readLast?'after':'before'} them)`,t=>{
+  const r=siteRun(t,{prompt,inspection:false});
+  r.disk('fleet-site-old/index.html',sameIndex?SPLIT_INDEX:SPLIT_INDEX.replace('Fleet site','Fleet site (ocean)'));
+  r.disk('fleet-site-old/styles.css','body{background:#123;color:#fff} /* last round: ocean theme */\n');
+  r.disk('fleet-site-old/script.js','/* old */\n');
+  if(!readLast)r.read('fleet-site-old/index.html');
+  const steps=[r.write('.fleet-site/index.html',SPLIT_INDEX),
+    r.write('.fleet-site/styles.css','body{background:#0b3d20;color:#e8f5e9} /* this round: forest theme */\n'),
+    r.write('.fleet-site/script.js','document.body.dataset.theme="forest";\n')];
+  assert.equal(steps[0].decision?.block===true,writes==='refused',steps[0].text);
+  if(readLast)steps.push(r.read('fleet-site-old/index.html'));
+  for(const step of steps)assert.doesNotMatch(step.text,/"relativeDirectory"|fleet-site-old/,step.text);
+  if(writes==='admitted')assert.ok(steps[0].text.includes(UNPUBLISHABLE_PREVIEW_DIRECTORY_STEP),steps[0].text);
+  assert.equal(r.describePublish(),`${DESCRIBE_PUBLISH}.`);
+  const finalized=r.finalize();
+  assert.doesNotMatch(finalized,/"relativeDirectory"|fleet-site-old/);
+  if(writes==='admitted')assert.equal(finalized,FINALIZE_COPY);
+  const argless=r.publish({});
+  assert.equal(argless.decision?.block,true,JSON.stringify(argless.decision));
+  assert.notEqual(r.guard.verificationForRun('guided-run')?.status,'passed');
+  assert.doesNotMatch(String(r.guard.deliveryVerificationForRun('guided-run')?.text),/Your preview is ready/);
+  if(writes==='admitted')assert.notEqual(r.publish({relativeDirectory:'fleet-site-old'}).decision?.block,true);
+});
+
+// Reviewer probe rr6747-extra: the owner's own hidden site, only read. Each
+// restriction keeps its own step, and neither the step, the finalize
+// revision nor the wrapped tool_describe answer names a directory.
+test('an owner\'s hidden site that was only read is never named, whatever the owner excluded',t=>{
+  for(const [prompt,step] of [
+    ['Publish my existing site in the .mysite folder as a Workbench preview. Do not change any files.',UNPUBLISHABLE_RESTRICTED_PREVIEW_DIRECTORY_STEP],
+    ['Publish the existing .mysite folder as a Workbench preview. Do not run any commands.',UNPUBLISHABLE_RESTRICTED_PREVIEW_DIRECTORY_STEP],
+    ['Publish my existing site in the .mysite folder as a Workbench preview. Do not rebuild it.',UNPUBLISHABLE_PREVIEW_DIRECTORY_STEP]]) {
+    const r=siteRun(t,{prompt});
+    r.disk('.mysite/index.html',PAGE);
+    const read=r.read('.mysite/index.html');
+    assert.ok(read.text.includes(step.trimEnd()),read.text);
+    assert.doesNotMatch(read.text,/"relativeDirectory"/);
+    const finalized=r.finalize();
+    assert.equal(finalized,step===UNPUBLISHABLE_PREVIEW_DIRECTORY_STEP?FINALIZE_COPY:step.trimEnd(),prompt);
+    assert.equal(r.describePublish(),`${DESCRIBE_PUBLISH}.`,prompt);
+  }
 });
 
 // The same probe with a build: a template directory that was only read beside
