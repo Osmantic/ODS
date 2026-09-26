@@ -100,7 +100,10 @@ def router(tmp_path, monkeypatch):
         staged.replace(state_path)
         mod._state_cache["mtime"] = None
 
-    client = TestClient(mod.app)
+    # The forward route requires the internal key, so the default client
+    # presents it — that is what LiteLLM does on the switchboard route.
+    # Tests that assert the unauthenticated behaviour build their own client.
+    client = TestClient(mod.app, headers={"Authorization": "Bearer internal-secret"})
     client.__enter__()
     mod.app.state.http = httpx.AsyncClient(
         transport=httpx.MockTransport(upstream_handler)
@@ -765,15 +768,22 @@ class TestForwarding:
         assert b"Concrete.gguf" not in raw
 
     def test_client_authorization_stripped_and_backend_key_injected(self, router):
+        """The caller's key authenticates to the router and stops there.
+
+        The caller now presents the internal key rather than an arbitrary
+        bearer, so this also pins that the internal key is never forwarded to
+        the model backend — the upstream must see the endpoint's own key.
+        """
         mod, client, write_state, calls = router
         import os
         os.environ["KEYED_API_KEY"] = "backend-secret"
         write_state(endpoint="keyed")
         resp = client.post("/v1/chat/completions",
-                           headers={"Authorization": "Bearer client-secret"},
+                           headers={"Authorization": "Bearer internal-secret"},
                            json={"model": "ods/current", "messages": []})
         assert resp.status_code == 200
         assert calls[-1]["auth"] == "Bearer backend-secret"
+        assert "internal-secret" not in str(calls[-1]["auth"])
 
     def test_unknown_path_rejected(self, router):
         mod, client, write_state, calls = router
@@ -1172,10 +1182,68 @@ class TestModelsAndEvidence:
 
     def test_evidence_requires_bearer(self, router):
         mod, client, write_state, calls = router
-        assert client.get("/internal/route-evidence/x").status_code == 401
+        anon = TestClient(mod.app)
+        assert anon.get("/internal/route-evidence/x").status_code == 401
         wrong = client.get("/internal/route-evidence/x",
                            headers={"Authorization": "Bearer nope"})
         assert wrong.status_code == 401
+
+    def test_forward_requires_bearer(self, router):
+        """A shared-network peer with no key cannot spend inference capacity.
+
+        The router is `expose:`d on ods-network, so every container can reach
+        it. Reachability is not a credential.
+        """
+        mod, client, write_state, calls = router
+        write_state()
+        anon = TestClient(mod.app)
+        body = {"model": "ods/current", "messages": [{"role": "user", "content": "hi"}]}
+
+        resp = anon.post("/v1/chat/completions", json=body)
+        assert resp.status_code == 401
+        assert resp.json() == {"error": "unauthorized"}
+        assert calls == [], "unauthenticated request must not reach the upstream"
+
+        wrong = client.post("/v1/chat/completions", json=body,
+                            headers={"Authorization": "Bearer nope"})
+        assert wrong.status_code == 401
+        assert calls == []
+
+        ok = client.post("/v1/chat/completions", json=body)
+        assert ok.status_code == 200
+        assert len(calls) == 1
+
+    def test_forward_rejects_before_disclosing_served_paths(self, router):
+        """An unserved path returns 401, not 404, to an anonymous caller.
+
+        Authenticating first keeps FORWARD_PATHS from being enumerable by a
+        caller that cannot use any of them.
+        """
+        mod, client, write_state, calls = router
+        write_state()
+        anon = TestClient(mod.app)
+        assert anon.post("/v1/not-a-route", json={}).status_code == 401
+        # An authenticated caller still gets the ordinary 404.
+        assert client.post("/v1/not-a-route", json={}).status_code == 404
+
+    def test_forward_denies_when_no_key_is_configured(self, router):
+        """No configured key means deny, never allow-all.
+
+        Matches the pre-existing /internal/route-evidence behaviour rather
+        than failing open on the data plane.
+        """
+        mod, client, write_state, calls = router
+        write_state()
+        monkey = TestClient(mod.app)
+        original = mod.INTERNAL_KEY
+        try:
+            mod.INTERNAL_KEY = ""
+            body = {"model": "ods/current",
+                    "messages": [{"role": "user", "content": "hi"}]}
+            assert monkey.post("/v1/chat/completions", json=body).status_code == 401
+            assert calls == []
+        finally:
+            mod.INTERNAL_KEY = original
 
     def test_health_reports_route_presence(self, router):
         mod, client, write_state, calls = router

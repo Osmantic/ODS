@@ -593,7 +593,7 @@ def render_litellm_switchboard(inputs: RenderInputs) -> RenderedFile:
     local_route = """    litellm_params:
       model: openai/ods/current
       api_base: http://model-router:9099/v1
-      api_key: no-key
+      api_key: os.environ/ODS_ROUTER_INTERNAL_KEY
 """
     routes = []
     for name in ("ods/current", "local", "default"):

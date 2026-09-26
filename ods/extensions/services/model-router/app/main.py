@@ -30,6 +30,7 @@ import json
 import logging
 import os
 import re
+import secrets
 import time
 import uuid
 from collections import OrderedDict
@@ -1493,10 +1494,29 @@ async def list_models() -> dict[str, Any]:
     return {"object": "list", "data": data, "ods": metadata}
 
 
+def _internal_key_authorized(request: Request) -> bool:
+    """Constant-time check of the caller's internal Bearer key.
+
+    Compared as UTF-8 bytes so a non-ASCII presented token is a clean mismatch
+    rather than a TypeError on the pre-auth path — the same shape as
+    dashboard-api's verify_api_key, token-spy and privacy-shield.
+
+    Returns False when no key is configured: the router must not serve a
+    protected route just because the deployment forgot to set one.
+    """
+    if not INTERNAL_KEY:
+        return False
+    provided = request.headers.get("authorization", "")
+    if not provided.startswith("Bearer "):
+        return False
+    return secrets.compare_digest(
+        provided[len("Bearer "):].encode("utf-8"), INTERNAL_KEY.encode("utf-8")
+    )
+
+
 @app.get("/internal/route-evidence/{probe_id}")
 async def route_evidence(probe_id: str, request: Request) -> Response:
-    provided = request.headers.get("authorization", "")
-    if not INTERNAL_KEY or provided != f"Bearer {INTERNAL_KEY}":
+    if not _internal_key_authorized(request):
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     record = _evidence.get(probe_id)
     attempts = _probe_attempts.public(probe_id, _current_probe_key())
@@ -1590,6 +1610,11 @@ async def model_swap_admission(request: Request) -> Response:
 @app.api_route("/{full_path:path}", methods=["GET", "POST", "PUT", "DELETE",
                                              "PATCH", "HEAD", "OPTIONS", "CONNECT"])
 async def forward(full_path: str, request: Request) -> Response:
+    # The router is `expose:`d on the shared ods-network, so reachability is
+    # not a caller credential. Authenticate before revealing which paths are
+    # served, and before spending any local inference capacity.
+    if not _internal_key_authorized(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
     path = "/" + full_path
     method = FORWARD_PATHS.get(path)
     if method is None or request.method != method:
