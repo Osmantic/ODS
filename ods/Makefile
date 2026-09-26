@@ -162,6 +162,7 @@ test: ## Run unit and contract tests
 	@bash tests/test-macos-config-without-docker.sh
 	@echo ""
 	@echo "=== CLI preset restore user extensions ==="
+	@bash tests/test-preset-import-relative-path.sh
 	@bash tests/test-cli-preset-restore-user-extensions.sh
 	@bash tests/test-preset-export-permissions.sh
 	@echo ""

@@ -3426,6 +3426,11 @@ META
             [[ -z "$archive" ]] && { log "Usage: ods preset import <preset.tar.gz>"; exit 1; }
             [[ -f "$archive" ]] || error "Archive not found: $archive"
 
+            # Resolve a relative archive path before cd changes the working directory
+            if [[ "$archive" != /* ]]; then
+                archive="$(pwd)/$archive"
+            fi
+
             log "Validating archive..."
 
             # Security: Check for path traversal
