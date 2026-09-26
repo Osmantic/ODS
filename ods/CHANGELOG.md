@@ -74,6 +74,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   ingress". It also drops its own stale bind after systemd recreates a runtime
   directory, names the check that refused in its journal, and the installer
   prints that journal when the bridge does not start.
+- The installer menu presets (Full Stack, Core Only) no longer override an
+  explicit `--hermes` or `--no-hermes`. The Windows Pixel path passes
+  `--no-hermes`; choosing Full Stack downloaded and enabled Hermes anyway.
 - Every curated catalog download URL now names a Hugging Face commit instead
   of `resolve/main`, so an upstream rewrite cannot change or remove a catalog
   file. The 48 other re-pinned models download the same bytes: each sha256 was
