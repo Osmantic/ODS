@@ -439,6 +439,30 @@ test('a summary written by any and-chain setup is not trusted, whatever the setu
   assert.equal(verdict(printed, {command: 'cd /workspace/project && python3 -m unittest -v'}), 'passed');
 });
 
+test('a second process started beside the runner with & is not trusted; the text heuristics judge the result', () => {
+  // The checker's "Error:" line lands next to the runner's clean summary. On
+  // d4a61f33 the text heuristics fail this result.
+  const output = 'Error: add(-1, -2) returned 1, expected -3\n.' + summary(1);
+  for (const command of [
+    'python3 -m unittest test_calc & python3 check_calc.py',
+    'cd /workspace/project && python3 -m unittest test_calc & python3 check_calc.py',
+  ]) {
+    for (const wrapped of [false, true]) {
+      assert.equal(verdict(output, {command, wrapped}), 'failed', `${command} wrapped=${wrapped}`);
+    }
+    assert.equal(verdict('.' + summary(1), {command}), 'passed', `${command} with clean output`);
+  }
+  // Through the process-poll completion path as well.
+  const s = session(UNIT);
+  s.step('exec', {command: 'python3 -m unittest test_calc & python3 check_calc.py', workdir: '/workspace/project'},
+    {content: [{type: 'text', text: 'Command still running (session calm-otter).'}], details: {status: 'running', sessionId: 'calm-otter'}}, 'background');
+  s.step('process', {action: 'poll', sessionId: 'calm-otter'}, {content: [{type: 'text', text: output}],
+    details: {status: 'completed', sessionId: 'calm-otter', exitCode: 0, aggregated: output}}, 'poll');
+  assert.equal(s.guard.verificationStatus('run'), 'failed');
+  // The trailing stderr merge alone is not a second process.
+  assert.equal(verdict(output, {command: 'python3 -m unittest test_calc -v 2>&1'}), 'passed');
+});
+
 test('a result that passed despite program output is not compacted; a clean one still is', () => {
   const run = output => session(UNIT, {wrapped: true}).step('exec', {command: 'python3 -m unittest -v', workdir: '/workspace/project'},
     {content: [{type: 'text', text: output}], details: {status: 'completed', exitCode: 0, aggregated: output}}, 'unit');
