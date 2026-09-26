@@ -164,8 +164,14 @@ env_value() {
         "$FAKE_INSTALL/.env"
 }
 
+# A small model left on one GPU by model activation; a new assignment starts
+# from its own split and the next activation re-decides the placement.
+echo "LLAMA_ARG_MAIN_GPU=1" >>"$FAKE_INSTALL/.env"
 run_manual $'0,1,2\n2\n\n1\npipeline\nn\n'
 [[ $RC -eq 0 ]] || { echo "[FAIL] manual reassignment failed: $OUTPUT"; exit 1; }
+if grep -q '^LLAMA_ARG_MAIN_GPU=' "$FAKE_INSTALL/.env"; then
+    echo "[FAIL] manual reassignment kept a stale LLAMA_ARG_MAIN_GPU"; exit 1
+fi
 
 assignment=$(env_value GPU_ASSIGNMENT_JSON_B64 | base64 -d)
 echo "$assignment" | jq -e '
@@ -350,12 +356,16 @@ sed -i \
     -e 's/^COMFYUI_GPU_UUID=.*/COMFYUI_GPU_UUID=GPU-stale/' \
     -e 's/^EMBEDDINGS_GPU_UUID=.*/EMBEDDINGS_GPU_UUID=GPU-stale/' \
     "$FAKE_INSTALL/.env"
+echo "LLAMA_ARG_MAIN_GPU=1" >>"$FAKE_INSTALL/.env"
 set +e
 OUTPUT=$(printf 'n\n' |
     ODS_HOME="$FAKE_INSTALL" PATH="$STUB_PATH" "$ODS_CLI" gpu reassign --auto 2>&1)
 RC=$?
 set -e
 [[ $RC -eq 0 ]] || { echo "[FAIL] automatic reassignment failed: $OUTPUT"; exit 1; }
+if grep -q '^LLAMA_ARG_MAIN_GPU=' "$FAKE_INSTALL/.env"; then
+    echo "[FAIL] automatic reassignment kept a stale LLAMA_ARG_MAIN_GPU"; exit 1
+fi
 assignment=$(env_value GPU_ASSIGNMENT_JSON_B64 | base64 -d)
 expected_llama_uuids=$(echo "$assignment" | jq -r \
     '.gpu_assignment.services.llama_server.gpus | join(",")')

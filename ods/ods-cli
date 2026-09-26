@@ -5669,6 +5669,19 @@ _gpu_validate() {
             echo "    Fix: run 'ods gpu reassign' or set LLAMA_ARG_SPLIT_MODE=none in .env"
             ((fail++)) || true
         fi
+    elif [[ "$split_mode" == "none" && -n "$llama_uuids" && "$llama_uuids" == *,* ]]; then
+        # Model activation runs a model that needs at most half of one GPU
+        # on one of the llama GPUs; larger models get the layer split back.
+        local llama_count main_gpu="${LLAMA_ARG_MAIN_GPU:-0}"
+        llama_count=$(echo "$llama_uuids" | tr ',' '\n' | grep -c . 2>/dev/null) || llama_count=1
+        if [[ "$main_gpu" =~ ^[0-9]+$ ]] && (( 10#$main_gpu < llama_count )); then
+            success "Active model runs on one of ${llama_count} llama GPUs (LLAMA_ARG_SPLIT_MODE=none, LLAMA_ARG_MAIN_GPU=${main_gpu})"
+            ((pass++)) || true
+        else
+            warn "LLAMA_ARG_MAIN_GPU=${main_gpu} is not one of the ${llama_count} llama GPUs"
+            echo "    Fix: switch the model again in the Dashboard, or remove LLAMA_ARG_MAIN_GPU from .env"
+            ((fail++)) || true
+        fi
     fi
 
     echo ""
@@ -6177,6 +6190,9 @@ _gpu_reassign() {
         _env_set "LLAMA_SERVER_GPU_INDICES" "$_manual_llama"
         _env_set "LLAMA_ARG_SPLIT_MODE" "$split_mode_m"
         _env_set "LLAMA_ARG_TENSOR_SPLIT" "$tensor_split_m"
+        # A new assignment starts from its own split; the next model activation
+        # re-decides whether a small model runs on one GPU.
+        _env_unset "LLAMA_ARG_MAIN_GPU"
         _env_set "WHISPER_GPU_UUID" "$whisper_uuid_m"
         _env_set "COMFYUI_GPU_UUID" "$comfyui_uuid_m"
         _env_set "EMBEDDINGS_GPU_UUID" "$embeddings_uuid_m"
@@ -6272,6 +6288,9 @@ _gpu_reassign() {
     _env_set "LLAMA_SERVER_GPU_INDICES" "$llama_indices"
     _env_set "LLAMA_ARG_SPLIT_MODE" "$split_mode"
     _env_set "LLAMA_ARG_TENSOR_SPLIT" "$tensor_split"
+    # A new assignment starts from its own split; the next model activation
+    # re-decides whether a small model runs on one GPU.
+    _env_unset "LLAMA_ARG_MAIN_GPU"
     _env_set "WHISPER_GPU_UUID" "$whisper_uuid"
     _env_set "COMFYUI_GPU_UUID" "$comfyui_uuid"
     _env_set "EMBEDDINGS_GPU_UUID" "$embeddings_uuid"

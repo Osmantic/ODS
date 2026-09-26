@@ -43,6 +43,7 @@ test: ## Run unit and contract tests
 	@bash tests/test-phase03-multigpu-tty.sh
 	@bash tests/test-pixel-support-services.sh
 	@bash tests/test-phase03-no-gpu-assignment-message.sh
+	@bash tests/test-phase03-preserved-gpu-placement.sh
 	@bash tests/contracts/test-preflight-fixtures.sh
 	@bash tests/test-preflight-resolver-bug.sh
 	@bash tests/test-linux-cloud-mode.sh
@@ -235,6 +236,7 @@ test: ## Run unit and contract tests
 	@echo ""
 	@echo "=== NVIDIA multi-GPU visibility contract ==="
 	@bash tests/test-multigpu-nvidia-visibility.sh
+	@bash tests/test-gpu-validate-one-gpu-placement.sh
 	@echo ""
 	@echo "=== CLI user-extension dependency resolution ==="
 	@bash tests/test-cli-user-extension-deps.sh
