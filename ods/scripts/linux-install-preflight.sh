@@ -23,6 +23,14 @@ MIN_DISK_GB_FREE="${MIN_DISK_GB_FREE:-15}"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
+        --json-file|--ods-root|--min-disk-gb)
+            if [[ $# -lt 2 || -z "${2:-}" || "$2" == -* ]]; then
+                echo "Option $1 requires an argument" >&2
+                exit 2
+            fi
+            ;;
+    esac
+    case "$1" in
         --json)
             OUTPUT_MODE="json"
             shift
