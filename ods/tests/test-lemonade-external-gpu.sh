@@ -2,6 +2,8 @@
 # The Windows Portal AMD route passes --lemonade-url/--lemonade-model and the
 # Windows GPU to install-core. The flags must reach the phases, and the
 # hardware scan must show that GPU instead of the CPU-only Linux probe.
+# Variables below are read by the installer code this test evals.
+# shellcheck disable=SC2034
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -41,9 +43,25 @@ card() {
     eval "$card_source"
 }
 shown="$(LEMONADE_EXTERNAL=true LEMONADE_GPU_NAME='AMD Radeon RX 9070 XT' LEMONADE_GPU_VRAM_MB=16304 card)"
-check '[[ "$shown" == "AMD Radeon RX 9070 XT (Lemonade)|15" ]]' "hardware scan shows the Windows Lemonade GPU ($shown)"
+check '[[ "$shown" == "AMD Radeon RX 9070 XT (Lemonade)|16" ]]' "hardware scan shows the Windows Lemonade GPU ($shown)"
 shown="$(LEMONADE_EXTERNAL=false LEMONADE_GPU_NAME='AMD Radeon RX 9070 XT' LEMONADE_GPU_VRAM_MB=16304 card)"
 check '[[ "$shown" == "None|0" ]]' "without an external Lemonade the Linux probe is shown ($shown)"
+
+# The Linux GPU probe must not warn about CPU-only inference for this route.
+fallback_source="$(sed -n '/# No GPU detected - fall back to CPU-only mode/,/^    return 1$/p' "$ROOT/installers/lib/detection.sh")"
+[[ -n "$fallback_source" ]] || { echo "FAIL: CPU fallback block not found" >&2; exit 1; }
+probe() {
+    ai() { printf 'AI:%s' "$1"; }
+    warn() { printf 'WARN:%s' "$1"; }
+    log() { :; }
+    eval "fallback() { ${fallback_source}
+}"
+    fallback || true
+}
+said="$(LEMONADE_EXTERNAL=true LEMONADE_GPU_NAME='AMD Radeon RX 9070 XT' probe)"
+check '[[ "$said" == "AI:"*"runs on AMD Radeon RX 9070 XT through Lemonade"* ]]' "Lemonade route replaces the CPU-only warning ($said)"
+said="$(LEMONADE_EXTERNAL=false LEMONADE_GPU_NAME='' probe)"
+check '[[ "$said" == "WARN:No GPU detected."* ]]' "other hosts keep the CPU-only warning"
 
 echo "Results: $pass passed, $fail failed"
 [[ "$fail" -eq 0 ]]
