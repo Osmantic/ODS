@@ -121,6 +121,34 @@ esac
                 self.assertNotEqual(result.returncode, 0)
                 self.assertNotIn('do-not-follow', result.stdout + result.stderr)
 
+    def test_closed_connection_is_reported_as_closed_not_as_env(self):
+        import socket
+        listener = socket.socket()
+        listener.bind(('127.0.0.1', 0))
+        listener.listen(4)
+        self.addCleanup(listener.close)
+
+        def accept_and_close():
+            for _ in range(4):
+                try:
+                    connection, _ = listener.accept()
+                except OSError:
+                    return
+                connection.recv(4096)
+                connection.close()
+
+        threading.Thread(target=accept_and_close, daemon=True).start()
+        with tempfile.TemporaryDirectory() as directory:
+            Path(directory, '.env').write_text(
+                f'DASHBOARD_API_PORT={listener.getsockname()[1]}\nDASHBOARD_API_KEY=do-not-print\n')
+            result = subprocess.run(['python3', str(SCRIPT.parent / 'verify-portal-api.py'), directory],
+                                    capture_output=True, text=True, timeout=30)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('closed the connection', result.stderr)
+        self.assertNotIn('.env', result.stderr)
+        self.assertNotIn('Traceback', result.stderr)
+        self.assertNotIn('do-not-print', result.stdout + result.stderr)
+
     def test_invalid_or_executable_port_is_not_evaluated(self):
         for port in ('0', '65536', 'abc', '$(echo injected)'):
             with self.subTest(port=port):
