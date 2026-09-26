@@ -290,13 +290,17 @@ function measuredFeedback(request, result, step, {requirementOf, stated}) {
   const shown = visible ? 'visible' : 'hidden', expected = stateWord(step.action), subject = locatorText(step.locator);
   const state = `${measured}, so it is ${shown} where this step expects it ${expected}.`;
   const own = correct(stated), target = own.args?.steps[0].locator;
-  const onTarget = own.members.some(member => isDeepStrictEqual(member, step.locator)) || isDeepStrictEqual(target, step.locator) ||
+  const ofTarget = locator => own.members.some(member => isDeepStrictEqual(member, locator)) || isDeepStrictEqual(target, locator);
+  const onTarget = ofTarget(step.locator) ||
     transitions(request.steps).some(([before, , after]) => before === step.index || after === step.index);
   // Earlier passing steps already held one locator at opposite visibility
-  // around a click, and this step checks a different element.
+  // around a click, and this step checks a different element. With a target
+  // named from the published source, only that target's change is offered:
+  // another element's passing change never stands in for the requested one,
+  // and a failing step on the target itself is its measured defect.
   const prefix = request.steps.slice(0, step.index);
-  const proven = !prefix.some(item => isDeepStrictEqual(item.locator, step.locator)) &&
-    transitions(prefix).find(([before]) => !stated || prefix[before].action === stated);
+  const proven = !onTarget && !prefix.some(item => isDeepStrictEqual(item.locator, step.locator)) &&
+    transitions(prefix).find(([before]) => (!stated || prefix[before].action === stated) && (!named(own) || ofTarget(prefix[before].locator)));
   if (proven) {
     const [before, click, after] = proven, args = {siteId: request.siteId, sha256: request.sha256, viewport: request.viewport, steps: prefix};
     return {diagnosis: `${state} Steps ${before + 1}, ${click + 1} and ${after + 1} before it already measured ${locatorText(prefix[before].locator)} ` +

@@ -506,6 +506,48 @@ test('tower2 round 107 call 20: a failing extra check after a proven change gets
   }
 });
 
+// An earlier passing change of another element never stands in for the
+// owner's target read from the published source (#midnight-card): here the
+// click reveals only an unrelated note, and the requested card stays hidden.
+// Offering the note's steps verified the run on a page whose requested card
+// never shows.
+const NOTE = {selector: '#note'}, BANNER = {selector: '#banner'}, CARD = {selector: '#midnight-card'};
+const UNRELATED_CHANGE_PAGE = {
+  before: page([[BUTTON, 'visible'], [CARD, 'hidden'], [OWNER_HEADING, 'hidden'], [NOTE, 'hidden'], [BANNER, 'visible']]),
+  after: page([[BUTTON, 'visible'], [CARD, 'hidden'], [OWNER_HEADING, 'hidden'], [NOTE, 'visible'], [BANNER, 'hidden']]),
+};
+test('another element\'s passing change is never offered in place of the owner\'s target', async t => {
+  const noteChange = [{action: 'assert-hidden', locator: NOTE}, {action: 'click', locator: BUTTON}, {action: 'assert-visible', locator: NOTE}];
+  for (const transport of ['direct', 'tool_call']) {
+    // The owner's card itself fails after the click: its measured defect.
+    const r = replay(t, STRIXY, UNRELATED_CHANGE_PAGE);
+    await r.through(7);
+    const publish = call(STRIXY, 7).details;
+    const plan = {...STRIXY_PLAN(publish), steps: [...noteChange, {action: 'assert-visible', locator: CARD}]};
+    const measured = await r.inspect(plan, `card-${transport}`, transport);
+    const text = assertNotPassing(measured, measured.details);
+    assert.ok(text.startsWith('Preview inspection failed. Step 4 (assert-visible) "#midnight-card" measured display "none", visibility "visible", ' +
+      'opacity "1" and rectCount 0 after the click at step 2 (button "Show sold out"), so it is hidden where this step expects it visible. ' + FACTS), text);
+    assert.equal(READY.exec(text), null, 'no ready call: the requested card did not change');
+    assert.match(text, /Next step: repair the source/);
+    assert.deepEqual(stepsAfterRepair(text), STRIXY_PLAN(publish).steps);
+    assert.equal(r.verification().status, 'failed');
+  }
+  // Another element fails after the click: the owner's target is offered,
+  // not the note, and it measures the real defect.
+  const r = replay(t, STRIXY, UNRELATED_CHANGE_PAGE);
+  await r.through(7);
+  const publish = call(STRIXY, 7).details;
+  const other = await r.inspect({...STRIXY_PLAN(publish), steps: [...noteChange, {action: 'assert-visible', locator: BANNER}]}, 'banner', 'tool_call');
+  const text = assertNotPassing(other, other.details);
+  assert.ok(text.includes('It is not the target "#midnight-card" of the show/hide check.'), text);
+  const args = readyArgs(text);
+  assert.deepEqual(args, STRIXY_PLAN(publish));
+  const next = await r.inspect(args, 'banner-next', 'tool_call');
+  assert.equal(next.details.steps[2].errorCode, 'visibility_mismatch');
+  assert.equal(r.verification().status, 'failed');
+});
+
 // Call 21 clicked the button by its old name after the first click renamed it.
 test('tower2 round 107 call 21: a control renamed by an earlier click gets that cause', async () => {
   const recorded = tower2Call(21), receipt = recordedReceipt(recorded);
