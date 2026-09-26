@@ -15,10 +15,10 @@ import {createToolLoopGuard, userMessageExtensionLifecycleIntent, userMessageOpe
   userMessageRequestsWorkspaceContinuation, userMessageRequestsWorkspacePreview, userMessageRequestsWorkspaceTools,
   userMessageRequestsWorkspaceVisualContinuation, userMessageRequiresOperations,
   workspacePreviewMode} from '../plugin/tool-loop-guard.mjs';
-import {OUTPUT_LIMIT_ANSWER_TEXT, OUTPUT_LIMIT_CONTINUATION_PROMPT, OUTPUT_LIMIT_CONTINUED_TEXT,
+import {OUTPUT_LIMIT_AFTER_REPLY, OUTPUT_LIMIT_ANSWER_TEXT, OUTPUT_LIMIT_CONTINUATION_PROMPT, OUTPUT_LIMIT_CONTINUED_TEXT,
   OUTPUT_LIMIT_WORKSPACE_TEXT} from '../plugin/output-limit-recovery.mjs';
 import {ODS_COMPACT_CONVERSATION_CONTRACT, ODS_CONVERSATION_CONTRACT, promptContractForAgent} from '../plugin/prompt-contract.mjs';
-import {OUTPUT_LIMIT_CONTINUATION_PROMPT as INGRESS_PROMPT, computeSessionUser,
+import {OUTPUT_LIMIT_AFTER_REPLY as INGRESS_AFTER_REPLY, OUTPUT_LIMIT_CONTINUATION_PROMPT as INGRESS_PROMPT, computeSessionUser,
   createIngressServer} from '../host/pixel_ingress.mjs';
 
 const CHAT = 'strixy-forest-demo';
@@ -104,6 +104,7 @@ function publishSplitPage(guard, context, {written = SPLIT_PAGE} = {}) {
 
 test('the ingress and the plugin carry the same continuation bytes', () => {
   assert.equal(INGRESS_PROMPT, OUTPUT_LIMIT_CONTINUATION_PROMPT);
+  assert.equal(INGRESS_AFTER_REPLY, OUTPUT_LIMIT_AFTER_REPLY);
   assert.doesNotMatch(OUTPUT_LIMIT_CONTINUATION_PROMPT, /\d/, 'no per-turn variable text');
 });
 
