@@ -1415,11 +1415,12 @@ function verificationFingerprintIsPythonUnittest(fingerprint) {
 // summary is present, the result fails only on: a zero-test summary or NO
 // TESTS RAN, a summary not followed by OK, a FAILED ( line, nonzero expected
 // failures or unexpected successes (each also in its -v form), a failure
-// header after unittest's "=" separator, or a line-start FAIL or
-// AssertionError. Program output such as "Error:", "ERROR:" or
-// "ERROR:root:..." logging, or a -v docstring, does not fail it. Returns
-// undefined when no summary is present, so custom runners keep the text
-// heuristics below.
+// header after unittest's "=" separator, a line-start FAIL, or AssertionError
+// anywhere. Program output such as "Error:", "ERROR:" or "ERROR:root:..."
+// logging, or a -v docstring, does not fail it. Returns undefined when no
+// summary is present, so custom runners keep the text heuristics below. Only
+// a result of unittest's own runner is judged this way (see
+// execFingerprintRunsUnittestRunner).
 const UNITTEST_RUN_SUMMARY = /^Ran (\d+) tests? in \d+(?:\.\d+)?s\s*$/;
 const UNITTEST_CLEAN_RESULT = /^OK(?: \([^()]*\))?\s*$/;
 // printErrorList writes separator1 ("=" * 70), then "FAIL: test_x
@@ -1430,18 +1431,29 @@ const UNITTEST_ERROR_SEPARATOR = /^={70}\s*$/;
 const UNITTEST_FAILURE_HEADER = /^(?:FAIL|ERROR): [\p{L}\p{N}_.]+ \([\p{L}\p{N}_.]+\)/u;
 // df3f4bf3a: a check that runs beside unittest in the same exec and prints
 // its failure still fails the run, whatever the summary says: module-level
-// checks imported by discovery, ad-hoc checks after unittest.main(exit=False),
-// a test that catches its own assertion and prints the traceback.
-const CHECKER_FAILURE_LINE = /^[ \t]*(?:FAIL\b|AssertionError\b)/;
+// checks imported by discovery, a test that catches its own assertion and
+// prints the traceback. Such a line starts with an upper-case FAIL word, or
+// with FAIL in any case before ":", "(", a space, a tab or the line end
+// ("fail: negative numbers", "Fail: ..."). AssertionError counts anywhere and
+// in any case: in a repr ("Test failed: AssertionError('...')") or after a
+// mark ("✗ add(-1, -2): AssertionError: ..."). A passing test that prints
+// such text therefore fails the run: a false failure, never a false pass.
+const CHECKER_FAILURE_LINE = /^[ \t]*FAIL\b/;
+const CHECKER_FAIL_LINE_ANY_CASE = /^[ \t]*FAIL(?:[:( \t]|$)/i;
+const CHECKER_ASSERTION_ERROR = /\bAssertionError\b/i;
 // unittest's FAILED result, and the same counts in any case.
 const UNITTEST_FAILED_RESULT = /^[ \t]*FAILED \(/;
 const UNITTEST_FAILED_COUNTS =
   /^[ \t]*failed\s*\(\s*(?:failures|errors|expected failures|unexpected successes)\s*=/i;
 
+// Python 3.14 colors unittest's markers when its output is a terminal (a pty
+// exec), e.g. "\x1b[32mOK\x1b[0m (\x1b[33mskipped=1\x1b[0m)".
+function withoutTerminalColors(text) {
+  return text.replace(/\x1b\[[0-9;]*m/g, "");
+}
+
 function unittestRunnerSummaryHasNonCleanOutcome(values) {
-  // Python 3.14 colors these markers when its output is a terminal (a pty
-  // exec), e.g. "\x1b[32mOK\x1b[0m (\x1b[33mskipped=1\x1b[0m)".
-  const texts = values.map((value) => value.replace(/\x1b\[[0-9;]*m/g, ""));
+  const texts = values.map(withoutTerminalColors);
   const outputs = texts.map((text) => text.split(/\r?\n/));
   if (!outputs.some((lines) => lines.some((line) => UNITTEST_RUN_SUMMARY.test(line)))) {
     return undefined;
@@ -1457,6 +1469,7 @@ function unittestRunnerSummaryHasNonCleanOutcome(values) {
       if (
         (UNITTEST_FAILURE_HEADER.test(line) && UNITTEST_ERROR_SEPARATOR.test(lines[index - 1] ?? "")) ||
         CHECKER_FAILURE_LINE.test(line) ||
+        CHECKER_FAIL_LINE_ANY_CASE.test(line) ||
         UNITTEST_FAILED_RESULT.test(line) ||
         UNITTEST_FAILED_COUNTS.test(line)
       ) {
@@ -1466,6 +1479,7 @@ function unittestRunnerSummaryHasNonCleanOutcome(values) {
   }
   return texts.some(
     (text) =>
+      CHECKER_ASSERTION_ERROR.test(text) ||
       /\bexpected failures?\s*=\s*[1-9][0-9]*\b/i.test(text) ||
       /\bunexpected successes?\s*=\s*[1-9][0-9]*\b/i.test(text) ||
       /\.\.\.\s+expected failure\b/i.test(text) ||
@@ -1474,12 +1488,18 @@ function unittestRunnerSummaryHasNonCleanOutcome(values) {
   );
 }
 
-// andChainVerificationParams accepts literal `echo` setup before the test
-// command. The echoed words land in the same result as the test output and
-// could spell a runner summary the test never printed, so such a result is
-// judged by the text heuristics only. The fingerprint is execFingerprint of
-// the command as the model sent it.
-function execFingerprintEchoesBeforeVerification(fingerprint) {
+// A unittest summary is the run's own verdict only when unittest's runner is
+// the process the model ran: `python3 -m unittest ...`, alone or after `cd
+// /workspace/...`. Anything else in the same result can print a summary the
+// runner never printed, so such a result is judged by the text heuristics:
+// - setup that andChainVerificationParams accepts before the test (`echo Ran
+//   5 tests in 0.001s && echo && echo OK && ...`, `cp summary.txt
+//   /dev/stdout && ...`, or any other setup segment);
+// - a test script (`python3 test_calc.py`), whose own code runs around
+//   unittest.main(): checks after unittest.main(exit=False), or a custom
+//   runner that prints a summary of its own.
+// The fingerprint is execFingerprint of the command as the model sent it.
+function execFingerprintRunsUnittestRunner(fingerprint) {
   if (typeof fingerprint !== "string" || !fingerprint) return false;
   let command;
   try {
@@ -1487,13 +1507,15 @@ function execFingerprintEchoesBeforeVerification(fingerprint) {
   } catch {
     return false;
   }
-  if (typeof command !== "string" || !andChainVerificationParams({ command })) return false;
-  return command.trim().replace(/\s+2>&1\s*$/i, "").split("&&").slice(0, -1)
-    .some((segment) => /^echo(?:[ \t]|$)/.test(segment.trim()));
+  if (typeof command !== "string") return false;
+  const parsed = verificationCommand({ command });
+  return Boolean(parsed) && verificationCommandIsAuditable({ command }) &&
+    /^python(?:3(?:\.\d+)?)?\s+-m\s+unittest\b/i.test(parsed.withoutStderrMerge);
 }
 
-// trustRunnerSummary: false keeps the text heuristics for every result (an
-// echo-prefixed chain, and the transcript compaction below).
+// trustRunnerSummary: false keeps the text heuristics for every result (a
+// command other than unittest's own runner, and the transcript compaction
+// below).
 function execResultHasNonCleanUnittestOutcome(event, { trustRunnerSummary = true } = {}) {
   const result = event?.result;
   if (!result || typeof result !== "object" || Array.isArray(result)) return false;
@@ -10664,7 +10686,7 @@ export function createToolLoopGuard({
           pending.verificationFingerprint &&
           verificationFingerprintIsPythonUnittest(pending.verificationFingerprint) &&
           execResultHasNonCleanUnittestOutcome(event, {
-            trustRunnerSummary: !execFingerprintEchoesBeforeVerification(pending.fingerprint),
+            trustRunnerSummary: execFingerprintRunsUnittestRunner(pending.fingerprint),
           })
         );
       if (verificationFailed) {
@@ -10751,7 +10773,7 @@ export function createToolLoopGuard({
         verificationFingerprint &&
         verificationFingerprintIsPythonUnittest(verificationFingerprint) &&
         execResultHasNonCleanUnittestOutcome(execEvent, {
-          trustRunnerSummary: !execFingerprintEchoesBeforeVerification(fingerprint),
+          trustRunnerSummary: execFingerprintRunsUnittestRunner(fingerprint),
         })
       );
     // Native exec has no Tool Search envelope. Capture the same bounded

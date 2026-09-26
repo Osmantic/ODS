@@ -261,8 +261,6 @@ const PASSED = {
     "ERROR: cannot read folder /photos/missing: [Errno 2] No such file or directory: '/photos/missing'\n." + summary(1),
   'a verbose docstring that starts with Error':
     'test_missing (test_renamer.RenamerTest.test_missing)\nError when the folder is missing returns an empty list. ... ok' + summary(1),
-  'AssertionError text printed by a passing test':
-    'test_message (test_renamer.RenamerTest.test_message) ... AssertionError: shown to the user\nok' + summary(1),
   'skipped tests': 'test_raw (m.T.test_raw) ... skipped \'needs RAW fixtures\'\ntest_jpeg (m.T.test_jpeg) ... ok' + summary(3, 'OK (skipped=2)'),
   'CRLF output': ('ERROR: cannot read folder /photos/missing\n.' + summary(1)).replace(/\n/g, '\r\n'),
   // Accepted: program output after the summary (stdout flushes at exit) is
@@ -320,6 +318,23 @@ const FAILED = {
     "AssertionError: 'IMG_0001.jpg' != '2024-01-10_09-15-30.jpg'\nok" + summary(1),
   'an indented checker FAIL': '  FAIL: negative numbers\n.' + summary(1),
   'failure counts in lower case after an OK': 'Ran 3 tests in 0.010s\n\nOK\nfailed (failures=1)\n',
+  // A checker's failure in any case, or AssertionError anywhere, beside a
+  // clean summary. The same text printed by a passing test also fails: a
+  // false failure is accepted, a false pass is not.
+  'AssertionError text printed by a passing test':
+    'test_message (test_renamer.RenamerTest.test_message) ... AssertionError: shown to the user\nok' + summary(1),
+  'a lower-case checker fail line': 'fail: negative numbers (add(-1,-2) returned 1)\n..' + summary(2),
+  'a capitalized checker Fail line': 'Fail: negative numbers\n..' + summary(2),
+  'a checker fail line with a parenthesis': 'fail(negative numbers)\n..' + summary(2),
+  'a bare checker fail line': 'negative numbers:\nfail\n..' + summary(2),
+  'a checker FAILED line with an AssertionError repr': '..' + summary(2) + "FAILED negative: AssertionError('1 != -3')\n",
+  'AssertionError in the middle of a checker line': '..' + summary(2) + '✗ negative numbers: AssertionError: 1 != -3\n',
+  'AssertionError in lower case': '..' + summary(2) + 'negative numbers: assertionerror\n',
+  // Python 3.12, `python3 -m unittest -v`: discovery imported a module whose
+  // top-level checks print a mark and the caught AssertionError.
+  'a discovered checker that prints its caught AssertionError':
+    'test_positive (test_calc.TestAdd.test_positive) ... ok\n' + summary(1).replace('0.002s', '0.000s') +
+    '✓ add(1, 2)\n✗ add(-1, -2): AssertionError: returned 3, expected -3\n',
 };
 
 for (const wrapped of [false, true]) {
@@ -342,14 +357,35 @@ test('separate stdout and stderr streams are judged together by the summary', ()
   assert.equal(verdict(stderr, {details: {stdout: 'Ran 0 tests in 0.000s\n\nOK\n', stderr}}), 'failed');
 });
 
-test('direct test scripts use the same summary rule; custom runners keep the text heuristics', () => {
-  assert.equal(verdict('Error: Folder \'/missing\' does not exist.\n.' + summary(1), {command: 'python3 test_photo_renamer.py'}), 'passed');
+test('direct test scripts keep the text heuristics, with or without a summary', () => {
+  // A script's own code runs around unittest.main(), so a summary in its
+  // output is not the runner's verdict: program output such as "Error:" keeps
+  // the result failed, as on d4a61f33. The same output from `python3 -m
+  // unittest` is judged by the summary.
+  const noisy = 'Error: Folder \'/missing\' does not exist.\n.' + summary(1);
+  assert.equal(verdict(noisy, {command: 'python3 test_photo_renamer.py'}), 'failed');
+  assert.equal(verdict(noisy, {command: 'cd /workspace/project && python3 test_photo_renamer.py'}), 'failed');
+  assert.equal(verdict(noisy, {command: 'python3 -m unittest test_photo_renamer -v'}), 'passed');
+  assert.equal(verdict(noisy, {command: 'cd /workspace/project && python3 -m unittest test_photo_renamer -v 2>&1'}), 'passed');
+  // unittest.main(exit=False), then ad-hoc checks that report only "Error:"
+  // or "ERROR:".
+  for (const line of ['Error: renamed 0 of 3 photos', 'ERROR: renamed 0 of 3 photos']) {
+    assert.equal(verdict('..' + summary(2) + `${line}\n`, {command: 'python3 test_calc.py'}), 'failed', line);
+  }
+  // A custom runner that prints a summary of its own.
+  assert.equal(verdict('Ran 5 tests in 0.001s\n\nOK\nError: negative numbers returned 1\n', {command: 'python3 test_calc.py'}), 'failed');
+  // Python 3.12, `python3 test_calc.py`: unittest.main(exit=False), then a
+  // check that prints the caught AssertionError's repr.
+  const exitFalse = '.\n' + summary(1).replace('0.002s', '0.000s').slice(1) +
+    "PASSED add(1, 2)\nTest failed: AssertionError('add(-1, -2) returned 3, expected -3')\n";
+  assert.equal(verdict(exitFalse, {command: 'python3 test_calc.py'}), 'failed');
   assert.equal(verdict('FAIL: negative numbers\nAssertionError', {command: 'python3 test_photo_renamer.py'}), 'failed');
   // A custom runner that runs unittest and then its own failing check.
   assert.equal(verdict('..' + summary(2) + 'Integration check:\nFAIL: renamed 0 of 3 photos\n', {command: 'python3 test_all.py'}), 'failed');
   // Unchanged: without a summary, program text is still judged heuristically.
   assert.equal(verdict('Error: Folder \'/missing\' does not exist.\nAll tests passed!', {command: 'python3 test_photo_renamer.py'}), 'failed');
   assert.equal(verdict('Verification:\n  ok 20240110_091530.jpg\nAll tests passed!', {command: 'python3 test_rename.py'}), 'passed');
+  assert.equal(verdict('.' + summary(1), {command: 'python3 test_photo_renamer.py'}), 'passed');
 });
 
 test('a summary printed by and-chain echo setup is not trusted; the text heuristics judge the result', () => {
@@ -372,6 +408,35 @@ test('a summary printed by and-chain echo setup is not trusted; the text heurist
   const announced = 'cd /workspace/project && echo Running tests && python3 -m unittest -v';
   assert.equal(verdict('Running tests\n.' + summary(1), {command: announced}), 'passed');
   assert.equal(verdict("Running tests\nError: Folder '/missing' does not exist.\n." + summary(1), {command: announced}), 'failed');
+});
+
+test('a summary written by any and-chain setup is not trusted, whatever the setup command', () => {
+  const printed = 'Ran 5 tests in 0.001s\n\nOK\nError: add(-1, -2) returned 1, expected -3\n';
+  for (const command of [
+    // A file copied to the result's own stream.
+    'cd /workspace/project && cp expected_summary.txt /dev/stdout && python3 -m unittest -v',
+    'cd /workspace/project && cp expected_summary.txt /dev/stdout && python3 test_calc.py',
+    'cp /workspace/project/expected_summary.txt /dev/stderr && python3 -m unittest -v',
+    'cd /workspace/project && mv expected_summary.txt /dev/stdout && python3 -m unittest -v',
+    // Setup that cannot print a summary is judged the same way.
+    'cd /workspace/project && mkdir -p out && python3 -m unittest -v',
+    'cd /workspace/project && touch .ran && true && python3 -m unittest -v',
+  ]) {
+    for (const wrapped of [false, true]) {
+      assert.equal(verdict(printed, {command, wrapped}), 'failed', `${command} wrapped=${wrapped}`);
+    }
+    assert.equal(verdict('.' + summary(1), {command}), 'passed', `${command} with clean output`);
+  }
+  // Through the process-poll completion path as well.
+  const s = session(UNIT);
+  s.step('exec', {command: 'cd /workspace/project && cp expected_summary.txt /dev/stdout && python3 -m unittest -v'},
+    {content: [{type: 'text', text: 'Command still running (session calm-otter).'}], details: {status: 'running', sessionId: 'calm-otter'}}, 'background');
+  assert.equal(s.guard.verificationStatus('run'), 'pending');
+  s.step('process', {action: 'poll', sessionId: 'calm-otter'}, {content: [{type: 'text', text: printed}],
+    details: {status: 'completed', sessionId: 'calm-otter', exitCode: 0, aggregated: printed}}, 'poll');
+  assert.equal(s.guard.verificationStatus('run'), 'failed');
+  // A leading `cd /workspace/...` alone is not setup: the tower3 command shape.
+  assert.equal(verdict(printed, {command: 'cd /workspace/project && python3 -m unittest -v'}), 'passed');
 });
 
 test('a result that passed despite program output is not compacted; a clean one still is', () => {
