@@ -119,8 +119,12 @@ function headingLocator(outline, index) {
 // id of the model's element), 'model' (the model's state-free locator, unique
 // in the published page), 'unverified' (the model's state-free locator with
 // no usable outline), 'heading' (the owner-named heading from the published
-// page) or 'owner' (the owner's phrase as a heading name).
-export function chooseTransitionTarget(request, {control, outline, phrase} = {}) {
+// page) or 'owner' (the owner's phrase as a heading name). avoid is a locator
+// the capsule just matched to nothing, several elements or a syntax error; it
+// is never returned, so the next option (the element's published id, the
+// heading, the owner's phrase) is used instead.
+export function chooseTransitionTarget(request, {control, outline, phrase, avoid} = {}) {
+  const usable = locator => locator !== undefined && (avoid === undefined || !isDeepStrictEqual(locator, avoid));
   const clickAt = request.steps.findIndex(step => step.action === 'click');
   const states = new Set([...STATE_CLASS_WORDS, ...(outline?.stateClasses ?? [])]);
   const groups = new Map();
@@ -140,8 +144,14 @@ export function chooseTransitionTarget(request, {control, outline, phrase} = {})
   const candidates = [...groups.values()].filter(group => group.stripped || group.after)
     .sort((left, right) => Number(right.stripped) - Number(left.stripped));
   const heading = outline?.headingIndex;
+  // The owner-named heading, else (when that locator is avoided) its published id.
+  const headingTarget = () => heading === undefined ? undefined
+    : [headingLocator(outline, heading), idLocator(outline, heading)].find(usable);
   for (const group of candidates) {
-    if (!outline) return {locator: group.base, basis: 'unverified', members: group.members};
+    if (!outline) {
+      if (usable(group.base)) return {locator: group.base, basis: 'unverified', members: group.members};
+      continue;
+    }
     let element, unique = false;
     if (group.base.selector !== undefined) {
       const matched = staticMatches(group.base.selector, outline);
@@ -152,18 +162,24 @@ export function chooseTransitionTarget(request, {control, outline, phrase} = {})
           const narrowed = member.selector !== undefined ? staticMatches(member.selector, outline) : undefined;
           if (narrowed?.indices.length === 1) { element = narrowed.indices[0]; break; }
         }
-      } else if (matched && heading === undefined) return {locator: group.base, basis: 'unverified', members: group.members};
+      } else if (matched && heading === undefined) {
+        if (usable(group.base)) return {locator: group.base, basis: 'unverified', members: group.members};
+        continue;
+      }
     } else {
       const named = outline.elements.flatMap((item, index) => item.heading && item.name === group.base.name ? [index] : []);
       if (named.length === 1) [element, unique] = [named[0], true];
     }
     if (element === undefined || (heading !== undefined && !contains(outline, element, heading))) continue;
     const id = idLocator(outline, element);
-    if (id) return {locator: id, basis: 'id', members: group.members};
-    if (unique) return {locator: group.base, basis: 'model', members: group.members};
-    if (heading !== undefined && headingLocator(outline, heading)) return {locator: headingLocator(outline, heading), basis: 'heading', members: group.members};
+    if (usable(id)) return {locator: id, basis: 'id', members: group.members};
+    if (unique && usable(group.base)) return {locator: group.base, basis: 'model', members: group.members};
+    const named = headingTarget();
+    if (named) return {locator: named, basis: 'heading', members: group.members};
   }
-  if (heading !== undefined && headingLocator(outline, heading)) return {locator: headingLocator(outline, heading), basis: 'heading'};
-  if (phrase) return {locator: {role: 'heading', name: phrase, exact: true}, basis: 'owner'};
+  const named = headingTarget();
+  if (named) return {locator: named, basis: 'heading'};
+  const owner = phrase ? {role: 'heading', name: phrase, exact: true} : undefined;
+  if (usable(owner)) return {locator: owner, basis: 'owner'};
   return undefined;
 }

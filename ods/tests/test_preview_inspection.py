@@ -4,6 +4,7 @@ import base64
 import collections
 import copy
 import hashlib
+import json
 import os
 import socket
 import struct
@@ -1045,6 +1046,31 @@ def palette_share(result, name):
 TOWER1_PLAN = [step("assert-hidden", "#midnight-concert-card"), role_step("click", "button", "Show sold out"),
                step("assert-visible", "#midnight-concert-card")]
 
+# Fleet rounds 106 and 107 (ods-main-qualification-20260924-r049): the
+# model-authored bytes of recorded publications, from the replay fixtures of
+# the plugin tests, checked against each host snapshot digest.
+PIXEL_TESTS = Path(__file__).resolve().parents[1] / "extensions/services/pixel-agent/tests"
+MIDNIGHT_OWNER = ("heading", "Midnight sold-out concert")
+
+
+def recorded_site(fixture_name, publication):
+    fixture = json.loads((PIXEL_TESTS / fixture_name).read_text(encoding="utf-8"))
+    files, receipt = {}, None
+    for call in fixture["turns"][0]["calls"]:
+        if call["call"] == publication:
+            receipt = call["details"]
+            break
+        name = call["arguments"].get("path", "").split("/")[-1]
+        if call["tool"] == "write":
+            files[name] = call["arguments"]["content"]
+        elif call["tool"] == "edit":
+            for edit in call["arguments"]["edits"]:
+                files[name] = files[name].replace(edit["oldText"], edit["newText"], 1)
+    files = {name: content.encode() for name, content in files.items()}
+    assert bundle(None, None, files)["request"]["sha256"] == receipt["sha256"], fixture_name
+    return files, fixture
+
+
 @unittest.skipUnless(
     os.environ.get("ODS_PREVIEW_BROWSER_TESTS") == "1", "real Chromium opt in"
 )
@@ -1437,6 +1463,42 @@ class BrowserTests(unittest.TestCase):
         result = self.check(html, [step("assert-visible", "#item")])
         self.assertEqual(result["pageErrors"]["count"], 1, "the palette load is not recorded")
         self.assertIn("green", palette_names(result))
+
+    def test_strixy_round107_corrected_args_pass(self):
+        # The flattened call-8 steps, as the rejected request's ready args.
+        files, _ = recorded_site("inspection-recovery-strixy-round107.json", 7)
+        result = self.check(None, [step("assert-hidden", "#midnight-card"), step("click", name="Show sold out"),
+                                   step("assert-visible", "#midnight-card")], files)
+        self.assertEqual(result["status"], "passed", result)
+        self.assertEqual(result["steps"][0]["before"]["display"], "none")
+
+    def test_mac_round106_heading_plan_passes(self):
+        # Calls 9-12 failed on locators; the requirement-derived heading plan,
+        # with the model's .reveal-btn click or the owner's button, passes.
+        files, _ = recorded_site("inspection-recovery-mac-round106.json", 8)
+        for control in (step("click", ".reveal-btn"), step("click", name="Show sold out")):
+            with self.subTest(control=control):
+                result = self.check(None, [role_step("assert-hidden", *MIDNIGHT_OWNER), control,
+                                           role_step("assert-visible", *MIDNIGHT_OWNER)], files)
+                self.assertEqual(result["status"], "passed", result)
+
+    def test_laptop_round107_measured_failures_are_page_defects(self):
+        # site-ba3eb2f6 never hides the card; the corrected plan fails at step 1.
+        files, _ = recorded_site("inspection-recovery-laptop-round107.json", 3)
+        result = self.check(None, [step("assert-hidden", ".event-card.sold-out"), step("click", ".show-sold-out-btn"),
+                                   step("assert-visible", ".event-card.sold-out")], files)
+        self.assertEqual(result["steps"][0]["errorCode"], "visibility_mismatch", result)
+        self.assertTrue(result["steps"][0]["before"]["visible"])
+        # site-1f5f2cf8, call 26: scripts ran and the real click removed .hidden,
+        # while .sold-out-card {display:none} still hides the card.
+        files, fixture = recorded_site("inspection-recovery-laptop-round107.json", 23)
+        recorded = next(call for call in fixture["turns"][0]["calls"] if call["call"] == 26)
+        result = self.check(None, recorded["arguments"]["steps"], files)
+        self.assertEqual([s["status"] for s in result["steps"]], ["passed", "passed", "passed", "failed"], result)
+        self.assertEqual(result["steps"][3]["errorCode"], "visibility_mismatch")
+        self.assertEqual(result["steps"][3]["before"]["display"], "none")
+        self.assertEqual(recorded["details"]["steps"][3]["before"]["display"], "none")
+
 
 @unittest.skipUnless(
     os.environ.get("ODS_INSPECTION_TEST_IMAGE"), "isolated Docker image test opt in"
