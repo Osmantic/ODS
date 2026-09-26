@@ -33,7 +33,7 @@ import { assistantMessageText, composeProgressFinalization, composeReadPages, cr
 import { STOP_SYNTHESIS_LIMITS, STOP_SYNTHESIS_NOTE, synthesisAnswer, synthesisRequest } from "./stop-synthesis.mjs";
 import { OWNER_VISIBLE_REPLY_INSTRUCTION, OWNER_VISIBLE_REPLY_REASON, ownerInteractiveTurn, silentReplyText } from "./owner-visible-reply.mjs";
 import { canonicalWorkspaceParams, extensionlessHtmlWrite, workspaceFileParent, nativeExecWorkdir, sandboxHostWorkspaceFailure, malformedRelativeWorkspacePath } from "./workspace-path-contract.mjs";
-import { routePlaygroundTool, requestsNewPlaygroundProject } from "./playground-projects.mjs";
+import { bindsNewProject, routePlaygroundTool, requestsNewPlaygroundProject } from "./playground-projects.mjs";
 import { workspaceMutationFiles } from "./workspace-projects.mjs";
 import {WORKSPACE_BUNDLE_TOOL, normalizeWorkspaceBundle} from './workspace-bundle.mjs';
 import { PREVIEW_INSPECTION_TOOL, requestsVisibilityInteraction, requestsBehaviorPreservation, boundVisibilityInspection, boundStaticPreviewInspection,
@@ -3884,6 +3884,12 @@ function extensionDiscoveryEligible(state) {
     [...state.operationsRequiredActions].every((action) => EXTENSION_READ_ACTIONS.has(action));
 }
 
+// Owner and run states in which Playground project routing applies.
+function playgroundRoutingActive(state) {
+  return Boolean(state) && !state.clientCancelled && !state.recursiveDeleteDenied && !state.unrequestedOperationsTerminal
+    && !state.privateNetworkPrompt && !state.operationsRequired && !state.exactDownloadRequested && !state.codingExhausted;
+}
+
 function toolProgressLane(state, tool, wrappedTarget) {
   // Opt in only for current, explicitly mixed owner scope. This attribution is
   // accounting, not authority: all existing tool/broker boundaries still run.
@@ -7353,6 +7359,42 @@ export function createToolLoopGuard({
     } catch { observe({callbackThrew:true}); }
   }
 
+  // The first tool call after a correctable refusal tripped the global fuse
+  // (correctableRefusal in run-progress-budget.mjs) may be the remedy that
+  // refusal named: for the Playground router's refusals before the first
+  // project file, a write the router will bind as the new project
+  // (bindsNewProject). Only that call, and only while no tool boundary has
+  // delivered the finalization instruction, re-opens the response. Any other
+  // first call spends the correction, and the stop proceeds exactly as
+  // before. Nested Tool Search children get no allowance.
+  function admitRefusalRemedy(state, toolName, params, callId) {
+    const remedy = progressFinalization(state).phase === 'pending' &&
+      typeof callId === 'string' && callId !== '' && !callId.startsWith('tool_search_code:') &&
+      playgroundRoutingActive(state) && state.playgroundRouting !== undefined &&
+      bindsNewProject({state:state.playgroundRouting, tool:toolName, params, root:state.configuredWorkspaceRoot,
+        existingPaths:[...state.successfulReadPaths]});
+    if (!state.progressBudget.correctFuse(remedy)) return false;
+    state.progressFinalization.disarm();
+    return true;
+  }
+
+  // A correctable refusal's kind, kept by exact call ID until its receipt is
+  // counted (after_tool_call or tool_result_persist, whichever comes first).
+  // Only the refusal itself reaches the runtime.
+  function rememberCorrectableRefusal(state, callId, kind) {
+    if (typeof kind !== 'string' || !kind || typeof callId !== 'string' || !callId ||
+        callId.startsWith('tool_search_code:')) return;
+    const refusals = state.correctableRefusals ??= new Map();
+    if (refusals.size >= MAX_TRACKED_RUNS) refusals.delete(refusals.keys().next().value);
+    refusals.set(callId, kind);
+  }
+
+  function takeCorrectableRefusal(state, callId) {
+    const kind = state.correctableRefusals?.get(callId);
+    state.correctableRefusals?.delete(callId);
+    return kind;
+  }
+
   // Publication currency across later calls (see preview-revalidation.mjs).
   // A call this guard refuses runs nothing: it neither advances nor revokes a
   // pending host comparison, and its receipt is recognized by exact call ID.
@@ -7399,6 +7441,11 @@ export function createToolLoopGuard({
     // policy and deterministic routing active from runId alone; operations
     // that truly need a session still fail closed on the optional sessionId.
     const state = runId ? stateFor(runId) : undefined;
+    // The one exception to the stop below: the first tool call after a
+    // correctable refusal tripped the fuse, when it is that refusal's remedy.
+    if (state?.progressBudget.pendingCorrection !== undefined) {
+      admitRefusalRemedy(state, toolName, normalizedParams ?? event?.params, context?.toolCallId ?? event?.toolCallId);
+    }
     // Every tool stays blocked after the budget stops the response. Until the
     // model has seen the finalization instruction, the refusal carries it; a
     // tool call during the answer turn ends the run at this boundary (the
@@ -7477,8 +7524,7 @@ export function createToolLoopGuard({
     const asksOwner = toolName === 'pixel_ods_ask_user' || (toolName === 'tool_call' && ['pixel_ods_ask_user','openclaw:pixel-ods:pixel_ods_ask_user'].includes(event?.params?.id));
     if ((asksOwner || ['pixel_ods_goal','pixel_ods_activity','pixel_ods_skill'].includes(delegatedName)) &&
         !state?.operationsExpectedExtensionLifecycle) return state?.clientCancelled ? {block:true,blockReason:CLIENT_CANCELLED_REASON} : undefined;
-    if (state && !state.clientCancelled && !state.recursiveDeleteDenied && !state.unrequestedOperationsTerminal
-      && !state.privateNetworkPrompt && !state.operationsRequired && !state.exactDownloadRequested && !state.codingExhausted) {
+    if (playgroundRoutingActive(state)) {
       state.playgroundRouting ??= {};
       const projectRoute = routePlaygroundTool({state:state.playgroundRouting,tool:toolName,
         params:normalizedParams ?? event?.params,root:state.configuredWorkspaceRoot,
@@ -7486,7 +7532,10 @@ export function createToolLoopGuard({
         preserveExisting:state.workspaceVisualContinuationRequested && !state.workspaceTaskDirectory?.startsWith('Playground/'),
         continueProject:state.workspaceVisualContinuationRequested,
         existingPaths:[...state.successfulReadPaths]});
-      if (projectRoute?.block) return projectRoute;
+      if (projectRoute?.block) {
+        rememberCorrectableRefusal(state, context?.toolCallId ?? event?.toolCallId, projectRoute.correctable);
+        return {block:true, blockReason:projectRoute.blockReason};
+      }
       if (projectRoute?.params) normalizedParams = projectRoute.params;
       const routedRestriction = workspacePreviewRestrictionReason(state, delegatedName,
         toolName === 'tool_call' ? (normalizedParams ?? event?.params)?.args : normalizedParams ?? event?.params);
@@ -9877,7 +9926,8 @@ export function createToolLoopGuard({
         params: event.params, failed: failedToolOutcome(event), pending: running,
         discovery:state.workspaceLaneRequested && (EXTENSION_METADATA_TOOLS.has(effectiveProgressTool) ||
           effectiveProgressTool === 'pixel_ops_inventory'),
-        lane:toolProgressLane(state, effectiveProgressTool,toolName === 'tool_call' ? event.params?.id : undefined)});
+        lane:toolProgressLane(state, effectiveProgressTool,toolName === 'tool_call' ? event.params?.id : undefined),
+        correctableRefusal:takeCorrectableRefusal(state, toolCallId)});
     }
     if (
       toolName === "tool_call" &&
@@ -11151,12 +11201,14 @@ export function createToolLoopGuard({
     // their persisted error receipt too; call IDs prevent double accounting.
     if (state && message.isError === true) {
       state.progressBudget.observeResult({callId: toolCallId, tool: message.toolName,
-        failed: true, lane:progressLane});
+        failed: true, lane:progressLane, correctableRefusal:takeCorrectableRefusal(state, toolCallId)});
     }
     // Transcript copy only: OpenClaw applies tool_result_persist to the saved
     // session, not to the live context of this run. The finalization
-    // instruction therefore travels as a before_tool_call refusal.
-    if (state?.progressBudget.exhausted) {
+    // instruction therefore travels as a before_tool_call refusal. While the
+    // refusal that tripped the fuse may still be corrected, its own receipt
+    // keeps the refusal text: the response may yet continue.
+    if (state?.progressBudget.exhausted && state.progressBudget.pendingCorrection === undefined) {
       return {message: {...message, content: [{type: 'text', text: RUN_PROGRESS_STOP_REASON}]}};
     }
     if (message.isError === true && state?.progressBudget.laneExhausted(progressLane)) {
