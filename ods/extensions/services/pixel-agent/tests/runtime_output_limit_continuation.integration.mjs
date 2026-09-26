@@ -1,98 +1,96 @@
-// Real pinned harness + real ingress, deterministic model, disposable state.
+// Real pinned harness + the real pixel-ods plugin + the real ingress on the
+// Portal history path; deterministic model, disposable state.
 // strixy 2026-09-25: the owner's website request produced one reply that
 // wrote the whole page in one tool call and stopped at the output limit
-// (finish_reason "length"). The model here replays that reply: OpenClaw
-// 2026.6.33 does not run the cut call and skips before_agent_finalize, so the
-// ingress asks Pixel for one continuation turn with the fixed message. The
-// continuation either answers ('answer') or is cut again ('cut'), which keeps
-// the honest output-limit report with no further turn. A long text answer cut
-// the same way ('text') reaches the owner as OpenClaw's generic "couldn't
-// generate a response" without the continuation, so it is continued as well.
+// (finish_reason "length"). OpenClaw 2026.6.33 does not run the cut call and
+// skips before_agent_finalize, so the ingress asks Pixel for one continuation
+// turn with a fixed message. Each cut case is compared with the same model
+// behaviour without the cut: the continuation keeps the owner request's
+// contract, Playground project and delivery checks, so the owner receives
+// what the uncut turn would have delivered.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createServer} from 'node:http';
 import {once} from 'node:events';
-import {spawn} from 'node:child_process';
-import {mkdtempSync,mkdirSync,writeFileSync,cpSync,symlinkSync,readFileSync,rmSync,existsSync} from 'node:fs';
+import {spawn, execFile} from 'node:child_process';
+import {mkdtempSync,mkdirSync,writeFileSync,symlinkSync,readFileSync,readdirSync,rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
+import {fileURLToPath} from 'node:url';
 import {setTimeout as delay} from 'node:timers/promises';
-import {createIngressServer} from '../host/pixel_ingress.mjs';
+import {createIngressServer, gatewayFetch} from '../host/pixel_ingress.mjs';
+import {createChatHistoryLedger} from '../host/chat_history_ledger.mjs';
 import {OUTPUT_LIMIT_CONTINUATION_PROMPT,OUTPUT_LIMIT_UNRECOVERED_TEXT} from '../plugin/output-limit-recovery.mjs';
-const pkg=process.env.OPENCLAW_PACKAGE;
-const PROMPT='as a demo of your capabilities, make me a cool looking webpage with a forest theme and cool forest type effects.  Best you can do.' +
-  "\n\n[ODS Portal delivery requirement: Answer the owner's complete message above. " +
-  'If it asks for exact text, copy that full exact text. Do not answer with a generic acknowledgement. Do not output NO_REPLY.]';
-const OPENING='Let me build something impressive — a full forest-themed interactive experience.';
-const ANSWER='Your forest page is ready in Playground/forest as index.html, styles.css and script.js.';
 
-for (const continuation of ['answer','cut','text']) test(`real harness output-limit continuation: ${continuation}`,
-  {skip:!pkg||process.platform==='win32',timeout:120000}, async () => {
+const pkg=process.env.OPENCLAW_PACKAGE;
+const DELIVERY="\n\n[ODS Portal delivery requirement: Answer the owner's complete message above. " +
+  'If it asks for exact text, copy that full exact text. Do not answer with a generic acknowledgement. Do not output NO_REPLY.]';
+const SITE='as a demo of your capabilities, make me a cool looking webpage with a forest theme and cool forest type effects.  Best you can do.'+DELIVERY;
+const TEXT='Write me the longest, most detailed guide you can about how old-growth forests store carbon.'+DELIVERY;
+const OPENING='Let me build something impressive — a full forest-themed interactive experience.';
+const READY='Your forest page is ready in Playground/forest as index.html, styles.css and script.js.';
+const GUIDE='Old-growth forests store carbon in living wood, dead wood and deep soils; here is the concise guide.';
+const STYLES={path:'Playground/forest/styles.css',content:'body{background:#0b3d20;color:#e8f5e9}\n'};
+const PAGE={path:'Playground/forest/index.html',content:'<!doctype html><html><head><title>Forest</title><link rel="stylesheet" href="styles.css"></head><body><h1>Forest</h1></body></html>\n'};
+const cut={cut:true}, cutText={cut:true,text:true}, write=file=>({write:file}), say=text=>({say:text});
+
+// Each cut case and the uncut control with the same model behaviour.
+const CASES={
+  'site':{prompt:SITE,steps:[cut,write(PAGE),say(READY)],control:[write(PAGE),say(READY)],continuationRound:1},
+  'tools then cut':{prompt:SITE,steps:[write(STYLES),cut,write(PAGE),say(READY)],control:[write(STYLES),write(PAGE),say(READY)],continuationRound:2},
+  'unfounded ready claim':{prompt:SITE,steps:[cut,say(READY)],control:[say(READY)],continuationRound:1},
+  'text':{prompt:TEXT,steps:[cutText,say(GUIDE)],control:[say(GUIDE)],continuationRound:1,followUp:true},
+  'cut again':{prompt:SITE,steps:[cut,cut]},
+};
+
+async function run(prompt,steps,{followUp=false}={}) {
   const root=mkdtempSync(join(tmpdir(),'ods-output-limit-'));
-  let rounds=0,log='',child,ingress;
-  const requests=[];
+  const workspace=join(root,'workspace');
+  let log='',child,ingress;
+  const requests=[],grants=[],executed=[];
   const chunk=(delta,finish=null,extra={})=>'data: '+JSON.stringify({id:'fixture',object:'chat.completion.chunk',
     choices:[{index:0,delta,finish_reason:finish}],...extra})+'\n\n';
+  const text=content=>typeof content==='string'?content:Array.isArray(content)?content.map(part=>part?.text??'').join('\n'):'';
   const upstream=createServer(async(req,res)=>{
-    const chunks=[];for await(const part of req) chunks.push(part);
-    const body=JSON.parse(Buffer.concat(chunks).toString());
-    requests.push(body.messages.filter(message=>message.role==='user')
-      .map(message=>typeof message.content==='string'?message.content:JSON.stringify(message.content)));
-    const round=rounds++;
+    const parts=[];for await(const part of req) parts.push(part);
+    const body=JSON.parse(Buffer.concat(parts).toString());
+    // Each run has its own disposable root; compare prompts without it.
+    requests.push({system:text(body.messages.find(message=>message.role==='system')?.content).replaceAll(root,'<root>'),
+      users:body.messages.filter(message=>message.role==='user').map(message=>text(message.content)),
+      tools:body.messages.filter(message=>message.role==='tool').length,maxTokens:body.max_tokens??body.max_completion_tokens});
+    // After the script, the model repeats its last answer (a revision pass).
+    const step=steps[requests.length-1]??steps.at(-1);
     res.writeHead(200,{'Content-Type':'text/event-stream'});
-    if(round===1&&continuation!=='cut'){
-      res.write(chunk({role:'assistant',content:ANSWER}));
-      res.end(chunk({},'stop')+'data: [DONE]\n\n');return;
+    if(step.say){res.write(chunk({role:'assistant',content:step.say}));res.end(chunk({},'stop')+'data: [DONE]\n\n');return;}
+    if(step.write){
+      res.write(chunk({role:'assistant',content:''}));
+      res.write(chunk({tool_calls:[{index:0,id:`call-${requests.length}`,type:'function',function:{name:'write',arguments:JSON.stringify(step.write)}}]}));
+      res.end(chunk({},'tool_calls')+'data: [DONE]\n\n');return;
     }
-    // The recorded shape: an opening sentence, then one whole-page write whose
-    // arguments end mid-document when the output limit is reached.
+    // The recorded shape: an opening sentence, then (unless text-only) one
+    // whole-page write whose arguments end mid-document at the output limit.
     res.write(chunk({role:'assistant',content:OPENING}));
-    if(continuation!=='text')res.write(chunk({tool_calls:[{index:0,id:`call-${round}`,type:'function',function:{name:'fixture_write',
-      arguments:'{"path":"forest/index.html","content":"<!doctype html><html><head><style>:root{--moss:#2f5d3a'}}]}));
-    res.end(chunk({},'length',{usage:{prompt_tokens:900,completion_tokens:4096,total_tokens:4996}})+'data: [DONE]\n\n');
+    if(!step.text)res.write(chunk({tool_calls:[{index:0,id:`call-${requests.length}`,type:'function',function:{name:'write',
+      arguments:'{"path":"Playground/forest/index.html","content":"<!doctype html><html><head><style>:root{--moss:#2f5d3a'}}]}));
+    res.end(chunk({},'length',{usage:{prompt_tokens:900,completion_tokens:8192,total_tokens:9092}})+'data: [DONE]\n\n');
   });
   await new Promise(resolve=>upstream.listen(0,'127.0.0.1',resolve));
   const probe=createServer();await new Promise(resolve=>probe.listen(0,'127.0.0.1',resolve));
   const port=probe.address().port;await new Promise(resolve=>probe.close(resolve));
-  mkdirSync(join(root,'node_modules'));symlinkSync(pkg,join(root,'node_modules','openclaw'));
-  const plugin=join(root,'plugin');mkdirSync(plugin);
-  cpSync(new URL('../plugin/',import.meta.url),join(plugin,'ods'),{recursive:true});
-  writeFileSync(join(plugin,'package.json'),JSON.stringify({name:'output-limit-fixture',version:'1.0.0',type:'module',openclaw:{extensions:['./index.mjs']}}));
-  writeFileSync(join(plugin,'openclaw.plugin.json'),JSON.stringify({id:'output-limit-fixture',contracts:{tools:['fixture_write']},activation:{onStartup:true},configSchema:{type:'object',properties:{}}}));
-  writeFileSync(join(plugin,'index.mjs'),`
-    import {createToolLoopGuard} from './ods/tool-loop-guard.mjs';
-    import {appendFileSync} from 'node:fs';
-    const record=x=>appendFileSync(${JSON.stringify(join(root,'events.jsonl'))},JSON.stringify(x)+'\\n');
-    const guard=createToolLoopGuard({abortRun:()=>false});
-    const route=(api,path,answer)=>api.registerHttpRoute({path,auth:'gateway',match:'exact',handler:async(req,res)=>{
-      let body='';for await(const part of req)body+=part;
-      const value=answer(JSON.parse(body).runId);record({route:path,value});
-      res.writeHead(200,{'Content-Type':'application/json'});res.end(JSON.stringify(value));return true;
-    }});
-    export default {id:'output-limit-fixture',register(api){
-      route(api,'/pixel-ods/verification',runId=>guard.deliveryVerificationForRun(runId));
-      route(api,'/pixel-ods/output-limit-continuation',runId=>guard.outputLimitContinuationForRun(runId));
-      api.on('before_prompt_build',(e,c)=>guard.observeRun(c,'pixel',e));
-      api.on('model_call_started',(e,c)=>guard.observeModelCall(e,c));
-      api.on('model_call_ended',(e,c)=>guard.observeModelEnd(e,c));
-      api.on('before_message_write',(e,c)=>{if(e.message?.role==='assistant')record({write:e.message.stopReason});
-        return guard.observeAssistantMessage(e,c);});
-      api.on('before_agent_finalize',(e,c)=>{const d=guard.beforeAgentFinalize(e,c);
-        record({finalize:e.lastAssistantMessage??null,decision:d?.action??null});return d;});
-      api.on('reply_payload_sending',e=>guard.replyPayloadSending(e));
-      api.registerTool({name:'fixture_write',description:'Write one workspace file.',
-        parameters:{type:'object',properties:{path:{type:'string'},content:{type:'string'}},required:['path','content']},
-        async execute(id,args){record({execute:args.path});return {content:[{type:'text',text:'written'}]};}});
-    }};
-  `);
+  // Pixel's access runtime keeps its state under ~/.openclaw.
+  mkdirSync(join(root,'.openclaw'),{mode:0o700});
+  mkdirSync(workspace);mkdirSync(join(root,'node_modules'));symlinkSync(pkg,join(root,'node_modules','openclaw'));
+  const model='Qwen3.6-35B-A3B';
+  // The strixy managed shape: an 8192-token output limit for the local model.
   const config={logging:{file:join(root,'runtime.log')},update:{checkOnStart:false},
     gateway:{mode:'local',bind:'loopback',port,auth:{mode:'token',token:'fixture-only'},http:{endpoints:{chatCompletions:{enabled:true}}}},
-    agents:{defaults:{workspace:join(root,'workspace'),skipBootstrap:true,model:{primary:'fixture/test'},contextTokens:32768,heartbeat:{every:'0m'}},
-      list:[{id:'pixel',default:true}]},
-    models:{mode:'replace',providers:{fixture:{baseUrl:`http://127.0.0.1:${upstream.address().port}/v1`,api:'openai-completions',apiKey:'fixture-only',
-      models:[{id:'test',name:'Fixture',contextWindow:32768,maxTokens:4096,reasoning:false,input:['text']}]}}},
-    tools:{allow:['fixture_write']},plugins:{allow:['output-limit-fixture'],load:{paths:[plugin]},
-      entries:{'output-limit-fixture':{enabled:true,hooks:{allowConversationAccess:true}}}}};
+    agents:{defaults:{workspace,skipBootstrap:true,sandbox:{mode:'off'},model:{primary:`ods-local/${model}`},contextTokens:131072,heartbeat:{every:'0m'}},
+      list:[{id:'pixel',default:true,workspace,model:`ods-local/${model}`,contextTokens:131072,params:{maxTokens:8192}}]},
+    models:{mode:'replace',providers:{'ods-local':{baseUrl:`http://127.0.0.1:${upstream.address().port}/v1`,api:'openai-completions',apiKey:'fixture-only',
+      models:[{id:model,name:`ODS Local ${model}`,contextWindow:131072,maxTokens:8192,reasoning:false,input:['text']}]}}},
+    tools:{exec:{host:'gateway'}},
+    plugins:{allow:['pixel-ods'],load:{paths:[fileURLToPath(new URL('../plugin/',import.meta.url))]},
+      entries:{'pixel-ods':{enabled:true,config:{modelContextWindow:131072},hooks:{allowConversationAccess:true}}}}};
   writeFileSync(join(root,'openclaw.json'),JSON.stringify(config));
   try {
     child=spawn(process.execPath,[join(pkg,'openclaw.mjs'),'gateway','run'],{cwd:root,detached:true,
@@ -100,49 +98,92 @@ for (const continuation of ['answer','cut','text']) test(`real harness output-li
       stdio:['ignore','pipe','pipe']});
     child.stdout.on('data',x=>log+=x);child.stderr.on('data',x=>log+=x);
     let ready=false;
-    for(let n=0;n<250;n++){
+    for(let n=0;n<400;n++){
       try{ready=(await fetch(`http://127.0.0.1:${port}/health`,{signal:AbortSignal.timeout(500)})).ok;}catch{}
       if(ready)break;assert.equal(child.exitCode,null,log);await delay(100);
     }
     assert.ok(ready,log);
-    ingress=createIngressServer({token:'fixture-only',gatewayPort:port});
+    // The production ingress transport, observed: every grant it received.
+    const observed=async(url,init)=>{
+      const response=await gatewayFetch(url,init);
+      if(!String(url).endsWith('/pixel-ods/output-limit-continuation'))return response;
+      const [kept,copy]=response.body.tee();
+      grants.push(new Response(copy).json());
+      return {...response,body:kept};
+    };
+    ingress=createIngressServer({token:'fixture-only',gatewayPort:port,historyLedger:createChatHistoryLedger(join(root,'chat-state')),
+      deps:{execFile,fetch:observed,setTimeout,clearTimeout}});
     await new Promise(resolve=>ingress.listen(0,'127.0.0.1',resolve));
-    const response=await fetch(`http://127.0.0.1:${ingress.address().port}/v1/chat/completions`,{method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({model:'openclaw:pixel',stream:true,user:'output-limit-fixture',messages:[{role:'user',content:PROMPT}]}),
-      signal:AbortSignal.timeout(60000)});
-    const body=await response.text();
-    assert.equal(response.status,200,body+'\n'+log);
-    const events=existsSync(join(root,'events.jsonl'))?readFileSync(join(root,'events.jsonl'),'utf8').trim().split('\n').map(JSON.parse):[];
-    const frames=body.split(/\r?\n/).filter(line=>line.startsWith('data: {')).map(line=>JSON.parse(line.slice(6)));
-    const delivered=frames.map(frame=>frame.choices?.[0]?.delta?.content ?? '').join('');
-    const trace=JSON.stringify({rounds,requests,events,delivered})+'\n'+log;
-    assert.equal(rounds,2,'exactly one continuation turn, never a loop\n'+trace);
-    assert.deepEqual(events.filter(x=>x.execute),[],'the cut write call never ran\n'+trace);
-    const grants=events.filter(x=>x.route==='/pixel-ods/output-limit-continuation');
-    assert.equal(grants.length,1,'the ingress asks once, for the owner turn only\n'+trace);
-    assert.equal(grants[0].value.eligible,true,trace);
-    assert.match(grants[0].value.user,/^ods-[0-9a-f]{64}$/,trace);
-    // OpenClaw prefixes each user message with its own timestamp envelope.
-    assert.match(requests[1].at(-1),/^\[[^\]\n]+\] ODS internal continuation: /,trace);
-    assert.ok(requests[1].at(-1).endsWith(` ${OUTPUT_LIMIT_CONTINUATION_PROMPT}`),'the continuation carries only the fixed message\n'+trace);
-    assert.ok(requests[1].slice(0,-1).some(text=>text.includes('forest theme')),'the owner request stays in context\n'+trace);
-    if(continuation!=='cut'){
-      assert.deepEqual(events.filter(x=>'write' in x).map(x=>x.write),['length','stop'],trace);
-      // OpenClaw skipped the hook for the cut turn; only the answer reached it.
-      assert.deepEqual(events.filter(x=>'finalize' in x).map(x=>[x.finalize,x.decision]),[[ANSWER,null]],trace);
-      assert.equal(delivered,ANSWER,trace);
-      assert.notEqual(frames.at(-1).pixel_outcome.status,'failed',trace);
-    } else {
-      assert.deepEqual(events.filter(x=>'write' in x).map(x=>x.write),['length','length'],trace);
-      assert.deepEqual(events.filter(x=>'finalize' in x),[],'OpenClaw skips the hook for both cut turns\n'+trace);
-      assert.ok(delivered.startsWith(OUTPUT_LIMIT_UNRECOVERED_TEXT),trace);
-      assert.equal(frames.at(-1).pixel_outcome.status,'failed',trace);
-    }
+    const turns=[];
+    const send=async(snapshot,requestId)=>{
+      const response=await fetch(`http://127.0.0.1:${ingress.address().port}/v1/chat/completions`,{method:'POST',
+        headers:{'Content-Type':'application/json'},signal:AbortSignal.timeout(90000),
+        body:JSON.stringify({model:'openclaw:pixel',stream:true,user:'output-limit-fixture',
+          messages:[{role:'user',content:snapshot.at(-1).content}],history_snapshot:{schemaVersion:1,messages:snapshot},request_id:requestId})});
+      const body=await response.text();
+      assert.equal(response.status,200,body+'\n'+log);
+      const frames=body.split(/\r?\n/).filter(line=>line.startsWith('data: {')).map(line=>JSON.parse(line.slice(6)));
+      assert.deepEqual(frames.filter(frame=>frame.error),[],body);
+      turns.push({delivered:frames.map(frame=>frame.choices?.[0]?.delta?.content??'').join(''),outcome:frames.at(-1).pixel_outcome?.status});
+    };
+    await send([{role:'user',content:prompt}],'turn-1');
+    const firstTurnRequests=requests.length;
+    if(followUp)await send([{role:'user',content:prompt},{role:'assistant',content:turns[0].delivered},
+      {role:'user',content:'Thanks. Summarize that in one sentence.'+DELIVERY}],'turn-2');
+    const ledger=readdirSync(join(root,'chat-state')).filter(name=>name.endsWith('.json'))
+      .map(name=>JSON.parse(readFileSync(join(root,'chat-state',name),'utf8')).status);
+    const files=readdirSync(workspace,{recursive:true}).map(String).sort();
+    const contents=Object.fromEntries(files.filter(file=>/\.(?:html|css|js)$/.test(file))
+      .map(file=>[file,readFileSync(join(workspace,file),'utf8')]));
+    return {turns,requests,firstTurnRequests,grants:await Promise.all(grants),ledger,files,contents,log};
   } finally {
     if(ingress){ingress.closeAllConnections();await new Promise(resolve=>ingress.close(resolve));}
     if(child&&child.exitCode===null){const closed=once(child,'close');process.kill(-child.pid,'SIGTERM');
       await Promise.race([closed,delay(3000)]);if(child.exitCode===null){process.kill(-child.pid,'SIGKILL');await closed;}}
     upstream.closeAllConnections();await new Promise(resolve=>upstream.close(resolve));rmSync(root,{recursive:true,force:true});
+  }
+}
+
+for (const [name,spec] of Object.entries(CASES)) test(`real Pixel output-limit continuation: ${name}`,
+  {skip:!pkg||process.platform==='win32',timeout:300000}, async () => {
+  const result=await run(spec.prompt,spec.steps,{followUp:spec.followUp});
+  const trace=JSON.stringify({...result,log:undefined,requests:result.requests.map(r=>({...r,system:r.system.length}))})+'\n'+result.log;
+  const [turn]=result.turns;
+  assert.equal(result.grants.length,1,'the ingress asks once, only for the cut owner turn\n'+trace);
+  assert.equal(result.grants[0].eligible,true,trace);
+  assert.match(result.grants[0].user,/^ods-[0-9a-f]{64}$/,trace);
+  assert.ok(result.requests.every(request=>request.maxTokens===8192),trace);
+  // The cut call never ran: no file holds its unfinished document.
+  assert.ok(!Object.values(result.contents).some(content=>content.includes('--moss')),trace);
+  assert.deepEqual(result.ledger,['ready'],trace);
+  if(name==='cut again'){
+    assert.equal(result.requests.length,2,'one continuation, never a loop\n'+trace);
+    assert.ok(turn.delivered.startsWith(OUTPUT_LIMIT_UNRECOVERED_TEXT),trace);
+    assert.equal(turn.outcome,'failed',trace);
+    return;
+  }
+  const continuation=result.requests[spec.continuationRound];
+  // OpenClaw prefixes each user message with its own timestamp envelope.
+  assert.match(continuation.users.at(-1),/^\[[^\]\n]+\] ODS internal continuation: /,trace);
+  assert.ok(continuation.users.at(-1).endsWith(` ${OUTPUT_LIMIT_CONTINUATION_PROMPT}`),'only the fixed message is new\n'+trace);
+  assert.ok(continuation.users.slice(0,-1).some(user=>user.includes('forest')),'the owner request stays in context\n'+trace);
+  assert.equal(continuation.system,result.requests[0].system,'the continuation keeps the owner turn system prompt\n'+trace);
+  assert.match(continuation.system,/can hold at most about 8192 output tokens/,trace);
+  // The same model behaviour without the cut, for comparison.
+  const control=await run(spec.prompt,spec.control);
+  assert.deepEqual(control.grants,[],'an uncut turn never asks\n'+JSON.stringify(control.grants));
+  assert.equal(control.requests[0].system,result.requests[0].system,'the same owner contract');
+  assert.deepEqual(turn,control.turns[0],'the owner receives what the uncut turn delivers\n'+trace);
+  assert.deepEqual(result.files,control.files,'the same files in the same Playground project\n'+trace);
+  assert.deepEqual(result.contents,control.contents,trace);
+  if(name==='unfounded ready claim')assert.equal(turn.outcome,'failed',trace);
+  if(name==='text'){
+    assert.equal(turn.delivered,GUIDE,trace);
+    assert.notEqual(turn.outcome,'failed',trace);
+    // The next owner message is its own turn, classified by itself.
+    const next=result.turns[1];
+    assert.equal(next.delivered,GUIDE,trace);
+    assert.equal(result.requests.length,result.firstTurnRequests+1,trace);
+    assert.match(result.requests.at(-1).users.at(-1),/Summarize that in one sentence\./,trace);
   }
 });
