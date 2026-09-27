@@ -62,8 +62,8 @@ function exhaustByFailures(guard) {
   return persisted;
 }
 
-function callTool(guard, toolName = 'web_search', params = {query: 'RTX 5070 vs RX 9070 1440p benchmark'}, id = `call-${toolName}`) {
-  return guard.beforeToolCall({toolName, toolCallId: id, params}, {...context, toolName, toolCallId: id});
+function callTool(guard, toolName = 'web_search', params = {query: 'RTX 5070 vs RX 9070 1440p benchmark'}, id = `call-${toolName}`, ctx = context) {
+  return guard.beforeToolCall({toolName, toolCallId: id, params}, {...ctx, toolName, toolCallId: id});
 }
 
 // The model call after the exhausting result still sees that original result
@@ -248,13 +248,13 @@ test('empty, degenerate, tool-like or overrun finalization falls back to the can
   assert.equal(guard.deliveryVerificationForRun(context.runId).text, RUN_PROGRESS_STOP_REASON);
 });
 
-function verifiedPreview(guard) {
+function verifiedPreview(guard, ctx = context) {
   const write = {path: 'night-garden/index.html', content: '<!doctype html><title>Night Garden</title><h1>Night Garden</h1>'};
-  callTool(guard, 'write', write, 'write');
+  callTool(guard, 'write', write, 'write', ctx);
   guard.afterToolCall({toolName: 'write', toolCallId: 'write', params: write, result: {details: {status: 'completed'}}},
-    {...context, toolName: 'write', toolCallId: 'write'});
+    {...ctx, toolName: 'write', toolCallId: 'write'});
   const params = {relativeDirectory: 'night-garden'};
-  assert.notEqual(callTool(guard, 'pixel_ods_workspace_preview', params, 'publish')?.block, true);
+  assert.notEqual(callTool(guard, 'pixel_ods_workspace_preview', params, 'publish', ctx)?.block, true);
   const entry = Buffer.from('index.html'), bytes = Buffer.from(write.content);
   const pathLength = Buffer.alloc(4), contentLength = Buffer.alloc(8);
   pathLength.writeUInt32BE(entry.length); contentLength.writeBigUInt64BE(BigInt(bytes.length));
@@ -264,7 +264,7 @@ function verifiedPreview(guard) {
     files: 1, bytes: bytes.length, sha256, siteId, entryFile: 'index.html', entrySha256: createHash('sha256').update(bytes).digest('hex'),
     port: 9437, url: `http://${siteId}.localhost:9437/${siteId}/`, httpStatus: 200, readbackVerified: true, executable: false, overwritten: false};
   guard.afterToolCall({toolName: 'pixel_ods_workspace_preview', toolCallId: 'publish', params, result: {details}},
-    {...context, toolName: 'pixel_ods_workspace_preview', toolCallId: 'publish'});
+    {...ctx, toolName: 'pixel_ods_workspace_preview', toolCallId: 'publish'});
   return details;
 }
 
@@ -300,6 +300,78 @@ test('visual stops never gain an unverified preview or localhost claim', () => {
   assert.ok(delivery.text.includes(`[Open last published preview](${details.url})`));
   assert.match(delivery.text, /not proof that all requested work completed/);
   assert.equal(delivery.preview.sha256, details.sha256);
+});
+
+// Each later turn in a chat is seeded with its latest publication. Replays a
+// fleet qualification chat: after an event website was published and revised,
+// a calc task in its own directory and a coding task in a new project each
+// exhausted the tool-loop fuse, and both stop replies linked the website and
+// carried its receipt, which Portal shows as that turn's own publication.
+function stopAfterEarlierPublication(prompt, paths = []) {
+  const guard = createToolLoopGuard({abortRun: () => true});
+  const site = {...context, runId: 'site-run'};
+  guard.observeRun(site, 'pixel', {prompt: 'Create a polished static event website in night-garden and publish a verified Pixel workspace preview.'});
+  const details = verifiedPreview(guard, site);
+  guard.observeRun(context, 'pixel', {prompt});
+  for (const path of paths) {
+    // A revision reads the published file before replacing it.
+    if (path.startsWith(`${details.relativeDirectory}/`)) {
+      assert.notEqual(callTool(guard, 'read', {path}, `read-${path}`)?.block, true, path);
+      guard.afterToolCall({toolName: 'read', toolCallId: `read-${path}`, params: {path},
+        result: {content: [{type: 'text', text: '<!doctype html><title>Night Garden</title><h1>Night Garden</h1>'}]}},
+      {...context, toolName: 'read', toolCallId: `read-${path}`});
+    }
+    const params = {path, content: path.endsWith('.html') ? '<!doctype html><title>Night Garden Revised</title>' : 'print(sum(i * i for i in range(1, 101)))\n'};
+    const decision = callTool(guard, 'write', params, path);
+    assert.notEqual(decision?.block, true, `${path}: ${decision?.blockReason}`);
+    guard.afterToolCall({toolName: 'write', toolCallId: path, params, result: {details: {status: 'completed'}}},
+      {...context, toolName: 'write', toolCallId: path});
+  }
+  exhaustByFailures(guard);
+  return {guard, details};
+}
+
+test('a stop in a different project neither links nor carries the earlier publication', () => {
+  const calc = 'In a separate workspace directory night-garden-calc, write a Python program that computes sum(i*i for i in range(1,101)). ' +
+    'Execute it so it writes public/result.json, create public/index.html showing the result, then publish ONLY the public subdirectory as a Pixel workspace preview.';
+  const coding = 'In a new workspace project night-garden-coding, implement a stdlib-only Python CSV expense-report CLI with unittest tests and run them. ' +
+    'Then create public/index.html with the test results and publish the public directory as a verified Pixel workspace preview.';
+  for (const [kind, prompt, paths] of [['calc', calc, ['night-garden-calc/solve.py']], ['calc before any write', calc, []],
+    ['coding', coding, ['night-garden-coding/totals.py', 'night-garden-coding/public/index.html']]]) {
+    const {guard} = stopAfterEarlierPublication(prompt, paths);
+    const delivery = guard.deliveryVerificationForRun(context.runId);
+    assert.equal(delivery.status, 'failed', kind);
+    assert.equal(delivery.text, RUN_PROGRESS_STOP_REASON, `${kind}: no link to another project's snapshot`);
+    assert.equal(delivery.preview, undefined, `${kind}: no receipt for Portal to show as this turn's publication`);
+    const verification = guard.verificationForRun(context.runId);
+    assert.equal(verification.preview, undefined, kind);
+    assert.doesNotMatch(verification.text, /last published preview/, kind);
+  }
+  // The answer turn gets the same scope: no link, and no allowance for the old URL.
+  const {guard, details} = stopAfterEarlierPublication(calc, ['night-garden-calc/solve.py']);
+  enterAnswerTurn(guard);
+  const answer = 'solve.py computes 338350, but result.json and the public preview were not produced before the tool limit.';
+  guard.beforeAgentFinalize({lastAssistantMessage: answer}, context);
+  const delivery = guard.deliveryVerificationForRun(context.runId);
+  assert.ok(delivery.text.startsWith(answer));
+  assert.match(delivery.text, /ODS did not verify a preview in this response\. No localhost URL is live or claimed\./);
+  assert.ok(!delivery.text.includes(details.url));
+  assert.equal(delivery.preview, undefined);
+});
+
+test('a stop while continuing the published project still offers its last verified preview', () => {
+  for (const prompt of ['Update that same website: change both page title and h1 to exactly "Night Garden Revised". Publish the updated preview and provide its new URL.',
+    'Add a visible footer "Tickets at the door" to night-garden/index.html and publish a verified Pixel workspace preview.']) {
+    const {guard, details} = stopAfterEarlierPublication(prompt, ['night-garden/index.html']);
+    const delivery = guard.deliveryVerificationForRun(context.runId);
+    assert.equal(delivery.status, 'failed', prompt);
+    assert.ok(delivery.text.includes(`[Open last published preview](${details.url})`), prompt);
+    assert.match(delivery.text, /not proof that all requested work completed/, prompt);
+    assert.equal(delivery.preview.sha256, details.sha256, prompt);
+    const verification = guard.verificationForRun(context.runId);
+    assert.equal(verification.preview.sha256, details.sha256, prompt);
+    assert.match(verification.text, /Your last published preview is still available/, prompt);
+  }
 });
 
 test('coding stops report a failed verification command alongside the answer', () => {
