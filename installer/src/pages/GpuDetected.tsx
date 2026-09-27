@@ -21,11 +21,16 @@ export default function GpuDetected({ onNext }: Props) {
   const [selectedTier, setSelectedTier] = useState<number>(1);
 
   useEffect(() => {
-    detectGpu().then((r) => {
-      setResult(r);
-      setSelectedTier(r.recommended_tier);
-      setLoading(false);
-    });
+    detectGpu()
+      .then((r) => {
+        setResult(r);
+        setSelectedTier(r.recommended_tier);
+        setLoading(false);
+      })
+      .catch((e) => {
+        console.error("GPU detection failed:", e);
+        setLoading(false);
+      });
   }, []);
 
   if (loading) {
