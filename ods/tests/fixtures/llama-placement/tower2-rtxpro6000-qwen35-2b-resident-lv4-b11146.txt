@@ -1,0 +1,113 @@
+0.00.000.301 I srv  llama_server: initializing ...
+warn: LLAMA_ARG_HOST environment variable is set, but will be overwritten by command line argument --host
+0.00.082.570 I cmn  common_param: common_params_print_info: build 11146 (7fe450e19) with GNU 14.2.0 for Linux x86_64
+0.00.082.574 I cmn  common_param: common_params_print_info: verbosity = 4 (adjust with the `-lv N` CLI arg)
+0.00.082.575 I cmn  common_param: device_info:
+0.00.193.330 I cmn  common_param:   - CUDA0   : NVIDIA RTX PRO 6000 Blackwell Workstation Edition (97246 MiB, 68993 MiB free)
+0.00.193.342 I cmn  common_param:   - CPU     : AMD Ryzen Threadripper PRO 7965WX 24-Cores (257272 MiB, 257272 MiB free)
+0.00.193.423 I cmn  common_param: system_info: n_threads = 4 (n_threads_batch = 4) / 48 | CUDA : ARCHS = 500,610,700,750,800,860,890,900,1200 | USE_GRAPHS = 1 | FA_QUANTS = q4_0-q4_0,q8_0-q8_0,f16-f16,bf16-bf16 | BLACKWELL_NATIVE_FP4 = 1 | CPU : SSE3 = 1 | SSSE3 = 1 | AVX = 1 | AVX2 = 1 | F16C = 1 | FMA = 1 | BMI2 = 1 | AVX512 = 1 | AVX512_VBMI = 1 | AVX512_VNNI = 1 | AVX512_BF16 = 1 | LLAMAFILE = 1 | OPENMP = 1 | REPACK = 1 | 
+0.00.193.485 I srv  init_listene: running without SSL
+0.00.193.802 I srv          init: using 47 threads for HTTP server
+0.00.193.841 W srv  llama_server: security: no API key is set and CORS allows all origins (see https://github.com/ggml-org/llama.cpp/pull/25655)
+0.00.197.071 I srv    load_model: loading model '/models/Qwen3.5-2B-Q4_K_M.gguf'
+0.00.197.073 I srv    load_model: local path '/models/Qwen3.5-2B-Q4_K_M.gguf'
+0.00.197.091 I cmn  common_init_: fitting params to device memory ...
+0.00.197.092 I cmn  common_init_: (for bugs during this step try to reproduce them with -fit off, or provide --verbose logs if the bug only occurs with -fit on)
+0.00.197.144 I common_params_fit_impl: getting device memory data for initial parameters:
+0.00.582.020 I common_memory_breakdown_print: | memory breakdown [MiB]                                 | total    free    self   model   context   compute    unaccounted |
+0.00.582.035 I common_memory_breakdown_print: |   - CUDA0 (RTX PRO 6000 Blackwell Workstation Edition) | 97246 = 68971 + (2106 =  1211 +     787 +     108) +       26168 |
+0.00.582.035 I common_memory_breakdown_print: |   - Host                                               |                   469 =   397 +       0 +      72                |
+0.00.622.797 I common_params_fit_impl: projected to use 2106 MiB of device memory vs. 68971 MiB of free device memory
+0.00.622.803 I common_params_fit_impl: will leave 66865 >= 1024 MiB of free device memory, no changes needed
+0.00.622.804 I common_fit_params: successfully fit params to free device memory
+0.00.622.807 I common_fit_params: fitting params to free memory took 0.43 seconds
+0.00.650.190 I llama_model_loader: loaded meta data with 46 key-value pairs and 320 tensors from /models/Qwen3.5-2B-Q4_K_M.gguf (version GGUF V3 (latest))
+0.00.650.203 I llama_model_loader: Dumping metadata keys/values. Note: KV overrides do not apply in this output.
+0.00.688.216 I llama_model_loader: - type  f32:  133 tensors
+0.00.688.217 I llama_model_loader: - type q8_0:   36 tensors
+0.00.688.217 I llama_model_loader: - type q4_K:   98 tensors
+0.00.688.217 I llama_model_loader: - type q5_K:   36 tensors
+0.00.688.217 I llama_model_loader: - type q6_K:   17 tensors
+0.00.692.825 I llama_prepare_model_devices: using device CUDA0 (NVIDIA RTX PRO 6000 Blackwell Workstation Edition) (0000:01:00.0) - 68991 MiB free
+0.00.764.739 I load: 0 unused tokens
+0.00.784.821 I load: printing all EOG tokens:
+0.00.784.824 I load:   - 248044 ('<|endoftext|>')
+0.00.784.825 I load:   - 248046 ('<|im_end|>')
+0.00.784.825 I load:   - 248063 ('<|fim_pad|>')
+0.00.784.826 I load:   - 248064 ('<|repo_name|>')
+0.00.784.826 I load:   - 248065 ('<|file_sep|>')
+0.00.784.983 I load: special tokens cache size = 33
+0.00.840.737 I load: token to piece cache size = 1.7581 MB
+0.00.840.755 I print_info: n_embd                = 2048
+0.00.840.756 I print_info: n_layer               = 24
+0.00.840.781 I print_info: n_vocab               = 248320
+0.00.844.598 I load_tensors: loading model tensors, this can take a while... (load_mode = mmap)
+0.00.910.805 I load_tensors: offloading output layer to GPU
+0.00.910.809 I load_tensors: offloading 23 repeating layers to GPU
+0.00.910.809 I load_tensors: offloaded 25/25 layers to GPU
+0.00.910.812 I load_tensors:   CPU_Mapped model buffer size =   397.85 MiB
+0.00.910.813 I load_tensors:        CUDA0 model buffer size =  1211.05 MiB
+0.00.978.808 I cmn  common_init_: added <|endoftext|> logit bias = -inf
+0.00.978.812 I cmn  common_init_: added <|im_end|> logit bias = -inf
+0.00.978.813 I cmn  common_init_: added <|fim_pad|> logit bias = -inf
+0.00.978.814 I cmn  common_init_: added <|repo_name|> logit bias = -inf
+0.00.978.814 I cmn  common_init_: added <|file_sep|> logit bias = -inf
+0.00.978.885 I llama_context: constructing llama_context
+0.00.978.889 I llama_context: n_seq_max             = 1
+0.00.978.889 I llama_context: n_ctx                 = 65536
+0.00.978.890 I llama_context: n_ctx_seq             = 65536
+0.00.978.890 I llama_context: n_batch               = 2048
+0.00.978.890 I llama_context: n_ubatch              = 512
+0.00.978.890 I llama_context: causal_attn           = 1
+0.00.978.891 I llama_context: flash_attn            = auto
+0.00.978.891 I llama_context: kv_unified            = false
+0.00.978.894 I llama_context: freq_base             = 10000000.0
+0.00.978.894 I llama_context: freq_scale            = 1
+0.00.978.894 I llama_context: n_rs_seq              = 0
+0.00.978.895 I llama_context: n_outputs_max         = 1
+0.00.978.895 I llama_context: n_outputs_max_per_seq = 1
+0.00.978.895 I llama_context: n_ctx_seq (65536) < n_ctx_train (262144) -- the full capacity of the model will not be utilized
+0.00.982.130 I llama_context:  CUDA_Host  output buffer size =     0.95 MiB
+0.00.982.476 I llama_kv_cache:      CUDA0 KV buffer size =   768.00 MiB
+0.00.982.956 I llama_kv_cache: size =  768.00 MiB ( 65536 cells,   6 layers,  1/1 seqs), K (f16):  384.00 MiB, V (f16):  384.00 MiB
+0.00.982.958 I llama_kv_cache: attn_rot_k = 0, n_embd_head_k_all = 256
+0.00.982.959 I llama_kv_cache: attn_rot_v = 0, n_embd_head_k_all = 256
+0.00.983.055 I llama_memory_recurrent:      CUDA0 RS buffer size =    19.27 MiB
+0.00.983.060 I llama_memory_recurrent: size =   19.27 MiB (     1 cells,  24 layers,  1 seqs  0 rs_seq), R (f32):    1.27 MiB, S (f32):   18.00 MiB, P (f32):    0.00 MiB
+0.00.984.186 I sched_reserve: reserving ...
+0.00.985.014 I resolve_fused_ops: Flash Attention enabled
+0.00.985.016 I resolve_fused_ops: resolving fused DeepSeek V4 HC support:
+0.00.985.267 I resolve_fused_ops: fused DeepSeek V4 HC pre enabled
+0.00.985.511 I resolve_fused_ops: fused DeepSeek V4 HC comb enabled
+0.00.985.757 I resolve_fused_ops: fused DeepSeek V4 HC post enabled
+0.01.023.360 I sched_reserve:      CUDA0 compute buffer size =   108.16 MiB
+0.01.023.364 I sched_reserve:  CUDA_Host compute buffer size =    72.02 MiB
+0.01.023.365 I sched_reserve: graph: nodes = 1411, splits = 2, input objects = 4, input tensors = 7
+0.01.023.366 I sched_reserve: reserve took 39.18 ms, sched copies = 1
+0.01.023.416 I cmn          init: llama threadpool init, n_threads = 4
+0.01.024.473 I cmn  common_init_: warming up the model with an empty run - please wait ... (--no-warmup to disable)
+0.01.076.817 I cmn  common_conte: the context does not support partial sequence removal
+0.01.079.337 I srv    load_model: speculative decoding will use checkpoints
+0.01.079.340 I srv    load_model: initializing, n_slots = 1, n_ctx_slot = 65536, kv_unified = 'false'
+0.01.079.352 I spec common_specu: no implementations specified for speculative decoding
+0.01.079.354 I slot   load_model: id  0 | task -1 | new slot, n_ctx = 65536
+0.01.079.419 I srv    load_model: prompt cache is enabled, size limit: 8192 MiB
+0.01.079.421 I srv    load_model: use `--cache-ram 0` to disable the prompt cache
+0.01.079.421 I srv    load_model: for more info see https://github.com/ggml-org/llama.cpp/pull/16391
+0.01.079.421 I srv    load_model: context checkpoints enabled, max = 32, min spacing = 8192
+0.01.079.434 I srv          init: idle slots will be saved to prompt cache upon starting a new task
+0.01.082.785 I srv          init: init: chat template, example_format: '<|im_start|>system
+You are a helpful assistant<|im_end|>
+<|im_start|>user
+Hello<|im_end|>
+<|im_start|>assistant
+Hi there<|im_end|>
+<|im_start|>user
+How are you?<|im_end|>
+<|im_start|>assistant
+<think>
+'
+0.01.083.172 I srv          init: init: chat template, thinking = 1
+0.01.083.177 I srv          init: preserve_reasoning kwarg: not supported by template
+0.01.083.213 I srv  llama_server: model loaded
+0.01.083.218 I srv  llama_server: listening on http://0.0.0.0:8080

@@ -694,7 +694,82 @@ elif command -v python >/dev/null 2>&1; then
     PYTHON_CMD="python"
 fi
 
-"$PYTHON_CMD" - "$CAP_FILE" "$PREFLIGHT_FILE" "$REPORT_FILE" "$DOCKER_CLI" "$DOCKER_DAEMON" "$COMPOSE_CLI" "$DASHBOARD_HTTP" "$WEBUI_HTTP" "$_DASHBOARD_PORT" "$_WEBUI_PORT" "$EXT_DIAGNOSTICS" "$STT_MODEL_CACHED" "$STT_MODEL_NAME" "$STT_RECOVERY_HINT" "$TTS_HTTP" "$TTS_PORT" "$DGX_SPARK_GPU" "$DGX_SPARK_GPU_NAME" "$DGX_SPARK_COMPUTE_CAP" "$LLAMA_CUDA_ARCHS" "$DGX_SPARK_CUDA_ARCH_STATUS" "$DGX_SPARK_CUDA_ARCH_MESSAGE" "$HERMES_SLASH_WORKER_COUNT" "$HERMES_SLASH_WORKER_MAX_COUNT" "$ODS_MANAGED_CONTAINER_COUNT" "$ODS_RUNNING_CONTAINER_COUNT" "$ROOT_DIR" <<'PY'
+# GPU residency. llama.cpp picks layer placement when it loads the model and
+# reports it only in its load log. A model that lands partly on the CPU still
+# answers /health and chat, just several times slower (32/65 layers ran at
+# 1.5 tok/s on an RTX 5090), so read the running server's placement and fail
+# unless every layer is on the GPU or a CPU offload was configured. An
+# ODS-managed GPU llama-server that has loaded its model but whose load log
+# does not state placement fails too ("unverified"): a llama.cpp upgrade or
+# log verbosity that stops printing it must not turn the check into a silent
+# pass. Lemonade manages placement itself and does not log it, so it is
+# skipped, like CPU-only installs, external LLMs and a server with no log to
+# read. A load section that rotated out of the log is "unknown" (a warning):
+# a restart logs a fresh one.
+GPU_RESIDENCY_JSON=""
+_doctor_check_gpu_residency() {
+    local residency_script="$ROOT_DIR/scripts/llama_gpu_residency.py"
+    local backend="${GPU_BACKEND:-${CAP_LLM_BACKEND:-}}"
+    local container output summary status message rc=0
+    local -a mode_args
+
+    if [[ ! -f "$residency_script" ]]; then
+        GPU_RESIDENCY_JSON='{"status": "unknown", "source": null, "message": "scripts/llama_gpu_residency.py is missing from this install", "fix_hint": "", "intentional_offload": false, "offload_declarations": []}'
+        log_warn "GPU residency: scripts/llama_gpu_residency.py is missing from this install"
+        return 0
+    fi
+    if [[ "${LLM_PROVIDER:-}" != llama-server ]]; then
+        mode_args=(--skip "the LLM is not served by an ODS-managed llama-server")
+    elif [[ "$backend" == cpu ]]; then
+        mode_args=(--skip "CPU-only install: the model runs on the CPU by design")
+    elif [[ "$backend" == amd || "$backend" == AMD || "${LLM_BACKEND:-}" == lemonade \
+            || "${AMD_INFERENCE_RUNTIME:-}" == lemonade ]]; then
+        # Same rule as the host agent's _uses_lemonade_runtime.
+        mode_args=(--skip "Lemonade manages GPU placement itself and does not log it")
+    elif [[ "$(uname -s)" == Darwin && "${LLM_STATUS:-}" != ok ]]; then
+        mode_args=(--skip "native llama-server is not responding")
+    elif [[ "$(uname -s)" == Darwin ]]; then
+        # The LaunchAgent appends to the first log; a host-agent launch
+        # without the LaunchAgent writes the second. The newest one belongs
+        # to the running server.
+        mode_args=(--log-file "$HOME/Library/Logs/ODS/llama-server.log"
+            --log-file "$ROOT_DIR/data/llama-server.log" --process-args)
+    else
+        container=$(sr_container "llama-server" 2>/dev/null || echo "ods-llama-server")
+        if [[ "$DOCKER_DAEMON" == "true" ]] \
+            && docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "$container"; then
+            mode_args=(--docker-container "$container")
+        else
+            mode_args=(--skip "$container is not running")
+        fi
+    fi
+    # /health answers only once the model is loaded. Without it, a log that
+    # has not yet reported placement is a load in progress, not a failure.
+    if [[ "${mode_args[0]}" != --skip && "${LLM_STATUS:-}" == ok ]]; then
+        mode_args+=(--server-ready)
+    fi
+
+    output="$("$PYTHON_CMD" "$residency_script" "${mode_args[@]}")" || rc=$?
+    if (( rc != 0 )) || [[ -z "$output" ]]; then
+        output="$("$PYTHON_CMD" "$residency_script" --unknown "reading llama-server placement failed (exit $rc)")"
+    fi
+    GPU_RESIDENCY_JSON="$output"
+
+    summary="$("$PYTHON_CMD" -c 'import json, sys
+d = json.loads(sys.argv[1])
+print(d["status"] + "\t" + d["message"])' "$output")"
+    status="${summary%%$'\t'*}"
+    message="${summary#*$'\t'}"
+    case "$status" in
+        pass|intentional) log_ok "GPU residency: $message" ;;
+        fail|unverified) log_fail "GPU residency: $message" ;;
+        unknown) log_warn "GPU residency: $message" ;;
+        *) log_info "GPU residency: $message" ;;
+    esac
+}
+_doctor_check_gpu_residency
+
+"$PYTHON_CMD" - "$CAP_FILE" "$PREFLIGHT_FILE" "$REPORT_FILE" "$DOCKER_CLI" "$DOCKER_DAEMON" "$COMPOSE_CLI" "$DASHBOARD_HTTP" "$WEBUI_HTTP" "$_DASHBOARD_PORT" "$_WEBUI_PORT" "$EXT_DIAGNOSTICS" "$STT_MODEL_CACHED" "$STT_MODEL_NAME" "$STT_RECOVERY_HINT" "$TTS_HTTP" "$TTS_PORT" "$DGX_SPARK_GPU" "$DGX_SPARK_GPU_NAME" "$DGX_SPARK_COMPUTE_CAP" "$LLAMA_CUDA_ARCHS" "$DGX_SPARK_CUDA_ARCH_STATUS" "$DGX_SPARK_CUDA_ARCH_MESSAGE" "$HERMES_SLASH_WORKER_COUNT" "$HERMES_SLASH_WORKER_MAX_COUNT" "$ODS_MANAGED_CONTAINER_COUNT" "$ODS_RUNNING_CONTAINER_COUNT" "$ROOT_DIR" "$GPU_RESIDENCY_JSON" <<'PY'
 import json
 import os
 import pathlib
@@ -704,11 +779,12 @@ import sys
 from datetime import datetime, timezone
 from urllib import error, parse, request
 
-cap_file, preflight_file, report_file, docker_cli, docker_daemon, compose_cli, dashboard_http, webui_http, dashboard_port, webui_port, ext_diagnostics_json, stt_cached, stt_model_name, stt_recovery, tts_http, tts_port, dgx_spark_gpu, dgx_spark_gpu_name, dgx_spark_compute_cap, llama_cuda_archs, dgx_spark_arch_status, dgx_spark_arch_message, hermes_slash_worker_count, hermes_slash_worker_max_count, ods_managed_container_count, ods_running_container_count, root_dir_arg = sys.argv[1:]
+cap_file, preflight_file, report_file, docker_cli, docker_daemon, compose_cli, dashboard_http, webui_http, dashboard_port, webui_port, ext_diagnostics_json, stt_cached, stt_model_name, stt_recovery, tts_http, tts_port, dgx_spark_gpu, dgx_spark_gpu_name, dgx_spark_compute_cap, llama_cuda_archs, dgx_spark_arch_status, dgx_spark_arch_message, hermes_slash_worker_count, hermes_slash_worker_max_count, ods_managed_container_count, ods_running_container_count, root_dir_arg, gpu_residency_json = sys.argv[1:]
 
 cap = json.load(open(cap_file, "r", encoding="utf-8"))
 pre = json.load(open(preflight_file, "r", encoding="utf-8"))
 ext_diagnostics = json.loads(ext_diagnostics_json)
+gpu_residency = json.loads(gpu_residency_json)
 root_dir = pathlib.Path(root_dir_arg).resolve()
 
 def _int_value(raw, default=0):
@@ -1599,9 +1675,43 @@ def _collect_install_diagnoses(artifacts):
     return unique
 
 
+def _gpu_residency_diagnoses(residency):
+    if residency.get("status") == "unverified":
+        return [
+            _diagnosis(
+                "ODS-LLM-GPU-PLACEMENT-UNVERIFIED",
+                "blocker",
+                "high",
+                "ODS cannot confirm the running model is on the GPU",
+                [_evidence(residency.get("source") or "llama-server", residency["message"])],
+                "A model that llama.cpp placed partly on the CPU answers health checks and chat, only several "
+                "times slower; without the placement lines in llama-server's load log that is not detectable.",
+                [residency["fix_hint"]],
+            )
+        ]
+    if residency.get("status") != "fail":
+        return []
+    return [
+        _diagnosis(
+            "ODS-LLM-PARTIAL-GPU-OFFLOAD",
+            "blocker",
+            "high",
+            "The running model is partly on the CPU",
+            [_evidence(residency.get("source") or "llama-server", residency["message"])],
+            "Every token passes through the layers left in system RAM, so replies are several times slower "
+            "than with the whole model on the GPU, while health checks still pass.",
+            [residency["fix_hint"]],
+        )
+    ]
+
+
 install_artifacts = _collect_install_artifacts()
 inference_contract = _collect_inference_contract()
-diagnoses = _collect_install_diagnoses(install_artifacts) + inference_contract.get("diagnoses", [])
+diagnoses = (
+    _collect_install_diagnoses(install_artifacts)
+    + inference_contract.get("diagnoses", [])
+    + _gpu_residency_diagnoses(gpu_residency)
+)
 inference_contract_public = dict(inference_contract)
 inference_contract_public.pop("diagnoses", None)
 
@@ -1655,6 +1765,7 @@ report = {
         },
         "amd_runtime": amd_runtime,
         "inference_contract": inference_contract_public,
+        "gpu_residency": gpu_residency,
     },
     "extensions": ext_diagnostics,
     "summary": {
@@ -1849,6 +1960,10 @@ if amd_runtime.get("available"):
     )
 elif amd_runtime.get("reason") and amd_runtime.get("reason") != "not_amd":
     print(f"  AMD Runtime:   {amd_runtime.get('reason')}")
+
+gpu_residency = data.get("runtime", {}).get("gpu_residency") or {}
+if gpu_residency.get("status") in {"pass", "fail", "intentional", "unverified", "unknown"}:
+    print(f"  GPU residency: {gpu_residency.get('status')} - {gpu_residency.get('message')}")
 
 hermes_workers = data.get("runtime", {}).get("hermes_slash_workers", {})
 if hermes_workers.get("status") == "warn":

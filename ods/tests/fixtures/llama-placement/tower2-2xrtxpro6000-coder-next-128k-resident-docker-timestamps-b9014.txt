@@ -1,0 +1,47 @@
+2026-09-25T12:15:00.988562293Z print_info: EOG token             = 151664 '<|file_sep|>'
+2026-09-25T12:15:00.988564417Z print_info: max token length      = 256
+2026-09-25T12:15:00.988569024Z load_tensors: loading model tensors, this can take a while... (mmap = true, direct_io = false)
+2026-09-25T12:15:02.934932430Z load_tensors: offloading output layer to GPU
+2026-09-25T12:15:02.934953492Z load_tensors: offloading 47 repeating layers to GPU
+2026-09-25T12:15:02.934955575Z load_tensors: offloaded 49/49 layers to GPU
+2026-09-25T12:15:02.934957148Z load_tensors:   CPU_Mapped model buffer size =   166.92 MiB
+2026-09-25T12:15:02.934958770Z load_tensors:        CUDA0 model buffer size = 23823.69 MiB
+2026-09-25T12:15:02.934960242Z load_tensors:        CUDA1 model buffer size = 22283.89 MiB
+2026-09-25T12:15:05.386002612Z ....................................................................................................
+2026-09-25T12:15:05.387658799Z common_init_result: added </s> logit bias = -inf
+2026-09-25T12:15:05.387788284Z common_init_result: added <|endoftext|> logit bias = -inf
+2026-09-25T12:15:05.387792550Z common_init_result: added <|im_end|> logit bias = -inf
+2026-09-25T12:15:05.387795885Z common_init_result: added <|fim_pad|> logit bias = -inf
+2026-09-25T12:15:05.387798038Z common_init_result: added <|repo_name|> logit bias = -inf
+2026-09-25T12:15:05.387800092Z common_init_result: added <|file_sep|> logit bias = -inf
+2026-09-25T12:15:05.387860663Z llama_context: constructing llama_context
+2026-09-25T12:15:05.387864288Z llama_context: n_seq_max     = 1
+2026-09-25T12:15:05.387867072Z llama_context: n_ctx         = 131072
+2026-09-25T12:15:05.387870077Z llama_context: n_ctx_seq     = 131072
+2026-09-25T12:15:05.387872160Z llama_context: n_batch       = 2048
+2026-09-25T12:15:05.387874063Z llama_context: n_ubatch      = 512
+2026-09-25T12:15:05.387876066Z llama_context: causal_attn   = 1
+2026-09-25T12:15:05.387877969Z llama_context: flash_attn    = auto
+2026-09-25T12:15:05.387879892Z llama_context: kv_unified    = false
+2026-09-25T12:15:05.387881805Z llama_context: freq_base     = 5000000.0
+2026-09-25T12:15:05.387883748Z llama_context: freq_scale    = 1
+2026-09-25T12:15:05.387885701Z llama_context: n_ctx_seq (131072) < n_ctx_train (262144) -- the full capacity of the model will not be utilized
+2026-09-25T12:15:05.389193272Z llama_context:  CUDA_Host  output buffer size =     0.58 MiB
+2026-09-25T12:15:05.389701628Z llama_kv_cache:      CUDA0 KV buffer size =  1536.00 MiB
+2026-09-25T12:15:05.390842107Z llama_kv_cache:      CUDA1 KV buffer size =  1536.00 MiB
+2026-09-25T12:15:05.391806221Z llama_kv_cache: size = 3072.00 MiB (131072 cells,  12 layers,  1/1 seqs), K (f16): 1536.00 MiB, V (f16): 1536.00 MiB
+2026-09-25T12:15:05.391810337Z llama_kv_cache: attn_rot_k = 0, n_embd_head_k_all = 256
+2026-09-25T12:15:05.391812430Z llama_kv_cache: attn_rot_v = 0, n_embd_head_k_all = 256
+2026-09-25T12:15:05.391921525Z llama_memory_recurrent:      CUDA0 RS buffer size =    39.78 MiB
+2026-09-25T12:15:05.392012191Z llama_memory_recurrent:      CUDA1 RS buffer size =    35.59 MiB
+2026-09-25T12:15:05.392014084Z llama_memory_recurrent: size =   75.38 MiB (     1 cells,  48 layers,  1 seqs), R (f32):    3.38 MiB, S (f32):   72.00 MiB
+2026-09-25T12:15:05.394405018Z llama_context: pipeline parallelism enabled
+2026-09-25T12:15:05.394409425Z sched_reserve: reserving ...
+2026-09-25T12:15:05.404814220Z sched_reserve: Flash Attention was auto, set to enabled
+2026-09-25T12:15:05.404818066Z sched_reserve: resolving fused Gated Delta Net support:
+2026-09-25T12:15:05.405562929Z sched_reserve: fused Gated Delta Net (autoregressive) enabled
+2026-09-25T12:15:05.406297786Z sched_reserve: fused Gated Delta Net (chunked) enabled
+2026-09-25T12:15:05.888892106Z sched_reserve:      CUDA0 compute buffer size =  1254.04 MiB
+2026-09-25T12:15:05.888912768Z sched_reserve:      CUDA1 compute buffer size =   832.80 MiB
+2026-09-25T12:15:05.888914721Z sched_reserve:  CUDA_Host compute buffer size =  1032.05 MiB
+2026-09-25T12:15:05.888916173Z sched_reserve: graph nodes  = 5013

@@ -88,6 +88,17 @@ ENV_NAMES_BY_BUILD = {
 FORWARD_ENV_NAMES = {
     # --checkpoint-min-step replaced --checkpoint-every-n-tokens (#22929).
     "LLAMA_ARG_CHECKPOINT_MIN_SPACING_NT": 9310,
+    # -lv/--log-verbosity; b9357 and older read LLAMA_LOG_VERBOSITY (#23778).
+    "LLAMA_ARG_LOG_VERBOSITY": 9360,
+}
+
+# Forward names that carry an ODS default rather than a bare pass-through,
+# with that default. Only for names whose default is safe on the pinned build
+# because the pinned build ignores the name.
+FORWARD_ENV_DEFAULTS = {
+    # Placement lines ("offloaded N/M layers to GPU") need verbosity 4 from
+    # b9151; tests/contracts/test-llama-placement-log.py covers them.
+    "LLAMA_ARG_LOG_VERBOSITY": "${LLAMA_ARG_LOG_VERBOSITY:-4}",
 }
 
 # ODS .env keys for native launchers that llama.cpp itself never reads. They
@@ -308,7 +319,7 @@ def main() -> int:
                 errors.append(f"{stack}: llama.cpp {label} does not read {key}")
             elif pinned and pinned >= first_build:
                 errors.append(f"{stack}: {key} is read from b{first_build}; add it to ENV_NAMES_BY_BUILD[{pinned}]")
-            elif value is not None:
+            elif value is not None and value != FORWARD_ENV_DEFAULTS.get(key):
                 errors.append(f"{stack}: {key} is for llama.cpp b{first_build}+ and must stay a bare pass-through")
     for stack, files in stacks.items():
         if container_env(files, {CHECKPOINT: "-1"}).get(CHECKPOINT) != "-1":

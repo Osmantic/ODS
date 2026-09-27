@@ -45,6 +45,8 @@ Runtime Environment:
   ✓ Docker Compose
   ✗ Dashboard HTTP
   ✗ WebUI HTTP
+  ✗ GPU residency: model partly on CPU: 29/33 layers on GPU, 1079 MiB of weights in system RAM; expect much slower responses
+    Fix: The GPU had room for the whole model: llama.cpp needed 6492 MiB and 6860 MiB was free, but it keeps 1024 MiB free as a safety margin and moved 4 layers to the CPU. Closing other programs will not change this. ...
   ✓ Inference contract: mode=local, owner=ods, gateway=llama-server
   ⚠ DGX Spark llama-server CUDA arch: DGX Spark detected, but llama-server reports CUDA archs '500,610,700,750,800,860,890,1200' without sm_121.
 
@@ -105,6 +107,45 @@ ods doctor --json > report.json
 - **runtime.dgx_spark_cuda_arch_check**: Warns when a DGX Spark / GB10
   machine is running a llama.cpp CUDA binary that does not report `sm_121`
   support in `llama-server` logs.
+- **runtime.gpu_residency**: Where the running llama-server placed the model,
+  read from its load log (`scripts/llama_gpu_residency.py`). With
+  `--n-gpu-layers auto`, llama.cpp keeps 1024 MiB of VRAM free by default and
+  moves layers to the CPU when the model does not fit. The server still answers
+  health checks and chat, only several times slower. `status` is one of:
+  - `pass`: every layer is on the GPU.
+  - `fail`: layers, KV cache, or MoE expert weights that llama.cpp's fit moved
+    ("N overflowing") are in system RAM. Doctor adds the blocker diagnosis
+    `ODS-LLM-PARTIAL-GPU-OFFLOAD` with a fix, and `ods doctor` exits 1.
+    `remedy` says which fix llama.cpp's own fit numbers point to:
+    - `refit`: the model fits the free VRAM llama.cpp saw once its margin is
+      512 MiB and `-ub 256` shrinks the compute buffer, so nothing needs
+      freeing. Reload the model from the dashboard (Configure context, then
+      Reload on GPU) or set `LLAMA_ARG_FIT_TARGET=512` and
+      `LLAMA_ARG_UBATCH=256`. This is the 8 GB laptop case: 6492 MiB needed,
+      6860 MiB free, 1024 MiB default margin.
+    - `free_or_shrink`: it does not fit even then, or those settings are
+      already in effect. Close programs that hold VRAM, or choose a smaller
+      context or model.
+    - `set_auto_layers`: `N_GPU_LAYERS` caps the layers below the model's.
+  - `intentional`: every layer is on the GPU and an MoE/tensor offload to the
+    CPU is configured (`--n-cpu-moe`, `--cpu-moe`, `-ot ...=CPU`, or their
+    `LLAMA_ARG_*` variables). Such a declaration never excuses layers or KV
+    cache on the CPU.
+  - `unverified`: the model finished loading, but the load log does not say
+    where the layers are. From b9151 llama.cpp prints placement only at log
+    verbosity 4; ODS passes `LLAMA_ARG_LOG_VERBOSITY=4`, and a lower value, a
+    b9151-b9357 build (which reads another variable) or an unknown build
+    leaves the load unreadable. Doctor adds the blocker diagnosis
+    `ODS-LLM-GPU-PLACEMENT-UNVERIFIED`, and `ods doctor` exits 1: a placement
+    ODS cannot read is not a pass.
+  - `unknown`: nothing to judge yet. The model is still loading, or the load
+    section rotated out of the log (a restart logs a fresh one).
+  - `skipped`: no ODS-managed GPU llama-server is running: CPU-only install,
+    external LLM, Lemonade (which manages placement itself and does not log
+    it), or a stopped container.
+
+  Only offload-related `LLAMA_ARG_*` values are read from the container
+  environment.
 - **summary**: Aggregate status (blockers, warnings, runtime_ready)
 - **autofix_hints**: Prioritized remediation actions
 

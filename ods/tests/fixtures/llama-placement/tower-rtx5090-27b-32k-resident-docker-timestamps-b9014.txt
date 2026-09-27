@@ -1,0 +1,43 @@
+2026-09-25T13:40:31.652101401Z print_info: EOG token             = 248065 '<|file_sep|>'
+2026-09-25T13:40:31.652104579Z print_info: max token length      = 256
+2026-09-25T13:40:31.652107849Z load_tensors: loading model tensors, this can take a while... (mmap = true, direct_io = false)
+2026-09-25T13:40:32.000024777Z load_tensors: offloading output layer to GPU
+2026-09-25T13:40:32.000050631Z load_tensors: offloading 63 repeating layers to GPU
+2026-09-25T13:40:32.000052384Z load_tensors: offloaded 65/65 layers to GPU
+2026-09-25T13:40:32.000053366Z load_tensors:   CPU_Mapped model buffer size =   682.03 MiB
+2026-09-25T13:40:32.000054438Z load_tensors:        CUDA0 model buffer size = 15272.77 MiB
+2026-09-25T13:40:33.521653694Z ............................................................................................
+2026-09-25T13:40:33.526322464Z common_init_result: added <|endoftext|> logit bias = -inf
+2026-09-25T13:40:33.526334743Z common_init_result: added <|im_end|> logit bias = -inf
+2026-09-25T13:40:33.526336169Z common_init_result: added <|fim_pad|> logit bias = -inf
+2026-09-25T13:40:33.526337307Z common_init_result: added <|repo_name|> logit bias = -inf
+2026-09-25T13:40:33.526338024Z common_init_result: added <|file_sep|> logit bias = -inf
+2026-09-25T13:40:33.526338788Z llama_context: constructing llama_context
+2026-09-25T13:40:33.526339541Z llama_context: n_seq_max     = 1
+2026-09-25T13:40:33.526340153Z llama_context: n_ctx         = 32768
+2026-09-25T13:40:33.526340757Z llama_context: n_ctx_seq     = 32768
+2026-09-25T13:40:33.526341692Z llama_context: n_batch       = 2048
+2026-09-25T13:40:33.526342275Z llama_context: n_ubatch      = 512
+2026-09-25T13:40:33.526342866Z llama_context: causal_attn   = 1
+2026-09-25T13:40:33.526352747Z llama_context: flash_attn    = auto
+2026-09-25T13:40:33.526353634Z llama_context: kv_unified    = false
+2026-09-25T13:40:33.526354330Z llama_context: freq_base     = 10000000.0
+2026-09-25T13:40:33.526355089Z llama_context: freq_scale    = 1
+2026-09-25T13:40:33.526355771Z llama_context: n_ctx_seq (32768) < n_ctx_train (262144) -- the full capacity of the model will not be utilized
+2026-09-25T13:40:33.527001305Z llama_context:  CUDA_Host  output buffer size =     0.95 MiB
+2026-09-25T13:40:33.528275317Z llama_kv_cache:      CUDA0 KV buffer size =  2048.00 MiB
+2026-09-25T13:40:33.529658320Z llama_kv_cache: size = 2048.00 MiB ( 32768 cells,  16 layers,  1/1 seqs), K (f16): 1024.00 MiB, V (f16): 1024.00 MiB
+2026-09-25T13:40:33.529666312Z llama_kv_cache: attn_rot_k = 0, n_embd_head_k_all = 256
+2026-09-25T13:40:33.529667675Z llama_kv_cache: attn_rot_v = 0, n_embd_head_k_all = 256
+2026-09-25T13:40:33.529668741Z llama_memory_recurrent:      CUDA0 RS buffer size =   149.62 MiB
+2026-09-25T13:40:33.529669454Z llama_memory_recurrent: size =  149.62 MiB (     1 cells,  64 layers,  1 seqs), R (f32):    5.62 MiB, S (f32):  144.00 MiB
+2026-09-25T13:40:33.529670190Z sched_reserve: reserving ...
+2026-09-25T13:40:33.541149820Z sched_reserve: Flash Attention was auto, set to enabled
+2026-09-25T13:40:33.541175077Z sched_reserve: resolving fused Gated Delta Net support:
+2026-09-25T13:40:33.541394897Z sched_reserve: fused Gated Delta Net (autoregressive) enabled
+2026-09-25T13:40:33.541912431Z sched_reserve: fused Gated Delta Net (chunked) enabled
+2026-09-25T13:40:33.571997959Z sched_reserve:      CUDA0 compute buffer size =   495.00 MiB
+2026-09-25T13:40:33.572025177Z sched_reserve:  CUDA_Host compute buffer size =    84.02 MiB
+2026-09-25T13:40:33.572026388Z sched_reserve: graph nodes  = 3657
+2026-09-25T13:40:33.572027206Z sched_reserve: graph splits = 2
+2026-09-25T13:40:33.572027976Z sched_reserve: reserve took 41.92 ms, sched copies = 1

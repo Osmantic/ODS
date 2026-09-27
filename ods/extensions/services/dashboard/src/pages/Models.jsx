@@ -23,6 +23,7 @@ import HuggingFaceModelBrowser from '../components/model-library/HuggingFaceMode
 import ExternalLemonadeAdoption from '../components/ExternalLemonadeAdoption'
 import MetalMetricIcon from '../components/MetalMetricIcon'
 import FittedLibraryPage from '../components/FittedLibraryPage'
+import { describePlacement, isCpuSpill, isPlacementProblem } from '../lib/modelPlacement'
 import './models-refined.css'
 
 const PAGE_SIZE = 10
@@ -66,6 +67,7 @@ export default function Models({ compact = false }) {
     currentModel,
     loadedModel,
     configuredModel,
+    runtimePlacement,
     odsMode,
     configuredMode,
     llmBackend,
@@ -222,11 +224,11 @@ export default function Models({ compact = false }) {
     await deleteModel(modelId)
   }
 
-  const handleConfirmActivation = async (contextLength) => {
+  const handleConfirmActivation = async (contextLength, { reload = false } = {}) => {
     if (!activationConfigModel?.id) return
     const modelId = activationConfigModel.id
     setActivationConfigModel(null)
-    await loadModel(modelId, { contextLength })
+    await loadModel(modelId, reload ? { contextLength, reload } : { contextLength })
   }
 
   const handleHuggingFaceImportStarted = async (result) => {
@@ -250,6 +252,7 @@ export default function Models({ compact = false }) {
   })
   const retryModelId = catalogModelIdForProgress(models, visibleDownloadProgress?.model)
   const renderModel = model => <ModelTableRow key={model.id} compact={compact} model={model} gpu={gpu}
+    placement={model.status === 'loaded' || model.id === currentModel ? runtimePlacement : null}
     canActivateModels={canActivateModels} activationModeError={activationModeError}
     hermesMinimumContext={hermesMinimumContext} pixelMinimumContext={pixelMinimumContext}
     isCurrentModel={model.id === currentModel} isLoading={pendingModelActions.includes(model.id)}
@@ -350,6 +353,7 @@ export default function Models({ compact = false }) {
         model={activeModel}
         currentModel={currentModel || loadedModel}
         gpu={gpu}
+        placement={runtimePlacement}
       />
 
       <ExternalLemonadeAdoption
@@ -478,6 +482,7 @@ export default function Models({ compact = false }) {
           pixelMinimumContext={pixelMinimumContext}
           hermesMinimumContext={hermesMinimumContext}
           isCurrentModel={activationConfigModel.id === currentModel}
+          placement={activationConfigModel.id === currentModel ? runtimePlacement : null}
           onCancel={() => setActivationConfigModel(null)}
           onConfirm={handleConfirmActivation}
         />
@@ -486,19 +491,45 @@ export default function Models({ compact = false }) {
   )
 }
 
-function CurrentModelPanel({ model, currentModel, gpu, compact = false }) {
+function PlacementWarning({ view, compact = false }) {
+  if (!isPlacementProblem(view)) return null
+  if (compact) return (
+    <div role="status" className="models-external-notice">
+      <strong>{view.warning}</strong>
+      <span>{view.detail}</span>
+    </div>
+  )
+  return (
+    <div role="status" className="mt-4 flex items-start gap-2 rounded-lg border border-theme-border bg-theme-text-secondary/10 px-3 py-2.5 text-xs text-theme-text-secondary">
+      <AlertCircle size={15} className="mt-0.5 shrink-0 text-theme-text-secondary" />
+      <div>
+        <p className="font-semibold">{view.warning}</p>
+        <p className="mt-1 text-theme-text-secondary/75">{view.detail}</p>
+        {view.hostDetail && <p className="mt-1 text-[11px] text-theme-text-muted">{view.hostDetail}</p>}
+      </div>
+    </div>
+  )
+}
+
+function CurrentModelPanel({ model, currentModel, gpu, placement, compact = false }) {
   const modelLabel = currentModel || model?.id
   const speed = getSpeedDisplay(model)
   const context = model ? formatContext(model.contextLength) : '--'
   const memory = model ? getMemoryMeta(model, gpu) : null
   const statusLabel = currentModel ? 'Currently running' : 'Model runtime'
+  // Placement is measured on the running server; the fit badge is only an
+  // estimate and must not contradict a model that spilled onto the CPU or
+  // whose placement the server could not confirm.
+  const placementView = currentModel ? describePlacement(placement) : null
+  const placementProblem = isPlacementProblem(placementView)
 
   if (compact) return (
     <section className="models-active" aria-label="Model runtime">
       <header><span className={currentModel ? 'models-live' : ''}>{statusLabel}</span><Link to="/dashboard">Dashboard <ChevronRight size={12}/></Link></header>
       <div className="models-active-name"><MetalMetricIcon icon={Box} size={22}/><strong title={modelLabel}>{model?.name || modelLabel || 'No model running'}</strong></div>
       {currentModel && <>
-        <dl><div><dt>Context</dt><dd>{context}</dd></div>{memory && <div><dt>VRAM estimate</dt><dd>{memory.label}</dd></div>}</dl>
+        <dl><div><dt>Context</dt><dd>{context}</dd></div>{memory && <div><dt>VRAM estimate</dt><dd>{memory.label}</dd></div>}{placement?.layersTotal ? <div><dt>GPU layers</dt><dd>{placement.layersOnGpu}/{placement.layersTotal}</dd></div> : null}</dl>
+        <PlacementWarning view={placementView} compact />
       </>}
     </section>
   )
@@ -514,7 +545,8 @@ function CurrentModelPanel({ model, currentModel, gpu, compact = false }) {
                 {statusLabel}: {modelLabel || 'none'}
               </h2>
               {model?.quantization && <Badge>{model.quantization}</Badge>}
-              {model?.fitsVram && <Badge tone="green">{model.fitLabel || 'Fits GPU'}</Badge>}
+              {model?.fitsVram && !placementProblem && <Badge tone="green">{model.fitLabel || 'Fits GPU'}</Badge>}
+              {placementView && !placementProblem && <Badge tone={placementView.tone}>{placementView.label}</Badge>}
             </div>
             <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-theme-text-muted">
               <span>{currentModel ? 'Active runtime' : 'Ready after first launch'}</span>
@@ -533,6 +565,7 @@ function CurrentModelPanel({ model, currentModel, gpu, compact = false }) {
           Dashboard
         </Link>
       </div>
+      <PlacementWarning view={placementView} />
     </section>
   )
 }
@@ -808,6 +841,7 @@ function ModelTableRow({
   compact = false,
   model,
   gpu,
+  placement = null,
   canActivateModels,
   activationModeError,
   hermesMinimumContext,
@@ -833,6 +867,8 @@ function ModelTableRow({
   const tags = getModelTags(model, hermesMinimumContext)
   const iconTone = getIconTone(model, compatibility)
   const performanceBadge = getPerformanceBadge(model)
+  const rowPlacement = isLoaded ? describePlacement(placement) : null
+  const placementBadge = isPlacementProblem(rowPlacement) ? rowPlacement : null
   const runDisabledReason = isRuntimeManaged ? null : getRunDisabledReason({
     model,
     gpu,
@@ -871,6 +907,7 @@ function ModelTableRow({
               {performanceBadge && <Badge tone={performanceBadge.tone}>{performanceBadge.label}</Badge>}
               {model.recommended && !isLoaded && <Badge tone="amber">Selected install</Badge>}
               {isLoaded && <Badge tone="green">Active</Badge>}
+              {placementBadge && <Badge tone="amber">{placementBadge.label}</Badge>}
             </div>
           </div>
         </div>
@@ -1126,6 +1163,7 @@ function ModelActivationDialog({
   pixelMinimumContext,
   hermesMinimumContext,
   isCurrentModel,
+  placement = null,
   onCancel,
   onConfirm,
 }) {
@@ -1149,6 +1187,10 @@ function ModelActivationDialog({
   const contextValid = Number.isSafeInteger(selectedContext)
     && selectedContext >= 1024
   const sameContext = contextValid && isCurrentModel && selectedContext === currentContext
+  // A running model that spilled onto the CPU can be loaded again at the
+  // same context: the host fits it to the GPU again.
+  const placementView = isCurrentModel ? describePlacement(placement) : null
+  const reloadOnGpu = sameContext && isCpuSpill(placementView) && placementView.canReload
   const openAiChat = getOpenAiChatCompatibility(model)
   const pixelAgent = getPixelAgentCompatibility(model)
   const agentViability = getAgentViabilityCompatibility(model)
@@ -1319,12 +1361,12 @@ function ModelActivationDialog({
             </button>
             <button
               type="button"
-              onClick={() => onConfirm(selectedContext)}
-              disabled={!contextValid || sameContext || (model.fitsVram === false && !model.recommended && selected?.fitsVram === false)}
+              onClick={() => onConfirm(selectedContext, { reload: reloadOnGpu })}
+              disabled={!contextValid || (sameContext && !reloadOnGpu) || (!reloadOnGpu && model.fitsVram === false && !model.recommended && selected?.fitsVram === false)}
               className="inline-flex h-9 min-w-28 items-center justify-center gap-2 rounded-md bg-theme-accent px-4 text-xs font-semibold text-white shadow-[0_0_18px_rgba(168,85,247,0.28)] transition-colors hover:bg-theme-accent-hover disabled:cursor-not-allowed disabled:opacity-40"
             >
               <Play size={13} />
-              {sameContext ? 'Already active' : isCurrentModel ? 'Apply context' : 'Run model'}
+              {reloadOnGpu ? 'Reload on GPU' : sameContext ? 'Already active' : isCurrentModel ? 'Apply context' : 'Run model'}
             </button>
           </div>
         </div>

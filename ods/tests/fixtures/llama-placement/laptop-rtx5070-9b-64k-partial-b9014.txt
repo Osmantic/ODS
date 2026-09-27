@@ -1,0 +1,104 @@
+ggml_cuda_init: found 1 CUDA devices (Total VRAM: 8150 MiB):
+  Device 0: NVIDIA GeForce RTX 5070 Laptop GPU, compute capability 12.0, VMM: yes, VRAM: 8150 MiB
+load_backend: loaded CUDA backend from /app/libggml-cuda.so
+load_backend: loaded CPU backend from /app/libggml-cpu-alderlake.so
+warn: LLAMA_ARG_HOST environment variable is set, but will be overwritten by command line argument --host
+build_info: b9014-d4b0c22f9
+system_info: n_threads = 4 (n_threads_batch = 4) / 16 | CUDA : ARCHS = 500,610,700,750,800,860,890,1200 | USE_GRAPHS = 1 | PEER_MAX_BATCH_SIZE = 128 | BLACKWELL_NATIVE_FP4 = 1 | CPU : SSE3 = 1 | SSSE3 = 1 | AVX = 1 | AVX_VNNI = 1 | AVX2 = 1 | F16C = 1 | FMA = 1 | BMI2 = 1 | LLAMAFILE = 1 | OPENMP = 1 | REPACK = 1 | 
+Running without SSL
+init: using 15 threads for HTTP server
+start: binding port with default address family
+main: loading model
+srv    load_model: loading model '/models/Qwen3.5-9B-Q4_K_M.gguf'
+common_init_result: fitting params to device memory, for bugs during this step try to reproduce them with -fit off, or provide --verbose logs if the bug only occurs with -fit on
+common_params_fit_impl: getting device memory data for initial parameters:
+common_memory_breakdown_print: | memory breakdown [MiB]          | total   free    self   model   context   compute    unaccounted |
+common_memory_breakdown_print: |   - CUDA0 (RTX 5070 Laptop GPU) |  8150 = 6860 + (6492 =  4861 +    1138 +     493) +       -5201 |
+common_memory_breakdown_print: |   - Host                        |                  689 =   545 +       0 +     144                |
+common_params_fit_impl: projected to use 6492 MiB of device memory vs. 6860 MiB of free device memory
+common_params_fit_impl: cannot meet free memory target of 1024 MiB, need to reduce device memory by 656 MiB
+common_params_fit_impl: context size set by user to 65536 -> no change
+common_params_fit_impl: id=0, target=5836 MiB
+common_memory_breakdown_print: | memory breakdown [MiB]          | total   free    self   model   context   compute    unaccounted |
+common_memory_breakdown_print: |   - CUDA0 (RTX 5070 Laptop GPU) |  8150 = 6912 + (1288 =     0 +       0 +    1288) +         -50 |
+common_memory_breakdown_print: |   - Host                        |                 6697 =  5406 +    1138 +     152                |
+common_params_fit_impl: memory for test allocation by device:
+common_params_fit_impl: id=0, n_layer= 0, n_part= 0, overflow_type=4, mem=  1288 MiB
+common_params_fit_impl: filling dense layers back-to-front:
+common_memory_breakdown_print: | memory breakdown [MiB]          | total   free    self   model   context   compute    unaccounted |
+common_memory_breakdown_print: |   - CUDA0 (RTX 5070 Laptop GPU) |  8150 = 6860 + (6492 =  4861 +    1138 +     493) +       -5201 |
+common_memory_breakdown_print: |   - Host                        |                  689 =   545 +       0 +     144                |
+common_params_fit_impl: memory for test allocation by device:
+common_params_fit_impl: id=0, n_layer=33, n_part= 0, overflow_type=4, mem=  6492 MiB
+common_params_fit_impl: start filling device 0, delta=33
+common_memory_breakdown_print: | memory breakdown [MiB]          | total   free    self   model   context   compute    unaccounted |
+common_memory_breakdown_print: |   - CUDA0 (RTX 5070 Laptop GPU) |  8150 = 6870 + (5691 =  4204 +     993 +     493) +       -4410 |
+common_memory_breakdown_print: |   - Host                        |                 1499 =  1202 +     144 +     152                |
+common_params_fit_impl: memory for test allocation by device:
+common_params_fit_impl: id=0, n_layer=28, n_part= 0, overflow_type=4, mem=  5691 MiB
+common_params_fit_impl: set ngl_per_device[0].n_layer=28
+common_memory_breakdown_print: | memory breakdown [MiB]          | total   free    self   model   context   compute    unaccounted |
+common_memory_breakdown_print: |   - CUDA0 (RTX 5070 Laptop GPU) |  8150 = 6868 + (5816 =  4327 +     995 +     493) +       -4534 |
+common_memory_breakdown_print: |   - Host                        |                 1373 =  1078 +     142 +     152                |
+common_params_fit_impl: memory for test allocation by device:
+common_params_fit_impl: id=0, n_layer=29, n_part= 0, overflow_type=4, mem=  5816 MiB
+common_params_fit_impl: set ngl_per_device[0].n_layer=29
+common_memory_breakdown_print: | memory breakdown [MiB]          | total   free    self   model   context   compute    unaccounted |
+common_memory_breakdown_print: |   - CUDA0 (RTX 5070 Laptop GPU) |  8150 = 6868 + (6078 =  4453 +    1131 +     493) +       -4796 |
+common_memory_breakdown_print: |   - Host                        |                 1111 =   953 +       6 +     152                |
+common_params_fit_impl: memory for test allocation by device:
+common_params_fit_impl: id=0, n_layer=30, n_part= 0, overflow_type=4, mem=  6078 MiB
+common_params_fit_impl: set ngl_per_device_high[0].n_layer=30
+common_params_fit_impl:   - CUDA0 (NVIDIA GeForce RTX 5070 Laptop GPU): 29 layers,   5816 MiB used,   1043 MiB free
+common_fit_params: successfully fit params to free device memory
+common_fit_params: fitting params to free memory took 2.33 seconds
+llama_model_load_from_file_impl: using device CUDA0 (NVIDIA GeForce RTX 5070 Laptop GPU) (0000:01:00.0) - 6912 MiB free
+llama_model_loader: loaded meta data with 46 key-value pairs and 427 tensors from /models/Qwen3.5-9B-Q4_K_M.gguf (version GGUF V3 (latest))
+llama_model_loader: Dumping metadata keys/values. Note: KV overrides do not apply in this output.
+llama_model_loader: - kv   0:                       general.architecture str              = qwen35
+print_info: EOG token             = 248064 '<|repo_name|>'
+print_info: EOG token             = 248065 '<|file_sep|>'
+print_info: max token length      = 256
+load_tensors: loading model tensors, this can take a while... (mmap = true, direct_io = false)
+load_tensors: offloading output layer to GPU
+load_tensors: offloading 28 repeating layers to GPU
+load_tensors: offloaded 29/33 layers to GPU
+load_tensors:   CPU_Mapped model buffer size =  1078.96 MiB
+load_tensors:        CUDA0 model buffer size =  4327.95 MiB
+.............................................................................
+common_init_result: added <|endoftext|> logit bias = -inf
+common_init_result: added <|im_end|> logit bias = -inf
+common_init_result: added <|fim_pad|> logit bias = -inf
+common_init_result: added <|repo_name|> logit bias = -inf
+common_init_result: added <|file_sep|> logit bias = -inf
+llama_context: constructing llama_context
+llama_context: n_seq_max     = 1
+llama_context: n_ctx         = 65536
+llama_context: n_ctx_seq     = 65536
+llama_context: n_batch       = 2048
+llama_context: n_ubatch      = 512
+llama_context: causal_attn   = 1
+llama_context: flash_attn    = enabled
+llama_context: kv_unified    = false
+llama_context: freq_base     = 10000000.0
+llama_context: freq_scale    = 1
+llama_context: n_ctx_seq (65536) < n_ctx_train (262144) -- the full capacity of the model will not be utilized
+llama_context:  CUDA_Host  output buffer size =     0.95 MiB
+llama_kv_cache:        CPU KV buffer size =   136.00 MiB
+llama_kv_cache:      CUDA0 KV buffer size =   952.00 MiB
+llama_kv_cache: size = 1088.00 MiB ( 65536 cells,   8 layers,  1/1 seqs), K (q8_0):  544.00 MiB, V (q8_0):  544.00 MiB
+llama_kv_cache: attn_rot_k = 1, n_embd_head_k_all = 256
+llama_kv_cache: attn_rot_v = 1, n_embd_head_k_all = 256
+llama_memory_recurrent:        CPU RS buffer size =     6.28 MiB
+llama_memory_recurrent:      CUDA0 RS buffer size =    43.97 MiB
+llama_memory_recurrent: size =   50.25 MiB (     1 cells,  32 layers,  1 seqs), R (f32):    2.25 MiB, S (f32):   48.00 MiB
+sched_reserve: reserving ...
+sched_reserve: resolving fused Gated Delta Net support:
+sched_reserve: fused Gated Delta Net (autoregressive) enabled
+sched_reserve: fused Gated Delta Net (chunked) enabled
+sched_reserve:      CUDA0 compute buffer size =   493.00 MiB
+sched_reserve:  CUDA_Host compute buffer size =   152.38 MiB
+sched_reserve: graph nodes  = 1929
+sched_reserve: graph splits = 66 (with bs=512), 8 (with bs=1)
+sched_reserve: reserve took 89.21 ms, sched copies = 1
+common_init_from_params: warming up the model with an empty run - please wait ... (--no-warmup to disable)
