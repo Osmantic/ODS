@@ -19,12 +19,18 @@ test('repairs one exact redundant core web envelope without changing its request
 });
 
 test('does not infer arbitrary plugins, recursive envelopes, or conflicting wrapper fields', () => {
-  for (const params of [
-    nested('thirdparty:web_fetch',{url:'https://docs.example.org'}),
-    nested('pixel_ops_run',{action:'arbitrary'}),
-    {...nested('web_fetch',{url:'https://docs.example.org'}),headers:{Authorization:'untrusted'}},
-    nested('tool_call',nested('web_fetch',{url:'https://docs.example.org'})),
-  ]) assert.equal(invoke(createToolLoopGuard(),'tool_call',params),undefined);
+  const inner = 'tool_call is its own tool, not a tool_call id. Call tool_call directly with the inner id and args.';
+  for (const [params, blockReason] of [
+    [nested('thirdparty:web_fetch',{url:'https://docs.example.org'}), inner],
+    [nested('pixel_ops_run',{action:'arbitrary'}), inner],
+    [{...nested('web_fetch',{url:'https://docs.example.org'}),headers:{Authorization:'untrusted'}}, inner],
+    // The inner id is itself a control tool, which OpenClaw never resolves either.
+    [nested('tool_call',nested('web_fetch',{url:'https://docs.example.org'})),
+      'tool_call is its own tool, not a tool_call id. Control tools cannot be described or called by id; tool_describe and tool_call take only the id of a tool that tool_search found. ' +
+      'Call the tool you need directly by its own name from your tool list, or find it with tool_search.'],
+  // tool_call is not a catalog id, so OpenClaw could only reject these. The
+  // guard answers each with the direct route and never rewrites it into a call.
+  ]) assert.deepEqual(invoke(createToolLoopGuard(),'tool_call',params), {block:true, blockReason});
 });
 
 test('normalized public reads retain private destination guards', () => {
