@@ -477,5 +477,8 @@ export function createCompletionAssurance() {
     },
     get terminal() { return terminal; },
     get terminalStatus() { return terminalStatus; },
+    // The owner asked for research, or this run used web results: the answer
+    // is model text, which a host tool receipt cannot carry.
+    get researchInvolved() { return research || webObserved; },
   };
 }

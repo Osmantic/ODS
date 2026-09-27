@@ -4,6 +4,7 @@
 // parsed canonical URLs, extension IDs, peer hostnames, and numeric ports;
 // untrusted projection or tool-result fields are never interpolated here.
 
+import { RECURSIVE_DELETE_CONTRACT } from "./agent-skills.mjs";
 import {
   managedTeamRole,
   githubReadmeUrl,
@@ -24,6 +25,7 @@ import {
   userMessageRequestsWorkspacePreview,
   userMessageRequestsWorkspaceTools,
   userMessageRequestsNewPlaygroundProject,
+  userMessageRequestsNamedCodeChange,
   workspacePreviewMode,
 } from "./tool-loop-guard.mjs";
 import { AGENT_SKILLS, PREVIEW_RUNTIME_CONTRACT } from "./agent-skills.mjs";
@@ -385,9 +387,13 @@ export function promptContractForAgent(
   const workspaceToolsRequested =
     userMessageRequestsWorkspaceTools(event?.messages, event?.prompt) ||
     userMessageRequestsNewPlaygroundProject(event?.messages, event?.prompt);
+  // The workspace guide carries the deletion disclosure. A change to named
+  // existing code gets the disclosure alone; other turns are unchanged.
   const workspaceGuide = workspacePreview || workspaceToolsRequested
     ? ` ${AGENT_SKILLS.workspace}`
-    : "";
+    : userMessageRequestsNamedCodeChange(event?.messages, event?.prompt)
+      ? ` ${RECURSIVE_DELETE_CONTRACT}`
+      : "";
   const verification =
     verificationStatus === "pending"
       ? ` ${ODS_VERIFICATION_PENDING_CONTRACT}`

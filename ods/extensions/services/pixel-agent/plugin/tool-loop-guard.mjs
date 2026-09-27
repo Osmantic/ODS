@@ -1408,32 +1408,187 @@ function verificationFingerprintIsPythonUnittest(fingerprint) {
   }
 }
 
-function execResultHasNonCleanUnittestOutcome(event) {
+// unittest's TextTestRunner ends every run with its own summary: "Ran N
+// tests in X.XXXs", one blank line, then "OK", "OK (skipped=2)", "FAILED
+// (failures=1)" or "NO TESTS RAN". Fleet, open-prompt 07 photo-renamer on
+// d4a61f33 (tower3, Qwen3.5-27B): an exit-0 run ended "Ran 11 tests ... OK",
+// yet a passing negative-path test had printed "Error: Folder ... does not
+// exist." and that program output kept the verification failed. When such a
+// summary is present, the result fails only on: a zero-test summary or NO
+// TESTS RAN, a summary not followed by OK, a FAILED ( line, nonzero expected
+// failures or unexpected successes (each also in its -v form), a failure
+// header after unittest's "=" separator, a line-start FAIL, or AssertionError
+// anywhere. Program output such as "Error:", "ERROR:" or "ERROR:root:..."
+// logging, or a -v docstring, does not fail it. Returns undefined when no
+// summary is present, so custom runners keep the text heuristics below. Only
+// a result of unittest's own runner is judged this way (see
+// execFingerprintRunsUnittestRunner).
+const UNITTEST_RUN_SUMMARY = /^Ran (\d+) tests? in \d+(?:\.\d+)?s\s*$/;
+const UNITTEST_CLEAN_RESULT = /^OK(?: \([^()]*\))?\s*$/;
+// printErrorList writes separator1 ("=" * 70), then "FAIL: test_x
+// (module.Class.test_x)" or "ERROR: setUpClass (module.Class)": a test name
+// and a dotted identifier. A photo renamer's "ERROR: IMG_0001.jpg (no EXIF
+// date)" or "ERROR: IMG_0002.jpg (corrupt)" is not a header.
+const UNITTEST_ERROR_SEPARATOR = /^={70}\s*$/;
+const UNITTEST_FAILURE_HEADER = /^(?:FAIL|ERROR): [\p{L}\p{N}_.]+ \([\p{L}\p{N}_.]+\)/u;
+// df3f4bf3a: a check that runs beside unittest in the same exec and prints
+// its failure still fails the run, whatever the summary says: module-level
+// checks imported by discovery, a test that catches its own assertion and
+// prints the traceback. Such a line starts with an upper-case FAIL word, or
+// with FAIL in any case before ":", "(", a space, a tab or the line end
+// ("fail: negative numbers", "Fail: ..."). AssertionError counts anywhere and
+// in any case: in a repr ("Test failed: AssertionError('...')") or after a
+// mark ("✗ add(-1, -2): AssertionError: ..."). A passing test that prints
+// such text therefore fails the run: a false failure, never a false pass.
+const CHECKER_FAILURE_LINE = /^[ \t]*FAIL\b/;
+const CHECKER_FAIL_LINE_ANY_CASE = /^[ \t]*FAIL(?:[:( \t]|$)/i;
+const CHECKER_ASSERTION_ERROR = /\bAssertionError\b/i;
+// unittest's FAILED result, and the same counts in any case.
+const UNITTEST_FAILED_RESULT = /^[ \t]*FAILED \(/;
+const UNITTEST_FAILED_COUNTS =
+  /^[ \t]*failed\s*\(\s*(?:failures|errors|expected failures|unexpected successes)\s*=/i;
+
+// Python 3.14 colors unittest's markers when its output is a terminal (a pty
+// exec), e.g. "\x1b[32mOK\x1b[0m (\x1b[33mskipped=1\x1b[0m)".
+function withoutTerminalColors(text) {
+  return text.replace(/\x1b\[[0-9;]*m/g, "");
+}
+
+function unittestRunnerSummaryHasNonCleanOutcome(values) {
+  const texts = values.map(withoutTerminalColors);
+  const outputs = texts.map((text) => text.split(/\r?\n/));
+  if (!outputs.some((lines) => lines.some((line) => UNITTEST_RUN_SUMMARY.test(line)))) {
+    return undefined;
+  }
+  for (const lines of outputs) {
+    for (const [index, line] of lines.entries()) {
+      const summary = line.match(UNITTEST_RUN_SUMMARY);
+      if (summary) {
+        if (Number(summary[1]) === 0) return true;
+        const outcome = /^\s*$/.test(lines[index + 1] ?? "") ? lines[index + 2] : lines[index + 1];
+        if (!UNITTEST_CLEAN_RESULT.test(outcome ?? "")) return true;
+      }
+      if (
+        (UNITTEST_FAILURE_HEADER.test(line) && UNITTEST_ERROR_SEPARATOR.test(lines[index - 1] ?? "")) ||
+        CHECKER_FAILURE_LINE.test(line) ||
+        CHECKER_FAIL_LINE_ANY_CASE.test(line) ||
+        UNITTEST_FAILED_RESULT.test(line) ||
+        UNITTEST_FAILED_COUNTS.test(line)
+      ) {
+        return true;
+      }
+    }
+  }
+  return texts.some(
+    (text) =>
+      CHECKER_ASSERTION_ERROR.test(text) ||
+      /\bexpected failures?\s*=\s*[1-9][0-9]*\b/i.test(text) ||
+      /\bunexpected successes?\s*=\s*[1-9][0-9]*\b/i.test(text) ||
+      /\.\.\.\s+expected failure\b/i.test(text) ||
+      /\.\.\.\s+unexpected success\b/i.test(text) ||
+      /\bNO\s+TESTS?\s+RAN\b/i.test(text)
+  );
+}
+
+// A unittest summary is the run's own verdict only when unittest's runner is
+// the process the model ran: `python3 -m unittest ...`, alone or after `cd
+// /workspace/...`. Anything else in the same result can print a summary the
+// runner never printed, so such a result is judged by the text heuristics:
+// - setup that andChainVerificationParams accepts before the test (`echo Ran
+//   5 tests in 0.001s && echo && echo OK && ...`, `cp summary.txt
+//   /dev/stdout && ...`, or any other setup segment);
+// - a test script (`python3 test_calc.py`), whose own code runs around
+//   unittest.main(): checks after unittest.main(exit=False), or a custom
+//   runner that prints a summary of its own;
+// - a second process started beside the runner with `&` (`python3 -m
+//   unittest test_calc & python3 check_calc.py`), which
+//   verificationCommandIsAuditable does not refuse.
+// The fingerprint is execFingerprint of the command as the model sent it.
+function execFingerprintRunsUnittestRunner(fingerprint) {
+  if (typeof fingerprint !== "string" || !fingerprint) return false;
+  let command;
+  try {
+    [command] = JSON.parse(fingerprint);
+  } catch {
+    return false;
+  }
+  if (typeof command !== "string") return false;
+  const parsed = verificationCommand({ command });
+  return Boolean(parsed) && verificationCommandIsAuditable({ command }) &&
+    !parsed.withoutStderrMerge.includes("&") &&
+    /^python(?:3(?:\.\d+)?)?\s+-m\s+unittest\b/i.test(parsed.withoutStderrMerge);
+}
+
+function execResultTexts(event) {
   const result = event?.result;
-  if (!result || typeof result !== "object" || Array.isArray(result)) return false;
-  const values = [
+  if (!result || typeof result !== "object" || Array.isArray(result)) return [];
+  return [
     result?.details?.aggregated,
     result?.details?.stdout,
     result?.details?.stderr,
     ...(Array.isArray(result.content)
       ? result.content.map((item) => item?.type === "text" ? item.text : undefined)
       : []),
-  ];
+  ].filter((value) => typeof value === "string");
+}
+
+// trustRunnerSummary: false keeps the text heuristics for every result (a
+// command other than unittest's own runner, and the transcript compaction
+// below).
+function execResultHasNonCleanUnittestOutcome(event, { trustRunnerSummary = true } = {}) {
+  const values = execResultTexts(event);
+  const runnerVerdict = trustRunnerSummary ? unittestRunnerSummaryHasNonCleanOutcome(values) : undefined;
+  if (runnerVerdict !== undefined) return runnerVerdict;
   return values.some(
     (value) =>
-      typeof value === "string" &&
-      (
-        /\bexpected failures?\s*=\s*[1-9][0-9]*\b/i.test(value) ||
-        /\bunexpected successes?\s*=\s*[1-9][0-9]*\b/i.test(value) ||
-        /\.\.\.\s+expected failure\b/i.test(value) ||
-        /\.\.\.\s+unexpected success\b/i.test(value) ||
-        /(?:^|\n)\s*(?:FAIL|ERROR)(?::|\s|\()/i.test(value) ||
-        /\bAssertionError\b/i.test(value) ||
-        /(?:^|\n)\s*FAILED\s*\(/i.test(value) ||
-        /\bRan\s+0\s+tests?\b/i.test(value) ||
-        /\bNO\s+TESTS?\s+RAN\b/i.test(value)
-      )
+      /\bexpected failures?\s*=\s*[1-9][0-9]*\b/i.test(value) ||
+      /\bunexpected successes?\s*=\s*[1-9][0-9]*\b/i.test(value) ||
+      /\.\.\.\s+expected failure\b/i.test(value) ||
+      /\.\.\.\s+unexpected success\b/i.test(value) ||
+      /(?:^|\n)\s*(?:FAIL|ERROR)(?::|\s|\()/i.test(value) ||
+      /\bAssertionError\b/i.test(value) ||
+      /(?:^|\n)\s*FAILED\s*\(/i.test(value) ||
+      /\bRan\s+0\s+tests?\b/i.test(value) ||
+      /\bNO\s+TESTS?\s+RAN\b/i.test(value)
   );
+}
+
+// A test command that exited zero although no test it reported passed: every
+// test was skipped or an expected failure. Such a run proves nothing about the
+// code. Terminal colors are removed first (Python 3.14 and pytest color their
+// summaries on a pty), and unittest's outcome line is found as
+// unittestRunnerSummaryHasNonCleanOutcome finds it. Covered:
+// - unittest "Ran N tests", then "OK (skipped=S, expected failures=X)" with
+//   S + X >= N;
+// - a pytest summary line ("3 skipped in 0.01s", "2 xfailed in 0.02s",
+//   "1 skipped, 1 xpassed, 1 warning in 0.02s") without a nonzero "passed";
+// - a Jest or Vitest "Tests" line with counts and without a nonzero "passed";
+// - node:test "pass 0" with skipped or todo tests, cargo "0 passed" with
+//   ignored tests, or go "[no tests to run]".
+function unittestReportsNoPassingTest(text) {
+  const lines = text.split(/\r?\n/);
+  return lines.some((line, index) => {
+    const summary = line.match(UNITTEST_RUN_SUMMARY);
+    if (!summary) return false;
+    const outcome = (/^\s*$/.test(lines[index + 1] ?? "") ? lines[index + 2] : lines[index + 1]) ?? "";
+    if (!UNITTEST_CLEAN_RESULT.test(outcome)) return false;
+    const count = (name) => Number(new RegExp(String.raw`\b${name}=([0-9]+)`).exec(outcome)?.[1] ?? 0);
+    return count("skipped") + count("expected failures") >= Number(summary[1]);
+  });
+}
+
+function execResultReportsOnlySkippedTests(event) {
+  return execResultTexts(event).map(withoutTerminalColors).some((value) => {
+    if (unittestReportsNoPassingTest(value)) return true;
+    for (const [, summary] of value.matchAll(/(?:^|\n)[= ]*((?:[0-9]+ (?:passed|failed|skipped|deselected|xfailed|xpassed|errors?|warnings?)(?:, )?)+) in [0-9.]+s\b/g)) {
+      if (!/\b[1-9][0-9]* passed\b/.test(summary)) return true;
+    }
+    const jest = /(?:^|\n)\s*Tests:?\s+([^\n]*)/.exec(value)?.[1];
+    if (jest && /\b[0-9]+ (?:passed|failed|skipped|todo|total)\b/.test(jest) && !/\b[1-9][0-9]* passed\b/.test(jest)) return true;
+    if (/(?:^|\n)(?:#|\u2139) pass 0\b/.test(value) && /(?:^|\n)(?:#|\u2139) (?:skipped|todo) [1-9]/.test(value)) return true;
+    if (/(?:^|\n)test result: ok\. 0 passed; 0 failed; [1-9][0-9]* ignored\b/.test(value)) return true;
+    return /\[no tests to run\]/.test(value);
+  });
 }
 
 function execFailed(event) {
@@ -1504,6 +1659,20 @@ function canonicalPendingProcessSessionId(params, pendingSessions) {
 // `tool_search_code:<sanitized parent ID>:<tool>:<sequence>`.
 function toolSearchChildPrefix(parentId) {
   return `tool_search_code:${String(parentId).trim().replace(/[^A-Za-z0-9_.:-]+/g, "_").slice(0, 120) || "call"}:`;
+}
+
+// Whether a call ran while another admitted call that could change the
+// workspace also ran. A Tool Search child reads its parent's record. Without a
+// record (no call ID, or more calls in flight than are tracked) this cannot be
+// excluded, so it counts as overlapped.
+function workspaceCallOverlapped(inFlight, callId) {
+  if (typeof callId !== "string" || !callId) return true;
+  const own = inFlight.get(callId);
+  if (own) return own.overlapped;
+  for (const [id, parent] of inFlight) {
+    if (callId.startsWith(toolSearchChildPrefix(id))) return parent.overlapped;
+  }
+  return true;
 }
 
 function toolCallFailed(event) {
@@ -3205,7 +3374,10 @@ function cleanUnittestSummary(result) {
     result.isError === true ||
     result?.details?.status !== "completed" ||
     result?.details?.exitCode !== 0 ||
-    execResultHasNonCleanUnittestOutcome({ result })
+    // Compaction hides every other line from the model, so it needs the
+    // strict text heuristics as well: a result that passed despite program
+    // output keeps that output in the transcript.
+    execResultHasNonCleanUnittestOutcome({ result }, { trustRunnerSummary: false })
   ) {
     return undefined;
   }
@@ -4700,6 +4872,153 @@ function requestsRecursiveForcedDelete(params) {
   return false;
 }
 
+// Workspace-relative files as owner receipts list them.
+function receiptFiles(paths) {
+  return [...paths].filter((file) =>
+    typeof file === "string" && file.split("/").every((part) => WORKSPACE_PATH_COMPONENT.test(part))
+  ).sort();
+}
+
+function receiptWrittenFiles(state) {
+  return receiptFiles(state.successfulWritePaths);
+}
+
+// Files a run wrote, then files it changed with edit or apply_patch (and did
+// not also write), in path order.
+function receiptChangedFiles(state) {
+  const written = receiptWrittenFiles(state);
+  const changed = receiptFiles([...state.successfulEditPaths, ...state.successfulPatchPaths])
+    .filter((file, index, files) => files.indexOf(file) === index && !written.includes(file));
+  return [...written.map((file) => ({file, verb: "written"})), ...changed.map((file) => ({file, verb: "changed"}))]
+    .sort((left, right) => left.file < right.file ? -1 : left.file > right.file ? 1 : 0);
+}
+
+// At most 20 named files, one bounded line each. Each path component is
+// bounded but a path's depth is not, so a long path keeps its start and its
+// file name. Twenty lines stay far below the ingress text bound.
+const RECEIPT_FILE_LIMIT = 20;
+const RECEIPT_TRACKED_PATCH_PATHS = 256;
+const RECEIPT_PATH_CHARS = 200;
+function receiptPath(file) {
+  const text = `/workspace/${file}`;
+  return text.length <= RECEIPT_PATH_CHARS ? text
+    : `${text.slice(0, 60)}\u2026${text.slice(text.length - (RECEIPT_PATH_CHARS - 61))}`;
+}
+
+function receiptFileLines(entries) {
+  const more = entries.length - RECEIPT_FILE_LIMIT;
+  return entries.slice(0, RECEIPT_FILE_LIMIT).map(({file, verb}) => `- File ${verb}: \`${receiptPath(file)}\`.`).join("\n") +
+    (more > 0 ? `\n- ${more} additional files were ${entries.every(({verb}) => verb === "written") ? "written" : "written or changed"}.` : "");
+}
+
+// Model-chosen text shown as inline code in an owner receipt: one bounded
+// line without backticks or control characters.
+function receiptCode(value) {
+  const text = String(value).replace(/[`\u0000-\u001f\u007f\u2028\u2029]/g, " ").replace(/\s+/g, " ").trim();
+  return text.length > 160 ? `${text.slice(0, 159)}\u2026` : text;
+}
+
+// The recognized test command an executed exec call ran and the directory it
+// ran in. A leading `cd /workspace/...` is where the command ran, whatever
+// workdir the call named; otherwise the workdir, or the workspace root.
+function verificationReceiptTarget(params) {
+  let parsed = verificationCommand(params);
+  if (!parsed || !verificationCommandIsAuditable(params)) {
+    params = andChainVerificationParams(params);
+    parsed = params ? verificationCommand(params) : undefined;
+  }
+  if (!parsed) return undefined;
+  const workdir = parsed.commandWorkdir ?? normalizeExecWorkdir(params.workdir);
+  const directory = typeof workdir === "string" && workdir.startsWith("/")
+    ? workdir.replace(/(?<=.)\/+$/, "") : "/workspace";
+  const command = parsed.command.replace(/\s+2>&1\s*$/i, "");
+  return receiptCode(command) ? Object.freeze({command, directory}) : undefined;
+}
+
+// Whether a test directory contains one of these workspace-relative files. The
+// workspace root and the Playground folder, which hold other projects, contain
+// only their own top-level files here: a test run from either may have tested
+// another project (`python3 -m unittest discover -s Playground/old-project`,
+// `cd /workspace/Playground && python3 -m pytest old-project`). A command that
+// names a parent, home or absolute path outside its directory can also test
+// something else, so it covers nothing.
+function receiptTargetCovers(target, entries) {
+  const directory = target?.directory;
+  if (typeof target?.command !== "string") return false;
+  for (const word of target.command.split(/\s+/).map((value) => value.replace(/^['"]+|['"]+$/g, ""))) {
+    if (/^~|(?:^|[=/])\.\.(?:\/|$)/.test(word)) return false;
+    if (/^\//.test(word) && word !== directory && !word.startsWith(`${directory}/`)) return false;
+  }
+  if (directory === "/workspace" || directory === "/workspace/Playground") {
+    return entries.some(({file}) => `/workspace/${file}`.replace(/\/[^/]*$/, "") === directory);
+  }
+  if (typeof directory !== "string" || !directory.startsWith("/workspace/")) return false;
+  const relative = directory.slice("/workspace/".length);
+  return entries.some(({file}) => file.startsWith(`${relative}/`));
+}
+
+// After a deletion refusal no model text reaches the owner, so a host receipt
+// can stand for the result only when the owner asked for a change to files and
+// for nothing to be said in the reply. The answer detector is deliberately
+// broad; a wrong match only keeps the run failed, as on main. It matches a
+// question, and any ask for reply content: an explanation, description,
+// summary, overview, report or results, usage or instructions, how it works or
+// how to run it, documentation, a walkthrough, a comparison or citations;
+// "tell me", "show me", "give me", "let me know"; "include ..."; or the
+// reply, answer or response itself. "Can you write ...?" is a request, not a
+// question.
+const RECEIPT_CHANGE_REQUEST =
+  /\b(?:create|write|edit|update|build|implement|fix|repair|add|modify|generate|refactor|change|rename|make|patch|convert)\b/i;
+const RECEIPT_POLITE_REQUEST = /^(?:please\s+)?(?:can|could|would|will)\s+you\s+(?:please\s+)?/i;
+const RECEIPT_ANSWER_REQUEST = new RegExp([
+  String.raw`^(?:what|why|how|which|who|when|where)\b`,
+  String.raw`\b(?:explain\w*|explanations?|describ\w*|descriptions?|summar\w*|overviews?|report\w*|results?)\b`,
+  String.raw`\b(?:usage|instructions?|document\w*|walk\s*-?\s*through\w*|walk\s+(?:me|us)\b|compar\w*|cite|citations?)\b`,
+  String.raw`\b(?:tell|show|give|send)\s+(?:me|us)\b|\blet\s+(?:me|us)\s+know\b|\binclud\w*`,
+  String.raw`\bhow\s+(?:it|this|that|they|the|to|you|i|we)\b`,
+  String.raw`\b(?:repl(?:y|ies)|answer\w*|respon(?:d|se)\w*)\b`,
+].join("|"), "i");
+function ownerRequestAnswerableByReceipt(text) {
+  const clauses = ownerLaneText(String(text ?? "").replace(/\n\n\[ODS (?:Portal|Pixel) delivery requirement:[\s\S]*$/, ""))
+    .split(/(?<=[!?;\n])|(?<=\.)(?=\s|$)/).map((clause) => clause.trim()).filter(Boolean);
+  let change = false;
+  for (const clause of clauses) {
+    const polite = RECEIPT_POLITE_REQUEST.exec(clause);
+    const body = polite ? clause.slice(polite[0].length) : clause;
+    const request = polite && new RegExp(`^${RECEIPT_CHANGE_REQUEST.source}`, "i").test(body);
+    if (RECEIPT_ANSWER_REQUEST.test(body) || (!request && /\?/.test(clause))) return false;
+    change ||= RECEIPT_CHANGE_REQUEST.test(body);
+  }
+  return change;
+}
+
+// Owner receipt after an unauthorized recursive deletion was refused. Every
+// fact comes from host state. It cannot prove that nothing was ever deleted,
+// so it does not claim that, and it addresses the owner, not the model.
+function recursiveDeleteRefusalReceipt({ files, target, testState, running, passed }) {
+  const test = target ? `\`${receiptCode(target.command)}\` in \`${receiptCode(target.directory)}\`` : undefined;
+  const latest = test ? `The latest recognized test command, ${test},` : "The latest recognized test command";
+  const testLine = {
+    passed: `${latest} passed, and no tool call that could change the workspace ran after it.`,
+    stale: `${latest} passed, but a later tool call or command could have changed the workspace, so that result is not current.`,
+    overlapped: `${latest} passed, but another tool call or command ran at the same time, so that result is not current.`,
+    skipped: `${latest} exited successfully, but no test it reported passed: each was skipped, not run or an expected failure.`,
+    failed: `${latest} failed.`,
+    pending: `${latest} had not finished, so its result is unknown.`,
+  }[testState] ?? "No recognized test command ran.";
+  return [
+    "Pixel stopped using tools because a command included a recursive deletion that you did not ask for. " +
+      "That command was refused and did not run.",
+    "Results recorded by Pixel's tools before that:",
+    files.length ? receiptFileLines(files) : "- No file was written or changed with Pixel's file tools.",
+    `- ${testLine}`,
+    ...(running ? ["- A command started earlier was still running when tool use stopped."] : []),
+    passed
+      ? "This does not establish complete test coverage or completion of every requested step."
+      : "This request is not complete. Ask Pixel to continue, or say explicitly if you want a folder deleted.",
+  ].join("\n");
+}
+
 // Keep status UI elements separate from requests for platform facts.
 function statusKeywordIsUiNounPhrase(clause, keywordIndex, keywordLen) {
   const uiWords =
@@ -5614,6 +5933,22 @@ export function userMessageRequestsWorkspaceTools(messages, prompt = undefined) 
 
 export function userMessageRequestsNewPlaygroundProject(messages, prompt = undefined) {
   return requestsNewPlaygroundProject(currentOwnerIntentText(messages,prompt));
+}
+
+// A change or test run for named workspace code, such as "Fix the bug in
+// Playground/photo-renamer/rename_photos.py, then run the tests". These
+// requests need not say "workspace" or ask for a new project, so the workspace
+// guide can be absent from their turn.
+const NAMED_CODE_OPERAND =
+  /(?:^|[\s(`'"])(?:\.\/)?(?:Playground\/[A-Za-z0-9._-]|[A-Za-z0-9_][A-Za-z0-9._/-]*\.(?:py|js|mjs|cjs|ts|tsx|jsx|go|rs|java|kt|rb|php|cs|c|cc|cpp|h|hpp|sh|swift)\b)/;
+const NAMED_CODE_ACTION = "fix|repair|debug|edit|update|change|modify|add|implement|refactor|rewrite|write|create|build|run|test";
+export function userMessageRequestsNamedCodeChange(messages, prompt = undefined) {
+  const text = ownerLaneText(currentOwnerIntentText(messages, prompt));
+  const action = new RegExp(`\\b(?:${NAMED_CODE_ACTION})\\b`, "i");
+  const rejection = new RegExp(
+    `\\b(?:do\\s+not|don't|never|must\\s+not|should\\s+not|avoid|skip|without)\\b[^.!?;\\n]{0,96}\\b(?:${NAMED_CODE_ACTION})\\b`, "i");
+  return text.split(/[!?;\n]+|\.(?=\s|$)/).some((clause) =>
+    NAMED_CODE_OPERAND.test(clause) && action.test(clause) && !rejection.test(clause));
 }
 
 export function userMessageRequestsWorkspaceMutation(messages, prompt = undefined) {
@@ -7098,6 +7433,8 @@ export function createToolLoopGuard({
         successfulWritePaths: new Set(),
         boundPreviewWriteDirectories: new Set(),
         successfulEditPaths: new Set(),
+        successfulPatchPaths: new Set(),
+        workspaceMutationSucceeded: false,
         successfulWriteContentByPath: new Map(),
         compareSwapRepairCounts: new Map(),
         successfulReadPaths: new Set(),
@@ -7207,6 +7544,9 @@ export function createToolLoopGuard({
         latestVerificationStatus: undefined,
         latestVerificationFingerprint: undefined,
         latestVerificationPassedGeneration: undefined,
+        latestVerificationTarget: undefined,
+        latestVerificationSkippedOnly: false,
+        latestVerificationOverlapped: false,
         wrappedExecFailurePending: false,
         suppressStaleExecWarning: false,
         recursiveDeleteAuthorized: false,
@@ -7218,12 +7558,17 @@ export function createToolLoopGuard({
         // not been observed yet, and whether any exec went to the background.
         execCallsInFlight: new Set(),
         backgroundExecStarted: false,
+        // Admitted calls that could change the workspace and whose receipt
+        // has not been observed yet, by call ID, and whether another such call
+        // ran at the same time (sibling calls from one model response).
+        workspaceCallsInFlight: new Map(),
         // Budget-free corrective answers used so far, by kind.
         freeCorrections: new Map(),
         // Destinations whose re-typed write was already refused once.
         derivedWriteRefusedPaths: new Set(),
         execOriginalByWrapped: new Map(),
         verificationOriginalByWrapped: new Map(),
+        verificationTargetByWrapped: new Map(),
         currentSessionId: undefined,
         currentSessionKey: undefined,
         visibleReplyText: undefined,
@@ -7370,6 +7715,14 @@ export function createToolLoopGuard({
       return decision;
     }
     state.previewVerificationGeneration = (state.previewVerificationGeneration ?? 0) + 1;
+    // Sibling calls from one model response run at the same time, so a test
+    // may not have seen a sibling's change. A Tool Search child runs inside
+    // its parent call and is not a sibling.
+    if (typeof callId === 'string' && callId && !callId.startsWith('tool_search_code:')) {
+      const inFlight = state.workspaceCallsInFlight;
+      for (const other of inFlight.values()) other.overlapped = true;
+      if (inFlight.size < MAX_PENDING_EXEC_SESSIONS) inFlight.set(callId, {overlapped: inFlight.size > 0});
+    }
     const selected = toolName === 'tool_call'
       ? /^(?:openclaw:core:)?(?:exec|read|write|edit|apply_patch)$/.test(event?.params?.id ?? '')
         ? {name:event.params.id.split(':').at(-1),params:event.params.args} : undefined
@@ -8906,11 +9259,18 @@ export function createToolLoopGuard({
           state.latestVerificationPassedGeneration === state.previewVerificationGeneration)) {
         state.latestVerificationStatus = "failed";
       }
-      // The refusal runs nothing; repeats (often with a variant redirect) are
-      // bounded by recordFreeCorrection instead of each draining the budget.
-      recordFreeCorrection(state, "verification-not-auditable",
-        context?.toolCallId ?? event?.toolCallId, toolName);
-      return { block: true, blockReason: VERIFICATION_COMMAND_NOT_AUDITABLE_REASON };
+      // After a coding stop, the stop's own terminal handling below answers
+      // every further exec (one terminal refusal, then abort). "Run it
+      // directly" would contradict its "Do not call another tool", and a
+      // model obeys the newer message (strixy, d4a61f33: `...; echo
+      // "EXIT:$?"` was coached, then rerun bare).
+      if (!state?.codingExhausted) {
+        // The refusal runs nothing; repeats (often with a variant redirect) are
+        // bounded by recordFreeCorrection instead of each draining the budget.
+        recordFreeCorrection(state, "verification-not-auditable",
+          context?.toolCallId ?? event?.toolCallId, toolName);
+        return { block: true, blockReason: VERIFICATION_COMMAND_NOT_AUDITABLE_REASON };
+      }
     }
 
     if (state?.privateNetworkPrompt) {
@@ -9241,6 +9601,9 @@ export function createToolLoopGuard({
         const params = { ...selectedParams };
         const originalFingerprint = execFingerprint(params);
         const originalVerificationFingerprint = verificationExecFingerprint(params);
+        // The command and directory the model gave, before execution control
+        // wraps the command and resolves the workdir to a host path.
+        const originalVerificationTarget = originalVerificationFingerprint ? verificationReceiptTarget(params) : undefined;
         const directory = execControl.resolveWorkdir?.(params.workdir, state?.configuredWorkspaceRoot);
         if (directory?.block) return directory;
         if (directory) params.workdir = directory.workdir;
@@ -9272,6 +9635,7 @@ export function createToolLoopGuard({
             wrappedFingerprint,
             originalVerificationFingerprint
           );
+          state.verificationTargetByWrapped.set(wrappedFingerprint, originalVerificationTarget);
         }
         return {
           params: toolName === "tool_call"
@@ -9347,6 +9711,7 @@ export function createToolLoopGuard({
       if (ownerIntent) state.playgroundOwnerIntent = ownerIntent;
       if (ownerIntent) state.ownerResearchDate = ownerResearchDate(ownerIntent);
       if (ownerIntent) state.ownerQuestionIntent=requestsChoiceQuestion(ownerIntent);
+      if (ownerIntent) state.receiptAnswersOwnerRequest = ownerRequestAnswerableByReceipt(ownerIntent);
       if (teamRole) {state.managedTeamWorker=true;state.managedTeamReadOnly=teamRole!=='Builder';state.managedTeamCoordinator=teamRole==='Coordinator';state.ownerQuestionIntent=teamQuestionIntent;}
       if (capabilities !== undefined) {
         state.configuredWorkspaceRoot = capabilities.workspaceRoot;
@@ -9813,6 +10178,11 @@ export function createToolLoopGuard({
         : undefined;
     if (runningExecSessionId(phantomExecReceipt)) rememberBackgroundExec(state, agentId);
     state.execCallsInFlight.delete(toolCallId);
+    // Whether another call that could change the workspace ran while this one
+    // ran. A Tool Search child reads its parent's record; a call without a
+    // record counts as overlapped.
+    const concurrentCall = workspaceCallOverlapped(state.workspaceCallsInFlight, toolCallId);
+    state.workspaceCallsInFlight.delete(toolCallId);
     const pendingToolRun = pendingToolRuns.get(toolCallId);
     if (workspacePreviewInspectionAvailable && pendingToolRun?.selectedToolName === PREVIEW_INSPECTION_TOOL &&
         pendingToolRun.runId === runId && pendingToolRun.transport === toolName &&
@@ -9973,6 +10343,7 @@ export function createToolLoopGuard({
         ? completedMutation
         : undefined;
     if (successfulMutation) {
+      state.workspaceMutationSucceeded = true;
       state.invalidEditCreateBlocks = 0;
       state.oversizedEditBlocks = 0;
       state.noOpEditBlocks = 0;
@@ -10147,6 +10518,13 @@ export function createToolLoopGuard({
       ? editReplacementPairs(successfulMutation.event?.params)
       : [];
     if (completedEditPath) state.successfulEditPaths.add(completedEditPath);
+    if (successfulMutation?.name === "apply_patch") {
+      for (const file of workspaceMutationFiles("apply_patch", successfulMutation.event?.params)) {
+        if (state.successfulPatchPaths.size < RECEIPT_TRACKED_PATCH_PATHS) {
+          state.successfulPatchPaths.add(normalizeWorkspaceFilePath(file));
+        }
+      }
+    }
     const completedVisualMutationPath = completedEditPath ?? completedWritePath;
     const previousVisualDirectory = sessionPreviews.get(state.currentSessionId)?.relativeDirectory;
     const updatesPublishedProject = previousVisualDirectory && completedVisualMutationPath?.startsWith(`${previousVisualDirectory}/`);
@@ -10579,12 +10957,16 @@ export function createToolLoopGuard({
       if (!pending) return;
       state.pendingExecSessions.delete(completion.sessionId);
       state.pendingExecBlocks.delete(completion.sessionId);
+      // This command ran while every command still pending ran.
+      for (const other of state.pendingExecSessions.values()) other.overlapped = true;
       const verificationFailed =
         completion.failed ||
         (
           pending.verificationFingerprint &&
           verificationFingerprintIsPythonUnittest(pending.verificationFingerprint) &&
-          execResultHasNonCleanUnittestOutcome(event)
+          execResultHasNonCleanUnittestOutcome(event, {
+            trustRunnerSummary: execFingerprintRunsUnittestRunner(pending.fingerprint),
+          })
         );
       if (verificationFailed) {
         if (pending.fingerprint) {
@@ -10610,8 +10992,24 @@ export function createToolLoopGuard({
         if (pending.verificationFingerprint) {
           state.failedVerificationAttempts = 0;
           state.latestVerificationStatus = "passed";
-          state.latestVerificationPassedGeneration = state.previewVerificationGeneration;
+          // The test ran against the workspace as it was when it started: a
+          // call that ran while it was still running makes this pass stale.
+          state.latestVerificationPassedGeneration = pending.generation;
+          state.latestVerificationSkippedOnly = execResultReportsOnlySkippedTests(event);
+          // Another background command ran while this test ran: it started
+          // before or during the test, ended during it, or is still running.
+          state.latestVerificationOverlapped = pending.overlapped === true || state.pendingExecSessions.size > 0;
         }
+      }
+      if (pending.verificationFingerprint) {
+        // The receipt names the command whose result this is.
+        state.latestVerificationFingerprint = pending.verificationFingerprint;
+        state.latestVerificationTarget = pending.target;
+      } else {
+        // A background command could change the workspace until it ended, so
+        // no earlier pass is current any more. A read-only poll does not
+        // advance the generation by itself.
+        state.latestVerificationPassedGeneration = undefined;
       }
       return;
     }
@@ -10641,12 +11039,23 @@ export function createToolLoopGuard({
       state.verificationOriginalByWrapped.get(observedFingerprint) ??
       verificationExecFingerprint(execEvent?.params);
     if (observedFingerprint) state.execOriginalByWrapped.delete(observedFingerprint);
+    const wrappedVerificationTarget = state.verificationTargetByWrapped.get(observedFingerprint);
     if (observedFingerprint) {
       state.verificationOriginalByWrapped.delete(observedFingerprint);
+      state.verificationTargetByWrapped.delete(observedFingerprint);
     }
+    // After a recursive-deletion refusal, a call this guard refused ran
+    // nothing. Its blocked receipt is not a test result or a failed command,
+    // so it cannot replace the latest real verification in the owner receipt.
+    if (refusedCall && state.recursiveDeleteDenied) return;
     if (!fingerprint && !verificationFingerprint) return;
+    const verificationTarget = verificationFingerprint
+      ? wrappedVerificationTarget ?? verificationReceiptTarget(execEvent?.params) : undefined;
     if (verificationFingerprint) {
       state.latestVerificationFingerprint = verificationFingerprint;
+      state.latestVerificationTarget = verificationTarget;
+      state.latestVerificationSkippedOnly = false;
+      state.latestVerificationOverlapped = false;
     }
     const pendingSessionId = runningExecSessionId(execEvent);
     if (pendingSessionId) {
@@ -10654,9 +11063,16 @@ export function createToolLoopGuard({
         state.codingExhausted = true;
         return;
       }
+      // Background commands that run at the same time overlap each other: a
+      // test pass is not current when another command could have changed the
+      // workspace while the test ran.
+      for (const other of state.pendingExecSessions.values()) other.overlapped = true;
       state.pendingExecSessions.set(pendingSessionId, {
         fingerprint,
         verificationFingerprint,
+        target: verificationTarget,
+        generation: state.previewVerificationGeneration,
+        overlapped: state.pendingExecSessions.size > 0 || concurrentCall,
       });
       if (verificationFingerprint) state.latestVerificationStatus = "pending";
       return;
@@ -10669,7 +11085,9 @@ export function createToolLoopGuard({
       (
         verificationFingerprint &&
         verificationFingerprintIsPythonUnittest(verificationFingerprint) &&
-        execResultHasNonCleanUnittestOutcome(execEvent)
+        execResultHasNonCleanUnittestOutcome(execEvent, {
+          trustRunnerSummary: execFingerprintRunsUnittestRunner(fingerprint),
+        })
       );
     // Native exec has no Tool Search envelope. Capture the same bounded
     // failure projection only after this exact call's terminal unittest result;
@@ -10721,6 +11139,10 @@ export function createToolLoopGuard({
         state.failedVerificationAttempts = 0;
         state.latestVerificationStatus = "passed";
         state.latestVerificationPassedGeneration = state.previewVerificationGeneration;
+        state.latestVerificationSkippedOnly = execResultReportsOnlySkippedTests(execEvent);
+        // A background command that had not been observed to end, or a
+        // sibling call, was running while this test ran.
+        state.latestVerificationOverlapped = state.pendingExecSessions.size > 0 || concurrentCall;
       }
     }
   }
@@ -11581,7 +12003,7 @@ export function createToolLoopGuard({
       if (!result || !valid()) return false;
       afterToolCall({toolName: WORKSPACE_PREVIEW_TOOL, toolCallId: callId, params, result}, ctx, agentId);
       return Boolean(state.workspacePreview);
-    } finally { pendingToolRuns.delete(callId); }
+    } finally { pendingToolRuns.delete(callId); state.workspaceCallsInFlight.delete(callId); }
   }
 
   async function revalidateWorkspacePreview(event, context, agentId = 'pixel') {
@@ -11810,7 +12232,14 @@ export function createToolLoopGuard({
 
   function endPreviewRevalidation(event, context) {
     const state = runs.get(context?.runId ?? event?.runId);
-    if (state) {state.previewRevalidationCandidate=undefined;state.previewVerificationGeneration=(state.previewVerificationGeneration ?? 0)+1;}
+    if (!state) return;
+    // Ending the attempt voids pending preview revalidation but changes no
+    // workspace file, so a test pass that was current stays current. OpenClaw
+    // runs agent_end before the ingress reads delivery verification.
+    const passCurrent = Number.isInteger(state.latestVerificationPassedGeneration) &&
+      state.latestVerificationPassedGeneration === state.previewVerificationGeneration;
+    state.previewRevalidationCandidate=undefined;state.previewVerificationGeneration=(state.previewVerificationGeneration ?? 0)+1;
+    if (passCurrent) state.latestVerificationPassedGeneration = state.previewVerificationGeneration;
   }
 
   // agent_end: a later cancel for this user can no longer name this run's
@@ -11919,9 +12348,56 @@ export function createToolLoopGuard({
     if (typeof runId !== "string" || !runId) return { status: "none" };
     const state = runs.get(runId);
     if (!state) return { status: "none" };
-    if (state.recursiveDeleteDenied) {
-      return { status: "failed", text: RECURSIVE_DELETE_REQUIRES_OWNER_REASON };
-    }
+    if (state.recursiveDeleteDenied) return recursiveDeleteRefusalVerification(state);
+    return workspaceTaskVerification(state);
+  }
+
+  // After an unauthorized recursive deletion was refused, every later tool
+  // call in the run is refused and no model text is delivered. The owner gets
+  // a host receipt instead of the model-directed refusal. The run keeps
+  // 'passed' only when the receipt can stand for the whole result:
+  // - the owner asked for a change to files and for nothing to be said in the
+  //   reply (no question, explanation, summary, results or other answer text)
+  //   and no research, and a write, edit or patch succeeded in this run;
+  // - the latest recognized test passed, did not skip every test, ran in a
+  //   directory containing a file this run changed without naming a path
+  //   outside it, and is still current: no call that could change the
+  //   workspace was admitted after it (refused calls never advance the
+  //   generation; agent_end keeps a current pass current), no sibling call
+  //   and no other background command ran while it ran or ended after it,
+  //   and none is running;
+  // - the rest of the task evaluation passed without a publication receipt.
+  // Receipt-based work (Operations, exact downloads, previews, managed
+  // extension or team work) and every other state stay 'failed'.
+  function recursiveDeleteRefusalVerification(state) {
+    const verification = workspaceTaskVerification(state);
+    const status = state.latestVerificationStatus;
+    const current = status === "passed" && Number.isInteger(state.latestVerificationPassedGeneration) &&
+      state.latestVerificationPassedGeneration === state.previewVerificationGeneration;
+    const skipped = current && state.latestVerificationSkippedOnly === true;
+    const overlapped = current && state.latestVerificationOverlapped === true;
+    const running = state.pendingExecSessions.size > 0;
+    const files = receiptChangedFiles(state);
+    const passed = current && !skipped && !overlapped && !running && state.workspaceMutationSucceeded === true &&
+      receiptTargetCovers(state.latestVerificationTarget, files) &&
+      state.receiptAnswersOwnerRequest === true && !state.completionAssurance.researchInvolved &&
+      verification.status === "passed" && !verification.preview &&
+      !state.operationsRequired && !state.exactDownloadRequested && !state.workspacePreviewRequired &&
+      !state.extensionCompletionGate?.active && !state.extensionPendingHandoff && !state.managedTeamWorker;
+    return {
+      status: passed ? "passed" : "failed",
+      text: recursiveDeleteRefusalReceipt({
+        files,
+        target: state.latestVerificationTarget,
+        testState: skipped ? "skipped" : overlapped ? "overlapped" : current ? "passed"
+          : status === "passed" ? "stale" : status ?? "not-run",
+        running,
+        passed,
+      }),
+    };
+  }
+
+  function workspaceTaskVerification(state) {
     if (state.unrequestedOperationsAborted) {
       return { status: "failed", text: UNREQUESTED_OPERATIONS_LOOP_ABORT_REASON };
     }
@@ -12207,9 +12683,7 @@ export function createToolLoopGuard({
         };
       }
       if (state.codingExhausted && state.workspaceTaskRequested && state.pendingExecSessions.size === 0) {
-        const writtenFiles = [...state.successfulWritePaths].filter((file) =>
-          typeof file === "string" && file.split("/").every((part) => WORKSPACE_PATH_COMPONENT.test(part))
-        ).sort();
+        const writtenFiles = receiptWrittenFiles(state);
         if (writtenFiles.length > 0) {
           // Preserve real work when the model repeats a completed command and
           // cannot produce a final reply. This is a partial tool receipt, not
@@ -12218,8 +12692,7 @@ export function createToolLoopGuard({
             status: "passed",
             text: "Pixel stopped repeating completed work before it could finish its explanation. " +
               "The following results were recorded by its tools:\n" +
-              writtenFiles.slice(0, 20).map((file) => `- File written: \`/workspace/${file}\`.`).join("\n") +
-              (writtenFiles.length > 20 ? `\n- ${writtenFiles.length - 20} additional files were written.` : "") +
+              receiptFileLines(writtenFiles.map((file) => ({file, verb: "written"}))) +
               "\n- The latest recognized test command completed successfully.\n" +
               "This does not establish complete test coverage or completion of every requested step. " +
               "The workspace is preserved; ask Pixel to continue from these files.",
@@ -12247,7 +12720,10 @@ export function createToolLoopGuard({
     if (state?.completionAssurance.terminal && verification.status === 'none' && !stopAnswer) {
       return {status:state.completionAssurance.terminalStatus, text:state.completionAssurance.terminal};
     }
-    if (state?.progressBudget.exhausted) {
+    // An exhausted budget refuses every call before the deletion check, so a
+    // deletion refusal always came first; the latch's own refusals then count
+    // as failures. The deletion receipt, not the progress stop, is the cause.
+    if (state?.progressBudget.exhausted && !state.recursiveDeleteDenied) {
       const preview = progressStopPreview(state);
       const receipt = preview ? {preview: {schemaVersion: 1, kind: 'ods-pixel-workspace-preview', ...preview}} : {};
       // The request is still incomplete ('failed'); only the finalization
