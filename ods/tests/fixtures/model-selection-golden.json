@@ -5,6 +5,12 @@
     "corrected_estimate_gib": 7.77,
     "fits": true,
     "fits_at_hermes": true,
+    "gemma4": {
+      "context_length": 65536,
+      "pick": "gemma4-e4b-q4",
+      "policy": "context-aware-curated-fit-v2",
+      "runtime_profile": null
+    },
     "pick": "qwen3.5-9b-q4",
     "policy": "context-aware-curated-fit-v2",
     "runtime_profile": null,
@@ -16,6 +22,12 @@
     "corrected_estimate_gib": 20.32,
     "fits": true,
     "fits_at_hermes": true,
+    "gemma4": {
+      "context_length": 65536,
+      "pick": "gemma4-26b-a4b-q4",
+      "policy": "context-aware-curated-fit-v2",
+      "runtime_profile": null
+    },
     "pick": "qwen3.5-27b-q4",
     "policy": "context-aware-curated-fit-v2",
     "runtime_profile": null,
@@ -27,6 +39,12 @@
     "corrected_estimate_gib": 23.83,
     "fits": true,
     "fits_at_hermes": true,
+    "gemma4": {
+      "context_length": 131072,
+      "pick": "gemma4-31b-q4",
+      "policy": "context-aware-curated-fit-v2",
+      "runtime_profile": null
+    },
     "pick": "qwen3.6-35b-a3b-ud-q4",
     "policy": "context-aware-curated-fit-v2",
     "runtime_profile": null,
@@ -38,6 +56,12 @@
     "corrected_estimate_gib": 6.83,
     "fits": true,
     "fits_at_hermes": true,
+    "gemma4": {
+      "context_length": 65536,
+      "pick": "gemma4-e4b-q4",
+      "policy": "context-aware-curated-fit-v2",
+      "runtime_profile": null
+    },
     "pick": "qwen3.5-9b-q4",
     "policy": "context-aware-curated-fit-v2",
     "runtime_profile": "amd-8gb-64k-q8-kv",
@@ -49,6 +73,12 @@
     "corrected_estimate_gib": 23.83,
     "fits": true,
     "fits_at_hermes": "n/a",
+    "gemma4": {
+      "context_length": 131072,
+      "pick": "gemma4-31b-q4",
+      "policy": "context-aware-curated-fit-v2",
+      "runtime_profile": null
+    },
     "pick": "qwen3.6-35b-a3b-ud-q4",
     "policy": "context-aware-curated-fit-v2+unified-memory-coder-next-a3b-v1",
     "runtime_profile": null,
@@ -60,6 +90,12 @@
     "corrected_estimate_gib": 7.77,
     "fits": true,
     "fits_at_hermes": "n/a",
+    "gemma4": {
+      "context_length": 65536,
+      "pick": "gemma4-e4b-q4",
+      "policy": "context-aware-curated-fit-v2",
+      "runtime_profile": null
+    },
     "pick": "qwen3.5-9b-q4",
     "policy": "context-aware-curated-fit-v2",
     "runtime_profile": null,
@@ -71,6 +107,12 @@
     "corrected_estimate_gib": 23.83,
     "fits": true,
     "fits_at_hermes": "n/a",
+    "gemma4": {
+      "context_length": 131072,
+      "pick": "gemma4-31b-q4",
+      "policy": "context-aware-curated-fit-v2",
+      "runtime_profile": null
+    },
     "pick": "qwen3.6-35b-a3b-ud-q4",
     "policy": "context-aware-curated-fit-v2+unified-memory-coder-next-a3b-v1",
     "runtime_profile": null,
@@ -82,6 +124,12 @@
     "corrected_estimate_gib": 7.77,
     "fits": true,
     "fits_at_hermes": "n/a",
+    "gemma4": {
+      "context_length": 65536,
+      "pick": "gemma4-e4b-q4",
+      "policy": "context-aware-curated-fit-v2",
+      "runtime_profile": null
+    },
     "pick": "qwen3.5-9b-q4",
     "policy": "context-aware-curated-fit-v2",
     "runtime_profile": null,
@@ -93,6 +141,12 @@
     "corrected_estimate_gib": 7.77,
     "fits": true,
     "fits_at_hermes": "n/a",
+    "gemma4": {
+      "context_length": 65536,
+      "pick": "gemma4-e4b-q4",
+      "policy": "context-aware-curated-fit-v2",
+      "runtime_profile": null
+    },
     "pick": "qwen3.5-9b-q4",
     "policy": "context-aware-curated-fit-v2",
     "runtime_profile": null,
@@ -104,6 +158,12 @@
     "corrected_estimate_gib": 7.77,
     "fits": true,
     "fits_at_hermes": "n/a",
+    "gemma4": {
+      "context_length": 65536,
+      "pick": "gemma4-26b-a4b-q4",
+      "policy": "context-aware-curated-fit-v2",
+      "runtime_profile": null
+    },
     "pick": "qwen3.5-9b-q4",
     "policy": "context-aware-curated-fit-v2",
     "runtime_profile": null,
@@ -115,6 +175,12 @@
     "corrected_estimate_gib": 23.83,
     "fits": true,
     "fits_at_hermes": "n/a",
+    "gemma4": {
+      "context_length": 65536,
+      "pick": "gemma4-26b-a4b-q4",
+      "policy": "context-aware-curated-fit-v2",
+      "runtime_profile": null
+    },
     "pick": "qwen3.6-35b-a3b-ud-q4",
     "policy": "context-aware-curated-fit-v2",
     "runtime_profile": null,
@@ -126,6 +192,12 @@
     "corrected_estimate_gib": 23.83,
     "fits": true,
     "fits_at_hermes": "n/a",
+    "gemma4": {
+      "context_length": 131072,
+      "pick": "gemma4-31b-q4",
+      "policy": "context-aware-curated-fit-v2",
+      "runtime_profile": null
+    },
     "pick": "qwen3.6-35b-a3b-ud-q4",
     "policy": "context-aware-curated-fit-v2",
     "runtime_profile": null,
@@ -137,6 +209,12 @@
     "corrected_estimate_gib": 4.11,
     "fits": true,
     "fits_at_hermes": "n/a",
+    "gemma4": {
+      "context_length": 65536,
+      "pick": "gemma4-e2b-q4",
+      "policy": "context-aware-curated-fit-v2",
+      "runtime_profile": null
+    },
     "pick": "nvidia-nemotron3-nano-4b-q4",
     "policy": "context-aware-curated-fit-v2",
     "runtime_profile": null,
@@ -148,6 +226,12 @@
     "corrected_estimate_gib": 23.83,
     "fits": true,
     "fits_at_hermes": "n/a",
+    "gemma4": {
+      "context_length": 131072,
+      "pick": "gemma4-31b-q4",
+      "policy": "context-aware-curated-fit-v2",
+      "runtime_profile": null
+    },
     "pick": "qwen3.6-35b-a3b-ud-q4",
     "policy": "context-aware-curated-fit-v2+unified-memory-coder-next-a3b-v1",
     "runtime_profile": null,
@@ -159,6 +243,12 @@
     "corrected_estimate_gib": 2.05,
     "fits": true,
     "fits_at_hermes": true,
+    "gemma4": {
+      "context_length": 65536,
+      "pick": "gemma4-e2b-q4",
+      "policy": "context-aware-curated-fit-v2",
+      "runtime_profile": null
+    },
     "pick": "qwen3.5-2b-q4",
     "policy": "context-aware-curated-fit-v2",
     "runtime_profile": "cpu-64k-q8-kv",
@@ -170,6 +260,12 @@
     "corrected_estimate_gib": 4.25,
     "fits": true,
     "fits_at_hermes": true,
+    "gemma4": {
+      "context_length": 65536,
+      "pick": "gemma4-e2b-q4",
+      "policy": "context-aware-curated-fit-v2",
+      "runtime_profile": null
+    },
     "pick": "qwen3.5-4b-q4",
     "policy": "context-aware-curated-fit-v2",
     "runtime_profile": "cpu-64k-q8-kv",
@@ -181,6 +277,12 @@
     "corrected_estimate_gib": 4.25,
     "fits": true,
     "fits_at_hermes": true,
+    "gemma4": {
+      "context_length": 65536,
+      "pick": "gemma4-e2b-q4",
+      "policy": "context-aware-curated-fit-v2",
+      "runtime_profile": null
+    },
     "pick": "qwen3.5-4b-q4",
     "policy": "context-aware-curated-fit-v2",
     "runtime_profile": "cpu-64k-q8-kv",
@@ -192,6 +294,12 @@
     "corrected_estimate_gib": 7.03,
     "fits": true,
     "fits_at_hermes": true,
+    "gemma4": {
+      "context_length": 65536,
+      "pick": "gemma4-e4b-q4",
+      "policy": "context-aware-curated-fit-v2",
+      "runtime_profile": null
+    },
     "pick": "qwen3.5-9b-q4",
     "policy": "context-aware-curated-fit-v2",
     "runtime_profile": "cpu-64k-q8-kv",
@@ -203,6 +311,12 @@
     "corrected_estimate_gib": 7.03,
     "fits": true,
     "fits_at_hermes": true,
+    "gemma4": {
+      "context_length": 65536,
+      "pick": "gemma4-e4b-q4",
+      "policy": "context-aware-curated-fit-v2",
+      "runtime_profile": null
+    },
     "pick": "qwen3.5-9b-q4",
     "policy": "context-aware-curated-fit-v2",
     "runtime_profile": "cpu-64k-q8-kv",
@@ -214,6 +328,12 @@
     "corrected_estimate_gib": 7.03,
     "fits": true,
     "fits_at_hermes": true,
+    "gemma4": {
+      "context_length": 65536,
+      "pick": "gemma4-e4b-q4",
+      "policy": "context-aware-curated-fit-v2",
+      "runtime_profile": null
+    },
     "pick": "qwen3.5-9b-q4",
     "policy": "context-aware-curated-fit-v2",
     "runtime_profile": "cpu-64k-q8-kv",
@@ -225,6 +345,12 @@
     "corrected_estimate_gib": 2.05,
     "fits": true,
     "fits_at_hermes": true,
+    "gemma4": {
+      "context_length": 65536,
+      "pick": "qwen3.5-2b-q4",
+      "policy": "context-aware-curated-fit-v2",
+      "runtime_profile": "cpu-64k-q8-kv"
+    },
     "pick": "qwen3.5-2b-q4",
     "policy": "context-aware-curated-fit-v2",
     "runtime_profile": "cpu-64k-q8-kv",
@@ -247,6 +373,12 @@
     "corrected_estimate_gib": 7.77,
     "fits": true,
     "fits_at_hermes": true,
+    "gemma4": {
+      "context_length": 65536,
+      "pick": "gemma4-e4b-q4",
+      "policy": "context-aware-curated-fit-v2",
+      "runtime_profile": null
+    },
     "pick": "qwen3.5-9b-q4",
     "policy": "context-aware-curated-fit-v2",
     "runtime_profile": null,
@@ -269,6 +401,12 @@
     "corrected_estimate_gib": 7.77,
     "fits": true,
     "fits_at_hermes": true,
+    "gemma4": {
+      "context_length": 65536,
+      "pick": "gemma4-e4b-q4",
+      "policy": "context-aware-curated-fit-v2",
+      "runtime_profile": null
+    },
     "pick": "qwen3.5-9b-q4",
     "policy": "context-aware-curated-fit-v2",
     "runtime_profile": null,
@@ -291,6 +429,12 @@
     "corrected_estimate_gib": 7.77,
     "fits": true,
     "fits_at_hermes": true,
+    "gemma4": {
+      "context_length": 65536,
+      "pick": "gemma4-e4b-q4",
+      "policy": "context-aware-curated-fit-v2",
+      "runtime_profile": null
+    },
     "pick": "qwen3.5-9b-q4",
     "policy": "context-aware-curated-fit-v2",
     "runtime_profile": null,
@@ -313,6 +457,12 @@
     "corrected_estimate_gib": 49.3,
     "fits": true,
     "fits_at_hermes": true,
+    "gemma4": {
+      "context_length": 131072,
+      "pick": "gemma4-31b-q4",
+      "policy": "context-aware-curated-fit-v2",
+      "runtime_profile": null
+    },
     "pick": "qwen3-coder-next-q4",
     "policy": "context-aware-curated-fit-v2",
     "runtime_profile": null,
@@ -335,6 +485,12 @@
     "corrected_estimate_gib": 18.45,
     "fits": true,
     "fits_at_hermes": true,
+    "gemma4": {
+      "context_length": 65536,
+      "pick": "gemma4-26b-a4b-q4",
+      "policy": "context-aware-curated-fit-v2",
+      "runtime_profile": null
+    },
     "pick": "qwen3.5-27b-q4",
     "policy": "context-aware-curated-fit-v2",
     "runtime_profile": "nvidia-20gb-64k-q8-kv",
@@ -357,6 +513,12 @@
     "corrected_estimate_gib": 20.32,
     "fits": true,
     "fits_at_hermes": true,
+    "gemma4": {
+      "context_length": 65536,
+      "pick": "gemma4-26b-a4b-q4",
+      "policy": "context-aware-curated-fit-v2",
+      "runtime_profile": null
+    },
     "pick": "qwen3.5-27b-q4",
     "policy": "context-aware-curated-fit-v2",
     "runtime_profile": null,
@@ -379,6 +541,12 @@
     "corrected_estimate_gib": 20.32,
     "fits": true,
     "fits_at_hermes": true,
+    "gemma4": {
+      "context_length": 131072,
+      "pick": "gemma4-31b-q4",
+      "policy": "context-aware-curated-fit-v2",
+      "runtime_profile": null
+    },
     "pick": "qwen3.5-27b-q4",
     "policy": "context-aware-curated-fit-v2",
     "runtime_profile": null,
@@ -401,6 +569,12 @@
     "corrected_estimate_gib": 23.83,
     "fits": true,
     "fits_at_hermes": true,
+    "gemma4": {
+      "context_length": 131072,
+      "pick": "gemma4-31b-q4",
+      "policy": "context-aware-curated-fit-v2",
+      "runtime_profile": null
+    },
     "pick": "qwen3.6-35b-a3b-ud-q4",
     "policy": "context-aware-curated-fit-v2",
     "runtime_profile": null,
@@ -423,6 +597,12 @@
     "corrected_estimate_gib": 23.83,
     "fits": true,
     "fits_at_hermes": true,
+    "gemma4": {
+      "context_length": 131072,
+      "pick": "gemma4-31b-q4",
+      "policy": "context-aware-curated-fit-v2",
+      "runtime_profile": null
+    },
     "pick": "qwen3.6-35b-a3b-ud-q4",
     "policy": "context-aware-curated-fit-v2",
     "runtime_profile": null,
@@ -445,6 +625,12 @@
     "corrected_estimate_gib": 2.33,
     "fits": true,
     "fits_at_hermes": true,
+    "gemma4": {
+      "context_length": 65536,
+      "pick": "gemma4-e2b-q4",
+      "policy": "context-aware-curated-fit-v2",
+      "runtime_profile": null
+    },
     "pick": "qwen3.5-2b-q4",
     "policy": "context-aware-curated-fit-v2",
     "runtime_profile": null,
@@ -467,6 +653,12 @@
     "corrected_estimate_gib": 49.3,
     "fits": true,
     "fits_at_hermes": true,
+    "gemma4": {
+      "context_length": 131072,
+      "pick": "gemma4-31b-q4",
+      "policy": "context-aware-curated-fit-v2",
+      "runtime_profile": null
+    },
     "pick": "qwen3-coder-next-q4",
     "policy": "context-aware-curated-fit-v2",
     "runtime_profile": null,
@@ -489,6 +681,12 @@
     "corrected_estimate_gib": 4.05,
     "fits": true,
     "fits_at_hermes": true,
+    "gemma4": {
+      "context_length": 65536,
+      "pick": "gemma4-e2b-q4",
+      "policy": "context-aware-curated-fit-v2",
+      "runtime_profile": null
+    },
     "pick": "qwen3.5-4b-q4",
     "policy": "context-aware-curated-fit-v2",
     "runtime_profile": "nvidia-6gb-64k-q8-kv",
@@ -511,6 +709,12 @@
     "corrected_estimate_gib": 49.3,
     "fits": true,
     "fits_at_hermes": true,
+    "gemma4": {
+      "context_length": 131072,
+      "pick": "gemma4-31b-q4",
+      "policy": "context-aware-curated-fit-v2",
+      "runtime_profile": null
+    },
     "pick": "qwen3-coder-next-q4",
     "policy": "context-aware-curated-fit-v2",
     "runtime_profile": null,
@@ -533,6 +737,12 @@
     "corrected_estimate_gib": 3.55,
     "fits": true,
     "fits_at_hermes": true,
+    "gemma4": {
+      "context_length": 65536,
+      "pick": "gemma4-e4b-q4",
+      "policy": "context-aware-curated-fit-v2",
+      "runtime_profile": null
+    },
     "pick": "qwen3.5-4b-q4",
     "policy": "context-aware-curated-fit-v2",
     "runtime_profile": "nvidia-8gb-64k-q4-kv",
@@ -555,6 +765,12 @@
     "corrected_estimate_gib": 6.83,
     "fits": true,
     "fits_at_hermes": true,
+    "gemma4": {
+      "context_length": 65536,
+      "pick": "gemma4-e4b-q4",
+      "policy": "context-aware-curated-fit-v2",
+      "runtime_profile": null
+    },
     "pick": "qwen3.5-9b-q4",
     "policy": "context-aware-curated-fit-v2",
     "runtime_profile": "nvidia-8gb-64k-q8-kv",
@@ -577,6 +793,12 @@
     "corrected_estimate_gib": 6.83,
     "fits": true,
     "fits_at_hermes": true,
+    "gemma4": {
+      "context_length": 65536,
+      "pick": "gemma4-e4b-q4",
+      "policy": "context-aware-curated-fit-v2",
+      "runtime_profile": null
+    },
     "pick": "qwen3.5-9b-q4",
     "policy": "context-aware-curated-fit-v2",
     "runtime_profile": "nvidia-8gb-64k-q8-kv",
@@ -599,6 +821,12 @@
     "corrected_estimate_gib": 49.3,
     "fits": true,
     "fits_at_hermes": true,
+    "gemma4": {
+      "context_length": 131072,
+      "pick": "gemma4-31b-q4",
+      "policy": "context-aware-curated-fit-v2",
+      "runtime_profile": null
+    },
     "pick": "qwen3-coder-next-q4",
     "policy": "context-aware-curated-fit-v2",
     "runtime_profile": null,
@@ -621,6 +849,12 @@
     "corrected_estimate_gib": 23.83,
     "fits": true,
     "fits_at_hermes": true,
+    "gemma4": {
+      "context_length": 131072,
+      "pick": "gemma4-31b-q4",
+      "policy": "context-aware-curated-fit-v2",
+      "runtime_profile": null
+    },
     "pick": "qwen3.6-35b-a3b-ud-q4",
     "policy": "context-aware-curated-fit-v2",
     "runtime_profile": null,
@@ -632,6 +866,12 @@
     "corrected_estimate_gib": 23.83,
     "fits": true,
     "fits_at_hermes": true,
+    "gemma4": {
+      "context_length": 131072,
+      "pick": "gemma4-31b-q4",
+      "policy": "context-aware-curated-fit-v2",
+      "runtime_profile": null
+    },
     "pick": "qwen3.6-35b-a3b-ud-q4",
     "policy": "context-aware-curated-fit-v2+spark-aarch64-nv-ultra-a3b-v1",
     "runtime_profile": null,
@@ -643,6 +883,12 @@
     "corrected_estimate_gib": 7.77,
     "fits": true,
     "fits_at_hermes": true,
+    "gemma4": {
+      "context_length": 65536,
+      "pick": "gemma4-e4b-q4",
+      "policy": "context-aware-curated-fit-v2",
+      "runtime_profile": null
+    },
     "pick": "qwen3.5-9b-q4",
     "policy": "context-aware-curated-fit-v2",
     "runtime_profile": null,
@@ -654,6 +900,12 @@
     "corrected_estimate_gib": 7.77,
     "fits": true,
     "fits_at_hermes": true,
+    "gemma4": {
+      "context_length": 65536,
+      "pick": "gemma4-e4b-q4",
+      "policy": "context-aware-curated-fit-v2",
+      "runtime_profile": null
+    },
     "pick": "qwen3.5-9b-q4",
     "policy": "context-aware-curated-fit-v2",
     "runtime_profile": null,
@@ -665,6 +917,12 @@
     "corrected_estimate_gib": 23.83,
     "fits": true,
     "fits_at_hermes": true,
+    "gemma4": {
+      "context_length": 131072,
+      "pick": "gemma4-31b-q4",
+      "policy": "context-aware-curated-fit-v2",
+      "runtime_profile": null
+    },
     "pick": "qwen3.6-35b-a3b-ud-q4",
     "policy": "context-aware-curated-fit-v2",
     "runtime_profile": null,
@@ -676,6 +934,12 @@
     "corrected_estimate_gib": 23.83,
     "fits": true,
     "fits_at_hermes": true,
+    "gemma4": {
+      "context_length": 131072,
+      "pick": "gemma4-31b-q4",
+      "policy": "context-aware-curated-fit-v2",
+      "runtime_profile": null
+    },
     "pick": "qwen3.6-35b-a3b-ud-q4",
     "policy": "context-aware-curated-fit-v2+unified-memory-coder-next-a3b-v1",
     "runtime_profile": null,
@@ -687,6 +951,12 @@
     "corrected_estimate_gib": 23.83,
     "fits": true,
     "fits_at_hermes": true,
+    "gemma4": {
+      "context_length": 131072,
+      "pick": "gemma4-31b-q4",
+      "policy": "context-aware-curated-fit-v2",
+      "runtime_profile": null
+    },
     "pick": "qwen3.6-35b-a3b-ud-q4",
     "policy": "context-aware-curated-fit-v2+unified-memory-coder-next-a3b-v1",
     "runtime_profile": null,
@@ -698,6 +968,12 @@
     "corrected_estimate_gib": 23.83,
     "fits": true,
     "fits_at_hermes": true,
+    "gemma4": {
+      "context_length": 131072,
+      "pick": "gemma4-31b-q4",
+      "policy": "context-aware-curated-fit-v2",
+      "runtime_profile": null
+    },
     "pick": "qwen3.6-35b-a3b-ud-q4",
     "policy": "context-aware-curated-fit-v2",
     "runtime_profile": null,
@@ -709,6 +985,12 @@
     "corrected_estimate_gib": 23.83,
     "fits": true,
     "fits_at_hermes": true,
+    "gemma4": {
+      "context_length": 131072,
+      "pick": "gemma4-31b-q4",
+      "policy": "context-aware-curated-fit-v2",
+      "runtime_profile": null
+    },
     "pick": "qwen3.6-35b-a3b-ud-q4",
     "policy": "context-aware-curated-fit-v2+unified-memory-coder-next-a3b-v1",
     "runtime_profile": null,

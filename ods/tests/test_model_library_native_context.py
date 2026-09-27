@@ -84,6 +84,18 @@ NATIVE_CONTEXT = {
 }
 
 
+# Entries whose declared max_context_length is below the GGUF header, and why.
+# Every other entry declares exactly its header value.
+DOCUMENTED_BELOW_HEADER = {
+    # nvidia/NVIDIA-Nemotron-3-Nano-4B-BF16 config.json (the entry's pinned
+    # architecture_source revision) sets max_position_embeddings 262144, and
+    # the model card says "Context length up to 262K". NVIDIA's GGUF header
+    # says 1048576, which no published evaluation of the 4B backs; ODS keeps
+    # the documented maximum (llama.cpp serves it: it is below the header).
+    "nvidia-nemotron3-nano-4b-q4": 262144,
+}
+
+
 def _catalog() -> dict[str, dict]:
     models = json.loads(CATALOG.read_text(encoding="utf-8"))["models"]
     return {model["id"]: model for model in models}
@@ -120,6 +132,28 @@ def test_catalog_context_fits_native_training_context(model_id: str) -> None:
         f"{model_id} declares {over} above its {native}-token GGUF training "
         "context; llama.cpp caps the slot there, so activation can never prove it"
     )
+
+
+@pytest.mark.parametrize("model_id", sorted(NATIVE_CONTEXT))
+def test_every_entry_declares_its_native_maximum(model_id: str) -> None:
+    """``max_context_length`` is the ceiling every load path applies
+    (model_selection.declared_max_context): a switch, a restore, the host
+    agent's replay of the installer's record and an owner's explicit
+    context. An entry without it has no ceiling, so a stale context above
+    the native one reaches llama.cpp and the activation rolls back."""
+    model = _catalog()[model_id]
+    declared = model.get("max_context_length")
+    assert isinstance(declared, int) and not isinstance(declared, bool), (
+        f"{model_id} must declare max_context_length (GGUF <arch>.context_length: {NATIVE_CONTEXT[model_id]})"
+    )
+    expected = DOCUMENTED_BELOW_HEADER.get(model_id, NATIVE_CONTEXT[model_id])
+    assert declared == expected, (model_id, declared, expected)
+    assert model["context_length"] <= declared, model_id
+
+
+def test_documented_exceptions_stay_below_the_header() -> None:
+    for model_id, declared in DOCUMENTED_BELOW_HEADER.items():
+        assert declared < NATIVE_CONTEXT[model_id], model_id
 
 
 def test_previously_overstated_entries_use_native_context() -> None:

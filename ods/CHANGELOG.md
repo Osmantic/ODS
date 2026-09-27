@@ -133,6 +133,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   and put `<think>` blocks in replies.
 
 ### Fixed
+- Switching to Gemma 3 4B on an 8 GB GPU no longer lands at 32K with ODS Talk
+  blocked. The catalog now declares its sliding-window layout (5 of 34 layers
+  hold the full context, the other 29 a 1024-token window), so the Models
+  list and the switch plan both see it fit at 128K (about 5.4 GiB). A
+  downloaded model's GGUF header no longer overrides a reviewed catalog
+  layout on the Models list (Gemma 4 headers list KV heads for every layer,
+  which the list charged at the full context). Before a switch, the Models
+  list judges ODS Talk at the context the switch will send.
+- Every catalog model declares its native context, and no load path asks for
+  more: a Dashboard request above it is refused with the model's maximum
+  instead of rolling back after the load, and a stale `CTX_SIZE` or
+  installer-recorded context is capped. An installer rerun replaces an older
+  installer pick whose recorded context was above its native maximum when
+  the cap leaves it below 64K; a model the owner chose in the Dashboard is
+  still kept.
+- The Windows installer's memory estimate counts sliding-window layers the
+  way the Linux and macOS selector does, so its Gemma-profile picks match.
 - Gemma 4 26B-A4B (`gemma4-26b-a4b-q4`) and Gemma 4 31B (`gemma4-31b-q4`)
   download again. ggml-org deleted both Q4_K_M files from its repos on
   2026-07-16, so the catalog and the Gemma-profile tier maps (`NV_ULTRA`,

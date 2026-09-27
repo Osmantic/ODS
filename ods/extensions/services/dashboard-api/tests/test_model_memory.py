@@ -544,3 +544,68 @@ class TestArchitectureEstimator:
         assert sliding_window_kv_bytes_per_cell(ARCH["qwen3.5-9b"]) == 0
         assert sliding_window_cells(ARCH["qwen3.5-9b"], 65536) == 0
         assert estimate_model_memory(ARCH["qwen3.5-9b"], context_length=65536).swa_kv_gib == 0
+
+
+# ---------------------------------------------------------------------------
+# GGUF header metadata and the native-context ceiling.
+# ---------------------------------------------------------------------------
+
+from model_memory import declared_max_context, with_file_metadata  # noqa: E402
+
+
+def test_gguf_header_fills_in_an_entry_without_a_reviewed_layout():
+    entry = {"id": "import", "size_mb": 2490, "context_length": 32768}
+    header = {"block_count": 34, "attention_head_count_kv": 4, "attention_key_length": 256,
+              "attention_value_length": 256, "size_bytes": 2489757856}
+    merged = with_file_metadata(entry, header)
+    assert merged["block_count"] == 34 and merged["attention_head_count_kv"] == 4
+    assert merged["size_bytes"] == 2489757856
+
+
+def test_a_reviewed_layout_outranks_the_gguf_header():
+    gemma3 = next(entry for entry in _catalog_entries() if entry["id"] == "gemma3-4b-it-q4")
+    assert architecture_metadata_complete(gemma3)
+    # Gemma 4 style header: KV heads listed for every layer, sliding ones too,
+    # and no field the estimator reads for which layers are global.
+    header = {"block_count": 34, "attention_head_count_kv": [4] * 34, "attention_key_length": 256,
+              "attention_value_length": 256, "full_attention_interval": None,
+              "context_length": 131072, "readable": True}
+    merged = with_file_metadata(gemma3, header)
+    assert merged["attention_head_count_kv"] == 4
+    assert merged["attention_layer_count"] == 5
+    assert merged["readable"] is True and merged["context_length"] == 131072
+    assert (
+        estimate_model_memory(merged, context_length=131072)
+        == estimate_model_memory(gemma3, context_length=131072)
+    )
+    # The same header merged naively charges all 34 layers at full context.
+    naive = estimate_model_memory({**gemma3, **header}, context_length=131072)
+    assert naive.device_gib > estimate_model_memory(gemma3, context_length=131072).device_gib + 10
+
+
+def test_gemma3_4b_sliding_window_layout():
+    # unsloth/gemma-3-4b-it config.json (google/gemma-3-4b-it is gated):
+    # 34 layers, sliding_window_pattern 6 -> layers 5, 11, 17, 23, 29 global.
+    gemma3 = next(entry for entry in _catalog_entries() if entry["id"] == "gemma3-4b-it-q4")
+    assert [layer for layer in range(34) if layer % 6 == 5] == [5, 11, 17, 23, 29]
+    assert kv_layer_count(gemma3) == 5
+    assert gemma3["sliding_window_layer_count"] == 34 - 5
+    assert kv_bytes_per_token(gemma3) == 5 * 4 * (256 + 256) * 2
+    assert sliding_window_kv_bytes_per_cell(gemma3) == 29 * 4 * (256 + 256) * 2
+    assert sliding_window_cells(gemma3, 131072) == 1536
+    at_128k = estimate_model_memory(gemma3, context_length=131072)
+    assert at_128k.device_gib == 5.37
+    # Fits an 8 GB laptop GPU (8151 MiB) with the discrete margin.
+    assert memory_fits(at_128k.device_gib, 8151 / 1024, "discrete", architecture_estimate=True)
+
+
+def test_declared_max_context():
+    assert declared_max_context({"max_context_length": 40960}) == 40960
+    assert declared_max_context({"context_length": 40960}) == 0
+    # The dashboard's normalized fallback (max := context) is not a ceiling.
+    assert declared_max_context({"max_context_length": 32768, "native_context_declared": False}) == 0
+    assert declared_max_context({"max_context_length": True}) == 0
+    assert declared_max_context({"max_context_length": "bad"}) == 0
+    import model_selection
+
+    assert model_selection.declared_max_context is declared_max_context

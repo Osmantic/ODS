@@ -466,6 +466,11 @@ def preserved_contract(args: argparse.Namespace) -> dict[str, str] | None:
     # so the recorded value is never served and the activation's context
     # proof cannot pass (tower2 2026-09-25: qwen3-30b-a3b-q4 recorded at
     # 131072 on a 40960-token GGUF). Carry the context that is served.
+    # A capped record is reported (MODEL_PRESERVED_RECORDED_CONTEXT): when
+    # the installer, not the owner, chose this model and the cap leaves it
+    # below the Hermes floor, phase 03 replaces it (see
+    # _ods_model_is_capped_installer_pick in installers/phases/03-features.sh).
+    recorded_context = context
     native_max = positive_int(model.get("max_context_length"))
     if native_max and context > native_max:
         context = native_max
@@ -586,6 +591,8 @@ def preserved_contract(args: argparse.Namespace) -> dict[str, str] | None:
     }
     if active_store_id != "default":
         contract["ODS_ACTIVE_MODEL_STORE"] = active_store_id
+    if context != recorded_context:
+        contract["MODEL_PRESERVED_RECORDED_CONTEXT"] = str(recorded_context)
     return contract
 
 

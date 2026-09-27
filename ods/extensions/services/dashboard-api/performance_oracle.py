@@ -29,7 +29,7 @@ from helpers import (
     get_recorded_model_performance,
     is_plausible_single_request_tps,
 )
-from model_memory import memory_metadata, required_model_memory_gb
+from model_memory import memory_metadata, required_model_memory_gb, with_file_metadata
 from model_selection import (
     POLICY as _SHARED_SELECTOR_POLICY,
     family_allowed as _shared_family_allowed,
@@ -1132,6 +1132,32 @@ def _context_options(
     ]
 
 
+def dialog_switch_context(
+    listed_context: Optional[int],
+    fits: bool,
+    recommended: bool,
+    context_options: list[dict[str, Any]],
+) -> Optional[int]:
+    """The context a switch from the Models page sends for this row.
+
+    Mirrors ModelActivationDialog's default (dashboard/src/pages/Models.jsx):
+    a row that fits, or the installer's pick, is sent at its listed context;
+    otherwise the largest context option that fits, if one reaches the Pixel
+    minimum. The Portal quick switch (PortalModelSelector.jsx) sends the same
+    largest fitting option. The row's pre-switch ODS Talk verdict judges this
+    context, so an owner sees that Talk will be unavailable before switching,
+    not after.
+    """
+    if fits or recommended:
+        return listed_context
+    fitting = [
+        int(option["contextLength"])
+        for option in context_options
+        if option.get("fitsVram") is True and int(option.get("contextLength") or 0) >= PIXEL_MIN_CONTEXT
+    ]
+    return max(fitting) if fitting else listed_context
+
+
 def _usable_model_memory_gb(gpu_info: Optional[GPUInfo], system_ram_gb: int | None = None) -> float:
     if not gpu_info:
         return 0.0
@@ -1725,7 +1751,10 @@ def build_models_payload(gpu_info: Optional[GPUInfo], loaded_model: Optional[str
                 else 0
             )
         )
-        memory_model = {**model, **metadata}
+        # The GGUF header fills in what the catalog does not declare; a
+        # reviewed catalog layout (sliding-window, hybrid) stays authoritative,
+        # so this row and the switch plan above estimate the same model.
+        memory_model = with_file_metadata(model, metadata)
         context_model = {
             **memory_model,
             "context_length": actual_context,
@@ -1743,6 +1772,14 @@ def build_models_payload(gpu_info: Optional[GPUInfo], loaded_model: Optional[str
         else:
             fits_total = bool(_fits_declared_vram(selector_required, 4.0) or is_loaded)
             fits_current = False
+        context_options = _context_options(context_model, runtime_profile, gpu_info)
+        # A loaded row describes what runs; any other row is judged at the
+        # context a switch from Models would send (see dialog_switch_context).
+        verdict_context = (
+            actual_context
+            if is_loaded
+            else dialog_switch_context(actual_context, fits_total, is_recommended, context_options)
+        )
         perf = evaluate_performance(model, gpu_info, metadata, is_loaded, live_tps, actual_context, flags, evidence, fits_total, runtime)
         reason = recommendation.get("reason") if is_configured else ""
         if is_recommended and not is_loaded and perf["source"] == "benchmark_required":
@@ -1783,7 +1820,7 @@ def build_models_payload(gpu_info: Optional[GPUInfo], loaded_model: Optional[str
             "estimatedRequired": selector_required,
             "contextLength": actual_context,
             "maxContextLength": max_context_length or None,
-            "contextOptions": _context_options(context_model, runtime_profile, gpu_info),
+            "contextOptions": context_options,
             "specialty": model["specialty"],
             "description": model["description"],
             "tokensPerSecEstimate": model.get("tokens_per_sec_estimate"),
@@ -1812,7 +1849,7 @@ def build_models_payload(gpu_info: Optional[GPUInfo], loaded_model: Optional[str
                 {**model, "max_context_length": max_context_length, "context_limit_known": context_limit_known},
                 perf,
                 model_compatibility_runtime_context(install_dir, gpu_info, runtime),
-                context_length=actual_context,
+                context_length=verdict_context,
             ),
             "status": "loaded" if is_loaded else status_if_not_loaded,
             "recommended": is_recommended,

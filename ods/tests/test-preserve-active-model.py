@@ -178,10 +178,43 @@ def test_preserved_context_is_clamped_to_the_declared_native_context() -> None:
         env, catalog, imports, models_dir = write_model_fixture(Path(tmp))
         replace_env(env, "MAX_CONTEXT=65536", "MAX_CONTEXT=262144")
         replace_env(env, "CTX_SIZE=65536", "CTX_SIZE=262144")
-        assert run_helper(env, catalog, imports, models_dir)["MAX_CONTEXT"] == "131072"
+        capped = run_helper(env, catalog, imports, models_dir)
+        assert capped["MAX_CONTEXT"] == "131072"
+        # The cap is reported, so phase 03 can replace a capped installer
+        # pick that the cap leaves below the Hermes floor.
+        assert capped["MODEL_PRESERVED_RECORDED_CONTEXT"] == "262144"
         replace_env(env, "MAX_CONTEXT=262144", "MAX_CONTEXT=98304")
         replace_env(env, "CTX_SIZE=262144", "CTX_SIZE=98304")
-        assert run_helper(env, catalog, imports, models_dir)["MAX_CONTEXT"] == "98304"
+        kept = run_helper(env, catalog, imports, models_dir)
+        assert kept["MAX_CONTEXT"] == "98304"
+        assert "MODEL_PRESERVED_RECORDED_CONTEXT" not in kept
+
+
+def test_capped_installer_pick_reaches_the_installer_loader() -> None:
+    # The report survives the installer's allowlisted loader together with
+    # the pick's source, which phase 03 reads to tell an installer pick from
+    # the owner's Dashboard choice.
+    with tempfile.TemporaryDirectory() as tmp:
+        env, catalog, imports, models_dir = write_model_fixture(Path(tmp))
+        replace_env(env, "MAX_CONTEXT=65536", "MAX_CONTEXT=262144")
+        replace_env(env, "CTX_SIZE=65536", "CTX_SIZE=262144")
+        env.write_text(env.read_text(encoding="utf-8") + "MODEL_SELECTION_SOURCE=installer\n", encoding="utf-8")
+        command = [
+            sys.executable, str(HELPER), "--env", str(env), "--catalog", str(catalog),
+            "--imports", str(imports), "--models-dir", str(models_dir), "--backend", "nvidia",
+            "--memory-type", "discrete", "--vram-mb", "8192", "--ram-gb", "32", "--host-arch", "amd64",
+        ]
+        fragment = subprocess.run(command, check=True, capture_output=True, text=True).stdout
+        loaded = subprocess.run(
+            [
+                "bash", "-c",
+                'source "$1"; load_model_selector_env_from_output; '
+                'printf "%s|%s|%s" "$MAX_CONTEXT" "$MODEL_SELECTION_SOURCE" "$MODEL_PRESERVED_RECORDED_CONTEXT"',
+                "_", str(ROOT / "lib" / "safe-env.sh"),
+            ],
+            input=fragment, check=True, capture_output=True, text=True,
+        ).stdout
+        assert loaded == "131072|installer|262144"
 
 
 def test_valid_dashboard_import_is_preserved() -> None:
@@ -472,6 +505,7 @@ def main() -> int:
         test_valid_curated_model_is_preserved,
         test_cpu_profile_host_ram_caps_are_preserved,
         test_preserved_context_is_clamped_to_the_declared_native_context,
+        test_capped_installer_pick_reaches_the_installer_loader,
         test_external_registered_model_store_is_preserved,
         test_commented_model_contract_survives_rerun,
         test_commented_contract_reaches_installer_safe_loader,

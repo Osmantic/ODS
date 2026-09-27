@@ -142,7 +142,9 @@ export PIXEL_AGENT_MODE ENABLE_PIXEL_RUNTIME ENABLE_PIXEL
 # raise is re-checked against the same hardware envelope phase 02 selected
 # with (installers/lib/model-selector.sh):
 #   fits at 64K           -> raise;
-#   this run's own pick   -> re-select a model that fits at 64K;
+#   this run's own pick, or an older installer pick whose recorded context
+#   was above its native maximum
+#                         -> re-select a model that fits at 64K;
 #   otherwise (a model the owner activated in the Dashboard, an older pick a
 #   rerun preserved, or nothing fits at 64K)
 #                         -> keep the largest context that fits and say that
@@ -162,6 +164,20 @@ _ods_model_is_current_pick() {
     [[ -z "${INSTALLER_RECOMMENDED_GGUF:-}" || "${GGUF_FILE:-}" == "$INSTALLER_RECOMMENDED_GGUF" ]] || return 1
     [[ -z "${INSTALLER_RECOMMENDED_MODEL:-}" || "${LLM_MODEL:-}" == "$INSTALLER_RECOMMENDED_MODEL" ]] || return 1
     return 0
+}
+# "An older installer pick whose recorded context was above its native
+# maximum": preserve-active-model.py caps such a record to the native maximum
+# and reports the recorded value in MODEL_PRESERVED_RECORDED_CONTEXT (an older
+# selector's 131072 for the 40960-token Qwen3-30B-A3B). That pick never served
+# what the installer recorded, and the installer chose it, not the owner, so
+# when the cap leaves it below the Hermes floor it is replaced like this run's
+# pick. A model the owner chose in the Dashboard (MODEL_SELECTION_SOURCE=
+# dashboard) is never replaced.
+_ods_model_is_capped_installer_pick() {
+    [[ "${MODEL_SELECTION_SOURCE:-}" == "installer" ]] || return 1
+    [[ "${MODEL_PRESERVED_RECORDED_CONTEXT:-}" =~ ^[0-9]+$ ]] || return 1
+    [[ "${MAX_CONTEXT:-}" =~ ^[0-9]+$ ]] || return 1
+    (( MODEL_PRESERVED_RECORDED_CONTEXT > MAX_CONTEXT ))
 }
 HERMES_CONTEXT_BELOW_FLOOR=false
 if [[ "${ENABLE_HERMES:-false}" == "true" && "${ODS_MODE:-local}" != "cloud" ]]; then
@@ -188,6 +204,9 @@ if [[ "${ENABLE_HERMES:-false}" == "true" && "${ODS_MODE:-local}" != "cloud" ]];
                 0) _hermes_floor_action="raise" ;;
                 3)
                     if _ods_model_is_current_pick; then
+                        _hermes_floor_action="reselect"
+                    elif _ods_model_is_capped_installer_pick; then
+                        log "Hermes floor: ${LLM_MODEL:-model} is an earlier installer pick recorded at ${MODEL_PRESERVED_RECORDED_CONTEXT}, above its native ${MAX_CONTEXT}; re-selecting"
                         _hermes_floor_action="reselect"
                     else
                         _hermes_floor_action="cap"
@@ -256,7 +275,8 @@ fi
 if _ods_model_is_current_pick && [[ "${MAX_CONTEXT:-}" =~ ^[0-9]+$ ]]; then
     INSTALLER_RECOMMENDED_CONTEXT="$MAX_CONTEXT"
 fi
-unset -f _ods_model_is_current_pick
+unset -f _ods_model_is_current_pick _ods_model_is_capped_installer_pick
+unset MODEL_PRESERVED_RECORDED_CONTEXT
 export HERMES_CONTEXT_BELOW_FLOOR
 
 # Sync optional-extension compose state with the ENABLE_* flags — the

@@ -11,6 +11,10 @@ selector's picks get a real fit column (`corrected GiB`, `fits`, `fits @64K`).
   7a328347 (after #6712), estimated with this change's estimator.
 - `after.md`: this change. `tests/fixtures/model-selection-golden.json` pins
   the same picks, and `tests/test-model-selection-matrix.py` checks them.
+  For envelopes without a size ceiling the golden file also pins the
+  `--profile gemma4` pick (`gemma4`), which
+  `tests/test-windows-catalog-selector.ps1` compares with the Windows
+  selector.
 
 Regenerate (Linux, from `ods/`):
 

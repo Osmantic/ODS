@@ -259,7 +259,9 @@ jobs:
           python3 tests/test_model_selector_failure.py
 
       - name: Model Selection Matrix and Catalog Architecture
-        run: python -m pytest -q tests/test-model-selection-matrix.py tests/test-model-library-architecture.py
+        run: >-
+          python -m pytest -q tests/test-model-selection-matrix.py tests/test-model-library-architecture.py
+          tests/test_model_library_native_context.py
 
       - name: Pixel Provider and Access Contracts
         run: python3 -m unittest discover -s tests -p 'test_pixel_*.py' -v
