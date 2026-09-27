@@ -6,6 +6,11 @@ ODS tree over the 65 hardware envelopes in
 macOS installers call it. Each pick is then re-checked with the memory
 estimator and catalog layouts of the tree the harness runs from, so an older
 selector's picks get a real fit column (`corrected GiB`, `fits`, `fits @64K`).
+On a discrete GPU `fits` is full GPU residency: whether llama.cpp keeps the
+pick fully on the idle GPU with the settings the selector emitted (its runtime
+profile plus any residency settings), on native Linux. That is why the
+BEFORE file shows the old 8 GB profile (ubatch 512, 1024 MiB fit target) as
+not fitting: it loaded 29 of 33 layers on the RTX 5070 Laptop.
 
 - `before-origin-main-7a328347.md`: the selector and catalog at origin/main
   7a328347 (after #6712), estimated with this change's estimator.

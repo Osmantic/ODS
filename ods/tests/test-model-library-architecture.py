@@ -14,7 +14,10 @@ catalog declares. These checks keep the catalog and the estimator honest:
 * ``vram_required_gb`` (what the dashboard shows) sits just above the
   estimate at the operating context;
 * runtime profiles either carry a fleet-measured budget or let the estimator
-  compute one from their cache settings.
+  compute one from their cache settings;
+* ``gpu_residency`` (the GPU-residency projection's measured or GGUF-derived
+  inputs) agrees with the layout wherever an entry carries both: one KV
+  formula and one recurrent-state size, whichever path reads them.
 """
 
 from __future__ import annotations
@@ -31,8 +34,10 @@ CATALOG = ROOT / "config" / "model-library.json"
 sys.path.insert(0, str(ROOT / "extensions" / "services" / "dashboard-api"))
 
 from model_memory import (  # noqa: E402
+    MIB,
     architecture_metadata_complete,
     estimate_model_memory,
+    kv_bytes_per_token,
     kv_layer_count,
 )
 
@@ -216,6 +221,28 @@ def test_tier_map_defaults_are_install_recommendations():
         stale = sorted(files - installable)
         assert not stale, (tier_map, stale)
 
+
+
+@pytest.mark.parametrize(
+    "model",
+    [model for model in _models() if isinstance(model.get("gpu_residency"), dict)],
+    ids=lambda model: model["id"],
+)
+def test_gpu_residency_agrees_with_the_layout(model):
+    """One KV formula: model_memory.estimated_device_memory_mib reads the
+    layout first and falls back to ``gpu_residency`` only without one, so the
+    two must never disagree where both exist."""
+    residency = model["gpu_residency"]
+    assert residency.get("basis") in {"measured", "gguf"}, model["id"]
+    assert residency.get("source"), model["id"]
+    per_token = kv_bytes_per_token(model)
+    if per_token is not None:
+        assert residency["kv_bytes_per_token_f16"] == per_token, model["id"]
+    state = model.get("recurrent_state_bytes")
+    if state is not None:
+        assert residency["recurrent_state_mib"] == pytest.approx(state / MIB, abs=0.01), model["id"]
+    if model.get("embedding_length") is not None and residency.get("embedding_length") is not None:
+        assert residency["embedding_length"] == model["embedding_length"], model["id"]
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))

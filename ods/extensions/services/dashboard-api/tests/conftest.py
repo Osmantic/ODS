@@ -38,6 +38,20 @@ if "fcntl" not in sys.modules:
 FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures"
 
 
+@pytest.fixture(autouse=True)
+def _pin_gpu_residency_platform(monkeypatch):
+    """Pin native Linux for GPU residency arithmetic.
+
+    The driver reserve differs between native Linux and WDDM (WSL, Windows),
+    so fit results would otherwise depend on the machine running the tests.
+    """
+    import model_memory
+    import performance_oracle
+
+    monkeypatch.setattr(model_memory, "detect_gpu_platform", lambda: "linux")
+    monkeypatch.setattr(performance_oracle, "detect_gpu_platform", lambda: "linux")
+
+
 @pytest.fixture()
 def install_dir(tmp_path, monkeypatch):
     """Provide an isolated install directory with a .env file."""

@@ -2032,6 +2032,9 @@ function Start-NativeInferenceServer {
             if ($envVars["LLAMA_ARG_CACHE_TYPE_K"]) { $llamaArgs += @("--cache-type-k", $envVars["LLAMA_ARG_CACHE_TYPE_K"]) }
             if ($envVars["LLAMA_ARG_CACHE_TYPE_V"]) { $llamaArgs += @("--cache-type-v", $envVars["LLAMA_ARG_CACHE_TYPE_V"]) }
             if ($envVars["LLAMA_ARG_N_CPU_MOE"]) { $llamaArgs += @("--n-cpu-moe", $envVars["LLAMA_ARG_N_CPU_MOE"]) }
+            if ($envVars["LLAMA_ARG_UBATCH"]) { $llamaArgs += @("--ubatch-size", $envVars["LLAMA_ARG_UBATCH"]) }
+            if ($envVars["LLAMA_ARG_FIT_TARGET"]) { $llamaArgs += @("--fit-target", $envVars["LLAMA_ARG_FIT_TARGET"]) }
+            if ($envVars["LLAMA_THREADS"]) { $llamaArgs += @("--threads", $envVars["LLAMA_THREADS"]) }
             if ($envVars["LLAMA_PARALLEL"]) { $llamaArgs += @("--parallel", $envVars["LLAMA_PARALLEL"]) }
             # Only when this llama-server still has the flag (removed in
             # llama.cpp b9310); an unknown flag stops llama-server.

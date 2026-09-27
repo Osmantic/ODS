@@ -74,6 +74,11 @@ ENV_NAMES_BY_BUILD = {
         "LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_V",
         "LLAMA_ARG_SPLIT_MODE",
         "LLAMA_ARG_TENSOR_SPLIT",
+        # -ub/--ubatch-size and -fitt/--fit-target (a single value is broadcast
+        # to every device); runtime profiles set them to keep every layer on
+        # the GPU.
+        "LLAMA_ARG_UBATCH",
+        "LLAMA_ARG_FIT_TARGET",
         # --cache-prompt/--no-cache-prompt is negatable, so common_arg::
         # get_value_from_env also reads LLAMA_ARG_NO_CACHE_PROMPT. Any value,
         # including 0 or empty, disables prompt caching.

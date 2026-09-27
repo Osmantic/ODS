@@ -158,10 +158,25 @@ function Get-GpuInfo {
                     if ($ccMajor -ge 12) { $isBlackwell = $true }
                 }
 
+                # Memory already in use on the first GPU (a desktop drawn on
+                # it, other GPU apps). The catalog selector plans the model's
+                # settings around it; 0 when it cannot be read.
+                $usedMB = 0
+                try {
+                    $usedRaw = & nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits 2>$null
+                    if ($LASTEXITCODE -eq 0 -and $usedRaw) {
+                        $usedFirst = (@($usedRaw -split "`n" | Where-Object { $_.Trim() })[0]).Trim() -replace "[^\d]", ""
+                        if ($usedFirst) { $usedMB = [int]$usedFirst }
+                    }
+                } catch {
+                    $usedMB = 0
+                }
+
                 return @{
                     Backend       = "nvidia"
                     Name          = $gpuName
                     VramMB        = $vramMB
+                    UsedMB        = $usedMB
                     Count         = $gpuCount
                     MemoryType    = "discrete"
                     DeviceId      = ""

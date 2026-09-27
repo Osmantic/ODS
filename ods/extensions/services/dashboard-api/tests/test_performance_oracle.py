@@ -42,6 +42,15 @@ def _model():
         "size_mb": 5760,
         "vram_required_gb": 8,
         "context_length": 32768,
+        # llama.cpp b9014 load log (windows-laptop-wsl-beta, 2026-09-25).
+        "gpu_residency": {
+            "basis": "measured",
+            "gpu_weights_mib": 4861.28,
+            "kv_bytes_per_token_f16": 32768,
+            "recurrent_state_mib": 50.25,
+            "vocab_size": 248320,
+            "embedding_length": 4096,
+        },
         "specialty": "General",
         "description": "Test model",
         "quantization": "Q4_K_M",
@@ -59,6 +68,11 @@ def test_phi4_dashboard_defaults_to_fitting_context(data_dir, tmp_path):
     )
     model = next(item for item in payload["models"] if item["id"] == raw["id"])
     assert model["contextLength"] == 32768
+    # Fully GPU-resident at that context on 8GB only with a q8_0 KV cache,
+    # ubatch 256 and a 512 MiB llama.cpp margin (f16 KV alone is 4 GiB).
+    assert model["gpuResidency"]["fits"] is True
+    assert model["gpuResidency"]["cacheTypeK"] == "q8_0"
+    assert model["gpuResidency"]["adjustments"] == ["ubatch 256", "fit target 512 MiB", "KV cache q8_0"]
     recommended = [option for option in model["contextOptions"] if option["recommended"]]
     assert len(recommended) == 1
     assert recommended[0]["contextLength"] == 32768
@@ -1289,6 +1303,9 @@ def test_real_catalog_has_six_windows_8gb_release_swap_candidates(data_dir, tmp_
     # The Strixy-only positive evidence must not override this Windows host's
     # independently measured 0.5 tok/s performance block.
     assert "phi4-mini-q4" not in candidate_ids
+    # Its full 128K context needs ~16 GB of f16 KV: never shown as fitting.
+    assert all_by_id["phi4-mini-q4"]["contextOptions"][-1]["contextLength"] == 128000
+    assert all_by_id["phi4-mini-q4"]["contextOptions"][-1]["fitsVram"] is False
     assert "gemma3-4b-it-q4" not in candidate_ids
     assert "falcon-h1-1.5b-instruct-q4" not in candidate_ids
     assert "falcon-h1-3b-instruct-q4" not in candidate_ids
@@ -1634,8 +1651,12 @@ def test_downloaded_gguf_header_replaces_stale_hub_context(
     assert model["metadata"]["contextSource"] == "gguf_file"
     assert model["contextOptions"][-1]["contextLength"] == 131072
     assert model["contextOptions"][-1]["fullContext"] is True
+    # Without exact gpu_residency metadata the capacity fit decides, as in the
+    # installer; the residency estimate is attached for display only.
     assert model["estimatedRequired"] == 1.61
     assert model["contextOptions"][-1]["estimatedRequired"] == 18.49
+    assert model["contextOptions"][-1]["fitsVram"] is False
+    assert model["gpuResidency"]["basis"] == "architecture"
 
 
 def test_configured_model_prefers_env_file_over_stale_process_env(data_dir, tmp_path, monkeypatch):
@@ -1736,6 +1757,14 @@ def test_pre_download_ranker_accounts_for_long_context_kv_on_4gb_gpu(data_dir, t
             "size_mb": 1500,
             "vram_required_gb": 3,
             "context_length": 8192,
+            "gpu_residency": {
+                "basis": "gguf",
+                "gpu_weights_mib": 1221.5,
+                "kv_bytes_per_token_f16": 12288,
+                "recurrent_state_mib": 50.25,
+                "vocab_size": 248320,
+                "embedding_length": 2048,
+            },
             "quantization": "Q4_K_M",
             "specialty": "Fast",
             "description": "Bootstrap model",
@@ -1784,6 +1813,13 @@ def test_qwen35_2b_is_the_4gb_recommendation_despite_fleet_failures(
     # (phi-4-mini only reaches 8K there), so the 2B is recommended; its
     # fleet verdicts still say where it falls short.
     assert model["recommended"] is True
+    # 4GB is below the range the residency estimate is calibrated for, so it
+    # changes neither the recommendation nor fitsVram there: the capacity fit
+    # decides. The residency plan is still shown: the 2B stays on the GPU at
+    # 64K with ubatch 256 and a 512 MiB llama.cpp margin (native Linux).
+    assert model["gpuResidency"]["decisive"] is False
+    assert model["gpuResidency"]["fits"] is True
+    assert model["gpuResidency"]["adjustments"] == ["ubatch 256", "fit target 512 MiB"]
     compatibility = model["appCompatibility"]
     assert compatibility["hermesTalk"]["status"] == "verified"
     assert compatibility["openaiChat"]["status"] == "unsupported_until_revalidated"
@@ -1894,7 +1930,9 @@ def test_pre_download_ranker_honors_gemma_profile(data_dir):
             "name": "Gemma 4 E4B",
             "family": "gemma4",
             "gguf_file": "gemma-4-E4B-it-Q4_K_M.gguf",
-            "size_mb": 5340,
+            # The shipped artifact (model-library.json): fully GPU-resident on
+            # 8GB at 32K by the declared-basis estimate.
+            "size_mb": 4747,
             "vram_required_gb": 8,
             "context_length": 32768,
             "quantization": "Q4_K_M",
@@ -1935,7 +1973,9 @@ def test_pre_download_ranker_allows_8gb_nvidia_runtime_profile(monkeypatch):
                 "vram_min_gb": 7.5,
                 "vram_max_gb": 12.5,
                 "system_ram_min_gb": 31,
-                "estimated_required_gb": 8,
+                # GPU share after the declared expert offload; it must leave
+                # the driver reserve and llama.cpp's margin free on 8GB.
+                "estimated_required_gb": 5.5,
                 "context_length": 65536,
                 "fit_label": "Advanced 8GB TurboQuant fit",
                 "env": {"LLAMA_ARG_N_CPU_MOE": "30"},
@@ -1978,7 +2018,8 @@ def test_pre_download_ranker_excludes_ram_ineligible_hardware_profile(
             "vram_min_gb": 7.5,
             "vram_max_gb": 8.5,
             "system_ram_min_gb": 15,
-            "estimated_required_gb": 8,
+            # Device projection for the profile's settings (see above).
+            "estimated_required_gb": 5.5,
             "context_length": 65536,
         }],
     }
@@ -2383,3 +2424,33 @@ def test_model_list_plans_every_context_with_the_install_policy(data_dir, tmp_pa
     small_27b = next(model for model in small["models"] if model["id"] == "qwen3.5-27b-q4")
     assert small_27b["contextLength"] < 65536
     assert small_27b["appCompatibility"]["hermesTalk"]["code"] == "context_below_hermes_minimum"
+
+
+def test_loaded_model_fit_follows_observed_placement_not_a_blanket_true(data_dir, tmp_path):
+    """The loaded model's fitsVram is what llama.cpp did, never forced true."""
+    install_dir = tmp_path / "ods"
+    (install_dir / "data" / "models").mkdir(parents=True)
+
+    def loaded(placement):
+        payload = build_models_payload(
+            _gpu(total_mb=8188), "qwen3.5-9b", 0, install_dir, data_dir,
+            context_length=65536, catalog=[_model()], evidence=[], placement=placement,
+        )
+        return payload["models"][0]
+
+    partial = {
+        "modelFile": "Qwen3.5-9B-Q4_K_M.gguf", "layersOnGpu": 29, "layersTotal": 33,
+        "fullyResident": False, "status": "partial",
+    }
+    resident = {**partial, "layersOnGpu": 33, "fullyResident": True, "status": "fully_resident"}
+    other_model = {**partial, "modelFile": "Other.gguf"}
+
+    assert loaded(partial)["status"] == "loaded"
+    assert loaded(partial)["fitsVram"] is False
+    assert loaded(partial)["fitsCurrentVram"] is False
+    assert loaded(resident)["fitsVram"] is True
+    # A placement for another file (a switch in flight) or none at all falls
+    # back to the estimate: the 9B fits 8GB at 64K with a q8_0 KV cache.
+    assert loaded(other_model)["fitsVram"] is True
+    assert loaded(None)["fitsVram"] is True
+    assert loaded(None)["gpuResidency"]["cacheTypeK"] == "q8_0"

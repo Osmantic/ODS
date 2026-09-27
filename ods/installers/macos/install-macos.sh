@@ -2367,6 +2367,9 @@ else
         _cache_type_k=$(grep '^LLAMA_ARG_CACHE_TYPE_K=' "$INSTALL_DIR/.env" 2>/dev/null | cut -d= -f2 | tr -d '"' || echo "")
         _cache_type_v=$(grep '^LLAMA_ARG_CACHE_TYPE_V=' "$INSTALL_DIR/.env" 2>/dev/null | cut -d= -f2 | tr -d '"' || echo "")
         _n_cpu_moe=$(grep '^LLAMA_ARG_N_CPU_MOE=' "$INSTALL_DIR/.env" 2>/dev/null | cut -d= -f2 | tr -d '"' || echo "")
+        _ubatch="$(read_env_value "$INSTALL_DIR/.env" "LLAMA_ARG_UBATCH")"
+        _fit_target="$(read_env_value "$INSTALL_DIR/.env" "LLAMA_ARG_FIT_TARGET")"
+        _threads="$(read_env_value "$INSTALL_DIR/.env" "LLAMA_THREADS")"
         _gpu_layers=$(grep '^N_GPU_LAYERS=' "$INSTALL_DIR/.env" 2>/dev/null | cut -d= -f2 | tr -d '"' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' || echo "")
         [[ -z "$_gpu_layers" ]] && _gpu_layers="auto"
         _spec_type=$(grep '^LLAMA_ARG_SPEC_TYPE=' "$INSTALL_DIR/.env" 2>/dev/null | cut -d= -f2 | tr -d '"' || echo "")
@@ -2386,6 +2389,9 @@ else
         [[ -n "$_cache_type_k" ]] && _llama_args+=(--cache-type-k "$_cache_type_k")
         [[ -n "$_cache_type_v" ]] && _llama_args+=(--cache-type-v "$_cache_type_v")
         [[ -n "$_n_cpu_moe" ]] && _llama_args+=(--n-cpu-moe "$_n_cpu_moe")
+        [[ -n "$_ubatch" ]] && _llama_args+=(--ubatch-size "$_ubatch")
+        [[ -n "$_fit_target" ]] && _llama_args+=(--fit-target "$_fit_target")
+        [[ -n "$_threads" ]] && _llama_args+=(--threads "$_threads")
         [[ -n "$_spec_type" ]] && _llama_args+=(--spec-type "$_spec_type")
         # Draft flags, --ctx-checkpoints 32, the ngram-mod default and the
         # reasoning flags (--reasoning on b9014, else this --reasoning-format)

@@ -726,6 +726,9 @@ start_native_llama() {
     [[ -n "${ENV_LLAMA_ARG_CACHE_TYPE_K:-}" ]] && llama_args+=(--cache-type-k "$ENV_LLAMA_ARG_CACHE_TYPE_K")
     [[ -n "${ENV_LLAMA_ARG_CACHE_TYPE_V:-}" ]] && llama_args+=(--cache-type-v "$ENV_LLAMA_ARG_CACHE_TYPE_V")
     [[ -n "${ENV_LLAMA_ARG_N_CPU_MOE:-}" ]] && llama_args+=(--n-cpu-moe "$ENV_LLAMA_ARG_N_CPU_MOE")
+    [[ -n "${ENV_LLAMA_ARG_UBATCH:-}" ]] && llama_args+=(--ubatch-size "$ENV_LLAMA_ARG_UBATCH")
+    [[ -n "${ENV_LLAMA_ARG_FIT_TARGET:-}" ]] && llama_args+=(--fit-target "$ENV_LLAMA_ARG_FIT_TARGET")
+    [[ -n "${ENV_LLAMA_THREADS:-}" ]] && llama_args+=(--threads "$ENV_LLAMA_THREADS")
     [[ -n "${ENV_LLAMA_ARG_SPEC_TYPE:-}" ]] && llama_args+=(--spec-type "$ENV_LLAMA_ARG_SPEC_TYPE")
     # Draft flags, --ctx-checkpoints 32, the ngram-mod default and the reasoning
     # flags (--reasoning on b9014, else this --reasoning-format) are spelled

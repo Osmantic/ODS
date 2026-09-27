@@ -71,7 +71,7 @@ try {
     $phiCandidate.install_recommendation = $true
     @{ models = @($phiCandidate) } | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath (Join-Path $configDir "model-library.json")
     foreach ($backend in @("nvidia", "amd", "sycl")) {
-        foreach ($case in @(@(4, 8192), @(8, 32768), @(16, 65536), @(24, 128000))) {
+        foreach ($case in @(@(4, 8192), @(6, 16384), @(8, 32768), @(16, 65536), @(24, 128000))) {
             $gpu.Backend = $backend
             $gpu.VramMB = $case[0] * 1024
             $resolved = Resolve-CatalogModelRecommendation -TierConfig $tierConfig.Clone() -Tier "1" -GpuInfo $gpu -SystemRamGB 32 -SourceRoot $tempRoot
@@ -79,6 +79,39 @@ try {
                 throw "Wrong Phi4 context on $backend with $($case[0]) GiB: $($resolved.MaxContext)"
             }
         }
+    }
+    # A 4GB card is below the calibrated range: Phi-4 mini at 8K is predicted
+    # to spill, but the estimate never changes the pick there. It keeps its
+    # declared settings and the reason says the placement is reported.
+    $gpu.Backend = "nvidia"
+    $gpu.VramMB = 4096
+    $resolved = Resolve-CatalogModelRecommendation -TierConfig $tierConfig.Clone() -Tier "1" -GpuInfo $gpu -SystemRamGB 32 -SourceRoot $tempRoot
+    if ($resolved.LLAMA_ARG_UBATCH -or $resolved.LLAMA_ARG_FIT_TARGET -or $resolved.RecommendationReason -notlike "*does not stay fully on this GPU*") {
+        throw "4GB Phi4 should keep its declared settings and report the spill: $($resolved.RecommendationReason)"
+    }
+    # The 8GB result keeps every layer on the GPU with a q8_0 KV cache.
+    $gpu.VramMB = 8192
+    $resolved = Resolve-CatalogModelRecommendation -TierConfig $tierConfig.Clone() -Tier "1" -GpuInfo $gpu -SystemRamGB 32 -SourceRoot $tempRoot
+    if ($resolved.LLAMA_ARG_CACHE_TYPE_K -ne "q8_0" -or $resolved.LLAMA_ARG_UBATCH -ne "256" -or $resolved.LLAMA_ARG_FIT_TARGET -ne "512" -or $resolved.LLAMA_ARG_FLASH_ATTN -ne "on") {
+        throw "Phi4 on 8GB lacks its GPU residency settings: $($resolved.LLAMA_ARG_CACHE_TYPE_K)/$($resolved.LLAMA_ARG_UBATCH)/$($resolved.LLAMA_ARG_FIT_TARGET)"
+    }
+    # Memory other processes hold (a desktop drawn on the GPU, another GPU
+    # app) never changes the pick; the settings shrink around it, and when
+    # even the smallest allowed settings spill the reason says so.
+    $gpu.UsedMB = 1700
+    $busy = Resolve-CatalogModelRecommendation -TierConfig $tierConfig.Clone() -Tier "1" -GpuInfo $gpu -SystemRamGB 32 -SourceRoot $tempRoot
+    # q4_0 alone makes room, so prompt processing keeps ubatch 256.
+    if ($busy.LlmModel -ne "phi-4-mini" -or $busy.MaxContext -ne 32768 -or $busy.LLAMA_ARG_CACHE_TYPE_K -ne "q4_0" -or $busy.LLAMA_ARG_UBATCH -ne "256") {
+        throw "1.7GB in use was not planned around: $($busy.LlmModel) $($busy.MaxContext) $($busy.LLAMA_ARG_CACHE_TYPE_K) $($busy.LLAMA_ARG_UBATCH)"
+    }
+    $gpu.UsedMB = 4000
+    $busy = Resolve-CatalogModelRecommendation -TierConfig $tierConfig.Clone() -Tier "1" -GpuInfo $gpu -SystemRamGB 32 -SourceRoot $tempRoot
+    $gpu.Remove("UsedMB")
+    if ($busy.LlmModel -ne "phi-4-mini" -or $busy.MaxContext -ne 32768 -or $busy.LLAMA_ARG_UBATCH -ne "128") {
+        throw "4GB in use changed the pick or was not planned around: $($busy.LlmModel) $($busy.MaxContext) $($busy.LLAMA_ARG_UBATCH)"
+    }
+    if ($busy.RecommendationReason -notlike "*Other processes hold 4000 MiB*") {
+        throw "Best-effort settings were not reported: $($busy.RecommendationReason)"
     }
     if ($phi.context_length -ne 128000) { throw "Context selection mutated the catalog" }
     $gpu.VramMB = 1024
