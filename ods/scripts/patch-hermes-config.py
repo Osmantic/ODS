@@ -10,8 +10,20 @@ the rest of the user's config.
 from __future__ import annotations
 
 import argparse
+import os
 import re
+import tempfile
 from pathlib import Path
+
+
+def _yaml_dq(value: str) -> str:
+    """Return ``value`` as a YAML double-quoted scalar with ``"`` and ``\\`` escaped.
+
+    The Bash sed path (``yaml_double_quoted_scalar_content``) already escapes these
+    characters; this Python path must agree so values containing quotes or
+    backslashes produce valid YAML instead of corrupting the Hermes config.
+    """
+    return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
 def _top_level_block(lines: list[str], name: str) -> tuple[int, int] | None:
@@ -22,14 +34,20 @@ def _top_level_block(lines: list[str], name: str) -> tuple[int, int] | None:
             if pattern.match(line):
                 start = idx
             continue
-        if line and not line.startswith((" ", "\t")) and not line.lstrip().startswith("#"):
+        if (
+            line
+            and not line.startswith((" ", "\t"))
+            and not line.lstrip().startswith("#")
+        ):
             return start, idx
     if start is None:
         return None
     return start, len(lines)
 
 
-def _child_block(lines: list[str], parent: tuple[int, int], name: str, indent: int) -> tuple[int, int] | None:
+def _child_block(
+    lines: list[str], parent: tuple[int, int], name: str, indent: int
+) -> tuple[int, int] | None:
     start = None
     prefix = " " * indent
     pattern = re.compile(rf"^{prefix}{re.escape(name)}:\s*(?:#.*)?$")
@@ -39,14 +57,21 @@ def _child_block(lines: list[str], parent: tuple[int, int], name: str, indent: i
             if pattern.match(line):
                 start = idx
             continue
-        if line.startswith(prefix) and line.strip() and not line.startswith(prefix + " ") and not line.lstrip().startswith("#"):
+        if (
+            line.startswith(prefix)
+            and line.strip()
+            and not line.startswith(prefix + " ")
+            and not line.lstrip().startswith("#")
+        ):
             return start, idx
     if start is None:
         return None
     return start, parent[1]
 
 
-def _set_key(lines: list[str], block: tuple[int, int], key: str, value: str, indent: int) -> tuple[int, int]:
+def _set_key(
+    lines: list[str], block: tuple[int, int], key: str, value: str, indent: int
+) -> tuple[int, int]:
     prefix = " " * indent
     pattern = re.compile(rf"^{prefix}{re.escape(key)}:\s*.*$")
     for idx in range(block[0] + 1, block[1]):
@@ -65,7 +90,9 @@ def _has_key(lines: list[str], block: tuple[int, int], key: str, indent: int) ->
     return any(pattern.match(lines[idx]) for idx in range(block[0] + 1, block[1]))
 
 
-def _key_value(lines: list[str], block: tuple[int, int], key: str, indent: int) -> str | None:
+def _key_value(
+    lines: list[str], block: tuple[int, int], key: str, indent: int
+) -> str | None:
     prefix = " " * indent
     pattern = re.compile(rf"^{prefix}{re.escape(key)}:\s*(.*?)\s*(?:#.*)?$")
     for idx in range(block[0] + 1, block[1]):
@@ -87,12 +114,12 @@ def _ensure_model(
     if block is None:
         insert = ["model:"]
         if model:
-            insert.append(f'  default: "{model}"')
+            insert.append(f"  default: {_yaml_dq(model)}")
         if base_url:
             insert.append('  provider: "custom"')
-            insert.append(f'  base_url: "{base_url}"')
+            insert.append(f"  base_url: {_yaml_dq(base_url)}")
         if api_key:
-            insert.append(f'  api_key: "{api_key}"')
+            insert.append(f"  api_key: {_yaml_dq(api_key)}")
         if context_length:
             insert.append(f"  context_length: {context_length}")
         if max_tokens:
@@ -101,11 +128,11 @@ def _ensure_model(
         return
 
     if model:
-        block = _set_key(lines, block, "default", f'"{model}"', 2)
+        block = _set_key(lines, block, "default", _yaml_dq(model), 2)
     if base_url:
-        block = _set_key(lines, block, "base_url", f'"{base_url}"', 2)
+        block = _set_key(lines, block, "base_url", _yaml_dq(base_url), 2)
     if api_key:
-        block = _set_key(lines, block, "api_key", f'"{api_key}"', 2)
+        block = _set_key(lines, block, "api_key", _yaml_dq(api_key), 2)
     if context_length:
         block = _set_key(lines, block, "context_length", str(context_length), 2)
     # Existing operator values win, but migrate configs that predate ODS's
@@ -115,7 +142,9 @@ def _ensure_model(
         _set_key(lines, block, "max_tokens", str(max_tokens), 2)
 
 
-def _ensure_provider_timeout(lines: list[str], provider: str = "custom", timeout_seconds: int = 180) -> None:
+def _ensure_provider_timeout(
+    lines: list[str], provider: str = "custom", timeout_seconds: int = 180
+) -> None:
     """Add ODS's local-provider timeout default without clobbering operators.
 
     Hermes can spend a long time in local prefill before the first token on
@@ -152,9 +181,13 @@ def _ensure_provider_timeout(lines: list[str], provider: str = "custom", timeout
 
     existing = _key_value(lines, provider_block, "request_timeout_seconds", 4)
     if existing is None:
-        _set_key(lines, provider_block, "request_timeout_seconds", str(timeout_seconds), 4)
+        _set_key(
+            lines, provider_block, "request_timeout_seconds", str(timeout_seconds), 4
+        )
     elif timeout_seconds != 180 and existing == "180":
-        _set_key(lines, provider_block, "request_timeout_seconds", str(timeout_seconds), 4)
+        _set_key(
+            lines, provider_block, "request_timeout_seconds", str(timeout_seconds), 4
+        )
 
 
 def _ensure_auxiliary(lines: list[str], context_length: int | None) -> None:
@@ -290,7 +323,12 @@ def patch_config(
         updated += "\n"
     if updated == original:
         return False
-    path.write_text(updated, encoding="utf-8")
+    # Write atomically: a kill/OOM mid-write must not leave a half-written
+    # config.yaml that makes Hermes crash-loop on next start.
+    fd, tmp_name = tempfile.mkstemp(dir=str(path.parent))
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(updated)
+    os.replace(tmp_name, path)
     return True
 
 
@@ -299,7 +337,10 @@ def main() -> int:
     parser.add_argument("path", type=Path)
     parser.add_argument("--model")
     parser.add_argument("--base-url")
-    parser.add_argument("--api-key", help="Bearer token Hermes uses to call the LLM (needed when routing through litellm)")
+    parser.add_argument(
+        "--api-key",
+        help="Bearer token Hermes uses to call the LLM (needed when routing through litellm)",
+    )
     parser.add_argument("--context-length", type=int)
     parser.add_argument("--request-timeout-seconds", type=int, default=180)
     parser.add_argument("--max-tokens", type=int, default=1024)
