@@ -1,0 +1,922 @@
+{
+ "evidence": "windows-laptop-wsl-beta (Qwen3.5-9B, RTX 5070 laptop 8 GB), ODS main d4a61f33, ods-main-qualification-20260924-r049 round 107 website journey, session fabc87a8-0e08-4e86-9d4d-94b092d931fb (2026-09-25T23:26Z). Call 4 (transcript row 11) omitted exact:true on the button locator and was rejected. Call 5 (row 13) asserted \".event-card.sold-out.hidden\" hidden on site-ba3eb2f6, whose card is never hidden, and matched nothing. The model concluded the inspector snapshots before JavaScript runs (rows 25, 33, 35), sent {} (call 14, row 31), and after repairs published site-1f5f2cf8, where call 26 (row 55, result row 56) measured \".sold-out-card\" display:none after a real click: the handler removes .hidden while the CSS hides .sold-out-card. The model read the receipt's \"before\" as a pre-script snapshot (rows 57, 63, 73). Owner message, the model-authored file and applied edits, host publication receipts, inspection arguments, capsule receipts and tool texts, byte for byte; reads, repeated inspections, a failed edit and the answers are omitted. Calls 13 (row 29, site-c54d9d87, whose card has the hidden attribute that the handler never removes) and 24 (row 51, site-1f5f2cf8, a role/name click on a visible button that the capsule names \"SHOW SOLD OUT\" because of text-transform: uppercase) are recorded as returned.",
+ "session": {
+  "sessionId": "fabc87a8-0e08-4e86-9d4d-94b092d931fb",
+  "sessionKey": "agent:pixel:openai-user:ods-52471fb05fcfa342743d3c7de184445480ae8baf14aa74d4fca92c435fed9eba"
+ },
+ "turns": [
+  {
+   "runId": "chatcmpl_21d639cf-f622-4ab2-92cf-88debec5664f",
+   "prompt": "Create a polished responsive static event website in a new workspace directory fleet-qualification-56a03d4540cb. Actually write files and publish a verified Pixel workspace preview. Page title and one h1 must be exactly \"Night Garden FLEET-c8c40c5702\". Include three event cards: Dawn jazz, River lantern walk, and Midnight sold-out concert. Initially hide the entire Midnight sold-out concert card. Provide an accessible button named exactly \"Show sold out\" that reveals that card when clicked. Mobile width 375px must not overflow horizontally. Use semantic HTML, attractive CSS, working JavaScript, no external libraries, no localStorage dependency. Include the preview URL in your final response. Do the work now.\n\n[ODS Portal delivery requirement: Answer the owner's complete message above. If it asks for exact text, copy that full exact text. Do not answer with a generic acknowledgement. Do not output NO_REPLY.]\n[ODS Portal workspace task route: Perform the requested workspace mutation before verification. When tool_call is visible, use it with id write and normal write args for every new file you author. edit cannot create a file and requires a non-empty oldText copied from an existing file. Use edit or apply_patch only after reading an existing file. Then use exec only for readback, tests, the requested digest, or copies of existing files: make copies and JSON maps of file contents with one short command that reads the real files, such as cp or python3 with json.dump, never by re-typing them. Do not repeatedly list directories or hash proposed text instead of the created file.]",
+   "calls": [
+    {
+     "call": 1,
+     "row": 5,
+     "id": "iJ58lmENkD8Z4rsjP6AQ3yap4ojfyGgD",
+     "tool": "exec",
+     "arguments": {
+      "command": "mkdir -p fleet-qualification-56a03d4540cb"
+     },
+     "details": {
+      "status": "completed",
+      "exitCode": 0,
+      "durationMs": 159,
+      "aggregated": "",
+      "cwd": "/home/odsbeta/.openclaw/workspace-pixel"
+     }
+    },
+    {
+     "call": 2,
+     "row": 7,
+     "id": "WL6pcuvhuDNhIQMjcSYgAcWixnFGw9dG",
+     "tool": "write",
+     "arguments": {
+      "path": "fleet-qualification-56a03d4540cb/index.html",
+      "content": "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n  <meta charset=\"UTF-8\">\n  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n  <title>Night Garden FLEET-c8c40c5702</title>\n  <style>\n    *, *::before, *::after {\n      box-sizing: border-box;\n      margin: 0;\n      padding: 0;\n    }\n\n    :root {\n      --primary-purple: #6c5ce7;\n      --secondary-purple: #a29bfe;\n      --dark-bg: #0a0a0f;\n      --card-bg: #1a1a2e;\n      --text-primary: #ffffff;\n      --text-secondary: #b8b8d0;\n      --accent-gold: #fdcb6e;\n      --sold-out-bg: #2d2d44;\n      --sold-out-overlay: rgba(0, 0, 0, 0.95);\n    }\n\n    body {\n      font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;\n      background: var(--dark-bg);\n      background: linear-gradient(135deg, var(--dark-bg) 0%, #16213e 100%);\n      min-height: 100vh;\n      color: var(--text-primary);\n      line-height: 1.6;\n    }\n\n    .container {\n      max-width: 1200px;\n      margin: 0 auto;\n      padding: 2rem 1rem;\n    }\n\n    header {\n      text-align: center;\n      padding: 3rem 0 2rem;\n    }\n\n    h1 {\n      font-size: clamp(2rem, 5vw, 3.5rem);\n      font-weight: 800;\n      background: linear-gradient(135deg, var(--secondary-purple) 0%, var(--accent-gold) 100%);\n      -webkit-background-clip: text;\n      -webkit-text-fill-color: transparent;\n      background-clip: text;\n      text-transform: uppercase;\n      letter-spacing: 3px;\n      margin-bottom: 1rem;\n    }\n\n    .subtitle {\n      font-size: 1.1rem;\n      color: var(--text-secondary);\n      font-weight: 300;\n    }\n\n    .events-grid {\n      display: grid;\n      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));\n      gap: 2rem;\n      margin-top: 2rem;\n    }\n\n    .event-card {\n      background: var(--card-bg);\n      border-radius: 16px;\n      overflow: hidden;\n      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);\n      transition: transform 0.3s ease, box-shadow 0.3s ease;\n      opacity: 1;\n      transform: none;\n    }\n\n    .event-card.hidden {\n      opacity: 0;\n      transform: translateY(20px);\n      pointer-events: none;\n    }\n\n    .event-card:hover {\n      transform: translateY(-8px);\n      box-shadow: 0 16px 48px rgba(108, 92, 231, 0.3);\n    }\n\n    .card-image {\n      height: 200px;\n      background: linear-gradient(135deg, var(--primary-purple) 0%, #8854d0 100%);\n      position: relative;\n      overflow: hidden;\n    }\n\n    .card-image::before {\n      content: '';\n      position: absolute;\n      top: 0;\n      left: 0;\n      right: 0;\n      bottom: 0;\n      background: url(\"data:image/svg+xml,%3Csvg width='60' height='60' viewBox='0 0 60 60' xmlns='http://www.w3.org/2000/svg'%3E%3Cg fill='none' fill-rule='evenodd'%3E%3Cg fill='%23ffffff' fill-opacity='0.05'%3E%3Cpath d='M36 34v-4h-2v4h-4v2h4v4h2v-4h4v-2h-4zm0-30V0h-2v4h-4v2h4v4h2V6h4V4h-4zM6 34v-4H4v4H0v2h4v4h2v-4h4v-2H6zm0-30V0H4v4H0v2h4v4h2V6h4V4H6z'/%3E%3C/g%3E%3C/g%3E%3C/svg%3E\");\n    }\n\n    .card-content {\n      padding: 1.5rem;\n    }\n\n    .event-title {\n      font-size: 1.4rem;\n      font-weight: 700;\n      margin-bottom: 0.5rem;\n      color: var(--text-primary);\n    }\n\n    .event-time {\n      font-size: 0.95rem;\n      color: var(--accent-gold);\n      margin-bottom: 1rem;\n      font-weight: 500;\n    }\n\n    .event-description {\n      font-size: 0.95rem;\n      color: var(--text-secondary);\n      margin-bottom: 1rem;\n    }\n\n    .event-details {\n      display: flex;\n      flex-wrap: wrap;\n      gap: 1rem;\n      font-size: 0.85rem;\n      color: var(--text-secondary);\n    }\n\n    .detail-item {\n      display: flex;\n      align-items: center;\n      gap: 0.3rem;\n    }\n\n    .sold-out-badge {\n      position: absolute;\n      top: 1rem;\n      right: 1rem;\n      background: var(--accent-gold);\n      color: var(--dark-bg);\n      padding: 0.5rem 1rem;\n      border-radius: 20px;\n      font-weight: 700;\n      font-size: 0.8rem;\n      text-transform: uppercase;\n      letter-spacing: 1px;\n    }\n\n    .sold-out-overlay {\n      position: absolute;\n      top: 0;\n      left: 0;\n      right: 0;\n      bottom: 0;\n      background: var(--sold-out-overlay);\n      display: flex;\n      align-items: center;\n      justify-content: center;\n      opacity: 0;\n      transition: opacity 0.3s ease;\n    }\n\n    .event-card.sold-out .sold-out-overlay {\n      opacity: 1;\n    }\n\n    .sold-out-message {\n      color: var(--accent-gold);\n      font-weight: 700;\n      font-size: 1.2rem;\n      text-align: center;\n      padding: 1rem;\n    }\n\n    .cta-button {\n      display: inline-block;\n      background: linear-gradient(135deg, var(--primary-purple) 0%, var(--secondary-purple) 100%);\n      color: white;\n      padding: 0.75rem 1.5rem;\n      border: none;\n      border-radius: 8px;\n      font-size: 0.9rem;\n      font-weight: 600;\n      cursor: pointer;\n      transition: transform 0.2s ease, box-shadow 0.2s ease;\n      margin-top: 1rem;\n    }\n\n    .cta-button:hover {\n      transform: translateY(-2px);\n      box-shadow: 0 8px 20px rgba(108, 92, 231, 0.4);\n    }\n\n    .cta-button:active {\n      transform: translateY(0);\n    }\n\n    .toggle-section {\n      text-align: center;\n      margin: 3rem 0 2rem;\n      padding: 1rem;\n    }\n\n    .show-sold-out-btn {\n      background: transparent;\n      border: 2px solid var(--primary-purple);\n      color: var(--text-primary);\n      padding: 0.75rem 2rem;\n      font-size: 1rem;\n      font-weight: 600;\n      border-radius: 50px;\n      cursor: pointer;\n      transition: all 0.3s ease;\n      letter-spacing: 1px;\n      text-transform: uppercase;\n    }\n\n    .show-sold-out-btn:hover {\n      background: var(--primary-purple);\n      box-shadow: 0 8px 24px rgba(108, 92, 231, 0.4);\n    }\n\n    .show-sold-out-btn:active {\n      transform: scale(0.98);\n    }\n\n    footer {\n      text-align: center;\n      padding: 2rem;\n      color: var(--text-secondary);\n      font-size: 0.9rem;\n      border-top: 1px solid rgba(255, 255, 255, 0.1);\n      margin-top: 2rem;\n    }\n\n    @media (max-width: 375px) {\n      .container {\n        padding: 1rem 0.75rem;\n      }\n\n      header {\n        padding: 2rem 0 1.5rem;\n      }\n\n      .events-grid {\n        grid-template-columns: 1fr;\n        gap: 1.5rem;\n      }\n\n      .event-card {\n        border-radius: 12px;\n      }\n\n      .card-image {\n        height: 160px;\n      }\n\n      .card-content {\n        padding: 1.25rem;\n      }\n\n      .event-title {\n        font-size: 1.2rem;\n      }\n\n      .event-details {\n        flex-direction: column;\n        gap: 0.5rem;\n      }\n\n      .show-sold-out-btn {\n        padding: 0.6rem 1.5rem;\n        font-size: 0.9rem;\n      }\n    }\n\n    @media (max-width: 768px) {\n      .events-grid {\n        grid-template-columns: 1fr;\n        gap: 1.5rem;\n      }\n\n      h1 {\n        font-size: 2rem;\n      }\n    }\n\n    @media (prefers-reduced-motion: reduce) {\n      .event-card {\n        transition: none;\n      }\n\n      .event-card.hidden {\n        transform: none;\n      }\n\n      .sold-out-overlay {\n        transition: none;\n      }\n    }\n  </style>\n</head>\n<body>\n  <div class=\"container\">\n    <header>\n      <h1>Night Garden FLEET-c8c40c5702</h1>\n      <p class=\"subtitle\">An unforgettable night of music, culture, and magic</p>\n    </header>\n\n    <main>\n      <div class=\"events-grid\">\n        <article class=\"event-card\">\n          <div class=\"card-image\">\n            <div class=\"card-content\">\n              <h2 class=\"event-title\">Dawn Jazz</h2>\n              <p class=\"event-time\">🎵 8:00 PM - 10:00 PM</p>\n              <p class=\"event-description\">\n                Experience smooth jazz melodies as the night transitions into dawn.\n                Featuring renowned artists from around the globe, bringing together\n                the best of contemporary and classic jazz in an intimate setting.\n              </p>\n              <div class=\"event-details\">\n                <span class=\"detail-item\">🎷 Live Performance</span>\n                <span class=\"detail-item\">🎺 20+ Musicians</span>\n                <span class=\"detail-item\">🎟️ All Ages</span>\n              </div>\n              <button class=\"cta-button\">Get Tickets</button>\n            </div>\n          </div>\n        </article>\n\n        <article class=\"event-card\">\n          <div class=\"card-image\" style=\"background: linear-gradient(135deg, #6c5ce7 0%, #00b894 100%);\">\n            <div class=\"card-content\">\n              <h2 class=\"event-title\">River Lantern Walk</h2>\n              <p class=\"event-time\">🏮 9:00 PM - 11:00 PM</p>\n              <p class=\"event-description\">\n                Join us for a serene walk along the riverbank adorned with thousands\n                of glowing lanterns. A peaceful journey through light and reflection,\n                celebrating the beauty of our natural surroundings.\n              </p>\n              <div class=\"event-details\">\n                <span class=\"detail-item\">🚶 Guided Walk</span>\n                <span class=\"detail-item\">🌊 River Path</span>\n                <span class=\"detail-item\">🎨 Art Installation</span>\n              </div>\n              <button class=\"cta-button\">Register Now</button>\n            </div>\n          </div>\n        </article>\n\n        <article class=\"event-card sold-out\">\n          <div class=\"sold-out-badge\">SOLD OUT</div>\n          <div class=\"card-image\" style=\"background: linear-gradient(135deg, #e17055 0%, #d63031 100%);\">\n            <div class=\"sold-out-overlay\">\n              <p class=\"sold-out-message\">🎫 This event is sold out</p>\n            </div>\n            <div class=\"card-content\">\n              <h2 class=\"event-title\">Midnight Sold-Out Concert</h2>\n              <p class=\"event-time\">🎤 11:30 PM - 2:00 AM</p>\n              <p class=\"event-description\">\n                The headline act of the night! An electrifying performance featuring\n                world-class artists delivering an unforgettable show. Don't miss out\n                on this spectacular finale to an extraordinary evening.\n              </p>\n              <div class=\"event-details\">\n                <span class=\"detail-item\">🌟 Headliner</span>\n                <span class=\"detail-item\">🔥 Premium Experience</span>\n                <span class=\"detail-item\">🎭 Main Stage</span>\n              </div>\n              <button class=\"cta-button\" disabled>Already Sold Out</button>\n            </div>\n          </div>\n        </article>\n      </div>\n\n      <div class=\"toggle-section\">\n        <button type=\"button\" class=\"show-sold-out-btn\" id=\"showSoldOutBtn\">Show sold out</button>\n      </div>\n    </main>\n\n    <footer>\n      <p>&copy; 2026 Night Garden Events. All rights reserved.</p>\n    </footer>\n  </div>\n\n  <script>\n    document.addEventListener('DOMContentLoaded', function() {\n      const showSoldOutBtn = document.getElementById('showSoldOutBtn');\n      const soldOutCard = document.querySelector('.event-card.sold-out');\n\n      showSoldOutBtn.addEventListener('click', function() {\n        if (soldOutCard) {\n          soldOutCard.classList.remove('hidden');\n        }\n\n        showSoldOutBtn.textContent = 'Hide sold out';\n        showSoldOutBtn.style.borderColor = 'var(--accent-gold)';\n        showSoldOutBtn.style.color = 'var(--accent-gold)';\n        showSoldOutBtn.style.background = 'var(--sold-out-bg)';\n\n        const originalText = 'Show sold out';\n        const revertedText = 'Hide sold out';\n\n        showSoldOutBtn.dataset.originalText = originalText;\n\n        setTimeout(function() {\n          showSoldOutBtn.dataset.revertedText = revertedText;\n        }, 1000);\n      });\n    });\n  </script>\n</body>\n</html>\n"
+     }
+    },
+    {
+     "call": 3,
+     "row": 9,
+     "id": "UXq91SEKwE4L2pAP6SwQDXhnVOHfdbKs",
+     "tool": "pixel_ods_workspace_preview",
+     "transport": "tool_call",
+     "arguments": {
+      "relativeDirectory": "fleet-qualification-56a03d4540cb"
+     },
+     "details": {
+      "boundary": "Create-only static-site snapshot from the configured Pixel workspace to a dedicated loopback preview origin; no arbitrary host path, network destination, server process, overwrite, or execution authority.",
+      "bytes": 11530,
+      "entryFile": "index.html",
+      "entrySha256": "ea47b208cba10b3c88ce7b59a808e99ef14e52c1c91ae99d4c31f5923ff05719",
+      "executable": false,
+      "files": 1,
+      "httpStatus": 200,
+      "kind": "ods-pixel-workspace-preview",
+      "overwritten": false,
+      "port": 19437,
+      "publishedEmptyPaths": [],
+      "publishedEmptyPathsOmitted": 0,
+      "publishedPaths": [
+       "index.html"
+      ],
+      "publishedPathsOmitted": 0,
+      "readbackVerified": true,
+      "relativeDirectory": "fleet-qualification-56a03d4540cb",
+      "schemaVersion": 1,
+      "sha256": "ba3eb2f6e71217b5dbcf343e4d8d8f75ce4dab637426c2a77682649a5c04f6fd",
+      "siteId": "site-ba3eb2f6e71217b5dbcf343e",
+      "status": "succeeded",
+      "url": "http://site-ba3eb2f6e71217b5dbcf343e.localhost:19437/site-ba3eb2f6e71217b5dbcf343e/"
+     }
+    },
+    {
+     "call": 4,
+     "row": 11,
+     "id": "XDIze5tACDatQqI2zq3LBXhQjhQHXfSi",
+     "tool": "pixel_ods_workspace_preview_inspect",
+     "transport": "tool_call",
+     "arguments": {
+      "siteId": "site-ba3eb2f6e71217b5dbcf343e",
+      "sha256": "ba3eb2f6e71217b5dbcf343e4d8d8f75ce4dab637426c2a77682649a5c04f6fd",
+      "viewport": {
+       "width": 375,
+       "height": 667
+      },
+      "steps": [
+       {
+        "action": "assert-visible",
+        "locator": {
+         "selector": "h1"
+        }
+       },
+       {
+        "action": "assert-visible",
+        "locator": {
+         "selector": ".event-card.sold-out.hidden"
+        }
+       },
+       {
+        "action": "click",
+        "locator": {
+         "role": "button",
+         "name": "Show sold out"
+        }
+       },
+       {
+        "action": "assert-visible",
+        "locator": {
+         "selector": ".event-card.sold-out:not(.hidden)"
+        }
+       }
+      ]
+     },
+     "details": {
+      "schemaVersion": 1,
+      "kind": "ods-pixel-preview-inspection",
+      "status": "failed",
+      "errorCode": "invalid_request",
+      "scope": "Only the listed CSS layout visibility assertions and click dispatches were tested; not pixel paint, occlusion, clipping, a full accessibility audit, or overall functionality.",
+      "ok": false
+     },
+     "isError": true,
+     "text": "Preview inspection request rejected before execution: invalid arguments. Use a supported role, exact accessible name and exact:true, or a CSS selector. The inspector was not contacted; this does not establish service unavailability. Call tool_describe with id \"pixel_ods_workspace_preview_inspect\", then retry through tool_call with the exact published siteId and full sha256, viewport {width,height}, and valid steps. Use a CSS selector for elements whose role is not supported. Do not guess snapshot identifiers. Requested behavior remains unverified."
+    },
+    {
+     "call": 5,
+     "row": 13,
+     "id": "tAVYdYAS0CFwgCZD9IWsdjeihKFEmv0F",
+     "tool": "pixel_ods_workspace_preview_inspect",
+     "transport": "tool_call",
+     "arguments": {
+      "siteId": "site-ba3eb2f6e71217b5dbcf343e",
+      "sha256": "ba3eb2f6e71217b5dbcf343e4d8d8f75ce4dab637426c2a77682649a5c04f6fd",
+      "viewport": {
+       "width": 375,
+       "height": 667
+      },
+      "steps": [
+       {
+        "action": "assert-visible",
+        "locator": {
+         "selector": "h1"
+        }
+       },
+       {
+        "action": "assert-hidden",
+        "locator": {
+         "selector": ".event-card.sold-out.hidden"
+        }
+       },
+       {
+        "action": "click",
+        "locator": {
+         "selector": ".show-sold-out-btn"
+        }
+       },
+       {
+        "action": "assert-visible",
+        "locator": {
+         "selector": ".event-card.sold-out:not(.hidden)"
+        }
+       }
+      ]
+     },
+     "details": {
+      "blockedRequests": [],
+      "diagnostics": {
+       "hiddenUntilFoundCount": 0,
+       "renderedHiddenAttributeCount": 0
+      },
+      "kind": "ods-pixel-preview-inspection",
+      "planSha256": "cc94e9b26d5ed6a99a929c2c49b46dc733bc29b0fc6b0cf933535b684f30e0ee",
+      "renderedColors": {
+       "colors": [
+        {
+         "hex": "#0e121f",
+         "name": "black",
+         "percent": 55
+        },
+        {
+         "hex": "#12192e",
+         "name": "blue",
+         "percent": 25
+        },
+        {
+         "hex": "#7759de",
+         "name": "blue",
+         "percent": 8
+        },
+        {
+         "hex": "#7e57d8",
+         "name": "purple",
+         "percent": 4
+        },
+        {
+         "hex": "#239aaf",
+         "name": "teal",
+         "percent": 3
+        },
+        {
+         "hex": "#161c2f",
+         "name": "dark gray",
+         "percent": 1
+        }
+       ],
+       "viewport": {
+        "height": 720,
+        "width": 1280
+       }
+      },
+      "schemaVersion": 1,
+      "scope": "Only the listed CSS layout visibility assertions and click dispatches were tested; not pixel paint, occlusion, clipping, a full accessibility audit, or overall functionality.",
+      "sha256": "ba3eb2f6e71217b5dbcf343e4d8d8f75ce4dab637426c2a77682649a5c04f6fd",
+      "siteId": "site-ba3eb2f6e71217b5dbcf343e",
+      "status": "failed",
+      "steps": [
+       {
+        "action": "assert-visible",
+        "before": {
+         "count": 1,
+         "display": "block",
+         "hidden": false,
+         "hiddenUntilFound": false,
+         "opacity": "1",
+         "rectCount": 1,
+         "visibility": "visible",
+         "visible": true
+        },
+        "index": 0,
+        "locator": {
+         "selector": "h1"
+        },
+        "stable": true,
+        "status": "passed"
+       },
+       {
+        "action": "assert-hidden",
+        "before": {
+         "count": 0
+        },
+        "errorCode": "no_match",
+        "index": 1,
+        "locator": {
+         "selector": ".event-card.sold-out.hidden"
+        },
+        "stable": true,
+        "status": "failed"
+       }
+      ],
+      "viewport": {
+       "height": 667,
+       "width": 375
+      },
+      "ok": false
+     },
+     "isError": true,
+     "text": "Preview inspection failed. Step 2 (assert-hidden) matched no element, so nothing was measured and later steps did not run. Copy the exact role and accessible name (case, spacing, punctuation) or a CSS selector such as an id from your source, and retry the inspection on the same published snapshot. Do not change the site only to satisfy a locator. Requested behavior remains unverified. Only the listed CSS layout visibility assertions and click dispatches were tested; not pixel paint, occlusion, clipping, a full accessibility audit, or overall functionality. Rendered colors (by area, desktop 1280x720 as loaded): black 55%, blue #12192e 25%, blue #7759de 8%, purple #7e57d8 4%, teal #239aaf 3%, dark gray 1%. Colors under 1% of the view and hover/focus-only styles are not listed. Evidence: {\"blockedRequests\":[],\"diagnostics\":{\"hiddenUntilFoundCount\":0,\"renderedHiddenAttributeCount\":0},\"kind\":\"ods-pixel-preview-inspection\",\"planSha256\":\"cc94e9b26d5ed6a99a929c2c49b46dc733bc29b0fc6b0cf933535b684f30e0ee\",\"schemaVersion\":1,\"scope\":\"Only the listed CSS layout visibility assertions and click dispatches were tested; not pixel paint, occlusion, clipping, a full accessibility audit, or overall functionality.\",\"sha256\":\"ba3eb2f6e71217b5dbcf343e4d8d8f75ce4dab637426c2a77682649a5c04f6fd\",\"siteId\":\"site-ba3eb2f6e71217b5dbcf343e\",\"status\":\"failed\",\"steps\":[{\"action\":\"assert-visible\",\"before\":{\"count\":1,\"display\":\"block\",\"hidden\":false,\"hiddenUntilFound\":false,\"opacity\":\"1\",\"rectCount\":1,\"visibility\":\"visible\",\"visible\":true},\"index\":0,\"locator\":{\"selector\":\"h1\"},\"stable\":true,\"status\":\"passed\"},{\"action\":\"assert-hidden\",\"before\":{\"count\":0},\"errorCode\":\"no_match\",\"index\":1,\"locator\":{\"selector\":\".event-card.sold-out.hidden\"},\"stable\":true,\"status\":\"failed\"}],\"viewport\":{\"height\":667,\"width\":375}}"
+    },
+    {
+     "call": 7,
+     "row": 17,
+     "id": "3SlxAJHHV3agwySgMEWEv91NUB1E5YIe",
+     "tool": "edit",
+     "arguments": {
+      "path": "fleet-qualification-56a03d4540cb/index.html",
+      "edits": [
+       {
+        "oldText": "    .event-card.hidden {\n      opacity: 0;\n      transform: translateY(20px);\n      pointer-events: none;\n    }",
+        "newText": "    .event-card.hidden {\n      display: none;\n    }"
+       },
+       {
+        "oldText": "    @media (prefers-reduced-motion: reduce) {\n      .event-card {\n        transition: none;\n      }\n\n      .event-card.hidden {\n        transform: none;\n      }\n\n      .sold-out-overlay {\n        transition: none;\n      }\n    }",
+        "newText": "    @media (prefers-reduced-motion: reduce) {\n      .event-card {\n        transition: none;\n      }\n\n      .event-card.hidden {\n        display: none;\n      }\n\n      .sold-out-overlay {\n        transition: none;\n      }\n    }"
+       }
+      ]
+     }
+    },
+    {
+     "call": 8,
+     "row": 19,
+     "id": "XGZhNDlehc6JMtbGJxQN9lkBNdDZ1uh6",
+     "tool": "pixel_ods_workspace_preview",
+     "transport": "tool_call",
+     "arguments": {
+      "relativeDirectory": "fleet-qualification-56a03d4540cb"
+     },
+     "details": {
+      "boundary": "Create-only static-site snapshot from the configured Pixel workspace to a dedicated loopback preview origin; no arbitrary host path, network destination, server process, overwrite, or execution authority.",
+      "bytes": 11468,
+      "entryFile": "index.html",
+      "entrySha256": "9d53968b423afffa515e717a85a52c2bcd5c7b279cf1e218aa2bfcb1e9bf988c",
+      "executable": false,
+      "files": 1,
+      "httpStatus": 200,
+      "kind": "ods-pixel-workspace-preview",
+      "overwritten": false,
+      "port": 19437,
+      "publishedEmptyPaths": [],
+      "publishedEmptyPathsOmitted": 0,
+      "publishedPaths": [
+       "index.html"
+      ],
+      "publishedPathsOmitted": 0,
+      "readbackVerified": true,
+      "relativeDirectory": "fleet-qualification-56a03d4540cb",
+      "schemaVersion": 1,
+      "sha256": "fe65275b989630e77e34d6ef6053316cdfa36e7f840e94b3e25ad774eb41d67b",
+      "siteId": "site-fe65275b989630e77e34d6ef",
+      "status": "succeeded",
+      "url": "http://site-fe65275b989630e77e34d6ef.localhost:19437/site-fe65275b989630e77e34d6ef/"
+     }
+    },
+    {
+     "call": 11,
+     "row": 25,
+     "id": "bWnsNFcUT6W6Tfs1nyP46QD1mRyz0xSS",
+     "tool": "edit",
+     "arguments": {
+      "path": "fleet-qualification-56a03d4540cb/index.html",
+      "edits": [
+       {
+        "oldText": "        <article class=\"event-card sold-out\">\n          <div class=\"sold-out-badge\">SOLD OUT</div>",
+        "newText": "        <article class=\"event-card sold-out\" hidden>\n          <div class=\"sold-out-badge\">SOLD OUT</div>"
+       }
+      ]
+     }
+    },
+    {
+     "call": 12,
+     "row": 27,
+     "id": "vy10DodflmV2hIHh96TxjEMHeuPwKPrb",
+     "tool": "pixel_ods_workspace_preview",
+     "transport": "tool_call",
+     "arguments": {
+      "relativeDirectory": "fleet-qualification-56a03d4540cb"
+     },
+     "details": {
+      "boundary": "Create-only static-site snapshot from the configured Pixel workspace to a dedicated loopback preview origin; no arbitrary host path, network destination, server process, overwrite, or execution authority.",
+      "bytes": 11475,
+      "entryFile": "index.html",
+      "entrySha256": "c7160293441f8998237fdd135cc5a67521747c75db92b443af1e19511fe60e58",
+      "executable": false,
+      "files": 1,
+      "httpStatus": 200,
+      "kind": "ods-pixel-workspace-preview",
+      "overwritten": false,
+      "port": 19437,
+      "publishedEmptyPaths": [],
+      "publishedEmptyPathsOmitted": 0,
+      "publishedPaths": [
+       "index.html"
+      ],
+      "publishedPathsOmitted": 0,
+      "readbackVerified": true,
+      "relativeDirectory": "fleet-qualification-56a03d4540cb",
+      "schemaVersion": 1,
+      "sha256": "c54d9d87a7934302078a8ee4c00286e167abc94c31612519a6897f7ff853b232",
+      "siteId": "site-c54d9d87a7934302078a8ee4",
+      "status": "succeeded",
+      "url": "http://site-c54d9d87a7934302078a8ee4.localhost:19437/site-c54d9d87a7934302078a8ee4/"
+     }
+    },
+    {
+     "call": 13,
+     "row": 29,
+     "id": "zWiTPxuA7eNTnNAF8EsmKTLDFqhwuORn",
+     "tool": "pixel_ods_workspace_preview_inspect",
+     "transport": "tool_call",
+     "arguments": {
+      "siteId": "site-c54d9d87a7934302078a8ee4",
+      "sha256": "c54d9d87a7934302078a8ee4c00286e167abc94c31612519a6897f7ff853b232",
+      "viewport": {
+       "width": 375,
+       "height": 667
+      },
+      "steps": [
+       {
+        "action": "assert-visible",
+        "locator": {
+         "selector": "h1"
+        }
+       },
+       {
+        "action": "assert-hidden",
+        "locator": {
+         "selector": "article.hidden"
+        }
+       },
+       {
+        "action": "click",
+        "locator": {
+         "selector": ".show-sold-out-btn"
+        }
+       },
+       {
+        "action": "assert-visible",
+        "locator": {
+         "selector": "article:not(.hidden)"
+        }
+       }
+      ]
+     },
+     "details": {
+      "blockedRequests": [],
+      "diagnostics": {
+       "hiddenUntilFoundCount": 0,
+       "renderedHiddenAttributeCount": 0
+      },
+      "kind": "ods-pixel-preview-inspection",
+      "planSha256": "430433b634fe2f41725e6de62008ea42c6bdc2575724384065b3d862a8f30b5e",
+      "renderedColors": {
+       "colors": [
+        {
+         "hex": "#0f1423",
+         "name": "black",
+         "percent": 47
+        },
+        {
+         "hex": "#12192e",
+         "name": "blue",
+         "percent": 25
+        },
+        {
+         "hex": "#7759de",
+         "name": "blue",
+         "percent": 12
+        },
+        {
+         "hex": "#8156d6",
+         "name": "purple",
+         "percent": 6
+        },
+        {
+         "hex": "#19a3a7",
+         "name": "teal",
+         "percent": 4
+        },
+        {
+         "hex": "#8e7bd9",
+         "name": "blue",
+         "percent": 1
+        }
+       ],
+       "viewport": {
+        "height": 720,
+        "width": 1280
+       }
+      },
+      "schemaVersion": 1,
+      "scope": "Only the listed CSS layout visibility assertions and click dispatches were tested; not pixel paint, occlusion, clipping, a full accessibility audit, or overall functionality.",
+      "sha256": "c54d9d87a7934302078a8ee4c00286e167abc94c31612519a6897f7ff853b232",
+      "siteId": "site-c54d9d87a7934302078a8ee4",
+      "status": "failed",
+      "steps": [
+       {
+        "action": "assert-visible",
+        "before": {
+         "count": 1,
+         "display": "block",
+         "hidden": false,
+         "hiddenUntilFound": false,
+         "opacity": "1",
+         "rectCount": 1,
+         "visibility": "visible",
+         "visible": true
+        },
+        "index": 0,
+        "locator": {
+         "selector": "h1"
+        },
+        "stable": true,
+        "status": "passed"
+       },
+       {
+        "action": "assert-hidden",
+        "before": {
+         "count": 0
+        },
+        "errorCode": "no_match",
+        "index": 1,
+        "locator": {
+         "selector": "article.hidden"
+        },
+        "stable": true,
+        "status": "failed"
+       }
+      ],
+      "viewport": {
+       "height": 667,
+       "width": 375
+      },
+      "ok": false
+     },
+     "isError": true,
+     "text": "Preview inspection failed. Step 2 (assert-hidden) matched no element, so nothing was measured and later steps did not run. Copy the exact role and accessible name (case, spacing, punctuation) or a CSS selector such as an id from your source, and retry the inspection on the same published snapshot. Do not change the site only to satisfy a locator. Requested behavior remains unverified. Only the listed CSS layout visibility assertions and click dispatches were tested; not pixel paint, occlusion, clipping, a full accessibility audit, or overall functionality. Rendered colors (by area, desktop 1280x720 as loaded): black 47%, blue #12192e 25%, blue #7759de 12%, purple #8156d6 6%, teal #19a3a7 4%, blue #8e7bd9 1%. Colors under 1% of the view and hover/focus-only styles are not listed. Evidence: {\"blockedRequests\":[],\"diagnostics\":{\"hiddenUntilFoundCount\":0,\"renderedHiddenAttributeCount\":0},\"kind\":\"ods-pixel-preview-inspection\",\"planSha256\":\"430433b634fe2f41725e6de62008ea42c6bdc2575724384065b3d862a8f30b5e\",\"schemaVersion\":1,\"scope\":\"Only the listed CSS layout visibility assertions and click dispatches were tested; not pixel paint, occlusion, clipping, a full accessibility audit, or overall functionality.\",\"sha256\":\"c54d9d87a7934302078a8ee4c00286e167abc94c31612519a6897f7ff853b232\",\"siteId\":\"site-c54d9d87a7934302078a8ee4\",\"status\":\"failed\",\"steps\":[{\"action\":\"assert-visible\",\"before\":{\"count\":1,\"display\":\"block\",\"hidden\":false,\"hiddenUntilFound\":false,\"opacity\":\"1\",\"rectCount\":1,\"visibility\":\"visible\",\"visible\":true},\"index\":0,\"locator\":{\"selector\":\"h1\"},\"stable\":true,\"status\":\"passed\"},{\"action\":\"assert-hidden\",\"before\":{\"count\":0},\"errorCode\":\"no_match\",\"index\":1,\"locator\":{\"selector\":\"article.hidden\"},\"stable\":true,\"status\":\"failed\"}],\"viewport\":{\"height\":667,\"width\":375}}"
+    },
+    {
+     "call": 14,
+     "row": 31,
+     "id": "g1nRTYHswt6nJAy6y2XPVeOjqmmZRpNJ",
+     "tool": "pixel_ods_workspace_preview_inspect",
+     "transport": "tool_call",
+     "arguments": {},
+     "details": {
+      "schemaVersion": 1,
+      "kind": "ods-pixel-preview-inspection",
+      "status": "failed",
+      "errorCode": "invalid_request",
+      "scope": "Only the listed CSS layout visibility assertions and click dispatches were tested; not pixel paint, occlusion, clipping, a full accessibility audit, or overall functionality.",
+      "ok": false
+     },
+     "isError": true,
+     "text": "Preview inspection request rejected before execution: invalid arguments. Provide only siteId, sha256, viewport and steps. The inspector was not contacted; this does not establish service unavailability. Call tool_describe with id \"pixel_ods_workspace_preview_inspect\", then retry through tool_call with the exact published siteId and full sha256, viewport {width,height}, and valid steps. Use a CSS selector for elements whose role is not supported. Do not guess snapshot identifiers. Requested behavior remains unverified."
+    },
+    {
+     "call": 22,
+     "row": 47,
+     "id": "lYGdsTtVU3laOnoncNFPTcwZ7f2czYIk",
+     "tool": "edit",
+     "arguments": {
+      "path": "fleet-qualification-56a03d4540cb/index.html",
+      "edits": [
+       {
+        "oldText": "    .event-card.hidden {\n      display: none;\n    }",
+        "newText": "    .sold-out-card {\n      display: none;\n    }"
+       },
+       {
+        "oldText": "        <article class=\"event-card sold-out\" hidden>\n          <div class=\"sold-out-badge\">SOLD OUT</div>",
+        "newText": "        <article class=\"event-card sold-out sold-out-card\">\n          <div class=\"sold-out-badge\">SOLD OUT</div>"
+       },
+       {
+        "oldText": "        <button type=\"button\" class=\"show-sold-out-btn\" id=\"showSoldOutBtn\">Show sold out</button>",
+        "newText": "        <button type=\"button\" class=\"show-sold-out-btn\" id=\"showSoldOutBtn\" style=\"display: inline-block;\">Show sold out</button>"
+       }
+      ]
+     }
+    },
+    {
+     "call": 23,
+     "row": 49,
+     "id": "eFVe8YiKEuKdtRpRmPmX4ZCy0sOaRthZ",
+     "tool": "pixel_ods_workspace_preview",
+     "transport": "tool_call",
+     "arguments": {
+      "relativeDirectory": "fleet-qualification-56a03d4540cb"
+     },
+     "details": {
+      "boundary": "Create-only static-site snapshot from the configured Pixel workspace to a dedicated loopback preview origin; no arbitrary host path, network destination, server process, overwrite, or execution authority.",
+      "bytes": 11509,
+      "entryFile": "index.html",
+      "entrySha256": "16dfebde8ca6e07f40da751ddd79ee3c535f7047aec2aaf28f3709ab31fc655c",
+      "executable": false,
+      "files": 1,
+      "httpStatus": 200,
+      "kind": "ods-pixel-workspace-preview",
+      "overwritten": false,
+      "port": 19437,
+      "publishedEmptyPaths": [],
+      "publishedEmptyPathsOmitted": 0,
+      "publishedPaths": [
+       "index.html"
+      ],
+      "publishedPathsOmitted": 0,
+      "readbackVerified": true,
+      "relativeDirectory": "fleet-qualification-56a03d4540cb",
+      "schemaVersion": 1,
+      "sha256": "1f5f2cf8da3b36f920507469d941da24c00b8866f924e72b6cc7332812722018",
+      "siteId": "site-1f5f2cf8da3b36f920507469",
+      "status": "succeeded",
+      "url": "http://site-1f5f2cf8da3b36f920507469.localhost:19437/site-1f5f2cf8da3b36f920507469/"
+     }
+    },
+    {
+     "call": 24,
+     "row": 51,
+     "id": "2idLzxS8XNkW8Wuq37LaFtOe4pBPdetF",
+     "tool": "pixel_ods_workspace_preview_inspect",
+     "transport": "tool_call",
+     "arguments": {
+      "siteId": "site-1f5f2cf8da3b36f920507469",
+      "sha256": "1f5f2cf8da3b36f920507469d941da24c00b8866f924e72b6cc7332812722018",
+      "viewport": {
+       "width": 375,
+       "height": 667
+      },
+      "steps": [
+       {
+        "action": "assert-visible",
+        "locator": {
+         "selector": "h1"
+        }
+       },
+       {
+        "action": "assert-visible",
+        "locator": {
+         "selector": ".show-sold-out-btn"
+        }
+       },
+       {
+        "action": "click",
+        "locator": {
+         "role": "button",
+         "name": "Show sold out",
+         "exact": true
+        }
+       },
+       {
+        "action": "assert-visible",
+        "locator": {
+         "selector": ".sold-out-card"
+        }
+       }
+      ]
+     },
+     "details": {
+      "blockedRequests": [],
+      "diagnostics": {
+       "hiddenUntilFoundCount": 0,
+       "renderedHiddenAttributeCount": 0
+      },
+      "kind": "ods-pixel-preview-inspection",
+      "planSha256": "b0a0cf1565b218650597d89131798e8d490607339076143c43f78055e888282a",
+      "renderedColors": {
+       "colors": [
+        {
+         "hex": "#0f1423",
+         "name": "black",
+         "percent": 47
+        },
+        {
+         "hex": "#12192e",
+         "name": "blue",
+         "percent": 25
+        },
+        {
+         "hex": "#7759de",
+         "name": "blue",
+         "percent": 12
+        },
+        {
+         "hex": "#8156d6",
+         "name": "purple",
+         "percent": 6
+        },
+        {
+         "hex": "#19a3a7",
+         "name": "teal",
+         "percent": 4
+        },
+        {
+         "hex": "#8e7bd9",
+         "name": "blue",
+         "percent": 1
+        }
+       ],
+       "viewport": {
+        "height": 720,
+        "width": 1280
+       }
+      },
+      "schemaVersion": 1,
+      "scope": "Only the listed CSS layout visibility assertions and click dispatches were tested; not pixel paint, occlusion, clipping, a full accessibility audit, or overall functionality.",
+      "sha256": "1f5f2cf8da3b36f920507469d941da24c00b8866f924e72b6cc7332812722018",
+      "siteId": "site-1f5f2cf8da3b36f920507469",
+      "status": "failed",
+      "steps": [
+       {
+        "action": "assert-visible",
+        "before": {
+         "count": 1,
+         "display": "block",
+         "hidden": false,
+         "hiddenUntilFound": false,
+         "opacity": "1",
+         "rectCount": 1,
+         "visibility": "visible",
+         "visible": true
+        },
+        "index": 0,
+        "locator": {
+         "selector": "h1"
+        },
+        "stable": true,
+        "status": "passed"
+       },
+       {
+        "action": "assert-visible",
+        "before": {
+         "count": 1,
+         "display": "inline-block",
+         "hidden": false,
+         "hiddenUntilFound": false,
+         "opacity": "1",
+         "rectCount": 1,
+         "visibility": "visible",
+         "visible": true
+        },
+        "index": 1,
+        "locator": {
+         "selector": ".show-sold-out-btn"
+        },
+        "stable": true,
+        "status": "passed"
+       },
+       {
+        "action": "click",
+        "before": {
+         "count": 0
+        },
+        "errorCode": "no_match",
+        "index": 2,
+        "locator": {
+         "exact": true,
+         "name": "Show sold out",
+         "role": "button"
+        },
+        "stable": true,
+        "status": "failed"
+       }
+      ],
+      "viewport": {
+       "height": 667,
+       "width": 375
+      },
+      "ok": false
+     },
+     "isError": true,
+     "text": "Preview inspection failed. Step 3 (click) matched no element, so nothing was measured and later steps did not run. For click, role/name locators match only rendered elements, so a hidden element is not matched. Copy the exact role and accessible name (case, spacing, punctuation) or a CSS selector such as an id from your source, and retry the inspection on the same published snapshot. Do not change the site only to satisfy a locator. Requested behavior remains unverified. Only the listed CSS layout visibility assertions and click dispatches were tested; not pixel paint, occlusion, clipping, a full accessibility audit, or overall functionality. Rendered colors (by area, desktop 1280x720 as loaded): black 47%, blue #12192e 25%, blue #7759de 12%, purple #8156d6 6%, teal #19a3a7 4%, blue #8e7bd9 1%. Colors under 1% of the view and hover/focus-only styles are not listed. Evidence: {\"blockedRequests\":[],\"diagnostics\":{\"hiddenUntilFoundCount\":0,\"renderedHiddenAttributeCount\":0},\"kind\":\"ods-pixel-preview-inspection\",\"planSha256\":\"b0a0cf1565b218650597d89131798e8d490607339076143c43f78055e888282a\",\"schemaVersion\":1,\"scope\":\"Only the listed CSS layout visibility assertions and click dispatches were tested; not pixel paint, occlusion, clipping, a full accessibility audit, or overall functionality.\",\"sha256\":\"1f5f2cf8da3b36f920507469d941da24c00b8866f924e72b6cc7332812722018\",\"siteId\":\"site-1f5f2cf8da3b36f920507469\",\"status\":\"failed\",\"steps\":[{\"action\":\"assert-visible\",\"before\":{\"count\":1,\"display\":\"block\",\"hidden\":false,\"hiddenUntilFound\":false,\"opacity\":\"1\",\"rectCount\":1,\"visibility\":\"visible\",\"visible\":true},\"index\":0,\"locator\":{\"selector\":\"h1\"},\"stable\":true,\"status\":\"passed\"},{\"action\":\"assert-visible\",\"before\":{\"count\":1,\"display\":\"inline-block\",\"hidden\":false,\"hiddenUntilFound\":false,\"opacity\":\"1\",\"rectCount\":1,\"visibility\":\"visible\",\"visible\":true},\"index\":1,\"locator\":{\"selector\":\".show-sold-out-btn\"},\"stable\":true,\"status\":\"passed\"},{\"action\":\"click\",\"before\":{\"count\":0},\"errorCode\":\"no_match\",\"index\":2,\"locator\":{\"exact\":true,\"name\":\"Show sold out\",\"role\":\"button\"},\"stable\":true,\"status\":\"failed\"}],\"viewport\":{\"height\":667,\"width\":375}}"
+    },
+    {
+     "call": 26,
+     "row": 55,
+     "id": "aNBvEDxagtrE23jqXFnQjJ0ddvpto4Gx",
+     "tool": "pixel_ods_workspace_preview_inspect",
+     "transport": "tool_call",
+     "arguments": {
+      "siteId": "site-1f5f2cf8da3b36f920507469",
+      "sha256": "1f5f2cf8da3b36f920507469d941da24c00b8866f924e72b6cc7332812722018",
+      "viewport": {
+       "width": 375,
+       "height": 667
+      },
+      "steps": [
+       {
+        "action": "assert-visible",
+        "locator": {
+         "selector": "h1"
+        }
+       },
+       {
+        "action": "assert-visible",
+        "locator": {
+         "selector": ".show-sold-out-btn"
+        }
+       },
+       {
+        "action": "click",
+        "locator": {
+         "selector": ".show-sold-out-btn"
+        }
+       },
+       {
+        "action": "assert-visible",
+        "locator": {
+         "selector": ".sold-out-card"
+        }
+       }
+      ]
+     },
+     "details": {
+      "blockedRequests": [],
+      "diagnostics": {
+       "hiddenUntilFoundCount": 0,
+       "renderedHiddenAttributeCount": 0
+      },
+      "kind": "ods-pixel-preview-inspection",
+      "planSha256": "5114b40eb220574370a601860f40ff738b24a3e4dd5423e303a475ea03169d96",
+      "renderedColors": {
+       "colors": [
+        {
+         "hex": "#0f1423",
+         "name": "black",
+         "percent": 47
+        },
+        {
+         "hex": "#12192e",
+         "name": "blue",
+         "percent": 25
+        },
+        {
+         "hex": "#7759de",
+         "name": "blue",
+         "percent": 12
+        },
+        {
+         "hex": "#8156d6",
+         "name": "purple",
+         "percent": 6
+        },
+        {
+         "hex": "#19a3a7",
+         "name": "teal",
+         "percent": 4
+        },
+        {
+         "hex": "#8e7bd9",
+         "name": "blue",
+         "percent": 1
+        }
+       ],
+       "viewport": {
+        "height": 720,
+        "width": 1280
+       }
+      },
+      "schemaVersion": 1,
+      "scope": "Only the listed CSS layout visibility assertions and click dispatches were tested; not pixel paint, occlusion, clipping, a full accessibility audit, or overall functionality.",
+      "sha256": "1f5f2cf8da3b36f920507469d941da24c00b8866f924e72b6cc7332812722018",
+      "siteId": "site-1f5f2cf8da3b36f920507469",
+      "status": "failed",
+      "steps": [
+       {
+        "action": "assert-visible",
+        "before": {
+         "count": 1,
+         "display": "block",
+         "hidden": false,
+         "hiddenUntilFound": false,
+         "opacity": "1",
+         "rectCount": 1,
+         "visibility": "visible",
+         "visible": true
+        },
+        "index": 0,
+        "locator": {
+         "selector": "h1"
+        },
+        "stable": true,
+        "status": "passed"
+       },
+       {
+        "action": "assert-visible",
+        "before": {
+         "count": 1,
+         "display": "inline-block",
+         "hidden": false,
+         "hiddenUntilFound": false,
+         "opacity": "1",
+         "rectCount": 1,
+         "visibility": "visible",
+         "visible": true
+        },
+        "index": 1,
+        "locator": {
+         "selector": ".show-sold-out-btn"
+        },
+        "stable": true,
+        "status": "passed"
+       },
+       {
+        "action": "click",
+        "after": {
+         "count": 1,
+         "display": "inline-block",
+         "hidden": false,
+         "hiddenUntilFound": false,
+         "opacity": "1",
+         "rectCount": 1,
+         "visibility": "visible",
+         "visible": true
+        },
+        "before": {
+         "count": 1,
+         "display": "inline-block",
+         "hidden": false,
+         "hiddenUntilFound": false,
+         "opacity": "1",
+         "rectCount": 1,
+         "visibility": "visible",
+         "visible": true
+        },
+        "index": 2,
+        "locator": {
+         "selector": ".show-sold-out-btn"
+        },
+        "stable": true,
+        "status": "passed"
+       },
+       {
+        "action": "assert-visible",
+        "before": {
+         "count": 1,
+         "display": "none",
+         "hidden": false,
+         "hiddenUntilFound": false,
+         "opacity": "1",
+         "rectCount": 0,
+         "visibility": "visible",
+         "visible": false
+        },
+        "errorCode": "visibility_mismatch",
+        "index": 3,
+        "locator": {
+         "selector": ".sold-out-card"
+        },
+        "stable": true,
+        "status": "failed"
+       }
+      ],
+      "viewport": {
+       "height": 667,
+       "width": 375
+      },
+      "ok": false
+     },
+     "isError": true,
+     "text": "Preview inspection failed. Requested behavior remains unverified; a failed inspection does not establish a visibility transition. Only the listed CSS layout visibility assertions and click dispatches were tested; not pixel paint, occlusion, clipping, a full accessibility audit, or overall functionality. Rendered colors (by area, desktop 1280x720 as loaded): black 47%, blue #12192e 25%, blue #7759de 12%, purple #8156d6 6%, teal #19a3a7 4%, blue #8e7bd9 1%. Colors under 1% of the view and hover/focus-only styles are not listed. Evidence: {\"blockedRequests\":[],\"diagnostics\":{\"hiddenUntilFoundCount\":0,\"renderedHiddenAttributeCount\":0},\"kind\":\"ods-pixel-preview-inspection\",\"planSha256\":\"5114b40eb220574370a601860f40ff738b24a3e4dd5423e303a475ea03169d96\",\"schemaVersion\":1,\"scope\":\"Only the listed CSS layout visibility assertions and click dispatches were tested; not pixel paint, occlusion, clipping, a full accessibility audit, or overall functionality.\",\"sha256\":\"1f5f2cf8da3b36f920507469d941da24c00b8866f924e72b6cc7332812722018\",\"siteId\":\"site-1f5f2cf8da3b36f920507469\",\"status\":\"failed\",\"steps\":[{\"action\":\"assert-visible\",\"before\":{\"count\":1,\"display\":\"block\",\"hidden\":false,\"hiddenUntilFound\":false,\"opacity\":\"1\",\"rectCount\":1,\"visibility\":\"visible\",\"visible\":true},\"index\":0,\"locator\":{\"selector\":\"h1\"},\"stable\":true,\"status\":\"passed\"},{\"action\":\"assert-visible\",\"before\":{\"count\":1,\"display\":\"inline-block\",\"hidden\":false,\"hiddenUntilFound\":false,\"opacity\":\"1\",\"rectCount\":1,\"visibility\":\"visible\",\"visible\":true},\"index\":1,\"locator\":{\"selector\":\".show-sold-out-btn\"},\"stable\":true,\"status\":\"passed\"},{\"action\":\"click\",\"after\":{\"count\":1,\"display\":\"inline-block\",\"hidden\":false,\"hiddenUntilFound\":false,\"opacity\":\"1\",\"rectCount\":1,\"visibility\":\"visible\",\"visible\":true},\"before\":{\"count\":1,\"display\":\"inline-block\",\"hidden\":false,\"hiddenUntilFound\":false,\"opacity\":\"1\",\"rectCount\":1,\"visibility\":\"visible\",\"visible\":true},\"index\":2,\"locator\":{\"selector\":\".show-sold-out-btn\"},\"stable\":true,\"status\":\"passed\"},{\"action\":\"assert-visible\",\"before\":{\"count\":1,\"display\":\"none\",\"hidden\":false,\"hiddenUntilFound\":false,\"opacity\":\"1\",\"rectCount\":0,\"visibility\":\"visible\",\"visible\":false},\"errorCode\":\"visibility_mismatch\",\"index\":3,\"locator\":{\"selector\":\".sold-out-card\"},\"stable\":true,\"status\":\"failed\"}],\"viewport\":{\"height\":667,\"width\":375}}"
+    }
+   ]
+  }
+ ]
+}

@@ -40,12 +40,21 @@ const escapeRegExp = value => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const phraseIn = (text, phrase) => Boolean(phrase) &&
   new RegExp(`(?<![\\p{L}\\p{N}])${escapeRegExp(phrase)}(?![\\p{L}\\p{N}])`, 'u').test(text);
 
-export function requestedVisibilityTransition(ownerText, literals) {
+// The owner's show/hide clauses, outside code, block quotes and negated clauses.
+function showHideClauses(ownerText) {
   const prose = String(ownerText ?? '').slice(0, 12000)
     .replace(/```[\s\S]*?(?:```|$)|~~~[\s\S]*?(?:~~~|$)/g, '\n').replace(/^[ \t]*>[^\n]*/gm, '\n');
   const clauses = prose.split(/[!?;\n]+|\.(?=\s|$)/).map(clause => ({clause, bare: clause.replace(QUOTED, ' ')}))
     .filter(({bare}) => !/^\s*(?:please\s+)?(?:do\s+not|don['’]t|never|avoid|skip|explain|describe|example)\b/i.test(bare) &&
       SHOW_HIDE_CLAUSE.test(bare));
+  return {prose, clauses};
+}
+const CLICK_WORD = /\b(?:click(?:s|ed|ing)?|press(?:es|ed)?|tap(?:s|ped)?|buttons?|toggles?)\b/i;
+const clickConceals = ({bare}) => CLICK_WORD.test(bare) && CLICK_CONCEALS.test(bare) && !CLICK_REVEALS.test(bare);
+const clickReveals = ({bare}) => CLICK_WORD.test(bare) && CLICK_REVEALS.test(bare) && !CLICK_CONCEALS.test(bare);
+
+export function requestedVisibilityTransition(ownerText, literals) {
+  const {prose, clauses} = showHideClauses(ownerText);
   if (!clauses.length) return undefined;
   const text = Array.isArray(literals) ? literals.filter(literal => literal && literal.match !== 'file' &&
     typeof literal.text === 'string' && !literal.targets?.some(target => target === 'page title' || target === 'h1')) : [];
@@ -58,10 +67,21 @@ export function requestedVisibilityTransition(ownerText, literals) {
   const candidates = text.filter(literal => literal.text !== control?.name);
   const target = [...candidates.filter(literal => literal.match === 'item'), ...candidates.filter(literal => literal.match !== 'item')]
     .find(literal => clauses.some(({clause}) => phraseIn(foldedText(clause), foldedText(literal.text))))?.text;
-  const hidesOnClick = clauses.some(({bare}) => /\b(?:click(?:s|ed|ing)?|press(?:es|ed)?|tap(?:s|ped)?|buttons?|toggles?)\b/i.test(bare) &&
-    CLICK_CONCEALS.test(bare) && !CLICK_REVEALS.test(bare));
+  const hidesOnClick = clauses.some(clickConceals);
   const initiallyHidden = clauses.some(({bare}) => STARTS_HIDDEN.test(bare)) || !hidesOnClick;
   return Object.freeze({...(target ? {target} : {}), ...(control ? {control} : {}), initiallyHidden});
+}
+
+// requestedVisibilityTransition defaults to hidden first. This names the state
+// before the click only where the owner's own wording fixes it: 'hidden' for an
+// initially-hidden phrase or a click that only reveals, 'visible' for a click
+// that only hides. A toggle, both or neither leaves it undefined. It words
+// corrective inspection guidance only; it is never evidence or a gate.
+export function statedVisibilityDirection(ownerText) {
+  const {clauses} = showHideClauses(ownerText);
+  if (clauses.some(({bare}) => STARTS_HIDDEN.test(bare))) return 'hidden';
+  const reveals = clauses.some(clickReveals), conceals = clauses.some(clickConceals);
+  return reveals === conceals ? undefined : reveals ? 'hidden' : 'visible';
 }
 
 // A later turn that preserves the bound behavior keeps the earlier wording
@@ -149,5 +169,5 @@ export function pageErrorRepairInstruction(preview, pageErrors) {
 }
 
 export function visibilityInspectionInstruction(preview, pageErrors) {
-  return pageErrorRepairInstruction(preview, pageErrors) ?? `The published files are verified, but the requested show/hide interaction is not. Before replying, call ${PREVIEW_INSPECTION_TOOL} directly with siteId ${JSON.stringify(preview.siteId)}, sha256 ${JSON.stringify(preview.sha256)}, viewport {width,height}, and steps. Use its offered schema. If the tool is deferred, call tool_describe with its exact id, then tool_call with the returned id and args. Copy these exact publication identifiers; do not guess or shorten them. Choose the actual requested control and affected element from your source: assert the element's initial visibility, click the control using its exact supported accessible role/name when available, then assert the opposite visibility of that same element. Use a stable CSS selector for an element without a supported semantic locator. Do not substitute an unrelated passing interaction. If arguments are rejected, correct them from the schema and this receipt. If a browser check fails, repair the relevant files, republish, and inspect that new snapshot within the existing turn budget. If inspection is unavailable or unfinished, retain the preview and report the requested interaction as unverified. These checks cover only listed CSS layout visibility transitions, not overall correctness.`;
+  return pageErrorRepairInstruction(preview, pageErrors) ?? `The published files are verified, but the requested show/hide interaction is not. Before replying, call ${PREVIEW_INSPECTION_TOOL} directly with siteId ${JSON.stringify(preview.siteId)}, sha256 ${JSON.stringify(preview.sha256)}, viewport {width,height}, and steps. Use its offered schema. If you call tools through tool_call, give tool_call the id ${JSON.stringify(PREVIEW_INSPECTION_TOOL)} and these args; no other tool call is needed first. Copy these exact publication identifiers; do not guess or shorten them. Choose the actual requested control and affected element from your source: assert the element's initial visibility, click the control using its exact supported accessible role/name when available, then assert the opposite visibility of that same element. Use a stable CSS selector for an element without a supported semantic locator. Do not substitute an unrelated passing interaction. If arguments are rejected, correct them from the schema and this receipt. If a browser check fails, repair the relevant files, republish, and inspect that new snapshot within the existing turn budget. If inspection is unavailable or unfinished, retain the preview and report the requested interaction as unverified. These checks cover only listed CSS layout visibility transitions, not overall correctness.`;
 }

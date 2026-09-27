@@ -114,13 +114,80 @@ function headingLocator(outline, index) {
   const {name} = outline.elements[index];
   return name ? {role: 'heading', name, exact: true} : idLocator(outline, index);
 }
+// A CSS locator naming exactly element index: its unique published id, else
+// its tag and classes without state classes when those name only it.
+function cssLocator(outline, index, states) {
+  const id = idLocator(outline, index);
+  if (id) return id;
+  const {tag, classes} = outline.elements[index];
+  const kept = classes.filter(name => SAFE_ID.test(name) && !states.has(name));
+  if (!kept.length || !TAG.test(tag)) return undefined;
+  const selector = `${tag}${kept.map(name => `.${name}`).join('')}`;
+  return staticMatches(selector, outline)?.indices.length === 1 ? {selector} : undefined;
+}
+// The owner-named heading's nearest element (itself included) that a CSS
+// locator names, below any element that holds another heading or the control:
+// the requested item, or part of it. A CSS locator measures it hidden or
+// visible; a role/name heading asserted visible matches nothing while it
+// stays hidden. Without a located control only the heading itself is used, so
+// the target is never an always-visible wrapper around the control.
+function headingContainer(outline, heading, states, control) {
+  const others = outline.elements.flatMap((element, index) => element.heading && index !== heading ? [index] : []);
+  for (let at = heading, depth = 0; at >= 0 && depth < 1100; at = outline.elements[at].parent, depth += 1) {
+    if (['html', 'body', 'main'].includes(outline.elements[at].tag) || others.some(other => contains(outline, at, other)) ||
+        (at !== heading && (control === undefined || contains(outline, at, control)))) break;
+    const locator = cssLocator(outline, at, states);
+    if (locator) return locator;
+  }
+  return undefined;
+}
+// The outline index of the one element a control locator names, if any.
+function controlIndex(outline, locator) {
+  if (locator?.selector !== undefined) {
+    const matched = staticMatches(locator.selector, outline);
+    return matched?.exact && matched.indices.length === 1 ? matched.indices[0] : undefined;
+  }
+  const found = locator?.role === undefined ? [] : outline.elements.flatMap((element, index) =>
+    element.role === locator.role && element.name !== undefined && folded(element.name) === folded(locator.name) ? [index] : []);
+  return found.length === 1 ? found[0] : undefined;
+}
+// The published CSS locator of the one control with this role whose authored
+// name equals the locator's name ignoring case and spacing. The capsule matches
+// the rendered name, which CSS text-transform or a script can change.
+const folded = name => String(name).replace(/\s+/g, ' ').trim().toLowerCase();
+export function controlLocator(outline, locator) {
+  if (!outline || locator?.role === undefined) return undefined;
+  const index = controlIndex(outline, locator);
+  return index === undefined ? undefined : cssLocator(outline, index, new Set([...STATE_CLASS_WORDS, ...(outline.stateClasses ?? [])]));
+}
+
+// Steps sent after a repair name the element a one-compound class selector
+// names by its published id, else by its tag and its other classes: the repair
+// may change the very class the selector uses to hide it (laptop round 107
+// repaired its handler to remove .sold-out-card, then re-sent .sold-out-card).
+// Undefined when the locator is already an id or nothing else names only it.
+export function repairTarget(outline, locator) {
+  if (!outline || locator?.selector === undefined) return undefined;
+  const matched = staticMatches(locator.selector, outline);
+  if (!matched?.exact || matched.indices.length !== 1) return undefined;
+  const [index] = matched.indices, id = idLocator(outline, index);
+  if (id) return isDeepStrictEqual(id, locator) ? undefined : id;
+  const own = parseSelector(locator.selector).compounds.at(-1).flatMap(part => part.kind === 'class' ? [part.value] : []);
+  return cssLocator(outline, index, new Set([...STATE_CLASS_WORDS, ...(outline.stateClasses ?? []), ...own]));
+}
 
 // Returns {locator, basis, members} or undefined. basis: 'id' (the published
 // id of the model's element), 'model' (the model's state-free locator, unique
 // in the published page), 'unverified' (the model's state-free locator with
 // no usable outline), 'heading' (the owner-named heading from the published
-// page) or 'owner' (the owner's phrase as a heading name).
-export function chooseTransitionTarget(request, {control, outline, phrase} = {}) {
+// page) or 'owner' (the owner's phrase as a heading name). avoid is a locator
+// the capsule just matched to nothing, several elements or a syntax error; it
+// is never returned, so the next option (the element's published id, the
+// heading, the owner's phrase) is used instead. preferCss (failure guidance
+// only) puts the heading's item as a CSS locator ('container') before the
+// role/name heading.
+export function chooseTransitionTarget(request, {control, outline, phrase, avoid, preferCss = false} = {}) {
+  const usable = locator => locator !== undefined && (avoid === undefined || !isDeepStrictEqual(locator, avoid));
   const clickAt = request.steps.findIndex(step => step.action === 'click');
   const states = new Set([...STATE_CLASS_WORDS, ...(outline?.stateClasses ?? [])]);
   const groups = new Map();
@@ -140,8 +207,16 @@ export function chooseTransitionTarget(request, {control, outline, phrase} = {})
   const candidates = [...groups.values()].filter(group => group.stripped || group.after)
     .sort((left, right) => Number(right.stripped) - Number(left.stripped));
   const heading = outline?.headingIndex;
+  // The owner-named heading, else (when that locator is avoided) its published id.
+  const headingTarget = () => heading === undefined ? undefined
+    : [headingLocator(outline, heading), idLocator(outline, heading)].find(usable);
+  const containerTarget = () => preferCss && heading !== undefined
+    ? [headingContainer(outline, heading, states, controlIndex(outline, control))].find(usable) : undefined;
   for (const group of candidates) {
-    if (!outline) return {locator: group.base, basis: 'unverified', members: group.members};
+    if (!outline) {
+      if (usable(group.base)) return {locator: group.base, basis: 'unverified', members: group.members};
+      continue;
+    }
     let element, unique = false;
     if (group.base.selector !== undefined) {
       const matched = staticMatches(group.base.selector, outline);
@@ -152,18 +227,28 @@ export function chooseTransitionTarget(request, {control, outline, phrase} = {})
           const narrowed = member.selector !== undefined ? staticMatches(member.selector, outline) : undefined;
           if (narrowed?.indices.length === 1) { element = narrowed.indices[0]; break; }
         }
-      } else if (matched && heading === undefined) return {locator: group.base, basis: 'unverified', members: group.members};
+      } else if (matched && heading === undefined) {
+        if (usable(group.base)) return {locator: group.base, basis: 'unverified', members: group.members};
+        continue;
+      }
     } else {
       const named = outline.elements.flatMap((item, index) => item.heading && item.name === group.base.name ? [index] : []);
       if (named.length === 1) [element, unique] = [named[0], true];
     }
     if (element === undefined || (heading !== undefined && !contains(outline, element, heading))) continue;
     const id = idLocator(outline, element);
-    if (id) return {locator: id, basis: 'id', members: group.members};
-    if (unique) return {locator: group.base, basis: 'model', members: group.members};
-    if (heading !== undefined && headingLocator(outline, heading)) return {locator: headingLocator(outline, heading), basis: 'heading', members: group.members};
+    if (usable(id)) return {locator: id, basis: 'id', members: group.members};
+    if (unique && usable(group.base)) return {locator: group.base, basis: 'model', members: group.members};
+    const item = containerTarget();
+    if (item) return {locator: item, basis: 'container', members: group.members};
+    const named = headingTarget();
+    if (named) return {locator: named, basis: 'heading', members: group.members};
   }
-  if (heading !== undefined && headingLocator(outline, heading)) return {locator: headingLocator(outline, heading), basis: 'heading'};
-  if (phrase) return {locator: {role: 'heading', name: phrase, exact: true}, basis: 'owner'};
+  const item = containerTarget();
+  if (item) return {locator: item, basis: 'container'};
+  const named = headingTarget();
+  if (named) return {locator: named, basis: 'heading'};
+  const owner = phrase ? {role: 'heading', name: phrase, exact: true} : undefined;
+  if (usable(owner)) return {locator: owner, basis: 'owner'};
   return undefined;
 }

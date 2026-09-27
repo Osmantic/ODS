@@ -282,9 +282,14 @@ test('tower2 round 102: state-qualified locators are INCOMPLETE and get one stab
   const r = replay(t, TOWER2, TOWER2_PAGE, TOWER2_SESSION);
   const [create] = TOWER2.turns;
   await r.until(create, TOWER2_NO_MATCH);
-  // The first plan failed on the unrepaired page; failures are returned unchanged.
+  // The first plan failed on the unrepaired page. The recorded failure is kept
+  // byte for byte; the owner's show/hide requirement adds one ready call.
   const failed = await r.run(TOWER2_NO_MATCH);
-  assert.equal(failed.content[0].text, TOWER2_NO_MATCH.text, 'byte-identical to the recorded failure');
+  const failedText = failed.content[0].text;
+  const ready = failedText.indexOf(' Next step: call pixel_ods_workspace_preview_inspect (a tool in your list; call it by name)');
+  assert.equal(failedText.slice(0, ready) + failedText.slice(failedText.indexOf(` ${INSPECTION_SCOPE}`)), TOWER2_NO_MATCH.text,
+    'byte-identical to the recorded failure apart from the ready call');
+  assert.deepEqual(nextArgs(failedText).steps, transition(TOWER2_TARGET));
   assert.equal(failed.details.status, 'failed');
   for (const call of create.calls.slice(create.calls.indexOf(TOWER2_NO_MATCH) + 1, create.calls.indexOf(TOWER2_INSPECT))) await r.run(call);
   const {text, args} = assertIncomplete(await r.run(TOWER2_INSPECT), TOWER2_INSPECT, TOWER2_PUBLISH, TOWER2_TARGET);

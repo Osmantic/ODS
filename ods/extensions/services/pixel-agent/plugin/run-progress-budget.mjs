@@ -49,6 +49,15 @@ export function createRunProgressBudget() {
     stop() { terminal = true; },
     get exhaustedLanes() { return [...exhaustedLanes]; },
     laneExhausted(lane) { return exhaustedLanes.has(lane); },
+    // Read-only: whether one more failed call (in lane) would stop the response
+    // or that lane, or the next model round would, so no further call of it runs.
+    failureEnds(lane) {
+      if (terminal || rounds >= RUN_PROGRESS_LIMITS.roundsWithoutProgress ||
+          failures + 1 >= RUN_PROGRESS_LIMITS.totalFailures) return true;
+      return PROGRESS_LANES.has(lane)
+        ? exhaustedLanes.has(lane) || (laneFailures.get(lane) ?? 0) + 1 >= RUN_PROGRESS_LIMITS.consecutiveFailures
+        : consecutiveFailures + 1 >= RUN_PROGRESS_LIMITS.consecutiveFailures;
+    },
     beginModelRound() {
       if (++rounds > RUN_PROGRESS_LIMITS.roundsWithoutProgress) terminal = true;
       return terminal;

@@ -180,6 +180,153 @@ test('unmatched locators get one actionable locator fix, never a site change',as
   assert.equal(text.match(/retry/g).length,1);
  }
 });
+test('an attribute-equals class selector that matched nothing gets the whole-string explanation',async()=>{
+ const hint='An attribute selector [class="..."] matches only an element whose whole class attribute is exactly that string; for an element with classes a and b use .a.b, or an id.';
+ for(const [selector,expected] of [['[class="event-card.hidden"] h2',true],['[class = "event-card hidden"]',true],['.event-card.hidden',false],['[class~="hidden"]',false],['[class$="card"]',false]]) {
+  const p=params();p.steps[0].locator={selector};
+  const text=(await createWorkspacePreviewInspectTool({request:async r=>unmatched(r,0,'no_match',0)}).execute('class',p)).content[0].text;
+  assert.equal(text.includes(hint),expected,selector);
+  assert.equal(text.match(/retry/g).length,1);
+ }
+});
+
+// Laptop and mac round 107 read "before" as a pre-script snapshot and called a
+// broken click handler a timing issue. A step that matched one element and
+// measured the wrong state, could not be clicked, or never settled gets its
+// measurement and one repair step, never a ready call: the repair changes the
+// snapshot. isError and the capsule receipt as details are unchanged.
+const FACTS='The inspector loads the published page with its scripts running and dispatches a real click; in Evidence, before is the measurement taken at that step, not a pre-script snapshot.';
+function measuredFailure(request,index,errorCode,before) {
+ const value=receipt(request);value.status='failed';value.steps=value.steps.slice(0,index+1);
+ value.steps.slice(0,index).forEach(step=>{step.before=state(step.action!=='assert-hidden');});
+ Object.assign(value.steps[index],{before,status:'failed',errorCode},errorCode==='unstable'?{stable:false}:{});
+ if(errorCode==='click_failed') delete value.steps[index].after;
+ return value;
+}
+test('measured failures name the step, its measurement, the inspector facts and one repair',async()=>{
+ const run=async(p,value,options={})=>{
+  const result=await createWorkspacePreviewInspectTool({request:async()=>value,...options}).execute('measured',p);
+  assert.equal(result.isError,true);assert.deepEqual(result.details,value);
+  const text=result.content[0].text,summary=text.slice(0,text.indexOf(` ${INSPECTION_SCOPE}`));
+  assert.ok(summary.includes(` ${FACTS} Requested behavior remains unverified; a failed inspection does not establish a visibility transition. Next step: `),summary);
+  assert.doesNotMatch(summary,/\bpassed\b|\bverified\b|timing/);
+  assert.deepEqual(JSON.parse(text.slice(text.indexOf(' Evidence: ')+11)),value);
+  return summary;
+ };
+ const request=normalize(params());
+ // The steps for the new snapshot: the plan's own id locator on both sides of the click.
+ const repaired='republish, then inspect the new snapshot with these steps, using siteId and sha256 from its publication receipt: '+JSON.stringify(params().steps)+'.';
+ const afterClick=await run(params(),measuredFailure(request,2,'visibility_mismatch',state(false)));
+ assert.ok(afterClick.startsWith('Preview inspection failed. Step 3 (assert-visible) "#card" measured display "none", visibility "visible", opacity "1" and rectCount 0 '+
+  'after the click at step 2 (button "Mostrar próximos eventos"), so it is hidden where this step expects it visible.'),afterClick);
+ assert.ok(afterClick.endsWith('Next step: repair the source (for example, have the click handler change the same class or attribute that the CSS uses to hide it), '+repaired),afterClick);
+ const clickFailed=await run(params(),measuredFailure(request,1,'click_failed',state(true)));
+ assert.ok(clickFailed.startsWith('Preview inspection failed. Step 2 (click) button "Mostrar próximos eventos" measured display "block", visibility "visible", opacity "1" and rectCount 1 '+
+  'as the page loaded, before any click, and a real click on it could not be completed.'),clickFailed);
+ assert.ok(clickFailed.endsWith(`rendered, enabled and not covered when clicked, ${repaired}`),clickFailed);
+ const unstable=await run(params(),measuredFailure(request,2,'unstable',state(true)));
+ assert.match(unstable,/after the click at step 2 \(button "Mostrar próximos eventos"\), and its measurements kept changing and did not settle\./);
+});
+// Visible as the page loads where the plan asserts it hidden first: the
+// owner's order decides only where the owner's own wording stated it (guard
+// guidance); otherwise both orders stay open and the owner is not named.
+test('an element visible as the page loads gets a direction-aware next step',async()=>{
+ const atLoad=measuredFailure(normalize(params()),0,'visibility_mismatch',state(true));
+ const text=async options=>(await createWorkspacePreviewInspectTool({request:async()=>structuredClone(atLoad),...options}).execute('load',params())).content[0].text;
+ const lead='Preview inspection failed. Step 1 (assert-hidden) "#card" measured display "block", visibility "visible", opacity "1" and rectCount 1 '+
+  'as the page loaded, before any click, so it is visible where this step expects it hidden. The element is visible as the page loads';
+ const hiddenFirst='republish, then inspect the new snapshot with these steps, using siteId and sha256 from its publication receipt: '+JSON.stringify(params().steps)+'.';
+ const visibleFirst=JSON.stringify({...params(),steps:[{...params().steps[0],action:'assert-visible'},params().steps[1],{...params().steps[2],action:'assert-hidden'}]});
+ const requirement={initiallyHidden:true};
+ const plain=await text();
+ assert.ok(plain.startsWith(`${lead}. ${FACTS}`),plain);
+ assert.ok(plain.includes('Next step: if it should be hidden until the click, repair the source so it is hidden as the page loads (for example, a class or attribute '+
+  `in the published HTML that the CSS hides and the click handler changes), ${hiddenFirst} Otherwise the page may start visible: call pixel_ods_workspace_preview_inspect `+
+  `(a tool in your list; call it by name) with exactly these args: ${visibleFirst} `),plain);
+ assert.doesNotMatch(plain,/owner/);
+ // A requirement whose direction is only the hidden-first default: neutral, never "the owner asked".
+ const unstated=await text({transitionRequirement:()=>requirement});
+ assert.ok(unstated.startsWith(`${lead}; the owner's request does not say whether it starts hidden or visible. ${FACTS}`),unstated);
+ assert.match(unstated,/Next step: if the owner asked for it hidden until the click, repair the source/);
+ assert.doesNotMatch(unstated,/owner's request has it|asked for it hidden initially/);
+ // Stated hidden first: the page is wrong; one repair, no args.
+ const stated=await text({transitionRequirement:()=>requirement,guidance:()=>({direction:'hidden'})});
+ assert.ok(stated.startsWith(`${lead}, but the owner's request has it hidden until the click. ${FACTS}`),stated);
+ assert.ok(stated.includes(`Next step: repair the source so it is hidden as the page loads (for example, a class or attribute in the published HTML that the CSS hides and the click handler changes), ${hiddenFirst}`),stated);
+ assert.doesNotMatch(stated,/exactly these args|Otherwise/);
+ // Stated visible first (hide on click): the plan is reversed; the same snapshot, in the owner's order.
+ const reversed=await text({transitionRequirement:()=>({initiallyHidden:false}),guidance:()=>({direction:'visible'})});
+ assert.ok(reversed.startsWith(`${lead}, as the owner's request has it before the click, so these steps assert the reverse order; the site needs no change for this. ${FACTS}`),reversed);
+ assert.ok(reversed.includes(`Next step: call pixel_ods_workspace_preview_inspect (a tool in your list; call it by name) with exactly these args: ${visibleFirst} `),reversed);
+ assert.doesNotMatch(reversed,/repair the source/);
+});
+test('an element hidden as the page loads where the plan asserts it visible first may be the owner-requested state',async()=>{
+ const p=()=>({...params(),steps:[{...params().steps[0],action:'assert-visible'},params().steps[1],{...params().steps[2],action:'assert-hidden'}]});
+ const value=measuredFailure(normalize(p()),0,'visibility_mismatch',state(false));
+ const text=async options=>(await createWorkspacePreviewInspectTool({request:async()=>structuredClone(value),...options}).execute('hidden',p())).content[0].text;
+ const hiddenFirst=JSON.stringify(params());
+ // Stated hidden first (reveal on click): the page is right and the plan reversed.
+ const reversed=await text({transitionRequirement:()=>({initiallyHidden:true}),guidance:()=>({direction:'hidden'})});
+ assert.ok(reversed.includes('so it is hidden where this step expects it visible. The element is hidden as the page loads, as the owner\'s request has it before the click, '+
+  `so these steps assert the reverse order; the site needs no change for this. ${FACTS}`),reversed);
+ assert.ok(reversed.includes(`with exactly these args: ${hiddenFirst} `),reversed);
+ // Stated visible first: the page is wrong.
+ const stated=await text({transitionRequirement:()=>({initiallyHidden:false}),guidance:()=>({direction:'visible'})});
+ assert.match(stated,/The element is hidden as the page loads, but the owner's request has it visible until the click\./);
+ assert.match(stated,/Next step: repair the source so it is visible as the page loads/);
+ assert.doesNotMatch(stated,/exactly these args/);
+ // No stated direction: both orders.
+ const open=await text({transitionRequirement:()=>({initiallyHidden:true})});
+ assert.match(open,/Next step: if the owner asked for it visible until the click, repair the source so it is visible as the page loads .* Otherwise the page may start hidden: call/);
+ assert.ok(open.includes(`with exactly these args: ${hiddenFirst} `),open);
+});
+test('failures without a measured step keep the generic unverified text',async()=>{
+ const request=normalize(params());
+ const blocked={...receipt(request),status:'failed',blockedRequests:['navigation']};
+ const failure={schemaVersion:1,kind:INSPECTION_KIND,status:'failed',errorCode:'timeout',siteId:request.siteId,sha256:request.sha256,planSha256:inspectionPlanHash(request),scope:INSPECTION_SCOPE};
+ const unsettledClick=receipt(request);unsettledClick.status='failed';unsettledClick.steps=unsettledClick.steps.slice(0,2);
+ Object.assign(unsettledClick.steps[1],{stable:false,status:'failed'});
+ for(const value of [blocked,failure,unsettledClick]) {
+  const result=await createWorkspacePreviewInspectTool({request:async()=>value,transitionRequirement:()=>assert.fail('not consulted')}).execute('generic',params());
+  assert.equal(result.isError,true);assert.deepEqual(result.details,value);
+  assert.ok(result.content[0].text.startsWith(`Preview inspection failed. Requested behavior remains unverified; a failed inspection does not establish a visibility transition. ${INSPECTION_SCOPE}`),result.content[0].text);
+ }
+});
+// The run progress budget refuses every call after the one that exhausts it
+// (guard guidance finalFailure): no failing result then names another call.
+test('a failure that ends the response\'s tool use replaces every next step',async()=>{
+ const FINAL=' This failed call was the last one this response allows, so no further tool call can run: do not call any tool. '+
+  'Answer the owner now from the results already returned, and report the requested behavior as unverified.';
+ const request=normalize(params());
+ const final={guidance:()=>({finalFailure:true}),transitionRequirement:()=>({target:'Midnight sold-out concert',initiallyHidden:true})};
+ const withErrors={...measuredFailure(request,2,'visibility_mismatch',state(false)),pageErrors:{count:1,messages:['boom']}};
+ const cases=[
+  [params(),measuredFailure(request,2,'visibility_mismatch',state(false))],
+  [params(),measuredFailure(request,0,'visibility_mismatch',state(true))],
+  [params(),unmatched(request,0,'no_match',0)],
+  [params(),withErrors],
+  [params(),{...receipt(request),status:'failed',blockedRequests:['navigation']}],
+  [{...params(),steps:[{action:'assert-hidden',selector:'#card'}]},undefined],
+ ];
+ for(const [p,value] of cases) {
+  const result=await createWorkspacePreviewInspectTool({request:async()=>structuredClone(value),...final}).execute('final',p);
+  const text=result.content[0].text,summary=value?text.slice(0,text.indexOf(` ${INSPECTION_SCOPE}`)):text;
+  assert.equal(result.isError,true);
+  assert.ok(summary.endsWith(FINAL),summary);
+  assert.doesNotMatch(summary,/Next step|exactly these args|retry|republish/);
+ }
+ // An incomplete (passing, untested) plan is an error outcome too.
+ const untested={...params(),steps:[{action:'click',locator:params().steps[1].locator}]};
+ const incomplete=await createWorkspacePreviewInspectTool({request:async r=>receipt(r),...final}).execute('incomplete',untested);
+ assert.equal(incomplete.details.status,'incomplete');
+ assert.ok(incomplete.content[0].text.startsWith('Preview inspection INCOMPLETE - not verified.'));
+ const incompleteSummary=incomplete.content[0].text.slice(0,incomplete.content[0].text.indexOf(` ${INSPECTION_SCOPE}`));
+ assert.ok(incompleteSummary.endsWith(FINAL),incompleteSummary);
+ assert.doesNotMatch(incompleteSummary,/Next step|exactly these args/);
+ // A passing inspection is not a failure: the guidance is never consulted for it.
+ const passed=await createWorkspacePreviewInspectTool({request:async r=>receipt(r),guidance:()=>assert.fail('not consulted')}).execute('passed',params());
+ assert.equal(passed.details.status,'passed');
+});
 test('tool description states role/name matching for hidden assertions',()=>{
  const {description}=createWorkspacePreviewInspectTool({request:async()=>{}});
  assert.match(description,/Exact role\/name locators match rendered elements; assert-hidden also matches hidden ones, so one role\/name can be asserted hidden, clicked into view, then asserted visible\./);
