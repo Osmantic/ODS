@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 """Regression tests for service initialization vs missing component classification in ods-preflight.sh."""
-import glob
 import os
-from pathlib import Path
 import subprocess
 import tempfile
 import unittest
+from pathlib import Path
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 PREFLIGHT_SCRIPT = ROOT_DIR / "ods-preflight.sh"
@@ -54,6 +53,7 @@ exit 0
                 env=env,
                 capture_output=True,
                 text=True,
+                check=False,
             )
 
             stdout = proc.stdout
@@ -97,6 +97,7 @@ exit 0
                 env=env,
                 capture_output=True,
                 text=True,
+                check=False,
             )
 
             stdout = proc.stdout
