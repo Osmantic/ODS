@@ -135,7 +135,7 @@
           "type": "integer",
           "minimum": 1,
           "maximum": 600,
-          "description": "Seconds the host agent polls for the container to reach the running state before declaring install failed (default: 15). Increase for extensions with heavy initialization (e.g. JVM, postgres, clickhouse)."
+          "description": "Seconds the host agent polls for the container to reach the running state before declaring install failed (default: 15). Increase for extensions with heavy initialization (e.g. JVM, postgres, clickhouse). A value above 300 also keeps a freshly started extension shown as installing, rather than stopped, for that long until it is healthy (first starts that install their runtime)."
         },
         "gpu_backends": {
           "type": "array",

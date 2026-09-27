@@ -3213,6 +3213,42 @@ class TestExtensionLifecycleStatus:
         status = _compute_extension_status(ext, services_by_id)
         assert status == "unhealthy"
 
+    @pytest.mark.parametrize("age, startup_timeout, expected", [
+        (295, None, "installing"),
+        (305, None, "stopped"),
+        (305, 240, "stopped"),     # shorter values never shrink the 300 s window
+        (305, 600, "installing"),  # AMD GAIA installs its backend on first start
+        (595, 600, "installing"),
+        (605, 600, "stopped"),
+    ])
+    def test_started_window_honors_manifest_startup_timeout(
+            self, monkeypatch, tmp_path, age, startup_timeout, expected):
+        """A freshly started extension that is not healthy yet stays
+        "installing" for max(300 s, manifest startup_timeout), not "stopped"."""
+        from datetime import datetime, timedelta, timezone
+
+        from routers.extensions import _compute_extension_status
+
+        user_dir = tmp_path / "user"
+        (user_dir / "my-ext").mkdir(parents=True)
+        (user_dir / "my-ext" / "compose.yaml").write_text(_SAFE_COMPOSE)
+        monkeypatch.setattr("routers.extensions.DATA_DIR", str(tmp_path))
+        monkeypatch.setattr("routers.extensions.USER_EXTENSIONS_DIR", user_dir)
+        monkeypatch.setattr("routers.extensions.GPU_BACKEND", "nvidia")
+        monkeypatch.setattr("routers.extensions.SERVICES", {})
+        (tmp_path / "extension-progress").mkdir()
+        updated = (datetime.now(timezone.utc) - timedelta(seconds=age)).isoformat()
+        (tmp_path / "extension-progress" / "my-ext.json").write_text(json.dumps({
+            "service_id": "my-ext", "status": "started", "phase_label": "Service started",
+            "error": None, "started_at": updated, "updated_at": updated,
+        }))
+
+        ext = _make_catalog_ext("my-ext")
+        if startup_timeout is not None:
+            ext["startup_timeout"] = startup_timeout
+        services_by_id = {"my-ext": _make_service_status("my-ext", "down")}
+        assert _compute_extension_status(ext, services_by_id) == expected
+
 
 # --- Symlink handling ---
 

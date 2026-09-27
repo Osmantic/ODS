@@ -17,7 +17,8 @@ RUN npm install -g "@amd-gaia/agent-ui@${GAIA_AGENT_UI_VERSION}" \
     && npm cache clean --force
 
 COPY docker-entrypoint.sh /usr/local/bin/ods-gaia-entrypoint
-RUN chmod 0755 /usr/local/bin/ods-gaia-entrypoint
+COPY ods-gaia-forward.cjs /usr/local/bin/ods-gaia-forward
+RUN chmod 0755 /usr/local/bin/ods-gaia-entrypoint /usr/local/bin/ods-gaia-forward
 
 USER gaia
 WORKDIR /home/gaia

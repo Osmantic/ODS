@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-25T17:56:01Z",
+  "generated_at": "2026-09-26T08:34:36Z",
   "schema_version": "1.0.0",
   "extensions": [
     {
@@ -2912,7 +2912,7 @@
           ]
         }
       ],
-      "startup_timeout": 300,
+      "startup_timeout": 600,
       "configuration_scope": "declared-environment-keys"
     },
     {

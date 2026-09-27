@@ -133,6 +133,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   and put `<think>` blocks in replies.
 
 ### Fixed
+- The AMD GAIA extension is reachable. AMD's full-mode backend listens on
+  `127.0.0.1` only, so the dashboard's health check and the published port
+  (`localhost:7822`) were refused: an install showed "installing" for five
+  minutes, then "stopped", while Docker reported the container healthy. The
+  backend now runs on a container-internal loopback port behind a small TCP
+  forwarder on port 4200. If `gaia-ui`, its backend or the forwarder stops, the
+  container exits and Docker restarts it. Serve-only mode is unchanged. GAIA's
+  API has no login: containers on the ODS network can now reach it, and in LAN
+  mode (`BIND_ADDRESS=0.0.0.0`) so can the LAN, as with other ODS services
+  without a login. The container refuses to start when an `ngrok` binary is
+  present, which keeps GAIA's mobile-access tunnel unavailable.
+- The dashboard keeps a newly started extension "installing", rather than
+  "stopped", for its manifest's `startup_timeout` when that exceeds five
+  minutes. AMD GAIA declares 10 minutes because its first start installs its
+  Python backend (about 400 MB to download).
 - Gemma 4 26B-A4B (`gemma4-26b-a4b-q4`) and Gemma 4 31B (`gemma4-31b-q4`)
   download again. ggml-org deleted both Q4_K_M files from its repos on
   2026-07-16, so the catalog and the Gemma-profile tier maps (`NV_ULTRA`,

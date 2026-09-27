@@ -14,7 +14,7 @@ service:
   health: /
   ui_path: /
   health_timeout: 30
-  startup_timeout: 300
+  startup_timeout: 600
   type: docker
   gpu_backends: [all]
   compose_file: compose.yaml

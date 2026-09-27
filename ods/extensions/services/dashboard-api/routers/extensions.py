@@ -373,6 +373,20 @@ def _is_one_shot_extension(ext: dict) -> bool:
     return ext.get("port") == 0 and ext.get("startup_check", False) is False
 
 
+_STARTUP_WINDOW_SECONDS = 300
+
+
+def _startup_window_seconds(ext: dict) -> int:
+    """Seconds a freshly started extension stays "installing" until healthy.
+
+    A manifest's longer startup_timeout (schema maximum 600) covers services
+    whose first start installs their runtime, such as AMD GAIA's backend.
+    """
+    timeout = ext.get("startup_timeout")
+    if type(timeout) is int and timeout > _STARTUP_WINDOW_SECONDS:
+        return timeout
+    return _STARTUP_WINDOW_SECONDS
+
 
 def _compute_extension_status(ext: dict, services_by_id: dict) -> str:
     """Compute the runtime status of an extension."""
@@ -403,7 +417,8 @@ def _compute_extension_status(ext: dict, services_by_id: dict) -> str:
             # recent (<5 min), the healthcheck may still be running â€”
             # show "installing". If older, the user likely stopped the
             # container afterwards â€” fall through to normal status logic.
-            if not _is_stale(progress.get("updated_at", ""), max_age_seconds=300):
+            if not _is_stale(progress.get("updated_at", ""),
+                             max_age_seconds=_startup_window_seconds(ext)):
                 # Long-running services still need an observed healthy state.
                 svc = services_by_id.get(ext_id)
                 if not (svc and svc.status == "healthy"):

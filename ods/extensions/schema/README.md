@@ -61,7 +61,7 @@ Identifies the service and how the registry and compose resolver use it.
 | `host_network`        | boolean | no       | Whether the service uses the host network namespace and may omit an HTTP health path. |
 | `type`                | string  | yes      | `docker` or `host-systemd`. |
 | `startup_check`       | boolean | no       | When `false`, the host agent skips the post-install running-state poll and treats `docker compose up`'s clean exit as success. Set this on one-shot CLI / setup-only extensions whose containers intentionally exit after init (e.g. `aider`). Default: `true`. |
-| `startup_timeout`     | integer | no       | Seconds the host agent polls for the container to reach the `running` state before declaring install failed. Override the 15-second default for extensions with heavy initialization (postgres, clickhouse, JVM-based services). |
+| `startup_timeout`     | integer | no       | Seconds the host agent polls for the container to reach the `running` state before declaring install failed. Override the 15-second default for extensions with heavy initialization (postgres, clickhouse, JVM-based services). A value above 300 also keeps a freshly started extension shown as `installing`, rather than `stopped`, for that long until its health check passes (first starts that install their runtime). |
 | `gpu_backends`         | array   | no       | `amd`, `nvidia`, `apple`, `cpu`, `none`, or `all`. Used for compose overlay selection. |
 | `compose_file`        | string  | no       | Relative path to compose fragment (e.g. `compose.yaml`). |
 | `category`            | string  | yes      | `core`, `recommended`, or `optional`. Affects default enable/disable. |
