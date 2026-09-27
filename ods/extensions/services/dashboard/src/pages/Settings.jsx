@@ -125,7 +125,7 @@ const matchesEnvSearch = (key, field, query) => {
 }
 
 const routeSeverityOrder = { down: 0, unhealthy: 1, degraded: 2, unknown: 3, healthy: 4 }
-const sortRoutesBySeverity = (items) => [...(items || [])].sort((a, b) => (routeSeverityOrder[a.status] ?? 9) - (routeSeverityOrder[b.status] ?? 9))
+export const sortRoutesBySeverity = (items) => [...(items || [])].sort((a, b) => (routeSeverityOrder[a.status] ?? 9) - (routeSeverityOrder[b.status] ?? 9))
 const routeFilterDotClass = {
   online: 'bg-emerald-400',
   degraded: 'bg-theme-text-secondary',
