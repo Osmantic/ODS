@@ -4741,6 +4741,294 @@ def test_model_gpu_plan_explicitly_skips_wsl_auto_replan(tmp_path, monkeypatch, 
     ) is None
 
 
+# tower2: 2x RTX PRO 6000 (95.6 GB each), llama-server on both GPUs with the
+# installer's layer split, auxiliary services on GPU 1 (live topology and
+# assignment captured 2026-09-25).
+_TOWER2_GPU0 = "GPU-ff71102f-22f8-52bb-da93-2076a6531329"
+_TOWER2_GPU1 = "GPU-fe3fb4d0-5ddc-9c05-587b-1bc84c75c1a0"
+_TOWER2_GPU_MIB = int(95.6 * 1024)
+
+
+def _tower2_gpu_contract(aux_gpu=_TOWER2_GPU1):
+    topology = {
+        "vendor": "nvidia",
+        "gpu_count": 2,
+        "driver_version": "595.58.03",
+        "mig_enabled": False,
+        "numa": {"nodes": 1},
+        "gpus": [
+            {
+                "index": 0,
+                "name": "NVIDIA RTX PRO 6000 Blackwell Workstation Edition",
+                "memory_gb": 95.6,
+                "memory_free_gb": 94.6,
+                "uuid": _TOWER2_GPU0,
+            },
+            {
+                "index": 1,
+                "name": "NVIDIA RTX PRO 6000 Blackwell Workstation Edition",
+                "memory_gb": 95.6,
+                "memory_free_gb": 95,
+                "uuid": _TOWER2_GPU1,
+            },
+        ],
+        "links": [
+            {"gpu_a": 0, "gpu_b": 1, "link_type": "NODE", "link_label": "SameNUMA-NoBridge", "rank": 20},
+        ],
+    }
+    aux_index = 0 if aux_gpu == _TOWER2_GPU0 else 1
+    assignment = {
+        "gpu_assignment": {
+            "version": "1.0",
+            "strategy": "colocated",
+            "services": {
+                "whisper": {"gpus": [aux_gpu], "gpu_indices": [aux_index]},
+                "comfyui": {"gpus": [aux_gpu], "gpu_indices": [aux_index]},
+                "embeddings": {"gpus": [aux_gpu], "gpu_indices": [aux_index]},
+                "llama_server": {
+                    "gpus": [_TOWER2_GPU0, _TOWER2_GPU1],
+                    "gpu_indices": [0, 1],
+                    "parallelism": {
+                        "mode": "pipeline",
+                        "tensor_parallel_size": 1,
+                        "pipeline_parallel_size": 2,
+                        "gpu_memory_utilization": 0.95,
+                    },
+                },
+            },
+        }
+    }
+    return topology, assignment
+
+
+def _install_tower2_gpu_contract(install_dir, env_path, *, aux_gpu=_TOWER2_GPU1,
+                                 split_mode="layer", main_gpu=None):
+    config_dir = install_dir / "config"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    topology, assignment = _tower2_gpu_contract(aux_gpu)
+    (config_dir / "gpu-topology.json").write_text(json.dumps(topology), encoding="utf-8")
+    encoded = base64.b64encode(
+        json.dumps(assignment, separators=(",", ":")).encode("utf-8")
+    ).decode("ascii")
+    with env_path.open("a", encoding="utf-8") as handle:
+        handle.write(
+            "GPU_COUNT=2\n"
+            f"GPU_ASSIGNMENT_JSON_B64={encoded}\n"
+            f"LLAMA_SERVER_GPU_UUIDS={_TOWER2_GPU0},{_TOWER2_GPU1}\n"
+            f"LLAMA_ARG_SPLIT_MODE={split_mode}\n"
+            "LLAMA_ARG_TENSOR_SPLIT=1,1\n"
+        )
+        if main_gpu is not None:
+            handle.write(f"LLAMA_ARG_MAIN_GPU={main_gpu}\n")
+    return encoded
+
+
+def _write_tower2_placement_fixture(tmp_path, monkeypatch, **contract):
+    _native_nvidia_host(monkeypatch)
+    install_dir = tmp_path / "install"
+    models_dir = install_dir / "data" / "models"
+    models_dir.mkdir(parents=True)
+    env_path = install_dir / ".env"
+    env_path.write_text("GPU_BACKEND=nvidia\n", encoding="utf-8")
+    _install_tower2_gpu_contract(install_dir, env_path, **contract)
+    target = models_dir / "target.gguf"
+    target.write_bytes(b"model")
+    monkeypatch.setattr(_mod, "INSTALL_DIR", install_dir)
+    return install_dir, target, _mod.load_env(env_path)
+
+
+def _shipped_catalog_model(model_id):
+    catalog = json.loads(
+        (_agent_path.parents[1] / "config" / "model-library.json").read_text(encoding="utf-8")
+    )
+    return next(model for model in catalog["models"] if model["id"] == model_id)
+
+
+@pytest.mark.parametrize("model_id", ["gemma4-e2b-q4", "gemma4-e4b-q4", "gemma4-26b-a4b-q4"])
+def test_small_model_runs_on_one_gpu_of_a_multi_gpu_assignment(tmp_path, monkeypatch, model_id):
+    # b9014 aborts Gemma 4 E2B on tower2's layer split with
+    # GGML_ASSERT(n_inputs < GGML_SCHED_MAX_SPLIT_INPUTS); on one GPU it
+    # serves (reproduced 2026-09-25 with the pinned image).
+    _install_dir, target, env = _write_tower2_placement_fixture(tmp_path, monkeypatch)
+    model = _shipped_catalog_model(model_id)
+
+    placement = _mod._plan_nvidia_llama_placement(
+        env,
+        model,
+        target,
+        context_length=model["context_length"],
+    )
+
+    assert placement["mode"] == "single"
+    # GPU 1 hosts Whisper, ComfyUI and embeddings; the model gets GPU 0.
+    assert placement["gpu"] == _TOWER2_GPU0
+    assert placement["main_gpu"] == 0
+    assert placement["gpu_mb"] == _TOWER2_GPU_MIB
+    assert placement["required_mb"] <= _TOWER2_GPU_MIB // 2
+    assert placement["env_updates"] == {
+        "LLAMA_ARG_SPLIT_MODE": "none",
+        "LLAMA_ARG_MAIN_GPU": "0",
+    }
+    assert placement["env_removals"] == []
+
+
+@pytest.mark.parametrize("context_length", [131072, 65536, 32768, 8192])
+def test_qwen3_coder_next_keeps_the_tower2_layer_split(tmp_path, monkeypatch, context_length):
+    _install_dir, target, env = _write_tower2_placement_fixture(tmp_path, monkeypatch)
+    model = _shipped_catalog_model("qwen3-coder-next-q4")
+
+    placement = _mod._plan_nvidia_llama_placement(
+        env,
+        model,
+        target,
+        context_length=context_length,
+    )
+
+    assert placement["mode"] == "split"
+    assert placement["required_mb"] > _TOWER2_GPU_MIB // 2
+    # The persisted layer split and its 1,1 weights stay exactly as they are.
+    assert placement["env_updates"] == {}
+    assert placement["env_removals"] == ["LLAMA_ARG_MAIN_GPU"]
+    assert _mod._plan_nvidia_model_gpu_assignment(
+        env, model, target, context_length=context_length
+    ) is None
+
+
+def test_large_model_restores_the_layer_split_after_a_one_gpu_placement(tmp_path, monkeypatch):
+    _install_dir, target, env = _write_tower2_placement_fixture(
+        tmp_path, monkeypatch, split_mode="none", main_gpu=0
+    )
+
+    placement = _mod._plan_nvidia_llama_placement(
+        env,
+        _shipped_catalog_model("qwen3-coder-next-q4"),
+        target,
+        context_length=131072,
+    )
+
+    assert placement["mode"] == "split"
+    assert placement["env_updates"] == {"LLAMA_ARG_SPLIT_MODE": "layer"}
+    assert placement["env_removals"] == ["LLAMA_ARG_MAIN_GPU"]
+
+
+def test_one_gpu_placement_is_idempotent(tmp_path, monkeypatch):
+    _install_dir, target, env = _write_tower2_placement_fixture(tmp_path, monkeypatch)
+    model = _shipped_catalog_model("gemma4-e2b-q4")
+    first = _mod._plan_nvidia_llama_placement(env, model, target, context_length=65536)
+    env.update(first["env_updates"])
+
+    second = _mod._plan_nvidia_llama_placement(env, model, target, context_length=65536)
+
+    assert second["env_updates"] == first["env_updates"]
+
+
+def test_one_gpu_placement_avoids_the_gpu_with_auxiliary_services(tmp_path, monkeypatch):
+    _install_dir, target, env = _write_tower2_placement_fixture(
+        tmp_path, monkeypatch, aux_gpu=_TOWER2_GPU0
+    )
+
+    placement = _mod._plan_nvidia_llama_placement(
+        env,
+        _shipped_catalog_model("gemma4-e2b-q4"),
+        target,
+        context_length=65536,
+    )
+
+    assert placement["gpu"] == _TOWER2_GPU1
+    assert placement["main_gpu"] == 1
+    assert placement["env_updates"]["LLAMA_ARG_MAIN_GPU"] == "1"
+
+
+def test_one_gpu_placement_reads_a_legacy_uuid_only_assignment(tmp_path, monkeypatch):
+    _install_dir, target, env = _write_tower2_placement_fixture(tmp_path, monkeypatch)
+    env.pop("GPU_ASSIGNMENT_JSON_B64")
+
+    placement = _mod._plan_nvidia_llama_placement(
+        env,
+        _shipped_catalog_model("gemma4-e2b-q4"),
+        target,
+        context_length=65536,
+    )
+
+    assert placement["mode"] == "single"
+    assert placement["main_gpu"] == 0
+
+
+@pytest.mark.parametrize(
+    ("model", "expected_mode"),
+    [
+        ({"vram_required_gb": 3, "size_mb": 2000}, "single"),
+        ({"vram_required_gb": 5, "size_mb": 3500}, "split"),
+    ],
+)
+def test_one_gpu_placement_must_fit_the_smallest_assigned_gpu(
+    tmp_path, monkeypatch, model, expected_mode,
+):
+    # davep: llama-server on an 11 GB and an 8 GB card. Half of the 8 GB card
+    # is the limit, and the larger card is chosen.
+    _install_dir, target, env = _write_nvidia_gpu_plan_fixture(tmp_path, monkeypatch)
+    env["LLAMA_ARG_SPLIT_MODE"] = "layer"
+
+    placement = _mod._plan_nvidia_llama_placement(env, model, target)
+
+    assert placement["mode"] == expected_mode
+    if expected_mode == "single":
+        assert placement["gpu"] == "GPU-ti-0"
+        assert placement["main_gpu"] == 0
+    else:
+        assert placement["env_updates"] == {}
+
+
+def test_expanded_assignment_is_always_a_layer_split(tmp_path, monkeypatch):
+    _install_dir, target, env = _write_nvidia_gpu_plan_fixture(tmp_path, monkeypatch)
+    model = {"vram_required_gb": 24, "size_mb": 21110}
+    plan = _mod._plan_nvidia_model_gpu_assignment(env, model, target)
+
+    placement = _mod._plan_nvidia_llama_placement(
+        env, model, target, gpu_assignment_plan=plan
+    )
+
+    assert plan["env_updates"]["LLAMA_ARG_SPLIT_MODE"] == "layer"
+    assert placement == {
+        "mode": "split",
+        "required_mb": plan["required_mb"],
+        "env_updates": {},
+        "env_removals": ["LLAMA_ARG_MAIN_GPU"],
+    }
+
+
+@pytest.mark.parametrize("case", ["amd", "one-gpu", "one-llama-gpu", "wsl", "mig", "no-topology"])
+def test_one_gpu_placement_leaves_other_runtimes_unchanged(tmp_path, monkeypatch, case):
+    install_dir, target, env = _write_tower2_placement_fixture(tmp_path, monkeypatch)
+    topology_path = install_dir / "config" / "gpu-topology.json"
+    if case == "amd":
+        env["GPU_BACKEND"] = "amd"
+    elif case == "one-gpu":
+        env["GPU_COUNT"] = "1"
+    elif case == "one-llama-gpu":
+        _topology, assignment = _tower2_gpu_contract()
+        llama = assignment["gpu_assignment"]["services"]["llama_server"]
+        llama["gpus"], llama["gpu_indices"] = [_TOWER2_GPU0], [0]
+        env["GPU_ASSIGNMENT_JSON_B64"] = base64.b64encode(
+            json.dumps(assignment).encode("utf-8")
+        ).decode("ascii")
+    elif case == "wsl":
+        monkeypatch.setenv("WSL_DISTRO_NAME", "Ubuntu")
+    elif case == "mig":
+        topology = json.loads(topology_path.read_text(encoding="utf-8"))
+        topology["mig_enabled"] = True
+        topology_path.write_text(json.dumps(topology), encoding="utf-8")
+    else:
+        topology_path.unlink()
+
+    assert _mod._plan_nvidia_llama_placement(
+        env,
+        _shipped_catalog_model("gemma4-e2b-q4"),
+        target,
+        context_length=65536,
+    ) is None
+
+
 def test_managed_pixel_reconcile_is_noop_when_this_install_does_not_own_pixel(
     monkeypatch,
 ):
@@ -5877,6 +6165,130 @@ class TestModelActivateRollback:
         assert restart_envs[1]["LLAMA_SERVER_GPU_UUIDS"] == "GPU-ti-0,GPU-1080"
         assert env_path.read_text(encoding="utf-8") == original_env
         assert _mod.load_env(env_path)["GPU_ASSIGNMENT_JSON_B64"] == original_assignment
+
+    def _activate_on_tower2(self, tmp_path, monkeypatch, *, size_mb, vram_required_gb,
+                            readiness=None, **contract):
+        _native_nvidia_host(monkeypatch)
+        install_dir, env_path, _env_text, _models_ini, _ini_text, _yaml, _yaml_text = (
+            _write_model_activation_fixture(tmp_path)
+        )
+        catalog_path = install_dir / "config" / "model-library.json"
+        catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
+        catalog["models"][0].update({
+            "size_mb": size_mb,
+            "vram_required_gb": vram_required_gb,
+        })
+        catalog_path.write_text(json.dumps(catalog), encoding="utf-8")
+        _install_tower2_gpu_contract(install_dir, env_path, **contract)
+        original_env = env_path.read_text(encoding="utf-8")
+        restart_envs = []
+
+        monkeypatch.setattr(_mod, "INSTALL_DIR", install_dir)
+        monkeypatch.delenv("ODS_HOST_INSTALL_DIR", raising=False)
+        monkeypatch.setattr(
+            _mod,
+            "_compose_restart_llama_server",
+            lambda env: restart_envs.append(dict(env)),
+        )
+        monkeypatch.setattr(
+            _mod, "_wait_for_model_readiness", readiness or _mock_verified_readiness
+        )
+        handler = _ResponseHandler()
+
+        _mod.AgentHandler._do_model_activate(handler, "target-model")
+
+        receipt_path = install_dir / "data" / "model-activation-receipt.json"
+        receipt = (
+            json.loads(receipt_path.read_text(encoding="utf-8"))
+            if receipt_path.exists()
+            else None
+        )
+        return handler, env_path, original_env, restart_envs, receipt
+
+    def test_small_model_activation_commits_one_gpu_placement(self, tmp_path, monkeypatch):
+        # gemma4-e2b-q4's catalog size on tower2's two-GPU layer split.
+        handler, env_path, _original, restart_envs, receipt = self._activate_on_tower2(
+            tmp_path, monkeypatch, size_mb=2963, vram_required_gb=5,
+        )
+
+        assert handler.response_code == 200
+        assert handler.parse_response()["gpu_assignment_changed"] is False
+        assert len(restart_envs) == 1
+        launched = restart_envs[0]
+        assert launched["LLAMA_ARG_SPLIT_MODE"] == "none"
+        assert launched["LLAMA_ARG_MAIN_GPU"] == "0"
+        # Both GPUs stay assigned (and visible) with the assignment's weights.
+        assert launched["LLAMA_SERVER_GPU_UUIDS"] == f"{_TOWER2_GPU0},{_TOWER2_GPU1}"
+        assert launched["LLAMA_ARG_TENSOR_SPLIT"] == "1,1"
+        persisted = _mod.load_env(env_path)
+        assert persisted["LLAMA_ARG_SPLIT_MODE"] == "none"
+        assert persisted["LLAMA_ARG_MAIN_GPU"] == "0"
+        assert persisted["LLAMA_ARG_TENSOR_SPLIT"] == "1,1"
+        assert receipt["gpuAssignment"] == {"changed": False}
+        placement = receipt["gpuPlacement"]
+        assert placement["requiredMiB"] <= _TOWER2_GPU_MIB // 2
+        assert placement == {
+            "mode": "single",
+            "requiredMiB": placement["requiredMiB"],
+            "gpu": _TOWER2_GPU0,
+            "mainGpu": 0,
+            "gpuMiB": _TOWER2_GPU_MIB,
+        }
+
+    def test_large_model_activation_restores_the_layer_split(self, tmp_path, monkeypatch):
+        # qwen3-coder-next-q4's catalog size after a small model ran on GPU 0.
+        handler, env_path, _original, restart_envs, receipt = self._activate_on_tower2(
+            tmp_path, monkeypatch, size_mb=48500, vram_required_gb=52,
+            split_mode="none", main_gpu=0,
+        )
+
+        assert handler.response_code == 200
+        launched = restart_envs[0]
+        assert launched["LLAMA_ARG_SPLIT_MODE"] == "layer"
+        assert launched["LLAMA_ARG_TENSOR_SPLIT"] == "1,1"
+        assert "LLAMA_ARG_MAIN_GPU" not in launched
+        persisted_text = env_path.read_text(encoding="utf-8")
+        assert "LLAMA_ARG_MAIN_GPU" not in persisted_text
+        assert "LLAMA_ARG_SPLIT_MODE=layer\n" in persisted_text
+        assert receipt["gpuPlacement"]["mode"] == "split"
+        assert receipt["gpuPlacement"]["requiredMiB"] > _TOWER2_GPU_MIB // 2
+        assert set(receipt["gpuPlacement"]) == {"mode", "requiredMiB"}
+
+    def test_large_model_activation_keeps_an_existing_layer_split_byte_for_byte(
+        self, tmp_path, monkeypatch,
+    ):
+        handler, env_path, original_env, restart_envs, _receipt = self._activate_on_tower2(
+            tmp_path, monkeypatch, size_mb=48500, vram_required_gb=52,
+        )
+
+        assert handler.response_code == 200
+        placement_lines = [
+            line
+            for line in env_path.read_text(encoding="utf-8").splitlines()
+            if line.startswith(("GPU_", "LLAMA_SERVER_GPU", "LLAMA_ARG_SPLIT", "LLAMA_ARG_TENSOR", "LLAMA_ARG_MAIN"))
+        ]
+        assert placement_lines == [
+            line
+            for line in original_env.splitlines()
+            if line.startswith(("GPU_", "LLAMA_SERVER_GPU", "LLAMA_ARG_SPLIT", "LLAMA_ARG_TENSOR", "LLAMA_ARG_MAIN"))
+        ]
+        assert restart_envs[0]["LLAMA_ARG_SPLIT_MODE"] == "layer"
+
+    def test_failed_one_gpu_activation_rolls_back_the_layer_split(self, tmp_path, monkeypatch):
+        def readiness(env, *_args, **kwargs):
+            if env.get("GGUF_FILE") == "new-model.gguf":
+                return None if (kwargs.get("return_identity") or kwargs.get("return_proof")) else False
+            return _mock_verified_readiness(*_args, **kwargs)
+
+        handler, env_path, original_env, restart_envs, _receipt = self._activate_on_tower2(
+            tmp_path, monkeypatch, size_mb=2963, vram_required_gb=5, readiness=readiness,
+        )
+
+        assert handler.response_code == 500
+        assert handler.parse_response()["rolled_back"] is True
+        assert [env["LLAMA_ARG_SPLIT_MODE"] for env in restart_envs] == ["none", "layer"]
+        assert "LLAMA_ARG_MAIN_GPU" not in restart_envs[1]
+        assert env_path.read_text(encoding="utf-8") == original_env
 
     def test_larger_model_replans_and_commits_amd_rocm_assignment(
         self,

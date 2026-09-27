@@ -7,6 +7,7 @@ on:
       - 'ods/tests/test_nvidia_mig_current.py'
       - 'ods/tests/test-nvidia-topo.sh'
       - 'ods/tests/test-gpu-reassign-manual.sh'
+      - 'ods/tests/test-gpu-validate-one-gpu-placement.sh'
       - '.github/workflows/test-nvidia-mig.yml'
   push:
     branches: [public-beta]
@@ -16,6 +17,7 @@ on:
       - 'ods/tests/test_nvidia_mig_current.py'
       - 'ods/tests/test-nvidia-topo.sh'
       - 'ods/tests/test-gpu-reassign-manual.sh'
+      - 'ods/tests/test-gpu-validate-one-gpu-placement.sh'
       - '.github/workflows/test-nvidia-mig.yml'
 permissions:
   contents: read
@@ -35,3 +37,4 @@ jobs:
       - run: python -m pytest -q ods/tests/test_nvidia_mig_current.py
       - run: bash ods/tests/test-nvidia-topo.sh
       - run: bash ods/tests/test-gpu-reassign-manual.sh
+      - run: bash ods/tests/test-gpu-validate-one-gpu-placement.sh

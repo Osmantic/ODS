@@ -133,6 +133,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   and put `<think>` blocks in replies.
 
 ### Fixed
+- On NVIDIA hosts that give llama-server two or more GPUs, a model that needs
+  at most half of one of them now runs on one GPU (`LLAMA_ARG_SPLIT_MODE=none`
+  with `LLAMA_ARG_MAIN_GPU`) instead of the layer split. Switching to Gemma 4
+  E2B on a two-GPU host failed: the pinned llama.cpp (b9014) aborts that model
+  on any multi-GPU split with `GGML_ASSERT(n_inputs <
+  GGML_SCHED_MAX_SPLIT_INPUTS)` (ggml-org/llama.cpp#24657, fixed upstream by
+  #22789 in b10247), and ODS rolled back. One GPU also avoids the per-token
+  cross-GPU hop (short Gemma 4 E2B samples on an RTX PRO 6000: 290-308
+  tok/s on one GPU, 225-250 tok/s split). Larger models keep the
+  assignment's split and weights; Qwen3-Coder-Next on 2x RTX PRO 6000 is
+  unchanged. The GPU assignment itself does not change, an installer rerun
+  keeps the placement, `ods gpu reassign` resets it, and `ods gpu validate`
+  reports it.
 - Gemma 4 26B-A4B (`gemma4-26b-a4b-q4`) and Gemma 4 31B (`gemma4-31b-q4`)
   download again. ggml-org deleted both Q4_K_M files from its repos on
   2026-07-16, so the catalog and the Gemma-profile tier maps (`NV_ULTRA`,

@@ -4,6 +4,11 @@ services:
       NVIDIA_VISIBLE_DEVICES: "${LLAMA_SERVER_GPU_UUIDS:?LLAMA_SERVER_GPU_UUIDS must be set for the NVIDIA multi-GPU overlay}"
       LLAMA_ARG_SPLIT_MODE: "${LLAMA_ARG_SPLIT_MODE:-none}"
       LLAMA_ARG_TENSOR_SPLIT: "${LLAMA_ARG_TENSOR_SPLIT:-}"
+      # With LLAMA_ARG_SPLIT_MODE=none, the one assigned GPU that holds the
+      # whole model (an index into LLAMA_SERVER_GPU_UUIDS in PCI bus order).
+      # Model activation sets both for a model that fits comfortably on one
+      # GPU; 0 is llama.cpp's own default and is unused by a layer split.
+      LLAMA_ARG_MAIN_GPU: "${LLAMA_ARG_MAIN_GPU:-0}"
     deploy:
       resources:
         reservations:

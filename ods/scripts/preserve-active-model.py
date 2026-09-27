@@ -39,6 +39,7 @@ RUNTIME_KEYS = (
     "LLAMA_ARG_SPEC_DRAFT_TYPE_V",
     "LLAMA_ARG_SPLIT_MODE",
     "LLAMA_ARG_TENSOR_SPLIT",
+    "LLAMA_ARG_MAIN_GPU",
 )
 
 # A completed switchboard proof records the exact model and context, but the v1
@@ -360,6 +361,8 @@ def valid_runtime_value(key: str, value: str) -> bool:
         return value in {"none", "layer", "row"}
     if key == "LLAMA_ARG_TENSOR_SPLIT":
         return value == "" or bool(re.fullmatch(r"[0-9]+(?:\.[0-9]+)?(?:,[0-9]+(?:\.[0-9]+)?)*", value))
+    if key == "LLAMA_ARG_MAIN_GPU":
+        return bool(re.fullmatch(r"0|[1-9][0-9]?", value))
     return False
 
 
