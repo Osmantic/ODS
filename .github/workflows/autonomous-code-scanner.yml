@@ -23,6 +23,9 @@ concurrency:
   group: autonomous-code-scanner
   cancel-in-progress: false
 
+permissions:
+  contents: read
+
 jobs:
   # Job 1: Pre-Flight Security Check (10 min)
   security-check:
