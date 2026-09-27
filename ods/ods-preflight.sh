@@ -243,7 +243,11 @@ for ENDPOINT in "${WHISPER_ENDPOINTS[@]}"; do
 done
 
 if [ "$WHISPER_FOUND" = false ]; then
-    warn "Whisper STT not found — voice input will be unavailable"
+    if docker ps --format '{{.Names}}' 2>/dev/null | grep -qi "ods-whisper"; then
+        warn "Whisper STT container running but not responding yet (service may still be initializing)"
+    else
+        warn "Whisper STT not found — voice input will be unavailable"
+    fi
 fi
 log ""
 
@@ -262,7 +266,11 @@ for ENDPOINT in "${TTS_ENDPOINTS[@]}"; do
 done
 
 if [ "$TTS_FOUND" = false ]; then
-    warn "TTS not found — voice output will be unavailable"
+    if docker ps --format '{{.Names}}' 2>/dev/null | grep -qi "ods-tts"; then
+        warn "TTS container running but not responding yet (model warmup may still be in progress)"
+    else
+        warn "TTS not found — voice output will be unavailable"
+    fi
 fi
 log ""
 
@@ -281,7 +289,11 @@ for ENDPOINT in "${EMBEDDING_ENDPOINTS[@]}"; do
 done
 
 if [ "$EMBEDDING_FOUND" = false ]; then
-    warn "Embeddings not found — RAG features will be unavailable"
+    if docker ps --format '{{.Names}}' 2>/dev/null | grep -qi "ods-embeddings"; then
+        warn "Embeddings container running but not responding yet (model may still be downloading)"
+    else
+        warn "Embeddings not found — RAG features will be unavailable"
+    fi
 fi
 log ""
 
@@ -300,7 +312,11 @@ for ENDPOINT in "${DASHBOARD_ENDPOINTS[@]}"; do
 done
 
 if [ "$DASHBOARD_FOUND" = false ]; then
-    warn "Dashboard not found at port ${DASHBOARD_PORT_RESOLVED}"
+    if docker ps --format '{{.Names}}' 2>/dev/null | grep -qi "ods-dashboard"; then
+        warn "Dashboard container running but not responding yet (service may still be initializing)"
+    else
+        warn "Dashboard not found at port ${DASHBOARD_PORT_RESOLVED}"
+    fi
 fi
 log ""
 
