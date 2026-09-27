@@ -14,7 +14,7 @@ const FLEET_FILE = 'fleet-qualification-468ad70ff1cb-calc/sum_squares.py';
 const FLEET_DIAGNOSIS = '[ODS Pixel Python syntax] Line 10 of fleet-qualification-468ad70ff1cb-calc/sum_squares.py contains literal \\n escape sequences ' +
   'outside string literals where real line breaks belong (the file content was escaped twice). ' +
   'Rewrite that file with real line breaks; keep escapes inside string literals unchanged.';
-const HOST_ROOT = '/Users/michaelbradley/ods-fleet-install-c05f/data/pixel-native/home/.openclaw/workspace-pixel';
+const HOST_ROOT = '/Users/owner/ods-install/data/pixel-native/home/.openclaw/workspace-pixel';
 
 const failed = (text, exitCode = 1) =>
   ({isError: true, content: [{type: 'text', text}], details: {status: 'completed', exitCode, durationMs: 169, aggregated: text}});

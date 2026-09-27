@@ -407,7 +407,7 @@ printf '%s\n' 'triage the authorized mailbox and write the private report' | \
 - Status evidence is size-checked and timestamped; an unreachable
   peer is reported as unknown, never as proof of absence.
 - The mesh profile is explicitly owner-trusted: unsandboxed host exec, real
-  filesystem, Docker, network, and SSH, per Michael's standing authorization.
+  filesystem, Docker, network, and SSH, per the owner's standing authorization.
 - `ask-readonly` and `message-readonly` mechanically narrow one fresh turn to
   the `read` tool through an owner-private ephemeral config. Before returning
   success, the peer independently reconciles the durable transcript and rejects

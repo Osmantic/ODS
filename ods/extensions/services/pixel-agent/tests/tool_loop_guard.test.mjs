@@ -6936,8 +6936,8 @@ test("renders a structurally validated broad host inventory without command argu
     ["os", "host.os-release", 'PRETTY_NAME="Ubuntu 24.04.4 LTS"\nNAME="Ubuntu"\n'],
     ["uptime", "host.uptime", "18:42:19 up 2 days,  3:17,  1 user,  load average: 0.25, 0.18, 0.11\n"],
     ["processes", "host.processes", [
-      "42 1 michael S 12.5 1.2 python3",
-      "77 1 michael S 1.0 8.4 openclaw",
+      "42 1 owner S 12.5 1.2 python3",
+      "77 1 owner S 1.0 8.4 openclaw",
       "88 1 root S 4.0 2.5 dockerd",
     ].join("\n") + "\n"],
     ["services", "host.services", "ssh.service loaded active running OpenBSD Secure Shell server\n"],

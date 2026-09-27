@@ -461,7 +461,7 @@ per deployment and never copied from the source Pixel instance.
 | `schemas/frontier-request-v2.schema.json` / `schemas/frontier-policy-v2.schema.json` | Adaptive local-attempt and broker routing/cost/cache contracts |
 | `schemas/frontier-integration-v1.schema.json` | Content-free receipt for exact-result-bound local critique and finalization |
 | `security-evals/` | Live prompt-injection and tool-trace regression harnesses |
-| `workspace-template/` | Sanitized identity, policy, memory, and helper skeleton |
+| `workspace-template/` | Generic identity, policy, memory, and helper files copied into new workspaces; no owner-specific content |
 | `tests/` | Static and clean-room plan/apply/verify acceptance tests |
 | `RELEASE-MANIFEST.json` | Only authored source for release, runtime, artifact, and image pins |
 | `OPENCLAW-COMPATIBILITY.json` / `.md` | Machine-readable qualification states and generated readable table |

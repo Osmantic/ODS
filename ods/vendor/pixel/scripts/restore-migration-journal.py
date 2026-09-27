@@ -268,7 +268,7 @@ QUIESCE_UNITS = {"openclaw-gateway.service", "pixel-source-broker.timer",
 
 # The privileged helper runs as the root euid via sudo. Installed Pixel unit files are
 # root-owned; user-state deployment items (active current symlink, config/workspace files)
-# are owned by the *invoking* non-root user (michael), never by root. ROOT_UID is the owner
+# are owned by the *invoking* non-root user, never by root. ROOT_UID is the owner
 # of installed unit files and UNIT_PARENT is the only directory unit deployment items may
 # name. The isolated test harness mechanically replaces ROOT_UID/ROOT_GID with the test
 # euid/egid and UNIT_PARENT with a temp directory in a clearly non-root test copy (no
