@@ -122,6 +122,12 @@
           "type": "boolean",
           "description": "When false, omit this service from dashboard external quicklinks while keeping it in health/status APIs."
         },
+        "docs_url": {
+          "type": "string",
+          "pattern": "^https://[A-Za-z0-9.-]+(:[0-9]{1,5})?(/[!-~]*)?$",
+          "maxLength": 512,
+          "description": "Owner-facing documentation for the application. The dashboard links to it from the extension's guide; when absent, the repository named in the recipe's upstream.json is used."
+        },
         "macos_host_supported": {
           "type": "boolean",
           "description": "True when a host-systemd service has an equivalent macOS LaunchAgent and should remain in the Apple service registry."

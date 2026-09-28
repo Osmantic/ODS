@@ -68,7 +68,7 @@ Environment variables (set in `.env`):
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
 | `GET` | `/api/service-tokens` | Yes | Service auth tokens (e.g. OpenClaw) |
-| `GET` | `/api/external-links` | Yes | Sidebar links from service manifests |
+| `GET` | `/api/external-links` | Yes | Applications links from service manifests, plus installed extensions with a web page (with health) |
 | `GET` | `/api/storage` | Yes | Storage breakdown (models, vector DB, total) |
 
 ### Workflows (n8n integration)
@@ -130,7 +130,7 @@ Environment variables (set in `.env`):
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
 | `GET` | `/api/extensions/catalog` | Yes | Browse extension catalog with status, filterable by `category` and `gpu_compatible` query params |
-| `GET` | `/api/extensions/{service_id}` | Yes | Detailed info for a single extension (manifest, features, env vars, setup instructions) |
+| `GET` | `/api/extensions/{service_id}` | Yes | Detailed info for a single extension (manifest, features, env vars, setup instructions), its recipe guide (`integration`) and how to use it (`guide`: page or API, published port, network address, docs link, declared settings by presence only) |
 | `POST` | `/api/extensions/{service_id}/install` | Yes | Install an extension from the extensions library into user-extensions |
 | `POST` | `/api/extensions/{service_id}/enable` | Yes | Enable a disabled extension (renames `compose.yaml.disabled` to `compose.yaml`, starts container via host agent) |
 | `POST` | `/api/extensions/{service_id}/disable` | Yes | Disable an enabled extension (stops container via host agent, renames `compose.yaml` to `compose.yaml.disabled`) |

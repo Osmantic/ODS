@@ -69,6 +69,9 @@ Identifies the service and how the registry and compose resolver use it.
 | `env_vars`            | array   | no       | List of `{ key, required?, secret?, description?, default? }` for documentation and validation. |
 | `llm`                 | object  | no       | Swap-safety contract declaring consumption, route, pinning, context floor, and probe metadata. |
 | `setup_hook`          | string  | no       | Relative path to a setup script run during installation. |
+| `ui_path`             | string  | no       | Path of the service's web page (default `/`). The dashboard's Open button, Applications entry and How to use guide open the published host port plus this path. |
+| `external_link`       | boolean | no       | `false` when the service has no page for a person (an API or background service). It is then left out of Applications and its guide says how other apps reach it. Default: `true`. |
+| `docs_url`            | string  | no       | https URL of the application's own documentation, linked from the How to use guide. When absent, the catalog uses the `repository` in the recipe's `upstream.json`. |
 
 The service registry (`lib/service-registry.sh`) builds `SERVICE_PORTS`, `SERVICE_HEALTH`, and related maps from these fields. The compose resolver includes only enabled services (compose file present) in the stack.
 
@@ -88,6 +91,7 @@ Used by the installer and dashboard to show feature toggles (e.g. "Voice", "Work
 | `requirements`     | object | `services`, `services_any`, `vram_gb`, `vram_mb`, `disk_gb`. |
 | `priority`         | integer| Sort order. |
 | `gpu_backends`     | array  | Same as service. |
+| `launch`           | object | `{type: service, service, path}` for a page to open, `internal` for a dashboard route, `none` for an API or background feature. `none` alone also marks the service as having no page. |
 
 Schema allows additional properties on feature objects for future use.
 

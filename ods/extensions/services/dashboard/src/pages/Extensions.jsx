@@ -2,6 +2,7 @@ import {
   Database, Cpu, Workflow, Plug, Image, MessageSquare, Code,
   FileText, Shield, Globe, Music, Video, Search, Puzzle,
   Box, Loader2, RefreshCw, RotateCcw, ChevronDown, ChevronUp, Package, Info, X, Download, Trash2, ExternalLink, Terminal, Copy, Check,
+  BookOpen,
 } from 'lucide-react'
 import { useState, useEffect, useRef } from 'react'
 import { DependencyBadges, DependencyConfirmDialog, DisableDependentWarning } from '../components/DependencyBadges'
@@ -11,6 +12,8 @@ import { serviceUrl } from '../lib/serviceUrls'
 import { createRecoveryTracker } from '../utils/recoveryTracker'
 import MetalMetricIcon from '../components/MetalMetricIcon'
 import FittedLibraryPage from '../components/FittedLibraryPage'
+import ExtensionGuide, { extensionKind } from '../components/ExtensionGuide'
+import { notifyApplicationsChanged, setPinned } from '../lib/applicationPins'
 import {
   ExtensionSettingsFields, installPlanSettings, installPlanWarnings, missingSettingsRefusal, saveExtensionSettings,
   savedSettingsWarning, settingProblem,
@@ -98,6 +101,27 @@ const STATUS_DESCRIPTIONS = {
   error:         'Installation or startup failed \u2014 click for details',
 }
 
+// What the owner can do right after an install or enable finishes: open the
+// page (and find it under Applications) or read how to use it.
+export function readyToast(ext) {
+  const name = ext.name || 'Extension'
+  if (ext.status === 'cli_installed') {
+    return { type: 'success', text: `${name} installed — run via \`docker compose run --rm ${ext.id}\`.`, actions: [{ label: 'How to use', ext }] }
+  }
+  const kind = extensionKind(ext, HEADLESS_EXTENSIONS.has(ext.id))
+  const url = kind === 'web' ? serviceUrl(ext) : null
+  if (url) {
+    return {
+      type: 'success', text: `${name} is installed and running. Open it here or from Applications in the sidebar.`,
+      actions: [{ label: 'Open', href: url }, { label: 'How to use', ext }],
+    }
+  }
+  return {
+    type: 'success', text: `${name} is installed and running. It has no page to open; How to use shows how other apps reach it.`,
+    actions: [{ label: 'How to use', ext }],
+  }
+}
+
 export default function Extensions({ compact = false }) {
   const [catalog, setCatalog] = useState(null)
   const [loading, setLoading] = useState(true)
@@ -111,6 +135,7 @@ export default function Extensions({ compact = false }) {
   const [confirm, setConfirm] = useState(null)
   const [toast, setToast] = useState(null)
   const [consoleExt, setConsoleExt] = useState(null)
+  const [guideExt, setGuideExt] = useState(null)
   const [refreshing, setRefreshing] = useState(false)
   const [progressMap, setProgressMap] = useState({})
   const [depConfirm, setDepConfirm] = useState(null)
@@ -124,12 +149,17 @@ export default function Extensions({ compact = false }) {
   const [pollingLost, setPollingLost] = useState(false)
   const installProgressRef = useRef(null)
   const activePollers = useRef({})
+  // The request (install or enable) that started each poller, when known.
+  const pollActions = useRef({})
   // Per-service recovery tracker: counts consecutive fetch failures and
   // fires onThresholdReached/onRecovered to drive the polling-lost banner.
   // Keyed by serviceId because multiple installs can be polling concurrently.
   const recoveryTrackers = useRef({})
 
-  const pollProgress = (serviceId) => {
+  // ``action`` is the request that started this install/enable, when known.
+  // A poller the refreshed catalog already started still learns it.
+  const pollProgress = (serviceId, action = null) => {
+    if (action) pollActions.current[serviceId] = action
     if (activePollers.current[serviceId]) return
     recoveryTrackers.current[serviceId] = createRecoveryTracker({
       threshold: 3,
@@ -155,6 +185,7 @@ export default function Extensions({ compact = false }) {
           clearInterval(activePollers.current[serviceId])
           delete activePollers.current[serviceId]
           delete recoveryTrackers.current[serviceId]
+          delete pollActions.current[serviceId]
           setToast({ type: 'error', text: data.error || 'Installation failed' })
           setProgressMap(prev => { const next = { ...prev }; delete next[serviceId]; return next })
           fetchCatalog()
@@ -172,10 +203,13 @@ export default function Extensions({ compact = false }) {
             clearInterval(activePollers.current[serviceId])
             delete activePollers.current[serviceId]
             delete recoveryTrackers.current[serviceId]
-            const successText = ext.status === 'cli_installed'
-              ? `${ext.name || 'Extension'} installed — run via \`docker compose run --rm ${serviceId}\`.`
-              : 'Extension installed and started.'
-            setToast({ type: 'success', text: successText })
+            // A fresh install is pinned to Applications (again, if the owner
+            // had unpinned an earlier installation); any finish refreshes it.
+            const started = pollActions.current[serviceId]
+            delete pollActions.current[serviceId]
+            if (started === 'install') setPinned(serviceId, true)
+            else notifyApplicationsChanged()
+            setToast(readyToast(ext))
             setProgressMap(prev => { const next = { ...prev }; delete next[serviceId]; return next })
           }
           // If not yet "enabled" / "cli_installed", keep polling — healthcheck still running
@@ -222,7 +256,8 @@ export default function Extensions({ compact = false }) {
 
   useEffect(() => {
     if (toast && toast.type !== 'info') {
-      const t = setTimeout(() => setToast(null), 8000)
+      // A toast with next steps stays long enough to act on.
+      const t = setTimeout(() => setToast(null), toast.actions?.length ? 20000 : 8000)
       return () => clearTimeout(t)
     }
   }, [toast])
@@ -358,7 +393,7 @@ export default function Extensions({ compact = false }) {
         // Refresh catalog to show "installing" state, then let the
         // catalog-driven poller handle the rest (toast + final refresh)
         await fetchCatalog()
-        pollProgress(serviceId)
+        pollProgress(serviceId, action)
       } else {
         let successText = data.message || (
           action === 'uninstall' ? 'Extension removed' :
@@ -374,6 +409,7 @@ export default function Extensions({ compact = false }) {
           setToast({ type: 'success', text: successText })
         }
         await fetchCatalog()
+        notifyApplicationsChanged()
       }
     } catch (err) {
       const base = friendlyError(err.message) || `Failed to ${action} extension`
@@ -620,6 +656,7 @@ export default function Extensions({ compact = false }) {
               gpuBackend={catalog?.gpu_backend}
               agentAvailable={catalog?.agent_available}
               onDetails={() => setExpanded(ext.id)}
+              onGuide={() => setGuideExt(ext)}
               onConsole={() => setConsoleExt(ext)}
               onAction={requestAction}
               mutating={mutating}
@@ -634,6 +671,15 @@ export default function Extensions({ compact = false }) {
       {/* Detail modal */}
       {expanded && (
         <DetailModal ext={extensions.find(e => e.id === expanded)} gpuBackend={catalog?.gpu_backend} onClose={() => setExpanded(null)} />
+      )}
+
+      {/* How to use: open, sign in, documentation */}
+      {guideExt && (
+        <ExtensionGuide
+          ext={extensions.find(e => e.id === guideExt.id) || guideExt}
+          headless={HEADLESS_EXTENSIONS.has(guideExt.id)}
+          onClose={() => setGuideExt(null)}
+        />
       )}
 
       {/* Console modal */}
@@ -713,9 +759,26 @@ export default function Extensions({ compact = false }) {
           toast.type === 'info' ? 'border-theme-accent/20 bg-theme-card/95 text-theme-accent-light' :
           'border-green-500/20 bg-theme-card/95 text-green-300'
         }`}>
-          <div className="flex items-center justify-between gap-3">
-            <span className="leading-relaxed">{toast.text}</span>
-            <button onClick={() => setToast(null)} className="text-theme-text-muted/45 hover:text-theme-text-secondary transition-colors">×</button>
+          <div className="flex items-start justify-between gap-3">
+            <div className="flex flex-col gap-2">
+              <span className="leading-relaxed">{toast.text}</span>
+              {toast.actions?.length > 0 && (
+                <div className="flex flex-wrap gap-2">
+                  {toast.actions.map(item => item.href ? (
+                    <a key={item.label} href={item.href} target="_blank" rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1 rounded-md border border-green-500/30 px-2 py-1 text-green-200 hover:bg-green-500/10">
+                      <ExternalLink size={11} /> {item.label}
+                    </a>
+                  ) : (
+                    <button key={item.label} type="button" onClick={() => { setGuideExt(item.ext); setToast(null) }}
+                      className="inline-flex items-center gap-1 rounded-md border border-green-500/30 px-2 py-1 text-green-200 hover:bg-green-500/10">
+                      <BookOpen size={11} /> {item.label}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+            <button onClick={() => setToast(null)} aria-label="Dismiss notification" className="text-theme-text-muted/45 hover:text-theme-text-secondary transition-colors">×</button>
           </div>
         </div>
       )}
@@ -781,7 +844,7 @@ function LlmSwapBadge({ llm }) {
   )
 }
 
-function ExtensionCard({ ext, gpuBackend, agentAvailable, onDetails, onConsole, onAction, mutating, progressData }) {
+function ExtensionCard({ ext, gpuBackend, agentAvailable, onDetails, onGuide, onConsole, onAction, mutating, progressData }) {
   const Icon = extensionIcon(ext)
   const status = ext.status || 'not_installed'
   const statusStyle = STATUS_STYLES[status] || STATUS_STYLES.not_installed
@@ -806,6 +869,9 @@ function ExtensionCard({ ext, gpuBackend, agentAvailable, onDetails, onConsole, 
   const showRollback = isUserExt && ext.rollback_available
   const launchUrl = serviceUrl(ext)
   const launchPort = ext.external_port ?? ext.external_port_default ?? ext.port
+  const kind = extensionKind(ext, HEADLESS_EXTENSIONS.has(ext.id))
+  const canOpen = status === 'enabled' && kind === 'web' && Boolean(launchUrl)
+  const showGuide = !['not_installed', 'incompatible', 'installing', 'setting_up'].includes(status)
 
   return (
     <article className="extension-entry">
@@ -900,7 +966,28 @@ function ExtensionCard({ ext, gpuBackend, agentAvailable, onDetails, onConsole, 
 
       {/* Card footer */}
       <div className="extension-actions flex flex-wrap items-center justify-between gap-2">
-        <div className="flex flex-wrap gap-1.5">
+        <div className="flex flex-wrap items-center gap-1.5">
+          {canOpen && (
+            <a
+              href={launchUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              onClick={e => e.stopPropagation()}
+              className="extension-open flex items-center gap-1.5 px-3 py-1.5 text-[10px] font-semibold rounded-lg transition-colors"
+              title={launchPort && !ext.public_url ? `Open ${ext.name} (port ${launchPort})` : `Open ${ext.name}`}
+            >
+              <ExternalLink size={12} /> Open
+            </a>
+          )}
+          {showGuide && (
+            <button
+              onClick={onGuide}
+              aria-label={`How to use ${ext.name}`}
+              className="flex items-center gap-1 px-2 py-1.5 text-[10px] text-theme-text-secondary hover:text-theme-text hover:bg-theme-surface-hover/40 rounded-lg transition-colors"
+            >
+              <BookOpen size={13} /><span>How to use</span>
+            </button>
+          )}
           {showInstall && (
             <button
               disabled={actionDisabled}
@@ -995,25 +1082,11 @@ function ExtensionCard({ ext, gpuBackend, agentAvailable, onDetails, onConsole, 
         </div>
         <div className="flex items-center gap-2">
           <DependencyBadges dependsOn={ext.depends_on} dependencyStatus={ext.dependency_status} />
-          {status === 'enabled' && launchUrl ? (
-            HEADLESS_EXTENSIONS.has(ext.id) ? (
-              <span className="px-2 py-1 text-[9px] font-mono uppercase tracking-[0.12em] text-theme-text-muted/45">
-                API service
-              </span>
-            ) : (
-              <a
-                href={launchUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                onClick={e => e.stopPropagation()}
-                className="flex items-center gap-1 px-2 py-1.5 text-[10px] font-mono text-theme-text-secondary hover:text-theme-text hover:bg-theme-surface-hover/40 rounded-lg transition-colors"
-                title={launchPort ? "Open on port " + launchPort : "Open service"}
-              >
-                <ExternalLink size={11} />
-                {launchPort ? ":" + launchPort : "Open service"}
-              </a>
-            )
-          ) : null}
+          {status === 'enabled' && kind === 'api' && (
+            <span className="px-2 py-1 text-[9px] font-mono uppercase tracking-[0.12em] text-theme-text-muted/45" title="No page to open; How to use shows how other apps reach it">
+              API service
+            </span>
+          )}
           {(isUserExt || isCore) && status !== 'not_installed' && (
             <button
               onClick={onConsole}
