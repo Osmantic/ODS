@@ -553,6 +553,7 @@ export default function Pixel({ systemStatus = null }) {
   const [input, setInput] = useState(() => initialChat?.draft || '')
   const [persistenceError, setPersistenceError] = useState('')
   const [persistenceReady, setPersistenceReady] = useState(false)
+  const [persistenceViewStatus, setPersistenceViewStatus] = useState('checking')
   const [sending, setSending] = useState(false)
   const [interrupted, setInterrupted] = useState(() => initialChat?.interrupted || false)
   const [stopping, setStopping] = useState(false)
@@ -680,6 +681,7 @@ export default function Pixel({ systemStatus = null }) {
       return false
     }
     setPersistenceReady(true)
+    setPersistenceViewStatus('owned')
     return true
   }, [])
 
@@ -706,30 +708,34 @@ export default function Pixel({ systemStatus = null }) {
     const chatId = chatIdRef.current
     let disposed = false
     let timer = null
+    let retryDelay = 100
+    setPersistenceViewStatus('checking')
+    function showRaw(raw) {
+      const normalized = loadStoredChat(raw)
+      if (!normalized) return false
+      const priorCompactionId = compactionRequestRef.current
+      requestIdRef.current = normalized.requestId
+      contextStartRef.current = normalized.contextStart
+      compactionRequestRef.current = normalized.compactionRequestId
+      if (priorCompactionId !== normalized.compactionRequestId) {
+        setPersistenceRecoveryGeneration(value => value + 1)
+      }
+      setMessages(normalized.messages)
+      setInput(normalized.draft)
+      setPreview(normalized.preview)
+      setWorkspaceOpen(normalized.workspaceOpen)
+      setInterrupted(normalized.interrupted)
+      updateRestoredActivity(normalized.interrupted ? 'checking' : 'idle')
+      setActivityRefresh(value => value + 1)
+      return true
+    }
     async function attempt() {
       if (disposed || chatIdRef.current !== chatId) return
       const result = await persistence.current.acquirePassive()
       if (disposed || chatIdRef.current !== chatId) return
+      setPersistenceViewStatus(result.owned ? 'owned' : result.reason)
       if (result.owned && result.rebase) {
-        const raw = result.rebase
-        const normalized = loadStoredChat(raw)
-        if (normalized) {
-          const priorCompactionId = compactionRequestRef.current
-          requestIdRef.current = normalized.requestId
-          contextStartRef.current = normalized.contextStart
-          compactionRequestRef.current = normalized.compactionRequestId
-          if (priorCompactionId !== normalized.compactionRequestId) {
-            setPersistenceRecoveryGeneration(value => value + 1)
-          }
-          setMessages(normalized.messages)
-          setInput(normalized.draft)
-          setPreview(normalized.preview)
-          setWorkspaceOpen(normalized.workspaceOpen)
-          setInterrupted(normalized.interrupted)
-          updateRestoredActivity(normalized.interrupted ? 'checking' : 'idle')
-          setActivityRefresh(value => value + 1)
-        }
-        if (!normalized) return
+        if (!showRaw(result.rebase)) return
         setPersistenceReady(true)
         if(compactionRequestRef.current)void contextControl.refresh(true)
         return
@@ -740,7 +746,10 @@ export default function Pixel({ systemStatus = null }) {
         return
       }
       if (result.reason === 'locked') {
-        timer = globalThis.setTimeout(attempt, 2000)
+        const latest = persistence.current.peekLatest()
+        if (latest) showRaw(latest)
+        timer = globalThis.setTimeout(attempt, retryDelay)
+        retryDelay = Math.min(retryDelay * 2, 2000)
       }
     }
     attempt()
@@ -1509,6 +1518,10 @@ export default function Pixel({ systemStatus = null }) {
       ? 'Checking previous work'
     : interrupted && restoredActivity === 'unknown'
       ? 'Activity unknown'
+    : persistenceViewStatus === 'locked'
+      ? 'Open in another tab'
+    : persistenceViewStatus === 'unavailable'
+      ? 'Saving unavailable'
     : status === 'available'
       ? (readinessView.attention ? 'Needs attention' : 'Available')
       : status === 'switching'

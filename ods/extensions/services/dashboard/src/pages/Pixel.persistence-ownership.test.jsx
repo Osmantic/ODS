@@ -130,6 +130,92 @@ describe('Pixel Web Lock ownership integration', () => {
     follower.unmount()
   })
 
+  it('a follower opened before Send shows the saved progress and final without writing', async () => {
+    const chatId = 'before-send-viewer'
+    seedOwnedChat({ chatId, messages: [] })
+    const finalFrame = deferred()
+    const streamCalls = []
+    installFetch((url, options) => {
+      if (url === '/api/pixel/chat/stream') {
+        streamCalls.push(JSON.parse(options.body))
+        return finalFrame.promise
+      }
+      if (url === '/api/pixel/chat/result') return Promise.resolve(response({ state: 'active', events: '' }))
+      throw new Error(`Unexpected request ${url}`)
+    })
+    const owner = render(<Pixel />)
+    await within(owner.container).findByText('Available')
+    fireEvent.change(within(owner.container).getByPlaceholderText('Message Portal...'), { target: { value: 'Build a forest page' } })
+    await waitFor(() => expect(parseRaw(CHAT_KEY).draft).toBe('Build a forest page'))
+    const follower = render(<Pixel />)
+    await within(follower.container).findByText('Open in another tab')
+    expect(within(follower.container).getByPlaceholderText('Message Portal...')).toHaveValue('Build a forest page')
+    fireEvent.click(within(owner.container).getByTitle('Send'))
+    await waitFor(() => expect(streamCalls).toHaveLength(1))
+    const activeChat = readRaw(CHAT_KEY)
+    const activeLibrary = readRaw(CONVERSATION_STORAGE_NAME)
+    await within(follower.container).findByText('Working in this chat', {}, { timeout: 6000 })
+    expect(within(follower.container).getByText('Build a forest page')).toBeVisible()
+    expect(within(follower.container).getByPlaceholderText('Message Portal...')).toHaveValue('')
+    expect(readRaw(CHAT_KEY)).toBe(activeChat)
+    expect(readRaw(CONVERSATION_STORAGE_NAME)).toBe(activeLibrary)
+    await act(async () => finalFrame.resolve(sseResponse([
+      JSON.stringify({ choices: [{ delta: { content: 'Published forest preview' } }] }), '[DONE]',
+    ])))
+    expect(await within(owner.container).findByText('Published forest preview')).toBeVisible()
+    await waitFor(() => expect(parseRaw(CHAT_KEY).inFlight).toBe(false))
+    const finalChat = readRaw(CHAT_KEY)
+    const finalLibrary = readRaw(CONVERSATION_STORAGE_NAME)
+    await within(follower.container).findByText('Published forest preview', {}, { timeout: 6000 })
+    expect(within(follower.container).getByText('Open in another tab')).toBeVisible()
+    expect(within(follower.container).getByPlaceholderText('Message Portal...')).toHaveValue('')
+    expect(readRaw(CHAT_KEY)).toBe(finalChat)
+    expect(readRaw(CONVERSATION_STORAGE_NAME)).toBe(finalLibrary)
+    expect(streamCalls).toHaveLength(1)
+    owner.unmount()
+    follower.unmount()
+  }, 12000)
+
+  it('a follow-up based on the displayed final reply can send after the owner closes', async () => {
+    const chatId = 'displayed-reply-follow-up'
+    seedOwnedChat({ chatId, messages: [] })
+    const finalFrame = deferred()
+    const streamCalls = []
+    installFetch((url, options) => {
+      if (url === '/api/pixel/chat/stream') {
+        streamCalls.push(JSON.parse(options.body))
+        return streamCalls.length === 1 ? finalFrame.promise : Promise.resolve(sseResponse([
+          JSON.stringify({ choices: [{ delta: { content: 'Follow-up answer' } }] }), '[DONE]',
+        ]))
+      }
+      if (url === '/api/pixel/chat/result') return Promise.resolve(response({ state: 'active', events: '' }))
+      throw new Error(`Unexpected request ${url}`)
+    })
+    const owner = render(<Pixel />)
+    await within(owner.container).findByText('Available')
+    fireEvent.change(within(owner.container).getByPlaceholderText('Message Portal...'), { target: { value: 'First question' } })
+    await waitFor(() => expect(parseRaw(CHAT_KEY).draft).toBe('First question'))
+    const follower = render(<Pixel />)
+    await within(follower.container).findByText('Open in another tab')
+    fireEvent.click(within(owner.container).getByTitle('Send'))
+    await waitFor(() => expect(streamCalls).toHaveLength(1))
+    await act(async () => finalFrame.resolve(sseResponse([
+      JSON.stringify({ choices: [{ delta: { content: 'First answer' } }] }), '[DONE]',
+    ])))
+    await within(follower.container).findByText('First answer', {}, { timeout: 6000 })
+    fireEvent.change(within(follower.container).getByPlaceholderText('Message Portal...'), { target: { value: 'A follow-up to the displayed answer' } })
+    owner.unmount()
+    await within(follower.container).findByText('Available', {}, { timeout: 6000 })
+    fireEvent.click(within(follower.container).getByTitle('Send'))
+    expect(await within(follower.container).findByText('Follow-up answer')).toBeVisible()
+    expect(streamCalls).toHaveLength(2)
+    expect(streamCalls[1].messages.slice(0, 2)).toEqual([
+      { role: 'user', content: 'First question' }, { role: 'assistant', content: 'First answer' },
+    ])
+    expect(within(follower.container).queryByText(/conversation changed in another tab/i)).toBeNull()
+    follower.unmount()
+  }, 12000)
+
   it('journey 2: owner unmount releases lease; follower retries and rebases before terminal replay', async () => {
     const chatId = 'owner-chat-2'
     const requestId = 'owner-req-2'
@@ -264,7 +350,7 @@ describe('Pixel Web Lock ownership integration', () => {
 
     // Follower mounts while owner holds the lease.
     const follower = render(<Pixel />)
-    await within(follower.container).findByText('Available')
+    await within(follower.container).findByText('Open in another tab')
     const followerTextarea = within(follower.container).getByPlaceholderText('Message Portal...')
     fireEvent.change(followerTextarea, { target: { value: 'Follower stale draft' } })
     // Follower's local text is preserved.
@@ -325,7 +411,7 @@ describe('Pixel Web Lock ownership integration', () => {
 
     // Reopen: draft is restored, no remote inference fired.
     const second = render(<Pixel />)
-    await screen.findByText('Available')
+    await within(second.container).findByText('Available', {}, { timeout: 6000 })
     const restored = within(second.container).getByPlaceholderText('Message Portal...')
     await waitFor(() => expect(restored).toHaveValue('Unsent draft'))
     expect(streamCalls).toHaveLength(0)
@@ -359,7 +445,7 @@ describe('Pixel Web Lock ownership integration', () => {
     })
 
     const view = render(<Pixel />)
-    await screen.findByText('Available')
+    await within(view.container).findByText('Saving unavailable')
     const textarea = within(view.container).getByPlaceholderText('Message Portal...')
     fireEvent.change(textarea, { target: { value: 'Cannot send' } })
     const send = within(view.container).getByTitle('Send')
@@ -460,7 +546,7 @@ describe('Pixel Web Lock ownership integration', () => {
     const owner = render(<Pixel />)
     await within(owner.container).findByText('Available')
     const follower = render(<Pixel />)
-    await within(follower.container).findByText('Available')
+    await within(follower.container).findByText('Open in another tab')
     const followerTextarea = within(follower.container).getByPlaceholderText('Message Portal...')
     await waitFor(() => expect(followerTextarea).toHaveValue('Follower draft'))
 
@@ -509,7 +595,7 @@ describe('Pixel Web Lock ownership integration', () => {
 
     // Reopen: same state, no resubmit.
     const reopened = render(<Pixel />)
-    await within(reopened.container).findByText('Available')
+    await within(reopened.container).findByText('Available', {}, { timeout: 6000 })
     await waitFor(() => expect(within(reopened.container).getByPlaceholderText('Message Portal...')).toHaveValue('Follower draft'))
     expect(within(reopened.container).getByText('Original answer')).toBeVisible()
     expect(compactCalls).toHaveLength(1)

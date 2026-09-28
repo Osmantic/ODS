@@ -51,7 +51,7 @@ export function readConversations() {
   } catch { return [] }
 }
 
-function conversationSnapshot(chat) {
+export function conversationSnapshot(chat) {
   if (!chat) return null
   // Save timestamps alone do not make identical content a conflicting edit.
   return JSON.stringify(Object.fromEntries(Object.entries(chat)

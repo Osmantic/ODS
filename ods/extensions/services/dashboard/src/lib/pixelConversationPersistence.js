@@ -1,4 +1,4 @@
-import { createConversationWriter, readConversations, isConversationDeleted, PERSISTENCE_OWNERSHIP } from './pixelConversations'
+import { createConversationWriter, conversationSnapshot, readConversations, isConversationDeleted, PERSISTENCE_OWNERSHIP } from './pixelConversations'
 import { createConversationOwnership } from './pixelConversationOwnership'
 
 export { PERSISTENCE_OWNERSHIP }
@@ -22,6 +22,7 @@ export function createConversationPersistence({
   let dirty = false
   let passiveRebased = false
   let boundRaw = null
+  let displayedSnapshot = null
 
   function releaseOwnership() {
     try { ownership.release() } catch { /* ignore */ }
@@ -38,6 +39,7 @@ export function createConversationPersistence({
     dirty = false
     passiveRebased = false
     boundRaw = rawSnapshot ?? null
+    displayedSnapshot = conversationSnapshot(boundRaw)
     return true
   }
 
@@ -107,8 +109,30 @@ export function createConversationPersistence({
     }
     writer = createConversationWriter(latest ?? null)
     boundRaw = latest ?? null
+    displayedSnapshot = conversationSnapshot(boundRaw)
     passiveRebased = true
     return { owned: true, rebase: latest ?? null }
+  }
+
+  // Updating a clean viewer's display is not ownership and never writes storage.
+  // Once edited, its baseline stays fixed so a later author change still fails CAS.
+  function peekLatest() {
+    if (disposed || !writer || !chatId || owns() || dirty || isLegacyRaw(boundRaw)) return null
+    const myGen = generation
+    const myId = chatId
+    let latest
+    try {
+      if (deleted(myId)) return null
+      latest = readLatest(myId)
+    } catch { return null }
+    if (disposed || generation !== myGen || chatId !== myId || dirty || owns()) return null
+    if (!latest || latest.chatId !== myId || isLegacyRaw(latest)) return null
+    const snapshot = conversationSnapshot(latest)
+    if (snapshot === displayedSnapshot) return null
+    writer = createConversationWriter(latest)
+    boundRaw = latest
+    displayedSnapshot = snapshot
+    return latest
   }
 
   function owns() {
@@ -149,6 +173,7 @@ export function createConversationPersistence({
     const stamped = { ...record, persistenceOwnership: PERSISTENCE_OWNERSHIP }
     const result = writer(stamped)
     boundRaw = stamped
+    displayedSnapshot = conversationSnapshot(stamped)
     return result
   }
 
@@ -168,9 +193,10 @@ export function createConversationPersistence({
     dirty = false
     passiveRebased = false
     boundRaw = null
+    displayedSnapshot = null
   }
 
-  return { bind, acquireAuthor, acquirePassive, commit, owns, assertCurrent, release, dispose }
+  return { bind, acquireAuthor, acquirePassive, peekLatest, commit, owns, assertCurrent, release, dispose }
 }
 
 export default createConversationPersistence
