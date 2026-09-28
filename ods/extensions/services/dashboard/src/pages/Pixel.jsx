@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import PixelConversationRecovery from '../components/PixelConversationRecovery'
-import { readConversations, saveConversation, createConversationWriter, SELECT_EVENT, DELETE_EVENT, deleteConversation, isConversationDeleted } from '../lib/pixelConversations'
+import { readConversations, saveConversation, SELECT_EVENT, DELETE_EVENT, deleteConversation, isConversationDeleted } from '../lib/pixelConversations'
+import { createConversationPersistence } from '../lib/pixelConversationPersistence'
 import {usePixelAutoScroll} from '../lib/usePixelAutoScroll'
 import { Link } from 'react-router-dom'
 import PixelAdvice from '../components/PixelAdvice.jsx'
@@ -541,8 +542,8 @@ export default function Pixel({ systemStatus = null }) {
   const profile = useLocalProfile()
   const { displayName } = usePortalIdentity()
   const [initialChat] = useState(loadStoredChat)
-  const conversationWriter = useRef(null)
-  if (!conversationWriter.current) conversationWriter.current = createConversationWriter(initialChat?.persistenceSnapshot)
+  const persistence = useRef(null)
+  const persistenceMounted = useRef(true)
   const pendingImport = useRef(null)
   const sendKey = usePixelSendKey()
 
@@ -551,6 +552,7 @@ export default function Pixel({ systemStatus = null }) {
   const [messages, setMessages] = useState(() => initialChat?.messages || [])
   const [input, setInput] = useState(() => initialChat?.draft || '')
   const [persistenceError, setPersistenceError] = useState('')
+  const [persistenceReady, setPersistenceReady] = useState(false)
   const [sending, setSending] = useState(false)
   const [interrupted, setInterrupted] = useState(() => initialChat?.interrupted || false)
   const [stopping, setStopping] = useState(false)
@@ -575,7 +577,7 @@ export default function Pixel({ systemStatus = null }) {
   const [workspaceOpen, setWorkspaceOpen] = useState(() => initialChat?.workspaceOpen || false)
   function openPublication(publication, kind, path=null) {
     const current=latestProjectPublication(publication,messages)
-    setPreview(current);setWorkspaceOpen(true);setPreviewCollapsed(false)
+    void claimConversation();setPreview(current);setWorkspaceOpen(true);setPreviewCollapsed(false)
     setWorkspaceRequest({chatId:chatIdRef.current,siteId:current.siteId,kind,path})
   }
 
@@ -583,12 +585,17 @@ export default function Pixel({ systemStatus = null }) {
   const stopRequestRef = useRef(null)
   const restoredActivityRef = useRef(restoredActivity)
   const chatIdRef = useRef(initialChat?.chatId || makeChatId())
+  if (!persistence.current) {
+    persistence.current = createConversationPersistence()
+    persistence.current.bind(chatIdRef.current, initialChat?.persistenceSnapshot ?? null)
+  }
   const { state: extensionInstallation, start: startExtensionInstallation, stop: stopExtensionInstallation, resume: resumeExtensionInstallation } = useExtensionInstallation(chatIdRef.current)
   const { state: githubExtensionInstallation, start: startGithubExtensionRequest,
     stop: stopGithubExtensionInstallation, resume: resumeGithubExtensionInstallation } = useGithubExtensionRequest(chatIdRef.current)
   useEffect(() => { setWorkspaceRequest(null); setWorkspaceExpanded(false) }, [chatIdRef.current])
   const contextStartRef = useRef(initialChat?.contextStart || 0)
   const compactionRequestRef = useRef(initialChat?.compactionRequestId || null)
+  const [persistenceRecoveryGeneration, setPersistenceRecoveryGeneration] = useState(0)
   const requestIdRef = useRef(initialChat?.requestId || null)
   const inputRef = useRef(null)
   const scrollRef = useRef(null)
@@ -648,22 +655,104 @@ export default function Pixel({ systemStatus = null }) {
   const contextControl=usePortalContext({chatId:chatIdRef.current,
     runtimeIdentity:{model:contextRuntime?.model || activeModel,source:contextRuntime?.source || '',routeFingerprint:contextRuntime?.routeFingerprint},capacity:contextCapacity,
     initialRequestId:compactionRequestRef.current,
+    recoveryGeneration:persistenceRecoveryGeneration,
     blocked:sending || modelSwitching || stopping || teams.busy || (interrupted && restoredActivity!=='terminal') || status!=='available',
     onPendingChange:(id,chatId)=>{
       if(chatId!==chatIdRef.current)throw new Error('The conversation changed before compaction could be saved.')
+      if(!persistenceReady)throw new Error('The conversation is still checking its saved state.')
       historySnapshot(messages)
-      conversationWriter.current({schema:1,chatId,requestId:requestIdRef.current,inFlight:sending,interrupted,draft:input,
+      persistence.current.commit({schema:1,chatId,requestId:requestIdRef.current,inFlight:sending,interrupted,draft:input,
         messages,contextStart:contextStartRef.current,compactionRequestId:id,preview,workspaceOpen})
       compactionRequestRef.current=id
     },
   })
-  const compactConversation=useCallback(async()=>{
-    const accepted=await contextControl.compact()
-    if(accepted && (compactCommand(input) || input==='/'))setInput(value=>value===input?'':value)
-  },[contextControl.compact,input])
   const updateRestoredActivity = useCallback((value) => {
     restoredActivityRef.current = value
     setRestoredActivity(value)
+  }, [])
+
+  const claimConversation = useCallback(async () => {
+    const claimedChatId = chatIdRef.current
+    const owned = await persistence.current.acquireAuthor()
+    if (!persistenceMounted.current || chatIdRef.current !== claimedChatId) return false
+    if (!owned || !persistence.current.owns()) {
+      setPersistenceError('This chat cannot be edited in this tab right now. If it is open elsewhere, close that tab before continuing. Your unsaved text is preserved here.')
+      return false
+    }
+    setPersistenceReady(true)
+    return true
+  }, [])
+
+  const authorActionPending = useRef(null)
+  const compactConversation=useCallback(async()=>{
+    if(authorActionPending.current)return
+    const authorAction=Symbol()
+    authorActionPending.current=authorAction
+    try {
+      const claimed=await claimConversation()
+      if(!claimed)return
+      try { persistence.current.assertCurrent() } catch (error) {
+        setPersistenceError(error?.code === 'conversation-changed' ? error.message : 'Your browser could not save this conversation. Keep this page open to avoid losing it.')
+        return
+      }
+      const accepted=await contextControl.compact()
+      if(accepted && (compactCommand(input) || input==='/'))setInput(value=>value===input?'':value)
+    } finally {
+      if(authorActionPending.current===authorAction)authorActionPending.current=null
+    }
+  },[contextControl.compact,input,claimConversation])
+
+  useEffect(() => {
+    const chatId = chatIdRef.current
+    let disposed = false
+    let timer = null
+    async function attempt() {
+      if (disposed || chatIdRef.current !== chatId) return
+      const result = await persistence.current.acquirePassive()
+      if (disposed || chatIdRef.current !== chatId) return
+      if (result.owned && result.rebase) {
+        const raw = result.rebase
+        const normalized = loadStoredChat(raw)
+        if (normalized) {
+          const priorCompactionId = compactionRequestRef.current
+          requestIdRef.current = normalized.requestId
+          contextStartRef.current = normalized.contextStart
+          compactionRequestRef.current = normalized.compactionRequestId
+          if (priorCompactionId !== normalized.compactionRequestId) {
+            setPersistenceRecoveryGeneration(value => value + 1)
+          }
+          setMessages(normalized.messages)
+          setInput(normalized.draft)
+          setPreview(normalized.preview)
+          setWorkspaceOpen(normalized.workspaceOpen)
+          setInterrupted(normalized.interrupted)
+          updateRestoredActivity(normalized.interrupted ? 'checking' : 'idle')
+          setActivityRefresh(value => value + 1)
+        }
+        if (!normalized) return
+        setPersistenceReady(true)
+        if(compactionRequestRef.current)void contextControl.refresh(true)
+        return
+      }
+      if (result.owned) {
+        setPersistenceReady(true)
+        if(compactionRequestRef.current)void contextControl.refresh(true)
+        return
+      }
+      if (result.reason === 'locked') {
+        timer = globalThis.setTimeout(attempt, 2000)
+      }
+    }
+    attempt()
+    return () => {
+      disposed = true
+      if (timer !== null) globalThis.clearTimeout(timer)
+    }
+  }, [chatIdRef.current, updateRestoredActivity])
+
+  useEffect(() => {
+    persistenceMounted.current = true
+    return () => { persistenceMounted.current = false; persistence.current?.release() }
   }, [])
 
   useEffect(() => {
@@ -863,6 +952,7 @@ export default function Pixel({ systemStatus = null }) {
   }, [input])
 
   useEffect(() => {
+    if (!persistenceReady || !persistence.current?.owns()) return
     try {
       const storedMessages = messages.map(message => {
         const task = message.role === 'assistant' && parseTaskActivity(message.task, message.task?.runId)
@@ -870,7 +960,7 @@ export default function Pixel({ systemStatus = null }) {
       })
       // Report storage limits without silently trimming previous turns.
       if (storedMessages.length > MAX_STORED_MESSAGES || storedMessages.reduce((total, message) => total + new TextEncoder().encode(message.content).byteLength, 0) > MAX_STORED_MESSAGE_BYTES) throw new Error('stored Portal chat is too large')
-      conversationWriter.current({
+      persistence.current.commit({
         schema: 1,
         chatId: chatIdRef.current,
         requestId: requestIdRef.current,
@@ -890,7 +980,7 @@ export default function Pixel({ systemStatus = null }) {
       setPersistenceError(error?.code === 'conversation-changed' ? error.message
         : 'Your browser could not save this conversation. Keep this page open to avoid losing it.')
     }
-  }, [messages, preview, workspaceOpen, sending, interrupted, input])
+  }, [messages, preview, workspaceOpen, sending, interrupted, input, persistenceReady])
 
   const sendMessage = useCallback(async (answerOverride, continuationId = null) => {
     const trimmed = (typeof answerOverride === 'string' ? answerOverride : input).trim()
@@ -899,6 +989,17 @@ export default function Pixel({ systemStatus = null }) {
     if (!trimmed || sending || modelSwitching || abortRef.current || restoredActive || restoredChecking || status !== 'available' || trimmed.length > MAX_INPUT_LEN) return
     if(teams.busy)return
     if(goalCommand(trimmed) && !goalCommand(trimmed).task) { setStopError('Describe the goal you want to complete.'); return }
+    if(authorActionPending.current)return
+    const authorAction=Symbol()
+    authorActionPending.current=authorAction
+    try {
+    const claimed=await claimConversation()
+    if(!claimed)return
+    if(!persistenceMounted.current)return
+    try { persistence.current.assertCurrent() } catch (error) {
+      setPersistenceError(error?.code === 'conversation-changed' ? error.message : 'Your browser could not save this conversation. Keep this page open to avoid losing it.')
+      return
+    }
     const requestedGoal=goalCommand(trimmed)
     // Extension installation already has a durable coordinator. Sending this
     // command to a separate goal agent bypasses request registration and the
@@ -943,6 +1044,8 @@ export default function Pixel({ systemStatus = null }) {
 
     const controller = new AbortController()
     abortRef.current = controller
+    // The stream now owns admission; a stopped reader cannot hold this gate.
+    if(authorActionPending.current===authorAction)authorActionPending.current=null
     // Stop releases the UI before the old reader necessarily settles. Only
     // this generation may update the response, workspace, or sending state.
     const isCurrentTurn = () => !controller.signal.aborted && abortRef.current === controller
@@ -969,7 +1072,7 @@ export default function Pixel({ systemStatus = null }) {
         // Commit the attempt identity before the POST can start tool work.
         // A page close before React's persistence effect must still recover it.
         try {
-          conversationWriter.current({
+          persistence.current.commit({
             schema: 1, chatId, requestId, inFlight: true, interrupted: false,
             messages: [...visibleConversation, { role: 'assistant', content: '' }], preview,
             draft: typeof answerOverride === 'string' ? input : '', contextStart: contextStartRef.current, compactionRequestId:compactionRequestRef.current, workspaceOpen,
@@ -1149,7 +1252,11 @@ export default function Pixel({ systemStatus = null }) {
 
       if (!attempt.receivedError && attempt.receivedDone && attempt.recoveryEligible) {
         const retryChatId = makeChatId()
+        persistence.current.bind(retryChatId, null)
+        setPersistenceReady(false)
         chatIdRef.current = retryChatId
+        if (!await claimConversation()) throw new Error('chat-recovery-storage-unavailable')
+        if (!isCurrentTurn()) return
         contextStartRef.current = originalContextStart
         latestAssistantText = ''
         setMessages([
@@ -1215,7 +1322,10 @@ export default function Pixel({ systemStatus = null }) {
         void contextControl.refresh(true)
       }
     }
-  }, [input, messages, preview, workspaceOpen, sending, modelSwitching, status, restoredActive, restoredChecking, updateRestoredActivity, teams.busy, teams.start,compactConversation,contextControl.busy,contextControl.historyUnknown,contextControl.refresh,startExtensionInstallation,startGithubExtensionRequest])
+    } finally {
+      if(authorActionPending.current===authorAction)authorActionPending.current=null
+    }
+  }, [input, messages, preview, workspaceOpen, sending, modelSwitching, status, restoredActive, restoredChecking, updateRestoredActivity, teams.busy, teams.start,compactConversation,claimConversation,contextControl.busy,contextControl.historyUnknown,contextControl.refresh,startExtensionInstallation,startGithubExtensionRequest])
 
   const stopStreaming = useCallback(async () => {
     const controller = abortRef.current
@@ -1285,7 +1395,10 @@ export default function Pixel({ systemStatus = null }) {
 
   const startNewChat = useCallback(() => {
     if (sending || restoredActive || restoredChecking || stopping || teams.launching || contextControl.busy) return
-    chatIdRef.current = makeChatId()
+    const newId = makeChatId()
+    persistence.current.bind(newId, null)
+    setPersistenceReady(false)
+    chatIdRef.current = newId
     requestIdRef.current = null
     contextStartRef.current = 0
     compactionRequestRef.current = null
@@ -1325,6 +1438,7 @@ export default function Pixel({ systemStatus = null }) {
 
   const insertComposerText = useCallback((text, { replace = false } = {}) => {
     if (sending || restoredActive || restoredChecking || stopping || contextControl.busy) return
+    void claimConversation()
     setInput(value => {
       if (replace) return text
       const mode=agentCommand(text)?'agents':goalCommand(text)?'goal':null
@@ -1332,7 +1446,7 @@ export default function Pixel({ systemStatus = null }) {
       return mode ? `/${mode} ${task}` : appendComposerText(value, text)
     })
     inputRef.current?.focus?.()
-  }, [sending, restoredActive, restoredChecking, stopping,contextControl.busy])
+  }, [sending, restoredActive, restoredChecking, stopping,contextControl.busy,claimConversation])
 
   useEffect(() => {
     window.addEventListener('ods:pixel-new-task', startNewChat)
@@ -1347,7 +1461,8 @@ export default function Pixel({ systemStatus = null }) {
       }
       const chat = loadStoredChat(readConversations().find(item => item.chatId === event.detail))
       if (!chat || chat.chatId === chatIdRef.current) return
-      conversationWriter.current = createConversationWriter(chat.persistenceSnapshot)
+      persistence.current.bind(chat.chatId, chat.persistenceSnapshot)
+      setPersistenceReady(false)
       chatIdRef.current = chat.chatId
       requestIdRef.current = chat.requestId
       contextStartRef.current = chat.contextStart
@@ -1441,11 +1556,11 @@ export default function Pixel({ systemStatus = null }) {
             <PixelHandoffApproval label="Approvals" />
             <details className="pixel-chat-options-advanced"><summary>Advanced tools</summary><div>
               <PortalRuntimeIdentity identity={runtimeIdentity} runtime={agentRuntime} />
-              <PixelAdvice canInsert={!sending && !contextControl.busy} onInsert={text => setInput(current => current ? `${current}\n\n${text}` : text)} />
+              <PixelAdvice canInsert={!sending && !contextControl.busy} onInsert={text => { void claimConversation(); setInput(current => current ? `${current}\n\n${text}` : text) }} />
               <PixelProviderScopes chatId={chatIdRef.current} sending={sending} />
             </div></details>
           </div></details>
-          <button type="button" aria-label="Workspace" aria-expanded={workspaceOpen} onClick={() => { setWorkspaceOpen(value => !value); setPreviewCollapsed(false) }} className="inline-flex items-center gap-1.5 bg-transparent px-2.5 py-1.5 text-xs text-theme-text-secondary hover:text-theme-text">
+          <button type="button" aria-label="Workspace" aria-expanded={workspaceOpen} onClick={() => { void claimConversation(); setWorkspaceOpen(value => !value); setPreviewCollapsed(false) }} className="inline-flex items-center gap-1.5 bg-transparent px-2.5 py-1.5 text-xs text-theme-text-secondary hover:text-theme-text">
             <PanelRightOpen size={14}/><span>Workspace</span>
           </button>
           {messages.length > 0 && (
@@ -1602,7 +1717,7 @@ export default function Pixel({ systemStatus = null }) {
               ) : (
                 <span className="break-words whitespace-pre-wrap">{message.content}</span>
               )}
-              {message.role === 'assistant' && message.questions && <PixelQuestions questions={message.questions} answers={message.questionDraft} answered={index<messages.length-1} disabled={message.goalMode ? message.goalState!=='waiting' : isDisabled || sending || restoredActive || restoredChecking} onChange={questionDraft=>setMessages(previous=>previous.map((item,i)=>i===index?{...item,questionDraft}:item))} onSubmit={answer=>message.goalMode ? teams.answer(message.teamId,'0',message.questionDraft) : sendMessage(message.task?.goal ? continueGoal(messages,index,answer) : answer)}/>}
+              {message.role === 'assistant' && message.questions && <PixelQuestions questions={message.questions} answers={message.questionDraft} answered={index<messages.length-1} disabled={message.goalMode ? message.goalState!=='waiting' : isDisabled || sending || restoredActive || restoredChecking} onChange={questionDraft=>{void claimConversation();setMessages(previous=>previous.map((item,i)=>i===index?{...item,questionDraft}:item))}} onSubmit={answer=>message.goalMode ? (async()=>{if(authorActionPending.current)return;const authorAction=Symbol();authorActionPending.current=authorAction;try{const claimed=await claimConversation();if(!claimed)return;try{persistence.current.assertCurrent()}catch(error){setPersistenceError(error?.code==='conversation-changed'?error.message:'Your browser could not save this conversation. Keep this page open to avoid losing it.');return}await teams.answer(message.teamId,'0',message.questionDraft)}finally{if(authorActionPending.current===authorAction)authorActionPending.current=null}})() : sendMessage(message.task?.goal ? continueGoal(messages,index,answer) : answer)}/>}
               {message.goalMode && message.goalNotice && <p role="status" className="mt-3 text-xs text-theme-text-secondary">{message.goalNotice}</p>}
               {message.teamId && !(message.goalMode && ACTIVE_TEAMS.has(message.goalState)) && <button type="button" onClick={()=>openAgents({teamId:message.teamId,agentId:'0'})} className={message.goalMode?"mt-3 border-0 bg-transparent px-0 py-2 text-xs hover:underline":"mt-3 rounded-lg border border-theme-border px-3 py-2 text-xs hover:bg-theme-border/30"}>{message.goalMode?'View goal history':'View agents and conversations'}</button>}
 
@@ -1616,14 +1731,14 @@ export default function Pixel({ systemStatus = null }) {
       <div className="pixel-composer px-4 py-3 sm:px-6">
         {chatScroll.showLatest && <div className="mb-2 text-center"><button type="button" onClick={chatScroll.jumpToLatest} className="portal-jump-latest">Jump to latest</button></div>}
         <div className={`portal-glass-composer mx-auto max-w-5xl ${messages.length===0 ? 'portal-neon-prompt' : ''}`}>
-          {command && <div className="mb-2 flex flex-wrap items-center gap-2 rounded-xl bg-theme-card/70 px-3 py-2 text-xs text-theme-text-secondary" role="group" aria-label="Agent team mode"><span className="font-medium text-theme-text">Agent team</span><span>Describe your task. Portal will choose the team.</span><button type="button" disabled={isDisabled} onClick={()=>setInput(command.task)} className="ml-auto whitespace-nowrap rounded px-2 py-1 hover:bg-theme-border/30">Exit team mode</button></div>}
-          {goalDraft && <div className="portal-goal-mode" role="group" aria-label="Goal mode"><span>Goal</span><small>Describe the outcome. Portal will plan, work and check its progress.</small><button type="button" disabled={isDisabled} onClick={()=>setInput(goalDraft.task)}>Exit goal mode</button></div>}
+          {command && <div className="mb-2 flex flex-wrap items-center gap-2 rounded-xl bg-theme-card/70 px-3 py-2 text-xs text-theme-text-secondary" role="group" aria-label="Agent team mode"><span className="font-medium text-theme-text">Agent team</span><span>Describe your task. Portal will choose the team.</span><button type="button" disabled={isDisabled} onClick={()=>{void claimConversation();setInput(command.task)}} className="ml-auto whitespace-nowrap rounded px-2 py-1 hover:bg-theme-border/30">Exit team mode</button></div>}
+          {goalDraft && <div className="portal-goal-mode" role="group" aria-label="Goal mode"><span>Goal</span><small>Describe the outcome. Portal will plan, work and check its progress.</small><button type="button" disabled={isDisabled} onClick={()=>{void claimConversation();setInput(goalDraft.task)}}>Exit goal mode</button></div>}
           {teams.error && <p role="alert" className="text-xs text-theme-text-secondary">{teams.error}</p>}
           <div className="pixel-composer-row">
           <textarea
             ref={inputRef}
             value={command ? command.task : goalDraft ? goalDraft.task : input}
-            onChange={(event) => setInput(command ? `/agents ${event.target.value}` : goalDraft ? `/goal ${event.target.value}` : event.target.value)}
+            onChange={(event) => { void claimConversation(); setInput(command ? `/agents ${event.target.value}` : goalDraft ? `/goal ${event.target.value}` : event.target.value) }}
             onKeyDown={(event) => {
               if (shouldSendMessage(event, sendKey.mode)) {
                 event.preventDefault()
@@ -1710,7 +1825,7 @@ export default function Pixel({ systemStatus = null }) {
               onRefresh={()=>setPreviewRefresh(value=>value+1)}
               collapsed={previewCollapsed} onCollapse={()=>setPreviewCollapsed(value=>!value)}
               expanded={workspaceExpanded} onExpand={()=>setWorkspaceExpanded(value=>!value)}
-              onClose={()=>{setWorkspaceOpen(false);setWorkspaceExpanded(false)}}
+              onClose={()=>{void claimConversation();setWorkspaceOpen(false);setWorkspaceExpanded(false)}}
               onPublish={isDisabled?undefined:()=>{setWorkspaceExpanded(false);insertComposerText('Publique o site que voce criou nesta conversa no preview do ODS. Inspecione os arquivos existentes, preserve o projeto e use pixel_ods_workspace_preview para a pasta que contem index.html.')}}/>
 
           </aside>

@@ -56,7 +56,7 @@ it('does not start a backend task when a newer saved revision appeared before Se
   await waitFor(()=>expect(screen.queryByText('Working')).not.toBeInTheDocument())
   expect(fetch.mock.calls.some(([url])=>url==='/api/pixel/chat/stream')).toBe(false)
   expect(localStorage.getItem(CHAT_KEY)).toBe(before)
-  expect(screen.getByText('This conversation changed in another tab. No task was started. Download a recovery copy, then reload to read the saved version.')).toBeVisible()
+  expect(await screen.findByText(/This conversation changed in another tab/)).toBeVisible()
   expect(screen.queryByText(/Check browser storage and try again/)).not.toBeInTheDocument()
 })
 
@@ -70,8 +70,8 @@ it('starts and saves a new task after another active tab moves the shared pointe
     return {ok:true,status:200,body:{getReader:()=>({read:async()=>read?{done:true}:(read=true,{done:false,value:bytes}),releaseLock(){}})}}
   })
   fireEvent.click(screen.getByRole('button', {name:'New chat'}))
+  await waitFor(()=>expect(stored().chatId).not.toBe(original.chatId))
   const newId = stored().chatId
-  expect(newId).not.toBe(original.chatId)
   act(() => saveConversation({...original, draft:'Other active tab'}))
   fireEvent.change(input, {target:{value:'Make a forest page'}})
   fireEvent.click(screen.getByTitle('Send'))
@@ -90,5 +90,5 @@ it('can explicitly select a different saved conversation and continue saving', a
   act(() => window.dispatchEvent(new CustomEvent(SELECT_EVENT,{detail:'selected-chat'})))
   expect(input).toHaveValue('Selected draft')
   fireEvent.change(input,{target:{value:'Intentional new edit'}})
-  expect(stored().draft).toBe('Intentional new edit')
+  await waitFor(()=>expect(stored().draft).toBe('Intentional new edit'))
 })

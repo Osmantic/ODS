@@ -5,6 +5,41 @@ const current = () => JSON.parse(localStorage.getItem(CHAT_KEY))
 beforeEach(()=>localStorage.clear())
 afterEach(()=>vi.restoreAllMocks())
 
+it('checks the current checkpoint without changing storage or its baseline',()=>{
+  saveConversation(chat)
+  const write=createConversationWriter(current())
+  const before=localStorage.getItem(CHAT_KEY)
+  const writes=vi.spyOn(Storage.prototype,'setItem')
+  write.assertCurrent(chat.chatId)
+  expect(writes).not.toHaveBeenCalled()
+  expect(localStorage.getItem(CHAT_KEY)).toBe(before)
+  write({...chat,draft:'Accepted after a read-only check'})
+  expect(current().draft).toBe('Accepted after a read-only check')
+})
+
+it('rejects a stale checkpoint before remote work without adopting newer contents',()=>{
+  saveConversation(chat)
+  const write=createConversationWriter(current())
+  saveConversation({...chat,draft:'Another author saved'})
+  const before=localStorage.getItem(CHAT_KEY)
+  const writes=vi.spyOn(Storage.prototype,'setItem')
+  expect(()=>write.assertCurrent(chat.chatId)).toThrow(/changed in another tab/)
+  expect(writes).not.toHaveBeenCalled()
+  expect(localStorage.getItem(CHAT_KEY)).toBe(before)
+  expect(()=>write({...chat,draft:'Stale unsaved input'})).toThrow(/changed in another tab/)
+})
+
+it('read-only admission preserves deletion and unreadable-library failures',()=>{
+  saveConversation(chat)
+  const write=createConversationWriter(current())
+  localStorage.setItem('ods.pixel.conversations.v1','{broken')
+  expect(()=>write.assertCurrent(chat.chatId)).toThrow()
+  expect(localStorage.getItem('ods.pixel.conversations.v1')).toBe('{broken')
+  localStorage.setItem('ods.pixel.conversations.v1','[]')
+  deleteConversation(chat.chatId)
+  expect(()=>write.assertCurrent(chat.chatId)).toThrow(/deleted in another tab/)
+})
+
 it('detects changed contents even when timestamps are equal',()=>{
   vi.spyOn(Date,'now').mockReturnValue(42)
   saveConversation(chat)

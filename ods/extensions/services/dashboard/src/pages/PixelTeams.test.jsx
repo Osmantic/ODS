@@ -16,7 +16,7 @@ it('persists team project observations when the summary stays identical and rest
     projects:[{schemaVersion:1,kind:'ods-workspace-project',relativeDirectory:'Playground/team-notes',observedAt:'2026-09-16T12:00:30.000Z'}]}
   const team={id,status:'completed',goal:'Write notes',agents:[{id:'0',name:'Writer',role:'builder',task:'Write notes',status:'completed',conversation:[{role:'assistant',content:'Saved the notes.'}]}]}
   const content=portalTeams.teamSummary(team)
-  saveConversation({schema:1,chatId:'team-project',messages:[{role:'user',content:'Write notes'},{role:'assistant',teamId:id,content}]})
+  saveConversation({schema:1,chatId:'team-project',persistenceOwnership:'web-lock-v1',messages:[{role:'user',content:'Write notes'},{role:'assistant',teamId:id,content}]})
   let controller={teams:[team],busy:false,error:'',selected:null,select:vi.fn()}
   vi.spyOn(portalTeams,'usePortalTeams').mockImplementation(()=>controller)
   vi.stubGlobal('fetch',vi.fn(async()=>({ok:true,json:async()=>({available:true,model:'pixel/default'})})))

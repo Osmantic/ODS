@@ -1,10 +1,19 @@
-import { CHAT_KEY, createConversationWriter, deleteConversation, readConversations, saveConversation } from './pixelConversations'
+import { CHAT_KEY, PERSISTENCE_OWNERSHIP, createConversationWriter, deleteConversation, readConversations, saveConversation } from './pixelConversations'
 
 const record = (chatId, draft = '', messages = []) => ({schema:1, chatId, messages, draft})
 const current = () => JSON.parse(localStorage.getItem(CHAT_KEY))
 const other = () => record('other', '', [{role:'user',content:'Keep the owner task'}])
 beforeEach(() => localStorage.clear())
 afterEach(() => vi.restoreAllMocks())
+
+test('a participating empty draft remains editable when a different chat moves the pointer',()=>{
+  const writer=createConversationWriter()
+  writer({...record('new'),persistenceOwnership:PERSISTENCE_OWNERSHIP})
+  saveConversation(other())
+  writer.assertCurrent('new')
+  expect(()=>writer({...record('new','Keep this draft'),persistenceOwnership:PERSISTENCE_OWNERSHIP})).not.toThrow()
+  expect(readConversations().find(chat=>chat.chatId==='new').draft).toBe('Keep this draft')
+})
 
 test('an existing writer can already create a different absent chat without rebinding', () => {
   saveConversation(other())
@@ -78,6 +87,7 @@ test('a colliding identity cannot replace an existing conversation', () => {
 test.each([
   {requestId:'request-1'}, {inFlight:true}, {interrupted:true}, {compactionRequestId:'compact-1'},
   {contextStart:1}, {preview:{siteId:'retained'}}, {futureRecoveryMetadata:'preserve'},
+  {persistenceOwnership:'unknown-protocol'}, {persistenceOwnership:null},
 ])('an absent empty baseline with operation or unknown metadata remains strict (%j)', metadata => {
   const writer = createConversationWriter()
   writer({...record('new'), ...metadata})

@@ -2,6 +2,7 @@ import { conversationLabels, deleteConversationLabels } from './pixelConversatio
 import {parseProjectTasks} from './pixelTaskActivity'
 
 export const CHAT_KEY = 'ods.pixel.chat.v1'
+export const PERSISTENCE_OWNERSHIP = 'web-lock-v1'
 const LIBRARY_KEY = 'ods.pixel.conversations.v1'
 export const LIBRARY_EVENT = 'ods:pixel-conversations-changed'
 export const SELECT_EVENT = 'ods:pixel-select-conversation'
@@ -59,13 +60,14 @@ function conversationSnapshot(chat) {
 }
 
 const EMPTY_DRAFT_KEYS = new Set(['schema', 'chatId', 'messages', 'draft', 'requestId', 'inFlight',
-  'interrupted', 'contextStart', 'compactionRequestId', 'preview', 'workspaceOpen', 'updatedAt', 'persistenceVersion'])
+  'interrupted', 'contextStart', 'compactionRequestId', 'preview', 'workspaceOpen', 'updatedAt', 'persistenceVersion', 'persistenceOwnership'])
 function omittedEmptyBaseline(chat) {
   // The library omits an empty draft. Moving the shared active pointer does
   // not edit that draft, but pending operations and unknown metadata stay strict.
   return Array.isArray(chat?.messages) && chat.messages.length === 0 && !chat.draft?.trim()
     && !chat.requestId && !chat.inFlight && !chat.interrupted && !chat.compactionRequestId && !chat.preview
     && (chat.contextStart == null || chat.contextStart === 0)
+    && (chat.persistenceOwnership === undefined || chat.persistenceOwnership === PERSISTENCE_OWNERSHIP)
     && Object.keys(chat).every(key => EMPTY_DRAFT_KEYS.has(key))
 }
 
@@ -76,11 +78,28 @@ export function createConversationWriter(initial = null) {
   let chatId = initial?.chatId
   let expected = conversationSnapshot(initial)
   let omitted = omittedEmptyBaseline(initial)
-  return chat => saveConversation(chat, {
+  function latestRecord(targetChatId) {
+    const entries = loadConversations(true)
+    const previous = entries.find(item => valid(item) && item.chatId === targetChatId)
+    const current = currentConversation()
+    return valid(current) && current.chatId === targetChatId && (current.persistenceVersion === 2 || !previous) ? current : previous
+  }
+  function assertCurrent(targetChatId = chatId) {
+    if (deletedIds().includes(targetChatId)) throw new Error('This conversation was deleted in another tab. Start a new chat.')
+    const latest = latestRecord(targetChatId)
+    const matches = conversationSnapshot(latest ?? null) === (targetChatId === chatId ? expected : null)
+      || (targetChatId === chatId && latest == null && omitted)
+    if (!matches) {
+      const error = new Error('This conversation changed in another tab. Download a recovery copy of your unsaved text, then reload this page to read the saved version.')
+      error.code = 'conversation-changed'
+      throw error
+    }
+  }
+  return Object.assign(chat => saveConversation(chat, {
     matches: current => conversationSnapshot(current) === (chat.chatId === chatId ? expected : null)
       || (chat.chatId === chatId && current === null && omitted),
     committed: value => {chatId = value.chatId; expected = conversationSnapshot(value); omitted = omittedEmptyBaseline(value)},
-  })
+  }), { assertCurrent })
 }
 
 export function saveConversation(chat, checkpoint) {

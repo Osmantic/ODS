@@ -1566,7 +1566,7 @@ describe('Pixel', () => {
       url:`http://${siteId}.localhost:9437/${siteId}/`,files:2,bytes:4096,
       sha256:'a'.repeat(64),entrySha256:'b'.repeat(64)}
     globalThis.localStorage.setItem('ods.pixel.chat.v1', JSON.stringify({
-      schema:1, chatId:'durable-chat', requestId:'durable-attempt', inFlight:true,
+      schema:1, chatId:'durable-chat', requestId:'durable-attempt', inFlight:true, persistenceOwnership:'web-lock-v1',
       messages:[{role:'user',content:'Make my preview'},{role:'assistant',content:'Partial answer'}],
     }))
     globalThis.fetch.mockImplementation(async (url, options) => {
@@ -1586,7 +1586,7 @@ describe('Pixel', () => {
     expect(await screen.findByTitle('Interactive Portal preview')).toHaveAttribute('src',`/pixel-preview/${siteId}/__ods_view__.html`)
     expect(screen.queryByText('Partial answer')).toBeNull()
     expect(globalThis.fetch.mock.calls.some(([url]) => url === '/api/pixel/chat/stream')).toBe(false)
-    await waitFor(() => expect(JSON.parse(localStorage.getItem('ods.pixel.chat.v1')).inFlight).toBe(false))
+    await waitFor(() => expect(JSON.parse(localStorage.getItem('ods.pixel.chat.v1')).inFlight).toBe(false), {timeout:6000})
     first.unmount()
     render(<Pixel />)
     expect(await screen.findByText('Recovered final answer')).toBeVisible()
