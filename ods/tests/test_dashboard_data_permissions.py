@@ -103,10 +103,12 @@ os.replace(path, data / "dashboard-password.json")
                 saved.write_bytes(b"private-state")
                 saved.chmod(0o600)
                 os.chown(saved, 1000, 1000)
+                # Read the exact libraries before dropping IDs: a CI checkout
+                # can be beneath a runner home that UID 1000 cannot traverse.
                 script = ('set -euo pipefail\n'
-                          'source "$SCRIPT_DIR/installers/lib/sudo.sh"\n'
-                          'source "$SCRIPT_DIR/installers/lib/dashboard-data.sh"\n'
-                          'ODS_SUDO_AVAILABLE=false\n'
+                          + (ROOT / "installers/lib/sudo.sh").read_text() + '\n'
+                          + (ROOT / "installers/lib/dashboard-data.sh").read_text() + '\n'
+                          + 'ODS_SUDO_AVAILABLE=false\n'
                           'ods_prepare_dashboard_data "$INSTALL_DIR" false\n')
 
                 def identity():
