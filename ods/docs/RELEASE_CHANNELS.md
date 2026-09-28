@@ -37,12 +37,11 @@ qualification campaign is incomplete.
 
 ## Default Guidance
 
-- The default README quickstart requires an immutable signed stable artifact.
-  The historical `v3.0.0` release does not meet that new contract. Publishing
-  and validating the first eligible candidate is a rollout gate; the verified
-  command stops before installation while that gate is open.
-- Development `main` is an explicit opt-in under the README's development
-  section, not a fallback after failed verification.
+- New users can follow the README quickstart, which tracks `main` and is not
+  signed. A signed-source path is staged in
+  [Verified Install Preview](VERIFIED_INSTALL_PREVIEW.md); it becomes the
+  default only after the first eligible immutable release is published and
+  validated. The historical `v3.0.0` release does not meet that contract.
 - Pin `v3.0.0` to reproduce the V3 Pre-Release source, or an audited later commit
   to include subsequent fixes. Do not relabel earlier tests as a later-head pass.
 - V3 fixes target `main`. No `release/3.x` branch is implied by the new tag.
