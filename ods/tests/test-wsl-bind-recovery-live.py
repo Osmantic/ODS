@@ -43,6 +43,9 @@ class LiveRecovery(unittest.TestCase):
         def current_id():
             return recovery.run(["docker", "compose", *flags, "ps", "-q", "fixture"], 15).stdout.strip()
         try:
+            self.assertEqual(recovery.main(["--check", *cli]), 0)
+            self.assertEqual(recovery.main(cli), 0)
+            self.assertEqual(current_id(), "")
             recovery.run(["docker", "compose", *flags, "up", "-d", "--no-build", "--pull", "never"], 60)
             initial = current_id()
             self.assertEqual(recovery.main(["--check", *cli]), 0)
@@ -70,6 +73,62 @@ class LiveRecovery(unittest.TestCase):
             print(json.dumps({"live_recovery": "passed", "artifacts": str(root), "project": project,
                               "stale_readonly_check": True, "old_view_preserved": True, "repeat_idempotent": True}))
         finally:
+            recovery._deadline = None
+            recovery.run(["docker", "compose", *flags, "down", "--timeout", "5"], 30)
+
+    def test_failed_oci_file_mount_recovers_after_source_is_available(self):
+        self.assertTrue(recovery.is_wsl_docker_desktop())
+        image = os.environ.get("ODS_RECOVERY_TEST_IMAGE")
+        if not image:
+            image = recovery.run(["docker", "inspect", "ods-dashboard-api", "--format", "{{.Image}}"], 15).stdout.strip()
+        root = Path(tempfile.mkdtemp(prefix="ods-bind-recovery-oci-"))
+        source = root / "current"
+        source.mkdir(mode=0o755)
+        project = "ods-bind-oci-" + uuid.uuid4().hex[:12]
+        target = "/etc/passwd"
+        compose = root / "compose.json"
+        compose.write_text(json.dumps({"name": project, "services": {"fixture": {
+            "image": image, "entrypoint": [],
+            "command": ["python", "-c", "import time; time.sleep(600)"],
+            "network_mode": "none", "volumes": [{"type": "bind", "source": str(source),
+                                                    "target": target, "read_only": True}]
+        }}}))
+        flags = ["--project-directory", str(root), "-p", project, "-f", str(compose)]
+        cli = ["--install-dir", str(root), "--service", "fixture", "--", *flags]
+
+        def current_id():
+            return recovery.run(["docker", "compose", *flags, "ps", "-a", "-q", "fixture"], 15).stdout.strip()
+
+        try:
+            self.assertEqual(recovery.main(["--check", *cli]), 0)
+            self.assertEqual(recovery.main(cli), 0)
+            self.assertEqual(current_id(), "")
+            up = recovery.run(["docker", "compose", *flags, "up", "-d", "--no-build", "--pull", "never"],
+                              60, check=False)
+            self.assertNotEqual(up.returncode, 0, "directory over regular image file must fail")
+            stopped = current_id()
+            self.assertTrue(stopped, "expected an actual failed OCI container")
+            state = recovery.inspect_container(stopped)["State"]
+            self.assertIn(state["Status"], ("created", "exited", "dead"))
+            self.assertIn(target, state["Error"])
+            self.assertIn("not a directory", state["Error"].lower())
+            source.rename(root / "retained-original")
+            source.write_text("new-source-generation")
+            self.assertEqual(recovery.main(["--check", *cli]), 2)
+            self.assertEqual(current_id(), stopped)
+            self.assertEqual(recovery.main(cli), 0)
+            repaired = current_id()
+            self.assertNotEqual(repaired, stopped)
+            self.assertEqual(recovery.run(["docker", "exec", repaired, "cat", target], 15).stdout,
+                             "new-source-generation")
+            self.assertEqual(list((root / recovery.BACKUP_ROOT_REL).glob("*/*.tar")), [])
+            self.assertEqual(recovery.main(["--check", *cli]), 0)
+            self.assertEqual(recovery.main(cli), 0)
+            self.assertEqual(current_id(), repaired)
+            print(json.dumps({"stopped_oci_recovery": "passed", "artifacts": str(root), "project": project,
+                              "fresh_empty_noop": True, "repeat_idempotent": True}))
+        finally:
+            recovery._deadline = None
             recovery.run(["docker", "compose", *flags, "down", "--timeout", "5"], 30)
 
 

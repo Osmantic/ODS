@@ -249,7 +249,7 @@ class TestPausedRefusal(Base):
 class TestStoppedClassification(Base):
     def test_failed_oci_start_is_recreated_without_archiving_a_nonrunning_view(self):
         cfg = fake_config(services={"a": {"volumes": [bind(str(self.host), "/data")]}})
-        container = {"State": {"Status": "exited", "Error": "OCI mount failed: not a directory"}, "Config": {"Labels": {
+        container = {"State": {"Status": "exited", "Error": 'OCI mount failed at "/data": not a directory'}, "Config": {"Labels": {
             "com.docker.compose.project": "proj", "com.docker.compose.service": "a"}}}
         with mock.patch.object(H, "is_wsl_docker_desktop", return_value=True), \
              mock.patch.object(H, "compose_config_json", return_value=cfg), \
@@ -264,10 +264,28 @@ class TestStoppedClassification(Base):
 
     def test_stopped_oci_error_repairs(self):
         binds = [(str(self.host), "/a", False)]
-        ctr = {"State": {"Error": "OCI runtime: not a directory"}}
+        ctr = {"State": {"Error": 'OCI runtime: error mounting to rootfs at "/a": not a directory'}}
         stale, reason = H.classify_stopped(ctr, binds)
         self.assertTrue(stale)
         self.assertEqual(reason, "stopped-oci-mount-error")
+
+    def test_unrelated_and_partial_target_errors_do_not_recreate(self):
+        binds = [(str(self.host), "/data", False)]
+        for target in ("/database", "/nested/data", "/data/file", "/data-cache", "/app"):
+            with self.subTest(target=target):
+                ctr = {"State": {"Error": f'OCI mount or exec at "{target}": not a directory'}}
+                self.assertEqual(H.classify_stopped(ctr, binds), (False, "stopped-no-evidence"))
+
+    def test_desktop_mount_and_entrypoint_errors_name_actual_file_target(self):
+        binds = [(str(self.host / "f.txt"), "/app/entrypoint.sh", True)]
+        for error in (
+            'error mounting "/run/desktop/mnt/host/wsl/docker-desktop-bind-mounts/Ubuntu/abc" '
+            'to rootfs at "/app/entrypoint.sh": create mountpoint: not a directory',
+            'OCI runtime create failed: exec: "/app/entrypoint.sh": is a directory',
+        ):
+            with self.subTest(error=error):
+                self.assertEqual(H.classify_stopped({"State": {"Error": error}}, binds),
+                                 (True, "stopped-oci-mount-error"))
 
     def test_ordinary_exited_no_repair(self):
         binds = [(str(self.host), "/a", False)]
@@ -438,6 +456,46 @@ class TestMalformedComposePs(Base):
 
 
 class TestRecreateFlags(Base):
+    def test_all_stale_replica_views_are_archived_before_one_service_recreate(self):
+        cfg = fake_config(services={"a": {"volumes": [bind(str(self.host), "/data")]}})
+        names = ("original-1", "original-2")
+        rows = [{"Service": "a", "Name": name} for name in names]
+        container = {"State": {"Status": "running"}, "Config": {"Labels": {
+            "com.docker.compose.project": "proj", "com.docker.compose.service": "a"}}}
+        events = []
+        with mock.patch.object(H, "is_wsl_docker_desktop", return_value=True), \
+             mock.patch.object(H, "compose_config_json", return_value=cfg), \
+             mock.patch.object(H, "compose_ps", return_value=rows), \
+             mock.patch.object(H, "inspect_container", return_value=container), \
+             mock.patch.object(H, "classify_running", return_value=(True, "stale-bind:/data")), \
+             mock.patch.object(H, "backup_phantom", side_effect=lambda _root, name, _binds: (events.append(name) or (1, 1))), \
+             mock.patch.object(H, "recreate", side_effect=lambda _flags, service: events.append("recreate:" + service)), \
+             mock.patch.object(H, "verify", return_value=(True, "ok")) as verify:
+            self.assertEqual(H.main(["--install-dir", str(self.install), "--", "-f", "fixture.yml"]), 0)
+        self.assertEqual(events, [*names, "recreate:a"])
+        verify.assert_called_once()
+
+    def test_verify_does_not_hide_a_bad_later_replica(self):
+        binds = [(str(self.host), "/data", False)]
+        same = {"device": 1, "inode": 10, "filetype": "dir"}
+        stale = {**same, "inode": 99}
+        running = {"State": {"Status": "running"}}
+        rows = [{"Service": "a", "Name": "first"}, {"Service": "a", "Name": "second"}]
+        for case, second, seen, expected in (
+            ("stale", running, stale, "stale-bind:/data"),
+            ("paused", {"State": {"Status": "running", "Paused": True}}, same, "paused"),
+            ("missing", None, same, "inspect-failed"),
+            ("healthy", running, same, "ok"),
+        ):
+            with self.subTest(case=case), \
+                 mock.patch.object(H, "compose_ps", return_value=rows), \
+                 mock.patch.object(H, "inspect_container", side_effect=[running, second]) as inspect, \
+                 mock.patch.object(H, "host_stat", return_value=same), \
+                 mock.patch.object(H, "exec_stat", side_effect=[same, seen]):
+                ok, reason = H.verify(["-f", "fixture.yml"], "a", binds)
+                self.assertEqual((ok, reason), (case == "healthy", expected))
+                self.assertEqual(inspect.call_args_list, [mock.call("first"), mock.call("second")])
+
     def test_recreate_no_pull_no_build_no_deps(self):
         calls = []
 

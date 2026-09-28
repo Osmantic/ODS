@@ -96,14 +96,18 @@ try {
     Set-ODSWslStartupIntent $identity $false
     $savedResolve=Get-Command Resolve-ODSWslRegisteredDistro -CommandType Function -ErrorAction SilentlyContinue
     function Resolve-ODSWslRegisteredDistro {param($Name);throw 'enable-startup must not query WSL'}
+    $savedRunning=Get-Command Get-ODSWslRunningDistributions -CommandType Function -ErrorAction SilentlyContinue
+    function Get-ODSWslRunningDistributions {throw 'enable-startup must not enumerate WSL distributions'}
     try {
         $repair=Invoke-ODSWslLifecycle enable-startup $identity.distro $identity.installRoot -DockerDesktopPath $desktop
         Check ($script:registrations -eq 1) 'enable-startup registers the owner-limited startup task without rerunning the installer'
         Check ($script:events.Count -eq 0) 'enable-startup performs no WSL Docker or service operation'
         Check (-not (Get-ODSWslStartupIntent $identity).desiredRunning) 'enable-startup preserves the existing desiredRunning=false preference'
         Check ($repair.identity.id -ceq $identity.id) 'enable-startup returns the lifetime status for the repaired installation'
+        Check ($repair.state -eq 'registered' -and $null -eq $repair.distroRunning) 'startup registration returns Windows-only status without claiming runtime readiness'
     } finally {
         if ($savedResolve) { Set-Item -Path Function:\Resolve-ODSWslRegisteredDistro -Value $savedResolve.ScriptBlock }
+        if ($savedRunning) { Set-Item -Path Function:\Get-ODSWslRunningDistributions -Value $savedRunning.ScriptBlock }
     }
     $script:registrations=0;$script:startupTask=$null
     Enable-ODSWslStartup $identity $desktop
@@ -242,6 +246,10 @@ try {
     Check ((ConvertTo-ODSWindowsArgument '/home/owner/ods') -ceq '/home/owner/ods') 'simple Linux paths remain unquoted'
     Check ((ConvertTo-ODSWindowsArgument 'C:\a b\') -ceq '"C:\a b\\"') 'Windows argv quoting preserves trailing separators'
     Check ((ConvertTo-ODSWindowsArgument 'a"b') -ceq '"a\"b"') 'Windows argv quoting preserves embedded quotes'
+    $parameterNames=@([Management.Automation.Language.Parser]::ParseFile(
+        (Join-Path $PSScriptRoot '../../installers/wsl-lifecycle.ps1'),[ref]$null,[ref]$null
+    ).ParamBlock.Parameters | ForEach-Object { $_.Name.VariablePath.UserPath })
+    Check (($parameterNames -join ',') -ceq 'Action,Distro,InstallRoot,InstanceDirectory,ValidateOnly,StateRoot,DockerDesktopPath') 'public script preserves all legacy positional parameters before the new optional Docker path'
     Write-Host "Passed $count startup contracts; no WSL Docker Scheduler or service action ran."
 } finally {
     if(Test-Path -LiteralPath $fixture){

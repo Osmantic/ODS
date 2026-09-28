@@ -112,12 +112,15 @@ Use the existing `-StateRoot` when the installation has a custom state location.
 The action validates the existing owner manifest and holder task, copies the
 launcher into durable private state, and preserves an explicit stopped
 preference. It does not launch Docker, WSL, or the stack. An explicit start is
-still required when the saved preference is stopped.
+still required when the saved preference is stopped. Its `registered` result
+confirms Windows registration only; it does not report runtime readiness.
 
 Run `ODS_WSL_RECOVERY_LIVE=1 python3 tests/test-wsl-bind-recovery-live.py` from
 WSL to reproduce a replaced bind source with an isolated disposable Compose
 project. The test retains the old marker in a private archive, verifies the new
 container sees the replacement source, and checks repeat-start idempotence.
+It also checks an empty fresh project without creating containers and repairs
+a real stopped OCI file/directory mount failure after its source is available.
 
 Qualification: the repository includes controlled Windows identity/ACL/lock and
 Linux-adapter ownership/ordering tests. An isolated holder-only roundtrip has

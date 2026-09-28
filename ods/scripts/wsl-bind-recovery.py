@@ -10,6 +10,7 @@ unrelated projects. Never prints secrets.
 import argparse
 import json
 import os
+import re
 import selectors
 import shutil
 import stat as statmod
@@ -269,7 +270,12 @@ def classify_stopped(container, binds):
     low = err.lower()
     if "not a directory" not in low and "is a directory" not in low:
         return False, "stopped-no-evidence"
-    return True, "stopped-oci-mount-error"
+    # Require a declared target as a complete path token. A named-volume,
+    # executable or working-directory error elsewhere is not stale-bind proof.
+    for _src, dst, _ro in binds:
+        if re.search(r"(?<![\w/.-])" + re.escape(dst) + r"(?![\w/.-])", err):
+            return True, "stopped-oci-mount-error"
+    return False, "stopped-no-evidence"
 
 
 def _bounded_tar_stream(container_name, argv, archive_path, deadline):
@@ -425,16 +431,20 @@ def verify(flags, service, expected_binds):
         rows = compose_ps(flags)
     except RuntimeError as exc:
         return False, f"compose-ps-failed:{exc}"
+    matched = False
     for row in rows:
         if row.get("Service") != service:
             continue
         name = row.get("Name")
         if not name:
-            continue
+            return False, "container-missing"
+        matched = True
         container = inspect_container(name)
         if not container:
             return False, "inspect-failed"
         state = (container.get("State") or {}).get("Status", "")
+        if (container.get("State") or {}).get("Paused") or state == "paused":
+            return False, "paused"
         if state != "running":
             return False, f"state={state}"
         try:
@@ -447,8 +457,7 @@ def verify(flags, service, expected_binds):
                     return False, f"stale-bind:{dst}"
         except RuntimeError as exc:
             return False, f"verify-error:{exc}"
-        return True, "ok"
-    return False, "container-missing"
+    return (True, "ok") if matched else (False, "container-missing")
 
 
 def main(argv=None):
@@ -579,14 +588,17 @@ def main(argv=None):
         except (RuntimeError, OSError) as exc:
             return fail(str(exc))
 
-    for svc, _name, _binds, _state in stale_services:
+    # Compose recreates the entire service, including its replicas. Preserve
+    # every original stale view above, then recreate and verify each service once.
+    service_binds = {svc: binds for svc, _name, binds, _state in stale_services}
+    for svc in service_binds:
         log(f"recreating {svc}")
         try:
             recreate(flags, svc)
         except subprocess.SubprocessError as exc:
             return fail(f"recreate failed for {svc}: {exc}")
 
-    for svc, _name, binds, _state in stale_services:
+    for svc, binds in service_binds.items():
         ok, reason = verify(flags, svc, binds)
         if not ok:
             return fail(f"post-recreate verification failed for {svc}: {reason}")

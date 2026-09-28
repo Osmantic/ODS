@@ -6,9 +6,9 @@ param(
     [string]$Distro,
     [string]$InstallRoot,
     [string]$InstanceDirectory,
-    [string]$DockerDesktopPath,
     [switch]$ValidateOnly,
-    [string]$StateRoot
+    [string]$StateRoot,
+    [string]$DockerDesktopPath
 )
 $ErrorActionPreference = 'Stop'
 $script:ODSWslLifecycleSource = $PSCommandPath
@@ -751,7 +751,15 @@ function Invoke-ODSWslLifecycle([string]$Action,[string]$Distro,[string]$Install
         if ($ValidateOnly) { throw 'ValidateOnly is supported only for disable-startup' }
         $identity=Get-ODSWslIdentity $Distro $InstallRoot
         Enable-ODSWslStartup $identity $DockerDesktopPath
-        return (Get-ODSWslLifetimeStatus $identity)
+        # Registration is Windows-only, even when WSL is unavailable. Do not
+        # infer runtime health from a successfully registered sign-in task.
+        $intent=Get-ODSWslStartupIntent $identity
+        return [pscustomobject]@{
+            scope='wsl-lifetime'; state='registered'; distroRunning=$null;
+            identity=$identity; runtime=$null;
+            startupEnabled=($null -ne $intent -and $intent.desiredRunning);
+            startup=(Read-ODSWslJson (Join-Path $identity.directory 'startup-status.json'))
+        }
     }
     if ($ValidateOnly) { throw 'ValidateOnly is supported only for disable-startup' }
     $Distro=Resolve-ODSWslRegisteredDistro $Distro
