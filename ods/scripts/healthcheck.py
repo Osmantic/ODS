@@ -119,6 +119,8 @@ def _parse_host_port(raw: str) -> Tuple[str, int]:
     except ValueError as exc:
         raise ValueError("port must be an integer") from exc
     if not (1 <= port <= 65535):
+        raise ValueError("port must be in range 1-65535")
+    if not (1 <= port <= 65535):
         raise ValueError("port out of range (1-65535)")
     return (host, port)
 
