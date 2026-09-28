@@ -244,6 +244,13 @@ _prune_rollback_snapshots() {
     done < <(find "${ROLLBACK_DIR}" -maxdepth 1 -type d -name "pre-update-*" | sort -r)
 }
 
+_require_positive_backup_retention() {
+    if [[ ! "$MAX_BACKUPS" =~ ^[1-9][0-9]{0,8}$ ]]; then
+        log_error "MAX_BACKUPS must be a positive integer (1-999999999); refusing to create a snapshot that may be pruned immediately."
+        return 1
+    fi
+}
+
 # snapshot_pre_update <timestamp>
 #   Creates data/backups/pre-update-<timestamp>/ and copies:
 #     • .env and .env.* variants
@@ -254,6 +261,8 @@ _prune_rollback_snapshots() {
 #   then prints the snapshot directory path on stdout.
 snapshot_pre_update() {
     local timestamp="${1:-$(date +%Y%m%d-%H%M%S)}"
+
+    _require_positive_backup_retention || return 1
 
     # All log calls redirect to stderr so command-substitution callers
     # (snap_dir=$(snapshot_pre_update ...)) only capture the path on stdout.
@@ -688,6 +697,7 @@ cmd_status() {
 
 cmd_backup() {
     local backup_name="${1:-}"
+    _require_positive_backup_retention || return 1
     if [[ -n "$backup_name" && ! "$backup_name" =~ ^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$ ]]; then
         log_error "Invalid backup name. Use 1-64 letters, numbers, underscores, or hyphens."
         return 1
@@ -712,7 +722,7 @@ cmd_backup() {
         log_error "Backup already in progress: ${backup_id}"
         return 1
     fi
-    if [[ -e "$backup_path" ]]; then
+    if [[ -e "$backup_path" || -L "$backup_path" ]]; then
         rmdir "$lock_path"
         log_error "Backup already exists: ${backup_id}"
         return 1
@@ -742,7 +752,7 @@ cmd_backup() {
     # can bring the restored stack up with the same file selection (same set
     # snapshot_pre_update captures).
     if [[ -f "${INSTALL_DIR}/.compose-flags" ]]; then
-        cp "${INSTALL_DIR}/.compose-flags" "$backup_path/"
+        cp "${INSTALL_DIR}/.compose-flags" "$staging_path/"
         files_backed_up=$((files_backed_up + 1))
     fi
 
@@ -753,7 +763,7 @@ cmd_backup() {
     for ext_dir in litellm n8n openclaw searxng; do
         local src="${INSTALL_DIR}/config/${ext_dir}"
         if [[ -d "$src" ]]; then
-            cp -r "$src" "${backup_path}/config-${ext_dir}"
+            cp -r "$src" "${staging_path}/config-${ext_dir}"
             files_backed_up=$((files_backed_up + 1))
         fi
     done

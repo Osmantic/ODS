@@ -40,6 +40,9 @@ mkdir -p "$FIXTURE/home"
 cp "$ROOT_DIR/ods-update.sh" "$FIXTURE/ods-update.sh"
 : > "$FIXTURE/docker-compose.base.yml"
 : > "$FIXTURE/docker-compose.nvidia.yml"
+printf '%s\n' '-f docker-compose.base.yml -f docker-compose.nvidia.yml' > "$FIXTURE/.compose-flags"
+mkdir -p "$FIXTURE/config/litellm"
+printf 'model_list: []\n' > "$FIXTURE/config/litellm/config.yaml"
 echo "GPU_BACKEND=nvidia" > "$FIXTURE/.env"
 echo '{"version": "2.0.0"}' > "$FIXTURE/.version"
 
@@ -76,9 +79,9 @@ fi
 # ---------------------------------------------------------------------------
 # 2. all eligible files are copied and counted
 # ---------------------------------------------------------------------------
-# 2 compose files + .env + .version = 4
-if echo "$output" | grep -q "Files backed up: 4"; then
-    pass "backup counted all 4 files"
+# 2 compose files + .env + .compose-flags + config/litellm + .version = 6
+if echo "$output" | grep -q "Files backed up: 6"; then
+    pass "backup counted all 6 files"
 else
     fail "wrong file count: $(echo "$output" | grep 'Files backed up' || echo "$output")"
 fi
@@ -86,6 +89,13 @@ if [[ -f "$backup_dir/docker-compose.nvidia.yml" && -f "$backup_dir/.version" ]]
     pass "backup copied files beyond the first one"
 else
     fail "backup stopped after the first file"
+fi
+if [[ -f "$backup_dir/.compose-flags" && -f "$backup_dir/config-litellm/config.yaml" \
+      && -f "$backup_dir/metadata.json" && -f "$backup_dir/snapshot.json" ]] \
+   && ! find "$backup_dir" -mindepth 1 -maxdepth 1 -name '.*.tmp.*' | grep -q .; then
+    pass "backup publishes a flat, restorable snapshot with active overlays and config"
+else
+    fail "backup published missing or nested snapshot content: $output"
 fi
 
 # ---------------------------------------------------------------------------
@@ -189,6 +199,21 @@ if echo "$output" | grep -q "Backup already in progress" && \
 else
     fail "backup ignored an active transaction lock: $output"
 fi
+
+# ---------------------------------------------------------------------------
+# 8. invalid retention cannot delete the snapshot and report success
+# ---------------------------------------------------------------------------
+for invalid_retention in 0 -1 invalid; do
+    if HOME="$FIXTURE/home" MAX_BACKUPS="$invalid_retention" \
+        bash "$FIXTURE/ods-update.sh" backup retention > "$FIXTURE/retention.log" 2>&1; then
+        fail "MAX_BACKUPS=$invalid_retention was accepted"
+    elif grep -q 'MAX_BACKUPS must be a positive integer' "$FIXTURE/retention.log" \
+        && ! find "$BACKUPS" -maxdepth 1 -type d -name 'backup-retention-*' | grep -q .; then
+        pass "MAX_BACKUPS=$invalid_retention refuses an unusable snapshot"
+    else
+        fail "MAX_BACKUPS=$invalid_retention failed without the retention guard"
+    fi
+done
 
 echo ""
 echo "Results: $PASSED passed, $FAILED failed"

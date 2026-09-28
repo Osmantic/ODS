@@ -2131,6 +2131,30 @@ cmd_update() {
         return 0
     fi
 
+    # Version compatibility check — warn on major version jumps before touching anything
+    if ! _check_version_compat "$force_flag"; then
+        exit 0
+    fi
+
+    # Show what we're updating from/to (if versions were resolved)
+    if [[ -n "${_COMPAT_INSTALLED_VER:-}" && -n "${_COMPAT_TARGET_VER:-}" \
+          && "$_COMPAT_INSTALLED_VER" != "$_COMPAT_TARGET_VER" ]]; then
+        log "Updating: v${_COMPAT_INSTALLED_VER} → v${_COMPAT_TARGET_VER}"
+    fi
+
+    # Pre-update snapshot — safety net before any images are pulled.
+    # Only ods-update.sh creates snapshots that `ods rollback` can select and
+    # that include .env, Compose selection, and extension configs.
+    local _snap_label="pre-update-$(date +%Y%m%d-%H%M%S)"
+    if [[ -x "$INSTALL_DIR/ods-update.sh" ]]; then
+        log "Creating pre-update snapshot (${_snap_label})..."
+        if ! bash "$INSTALL_DIR/ods-update.sh" backup "$_snap_label"; then
+            error "Pre-update snapshot failed. Resolve backup storage and retry; no update was applied."
+        fi
+    else
+        error "ods-update.sh is missing or not executable; cannot create a rollback snapshot. Restore it before updating."
+    fi
+
     ensure_llama_cpu_budget
 
     # Upsert SHIELD_API_KEY when missing (pre-PR-#1069 upgrade path).
@@ -2145,35 +2169,6 @@ cmd_update() {
     flags_str=$(get_compose_flags)
     local -a flags
     read -ra flags <<< "$flags_str"
-
-    # Version compatibility check — warn on major version jumps before touching anything
-    if ! _check_version_compat "$force_flag"; then
-        exit 0
-    fi
-
-    # Show what we're updating from/to (if versions were resolved)
-    if [[ -n "${_COMPAT_INSTALLED_VER:-}" && -n "${_COMPAT_TARGET_VER:-}" \
-          && "$_COMPAT_INSTALLED_VER" != "$_COMPAT_TARGET_VER" ]]; then
-        log "Updating: v${_COMPAT_INSTALLED_VER} → v${_COMPAT_TARGET_VER}"
-    fi
-
-    # Pre-update snapshot — safety net before any images are pulled.
-    # Delegates to ods-update.sh (which writes to data/backups/ and includes
-    # extension configs) when available; falls back to ods-backup.sh.
-    local _snap_label="pre-update-$(date +%Y%m%d-%H%M%S)"
-    if [[ -x "$INSTALL_DIR/ods-update.sh" ]]; then
-        log "Creating pre-update snapshot (${_snap_label})..."
-        if ! bash "$INSTALL_DIR/ods-update.sh" backup "$_snap_label"; then
-            warn "Pre-update snapshot failed; proceeding without safety net."
-        fi
-    elif [[ -x "$INSTALL_DIR/ods-backup.sh" ]]; then
-        log "Creating pre-update backup (${_snap_label})..."
-        if ! "$INSTALL_DIR/ods-backup.sh" --type user-data --description "$_snap_label"; then
-            warn "Pre-update backup failed; proceeding without safety net."
-        fi
-    else
-        warn "ods-update.sh and ods-backup.sh not found; skipping pre-update snapshot."
-    fi
 
     if ! _ods_cli_pull_external_images "${flags[@]}"; then
         error "Failed to pull latest images"
