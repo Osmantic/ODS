@@ -623,3 +623,29 @@ test("visibility duty matches requested behavior: Add a Pause motion toggle to q
   assert.equal(guard.verificationForRun('run').status,'failed');
   assert.match(guard.verificationForRun('run').text,/show\/hide interaction/);
 });
+
+// Quoted control names can be set off by commas without requesting a transition.
+test('comma-separated initial control state case 1',()=>{
+  assert.equal(requestsVisibilityInteraction("The button, \"Hide details\", starts unpressed."),false);
+});
+test('comma-separated initial control state case 2',()=>{
+  assert.equal(requestsVisibilityInteraction("The button, \"Hide details\", starts unpressed and reveals the panel on click."),true);
+});
+test('comma-separated initial control state case 3',()=>{
+  assert.equal(requestsVisibilityInteraction("The \"Hide details\", button starts unpressed."),false);
+});
+test('comma-separated initial control state case 4',()=>{
+  assert.equal(requestsVisibilityInteraction("The \"Show details\" button starts with aria-pressed=false and reveals the panel on click."),true);
+});
+test('comma-separated initial control state case 5',()=>{
+  assert.equal(requestsVisibilityInteraction("Add a button, \"Hide details\", that starts unpressed."),true);
+});
+test('comma-separated initial control state case 6',()=>{
+  assert.equal(requestsVisibilityInteraction("The button, \"Hide details\", starts unpressed, and the toggle, \"Show more\", starts expanded."),false);
+});
+test('comma-separated initial control state case 7',()=>{
+  assert.equal(requestsVisibilityInteraction("Do not click the button, \"Hide details\", which starts unpressed."),false);
+});
+test('comma-separated initial control state case 8',()=>{
+  assert.equal(requestsVisibilityInteraction("The button, \"Read\", starts unpressed and clicking it shows \"Results card\"."),true);
+});

@@ -23,8 +23,8 @@ export function requestsVisibilityInteraction(text) {
       /\b(?:aria-(?:pressed|expanded|hidden|checked|selected)|pressed|unpressed|expanded|collapsed|checked|unchecked|selected)\b/i.test(clause) &&
       !/\b(?:add|create|implement)\b/i.test(clause);
     const bare = initialControlState ? clause.replace(QUOTED, (name, offset) =>
-      /\b(?:button|toggle|link|tab|switch)\s*(?:(?:named|called|labelled|labeled)\s*)?$/i.test(clause.slice(0, offset)) ||
-      /^\s*(?:button|toggle|link|tab|switch)\b/i.test(clause.slice(offset + name.length)) ? ' ' : name)
+      /\b(?:button|toggle|link|tab|switch)\s*,?\s*(?:(?:named|called|labelled|labeled)\s*)?$/i.test(clause.slice(0, offset)) ||
+      /^\s*,?\s*(?:button|toggle|link|tab|switch)\b/i.test(clause.slice(offset + name.length)) ? ' ' : name)
       .replace(/\b(?:its|their|the|this|that|a|an|my|your|our)\s+(?:show|hide|reveal|expand|collapse)(?:[ \t]+[\p{L}\p{N}_-]+){0,4}[ \t]+(?:button|toggle|link|tab|switch)(?=[ \t]+(?:starts?|begins?|defaults?)\b)/giu, ' control ') : clause;
     return /\b(?:shows?|hides?|hidden|reveals?|expands?|collapses?|visible|visibility)\b/i.test(bare);
   });
