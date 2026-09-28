@@ -329,6 +329,9 @@ jobs:
       - name: OpenCode Bun Temp Confinement Tests
         run: bash tests/test-opencode-bun-tmpdir.sh
 
+      - name: OpenCode ownership and installer configuration
+        run: python3 -m pytest -q tests/test_opencode_ownership.py
+
       - name: ODS Doctor Tests
         run: |
           bash tests/test-ods-doctor.sh
