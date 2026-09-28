@@ -1760,8 +1760,8 @@ search:
 $(ods_searxng_hostnames_yaml "$_searxng_lang")
 engines:
   - name: bing
-    # Requalify before enabling: https://github.com/searxng/searxng/pull/6671
-    disabled: true
+    # Fallback when other general engines are blocked (CAPTCHA/429/access denied).
+    disabled: false
   - name: duckduckgo
     disabled: false
   - name: google

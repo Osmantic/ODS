@@ -86,6 +86,44 @@ distributions and their clients are left alone. Windows may naturally retire a
 distribution after its final Windows client exits; keeping unrelated work alive
 remains the responsibility of that work's owner.
 
+Stale-bind recovery: an authorized `ods start` on WSL with Docker Desktop
+probes the actual running container view and, when a service's bind mount has
+been invalidated by a WSL restart, recreates that service from already-installed
+images (no pull, no build) with real data retained and a private bounded backup
+of writable data in the stale container view. Backups are capped at 1 GiB and
+10,000 archive members across affected services, require disk headroom, and
+remain private even when recovery fails. The helper has a 120-second total
+budget within the lifecycle adapter's 300-second start budget. Selected paused services
+are refused rather than recreated. This recovery runs before Compose during
+manual starts and the saved Windows sign-in startup path;
+it makes no promise of universal resilience. Real Windows reboot qualification
+is still pending; the current evidence is a live laptop restoration.
+Containers absent from the selected manifest, including removed or disabled
+extension orphans, are left untouched.
+
+For an already-managed installation missing its Windows sign-in task, repair
+registration without rerunning setup or starting WSL:
+
+```powershell
+powershell -File .\installers\wsl-lifecycle.ps1 -Action enable-startup `
+  -Distro Ubuntu-24.04 -InstallRoot /home/owner/ods `
+  -DockerDesktopPath 'C:\Program Files\Docker\Docker\Docker Desktop.exe'
+```
+
+Use the existing `-StateRoot` when the installation has a custom state location.
+The action validates the existing owner manifest and holder task, copies the
+launcher into durable private state, and preserves an explicit stopped
+preference. It does not launch Docker, WSL, or the stack. An explicit start is
+still required when the saved preference is stopped. Its `registered` result
+confirms Windows registration only; it does not report runtime readiness.
+
+Run `ODS_WSL_RECOVERY_LIVE=1 python3 tests/test-wsl-bind-recovery-live.py` from
+WSL to reproduce a replaced bind source with an isolated disposable Compose
+project. The test retains the old marker in a private archive, verifies the new
+container sees the replacement source, and checks repeat-start idempotence.
+It also checks an empty fresh project without creating containers and repairs
+a real stopped OCI file/directory mount failure after its source is available.
+
 Qualification: the repository includes controlled Windows identity/ACL/lock and
 Linux-adapter ownership/ordering tests. An isolated holder-only roundtrip has
 also been verified with Windows PowerShell 5.1 and Ubuntu-24.04: real Scheduler

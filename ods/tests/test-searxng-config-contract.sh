@@ -17,8 +17,8 @@ locale_lib="$ROOT/installers/lib/searxng-locale.sh"
 files=("$template" "$linux_phase" "$macos_generator" "$windows_generator")
 
 for file in "${files[@]}"; do
-  grep -A3 -F -- "- name: bing" "$file" | grep -Fq "disabled: true" || {
-    echo "Unqualified Bing engine must be disabled in factory SearXNG configuration: $file" >&2
+  grep -A3 -F -- "- name: bing" "$file" | grep -Fq "disabled: false" || {
+    echo "Bing must be enabled as a general-web fallback in factory SearXNG configuration: $file" >&2
     exit 1
   }
   grep -A1 -F -- "- name: brave" "$file" | grep -Fq "disabled: false" || {
@@ -60,7 +60,8 @@ expect_lang "cs_CZ.UTF-8" "cs-CZ"
 expect_lang "nb_NO.UTF-8" "nb-NO"
 expect_lang "en_150" "en"
 expect_lang "sr_RS@latin" "en"
-expect_lang "fil_PH.UTF-8" "en"
+expect_lang "fil_PH.UTF-8" "fil-PH"
+expect_lang "kn_IN.UTF-8" "en"
 expect_lang "C.UTF-8" "en"
 expect_lang "C" "en"
 expect_lang "POSIX" "en"
@@ -184,6 +185,10 @@ if [[ -n "$powershell_bin" ]]; then
   if command -v cygpath >/dev/null 2>&1; then
     windows_generator_native="$(cygpath -w "$windows_generator")"
     windows_tmp_native="$(cygpath -w "$tmp")"
+  elif [[ "$powershell_bin" == *.exe ]] && command -v wslpath >/dev/null 2>&1; then
+    windows_generator_native="$(wslpath -w "$windows_generator")"
+    windows_tmp_native="$(wslpath -w "$tmp")"
+    export WSLENV="${WSLENV:+$WSLENV:}WINDOWS_GENERATOR:OUT_DIR:LOCALE_NAME"
   fi
   for locale in en-US cs-CZ; do
     WINDOWS_GENERATOR="$windows_generator_native" OUT_DIR="$windows_tmp_native\\windows-$locale" LOCALE_NAME="$locale" \

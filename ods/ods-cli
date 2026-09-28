@@ -1965,6 +1965,19 @@ cmd_start() {
         error "Rootless bind-mount ownership is not ready; service start was cancelled."
     fi
 
+    # WSL-only: recover stale Docker Desktop bind mounts before Compose starts.
+    # The helper itself no-ops on non-WSL and non-Docker-Desktop hosts; the
+    # uname gate here keeps Python from being a hard requirement on plain Linux.
+    if [[ "$(uname -r 2>/dev/null)" == *[Mm]icrosoft* ]]; then
+        local _wsl_bind_recovery="$INSTALL_DIR/scripts/wsl-bind-recovery.py"
+        if [[ ! -f "$_wsl_bind_recovery" ]]; then
+            error "WSL bind-mount recovery helper is missing: $_wsl_bind_recovery. Reinstall or update ODS before starting services."
+        fi
+        if ! "${ODS_PYTHON_CMD:-python3}" "$_wsl_bind_recovery" --install-dir "$INSTALL_DIR" --service "$resolved_service" -- "${flags[@]}"; then
+            error "WSL bind-mount recovery failed; service start was cancelled."
+        fi
+    fi
+
     if [[ -z "$resolved_service" ]]; then
         _compose_run_with_summary "Starting all services" "${flags[@]}" up -d
     else

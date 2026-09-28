@@ -18,8 +18,8 @@
 # $script:SearxngLocaleTags in installers/windows/lib/env-generator.ps1.
 # ============================================================================
 
-# searxng/searxng:2026.3.8-a563127a2@sha256:754a07a64e926a1fc0a8a30cd7a07d08278188f0ef6143e38ad0b22ea8599c55 searx/sxng_locales.py
-ODS_SEARXNG_LOCALE_TAGS="af ar ar-SA be bg bg-BG ca cs cs-CZ cy da da-DK de de-AT de-CH de-DE el el-GR en en-AU en-CA en-GB en-IE en-IN en-NZ en-PH en-PK en-SG en-US en-ZA es es-AR es-CL es-CO es-ES es-MX es-PE et et-EE eu fa fi fi-FI fr fr-BE fr-CA fr-CH fr-FR ga gd gl he hi hr hu hu-HU id id-ID is it it-CH it-IT ja ja-JP kn ko ko-KR lt lv ml mr nb nb-NO nl nl-BE nl-NL pl pl-PL pt pt-BR pt-PT ro ro-RO ru ru-RU sk sl sq sv sv-SE ta te th th-TH tr tr-TR uk ur vi vi-VN zh zh-CN zh-HK zh-TW"
+# searxng/searxng:2026.9.25-12f8b6515@sha256:5286edb35782454ab8a102c5eff6b54bff745853191b46aeead95f225aa6dfb6 searx/sxng_locales.py
+ODS_SEARXNG_LOCALE_TAGS="af ar ar-SA bg bg-BG ca ca-ES cs cs-CZ cy da da-DK de de-AT de-BE de-CH de-DE el el-GR en en-AU en-CA en-GB en-HK en-IE en-IN en-NZ en-PH en-PK en-SG en-US en-ZA es es-AR es-CL es-CO es-ES es-MX es-PE es-VE et et-EE fa fi fi-FI fil fil-PH fr fr-BE fr-CA fr-CH fr-FR gl hi hi-IN hr hr-HR hu hu-HU id id-ID it it-CH it-IT ja ja-JP ko ko-KR lt lt-LT lv lv-LV mi mi-NZ nb nb-NO nl nl-BE nl-NL nn nn-NO pl pl-PL pt pt-BR pt-PT ro ro-RO ru ru-RU sk sk-SK sl sl-SI sq sv sv-FI sv-SE th th-TH tr tr-TR uk uk-UA vi vi-VN zh zh-CN zh-HK zh-TW"
 
 # ods_searxng_default_lang [LOCALE]
 #   Map a POSIX/BCP 47 locale (en_US.UTF-8, de-DE, zh-Hant-TW, sr_RS@latin)
