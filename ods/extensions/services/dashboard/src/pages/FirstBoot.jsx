@@ -569,6 +569,7 @@ function ConfirmStep({
           onClick={onBack}
           aria-label="Back"
           disabled={finishing}
+          aria-label="Back"
           className="flex items-center justify-center gap-2 bg-theme-card border border-theme-border text-theme-text py-4 px-5 rounded-xl disabled:opacity-50"
         >
           <ChevronLeft size={18} />
