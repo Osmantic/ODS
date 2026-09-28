@@ -45,6 +45,22 @@ def test_talk_status_requires_session(talk_client, monkeypatch):
     assert data["capabilities"]["live_mic_requires_secure_context"] is True
 
 
+def test_talk_status_keeps_audio_input_available_when_tts_is_down(talk_client, monkeypatch):
+    """A working Whisper endpoint is enough for recording and transcription."""
+    async def fake_state(service_id):
+        statuses = {"hermes": "healthy", "whisper": "healthy", "tts": "down"}
+        return {"configured": True, "status": statuses[service_id], "id": service_id}
+
+    monkeypatch.setattr("routers.talk._service_state", fake_state)
+
+    resp = talk_client.get("/api/talk/status")
+
+    assert resp.status_code == 200, resp.text
+    capabilities = resp.json()["capabilities"]
+    assert capabilities["audio_message"] is True
+    assert capabilities["tts"] is False
+
+
 def test_talk_status_disables_text_chat_for_incompatible_active_model(talk_client, monkeypatch):
     async def fake_state(service_id):
         return {"configured": True, "status": "healthy", "id": service_id}

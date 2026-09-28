@@ -98,6 +98,28 @@ describe('ODSTalk', () => {
     expect(await screen.findByText('I can help from this ODS.')).toBeInTheDocument()
   })
 
+  test('keeps the recording control available when Whisper is healthy but TTS is down', async () => {
+    Object.defineProperty(window, 'isSecureContext', { configurable: true, value: true })
+    const getUserMedia = vi.fn(async () => ({ getTracks: () => [] }))
+    Object.defineProperty(navigator, 'mediaDevices', { configurable: true, value: { getUserMedia } })
+    globalThis.MediaRecorder = class {
+      start = vi.fn()
+      state = 'inactive'
+    }
+    vi.stubGlobal('fetch', vi.fn(async (url) => {
+      if (url === '/api/talk/status') {
+        return response({ capabilities: { text_chat: true, tts: false, audio_message: true } })
+      }
+      throw new Error(`unexpected request: ${url}`)
+    }))
+
+    render(<ODSTalk />)
+
+    const record = await screen.findByRole('button', { name: 'Record voice' })
+    fireEvent.click(record)
+    await waitFor(() => expect(getUserMedia).toHaveBeenCalledWith({ audio: true }))
+  })
+
   test('shows model compatibility reason and disables send when text chat is blocked', async () => {
     const fetchMock = vi.fn(async (url) => {
       if (url === '/api/talk/status') {
