@@ -375,18 +375,50 @@ assert "mktemp \"${TMPDIR:-/tmp}/ods-gtt-tuning.XXXXXX\"" in text
 PY
 pass "AMD tuning honors no-sudo mode and uses a secure temporary config"
 
-python3 - "$ROOT_DIR/installers/phases/06-directories.sh" <<'PY'
+python3 - "$ROOT_DIR/installers/phases/06-directories.sh" "$ROOT_DIR/installers/lib/hermes-data-dir.sh" <<'PY'
 import pathlib
 import re
 import sys
 
-text = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")
-assert "_phase06_repair_host_path" in text
-assert "Hermes requires data/hermes ownership $_phase06_compose_uid:$_phase06_compose_gid and mode 700" in text
-assert 'ods_sudo chown -R "$_phase06_compose_uid:$_phase06_compose_gid"' in text
-assert not re.search(r"(?m)^\s*sudo\s+(?:chown|chmod)\s+", text)
+phase = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")
+helper = pathlib.Path(sys.argv[2]).read_text(encoding="utf-8")
+assert "_phase06_repair_host_path" in phase
+assert 'ods_ensure_hermes_private_dir "$INSTALL_DIR/data/hermes"' in phase
+assert "Hermes requires data/hermes ownership $owner_uid:$owner_gid and mode 700" in helper
+assert 'ods_sudo chown -R "$owner_uid:$owner_gid"' in helper
+assert not re.search(r"(?m)^\s*sudo\s+(?:chown|chmod)\s+", phase + helper)
 PY
 pass "rootful ownership repair uses persisted IDs and fails clearly without sudo"
+
+# Exercise the directory operation used by a fresh rootful Docker install.
+# A no-sudo user owns the new bind mount and can set its private mode.
+# shellcheck source=../installers/lib/hermes-data-dir.sh
+source "$ROOT_DIR/installers/lib/hermes-data-dir.sh"
+ods_sudo_available() { return 1; }
+error() { echo "$*" >&2; }
+hermes_dir="$TMP_DIR/hermes"
+mkdir -m 755 "$hermes_dir"
+ods_ensure_hermes_private_dir "$hermes_dir" "$(id -u)" "$(id -g)" \
+    || fail "fresh Hermes directory required sudo"
+[[ "$(stat -c '%a' "$hermes_dir")" == 700 ]] \
+    || fail "fresh Hermes directory did not become private"
+pass "fresh user-owned Hermes directory becomes private without sudo"
+
+chmod 755 "$hermes_dir"
+mkdir "$hermes_dir/sessions"
+ods_ensure_hermes_private_dir "$hermes_dir" "$(id -u)" "$(id -g)" \
+    || fail "user-owned Hermes rerun required sudo"
+[[ "$(stat -c '%a' "$hermes_dir")" == 700 ]] \
+    || fail "Hermes rerun did not restore private mode"
+pass "user-owned Hermes rerun restores private mode without sudo"
+
+chmod 755 "$hermes_dir"
+if ods_ensure_hermes_private_dir "$hermes_dir" "$(( $(id -u) + 1 ))" "$(id -g)" 2>/dev/null; then
+    fail "foreign-owned Hermes directory bypassed privileged repair"
+fi
+[[ "$(stat -c '%a' "$hermes_dir")" == 755 ]] \
+    || fail "failed ownership repair changed Hermes directory"
+pass "foreign-owned Hermes directory still needs privileged repair"
 
 if grep -q 'Ignoring placeholder .* from environment' \
     "$ROOT_DIR/installers/phases/06-directories.sh"; then
