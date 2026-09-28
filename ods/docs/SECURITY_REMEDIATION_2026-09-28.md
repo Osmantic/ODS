@@ -27,6 +27,12 @@ implemented on main before this work.
 - Dashboard frontend: 210 files / 1,773 tests passed; build and lint passed
   (lint retained pre-existing warnings). Production npm audit: zero findings.
   Development-tool advisories are not included in that production-only result.
+- Eight additional navigation cases now cover malicious query destinations,
+  protocol-relative/encoded/script URLs, redirect history replacement and
+  external tab isolation. Forty focused App/Sidebar/registry/settings tests
+  passed. The new cases exercise existing production behavior with the upgraded
+  router; they do not introduce new navigation behavior. ESLint reports zero
+  errors and the existing JSX unused-variable warning pattern.
 - API authentication/origin tests: 35 passed.
 - Focused recipe/API suite on Linux: 679 passed, two skipped. A subsequent
   policy/source run passed 272, with 134 platform-gated skips. Windows policy
@@ -117,7 +123,10 @@ to upstream. No installed data is deleted and the generated catalog still has
 Locally, 338 library staging/resolver cases, 17 dependency contracts, three
 actual Compose backend renders and two retired-entry rejection tests passed.
 A new disposable Docker CI test seeds an unreviewed local tag and verifies the
-shipped pull policy rebuilds the reviewed source. That new test remains pending.
+shipped pull policy rebuilds the reviewed source. Runtime security run
+`36477433876` on `b983b1268` passed all jobs: 22 recovery cases and four library
+cases, including the actual forced-build container test, all nine production
+image builds and saved-stack checks on Windows, Linux and macOS.
 Runtime security run `36476143179` on `4471122f9` passed all jobs, including the
 UTF-8 recovery correction; this precedes the library update.
 

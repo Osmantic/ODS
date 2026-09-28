@@ -68,6 +68,19 @@ describe('Sidebar', () => {
     expect(screen.getAllByText('ODS 1.0.0')).toHaveLength(1)
   })
 
+  test('keeps an external application link outside SPA navigation and isolates its new tab', () => {
+    const url = 'https://app.example.test/?next=https%3A%2F%2Fother.example%2F#workspace'
+    getSidebarExternalLinks.mockReturnValue([
+      {key: 'example', label: 'External application', url, healthy: true, icon: () => <span/>},
+    ])
+    render(<Sidebar status={defaultStatus} collapsed={false} onToggle={() => {}} />)
+    // The Applications disclosure starts closed; inspect the actual anchor.
+    const link = screen.getByText('External application').closest('a')
+    expect(link).toHaveAttribute('href', url)
+    expect(link).toHaveAttribute('target', '_blank')
+    expect(link.rel.split(' ')).toEqual(expect.arrayContaining(['noopener', 'noreferrer']))
+  })
+
   test('keeps an always-visible OpenCode launcher in the default application list', () => {
     getSidebarExternalLinks.mockReturnValueOnce([
       {
