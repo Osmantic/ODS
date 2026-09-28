@@ -145,3 +145,31 @@ def test_release_job_is_tag_only_pinned_and_draft_only():
     publish = job['steps'][-1]['run']
     assert 'gh release create' in publish and '--verify-tag --draft' in publish
     assert '--clobber' not in publish and 'gh release edit' not in publish
+
+
+def test_real_repository_source_can_be_packaged(tmp_path):
+    # The small trust-boundary fixtures cannot detect a nonportable filename,
+    # case collision or missing entrypoint in the actual release tree.
+    if not (ROOT / '.git').exists():
+        pytest.skip('Focused file-only fixture; full checkout packaging runs in CI')
+    commit = release.git(ROOT, 'rev-parse', 'HEAD').decode().strip()
+    identity = {'repository': release.REPOSITORY, 'tag': 'v0.0.0-fixture',
+                'tagObject': '0' * 40, 'commit': commit}
+    output = tmp_path / 'actual-source'
+    release.package_source(ROOT, identity, output)
+    with zipfile.ZipFile(next(output.glob('*.zip'))) as archive:
+        names = set(archive.namelist())
+        assert '.git/config' not in names
+        for path in ('install.sh', 'install.ps1', 'ods/install.sh', 'ods/installers/windows.ps1'):
+            expected = release.git(ROOT, 'show', commit + ':' + path)
+            # Git's committed attributes deliberately export PowerShell as
+            # CRLF and shell scripts as LF, independent of the packaging host.
+            attribute = release.git(ROOT, 'check-attr', '--source=' + commit, 'eol', '--', path)
+            eol = attribute.decode().strip().rsplit(': ', 1)[-1]
+            if eol in ('lf', 'crlf'):
+                expected = expected.replace(b'\r\n', b'\n')
+                if eol == 'crlf':
+                    expected = expected.replace(b'\n', b'\r\n')
+            assert archive.read(path) == expected
+    # This exercises actual packaging, not signature acceptance. Nothing is
+    # uploaded, tagged, signed or executed from the generated archives.

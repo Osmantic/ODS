@@ -184,6 +184,14 @@ published release is not eligible and no successful new-user installation of
 an eligible signed artifact has yet been demonstrated. This is a merge/release
 gate, not a reason to add an unsigned fallback.
 
+Producer-only draft PR #6882 provides the independent prerequisite without
+changing the public installer command or runtime. Its initial source contracts
+passed on Linux, Windows and macOS in run `36481643159`. A follow-up contract
+also packages the full committed repository and checks installer contents using
+the committed `.gitattributes` line-ending policy; all 13 producer tests passed
+locally on Windows. This proves source packaging compatibility, not acceptance
+of a real signed tag or OIDC attestation. Maintainer publication is still needed.
+
 ## Upgrade behavior to review
 
 When a legacy recipe fails current Compose validation, stop/disable operations
