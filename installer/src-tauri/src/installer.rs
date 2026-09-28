@@ -8,6 +8,7 @@ use std::thread;
 
 const DEFAULT_REPO_URL: &str = "https://github.com/Osmantic/ODS.git";
 const DEFAULT_INSTALL_REF: &str = "main";
+const GIT_CLONE_DEPTH: &str = "1";
 const TRANSFERRED_REPO_URL_BYTES: &[u8] = &[
     104, 116, 116, 112, 115, 58, 47, 47, 103, 105, 116, 104, 117, 98, 46, 99, 111, 109, 47, 76,
     105, 103, 104, 116, 45, 72, 101, 97, 114, 116, 45, 76, 97, 98, 115, 47, 79, 68, 83, 46, 103,
@@ -196,7 +197,7 @@ fn ensure_checkout(install_dir: &Path) -> Result<(), String> {
         .args([
             "clone",
             "--depth",
-            "1",
+            GIT_CLONE_DEPTH,
             "--branch",
             install_ref(),
             repo_url(),
