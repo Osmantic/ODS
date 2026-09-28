@@ -139,6 +139,7 @@ def test_preview_keeps_only_edge_csp_and_portal_policy_stays_strict(tmp_path):
         # exact and regex locations that could override the generic API gate.
         paths = ["/api/status", "/api/templates/example/apply", "/api/models/example/load",
                  "/api/pixel/chat/stream", "/api/pixel/access-mode", "/api/models/recovery",
+                 "/api/models/recovery/restore",
                  "/api/extensions/example/update", "/api/extensions/example/rollback",
                  "/api/auth/admin-session", "/api/auth/dashboard-session/password", "/api/auth/dashboard-session/link"]
         for path in paths:

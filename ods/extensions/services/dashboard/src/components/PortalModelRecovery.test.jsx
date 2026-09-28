@@ -92,3 +92,131 @@ it('closing the menu does not abort accepted recovery; reopening reads persisted
   await act(async()=>resolvePost(reply(done)))
   expect(recovered).toHaveBeenCalledOnce()
 })
+
+const restore={model:'qwen3-coder-next-Q4_K_M.gguf',contextLength:131072}
+const held={pending:true,phase:'held',transactionId:'b'.repeat(64),restore}
+const proofRequired={...held,reason:'model-recovery-proof-required'}
+
+it('offers the named previous-model restore only after repair cannot prove the switch',async()=>{
+  let resolveRestore
+  vi.stubGlobal('fetch',vi.fn(async(url,options)=>{
+    if(url==='/api/models/recovery/restore')return await new Promise(resolve=>{resolveRestore=resolve})
+    return options?.method==='POST'?{...reply(proofRequired,false),status:409}:reply(held)
+  }))
+  const recovered=vi.fn(),busy=vi.fn()
+  render(<PortalModelRecovery onRecovered={recovered} onBusyChange={busy}/>)
+  const repair=await screen.findByRole('button',{name:'Recover model switch'})
+  expect(screen.queryByRole('button',{name:/^Restore/})).toBeNull()
+  fireEvent.click(repair)
+  const button=await screen.findByRole('button',{name:`Restore ${restore.model}`})
+  expect(screen.getByText(/reloads qwen3-coder-next-Q4_K_M\.gguf at 128K context/)).toBeInTheDocument()
+  fireEvent.click(button);fireEvent.click(button)
+  const restores=fetch.mock.calls.filter(([url])=>url==='/api/models/recovery/restore')
+  expect(restores).toHaveLength(1)
+  expect(restores[0][1]).toMatchObject({method:'POST',body:JSON.stringify({transactionId:held.transactionId})})
+  expect(busy).toHaveBeenLastCalledWith(true)
+  await act(async()=>resolveRestore(reply({pending:false,phase:'completed',transactionId:held.transactionId,outcome:'rollback'})))
+  expect(recovered).toHaveBeenCalledOnce()
+  expect(screen.queryByRole('button')).toBeNull()
+  expect(screen.queryByRole('alert')).toBeNull()
+})
+
+it('a failed restore keeps the switch pending, explains why, and can be retried',async()=>{
+  const failed={...held,reason:'model-restore-failed',detail:'Model activation failed: llama-server did not start'}
+  vi.stubGlobal('fetch',vi.fn(async(url,options)=>{
+    if(url==='/api/models/recovery/restore')return {...reply(failed,false),status:409}
+    return options?.method==='POST'?{...reply(proofRequired,false),status:409}:reply(held)
+  }))
+  const recovered=vi.fn()
+  render(<PortalModelRecovery onRecovered={recovered}/>)
+  fireEvent.click(await screen.findByRole('button',{name:'Recover model switch'}))
+  fireEvent.click(await screen.findByRole('button',{name:`Restore ${restore.model}`}))
+  expect(await screen.findByRole('alert')).toHaveTextContent('llama-server did not start')
+  expect(screen.getByRole('alert')).toHaveTextContent('still pending')
+  expect(screen.getByRole('button',{name:`Restore ${restore.model}`})).toBeEnabled()
+  expect(recovered).not.toHaveBeenCalled()
+})
+
+it('says plainly when no automatic restore exists instead of leaving a dead end',async()=>{
+  const bare={pending:true,phase:'held',transactionId:'b'.repeat(64)}
+  vi.stubGlobal('fetch',vi.fn(async(_,options)=>options?.method==='POST'
+    ?{...reply({...bare,reason:'model-recovery-proof-required',restore:{model:'bad\nname',contextLength:4096}},false),status:409}
+    :reply(bare)))
+  render(<PortalModelRecovery/>)
+  fireEvent.click(await screen.findByRole('button',{name:'Recover model switch'}))
+  expect(await screen.findByText(/cannot be restored automatically/)).toBeInTheDocument()
+  expect(screen.queryByRole('button',{name:/^Restore/})).toBeNull()
+})
+
+it('a coordinator that did not answer asks for a retry and never offers a restore',async()=>{
+  vi.stubGlobal('fetch',vi.fn(async(_,options)=>options?.method==='POST'
+    ?{...reply({...held,reason:'model-recovery-unavailable'},false),status:503}
+    :reply(held)))
+  const recovered=vi.fn()
+  render(<PortalModelRecovery onRecovered={recovered}/>)
+  fireEvent.click(await screen.findByRole('button',{name:'Recover model switch'}))
+  expect(await screen.findByRole('alert')).toHaveTextContent('did not answer, so the switch could not be verified. No model was loaded')
+  expect(screen.queryByRole('button',{name:/^Restore/})).toBeNull()
+  expect(screen.queryByText(/cannot be restored automatically/)).toBeNull()
+  expect(screen.getByRole('button',{name:'Recover model switch'})).toBeEnabled()
+  expect(recovered).not.toHaveBeenCalled()
+})
+
+it('a restore that ended by keeping the new model says so instead of reporting a restore',async()=>{
+  const kept={pending:false,phase:'completed',transactionId:held.transactionId,outcome:'commit',reason:'model-restore-target-kept'}
+  vi.stubGlobal('fetch',vi.fn(async(url,options)=>{
+    if(url==='/api/models/recovery/restore')return reply(kept)
+    return options?.method==='POST'?{...reply(proofRequired,false),status:409}:reply(held)
+  }))
+  const recovered=vi.fn(),changed=vi.fn()
+  render(<PortalModelRecovery onRecovered={recovered} onPendingChange={changed}/>)
+  fireEvent.click(await screen.findByRole('button',{name:'Recover model switch'}))
+  fireEvent.click(await screen.findByRole('button',{name:`Restore ${restore.model}`}))
+  const alert=await screen.findByRole('alert')
+  expect(alert).toHaveTextContent('the new model was kept')
+  expect(alert).toHaveTextContent(`${restore.model} was not restored`)
+  // The switch is resolved: no pending controls remain, and the catalog refreshes.
+  expect(recovered).toHaveBeenCalledOnce()
+  expect(changed).toHaveBeenLastCalledWith(false)
+  expect(screen.queryByRole('button')).toBeNull()
+})
+
+it('the kept-model notice survives catalog refreshes and a menu closed while the restore ran',async()=>{
+  const kept={pending:false,phase:'completed',transactionId:held.transactionId,outcome:'commit',reason:'model-restore-target-kept'}
+  let resolveRestore,state=held
+  vi.stubGlobal('fetch',vi.fn(async(url,options)=>{
+    if(url==='/api/models/recovery/restore')return await new Promise(resolve=>{resolveRestore=resolve})
+    return options?.method==='POST'?{...reply(proofRequired,false),status:409}:reply(state)
+  }))
+  const view=render(<PortalModelRecovery active refreshKey="false:false"/>)
+  fireEvent.click(await screen.findByRole('button',{name:'Recover model switch'}))
+  fireEvent.click(await screen.findByRole('button',{name:`Restore ${restore.model}`}))
+  // The owner closes the menu, and a catalog poll observes the restore's model activation.
+  view.rerender(<PortalModelRecovery active={false} refreshKey="false:true"/>)
+  state={pending:false,phase:'completed',transactionId:held.transactionId}
+  await act(async()=>resolveRestore(reply(kept)))
+  // Reopening refreshes the catalog, which no longer reports the activation.
+  view.rerender(<PortalModelRecovery active refreshKey="false:false"/>)
+  await act(async()=>{})
+  expect(screen.getByRole('alert')).toHaveTextContent('the new model was kept')
+  // Once seen, closing the menu dismisses it.
+  view.rerender(<PortalModelRecovery active={false} refreshKey="false:false"/>)
+  view.rerender(<PortalModelRecovery active refreshKey="false:false"/>)
+  await act(async()=>{})
+  expect(screen.queryByRole('alert')).toBeNull()
+})
+
+it('an unconfirmed restore says the state is unknown, not that no restore exists',async()=>{
+  const unknown={pending:true,phase:'unavailable',transactionId:null,reason:'model-recovery-unavailable'}
+  vi.stubGlobal('fetch',vi.fn(async(url,options)=>{
+    if(url==='/api/models/recovery/restore')return {...reply(unknown,false),status:503}
+    return options?.method==='POST'?{...reply(proofRequired,false),status:409}:reply(held)
+  }))
+  const recovered=vi.fn()
+  render(<PortalModelRecovery onRecovered={recovered}/>)
+  fireEvent.click(await screen.findByRole('button',{name:'Recover model switch'}))
+  fireEvent.click(await screen.findByRole('button',{name:`Restore ${restore.model}`}))
+  expect(await screen.findByRole('alert')).toHaveTextContent('could not confirm the restore, so the switch state is unknown')
+  expect(screen.queryByText(/cannot be restored automatically/)).toBeNull()
+  expect(recovered).not.toHaveBeenCalled()
+})

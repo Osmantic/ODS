@@ -69,6 +69,22 @@ class ModelControlTests(unittest.TestCase):
                 relay.request_runtime_model_control('model-status',config={**CONFIG,'DASHBOARD_API_KEY':CONFIG['PIXEL_OPENWEBUI_KEY']})
             run.assert_not_called()
 
+    def test_model_control_inspect_gets_one_longer_deadline_and_is_never_looped(self):
+        calls=[]
+        def run(args,**kwargs):
+            calls.append((args,kwargs))
+            return types.SimpleNamespace(stdout=(('d'*64+' true pixel-edge').encode() if args[1]=='inspect'
+                else json.dumps({'status':200,'body':STATE}).encode()))
+        with patch.object(relay.subprocess,'run',side_effect=run):
+            relay.request_runtime_model_control('model-status',config=CONFIG)
+            relay.request_runtime_access('status',config=CONFIG)
+        self.assertEqual([options['timeout'] for args,options in calls if args[1]=='inspect'],[60,5])
+        with patch.object(relay.subprocess,'run',side_effect=subprocess.TimeoutExpired('docker',60)) as run:
+            with self.assertRaises(relay.AccessRelayError):
+                relay.request_runtime_model_control('model-finish',dict(transactionId=TX,outcome='rollback'),config=CONFIG)
+            # Nothing was dispatched: the inspect timed out once and was not repeated.
+            self.assertEqual(run.call_count,1)
+
     def test_lost_reply_is_not_replayed(self):
         with patch.object(relay.platform,'system',return_value='Windows'),patch.object(relay.subprocess,'run',side_effect=[
             types.SimpleNamespace(stdout=('d'*64+' true pixel-edge').encode()),subprocess.TimeoutExpired('docker',313)]) as run:
