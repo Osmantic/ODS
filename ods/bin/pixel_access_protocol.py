@@ -80,6 +80,8 @@ def control_request(value):
             "provider-change": {"operation", "data_dir_id", "request"}}
     if operation not in keys or set(value) != keys[operation]:
         raise ProtocolError("invalid-request")
+    if "data_dir_id" in value and (type(value["data_dir_id"]) is not str or not value["data_dir_id"].strip()):
+        raise ProtocolError("invalid-request")
     if operation.startswith(("settings-", "provider-")) and (type(value["data_dir_id"]) is not str or not HEX.fullmatch(value["data_dir_id"])):
         raise ProtocolError("invalid-request")
     if "request" in value and type(value["request"]) is not dict:
