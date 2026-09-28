@@ -5342,7 +5342,7 @@ export function userMessageOperationsRequirements(messages, prompt = undefined) 
   // independent, explicit network-interface requests in the same turn.
   const networkInterfaceObservation = hostIntentClauses.some((clause) =>
     !artifactOrExplanation.test(clause) && !negatedObservationClause(clause) && (
-      /\bnetwork\s+interfaces?\b/i.test(clause) ||
+      /\bnetwork\s+interfaces?\b(?!\s+(?:can|cannot|can['’]t|supports?|establishes?)\b)/i.test(clause) ||
       /\b(?:show|report|list|check|inspect|name|identify|enumerate|display|read|measure|tell\s+me)\s+(?:me\s+)?(?:(?:the|this|that|my|our|all|any|available|active|host|machine|computer|system|local)\s+)*interfaces?\b(?!\s+(?:can|cannot|can['’]t|supports?|establishes?)\b)/i.test(clause) ||
       /\b(?:what|which|how\s+many)\s+(?:(?:the|this|that|my|our|available|active|host|machine|computer|system|local)\s+)*interfaces?\b(?!\s+(?:can|cannot|can['’]t|supports?|establishes?)\b)/i.test(clause)
     ));
@@ -6583,20 +6583,32 @@ export function privateBrowserAccessForAgent(config, agentId = "pixel") {
 // This supplies acquisition guidance, never host or runner authority. Online
 // repository questions and instructions to write a cloning script stay ordinary
 // research/coding requests; only actual acquisition or local analysis uses it.
+function ownerAcquisitionIntentClauses(messages, prompt) {
+  return ownerLaneText(currentOwnerIntentText(messages, prompt))
+    // Preserve URL, filename, and version dots when separating owner clauses.
+    .split(/[!?;\n]+|\.(?=\s|$)/)
+    .map((clause) => clause.trim().replace(/^(?:(?:also|now|please)[,\s]+)+/i, ""))
+    .filter((clause) => clause &&
+      !/^(?:but\s+)?(?:do\s+not|don['’]t|never|avoid|skip|omit|exclude|without)\b/i.test(clause) &&
+      !/^(?:explain|describe|document|tutorial|example|hypothetical|fictional|pretend)\b/i.test(clause));
+}
+
 export function userMessageRequestsRepositoryAcquisition(messages, prompt = undefined) {
-  const text = currentOwnerIntentText(messages, prompt);
-  if (!text || !userMessageGitHubRepositoryUrl(messages, prompt)) return false;
-  if (/\b(?:do\s+not|don['’]t|never|avoid|without)\s+(?:clone|checkout|check\s+out|fetch|download|retrieve|acquire|audit|inspect|review)\b/i.test(text)) return false;
-  if (/\b(?:explain|describe|write|create|design|implement)\b[^.!?;\n]{0,80}\b(?:how\s+to|script|function|example|instructions?)\b/i.test(text)) return false;
-  return /\b(?:clone|checkout|check\s+out|fetch|download|retrieve|acquire|obtain)\b/i.test(text) ||
-    (/\b(?:audit|inspect|review|read|extract|unpack)\b/i.test(text) &&
-      /\b(?:locally|local\s+(?:copy|source|checkout|audit)|workspace)\b/i.test(text));
+  // Multiword quoted instructions are already masked; quoted URL operands
+  // remain usable without changing the shared repository URL classifier.
+  const sourceText = ownerLaneText(currentOwnerIntentText(messages, prompt)).replace(/["'`“”]/g, " ");
+  if (!userMessageGitHubRepositoryUrl([], sourceText)) return false;
+  return ownerAcquisitionIntentClauses(messages, prompt).some((clause) =>
+    !/\b(?:explain|describe|write|create|design|implement)\b[^.!?;\n]{0,80}\b(?:how\s+to|script|function|example|instructions?)\b/i.test(clause) &&
+    (/\b(?:clone|checkout|check\s+out|fetch|download|retrieve|acquire|obtain)\b/i.test(clause) ||
+      (/\b(?:audit|inspect|review|read|extract|unpack)\b/i.test(clause) &&
+        /\b(?:locally|local\s+(?:copy|source|checkout|audit)|workspace)\b/i.test(clause))));
 }
 
 export function userMessageRequestsWorkspaceDownloadContinuation(messages, prompt = undefined) {
-  const text = currentOwnerIntentText(messages, prompt);
-  return /\b(?:extract|unpack|untar|unzip)\b[^.!?;\n]{0,80}\bworkspace\b/i.test(text) ||
-    /\b(?:continue|resume|finish)\b[^.!?;\n]{0,80}\b(?:download|artifact|archive|tarball)\b/i.test(text);
+  return ownerAcquisitionIntentClauses(messages, prompt).some((clause) =>
+    /\b(?:extract|unpack|untar|unzip)\b[^.!?;\n]{0,80}\bworkspace\b/i.test(clause) ||
+    /\b(?:continue|resume|finish)\s+(?:with\s+)?(?:(?:the|this|that|my|our|existing|previous|staged)\s+)*(?:download|artifact|archive|tarball)\b/i.test(clause));
 }
 
 export function userMessageRequestsExactByteDownload(messages, prompt = undefined) {

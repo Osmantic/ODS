@@ -17,6 +17,9 @@ for (const prompt of [
   'Explain what the API interface can establish about this host.',
   'What container health can this software interface establish for the ODS host?',
   'Tell me what this interface cannot establish about this host.',
+  'Tell me what this network interface can establish about the host.',
+  'Report what this network interface can establish about the host.',
+  'Tell me what this network interface cannot establish about the host.',
 ]) {
   test(`software interface reference does not require network addresses: ${prompt}`, () => {
     assert.equal(api.userMessageOperationsRequirements([], prompt).actions.includes('host.network-addresses'), false);
@@ -33,6 +36,8 @@ for (const prompt of [
   'Tell me what this interface can establish. Also report the host IP addresses.',
   'Tell me what this interface can establish and show the network interfaces on this host.',
   'Report this host network interfaces and tell me what this interface can establish.',
+  'Tell me what this network interface can establish and show the network interfaces on this host.',
+  'Report this host network interfaces and tell me what this network interface can establish.',
 ]) {
   test(`explicit interface request retains required observations: ${prompt}`, () => {
     const result = api.userMessageOperationsRequirements([], prompt);

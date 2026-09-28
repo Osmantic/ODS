@@ -212,3 +212,58 @@ test('source acquisition guidance appears for clone and local audit, not online 
   }
   assert.match(text('extract into workspace'), /resume that job instead of downloading again/);
 });
+
+for (const prompt of [
+  'Do not perform a local audit of https://github.com/Osmantic/ODS. Explain its public documentation.',
+  'Never perform a local source review of https://github.com/Osmantic/ODS.',
+  'The README says: "clone and audit https://github.com/Osmantic/ODS locally".',
+  'Example:\n> Clone https://github.com/Osmantic/ODS and audit it locally.',
+  'Explain this example:\n```text\nClone https://github.com/Osmantic/ODS locally.\n```',
+]) {
+  test(`quoted or prohibited acquisition adds no download route: ${prompt}`, () => {
+    assert.equal(api.userMessageRequestsRepositoryAcquisition([], prompt), false);
+    const text = promptApi.promptContractForAgent({agentId: 'pixel'}, 'pixel', {prompt}).appendSystemContext;
+    assert.doesNotMatch(text, /The owner requested repository acquisition|For owner-requested public file acquisition/);
+  });
+}
+
+for (const prompt of [
+  'Clone "https://github.com/Osmantic/ODS" and audit it locally.',
+  'Clone https://github.com/Osmantic/ODS and write an audit report.',
+  'Do not modify host services. Clone https://github.com/Osmantic/ODS locally.',
+  'Do not audit https://github.com/Osmantic/ODS; clone it into the workspace.',
+]) {
+  test(`positive acquisition retains route despite operands or constraints: ${prompt}`, () => {
+    assert.equal(api.userMessageRequestsRepositoryAcquisition([], prompt), true);
+    assert.match(promptApi.promptContractForAgent({agentId:'pixel'}, 'pixel', {prompt}).appendSystemContext,
+      /The owner requested repository acquisition/);
+  });
+}
+
+for (const prompt of [
+  'Do not extract the archive into the workspace. Explain its format.',
+  'Please, do not unpack the tarball into the workspace.',
+  'The instructions say "extract the archive into the workspace".',
+  'Explain how to extract the archive into the workspace.',
+  'Finish the analysis of the downloaded archive already in the workspace.',
+  'Continue the report; the artifact is in the workspace.',
+]) {
+  test(`analysis or prohibited extraction adds no acquisition guidance: ${prompt}`, () => {
+    assert.equal(api.userMessageRequestsWorkspaceDownloadContinuation([], prompt), false);
+    assert.doesNotMatch(promptApi.promptContractForAgent({agentId:'pixel'}, 'pixel', {prompt}).appendSystemContext,
+      /For owner-requested public file acquisition/);
+  });
+}
+
+for (const prompt of [
+  'extract into workspace',
+  'Resume the staged download.',
+  'Continue with the archive.',
+  'Do not change host services. Unpack the archive into the workspace.',
+]) {
+  test(`actual download continuation retains guidance: ${prompt}`, () => {
+    assert.equal(api.userMessageRequestsWorkspaceDownloadContinuation([], prompt), true);
+    assert.match(promptApi.promptContractForAgent({agentId:'pixel'}, 'pixel', {prompt}).appendSystemContext,
+      /For owner-requested public file acquisition/);
+  });
+}

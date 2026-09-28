@@ -8,7 +8,7 @@ const jobId = 'ops-1234567890123-abcdef123456';
 const url = 'https://nodejs.org/dist/v22.23.2/node-v22.23.2-linux-x64.tar.xz';
 const filename = 'node-v22.23.2-linux-x64.tar.xz';
 const sha256 = 'a'.repeat(64);
-function harness(wrapped) {
+function harness(wrapped, expectedDigest = true) {
   const guard = api.createToolLoopGuard();
   const ctx = {agentId: 'pixel', runId: 'artifact-terminal', sessionId: 'artifact-session'};
   guard.observeRun(ctx, 'pixel', {prompt: `Use Operations to stage ${url} and run the local Node tests.`});
@@ -28,7 +28,7 @@ function harness(wrapped) {
       ? {details: {tool: {id, source: 'openclaw', sourceName: 'pixel-operations-broker', name}, result}} : result},
       {...ctx, toolName}, 'pixel');
   }
-  finish('pixel_ops_download_stage', {url, filename, expectedSha256: sha256},
+  finish('pixel_ops_download_stage', {url, filename, ...(expectedDigest ? {expectedSha256: sha256} : {})},
     {details: {jobId, status: 'submitted', kind: 'download'}});
   function complete(mutate = () => {}) {
     const details = {jobId, status: 'succeeded', waitTimedOut: false, steps: [{
@@ -53,6 +53,11 @@ function harness(wrapped) {
 }
 
 for (const wrapped of [false, true]) {
+  test(`canonical receipt also completes without an owner-supplied digest: ${wrapped}`, () => {
+    const h = harness(wrapped, false);
+    assert.notEqual(h.complete().status, 'failed');
+    assert.match(h.deliver(), /local Node tests completed successfully/);
+  });
   test(`canonical artifact receipt without shell fields completes delivery: ${wrapped}`, () => {
     const h = harness(wrapped);
     assert.notEqual(h.complete().status, 'failed');
