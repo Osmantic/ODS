@@ -50,7 +50,7 @@ const STACK_OPTIONS = [
 
 const TOTAL_STEPS = 4
 
-function readProgress() {
+export function readProgress() {
   try {
     const raw = globalThis.localStorage?.getItem(PROGRESS_KEY)
     return raw ? JSON.parse(raw) : null
@@ -59,7 +59,7 @@ function readProgress() {
   }
 }
 
-function writeProgress(progress) {
+export function writeProgress(progress) {
   try {
     globalThis.localStorage?.setItem(PROGRESS_KEY, JSON.stringify(progress))
   } catch {
@@ -67,7 +67,7 @@ function writeProgress(progress) {
   }
 }
 
-function clearProgress() {
+export function clearProgress() {
   try {
     globalThis.localStorage?.removeItem(PROGRESS_KEY)
   } catch {
