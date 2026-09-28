@@ -12,6 +12,8 @@ from model_stores import active_compose_overlay, validated_compose_overlay
 
 def resolve_flags(install_dir, flags):
     root = Path(install_dir).resolve()
+    if not root.is_dir():
+        raise ValueError('install_dir does not exist or is not a directory')
     if not isinstance(flags, list) or any(not isinstance(value, str) or any(c in value for c in '\x00\r\n') for value in flags):
         raise ValueError('Invalid saved Compose arguments')
     overlay = validated_compose_overlay(root)
