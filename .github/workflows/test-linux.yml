@@ -506,6 +506,7 @@ jobs:
       - name: WSL Windows Runtime Ownership and Retirement Contracts
         run: |
           python3 tests/contracts/test-wsl-stack.py
+          python3 tests/test-wsl-bind-recovery.py
           python3 tests/test-wsl-lemonade-control.py
           python3 tests/test-configure-wsl-model-store.py
           python3 tests/test-retire-wsl-runtime.py

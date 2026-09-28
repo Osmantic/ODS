@@ -84,3 +84,40 @@ rc=0
 if grep -qx prepare "$events"; then exit 1; fi
 if grep -qx compose "$events"; then exit 1; fi
 printf 'PASS: restart deferral is restricted to the complete lifecycle start\n'
+
+# Exercise the actual cmd_start call site used by Windows sign-in recovery.
+mkdir -p "$fixture/scripts"
+: > "$fixture/scripts/wsl-bind-recovery.py"
+uname() {
+    if [[ "${1:-}" == -r ]]; then printf '6.6.87.2-microsoft-standard-WSL2\n';
+    else printf 'Linux\n'; fi
+}
+python3() {
+    if [[ "$1" == "$fixture/scripts/wsl-bind-recovery.py" ]]; then
+        [[ $# == 8 && "$2" == --install-dir && "$3" == "$fixture" &&
+           "$4" == --service && -z "$5" && "$6" == -- && "$7" == -f && "$8" == fixture.yml ]]
+        printf 'bind-recovery\n' >> "$events"
+        [[ "$bind_failure" == false ]] || return 71
+    elif [[ "$1" == "$INSTALL_DIR/lib/wsl-agent-address.py" ]]; then
+        printf 'prepare\n' >> "$events"
+        printf '{"changed":false,"mode":"wsl-nat","address":"10.2.3.4"}\n'
+    elif [[ "$1" == -c ]]; then
+        cat >/dev/null
+        printf 'false\n'
+    else
+        cat >/dev/null
+    fi
+}
+bind_failure=false
+: > "$events"
+(cmd_start --defer-wsl-agent-restart)
+[[ "$(cat "$events")" == $'load-env\nprepare\nload-env\nbind-recovery\ncompose' ]]
+printf 'PASS: WSL sign-in start verifies bind views before Compose\n'
+bind_failure=true
+: > "$events"
+rc=0
+(cmd_start --defer-wsl-agent-restart) > "$fixture/output" 2>&1 || rc=$?
+[[ "$rc" != 0 ]]
+grep -qx bind-recovery "$events"
+if grep -qx compose "$events"; then exit 1; fi
+printf 'PASS: failed WSL recovery prevents Compose start\n'

@@ -88,6 +88,26 @@ try {
     Check ((Get-ODSWslStartupConfig $identity).dockerDesktopPath -ceq $desktop) 'startup uses the installer-resolved executable instead of assuming the Windows drive or Docker location'
     Check ($script:registrations -eq 1) 'verified installation creates exactly one separate startup task'
     Check ((Get-ODSWslStartupIntent $identity).desiredRunning) 'new installation opts into sign-in recovery'
+    # Public enable-startup repair path: must call owner registration without
+    # invoking Resolve-ODSWslRegisteredDistro (no WSL query) and without
+    # touching the holder task or running any WSL/Docker/service command.
+    $script:registrations=0;$script:events=@()
+    $script:startupTask=$null
+    Set-ODSWslStartupIntent $identity $false
+    $savedResolve=Get-Command Resolve-ODSWslRegisteredDistro -CommandType Function -ErrorAction SilentlyContinue
+    function Resolve-ODSWslRegisteredDistro {param($Name);throw 'enable-startup must not query WSL'}
+    try {
+        $repair=Invoke-ODSWslLifecycle enable-startup $identity.distro $identity.installRoot -DockerDesktopPath $desktop
+        Check ($script:registrations -eq 1) 'enable-startup registers the owner-limited startup task without rerunning the installer'
+        Check ($script:events.Count -eq 0) 'enable-startup performs no WSL Docker or service operation'
+        Check (-not (Get-ODSWslStartupIntent $identity).desiredRunning) 'enable-startup preserves the existing desiredRunning=false preference'
+        Check ($repair.identity.id -ceq $identity.id) 'enable-startup returns the lifetime status for the repaired installation'
+    } finally {
+        if ($savedResolve) { Set-Item -Path Function:\Resolve-ODSWslRegisteredDistro -Value $savedResolve.ScriptBlock }
+    }
+    $script:registrations=0;$script:startupTask=$null
+    Enable-ODSWslStartup $identity $desktop
+    Check ($script:registrations -eq 1) 'fixture re-registers the startup task for subsequent checks'
     Check ((Read-ODSWslJson (Join-Path $fixture 'instance.json')).id -ceq $identity.id) 'registration preserves the installation manifest'
     Check ((Get-Content (Join-Path $fixture 'startup.ps1') -Raw).Contains('function Invoke-ODSWslStartup')) 'startup launcher is copied into durable private state'
     Set-ODSWslStartupIntent $identity $false
