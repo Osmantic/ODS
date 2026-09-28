@@ -7156,7 +7156,8 @@ def _enable_retry_work(service_id: str) -> None:
 
         _write_progress(service_id, "started", "Service started",
                         exit_verified=not startup_check and retry_service_def.get('port') == 0)
-    except (RuntimeError, OSError, subprocess.SubprocessError) as exc:
+    except (RuntimeError, ValueError, OSError, subprocess.SubprocessError) as exc:
+        # ValueError: a saved recipe rejected by the Compose policy.
         logger.exception("Enable-retry failed for %s", service_id)
         _write_progress(service_id, "error", "Retry failed",
                         error=str(exc)[:500])
@@ -11541,7 +11542,8 @@ class AgentHandler(BaseHTTPRequestHandler):
                                                      'state': 'uncertain'}
                 _write_progress(service_id, "error", "Installation failed",
                                 error=f"timed out ({SUBPROCESS_TIMEOUT_START}s)")
-            except (RuntimeError, OSError, subprocess.SubprocessError) as exc:
+            except (RuntimeError, ValueError, OSError, subprocess.SubprocessError) as exc:
+                # ValueError: a saved recipe rejected by the Compose policy.
                 logger.exception("Install failed for %s", service_id)
                 _write_progress(service_id, "error", "Installation failed",
                                 error=str(exc)[:500])
