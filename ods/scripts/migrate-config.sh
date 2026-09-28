@@ -166,8 +166,10 @@ cmd_diff() {
     echo "New variables (add these to your .env):"
     while IFS='=' read -r key value; do
         [[ -z "$key" || "$key" =~ ^# ]] && continue
+        key="${key#export }"
+        key="$(echo "$key" | tr -d '[:space:]')"
         local grep_exit=0
-        grep -q "^${key}=" "$current_env" 2>&1 || grep_exit=$?
+        grep -Eq "^(export )?${key}=" "$current_env" 2>&1 || grep_exit=$?
         if [[ $grep_exit -ne 0 ]]; then
             echo "  + $key=$value"
         fi
@@ -177,8 +179,10 @@ cmd_diff() {
     echo "Deprecated variables (remove from your .env):"
     while IFS='=' read -r key value; do
         [[ -z "$key" || "$key" =~ ^# ]] && continue
+        key="${key#export }"
+        key="$(echo "$key" | tr -d '[:space:]')"
         local grep_exit=0
-        grep -q "^${key}=" "$example_env" 2>&1 || grep_exit=$?
+        grep -Eq "^(export )?${key}=" "$example_env" 2>&1 || grep_exit=$?
         if [[ $grep_exit -ne 0 ]]; then
             echo "  - $key"
         fi
