@@ -33,6 +33,8 @@ async function execute(source, mode, options = {}) {
     pickerRequests: [], extractionRequests: [] };
   const schema = (kind, shape) => ({kind, shape, describe() { return this; }});
   const pageContent = options.pageContent ?? 'Page author: J. Pell. Quoted speaker: Aria Vance.';
+  const researchBlock = {id:'fixture-research',data:{subSteps:(options.visitedURLs ?? []).map(url =>
+    ({type:'reading',reading:[{metadata:{url}}]}))}};
   const dependencies = {
     56471: { n: async () => ({ results: options.searchResults ?? results }) },
     25341: { A: (a, b) => a[0] * b[0] + a[1] * b[1] },
@@ -40,8 +42,8 @@ async function execute(source, mode, options = {}) {
       number: () => schema('number'), string: () => schema('string') } },
     96227: { A: { scrape: async url => {
       calls.pages.push(url);
-      if (options.readerFails) throw Error('fixture reader unavailable');
-      return { content: pageContent };
+      if (options.readerFails || options.readerFailsURL === url) throw Error('fixture reader unavailable');
+      return {content:options.pageContentByURL?.[url] ?? pageContent};
     } } },
     29092: { A: content => options.chunks ?? Array.from({ length: 6 }, (_, index) => content + ' chunk ' + index) },
   };
@@ -55,8 +57,7 @@ async function execute(source, mode, options = {}) {
   Function('crypto', 'console', 'return (' + source + ')')(crypto, { log() {} })({}, exports, requireModule);
   const documents = await exports.k({
     mode, queries: ['Aria Vance in AI'],
-    researchBlock: { id: 'fixture-research', data: { subSteps: (options.visitedURLs ?? []).map(url =>
-      ({type:'reading', reading:[{metadata:{url}}]})) } }, session: { updateBlock() {} },
+    researchBlock, session: { updateBlock() {} },
     embedding: { embedText: async texts => {
       calls.embedding++;
       if (!options.workingEmbedding) throw Error('fixture embedding unavailable');
@@ -77,6 +78,7 @@ async function execute(source, mode, options = {}) {
         await new Promise(resolve => setTimeout(resolve, 3));
         if (options.firstExtractionFails && ordinal === 1) throw Error('fixture extractor unavailable');
         if (source === original) return {extracted_facts: pageContent};
+        if (options.responseForRequest) return options.responseForRequest(request, ordinal);
         return options.extractionResponse ?? {
           facts: options.emptyFacts ? [] : [{text: pageContent, evidence_quote: pageContent}],
           retrieval_notes: 'Reader could not establish an unrelated role.',
@@ -84,6 +86,8 @@ async function execute(source, mode, options = {}) {
       } finally { calls.active--; }
     } },
   });
+  calls.readingAttempts = researchBlock.data.subSteps.filter(step => step.type === 'reading')
+    .slice((options.visitedURLs ?? []).length).flatMap(step => step.reading.map(doc => doc.metadata.url));
   return { documents, calls };
 }
 
@@ -276,4 +280,54 @@ test('legacy flat notes and typed coverage-only outputs produce no documents', a
     assert.ok(calls.extraction > 0);
     assert.deepEqual(documents, []);
   }
+});
+
+test('Speed tries the next explicitly selected page after an empty first extraction', async () => {
+  const fact = 'Aria Vance founded Example Lab.';
+  const {documents,calls} = await execute(patched, 'speed', {
+    pageContentByURL:{[results[0].url]:'Unrelated paragraph.',[results[1].url]:fact},
+    responseForRequest:request => request.messages[1].content.includes(fact)
+      ? {facts:[{text:fact,evidence_quote:fact}],retrieval_notes:''}
+      : {facts:[],retrieval_notes:'Reader could not establish the requested role.'},
+  });
+  assert.deepEqual(calls.pages,[results[0].url,results[1].url]);
+  assert.deepEqual(calls.readingAttempts,calls.pages);
+  assert.equal(calls.extraction,4);
+  assert.equal(calls.maxActive,1);
+  assert.equal(documents.length,1);
+  assert.equal(documents[0].metadata.url,results[1].url);
+  assert.ok(!documents[0].content.includes('could not establish'));
+});
+test('Speed stops after the first useful source without reading or reporting the runner-up', async () => {
+  const {documents,calls} = await execute(patched,'speed',{pickedIndices:[0,1,2]});
+  assert.equal(documents.length,1);
+  assert.deepEqual(calls.pages,[results[0].url]);
+  assert.deepEqual(calls.readingAttempts,calls.pages);
+  assert.equal(calls.extraction,2);
+});
+test('Speed bounds all-empty fallback to two attempted pages and four chunk extractions', async () => {
+  const {documents,calls} = await execute(patched,'speed',{emptyFacts:true,pickedIndices:[0,1,2]});
+  assert.deepEqual(documents,[]);
+  assert.deepEqual(calls.pages,[results[0].url,results[1].url]);
+  assert.deepEqual(calls.readingAttempts,calls.pages);
+  assert.equal(calls.extraction,4);
+  assert.equal(calls.maxActive,1);
+});
+test('Speed releases its page queue after a failed first reader', {timeout:2000}, async () => {
+  const {documents,calls} = await execute(patched,'speed',{readerFailsURL:results[0].url});
+  assert.deepEqual(calls.pages,[results[0].url,results[1].url]);
+  assert.deepEqual(calls.readingAttempts,calls.pages);
+  assert.equal(calls.extraction,2);
+  assert.equal(documents.length,1);
+  assert.equal(documents[0].metadata.url,results[1].url);
+});
+test('Speed rejects unverified quotes in the first page and uses a supported selected runner-up', async () => {
+  const fact = 'Aria Vance founded Example Lab.';
+  const {documents,calls} = await execute(patched,'speed',{
+    pageContentByURL:{[results[0].url]:'Other content.',[results[1].url]:fact},
+    responseForRequest:() => ({facts:[{text:fact,evidence_quote:fact}],retrieval_notes:''}),
+  });
+  assert.deepEqual(calls.pages,[results[0].url,results[1].url]);
+  assert.equal(documents.length,1);
+  assert.equal(documents[0].metadata.url,results[1].url);
 });

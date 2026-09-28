@@ -222,6 +222,43 @@ PATCHES.push({
   old: quotedEvidenceCitations,
   replacement: quotedEvidenceCitations + '\n    - A Source quote is page evidence; the preceding fact summary is an extractor interpretation. Cite a claim only when its accompanying quote supports the claim and attribution. If a summary conflicts with its quote, follow the quote and omit the unsupported interpretation. Preserve explicit source-stated negative facts; quote presence alone does not establish that a summary is true.'
 });
+// Speed keeps one useful source and tries at most one selected fallback.
+PATCHES.push(...[
+  {
+    "id": "quality-41",
+    "old": ".picked_indices.slice(0,\"speed\"===a.mode?1:\"balanced\"===a.mode?2:3).map(a=>i[a]).filter(a=>void 0!==a)",
+    "replacement": ".picked_indices.slice(0,\"speed\"===a.mode?2:\"balanced\"===a.mode?2:3).map(a=>i[a]).filter(a=>void 0!==a)"
+  },
+  {
+    "id": "quality-42",
+    "old": "return await Promise.all(o.map(async(b,c)=>{try{",
+    "replacement": "let odsSpeedQueue=Promise.resolve(),odsSpeedFound=!1,odsResearchBlock=b;return await Promise.all(o.map(async(b,c)=>{let odsSpeedRelease;if(\"speed\"===a.mode){let odsSpeedWait=odsSpeedQueue;odsSpeedQueue=new Promise(resolve=>{odsSpeedRelease=resolve});await odsSpeedWait;if(odsSpeedFound){odsSpeedRelease();return}}try{"
+  },
+  {
+    "id": "quality-43",
+    "old": "d.trim()&&p.push({...b,content:d})",
+    "replacement": "d.trim()&&(p.push({...b,content:d}),\"speed\"===a.mode&&(odsSpeedFound=!0))"
+  },
+  {
+    "id": "quality-44",
+    "old": "}catch(a){console.log(\"Error scraping or extracting information from\",b.metadata.url,a)}})),p}}}",
+    "replacement": "}catch(a){console.log(\"Error scraping or extracting information from\",b.metadata.url,a)}finally{if(odsSpeedRelease)odsSpeedRelease()}})),p}}}"
+  },
+  {
+    "id": "quality-45",
+    "old": "o.length>0&&(b.data.subSteps.push({id:crypto.randomUUID(),type:\"reading\",reading:o}),a.session.updateBlock(b.id,[{path:\"/data/subSteps\",op:\"replace\",value:b.data.subSteps}]));",
+    "replacement": "o.length>0&&\"speed\"!==a.mode&&(b.data.subSteps.push({id:crypto.randomUUID(),type:\"reading\",reading:o}),a.session.updateBlock(b.id,[{path:\"/data/subSteps\",op:\"replace\",value:b.data.subSteps}]));"
+  },
+  {
+    "id": "quality-46",
+    "old": "try{let c=await g.A.scrape(b.metadata.url).catch(a=>{console.log(\"Error scraping data from\",b.metadata.url,a)});if(!c)return;",
+    "replacement": "try{if(\"speed\"===a.mode){odsResearchBlock.data.subSteps.push({id:crypto.randomUUID(),type:\"reading\",reading:[b]});a.session.updateBlock(odsResearchBlock.id,[{path:\"/data/subSteps\",op:\"replace\",value:odsResearchBlock.data.subSteps}])}let c=await g.A.scrape(b.metadata.url).catch(a=>{console.log(\"Error scraping data from\",b.metadata.url,a)});if(!c)return;"
+  }
+]);
+// These replacements deliberately supersede earlier source anchors. Only
+// their actual replacement text can supply the earlier recognition proof.
+PATCHES.find(patch=>patch.id === 'quality-30').supersededBy = 'quality-41';
+PATCHES.find(patch=>patch.id === 'quality-32').supersededBy = 'quality-43';
 function replaceUnpatched(source, old, replacement) {
   let cursor = 0, count = 0, out = '';
   for (;;) {
@@ -244,7 +281,9 @@ function patchBundle(source) {
   let out = source;
   const recognized = [], applied = [];
   for (const patch of PATCHES) {
-    if (out.includes(patch.old) || out.includes(patch.replacement)) recognized.push(patch.id);
+    const successor = PATCHES.find(candidate => candidate.id === patch.supersededBy);
+    if (out.includes(patch.old) || out.includes(patch.replacement) ||
+        (successor && out.includes(successor.replacement))) recognized.push(patch.id);
     const changed = replaceUnpatched(out, patch.old, patch.replacement);
     out = changed.source;
     if (changed.count) applied.push({ id: patch.id, count: changed.count });

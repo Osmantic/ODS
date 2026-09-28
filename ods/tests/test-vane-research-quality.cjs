@@ -77,8 +77,8 @@ const actualPath = process.env.VANE_TEST_BUNDLE;
 test('actual pinned image bundle has all anchors and remains valid/idempotent', { skip: !actualPath }, t => {
   const source = fs.readFileSync(actualPath, 'utf8');
   const result = patchBundle(source);
-  assert.equal(new Set(result.recognized).size, 40);
-  assert.equal(result.applied.length, 40);
+  assert.equal(new Set(result.recognized).size, 46);
+  assert.equal(result.applied.length, 46);
   assert.ok(!result.source.includes('SHALL NOT BE LESS THAN AT LEAST 2000 WORDS'));
   assert.ok(!result.source.includes('exhaust your research budget first'));
   assert.match(result.source, /The iteration budget is an upper bound, not a quota/);
