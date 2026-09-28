@@ -9,7 +9,7 @@ function blurDisabled(field) {
   field.disabled = true
 }
 
-function Composer({ disabled = false, overlay = false }) {
+function Composer({ disabled = false, overlay = false, notice = false }) {
   const inputRef = useRef(null)
   const [value, setValue] = useState('')
   const prepareSend = useComposerFocus({ inputRef, disabled, onType: key => setValue(text => text + key) })
@@ -21,6 +21,7 @@ function Composer({ disabled = false, overlay = false }) {
     <div contentEditable suppressContentEditableWarning data-testid="editor"/>
     <p>Selected answer</p>
     {overlay && <div role="dialog" aria-label="Settings">Settings</div>}
+    {notice && <div role="dialog" aria-label="Install prompt" data-composer-focus-ignore>Install</div>}
   </>
 }
 
@@ -110,6 +111,18 @@ it('does not capture typing or restore focus while a dialog is open', async () =
   expect(field).not.toHaveFocus()
   await user.keyboard('hello')
   expect(field).toHaveValue('')
+})
+
+it('keeps restoring focus and capturing typing while a non-blocking notice is shown', async () => {
+  const user = userEvent.setup()
+  const {rerender} = render(<Composer disabled notice/>)
+  rerender(<Composer notice/>)
+  const field = screen.getByRole('textbox', {name:'Message'})
+  expect(field).toHaveFocus()
+  field.blur()
+  await user.keyboard('hello')
+  expect(field).toHaveValue('hello')
+  expect(field).toHaveFocus()
 })
 
 it('does not steal selected message text or restore after keyboard navigation/window blur', () => {
