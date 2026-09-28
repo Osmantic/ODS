@@ -2,6 +2,7 @@ import hashlib
 import importlib.util
 import json
 from pathlib import Path
+import shutil
 from types import SimpleNamespace
 
 import pytest
@@ -13,7 +14,8 @@ module = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(module)
 
 
-@pytest.mark.parametrize('mode', ['plan', 'apply', 'handover-failure', 'release-failure', 'changed-env', 'changed-artifact'])
+@pytest.mark.parametrize('mode', ['plan', 'apply', 'handover-failure', 'release-failure',
+                                 'changed-env', 'changed-artifact', 'unsafe-recipe', 'recipe-alias'])
 def test_owner_command_defaults_to_plan_and_recovers_only_unreleased_handover(tmp_path, monkeypatch, mode):
     monkeypatch.setattr(module.sys, 'platform', 'darwin')
     monkeypatch.setattr(module.os, 'geteuid', lambda: 501)
@@ -27,6 +29,18 @@ def test_owner_command_defaults_to_plan_and_recovers_only_unreleased_handover(tm
     (installed / '.env').chmod(0o600)
     (installed / '.compose-flags').write_text('-f docker-compose.base.yml')
     (installed / 'docker-compose.base.yml').write_text('services: {}')
+    recipe = installed / 'data/user-extensions/example/compose.yaml'
+    recipe.parent.mkdir(parents=True)
+    recipe.write_text(json.dumps({'services': {'example': {'image': 'example/app:1',
+        **({'privileged': True} if mode in ('unsafe-recipe', 'recipe-alias') else {})}}}))
+    if mode == 'recipe-alias':
+        target = installed / 'unreviewed.yaml'
+        recipe.rename(target)
+        recipe.symlink_to(target)
+    (installed / 'scripts').mkdir()
+    shutil.copyfile(Path(__file__).resolve().parents[1] / 'scripts/resolve-compose-stack.sh',
+        installed / 'scripts/resolve-compose-stack.sh')
+    (installed / '.compose-flags').write_text('-f docker-compose.base.yml -f data/user-extensions/example/compose.yaml')
     receipt = {'kind': 'legacy-native', 'status': 'prepared', 'phase': 'awaiting-joint-activation',
         'environmentStatus': 'configured', 'installDir': str(installed),
         'environmentAfterSha256': hashlib.sha256(env).hexdigest(),
@@ -64,14 +78,14 @@ def test_owner_command_defaults_to_plan_and_recovers_only_unreleased_handover(tm
         events.append('restore')
         kwargs['checkpoint']({'phase': 'infrastructure-rolled-back', 'requiresRecovery': False})
     compose = SimpleNamespace(migrate_infrastructure=handover, finish_migration_infrastructure=finish,
-        restore_migration_infrastructure=restore)
+        restore_migration_infrastructure=restore, validate_stack=original_helper('compose').validate_stack)
     monkeypatch.setattr(module, 'helper', lambda name: compose if name == 'compose' else original_helper(name))
     if mode in ('plan', 'apply'):
         result = module.migrate(prepared, apply=mode == 'apply')
         assert result['status'] == ('planned' if mode == 'plan' else 'docker-ready')
     else:
         with pytest.raises(ValueError): module.migrate(prepared, apply=True)
-    if mode in ('plan', 'changed-env', 'changed-artifact'):
+    if mode in ('plan', 'changed-env', 'changed-artifact', 'unsafe-recipe', 'recipe-alias'):
         assert not events and not (prepared / 'docker-migration.json').exists()
         if mode != 'plan': assert not commands
     else:

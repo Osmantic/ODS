@@ -4,6 +4,7 @@ import importlib.util
 import json
 import sys
 import subprocess
+import shutil
 from types import SimpleNamespace
 from pathlib import Path
 
@@ -126,17 +127,26 @@ def test_update_publication_is_atomic_and_replayable(tmp_path, monkeypatch, faul
 
 @pytest.mark.parametrize('cached', [True, False])
 @pytest.mark.parametrize('fault', [None, 'socket', 'flags', 'project', 'missing', 'legacy-map',
-    'legacy-list', 'start', 'probe', 'escape'])
+    'legacy-list', 'start', 'probe', 'escape', 'unsafe-recipe', 'recipe-alias'])
 def test_refresh_clients_uses_native_stack_and_verifies_from_dashboard(tmp_path, monkeypatch, fault, cached):
     installed = tmp_path / 'ods'
     installed.mkdir()
-    flags = '--invalid' if fault == 'flags' else '-f base.yaml -f legacy.yaml'
+    fragment = 'data/user-extensions/example/compose.yaml'
+    flags = '--invalid' if fault == 'flags' else '-f base.yaml -f legacy.yaml -f ' + fragment
     if cached: (installed / '.compose-flags').write_text(flags)
     (installed / '.env').write_text('GPU_BACKEND="apple" # saved hardware\nODS_MODE=local\n')
     (installed / '.env').chmod(0o600)
     resolver = installed / 'scripts/resolve-compose-stack.sh'
     resolver.parent.mkdir()
-    resolver.write_text('# fixture')
+    shutil.copyfile(Path(__file__).resolve().parents[1] / 'scripts/resolve-compose-stack.sh', resolver)
+    recipe = installed / fragment
+    recipe.parent.mkdir(parents=True)
+    recipe.write_text(json.dumps({'services': {'example': {'image': 'example/app:1',
+        **({'privileged': True} if fault in ('unsafe-recipe', 'recipe-alias') else {})}}}))
+    if fault == 'recipe-alias':
+        target = installed / 'unreviewed.yaml'
+        recipe.rename(target)
+        recipe.symlink_to(target)
     (tmp_path / 'outside.yaml').write_text('services: {}')
     for name in ('base.yaml', 'native.yaml'): (installed / name).write_text('services: {}')
     environment = dict(PIXEL_HISTORY_DOCKER='/docker', PIXEL_HISTORY_PROJECT='ods',
@@ -144,13 +154,14 @@ def test_refresh_clients_uses_native_stack_and_verifies_from_dashboard(tmp_path,
     installer = SimpleNamespace(_source_gateway=lambda *a: (None, environment, None, None, None, None),
         _native_transport_environment=lambda *a: None, _launchd=SimpleNamespace(GATEWAY_PLIST='/gateway.plist'))
     def resolve(path, files):
-        assert path == installed and files == ['base.yaml', 'legacy.yaml']
-        return ['../outside.yaml'] if fault == 'escape' else ['base.yaml', 'native.yaml']
+        assert path == installed and files == ['base.yaml', 'legacy.yaml', fragment]
+        return ['../outside.yaml'] if fault == 'escape' else ['base.yaml', 'native.yaml', fragment]
     stack = SimpleNamespace(resolve_files=resolve)
     native_env = module.helper('pixel-native-env')
+    native_compose = module.helper('pixel-native-compose')
     monkeypatch.setattr(module, 'helper', lambda name: {
         'pixel-macos-access-install': installer, 'pixel-native-stack': stack,
-        'pixel-native-env': native_env}[name])
+        'pixel-native-env': native_env, 'pixel-native-compose': native_compose}[name])
     monkeypatch.setattr(module.Path, 'is_socket', lambda path: fault != 'socket')
     monkeypatch.setenv('DOCKER_CONTEXT', 'remote')
     monkeypatch.setenv('DOCKER_TLS_VERIFY', '1')
@@ -184,6 +195,8 @@ def test_refresh_clients_uses_native_stack_and_verifies_from_dashboard(tmp_path,
     if fault:
         with pytest.raises((ValueError, subprocess.CalledProcessError)): module.refresh_clients(installed)
         if fault not in ('start', 'probe'): assert not any('up' in call for call in calls)
+        if fault in ('unsafe-recipe', 'recipe-alias'):
+            assert not calls
     else:
         module.refresh_clients(installed)
         assert len(calls) == 3

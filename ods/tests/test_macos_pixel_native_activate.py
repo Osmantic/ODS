@@ -2,6 +2,7 @@ import importlib.util
 import json
 import os as os
 from pathlib import Path
+import shutil
 from types import SimpleNamespace
 
 import pytest
@@ -14,7 +15,7 @@ SPEC.loader.exec_module(module)
 
 
 @pytest.mark.parametrize('fault', [None, 'configure', 'environment', 'keys', 'files', 'config', 'existing',
-    'prerequisites', 'infrastructure', 'protected', 'health', 'webui-routing'])
+    'prerequisites', 'infrastructure', 'protected', 'health', 'webui-routing', 'unsafe-recipe', 'recipe-alias'])
 def test_prepared_activation_validates_and_orders_real_entry_points(tmp_path, monkeypatch, fault):
     monkeypatch.setattr(module.sys, 'platform', 'darwin')
     monkeypatch.setattr(module.os, 'geteuid', lambda: 501)
@@ -34,6 +35,18 @@ def test_prepared_activation_validates_and_orders_real_entry_points(tmp_path, mo
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text('fixture')
         files.append(path)
+    recipe = install_dir / 'data/user-extensions/example/compose.yaml'
+    recipe.parent.mkdir(parents=True)
+    recipe.write_text(json.dumps({'services': {'example': {'image': 'example/app:1',
+        **({'privileged': True} if fault in ('unsafe-recipe', 'recipe-alias') else {})}}}))
+    if fault == 'recipe-alias':
+        target = install_dir / 'unreviewed.yaml'
+        recipe.rename(target)
+        recipe.symlink_to(target)
+    (install_dir / 'scripts').mkdir()
+    shutil.copyfile(Path(__file__).resolve().parents[1] / 'scripts/resolve-compose-stack.sh',
+        install_dir / 'scripts/resolve-compose-stack.sh')
+    files.append(recipe)
     if fault == 'files': files.reverse()
     env = dict(DASHBOARD_API_KEY='d' * 64, PIXEL_OPENWEBUI_KEY='e' * 64, PIXEL_MODEL_RELAY_KEY='f' * 64,
         PIXEL_NATIVE_UID='501', PIXEL_INGRESS_GID='20', PIXEL_NATIVE_INGRESS_IMAGE='sha256:' + 'a' * 64,
@@ -61,7 +74,8 @@ def test_prepared_activation_validates_and_orders_real_entry_points(tmp_path, mo
         'pixel-macos-access-install.py': SimpleNamespace(make_plan=make_plan, bind_initial_services=bind,
             _env_file=lambda path: env),
         'pixel-native-compose.py': SimpleNamespace(start_infrastructure=lambda run, **kw: event('infrastructure'),
-            wait_ready=lambda run: event('health')),
+            wait_ready=lambda run: event('health'),
+            validate_stack=module.helper('pixel-native-compose.py').validate_stack),
     }
     if fault == 'configure':
         native_env = module.helper('pixel-native-env.py')
@@ -114,7 +128,10 @@ def test_prepared_activation_validates_and_orders_real_entry_points(tmp_path, mo
         if fault == 'configure':
             assert (preparation / 'environment-before-native.env').read_text() == before
             assert env_path.read_text().startswith('LLM_MODEL=owner-selected\n')
-    if fault in ('environment', 'keys', 'files', 'config'):
+    if fault in ('unsafe-recipe', 'recipe-alias'):
+        assert events == ['plan', 'bind']
+        assert not (preparation / 'environment-before-native.env').exists()
+    if fault in ('environment', 'keys', 'files', 'config', 'unsafe-recipe', 'recipe-alias'):
         assert not journal.exists()
     elif fault == 'existing':
         assert journal.read_text() == 'do not overwrite'

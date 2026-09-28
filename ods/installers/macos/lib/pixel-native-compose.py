@@ -3,7 +3,9 @@
 The caller supplies its resolved Compose runner, selected project/environment
 and private dashboard credential. No gateway is activated by this module.
 """
+import importlib.util
 import json
+from pathlib import Path
 import re
 import secrets
 import subprocess
@@ -25,6 +27,19 @@ with urllib.request.urlopen(request,timeout=3) as response:
     if len(value)>65536: raise ValueError('oversized response')
     sys.stdout.buffer.write(value)
 '''
+
+
+def validate_stack(install_dir, paths):
+    """Use the shared extension policy before interpreting a saved stack."""
+    policy_path = Path(__file__).resolve().parents[3] / 'scripts/compose-cache-policy.py'
+    spec = importlib.util.spec_from_file_location('native_compose_cache_policy', policy_path)
+    policy = importlib.util.module_from_spec(spec)
+    try:
+        spec.loader.exec_module(policy)
+    except OSError as error:
+        raise ValueError('compose-security-policy-missing') from error
+    flags = [argument for path in paths for argument in ('-f', str(path))]
+    policy.validate_flags(install_dir, flags)
 
 
 def start_infrastructure(run, *, dashboard_key, admission=None):

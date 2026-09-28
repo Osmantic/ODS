@@ -102,6 +102,9 @@ jobs:
       - run: python -m pytest ods/tests/test-stop-owned-containers.py -q
       - if: runner.os != 'Windows'
         run: python -m pytest ods/tests/test-macos-private-opencode-route.py -q
+      - if: runner.os != 'Windows'
+        name: Validate native migration recipe authorization and recovery
+        run: python -m pytest ods/tests/test_macos_pixel_native_activate.py ods/tests/test_macos_pixel_native_docker_migrate.py ods/tests/test_macos_pixel_native_prepare.py ods/tests/test_macos_pixel_native_finalize.py -q
       - if: runner.os == 'Windows'
         shell: powershell
         run: ./ods/tests/test-windows-compose-model-stores.ps1

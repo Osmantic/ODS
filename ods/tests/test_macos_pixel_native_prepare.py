@@ -2,6 +2,7 @@ import importlib.util
 import json
 import plistlib
 from pathlib import Path
+import shutil
 from types import SimpleNamespace
 
 import pytest
@@ -13,7 +14,7 @@ module = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(module)
 
 
-@pytest.mark.parametrize('fault', [None, 'hash', 'mount', 'network', 'image', 'container'])
+@pytest.mark.parametrize('fault', [None, 'hash', 'mount', 'network', 'image', 'container', 'unsafe-recipe'])
 def test_rollback_snapshot_pins_running_images_and_distinct_default_networks(tmp_path, monkeypatch, fault):
     monkeypatch.setattr(module.sys, 'platform', 'darwin')
     monkeypatch.setattr(module.os, 'geteuid', lambda: 501)
@@ -26,6 +27,13 @@ def test_rollback_snapshot_pins_running_images_and_distinct_default_networks(tmp
         'installDir': str(installed), 'legacyStorage': {'project': 'ods', 'containers': ids}}
     (prep / 'preparation.json').write_text(json.dumps(receipt))
     (prep / 'preparation.json').chmod(0o600)
+    recipe = installed / 'data/user-extensions/example/compose.yaml'
+    recipe.parent.mkdir(parents=True)
+    recipe.write_text(json.dumps({'services': {'example': {'image': 'example/app:1',
+        **({'privileged': True} if fault == 'unsafe-recipe' else {})}}}))
+    (installed / 'scripts').mkdir()
+    shutil.copyfile(Path(__file__).resolve().parents[1] / 'scripts/resolve-compose-stack.sh',
+        installed / 'scripts/resolve-compose-stack.sh')
     documents, inspections = {}, {}
     for key, service in (('edge', 'pixel-edge'), ('preview', 'pixel-workspace-preview')):
         path = installed / (key + '.json')
@@ -41,7 +49,7 @@ def test_rollback_snapshot_pins_running_images_and_distinct_default_networks(tmp
         inspections[ids[key]] = {'Id': ids[key], 'Name': '/ods-' + service,
             'Image': 'sha256:' + ids[key], 'Config': {'Labels': {
                 'com.docker.compose.project': 'ods', 'com.docker.compose.service': service,
-                'com.docker.compose.project.config_files': str(path),
+                'com.docker.compose.project.config_files': str(path) + ',' + str(recipe),
                 'com.docker.compose.config-hash': 'c' * 64}},
             'Mounts': [{'Type': 'volume', 'Name': key + '-data', 'Destination': '/data'}],
             'NetworkSettings': {'Networks': {key + '-network': {}}}}
@@ -54,19 +62,23 @@ def test_rollback_snapshot_pins_running_images_and_distinct_default_networks(tmp
         'd' * 64 if fault == 'container' else ids['edge' if name == 'ods-pixel-edge' else 'preview'])
     monkeypatch.setattr(compose, '_inspect_ingress', lambda runner, identity: inspections[identity])
     calls = []
-    def docker(runner, *args):
+    def docker(argv, **kwargs):
+        args = argv[1:]
         calls.append(args)
         assert args[0] == 'compose' and 'config' in args
         if '--hash' in args:
-            return args[-1] + ' ' + ('bad' if fault == 'hash' else 'c' * 64)
+            return SimpleNamespace(returncode=0, stdout=args[-1] + ' ' + ('bad' if fault == 'hash' else 'c' * 64))
         path = Path(args[args.index('-f') + 1])
-        return json.dumps(documents['pixel-edge' if path.stem == 'edge' else 'pixel-workspace-preview'])
-    monkeypatch.setattr(compose, '_docker', docker)
+        return SimpleNamespace(returncode=0,
+            stdout=json.dumps(documents['pixel-edge' if path.stem == 'edge' else 'pixel-workspace-preview']))
+    monkeypatch.setattr(module.subprocess, 'run', docker)
     monkeypatch.setattr(module, 'helper', lambda name: compose if name == 'compose' else original_helper(name))
     if fault:
         with pytest.raises(ValueError):
             module.stage_legacy_rollback(preparation=prep, docker='/docker', project='ods')
         assert not (prep / 'rollback.compose.json').exists()
+        if fault == 'unsafe-recipe':
+            assert not calls
     else:
         result = module.stage_legacy_rollback(preparation=prep, docker='/docker', project='ods')
         assert result['services'] == 2 and result['servicesChanged'] is False

@@ -64,6 +64,8 @@ def migrate(preparation, *, apply=False):
     tokens = shlex.split((install_dir / '.compose-flags').read_text())
     if len(tokens) % 2 or any(value != '-f' for value in tokens[::2]):
         raise ValueError('resolved-legacy-compose-flags-required')
+    original_files = [install_dir / value for value in tokens[1::2]]
+    compose.validate_stack(install_dir, original_files)
     fragments = helper('install').FRAGMENTS
     removed = {install_dir / value for value in (*fragments, 'extensions/services/pixel-vm-link/compose.yaml')}
     files = []
@@ -81,7 +83,10 @@ def migrate(preparation, *, apply=False):
     def execute(command, args, timeout, input):
         return subprocess.run([*command, *args], cwd=install_dir, env=process_env,
             capture_output=True, text=True, timeout=timeout, input=input)
-    def run(*args, timeout=60, input=None): return execute(command, args, timeout, input)
+    def run(*args, timeout=60, input=None):
+        compose.validate_stack(install_dir, original_files)
+        compose.validate_stack(install_dir, files)
+        return execute(command, args, timeout, input)
     def previous_run(*args, timeout=60, input=None): return execute(previous, args, timeout, input)
     def docker_run(*args, timeout=60, input=None): return execute([docker], args, timeout, input)
     if run('config', '--quiet').returncode or previous_run('config', '--quiet').returncode:

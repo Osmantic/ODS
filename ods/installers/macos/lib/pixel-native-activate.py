@@ -64,6 +64,7 @@ def activate(*, preparation, install_dir, ods_source, compose_files, configure_s
         'PIXEL_NATIVE_GATEWAY_PORT': str(document['gateway']['port']),
         'PIXEL_NATIVE_ACCESS_PORT': str(plan['access_port']),
     }
+    compose.validate_stack(install_dir, compose_files)
     paths = [Path(path).resolve(strict=True) for path in compose_files]
     required = [install_dir / relative for relative in (
         'extensions/services/pixel-model-relay/compose.yaml.disabled',
@@ -75,6 +76,7 @@ def activate(*, preparation, install_dir, ods_source, compose_files, configure_s
     journal = preparation / 'activation.json'
     if os.path.lexists(journal):
         raise ValueError('native-activation-journal-requires-review')
+    compose.validate_stack(install_dir, paths)
     if configure_stack:
         bindings = {**expected,
             'PIXEL_INGRESS_RUNTIME_DIR': env.get('PIXEL_INGRESS_RUNTIME_DIR') or str(home / 'unused-docker-ingress'),
@@ -91,6 +93,8 @@ def activate(*, preparation, install_dir, ods_source, compose_files, configure_s
     process_env = {'HOME': owner.pw_dir, 'PATH': source_env['PATH'],
         'DOCKER_HOST': source_env['DOCKER_HOST'], 'DOCKER_CONFIG': source_env['DOCKER_CONFIG']}
     def run(*args, timeout=60, input=None):
+        compose.validate_stack(install_dir, compose_files)
+        compose.validate_stack(install_dir, paths)
         return subprocess.run([*command, *args], cwd=install_dir, env=process_env,
             capture_output=True, text=True, timeout=timeout, input=input)
     # Validate Compose interpolation before recording or starting an attempt.

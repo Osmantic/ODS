@@ -213,6 +213,26 @@ does not provide Hermes readiness; the identical failure was reproduced from
 the base `main` revision `e3b3c89b4`. This is not evidence of a successful real
 model swap. Docker Desktop was not started for these fixtures.
 
+The legacy `upgrade-model.sh` helper also validates before stopping/starting
+Compose services and before changing the model in `.env`. Its read-only service
+lookup no longer renders Compose merely to return the fixed `llama-server`
+name. A refused restart cannot be reported as a successful rollback.
+
+Native macOS activation, rollback preparation, Docker handover and consumer
+refresh now use the same saved-recipe policy. Validation happens before
+configuration writes and before each Compose command, preserving both original
+and resolved paths so symlink aliases cannot erase a recipe's untrusted origin.
+The digest-verified rollback snapshot still restores the already-running core
+infrastructure without rebuilding a rejected extension.
+
+Validation for this follow-up: 159 saved-stack/legacy-helper/native migration
+cases, 66 native finalization cases and 203 native Compose/install/stack cases
+passed locally in Linux fixtures.
+Existing GPU-overlay selection and atomic `.env` write contracts passed, as did
+the configured Ruff rules and workflow security tests. CI now explicitly runs
+the migration/activation/finalization fixtures on Linux and macOS. These tests
+mock Docker/launchd and do not claim a physical Mac migration or GPU benchmark.
+
 Recovery tests cover Linux/macOS CLI delegation, PowerShell 5.1 stop/disable,
 host-agent stop-only recovery, ownership mismatches, malformed Docker metadata,
 and preserving recipe files when stopping fails. The dedicated real-container

@@ -99,6 +99,9 @@ def stage_legacy_rollback(*, preparation, docker, project):
         raise ValueError('unactivated-legacy-storage-preparation-required')
     install_dir = Path(receipt['installDir']).resolve(strict=True)
     def run(*args, timeout=45):
+        if args and args[0] == 'compose':
+            paths = [args[index + 1] for index, value in enumerate(args[:-1]) if value == '-f']
+            compose.validate_stack(install_dir, paths)
         return subprocess.run([str(docker), *args], capture_output=True, text=True, timeout=timeout)
     rollback = {'name': project, 'services': {}, 'volumes': {}, 'networks': {}}
     images = {}

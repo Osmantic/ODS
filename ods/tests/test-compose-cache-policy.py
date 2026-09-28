@@ -27,6 +27,49 @@ def test_argument_cli_preserves_spaces_and_unicode(installed):
     assert json.loads(result.stdout) == args
 
 
+@pytest.mark.skipif(sys.platform == 'win32', reason='POSIX legacy model helper')
+@pytest.mark.parametrize('action', ['start_llm new-model', 'stop_llm', 'cmd_rollback'])
+@pytest.mark.parametrize('confined', [False, True])
+def test_legacy_model_helper_validates_before_docker_or_env_write(installed, action, confined):
+    source_recipe(installed, confined=confined)
+    shutil.copyfile(ODS / 'scripts/compose-cache-policy.py', installed / 'scripts/compose-cache-policy.py')
+    (installed / '.compose-flags').write_text('-f base.yml -f data/user-extensions/example/compose.yaml')
+    (installed / '.env').write_text('original')
+    source = (ODS / 'scripts/upgrade-model.sh').read_text()
+    names = ['detect_compose_file', 'detect_inference_service', 'resolve_inference_runtime',
+             'validate_model_compose', 'run_model_compose', 'start_llm', 'stop_llm', 'cmd_rollback']
+    functions = '\n'.join(re.search(r'^' + name + r'\(\) \{.*?^}', source,
+                                    re.MULTILINE | re.DOTALL).group() for name in names)
+    prelude = '''
+set -u
+ODS_DIR="$1"
+ODS_PYTHON_CMD="$2"
+OLLAMA_PORT=11434
+LLAMA_SERVER_CONTAINER=ods-llama-server
+BACKUP_FILE="$ODS_DIR/absent-backup"
+MODELS_DIR="$ODS_DIR/models"
+docker() { printf '%s\\n' "$*" >> "$ODS_DIR/docker-called"; }
+log() { :; }
+success() { :; }
+get_previous_model() { echo previous; }
+get_current_model() { echo current; }
+wait_for_llm() { return 0; }
+test_inference() { return 0; }
+HEALTH_CHECK_TIMEOUT=1
+save_state() { touch "$ODS_DIR/saved-state"; }
+update_env_value() { printf changed > "$1"; }
+'''
+    result = subprocess.run(['bash', '-s', '--', str(installed), sys.executable],
+                            input=prelude + functions + '\n' + action, capture_output=True, text=True)
+    assert (result.returncode == 0) == confined, result.stderr
+    assert (installed / 'docker-called').exists() == confined
+    assert (installed / '.env').read_text() == ('changed' if confined and action != 'stop_llm' else 'original')
+    if action == 'cmd_rollback':
+        assert (installed / 'saved-state').exists() == confined
+    if not confined:
+        assert 'requires review' in result.stderr
+
+
 @pytest.mark.skipif(sys.platform == 'win32', reason='POSIX bootstrap integration')
 @pytest.mark.parametrize('action', ['llama', 'llama-retry', 'hermes', 'windows-openclaw',
                                    'windows-cached', 'windows-recovered', 'lemonade', 'openclaw'])

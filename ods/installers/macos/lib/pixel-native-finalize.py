@@ -251,14 +251,21 @@ def refresh_clients(install_dir):
         if key not in ('DOCKER_CONTEXT', 'DOCKER_TLS_VERIFY', 'DOCKER_CERT_PATH', 'DOCKER_HOST')}
     process_env['DOCKER_HOST'] = endpoint
     tokens = compose_flags(install_dir, process_env)
+    compose = helper('pixel-native-compose')
+    original_files = [install_dir / value for value in tokens[1::2]]
+    compose.validate_stack(install_dir, original_files)
+    resolved_files = [install_dir / value for value in stack.resolve_files(install_dir, tokens[1::2])]
+    compose.validate_stack(install_dir, resolved_files)
     command = [transport['docker'], 'compose', '--project-directory', str(install_dir),
         '--project-name', transport['project'], '--env-file', str(install_dir / '.env')]
-    for value in stack.resolve_files(install_dir, tokens[1::2]):
-        path = (install_dir / value).resolve(strict=True)
+    for value in resolved_files:
+        path = value.resolve(strict=True)
         if install_dir not in path.parents or not path.is_file():
             raise ValueError('installed-compose-file-required')
         command.extend(['-f', str(path)])
     def run(*args, timeout=30):
+        compose.validate_stack(install_dir, original_files)
+        compose.validate_stack(install_dir, resolved_files)
         return subprocess.run([*command, *args], cwd=install_dir, env=process_env,
             capture_output=True, text=True, check=True, timeout=timeout)
     resolved = json.loads(run('config', '--format', 'json').stdout)
