@@ -62,9 +62,11 @@ def main():
     args = parser.parse_args()
     try:
         if args.json_stdin:
-            raw = sys.stdin.read(131073)
+            # Native PowerShell pipelines may send one UTF-8 BOM. Preserve
+            # non-ASCII paths without accepting locale-dependent encodings.
+            raw = sys.stdin.buffer.read(131073)
             if len(raw) > 131072: raise ValueError('Saved Compose arguments are too large')
-            flags = json.loads(raw)
+            flags = json.loads(raw.decode('utf-8-sig'))
         else:
             flags = args.flags.split()
         result = resolve_flags(args.install_dir, flags)

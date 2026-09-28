@@ -256,6 +256,36 @@ def test_model_store_helper_cannot_bypass_recipe_validation(installed):
     assert 'requires review' in result.stderr
 
 
+@pytest.mark.parametrize('helper', ['compose-cache-policy.py', 'model-store-compose-flags.py'])
+@pytest.mark.parametrize('prefix', [b'', b'\xef\xbb\xbf'])
+def test_native_json_pipeline_preserves_unicode_with_optional_bom(installed, helper, prefix):
+    command = [sys.executable, str(ODS / 'scripts' / helper), '--install-dir', str(installed)]
+    if helper == 'model-store-compose-flags.py':
+        command.append('--json-stdin')
+    original = flags() + ['--env-file', 'folder with spaces/owner-\u00e9\u6a21.env']
+    wire = prefix + json.dumps(original, ensure_ascii=False).encode('utf-8')
+    result = subprocess.run(command, input=wire, capture_output=True)
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == original
+    change(installed, {'privileged': True})
+    result = subprocess.run(command, input=wire, capture_output=True)
+    assert result.returncode == 2
+    assert not result.stdout
+    assert b'requires review' in result.stderr
+
+
+@pytest.mark.parametrize('helper', ['compose-cache-policy.py', 'model-store-compose-flags.py'])
+@pytest.mark.parametrize('wire', [b'\xef\xbb\xbf\xef\xbb\xbf[]', b'\xff[]', b'[]garbage', b' ' * 131073],
+                         ids=['repeated-bom', 'invalid-utf8', 'trailing-data', 'oversized'])
+def test_native_json_pipeline_rejects_invalid_or_oversized_input(installed, helper, wire):
+    command = [sys.executable, str(ODS / 'scripts' / helper), '--install-dir', str(installed)]
+    if helper == 'model-store-compose-flags.py':
+        command.append('--json-stdin')
+    result = subprocess.run(command, input=wire, capture_output=True)
+    assert result.returncode == 2
+    assert not result.stdout
+
+
 @pytest.mark.skipif(sys.platform == 'win32', reason='POSIX CLI integration')
 @pytest.mark.parametrize('platform', ['linux', 'macos'])
 def test_native_cli_rejects_cached_recipe_before_docker(installed, platform):
@@ -278,6 +308,19 @@ def test_native_cli_rejects_cached_recipe_before_docker(installed, platform):
     (installed / '.compose-flags').write_text(saved)
     script = 'set -e\nINSTALL_DIR="$1"\n' + prelude + function + '\nget_compose_flags\n'
     command = ['bash', '-s', '--', str(installed)]
+    if platform == 'linux':
+        # Linux CLI requires Bash 4+. Keep the native macOS case on its system
+        # Bash, while selecting a supported shell for the Linux-only function.
+        for candidate in ['bash', '/opt/homebrew/bin/bash', '/usr/local/bin/bash']:
+            if not shutil.which(candidate):
+                continue
+            version = subprocess.run([candidate, '-c', 'echo "${BASH_VERSINFO[0]}"'],
+                                     capture_output=True, text=True, check=True)
+            if int(version.stdout.strip()) >= 4:
+                command[0] = candidate
+                break
+        else:
+            pytest.skip('Linux CLI needs Bash 4+; native macOS case runs separately')
     # Use the same configured interpreter for the shell helper and pytest.
     import os
     env = dict(os.environ, PATH=str(Path(sys.executable).parent) + os.pathsep + os.environ['PATH'])

@@ -75,6 +75,28 @@ These results refer to the relevant focused changes, not to every combination
 of installer, GPU and operating system. The PR remains draft until the remaining
 items above and CI are resolved.
 
+### Regression review following installer concerns
+
+The `install-macos.sh` loopback change is intentional, not a claim of unchanged
+network behavior: native OpenCode connects to the host's published LiteLLM port
+or native llama port. Both listeners remain private even when the UI is exposed
+to the LAN. The Colima bridge is a separate container-to-host route.
+
+An additional 30 cases execute the actual installer route-selection block and
+config writer for switchboard, cloud and native modes, five IPv4/IPv6 UI bind
+settings, and default/custom ports. Custom-port cases make an actual loopback
+HTTP request using the generated URL, key and model; upgrade fixtures verify
+that unrelated user settings survive. These are fixture endpoints, not model
+inference, launchd or a full macOS installation. The test also runs on macOS CI.
+
+The latest completed checks on the preceding commit exposed a PowerShell 5.1
+UTF-8 BOM handling error, a Linux-only shell fixture running under macOS Bash
+3.2, and an outdated SearXNG locale image-reference comment. The remediation
+accepts one optional UTF-8 BOM while rejecting invalid/oversized input, selects
+Bash 4+ only for the Linux fixture, and aligns the comment with the pinned image.
+Native macOS shell cases continue to run with the system Bash. Final-head CI
+must confirm these changes before any merge recommendation.
+
 ## Upgrade behavior to review
 
 LAN clients use authenticated UI/gateway routes. Direct inference and extension

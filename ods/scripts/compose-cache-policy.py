@@ -134,10 +134,12 @@ def main():
         if args.flags is not None:
             flags = args.flags.split()
         else:
-            raw = sys.stdin.read(131073)
+            # PowerShell 5.1 can prepend a UTF-8 BOM to native pipeline input.
+            # Decode the wire format explicitly, independently of the locale.
+            raw = sys.stdin.buffer.read(131073)
             if len(raw) > 131072:
                 raise ValueError('Saved Compose arguments are too large')
-            flags = json.loads(raw)
+            flags = json.loads(raw.decode('utf-8-sig'))
         validate_flags(args.install_dir, flags)
         print(' '.join(flags) if args.format == 'flags' else json.dumps(flags))
     except (OSError, ValueError) as error:
