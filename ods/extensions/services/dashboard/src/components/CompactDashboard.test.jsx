@@ -40,3 +40,14 @@ it('does not fabricate a percentage without telemetry', () => {
   expect(screen.queryByRole('progressbar')).toBeNull()
   expect(screen.getByText('No service telemetry available.')).toBeVisible()
 })
+it('ignores a resize callback delivered after unmount', () => {
+  let measure
+  vi.stubGlobal('ResizeObserver', class {
+    constructor(callback) { measure = callback }
+    observe() {}
+    disconnect() {}
+  })
+  const { unmount } = render(<div className="portal-panel-content"><CompactDashboard health={{text:'Online'}} metrics={[]} services={[]}/></div>)
+  unmount()
+  expect(() => measure()).not.toThrow()
+})

@@ -29,6 +29,7 @@ export default function CompactDashboard({ metrics, services, health }) {
     const panel = list.current.closest('.portal-panel-content')
     if (!panel) return
     const measure = () => {
+      if (!list.current || !panel.isConnected) return
       const listOffset = list.current.getBoundingClientRect().top - panel.getBoundingClientRect().top + panel.scrollTop
       const available = panel.clientHeight - listOffset - 48
       // Measure the actual collapsed rows; status pills no longer add height.
