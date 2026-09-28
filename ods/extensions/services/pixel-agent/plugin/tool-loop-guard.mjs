@@ -5317,6 +5317,15 @@ export function userMessageOperationsRequirements(messages, prompt = undefined) 
   );
   const artifactOrExplanation = /\b(?:explain|tutorial|example|hypothetical|fictional|pretend|build|create|design|implement|write|preview)\b/i;
   const negatedObservationClause = (clause) => /^\s*(?:but\s+)?(?:please\s+)?(?:do\s+not|don['’]t|never|avoid|skip|omit|exclude)\b/i.test(clause);
+  // "This interface can establish ..." describes a software capability.
+  // Bind bare interface observations to their request object, while keeping
+  // independent, explicit network-interface requests in the same turn.
+  const networkInterfaceObservation = hostIntentClauses.some((clause) =>
+    !artifactOrExplanation.test(clause) && !negatedObservationClause(clause) && (
+      /\bnetwork\s+interfaces?\b/i.test(clause) ||
+      /\b(?:show|report|list|check|inspect|name|identify|enumerate|display|read|measure|tell\s+me)\s+(?:me\s+)?(?:(?:the|this|that|my|our|all|any|available|active|host|machine|computer|system|local)\s+)*interfaces?\b(?!\s+(?:can|cannot|can['’]t|supports?|establishes?)\b)/i.test(clause) ||
+      /\b(?:what|which|how\s+many)\s+(?:(?:the|this|that|my|our|available|active|host|machine|computer|system|local)\s+)*interfaces?\b(?!\s+(?:can|cannot|can['’]t|supports?|establishes?)\b)/i.test(clause)
+    ));
   const networkDiscoveryClause = (clause) =>
     /\b(?:LAN|local\s+network)\b/i.test(clause) &&
     /\b(?:computers|machines|hosts|devices|peers)\b/i.test(clause) &&
@@ -5443,7 +5452,7 @@ export function userMessageOperationsRequirements(messages, prompt = undefined) 
   if (broadHostExploration || hardwareOverviewIntent || (hostContext && /\b(?:disk|filesystem|storage|mounts?)\b/i.test(hostText))) {
     actions.push("host.storage");
   }
-  if (broadHostExploration || networkDiscoveryRequested || localNetworkOverview || (hostContext && /\b(?:network interfaces?|interfaces?|addresses?|ip addresses?)\b/i.test(hostText))) {
+  if (broadHostExploration || networkDiscoveryRequested || localNetworkOverview || (hostContext && (networkInterfaceObservation || /\b(?:addresses?|ip addresses?)\b/i.test(hostText)))) {
     actions.push("host.network-addresses");
   }
   if (broadHostExploration || networkDiscoveryRequested || localNetworkOverview || (hostContext && /\b(?:routes?|routing)\b/i.test(hostText))) {
