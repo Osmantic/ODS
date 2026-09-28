@@ -170,6 +170,7 @@ load_model_selector_env_from_output() {
         LLAMA_SERVER_MEMORY_LIMIT \
         LLAMA_CPP_RELEASE_TAG_OVERRIDE \
         LLAMA_CPP_SERVER_BINARY \
+        LLAMA_PARALLEL \
         LLAMA_ARG_FLASH_ATTN \
         LLAMA_ARG_CACHE_TYPE_K \
         LLAMA_ARG_CACHE_TYPE_V \
