@@ -1955,7 +1955,10 @@ function operationsSubmission(event, toolName) {
       actions.push({ target: step.target, action: step.action, parameters: step.parameters });
     }
   } else if (toolName === "pixel_ops_download_stage" && details.kind === "download") {
+    const download = exactDownloadSubmission(event, event?.params);
+    if (!download) return undefined;
     actions.push({ target: "broker", action: "download.stage" });
+    return { jobId: details.jobId, actions, download };
   } else if (
     toolName === "pixel_ops_artifact_transfer" &&
     details.kind === "transfer" &&
@@ -2009,6 +2012,23 @@ function operationsTerminalOutcome(event, submittedJobs) {
       approvalRequired: details.approvalRequired,
       actions: submission.actions,
       steps: [],
+    };
+  }
+  // Canonical download receipts carry artifact metadata, not shell output.
+  // Reuse the exact-byte validator and retain the stricter command contract
+  // below for action, workflow, transfer, and shell submissions.
+  if (submission.download) {
+    const artifact = exactDownloadTerminalArtifact(event,
+      new Map([[requestedJobId, submission.download]]));
+    if (!artifact) return undefined;
+    return {
+      jobId: requestedJobId,
+      status: details.status,
+      planHash: details.planHash,
+      approvalRequired: details.approvalRequired,
+      actions: submission.actions,
+      steps: details.steps,
+      artifact,
     };
   }
   if (!Array.isArray(details.steps) || details.steps.length !== submission.actions.length) {
