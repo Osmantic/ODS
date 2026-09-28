@@ -491,3 +491,33 @@ def test_native_cli_rejects_cached_recipe_before_docker(installed, platform):
     assert result.returncode != 0
     assert not result.stdout
     assert 'requires review' in result.stderr
+
+
+def _resolver_policy(resolver=None):
+    """The resolver's delimited policy slice, executed as the cache policy does."""
+    import yaml
+    path = resolver or ODS / 'scripts/resolve-compose-stack.sh'
+    source = path.read_text(encoding='utf-8')
+    start = source.index('_LOOPBACK_VAR_DEFAULT_RE = re.compile(')
+    end = source.index('def _load_compose_mapping(', start)
+    namespace = {'script_dir': ODS, 'pathlib': Path, 're': re, 'os': os,
+                 'json': json, 'yaml': yaml, 'sys': sys}
+    exec(compile(source[start:end], str(path), 'exec'), namespace)
+    return namespace['_source_runtime_merge_problems']
+
+
+def _empty_section_entries():
+    remote = {'build': {'context': 'https://github.com/example/app.git#' + 'a' * 40}}
+    return [
+        (Path('empty-document.yaml'), None),
+        (Path('services-none.yaml'), {'services': None}),
+        (Path('networks-none.yaml'), {'services': {'plain': {'image': 'x', 'networks': None}}, 'networks': None}),
+        (Path('service-none.yaml'), {'services': {'plain': None}}),
+        (Path('source.yaml'), {'services': {'src': remote}, 'networks': None}),
+    ]
+
+
+def test_source_merge_check_tolerates_empty_yaml_sections():
+    # Present-but-empty sections parse as None and used to crash the resolver
+    # and the saved-stack validator with a traceback instead of a decision.
+    assert _resolver_policy()(_empty_section_entries()) == []
