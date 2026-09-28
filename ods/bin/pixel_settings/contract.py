@@ -58,7 +58,7 @@ def validate_preferences(value):
             valid = type(item) is int or spec[0] == "number" and type(item) is float
             valid = valid and spec[1] <= item <= spec[2] and math.isfinite(item)
         if not valid:
-            raise SettingsError("invalid-setting-" + name)
+            raise SettingsError(f"invalid-setting-{name}")
         result[name] = item
     return result
 
