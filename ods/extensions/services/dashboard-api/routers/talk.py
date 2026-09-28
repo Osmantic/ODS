@@ -686,7 +686,11 @@ async def talk_status(request: Request) -> dict[str, Any]:
     )
     talk_block_reason = _hermes_talk_block_reason(model_compatibility)
     text_chat_ready = hermes.get("status") == "healthy" and not talk_block_reason
-    voice_ready = whisper.get("status") == "healthy" and tts.get("status") == "healthy"
+    # Recording and transcribing a message only reaches Whisper.  Kokoro is
+    # used later, and independently, to speak a completed reply.  Keeping
+    # these capabilities separate means a temporary TTS outage does not hide
+    # a working microphone or prevent a user from sending a voice message.
+    audio_message_ready = whisper.get("status") == "healthy"
     return {
         "ok": True,
         "session": {"expires_at": expires_at},
@@ -699,7 +703,7 @@ async def talk_status(request: Request) -> dict[str, Any]:
         "capabilities": {
             "text_chat": text_chat_ready,
             "tts": tts.get("status") == "healthy",
-            "audio_message": voice_ready,
+            "audio_message": audio_message_ready,
             "live_mic_requires_secure_context": True,
         },
         "reason": talk_block_reason,
