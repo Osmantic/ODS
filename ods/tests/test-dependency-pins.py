@@ -306,11 +306,80 @@ def main() -> int:
         test_external_pins_cannot_be_bypassed_by_lock_or_latest_exception,
         test_rocm_default_digest_is_resolved_and_override_is_explicit,
         test_extension_library_sha_tags_are_rejected,
+        test_dockerfile_heredocs_are_not_image_instructions,
+        test_dockerfile_directives_continuations_and_stage_scope,
+        test_dockerfile_truncated_documents_fail_closed,
     ]
     for test in tests:
         test()
     print("[PASS] dependency pin tests")
     return 0
+
+
+def test_dockerfile_heredocs_are_not_image_instructions() -> None:
+    module = load_module()
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        path = root / 'Dockerfile'
+        path.write_text('''FROM python:3.11 AS build
+RUN cat > /app/app.py << 'PY'
+from audiocraft.models import MusicGen
+ARG NEXT=attacker/hidden:latest
+PY
+COPY <<-"ONE" <<'TWO' /app/
+\tFROM hidden/image:latest
+\tONE
+FROM hidden/second:latest
+TWO
+RUN echo "<<QUOTED"
+RUN ["echo", "<<JSON"]
+RUN cat <<< "here string"
+FROM build AS final
+FROM scratch
+FROM actual/final:1
+''', encoding='utf-8')
+        refs = module._dockerfile_image_refs(path, root)
+        assert [(ref.line, ref.value) for ref in refs] == [(1, 'python:3.11'), (16, 'actual/final:1')]
+    # Real shipped code includes lowercase Python 'from' inside a heredoc.
+    path = ROOT / 'extensions/library/services/audiocraft/Dockerfile'
+    refs = module._dockerfile_image_refs(path)
+    assert len(refs) == 1 and refs[0].value.startswith('python:3.10-slim-bookworm@sha256:')
+
+
+def test_dockerfile_directives_continuations_and_stage_scope() -> None:
+    module = load_module()
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        path = root / 'Dockerfile'
+        path.write_text('# syntax=docker/dockerfile:1\n# escape=`\n'
+                        'arg BASE=python:3.11\nFROM --platform=$BUILDPLATFORM `\n'
+                        '# ignored comment inside continuation\n'
+                        '    ${BASE} as builder\nARG BASE=hidden:latest\n'
+                        'FROM\t${BASE}\nFROM builder AS another\n', encoding='utf-8')
+        refs = module._dockerfile_image_refs(path, root)
+        assert [(ref.line, ref.value, ref.source) for ref in refs] == [
+            (1, 'docker/dockerfile:1', 'dockerfile syntax'),
+            (4, 'python:3.11', 'dockerfile from'), (8, 'python:3.11', 'dockerfile from')]
+        # A syntax-looking comment after any blank/comment/instruction is inert.
+        for prefix in ('\n', '# ordinary comment\n', 'ARG BASE=python:3.11\n'):
+            path.write_text(prefix + '# syntax=ignored:latest\nFROM python:3.11\n', encoding='utf-8')
+            refs = module._dockerfile_image_refs(path, root)
+            assert [ref.value for ref in refs] == ['python:3.11']
+
+
+def test_dockerfile_truncated_documents_fail_closed() -> None:
+    module = load_module()
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        path = root / 'Dockerfile'
+        for tail in ('RUN cat <<EOF\nFROM hidden:latest\n', 'FROM \\\n', 'RUN cat <<\n'):
+            path.write_text('FROM python:3.11\n' + tail, encoding='utf-8')
+            try:
+                module._dockerfile_image_refs(path, root)
+            except ValueError:
+                pass
+            else:
+                raise AssertionError('Truncated Dockerfile must not yield a successful partial inventory')
 
 
 if __name__ == "__main__":

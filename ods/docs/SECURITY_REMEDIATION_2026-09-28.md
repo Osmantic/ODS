@@ -92,11 +92,15 @@ implemented on main before this work.
   run `36473239829` also passed the nine actual production Dockerfile builds
   and in-container dependency checks. This supersedes the earlier pending CI.
 
-Remaining image work includes the unavailable InvokeAI generic tag and the
-disabled legacy Dify image, plus enforcing the library's local-build/external
-image distinction without treating embedded Python `from` statements as
-Dockerfile instructions. Do not count missing or locally built image tags as
-verified external registry images.
+The image reader now handles Dockerfile heredocs, logical continuations,
+global build arguments, local stages and frontend syntax directives. Python
+`from` statements inside the AudioCraft heredoc are no longer mistaken for
+registry images. Fifteen dependency contracts pass, including malformed input
+rejection. The library inventory contains 357 references; 107 lack digests,
+including 105 local build tags and the unavailable InvokeAI/Dify references.
+Remaining image work includes qualifying those two legacy recipes and enforcing
+the local-build/external distinction. Do not count missing or locally built
+image tags as verified external registry images.
 
 These results refer to the relevant focused changes, not to every combination
 of installer, GPU and operating system. The PR remains draft until the remaining
@@ -167,8 +171,12 @@ Recovery tests cover Linux/macOS CLI delegation, PowerShell 5.1 stop/disable,
 host-agent stop-only recovery, ownership mismatches, malformed Docker metadata,
 and preserving recipe files when stopping fails. The dedicated real-container
 CI test verifies that another installation with the same project and service
-names remains running with its restart policy unchanged. That new CI test is
-pending on the recovery commit; Docker Desktop remains stopped locally.
+names remains running with its restart policy unchanged. Runtime security CI
+`36475219401` on `b6d40a9aa` passed: 21 recovery cases including real containers,
+all three saved-stack platform jobs and all nine production image builds.
+The local combined cache/recovery run passed 66 cases (one Docker-only skip),
+and native PowerShell 5.1 stop/disable passed. Docker Desktop remains stopped
+locally. Broader PR checks were still running when this evidence was recorded.
 
 The follow-up lifecycle review also found native background model upgrades still
 reading the dashboard's LAN bind, and the macOS doctor probing that address.
