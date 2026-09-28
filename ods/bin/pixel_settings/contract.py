@@ -56,7 +56,7 @@ def validate_preferences(value):
             valid = type(item) is str and item in spec[1:]
         else:
             valid = type(item) is int or spec[0] == "number" and type(item) is float
-            valid = valid and spec[1] <= item <= spec[2] and math.isfinite(item)
+            valid = valid and not isinstance(item, bool) and math.isfinite(item) and spec[1] <= item <= spec[2]
         if not valid:
             raise SettingsError("invalid-setting-" + name)
         result[name] = item
