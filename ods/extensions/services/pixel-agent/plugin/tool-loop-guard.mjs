@@ -5437,7 +5437,7 @@ export function userMessageOperationsRequirements(messages, prompt = undefined) 
   if (broadHostExploration || (hostContext && /\b(?:process|processes|process inventory)\b/i.test(hostText))) {
     actions.push("host.processes");
   }
-  if (broadHostExploration || (hostContext && /\b(?:systemd|(?:system\s+)?services?|service inventory)\b/i.test(hostText))) {
+  if (broadHostExploration || (hostContext && /\b(?:systemd|(?:system\s+)?services?|service inventory)\b/i.test(localHostFacetText))) {
     actions.push("host.services");
   }
   if (broadHostExploration || hardwareOverviewIntent || (hostContext && /\b(?:cpu|processor|hardware)\b/i.test(hostText))) {

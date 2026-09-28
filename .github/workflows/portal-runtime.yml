@@ -49,8 +49,8 @@ jobs:
       - run: node --test ods/extensions/services/pixel-agent/tests/read_range.test.mjs
       - run: node --test ods/extensions/services/pixel-agent/tests/tool_result_projection.test.mjs
       - run: node --test ods/extensions/services/pixel-agent/tests/persisted_tool_model_projection.test.mjs ods/extensions/services/pixel-agent/tests/exec_completion_feedback.test.mjs
-      - name: Verify repository handoff and bounded host interface intent
-        run: node --test ods/extensions/services/pixel-agent/tests/repository_acquisition_routing.test.mjs ods/extensions/services/pixel-agent/tests/prompt_contract.test.mjs ods/extensions/services/pixel-agent/tests/operations_composition.test.mjs ods/extensions/services/pixel-agent/tests/download_promote.test.mjs ods/extensions/services/pixel-agent/tests/network_interface_intent.test.mjs
+      - name: Verify repository handoff and bounded host intent
+        run: node --test ods/extensions/services/pixel-agent/tests/repository_acquisition_routing.test.mjs ods/extensions/services/pixel-agent/tests/prompt_contract.test.mjs ods/extensions/services/pixel-agent/tests/operations_composition.test.mjs ods/extensions/services/pixel-agent/tests/download_promote.test.mjs ods/extensions/services/pixel-agent/tests/network_interface_intent.test.mjs ods/extensions/services/pixel-agent/tests/host_service_constraint_intent.test.mjs
       - name: Verify bounded preview delivery across platforms
         run: |
           node --test ods/extensions/services/pixel-agent/tests/preview_delivery_recovery.test.mjs
