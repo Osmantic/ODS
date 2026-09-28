@@ -27,6 +27,8 @@ def launch_application(request, *, approved_apps, access_status):
         raise AppLaunchError('owner-macos-session-required')
     if os.stat('/dev/console').st_uid != os.getuid():
         raise AppLaunchError('owner-console-session-required')
+    if type(approved_apps[bundle_id]) is not str:
+        raise AppLaunchError('approved-app-path-invalid')
     app = Path(approved_apps[bundle_id])
     if not app.is_absolute() or app.suffix != '.app' or app.resolve(strict=True) != app:
         raise AppLaunchError('approved-app-path-invalid')
