@@ -51,6 +51,16 @@ class LiveRecovery(unittest.TestCase):
             self.assertEqual(recovery.main(["--check", *cli]), 0)
             self.assertEqual(recovery.main(cli), 0)
             self.assertEqual(current_id(), initial)
+            # A different selected manifest leaves this same-project orphan
+            # alone, as Compose does after an extension is disabled or removed.
+            selected = root / "selected.json"
+            selected.write_text(json.dumps({"name": project, "services": {"selected": {
+                "image": image, "network_mode": "none"
+            }}}))
+            selected_cli = ["--install-dir", str(root), "--", "-p", project, "-f", str(selected)]
+            self.assertEqual(recovery.main(["--check", *selected_cli]), 0)
+            self.assertEqual(recovery.main(selected_cli), 0)
+            self.assertEqual(current_id(), initial)
             source.rename(root / "retained-original")
             source.mkdir(mode=0o755)
             (source / "new-marker").write_text("new-source-generation")

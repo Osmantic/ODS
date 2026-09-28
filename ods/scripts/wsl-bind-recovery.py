@@ -506,6 +506,10 @@ def main(argv=None):
     candidates = []
     for row in rows:
         svc = row.get("Service") or ""
+        # Compose ps includes project orphans after an extension is removed
+        # or disabled. Only the caller's selected manifest authorizes recovery.
+        if svc not in config["services"]:
+            continue
         if requested and svc != requested:
             continue
         name = row.get("Name")

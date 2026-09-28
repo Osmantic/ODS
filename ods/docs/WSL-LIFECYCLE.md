@@ -93,11 +93,13 @@ images (no pull, no build) with real data retained and a private bounded backup
 of writable data in the stale container view. Backups are capped at 1 GiB and
 10,000 archive members across affected services, require disk headroom, and
 remain private even when recovery fails. The helper has a 120-second total
-budget within the lifecycle adapter's 300-second start budget. Paused services
+budget within the lifecycle adapter's 300-second start budget. Selected paused services
 are refused rather than recreated. This recovery runs before Compose during
 manual starts and the saved Windows sign-in startup path;
 it makes no promise of universal resilience. Real Windows reboot qualification
 is still pending; the current evidence is a live laptop restoration.
+Containers absent from the selected manifest, including removed or disabled
+extension orphans, are left untouched.
 
 For an already-managed installation missing its Windows sign-in task, repair
 registration without rerunning setup or starting WSL:

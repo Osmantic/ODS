@@ -420,6 +420,25 @@ class TestArchiveSafety(Base):
 
 
 class TestRepeatHealthyNoRecreate(Base):
+    def test_orphan_is_not_inspected_or_recreated_while_selected_service_is_checked(self):
+        cfg = fake_config(services={"a": {"volumes": [bind(str(self.host), "/data")]}})
+        rows = [{"Service": "baserow", "Name": "orphan"}, {"Service": "a", "Name": "active"}]
+        container = {"State": {"Status": "running"}, "Config": {"Labels": {
+            "com.docker.compose.project": "proj", "com.docker.compose.service": "a"}}}
+        with mock.patch.object(H, "is_wsl_docker_desktop", return_value=True), \
+             mock.patch.object(H, "compose_config_json", return_value=cfg), \
+             mock.patch.object(H, "compose_ps", return_value=rows), \
+             mock.patch.object(H, "inspect_container", return_value=container) as inspect, \
+             mock.patch.object(H, "classify_running", return_value=(False, "healthy")) as classify, \
+             mock.patch.object(H, "backup_phantom") as backup, \
+             mock.patch.object(H, "recreate") as recreate:
+            result = H.main(["--install-dir", str(self.install), "--", "-f", "x.yml"])
+        self.assertEqual(result, 0)
+        inspect.assert_called_once_with("active")
+        classify.assert_called_once_with("active", [(str(self.host), "/data", False)])
+        backup.assert_not_called()
+        recreate.assert_not_called()
+
     def test_healthy_start_no_recreate(self):
         cfg = fake_config(services={"a": {"volumes": [bind(str(self.host), "/a")]}})
         ps_rows = [{"Service": "a", "Name": "ca"}]
