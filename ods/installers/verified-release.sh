@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# This body is also the inspectable Linux/macOS quickstart; no remote script is
+# This body is also the Linux/macOS qualification preview; no remote script is
 # executed until gh has authenticated the exact source archive.
 (
 set -euo pipefail

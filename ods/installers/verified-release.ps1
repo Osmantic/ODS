@@ -1,4 +1,4 @@
-# This body is also the inspectable Windows quickstart. It requires GitHub CLI,
+# This body is also the Windows qualification preview. It requires GitHub CLI,
 # but no Python, WSL or Docker to authenticate the source before setup begins.
 & {
     $ErrorActionPreference = 'Stop'

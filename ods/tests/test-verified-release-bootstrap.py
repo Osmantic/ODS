@@ -138,9 +138,15 @@ def test_release_rejection_never_extracts_or_invokes_installation(harness, scena
     assert (old_install / '.env').read_text() == 'owner fixture'
 
 
-def test_readme_executes_reviewed_bootstrap_bodies():
+def test_qualification_commands_match_reviewed_bootstrap_bodies():
+    preview = (ODS / 'docs/VERIFIED_INSTALL_PREVIEW.md').read_text(encoding='utf-8')
     readme = (ODS.parent / 'README.md').read_text(encoding='utf-8')
     for suffix, fence in [('sh', 'bash'), ('ps1', 'powershell')]:
         body = (ODS / f'installers/verified-release.{suffix}').read_text(encoding='utf-8')
         body = '\n'.join(line for line in body.splitlines() if not line.startswith('#')).strip()
-        assert f'```{fence}\n{body}\n```' in readme
+        assert f'```{fence}\n{body}\n```' in preview
+    # The public path must remain usable before the first eligible release.
+    # Activating the verified channel requires a separate qualification change.
+    assert 'ods/docs/VERIFIED_INSTALL_PREVIEW.md' in readme
+    assert 'https://github.com/Osmantic/ODS/archive/refs/heads/main.zip' in readme
+    assert 'gh attestation verify' not in readme

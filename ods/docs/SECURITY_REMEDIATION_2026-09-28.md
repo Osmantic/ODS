@@ -6,9 +6,34 @@ This is the implementation ledger for the eight findings in the audit of
 current main. In particular, remote Dashboard session authentication was already
 implemented on main before this work.
 
-**Status: implementation and automated validation are available for review;
-release provenance is not operationally closed. Do not merge this PR as a
-one-step onboarding rollout.**
+**Status: runtime security implementation and automated validation are available
+for review; release provenance is not operationally closed. The public installer
+channel is preserved, so merging the runtime fixes does not require activating
+an unqualified signed release.**
+
+### Rollout separation
+
+The verified commands are now staged in
+[Verified Installer Preview](VERIFIED_INSTALL_PREVIEW.md), with the unchanged
+verification boundary and executable tests. The main README keeps the existing
+development-main installation path and states its unsigned-source limitation.
+This is not a fallback from failed verification: the preview still refuses an
+ineligible release without running any installer.
+
+Recommended review order is producer-only #6882, then security #6859 after
+refreshing its base and confirming CI. The implementation team owns testing;
+Mike owns the requested merges. Real signing/publication needs separate release
+authorization, and qualification of those real artifacts precedes a separate
+public-channel activation change. This removes the release-publication blocker
+from the runtime fixes, but **does not close SEC-005's default-channel finding**.
+
+The separated preview passed all 12 consumer contracts on Windows PowerShell
+5.1 and all 12 on Linux locally, including real archive extraction with fixture
+installers and rejection before mutation. Linux used the Ubuntu unzip package
+extracted into the test user's cache, without changing the live ODS or installing
+a system package. Documentation checks found no new broken links; the existing
+103-link baseline remains. CI must confirm this follow-up before review status
+changes; the earlier 80 passed checks describe the preceding implementation.
 
 ### Current evidence (supersedes earlier pending CI notes below)
 
@@ -53,7 +78,7 @@ resolutions; they are not a claim that those resolved failures remain open.
 | SEC-002: Python advisories | Upgrade FastAPI/Starlette and aiohttp; all nine API/relay Docker builds install complete hash-checked locks; production audits are clean. All nine production Dockerfile builds and in-container pip checks passed CI on `1788236a9`. | Keep final-head dependency and regression checks green. |
 | SEC-003: source containment | Generated source services have numeric non-root UID, no capabilities, no-new-privileges, read-only root, resource limits and an internal network; API publication/re-enable and dynamic resolver enforce the profile. Saved stack arguments are revalidated by the host and platform CLIs, including old receipts; merged recipes cannot override or join source sandboxes. | Real-container and cross-platform saved-stack CI passed. Existing recipes requiring broader permissions need explicit review, not silent migration. |
 | SEC-004: public AI spending | Paid issue triage and review comments require a trusted association; serialized jobs and per-run budgets; unauthorized comments cannot cancel another comment's review. | Workflow contracts passed. This bounds individual runs, not the organization's total monthly provider bill. |
-| SEC-005: provenance | Python locks/hashes and pinned core/library images; local library images require a forced in-recipe build. Signed-tag source packaging, draft-only checksum/SBOM/OIDC workflow, and Windows/POSIX verified consumers are implemented. README separates verified stable from development opt-in. | Library and producer CI passed. Verify the first signed immutable candidate end to end. The current public release is ineligible: do not switch public onboarding until the producer is released and qualified. Existing tags have not been changed or retroactively signed. |
+| SEC-005: provenance | Python locks/hashes and pinned core/library images; local library images require a forced in-recipe build. Signed-tag source packaging, draft-only checksum/SBOM/OIDC workflow, and Windows/POSIX verified consumers are implemented. The verified public-channel change is staged separately from the current main quickstart. | Library and producer CI passed. Verify the first signed immutable candidate end to end, then activate the verified public channel in a separate reviewed change. The default-channel finding remains open. Existing tags have not been changed or retroactively signed. |
 | SEC-006: React Router | Coordinated update to react-router-dom 7.18.4 and its lockfile; production npm audit is clean. | Focused malicious-navigation cases and full frontend jobs on all three hosts passed on the implementation commit above. |
 | SEC-007: local origin trust | State-changing requests require exact Origin/Host agreement; the CORS allowlist no longer grants mutation authority. | Focused authentication/origin cases and the full API job passed on the implementation commit above. |
 | SEC-008: mutable Actions | Remaining twelve Action uses pinned to full commit hashes. | Workflow contracts passed. |
@@ -215,13 +240,14 @@ metadata, tag or attestation checks preserve an existing installation. Paths
 include spaces and accented/CJK characters. HTTP and the verifier are controlled
 fixtures: real OIDC acceptance remains a first-release gate. Public downloads
 avoid GitHub CLI login requirements; only bundle verification invokes `gh`.
-The README bodies are checked against the executable scripts to avoid drift.
+The preview bodies are checked against the executable scripts to avoid drift.
 
 Rollout must stage the producer before switching public onboarding to the
-verified channel. This draft contains both sides for review, but the current
+verified channel. This draft includes producer and preview for review, but the current
 published release is not eligible and no successful new-user installation of
-an eligible signed artifact has yet been demonstrated. This is a merge/release
-gate, not a reason to add an unsigned fallback.
+an eligible signed artifact has yet been demonstrated. This gates public-channel
+activation, not merging the independently tested runtime fixes. It is not a
+reason to add an unsigned fallback to the verified consumer.
 
 Producer-only draft PR #6882 provides the independent prerequisite without
 changing the public installer command or runtime. Its initial source contracts

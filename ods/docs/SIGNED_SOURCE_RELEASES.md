@@ -1,8 +1,10 @@
 # Signed source release pipeline
 
 This pipeline prepares release candidates. It does not publish them or change
-an existing tag. The README's verified channel requires the first eligible
-candidate before it can install anything. The historical `v3.0.0` tag is not
+an existing tag. The [verified installer preview](VERIFIED_INSTALL_PREVIEW.md)
+requires the first eligible candidate before it can install anything. The
+public README retains the existing development-main channel until qualification.
+The historical `v3.0.0` tag is not
 retroactively signed by this change.
 
 ## Maintainer sequence
@@ -73,7 +75,7 @@ Verify `release-manifest.json`, `source.spdx.json` and `SHA256SUMS` the same way
 before trusting their contents. A matching checksum alone only establishes
 file integrity; it does not authenticate who produced the checksum file.
 
-The README commands and `installers/verified-release.{sh,ps1}` select the latest
+The preview commands and `installers/verified-release.{sh,ps1}` select the latest
 non-draft, non-prerelease immutable release, obtain its verified annotated tag
 identity, and authenticate the archive before extraction or installer execution.
 Metadata and assets use public HTTPS; `gh attestation verify --bundle` does not
@@ -89,3 +91,10 @@ they cannot be honestly reported as validated by mocked API responses. Until
 that candidate and the automated consumer are verified, the stable bootstrap
 transition remains an open remediation item. No fallback to an unverified
 archive should be introduced to make that transition appear successful.
+
+The implementation team owns qualification and testing. Maintainer merge
+approval does not imply artifact publication approval or require the maintainer
+to reproduce development tests. The producer and runtime security fixes may be
+merged before qualification because neither activates this preview in the
+public quickstart. Promoting it is a separate reviewed change after the actual
+release and installer evidence exists.
