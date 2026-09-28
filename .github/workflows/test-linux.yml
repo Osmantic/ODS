@@ -31,6 +31,7 @@ jobs:
         run: python3 tests/test_restore_transaction.py -v
       - name: Backup integrity and restore round trip
         run: |
+          python3 tests/test_restore_multiple_args.py
           bash tests/test-backup-integrity.sh
           bash tests/test-backup-restore-roundtrip.sh
 
