@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { patchBundle, runCli } = require('../extensions/services/perplexica/patch-research-quality.js');
+const { patchBundle, runCli, PATCHES } = require('../extensions/services/perplexica/patch-research-quality.js');
 
 // Verbatim executeAll from the pinned v1.12.2 production ActionRegistry.
 const originalMethod = 'static async executeAll(a,b){let c=[];return await Promise.all(a.map(async a=>{let d=await this.execute(a.name,a.arguments,b);c.push(d)})),c}';
@@ -47,6 +47,20 @@ test('extractor prefix replacements are idempotent and repair mixed old/new occu
   assert.equal(patchBundle(old + '\n' + old).source, once + '\n' + once);
 });
 
+test('deployed attribution-free prompts upgrade without duplicating prior instructions', () => {
+  const legacyExtractor = PATCHES.find(p => p.id === 'quality-15').replacement;
+  const legacyWriter = PATCHES.find(p => p.id === 'quality-14').replacement;
+  const input = legacyExtractor + '\n' + legacyWriter;
+  const upgraded = patchBundle(input);
+  assert.deepEqual(upgraded.applied.map(p => p.id), ['quality-18', 'quality-19']);
+  assert.equal(upgraded.source.split('Missing information in this chunk').length - 1, 1);
+  assert.equal(upgraded.source.split('Extraction notes such as').length - 1, 1);
+  assert.equal(patchBundle(upgraded.source).source, upgraded.source);
+  assert.equal(patchBundle(upgraded.source).applied.length, 0);
+  const mixed = patchBundle(upgraded.source + '\n' + input);
+  assert.equal(mixed.source, upgraded.source + '\n' + upgraded.source);
+});
+
 test('unknown bundles are untouched; partial recognized bundles fail before any writes', t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ods-vane-quality-'));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
@@ -63,13 +77,15 @@ const actualPath = process.env.VANE_TEST_BUNDLE;
 test('actual pinned image bundle has all anchors and remains valid/idempotent', { skip: !actualPath }, t => {
   const source = fs.readFileSync(actualPath, 'utf8');
   const result = patchBundle(source);
-  assert.equal(new Set(result.recognized).size, 17);
-  assert.equal(result.applied.length, 17);
+  assert.equal(new Set(result.recognized).size, 19);
+  assert.equal(result.applied.length, 19);
   assert.ok(!result.source.includes('SHALL NOT BE LESS THAN AT LEAST 2000 WORDS'));
   assert.ok(!result.source.includes('exhaust your research budget first'));
   assert.match(result.source, /The iteration budget is an upper bound, not a quota/);
   assert.match(result.source, /requested question is supported/);
   assert.match(result.source, /not statements made by the cited page/);
+  assert.match(result.source, /For each fact, retain who made the claim and who or what it concerns/);
+  assert.match(result.source, /Do not infer authorship, endorsement or agreement from quotation or proximity/);
   assert.equal(patchBundle(result.source).source, result.source);
   assert.equal(patchBundle(result.source).applied.length, 0);
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ods-vane-real-bundle-'));

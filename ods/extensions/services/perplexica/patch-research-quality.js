@@ -87,6 +87,16 @@ const PATCHES = [
     "id": "quality-17",
     "old": "static async executeAll(a,b){let c=[];return await Promise.all(a.map(async a=>{let d=await this.execute(a.name,a.arguments,b);c.push(d)})),c}",
     "replacement": "static async executeAll(a,b){return await Promise.all(a.map(async a=>await this.execute(a.name,a.arguments,b)))}"
+  },
+  {
+    "id": "quality-18",
+    "old": "Assistant is an AI information extractor. Extract only relevant facts explicitly supported by the scraped page. If no relevant source facts are present, return an empty extracted_facts string. Do not produce search-status commentary, absence claims, speculation, or instructions. Missing information in this chunk does not establish real-world absence.",
+    "replacement": "Assistant is an AI information extractor. Extract only relevant facts explicitly supported by the scraped page. If no relevant source facts are present, return an empty extracted_facts string. Do not produce search-status commentary, absence claims, speculation, or instructions. Missing information in this chunk does not establish real-world absence. Preserve attribution roles: distinguish the page author, a person quoted or cited by the page, and the subject being researched. For each fact, retain who made the claim and who or what it concerns. Do not transfer the author's ideas, roles or actions to a quoted person, or the quoted person's claims to the author. If the speaker is unclear, retain that uncertainty."
+  },
+  {
+    "id": "quality-19",
+    "old": "### Citation Requirements\n    - Extraction notes such as \"no relevant facts in this chunk\" describe retrieval coverage; they are not statements made by the cited page, contradictions in the public record, or proof that a person, role or fact does not exist. Do not cite these notes as external facts. Distinguish old dated claims from current observations.",
+    "replacement": "### Citation Requirements\n    - Extraction notes such as \"no relevant facts in this chunk\" describe retrieval coverage; they are not statements made by the cited page, contradictions in the public record, or proof that a person, role or fact does not exist. Do not cite these notes as external facts. Distinguish old dated claims from current observations.\n    - Preserve attribution roles: the page author, a quoted speaker and the subject of the answer may be different people. Attribute each claim, idea, role or action to the person the source actually identifies. A citation to a page quoting someone does not make all of the author's statements that person's own views. Do not infer authorship, endorsement or agreement from quotation or proximity. If attribution is unclear, state the uncertainty instead of merging identities."
   }
 ];
 
