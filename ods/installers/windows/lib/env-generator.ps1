@@ -1186,6 +1186,28 @@ LANGFUSE_INIT_USER_PASSWORD=$langfuseInitUserPassword
     # NOTE: No VIDEO_GID, RENDER_GID, HSA_OVERRIDE_GFX_VERSION on Windows
     # Those are Linux-only for AMD ROCm container device access
 
+    # The installer owns the keys emitted above, but extensions can declare
+    # additional .env settings after installation. Keep assignments that this
+    # generator does not own so rerunning the supported installer does not
+    # silently remove an enabled extension's configuration. Generated values
+    # deliberately win on a collision: those keys may require normalization
+    # for the selected tier, runtime, or network mode.
+    $generatedEnvKeys = @{}
+    $envContent -split "`r?`n" | ForEach-Object {
+        if ($_ -match "^([A-Za-z_][A-Za-z0-9_]*)=") {
+            $generatedEnvKeys[$Matches[1]] = $true
+        }
+    }
+    $preservedExtensionSettings = @(
+        $existingEnv.Keys |
+            Where-Object { -not $generatedEnvKeys.ContainsKey($_) } |
+            Sort-Object |
+            ForEach-Object { "$_=$($existingEnv[$_])" }
+    )
+    if ($preservedExtensionSettings.Count -gt 0) {
+        $envContent += "`n#=== Preserved extension settings ===`n" + ($preservedExtensionSettings -join "`n") + "`n"
+    }
+
     $envPath = Join-Path $InstallDir ".env"
     if (Test-Path -LiteralPath $envPath -PathType Container) {
         Remove-Item -LiteralPath $envPath -Recurse -Force
