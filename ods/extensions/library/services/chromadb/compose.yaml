@@ -1,6 +1,6 @@
 services:
   chromadb:
-    image: chromadb/chroma:1.5.3
+    image: chromadb/chroma:1.5.3@sha256:cfd193653bd61076610730a09acae34ab85b5b6b1f5db4d944c17b5e8453658d
     container_name: ods-chromadb
     ports:
       - "127.0.0.1:${CHROMADB_PORT:-8000}:8000"

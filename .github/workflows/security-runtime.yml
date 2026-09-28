@@ -57,6 +57,7 @@ jobs:
       - run: python -m pip install 'PyYAML==6.0.3'
       - run: python .github/scripts/test_security_workflows.py
       - run: python ods/tests/contracts/test-private-service-ports.py
+      - run: python ods/scripts/check-dependency-pins.py
 
   frontend-audit:
     runs-on: ubuntu-latest

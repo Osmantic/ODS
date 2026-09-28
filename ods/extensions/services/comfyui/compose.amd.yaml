@@ -1,6 +1,6 @@
 services:
   comfyui:
-    image: ignatberesnev/comfyui-gfx1151:v0.2
+    image: ignatberesnev/comfyui-gfx1151:v0.2@sha256:a38260b56a94fdf5aa9f951a96a73ef1987b70ebcbd4757447708a756a67abc0
     container_name: ods-comfyui
     restart: unless-stopped
     devices:

@@ -33,7 +33,7 @@ ODS_SKIP_GPU_OVERLAYS=""
 ods_configure_whisper_acceleration nvidia 573
 assert_eq "acceleration" "cpu" "$WHISPER_ACCELERATION"
 assert_eq "forced fallback" "true" "$WHISPER_ACCELERATION_FORCED_CPU"
-assert_eq "CPU image" "ghcr.io/speaches-ai/speaches:0.9.0-rc.3-cpu" "$WHISPER_IMAGE"
+assert_eq "CPU image" "ghcr.io/speaches-ai/speaches:0.9.0-rc.3-cpu@sha256:2163775b6df5e451a71200e8f675fed68dbd8ab184fc604453d549e486f22fd2" "$WHISPER_IMAGE"
 assert_eq "CPU model" "Systran/faster-whisper-base" "$AUDIO_STT_MODEL"
 assert_eq "only Whisper overlay skipped" "whisper" "$ODS_SKIP_GPU_OVERLAYS"
 
@@ -51,7 +51,7 @@ WHISPER_ACCELERATION=cpu
 unset WHISPER_IMAGE AUDIO_STT_MODEL ODS_SKIP_GPU_OVERLAYS
 ods_configure_whisper_acceleration nvidia 600
 assert_eq "explicit CPU" "cpu" "$WHISPER_ACCELERATION"
-assert_eq "CPU image selected" "ghcr.io/speaches-ai/speaches:0.9.0-rc.3-cpu" "$WHISPER_IMAGE"
+assert_eq "CPU image selected" "ghcr.io/speaches-ai/speaches:0.9.0-rc.3-cpu@sha256:2163775b6df5e451a71200e8f675fed68dbd8ab184fc604453d549e486f22fd2" "$WHISPER_IMAGE"
 assert_eq "overlay suppressed" "whisper" "$ODS_SKIP_GPU_OVERLAYS"
 
 echo ""

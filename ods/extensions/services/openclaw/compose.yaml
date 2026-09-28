@@ -2,7 +2,7 @@ services:
   openclaw:
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    image: ghcr.io/openclaw/openclaw:2026.3.8
+    image: ghcr.io/openclaw/openclaw:2026.3.8@sha256:7b1294f6aa2eb05b2070cc614743f79212313fc294e5de221ada8a2969ea52f6
     container_name: ods-openclaw
     restart: unless-stopped
     security_opt:

@@ -23,7 +23,7 @@
 #   4. Runtime stage           — only invalidated when the binary or oneAPI image changes
 # =============================================================================
 
-ARG ONEAPI_VERSION=2025.0.0-0-devel-ubuntu22.04
+ARG ONEAPI_VERSION=2025.0.0-0-devel-ubuntu22.04@sha256:1e97b18f00ee37206759916cdbe4ff0beab332861b41207e245f62892d74635b
 
 # ---------------------------------------------------------------------------
 # Stage 1 — Build

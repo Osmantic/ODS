@@ -17,7 +17,7 @@
       "id": "base.open-webui",
       "type": "image",
       "path": "docker-compose.base.yml",
-      "value": "ghcr.io/open-webui/open-webui:v0.7.2"
+      "value": "ghcr.io/open-webui/open-webui:v0.7.2@sha256:16d9a3615b45f14a0c89f7ad7a3bf151f923ed32c2e68f9204eb17d1ce40774b"
     },
     {
       "id": "apple.llama-server",
@@ -47,7 +47,7 @@
       "id": "ape.python",
       "type": "image",
       "path": "extensions/services/ape/Dockerfile",
-      "value": "python:3.12-slim"
+      "value": "python:3.12-slim@sha256:f77ac9e44ae96ef2c90b8053ea08c31f8be030f824196b0ae4db6d462c84e51f"
     },
     {
       "id": "brave-search.node",
@@ -59,7 +59,7 @@
       "id": "comfyui.amd",
       "type": "image",
       "path": "extensions/services/comfyui/compose.amd.yaml",
-      "value": "ignatberesnev/comfyui-gfx1151:v0.2"
+      "value": "ignatberesnev/comfyui-gfx1151:v0.2@sha256:a38260b56a94fdf5aa9f951a96a73ef1987b70ebcbd4757447708a756a67abc0"
     },
     {
       "id": "comfyui.nvidia-runtime",
@@ -83,37 +83,37 @@
       "id": "dashboard-api.python",
       "type": "image",
       "path": "extensions/services/dashboard-api/Dockerfile",
-      "value": "python:3.11-slim"
+      "value": "python:3.11-slim@sha256:e41613d42d4891e4930f79523f93f81bbc7632584ec65e36ab055f41a800b41e"
     },
     {
       "id": "model-router.python",
       "type": "image",
       "path": "extensions/services/model-router/Dockerfile",
-      "value": "python:3.11-slim"
+      "value": "python:3.11-slim@sha256:e41613d42d4891e4930f79523f93f81bbc7632584ec65e36ab055f41a800b41e"
     },
     {
       "id": "pixel-inference.python",
       "type": "image",
       "path": "extensions/services/pixel-inference/Dockerfile",
-      "value": "python:3.11-slim"
+      "value": "python:3.11-slim@sha256:e41613d42d4891e4930f79523f93f81bbc7632584ec65e36ab055f41a800b41e"
     },
     {
       "id": "pixel-edge.python",
       "type": "image",
       "path": "extensions/services/pixel-edge/Dockerfile",
-      "value": "python:3.11-slim"
+      "value": "python:3.11-slim@sha256:e41613d42d4891e4930f79523f93f81bbc7632584ec65e36ab055f41a800b41e"
     },
     {
       "id": "pixel-model-relay.python",
       "type": "image",
       "path": "extensions/services/pixel-model-relay/Dockerfile",
-      "value": "python:3.11-slim"
+      "value": "python:3.11-slim@sha256:e41613d42d4891e4930f79523f93f81bbc7632584ec65e36ab055f41a800b41e"
     },
     {
       "id": "pixel-workspace-preview.python",
       "type": "image",
       "path": "extensions/services/pixel-agent/host/Dockerfile.preview",
-      "value": "python:3.11-slim"
+      "value": "python:3.11-slim@sha256:e41613d42d4891e4930f79523f93f81bbc7632584ec65e36ab055f41a800b41e"
     },
     {
       "id": "pixel-preview-inspection.python",
@@ -125,25 +125,25 @@
       "id": "remote-provider-egress.python",
       "type": "image",
       "path": "extensions/services/remote-provider-egress/Dockerfile",
-      "value": "python:3.11-slim"
+      "value": "python:3.11-slim@sha256:e41613d42d4891e4930f79523f93f81bbc7632584ec65e36ab055f41a800b41e"
     },
     {
       "id": "remote-provider-ssh-tunnel.python",
       "type": "image",
       "path": "extensions/services/remote-provider-ssh-tunnel/Dockerfile",
-      "value": "python:3.11-slim"
+      "value": "python:3.11-slim@sha256:e41613d42d4891e4930f79523f93f81bbc7632584ec65e36ab055f41a800b41e"
     },
     {
       "id": "ods-proxy.caddy",
       "type": "image",
       "path": "extensions/services/ods-proxy/compose.yaml",
-      "value": "caddy:2.11.3-alpine"
+      "value": "caddy:2.11.3-alpine@sha256:86deaf5e3d3408a6ccec08fbb79989783dd26e206ae10bcf78a801dc8c9ab794"
     },
     {
       "id": "embeddings.tei",
       "type": "image",
       "path": "extensions/services/embeddings/compose.yaml",
-      "value": "ghcr.io/huggingface/text-embeddings-inference:cpu-1.9.1"
+      "value": "ghcr.io/huggingface/text-embeddings-inference:cpu-1.9.1@sha256:b7772cdd9dcbced147b16a7dff17d4aed1ab36333f8d3e686c50d2175e1d2126"
     },
     {
       "id": "hermes.agent",
@@ -155,7 +155,7 @@
       "id": "hermes-proxy.caddy",
       "type": "image",
       "path": "extensions/services/hermes-proxy/compose.yaml",
-      "value": "caddy:2.11.3-alpine"
+      "value": "caddy:2.11.3-alpine@sha256:86deaf5e3d3408a6ccec08fbb79989783dd26e206ae10bcf78a801dc8c9ab794"
     },
     {
       "id": "langfuse.web",
@@ -233,13 +233,13 @@
       "id": "n8n.app",
       "type": "image",
       "path": "extensions/services/n8n/compose.yaml",
-      "value": "n8nio/n8n:2.6.4"
+      "value": "n8nio/n8n:2.6.4@sha256:b962d7f8ba9e990a0c530256d841fdc52312dce32173f29808e29a9430811ad3"
     },
     {
       "id": "openclaw.app",
       "type": "image",
       "path": "extensions/services/openclaw/compose.yaml",
-      "value": "ghcr.io/openclaw/openclaw:2026.3.8"
+      "value": "ghcr.io/openclaw/openclaw:2026.3.8@sha256:7b1294f6aa2eb05b2070cc614743f79212313fc294e5de221ada8a2969ea52f6"
     },
     {
       "id": "perplexica.app",
@@ -251,7 +251,7 @@
       "id": "privacy-shield.python",
       "type": "image",
       "path": "extensions/services/privacy-shield/Dockerfile",
-      "value": "python:3.11-slim"
+      "value": "python:3.11-slim@sha256:e41613d42d4891e4930f79523f93f81bbc7632584ec65e36ab055f41a800b41e"
     },
     {
       "id": "qdrant.vector-db",
@@ -263,7 +263,7 @@
       "id": "searxng.search",
       "type": "image",
       "path": "extensions/services/searxng/compose.yaml",
-      "value": "searxng/searxng:2026.3.8-a563127a2"
+      "value": "searxng/searxng:2026.3.8-a563127a2@sha256:754a07a64e926a1fc0a8a30cd7a07d08278188f0ef6143e38ad0b22ea8599c55"
     },
     {
       "id": "tailscale.sidecar",
@@ -275,39 +275,39 @@
       "id": "token-spy.python",
       "type": "image",
       "path": "extensions/services/token-spy/Dockerfile",
-      "value": "python:3.12-slim"
+      "value": "python:3.12-slim@sha256:f77ac9e44ae96ef2c90b8053ea08c31f8be030f824196b0ae4db6d462c84e51f"
     },
     {
       "id": "tts.kokoro",
       "type": "image",
       "path": "extensions/services/tts/compose.yaml",
-      "value": "ghcr.io/remsky/kokoro-fastapi-cpu:v0.2.4"
+      "value": "ghcr.io/remsky/kokoro-fastapi-cpu:v0.2.4@sha256:c8812546d358cbfd6a5c4087a28795b2b001d8e32d7a322eedd246e6bc13cb55"
     },
     {
       "id": "whisper.cpu",
       "type": "image",
       "path": "extensions/services/whisper/compose.yaml",
-      "raw": "${WHISPER_IMAGE:-ghcr.io/speaches-ai/speaches:0.9.0-rc.3-cpu}",
-      "value": "ghcr.io/speaches-ai/speaches:0.9.0-rc.3-cpu"
+      "raw": "${WHISPER_IMAGE:-ghcr.io/speaches-ai/speaches:0.9.0-rc.3-cpu@sha256:2163775b6df5e451a71200e8f675fed68dbd8ab184fc604453d549e486f22fd2}",
+      "value": "ghcr.io/speaches-ai/speaches:0.9.0-rc.3-cpu@sha256:2163775b6df5e451a71200e8f675fed68dbd8ab184fc604453d549e486f22fd2"
     },
     {
       "id": "whisper.nvidia",
       "type": "image",
       "path": "extensions/services/whisper/compose.nvidia.yaml",
-      "raw": "${WHISPER_IMAGE:-ghcr.io/speaches-ai/speaches:0.9.0-rc.3-cuda}",
-      "value": "ghcr.io/speaches-ai/speaches:0.9.0-rc.3-cuda"
+      "raw": "${WHISPER_IMAGE:-ghcr.io/speaches-ai/speaches:0.9.0-rc.3-cuda@sha256:f4eb14d1c53b19c5bd1f76d10ea9fc10288ceaf82dca09506d3f0ef92ee943de}",
+      "value": "ghcr.io/speaches-ai/speaches:0.9.0-rc.3-cuda@sha256:f4eb14d1c53b19c5bd1f76d10ea9fc10288ceaf82dca09506d3f0ef92ee943de"
     },
     {
       "id": "macos.placeholder-api",
       "type": "image",
       "path": "installers/macos/docker-compose.macos.yml",
-      "value": "busybox:1.36.1"
+      "value": "busybox:1.36.1@sha256:73aaf090f3d85aa34ee199857f03fa3a95c8ede2ffd4cc2cdb5b94e566b11662"
     },
     {
       "id": "windows-amd-local.placeholder-api",
       "type": "image",
       "path": "installers/windows/docker-compose.windows-amd.local.yml",
-      "value": "busybox:1.36.1"
+      "value": "busybox:1.36.1@sha256:73aaf090f3d85aa34ee199857f03fa3a95c8ede2ffd4cc2cdb5b94e566b11662"
     },
     {
       "id": "fooocus.runtime",
@@ -343,7 +343,7 @@
   "allow_latest": [
     {
       "path": "installers/windows/docker-compose.windows-amd.yml",
-      "value": "hello-world:latest",
+      "value": "hello-world:latest@sha256:5e23090353324d887c48ad5e5c56d294eab81588df9605b07d1afe895f9cc8f8",
       "reason": "Windows AMD placeholder service has replicas: 0 and never pulls or runs the image during normal operation."
     }
   ],
@@ -452,14 +452,14 @@
     },
     {
       "path": "extensions/services/whisper/compose.yaml",
-      "value": "${WHISPER_IMAGE:-ghcr.io/speaches-ai/speaches:0.9.0-rc.3-cpu}",
-      "default": "ghcr.io/speaches-ai/speaches:0.9.0-rc.3-cpu",
+      "value": "${WHISPER_IMAGE:-ghcr.io/speaches-ai/speaches:0.9.0-rc.3-cpu@sha256:2163775b6df5e451a71200e8f675fed68dbd8ab184fc604453d549e486f22fd2}",
+      "default": "ghcr.io/speaches-ai/speaches:0.9.0-rc.3-cpu@sha256:2163775b6df5e451a71200e8f675fed68dbd8ab184fc604453d549e486f22fd2",
       "reason": "Whisper CPU image can be overridden by operators, but the shipped default is locked."
     },
     {
       "path": "extensions/services/whisper/compose.nvidia.yaml",
-      "value": "${WHISPER_IMAGE:-ghcr.io/speaches-ai/speaches:0.9.0-rc.3-cuda}",
-      "default": "ghcr.io/speaches-ai/speaches:0.9.0-rc.3-cuda",
+      "value": "${WHISPER_IMAGE:-ghcr.io/speaches-ai/speaches:0.9.0-rc.3-cuda@sha256:f4eb14d1c53b19c5bd1f76d10ea9fc10288ceaf82dca09506d3f0ef92ee943de}",
+      "default": "ghcr.io/speaches-ai/speaches:0.9.0-rc.3-cuda@sha256:f4eb14d1c53b19c5bd1f76d10ea9fc10288ceaf82dca09506d3f0ef92ee943de",
       "reason": "Whisper CUDA image can be overridden by operators, but the shipped default is locked."
     }
   ]

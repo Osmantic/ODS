@@ -1028,11 +1028,11 @@ function New-ODSEnv {
         $whisperAcceleration = $whisperAccelerationDefault
     }
 
-    $whisperImageDefault = $(if ($whisperAcceleration -eq "cuda") { "" } else { "ghcr.io/speaches-ai/speaches:0.9.0-rc.3-cpu" })
+    $whisperImageDefault = $(if ($whisperAcceleration -eq "cuda") { "" } else { "ghcr.io/speaches-ai/speaches:0.9.0-rc.3-cpu@sha256:2163775b6df5e451a71200e8f675fed68dbd8ab184fc604453d549e486f22fd2" })
     $whisperImage = Get-EnvOrNew "WHISPER_IMAGE" $whisperImageDefault
     if ($whisperAcceleration -eq "cpu" -and
         ([string]::IsNullOrWhiteSpace($whisperImage) -or $whisperImage -match "(?i)cuda")) {
-        $whisperImage = "ghcr.io/speaches-ai/speaches:0.9.0-rc.3-cpu"
+        $whisperImage = "ghcr.io/speaches-ai/speaches:0.9.0-rc.3-cpu@sha256:2163775b6df5e451a71200e8f675fed68dbd8ab184fc604453d549e486f22fd2"
     }
 
     $audioSttModelDefault = $(if ($whisperAcceleration -eq "cuda") { "deepdml/faster-whisper-large-v3-turbo-ct2" } else { "Systran/faster-whisper-base" })
@@ -1208,7 +1208,7 @@ WHISPER_MODEL=base
 # Whisper STT runtime. Windows NVIDIA uses CUDA only when the driver supports
 # the bundled Speaches CUDA image; otherwise Whisper stays on the CPU image.
 WHISPER_ACCELERATION=$whisperAcceleration
-$(if ($whisperImage) { "WHISPER_IMAGE=$whisperImage" } else { "#WHISPER_IMAGE=ghcr.io/speaches-ai/speaches:0.9.0-rc.3-cpu" })
+$(if ($whisperImage) { "WHISPER_IMAGE=$whisperImage" } else { "#WHISPER_IMAGE=ghcr.io/speaches-ai/speaches:0.9.0-rc.3-cpu@sha256:2163775b6df5e451a71200e8f675fed68dbd8ab184fc604453d549e486f22fd2" })
 # Whisper STT model — CUDA uses the larger turbo model, CPU uses base.
 # Open WebUI reads this to request transcription; installer pre-downloads
 # the same model so the first transcription works.
@@ -1352,7 +1352,7 @@ function Get-SearxngDefaultLanguage {
     #>
     param([string]$Locale = (Get-Culture).Name)
 
-    # searxng/searxng:2026.3.8-a563127a2 searx/sxng_locales.py
+    # searxng/searxng:2026.3.8-a563127a2@sha256:754a07a64e926a1fc0a8a30cd7a07d08278188f0ef6143e38ad0b22ea8599c55 searx/sxng_locales.py
     $tags = "af ar ar-SA be bg bg-BG ca cs cs-CZ cy da da-DK de de-AT de-CH de-DE el el-GR en en-AU en-CA en-GB en-IE en-IN en-NZ en-PH en-PK en-SG en-US en-ZA es es-AR es-CL es-CO es-ES es-MX es-PE et et-EE eu fa fi fi-FI fr fr-BE fr-CA fr-CH fr-FR ga gd gl he hi hr hu hu-HU id id-ID is it it-CH it-IT ja ja-JP kn ko ko-KR lt lv ml mr nb nb-NO nl nl-BE nl-NL pl pl-PL pt pt-BR pt-PT ro ro-RO ru ru-RU sk sl sq sv sv-SE ta te th th-TH tr tr-TR uk ur vi vi-VN zh zh-CN zh-HK zh-TW" -split ' '
 
     $raw = (("$Locale" -split '[.@]')[0]) -replace '_', '-'

@@ -636,7 +636,7 @@ ods_configure_whisper_acceleration() {
     if [[ "$WHISPER_ACCELERATION" == "cpu" ]]; then
         _ods_csv_add_unique ODS_SKIP_GPU_OVERLAYS whisper
         if [[ -z "${WHISPER_IMAGE:-}" || "${WHISPER_IMAGE:-}" =~ [Cc][Uu][Dd][Aa] ]]; then
-            WHISPER_IMAGE="ghcr.io/speaches-ai/speaches:0.9.0-rc.3-cpu"
+            WHISPER_IMAGE="ghcr.io/speaches-ai/speaches:0.9.0-rc.3-cpu@sha256:2163775b6df5e451a71200e8f675fed68dbd8ab184fc604453d549e486f22fd2"
         fi
         if [[ "${AUDIO_STT_MODEL:-}" =~ ([Ll]arge-v3|[Tt]urbo) ]]; then
             AUDIO_STT_MODEL="Systran/faster-whisper-base"

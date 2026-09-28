@@ -14,7 +14,7 @@ implemented on main before this work.
 | SEC-002: Python advisories | Upgrade FastAPI/Starlette and aiohttp; all nine API/relay Docker builds install complete hash-checked locks; production audits are clean. | CI installation/build coverage and triage remaining full-suite failures. |
 | SEC-003: source containment | Generated source services have numeric non-root UID, no capabilities, no-new-privileges, read-only root, resource limits and an internal network; API publication/re-enable and dynamic resolver enforce the profile. Saved stack arguments are revalidated by the host and platform CLIs, including old receipts; merged recipes cannot override or join source sandboxes. | Real-container CI passed; run the new cross-platform saved-stack CI and broader lifecycle regressions. |
 | SEC-004: public AI spending | Paid issue triage and review comments require a trusted association; serialized jobs and per-run budgets; unauthorized comments cannot cancel another comment's review. | CI workflow validation. This bounds individual runs, not the organization's total monthly provider bill. |
-| SEC-005: provenance | Python locks/hashes and pinned multi-platform Python base image indexes. | Release checksums/SBOM/attestations, verified bootstrap channel and remaining image pins. Existing published tags have not been changed or retroactively signed. |
+| SEC-005: provenance | Python locks/hashes, Python base image indexes and 31 additional external image references resolved from registry descriptors. Compose, installer prefetch/defaults and the dependency inventory agree on those digests. | Release checksums/SBOM/attestations, verified bootstrap channel and remaining image pins. Existing published tags have not been changed or retroactively signed. |
 | SEC-006: React Router | Coordinated update to react-router-dom 7.18.4 and its lockfile; production npm audit is clean. | CI across supported frontend hosts. |
 | SEC-007: local origin trust | State-changing requests require exact Origin/Host agreement; the CORS allowlist no longer grants mutation authority. | CI regression coverage. |
 | SEC-008: mutable Actions | Remaining twelve Action uses pinned to full commit hashes. | CI workflow validation. |
@@ -61,6 +61,15 @@ implemented on main before this work.
   pass locally. A smoke assertion expecting interpolated OpenClaw ports was
   updated to require literal loopback; its six contracts passed. Await new CI
   before claiming the entire suite passed.
+- Image pin update: dependency inventory check and ten dependency contracts
+  passed; Whisper CPU/CUDA selection passed 13 cases and Dashboard ownership
+  contracts passed. Pins use each tag's top-level descriptor, preserving the
+  platform set instead of selecting only an amd64 child manifest.
+- Registry verification is not finished. Docker Hub returned anonymous rate
+  limits for some remaining images. InvokeAI's configured `v6.11.1` image does
+  not exist; upstream publishes separate `v6.11.1-cpu` and `v6.11.1-cuda`
+  images, so the AMD/NVIDIA recipe needs explicit review before replacing it.
+  Dockerfile frontend directives and disabled fragments also need final review.
 
 These results refer to the relevant focused changes, not to every combination
 of installer, GPU and operating system. The PR remains draft until the remaining

@@ -1,4 +1,4 @@
-FROM python:3.11-slim
+FROM python:3.11-slim@sha256:e41613d42d4891e4930f79523f93f81bbc7632584ec65e36ab055f41a800b41e
 WORKDIR /source
 COPY workspace_preview.py unix_peer.py /source/
 COPY preview_inspection.py preview_inspection_protocol.py /source/

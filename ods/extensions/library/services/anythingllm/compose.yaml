@@ -1,6 +1,6 @@
 services:
   anythingllm:
-    image: mintplexlabs/anythingllm:1.11.1
+    image: mintplexlabs/anythingllm:1.11.1@sha256:0d9124c5ee5f1774dc205ecacab627eeeee630e7ec8fce70e2204a3d67bacac7
     container_name: ods-anythingllm
     restart: unless-stopped
     depends_on:

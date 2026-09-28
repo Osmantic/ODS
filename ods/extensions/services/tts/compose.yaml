@@ -1,6 +1,6 @@
 services:
   tts:
-    image: ghcr.io/remsky/kokoro-fastapi-cpu:v0.2.4
+    image: ghcr.io/remsky/kokoro-fastapi-cpu:v0.2.4@sha256:c8812546d358cbfd6a5c4087a28795b2b001d8e32d7a322eedd246e6bc13cb55
     container_name: ods-tts
     restart: unless-stopped
     security_opt:

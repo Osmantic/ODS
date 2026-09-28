@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Docker rootless bind-mount ownership helpers for native Linux.
 
-ODS_ROOTLESS_HELPER_IMAGE="${ODS_ROOTLESS_HELPER_IMAGE:-busybox:1.36.1}"
+ODS_ROOTLESS_HELPER_IMAGE="${ODS_ROOTLESS_HELPER_IMAGE:-busybox:1.36.1@sha256:73aaf090f3d85aa34ee199857f03fa3a95c8ede2ffd4cc2cdb5b94e566b11662}"
 
 _ods_rootless_docker_info() {
     # The installer may have verified sudo-backed Docker before the current

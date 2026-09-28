@@ -1,6 +1,6 @@
 services:
   milvus:
-    image: milvusdb/milvus:v2.4.5
+    image: milvusdb/milvus:v2.4.5@sha256:5a0a330981c925e53efe088a2864f27c33d3347868665ebdf0944c917bcb8c85
     container_name: ods-milvus
     ports:
       - "127.0.0.1:${MILVUS_PORT:-19530}:19530"

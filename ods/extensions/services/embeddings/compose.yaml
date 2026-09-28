@@ -1,6 +1,6 @@
 services:
   embeddings:
-    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.9.1
+    image: ghcr.io/huggingface/text-embeddings-inference:cpu-1.9.1@sha256:b7772cdd9dcbced147b16a7dff17d4aed1ab36333f8d3e686c50d2175e1d2126
     platform: linux/amd64  # TEI has no arm64 image -- Rosetta 2 on Apple Silicon
     container_name: ods-embeddings
     restart: unless-stopped

@@ -1,6 +1,6 @@
 services:
   n8n:
-    image: n8nio/n8n:2.6.4
+    image: n8nio/n8n:2.6.4@sha256:b962d7f8ba9e990a0c530256d841fdc52312dce32173f29808e29a9430811ad3
     container_name: ods-n8n
     restart: unless-stopped
     user: "${N8N_RUN_USER:-${ODS_UID:-1000}:${ODS_GID:-1000}}"

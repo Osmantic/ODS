@@ -1,6 +1,6 @@
 services:
   immich:
-    image: ghcr.io/immich-app/immich-server:v1.131.3
+    image: ghcr.io/immich-app/immich-server:v1.131.3@sha256:7e5b6729b12b5e5cc5d98bcc6f7c27f723fabae4ee77696855808ebd5200bbf8
     container_name: ods-immich
     ports:
       - "127.0.0.1:${IMMICH_PORT:-2283}:2283"
@@ -38,7 +38,7 @@ services:
       - ods-network
 
   immich-postgres:
-    image: docker.io/tensorchord/pgvecto-rs:pg16-v0.2.0
+    image: docker.io/tensorchord/pgvecto-rs:pg16-v0.2.0@sha256:592cac7b88a6443a9b06dfc0248b847ee3b20971244be3ea9bf259b01fe1621e
     container_name: immich-postgres
     volumes:
       - ./data/immich/postgres:/var/lib/postgresql/data
