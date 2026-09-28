@@ -708,7 +708,10 @@ if ext_dir.exists():
                 continue
             if manifest.get("schema_version") != "ods.services.v1":
                 continue
-            service = manifest.get("service", {})
+            service = manifest.get("service")
+            if not isinstance(service, dict):
+                print(f"WARNING: malformed 'service' mapping for {service_dir.name} at {manifest_path}, skipping", file=sys.stderr)
+                continue
             # Check GPU backend compatibility
             backends = service.get("gpu_backends", ["amd", "nvidia"])
             # "none" means CPU-only — compatible with any GPU backend
@@ -799,7 +802,10 @@ if user_ext_dir.exists():
                         continue
                     if isinstance(manifest, dict) and manifest.get("schema_version") != "ods.services.v1":
                         continue
-                    service = manifest.get("service", {}) if isinstance(manifest, dict) else {}
+                    service = manifest.get("service") if isinstance(manifest, dict) else {}
+                    if isinstance(manifest, dict) and not isinstance(service, dict):
+                        print(f"WARNING: malformed 'service' mapping for {service_dir.name} at {manifest_path}, skipping", file=sys.stderr)
+                        continue
                 else:
                     service = {}
                 # Imported recipes without GPU metadata are unrestricted, as
