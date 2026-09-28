@@ -73,7 +73,10 @@ def stop_owned_containers(install_dir, services=None):
         # A legacy restart: always must not resurrect the rejected runtime when
         # Docker restarts. A reviewed Compose recreate restores its policy.
         _docker(['update', '--restart=no', *owned])
-        _docker(['stop', '--time', '10', *owned], timeout=120)
+        # No --time: each container keeps its own stop_grace_period, so a
+        # database with a 60 s grace is not killed after 10 s. Docker stops the
+        # containers in parallel, so the bound covers the longest grace.
+        _docker(['stop', *owned], timeout=300)
     return owned
 
 
