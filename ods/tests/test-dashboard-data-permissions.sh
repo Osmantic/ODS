@@ -25,6 +25,7 @@ run_case() (
     warn() { echo "$*" >&2; }
     error() { echo "$*" >&2; return 1; }
     chown() { :; } # Existing unrelated Token Spy adjustment.
+    ods_sudo_available() { return 0; }
     ods_sudo() {
         printf '%s\n' "$*" >> "$QA_CALLS"
         case "$1" in

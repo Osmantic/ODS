@@ -3,6 +3,16 @@
 # the shared data root. Preserve the install owner's UID; grant that runtime
 # group parent access and retain the API's private chat-result ownership.
 
+# Use available privilege, or let ordinary filesystem permissions decide.
+# ods_sudo deliberately skips optional work when privilege is unavailable.
+_ods_dashboard_mutate() {
+    if declare -f ods_sudo_available >/dev/null 2>&1 && ods_sudo_available; then
+        ods_sudo "$@"
+    else
+        "$@"
+    fi
+}
+
 ods_prepare_dashboard_data() {
     local install_dir="$1" rootless="$2" target metadata group mode
     target="$install_dir/data"
@@ -36,10 +46,10 @@ ods_prepare_dashboard_data() {
     metadata=$(stat -c '%g:%a' "$target") || return 1
     IFS=: read -r group mode <<< "$metadata"
     if [[ "$group" != 1000 ]]; then
-        ods_sudo chgrp 1000 "$target" || return 1
+        _ods_dashboard_mutate chgrp 1000 "$target" || return 1
     fi
     if (( (8#$mode & 8#070) != 8#070 )); then
-        ods_sudo chmod g+rwx "$target" || return 1
+        _ods_dashboard_mutate chmod g+rwx "$target" || return 1
     fi
     metadata=$(stat -c '%g:%a' "$target") || return 1
     IFS=: read -r group mode <<< "$metadata"
@@ -52,7 +62,7 @@ ods_prepare_dashboard_data() {
             # Older generic reinstall repair transferred this private tree
             # to the installing user. Restore it without following symlinks
             # or changing modes, files, or other services' data.
-            ods_sudo chown -h -R 1000:1000 "$target" || return 1
+            _ods_dashboard_mutate chown -h -R 1000:1000 "$target" || return 1
         fi
         [[ "$(stat -c '%u:%g' "$target")" == 1000:1000 ]] || return 1
     fi

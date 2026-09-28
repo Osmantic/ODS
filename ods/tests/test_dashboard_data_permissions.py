@@ -91,5 +91,39 @@ os.replace(path, data / "dashboard-password.json")
             self.assertEqual(outside.read_text(), "untouched")
 
 
+    def test_no_sudo_uses_actual_owner_authority(self):
+        for uid, succeeds in ((1000, True), (1001, False)):
+            with self.subTest(uid=uid), tempfile.TemporaryDirectory() as temporary:
+                install = Path(temporary)
+                install.chmod(0o755)
+                data = install / "data"
+                data.mkdir(mode=0o755)
+                os.chown(data, 1000, 1000)
+                saved = data / "retained-password"
+                saved.write_bytes(b"private-state")
+                saved.chmod(0o600)
+                os.chown(saved, 1000, 1000)
+                script = ('set -euo pipefail\n'
+                          'source "$SCRIPT_DIR/installers/lib/sudo.sh"\n'
+                          'source "$SCRIPT_DIR/installers/lib/dashboard-data.sh"\n'
+                          'ODS_SUDO_AVAILABLE=false\n'
+                          'ods_prepare_dashboard_data "$INSTALL_DIR" false\n')
+
+                def identity():
+                    os.setgroups([])
+                    os.setgid(uid)
+                    os.setuid(uid)
+
+                result = subprocess.run(["bash", "-c", script],
+                    env=dict(os.environ, SCRIPT_DIR=str(ROOT), INSTALL_DIR=str(install)),
+                    preexec_fn=identity, capture_output=True, text=True, check=False)
+                self.assertEqual(result.returncode == 0, succeeds, result.stderr)
+                self.assertEqual(data.stat().st_uid, 1000)
+                self.assertEqual(data.stat().st_gid, 1000)
+                self.assertEqual(data.stat().st_mode & 0o777, 0o775 if succeeds else 0o755)
+                self.assertEqual(saved.read_bytes(), b"private-state")
+                self.assertEqual(saved.stat().st_mode & 0o777, 0o600)
+
+
 if __name__ == "__main__":
     unittest.main()
