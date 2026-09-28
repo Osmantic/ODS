@@ -150,6 +150,15 @@ http://hermes.{$ODS_DEVICE_NAME:ods}.local {
     # listener is configured for convenient direct access.
     forward_auth dashboard-api:3002 {
         uri /api/auth/verify-session
+        # Hermes chat opens WebSockets. Send the auth sub-request as plain
+        # HTTP, or dashboard-api rejects the Upgrade handshake with 403 and a
+        # valid session is refused (same strips as hermes-proxy's own check).
+        header_up -Connection
+        header_up -Upgrade
+        header_up -Sec-Websocket-Key
+        header_up -Sec-Websocket-Version
+        header_up -Sec-Websocket-Protocol
+        header_up -Sec-Websocket-Extensions
     }
 	reverse_proxy hermes-proxy:9120 {
 		header_up X-Forwarded-Proto {scheme}
