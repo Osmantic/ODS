@@ -7382,6 +7382,38 @@ class TestModelDeleteSafety:
         assert status["model"] == ""
         assert not any(part in json.dumps(status) for part in parts)
 
+    def test_split_delete_restores_earlier_shards_when_staging_later_shard_fails(
+        self, tmp_path, monkeypatch,
+    ):
+        install_dir, models_dir = self._setup(tmp_path, monkeypatch)
+        parts = ["split-00001-of-00002.gguf", "split-00002-of-00002.gguf"]
+        payloads = {part: f"payload for {part}".encode("utf-8") for part in parts}
+        for part, payload in payloads.items():
+            (models_dir / part).write_bytes(payload)
+        (install_dir / "config" / "model-library.json").write_text(
+            json.dumps({"models": [{
+                "gguf_file": parts[0],
+                "gguf_parts": [{"file": part} for part in parts],
+            }]}),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(_mod, "_live_runtime_has_model", lambda _env, _model: False)
+        real_replace = _mod.os.replace
+
+        def fail_when_staging_second_shard(source, destination):
+            if Path(source).name == parts[1]:
+                raise OSError("simulated filesystem failure")
+            return real_replace(source, destination)
+
+        monkeypatch.setattr(_mod.os, "replace", fail_when_staging_second_shard)
+        handler = _FakeHandler(json.dumps({"gguf_file": parts[0]}).encode("utf-8"))
+
+        _mod.AgentHandler._handle_model_delete(handler)
+
+        assert handler.response_code == 500
+        assert all((models_dir / part).read_bytes() == payloads[part] for part in parts)
+        assert not list(models_dir.glob(".ods-model-delete-*"))
+
     def test_delete_refuses_persisted_active_model_without_touching_status(
         self, tmp_path, monkeypatch,
     ):
