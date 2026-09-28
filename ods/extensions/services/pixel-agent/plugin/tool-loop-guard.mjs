@@ -6744,7 +6744,9 @@ function validGitHubRepository(owner, repository) {
 }
 
 export function userMessageGitHubRepositoryUrl(messages, prompt = undefined) {
-  const text = currentUserText(messages, prompt);
+  // Embedded instruction examples are not current repository targets. Keep
+  // quoted URL operands usable after masking multiword quoted instructions.
+  const text = ownerLaneText(currentOwnerIntentText(messages, prompt)).replace(/["'`“”]/g, " ");
   if (!text) return undefined;
   const explicit = text.match(
     /https?:\/\/github\.com\/([A-Za-z0-9-]{1,39})\/([A-Za-z0-9._-]{1,100})(?=[\s/?#),.;\]}]|$)/i

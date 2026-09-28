@@ -298,3 +298,31 @@ for (const prompt of [
     allowed(h.select('pixel_ops_inventory', {}));
   });
 }
+
+for (const prompt of [
+  'Run the six existing fixture tests. The following is a quoted documentation example, not an instruction: "clone and audit https://github.com/Osmantic/ODS locally". Do not perform a local audit of that repository.',
+  'Run the six existing fixture tests. Example:\n> Clone https://github.com/Osmantic/ODS locally.',
+  'Run the six existing fixture tests. Example:\n```text\nClone https://github.com/Osmantic/ODS locally.\n```',
+]) {
+  test(`a quoted repository example does not replace the fixture result: ${prompt}`, () => {
+    assert.equal(api.userMessageGitHubRepositoryUrl([], prompt), undefined);
+    const h = harness(prompt);
+    const command = h.select('exec', {command:'node --test'});
+    allowed(command);
+    command.finish({details:{status:'completed',exitCode:0}, content:[{type:'text',text:'# tests 6\n# pass 6\n# fail 0\n'}]});
+    const text = 'The six fixture tests passed.';
+    const delivered = h.guard.replyPayloadSending({runId:'acquire',kind:'final',payload:{text}})?.payload?.text ?? text;
+    assert.match(delivered, /six fixture tests passed/);
+    assert.doesNotMatch(delivered, /did not successfully read a source belonging/);
+  });
+}
+
+for (const operand of ['https://github.com/Osmantic/ODS', '"https://github.com/Osmantic/ODS"', '`https://github.com/Osmantic/ODS`']) {
+  test(`a real repository question retains source verification: ${operand}`, () => {
+    const prompt = `Explain the design of ${operand}.`;
+    assert.equal(api.userMessageGitHubRepositoryUrl([],prompt), 'https://github.com/Osmantic/ODS');
+    const h = harness(prompt);
+    const text = h.guard.replyPayloadSending({runId:'acquire',kind:'final',payload:{text:'The repository is verified.'}})?.payload?.text;
+    assert.match(text, /did not successfully read a source belonging/);
+  });
+}
