@@ -8,6 +8,7 @@ compose flags the caller already resolved. Never touches volumes, auth, or
 unrelated projects. Never prints secrets.
 """
 import argparse
+import importlib.util
 import json
 import os
 import re
@@ -28,6 +29,7 @@ BACKUP_MAX_BYTES = 1024 * 1024 * 1024
 BACKUP_MAX_ENTRIES = 10000
 RECOVERY_TIMEOUT = 120
 _deadline = None
+_install_dir = None
 
 
 def log(msg):
@@ -40,6 +42,17 @@ def fail(msg):
 
 
 def run(argv, timeout, check=True, capture=True, binary=False):
+    if argv[:2] == ["docker", "compose"]:
+        # A recovery may run long after CLI resolution. Recheck the current
+        # recipe bytes before rendering or recreating any part of the stack.
+        policy_path = Path(__file__).with_name("compose-cache-policy.py")
+        try:
+            spec = importlib.util.spec_from_file_location("recovery_compose_policy", policy_path)
+            policy = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(policy)
+            policy.validate_flags(_install_dir or Path.cwd(), argv[2:])
+        except (OSError, ValueError, ImportError) as exc:
+            raise RuntimeError(f"saved Compose policy rejected recovery: {exc}") from exc
     if _deadline is not None:
         remaining = _deadline - time.monotonic()
         if remaining <= 0:
@@ -461,8 +474,9 @@ def verify(flags, service, expected_binds):
 
 
 def main(argv=None):
-    global _deadline
+    global _deadline, _install_dir
     _deadline = None
+    _install_dir = None
     parser = argparse.ArgumentParser()
     parser.add_argument("--install-dir", required=True)
     parser.add_argument("--service", default="")
@@ -473,6 +487,7 @@ def main(argv=None):
     install_dir = Path(args.install_dir).resolve()
     if not install_dir.is_dir():
         return fail(f"install dir not found: {install_dir}")
+    _install_dir = install_dir
 
     flags = args.flags[1:] if args.flags and args.flags[0] == "--" else args.flags
     if not flags:
@@ -599,7 +614,7 @@ def main(argv=None):
         log(f"recreating {svc}")
         try:
             recreate(flags, svc)
-        except subprocess.SubprocessError as exc:
+        except (subprocess.SubprocessError, RuntimeError) as exc:
             return fail(f"recreate failed for {svc}: {exc}")
 
     for svc, binds in service_binds.items():

@@ -9,6 +9,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+from unittest import mock
 
 import pytest
 
@@ -16,6 +17,34 @@ ODS = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location('cache_policy', ODS / 'scripts/compose-cache-policy.py')
 POLICY = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(POLICY)
+
+
+@pytest.mark.parametrize('operation', ['config', 'ps', 'recreate'])
+@pytest.mark.parametrize('confined', [False, True])
+def test_wsl_bind_recovery_revalidates_before_each_compose_operation(installed, operation, confined):
+    source_recipe(installed, confined=confined)
+    spec = importlib.util.spec_from_file_location('recovery_policy_test', ODS / 'scripts/wsl-bind-recovery.py')
+    helper = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(helper)
+    helper._install_dir = installed
+    action = {'config': lambda: helper.compose_config_json(flags()),
+              'ps': lambda: helper.compose_ps(flags()),
+              'recreate': lambda: helper.recreate(flags(), 'example')}[operation]
+    stdout = '{"services": {}}' if operation == 'config' else '[]'
+    with mock.patch.object(helper.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, stdout)) as docker:
+        if not confined:
+            with pytest.raises(RuntimeError, match='saved Compose policy rejected'):
+                action()
+            docker.assert_not_called()
+        else:
+            action()
+            assert docker.call_count == 1
+            # Approval at first render cannot authorize a subsequently changed
+            # recipe during backup/recovery. The next command must revalidate.
+            source_recipe(installed, confined=False)
+            with pytest.raises(RuntimeError, match='saved Compose policy rejected'):
+                action()
+            assert docker.call_count == 1
 
 
 def test_argument_cli_preserves_spaces_and_unicode(installed):
