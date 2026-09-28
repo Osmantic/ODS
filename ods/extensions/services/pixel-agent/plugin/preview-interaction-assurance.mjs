@@ -14,10 +14,20 @@ export const PREVIEW_INSPECTION_TOOL = 'pixel_ods_workspace_preview_inspect';
 // This capability checks visibility transitions. Do not turn arbitrary form,
 // navigation, animation or visual requests into checks the tool cannot perform.
 export function requestsVisibilityInteraction(text) {
-  return String(text ?? '').split(/[!?;\n]+|\.(?=\s|$)/).some(clause =>
-    !/^\s*(?:please\s+)?(?:do\s+not|don['’]t|never|avoid|skip|explain|describe|example)\b/i.test(clause) &&
-    /\b(?:clicks?|buttons?|toggles?|expands?|collapses?)\b/i.test(clause) &&
-    /\b(?:shows?|hides?|hidden|reveals?|expands?|collapses?|visible|visibility)\b/i.test(clause));
+  return String(text ?? '').split(/[!?;\n]+|\.(?=\s|$)/).some(clause => {
+    if (/^\s*(?:please\s+)?(?:do\s+not|don['’]t|never|avoid|skip|explain|describe|example)\b/i.test(clause) ||
+        !/\b(?:clicks?|buttons?|toggles?|expands?|collapses?)\b/i.test(clause)) return false;
+    // Correcting an existing control's initial state does not request a new
+    // content transition. Preserve new controls, quoted targets and mixed duties.
+    const initialControlState = /\b(?:starts?|begins?|defaults?)\b/i.test(clause) &&
+      /\b(?:aria-(?:pressed|expanded|hidden|checked|selected)|pressed|unpressed|expanded|collapsed|checked|unchecked|selected)\b/i.test(clause) &&
+      !/\b(?:add|create|implement)\b/i.test(clause);
+    const bare = initialControlState ? clause.replace(QUOTED, (name, offset) =>
+      /\b(?:button|toggle|link|tab|switch)\s*(?:(?:named|called|labelled|labeled)\s*)?$/i.test(clause.slice(0, offset)) ||
+      /^\s*(?:button|toggle|link|tab|switch)\b/i.test(clause.slice(offset + name.length)) ? ' ' : name)
+      .replace(/\b(?:its|their|the|this|that|a|an|my|your|our)\s+(?:show|hide|reveal|expand|collapse)(?:[ \t]+[\p{L}\p{N}_-]+){0,4}[ \t]+(?:button|toggle|link|tab|switch)(?=[ \t]+(?:starts?|begins?|defaults?)\b)/giu, ' control ') : clause;
+    return /\b(?:shows?|hides?|hidden|reveals?|expands?|collapses?|visible|visibility)\b/i.test(bare);
+  });
 }
 
 // The owner's own wording of a requested show/hide change, used only to name
@@ -149,5 +159,5 @@ export function pageErrorRepairInstruction(preview, pageErrors) {
 }
 
 export function visibilityInspectionInstruction(preview, pageErrors) {
-  return pageErrorRepairInstruction(preview, pageErrors) ?? `The published files are verified, but the requested show/hide interaction is not. Before replying, call ${PREVIEW_INSPECTION_TOOL} directly with siteId ${JSON.stringify(preview.siteId)}, sha256 ${JSON.stringify(preview.sha256)}, viewport {width,height}, and steps. Use its offered schema. If the tool is deferred, call tool_describe with its exact id, then tool_call with the returned id and args. Copy these exact publication identifiers; do not guess or shorten them. Choose the actual requested control and affected element from your source: assert the element's initial visibility, click the control using its exact supported accessible role/name when available, then assert the opposite visibility of that same element. Use a stable CSS selector for an element without a supported semantic locator. Do not substitute an unrelated passing interaction. If arguments are rejected, correct them from the schema and this receipt. If a browser check fails, repair the relevant files, republish, and inspect that new snapshot within the existing turn budget. If inspection is unavailable or unfinished, retain the preview and report the requested interaction as unverified. These checks cover only listed CSS layout visibility transitions, not overall correctness.`;
+  return pageErrorRepairInstruction(preview, pageErrors) ?? `The published files are verified, but the requested show/hide interaction is not. Before replying, call ${PREVIEW_INSPECTION_TOOL} directly with siteId ${JSON.stringify(preview.siteId)}, sha256 ${JSON.stringify(preview.sha256)}, viewport {width,height}, and steps. Use its offered schema. If the tool is deferred, call tool_describe with its exact id, then tool_call with the returned id and args. Copy these exact publication identifiers; do not guess or shorten them. Choose the actual requested control and affected element from your source: assert the element's initial visibility, click the control using its exact supported accessible role/name when available, then assert the opposite visibility of that same element. assert-visible and assert-hidden report whether the matched element is actually visible or hidden; they do not treat the disappearance of an attribute selector (for example an aria-pressed attribute) as visibility evidence. Use a stable CSS selector for an element without a supported semantic locator. Do not substitute an unrelated passing interaction. If arguments are rejected, correct them from the schema and this receipt. If a browser check fails, repair the relevant files, republish, and inspect that new snapshot within the existing turn budget. If inspection is unavailable or unfinished, retain the preview and report the requested interaction as unverified. These checks cover only listed CSS layout visibility transitions, not overall correctness.`;
 }

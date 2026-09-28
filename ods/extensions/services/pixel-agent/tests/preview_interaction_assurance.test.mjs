@@ -175,6 +175,47 @@ test('visibility gate only requests checks supported by the installed capability
     const {guard}=setup(config);assert.equal(guard.verificationForRun('run').status,'passed');
   }
 });
+
+test('initial control-state corrections do not imply a new visibility transition',()=>{
+  for (const text of [
+    'First, wireframe is off initially, but its Show wireframe button starts with aria-pressed=true; initialise it to match the actual state.',
+    'The "Show details" button starts with aria-pressed=true.',
+    'The button named "Hide details" should start unpressed.',
+    'Its Expand menu toggle defaults to aria-expanded=false.',
+  ]) {
+    assert.equal(requestsVisibilityInteraction(text), false, text);
+  }
+  for (const text of [
+    'First, wireframe is off initially, but its Show wireframe button starts with aria-pressed=true; initialise it to match the actual state.',
+    'The "Show details" button starts with aria-pressed=true.',
+  ]) {
+    const {guard} = setup({prompt:`Create and publish a website in a new workspace directory site. ${text}`});
+    assert.equal(guard.verificationForRun('run').status, 'passed', text);
+    assert.doesNotMatch(guard.verificationForRun('run').text, /show\/hide interaction/, text);
+  }
+});
+
+test('control labels and aria state never remove real affected-content duties',()=>{
+  for (const text of [
+    'Add a "Show details" button.',
+    'Add a "Show details" button that starts with aria-pressed=false.',
+    'Create the Show details button starting with aria-pressed=false.',
+  ]) assert.equal(requestsVisibilityInteraction(text), true, text);
+  for (const text of [
+    'Add a "Show details" button that reveals the hidden panel.',
+    'The "Hide sidebar" button should hide the sidebar.',
+    'Click the button to show "Results card".',
+    'Show this card with a button.',
+    'Click "Expand" to reveal the section.',
+    'The Show details button starts with aria-pressed=false and reveals the panel on click.',
+    'Its Show wireframe button starts with aria-pressed=true, and also add a button that shows the hidden details panel.',
+  ]) {
+    assert.equal(requestsVisibilityInteraction(text), true, text);
+    const {guard} = setup({prompt:`Create and publish a website in a new workspace directory site. ${text}`});
+    assert.equal(guard.verificationForRun('run').status, 'failed', text);
+    assert.match(guard.verificationForRun('run').text, /show\/hide interaction/, text);
+  }
+});
 test('published links remain available without falsely passing missing interaction evidence',()=>{
   const {guard,preview}=setup();const outcome=guard.verificationForRun('run');
   assert.equal(outcome.status,'failed');assert.equal(outcome.preview.sha256,preview.sha256);assert.match(outcome.text,/behavior remains unverified/);
