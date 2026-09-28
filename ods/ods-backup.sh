@@ -247,8 +247,10 @@ list_backups() {
 delete_backup() {
     local backup_id="$1"
 
-    # Reject path traversal attempts
-    if [[ "$backup_id" == *..* || "$backup_id" == */* || "$backup_id" == *\\* ]]; then
+    # A delete request must name one of the backup ID shapes this script
+    # creates or recognizes.  Path traversal checks alone still permit an
+    # arbitrary sibling of .backups (for example, an operator's notes).
+    if [[ ! "$backup_id" =~ ^([A-Za-z0-9_][A-Za-z0-9_-]*-)?([0-9]{8}-[0-9]{6})(\.tar\.gz)?$ ]]; then
         log_error "Invalid backup ID: $backup_id"
         return 1
     fi

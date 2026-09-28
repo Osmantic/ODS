@@ -30,3 +30,16 @@ fi
     exit 1
 }
 echo "PASS: failed backup deletion propagates non-zero status"
+
+# An operator can keep unrelated files directly under .backups.  Deletion
+# must only accept backup IDs, not merely a path that stays below the root.
+mkdir -p "$BACKUP_ROOT/operator-notes"
+if printf 'y\n' | delete_backup operator-notes >/dev/null 2>&1; then
+    echo "FAIL: delete_backup accepted an unrelated directory"
+    exit 1
+fi
+[[ -d "$BACKUP_ROOT/operator-notes" ]] || {
+    echo "FAIL: delete_backup removed an unrelated directory"
+    exit 1
+}
+echo "PASS: deletion rejects non-backup paths"
