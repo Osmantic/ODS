@@ -13017,8 +13017,52 @@ class AgentHandler(BaseHTTPRequestHandler):
                 )
                 return
 
-            for pf in parts_to_delete:
-                pf.unlink()
+            # A split GGUF only works as a complete set.  Do not unlink its
+            # members one at a time: a later filesystem error would otherwise
+            # strand an unusable partial model.  First atomically move every
+            # member into a private directory on the same filesystem.  If a
+            # move fails, put every already moved member back before reporting
+            # the error.  Once all moves succeed, the files can be retired.
+            staging_dir = Path(tempfile.mkdtemp(
+                prefix=".ods-model-delete-", dir=models_dir,
+            ))
+            staged_parts: list[tuple[Path, Path]] = []
+            try:
+                for pf in parts_to_delete:
+                    staged = staging_dir / pf.name
+                    os.replace(pf, staged)
+                    staged_parts.append((pf, staged))
+            except OSError:
+                rollback_errors = []
+                for original, staged in reversed(staged_parts):
+                    try:
+                        os.replace(staged, original)
+                    except OSError as rollback_exc:
+                        rollback_errors.append(str(rollback_exc))
+                try:
+                    staging_dir.rmdir()
+                except OSError:
+                    pass
+                if rollback_errors:
+                    raise OSError(
+                        "Failed to stage grouped model deletion and restore every shard: "
+                        + "; ".join(rollback_errors)
+                    )
+                raise
+
+            try:
+                for _original, staged in staged_parts:
+                    staged.unlink()
+                staging_dir.rmdir()
+            except OSError as exc:
+                # All original names have been retired, so a cleanup failure
+                # cannot leave a loader-visible partial model.  Preserve the
+                # staged directory for explicit recovery instead of claiming
+                # success.
+                raise OSError(
+                    f"Failed to finalize grouped model deletion; recoverable data remains in "
+                    f"{staging_dir.name}: {exc}"
+                ) from exc
 
             status_path = INSTALL_DIR / "data" / "model-download-status.json"
             if status_path.exists():
