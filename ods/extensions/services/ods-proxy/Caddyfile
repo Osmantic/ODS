@@ -152,5 +152,8 @@ http://hermes.{$ODS_DEVICE_NAME:ods}.local {
 # can edit this block or front the proxy with their own routing.
 # ---------------------------------------------------------------------
 http://{$ODS_DEVICE_NAME:ods}.local {
-	redir http://chat.{$ODS_DEVICE_NAME:ods}.local{uri} 302
+	# Keep the published host port when ODS_PROXY_PORT is non-default. The
+	# proxy itself always listens on container port 80, so the incoming request
+	# cannot reveal the host-side mapping.
+	redir http://chat.{$ODS_DEVICE_NAME:ods}.local:{$ODS_PROXY_PORT:80}{uri} 302
 }
