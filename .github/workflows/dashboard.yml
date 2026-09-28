@@ -62,7 +62,7 @@ jobs:
 
       - name: Install Dependencies
         run: |
-          pip install -r requirements.txt
+          pip install --require-hashes -r requirements.lock
           pip install -r tests/requirements-test.txt
 
       - name: Test configured SQLite paths

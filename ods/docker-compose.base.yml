@@ -32,7 +32,7 @@ services:
     volumes:
       - ./data/models:/models:z
     ports:
-      - "${BIND_ADDRESS:-127.0.0.1}:${OLLAMA_PORT:-11434}:8080"
+      - "127.0.0.1:${OLLAMA_PORT:-11434}:8080"
     command:
       - --model
       - /models/${GGUF_FILE:-Qwen3.5-9B-Q4_K_M.gguf}
@@ -219,7 +219,7 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:
-      - "${BIND_ADDRESS:-127.0.0.1}:${DASHBOARD_API_PORT:-3002}:3002"
+      - "127.0.0.1:${DASHBOARD_API_PORT:-3002}:3002"
     security_opt:
       - no-new-privileges:true
     logging: *default-logging

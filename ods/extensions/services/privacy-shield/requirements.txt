@@ -1,4 +1,6 @@
-fastapi>=0.100.0,<0.120.0
+fastapi==0.141.1
+# Security floor includes form limits and URL/Host parsing fixes (2026 audit).
+starlette==1.7.0
 httpx>=0.24.0,<0.29.0
 uvicorn>=0.23.0,<0.30.0
 cachetools>=5.0.0,<6.0.0

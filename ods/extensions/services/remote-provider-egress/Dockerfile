@@ -1,11 +1,11 @@
-FROM python:3.11-slim
+FROM python:3.11-slim@sha256:e41613d42d4891e4930f79523f93f81bbc7632584ec65e36ab055f41a800b41e
 
 RUN addgroup --gid 10778 odsremote && \
     adduser --uid 10778 --gid 10778 --disabled-password --gecos "" odsremote
 
 WORKDIR /srv/remote-provider-egress
-COPY extensions/services/remote-provider-egress/requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt
+COPY extensions/services/remote-provider-egress/requirements.lock ./
+RUN pip install --no-cache-dir --require-hashes -r requirements.lock
 COPY extensions/services/remote-provider-egress/app ./app
 COPY bin/remote_provider ./remote_provider
 

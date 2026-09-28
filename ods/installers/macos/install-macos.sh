@@ -1987,7 +1987,7 @@ else
 
     _macos_llm_bridge_enabled="false"
     if [[ "${DOCKER_BACKEND:-unknown}" == "colima" ]]; then
-        _macos_llm_bind="$(read_env_value "${INSTALL_DIR}/.env" "BIND_ADDRESS")"
+        _macos_llm_bind="127.0.0.1"
         [[ -n "$_macos_llm_bind" ]] || _macos_llm_bind="127.0.0.1"
         _macos_llm_bridge_enabled="true"
         _macos_agent_bridge_enabled="true"
@@ -2354,10 +2354,8 @@ else
             *)    _reasoning_fmt="$_reasoning" ;;
         esac
 
-        # Honour the unified BIND_ADDRESS knob (PR #964) so --lan / dashboard
-        # toggle / manual edit reach the native llama-server too. Falls back
-        # to loopback when unset (default-secure).
-        _bind=$(grep '^BIND_ADDRESS=' "$INSTALL_DIR/.env" 2>/dev/null | cut -d= -f2 | tr -d '"' || echo "")
+        # LAN access is limited to authenticated UIs; inference stays private.
+        _bind="127.0.0.1"
         [[ -z "$_bind" ]] && _bind="127.0.0.1"
         _native_llama_port=$(read_env_value "$INSTALL_DIR/.env" "ODS_NATIVE_LLAMA_PORT")
         [[ "$_native_llama_port" =~ ^[0-9]+$ ]] || _native_llama_port="8080"
@@ -3038,7 +3036,7 @@ for service in (data.get("services") or {}).values():
             _opencode_model="ods/current"
             _opencode_port="$(read_env_value "$INSTALL_DIR/.env" "LITELLM_PORT")"
             [[ "$_opencode_port" =~ ^[0-9]+$ ]] || _opencode_port="4000"
-            _opencode_bind="$(read_env_value "$INSTALL_DIR/.env" "BIND_ADDRESS")"
+            _opencode_bind="127.0.0.1"
             _opencode_host="$(macos_bind_probe_host "${_opencode_bind:-127.0.0.1}")"
             _opencode_base_url="http://${_opencode_host}:${_opencode_port}/v1"
             _opencode_api_key="$(read_env_value "$INSTALL_DIR/.env" "LITELLM_KEY")"
@@ -3046,7 +3044,7 @@ for service in (data.get("services") or {}).values():
             _opencode_model="default"
             _opencode_port="$(read_env_value "$INSTALL_DIR/.env" "LITELLM_PORT")"
             [[ "$_opencode_port" =~ ^[0-9]+$ ]] || _opencode_port="4000"
-            _opencode_bind="$(read_env_value "$INSTALL_DIR/.env" "BIND_ADDRESS")"
+            _opencode_bind="127.0.0.1"
             _opencode_host="$(macos_bind_probe_host "${_opencode_bind:-127.0.0.1}")"
             _opencode_base_url="http://${_opencode_host}:${_opencode_port}/v1"
             _opencode_api_key="$(read_env_value "$INSTALL_DIR/.env" "LITELLM_KEY")"
@@ -3054,7 +3052,7 @@ for service in (data.get("services") or {}).values():
             _opencode_model="$LLM_MODEL"
             _opencode_port="$(read_env_value "$INSTALL_DIR/.env" "ODS_NATIVE_LLAMA_PORT")"
             [[ "$_opencode_port" =~ ^[0-9]+$ ]] || _opencode_port="8080"
-            _opencode_bind="$(read_env_value "$INSTALL_DIR/.env" "BIND_ADDRESS")"
+            _opencode_bind="127.0.0.1"
             _opencode_host="$(macos_bind_probe_host "${_opencode_bind:-127.0.0.1}")"
             _opencode_base_url="http://${_opencode_host}:${_opencode_port}/v1"
             _opencode_api_key="no-key"
@@ -3289,7 +3287,7 @@ if $CLOUD_MODE; then
     HEALTH_URLS=("http://127.0.0.1:4000/health/readiness" "http://127.0.0.1:3000")
     HEALTH_CONTAINERS=("ods-litellm" "ods-webui")
 else
-    _health_bind="$(read_env_value "$INSTALL_DIR/.env" "BIND_ADDRESS")"
+    _health_bind="127.0.0.1"
     _health_llama_host="$(macos_bind_probe_host "${_health_bind:-127.0.0.1}")"
     _health_llama_port="$(read_env_value "$INSTALL_DIR/.env" "ODS_NATIVE_LLAMA_PORT")"
     [[ "$_health_llama_port" =~ ^[0-9]+$ ]] || _health_llama_port="8080"
@@ -3351,7 +3349,7 @@ done
 
 if $CLOUD_MODE; then
     _cloud_health_key="$(read_env_value "$INSTALL_DIR/.env" "LITELLM_KEY")"
-    _cloud_health_bind="$(read_env_value "$INSTALL_DIR/.env" "BIND_ADDRESS")"
+    _cloud_health_bind="127.0.0.1"
     _cloud_health_host="$(macos_bind_probe_host "${_cloud_health_bind:-127.0.0.1}")"
     _cloud_health_port="$(read_env_value "$INSTALL_DIR/.env" "LITELLM_PORT")"
     [[ "$_cloud_health_port" =~ ^[0-9]+$ ]] || _cloud_health_port="4000"

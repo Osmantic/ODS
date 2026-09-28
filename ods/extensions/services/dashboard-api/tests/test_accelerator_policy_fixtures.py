@@ -355,7 +355,7 @@ _HARDENED = """\
       - RECIPE_URL=http://localhost:${RECIPE_PORT:-8080}
     command: ["sh", "-c", "echo $$HOME && exec recipe"]
     ports:
-      - "${BIND_ADDRESS:-127.0.0.1}:${RECIPE_PORT:-8080}:8080"
+      - "127.0.0.1:${RECIPE_PORT:-8080}:8080"
       - "127.0.0.1:9090:9090/udp"
     volumes:
       - ./data/recipe:/data

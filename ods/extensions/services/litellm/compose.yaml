@@ -27,7 +27,7 @@ services:
       # /tmp/config.yaml, so the callback must be mounted alongside it.
       - ./extensions/services/litellm/ods_token_spy_callback.py:/tmp/ods_token_spy_callback.py:ro,z
     ports:
-      - "${BIND_ADDRESS:-127.0.0.1}:${LITELLM_PORT:-4000}:4000"
+      - "127.0.0.1:${LITELLM_PORT:-4000}:4000"
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |

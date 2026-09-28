@@ -3,7 +3,7 @@ services:
     image: chromadb/chroma:1.5.3
     container_name: ods-chromadb
     ports:
-      - "${BIND_ADDRESS:-127.0.0.1}:${CHROMADB_PORT:-8000}:8000"
+      - "127.0.0.1:${CHROMADB_PORT:-8000}:8000"
     volumes:
       - ./data/chromadb:/chromadb
     environment:

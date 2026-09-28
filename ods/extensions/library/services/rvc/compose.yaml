@@ -3,7 +3,7 @@ services:
     image: aladdin1234/rvc-webui:0.1@sha256:7f8b4ca826d31d0ea50c56327d9fbfd1dacead37064a5f9745738b728a6271be
     container_name: ods-rvc
     ports:
-      - "${BIND_ADDRESS:-127.0.0.1}:${RVC_PORT:-7809}:7865"
+      - "127.0.0.1:${RVC_PORT:-7809}:7865"
     volumes:
       - ./data/rvc/weights:/app/assets/weights
       - ./data/rvc/opt:/app/opt

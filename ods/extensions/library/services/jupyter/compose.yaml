@@ -3,7 +3,7 @@ services:
     image: jupyter/scipy-notebook:python-3.11
     container_name: ods-jupyter
     ports:
-      - "${BIND_ADDRESS:-127.0.0.1}:${JUPYTER_PORT:-8889}:8888"
+      - "127.0.0.1:${JUPYTER_PORT:-8889}:8888"
     volumes:
       - ./data/jupyter/workspace:/home/jovyan/work
       - ./data/jupyter/notebooks:/home/jovyan/notebooks

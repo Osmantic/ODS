@@ -6,7 +6,7 @@ services:
     security_opt:
     - no-new-privileges:true
     ports:
-    - ${BIND_ADDRESS:-127.0.0.1}:${DOCLING_SERVE_PORT:-11000}:5001
+    - 127.0.0.1:${DOCLING_SERVE_PORT:-11000}:5001
     healthcheck:
       test:
       - CMD

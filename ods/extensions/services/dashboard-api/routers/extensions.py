@@ -507,25 +507,18 @@ def _resolve_extension_dir(service_id: str) -> Path:
     )
 
 
-# Compose port-binding host part may be a literal IP or a Compose variable
-# expansion. To stay default-secure while supporting the LAN toggle (PR #964),
-# we accept exactly two forms:
-#   1. literal "127.0.0.1"
-#   2. "${VAR:-127.0.0.1}" â€” variable with a literal-127.0.0.1 default
-# Everything else (bare "${VAR}" with no default, "${VAR:-0.0.0.0}", literal
-# "0.0.0.0", hostnames, etc.) is rejected.
+# Extension ports require literal loopback. An environment override can turn
+# a loopback default into a public bind. The parser still recognizes historical
+# interpolation syntax to reject it clearly.
 _LOOPBACK_VAR_DEFAULT_RE = re.compile(
     r"^\$\{[A-Za-z_][A-Za-z0-9_]*:-127\.0\.0\.1\}$",
 )
 
 
 def _host_part_is_loopback(host: str) -> bool:
-    if host == "127.0.0.1":
-        return True
-    # fullmatch (not match) so trailing characters never sneak past the
-    # `$`-anchor â€” Python's `$` matches before a single trailing newline by
-    # default, which YAML won't normally produce but is worth defending.
-    return bool(_LOOPBACK_VAR_DEFAULT_RE.fullmatch(host))
+    # An environment override can turn a loopback default into a public bind.
+    # Reject old interpolated recipes; do not rewrite their approved contents.
+    return host == "127.0.0.1"
 
 
 def _split_port_host(port_str: str) -> tuple[Optional[str], str]:

@@ -1,4 +1,5 @@
 import asyncio
+import ast
 import json
 from unittest.mock import AsyncMock
 
@@ -14,11 +15,31 @@ from test_extension_recipe_drafts import evidence
 from routers import extensions
 
 
+def test_restart_enforces_the_same_source_sandbox_as_publication():
+    """CLI restart cannot bypass the API's source capability boundary."""
+    module = (ODS / 'extensions/services/dashboard-api/extension_source_build.py').read_text(encoding='utf-8')
+    script = (ODS / 'scripts/resolve-compose-stack.sh').read_text(encoding='utf-8')
+    embedded = script.split("<<'PY'\n", 1)[1].rsplit('\nPY', 1)[0]
+
+    def implementation(source):
+        tree = ast.parse(source)
+        function = next(node for node in tree.body
+                        if isinstance(node, ast.FunctionDef) and node.name == 'verify_source_runtime')
+        return ast.dump(function, include_attributes=False)
+
+    assert implementation(module) == implementation(embedded)
+
+
 def proposal():
     value = candidate()
     service = value['compose']['services']['apache-answer']
     service.update(build={'context': value['repository'] + '.git#' + value['commit'] + ':app'},
                    image='ods-source-apache-answer:' + value['commit'], pull_policy='never')
+    service.update(user='65532:65532', cap_drop=['ALL'],
+                   security_opt=['no-new-privileges:true'], read_only=True,
+                   cpus=2, mem_limit='2g', pids_limit=256,
+                   networks=['apache-answer-sandbox'])
+    value['compose']['networks'] = {'apache-answer-sandbox': {'internal': True}}
     return value
 
 
@@ -42,6 +63,36 @@ def test_source_recipe_keeps_untrusted_container_checks():
     assert validate_recipe(value, SCHEMA, set(), scan)['valid'] is True
     value['compose']['services']['apache-answer']['privileged'] = True
     assert validate_recipe(value, SCHEMA, set(), scan)['valid'] is False
+
+
+@pytest.mark.parametrize('change', [
+    {'user': None}, {'user': 'root'}, {'user': '0:1000'},
+    {'read_only': False}, {'cap_drop': []}, {'cap_add': ['NET_BIND_SERVICE']},
+    {'security_opt': ['no-new-privileges:false']}, {'networks': ['ods-network']},
+    {'network_mode': 'host'}, {'pids_limit': -1}, {'pids_limit': True},
+    {'mem_limit': '0g'}, {'mem_limit': '64g'}, {'cpus': 0},
+])
+def test_source_runtime_cannot_relax_its_sandbox(change):
+    value = proposal()
+    value['compose']['services']['apache-answer'].update(change)
+    assert not validate_recipe(value, SCHEMA, set(), scan)['valid']
+
+
+def test_source_runtime_cannot_attach_its_sandbox_to_an_existing_network():
+    value = proposal()
+    value['compose']['networks']['apache-answer-sandbox'] = {
+        'external': True, 'name': 'ods-network', 'internal': True,
+    }
+    assert not validate_recipe(value, SCHEMA, set(), scan)['valid']
+
+
+def test_source_runtime_cannot_add_an_unconfined_image_companion():
+    value = proposal()
+    value['compose']['services']['apache-answer-helper'] = {
+        'image': 'example/helper@sha256:' + 'b' * 64,
+        'networks': ['ods-network'],
+    }
+    assert not validate_recipe(value, SCHEMA, set(), scan)['valid']
 
 
 @pytest.mark.parametrize('change', [{'image': 'somebody/remote:latest'}, {'pull_policy': 'always'},

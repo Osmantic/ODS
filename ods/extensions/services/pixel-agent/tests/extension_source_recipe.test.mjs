@@ -18,6 +18,15 @@ test('compiles only packaging conventions and preserves the researched applicati
   assert.deepEqual(service.ports, ['127.0.0.1:${EXAMPLE_PROJECT_PORT:-8080}:8080']);
   assert.deepEqual(service.healthcheck.test, source.healthcheck);
   assert.equal(service.command, undefined);
+  assert.equal(service.user, '65532:65532');
+  assert.deepEqual(service.cap_drop, ['ALL']);
+  assert.deepEqual(service.security_opt, ['no-new-privileges:true']);
+  assert.equal(service.read_only, true);
+  assert.equal(service.mem_limit, '2g');
+  assert.equal(service.cpus, 2);
+  assert.equal(service.pids_limit, 256);
+  assert.deepEqual(service.networks, ['example-project-sandbox']);
+  assert.deepEqual(recipe.compose.networks, {'example-project-sandbox': {internal: true}});
 });
 
 test('inline shell variables remain in the container, not host interpolation', () => {

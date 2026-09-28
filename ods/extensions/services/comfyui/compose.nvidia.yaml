@@ -8,7 +8,7 @@ services:
     security_opt:
       - no-new-privileges:true
     ports:
-      - "${BIND_ADDRESS:-127.0.0.1}:${COMFYUI_PORT:-8188}:8188"
+      - "127.0.0.1:${COMFYUI_PORT:-8188}:8188"
     volumes:
       - ./data/comfyui/models:/models:z
       - ./data/comfyui/output:/output:z

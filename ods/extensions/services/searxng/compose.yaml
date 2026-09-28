@@ -11,7 +11,7 @@ services:
     volumes:
       - ./config/searxng:/etc/searxng:rw,z
     ports:
-      - "${BIND_ADDRESS:-127.0.0.1}:${SEARXNG_PORT:-8888}:8080"
+      - "127.0.0.1:${SEARXNG_PORT:-8888}:8080"
     healthcheck:
       test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:8080/healthz"]
       interval: 30s

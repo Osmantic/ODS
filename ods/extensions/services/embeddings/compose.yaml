@@ -13,7 +13,7 @@ services:
     volumes:
       - ./data/embeddings:/data:z
     ports:
-      - "${BIND_ADDRESS:-127.0.0.1}:${EMBEDDINGS_PORT:-8090}:80"
+      - "127.0.0.1:${EMBEDDINGS_PORT:-8090}:80"
     deploy:
       resources:
         limits:

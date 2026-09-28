@@ -35,7 +35,7 @@ services:
     volumes:
       - ./data/baserow:/baserow/data:rw
     ports:
-      - "${BIND_ADDRESS:-127.0.0.1}:${BASEROW_PORT:-3007}:80"
+      - "127.0.0.1:${BASEROW_PORT:-3007}:80"
     networks:
       - ods-network
     healthcheck:

@@ -41,7 +41,7 @@ services:
       - ./data/openclaw/home/cron:/home/node/.openclaw/cron:z
       - ./config/openclaw/workspace:/home/node/.openclaw/workspace:z
     ports:
-      - "${BIND_ADDRESS:-127.0.0.1}:${OPENCLAW_PORT:-7860}:18789"
+      - "127.0.0.1:${OPENCLAW_PORT:-7860}:18789"
     deploy:
       resources:
         limits:

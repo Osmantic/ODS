@@ -18,7 +18,7 @@ services:
       - ./data/paperless/export:/usr/src/paperless/export
       - ./data/paperless/media:/usr/src/paperless/media
     ports:
-      - "${BIND_ADDRESS:-127.0.0.1}:${PAPERLESS_PORT:-7807}:8000"
+      - "127.0.0.1:${PAPERLESS_PORT:-7807}:8000"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://127.0.0.1:8000/accounts/login/"]
       interval: 30s

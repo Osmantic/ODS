@@ -10,7 +10,7 @@ services:
     volumes:
       - apache-answer-data:/data
     ports:
-      - ${BIND_ADDRESS:-127.0.0.1}:${APACHE_ANSWER_PORT:-11147}:80
+      - 127.0.0.1:${APACHE_ANSWER_PORT:-11147}:80
     healthcheck:
       test: [CMD, curl, --fail, --silent, --show-error, --location, --max-time, '8', 'http://127.0.0.1/']
       interval: 30s

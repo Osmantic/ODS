@@ -24,7 +24,7 @@ services:
     volumes:
       - fooocus-data:/content/data
     ports:
-      - ${BIND_ADDRESS:-127.0.0.1}:${FOOOCUS_PORT:-7865}:7865
+      - 127.0.0.1:${FOOOCUS_PORT:-7865}:7865
     healthcheck:
       test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:7865/', timeout=8).read()"]
       interval: 30s

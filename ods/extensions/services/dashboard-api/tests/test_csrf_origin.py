@@ -33,6 +33,25 @@ def _simple_form_post_headers(origin=ATTACKER, sec_fetch_site="cross-site"):
 
 class TestCrossSiteStateChangeRejected:
 
+    @pytest.mark.parametrize("origin", [
+        "http://localhost:3000", "http://127.0.0.1:3000",
+        "https://trusted-integration.example",
+    ])
+    @pytest.mark.parametrize("method", ["POST", "PUT", "PATCH", "DELETE"])
+    def test_cors_allowlist_does_not_authorize_cross_origin_mutations(
+        self, test_client, monkeypatch, origin, method
+    ):
+        monkeypatch.setenv("DASHBOARD_ALLOWED_ORIGINS", origin)
+        with patch("routers.resources._post_agent_json") as post_agent:
+            response = test_client.request(
+                method, "/api/services/ape/restart",
+                headers={**test_client.auth_headers, "Host": "localhost:3001",
+                         "Origin": origin, "Sec-Fetch-Site": "same-site"},
+            )
+        assert response.status_code == 403
+        assert "Cross-origin" in response.json()["detail"]
+        post_agent.assert_not_called()
+
     def test_cross_site_post_is_rejected_before_the_route_runs(
         self, test_client, monkeypatch
     ):

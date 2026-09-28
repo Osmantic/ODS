@@ -6,7 +6,7 @@ services:
     security_opt:
     - no-new-privileges:true
     ports:
-    - ${BIND_ADDRESS:-127.0.0.1}:${PAPERLESS_GPT_PORT:-11015}:8080
+    - 127.0.0.1:${PAPERLESS_GPT_PORT:-11015}:8080
     healthcheck:
       test:
       - CMD

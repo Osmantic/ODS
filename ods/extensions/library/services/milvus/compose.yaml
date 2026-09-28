@@ -3,8 +3,8 @@ services:
     image: milvusdb/milvus:v2.4.5
     container_name: ods-milvus
     ports:
-      - "${BIND_ADDRESS:-127.0.0.1}:${MILVUS_PORT:-19530}:19530"
-      - "${BIND_ADDRESS:-127.0.0.1}:9091:9091"
+      - "127.0.0.1:${MILVUS_PORT:-19530}:19530"
+      - "127.0.0.1:9091:9091"
     volumes:
       - ./data/milvus:/var/lib/milvus
     environment:

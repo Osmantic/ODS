@@ -35,7 +35,7 @@ services:
       - ./extensions/services/perplexica/sync-model-config.js:/app/ods-sync-model-config.js:ro,z
       - ./extensions/services/perplexica/sync-search-config.js:/app/ods-sync-search-config.js:ro,z
     ports:
-      - "${BIND_ADDRESS:-127.0.0.1}:${PERPLEXICA_PORT:-3004}:3000"
+      - "127.0.0.1:${PERPLEXICA_PORT:-3004}:3000"
     deploy:
       resources:
         limits:

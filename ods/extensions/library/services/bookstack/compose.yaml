@@ -17,7 +17,7 @@ services:
       DB_PASSWORD: ${BOOKSTACK_DB_PASSWORD:?Set BOOKSTACK_DB_PASSWORD}
     volumes: [bookstack-config:/config]
     ports:
-      - ${BIND_ADDRESS:-127.0.0.1}:${BOOKSTACK_PORT:-11148}:80
+      - 127.0.0.1:${BOOKSTACK_PORT:-11148}:80
     depends_on:
       bookstack-db:
         condition: service_healthy

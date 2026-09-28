@@ -40,7 +40,7 @@ services:
       # BIND_ADDRESS gates LAN exposure (ODS convention). Default
       # 127.0.0.1 = localhost only. Set BIND_ADDRESS=0.0.0.0 in .env to
       # expose on the LAN at hermes.<device>.local:9120.
-      - "${BIND_ADDRESS:-127.0.0.1}:${HERMES_PROXY_PORT:-9120}:9120"
+      - "127.0.0.1:${HERMES_PROXY_PORT:-9120}:9120"
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:9120/health"]
       interval: 30s

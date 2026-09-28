@@ -22,7 +22,7 @@ services:
       miniflux-db:
         condition: service_healthy
     ports:
-      - "${BIND_ADDRESS:-127.0.0.1}:${MINIFLUX_PORT:-8098}:8080"
+      - "127.0.0.1:${MINIFLUX_PORT:-8098}:8080"
     healthcheck:
       test: [CMD, /usr/bin/miniflux, -healthcheck, auto]
       interval: 30s

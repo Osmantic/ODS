@@ -495,19 +495,8 @@ if ($dryRun) {
                 }
             }
 
-            # Honour the unified BIND_ADDRESS knob (PR #964) for native servers.
-            # Phase 06 has already written BIND_ADDRESS to .env (0.0.0.0 with -Lan,
-            # 127.0.0.1 otherwise). Read once and reuse for both Lemonade and
-            # llama.cpp launches below. Empty/missing → loopback.
-            $_envPath = Join-Path $installDir ".env"
+            # LAN enables authenticated UIs, never the unauthenticated model API.
             $bindAddr = "127.0.0.1"
-            if (Test-Path $_envPath) {
-                $_envText = Get-Content $_envPath -Raw
-                if ($_envText -match "(?m)^BIND_ADDRESS=(.*)$") {
-                    $_match = $Matches[1].Trim().Trim('"').Trim("'")
-                    if (-not [string]::IsNullOrWhiteSpace($_match)) { $bindAddr = $_match }
-                }
-            }
 
             function Get-ODSPriorLemonadeTaskName {
                 return (-join ([char[]](

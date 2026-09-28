@@ -638,8 +638,8 @@ FAKE_PYTHON
                 || fail "$label: loopback bridge was not bootstrapped: ${events[1]}"
             [[ "${events[2]}" == launchctl\ \<kickstart\>* ]] \
                 || fail "$label: loopback bridge was not kickstarted: ${events[2]}"
-            [[ "${events[3]}" == exec\ \<--host\>\ \<"$bind_address"\>* ]] \
-                || fail "$label: native llama did not receive bind $bind_address: ${events[3]}"
+            [[ "${events[3]}" == exec\ \<--host\>\ \<127.0.0.1\>* ]] \
+                || fail "$label: UI preference exposed native inference: ${events[3]}"
             [[ "$LAST_BRIDGE_ENABLED" == "true" ]] \
                 || fail "$label: restored bridge state was not persisted"
         fi
@@ -648,12 +648,12 @@ FAKE_PYTHON
         pass "$label"
     }
 
-    run_start_case "0.0.0.0" "192.168.106.1" direct "IPv4 wildcard boots out bridge before native llama"
-    run_start_case "::" "192.168.106.1" direct "IPv6 wildcard boots out bridge before native llama"
-    run_start_case "192.168.106.1" "192.168.106.1" direct "gateway bind boots out bridge before native llama"
+    run_start_case "0.0.0.0" "192.168.106.1" bridge "IPv4 LAN preference keeps inference private and restores bridge"
+    run_start_case "::" "192.168.106.1" bridge "IPv6 LAN preference keeps inference private and restores bridge"
+    run_start_case "192.168.106.1" "192.168.106.1" bridge "gateway preference keeps inference private and restores bridge"
     run_start_case "127.0.0.1" "192.168.106.1" bridge "returning to loopback recreates bridge before native llama"
     TEST_PARALLEL=2
-    run_start_case "0.0.0.0" "192.168.106.1" direct "explicit native parallelism survives start"
+    run_start_case "0.0.0.0" "192.168.106.1" bridge "explicit native parallelism survives start"
 )
 
 echo "[OK] macOS direct-bind bridge contract holds"

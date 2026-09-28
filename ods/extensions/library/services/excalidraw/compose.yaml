@@ -6,7 +6,7 @@ services:
     security_opt:
     - no-new-privileges:true
     ports:
-    - ${BIND_ADDRESS:-127.0.0.1}:${EXCALIDRAW_PORT:-11010}:80
+    - 127.0.0.1:${EXCALIDRAW_PORT:-11010}:80
     healthcheck:
       test:
       - CMD

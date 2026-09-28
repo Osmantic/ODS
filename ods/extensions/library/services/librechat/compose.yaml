@@ -55,7 +55,7 @@ services:
       - ./data/librechat/logs:/app/api/logs:rw
       - ./data/librechat/uploads:/app/uploads:rw
     ports:
-      - "${BIND_ADDRESS:-127.0.0.1}:${LIBRECHAT_PORT:-3080}:3080"
+      - "127.0.0.1:${LIBRECHAT_PORT:-3080}:3080"
     depends_on:
       librechat-mongodb:
         condition: service_healthy

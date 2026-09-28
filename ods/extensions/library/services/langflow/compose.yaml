@@ -12,7 +12,7 @@ services:
     volumes:
       - ./data/langflow:/app/data
     ports:
-      - "${BIND_ADDRESS:-127.0.0.1}:${LANGFLOW_PORT:-7802}:7860"
+      - "127.0.0.1:${LANGFLOW_PORT:-7802}:7860"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://127.0.0.1:7860/health"]
       interval: 30s

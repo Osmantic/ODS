@@ -244,10 +244,10 @@ except (OSError, ValueError):
     }
 
 
-def _host_part_is_loopback(host):
-    if host == "127.0.0.1":
-        return True
-    return bool(_LOOPBACK_VAR_DEFAULT_RE.fullmatch(host))
+def _host_part_is_loopback(host: str) -> bool:
+    # An environment override can turn a loopback default into a public bind.
+    # Reject old interpolated recipes; do not rewrite their approved contents.
+    return host == "127.0.0.1"
 
 
 def _split_port_host(port_str):
@@ -266,6 +266,35 @@ def _split_port_host(port_str):
 
 
 _extension_build_contexts = {}
+
+
+def verify_source_runtime(candidate, service):
+    """Enforce the source sandbox at proposal, publication and re-enable time.
+
+    Defaults in the generator alone are insufficient: a proposed Dockerfile
+    can omit USER and a saved recipe may be edited before a restart.
+    """
+    target = candidate.get('manifest', {}).get('service', {}).get('id', '')
+    network = target + '-sandbox'
+    uid = str(service.get('user', ''))
+    if not re.fullmatch(r'[1-9][0-9]*(?::[1-9][0-9]*)?', uid):
+        raise ValueError('Source runtime requires an explicit non-root numeric user')
+    if (service.get('cap_drop') != ['ALL'] or service.get('cap_add')
+            or service.get('security_opt') != ['no-new-privileges:true']
+            or service.get('read_only') is not True):
+        raise ValueError('Source runtime requires read-only, capability-free confinement')
+    if (service.get('networks') != [network] or 'network_mode' in service
+            or candidate['compose'].get('networks', {}).get(network) != {'internal': True}):
+        raise ValueError('Source runtime requires its own internal sandbox network')
+    cpus, pids = service.get('cpus'), service.get('pids_limit')
+    memory = service.get('mem_limit')
+    if (isinstance(cpus, bool) or not isinstance(cpus, (int, float)) or not 0 < cpus <= 32
+            or isinstance(pids, bool) or not isinstance(pids, int) or not 0 < pids <= 4096
+            or not isinstance(memory, str) or not re.fullmatch(r'[1-9][0-9]*(?:m|g)', memory.lower())):
+        raise ValueError('Source runtime requires bounded CPU, memory and PID limits')
+    memory_mib = int(memory[:-1]) * (1024 if memory[-1].lower() == 'g' else 1)
+    if memory_mib > 32768:
+        raise ValueError('Source runtime memory limit exceeds 32 GiB')
 
 
 def _extension_build_context(compose_path, build):
@@ -309,6 +338,10 @@ def _extension_build_context(compose_path, build):
         if not isinstance(manifest, dict) or not isinstance(compose, dict) or not isinstance(compose.get("services"), dict):
             raise ValueError("invalid source recipe documents")
         candidate = {"repository": upstream["repository"], "commit": revision, "manifest": manifest, "compose": compose}
+        for definition in compose['services'].values():
+            if not isinstance(definition, dict):
+                raise ValueError('Source runtime service must be a mapping')
+            verify_source_runtime(candidate, definition)
         digest = hashlib.sha256(json.dumps(candidate, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()).hexdigest()
         if upstream.get("recipeDigest") != digest:
             raise ValueError("installed source recipe changed")

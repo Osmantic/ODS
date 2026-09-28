@@ -24,7 +24,9 @@ on:
 concurrency:
   # A normal status comment creates a skipped issue_comment run. Keep that run
   # from cancelling the in-flight pull_request review for the same PR.
-  group: claude-review-${{ github.event_name }}-${{ github.event.pull_request.number || github.event.issue.number }}
+  # Each comment gets an independent workflow group. An untrusted comment
+  # must not cancel a maintainer's already-authorized paid review.
+  group: claude-review-${{ github.event_name }}-${{ github.event_name == 'issue_comment' && github.run_id || github.event.pull_request.number }}
   cancel-in-progress: true
 
 permissions:
@@ -45,11 +47,15 @@ jobs:
         github.event_name == 'pull_request' ||
         (github.event_name == 'issue_comment' &&
          github.event.issue.pull_request &&
-         contains(github.event.comment.body, '@claude-review'))
+         contains(github.event.comment.body, '@claude-review') &&
+         contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association))
       )
 
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    concurrency:
+      group: claude-review-budget
+      cancel-in-progress: false
 
     steps:
       - name: Check if fork PR
@@ -66,7 +72,9 @@ jobs:
             fi
           fi
 
-          # For issue_comment events, API key absence signals fork PR
+          # issue_comment runs in the base repository even for fork PRs.
+          # The job's author_association gate authorizes the commenter; a
+          # missing API key only means AI review is not configured.
           if [ "${{ github.event_name }}" == "issue_comment" ] && [ "$HAS_API_KEY" != "true" ]; then
             IS_FORK="true"
           fi
@@ -119,6 +127,7 @@ jobs:
             code-review --comment \
             --model claude-opus-4-5-20251101 \
             --max-turns 20 \
+            --max-budget-usd 5 \
             --allowedTools "Bash(git diff *),Bash(git log *),Bash(git blame *),Read"
 
           github_token: ${{ secrets.GITHUB_TOKEN }}

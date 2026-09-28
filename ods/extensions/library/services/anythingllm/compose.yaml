@@ -27,7 +27,7 @@ services:
     volumes:
       - ./data/anythingllm:/app/server/storage:rw
     ports:
-      - "${BIND_ADDRESS:-127.0.0.1}:${ANYTHINGLLM_PORT:-7800}:3001"
+      - "127.0.0.1:${ANYTHINGLLM_PORT:-7800}:3001"
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://127.0.0.1:3001/api/health"]
       interval: 30s

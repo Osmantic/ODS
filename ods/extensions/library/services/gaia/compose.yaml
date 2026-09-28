@@ -25,7 +25,7 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:
-      - "${BIND_ADDRESS:-127.0.0.1}:${GAIA_PORT:-7822}:4200"
+      - "127.0.0.1:${GAIA_PORT:-7822}:4200"
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4200/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 30s

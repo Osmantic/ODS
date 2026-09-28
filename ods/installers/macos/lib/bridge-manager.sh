@@ -96,7 +96,7 @@ macos_configure_llm_bridge_from_env() {
 
     mode="$(read_env_value "$env_file" "ODS_MODE")"
     [[ -n "$mode" ]] || mode="local"
-    bind_address="$(read_env_value "$env_file" "BIND_ADDRESS")"
+    bind_address="127.0.0.1"
     [[ -n "$bind_address" ]] || bind_address="127.0.0.1"
     listen_host="$(read_env_value "$env_file" "ODS_MACOS_HOST_GATEWAY")"
     allowed_peer="$(read_env_value "$env_file" "ODS_MACOS_VM_IP")"

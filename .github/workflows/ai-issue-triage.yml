@@ -8,15 +8,17 @@ on:
   issues:
     types: [opened]
 
-concurrency:
-  group: issue-triage-${{ github.event.issue.number }}
-  cancel-in-progress: false
-
 jobs:
   triage:
     name: Triage Issue
     runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # Queue only authorized work; public events cannot replace pending jobs.
+    concurrency:
+      group: issue-triage-budget
+      cancel-in-progress: false
     if: >-
+      contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.issue.author_association) &&
       github.event.issue.user.login != 'github-actions[bot]' &&
       github.event.issue.user.login != 'dependabot[bot]' &&
       github.event.issue.user.login != 'claude[bot]'
@@ -104,3 +106,4 @@ jobs:
             --allowedTools
             "Bash(gh issue edit *),Read,Glob,Grep"
             --max-turns 5
+            --max-budget-usd 2

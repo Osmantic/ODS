@@ -3,7 +3,7 @@ services:
     image: daswer123/xtts-api-server@sha256:491e0a198fc56c46d3dbb300ab993d29cc699813ea8fd1c6ee77aa80ab133e3e
     container_name: ods-xtts
     ports:
-      - "${BIND_ADDRESS:-127.0.0.1}:${XTTS_PORT:-8100}:80"
+      - "127.0.0.1:${XTTS_PORT:-8100}:80"
     volumes:
       - ./data/xtts:/app/tts_models
     environment:

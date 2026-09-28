@@ -2225,9 +2225,8 @@ function Start-NativeInferenceServer {
     $backend = Get-NativeInferenceBackend
     $envVars = Read-ODSEnv
 
-    # Honour the unified BIND_ADDRESS knob (PR #964); empty/missing → loopback.
-    $bindAddr = $envVars["BIND_ADDRESS"]
-    if ([string]::IsNullOrWhiteSpace($bindAddr)) { $bindAddr = "127.0.0.1" }
+    # Match the installer's private inference listener across restarts.
+    $bindAddr = "127.0.0.1"
 
     if ($backend -eq "lemonade") {
         if (Invoke-ODSHostAgentConfiguredModelActivation -EnvVars $envVars) {

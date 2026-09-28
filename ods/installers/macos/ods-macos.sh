@@ -436,7 +436,7 @@ resolve_cli_llm_route() {
     CLI_LLM_API_KEY=""
     if [[ "$CLI_LLM_MODE" == "cloud" ]]; then
         local litellm_port="${ENV_LITELLM_PORT:-4000}"
-        local cloud_bind_address="${ENV_BIND_ADDRESS:-127.0.0.1}"
+        local cloud_bind_address="127.0.0.1"
         local cloud_probe_host
         [[ "$litellm_port" =~ ^[0-9]+$ ]] || litellm_port="4000"
         cloud_probe_host="$(macos_bind_probe_host "$cloud_bind_address")"
@@ -450,7 +450,7 @@ resolve_cli_llm_route() {
 
     local native_port="${ENV_ODS_NATIVE_LLAMA_PORT:-${ENV_OLLAMA_PORT:-8080}}"
     [[ "$native_port" =~ ^[0-9]+$ ]] || native_port="8080"
-    local bind_address="${ENV_BIND_ADDRESS:-127.0.0.1}"
+    local bind_address="127.0.0.1"
     local probe_host
     probe_host="$(macos_bind_probe_host "$bind_address")"
     CLI_LLM_NAME="LLM API"
@@ -652,7 +652,7 @@ get_native_llama_status() {
         native_port="$(read_env_value "${INSTALL_DIR}/.env" "ODS_NATIVE_LLAMA_PORT")"
         [[ "$native_port" =~ ^[0-9]+$ ]] || native_port="8080"
         local bind_address probe_host
-        bind_address="$(read_env_value "${INSTALL_DIR}/.env" "BIND_ADDRESS")"
+        bind_address="127.0.0.1"
         probe_host="$(macos_bind_probe_host "${bind_address:-127.0.0.1}")"
         if curl -sf --max-time 10 "http://${probe_host}:${native_port}/health" >/dev/null 2>&1; then
             NATIVE_LLAMA_HEALTHY=true
@@ -694,7 +694,7 @@ start_native_llama() {
     gpu_layers="$(printf '%s' "$gpu_layers" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
     gpu_layers="${gpu_layers:-auto}"
     local native_port="${ENV_ODS_NATIVE_LLAMA_PORT:-8080}"
-    local bind_address="${ENV_BIND_ADDRESS:-127.0.0.1}"
+    local bind_address="127.0.0.1"
     local probe_host
     probe_host="$(macos_bind_probe_host "$bind_address")"
     [[ "$native_port" =~ ^[0-9]+$ ]] || native_port="8080"

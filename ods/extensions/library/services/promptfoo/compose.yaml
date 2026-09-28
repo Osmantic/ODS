@@ -6,7 +6,7 @@ services:
     security_opt:
     - no-new-privileges:true
     ports:
-    - ${BIND_ADDRESS:-127.0.0.1}:${PROMPTFOO_PORT:-11003}:3000
+    - 127.0.0.1:${PROMPTFOO_PORT:-11003}:3000
     healthcheck:
       test:
       - CMD

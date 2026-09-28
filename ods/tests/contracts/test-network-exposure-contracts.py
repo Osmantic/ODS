@@ -94,6 +94,10 @@ def test_hermes_is_internal_only_with_optional_proxy_gate() -> None:
     assert_true("forward_auth" in proxy_caddyfile, "opt-in Hermes gate must retain forward_auth")
     assert_true("/api/auth/verify-session" in proxy_caddyfile, "hermes-proxy must call dashboard auth verification")
     assert_true("reverse_proxy {$HERMES_PROXY_UPSTREAM:ods-hermes:9119}" in proxy_caddyfile, "hermes-proxy must forward to internal Hermes")
+    lan = caddy_block_body(read(SERVICES / "ods-proxy" / "Caddyfile"), "http://hermes.{$ODS_DEVICE_NAME:ods}.local {")
+    assert_true("forward_auth dashboard-api:3002" in lan and "/api/auth/verify-session" in lan,
+                "Hermes LAN entrypoint must authenticate even when local gating is disabled")
+    assert_true("HERMES_REQUIRE_OWNER_CARD" not in lan, "LAN authentication must not be optional")
 
 
 def test_pixel_edge_is_internal_only_and_token_gated() -> None:

@@ -2129,10 +2129,10 @@ class TestComposeScanEdgeCases:
         assert resp.status_code == 400
         assert "127.0.0.1" in resp.json()["detail"]
 
-    def test_scan_allows_bind_address_var_with_loopback_default(
+    def test_scan_rejects_bind_address_var_with_loopback_default(
         self, test_client, monkeypatch, tmp_path,
     ):
-        """${BIND_ADDRESS:-127.0.0.1} is the sanctioned LAN-toggle pattern (PR #964)."""
+        """An interpolated bind can become public and must be rejected."""
         compose = (
             "services:\n  svc:\n    image: test:latest\n"
             "    ports:\n      - '${BIND_ADDRESS:-127.0.0.1}:8080:80'\n"
@@ -2144,12 +2144,13 @@ class TestComposeScanEdgeCases:
             "/api/extensions/bind-ok/install",
             headers=test_client.auth_headers,
         )
-        assert resp.status_code == 200
+        assert resp.status_code == 400
+        assert "127.0.0.1" in resp.json()["detail"]
 
-    def test_scan_allows_arbitrary_var_name_with_loopback_default(
+    def test_scan_rejects_arbitrary_var_name_with_loopback_default(
         self, test_client, monkeypatch, tmp_path,
     ):
-        """Any ${VAR:-127.0.0.1} form is accepted, not just BIND_ADDRESS."""
+        """An interpolated bind can become public and must be rejected."""
         compose = (
             "services:\n  svc:\n    image: test:latest\n"
             "    ports:\n      - '${MY_HOST:-127.0.0.1}:8080:80'\n"
@@ -2161,7 +2162,8 @@ class TestComposeScanEdgeCases:
             "/api/extensions/bind-var/install",
             headers=test_client.auth_headers,
         )
-        assert resp.status_code == 200
+        assert resp.status_code == 400
+        assert "127.0.0.1" in resp.json()["detail"]
 
     def test_scan_rejects_var_with_non_loopback_default(
         self, test_client, monkeypatch, tmp_path,
@@ -2199,10 +2201,10 @@ class TestComposeScanEdgeCases:
         assert resp.status_code == 400
         assert "127.0.0.1" in resp.json()["detail"]
 
-    def test_scan_allows_dict_port_with_bind_address_default(
+    def test_scan_rejects_dict_port_with_bind_address_default(
         self, test_client, monkeypatch, tmp_path,
     ):
-        """Dict-form port with host_ip: ${VAR:-127.0.0.1} is also accepted."""
+        """An interpolated bind can become public and must be rejected."""
         compose = (
             "services:\n  svc:\n    image: test:latest\n"
             "    ports:\n      - target: 80\n"
@@ -2216,7 +2218,8 @@ class TestComposeScanEdgeCases:
             "/api/extensions/dict-ok/install",
             headers=test_client.auth_headers,
         )
-        assert resp.status_code == 200
+        assert resp.status_code == 400
+        assert "127.0.0.1" in resp.json()["detail"]
 
     def test_scan_rejects_core_service_name(
         self, test_client, monkeypatch, tmp_path,
@@ -2426,8 +2429,8 @@ class TestHostPartIsLoopback:
 
     def test_var_with_loopback_default(self):
         from routers.extensions import _host_part_is_loopback
-        assert _host_part_is_loopback("${BIND_ADDRESS:-127.0.0.1}") is True
-        assert _host_part_is_loopback("${MY_HOST:-127.0.0.1}") is True
+        assert _host_part_is_loopback("${BIND_ADDRESS:-127.0.0.1}") is False
+        assert _host_part_is_loopback("${MY_HOST:-127.0.0.1}") is False
 
     def test_rejects_var_without_default(self):
         from routers.extensions import _host_part_is_loopback
@@ -2558,11 +2561,10 @@ class TestScanComposePortBindingRegressionLocks:
         assert resp.status_code == 400
         assert "127.0.0.1" in resp.json()["detail"]
 
-    def test_var_with_proto_suffix_accepted(
+    def test_var_with_proto_suffix_rejected(
         self, test_client, monkeypatch, tmp_path,
     ):
-        """`${VAR:-127.0.0.1}:8554:8554/udp` is the sanctioned pattern
-        with an explicit /proto suffix (e.g. frigate's WebRTC port)."""
+        """An interpolated bind can become public and must be rejected."""
         compose = (
             "services:\n  svc:\n    image: test:latest\n"
             "    ports:\n      - '${BIND_ADDRESS:-127.0.0.1}:8554:8554/udp'\n"
@@ -2574,7 +2576,8 @@ class TestScanComposePortBindingRegressionLocks:
             "/api/extensions/udp-ext/install",
             headers=test_client.auth_headers,
         )
-        assert resp.status_code == 200
+        assert resp.status_code == 400
+        assert "127.0.0.1" in resp.json()["detail"]
 
     def test_hostname_in_host_position_rejected(
         self, test_client, monkeypatch, tmp_path,

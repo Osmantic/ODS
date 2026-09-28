@@ -6,6 +6,35 @@ from urllib.parse import urlsplit
 from extension_github import repository_identity
 
 
+def verify_source_runtime(candidate, service):
+    """Enforce the source sandbox at proposal, publication and re-enable time.
+
+    Defaults in the generator alone are insufficient: a proposed Dockerfile
+    can omit USER and a saved recipe may be edited before a restart.
+    """
+    target = candidate.get('manifest', {}).get('service', {}).get('id', '')
+    network = target + '-sandbox'
+    uid = str(service.get('user', ''))
+    if not re.fullmatch(r'[1-9][0-9]*(?::[1-9][0-9]*)?', uid):
+        raise ValueError('Source runtime requires an explicit non-root numeric user')
+    if (service.get('cap_drop') != ['ALL'] or service.get('cap_add')
+            or service.get('security_opt') != ['no-new-privileges:true']
+            or service.get('read_only') is not True):
+        raise ValueError('Source runtime requires read-only, capability-free confinement')
+    if (service.get('networks') != [network] or 'network_mode' in service
+            or candidate['compose'].get('networks', {}).get(network) != {'internal': True}):
+        raise ValueError('Source runtime requires its own internal sandbox network')
+    cpus, pids = service.get('cpus'), service.get('pids_limit')
+    memory = service.get('mem_limit')
+    if (isinstance(cpus, bool) or not isinstance(cpus, (int, float)) or not 0 < cpus <= 32
+            or isinstance(pids, bool) or not isinstance(pids, int) or not 0 < pids <= 4096
+            or not isinstance(memory, str) or not re.fullmatch(r'[1-9][0-9]*(?:m|g)', memory.lower())):
+        raise ValueError('Source runtime requires bounded CPU, memory and PID limits')
+    memory_mib = int(memory[:-1]) * (1024 if memory[-1].lower() == 'g' else 1)
+    if memory_mib > 32768:
+        raise ValueError('Source runtime memory limit exceeds 32 GiB')
+
+
 def source_builds(candidate):
     """Bind upstream or proposed Dockerfiles to the immutable source context."""
     repository = repository_identity(candidate['repository']).lower()
@@ -13,7 +42,13 @@ def source_builds(candidate):
     if not isinstance(commit, str) or not re.fullmatch(r'[a-f0-9]{40}', commit):
         raise ValueError('Immutable source revision required')
     result = []
-    for name, service in candidate['compose']['services'].items():
+    services = candidate['compose']['services']
+    if any(isinstance(service, dict) and 'build' in service for service in services.values()):
+        for service in services.values():
+            if not isinstance(service, dict):
+                raise ValueError('Source runtime service must be a mapping')
+            verify_source_runtime(candidate, service)
+    for name, service in services.items():
         if not isinstance(service, dict) or 'build' not in service:
             continue
         build = service['build']

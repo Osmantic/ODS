@@ -3104,6 +3104,9 @@ class TestLaunchNativeLlamaServer:
 
         monkeypatch.setattr(_mod, "INSTALL_DIR", tmp_path)
         monkeypatch.setattr(subprocess, "Popen", fake_popen)
+        # This fixture tests launch arguments, not the runtime help probe.
+        monkeypatch.setattr(_mod, "_windows_llama_reasoning_arguments",
+                            lambda binary, mode, fmt: ["--reasoning-format", fmt])
 
         _launch_native_llama_server(env_path, llama_bin, llama_log, pid_file)
 
@@ -3178,7 +3181,8 @@ class TestLaunchNativeLlamaServer:
         for flag in ("--reasoning", "--reasoning-format", "--reasoning-budget"):
             assert (flag in cmd) == (flag in expected), flag
 
-    def test_llm_bridge_is_disabled_before_native_bind(self, monkeypatch, tmp_path):
+    @pytest.mark.parametrize('system', ['Windows', 'Darwin', 'Linux'])
+    def test_ui_lan_preference_does_not_publish_native_inference(self, monkeypatch, tmp_path, system):
         env = {
             "GGUF_FILE": "test-model.gguf",
             "BIND_ADDRESS": "0.0.0.0",
@@ -3199,6 +3203,9 @@ class TestLaunchNativeLlamaServer:
 
         monkeypatch.setattr(_mod, "INSTALL_DIR", tmp_path)
         monkeypatch.setattr(_mod, "load_env", lambda _path: env)
+        monkeypatch.setattr(_mod.platform, "system", lambda: system)
+        monkeypatch.setattr(_mod, "_windows_llama_reasoning_arguments",
+                            lambda binary, mode, fmt: ["--reasoning-format", fmt])
         monkeypatch.setattr(_mod, "_disable_conflicting_macos_bridge", fake_disable)
         monkeypatch.setattr(_mod.subprocess, "Popen", fake_popen)
 
@@ -3212,11 +3219,11 @@ class TestLaunchNativeLlamaServer:
         assert events[0] == (
             "bootout",
             env,
-            "0.0.0.0",
+            "127.0.0.1",
             "com.ods.llm-bridge",
         )
         assert events[1][0] == "bind"
-        assert events[1][1][events[1][1].index("--host") + 1] == "0.0.0.0"
+        assert events[1][1][events[1][1].index("--host") + 1] == "127.0.0.1"
 
 
 class TestWindowsNativeLlamaServer:
@@ -3332,6 +3339,7 @@ class TestRestartWindowsLemonade:
         })
 
         script = captured["script"]
+        assert captured["env"]["ODS_WIN_BIND_ADDR"] == "127.0.0.1"
         assert captured["cmd"][0] == "selected-pwsh.exe"
         assert "-NonInteractive" in captured["cmd"]
         assert captured["creationflags"] == 0x08000000

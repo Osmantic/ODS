@@ -1181,7 +1181,6 @@ async def enforce_same_origin_for_state_changes(request: Request, call_next):
         if origin is not None or cross_site:
             same_origin = origin is not None and (
                 _origin_matches_host(origin, request.headers.get("host"))
-                or origin in get_allowed_origins()
             )
             if cross_site or not same_origin:
                 logger.warning(

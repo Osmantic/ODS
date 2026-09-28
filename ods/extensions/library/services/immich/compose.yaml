@@ -3,7 +3,7 @@ services:
     image: ghcr.io/immich-app/immich-server:v1.131.3
     container_name: ods-immich
     ports:
-      - "${BIND_ADDRESS:-127.0.0.1}:${IMMICH_PORT:-2283}:2283"
+      - "127.0.0.1:${IMMICH_PORT:-2283}:2283"
     volumes:
       - ./data/immich/upload:/usr/src/app/upload
       - ./data/immich/backup:/usr/src/app/backup

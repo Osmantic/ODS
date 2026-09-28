@@ -25,7 +25,7 @@ services:
       - ./config/continue/nginx.conf:/etc/nginx/conf.d/default.conf:ro
       - ./config/continue/entrypoint.sh:/docker-entrypoint.d/50-continue-init.sh:ro
     ports:
-      - "${BIND_ADDRESS:-127.0.0.1}:${CONTINUE_PORT:-8890}:8080"
+      - "127.0.0.1:${CONTINUE_PORT:-8890}:8080"
     networks:
       - ods-network
     healthcheck:

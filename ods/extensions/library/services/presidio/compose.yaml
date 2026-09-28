@@ -6,7 +6,7 @@ services:
     security_opt:
     - no-new-privileges:true
     ports:
-    - ${BIND_ADDRESS:-127.0.0.1}:${PRESIDIO_PORT:-11020}:3000
+    - 127.0.0.1:${PRESIDIO_PORT:-11020}:3000
     healthcheck:
       test:
       - CMD
@@ -43,7 +43,7 @@ services:
     security_opt:
     - no-new-privileges:true
     ports:
-    - ${BIND_ADDRESS:-127.0.0.1}:${PRESIDIO_ANONYMIZER_PORT:-11021}:3000
+    - 127.0.0.1:${PRESIDIO_ANONYMIZER_PORT:-11021}:3000
     healthcheck:
       test:
       - CMD

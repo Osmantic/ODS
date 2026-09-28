@@ -28,7 +28,7 @@ services:
       - ./data/comfyui/ComfyUI:/opt/ComfyUI:z
       - ./data/comfyui/miopen:/root/.config/miopen:z
     ports:
-      - "${BIND_ADDRESS:-127.0.0.1}:${COMFYUI_PORT:-8188}:8188"
+      - "127.0.0.1:${COMFYUI_PORT:-8188}:8188"
     command: >-
       /bin/sh -c "/opt/comfyui-gfx1151-utils/check-comfyui.sh &&
       python3 /opt/ComfyUI/main.py --listen 0.0.0.0 --use-flash-attention"

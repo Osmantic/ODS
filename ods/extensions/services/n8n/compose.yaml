@@ -29,7 +29,7 @@ services:
       - ./data/n8n:/tmp/.n8n:z
       - ./config/n8n:/tmp/workflows:z
     ports:
-      - "${BIND_ADDRESS:-127.0.0.1}:${N8N_PORT:-5678}:5678"
+      - "127.0.0.1:${N8N_PORT:-5678}:5678"
     deploy:
       resources:
         limits:

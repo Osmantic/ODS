@@ -20,7 +20,7 @@ services:
     volumes:
       - ./data/flowise:/root/.flowise:rw
     ports:
-      - "${BIND_ADDRESS:-127.0.0.1}:${FLOWISE_PORT:-7801}:3000"
+      - "127.0.0.1:${FLOWISE_PORT:-7801}:3000"
     healthcheck:
       test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:3000/api/v1/ping"]
       interval: 30s

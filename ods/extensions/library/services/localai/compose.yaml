@@ -8,7 +8,7 @@ services:
     networks:
       - ods-network
     ports:
-      - "${BIND_ADDRESS:-127.0.0.1}:${LOCALAI_EXTERNAL_PORT:-7803}:8080"
+      - "127.0.0.1:${LOCALAI_EXTERNAL_PORT:-7803}:8080"
     volumes:
       - ./data/localai/models:/models
       - ./data/localai/builds:/builds

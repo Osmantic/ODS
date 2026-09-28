@@ -6,7 +6,7 @@ services:
     security_opt:
     - no-new-privileges:true
     ports:
-    - ${BIND_ADDRESS:-127.0.0.1}:${SPEACHES_PORT:-11014}:8000
+    - 127.0.0.1:${SPEACHES_PORT:-11014}:8000
     healthcheck:
       test:
       - CMD

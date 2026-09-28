@@ -4,25 +4,25 @@
   "services": {
     "ape": {
       "risk": "agent-policy-control-plane",
-      "lan_exposure": "operator-controlled",
+      "lan_exposure": "loopback-only",
       "auth_required": true,
-      "notes": "Policy/audit service for agent tool calls; keep local unless explicitly publishing an agent control surface."
+      "notes": "Host port remains loopback-only, independently of BIND_ADDRESS. Policy/audit service for agent tool calls; keep local unless explicitly publishing an agent control surface."
     },
     "brave-search": {
       "risk": "paid-api-proxy",
-      "lan_exposure": "operator-controlled",
+      "lan_exposure": "loopback-only",
       "auth_required": true,
-      "notes": "Bridges to a paid upstream API key; exposure risks quota/key abuse."
+      "notes": "Host port remains loopback-only, independently of BIND_ADDRESS. Bridges to a paid upstream API key; exposure risks quota/key abuse."
     },
     "comfyui": {
       "risk": "gpu-workload-ui",
-      "lan_exposure": "operator-controlled",
+      "lan_exposure": "loopback-only",
       "auth_required": false,
-      "notes": "Optional image-generation UI; should stay localhost/private by default."
+      "notes": "Host port remains loopback-only, independently of BIND_ADDRESS. Optional image-generation UI; should stay localhost/private by default."
     },
     "dashboard": {
       "risk": "operator-ui",
-      "lan_exposure": "operator-controlled",
+      "lan_exposure": "loopback-only",
       "auth_required": true,
       "notes": "Primary control surface."
     },
@@ -30,7 +30,7 @@
       "risk": "operator-api",
       "lan_exposure": "operator-controlled",
       "auth_required": true,
-      "notes": "Host-agent and setup API surface."
+      "notes": "Host port remains loopback-only, independently of BIND_ADDRESS. Host-agent and setup API surface."
     },
     "ods-proxy": {
       "risk": "lan-entrypoint",
@@ -40,9 +40,9 @@
     },
     "embeddings": {
       "risk": "model-inference-api",
-      "lan_exposure": "operator-controlled",
+      "lan_exposure": "loopback-only",
       "auth_required": false,
-      "notes": "Embedding model API; keep private unless a client explicitly needs it."
+      "notes": "Host port remains loopback-only, independently of BIND_ADDRESS. Embedding model API; keep private unless a client explicitly needs it."
     },
     "hermes": {
       "risk": "autonomous-agent-internal",
@@ -52,27 +52,27 @@
     },
     "hermes-proxy": {
       "risk": "autonomous-agent-gateway",
-      "lan_exposure": "operator-controlled",
+      "lan_exposure": "loopback-only",
       "auth_required": false,
-      "notes": "Hermes opens directly by default on the configured BIND_ADDRESS. Set HERMES_REQUIRE_OWNER_CARD=true for signed ODS-session gating. Internal Hermes API/session-token checks remain enabled."
+      "notes": "Direct access is loopback-only. HERMES_REQUIRE_OWNER_CARD can additionally protect the local listener. The ODS LAN proxy always verifies the owner session before forwarding to this service."
     },
     "langfuse": {
       "risk": "observability-data-ui",
-      "lan_exposure": "operator-controlled",
+      "lan_exposure": "loopback-only",
       "auth_required": true,
-      "notes": "May contain prompts, traces, and evaluation data."
+      "notes": "Host port remains loopback-only, independently of BIND_ADDRESS. May contain prompts, traces, and evaluation data."
     },
     "litellm": {
       "risk": "llm-api-gateway",
-      "lan_exposure": "operator-controlled",
+      "lan_exposure": "loopback-only",
       "auth_required": true,
-      "notes": "Must enforce LITELLM_MASTER_KEY when used as a gateway."
+      "notes": "Host port remains loopback-only, independently of BIND_ADDRESS. Must enforce LITELLM_MASTER_KEY when used as a gateway."
     },
     "llama-server": {
       "risk": "model-inference-api",
-      "lan_exposure": "operator-controlled",
+      "lan_exposure": "loopback-only",
       "auth_required": false,
-      "notes": "Local OpenAI-compatible inference API."
+      "notes": "Host port remains loopback-only, independently of BIND_ADDRESS. Local OpenAI-compatible inference API."
     },
     "model-router": {
       "risk": "model-routing-internal-api",
@@ -94,9 +94,9 @@
     },
     "n8n": {
       "risk": "workflow-automation-ui",
-      "lan_exposure": "operator-controlled",
+      "lan_exposure": "loopback-only",
       "auth_required": true,
-      "notes": "Workflow automation can call local and external services."
+      "notes": "Host port remains loopback-only, independently of BIND_ADDRESS. Workflow automation can call local and external services."
     },
     "open-webui": {
       "risk": "chat-ui",
@@ -108,19 +108,19 @@
       "risk": "deprecated-agent",
       "lan_exposure": "opt-in-only",
       "auth_required": true,
-      "notes": "Deprecated legacy agent. Must remain optional and token-gated."
+      "notes": "Host port remains loopback-only, independently of BIND_ADDRESS. Deprecated legacy agent. Must remain optional and token-gated."
     },
     "opencode": {
       "risk": "code-execution-ui",
-      "lan_exposure": "operator-controlled",
+      "lan_exposure": "loopback-only",
       "auth_required": true,
-      "notes": "Browser IDE/coding assistant surface."
+      "notes": "Host port remains loopback-only, independently of BIND_ADDRESS. Browser IDE/coding assistant surface."
     },
     "perplexica": {
       "risk": "research-ui",
-      "lan_exposure": "operator-controlled",
+      "lan_exposure": "loopback-only",
       "auth_required": false,
-      "notes": "Deep research UI backed by search and local inference."
+      "notes": "Host port remains loopback-only, independently of BIND_ADDRESS. Deep research UI backed by search and local inference."
     },
     "pixel-edge": {
       "risk": "autonomous-agent-internal-gateway",
@@ -130,15 +130,15 @@
     },
     "privacy-shield": {
       "risk": "privacy-proxy",
-      "lan_exposure": "operator-controlled",
+      "lan_exposure": "loopback-only",
       "auth_required": true,
-      "notes": "PII restoration/proxy surface; auth protects re-identification paths."
+      "notes": "Host port remains loopback-only, independently of BIND_ADDRESS. PII restoration/proxy surface; auth protects re-identification paths."
     },
     "qdrant": {
       "risk": "vector-database-api",
-      "lan_exposure": "operator-controlled",
+      "lan_exposure": "loopback-only",
       "auth_required": true,
-      "notes": "Vector database can contain private embeddings and metadata."
+      "notes": "Host port remains loopback-only, independently of BIND_ADDRESS. Vector database can contain private embeddings and metadata."
     },
     "remote-provider-egress": {
       "risk": "remote-llm-egress",
@@ -154,9 +154,9 @@
     },
     "searxng": {
       "risk": "search-ui",
-      "lan_exposure": "operator-controlled",
+      "lan_exposure": "loopback-only",
       "auth_required": false,
-      "notes": "Metasearch service; exposure can leak query history."
+      "notes": "Host port remains loopback-only, independently of BIND_ADDRESS. Metasearch service; exposure can leak query history."
     },
     "tailscale": {
       "risk": "remote-network-access",
@@ -166,27 +166,27 @@
     },
     "token-spy": {
       "risk": "usage-observability-ui",
-      "lan_exposure": "operator-controlled",
+      "lan_exposure": "loopback-only",
       "auth_required": true,
-      "notes": "Usage/trace data can reveal prompts and model behavior."
+      "notes": "Host port remains loopback-only, independently of BIND_ADDRESS. Usage/trace data can reveal prompts and model behavior."
     },
     "tts": {
       "risk": "model-inference-api",
-      "lan_exposure": "operator-controlled",
+      "lan_exposure": "loopback-only",
       "auth_required": false,
-      "notes": "Text-to-speech model API."
+      "notes": "Host port remains loopback-only, independently of BIND_ADDRESS. Text-to-speech model API."
     },
     "whisper": {
       "risk": "audio-transcription-api",
-      "lan_exposure": "operator-controlled",
+      "lan_exposure": "loopback-only",
       "auth_required": false,
-      "notes": "Speech-to-text model API; audio may be sensitive."
+      "notes": "Host port remains loopback-only, independently of BIND_ADDRESS. Speech-to-text model API; audio may be sensitive."
     },
     "fooocus": {
       "risk": "image-generation-ui",
-      "lan_exposure": "operator-controlled",
+      "lan_exposure": "loopback-only",
       "auth_required": false,
-      "notes": "NVIDIA-only image generation UI; default loopback binding. No application authentication is provisioned; keep local or place behind an authenticated proxy before changing exposure."
+      "notes": "Host port remains loopback-only, independently of BIND_ADDRESS. NVIDIA-only image generation UI; default loopback binding. No application authentication is provisioned; keep local or place behind an authenticated proxy before changing exposure."
     }
   }
 }

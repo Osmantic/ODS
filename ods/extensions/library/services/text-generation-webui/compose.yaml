@@ -8,8 +8,8 @@ services:
     security_opt:
       - no-new-privileges:true
     ports:
-      - "${BIND_ADDRESS:-127.0.0.1}:${TEXT_GEN_WEBUI_PORT:-7862}:7860"
-      - "${BIND_ADDRESS:-127.0.0.1}:${TEXT_GEN_WEBUI_API_PORT:-5001}:5001"  # OpenAI-compatible API
+      - "127.0.0.1:${TEXT_GEN_WEBUI_PORT:-7862}:7860"
+      - "127.0.0.1:${TEXT_GEN_WEBUI_API_PORT:-5001}:5001"  # OpenAI-compatible API
     environment:
       - EXTRA_LAUNCH_ARGS=--api --listen --listen-port 7860 --api-port ${TEXT_GEN_WEBUI_API_PORT:-5001} --extensions openai
     volumes:

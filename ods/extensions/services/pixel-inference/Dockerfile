@@ -1,7 +1,7 @@
-FROM python:3.11-slim
+FROM python:3.11-slim@sha256:e41613d42d4891e4930f79523f93f81bbc7632584ec65e36ab055f41a800b41e
 WORKDIR /srv/pixel-inference
-COPY extensions/services/pixel-inference/requirements.txt ./
-RUN pip install --no-cache-dir -r requirements.txt
+COPY extensions/services/pixel-inference/requirements.lock ./
+RUN pip install --no-cache-dir --require-hashes -r requirements.lock
 COPY extensions/services/pixel-inference/app ./app
 COPY bin/pixel_provider ./pixel_provider
 # Compose runs as the installing owner so the read-only private state mount

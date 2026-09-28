@@ -15,7 +15,7 @@ services:
       - ./data/whisper:/home/ubuntu/.cache/huggingface/hub:z
       - ./extensions/services/whisper/docker-entrypoint.sh:/app/docker-entrypoint.sh:ro,z
     ports:
-      - "${BIND_ADDRESS:-127.0.0.1}:${WHISPER_PORT:-9000}:8000"
+      - "127.0.0.1:${WHISPER_PORT:-9000}:8000"
     deploy:
       resources:
         limits:

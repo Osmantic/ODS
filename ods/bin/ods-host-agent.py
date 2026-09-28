@@ -15431,14 +15431,7 @@ def _chat_completion_ready(
 
 def _native_llama_health_host(env: dict) -> str:
     """Return a URL-safe host reachable through the native llama bind."""
-    bind_addr = str(env.get("BIND_ADDRESS") or "").strip() or "127.0.0.1"
-    if bind_addr == "0.0.0.0":
-        return "127.0.0.1"
-    if bind_addr == "::":
-        return "[::1]"
-    if ":" in bind_addr and not bind_addr.startswith("["):
-        return f"[{bind_addr}]"
-    return bind_addr
+    return "127.0.0.1"
 
 
 def _require_macos_bridge_manager(env_path: Path) -> tuple[Path, Path]:
@@ -16097,7 +16090,7 @@ def _restart_windows_lemonade(env: dict):
         "ODS_WIN_MODELS_DIR": str(_active_model_directory(env)),
         "ODS_WIN_PID_FILE": str(INSTALL_DIR / "data" / "llama-server.pid"),
         "ODS_WIN_LEMONADE_PORT": env.get("AMD_INFERENCE_PORT", "8080") or "8080",
-        "ODS_WIN_BIND_ADDR": env.get("BIND_ADDRESS", "127.0.0.1") or "127.0.0.1",
+        "ODS_WIN_BIND_ADDR": "127.0.0.1",
         "ODS_WIN_CONTEXT_SIZE": str(env.get("CTX_SIZE") or env.get("MAX_CONTEXT") or "0"),
     })
     registered_profile = _model_stores.lemonade_profile(INSTALL_DIR / "data", env.get("GGUF_FILE", ""))
@@ -18519,8 +18512,8 @@ def _launch_native_llama_server(env_path: Path, llama_bin: Path, llama_log: Path
     model_path = _active_model_directory(env) / gguf_file
     reasoning = env.get("LLAMA_REASONING", "off")
     reasoning_fmt = {"off": "none", "on": "deepseek"}.get(reasoning, reasoning)
-    # Honour the unified BIND_ADDRESS knob (PR #964); empty/missing → loopback.
-    bind_addr = env.get("BIND_ADDRESS", "").strip() or "127.0.0.1"
+    # UI LAN access must not publish an unauthenticated inference endpoint.
+    bind_addr = "127.0.0.1"
     _disable_conflicting_macos_bridge(env, bind_addr, _MACOS_LLM_BRIDGE_LABEL)
     port = (
         env.get("ODS_NATIVE_LLAMA_PORT")

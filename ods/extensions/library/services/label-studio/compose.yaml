@@ -17,7 +17,7 @@ services:
       - ./media:/label-studio/media:rw
       - ./www:/label-studio/www:rw
     ports:
-      - "${BIND_ADDRESS:-127.0.0.1}:${LABEL_STUDIO_PORT:-8086}:8080"
+      - "127.0.0.1:${LABEL_STUDIO_PORT:-8086}:8080"
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://127.0.0.1:8080/health"]
       interval: 30s
