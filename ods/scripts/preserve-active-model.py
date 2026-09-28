@@ -88,6 +88,8 @@ def parse_dotenv(path: Path) -> dict[str, str]:
 
 def shell_value(value: Any) -> str:
     text = str(value if value is not None else "")
+    if "\x00" in text:
+        raise ValueError("null byte in shell value")
     text = (
         text.replace("\\", "\\\\")
         .replace('"', '\\"')
