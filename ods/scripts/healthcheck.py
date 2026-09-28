@@ -338,7 +338,7 @@ def main(argv: Sequence[str]) -> int:
             print("[FAIL] --timeout must be > 0")
         return 2
 
-    if args.retries < 0 or args.retries > 50:
+    if not isinstance(args.retries, int) or args.retries < 0 or args.retries > 50:
         res = Result(ok=False, target=args.target, kind=kind, detail="--retries out of range (0-50)")
         if args.json:
             print(res.to_json())
