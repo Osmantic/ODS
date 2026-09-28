@@ -33,7 +33,7 @@ export function createFakeLocks() {
       result = callback({ name, mode: opts.mode || 'exclusive' })
     } catch (error) {
       // Native semantics: a throwing callback still releases the lock.
-      queueMicrotask(() => {
+      globalThis.queueMicrotask(() => {
         if (holders.get(name) === holder) holders.delete(name)
       })
       return Promise.reject(error)
@@ -45,11 +45,11 @@ export function createFakeLocks() {
     }
     if (result && typeof result.then === 'function') {
       return Promise.resolve(result).then(
-        value => { queueMicrotask(settle); return value },
-        error => { queueMicrotask(settle); throw error }
+        value => { globalThis.queueMicrotask(settle); return value },
+        error => { globalThis.queueMicrotask(settle); throw error }
       )
     }
-    queueMicrotask(settle)
+    globalThis.queueMicrotask(settle)
     return Promise.resolve(result)
   }
 

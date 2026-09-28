@@ -9,7 +9,7 @@ import {
 } from './pixelConversations'
 import { createConversationOwnership } from './pixelConversationOwnership'
 
-const LIBRARY_KEY = 'ods.pixel.conversations.v1'
+const CONVERSATION_STORAGE_NAME = 'ods.pixel.conversations.v1'
 const DELETED_KEY = 'ods.pixel.deleted-conversations.v1'
 const OWNERSHIP = 'web-lock-v1'
 
@@ -86,7 +86,7 @@ function makeRecord(chatId, overrides = {}) {
 }
 
 function seedLibrary(records) {
-  localStorage.setItem(LIBRARY_KEY, JSON.stringify(records))
+  localStorage.setItem(CONVERSATION_STORAGE_NAME, JSON.stringify(records))
 }
 
 function seedActive(record) {
@@ -187,13 +187,13 @@ describe('pixelConversationPersistence', () => {
     seedLibrary([legacy])
     seedActive(legacy)
     const beforeChat = localStorage.getItem(CHAT_KEY)
-    const beforeLib = localStorage.getItem(LIBRARY_KEY)
+    const beforeLib = localStorage.getItem(CONVERSATION_STORAGE_NAME)
     controller.bind('chat-legacy', legacy)
     const result = await controller.acquirePassive()
     expect(result).toEqual({ owned: false, reason: 'legacy' })
     expect(spy).not.toHaveBeenCalled()
     expect(localStorage.getItem(CHAT_KEY)).toBe(beforeChat)
-    expect(localStorage.getItem(LIBRARY_KEY)).toBe(beforeLib)
+    expect(localStorage.getItem(CONVERSATION_STORAGE_NAME)).toBe(beforeLib)
   })
 
   it('legacy author claim can still save', async () => {
@@ -293,7 +293,7 @@ describe('pixelConversationPersistence', () => {
     seedLibrary([raw])
     seedActive(raw)
     controller.bind('chat-missing', raw)
-    localStorage.removeItem(LIBRARY_KEY)
+    localStorage.removeItem(CONVERSATION_STORAGE_NAME)
     localStorage.removeItem(CHAT_KEY)
     const result = await controller.acquirePassive()
     expect(result.owned).toBe(false)
@@ -357,7 +357,7 @@ describe('pixelConversationPersistence', () => {
 
     // Follower attempts normalization commit -> rejected (no ownership).
     const beforeChat = localStorage.getItem(CHAT_KEY)
-    const beforeLib = localStorage.getItem(LIBRARY_KEY)
+    const beforeLib = localStorage.getItem(CONVERSATION_STORAGE_NAME)
     let error
     try {
       follower.commit({ ...raw, inFlight: false, requestId: null, messages: [{ role: 'user', content: 'normalized' }] })
@@ -365,7 +365,7 @@ describe('pixelConversationPersistence', () => {
     expect(error).toBeTruthy()
     expect(error.code).toBe('conversation-owned-elsewhere')
     expect(localStorage.getItem(CHAT_KEY)).toBe(beforeChat)
-    expect(localStorage.getItem(LIBRARY_KEY)).toBe(beforeLib)
+    expect(localStorage.getItem(CONVERSATION_STORAGE_NAME)).toBe(beforeLib)
 
     // Author final terminal commit STILL succeeds.
     author.commit({
@@ -497,7 +497,7 @@ describe('pixelConversationPersistence', () => {
     await flush()
 
     const beforeChat = localStorage.getItem(CHAT_KEY)
-    const beforeLib = localStorage.getItem(LIBRARY_KEY)
+    const beforeLib = localStorage.getItem(CONVERSATION_STORAGE_NAME)
 
     const { controller: c3 } = makeController({ locks })
     c3.bind('chat-bytes', raw)
@@ -507,11 +507,11 @@ describe('pixelConversationPersistence', () => {
     try { c3.commit({ ...raw, messages: [{ role: 'user', content: 'stale' }] }) } catch (e) { error = e }
     expect(error.code).toBe('conversation-changed')
     expect(localStorage.getItem(CHAT_KEY)).toBe(beforeChat)
-    expect(localStorage.getItem(LIBRARY_KEY)).toBe(beforeLib)
+    expect(localStorage.getItem(CONVERSATION_STORAGE_NAME)).toBe(beforeLib)
   })
 
   it('readConversations returns [] on unreadable library', () => {
-    localStorage.setItem(LIBRARY_KEY, 'not-json')
+    localStorage.setItem(CONVERSATION_STORAGE_NAME, 'not-json')
     expect(readConversations()).toEqual([])
   })
 

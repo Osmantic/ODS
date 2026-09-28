@@ -4,7 +4,7 @@ import { StrictMode } from 'react'
 import { CONTEXT_REQUEST_ID } from '../lib/portalContext'
 import Pixel from './Pixel'
 import { CHAT_KEY, PERSISTENCE_OWNERSHIP } from '../lib/pixelConversations'
-const LIBRARY_KEY = 'ods.pixel.conversations.v1'
+const CONVERSATION_STORAGE_NAME = 'ods.pixel.conversations.v1'
 
 const response = (body, status = 200) => ({
   ok: status >= 200 && status < 300,
@@ -56,7 +56,7 @@ function seedOwnedChat({ chatId, requestId, messages, draft = '', inFlight = fal
     updatedAt: Date.now(),
   }
   localStorage.setItem(CHAT_KEY, JSON.stringify(record))
-  localStorage.setItem(LIBRARY_KEY, JSON.stringify([record]))
+  localStorage.setItem(CONVERSATION_STORAGE_NAME, JSON.stringify([record]))
   return record
 }
 
@@ -66,7 +66,7 @@ function seedLegacyChat({ chatId, messages, draft = '', inFlight = false, interr
     updatedAt: Date.now(),
   }
   localStorage.setItem(CHAT_KEY, JSON.stringify(record))
-  localStorage.setItem(LIBRARY_KEY, JSON.stringify([record]))
+  localStorage.setItem(CONVERSATION_STORAGE_NAME, JSON.stringify([record]))
   return record
 }
 
@@ -112,12 +112,12 @@ describe('Pixel Web Lock ownership integration', () => {
     await waitFor(() => expect(streamCalls).toHaveLength(1))
     expect(parseRaw(CHAT_KEY)).toMatchObject({chatId,inFlight:true,requestId:streamCalls[0].request_id})
     const beforeChat = readRaw(CHAT_KEY)
-    const beforeLibrary = readRaw(LIBRARY_KEY)
+    const beforeLibrary = readRaw(CONVERSATION_STORAGE_NAME)
     const follower = render(<Pixel />)
     await within(follower.container).findByText('Working in this chat')
     expect(within(follower.container).getByPlaceholderText('Message Portal...')).toBeDisabled()
     expect(readRaw(CHAT_KEY)).toBe(beforeChat)
-    expect(readRaw(LIBRARY_KEY)).toBe(beforeLibrary)
+    expect(readRaw(CONVERSATION_STORAGE_NAME)).toBe(beforeLibrary)
     expect(streamCalls).toHaveLength(1)
     await act(async () => finalFrame.resolve(sseResponse([
       JSON.stringify({choices:[{delta:{content:'Final answer'}}]}),'[DONE]',
@@ -209,7 +209,7 @@ describe('Pixel Web Lock ownership integration', () => {
       ],
     })
     const beforeChat = readRaw(CHAT_KEY)
-    const beforeLibrary = readRaw(LIBRARY_KEY)
+    const beforeLibrary = readRaw(CONVERSATION_STORAGE_NAME)
 
     installFetch((url) => {
       if (url === '/api/pixel/chat/result') return Promise.resolve(response({ state: 'active', events: '' }))
@@ -223,7 +223,7 @@ describe('Pixel Web Lock ownership integration', () => {
 
     // Legacy raw bytes are preserved exactly.
     expect(readRaw(CHAT_KEY)).toBe(beforeChat)
-    expect(readRaw(LIBRARY_KEY)).toBe(beforeLibrary)
+    expect(readRaw(CONVERSATION_STORAGE_NAME)).toBe(beforeLibrary)
     // No lock was claimed for the legacy chat.
     expect(locksHandle.locks._isHeld(`ods:pixel-chat-writer:${chatId}`)).toBe(false)
     // Legacy record still lacks the ownership marker.
