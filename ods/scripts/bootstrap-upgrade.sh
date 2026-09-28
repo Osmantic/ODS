@@ -435,6 +435,22 @@ write_existing_upgrade_status() {
     write_status "downloading" "$percent" "$downloaded" "$total" 0 "$message"
 }
 
+validate_bootstrap_compose_args() {
+    # A saved stack is not authorization: recipes may have changed since the
+    # installer resolved it. Validate immediately before every Compose call,
+    # including retries and companion-agent recreation. Preserve argv boundaries.
+    local policy="$INSTALL_DIR/scripts/compose-cache-policy.py"
+    local python_cmd="${ODS_PYTHON_CMD:-}"
+    if [[ -z "$python_cmd" ]]; then
+        python_cmd="$(command -v python3 2>/dev/null || command -v python 2>/dev/null || true)"
+    fi
+    if [[ ! -f "$policy" || -z "$python_cmd" ]]; then
+        log "ERROR: cannot validate the saved Compose stack; repair the ODS installation before upgrading models."
+        return 1
+    fi
+    "$python_cmd" "$policy" --install-dir "$INSTALL_DIR" --arguments "$@" >/dev/null
+}
+
 compose_recreate_llama_server_with_retry() {
     local -a compose_args=("$@")
     local max_attempts="${ODS_BOOTSTRAP_COMPOSE_RETRY_ATTEMPTS:-3}"
@@ -446,6 +462,7 @@ compose_recreate_llama_server_with_retry() {
     local retries=$(( max_attempts - 1 ))
     local output rc
     while true; do
+        validate_bootstrap_compose_args "${compose_args[@]}" || return 1
         output=$(env -u GGUF_FILE -u LLM_MODEL -u MAX_CONTEXT -u CTX_SIZE \
             $DOCKER_COMPOSE_CMD "${compose_args[@]}" up -d --force-recreate --no-deps llama-server 2>&1)
         rc=$?
@@ -487,6 +504,7 @@ compose_recreate_hermes() {
     # replaced, so recreate Hermes through the exact active Compose stack.
     (
         cd "$INSTALL_DIR"
+        validate_bootstrap_compose_args "${compose_args[@]}" || return 1
         env -u GGUF_FILE -u LLM_MODEL -u LEMONADE_MODEL -u MAX_CONTEXT -u CTX_SIZE \
             $DOCKER_COMPOSE_CMD "${compose_args[@]}" \
             up -d --force-recreate --no-deps hermes
@@ -1942,7 +1960,10 @@ capture_windows_lemonade_dependent_state() {
 }
 
 load_windows_lemonade_compose_args() {
-    [[ ${#WINDOWS_LEMONADE_COMPOSE_ARGS[@]} -eq 0 ]] || return 0
+    if [[ ${#WINDOWS_LEMONADE_COMPOSE_ARGS[@]} -gt 0 ]]; then
+        validate_bootstrap_compose_args "${WINDOWS_LEMONADE_COMPOSE_ARGS[@]}"
+        return $?
+    fi
     [[ -n "${DOCKER_COMPOSE_CMD:-}" ]] || return 1
 
     local resolved_flags="" recovered_flags=false
@@ -1999,6 +2020,7 @@ load_windows_lemonade_compose_args() {
         index=$((index + 1))
     done
     (( compose_file_count > 0 )) || return 1
+    validate_bootstrap_compose_args "${candidate_args[@]}" || return 1
 
     if [[ "$recovered_flags" == "true" ]]; then
         printf '%s\n' "$resolved_flags" > "$INSTALL_DIR/.compose-flags" || return 1
@@ -2465,6 +2487,7 @@ refresh_lemonade_after_bootstrap_cleanup() {
     fi
 
     log "Refreshing Lemonade after bootstrap model cleanup so stale model metadata is dropped..."
+    validate_bootstrap_compose_args "${compose_args[@]}" || return 1
     env -u GGUF_FILE -u LLM_MODEL -u MAX_CONTEXT -u CTX_SIZE \
         $DOCKER_COMPOSE_CMD "${compose_args[@]}" up -d --force-recreate --no-deps llama-server 2>&1 || return 1
 
@@ -3398,6 +3421,7 @@ elif [[ -n "$DOCKER_CMD" ]] && $DOCKER_CMD ps --filter name=ods-llama-server --f
             # which executes the first compose-arg (e.g. `-f`) as a binary.
             # Skip the recreate and surface a clear warning instead.
             if [[ ${#COMPOSE_ARGS[@]} -gt 0 && -n "$DOCKER_COMPOSE_CMD" ]]; then
+                validate_bootstrap_compose_args "${COMPOSE_ARGS[@]}" && \
                 env -u GGUF_FILE -u LLM_MODEL -u MAX_CONTEXT -u CTX_SIZE \
                     $DOCKER_COMPOSE_CMD "${COMPOSE_ARGS[@]}" up -d --force-recreate openclaw 2>&1 || \
                     log "WARNING: OpenClaw recreate failed (non-fatal)"

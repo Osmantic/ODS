@@ -2,7 +2,10 @@
 import hashlib
 import importlib.util
 import json
+import os
 from pathlib import Path
+import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -13,6 +16,90 @@ ODS = Path(__file__).resolve().parents[1]
 SPEC = importlib.util.spec_from_file_location('cache_policy', ODS / 'scripts/compose-cache-policy.py')
 POLICY = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(POLICY)
+
+
+def test_argument_cli_preserves_spaces_and_unicode(installed):
+    args = flags() + ['--env-file', 'owner café 文.env', '-p', 'owner-project']
+    result = subprocess.run(
+        [sys.executable, str(ODS / 'scripts/compose-cache-policy.py'),
+         '--install-dir', str(installed), '--arguments', *args],
+        capture_output=True, encoding='utf-8', check=True)
+    assert json.loads(result.stdout) == args
+
+
+@pytest.mark.skipif(sys.platform == 'win32', reason='POSIX bootstrap integration')
+@pytest.mark.parametrize('action', ['llama', 'llama-retry', 'hermes', 'windows-openclaw',
+                                   'windows-cached', 'windows-recovered', 'lemonade', 'openclaw'])
+@pytest.mark.parametrize('confined', [False, True])
+def test_bootstrap_revalidates_every_compose_entry(installed, action, confined):
+    source_recipe(installed, confined=confined)
+    shutil.copyfile(ODS / 'scripts/compose-cache-policy.py',
+                    installed / 'scripts/compose-cache-policy.py')
+    (installed / 'base.yml').write_text('services: {}')
+    arguments = ['-f', 'base.yml', '-f', 'data/user-extensions/example/compose.yaml']
+    saved = ' '.join(arguments)
+    (installed / '.compose-flags').write_text(saved)
+    (installed / 'logs').mkdir()
+    (installed / 'logs/compose-launch.txt').write_text('compose_flags=' + saved + '\n')
+    marker = installed / 'docker-called'
+    compose = installed / 'compose-probe'
+    # Record dispatch only; never start Docker or affect a running installation.
+    compose.write_text('#!/bin/sh\nprintf called >> ' + shlex.quote(str(marker)) + '\nexit 42\n')
+    if action == 'llama-retry':
+        mutation = ('import json, pathlib; p=pathlib.Path(' + repr(str(fragment(installed))) + '); '
+                    'd=json.loads(p.read_text()); d["services"]["example"]["privileged"]=True; '
+                    'p.write_text(json.dumps(d))')
+        compose.write_text('#!/bin/sh\nprintf called >> ' + shlex.quote(str(marker)) + '\n' +
+                           shlex.quote(sys.executable) + ' -c ' + shlex.quote(mutation) +
+                           '\necho "dependency failed to start"\nexit 1\n')
+    compose.chmod(0o700)
+    source = (ODS / 'scripts/bootstrap-upgrade.sh').read_text()
+    names = ['validate_bootstrap_compose_args', 'compose_recreate_llama_server_with_retry',
+             'compose_recreate_hermes', 'load_windows_lemonade_compose_args',
+             'recreate_windows_lemonade_openclaw', 'refresh_lemonade_after_bootstrap_cleanup']
+    functions = '\n'.join(re.search(r'^' + name + r'\(\) \{.*?^}', source,
+                                     re.MULTILINE | re.DOTALL).group() for name in names)
+    prelude = '''
+INSTALL_DIR="$1"
+ODS_PYTHON_CMD="$2"
+DOCKER_COMPOSE_CMD="$INSTALL_DIR/compose-probe"
+DOCKER_CMD=true
+ODS_BOOTSTRAP_COMPOSE_RETRY_DELAY=0
+COMPOSE_ARGS=(-f base.yml -f data/user-extensions/example/compose.yaml)
+WINDOWS_LEMONADE_COMPOSE_ARGS=()
+WINDOWS_LEMONADE_OPENCLAW_PRESENT=true
+FULL_GGUF_FILE=full.gguf
+BOOTSTRAP_GGUF=small.gguf
+is_windows_bash() { return 1; }
+log() { echo "$*" >&2; }
+read_env_value() { echo amd; }
+cd "$INSTALL_DIR" || exit 1
+'''
+    calls = {
+        'llama': 'compose_recreate_llama_server_with_retry "${COMPOSE_ARGS[@]}"',
+        'llama-retry': 'compose_recreate_llama_server_with_retry "${COMPOSE_ARGS[@]}"',
+        'hermes': 'compose_recreate_hermes',
+        'windows-openclaw': 'recreate_windows_lemonade_openclaw',
+        'windows-cached': 'WINDOWS_LEMONADE_COMPOSE_ARGS=("${COMPOSE_ARGS[@]}"); recreate_windows_lemonade_openclaw',
+        'windows-recovered': 'rm .compose-flags; recreate_windows_lemonade_openclaw',
+        'lemonade': 'refresh_lemonade_after_bootstrap_cleanup',
+    }
+    if action == 'openclaw':
+        block = source.split('log "Recreating OpenClaw to pick up model change..."', 1)[1]
+        calls[action] = block.split('\n            fi', 1)[0] + '\n            fi\n'
+    env = dict(os.environ, PATH=str(Path(sys.executable).parent) + os.pathsep + os.environ['PATH'])
+    result = subprocess.run(['bash', '-s', '--', str(installed), sys.executable],
+                            input=prelude + functions + '\n' + calls[action],
+                            capture_output=True, text=True, env=env)
+    assert marker.exists() == confined, result.stderr
+    if action == 'llama-retry' and confined:
+        assert marker.read_text() == 'called'
+        assert result.returncode != 0
+        assert 'requires review' in result.stderr
+    if not confined:
+        assert 'requires review' in result.stderr
+        if action == 'windows-recovered':
+            assert not (installed / '.compose-flags').exists()
 
 
 @pytest.fixture

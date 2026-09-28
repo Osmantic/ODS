@@ -195,6 +195,24 @@ matched containers' automatic restart, then stops them without deleting data
 or containers. Repair and recreate the reviewed recipe before starting again.
 Start and restart operations still reject invalid recipes.
 
+Background model upgrades now revalidate saved Compose fragments before each
+service recreation, including retries, Hermes/OpenClaw companions, Lemonade
+cleanup and Windows launch-log recovery. An already populated argument array
+does not skip validation. The policy CLI accepts explicit argv so spaces and
+Unicode are preserved. Missing policy/runtime support stops the operation;
+rejected recipes are never passed to Compose or persisted as recovered flags.
+Behavioral fixtures execute the production shell functions with real policy
+validation and a recording Compose substitute, covering valid confined sources,
+legacy unsafe sources and a recipe changed between retry attempts.
+
+This follow-up passed 68 combined saved-stack/model-store cases on Linux and
+44 saved-stack cases on Windows (19 POSIX-only skips). Existing hot-swap,
+OpenClaw guard, reinstall ownership and model lifecycle lock contracts passed.
+`test-cli-bootstrap-compose-wait.sh` still fails because its Docker fixture
+does not provide Hermes readiness; the identical failure was reproduced from
+the base `main` revision `e3b3c89b4`. This is not evidence of a successful real
+model swap. Docker Desktop was not started for these fixtures.
+
 Recovery tests cover Linux/macOS CLI delegation, PowerShell 5.1 stop/disable,
 host-agent stop-only recovery, ownership mismatches, malformed Docker metadata,
 and preserving recipe files when stopping fails. The dedicated real-container

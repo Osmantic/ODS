@@ -127,11 +127,15 @@ def validate_flags(install_dir, flags):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--install-dir', required=True)
-    parser.add_argument('--flags')
+    inputs = parser.add_mutually_exclusive_group()
+    inputs.add_argument('--flags')
+    inputs.add_argument('--arguments', nargs=argparse.REMAINDER)
     parser.add_argument('--format', choices=('flags', 'json'), default='json')
     args = parser.parse_args()
     try:
-        if args.flags is not None:
+        if args.arguments is not None:
+            flags = args.arguments
+        elif args.flags is not None:
             flags = args.flags.split()
         else:
             # PowerShell 5.1 can prepend a UTF-8 BOM to native pipeline input.

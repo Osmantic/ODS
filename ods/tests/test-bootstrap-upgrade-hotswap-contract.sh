@@ -171,10 +171,12 @@ compose_hermes_block="$(function_block compose_recreate_hermes | grep -v '^[[:sp
 windows_compose_loader_block="$(function_block load_windows_lemonade_compose_args | grep -v '^[[:space:]]*#')"
 eval "$compose_hermes_block"
 eval "$windows_compose_loader_block"
+eval "$(function_block validate_bootstrap_compose_args)"
 log() { :; }
 compose_hermes_tmp="$(mktemp -d "${TMPDIR:-/tmp}/ods-hermes-compose.XXXXXX")"
 INSTALL_DIR="$compose_hermes_tmp/install"
-mkdir -p "$INSTALL_DIR"
+mkdir -p "$INSTALL_DIR/scripts"
+cp "$ROOT_DIR/scripts/compose-cache-policy.py" "$INSTALL_DIR/scripts/"
 compose_capture="$compose_hermes_tmp/calls"
 compose_mock="$compose_hermes_tmp/mock-compose"
 cat >"$compose_mock" <<'MOCK_COMPOSE'
