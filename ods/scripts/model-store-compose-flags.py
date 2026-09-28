@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Refresh only ODS model-store overlays in an existing Compose argument list."""
 import argparse
+import importlib.util
 import json
 from pathlib import Path
 import sys
@@ -14,6 +15,11 @@ def resolve_flags(install_dir, flags):
     root = Path(install_dir).resolve()
     if not isinstance(flags, list) or any(not isinstance(value, str) or any(c in value for c in '\x00\r\n') for value in flags):
         raise ValueError('Invalid saved Compose arguments')
+    policy_path = Path(__file__).resolve().with_name('compose-cache-policy.py')
+    spec = importlib.util.spec_from_file_location('_ods_cached_compose_policy', policy_path)
+    policy = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(policy)
+    policy.validate_flags(root, flags)
     overlay = validated_compose_overlay(root)
     if overlay is None:
         if (root/'data/model-stores.json').exists():

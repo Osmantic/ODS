@@ -1179,7 +1179,7 @@ def _scan_compose_content(
                         status_code=400,
                         detail=(
                             f"Extension rejected: dict port binding in {svc_name} "
-                            f"must use host_ip: 127.0.0.1 (or '${{VAR:-127.0.0.1}}')"
+                            f"must use literal host_ip: 127.0.0.1"
                         ),
                     )
             else:
@@ -1201,7 +1201,7 @@ def _scan_compose_content(
                         detail=(
                             f"Extension rejected: port binding '{port_str}' "
                             f"in {svc_name} must bind 127.0.0.1 "
-                            f"(literal or '${{VAR:-127.0.0.1}}')"
+                            f"(literal; environment overrides are not permitted)"
                         ),
                     )
                 # Strip optional "/proto" suffix before checking host_port:container_port.

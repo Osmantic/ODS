@@ -5667,11 +5667,11 @@ class TestModelActivateRollback:
         ("bind_addr", "expected_identity_url"),
         [
             ("0.0.0.0", "http://127.0.0.1:9090/v1/models"),
-            ("::", "http://[::1]:9090/v1/models"),
-            ("192.168.106.1", "http://192.168.106.1:9090/v1/models"),
+            ("::", "http://127.0.0.1:9090/v1/models"),
+            ("192.168.106.1", "http://127.0.0.1:9090/v1/models"),
         ],
     )
-    def test_apple_native_activation_probes_reachable_bind(
+    def test_apple_native_activation_probes_private_inference_despite_ui_bind(
         self,
         tmp_path,
         monkeypatch,

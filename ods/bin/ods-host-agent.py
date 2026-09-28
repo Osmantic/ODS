@@ -5638,6 +5638,13 @@ def resolve_compose_flags() -> list:
         raw = flags_file.read_text(encoding="utf-8").strip()
         if raw:
             flags = raw.split()
+            # An approved file list does not authorize changed or legacy
+            # extension definitions. Validate the actual files on every use.
+            policy_path = Path(__file__).resolve().parent.parent / "scripts" / "compose-cache-policy.py"
+            policy_spec = importlib.util.spec_from_file_location("_ods_compose_cache_policy", policy_path)
+            policy = importlib.util.module_from_spec(policy_spec)
+            policy_spec.loader.exec_module(policy)
+            policy.validate_flags(INSTALL_DIR, flags)
             active_name = ".active-model-store.compose.json"
             flags = [value for index, value in enumerate(flags)
                      if not (Path(value).name == active_name or (value == "-f" and index+1 < len(flags) and Path(flags[index+1]).name == active_name))]

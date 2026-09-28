@@ -979,7 +979,7 @@ def _scan_user_compose_content(compose_path, trusted_library=False, accelerator=
                 if isinstance(port, dict):
                     host_ip = port.get("host_ip", "")
                     if port.get("published") and not _host_part_is_loopback(host_ip):
-                        reject(f"service '{svc_name}' dict port binding must use host_ip 127.0.0.1 or '${{VAR:-127.0.0.1}}'")
+                        reject(f"service '{svc_name}' dict port binding must use literal host_ip 127.0.0.1")
                 else:
                     port_str = str(port)
                     host_part, rest = _split_port_host(port_str)
@@ -987,7 +987,7 @@ def _scan_user_compose_content(compose_path, trusted_library=False, accelerator=
                         reject(f"service '{svc_name}' port '{port_str}' must use 127.0.0.1:host:container format")
                         continue
                     if not _host_part_is_loopback(host_part):
-                        reject(f"service '{svc_name}' port '{port_str}' must bind 127.0.0.1 (literal or '${{VAR:-127.0.0.1}}')")
+                        reject(f"service '{svc_name}' port '{port_str}' must bind literal 127.0.0.1")
                         continue
                     core = rest.split("/", 1)[0]
                     if ":" not in core:
@@ -996,6 +996,41 @@ def _scan_user_compose_content(compose_path, trusted_library=False, accelerator=
     if ok:
         _extension_build_contexts[str(compose_path.resolve())] = build_contexts
     return (ok, warnings)
+
+
+def _source_runtime_merge_problems(entries):
+    """A second recipe/overlay cannot weaken a commit-bound source sandbox.
+
+    Per-file checks are insufficient: Compose merges services and networks.
+    Source receipts authorize one complete document, not later overrides or
+    other extensions joining its private network.
+    """
+    services, networks = {}, {}
+    for path, document in entries:
+        definitions = document.get('services', {})
+        if not isinstance(definitions, dict):
+            continue
+        remote = any(isinstance(item, dict) and isinstance(item.get('build'), dict)
+                     and str(item['build'].get('context', '')).startswith('https://github.com/')
+                     for item in definitions.values())
+        if remote:
+            for key in definitions:
+                services.setdefault(key, set()).add(str(path))
+            for key in document.get('networks', {}):
+                networks.setdefault(key, set()).add(str(path))
+    problems = []
+    for path, document in entries:
+        for name, definition in document.get('services', {}).items():
+            if name in services and services[name] != {str(path)}:
+                problems.append(f"source service '{name}' is overridden by another recipe or overlay")
+            if isinstance(definition, dict):
+                for network in definition.get('networks', []):
+                    if network in networks and networks[network] != {str(path)}:
+                        problems.append(f"source sandbox '{network}' is joined by another recipe or overlay")
+        for network in document.get('networks', {}):
+            if network in networks and networks[network] != {str(path)}:
+                problems.append(f"source sandbox '{network}' is overridden by another recipe or overlay")
+    return problems
 
 
 def _extension_base_path(service_dir, service, label):
@@ -1562,6 +1597,16 @@ def _drop_unresolvable_user_extensions(files):
 
 
 resolved = _drop_unresolvable_user_extensions(resolved)
+
+# Validate the complete selected set before generating trusted build overlays.
+_source_entries = []
+for _fragment in resolved:
+    _path = script_dir / _fragment
+    if _path.resolve().is_relative_to((script_dir / 'data/user-extensions').resolve()):
+        _source_entries.append((_path, _compose_policy_load(_path.read_text(encoding='utf-8'))))
+_source_problems = _source_runtime_merge_problems(_source_entries)
+if _source_problems:
+    raise ValueError('; '.join(_source_problems))
 
 # Each extension owns its projection so narrowed installs cannot accidentally
 # include unrelated services or require their missing configuration.

@@ -138,7 +138,7 @@ function Get-ComposeFlags {
     $flagsFile = Join-Path $InstallDir ".compose-flags"
     if (Test-Path $flagsFile) {
         $raw = (Get-Content $flagsFile -Raw).Trim()
-        if ((Test-Path -LiteralPath (Join-Path $InstallDir '.model-stores.compose.json')) -or
+        if (($raw -match 'user-extensions') -or (Test-Path -LiteralPath (Join-Path $InstallDir 'data/user-extensions')) -or (Test-Path -LiteralPath (Join-Path $InstallDir '.model-stores.compose.json')) -or
             (Test-Path -LiteralPath (Join-Path $InstallDir 'data/model-stores.json'))) {
             return (Resolve-ODSModelStoreComposeFlags -Flags ($raw -split "\s+"))
         }
@@ -154,7 +154,7 @@ function Get-ComposeFlags {
             $raw = ($composeFlagsLine -replace "^compose_flags=", "").Trim()
             if (-not [string]::IsNullOrWhiteSpace($raw)) {
                 Write-AIWarn ".compose-flags is missing; using compose flags from logs\compose-launch.txt"
-                if ((Test-Path -LiteralPath (Join-Path $InstallDir '.model-stores.compose.json')) -or
+                if (($raw -match 'user-extensions') -or (Test-Path -LiteralPath (Join-Path $InstallDir 'data/user-extensions')) -or (Test-Path -LiteralPath (Join-Path $InstallDir '.model-stores.compose.json')) -or
                     (Test-Path -LiteralPath (Join-Path $InstallDir 'data/model-stores.json'))) {
                     return (Resolve-ODSModelStoreComposeFlags -Flags ($raw -split "\s+"))
                 }
@@ -192,7 +192,7 @@ function Get-ComposeFlags {
         }
     }
 
-    if ((Test-Path -LiteralPath (Join-Path $InstallDir '.model-stores.compose.json')) -or
+    if ((($flags -join ' ') -match 'user-extensions') -or (Test-Path -LiteralPath (Join-Path $InstallDir 'data/user-extensions')) -or (Test-Path -LiteralPath (Join-Path $InstallDir '.model-stores.compose.json')) -or
         (Test-Path -LiteralPath (Join-Path $InstallDir 'data/model-stores.json'))) {
         return (Resolve-ODSModelStoreComposeFlags -Flags $flags)
     }

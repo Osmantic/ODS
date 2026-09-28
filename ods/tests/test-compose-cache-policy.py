@@ -1,0 +1,291 @@
+"""Saved Compose arguments are never a substitute for recipe authorization."""
+import hashlib
+import importlib.util
+import json
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+
+import pytest
+
+ODS = Path(__file__).resolve().parents[1]
+SPEC = importlib.util.spec_from_file_location('cache_policy', ODS / 'scripts/compose-cache-policy.py')
+POLICY = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(POLICY)
+
+
+@pytest.fixture
+def installed(tmp_path):
+    root = tmp_path / 'ods'
+    (root / 'scripts').mkdir(parents=True)
+    shutil.copyfile(ODS / 'scripts/resolve-compose-stack.sh', root / 'scripts/resolve-compose-stack.sh')
+    folder = root / 'data/user-extensions/example'
+    folder.mkdir(parents=True)
+    (folder / 'manifest.yaml').write_text(json.dumps({'schema_version': 'ods.services.v1', 'service': {'id': 'example'}}))
+    (folder / 'upstream.json').write_text(json.dumps({'origin': 'github-proposal'}))
+    (folder / 'compose.yaml').write_text(json.dumps({'services': {'example': {
+        'image': 'example/app:1', 'ports': ['127.0.0.1:9099:8080'],
+    }}}))
+    return root
+
+
+def fragment(root):
+    return root / 'data/user-extensions/example/compose.yaml'
+
+
+def flags():
+    return ['--env-file', 'owner.env', '-p', 'owner-project', '-f', 'base.yml',
+            '--file=data/user-extensions/example/compose.yaml', '--profile', 'owner']
+
+
+def change(root, updates):
+    path = fragment(root)
+    doc = json.loads(path.read_text())
+    doc['services']['example'].update(updates)
+    path.write_text(json.dumps(doc))
+
+
+def source_recipe(root, confined=True):
+    """An immutable recipe with a valid receipt, including pre-upgrade recipes."""
+    path = fragment(root)
+    revision = 'a' * 40
+    service = {'build': {'context': 'https://github.com/example/app.git#' + revision},
+               'image': 'ods-source-example:' + revision, 'pull_policy': 'never'}
+    compose = {'services': {'example': service}}
+    if confined:
+        service.update(user='65532:65532', cap_drop=['ALL'], read_only=True,
+                       security_opt=['no-new-privileges:true'], cpus=2, pids_limit=256,
+                       mem_limit='2g', networks=['example-sandbox'])
+        compose['networks'] = {'example-sandbox': {'internal': True}}
+    manifest = {'schema_version': 'ods.services.v1', 'service': {'id': 'example'}}
+    candidate = {'repository': 'https://github.com/example/app', 'commit': revision,
+                 'manifest': manifest, 'compose': compose}
+    digest = hashlib.sha256(json.dumps(candidate, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+    receipt = {'origin': 'github-proposal', 'repository': candidate['repository'], 'commit': revision,
+               'recipeDigest': digest, 'sourceFiles': [{'service': 'example', 'path': 'Dockerfile', 'blob': 'b' * 40}]}
+    path.write_text(json.dumps(compose))
+    (path.parent / 'manifest.yaml').write_text(json.dumps(manifest))
+    (path.parent / 'upstream.json').write_text(json.dumps(receipt))
+    return compose
+
+
+def test_preserves_approved_arguments_and_recipe_bytes(installed):
+    before = fragment(installed).read_bytes()
+    assert POLICY.validate_flags(installed, flags()) == flags()
+    assert fragment(installed).read_bytes() == before
+
+
+@pytest.mark.parametrize('ports', [
+    ['${BIND_ADDRESS:-127.0.0.1}:9099:8080'], ['0.0.0.0:9099:8080'], ['9099:8080'],
+    [{'host_ip': '${BIND_ADDRESS:-127.0.0.1}', 'published': 9099, 'target': 8080}],
+])
+def test_rejects_saved_lan_binds_without_rewriting_approval(installed, ports):
+    change(installed, {'ports': ports})
+    before = fragment(installed).read_bytes()
+    with pytest.raises(ValueError, match='127.0.0.1'):
+        POLICY.validate_flags(installed, flags())
+    assert fragment(installed).read_bytes() == before
+
+
+@pytest.mark.parametrize('updates', [
+    {'privileged': True}, {'user': '0'}, {'network_mode': 'host'},
+    {'volumes': ['/var/run/docker.sock:/var/run/docker.sock']},
+    {'cap_add': ['SYS_ADMIN']}, {'pid': 'host'},
+])
+def test_edited_recipe_is_rechecked_every_time(installed, updates):
+    POLICY.validate_flags(installed, flags())
+    change(installed, updates)
+    with pytest.raises(ValueError, match='requires review'):
+        POLICY.validate_flags(installed, flags())
+
+
+def test_rejects_shadowing_core_service(installed):
+    fragment(installed).write_text(json.dumps({'services': {'dashboard-api': {'image': 'example/app:1'}}}))
+    with pytest.raises(ValueError, match='collides'):
+        POLICY.validate_flags(installed, flags())
+
+
+def test_old_source_receipt_does_not_authorize_unconfined_runtime(installed):
+    source_recipe(installed, confined=False)
+    with pytest.raises(ValueError, match='non-root'):
+        POLICY.validate_flags(installed, flags())
+
+
+def test_confined_source_and_matching_context_projection_are_accepted(installed):
+    doc = source_recipe(installed)
+    projection = fragment(installed).with_name('.ods-build-context-compose.yaml.json')
+    projection.write_text(json.dumps({'services': {'example': {'build': {
+        'context': doc['services']['example']['build']['context']}}}}))
+    original = flags() + ['-f', str(projection)]
+    assert POLICY.validate_flags(installed, original) == original
+    projection.write_text(json.dumps({'services': {'example': {'privileged': True}}}))
+    with pytest.raises(ValueError, match='projection changed'):
+        POLICY.validate_flags(installed, original)
+
+
+def test_source_receipt_is_bound_to_recipe_bytes(installed):
+    source_recipe(installed)
+    change(installed, {'command': ['unexpected', 'command']})
+    with pytest.raises(ValueError, match='recipe changed'):
+        POLICY.validate_flags(installed, flags())
+
+
+@pytest.mark.parametrize('document', [
+    {'services': {'example': {'read_only': False}}},
+    {'networks': {'example-sandbox': {'internal': False}}},
+    {'services': {'another-service': {'image': 'example/app:1', 'networks': ['example-sandbox']}}},
+])
+def test_compose_merge_cannot_weaken_or_join_source_sandbox(installed, document):
+    source_recipe(installed)
+    overlay = fragment(installed).with_name('compose.cpu.yaml')
+    overlay.write_text(json.dumps(document))
+    with pytest.raises(ValueError, match='source.*(overridden|joined)'):
+        POLICY.validate_flags(installed, flags() + ['-f', str(overlay)])
+
+
+def test_another_extension_cannot_attach_to_a_source_sandbox(installed):
+    source_recipe(installed)
+    other = installed / 'data/user-extensions/other/compose.yaml'
+    other.parent.mkdir()
+    other.write_text(json.dumps({'services': {'other': {'image': 'example/app:1',
+                                                      'networks': ['example-sandbox']}}}))
+    with pytest.raises(ValueError, match='sandbox.*joined'):
+        POLICY.validate_flags(installed, flags() + ['-f', str(other)])
+
+
+@pytest.mark.skipif(sys.platform == 'win32', reason='POSIX dynamic resolver integration')
+def test_dynamic_resolution_also_rejects_source_overlay(installed):
+    import os
+    source_recipe(installed)
+    (installed / 'docker-compose.base.yml').write_text('services: {}')
+    (installed / 'docker-compose.cpu.yml').write_text('services: {}')
+    env = dict(os.environ, PATH=str(Path(sys.executable).parent) + os.pathsep + os.environ['PATH'])
+    command = ['bash', str(installed / 'scripts/resolve-compose-stack.sh'),
+               '--script-dir', str(installed), '--gpu-backend', 'cpu']
+    result = subprocess.run(command, capture_output=True, text=True, env=env)
+    assert result.returncode == 0, result.stderr
+    assert 'data/user-extensions/example/compose.yaml' in result.stdout
+    fragment(installed).with_name('compose.cpu.yaml').write_text(json.dumps({
+        'services': {'example': {'read_only': False}}}))
+    result = subprocess.run(command, capture_output=True, text=True, env=env)
+    assert result.returncode != 0
+    assert not result.stdout
+    assert 'source service' in result.stderr and 'overridden' in result.stderr
+
+
+def test_projection_without_original_recipe_is_rejected(installed):
+    projection = fragment(installed).with_name('.ods-build-context-compose.yaml.json')
+    projection.write_text('{}')
+    with pytest.raises(ValueError, match='no validated source recipe'):
+        POLICY.validate_flags(installed, ['-f', str(projection)])
+
+
+def test_disabled_base_does_not_leave_cached_accelerator_enabled(installed):
+    overlay = fragment(installed).with_name('compose.nvidia.yaml')
+    overlay.write_text('{"services": {"example": {"environment": {"X": "1"}}}}')
+    fragment(installed).rename(fragment(installed).with_suffix('.yaml.disabled'))
+    with pytest.raises(ValueError, match='disabled or omitted'):
+        POLICY.validate_flags(installed, ['-f', str(overlay)])
+
+
+def test_missing_policy_fails_closed_only_for_extensions(installed):
+    (installed / 'scripts/resolve-compose-stack.sh').unlink()
+    assert POLICY.validate_flags(installed, ['-f', 'base.yml']) == ['-f', 'base.yml']
+    with pytest.raises(ValueError, match='security policy is missing'):
+        POLICY.validate_flags(installed, flags())
+
+
+def link_or_skip(path, target, directory=False):
+    try:
+        path.symlink_to(target, target_is_directory=directory)
+    except OSError as error:
+        pytest.skip(f'Symlink creation unavailable: {error}')
+
+
+def test_alias_outside_extensions_cannot_disguise_recipe(installed):
+    alias = installed / 'innocent-core.yml'
+    link_or_skip(alias, fragment(installed))
+    with pytest.raises(ValueError, match='aliases'):
+        POLICY.validate_flags(installed, ['-f', str(alias)])
+
+
+def test_recipe_symlink_is_rejected(installed):
+    path = fragment(installed)
+    saved = path.with_suffix('.original')
+    path.rename(saved)
+    link_or_skip(path, saved)
+    with pytest.raises(ValueError, match='owned regular'):
+        POLICY.validate_flags(installed, flags())
+
+
+def test_installation_data_can_live_on_another_disk(installed):
+    data = installed / 'data'
+    moved = installed.parent / 'another-disk-data'
+    data.rename(moved)
+    link_or_skip(data, moved, directory=True)
+    assert POLICY.validate_flags(installed, flags()) == flags()
+
+
+@pytest.mark.parametrize('arguments', ['-f base.yml', ['-f'], ['-f', 'bad\n.yml'], [42]])
+def test_malformed_arguments_are_rejected(installed, arguments):
+    with pytest.raises(ValueError):
+        POLICY.validate_flags(installed, arguments)
+
+
+def test_json_cli_preserves_spaces_and_fails_without_emitting_flags(installed):
+    command = [sys.executable, str(ODS / 'scripts/compose-cache-policy.py'), '--install-dir', str(installed)]
+    original = flags() + ['--env-file', 'folder with spaces/owner.env']
+    result = subprocess.run(command, input=json.dumps(original), capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == original
+    change(installed, {'privileged': True})
+    result = subprocess.run(command, input=json.dumps(original), capture_output=True, text=True)
+    assert result.returncode == 2
+    assert not result.stdout
+    assert 'requires review' in result.stderr
+
+
+def test_model_store_helper_cannot_bypass_recipe_validation(installed):
+    command = [sys.executable, str(ODS / 'scripts/model-store-compose-flags.py'),
+               '--install-dir', str(installed), '--json-stdin']
+    change(installed, {'privileged': True})
+    result = subprocess.run(command, input=json.dumps(flags()), capture_output=True, text=True)
+    assert result.returncode == 2
+    assert not result.stdout
+    assert 'requires review' in result.stderr
+
+
+@pytest.mark.skipif(sys.platform == 'win32', reason='POSIX CLI integration')
+@pytest.mark.parametrize('platform', ['linux', 'macos'])
+def test_native_cli_rejects_cached_recipe_before_docker(installed, platform):
+    # Extract the actual function, leaving process start and user configuration
+    # outside this test. Exercise the real Python validator, not a stub.
+    if platform == 'linux':
+        script = (ODS / 'ods-cli').read_text(encoding='utf-8')
+        function = 'get_compose_flags() {' + script.split('get_compose_flags() {', 1)[1].split('\n}\n', 1)[0] + '\n}\n'
+        prelude = '_ensure_hermes_dashboard_session_token() { :; }\nwarn() { echo "$*" >&2; }\n'
+    else:
+        script = (ODS / 'installers/macos/lib/native-model.sh').read_text(encoding='utf-8')
+        function = script.split('macos_model_store_compose_flags() {', 1)[1].split('\n}\n', 1)[0]
+        function = 'macos_model_store_compose_flags() {' + function + '\n}\n'
+        function += 'get_compose_flags() { macos_model_store_compose_flags "$(cat "$INSTALL_DIR/.compose-flags")"; }\n'
+        prelude = ''
+    for name in ['compose-cache-policy.py', 'model-store-compose-flags.py']:
+        (installed / 'scripts' / name).symlink_to(ODS / 'scripts' / name)
+    (installed / 'base.yml').write_text('services: {}')
+    saved = '-f base.yml -f data/user-extensions/example/compose.yaml'
+    (installed / '.compose-flags').write_text(saved)
+    script = 'set -e\nINSTALL_DIR="$1"\n' + prelude + function + '\nget_compose_flags\n'
+    command = ['bash', '-s', '--', str(installed)]
+    # Use the same configured interpreter for the shell helper and pytest.
+    import os
+    env = dict(os.environ, PATH=str(Path(sys.executable).parent) + os.pathsep + os.environ['PATH'])
+    result = subprocess.run(command, input=script, capture_output=True, text=True, env=env)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == saved
+    change(installed, {'privileged': True})
+    result = subprocess.run(command, input=script, capture_output=True, text=True, env=env)
+    assert result.returncode != 0
+    assert not result.stdout
+    assert 'requires review' in result.stderr

@@ -12,7 +12,7 @@ implemented on main before this work.
 | --- | --- | --- |
 | SEC-001: LAN exposure | Private Compose ports and native inference stay loopback-bound; authenticated UI entrypoints retain LAN access; Hermes LAN proxy requires an owner session; new recipes cannot interpolate host binds. | Finish upgrade/cached-stack migration coverage and cross-platform lifecycle checks. |
 | SEC-002: Python advisories | Upgrade FastAPI/Starlette and aiohttp; all nine API/relay Docker builds install complete hash-checked locks; production audits are clean. | CI installation/build coverage and triage remaining full-suite failures. |
-| SEC-003: source containment | Generated source services have numeric non-root UID, no capabilities, no-new-privileges, read-only root, resource limits and an internal network; API publication/re-enable and dynamic resolver enforce the profile. | Run the real-container confinement test in CI; close cached-stack paths for previously installed recipes and verify migration behavior. |
+| SEC-003: source containment | Generated source services have numeric non-root UID, no capabilities, no-new-privileges, read-only root, resource limits and an internal network; API publication/re-enable and dynamic resolver enforce the profile. Saved stack arguments are revalidated by the host and platform CLIs, including old receipts; merged recipes cannot override or join source sandboxes. | Real-container CI passed; run the new cross-platform saved-stack CI and broader lifecycle regressions. |
 | SEC-004: public AI spending | Paid issue triage and review comments require a trusted association; serialized jobs and per-run budgets; unauthorized comments cannot cancel another comment's review. | CI workflow validation. This bounds individual runs, not the organization's total monthly provider bill. |
 | SEC-005: provenance | Python locks/hashes and pinned multi-platform Python base image indexes. | Release checksums/SBOM/attestations, verified bootstrap channel and remaining image pins. Existing published tags have not been changed or retroactively signed. |
 | SEC-006: React Router | Coordinated update to react-router-dom 7.18.4 and its lockfile; production npm audit is clean. | CI across supported frontend hosts. |
@@ -45,9 +45,22 @@ implemented on main before this work.
   A library-staging race while files were being edited passed on rerun.
   Darwin metrics and WSL-to-Windows PowerShell fixtures still require baseline
   comparison/triage. Do not label the full suite green.
-- The real-container sandbox test is wired into `security-runtime.yml` but
-  was skipped locally because Docker Desktop is not running. The test uses a
-  unique disposable project and a canary service, never the live ODS stack.
+- Runtime security CI run `36463490433` passed on commit `1a9e126fce`:
+  all nine locked Python environments installed and passed dependency checks
+  and audits, frontend production audit and policy checks passed, and the
+  source sandbox passed with real Docker containers and a canary service.
+  Docker Desktop remained stopped locally; the live ODS stack was not used.
+- Saved-stack policy and model-store integration: 39 tests passed on Linux,
+  including actual shell entrypoints and dynamic resolution. Windows PowerShell
+  5.1 passed the native saved-stack/model-store integration. Host-agent Compose
+  tests: ten passed. Symlink aliases, changed receipts, unsafe overlays and
+  cross-extension network attachment are rejected without rewriting approvals.
+- The full API CI on the first PR commit passed 6,116 tests and failed two
+  assertions still expecting native inference to follow the UI bind address.
+  Both expectations now require private loopback and all three related cases
+  pass locally. A smoke assertion expecting interpolated OpenClaw ports was
+  updated to require literal loopback; its six contracts passed. Await new CI
+  before claiming the entire suite passed.
 
 These results refer to the relevant focused changes, not to every combination
 of installer, GPU and operating system. The PR remains draft until the remaining

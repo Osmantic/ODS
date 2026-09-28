@@ -50,7 +50,7 @@ macos_resolve_checkpoint_args() {
 
 macos_model_store_compose_flags() {
     local flags="$1" helper="${INSTALL_DIR}/scripts/model-store-compose-flags.py"
-    if [[ ! -e "${INSTALL_DIR}/.model-stores.compose.json" && ! -e "${INSTALL_DIR}/data/model-stores.json" ]]; then
+    if [[ ! -e "${INSTALL_DIR}/.model-stores.compose.json" && ! -e "${INSTALL_DIR}/data/model-stores.json" && ! -d "${INSTALL_DIR}/data/user-extensions" && "$flags" != *user-extensions* ]]; then
         printf '%s\n' "$flags"
         return
     fi
@@ -58,7 +58,11 @@ macos_model_store_compose_flags() {
         echo "The registered model-store Compose resolver is missing. Repair the ODS installation." >&2
         return 1
     fi
-    python3 "$helper" --install-dir "$INSTALL_DIR" --flags="$flags" --format flags
+    local policy_python="${ODS_PYTHON_CMD:-python3}"
+    if [[ -f "$INSTALL_DIR/lib/python-cmd.sh" ]]; then
+        policy_python="$(. "$INSTALL_DIR/lib/python-cmd.sh"; ods_detect_python_cmd_with_module yaml)" || return 1
+    fi
+    "$policy_python" "$helper" --install-dir "$INSTALL_DIR" --flags="$flags" --format flags
 }
 
 macos_resolve_native_model() {

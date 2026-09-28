@@ -1525,6 +1525,24 @@ class TestValidateCoreRecreateIds:
 
 class TestResolveComposeFlagsCache:
 
+    def test_cached_recipe_is_checked_before_any_docker_command(self, tmp_path, monkeypatch):
+        import shutil
+        scripts = tmp_path / 'scripts'
+        scripts.mkdir()
+        source = Path(_mod.__file__).resolve().parent.parent / 'scripts/resolve-compose-stack.sh'
+        shutil.copyfile(source, scripts / source.name)
+        extension = tmp_path / 'data/user-extensions/example'
+        extension.mkdir(parents=True)
+        (extension / 'compose.yaml').write_text(
+            'services:\n  example:\n    image: example/app:1\n    privileged: true\n', encoding='utf-8')
+        saved = '-f docker-compose.base.yml -f data/user-extensions/example/compose.yaml'
+        (tmp_path / '.compose-flags').write_text(saved, encoding='utf-8')
+        monkeypatch.setattr(_mod, 'INSTALL_DIR', tmp_path)
+        monkeypatch.setattr(_mod.subprocess, 'run', lambda *a, **k: pytest.fail('No Docker command may run'))
+        with pytest.raises(ValueError, match='requires review'):
+            resolve_compose_flags()
+        assert (tmp_path / '.compose-flags').read_text(encoding='utf-8') == saved
+
     def test_prefers_saved_compose_flags_file(self, tmp_path, monkeypatch):
         install_dir = tmp_path / "ods"
         install_dir.mkdir()

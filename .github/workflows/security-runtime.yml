@@ -70,6 +70,24 @@ jobs:
         working-directory: ods/extensions/services/dashboard
         run: npm audit --omit=dev --registry=https://registry.npmjs.org
 
+  saved-stack-policy:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+        with:
+          python-version: '3.11'
+      - run: python -m pip install 'PyYAML==6.0.3' 'pytest==8.4.2'
+      - run: python -m pytest ods/tests/test-compose-cache-policy.py ods/tests/test-model-store-compose-flags.py -q
+      - if: runner.os == 'Windows'
+        shell: powershell
+        run: ./ods/tests/test-windows-compose-model-stores.ps1
+
   source-sandbox:
     runs-on: ubuntu-latest
     timeout-minutes: 10

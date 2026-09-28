@@ -9,7 +9,7 @@ foreach ($name in @('Get-ComposeFlags', 'Resolve-ODSModelStoreComposeFlags', 'Ge
 }
 function Ensure-HermesDashboardSessionToken { }
 function Read-ODSEnv { return @{ODS_ACTIVE_MODEL_STORE='default'; GGUF_FILE='fixture.gguf'} }
-function Resolve-ODSHostAgentPython { return [pscustomobject]@{ FilePath = (Get-Command python -CommandType Application).Source; PrefixArgs = @() } }
+function Resolve-ODSHostAgentPython { return [pscustomobject]@{ FilePath = (Get-Command python -CommandType Application | Select-Object -First 1).Source; PrefixArgs = @() } }
 function Assert-True { param($Value, $Message) if (-not $Value) { throw $Message } }
 $fixture = Join-Path ([IO.Path]::GetTempPath()) ('ods-compose-models-'+[Guid]::NewGuid().ToString('N'))
 $InstallDir = Join-Path $fixture 'install'
@@ -18,6 +18,8 @@ try {
         New-Item -ItemType Directory -Path (Join-Path $InstallDir $directory) -Force | Out-Null
     }
     Copy-Item -LiteralPath (Join-Path $root 'scripts/model-store-compose-flags.py') -Destination (Join-Path $InstallDir 'scripts')
+    Copy-Item -LiteralPath (Join-Path $root 'scripts/compose-cache-policy.py') -Destination (Join-Path $InstallDir 'scripts')
+    Copy-Item -LiteralPath (Join-Path $root 'scripts/resolve-compose-stack.sh') -Destination (Join-Path $InstallDir 'scripts')
     foreach ($module in @('model_stores.py','env_values.py')) {
         Copy-Item -LiteralPath (Join-Path $root "extensions/services/dashboard-api/$module") -Destination (Join-Path $InstallDir 'extensions/services/dashboard-api')
     }
@@ -50,6 +52,14 @@ try {
     [IO.File]::WriteAllText((Join-Path $InstallDir '.env'), "ODS_ACTIVE_MODEL_STORE=default`n")
     Assert-True (((Get-ComposeFlags) -join ' ') -eq ($original+' -f .model-stores.compose.json')) 'Switching back to default retained a stale SSD active mount'
     Write-Host '[PASS] Windows saved Compose flags include validated new mounts and preserve custom flags'
+    $extension = Join-Path $InstallDir 'data/user-extensions/example'
+    New-Item -ItemType Directory -Path $extension -Force | Out-Null
+    [IO.File]::WriteAllText((Join-Path $extension 'compose.yaml'), '{"services":{"example":{"image":"example/app:1","privileged":true}}}')
+    [IO.File]::WriteAllText($cache, '-f base.yml -f data/user-extensions/example/compose.yaml')
+    $rejected = $false
+    try { $null = Get-ComposeFlags } catch { $rejected = $_.Exception.Message -match 'requires review' }
+    Assert-True $rejected 'Saved extension escaped runtime security validation'
+    Write-Host '[PASS] Windows rejects unsafe saved extensions before calling Docker'
 } finally {
     $resolved = [IO.Path]::GetFullPath($fixture)
     $prefix = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\','/') + [IO.Path]::DirectorySeparatorChar

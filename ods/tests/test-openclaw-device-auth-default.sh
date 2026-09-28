@@ -147,12 +147,12 @@ fi
 
 # ── D. Localhost path unaffected ───────────────────────────────────────────
 if [[ -f "$COMPOSE" ]]; then
-    if grep -Eq 'BIND_ADDRESS:-127\.0\.0\.1' "$COMPOSE"; then
-        pass "BIND_ADDRESS still defaults to 127.0.0.1 (localhost unaffected)"
+    if grep -Eq '127\.0\.0\.1:\$\{OPENCLAW_PORT:-7860\}:18789' "$COMPOSE"; then
+        pass "OpenClaw remains loopback-bound even when the UI allows LAN"
     else
-        fail "BIND_ADDRESS default changed away from 127.0.0.1"
+        fail "OpenClaw host binding is not literal loopback"
     fi
-    if grep -Eq '\$\{BIND_ADDRESS:-127\.0\.0\.1\}:\$\{OPENCLAW_PORT:-7860\}:18789' "$COMPOSE"; then
+    if grep -Eq '127\.0\.0\.1:\$\{OPENCLAW_PORT:-7860\}:18789' "$COMPOSE"; then
         pass "port mapping 127.0.0.1:7860->18789 unchanged"
     else
         fail "openclaw port mapping changed"

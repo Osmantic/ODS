@@ -917,6 +917,16 @@ get_compose_flags() {
                 stale=1
             fi
             if [[ "$stale" == "0" ]]; then
+                if [[ "$cached" == *user-extensions* || -d "$INSTALL_DIR/data/user-extensions" ]]; then
+                    local policy="$INSTALL_DIR/scripts/compose-cache-policy.py"
+                    [[ -f "$policy" ]] || { warn "Saved extensions need the Compose security validator; repair ODS."; return 1; }
+                    local policy_python="${ODS_PYTHON_CMD:-python3}"
+                    if [[ -f "$INSTALL_DIR/lib/python-cmd.sh" ]]; then
+                        policy_python="$(. "$INSTALL_DIR/lib/python-cmd.sh"; ods_detect_python_cmd_with_module yaml)" || return 1
+                    fi
+                    "$policy_python" "$policy" --install-dir "$INSTALL_DIR" --flags="$cached" --format flags
+                    return $?
+                fi
                 echo "$cached"
                 return
             fi
