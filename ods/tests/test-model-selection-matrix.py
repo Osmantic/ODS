@@ -17,6 +17,7 @@ from __future__ import annotations
 import functools
 import importlib.util
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -96,6 +97,10 @@ def test_fleet_defaults_do_not_move(envelope_id):
 
 def _selector_env(envelope_id: str) -> dict[str, str]:
     envelope = next(item for item in _envelopes() if item["id"] == envelope_id)
+    env = os.environ.copy()
+    # This fixture describes the named fleet host, not an arbitrary 8GB GPU.
+    env["ODS_FLEET_HOST_ID"] = "windows-laptop"
+    env.pop("ODS_COMPATIBILITY_HOST", None)
     result = subprocess.run(
         [
             sys.executable, str(ROOT / "scripts" / "select-model.py"),
@@ -106,7 +111,7 @@ def _selector_env(envelope_id: str) -> dict[str, str]:
             "--host-arch", envelope["host_arch"], "--installable-only",
             "--min-context", "65536", "--env",
         ],
-        capture_output=True, text=True, check=True,
+        capture_output=True, text=True, check=True, env=env,
     )
     values = {}
     for line in result.stdout.splitlines():

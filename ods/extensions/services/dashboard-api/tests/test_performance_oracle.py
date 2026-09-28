@@ -49,6 +49,41 @@ def _model():
     }
 
 
+def test_installed_host_scope_drives_pixel_verdict_and_recommendation(monkeypatch, tmp_path):
+    install_dir = tmp_path / "ods"
+    install_dir.mkdir()
+    monkeypatch.setenv("ODS_FLEET_HOST_ID", "dashboard-container")
+    scoped = {**_model(), "id": "scoped", "name": "scoped", "family": "qwen",
+              "size_mb": 900, "vram_required_gb": 2,
+              "gguf_url": "https://example.test/scoped.gguf",
+              "selection": {"discrete": 10},
+              "app_compatibility": {"pixel_agent": {
+                  "status": "verified", "hostScope": ["windows-laptop"]}}}
+    ordinary = {**scoped, "id": "ordinary", "name": "ordinary",
+                "gguf_file": "ordinary.gguf",
+                "gguf_url": "https://example.test/ordinary.gguf",
+                "selection": {"discrete": 11},
+                "app_compatibility": {"pixel_agent": {"status": "unknown"}}}
+
+    (install_dir / ".env").write_text("ODS_FLEET_HOST_ID=windows-laptop\n", encoding="utf-8")
+    windows = build_models_payload(
+        _gpu(), None, 0, install_dir, tmp_path / "data",
+        catalog=[scoped, ordinary], evidence=[], downloaded_files_override={},
+    )
+    assert windows["recommendationAlternatives"][0]["id"] == "scoped"
+    assert next(m for m in windows["models"] if m["id"] == "scoped")[
+        "appCompatibility"]["pixelAgent"]["status"] == "verified"
+
+    (install_dir / ".env").write_text("ODS_FLEET_HOST_ID=qa-cpu-host\n", encoding="utf-8")
+    unmatched = build_models_payload(
+        _gpu(), None, 0, install_dir, tmp_path / "data",
+        catalog=[scoped, ordinary], evidence=[], downloaded_files_override={},
+    )
+    assert unmatched["recommendationAlternatives"][0]["id"] == "ordinary"
+    assert next(m for m in unmatched["models"] if m["id"] == "scoped")[
+        "appCompatibility"]["pixelAgent"]["status"] == "unknown"
+
+
 def test_phi4_dashboard_defaults_to_fitting_context(data_dir, tmp_path):
     install_dir = tmp_path / "ods"
     install_dir.mkdir()
