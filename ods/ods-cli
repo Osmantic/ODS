@@ -758,6 +758,53 @@ load_env() {
 #=============================================================================
 . "$SCRIPT_DIR/lib/service-registry.sh"
 
+# Native lifecycle for the existing ODS OpenCode user service on Linux/WSL.
+# Return 2 for services outside this fixed binding so Docker handling continues.
+
+_ods_host_services_systemctl_user() {
+    local owner_uid owner_runtime owner_bus
+    owner_uid="$(id -u)"
+    owner_runtime="${XDG_RUNTIME_DIR:-/run/user/$owner_uid}"
+    owner_bus="${DBUS_SESSION_BUS_ADDRESS:-unix:path=$owner_runtime/bus}"
+    env XDG_RUNTIME_DIR="$owner_runtime" DBUS_SESSION_BUS_ADDRESS="$owner_bus" \
+        systemctl --user "$@"
+}
+
+_ods_host_services_is_managed_host_service() {
+    local service_id="$1"
+    [[ "$service_id" == opencode ]] \
+        && [[ "${SERVICE_TYPES[$service_id]:-docker}" == host-systemd ]] \
+        && [[ "${SERVICE_CATEGORIES[$service_id]:-optional}" != core ]]
+}
+
+ods_host_service_dispatch() {
+    local action="$1" service_id="$2" load_state
+    _ods_host_services_is_managed_host_service "$service_id" || return 2
+    if [[ "$(uname -s)" != Linux ]]; then
+        printf 'OpenCode host lifecycle through this CLI requires Linux or WSL.\n' >&2
+        return 1
+    fi
+    case "$action" in
+        enable|disable|start|stop|restart) ;;
+        *) printf 'Unsupported OpenCode lifecycle action: %s\n' "$action" >&2; return 1 ;;
+    esac
+    if ! load_state="$(_ods_host_services_systemctl_user show -p LoadState --value opencode-web.service)"; then
+        printf 'Could not inspect the OpenCode user service.\n' >&2
+        return 1
+    fi
+    case "$load_state" in
+        loaded) ;;
+        not-found|'') printf 'OpenCode service is missing. Rerun the ODS installer with OpenCode enabled.\n' >&2; return 1 ;;
+        masked) printf 'OpenCode service is masked; its existing policy was preserved.\n' >&2; return 1 ;;
+        *) printf 'OpenCode service is not loadable: %s\n' "$load_state" >&2; return 1 ;;
+    esac
+    case "$action" in
+        enable|disable) _ods_host_services_systemctl_user "$action" --now opencode-web.service ;;
+        start|stop|restart) _ods_host_services_systemctl_user "$action" opencode-web.service ;;
+    esac
+}
+
+
 # Resolve a user-provided service name to a compose service ID
 resolve_service() {
     local resolved
@@ -1662,7 +1709,7 @@ cmd_restart() {
     check_install
     cd "$INSTALL_DIR"
     load_env
-    ensure_llama_cpu_budget
+    sr_load
 
     # Parse flags vs positional service name
     local rebuild_images="false"
@@ -1676,17 +1723,29 @@ cmd_restart() {
         esac
     done
 
+    local resolved_service="$service"
+    if [[ -n "$resolved_service" ]]; then
+        resolved_service=$(resolve_service "$resolved_service")
+    fi
+
+    if [[ -n "$resolved_service" ]] && _ods_host_services_is_managed_host_service "$resolved_service"; then
+        [[ "$rebuild_images" == "true" ]] && error "--rebuild-images is not supported for host services."
+        if ods_host_service_dispatch restart "$resolved_service"; then
+            success "Restarted $resolved_service"
+            return 0
+        else
+            error "Failed to restart $resolved_service"
+        fi
+    fi
+
+    ensure_llama_cpu_budget
+
     local flags_str
     flags_str=$(get_compose_flags)
     local -a flags
     read -ra flags <<< "$flags_str"
 
     [[ "$rebuild_images" == "true" ]] && _ods_cli_rebuild_images "${flags[@]}"
-
-    local resolved_service="$service"
-    if [[ -n "$resolved_service" ]]; then
-        resolved_service=$(resolve_service "$resolved_service")
-    fi
 
     if [[ "$resolved_service" == "ods-proxy" ]]; then
         _ods_cli_prepare_proxy_start "${flags[@]}"
@@ -1847,8 +1906,24 @@ cmd_stop() {
     check_install
     cd "$INSTALL_DIR"
     load_env
+    sr_load
 
     local service="${1:-}"
+
+    if [[ -n "$service" ]]; then
+        local resolved_service
+        resolved_service=$(resolve_service "$service")
+        if _ods_host_services_is_managed_host_service "$resolved_service"; then
+            if ods_host_service_dispatch stop "$resolved_service"; then
+                success "Stopped $resolved_service"
+                return 0
+            else
+                error "Failed to stop $resolved_service"
+            fi
+        fi
+        service="$resolved_service"
+    fi
+
     local flags_str
     flags_str=$(get_compose_flags)
     local -a flags
@@ -1857,7 +1932,6 @@ cmd_stop() {
     if [[ -z "$service" ]]; then
         _compose_run_with_summary "Stopping all services" "${flags[@]}" down
     else
-        service=$(resolve_service "$service")
         _compose_run_with_summary "Stopping $service" "${flags[@]}" stop "$service"
     fi
 }
@@ -1876,7 +1950,6 @@ cmd_start() {
     check_install
     cd "$INSTALL_DIR"
     load_env
-    ensure_llama_cpu_budget
     sr_load
 
     # Parse flags vs positional service name
@@ -1897,17 +1970,29 @@ cmd_start() {
         error "Deferred WSL agent restart requires a complete stack start."
     fi
 
+    local resolved_service="$service"
+    if [[ -n "$resolved_service" ]]; then
+        resolved_service=$(resolve_service "$resolved_service")
+    fi
+
+    if [[ -n "$resolved_service" ]] && _ods_host_services_is_managed_host_service "$resolved_service"; then
+        [[ "$rebuild_images" == "true" ]] && error "--rebuild-images is not supported for host services."
+        if ods_host_service_dispatch start "$resolved_service"; then
+            success "Started $resolved_service"
+            return 0
+        else
+            error "Failed to start $resolved_service"
+        fi
+    fi
+
+    ensure_llama_cpu_budget
+
     local flags_str
     flags_str=$(get_compose_flags)
     local -a flags
     read -ra flags <<< "$flags_str"
 
     [[ "$rebuild_images" == "true" ]] && _ods_cli_rebuild_images "${flags[@]}"
-
-    local resolved_service="$service"
-    if [[ -n "$resolved_service" ]]; then
-        resolved_service=$(resolve_service "$resolved_service")
-    fi
 
     if [[ -z "$resolved_service" && -f "$INSTALL_DIR/lib/wsl-agent-address.sh" ]]; then
         # Refresh only automatically managed NAT addresses after WSL restarts.
@@ -2902,6 +2987,15 @@ cmd_enable() {
     local cat="${SERVICE_CATEGORIES[$service_id]:-optional}"
     [[ "$cat" == "core" ]] && { success "$service_id is a core service (always enabled)."; return 0; }
 
+    if _ods_host_services_is_managed_host_service "$service_id"; then
+        if ods_host_service_dispatch enable "$service_id"; then
+            success "Enabled $service_id"
+            return 0
+        else
+            error "Failed to enable $service_id"
+        fi
+    fi
+
     if [[ "$service_id" == "ods-proxy" ]]; then
         _ods_cli_require_proxy_auth
     fi
@@ -3018,6 +3112,15 @@ cmd_disable() {
     # Check it's not a core service
     local cat="${SERVICE_CATEGORIES[$service_id]:-optional}"
     [[ "$cat" == "core" ]] && error "Cannot disable core service: $service_id"
+
+    if _ods_host_services_is_managed_host_service "$service_id"; then
+        if ods_host_service_dispatch disable "$service_id"; then
+            success "Disabled $service_id"
+            return 0
+        else
+            error "Failed to disable $service_id"
+        fi
+    fi
 
     # Check for reverse dependents
     local dependents=()
