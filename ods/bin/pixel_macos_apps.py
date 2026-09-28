@@ -17,7 +17,7 @@ class AppLaunchError(ValueError):
 
 def launch_application(request, *, approved_apps, access_status):
     if (type(request) is not dict or set(request) != {'bundleId'}
-            or type(request['bundleId']) is not str
+            or type(request['bundleId']) is not str or len(request['bundleId']) > 155
             or not re.fullmatch(r'[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+', request['bundleId'])):
         raise AppLaunchError('invalid-app-request')
     bundle_id = request['bundleId']
