@@ -87,6 +87,9 @@ DASHBOARD_API_KEY=$SECRET_VALUE
 OPENAI_API_KEY=$SECRET_VALUE
 N8N_USER=$SECRET_VALUE
 LANGFUSE_INIT_USER_EMAIL=$SECRET_VALUE
+HUGINN_INVITATION_CODE=schema-huginn-invitation-code
+CREDS_IV=schema-librechat-credentials-iv
+SFTPGO_SETUP_CODE=schema-sftpgo-setup-code
 NORMAL_VALUE=visible-value
 ODS_MODE=cloud
 GPU_BACKEND=cpu
@@ -174,19 +177,22 @@ else
     fail "redacted env file is missing expected redaction"
 fi
 
-# Schema secret:true user/email keys must be redacted too — they ship in the
-# publicly shared bundle. The old keyword set omitted USER/EMAIL.
+# Schema secret:true keys must be redacted too — they ship in the publicly
+# shared bundle, including names without a heuristic secret word.
 if grep -q "N8N_USER=\\[REDACTED\\]" "$BUNDLE_DIR/config/env.redacted" \
-    && grep -q "LANGFUSE_INIT_USER_EMAIL=\\[REDACTED\\]" "$BUNDLE_DIR/config/env.redacted"; then
-    pass "schema-secret user/email env keys are redacted"
+    && grep -q "LANGFUSE_INIT_USER_EMAIL=\\[REDACTED\\]" "$BUNDLE_DIR/config/env.redacted" \
+    && grep -q "HUGINN_INVITATION_CODE=\\[REDACTED\\]" "$BUNDLE_DIR/config/env.redacted" \
+    && grep -q "CREDS_IV=\\[REDACTED\\]" "$BUNDLE_DIR/config/env.redacted" \
+    && grep -q "SFTPGO_SETUP_CODE=\\[REDACTED\\]" "$BUNDLE_DIR/config/env.redacted"; then
+    pass "schema-secret env keys are redacted"
 else
-    fail "N8N_USER / LANGFUSE_INIT_USER_EMAIL leaked into env.redacted"
+    fail "schema-secret env key leaked into env.redacted"
 fi
 
-if grep -R "$SECRET_VALUE" "$BUNDLE_DIR" >/dev/null 2>&1; then
-    fail "raw test secret leaked into bundle directory"
+if grep -R -E "$SECRET_VALUE|schema-huginn-invitation-code|schema-librechat-credentials-iv|schema-sftpgo-setup-code" "$BUNDLE_DIR" >/dev/null 2>&1; then
+    fail "raw schema secret leaked into bundle directory"
 else
-    pass "raw test secret is absent from bundle directory"
+    pass "raw schema secret is absent from bundle directory"
 fi
 
 EVIDENCE_PATH="$BUNDLE_DIR/manifest/evidence.json"
@@ -209,6 +215,12 @@ assert "compose" in evidence
 assert "config_hashes" in evidence
 assert evidence["env_keys"]["DASHBOARD_API_KEY"]["redacted"] is True
 assert evidence["env_keys"]["DASHBOARD_API_KEY"]["value"] is None
+assert evidence["env_keys"]["HUGINN_INVITATION_CODE"]["redacted"] is True
+assert evidence["env_keys"]["HUGINN_INVITATION_CODE"]["value"] is None
+assert evidence["env_keys"]["CREDS_IV"]["redacted"] is True
+assert evidence["env_keys"]["CREDS_IV"]["value"] is None
+assert evidence["env_keys"]["SFTPGO_SETUP_CODE"]["redacted"] is True
+assert evidence["env_keys"]["SFTPGO_SETUP_CODE"]["value"] is None
 assert evidence["env_keys"]["NORMAL_VALUE"]["value"] == "visible-value"
 assert "docker-compose.cloud.yml" in evidence["compose"]["files"]
 assert "docker-compose.cpu.yml" not in evidence["compose"]["files"]
@@ -226,10 +238,10 @@ if [[ -z "$ENV_MEMBER" ]]; then
     fail "archive does not contain config/env.redacted"
 elif ! tar -xOf "$ARCHIVE_PATH" "$ENV_MEMBER" > "$ARCHIVE_ENV"; then
     fail "could not extract config/env.redacted from archive"
-elif grep -q "$SECRET_VALUE" "$ARCHIVE_ENV"; then
-    fail "raw test secret leaked into bundle archive"
+elif grep -E "$SECRET_VALUE|schema-huginn-invitation-code|schema-librechat-credentials-iv|schema-sftpgo-setup-code" "$ARCHIVE_ENV"; then
+    fail "raw schema secret leaked into bundle archive"
 else
-    pass "raw test secret is absent from bundle archive env"
+    pass "raw schema secret is absent from bundle archive env"
 fi
 
 if [[ -f "$BUNDLE_DIR/docker/unavailable.txt" ]]; then
