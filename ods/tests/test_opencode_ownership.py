@@ -2,6 +2,7 @@ import importlib.util
 import json
 import os
 import stat
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -85,12 +86,16 @@ def _write_ports(root, port, env_var="OPENCODE_PORT"):
 
 def _write_env(root, env_var, port):
     p = root / ".env"
-    p.write_text("%s=%d\n" % (env_var, port))
+    p.write_text("ODS_MODEL_SWITCHBOARD=disabled\nODS_MODE=local\nOLLAMA_PORT=8080\n%s=%d\n" % (env_var, port))
     os.chmod(p, 0o600)
     return p
 
 
-def _write_cfgs(root, home, name="opencode.json", data=b'{"a":1}'):
+def _write_cfgs(root, home, name="opencode.json", data=None):
+    if data is None:
+        data = json.dumps({"model": "llama-server/fixture", "provider": {
+            "llama-server": {"npm": "@ai-sdk/openai-compatible", "options": {
+                "baseURL": "http://127.0.0.1:8080/v1", "apiKey": "no-key"}}}}).encode()
     a = root / "opencode" / name
     b = home / ".config/opencode" / name
     a.write_bytes(data)
@@ -104,6 +109,7 @@ def _setup_valid(helper, root, home, binary, template_bytes, port=3003):
     unit = _render(helper, template_bytes, home, binary)
     _write_unit(home, unit)
     _write_ports(root, port)
+    _write_env(root, "OPENCODE_PORT", port)
     _write_cfgs(root, home)
     _write_cfgs(root, home, name='config.json')
     return unit
@@ -155,6 +161,7 @@ def test_record_then_verify_ok(helper, root, home, binary, template_bytes, uid,
     assert out["startTicks"] == 1000
     assert out["provenInstallationRoot"] is True
     assert out["ownerService"] is True
+    assert out["schemaVersion"] == 1, 'the Windows ownership status wire contract is unchanged'
 
 
 def test_record_idempotent(helper, root, home, binary, template_bytes, uid):
@@ -334,3 +341,170 @@ def test_verify_rejects_runtime_identity_change(helper, root, home, binary, temp
 def test_rejects_external_or_unexpected_service_argv(helper, argv):
     with pytest.raises(helper.Fail):
         helper.parse_unit_execstart(('ExecStart=' + argv).encode())
+
+
+def _emit_actual_phase_config(helper, root, home, env_values):
+    """Run the real route/config fresh and rerun branches, never service/CLI code."""
+    phase = Path(helper.__file__).parents[1] / 'phases/07-devtools.sh'
+    source = phase.read_text()
+    start = source.index('        _opencode_model_id="${LLM_MODEL}"')
+    end = source.index('        # Install OpenCode Web UI as user-level', start)
+    emitter = source[start:end]
+    assert 'systemctl' not in emitter and 'ownership.py' not in emitter
+    config = home / '.config/opencode'
+    assert root.is_relative_to(home.parent) and home.is_relative_to(root.parent)
+    environment = {'PATH': '/usr/bin:/bin', 'HOME': str(home), 'LLM_MODEL': 'fixture-model',
+                   'MAX_CONTEXT': '4096', **env_values}
+    script = 'set -eu\nai_bad() { exit 91; }\nai_ok() { :; }\nai_warn() { :; }\n'
+    script += 'OPENCODE_CONFIG_DIR="$HOME/.config/opencode"\n' + emitter
+    result = subprocess.run(['bash', '-s', '--', str(config/'opencode.json'),
+                             str(config/'config.json')], input=script, text=True,
+                            capture_output=True, env=environment, timeout=5)
+    assert result.returncode == 0, 'isolated production emitter failed'
+    assert result.stdout == '' and result.stderr == ''
+    env_path = root / '.env'
+    env_path.write_text(''.join('%s=%s\n' % item for item in env_values.items()))
+    env_path.chmod(0o600)
+
+
+@pytest.mark.parametrize('env_values', [
+    {'LITELLM_KEY': 'fixture-gateway-key'},
+    {'ODS_MODEL_SWITCHBOARD': 'enabled', 'LITELLM_KEY': 'fixture-gateway-key', 'LITELLM_PORT': '4017'},
+    {'ODS_MODEL_SWITCHBOARD': 'disabled', 'EXTERNAL_LLM_URL': 'https://example.test/v1',
+     'EXTERNAL_LLM_MODEL': 'fixture-external', 'LITELLM_KEY': 'fixture-gateway-key'},
+    {'ODS_MODEL_SWITCHBOARD': 'disabled', 'ODS_MODE': 'lemonade', 'LITELLM_KEY': 'fixture-gateway-key'},
+    {'ODS_MODEL_SWITCHBOARD': 'disabled', 'ODS_MODE': 'lemonade'},
+    {'ODS_MODEL_SWITCHBOARD': 'disabled', 'ODS_MODE': 'local', 'OLLAMA_PORT': '8088'},
+])
+def test_actual_phase_emitter_records_without_invented_root_configs(
+        helper, root, home, binary, template_bytes, uid, monkeypatch, env_values):
+    _setup_valid(helper, root, home, binary, template_bytes)
+    for name in helper.CFG_NAMES:
+        (root/helper.CFG_ROOT_REL/name).unlink()
+        (home/helper.CFG_HOME_REL/name).unlink()
+    _emit_actual_phase_config(helper, root, home, env_values)
+    protected = {name: ((home/helper.CFG_HOME_REL/name).read_bytes(),
+                        (home/helper.CFG_HOME_REL/name).stat().st_ino)
+                 for name in helper.CFG_NAMES}
+    for name in helper.CFG_NAMES:
+        assert stat.S_IMODE((home/helper.CFG_HOME_REL/name).stat().st_mode) == 0o600
+        assert not (root/helper.CFG_ROOT_REL/name).exists()
+    assert helper.record(root, home, uid)['state'] == 'recorded'
+    marker = (home/helper.MARKER_REL).read_bytes()
+    assert helper.record(root, home, uid)['state'] == 'idempotent'
+    _patch_proc(monkeypatch, helper, binary, uid)
+    assert helper.verify(root, home, uid, systemctl_runner=lambda u, n:
+                         _fake_systemctl(helper, home, binary, 3003))['ownerService']
+    assert (home/helper.MARKER_REL).read_bytes() == marker
+    for name, (data, inode) in protected.items():
+        path = home/helper.CFG_HOME_REL/name
+        assert path.read_bytes() == data and path.stat().st_ino == inode
+        assert not (root/helper.CFG_ROOT_REL/name).exists()
+    # Run the actual installer rewrite/sync branch with the same choices.
+    _emit_actual_phase_config(helper, root, home, env_values)
+    assert helper.record(root, home, uid)['state'] == 'idempotent'
+    assert (home/helper.MARKER_REL).read_bytes() == marker
+    for name in helper.CFG_NAMES:
+        assert stat.S_IMODE((home/helper.CFG_HOME_REL/name).stat().st_mode) == 0o600
+        assert not (root/helper.CFG_ROOT_REL/name).exists()
+
+
+def _without_root_configs(helper, root, home, binary, template_bytes):
+    _setup_valid(helper, root, home, binary, template_bytes)
+    for name in helper.CFG_NAMES:
+        (root/helper.CFG_ROOT_REL/name).unlink()
+
+
+@pytest.mark.parametrize('defect', ['key', 'url', 'npm', 'other-provider', 'duplicate-json',
+                                  'duplicate-env', 'invalid-port', 'nonfinite', 'pair',
+                                  'symlink', 'hardlink', 'public-mode', 'foreign-root-copy'])
+def test_legacy_admission_rejects_unrelated_or_unsafe_config_without_mutation(
+        helper, root, home, binary, template_bytes, uid, defect, tmp_path):
+    _without_root_configs(helper, root, home, binary, template_bytes)
+    a, b = (home/helper.CFG_HOME_REL/name for name in helper.CFG_NAMES)
+    doc = json.loads(a.read_bytes())
+    provider = doc['provider']['llama-server']
+    if defect == 'key':
+        provider['options']['apiKey'] = 'different-fixture-key'
+    elif defect == 'url':
+        provider['options']['baseURL'] = 'http://127.0.0.1:4000/v1'
+    elif defect == 'npm':
+        provider['npm'] = '@example/foreign'
+    elif defect == 'other-provider':
+        doc['provider'] = {'other': provider}
+    elif defect == 'duplicate-env':
+        with (root/'.env').open('a') as stream:
+            stream.write('OLLAMA_PORT=8080\n')
+    elif defect == 'invalid-port':
+        with (root/'.env').open('a') as stream:
+            stream.write('LITELLM_PORT=99999\n')
+    elif defect == 'nonfinite':
+        doc['metadata'] = float('nan')
+    if defect in {'key', 'url', 'npm', 'other-provider', 'nonfinite'}:
+        a.write_text(json.dumps(doc))
+        b.write_bytes(a.read_bytes())
+    if defect == 'duplicate-json':
+        a.write_text('{"provider":{},"provider":{}}')
+        b.write_bytes(a.read_bytes())
+    elif defect == 'pair':
+        b.write_bytes(b'{}')
+    elif defect in {'symlink', 'hardlink'}:
+        foreign = tmp_path/'foreign-config.json'
+        foreign.write_bytes(a.read_bytes())
+        foreign.chmod(0o600)
+        a.unlink()
+        a.symlink_to(foreign) if defect == 'symlink' else os.link(foreign, a)
+    elif defect == 'public-mode':
+        a.chmod(0o644)
+    elif defect == 'foreign-root-copy':
+        foreign = root/helper.CFG_ROOT_REL/helper.CFG_NAMES[0]
+        foreign.write_bytes(b'{"foreign":true}')
+        foreign.chmod(0o600)
+    before = {path: path.read_bytes() for path in (a, b, root/'.env')}
+    with pytest.raises(helper.Fail):
+        helper.record(root, home, uid)
+    assert not (home/helper.MARKER_REL).exists()
+    assert {path: path.read_bytes() for path in before} == before
+
+
+def test_legacy_custom_settings_are_preserved_and_format_only_rerun_is_idempotent(
+        helper, root, home, binary, template_bytes, uid):
+    _without_root_configs(helper, root, home, binary, template_bytes)
+    paths = [home/helper.CFG_HOME_REL/name for name in helper.CFG_NAMES]
+    doc = json.loads(paths[0].read_bytes())
+    doc['model'] = 'other/custom-choice'
+    doc['provider']['other'] = {'custom': True}
+    doc['customSetting'] = {'keep': ['these', 'values']}
+    for path in paths:
+        path.write_text(json.dumps(doc, indent=2))
+    before = [path.read_bytes() for path in paths]
+    helper.record(root, home, uid)
+    marker = (home/helper.MARKER_REL).read_bytes()
+    assert [path.read_bytes() for path in paths] == before
+    for path in paths:
+        path.write_text(json.dumps(doc, separators=(',', ':')))
+    assert helper.record(root, home, uid)['state'] == 'idempotent'
+    assert (home/helper.MARKER_REL).read_bytes() == marker
+    doc['customSetting']['keep'].append('changed')
+    for path in paths:
+        path.write_text(json.dumps(doc))
+    with pytest.raises(helper.Fail):
+        helper.verify(root, home, uid, systemctl_runner=lambda u, n: {})
+    with pytest.raises(helper.Fail):
+        helper.record(root, home, uid)
+    assert (home/helper.MARKER_REL).read_bytes() == marker
+
+
+def test_previous_schema_marker_is_preserved_and_requires_explicit_migration(
+        helper, root, home, binary, template_bytes, uid):
+    _without_root_configs(helper, root, home, binary, template_bytes)
+    helper.record(root, home, uid)
+    marker = home/helper.MARKER_REL
+    doc = json.loads(marker.read_bytes())
+    doc['schemaVersion'] = 1
+    del doc['configSha256']
+    marker.write_text(json.dumps(doc))
+    before = marker.read_bytes()
+    with pytest.raises(helper.Fail):
+        helper.record(root, home, uid)
+    assert marker.read_bytes() == before

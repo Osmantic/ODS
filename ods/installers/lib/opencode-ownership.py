@@ -13,7 +13,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-SCHEMA = 1
+SCHEMA = 2
+OWNER_STATUS_SCHEMA = 1
 MANAGER = "ods"
 UNIT_NAME = "opencode-web.service"
 MARKER_REL = ".config/ods/opencode-web.owner.json"
@@ -236,11 +237,67 @@ def resolve_registered_port(root, uid):
 
 
 def compare_configs(root, home, uid):
+    """Bind HOME config to this root's managed provider without invented copies."""
+    keys = {"ODS_MODEL_SWITCHBOARD", "EXTERNAL_LLM_URL", "EXTERNAL_LLM_MODEL",
+            "ODS_MODE", "LITELLM_KEY", "LITELLM_PORT", "OLLAMA_PORT"}
+    env = {}
+    text = regular(root / ENV_REL, uid, MAX_ENV, private=True).decode("utf-8")
+    for line in text.splitlines():
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        if key not in keys:
+            continue
+        if key in env:
+            raise Fail("duplicate managed env key")
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+            value = value[1:-1]
+        env[key] = value
+    for key in ("LITELLM_PORT", "OLLAMA_PORT"):
+        value = env.get(key, "")
+        if value and (not re.fullmatch(r"[0-9]+", value) or not 1 <= int(value) <= 65535):
+            raise Fail("invalid managed provider port")
+    gateway = ((env.get("ODS_MODEL_SWITCHBOARD") or "enabled") == "enabled" or
+               bool(env.get("EXTERNAL_LLM_URL") and env.get("EXTERNAL_LLM_MODEL")) or
+               env.get("ODS_MODE") == "lemonade")
+    if gateway:
+        port = env.get("LITELLM_PORT") or "4000"
+        api_key = env.get("LITELLM_KEY") or ""
+        # Only the legacy Lemonade branch permits the installer's no-key default.
+        strict_key = ((env.get("ODS_MODEL_SWITCHBOARD") or "enabled") == "enabled" or
+                      bool(env.get("EXTERNAL_LLM_URL") and env.get("EXTERNAL_LLM_MODEL")))
+        if not api_key and strict_key:
+            raise Fail("managed gateway key missing")
+        api_key = api_key or "no-key"
+    else:
+        port = env.get("OLLAMA_PORT") or "8080"
+        api_key = "no-key"
+    expected_url = "http://127.0.0.1:%s/v1" % port
+    blobs = [regular(home / CFG_HOME_REL / name, uid, MAX_CFG, private=True)
+             for name in CFG_NAMES]
+    if blobs[0] != blobs[1]:
+        raise Fail("home config pair mismatch")
+    doc = load_json(blobs[0])
+    providers = doc.get("provider") if isinstance(doc, dict) else None
+    provider = providers.get("llama-server") if isinstance(providers, dict) else None
+    options = provider.get("options") if isinstance(provider, dict) else None
+    if (not isinstance(provider, dict) or provider.get("npm") != "@ai-sdk/openai-compatible" or
+            not isinstance(options, dict) or options.get("baseURL") != expected_url or
+            options.get("apiKey") != api_key):
+        raise Fail("config not associated with root provider")
+    # Older explicit copies, when present, remain strict evidence; never create them.
     for name in CFG_NAMES:
-        a = regular(root / CFG_ROOT_REL / name, uid, MAX_CFG, private=True)
-        b = regular(home / CFG_HOME_REL / name, uid, MAX_CFG, private=True)
-        if sha256(a) != sha256(b):
-            raise Fail("config mismatch")
+        path = root / CFG_ROOT_REL / name
+        if os.path.lexists(str(path)):
+            if regular(path, uid, MAX_CFG, private=True) != blobs[CFG_NAMES.index(name)]:
+                raise Fail("config mismatch")
+    try:
+        canonical = json.dumps(doc, sort_keys=True, separators=(",", ":"),
+                               ensure_ascii=False, allow_nan=False).encode("utf-8")
+    except (ValueError, TypeError):
+        raise Fail("invalid config value")
+    return sha256(canonical)
 
 
 def read_marker(home, uid):
@@ -249,7 +306,7 @@ def read_marker(home, uid):
         return None
     data = regular(path, uid, MAX_MARKER, private=True)
     doc = load_json(data)
-    fields = {"schemaVersion", "manager", "installRoot", "ownerUid", "unitPath", "unitSha256", "binaryPath", "port"}
+    fields = {"schemaVersion", "manager", "installRoot", "ownerUid", "unitPath", "unitSha256", "binaryPath", "port", "configSha256"}
     if not isinstance(doc, dict) or set(doc) != fields:
         raise Fail("marker fields mismatch")
     if doc.get("schemaVersion") != SCHEMA:
@@ -439,7 +496,8 @@ def verify(root, home, uid, systemctl_runner=None):
     registered = resolve_registered_port(root, uid)
     if registered != unit_port:
         raise Fail("registered port mismatch")
-    compare_configs(root, home, uid)
+    if compare_configs(root, home, uid) != marker.get("configSha256"):
+        raise Fail("config hash mismatch")
     template = read_template(root, uid)
     rendered = render_template(template, home, binary)
     if rendered != unit_bytes:
@@ -488,7 +546,7 @@ def verify(root, home, uid, systemctl_runner=None):
     if _proc_starttime(pid) != start_ticks:
         raise Fail("pid reused")
     return {
-        "schemaVersion": SCHEMA,
+        "schemaVersion": OWNER_STATUS_SCHEMA,
         "manager": MANAGER,
         "installRoot": str(root),
         "ownerUid": uid,
@@ -521,7 +579,7 @@ def record(root, home, uid):
     working = parse_unit_workingdir(unit_bytes)
     if working != str(home):
         raise Fail("working directory mismatch")
-    compare_configs(root, home, uid)
+    config_hash = compare_configs(root, home, uid)
     template = read_template(root, uid)
     rendered = render_template(template, home, binary)
     if rendered != unit_bytes:
@@ -529,7 +587,8 @@ def record(root, home, uid):
     registered = resolve_registered_port(root, uid)
     if registered != unit_port:
         raise Fail("registered port mismatch")
-    compare_configs(root, home, uid)
+    if compare_configs(root, home, uid) != config_hash:
+        raise Fail("config changed during admission")
     _check_binary(binary, uid)
     payload = {
         "schemaVersion": SCHEMA,
@@ -540,6 +599,7 @@ def record(root, home, uid):
         "unitSha256": sha256(unit_bytes),
         "binaryPath": binary,
         "port": unit_port,
+        "configSha256": config_hash,
     }
     existing = read_marker(home, uid)
     if existing is not None:

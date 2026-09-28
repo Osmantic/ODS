@@ -219,6 +219,9 @@ else
         # and as deterministic recovery when the jq rewrite path finds an
         # existing malformed file it cannot parse (issue #332).
         _opencode_write_fresh() {
+            # Private provider credentials must be private at creation.
+            (
+            umask 077
             cat > "$1" <<OPENCODE_EOF
 {
   "\$schema": "https://opencode.ai/config.json",
@@ -245,6 +248,7 @@ else
   }
 }
 OPENCODE_EOF
+            )
         }
 
         if [[ ! -f "$OPENCODE_CONFIG_DIR/opencode.json" ]]; then
@@ -255,7 +259,7 @@ OPENCODE_EOF
             _opencode_updated=false
             if command -v jq >/dev/null 2>&1; then
                 _opencode_tmp="$OPENCODE_CONFIG_DIR/opencode.json.tmp.$$"
-                if jq --arg url "$_opencode_url" --arg key "$_opencode_key" \
+                if (umask 077; jq --arg url "$_opencode_url" --arg key "$_opencode_key" \
                     --arg model_id "$_opencode_model_id" \
                     --arg model_name "$_opencode_model_name" \
                     --arg provider_name "$_opencode_provider_name" \
@@ -275,7 +279,7 @@ OPENCODE_EOF
                            "limit": {"context": $context, "output": $output}
                          }
                        }' \
-                    "$OPENCODE_CONFIG_DIR/opencode.json" > "$_opencode_tmp" 2>/dev/null; then
+                    "$OPENCODE_CONFIG_DIR/opencode.json" > "$_opencode_tmp" 2>/dev/null); then
                     mv "$_opencode_tmp" "$OPENCODE_CONFIG_DIR/opencode.json"
                     ai_ok "OpenCode config updated (model, API key, and URL refreshed)"
                     _opencode_updated=true
@@ -297,7 +301,7 @@ OPENCODE_EOF
             fi
         fi
         # OpenCode reads config.json, not opencode.json — always sync
-        cp "$OPENCODE_CONFIG_DIR/opencode.json" "$OPENCODE_CONFIG_DIR/config.json"
+        (umask 077; cp "$OPENCODE_CONFIG_DIR/opencode.json" "$OPENCODE_CONFIG_DIR/config.json")
 
         # Install OpenCode Web UI as user-level systemd service (no sudo required)
         if [[ -f "$INSTALL_DIR/opencode/opencode-web.service" ]]; then
