@@ -201,6 +201,12 @@ a reviewed tag or internal fork and record the exact commit or release tag.
 
 ## Provenance Roadmap
 
+The [signed source release pipeline](SIGNED_SOURCE_RELEASES.md) now defines the
+candidate producer and its verification gate. It only creates draft releases
+from new, verified signed tags. The existing quick start has not yet switched
+to those artifacts; first-candidate verification and the automated consumer
+remain required before treating the provenance chain as complete.
+
 1. Publish checksums for release installer artifacts.
 2. Sign release artifacts and tags with maintainer-controlled signing keys.
 3. Publish SBOMs for release artifacts and core container images.

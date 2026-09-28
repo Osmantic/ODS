@@ -14,7 +14,7 @@ implemented on main before this work.
 | SEC-002: Python advisories | Upgrade FastAPI/Starlette and aiohttp; all nine API/relay Docker builds install complete hash-checked locks; production audits are clean. | CI installation/build coverage and triage remaining full-suite failures. |
 | SEC-003: source containment | Generated source services have numeric non-root UID, no capabilities, no-new-privileges, read-only root, resource limits and an internal network; API publication/re-enable and dynamic resolver enforce the profile. Saved stack arguments are revalidated by the host and platform CLIs, including old receipts; merged recipes cannot override or join source sandboxes. | Real-container CI passed; run the new cross-platform saved-stack CI and broader lifecycle regressions. |
 | SEC-004: public AI spending | Paid issue triage and review comments require a trusted association; serialized jobs and per-run budgets; unauthorized comments cannot cancel another comment's review. | CI workflow validation. This bounds individual runs, not the organization's total monthly provider bill. |
-| SEC-005: provenance | Python locks/hashes, Python base image indexes and 31 additional external image references resolved from registry descriptors. Compose, installer prefetch/defaults and the dependency inventory agree on those digests. | Release checksums/SBOM/attestations, verified bootstrap channel and remaining image pins. Existing published tags have not been changed or retroactively signed. |
+| SEC-005: provenance | Python locks/hashes, Python base image indexes and 31 additional external image references resolved from registry descriptors. Signed-tag source packaging and a draft-only checksum/SBOM/OIDC workflow are implemented, with gate/archive tests. | Verify the first signed candidate end to end; implement the verified bootstrap channel and finish image pins. Existing published tags have not been changed or retroactively signed. |
 | SEC-006: React Router | Coordinated update to react-router-dom 7.18.4 and its lockfile; production npm audit is clean. | CI across supported frontend hosts. |
 | SEC-007: local origin trust | State-changing requests require exact Origin/Host agreement; the CORS allowlist no longer grants mutation authority. | CI regression coverage. |
 | SEC-008: mutable Actions | Remaining twelve Action uses pinned to full commit hashes. | CI workflow validation. |
@@ -96,6 +96,19 @@ accepts one optional UTF-8 BOM while rejecting invalid/oversized input, selects
 Bash 4+ only for the Linux fixture, and aligns the comment with the pinned image.
 Native macOS shell cases continue to run with the system Bash. Final-head CI
 must confirm these changes before any merge recommendation.
+
+The subsequent Windows CI confirmed both native checks passed, but propagated
+the deliberately failing helper's exit code from the rejection test. The test
+now exits successfully only after all assertions and cleanup complete. The
+integration run reached the macOS CLI suite and found older expectations for
+LAN-bound model traffic; these now require loopback while preserving custom
+ports and cloud credentials, consistent with the new listener policy.
+
+Release producer contracts pass on Windows and Linux (12 cases each), covering
+signature-response rejection, moved tags, unmerged commits, source-only
+packaging, reproducibility and symlink refusal. GitHub is the actual signature
+verifier; mocked API responses exercise the gate but do not prove production
+OIDC signing or published asset verification. No release workflow was dispatched.
 
 ## Upgrade behavior to review
 

@@ -72,3 +72,6 @@ try {
         Remove-Item -LiteralPath $resolved -Recurse -Force -ErrorAction SilentlyContinue
     }
 }
+# The last native call deliberately rejected an unsafe recipe. CI's PowerShell
+# wrapper otherwise mistakes that expected exit code for a failed test script.
+exit 0
