@@ -31,6 +31,8 @@ def normalize_outcome(value):
 
 
 def unavailable(reason):
+    if type(reason) is not str or not re.fullmatch(r"[a-z][a-z0-9-]{0,95}", reason):
+        raise SettingsError("invalid-settings-response")
     return {"schemaVersion": 1, "status": "unavailable", "revision": None, "settingsRevision": None,
             "appliedRevision": None, "capabilities": None, "pending": None, "lastVerifiedAt": None,
             "reason": reason}
