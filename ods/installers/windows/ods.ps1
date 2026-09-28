@@ -119,7 +119,10 @@ function Resolve-ODSModelStoreComposeFlags {
     }
     $python = Resolve-ODSHostAgentPython
     if (-not $python) { throw 'Python 3 is required for registered model-store Compose mounts' }
-    $arguments = @($python.PrefixArgs) + @($helper, '--install-dir', $InstallDir, '--json-stdin')
+    # Windows PowerShell's pipeline encoding can be ASCII, UTF-16 or UTF-8
+    # with a BOM depending on the host/profile. This is a UTF-8 JSON protocol.
+    $OutputEncoding = New-Object System.Text.UTF8Encoding($false)
+    $arguments = @($python.PrefixArgs) + @('-X', 'utf8', $helper, '--install-dir', $InstallDir, '--json-stdin')
     $inputJson = ConvertTo-Json -InputObject @($Flags) -Compress
     $output = $inputJson | & $python.FilePath @arguments 2>&1
     if ($LASTEXITCODE -ne 0) { throw "Registered model-store Compose configuration is unavailable: $(($output | Out-String).Trim())" }

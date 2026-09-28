@@ -12,8 +12,12 @@ function Read-ODSEnv { return @{ODS_ACTIVE_MODEL_STORE='default'; GGUF_FILE='fix
 function Resolve-ODSHostAgentPython { return [pscustomobject]@{ FilePath = (Get-Command python -CommandType Application | Select-Object -First 1).Source; PrefixArgs = @() } }
 function Assert-True { param($Value, $Message) if (-not $Value) { throw $Message } }
 $fixture = Join-Path ([IO.Path]::GetTempPath()) ('ods-compose-models-'+[Guid]::NewGuid().ToString('N'))
-$InstallDir = Join-Path $fixture 'install'
+$InstallDir = Join-Path $fixture ('install-' + [char]0x00e9 + [char]0x6a21)
+$previousOutputEncoding = $OutputEncoding
 try {
+    # CI hosts can inherit a BOM-bearing encoding. The helper must establish
+    # its own wire encoding, including non-ASCII model-store paths.
+    $OutputEncoding = New-Object System.Text.UTF8Encoding($true)
     foreach ($directory in @('data/models', 'scripts', 'extensions/services/dashboard-api', 'SSD space')) {
         New-Item -ItemType Directory -Path (Join-Path $InstallDir $directory) -Force | Out-Null
     }
@@ -61,6 +65,7 @@ try {
     Assert-True $rejected 'Saved extension escaped runtime security validation'
     Write-Host '[PASS] Windows rejects unsafe saved extensions before calling Docker'
 } finally {
+    $OutputEncoding = $previousOutputEncoding
     $resolved = [IO.Path]::GetFullPath($fixture)
     $prefix = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\','/') + [IO.Path]::DirectorySeparatorChar
     if ($resolved.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase) -and [IO.Path]::GetFileName($resolved).StartsWith('ods-compose-models-')) {
