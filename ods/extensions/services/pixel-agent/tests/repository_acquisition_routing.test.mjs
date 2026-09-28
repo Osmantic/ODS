@@ -232,6 +232,7 @@ for (const prompt of [
   'Clone https://github.com/Osmantic/ODS and write an audit report.',
   'Do not modify host services. Clone https://github.com/Osmantic/ODS locally.',
   'Do not audit https://github.com/Osmantic/ODS; clone it into the workspace.',
+  'Without changing host services, clone https://github.com/Osmantic/ODS locally.',
 ]) {
   test(`positive acquisition retains route despite operands or constraints: ${prompt}`, () => {
     assert.equal(api.userMessageRequestsRepositoryAcquisition([], prompt), true);
@@ -260,6 +261,7 @@ for (const prompt of [
   'Resume the staged download.',
   'Continue with the archive.',
   'Do not change host services. Unpack the archive into the workspace.',
+  'Without changing host services, unpack the archive into the workspace.',
 ]) {
   test(`actual download continuation retains guidance: ${prompt}`, () => {
     assert.equal(api.userMessageRequestsWorkspaceDownloadContinuation([], prompt), true);
@@ -272,6 +274,8 @@ for (const prompt of [
   'Run the six existing Node fixture tests in the workspace. Report the real test result and explain what this network interface can and cannot establish about the host. Here interface refers to the software capability surface. Do not inspect host addresses, run host operations, modify host services, or acquire another download.',
   'Run the existing tests and describe the software capabilities. Do not use Operations or inspect the host.',
   'Run the existing tests. The documentation example says "Inspect the available Operations capability inventory".',
+  'Without running host Operations, report software capabilities and run the existing fixture tests.',
+  'Run the existing fixture tests. Without Operations. Report the software capabilities.',
 ]) {
   for (const wrapped of [false, true]) {
     test(`negative or quoted Operations scope preserves workspace execution: ${wrapped}/${prompt}`, () => {

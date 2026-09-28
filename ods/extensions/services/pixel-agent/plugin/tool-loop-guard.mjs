@@ -5616,7 +5616,8 @@ function positiveOperationsIntentText(text) {
   // software-capability explanation into an exclusive Operations inventory.
   return ownerLaneText(text)
     .split(/[!?;\n]+|\.(?=\s|$)/)
-    .filter((clause) => !/^\s*(?:but\s+)?(?:please[,\s]+)?(?:do\s+not|don['’]t|never|must\s+not|should\s+not|avoid|skip|omit|exclude|no)\b/i.test(clause))
+    .map((clause) => clause.trim().replace(/^without\b[^,!?;\n]{1,160},\s*/i, ""))
+    .filter((clause) => !/^\s*(?:but\s+)?(?:please[,\s]+)?(?:do\s+not|don['’]t|never|must\s+not|should\s+not|avoid|skip|omit|exclude|without|no)\b/i.test(clause))
     .join(" ");
 }
 
@@ -6596,7 +6597,9 @@ function ownerAcquisitionIntentClauses(messages, prompt) {
   return ownerLaneText(currentOwnerIntentText(messages, prompt))
     // Preserve URL, filename, and version dots when separating owner clauses.
     .split(/[!?;\n]+|\.(?=\s|$)/)
-    .map((clause) => clause.trim().replace(/^(?:(?:also|now|please)[,\s]+)+/i, ""))
+    .map((clause) => clause.trim()
+      .replace(/^without\b[^,!?;\n]{1,160},\s*/i, "")
+      .replace(/^(?:(?:also|now|please)[,\s]+)+/i, ""))
     .filter((clause) => clause &&
       !/^(?:but\s+)?(?:do\s+not|don['’]t|never|avoid|skip|omit|exclude|without)\b/i.test(clause) &&
       !/^(?:explain|describe|document|tutorial|example|hypothetical|fictional|pretend)\b/i.test(clause));
