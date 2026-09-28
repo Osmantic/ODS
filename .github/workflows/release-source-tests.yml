@@ -1,0 +1,35 @@
+name: Release source contracts
+
+on:
+  pull_request:
+    paths:
+      - '.github/scripts/release_source.py'
+      - '.github/scripts/test_release_source.py'
+      - '.github/workflows/release-provenance.yml'
+      - '.github/workflows/release-source-tests.yml'
+  push:
+    branches: [main]
+    paths:
+      - '.github/scripts/release_source.py'
+      - '.github/scripts/test_release_source.py'
+      - '.github/workflows/release-provenance.yml'
+      - '.github/workflows/release-source-tests.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  source-contracts:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+        with:
+          python-version: '3.11'
+      - run: python -m pip install 'pytest==8.4.2' 'PyYAML==6.0.3'
+      - run: python -m pytest .github/scripts/test_release_source.py -q

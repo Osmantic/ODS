@@ -1,0 +1,70 @@
+name: Signed release source
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: signed-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  draft:
+    if: github.repository == 'Osmantic/ODS' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+        with:
+          python-version: '3.11'
+      - name: Verify signed tag and archive only its committed source
+        run: python .github/scripts/release_source.py prepare --output "$RUNNER_TEMP/ods-release"
+      - name: Generate source dependency SBOM
+        uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
+        with:
+          path: ${{ runner.temp }}/ods-release/source
+          format: spdx-json
+          output-file: ${{ runner.temp }}/ods-release/source.spdx.json
+          syft-version: v1.52.0
+          upload-artifact: false
+          upload-release-assets: false
+      - name: Bind source identity, archive hashes and SBOM
+        run: python .github/scripts/release_source.py finalize --output "$RUNNER_TEMP/ods-release"
+      - name: Attest source packages and inventory with GitHub OIDC
+        id: attest
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: |
+            ${{ runner.temp }}/ods-release/ODS-*-source.zip
+            ${{ runner.temp }}/ods-release/ODS-*-source.tar.gz
+            ${{ runner.temp }}/ods-release/source.spdx.json
+            ${{ runner.temp }}/ods-release/release-manifest.json
+            ${{ runner.temp }}/ods-release/SHA256SUMS
+      - name: Create a new draft; never overwrite or publish an existing release
+        env:
+          BUNDLE: ${{ steps.attest.outputs.bundle-path }}
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF#refs/tags/}"
+          cd "$RUNNER_TEMP/ods-release"
+          cp -- "$BUNDLE" provenance.sigstore.jsonl
+          args=()
+          if [[ "$tag" == *-* ]]; then args+=(--prerelease); fi
+          gh release create "$tag" --repo Osmantic/ODS --verify-tag --draft \
+            --title "$tag" --notes 'Signed source candidate. Maintainer validation and publication required. The SBOM covers source dependencies, not container OS layers or model weights.' \
+            "${args[@]}" "ODS-$tag-source.zip" "ODS-$tag-source.tar.gz" \
+            source.spdx.json release-manifest.json SHA256SUMS provenance.sigstore.jsonl
