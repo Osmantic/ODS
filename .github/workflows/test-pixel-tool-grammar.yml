@@ -23,11 +23,11 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: '22'
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.11'
       - name: Install the exact reviewed OpenClaw package without lifecycle scripts
@@ -51,7 +51,7 @@ jobs:
           mkdir -p "$runtime/state" "$runtime/workspace"
           python -m pip install pytest
       - name: Fetch the default Compose runtime's exact source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: ggml-org/llama.cpp
           # b9014, matching ods/docker-compose.base.yml
