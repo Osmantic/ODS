@@ -52,7 +52,7 @@ test('deployed attribution-free prompts upgrade without duplicating prior instru
   const legacyWriter = PATCHES.find(p => p.id === 'quality-14').replacement;
   const input = legacyExtractor + '\n' + legacyWriter;
   const upgraded = patchBundle(input);
-  assert.deepEqual(upgraded.applied.map(p => p.id), ['quality-18', 'quality-19', 'quality-20', 'quality-21', 'quality-22']);
+  assert.deepEqual(upgraded.applied.map(p => p.id), ['quality-18', 'quality-19', 'quality-20', 'quality-21', 'quality-22', 'quality-23', 'quality-24']);
   assert.equal(upgraded.source.split('Missing information in this chunk').length - 1, 1);
   assert.equal(upgraded.source.split('Extraction notes such as').length - 1, 1);
   assert.equal(patchBundle(upgraded.source).source, upgraded.source);
@@ -77,8 +77,8 @@ const actualPath = process.env.VANE_TEST_BUNDLE;
 test('actual pinned image bundle has all anchors and remains valid/idempotent', { skip: !actualPath }, t => {
   const source = fs.readFileSync(actualPath, 'utf8');
   const result = patchBundle(source);
-  assert.equal(new Set(result.recognized).size, 22);
-  assert.equal(result.applied.length, 22);
+  assert.equal(new Set(result.recognized).size, 24);
+  assert.equal(result.applied.length, 24);
   assert.ok(!result.source.includes('SHALL NOT BE LESS THAN AT LEAST 2000 WORDS'));
   assert.ok(!result.source.includes('exhaust your research budget first'));
   assert.match(result.source, /The iteration budget is an upper bound, not a quota/);
@@ -88,6 +88,8 @@ test('actual pinned image bundle has all anchors and remains valid/idempotent', 
   assert.match(result.source, /Do not infer authorship, endorsement or agreement from quotation or proximity/);
   assert.match(result.source, /shared first name, similar name or appearance in search results/);
   assert.match(result.source, /Omit unrelated profiles and speculative disambiguation asides/);
+  assert.match(result.source, /A demo status label does not establish current operational state/);
+  assert.match(result.source, /Preserve relevant, explicitly supported status observations with their context/);
   assert.equal(patchBundle(result.source).source, result.source);
   assert.equal(patchBundle(result.source).applied.length, 0);
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ods-vane-real-bundle-'));

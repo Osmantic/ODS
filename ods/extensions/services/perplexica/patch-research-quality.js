@@ -117,6 +117,18 @@ PATCHES.push({
   old: groundedCitations,
   replacement: groundedCitations + '\n    - Keep the answer within the requested subject. Facts about a different person or organization returned by search do not establish name confusion, conflation or a relationship. Omit unrelated profiles and speculative disambiguation asides. Include an identity distinction only when it answers the question or source evidence establishes a material ambiguity; preserve explicitly supported aliases and relationships.'
 });
+const relevantExtractor = PATCHES.find(patch => patch.id === 'quality-21').replacement;
+PATCHES.push({
+  id: 'quality-23',
+  old: relevantExtractor,
+  replacement: relevantExtractor + ' Distinguish substantive source claims from decorative interface labels, illustrative dashboards and example data. A demo status label does not establish current operational state. Extract an operational claim only with its actual source, observation context and date when provided; preserve genuine status evidence when the question calls for it.'
+});
+const relevantCitations = PATCHES.find(patch => patch.id === 'quality-22').replacement;
+PATCHES.push({
+  id: 'quality-24',
+  old: relevantCitations,
+  replacement: relevantCitations + '\n    - Describe capabilities separately from operational state. Decorative interface labels and example dashboards are not evidence of live service health. Preserve relevant, explicitly supported status observations with their context. Identify self-reported claims by their source; unrelated pages omitting the subject do not establish lack of independent confirmation. Do not discuss retrieval coverage, exclusion decisions or absence notes unless the user asks about the research process.'
+});
 
 function replaceUnpatched(source, old, replacement) {
   let cursor = 0, count = 0, out = '';
