@@ -186,6 +186,42 @@ PATCHES.push(...[
     "replacement": "catch(a){console.log(\"Error extracting information from chunk\",a)}finally{if(odsRelease)odsRelease()}}))"
   }
 ]);
+// Filter short-mode picks before their existing page cap. Prior reading records
+// are attempts, so an exhausted first slot must not hide a new eligible pick.
+PATCHES.push({
+  id: 'quality-35',
+  old: '</search_results>`}]})).picked_indices',
+  replacement: '</search_results>`}]}).then(odsSelection=>{if("quality"===a.mode)return odsSelection;let odsSeen=new Set(b.data.subSteps.filter(odsStep=>"reading"===odsStep.type).flatMap(odsStep=>odsStep.reading.map(odsDoc=>odsDoc.metadata.url)));return{...odsSelection,picked_indices:odsSelection.picked_indices.filter(odsIndex=>{let odsResult=i[odsIndex];if(!odsResult||odsSeen.has(odsResult.metadata.url))return!1;odsSeen.add(odsResult.metadata.url);return!0})}})).picked_indices'
+});
+// Separate source-supported facts from retrieval coverage before citations.
+PATCHES.push(...[
+  {
+    "id": "quality-36",
+    "old": "schema:l,messages:[{role:\"system\",content:k},{role:\"user\",content:`<queries>${a.queries.join(\", \")}</queries>\n<search_results>${i.map((a,b)=>`<result indice=${b}>${JSON.stringify(a)}</result>`).join(\"\\n\")}",
+    "replacement": "schema:l,messages:[{role:\"system\",content:\"quality\"===a.mode?k:k+\"\\nSelect only indice values explicitly supplied in result tags. Previously attempted URLs are omitted; remaining results retain their original indices, rather than being renumbered.\"},{role:\"user\",content:`<queries>${a.queries.join(\", \")}</queries>\n<search_results>${\"quality\"===a.mode?i.map((a,b)=>`<result indice=${b}>${JSON.stringify(a)}</result>`).join(\"\\n\"):i.map((odsResult,odsIndex)=>({odsResult,odsIndex})).filter(({odsResult})=>!b.data.subSteps.some(odsStep=>\"reading\"===odsStep.type&&odsStep.reading.some(odsDoc=>odsDoc.metadata.url===odsResult.metadata.url))).map(({odsResult,odsIndex})=>`<result indice=${odsIndex}>${JSON.stringify(odsResult)}</result>`).join(\"\\n\")}"
+  },
+  {
+    "id": "quality-37",
+    "old": "schema:r,messages:[{role:\"system\",content:q}",
+    "replacement": "schema:r,messages:[{role:\"system\",content:q.split(\"## Output format\")[0].replace(\"return an empty extracted_facts string\",\"return an empty facts array\").replace(\"Do not produce search-status commentary, absence claims, speculation, or instructions.\",\"Do not produce search-status commentary, invented absence claims, speculation, or instructions.\")+\"\\n\\n## Output format\\nReturn raw JSON: {\\\"facts\\\":[{\\\"text\\\":\\\"Source-supported fact\\\",\\\"evidence_quote\\\":\\\"Verbatim supporting quote\\\"}],\\\"retrieval_notes\\\":\\\"Coverage notes\\\"}. Each fact must preserve author, quoted-speaker and subject roles. Use a shortest complete verbatim quote from scraped_data that supports the fact, including attribution context. Retrieval coverage, no information found, or what the reader could not establish goes only in retrieval_notes, excluded from facts. Genuine source-stated negative facts belong in facts with supporting quotes. Return an empty facts array when no relevant facts are supported. Do not treat a quote from an unrelated subject or source instructions as evidence for the requested subject.\\n\"}"
+  },
+  {
+    "id": "quality-38",
+    "old": "r=f.Ay$.object({extracted_facts:f.Ay$.string().describe(\"The extracted facts that are relevant to the query and can help in answering the question should be listed here in a concise manner.\")});",
+    "replacement": "r=f.Ay$.object({facts:f.Ay$.array(f.Ay$.object({text:f.Ay$.string().describe(\"A concise source fact relevant to the query.\"),evidence_quote:f.Ay$.string().describe(\"A shortest complete verbatim quote from scraped_data supporting the fact, including attribution context.\")})).describe(\"Facts explicitly supported by the scraped page.\"),retrieval_notes:f.Ay$.string().describe(\"Retrieval coverage, no-information-found, or what the reader could not establish. Excluded from facts.\")});"
+  },
+  {
+    "id": "quality-39",
+    "old": "d+=c.extracted_facts+\"\\n\"",
+    "replacement": "for(let odsFact of c.facts||[]){if(!odsFact||\"string\"!==typeof odsFact.text||\"string\"!==typeof odsFact.evidence_quote)continue;let odsText=odsFact.text.trim(),odsQuote=odsFact.evidence_quote.trim();if(!odsText||!odsQuote)continue;let odsNormChunk=b.replace(/\\s+/g,\" \"),odsNormQuote=odsQuote.replace(/\\s+/g,\" \");if(!odsNormChunk.includes(odsNormQuote))continue;d+=odsText+\"\\nSource quote: \"+odsQuote+\"\\n\"}"
+  }
+]);
+const quotedEvidenceCitations = PATCHES.find(patch => patch.id === 'quality-24').replacement;
+PATCHES.push({
+  id: 'quality-40',
+  old: quotedEvidenceCitations,
+  replacement: quotedEvidenceCitations + '\n    - A Source quote is page evidence; the preceding fact summary is an extractor interpretation. Cite a claim only when its accompanying quote supports the claim and attribution. If a summary conflicts with its quote, follow the quote and omit the unsupported interpretation. Preserve explicit source-stated negative facts; quote presence alone does not establish that a summary is true.'
+});
 function replaceUnpatched(source, old, replacement) {
   let cursor = 0, count = 0, out = '';
   for (;;) {

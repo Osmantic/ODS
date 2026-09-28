@@ -29,18 +29,21 @@ test('fixture matches the pinned production module and an optional full image bu
 });
 
 async function execute(source, mode, options = {}) {
-  const calls = { embedding: 0, picker: 0, extraction: 0, pages: [], active: 0, maxActive: 0 };
-  const schema = { describe() { return this; } };
+  const calls = { embedding: 0, picker: 0, extraction: 0, pages: [], active: 0, maxActive: 0,
+    pickerRequests: [], extractionRequests: [] };
+  const schema = (kind, shape) => ({kind, shape, describe() { return this; }});
+  const pageContent = options.pageContent ?? 'Page author: J. Pell. Quoted speaker: Aria Vance.';
   const dependencies = {
-    56471: { n: async () => ({ results }) },
+    56471: { n: async () => ({ results: options.searchResults ?? results }) },
     25341: { A: (a, b) => a[0] * b[0] + a[1] * b[1] },
-    46901: { Ay$: { object: () => schema, array: () => schema, number: () => schema, string: () => schema } },
+    46901: { Ay$: { object: shape => schema('object', shape), array: shape => schema('array', shape),
+      number: () => schema('number'), string: () => schema('string') } },
     96227: { A: { scrape: async url => {
       calls.pages.push(url);
       if (options.readerFails) throw Error('fixture reader unavailable');
-      return { content: 'Page author: J. Pell. Quoted speaker: Aria Vance.' };
+      return { content: pageContent };
     } } },
-    29092: { A: content => Array.from({ length: 6 }, (_, index) => content + ' chunk ' + index) },
+    29092: { A: content => options.chunks ?? Array.from({ length: 6 }, (_, index) => content + ' chunk ' + index) },
   };
   const requireModule = id => {
     assert.ok(Object.hasOwn(dependencies, id), 'unexpected production import ' + id);
@@ -52,7 +55,8 @@ async function execute(source, mode, options = {}) {
   Function('crypto', 'console', 'return (' + source + ')')(crypto, { log() {} })({}, exports, requireModule);
   const documents = await exports.k({
     mode, queries: ['Aria Vance in AI'],
-    researchBlock: { id: 'fixture-research', data: { subSteps: [] } }, session: { updateBlock() {} },
+    researchBlock: { id: 'fixture-research', data: { subSteps: (options.visitedURLs ?? []).map(url =>
+      ({type:'reading', reading:[{metadata:{url}}]})) } }, session: { updateBlock() {} },
     embedding: { embedText: async texts => {
       calls.embedding++;
       if (!options.workingEmbedding) throw Error('fixture embedding unavailable');
@@ -61,17 +65,22 @@ async function execute(source, mode, options = {}) {
     llm: { generateObject: async request => {
       if (request.messages[0].content.includes('search result picker')) {
         calls.picker++;
+        calls.pickerRequests.push(request);
         if (options.pickerFails) throw Error('fixture picker unavailable');
-        return { picked_indices: [0, 1] };
+        return { picked_indices: options.pickedIndices ?? [0, 1] };
       }
-      if (source !== original) assert.match(request.messages[0].content, /Preserve attribution roles/);
+      calls.extractionRequests.push(request);
       const ordinal = ++calls.extraction;
       calls.active++;
       calls.maxActive = Math.max(calls.maxActive, calls.active);
       try {
         await new Promise(resolve => setTimeout(resolve, 3));
         if (options.firstExtractionFails && ordinal === 1) throw Error('fixture extractor unavailable');
-        return { extracted_facts: options.emptyFacts ? ' \n ' : 'Page author: J. Pell. Quoted speaker: Aria Vance.' };
+        if (source === original) return {extracted_facts: pageContent};
+        return options.extractionResponse ?? {
+          facts: options.emptyFacts ? [] : [{text: pageContent, evidence_quote: pageContent}],
+          retrieval_notes: 'Reader could not establish an unrelated role.',
+        };
       } finally { calls.active--; }
     } },
   });
@@ -104,7 +113,8 @@ for (const mode of ['speed', 'balanced', 'quality']) {
     if (mode !== 'quality') assert.ok(calls.maxActive <= pages);
     assert.ok(documents.length > 0);
     assert.ok(documents.every(document => document.content.trimEnd().split('\n').every(fact =>
-      fact === 'Page author: J. Pell. Quoted speaker: Aria Vance.')));
+      fact === 'Page author: J. Pell. Quoted speaker: Aria Vance.' ||
+      fact === 'Source quote: Page author: J. Pell. Quoted speaker: Aria Vance.')));
     assert.ok(documents.every(document => calls.pages.includes(document.metadata.url)));
     assert.ok(!documents.some(document => document.metadata.url.endsWith('/unrelated')));
     if (mode === 'quality') {
@@ -132,7 +142,7 @@ for (const mode of ['speed', 'balanced']) {
     const { documents, calls } = await execute(patched, mode, { firstExtractionFails: true });
     const expected = mode === 'speed' ? 2 : 8;
     assert.equal(calls.extraction, expected);
-    assert.equal(documents.reduce((count, document) => count + document.content.trimEnd().split('\n').length, 0), expected - 1);
+    assert.equal(documents.reduce((count, document) => count + document.content.trimEnd().split('\n').length, 0), 2 * (expected - 1));
     assert.ok(calls.maxActive <= (mode === 'speed' ? 1 : 2));
   });
 }
@@ -143,4 +153,127 @@ test('picker failure rejects and unsupported modes produce no raw evidence fallb
   assert.deepEqual(unsupported.documents, []);
   assert.equal(unsupported.calls.picker, 0);
   assert.equal(unsupported.calls.embedding, 0);
+});
+
+const relatedResults = [results[0], results[1],
+  {title:'Aria Vance research',url:'https://example.test/research',content:'Aria Vance works in AI.'}];
+for (const mode of ['speed', 'balanced']) {
+  test(`${mode} applies its page budget to eligible picks after a previous reading`, async () => {
+    const {documents, calls} = await execute(patched, mode, {
+      searchResults:relatedResults, pickedIndices:[0,1,2], visitedURLs:[results[0].url],
+    });
+    assert.deepEqual(calls.pages, mode === 'speed'
+      ? [relatedResults[1].url] : [relatedResults[1].url, relatedResults[2].url]);
+    assert.ok(documents.length > 0);
+  });
+}
+test('short-mode invalid and duplicate picks do not consume eligible page slots', async () => {
+  const invalid = await execute(patched, 'speed', {pickedIndices:[99,0,1]});
+  assert.deepEqual(invalid.calls.pages, [results[0].url]);
+  const duplicate = await execute(patched, 'balanced', {pickedIndices:[0,0,1]});
+  assert.deepEqual(duplicate.calls.pages, [results[0].url, results[1].url]);
+  const visitedDuplicates = await execute(patched, 'speed', {
+    pickedIndices:[0,0,0,1], visitedURLs:[results[0].url],
+  });
+  assert.deepEqual(visitedDuplicates.calls.pages, [results[1].url]);
+});
+test('Quality retains its original selected-index cap and full page extraction', async () => {
+  const {calls} = await execute(patched, 'quality', {
+    searchResults:relatedResults, pickedIndices:[99,0,1,2], visitedURLs:[results[0].url],
+  });
+  assert.deepEqual(calls.pages, [results[1].url]);
+  assert.equal(calls.extraction, 6);
+});
+
+for (const mode of ['speed', 'balanced']) {
+  test(`${mode} picker omits prior URLs without renumbering remaining indices`, async () => {
+    const {calls} = await execute(patched, mode, {
+      searchResults:relatedResults, pickedIndices:[1,2], visitedURLs:[results[0].url],
+    });
+    const [request] = calls.pickerRequests;
+    assert.match(request.messages[0].content, /rather than being renumbered/);
+    assert.ok(!request.messages[1].content.includes(results[0].url));
+    assert.ok(!request.messages[1].content.includes('<result indice=0>'));
+    assert.match(request.messages[1].content, /<result indice=1>/);
+    assert.match(request.messages[1].content, /<result indice=2>/);
+  });
+}
+test('Quality picker messages are byte-identical to upstream, including prior URLs', async () => {
+  const options = {searchResults:relatedResults, pickedIndices:[0,1], visitedURLs:[results[0].url]};
+  const upstream = await execute(original, 'quality', options);
+  const candidate = await execute(patched, 'quality', options);
+  assert.deepEqual(candidate.calls.pickerRequests[0].messages, upstream.calls.pickerRequests[0].messages);
+});
+test('a picker returning only a prior index never triggers blind reading', async () => {
+  const {calls, documents} = await execute(patched, 'speed', {
+    searchResults:relatedResults, pickedIndices:[0], visitedURLs:[results[0].url],
+  });
+  assert.deepEqual(calls.pages, []);
+  assert.equal(calls.extraction, 0);
+  assert.deepEqual(documents, []);
+});
+test('typed schema and prompt retain semantic guards and remove the legacy output contract', async () => {
+  const {calls} = await execute(patched, 'speed');
+  const [request] = calls.extractionRequests;
+  const prompt = request.messages[0].content;
+  assert.match(prompt, /Preserve attribution roles/);
+  assert.match(prompt, /Check entity identity/);
+  assert.match(prompt, /decorative interface labels/);
+  assert.match(prompt, /Genuine source-stated negative facts/);
+  assert.match(prompt, /Return raw JSON/);
+  assert.ok(!prompt.includes('extracted_facts'));
+  assert.deepEqual(Object.keys(request.schema.shape), ['facts', 'retrieval_notes']);
+  assert.equal(request.schema.shape.facts.kind, 'array');
+  assert.deepEqual(Object.keys(request.schema.shape.facts.shape.shape), ['text', 'evidence_quote']);
+});
+test('positive facts and genuine source-stated negatives survive, while coverage notes do not', async () => {
+  const positive = 'Aria Vance founded Example Lab.';
+  const negative = 'Aria Vance has not joined Example University.';
+  const {documents} = await execute(patched, 'speed', {
+    pageContent:positive + ' ' + negative,
+    extractionResponse:{facts:[{text:positive,evidence_quote:positive},{text:negative,evidence_quote:negative}],
+      retrieval_notes:'No information found about funding; the reader could not establish it.'},
+  });
+  assert.equal(documents.length, 1);
+  assert.ok(documents[0].content.includes(positive));
+  assert.ok(documents[0].content.includes(negative));
+  assert.ok(!documents[0].content.includes('funding'));
+  assert.equal(documents[0].metadata.url, results[0].url);
+});
+test('quote verification uses the current actual chunk, not another chunk of the page', async () => {
+  const supported = 'Aria Vance founded Example Lab.';
+  const {documents} = await execute(patched, 'speed', {
+    chunks:['A different paragraph.', supported],
+    extractionResponse:{facts:[{text:supported,evidence_quote:supported}],retrieval_notes:'Do not forward'},
+  });
+  assert.equal(documents.length, 1);
+  assert.equal(documents[0].content, supported + '\nSource quote: ' + supported + '\n');
+});
+test('whitespace and Unicode in an actual supporting quote are accepted without changing the quote', async () => {
+  const quote = 'Aria\u00a0Vance\n founded\tExample Lab.';
+  const {documents} = await execute(patched, 'speed', {
+    pageContent:'Aria Vance founded Example Lab.',
+    extractionResponse:{facts:[{text:'She founded Example Lab.',evidence_quote:quote}],retrieval_notes:''},
+  });
+  assert.equal(documents.length, 1);
+  assert.ok(documents[0].content.includes('Source quote: ' + quote));
+});
+test('unsupported, malformed, missing and empty quotes cannot become cited documents', async () => {
+  const {documents} = await execute(patched, 'speed', {extractionResponse:{facts:[
+    null, 'a string', {text:42,evidence_quote:'Page author: J. Pell.'},
+    {text:'Wrong fact',evidence_quote:'Absent from the actual page'},
+    {text:'No quote'}, {text:'Empty',evidence_quote:' '}, {text:'',evidence_quote:'Page author: J. Pell.'},
+    {text:'Non-string quote',evidence_quote:42},
+  ],retrieval_notes:'No information found'}});
+  assert.deepEqual(documents, []);
+});
+test('legacy flat notes and typed coverage-only outputs produce no documents', async () => {
+  for (const extractionResponse of [
+    {extracted_facts:'The reader could not establish a fact.'},
+    {facts:[],retrieval_notes:'No information found about the requested person.'},
+  ]) {
+    const {documents, calls} = await execute(patched, 'balanced', {extractionResponse});
+    assert.ok(calls.extraction > 0);
+    assert.deepEqual(documents, []);
+  }
 });
