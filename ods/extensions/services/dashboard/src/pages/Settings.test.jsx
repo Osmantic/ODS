@@ -27,6 +27,7 @@ const storage = {
 
 const editor = {
   path: '.env',
+  revision: 'env-revision-from-server',
   fields: {
     ODS_VERSION: {
       key: 'ODS_VERSION',
@@ -309,6 +310,7 @@ it.each([true,false])('locks the environment draft until its pending save settle
     : {detail:'Write failed'}, success ? 200 : 503)))
   expect(field).toBeEnabled()
   expect(field).toHaveValue('192.168.1.25')
+  expect(JSON.parse(fetchMock.mock.calls.find(([, options]) => options?.method === 'PUT')[1].body).revision).toBe('env-revision-from-server')
   fireEvent.change(field,{target:{value:'192.168.1.26'}})
   expect(screen.getByRole('button',{name:'Save .env'})).toBeEnabled()
   expect(fetchMock.mock.calls.filter(([,options]) => options?.method === 'PUT')).toHaveLength(1)
