@@ -49,6 +49,17 @@ def _node_cmd_or_skip() -> str | None:
     return None
 
 
+def test_research_quality_behavior_regressions() -> None:
+    node = _node_cmd_or_skip()
+    if not node:
+        return
+    result = subprocess.run(
+        [node, "--test", str(ROOT / "tests" / "test-vane-research-quality.cjs")],
+        capture_output=True, text=True, timeout=30,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
 def _bash_cmd_or_skip() -> str | None:
     bash = shutil.which("bash")
     if bash:
