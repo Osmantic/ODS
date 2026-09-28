@@ -28,6 +28,7 @@ service:
     secret: true
     description: Initial password for the ods administrator. Use a single-line password;
       later changes are managed in CouchDB and persisted.
+    generate: password
   ui_path: /_utils/
 tags:
 - database

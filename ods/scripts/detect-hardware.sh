@@ -531,14 +531,14 @@ tier_model() {
     fi
 
     case $1 in
-        T4)    echo "qwen3-coder-next" ;;
-        T3)    echo "qwen3-30b-a3b" ;;
+        T4)    echo "qwen3.6-35b-a3b" ;;
+        T3)    echo "qwen3.5-27b" ;;
         T2)    echo "qwen3.5-9b" ;;
         T0)    echo "qwen3.5-2b" ;;
         T1)    echo "qwen3.5-2b" ;;
         NV_ULTRA)   echo "qwen3-coder-next" ;;
-        SH_LARGE)   echo "qwen3-coder-next" ;;
-        SH_COMPACT) echo "qwen3-30b-a3b" ;;
+        SH_LARGE)   echo "qwen3.6-35b-a3b" ;;
+        SH_COMPACT) echo "qwen3.6-35b-a3b" ;;
         AP_ULTRA)   echo "qwen3-coder-next-Q4_K_M.gguf" ;;
         AP_PRO)     echo "qwen3.5-9b-Q4_K_M.gguf" ;;
         AP_BASE)    echo "qwen3.5-2b-Q4_K_M.gguf" ;;

@@ -782,6 +782,10 @@ _regenerate_compose_flags() {
             rm -f "$INSTALL_DIR/.compose-flags"
             warn "Could not regenerate the compose stack cache. 'ods start' will fail until this is resolved:"
             [[ -n "$resolver_err" ]] && printf '%s\n' "$resolver_err" >&2
+        elif [[ "$resolver_err" == *WARNING:* ]]; then
+            # The stack resolved, but refused extension files (and anything
+            # that depends on them) were left out. Say which, and why.
+            printf '%s\n' "$resolver_err" | grep '^WARNING:' >&2 || true
         fi
     else
         rm -f "$INSTALL_DIR/.compose-flags"
@@ -1877,15 +1881,21 @@ cmd_start() {
 
     # Parse flags vs positional service name
     local rebuild_images="false"
+    local restart_wsl_agent="true"
     local service=""
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --rebuild-images) rebuild_images="true"; shift ;;
+            # The Windows lifecycle controller owns the verified native restart.
+            --defer-wsl-agent-restart) restart_wsl_agent="false"; shift ;;
             --) shift; break ;;
             -*) error "Unknown option: $1" ;;
             *) service="$1"; shift ;;
         esac
     done
+    if [[ "$restart_wsl_agent" == false && -n "$service" ]]; then
+        error "Deferred WSL agent restart requires a complete stack start."
+    fi
 
     local flags_str
     flags_str=$(get_compose_flags)
@@ -1897,6 +1907,14 @@ cmd_start() {
     local resolved_service="$service"
     if [[ -n "$resolved_service" ]]; then
         resolved_service=$(resolve_service "$resolved_service")
+    fi
+
+    if [[ -z "$resolved_service" && -f "$INSTALL_DIR/lib/wsl-agent-address.sh" ]]; then
+        # Refresh only automatically managed NAT addresses after WSL restarts.
+        # shellcheck source=lib/wsl-agent-address.sh
+        . "$INSTALL_DIR/lib/wsl-agent-address.sh"
+        ods_prepare_wsl_agent_address "$INSTALL_DIR" "$restart_wsl_agent" || error "WSL control address could not be prepared; start cancelled."
+        load_env
     fi
 
     if [[ "$resolved_service" == "ods-proxy" ]]; then
@@ -6055,7 +6073,13 @@ _gpu_reassign() {
             read -r _para
             case "${_para:-tensor}" in
                 tensor|hybrid)
-                    split_mode_m="row"
+                    # NVIDIA: CUDA row split is not fleet-qualified and fails at
+                    # model load from llama.cpp b9890, so use layer split.
+                    if [[ "$backend" == "nvidia" ]]; then
+                        split_mode_m="layer"
+                    else
+                        split_mode_m="row"
+                    fi
                     parallelism_mode_m="tensor"
                     tensor_split_m=$(printf '1,%.0s' $(seq 1 "$llama_gpu_count"))
                     tensor_split_m="${tensor_split_m%,}"
@@ -6230,8 +6254,10 @@ _gpu_reassign() {
 
     local _para_mode
     _para_mode=$(echo "$assignment_json" | jq -r '.gpu_assignment.services.llama_server.parallelism.mode // "none"')
+    # NVIDIA uses layer split for every multi-GPU mode (CUDA row split fails
+    # at model load from llama.cpp b9890). AMD keeps row for tensor/hybrid.
     case "$_para_mode" in
-        tensor|hybrid) split_mode="row" ;;
+        tensor|hybrid) if [[ "$backend" == "nvidia" ]]; then split_mode="layer"; else split_mode="row"; fi ;;
         pipeline)      split_mode="layer" ;;
         *)             split_mode="none" ;;
     esac

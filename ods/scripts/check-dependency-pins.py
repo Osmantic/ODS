@@ -26,6 +26,12 @@ VAR_RE = re.compile(
     r"|\$(?P<plain>[A-Za-z_][A-Za-z0-9_]*)"
 )
 EPHEMERAL_SHA_TAG_RE = re.compile(r"^sha-[0-9a-f]{7,64}$", re.IGNORECASE)
+DIGEST_RE = re.compile(r"@sha256:[0-9a-f]{64}$")
+# Repositories whose tags upstream does not treat as immutable release names.
+# llama.cpp publishes a build tag for only a fraction of builds, and ODS has
+# already shipped a pin to a tag that never existed, so every llama.cpp image
+# must carry the digest that was verified when the pin was chosen.
+DIGEST_REQUIRED_REPOSITORIES = frozenset({"ghcr.io/ggml-org/llama.cpp"})
 
 
 @dataclass(frozen=True)
@@ -196,6 +202,24 @@ def _has_tag_or_digest(value: str) -> bool:
     return _has_digest(value) or _image_tag(value) is not None
 
 
+def _image_repository(value: str) -> str:
+    without_digest = value.split("@", 1)[0]
+    head, _, last_segment = without_digest.rpartition("/")
+    name = last_segment.split(":", 1)[0]
+    return f"{head}/{name}" if head else name
+
+
+def _requires_digest(value: str) -> bool:
+    return _image_repository(value) in DIGEST_REQUIRED_REPOSITORIES
+
+
+def _digest_required_error(location: str, value: str) -> str:
+    return (
+        f"{location}: {_image_repository(value)} images must be pinned by tag and "
+        f"@sha256 digest: {value}"
+    )
+
+
 def _is_variable_ref(value: str) -> bool:
     return "$" in value
 
@@ -316,6 +340,11 @@ def validate_refs(refs: Iterable[ImageRef], lock: dict[str, object], root: Path 
 
         if _is_ephemeral_sha_tag(ref.value) and not _has_digest(ref.value):
             errors.append(_ephemeral_sha_tag_error(ref))
+
+        if _requires_digest(ref.value) and not (
+            DIGEST_RE.search(ref.value) and _image_tag(ref.value) is not None
+        ):
+            errors.append(_digest_required_error(location, ref.value))
 
         if (ref.path, ref.value) not in entry_keys and (ref.path, ref.value) not in latest_allow:
             errors.append(f"{location}: image ref is not recorded in dependency-lock.json: {ref.value}")

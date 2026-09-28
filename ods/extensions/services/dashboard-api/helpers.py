@@ -600,7 +600,13 @@ async def _fetch_llama_metrics(model_hint: Optional[str] = None, counter_id: Opt
     try:
         if LLM_BACKEND == "lemonade":
             if read_live_env_value("AMD_INFERENCE_LOCATION").lower() == "host":
-                host_status = await request_agent_json("GET", "/v1/llm/status", timeout=6)
+                if read_live_env_value("LEMONADE_HOST_TRANSPORT") == "model-router":
+                    host_status = await request_agent_json("GET", "/v1/model/external-observation?stats=1", timeout=6)
+                    if (not isinstance(host_status, dict) or host_status.get("status") != "verified"
+                            or host_status.get("modelId") != model_hint):
+                        raise ValueError("Lemonade telemetry does not match the observed model")
+                else:
+                    host_status = await request_agent_json("GET", "/v1/llm/status", timeout=6)
                 stats = host_status.get("stats")
             else:
                 if "llama-server" not in SERVICES:
@@ -764,6 +770,15 @@ async def get_loaded_model() -> Optional[str]:
     """Query llama-server for actually loaded model name."""
     if LLM_BACKEND == "lemonade" and read_live_env_value("AMD_INFERENCE_LOCATION").lower() == "host":
         try:
+            if read_live_env_value("LEMONADE_HOST_TRANSPORT") == "model-router":
+                # Windows Lemonade reached through WSL has no Windows-native
+                # /v1/llm/status endpoint on its Linux host agent. Use the
+                # agent's live observation through the configured transport.
+                observation = await request_agent_json("GET", "/v1/model/external-observation", timeout=6)
+                if not isinstance(observation, dict) or observation.get("status") != "verified":
+                    return None
+                loaded = observation.get("modelId")
+                return loaded.strip() if isinstance(loaded, str) and loaded.strip() else None
             status = await request_agent_json("GET", "/v1/llm/status", timeout=6)
             health = status.get("health") or {}
             loaded = health.get("model_loaded")

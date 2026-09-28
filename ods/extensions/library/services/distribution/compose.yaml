@@ -6,7 +6,7 @@ services:
     security_opt:
     - no-new-privileges:true
     ports:
-    - 127.0.0.1:${DISTRIBUTION_PORT:-11136}:5000
+    - "${BIND_ADDRESS:-127.0.0.1}:${DISTRIBUTION_PORT:-11136}:5000"
     healthcheck:
       test:
       - CMD

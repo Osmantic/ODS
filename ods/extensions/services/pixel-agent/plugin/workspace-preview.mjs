@@ -304,6 +304,7 @@ export function createWorkspacePreviewTool({ request, transport = "unix" } = {})
               `(${response.bytes} bytes). Verified browser URL: ${response.url}. ` +
               `Inspection snapshot: ${JSON.stringify({siteId:response.siteId,sha256:response.sha256})}. ` +
               'Use pixel_ods_workspace_preview_inspect for this owned preview, not public web_fetch or shell HTTP. Copy both identifiers exactly; sha256 is the full snapshot digest, not entrySha256 or the shortened site suffix. ' +
+              'Publication does not render the page; the inspection result also reports its rendered colors by area. Check them before claiming a visible color or style change. ' +
               publishedPathFeedback(response) +
               emptyPathFeedback(response) +
               "This receipt proves publication and HTTP readback only, not successful startup, interactions or durable browser storage. Verify requested behavior in the actual preview before claiming it works. " +

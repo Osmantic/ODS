@@ -27,6 +27,7 @@ COMPACTION_RESUME_MODULE = "sessions-CZbwb3_c.js"
 COMPACTION_BUDGET_MODULE = "selection-BEwSQKM-.js"
 READ_RANGE_MODULE = "openclaw-tools-iHHy99PD.js"
 TOOL_RESULT_PROJECTION_MODULE = "tool-result-truncation-CbxVHy2D.js"
+DIAGNOSTIC_STREAM_MODULE = "attempt.model-diagnostic-events-DqqiPQPY.js"
 VERSION = "2026.6.33"
 SHA256 = re.compile(r"[0-9a-f]{64}")
 RUNTIME_MODULE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,254}\.js")
@@ -123,7 +124,7 @@ def repair(runtime_root, state_dir, *, restore=False, manifest_path=MANIFEST,
            module_name=MODULE):
     if module_name not in {MODULE, COMPLETION_MODULE, IMAGE_MODULE, COMPACTION_MODULE, COMPACTION_IDLE_MODULE,
                            COMPACTION_RESUME_MODULE, COMPACTION_BUDGET_MODULE, READ_RANGE_MODULE,
-                           TOOL_RESULT_PROJECTION_MODULE}:
+                           TOOL_RESULT_PROJECTION_MODULE, DIAGNOSTIC_STREAM_MODULE}:
         raise ValueError("unsupported runtime repair module")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     package = json.loads((runtime_root / "package.json").read_text(encoding="utf-8"))
@@ -331,6 +332,7 @@ def main():
     selection.add_argument("--compaction-budget", action="store_true")
     selection.add_argument("--read-range", action="store_true")
     selection.add_argument("--tool-result-projection", action="store_true")
+    selection.add_argument("--diagnostic-stream-writes", action="store_true")
     selection.add_argument("--restore-foreign", type=Path, metavar="PATCHES_ROOT",
                            help="restore and archive patch sets not named by --known")
     args = parser.parse_args()
@@ -362,6 +364,9 @@ def main():
     elif args.tool_result_projection:
         options = {"module_name": TOOL_RESULT_PROJECTION_MODULE,
                    "manifest_path": MANIFEST.with_name("openclaw-tool-result-projection.json")}
+    elif args.diagnostic_stream_writes:
+        options = {"module_name": DIAGNOSTIC_STREAM_MODULE,
+                   "manifest_path": MANIFEST.with_name("openclaw-diagnostic-stream-writes.json")}
     elif args.compaction_resume:
         options = {"module_name": COMPACTION_RESUME_MODULE,
                    "manifest_path": MANIFEST.with_name("openclaw-compaction-resume.json")}

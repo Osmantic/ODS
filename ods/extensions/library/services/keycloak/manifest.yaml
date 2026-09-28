@@ -25,10 +25,15 @@ service:
     required: true
     secret: true
     description: Stable random 64-hex PostgreSQL password.
+    format: hex64
+    generate: hex64
   - key: KEYCLOAK_BOOTSTRAP_PASSWORD
     required: true
     secret: true
     description: Distinct random 64-hex initial temporary administrator password, not an existing-account reset.
+    format: hex64
+    distinct_from: [KEYCLOAK_DB_PASSWORD]
+    generate: hex64
   ui_path: /admin/
 tags: [identity, oidc, saml, open-source]
 features:

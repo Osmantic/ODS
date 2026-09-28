@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Regression test for Apple Silicon 8GB model context clamping on Phi-4-mini."""
+"""Apple Silicon 8GB model selection and the Phi-4-mini 8GB profile scope."""
 
 from __future__ import annotations
 
@@ -46,13 +46,16 @@ def run_selector(ram_gb: int, *extra: str) -> dict[str, str]:
     return env
 
 
-def test_apple_silicon_8gb_clamps_phi4_mini_context() -> None:
-    env = run_selector(8)
-    assert env.get("LLM_MODEL") == "phi-4-mini"
-    assert env.get("MAX_CONTEXT") == "16384", f"Expected 16384 context, got {env.get('MAX_CONTEXT')}"
-    assert env.get("MODEL_RUNTIME_PROFILE") == "apple-silicon-8gb-16k"
-    assert env.get("LLAMA_ARG_CACHE_TYPE_K") == "q4_0"
-    assert env.get("LLAMA_ARG_CACHE_TYPE_V") == "q4_0"
+def test_apple_silicon_8gb_selects_nemotron_at_64k() -> None:
+    # Phi-4-mini only reached 16K here (with a Q4 KV cache), below Pixel's
+    # 24K prompt and the 64K Hermes floor. Nemotron 3 Nano 4B keeps KV on 4 of
+    # its 42 layers: about 4.1 GiB at 64K against a 4.4 GiB budget.
+    for extra in ((), ("--min-context", "65536")):
+        env = run_selector(8, *extra)
+        assert env.get("LLM_MODEL") == "NVIDIA-Nemotron3-Nano-4B", env.get("LLM_MODEL")
+        assert env.get("MAX_CONTEXT") == "65536", f"Expected 65536 context, got {env.get('MAX_CONTEXT')}"
+        assert not env.get("MODEL_RUNTIME_PROFILE")
+        assert not env.get("LLAMA_ARG_CACHE_TYPE_K")
 
 
 def test_apple_silicon_16gb_avoids_8gb_profile() -> None:
@@ -83,7 +86,7 @@ def test_profile_scope_preserves_larger_hosts_and_low_ram_guard() -> None:
 
 
 def main() -> int:
-    test_apple_silicon_8gb_clamps_phi4_mini_context()
+    test_apple_silicon_8gb_selects_nemotron_at_64k()
     test_apple_silicon_16gb_avoids_8gb_profile()
     test_profile_scope_preserves_larger_hosts_and_low_ram_guard()
     print("Apple Silicon model selector context tests passed: 3")

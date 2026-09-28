@@ -273,8 +273,13 @@ if config_present:
     base_keys = {"install_dir", "owner", "openclaw_bin", "gateway_port", "settings_data_dir"}
     relay_keys = base_keys | {"edge_owner_key_sha256"}
     legacy_relay_keys = (base_keys - {"gateway_port"}) | {"edge_owner_key_sha256"}
+    # Original ODS access deployments predate both gateway-port binding and
+    # the edge relay. Their exact private four-field config still binds the
+    # owner/install, and all source mirrors and state checks below still apply.
+    legacy_base_keys = base_keys - {"gateway_port"}
     allowed_keys = (base_keys, relay_keys, relay_keys | {"gateway_binding"},
-                    legacy_relay_keys, legacy_relay_keys | {"gateway_binding"})
+                    legacy_relay_keys, legacy_relay_keys | {"gateway_binding"},
+                    legacy_base_keys)
     if (not isinstance(value, dict)
             or set(value) not in allowed_keys
             or value.get("install_dir") != str(install.resolve())

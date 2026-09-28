@@ -42,6 +42,8 @@ read_env_value() {
 # shellcheck source=../../../lib/dotenv-quote.sh
 _ODS_MACOS_ENV_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 . "$_ODS_MACOS_ENV_ROOT/lib/dotenv-quote.sh"
+# shellcheck source=../../lib/searxng-locale.sh
+. "$_ODS_MACOS_ENV_ROOT/installers/lib/searxng-locale.sh"
 unset _ODS_MACOS_ENV_ROOT
 
 env_key_exists() {
@@ -640,8 +642,13 @@ LLAMA_ARG_CACHE_TYPE_V=${LLAMA_ARG_CACHE_TYPE_V:-f16}
 # LLAMA_ARG_CHECKPOINT_EVERY_NT=1024
 # Newer runtimes use minimum spacing instead of the legacy interval; never set both.
 # LLAMA_ARG_CHECKPOINT_MIN_SPACING_NT=1024
-# LLAMA_ARG_CTX_CHECKPOINTS=8
+# Prompt checkpoints per slot. Unset uses 32 (about 50 MiB each for Qwen3.5-9B);
+# lower it, or set 0, to save memory.
+# LLAMA_ARG_CTX_CHECKPOINTS=32
 # LLAMA_ARG_CACHE_RAM=512
+# Lossless n-gram speculation (--spec-type ngram-mod) is on by default when the
+# installed llama-server supports it (b8955+; ODS pins b9014). Turn it off with:
+# LLAMA_SPEC_TYPE=none
 # Optional idle unloading: saves RAM between sessions, but loses prompt cache on sleep.
 # LLAMA_ARG_SLEEP_IDLE_SECONDS=120
 # Optional MoE only. Example for 8-12GB VRAM: LLAMA_ARG_N_CPU_MOE=25
@@ -785,6 +792,10 @@ generate_searxng_config() {
         return 0
     fi
 
+    # Terminal sessions usually export LANG; otherwise use the macOS locale.
+    local search_lang
+    search_lang="$(ods_searxng_default_lang "${LC_ALL:-${LC_MESSAGES:-${LANG:-$(defaults read -g AppleLocale 2>/dev/null || true)}}}")"
+
     cat > "$settings_path" << SEARXEOF
 use_default_settings: true
 server:
@@ -794,9 +805,12 @@ server:
   limiter: false
 search:
   safe_search: 0
+  # Install locale. API clients send no language, so "auto" would mean "all".
+  default_lang: "${search_lang}"
   formats:
     - html
     - json
+$(ods_searxng_hostnames_yaml "$search_lang")
 engines:
   - name: bing
     # Requalify before enabling: https://github.com/searxng/searxng/pull/6671

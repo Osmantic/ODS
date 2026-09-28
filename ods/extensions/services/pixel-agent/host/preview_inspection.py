@@ -26,6 +26,7 @@ from preview_inspection_protocol import (
     exact,
     failure,
     plan_hash,
+    read_only_wsl_docker,
     strict_json,
     validate_bundle,
     validate_request,
@@ -79,7 +80,10 @@ def load_config():
         not stat.S_ISREG(info.st_mode)
         or info.st_nlink != 1
         or info.st_uid not in ((0, config["ownerUid"]) if native else (0,))
-        or info.st_mode & 0o022
+        or (
+            info.st_mode & 0o022
+            and not (not native and read_only_wsl_docker(binary, info))
+        )
         or not info.st_mode & 0o111
     ):
         raise Invalid("unsafe Docker binary")

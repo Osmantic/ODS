@@ -11,7 +11,7 @@ const artifacts = [
 
 beforeEach(() => {
   vi.useFakeTimers()
-  vi.stubGlobal('fetch', vi.fn(async url => ({ok: true, json: async () => url.includes('/search?') ? {models: [repo]} : url.endsWith('/import') ? {started: true} : {...repo, artifacts}})))
+  vi.stubGlobal('fetch', vi.fn(async url => ({ok: true, json: async () => url.includes('/search?') ? {models: [repo]} : url.endsWith('/import') ? {modelId: 'hf-fixture', status: 'downloading'} : {...repo, artifacts}})))
 })
 afterEach(() => {vi.useRealTimers(); vi.unstubAllGlobals()})
 
@@ -47,7 +47,7 @@ test('imports the exact filtered artifact and retains backend import guards', as
   await act(async () => {fireEvent.click(dialog.getByRole('button', {name: 'Import', exact: true}))})
   const request = fetch.mock.calls.find(([url]) => url.endsWith('/import'))
   expect(JSON.parse(request[1].body)).toEqual({repoId: 'org/model', artifactId: 'q8'})
-  expect(onImportStarted).toHaveBeenCalledWith({started: true})
+  expect(onImportStarted).toHaveBeenCalledWith({modelId: 'hf-fixture', status: 'downloading'})
 })
 
 test('clears filtering when the operator closes and reopens a repository', async () => {

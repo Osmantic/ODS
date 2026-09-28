@@ -2,13 +2,34 @@
 # functions only. The separate native Windows/Docker Desktop path does not use it.
 [CmdletBinding()]
 param(
-    [ValidateSet('start','status','stop','restart','release','hold')][string]$Action = 'status',
+    [ValidateSet('start','status','stop','restart','release','hold','autostart','disable-startup')][string]$Action = 'status',
     [string]$Distro,
     [string]$InstallRoot,
-    [string]$InstanceDirectory
+    [string]$InstanceDirectory,
+    [switch]$ValidateOnly,
+    [string]$StateRoot
 )
 $ErrorActionPreference = 'Stop'
 $script:ODSWslLifecycleSource = $PSCommandPath
+$script:ODSWslStartupDeadline = $null
+$script:ODSWslStartupIdentity = $null
+$script:ODSWslStartupGeneration = $null
+$script:ODSWslStateRoot = ''
+if ($StateRoot) {
+    if ($StateRoot -notmatch '^(?:[A-Za-z]:[\\/]|\\\\[^\\/]+[\\/][^\\/]+(?:[\\/]|$))' -or $StateRoot -match '[\x00-\x1f"]') { throw 'An absolute Windows state directory is required' }
+    $script:ODSWslStateRoot = [IO.Path]::GetFullPath($StateRoot).TrimEnd('\')
+    if ($script:ODSWslStateRoot -eq [IO.Path]::GetPathRoot($StateRoot).TrimEnd('\')) { throw 'State directory cannot be a filesystem root' }
+}
+
+function Get-ODSWslUtcNow { [DateTime]::UtcNow }
+
+function Resolve-ODSWslRegisteredDistro([string]$Name) {
+    $names = & (Join-Path ([Environment]::SystemDirectory) 'wsl.exe') --list --quiet 2>$null
+    if ($LASTEXITCODE -ne 0) { throw 'Could not inspect registered WSL distributions' }
+    $registeredNames = @($names | ForEach-Object { ($_ -replace "`0", '').Trim() } | Where-Object { $_ -ieq $Name })
+    if ($registeredNames.Count -ne 1) { throw 'Select one registered WSL distribution' }
+    $registeredNames[0]
+}
 
 function Get-ODSWslIdentity([string]$Distro, [string]$InstallRoot) {
     if ([string]::IsNullOrWhiteSpace($Distro) -or $Distro -match '[\x00-\x1f"\\]') { throw 'Invalid WSL distribution name' }
@@ -18,7 +39,8 @@ function Get-ODSWslIdentity([string]$Distro, [string]$InstallRoot) {
     $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
     $hash = [Security.Cryptography.SHA256]::Create()
     try { $id = -join ($hash.ComputeHash([Text.Encoding]::UTF8.GetBytes("$sid`n$Distro`n$InstallRoot")) | ForEach-Object { $_.ToString('x2') }) } finally { $hash.Dispose() }
-    [pscustomobject]@{ schemaVersion=1; ownerSid=$sid; distro=$Distro; installRoot=$InstallRoot; id=$id; taskName="ODS-WSL-$($id.Substring(0,24))"; directory=(Join-Path $env:LOCALAPPDATA "ODS\wsl\$id") }
+    $stateBase = if ($script:ODSWslStateRoot) { $script:ODSWslStateRoot } else { Join-Path $env:LOCALAPPDATA 'ODS\wsl' }
+    [pscustomobject]@{ schemaVersion=1; ownerSid=$sid; distro=$Distro; installRoot=$InstallRoot; id=$id; taskName="ODS-WSL-$($id.Substring(0,24))"; directory=(Join-Path $stateBase $id) }
 }
 
 function Assert-ODSPrivatePath([string]$Path, [switch]$Directory) {
@@ -96,6 +118,10 @@ function Open-ODSPrivateLock([string]$Path) {
 }
 
 function Get-ODSWslRunningDistributions {
+    if ($script:ODSWslStartupIdentity) {
+        $output=Invoke-ODSWslBoundedCommand $script:ODSWslStartupIdentity @() 10 -ListRunning
+        return @($output -split '\r?\n' | ForEach-Object { ($_ -replace "`0",'').Trim() } | Where-Object { $_ })
+    }
     $names = & (Join-Path $env:WINDIR 'System32\wsl.exe') --list --running --quiet 2>$null
     if ($LASTEXITCODE -ne 0) { throw 'Could not inspect running WSL distributions' }
     @($names | ForEach-Object { ($_ -replace "`0",'').Trim() } | Where-Object { $_ })
@@ -136,8 +162,328 @@ function Assert-ODSWslManifest($Identity) {
     $manifest
 }
 
+function Get-ODSWslStartupIntent($Identity) {
+    $value = Read-ODSWslJson (Join-Path $Identity.directory 'startup-intent.json')
+    if (-not $value) { return $null }
+    if ($value.schemaVersion -ne 1 -or $value.desiredRunning -isnot [bool] -or
+        $value.generation -notmatch '^[a-f0-9]{32}$') { throw 'Invalid WSL startup preference' }
+    foreach ($key in @('ownerSid','distro','installRoot','id')) {
+        if ($value.$key -cne $Identity.$key) { throw 'WSL startup preference belongs to another installation' }
+    }
+    $value
+}
+
+function Set-ODSWslStartupIntent($Identity,[bool]$Running) {
+    $null = Assert-ODSWslManifest $Identity
+    $null = Get-ODSWslStartupIntent $Identity
+    Write-ODSWslJson (Join-Path $Identity.directory 'startup-intent.json') @{
+        schemaVersion=1; ownerSid=$Identity.ownerSid; distro=$Identity.distro;
+        installRoot=$Identity.installRoot; id=$Identity.id; desiredRunning=$Running;
+        generation=[guid]::NewGuid().ToString('N')
+    }
+}
+
+function Get-ODSWslStartupArguments($Identity) {
+    $arguments = '-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "{0}" -Action autostart -InstanceDirectory "{1}"' -f (Join-Path $Identity.directory 'startup.ps1'),$Identity.directory
+    if ($script:ODSWslStateRoot) { $arguments += ' -StateRoot "{0}"' -f $script:ODSWslStateRoot }
+    $arguments
+}
+
+function Assert-ODSWslStartupTask($Identity) {
+    $task = Get-ScheduledTask -TaskName ($Identity.taskName + '-Startup') -ErrorAction SilentlyContinue
+    if (-not $task) { throw 'Owned WSL startup task is missing' }
+    $triggers = @($task.Triggers | Where-Object { $null -ne $_ })
+    $principal = $task.Principal.UserId
+    if ($principal -notmatch '^S-1-') { $principal=([Security.Principal.NTAccount]::new($principal)).Translate([Security.Principal.SecurityIdentifier]).Value }
+    $triggerSid = if ($triggers.Count -eq 1) { $triggers[0].UserId } else { '' }
+    if ($triggerSid -and $triggerSid -notmatch '^S-1-') { $triggerSid=([Security.Principal.NTAccount]::new($triggerSid)).Translate([Security.Principal.SecurityIdentifier]).Value }
+    if (@($task.Actions).Count -ne 1 -or
+        $task.Actions[0].Execute -ine (Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\v1.0\powershell.exe') -or
+        $task.Actions[0].Arguments -cne (Get-ODSWslStartupArguments $Identity) -or
+        $principal -ine $Identity.ownerSid -or $task.Principal.RunLevel -ne 'Limited' -or
+        $task.Principal.LogonType -ne 'Interactive' -or $triggers.Count -ne 1 -or
+        $triggers[0].CimClass.CimClassName -ne 'MSFT_TaskLogonTrigger' -or $triggerSid -ine $Identity.ownerSid -or
+        $triggers[0].Delay -ne 'PT30S' -or $task.Settings.ExecutionTimeLimit -ne 'PT25M' -or
+        $task.Settings.RestartCount -ne 0) {
+        throw 'WSL startup task identity changed; the existing registration was left untouched'
+    }
+    $task
+}
+
+function Get-ODSWslStartupConfig($Identity) {
+    $value = Read-ODSWslJson (Join-Path $Identity.directory 'startup-config.json')
+    if (-not $value -or $value.schemaVersion -ne 1 -or $value.id -cne $Identity.id -or
+        $value.dockerDesktopPath -notmatch '^[A-Za-z]:\\' -or
+        [IO.Path]::GetFileName($value.dockerDesktopPath) -cne 'Docker Desktop.exe' -or
+        [IO.Path]::GetFullPath($value.dockerDesktopPath) -cne $value.dockerDesktopPath) {
+        throw 'Verified Docker Desktop startup path is missing or invalid; rerun Windows setup'
+    }
+    $value
+}
+
+function Enable-ODSWslStartup($Identity,[string]$DockerDesktopPath = '') {
+    $null = Assert-ODSWslManifest $Identity
+    $null = Assert-ODSWslTask $Identity
+    $taskName = $Identity.taskName + '-Startup'
+    $existing = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+    if ($existing) { $null = Assert-ODSWslStartupTask $Identity }
+    if ($DockerDesktopPath) {
+        if ($DockerDesktopPath -notmatch '^[A-Za-z]:\\' -or [IO.Path]::GetFileName($DockerDesktopPath) -cne 'Docker Desktop.exe' -or
+            -not (Test-Path -LiteralPath $DockerDesktopPath -PathType Leaf)) { throw 'Setup did not supply an existing absolute Docker Desktop executable' }
+        $resolved=[IO.Path]::GetFullPath($DockerDesktopPath)
+        Write-ODSWslJson (Join-Path $Identity.directory 'startup-config.json') @{schemaVersion=1;id=$Identity.id;dockerDesktopPath=$resolved}
+    }
+    $null=Get-ODSWslStartupConfig $Identity
+    # A second durable file leaves the currently running holder immutable.
+    Write-ODSPrivateBytes (Join-Path $Identity.directory 'startup.ps1') ([IO.File]::ReadAllBytes($script:ODSWslLifecycleSource))
+    if (-not (Get-ODSWslStartupIntent $Identity)) { Set-ODSWslStartupIntent $Identity $true }
+    if (-not $existing) {
+        $action = New-ScheduledTaskAction -Execute (Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\v1.0\powershell.exe') -Argument (Get-ODSWslStartupArguments $Identity)
+        $principal = New-ScheduledTaskPrincipal -UserId $Identity.ownerSid -LogonType Interactive -RunLevel Limited
+        $trigger = New-ScheduledTaskTrigger -AtLogOn -User $Identity.ownerSid
+        $trigger.Delay = 'PT30S'
+        $settings = New-ScheduledTaskSettingsSet -Hidden -ExecutionTimeLimit ([TimeSpan]::FromMinutes(25)) -MultipleInstances IgnoreNew -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+        Register-ScheduledTask -TaskName $taskName -Action $action -Principal $principal -Trigger $trigger -Settings $settings -Description 'Restore this ODS WSL installation at owner sign-in only while its saved preference is running.' | Out-Null
+    }
+    $null = Assert-ODSWslStartupTask $Identity
+}
+
+function Assert-ODSWslStartupStillWanted {
+    if (-not $script:ODSWslStartupIdentity) { return }
+    $intent = Get-ODSWslStartupIntent $script:ODSWslStartupIdentity
+    if (-not $intent -or -not $intent.desiredRunning -or $intent.generation -cne $script:ODSWslStartupGeneration) {
+        throw 'WSL startup cancelled by a newer owner command'
+    }
+    if ((Get-ODSWslUtcNow) -ge $script:ODSWslStartupDeadline) { throw 'WSL startup deadline exceeded; inspect startup-status.json and retry start after Docker is ready' }
+}
+
+function Disable-ODSWslStartup($Identity,[switch]$ValidateOnly) {
+    $task=Get-ScheduledTask -TaskName ($Identity.taskName + '-Startup') -ErrorAction SilentlyContinue
+    if (-not (Test-Path -LiteralPath $Identity.directory)) {
+        if ($task) { throw 'Startup task exists without its owner manifest; refusing to modify it' }
+        return [pscustomobject]@{scope='wsl-startup';state='unmanaged';identity=$Identity}
+    }
+    $null=Assert-ODSWslManifest $Identity
+    if ($task) { $null=Assert-ODSWslStartupTask $Identity }
+    $null=Get-ODSWslStartupIntent $Identity
+    $lock=$null
+    try {
+        if ($ValidateOnly) {
+            $path=Join-Path $Identity.directory 'command.lock'
+            if (Test-Path -LiteralPath $path) {
+                Assert-ODSPrivatePath $path
+                $lock=[IO.File]::Open($path,'Open','ReadWrite','None')
+            }
+            Assert-ODSWslCommandSettled $Identity -ValidateOnly
+            return [pscustomobject]@{scope='wsl-startup';state='validated';identity=$Identity}
+        }
+        Set-ODSWslStartupIntent $Identity $false
+        if ($task) { Disable-ScheduledTask -TaskName ($Identity.taskName + '-Startup') | Out-Null }
+        # Uninstall must not remove Linux assets while an old start is draining.
+        $lock=Open-ODSWslCommandLock $Identity
+        Assert-ODSWslCommandSettled $Identity
+        [pscustomobject]@{scope='wsl-startup';state='disabled';identity=$Identity}
+    } finally { if ($lock) { $lock.Dispose() } }
+}
+
+function Open-ODSWslCommandLock($Identity) {
+    # A stop preference cancels the startup coordinator before this wait.
+    # Give that bounded command a short opportunity to release its lock.
+    for ($attempt=0; $attempt -lt 20; $attempt++) {
+        try { return Open-ODSPrivateLock (Join-Path $Identity.directory 'command.lock') }
+        catch [IO.IOException] {
+            if ($attempt -eq 19) { throw 'Another ODS lifecycle command is still draining; the requested startup preference was saved. Wait for it to finish, then retry stop or start.' }
+            Start-Sleep -Milliseconds 250
+        }
+    }
+}
+
+function Get-ODSWslWindowsBootId {
+    (Get-CimInstance Win32_OperatingSystem).LastBootUpTime.ToUniversalTime().Ticks.ToString()
+}
+
+function Assert-ODSWslCommandSettled($Identity,[switch]$ValidateOnly) {
+    $pending=Read-ODSWslJson (Join-Path $Identity.directory 'command-pending.json')
+    if ($pending -and $pending.state -ne 'completed') {
+        # A later full Windows boot proves the old WSL command cannot still be
+        # running. Sign-out, Docker restart and closing a terminal do not.
+        $boot=Get-ODSWslWindowsBootId
+        if ($pending.id -ceq $Identity.id -and $pending.bootId -match '^\d{1,19}$' -and
+            [long]$boot -gt [long]$pending.bootId) {
+            if (-not $ValidateOnly) {
+                Write-ODSWslJson (Join-Path $Identity.directory 'command-pending.json') @{schemaVersion=1;state='completed';id=$Identity.id;reason='previous Windows boot ended'}
+            }
+            return
+        }
+        throw 'A previous WSL stack command has no confirmed Linux completion. No further stack operation was attempted. Restart Windows (not just sign out), then retry the requested lifecycle action; do not delete command-pending.json.'
+    }
+}
+
+function Wait-ODSWslCommandProcess($Process,[DateTime]$Deadline,[switch]$Mutation) {
+    $cancelled=$null
+    while (-not $Process.WaitForExit(250)) {
+        if (-not $cancelled) {
+            try { Assert-ODSWslStartupStillWanted } catch {
+                if (-not $Mutation) { throw }
+                # Keep command.lock and the client alive while Linux finishes.
+                # Stopping wsl.exe does not acknowledge stopping its command.
+                $cancelled=$_.Exception.Message
+            }
+        }
+        if ((Get-ODSWslUtcNow) -ge $Deadline) { throw [TimeoutException]::new('Bounded WSL command timed out without confirmed Linux completion') }
+    }
+    $cancelled
+}
+
+function Complete-ODSWslCommand($Identity,[string]$Token,[string]$Output,[int]$ExitCode) {
+    $suffix="`nODS_WSL_COMPLETED_${Token}:${ExitCode}`n"
+    if (-not $Output.EndsWith($suffix,[StringComparison]::Ordinal)) { throw 'WSL stack command exited without its Linux completion acknowledgement' }
+    # GNU timeout and the Compose adapter reserve 124/137 for a potentially
+    # interrupted descendant. Ordinary errors remain immediately retryable.
+    if ($ExitCode -notin @(124,137)) {
+        Write-ODSWslJson (Join-Path $Identity.directory 'command-pending.json') @{schemaVersion=1;state='completed';id=$Identity.id;token=$Token}
+    }
+    $Output.Substring(0,$Output.Length-$suffix.Length)
+}
+
+function ConvertTo-ODSWindowsArgument([string]$Value) {
+    # WSL parses its option prefix itself and can retain redundant quotes on
+    # simple tokens ("--list" becomes a Linux command). Quote only when needed.
+    if ($Value.Length -gt 0 -and $Value -notmatch '[\s"]') { return $Value }
+    # CommandLineToArgvW quoting, including quotes and trailing backslashes.
+    $quoted = [Text.StringBuilder]::new(); $null = $quoted.Append('"'); $slashes = 0
+    foreach ($character in $Value.ToCharArray()) {
+        if ($character -eq '\') { $slashes++; continue }
+        if ($character -eq '"') { $null = $quoted.Append(('\' * (2 * $slashes + 1))) }
+        else { $null = $quoted.Append(('\' * $slashes)) }
+        $null = $quoted.Append($character); $slashes = 0
+    }
+    $null = $quoted.Append(('\' * (2 * $slashes))); $null = $quoted.Append('"')
+    $quoted.ToString()
+}
+
+function Assert-ODSWslRootArguments([string[]]$Arguments) {
+    $allowed=@('pixel-ingress.service','openclaw-gateway.service','pixel-extension-manager.service','pixel-artifact-promoter.service','pixel-workspace-preview.service','pixel-preview-inspection.service')
+    $native=$Arguments[1] -cin @('start','stop') -and $Arguments[2] -cin $allowed
+    $agentRestart=$Arguments[1] -ceq 'restart' -and $Arguments[2] -ceq 'ods-host-agent.service'
+    if ($Arguments.Count -ne 3 -or $Arguments[0] -cne '/usr/bin/systemctl' -or -not ($native -or $agentRestart)) {
+        throw 'Only exact native systemctl lifecycle commands may run as WSL root'
+    }
+}
+
+function Invoke-ODSWslBoundedCommand($Identity,[string[]]$Arguments,[int]$Seconds=15,[switch]$AsRoot,[switch]$ListRunning,[switch]$Mutation) {
+    Assert-ODSWslStartupStillWanted
+    if ($ListRunning -and ($AsRoot -or $Arguments.Count -or $Mutation)) { throw 'Distribution listing accepts no executable arguments' }
+    $target = @('--distribution',$Identity.distro)
+    if ($AsRoot) {
+        Assert-ODSWslRootArguments $Arguments
+        $target += @('--user','root')
+    }
+    # A Linux acknowledgement clears a completed, non-timeout operation.
+    # A lost client / timeout is ambiguous, so later commands fail closed.
+    $token=[guid]::NewGuid().ToString('N')
+    $completion='ODS_WSL_COMPLETED_' + $token
+    if ($Mutation) {
+        Assert-ODSWslCommandSettled $Identity
+        Write-ODSWslJson (Join-Path $Identity.directory 'command-pending.json') @{
+            schemaVersion=1;state='pending';id=$Identity.id;token=$token;bootId=(Get-ODSWslWindowsBootId);startedUtc=(Get-ODSWslUtcNow).ToString('o')
+        }
+        $wrapper='/usr/bin/timeout --signal=TERM --kill-after=5s "$1" "${@:3}"; code=$?; printf "\n%s:%s\n" "$2" "$code"; exit "$code"'
+        $target += @('--exec','/bin/bash','--noprofile','--norc','-c',$wrapper,'ods-wsl-command',([string]$Seconds),$completion) + $Arguments
+    } else {
+        $target += @('--exec','/usr/bin/timeout','--signal=TERM','--kill-after=5s',([string]$Seconds)) + $Arguments
+    }
+    if ($ListRunning) { $target=@('--list','--running','--quiet') }
+    $info = [Diagnostics.ProcessStartInfo]::new()
+    $info.FileName = Join-Path ([Environment]::SystemDirectory) 'wsl.exe'
+    $info.Arguments = ($target | ForEach-Object { ConvertTo-ODSWindowsArgument $_ }) -join ' '
+    $info.UseShellExecute=$false; $info.CreateNoWindow=$true
+    $info.RedirectStandardOutput=$true; $info.RedirectStandardError=$true
+    $process = [Diagnostics.Process]::new(); $process.StartInfo=$info; $started=$false
+    try {
+        if (-not $process.Start()) { throw 'Could not launch the bound WSL command' }
+        $started=$true
+        $null=$process.Handle
+        $stdout=$process.StandardOutput.ReadToEndAsync(); $stderr=$process.StandardError.ReadToEndAsync()
+        $deadline=(Get-ODSWslUtcNow).AddSeconds($Seconds + 30)
+        $cancelled=Wait-ODSWslCommandProcess $process $deadline -Mutation:$Mutation
+        if (-not $stdout.Wait(5000) -or -not $stderr.Wait(5000)) { throw [TimeoutException]::new('WSL command output did not close after the client exited') }
+        $output=$stdout.GetAwaiter().GetResult(); $errorOutput=$stderr.GetAwaiter().GetResult()
+        if ($Mutation) {
+            $output=Complete-ODSWslCommand $Identity $token $output $process.ExitCode
+        }
+        if ($process.ExitCode -ne 0) { throw [IO.IOException]::new('WSL startup command failed: ' + $errorOutput.Trim()) }
+        if ($cancelled) { throw $cancelled }
+        Assert-ODSWslStartupStillWanted
+        $output
+    } finally {
+        if ($started -and -not $process.HasExited) { $process.Kill(); $null=$process.WaitForExit(5000) }
+        $process.Dispose()
+    }
+}
+
+function Start-ODSWslDockerDesktop($Identity) {
+    $desktop = (Get-ODSWslStartupConfig $Identity).dockerDesktopPath
+    if (-not (Test-Path -LiteralPath $desktop -PathType Leaf)) { throw 'Docker Desktop is missing; open setup before retrying startup' }
+    Start-Process -FilePath $desktop -WindowStyle Hidden | Out-Null
+}
+
+function Invoke-ODSWslStartup([string]$Directory) {
+    Assert-ODSPrivatePath $Directory -Directory
+    $manifest=Read-ODSWslJson (Join-Path $Directory 'instance.json')
+    $identity=Get-ODSWslIdentity $manifest.distro $manifest.installRoot
+    if ($Directory -cne $identity.directory) { throw 'Startup directory does not match this owner and installation' }
+    $null=Assert-ODSWslManifest $identity
+    $null=Assert-ODSWslStartupTask $identity
+    $startupLock=Open-ODSPrivateLock (Join-Path $Directory 'startup.lock')
+    $status=@{schemaVersion=1;state='starting';startedUtc=[DateTime]::UtcNow.ToString('o');error=$null}
+    $commandLock=$null
+    try {
+        $intent=Get-ODSWslStartupIntent $identity
+        if (-not $intent -or -not $intent.desiredRunning) { $status.state='disabled'; return }
+        $script:ODSWslStartupIdentity=$identity
+        $script:ODSWslStartupGeneration=$intent.generation
+        $script:ODSWslStartupDeadline=(Get-ODSWslUtcNow).AddMinutes(20)
+        $status.state='waiting-for-docker'; Write-ODSWslJson (Join-Path $Directory 'startup-status.json') $status
+        Start-ODSWslDockerDesktop $identity
+        $dockerDeadline=(Get-ODSWslUtcNow).AddMinutes(10)
+        $dockerReady=$false
+        while ((Get-ODSWslUtcNow) -lt $dockerDeadline) {
+            Assert-ODSWslStartupStillWanted
+            try {
+                $null=Invoke-ODSWslBoundedCommand $identity @('/usr/bin/env','docker','info') 15
+                $null=Invoke-ODSWslBoundedCommand $identity @('/usr/bin/env','docker','compose','version') 15
+                $dockerReady=$true; break
+            } catch [IO.IOException], [TimeoutException] {
+                Assert-ODSWslStartupStillWanted
+                $status.error=$_.Exception.Message
+                Write-ODSWslJson (Join-Path $Directory 'startup-status.json') $status
+            }
+            Start-Sleep -Seconds 3
+        }
+        if (-not $dockerReady) { throw "Docker did not become ready in this distribution within ten minutes; open Docker Desktop and run lifecycle start. Last probe error: $($status.error)" }
+        $commandLock=Open-ODSPrivateLock (Join-Path $Directory 'command.lock')
+        Assert-ODSWslCommandSettled $identity
+        Assert-ODSWslStartupStillWanted
+        $status.state='starting-stack'; $status.error=$null
+        Write-ODSWslJson (Join-Path $Directory 'startup-status.json') $status
+        $null=Start-ODSWslLifetime $identity
+        Invoke-ODSWslStack $identity 'start' | ForEach-Object { [Console]::Error.WriteLine([string]$_) }
+        Assert-ODSWslStartupStillWanted
+        $status.state='started'
+    } catch { $status.state='failed'; $status.error=$_.Exception.Message; throw }
+    finally {
+        $status.endedUtc=[DateTime]::UtcNow.ToString('o')
+        Write-ODSWslJson (Join-Path $Directory 'startup-status.json') $status
+        $script:ODSWslStartupIdentity=$null; $script:ODSWslStartupDeadline=$null; $script:ODSWslStartupGeneration=$null
+        if ($commandLock) { $commandLock.Dispose() }; $startupLock.Dispose()
+    }
+}
+
 function Get-ODSWslTaskArguments($Identity) {
-    '-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "{0}" -Action hold -InstanceDirectory "{1}"' -f (Join-Path $Identity.directory 'controller.ps1'),$Identity.directory
+    $arguments = '-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "{0}" -Action hold -InstanceDirectory "{1}"' -f (Join-Path $Identity.directory 'controller.ps1'),$Identity.directory
+    if ($script:ODSWslStateRoot) { $arguments += ' -StateRoot "{0}"' -f $script:ODSWslStateRoot }
+    $arguments
 }
 
 function Get-ODSWslHolderArguments($Identity) {
@@ -157,21 +503,31 @@ function Assert-ODSWslTask($Identity) {
     if (@($task.Actions).Count -ne 1 -or $task.Actions[0].Execute -ine $expectedExe -or
         $task.Actions[0].Arguments -cne (Get-ODSWslTaskArguments $Identity) -or @($task.Triggers | Where-Object { $null -ne $_ }).Count -ne 0 -or
         $principalSid -ine $Identity.ownerSid -or $task.Principal.RunLevel -ne 'Limited' -or
-        $task.Settings.ExecutionTimeLimit -ne 'PT0S' -or $task.Settings.RestartCount -ne 0) { throw 'WSL lifetime task identity changed' }
+        $task.Settings.ExecutionTimeLimit -ne 'PT0S' -or $task.Settings.RestartCount -ne 0) {
+        # Never adopt or replace a task this code did not register: say which
+        # one it is and how the owner removes it if nothing else uses it.
+        throw "WSL lifetime task identity changed: scheduled task $($Identity.taskName) does not match this ODS installation ($($Identity.distro), $($Identity.installRoot)); it was created by another ODS version or modified. If no other ODS installation uses it, remove it with: Unregister-ScheduledTask -TaskName '$($Identity.taskName)' -Confirm:`$false then rerun."
+    }
     $task
 }
 
 function Get-ODSWslLifetimeStatus($Identity) {
     $running = @(Get-ODSWslRunningDistributions) -contains $Identity.distro
     if (-not (Test-Path -LiteralPath $Identity.directory)) { return [pscustomobject]@{ scope='wsl-lifetime'; state='unmanaged'; distroRunning=$running; identity=$Identity; runtime=$null } }
+    if ($script:ODSWslStateRoot) { Assert-ODSPrivatePath $script:ODSWslStateRoot -Directory }
     $null = Assert-ODSWslManifest $Identity
     $runtime = Read-ODSWslJson (Join-Path $Identity.directory 'runtime.json')
     $owned = $runtime -and $runtime.state -eq 'running' -and (Test-ODSProcessIdentity $runtime.child (Get-ODSProcessIdentity $runtime.child.pid))
     $state = if ($owned -and $running) { 'running' } elseif ($runtime -and $runtime.state -eq 'stopped') { 'stopped' } else { 'inactive' }
-    [pscustomobject]@{ scope='wsl-lifetime'; state=$state; distroRunning=$running; identity=$Identity; runtime=$runtime }
+    $intent=Get-ODSWslStartupIntent $Identity
+    [pscustomobject]@{ scope='wsl-lifetime'; state=$state; distroRunning=$running; identity=$Identity; runtime=$runtime;
+        startupEnabled=($null -ne $intent -and $intent.desiredRunning);
+        startup=(Read-ODSWslJson (Join-Path $Identity.directory 'startup-status.json')) }
 }
 
 function Start-ODSWslLifetime($Identity) {
+    Assert-ODSWslStartupStillWanted
+    if ($script:ODSWslStateRoot) { Initialize-ODSPrivateDirectory $script:ODSWslStateRoot }
     Initialize-ODSPrivateDirectory $Identity.directory
     $manifestPath = Join-Path $Identity.directory 'instance.json'
     if (Test-Path -LiteralPath $manifestPath) { $null=Assert-ODSWslManifest $Identity } else { Write-ODSWslJson $manifestPath $Identity }
@@ -193,8 +549,10 @@ function Start-ODSWslLifetime($Identity) {
     $settings=New-ScheduledTaskSettingsSet -Hidden -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
     Register-ScheduledTask -TaskName $Identity.taskName -Action $action -Principal $principal -Settings $settings -Description 'ODS owned WSL lifetime. On-demand only; explicit stop is never restarted automatically.' | Out-Null
     $null=Assert-ODSWslTask $Identity
+    Assert-ODSWslStartupStillWanted
     Start-ScheduledTask -TaskName $Identity.taskName
     for ($attempt=0; $attempt -lt 60; $attempt++) {
+        Assert-ODSWslStartupStillWanted
         $runtime=Read-ODSWslJson (Join-Path $Identity.directory 'runtime.json')
         if ($runtime -and $runtime.generation -eq $generation) {
             if ($runtime.state -eq 'running' -and (Test-ODSProcessIdentity $runtime.child (Get-ODSProcessIdentity $runtime.child.pid))) { return (Get-ODSWslLifetimeStatus $Identity) }
@@ -227,10 +585,25 @@ function Stop-ODSWslLifetime($Identity) {
         }
         Start-Sleep -Milliseconds 500
     }
-    throw 'Stop requested but controller has not confirmed exit; no unrelated task or process was stopped'
+    # A wedged controller must not leave an exact owned WSL client behind.
+    # Revalidate the task immediately before stopping it, then use the child's
+    # retained process identity/handle rather than terminating the distribution.
+    $null=Assert-ODSWslTask $Identity
+    $runtime=Read-ODSWslJson (Join-Path $Identity.directory 'runtime.json')
+    if (-not $runtime -or $runtime.generation -cne $request.generation) {
+        throw 'Stop could not establish the current controller generation; no unrelated task or process was stopped'
+    }
+    Stop-ScheduledTask -TaskName $Identity.taskName
+    Stop-ODSOwnedProcess $runtime.child
+    Write-ODSWslJson (Join-Path $Identity.directory 'runtime.json') @{
+        generation=$request.generation;state='stopped';endedUtc=[DateTime]::UtcNow.ToString('o');
+        reason='unresponsive owned controller stopped; exact child released'
+    }
+    Get-ODSWslLifetimeStatus $Identity
 }
 
 function Invoke-ODSWslHolder([string]$Directory) {
+    if ($script:ODSWslStateRoot) { Assert-ODSPrivatePath $script:ODSWslStateRoot -Directory }
     Assert-ODSPrivatePath $Directory -Directory
     $manifest=Read-ODSWslJson (Join-Path $Directory 'instance.json')
     $identity=Get-ODSWslIdentity $manifest.distro $manifest.installRoot
@@ -283,7 +656,10 @@ function New-ODSWslRootCommand([string]$RepoRoot) {
 
 function New-ODSWslInstallerCommand([string]$RepoRoot,[string[]]$Arguments,[string]$ResolvedRoot) {
     $command="cd -- " + (ConvertTo-ODSBashArgument $RepoRoot) + " && "
-    if ($ResolvedRoot) { $command += "env INSTALL_DIR=" + (ConvertTo-ODSBashArgument $ResolvedRoot) + " " }
+    $environment=@()
+    if ($ResolvedRoot) { $environment += 'INSTALL_DIR=' + (ConvertTo-ODSBashArgument $ResolvedRoot) }
+    if ($script:ODSWslStateRoot) { $environment += 'ODS_WSL_STATE_ROOT=' + (ConvertTo-ODSBashArgument $script:ODSWslStateRoot) }
+    if ($environment.Count) { $command += 'env ' + ($environment -join ' ') + ' ' }
     $command += 'bash install-core.sh'
     foreach ($argument in $Arguments) { $command += ' ' + (ConvertTo-ODSBashArgument $argument) }
     $command
@@ -291,12 +667,18 @@ function New-ODSWslInstallerCommand([string]$RepoRoot,[string[]]$Arguments,[stri
 
 function Assert-ODSWslStackPlan($Identity,[string]$Action,$Plan) {
     $required=@('schemaVersion','action','installRoot','ownerUid','nativeUnits')
+    $allowedNames=$required+@('hostAgentRestart')
     $names=@($Plan.PSObject.Properties.Name)
-    if ($names.Count -ne $required.Count -or @($names | Where-Object { $_ -notin $required }).Count -gt 0 -or
+    if ($names.Count -notin @(5,6) -or @($names | Where-Object { $_ -cnotin $allowedNames }).Count -gt 0 -or
+        @($required | Where-Object { $_ -cnotin $names }).Count -gt 0 -or
         $Plan.schemaVersion -ne 1 -or ($Plan.schemaVersion -isnot [int] -and $Plan.schemaVersion -isnot [long]) -or
         $Plan.action -isnot [string] -or $Plan.action -cne $Action -or $Plan.installRoot -isnot [string] -or $Plan.installRoot -cne $Identity.installRoot -or
         ($Plan.ownerUid -isnot [int] -and $Plan.ownerUid -isnot [long]) -or $Plan.ownerUid -le 0 -or $Plan.ownerUid -gt 4294967294 -or
         $Plan.nativeUnits -isnot [Array]) { throw 'Invalid owner-verified WSL lifecycle plan' }
+    if ($names -ccontains 'hostAgentRestart' -and
+        ($Plan.hostAgentRestart -isnot [bool] -or ($Action -cne 'start' -and $Plan.hostAgentRestart))) {
+        throw 'Invalid owner-verified host agent restart request'
+    }
     $allowed=@('pixel-ingress.service','openclaw-gateway.service','pixel-extension-manager.service','pixel-artifact-promoter.service','pixel-workspace-preview.service','pixel-preview-inspection.service')
     if ($Plan.nativeUnits.Count -ne 0) {
         # The owner-side verifier accepts only a complete legacy installation
@@ -311,10 +693,14 @@ function Assert-ODSWslStackPlan($Identity,[string]$Action,$Plan) {
 function Invoke-ODSWslCommand($Identity,[string[]]$Arguments,[switch]$AsRoot) {
     $target=@('--distribution',$Identity.distro)
     if ($AsRoot) {
-        $allowed=@('pixel-ingress.service','openclaw-gateway.service','pixel-extension-manager.service','pixel-artifact-promoter.service','pixel-workspace-preview.service','pixel-preview-inspection.service')
-        if ($Arguments.Count -ne 3 -or $Arguments[0] -cne '/usr/bin/systemctl' -or
-            $Arguments[1] -cnotin @('start','stop') -or $Arguments[2] -cnotin $allowed) { throw 'Only exact native systemctl lifecycle commands may run as WSL root' }
+        Assert-ODSWslRootArguments $Arguments
         $target+=@('--user','root')
+    }
+    if ($script:ODSWslStartupDeadline) {
+        Assert-ODSWslStartupStillWanted
+        $seconds=[Math]::Max(1,[int]($script:ODSWslStartupDeadline - (Get-ODSWslUtcNow)).TotalSeconds)
+        $mutation=$AsRoot -or ($Arguments.Count -ge 3 -and $Arguments[0] -ceq 'python3' -and $Arguments[2] -cin @('compose-start','compose-stop'))
+        return Invoke-ODSWslBoundedCommand $Identity $Arguments $seconds -AsRoot:$AsRoot -Mutation:$mutation
     }
     $target+=@('--exec')+$Arguments
     & (Join-Path $env:WINDIR 'System32\wsl.exe') @target
@@ -323,12 +709,13 @@ function Invoke-ODSWslCommand($Identity,[string[]]$Arguments,[switch]$AsRoot) {
 
 function Invoke-ODSWslNativeUnit($Identity,[string]$Action,[string]$Unit) {
     $allowed=@('pixel-ingress.service','openclaw-gateway.service','pixel-extension-manager.service','pixel-artifact-promoter.service','pixel-workspace-preview.service','pixel-preview-inspection.service')
-    if ($Action -notin @('start','stop') -or $Unit -cnotin $allowed) { throw 'Invalid fixed native lifecycle command' }
+    $agentRestart=$Action -ceq 'restart' -and $Unit -ceq 'ods-host-agent.service'
+    if (-not $agentRestart -and ($Action -cnotin @('start','stop') -or $Unit -cnotin $allowed)) { throw 'Invalid fixed native lifecycle command' }
     # The signed-in Windows distro owner already has WSL --user root authority.
     # Execute only this fixed system executable/argv; never owner Python/bash.
     Invoke-ODSWslCommand $Identity @('/usr/bin/systemctl',$Action,$Unit) -AsRoot
     $state=(Invoke-ODSWslCommand $Identity @('/usr/bin/systemctl','show',$Unit,'--property=ActiveState','--value') | Out-String).Trim()
-    if (($Action -eq 'start' -and $state -ne 'active') -or
+    if (($Action -in @('start','restart') -and $state -ne 'active') -or
         ($Action -eq 'stop' -and $state -notin @('inactive','failed'))) { throw "Native ODS unit did not reach the requested state: $Unit" }
 }
 
@@ -346,17 +733,40 @@ function Invoke-ODSWslStack($Identity,[string]$Action) {
     # Compose always executes as the ordinary Linux owner, never as root.
     Invoke-ODSWslCommand $Identity @('python3',$program,"compose-$Action",$Identity.installRoot)
     if ($Action -eq 'start') {
+        if ($plan.hostAgentRestart) { Invoke-ODSWslNativeUnit $Identity 'restart' 'ods-host-agent.service' }
         [Array]::Reverse($units)
         foreach ($unit in $units) { Invoke-ODSWslNativeUnit $Identity 'start' $unit }
     }
 }
 
-function Invoke-ODSWslLifecycle([string]$Action,[string]$Distro,[string]$InstallRoot) {
+function Invoke-ODSWslLifecycle([string]$Action,[string]$Distro,[string]$InstallRoot,[switch]$ValidateOnly) {
+    # Uninstall already supplies the installation's canonical distro. Never
+    # enter or even query WSL while withdrawing Windows sign-in permission.
+    if ($Action -eq 'disable-startup') { return Disable-ODSWslStartup (Get-ODSWslIdentity $Distro $InstallRoot) -ValidateOnly:$ValidateOnly }
+    if ($ValidateOnly) { throw 'ValidateOnly is supported only for disable-startup' }
+    $Distro=Resolve-ODSWslRegisteredDistro $Distro
     $identity=Get-ODSWslIdentity $Distro $InstallRoot
     if ($Action -eq 'status') { return (Get-ODSWslLifetimeStatus $identity) }
+    if ($script:ODSWslStateRoot) { Initialize-ODSPrivateDirectory $script:ODSWslStateRoot }
     Initialize-ODSPrivateDirectory $identity.directory
-    $lock=Open-ODSPrivateLock (Join-Path $identity.directory 'command.lock')
+    $manifestPath=Join-Path $identity.directory 'instance.json'
+    if (-not (Test-Path -LiteralPath $manifestPath)) {
+        Write-ODSPrivateBytes $manifestPath ([Text.UTF8Encoding]::new($false).GetBytes(($identity | ConvertTo-Json -Depth 8))) -CreateOnly
+    }
+    # Publish once, before waiting for a previous command. A newer stop must
+    # never be overwritten when this start finally acquires command.lock.
+    Set-ODSWslStartupIntent $identity ($Action -in @('start','restart'))
+    $intent=Get-ODSWslStartupIntent $identity
+    $lock=$null
     try {
+        if ($Action -in @('start','restart')) {
+            $script:ODSWslStartupIdentity=$identity
+            $script:ODSWslStartupGeneration=$intent.generation
+        }
+        $script:ODSWslStartupDeadline=(Get-ODSWslUtcNow).AddMinutes(20)
+        $lock=Open-ODSWslCommandLock $identity
+        Assert-ODSWslCommandSettled $identity
+        Assert-ODSWslStartupStillWanted
         if ($Action -eq 'release') { return (Stop-ODSWslLifetime $identity) }
         if ($Action -in @('stop','restart')) {
             $status=Get-ODSWslLifetimeStatus $identity
@@ -368,14 +778,27 @@ function Invoke-ODSWslLifecycle([string]$Action,[string]$Distro,[string]$Install
             if ($Action -eq 'stop') { return $status }
         }
         $status=Start-ODSWslLifetime $identity
+        Assert-ODSWslStartupStillWanted
+        if (Test-Path -LiteralPath (Join-Path $identity.directory 'startup-config.json')) {
+            Enable-ODSWslStartup $identity
+            $null=Assert-ODSWslStartupTask $identity
+            Assert-ODSWslStartupStillWanted
+            Enable-ScheduledTask -TaskName ($identity.taskName + '-Startup') | Out-Null
+        }
         # Stack commands emit progress and an adapter receipt. Keep them on
         # stderr so the public success pipeline contains one lifetime result.
         Invoke-ODSWslStack $identity 'start' | ForEach-Object { [Console]::Error.WriteLine([string]$_) }
+        Assert-ODSWslStartupStillWanted
         Get-ODSWslLifetimeStatus $identity
-    } finally { $lock.Dispose() }
+    } finally {
+        $script:ODSWslStartupIdentity=$null; $script:ODSWslStartupGeneration=$null; $script:ODSWslStartupDeadline=$null
+        if ($lock) { $lock.Dispose() }
+    }
 }
 
 if ($MyInvocation.InvocationName -ne '.') {
+    [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false)
     if ($Action -eq 'hold') { Invoke-ODSWslHolder $InstanceDirectory }
-    else { Invoke-ODSWslLifecycle $Action $Distro $InstallRoot | ConvertTo-Json -Depth 8 }
+    elseif ($Action -eq 'autostart') { Invoke-ODSWslStartup $InstanceDirectory }
+    else { Invoke-ODSWslLifecycle $Action $Distro $InstallRoot -ValidateOnly:$ValidateOnly | ConvertTo-Json -Depth 8 }
 }

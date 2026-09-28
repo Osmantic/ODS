@@ -6,7 +6,7 @@ services:
     security_opt:
     - no-new-privileges:true
     ports:
-    - 127.0.0.1:${RADICALE_PORT:-11097}:5232
+    - "${BIND_ADDRESS:-127.0.0.1}:${RADICALE_PORT:-11097}:5232"
     healthcheck:
       test:
       - CMD

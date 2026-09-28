@@ -4,7 +4,7 @@ services:
     container_name: ods-hedgedoc
     restart: unless-stopped
     ports:
-    - 127.0.0.1:${HEDGEDOC_PORT:-11043}:3000
+    - "${BIND_ADDRESS:-127.0.0.1}:${HEDGEDOC_PORT:-11043}:3000"
     healthcheck:
       test:
       - CMD

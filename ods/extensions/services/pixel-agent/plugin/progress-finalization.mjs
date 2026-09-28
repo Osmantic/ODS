@@ -9,7 +9,8 @@
 // substantive answer text in the same message is kept as a partial answer (the
 // calls are refused and never run). Any further model call, or an empty or
 // degenerate answer, falls back to the canned stop text, followed by the
-// host's list of pages read successfully in the response.
+// host's list of pages read successfully in the response, unless the stop
+// synthesis (stop-synthesis.mjs) answers from those pages first.
 import { RUN_PROGRESS_STOP_REASON } from './run-progress-budget.mjs';
 import { promisesExecution } from './completion-assurance.mjs';
 
@@ -25,7 +26,7 @@ export const PROGRESS_FINALIZATION_INSTRUCTION =
   'Do not claim a publication, preview URL, passing test or saved file that a tool result above did not confirm.';
 
 export const PROGRESS_FINALIZATION_NOTE =
-  '**Partial answer: Pixel reached its tool limit.** This response was stopped after repeated tool failures ' +
+  '**Partial answer: Portal reached its tool limit.** This response was stopped after repeated tool failures ' +
   'or attempts without progress. The answer above was written from evidence gathered before the stop and may be ' +
   'incomplete; items it marks as missing or unverified were not completed. ' +
   'Saved files and previously verified publications were preserved.';
@@ -36,7 +37,7 @@ export const PROGRESS_FINALIZATION_REFUSED_CALLS_NOTE =
 // Host-built from this response's successful page-read receipts; only the
 // list varies. Titles are page-provided text, reduced to plain words.
 export const PROGRESS_READ_PAGES_HEADING =
-  'Pages Pixel read successfully in this response before the stop (listed by ODS from its read receipts; ' +
+  'Pages Portal read successfully in this response before the stop (listed by ODS from its read receipts; ' +
   'titles are as each page reported them):';
 export const MAX_READ_PAGES_LISTED = 8;
 
@@ -119,13 +120,16 @@ export function composeReadPages(pages) {
 }
 
 // Model answer first (the requested format stays intact), then host facts.
+// `synthesis` marks a stop synthesis (stop-synthesis.mjs): its note, and the
+// pages it was given, listed last.
 export function composeProgressFinalization(answer, {preview, previewExpected = false,
   verificationStatus, researchLimit = false, unverifiedLinks = [], refusedToolCalls = false,
-  requestedTextMissing} = {}) {
+  requestedTextMissing, synthesis} = {}) {
   const fences = [...answer.matchAll(/^[ \t]{0,3}(`{3,}|~{3,})/gm)].map(match => match[1]);
   const closing = fences.length % 2 ? `\n${fences.at(-1)}` : '';
   const facts = [PROGRESS_FINALIZATION_NOTE];
   if (refusedToolCalls) facts.push(PROGRESS_FINALIZATION_REFUSED_CALLS_NOTE);
+  if (typeof synthesis?.note === 'string' && synthesis.note) facts.push(synthesis.note);
   if (researchLimit) facts.push("This response's web research allowance was used up, so no further sources could be read.");
   if (verificationStatus === 'failed') facts.push('The latest recognized test or verification command failed.');
   else if (verificationStatus === 'pending') facts.push('A recognized test or verification command had not finished, so its result is unverified.');
@@ -137,6 +141,8 @@ export function composeProgressFinalization(answer, {preview, previewExpected = 
       'This is the last verified publication, not proof that all requested work completed.');
     if (typeof requestedTextMissing === 'string' && requestedTextMissing) facts.push(requestedTextMissing);
   } else if (previewExpected) facts.push('ODS did not verify a preview in this response. No localhost URL is live or claimed.');
+  const pages = synthesis ? composeReadPages(synthesis.pages) : '';
+  if (pages) facts.push(pages);
   return `${answer}${closing}\n\n${facts.join('\n\n')}`;
 }
 

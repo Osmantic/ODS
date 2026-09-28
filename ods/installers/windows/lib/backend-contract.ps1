@@ -595,7 +595,7 @@ function Set-ODSLemonadeModernRuntimeConfig {
     }
     $body = $payload | ConvertTo-Json -Compress
     $null = Invoke-RestMethod -Method Post -Uri "$baseUrl/internal/set" `
-        -Headers $headers -ContentType "application/json" -Body $body `
+        -Headers $headers -ContentType "application/json; charset=utf-8" -Body ([Text.Encoding]::UTF8.GetBytes($body)) `
         -TimeoutSec 10 -ErrorAction Stop
     $config = Invoke-RestMethod -Method Get -Uri "$baseUrl/internal/config" `
         -Headers $headers -TimeoutSec 10 -ErrorAction Stop
@@ -648,7 +648,7 @@ function Set-ODSLemonadeLoadedModel {
         llamacpp_backend = "vulkan"
     } | ConvertTo-Json -Compress
     $response = Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:$Port/api/v1/load" `
-        -Headers $headers -ContentType "application/json" -Body $body `
+        -Headers $headers -ContentType "application/json; charset=utf-8" -Body ([Text.Encoding]::UTF8.GetBytes($body)) `
         -TimeoutSec $TimeoutSec -ErrorAction Stop
     if ([string]$response.status -notin @("success", "ok")) {
         throw "Lemonade did not confirm model loading."

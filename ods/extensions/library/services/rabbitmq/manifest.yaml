@@ -27,10 +27,15 @@ service:
     required: true
     secret: true
     description: 64-hex initial ods_admin password; existing accounts are preserved.
+    format: hex64
+    generate: hex64
   - key: RABBITMQ_NODE_SECRET
     required: true
     secret: true
     description: Distinct stable 64-hex Erlang node/CLI cookie, preserved with backups.
+    format: hex64
+    distinct_from: [RABBITMQ_ADMIN_PASSWORD]
+    generate: hex64
   - key: RABBITMQ_AMQP_PORT
     required: false
     default: '11106'

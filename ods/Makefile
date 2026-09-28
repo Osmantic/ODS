@@ -25,8 +25,13 @@ test: ## Run unit and contract tests
 	@echo ""
 	@echo "=== Tier map tests ==="
 	@bash tests/test-tier-map.sh
+	@python3 tests/test-model-library-pinned-urls.py
 	@bash tests/test-installer-context-parity.sh
 	@bash tests/test-hermes-context-floor.sh
+	@bash tests/test-install-menu-hermes-flag.sh
+	@bash tests/test-custom-menu-agent-flags.sh
+	@bash tests/test-lemonade-external-gpu.sh
+	@bash tests/test-preflight-external-gpu.sh
 	@echo ""
 	@echo "=== Hermes slash worker prune ==="
 	@bash tests/test-hermes-slash-worker-prune.sh
@@ -52,6 +57,7 @@ test: ## Run unit and contract tests
 	@bash tests/test-linux-host-agent-stop.sh
 	@bash tests/test-preflight-dashboard-port.sh
 	@bash tests/test-wsl-broken-docker-shim.sh
+	@bash tests/test-wsl-nvidia-driver-guard.sh
 	@bash tests/test-ui-missing-container-fast-fail.sh
 	@echo ""
 	@echo "=== ods-doctor rootless subordinate IDs ==="
@@ -76,6 +82,13 @@ test: ## Run unit and contract tests
 	@echo ""
 	@echo "=== AMD/Lemonade contracts ==="
 	@bash tests/contracts/test-amd-lemonade-contracts.sh
+	@bash tests/test-lemonade-host-transport.sh
+	@bash tests/test-wsl-agent-start.sh
+	@python3 tests/test-lemonade-container-transport.py
+	@python3 tests/test-wsl-lemonade-proof.py
+	@python3 tests/test-wsl-lemonade-control.py
+	@python3 tests/test-configure-wsl-model-store.py
+	@python3 tests/test-retire-wsl-runtime.py
 	@bash tests/test-litellm-amd-auth-enforced.sh
 	@bash tests/contracts/test-windows-strix-tier-map.sh
 	@bash tests/contracts/test-windows-llm-model-readiness.sh
@@ -87,9 +100,11 @@ test: ## Run unit and contract tests
 	@echo "=== Overlay/plist contracts ==="
 	@bash tests/contracts/test-overlay-map-coherence.sh
 	@bash tests/contracts/test-plist-log-paths.sh
+	@python3 tests/contracts/test-llama-cpp-compat.py
 	@python3 tests/contracts/test-llama-runtime-tunables.py
 	@python3 tests/contracts/test-llama-spec-default.py
 	@bash tests/test-llama-mtp-args.sh
+	@python3 -m unittest tests/test_macos_runtime_llama_args.py tests/test_macos_checkpoint_args.py
 	@echo ""
 	@echo "=== safe .env loading (quote/CRLF handling) ==="
 	@bash tests/test-safe-env.sh
@@ -125,6 +140,9 @@ test: ## Run unit and contract tests
 	@echo ""
 	@echo "=== brave-search searxng compat contract ==="
 	@bash tests/test-brave-search-searxng-compat.sh
+	@echo ""
+	@echo "=== SearXNG factory config contract ==="
+	@bash tests/test-searxng-config-contract.sh
 	@echo ""
 	@echo "=== ods-cli pipefail tolerance ==="
 	@bash tests/test-ods-cli-pipefail-tolerance.sh

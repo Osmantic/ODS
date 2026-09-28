@@ -1,7 +1,8 @@
 [Unit]
 Description=ODS Pixel isolated immutable preview inspection broker
 After=docker.service pixel-workspace-preview.service
-Requires=docker.service pixel-workspace-preview.service
+Requires=pixel-workspace-preview.service
+Wants=docker.service
 
 [Service]
 Type=simple

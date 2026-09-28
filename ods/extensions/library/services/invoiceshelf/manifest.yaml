@@ -28,6 +28,8 @@ service:
     secret: true
     description: Stable random 64-hex encryption key; preserve with backups and never
       replace casually.
+    format: hex64
+    generate: hex64
   ui_path: /
 tags:
 - invoices

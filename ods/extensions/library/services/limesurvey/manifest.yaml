@@ -27,15 +27,21 @@ service:
     required: true
     secret: true
     description: 64-hex database password; preserve for existing PostgreSQL data.
+    format: hex64
+    generate: hex64
   - key: LIMESURVEY_ADMIN_PASSWORD
     required: true
     secret: true
     description: Distinct 64-hex initial administrator password; existing accounts
       are not reset.
+    format: hex64
+    distinct_from: [LIMESURVEY_DB_PASSWORD]
+    generate: hex64
   - key: LIMESURVEY_ADMIN_EMAIL
     required: true
     secret: false
     description: Actual owner email address for initial administrator account.
+    format: email
   ui_path: /index.php/admin
 tags:
 - surveys

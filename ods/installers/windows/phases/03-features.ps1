@@ -149,14 +149,50 @@ if ($enableComfyui -and $gpuInfo.Backend -eq "amd" -and -not $cloudMode) {
     Write-AI "  Image generation can be enabled later when a Windows-native ComfyUI backend is available."
 }
 
+# Hermes needs 64K context. The raise grows the KV cache, so it is re-checked
+# against the same hardware envelope phase 02 selected with (mirrors
+# installers/phases/03-features.sh): raise when the pick fits at 64K,
+# otherwise re-select a model that does, otherwise keep the largest context
+# that fits and say ODS Talk is unavailable (the Dashboard shows why).
+$hermesContextBelowFloor = $false
 if ($enableHermes -and -not $cloudMode) {
     $hermesContextSize = 65536
     if ([int]$tierConfig.MaxContext -lt $hermesContextSize) {
-        Write-AIWarn "Hermes enabled: increasing llama context from $($tierConfig.MaxContext) to $hermesContextSize (64K floor)."
-        if ($tierConfig.ContainsKey("RecommendationReason") -and $tierConfig.RecommendationReason) {
-            $tierConfig.RecommendationReason = "$($tierConfig.RecommendationReason) Hermes requires at least 64K context, so runtime context was raised to $hermesContextSize."
+        $hermesFloorAction = "raise"
+        $hermesFit = Test-CatalogModelContextFit -TierConfig $tierConfig -GpuInfo $gpuInfo `
+            -SystemRamGB $systemRamGB -SourceRoot $sourceRoot -ContextLength $hermesContextSize
+        if ($hermesFit -eq $false) {
+            $hermesPrevious = "$($tierConfig.LlmModel) at $($tierConfig.MaxContext)"
+            try {
+                $hermesReselected = Resolve-CatalogModelRecommendation `
+                    -TierConfig (Resolve-TierConfig -Tier $selectedTier) `
+                    -Tier $selectedTier `
+                    -GpuInfo $gpuInfo `
+                    -SystemRamGB $systemRamGB `
+                    -SourceRoot $sourceRoot `
+                    -MinContext $hermesContextSize `
+                    -RequireMinContext
+                $tierConfig = $hermesReselected
+                $hermesFloorAction = "reselected"
+                Write-AIWarn "Hermes needs 64K context: $hermesPrevious cannot serve 64K here, so $($tierConfig.LlmModel) was selected at $($tierConfig.MaxContext)."
+            } catch {
+                $hermesFloorAction = "cap"
+            }
         }
-        $tierConfig.MaxContext = $hermesContextSize
+        if ($hermesFloorAction -eq "raise") {
+            Write-AIWarn "Hermes enabled: increasing llama context from $($tierConfig.MaxContext) to $hermesContextSize (64K floor)."
+            if ($tierConfig.ContainsKey("RecommendationReason") -and $tierConfig.RecommendationReason) {
+                $tierConfig.RecommendationReason = "$($tierConfig.RecommendationReason) Hermes requires at least 64K context, so runtime context was raised to $hermesContextSize."
+            }
+            $tierConfig.MaxContext = $hermesContextSize
+        } elseif ($hermesFloorAction -eq "cap") {
+            $hermesContextBelowFloor = $true
+            Write-AIWarn "Hermes needs at least 64K context, but $($tierConfig.LlmModel) runs at $($tierConfig.MaxContext) here (64K does not fit or exceeds its native context)."
+            Write-AIWarn "ODS Talk stays unavailable (the Dashboard says why) until you choose a model that fits 64K in Models."
+            if ($tierConfig.ContainsKey("RecommendationReason") -and $tierConfig.RecommendationReason) {
+                $tierConfig.RecommendationReason = "$($tierConfig.RecommendationReason) Hermes requires 64K context, which does not fit here; ODS Talk is unavailable with this model."
+            }
+        }
     }
 }
 

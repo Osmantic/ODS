@@ -54,15 +54,16 @@ export default function PortalModelSelector(props) {
 /** Once opened, retain the hook even while closed so an accepted swap stays observed. */
 function LoadedModelSelector({activeModel='',runtimeSource,busy=false,onSwitchingChange,onSettled}) {
   const catalog=useModels()
-  const {currentModel,activationReadyModel,loading,error,canActivateModels,activationModeError,activationLoading,modelLifecycle,actionLoadingModels=[],loadModel,refresh,clearMutationError}=catalog
+  const {currentModel,activationReadyModel,loading,error,canActivateModels,activationModeError,activationLoading,modelLifecycle,externalLemonade,modelManagement,runtimeActionLoading,actionLoadingModels=[],loadModel,refresh,clearMutationError}=catalog
   const models=Array.isArray(catalog.models)?catalog.models:[]
   const installed=models.filter(model=>model && typeof model.id==='string' && ['loaded','downloaded'].includes(model.status))
     .map(quickSwitchProfile)
   const [open,setOpen]=useState(true),[confirmId,setConfirmId]=useState(null),[pending,setPending]=useState(false),[localError,setLocalError]=useState('')
   const [recoveryPending,setRecoveryPending]=useState(false),[recoveryBusy,setRecoveryBusy]=useState(false)
   const root=useRef(null),trigger=useRef(null),list=useRef(null),mounted=useRef(true),submitLock=useRef(false)
-  const id=useId(),remote=runtimeSource==='remote-provider',external=runtimeSource==='external-host',local=runtimeSource==='local-switchboard'
-  const switching=pending || recoveryBusy || Boolean(activationLoading) || Boolean(modelLifecycle?.active && modelLifecycle.operation==='model_activation')
+  const managementUnavailable=externalLemonade===true && modelManagement?.managed==null
+  const id=useId(),remote=runtimeSource==='remote-provider',external=runtimeSource==='external-host' && !managementUnavailable && modelManagement?.managed!==true,local=runtimeSource==='local-switchboard' || (runtimeSource==='external-host' && modelManagement?.managed===true)
+  const switching=pending || recoveryBusy || Boolean(activationLoading || runtimeActionLoading) || Boolean(modelLifecycle?.active && modelLifecycle.operation==='model_activation')
   const current=local?models.find(model=>model.id===currentModel):null
   const selectedId=local && activationReadyModel===currentModel?currentModel:null
   const activeName=current || activeModel
@@ -88,6 +89,7 @@ function LoadedModelSelector({activeModel='',runtimeSource,busy=false,onSwitchin
     if(switching || modelLifecycle?.active || actionLoadingModels.length)return 'A model operation is in progress.'
     if(recoveryPending)return 'Recover the interrupted model switch before loading another model.'
     if(remote)return 'This conversation uses a remote provider. Choose its model in provider settings.'
+    if(managementUnavailable)return activationModeError || 'Runtime management could not be verified. Refresh the model list.'
     if(external)return 'This model is managed on the external host. Switch it there.'
     if(!local)return 'The conversation’s model source is not confirmed. Review Models before switching.'
     if(busy)return 'Wait for the active task to finish before switching models.'
@@ -111,7 +113,7 @@ function LoadedModelSelector({activeModel='',runtimeSource,busy=false,onSwitchin
       if(mounted.current){setPending(false);onSettled?.()}
     }
   }
-  const reason=switching?'':confirmation?unavailable(confirmation):remote?'This conversation uses a remote provider.':external?'This model is managed on the external host.':!local?'The conversation’s model source is not confirmed.':busy?'The current task is still running.':!canActivateModels && !loading?activationModeError:''
+  const reason=switching?'':confirmation?unavailable(confirmation):remote?'This conversation uses a remote provider.':managementUnavailable?activationModeError || 'Runtime management could not be verified. Refresh the model list.':external?'This model is managed on the external host.':!local?'The conversation’s model source is not confirmed.':busy?'The current task is still running.':!canActivateModels && !loading?activationModeError:''
   const showActiveFallback=activeModel && !current
   return <div ref={root} className="portal-model-selector">
     <button ref={trigger} type="button" className="portal-model-trigger" aria-label={`Choose model: ${modelDisplayName(activeName,true)}`} aria-haspopup="dialog" aria-expanded={open} aria-controls={open?id:undefined} title={modelDisplayName(activeName)} onClick={()=>{if(open)close();else {setOpen(true);void refresh()}}}>

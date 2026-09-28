@@ -27,6 +27,9 @@ service:
     required: true
     description: HTTP(S) endpoint reachable from the container that should return
       200. No embedded credentials.
+    format: url
+    pattern: '^https?://([A-Za-z0-9._~-]+|\[[0-9A-Fa-f:.]+\])(:[0-9]*)?([/?]([!-"$&-~]|%[0-9A-Fa-f]{2})*)?$'
+    format_description: 'with a lowercase scheme, no #fragment and only valid % escapes'
   ui_path: /
 tags:
 - monitoring

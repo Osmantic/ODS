@@ -70,6 +70,11 @@ export default function Models({ compact = false }) {
     configuredMode,
     llmBackend,
     externalLemonade,
+    modelManagement,
+    modelLifecycle,
+    runtimeActionLoading,
+    stopRuntime,
+    startRuntime,
     canActivateModels,
     activationModeError,
     recommendationAlternatives,
@@ -253,9 +258,9 @@ export default function Models({ compact = false }) {
     canActivateModels={canActivateModels} activationModeError={activationModeError}
     hermesMinimumContext={hermesMinimumContext} pixelMinimumContext={pixelMinimumContext}
     isCurrentModel={model.id === currentModel} isLoading={pendingModelActions.includes(model.id)}
-    loadBusy={pendingModelActions.length > 0} activationBusy={Boolean(activationLoading)}
+    loadBusy={pendingModelActions.length > 0} activationBusy={Boolean(activationLoading || runtimeActionLoading)}
     downloadBusy={downloadProgress.isDownloading || !!downloadStarting} downloadStarting={downloadStarting === model.id}
-    onDownload={() => handleDownload(model.id)} onLoad={() => setActivationConfigModel(model)}
+    onDownload={() => handleDownload(model.id)} onLoad={() => { if (canActivateModels && !runtimeActionLoading) setActivationConfigModel(model) }}
     onBenchmark={() => benchmarkModel(model.id)} onDelete={() => setDeleteConfirmModel(model)}/>
 
   if (loading) {
@@ -316,12 +321,12 @@ export default function Models({ compact = false }) {
         </div>
       )}
 
-      {!canActivateModels && (
+      {!canActivateModels && !(modelManagement?.managed === true && modelManagement.running === false) && (
         <section className={compact ? 'models-external-notice' : 'mb-5 flex flex-col gap-3 rounded-xl border border-theme-border bg-theme-text-secondary/10 p-4 sm:flex-row sm:items-center sm:justify-between'}>
           <div className="flex min-w-0 items-start gap-3">
             <AlertCircle size={18} className="mt-0.5 shrink-0 text-theme-text-secondary" />
             <div>
-              <p className="text-sm font-semibold text-theme-text-secondary">{llmBackend === 'external' ? 'Model changes managed externally' : 'Local model runtime unavailable'}</p>
+              <p className="text-sm font-semibold text-theme-text-secondary">{llmBackend === 'external' || (externalLemonade && modelManagement?.managed === false) ? 'Model changes managed externally' : externalLemonade && modelManagement?.managed == null ? 'Runtime management unavailable' : 'Local model runtime unavailable'}</p>
               <p className="mt-1 text-sm text-theme-text-secondary/75">{activationModeError}</p>
               {!compact && <p className="mt-1 text-xs text-theme-text-secondary/60">Model downloads and deletion remain available.</p>}
             </div>
@@ -345,6 +350,17 @@ export default function Models({ compact = false }) {
         />
       )}
 
+      {modelManagement?.managed === true && modelManagement.canUnload === true && (
+        <section aria-label="Model runtime controls" className="mb-3 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-theme-border p-3 text-sm">
+          <p>{modelManagement.running ? 'Unload the model to release GPU memory. Your saved model selection is kept.' : 'The model runtime is stopped. Resume your saved model to enable model changes.'}</p>
+          <button type="button" onClick={modelManagement.running ? stopRuntime : startRuntime}
+            disabled={Boolean(runtimeActionLoading || activationLoading || modelLifecycle?.active || pendingModelActions.length || downloadProgress.isDownloading)}
+            className="rounded-md border border-theme-border px-3 py-2 disabled:opacity-50">
+            {runtimeActionLoading === 'stop' ? 'Unloading…' : runtimeActionLoading === 'start' ? 'Resuming…' : modelManagement.running ? 'Unload model' : 'Resume model'}
+          </button>
+        </section>
+      )}
+
       <CurrentModelPanel
         compact={compact}
         model={activeModel}
@@ -353,7 +369,7 @@ export default function Models({ compact = false }) {
       />
 
       <ExternalLemonadeAdoption
-        enabled={odsMode === 'lemonade' && externalLemonade === true}
+        enabled={odsMode === 'lemonade' && externalLemonade === true && modelManagement?.managed === false}
         minimumContext={pixelMinimumContext}
         onSettled={refresh}
         compact={compact}
@@ -392,7 +408,7 @@ export default function Models({ compact = false }) {
         >
           <HuggingFaceModelBrowser
             gpu={gpu}
-            downloadBusy={downloadProgress.isDownloading || Boolean(downloadStarting)}
+            downloadBusy={downloadProgress.isDownloading || Boolean(downloadStarting || runtimeActionLoading)}
             onImportStarted={handleHuggingFaceImportStarted}
           />
         </section>
@@ -478,6 +494,8 @@ export default function Models({ compact = false }) {
           pixelMinimumContext={pixelMinimumContext}
           hermesMinimumContext={hermesMinimumContext}
           isCurrentModel={activationConfigModel.id === currentModel}
+          canActivate={canActivateModels && !runtimeActionLoading}
+          activationModeError={activationModeError}
           onCancel={() => setActivationConfigModel(null)}
           onConfirm={handleConfirmActivation}
         />
@@ -850,7 +868,7 @@ function ModelTableRow({
     <div className="model-fit"><span>{compatibility.label}</span><span>{compatibility.detail}</span></div>
     <footer><div className="model-entry-actions">
       <PrimaryAction model={model} isLoaded={isLoaded} isDownloaded={isDownloaded} isLoading={isLoading} activationBusy={activationBusy} downloadBusy={downloadBusy} downloadStarting={downloadStarting} runDisabledReason={runDisabledReason} hermesMinimumContext={hermesMinimumContext} onDownload={onDownload} onLoad={onLoad} onBenchmark={onBenchmark}/>
-      {isLoaded && !isRuntimeManaged && <button aria-label={`Configure context for ${model.name}`} title={`Configure context for ${model.name}`} disabled={activationBusy} onClick={onLoad}><MetalMetricIcon icon={SlidersHorizontal} size={14}/></button>}
+      {isLoaded && !isRuntimeManaged && <button aria-label={`Configure context for ${model.name}`} title={activationModeError || `Configure context for ${model.name}`} disabled={activationBusy || !canActivateModels} onClick={onLoad}><MetalMetricIcon icon={SlidersHorizontal} size={14}/></button>}
       <DeleteAction model={model} isLoaded={isLoaded} isDownloaded={isDownloaded} isLoading={isLoading} activationBusy={activationBusy} onDelete={onDelete}/>
     </div><details className="model-entry-details"><summary>Details <ChevronRight size={12}/></summary><div><p>{model.description || 'No description available.'}</p><p>{tags.join(' · ')}</p>{performanceBadge && <p>{performanceBadge.label}</p>}<p>{compatibility.label}: {compatibility.detail}</p>{compatibilityNotes.map(note => <p key={note}>{note}</p>)}{runDisabledReason && <p>{runDisabledReason}</p>}</div></details></footer>
   </article>
@@ -895,9 +913,9 @@ function ModelTableRow({
           <button
             type="button"
             onClick={onLoad}
-            disabled={activationBusy}
+            disabled={activationBusy || !canActivateModels}
             aria-label={`Configure context for ${model.name}`}
-            title={`Configure context for ${model.name}`}
+            title={activationModeError || `Configure context for ${model.name}`}
             className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-theme-border bg-theme-bg/45 text-theme-text-muted transition-colors hover:border-theme-accent/35 hover:text-theme-accent disabled:cursor-not-allowed disabled:opacity-40"
           >
             <SlidersHorizontal size={14} />
@@ -1126,6 +1144,8 @@ function ModelActivationDialog({
   pixelMinimumContext,
   hermesMinimumContext,
   isCurrentModel,
+  canActivate,
+  activationModeError,
   onCancel,
   onConfirm,
 }) {
@@ -1307,7 +1327,7 @@ function ModelActivationDialog({
 
         <div className="flex items-center justify-between gap-3 border-t border-theme-border bg-theme-bg/25 px-5 py-4">
           <span className="text-[11px] text-theme-text-muted">
-            {isCurrentModel ? `Active: ${formatContext(currentContext)}` : model.quantization || 'GGUF'}
+            {!canActivate ? activationModeError || 'Wait for the runtime operation to finish.' : isCurrentModel ? `Active: ${formatContext(currentContext)}` : model.quantization || 'GGUF'}
           </span>
           <div className="flex gap-2">
             <button
@@ -1320,7 +1340,7 @@ function ModelActivationDialog({
             <button
               type="button"
               onClick={() => onConfirm(selectedContext)}
-              disabled={!contextValid || sameContext || (model.fitsVram === false && !model.recommended && selected?.fitsVram === false)}
+              disabled={!canActivate || !contextValid || sameContext || (model.fitsVram === false && !model.recommended && selected?.fitsVram === false)}
               className="inline-flex h-9 min-w-28 items-center justify-center gap-2 rounded-md bg-theme-accent px-4 text-xs font-semibold text-white shadow-[0_0_18px_rgba(168,85,247,0.28)] transition-colors hover:bg-theme-accent-hover disabled:cursor-not-allowed disabled:opacity-40"
             >
               <Play size={13} />

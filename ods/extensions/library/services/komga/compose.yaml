@@ -6,7 +6,7 @@ services:
     security_opt:
     - no-new-privileges:true
     ports:
-    - 127.0.0.1:${KOMGA_PORT:-11049}:25600
+    - "${BIND_ADDRESS:-127.0.0.1}:${KOMGA_PORT:-11049}:25600"
     healthcheck:
       test:
       - CMD

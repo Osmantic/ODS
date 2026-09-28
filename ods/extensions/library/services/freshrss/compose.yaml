@@ -4,7 +4,7 @@ services:
     container_name: ods-freshrss
     restart: unless-stopped
     ports:
-    - 127.0.0.1:${FRESHRSS_PORT:-11029}:80
+    - "${BIND_ADDRESS:-127.0.0.1}:${FRESHRSS_PORT:-11029}:80"
     healthcheck:
       test:
       - CMD

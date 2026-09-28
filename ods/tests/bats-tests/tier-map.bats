@@ -56,9 +56,9 @@ teardown() {
     resolve_tier_config
     assert_equal "$TIER_NAME" "Pro"
     assert_equal "$MODEL_PROFILE_EFFECTIVE" "qwen"
-    assert_equal "$LLM_MODEL" "qwen3-30b-a3b"
-    assert_equal "$GGUF_FILE" "Qwen3-30B-A3B-Q4_K_M.gguf"
-    assert_equal "$MAX_CONTEXT" "32768"
+    assert_equal "$LLM_MODEL" "qwen3.5-27b"
+    assert_equal "$GGUF_FILE" "Qwen3.5-27B-Q4_K_M.gguf"
+    assert_equal "$MAX_CONTEXT" "65536"
 }
 
 @test "resolve_tier_config: default profile keeps tier 4 on Qwen" {
@@ -66,8 +66,8 @@ teardown() {
     resolve_tier_config
     assert_equal "$TIER_NAME" "Enterprise"
     assert_equal "$MODEL_PROFILE_EFFECTIVE" "qwen"
-    assert_equal "$LLM_MODEL" "qwen3-30b-a3b"
-    assert_equal "$GGUF_FILE" "Qwen3-30B-A3B-Q4_K_M.gguf"
+    assert_equal "$LLM_MODEL" "qwen3.6-35b-a3b"
+    assert_equal "$GGUF_FILE" "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf"
     assert_equal "$MAX_CONTEXT" "131072"
 }
 
@@ -102,12 +102,12 @@ teardown() {
     assert_equal "$MAX_CONTEXT" "131072"
 }
 
-@test "resolve_tier_config: default profile keeps SH_COMPACT on Qwen 30B A3B" {
+@test "resolve_tier_config: default profile puts SH_COMPACT on Qwen 3.6 35B A3B" {
     TIER=SH_COMPACT
     resolve_tier_config
     assert_equal "$TIER_NAME" "Strix Halo Compact"
     assert_equal "$MODEL_PROFILE_EFFECTIVE" "qwen"
-    assert_equal "$LLM_MODEL" "qwen3-30b-a3b"
+    assert_equal "$LLM_MODEL" "qwen3.6-35b-a3b"
     assert_equal "$MAX_CONTEXT" "131072"
 }
 
@@ -115,7 +115,7 @@ teardown() {
     TIER=CLOUD
     resolve_tier_config
     assert_equal "$TIER_NAME" "Cloud (API)"
-    assert_equal "$LLM_MODEL" "anthropic/claude-sonnet-4-5-20250514"
+    assert_equal "$LLM_MODEL" "anthropic/claude-sonnet-4-6"
     assert_equal "$GGUF_FILE" ""
     assert_equal "$GGUF_URL" ""
     assert_equal "$MAX_CONTEXT" "200000"
@@ -138,10 +138,10 @@ teardown() {
     assert_output "qwen3.5-9b"
 
     run tier_to_model 3
-    assert_output "qwen3-30b-a3b"
+    assert_output "qwen3.5-27b"
 
     run tier_to_model 4
-    assert_output "qwen3-30b-a3b"
+    assert_output "qwen3.6-35b-a3b"
 }
 
 @test "tier_to_model: default profile maps T-prefix aliases correctly" {
@@ -152,15 +152,15 @@ teardown() {
     assert_output "qwen3.5-9b"
 
     run tier_to_model T3
-    assert_output "qwen3-30b-a3b"
+    assert_output "qwen3.5-27b"
 
     run tier_to_model T4
-    assert_output "qwen3-30b-a3b"
+    assert_output "qwen3.6-35b-a3b"
 }
 
 @test "tier_to_model: default profile maps special tiers correctly" {
     run tier_to_model CLOUD
-    assert_output "anthropic/claude-sonnet-4-5-20250514"
+    assert_output "anthropic/claude-sonnet-4-6"
 
     run tier_to_model NV_ULTRA
     assert_output "qwen3-coder-next"
@@ -169,10 +169,10 @@ teardown() {
     assert_output "qwen3.6-35b-a3b"
 
     run tier_to_model SH_COMPACT
-    assert_output "qwen3-30b-a3b"
+    assert_output "qwen3.6-35b-a3b"
 
     run tier_to_model SH
-    assert_output "qwen3-30b-a3b"
+    assert_output "qwen3.6-35b-a3b"
 }
 
 @test "tier_to_model: arm64 NV_ULTRA maps to A3B MoE substitution" {
@@ -199,7 +199,7 @@ teardown() {
     assert_equal "$LLM_MODEL" "gemma-4-e4b-it"
     assert_equal "$GGUF_FILE" "gemma-4-E4B-it-Q4_K_M.gguf"
     assert_equal "$MAX_CONTEXT" "32768"
-    assert_equal "$LLAMA_SERVER_IMAGE" "ghcr.io/ggml-org/llama.cpp:server-cuda-b9014"
+    assert_equal "$LLAMA_SERVER_IMAGE" "ghcr.io/ggml-org/llama.cpp:server-cuda-b9014@sha256:fcf285820892e7ce3218379634e3590826fc697e8b6745b9392072462e355c4f"
     assert_equal "$LLAMA_CPP_RELEASE_TAG_OVERRIDE" "b9014"
 }
 
@@ -272,7 +272,7 @@ teardown() {
     assert_output "qwen3.5-9b"
 
     run tier_to_model 3 qwen
-    assert_output "qwen3-30b-a3b"
+    assert_output "qwen3.5-27b"
 
     run tier_to_model NV_ULTRA qwen
     assert_output "qwen3-coder-next"

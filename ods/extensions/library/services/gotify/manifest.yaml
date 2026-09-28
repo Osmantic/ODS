@@ -28,6 +28,8 @@ service:
     secret: true
     description: Initial administrator password; existing accounts are not reset by
       changing this value.
+    max_length: 72
+    generate: password
   ui_path: /
 tags:
 - notifications

@@ -30,6 +30,8 @@ service:
     required: true
     secret: true
     description: API token from your Paperless-ngx account.
+    pattern: '^[!-~]+$'
+    format_description: printable ASCII without spaces
   ui_path: /
   llm:
     consumes: true

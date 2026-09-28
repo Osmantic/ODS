@@ -284,6 +284,58 @@ OPENCLAW_PACKAGE=/path/to/openclaw node --test \
   ods/extensions/services/pixel-agent/tests/runtime_tool_result_delivery.integration.mjs
 ```
 
+## Tool-call arguments under the native macOS stream order
+
+OpenClaw 2026.6.33's openai-completions transport parses streamed tool-call
+arguments with a JSON repair that runs before a strict parse. When a string
+so far ends like a Windows drive prefix, as Python's `as f:` or `as e:` does,
+the repair keeps each following control escape such as `\n`, `\t` or `\r` as
+a literal backslash sequence until the next quote or colon. Upstream, the embedded
+runner's malformed-argument wrapper re-parses the raw argument text strictly
+and replaces that result, so valid JSON reaches the tool unchanged.
+
+The native macOS bundle's buffered stream-progress patch moves the model-call
+diagnostic observer inside that wrapper. The observer returns a proxy that
+intercepts reads of the stream's iterator and `result` but not writes. The
+wrappers applied outside it (argument repair, tool-name trimming, standalone
+text tool-call promotion and sensitive-stop handling) assigned their
+replacements to the proxy's target, and the proxy kept returning its own, so
+none of them ran on macOS. In one recorded macOS qualification round, 12 of 97
+distinct tool calls (file writes, edits and commands carrying Python code) had
+literal `\n` where the model wrote line breaks. One edit meant to fix that was
+corrupted the same way, and the coding task failed.
+
+`openclaw-diagnostic-stream-writes.json` repairs the exact
+`attempt.model-diagnostic-events-DqqiPQPY.js` bytes. The proxy now keeps an
+iterator or `result` assigned to it and returns it on later reads. Each outer
+wrapper still reaches the observer through the value it read before assigning,
+so the observer continues to see the raw transport events and final result.
+Other writes reach the stream as before. Where the observer is outermost, as in
+the upstream order used by Linux/Windows-WSL, nothing assigns to it and
+behavior is unchanged.
+
+Native macOS composes the recipe into its protected bundle before the
+selection repair, so the stream-progress patch still applies last.
+Linux/Windows-WSL applies the same recipe with `--diagnostic-stream-writes`;
+restore uses the existing backup contract (`--diagnostic-stream-writes
+--restore`). The transport's JSON repair itself is unchanged: arguments longer
+than the wrapper's 64,000-character buffer still reach the tool as the
+transport parsed them, on every platform.
+
+The real-gateway test composes a runtime copy with the macOS bundle code and
+writes a Python file through a deterministic provider. Set
+`ODS_DIAGNOSTIC_STREAM_WRITES_RED=1` to keep the pinned observer and see the
+literal `\n`:
+
+```sh
+OPENCLAW_PACKAGE=/path/to/openclaw node --test \
+  ods/extensions/services/pixel-agent/tests/runtime_diagnostic_stream_writes.integration.mjs
+```
+
+The transformation includes a small portion of OpenClaw's MIT-licensed
+diagnostic events runtime, Copyright (c) 2026 OpenClaw Foundation; see the
+[upstream MIT notice](upstream/THIRD_PARTY_NOTICES.md).
+
 ## Runtime patches from another ODS build
 
 A different ODS build, such as a newer candidate or a downgrade source, can

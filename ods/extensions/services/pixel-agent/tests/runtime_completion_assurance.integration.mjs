@@ -27,7 +27,9 @@ test('real harness recovers a premature stop and retains safe delivery when furt
   const port=probe.address().port;await new Promise(resolve=>probe.close(resolve));
   mkdirSync(join(root,'node_modules'));symlinkSync(pkg,join(root,'node_modules','openclaw'));
   const plugin=join(root,'plugin');mkdirSync(plugin);
-  copyFileSync(new URL('../plugin/completion-assurance.mjs',import.meta.url),join(plugin,'completion-assurance.mjs'));
+  // completion-assurance.mjs and its one plugin-local import.
+  for (const file of ['completion-assurance.mjs','page-excerpt.mjs'])
+    copyFileSync(new URL(`../plugin/${file}`,import.meta.url),join(plugin,file));
   writeFileSync(join(plugin,'package.json'),JSON.stringify({name:'completion-fixture',version:'1.0.0',type:'module',openclaw:{extensions:['./index.mjs']}}));
   writeFileSync(join(plugin,'openclaw.plugin.json'),JSON.stringify({id:'completion-fixture',contracts:{tools:['fixture_source']},toolMetadata:{fixture_source:{replaySafe:true}},activation:{onStartup:true},configSchema:{type:'object',properties:{}}}));
   writeFileSync(join(plugin,'index.mjs'),`

@@ -118,9 +118,9 @@ def test_prepared_recipe_is_discoverable_and_stages_without_curated_privileges(m
     assert extensions._current_extension_catalog()[0]['id'] == 'apache-answer'
     observed = []
     original = extensions._scan_compose_content
-    def scan(path, trusted=False):
+    def scan(path, trusted=False, **options):
         observed.append(trusted)
-        return original(path, trusted=trusted)
+        return original(path, trusted=trusted, **options)
     monkeypatch.setattr(extensions, '_scan_compose_content', scan)
     with extensions._staged_library_extension('apache-answer', tmp_path / 'user/apache-answer') as (staged, digest):
         assert (staged / 'compose.yaml').is_file()

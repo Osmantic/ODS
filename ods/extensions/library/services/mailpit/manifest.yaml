@@ -28,11 +28,15 @@ service:
     secret: true
     description: UI credentials in username:password format; separate multiple pairs
       with spaces. No whitespace inside a username/password.
+    pattern: '^[^\s:]+:[^\s]+( +[^\s:]+:[^\s]+)*$'
+    format_description: 'username:password pairs separated by spaces'
   - key: MAILPIT_SMTP_AUTH
     required: true
     secret: true
     description: SMTP credentials in username:password format; use separate development-only
       credentials.
+    pattern: '^[^\s:]+:[^\s]+( +[^\s:]+:[^\s]+)*$'
+    format_description: 'username:password pairs separated by spaces'
   - key: MAILPIT_SMTP_PORT
     required: false
     default: '11053'

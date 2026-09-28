@@ -806,6 +806,94 @@ class TestGetLlamaMetrics:
 class TestGetLoadedModel:
 
     @pytest.mark.asyncio
+    async def test_wsl_lemonade_uses_live_transport_marker_and_verified_observation(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("config.INSTALL_DIR", str(tmp_path))
+        monkeypatch.setenv("LEMONADE_HOST_TRANSPORT", "direct")
+        (tmp_path / ".env").write_text(
+            "AMD_INFERENCE_LOCATION=host\nLEMONADE_HOST_TRANSPORT=model-router\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr("helpers.LLM_BACKEND", "lemonade")
+        monkeypatch.setattr("helpers.SERVICES", {})
+        agent = AsyncMock(return_value={
+            "status": "verified", "modelId": " extra.Qwen3.5-9B-Q4_K_M.gguf ",
+            "contextLength": 65536, "backend": "vulkan",
+        })
+        monkeypatch.setattr("helpers.request_agent_json", agent)
+        client = AsyncMock(side_effect=AssertionError("No direct or catalog fallback"))
+        monkeypatch.setattr("helpers._get_httpx_client", client)
+
+        assert await get_loaded_model() == "extra.Qwen3.5-9B-Q4_K_M.gguf"
+        agent.assert_awaited_once_with("GET", "/v1/model/external-observation", timeout=6)
+        client.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("observation", [
+        None, [], "verified", {},
+        {"status": "ok", "modelId": "stale-model"},
+        {"status": "pending", "modelId": "stale-model"},
+        {"modelId": "stale-model"},
+        {"status": "verified"},
+        {"status": "verified", "modelId": None},
+        {"status": "verified", "modelId": ""},
+        {"status": "verified", "modelId": " \t\n "},
+        {"status": "verified", "modelId": 123},
+        {"status": "verified", "modelId": ["stale-model"]},
+    ])
+    async def test_wsl_lemonade_rejects_unverified_or_invalid_identity(self, monkeypatch, observation):
+        monkeypatch.setattr("helpers.LLM_BACKEND", "lemonade")
+        monkeypatch.setattr("helpers.read_live_env_value", lambda key: {
+            "AMD_INFERENCE_LOCATION": "host", "LEMONADE_HOST_TRANSPORT": "model-router",
+        }.get(key, ""))
+        agent = AsyncMock(return_value=observation)
+        monkeypatch.setattr("helpers.request_agent_json", agent)
+        client = AsyncMock(side_effect=AssertionError("No direct or catalog fallback"))
+        monkeypatch.setattr("helpers._get_httpx_client", client)
+
+        assert await get_loaded_model() is None
+        agent.assert_awaited_once_with("GET", "/v1/model/external-observation", timeout=6)
+        client.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("failure", ["timeout", "unavailable", "http-error"])
+    async def test_wsl_lemonade_never_reuses_identity_after_failed_observation(self, monkeypatch, failure):
+        from host_agent_client import AgentHTTPError, AgentTimeout, AgentUnavailable
+
+        errors = {
+            "timeout": AgentTimeout("fixture timeout"),
+            "unavailable": AgentUnavailable("fixture unavailable"),
+            "http-error": AgentHTTPError(503, "fixture unavailable"),
+        }
+        monkeypatch.setattr("helpers.LLM_BACKEND", "lemonade")
+        monkeypatch.setattr("helpers.read_live_env_value", lambda key: {
+            "AMD_INFERENCE_LOCATION": "host", "LEMONADE_HOST_TRANSPORT": "model-router",
+        }.get(key, ""))
+        agent = AsyncMock(side_effect=[
+            {"status": "verified", "modelId": "previous-model"}, errors[failure],
+        ])
+        monkeypatch.setattr("helpers.request_agent_json", agent)
+        client = AsyncMock(side_effect=AssertionError("No direct or catalog fallback"))
+        monkeypatch.setattr("helpers._get_httpx_client", client)
+
+        assert await get_loaded_model() == "previous-model"
+        assert await get_loaded_model() is None
+        assert agent.await_count == 2
+        client.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("transport", ["", "direct"])
+    async def test_native_host_lemonade_keeps_legacy_status_route(self, monkeypatch, transport):
+        monkeypatch.setattr("helpers.LLM_BACKEND", "lemonade")
+        monkeypatch.setattr("helpers.read_live_env_value", lambda key: {
+            "AMD_INFERENCE_LOCATION": "host", "LEMONADE_HOST_TRANSPORT": transport,
+        }.get(key, ""))
+        agent = AsyncMock(return_value={"health": {"status": "ok", "model_loaded": "native-model"}})
+        monkeypatch.setattr("helpers.request_agent_json", agent)
+
+        assert await get_loaded_model() == "native-model"
+        agent.assert_awaited_once_with("GET", "/v1/llm/status", timeout=6)
+
+    @pytest.mark.asyncio
     async def test_generic_external_lemonade_uses_loaded_health_not_first_available(self, monkeypatch):
         monkeypatch.setattr("helpers.SERVICES", {
             "llama-server": {"host": "host.docker.internal", "port": 8000},
@@ -1392,6 +1480,65 @@ class TestLemonadeMetrics:
     @pytest.fixture(autouse=True)
     def loaded_model(self, monkeypatch):
         monkeypatch.setattr("helpers.get_loaded_model", AsyncMock(return_value="lemonade-model"))
+
+    @pytest.mark.asyncio
+    async def test_wsl_stats_use_live_transport_and_retain_last_completion_without_accumulating(self, tmp_path, monkeypatch):
+        import helpers
+        from host_agent_client import AgentHTTPError
+
+        monkeypatch.setattr("config.INSTALL_DIR", str(tmp_path))
+        monkeypatch.setenv("LEMONADE_HOST_TRANSPORT", "direct")
+        (tmp_path / ".env").write_text("AMD_INFERENCE_LOCATION=host\nLEMONADE_HOST_TRANSPORT=model-router\n")
+        monkeypatch.setattr(helpers, "LLM_BACKEND", "lemonade")
+        monkeypatch.setattr(helpers, "_TOKEN_FILE", tmp_path / "unused-cumulative-counter.json")
+        clock = [10.0]
+        monkeypatch.setattr(helpers, "_metrics_clock", lambda: clock[0])
+        sample = {"status": "verified", "modelId": "lemonade-model", "stats": {
+            "tokens_per_second": 24.577333938267465, "output_tokens": 163,
+            "input_tokens": 1196, "prompt_tokens": 18188, "time_to_first_token": 1.992152,
+        }}
+        request = AsyncMock(side_effect=[sample, sample, AgentHTTPError(503, "stats unavailable")])
+        monkeypatch.setattr(helpers, "request_agent_json", request)
+        client = AsyncMock(side_effect=AssertionError("No direct fallback or generated completion"))
+        monkeypatch.setattr(helpers, "_get_httpx_client", client)
+
+        first = await helpers.get_llama_metrics()
+        clock[0] += 2
+        retained = await helpers.get_llama_metrics()
+        clock[0] += 2
+        unavailable = await helpers.get_llama_metrics()
+
+        assert first["tokens_per_second"] == retained["tokens_per_second"] == 24.6
+        assert first["throughput_state"] == "measured"
+        assert retained["throughput_state"] == "retained"
+        assert first["throughput_mode"] == retained["throughput_mode"] == "latest_completion"
+        assert first["lifetime_tokens"] == retained["lifetime_tokens"] == 163
+        assert first["token_count_mode"] == retained["token_count_mode"] == "latest_completion"
+        assert retained["throughput_sampled_at"] == first["throughput_sampled_at"]
+        assert unavailable["throughput_state"] == "unavailable"
+        assert unavailable["token_count_mode"] == "unavailable"
+        assert not helpers._TOKEN_FILE.exists()
+        assert all(call.args == ("GET", "/v1/model/external-observation?stats=1") for call in request.await_args_list)
+        client.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("observation", [
+        None, [], {"status": "pending", "modelId": "lemonade-model"},
+        {"status": "verified", "modelId": "other-model"},
+        {"status": "verified", "modelId": "lemonade-model", "stats": None},
+    ])
+    async def test_wsl_stats_require_matching_verified_model(self, monkeypatch, observation):
+        import helpers
+        monkeypatch.setattr(helpers, "LLM_BACKEND", "lemonade")
+        monkeypatch.setattr(helpers, "read_live_env_value", lambda key: {
+            "AMD_INFERENCE_LOCATION": "host", "LEMONADE_HOST_TRANSPORT": "model-router",
+        }.get(key, ""))
+        request = AsyncMock(return_value=observation)
+        monkeypatch.setattr(helpers, "request_agent_json", request)
+        result = await helpers.get_llama_metrics()
+        assert result["tokens_per_second"] is None
+        assert result["throughput_state"] == "unavailable"
+        request.assert_awaited_once_with("GET", "/v1/model/external-observation?stats=1", timeout=6)
 
     @pytest.mark.asyncio
     async def test_host_stats_report_real_tps_and_latest_completion_tokens(

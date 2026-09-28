@@ -1,14 +1,18 @@
 #!/usr/bin/env python3
 """Untrusted site execution lives only in the short-lived no-network capsule."""
 
+import collections
 import http.server
+import itertools
 import mimetypes
 import re
+import struct
 import sys
 import threading
 import time
 import unicodedata
 import urllib.parse
+import zlib
 from preview_inspection_protocol import (
     CSP,
     Invalid,
@@ -62,9 +66,18 @@ SELECTOR_COUNT = r"""function(selector) {
 # (script, style, template and noscript text never contributes). It runs in the
 # isolated world, so page script cannot replace the DOM or style APIs it reads.
 # Chromium's own rendered matches are passed in and kept, so a rendered element
-# is matched exactly as before; the union is de-duplicated by identity.
-ROLE_NAME_INCLUDING_HIDDEN = r"""function(role, name, ...rendered) {
-  const VALID = new Set(('alert alertdialog application article banner blockquote button caption cell checkbox code ' +
+# is matched exactly as before; the union is de-duplicated by identity. The
+# role and name rules are shared with ROLE_NAME_RENDERED and CONTROL_NAMES
+# below, which also use their includeHidden:false mode (`rendered`).
+#
+# Chromium's accessibility names also apply CSS text-transform: a button whose
+# source text is "Show sold out", styled uppercase, is named "SHOW SOLD OUT"
+# there, while Playwright's getByRole names (the capsule's own click and the
+# owner's check) use the source text. So assert-visible and click use the same
+# rules in their rendered-only form, ROLE_NAME_RENDERED: Playwright's default
+# getByRole(role, {name, exact: true}), which keeps only elements not hidden
+# for ARIA and leaves hidden descendants out of a name.
+ACCESSIBLE_NAME_RULES = r"""  const VALID = new Set(('alert alertdialog application article banner blockquote button caption cell checkbox code ' +
     'columnheader combobox complementary contentinfo definition deletion dialog directory document emphasis feed figure ' +
     'form generic grid gridcell group heading img insertion link list listbox listitem log main mark marquee math meter ' +
     'menu menubar menuitem menuitemcheckbox menuitemradio navigation none note option paragraph presentation progressbar ' +
@@ -158,9 +171,77 @@ ROLE_NAME_INCLUDING_HIDDEN = r"""function(role, name, ...rendered) {
     const text = parts.map(t => t.text).join('');
     return pseudo && (s.display || 'inline') !== 'inline' ? ' ' + text + ' ' : text;
   };
-  const labels = e => { try { return [...(e.labels || [])]; } catch { return []; } };
-  const fromLabels = (list, o) =>
-    list.map(label => alternative(label, {visited: o.visited, label: true})).filter(Boolean).join(' ');
+  // Playwright's isElementHiddenForAria: what the accessibility tree and a
+  // default getByRole leave out (script and style content, display:none or
+  // a non-visible visibility, content-visibility, aria-hidden="true" on the
+  // element or an ancestor, unslotted shadow-host children).
+  const parentOf = e => e.parentElement || (e.parentNode && e.parentNode.nodeType === 11 && e.parentNode.host) || null;
+  const outsideTree = new Map();
+  const excluded = e => {
+    if (!outsideTree.has(e)) {
+      const s = style(e), parent = parentOf(e);
+      outsideTree.set(e, Boolean(e.parentElement && e.parentElement.shadowRoot && !e.assignedSlot) || !s ||
+        s.display === 'none' || (e.getAttribute('aria-hidden') || '').toLowerCase() === 'true' || Boolean(parent && excluded(parent)));
+    }
+    return outsideTree.get(e);
+  };
+  const textShown = node => {
+    const range = node.ownerDocument.createRange();
+    range.selectNode(node);
+    const box = range.getBoundingClientRect();
+    return box.width > 0 && box.height > 0;
+  };
+  // One result per element per call, like Playwright's cacheIsHidden: the name
+  // walk asks again for every descendant, and a display:contents chain would
+  // otherwise be re-walked from each of its levels (quadratic in its depth).
+  const hiddenCache = new Map();
+  const hiddenForAria = e => {
+    if (!hiddenCache.has(e)) hiddenCache.set(e, hiddenUncached(e));
+    return hiddenCache.get(e);
+  };
+  const hiddenUncached = e => {
+    const t = tag(e), s = style(e);
+    if (IGNORED.has(t)) return true;
+    if (s && s.display === 'contents' && t !== 'slot') {
+      for (let child = e.firstChild; child; child = child.nextSibling) {
+        if (child.nodeType === 1 && !hiddenForAria(child)) return false;
+        if (child.nodeType === 3 && textShown(child)) return false;
+      }
+      return true;
+    }
+    if (!(t === 'option' && e.closest('select')) && t !== 'slot' && s && (!e.checkVisibility() || s.visibility !== 'visible'))
+      return true;
+    return excluded(e);
+  };
+  // Options: `rendered` computes Playwright's includeHidden:false name, which
+  // skips hidden descendants unless they are reached through an aria-labelledby,
+  // <label> or SVG <title> reference that is itself hidden; without it (the
+  // hidden-inclusive matcher, a hidden control) nothing is skipped.
+  const reference = (o, e, kind) => o.rendered ? {rendered: true, [kind]: hiddenForAria(e)} : {};
+  // The labels whose control is e, in tree order: what e.labels returns. A
+  // label and its control share a tree, so each tree's labels are indexed once
+  // per call; e.labels itself scans the whole tree on each element's first
+  // read, which made a page of many buttons cost buttons x elements.
+  const labelIndex = new Map();
+  const labels = e => {
+    try {
+      const root = e.getRootNode();
+      let index = labelIndex.get(root);
+      if (!index) {
+        index = new Map();
+        for (const label of root.querySelectorAll('label')) {
+          const control = label.control;
+          if (!control) continue;
+          if (!index.has(control)) index.set(control, []);
+          index.get(control).push(label);
+        }
+        labelIndex.set(root, index);
+      }
+      return index.get(e) || [];
+    } catch { return []; }
+  };
+  const fromLabels = (list, o) => list.map(label =>
+    alternative(label, {visited: o.visited, label: true, ...reference(o, label, 'hiddenLabel')})).filter(Boolean).join(' ');
   const inner = (e, o) => {
     const out = [cssContent(e, '::before') || ''], own = cssContent(e);
     const visit = node => {
@@ -184,10 +265,12 @@ ROLE_NAME_INCLUDING_HIDDEN = r"""function(role, name, ...rendered) {
     const visited = o.visited, t = tag(e);
     if (visited.has(e)) return '';
     if (IGNORED.has(t)) { visited.add(e); return ''; }
+    if (o.rendered && !o.hiddenLabelledBy && !o.hiddenLabel && hiddenForAria(e)) { visited.add(e); return ''; }
     const child = {...o, target: o.target === 'self' ? 'descendant' : o.target};
     const labelledBy = e.hasAttribute('aria-labelledby') ? idRefs(e, 'aria-labelledby') : [];
     if (!o.labelledBy) {
-      const text = labelledBy.map(ref => alternative(ref, {visited, labelledBy: true})).join(' ');
+      const text = labelledBy.map(ref =>
+        alternative(ref, {visited, labelledBy: true, ...reference(o, ref, 'hiddenLabelledBy')})).join(' ');
       if (text) return text;
     }
     const r = roleOf(e) || '';
@@ -236,6 +319,13 @@ ROLE_NAME_INCLUDING_HIDDEN = r"""function(role, name, ...rendered) {
         const alt = e.getAttribute('alt') || '';
         return alt.trim() ? alt : e.getAttribute('title') || '';
       }
+      if (t === 'svg' || e.ownerSVGElement) {
+        visited.add(e);
+        for (let title = e.firstElementChild; title; title = title.nextElementSibling) {
+          if (tag(title) === 'title' && title.ownerSVGElement)
+            return alternative(title, {...child, labelledBy: true, ...reference(o, title, 'hiddenLabelledBy')});
+        }
+      }
     }
     if (CONTENT.has(r) || (o.target === 'descendant' && DESCENDANT.has(r)) || o.labelledBy || o.label ||
         (t === 'summary' && r !== 'presentation' && r !== 'none')) {
@@ -253,20 +343,80 @@ ROLE_NAME_INCLUDING_HIDDEN = r"""function(role, name, ...rendered) {
   const flat = s => s.split(' ').map(c => c.replace(/\r\n/g, '\n').replace(/[​­]/g, '')
     .replace(/\s\s*/g, ' ')).join(' ').trim();
   const normal = s => s.replace(/[​­]/g, '').trim().replace(/\s+/g, ' ');
-  const want = normal(name), out = [...new Set(rendered)];
+"""
+# The exact role/name match on those rules. renderedOnly selects Playwright's
+# default getByRole (assert-visible, click) or includeHidden (assert-hidden).
+ROLE_NAME_MATCH = r"""  const want = normal(name), out = [...new Set(rendered)];
   const walk = root => {
     for (const e of root.querySelectorAll('*')) {
-      if (roleOf(e) === role && !out.includes(e) &&
-          normal(flat(alternative(e, {visited: new Set(), target: 'self'}))) === want) out.push(e);
+      if (roleOf(e) === role && !out.includes(e) && !(renderedOnly && hiddenForAria(e)) &&
+          normal(flat(alternative(e, {visited: new Set(), target: 'self', rendered: renderedOnly}))) === want) out.push(e);
       if (e.shadowRoot) walk(e.shadowRoot);
     }
   };
   walk(document);
   return out;
 }"""
-# Bounds Chromium matches carried into the hidden-inclusive union; more than
-# one match already fails uniqueness.
+ROLE_NAME_INCLUDING_HIDDEN = (
+    "function(role, name, ...rendered) {\n  const renderedOnly = false;\n" + ACCESSIBLE_NAME_RULES + ROLE_NAME_MATCH
+)
+ROLE_NAME_RENDERED = (
+    "function(role, name, ...rendered) {\n  const renderedOnly = true;\n" + ACCESSIBLE_NAME_RULES + ROLE_NAME_MATCH
+)
+# Bounds Chromium matches carried into either union; more than one match
+# already fails uniqueness.
 MAX_RENDERED_MATCHES = 32
+
+# Load-time accessible names of every button and link, computed after the
+# page's scripts ran and before any step, hidden ones included, by the same
+# Playwright-compatible role and name rules as the matcher above. An owner may
+# require a control named exactly X, and a script may replace a correct name
+# (fleet round 100: setAttribute('aria-label', ...) on load), so the capsule
+# reports the computed name, whether the element is exposed, what supplied the
+# name, and the element's own content text when that differs from the name.
+# A control in the accessibility tree gets the name Chromium and a default
+# getByRole(role, {name, exact: true}) use: hidden descendants (an aria-hidden
+# icon, a hidden alternate label, a display:none badge) do not contribute. A
+# control that is itself hidden keeps the hidden-inclusive name that
+# getByRole(..., {includeHidden: true}) matches. Exposed means in the
+# accessibility tree and rendered with a box. Opacity is ignored: entrance
+# animations change it at load, and it hides nothing from assistive technology
+# or role locators. Read-only, in the isolated world; evidence only, never a
+# step or a status.
+CONTROL_NAMES = "function(limit) {\n" + ACCESSIBLE_NAME_RULES + r"""  const CONTROLS = new Set(['button', 'link']);
+  const boxed = e => e.checkVisibility({checkVisibilityCSS:true,contentVisibilityAuto:true}) &&
+    [...e.getClientRects()].some(r => r.width > 0 && r.height > 0);
+  const items = [];
+  let count = 0;
+  const walk = root => {
+    for (const e of root.querySelectorAll('*')) {
+      const role = roleOf(e);
+      if (CONTROLS.has(role) && count++ < limit) {
+        const rendered = !hiddenForAria(e);
+        const name = normal(flat(alternative(e, {visited: new Set(), target: 'self', rendered})));
+        const text = normal(flat(inner(e, {visited: new Set([e]), target: 'descendant', rendered})));
+        const labelledBy = e.hasAttribute('aria-labelledby') && idRefs(e, 'aria-labelledby').map(ref =>
+          alternative(ref, {visited: new Set(), labelledBy: true, ...reference({rendered}, ref, 'hiddenLabelledBy')})).join(' ');
+        const source = labelledBy ? 'aria-labelledby' : (e.getAttribute('aria-label') || '').trim() ? 'aria-label'
+          : name && name === text ? 'content' : 'other';
+        items.push({role, name, text, source, visible: rendered && boxed(e)});
+      }
+      if (e.shadowRoot) walk(e.shadowRoot);
+    }
+  };
+  walk(document);
+  return {count, items};
+}"""
+# Controls listed per receipt (document order), the saturating total count,
+# characters per name or text, and the listed items' encoded size. The size
+# bound keeps the receipt within MAX_RESULT with every other field at its own
+# maximum; a longer list is cut, never an invalid receipt.
+MAX_CONTROLS = 48
+MAX_CONTROL_COUNT = 1000
+MAX_CONTROL_CHARS = 120
+MAX_CONTROLS_BYTES = 6144
+CONTROL_ROLES = ("button", "link")
+CONTROL_SOURCES = ("aria-labelledby", "aria-label", "content", "other")
 
 
 class InvalidSelector(Invalid):
@@ -319,6 +469,60 @@ def page_error_text(value):
     return text or "(no message)"
 
 
+def control_text(value):
+    """An inert, bounded control name or text; unlike page errors, empty stays empty."""
+    try:
+        text = str(value)[: 16 * MAX_CONTROL_CHARS]
+    except Exception:
+        text = ""
+    text = " ".join(
+        "".join(
+            " "
+            if unicodedata.category(c).startswith("C")
+            or unicodedata.category(c) in ("Zl", "Zp")
+            else c
+            for c in text
+        ).split()
+    )
+    if len(text) > MAX_CONTROL_CHARS:
+        text = text[: MAX_CONTROL_CHARS - 1].rstrip() + "…"
+    return text
+
+
+def control_names(value):
+    """Receipt `controls` from the isolated world's CONTROL_NAMES result."""
+    if (
+        not isinstance(value, dict)
+        or type(value.get("count")) is not int
+        or not isinstance(value.get("items"), list)
+    ):
+        raise Invalid("invalid control names")
+    items, size = [], 0
+    for raw in value["items"][:MAX_CONTROLS]:
+        if (
+            not isinstance(raw, dict)
+            or raw.get("role") not in CONTROL_ROLES
+            or type(raw.get("visible")) is not bool
+            or raw.get("source") not in CONTROL_SOURCES
+        ):
+            raise Invalid("invalid control names")
+        item = {
+            "role": raw["role"],
+            "name": control_text(raw.get("name", "")),
+            "visible": raw["visible"],
+            "source": raw["source"],
+        }
+        text = control_text(raw.get("text", ""))
+        if text and text != item["name"]:
+            item["text"] = text
+        size += len(canonical(item)) + 1
+        if size > MAX_CONTROLS_BYTES:
+            break
+        items.append(item)
+    count = max(len(items), min(value["count"], MAX_CONTROL_COUNT))
+    return {"count": count, "items": items}
+
+
 class PageErrors:
     """Uncaught exceptions of the inspected page; never evidence of success."""
 
@@ -358,6 +562,165 @@ class PageErrors:
         return {"pageErrors": {"count": self.count, "messages": list(self.messages)}}
 
 
+# Rendered palette: the painted colors of the page as first loaded at a fixed
+# desktop viewport, by share of that viewport's area. It is captured in its own
+# disposable context of the same browser, through the same loopback server and
+# request guard, so it neither observes nor changes the inspected steps. The
+# device scale renders 320x180 device pixels (one per 4x4 CSS pixels): large
+# painted regions keep their exact color, while small text and edges blend.
+PALETTE_VIEWPORT = {"width": 1280, "height": 720}
+PALETTE_DEVICE_SCALE = 0.25
+PALETTE_SETTLE_MS = 100
+PALETTE_TIMEOUT_MS = 3000
+# The broker allows the whole capsule 45 seconds. A capture (at most two
+# timeouts) starts only while it cannot push a slow run past that deadline.
+PALETTE_START_BUDGET_S = 30
+MAX_PALETTE_COLORS = 6
+MAX_PALETTE_PIXELS = 1920 * 1920
+PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+# Hue families (HSL degrees, upper bound exclusive). Achromatic colors are
+# named by lightness instead; see palette_bucket.
+HUE_FAMILIES = (
+    (12, "red"),
+    (36, "orange"),
+    (50, "amber"),
+    (68, "yellow"),
+    (165, "green"),
+    (195, "teal"),
+    (255, "blue"),
+    (290, "purple"),
+    (345, "pink"),
+    (360, "red"),
+)
+GRAY_LEVELS = ((0.13, "black"), (0.40, "dark gray"), (0.72, "gray"), (0.94, "light gray"))
+PALETTE_NAMES = (
+    "white", "light gray", "gray", "dark gray", "black", "red", "orange",
+    "amber", "yellow", "green", "teal", "blue", "purple", "pink", "brown",
+)
+
+
+def png_colors(data):
+    """Count the exact RGB colors of a non-interlaced 8-bit RGB/RGBA PNG.
+
+    Standard library only; alpha is ignored (browser screenshots are opaque).
+    """
+    if not isinstance(data, (bytes, bytearray)) or data[:8] != PNG_SIGNATURE:
+        raise Invalid("invalid png")
+    position, header, compressed = 8, None, []
+    while position + 8 <= len(data):
+        length, kind = struct.unpack(">I4s", data[position : position + 8])
+        body = data[position + 8 : position + 8 + length]
+        if len(body) != length:
+            raise Invalid("invalid png")
+        position += 12 + length
+        if kind == b"IHDR":
+            if length != 13:
+                raise Invalid("invalid png")
+            header = struct.unpack(">IIBBBBB", body)
+        elif kind == b"IDAT":
+            compressed.append(body)
+        elif kind == b"IEND":
+            break
+    if header is None:
+        raise Invalid("invalid png")
+    width, height, depth, color_type, _, _, interlace = header
+    if (
+        depth != 8
+        or color_type not in (2, 6)
+        or interlace
+        or not 0 < width * height <= MAX_PALETTE_PIXELS
+    ):
+        raise Invalid("unsupported png")
+    channels = 3 if color_type == 2 else 4
+    stride = width * channels
+    expected = (stride + 1) * height
+    try:
+        raw = zlib.decompressobj().decompress(b"".join(compressed), expected)
+    except zlib.error:
+        raise Invalid("invalid png") from None
+    if len(raw) != expected:
+        raise Invalid("invalid png")
+    counts = collections.Counter()
+    previous = bytearray(stride)
+    add = lambda a, b: (a + b) & 255
+    for row in range(height):
+        start = row * (stride + 1)
+        kind = raw[start]
+        line = bytearray(raw[start + 1 : start + 1 + stride])
+        if kind == 1:
+            for channel in range(channels):
+                line[channel::channels] = bytes(
+                    itertools.accumulate(line[channel::channels], add)
+                )
+        elif kind == 2:
+            line = bytearray(map(add, line, previous))
+        elif kind == 3:
+            for i in range(stride):
+                left = line[i - channels] if i >= channels else 0
+                line[i] = (line[i] + ((left + previous[i]) >> 1)) & 255
+        elif kind == 4:
+            for i in range(stride):
+                a = line[i - channels] if i >= channels else 0
+                b = previous[i]
+                c = previous[i - channels] if i >= channels else 0
+                p = a + b - c
+                pa, pb, pc = abs(p - a), abs(p - b), abs(p - c)
+                predictor = a if pa <= pb and pa <= pc else b if pb <= pc else c
+                line[i] = (line[i] + predictor) & 255
+        elif kind != 0:
+            raise Invalid("invalid png")
+        counts.update(zip(line[0::channels], line[1::channels], line[2::channels]))
+        previous = line
+    return counts
+
+
+def palette_bucket(r, g, b):
+    """A fixed perceptual bucket (HSL family and lightness band) for one color."""
+    high, low = max(r, g, b), min(r, g, b)
+    delta = high - low
+    lightness = (high + low) / 510
+    # Chroma under 10% reads as neutral (tinted whites, grays and near-blacks).
+    if delta < 26:
+        name = next((n for limit, n in GRAY_LEVELS if lightness < limit), "white")
+        return name, 0
+    if high == r:
+        hue = (60 * (g - b) / delta) % 360
+    elif high == g:
+        hue = 60 * (b - r) / delta + 120
+    else:
+        hue = 60 * (r - g) / delta + 240
+    saturation = delta / (high + low) if lightness <= 0.5 else delta / (510 - high - low)
+    name = next(n for limit, n in HUE_FAMILIES if hue < limit)
+    if name == "red" and lightness >= 0.75:
+        name = "pink"
+    elif 12 <= hue < 50 and (lightness < 0.35 or (saturation < 0.5 and lightness < 0.7)):
+        # Dark or muted orange and amber hues read as brown.
+        name = "brown"
+    return name, 0 if lightness < 0.35 else 1 if lightness < 0.65 else 2
+
+
+def rendered_palette(counts, limit=MAX_PALETTE_COLORS):
+    """Top painted buckets by area: name, most frequent exact hex, percent."""
+    total = sum(counts.values())
+    if total <= 0:
+        raise Invalid("empty capture")
+    buckets = {}
+    for color, count in counts.items():
+        entry = buckets.setdefault(palette_bucket(*color), [0, color, 0])
+        entry[0] += count
+        if count > entry[2] or (count == entry[2] and color < entry[1]):
+            entry[1], entry[2] = color, count
+    colors = []
+    for (name, _band), (count, color, _) in sorted(
+        buckets.items(), key=lambda item: (-item[1][0], item[0])
+    )[:limit]:
+        percent = (200 * count + total) // (2 * total)
+        if percent < 1:
+            break
+        colors.append({"name": name, "hex": "#%02x%02x%02x" % color, "percent": percent})
+    return colors
+
+
 def wrapper_document(prefix):
     # Fixed and script-free: page script exceptions therefore come only from
     # the sandboxed preview frame or a frame the preview itself created.
@@ -367,26 +730,123 @@ def wrapper_document(prefix):
     ).encode()
 
 
-def observe_until_stable(once, wait):
+def guard_requests(context, page, origin, prefix, blocked):
+    """Allow only GETs of the wrapper and this site's files from the loopback
+    server, and at most the wrapper and site-entry navigations. Everything
+    else, popups, downloads and websockets are recorded (bounded) and stopped."""
+    navigation_count = 0
+
+    def route_handler(route):
+        nonlocal navigation_count
+        req = route.request
+        parsed = urllib.parse.urlsplit(req.url)
+        safe = (
+            req.method == "GET"
+            and parsed.scheme == "http"
+            and "http://" + parsed.netloc == origin
+            and (
+                parsed.path.startswith(prefix)
+                or parsed.path == "/__ods_inspection__.html"
+            )
+        )
+        if req.is_navigation_request():
+            navigation_count += 1
+            safe = (
+                safe
+                and navigation_count <= 2
+                and req.url
+                in (origin + "/__ods_inspection__.html", origin + prefix)
+            )
+        if safe:
+            route.continue_()
+        else:
+            if len(blocked) < 32:
+                blocked.append(
+                    "navigation" if req.is_navigation_request() else "network"
+                )
+            route.abort()
+
+    context.route("**/*", route_handler)
+    context.on(
+        "page",
+        lambda popup: (
+            blocked.append("popup") if len(blocked) < 32 else None,
+            popup.close(),
+        ),
+    )
+    page.on(
+        "download",
+        lambda download: (
+            blocked.append("download") if len(blocked) < 32 else None,
+            download.cancel(),
+        ),
+    )
+    page.on(
+        "websocket",
+        lambda _: blocked.append("websocket") if len(blocked) < 32 else None,
+    )
+
+
+def capture_palette(browser, origin, prefix):
+    """Rendered colors of a fresh load at the fixed desktop viewport, or None.
+
+    Its own context: the step context and its page-error listener never see
+    this load, and a request blocked here voids only the palette."""
+    blocked = []
+    context = browser.new_context(
+        viewport=dict(PALETTE_VIEWPORT),
+        device_scale_factor=PALETTE_DEVICE_SCALE,
+        service_workers="block",
+        accept_downloads=False,
+    )
+    try:
+        page = context.new_page()
+        page.set_default_timeout(PALETTE_TIMEOUT_MS)
+        guard_requests(context, page, origin, prefix, blocked)
+        page.goto(
+            origin + "/__ods_inspection__.html",
+            wait_until="load",
+            timeout=PALETTE_TIMEOUT_MS,
+        )
+        frame = page.frame(name="inspection")
+        if frame is None or frame.url != origin + prefix:
+            return None
+        page.wait_for_timeout(PALETTE_SETTLE_MS)
+        image = page.screenshot(type="png", scale="device", timeout=PALETTE_TIMEOUT_MS)
+        if blocked:
+            return None
+        return {"viewport": dict(PALETTE_VIEWPORT), "colors": rendered_palette(png_colors(image))}
+    finally:
+        context.close()
+
+
+def observe_until_stable(once, wait, expected=None):
     # Keep the 100ms fast path. A finite transition may need more samples,
     # but changing observations never become a passing assertion on timeout.
     # The broker's independent 45s capsule deadline still bounds all steps.
     deadline = time.monotonic() + 1.5
     previous = once()
+    stable = False
     while True:
         remaining = deadline - time.monotonic()
         if remaining < 0.1:
-            return previous, False
+            return previous, stable
         wait(100)
         current = once()
         if time.monotonic() > deadline:
             return current, False
-        if current == previous:
+        stable = current == previous
+        # A delayed entrance can remain hidden for two identical samples.
+        # Assertions wait for their expected state within the SAME deadline;
+        # an unchanged opposite state still fails the caller's assertion.
+        if stable and (expected is None or current.get("count") != 1
+                       or current.get("visible") is expected):
             return current, True
         previous = current
 
 
 def run_browser(bundle, playwright_factory=None):
+    started = time.monotonic()
     request, files = validate_bundle(bundle)
     prefix = "/" + request["siteId"] + "/"
     blocked = []
@@ -457,57 +917,7 @@ def run_browser(bundle, playwright_factory=None):
             )
             page = context.new_page()
             page.set_default_timeout(2000)
-            navigation_count = 0
-
-            def route_handler(route):
-                nonlocal navigation_count
-                req = route.request
-                parsed = urllib.parse.urlsplit(req.url)
-                safe = (
-                    req.method == "GET"
-                    and parsed.scheme == "http"
-                    and parsed.netloc == f"127.0.0.1:{server.server_port}"
-                    and (
-                        parsed.path.startswith(prefix)
-                        or parsed.path == "/__ods_inspection__.html"
-                    )
-                )
-                if req.is_navigation_request():
-                    navigation_count += 1
-                    safe = (
-                        safe
-                        and navigation_count <= 2
-                        and req.url
-                        in (origin + "/__ods_inspection__.html", origin + prefix)
-                    )
-                if safe:
-                    route.continue_()
-                else:
-                    if len(blocked) < 32:
-                        blocked.append(
-                            "navigation" if req.is_navigation_request() else "network"
-                        )
-                    route.abort()
-
-            context.route("**/*", route_handler)
-            context.on(
-                "page",
-                lambda popup: (
-                    blocked.append("popup") if len(blocked) < 32 else None,
-                    popup.close(),
-                ),
-            )
-            page.on(
-                "download",
-                lambda download: (
-                    blocked.append("download") if len(blocked) < 32 else None,
-                    download.cancel(),
-                ),
-            )
-            page.on(
-                "websocket",
-                lambda _: blocked.append("websocket") if len(blocked) < 32 else None,
-            )
+            guard_requests(context, page, origin, prefix, blocked)
             # Registered before navigation so startup exceptions are included.
             # Page-scoped (not context-wide): blocked popups are never recorded.
             page.on("pageerror", page_errors.record)
@@ -557,9 +967,10 @@ def run_browser(bundle, playwright_factory=None):
                 "Runtime.evaluate", {"expression": "document", "contextId": world}
             )["result"]["objectId"]
 
-            def including_hidden(locator, nodes, owned):
+            def including_hidden(locator, nodes, owned, rendered_only=False):
                 # Carry Chromium's rendered matches into the isolated world and
-                # add hidden-inclusive exact role/name matches by identity.
+                # add Playwright-rule exact role/name matches by identity:
+                # hidden-inclusive, or rendered-only (source-text names).
                 unresolved = max(0, len(nodes) - MAX_RENDERED_MATCHES)
                 rendered = []
                 for n in nodes[:MAX_RENDERED_MATCHES]:
@@ -577,7 +988,9 @@ def run_browser(bundle, playwright_factory=None):
                     "Runtime.callFunctionOn",
                     {
                         "executionContextId": world,
-                        "functionDeclaration": ROLE_NAME_INCLUDING_HIDDEN,
+                        "functionDeclaration": ROLE_NAME_RENDERED
+                        if rendered_only
+                        else ROLE_NAME_INCLUDING_HIDDEN,
                         "arguments": [{"value": locator["role"]}, {"value": locator["name"]},
                                       *({"objectId": h} for h in rendered)],
                         "returnByValue": False,
@@ -653,20 +1066,12 @@ def run_browser(bundle, playwright_factory=None):
                         and n.get("name", {}).get("value") == locator["name"]
                         and n.get("backendDOMNodeId")
                     ]
-                    if include_hidden:
-                        count, node = including_hidden(locator, nodes, owned)
-                        if count != 1:
-                            return {"count": count}
-                    elif len(nodes) != 1:
-                        return {"count": len(nodes)}
-                    else:
-                        node = cdp.send(
-                            "DOM.resolveNode",
-                            {
-                                "backendNodeId": nodes[0]["backendDOMNodeId"],
-                                "executionContextId": world,
-                            },
-                        )["object"]["objectId"]
+                    # Chromium's names apply text-transform; the matcher's
+                    # Playwright names use the source text. A rendered step
+                    # therefore unions both, rendered-only on either side.
+                    count, node = including_hidden(locator, nodes, owned, rendered_only=not include_hidden)
+                    if count != 1:
+                        return {"count": count}
                 owned.append(node)
                 result = cdp.send(
                     "Runtime.callFunctionOn",
@@ -680,20 +1085,28 @@ def run_browser(bundle, playwright_factory=None):
                     raise Invalid("inspection failed")
                 return result["result"]["value"]
 
-            def observe(locator, include_hidden=False):
+            def observe(locator, include_hidden=False, expected=None):
                 return observe_until_stable(
-                    lambda: once(locator, include_hidden), page.wait_for_timeout
+                    lambda: once(locator, include_hidden), page.wait_for_timeout, expected
                 )
 
             page.wait_for_timeout(100)
             diagnostics = evaluate(DIAGNOSTIC)
+            # At load, before any step can change a name. Separate evidence:
+            # omitted (as by older capsules) when it cannot be captured.
+            try:
+                controls = control_names(evaluate(CONTROL_NAMES, [MAX_CONTROLS]))
+            except Exception:
+                controls = None
             results = []
             for index, step in enumerate(request["steps"]):
                 try:
                     # Only a hidden assertion may address a hidden element by
-                    # role/name; assert-visible and click stay rendered-only.
+                    # role/name; assert-visible and click stay rendered-only,
+                    # and they match Playwright's source-text names too.
                     before, stable = observe(
-                        step["locator"], step["action"] == "assert-hidden"
+                        step["locator"], step["action"] == "assert-hidden",
+                        None if step["action"] == "click" else step["action"] == "assert-visible",
                     )
                 except InvalidSelector:
                     # No DOM observation exists for invalid syntax. Preserve
@@ -768,6 +1181,22 @@ def run_browser(bundle, playwright_factory=None):
                 "scope": SCOPE,
             }
             context.close()
+            # After the step context is closed, so its receipt is final. The
+            # palette is separate evidence: it never changes a step or status,
+            # and it is omitted (as by older capsules) when capture fails.
+            palette = None
+            if time.monotonic() - started < PALETTE_START_BUDGET_S:
+                try:
+                    palette = capture_palette(browser, origin, prefix)
+                except Exception:
+                    pass
+            if palette:
+                result["renderedColors"] = palette
+            # Bounded above; still never the reason a receipt exceeds its limit.
+            if controls is not None:
+                result["controls"] = controls
+                if len(canonical(result)) >= MAX_RESULT:
+                    del result["controls"]
             browser.close()
             return result
     finally:

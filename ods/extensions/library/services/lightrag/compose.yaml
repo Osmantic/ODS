@@ -6,7 +6,7 @@ services:
     security_opt:
     - no-new-privileges:true
     ports:
-    - 127.0.0.1:${LIGHTRAG_PORT:-11032}:9621
+    - "${BIND_ADDRESS:-127.0.0.1}:${LIGHTRAG_PORT:-11032}:9621"
     healthcheck:
       test:
       - CMD

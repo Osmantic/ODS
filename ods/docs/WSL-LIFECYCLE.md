@@ -18,8 +18,10 @@ powershell -ExecutionPolicy Bypass -File .\installers\wsl-lifecycle.ps1 -Action 
 - `status` reads the Windows distribution list and the private process record.
   It does not enter WSL. Its `scope: wsl-lifetime` result reports the holder and
   distribution, **not Pixel readiness, model health, or a completed user turn**.
-- `start` establishes the holder, starts the exact installation's Compose stack,
-  then starts its verified native Pixel units. An existing holder is reused.
+- `start` establishes the holder, refreshes the managed WSL NAT address and
+  starts the exact installation's Compose stack as the ordinary Linux owner.
+  Windows then restarts its verified host-agent unit before starting the native
+  Pixel units. An existing holder is reused.
 - `stop` first verifies the installation's existing private ODS ownership marker
   and native unit identities. It stops ingress, waits for gateway shutdown, stops
   the ODS auxiliaries, then stops that install's Compose stack and releases only
@@ -35,13 +37,23 @@ powershell -ExecutionPolicy Bypass -File .\installers\wsl-lifecycle.ps1 -Action 
 
 The ordinary Linux owner validates the private installation marker and exact
 unit copies before returning a fixed lifecycle plan. Windows accepts only the
-five known Pixel unit names in their required order and runs fixed
+known Pixel unit names in their required order and runs fixed
 `/usr/bin/systemctl start|stop <unit>` arguments using that bound distribution's
 existing root identity. This uses the Windows owner's existing
 [WSL user-selection authority](https://learn.microsoft.com/en-us/windows/wsl/basic-commands#run-a-specific-linux-distribution-from-powershell-or-cmd).
 It adds no sudoers rule and needs no cached sudo password. Neither Python nor
 shell code from the owner's checkout is executed as root. Compose and all plan
 validation remain ordinary-owner operations.
+
+For an installed host agent, the plan also verifies the protected system unit,
+Linux user and exact executable path. Windows admits only the additional fixed
+`/usr/bin/systemctl restart ods-host-agent.service` command and checks that the
+unit becomes active before starting Pixel. A missing host-agent unit retains the
+legacy Compose-only behavior; a foreign or modified unit stops startup. This
+restart also runs when the NAT address is already current, so an earlier failed
+attempt cannot leave the agent listening on its old address. The internal
+`ods-cli start --defer-wsl-agent-restart` option leaves this restart to the Windows
+controller; direct `ods start` retains its existing Linux privilege checks.
 
 The Windows installer resolves its Linux root from the same source directory and
 path utility used by `install-core.sh`, then explicitly passes that resolved root

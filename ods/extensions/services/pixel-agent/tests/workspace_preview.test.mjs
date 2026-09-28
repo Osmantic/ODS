@@ -94,6 +94,8 @@ test("publishes only the exact existing workspace directory", async () => {
   assert.match(result.content[0].text,/pixel_ods_workspace_preview_inspect/);
   assert.match(result.content[0].text, /independently published and read back/);
   assert.match(result.content[0].text, /publication and HTTP readback only, not successful startup, interactions or durable browser storage/);
+  // Publication renders nothing; the palette arrives with inspection.
+  assert.match(result.content[0].text, /Publication does not render the page; the inspection result also reports its rendered colors by area\. Check them before claiming a visible color or style change\. /);
   assert.deepEqual(calls, [{
     schemaVersion: 1,
     action: "publish",

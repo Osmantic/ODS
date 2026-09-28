@@ -6,8 +6,8 @@ services:
     security_opt:
     - no-new-privileges:true
     ports:
-    - 127.0.0.1:${LLDAP_PORT:-11066}:17170
-    - 127.0.0.1:${LLDAP_BIND_PORT:-11067}:3890
+    - "${BIND_ADDRESS:-127.0.0.1}:${LLDAP_PORT:-11066}:17170"
+    - "${BIND_ADDRESS:-127.0.0.1}:${LLDAP_BIND_PORT:-11067}:3890"
     healthcheck:
       test:
       - CMD

@@ -917,7 +917,7 @@ function deliveryVerification(completion, verification) {
   const { suppressStaleExecWarning, ...evidence } = verification;
   return {
     ...evidence, status:'failed',
-    text:'Pixel ended without a visible answer or a delivered result. This request is incomplete. ' +
+    text:'Portal ended without a visible answer or a delivered result. This request is incomplete. ' +
       'Earlier tool activity may have completed; check its receipts before repeating any action. ' +
       'No detailed failure reason was returned.',
   };

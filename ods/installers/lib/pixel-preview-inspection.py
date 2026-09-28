@@ -80,10 +80,24 @@ def docker_path(transport):
     )
     resolved = path.resolve(strict=True)
     info = resolved.stat()
+    protocol_path = (
+        Path(__file__).resolve().parents[2]
+        / "extensions/services/pixel-agent/host/preview_inspection_protocol.py"
+    )
+    spec = importlib.util.spec_from_file_location(
+        "inspection_docker_protocol", protocol_path
+    )
+    protocol = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(protocol)
     if (
         not stat.S_ISREG(info.st_mode)
         or info.st_uid != 0
-        or info.st_mode & 0o022
+        or (
+            info.st_mode & 0o022
+            and not (
+                transport == "local" and protocol.read_only_wsl_docker(resolved, info)
+            )
+        )
         or not info.st_mode & 0o111
     ):
         raise ValueError("unsafe-inspection-docker")

@@ -80,3 +80,24 @@ test('switching conversations aborts pending setup and never resumes the old cha
   resolveSave(response({status: 'saved', service_id: 'demo', saved_keys: ['DEMO_PASSWORD']}))
   await waitFor(() => expect(resume).not.toHaveBeenCalled())
 })
+
+test('shows the declared format and the API format refusal without the value', async () => {
+  const formatted = plan()
+  formatted.steps[0].configuration[0].format = {hint: '64 hexadecimal characters (0-9, a-f)'}
+  const message = 'DEMO_PASSWORD must be 64 hexadecimal characters (0-9, a-f). Nothing was saved.'
+  const fetcher = vi.fn().mockResolvedValueOnce(response(formatted)).mockResolvedValueOnce({
+    ok: false, status: 422, json: async () => ({detail: {code: 'invalid_configuration', service_id: 'demo', message,
+      invalid_configuration: [{key: 'DEMO_PASSWORD', expected: '64 hexadecimal characters (0-9, a-f)'}]}}),
+  })
+  vi.stubGlobal('fetch', fetcher)
+  const resume = vi.fn()
+  render(<PortalExtensionSetup command="/extensions @demo" onConfigured={resume}/>)
+  expect(await screen.findByText('Format: 64 hexadecimal characters (0-9, a-f)')).toBeInTheDocument()
+  fireEvent.change(screen.getByLabelText(/DEMO_PASSWORD/), {target: {value: 'private-value'}})
+  fireEvent.click(screen.getByRole('button', {name: /Save and continue/}))
+  const alert = await screen.findByRole('alert')
+  expect(alert).toHaveTextContent(message)
+  expect(alert).not.toHaveTextContent('private-value')
+  expect(screen.queryByDisplayValue('private-value')).not.toBeInTheDocument()
+  expect(resume).not.toHaveBeenCalled()
+})

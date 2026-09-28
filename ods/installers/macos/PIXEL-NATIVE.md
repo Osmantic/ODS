@@ -833,7 +833,11 @@ The opt-in `pixel-runtime-bundle.py --stream-progress-fix` stages a narrow
 OpenClaw 2026.6.33 correction before computing the bundle manifest. It accepts
 only the reviewed SHA256 of `dist/selection-BEwSQKM-.js`; different upstream
 bytes fail closed. Both idle and diagnostic observers move before tool-call
-repair/buffering wrappers. Tool normalization and output are preserved.
+repair/buffering wrappers. Tool normalization and output are preserved only
+with the shared `openclaw-diagnostic-stream-writes.json` repair, which the
+bundle composes when shared repairs are selected: the pinned diagnostic
+observer's proxy discards the iterator and result replacements of every
+wrapper applied outside it (see `docs/pixel/ODS-RUNTIME-REPAIRS.md`).
 `ods-runtime-patches.json`, including original and patched hashes, is covered
 by the same content manifest. The input runtime and published bundles are not
 modified in place.
@@ -894,8 +898,14 @@ LLAMA_ARG_CTX_CHECKPOINTS=8
 LLAMA_ARG_CACHE_RAM=512
 ```
 
-These are an example qualification profile, not universal defaults. Unset
-values preserve existing behavior. The selected executable must advertise
+These are an example qualification profile, not universal defaults. An unset
+`LLAMA_ARG_CTX_CHECKPOINTS` now means 32 checkpoints on the default runtime,
+not the b8210 default of 8. Checkpoint reduction was never qualified, and more
+checkpoints are: on the Mac mini M4 with Qwen3.5-9B and b8210, editing turn 3's
+tool result after 12 appended tool turns took 84.3 s with 8 checkpoints and
+33.4 s with 32 (9,092 of 14,410 prompt tokens reused). Appends cost the same
+either way. b9014 already defaults to 32. Other unset values preserve existing
+behavior. The selected executable must advertise
 each requested option in `--help`; invalid/unsupported settings fail before
 the normal native-model replacement step. Existing registered model profiles
 retain their own qualified argument lists instead of mixing in these settings.

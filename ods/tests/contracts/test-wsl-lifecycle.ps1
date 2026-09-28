@@ -1,6 +1,7 @@
 $ErrorActionPreference='Stop'
 $Distro='Ubuntu-Scope-Test'
 . (Join-Path $PSScriptRoot '../../installers/wsl-lifecycle.ps1') -Distro $Distro
+function Resolve-ODSWslRegisteredDistro { param($Name); $Name }
 $count=0
 function Check([bool]$Condition,[string]$Message) { if(-not $Condition){throw $Message}; $script:count++; Write-Host "PASS $Message" }
 function Reject([scriptblock]$Operation,[string]$Message) { $threw=$false; try { & $Operation } catch { $threw=$true }; Check $threw $Message }
@@ -29,9 +30,70 @@ try {
     Check ((Get-ODSWslHolderArguments $a).StartsWith('--distribution Ubuntu-24.04 --exec ')) 'simple distribution name avoids WSL quote retention'
     $spaceDistro=Get-ODSWslIdentity 'Ubuntu Custom' '/home/ods/ods'
     Check ((Get-ODSWslHolderArguments $spaceDistro).StartsWith('--distribution "Ubuntu Custom" --exec ')) 'distribution whitespace remains within one argument'
+    $defaultTaskArguments=Get-ODSWslTaskArguments $a
+    $defaultStartupArguments=Get-ODSWslStartupArguments $a
+    $script:ODSWslStateRoot=Join-Path $PSScriptRoot 'fixture state root'
+    $explicitStateIdentity=Get-ODSWslIdentity 'Ubuntu-24.04' '/home/ods/ods'
+    Check ($explicitStateIdentity.id -ceq $a.id) 'state location does not change the owner and Linux installation identity'
+    Check ($explicitStateIdentity.directory -ceq (Join-Path $script:ODSWslStateRoot $a.id)) 'explicit state location selects the private instance directory'
+    Check ((Get-ODSWslTaskArguments $explicitStateIdentity).EndsWith((' -StateRoot "{0}"' -f $script:ODSWslStateRoot))) 'scheduled controller receives the same explicit state location'
+    Check ((Get-ODSWslStartupArguments $explicitStateIdentity).EndsWith((' -StateRoot "{0}"' -f $script:ODSWslStateRoot))) 'scheduled startup receives the same explicit state location'
+    $script:ODSWslStateRoot=''
+    Check ((Get-ODSWslTaskArguments $a) -ceq $defaultTaskArguments) 'default scheduler arguments remain compatible'
+    Check ((Get-ODSWslStartupArguments $a) -ceq $defaultStartupArguments) 'default startup arguments remain compatible'
+    $defaultInstallerCommand=New-ODSWslInstallerCommand '/mnt/c/source' @('--pixel') '/home/ods/ods'
+    Check ($defaultInstallerCommand -ceq "cd -- '/mnt/c/source' && env INSTALL_DIR='/home/ods/ods' bash install-core.sh '--pixel'") 'default installer command keeps the existing INSTALL_DIR contract without StateRoot'
+    $script:ODSWslStateRoot="C:\Owner's state root"
+    $expectedStateAssignment="ODS_WSL_STATE_ROOT='C:\Owner'\''s state root'"
+    Check ((New-ODSWslInstallerCommand '/mnt/c/source' @('--pixel') '/home/ods/ods') -ceq ("cd -- '/mnt/c/source' && env INSTALL_DIR='/home/ods/ods' " + $expectedStateAssignment + " bash install-core.sh '--pixel'")) 'installer preserves INSTALL_DIR while safely quoting StateRoot spaces and apostrophe'
+    Check ((New-ODSWslInstallerCommand '/mnt/c/source' @('--pixel') '') -ceq ("cd -- '/mnt/c/source' && env " + $expectedStateAssignment + " bash install-core.sh '--pixel'")) 'installer forwards StateRoot even before INSTALL_DIR is resolved'
+    $script:ODSWslStateRoot=''
+    Check ((New-ODSWslInstallerCommand '/mnt/c/source' @('--pixel') '') -ceq "cd -- '/mnt/c/source' && bash install-core.sh '--pixel'") 'installer without explicit roots adds no environment override'
+    foreach ($unsafeRoot in @('C:relative', '\relative', 'C:\', '\\server\share', 'C:\state"injected', ("C:\state"+[char]10+'injected'))) {
+        $validationError=$null
+        try { . (Join-Path $PSScriptRoot '../../installers/wsl-lifecycle.ps1') -StateRoot $unsafeRoot } catch { $validationError=$_.Exception.Message }
+        Check ($validationError -in @('An absolute Windows state directory is required','State directory cannot be a filesystem root')) "state root rejects unsafe path $($unsafeRoot.Replace([string][char]10,'<newline>')) before dispatch"
+    }
+    . (Join-Path $PSScriptRoot '../../installers/wsl-lifecycle.ps1') -Distro $Distro
     Initialize-ODSPrivateDirectory $fixture
     Assert-ODSPrivatePath $fixture -Directory
     Check $true 'actual Windows directory ACL is private'
+    & {
+        $customStateRoot=Join-Path $fixture 'custom state root'
+        . (Join-Path $PSScriptRoot '../../installers/wsl-lifecycle.ps1') -StateRoot $customStateRoot
+        Initialize-ODSPrivateDirectory $customStateRoot
+        $customIdentity=Get-ODSWslIdentity 'Ubuntu-24.04' '/home/ods/ods'
+        Initialize-ODSPrivateDirectory $customIdentity.directory
+        Write-ODSWslJson (Join-Path $customIdentity.directory 'instance.json') $customIdentity
+        Set-ODSWslStartupIntent $customIdentity $false
+        $uncreatedRoot=Join-Path $fixture 'cancelled state root'
+        $script:ODSWslStateRoot=$uncreatedRoot
+        $script:ODSWslStartupIdentity=$customIdentity
+        $script:ODSWslStartupGeneration=(Get-ODSWslStartupIntent $customIdentity).generation
+        $script:ODSWslStartupDeadline=[DateTime]::UtcNow.AddMinutes(1)
+        Reject {Start-ODSWslLifetime $customIdentity} 'cancelled startup refuses lifetime creation before initializing StateRoot'
+        Check (-not (Test-Path -LiteralPath $uncreatedRoot)) 'cancelled startup leaves its uninitialized StateRoot untouched'
+        $script:ODSWslStateRoot=$customStateRoot
+        $script:ODSWslStartupIdentity=$null;$script:ODSWslStartupGeneration=$null;$script:ODSWslStartupDeadline=$null
+        function Get-ScheduledTask { param($TaskName,$ErrorAction)
+            if($TaskName -cne ($customIdentity.taskName+'-Startup')){throw 'Unexpected custom-root task lookup'}
+            [pscustomobject]@{
+                Actions=@([pscustomobject]@{Execute=(Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\v1.0\powershell.exe');Arguments=(Get-ODSWslStartupArguments $customIdentity)})
+                Principal=[pscustomobject]@{UserId=$customIdentity.ownerSid;RunLevel='Limited';LogonType='Interactive'}
+                Triggers=@([pscustomobject]@{UserId=$customIdentity.ownerSid;Delay='PT30S';CimClass=[pscustomobject]@{CimClassName='MSFT_TaskLogonTrigger'}})
+                Settings=[pscustomobject]@{ExecutionTimeLimit='PT25M';RestartCount=0}
+            }
+        }
+        function Start-ODSWslDockerDesktop { throw 'Custom-root stopped fixture must not start Docker' }
+        function Start-ODSWslLifetime { throw 'Custom-root stopped fixture must not start WSL' }
+        Invoke-ODSWslStartup $customIdentity.directory
+        Check ((Read-ODSWslJson (Join-Path $customIdentity.directory 'startup-status.json')).state -eq 'disabled') 'custom-root startup recomputes the real identity and reads its stopped preference'
+        Check ($customIdentity.directory -ceq (Join-Path $customStateRoot $a.id)) 'custom-root startup retains the owner and installation hash'
+    }
+    . (Join-Path $PSScriptRoot '../../installers/wsl-lifecycle.ps1') -Distro $Distro
+    # Re-sourcing the real identity/StateRoot code also restores this boundary;
+    # keep all later public lifecycle calls inside the registered-distro fixture.
+    function Resolve-ODSWslRegisteredDistro { param($Name); $Name }
     $a.directory=$fixture
     Write-ODSWslJson (Join-Path $fixture 'instance.json') $a
     $null=Assert-ODSWslManifest $a
@@ -143,15 +205,46 @@ try {
     Reject { Assert-ODSWslStackPlan $a stop $bad } 'reject coerced boolean owner UID'
     $bad=$script:plan|ConvertTo-Json -Depth 5|ConvertFrom-Json;$bad|Add-Member executable '/bin/bash'
     Reject { Assert-ODSWslStackPlan $a stop $bad } 'reject extra executable metadata'
+    $managedPlan=$complete|ConvertTo-Json -Depth 5|ConvertFrom-Json
+    $managedPlan|Add-Member hostAgentRestart $false
+    Assert-ODSWslStackPlan $a stop $managedPlan
+    Check $true 'optional host agent restart false remains valid on stop'
+    $managedPlan.action='start';$managedPlan.hostAgentRestart=$true
+    Assert-ODSWslStackPlan $a start $managedPlan
+    Check $true 'strict boolean host agent restart is accepted only on start'
+    foreach($invalid in @('true',1,$null)){
+        $bad=$managedPlan|ConvertTo-Json -Depth 5|ConvertFrom-Json;$bad.hostAgentRestart=$invalid
+        Reject {Assert-ODSWslStackPlan $a start $bad} 'host agent restart rejects non-boolean values'
+    }
+    $bad=$managedPlan|ConvertTo-Json -Depth 5|ConvertFrom-Json;$bad.action='stop'
+    Reject {Assert-ODSWslStackPlan $a stop $bad} 'stop cannot request a host agent restart'
+    Assert-ODSWslRootArguments @('/usr/bin/systemctl','restart','ods-host-agent.service')
+    Check $true 'root allowlist accepts only the fixed host agent restart tuple'
+    foreach($rootArguments in @(
+        @('/usr/bin/systemctl','start','ods-host-agent.service'),
+        @('/usr/bin/systemctl','stop','ods-host-agent.service'),
+        @('/usr/bin/systemctl','restart','pixel-ingress.service'),
+        @('/usr/bin/systemctl','restart','docker.service'),
+        @('/usr/bin/systemctl','Restart','ods-host-agent.service'),
+        @('/usr/bin/systemctl','restart','ods-host-agent.service; id'),
+        @('/usr/bin/systemctl','restart','ods-host-agent.service','docker.service'),
+        @('python3','restart','ods-host-agent.service')
+    )){
+        Reject {Assert-ODSWslRootArguments $rootArguments} ('root rejects non-allowlisted tuple: '+($rootArguments -join ' '))
+    }
     Reject { Invoke-ODSWslCommand $a @('python3','owner.py') -AsRoot } 'root transport rejects owner Python before execution'
     Reject { Invoke-ODSWslCommand $a @('/bin/bash','-c','anything') -AsRoot } 'root transport rejects shell execution'
     Reject { Invoke-ODSWslCommand $a @('/usr/bin/systemctl','stop','docker.service') -AsRoot } 'root transport rejects unrelated services'
     Reject { Invoke-ODSWslCommand $a @('/usr/bin/systemctl','stop','pixel-ingress.service','docker.service') -AsRoot } 'root transport rejects extra argv'
     $script:transport=@();$script:unitState='inactive';$script:nativeFail=$false
+    $script:agentState='active';$script:agentFail=$false;$script:composeFail=$false
     function Invoke-ODSWslCommand { param($Identity,[string[]]$Arguments,[switch]$AsRoot)
         $script:transport+=[pscustomobject]@{distro=$Identity.distro;arguments=$Arguments;asRoot=[bool]$AsRoot}
         if($AsRoot -and $script:nativeFail){throw 'native stop failed'}
+        if($AsRoot -and $Arguments[2] -ceq 'ods-host-agent.service' -and $script:agentFail){throw 'host agent restart failed'}
         if($Arguments[0] -eq 'python3' -and $Arguments[2] -like 'plan-*'){return ($script:plan|ConvertTo-Json -Depth 5)}
+        if($Arguments[0] -eq 'python3' -and $Arguments[2] -eq 'compose-start' -and $script:composeFail){throw 'owner Compose failed'}
+        if($Arguments[0] -eq '/usr/bin/systemctl' -and $Arguments[1] -eq 'show' -and $Arguments[2] -ceq 'ods-host-agent.service'){return $script:agentState}
         if($Arguments[0] -eq '/usr/bin/systemctl' -and $Arguments[1] -eq 'show'){return $script:unitState}
     }
     $null=Invoke-ODSWslStack $a stop
@@ -176,11 +269,36 @@ try {
     Reject { Invoke-ODSWslStack $a stop } 'native stop failure is propagated'
     Check (@($script:transport|Where-Object {$_.arguments[2] -eq 'compose-stop'}).Count -eq 0) 'native stop failure prevents Compose stop'
 
+    $script:nativeFail=$false;$script:unitState='active';$script:plan=$managedPlan;$script:transport=@()
+    $null=Invoke-ODSWslStack $a start
+    Check ($script:transport[1].arguments[2] -ceq 'compose-start' -and -not $script:transport[1].asRoot -and
+        ($script:transport[2].arguments -join ' ') -ceq '/usr/bin/systemctl restart ods-host-agent.service' -and $script:transport[2].asRoot) 'owned Compose completes before the fixed root host agent restart'
+    Check (($script:transport[3].arguments -join ' ') -ceq '/usr/bin/systemctl show ods-host-agent.service --property=ActiveState --value' -and
+        -not $script:transport[3].asRoot -and $script:transport[4].arguments[1] -ceq 'start') 'host agent active state is confirmed as owner before any Pixel unit starts'
+    foreach($failure in @('compose','restart','inactive')){
+        $script:transport=@();$script:composeFail=$failure -eq 'compose';$script:agentFail=$failure -eq 'restart'
+        $script:agentState=if($failure -eq 'inactive'){'inactive'}else{'active'}
+        Reject {Invoke-ODSWslStack $a start} "$failure failure propagates from managed startup"
+        Check (@($script:transport|Where-Object {$_.asRoot -and $_.arguments[1] -ceq 'start'}).Count -eq 0) "$failure failure prevents Pixel units starting"
+        if($failure -eq 'compose'){Check (@($script:transport|Where-Object asRoot).Count -eq 0) 'failed Compose performs no root mutation'}
+    }
+    $script:composeFail=$false;$script:agentFail=$false;$script:agentState='active'
+    $script:plan.hostAgentRestart=$false;$script:transport=@()
+    $null=Invoke-ODSWslStack $a start
+    Check (@($script:transport|Where-Object {$_.arguments[2] -ceq 'ods-host-agent.service'}).Count -eq 0) 'false host agent flag preserves the existing start path'
+    $script:plan.action='stop';$script:unitState='inactive';$script:transport=@()
+    $null=Invoke-ODSWslStack $a stop
+    Check (@($script:transport|Where-Object {$_.arguments[2] -ceq 'ods-host-agent.service'}).Count -eq 0) 'stop never restarts or stops the host agent'
+    $script:plan.hostAgentRestart=$true;$script:transport=@()
+    Reject {Invoke-ODSWslStack $a stop} 'invalid stop restart flag fails before dispatch'
+    Check ($script:transport.Count -eq 1 -and -not $script:transport[0].asRoot) 'invalid restart plan dispatches no Compose or root command'
+
     $script:events=@();$script:stopFail=$false
     function Get-ODSWslIdentity { param($Distro,$InstallRoot); $a }
     function Get-ODSWslLifetimeStatus { param($Identity); [pscustomobject]@{state='stopped';distroRunning=$script:targetRunning} }
     function Stop-ODSWslLifetime { param($Identity); $script:events+='release'; [pscustomobject]@{state='stopped'} }
     function Start-ODSWslLifetime { param($Identity); $script:events+='hold'; [pscustomobject]@{state='running'} }
+    function Enable-ODSWslStartup { param($Identity) }
     function Invoke-ODSWslStack { param($Identity,$Action); $script:events+=$Action; if($script:stopFail){throw 'drain failed'} }
     $script:targetRunning=$false
     $null=Invoke-ODSWslLifecycle stop 'Ubuntu-24.04' '/home/ods/ods'

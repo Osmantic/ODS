@@ -1,5 +1,6 @@
 import {createAgentSkillTool} from './agent-skills.mjs';
 import {registerBootstrapCapabilities} from './bootstrap-capabilities.mjs';
+import {registerStableRuntimeLine} from './runtime-line.mjs';
 import {createRuntimeIdentity} from './runtime-identity.mjs';
 import {fileURLToPath} from 'node:url';
 import {createActivityTool, ACTIVITY_CONTRACT} from './activity-display.mjs';
@@ -51,6 +52,7 @@ import {
 import { withPixelCronDeliveryDefault } from "./cron-delivery-default.mjs";
 import { createPublicPageReader, createPublicWebExtractTool } from "./web-extract.mjs";
 import { citationPageReadsAllowed, createHostCitationVerifier } from "./citation-verification.mjs";
+import { createStopSynthesisClient } from "./stop-synthesis.mjs";
 import { createExtensionRepositoryContext } from './extension-repository-context.mjs';
 
 const extensionRepositoryContext = createExtensionRepositoryContext({
@@ -58,7 +60,8 @@ const extensionRepositoryContext = createExtensionRepositoryContext({
     guardedFetch: fetchWithWebToolsNetworkGuard, readResponseText, extractBasicHtmlContent,
   }),
 });
-import { createPerplexicaResearchTool } from "./perplexica-research.mjs";
+import { createPerplexicaAvailability, createPerplexicaResearchTool, researchOutputChars,
+  researchToolWhenAvailable } from "./perplexica-research.mjs";
 import { createDownloadPromoteTool } from "./download-promote.mjs";
 import {
   createExtensionReadTool,
@@ -93,6 +96,7 @@ let contextCompaction;
 let currentManagedRuntime;
 const managedRuntimeRegistry = createManagedRuntimeRegistry();
 const evidenceArtifactWriter = createEvidenceArtifactWriter();
+let perplexicaAvailability;
 const bundleAdmission = createWorkspaceBundleAdmission();
 
 // Restrict tool registration to the Pixel agent. Tools are only offered to the
@@ -286,6 +290,8 @@ export default definePluginEntry({
         release:token => accessRuntime.release(token), owns:token => accessRuntime.owns(token)},
     });
     registerHistoryIntegration(api,{compactor:contextCompaction,getSessionEntry,patchSessionEntry,resolveStorePath,withSessionTranscriptWriteLock});
+    // One system prompt for every Pixel chat: no per-chat session key or id.
+    registerStableRuntimeLine(api);
     const statusFile = statusFileFromEnv();
     const configuredContextWindow = api.pluginConfig?.modelContextWindow;
     const configuredLeanPrompt = api.pluginConfig?.leanPrompt === true;
@@ -320,6 +326,9 @@ export default definePluginEntry({
         }),
         allowed: () => citationPageReadsAllowed(api.runtime?.config?.current?.() ?? api.config, AGENT_ID),
       }),
+      // After a tool-limit stop without an answer: one tool-free completion by
+      // the same configured model, from the pages the run read.
+      stopSynthesis: createStopSynthesisClient({runtime: api.runtime, agentId: AGENT_ID}),
       warn: (message) => api.logger.warn(message),
       info: (message) => api.logger.info?.(message),
     });
@@ -708,9 +717,22 @@ export default definePluginEntry({
       { names: ["pixel_ods_web_extract"] }
     );
 
-    registerTool(api, createPerplexicaResearchTool({ port: api.pluginConfig?.perplexicaPort }), {
-      names: ["pixel_ods_research"],
-    });
+    // Offered only while the owner's Perplexica answers /api/config with chat
+    // and embedding defaults (OpenClaw keeps listing it from its descriptor
+    // cache once every manifest tool was offered; COMPLETION-RELIABILITY.md).
+    // The tool is deferred behind Tool Search, so its presence changes the
+    // server-side catalog, not the prompt bytes. Schema discovery always sees
+    // it and never probes the host.
+    const discovery = api.registrationMode === 'discovery';
+    if (!discovery) {
+      perplexicaAvailability ??= createPerplexicaAvailability({ port: api.pluginConfig?.perplexicaPort });
+      perplexicaAvailability.refreshIfStale();
+    }
+    const researchTool = createPerplexicaResearchTool({ port: api.pluginConfig?.perplexicaPort,
+      availability: discovery ? undefined : perplexicaAvailability,
+      outputChars: () => researchOutputChars(api.runtime?.config?.current?.() ?? api.config, AGENT_ID) });
+    api.registerTool(onlyPixel(discovery ? () => researchTool
+      : researchToolWhenAvailable(perplexicaAvailability, researchTool)), { names: ["pixel_ods_research"] });
     registerTool(api, createAgentSkillTool(), {names:['pixel_ods_skill']});
     registerTool(api, createAskUserTool(), {names:['pixel_ods_ask_user']});
     registerTool(api, createGoalProgressTool(), {names:['pixel_ods_goal']});
@@ -734,6 +756,9 @@ export default definePluginEntry({
     if (["unix", "native"].includes(api.pluginConfig?.workspacePreviewInspectionTransport)) {
       registerTool(api, createWorkspacePreviewInspectTool({
         transport: api.pluginConfig.workspacePreviewInspectionTransport,
+        // Finalize-time revisions do not reach the model after a plugin tool
+        // call; an untested requested show/hide change is reported here.
+        transitionRequirement: (toolCallId, params) => toolLoopGuard.previewInspectionTransition(toolCallId, params),
       }), { names: ["pixel_ods_workspace_preview_inspect"] });
     }
 

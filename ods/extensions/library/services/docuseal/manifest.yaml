@@ -28,6 +28,8 @@ service:
     secret: true
     description: 'Stable random application secret: generate 64 random bytes as 128
       hex characters and preserve it with backups.'
+    format: hex128
+    generate: hex128
   ui_path: /
 tags:
 - documents

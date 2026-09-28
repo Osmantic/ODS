@@ -191,7 +191,7 @@ class TestStateModule:
     def test_migrate_cloud_only_yields_none(self):
         env = {
             "ODS_MODE": "cloud",
-            "LLM_MODEL": "anthropic/claude-sonnet-4-5-20250514",
+            "LLM_MODEL": "anthropic/claude-sonnet-4-6",
             "GGUF_FILE": "",
             "MAX_CONTEXT": "200000",
         }
@@ -257,7 +257,7 @@ class TestStateModule:
         path = tmp_path / "model-state.json"
         env = {
             "ODS_MODE": "cloud",
-            "LLM_MODEL": "anthropic/claude-sonnet-4-5-20250514",
+            "LLM_MODEL": "anthropic/claude-sonnet-4-6",
             "MAX_CONTEXT": "200000",
         }
         assert sb.initialize_if_missing(path, env) is None

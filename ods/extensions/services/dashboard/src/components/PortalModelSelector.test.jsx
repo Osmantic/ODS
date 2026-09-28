@@ -294,3 +294,32 @@ it('reports the active switch instead of an expected temporary unknown source',a
   expect(screen.getByRole('menuitemradio',{name:/Qwen 3.5 2B/})).toHaveAttribute('title','A model operation is in progress.')
   expect(posts()).toHaveLength(0)
 })
+
+it.each([true,false])('an external host selector requires explicit managed activation capability (%s)',async managed=>{
+  vi.stubGlobal('fetch',vi.fn(async()=>({ok:true,json:async()=>({...payload(),externalLemonade:true,
+    modelManagement:{managed,canActivate:true,canUnload:true,running:true}})})))
+  render(view({runtimeSource:'external-host'}))
+  await open()
+  const option=screen.getByRole('menuitemradio',{name:/Qwen 3.5 2B/})
+  if(managed)expect(option).toBeEnabled()
+  else expect(option).toBeDisabled()
+  expect(posts()).toHaveLength(0)
+})
+
+it('keeps unknown management distinct from an external service and recovers on refresh',async()=>{
+  let capability={managed:null,canActivate:false,canUnload:false,running:false,reason:'Runtime management could not be verified'}
+  vi.stubGlobal('fetch',vi.fn(async()=>({ok:true,json:async()=>({...payload(),externalLemonade:true,modelManagement:capability})})))
+  render(view({runtimeSource:'external-host'}))
+  await open()
+  expect(screen.getByRole('menuitemradio',{name:/Qwen 3.5 2B/})).toBeDisabled()
+  expect(screen.getByText(capability.reason)).toBeVisible()
+  expect(screen.queryByText('This model is managed on the external host.')).toBeNull()
+  expect(screen.queryByText('Change this model on its external host.')).toBeNull()
+  expect(posts()).toHaveLength(0)
+
+  capability={managed:true,canActivate:true,canUnload:true,running:true}
+  fireEvent.keyDown(window,{key:'Escape'})
+  fireEvent.click(screen.getByRole('button',{name:'Choose model: Qwen 3.5 4B'}))
+  await waitFor(()=>expect(screen.getByRole('menuitemradio',{name:/Qwen 3.5 2B/})).toBeEnabled())
+  expect(screen.queryByText('Runtime management could not be verified')).toBeNull()
+})

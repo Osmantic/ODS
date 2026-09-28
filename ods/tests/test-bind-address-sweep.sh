@@ -31,10 +31,30 @@ if [[ ! -d "$EXT_DIR" ]]; then
     exit 1
 fi
 
-# Match lines that start a ports entry with a literal 127.0.0.1, quoted or not.
-# Healthcheck URLs live on `test:` lines and never start with `- "127.0.0.1:`
-# or `- 127.0.0.1:`, so this pattern is specific to ports: entries.
-OFFENDERS="$(grep -REn '^\s*-\s*"?127\.0\.0\.1:' "$EXT_DIR" --include='compose.yaml' || true)"
+# Follow the ports block, including YAML indentless sequence entries. A
+# multiline healthcheck can also contain a bare loopback address; it is not a
+# published host port and must remain container-internal.
+OFFENDERS="$(find "$EXT_DIR" -type f -name compose.yaml -exec awk '
+    FNR == 1 { in_ports = 0 }
+    /^[[:space:]]*ports:[[:space:]]*(#.*)?$/ {
+        match($0, /^[[:space:]]*/)
+        ports_indent = RLENGTH
+        in_ports = 1
+        next
+    }
+    in_ports {
+        match($0, /^[[:space:]]*/)
+        indent = RLENGTH
+        if ($0 !~ /^[[:space:]]*(#.*)?$/ &&
+            (indent < ports_indent ||
+             (indent == ports_indent && $0 !~ /^[[:space:]]*-/))) {
+            in_ports = 0
+        }
+        if (in_ports && $0 ~ /^[[:space:]]*-[[:space:]]*[\042\047]?127[.]0[.]0[.]1:/) {
+            print FILENAME ":" FNR ":" $0
+        }
+    }
+' {} +)"
 
 if [[ -n "$OFFENDERS" ]]; then
     echo -e "  ${RED}FAIL${NC} community extensions still bind to literal 127.0.0.1 in ports:"

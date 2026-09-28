@@ -143,7 +143,7 @@ test('repair is selected by Linux/WSL installation, foreign restore and native m
   assert.match(linux, /-f "\$plugin_root\/host\/openclaw-tool-result-projection\.json"/);
   assert.match(linux.split('--restore-foreign')[1].split('>>')[0], /\btool-result-projection\b/);
   assert.match(helper, /TOOL_RESULT_PROJECTION_MODULE = "tool-result-truncation-CbxVHy2D\.js"/);
-  assert.match(mac, /\('openclaw-tool-result-projection\.json', 'tool-result-truncation-CbxVHy2D\.js'\),\r?\n\s+\('openclaw-compaction-budget\.json', 'selection-BEwSQKM-\.js'\),\r?\n\)/,
+  assert.match(mac, /\('openclaw-tool-result-projection\.json', 'tool-result-truncation-CbxVHy2D\.js'\),\r?\n(?:\s+\('[a-z-]+\.json', '[A-Za-z0-9._-]+\.js'\),\r?\n)*\s+\('openclaw-compaction-budget\.json', 'selection-BEwSQKM-\.js'\),\r?\n\)/,
     'the stream-progress patch still composes on the last (selection) repair');
   assert.equal(manifest.version, '2026.6.33');
   assert.match(manifest.sourceSha256, /^[a-f0-9]{64}$/);

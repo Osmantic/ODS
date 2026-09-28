@@ -28,6 +28,8 @@ service:
     secret: true
     description: 64-hex password for DAV account ods; rotation requires updating configured
       clients.
+    format: hex64
+    generate: hex64
   ui_path: /.web/
 tags:
 - calendar

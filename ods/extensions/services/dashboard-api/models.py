@@ -235,3 +235,4 @@ class ModelLibraryResponse(BaseModel):
     configuredMode: str = "unknown"
     llmBackend: str = "unknown"
     externalLemonade: bool = False
+    modelManagement: Optional[dict[str, Any]] = None

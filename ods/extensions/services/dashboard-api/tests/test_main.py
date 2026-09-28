@@ -21,6 +21,11 @@ from main import (
 # --- get_allowed_origins ---
 
 
+@pytest.fixture(autouse=True)
+def no_remote_provider_network(monkeypatch):
+    monkeypatch.setattr("main.async_request_agent_json", AsyncMock(return_value={}))
+
+
 def test_read_installed_version_parses_json_version_file(tmp_path, monkeypatch):
     version_file = tmp_path / ".version"
     version_file.write_text(json.dumps({"version": "3.1.4"}), encoding="utf-8")

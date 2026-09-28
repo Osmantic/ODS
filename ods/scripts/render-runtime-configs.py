@@ -314,12 +314,12 @@ litellm_settings:
   # Stable public alias used by Switchboard-aware ODS consumers.
   - model_name: ods/current
     litellm_params:
-      model: anthropic/claude-sonnet-4-5-20250514
+      model: anthropic/claude-sonnet-4-6
       api_key: os.environ/ANTHROPIC_API_KEY
 
   - model_name: default
     litellm_params:
-      model: anthropic/claude-sonnet-4-5-20250514
+      model: anthropic/claude-sonnet-4-6
       api_key: os.environ/ANTHROPIC_API_KEY
 
   - model_name: gpt4o
@@ -379,7 +379,7 @@ def render_litellm_hybrid(inputs: RenderInputs) -> RenderedFile:
 
   - model_name: cloud
     litellm_params:
-      model: anthropic/claude-sonnet-4-5-20250514
+      model: anthropic/claude-sonnet-4-6
       api_key: os.environ/ANTHROPIC_API_KEY
 
   - model_name: minimax
@@ -602,7 +602,7 @@ def render_litellm_switchboard(inputs: RenderInputs) -> RenderedFile:
         routes.extend([
             """  - model_name: cloud
     litellm_params:
-      model: anthropic/claude-sonnet-4-5-20250514
+      model: anthropic/claude-sonnet-4-6
       api_key: os.environ/ANTHROPIC_API_KEY
 """,
             """  - model_name: minimax

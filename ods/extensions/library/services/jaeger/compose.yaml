@@ -6,9 +6,9 @@ services:
     security_opt:
     - no-new-privileges:true
     ports:
-    - 127.0.0.1:${JAEGER_PORT:-11102}:16686
-    - 127.0.0.1:${JAEGER_GRPC_PORT:-11103}:4317
-    - 127.0.0.1:${JAEGER_HTTP_PORT:-11104}:4318
+    - "${BIND_ADDRESS:-127.0.0.1}:${JAEGER_PORT:-11102}:16686"
+    - "${BIND_ADDRESS:-127.0.0.1}:${JAEGER_GRPC_PORT:-11103}:4317"
+    - "${BIND_ADDRESS:-127.0.0.1}:${JAEGER_HTTP_PORT:-11104}:4318"
     healthcheck:
       test:
       - CMD

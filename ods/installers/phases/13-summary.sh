@@ -171,6 +171,9 @@ if [[ "${ENABLE_PIXEL_RUNTIME:-false}" == "true" ]]; then
 elif [[ "${ENABLE_HERMES:-false}" == "true" ]]; then
     echo "  • Hermes Agent: enabled"
 fi
+if [[ "${HERMES_CONTEXT_BELOW_FLOOR:-false}" == "true" ]]; then
+    echo "  • ODS Talk: unavailable with ${LLM_MODEL} at ${MAX_CONTEXT} context (Hermes needs 64K); choose a model that fits 64K in Models"
+fi
 echo "  • Install dir: $INSTALL_DIR"
 echo ""
 

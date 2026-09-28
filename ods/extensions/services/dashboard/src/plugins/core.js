@@ -11,6 +11,7 @@ import {
   CreditCard,
   Code,
 } from 'lucide-react'
+import { isRemoteInference } from '../lib/inferenceMode'
 
 const Dashboard = lazy(() => import('../pages/Dashboard'))
 const SettingsPage = lazy(() => import('../pages/Settings'))
@@ -43,9 +44,10 @@ export const coreRoutes = [
     label: 'GPU Monitor',
     icon: Activity,
     component: GPUMonitor,
-    getProps: () => ({}),
-    // Route is always registered; sidebar entry only appears on multi-GPU systems
-    sidebar: ({ status }) => (status?.gpu?.gpu_count || 1) > 1,
+    getProps: ({ status, loading }) => ({ status, loading }),
+    // Route is always registered; sidebar entry only appears on multi-GPU
+    // local systems. Remote/cloud inference never shows the local GPU entry.
+    sidebar: ({ status, loading }) => !loading && !isRemoteInference(status) && (status?.gpu?.gpu_count || 1) > 1,
     order: 1,
   },
   {

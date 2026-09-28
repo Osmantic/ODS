@@ -97,7 +97,7 @@ for (const replies of [['NO_REPLY',ANSWER],['NO_REPLY','NO_REPLY']]) test(`real 
       assert.equal(delivered,ANSWER,trace);
       assert.notEqual(frames.at(-1).pixel_outcome.status,'failed',trace);
     } else {
-      assert.match(delivered,/^Pixel ended without a visible answer/,trace);
+      assert.match(delivered,/^Portal ended without a visible answer/,trace);
       assert.equal(frames.at(-1).pixel_outcome.status,'failed',trace);
     }
   } finally {

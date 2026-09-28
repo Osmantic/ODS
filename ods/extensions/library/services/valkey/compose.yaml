@@ -6,7 +6,7 @@ services:
     security_opt:
     - no-new-privileges:true
     ports:
-    - 127.0.0.1:${VALKEY_PORT:-11091}:6379
+    - "${BIND_ADDRESS:-127.0.0.1}:${VALKEY_PORT:-11091}:6379"
     healthcheck:
       test:
       - CMD

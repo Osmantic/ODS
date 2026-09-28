@@ -81,6 +81,7 @@ const MODEL_ACTIVATION_POLL_MS = 5000
 // Delete allows 30s at the host; the 128-token benchmark allows 384s.
 const MODEL_DELETE_TIMEOUT_MS = 35000
 const MODEL_BENCHMARK_TIMEOUT_MS = 400000
+const MODEL_RUNTIME_TIMEOUT_MS = 1225000
 // Activation allows 2700s plus 120s of download-busy retry grace.
 // Keep the UI lock until that budget and a small response margin have elapsed.
 const MODEL_ACTIVATION_TIMEOUT_MS = 2825000
@@ -114,7 +115,7 @@ async function errorMessageFromResponse(response, fallback) {
   return errorMessageFromPayload(await responseJson(response), fallback)
 }
 
-async function modelActionRequest(url, options, budget, timeoutMessage, failureMessage) {
+async function modelActionRequest(url, options, budget, timeoutMessage, failureMessage, expectedStatus = null) {
   const controller = new AbortController()
   let timer
   const deadline = new Promise((_, reject) => {
@@ -128,6 +129,9 @@ async function modelActionRequest(url, options, budget, timeoutMessage, failureM
       (async () => {
         const response = await fetch(url, { ...options, signal: controller.signal })
         if (!response.ok) throw new Error(await errorMessageFromResponse(response, failureMessage))
+        if (expectedStatus && (await responseJson(response)).status !== expectedStatus) {
+          throw new Error('The runtime operation was not confirmed. Refresh its status before retrying.')
+        }
       })(),
       deadline,
     ])
@@ -172,12 +176,25 @@ function normalizeOdsMode(value) {
   return ODS_MODES.has(mode) ? mode : 'unknown'
 }
 
-function modelActivationModeError(effectiveMode, configuredMode, llmBackend, externalLemonade) {
+function normalizeModelManagement(value) {
+  const managed = typeof value?.managed === 'boolean' ? value.managed : null
+  return {
+    managed,
+    canActivate: managed === true && value.canActivate === true,
+    canUnload: managed === true && value.canUnload === true,
+    running: managed === true && value.running === true,
+    reason: typeof value?.reason === 'string' ? value.reason : '',
+  }
+}
+
+function modelActivationModeError(effectiveMode, configuredMode, llmBackend, externalLemonade, management) {
   if (llmBackend === 'external') {
     return 'This install routes to a model service outside ODS. Downloading a model here does not switch the active model; reconnect ODS to its supported runtime integration to manage model changes.'
   }
-  if (externalLemonade) {
-    return 'Lemonade is managed outside ODS. Change the loaded model in Lemonade, then use Adopt loaded model here to update ODS and Portal.'
+  if (externalLemonade && !(management?.managed && management.canActivate)) {
+    return management?.managed === false
+      ? 'Change the loaded model in Lemonade, then use Adopt loaded model here to update ODS and Portal.'
+      : management?.reason || 'Model management is temporarily unavailable. Refresh the runtime status.'
   }
   if (effectiveMode === 'unknown' || configuredMode === 'unknown') {
     return 'ODS could not verify the active runtime mode. Repair or restart ODS before running a local model.'
@@ -219,6 +236,8 @@ export function useModels() {
   const [configuredMode, setConfiguredMode] = useState(USE_MOCK_DATA ? MOCK_MODES.configuredMode : 'unknown')
   const [llmBackend, setLlmBackend] = useState(USE_MOCK_DATA ? 'llama-server' : 'unknown')
   const [externalLemonade, setExternalLemonade] = useState(false)
+  const [modelManagement, setModelManagement] = useState(() => normalizeModelManagement(null))
+  const [runtimeActionLoading, setRuntimeActionLoading] = useState(null)
   const [recommendationAlternatives, setRecommendationAlternatives] = useState([])
   const [hermesMinimumContext, setHermesMinimumContext] = useState(DEFAULT_HERMES_MIN_CONTEXT)
   const [pixelMinimumContext, setPixelMinimumContext] = useState(DEFAULT_PIXEL_MIN_CONTEXT)
@@ -231,6 +250,7 @@ export function useModels() {
   const actionTokenRef = useRef(0)
   const modelsRequestRef = useRef(0)
   const latestSettledModelsRequestRef = useRef(0)
+  const latestModelsSnapshotRef = useRef(null)
   const pollInFlightRef = useRef(false)
   const loadActiveRef = useRef(false)
   const activationControllerRef = useRef(null)
@@ -297,9 +317,11 @@ export function useModels() {
       const data = await response.json()
       if (signal?.aborted) return null
 
-      // A slower, older request must not overwrite a newer snapshot.
-      if (requestId < latestSettledModelsRequestRef.current) return null
+      // Keep publishing ordered, but return valid readback to its caller.
+      // Faster background polls must not starve activation confirmation.
+      if (requestId < latestSettledModelsRequestRef.current) return data
       latestSettledModelsRequestRef.current = requestId
+      latestModelsSnapshotRef.current = data
 
       setModels(data.models)
       setGpu(data.gpu)
@@ -313,6 +335,7 @@ export function useModels() {
       setConfiguredMode(normalizeOdsMode(data.configuredMode ?? data.odsMode))
       setLlmBackend(typeof data.llmBackend === 'string' ? data.llmBackend.trim().toLowerCase() : 'unknown')
       setExternalLemonade(data.externalLemonade === true)
+      setModelManagement(normalizeModelManagement(data.modelManagement))
       setRecommendationAlternatives(data.recommendationAlternatives ?? [])
       setHermesMinimumContext(Number(data.hermesMinimumContext || DEFAULT_HERMES_MIN_CONTEXT))
       setPixelMinimumContext(Number(data.pixelMinimumContext || DEFAULT_PIXEL_MIN_CONTEXT))
@@ -324,6 +347,7 @@ export function useModels() {
       if (requestId >= latestSettledModelsRequestRef.current) {
         latestSettledModelsRequestRef.current = requestId
         setFetchError(err.message)
+        setModelManagement(normalizeModelManagement(null))
       }
       // No silent fallback - let error propagate to UI
     } finally {
@@ -386,7 +410,7 @@ export function useModels() {
   }
 
   const loadModel = async (modelId, options = {}) => {
-    const modeError = modelActivationModeError(odsMode, configuredMode, llmBackend, externalLemonade)
+    const modeError = modelActivationModeError(odsMode, configuredMode, llmBackend, externalLemonade, modelManagement)
     if (modeError) {
       setMutationError(modeError)
       return
@@ -416,7 +440,7 @@ export function useModels() {
     let activationError = null
     let targetLoaded = false
     const requestedContextLength = Number(options.contextLength || 0) || null
-    const activationMatches = (data) => {
+    const snapshotMatches = (data) => {
       if (
         data?.currentModel !== modelId ||
         data?.activationReadyModel !== modelId ||
@@ -426,6 +450,9 @@ export function useModels() {
       const activeModel = data?.models?.find(model => model.id === modelId)
       return Number(activeModel?.contextLength || 0) === requestedContextLength
     }
+    // A superseded response may confirm the operation when the newer published
+    // inventory agrees. A newer route/context or active lifecycle still blocks it.
+    const activationMatches = data => snapshotMatches(data) && snapshotMatches(latestModelsSnapshotRef.current)
 
     const activationRequestOptions = {
       method: 'POST',
@@ -522,6 +549,37 @@ export function useModels() {
     }
   }
 
+  const changeRuntime = async (operation) => {
+    if (!modelManagement.managed || !modelManagement.canUnload) {
+      setMutationError(modelManagement.reason || 'Runtime controls are unavailable for this installation.')
+      return
+    }
+    if (loadActiveRef.current || backendLifecycleBusy || pendingActionsRef.current.length) {
+      setMutationError('Wait for the current model operation to finish before changing the runtime.')
+      return
+    }
+    loadActiveRef.current = true
+    setRuntimeActionLoading(operation)
+    setMutationError(null)
+    latestSettledModelsRequestRef.current = ++modelsRequestRef.current
+    try {
+      await modelActionRequest(
+        '/api/models/runtime/' + operation,
+        { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' },
+        MODEL_RUNTIME_TIMEOUT_MS,
+        'The runtime operation timed out. The server may still be working; refresh before retrying.',
+        'Could not ' + operation + ' the model runtime.',
+        operation === 'stop' ? 'stopped' : 'started',
+      )
+    } catch (err) {
+      setMutationError(err.message)
+    } finally {
+      await fetchModels()
+      loadActiveRef.current = false
+      setRuntimeActionLoading(null)
+    }
+  }
+
   const deleteModel = async (modelId) => {
     setMutationError(null)
     const action = startAction(modelId, 'delete')
@@ -573,7 +631,7 @@ export function useModels() {
     ].filter(Boolean)),
   ]
   const error = mutationError || fetchError
-  const activationModeError = modelActivationModeError(odsMode, configuredMode, llmBackend, externalLemonade)
+  const activationModeError = modelActivationModeError(odsMode, configuredMode, llmBackend, externalLemonade, modelManagement)
 
   return {
     models,
@@ -587,6 +645,10 @@ export function useModels() {
     configuredMode,
     llmBackend,
     externalLemonade,
+    modelManagement,
+    runtimeActionLoading,
+    stopRuntime: () => changeRuntime('stop'),
+    startRuntime: () => changeRuntime('start'),
     canActivateModels: activationModeError === null,
     clearMutationError,
     activationModeError,

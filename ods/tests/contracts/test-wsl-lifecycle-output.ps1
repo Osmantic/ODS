@@ -3,6 +3,13 @@ $ErrorActionPreference = 'Stop'
 
 if ($Scenario) {
     . (Join-Path $PSScriptRoot '../../installers/wsl-lifecycle.ps1') -Distro 'Receipt-Fixture'
+    function Resolve-ODSWslRegisteredDistro { param($Name); $Name }
+    function Enable-ODSWslStartup { param($Identity) }
+    function Enable-ScheduledTask { param($TaskName) }
+    function Set-ODSWslStartupIntent { param($Identity,[bool]$Running);$script:fixtureIntent=[pscustomobject]@{desiredRunning=$Running;generation=('a'*32)} }
+    function Get-ODSWslStartupIntent { param($Identity);$script:fixtureIntent }
+    function Write-ODSPrivateBytes { param($Path,$Bytes,[switch]$CreateOnly) }
+    function Assert-ODSWslCommandSettled { param($Identity) }
     # Only external authority boundaries are replaced. The real stack planner,
     # lifecycle ordering, and public PowerShell result pipeline remain in use.
     $script:fixtureRunning = $true

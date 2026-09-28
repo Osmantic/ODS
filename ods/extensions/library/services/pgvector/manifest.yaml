@@ -28,11 +28,16 @@ service:
     secret: true
     description: 64-hex bootstrap administrator password; existing databases require
       SQL password rotation.
+    format: hex64
+    generate: hex64
   - key: PGVECTOR_APP_PASSWORD
     required: true
     secret: true
     description: Distinct 64-hex password for ods_app, used by projects and authenticated
       health checks.
+    format: hex64
+    distinct_from: [PGVECTOR_ADMIN_PASSWORD]
+    generate: hex64
   external_link: false
 tags:
 - database

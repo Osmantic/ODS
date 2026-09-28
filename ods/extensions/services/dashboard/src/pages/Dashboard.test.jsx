@@ -331,6 +331,19 @@ describe('Dashboard system overview', () => {
     await waitFor(() => expect(fetch).toHaveBeenCalledWith('/api/features'))
   })
 
+  it.each([0, null, undefined, NaN])('waits for valid VRAM capacity instead of showing denominator %s', async vramTotal => {
+    const gpu = { name: 'AMD Radeon RX 9070 XT', memoryType: 'discrete', vramUsed: 2, vramTotal, utilization: 0 }
+    const view = render(<Dashboard compact status={{ ...baseStatus, gpu }} loading={false} />)
+    const row = screen.getByText('VRAM').closest('.dashboard-metric-row')
+    expect(within(row).getByText('2.0 GB')).toBeVisible()
+    expect(within(row).getByText('capacity unavailable')).toBeVisible()
+    expect(within(row).queryByText(/^of /)).toBeNull()
+    view.rerender(<Dashboard compact status={{ ...baseStatus, gpu: { ...gpu, vramTotal: 16 } }} loading={false} />)
+    expect(within(row).getByText('of 16 GB')).toBeVisible()
+    expect(within(row).queryByText('capacity unavailable')).toBeNull()
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith('/api/features'))
+  })
+
   it('does not identify an AMD unified GPU as Apple Silicon', async () => {
     await renderDashboard({ ...baseStatus, gpu:{ name:'AMD Radeon 8060S Graphics', memoryType:'unified', utilization:61, vramUsed:9, vramTotal:96 }, ram:{used_gb:40,total_gb:128,percent:31} })
     expect(screen.getByText('GPU memory')).toBeVisible()

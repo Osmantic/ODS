@@ -28,6 +28,8 @@ service:
     secret: true
     description: 'Initial neo4j password: random 64 hexadecimal characters; not a
       reset for existing databases.'
+    format: hex64
+    generate: hex64
   - key: NEO4J_BOLT_PORT
     required: false
     default: '11140'

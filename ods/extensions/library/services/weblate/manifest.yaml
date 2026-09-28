@@ -27,15 +27,21 @@ service:
     required: true
     secret: true
     description: Random 64-hex PostgreSQL password; keep stable across recreation.
+    format: hex64
+    generate: hex64
   - key: WEBLATE_ADMIN_PASSWORD
     required: true
     secret: true
     description: Distinct random 64-hex admin password, reapplied by native startup.
+    format: hex64
+    distinct_from: [WEBLATE_DB_PASSWORD]
+    generate: hex64
   - key: WEBLATE_ADMIN_EMAIL
     required: true
     secret: false
     description: Actual owner email for the administrator account; SMTP is configured
       separately.
+    format: email
   ui_path: /
 tags:
 - localization

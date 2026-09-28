@@ -17,7 +17,8 @@ function Invoke-RestMethod {
     if ($Uri -like '*/health') {
         return @{ all_models_loaded = @(@{ model_name = 'extra.test.gguf'; recipe_options = @{ ctx_size = $script:loadedContext } }) }
     }
-    $payload = $Body | ConvertFrom-Json
+    Assert ($Body -is [byte[]] -and $ContentType -eq 'application/json; charset=utf-8') 'Model load must transmit explicit UTF-8 bytes'
+    $payload = [Text.Encoding]::UTF8.GetString($Body) | ConvertFrom-Json
     Assert ($Uri -eq 'http://127.0.0.1:18080/api/v1/load') 'Wrong load endpoint'
     Assert ($payload.ctx_size -eq 65536 -and $payload.model_name -eq 'extra.test.gguf') 'Lost model or context'
     Assert ($payload.save_options -eq $true -and $payload.llamacpp_backend -eq 'vulkan') 'Lost runtime options'

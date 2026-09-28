@@ -31,6 +31,8 @@ RUNTIME_KEYS = (
     "LLAMA_ARG_N_CPU_MOE",
     "LLAMA_ARG_NO_CACHE_PROMPT",
     "LLAMA_ARG_CHECKPOINT_EVERY_NT",
+    "LLAMA_ARG_CTX_CHECKPOINTS",
+    "LLAMA_ARG_CACHE_RAM",
     "LLAMA_ARG_SPEC_TYPE",
     "LLAMA_ARG_SPEC_DRAFT_N_MAX",
     "LLAMA_ARG_SPEC_DRAFT_TYPE_K",
@@ -50,6 +52,8 @@ PORTABLE_STATE_RECOVERY_KEYS = {
     "LLAMA_ARG_FLASH_ATTN",
     "LLAMA_ARG_CACHE_TYPE_K",
     "LLAMA_ARG_CACHE_TYPE_V",
+    "LLAMA_ARG_CTX_CHECKPOINTS",
+    "LLAMA_ARG_CACHE_RAM",
 }
 
 
@@ -124,6 +128,31 @@ def positive_int(value: Any) -> int | None:
     except (TypeError, ValueError):
         return None
     return number if number > 0 else None
+
+
+_HF_RESOLVE_URL = re.compile(
+    r"https://huggingface\.co/([A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*)"
+    r"/resolve/[^/?#]+/([^?#]+)"
+)
+
+
+def same_pinned_artifact(env_url: str, catalog_url: str, env_digest: str, catalog_digest: str) -> bool:
+    """True when two Hub URLs name the same repo file and the digests agree.
+
+    Only the revision segment may differ. A different repo, path, host or a
+    missing/mismatched sha256 is still a different artifact.
+    """
+    env_match = _HF_RESOLVE_URL.fullmatch(env_url.strip())
+    catalog_match = _HF_RESOLVE_URL.fullmatch(catalog_url.strip())
+    digest = env_digest.strip().lower()
+    return bool(
+        env_match
+        and catalog_match
+        and env_match.group(1).lower() == catalog_match.group(1).lower()
+        and env_match.group(2) == catalog_match.group(2)
+        and re.fullmatch(r"[0-9a-f]{64}", digest)
+        and digest == catalog_digest.strip().lower()
+    )
 
 
 def load_records(catalog_path: Path, imports_path: Path | None) -> list[dict[str, Any]]:
@@ -318,6 +347,10 @@ def valid_runtime_value(key: str, value: str) -> bool:
         return value.lower() in {"", "on", "off", "true", "false", "0", "1"}
     if key == "LLAMA_ARG_CHECKPOINT_EVERY_NT":
         return bool(re.fullmatch(r"-?[0-9]{1,10}", value))
+    if key == "LLAMA_ARG_CTX_CHECKPOINTS":
+        return value.isdigit() and int(value) <= 64
+    if key == "LLAMA_ARG_CACHE_RAM":
+        return value == "-1" or (value.isdigit() and int(value) <= 1048576)
     if key == "LLAMA_ARG_SPEC_TYPE":
         return bool(re.fullmatch(r"[A-Za-z0-9_,.-]{1,64}", value))
     if key == "LLAMA_ARG_SPEC_DRAFT_N_MAX":
@@ -406,6 +439,13 @@ def preserved_contract(args: argparse.Namespace) -> dict[str, str] | None:
         ("GGUF_SHA256", primary["sha256"]),
     ):
         if not state_authoritative and env.get(key) and env[key] != expected:
+            if key == "GGUF_URL" and same_pinned_artifact(
+                env[key], expected, env.get("GGUF_SHA256", ""), primary["sha256"]
+            ):
+                # Catalog re-pin of the same Hub file (e.g. resolve/main ->
+                # resolve/<commit>) with an unchanged digest is not a model
+                # change. The contract below carries the catalog's new URL.
+                continue
             return None
 
     if state_authoritative:
@@ -421,6 +461,14 @@ def preserved_contract(args: argparse.Namespace) -> dict[str, str] | None:
     # of turning a catalog advisory into an upgrade-time hard limit.
     if context < 1024 or context > 9_007_199_254_740_991:
         return None
+    # The owner's choice is honored up to the model's declared native
+    # maximum only. Above it llama.cpp caps the slot at the training context,
+    # so the recorded value is never served and the activation's context
+    # proof cannot pass (tower2 2026-09-25: qwen3-30b-a3b-q4 recorded at
+    # 131072 on a 40960-token GGUF). Carry the context that is served.
+    native_max = positive_int(model.get("max_context_length"))
+    if native_max and context > native_max:
+        context = native_max
 
     reuse_env_runtime = (
         not state_authoritative

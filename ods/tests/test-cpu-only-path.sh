@@ -131,6 +131,31 @@ else
     pass "Dry-run does not require GPU for tier 1"
 fi
 
+# 6. CPU runtime profile: the selector sizes the llama-server container and
+#    caps host-RAM state for the model it picks (16 GB RAM -> Qwen3.5 4B).
+if command -v python3 >/dev/null 2>&1; then
+    _cpu_env="$(python3 "$ROOT_DIR/scripts/select-model.py" \
+        --catalog "$ROOT_DIR/config/model-library.json" \
+        --backend cpu --memory-type discrete --vram-mb 0 --ram-gb 16 \
+        --profile qwen --tier 1 --host-arch amd64 --installable-only \
+        --min-context 65536 --env 2>/dev/null || true)"
+    _cpu_value() { printf '%s\n' "$_cpu_env" | sed -n "s/^$1=\"\(.*\)\"$/\1/p"; }
+    if [[ "$(_cpu_value LLM_MODEL)" == "qwen3.5-4b" \
+        && "$(_cpu_value MAX_CONTEXT)" == "65536" \
+        && "$(_cpu_value MODEL_RUNTIME_PROFILE)" == "cpu-64k-q8-kv" \
+        && "$(_cpu_value LLAMA_SERVER_MEMORY_LIMIT)" == "6G" \
+        && "$(_cpu_value LLAMA_ARG_CTX_CHECKPOINTS)" == "4" \
+        && "$(_cpu_value LLAMA_ARG_CACHE_TYPE_K)" == "q8_0" \
+        && "$(_cpu_value LLAMA_ARG_CACHE_TYPE_V)" == "q8_0" ]]; then
+        pass "CPU 16 GB selects Qwen3.5 4B at 64K with Q8 KV, 4 checkpoints and a 6G container"
+    else
+        fail "CPU 16 GB runtime profile: $(printf '%s' "$_cpu_env" | tr '\n' ' ')"
+    fi
+    unset -f _cpu_value
+else
+    skip "python3 unavailable; CPU runtime profile selection not checked"
+fi
+
 echo ""
 echo "Result: $PASSED passed, $FAILED failed"
 [[ $FAILED -eq 0 ]]

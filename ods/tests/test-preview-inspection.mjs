@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
-import {createWorkspacePreviewInspectTool,normalizeWorkspacePreviewInspectionParams as normalize,validateWorkspacePreviewInspectionReceipt as validate,inspectionPlanHash,INSPECTION_KIND,INSPECTION_SCOPE,MAX_PAGE_ERRORS} from '../extensions/services/pixel-agent/plugin/workspace-preview-inspect.mjs';
+import {createWorkspacePreviewInspectTool,normalizeWorkspacePreviewInspectionParams as normalize,validateWorkspacePreviewInspectionReceipt as validate,inspectionPlanHash,renderedColorsLine,INSPECTION_KIND,INSPECTION_SCOPE,MAX_PAGE_ERRORS,MAX_RENDERED_COLORS,NEUTRAL_COLOR_NAMES,RENDERED_COLOR_NAMES,MAX_CONTROLS,MAX_CONTROL_COUNT,MAX_CONTROL_CHARS,CONTROL_ROLES,CONTROL_SOURCES} from '../extensions/services/pixel-agent/plugin/workspace-preview-inspect.mjs';
 const params=()=>({siteId:'site-'+'a'.repeat(24),sha256:'a'.repeat(64),viewport:{width:375,height:812},steps:[{action:'assert-hidden',locator:{selector:'#card'}},{action:'click',locator:{role:'button',name:'Mostrar próximos eventos',exact:true}},{action:'assert-visible',locator:{selector:'#card'}}]});
 const state=visible=>({count:1,visible,display:visible?'block':'none',visibility:'visible',opacity:'1',hidden:!visible,hiddenUntilFound:false,rectCount:visible?1:0});
 function receipt(request) {return {schemaVersion:1,kind:INSPECTION_KIND,status:'passed',siteId:request.siteId,sha256:request.sha256,planSha256:inspectionPlanHash(request),viewport:request.viewport,steps:request.steps.map((s,index)=>({index,...s,before:state(index!==0),stable:true,status:'passed',...(s.action==='click'?{after:state(true)}:{})})),diagnostics:{renderedHiddenAttributeCount:0,hiddenUntilFoundCount:0},blockedRequests:[],scope:INSPECTION_SCOPE};}
@@ -187,7 +187,130 @@ test('tool description states role/name matching for hidden assertions',()=>{
 });
 test('capsule applies hidden-inclusive role matching to assert-hidden only',()=>{
  const source=fs.readFileSync(new URL('../extensions/services/pixel-agent/host/preview_inspection_capsule.py',import.meta.url),'utf8');
- assert.match(source,/observe\(\s*step\["locator"\], step\["action"\] == "assert-hidden"\s*\)/);
- assert.equal(source.match(/= including_hidden\(locator, nodes, owned\)/g).length,1);
+ assert.match(source,/observe\(\s*step\["locator"\], step\["action"\] == "assert-hidden",\s*None if step\["action"\] == "click" else step\["action"\] == "assert-visible",\s*\)/);
+ // Every other role/name step matches rendered-only (Playwright source-text
+ // names united with Chromium's accessibility tree).
+ assert.equal(source.match(/= including_hidden\(locator, nodes, owned, rendered_only=not include_hidden\)/g).length,1);
+ assert.match(source,/"functionDeclaration": ROLE_NAME_RENDERED\s+if rendered_only\s+else ROLE_NAME_INCLUDING_HIDDEN,/);
  assert.match(source,/if before\.get\("count"\) == 0:\s*item\["errorCode"\] = "no_match"/);
+});
+
+// Rendered palette. Real capsule output for the fleet round 069 page (tower1,
+// tests/fixtures/preview-palette/tower1-r069) and for its amber repair,
+// captured in the inspection image: the accent change only styled :focus.
+const TOWER1_COLORS={viewport:{width:1280,height:720},colors:[{name:'white',hex:'#f5f7f5',percent:77},{name:'green',hex:'#2d5a3d',percent:12},{name:'green',hex:'#4a7c59',percent:7},{name:'light gray',hex:'#e0e2e0',percent:3},{name:'gray',hex:'#a4bdab',percent:1}]};
+const AMBER_COLORS={viewport:{width:1280,height:720},colors:[{name:'white',hex:'#f5f7f5',percent:77},{name:'amber',hex:'#ffc107',percent:18},{name:'light gray',hex:'#e0e2e0',percent:2},{name:'amber',hex:'#ffe082',percent:2}]};
+const TOWER1_LINE='Rendered colors (by area, desktop 1280x720 as loaded): white 77%, green #2d5a3d 12%, green #4a7c59 7%, light gray 3%, gray 1%. Colors under 1% of the view and hover/focus-only styles are not listed.';
+const withColors=(request,renderedColors,value=receipt(request))=>({...value,renderedColors});
+test('rendered colors are optional, exactly bounded receipt evidence',()=>{
+ const request=normalize(params());
+ assert.equal(validate(receipt(request),request).renderedColors,undefined,'older capsules omit the field');
+ for(const colors of [TOWER1_COLORS,AMBER_COLORS]) assert.ok(validate(withColors(request,colors),request));
+ const palette=(...percents)=>({viewport:{width:1280,height:720},colors:percents.map((percent,i)=>({name:RENDERED_COLOR_NAMES[i],hex:`#${String(i).repeat(6)}`,percent}))});
+ // Each rounded share exceeds its exact share by at most one half.
+ for(const ok of [palette(100),palette(63,38),palette(34,34,33),palette(17,17,17,17,17,17),palette(18,18,17,17,17,16)]) assert.ok(validate(withColors(request,ok),request),JSON.stringify(ok));
+ const bad=[palette(),palette(17,17,17,17,17,17,1),palette(34,34,34),palette(64,38),palette(0),palette(101),palette(1.5),palette(1,2),palette('7'),
+  {...TOWER1_COLORS,viewport:{width:1280}},{...TOWER1_COLORS,viewport:{width:1280,height:100}},{...TOWER1_COLORS,viewport:{width:1280,height:720.5}},
+  {...TOWER1_COLORS,extra:true},{colors:TOWER1_COLORS.colors},null,[],'white 77%'];
+ for(const [key,value] of [['name','amber-ish'],['name','Green'],['name',''],['hex','#FFC107'],['hex','#ffc10'],['hex','ffc107'],['hex','#ffc1077'],['percent',-1],['source','css']]) {
+  const colors=structuredClone(TOWER1_COLORS);colors.colors[1][key]=value;bad.push(colors);
+ }
+ const missing=structuredClone(TOWER1_COLORS);delete missing.colors[0].hex;bad.push(missing);
+ for(const renderedColors of bad) assert.throws(()=>validate(withColors(request,renderedColors),request),undefined,JSON.stringify(renderedColors));
+ const failure={schemaVersion:1,kind:INSPECTION_KIND,status:'failed',errorCode:'unavailable',siteId:request.siteId,sha256:request.sha256,planSha256:inspectionPlanHash(request),scope:INSPECTION_SCOPE};
+ assert.throws(()=>validate({...failure,renderedColors:TOWER1_COLORS},request),undefined,'a transport failure carries no palette');
+});
+test('tool states the rendered palette once, in its fixed line after the assertion scope',async()=>{
+ const tool=createWorkspacePreviewInspectTool({request:async r=>withColors(r,TOWER1_COLORS)});
+ const result=await tool.execute('palette',params()),text=result.content[0].text;
+ assert.equal(result.isError,undefined);assert.equal(result.details.status,'passed');
+ assert.deepEqual(result.details.renderedColors,TOWER1_COLORS);
+ assert.ok(text.includes(`${INSPECTION_SCOPE} ${TOWER1_LINE} Evidence: {`),text);
+ assert.equal(text.split('Rendered colors').length,2);
+ const evidence=JSON.parse(text.slice(text.indexOf(' Evidence: ')+11));
+ assert.equal(evidence.renderedColors,undefined,'the evidence copy does not repeat the palette');
+ assert.deepEqual(evidence,receipt(normalize(params())));
+ // Absent (older capsule or failed capture): no line, unchanged text.
+ const plain=(await createWorkspacePreviewInspectTool({request:async r=>receipt(r)}).execute('plain',params())).content[0].text;
+ assert.doesNotMatch(plain,/Rendered colors/);
+ assert.equal(text.replace(` ${TOWER1_LINE}`,''),plain);
+ // Failed steps and page errors keep their summary; the palette still shows.
+ const failed=request=>{const value=withColors(request,AMBER_COLORS,withPageErrors(request,{count:1,messages:[STORAGE_ERROR]}));value.status='failed';value.steps=value.steps.slice(0,1);Object.assign(value.steps[0],{status:'failed',errorCode:'visibility_mismatch'});return value;};
+ const both=await createWorkspacePreviewInspectTool({request:async r=>failed(r)}).execute('both',params());
+ assert.equal(both.isError,true);
+ assert.ok(both.content[0].text.startsWith('Preview inspection failed, and the page threw 1 uncaught script error'),both.content[0].text);
+ assert.match(both.content[0].text,/Rendered colors \(by area, desktop 1280x720 as loaded\): white 77%, amber #ffc107 18%, light gray 2%, amber #ffe082 2%\. /);
+ assert.deepEqual(JSON.parse(both.content[0].text.slice(both.content[0].text.indexOf(' Evidence: ')+11)).pageErrors,{count:1});
+});
+test('tower1 round 069 replay: the green palette is reported and amber is absent',async()=>{
+ const text=(await createWorkspacePreviewInspectTool({request:async r=>withColors(r,TOWER1_COLORS)}).execute('r069',params())).content[0].text;
+ const line=text.slice(text.indexOf('Rendered colors'),text.indexOf(' Evidence: '));
+ assert.equal(line,TOWER1_LINE);
+ assert.match(line,/green #2d5a3d 12%, green #4a7c59 7%/);
+ assert.doesNotMatch(line,/amber|#ffc107/);
+ assert.match(renderedColorsLine(AMBER_COLORS),/amber #ffc107 18%/);
+ // Neutral names carry no hex; every other family does.
+ for(const name of RENDERED_COLOR_NAMES) {
+  const line=renderedColorsLine({viewport:{width:1280,height:720},colors:[{name,hex:'#123456',percent:100}]});
+  assert.equal(line.includes('#123456'),!NEUTRAL_COLOR_NAMES.includes(name),name);
+ }
+});
+test('capsule and plugin share the palette vocabulary and bounds',()=>{
+ const source=fs.readFileSync(new URL('../extensions/services/pixel-agent/host/preview_inspection_capsule.py',import.meta.url),'utf8');
+ const tuple=name=>JSON.parse('['+source.match(new RegExp(`^${name} = \\(([\\s\\S]+?)\\)\\r?\\n`,'m'))[1].replace(/,\s*$/,'')+']');
+ assert.deepEqual([...tuple('PALETTE_NAMES')].sort(),[...RENDERED_COLOR_NAMES].sort());
+ assert.equal(Number(source.match(/^MAX_PALETTE_COLORS = (\d+)\r?$/m)[1]),MAX_RENDERED_COLORS);
+ const grays=[...source.match(/^GRAY_LEVELS = \(([^\n]+)\)\r?$/m)[1].matchAll(/"([a-z ]+)"/g)].map(m=>m[1]);
+ assert.deepEqual([...grays,'white'].sort(),[...NEUTRAL_COLOR_NAMES].sort());
+ const viewport=source.match(/^PALETTE_VIEWPORT = \{"width": (\d+), "height": (\d+)\}\r?$/m).slice(1).map(Number);
+ assert.ok(viewport.every(v=>v>=240&&v<=1920));
+});
+test('tool description points to the rendered colors for color changes',()=>{
+ const {description}=createWorkspacePreviewInspectTool({request:async()=>{}});
+ assert.match(description,/also lists the rendered colors of the page by area at a desktop view as first loaded; use them to confirm a requested color change is actually visible\./);
+ assert.match(description,/This tests CSS layout visibility, not pixel paint, occlusion or clipping\./);
+});
+
+// Load-time control names. Real capsule output for the fleet round 100 page
+// (tower2, tests/fixtures/preview-controls/tower2-r100): script.js replaced
+// the "Show sold out" button's name on load.
+const TOWER2_CONTROLS={count:3,items:[{role:'link',name:'Get Tickets',visible:true,source:'content'},{role:'link',name:'Get Tickets',visible:true,source:'content'},{role:'button',name:'Show the sold out midnight concert card',visible:true,source:'aria-label',text:'Show sold out'}]};
+const withControls=(request,controls,value=receipt(request))=>({...value,controls});
+const control=extra=>({role:'button',name:'Show sold out',visible:true,source:'content',...extra});
+test('load-time control names are optional, exactly bounded receipt evidence',()=>{
+ const request=normalize(params());
+ assert.equal(validate(receipt(request),request).controls,undefined,'older capsules omit the field');
+ for(const ok of [TOWER2_CONTROLS,{count:0,items:[]},{count:MAX_CONTROL_COUNT,items:[control()]},{count:1,items:[control({name:''})]},
+   {count:1,items:[control({visible:false,source:'aria-labelledby',text:'x'.repeat(MAX_CONTROL_CHARS)})]},
+   {count:MAX_CONTROLS,items:Array.from({length:MAX_CONTROLS},(_,i)=>control({name:`Action ${i}`}))}]) {
+  assert.ok(validate(withControls(request,ok),request),JSON.stringify(ok));
+ }
+ const bad=[{count:0,items:[control()]},{count:MAX_CONTROL_COUNT+1,items:[]},{count:-1,items:[]},{count:1.5,items:[]},{count:'1',items:[]},
+  {items:[]},{count:1},{count:1,items:[control()],extra:true},{count:MAX_CONTROLS+1,items:Array.from({length:MAX_CONTROLS+1},()=>control())},null,[],'buttons'];
+ for(const change of [{role:'tab'},{role:'Button'},{name:'x'.repeat(MAX_CONTROL_CHARS+1)},{name:'line\nbreak'},{name:'\u202eflipped'},{name:7},
+   {visible:'true'},{source:'title'},{text:''},{text:'Show sold out'},{text:'x'.repeat(MAX_CONTROL_CHARS+1)},{extra:1}]) bad.push({count:1,items:[control(change)]});
+ const missing=control();delete missing.source;bad.push({count:1,items:[missing]});
+ for(const controls of bad) assert.throws(()=>validate(withControls(request,controls),request),undefined,JSON.stringify(controls));
+ const failure={schemaVersion:1,kind:INSPECTION_KIND,status:'failed',errorCode:'unavailable',siteId:request.siteId,sha256:request.sha256,planSha256:inspectionPlanHash(request),scope:INSPECTION_SCOPE};
+ assert.throws(()=>validate({...failure,controls:TOWER2_CONTROLS},request),undefined,'a transport failure carries no names');
+});
+test('capsule and plugin share the control-name bounds and vocabulary',()=>{
+ const source=fs.readFileSync(new URL('../extensions/services/pixel-agent/host/preview_inspection_capsule.py',import.meta.url),'utf8');
+ const bound=name=>Number(source.match(new RegExp(`^${name} = (\\d+)\\r?$`,'m'))[1]);
+ assert.equal(bound('MAX_CONTROLS'),MAX_CONTROLS);assert.equal(bound('MAX_CONTROL_COUNT'),MAX_CONTROL_COUNT);assert.equal(bound('MAX_CONTROL_CHARS'),MAX_CONTROL_CHARS);
+ const tuple=name=>JSON.parse('['+source.match(new RegExp(`^${name} = \\(([^\\n]+)\\)\\r?$`,'m'))[1]+']');
+ assert.deepEqual(tuple('CONTROL_ROLES'),[...CONTROL_ROLES]);assert.deepEqual(tuple('CONTROL_SOURCES'),[...CONTROL_SOURCES]);
+ assert.match(source,/const CONTROLS = new Set\(\['button', 'link'\]\);/);
+ for(const value of CONTROL_SOURCES) assert.ok(source.includes(`'${value}'`),value);
+});
+test('the tool states load-time names only to explain a missed exact name, never in the evidence copy',async()=>{
+ const plain=(await createWorkspacePreviewInspectTool({request:async r=>receipt(r)}).execute('plain',params())).content[0].text;
+ const result=await createWorkspacePreviewInspectTool({request:async r=>withControls(r,TOWER2_CONTROLS)}).execute('names',params());
+ assert.equal(result.content[0].text,plain,'a passed plan reads exactly as before');
+ assert.deepEqual(result.details.controls,TOWER2_CONTROLS);
+ const failed=request=>{const value=withControls(request,TOWER2_CONTROLS,unmatched(request,2,'no_match',0));return value;};
+ const click=fleetParams();click.steps[2].locator.name='Show sold out';
+ const text=(await createWorkspacePreviewInspectTool({request:async r=>failed(r)}).execute('miss',click)).content[0].text;
+ assert.match(text,/^Preview inspection failed\. Step 3 \(click\) matched no element, so nothing was measured and later steps did not run\. At load, after the page scripts ran, the rendered button whose text is "Show sold out" has the accessible name "Show the sold out midnight concert card", set by its aria-label attribute, which replaces its text as the name\./);
+ assert.equal(JSON.parse(text.slice(text.indexOf(' Evidence: ')+11)).controls,undefined);
 });

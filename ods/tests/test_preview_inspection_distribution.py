@@ -17,7 +17,103 @@ SPEC = importlib.util.spec_from_file_location(
 )
 module = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(module)
+PROTOCOL_SPEC = importlib.util.spec_from_file_location(
+    "inspection_docker_protocol_test",
+    ROOT / "extensions/services/pixel-agent/host/preview_inspection_protocol.py",
+)
+protocol = importlib.util.module_from_spec(PROTOCOL_SPEC)
+PROTOCOL_SPEC.loader.exec_module(protocol)
 IMAGE = "sha256:" + "a" * 64
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        None,
+        "writable-mount",
+        "world-write",
+        "owner",
+        "group",
+        "hardlink",
+        "kernel",
+        "parent-write",
+        "parent-link",
+        "unsticky",
+        "path",
+        "stat-error",
+        "filesystem",
+        "mount-target",
+        "nested-mount",
+        "mount-options",
+        "super-options",
+        "malformed-mountinfo",
+    ],
+)
+def test_read_only_wsl_desktop_cli_is_exact(monkeypatch, fault):
+    binary = Path("/mnt/wsl/docker-desktop/cli-tools/usr/bin/docker")
+    info = SimpleNamespace(st_mode=stat.S_IFREG | 0o775, st_uid=0, st_gid=0, st_nlink=1)
+    if fault == "world-write":
+        info.st_mode |= 0o002
+    if fault == "owner":
+        info.st_uid = 1000
+    if fault == "group":
+        info.st_gid = 1000
+    if fault == "hardlink":
+        info.st_nlink = 2
+    if fault == "path":
+        binary = Path("/tmp/docker")
+
+    def mount_info(path):
+        if fault == "stat-error":
+            raise OSError("unavailable mount")
+        return SimpleNamespace(f_flag=0 if fault == "writable-mount" else os.ST_RDONLY)
+
+    monkeypatch.setattr(protocol.os, "statvfs", mount_info)
+    monkeypatch.setattr(
+        protocol.platform,
+        "release",
+        lambda: "linux" if fault == "kernel" else "microsoft-standard-WSL2",
+    )
+
+    def text(path):
+        assert str(path) == "/proc/self/mountinfo"
+        target = "/mnt/wsl/docker-desktop/cli-tools"
+        if fault == "mount-target":
+            target = "/mnt/wsl/docker-desktop"
+        fs = "tmpfs" if fault == "filesystem" else "iso9660"
+        options = "rw" if fault == "mount-options" else "ro"
+        super_options = "rw" if fault == "super-options" else "ro"
+        value = f"10 1 0:12 / {target} {options} - {fs} /dev/loop0 {super_options}\n"
+        if fault == "nested-mount":
+            value += "11 10 0:13 / /mnt/wsl/docker-desktop/cli-tools/usr ro - tmpfs tmpfs ro\n"
+        if fault == "malformed-mountinfo":
+            value = "invalid"
+        return value
+
+    monkeypatch.setattr(protocol.Path, "read_text", text)
+
+    def parent_info(path):
+        mode = stat.S_IFDIR | (0o1777 if path == Path("/mnt/wsl") else 0o755)
+        if path == binary.parent and fault == "parent-write":
+            mode |= 0o002
+        if path == binary.parent and fault == "parent-link":
+            mode = stat.S_IFLNK | 0o777
+        if path == Path("/mnt/wsl") and fault == "unsticky":
+            mode &= ~stat.S_ISVTX
+        return SimpleNamespace(st_mode=mode, st_uid=0, st_gid=0)
+
+    monkeypatch.setattr(protocol.Path, "lstat", parent_info)
+    assert protocol.read_only_wsl_docker(binary, info) is (fault is None)
+
+
+def test_inspection_unit_supports_external_docker_daemon():
+    unit = (
+        ROOT / "extensions/services/pixel-agent/host/pixel-preview-inspection.service"
+    ).read_text()
+    assert "Requires=pixel-workspace-preview.service\n" in unit
+    assert "Wants=docker.service\n" in unit
+    assert "After=docker.service pixel-workspace-preview.service\n" in unit
+    assert "ProcSubset=pid\n" in unit
 
 
 def config():
@@ -360,14 +456,22 @@ def test_linux_uninstall_validates_all_artifacts_before_deleting_any(
     if fault == "foreign-file":
         (program / "operator-file").write_bytes(b"not ours")
     if fault == "changed-source":
-        target = "preview_inspection_leases.py" if document_generation else module.RUNTIME_FILES[0]
+        target = (
+            "preview_inspection_leases.py"
+            if document_generation
+            else module.RUNTIME_FILES[0]
+        )
         (program / target).write_bytes(b"changed")
     if fault == "wrong-owner":
         value = config()
         value["ownerUid"] = 1001
         config_path.write_text(json.dumps(value))
     if fault == "incomplete":
-        target = "preview_inspection_leases.py" if document_generation else module.RUNTIME_FILES[0]
+        target = (
+            "preview_inspection_leases.py"
+            if document_generation
+            else module.RUNTIME_FILES[0]
+        )
         (program / target).unlink()
     cache_root = program / "__pycache__"
     if fault and "cache" in fault:
@@ -444,7 +548,9 @@ def test_linux_uninstall_validates_all_artifacts_before_deleting_any(
 
 
 @pytest.mark.parametrize("mask", range(1, 7))
-def test_linux_cleanup_rejects_every_partial_document_source_generation(tmp_path, monkeypatch, mask):
+def test_linux_cleanup_rejects_every_partial_document_source_generation(
+    tmp_path, monkeypatch, mask
+):
     names = (
         "preview_inspection_document.py",
         "preview_inspection_lease.py",

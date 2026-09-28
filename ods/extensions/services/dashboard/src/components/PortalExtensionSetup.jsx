@@ -72,7 +72,13 @@ export default function PortalExtensionSetup({ command, disabled = false, onConf
           method: 'POST', headers: {'Content-Type': 'application/json'},
           body: JSON.stringify({values: group.values}), signal: request.signal, cache: 'no-store',
         })
-        if (!response.ok) throw new Error('save')
+        if (!response.ok) {
+          // A 422 names the setting and its expected format, never the value.
+          const body = response.status === 422 ? await response.json().catch(() => ({})) : {}
+          const reason = body?.detail?.code === 'invalid_configuration' && typeof body.detail.message === 'string'
+            ? body.detail.message.slice(0, 1000) : ''
+          throw Object.assign(new Error('save'), {reason})
+        }
         const receipt = await response.json()
         if (receipt.service_id !== group.id || receipt.status !== 'saved' || !Array.isArray(receipt.saved_keys) ||
             JSON.stringify([...receipt.saved_keys].sort()) !== JSON.stringify(Object.keys(group.values).sort())) throw new Error('save')
@@ -84,8 +90,10 @@ export default function PortalExtensionSetup({ command, disabled = false, onConf
       if (controller.current !== request || request.signal.aborted) return
       setGroups(remaining)
       if (!remaining.length) resume.current?.()
-    } catch {
-      if (controller.current === request) setError('Save could not be confirmed. Recheck configuration before entering values again.')
+    } catch (failure) {
+      if (controller.current === request) setError(failure?.reason
+        ? `${failure.reason} Recheck configuration, then enter the values again.`
+        : 'Save could not be confirmed. Recheck configuration before entering values again.')
     } finally {
       clearTimeout(timeout)
       if (controller.current === request) setBusy(false)
@@ -99,6 +107,7 @@ export default function PortalExtensionSetup({ command, disabled = false, onConf
       {group.fields.map(field => <label key={field.key}>
         <span>{field.key}</span>
         {typeof field.description === 'string' && <small>{field.description.slice(0, 500)}</small>}
+        {typeof field.format?.hint === 'string' && field.format.hint !== '' && <small>Format: {field.format.hint.slice(0, 300)}</small>}
         <input type={field.secret ? 'password' : 'text'} required maxLength={4096} autoComplete="off"
           spellCheck={false} value={values[`${group.id}/${field.key}`] || ''}
           onChange={event => setValues(current => ({...current, [`${group.id}/${field.key}`]: event.target.value}))}/>

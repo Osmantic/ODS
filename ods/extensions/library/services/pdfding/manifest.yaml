@@ -27,6 +27,8 @@ service:
     required: true
     secret: true
     description: Persistent random Django signing secret, at least 32 characters.
+    min_length: 32
+    generate: token
   ui_path: /
 tags:
 - documents

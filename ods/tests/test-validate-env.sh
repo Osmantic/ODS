@@ -509,11 +509,13 @@ fi
 # 22. Keys the Linux installer itself writes for Intel Arc (GPU_BACKEND=sycl,
 # installers/phases/06-directories.sh INTEL_ENV block) must be declared, or
 # `ods config validate` reports them as unknown on every Arc install.
+# SYCL_CACHE_PERSISTENT is no longer written, but .env files from earlier
+# installers still carry it and must keep validating.
 cp "$TMP_DIR/valid.env" "$TMP_DIR/arc.env"
 cat >> "$TMP_DIR/arc.env" <<'EOF'
-ONEAPI_DEVICE_SELECTOR=level_zero:gpu
-SYCL_CACHE_PERSISTENT=1
+ONEAPI_DEVICE_SELECTOR=level_zero:0
 ZES_ENABLE_SYSMAN=1
+SYCL_CACHE_PERSISTENT=1
 EOF
 set +e
 out=$("$VALIDATE_ENV_BASH" "$ROOT_DIR/scripts/validate-env.sh" "$TMP_DIR/arc.env" "$ROOT_DIR/.env.schema.json" 2>&1)

@@ -28,18 +28,26 @@ service:
     secret: true
     description: Initial admin password, at least 12 characters. Existing passwords
       are preserved.
+    min_length: 12
+    generate: password
   - key: LLDAP_JWT_SECRET
     required: true
     secret: true
     description: Persistent random session signing secret, at least 32 characters.
+    min_length: 32
+    generate: token
   - key: LLDAP_KEY_SEED
     required: true
     secret: true
     description: Persistent random password-protection key seed, at least 32 characters.
       Back up with database.
+    min_length: 32
+    generate: token
   - key: LLDAP_BASE_DN
     required: true
     description: Directory namespace, for example dc=yourorganization,dc=internal.
+    pattern: '^[^=,]+=[^=,]+(,[^=,]+=[^=,]+)*$'
+    format_description: 'comma-separated attribute=value pairs such as dc=example,dc=internal'
   ui_path: /
 tags:
 - identity

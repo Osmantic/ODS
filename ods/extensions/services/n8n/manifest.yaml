@@ -25,10 +25,12 @@ service:
     - key: N8N_USER
       required: true
       description: n8n initial admin email address
+      format: email
     - key: N8N_PASS
       required: true
       secret: true
       description: n8n admin password
+      min_length: 10
     - key: N8N_SECURE_COOKIE
       required: false
       description: Session-cookie policy (auto, true, or false); auto disables Secure only for loopback HTTP

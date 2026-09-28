@@ -27,6 +27,10 @@ service:
     required: true
     secret: true
     description: Random 64-hex password for the orthanc web/API account.
+    format: hex64
+    pattern: '^[0-9a-f]+$'
+    format_description: lowercase only
+    generate: hex64
   ui_path: /
 tags:
 - dicom

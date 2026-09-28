@@ -3,7 +3,11 @@
 import base64
 import hashlib
 import json
+import os
+from pathlib import Path
+import platform
 import re
+import stat
 import unicodedata
 
 KIND = "ods-pixel-preview-inspection"
@@ -26,6 +30,65 @@ SCOPE = "Only the listed CSS layout visibility assertions and click dispatches w
 
 class Invalid(ValueError):
     pass
+
+
+def read_only_wsl_docker(binary, info):
+    """Desktop's ISO reports 0775, but cannot be written by its root group."""
+    binary = Path(binary)
+    if (
+        str(binary) != "/mnt/wsl/docker-desktop/cli-tools/usr/bin/docker"
+        or info.st_uid != 0
+        or info.st_gid != 0
+        or info.st_nlink != 1
+        or not stat.S_ISREG(info.st_mode)
+        or stat.S_IMODE(info.st_mode) != 0o775
+    ):
+        return False
+    try:
+        if (
+            not os.statvfs(binary).f_flag & os.ST_RDONLY
+            or "microsoft" not in platform.release().lower()
+        ):
+            return False
+        mounts = []
+        for line in Path("/proc/self/mountinfo").read_text().splitlines():
+            fields = line.split()
+            separator = fields.index("-")
+            target = fields[4]
+            if str(binary) == target or str(binary).startswith(
+                target.rstrip("/") + "/"
+            ):
+                mounts.append(
+                    (target, fields[5], fields[separator + 1], fields[separator + 3])
+                )
+        target, options, filesystem, super_options = max(
+            mounts, key=lambda item: len(item[0])
+        )
+        if (
+            target != "/mnt/wsl/docker-desktop/cli-tools"
+            or filesystem != "iso9660"
+            or "ro" not in options.split(",")
+            or "ro" not in super_options.split(",")
+        ):
+            return False
+        for parent in binary.parents:
+            parent_info = parent.lstat()
+            if (
+                not stat.S_ISDIR(parent_info.st_mode)
+                or parent_info.st_uid != 0
+                or parent_info.st_gid != 0
+                or (
+                    parent_info.st_mode & 0o022
+                    and not (
+                        parent == Path("/mnt/wsl")
+                        and parent_info.st_mode & stat.S_ISVTX
+                    )
+                )
+            ):
+                return False
+    except (OSError, ValueError, IndexError):
+        return False
+    return True
 
 
 def strict_json(raw):

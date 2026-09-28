@@ -27,19 +27,27 @@ service:
     required: true
     secret: true
     description: Persistent private PostgreSQL password.
+    generate: password
   - key: KESTRA_ADMIN_EMAIL
     required: true
     secret: false
     description: Administrator email address for initial Basic Auth setup.
+    format: email
   - key: KESTRA_ADMIN_PASSWORD
     required: true
     secret: true
-    description: Administrator password, at least eight characters with uppercase
-      and a number.
+    description: Administrator password, at least eight characters with a lowercase
+      letter, an uppercase letter and a number.
+    pattern: '^(?=[!-#%-~]*[a-z])(?=[!-#%-~]*[A-Z])(?=[!-#%-~]*[0-9])[!-#%-~]+$'
+    format_description: 'printable ASCII without spaces or $, with a lowercase letter, an uppercase letter and a digit'
+    min_length: 8
+    max_length: 256
+    generate: password
   - key: KESTRA_MANAGEMENT_PASSWORD
     required: true
     secret: true
     description: Separate random password for the internal management endpoints.
+    generate: password
   - key: KESTRA_URL
     required: false
     default: http://localhost:11025/

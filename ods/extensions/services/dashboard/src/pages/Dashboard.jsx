@@ -7,6 +7,7 @@ import {
   Zap,
   Clock,
   Brain,
+  Cloud,
   Brackets,
   MessageSquare,
   Mic,
@@ -26,6 +27,7 @@ import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import CompactDashboard from '../components/CompactDashboard'
 import { serviceUrl } from '../lib/serviceUrls'
+import { getInferenceMode } from '../lib/inferenceMode'
 
 // Compute overall health from services (excludes not_deployed from counts)
 function computeHealth(services) {
@@ -733,8 +735,19 @@ export default function Dashboard({ status, loading, compact = false }) {
 
   const health = computeHealth(status?.services)
   const systemMetrics = []
+  const inferenceMode = getInferenceMode(status)
+  const remoteInference = inferenceMode.isRemote || inferenceMode.isCloud
 
-  if (status?.gpu) {
+  if (remoteInference) {
+    systemMetrics.push({
+      icon: Cloud,
+      label: 'Inference',
+      value: 'Cloud API',
+      subvalue: inferenceMode.isRemote ? 'remote provider' : 'cloud mode',
+    })
+  }
+
+  if (status?.gpu && !remoteInference) {
     if (status.gpu.memoryType === 'unified') {
       const hasGpuUsage = Number.isFinite(status.gpu.utilization)
       systemMetrics.push({
@@ -771,7 +784,8 @@ export default function Dashboard({ status, loading, compact = false }) {
         icon: HardDrive,
         label: 'VRAM',
         value: hasLiveVramUsage ? `${status.gpu.vramUsed.toFixed(1)} GB` : '—',
-        subvalue: `of ${status.gpu.vramTotal} GB`,
+        subvalue: Number.isFinite(status.gpu.vramTotal) && status.gpu.vramTotal > 0
+          ? `of ${status.gpu.vramTotal} GB` : 'capacity unavailable',
         percent: hasLiveVramUsage && status.gpu.vramTotal > 0
           ? (status.gpu.vramUsed / status.gpu.vramTotal) * 100
           : undefined,
@@ -782,7 +796,7 @@ export default function Dashboard({ status, loading, compact = false }) {
   if (status?.cpu) {
     systemMetrics.push({
       icon: Cpu,
-      label: 'CPU',
+      label: remoteInference ? 'Client CPU' : 'CPU',
       value: Number.isFinite(status.cpu.percent) ? `${status.cpu.percent}%` : '—',
       subvalue: [metricScopeLabel(status.cpu.scope),Number.isFinite(status.cpu.percent) ? 'utilization' : 'telemetry unavailable'].filter(Boolean).join(' · '),
       percent: Number.isFinite(status.cpu.percent) ? status.cpu.percent : undefined,
@@ -791,22 +805,22 @@ export default function Dashboard({ status, loading, compact = false }) {
 
   systemMetrics.push({
     icon: Thermometer,
-    label: 'CPU Temp',
+    label: remoteInference ? 'Client CPU Temp' : 'CPU Temp',
     value: Number.isFinite(status?.cpu?.temp_c) ? `${status.cpu.temp_c}°C` : '—',
     subvalue: Number.isFinite(status?.cpu?.temp_c) ? 'sensor reading' : 'telemetry unavailable',
   })
 
-  if (status?.ram && status?.gpu?.memoryType !== 'unified') {
+  if (status?.ram && (remoteInference || status?.gpu?.memoryType !== 'unified')) {
     systemMetrics.push({
       icon: HardDrive,
-      label: 'RAM',
+      label: remoteInference ? 'Client RAM' : 'RAM',
       value: Number.isFinite(status.ram.used_gb) ? `${status.ram.used_gb} GB` : '—',
       subvalue: `${Number.isFinite(status.ram.total_gb) ? `of ${status.ram.total_gb} GB` : 'capacity unavailable'}${metricScopeLabel(status.ram.scope) ? ` · ${metricScopeLabel(status.ram.scope)}` : ''}`,
       percent: Number.isFinite(status.ram.percent) ? status.ram.percent : undefined,
     })
   }
 
-  if (status?.gpu?.powerDraw != null) {
+  if (!remoteInference && status?.gpu?.powerDraw != null) {
     systemMetrics.push({
       icon: Power,
       label: 'GPU Power',
@@ -815,15 +829,17 @@ export default function Dashboard({ status, loading, compact = false }) {
     })
   }
 
-  systemMetrics.push({
-    icon: Thermometer,
-    label: 'GPU Temp',
-    value: Number.isFinite(status?.gpu?.temperature) ? `${status.gpu.temperature}°C` : '—',
-    subvalue: Number.isFinite(status?.gpu?.temperature)
-      ? status.gpu.temperature < 70 ? 'normal' : status.gpu.temperature < 85 ? 'warm' : 'hot'
-      : 'telemetry unavailable',
-    alert: status?.gpu?.temperature >= 85,
-  })
+  if (!remoteInference) {
+    systemMetrics.push({
+      icon: Thermometer,
+      label: 'GPU Temp',
+      value: Number.isFinite(status?.gpu?.temperature) ? `${status.gpu.temperature}°C` : '—',
+      subvalue: Number.isFinite(status?.gpu?.temperature)
+        ? status.gpu.temperature < 70 ? 'normal' : status.gpu.temperature < 85 ? 'warm' : 'hot'
+        : 'telemetry unavailable',
+      alert: status?.gpu?.temperature >= 85,
+    })
+  }
 
   systemMetrics.push(
     {
@@ -836,19 +852,19 @@ export default function Dashboard({ status, loading, compact = false }) {
       icon: Brackets,
       label: 'Context',
       value: status?.inference?.contextSize ? `${(status.inference.contextSize / 1024).toFixed(0)}k` : '—',
-      subvalue: 'max tokens',
+      subvalue: remoteInference ? 'API context limit' : 'max tokens',
     },
     {
       icon: Clock,
       label: 'Uptime',
       value: formatUptime(status?.uptime || 0),
-      subvalue: 'system',
+      subvalue: remoteInference ? 'client' : 'system',
     },
     {
       icon: Brain,
       label: 'Model',
-      value: status?.inference?.loadedModel || '—',
-      subvalue: 'loaded',
+      value: (remoteInference ? status?.currentModel : status?.inference?.loadedModel) || '—',
+      subvalue: remoteInference ? (status?.currentModel ? 'selected API model' : 'not reported') : 'loaded',
     }
   )
 
@@ -907,8 +923,8 @@ export default function Dashboard({ status, loading, compact = false }) {
         )}
       </div>
 
-      {/* Multi-GPU summary strip — only shown when gpu_count > 1 */}
-      {status?.gpu?.gpu_count > 1 && (
+      {/* Multi-GPU summary strip — only shown for local multi-GPU systems */}
+      {!remoteInference && status?.gpu?.gpu_count > 1 && (
         <Link to="/gpu" className="block mb-6">
           <div className="liquid-metal-frame flex items-center justify-between p-4 bg-indigo-500/10 border border-indigo-500/25 rounded-xl transition-colors group">
             <div className="flex items-center gap-3">
@@ -920,7 +936,7 @@ export default function Dashboard({ status, loading, compact = false }) {
                   Multi-GPU System · {status.gpu.gpu_count} GPUs
                 </p>
                 <p className="text-xs text-zinc-400 mt-0.5">
-                  {status.gpu.name} · {Number.isFinite(status.gpu.utilization) ? `${status.gpu.utilization}% avg util` : 'Utilization unavailable'} · {Number.isFinite(status.gpu.vramUsed) ? `${status.gpu.vramUsed.toFixed(1)}/${status.gpu.vramTotal} GB VRAM` : 'VRAM usage unavailable'}
+                  {status.gpu.name} · {Number.isFinite(status.gpu.utilization) ? `${status.gpu.utilization}% avg util` : 'Utilization unavailable'} · {Number.isFinite(status.gpu.vramUsed) ? `${status.gpu.vramUsed.toFixed(1)}${Number.isFinite(status.gpu.vramTotal) && status.gpu.vramTotal > 0 ? `/${status.gpu.vramTotal}` : ''} GB VRAM` : 'VRAM usage unavailable'}
                 </p>
               </div>
             </div>

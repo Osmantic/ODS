@@ -27,10 +27,14 @@ service:
     required: true
     secret: true
     description: 64 random hexadecimal characters for the dedicated PostgreSQL account.
+    format: hex64
+    generate: hex64
   - key: HOPPSCOTCH_ENCRYPTION_KEY
     required: true
     secret: true
     description: Stable 32-hex data-encryption key; retain with database backups.
+    format: hex32
+    generate: hex32
   ui_path: /
 tags:
 - development

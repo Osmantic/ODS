@@ -37,7 +37,7 @@ matches the work in front of them.
 - [September maintenance audit](MAINTENANCE-AUDIT-2026-09.md): changes, validation and remaining work outside the testing freeze.
 - [Third-party licensing review](THIRD-PARTY-LICENSING.md): component restrictions and open work.
 - [Recipe source register](RECIPE-SOURCE-REGISTER.md): sources and terms for the 34 recipes missing structured provenance.
-- [Model terms inventory](MODEL-TERMS-INVENTORY.md): 57 catalog entries and source evidence.
+- [Model terms inventory](MODEL-TERMS-INVENTORY.md): 58 catalog entries and source evidence.
 - [Artwork provenance](ASSET-PROVENANCE.md): file hashes, sources and rights status.
 - [Contributor ledger](CONTRIBUTOR-LEDGER-2026-09.md): promoted-range attribution without inferred identities.
 - [Documentation hygiene](DOCUMENTATION-HYGIENE.md): link gate and pinned vendor exceptions.

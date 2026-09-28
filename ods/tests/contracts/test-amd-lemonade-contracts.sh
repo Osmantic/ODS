@@ -562,7 +562,10 @@ fi
 echo "[contract] Windows AMD managed Lemonade avoids Whisper port 9000"
 if grep -q 'Lemonade.*reserves host port 9000' installers/windows/lib/env-generator.ps1 \
     && grep -q 'WHISPER_PORT=$whisperPort' installers/windows/lib/env-generator.ps1 \
-    && grep -q '9100' installers/windows/phases/04-requirements.ps1; then
+    && grep -q 'Resolve-WindowsWhisperHostPort' installers/windows/phases/04-requirements.ps1 \
+    && grep -Fq -- '-AmdInferenceRuntime $(if ($_usesNativeLemonade) { "lemonade" }' installers/windows/phases/04-requirements.ps1 \
+    && grep -Fq -- '-AmdInferenceLocation $(if ($_usesNativeLemonade) { "host" }' installers/windows/phases/04-requirements.ps1 \
+    && grep -Fq "if (\$managedAmd) { return '9100' }" installers/windows/lib/env-generator.ps1; then
     pass "Windows AMD/Lemonade defaults Whisper to alternate host port"
 else
     fail "Windows AMD/Lemonade must avoid Lemonade websocket port collision"

@@ -56,6 +56,32 @@ it('does not start a backend task when a newer saved revision appeared before Se
   await waitFor(()=>expect(screen.queryByText('Working')).not.toBeInTheDocument())
   expect(fetch.mock.calls.some(([url])=>url==='/api/pixel/chat/stream')).toBe(false)
   expect(localStorage.getItem(CHAT_KEY)).toBe(before)
+  expect(screen.getByText('This conversation changed in another tab. No task was started. Download a recovery copy, then reload to read the saved version.')).toBeVisible()
+  expect(screen.queryByText(/Check browser storage and try again/)).not.toBeInTheDocument()
+})
+
+it('starts and saves a new task after another active tab moves the shared pointer', async () => {
+  const input = await openChat()
+  const originalFetch = fetch.getMockImplementation()
+  fetch.mockImplementation(async (url, options) => {
+    if (url !== '/api/pixel/chat/stream') return originalFetch(url, options)
+    const bytes = new TextEncoder().encode('data: {"choices":[{"delta":{"content":"New task answer"}}]}\n\ndata: [DONE]\n\n')
+    let read = false
+    return {ok:true,status:200,body:{getReader:()=>({read:async()=>read?{done:true}:(read=true,{done:false,value:bytes}),releaseLock(){}})}}
+  })
+  fireEvent.click(screen.getByRole('button', {name:'New chat'}))
+  const newId = stored().chatId
+  expect(newId).not.toBe(original.chatId)
+  act(() => saveConversation({...original, draft:'Other active tab'}))
+  fireEvent.change(input, {target:{value:'Make a forest page'}})
+  fireEvent.click(screen.getByTitle('Send'))
+  expect(await screen.findByText('New task answer')).toBeVisible()
+  const posts = fetch.mock.calls.filter(([url]) => url === '/api/pixel/chat/stream')
+  expect(posts).toHaveLength(1)
+  expect(JSON.parse(posts[0][1].body).chat_id).toBe(newId)
+  expect(readConversations().find(chat => chat.chatId === original.chatId)).toMatchObject({messages:original.messages,draft:'Other active tab'})
+  expect(readConversations().find(chat => chat.chatId === newId).messages.at(-1).content).toBe('New task answer')
+  expect(screen.queryByRole('button', {name:'Download recovery copy'})).not.toBeInTheDocument()
 })
 
 it('can explicitly select a different saved conversation and continue saving', async () => {

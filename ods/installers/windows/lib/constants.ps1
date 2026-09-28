@@ -38,9 +38,16 @@ $script:LEMONADE_HEALTH_URL  = "http://127.0.0.1:8080/api/v1/health"
 # llama-server fallback (Vulkan build, used if Lemonade install is declined/fails)
 $script:LLAMA_SERVER_DIR = Join-Path $script:ODS_INSTALL_DIR "llama-server"
 $script:LLAMA_SERVER_EXE = Join-Path $script:LLAMA_SERVER_DIR "llama-server.exe"
-$script:LLAMA_CPP_RELEASE_TAG = "b8248"
+$script:LLAMA_CPP_RELEASE_TAG = "b9014"
 $script:LLAMA_CPP_VULKAN_ASSET = "llama-$($script:LLAMA_CPP_RELEASE_TAG)-bin-win-vulkan-x64.zip"
 $script:LLAMA_CPP_VULKAN_URL = "https://github.com/ggml-org/llama.cpp/releases/download/$($script:LLAMA_CPP_RELEASE_TAG)/$($script:LLAMA_CPP_VULKAN_ASSET)"
+# SHA-256 of each Windows Vulkan archive ODS may install, keyed by release
+# tag (the default above and any tier-map LlamaCppReleaseTag). Values are
+# GitHub's per-asset digests for the official ggml-org/llama.cpp release.
+# The installer refuses an archive whose tag is missing here.
+$script:LLAMA_CPP_VULKAN_SHA256 = @{
+    "b9014" = "6cd4bc7a44256e674458b0c5ea2ae3461dca29ee87876c8d410ecc78652a3b0f"
+}
 
 # Docker
 $script:DOCKER_COMPOSE_CMD = "docker compose"

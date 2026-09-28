@@ -65,7 +65,11 @@ try {
     if ((Get-CatalogModelEstimatedContextKvGB -Model $phi) -ne 15.62) {
         throw "Phi4 full-context KV allocation was underestimated"
     }
-    @{ models = @($phi) } | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath (Join-Path $configDir "model-library.json")
+    # phi4-mini is no longer an install recommendation; a copy that is still
+    # exercises the architecture-driven context step-down.
+    $phiCandidate = $phi.PSObject.Copy()
+    $phiCandidate.install_recommendation = $true
+    @{ models = @($phiCandidate) } | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath (Join-Path $configDir "model-library.json")
     foreach ($backend in @("nvidia", "amd", "sycl")) {
         foreach ($case in @(@(4, 8192), @(8, 32768), @(16, 65536), @(24, 128000))) {
             $gpu.Backend = $backend
@@ -105,3 +109,87 @@ try {
         Remove-Item -LiteralPath $resolvedTemp -Recurse -Force -ErrorAction SilentlyContinue
     }
 }
+
+# ---------------------------------------------------------------------------
+# Parity with scripts/select-model.py over every unbounded envelope in
+# tests/fixtures/model-selection-envelopes.json (golden: model-selection-golden.json).
+# ---------------------------------------------------------------------------
+$fixtureDir = Join-Path $repoRoot "tests/fixtures"
+$envelopes = (Get-Content (Join-Path $fixtureDir "model-selection-envelopes.json") -Raw | ConvertFrom-Json).envelopes
+$golden = Get-Content (Join-Path $fixtureDir "model-selection-golden.json") -Raw | ConvertFrom-Json
+$realCatalog = Get-Content (Join-Path $repoRoot "config/model-library.json") -Raw | ConvertFrom-Json
+$idByGguf = @{}
+foreach ($entry in $realCatalog.models) { if ($entry.gguf_file) { $idByGguf[[string]$entry.gguf_file] = [string]$entry.id } }
+$savedHostArch = $env:HOST_ARCH
+$checked = 0
+try {
+    foreach ($envelope in $envelopes) {
+        if ([string]$envelope.ceiling -ne "0") { continue }
+        # macOS picks go through select-model.py on the Mac; its unified-memory
+        # coder-next swap for any tier is not a Windows policy.
+        if ($envelope.backend -eq "apple") { continue }
+        $expected = $golden.($envelope.id)
+        $backend = if ($envelope.backend -eq "cpu") { "none" } else { [string]$envelope.backend }
+        $gpuInfo = @{ Backend = $backend; MemoryType = [string]$envelope.memory_type; VramMB = [int]$envelope.vram_mb }
+        $env:HOST_ARCH = [string]$envelope.host_arch
+        $tierConfig = @{ ModelProfileEffective = "qwen"; LlmModel = "fallback"; GgufFile = "fallback.gguf"; MaxContext = 8192 }
+        $resolved = Resolve-CatalogModelRecommendation -TierConfig $tierConfig -Tier ([string]$envelope.tier) `
+            -GpuInfo $gpuInfo -SystemRamGB ([int]$envelope.ram_gb) -SourceRoot $repoRoot -MinContext 65536
+        $pick = $idByGguf[[string]$resolved.GgufFile]
+        $profile = if ($resolved.RuntimeProfile) { [string]$resolved.RuntimeProfile } else { $null }
+        if ($pick -ne $expected.pick -or [int]$resolved.MaxContext -ne [int]$expected.context_length -or
+            $profile -ne $expected.runtime_profile -or [string]$resolved.RecommendationPolicy -ne [string]$expected.policy) {
+            throw "Windows selector diverges on $($envelope.id): $pick/$($resolved.MaxContext)/$profile/$($resolved.RecommendationPolicy); golden $($expected.pick)/$($expected.context_length)/$($expected.runtime_profile)/$($expected.policy)"
+        }
+        $checked++
+    }
+} finally {
+    $env:HOST_ARCH = $savedHostArch
+}
+if ($checked -lt 30) { throw "Windows parity covered only $checked envelopes" }
+Write-Host "[PASS] Windows selector matches select-model.py on $checked envelopes"
+
+# Hermes floor re-check (phases/03-features.ps1): the configured model's fit at 64K.
+$gpu27 = @{ Backend = "nvidia"; MemoryType = "discrete"; VramMB = 20475 }
+$config27 = @{ LlmModel = "qwen3.5-27b"; GgufFile = "Qwen3.5-27B-Q4_K_M.gguf"; MaxContext = 32768 }
+if ((Test-CatalogModelContextFit -TierConfig $config27 -GpuInfo $gpu27 -SystemRamGB 64 -SourceRoot $repoRoot -ContextLength 65536) -ne $false) {
+    throw "27B with F16 KV must not fit at 64K on a 20 GB card"
+}
+$gpu27.VramMB = 32607
+if ((Test-CatalogModelContextFit -TierConfig $config27 -GpuInfo $gpu27 -SystemRamGB 61 -SourceRoot $repoRoot -ContextLength 65536) -ne $true) {
+    throw "27B must fit at 64K on an RTX 5090"
+}
+# phi-4 at 64K would fit a 32 GB card by memory, but its native context is
+# 16,384: llama.cpp caps the slot there, so the raise is never a fit.
+$configPhi4 = @{ LlmModel = "phi-4"; GgufFile = "phi-4-Q4_K_M.gguf"; MaxContext = 16384 }
+$phi4Catalog = (Get-Content (Join-Path $repoRoot "config\model-library.json") -Raw | ConvertFrom-Json).models |
+    Where-Object { $_.id -eq "phi4-q4" } | Select-Object -First 1
+$configPhi4.LlmModel = "$($phi4Catalog.llm_model_name)"
+$configPhi4.GgufFile = "$($phi4Catalog.gguf_file)"
+if ((Test-CatalogModelContextFit -TierConfig $configPhi4 -GpuInfo $gpu27 -SystemRamGB 61 -SourceRoot $repoRoot -ContextLength 65536) -ne $false) {
+    throw "A context above the declared native maximum must never fit (phi-4 at 64K)"
+}
+if ((Test-CatalogModelContextFit -TierConfig $configPhi4 -GpuInfo $gpu27 -SystemRamGB 61 -SourceRoot $repoRoot -ContextLength 16384) -ne $true) {
+    throw "phi-4 at its native 16K must fit on an RTX 5090"
+}
+$unknown = @{ LlmModel = "imported"; GgufFile = "not-in-catalog.gguf"; MaxContext = 32768 }
+if ($null -ne (Test-CatalogModelContextFit -TierConfig $unknown -GpuInfo $gpu27 -SystemRamGB 61 -SourceRoot $repoRoot -ContextLength 65536)) {
+    throw "A model outside the catalog must be unknown, not a verdict"
+}
+$gpu27.VramMB = 20475
+$reselected = Resolve-CatalogModelRecommendation -TierConfig @{ ModelProfileEffective = "qwen" } -Tier "3" -GpuInfo $gpu27 `
+    -SystemRamGB 64 -SourceRoot $repoRoot -MinContext 65536 -RequireMinContext
+if ($reselected.RuntimeProfile -ne "nvidia-20gb-64k-q8-kv" -or [int]$reselected.MaxContext -ne 65536 -or $reselected.LLAMA_ARG_CACHE_TYPE_K -ne "q8_0") {
+    throw "20 GB re-selection at the floor should use the 27B Q8 KV profile: $($reselected.RuntimeProfile)/$($reselected.MaxContext)"
+}
+$gpu27.VramMB = 2048
+$refused = $false
+try {
+    $null = Resolve-CatalogModelRecommendation -TierConfig @{ ModelProfileEffective = "qwen" } -Tier "0" -GpuInfo $gpu27 `
+        -SystemRamGB 16 -SourceRoot $repoRoot -MinContext 65536 -RequireMinContext
+} catch {
+    if ($_.Exception.Message -notlike "*at 65536 context*") { throw }
+    $refused = $true
+}
+if (-not $refused) { throw "RequireMinContext must refuse when nothing fits at 64K" }
+Write-Host "[PASS] Windows Hermes floor re-check: fit test, re-selection and refusal"

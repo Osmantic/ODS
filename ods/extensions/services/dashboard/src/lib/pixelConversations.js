@@ -58,15 +58,28 @@ function conversationSnapshot(chat) {
     .sort(([left], [right]) => left.localeCompare(right))))
 }
 
+const EMPTY_DRAFT_KEYS = new Set(['schema', 'chatId', 'messages', 'draft', 'requestId', 'inFlight',
+  'interrupted', 'contextStart', 'compactionRequestId', 'preview', 'workspaceOpen', 'updatedAt', 'persistenceVersion'])
+function omittedEmptyBaseline(chat) {
+  // The library omits an empty draft. Moving the shared active pointer does
+  // not edit that draft, but pending operations and unknown metadata stay strict.
+  return Array.isArray(chat?.messages) && chat.messages.length === 0 && !chat.draft?.trim()
+    && !chat.requestId && !chat.inFlight && !chat.interrupted && !chat.compactionRequestId && !chat.preview
+    && (chat.contextStart == null || chat.contextStart === 0)
+    && Object.keys(chat).every(key => EMPTY_DRAFT_KEYS.has(key))
+}
+
 /** Bind a mounted editor to the exact record it read, including legacy data.
  * This is an optimistic stale-editor check; localStorage has no atomic CAS.
  */
 export function createConversationWriter(initial = null) {
   let chatId = initial?.chatId
   let expected = conversationSnapshot(initial)
+  let omitted = omittedEmptyBaseline(initial)
   return chat => saveConversation(chat, {
-    matches: current => conversationSnapshot(current) === (chat.chatId === chatId ? expected : null),
-    committed: value => {chatId = value.chatId; expected = conversationSnapshot(value)},
+    matches: current => conversationSnapshot(current) === (chat.chatId === chatId ? expected : null)
+      || (chat.chatId === chatId && current === null && omitted),
+    committed: value => {chatId = value.chatId; expected = conversationSnapshot(value); omitted = omittedEmptyBaseline(value)},
   })
 }
 

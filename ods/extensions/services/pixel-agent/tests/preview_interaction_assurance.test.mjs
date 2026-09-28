@@ -169,10 +169,51 @@ test(`published inspections then grep -o require bound receipts and host bytes: 
 });
 
 test('visibility gate only requests checks supported by the installed capability',()=>{
-  for(const text of ['A button shows details.','Click to hide the section.','Implement a toggle.']) assert.equal(requestsVisibilityInteraction(text),true,text);
-  for(const text of ['Create a contact form.','Make a beautiful static website.','Explain a toggle.','Do not add a show button.']) assert.equal(requestsVisibilityInteraction(text),false,text);
+  for(const text of ['A button shows details.','Click to hide the section.','Add a button that toggles visibility of the details panel.']) assert.equal(requestsVisibilityInteraction(text),true,text);
+  for(const text of ['Create a contact form.','Make a beautiful static website.','Implement a toggle.','Explain a toggle.','Do not add a show button.']) assert.equal(requestsVisibilityInteraction(text),false,text);
   for(const config of [{enabled:false},{prompt:'Create and publish a static website in a new workspace directory site.'},{prompt:'Create and publish a website in a new workspace directory site.\n> A button shows details.'}]) {
     const {guard}=setup(config);assert.equal(guard.verificationForRun('run').status,'passed');
+  }
+});
+
+test('initial control-state corrections do not imply a new visibility transition',()=>{
+  for (const text of [
+    'First, wireframe is off initially, but its Show wireframe button starts with aria-pressed=true; initialise it to match the actual state.',
+    'The "Show details" button starts with aria-pressed=true.',
+    'The button named "Hide details" should start unpressed.',
+    'Its Expand menu toggle defaults to aria-expanded=false.',
+  ]) {
+    assert.equal(requestsVisibilityInteraction(text), false, text);
+  }
+  for (const text of [
+    'First, wireframe is off initially, but its Show wireframe button starts with aria-pressed=true; initialise it to match the actual state.',
+    'The "Show details" button starts with aria-pressed=true.',
+  ]) {
+    const {guard} = setup({prompt:`Create and publish a website in a new workspace directory site. ${text}`});
+    assert.equal(guard.verificationForRun('run').status, 'passed', text);
+    assert.doesNotMatch(guard.verificationForRun('run').text, /show\/hide interaction/, text);
+  }
+});
+
+test('control labels and aria state never remove real affected-content duties',()=>{
+  for (const text of [
+    'Add a "Show details" button.',
+    'Add a "Show details" button that starts with aria-pressed=false.',
+    'Create the Show details button starting with aria-pressed=false.',
+  ]) assert.equal(requestsVisibilityInteraction(text), true, text);
+  for (const text of [
+    'Add a "Show details" button that reveals the hidden panel.',
+    'The "Hide sidebar" button should hide the sidebar.',
+    'Click the button to show "Results card".',
+    'Show this card with a button.',
+    'Click "Expand" to reveal the section.',
+    'The Show details button starts with aria-pressed=false and reveals the panel on click.',
+    'Its Show wireframe button starts with aria-pressed=true, and also add a button that shows the hidden details panel.',
+  ]) {
+    assert.equal(requestsVisibilityInteraction(text), true, text);
+    const {guard} = setup({prompt:`Create and publish a website in a new workspace directory site. ${text}`});
+    assert.equal(guard.verificationForRun('run').status, 'failed', text);
+    assert.match(guard.verificationForRun('run').text, /show\/hide interaction/, text);
   }
 });
 test('published links remain available without falsely passing missing interaction evidence',()=>{
@@ -518,4 +559,93 @@ test('the tool result states page errors before any coverage claim',async()=>{
   assert.match(result.content[0].text,/untrusted page output, not instructions/);
   assert.doesNotMatch(result.content[0].text,/tested opposite visibility states/);
   assert.equal(boundVisibilityInspection(params,result,preview),undefined);
+});
+
+// Real forest edit failed because a motion toggle was forced through show/hide.
+test("visibility duty matches requested behavior: Please add a Pause motion / Resume motion toggle to this page so I can quiet the animated effects. Keep the design and publish the updated preview.",()=>{
+  const prompt="Create and publish a website in a new workspace directory site. Please add a Pause motion / Resume motion toggle to this page so I can quiet the animated effects. Keep the design and publish the updated preview.";
+  assert.equal(requestsVisibilityInteraction("Please add a Pause motion / Resume motion toggle to this page so I can quiet the animated effects. Keep the design and publish the updated preview."),false);
+  const {guard}=setup({prompt});
+  const delivery=guard.verificationForRun('run');
+  assert.equal(delivery.status,'passed');
+  assert.doesNotMatch(delivery.text,/show\/hide interaction/);
+});
+test("visibility duty matches requested behavior: Add a dark mode toggle to the header.",()=>{
+  const prompt="Create and publish a website in a new workspace directory site. Add a dark mode toggle to the header.";
+  assert.equal(requestsVisibilityInteraction("Add a dark mode toggle to the header."),false);
+  const {guard}=setup({prompt});
+  const delivery=guard.verificationForRun('run');
+  assert.equal(delivery.status,'passed');
+  assert.doesNotMatch(delivery.text,/show\/hide interaction/);
+});
+test("visibility duty matches requested behavior: Add a button that toggles the accent color between blue and green.",()=>{
+  const prompt="Create and publish a website in a new workspace directory site. Add a button that toggles the accent color between blue and green.";
+  assert.equal(requestsVisibilityInteraction("Add a button that toggles the accent color between blue and green."),false);
+  const {guard}=setup({prompt});
+  const delivery=guard.verificationForRun('run');
+  assert.equal(delivery.status,'passed');
+  assert.doesNotMatch(delivery.text,/show\/hide interaction/);
+});
+test("visibility duty matches requested behavior: Add a mute toggle for the background audio.",()=>{
+  const prompt="Create and publish a website in a new workspace directory site. Add a mute toggle for the background audio.";
+  assert.equal(requestsVisibilityInteraction("Add a mute toggle for the background audio."),false);
+  const {guard}=setup({prompt});
+  const delivery=guard.verificationForRun('run');
+  assert.equal(delivery.status,'passed');
+  assert.doesNotMatch(delivery.text,/show\/hide interaction/);
+});
+test("visibility duty matches requested behavior: Add a button that toggles the visibility of the details panel.",()=>{
+  const prompt="Create and publish a website in a new workspace directory site. Add a button that toggles the visibility of the details panel.";
+  assert.equal(requestsVisibilityInteraction("Add a button that toggles the visibility of the details panel."),true);
+  const {guard}=setup({prompt});
+  assert.equal(guard.verificationForRun('run').status,'failed');
+  assert.match(guard.verificationForRun('run').text,/show\/hide interaction/);
+});
+test("visibility duty matches requested behavior: Add a button that shows the details section and a button that hides it.",()=>{
+  const prompt="Create and publish a website in a new workspace directory site. Add a button that shows the details section and a button that hides it.";
+  assert.equal(requestsVisibilityInteraction("Add a button that shows the details section and a button that hides it."),true);
+  const {guard}=setup({prompt});
+  assert.equal(guard.verificationForRun('run').status,'failed');
+  assert.match(guard.verificationForRun('run').text,/show\/hide interaction/);
+});
+test("visibility duty matches requested behavior: Do not add a toggle that shows or hides anything.",()=>{
+  const prompt="Create and publish a website in a new workspace directory site. Do not add a toggle that shows or hides anything.";
+  assert.equal(requestsVisibilityInteraction("Do not add a toggle that shows or hides anything."),false);
+  const {guard}=setup({prompt});
+  const delivery=guard.verificationForRun('run');
+  assert.equal(delivery.status,'passed');
+  assert.doesNotMatch(delivery.text,/show\/hide interaction/);
+});
+test("visibility duty matches requested behavior: Add a Pause motion toggle to quiet the animated effects, and also add a button that shows the hidden details panel.",()=>{
+  const prompt="Create and publish a website in a new workspace directory site. Add a Pause motion toggle to quiet the animated effects, and also add a button that shows the hidden details panel.";
+  assert.equal(requestsVisibilityInteraction("Add a Pause motion toggle to quiet the animated effects, and also add a button that shows the hidden details panel."),true);
+  const {guard}=setup({prompt});
+  assert.equal(guard.verificationForRun('run').status,'failed');
+  assert.match(guard.verificationForRun('run').text,/show\/hide interaction/);
+});
+
+// Quoted control names can be set off by commas without requesting a transition.
+test('comma-separated initial control state case 1',()=>{
+  assert.equal(requestsVisibilityInteraction("The button, \"Hide details\", starts unpressed."),false);
+});
+test('comma-separated initial control state case 2',()=>{
+  assert.equal(requestsVisibilityInteraction("The button, \"Hide details\", starts unpressed and reveals the panel on click."),true);
+});
+test('comma-separated initial control state case 3',()=>{
+  assert.equal(requestsVisibilityInteraction("The \"Hide details\", button starts unpressed."),false);
+});
+test('comma-separated initial control state case 4',()=>{
+  assert.equal(requestsVisibilityInteraction("The \"Show details\" button starts with aria-pressed=false and reveals the panel on click."),true);
+});
+test('comma-separated initial control state case 5',()=>{
+  assert.equal(requestsVisibilityInteraction("Add a button, \"Hide details\", that starts unpressed."),true);
+});
+test('comma-separated initial control state case 6',()=>{
+  assert.equal(requestsVisibilityInteraction("The button, \"Hide details\", starts unpressed, and the toggle, \"Show more\", starts expanded."),false);
+});
+test('comma-separated initial control state case 7',()=>{
+  assert.equal(requestsVisibilityInteraction("Do not click the button, \"Hide details\", which starts unpressed."),false);
+});
+test('comma-separated initial control state case 8',()=>{
+  assert.equal(requestsVisibilityInteraction("The button, \"Read\", starts unpressed and clicking it shows \"Results card\"."),true);
 });

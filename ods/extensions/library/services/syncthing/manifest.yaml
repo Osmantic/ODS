@@ -28,6 +28,8 @@ service:
     secret: true
     description: 64-hex initial password for GUI user ods; existing configured credentials
       are preserved.
+    format: hex64
+    generate: hex64
   - key: SYNCTHING_SYNC_PORT
     required: false
     default: '11096'

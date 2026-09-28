@@ -60,9 +60,9 @@ test('fleet create prompt yields the quoted exact strings and the counted card n
   assert.deepEqual(extractRequestedLiterals(FLEET_CREATE).map(literal => ({...literal})), [
     {text: 'Night Garden FLEET-068aa1af7e', match: 'exact', targets: ['page title', 'h1']},
     {text: 'Show sold out', match: 'exact', targets: []},
-    {text: 'Dawn jazz', match: 'item', targets: []},
-    {text: 'River lantern walk', match: 'item', targets: []},
-    {text: 'Midnight sold-out concert', match: 'item', targets: []},
+    {text: 'Dawn jazz', match: 'item', targets: ['heading'], list: 0},
+    {text: 'River lantern walk', match: 'item', targets: ['heading'], list: 0},
+    {text: 'Midnight sold-out concert', match: 'item', targets: ['heading'], list: 0},
   ]);
 });
 
@@ -77,9 +77,9 @@ test('Portuguese owner wording is extracted the same way', () => {
   assert.deepEqual(extractRequestedLiterals(PT_CREATE).map(literal => ({...literal})), [
     {text: 'Jardim Noturno', match: 'exact', targets: ['page title', 'h1']},
     {text: 'Mostrar esgotados', match: 'caseless', targets: []},
-    {text: 'Jazz ao amanhecer', match: 'item', targets: []},
-    {text: 'Caminhada das lanternas', match: 'item', targets: []},
-    {text: 'Show esgotado da meia-noite', match: 'item', targets: []},
+    {text: 'Jazz ao amanhecer', match: 'item', targets: ['heading'], list: 0},
+    {text: 'Caminhada das lanternas', match: 'item', targets: ['heading'], list: 0},
+    {text: 'Show esgotado da meia-noite', match: 'item', targets: ['heading'], list: 0},
   ]);
   const page = '<title>Jardim Noturno</title><h1>Jardim Noturno</h1><h3>Jazz ao Amanhecer</h3>' +
     '<h3>Caminhada das Lanternas</h3><h3>Show da meia-noite</h3><button>Mostrar esgotados</button>';

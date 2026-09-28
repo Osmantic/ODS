@@ -253,4 +253,40 @@ tags: [Bad_Tag]
 YAML
 check_case "tag pattern is enforced" invalid
 
+write_base_manifest
+cat >> "$CASE_ROOT/case/manifest.yaml" <<'YAML'
+  env_vars:
+    - key: TEST_SERVICE_DB_PASSWORD
+      required: true
+      secret: true
+      format: hex64
+      generate: hex64
+    - key: TEST_SERVICE_ADMIN_PASSWORD
+      required: true
+      secret: true
+      pattern: ^[A-Za-z0-9]+$
+      format_description: letters and digits only
+      min_length: 12
+      max_length: 72
+      generate: password
+YAML
+check_case "setting format metadata" valid
+
+write_base_manifest
+cat >> "$CASE_ROOT/case/manifest.yaml" <<'YAML'
+  env_vars:
+    - key: TEST_SERVICE_TOKEN
+      pattern: ^[a-z]+$
+YAML
+check_case "setting pattern requires a format description" invalid
+
+write_base_manifest
+cat >> "$CASE_ROOT/case/manifest.yaml" <<'YAML'
+  env_vars:
+    - key: TEST_SERVICE_TOKEN
+      format: hex64
+      generate: uuid
+YAML
+check_case "setting generator vocabulary is enforced" invalid
+
 echo "Manifest schema source-of-truth tests passed."

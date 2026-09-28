@@ -1,5 +1,6 @@
 // A bounded completion check, not an executor. All recovered calls still go
 // through the normal tool policy, cancellation, permission and loop guards.
+import { pageExcerpt, requestTerms } from './page-excerpt.mjs';
 const normalize = value => String(value ?? '').normalize('NFKD').replace(/\p{M}/gu, '').toLowerCase();
 const WEB = new Set(['web_search', 'web_fetch', 'pixel_ods_web_extract', 'pixel_ods_research', 'browser']);
 const DISCOVERY = new Set(['tool_search', 'tool_describe']);
@@ -23,6 +24,8 @@ function sourceReadsRequested(text) {
 // Only current-run, successful page receipts establish that a page was read.
 // Search hits, related links embedded in a page and delegated summaries do not.
 // This is an attribution boundary, not verification of the claims on a page.
+// pixel_ods_research (Perplexica) never qualifies: speed and balanced modes
+// answer from search snippets, and its sources are search results.
 function openedSourceUrls(tool, result) {
   const details = result?.details;
   let candidates = [];
@@ -58,14 +61,22 @@ export function pageTitle(value) {
   return text.length > 160 ? `${text.slice(0, 159).trimEnd()}…` : text;
 }
 
-// One entry per successfully read page, in read order, for the fallback list.
+// One entry per successfully read page, in read order, for the fallback list
+// and the stop synthesis. `text` is the page text the tool returned.
 function readPageEntry(tool, result) {
   const details = result?.details;
   const urls = openedSourceUrls(tool, result);
   if (!urls.length) return undefined;
   const url = (tool === 'web_fetch' && publicSourceUrl(details?.finalUrl)) || urls[0];
-  return {url, keys: urls.map(citationKey).filter(Boolean), title: tool === 'web_fetch' ? pageTitle(details?.title) : undefined};
+  const content = (result?.content ?? []).filter(block => block?.type === 'text' && typeof block.text === 'string')
+    .map(block => block.text).join('\n');
+  const text = tool === 'web_fetch' && typeof details?.text === 'string' && details.text.trim() ? details.text : content;
+  return {url, keys: urls.map(citationKey).filter(Boolean), title: tool === 'web_fetch' ? pageTitle(details?.title) : undefined, text,
+    targeted: tool === 'pixel_ods_web_extract'};
 }
+// Excerpts are kept for the first pages only; the synthesis uses at most eight.
+const MAX_EXCERPT_PAGES = 12;
+const PAGE_EXCERPT_CHARS = 1800;
 
 // Conservative page identity for matching a citation to a read receipt: URL
 // parsing already lowercases the scheme and host and drops default ports;
@@ -146,7 +157,7 @@ const MIN_PROSE_CHARS = 20;
 
 // A Markdown link or autolink around a neutralised destination becomes plain
 // text. The marker contains spaces, so an unmatched form is never a link.
-function unwrapMarker(text, marker) {
+export function unwrapMarker(text, marker) {
   const m = marker.replace(/[[\]]/g, '\\$&');
   const link = new RegExp(`!?\\[((?:[^\\[\\]\\n]|${m}){0,500})\\]\\(\\s*<?${m}>?(?:\\s+(?:"[^"\\n]*"|'[^'\\n]*'))?\\s*\\)`, 'g');
   return text.replace(link, (_, label) => label.trim() && label.trim() !== marker ? `${label} ${marker}` : marker)
@@ -278,18 +289,32 @@ export function createCompletionAssurance() {
   const hostVerified = new Set();
   const readSources = () => new Set([...opened, ...browserSnapshots, ...hostVerified]);
   // Model page reads and host verifications, deduplicated by citation key.
+  // Each of the first pages keeps a bounded excerpt around the request terms.
   const readPages = [];
   const readPageKeys = new Set();
-  const recordReadPage = entry => {
-    if (!entry || readPages.length >= 64 || entry.keys.some(key => readPageKeys.has(key))) {
-      if (entry?.title) {
-        const known = readPages.find(page => !page.title && entry.keys.some(key => page.keys.includes(key)));
-        if (known) known.title = entry.title;
+  let terms = new Set();
+  const excerptOf = (text, query) => typeof text === 'string' && text
+    ? pageExcerpt(text, query ? new Set([...terms, ...requestTerms(query)]) : terms, PAGE_EXCERPT_CHARS) : '';
+  const recordReadPage = (entry, query) => {
+    if (!entry) return;
+    const {text, targeted, ...page} = entry;
+    // A second read of a known page (often web_fetch, then targeted
+    // extraction) adds its title and evidence; extraction evidence goes first.
+    const known = readPages.find(existing => page.keys.some(key => existing.keys.includes(key)));
+    if (known) {
+      if (page.title && !known.title) known.title = page.title;
+      const extra = readPages.indexOf(known) < MAX_EXCERPT_PAGES ? excerptOf(text, query) : '';
+      if (extra && !known.excerpt?.includes(extra)) {
+        known.excerpt = (targeted ? [extra, known.excerpt] : [known.excerpt, extra]).filter(Boolean).join('\n…\n')
+          .slice(0, PAGE_EXCERPT_CHARS);
       }
       return;
     }
-    for (const key of entry.keys) readPageKeys.add(key);
-    readPages.push(entry);
+    if (readPages.length >= 64) return;
+    const excerpt = readPages.length < MAX_EXCERPT_PAGES ? excerptOf(text, query) : '';
+    if (excerpt) page.excerpt = excerpt;
+    for (const key of page.keys) readPageKeys.add(key);
+    readPages.push(page);
   };
   return {
     begin(ownerText, event) {
@@ -299,6 +324,7 @@ export function createCompletionAssurance() {
       const precedingRequest = continuedOwnerRequest(ownerText, event);
       readsRequired = sourceReadsRequested(ownerText) || sourceReadsRequested(precedingRequest);
       research = readsRequired || researchRequested(ownerText) || researchRequested(precedingRequest);
+      terms = requestTerms(ownerText, precedingRequest);
       conversational = /^(?:(?:please|por favor)[,\s]+)?(?:traduza|translate|reescreva|rewrite|repita|repeat|diga apenas|say exactly|responda apenas|return exactly|explique|explain|rascunho|draft|exemplo|example)\b/.test(normalize(ownerText).trim()) && !research;
       portuguese = /\b(qual|voce|vc|noticias|hoje|consulte|pesquise|busque|procure|crie|arquivo|internet|instale|instalar|baixar|configure|configurar)\b/.test(normalize(ownerText));
     },
@@ -333,7 +359,7 @@ export function createCompletionAssurance() {
         opened.add(url);
         sources.add(url);
       }
-      recordReadPage(readPageEntry(tool, event.result));
+      recordReadPage(readPageEntry(tool, event.result), typeof event.params?.query === 'string' ? event.params.query : undefined);
       workObserved = true;
       if (WEB.has(tool)) {
         webObserved = true;
@@ -359,6 +385,17 @@ export function createCompletionAssurance() {
     // Pages read successfully in this response: current-run model read
     // receipts (web_fetch, targeted extraction) and host verifications.
     get readPages() { return readPages.map(({url, title}) => (title ? {url, title} : {url})); },
+    // Read pages with an excerpt, in read order, for the stop synthesis.
+    synthesisSources() {
+      return readPages.filter(page => page.excerpt)
+        .map(({url, title, excerpt, keys}) => ({url, ...(title ? {title} : {}), excerpt, keys: [...keys]}));
+    },
+    // Cited links in `text` without a current-run read receipt or host
+    // verification, unless the text labels them; unlike unverifiedCitations,
+    // whatever the owner asked (the stop synthesis may cite only read pages).
+    unlistedCitations(text) {
+      return unreadCitations(String(text ?? ''), readSources());
+    },
     finalize(text) {
       if (cancelled) return;
       if (conversational) return;

@@ -30,10 +30,13 @@ service:
       description: "Password for the private PostgreSQL database; retain after initialization"
       required: true
       secret: true
+      generate: password
     - key: MINIFLUX_ADMIN_PASSWORD
       description: "Initial password for the admin account; later changes use the Miniflux UI"
       required: true
       secret: true
+      min_length: 6
+      generate: password
 features:
   - id: feed-library
     name: Feed Library

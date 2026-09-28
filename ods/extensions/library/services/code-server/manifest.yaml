@@ -27,6 +27,7 @@ service:
     required: true
     secret: true
     description: Strong password required to access the editor and its container terminal.
+    generate: password
   ui_path: /
 tags:
 - development

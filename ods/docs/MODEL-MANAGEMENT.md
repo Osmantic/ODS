@@ -1,6 +1,8 @@
 # Model Management
 
-ODS runs local language models as GGUF files from `data/models/`.
+ODS runs local language models as GGUF files from `data/models/` or an
+installer-registered model store. Windows AMD with Portal in WSL uses the
+Windows Lemonade store described below.
 The recommended path is the Dashboard Models page. Manual model swaps are also
 available for headless maintenance and advanced operator workflows.
 
@@ -13,10 +15,10 @@ From there you can:
 - Separate models already installed from the curated ODS catalog.
 - Search compatible GGUF repositories on Hugging Face without leaving ODS.
 - Check approximate model size, VRAM requirement, context length, and specialty.
-- Download a catalog model into `data/models/`.
-- Import an integrity-qualified Hugging Face GGUF into `data/models/`.
+- Download a catalog model into the installation's model store.
+- Import an integrity-qualified Hugging Face GGUF into that store.
 - Load a downloaded model.
-- Load a manually copied single-file GGUF discovered in `data/models/`.
+- Load a manually copied single-file GGUF discovered in the model store.
 - Delete a downloaded catalog model.
 
 The expected user flow is a six-verb chain:
@@ -34,6 +36,40 @@ declares a context floor such as `65536`, models below that floor should be
 shown as gated or warned before the swap. Badges should distinguish downloaded,
 loaded, swap-safe, not-swap-safe, gated, and probe-failed states so a model
 cannot look ready while an enabled app is known to be incompatible.
+
+### Windows AMD with Portal in WSL
+
+The Windows installer can bind its `ODSLemonadeRuntime` task to one WSL
+distribution and ODS runtime directory. With verified task ownership and model
+store registration, **Models** supports catalog and Hugging Face downloads,
+activation and context changes using the existing ODS transaction. Downloads
+go to `%LOCALAPPDATA%\ODS\lemonade\models`, which WSL accesses as a registered
+Windows store. The import registry and download progress remain in the ODS
+runtime's `data/` directory.
+
+Wait for verification after download, choose **Run**, then choose the context.
+Activation updates the owned Windows launcher selection as well as Portal and
+ODS routes. **Configure context** uses the same transaction. The current
+Windows controller accepts 4,096–262,144 tokens; the model, available memory
+and enabled apps must still support the requested value. A Hub listing or a
+verified download alone does not prove runtime or agent compatibility.
+
+**Unload model** stops the owned runtime while preserving its saved model and
+context. Portal admission stays paused while inference is stopped. **Resume
+model** starts and verifies the saved selection before releasing that pause;
+resume before attempting another model or context change.
+
+Older tasks without a WSL installation binding do not gain control from an
+update alone. Rerun the current Windows installer with the same distribution
+and runtime directory to register them. If ownership cannot be verified, the
+controls remain unavailable. Do not manually edit the binding or startup plan.
+
+An independently managed Lemonade server remains external. Change its loaded
+model in Lemonade, then use **Adopt loaded model** to update Portal and ODS
+routes. Adoption does not grant runtime control or change Lemonade's startup
+model. `LEMONADE_EXTERNAL=true` describes the Windows network placement; it is
+not permission to manage a process. Linux, NVIDIA and macOS retain their
+existing model-management paths.
 
 ### Hugging Face imports
 
@@ -69,6 +105,11 @@ retry re-reads the immutable Hub revision and verifies every retained or newly
 downloaded file before the model can become installed. An incomplete or
 cancelled transfer is never eligible for activation.
 
+The import dialog can be closed while its request is pending. If the request
+times out, use **Check download status** to reconcile the selected artifact
+with the catalog and download record. ODS does not automatically resubmit an
+uncertain import; a timeout alone does not mean the download failed.
+
 Imported metadata is stored separately in `data/model-imports.json`, so a
 source update or installer rerun does not modify `config/model-library.json` or
 discard community imports. Deleting a downloaded file keeps the import record,
@@ -95,8 +136,10 @@ ods model current
 curl http://localhost:11434/v1/models
 ```
 
-On macOS native Metal and Windows native/Lemonade installs, use
-`http://localhost:8080/v1/models` unless you changed the port.
+On macOS native Metal and native Windows installs, use the configured local
+API port (normally `8080`). For Windows AMD with Portal in WSL, verify the
+loaded model and send a message through Portal: WSL's localhost may differ
+from Windows localhost, and the installer may select another Lemonade port.
 
 Dashboard activation, Unix `ods model swap <tier>`, and Windows
 `.\ods.ps1 model swap <tier>` use the same authenticated host-agent transaction.
@@ -320,11 +363,16 @@ Default model directory:
 ~/ods/data/models/
 ```
 
-On Windows installs:
+On native Windows installs:
 
 ```powershell
 $env:USERPROFILE\ods\data\models\
 ```
+
+On Windows AMD with Portal in WSL, the registered Lemonade store is
+`%LOCALAPPDATA%\ODS\lemonade\models`. Catalog and Hugging Face downloads use
+that store automatically; the Ubuntu `~/ods/data/models/` directory is not
+the Windows runtime's model directory.
 
 Each model is normally a single `.gguf` file:
 
@@ -338,7 +386,7 @@ The active model is recorded in `.env`:
 grep -E "^(LLM_MODEL|GGUF_FILE|CTX_SIZE|MAX_CONTEXT)=" ~/ods/.env
 ```
 
-`GGUF_FILE` is the filename ODS should load from `data/models/`.
+`GGUF_FILE` is the filename ODS should load from its selected model store.
 `LLM_MODEL` is the friendly logical model name used by scripts and config.
 `CTX_SIZE` and `MAX_CONTEXT` control context length.
 
@@ -362,7 +410,7 @@ mkdir -p data/models
 
 curl -L \
   -o data/models/Qwen3.5-9B-Q4_K_M.gguf \
-  https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-Q4_K_M.gguf
+  https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/3885219b6810b007914f3a7950a8d1b469d598a5/Qwen3.5-9B-Q4_K_M.gguf
 ```
 
 Then open Dashboard -> Models. If the filename matches a catalog entry, the
@@ -372,7 +420,7 @@ model should appear as downloaded and you can load it from the Dashboard.
 
 For a single local `.gguf`, the normal flow is:
 
-1. Copy the file into `data/models/`.
+1. Copy the file into the installation's model store (normally `data/models/`; see [Where Models Live](#where-models-live)).
 2. Open Dashboard -> Models.
 3. Load the local entry.
 
@@ -381,13 +429,15 @@ runtime routing before restarting the inference service.
 
 On Lemonade installs, loading a model directly inside the Lemonade app only
 changes Lemonade's current runtime state. It does not update ODS's
-`.env` or LiteLLM routing. Open WebUI talks through ODS/LiteLLM, so
-its next chat can ask for the persisted ODS model and Lemonade may
-unload the model you opened manually. Use Dashboard -> Models -> Load when you
-want Open WebUI and other ODS clients to keep using the local GGUF.
+`.env` or routing. For an ODS-managed runtime, use Dashboard -> Models -> Run
+to keep the saved model, startup configuration and ODS clients in sync. For
+an independent external Lemonade service, change the model in Lemonade and
+use **Adopt loaded model** in ODS; that updates the route without changing
+the external service's startup selection.
 
 Use the manual procedure below only if you cannot access the Dashboard or need
-to repair an install by hand.
+to repair an install by hand. It does not update the bound Windows/WSL startup
+plan; use the managed controls or rerun the Windows installer for that path.
 
 1. Download the GGUF into `data/models/`.
 

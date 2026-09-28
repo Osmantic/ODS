@@ -81,6 +81,7 @@ source "$SCRIPT_DIR/installers/lib/sudo.sh"
 source "$SCRIPT_DIR/installers/lib/detection.sh"
 source "$SCRIPT_DIR/installers/lib/host-arch.sh"
 source "$SCRIPT_DIR/installers/lib/tier-map.sh"
+source "$SCRIPT_DIR/installers/lib/model-selector.sh"
 source "$SCRIPT_DIR/installers/lib/docker-images.sh"
 source "$SCRIPT_DIR/installers/lib/compose-images.sh"
 source "$SCRIPT_DIR/installers/lib/compose-select.sh"
@@ -118,6 +119,7 @@ ENABLE_RECOMMENDED=true
 ENABLE_HERMES=true
 ENABLE_PIXEL="${ENABLE_PIXEL:-auto}"
 PIXEL_EXPLICIT=false
+HERMES_EXPLICIT=false
 ENABLE_OPENCLAW=false
 OPENCLAW_EXPLICIT=false
 ENABLE_OPENCODE=false
@@ -139,7 +141,14 @@ ODS_MODE_EXPLICIT=false
 ODS_MODE="${ODS_MODE:-local}"
 LEMONADE_EXTERNAL="${LEMONADE_EXTERNAL:-false}"
 LEMONADE_BASE_URL="${LEMONADE_BASE_URL:-}"
+# Keep omission distinct from an explicit direct override until .env is read.
+LEMONADE_HOST_TRANSPORT="${LEMONADE_HOST_TRANSPORT:-}"
+ODS_WINDOWS_SYSTEM_DIRECTORY="${ODS_WINDOWS_SYSTEM_DIRECTORY:-}"
 LEMONADE_API_KEY="${LEMONADE_API_KEY:-}"
+LEMONADE_MODEL="${LEMONADE_MODEL:-}"
+# Display only: the GPU that runs an external Lemonade (e.g. Windows under WSL).
+LEMONADE_GPU_NAME="${LEMONADE_GPU_NAME:-}"
+LEMONADE_GPU_VRAM_MB="${LEMONADE_GPU_VRAM_MB:-}"
 OFFLINE_MODE=false   # M1 integration: fully air-gapped operation
 NO_BOOTSTRAP=false  # Skip bootstrap fast-start, download full model in foreground
 BIND_ADDRESS_EXPLICIT=false
@@ -172,8 +181,17 @@ Options:
                       Use an already-running Lemonade SDK server as the AMD LLM runtime
     --lemonade-url U  Lemonade server URL for --use-existing-lemonade
                       (auto-detects localhost:13305, then localhost:8000 when omitted)
+    --lemonade-host-transport direct|model-router
+                      Host-agent verification network: direct (default), or this
+                      installation's model-router container for Windows/WSL Lemonade
+    --windows-system-directory PATH
+                      Windows System32 directory supplied by Windows setup
     --lemonade-api-key K
                       API key LiteLLM should send to the existing Lemonade server
+    --lemonade-model M
+                      Exact model id the existing Lemonade server serves
+    --lemonade-gpu-name N, --lemonade-gpu-vram-mb MB
+                      GPU that runs the existing Lemonade, shown in the hardware scan
     --external-llm-url U
                       Reuse an OpenAI-compatible local or LAN endpoint
     --external-llm-provider P
@@ -248,7 +266,19 @@ while [[ $# -gt 0 ]]; do
         --cloud) ODS_MODE="cloud"; ODS_MODE_EXPLICIT=true; shift ;;
         --use-existing-lemonade) LEMONADE_EXTERNAL=true; ODS_MODE="lemonade"; ODS_MODE_EXPLICIT=true; shift ;;
         --lemonade-url) LEMONADE_EXTERNAL=true; ODS_MODE="lemonade"; ODS_MODE_EXPLICIT=true; LEMONADE_BASE_URL="$2"; shift 2 ;;
+        --lemonade-host-transport)
+            case "${2:-}" in direct|model-router) LEMONADE_HOST_TRANSPORT="$2" ;; *) echo "--lemonade-host-transport requires direct or model-router" >&2; exit 1 ;; esac
+            shift 2 ;;
+        --windows-system-directory)
+            [[ -n "${2:-}" && "${2:-}" != --* ]] || { echo "--windows-system-directory requires a Windows System32 path" >&2; exit 1; }
+            ODS_WINDOWS_SYSTEM_DIRECTORY="$2"
+            shift 2 ;;
         --lemonade-api-key) LEMONADE_API_KEY="$2"; shift 2 ;;
+        --lemonade-model) LEMONADE_MODEL="$2"; shift 2 ;;
+        --lemonade-gpu-name) LEMONADE_GPU_NAME="$2"; shift 2 ;;
+        --lemonade-gpu-vram-mb)
+            [[ -n "${2:-}" ]] || { echo "--lemonade-gpu-vram-mb needs a number of megabytes" >&2; exit 1; }
+            LEMONADE_GPU_VRAM_MB="$2"; shift 2 ;;
         --external-llm-url) EXTERNAL_LLM_URL="$2"; shift 2 ;;
         --external-llm-provider) EXTERNAL_LLM_PROVIDER="$2"; shift 2 ;;
         --external-llm-model) EXTERNAL_LLM_MODEL="$2"; shift 2 ;;
@@ -263,8 +293,8 @@ while [[ $# -gt 0 ]]; do
         --no-rag) ENABLE_RAG=false; shift ;;
         --recommended) ENABLE_RECOMMENDED=true; shift ;;
         --no-recommended) ENABLE_RECOMMENDED=false; shift ;;
-        --hermes) ENABLE_HERMES=true; shift ;;
-        --no-hermes) ENABLE_HERMES=false; shift ;;
+        --hermes) ENABLE_HERMES=true; HERMES_EXPLICIT=true; shift ;;
+        --no-hermes) ENABLE_HERMES=false; HERMES_EXPLICIT=true; shift ;;
         --pixel) ENABLE_PIXEL=true; PIXEL_EXPLICIT=true; shift ;;
         --no-pixel) ENABLE_PIXEL=false; PIXEL_EXPLICIT=true; shift ;;
         --openclaw) ENABLE_OPENCLAW=true; OPENCLAW_EXPLICIT=true; shift ;;
@@ -299,6 +329,27 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# Validate external Lemonade VRAM from either flags or the environment before
+# any phase can evaluate it as Bash arithmetic. Empty retains auto-detection.
+if [[ -n "$LEMONADE_GPU_VRAM_MB" ]]; then
+    [[ "$LEMONADE_GPU_VRAM_MB" =~ ^[0-9]+$ ]] || {
+        echo "LEMONADE_GPU_VRAM_MB must be a nonnegative decimal number of megabytes" >&2
+        exit 1
+    }
+    _lemonade_vram="${LEMONADE_GPU_VRAM_MB#"${LEMONADE_GPU_VRAM_MB%%[!0]*}"}"
+    _lemonade_vram="${_lemonade_vram:-0}"
+    # Phase 02 adds 512 before converting MiB to GiB; leave room in int64.
+    # Compare equal-length decimal strings without overflowing the validator.
+    # shellcheck disable=SC2071
+    if [[ ${#_lemonade_vram} -gt 19 ||
+        ( ${#_lemonade_vram} -eq 19 && "$_lemonade_vram" > 9223372036854775295 ) ]]; then
+        echo "LEMONADE_GPU_VRAM_MB exceeds the supported integer range" >&2
+        exit 1
+    fi
+    LEMONADE_GPU_VRAM_MB="$_lemonade_vram"
+fi
+unset _lemonade_vram
+
 # Help and malformed options exit without creating a log. Every remaining
 # path prepares a private diagnostic file before the first logging call.
 if ! ods_prepare_install_log "$LOG_FILE"; then
@@ -319,7 +370,8 @@ unset _requested_ods_mode
 if [[ "${LEMONADE_EXTERNAL,,}" == "true" ]]; then
     ODS_MODE="lemonade"
     ENABLE_RECOMMENDED=true
-    export LEMONADE_EXTERNAL LEMONADE_BASE_URL LEMONADE_API_KEY
+    # An empty LEMONADE_MODEL still lets phase 06 discover the model.
+    export LEMONADE_EXTERNAL LEMONADE_BASE_URL LEMONADE_HOST_TRANSPORT ODS_WINDOWS_SYSTEM_DIRECTORY LEMONADE_API_KEY LEMONADE_MODEL LEMONADE_GPU_NAME LEMONADE_GPU_VRAM_MB
 fi
 
 export EXTERNAL_LLM_URL EXTERNAL_LLM_PROVIDER EXTERNAL_LLM_MODEL

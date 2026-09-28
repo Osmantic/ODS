@@ -28,6 +28,8 @@ service:
     secret: true
     description: Persistent random login-token signing secret; use at least 32 random
       characters.
+    min_length: 32
+    generate: token
   ui_path: /
 tags:
 - conversion

@@ -25,14 +25,23 @@ service:
       required: true
       secret: true
       description: Stable Laravel encryption key, base64 followed by a colon and base64 encoding of 32 random bytes. Preserve it with backups.
+      pattern: '^base64:[A-Za-z0-9+/]{43}=$'
+      format_description: 'base64: followed by the base64 encoding of 32 random bytes (44 characters ending in =)'
     - key: BOOKSTACK_DB_PASSWORD
       required: true
       secret: true
       description: Dedicated database password. Use at least 24 random alphanumeric characters; preserve it after initialization.
+      pattern: '^[A-Za-z0-9]+$'
+      format_description: letters and digits only
+      min_length: 24
+      generate: password
     - key: BOOKSTACK_URL
       required: true
       secret: false
       description: Browser origin including port, normally http://localhost:11148. Changing this later requires BookStack URL migration.
+      format: url
+      pattern: '^https?://([A-Za-z0-9._~-]+|\[[0-9A-Fa-f:.]+\])(:[0-9]{1,5})?$'
+      format_description: 'an origin only: scheme, host and optional port, no path'
   description: Structured team documentation with books, chapters, pages, role permissions and a REST API; includes a private MariaDB database.
 tags: [documentation, knowledge, collaboration, open-source]
 features:

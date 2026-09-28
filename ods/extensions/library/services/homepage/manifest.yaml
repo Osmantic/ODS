@@ -27,11 +27,14 @@ service:
     required: true
     secret: true
     description: Password for the Homepage dashboard; not the ODS account password.
+    generate: password
   - key: HOMEPAGE_AUTH_SECRET
     required: true
     secret: true
     description: Persistent random session signing secret, at least 32 characters.
       Rotation invalidates sessions.
+    min_length: 32
+    generate: token
   - key: HOMEPAGE_EXTERNAL_URL
     required: false
     default: http://localhost:11038

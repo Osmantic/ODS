@@ -87,6 +87,7 @@ make_install() {
     mkdir -p "$install_dir/lib"
     cp "$TARGET" "$install_dir/ods-uninstall.sh"
     cp "$ROOT_DIR/lib/safe-env.sh" "$install_dir/lib/safe-env.sh"
+    cp "$ROOT_DIR/lib/system-uninstall.sh" "$install_dir/lib/system-uninstall.sh"
     mkdir -p "$install_dir/installers/macos/lib"
     cp "$ROOT_DIR/installers/macos/lib/pixel-native-uninstall.py" "$install_dir/installers/macos/lib/"
     touch "$install_dir/ods-cli"
@@ -108,6 +109,7 @@ run_uninstall() {
     local stub_dir="$3"
     local out_file="$4"
 
+    ODS_UNINSTALL_SYSTEMD_DIR="$TMP_DIR/systemd" \
     HOME="$home_dir" \
     INSTALL_DIR="$install_dir" \
     PATH="$stub_dir:$PATH" \
@@ -127,7 +129,7 @@ main() {
     trap 'chmod -R u+w "$TMP_DIR" 2>/dev/null; rm -rf "$TMP_DIR"' EXIT
 
     local stub_dir="$TMP_DIR/bin"
-    mkdir -p "$stub_dir"
+    mkdir -p "$stub_dir" "$TMP_DIR/systemd"
     make_stub_bin "$stub_dir"
     local uid
     uid="$(id -u)"

@@ -27,11 +27,20 @@ service:
     required: true
     secret: true
     description: Random 64-hex password for the ods single-user administrator.
+    format: hex64
+    pattern: '^[0-9a-f]+$'
+    format_description: lowercase only
+    generate: hex64
   - key: NIFI_SENSITIVE_PROPS_KEY
     required: true
     secret: true
     description: Independent random 64-hex flow encryption key; retain unchanged with
       backups.
+    format: hex64
+    pattern: '^[0-9a-f]+$'
+    format_description: lowercase only
+    distinct_from: [NIFI_ADMIN_PASSWORD]
+    generate: hex64
   - key: NIFI_PUBLIC_URL
     default: https://localhost:11146/nifi
     description: Browser URL; update together with NIFI_PORT if changing the published

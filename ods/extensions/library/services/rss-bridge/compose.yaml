@@ -9,7 +9,7 @@ services:
     security_opt:
     - no-new-privileges:true
     ports:
-    - 127.0.0.1:${RSS_BRIDGE_PORT:-11134}:80
+    - "${BIND_ADDRESS:-127.0.0.1}:${RSS_BRIDGE_PORT:-11134}:80"
     volumes:
     - rss-bridge-config:/config
     - rss-bridge-cache:/app/cache

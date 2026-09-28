@@ -974,9 +974,9 @@ export default function Pixel({ systemStatus = null }) {
             messages: [...visibleConversation, { role: 'assistant', content: '' }], preview,
             draft: typeof answerOverride === 'string' ? input : '', contextStart: contextStartRef.current, compactionRequestId:compactionRequestRef.current, workspaceOpen,
           })
-        } catch {
+        } catch (error) {
           requestIdRef.current = null
-          throw new Error('chat-recovery-storage-unavailable')
+          throw new Error(error?.code === 'conversation-changed' ? 'chat-recovery-conversation-changed' : 'chat-recovery-storage-unavailable')
         }
         const response = await fetch('/api/pixel/chat/stream', {
           method: 'POST',
@@ -1196,12 +1196,13 @@ export default function Pixel({ systemStatus = null }) {
       finishAttempt(attempt)
     } catch (error) {
       if (isCurrentTurn() && error?.name !== 'AbortError') {
-        const storageFailed = error?.message === 'chat-recovery-storage-unavailable'
+        const conversationChanged = error?.message === 'chat-recovery-conversation-changed'
+        const storageFailed = conversationChanged || error?.message === 'chat-recovery-storage-unavailable'
         const historyTooLarge=error?.message==='history-request-too-large'
         setInterrupted(!storageFailed && !historyTooLarge)
         if (storageFailed || historyTooLarge) setInput(trimmed)
         setMessages(previous => replaceLastAssistant(previous, {
-          content: historyTooLarge?'The encoded conversation exceeds the 8 MB request limit. No task was started. Export this conversation before starting a new chat.':storageFailed ? 'Could not save the request for recovery. No task was started. Check browser storage and try again.' : latestAssistantText || 'Request failed',
+          content: historyTooLarge?'The encoded conversation exceeds the 8 MB request limit. No task was started. Export this conversation before starting a new chat.':conversationChanged ? 'This conversation changed in another tab. No task was started. Download a recovery copy, then reload to read the saved version.' : storageFailed ? 'Could not save the request for recovery. No task was started. Check browser storage and try again.' : latestAssistantText || 'Request failed',
           status: 'error',
         }))
       }

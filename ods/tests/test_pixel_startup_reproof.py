@@ -118,17 +118,44 @@ class StartupTests(unittest.TestCase):
 
     def test_busy_model_lifecycle_has_bounded_wait_without_execution(self):
         self.begin.return_value = (False, {})
-        self.call()
+        self.assertIs(self.call(), True)
         self.assertEqual(self.begin.call_count, 12)
         self.assertEqual(self.sleep.call_count, 11)
         self.run.assert_not_called()
         self.end.assert_not_called()
 
+    def test_lock_contention_alone_is_a_deferral_not_a_readiness_warning(self):
+        # A long model download owns the lifecycle lock for the whole window.
+        # The helper never ran, so readiness was not observed to be degraded.
+        self.begin.return_value = (False, {'operation': 'model_download',
+                                           'target': 'model.gguf'})
+        with self.assertLogs('test', level='INFO') as logs:
+            self.assertIs(self.call(), True)
+        self.run.assert_not_called()
+        self.assertEqual(logs.output, [
+            'INFO:test:Pixel access reproof deferred while model_download is in progress'])
+
+    def test_contention_then_unavailable_preflight_still_warns(self):
+        self.begin.side_effect = [(False, {'operation': 'model_download'})] * 11 + [(True, {})]
+        failure = {'stage': 'status-unavailable', 'projection': {'available': False,
+            'pending': False, 'busy': False, 'reason': 'runtime-unavailable-or-busy'}}
+        self.run.return_value = types.SimpleNamespace(returncode=1, stderr=json.dumps(failure).encode())
+        with self.assertLogs('test', level='INFO') as logs:
+            self.assertIs(self.call(), True)
+        self.run.assert_called_once()
+        self.assertEqual(logs.output, [
+            'WARNING:test:Pixel startup reproof readiness window exhausted '
+            '(last stage=status-unavailable reason=runtime-unavailable-or-busy)'])
+
     def test_unavailable_preflight_retries_but_uncertain_change_does_not(self):
         failure = {'stage': 'unsafe-state', 'projection': {'available': False,
             'pending': False, 'busy': False, 'reason': 'admission-gate-unavailable'}}
         self.run.return_value = types.SimpleNamespace(returncode=1, stderr=json.dumps(failure).encode())
-        self.call()
+        with self.assertLogs('test', level='WARNING') as logs:
+            self.assertIs(self.call(), True)
+        self.assertEqual(logs.output, [
+            'WARNING:test:Pixel startup reproof readiness window exhausted '
+            '(last stage=unsafe-state reason=admission-gate-unavailable)'])
         self.assertEqual(self.run.call_count, 12)
         self.assertEqual(self.end.call_count, 12)
         self.run.reset_mock()

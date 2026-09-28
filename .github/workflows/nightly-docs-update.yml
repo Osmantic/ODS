@@ -202,7 +202,7 @@ jobs:
             echo "COMMITS_TO_ANALYZE: ${COMMITS}"
           } | npx -y @anthropic-ai/claude-code@2.1.89 \
             --print \
-            --model claude-sonnet-4-6-v1 \
+            --model claude-sonnet-4-6 \
             --max-turns 40 \
             --allowedTools "Read,Edit,Glob,Grep,Bash(git log *),Bash(git diff *)"
 

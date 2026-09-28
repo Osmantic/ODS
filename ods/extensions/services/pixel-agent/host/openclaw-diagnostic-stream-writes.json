@@ -1,0 +1,12 @@
+{
+  "version": "2026.6.33",
+  "sourceSha256": "fe7f3e7b20d2ef191b28c88fc759781c90f33d93ff9bb834cba2055a70decdd2",
+  "patchedSha256": "efeb0c2cf6936ebbb3104e155a92495b529092f21b1211efe3e24b3695ae590b",
+  "replacements": [
+    [
+      "\treturn new Proxy(stream, { get(target, property, receiver) {\n\t\tif (property === Symbol.asyncIterator) return observedIterator;\n\t\tif (property === \"result\" && observedResult) return observedResult;\n\t\tconst value = Reflect.get(target, property, receiver);\n\t\treturn typeof value === \"function\" ? value.bind(target) : value;\n\t} });\n",
+      "\tlet outerIterator;\n\tlet outerResult;\n\treturn new Proxy(stream, {\n\t\tget(target, property, receiver) {\n\t\t\tif (property === Symbol.asyncIterator) return outerIterator ?? observedIterator;\n\t\t\tif (property === \"result\" && observedResult) return outerResult ?? observedResult;\n\t\t\tconst value = Reflect.get(target, property, receiver);\n\t\t\treturn typeof value === \"function\" ? value.bind(target) : value;\n\t\t},\n\t\tset(target, property, value, receiver) {\n\t\t\tif (property === Symbol.asyncIterator) outerIterator = value;\n\t\t\telse if (property === \"result\" && observedResult) outerResult = value;\n\t\t\telse return Reflect.set(target, property, value, receiver);\n\t\t\treturn true;\n\t\t}\n\t});\n"
+    ]
+  ],
+  "previousReplacements": {}
+}

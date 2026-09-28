@@ -61,6 +61,64 @@ function Resolve-WindowsODSPort {
     return $DefaultPort
 }
 
+function Test-WindowsLemonadeWhisperPortConflict {
+    <#
+    .SYNOPSIS
+        Side-effect-free probe: does any process listening on host port 9000
+        look like a native Lemonade server/router? Scans ALL listeners, not
+        just the first. Never stops processes or prints command lines.
+    #>
+    param([int]$Port = 9000)
+
+    try {
+        $connections = @(Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue)
+    } catch {
+        return $false
+    }
+    if ($connections.Count -eq 0) { return $false }
+
+    $seenPids = @{}
+    foreach ($conn in $connections) {
+        $listenerPid = $conn.OwningProcess
+        if (-not $listenerPid -or $seenPids.ContainsKey($listenerPid)) { continue }
+        $seenPids[$listenerPid] = $true
+        try {
+            $proc = Get-Process -Id $listenerPid -ErrorAction SilentlyContinue
+        } catch {
+            $proc = $null
+        }
+        if (-not $proc) { continue }
+        $name = [string]$proc.ProcessName
+        if ($name -match '^(?i:lemonadeserver|lemonade-server|lemonade-router)$') {
+            return $true
+        }
+    }
+    return $false
+}
+
+function Resolve-WindowsWhisperHostPort {
+    <#
+    .SYNOPSIS
+        Resolve the Whisper host port. Non-9000 configured ports pass through
+        untouched (no probe). Port 9000 moves to 9100 only for managed
+        AMD/lemonade/host installs or an actual Lemonade listener conflict.
+    #>
+    param(
+        [string]$ConfiguredPort = "9000",
+        [string]$GpuBackend = "",
+        [string]$AmdInferenceRuntime = "",
+        [string]$AmdInferenceLocation = ""
+    )
+
+    if ($ConfiguredPort -ne '9000') { return $ConfiguredPort }
+
+    $managedAmd = ($GpuBackend -eq 'amd' -and $AmdInferenceRuntime -eq 'lemonade' -and $AmdInferenceLocation -eq 'host')
+    if ($managedAmd) { return '9100' }
+
+    if (Test-WindowsLemonadeWhisperPortConflict -Port 9000) { return '9100' }
+    return '9000'
+}
+
 function Get-ODSDockerMemoryGB {
     try {
         $raw = (& docker info --format "{{.MemTotal}}" 2>$null | Select-Object -First 1)
@@ -555,7 +613,7 @@ function ConvertTo-ODSDotenvValue {
         # Bash and Compose disagree about \` inside double-quoted dotenv
         # values. Normalize it only in this apostrophe fallback so both readers
         # receive the same safe text.
-        $text = $text.Replace('`', 'ˋ')
+        $text = $text.Replace('`', [string][char]0x02CB)
         $escaped = $text.Replace('\', '\\').Replace('"', '\"').Replace('$', '\$')
         return '"' + $escaped + '"'
     }
@@ -659,15 +717,15 @@ function New-ODSEnv {
 
     # Lemonade's native Windows router reserves host port 9000 for websockets.
     # Keep Whisper's container port unchanged, but move its host port out of the
-    # way on managed AMD/Lemonade installs. Existing .env choices still win.
-    $whisperPortDefault = "9000"
-    if ($GpuBackend -eq "amd" -and $AmdInferenceRuntime -eq "lemonade" -and $AmdInferenceLocation -eq "host") {
-        $whisperPortDefault = "9100"
-    }
-    $whisperPort = Get-EnvOrNew "WHISPER_PORT" $whisperPortDefault
-    if ($whisperPortDefault -eq "9100" -and $whisperPort -eq "9000") {
-        $whisperPort = "9100"
-    }
+    # way on managed AMD/Lemonade installs or when a Lemonade process actually
+    # listens on 9000 (e.g. Docker publishing Whisper there while an unrelated
+    # LemonadeServer holds loopback 9000). Custom .env ports remain unchanged.
+    $whisperPort = Resolve-WindowsODSPort `
+        -Name "WHISPER_PORT" -DefaultPort 9000 `
+        -ExistingEnv $existingEnv -InstallDir $InstallDir
+    $whisperPort = Resolve-WindowsWhisperHostPort -ConfiguredPort ([string]$whisperPort) `
+        -GpuBackend $GpuBackend -AmdInferenceRuntime $AmdInferenceRuntime `
+        -AmdInferenceLocation $AmdInferenceLocation
 
     function Get-ExistingTokenSpyApiKey {
         $tokenSpyKeyFile = Join-Path $InstallDir "data\token-spy\token-spy-api-key.txt"
@@ -844,6 +902,10 @@ function New-ODSEnv {
         $llamaMemoryDefault = Get-ODSDefaultNvidiaLlamaMemoryLimit `
             -AvailableRamGB $availableRamGB
         $llamaServerMemoryLimit = Get-EnvOrNew "LLAMA_SERVER_MEMORY_LIMIT" $llamaMemoryDefault
+    } elseif ($GpuBackend -in @("none", "cpu") -and $effectiveODSMode -ne "cloud" -and $TierConfig.LLAMA_SERVER_MEMORY_LIMIT) {
+        # CPU runtime profiles size the container for their model; without
+        # one the CPU compose default (6G) applies as before.
+        $llamaServerMemoryLimit = Get-EnvOrNew "LLAMA_SERVER_MEMORY_LIMIT" $TierConfig.LLAMA_SERVER_MEMORY_LIMIT
     }
     $existingLemonadeModel = Get-EnvOrNew "LEMONADE_MODEL" ""
     $existingGgufFile = Get-EnvOrNew "GGUF_FILE" ""
@@ -1065,8 +1127,8 @@ MODEL_PERFORMANCE_LABEL=$performanceLabel
 GPU_BACKEND=$GpuBackend
 SYSTEM_RAM_GB=$SystemRamGB
 N_GPU_LAYERS=$nGpuLayers
-$(if ($LlamaServerImage) { "LLAMA_SERVER_IMAGE=$LlamaServerImage" } else { "#LLAMA_SERVER_IMAGE=ghcr.io/ggml-org/llama.cpp:server-cuda" })
-$(if ($llamaServerImageFallback) { "LLAMA_SERVER_IMAGE_FALLBACK=$llamaServerImageFallback" } else { "#LLAMA_SERVER_IMAGE_FALLBACK=ghcr.io/ggml-org/llama.cpp:server-cuda-b9014" })
+$(if ($LlamaServerImage) { "LLAMA_SERVER_IMAGE=$LlamaServerImage" } else { "#LLAMA_SERVER_IMAGE=ghcr.io/ggml-org/llama.cpp:server-cuda-b9014@sha256:fcf285820892e7ce3218379634e3590826fc697e8b6745b9392072462e355c4f" })
+$(if ($llamaServerImageFallback) { "LLAMA_SERVER_IMAGE_FALLBACK=$llamaServerImageFallback" } else { "#LLAMA_SERVER_IMAGE_FALLBACK=ghcr.io/ggml-org/llama.cpp:server-cuda-b9014@sha256:fcf285820892e7ce3218379634e3590826fc697e8b6745b9392072462e355c4f" })
 $(if ($llamaServerMemoryLimit) { "LLAMA_SERVER_MEMORY_LIMIT=$llamaServerMemoryLimit" })
 $(if ($LemonadeServerImage) { "LEMONADE_SERVER_IMAGE=$LemonadeServerImage" } else { "#LEMONADE_SERVER_IMAGE=ghcr.io/lemonade-sdk/lemonade-server:v10.2.0" })
 #=== llama.cpp Runtime Tuning ===
@@ -1078,6 +1140,8 @@ LLAMA_ARG_CACHE_TYPE_V=$(Get-EnvOrNew "LLAMA_ARG_CACHE_TYPE_V" "$(if ($TierConfi
 $(if ($TierConfig.LLAMA_ARG_N_CPU_MOE) { "LLAMA_ARG_N_CPU_MOE=$($TierConfig.LLAMA_ARG_N_CPU_MOE)" })
 $(if ($TierConfig.LLAMA_ARG_NO_CACHE_PROMPT) { "LLAMA_ARG_NO_CACHE_PROMPT=$($TierConfig.LLAMA_ARG_NO_CACHE_PROMPT)" })
 $(if ($TierConfig.LLAMA_ARG_CHECKPOINT_EVERY_NT) { "LLAMA_ARG_CHECKPOINT_EVERY_NT=$($TierConfig.LLAMA_ARG_CHECKPOINT_EVERY_NT)" })
+$(if ($TierConfig.LLAMA_ARG_CTX_CHECKPOINTS) { "LLAMA_ARG_CTX_CHECKPOINTS=$($TierConfig.LLAMA_ARG_CTX_CHECKPOINTS)" })
+$(if ($TierConfig.LLAMA_ARG_CACHE_RAM) { "LLAMA_ARG_CACHE_RAM=$($TierConfig.LLAMA_ARG_CACHE_RAM)" })
 # NVIDIA/CPU llama.cpp images default to lossless n-gram speculation (ngram-mod).
 # LLAMA_SPEC_TYPE=none turns it off; unset keeps the default.
 $(if ($llamaSpecType) { "LLAMA_SPEC_TYPE=$llamaSpecType" })
@@ -1277,6 +1341,34 @@ litellm_settings:
     }
 }
 
+function Get-SearxngDefaultLanguage {
+    <#
+    .SYNOPSIS
+        Map a culture name (en-US, de-DE, zh-Hant-TW) to a SearXNG locale tag.
+    .DESCRIPTION
+        Mirrors ods_searxng_default_lang in installers/lib/searxng-locale.sh.
+        SearXNG refuses to start when search.default_lang is not one of its
+        locale tags, so only listed tags are returned; anything else is "en".
+    #>
+    param([string]$Locale = (Get-Culture).Name)
+
+    # searxng/searxng:2026.3.8-a563127a2 searx/sxng_locales.py
+    $tags = "af ar ar-SA be bg bg-BG ca cs cs-CZ cy da da-DK de de-AT de-CH de-DE el el-GR en en-AU en-CA en-GB en-IE en-IN en-NZ en-PH en-PK en-SG en-US en-ZA es es-AR es-CL es-CO es-ES es-MX es-PE et et-EE eu fa fi fi-FI fr fr-BE fr-CA fr-CH fr-FR ga gd gl he hi hr hu hu-HU id id-ID is it it-CH it-IT ja ja-JP kn ko ko-KR lt lv ml mr nb nb-NO nl nl-BE nl-NL pl pl-PL pt pt-BR pt-PT ro ro-RO ru ru-RU sk sl sq sv sv-SE ta te th th-TH tr tr-TR uk ur vi vi-VN zh zh-CN zh-HK zh-TW" -split ' '
+
+    $raw = (("$Locale" -split '[.@]')[0]) -replace '_', '-'
+    $parts = @($raw -split '-' | Where-Object { $_ })
+    if ($parts.Count -eq 0) { return "en" }
+    $lang = $parts[0].ToLowerInvariant()
+    if ($lang -cnotmatch '^[a-z]{2,3}$') { return "en" }
+    $region = $parts | Select-Object -Skip 1 | Where-Object { $_ -match '^[A-Za-z]{2}$' } | Select-Object -First 1
+    if ($region) {
+        $tag = "$lang-$($region.ToUpperInvariant())"
+        if ($tags -ccontains $tag) { return $tag }
+    }
+    if ($tags -ccontains $lang) { return $lang }
+    return "en"
+}
+
 function New-SearxngConfig {
     <#
     .SYNOPSIS
@@ -1284,11 +1376,26 @@ function New-SearxngConfig {
     #>
     param(
         [string]$InstallDir,
-        [string]$SecretKey
+        [string]$SecretKey,
+        [string]$SearchLanguage = (Get-SearxngDefaultLanguage)
     )
 
     $configDir = Join-Path (Join-Path $InstallDir "config") "searxng"
     New-Item -ItemType Directory -Path $configDir -Force | Out-Null
+
+    # Seznam stays the general-web fallback for when major engines refuse the
+    # household IP; keep its Czech-market .cz shops out unless the owner is
+    # Czech. Mirrors ods_searxng_hostnames_yaml in installers/lib/searxng-locale.sh.
+    $hostnames = ""
+    if (($SearchLanguage -split '-')[0] -ne "cs") {
+        $hostnames = @'
+hostnames:
+  # Seznam (below) is a Czech-market fallback; keep its .cz shops out of
+  # results unless the install locale is Czech.
+  remove:
+    - '\.cz$'
+'@
+    }
 
     $config = @"
 use_default_settings: true
@@ -1299,9 +1406,12 @@ server:
   limiter: false
 search:
   safe_search: 0
+  # Install locale. API clients send no language, so "auto" would mean "all".
+  default_lang: "$SearchLanguage"
   formats:
     - html
     - json
+$hostnames
 engines:
   - name: bing
     # Requalify before enabling: https://github.com/searxng/searxng/pull/6671

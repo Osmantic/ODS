@@ -1981,6 +1981,32 @@ else
 fi
 
 write_access_fixture
+python3 - "$ETC_DIR/pixel-access.json" <<'PY'
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+value = json.loads(path.read_text())
+value.pop("gateway_port")
+value.pop("edge_owner_key_sha256")
+path.write_text(json.dumps(value) + "\n")
+PY
+chmod 0600 "$ETC_DIR/pixel-access.json"
+if ods_pixel_uninstall_managed "$INSTALL_DIR" "$HOME_DIR"; then
+    fail "legacy four-field config accepted an unbound relay credential"
+else
+    [[ -e "$ETC_DIR/pixel-access-relay.key" && ! -s "$SYSTEMCTL_LOG" ]] \
+        && pass "legacy config with an unbound relay fails before mutation" \
+        || fail "legacy relay refusal mutated managed state"
+fi
+rm -f -- "$ETC_DIR/pixel-access-relay.key"
+if ods_pixel_uninstall_managed "$INSTALL_DIR" "$HOME_DIR" \
+    && [[ ! -e "$ETC_DIR/pixel-access.json" && ! -e "$ACCESS_STATE" \
+        && ! -e "$HOME_DIR/.config/ods/pixel-managed.json" ]]; then
+    pass "verified original four-field access configuration remains removable"
+else
+    fail "original access configuration was stranded by later gateway/relay fields"
+fi
+
+write_access_fixture
 rm -f -- "$INSTALL_DIR/bin/pixel_gateway_service.py" \
     "$LIBEXEC_DIR/ods-pixel-access/pixel_gateway_service.py"
 if ods_pixel_uninstall_managed "$INSTALL_DIR" "$HOME_DIR" \

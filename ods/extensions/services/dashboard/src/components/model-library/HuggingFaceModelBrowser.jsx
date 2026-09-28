@@ -20,6 +20,36 @@ import {
 
 const SEARCH_DELAY_MS = 350
 const SEARCH_TIMEOUT_MS = 30000
+const IMPORT_TIMEOUT_MS = 45000
+
+async function boundedJsonRequest(url, options = {}, timeout = SEARCH_TIMEOUT_MS) {
+  const controller = new AbortController()
+  let timer
+  try {
+    return await Promise.race([
+      (async () => {
+        const response = await fetch(url, { ...options, signal: controller.signal })
+        const body = await responseJson(response)
+        if (!response.ok) {
+          const error = new Error(errorMessage(body, 'Could not confirm the model operation.'))
+          error.rejected = (response.status >= 400 && response.status < 500) ||
+            response.headers?.get('X-ODS-Import-Started') === 'false'
+          throw error
+        }
+        return body
+      })(),
+      new Promise((_, reject) => {
+        timer = setTimeout(() => {
+          reject(new Error('The request timed out. Check download status before retrying.'))
+          controller.abort()
+        }, timeout)
+      }),
+    ])
+  } finally {
+    clearTimeout(timer)
+    controller.abort()
+  }
+}
 
 export default function HuggingFaceModelBrowser({ gpu, downloadBusy, onImportStarted }) {
   const [query, setQuery] = useState('')
@@ -34,6 +64,11 @@ export default function HuggingFaceModelBrowser({ gpu, downloadBusy, onImportSta
   const [detailsLoading, setDetailsLoading] = useState(false)
   const [detailsError, setDetailsError] = useState(null)
   const [importingArtifact, setImportingArtifact] = useState(null)
+  const [pendingImport, setPendingImport] = useState(null)
+  const [importNotice, setImportNotice] = useState('')
+  const [checkingImport, setCheckingImport] = useState(false)
+  const importLock = useRef(false)
+  const checkImportLock = useRef(false)
   const [searchAttempt, setSearchAttempt] = useState(0)
   const detailsRequestRef = useRef(0)
 
@@ -81,9 +116,7 @@ export default function HuggingFaceModelBrowser({ gpu, downloadBusy, onImportSta
     setDetailsError(null)
     setDetailsLoading(true)
     try {
-      const response = await fetch(`/api/models/huggingface/repositories/${encodeURI(model.id)}`)
-      const body = await responseJson(response)
-      if (!response.ok) throw new Error(errorMessage(body, 'Could not inspect this repository'))
+      const body = await boundedJsonRequest(`/api/models/huggingface/repositories/${encodeURI(model.id)}`)
       if (detailsRequestRef.current !== requestId) return
       if (body?.id !== model.id || !Array.isArray(body.artifacts)) {
         throw new Error('Could not read repository metadata. Retry details.')
@@ -97,7 +130,6 @@ export default function HuggingFaceModelBrowser({ gpu, downloadBusy, onImportSta
   }
 
   const closeRepository = () => {
-    if (importingArtifact) return
     detailsRequestRef.current += 1
     setSelectedRepo(null)
     setDetails(null)
@@ -105,29 +137,83 @@ export default function HuggingFaceModelBrowser({ gpu, downloadBusy, onImportSta
   }
 
   const importArtifact = async (artifact) => {
-    if (!details?.id || downloadBusy || importingArtifact) return
+    if (!details?.id || downloadBusy || pendingImport || importLock.current) return
+    importLock.current = true
+    const request = { repoId: details.id, artifactId: artifact.id }
+    setPendingImport({ ...request, startedAt: Date.now() })
+    setImportNotice('Starting the import. You can close this dialog; the download will continue on the host.')
     setImportingArtifact(artifact.id)
     setDetailsError(null)
     try {
-      const response = await fetch('/api/models/huggingface/import', {
+      const body = await boundedJsonRequest('/api/models/huggingface/import', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ repoId: details.id, artifactId: artifact.id }),
-      })
-      const body = await responseJson(response)
-      if (!response.ok) throw new Error(errorMessage(body, 'Could not start the GGUF import'))
-      await onImportStarted?.(body)
-      setSelectedRepo(null)
-      setDetails(null)
+        body: JSON.stringify(request),
+      }, IMPORT_TIMEOUT_MS)
+      if (typeof body?.modelId !== 'string' || !body.modelId.trim()) {
+        throw new Error('The import acknowledgement is incomplete.')
+      }
+      setPendingImport(null)
+      setImportNotice('')
+      Promise.resolve(onImportStarted?.(body)).catch(() => setImportNotice('Import accepted. Refresh Models to check download progress.'))
+      setSelectedRepo(current => current?.id === request.repoId ? null : current)
+      setDetails(current => current?.id === request.repoId ? null : current)
     } catch (requestError) {
-      setDetailsError(requestError.message)
+      if (requestError.rejected) setPendingImport(null)
+      setImportNotice(requestError.rejected ? requestError.message : `${requestError.message} The host may still be processing this import. Check its status; no second download has been requested.`)
     } finally {
       setImportingArtifact(null)
+      importLock.current = false
     }
   }
 
+  const reconcileImport = async () => {
+    if (!pendingImport || importLock.current || checkImportLock.current) return
+    checkImportLock.current = true
+    setCheckingImport(true)
+    try {
+      const [repository, catalog, progress] = await Promise.all([
+        boundedJsonRequest(`/api/models/huggingface/repositories/${encodeURI(pendingImport.repoId)}`),
+        boundedJsonRequest('/api/models'),
+        boundedJsonRequest('/api/models/download-status'),
+      ])
+      const artifact = repository.id === pendingImport.repoId && Array.isArray(repository.artifacts) && repository.artifacts.find(item => item.id === pendingImport.artifactId)
+      const model = artifact?.importedModelId && Array.isArray(catalog.models) && catalog.models.find(item => item.id === artifact.importedModelId)
+      const observed = progress.status === 'idle' && progress.lastTerminalStatus
+        ? progress.lastTerminalStatus : progress
+      const label = typeof observed.model === 'string' ? observed.model : ''
+      const matches = model && [model.id, model.gguf].some(value => typeof value === 'string' && value && (label === value || label.startsWith(value + ' (')))
+      const sampledAt = Date.parse(observed.updatedAt || '')
+      if (!matches || !Number.isFinite(sampledAt) || sampledAt < pendingImport.startedAt ||
+          !['downloading', 'verifying', 'complete', 'failed', 'error', 'cancelled', 'canceled'].includes(observed.status)) {
+        throw new Error('This import is not yet confirmed. Check status again before requesting another download.')
+      }
+      // A readback of this exact artifact resolves the uncertain POST. Never
+      // replay it: accepted downloads continue through the shared progress UI.
+      Promise.resolve(onImportStarted?.({ modelId: model.id, status: observed.status }))
+        .catch(() => setImportNotice('Import found. Refresh Models to check download progress.'))
+      setPendingImport(null)
+      setImportNotice('')
+      setSelectedRepo(null)
+      setDetails(null)
+    } catch (error) {
+      setImportNotice(error.message)
+    } finally {
+      checkImportLock.current = false
+      setCheckingImport(false)
+    }
+  }
+
+  const importStatus = importNotice && <div role="status" className="rounded-lg border border-theme-border p-3 text-sm">
+        <p>{importNotice}</p>
+        {pendingImport && <button type="button" onClick={reconcileImport} disabled={Boolean(importingArtifact || checkingImport)} className="mt-2 rounded border border-theme-border px-3 py-1 disabled:opacity-50">
+          {checkingImport ? 'Checking download…' : 'Check download status'}
+        </button>}
+      </div>
+
   return (
     <div className="space-y-4">
+      {!selectedRepo && importStatus}
       <section className="grid gap-3 border-b border-white/[0.06] pb-4 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
         <div className="flex min-w-0 items-center gap-3">
           <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-theme-border bg-theme-text-secondary/8">
@@ -234,8 +320,9 @@ export default function HuggingFaceModelBrowser({ gpu, downloadBusy, onImportSta
           loading={detailsLoading}
           error={detailsError}
           gpu={gpu}
-          downloadBusy={downloadBusy}
+          downloadBusy={downloadBusy || Boolean(pendingImport)}
           importingArtifact={importingArtifact}
+          importStatus={importStatus}
           onClose={closeRepository}
           onImport={importArtifact}
           onRetry={() => openRepository(selectedRepo)}
@@ -304,7 +391,7 @@ function RepositoryRow({ model, onInspect }) {
   )
 }
 
-function ArtifactDialog({ model, details, loading, error, gpu, downloadBusy, importingArtifact, onClose, onImport, onRetry }) {
+function ArtifactDialog({ model, details, loading, error, gpu, downloadBusy, importingArtifact, importStatus, onClose, onImport, onRetry }) {
   const [artifactFilter, setArtifactFilter] = useState('')
   const filteredArtifacts = useMemo(() => {
     const query = artifactFilter.trim().toLowerCase()
@@ -324,12 +411,13 @@ function ArtifactDialog({ model, details, loading, error, gpu, downloadBusy, imp
             </div>
             <p className="mt-1 text-xs text-theme-text-muted">Select an exact, integrity-qualified GGUF artifact.</p>
           </div>
-          <button type="button" onClick={onClose} disabled={Boolean(importingArtifact)} className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-white/[0.08] text-theme-text-muted hover:text-theme-text disabled:opacity-40" title="Close">
+          <button type="button" onClick={onClose} className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-white/[0.08] text-theme-text-muted hover:text-theme-text" title="Close">
             <X size={15} />
           </button>
         </header>
 
         <div className="max-h-[calc(88vh-72px)] overflow-y-auto p-5">
+          {importStatus}
           {loading && (
             <div className="flex min-h-52 items-center justify-center gap-3 text-sm text-theme-text-muted">
               <Loader2 size={18} className="animate-spin text-theme-text-secondary" /> Reading repository metadata...

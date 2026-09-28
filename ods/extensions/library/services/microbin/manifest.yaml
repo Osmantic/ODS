@@ -27,10 +27,12 @@ service:
     required: true
     secret: true
     description: Password for site-wide HTTP Basic login, username ods.
+    generate: password
   - key: MICROBIN_ADMIN_PASSWORD
     required: true
     secret: true
     description: Separate administrator password; replaces the upstream default.
+    generate: password
   ui_path: /
 tags:
 - sharing

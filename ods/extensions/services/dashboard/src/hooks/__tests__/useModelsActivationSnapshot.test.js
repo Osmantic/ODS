@@ -116,3 +116,44 @@ it('confirms three sequential swaps against each requested context',async()=>{
   }
   expect(fetch.mock.calls.filter(([,options])=>options?.method==='POST')).toHaveLength(3)
 })
+
+it('confirms a context change when faster background reads overtake both nine-second confirmation requests',async()=>{
+  let reads=0,contextLength=32768,settled=false
+  fetch.mockImplementation(async(_url,options)=>{
+    if(options?.method==='POST'){
+      expect(JSON.parse(options.body)).toEqual({context_length:16384})
+      contextLength=16384
+      return {ok:true}
+    }
+    const index=++reads
+    const data=await snapshot('target').json()
+    data.models=data.models.map(model=>({...model,contextLength}))
+    data.modelLifecycle=null
+    data.odsMode=data.configuredMode='lemonade'
+    data.llmBackend='lemonade'
+    data.externalLemonade=true
+    data.modelManagement={managed:true,canActivate:true,canUnload:true,running:true}
+    // Initial inventory is immediate. Confirmation reads start at 0s and 9s;
+    // background reads start every 2s and publish newer matching snapshots.
+    if(index>1)await new Promise(resolve=>setTimeout(resolve,[2,7].includes(index)?9000:1000))
+    return {ok:true,json:async()=>data}
+  })
+  Object.defineProperty(document,'hidden',{configurable:true,value:false})
+  const {result}=renderHook(()=>useModels())
+  await waitFor(()=>expect(result.current.loading).toBe(false))
+  vi.useFakeTimers()
+  let activation
+  act(()=>{activation=result.current.loadModel('target',{contextLength:16384});activation.then(()=>{settled=true})})
+  await act(async()=>{await vi.advanceTimersByTimeAsync(8000)})
+  expect(result.current.models.find(model=>model.id==='target').contextLength).toBe(16384)
+  expect(result.current.activationLoading).toBe('target')
+  expect(settled).toBe(false)
+  await act(async()=>{await vi.advanceTimersByTimeAsync(11000)})
+  expect(settled).toBe(true)
+  await activation
+  expect(result.current.activationLoading).toBeNull()
+  expect(result.current.actionLoadingModels).toEqual([])
+  expect(result.current.modelManagement.canUnload).toBe(true)
+  expect(result.current.error).toBeNull()
+  expect(fetch.mock.calls.filter(([,options])=>options?.method==='POST')).toHaveLength(1)
+})

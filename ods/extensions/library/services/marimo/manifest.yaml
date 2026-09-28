@@ -28,6 +28,8 @@ service:
     secret: true
     description: 64-hex editor authentication token; holders can execute notebook
       code.
+    format: hex64
+    generate: hex64
   ui_path: /
 tags:
 - notebooks

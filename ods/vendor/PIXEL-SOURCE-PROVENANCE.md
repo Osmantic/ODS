@@ -36,3 +36,26 @@ validation. Native boundary tests cover 25 and 32 accepted tools and 33 rejected
 the ODS installer additionally configures the pinned bundle using its actual
 generated extension tool list. The bundle retains its public synthetic identity
 and timestamp, contains one root commit, and two regenerations were byte-identical.
+
+## Pending upstream change: Anthropic work-provider model
+
+Pixel's Anthropic work-provider lane is pinned to `claude-sonnet-4-5-20250929`.
+Anthropic retires that snapshot no sooner than 2026-09-29. The profile's
+`modelSelection` is `fixed`, and an owner-private policy may only repeat
+`defaultModel`, so ODS cannot override it without regenerating this bundle.
+The lane is off unless an owner-private policy enables it with the owner's own
+Anthropic key; ODS never does. Portal chat uses LiteLLM's `ods/current` route.
+The upstream Pixel fix is to change the ID to `claude-sonnet-4-6` in:
+
+- `deploy/work-provider/profiles/anthropic.json` (`defaultModel`)
+- `deploy/work-provider/neutral-corpus.mjs` (`ANTHROPIC_MODEL`)
+- `deploy/work-provider/provider-smoke-core.mjs` (the `anthropic` smoke model)
+- `tests/provider-ingress-smoke.test.mjs`, `tests/work-provider-adversarial.test.mjs`
+  and `tests/work-provider-qualification-remote-lanes.test.mjs`
+- `deploy/work-provider/README.md` and `CHANGELOG.md`
+
+Owners who enabled the lane must update any `model` in their policy and requalify
+the lane; the router rejects a qualification for another model. Pixel's OpenRouter
+profile has a placeholder `anthropic/claude-sonnet-4-5` default, which is never
+sent because that lane is owner-pinned. `tests/test-cloud-model-ids.py` tracks
+both IDs and fails once a re-vendor drops them.

@@ -567,13 +567,33 @@ detect_gpu() {
     GPU_COUNT=0
     GPU_BACKEND="cpu"
     GPU_MEMORY_TYPE="none"
-    warn "No GPU detected. Falling back to CPU-only mode (inference will be slow)."
-    log "CPU-only mode: llama.cpp will use CPU inference. Consider adding a GPU for better performance."
+    if [[ "${LEMONADE_EXTERNAL:-false}" == "true" && -n "${LEMONADE_GPU_NAME:-}" ]]; then
+        # Windows under WSL: the GPU is used by Lemonade on the host, not here.
+        ai "No GPU inside this Linux environment; the model runs on ${LEMONADE_GPU_NAME} through Lemonade."
+        log "Model inference uses the external Lemonade GPU: ${LEMONADE_GPU_NAME}."
+    else
+        warn "No GPU detected. Falling back to CPU-only mode (inference will be slow)."
+        log "CPU-only mode: llama.cpp will use CPU inference. Consider adding a GPU for better performance."
+    fi
     return 1
 }
 
 MIN_DRIVER_VERSION=570
 MIN_WHISPER_CUDA_DRIVER_VERSION=575
+
+# WSL2 receives the NVIDIA driver from Windows through /usr/lib/wsl/lib.
+# Installing a Linux nvidia-driver package inside the distro shadows those
+# libraries and breaks GPU passthrough, and "reboot" inside WSL does not load
+# a Windows driver. An old WSL driver is therefore a Windows-side fix only.
+ods_wsl_nvidia_driver_too_old() {
+    local driver="${1:-unknown}"
+    ai_bad "NVIDIA driver ${driver} comes from Windows and is older than ${MIN_DRIVER_VERSION}."
+    ai "Update the NVIDIA driver on Windows (NVIDIA App or nvidia.com), then run in PowerShell:"
+    ai "  wsl --shutdown"
+    ai "Reopen Ubuntu, confirm nvidia-smi shows driver >= ${MIN_DRIVER_VERSION}, and re-run ODS."
+    ai "Do not install NVIDIA drivers inside WSL; that breaks GPU passthrough."
+    error "NVIDIA driver ${driver} on Windows is below ${MIN_DRIVER_VERSION}."
+}
 
 ods_whisper_cuda_supported() {
     local backend="${1:-${GPU_BACKEND:-cpu}}"

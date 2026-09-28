@@ -28,11 +28,16 @@ service:
     secret: true
     description: 64-hex initial administrator password for ods; existing users are
       not reset.
+    format: hex64
+    generate: hex64
   - key: GRAFANA_SECRET_KEY
     required: true
     secret: true
     description: Distinct stable 64-hex key protecting stored data-source credentials;
       preserve with backups.
+    format: hex64
+    distinct_from: [GRAFANA_ADMIN_PASSWORD]
+    generate: hex64
   ui_path: /
 tags:
 - observability

@@ -646,6 +646,13 @@ class TestProgressWrites:
 
 class TestResolveAgentBindAddr:
 
+    @pytest.fixture(autouse=True)
+    def native_daemon_info(self, monkeypatch):
+        monkeypatch.setattr(
+            _mod.subprocess, "run",
+            lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 0, "Ubuntu 24.04 LTS\n", ""),
+        )
+
     def test_explicit_bind_wins(self):
         assert _resolve_agent_bind_addr({"ODS_AGENT_BIND": "0.0.0.0"}, "Linux") == "0.0.0.0"
         assert _resolve_agent_bind_addr({"ODS_AGENT_BIND": "192.168.1.10"}, "Linux") == "192.168.1.10"
@@ -698,6 +705,23 @@ class TestResolveAgentBindAddr:
         )
         assert "--require-ods-network" in unit
         assert "StartLimitIntervalSec=0" in unit
+        assert "Restart=on-failure" in unit
+        assert "RestartSec=5" in unit
+
+    @pytest.mark.parametrize('gpu_backend', ['nvidia', 'amd', 'cpu'])
+    def test_wsl_boot_recovers_after_docker_starts_without_guessing_route(self, monkeypatch, gpu_backend):
+        results = iter([subprocess.CompletedProcess([], 1, '', 'daemon starting'),
+                        subprocess.CompletedProcess([], 0, 'Docker Desktop\n', '')])
+        monkeypatch.setattr(_mod, '_running_under_wsl', lambda *_args: True)
+        monkeypatch.setattr(_mod.subprocess, 'run', lambda *_args, **_kwargs: next(results))
+        monkeypatch.setattr(_mod, '_detect_docker_bridge_gateway',
+                            lambda: pytest.fail('unknown/Desktop daemon must not guess a native bridge'))
+        env = {'GPU_BACKEND': gpu_backend}
+        with pytest.raises(RuntimeError, match='Cannot identify'):
+            _resolve_agent_bind_addr(env, 'Linux', require_ods_network=True)
+        # The installed service retries the same entry point, without a
+        # sticky failure or fallback address surviving the previous attempt.
+        assert _resolve_agent_bind_addr(env, 'Linux', require_ods_network=True) == '127.0.0.1'
 
     def test_wsl_native_docker_uses_locally_owned_bridge_gateway(self, monkeypatch):
         monkeypatch.setattr(_mod, "_running_under_wsl", lambda *_args, **_kwargs: True)
@@ -716,6 +740,35 @@ class TestResolveAgentBindAddr:
         monkeypatch.setattr(_mod, "_local_bind_address_available", lambda _address: False)
 
         assert _resolve_agent_bind_addr({}, "Linux") == "127.0.0.1"
+
+    def test_wsl_desktop_ignores_leftover_bindable_native_bridge(self, monkeypatch):
+        monkeypatch.setattr(_mod, "_running_under_wsl", lambda *_args: True)
+        monkeypatch.setattr(_mod, "_detect_docker_bridge_gateway", lambda: "172.17.0.1")
+        monkeypatch.setattr(_mod, "_local_bind_address_available", lambda _address: True)
+        monkeypatch.setattr(
+            _mod.subprocess, "run",
+            lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 0, "Docker Desktop\n", ""),
+        )
+        assert _resolve_agent_bind_addr({}, "Linux", require_ods_network=True) == "127.0.0.1"
+
+    @pytest.mark.parametrize("returncode,output", [(1, ""), (0, "")])
+    def test_wsl_refuses_unknown_daemon_route(self, monkeypatch, returncode, output):
+        monkeypatch.setattr(_mod, "_running_under_wsl", lambda *_args: True)
+        monkeypatch.setattr(
+            _mod.subprocess, "run",
+            lambda *args, **kwargs: subprocess.CompletedProcess(args[0], returncode, output, ""),
+        )
+        with pytest.raises(RuntimeError, match="Cannot identify the WSL Docker daemon"):
+            _resolve_agent_bind_addr({}, "Linux", require_ods_network=True)
+
+    @pytest.mark.parametrize("error", [OSError("missing docker"), subprocess.TimeoutExpired("docker", 10)])
+    def test_wsl_daemon_io_failure_is_actionable(self, monkeypatch, error):
+        monkeypatch.setattr(_mod, "_running_under_wsl", lambda *_args: True)
+        def fail(*args, **kwargs):
+            raise error
+        monkeypatch.setattr(_mod.subprocess, "run", fail)
+        with pytest.raises(RuntimeError, match="Cannot identify the WSL Docker daemon"):
+            _resolve_agent_bind_addr({}, "Linux", require_ods_network=True)
 
     def test_linux_falls_back_to_bridge_gateway(self, monkeypatch):
         monkeypatch.setattr(_mod, "_running_under_wsl", lambda *_args, **_kwargs: False)
@@ -5675,9 +5728,11 @@ class TestModelActivationModeAndMacosBridge:
             "auto",
             "--parallel",
             "1",
+            "--metrics",
+            # No tuning helper in this install: the reasoning format arrives
+            # through its fallback instead of --reasoning (b9014).
             "--reasoning-format",
             "none",
-            "--metrics",
         ]
         assert pid_file.read_text(encoding="utf-8").strip() == "4321"
 
@@ -6619,14 +6674,19 @@ class TestEnableRetry:
 
         monkeypatch.setattr(_mod, "docker_compose_action",
                             lambda sid, act: (True, ""))
-        ticks = iter([0, 0, 2])
-        monkeypatch.setattr(_mod.time, "monotonic", lambda: next(ticks, 2))
+        # Body and startup deadlines observe the same monotonic clock. Keep
+        # reads side-effect free and advance time with the container probe,
+        # so adding deadline observations cannot exhaust a finite tick list.
+        now = [0.0]
+        monkeypatch.setattr(_mod.time, "monotonic", lambda: now[0])
         monkeypatch.setattr(_mod.time, "sleep", lambda *_args: None)
 
         inspect_calls = []
 
         def fake_run(cmd, *args, **kwargs):
             inspect_calls.append(cmd)
+            if cmd[:3] == ["docker", "inspect", "--format"]:
+                now[0] += 2.0
             return subprocess.CompletedProcess(args=cmd, returncode=0,
                                                stdout="exited|boom", stderr="")
 
@@ -6953,6 +7013,12 @@ class TestInstallStatePollBehavior:
 
         def fake_run(argv, **kwargs):
             calls.append({"argv": list(argv), "kwargs": dict(kwargs)})
+
+            # The failure diagnostic's state and log reads: nothing to add.
+            if list(argv[:3]) == ["docker", "inspect", "--format"] and argv[3] == "{{json .State}}":
+                return _CP(0, "{}", "")
+            if list(argv[:2]) == ["docker", "logs"]:
+                return _CP(0, "", "")
 
             # docker inspect ... -> consume next scripted response
             if (len(argv) >= 2 and argv[0] == "docker" and argv[1] == "inspect"):
@@ -7434,6 +7500,39 @@ class TestModelDeleteSafety:
         monkeypatch.setattr(_mod, "INSTALL_DIR", install_dir)
         monkeypatch.setattr(_mod, "AGENT_API_KEY", "test-key")
         return install_dir, models_dir
+
+    @pytest.mark.parametrize('managed', [False, True])
+    def test_registered_external_store_does_not_grant_deletion(self, tmp_path, monkeypatch, managed):
+        install, _ = self._setup(tmp_path, monkeypatch)
+        external = tmp_path / 'LM Studio models'
+        external.mkdir()
+        target = external / 'external.gguf'
+        target.write_bytes(b'external model')
+        (install / 'data/model-stores.json').write_text(json.dumps({'schemaVersion': 1, 'stores': [
+            {'id': 'lm-studio', 'hostPath': str(external), 'containerPath': '/model-stores/lm-studio'}]}))
+        monkeypatch.setattr(_mod, '_managed_wsl_lemonade', lambda _env:
+                            {'managed': managed, 'plan': {'GgufFile': 'other.gguf'}})
+        monkeypatch.setattr(_mod._wsl_lemonade, 'model_store', lambda *_args: tmp_path / 'owned-windows-store')
+        monkeypatch.setattr(_mod, '_live_runtime_has_model',
+                            lambda *_args: pytest.fail('ODS inactivity cannot authorize deleting an external library'))
+        handler = _FakeHandler(json.dumps({'gguf_file': target.name}).encode())
+        _mod.AgentHandler._handle_model_delete(handler)
+        assert handler.response_code == 409
+        assert handler.parse_response()['code'] == 'model_store_read_only'
+        assert target.read_bytes() == b'external model'
+
+    def test_default_model_hardlinked_to_another_library_is_preserved(self, tmp_path, monkeypatch):
+        _install, models = self._setup(tmp_path, monkeypatch)
+        target = models / 'shared.gguf'
+        target.write_bytes(b'shared model')
+        external = tmp_path / 'external.gguf'
+        os.link(target, external)
+        monkeypatch.setattr(_mod, '_live_runtime_has_model', lambda *_args: False)
+        handler = _FakeHandler(json.dumps({'gguf_file': target.name}).encode())
+        _mod.AgentHandler._handle_model_delete(handler)
+        assert handler.response_code == 409
+        assert handler.parse_response()['code'] == 'model_artifact_shared'
+        assert target.read_bytes() == external.read_bytes() == b'shared model'
 
     def test_split_delete_clears_status_naming_deleted_part(self, tmp_path, monkeypatch):
         install_dir, models_dir = self._setup(tmp_path, monkeypatch)

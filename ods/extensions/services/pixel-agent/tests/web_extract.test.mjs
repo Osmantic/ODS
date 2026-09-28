@@ -90,7 +90,8 @@ for (const scenario of ['success', 'missing-repository', 'redirect-loop', 'block
           throw new Error('aborted');
         }
         if (scenario === 'aborted') controller.abort();
-        const status = calls.length === 1 ? scenario === 'forbidden' ? 403 : 404
+        // A 403 is refused again by the single plain fallback request.
+        const status = scenario === 'forbidden' ? 403 : calls.length === 1 ? 404
           : ['missing-repository','redirect-loop'].includes(scenario) ? 404 : 200;
         return {response:new Response(status === 200 ? 'Actual repository file listing' : 'Missing', {
           status, headers:{'Content-Type':'text/plain'},
@@ -101,8 +102,13 @@ for (const scenario of ['success', 'missing-repository', 'redirect-loop', 'block
       extractBasicHtmlContent:async ({html}) => ({text:html}),
     });
     const result = await tool.execute('recover', {url:source,query:'installation'}, controller.signal);
-    assert.equal(calls.length, scenario === 'forbidden' ? 1 : 2);
-    if (calls.length === 2) {
+    assert.equal(calls.length, 2);
+    if (scenario === 'forbidden') {
+      // Only a missing file leads to the repository page; a refusal does not.
+      assert.deepEqual(calls.map(call => call.url), [source, source]);
+      assert.equal(result.details.recovery, undefined);
+      assert.equal(result.details.status, 403);
+    } else {
       assert.equal(calls[1].url, 'https://github.com/owner/project');
       assert.equal(calls[1].signal, controller.signal);
       assert.equal(calls[1].useEnvProxy, false);
@@ -115,7 +121,7 @@ for (const scenario of ['success', 'missing-repository', 'redirect-loop', 'block
       assert.equal(result.details.matched, false);
       assert.match(result.content[1].text, /Actual repository file listing/);
     } else assert.equal(result.isError, true);
-    assert.equal(releases.length, ['blocked','aborted','forbidden'].includes(scenario) ? 1 : 2);
+    assert.equal(releases.length, ['blocked','aborted'].includes(scenario) ? 1 : 2);
   });
 }
 

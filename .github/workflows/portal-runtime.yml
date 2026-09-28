@@ -88,6 +88,12 @@ jobs:
         env:
           OPENCLAW_PACKAGE: ${{ runner.temp }}/read-runtime/node_modules/openclaw
         run: node --test ods/extensions/services/pixel-agent/tests/runtime_exec_completion.integration.mjs
+      - name: Verify every Pixel chat reaches the real provider with one system prompt
+        if: runner.os != 'Windows'
+        shell: bash
+        env:
+          OPENCLAW_PACKAGE: ${{ runner.temp }}/read-runtime/node_modules/openclaw
+        run: node --test ods/extensions/services/pixel-agent/tests/runtime_line_stable.integration.mjs
       - name: Verify tool results reach real provider requests past the aggregate budget
         if: runner.os != 'Windows'
         shell: bash
@@ -100,7 +106,13 @@ jobs:
         env:
           OPENCLAW_PACKAGE: ${{ runner.temp }}/read-runtime/node_modules/openclaw
         run: node --test ods/extensions/services/pixel-agent/tests/runtime_cancel_recovery.integration.mjs
-      - name: Verify tool-limit finalization and silent-reply recovery with real Pixel runtime
+      - name: Verify tool-call arguments reach the tool unchanged in the native macOS stream order
+        if: runner.os != 'Windows'
+        shell: bash
+        env:
+          OPENCLAW_PACKAGE: ${{ runner.temp }}/read-runtime/node_modules/openclaw
+        run: node --test ods/extensions/services/pixel-agent/tests/runtime_diagnostic_stream_writes.integration.mjs
+      - name: Verify tool-limit finalization, stop synthesis and silent-reply recovery with real Pixel runtime
         if: runner.os != 'Windows'
         shell: bash
         env:
@@ -112,7 +124,9 @@ jobs:
           set -euo pipefail
           python3 ods/extensions/services/pixel-agent/host/openclaw_tool_recovery.py \
             --openclaw-bin "$OPENCLAW_PACKAGE/openclaw.mjs" --state-dir "$RUNNER_TEMP/pixel-completion-repair" --completion-recovery
-          node --test ods/extensions/services/pixel-agent/tests/runtime_progress_finalization.integration.mjs ods/extensions/services/pixel-agent/tests/runtime_owner_visible_reply.integration.mjs
+          node --test ods/extensions/services/pixel-agent/tests/runtime_progress_finalization.integration.mjs \
+            ods/extensions/services/pixel-agent/tests/runtime_stop_synthesis.integration.mjs \
+            ods/extensions/services/pixel-agent/tests/runtime_owner_visible_reply.integration.mjs
   runtime:
     runs-on: ubuntu-24.04
     timeout-minutes: 30

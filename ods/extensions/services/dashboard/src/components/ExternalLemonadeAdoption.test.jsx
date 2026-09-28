@@ -38,11 +38,11 @@ test('rechecks the exact physical model before one adoption and refreshes ODS', 
   expect(JSON.parse(fetch.mock.calls[2][1].body)).toEqual({ model_id: loaded.modelId })
 })
 
-test('keeps the narrow Portal model drawer concise without hiding the native ownership warning', async () => {
+test('keeps the narrow Portal model drawer concise without hiding the startup model limitation', async () => {
   vi.stubGlobal('fetch', vi.fn().mockResolvedValue(response(loaded)))
   view({ compact: true })
-  expect(await screen.findByText(/After switching in Lemonade, adopt here/)).toBeVisible()
-  expect(screen.getByText(/ODS leaves the native model loaded/)).toBeVisible()
+  expect(await screen.findByText(/Adopt the loaded model for Portal and ODS/)).toBeVisible()
+  expect(screen.getByText(/Adoption does not change Lemonade's startup model/)).toBeVisible()
   await waitFor(() => expect(screen.getByRole('button', { name: 'Adopt loaded model in ODS' })).toBeEnabled())
 })
 

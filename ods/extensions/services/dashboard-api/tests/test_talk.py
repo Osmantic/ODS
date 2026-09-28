@@ -17,7 +17,12 @@ def talk_client(test_client, signed_talk_cookie, monkeypatch):
     async def no_loaded_model():
         return None
 
+    async def no_live_context(model_hint=None):
+        return None
+
     monkeypatch.setattr("routers.talk.get_loaded_model", no_loaded_model)
+    # Never reach a real llama-server /props from the test process.
+    monkeypatch.setattr("routers.talk.get_llama_context_size", no_live_context)
     test_client.cookies.set("ods-session", signed_talk_cookie)
     return test_client
 
@@ -1811,3 +1816,133 @@ def test_sse_disconnect_denies_approval_before_cancelling(monkeypatch):
     assert '"choices":["once","deny"]' in body
     assert '"type":"done"' not in body
     assert order == ["deny", "interrupt", "cancel"]
+
+
+def _context_catalog():
+    return [
+        {
+            "id": "qwen3.5-27b-q4",
+            "name": "Qwen 3.5 27B",
+            "gguf_file": "Qwen3.5-27B-Q4_K_M.gguf",
+            "llm_model_name": "qwen3.5-27b",
+            "context_length": 65536,
+            "max_context_length": 262144,
+        },
+        {
+            "id": "phi4-q4",
+            "name": "Phi-4 14B",
+            "gguf_file": "phi-4-Q4_K_M.gguf",
+            "llm_model_name": "phi-4",
+            "context_length": 16384,
+            "max_context_length": 16384,
+        },
+    ]
+
+
+def _patch_context_talk(monkeypatch, *, gguf, env, live_context=None):
+    async def fake_state(service_id):
+        return {"configured": True, "status": "healthy", "id": service_id}
+
+    async def live_model():
+        return gguf
+
+    async def live_n_ctx(model_hint=None):
+        assert model_hint == gguf
+        return live_context
+
+    catalog = _context_catalog()
+    monkeypatch.setattr("routers.talk._service_state", fake_state)
+    monkeypatch.setattr("routers.talk.get_loaded_model", live_model)
+    monkeypatch.setattr("routers.talk.get_llama_context_size", live_n_ctx)
+    monkeypatch.setattr("routers.talk.load_model_catalog", lambda _install_dir: catalog)
+    monkeypatch.setattr("routers.talk.read_env_file_value", lambda key, _install_dir: env.get(key, ""))
+    monkeypatch.setattr("routers.talk.read_env_value", lambda key, _install_dir: env.get(key, ""))
+    monkeypatch.setattr("routers.talk.model_compatibility_runtime_context", lambda _install_dir: {})
+
+
+def test_talk_status_blocks_a_model_served_below_the_hermes_floor(talk_client, monkeypatch):
+    """tower1/tower3: the 27B served at 32K; Hermes then failed every turn with a 502."""
+    _patch_context_talk(monkeypatch, gguf="Qwen3.5-27B-Q4_K_M.gguf", env={"CTX_SIZE": "32768"})
+
+    data = talk_client.get("/api/talk/status").json()
+
+    assert data["capabilities"]["text_chat"] is False
+    assert data["reasonCode"] == "model_not_supported"
+    assert "64K" in data["reason"] and "32K" in data["reason"]
+    assert data["modelCompatibility"]["hermesTalk"]["code"] == "context_below_hermes_minimum"
+
+
+def test_talk_session_is_refused_up_front_below_the_floor(talk_client, monkeypatch):
+    _patch_context_talk(monkeypatch, gguf="Qwen3.5-27B-Q4_K_M.gguf", env={"CTX_SIZE": "32768"})
+
+    async def fail_session(_session_key):
+        raise AssertionError("Hermes must not be reached below the context floor")
+
+    monkeypatch.setattr("hermes_bridge.ensure_session", fail_session)
+
+    resp = talk_client.post("/api/talk/session")
+
+    assert resp.status_code == 409
+    assert "64K" in resp.json()["detail"]
+
+
+def test_talk_status_allows_the_same_model_at_the_floor(talk_client, monkeypatch):
+    _patch_context_talk(monkeypatch, gguf="Qwen3.5-27B-Q4_K_M.gguf", env={"CTX_SIZE": "65536"})
+
+    data = talk_client.get("/api/talk/status").json()
+
+    assert data["capabilities"]["text_chat"] is True
+    assert data["reason"] is None
+
+
+def test_talk_status_names_a_native_context_limit(talk_client, monkeypatch):
+    _patch_context_talk(monkeypatch, gguf="phi-4-Q4_K_M.gguf", env={"CTX_SIZE": "16384"})
+
+    data = talk_client.get("/api/talk/status").json()
+
+    assert data["capabilities"]["text_chat"] is False
+    assert "supports only 16K" in data["reason"]
+
+
+def test_talk_status_uses_the_live_context_over_the_launch_configuration(talk_client, monkeypatch):
+    """The live n_ctx is what Hermes checks, so it decides over the launch
+    configuration. They can disagree: llama.cpp caps a slot at the model's
+    training context whatever CTX_SIZE asks for (#6712: 131072 requested,
+    n_ctx 40960), and below 64K Hermes refuses every turn with a 502."""
+    _patch_context_talk(
+        monkeypatch, gguf="Qwen3.5-27B-Q4_K_M.gguf", env={"CTX_SIZE": "65536"}, live_context=32768,
+    )
+
+    data = talk_client.get("/api/talk/status").json()
+
+    assert data["capabilities"]["text_chat"] is False
+    assert data["modelCompatibility"]["hermesTalk"]["code"] == "context_below_hermes_minimum"
+    assert "runs at 32K" in data["reason"]
+
+
+def test_talk_status_allows_a_live_context_at_the_floor(talk_client, monkeypatch):
+    _patch_context_talk(
+        monkeypatch, gguf="Qwen3.5-27B-Q4_K_M.gguf", env={"CTX_SIZE": "32768"}, live_context=65536,
+    )
+
+    data = talk_client.get("/api/talk/status").json()
+
+    assert data["capabilities"]["text_chat"] is True
+    assert data["reason"] is None
+
+
+def test_talk_status_judges_an_import_on_its_live_context_only(talk_client, monkeypatch):
+    # A model outside the catalog (an import) served below the floor is
+    # reported up front too; without a live value its launch configuration
+    # is not used (a cloud or external backend has none to go by).
+    _patch_context_talk(
+        monkeypatch, gguf="my-import-Q4_K_M.gguf", env={"CTX_SIZE": "32768"}, live_context=32768,
+    )
+    data = talk_client.get("/api/talk/status").json()
+    assert data["modelCompatibility"]["hermesTalk"]["code"] == "context_below_hermes_minimum"
+
+    _patch_context_talk(
+        monkeypatch, gguf="my-import-Q4_K_M.gguf", env={"CTX_SIZE": "32768"}, live_context=None,
+    )
+    data = talk_client.get("/api/talk/status").json()
+    assert data["modelCompatibility"]["hermesTalk"].get("code") != "context_below_hermes_minimum"

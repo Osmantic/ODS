@@ -27,10 +27,15 @@ service:
     required: true
     secret: true
     description: Stable random 64-hex session signing secret.
+    format: hex64
+    generate: hex64
   - key: HEALTHCHECKS_DB_PASSWORD
     required: true
     secret: true
     description: Distinct 64-hex PostgreSQL password; retain for existing data.
+    format: hex64
+    distinct_from: [HEALTHCHECKS_SECRET_KEY]
+    generate: hex64
   ui_path: /
 tags:
 - monitoring

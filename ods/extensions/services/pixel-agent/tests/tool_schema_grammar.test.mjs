@@ -53,7 +53,7 @@ for (const [tool, samples] of [
   [registered.find(tool => tool.name === 'pixel_ods_workspace_bundle'),
     [{files:[{source:'project/source.py',key:'source.py',copyTo:'source.txt'}],mappingPath:'sources.json',outputRoot:'project/public'}]],
   [createDownloadPromoteTool(), [promotion, { ...promotion, sourceUrl: longUrl(4096) }]],
-  [createPerplexicaResearchTool(), [{ query: "Find public sources" }, { query: "a".repeat(16000) }]],
+  [createPerplexicaResearchTool(), [{ query: "Find public sources" }, { query: "a".repeat(1000) }]],
   [createHostCommandProposeTool(), [{ command: "pwd" }, { command: "a".repeat(16384) }]],
   [registered.find(tool => tool.name === 'pixel_ods_python_library_proposal'),
     [libraryProposal, {...libraryProposal, pythonVerification: {expression: 'a'.repeat(2048), expected: 'a'.repeat(2048)}}]],
@@ -89,14 +89,14 @@ test("promotion keeps the 4096-character URL limit at execution before any host 
   assert.equal(requests.length, 1);
 });
 
-test("research accepts the existing 16000-character brief and rejects larger input before HTTP", async () => {
+test("research accepts a 1000-character brief and rejects larger input before HTTP", async () => {
   let calls = 0;
   const tool = createPerplexicaResearchTool({ env: {}, fetch: async () => {
     calls++; return Response.json({ values: { preferences: {} } });
   } });
-  assert.equal((await tool.execute("full-brief", { query: "a".repeat(16000) })).details.status, "configuration_required");
+  assert.equal((await tool.execute("full-brief", { query: "a".repeat(1000) })).details.status, "configuration_required");
   assert.equal(calls, 1);
-  for (const query of ["a".repeat(16001), "", "   "]) {
+  for (const query of ["a".repeat(1001), "", "   ", "https://example.org/only-a-link"]) {
     assert.equal((await tool.execute("invalid-brief", { query })).details.status, "invalid_request");
   }
   assert.equal(calls, 1);

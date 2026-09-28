@@ -261,7 +261,7 @@ if (-not $_diskCheck.Sufficient) {
         $_installDirHint = "$($Matches[1].ToUpperInvariant()):\ods"
     }
     Write-AI "  To use a different drive, rerun from the source checkout with:"
-    Write-AI "  .\install.ps1 -InstallDir $_installDirHint"
+    Write-AI "  .\ods\installers\windows\install-windows.ps1 -InstallDir $_installDirHint"
     $requirementsMet = $false
 } else {
     Write-AISuccess "Disk: $($_diskCheck.FreeGB) GB free OK (>= ${_minDiskGB} GB for Tier $selectedTier)"
@@ -304,7 +304,16 @@ if ($enableRecommended) {
     $_portsToCheck["Token Spy (usage monitor)"] = 3005
 }
 if ($enableVoice) {
-    $_whisperPortToCheck = $(if ($gpuInfo.Backend -eq "amd" -and -not $cloudMode) { 9100 } else { 9000 })
+    # Preflight the exact host port phase 06 / New-ODSEnv will write: honor the
+    # process-level and persisted WHISPER_PORT override, then apply the same
+    # managed-AMD / Lemonade-conflict migration as Resolve-WindowsWhisperHostPort.
+    $_whisperConfiguredPort = Resolve-WindowsODSPort `
+        -Name "WHISPER_PORT" -DefaultPort 9000 -InstallDir $installDir
+    $_whisperPortToCheck = [int](Resolve-WindowsWhisperHostPort `
+        -ConfiguredPort ([string]$_whisperConfiguredPort) `
+        -GpuBackend ([string]$gpuInfo.Backend) `
+        -AmdInferenceRuntime $(if ($_usesNativeLemonade) { "lemonade" } else { "" }) `
+        -AmdInferenceLocation $(if ($_usesNativeLemonade) { "host" } else { "" }))
     $_portsToCheck["Whisper (STT)"] = $_whisperPortToCheck
     $_portsToCheck["Kokoro (TTS)"]  = 8880
 }

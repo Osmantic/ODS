@@ -160,6 +160,63 @@ def test_route_failure_restores_egress_and_consumers_before_proven_rollback(runt
     assert runtime.native==runtime.transactions[0].previous and not runtime.held
 
 
+@pytest.mark.parametrize('refresh_fails', [False, True])
+def test_rejected_replacement_refreshes_consumer_after_restoring_provider_files(
+    runtime, monkeypatch, refresh_fails,
+):
+    configure(runtime)
+    before = files(runtime.root)
+    previous = deepcopy(runtime.native)
+    secret = _mod._remote_provider_secret_path('REMOTE_LLM_API_KEY')
+    previous_secret = secret.read_bytes()
+    loaded = {'secret': previous_secret}
+    runtime.events.clear()
+
+    def restart(*args, **kwargs):
+        loaded['secret'] = secret.read_bytes()
+        runtime.events.append('load-candidate')
+        return True
+
+    def restore(*args, **kwargs):
+        assert runtime.held
+        # A startup consumer sees the provider files at recreation time.
+        assert secret.read_bytes() == previous_secret
+        assert files(runtime.root) == before
+        runtime.events.append('refresh-restored')
+        if refresh_fails:
+            raise RuntimeError('consumer recreation failed')
+        loaded['secret'] = secret.read_bytes()
+        return True
+
+    def verify(*args, **kwargs):
+        if loaded['secret'] != previous_secret:
+            raise RuntimeError('candidate chat denied')
+
+    def prove(_env, contract):
+        runtime.events.append('prove-restored')
+        return loaded['secret'] == previous_secret and contract == previous
+
+    monkeypatch.setattr(_mod, '_restart_existing_container', restart)
+    monkeypatch.setattr(_mod, '_restore_container_state', restore)
+    monkeypatch.setattr(_mod, '_verify_litellm_route', verify)
+    monkeypatch.setattr(_mod, '_prove_pixel_model_contract', prove)
+    payload = runtime.helpers._configure_payload()
+    payload['secrets']['apiKey'] = 'rejected-fixture-key'
+    plan = _mod._plan_remote_provider_lifecycle_operation(payload)
+    if refresh_fails:
+        with pytest.raises(_mod._PixelModelTransactionUncertain, match='consumer could not be refreshed'):
+            _mod._apply_remote_provider_lifecycle_operation(payload, plan)
+        assert runtime.held and 'finish-rollback' not in runtime.events
+    else:
+        with pytest.raises(_mod._RemoteProviderApplyError, match='candidate chat denied') as caught:
+            _mod._apply_remote_provider_lifecycle_operation(payload, plan)
+        assert caught.value.rollback == {'attempted': True, 'ok': True}
+        assert runtime.events[-3:] == ['refresh-restored', 'prove-restored', 'finish-rollback']
+        assert runtime.native == previous and not runtime.held
+    assert files(runtime.root) == before
+    assert runtime.events.count('refresh-restored') == 1
+
+
 @pytest.mark.parametrize('failure',['apply','finish','ownership'])
 def test_unconfirmed_mutation_or_lost_ownership_never_restores_or_releases(runtime,failure):
     runtime.failure=failure

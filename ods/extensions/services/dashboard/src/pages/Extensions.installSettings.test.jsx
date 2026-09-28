@@ -72,14 +72,13 @@ test('collects a required secret in the Install dialog, saves it, then installs'
 
   fireEvent.click(await screen.findByRole('button', { name: 'Install' }))
   const dialog = screen.getByRole('dialog', { name: 'Confirm action' })
-  const input = await within(dialog).findByLabelText(/GOTIFY_ADMIN_PASSWORD/)
+  const input = await within(dialog).findByLabelText(/GOTIFY_ADMIN_PASSWORD/, { selector: 'input' })
   expect(input).toHaveAttribute('type', 'password')
   expect(within(dialog).getByText(field.description)).toBeInTheDocument()
   expect(within(dialog).getByText(/Details → Configured Credentials/)).toBeInTheDocument()
 
   // An empty required setting is never sent.
-  fireEvent.click(within(dialog).getByRole('button', { name: 'Save and install' }))
-  expect(await within(dialog).findByRole('alert')).toHaveTextContent('Enter every required setting.')
+  expect(within(dialog).getByRole('button', { name: 'Save and install' })).toBeDisabled()
   expect(mutationCalls(fetchMock)).toEqual([])
 
   fireEvent.change(input, { target: { value: SECRET } })
@@ -106,7 +105,7 @@ test('installs directly when nothing is missing or a setup hook provides the set
   const dialog = screen.getByRole('dialog', { name: 'Confirm action' })
   const confirm = within(dialog).getByRole('button', { name: 'Install' })
   await waitFor(() => expect(confirm).toBeEnabled())
-  expect(within(dialog).queryByLabelText(/GOTIFY_ADMIN_PASSWORD/)).toBeNull()
+  expect(within(dialog).queryByLabelText(/GOTIFY_ADMIN_PASSWORD/, { selector: 'input' })).toBeNull()
   fireEvent.click(confirm)
 
   await waitFor(() => expect(install).toHaveBeenCalledOnce())
@@ -133,7 +132,7 @@ test('answers an install refusal for missing settings in the same dialog', async
 
   dialog = await screen.findByRole('dialog', { name: 'Confirm action' })
   expect(await within(dialog).findByText(/needs required settings before it can be installed/)).toBeInTheDocument()
-  fireEvent.change(within(dialog).getByLabelText(/GOTIFY_ADMIN_PASSWORD/), { target: { value: SECRET } })
+  fireEvent.change(within(dialog).getByLabelText(/GOTIFY_ADMIN_PASSWORD/, { selector: 'input' }), { target: { value: SECRET } })
   fireEvent.click(within(dialog).getByRole('button', { name: 'Save and install' }))
 
   await waitFor(() => expect(install).toHaveBeenCalledTimes(2))
@@ -158,7 +157,7 @@ test('Retry on a failed extension asks for the missing settings the API reports,
 
   const dialog = await screen.findByRole('dialog', { name: 'Confirm action' })
   expect(await within(dialog).findByText(refusal.message)).toBeInTheDocument()
-  fireEvent.change(within(dialog).getByLabelText(/GOTIFY_ADMIN_PASSWORD/), { target: { value: SECRET } })
+  fireEvent.change(within(dialog).getByLabelText(/GOTIFY_ADMIN_PASSWORD/, { selector: 'input' }), { target: { value: SECRET } })
   fireEvent.click(within(dialog).getByRole('button', { name: 'Save and enable' }))
 
   await waitFor(() => expect(enable).toHaveBeenCalledTimes(2))
@@ -175,13 +174,13 @@ test('a failed save stays in the dialog and never installs', async () => {
 
   fireEvent.click(await screen.findByRole('button', { name: 'Install' }))
   const dialog = screen.getByRole('dialog', { name: 'Confirm action' })
-  fireEvent.change(await within(dialog).findByLabelText(/GOTIFY_ADMIN_PASSWORD/), { target: { value: SECRET } })
+  fireEvent.change(await within(dialog).findByLabelText(/GOTIFY_ADMIN_PASSWORD/, { selector: 'input' }), { target: { value: SECRET } })
   fireEvent.click(within(dialog).getByRole('button', { name: 'Save and install' }))
 
   expect(await within(dialog).findByRole('alert')).toHaveTextContent(
     'Configuration save could not be confirmed. Nothing was installed or started.')
   expect(mutationCalls(fetchMock)).toEqual(['POST /api/extensions/gotify/configure'])
-  expect(within(dialog).getByLabelText(/GOTIFY_ADMIN_PASSWORD/)).toHaveValue('')
+  expect(within(dialog).getByLabelText(/GOTIFY_ADMIN_PASSWORD/, { selector: 'input' })).toHaveValue('')
 })
 
 test('cancelling discards typed settings without sending anything', async () => {
@@ -192,25 +191,26 @@ test('cancelling discards typed settings without sending anything', async () => 
 
   fireEvent.click(await screen.findByRole('button', { name: 'Install' }))
   let dialog = screen.getByRole('dialog', { name: 'Confirm action' })
-  fireEvent.change(await within(dialog).findByLabelText(/GOTIFY_ADMIN_PASSWORD/), { target: { value: SECRET } })
+  fireEvent.change(await within(dialog).findByLabelText(/GOTIFY_ADMIN_PASSWORD/, { selector: 'input' }), { target: { value: SECRET } })
   fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
   expect(screen.queryByRole('dialog', { name: 'Confirm action' })).toBeNull()
 
   fireEvent.click(screen.getByRole('button', { name: 'Install' }))
   dialog = screen.getByRole('dialog', { name: 'Confirm action' })
-  expect(await within(dialog).findByLabelText(/GOTIFY_ADMIN_PASSWORD/)).toHaveValue('')
+  expect(await within(dialog).findByLabelText(/GOTIFY_ADMIN_PASSWORD/, { selector: 'input' })).toHaveValue('')
   expect(mutationCalls(fetchMock)).toEqual([])
 })
 
 test('settings parsers reject anything but declared keys with typed flags', () => {
   expect(installPlanSettings(plan(), 'gotify')).toEqual([
-    { key: 'GOTIFY_ADMIN_PASSWORD', secret: true, description: field.description }])
+    { key: 'GOTIFY_ADMIN_PASSWORD', secret: true, description: field.description, format: null }])
   expect(installPlanSettings(plan({ setupHook: true }), 'gotify')).toEqual([])
   expect(installPlanSettings(plan(), 'other')).toBeNull()
   expect(installPlanSettings(plan({ missingConfiguration: ['NOT_DECLARED'] }), 'gotify')).toBeNull()
   expect(installPlanSettings(plan({ configuration: [{ ...field, configured: true }] }), 'gotify')).toBeNull()
   expect(missingSettingsRefusal(refusal)).toEqual({
-    serviceId: 'gotify', message: refusal.message, fields: refusal.configuration })
+    serviceId: 'gotify', message: refusal.message,
+    fields: refusal.configuration.map(item => ({ ...item, format: null })) })
   expect(missingSettingsRefusal({ ...refusal, code: 'other' })).toBeNull()
   expect(missingSettingsRefusal({ ...refusal, service_id: '../x' })).toBeNull()
   expect(missingSettingsRefusal({ ...refusal, configuration: [{ key: 'lower', secret: true }] })).toBeNull()

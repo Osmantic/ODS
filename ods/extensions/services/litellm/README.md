@@ -47,7 +47,7 @@ Routes to external cloud APIs. Requires at least one cloud API key.
 ```yaml
 # config/litellm/cloud.yaml
 model_list:
-  - model_name: default       # → anthropic/claude-sonnet-4-5-20250514
+  - model_name: default       # → anthropic/claude-sonnet-4-6
   - model_name: gpt4o         # → openai/gpt-4o
   - model_name: fast          # → anthropic/claude-haiku-4-5-20251001
   - model_name: minimax       # → MiniMax-M2.7 via minimax API
@@ -61,12 +61,13 @@ Uses llama-server as primary; falls back to Anthropic Claude on failure.
 ```yaml
 # config/litellm/hybrid.yaml
 model_list:
-  - model_name: default       # → llama-server (primary)
-  - model_name: default       # → anthropic/claude-sonnet-4-5-20250514 (fallback)
+  - model_name: local         # → llama-server (primary)
+  - model_name: cloud         # → anthropic/claude-sonnet-4-6 (fallback)
+  - model_name: default       # → llama-server
 router_settings:
   num_retries: 2
   fallbacks:
-    - default: [default]
+    - local: [cloud]
 ```
 
 ## Configuration

@@ -27,10 +27,14 @@ service:
     required: true
     secret: true
     description: 64 random hexadecimal characters for the dedicated PostgreSQL account.
+    format: hex64
+    generate: hex64
   - key: REACTIVE_RESUME_AUTH_SECRET
     required: true
     secret: true
     description: Stable 64-hex authentication secret; retain with backups.
+    format: hex64
+    generate: hex64
   - key: REACTIVE_RESUME_DISABLE_SIGNUPS
     required: false
     default: 'false'

@@ -64,3 +64,34 @@ if [[ -z "$external_active_line" || -z "$memory_budget_line" \
 fi
 
 printf '[PASS] NVIDIA llama-server memory budget contract\n'
+
+# CPU backend: llama.cpp threads follow physical cores, bounded by the
+# container CPU limit; 4 (the historical compose default) when unknown.
+assert_eq "$(ods_default_cpu_llama_threads 8 8.0)" "8" "8 physical cores (16 logical) under an 8-CPU limit"
+assert_eq "$(ods_default_cpu_llama_threads 32 8.0)" "8" "32 physical cores capped by the 8-CPU limit"
+assert_eq "$(ods_default_cpu_llama_threads 2 8.0)" "2" "2 physical cores"
+assert_eq "$(ods_default_cpu_llama_threads "" 8.0)" "4" "unknown core count keeps 4"
+assert_eq "$(ods_default_cpu_llama_threads "" 2.0)" "2" "unknown core count still respects a smaller limit"
+assert_eq "$(ods_default_cpu_llama_threads 6 invalid)" "6" "invalid limit falls back to 8"
+cores="$(ods_physical_cpu_cores)"
+[[ "$cores" =~ ^[1-9][0-9]*$ ]] || { printf '[FAIL] physical core detection returned %q\n' "$cores" >&2; exit 1; }
+
+# Phase 06 writes the CPU memory limit only from a runtime profile (the CPU
+# compose default stays 6G), writes LLAMA_THREADS for the CPU backend only,
+# and passes the profile's checkpoint and prompt-cache caps through.
+phase06="$ROOT_DIR/installers/phases/06-directories.sh"
+# shellcheck disable=SC2016
+grep -qF 'LLAMA_SERVER_MEMORY_LIMIT_VALUE="$(_env_get LLAMA_SERVER_MEMORY_LIMIT "${LLAMA_SERVER_MEMORY_LIMIT:-}")"' "$phase06"
+# shellcheck disable=SC2016
+grep -qF 'if [[ "$_cpu_backend" == "cpu" && "${ODS_MODE:-local}" != "cloud" ]]; then' "$phase06"
+# shellcheck disable=SC2016
+grep -qF 'echo "LLAMA_THREADS=${LLAMA_THREADS_VALUE}"' "$phase06"
+# shellcheck disable=SC2016
+grep -qF 'echo "LLAMA_ARG_CTX_CHECKPOINTS=${LLAMA_ARG_CTX_CHECKPOINTS}"' "$phase06"
+# shellcheck disable=SC2016
+grep -qF 'echo "LLAMA_ARG_CACHE_RAM=${LLAMA_ARG_CACHE_RAM}"' "$phase06"
+# shellcheck disable=SC2016
+grep -qF 'memory: ${LLAMA_SERVER_MEMORY_LIMIT:-6G}' "$ROOT_DIR/docker-compose.cpu.yml"
+# shellcheck disable=SC2016
+grep -qF -- '- "${LLAMA_THREADS:-4}"' "$ROOT_DIR/docker-compose.cpu.yml"
+printf '[PASS] CPU llama-server threads, memory limit and checkpoint caps contract\n'

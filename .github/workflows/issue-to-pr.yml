@@ -114,7 +114,7 @@ jobs:
             echo "${ISSUE_BODY}" | head -c 4000
           } | npx -y @anthropic-ai/claude-code@2.1.89 \
             --print \
-            --model claude-sonnet-4-6-v1 \
+            --model claude-sonnet-4-6 \
             --max-turns 30 \
             --allowedTools "Read,Edit,Write,Glob,Grep"
 

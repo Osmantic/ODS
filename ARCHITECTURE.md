@@ -115,11 +115,11 @@ The LLM inference engine (`llama-server`) is the foundation. GPU overlays select
 
 | Backend | Image | Acceleration |
 |---------|-------|-------------|
-| NVIDIA | `llama.cpp:server-cuda-b9014` default, overrideable via `LLAMA_SERVER_IMAGE` | CUDA, all GPUs reserved |
+| NVIDIA | `llama.cpp:server-cuda-b9014` (digest-pinned) default, overrideable via `LLAMA_SERVER_IMAGE` | CUDA, all GPUs reserved |
 | AMD | Custom `ods-lemonade-server` | ROCm / Vulkan / NPU via Lemonade |
 | Apple | Native host `llama-server` via macOS installer; Docker overlay is CPU fallback | Metal on host; containers reach `host.docker.internal:8080` |
 | Intel Arc | SYCL backend | Experimental |
-| CPU | `llama.cpp:server-b8248` | Pure CPU fallback |
+| CPU | `llama.cpp:server-b9014` (digest-pinned) | Pure CPU fallback |
 
 **LiteLLM** (port 4000) sits in front as an OpenAI-compatible proxy, enabling cloud fallback in hybrid mode and standardized API access for all consumers.
 

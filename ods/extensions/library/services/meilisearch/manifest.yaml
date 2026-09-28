@@ -27,6 +27,10 @@ service:
     required: true
     secret: true
     description: Search API master key, at least 16 characters.
+    pattern: '^[!-~]+$'
+    format_description: printable ASCII without spaces
+    min_length: 16
+    generate: token
   external_link: false
 tags:
 - data

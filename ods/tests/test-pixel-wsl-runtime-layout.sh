@@ -97,14 +97,14 @@ unset DOCKER_HOST
 
 export MOCK_DIRECT_DENY=false MOCK_DOCKER_OS='Docker Desktop' MOCK_PROPAGATION=shared
 expect_layout 'Docker Desktop uses shared WSL bridge' \
-    /mnt/host/wsl/ods-portal-runtime/ingress \
-    /mnt/host/wsl/ods-portal-runtime/preview rshared
+    /mnt/wsl/ods-portal-runtime/ingress \
+    /mnt/wsl/ods-portal-runtime/preview rshared
 
 DOCKER_CMD='sudo docker'
 export MOCK_DIRECT_DENY=true
 expect_layout 'Docker Desktop via resolved sudo command still uses shared bridge' \
-    /mnt/host/wsl/ods-portal-runtime/ingress \
-    /mnt/host/wsl/ods-portal-runtime/preview rshared
+    /mnt/wsl/ods-portal-runtime/ingress \
+    /mnt/wsl/ods-portal-runtime/preview rshared
 DOCKER_CMD=docker
 export MOCK_DIRECT_DENY=false
 

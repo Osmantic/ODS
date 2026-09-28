@@ -104,8 +104,11 @@ _phase06_pixel_runtime_layout() {
     docker_os="$(timeout 10s "${docker_command[@]}" info --format '{{.OperatingSystem}}' 2>/dev/null)" || return 1
     [[ "$docker_os" == "Docker Desktop" ]] || return 0
     [[ -d "$wsl_mount" && "$(findmnt -n -o PROPAGATION -T "$wsl_mount")" == shared ]] || return 1
-    PIXEL_INGRESS_RUNTIME_DIR_VALUE=/mnt/host/wsl/ods-portal-runtime/ingress
-    PIXEL_PREVIEW_RUNTIME_DIR_VALUE=/mnt/host/wsl/ods-portal-runtime/preview
+    # Use this distro's path. Docker Desktop's WSL proxy translates bind
+    # sources from the calling distro; the daemon's own name for this tmpfs
+    # is resolved inside this distro instead and fails as "not a shared mount".
+    PIXEL_INGRESS_RUNTIME_DIR_VALUE=/mnt/wsl/ods-portal-runtime/ingress
+    PIXEL_PREVIEW_RUNTIME_DIR_VALUE=/mnt/wsl/ods-portal-runtime/preview
     PIXEL_RUNTIME_BIND_PROPAGATION_VALUE=rshared
 }
 
@@ -129,6 +132,8 @@ else
 
     # shellcheck source=../lib/llama-memory-budget.sh
     source "$SCRIPT_DIR/installers/lib/llama-memory-budget.sh"
+    # shellcheck source=../lib/searxng-locale.sh
+    source "$SCRIPT_DIR/installers/lib/searxng-locale.sh"
 
     # shellcheck source=../../lib/dotenv-quote.sh
     source "$SCRIPT_DIR/lib/dotenv-quote.sh"
@@ -239,7 +244,7 @@ else
             return 1
         }
         _ods_pixel_source_transition_required \
-            "$_phase06_pixel_owner" "$_phase06_pixel_home" "$_phase06_requested_pixel_ref" \
+            "$_phase06_pixel_owner" "$_phase06_pixel_home" "$_phase06_requested_pixel_ref" "$SCRIPT_DIR" \
             || _phase06_pixel_source_transition=$?
         case "$_phase06_pixel_source_transition" in
             0)
@@ -409,32 +414,12 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
     ods_progress 39 "directories" "Copying source files"
     if [[ "$SCRIPT_DIR" != "$INSTALL_DIR" ]]; then
         ai "Copying source files to $INSTALL_DIR..."
-        if command -v rsync &>/dev/null; then
-            rsync -a --no-owner --no-group \
-                --exclude='.git' \
-                --exclude='data/' \
-                --exclude='logs/' \
-                --exclude='models/' \
-                --exclude='.env' \
-                --exclude='node_modules/' \
-                --exclude='dist/' \
-                --exclude='*.log' \
-                --exclude='.current-mode' \
-                --exclude='.profiles' \
-                --exclude='.target-model' \
-                --exclude='.target-quantization' \
-                --exclude='.offline-mode' \
-                "$SCRIPT_DIR/" "$INSTALL_DIR/"
-        else
-            # Fallback: cp -r everything, then remove runtime artifacts
-            if ! cp -r "$SCRIPT_DIR"/* "$INSTALL_DIR/" 2>>"$LOG_FILE"; then
-                warn "Source copy incomplete — some files may be missing"
-            fi
-            if ! cp "$SCRIPT_DIR"/.gitignore "$INSTALL_DIR/" 2>>"$LOG_FILE"; then
-                warn "Failed to copy .gitignore"
-            fi
-            rm -rf "$INSTALL_DIR/.git" 2>>"$LOG_FILE" || true
-        fi
+        # shellcheck source=../lib/source-copy.sh
+        source "$SCRIPT_DIR/installers/lib/source-copy.sh"
+        ods_copy_install_source "$SCRIPT_DIR" "$INSTALL_DIR" "$LOG_FILE" || {
+            error "Source upgrade failed; existing cloud provider configuration was preserved."
+            return 1
+        }
         # Ensure scripts are executable
         chmod +x "$INSTALL_DIR"/*.sh "$INSTALL_DIR"/scripts/*.sh "$INSTALL_DIR"/ods-cli 2>>"$LOG_FILE" || warn "Some scripts may not be executable — verify after install"
         ai_ok "Source files installed"
@@ -448,18 +433,23 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
     # any link where a regular file or directory is required.
     for _installed_code_root in \
         "$INSTALL_DIR/bin" \
+        "$INSTALL_DIR/lib" \
         "$INSTALL_DIR/scripts" \
         "$INSTALL_DIR/config" \
         "$INSTALL_DIR/extensions"
     do
         [[ -d "$_installed_code_root" && ! -L "$_installed_code_root" ]] \
             || error "Missing or unsafe installed code tree: $_installed_code_root"
-        find -P "$_installed_code_root" \( -type d -o -type f \) -exec chmod go-w {} + \
+        find -P "$_installed_code_root" \( -type d -o -type f \) \
+            \( -perm -020 -o -perm -002 \) -exec chmod go-w {} + \
             || error "Could not secure installed code tree: $_installed_code_root"
     done
     find -P "$INSTALL_DIR" -maxdepth 1 -type f \
-        \( -name '*.sh' -o -name 'ods-cli' \) -exec chmod go-w {} + \
+        \( -name '*.sh' -o -name 'ods-cli' \) \
+        \( -perm -020 -o -perm -002 \) -exec chmod go-w {} + \
         || error "Could not secure installed root executables"
+    [[ -d "$INSTALL_DIR" && ! -L "$INSTALL_DIR" ]] || error "Unsafe installed root"
+    chmod go-w "$INSTALL_DIR" || error "Could not secure installed root"
     unset _installed_code_root
 
     # Windows-mounted WSL checkouts commonly present every copied file as
@@ -701,6 +691,13 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
     OPENCLAW_TOKEN=$(_phase06_env_hex_secret OPENCLAW_TOKEN 24)
     LEMONADE_EXTERNAL_VALUE="${LEMONADE_EXTERNAL:-false}"
     [[ "${LEMONADE_EXTERNAL_VALUE,,}" == "true" ]] && LEMONADE_EXTERNAL_VALUE="true" || LEMONADE_EXTERNAL_VALUE="false"
+    LEMONADE_HOST_TRANSPORT="$(_env_get_explicit_first LEMONADE_HOST_TRANSPORT direct)"
+    ODS_WINDOWS_SYSTEM_DIRECTORY="$(_env_get_explicit_first ODS_WINDOWS_SYSTEM_DIRECTORY '')"
+    ODS_WSL_STATE_ROOT="$(_env_get_explicit_first ODS_WSL_STATE_ROOT '')"
+    case "$LEMONADE_HOST_TRANSPORT" in
+        direct|model-router) ;;
+        *) error "LEMONADE_HOST_TRANSPORT must be direct or model-router"; return 1 ;;
+    esac
     if [[ "$LEMONADE_EXTERNAL_VALUE" == "true" && -n "${LEMONADE_API_KEY:-}" ]]; then
         LITELLM_LEMONADE_API_KEY="$LEMONADE_API_KEY"
     fi
@@ -765,6 +762,9 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
     LIVEKIT_API_KEY=$(_phase06_env_hex_secret LIVEKIT_API_KEY 16)
     DASHBOARD_API_KEY=$(_phase06_env_hex_secret DASHBOARD_API_KEY 32)
     ODS_AGENT_KEY=$(_phase06_env_hex_secret ODS_AGENT_KEY 32)
+    ODS_AGENT_BIND_VALUE="$(_env_get ODS_AGENT_BIND "${ODS_AGENT_BIND:-}")"
+    ODS_AGENT_HOST_VALUE="$(_env_get ODS_AGENT_HOST "${ODS_AGENT_HOST:-}")"
+    ODS_AGENT_ADDRESS_MODE_VALUE="$(_env_get ODS_AGENT_ADDRESS_MODE "${ODS_AGENT_ADDRESS_MODE:-}")"
     # HMAC key for signing ods-session cookies (magic-link redemption).
     # 32 random bytes hex-encoded. Rotating invalidates every issued cookie —
     # the only revocation mechanism we have today, so don't rotate casually.
@@ -912,6 +912,12 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
         _llama_memory_default="$(ods_default_nvidia_llama_memory_limit "$_effective_memory_gb")"
         LLAMA_SERVER_MEMORY_LIMIT_VALUE="$(_env_get LLAMA_SERVER_MEMORY_LIMIT "${LLAMA_SERVER_MEMORY_LIMIT:-$_llama_memory_default}")"
         unset _docker_memory_gb _effective_memory_gb _llama_memory_default
+    elif [[ "$GPU_BACKEND" == "cpu" || "$GPU_BACKEND" == "none" ]] \
+        && [[ "$EXTERNAL_LLM_ACTIVE" != "true" && "${ODS_MODE:-local}" != "cloud" ]]; then
+        # CPU runtime profiles size the container for their model (weights,
+        # KV and capped context checkpoints). Without one, leave the key unset
+        # so docker-compose.cpu.yml's 6G default applies as before.
+        LLAMA_SERVER_MEMORY_LIMIT_VALUE="$(_env_get LLAMA_SERVER_MEMORY_LIMIT "${LLAMA_SERVER_MEMORY_LIMIT:-}")"
     fi
     ODS_MODE_VALUE="$(if [[ "$EXTERNAL_LLM_ACTIVE" == "true" ]]; then echo "local"; elif [[ "$LEMONADE_EXTERNAL_VALUE" == "true" ]]; then echo "lemonade"; elif [[ "$GPU_BACKEND" == "amd" && "${ODS_MODE:-local}" == "local" ]]; then echo "lemonade"; else echo "${ODS_MODE:-local}"; fi)"
     ODS_MODEL_SWITCHBOARD_VALUE=$(_env_get ODS_MODEL_SWITCHBOARD "${ODS_MODEL_SWITCHBOARD:-enabled}")
@@ -997,7 +1003,7 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
     LLM_API_URL="$LLM_API_URL_VALUE"
     HERMES_LLM_BASE_URL="$HERMES_LLM_BASE_URL_VALUE"
     HERMES_LLM_API_KEY="$HERMES_LLM_API_KEY_VALUE"
-    if [[ "$LEMONADE_EXTERNAL_VALUE" == "true" && "$LEMONADE_BASE_URL_VALUE" =~ ^http://(localhost|127\.0\.0\.1|\[::1\])(:|/|$) && "$(uname -s 2>/dev/null || echo unknown)" == "Linux" ]]; then
+    if [[ "$LEMONADE_EXTERNAL_VALUE" == "true" && "${LEMONADE_HOST_TRANSPORT:-direct}" != "model-router" && "$LEMONADE_BASE_URL_VALUE" =~ ^http://(localhost|127\.0\.0\.1|\[::1\])(:|/|$) && "$(uname -s 2>/dev/null || echo unknown)" == "Linux" ]]; then
         warn "Existing Lemonade URL uses loopback ($LEMONADE_BASE_URL_VALUE). Docker containers will use $LEMONADE_CONTAINER_BASE_URL_VALUE; ensure Lemonade is reachable there (for example: lemonade config set host=0.0.0.0 on a trusted host)."
     fi
 
@@ -1043,6 +1049,16 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
     LLAMA_CPU_RESERVATION=$(_select_auto_cpu_value LLAMA_CPU_RESERVATION "${_llama_cpu_reservation_detected}")
     if LC_ALL=C awk "BEGIN { exit !($LLAMA_CPU_RESERVATION > $LLAMA_CPU_LIMIT) }"; then
         LLAMA_CPU_RESERVATION="$LLAMA_CPU_LIMIT"
+    fi
+    # CPU inference: llama.cpp's own default is one thread per physical core;
+    # the compose file's fixed 4 left most cores idle. Bound it by the
+    # container's CPU limit. An owner-set LLAMA_THREADS is kept. GPU backends
+    # keep the compose default (their threads only feed the GPU).
+    LLAMA_THREADS_VALUE=""
+    if [[ "$_cpu_backend" == "cpu" && "${ODS_MODE:-local}" != "cloud" ]]; then
+        LLAMA_THREADS_VALUE="$(_env_get LLAMA_THREADS \
+            "$(ods_default_cpu_llama_threads "$(ods_physical_cpu_cores 2>/dev/null || true)" "$LLAMA_CPU_LIMIT")")"
+        [[ "$LLAMA_THREADS_VALUE" =~ ^[1-9][0-9]*$ ]] || LLAMA_THREADS_VALUE=""
     fi
 
     _tts_docker_memory_gb="$(ods_docker_memory_gb 2>/dev/null || true)"
@@ -1257,6 +1273,9 @@ AMD_INFERENCE_SUPPORTED_BACKENDS=$(if [[ "$EXTERNAL_LLM_ACTIVE" == "true" ]]; th
 AMD_INFERENCE_RUNTIME_MODE=$(if [[ "$EXTERNAL_LLM_ACTIVE" == "true" ]]; then echo ""; elif [[ "$LEMONADE_EXTERNAL_VALUE" == "true" ]]; then echo "external-lemonade"; elif [[ "$GPU_BACKEND" == "amd" && "${ODS_MODE:-local}" == "local" ]]; then echo "linux-container"; else echo ""; fi)
 AMD_INFERENCE_MANAGED=$(if [[ "$EXTERNAL_LLM_ACTIVE" == "true" ]]; then echo ""; elif [[ "$LEMONADE_EXTERNAL_VALUE" == "true" ]]; then echo "false"; elif [[ "$GPU_BACKEND" == "amd" && "${ODS_MODE:-local}" == "local" ]]; then echo "true"; else echo ""; fi)
 LEMONADE_EXTERNAL=${LEMONADE_EXTERNAL_VALUE}
+LEMONADE_HOST_TRANSPORT=$(dotenv_value "${LEMONADE_HOST_TRANSPORT}")
+$(if [[ -n "${ODS_WINDOWS_SYSTEM_DIRECTORY}" ]]; then printf 'ODS_WINDOWS_SYSTEM_DIRECTORY=%s' "$(dotenv_value "$ODS_WINDOWS_SYSTEM_DIRECTORY")"; fi)
+$(if [[ -n "${ODS_WSL_STATE_ROOT}" ]]; then printf 'ODS_WSL_STATE_ROOT=%s' "$(dotenv_value "$ODS_WSL_STATE_ROOT")"; fi)
 LEMONADE_BASE_URL=$(dotenv_value "${LEMONADE_BASE_URL_VALUE}")
 LEMONADE_CONTAINER_BASE_URL=$(dotenv_value "${LEMONADE_CONTAINER_BASE_URL_VALUE}")
 LEMONADE_API_BASE_PATH=$(dotenv_value "${LEMONADE_API_BASE_PATH_VALUE}")
@@ -1310,6 +1329,9 @@ LLAMA_ARG_CACHE_TYPE_V=${LLAMA_ARG_CACHE_TYPE_V:-f16}
 $(if [[ -n "${LLAMA_ARG_N_CPU_MOE:-}" ]]; then echo "LLAMA_ARG_N_CPU_MOE=${LLAMA_ARG_N_CPU_MOE}"; fi)
 $(if [[ -n "${LLAMA_ARG_NO_CACHE_PROMPT:-}" ]]; then echo "LLAMA_ARG_NO_CACHE_PROMPT=${LLAMA_ARG_NO_CACHE_PROMPT}"; fi)
 $(if [[ -n "${LLAMA_ARG_CHECKPOINT_EVERY_NT:-}" ]]; then echo "LLAMA_ARG_CHECKPOINT_EVERY_NT=${LLAMA_ARG_CHECKPOINT_EVERY_NT}"; fi)
+$(if [[ -n "${LLAMA_ARG_CTX_CHECKPOINTS:-}" ]]; then echo "LLAMA_ARG_CTX_CHECKPOINTS=${LLAMA_ARG_CTX_CHECKPOINTS}"; fi)
+$(if [[ -n "${LLAMA_ARG_CACHE_RAM:-}" ]]; then echo "LLAMA_ARG_CACHE_RAM=${LLAMA_ARG_CACHE_RAM}"; fi)
+$(if [[ -n "${LLAMA_THREADS_VALUE:-}" ]]; then echo "LLAMA_THREADS=${LLAMA_THREADS_VALUE}"; fi)
 LLAMA_PARALLEL=${LLAMA_PARALLEL:-1}
 # NVIDIA/CPU llama.cpp images default to lossless n-gram speculation (ngram-mod).
 # LLAMA_SPEC_TYPE=none turns it off; unset keeps the default.
@@ -1396,8 +1418,8 @@ VIDEO_GID=$(getent group video 2>/dev/null | cut -d: -f3 || echo 44)
 RENDER_GID=$(getent group render 2>/dev/null | cut -d: -f3 || echo 992)
 
 #=== Intel Arc / oneAPI SYCL Settings ===
-ONEAPI_DEVICE_SELECTOR=level_zero:gpu
-SYCL_CACHE_PERSISTENT=1
+# Set level_zero:0 on hosts with more than one Intel GPU.
+ONEAPI_DEVICE_SELECTOR=$(dotenv_value "$(_env_get ONEAPI_DEVICE_SELECTOR level_zero:gpu)")
 ZES_ENABLE_SYSMAN=1
 INTEL_ENV
 fi)
@@ -1437,6 +1459,9 @@ ODS_AUTH_UPSTREAM=${ODS_AUTH_UPSTREAM:-ods-dashboard-api:3002}
 WEBUI_SECRET=$(dotenv_value "${WEBUI_SECRET}")
 DASHBOARD_API_KEY=$(dotenv_value "${DASHBOARD_API_KEY}")
 ODS_AGENT_KEY=$(dotenv_value "${ODS_AGENT_KEY}")
+ODS_AGENT_BIND=$(dotenv_value "${ODS_AGENT_BIND_VALUE}")
+ODS_AGENT_HOST=$(dotenv_value "${ODS_AGENT_HOST_VALUE}")
+ODS_AGENT_ADDRESS_MODE=$(dotenv_value "${ODS_AGENT_ADDRESS_MODE_VALUE}")
 ODS_SESSION_SECRET=$(dotenv_value "${ODS_SESSION_SECRET}")
 HERMES_DASHBOARD_SESSION_TOKEN=$(dotenv_value "${HERMES_DASHBOARD_SESSION_TOKEN}")
 $(if [[ "${ENABLE_PIXEL_RUNTIME:-false}" == "true" ]]; then cat << PIXEL_ENV
@@ -1551,6 +1576,12 @@ ENV_EOF
     )
 
     chmod 600 "$INSTALL_DIR/.env"  # Secure secrets file
+    # Docker Desktop's daemon is outside the installing WSL namespace.
+    # Prepare its authenticated control address before phase 07 starts the
+    # host agent and before Compose inherits dashboard-api's environment.
+    # shellcheck source=../../lib/wsl-agent-address.sh
+    . "$INSTALL_DIR/lib/wsl-agent-address.sh"
+    ods_prepare_wsl_agent_address "$INSTALL_DIR" || exit 1
     ai_ok "Created $INSTALL_DIR"
     ai_ok "Generated secure secrets in .env (permissions: 600)"
 
@@ -1711,6 +1742,7 @@ ENV_EOF
     if [[ -f "$INSTALL_DIR/config/searxng/settings.yml" ]] && ! [[ -w "$INSTALL_DIR/config/searxng/settings.yml" ]]; then
         _phase06_repair_host_path "$INSTALL_DIR/config/searxng/settings.yml" "SearXNG configuration" || return 1
     fi
+    _searxng_lang="$(ods_searxng_default_lang)"
     cat > "$INSTALL_DIR/config/searxng/settings.yml" << SEARXNG_EOF
 use_default_settings: true
 server:
@@ -1720,9 +1752,12 @@ server:
   limiter: false
 search:
   safe_search: 0
+  # Install locale. API clients send no language, so "auto" would mean "all".
+  default_lang: "${_searxng_lang}"
   formats:
     - html
     - json
+$(ods_searxng_hostnames_yaml "$_searxng_lang")
 engines:
   - name: bing
     # Requalify before enabling: https://github.com/searxng/searxng/pull/6671
@@ -1743,7 +1778,8 @@ engines:
   - name: stackoverflow
     disabled: false
 SEARXNG_EOF
-    ai_ok "Generated SearXNG config with randomized secret key"
+    ai_ok "Generated SearXNG config with randomized secret key (search language ${_searxng_lang})"
+    unset _searxng_lang
 fi
 
 # Documentation, CLI tools, and compose variants already copied by rsync/cp block above

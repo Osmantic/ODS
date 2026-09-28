@@ -28,6 +28,8 @@ service:
     secret: true
     description: 64-hex private database password; browser administrator is created
       in native setup.
+    format: hex64
+    generate: hex64
   ui_path: /
 tags:
 - documentation

@@ -6,6 +6,7 @@ import pytest
 import test_model_activate as fixtures
 
 host=fixtures._mod
+_real_prove_pixel_model_contract=host._prove_pixel_model_contract
 OLD={'model':'same-model','contextLength':65536,'maxTokens':2048,'reasoning':False,'routeFingerprint':'a'*64}
 NEW={'model':'same-model','contextLength':65536,'maxTokens':8192,'reasoning':True,'routeFingerprint':'b'*64}
 
@@ -149,6 +150,37 @@ def test_partial_host_mutation_cannot_be_recovered_by_a_generic_reset(controller
     assert state['pending'] and 'model-finish' not in calls
     with pytest.raises(host._PixelModelTransactionUncertain):host._begin_pixel_model_transaction(env)
     assert calls.count('model-begin')==1
+
+
+@pytest.mark.parametrize('drift', ['LEMONADE_MODEL=other-model', 'CTX_SIZE=8192'])
+def test_commit_recovery_reads_current_env_before_releasing_native_hold(controller,monkeypatch,drift):
+    _,state,calls,_=controller
+    env_file=host.INSTALL_DIR/'.env'
+    text=('PIXEL_OPENWEBUI_KEY=configured\nLEMONADE_EXTERNAL=true\n'
+          'LEMONADE_MODEL=same-model\nCTX_SIZE=65536\nMAX_CONTEXT=65536\n')
+    env_file.write_text(text)
+    monkeypatch.setattr(host,'_pixel_model_config_paths',lambda:{'.env':env_file})
+    monkeypatch.setattr(host,'_managed_wsl_lemonade',lambda _env:{'managed':False})
+    monkeypatch.setattr(host,'_read_external_lemonade_observation',lambda _env:{
+        'modelId':'same-model','contextLength':65536,
+    })
+    env=host.load_env(env_file)
+    transaction=host._begin_pixel_model_transaction(env)
+    target={key:value for key,value in NEW.items() if key!='routeFingerprint'}
+    transaction.apply(target)
+    transaction._save('committing')
+    key=drift.split('=',1)[0]
+    env_file.write_text('\n'.join(drift if line.startswith(key+'=') else line
+                                  for line in text.splitlines())+'\n')
+    monkeypatch.setattr(host,'_prove_pixel_model_contract',_real_prove_pixel_model_contract)
+    assert _real_prove_pixel_model_contract(env,target) is True
+    assert _real_prove_pixel_model_contract(host.load_env(env_file),target) is False
+
+    result=host._recover_pixel_model_transaction(env)
+
+    assert result['pending'] is True
+    assert state['pending'] is True
+    assert 'model-finish' not in calls
 
 
 def test_explicit_recovery_commits_exact_applied_target_without_replaying_apply(controller):

@@ -143,6 +143,101 @@ test('compact external mode keeps the catalog visible without promising local ac
   expect(screen.queryByText(/--no-external-llm/)).not.toBeInTheDocument()
 })
 
+test.each([false, true])('loaded external Lemonade describes managed model changes without claiming runtime failure (compact=%s)', async (compact) => {
+  const state = baseState({
+    odsMode: 'lemonade', configuredMode: 'lemonade', llmBackend: 'lemonade',
+    externalLemonade: true, canActivateModels: false,
+    modelManagement: { managed: false, canActivate: false, canUnload: false, running: false },
+    activationModeError: 'Change the loaded model in Lemonade, then adopt it here.',
+    currentModel: 'qwen3.5-9b-q4', loadedModel: 'extra.Qwen3.5-9B-Q4_K_M.gguf',
+    models: [model({ status: 'loaded' }), model({ id: 'another-model', name: 'Another model', status: 'downloaded' })],
+  })
+  useModelsMock.mockReturnValue(state)
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+    ok: true, status: 200, json: async () => ({
+      status: 'verified', modelId: state.loadedModel, contextLength: 65536,
+    }),
+  }))
+  try {
+    render(createElement(MemoryRouter, null, createElement(Models, { compact })))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Adopt loaded model in ODS' })).toBeEnabled())
+    expect(screen.getByText('Model changes managed externally')).toBeVisible()
+    expect(screen.queryByText('Local model runtime unavailable')).not.toBeInTheDocument()
+    const notice = screen.getByText('Model changes managed externally').closest('section')
+    expect(within(notice).getByText(state.activationModeError)).toBeVisible()
+    for (const button of screen.getAllByRole('button', { name: 'Run' })) {
+      expect(button).toBeDisabled()
+    }
+    expect(screen.getByRole('button', { name: 'Configure context for Qwen 3.5 9B' })).toBeDisabled()
+    expect(state.loadModel).not.toHaveBeenCalled()
+  } finally {
+    vi.unstubAllGlobals()
+  }
+})
+
+test.each([true, false])('only managed runtimes expose unload/resume and hide adoption (running=%s)', async running => {
+  const state = baseState({
+    models: [model({ status: running ? 'loaded' : 'downloaded' })],
+    odsMode: 'lemonade', configuredMode: 'lemonade', llmBackend: 'lemonade', externalLemonade: true,
+    modelManagement: { managed: true, canActivate: running, canUnload: true, running },
+    canActivateModels: running,
+    stopRuntime: vi.fn(), startRuntime: vi.fn(),
+  })
+  useModelsMock.mockReturnValue(state)
+  renderModels()
+  const button = screen.getByRole('button', { name: running ? 'Unload model' : 'Resume model' })
+  fireEvent.click(button)
+  expect(running ? state.stopRuntime : state.startRuntime).toHaveBeenCalledOnce()
+  expect(screen.queryByRole('button', { name: 'Adopt loaded model in ODS' })).toBeNull()
+  if (!running) expect(screen.queryByText('Local model runtime unavailable')).toBeNull()
+})
+
+test.each([false, true])('unavailable management proof never offers adoption and recovers to managed controls (compact=%s)', compact => {
+  const state = baseState({
+    odsMode: 'lemonade', configuredMode: 'lemonade', llmBackend: 'lemonade', externalLemonade: true,
+    modelManagement: { managed: null, canActivate: false, canUnload: false, running: false },
+    canActivateModels: false, activationModeError: 'Runtime management could not be verified',
+    currentModel: 'qwen3.5-9b-q4', loadedModel: 'extra.Qwen3.5-9B-Q4_K_M.gguf',
+    models: [model({ status: 'loaded' }), model({ id: 'next', name: 'Next model', status: 'downloaded' })],
+  })
+  useModelsMock.mockReturnValue(state)
+  const view = render(createElement(MemoryRouter, null, createElement(Models, { compact })))
+  expect(screen.getByText('Runtime management unavailable')).toBeVisible()
+  expect(screen.queryByText('Model changes managed externally')).toBeNull()
+  expect(screen.queryByRole('button', { name: 'Adopt loaded model in ODS' })).toBeNull()
+  expect(screen.queryByRole('region', { name: 'Model runtime controls' })).toBeNull()
+  expect(screen.getByRole('button', { name: 'Configure context for Qwen 3.5 9B' })).toBeDisabled()
+  for (const button of screen.getAllByRole('button', { name: 'Run' })) expect(button).toBeDisabled()
+
+  useModelsMock.mockReturnValue({ ...state,
+    modelManagement: { managed: true, canActivate: true, canUnload: true, running: true },
+    canActivateModels: true, activationModeError: null,
+  })
+  view.rerender(createElement(MemoryRouter, null, createElement(Models, { compact })))
+  expect(screen.queryByText('Runtime management unavailable')).toBeNull()
+  expect(screen.getByRole('button', { name: 'Unload model' })).toBeEnabled()
+  expect(screen.getByRole('button', { name: 'Configure context for Qwen 3.5 9B' })).toBeEnabled()
+  expect(screen.queryByRole('button', { name: 'Adopt loaded model in ODS' })).toBeNull()
+})
+
+test('revoked capability disables a context dialog that is already open', () => {
+  const state = baseState({ models: [model({ status: 'loaded' })], currentModel: 'qwen3.5-9b-q4' })
+  useModelsMock.mockReturnValue(state)
+  const view = renderModels()
+  fireEvent.click(screen.getByRole('button', { name: 'Configure context for Qwen 3.5 9B' }))
+  fireEvent.change(screen.getByRole('spinbutton', { name: 'Custom context in tokens' }), { target: { value: '32768' } })
+  useModelsMock.mockReturnValue({ ...state, canActivateModels: false, activationModeError: 'Ownership could not be verified.' })
+  view.rerender(createElement(MemoryRouter, null, createElement(Models)))
+  expect(screen.getByRole('button', { name: 'Apply context' })).toBeDisabled()
+  expect(state.loadModel).not.toHaveBeenCalled()
+})
+
+test('ordinary external capability never exposes runtime controls', () => {
+  useModelsMock.mockReturnValue(baseState({ modelManagement: { managed: false, canUnload: true, running: true } }))
+  renderModels()
+  expect(screen.queryByRole('region', { name: 'Model runtime controls' })).toBeNull()
+})
+
 test('compact catalog uses fitted pages and preserves filter reset behavior', () => {
   useModelsMock.mockReturnValue(baseState({models:Array.from({length:12},(_,i)=>model({id:`m${i}`,name:`Catalog model ${i}`}))}))
   render(createElement(MemoryRouter,null,createElement(Models,{compact:true})))

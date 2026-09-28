@@ -6,9 +6,17 @@ server:
   limiter: false
 search:
   safe_search: 0
+  # Installers write the install locale here (installers/lib/searxng-locale.sh).
+  # API clients send no language, so "auto" would mean "all".
+  default_lang: "en"
   formats:
     - html
     - json
+hostnames:
+  # Seznam (below) is a Czech-market fallback; keep its .cz shops out of
+  # results unless the install locale is Czech.
+  remove:
+    - '\.cz$'
 engines:
   - name: bing
     # Requalify before enabling: this pin returns first-word-only results.

@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Night Garden FLEET-05f99032e1 Revised</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header>
+    <h1>Night Garden FLEET-05f99032e1 Revised</h1>
+  </header>
+
+  <main>
+    <section class="events">
+      <article class="event-card" aria-labelledby="dawn-jazz-title">
+        <div class="event-header">
+          <span class="event-time">6:00 AM</span>
+          <span class="event-status available">Available</span>
+        </div>
+        <h2 id="dawn-jazz-title">Dawn Jazz</h2>
+        <p class="event-description">Start your day with smooth jazz melodies under the morning sky. Acoustic performances featuring local artists.</p>
+        <button class="event-btn" type="button">View Details</button>
+      </article>
+
+      <article class="event-card" aria-labelledby="river-lantern-title">
+        <div class="event-header">
+          <span class="event-time">8:00 PM</span>
+          <span class="event-status available">Available</span>
+        </div>
+        <h2 id="river-lantern-title">River Lantern Walk</h2>
+        <p class="event-description">A serene evening stroll along the riverbank with floating lanterns. Bring your loved ones for this magical experience.</p>
+        <button class="event-btn" type="button">View Details</button>
+      </article>
+
+      <article class="event-card sold-out" id="midnight-concert-card" aria-labelledby="midnight-concert-title" hidden>
+        <div class="event-header">
+          <span class="event-time">12:00 AM</span>
+          <span class="event-status sold">Sold Out</span>
+        </div>
+        <h2 id="midnight-concert-title">Midnight sold-out concert</h2>
+        <p class="event-description">An electrifying night performance under the stars. This exclusive midnight sold-out concert has reached full capacity.</p>
+        <button class="event-btn disabled" type="button" disabled>Sold Out</button>
+      </article>
+    </section>
+
+    <button type="button" id="show-sold-out-btn" class="toggle-btn">Show sold out</button>
+  </main>
+
+  <footer>
+    <p>FLEET-05f99032e1 edited successfully</p>
+  </footer>
+
+  <script src="script.js"></script>
+</body>
+</html>

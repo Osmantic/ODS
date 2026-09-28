@@ -28,10 +28,15 @@ service:
     secret: true
     description: 'First-account password for username shiori: 12 to 72 UTF-8 bytes.
       Does not reset existing accounts.'
+    min_length: 12
+    max_length: 72
+    generate: password
   - key: SHIORI_HTTP_SECRET_KEY
     required: true
     secret: true
     description: Persistent random session signing secret, at least 32 random characters.
+    min_length: 32
+    generate: token
   ui_path: /
 tags:
 - bookmarks

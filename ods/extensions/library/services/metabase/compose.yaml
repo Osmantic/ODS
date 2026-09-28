@@ -4,7 +4,7 @@ services:
     container_name: ods-metabase
     restart: unless-stopped
     ports:
-    - 127.0.0.1:${METABASE_PORT:-11033}:3000
+    - "${BIND_ADDRESS:-127.0.0.1}:${METABASE_PORT:-11033}:3000"
     healthcheck:
       test:
       - CMD

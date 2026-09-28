@@ -1,10 +1,10 @@
 """Actual owner-authenticated host HTTP and storage; no installed runtime claims."""
 from concurrent.futures import ThreadPoolExecutor
 import http.client
-from http.server import ThreadingHTTPServer
 import importlib.util
 import json
 from pathlib import Path
+import socket
 import sys
 import threading
 
@@ -19,7 +19,7 @@ def server():
     sys.modules[spec.name] = agent
     spec.loader.exec_module(agent)
     agent.AGENT_API_KEY = "synthetic-settings-key"
-    listener = ThreadingHTTPServer(("127.0.0.1", 0), agent.AgentHandler)
+    listener = agent.ThreadedHTTPServer(("127.0.0.1", 0), agent.AgentHandler)
     thread = threading.Thread(target=listener.serve_forever, daemon=True)
     thread.start()
     try:
@@ -51,6 +51,66 @@ def api_request(server, tmp_path):
         finally:
             connection.close()
     return call
+
+
+def test_host_agent_bounds_incomplete_request_socket():
+    path = Path(__file__).resolve().parents[2] / "bin/ods-host-agent.py"
+    spec = importlib.util.spec_from_file_location("_socket_timeout_agent", path)
+    agent = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = agent
+    spec.loader.exec_module(agent)
+    listener = agent.ThreadedHTTPServer(("127.0.0.1", 0), agent.AgentHandler)
+    client = socket.create_connection(listener.server_address, timeout=2)
+    try:
+        request, _ = listener.get_request()
+        assert request.gettimeout() == agent.ThreadedHTTPServer.request_socket_timeout
+        request.close()
+    finally:
+        client.close()
+        listener.server_close()
+        sys.modules.pop(spec.name, None)
+
+
+def test_partial_body_times_out_and_server_recovers(server, tmp_path, monkeypatch):
+    agent, listener = server
+    agent.DATA_DIR = tmp_path
+    listener.request_socket_timeout = 0.1
+    listener.request_body_timeout = 0.1
+    reader_exited = threading.Event()
+    original = agent._read_request_body_bytes
+
+    def watched(handler, length):
+        try:
+            return original(handler, length)
+        finally:
+            reader_exited.set()
+
+    monkeypatch.setattr(agent, "_read_request_body_bytes", watched)
+    client = socket.create_connection(listener.server_address, timeout=2)
+    client.settimeout(2)
+    client.sendall(
+        b"POST /v1/pixel/settings/save HTTP/1.1\r\n"
+        b"Host: localhost\r\n"
+        b"Authorization: Bearer synthetic-settings-key\r\n"
+        b"Content-Length: 100\r\n\r\n{\"partial\":"
+    )
+    # Observe this reader exiting. A second connection alone would only prove
+    # ThreadingMixIn can start another worker, even if this one were stuck.
+    assert reader_exited.wait(2)
+    response = bytearray()
+    while chunk := client.recv(4096):
+        response.extend(chunk)
+    assert b"503" in response.split(b"\r\n", 1)[0]
+    listener.request_socket_timeout = 30
+    connection = http.client.HTTPConnection(*listener.server_address, timeout=2)
+    try:
+        connection.request("GET", "/v1/pixel/settings", headers={
+            "Authorization": "Bearer synthetic-settings-key",
+        })
+        assert connection.getresponse().status == 200
+    finally:
+        connection.close()
+        client.close()
 
 
 def test_pristine_get_and_auth_do_not_create_state(api_request, tmp_path):

@@ -7,6 +7,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Security
+- Native Windows uninstall now verifies each container's Compose installation
+  directory before any mutation. A shared `ods` project label cannot authorize
+  removing another WSL/Windows installation or unattached volumes of unknown
+  origin. Docker listing failures preserve the installation for recovery.
+- Perplexica's internal `scrape_url` action is disabled at container start. It
+  opened any URL its model named, without address validation, from the
+  Perplexica container on the ODS network, and Perplexica offered it in every
+  mode, so a request or a search result could steer it to an internal service.
+  Asking Perplexica about a specific URL now answers from search results.
 - The dashboard asks for sign-in when it is reached from another device: LAN
   mode, ODS proxy (`dashboard.<device>.local`), a reverse proxy or Tailscale
   Serve. Previously its proxy added the admin API key to every request, so
@@ -23,8 +32,171 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Previously issued ODS session cookies are invalidated at upgrade, including
   unexpired chat-only guest cookies. Owners renew through the existing owner
   card or authenticated dashboard flow; default direct Hermes access is unchanged.
+- Every llama.cpp image is now pinned by tag and sha256 digest, including the
+  tier-map, installer, host-agent and catalog copies. The dependency pin check
+  rejects a llama.cpp image without a digest.
 
 ### Changed
+- Windows: `install.ps1` now installs ODS inside Ubuntu/WSL2 with Pixel
+  (`--pixel --no-hermes --no-openclaw`) instead of the native Windows stack.
+  It prepares WSL and Ubuntu 24.04 when needed, and stops with instructions,
+  before changing anything in Ubuntu, when WSL2, systemd, a non-root user,
+  Docker Desktop's WSL integration or, on NVIDIA machines, a Windows driver
+  >= 570 with GPU and `nvidia` runtime visible from Ubuntu is missing. An
+  existing Ubuntu older than 24.04 is never reused. Success now requires the
+  authenticated Portal status API to report the agent available. Existing
+  native Windows installs are detected and left untouched; `install.ps1`
+  refuses to run beside them. Keep managing them with their own `ods.ps1`, or
+  rerun `ods\installers\windows\install-windows.ps1`. AMD machines that used
+  the native Lemonade path now get a GPU backend detected inside WSL, CPU, or
+  an explicitly configured endpoint. The Linux installer runs on the same
+  console (download progress and UTF-8 output stay visible), and warnings WSL
+  prints on stderr no longer turn a passing check into a failure.
+- Windows: setup now needs only the pasted PowerShell command. It checks disk
+  space and BIOS virtualization first. It installs Docker Desktop with winget
+  when missing (one restart shared with WSL) and continues by itself after
+  that restart through a one-time per-user `RunOnce` entry. For a new Ubuntu
+  it asks for the Linux username and password in PowerShell instead of the
+  Ubuntu window. It starts Docker Desktop and, when Docker is not connected to
+  the selected Ubuntu, shows the WSL integration setting to turn on and waits
+  for it; it never edits Docker's settings or restarts Docker. It finally opens
+  Portal and adds an
+  **ODS Portal** desktop shortcut. `-NonInteractive` still installs nothing.
+  A leftover `ODS-WSL-*` scheduled task from another ODS version is named in
+  the error together with the command that removes it.
+- Linux on WSL: an NVIDIA driver older than 570 stops with Windows update
+  instructions instead of installing `nvidia-driver-*` inside the distro,
+  which breaks WSL GPU passthrough.
+- Linux on WSL with Docker Desktop: Pixel Edge now binds the runtime bridge
+  as `/mnt/wsl/ods-portal-runtime/*`, the distro path Docker Desktop's WSL
+  proxy translates, and the installer creates those empty targets before Pixel
+  Edge starts. The daemon-side `/mnt/host/wsl/...` path stopped every fresh
+  install with "is mounted on / but it is not a shared mount".
+- The WSL runtime bridge now stacks on the bind Docker Desktop's WSL proxy
+  places on each Pixel Edge bind source; it refused that bind, so every fresh
+  WSL install stopped at "Could not install and start the private Pixel
+  ingress". It also drops its own stale bind after systemd recreates a runtime
+  directory, names the check that refused in its journal, and the installer
+  prints that journal when the bridge does not start.
+- The installer menu presets (Full Stack, Core Only) no longer override an
+  explicit `--hermes` or `--no-hermes`. The Windows Pixel path passes
+  `--no-hermes`; choosing Full Stack downloaded and enabled Hermes anyway.
+- Windows (`install.ps1`) with an AMD GPU now runs the model on the GPU through
+  Lemonade Server on Windows instead of on the CPU in WSL. Setup detects the
+  GPU and its memory in Windows, picks the model as the native installer does,
+  installs the pinned Lemonade for the user after asking, downloads the model
+  with checksum verification, runs Lemonade on 127.0.0.1 from a sign-in
+  scheduled task (`ODSLemonadeRuntime`), loads the model, and passes the route
+  to the Linux installer. `install-core.sh` gains `--lemonade-model`,
+  `--lemonade-gpu-name` and `--lemonade-gpu-vram-mb`; the hardware scan shows
+  that GPU instead of "None". An existing Lemonade (including 10.7+) is reused,
+  and Lemonade moves to the next free port when another program holds 8080.
+- Windows/WSL AMD setup now selects `--lemonade-host-transport model-router`.
+  The WSL host agent verifies the Windows Lemonade model through the running
+  model-router container belonging to this installation, where
+  `host.docker.internal` reaches Windows. This avoids probing WSL's own
+  localhost while keeping Lemonade bound to Windows loopback. Model identity,
+  context and completion checks still decide readiness; this transport does
+  not enable LAN access or cloud inference. Other Lemonade installs keep the
+  default `direct` transport.
+- On WSL, the host agent identifies Docker Desktop before choosing its bind
+  address. A leftover native `docker0` bridge could have the same gateway IP
+  as Docker Desktop and make the agent listen where ODS containers could not
+  reach it. Docker Desktop now selects WSL loopback regardless of that stale
+  bridge, for GPU and CPU installations alike.
+- The Windows AMD startup task restores and verifies the selected Lemonade
+  model and context at each sign-in, including Lemonade 10.0. A healthy API
+  without a loaded model no longer counts as completed setup. The task keeps
+  its launcher and configuration in the user's ODS directory instead of a
+  temporary installer checkout.
+- Re-running Windows AMD setup stops only the verified ODS task and its
+  process descendants, including cached llama.cpp workers. Other Lemonade
+  instances are preserved. Both the former direct task and the Lemonade
+  10.7 task launcher migrate to the durable launcher.
+- Failed Windows AMD startup cleans up the verified process tree, including
+  workers that outlive their parent. Separate process ownership records allow
+  an interrupted cleanup to resume without treating a failed launch as ready.
+- Portal reads the loaded Windows/WSL Lemonade model from the Linux host
+  agent's verified external-model observation instead of calling the
+  Windows-only model-status endpoint on that Linux agent.
+- The Windows/WSL Dashboard reads Lemonade's measured last-completion speed
+  through the authenticated host agent and owned model-router transport.
+  Repeated samples remain the last measurement rather than becoming live
+  throughput or accumulating into an invented token total.
+- Models describes externally managed Lemonade model changes without
+  incorrectly reporting that the local runtime is unavailable. Adoption
+  remains available; model activation still follows the runtime's capabilities.
+- The Windows/WSL hardware scan no longer claims CPU inference immediately
+  after identifying the Windows GPU used by Lemonade. Linux services retain
+  their detected backend.
+- Explicit Hermes and OpenClaw flags now take precedence in the Custom
+  feature menu as well as presets. The Windows Pixel path no longer asks to
+  enable agents that its command line explicitly disabled.
+- Every curated catalog download URL now names a Hugging Face commit instead
+  of `resolve/main`, so an upstream rewrite cannot change or remove a catalog
+  file. The 48 other re-pinned models download the same bytes: each sha256 was
+  checked at the pinned commit. A CI test rejects unpinned catalog URLs. An
+  installer rerun still keeps an active model whose `.env` has the old
+  `resolve/main` URL when the repo, file path and sha256 match the catalog, and
+  writes the pinned URL.
+- The Intel Docker image (`server-intel-b9014`), the Apple Docker image
+  (`server-b9014`) and fresh native Windows Vulkan installs
+  (`llama-b9014-bin-win-vulkan-x64.zip`, SHA-256 now checked before
+  extraction) move from llama.cpp b8248 to b9014, the build NVIDIA and CPU
+  already use. b8248 ignores `LLAMA_ARG_REASONING` and `LLAMA_ARG_SPEC_TYPE`,
+  and rejects `--spec-draft-n-max`, which the Windows launchers pass when
+  `LLAMA_ARG_SPEC_DRAFT_N_MAX` is set. Not measured on Intel or native Windows
+  hardware.
+  - Intel and Apple Docker now honor the reasoning-off default, so Qwen3.5
+    stops thinking by default on these backends (it thought on b8248). This
+    is intended; set `LLAMA_REASONING=on` to keep thinking.
+  - Intel: ODS no longer sets `SYCL_CACHE_PERSISTENT=1` for llama-server; the
+    persistent SYCL kernel cache crashes llama-server with the oneAPI 2025.3
+    runtime in the b9014 image. Every start now JIT-compiles kernels again
+    (~30 s). On hosts with more than one Intel GPU that runtime can crash with
+    the default `ONEAPI_DEVICE_SELECTOR=level_zero:gpu`; set
+    `ONEAPI_DEVICE_SELECTOR=level_zero:0` in `.env`, which the Intel overlays
+    now read and the installer keeps.
+  - The installer selects `docker-compose.arc.yml` for Intel, not
+    `docker-compose.intel.yml`, so the Intel image change reaches only stacks
+    started with the Intel overlay by hand. The Arc local-build path
+    (`docker-compose.arc.yml`, `images/llama-sycl`) was already broken and is
+    not moved to b9014 by this change: its image copies only the
+    `llama-server` binary although llama.cpp builds shared libraries by
+    default, the installer never builds it (it starts Compose with
+    `--no-build --pull never`) and never rebuilds an existing
+    `ods-llama-sycl:local`, and b9014 has not been compiled on its oneAPI
+    2025.0.0 base. Only its source defaults changed (tag `b9014`, pinned
+    commit).
+  - Native Windows: re-running the installer keeps an existing
+    `llama-server.exe`, so installs from before this change stay on b8248.
+    To move to b9014, delete `<install>\llama-server` and re-run the
+    installer. Every Windows launch path now reads the installed binary's
+    `--help`: on b9014 it passes `LLAMA_REASONING` as `--reasoning` (b9014
+    defaults it to `auto`, and `--reasoning-format none` alone returns the
+    reasoning inside the reply); on b8248 it keeps `--reasoning-format` and,
+    for `off`, adds `--reasoning-budget 0`, which is what turns thinking off
+    there. Before this change, b8248 installs returned Qwen3.5's reasoning
+    inside every reply.
+- Model selection ranks installable models by a curated priority per memory
+  class and checks fit with a memory estimate built from each model's
+  attention layout, instead of picking the largest file that fits. Fleet
+  hosts keep their models. Off-fleet hardware that received phi-4,
+  DeepSeek-R1 or Qwen3-30B-A3B (served past its 40,960-token limit) now gets
+  Qwen3.5 9B, Qwen3.5 27B or Qwen3.6 35B-A3B at 64K-128K; Apple 8 GB gets
+  Nemotron 3 Nano 4B at 64K, and CPU-only hosts get Q8-KV runtime profiles
+  sized for the llama-server container. Each pick serves the 64K context
+  Hermes needs where a model fits at 64K; the installers re-check the fit
+  before raising a smaller context, and record the served context so a
+  Dashboard restore of the installer's pick no longer drops to 32K. A
+  Dashboard model switch uses the same context rule as the installer and
+  never asks for more than a model's native context, and ODS Talk says up
+  front when the context llama-server actually serves is below 64K instead
+  of failing in Hermes. An installer rerun keeps a previously active model
+  (clamped to its native context) rather than replacing it; when that model
+  cannot serve 64K, Talk is shown as unavailable with the reason.
+- Gemma 4 26B-A4B, E2B and E4B now run at 64K: their sliding-window layers
+  keep the KV cache small, so the context no longer rules them out of Hermes.
 - Perplexica now runs upstream release v1.12.2, published under its new name
   Vane (`itzcrazykns1337/vane:slim-v1.12.2`, digest-pinned). The UI shows the
   Vane name; ODS keeps the `perplexica` service, port and volumes, so settings
@@ -40,14 +212,98 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Qwen3.5-27B, a copy-heavy edit fell from 89.5 s to 13.3 s and a whole-file
   rewrite from 70.1 s to 15.6 s. Novel generation and prefill did not change.
   Set `LLAMA_SPEC_TYPE=none` in `.env` to turn it off. Lemonade, Intel/Arc,
-  Apple and native macOS/Windows runtimes are unchanged.
+  Apple Docker and native Windows runtimes are unchanged; native macOS is
+  covered below.
+- Native macOS installs llama.cpp b9014 (Metal, `llama-b9014-bin-macos-arm64.tar.gz`,
+  SHA-256 `565aecda…4f22d`) instead of b8210, the same release as the Linux
+  images. b8210 turns speculative decoding off for hybrid models such as
+  Qwen3.5. On the fleet Mac mini M4 with Qwen3.5-9B, a copy-heavy file edit
+  fell from 158.2 s to 41.1 s and a whole-file rewrite from 155.6 s to
+  49.0 s, with byte-identical output. Existing installs keep their binary
+  until a fresh install or `get-ods.sh --force`.
+- Native macOS llama-server now keeps 32 prompt checkpoints per slot
+  (`--ctx-checkpoints 32`) unless `LLAMA_ARG_CTX_CHECKPOINTS` is set. On a Mac
+  mini M4 with Qwen3.5-9B and b8210, editing a tool result 9 turns back fell
+  from 84.3 s to 33.4 s. It also uses `--spec-type ngram-mod` when the
+  installed llama-server supports it (b8955+), with the same
+  `LLAMA_SPEC_TYPE=none` opt-out as Docker. On runtimes with b9014's
+  `--reasoning` switch, `LLAMA_REASONING` (default `off`) is passed as
+  `--reasoning`, as Docker does. Without it, b9014 turned Qwen3.5 thinking on
+  and put `<think>` blocks in replies.
 
 ### Fixed
+- Windows `ods.ps1 uninstall` no longer stops at "Docker cleanup is incomplete"
+  when a volume or network with the `ods` compose label is not in the saved
+  compose files (an older release or a since-disabled extension). It now removes
+  every labelled leftover after `compose down`, and a single leftover name is
+  passed to `docker` whole instead of one character per argument. If something
+  still cannot be removed, the message names it. Uninstall also removes the
+  `ODSNativeLlamaRuntime` scheduled task, and a helper task it cannot remove is
+  reported with the command to remove it instead of being skipped silently.
+- Gemma 4 26B-A4B (`gemma4-26b-a4b-q4`) and Gemma 4 31B (`gemma4-31b-q4`)
+  download again. ggml-org deleted both Q4_K_M files from its repos on
+  2026-07-16, so the catalog and the Gemma-profile tier maps (`NV_ULTRA`,
+  `SH_LARGE`, `SH_COMPACT`, tiers 3 and 4) pointed at URLs that return 404.
+  Their checksums had been stale since ggml-org replaced the files on
+  2026-04-12. Both now use pinned unsloth revisions with exact sha256 and size:
+  `gemma-4-26B-A4B-it-UD-Q4_K_M.gguf` (unsloth's Q4_K_M-class quant for this
+  model, 16.9 GB) and `gemma-4-31B-it-Q4_K_M.gguf` (18.3 GB). Only
+  `MODEL_PROFILE=gemma4` or `auto` installs were affected; the default `qwen`
+  profile never selects these models. Upgrade impact on an installer rerun:
+  - The 26B file name changed, so an existing 26B install is not preserved.
+    The rerun takes the current recommendation, and the old file stays in
+    `data/models`.
+  - The 31B keeps its file name, but the old file fails the new size check, so
+    the rerun takes the current recommendation. If that is the 31B again, the
+    installer finds a SHA256 mismatch, deletes the file and downloads 18.3 GB.
+  - A 32 GB NVIDIA GPU with `MODEL_PROFILE=gemma4` or `auto` on the Pixel
+    default route now gets Gemma 4 31B at 128K context instead of 26B-A4B. The
+    corrected file size puts its estimate at 31.07 GB of 31.8 GB; that fit is
+    estimated, not measured.
+  - Before this release these Gemma reruns already failed for most installs
+    (stale checksum, then a 404 on re-download), so this mostly replaces
+    reruns that were failing.
+- Native macOS launches no longer pass `--spec-draft-n-max` to a llama-server
+  that does not know it. Setting `LLAMA_ARG_SPEC_DRAFT_N_MAX` stopped the b8210
+  Metal server from starting (its flag is `--draft-max`). Draft flags are now
+  spelled for the installed binary, and an unsupported setting stops the
+  restart before the running model is stopped.
 - `LLAMA_ARG_CHECKPOINT_EVERY_N_TOKENS` is now `LLAMA_ARG_CHECKPOINT_EVERY_NT`,
   the name llama.cpp reads. Docker llama-server ignored the old name. Dashboard
   restarts of native macOS inference now read the same checkpoint keys as the
   installer (`LLAMA_ARG_CHECKPOINT_EVERY_NT`,
   `LLAMA_ARG_CHECKPOINT_MIN_SPACING_NT`).
+- Cloud mode, hybrid mode's `cloud` route and the CLOUD tier now use Claude
+  Sonnet 4.6 (`claude-sonnet-4-6`). The previous default,
+  `claude-sonnet-4-5-20250514`, is not an Anthropic model ID: it paired the
+  Sonnet 4.5 name with Sonnet 4's date, and neither Anthropic's model list nor
+  LiteLLM's model map has it. The `fast` route stays on Claude Haiku 4.5
+  (`claude-haiku-4-5-20251001`). A new test fails CI if any `anthropic/claude-*`
+  ID in ODS is not on a verified allowlist.
+- NVIDIA multi-GPU installs no longer use `--split-mode row` for tensor or
+  hybrid GPU assignments; they use `layer`, the mode the fleet runs. llama.cpp
+  b9890 removed CUDA row split, so row would stop the model loading once the
+  pin moves; the pinned b9014 still accepts it. An existing `.env` keeps its
+  value until the GPU assignment is recomputed, for example by
+  `ods gpu reassign`. AMD is unchanged.
+- Native Windows llama-server passes `LLAMA_ARG_CHECKPOINT_EVERY_NT` only when
+  the installed binary's `--help` lists `--checkpoint-every-n-tokens`, the
+  check native macOS already makes. llama.cpp b9310 removed the flag, and
+  llama-server exits on a flag it does not know.
+- Docker llama-server now receives `LLAMA_ARG_CHECKPOINT_MIN_SPACING_NT`
+  (`--checkpoint-min-step`, llama.cpp b9310 and later; the pinned b9014 ignores
+  it) and the draft KV cache types `LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_K`/`_V`,
+  the names llama.cpp reads. The native-only `LLAMA_ARG_SPEC_DRAFT_TYPE_K`/`_V`
+  keys never reached Docker.
+- Activating Qwen 3.8 27B now stops with a clear message instead of failing
+  to load: the default llama.cpp runtimes cannot load Qwen3.8 GGUFs.
+- llama-server no longer mounts `config/llama-server/models.ini`. llama.cpp
+  reads a preset file only with `--models-preset`, which ODS does not pass;
+  ODS still writes the file.
+- Corrections to earlier notes on llama.cpp env names: `LLAMA_ARG_NO_CACHE_PROMPT`
+  does work on b9014 (any value disables prompt caching), and
+  `LLAMA_ARG_CHECKPOINT_EVERY_N_TOKENS` never existed in llama.cpp; the flag's
+  env name is `LLAMA_ARG_CHECKPOINT_EVERY_NT`.
 
 ## [3.0.0] - 2026-09-24
 

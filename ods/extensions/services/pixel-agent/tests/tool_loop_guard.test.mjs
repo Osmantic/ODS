@@ -51,6 +51,45 @@ test('sandbox path guidance rejects native, unbound, successful and unrelated fa
 });
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+
+for (const explicit of [false, true]) {
+  test(`workspace file receipts coach a direct unittest command (explicit=${explicit})`, () => {
+    const guard=createToolLoopGuard();
+    const prompt=explicit
+      ? "Work autonomously in /workspace/audit-project. Inspect it, create math_helper.py and test_math_helper.py with unittest coverage, then run the tests."
+      : "Use your workspace tools. Create a new folder named audit-project. In it write math_helper.py and test_math_helper.py with unittest cases, then run the tests.";
+    guard.observeRun({agentId:"pixel",runId:"run-1",sessionId:"session-1"},"pixel",{prompt});
+    let persisted;
+    for (const [index,file] of ["math_helper.py","test_math_helper.py"].entries()) {
+      const toolCallId=`write-coaching-${index}`;
+      const content=index===0 ? "def multiply(a,b):\n    return a*b\n"
+        : "import unittest\nfrom math_helper import multiply\nclass TestMultiply(unittest.TestCase):\n    def test_value(self):\n        self.assertEqual(multiply(43,47),2021)\n";
+      const write=call(guard,"tool_call",{event:{toolCallId,params:{
+        id:"write",args:{path:`audit-project/${file}`,content},
+      }},context:{toolCallId}});
+      assert.notEqual(write?.block,true,write?.blockReason);
+      const result=wrappedCoreResult("write",{content:[{type:"text",text:"Successfully wrote 15 bytes"}]});
+      afterCall(guard,"tool_call",{event:{toolCallId,params:write?.params ?? {
+        id:"write",args:{path:`audit-project/${file}`,content},
+      },result},context:{toolCallId}});
+      persisted=persistToolResult(guard,"tool_call",toolCallId,result);
+      if(index===0) assert.doesNotMatch(JSON.stringify(persisted),/"command":"python3 -m unittest/);
+    }
+    const guidance=JSON.stringify(persisted);
+    assert.match(guidance,/python3 -m unittest -v test_math_helper\.py/);
+    assert.match(guidance,/workdir.*\/workspace\/audit-project/);
+    assert.match(guidance,/Do not add shell chains/);
+    const command=call(guard,"tool_call",{event:{toolCallId:"coached-test",params:{
+      id:"exec",args:{command:"python3 -m unittest -v test_math_helper.py",workdir:"/workspace/audit-project"},
+    }},context:{toolCallId:"coached-test"}});
+    assert.notEqual(command?.block,true);
+    // Masked exit evidence still cannot pass the verification audit gate.
+    const masked=call(guard,"tool_call",{event:{toolCallId:"masked-test",params:{
+      id:"exec",args:{command:'python3 -m unittest -v test_math_helper.py; echo "EXIT=$?"',workdir:"/workspace/audit-project"},
+    }},context:{toolCallId:"masked-test"}});
+    assert.equal(masked?.block,true);
+  });
+}
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -3534,7 +3573,8 @@ test("post-download analysis still enforces normal destructive-command boundarie
   assert.equal(call(guard, "exec", {
     event: { params: { command: "rm -rf /workspace/project" } },
   }).blockReason, RECURSIVE_DELETE_REQUIRES_OWNER_REASON);
-  assert.equal(reply(guard).payload.text, RECURSIVE_DELETE_REQUIRES_OWNER_REASON);
+  assert.match(reply(guard).payload.text, /^Portal blocked an unapproved recursive deletion/);
+  assert.doesNotMatch(reply(guard).payload.text, /Do not retry|Explain what was attempted|\bPixel\b/);
 });
 
 test("rejects mismatched or malformed staged-download terminal evidence", () => {
@@ -10456,6 +10496,35 @@ test("allows direct verification and a terminal stderr merge after a blocked pip
   assert.equal(reply(guard), undefined);
 });
 
+test("a refused redirect after a passing run keeps the pass until the workspace changes", () => {
+  const guard = createToolLoopGuard();
+  const direct = { command: "python3 -m unittest -v", workdir: "/workspace/project" };
+  assert.equal(call(guard, "exec", { event: { params: direct } }), undefined);
+  afterCall(guard, "exec", {
+    event: { params: direct, result: { isError: false, details: { exitCode: 0 } } },
+  });
+  const redirected = { command: "python3 -m unittest -v > test-results.txt 2>&1", workdir: "/workspace/project" };
+  const refusal = { block: true, blockReason: VERIFICATION_COMMAND_NOT_AUDITABLE_REASON };
+  const refuse = (toolCallId) => {
+    assert.deepEqual(call(guard, "exec", { event: { params: redirected, toolCallId } }), refusal);
+    afterCall(guard, "exec", { event: { params: redirected, toolCallId, error: refusal.blockReason } });
+  };
+  // The refused command runs nothing, so the real pass still describes the code.
+  refuse("call-refused-1");
+  refuse("call-refused-2");
+  assert.deepEqual(guard.verificationForRun("run-1"), { status: "passed" });
+
+  // After a workspace change the old pass no longer covers a refused check.
+  const write = { path: "project/totals.py", content: "TOTAL = 3" };
+  call(guard, "write", { event: { params: write } });
+  afterCall(guard, "write", { event: { params: write, result: { details: { status: "completed" } } } });
+  refuse("call-refused-3");
+  assert.deepEqual(guard.verificationForRun("run-1"), {
+    status: "failed",
+    text: VERIFICATION_FAILED_DELIVERY_PREFIX,
+  });
+});
+
 test("final delivery preserves a model response after passing verification", () => {
   const guard = createToolLoopGuard();
   const params = { command: "python3 -m unittest -v", workdir: "/workspace/project" };
@@ -12166,9 +12235,11 @@ test("deletion refusal stops alternate commands and tools in the same run", () =
   assert.deepEqual(signalled, ["run-1"]);
   assert.deepEqual(aborted, ["session-1"]);
   assert.equal(guard.beforeAgentFinalize({}, { agentId: "pixel", runId: "run-1" }), undefined);
-  assert.deepEqual(guard.deliveryVerificationForRun("run-1"), {
-    status: "failed", text: RECURSIVE_DELETE_REQUIRES_OWNER_REASON,
-  });
+  const delivered = guard.deliveryVerificationForRun("run-1");
+  assert.equal(delivered.status, "failed");
+  assert.equal(delivered.preview, undefined);
+  assert.match(delivered.text, /^Portal blocked an unapproved recursive deletion/);
+  assert.doesNotMatch(delivered.text, /Do not retry|Explain what was attempted|\bPixel\b/);
   // Another owner's ordinary run and a later actual run are not locked.
   assert.notEqual(call(guard, "read", { event: { runId: "run-2", params: { path: "notes.txt" } },
     context: { runId: "run-2", sessionId: "session-2" } })?.block, true);
@@ -15898,7 +15969,7 @@ test("historical preview cannot hide a later coding stop from the final reply", 
     }, context, "pixel");
     assert.equal(invoke("exec", params).blockReason, CODING_RETRY_EXHAUSTED_REASON);
     const delivered = reply(guard, {event: {runId: "coding-run", payload: {text: ""}}});
-    assert.match(delivered.payload.text, /stopped the coding loop/);
+    assert.match(delivered.payload.text, /stopped before the requested work was complete/);
     assert.ok(delivered.payload.text.includes(VERIFICATION_FAILED_DELIVERY_PREFIX));
     assert.ok(delivered.payload.text.includes(details.url));
     assert.match(delivered.payload.text, /last published preview/);

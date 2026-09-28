@@ -12,7 +12,8 @@ import { createRecoveryTracker } from '../utils/recoveryTracker'
 import MetalMetricIcon from '../components/MetalMetricIcon'
 import FittedLibraryPage from '../components/FittedLibraryPage'
 import {
-  ExtensionSettingsFields, installPlanSettings, missingSettingsRefusal, saveExtensionSettings,
+  ExtensionSettingsFields, installPlanSettings, installPlanWarnings, missingSettingsRefusal, saveExtensionSettings,
+  savedSettingsWarning, settingProblem,
 } from '../components/ExtensionInstallSettings'
 import './extensions-refined.css'
 
@@ -247,13 +248,18 @@ export default function Extensions({ compact = false }) {
     if (current.action === 'install' && current.settings?.loading) {
       const timeout = setTimeout(() => request.abort(), 15000)
       fetch(`/api/extensions/${current.ext.id}/install-plan`, { signal: request.signal, cache: 'no-store' })
-        .then(async response => (response.ok ? installPlanSettings(await response.json(), current.ext.id) : null))
+        .then(async response => {
+          if (!response.ok) return null
+          const plan = await response.json()
+          return { fields: installPlanSettings(plan, current.ext.id), warnings: installPlanWarnings(plan, current.ext.id) }
+        })
         .catch(() => null)
-        .then(fields => {
+        .then(result => {
           // Without a plan the install endpoint still refuses missing
           // settings, and this dialog then asks for them.
           setConfirm(open => (open?.id === dialogId
-            ? { ...open, settings: { ...open.settings, fields: fields || [], loading: false } } : open))
+            ? { ...open, settings: { ...open.settings, fields: result?.fields || [],
+              warnings: result?.warnings || [], loading: false } } : open))
         })
         .finally(() => clearTimeout(timeout))
     }
@@ -420,8 +426,10 @@ export default function Extensions({ compact = false }) {
     const values = Object.fromEntries(fields.map(field => [field.key, settingValues[field.key] || '']))
     const showError = error => setConfirm(open => (open?.id === current.id
       ? { ...open, settings: { ...open.settings, error } } : open))
-    if (Object.values(values).some(value => !value.trim())) {
-      showError('Enter every required setting.')
+    // The button stays disabled until every value passes its declared
+    // format; the API checks the same format again before writing.
+    if (fields.some(field => settingProblem(field, values[field.key], values))) {
+      showError('Enter every required setting in its expected format.')
       return
     }
     const controller = new AbortController()
@@ -649,6 +657,11 @@ export default function Extensions({ compact = false }) {
                 <Loader2 size={12} className="animate-spin" /> Checking required settings…
               </p>
             )}
+            {confirm.settings?.warnings?.length > 0 && (
+              <p role="note" className="mb-5 text-[11px] leading-relaxed text-amber-300">
+                {savedSettingsWarning(confirm.ext.name, confirm.settings.warnings)}
+              </p>
+            )}
             {confirm.settings?.fields?.length > 0 && (
               <ExtensionSettingsFields
                 fields={confirm.settings.fields}
@@ -664,7 +677,8 @@ export default function Extensions({ compact = false }) {
               <button onClick={() => setConfirm(null)} autoFocus className="px-4 py-2 text-[10px] font-mono uppercase tracking-[0.16em] text-theme-text-muted/65 hover:text-theme-text transition-colors">Cancel</button>
               <button
                 onClick={confirmAction}
-                disabled={settingsBusy || confirm.settings?.loading === true}
+                disabled={settingsBusy || confirm.settings?.loading === true
+                  || (confirm.settings?.fields || []).some(field => settingProblem(field, settingValues[field.key], settingValues))}
                 className={`px-4 py-2 text-[10px] font-semibold uppercase tracking-[0.08em] rounded-lg transition-colors disabled:opacity-50 ${
                   confirm.action === 'uninstall' || confirm.action === 'purge' ? 'bg-red-500/15 text-red-400 hover:bg-red-500/25' :
                   'bg-theme-accent/15 text-theme-accent-light hover:bg-theme-accent/25'

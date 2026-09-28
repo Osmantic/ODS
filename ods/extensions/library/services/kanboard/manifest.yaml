@@ -28,6 +28,9 @@ service:
     secret: true
     description: "Initial admin password, 12\u201372 UTF-8 bytes. Existing passwords\
       \ are not reset."
+    min_length: 12
+    max_length: 72
+    generate: password
   ui_path: /
 tags:
 - kanban

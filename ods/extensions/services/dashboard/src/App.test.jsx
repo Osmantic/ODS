@@ -54,14 +54,6 @@ vi.mock('./pages/ODSTalk', () => ({
 vi.mock('./pages/Pixel', () => ({ default: () => <input aria-label="Portal draft" /> }))
 vi.mock('./components/SettingsModal', () => ({ default: () => <input aria-label="Settings draft" /> }))
 
-vi.mock('./components/SplashScreen', () => ({
-  default: ({ onComplete }) => {
-    // In tests, immediately complete the splash so App renders normally
-    onComplete?.()
-    return null
-  }
-}))
-
 // InstallPromptBanner depends on browser PWA events we don't simulate
 // in these App-level tests; render nothing so it doesn't interfere.
 vi.mock('./components/InstallPromptBanner', () => ({
@@ -117,7 +109,6 @@ describe('App', () => {
       Promise.resolve({ ok: true, json: () => Promise.resolve({}) })
     ))
     globalThis.localStorage.removeItem('ods-sidebar-collapsed')
-    globalThis.sessionStorage.removeItem('ods-splash-shown')
     useFirstRun.mockReturnValue({ firstRun: false, loading: false, error: null, refresh: vi.fn() })
   })
 

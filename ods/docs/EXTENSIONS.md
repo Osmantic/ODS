@@ -455,7 +455,7 @@ AMD ROCm requires additional container configuration compared to NVIDIA:
 - **Device passthrough:** `/dev/dri` (rendering) and `/dev/kfd` (compute)
 - **Group membership:** Container user must be in the host's `video` and `render` groups
 - **GFX version override:** Avoid setting `HSA_OVERRIDE_GFX_VERSION` unless a specific image requires emulation. A wrong value can dispatch incompatible kernels; an empty value is also invalid. Prefer an image that contains kernels for the native `rocminfo` architecture.
-- **Security relaxation:** `cap_add: SYS_PTRACE` and `seccomp:unconfined` may be needed for ROCm profiling
+- **Security relaxation:** `cap_add: SYS_PTRACE` and `seccomp:unconfined` may be needed for ROCm profiling. They are refused in user and library extensions (see the compose policy below); a curated recipe's `compose.amd.yaml` may add only `/dev/kfd`, `/dev/dri` and the `${VIDEO_GID:-44}` / `${RENDER_GID:-992}` groups
 
 ## Compatibility Checklist
 
@@ -500,11 +500,61 @@ When a user installs an extension via the dashboard (`POST /api/extensions/{serv
 
 1. Validates the service ID and confirms it is not a core service
 2. Locates the extension in the **extensions library** (`$ODS_DATA_DIR/extensions-library/<id>/`)
-3. Performs a size check (max 50 MB) and security scan of the compose file (rejects privileged mode, Docker socket mounts, host network, dangerous capabilities, non-localhost port bindings, and other unsafe directives)
+3. Performs a size check (max 50 MB) and security scan of every compose file the recipe ships (the shared compose policy below)
 4. Copies the extension to `$ODS_DATA_DIR/user-extensions/<id>/` atomically via a temp directory on the same filesystem
 5. Calls the host agent to start the container (`POST /v1/extension/start`)
 
 The install uses file locking (`fcntl.flock`) to prevent double-install races.
+
+#### Compose policy
+
+`dashboard-api` (`routers/extensions.py:_scan_compose_content`, at install and
+enable time) and `scripts/resolve-compose-stack.sh`
+(`_scan_user_compose_content`, on every `ods` command) run one rule set: the
+`# >>> shared compose policy >>>` block, kept byte-identical in both files
+(`extensions/services/dashboard-api/tests/test_compose_policy_parity.py`). Values are judged the way Docker
+Compose resolves them, and anything the file alone cannot decide is refused:
+
+- **Parsing:** one YAML document, no duplicate keys, no Compose `!reset` /
+  `!override` tags, no self-referencing anchors.
+- **Booleans:** `privileged` and `use_api_socket` must be absent or an explicit
+  false; Compose casts the strings `true`/`yes`/`y`/`on` to true.
+- **Interpolation:** a guarded value may not use `${VAR}` / `$VAR` (Compose
+  fills it from the owner's environment or the default). The exceptions are
+  the shapes ODS core uses: the `${VIDEO_GID:-44}` / `${RENDER_GID:-992}` GPU
+  groups, `${ODS_UID:-N}:${ODS_GID:-N}` users, `${VAR:-127.0.0.1}` port hosts
+  and NVIDIA `device_ids`.
+- **Other files and containers:** no top-level `include`, `name`, `secrets`,
+  `configs` or `models`; no service `extends`, `env_file`, `label_file`,
+  `volumes_from`, `secrets`, `configs`, `post_start`/`pre_stop` hooks,
+  `develop`, `provider`, `annotations`, `cgroup_parent` or
+  `device_cgroup_rules`.
+- **Namespaces:** no `host` network/PID/IPC/UTS/user/cgroup namespace, and no
+  `container:` or `service:` join outside the extension's own file.
+- **Capabilities and security options:** `cap_add` only from Docker's default
+  set (never `SYS_ADMIN`, `DAC_READ_SEARCH`, `NET_ADMIN`, ...; `CAP_` prefix and
+  case are normalised); `security_opt` only `no-new-privileges`.
+- **Users and groups:** no root user (`root`, `0`, `00`, `+0`); `group_add`
+  only the GPU groups, only in a curated recipe's `compose.amd.yaml`.
+- **Volumes:** no absolute, `~`, Windows or `..` host paths, no Docker socket or
+  named pipe. Relative binds resolve against the ODS install directory (the
+  first `-f` file), so `.`, `./.env` and the whole `./data` / `./config` are
+  refused, and an imported (GitHub) recipe may bind only its own
+  `./data/<id>` and `./config/<id>`. Named volumes and networks may not set a
+  driver, options, `name` or `external` other than joining `ods-network`;
+  services may not set per-network aliases or addresses.
+- **Provenance:** a library recipe is curated unless its `upstream.json`
+  records `origin: github-proposal`. A linked, oversized (over 512 KiB),
+  non-JSON or duplicate-key marker is never curated: staging refuses the
+  install and the resolver treats the recipe as imported.
+- **Refusals do not take the stack down:** the resolver leaves a refused
+  file out with a `WARNING`. Compose rejects the whole project when a service
+  depends on an undefined one, so the resolver also leaves out every user
+  extension that needs (`depends_on`, `links`, `service:` namespaces) a
+  service no remaining file declares, transitively, naming the chain back to
+  the refusal. `ods enable`, `ods disable` and `ods mode` print these
+  warnings. The dashboard's enable/activate re-scan applies the same
+  imported-recipe bind namespace as the install gate.
 
 ### 4. Enable / Disable
 
