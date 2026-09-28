@@ -37,7 +37,12 @@ qualification campaign is incomplete.
 
 ## Default Guidance
 
-- New users can follow the README quickstart, which tracks `main`.
+- The default README quickstart requires an immutable signed stable artifact.
+  The historical `v3.0.0` release does not meet that new contract. Publishing
+  and validating the first eligible candidate is a rollout gate; the verified
+  command stops before installation while that gate is open.
+- Development `main` is an explicit opt-in under the README's development
+  section, not a fallback after failed verification.
 - Pin `v3.0.0` to reproduce the V3 Pre-Release source, or an audited later commit
   to include subsequent fixes. Do not relabel earlier tests as a later-head pass.
 - V3 fixes target `main`. No `release/3.x` branch is implied by the new tag.

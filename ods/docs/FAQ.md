@@ -1,5 +1,7 @@
 # ODS FAQ
 
+> **Release channel:** use the [verified stable quickstart](../../README.md#get-started) for signed source. It requires the first eligible immutable release; historical `v3.0.0` is not eligible. The `curl ... | bash` and `main.zip` examples on this page are development opt-ins, not verified stable installs.
+
 Quick answers to common questions.
 
 > **Looking for install/runtime troubleshooting?** See [TROUBLESHOOTING.md](TROUBLESHOOTING.md) and [INSTALL-TROUBLESHOOTING.md](INSTALL-TROUBLESHOOTING.md).

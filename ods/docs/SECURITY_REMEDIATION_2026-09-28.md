@@ -14,7 +14,7 @@ implemented on main before this work.
 | SEC-002: Python advisories | Upgrade FastAPI/Starlette and aiohttp; all nine API/relay Docker builds install complete hash-checked locks; production audits are clean. | CI installation/build coverage and triage remaining full-suite failures. |
 | SEC-003: source containment | Generated source services have numeric non-root UID, no capabilities, no-new-privileges, read-only root, resource limits and an internal network; API publication/re-enable and dynamic resolver enforce the profile. Saved stack arguments are revalidated by the host and platform CLIs, including old receipts; merged recipes cannot override or join source sandboxes. | Real-container CI passed; run the new cross-platform saved-stack CI and broader lifecycle regressions. |
 | SEC-004: public AI spending | Paid issue triage and review comments require a trusted association; serialized jobs and per-run budgets; unauthorized comments cannot cancel another comment's review. | CI workflow validation. This bounds individual runs, not the organization's total monthly provider bill. |
-| SEC-005: provenance | Python locks/hashes, Python base image indexes and 31 additional external image references resolved from registry descriptors. Signed-tag source packaging and a draft-only checksum/SBOM/OIDC workflow are implemented, with gate/archive tests. | Verify the first signed candidate end to end; implement the verified bootstrap channel and finish image pins. Existing published tags have not been changed or retroactively signed. |
+| SEC-005: provenance | Python locks/hashes, Python base image indexes and 31 additional external image references resolved from registry descriptors. Signed-tag source packaging, draft-only checksum/SBOM/OIDC workflow, and Windows/POSIX verified consumers are implemented. README separates verified stable from development opt-in. | Verify the first signed immutable candidate end to end and finish image pins. The current public release lacks the artifacts/immutability flag and is correctly refused: do not switch public onboarding until the producer is released and qualified. Existing tags have not been changed or retroactively signed. |
 | SEC-006: React Router | Coordinated update to react-router-dom 7.18.4 and its lockfile; production npm audit is clean. | CI across supported frontend hosts. |
 | SEC-007: local origin trust | State-changing requests require exact Origin/Host agreement; the CORS allowlist no longer grants mutation authority. | CI regression coverage. |
 | SEC-008: mutable Actions | Remaining twelve Action uses pinned to full commit hashes. | CI workflow validation. |
@@ -110,7 +110,30 @@ packaging, reproducibility and symlink refusal. GitHub is the actual signature
 verifier; mocked API responses exercise the gate but do not prove production
 OIDC signing or published asset verification. No release workflow was dispatched.
 
+Verified consumer contracts exercise the actual PowerShell 5.1/POSIX command
+bodies, real archive extraction and fixture installer execution. They constrain
+repository, workflow, ref, commit and runner identity before extraction; failed
+metadata, tag or attestation checks preserve an existing installation. Paths
+include spaces and accented/CJK characters. HTTP and the verifier are controlled
+fixtures: real OIDC acceptance remains a first-release gate. Public downloads
+avoid GitHub CLI login requirements; only bundle verification invokes `gh`.
+The README bodies are checked against the executable scripts to avoid drift.
+
+Rollout must stage the producer before switching public onboarding to the
+verified channel. This draft contains both sides for review, but the current
+published release is not eligible and no successful new-user installation of
+an eligible signed artifact has yet been demonstrated. This is a merge/release
+gate, not a reason to add an unsigned fallback.
+
 ## Upgrade behavior to review
+
+The follow-up lifecycle review also found native background model upgrades still
+reading the dashboard's LAN bind, and the macOS doctor probing that address.
+Those paths now preserve loopback through model replacement and recovery.
+Production argument assembly is tested with LAN/IPv6 settings, custom ports,
+model paths containing spaces and GPU/cache options; the Windows restart fixture
+and doctor diagnostics also pass. These are controlled runtime fixtures, not
+physical Windows GPU or macOS Metal validation.
 
 LAN clients use authenticated UI/gateway routes. Direct inference and extension
 ports no longer inherit the UI LAN preference. Applications requiring remote

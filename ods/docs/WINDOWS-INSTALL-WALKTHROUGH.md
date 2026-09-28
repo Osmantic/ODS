@@ -1,5 +1,7 @@
 # Legacy native Windows installation walkthrough
 
+> **Release channel:** use the [verified stable quickstart](../../README.md#get-started) for signed source. It requires the first eligible immutable release; historical `v3.0.0` is not eligible. The `curl ... | bash` and `main.zip` examples on this page are development opt-ins, not verified stable installs.
+
 For new Pixel/Portal installations, use [Windows Quickstart](WINDOWS-QUICKSTART.md). The root `install.ps1` now guides Ubuntu/WSL2 setup. This page describes only the legacy native implementation and Windows runtime paths; it does not install Pixel in Ubuntu.
 
 Step-by-step guide for installing ODS on Windows 10/11 with WSL2,

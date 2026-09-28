@@ -1,5 +1,7 @@
 # ODS V3 Pre-Release
 
+> **Release channel:** use the [verified stable quickstart](../README.md#get-started) for signed source. It requires the first eligible immutable release; historical `v3.0.0` is not eligible. The `curl ... | bash` and `main.zip` examples on this page are development opt-ins, not verified stable installs.
+
 **Osmantic Deployment System**
 
 **Public testing and refinement ahead of the official V3 launch.**

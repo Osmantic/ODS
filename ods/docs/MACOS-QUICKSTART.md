@@ -1,5 +1,7 @@
 # ODS macOS Quickstart
 
+> **Release channel:** use the [verified stable quickstart](../../README.md#get-started) for signed source. It requires the first eligible immutable release; historical `v3.0.0` is not eligible. The `curl ... | bash` and `main.zip` examples on this page are development opt-ins, not verified stable installs.
+
 > **Status: Supported**
 >
 > The macOS installer runs end-to-end on Apple Silicon. One command gives you a full local AI stack with Metal-accelerated inference.

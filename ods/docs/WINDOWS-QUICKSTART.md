@@ -1,5 +1,7 @@
 # ODS Windows Quickstart
 
+> **Release channel:** use the [verified stable quickstart](../../README.md#get-started) for signed source. It requires the first eligible immutable release; historical `v3.0.0` is not eligible. The `curl ... | bash` and `main.zip` examples on this page are development opt-ins, not verified stable installs.
+
 ## Start in Windows PowerShell
 
 Use a normal, non-Administrator PowerShell window. The installer guides Ubuntu/WSL2 preparation and installs Pixel/Portal there. There is no native Windows or Hermes fallback.

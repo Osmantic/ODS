@@ -8,9 +8,25 @@ intentionally expose services to your LAN.
 
 ## Install Paths
 
-### Public Linux/macOS Bootstrap
+### Verified stable source (release gate)
 
-The canonical one-liner is:
+The main README's default path verifies an immutable stable release archive
+before extraction or execution. It checks the annotated tag and its verified
+signature, then uses GitHub CLI to constrain the attestation to `Osmantic/ODS`,
+the release workflow, the exact tag and full commit on a GitHub-hosted runner.
+The inspectable command bodies are also in `installers/verified-release.sh`
+and `installers/verified-release.ps1`; tests keep them identical to the README.
+Public HTTP downloads and local bundle verification do not require GitHub login.
+
+**Rollout gate:** the historical `v3.0.0` release has neither those assets nor
+GitHub's immutable-release flag. The verified installer refuses it without
+touching an existing ODS installation. Maintainers must produce, validate and
+publish the first eligible release before advertising this channel as usable.
+See [Signed Source Releases](SIGNED_SOURCE_RELEASES.md).
+
+### Development Linux/macOS Bootstrap (explicit opt-in)
+
+The legacy hosted development one-liner is:
 
 ```bash
 curl -fsSL https://install.osmantic.com/ods.sh | bash
@@ -201,11 +217,10 @@ a reviewed tag or internal fork and record the exact commit or release tag.
 
 ## Provenance Roadmap
 
-The [signed source release pipeline](SIGNED_SOURCE_RELEASES.md) now defines the
-candidate producer and its verification gate. It only creates draft releases
-from new, verified signed tags. The existing quick start has not yet switched
-to those artifacts; first-candidate verification and the automated consumer
-remain required before treating the provenance chain as complete.
+The [signed source release pipeline](SIGNED_SOURCE_RELEASES.md) defines the
+candidate producer and the README's verified consumer. It only creates draft
+releases from new, verified signed tags. First-candidate signing, verification
+and installation tests remain required before this chain can be called complete.
 
 1. Publish checksums for release installer artifacts.
 2. Sign release artifacts and tags with maintainer-controlled signing keys.

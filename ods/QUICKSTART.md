@@ -1,5 +1,7 @@
 # ODS Quick Start
 
+> **Release channel:** use the [verified stable quickstart](../README.md#get-started) for signed source. It requires the first eligible immutable release; historical `v3.0.0` is not eligible. The `curl ... | bash` and `main.zip` examples on this page are development opt-ins, not verified stable installs.
+
 One command to a running local AI stack. The installer detects your hardware,
 chooses a model, writes the config, starts the services, and leaves you with a
 chat UI plus the `ods` management command.

@@ -482,7 +482,7 @@ else
 fi
 
 # ============================================================================
-# 20. User-ext compose with BIND_ADDRESS-default loopback port must be ACCEPTED
+# 20. A loopback interpolation default must not authorize a LAN-capable port
 # ============================================================================
 mkdir -p "$TEMP_DIR/data/user-extensions/user-loopback-default"
 cat > "$TEMP_DIR/data/user-extensions/user-loopback-default/manifest.yaml" <<'EOF'
@@ -506,9 +506,9 @@ ld_stdout=$(bash "$ROOT_DIR/scripts/resolve-compose-stack.sh" \
     2>/dev/null) || true
 
 if contains_path "$ld_stdout" "user-loopback-default/compose.yaml"; then
-    pass "User-ext with BIND_ADDRESS-default loopback port accepted"
+    fail "User-ext interpolation could publish its port on the UI LAN address"
 else
-    fail "User-ext with BIND_ADDRESS-default loopback port should be accepted"
+    pass "User-ext interpolated host bind rejected even with a loopback default"
 fi
 
 # ============================================================================

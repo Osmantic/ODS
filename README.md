@@ -68,24 +68,115 @@ is the older 2.6 maintenance lane. See
 [Installer Trust](ods/docs/INSTALLER_TRUST.md), and
 [Forkability](ods/docs/FORKABILITY.md).
 
-**September main update:** the quickstarts below follow development `main`,
-including the [September Portal/platform promotion](ods/docs/PUBLIC_BETA_PROMOTION_2026-09.md).
-That merge is not a new stable release or proof of complete fleet qualification.
-Native Pixel source-update and backup/recovery limits are documented in
-[Source Updates](ods/docs/SOURCE-UPDATES.md). Use a pinned release or audited
-commit when reproducibility is required.
+**Signed-release rollout:** the verified channel below requires a new signed,
+immutable release with source archives and an attestation bundle. The current
+`v3.0.0` release does not satisfy that contract and will be refused. This is a
+release gate, not a claim that a verified package has already been published.
+Development `main` remains an explicit opt-in below.
 
 ## Get Started
 
-Choose your system, copy the block, run it in a normal terminal. ODS installs the stack, picks a model for your hardware, starts the services, and gives you the local web UI.
+Choose your system, copy the block, run it in a normal terminal. Install the official [GitHub CLI](https://cli.github.com/) first. These commands authenticate an immutable stable source archive before extracting or executing its installer; they never fall back to `main`. Once verified, ODS installs the stack, selects a model and starts the local UI.
 
 **Linux or macOS**
 
 ```bash
-curl -fsSL https://install.osmantic.com/ods.sh | bash
+(
+set -euo pipefail
+command -v gh >/dev/null || { echo 'Install GitHub CLI from https://cli.github.com first.' >&2; exit 1; }
+command -v unzip >/dev/null || { echo 'Install unzip first.' >&2; exit 1; }
+command -v python3 >/dev/null || { echo 'Install Python 3 first (JSON metadata parsing).' >&2; exit 1; }
+command -v curl >/dev/null || { echo 'Install curl first.' >&2; exit 1; }
+ods_get() { curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location --connect-timeout 15 --max-time 600 "$@"; }
+ods_tag="$(ods_get https://api.github.com/repos/Osmantic/ODS/releases/latest | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("tag_name", "") if d.get("immutable") is True and d.get("draft") is False and d.get("prerelease") is False else "")')"
+[[ "$ods_tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+    echo 'No immutable signed stable release is available. No installation was changed; main is a separate development channel.' >&2
+    exit 1
+}
+ods_tag_object="$(ods_get "https://api.github.com/repos/Osmantic/ODS/git/ref/tags/$ods_tag" | python3 -c 'import json,sys; d=json.load(sys.stdin).get("object", {}); print(d.get("sha", "") if d.get("type") == "tag" else "")')"
+[[ "$ods_tag_object" =~ ^[0-9a-f]{40}$ ]] || { echo 'Stable tag must be annotated and signed.' >&2; exit 1; }
+ods_commit="$(ods_get "https://api.github.com/repos/Osmantic/ODS/git/tags/$ods_tag_object" | python3 -c 'import json,sys; d=json.load(sys.stdin); v=d.get("verification", {}); o=d.get("object", {}); print(o.get("sha", "") if v.get("verified") is True and v.get("reason") == "valid" and o.get("type") == "commit" else "")')"
+[[ "$ods_commit" =~ ^[0-9a-f]{40}$ ]] || { echo 'Release tag signature was not verified.' >&2; exit 1; }
+ods_stage="$(mktemp -d "${TMPDIR:-/tmp}/ods-release.XXXXXXXX")"
+ods_archive="ODS-$ods_tag-source.zip"
+ods_get "https://github.com/Osmantic/ODS/releases/download/$ods_tag/$ods_archive" -o "$ods_stage/$ods_archive"
+ods_get "https://github.com/Osmantic/ODS/releases/download/$ods_tag/provenance.sigstore.jsonl" -o "$ods_stage/provenance.sigstore.jsonl"
+gh attestation verify "$ods_stage/$ods_archive" \
+    --bundle "$ods_stage/provenance.sigstore.jsonl" --repo Osmantic/ODS --hostname github.com \
+    --signer-workflow Osmantic/ODS/.github/workflows/release-provenance.yml \
+    --source-ref "refs/tags/$ods_tag" --source-digest "$ods_commit" --deny-self-hosted-runners
+unzip -q "$ods_stage/$ods_archive" -d "$ods_stage/source"
+echo "Verified $ods_tag ($ods_commit). Source retained at $ods_stage/source"
+bash "$ods_stage/source/install.sh" "$@"
+)
 ```
 
 **Windows PowerShell** — guided Ubuntu/WSL2 setup with Pixel/Portal
+
+```powershell
+& {
+    $ErrorActionPreference = 'Stop'
+    if (-not (Get-Command gh -CommandType Application -ErrorAction SilentlyContinue)) {
+        throw 'Install GitHub CLI from https://cli.github.com first, then open a new normal PowerShell window.'
+    }
+    $odsRelease = Invoke-RestMethod -Uri 'https://api.github.com/repos/Osmantic/ODS/releases/latest' -TimeoutSec 60
+    $odsTag = [string]$odsRelease.tag_name
+    if ($odsRelease.immutable -ne $true -or $odsRelease.draft -ne $false -or $odsRelease.prerelease -ne $false -or $odsTag -cnotmatch '^v[0-9]+\.[0-9]+\.[0-9]+$') {
+        throw 'No immutable signed stable release is available. No installation was changed; main is a separate development channel.'
+    }
+    $odsRef = Invoke-RestMethod -Uri "https://api.github.com/repos/Osmantic/ODS/git/ref/tags/$odsTag" -TimeoutSec 60
+    $odsTagObject = [string]$odsRef.object.sha
+    if ($odsRef.object.type -ne 'tag' -or $odsTagObject -cnotmatch '^[0-9a-f]{40}$') { throw 'Stable tag must be annotated and signed.' }
+    $odsAnnotation = Invoke-RestMethod -Uri "https://api.github.com/repos/Osmantic/ODS/git/tags/$odsTagObject" -TimeoutSec 60
+    $odsCommit = [string]$odsAnnotation.object.sha
+    if ($odsAnnotation.verification.verified -ne $true -or $odsAnnotation.verification.reason -ne 'valid' -or $odsAnnotation.object.type -ne 'commit' -or $odsCommit -cnotmatch '^[0-9a-f]{40}$') {
+        throw 'Release tag signature was not verified.'
+    }
+    $odsStage = Join-Path $env:TEMP ('ods-release-' + [guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $odsStage | Out-Null
+    $odsArchive = "ODS-$odsTag-source.zip"
+    Invoke-WebRequest -UseBasicParsing -Uri "https://github.com/Osmantic/ODS/releases/download/$odsTag/$odsArchive" -OutFile (Join-Path $odsStage $odsArchive) -TimeoutSec 600
+    Invoke-WebRequest -UseBasicParsing -Uri "https://github.com/Osmantic/ODS/releases/download/$odsTag/provenance.sigstore.jsonl" -OutFile (Join-Path $odsStage 'provenance.sigstore.jsonl') -TimeoutSec 600
+    & gh attestation verify (Join-Path $odsStage $odsArchive) --bundle (Join-Path $odsStage 'provenance.sigstore.jsonl') --repo Osmantic/ODS --hostname github.com --signer-workflow Osmantic/ODS/.github/workflows/release-provenance.yml --source-ref "refs/tags/$odsTag" --source-digest $odsCommit --deny-self-hosted-runners
+    if ($LASTEXITCODE -ne 0) { throw 'GitHub release verification failed. No installer was executed.' }
+    $odsSource = Join-Path $odsStage 'source'
+    Expand-Archive -LiteralPath (Join-Path $odsStage $odsArchive) -DestinationPath $odsSource
+    Write-Host "Verified $odsTag ($odsCommit). Source retained at $odsSource"
+    $odsShell = if ($PSVersionTable.PSEdition -eq 'Desktop') { 'powershell.exe' } else { 'pwsh.exe' }
+    & (Join-Path $PSHOME $odsShell) -NoProfile -ExecutionPolicy Bypass -File (Join-Path $odsSource 'install.ps1')
+    if ($LASTEXITCODE -ne 0) { throw 'The verified installer reported a failure; inspect its output before retrying.' }
+}
+```
+
+Linux and macOS: Docker must be installed and running; `gh`, `curl`, `unzip` and Python 3 must be available. No GitHub login is required; downloads are public and `gh` verifies the supplied bundle locally.
+
+Windows: open a **normal PowerShell window** (not "Run as administrator"), paste the block, and answer the prompts. GitHub CLI must be installed first; WSL and Docker can still be installed by the guided setup. The installer:
+
+1. Checks free disk space (40 GB) and that hardware virtualization is on.
+2. Offers to enable WSL2 and install Docker Desktop with winget. Windows asks for administrator permission, then **one restart**; setup continues by itself after you sign in again.
+3. Offers to download Ubuntu 24.04 and asks you, in PowerShell, for a new Ubuntu username and password.
+4. Starts Docker Desktop and checks that it is connected to Ubuntu. If not, it shows the one setting to turn on in Docker Desktop and continues as soon as it works.
+5. Installs ODS inside Ubuntu with **`--pixel --no-hermes --no-openclaw`**. When Ubuntu asks for your `[sudo] password`, type the Ubuntu password; nothing appears while you type.
+6. Verifies Pixel and Portal, then opens Portal in your browser and adds an **ODS Portal** shortcut to your desktop.
+
+Each step asks before changing anything and stops with instructions if it cannot finish; rerun the same command after fixing it. There is no fallback to Hermes or the native Windows installer. On NVIDIA machines, update the Windows driver to 570 or newer first. To use an existing distribution, add `-Distro <name>` (names from `wsl -l -v`).
+
+Existing native Windows installations are not automatically migrated or deleted; see [Windows Quickstart](ods/docs/WINDOWS-QUICKSTART.md#existing-native-windows-installations) before switching.
+
+<details>
+<summary>Development main — explicit opt-in, without the signed-release guarantee</summary>
+
+Use this only when you intentionally want the moving development branch. These
+commands are separate from the verified stable path; a stable verification
+failure never selects them automatically.
+
+**Linux/macOS development:**
+
+```bash
+curl -fsSL https://install.osmantic.com/ods.sh | ODS_REF=main bash
+```
+
+**Windows development:**
 
 ```powershell
 $ProgressPreference = "SilentlyContinue"
@@ -99,27 +190,16 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 .\install.ps1
 ```
 
-Linux and macOS: Docker must be installed and running.
-
-Windows: open a **normal PowerShell window** (not "Run as administrator"), paste the block, and answer the prompts. Nothing else needs to be installed first. The installer:
-
-1. Checks free disk space (40 GB) and that hardware virtualization is on.
-2. Offers to enable WSL2 and install Docker Desktop with winget. Windows asks for administrator permission, then **one restart**; setup continues by itself after you sign in again.
-3. Offers to download Ubuntu 24.04 and asks you, in PowerShell, for a new Ubuntu username and password.
-4. Starts Docker Desktop and checks that it is connected to Ubuntu. If not, it shows the one setting to turn on in Docker Desktop and continues as soon as it works.
-5. Installs ODS inside Ubuntu with **`--pixel --no-hermes --no-openclaw`**. When Ubuntu asks for your `[sudo] password`, type the Ubuntu password; nothing appears while you type.
-6. Verifies Pixel and Portal, then opens Portal in your browser and adds an **ODS Portal** shortcut to your desktop.
-
-Each step asks before changing anything and stops with instructions if it cannot finish; rerun the same command after fixing it. There is no fallback to Hermes or the native Windows installer. On NVIDIA machines, update the Windows driver to 570 or newer first. To use an existing distribution, add `-Distro <name>` (names from `wsl -l -v`).
-
-Existing native Windows installations are not automatically migrated or deleted; see [Windows Quickstart](ods/docs/WINDOWS-QUICKSTART.md#existing-native-windows-installations) before switching.
-
 The hosted Linux/macOS endpoint proxies the current bootstrap from repository `main`.
 Reviewed merges reach it automatically after edge-cache refresh. `ODS_REF` selects a compatible repository checkout. See
-[Installer Trust](ods/docs/INSTALLER_TRUST.md) to inspect the script or install
-a stable release or audited commit manually.
+[Installer Trust](ods/docs/INSTALLER_TRUST.md) for the development trust boundary.
+The Windows development block downloads `main.zip`; it has no signed-release provenance guarantee.
 
-Windows users should not run the `curl ... | bash` command from PowerShell. The PowerShell block above downloads the public ODS source ZIP and delegates installation to Ubuntu/WSL2. For more detail, see the [Windows Quickstart](ods/docs/WINDOWS-QUICKSTART.md).
+</details>
+
+Windows users should use PowerShell, not paste Bash commands into it. Both
+verified source and the development checkout delegate Windows installation to
+Ubuntu/WSL2 with Pixel. See [Windows Quickstart](ods/docs/WINDOWS-QUICKSTART.md).
 
 After the installer completes successfully, Portal opens at **http://localhost:3001/pixel** (the Windows installer opens it for you and prints the exact URL). **http://localhost:3000** is Open WebUI, a separate interface. Verify that Portal is available and send a message; a loaded dashboard alone does not prove Pixel is ready. If installation fails or Portal is degraded, follow the [Windows Quickstart checks](ods/docs/WINDOWS-QUICKSTART.md#verify-portalpixel) before proceeding.
 

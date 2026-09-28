@@ -1,8 +1,9 @@
 # Signed source release pipeline
 
-This pipeline prepares release candidates. It does not publish them, change an
-existing tag, or switch the current quick start to a different installation
-channel. The historical `v3.0.0` tag is not retroactively signed by this change.
+This pipeline prepares release candidates. It does not publish them or change
+an existing tag. The README's verified channel requires the first eligible
+candidate before it can install anything. The historical `v3.0.0` tag is not
+retroactively signed by this change.
 
 ## Maintainer sequence
 
@@ -19,8 +20,9 @@ channel. The historical `v3.0.0` tag is not retroactively signed by this change.
    upload or incomplete draft needs maintainer inspection; a rerun does not
    overwrite its assets.
 5. After installation, update and rollback validation, a maintainer can publish
-   the candidate. Protect release tags and use GitHub immutable releases where
-   available before advertising a stable installation channel.
+   the candidate with GitHub release immutability enabled. Protect release tags
+   before advertising a stable installation channel. The verified consumer
+   requires the release API's `immutable: true` field.
 
 The package gate compares the local tag object with the live GitHub ref, checks
 GitHub's signature-verification result for that exact object, and requires the
@@ -71,7 +73,17 @@ Verify `release-manifest.json`, `source.spdx.json` and `SHA256SUMS` the same way
 before trusting their contents. A matching checksum alone only establishes
 file integrity; it does not authenticate who produced the checksum file.
 
-This producer has offline archive/gate contracts in PR CI. End-to-end OIDC
+The README commands and `installers/verified-release.{sh,ps1}` select the latest
+non-draft, non-prerelease immutable release, obtain its verified annotated tag
+identity, and authenticate the archive before extraction or installer execution.
+Metadata and assets use public HTTPS; `gh attestation verify --bundle` does not
+require a GitHub account. GitHub CLI must be installed from its official source.
+The POSIX path also needs curl, unzip and Python 3 for JSON parsing. Windows uses
+native PowerShell JSON/HTTP support. Both retain the verified temporary source
+for installer resume; they do not delete any existing runtime on verification
+failure. Development installation is a separate, explicit choice.
+
+The producer and consumer have offline gate/archive contracts in PR CI. End-to-end OIDC
 signing and release-asset verification require the first new signed candidate;
 they cannot be honestly reported as validated by mocked API responses. Until
 that candidate and the automated consumer are verified, the stable bootstrap
