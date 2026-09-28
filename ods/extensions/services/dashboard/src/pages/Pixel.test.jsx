@@ -217,7 +217,7 @@ describe('Pixel', () => {
     const matchMedia = globalThis.matchMedia
     vi.stubGlobal('matchMedia', query => query === '(prefers-reduced-motion: reduce)'
       ? { matches: true, addEventListener: vi.fn(), removeEventListener: vi.fn() }
-      : matchMedia(query))
+      : matchMedia?.(query) ?? { matches: false, addEventListener: vi.fn(), removeEventListener: vi.fn() })
     const sha256 = 'a'.repeat(64)
     const siteId = `site-${sha256.slice(0, 24)}`
     const preview = {

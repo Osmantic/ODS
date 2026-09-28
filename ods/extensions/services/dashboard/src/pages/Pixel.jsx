@@ -31,6 +31,7 @@ import PortalAgentActivity from '../components/PortalAgentActivity'
 import PortalExtensionSetup from '../components/PortalExtensionSetup'
 import PortalExtensionProgress from '../components/PortalExtensionProgress'
 import useExtensionInstallation from '../hooks/useExtensionInstallation'
+import { useComposerFocus } from '../hooks/useComposerFocus'
 import useGithubExtensionRequest from '../hooks/useGithubExtensionRequest'
 import useExtensionProjectIntegration from '../hooks/useExtensionProjectIntegration'
 import { conversationProject } from '../lib/conversationProjects'
@@ -1371,6 +1372,12 @@ export default function Pixel({ systemStatus = null }) {
   const inputOver = input.length > MAX_INPUT_LEN
   const inputEmpty = !(command?.task ?? goalDraft?.task ?? input).trim()
   const isDisabled = sending || modelSwitching || restoredActive || restoredChecking || stopping || teams.busy || contextControl.busy || contextControl.historyUnknown || status !== 'available'
+  const typeIntoComposer = useCallback(character => setInput(value => value + character), [])
+  const prepareComposerSend = useComposerFocus({ inputRef, disabled: isDisabled, onType: typeIntoComposer })
+  const sendFromComposer = () => {
+    prepareComposerSend()
+    void sendMessage()
+  }
   const integrationCommand = [...messages].reverse().find(message => message.role === 'user')?.content
   const {recovery: integrationRecovery, resume: resumeProjectIntegration} = useExtensionProjectIntegration({
     chatId: chatIdRef.current,
@@ -1627,7 +1634,7 @@ export default function Pixel({ systemStatus = null }) {
             onKeyDown={(event) => {
               if (shouldSendMessage(event, sendKey.mode)) {
                 event.preventDefault()
-                sendMessage()
+                sendFromComposer()
               }
             }}
             placeholder={modelSwitching ? 'Switching model…' : status === 'available'
@@ -1654,7 +1661,7 @@ export default function Pixel({ systemStatus = null }) {
             </button>
           ) : (
             <button
-              onClick={sendMessage}
+              onClick={sendFromComposer}
               disabled={isDisabled || inputOver || inputEmpty}
               className="inline-flex h-11 w-11 items-center justify-center rounded-xl bg-theme-accent text-white transition hover:bg-theme-accent-hover disabled:cursor-not-allowed disabled:opacity-40"
               title="Send"
