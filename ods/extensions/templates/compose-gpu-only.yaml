@@ -61,7 +61,7 @@ services:
     restart: unless-stopped
 
     ports:
-      - "${BIND_ADDRESS:-127.0.0.1}:${MY_SERVICE_PORT:-8080}:8080"
+      - "127.0.0.1:${MY_SERVICE_PORT:-8080}:8080"
 
     volumes:
       - ./data/my-service/models:/models
