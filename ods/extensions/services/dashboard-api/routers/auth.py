@@ -35,7 +35,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import RedirectResponse
 
 import session_signer
-from security import verify_api_key
+from security import request_uses_https, verify_api_key
 
 logger = logging.getLogger(__name__)
 
@@ -69,7 +69,7 @@ async def hermes_session(request: Request):
         raise HTTPException(status_code=503, detail="Hermes did not issue a login session")
     response = RedirectResponse("/", status_code=303)
     response.headers["Cache-Control"] = "no-store"
-    secure = request.url.scheme == "https" or request.headers.get("x-forwarded-proto") == "https"
+    secure = request_uses_https(request)
     allowed = {"hermes_session_at", "hermes_session_rt", "hermes_session_provider"}
     for cookie in cookies or []:
         if cookie.key not in allowed:
@@ -190,7 +190,7 @@ def admin_session(response: Response, request: Request) -> dict:
         )
 
     session_token = session_signer.issue(ttl_seconds=SESSION_TTL_SECONDS)
-    secure_cookie = request.url.scheme == "https"
+    secure_cookie = request_uses_https(request)
     cookie_domain = _cookie_domain()
 
     cookie_kwargs: dict = dict(

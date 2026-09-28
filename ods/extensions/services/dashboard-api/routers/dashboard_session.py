@@ -36,7 +36,7 @@ import dashboard_password
 import security
 from fastapi import APIRouter, Body, Depends, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
-from security import verify_api_key
+from security import request_uses_https, verify_api_key
 
 logger = logging.getLogger(__name__)
 
@@ -178,7 +178,7 @@ def _set_session_cookie(response: Response, request: Request, now: float) -> Non
         samesite="strict",
         # nginx overwrites this header with the effective transport scheme.
         # A direct caller claiming HTTPS can only request a stricter cookie.
-        secure=request.url.scheme == "https" or request.headers.get("x-forwarded-proto", "").lower() == "https",
+        secure=request_uses_https(request),
         path="/",
     )
 
