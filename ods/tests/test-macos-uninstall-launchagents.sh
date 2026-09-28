@@ -41,6 +41,7 @@ exit 0
 EOF
     cat > "$stub_dir/pgrep" <<'EOF'
 #!/usr/bin/env bash
+printf '%s\n' "$*" >> "${PGREP_LOG:?}"
 exit 1
 EOF
     cat > "$stub_dir/uname" <<'EOF'
@@ -77,9 +78,13 @@ EOF
 make_install() {
     local install_dir="$1"
 
-    mkdir -p "$install_dir/lib"
+    mkdir -p "$install_dir/lib" "$install_dir/installers/macos/lib"
     cp "$TARGET" "$install_dir/ods-uninstall.sh"
     cp "$ROOT_DIR/lib/safe-env.sh" "$install_dir/lib/safe-env.sh"
+    # This test mocks Darwin/launchd on Linux and covers LaunchAgent cleanup;
+    # keep the separate native-Pixel retirement prerequisite inert as well.
+    printf '#!/usr/bin/env python3\nraise SystemExit(0)\n' \
+        > "$install_dir/installers/macos/lib/pixel-native-uninstall.py"
     touch "$install_dir/ods-cli"
 }
 
@@ -103,6 +108,7 @@ run_uninstall() {
     INSTALL_DIR="$install_dir" \
     PATH="$stub_dir:$PATH" \
     LAUNCHCTL_LOG="${LAUNCHCTL_LOG:?}" \
+    PGREP_LOG="${PGREP_LOG:-$TMP_DIR/pgrep.log}" \
     UNAME_S="${UNAME_S:-Darwin}" \
     LOADED_LABELS="${LOADED_LABELS:-}" \
     BOOTOUT_FAIL="${BOOTOUT_FAIL:-}" \
@@ -127,8 +133,9 @@ main() {
     # shellcheck disable=SC2086
     make_home_with_plists "$home1" $CURRENT_LABELS $LEGACY_LABELS
     LAUNCHCTL_LOG="$TMP_DIR/launchctl1.log" LOADED_LABELS="$CURRENT_LABELS" \
+    PGREP_LOG="$TMP_DIR/pgrep1.log" \
         run_uninstall "$install1" "$home1" "$stub_dir" "$TMP_DIR/out1.log" \
-        || fail "normal macOS uninstall exited non-zero"
+        || { cat "$TMP_DIR/out1.log" >&2; fail "normal macOS uninstall exited non-zero"; }
 
     local label
     for label in $CURRENT_LABELS; do
@@ -140,6 +147,12 @@ main() {
             || fail "uninstall must remove ${label}.plist"
     done
     pass "macOS uninstall boots out loaded agents and removes all ODS plists (incl. legacy)"
+    if grep -Fq '.opencode/bin/opencode' "$TMP_DIR/pgrep1.log"; then
+        fail "uninstall must not search for or kill shared OpenCode processes"
+    fi
+    grep -Fq "$install1/bin/llama-server" "$TMP_DIR/pgrep1.log" \
+        || fail "install-owned native llama process cleanup must remain scoped to this install"
+    pass "uninstall leaves unrelated OpenCode processes alone and retains install-scoped llama cleanup"
 
     # ── Scenario 2: nothing installed — tolerated, no bootout, no warnings ──
     local install2="$TMP_DIR/install2" home2="$TMP_DIR/home2"
