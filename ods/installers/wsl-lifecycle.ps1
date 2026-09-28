@@ -2,12 +2,13 @@
 # functions only. The separate native Windows/Docker Desktop path does not use it.
 [CmdletBinding()]
 param(
-    [ValidateSet('start','status','stop','restart','release','hold','autostart','disable-startup')][string]$Action = 'status',
+    [ValidateSet('start','status','stop','restart','release','hold','autostart','disable-startup','enable-startup')][string]$Action = 'status',
     [string]$Distro,
     [string]$InstallRoot,
     [string]$InstanceDirectory,
     [switch]$ValidateOnly,
-    [string]$StateRoot
+    [string]$StateRoot,
+    [string]$DockerDesktopPath
 )
 $ErrorActionPreference = 'Stop'
 $script:ODSWslLifecycleSource = $PSCommandPath
@@ -739,10 +740,27 @@ function Invoke-ODSWslStack($Identity,[string]$Action) {
     }
 }
 
-function Invoke-ODSWslLifecycle([string]$Action,[string]$Distro,[string]$InstallRoot,[switch]$ValidateOnly) {
+function Invoke-ODSWslLifecycle([string]$Action,[string]$Distro,[string]$InstallRoot,[switch]$ValidateOnly,[string]$DockerDesktopPath) {
     # Uninstall already supplies the installation's canonical distro. Never
     # enter or even query WSL while withdrawing Windows sign-in permission.
     if ($Action -eq 'disable-startup') { return Disable-ODSWslStartup (Get-ODSWslIdentity $Distro $InstallRoot) -ValidateOnly:$ValidateOnly }
+    # Repair an already-managed installation's Windows sign-in task without
+    # rerunning the installer or entering WSL. Uses the canonical identity
+    # directly; the distro need not be registered for this Windows-only repair.
+    if ($Action -eq 'enable-startup') {
+        if ($ValidateOnly) { throw 'ValidateOnly is supported only for disable-startup' }
+        $identity=Get-ODSWslIdentity $Distro $InstallRoot
+        Enable-ODSWslStartup $identity $DockerDesktopPath
+        # Registration is Windows-only, even when WSL is unavailable. Do not
+        # infer runtime health from a successfully registered sign-in task.
+        $intent=Get-ODSWslStartupIntent $identity
+        return [pscustomobject]@{
+            scope='wsl-lifetime'; state='registered'; distroRunning=$null;
+            identity=$identity; runtime=$null;
+            startupEnabled=($null -ne $intent -and $intent.desiredRunning);
+            startup=(Read-ODSWslJson (Join-Path $identity.directory 'startup-status.json'))
+        }
+    }
     if ($ValidateOnly) { throw 'ValidateOnly is supported only for disable-startup' }
     $Distro=Resolve-ODSWslRegisteredDistro $Distro
     $identity=Get-ODSWslIdentity $Distro $InstallRoot
@@ -800,5 +818,5 @@ if ($MyInvocation.InvocationName -ne '.') {
     [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false)
     if ($Action -eq 'hold') { Invoke-ODSWslHolder $InstanceDirectory }
     elseif ($Action -eq 'autostart') { Invoke-ODSWslStartup $InstanceDirectory }
-    else { Invoke-ODSWslLifecycle $Action $Distro $InstallRoot -ValidateOnly:$ValidateOnly | ConvertTo-Json -Depth 8 }
+    else { Invoke-ODSWslLifecycle $Action $Distro $InstallRoot -DockerDesktopPath $DockerDesktopPath -ValidateOnly:$ValidateOnly | ConvertTo-Json -Depth 8 }
 }
