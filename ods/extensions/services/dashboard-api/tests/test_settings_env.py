@@ -205,6 +205,8 @@ def test_api_settings_env_masks_secret_values(test_client, settings_env_fixture)
     payload = response.json()
 
     assert payload["path"] == ".env"
+    assert isinstance(payload["revision"], str)
+    assert len(payload["revision"]) == 64
     assert payload["raw"] == ""
     assert payload["values"]["OPENAI_API_KEY"] == ""
     assert payload["fields"]["OPENAI_API_KEY"]["value"] == ""
@@ -213,6 +215,39 @@ def test_api_settings_env_masks_secret_values(test_client, settings_env_fixture)
     assert payload["values"]["LLM_BACKEND"] == "local"
     assert payload["fields"]["LLM_BACKEND"]["value"] == "local"
     assert payload["agentAvailable"] is True
+
+
+def test_settings_env_save_rejects_a_stale_editor_snapshot(test_client, settings_env_fixture):
+    """Two Settings tabs must not silently overwrite each other's full form."""
+    first_tab = test_client.get("/api/settings/env", headers=test_client.auth_headers)
+    second_tab = test_client.get("/api/settings/env", headers=test_client.auth_headers)
+    assert first_tab.status_code == second_tab.status_code == 200
+    first_payload = first_tab.json()
+    second_payload = second_tab.json()
+    assert first_payload["revision"] == second_payload["revision"]
+
+    first_values = {**first_payload["values"], "LLM_BACKEND": "cloud"}
+    first_save = test_client.put(
+        "/api/settings/env",
+        headers=test_client.auth_headers,
+        json={"mode": "form", "revision": first_payload["revision"], "values": first_values},
+    )
+    assert first_save.status_code == 200, first_save.text
+
+    second_values = {**second_payload["values"], "WEBUI_AUTH": "false"}
+    stale_save = test_client.put(
+        "/api/settings/env",
+        headers=test_client.auth_headers,
+        json={"mode": "form", "revision": second_payload["revision"], "values": second_values},
+    )
+    assert stale_save.status_code == 409, stale_save.text
+    assert stale_save.json()["detail"]["message"] == "Environment settings changed elsewhere. Reload the editor before saving."
+    from settings import _parse_env_text
+
+    persisted, issues = _parse_env_text(settings_env_fixture["env_path"].read_text(encoding="utf-8"))
+    assert issues == []
+    assert persisted["LLM_BACKEND"] == "cloud"
+    assert persisted["WEBUI_AUTH"] == "true"
 
 
 def test_api_settings_env_recognizes_library_ports_and_keeps_library_secrets_masked(

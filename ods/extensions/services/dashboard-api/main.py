@@ -15,6 +15,7 @@ Modules:
 """
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -131,6 +132,7 @@ class TTLCache:
 
 
 _cache = TTLCache()
+_settings_env_save_lock = asyncio.Lock()
 
 # Cache TTLs (seconds)
 _GPU_CACHE_TTL = 3.0
@@ -937,6 +939,7 @@ def _build_settings_env_payload(
 
     return {
         "path": _relative_install_path(env_path),
+        "revision": _env_revision(raw_text),
         "raw": "",
         "values": public_values,
         "fields": public_fields,
@@ -950,6 +953,11 @@ def _build_settings_env_payload(
     }
 
 
+def _env_revision(raw_text: str) -> str:
+    """Return an opaque revision for the exact persisted environment document."""
+    return hashlib.sha256(raw_text.encode("utf-8")).hexdigest()
+
+
 def _relative_install_path(path: Path) -> str:
     try:
         return str(path.relative_to(_resolve_install_root())).replace("\\", "/")
@@ -960,6 +968,21 @@ def _relative_install_path(path: Path) -> str:
 def _prepare_env_save(payload: dict[str, Any]) -> tuple[str, list[dict[str, Any]], dict[str, Any]]:
     mode = payload.get("mode", "form")
     env_path = _resolve_runtime_env_path()
+    try:
+        current_raw_text = env_path.read_text(encoding="utf-8")
+    except OSError:
+        current_raw_text = ""
+    expected_revision = payload.get("revision")
+    if expected_revision is not None and (not isinstance(expected_revision, str) or not expected_revision):
+        raise HTTPException(
+            status_code=400,
+            detail={"message": "Reload the environment editor before saving."},
+        )
+    if expected_revision is not None and expected_revision != _env_revision(current_raw_text):
+        raise HTTPException(
+            status_code=409,
+            detail={"message": "Environment settings changed elsewhere. Reload the editor before saving."},
+        )
     current_values, _ = _read_env_map_from_path(env_path)
     schema_properties, required_keys = _load_env_schema()
 
@@ -1711,32 +1734,33 @@ async def api_settings_env_save(
     payload: dict[str, Any] = Body(...),
     api_key: str = Depends(verify_api_key),
 ):
-    raw_text, issues, apply_plan = await asyncio.to_thread(_prepare_env_save, payload)
-    if issues:
-        raise HTTPException(
-            status_code=400,
-            detail={
-                "message": "Configuration validation failed.",
-                "issues": issues,
-            },
-        )
+    async with _settings_env_save_lock:
+        raw_text, issues, apply_plan = await asyncio.to_thread(_prepare_env_save, payload)
+        if issues:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "message": "Configuration validation failed.",
+                    "issues": issues,
+                },
+            )
 
-    try:
-        agent_resp = await asyncio.to_thread(_call_agent_env_update, raw_text)
-    except AgentHTTPError as exc:
-        detail = exc.detail
-        raise HTTPException(status_code=503, detail={"message": detail}) from exc
-    except AgentUnavailable as exc:
-        raise HTTPException(
-            status_code=503,
-            detail={"message": "ODS host agent is not reachable. Start the host agent, then try again."},
-        ) from exc
-    except AgentProtocolError as exc:
-        logger.error("Failed to contact host agent for env update: %s", exc)
-        raise HTTPException(
-            status_code=500,
-            detail={"message": "Could not contact host agent to write environment file."},
-        ) from exc
+        try:
+            agent_resp = await asyncio.to_thread(_call_agent_env_update, raw_text)
+        except AgentHTTPError as exc:
+            detail = exc.detail
+            raise HTTPException(status_code=503, detail={"message": detail}) from exc
+        except AgentUnavailable as exc:
+            raise HTTPException(
+                status_code=503,
+                detail={"message": "ODS host agent is not reachable. Start the host agent, then try again."},
+            ) from exc
+        except AgentProtocolError as exc:
+            logger.error("Failed to contact host agent for env update: %s", exc)
+            raise HTTPException(
+                status_code=500,
+                detail={"message": "Could not contact host agent to write environment file."},
+            ) from exc
     backup_relative = agent_resp.get("backup_path")
     saved_raw_text = raw_text
     enforced_values = agent_resp.get("enforced_values")
