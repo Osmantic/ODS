@@ -21,7 +21,8 @@ def _path(value):
 
 
 def _docker(arguments, timeout=30):
-    result = subprocess.run(['docker', *arguments], capture_output=True, text=True, timeout=timeout)
+    result = subprocess.run(['docker', *arguments], capture_output=True, text=True,
+                            encoding='utf-8', timeout=timeout)
     if result.returncode:
         raise ValueError('Docker recovery command failed: ' + (result.stderr or 'no diagnostic')[:500])
     return result.stdout

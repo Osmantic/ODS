@@ -177,6 +177,9 @@ all three saved-stack platform jobs and all nine production image builds.
 The local combined cache/recovery run passed 66 cases (one Docker-only skip),
 and native PowerShell 5.1 stop/disable passed. Docker Desktop remains stopped
 locally. Broader PR checks were still running when this evidence was recorded.
+Docker metadata is decoded explicitly as UTF-8 so accented/CJK ownership paths
+do not depend on the Windows code page. A real subprocess decoding regression
+test forces a legacy default encoding and verifies the path is preserved.
 
 The follow-up lifecycle review also found native background model upgrades still
 reading the dashboard's LAN bind, and the macOS doctor probing that address.

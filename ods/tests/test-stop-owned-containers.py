@@ -21,6 +21,19 @@ def load_helper():
     return module
 
 
+def test_docker_metadata_uses_utf8_independently_of_windows_codepage(monkeypatch):
+    module = load_helper()
+    actual_run = subprocess.run
+    # Docker emits UTF-8, even when the host process defaults to a legacy Windows
+    # code page. Exercise real subprocess decoding, not pre-decoded JSON mocks.
+    metadata = json.dumps({'path': 'C:/Users/Jos\u00e9/\u6a21\u578b'}, ensure_ascii=False)
+    command = [sys.executable, '-c',
+               f'import sys; sys.stdout.buffer.write({metadata!r}.encode("utf-8"))']
+    monkeypatch.setattr(subprocess, '_text_encoding', lambda: 'cp1252')
+    monkeypatch.setattr(subprocess, 'run', lambda args, **kwargs: actual_run(command, **kwargs))
+    assert module._docker(['inspect', 'a' * 64]) == metadata
+
+
 def container(root, ident='a', service='example', project='ods'):
     return {'Id': ident * 64, 'Config': {'Labels': {
         'com.docker.compose.project': project,
