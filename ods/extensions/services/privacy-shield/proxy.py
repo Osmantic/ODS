@@ -302,7 +302,9 @@ async def proxy(request: Request, path: str):
         scrubbed_body, metadata = shield.process_request(body_str)
         outbound = scrubbed_body.encode("utf-8")
 
-    target_url = f"{TARGET_API_BASE}/{path}"
+    target_url = httpx.URL(f"{TARGET_API_BASE}/{path}").copy_with(
+        query=request.scope.get("query_string", b"")
+    )
     method = request.method
     upstream_headers = _build_upstream_headers(
         request, len(outbound) if method == "POST" else None
