@@ -1853,6 +1853,15 @@ _ods_cli_refresh_soul() {
     return 0
 }
 
+_stop_owned_containers_for_recovery() {
+    local helper="$INSTALL_DIR/scripts/stop-owned-containers.py"
+    local policy_python="${ODS_PYTHON_CMD:-python3}"
+    local -a args=(--install-dir "$INSTALL_DIR")
+    [[ -n "${1:-}" ]] && args+=(--service "$1")
+    warn "Compose validation failed; stopping only existing containers verified as belonging to this installation."
+    "$policy_python" "$helper" "${args[@]}"
+}
+
 cmd_stop() {
     check_install
     cd "$INSTALL_DIR"
@@ -1860,7 +1869,11 @@ cmd_stop() {
 
     local service="${1:-}"
     local flags_str
-    flags_str=$(get_compose_flags)
+    if ! flags_str=$(get_compose_flags); then
+        [[ -n "$service" ]] && service=$(resolve_service "$service")
+        _stop_owned_containers_for_recovery "$service"
+        return $?
+    fi
     local -a flags
     read -ra flags <<< "$flags_str"
 
@@ -3054,10 +3067,13 @@ cmd_disable() {
 
     # Stop if running, then rename
     local flags_str
-    flags_str=$(get_compose_flags)
-    local -a flags
-    read -ra flags <<< "$flags_str"
-    docker compose "${flags[@]}" stop "$service_id" 2>/dev/null || true
+    if flags_str=$(get_compose_flags); then
+        local -a flags
+        read -ra flags <<< "$flags_str"
+        docker compose "${flags[@]}" stop "$service_id" 2>/dev/null || true
+    else
+        _stop_owned_containers_for_recovery "$service_id" || return 1
+    fi
     [[ -f "$cf" ]] && mv "$cf" "${cf}.disabled"
     _regenerate_compose_flags
     local _data_dir="$INSTALL_DIR/data/$service_id"

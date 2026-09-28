@@ -5935,7 +5935,23 @@ def _extension_stop_targets(service_id: str) -> list[str]:
 
 
 def docker_compose_action(service_id: str, action: str) -> tuple:
-    flags = resolve_compose_flags()
+    try:
+        flags = resolve_compose_flags()
+    except (OSError, ValueError, RuntimeError) as exc:
+        if action != "stop":
+            return False, str(exc)
+        # An old recipe may no longer qualify to start. Stopping must not
+        # evaluate its Compose lifecycle hooks or rely on its container names.
+        try:
+            targets = _extension_stop_targets(service_id)
+            helper_path = INSTALL_DIR / "scripts/stop-owned-containers.py"
+            spec = importlib.util.spec_from_file_location("_ods_stop_owned", helper_path)
+            recovery = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(recovery)
+            recovery.stop_owned_containers(INSTALL_DIR, targets)
+            return True, ""
+        except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as recovery_error:
+            return False, f"Could not stop verified ODS containers: {recovery_error}"
     compose_env = os.environ.copy()
     if action == "start":
         if service_id == "ods-proxy":

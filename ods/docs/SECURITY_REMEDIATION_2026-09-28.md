@@ -11,7 +11,7 @@ implemented on main before this work.
 | Finding | Implemented in this branch | Remaining verification/work |
 | --- | --- | --- |
 | SEC-001: LAN exposure | Private Compose ports and native inference stay loopback-bound; authenticated UI entrypoints retain LAN access; Hermes LAN proxy requires an owner session; new recipes cannot interpolate host binds. | Finish upgrade/cached-stack migration coverage and cross-platform lifecycle checks. |
-| SEC-002: Python advisories | Upgrade FastAPI/Starlette and aiohttp; all nine API/relay Docker builds install complete hash-checked locks; production audits are clean. CI now builds each actual production Dockerfile and runs pip check inside its isolated container. | Confirm the new image-build jobs and remaining full-suite failures on the final commit. |
+| SEC-002: Python advisories | Upgrade FastAPI/Starlette and aiohttp; all nine API/relay Docker builds install complete hash-checked locks; production audits are clean. All nine production Dockerfile builds and in-container pip checks passed CI on `1788236a9`. | Keep final-head dependency and regression checks green. |
 | SEC-003: source containment | Generated source services have numeric non-root UID, no capabilities, no-new-privileges, read-only root, resource limits and an internal network; API publication/re-enable and dynamic resolver enforce the profile. Saved stack arguments are revalidated by the host and platform CLIs, including old receipts; merged recipes cannot override or join source sandboxes. | Real-container CI passed; run the new cross-platform saved-stack CI and broader lifecycle regressions. |
 | SEC-004: public AI spending | Paid issue triage and review comments require a trusted association; serialized jobs and per-run budgets; unauthorized comments cannot cancel another comment's review. | CI workflow validation. This bounds individual runs, not the organization's total monthly provider bill. |
 | SEC-005: provenance | Python locks/hashes, Python base image indexes and 31 additional external image references resolved from registry descriptors. Signed-tag source packaging, draft-only checksum/SBOM/OIDC workflow, and Windows/POSIX verified consumers are implemented. README separates verified stable from development opt-in. | Verify the first signed immutable candidate end to end and finish image pins. The current public release lacks the artifacts/immutability flag and is correctly refused: do not switch public onboarding until the producer is released and qualified. Existing tags have not been changed or retroactively signed. |
@@ -87,8 +87,10 @@ implemented on main before this work.
   environments/audits, real-container confinement and saved-stack/verified
   bootstrap tests on Windows, Linux and macOS. Full API and frontend Windows/
   macOS jobs passed too. The Ubuntu frontend failed an unsaved-name test that
-  passed locally; a targeted CI rerun is pending. The new production Docker
-  build steps require another CI run after the image-pin update.
+  passed locally. Subsequent commit `1788236a9` passed every executed PR check,
+  including all three frontend hosts and the full API suite. Runtime security
+  run `36473239829` also passed the nine actual production Dockerfile builds
+  and in-container dependency checks. This supersedes the earlier pending CI.
 
 Remaining image work includes the unavailable InvokeAI generic tag and the
 disabled legacy Dify image, plus enforcing the library's local-build/external
@@ -151,6 +153,22 @@ an eligible signed artifact has yet been demonstrated. This is a merge/release
 gate, not a reason to add an unsigned fallback.
 
 ## Upgrade behavior to review
+
+When a legacy recipe fails current Compose validation, stop/disable operations
+now have a recovery path that never evaluates that recipe. Docker's existing
+container IDs and Compose labels must match the exact installation directory,
+base Compose file and requested service. A shared project name such as `ods`
+alone does not authorize stopping another installation. Recovery disables the
+matched containers' automatic restart, then stops them without deleting data
+or containers. Repair and recreate the reviewed recipe before starting again.
+Start and restart operations still reject invalid recipes.
+
+Recovery tests cover Linux/macOS CLI delegation, PowerShell 5.1 stop/disable,
+host-agent stop-only recovery, ownership mismatches, malformed Docker metadata,
+and preserving recipe files when stopping fails. The dedicated real-container
+CI test verifies that another installation with the same project and service
+names remains running with its restart policy unchanged. That new CI test is
+pending on the recovery commit; Docker Desktop remains stopped locally.
 
 The follow-up lifecycle review also found native background model upgrades still
 reading the dashboard's LAN bind, and the macOS doctor probing that address.

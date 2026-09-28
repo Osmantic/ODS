@@ -911,7 +911,21 @@ cmd_stop() {
     cd "$INSTALL_DIR"
 
     local flags
-    flags=$(get_compose_flags)
+    if ! flags=$(get_compose_flags); then
+        local policy_python="${ODS_PYTHON_CMD:-python3}"
+        local args=(--install-dir "$INSTALL_DIR")
+        if [[ "$service" == "llama-server" || "$service" == "llama" ]]; then
+            stop_native_llama
+            return $?
+        fi
+        [[ -n "$service" ]] && args+=(--service "$service")
+        ai "Compose validation failed; stopping only verified containers from this installation."
+        "$policy_python" "$INSTALL_DIR/scripts/stop-owned-containers.py" "${args[@]}" || return 1
+        if [[ -z "$service" && -f "$LLAMA_SERVER_PID_FILE" ]]; then
+            stop_native_llama
+        fi
+        return 0
+    fi
 
     if [[ "$service" == "llama-server" || "$service" == "llama" ]]; then
         stop_native_llama

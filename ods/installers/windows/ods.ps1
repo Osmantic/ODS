@@ -2625,6 +2625,19 @@ function Invoke-Start {
     }
 }
 
+function Stop-ODSOwnedContainersForRecovery {
+    param([string]$Service)
+    $python = Resolve-ODSHostAgentPython
+    if (-not $python) { throw 'Python 3 is required to verify ODS container ownership before stopping' }
+    $helper = Join-Path $InstallDir 'scripts/stop-owned-containers.py'
+    if (-not (Test-Path -LiteralPath $helper -PathType Leaf)) { throw 'ODS container recovery helper is missing' }
+    $arguments = @($python.PrefixArgs) + @('-X', 'utf8', $helper, '--install-dir', $InstallDir)
+    if ($Service) { $arguments += @('--service', $Service) }
+    Write-AIWarn 'Compose validation failed; stopping only existing containers verified as belonging to this installation.'
+    & $python.FilePath @arguments
+    if ($LASTEXITCODE -ne 0) { throw 'Could not stop verified ODS containers' }
+}
+
 function Invoke-Stop {
     param([string]$Service)
 
@@ -2654,7 +2667,11 @@ function Invoke-Stop {
     Test-Install
     Push-Location $InstallDir
     try {
-        $flags = Get-ComposeFlags
+        try { $flags = Get-ComposeFlags }
+        catch {
+            Stop-ODSOwnedContainersForRecovery -Service $Service
+            return
+        }
         if ($Service) {
             if (-not (Test-ODSComposeServiceAvailable -ComposeFlags $flags -Service $Service)) {
                 Write-ODSMissingComposeServiceHint -ComposeFlags $flags -Service $Service
@@ -3822,12 +3839,18 @@ function Invoke-Disable {
     $dockerRunning = $false
     try { $null = docker info 2>$null; $dockerRunning = ($LASTEXITCODE -eq 0) } catch { }
     if ($dockerRunning) {
-        $flags = Get-ComposeFlags
-        Write-AI "Stopping $ServiceId..."
-        $prevEAP = $ErrorActionPreference
-        $ErrorActionPreference = "SilentlyContinue"
-        & docker compose @flags stop $ServiceId 2>$null
-        $ErrorActionPreference = $prevEAP
+        try { $flags = Get-ComposeFlags }
+        catch {
+            Stop-ODSOwnedContainersForRecovery -Service $ServiceId
+            $flags = $null
+        }
+        if ($flags) {
+            Write-AI "Stopping $ServiceId..."
+            $prevEAP = $ErrorActionPreference
+            $ErrorActionPreference = "SilentlyContinue"
+            & docker compose @flags stop $ServiceId 2>$null
+            $ErrorActionPreference = $prevEAP
+        }
     } else {
         Write-AIWarn "Docker Desktop is not running -- skipping container stop. $ServiceId will be excluded from the next 'ods start'."
     }
