@@ -105,6 +105,18 @@ PATCHES.push({
   old: attributionCitations,
   replacement: attributionCitations + '\n    - Omission is not contradiction. A retrieved page or chunk that does not mention a fact is silent on it; do not present that omission as a discrepancy with a positive source. Report a material conflict only when sources make incompatible claims about the same subject and time. Preserve genuine explicit negative facts and uncertainty about unsupported claims, but do not manufacture a caveat from unrelated non-coverage.'
 });
+const attributedExtractor = PATCHES.find(patch => patch.id === 'quality-18').replacement;
+PATCHES.push({
+  id: 'quality-21',
+  old: attributedExtractor,
+  replacement: attributedExtractor + ' Check entity identity before extracting a fact: a shared first name, similar name or appearance in search results does not establish that two people or organizations are the same. Exclude facts about unrelated entities unless the source explicitly connects them to the requested subject. Preserve a supported alias or genuine identity ambiguity when the source establishes it.'
+});
+const groundedCitations = PATCHES.find(patch => patch.id === 'quality-20').replacement;
+PATCHES.push({
+  id: 'quality-22',
+  old: groundedCitations,
+  replacement: groundedCitations + '\n    - Keep the answer within the requested subject. Facts about a different person or organization returned by search do not establish name confusion, conflation or a relationship. Omit unrelated profiles and speculative disambiguation asides. Include an identity distinction only when it answers the question or source evidence establishes a material ambiguity; preserve explicitly supported aliases and relationships.'
+});
 
 function replaceUnpatched(source, old, replacement) {
   let cursor = 0, count = 0, out = '';
