@@ -18,7 +18,7 @@ while [[ $# -gt 0 ]]; do
             shift 2
             ;;
         --tier)
-            TIER="${2:-$TIER}"
+            TIER="$(echo "${2:-$TIER}" | tr '[:lower:]' '[:upper:]')"
             shift 2
             ;;
         --gpu-backend)
