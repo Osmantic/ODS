@@ -9,7 +9,6 @@ import importlib.util
 import json
 import os
 from pathlib import Path
-import subprocess
 import tarfile
 import tempfile
 import unittest
