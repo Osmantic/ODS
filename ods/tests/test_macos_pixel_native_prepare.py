@@ -4,6 +4,8 @@ import plistlib
 from pathlib import Path
 import shutil
 from types import SimpleNamespace
+# Initialize urllib's host-specific proxy backend before tests emulate Darwin.
+import urllib.request  # noqa: F401
 
 import pytest
 
