@@ -30,6 +30,8 @@ fakebin="$tmp/bin"
 install_dir="$tmp/install"
 resolver_calls="$tmp/resolver-calls.log"
 mkdir -p "$fakebin" "$install_dir/data/models" "$install_dir/config/llama-server" "$install_dir/scripts"
+# Cache recovery must pass the installed policy, just like a complete runtime.
+cp "$ROOT_DIR/scripts/compose-cache-policy.py" "$install_dir/scripts/"
 
 cat > "$fakebin/curl" <<'EOF'
 #!/usr/bin/env bash

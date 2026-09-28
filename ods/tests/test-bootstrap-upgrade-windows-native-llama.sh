@@ -32,6 +32,9 @@ mkdir -p \
     "$install_dir/config/llama-server" \
     "$install_dir/extensions/services/hermes" \
     "$install_dir/llama-server"
+# The dependent Compose refresh also uses the real installed policy gate.
+mkdir -p "$install_dir/scripts"
+cp "$ROOT_DIR/scripts/compose-cache-policy.py" "$install_dir/scripts/"
 
 cat > "$fakebin/uname" <<'EOF_UNAME'
 #!/usr/bin/env bash

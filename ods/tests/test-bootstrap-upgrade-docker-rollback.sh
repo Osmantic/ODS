@@ -29,6 +29,9 @@ fakebin="$tmp/bin"
 install_dir="$tmp/install"
 docker_calls="$tmp/docker-calls.log"
 mkdir -p "$fakebin" "$install_dir/data/models" "$install_dir/config/llama-server" "$install_dir/config/litellm"
+# Exercise the production policy gate before both the promotion and rollback.
+mkdir -p "$install_dir/scripts"
+cp "$ROOT_DIR/scripts/compose-cache-policy.py" "$install_dir/scripts/"
 
 # Keep the Docker-only fixture independent of the operator's managed Pixel.
 mkdir -p "$tmp/owner-home"

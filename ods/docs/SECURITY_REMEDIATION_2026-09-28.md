@@ -6,18 +6,57 @@ This is the implementation ledger for the eight findings in the audit of
 current main. In particular, remote Dashboard session authentication was already
 implemented on main before this work.
 
-**Status: work in progress. Do not merge or describe the audit as closed.**
+**Status: implementation and automated validation are available for review;
+release provenance is not operationally closed. Do not merge this PR as a
+one-step onboarding rollout.**
+
+### Current evidence (supersedes earlier pending CI notes below)
+
+At commit `da9e2198b0ae4906be5ccbf79fa706fa3d811be4`,
+[runtime security run 36482083471](https://github.com/Osmantic/ODS/actions/runs/36482083471)
+passed all 15 jobs. These include the nine real production Dockerfile builds,
+locked dependency audits, real-container source confinement/recovery/library
+build tests, private-port and workflow policies, and saved-stack/verified
+consumer checks on Windows, Linux and macOS. Native macOS migration cases use
+controlled Docker/launchd fixtures, even when run on a macOS runner.
+
+The same commit's [Dashboard run 36482083683](https://github.com/Osmantic/ODS/actions/runs/36482083683)
+passed the complete API job and frontend jobs on Windows, Linux and macOS.
+The broad integration job then exposed an incomplete bootstrap rollback test
+installation: it omitted the now-required `compose-cache-policy.py`, so the
+operation correctly stopped before reaching the rollback scenario. The
+rollback, recovered-flags and Windows native-model fixtures now include the
+actual policy helper; all three pass locally without bypassing the gate.
+The complete installer contract script also passes against an isolated Git
+archive with those three fixture changes applied. This uses committed source
+line endings; running the same grep-based contracts directly against a Windows
+checkout with CRLF template files produces an unrelated end-of-line mismatch.
+The follow-up changes test fixtures and this ledger, not production behavior;
+the broad integration workflow must confirm the corrected fixture.
+
+Producer-only PR #6882 at `ebef61fa848aba44bb72b0f90982e28b75a57eca`
+passed [run 36482081414](https://github.com/Osmantic/ODS/actions/runs/36482081414)
+on all three operating systems. Its 13 tests include packaging the complete
+committed repository with its actual `.gitattributes`; API signature responses
+remain fixtures and do not establish real OIDC signing.
+
+The public latest-release API was checked again: `v3.0.0` has `immutable: false`
+and no release assets. It is not eligible for the new consumer. First-release
+publication and end-to-end verification therefore remain required, regardless
+of the passing source-contract CI. No tag, release or running installation was
+modified. The later chronological notes retain earlier failures and their
+resolutions; they are not a claim that those resolved failures remain open.
 
 | Finding | Implemented in this branch | Remaining verification/work |
 | --- | --- | --- |
-| SEC-001: LAN exposure | Private Compose ports and native inference stay loopback-bound; authenticated UI entrypoints retain LAN access; Hermes LAN proxy requires an owner session; new recipes cannot interpolate host binds. | Finish upgrade/cached-stack migration coverage and cross-platform lifecycle checks. |
+| SEC-001: LAN exposure | Private Compose ports and native inference stay loopback-bound; authenticated UI entrypoints retain LAN access; Hermes LAN proxy requires an owner session; new recipes cannot interpolate host binds. | Automated port, route, upgrade and migration coverage passed. Physical full-install/GPU coverage is not claimed. |
 | SEC-002: Python advisories | Upgrade FastAPI/Starlette and aiohttp; all nine API/relay Docker builds install complete hash-checked locks; production audits are clean. All nine production Dockerfile builds and in-container pip checks passed CI on `1788236a9`. | Keep final-head dependency and regression checks green. |
-| SEC-003: source containment | Generated source services have numeric non-root UID, no capabilities, no-new-privileges, read-only root, resource limits and an internal network; API publication/re-enable and dynamic resolver enforce the profile. Saved stack arguments are revalidated by the host and platform CLIs, including old receipts; merged recipes cannot override or join source sandboxes. | Real-container CI passed; run the new cross-platform saved-stack CI and broader lifecycle regressions. |
-| SEC-004: public AI spending | Paid issue triage and review comments require a trusted association; serialized jobs and per-run budgets; unauthorized comments cannot cancel another comment's review. | CI workflow validation. This bounds individual runs, not the organization's total monthly provider bill. |
-| SEC-005: provenance | Python locks/hashes and pinned core/library images; local library images require a forced in-recipe build. Signed-tag source packaging, draft-only checksum/SBOM/OIDC workflow, and Windows/POSIX verified consumers are implemented. README separates verified stable from development opt-in. | Verify the first signed immutable candidate end to end and confirm the new library-policy CI. The current public release lacks the artifacts/immutability flag and is correctly refused: do not switch public onboarding until the producer is released and qualified. Existing tags have not been changed or retroactively signed. |
-| SEC-006: React Router | Coordinated update to react-router-dom 7.18.4 and its lockfile; production npm audit is clean. | CI across supported frontend hosts. |
-| SEC-007: local origin trust | State-changing requests require exact Origin/Host agreement; the CORS allowlist no longer grants mutation authority. | CI regression coverage. |
-| SEC-008: mutable Actions | Remaining twelve Action uses pinned to full commit hashes. | CI workflow validation. |
+| SEC-003: source containment | Generated source services have numeric non-root UID, no capabilities, no-new-privileges, read-only root, resource limits and an internal network; API publication/re-enable and dynamic resolver enforce the profile. Saved stack arguments are revalidated by the host and platform CLIs, including old receipts; merged recipes cannot override or join source sandboxes. | Real-container and cross-platform saved-stack CI passed. Existing recipes requiring broader permissions need explicit review, not silent migration. |
+| SEC-004: public AI spending | Paid issue triage and review comments require a trusted association; serialized jobs and per-run budgets; unauthorized comments cannot cancel another comment's review. | Workflow contracts passed. This bounds individual runs, not the organization's total monthly provider bill. |
+| SEC-005: provenance | Python locks/hashes and pinned core/library images; local library images require a forced in-recipe build. Signed-tag source packaging, draft-only checksum/SBOM/OIDC workflow, and Windows/POSIX verified consumers are implemented. README separates verified stable from development opt-in. | Library and producer CI passed. Verify the first signed immutable candidate end to end. The current public release is ineligible: do not switch public onboarding until the producer is released and qualified. Existing tags have not been changed or retroactively signed. |
+| SEC-006: React Router | Coordinated update to react-router-dom 7.18.4 and its lockfile; production npm audit is clean. | Focused malicious-navigation cases and full frontend jobs on all three hosts passed on the implementation commit above. |
+| SEC-007: local origin trust | State-changing requests require exact Origin/Host agreement; the CORS allowlist no longer grants mutation authority. | Focused authentication/origin cases and the full API job passed on the implementation commit above. |
+| SEC-008: mutable Actions | Remaining twelve Action uses pinned to full commit hashes. | Workflow contracts passed. |
 
 ## Validation evidence
 
