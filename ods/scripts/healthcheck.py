@@ -94,6 +94,9 @@ class Result:
 
 def _parse_target(raw: str) -> Tuple[str, str]:
     """Return (kind, normalized_target)."""
+    if "://" in raw and not (raw.startswith("http://") or raw.startswith("https://") or raw.startswith("tcp://")):
+        raise ValueError("unsupported scheme: target must be http(s) or tcp")
+
     if raw.startswith("http://") or raw.startswith("https://"):
         return ("http", raw)
 
