@@ -8,6 +8,17 @@ use std::thread;
 
 const DEFAULT_REPO_URL: &str = "https://github.com/Osmantic/ODS.git";
 const DEFAULT_INSTALL_REF: &str = "main";
+const PROGRESS_DOWNLOAD_START: u8 = 5;
+const PROGRESS_CONFIG_START: u8 = 15;
+const PROGRESS_INSTALLER_START: u8 = 20;
+const PROGRESS_PREFLIGHT: u8 = 20;
+const PROGRESS_GPU_DETECTION: u8 = 25;
+const PROGRESS_DOCKER_SETUP: u8 = 35;
+const PROGRESS_IMAGES_DOWNLOAD: u8 = 50;
+const PROGRESS_SERVICES_START: u8 = 75;
+const PROGRESS_HEALTH_CHECK: u8 = 85;
+const PROGRESS_COMPLETE: u8 = 95;
+const PROGRESS_FINISHED: u8 = 100;
 const TRANSFERRED_REPO_URL_BYTES: &[u8] = &[
     104, 116, 116, 112, 115, 58, 47, 47, 103, 105, 116, 104, 117, 98, 46, 99, 111, 109, 47, 76,
     105, 103, 104, 116, 45, 72, 101, 97, 114, 116, 45, 76, 97, 98, 115, 47, 79, 68, 83, 46, 103,
@@ -38,11 +49,11 @@ pub fn run_install(
     features: Vec<String>,
 ) -> Result<(), String> {
     // Phase 1: Clone the repo
-    update_progress(&state, "Downloading ODS", 5);
+    update_progress(&state, "Downloading ODS", PROGRESS_DOWNLOAD_START);
 
     ensure_checkout(&install_dir)?;
 
-    update_progress(&state, "Configuring installation", 15);
+    update_progress(&state, "Configuring installation", PROGRESS_CONFIG_START);
 
     // Phase 2: Build installer arguments
     let ods_dir = install_dir.join("ods");
@@ -65,7 +76,7 @@ pub fn run_install(
     }
 
     // Phase 3: Run the installer with progress parsing
-    update_progress(&state, "Running installer", 20);
+    update_progress(&state, "Running installer", PROGRESS_INSTALLER_START);
 
     let install_script = ods_dir.join("install.sh");
     let install_ps1 = install_dir.join("install.ps1");
@@ -150,7 +161,7 @@ pub fn run_install(
         .unwrap_or_default();
 
     if output.success() {
-        update_progress(&state, "Installation complete!", 100);
+        update_progress(&state, "Installation complete!", PROGRESS_FINISHED);
         let mut s = state.lock().unwrap();
         s.phase = InstallPhase::Complete;
         let _ = s.save();
@@ -314,19 +325,19 @@ fn parse_progress_line(line: &str) -> Option<ProgressEvent> {
     // Also parse phase markers from the existing installer output
     let line_lower = line.to_lowercase();
     let progress = if line_lower.contains("preflight") {
-        Some(("preflight", 20, "Running preflight checks"))
+        Some(("preflight", PROGRESS_PREFLIGHT, "Running preflight checks"))
     } else if line_lower.contains("detecting") && line_lower.contains("gpu") {
-        Some(("detection", 25, "Detecting GPU hardware"))
+        Some(("detection", PROGRESS_GPU_DETECTION, "Detecting GPU hardware"))
     } else if line_lower.contains("installing") && line_lower.contains("docker") {
-        Some(("docker", 35, "Setting up Docker"))
+        Some(("docker", PROGRESS_DOCKER_SETUP, "Setting up Docker"))
     } else if line_lower.contains("pulling") || line_lower.contains("download") {
-        Some(("images", 50, "Downloading container images"))
+        Some(("images", PROGRESS_IMAGES_DOWNLOAD, "Downloading container images"))
     } else if line_lower.contains("starting") && line_lower.contains("services") {
-        Some(("services", 75, "Starting services"))
+        Some(("services", PROGRESS_SERVICES_START, "Starting services"))
     } else if line_lower.contains("health") && line_lower.contains("check") {
-        Some(("health", 85, "Checking service health"))
+        Some(("health", PROGRESS_HEALTH_CHECK, "Checking service health"))
     } else if line_lower.contains("ready") || line_lower.contains("complete") {
-        Some(("complete", 95, "Almost done"))
+        Some(("complete", PROGRESS_COMPLETE, "Almost done"))
     } else {
         None
     };
