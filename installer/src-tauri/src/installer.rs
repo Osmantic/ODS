@@ -8,6 +8,11 @@ use std::thread;
 
 const DEFAULT_REPO_URL: &str = "https://github.com/Osmantic/ODS.git";
 const DEFAULT_INSTALL_REF: &str = "main";
+const FEATURE_VOICE: &str = "voice";
+const FEATURE_WORKFLOWS: &str = "workflows";
+const FEATURE_RAG: &str = "rag";
+const FEATURE_IMAGE_GEN: &str = "image_gen";
+const FEATURE_ALL: &str = "all";
 const TRANSFERRED_REPO_URL_BYTES: &[u8] = &[
     104, 116, 116, 112, 115, 58, 47, 47, 103, 105, 116, 104, 117, 98, 46, 99, 111, 109, 47, 76,
     105, 103, 104, 116, 45, 72, 101, 97, 114, 116, 45, 76, 97, 98, 115, 47, 79, 68, 83, 46, 103,
@@ -48,19 +53,19 @@ pub fn run_install(
     let ods_dir = install_dir.join("ods");
     let mut args = vec!["--tier".to_string(), tier.to_string()];
 
-    if features.contains(&"voice".to_string()) {
+    if features.contains(&FEATURE_VOICE.to_string()) {
         args.push("--voice".into());
     }
-    if features.contains(&"workflows".to_string()) {
+    if features.contains(&FEATURE_WORKFLOWS.to_string()) {
         args.push("--workflows".into());
     }
-    if features.contains(&"rag".to_string()) {
+    if features.contains(&FEATURE_RAG.to_string()) {
         args.push("--rag".into());
     }
-    if features.contains(&"image_gen".to_string()) {
+    if features.contains(&FEATURE_IMAGE_GEN.to_string()) {
         args.push("--image-gen".into());
     }
-    if features.contains(&"all".to_string()) {
+    if features.contains(&FEATURE_ALL.to_string()) {
         args.push("--all".into());
     }
 
@@ -92,11 +97,11 @@ pub fn run_install(
 
         for feature in &features {
             match feature.as_str() {
-                "voice" => ps_args.push("-Voice".into()),
-                "workflows" => ps_args.push("-Workflows".into()),
-                "rag" => ps_args.push("-Rag".into()),
-                "image_gen" => ps_args.push("-Comfyui".into()),
-                "all" => ps_args.push("-All".into()),
+                FEATURE_VOICE => ps_args.push("-Voice".into()),
+                FEATURE_WORKFLOWS => ps_args.push("-Workflows".into()),
+                FEATURE_RAG => ps_args.push("-Rag".into()),
+                FEATURE_IMAGE_GEN => ps_args.push("-Comfyui".into()),
+                FEATURE_ALL => ps_args.push("-All".into()),
                 _ => {}
             }
         }
