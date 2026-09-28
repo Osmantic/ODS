@@ -70,7 +70,7 @@ def fixture(tmp_path, monkeypatch):
 def test_service_recovery_preserves_other_installations_core_and_data(fixture):
     module, root, _, calls = fixture
     assert module.stop_owned_containers(root, ['example']) == ['a' * 64]
-    assert calls[-2:] == [['update', '--restart=no', 'a' * 64], ['stop', '--time', '10', 'a' * 64]]
+    assert calls[-2:] == [['update', '--restart=no', 'a' * 64], ['stop', 'a' * 64]]
     assert (root / 'data.txt').read_text() == 'preserve owner data'
 
 
