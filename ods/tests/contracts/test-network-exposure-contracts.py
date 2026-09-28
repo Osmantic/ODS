@@ -182,6 +182,20 @@ def test_ods_proxy_routes_talk_portal() -> None:
     assert_true("reverse_proxy dashboard:3001" in caddyfile, "ODS Talk should be served by the dashboard container")
 
 
+def test_ods_proxy_bare_redirect_keeps_published_port() -> None:
+    caddyfile = read(SERVICES / "ods-proxy" / "Caddyfile")
+    compose = read(SERVICES / "ods-proxy" / "compose.yaml")
+
+    assert_true(
+        "ODS_PROXY_PORT=${ODS_PROXY_PORT:-80}" in compose,
+        "ods-proxy must pass its published port into Caddy",
+    )
+    assert_true(
+        "http://chat.{$ODS_DEVICE_NAME:ods}.local:{$ODS_PROXY_PORT:80}{uri}" in caddyfile,
+        "bare ods-proxy host must redirect to chat on the configured published port",
+    )
+
+
 def test_dashboard_csp_allows_ods_talk_tts_blob_audio() -> None:
     nginx_conf = read(SERVICES / "dashboard" / "nginx.conf")
 
