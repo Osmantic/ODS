@@ -11,7 +11,7 @@ implemented on main before this work.
 | Finding | Implemented in this branch | Remaining verification/work |
 | --- | --- | --- |
 | SEC-001: LAN exposure | Private Compose ports and native inference stay loopback-bound; authenticated UI entrypoints retain LAN access; Hermes LAN proxy requires an owner session; new recipes cannot interpolate host binds. | Finish upgrade/cached-stack migration coverage and cross-platform lifecycle checks. |
-| SEC-002: Python advisories | Upgrade FastAPI/Starlette and aiohttp; all nine API/relay Docker builds install complete hash-checked locks; production audits are clean. | CI installation/build coverage and triage remaining full-suite failures. |
+| SEC-002: Python advisories | Upgrade FastAPI/Starlette and aiohttp; all nine API/relay Docker builds install complete hash-checked locks; production audits are clean. CI now builds each actual production Dockerfile and runs pip check inside its isolated container. | Confirm the new image-build jobs and remaining full-suite failures on the final commit. |
 | SEC-003: source containment | Generated source services have numeric non-root UID, no capabilities, no-new-privileges, read-only root, resource limits and an internal network; API publication/re-enable and dynamic resolver enforce the profile. Saved stack arguments are revalidated by the host and platform CLIs, including old receipts; merged recipes cannot override or join source sandboxes. | Real-container CI passed; run the new cross-platform saved-stack CI and broader lifecycle regressions. |
 | SEC-004: public AI spending | Paid issue triage and review comments require a trusted association; serialized jobs and per-run budgets; unauthorized comments cannot cancel another comment's review. | CI workflow validation. This bounds individual runs, not the organization's total monthly provider bill. |
 | SEC-005: provenance | Python locks/hashes, Python base image indexes and 31 additional external image references resolved from registry descriptors. Signed-tag source packaging, draft-only checksum/SBOM/OIDC workflow, and Windows/POSIX verified consumers are implemented. README separates verified stable from development opt-in. | Verify the first signed immutable candidate end to end and finish image pins. The current public release lacks the artifacts/immutability flag and is correctly refused: do not switch public onboarding until the producer is released and qualified. Existing tags have not been changed or retroactively signed. |
@@ -70,6 +70,31 @@ implemented on main before this work.
   not exist; upstream publishes separate `v6.11.1-cpu` and `v6.11.1-cuda`
   images, so the AMD/NVIDIA recipe needs explicit review before replacing it.
   Dockerfile frontend directives and disabled fragments also need final review.
+
+- A later registry pass resolved 18 more tag descriptors, including references
+  duplicated in disabled Langfuse fragments. Those defaults now carry their
+  top-level digest, including Node, nginx, CUDA/ROCm, Lemonade, Qdrant, Tailscale,
+  Aider and the Dockerfile frontend. Installer prefetch and backend metadata use
+  the same references. This preserves each image's existing platform set; it
+  does not assert GPU compatibility beyond the upstream image.
+- The core dependency checker now rejects any external image without a full
+  sha256 digest, including malformed hashes and allowlisted mutable tags.
+  Twelve dependency contracts passed. Linux AMD contracts passed; the Windows
+  run exposed two stale mocks (JSON is now UTF-8 bytes and launch prefers
+  installed PowerShell 7), which were corrected to match existing production
+  behavior. All 65 AMD contracts then passed in native Windows/Git Bash.
+- Runtime security run `36471971155` on `d7aea8ae9` passed all nine locked
+  environments/audits, real-container confinement and saved-stack/verified
+  bootstrap tests on Windows, Linux and macOS. Full API and frontend Windows/
+  macOS jobs passed too. The Ubuntu frontend failed an unsaved-name test that
+  passed locally; a targeted CI rerun is pending. The new production Docker
+  build steps require another CI run after the image-pin update.
+
+Remaining image work includes the unavailable InvokeAI generic tag and the
+disabled legacy Dify image, plus enforcing the library's local-build/external
+image distinction without treating embedded Python `from` statements as
+Dockerfile instructions. Do not count missing or locally built image tags as
+verified external registry images.
 
 These results refer to the relevant focused changes, not to every combination
 of installer, GPU and operating system. The PR remains draft until the remaining

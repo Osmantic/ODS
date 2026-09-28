@@ -3,8 +3,8 @@
 
 # Stage 1: Build React app
 # Vite 7 requires Node >=20.19. Use a compatible tag so dashboard rebuilds do
-# not reuse an older cached node:20-alpine base image.
-FROM node:20.19-alpine AS builder
+# not reuse an older cached Node 20 base image. The digest locks this build.
+FROM node:20.19-alpine@sha256:658d0f63e501824d6c23e06d4bb95c71e7d704537c9d9272f488ac03a370d448 AS builder
 
 WORKDIR /app
 
@@ -21,7 +21,7 @@ COPY . .
 RUN npm run build
 
 # Stage 2: Serve with nginx
-FROM nginx:alpine
+FROM nginx:alpine@sha256:df221db836e1754089190208cee7eeda94f233197056426eda74a43ab1abeac2
 
 # Copy built app from builder stage
 COPY --from=builder /app/dist /usr/share/nginx/html

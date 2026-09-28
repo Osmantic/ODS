@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:1
+# syntax=docker/dockerfile:1@sha256:ecfaec9ed6d810b56388c508f4121597bfbba70d41a6dfeee4d8cad5f295fc32
 FROM --platform=$BUILDPLATFORM node:24.16.0-alpine3.22@sha256:191c9f0080fcbbc6547a85dc0ff7988072214a355aabdc1d2ec55a7dae5eea8a AS build
 WORKDIR /app
 ADD --checksum=sha256:f520c672a2295b342b1f29dc203914240fb92b2abec6936d7ac549fdbf782751 https://codeload.github.com/JannisX11/blockbench/tar.gz/2569d0245d600030760cf0b8429b1b0017b871f1 /tmp/source.tar.gz

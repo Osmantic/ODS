@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:1
+# syntax=docker/dockerfile:1@sha256:ecfaec9ed6d810b56388c508f4121597bfbba70d41a6dfeee4d8cad5f295fc32
 FROM --platform=$BUILDPLATFORM node:24.16.0-alpine3.22@sha256:191c9f0080fcbbc6547a85dc0ff7988072214a355aabdc1d2ec55a7dae5eea8a AS build
 WORKDIR /app
 ADD --checksum=sha256:5e73cbcc0a37c378223664ea76e74feadf92b35837a7d9a683f0e21f51096050 https://codeload.github.com/SVG-Edit/svgedit/tar.gz/c44f061d2f9a626d2771cc931298af5a45522d87 /tmp/source.tar.gz

@@ -1,7 +1,7 @@
 services:
   continue:
     # NOTE: Continue.dev has no official server Docker image.
-    # This service uses nginx:1.27-alpine to host a templated config.yaml
+    # This service uses nginx:1.27-alpine@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10 to host a templated config.yaml
     # that IDE clients (VS Code / JetBrains Continue extension) can fetch
     # at http://<ods>:8890/config.yaml to auto-configure against
     # the local LLM API.  It also exposes /health for ODS's health checks.
@@ -12,7 +12,7 @@ services:
     #      http://<ods-ip>:8890
     #
     # See: https://docs.continue.dev/reference
-    image: nginx:1.27-alpine
+    image: nginx:1.27-alpine@sha256:65645c7bb6a0661892a8b03b89d0743208a18dd2f3f17a54ef4b76fb8e2f2a10
     container_name: ods-continue
     restart: unless-stopped
     security_opt:

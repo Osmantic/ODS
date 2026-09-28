@@ -217,7 +217,7 @@ def test_llama_cpp_images_require_tag_and_digest() -> None:
     pinned = "ghcr.io/ggml-org/llama.cpp:server-cuda-b9014" + digest
     assert _llama_ref_errors(module, pinned) == []
 
-    # Other repositories keep the tag-or-digest policy.
+    # A version tag alone is mutable even outside the llama.cpp registry.
     other = "ghcr.io/open-webui/open-webui:v0.7.2"
     lock = {
         "entries": [{"path": "docker-compose.base.yml", "value": other}],
@@ -228,7 +228,27 @@ def test_llama_cpp_images_require_tag_and_digest() -> None:
     ref = module.ImageRef(
         path="docker-compose.base.yml", line=1, raw=other, value=other, source="compose image"
     )
-    assert module.validate_refs([ref], lock) == []
+    assert any('complete @sha256 digest' in error for error in module.validate_refs([ref], lock))
+
+
+def test_external_pins_cannot_be_bypassed_by_lock_or_latest_exception() -> None:
+    module = load_module()
+    for image in ('example/runtime:1.0', 'example/runtime:latest',
+                  'example/runtime:1@sha256:abc', 'example/runtime@sha256:' + 'g' * 64):
+        item = {'path': 'compose.yaml', 'value': image}
+        lock = {'entries': [item], 'allow_latest': [item],
+                'allow_local_images': [], 'allow_variable_refs': []}
+        ref = module.ImageRef(path='compose.yaml', line=1, raw=image, value=image, source='compose image')
+        assert any('complete @sha256 digest' in error for error in module.validate_refs([ref], lock))
+
+
+def test_rocm_default_digest_is_resolved_and_override_is_explicit() -> None:
+    module = load_module()
+    path = ROOT / 'extensions/services/llama-server/Dockerfile.amd'
+    refs = module._dockerfile_image_refs(path)
+    builder = next(ref for ref in refs if ref.value.startswith('rocm/'))
+    assert builder.raw == 'rocm/dev-ubuntu-24.04:${ROCM_VERSION}-complete@${ROCM_IMAGE_DIGEST}'
+    assert builder.value == 'rocm/dev-ubuntu-24.04:7.2-complete@sha256:86e11093b4a7ec2a79b1b6701d10e840a6994f21c7e05929b51eb9be361c683a'
 
 
 def test_repo_llama_cpp_pins_carry_digests() -> None:
@@ -283,6 +303,8 @@ def main() -> int:
         test_sha256_digest_pins_are_allowed,
         test_llama_cpp_images_require_tag_and_digest,
         test_repo_llama_cpp_pins_carry_digests,
+        test_external_pins_cannot_be_bypassed_by_lock_or_latest_exception,
+        test_rocm_default_digest_is_resolved_and_override_is_explicit,
         test_extension_library_sha_tags_are_rejected,
     ]
     for test in tests:

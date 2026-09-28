@@ -1,6 +1,6 @@
 services:
   tailscale:
-    image: tailscale/tailscale:v1.96.5
+    image: tailscale/tailscale:v1.96.5@sha256:dbeff02d2337344b351afac203427218c4d0a06c43fc10a865184063498472a6
     container_name: ods-tailscale
     restart: unless-stopped
     # network_mode: host puts the Tailscale daemon in the host's network

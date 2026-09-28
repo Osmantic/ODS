@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:1
+# syntax=docker/dockerfile:1@sha256:ecfaec9ed6d810b56388c508f4121597bfbba70d41a6dfeee4d8cad5f295fc32
 FROM --platform=$BUILDPLATFORM maven:3.9-eclipse-temurin-21@sha256:c2a2c58516d160f43b50f12baa427ca86989e0bc942609e04aff61da5d9a7d74 AS build
 WORKDIR /src
 ADD --checksum=sha256:4eb77f988f2ad75bd3b4ab4cd9565bea08e57f53e7cb17f71ff0e8f8c6b77580 https://codeload.github.com/languagetool-org/languagetool/tar.gz/refs/tags/v6.6 /tmp/source.tar.gz

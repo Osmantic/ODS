@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:1
+# syntax=docker/dockerfile:1@sha256:ecfaec9ed6d810b56388c508f4121597bfbba70d41a6dfeee4d8cad5f295fc32
 FROM --platform=$BUILDPLATFORM node:24.16.0-alpine3.22@sha256:191c9f0080fcbbc6547a85dc0ff7988072214a355aabdc1d2ec55a7dae5eea8a AS build
 WORKDIR /app
 ADD --checksum=sha256:7ee319263e09816fb05e70b11a68e2956be610eb4cfcca30a306f44c0e910bd1 https://codeload.github.com/MengTo/threeui/tar.gz/68802d5428071ada5c20db8094b1649e6bb770ed /tmp/source.tar.gz

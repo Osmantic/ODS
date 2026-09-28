@@ -258,7 +258,7 @@ fi
 # 13. AMD backend contract centralizes Lemonade runtime metadata
 # ---------------------------------------------------------------------------
 echo "[contract] AMD backend contract exposes Lemonade runtime"
-if [[ "$(json_get config/backends/amd.json runtime.lemonade.container_image)" == "ghcr.io/lemonade-sdk/lemonade-server:v10.2.0" ]]; then
+if [[ "$(json_get config/backends/amd.json runtime.lemonade.container_image)" == "ghcr.io/lemonade-sdk/lemonade-server:v10.2.0@sha256:08edbf1128a7fd82b39f1de72c2f70c013f2ecfefac6a99c52bcf58eba532a3a" ]]; then
     pass "amd.json: Linux Lemonade image pin present"
 else
     fail "amd.json: runtime.lemonade.container_image must pin v10.2.0"
@@ -433,7 +433,7 @@ if ((${#_lemonade_ps_cmd[@]} > 0)); then
                 $script:configPost = [pscustomobject]@{
                     Uri = $Uri
                     Headers = $Headers
-                    Body = $Body | ConvertFrom-Json
+                    Body = ([Text.Encoding]::UTF8.GetString($Body)) | ConvertFrom-Json
                 }
                 return [pscustomobject]@{ status = "success" }
             }
@@ -498,7 +498,9 @@ if ((${#_lemonade_ps_cmd[@]} > 0)); then
             -Contract $modern -EnvPath (Join-Path $probeRoot ".env") `
             -DiagnosticLogPath (Join-Path $probeRoot "lemonade-launch.log")
         $launcherMatch = [regex]::Match($taskAction.Arguments, "-File\s+`"([^`"]+)`"")
-        if ($taskAction.Execute -ne "powershell.exe" -or -not $launcherMatch.Success) {
+        $installedPwsh = Get-Command pwsh.exe -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+        $expectedShell = if ($installedPwsh) { $installedPwsh.Source } else { "powershell.exe" }
+        if ($taskAction.Execute -ne $expectedShell -or -not $launcherMatch.Success) {
             throw "Modern Lemonade task must use the secure PowerShell launcher file"
         }
         if ($taskAction.Arguments.Length -gt 512) {

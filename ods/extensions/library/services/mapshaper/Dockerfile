@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:1
+# syntax=docker/dockerfile:1@sha256:ecfaec9ed6d810b56388c508f4121597bfbba70d41a6dfeee4d8cad5f295fc32
 FROM --platform=$BUILDPLATFORM node:24.16.0-alpine3.22@sha256:191c9f0080fcbbc6547a85dc0ff7988072214a355aabdc1d2ec55a7dae5eea8a AS build
 WORKDIR /app
 ADD --checksum=sha256:0810daa530a2b7020e98c2f02ed58cfa32c8151eb048ee7b79ad59774b79f0b7 https://codeload.github.com/mbloch/mapshaper/tar.gz/629049657b54242552d3488b39e75b3a78cd68d2 /tmp/source.tar.gz

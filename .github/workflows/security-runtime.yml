@@ -45,6 +45,17 @@ jobs:
         run: |
           python -m pip install 'pip-audit==2.10.1'
           python -m pip_audit --require-hashes -r "ods/extensions/services/$SERVICE/requirements.lock"
+      - name: Build the production Dockerfile and check its installed environment
+        run: |
+          context="ods/extensions/services/$SERVICE"
+          case "$SERVICE" in
+            pixel-inference|remote-provider-egress) context=ods ;;
+          esac
+          docker build --pull --tag "ods-security-$SERVICE:ci" \
+            --file "ods/extensions/services/$SERVICE/Dockerfile" "$context"
+          docker run --rm --network none --read-only --cap-drop ALL \
+            --security-opt no-new-privileges --entrypoint python \
+            "ods-security-$SERVICE:ci" -m pip check
 
   policy:
     runs-on: ubuntu-latest

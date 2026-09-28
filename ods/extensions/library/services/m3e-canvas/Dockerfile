@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:1
+# syntax=docker/dockerfile:1@sha256:ecfaec9ed6d810b56388c508f4121597bfbba70d41a6dfeee4d8cad5f295fc32
 FROM --platform=$BUILDPLATFORM node:24.16.0-alpine3.22@sha256:191c9f0080fcbbc6547a85dc0ff7988072214a355aabdc1d2ec55a7dae5eea8a AS build
 WORKDIR /app
 ADD --checksum=sha256:e2cf5777cd336723b399766aa239fa40a2753b4c7d3a9d1b09c2556bb70b8c80 https://codeload.github.com/lnkiai/m3e-canvas/tar.gz/dea74159d69b09fb6fc2e44ebebf5e62c043e1ce /tmp/source.tar.gz

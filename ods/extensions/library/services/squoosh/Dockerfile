@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:1
+# syntax=docker/dockerfile:1@sha256:ecfaec9ed6d810b56388c508f4121597bfbba70d41a6dfeee4d8cad5f295fc32
 FROM --platform=$BUILDPLATFORM node:24.16.0-alpine3.22@sha256:191c9f0080fcbbc6547a85dc0ff7988072214a355aabdc1d2ec55a7dae5eea8a AS build
 WORKDIR /app
 ADD --checksum=sha256:8a4caf8744066d08005ce32034ba654d8114aa6875ff3267b56a68a9021d1c08 https://codeload.github.com/GoogleChromeLabs/squoosh/tar.gz/e8d35e0fb66eb16eff6fe8fc773eabcbb7128de3 /tmp/source.tar.gz

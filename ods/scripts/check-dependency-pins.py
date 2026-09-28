@@ -195,7 +195,7 @@ def _image_tag(value: str) -> str | None:
 
 
 def _has_digest(value: str) -> bool:
-    return "@sha256:" in value
+    return DIGEST_RE.search(value) is not None
 
 
 def _has_tag_or_digest(value: str) -> bool:
@@ -333,6 +333,9 @@ def validate_refs(refs: Iterable[ImageRef], lock: dict[str, object], root: Path 
 
         if not _has_tag_or_digest(ref.value):
             errors.append(f"{location}: image ref must include a tag or digest: {ref.value}")
+
+        if not _has_digest(ref.value):
+            errors.append(f"{location}: external image must include a complete @sha256 digest: {ref.value}")
 
         if _image_tag(ref.value) == "latest" and not _has_digest(ref.value):
             if (ref.path, ref.value) not in latest_allow:

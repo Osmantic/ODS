@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:1
+# syntax=docker/dockerfile:1@sha256:ecfaec9ed6d810b56388c508f4121597bfbba70d41a6dfeee4d8cad5f295fc32
 FROM nginx:1.28-alpine@sha256:a8b39bd9cf0f83869a2162827a0caf6137ddf759d50a171451b335cecc87d236 AS source
 WORKDIR /source
 ADD --checksum=sha256:de7ed18349e4caed8d0025d56a3d620cbe79244f1345b3728089f5b55f834bf3 https://codeload.github.com/pkalogiros/AudioMass/tar.gz/21f5ee1362a47be6f0dbe6e4969a15e43d21b044 /tmp/source.tar.gz

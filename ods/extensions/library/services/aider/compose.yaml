@@ -1,6 +1,6 @@
 services:
   aider:
-    image: paulgauthier/aider:v0.86.2
+    image: paulgauthier/aider:v0.86.2@sha256:0d54037f6c97c85a926ebc3c903e27446f5bca96823d9f68902f1e623289b556
     container_name: ods-aider
     volumes:
       - ./data/aider:/app
