@@ -15,6 +15,8 @@ param(
     [switch]$Hermes,
     [switch]$NoHermes,
     [switch]$OpenClaw,
+    [switch]$OpenCode,
+    [switch]$NoOpenCode,
     [switch]$All,
     [switch]$Cloud,
     [switch]$Comfyui,

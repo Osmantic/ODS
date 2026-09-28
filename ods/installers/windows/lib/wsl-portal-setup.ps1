@@ -114,6 +114,7 @@ function Get-ODSPortalLinuxArguments([System.Collections.IDictionary]$Options) {
         All='--all'; Force='--force'; NonInteractive='--non-interactive';
         Voice='--voice'; Workflows='--workflows'; Rag='--rag';
         Recommended='--recommended'; NoRecommended='--no-recommended'; Cloud='--cloud';
+        OpenCode='--opencode'; NoOpenCode='--no-opencode';
         Comfyui='--comfyui'; NoComfyui='--no-comfyui';
         Langfuse='--langfuse'; NoLangfuse='--no-langfuse'; NoBootstrap='--no-bootstrap'; Lan='--lan'
     }
