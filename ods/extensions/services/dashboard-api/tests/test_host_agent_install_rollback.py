@@ -275,3 +275,38 @@ def test_compose_resolution_timeout_is_not_treated_as_a_bad_definition(host, mon
 
     assert host.progress("gotify")["status"] == "error"
     assert (extension / "compose.yaml").is_file()
+
+
+REJECTED_RECIPE = "Cached extension gotify requires review: port must bind literal 127.0.0.1"
+
+
+def test_install_with_a_rejected_saved_recipe_reports_the_error(host, monkeypatch):
+    # The Compose policy raises ValueError. Without a handler the worker died
+    # silently and the dashboard showed the install as in progress forever.
+    host.extension("gotify")
+    host.docker()
+
+    def reject(*args, **kwargs):
+        raise ValueError(REJECTED_RECIPE)
+    monkeypatch.setattr(_mod, "resolve_compose_flags", reject)
+
+    host.install("gotify")
+
+    record = host.progress("gotify")
+    assert record["status"] == "error" and record["phase_label"] == "Installation failed"
+    assert REJECTED_RECIPE in record["error"]
+
+
+def test_enable_retry_with_a_rejected_saved_recipe_reports_the_error(host, monkeypatch):
+    host.extension("gotify")
+    host.docker()
+
+    def reject(*args, **kwargs):
+        raise ValueError(REJECTED_RECIPE)
+    monkeypatch.setattr(_mod, "resolve_compose_flags", reject)
+
+    _mod._enable_retry_work("gotify")
+
+    record = host.progress("gotify")
+    assert record["status"] == "error" and record["phase_label"] == "Retry failed"
+    assert REJECTED_RECIPE in record["error"]
