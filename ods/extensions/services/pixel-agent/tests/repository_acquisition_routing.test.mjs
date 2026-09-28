@@ -267,3 +267,34 @@ for (const prompt of [
       /For owner-requested public file acquisition/);
   });
 }
+
+for (const prompt of [
+  'Run the six existing Node fixture tests in the workspace. Report the real test result and explain what this network interface can and cannot establish about the host. Here interface refers to the software capability surface. Do not inspect host addresses, run host operations, modify host services, or acquire another download.',
+  'Run the existing tests and describe the software capabilities. Do not use Operations or inspect the host.',
+  'Run the existing tests. The documentation example says "Inspect the available Operations capability inventory".',
+]) {
+  for (const wrapped of [false, true]) {
+    test(`negative or quoted Operations scope preserves workspace execution: ${wrapped}/${prompt}`, () => {
+      assert.equal(api.userMessageRequestsOperationsCapabilityInventory([], prompt), false);
+      assert.equal(api.userMessageOperationsRequirements([], prompt).required, false);
+      const h = harness(prompt, wrapped);
+      allowed(h.select('read', {path:'README.md'}));
+      allowed(h.select('exec', {command:'node --test'}));
+      assert.equal(h.select('pixel_ops_run', {target:'ods-host', action:'host.os-release'}).decision?.block, true);
+    });
+  }
+}
+
+for (const prompt of [
+  'Inspect your actual currently available Operations capability inventory. Report exact capability IDs and make no changes.',
+  'Do not run host operations. List the exact Pixel Operations capability inventory.',
+  'Use Operations. Report the currently available capability IDs.',
+]) {
+  test(`positive Operations inventory keeps its exclusive read-only route: ${prompt}`, () => {
+    assert.equal(api.userMessageRequestsOperationsCapabilityInventory([], prompt), true);
+    const h = harness(prompt);
+    assert.equal(h.select('exec', {command:'node --test'}).decision?.blockReason,
+      api.OPERATIONS_INVENTORY_REQUIRES_TOOL_REASON);
+    allowed(h.select('pixel_ops_inventory', {}));
+  });
+}

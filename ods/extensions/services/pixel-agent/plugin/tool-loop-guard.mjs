@@ -5289,7 +5289,7 @@ export function userMessageOperationsRequirements(messages, prompt = undefined) 
   const hostText = networkPeer ? localInspectionTextBesidePeer(text) : text;
   const explicitOperations =
     /\b(?:use|using|via|through|with)\b.{0,48}\b(?:Pixel\s+)?Operations(?:\s+(?:Broker|capabilit(?:y|ies)|tools?))?\b/i.test(
-      text
+      positiveOperationsIntentText(text)
     );
   const capabilityInventory = userMessageRequestsOperationsCapabilityInventory(
     messages,
@@ -5611,8 +5611,17 @@ export function userMessageRequestsHostCommand(messages, prompt = undefined) {
     });
 }
 
+function positiveOperationsIntentText(text) {
+  // A prohibition on host Operations cannot turn a workspace task and a
+  // software-capability explanation into an exclusive Operations inventory.
+  return ownerLaneText(text)
+    .split(/[!?;\n]+|\.(?=\s|$)/)
+    .filter((clause) => !/^\s*(?:but\s+)?(?:please[,\s]+)?(?:do\s+not|don['’]t|never|must\s+not|should\s+not|avoid|skip|omit|exclude|no)\b/i.test(clause))
+    .join(" ");
+}
+
 export function userMessageRequestsOperationsCapabilityInventory(messages, prompt = undefined) {
-  const text = currentOwnerIntentText(messages, prompt);
+  const text = positiveOperationsIntentText(currentOwnerIntentText(messages, prompt));
   if (!text || !/\b(?:Pixel\s+)?Operations\b/i.test(text)) return false;
   const inventoryScope =
     /\b(?:capabilit(?:y|ies)|inventory|named\s+(?:actions?|operations?)|action\s+IDs?|enabled\s+targets?)\b/i.test(
