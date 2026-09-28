@@ -42,6 +42,13 @@ mkdir -p "$FIXTURE/lib" "$FIXTURE/extensions/services/bsvc" "$FIXTURE/extensions
 cp "$ROOT_DIR/ods-cli" "$FIXTURE/ods-cli"
 cp "$ROOT_DIR"/lib/*.sh "$FIXTURE/lib/"
 : > "$FIXTURE/docker-compose.base.yml"
+cat > "$FIXTURE/ods-update.sh" <<'BACKUP'
+#!/usr/bin/env bash
+# This test exercises post-update service verification; provide its required
+# pre-update snapshot as a fixture so it reaches that path.
+[[ "${1:-}" == backup && -n "${2:-}" ]]
+BACKUP
+chmod +x "$FIXTURE/ods-update.sh"
 
 cat > "$FIXTURE/extensions/services/bsvc/manifest.yaml" <<'EOF'
 schema_version: ods.services.v1
