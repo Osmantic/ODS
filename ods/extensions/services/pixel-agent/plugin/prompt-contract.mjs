@@ -17,6 +17,8 @@ import {
   userMessageRequiresOdsAppsProjection,
   userMessageRequiresOdsStatusProjection,
   userMessageRequestsExactByteDownload,
+  userMessageRequestsRepositoryAcquisition,
+  userMessageRequestsWorkspaceDownloadContinuation,
   userMessageRequestsExtensionCatalog,
   userMessageRequestsExtensionInventory,
   userMessageRequestsPrivateUrl,
@@ -27,6 +29,9 @@ import {
   workspacePreviewMode,
 } from "./tool-loop-guard.mjs";
 import { AGENT_SKILLS, PREVIEW_RUNTIME_CONTRACT } from "./agent-skills.mjs";
+
+export const ODS_PUBLIC_DOWNLOAD_WORKSPACE_CONTRACT =
+  "For owner-requested public file acquisition, use pixel_ops_download_stage, wait for its terminal receipt with pixel_ops_job_wait, then use pixel_ods_download_promote to publish verified bytes into the workspace. pixel_ops_artifact_transfer targets a dedicated runner, not the workspace. Retain the actual job and artifact receipt on follow-ups; resume that job instead of downloading again or asking for authorization already given. After publication, continue the owner's authorized workspace work. These tools remain subject to broker and destination policy.";
 
 const PLAYGROUND_PROJECT_CONTRACT =
   "For a new project, choose one short descriptive folder under Playground, for example Playground/snake-game or Playground/weather-tool, and create every project file there. This is a real workspace folder, not a display label. Use the exact canonical paths returned by tools, including any collision suffix, for later reads, edits, exec workdir and preview relativeDirectory. Preserve explicitly requested paths and existing projects in their current locations; never move them into Playground. Keep shell commands relative to the chosen workdir; never invent host-specific paths.";
@@ -188,6 +193,9 @@ export const ODS_PRIVATE_URL_CONTRACT =
 
 export const ODS_PRIVATE_BROWSER_CONTRACT =
   "The owner requested a private page and this agent has an explicitly configured browser capability. Discover and use that browser for the requested URL and interactions, with its dedicated agent profile. Do not use personal browser sessions unless the owner expressly requested them. Public web_fetch and pixel_ods_web_extract remain public-only; shell is not a substitute. Report only what actual browser results establish, and state any browser failure honestly.";
+
+export const ODS_REPOSITORY_ACQUISITION_CONTRACT =
+  "The owner requested repository acquisition or local source analysis. Determine the repository's correct ref and source archive URL from evidence; do not guess main or HEAD archive paths. Use the staged-download and workspace-promotion route for source archives, then extract and read the actual source for the requested audit. An extracted archive has no Git checkout metadata: say so accurately, and use an available approved Git acquisition capability if a real checkout is required. Do not execute downloaded source for an audit-only request. A staging receipt alone does not complete the audit.";
 
 export const ODS_EXACT_DOWNLOAD_CONTRACT =
   "The owner's current request requires origin-exact bytes in the Pixel workspace. Discover or describe the approved tools as needed, then use pixel_ops_download_stage to obtain the bytes; the host guard binds the owner's one HTTPS URL, safe destination basename, and supplied SHA-256 when present. Wait for that job with pixel_ops_job_wait. After a succeeded terminal receipt, call pixel_ods_download_promote; the host guard binds the exact job, source, digest, filename, and workspace-relative destination. Do not use transformed web content or a reconstructed substitute for the original bytes, and do not read the root-only quarantine path. After verified promotion, continue the owner's authorized reading, analysis, report writing, and other work with normal tools and access checks. Do not execute downloaded code without authorization. Report the exact download receipt alongside the task results; it verifies bytes at publication, not later edits, analysis accuracy, or completion of the remaining work.";
@@ -368,6 +376,12 @@ export function promptContractForAgent(
   )
     ? ` ${ODS_EXACT_DOWNLOAD_CONTRACT}`
     : "";
+  const repositoryAcquisition = !exactDownload &&
+    userMessageRequestsRepositoryAcquisition(event?.messages, event?.prompt)
+    ? ` ${ODS_REPOSITORY_ACQUISITION_CONTRACT}` : "";
+  const workspaceDownload = !exactDownload && (repositoryAcquisition ||
+    userMessageRequestsWorkspaceDownloadContinuation(event?.messages, event?.prompt))
+    ? ` ${ODS_PUBLIC_DOWNLOAD_WORKSPACE_CONTRACT}` : "";
   const workspaceVisualContinuation =
     userMessageRequestsWorkspaceVisualContinuation(
       event?.messages,
@@ -398,6 +412,6 @@ export function promptContractForAgent(
     ? ` ${PLAYGROUND_PROJECT_CONTRACT}` : "";
   return {
     appendSystemContext:
-      `${extensionLifecycle ? `${extensionLifecycle} ` : ""}${conversationContract}${githubSource}${githubExtension}${extensionInventory}${extensionCatalog}${operationsContinuation}${operationsInventory}${operationsRequest}${exactDownload}${workspacePreview}${workspaceGuide}${project}${recovery}${verification}${privateUrl}`,
+      `${extensionLifecycle ? `${extensionLifecycle} ` : ""}${conversationContract}${githubSource}${githubExtension}${extensionInventory}${extensionCatalog}${operationsContinuation}${operationsInventory}${operationsRequest}${exactDownload}${repositoryAcquisition}${workspaceDownload}${workspacePreview}${workspaceGuide}${project}${recovery}${verification}${privateUrl}`,
   };
 }

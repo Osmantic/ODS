@@ -344,6 +344,9 @@ export const OPERATIONS_REQUIRES_BROKER_REASON =
 export const OPERATIONS_NOT_REQUESTED_REASON =
   "Pixel blocked this Operations tool because the owner's current request did not ask for host or ODS Operations work. Continue only the owner's original authorized task. For requested sandbox workspace work, use read, write, edit, apply_patch, exec, or process; do not submit an Operations job or broaden the task.";
 
+export const WORKSPACE_DOWNLOAD_TRANSFER_CORRECTION_REASON =
+  "A dedicated-runner artifact transfer does not publish a file into the Pixel workspace. Use the existing staged-download job: wait for its terminal receipt with pixel_ops_job_wait, then publish those verified bytes with pixel_ods_download_promote. If no download has been submitted, use pixel_ops_download_stage for the correct public source first. Continue the owner's authorized extraction and analysis with workspace tools; do not ask for the same authorization again or start another download for an existing job.";
+
 export const UNREQUESTED_OPERATIONS_TERMINAL_REASON =
   "Pixel blocked another unrequested Operations attempt after a routing correction. Do not call another tool in this response or submit an Operations job. Give the owner a final answer explaining what was verified and what remains incomplete; existing work is preserved.";
 
@@ -438,6 +441,7 @@ const FILE_PATH_TOOLS = new Set(["read", "write", "edit"]);
 const WORKSPACE_CONTINUATION_TOOLS = new Set([
   "read", "write", "edit", "apply_patch", "exec", "process",
   "pixel_ods_evidence_report", "pixel_ods_evidence_readback", WORKSPACE_BUNDLE_TOOL,
+  "pixel_ods_download_promote",
 ]);
 const FAILED_TEST_READ_REPAIR_REASON =
   "The verification command failed. Preserve the owner's explicit behavior contract: correct a test only when its expectation contradicts the owner; otherwise repair the implementation, and never weaken an assertion merely to match broken output. A blank label such as `Invalid integer:` is not a helpful empty-input message. When the failure already contains actual and expected evidence, apply one focused edit to the file implicated by the failure (test or implementation), then rerun the same verification command. If the failure is a missing-file error for a file you previously wrote, recreate it before rerunning. If evidence is insufficient, read the relevant file or run a focused diagnostic, then repair and rerun verification. Report an unresolved blocker honestly when the available tools cannot resolve it.";
@@ -6547,6 +6551,25 @@ export function privateBrowserAccessForAgent(config, agentId = "pixel") {
     (sandbox.browser?.allowHostControl ?? defaults.browser?.allowHostControl) === true;
 }
 
+// This supplies acquisition guidance, never host or runner authority. Online
+// repository questions and instructions to write a cloning script stay ordinary
+// research/coding requests; only actual acquisition or local analysis uses it.
+export function userMessageRequestsRepositoryAcquisition(messages, prompt = undefined) {
+  const text = currentOwnerIntentText(messages, prompt);
+  if (!text || !userMessageGitHubRepositoryUrl(messages, prompt)) return false;
+  if (/\b(?:do\s+not|don['’]t|never|avoid|without)\s+(?:clone|checkout|check\s+out|fetch|download|retrieve|acquire|audit|inspect|review)\b/i.test(text)) return false;
+  if (/\b(?:explain|describe|write|create|design|implement)\b[^.!?;\n]{0,80}\b(?:how\s+to|script|function|example|instructions?)\b/i.test(text)) return false;
+  return /\b(?:clone|checkout|check\s+out|fetch|download|retrieve|acquire|obtain)\b/i.test(text) ||
+    (/\b(?:audit|inspect|review|read|extract|unpack)\b/i.test(text) &&
+      /\b(?:locally|local\s+(?:copy|source|checkout|audit)|workspace)\b/i.test(text));
+}
+
+export function userMessageRequestsWorkspaceDownloadContinuation(messages, prompt = undefined) {
+  const text = currentOwnerIntentText(messages, prompt);
+  return /\b(?:extract|unpack|untar|unzip)\b[^.!?;\n]{0,80}\bworkspace\b/i.test(text) ||
+    /\b(?:continue|resume|finish)\b[^.!?;\n]{0,80}\b(?:download|artifact|archive|tarball)\b/i.test(text);
+}
+
 export function userMessageRequestsExactByteDownload(messages, prompt = undefined) {
   const text = currentOwnerIntentText(messages, prompt);
   if (!text) return false;
@@ -7162,6 +7185,8 @@ export function createToolLoopGuard({
         odsExcludedTools: new Set(),
         odsRequiredTools: new Set(),
         exactDownloadRequested: false,
+        ownerRepositoryAcquisition: false,
+        workspaceDownloadTransferCorrected: false,
         researchDownloadSubmissions: new Map(),
         exactDownloadRequest: undefined,
         exactDownloadSubmissions: new Map(),
@@ -8478,6 +8503,20 @@ export function createToolLoopGuard({
       [...state.operationsSubmittedJobs.keys()].every((jobId) =>
         state.operationsTerminalJobs.has(jobId)
       );
+    const selectedDownloadJobId = (toolName === "tool_call"
+      ? wrappedToolParams?.args : normalizedParams ?? event?.params)?.jobId;
+    const ownsSelectedDownload = state?.researchDownloadSubmissions.has(selectedDownloadJobId) ||
+      sessionDownloadJobs.get(state?.currentSessionId)?.has(selectedDownloadJobId);
+    if (state?.ownerIntentObserved && !state.operationsRequired && !state.exactDownloadRequested &&
+        effectiveToolName === "pixel_ops_artifact_transfer" &&
+        !state.workspaceDownloadTransferCorrected &&
+        (state.ownerRepositoryAcquisition || ownsSelectedDownload)) {
+      // Correct the wrong handoff once without consuming the denial budget for
+      // unrelated host actions. The transfer remains blocked. A repeated wrong
+      // selection reaches the normal bounded unrequested-Operations checks.
+      state.workspaceDownloadTransferCorrected = true;
+      return { block: true, blockReason: WORKSPACE_DOWNLOAD_TRANSFER_CORRECTION_REASON };
+    }
     if (
       state?.ownerIntentObserved &&
       !state.operationsRequired &&
@@ -9557,6 +9596,8 @@ export function createToolLoopGuard({
           event?.prompt
         );
         state.exactDownloadRequested = Boolean(state.exactDownloadRequest?.exact);
+        state.ownerRepositoryAcquisition = !state.exactDownloadRequested &&
+          userMessageRequestsRepositoryAcquisition(event?.messages, event?.prompt);
         const operations = userMessageOperationsRequirements(
           event?.messages,
           event?.prompt

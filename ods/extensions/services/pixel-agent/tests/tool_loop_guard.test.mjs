@@ -3056,7 +3056,13 @@ test("a research download does not grant access to another broker job or remote 
       params: { url: "https://github.com/pallets/click/archive/refs/heads/main.tar.gz", filename: "click-main.tar.gz" },
       result: { details: { status: "submitted", kind: "download", jobId: "ops-1234567890123-abcdef123456" } },
     } });
-    assert.equal(call(guard, name, { event: { params } }).blockReason, OPERATIONS_NOT_REQUESTED_REASON);
+    const denied = call(guard, name, { event: { params } });
+    assert.equal(denied.block, true);
+    if (name === "pixel_ops_artifact_transfer") {
+      assert.match(denied.blockReason, /pixel_ods_download_promote/);
+    } else {
+      assert.equal(denied.blockReason, OPERATIONS_NOT_REQUESTED_REASON);
+    }
   }
 });
 
