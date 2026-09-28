@@ -20,12 +20,23 @@ function harness(prompt, wrapped = false) {
   let sequence = 0;
   guard.observeRun(ctx, 'pixel', { prompt });
   function select(name, args = {}) {
-    const source = name === 'pixel_ods_download_promote' ? 'pixel-ods' : 'pixel-operations-broker';
+    const source = ['pixel_ods_download_promote', 'pixel_ods_extensions'].includes(name)
+      ? 'pixel-ods' : 'pixel-operations-broker';
     const toolName = wrapped && name.startsWith('pixel_') ? 'tool_call' : name;
     const params = toolName === 'tool_call' ? { id: `openclaw:${source}:${name}`, args } : args;
     const callCtx = { ...ctx, toolName, toolCallId: `call-${++sequence}` };
     const event = { toolName, params, runId: ctx.runId, toolCallId: callCtx.toolCallId };
-    return { decision: guard.beforeToolCall(event, callCtx, 'pixel'),
+    let decision = guard.beforeToolCall(event, callCtx, 'pixel');
+    if (toolName === 'tool_call' && decision?.block !== true) {
+      // Tool Search delegates through the selected tool's before-call hook.
+      // A permitted wrapper alone does not prove its inner submission passes.
+      const delegated = decision?.params ?? params;
+      const delegatedName = delegated.id.split(':').at(-1);
+      const inner = guard.beforeToolCall({ ...event, toolName: delegatedName, params: delegated.args },
+        { ...callCtx, toolName: delegatedName }, 'pixel');
+      if (inner?.block === true) decision = inner;
+    }
+    return { decision,
       finish(result) {
         const observed = toolName === 'tool_call' ? { details: { tool: {
           id: params.id, source: 'openclaw', sourceName: source, name,
@@ -67,6 +78,61 @@ function publish(h) {
   } });
   allowed(h.select('read', { path: relativePath }));
   allowed(h.select('exec', { command: `tar -tzf ${relativePath}` }));
+}
+
+const EXT_JOB = 'ops-1234567890123-fedcba654321';
+function observeExtensions(h, pending = false) {
+  const call = h.select('pixel_ods_extensions', { action: 'list' });
+  allowed(call);
+  const inventory = { schemaVersion: 1, kind: 'ods-pixel-extension-inventory', outcome: 'succeeded',
+    summary: { total: 0, installed: 0, enabled: 0, cliInstalled: 0, disabled: 0,
+      stopped: 0, unhealthy: 0, installing: 0, settingUp: 0, error: 0,
+      notInstalled: 0, incompatible: 0 }, extensions: [],
+    boundary: 'Read-only live ODS extension inventory; no mutation authority.',
+  };
+  call.finish({ details: { jobId: EXT_JOB, status: pending ? 'submitted' : 'succeeded',
+    waitTimedOut: pending,
+    ...(pending ? {} : { steps: [{ stepId: 'list-1', target: 'ods-host', action: 'ods.extensions.list',
+      parameters: {}, exitCode: 0, stdout: JSON.stringify(inventory) + '\n', stderr: '',
+      outputTruncated: { stdout: false, stderr: false }, riskSignals: [] }] }),
+  } });
+}
+
+for (const wrapped of [false, true]) {
+  test(`incidental extension inventory cannot hijack the source audit: ${wrapped}`, () => {
+    const h = harness(ORIGINAL, wrapped);
+    observeExtensions(h);
+    const catalog = h.select('pixel_ods_extensions', { action: 'search', query: 'git' });
+    allowed(catalog);
+    submit(h);
+    completeDownload(h);
+    publish(h);
+    assert.deepEqual(h.aborts, []);
+  });
+  test(`a pending incidental extension read remains pollable: ${wrapped}`, () => {
+    const h = harness(ORIGINAL, wrapped);
+    observeExtensions(h, true);
+    allowed(h.select('pixel_ops_job_wait', { jobId: EXT_JOB }));
+    assert.equal(h.select('pixel_ops_job_wait', { jobId: 'ops-1234567890124-fedcba654321' }).decision?.block, true);
+    submit(h);
+    completeDownload(h);
+    publish(h);
+  });
+  test(`incidental read-only discovery grants no host mutation: ${wrapped}`, () => {
+    const h = harness(ORIGINAL, wrapped);
+    observeExtensions(h);
+    assert.equal(h.select('pixel_ops_shell_propose', { command: 'id' }).decision?.blockReason,
+      api.OPERATIONS_NOT_REQUESTED_REASON);
+    assert.equal(h.select('pixel_ops_run', { target: 'ods-host', action: 'ods.extensions.enable',
+      parameters: { serviceId: 'comfyui' } }).decision?.blockReason,
+      api.UNREQUESTED_OPERATIONS_TERMINAL_REASON);
+  });
+  test(`owner-requested host facts still bind Operations submissions: ${wrapped}`, () => {
+    const h = harness('Check the ODS host hostname.', wrapped);
+    const result = h.select('pixel_ops_download_stage', { url: URL, filename: FILE }).decision;
+    assert.equal(result?.block, true);
+    assert.match(result.blockReason, /host facts requested|Required actions/);
+  });
 }
 
 for (const wrapped of [false, true]) {

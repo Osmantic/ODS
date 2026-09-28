@@ -8137,8 +8137,8 @@ export function createToolLoopGuard({
         (selectedToolName === EXTENSION_READ_TOOL || extensionReadSubmission(selectedToolName, selectedParams))) {
       // Read-only discovery is a tool capability, not a prompt-derived plan.
       // Keep actual target/query/ID intact; the broker validates their policy.
+      // Record incidental evidence without replacing the owner's task mode.
       state.extensionDiscoveryUsed = true;
-      state.operationsRequired = true;
     }
     if (state?.workspaceVisualContinuationRequested) {
       const continuationDirectory = state.workspaceTaskDirectory;
@@ -8525,6 +8525,10 @@ export function createToolLoopGuard({
       // Capability metadata is read-only and grants no action authority.
       effectiveToolName !== "pixel_ops_inventory" &&
       !(state.workspaceExtensionIsolated && effectiveToolName === EXTENSION_READ_TOOL) &&
+      !(extensionDiscoveryActive(state) &&
+        (effectiveToolName === EXTENSION_READ_TOOL ||
+          extensionReadSubmission(effectiveToolName, toolName === "tool_call"
+            ? wrappedToolParams?.args : normalizedParams ?? event?.params))) &&
       // Public downloads are a normal research/development capability. The
       // broker enforces network, size, redirect, and quarantine policy; the
       // promoter independently verifies bytes and a create-only destination.
@@ -8726,7 +8730,8 @@ export function createToolLoopGuard({
       return { block: true, blockReason: OPERATIONS_LOOP_ABORT_REASON };
     }
 
-    if (extensionDiscoveryActive(state) && OPERATIONS_SUBMISSION_TOOLS.has(toolName)) {
+    if (state?.operationsRequired && extensionDiscoveryActive(state) &&
+        OPERATIONS_SUBMISSION_TOOLS.has(toolName)) {
       const params = normalizedParams ?? event?.params;
       if (!extensionReadSubmission(toolName, params)) {
         return { block: true, blockReason: OPERATIONS_WRONG_ACTION_REASON };
@@ -10374,7 +10379,7 @@ export function createToolLoopGuard({
         rememberSessionPreview(state.currentSessionId, preview, state);
       }
     }
-    if (state.operationsRequired || state.hostObservationUsed) {
+    if (state.operationsRequired || state.hostObservationUsed || extensionDiscoveryActive(state)) {
       if (state.operationsInventoryOnly) {
         const wrappedInventory =
           toolName === "tool_call"
@@ -12163,8 +12168,9 @@ export function createToolLoopGuard({
         text: exactDownloadPublishedText(state.exactDownloadPromotion),
       };
     }
+    // Evidence truth remains independent of the owner's routing mode.
+    if (extensionDiscoveryActive(state)) return extensionDiscoveryVerification(state);
     if (state.operationsRequired) {
-      if (extensionDiscoveryActive(state)) return extensionDiscoveryVerification(state);
       if (state.operationsInventoryOnly) {
         const inventoryText = operationsInventoryEvidenceText(state.operationsInventory);
         return inventoryText
@@ -12403,11 +12409,11 @@ export function createToolLoopGuard({
     if (state?.webLoopAborted && verification.status === "none") {
       return { status: "failed", text: WEB_LOOP_DELIVERY_REASON };
     }
-    const readOnlyOperations = state?.operationsRequired &&
-      (extensionDiscoveryActive(state) || state.operationsInventoryOnly ||
+    const readOnlyOperations = extensionDiscoveryActive(state) || (state?.operationsRequired &&
+      (state.operationsInventoryOnly ||
         (state.operationsRequiredActions.size > 0 &&
           [...state.operationsRequiredActions].every((action) =>
-            action.startsWith("host.") || action === "ods.extensions.list" || action === "ods.extensions.search")));
+            action.startsWith("host.") || action === "ods.extensions.list" || action === "ods.extensions.search"))));
     return verification.status === "passed" && verification.text &&
       (readOnlyOperations || verification.preview || state?.exactDownloadPromotion)
       ? { ...verification, deliveryMode: "append" }
