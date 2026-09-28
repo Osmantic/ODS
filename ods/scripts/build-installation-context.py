@@ -377,6 +377,8 @@ def build_soul(
 ) -> bool:
     """Render the assembled SOUL.md. Returns True if the file actually
     changed (so callers can decide whether to bounce Hermes)."""
+    if not template_path.is_file():
+        raise FileNotFoundError(f"Template not found: {template_path}")
     template = template_path.read_text(encoding="utf-8")
     context = build_context_block(env_path)
 
@@ -410,7 +412,9 @@ def build_soul(
     previous = output_path.read_text(encoding="utf-8") if output_path.is_file() else ""
     if previous == assembled:
         return False
-    output_path.write_text(assembled, encoding="utf-8")
+    tmp_path = output_path.with_suffix(".tmp")
+    tmp_path.write_text(assembled, encoding="utf-8")
+    tmp_path.replace(output_path)
     return True
 
 
