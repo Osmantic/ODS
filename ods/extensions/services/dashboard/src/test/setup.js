@@ -1,4 +1,16 @@
 import '@testing-library/jest-dom'
+import { beforeEach, afterEach } from 'vitest'
+import { installFakeLocks } from './webLocks'
+
+let testLocks
+beforeEach(() => {
+  if (typeof globalThis.navigator === 'undefined') return
+  testLocks = installFakeLocks()
+})
+afterEach(() => {
+  testLocks?.restore()
+  testLocks = undefined
+})
 
 // Provide a working localStorage for jsdom environments that lack one
 if (typeof globalThis.localStorage === 'undefined' || typeof globalThis.localStorage.getItem !== 'function') {

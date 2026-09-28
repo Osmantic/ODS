@@ -48,7 +48,7 @@ function requestId() {
 
 /** Compaction belongs to the server session. The browser retains only its request
  * identity; neither the transcript nor an inferred model summary is replaced. */
-export function usePortalContext({chatId,runtimeKey:legacyRuntimeKey,runtimeIdentity,capacity,initialRequestId,blocked,onPendingChange}) {
+export function usePortalContext({chatId,runtimeKey:legacyRuntimeKey,runtimeIdentity,capacity,initialRequestId,recoveryGeneration=0,blocked,onPendingChange}) {
   const acceptedModel=useRef(null)
   const runtime=useRef({chatId,identity:{model:'',source:'',provider:'',routeFingerprint:''},epoch:0})
   const typed=runtimeIdentity!==undefined
@@ -152,18 +152,23 @@ export function usePortalContext({chatId,runtimeKey:legacyRuntimeKey,runtimeIden
     return run
   },[accept,publish])
 
+  const priorRecoveryGeneration=useRef(recoveryGeneration)
   useEffect(()=>{
     generation.current+=1;requests.current.forEach(controller=>controller.abort());requests.current.clear();query.current=null;refreshQueued.current=false;mutation.current=false;lastQuery.current=0
     pending.current=initialRequestId || null
+    const recoveryChanged=priorRecoveryGeneration.current!==recoveryGeneration
     if(priorChat.current!==chatId){lastMeasurement.current=null;invalidatedMeasurement.current=null;lastManual.current=pending.current}
     else if(priorRuntime.current && priorRuntime.current!==runtimeKey)invalidatedMeasurement.current=lastMeasurement.current
+    if(recoveryChanged)lastManual.current=pending.current
     priorChat.current=chatId
+    priorRecoveryGeneration.current=recoveryGeneration
     publish({context:null,observedCapacity:null,phase:pending.current?'checking':'idle',notice:pending.current?'Checking compaction status…':'',historyUnknown:false,resolving:false,recoveryNotice:''})
     priorRuntime.current=runtimeKey
     void refresh(true)
     return ()=>{generation.current+=1;requests.current.forEach(controller=>controller.abort());requests.current.clear();query.current=null;refreshQueued.current=false}
-    // A pending identity is restored only when changing sessions, not on autosave.
-  },[chatId,runtimeKey,publish,refresh])
+    // A pending identity is restored only when changing sessions or when a
+    // pure passive rebase observed a new compaction request identity.
+  },[chatId,runtimeKey,recoveryGeneration,publish,refresh])
 
   useEffect(()=>{
     if(view.chatId!==chatId || view.runtimeKey!==runtimeKey || !(pending.current || ['running','busy'].includes(view.phase) || view.historyUnknown))return

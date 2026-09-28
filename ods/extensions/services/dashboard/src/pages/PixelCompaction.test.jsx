@@ -2,6 +2,7 @@ import {act,fireEvent,screen,waitFor} from '@testing-library/react'
 import {render} from '../test/test-utils'
 import Pixel from './Pixel'
 import {CONTEXT_REQUEST_ID} from '../lib/portalContext'
+import {PERSISTENCE_OWNERSHIP} from '../lib/pixelConversations'
 
 const response=(body,status=200)=>({ok:status>=200 && status<300,status,json:async()=>body})
 const runtime={source:'local-switchboard',model:'small-model',contextLength:8192}
@@ -9,7 +10,7 @@ const snapshot=(status='idle',requestId,used=1200)=>({schemaVersion:1,status:'re
   model:{id:'small-model',provider:'local',contextWindow:8192},context:{used,window:8192,measuredAt:'2026-09-16T12:00:00.000Z'},
   compaction:{status,count:status==='completed'?1:0,...(requestId?{requestId}:{})},history:{revision:'a'.repeat(64),acknowledgedMessages:2}})
 const initial=[{role:'user',content:'Remember that the project is named Cedar.'},{role:'assistant',content:'The project is Cedar.',status:'done'}]
-const seed=(extra={})=>localStorage.setItem('ods.pixel.chat.v1',JSON.stringify({schema:1,chatId:'context-chat',messages:initial,draft:'',...extra}))
+const seed=(extra={})=>localStorage.setItem('ods.pixel.chat.v1',JSON.stringify({schema:1,chatId:'context-chat',messages:initial,draft:'',persistenceOwnership:PERSISTENCE_OWNERSHIP,...extra}))
 const stored=()=>JSON.parse(localStorage.getItem('ods.pixel.chat.v1'))
 const calls=url=>fetch.mock.calls.filter(([path])=>path===url)
 const stream=()=>{
@@ -133,7 +134,7 @@ it('keeps the draft and transcript while compacting and saves recovery identity 
   render(<Pixel/>);await screen.findByText('Available')
   fireEvent.click(screen.getByRole('button',{name:'Open prompt commands'}))
   fireEvent.click(screen.getByRole('button',{name:/Compact Free context/}))
-  expect(screen.getByPlaceholderText('Message Portal...')).toBeDisabled()
+  await waitFor(()=>expect(screen.getByPlaceholderText('Message Portal...')).toBeDisabled())
   expect(screen.getByTitle('Start a new chat')).toBeDisabled()
   expect(stored()).toMatchObject({chatId:'context-chat',messages:initial,draft:'My next request'})
   await act(async()=>finish())
@@ -172,7 +173,7 @@ it('recovers a pending compaction after reload using context inspection only',as
   await screen.findByText('Context compacted. Your full conversation is preserved.')
   expect(calls('/api/pixel/chat/compact')).toHaveLength(0)
   expect(calls('/api/pixel/chat/context').every(([,options])=>JSON.parse(options.body).chat_id==='context-chat')).toBe(true)
-  expect(stored()).toMatchObject({chatId:'context-chat',draft:'Keep this draft',messages:initial,compactionRequestId:null})
+  await waitFor(()=>expect(stored()).toMatchObject({chatId:'context-chat',draft:'Keep this draft',messages:initial,compactionRequestId:null}))
 })
 
 it('does not compact an editor whose conversation changed in another tab',async()=>{

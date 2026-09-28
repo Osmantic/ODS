@@ -1,4 +1,4 @@
-import { cleanup, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, screen, waitFor } from '@testing-library/react'
 import { render } from '../test/test-utils'
 import Pixel from './Pixel'
 import { CHAT_KEY, readConversations } from '../lib/pixelConversations'
@@ -23,9 +23,11 @@ test.each([
   ['legacy library-first', record('Old pointer text', 'Old draft'), record('Latest saved answer', 'Latest draft')],
   ['current pointer-first', {...record('Latest saved answer', 'Latest draft'), persistenceVersion: 2}, record('Old library text', 'Old draft')],
   ['legacy pointer only', record('Latest saved answer', 'Latest draft'), null],
-])('mount and autosave retain the authoritative %s record', async (_name, pointer, library) => {
+])('mount preserves raw legacy bytes and an explicit edit saves the authoritative %s record', async (_name, pointer, library) => {
   localStorage.setItem(CHAT_KEY, JSON.stringify(pointer))
   localStorage.setItem(LIBRARY_KEY, JSON.stringify(library ? [library] : []))
+  const beforePointer = localStorage.getItem(CHAT_KEY)
+  const beforeLibrary = localStorage.getItem(LIBRARY_KEY)
   render(<Pixel />)
   await screen.findByText('Available')
   expect(screen.getByPlaceholderText(/^Message .+\.\.\.$/)).toHaveValue('Latest draft')
@@ -33,9 +35,13 @@ test.each([
   expect(readConversations()[0]).toMatchObject({
     draft: 'Latest draft', messages: [{role: 'user', content: 'Latest saved answer'}],
   })
-  expect(JSON.parse(localStorage.getItem(CHAT_KEY))).toMatchObject({
-    persistenceVersion: 2, draft: 'Latest draft',
-  })
+  expect(localStorage.getItem(CHAT_KEY)).toBe(beforePointer)
+  expect(localStorage.getItem(LIBRARY_KEY)).toBe(beforeLibrary)
+  fireEvent.change(screen.getByPlaceholderText(/^Message .+\.\.\.$/), {target:{value:'Intentional continuation'}})
+  await waitFor(() => expect(JSON.parse(localStorage.getItem(CHAT_KEY))).toMatchObject({
+    persistenceVersion:2, persistenceOwnership:'web-lock-v1', draft:'Intentional continuation',
+    messages:[{role:'user',content:'Latest saved answer'}],
+  }))
   expect(fetch.mock.calls.some(([url, options]) => options?.method === 'POST' && url !== '/api/pixel/chat/context')).toBe(false)
 })
 
@@ -54,6 +60,8 @@ test('restores the library-first request receipt before checking interrupted wor
       {role: 'assistant', content: '', status: 'streaming'},
     ], inFlight: true, requestId: 'latest-request',
   }]))
+  const beforePointer = localStorage.getItem(CHAT_KEY)
+  const beforeLibrary = localStorage.getItem(LIBRARY_KEY)
   render(<Pixel />)
   await waitFor(() => expect(fetch).toHaveBeenCalledWith('/api/pixel/chat/result', expect.objectContaining({
     body: JSON.stringify({chat_id: 'retained-chat', request_id: 'latest-request'}),
@@ -63,7 +71,8 @@ test('restores the library-first request receipt before checking interrupted wor
   expect(screen.getByRole('textbox')).toBeDisabled()
   resolveHealth({ok: true, json: async () => ({available: true})})
   expect(await screen.findByPlaceholderText(/^Message .+\.\.\.$/)).toBeDisabled()
-  expect(JSON.parse(localStorage.getItem(CHAT_KEY))).toMatchObject({requestId: 'latest-request', interrupted: true})
+  expect(localStorage.getItem(CHAT_KEY)).toBe(beforePointer)
+  expect(localStorage.getItem(LIBRARY_KEY)).toBe(beforeLibrary)
   expect(fetch.mock.calls.some(([url]) => url === '/api/pixel/chat/stream')).toBe(false)
 })
 
