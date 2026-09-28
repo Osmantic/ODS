@@ -37,7 +37,7 @@ class Issues:
 
 
 def nonempty_string(value: Any) -> bool:
-    return isinstance(value, str) and bool(value.strip())
+    return isinstance(value, str) and not isinstance(value, bool) and bool(value.strip())
 
 
 def load_json(path: Path) -> Any:
