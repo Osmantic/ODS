@@ -54,7 +54,8 @@ def test_research_quality_behavior_regressions() -> None:
     if not node:
         return
     result = subprocess.run(
-        [node, "--test", str(ROOT / "tests" / "test-vane-research-quality.cjs")],
+        [node, "--test", str(ROOT / "tests" / "test-vane-research-quality.cjs"),
+         str(ROOT / "tests" / "test-vane-search-evidence.cjs")],
         capture_output=True, text=True, timeout=30,
     )
     assert result.returncode == 0, result.stdout + result.stderr

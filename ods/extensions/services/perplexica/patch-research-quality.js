@@ -148,6 +148,44 @@ PATCHES.push(...[
   }
 ]);
 
+// Default modes need selected page evidence, not unverified snippets.
+PATCHES.push(...[
+  {
+    "id": "quality-28",
+    "old": "\"speed\"===a.mode||\"balanced\"===a.mode",
+    "replacement": "!1/*ODS bounded selected-page evidence*/"
+  },
+  {
+    "id": "quality-29",
+    "old": "if(\"quality\"!==a.mode)return[];",
+    "replacement": "if(![\"speed\",\"balanced\",\"quality\"].includes(a.mode))return[];"
+  },
+  {
+    "id": "quality-30",
+    "old": ".picked_indices.slice(0,3).map",
+    "replacement": ".picked_indices.slice(0,\"speed\"===a.mode?1:\"balanced\"===a.mode?2:3).map"
+  },
+  {
+    "id": "quality-31",
+    "old": "e=(0,h.A)(c.content,4e3,500);await Promise.all(e.map",
+    "replacement": "e=(0,h.A)(c.content,4e3,500);if(\"quality\"!==a.mode)e=e.slice(0,\"speed\"===a.mode?2:4);let odsQueue=Promise.resolve();await Promise.all(e.map"
+  },
+  {
+    "id": "quality-32",
+    "old": ",p.push({...b,content:d})",
+    "replacement": ",d.trim()&&p.push({...b,content:d})"
+  },
+  {
+    "id": "quality-33",
+    "old": "await Promise.all(e.map(async b=>{try{let c=await a.llm.generateObject",
+    "replacement": "await Promise.all(e.map(async b=>{let odsRelease;if(\"quality\"!==a.mode){let odsWait=odsQueue;odsQueue=new Promise(resolve=>{odsRelease=resolve});await odsWait}try{let c=await a.llm.generateObject"
+  },
+  {
+    "id": "quality-34",
+    "old": "catch(a){console.log(\"Error extracting information from chunk\",a)}}))",
+    "replacement": "catch(a){console.log(\"Error extracting information from chunk\",a)}finally{if(odsRelease)odsRelease()}}))"
+  }
+]);
 function replaceUnpatched(source, old, replacement) {
   let cursor = 0, count = 0, out = '';
   for (;;) {
