@@ -330,6 +330,15 @@ OPENCODE_EOF
             loginctl enable-linger "$(whoami)" 2>/dev/null || \
                 sudo -n loginctl enable-linger "$(whoami)" 2>/dev/null || \
                 ai_warn "Could not enable linger. OpenCode may stop after logout. Run: loginctl enable-linger $(whoami)"
+            # The Windows lifetime holder forwards only a proven installation's
+            # user service. An existing different owner record is preserved.
+            if grep -qi microsoft /proc/sys/kernel/osrelease 2>/dev/null; then
+                if python3 "$INSTALL_DIR/installers/lib/opencode-ownership.py" record "$INSTALL_DIR" >> "$LOG_FILE" 2>&1; then
+                    ai_ok "OpenCode installation ownership verified for Windows loopback access"
+                else
+                    ai_warn "OpenCode Windows loopback ownership could not be recorded; existing resources were preserved. Inspect the installation log."
+                fi
+            fi
         fi
     fi
     else

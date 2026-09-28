@@ -100,6 +100,18 @@ jobs:
         shell: bash
         run: python3 tests/test-wsl-portal-readiness.py -v
 
+      - name: WSL OpenCode Ownership Contracts
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          python3 -m pip install pytest==8.4.2
+          python3 -m pytest tests/test_opencode_ownership.py -q
+
+      - name: WSL OpenCode Bridge Contracts (Windows PowerShell)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./tests/contracts/test-wsl-opencode-bridge.ps1
+
       - name: WSL Sign-in Recovery Contracts (PowerShell 7)
         if: runner.os == 'Windows'
         shell: pwsh
