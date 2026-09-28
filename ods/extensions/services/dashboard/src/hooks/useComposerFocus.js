@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useRef } from 'react'
 
 const hasSelection = () => Boolean(window.getSelection()?.toString())
+// A persistent notice (for example the install banner) opts out with
+// data-composer-focus-ignore so it cannot disable focus restoration for good.
 const hasOverlay = () => Array.from(document.querySelectorAll(
   'dialog[open], [role="dialog"], [role="alertdialog"], [aria-modal="true"], [role="menu"], [role="listbox"]',
-)).some(element => !element.closest('[hidden], [aria-hidden="true"]'))
+)).some(element => !element.closest('[hidden], [aria-hidden="true"], [data-composer-focus-ignore]'))
 const isPageFocused = () => [document.body, document.documentElement].includes(document.activeElement)
 
 // Disabled textareas lose browser focus during a turn. Restore only the user's
