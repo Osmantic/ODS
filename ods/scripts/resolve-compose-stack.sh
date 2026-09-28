@@ -1006,8 +1006,12 @@ def _source_runtime_merge_problems(entries):
     other extensions joining its private network.
     """
     services, networks = {}, {}
+    # YAML lets a section be present but empty (`services:` or `networks:`),
+    # which parses as None. Such recipes are not source recipes; never crash.
     for path, document in entries:
-        definitions = document.get('services', {})
+        if not isinstance(document, dict):
+            continue
+        definitions = document.get('services')
         if not isinstance(definitions, dict):
             continue
         remote = any(isinstance(item, dict) and isinstance(item.get('build'), dict)
@@ -1016,18 +1020,20 @@ def _source_runtime_merge_problems(entries):
         if remote:
             for key in definitions:
                 services.setdefault(key, set()).add(str(path))
-            for key in document.get('networks', {}):
+            for key in document.get('networks') or {}:
                 networks.setdefault(key, set()).add(str(path))
     problems = []
     for path, document in entries:
-        for name, definition in document.get('services', {}).items():
+        if not isinstance(document, dict):
+            continue
+        for name, definition in (document.get('services') or {}).items():
             if name in services and services[name] != {str(path)}:
                 problems.append(f"source service '{name}' is overridden by another recipe or overlay")
             if isinstance(definition, dict):
-                for network in definition.get('networks', []):
+                for network in definition.get('networks') or []:
                     if network in networks and networks[network] != {str(path)}:
                         problems.append(f"source sandbox '{network}' is joined by another recipe or overlay")
-        for network in document.get('networks', {}):
+        for network in document.get('networks') or {}:
             if network in networks and networks[network] != {str(path)}:
                 problems.append(f"source sandbox '{network}' is overridden by another recipe or overlay")
     return problems
