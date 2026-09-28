@@ -135,18 +135,32 @@ redact_file() {
     local file="$1"
     [[ -f "$file" ]] || return 0
 
-    "$PYTHON_CMD" - "$file" <<'PY'
+    "$PYTHON_CMD" - "$file" "$ROOT_DIR/.env.schema.json" <<'PY'
+import json
 import re
 import sys
 from pathlib import Path
 
 path = Path(sys.argv[1])
+schema_path = Path(sys.argv[2])
 try:
     text = path.read_text(encoding="utf-8", errors="replace")
 except OSError:
     raise SystemExit(0)
 
 secret_word = r"(?:KEY|TOKEN|SECRET|PASSWORD|PASS|SALT|AUTH|CREDENTIAL)"
+try:
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    schema_secret_names = {
+        name for name, definition in schema.get("properties", {}).items()
+        if definition.get("secret") is True
+    }
+except (OSError, ValueError, AttributeError):
+    schema_secret_names = set()
+
+schema_secret = "|".join(
+    re.escape(name) for name in sorted(schema_secret_names, key=len, reverse=True)
+)
 
 patterns = [
     (re.compile(r"(?i)(Bearer\s+)[A-Za-z0-9._~+/=-]+"), r"\1[REDACTED]"),
@@ -163,6 +177,18 @@ patterns = [
         r'\1\2"[REDACTED]"',
     ),
 ]
+
+if schema_secret:
+    patterns.extend([
+        (
+            re.compile(rf"(?im)^(\s*(?:export\s+)?(?:{schema_secret})\s*=\s*).*$"),
+            r"\1[REDACTED]",
+        ),
+        (
+            re.compile(rf"(?im)(^|[{{,]\s*)([\"']?(?:{schema_secret})[\"']?\s*:\s*)([\"']?)[^\"'\s,\n}}{{\[]+([\"']?)"),
+            r'\1\2"[REDACTED]"',
+        ),
+    ])
 
 for pattern, replacement in patterns:
     text = pattern.sub(replacement, text)
@@ -248,18 +274,28 @@ write_redacted_env() {
         return 0
     fi
 
-    "$PYTHON_CMD" - "$env_path" "$out_path" <<'PY'
+    "$PYTHON_CMD" - "$env_path" "$out_path" "$ROOT_DIR/.env.schema.json" <<'PY'
+import json
 import re
 import sys
 from pathlib import Path
 
 src = Path(sys.argv[1])
 dest = Path(sys.argv[2])
+schema_path = Path(sys.argv[3])
 # USER|EMAIL|BEARER cover schema secret:true keys the old pattern missed —
 # N8N_USER, LANGFUSE_INIT_USER_EMAIL, LANGFUSE_MINIO_ROOT_USER — which are
 # published in cleartext when this env.redacted is shared on a public issue.
 # Match .env.schema.json's secret set / the CLI's config-show masking.
 secret = re.compile(r"(KEY|TOKEN|SECRET|PASSWORD|PASS|SALT|AUTH|CREDENTIAL|USER|EMAIL|BEARER)", re.I)
+try:
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    schema_secret_names = {
+        name for name, definition in schema.get("properties", {}).items()
+        if definition.get("secret") is True
+    }
+except (OSError, ValueError, AttributeError):
+    schema_secret_names = set()
 
 lines = []
 for line in src.read_text(encoding="utf-8", errors="replace").splitlines():
@@ -271,7 +307,7 @@ for line in src.read_text(encoding="utf-8", errors="replace").splitlines():
     key = prefix.strip()
     if key.startswith("export "):
         key = key[7:].strip()
-    if secret.search(key):
+    if secret.search(key) or key in schema_secret_names:
         lines.append(f"{prefix}=[REDACTED]")
     else:
         lines.append(line)
@@ -612,7 +648,7 @@ PY
 }
 
 write_evidence() {
-    "$PYTHON_CMD" - "$BUNDLE_DIR" "$ROOT_DIR" <<'PY'
+    "$PYTHON_CMD" - "$BUNDLE_DIR" "$ROOT_DIR" "$ROOT_DIR/.env.schema.json" <<'PY'
 import hashlib
 import json
 import platform
@@ -624,12 +660,21 @@ from pathlib import Path
 
 bundle_dir = Path(sys.argv[1])
 root_dir = Path(sys.argv[2])
+schema_path = Path(sys.argv[3])
 status_path = bundle_dir / "manifest" / "command-status.tsv"
 
 # Keep in sync with write_redacted_env's key set. USER|EMAIL|BEARER cover
 # schema secret:true keys (N8N_USER, LANGFUSE_INIT_USER_EMAIL,
 # LANGFUSE_MINIO_ROOT_USER) whose VALUES would otherwise land in evidence.json.
 secret = re.compile(r"(KEY|TOKEN|SECRET|PASSWORD|PASS|SALT|AUTH|CREDENTIAL|USER|EMAIL|BEARER)", re.I)
+try:
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    schema_secret_names = {
+        name for name, definition in schema.get("properties", {}).items()
+        if definition.get("secret") is True
+    }
+except (OSError, ValueError, AttributeError):
+    schema_secret_names = set()
 
 
 def load_json(path):
@@ -731,8 +776,8 @@ env = env_pairs(root_dir / ".env")
 public_env_keys = {
     key: {
         "present": True,
-        "redacted": bool(secret.search(key)),
-        "value": None if secret.search(key) else value,
+        "redacted": bool(secret.search(key) or key in schema_secret_names),
+        "value": None if secret.search(key) or key in schema_secret_names else value,
     }
     for key, value in sorted(env.items())
 }
