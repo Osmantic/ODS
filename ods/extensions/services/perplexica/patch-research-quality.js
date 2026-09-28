@@ -259,6 +259,12 @@ PATCHES.push(...[
 // their actual replacement text can supply the earlier recognition proof.
 PATCHES.find(patch=>patch.id === 'quality-30').supersededBy = 'quality-41';
 PATCHES.find(patch=>patch.id === 'quality-32').supersededBy = 'quality-43';
+// Specific unverified facts require evidence even when phrased as a simple question.
+PATCHES.push({
+  "id": "quality-47",
+  "old": "1. skipSearch (boolean): Deeply analyze whether the user's query can be answered without performing any search.\n   - Set it to true if the query is straightforward, factual, or can be answered based on general knowledge.\n   - Set it to true for writing tasks or greeting messages that do not require external information.\n   - Set it to true if weather, stock, or similar widgets can fully satisfy the user's request.\n   - Set it to false if the query requires up-to-date information, specific details, or context that cannot be inferred from general knowledge.\n   - ALWAYS SET SKIPSEARCH TO FALSE IF YOU ARE UNCERTAIN OR IF THE QUERY IS AMBIGUOUS OR IF YOU'RE NOT SURE.",
+  "replacement": "1. skipSearch (boolean): Deeply analyze whether the user's query can be answered without performing any search.\n   - Set it to true only for greetings, creative writing, mathematical facts, established general concepts, or when a weather, stock, or calculation widget can fully satisfy the user's request.\n   - Set it to false when the query concerns a specific person, organization, or entity and asks about current facts, affiliations, roles, work, or other verifiable details that are not established general knowledge.\n   - Set it to false when the query concerns an obscure or ambiguous identity, or when the answer depends on information that cannot be verified from general knowledge alone.\n   - ALWAYS SET SKIPSEARCH TO FALSE IF YOU ARE UNCERTAIN OR IF THE QUERY IS AMBIGUOUS OR IF YOU'RE NOT SURE."
+});
 function replaceUnpatched(source, old, replacement) {
   let cursor = 0, count = 0, out = '';
   for (;;) {
