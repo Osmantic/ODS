@@ -50,7 +50,12 @@ exit 23
     Check ($returned -eq 23 -and $seen.s -ceq $stateLocation -and $seen.o -eq $true -and $seen.docker -ceq 'D:\Custom Docker\Docker Desktop.exe') 'state location, Docker location and Portal opening coexist in the delegated process'
     Set-Content -LiteralPath (Join-Path $delegateRoot 'windows.ps1') -Encoding UTF8 -Value "throw 'delegate failed'"
     Check ((Invoke-ODSPortalLinuxInstaller $delegateRoot 'Ubuntu-24.04' @() '' $false) -ne 0) 'delegate that throws is a failure'
-} finally { Remove-Item -LiteralPath $delegateRoot -Recurse -Force }
+} finally {
+    $resolvedDelegate=[IO.Path]::GetFullPath($delegateRoot)
+    $expectedTemp=[IO.Path]::GetFullPath([IO.Path]::GetTempPath())
+    if (-not $resolvedDelegate.StartsWith($expectedTemp,[StringComparison]::OrdinalIgnoreCase) -or (Split-Path $resolvedDelegate -Leaf) -notlike 'ods-portal-delegate-*') { throw 'Unsafe delegate fixture cleanup path' }
+    Remove-Item -LiteralPath $resolvedDelegate -Recurse -Force
+}
 function Reset-Scenario {
     $script:calls = [Collections.Generic.List[string]]::new()
     $script:prompts = [Collections.Generic.List[string]]::new()
@@ -210,6 +215,10 @@ try {
     Check ((Invoke-ODSPortalSetup $options 'unused') -eq 0) 'ready host delegates successfully'
     Check (($script:capturedArguments[-3..-1] -join ' ') -eq '--pixel --no-hermes --no-openclaw') 'mandatory Pixel policy wins after --all'
     Check (($script:capturedArguments -join ' ') -match '--all --no-langfuse') 'explicit disable follows all'
+    $codeArgs = @(Get-ODSPortalLinuxArguments @{OpenCode=$true})
+    Check (($codeArgs -contains '--opencode') -and ($codeArgs -notcontains '--all')) 'OpenCode can be enabled without unrelated optional services'
+    $codeArgs = @(Get-ODSPortalLinuxArguments @{All=$true; OpenCode=$true; NoOpenCode=$true})
+    Check ([Array]::IndexOf($codeArgs,'--no-opencode') -gt [Array]::IndexOf($codeArgs,'--all') -and [Array]::IndexOf($codeArgs,'--no-opencode') -gt [Array]::IndexOf($codeArgs,'--opencode')) 'explicit OpenCode disable wins over all and opt-in'
     Check ($script:capturedRoot -eq '/home/user/ODS data') 'Linux install path forwarded intact'
     Check ($script:capturedStateRoot -ceq 'C:\ODS private\state' -and ($script:capturedArguments -join ' ') -notmatch 'StateRoot|ODS private') 'setup forwards Windows state location without injecting it into Linux flags'
     foreach ($badState in @('relative\state','C:\','\\server\share','C:\a\..\state','C:\bad"state')) {
@@ -466,6 +475,15 @@ try {
             # GitHub's PowerShell runner propagates LASTEXITCODE after the script.
             $global:LASTEXITCODE = 0
         }
+        $optionRecord=Join-Path $fixture 'options.json'
+        Set-Content -LiteralPath $destination -Value "param([switch]`$OpenCode,[switch]`$NoOpenCode)`n[IO.File]::WriteAllText('$optionRecord', (ConvertTo-Json @{enabled=[bool]`$OpenCode;disabled=[bool]`$NoOpenCode}))`nexit 0" -Encoding UTF8
+        & $shell -NoProfile -File (Join-Path $fixture 'install.ps1') -OpenCode -NoOpenCode | Out-Host
+        $optionsSeen=Get-Content -LiteralPath $optionRecord -Raw | ConvertFrom-Json
+        Check ($LASTEXITCODE -eq 0 -and $optionsSeen.enabled -and $optionsSeen.disabled) 'actual root forwards explicit OpenCode choices to its child'
+        $parseTokens=$null;$parseErrors=$null
+        $portalAst=[Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot '../../installers/windows-portal.ps1'),[ref]$parseTokens,[ref]$parseErrors)
+        $portalParams=@($portalAst.ParamBlock.Parameters | ForEach-Object {$_.Name.VariablePath.UserPath})
+        Check (-not $parseErrors -and ($portalParams -contains 'OpenCode') -and ($portalParams -contains 'NoOpenCode')) 'WSL entry point accepts both explicit OpenCode choices'
     } finally {
         $resolved = [IO.Path]::GetFullPath($fixture)
         $tempRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath())

@@ -525,6 +525,73 @@ function Get-ODSWslLifetimeStatus($Identity) {
         startup=(Read-ODSWslJson (Join-Path $Identity.directory 'startup-status.json')) }
 }
 
+function Save-ODSOpenCodeBridgeDependencies($Identity) {
+    $sourceDirectory=Join-Path (Split-Path -Parent $script:ODSWslLifecycleSource) 'lib'
+    $destination=Join-Path $Identity.directory 'lib'
+    $names=@('wsl-loopback.ps1','wsl-loopback-helper.py','opencode-ownership.py')
+    $contents=@{}; $hashes=@{}
+    foreach ($name in $names) {
+        $file=Get-Item -LiteralPath (Join-Path $sourceDirectory $name) -Force
+        if ($file.PSIsContainer -or ($file.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'Unsafe bridge source' }
+        $contents[$name]=[IO.File]::ReadAllBytes($file.FullName)
+        $sha=[Security.Cryptography.SHA256]::Create()
+        try { $hashes[$name]=-join ($sha.ComputeHash($contents[$name]) | ForEach-Object {$_.ToString('x2')}) } finally {$sha.Dispose()}
+    }
+    Initialize-ODSPrivateDirectory $destination
+    foreach ($name in $names) { Write-ODSPrivateBytes (Join-Path $destination $name) $contents[$name] }
+    Write-ODSWslJson (Join-Path $destination 'bridge-manifest.json') @{schemaVersion=1;identityId=$Identity.id;files=$hashes}
+}
+
+function Get-ODSOpenCodeBridgeContext($Identity) {
+    $directory=Join-Path $Identity.directory 'lib'
+    $manifest=Read-ODSWslJson (Join-Path $directory 'bridge-manifest.json')
+    if (-not $manifest) { return $null }
+    Assert-ODSPrivatePath $directory -Directory
+    if ($manifest.schemaVersion -ne 1 -or $manifest.identityId -cne $Identity.id) { throw 'Bridge snapshot identity mismatch' }
+    $names=@('wsl-loopback.ps1','wsl-loopback-helper.py','opencode-ownership.py')
+    if (@($manifest.files.PSObject.Properties).Count -ne $names.Count) { throw 'Bridge snapshot file set mismatch' }
+    foreach ($name in $names) {
+        $expected=$manifest.files.PSObject.Properties[$name]
+        if (-not $expected -or $expected.Value -notmatch '^[a-f0-9]{64}$') { throw 'Invalid bridge snapshot hash' }
+        $file=Join-Path $directory $name
+        Assert-ODSPrivatePath $file
+        if ((Get-Item -LiteralPath $file).PSIsContainer -or (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash.ToLowerInvariant() -cne $expected.Value) { throw 'Bridge snapshot bytes changed' }
+    }
+    . (Join-Path $directory 'wsl-loopback.ps1')
+    Initialize-ODSWslLoopbackType
+    $guest=(Invoke-ODSWslBoundedCommand $Identity @('/usr/bin/wslpath','-a','-u',(Join-Path $directory 'wsl-loopback-helper.py')) 10).Trim()
+    if ($guest -notmatch '^/[^\x00-\x1f]+$' -or $guest.Contains('//') -or $guest -match '(^|/)\.\.?(/|$)') { throw 'Invalid bridge guest path' }
+    [pscustomobject]@{guestPath=$guest;ownerPath=($guest.Substring(0,$guest.LastIndexOf('/')+1)+'opencode-ownership.py')}
+}
+
+function Get-ODSOpenCodeBridgeOwner($Identity,$Context) {
+    $raw=Invoke-ODSWslBoundedCommand $Identity @('/usr/bin/python3',$Context.ownerPath,'verify',$Identity.installRoot) 10
+    $owner=$raw | ConvertFrom-Json
+    if ($owner.schemaVersion -ne 1 -or $owner.manager -cne 'ods' -or $owner.installRoot -cne $Identity.installRoot -or
+        $owner.unit -cne 'opencode-web.service' -or $owner.ownerUser -notmatch '^[a-zA-Z_][a-zA-Z0-9_.-]*\$?$' -or
+        $owner.ownerUid -le 0 -or $owner.mainPid -le 0 -or $owner.startTicks -le 0 -or
+        $owner.port -lt 1 -or $owner.port -gt 65535) { throw 'OpenCode service ownership not established' }
+    foreach ($name in @('ownerUid','mainPid','startTicks','port')) {
+        if ($owner.$name -isnot [int] -and $owner.$name -isnot [long]) { throw 'Invalid OpenCode numeric identity' }
+    }
+    $owner
+}
+
+function Start-ODSOpenCodeOwnedBridge($Identity,$Context,$Owner,[string]$Generation) {
+    $current=Read-ODSWslJson (Join-Path $Identity.directory 'request.json')
+    if ($current.generation -cne $Generation -or $current.action -ne 'run') { throw 'Holder generation was cancelled' }
+    $arguments=[string[]]@('--distribution',$Identity.distro,'--user',$Owner.ownerUser,'--exec','/usr/bin/python3',
+        $Context.guestPath,'--port',([string]$Owner.port),'--root',$Identity.installRoot)
+    $bridge=[Ods.WslLoopbackBridge]::new((Join-Path $env:WINDIR 'System32\wsl.exe'),$arguments,[int]$Owner.port,32)
+    try {
+        $bridge.Start()
+        if (-not $bridge.Ready) { throw 'Owned OpenCode listener unavailable' }
+        $current=Read-ODSWslJson (Join-Path $Identity.directory 'request.json')
+        if ($current.generation -cne $Generation -or $current.action -ne 'run') { throw 'Holder generation was cancelled' }
+        return $bridge
+    } catch { $bridge.Dispose(); throw }
+}
+
 function Start-ODSWslLifetime($Identity) {
     Assert-ODSWslStartupStillWanted
     if ($script:ODSWslStateRoot) { Initialize-ODSPrivateDirectory $script:ODSWslStateRoot }
@@ -541,6 +608,7 @@ function Start-ODSWslLifetime($Identity) {
     }
     # Immutable for the duration of this run; commands use the current source,
     # while an already-running controller continues using its private copy.
+    Save-ODSOpenCodeBridgeDependencies $Identity
     Write-ODSPrivateBytes (Join-Path $Identity.directory 'controller.ps1') ([IO.File]::ReadAllBytes($script:ODSWslLifecycleSource))
     $generation=[guid]::NewGuid().ToString('N')
     Write-ODSWslJson (Join-Path $Identity.directory 'request.json') @{ generation=$generation; action='run' }
@@ -613,7 +681,9 @@ function Invoke-ODSWslHolder([string]$Directory) {
     $request=Read-ODSWslJson (Join-Path $Directory 'request.json')
     if ($request.action -ne 'run') { $controllerLock.Dispose(); return }
     $runtime=@{ generation=$request.generation; state='starting'; controller=(Get-ODSProcessIdentity $PID); child=$null; startedUtc=[DateTime]::UtcNow.ToString('o'); error=$null }
-    $child=$null
+    $child=$null; $bridge=$null; $bridgeContext=$null; $bridgeIdentity=''
+    $nextBridgeProbe=[DateTime]::MinValue
+    $runtime.opencode=@{scope='windows-opencode-loopback';state='unavailable';url=$null;error=$null}
     try {
         # Root is an identity argument, not executable shell content. GNU sleep
         # has no six-hour timer, and Windows Task Scheduler has no time limit.
@@ -624,6 +694,8 @@ function Invoke-ODSWslHolder([string]$Directory) {
         $null=$child.Handle
         $runtime.child=Get-ODSProcessIdentity $child.Id
         if (-not $runtime.child) { throw 'WSL client exited before identity capture' }
+        try { $bridgeContext=Get-ODSOpenCodeBridgeContext $identity }
+        catch { $runtime.opencode.error='OpenCode bridge snapshot unavailable' }
         $runtime.state='running'; Write-ODSWslJson (Join-Path $Directory 'runtime.json') $runtime
         while (-not $child.HasExited) {
             $current=Read-ODSWslJson (Join-Path $Directory 'request.json')
@@ -631,6 +703,24 @@ function Invoke-ODSWslHolder([string]$Directory) {
                 Stop-ODSOwnedProcess $runtime.child
                 $runtime.state='stopped'
                 break
+            }
+            if ($bridgeContext -and [DateTime]::UtcNow -ge $nextBridgeProbe) {
+                try {
+                    $owner=Get-ODSOpenCodeBridgeOwner $identity $bridgeContext
+                    $observed='{0}:{1}:{2}:{3}:{4}' -f $owner.ownerUser,$owner.ownerUid,$owner.mainPid,$owner.startTicks,$owner.port
+                    if ($bridge -and $bridgeIdentity -cne $observed) { $bridge.Dispose(); $bridge=$null }
+                    if (-not $bridge) { $bridge=Start-ODSOpenCodeOwnedBridge $identity $bridgeContext $owner $request.generation }
+                    $bridgeIdentity=$observed
+                    $runtime.opencode=@{scope='windows-opencode-loopback';state='forwarding';url=('http://127.0.0.1:{0}' -f $owner.port);
+                        ownerUid=$owner.ownerUid;mainPid=$owner.mainPid;startTicks=$owner.startTicks;error=$null}
+                    $nextBridgeProbe=[DateTime]::UtcNow.AddSeconds(5)
+                } catch {
+                    if ($bridge) { $bridge.Dispose(); $bridge=$null }
+                    $runtime.opencode=@{scope='windows-opencode-loopback';state='unavailable';url=$null;
+                        error='OpenCode ownership or exclusive Windows listener unavailable; existing resources preserved'}
+                    $nextBridgeProbe=[DateTime]::UtcNow.AddSeconds(30)
+                }
+                Write-ODSWslJson (Join-Path $Directory 'runtime.json') $runtime
             }
             Start-Sleep -Milliseconds 500
             $child.Refresh()
@@ -641,7 +731,10 @@ function Invoke-ODSWslHolder([string]$Directory) {
         # report the nullable value honestly, never use it as success evidence.
         $runtime.exitCode=$child.ExitCode
     } catch { $runtime.state='failed'; $runtime.error=$_.Exception.Message; if ($runtime.child) { Stop-ODSOwnedProcess $runtime.child } }
-    finally { $runtime.endedUtc=[DateTime]::UtcNow.ToString('o'); Write-ODSWslJson (Join-Path $Directory 'runtime.json') $runtime; if ($child) { $child.Dispose() }; $controllerLock.Dispose() }
+    finally {
+        if ($bridge) { $bridge.Dispose(); $bridge=$null }
+        $runtime.opencode.state='stopped'; $runtime.opencode.url=$null
+        $runtime.endedUtc=[DateTime]::UtcNow.ToString('o'); Write-ODSWslJson (Join-Path $Directory 'runtime.json') $runtime; if ($child) { $child.Dispose() }; $controllerLock.Dispose() }
 }
 
 function ConvertTo-ODSBashArgument([string]$Value) {

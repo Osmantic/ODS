@@ -146,3 +146,7 @@ e31fc3e4ccaedb327ce52c34b0a8eb8815b6d5a0:ods/extensions/services/dashboard-api/r
 26a4fdaa3f3c46a6fb34eee624f8e1552490683a:ods/extensions/services/dashboard-api/tests/test_host_agent_output_redaction.py:generic-api-key:208
 # Reviewed synthetic loopback key in the HTTP deadline test; not a credential.
 ee6593ce2d9fd4acbf92000adc3edff2a9ccdf04:ods/tests/pixel_settings/test_host_body_deadline.py:generic-api-key:22
+
+# Public Portal localStorage addresses in ownership tests; no credentials.
+a4b35b934c2f627d844dfa6a6b7dbd26ea2fbc9b:ods/extensions/services/dashboard/src/pages/Pixel.persistence-ownership.test.jsx:generic-api-key:7
+a4b35b934c2f627d844dfa6a6b7dbd26ea2fbc9b:ods/extensions/services/dashboard/src/lib/pixelConversationPersistence.test.js:generic-api-key:12

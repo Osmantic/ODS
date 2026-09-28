@@ -65,6 +65,7 @@ This does not move Ubuntu's virtual disk or Docker storage. Windows drive paths 
 - `-Tier 1..4`, `-Cloud`: forward model selection.
 - `-Voice`, `-Workflows`, `-Rag`, `-Recommended`, `-NoRecommended`: service choices.
 - `-All`, `-Comfyui`, `-NoComfyui`, `-Langfuse`, `-NoLangfuse`: optional services; explicit disables override `-All`.
+- `-OpenCode`, `-NoOpenCode`: enable or disable the optional OpenCode browser IDE. `-NoOpenCode` overrides `-All` and `-OpenCode`. Use the same choice on setup reruns. When enabled, the Windows loopback bridge exposes only the installation's verified OpenCode user service.
 - `-NoBootstrap`, `-Force`, `-Lan`: corresponding Linux options.
 - `-SummaryJsonPath <Linux path>`: Linux summary output location.
 - `-StateRoot <Windows path>`: optional private directory for the Windows WSL lifetime controller. Keep the same value for setup reruns and lifecycle commands. ODS enforces its owner ACLs. If a packaged terminal's scheduled process cannot see the default AppData controller, use a directory in Documents, for example `-StateRoot "$env:USERPROFILE\Documents\ODS-wsl-state"`; do not move an active controller's state without releasing it first.
