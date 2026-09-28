@@ -1,6 +1,8 @@
 """Exercise egress header forwarding through its ASGI HTTP boundary."""
 import importlib.util
+import asyncio
 import sys
+import time
 from pathlib import Path
 
 import httpx
@@ -85,3 +87,40 @@ def test_response_connection_options_stay_on_provider_hop(egress, monkeypatch, s
     assert response.headers["x-request-id"] == "retained"
     assert response.headers["retry-after"] == "7"
     assert response.headers["x-ods-provider-model"] == "real-model"
+
+
+def test_streaming_response_enforces_total_upstream_deadline(egress, monkeypatch):
+    egress.UPSTREAM_TIMEOUT_SECONDS = 0.04
+    closed = []
+
+    async def slow_body():
+        try:
+            while True:
+                await asyncio.sleep(0.015)
+                yield b"data: keep-alive\n\n"
+        finally:
+            closed.append(True)
+
+    class SlowBody(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            async for chunk in slow_body():
+                yield chunk
+
+        async def aclose(self):
+            closed.append(True)
+
+    class SlowTransport(httpx.AsyncBaseTransport):
+        async def handle_async_request(self, request):
+            return httpx.Response(200, stream=SlowBody())
+
+    with TestClient(egress.app) as client:
+        transport = httpx.AsyncClient(transport=SlowTransport())
+        monkeypatch.setattr(egress, "_http_client", lambda key="": transport)
+        started = time.monotonic()
+        response = client.post("/v1/chat/completions", json={"stream": True})
+        elapsed = time.monotonic() - started
+        client.portal.call(transport.aclose)
+
+    assert response.status_code == 200
+    assert elapsed < 0.3
+    assert closed
