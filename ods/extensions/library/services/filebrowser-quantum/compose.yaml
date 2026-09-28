@@ -1,6 +1,7 @@
 services:
   filebrowser-quantum:
     image: ods/filebrowser-quantum:1.5.6-storage-v1
+    pull_policy: build
     container_name: ods-filebrowser-quantum
     restart: unless-stopped
     security_opt:

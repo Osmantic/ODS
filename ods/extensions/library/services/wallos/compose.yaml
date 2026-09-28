@@ -1,6 +1,7 @@
 services:
   wallos:
     image: ods/wallos:5.8.1-local-v1
+    pull_policy: build
     container_name: ods-wallos
     restart: unless-stopped
     security_opt:

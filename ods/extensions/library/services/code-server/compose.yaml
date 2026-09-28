@@ -1,6 +1,7 @@
 services:
   code-server:
     image: ods/code-server:4.138.0-workspace-v1
+    pull_policy: build
     container_name: ods-code-server
     restart: unless-stopped
     security_opt:

@@ -1,6 +1,7 @@
 services:
   prometheus:
     image: ods/prometheus:3.14.0-local-v1
+    pull_policy: build
     container_name: ods-prometheus
     restart: unless-stopped
     security_opt:

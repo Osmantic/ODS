@@ -1,6 +1,7 @@
 services:
   homebox:
     image: ods/homebox:0.26.2-local-v1
+    pull_policy: build
     container_name: ods-homebox
     restart: unless-stopped
     security_opt:

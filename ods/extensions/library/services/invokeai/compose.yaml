@@ -1,6 +1,6 @@
 services:
   invokeai:
-    image: ghcr.io/invoke-ai/invokeai:v6.11.1
+    image: ghcr.io/invoke-ai/invokeai:v6.11.1-cpu@sha256:87b038258293f2bafa63d64f14906deeb40d32a563f7236f1be9679b7200d3a6
     container_name: ods-invokeai
     restart: unless-stopped
     security_opt:
@@ -12,7 +12,7 @@ services:
     ports:
       - "127.0.0.1:${INVOKEAI_PORT:-9090}:9090"
     healthcheck:
-      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9090/health')"]
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9090/api/v1/app/version', timeout=5)"]
       interval: 30s
       timeout: 10s
       retries: 3

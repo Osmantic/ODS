@@ -1,6 +1,7 @@
 services:
   limesurvey:
     image: ods/limesurvey:7.1.1-local-v1
+    pull_policy: build
     container_name: ods-limesurvey
     restart: unless-stopped
     security_opt:

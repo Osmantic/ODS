@@ -1,6 +1,7 @@
 services:
   flarum:
     image: ods/flarum:1.8.19-local-v1
+    pull_policy: build
     container_name: ods-flarum
     build:
       context: .
@@ -94,6 +95,7 @@ services:
         max-file: '3'
   flarum-cron:
     image: ods/flarum:1.8.19-local-v1
+    pull_policy: build
     container_name: ods-flarum-cron
     build:
       context: .

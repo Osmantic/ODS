@@ -1,6 +1,7 @@
 services:
   audiobookshelf:
     image: ods/audiobookshelf:2.36.1-local-v1
+    pull_policy: build
     container_name: ods-audiobookshelf
     restart: unless-stopped
     security_opt:

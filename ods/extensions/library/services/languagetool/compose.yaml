@@ -1,6 +1,7 @@
 services:
   languagetool:
     image: ods/languagetool:6.6-local-v1
+    pull_policy: build
     container_name: ods-languagetool
     restart: unless-stopped
     security_opt:

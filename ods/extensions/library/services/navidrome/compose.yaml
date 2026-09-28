@@ -1,6 +1,7 @@
 services:
   navidrome:
     image: ods/navidrome:0.64.0-local-v1
+    pull_policy: build
     container_name: ods-navidrome
     restart: unless-stopped
     security_opt:

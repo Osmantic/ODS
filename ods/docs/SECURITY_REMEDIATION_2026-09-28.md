@@ -14,7 +14,7 @@ implemented on main before this work.
 | SEC-002: Python advisories | Upgrade FastAPI/Starlette and aiohttp; all nine API/relay Docker builds install complete hash-checked locks; production audits are clean. All nine production Dockerfile builds and in-container pip checks passed CI on `1788236a9`. | Keep final-head dependency and regression checks green. |
 | SEC-003: source containment | Generated source services have numeric non-root UID, no capabilities, no-new-privileges, read-only root, resource limits and an internal network; API publication/re-enable and dynamic resolver enforce the profile. Saved stack arguments are revalidated by the host and platform CLIs, including old receipts; merged recipes cannot override or join source sandboxes. | Real-container CI passed; run the new cross-platform saved-stack CI and broader lifecycle regressions. |
 | SEC-004: public AI spending | Paid issue triage and review comments require a trusted association; serialized jobs and per-run budgets; unauthorized comments cannot cancel another comment's review. | CI workflow validation. This bounds individual runs, not the organization's total monthly provider bill. |
-| SEC-005: provenance | Python locks/hashes, Python base image indexes and 31 additional external image references resolved from registry descriptors. Signed-tag source packaging, draft-only checksum/SBOM/OIDC workflow, and Windows/POSIX verified consumers are implemented. README separates verified stable from development opt-in. | Verify the first signed immutable candidate end to end and finish image pins. The current public release lacks the artifacts/immutability flag and is correctly refused: do not switch public onboarding until the producer is released and qualified. Existing tags have not been changed or retroactively signed. |
+| SEC-005: provenance | Python locks/hashes and pinned core/library images; local library images require a forced in-recipe build. Signed-tag source packaging, draft-only checksum/SBOM/OIDC workflow, and Windows/POSIX verified consumers are implemented. README separates verified stable from development opt-in. | Verify the first signed immutable candidate end to end and confirm the new library-policy CI. The current public release lacks the artifacts/immutability flag and is correctly refused: do not switch public onboarding until the producer is released and qualified. Existing tags have not been changed or retroactively signed. |
 | SEC-006: React Router | Coordinated update to react-router-dom 7.18.4 and its lockfile; production npm audit is clean. | CI across supported frontend hosts. |
 | SEC-007: local origin trust | State-changing requests require exact Origin/Host agreement; the CORS allowlist no longer grants mutation authority. | CI regression coverage. |
 | SEC-008: mutable Actions | Remaining twelve Action uses pinned to full commit hashes. | CI workflow validation. |
@@ -65,11 +65,10 @@ implemented on main before this work.
   passed; Whisper CPU/CUDA selection passed 13 cases and Dashboard ownership
   contracts passed. Pins use each tag's top-level descriptor, preserving the
   platform set instead of selecting only an amd64 child manifest.
-- Registry verification is not finished. Docker Hub returned anonymous rate
-  limits for some remaining images. InvokeAI's configured `v6.11.1` image does
-  not exist; upstream publishes separate `v6.11.1-cpu` and `v6.11.1-cuda`
-  images, so the AMD/NVIDIA recipe needs explicit review before replacing it.
-  Dockerfile frontend directives and disabled fragments also need final review.
+- Earlier registry checks encountered Docker Hub rate limits and an unavailable
+  generic InvokeAI tag. The follow-up resolved the frontend/base images and
+  verified all three upstream InvokeAI variants: CPU, CUDA and ROCm. The
+  earlier inventory did not include the ROCm tag; it exists and is now pinned.
 
 - A later registry pass resolved 18 more tag descriptors, including references
   duplicated in disabled Langfuse fragments. Those defaults now carry their
@@ -95,12 +94,32 @@ implemented on main before this work.
 The image reader now handles Dockerfile heredocs, logical continuations,
 global build arguments, local stages and frontend syntax directives. Python
 `from` statements inside the AudioCraft heredoc are no longer mistaken for
-registry images. Fifteen dependency contracts pass, including malformed input
-rejection. The library inventory contains 357 references; 107 lack digests,
-including 105 local build tags and the unavailable InvokeAI/Dify references.
-Remaining image work includes qualifying those two legacy recipes and enforcing
-the local-build/external distinction. Do not count missing or locally built
-image tags as verified external registry images.
+registry images. Seventeen dependency contracts pass, including malformed input
+rejection and the library boundary. The current library inventory contains 357
+references: 253 external references with complete digests and 104 local-build
+references across 102 recipes. Local tags require `pull_policy: build` and a
+Dockerfile confined to the recipe; a matching `ods/` name alone is insufficient.
+This prevents normal Compose startup from trusting a pre-existing/pulled tag
+instead of rebuilding the reviewed source. Build cache remains available.
+
+InvokeAI's CPU/CUDA/ROCm indexes were verified anonymously with `docker buildx
+imagetools inspect`. Each currently publishes Linux amd64, not native Metal or
+arm64. Actual Compose rendering selects the expected backend, private port and
+`/api/v1/app/version` readiness URL. The AMD entrypoint receives the render GID.
+These checks do not claim physical GPU execution or image-generation success.
+
+The Dify and Jan placeholders were already excluded from the deployable catalog
+and refused by the install API. Their unverified disabled Compose templates are
+removed; reference documentation explains the unsupported integration and links
+to upstream. No installed data is deleted and the generated catalog still has
+200 entries. Dify is not being claimed as a newly working integration.
+
+Locally, 338 library staging/resolver cases, 17 dependency contracts, three
+actual Compose backend renders and two retired-entry rejection tests passed.
+A new disposable Docker CI test seeds an unreviewed local tag and verifies the
+shipped pull policy rebuilds the reviewed source. That new test remains pending.
+Runtime security run `36476143179` on `4471122f9` passed all jobs, including the
+UTF-8 recovery correction; this precedes the library update.
 
 These results refer to the relevant focused changes, not to every combination
 of installer, GPU and operating system. The PR remains draft until the remaining

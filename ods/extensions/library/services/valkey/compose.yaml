@@ -1,6 +1,7 @@
 services:
   valkey:
     image: ods/valkey:9.1.2-local-v1
+    pull_policy: build
     container_name: ods-valkey
     restart: unless-stopped
     security_opt:

@@ -1,6 +1,7 @@
 services:
   pdfding:
     image: ods/pdfding:1.14.0-local-v1
+    pull_policy: build
     container_name: ods-pdfding
     restart: unless-stopped
     security_opt:

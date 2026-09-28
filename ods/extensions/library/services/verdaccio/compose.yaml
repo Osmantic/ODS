@@ -1,6 +1,7 @@
 services:
   verdaccio:
     image: ods/verdaccio:6.10.4-local-v1
+    pull_policy: build
     container_name: ods-verdaccio
     restart: unless-stopped
     security_opt:

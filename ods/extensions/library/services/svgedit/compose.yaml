@@ -1,6 +1,7 @@
 services:
   svgedit:
     image: ods/svgedit:c44f061-local-v1
+    pull_policy: build
     container_name: ods-svgedit
     restart: unless-stopped
     security_opt:

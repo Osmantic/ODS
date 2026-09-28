@@ -1,6 +1,7 @@
 services:
   chartdb:
     image: ods/chartdb:1.20.1-local-v1
+    pull_policy: build
     container_name: ods-chartdb
     restart: unless-stopped
     security_opt:

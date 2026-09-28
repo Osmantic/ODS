@@ -475,6 +475,52 @@ def validate_ephemeral_sha_tags(refs: Iterable[ImageRef]) -> list[str]:
     return errors
 
 
+def validate_library_refs(refs: Iterable[ImageRef], root: Path = ROOT) -> list[str]:
+    """Library images are either immutable pulls or forced, in-recipe builds."""
+    import yaml
+
+    errors: list[str] = []
+    documents: dict[str, dict] = {}
+    for ref in refs:
+        if _has_digest(ref.value):
+            continue
+        location = f'{ref.path}:{ref.line}'
+        if ref.source != 'compose image' or not ref.value.startswith('ods/'):
+            errors.append(f'{location}: external library image must include a complete @sha256 digest: {ref.value}')
+            continue
+        recipe = root / ref.path
+        if ref.path not in documents:
+            document = yaml.safe_load(recipe.read_text(encoding='utf-8'))
+            documents[ref.path] = document if isinstance(document, dict) else {}
+        services = documents[ref.path].get('services', {})
+        matches = [service for service in services.values() if isinstance(service, dict)
+                   and service.get('image') == ref.raw] if isinstance(services, dict) else []
+        valid = bool(matches) and not _is_variable_ref(ref.raw)
+        for service in matches:
+            build = service.get('build')
+            build = {'context': build} if isinstance(build, str) else build
+            if (not isinstance(build, dict) or service.get('pull_policy') != 'build'
+                    or build.get('additional_contexts') or build.get('dockerfile_inline')):
+                valid = False
+                break
+            context = build.get('context', '.')
+            dockerfile = build.get('dockerfile', 'Dockerfile')
+            if (not isinstance(context, str) or not isinstance(dockerfile, str)
+                    or '$' in context + dockerfile):
+                valid = False
+                break
+            directory = (recipe.parent / context).resolve()
+            definition = (directory / dockerfile).resolve()
+            if (not directory.is_relative_to(recipe.parent.resolve())
+                    or not definition.is_relative_to(directory)
+                    or not definition.is_file() or not definition.name.startswith('Dockerfile')):
+                valid = False
+                break
+        if not valid:
+            errors.append(f'{location}: local library image requires pull_policy: build and an in-recipe Dockerfile: {ref.value}')
+    return errors
+
+
 def load_lock(path: Path = LOCK_PATH) -> dict[str, object]:
     with path.open(encoding="utf-8") as handle:
         data = json.load(handle)
@@ -487,7 +533,9 @@ def check(path: Path = LOCK_PATH, root: Path = ROOT) -> list[str]:
     lock = load_lock(path)
     errors = _validate_lock_shape(lock, root)
     errors.extend(validate_refs(discover_image_refs(root), lock, root))
-    errors.extend(validate_ephemeral_sha_tags(discover_extension_library_image_refs(root)))
+    library_refs = discover_extension_library_image_refs(root)
+    errors.extend(validate_ephemeral_sha_tags(library_refs))
+    errors.extend(validate_library_refs(library_refs, root))
     return errors
 
 

@@ -1,6 +1,7 @@
 services:
   trilium:
     image: ods/trilium:0.105.0-storage-v1
+    pull_policy: build
     container_name: ods-trilium
     restart: unless-stopped
     security_opt:

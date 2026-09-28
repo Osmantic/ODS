@@ -1,6 +1,7 @@
 services:
   keycloak:
     image: ods/keycloak:26.7.4-local-v1
+    pull_policy: build
     container_name: ods-keycloak
     build:
       context: .

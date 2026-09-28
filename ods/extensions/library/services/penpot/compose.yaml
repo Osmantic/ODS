@@ -1,6 +1,7 @@
 services:
   penpot:
     image: ods/penpot:2.17.2-local-v1
+    pull_policy: build
     restart: unless-stopped
     networks:
     - ods-network

@@ -1,6 +1,7 @@
 services:
   couchdb:
     image: ods/couchdb:3.5.2.1-local-v1
+    pull_policy: build
     container_name: ods-couchdb
     restart: unless-stopped
     security_opt:

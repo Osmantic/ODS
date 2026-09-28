@@ -1,6 +1,7 @@
 services:
   pocketbase:
     image: ods/pocketbase:0.40.4-local-v1
+    pull_policy: build
     container_name: ods-pocketbase
     restart: unless-stopped
     security_opt:

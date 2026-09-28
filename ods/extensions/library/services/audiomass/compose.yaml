@@ -1,6 +1,7 @@
 services:
   audiomass:
     image: ods/audiomass:21f5ee1-local-v1
+    pull_policy: build
     container_name: ods-audiomass
     restart: unless-stopped
     security_opt:

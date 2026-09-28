@@ -1,6 +1,7 @@
 services:
   rest-server:
     image: ods/rest-server:0.14.0-local-v1
+    pull_policy: build
     container_name: ods-rest-server
     build:
       context: .

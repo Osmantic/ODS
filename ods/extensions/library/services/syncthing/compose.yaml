@@ -1,6 +1,7 @@
 services:
   syncthing:
     image: ods/syncthing:2.1.5-local-v1
+    pull_policy: build
     container_name: ods-syncthing
     restart: unless-stopped
     security_opt:

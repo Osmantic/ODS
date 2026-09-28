@@ -1,6 +1,7 @@
 services:
   lldap:
     image: ods/lldap:0.6.3-local-v1
+    pull_policy: build
     container_name: ods-lldap
     restart: unless-stopped
     security_opt:

@@ -1,6 +1,7 @@
 services:
   komga:
     image: ods/komga:1.27.0-local-v1
+    pull_policy: build
     container_name: ods-komga
     restart: unless-stopped
     security_opt:

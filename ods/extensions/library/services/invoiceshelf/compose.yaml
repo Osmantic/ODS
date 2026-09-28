@@ -1,6 +1,7 @@
 services:
   invoiceshelf:
     image: ods/invoiceshelf:2.4.2-local-v1
+    pull_policy: build
     container_name: ods-invoiceshelf
     restart: unless-stopped
     security_opt:

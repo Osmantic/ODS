@@ -1,6 +1,7 @@
 services:
   wiremock:
     image: ods/wiremock:3.13.2-2-storage-v1
+    pull_policy: build
     container_name: ods-wiremock
     restart: unless-stopped
     security_opt:

@@ -1,6 +1,7 @@
 services:
   listmonk:
     image: ods/listmonk:6.2.0-local-v1
+    pull_policy: build
     container_name: ods-listmonk
     restart: unless-stopped
     security_opt:

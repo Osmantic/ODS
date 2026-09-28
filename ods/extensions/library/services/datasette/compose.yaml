@@ -1,6 +1,7 @@
 services:
   datasette:
     image: ods/datasette:0.65.5-local-v1
+    pull_policy: build
     container_name: ods-datasette
     restart: unless-stopped
     security_opt:

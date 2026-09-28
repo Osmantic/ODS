@@ -1,6 +1,7 @@
 services:
   influxdb:
     image: ods/influxdb:2.9.1-local-v1
+    pull_policy: build
     container_name: ods-influxdb
     build:
       context: .

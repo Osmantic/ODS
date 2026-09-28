@@ -1,6 +1,7 @@
 services:
   shiori:
     image: ods/shiori:1.8.0-local-v1
+    pull_policy: build
     container_name: ods-shiori
     restart: unless-stopped
     security_opt:

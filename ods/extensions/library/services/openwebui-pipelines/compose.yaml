@@ -1,6 +1,7 @@
 services:
   openwebui-pipelines:
     image: ods/openwebui-pipelines:039f9c54-local-v1
+    pull_policy: build
     container_name: ods-openwebui-pipelines
     restart: unless-stopped
     security_opt:

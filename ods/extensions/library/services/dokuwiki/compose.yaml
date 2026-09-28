@@ -1,6 +1,7 @@
 services:
   dokuwiki:
     image: ods/dokuwiki:2026.07.14c-local-v1
+    pull_policy: build
     container_name: ods-dokuwiki
     restart: unless-stopped
     security_opt:

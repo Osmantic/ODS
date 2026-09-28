@@ -1,6 +1,7 @@
 services:
   microbin:
     image: ods/microbin-access:2.1.0-local-v1
+    pull_policy: build
     container_name: ods-microbin
     restart: unless-stopped
     security_opt:
@@ -40,6 +41,7 @@ services:
         condition: service_started
   microbin-backend:
     image: ods/microbin:2.1.0-local-v1
+    pull_policy: build
     container_name: ods-microbin-backend
     restart: unless-stopped
     security_opt:

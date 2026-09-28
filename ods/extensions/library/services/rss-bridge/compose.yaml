@@ -1,6 +1,7 @@
 services:
   rss-bridge:
     image: ods/rss-bridge:f4aa9e04-local-v1
+    pull_policy: build
     container_name: ods-rss-bridge
     build:
       context: .

@@ -1,6 +1,7 @@
 services:
   weblate:
     image: ods/weblate:2026.9.1-local-v1
+    pull_policy: build
     container_name: ods-weblate
     restart: unless-stopped
     security_opt:

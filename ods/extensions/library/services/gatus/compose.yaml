@@ -1,6 +1,7 @@
 services:
   gatus:
     image: ods/gatus:5.36.0-local-v1
+    pull_policy: build
     container_name: ods-gatus
     restart: unless-stopped
     security_opt:

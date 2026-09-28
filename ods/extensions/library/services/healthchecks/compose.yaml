@@ -1,6 +1,7 @@
 services:
   healthchecks:
     image: ods/healthchecks:4.4-local-v1
+    pull_policy: build
     container_name: ods-healthchecks
     restart: unless-stopped
     security_opt:

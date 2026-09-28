@@ -1,6 +1,7 @@
 services:
   dufs:
     image: ods/dufs:0.46.0-local-v1
+    pull_policy: build
     container_name: ods-dufs
     restart: unless-stopped
     security_opt:

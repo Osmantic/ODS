@@ -1,6 +1,7 @@
 services:
   vaultwarden:
     image: ods/vaultwarden:1.37.3-local-v1
+    pull_policy: build
     container_name: ods-vaultwarden
     restart: unless-stopped
     security_opt:

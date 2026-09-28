@@ -309,6 +309,8 @@ def main() -> int:
         test_dockerfile_heredocs_are_not_image_instructions,
         test_dockerfile_directives_continuations_and_stage_scope,
         test_dockerfile_truncated_documents_fail_closed,
+        test_library_local_tag_requires_a_forced_build_inside_the_recipe,
+        test_invokeai_selects_pinned_backend_images_and_real_readiness_route,
     ]
     for test in tests:
         test()
@@ -380,6 +382,62 @@ def test_dockerfile_truncated_documents_fail_closed() -> None:
                 pass
             else:
                 raise AssertionError('Truncated Dockerfile must not yield a successful partial inventory')
+
+
+def test_library_local_tag_requires_a_forced_build_inside_the_recipe() -> None:
+    import yaml
+
+    module = load_module()
+    with TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        recipe = root / 'extensions/library/services/example'
+        recipe.mkdir(parents=True)
+        path = recipe / 'compose.yaml'
+        (recipe / 'Dockerfile').write_text('FROM example/base:1@sha256:' + 'a' * 64 + '\n', encoding='utf-8')
+        image = 'ods/example:1-local'
+        good = {'image': image, 'pull_policy': 'build', 'build': {'context': '.', 'dockerfile': 'Dockerfile'}}
+        cases = [
+            (good, True),
+            ({'image': image}, False),
+            ({**good, 'pull_policy': 'missing'}, False),
+            ({**good, 'pull_policy': 'always'}, False),
+            ({**good, 'build': 'https://example.com/source.git'}, False),
+            ({**good, 'build': {'context': '../outside'}}, False),
+            ({**good, 'build': {'context': '.', 'dockerfile': 'missing'}}, False),
+            ({**good, 'build': {'context': '.', 'dockerfile': '${BUILD_FILE}'}}, False),
+            ({**good, 'build': {'context': '.', 'dockerfile_inline': 'FROM mutable:latest'}}, False),
+            ({**good, 'build': {'context': '.', 'additional_contexts': {'other': 'docker-image://mutable:latest'}}}, False),
+        ]
+        for service, accepted in cases:
+            path.write_text(yaml.safe_dump({'services': {'app': service}}), encoding='utf-8')
+            refs = module._compose_image_refs(path, root)
+            errors = module.validate_library_refs(refs, root)
+            assert (not errors) == accepted, (service, errors)
+        # A second service with the same local tag cannot inherit another
+        # service's permission to pull it without a build of its own.
+        path.write_text(yaml.safe_dump({'services': {'app': good, 'worker': {'image': image}}}), encoding='utf-8')
+        assert module.validate_library_refs(module._compose_image_refs(path, root), root)
+        # Source builds do not exempt mutable Dockerfile base images.
+        (recipe / 'Dockerfile').write_text('FROM example/base:latest\n', encoding='utf-8')
+        assert module.validate_library_refs(module._dockerfile_image_refs(recipe / 'Dockerfile', root), root)
+
+
+def test_invokeai_selects_pinned_backend_images_and_real_readiness_route() -> None:
+    import yaml
+
+    module = load_module()
+    recipe = ROOT / 'extensions/library/services/invokeai'
+    base = yaml.safe_load((recipe / 'compose.yaml').read_text())['services']['invokeai']
+    manifest = yaml.safe_load((recipe / 'manifest.yaml').read_text())['service']
+    assert base['image'].startswith('ghcr.io/invoke-ai/invokeai:v6.11.1-cpu@sha256:')
+    assert manifest['health'] == '/api/v1/app/version'
+    assert manifest['health'] in base['healthcheck']['test'][-1]
+    for backend, suffix in [('amd', 'rocm'), ('nvidia', 'cuda')]:
+        service = yaml.safe_load((recipe / f'compose.{backend}.yaml').read_text())['services']['invokeai']
+        assert service['image'].startswith(f'ghcr.io/invoke-ai/invokeai:v6.11.1-{suffix}@sha256:')
+        assert module._has_digest(service['image'])
+    amd = yaml.safe_load((recipe / 'compose.amd.yaml').read_text())['services']['invokeai']
+    assert 'RENDER_GROUP_ID=${RENDER_GID:-992}' in amd['environment']
 
 
 if __name__ == "__main__":

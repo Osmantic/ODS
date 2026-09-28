@@ -1,6 +1,7 @@
 services:
   mailpit:
     image: ods/mailpit:1.31.2-local-v1
+    pull_policy: build
     container_name: ods-mailpit
     restart: unless-stopped
     security_opt:

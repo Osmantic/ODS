@@ -1,6 +1,7 @@
 services:
   mermaid-live-editor:
     image: ods/mermaid-live-editor:8754416-local-v1
+    pull_policy: build
     container_name: ods-mermaid-live-editor
     restart: unless-stopped
     security_opt:

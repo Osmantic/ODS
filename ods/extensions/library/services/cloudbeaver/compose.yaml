@@ -1,6 +1,7 @@
 services:
   cloudbeaver:
     image: ods/cloudbeaver:25.3.5-local-v1
+    pull_policy: build
     container_name: ods-cloudbeaver
     restart: unless-stopped
     security_opt:

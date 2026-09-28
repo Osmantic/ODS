@@ -1,6 +1,7 @@
 services:
   grocy:
     image: ods/grocy:4.7.1-local-v1
+    pull_policy: build
     container_name: ods-grocy
     build:
       context: .

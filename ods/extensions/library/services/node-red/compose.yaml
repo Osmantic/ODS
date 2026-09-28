@@ -1,6 +1,7 @@
 services:
   node-red:
     image: ods/node-red:5.0.7-local-v1
+    pull_policy: build
     container_name: ods-node-red
     restart: unless-stopped
     security_opt:

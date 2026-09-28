@@ -1,6 +1,7 @@
 services:
   sftpgo:
     image: ods/sftpgo:2.7.6-local-v1
+    pull_policy: build
     container_name: ods-sftpgo
     restart: unless-stopped
     security_opt:

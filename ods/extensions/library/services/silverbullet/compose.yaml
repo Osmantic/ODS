@@ -1,6 +1,7 @@
 services:
   silverbullet:
     image: ods/silverbullet:2.11.0-storage-v1
+    pull_policy: build
     container_name: ods-silverbullet
     restart: unless-stopped
     security_opt:

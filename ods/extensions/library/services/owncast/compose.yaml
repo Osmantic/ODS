@@ -1,6 +1,7 @@
 services:
   owncast:
     image: ods/owncast:0.3.0-local-v1
+    pull_policy: build
     container_name: ods-owncast
     restart: unless-stopped
     security_opt:

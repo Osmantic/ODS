@@ -70,6 +70,7 @@ jobs:
       - run: python -m pytest .github/scripts/test_release_source.py -q
       - run: python ods/tests/contracts/test-private-service-ports.py
       - run: python ods/scripts/check-dependency-pins.py
+      - run: python ods/tests/test-dependency-pins.py
 
   frontend-audit:
     runs-on: ubuntu-latest
@@ -129,3 +130,9 @@ jobs:
         run: |
           python -m pip install 'pytest==8.4.2'
           python -m pytest ods/tests/test-stop-owned-containers.py -q
+      - name: Verify library image selection and forced local builds
+        env:
+          ODS_RUN_DOCKER_SECURITY_TESTS: '1'
+        run: |
+          python -m pip install 'PyYAML==6.0.3'
+          python -m pytest ods/tests/test-library-image-policy.py -q

@@ -1,6 +1,7 @@
 services:
   vikunja:
     image: ods/vikunja:2.6.0-storage-v1
+    pull_policy: build
     container_name: ods-vikunja
     restart: unless-stopped
     security_opt:

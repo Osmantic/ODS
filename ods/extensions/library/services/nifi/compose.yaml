@@ -1,6 +1,7 @@
 services:
   nifi:
     image: ods/nifi:6f7f2840-local-v1
+    pull_policy: build
     container_name: ods-nifi
     build:
       context: .

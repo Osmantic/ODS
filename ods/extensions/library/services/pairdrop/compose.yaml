@@ -1,6 +1,7 @@
 services:
   pairdrop:
     image: ods/pairdrop:1.11.2-local-v1
+    pull_policy: build
     container_name: ods-pairdrop
     restart: unless-stopped
     security_opt:

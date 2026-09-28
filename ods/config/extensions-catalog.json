@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-25T17:56:01Z",
+  "generated_at": "2026-09-28T20:06:41Z",
   "schema_version": "1.0.0",
   "extensions": [
     {
@@ -4244,7 +4244,7 @@
       "depends_on": [],
       "port": 9090,
       "external_port_default": 9090,
-      "health_endpoint": "/health",
+      "health_endpoint": "/api/v1/app/version",
       "env_vars": [],
       "tags": [
         "image-generation",

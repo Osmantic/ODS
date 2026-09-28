@@ -1,6 +1,7 @@
 services:
   blockbench:
     image: ods/blockbench:5.2.0-local-v1
+    pull_policy: build
     container_name: ods-blockbench
     restart: unless-stopped
     security_opt:

@@ -1,6 +1,7 @@
 services:
   wallabag:
     image: ods/wallabag:2.6.14-local-v1
+    pull_policy: build
     container_name: ods-wallabag
     restart: unless-stopped
     security_opt:

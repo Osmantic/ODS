@@ -1,6 +1,7 @@
 services:
   minipaint:
     image: ods/minipaint:4.14.3-a79733e-local-v1
+    pull_policy: build
     container_name: ods-minipaint
     restart: unless-stopped
     security_opt:

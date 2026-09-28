@@ -1,5 +1,6 @@
 services:
   invokeai:
+    image: ghcr.io/invoke-ai/invokeai:v6.11.1-rocm@sha256:f0da741fb79aedd1b989cb35ee73114f42ae0721850dd59bb7a2b6402dc8772b
     devices:
       - /dev/dri:/dev/dri
       - /dev/kfd:/dev/kfd
@@ -7,4 +8,5 @@ services:
       - "${VIDEO_GID:-44}"
       - "${RENDER_GID:-992}"
     environment:
+      - RENDER_GROUP_ID=${RENDER_GID:-992}
       - HSA_OVERRIDE_GFX_VERSION=${HSA_OVERRIDE_GFX_VERSION:-}

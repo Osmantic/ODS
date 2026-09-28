@@ -1,6 +1,7 @@
 services:
   go-httpbin:
     image: ods/go-httpbin:2.25.0-health-v1
+    pull_policy: build
     container_name: ods-go-httpbin
     restart: unless-stopped
     security_opt:

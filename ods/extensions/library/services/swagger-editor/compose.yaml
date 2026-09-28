@@ -1,6 +1,7 @@
 services:
   swagger-editor:
     image: ods/swagger-editor:5-b56bd6a7-local-v1
+    pull_policy: build
     container_name: ods-swagger-editor
     build:
       context: .

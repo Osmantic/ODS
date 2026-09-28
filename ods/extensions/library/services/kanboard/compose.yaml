@@ -1,6 +1,7 @@
 services:
   kanboard:
     image: ods/kanboard:1.2.54-local-v1
+    pull_policy: build
     container_name: ods-kanboard
     restart: unless-stopped
     security_opt:

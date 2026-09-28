@@ -1,6 +1,7 @@
 services:
   hedgedoc:
     image: ods/hedgedoc:1.12.0-storage-v1
+    pull_policy: build
     container_name: ods-hedgedoc
     restart: unless-stopped
     ports:

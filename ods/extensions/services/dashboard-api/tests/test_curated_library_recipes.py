@@ -24,6 +24,18 @@ LEGACY_RECIPES = sorted(path.parent for path in LIBRARY.glob("*/compose.yaml")
                         if not (path.parent / "upstream.json").exists())
 
 
+@pytest.mark.parametrize('service_id', ['dify', 'jan'])
+def test_retired_unverified_templates_remain_noninstallable(service_id, tmp_path, monkeypatch):
+    monkeypatch.setattr(extensions, 'EXTENSIONS_LIBRARY_DIR', LIBRARY)
+    monkeypatch.setattr(extensions, 'USER_EXTENSIONS_DIR', tmp_path / 'user')
+    assert not extensions._is_installable(service_id)
+    destination = tmp_path / 'user' / service_id
+    with pytest.raises(HTTPException, match='no deployable compose.yaml'):
+        with extensions._staged_library_extension(service_id, destination):
+            pytest.fail('A reference-only entry must not be prepared for installation')
+    assert not destination.exists()
+
+
 @pytest.mark.parametrize("recipe", LEGACY_RECIPES, ids=lambda path: path.name)
 def test_existing_catalog_recipe_passes_the_same_install_boundary(recipe, tmp_path, monkeypatch):
     """An older catalog entry must not bypass the checks applied to new entries."""

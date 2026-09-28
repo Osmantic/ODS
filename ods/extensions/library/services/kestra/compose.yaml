@@ -1,6 +1,7 @@
 services:
   kestra:
     image: ods/kestra:2.0.2-storage-v1
+    pull_policy: build
     build:
       context: .
       dockerfile: Dockerfile

@@ -1,6 +1,7 @@
 services:
   m3e-canvas:
     image: ods/m3e-canvas:dea7415-local-v1
+    pull_policy: build
     container_name: ods-m3e-canvas
     restart: unless-stopped
     security_opt:

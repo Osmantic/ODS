@@ -1,6 +1,7 @@
 services:
   redoc:
     image: ods/redoc:2.5.3-local-v1
+    pull_policy: build
     container_name: ods-redoc
     restart: unless-stopped
     security_opt:
