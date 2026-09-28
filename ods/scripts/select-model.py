@@ -110,11 +110,6 @@ def normalize_model(raw: dict[str, Any], host_values: list[str] | None = None) -
         if isinstance(app_compatibility.get("agent_viability"), dict)
         else {}
     )
-    pixel_agent = (
-        app_compatibility.get("pixel_agent")
-        if isinstance(app_compatibility.get("pixel_agent"), dict)
-        else {}
-    )
     return {
         **memory_metadata(raw),
         "id": str(model_id),
