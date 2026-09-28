@@ -1980,6 +1980,15 @@ cmd_dry_run() {
         _vf=$(jq -r '.version // empty' "$INSTALL_DIR/.version" 2>/dev/null || true)
         [[ -n "$_vf" ]] && cur_ver="$_vf"
     fi
+    # Match the installed-version contract used by _check_version_compat:
+    # .env ODS_VERSION > .version > manifest.json ods_version. On a fresh install
+    # that lacks both .env ODS_VERSION and .version, the real version still lives
+    # in manifest.json, so fall back to it before defaulting to 0.0.0.
+    if [[ "$cur_ver" == "0.0.0" && -f "$INSTALL_DIR/manifest.json" ]]; then
+        local _mf
+        _mf=$(_manifest_field "$INSTALL_DIR/manifest.json" "ods_version")
+        [[ -n "$_mf" ]] && cur_ver="$_mf"
+    fi
 
     # Try dashboard API first; fall back to direct GitHub query.
     local api_json=""
