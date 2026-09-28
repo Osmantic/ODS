@@ -20,10 +20,11 @@ def resolve_flags(install_dir, flags):
             raise ValueError('Registered model stores have no matching Compose overlay')
         return flags
     identifier = 'default'
-    for line in (root/'.env').read_text(encoding='utf-8').splitlines():
-        key, separator, value = line.partition('=')
-        if separator and key.strip() == 'ODS_ACTIVE_MODEL_STORE':
-            identifier = parse_env_value(value)
+    if (root/'.env').exists():
+        for line in (root/'.env').read_text(encoding='utf-8').splitlines():
+            key, separator, value = line.partition('=')
+            if separator and key.strip() == 'ODS_ACTIVE_MODEL_STORE':
+                identifier = parse_env_value(value)
     active = active_compose_overlay(root, identifier)
     managed = {root/'.model-stores.compose.json', root/'data/.active-model-store.compose.json'}
     def is_managed(value):
