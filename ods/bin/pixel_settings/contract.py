@@ -37,7 +37,7 @@ CONTROLS = {
     "bootstrapMaxChars": ("integer", 1, 2_000_000),
     "bootstrapTotalMaxChars": ("integer", 1, 2_000_000),
 }
-COMPACTION_CONTROLS = frozenset(name for name in CONTROLS if name.startswith("compaction"))
+COMPACTION_CONTROLS = frozenset(k for k in CONTROLS if k.startswith("compaction"))
 
 
 def validate_preferences(value):
