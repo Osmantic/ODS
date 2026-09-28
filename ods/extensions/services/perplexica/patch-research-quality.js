@@ -99,6 +99,12 @@ const PATCHES = [
     "replacement": "### Citation Requirements\n    - Extraction notes such as \"no relevant facts in this chunk\" describe retrieval coverage; they are not statements made by the cited page, contradictions in the public record, or proof that a person, role or fact does not exist. Do not cite these notes as external facts. Distinguish old dated claims from current observations.\n    - Preserve attribution roles: the page author, a quoted speaker and the subject of the answer may be different people. Attribute each claim, idea, role or action to the person the source actually identifies. A citation to a page quoting someone does not make all of the author's statements that person's own views. Do not infer authorship, endorsement or agreement from quotation or proximity. If attribution is unclear, state the uncertainty instead of merging identities."
   }
 ];
+const attributionCitations = PATCHES.find(patch => patch.id === 'quality-19').replacement;
+PATCHES.push({
+  id: 'quality-20',
+  old: attributionCitations,
+  replacement: attributionCitations + '\n    - Omission is not contradiction. A retrieved page or chunk that does not mention a fact is silent on it; do not present that omission as a discrepancy with a positive source. Report a material conflict only when sources make incompatible claims about the same subject and time. Preserve genuine explicit negative facts and uncertainty about unsupported claims, but do not manufacture a caveat from unrelated non-coverage.'
+});
 
 function replaceUnpatched(source, old, replacement) {
   let cursor = 0, count = 0, out = '';
