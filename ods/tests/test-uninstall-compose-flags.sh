@@ -91,6 +91,18 @@ EOF
 exit 1
 EOF
     chmod +x "$stub_dir/pgrep"
+
+    # This fixture models native Docker cleanup, not WSL task retirement.
+    # Keep it isolated from the machine on which the test happens to run.
+    cat > "$stub_dir/uname" <<'EOF'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "-r" ]]; then
+    printf 'fixture-native-kernel\n'
+else
+    /usr/bin/uname "$@"
+fi
+EOF
+    chmod +x "$stub_dir/uname"
 }
 
 make_install() {
@@ -100,6 +112,9 @@ make_install() {
     cp "$TARGET" "$install_dir/ods-uninstall.sh"
     cp "$ROOT_DIR/lib/safe-env.sh" "$install_dir/lib/safe-env.sh"
     cp "$ROOT_DIR/lib/system-uninstall.sh" "$install_dir/lib/system-uninstall.sh"
+    mkdir -p "$install_dir/scripts"
+    cp "$ROOT_DIR/scripts/compose-cache-policy.py" "$install_dir/scripts/"
+    cp "$ROOT_DIR/scripts/resolve-compose-stack.sh" "$install_dir/scripts/"
     mkdir -p "$install_dir/installers/macos/lib"
     cp "$ROOT_DIR/installers/macos/lib/pixel-native-uninstall.py" "$install_dir/installers/macos/lib/"
     touch "$install_dir/ods-cli"
@@ -137,6 +152,66 @@ main() {
     local stub_dir="$TMP_DIR/bin"
     mkdir -p "$stub_dir"
     make_stub_bin "$stub_dir"
+
+    # Refusal must precede every privileged/service cleanup and preserve data.
+    local unsafe_install="$TMP_DIR/unsafe-install" unsafe_home="$TMP_DIR/unsafe-home"
+    local unsafe_docker="$TMP_DIR/unsafe-docker.log" unsafe_sudo="$TMP_DIR/unsafe-sudo.log"
+    make_install "$unsafe_install"
+    mkdir -p "$unsafe_home" "$unsafe_install/data/user-extensions/example"
+    printf '%s\n' '{"services":{"example":{"image":"example/app:1","privileged":true}}}' \
+        > "$unsafe_install/data/user-extensions/example/compose.yaml"
+    printf '%s\n' '-f docker-compose.base.yml -f data/user-extensions/example/compose.yaml' \
+        > "$unsafe_install/.compose-flags"
+    printf 'retain owner data\n' > "$unsafe_install/data/owner.txt"
+    if DOCKER_LOG="$unsafe_docker" SUDO_LOG="$unsafe_sudo" \
+        run_uninstall "$unsafe_install" "$unsafe_home" "$stub_dir" 2>"$TMP_DIR/unsafe-error"; then
+        fail "unsafe cached extension must block uninstall"
+    fi
+    [[ ! -s "$unsafe_docker" && ! -s "$unsafe_sudo" ]] \
+        || fail "unsafe recipe rejection must precede Docker and sudo"
+    [[ -f "$unsafe_install/ods-uninstall.sh" && -f "$unsafe_install/data/owner.txt" ]] \
+        || fail "unsafe recipe rejection must preserve installation and owner data"
+    grep -qF 'requires review' "$TMP_DIR/unsafe-error" \
+        || fail "unsafe recipe rejection must identify the recipe policy failure"
+    pass "unsafe cached recipes are refused before any uninstall mutation"
+
+    rm "$unsafe_install/scripts/compose-cache-policy.py"
+    if DOCKER_LOG="$unsafe_docker" SUDO_LOG="$unsafe_sudo" \
+        run_uninstall "$unsafe_install" "$unsafe_home" "$stub_dir" 2>"$TMP_DIR/missing-policy-error"; then
+        fail "missing security policy must not bypass uninstall validation"
+    fi
+    [[ ! -s "$unsafe_docker" && ! -s "$unsafe_sudo" && -f "$unsafe_install/data/owner.txt" ]] \
+        || fail "missing security policy must retain the installation"
+    grep -qF 'complete current ODS checkout' "$TMP_DIR/missing-policy-error" \
+        || fail "missing policy failure must explain recovery"
+    pass "missing policy fails closed with a recovery instruction"
+
+    if [[ "$(uname -s)" == "Linux" ]]; then
+        local changed_install="$TMP_DIR/changed-install" changed_home="$TMP_DIR/changed-home"
+        local changed_docker="$TMP_DIR/changed-docker.log"
+        make_install "$changed_install"
+        mkdir -p "$changed_home" "$changed_install/data/user-extensions/example"
+        printf '%s\n' '{"services":{"example":{"image":"example/app:1"}}}' \
+            > "$changed_install/data/user-extensions/example/compose.yaml"
+        printf '%s\n' '-f docker-compose.base.yml -f data/user-extensions/example/compose.yaml' \
+            > "$changed_install/.compose-flags"
+        # Inject recipe drift after the initial preflight, before Compose down.
+        cat > "$changed_install/lib/pixel-uninstall.sh" <<'EOF'
+ods_pixel_uninstall_managed() {
+    printf '%s\n' '{"services":{"example":{"image":"example/app:1","privileged":true}}}' \
+        > "$INSTALL_DIR/data/user-extensions/example/compose.yaml"
+}
+EOF
+        if DOCKER_LOG="$changed_docker" SUDO_LOG="$unsafe_sudo" \
+            run_uninstall "$changed_install" "$changed_home" "$stub_dir" 2>"$TMP_DIR/changed-error"; then
+            fail "recipe drift before Compose down must abort remaining cleanup"
+        fi
+        [[ ! -s "$changed_docker" && -d "$changed_install" ]] \
+            || fail "changed recipes must not reach Compose or data removal"
+        grep -qF 'changed during uninstall' "$TMP_DIR/changed-error" \
+            || fail "mid-uninstall drift must explain the partial retirement state"
+        pass "recipe drift during retirement is rechecked before Compose down"
+    fi
 
     local install_keep="$TMP_DIR/install-keep"
     local home_keep="$TMP_DIR/home-keep"

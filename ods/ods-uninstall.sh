@@ -102,6 +102,15 @@ resolve_compose_flags() {
     printf '%s\n' "$flags"
 }
 
+validate_uninstall_compose() {
+    local policy="$SCRIPT_DIR/scripts/compose-cache-policy.py"
+    if [[ ! -f "$policy" ]] || ! command -v python3 >/dev/null 2>&1; then
+        log_error "Compose security policy or Python 3 is missing; run the uninstaller from a complete current ODS checkout."
+        return 1
+    fi
+    python3 "$policy" --install-dir "$INSTALL_DIR" --arguments "$@" >/dev/null
+}
+
 preserve_model_cache() {
     MODELS_BACKUP="${INSTALL_DIR%/}.models-backup"
     python3 "$SCRIPT_DIR/lib/model-cache-custody.py" preserve "$INSTALL_DIR" || return 1
@@ -231,6 +240,21 @@ if [[ "$FORCE" != "true" ]]; then
     echo ""
 fi
 
+# Compose down can execute extension lifecycle hooks. Refuse unsafe saved
+# recipes before retiring Pixel, privileged services, or any installation data.
+compose_flags=""
+compose_args=()
+if command -v docker >/dev/null 2>&1; then
+    compose_flags="$(resolve_compose_flags)"
+    if [[ -n "$compose_flags" ]]; then
+        read -ra compose_args <<< "$compose_flags"
+        validate_uninstall_compose "${compose_args[@]}" || {
+            log_error "Saved extension recipes require review; installation untouched. Use ods stop for safe shutdown, repair the recipes, then retry uninstall."
+            exit 1
+        }
+    fi
+fi
+
 # Fail before stopping/removing services if models cannot be retained without
 # crossing filesystems. Recheck immediately before the actual atomic rename.
 if $KEEP_MODELS; then
@@ -344,7 +368,6 @@ if command -v docker &>/dev/null; then
     # Use ODS's resolved compose stack. The repo does not ship a
     # top-level docker-compose.yml, so bare `docker compose down` can fail with
     # "no configuration file provided" even from the correct install dir.
-    compose_flags="$(resolve_compose_flags)"
     compose_down_args=(down)
     if [[ "$KEEP_DATA" != "true" ]]; then
         compose_down_args+=(-v)
@@ -352,7 +375,10 @@ if command -v docker &>/dev/null; then
     compose_down_args+=(--remove-orphans)
 
     if [[ -n "$compose_flags" ]]; then
-        read -ra compose_args <<< "$compose_flags"
+        validate_uninstall_compose "${compose_args[@]}" || {
+            log_error "Saved extension recipes changed during uninstall; remaining installation retained."
+            exit 1
+        }
         docker compose "${compose_args[@]}" "${compose_down_args[@]}" 2>/dev/null || \
             log_warn "docker compose cleanup failed; falling back to container/volume discovery"
     else

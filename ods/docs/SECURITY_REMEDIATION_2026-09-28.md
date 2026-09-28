@@ -195,6 +195,17 @@ matched containers' automatic restart, then stops them without deleting data
 or containers. Repair and recreate the reviewed recipe before starting again.
 Start and restart operations still reject invalid recipes.
 
+Uninstall also checks the saved stack before retiring Pixel/system services or
+deleting data, then rechecks immediately before Compose down (which can execute
+extension lifecycle hooks). Unsafe recipes and a missing validator fail closed
+with instructions to use safe shutdown and review the recipe. Drift after the
+initial check stops remaining cleanup and reports that retirement may already
+have started. Tests exercise the real uninstaller in temporary directories with
+Docker, sudo and service-control substitutes: unsafe input, missing policy,
+mid-retirement drift, normal removal and `--keep-data` behavior all pass.
+macOS LaunchAgent removal fixtures and 35 system/native retirement cases also
+pass. These tests never uninstall the running ODS or start Docker Desktop.
+
 Background model upgrades now revalidate saved Compose fragments before each
 service recreation, including retries, Hermes/OpenClaw companions, Lemonade
 cleanup and Windows launch-log recovery. An already populated argument array
