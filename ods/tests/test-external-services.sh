@@ -94,9 +94,17 @@ run_phase_case() {
                 [[ "${MOCK_OLLAMA:-down}" == "up" ]] || return 22
                 printf '{"models":[{"name":"qwen3.5:9b"},{"name":"llama3.2:3b"}]}'
                 ;;
+            */api/ps)
+                [[ "${MOCK_OLLAMA:-down}" == "up" ]] || return 22
+                printf '{"models":[{"name":"qwen3.5:9b","context_length":8192}]}'
+                ;;
             */v1/models)
                 [[ "${MOCK_LMSTUDIO:-down}" == "up" ]] || return 22
                 printf '{"data":[{"id":"qwen3.5-9b"},{"id":"local-model"}]}'
+                ;;
+            */props)
+                [[ "${MOCK_LMSTUDIO:-down}" == "up" ]] || return 22
+                printf '{"model_alias":"local-model","default_generation_settings":{"n_ctx":8192}}'
                 ;;
             */v1/chat/completions)
                 printf '{"choices":[{"message":{"content":"OK"}}]}'
@@ -113,6 +121,7 @@ run_phase_case() {
     INSTALL_DIR="$install_dir"
     GGUF_FILE="Qwen3.5-9B-Q4_K_M.gguf"
     LLM_MODEL="qwen3.5-9b"
+    MAX_CONTEXT=65536
     unset EXTERNAL_LLM_URL EXTERNAL_LLM_CONTAINER_URL EXTERNAL_LLM_PROVIDER
     unset EXTERNAL_LLM_MODEL EXTERNAL_LLM_AUTO_REUSE EXTERNAL_LLM_DISABLE
     unset EXTERNAL_LLM_RESET SKIP_MODEL_DOWNLOAD LEMONADE_EXTERNAL
@@ -301,6 +310,7 @@ run_phase06_env_cycle() (
     export EXTERNAL_LLM_CONTAINER_URL=http://host.docker.internal:11434
     export EXTERNAL_LLM_PROVIDER=ollama
     export EXTERNAL_LLM_MODEL=qwen3.5:9b
+    export EXTERNAL_LLM_CONTEXT=4096
     export LEMONADE_EXTERNAL=false
 
     # shellcheck source=../installers/lib/constants.sh
@@ -356,6 +366,7 @@ run_phase06_env_cycle() (
     grep -q 'api_base: "http://host.docker.internal:11434/v1"' "$install_dir/config/litellm/local.yaml"
     grep -q 'master_key: os.environ/LITELLM_MASTER_KEY' "$install_dir/config/litellm/local.yaml"
     grep -qx 'EXTERNAL_LLM_PROVIDER=ollama' "$install_dir/.env"
+    grep -qx 'EXTERNAL_LLM_CONTEXT=4096' "$install_dir/.env"
     grep -qx 'SKIP_MODEL_DOWNLOAD=true' "$install_dir/.env"
     grep -qx 'MODEL_RECOMMENDED_MODEL=qwen3-1.7b' "$install_dir/.env"
 
@@ -366,6 +377,7 @@ run_phase06_env_cycle() (
     export EXTERNAL_LLM_CONTAINER_URL=
     export EXTERNAL_LLM_PROVIDER=
     export EXTERNAL_LLM_MODEL=
+    export EXTERNAL_LLM_CONTEXT=
     export EXTERNAL_LLM_RESET=true
 
     source "$install_dir/installers/phases/06-directories.sh"
@@ -377,6 +389,7 @@ run_phase06_env_cycle() (
     grep -qx 'HERMES_LLM_BASE_URL=http://llama-server:8080/v1' "$install_dir/.env"
     grep -qx 'EXTERNAL_LLM_URL=' "$install_dir/.env"
     grep -qx 'EXTERNAL_LLM_PROVIDER=' "$install_dir/.env"
+    grep -qx 'EXTERNAL_LLM_CONTEXT=' "$install_dir/.env"
     grep -qx 'SKIP_MODEL_DOWNLOAD=false' "$install_dir/.env"
     grep -q 'api_base: http://llama-server:8080/v1' "$install_dir/config/litellm/local.yaml"
     ! grep -q 'host.docker.internal:11434\|openai/qwen3.5:9b' "$install_dir/config/litellm/local.yaml"

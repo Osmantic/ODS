@@ -1264,6 +1264,7 @@ EXTERNAL_LLM_URL=${EXTERNAL_LLM_URL_VALUE}
 EXTERNAL_LLM_CONTAINER_URL=${EXTERNAL_LLM_CONTAINER_URL_VALUE}
 EXTERNAL_LLM_PROVIDER=${EXTERNAL_LLM_PROVIDER_VALUE}
 EXTERNAL_LLM_MODEL=${EXTERNAL_SELECTED_MODEL}
+EXTERNAL_LLM_CONTEXT=${EXTERNAL_LLM_CONTEXT:-}
 SKIP_MODEL_DOWNLOAD=${EXTERNAL_LLM_ACTIVE}
 AMD_INFERENCE_RUNTIME=$(if [[ "$EXTERNAL_LLM_ACTIVE" == "true" ]]; then echo ""; elif [[ "$LEMONADE_EXTERNAL_VALUE" == "true" || ( "$GPU_BACKEND" == "amd" && "${ODS_MODE:-local}" == "local" ) ]]; then echo "lemonade"; else echo ""; fi)
 AMD_INFERENCE_BACKEND=$(if [[ "$EXTERNAL_LLM_ACTIVE" == "true" ]]; then echo ""; elif [[ "$LEMONADE_EXTERNAL_VALUE" == "true" ]]; then echo "${AMD_INFERENCE_BACKEND:-auto}"; elif [[ "$GPU_BACKEND" == "amd" && "${ODS_MODE:-local}" == "local" ]]; then echo "${BACKEND_LEMONADE_LINUX_BACKEND:-rocm}"; else echo ""; fi)

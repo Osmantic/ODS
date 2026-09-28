@@ -144,6 +144,36 @@ external_llm_resolve_model() {
     external_llm_find_matching_model "$target" <<<"$models"
 }
 
+external_llm_serving_context() {
+    local provider="${1:-}" url="${2:-}" model="${3:-}" response context
+    local parser="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/external-model-context.py"
+    url="$(external_llm_host_url "$url")"
+    case "$provider" in
+        ollama)
+            response="$(curl -fsS --max-time 5 "${url}/api/ps" 2>&1)" || {
+                printf 'External Ollama /api/ps loaded-model probe failed: %s\n' "${response:-no response}" >&2
+                return 1
+            }
+            printf '%s' "$response" | python3 "$parser" ollama-ps "$model"
+            ;;
+        lmstudio|openai-compatible)
+            if response="$(curl -fsS --max-time 5 "${url}/props" 2>&1)"; then
+                if context="$(printf '%s' "$response" | python3 "$parser" llama-props "$model" 2>&1)"; then
+                    printf '%s\n' "$context"
+                    return 0
+                fi
+            fi
+            if response="$(curl -fsS --max-time 5 "${url}/api/v1/models" 2>&1)"; then
+                printf '%s' "$response" | python3 "$parser" lmstudio-v1 "$model"
+            else
+                printf 'External /props and /api/v1/models loaded-model probes failed: %s\n' "${response:-no response}" >&2
+                return 1
+            fi
+            ;;
+        *) return 2 ;;
+    esac
+}
+
 external_llm_probe_completion() {
     local url="${1:-}" model="${2:-}" body attempt curl_status
     url="$(external_llm_host_url "$url")"

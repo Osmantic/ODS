@@ -158,6 +158,7 @@ SUMMARY_JSON_FILE="${SUMMARY_JSON_FILE:-}"
 EXTERNAL_LLM_URL="${EXTERNAL_LLM_URL:-}"
 EXTERNAL_LLM_PROVIDER="${EXTERNAL_LLM_PROVIDER:-auto}"
 EXTERNAL_LLM_MODEL="${EXTERNAL_LLM_MODEL:-}"
+EXTERNAL_LLM_CONTEXT="${EXTERNAL_LLM_CONTEXT:-}"
 EXTERNAL_LLM_AUTO_REUSE="${EXTERNAL_LLM_AUTO_REUSE:-false}"
 EXTERNAL_LLM_DISABLE=false
 ODS_RESELECT_MODEL="${ODS_RESELECT_MODEL:-false}"
@@ -198,6 +199,8 @@ Options:
                       External provider: auto, ollama, lmstudio, or openai-compatible
     --external-llm-model M
                       Exact model id exposed by the external provider
+    --external-llm-context N
+                      Verified serving context when the provider cannot report it
     --reuse-external-llm
                       Allow non-interactive reuse of a detected matching model
     --no-external-llm
@@ -282,6 +285,9 @@ while [[ $# -gt 0 ]]; do
         --external-llm-url) EXTERNAL_LLM_URL="$2"; shift 2 ;;
         --external-llm-provider) EXTERNAL_LLM_PROVIDER="$2"; shift 2 ;;
         --external-llm-model) EXTERNAL_LLM_MODEL="$2"; shift 2 ;;
+        --external-llm-context)
+            [[ -n "${2:-}" && "${2:-}" != --* ]] || { echo "--external-llm-context requires a token count" >&2; exit 1; }
+            EXTERNAL_LLM_CONTEXT="$2"; shift 2 ;;
         --reuse-external-llm) EXTERNAL_LLM_AUTO_REUSE=true; shift ;;
         --no-external-llm) EXTERNAL_LLM_DISABLE=true; shift ;;
         --reselect-model) ODS_RESELECT_MODEL=true; shift ;;
@@ -374,7 +380,7 @@ if [[ "${LEMONADE_EXTERNAL,,}" == "true" ]]; then
     export LEMONADE_EXTERNAL LEMONADE_BASE_URL LEMONADE_HOST_TRANSPORT ODS_WINDOWS_SYSTEM_DIRECTORY LEMONADE_API_KEY LEMONADE_MODEL LEMONADE_GPU_NAME LEMONADE_GPU_VRAM_MB
 fi
 
-export EXTERNAL_LLM_URL EXTERNAL_LLM_PROVIDER EXTERNAL_LLM_MODEL
+export EXTERNAL_LLM_URL EXTERNAL_LLM_PROVIDER EXTERNAL_LLM_MODEL EXTERNAL_LLM_CONTEXT
 export EXTERNAL_LLM_AUTO_REUSE EXTERNAL_LLM_DISABLE ODS_RESELECT_MODEL
 
 # OpenClaw deprecation back-compat: preserve OpenClaw on UPGRADES of installs
