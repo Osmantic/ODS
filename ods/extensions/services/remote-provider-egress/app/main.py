@@ -8,6 +8,7 @@ injects provider credentials from a private file at the final egress boundary.
 from __future__ import annotations
 
 import os
+import asyncio
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, AsyncIterator, Mapping
@@ -384,7 +385,20 @@ async def forward(full_path: str, request: Request) -> Response:
 
             async def stream_body() -> AsyncIterator[bytes]:
                 try:
-                    async for chunk in upstream.aiter_bytes():
+                    deadline = asyncio.get_running_loop().time() + UPSTREAM_TIMEOUT_SECONDS
+                    iterator = upstream.aiter_bytes().__aiter__()
+                    while True:
+                        remaining = deadline - asyncio.get_running_loop().time()
+                        if remaining <= 0:
+                            break
+                        try:
+                            chunk = await asyncio.wait_for(
+                                iterator.__anext__(), timeout=remaining
+                            )
+                        except StopAsyncIteration:
+                            break
+                        except asyncio.TimeoutError:
+                            break
                         yield chunk
                 finally:
                     await upstream.aclose()
