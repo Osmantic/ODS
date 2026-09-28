@@ -71,6 +71,16 @@ if [[ -z "$PYTHON_CMD" ]] || ! "$PYTHON_CMD" -c 'import json' >/dev/null 2>&1; t
     exit 1
 fi
 
+# Snapshot marker, stamped *before* the active set is read. A session created
+# between that read and the deletion pass below is not in the active set yet,
+# but it is very much live — judging it by this snapshot would delete the
+# user's just-opened conversation. Files newer than the marker are left alone
+# and picked up by the next run. It lives in SESSIONS_DIR so its mtime comes
+# from the same filesystem clock as the session files it is compared against.
+SNAPSHOT_REF="$SESSIONS_DIR/.cleanup-snapshot.$$"
+: > "$SNAPSHOT_REF"
+trap 'rm -f "$SNAPSHOT_REF"' EXIT
+
 ACTIVE_IDS_OUTPUT=""
 ACTIVE_IDS_EXIT=0
 ACTIVE_IDS_OUTPUT=$("$PYTHON_CMD" - "$SESSIONS_JSON" <<'PY'
@@ -145,6 +155,13 @@ REMOVED_BLOATED=0
 for f in "$SESSIONS_DIR"/*.jsonl; do
     [ -f "$f" ] || continue
     BASENAME=$(basename "$f" .jsonl)
+
+    # Created or touched after the snapshot: the active set we read predates it,
+    # so it cannot tell us whether this session is live. Leave it for next run.
+    if [ "$f" -nt "$SNAPSHOT_REF" ]; then
+        echo "[$(date)] Skipping session newer than this cleanup cycle: $BASENAME"
+        continue
+    fi
 
     # Check if this session is active
     IS_ACTIVE=false
