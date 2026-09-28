@@ -56,11 +56,11 @@ _doctor_check_llama_server
 [[ "$LLM_STATUS" == ok && "$LLM_URL" == http://127.0.0.1:8080 && ! -e "$docker_calls" ]] \
     || fail 'native model must not require Docker or use OLLAMA_PORT'
 ODS_NATIVE_LLAMA_PORT=18080
-for pair in '0.0.0.0|127.0.0.1' '::|[::1]' '::1|[::1]' '127.0.0.2|127.0.0.2'; do
-    BIND_ADDRESS="${pair%%|*}"
+for dashboard_bind in 0.0.0.0 :: ::1 127.0.0.2; do
+    BIND_ADDRESS="$dashboard_bind"
     _doctor_check_llama_server
-    [[ "$LLM_STATUS" == ok && "$LLM_URL" == "http://${pair#*|}:18080" ]] \
-        || fail "incorrect native bind/port: $pair"
+    [[ "$LLM_STATUS" == ok && "$LLM_URL" == "http://127.0.0.1:18080" ]] \
+        || fail "dashboard bind changed the private native probe: $dashboard_bind"
     [[ "${curl_calls[-1]}" == "$LLM_URL/health" ]] || fail 'wrong native health URL'
 done
 curl_rc=22

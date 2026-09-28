@@ -85,6 +85,7 @@ fi
   printf 'model=%s\n' "$ODS_WIN_MODEL_PATH"
   printf 'rollback=%s\n' "$ODS_WIN_ROLLBACK_MODEL_PATH"
   printf 'port=%s\n' "$ODS_WIN_LLAMA_PORT"
+  printf 'bind=%s\n' "$ODS_WIN_BIND_ADDR"
   printf 'ctx=%s\n' "$ODS_WIN_CTX_SIZE"
   printf 'reasoning=%s\n' "$ODS_WIN_REASONING_FORMAT"
 } >> "${ODS_FAKE_PS_TRACE:?}"
@@ -135,7 +136,7 @@ AMD_INFERENCE_LOCATION=host
 AMD_INFERENCE_PORT=8080
 AMD_INFERENCE_RUNTIME_MODE=windows-llama-server-fallback
 AMD_INFERENCE_MANAGED=true
-BIND_ADDRESS=127.0.0.1
+BIND_ADDRESS=0.0.0.0
 GGUF_FILE=Bootstrap.gguf
 LLM_MODEL=bootstrap-model
 MAX_CONTEXT=8192
@@ -194,6 +195,8 @@ grep -q 'rollback=.*Bootstrap.gguf$' "$trace" \
     || fail "PowerShell restart should receive the bootstrap rollback path"
 grep -q 'port=8080' "$trace" \
     || fail "PowerShell restart should target the AMD inference port"
+grep -qx 'bind=127.0.0.1' "$trace" \
+    || fail "PowerShell restart must not inherit the dashboard LAN binding"
 grep -q 'ctx=32768' "$trace" \
     || fail "PowerShell restart should target the full-model context"
 grep -q 'reasoning=none' "$trace" \

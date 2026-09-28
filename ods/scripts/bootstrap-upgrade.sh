@@ -1213,8 +1213,8 @@ restart_windows_lemonade_with_full_model() {
 
     local pid_file bind_addr lemonade_port target_context helper_path env_path
     pid_file="$INSTALL_DIR/data/llama-server.pid"
-    bind_addr="$(read_env_value BIND_ADDRESS)"
-    [[ -n "$bind_addr" ]] || bind_addr="127.0.0.1"
+    # Model upgrades must preserve the private native inference listener.
+    bind_addr="127.0.0.1"
     lemonade_port="$(read_env_value AMD_INFERENCE_PORT)"
     [[ -n "$lemonade_port" ]] || lemonade_port="8080"
     target_context="$(read_env_value CTX_SIZE)"
@@ -1594,8 +1594,8 @@ restart_windows_native_llama_server_with_full_model() {
     model_path="$MODELS_DIR/$FULL_GGUF_FILE"
     rollback_model_path="$MODELS_DIR/$BOOTSTRAP_GGUF_FILE"
     log_path="$INSTALL_DIR/data/llama-server.log"
-    bind_addr="$(read_env_value BIND_ADDRESS)"
-    [[ -n "$bind_addr" ]] || bind_addr="127.0.0.1"
+    # Model upgrades must preserve the private native inference listener.
+    bind_addr="127.0.0.1"
     ctx_size="$(read_env_value CTX_SIZE)"
     [[ -n "$ctx_size" ]] || ctx_size="$(read_env_value MAX_CONTEXT)"
     [[ -n "$ctx_size" ]] || ctx_size="$FULL_MAX_CONTEXT"
@@ -3648,9 +3648,8 @@ elif [[ -f "$INSTALL_DIR/data/.llama-server.pid" ]]; then
                 fi
             fi
 
-            # Honour the unified BIND_ADDRESS knob (PR #964); empty/missing → loopback.
-            _bind=$(grep '^BIND_ADDRESS=' "$ENV_FILE" 2>/dev/null | cut -d= -f2 | tr -d '"' || echo "")
-            [[ -z "$_bind" ]] && _bind="127.0.0.1"
+            # The dashboard's LAN binding must not expose native inference.
+            _bind="127.0.0.1"
             _native_port=$(grep '^ODS_NATIVE_LLAMA_PORT=' "$ENV_FILE" 2>/dev/null | cut -d= -f2 | tr -d '"' || echo "")
             [[ "$_native_port" =~ ^[0-9]+$ ]] || _native_port="8080"
             _flash_attn=$(grep '^LLAMA_ARG_FLASH_ATTN=' "$ENV_FILE" 2>/dev/null | cut -d= -f2 | tr -d '"' || echo "")

@@ -107,3 +107,26 @@ def test_installer_keeps_host_model_reachable_across_lan_modes(tmp_path, endpoin
             assert json.load(response)['choices'][0]['message']['content'] == 'route verified'
         assert requests == [('/v1/chat/completions', 'Bearer ' + expected_key,
                              {'model': expected_model, 'messages': []})]
+
+
+@pytest.mark.parametrize('bind', ['0.0.0.0', '::', '192.168.106.1'])
+def test_background_model_upgrade_preserves_private_listener(tmp_path, bind):
+    """Execute production argument assembly without launching Metal or launchd."""
+    env_file = tmp_path / '.env'
+    env_file.write_text(f'BIND_ADDRESS={bind}\nODS_NATIVE_LLAMA_PORT=18081\n'
+                        'N_GPU_LAYERS=33\nLLAMA_ARG_CACHE_TYPE_K=q8_0\n', encoding='utf-8')
+    source = (ODS / 'scripts/bootstrap-upgrade.sh').read_text(encoding='utf-8')
+    begin = source.index('            # The dashboard\'s LAN binding must not expose native inference.')
+    end = source.index('\n            # Relaunch with new model', begin)
+    script = ('set -eu\nENV_FILE="$1"\n_model_path="$2"\n_ctx_size=8192\n'
+              '_llama_tuning_args=()\n' + source[begin:end] +
+              '\nprintf "%s\\0" "${_llama_args[@]}"\n')
+    result = subprocess.run(['bash', '-s', '--', str(env_file), str(tmp_path / 'full model.gguf')],
+                            input=script, text=True, capture_output=True, timeout=10)
+    assert result.returncode == 0, result.stderr
+    args = result.stdout.rstrip('\0').split('\0')
+    assert args[args.index('--host') + 1] == '127.0.0.1'
+    assert args[args.index('--port') + 1] == '18081'
+    assert args[args.index('--model') + 1] == str(tmp_path / 'full model.gguf')
+    assert args[args.index('--n-gpu-layers') + 1] == '33'
+    assert args[args.index('--cache-type-k') + 1] == 'q8_0'

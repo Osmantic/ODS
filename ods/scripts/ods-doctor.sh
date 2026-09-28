@@ -304,12 +304,8 @@ _doctor_check_llama_server() {
 
     if [[ "$(uname -s)" == Darwin ]]; then
         port="${ODS_NATIVE_LLAMA_PORT:-8080}"
-        local probe_host
-        # Reuse the installer's bind handling without importing its globals.
-        probe_host="$(
-            source "$ROOT_DIR/installers/macos/lib/constants.sh"
-            macos_bind_probe_host "${BIND_ADDRESS:-127.0.0.1}"
-        )" || probe_host=""
+        # Native inference stays private even when the dashboard uses a LAN bind.
+        local probe_host="127.0.0.1"
         LLM_URL=""
         if [[ "$port" =~ ^[0-9]+$ && ${#port} -le 5 ]] \
             && (( 10#$port > 0 && 10#$port <= 65535 )) && [[ -n "$probe_host" ]]; then
@@ -322,7 +318,7 @@ _doctor_check_llama_server() {
             log_ok "  Endpoint : $LLM_URL"
         else
             LLM_STATUS="fail"
-            LLM_RECOVERY="check BIND_ADDRESS and ODS_NATIVE_LLAMA_PORT; run ods restart"
+            LLM_RECOVERY="check the native llama-server process and ODS_NATIVE_LLAMA_PORT; run ods restart"
             log_fail "LLM backend: llama-server (native Metal) - not responding"
             log_info "  Recovery : $LLM_RECOVERY"
         fi
