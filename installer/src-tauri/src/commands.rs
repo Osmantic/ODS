@@ -5,6 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
 const ALLOWED_FEATURES: &[&str] = &["voice", "workflows", "rag", "image_gen", "all"];
+const GIT_CMD: &str = "git";
 
 static INSTALL_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 
@@ -59,7 +60,7 @@ pub struct PrerequisiteStatus {
 
 #[tauri::command]
 pub fn check_prerequisites() -> PrerequisiteStatus {
-    let git = which::which("git").is_ok();
+    let git = which::which(GIT_CMD).is_ok();
     let docker_status = docker::check();
     let wsl2_needed = cfg!(target_os = "windows");
     let wsl2_installed = if wsl2_needed {
