@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { startInstall, getInstallProgress, type ProgressInfo } from "../hooks/useTauri";
+import { startInstall, getInstallProgress, checkNetwork, type ProgressInfo } from "../hooks/useTauri";
 
 interface Props {
   tier: number;
@@ -10,6 +10,7 @@ interface Props {
 }
 
 const PHASE_LABELS: Record<string, string> = {
+  network: "Checking network connectivity",
   preflight: "Running preflight checks",
   detection: "Detecting hardware",
   docker: "Setting up Docker",
@@ -38,12 +39,36 @@ export default function Installing({
     if (started.current) return;
     started.current = true;
 
-    // Start the install
-    startInstall(tier, features, installDir).then(() => {
-      onComplete();
-    }).catch((e) => {
-      onError(String(e));
-    });
+    (async () => {
+      // Check network connectivity first
+      setProgress((p) => ({
+        ...p,
+        phase: "network",
+        message: "Checking network connectivity...",
+        percent: 1,
+      }));
+
+      try {
+        const networkStatus = await checkNetwork();
+        if (!networkStatus.all_reachable) {
+          let errorMsg = "Network connectivity check failed:";
+          if (!networkStatus.github_reachable) {
+            errorMsg += " GitHub is not reachable.";
+          }
+          if (!networkStatus.docker_registry_reachable) {
+            errorMsg += " Docker registry is not reachable.";
+          }
+          onError(errorMsg);
+          return;
+        }
+
+        // Network is OK, proceed with installation
+        await startInstall(tier, features, installDir);
+        onComplete();
+      } catch (e) {
+        onError(String(e));
+      }
+    })();
 
     // Poll for progress
     const interval = setInterval(async () => {

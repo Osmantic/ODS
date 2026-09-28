@@ -63,6 +63,12 @@ export interface GpuResult {
   tier_description: string;
 }
 
+export interface NetworkStatus {
+  github_reachable: boolean;
+  docker_registry_reachable: boolean;
+  all_reachable: boolean;
+}
+
 export interface ProgressInfo {
   phase: string;
   percent: number;
@@ -93,6 +99,8 @@ export const installPrerequisite = (component: string) =>
   invoke<InstallPrereqResult>("install_prerequisites", { component });
 
 export const detectGpu = () => invoke<GpuResult>("detect_gpu");
+
+export const checkNetwork = () => invoke<NetworkStatus>("check_network");
 
 export const startInstall = (
   tier: number,

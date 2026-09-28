@@ -5,6 +5,7 @@ mod commands;
 mod docker;
 mod gpu;
 mod installer;
+mod network;
 mod platform;
 mod state;
 
@@ -14,6 +15,7 @@ fn main() {
             commands::check_system,
             commands::check_prerequisites,
             commands::install_prerequisites,
+            commands::check_network,
             commands::detect_gpu,
             commands::start_install,
             commands::get_install_progress,
