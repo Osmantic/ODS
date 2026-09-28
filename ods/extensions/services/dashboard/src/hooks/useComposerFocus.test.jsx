@@ -9,12 +9,18 @@ function blurDisabled(field) {
   field.disabled = true
 }
 
-function Composer({ disabled = false, overlay = false, notice = false }) {
+function Composer({ disabled = false, overlay = false, notice = false, visible = true }) {
   const inputRef = useRef(null)
   const [value, setValue] = useState('')
-  const prepareSend = useComposerFocus({ inputRef, disabled, onType: key => setValue(text => text + key) })
+  const prepareSend = useComposerFocus({ inputRef, disabled, visible, onType: (key, start, end) => setValue(text => {
+    const from = Math.min(start ?? text.length, text.length)
+    const to = Math.min(end ?? from, text.length)
+    return text.slice(0, from) + key + text.slice(to)
+  }) })
   return <>
+    <div style={visible ? undefined : {display:'none'}}>
     <textarea aria-label="Message" ref={inputRef} disabled={disabled} value={value} onChange={event => setValue(event.target.value)}/>
+    </div>
     <button onClick={prepareSend}>Send</button>
     <input aria-label="Search"/>
     <a href="#other">Other page</a>
@@ -149,4 +155,35 @@ it('removes the global keyboard listener when the conversation unmounts', () => 
   const {unmount} = render(<Composer/>)
   unmount()
   expect(fireEvent.keyDown(document.body, {key:'x'})).toBe(true)
+})
+
+it('does not intercept Space or mutate the draft when the composer is hidden', () => {
+  render(<Composer visible={false}/>)
+  const field = screen.getByLabelText('Message')
+  field.blur()
+  expect(fireEvent.keyDown(document.body, {key:' '})).toBe(true)
+  expect(field).toHaveValue('')
+  expect(field).not.toHaveFocus()
+})
+
+it('inserts background typing at the caret instead of appending', async () => {
+  const user = userEvent.setup()
+  render(<Composer/>)
+  const field = screen.getByLabelText('Message')
+  await user.type(field, 'abcd')
+  field.setSelectionRange(2, 2)
+  field.blur()
+  await user.keyboard('XY')
+  expect(field).toHaveValue('abXYcd')
+  expect(field).toHaveFocus()
+  expect(field.selectionStart).toBe(4)
+  expect(field.selectionEnd).toBe(4)
+})
+
+it('leaves typing with the page when a composer ancestor is hidden', () => {
+  render(<div hidden><Composer/></div>)
+  const field = screen.getByLabelText('Message')
+  expect(fireEvent.keyDown(document.body, {key:'x'})).toBe(true)
+  expect(field).toHaveValue('')
+  expect(field).not.toHaveFocus()
 })

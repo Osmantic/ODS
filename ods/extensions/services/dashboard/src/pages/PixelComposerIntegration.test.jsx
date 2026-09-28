@@ -105,3 +105,40 @@ it('restores composer focus when a request fails so the next message can be type
   await user.keyboard('Try again')
   expect(field).toHaveValue('Try again')
 })
+
+it.each(['abcd', '/agents abcd', '/AGENTES   abcd', '/goal abcd'])(
+  'preserves the displayed caret when background typing into %s', async draft => {
+    const user = userEvent.setup()
+    render(<Pixel/>)
+    const field = await screen.findByPlaceholderText('Message Portal...')
+    await waitFor(() => expect(field).toHaveFocus())
+    fireEvent.change(field, {target:{value:draft}})
+    expect(field).toHaveValue('abcd')
+    field.setSelectionRange(2, 2)
+    field.blur()
+    await user.keyboard('XY')
+    expect(field).toHaveValue('abXYcd')
+    expect(field).toHaveFocus()
+    expect(field.selectionStart).toBe(4)
+    if (draft.startsWith('/goal')) expect(screen.getByRole('group', {name:'Goal mode'})).toBeInTheDocument()
+    else if (draft !== 'abcd') expect(screen.getByRole('group', {name:'Agent team mode'})).toBeInTheDocument()
+  },
+)
+
+it('leaves keys and the draft alone while the workspace hides the composer', async () => {
+  const user = userEvent.setup()
+  render(<Pixel/>)
+  const field = await screen.findByPlaceholderText('Message Portal...')
+  await waitFor(() => expect(field).toHaveFocus())
+  fireEvent.change(field, {target:{value:'Retained draft'}})
+  await user.click(screen.getByRole('button', {name:'Workspace', exact:true}))
+  await user.click(screen.getByRole('button', {name:'Expand workspace', exact:true}))
+  expect(field.closest('.pixel-chat-preview-layout')).toHaveClass('is-workspace-expanded')
+  field.blur() // jsdom does not apply the imported display:none rule.
+  expect(fireEvent.keyDown(document.body, {key:' '})).toBe(true)
+  await user.keyboard('abc')
+  expect(field).toHaveValue('Retained draft')
+  await user.click(screen.getByRole('button', {name:'Restore workspace size', exact:true}))
+  expect(field.closest('.pixel-chat-preview-layout')).not.toHaveClass('is-workspace-expanded')
+  expect(field).toHaveValue('Retained draft')
+})

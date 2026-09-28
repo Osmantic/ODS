@@ -1372,8 +1372,17 @@ export default function Pixel({ systemStatus = null }) {
   const inputOver = input.length > MAX_INPUT_LEN
   const inputEmpty = !(command?.task ?? goalDraft?.task ?? input).trim()
   const isDisabled = sending || modelSwitching || restoredActive || restoredChecking || stopping || teams.busy || contextControl.busy || contextControl.historyUnknown || status !== 'available'
-  const typeIntoComposer = useCallback(character => setInput(value => value + character), [])
-  const prepareComposerSend = useComposerFocus({ inputRef, disabled: isDisabled, onType: typeIntoComposer })
+  const composerVisible = !(workspaceExpanded && workspaceOpen && !previewCollapsed)
+  const typeIntoComposer = useCallback((character, start, end) => setInput(value => {
+    const agent = agentCommand(value)
+    const goal = goalCommand(value)
+    const text = (agent || goal)?.task ?? value
+    const from = Math.max(0, Math.min(start ?? text.length, text.length))
+    const to = Math.max(from, Math.min(end ?? from, text.length))
+    const next = text.slice(0, from) + character + text.slice(to)
+    return agent ? `/agents ${next}` : goal ? `/goal ${next}` : next
+  }), [])
+  const prepareComposerSend = useComposerFocus({ inputRef, disabled: isDisabled, visible: composerVisible, onType: typeIntoComposer })
   const sendFromComposer = () => {
     prepareComposerSend()
     void sendMessage()
@@ -1411,7 +1420,7 @@ export default function Pixel({ systemStatus = null }) {
 
   return (
     <div className="pixel-chat flex flex-col overflow-hidden text-theme-text">
-      <div className={`pixel-chat-preview-layout flex min-h-0 flex-1 flex-col lg:flex-row ${workspaceExpanded && workspaceOpen && !previewCollapsed ? 'is-workspace-expanded' : ''}`}>
+      <div className={`pixel-chat-preview-layout flex min-h-0 flex-1 flex-col lg:flex-row ${!composerVisible ? 'is-workspace-expanded' : ''}`}>
         <div className="pixel-chat-column flex min-h-0 min-w-0 flex-1 flex-col">
       {persistenceError && <PixelConversationRecovery error={persistenceError} chatId={chatIdRef.current} messages={messages} draft={input}/>}
       <header className="pixel-chat-header">
