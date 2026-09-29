@@ -26,7 +26,7 @@ class CompletionObservation:
     def payload(self, value):
         if not isinstance(value, dict):
             return
-        if 'error' in value or value.get('type') in ('error', 'response.failed', 'response.incomplete'):
+        if value.get('error') is not None or value.get('type') in ('error', 'response.failed', 'response.incomplete'):
             self.invalid = True
             return
         if value.get('type') == 'response.completed':
