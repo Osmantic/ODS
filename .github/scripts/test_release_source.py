@@ -113,6 +113,7 @@ def test_exact_archives_ignore_working_changes_and_bind_inventory(repo, tmp_path
         with tarfile.open(next(output.glob('*.tar.gz'))) as archive:
             assert 'owner-secret.txt' not in archive.getnames()
             assert archive.extractfile('install.sh').read() == b'fixture, never executed\n'
+            assert {m.mode for m in archive.getmembers() if m.isfile()} <= {0o644, 0o755}
         with zipfile.ZipFile(next(output.glob('*.zip'))) as archive:
             assert 'owner-secret.txt' not in archive.namelist()
             assert archive.read('install.sh') == b'fixture, never executed\n'
@@ -137,6 +138,10 @@ def test_release_job_is_tag_only_pinned_and_draft_only():
     assert set(config['on']) == {'push', 'workflow_dispatch'}
     assert config['on']['push'] == {'tags': ['v*']}
     job = config['jobs']['draft']
+    # The write-scoped token may only reach the step that runs gh.
+    assert 'GH_TOKEN' not in job.get('env', {})
+    assert set(job['steps'][-1]['env']) >= {'GH_TOKEN', 'BUNDLE'}
+    assert not any('GH_TOKEN' in step.get('env', {}) for step in job['steps'][:-1])
     assert "github.repository == 'Osmantic/ODS'" in job['if']
     assert "startsWith(github.ref, 'refs/tags/v')" in job['if']
     for step in job['steps']:
