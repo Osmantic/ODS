@@ -84,6 +84,10 @@ try {
     if (-not $explicit.Hermes -or -not $explicit.Comfyui -or -not $explicit.Recommended) {
         throw 'Explicit CLI opt-ins were lost on a fresh noninteractive install'
     }
+    $full = Invoke-Selection -Path $fresh -All $true
+    if (-not $full.Langfuse -or -not $full.Comfyui -or -not $full.DeepResearch) {
+        throw '-All did not select the full native Windows feature set'
+    }
 
     $prior = Join-Path $scratch 'prior'
     Set-InstalledFixture -Path $prior -Services @('litellm','token-spy','whisper','tts','n8n',
@@ -144,6 +148,12 @@ try {
     foreach ($id in @('litellm','searxng','hermes','comfyui','perplexica','langfuse')) {
         if ($plan[$id].Enabled) { throw "Core plan selected $id" }
     }
+    $fullPlan = New-ODSWindowsServicePlan -EnableRecommended $full.Recommended -EnableVoice $full.Voice `
+        -EnableWorkflows $full.Workflows -EnableRag $full.Rag -EnableHermes $full.Hermes `
+        -EnableOpenClaw $full.OpenClaw -EnableComfyui $full.Comfyui `
+        -EnableDeepResearch $full.DeepResearch -EnablePrivacyShield $full.PrivacyShield `
+        -EnableLangfuse $full.Langfuse
+    if (-not $fullPlan['langfuse'].Enabled) { throw '-All did not include Langfuse in the service plan' }
     Write-Output 'PASS: Windows fresh defaults, legacy selection, overrides and fail-closed records'
 } finally {
     $resolved = [IO.Path]::GetFullPath($scratch)
