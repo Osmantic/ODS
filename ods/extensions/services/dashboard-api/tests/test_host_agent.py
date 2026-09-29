@@ -6063,6 +6063,55 @@ class TestPrecreateDataDirs:
         assert data_dir.is_dir()
         assert chowns == [(data_dir, 10001, 10001)]
 
+    def test_start_skips_posix_ownership_when_getuid_is_unavailable(
+        self, tmp_path, monkeypatch,
+    ):
+        """Native Windows can start extensions with numeric container UIDs."""
+        pytest.importorskip("yaml")
+        user_root = tmp_path / "user"
+        builtin_root = tmp_path / "builtin"
+        install_dir = tmp_path / "install"
+        user_root.mkdir()
+        builtin_root.mkdir()
+        install_dir.mkdir()
+        ext_dir = user_root / "svc-u"
+        self._write_compose_with_user(
+            ext_dir,
+            ["./data/gaia:/home/gaia/.gaia"],
+            "10001:10001",
+        )
+        self._write_manifest(ext_dir, "svc-u", 10001)
+        real_os = _mod.os
+
+        class WindowsOs:
+            def __getattr__(self, name):
+                if name in {"getuid", "chown"}:
+                    raise AttributeError(name)
+                return getattr(real_os, name)
+
+        compose_calls = []
+        monkeypatch.setattr(_mod, "EXTENSIONS_DIR", builtin_root)
+        monkeypatch.setattr(_mod, "USER_EXTENSIONS_DIR", user_root)
+        monkeypatch.setattr(_mod, "INSTALL_DIR", install_dir)
+        monkeypatch.setattr(_mod, "os", WindowsOs())
+        monkeypatch.setattr(_mod, "resolve_compose_flags", lambda: [])
+        monkeypatch.setattr(_mod, "_repair_rootless_data_ownership", lambda _sid: None)
+        monkeypatch.setattr(
+            _mod.subprocess,
+            "run",
+            lambda command, **_kwargs: (
+                compose_calls.append(command)
+                or types.SimpleNamespace(returncode=0, stderr="")
+            ),
+        )
+
+        ok, error = _mod.docker_compose_action("svc-u", "start")
+
+        assert ok is True
+        assert error == ""
+        assert (install_dir / "data" / "gaia").is_dir()
+        assert compose_calls == [["docker", "compose", "up", "-d", "svc-u"]]
+
     def test_compose_user_takes_precedence_over_manifest_uid(
         self, tmp_path, monkeypatch,
     ):
