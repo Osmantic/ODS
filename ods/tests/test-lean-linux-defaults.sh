@@ -21,6 +21,10 @@ check_defaults() (
         echo "FAIL: initial WebUI fallback was lost on existing=$existing" >&2
         exit 1
     }
+    [[ "$ENABLE_ODS_PROXY" == false ]] || {
+        echo "FAIL: unexpected LAN proxy default would require WebUI" >&2
+        exit 1
+    }
     for flag in ENABLE_VOICE ENABLE_WORKFLOWS ENABLE_RAG ENABLE_RECOMMENDED \
                 ENABLE_HERMES ENABLE_COMFYUI ENABLE_APE ENABLE_PERPLEXICA \
                 ENABLE_PRIVACY_SHIELD; do
