@@ -249,7 +249,7 @@ if command -v docker >/dev/null 2>&1; then
     if [[ -n "$compose_flags" ]]; then
         read -ra compose_args <<< "$compose_flags"
         validate_uninstall_compose "${compose_args[@]}" || {
-            log_error "Saved extension recipes require review; installation untouched. Use ods stop for safe shutdown, repair the recipes, then retry uninstall."
+            log_error "Saved extension recipes require review; installation untouched. Run 'ods disable <extension>' for each extension named above (it stops it safely and keeps its data), then retry uninstall."
             exit 1
         }
     fi
