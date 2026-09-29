@@ -284,10 +284,12 @@ def test_main_shell_routes_pixel_only_after_base_launch_and_before_flag_persiste
 
 
 @pytest.mark.parametrize('pixel', ['true', 'false'])
-def test_core_feature_selection_keeps_pixel_dependencies_without_heavy_services(pixel):
+def test_core_feature_selection_keeps_pixel_dependencies_without_heavy_services(pixel, tmp_path):
     script = (ROOT / 'installers/macos/install-macos.sh').read_text()
     start = script.index('if ! $NON_INTERACTIVE && ! $ALL_FEATURES && ! $DRY_RUN; then')
     stop = script.index('ai "Features:"', start)
+    resolver_start = script.index('_macos_resolve_support_services() {')
+    resolver_stop = script.index('\n}', resolver_start) + 2
     shell = '''set -eu
 NON_INTERACTIVE=true; ALL_FEATURES=false; DRY_RUN=false
 CLOUD_MODE=false; ENABLE_RECOMMENDED=false
@@ -295,11 +297,14 @@ ENABLE_HERMES=false; ENABLE_OPENCLAW=false; ENABLE_APE=false
 ENABLE_PERPLEXICA=false; ENABLE_VOICE=false; ENABLE_RAG=false; ENABLE_WORKFLOWS=false
 ENABLE_OPENCODE=false; OPENCODE_ENABLE_EXPLICIT=false; OPENCODE_DISABLE_EXPLICIT=false
 OPENCODE_DISABLE_SELECTED=false
-''' + 'ENABLE_PIXEL=' + pixel + '\n' + script[start:stop] + '''
-printf '%s %s %s %s %s %s %s' "$ENABLE_RECOMMENDED" "$ENABLE_SEARXNG" "$ENABLE_HERMES" "$ENABLE_OPENCLAW" "$ENABLE_VOICE" "$ENABLE_RAG" "$ENABLE_WORKFLOWS"
+read_env_value() { printf '\\n'; }
+ai_err() { printf '%s\\n' "$*" >&2; }
+''' + script[resolver_start:resolver_stop] + '\nENABLE_PIXEL=' + pixel + '\n' + script[start:stop] + '''
+printf '%s %s %s %s %s %s %s %s' "$ENABLE_RECOMMENDED" "$ENABLE_LITELLM" "$ENABLE_SEARXNG" "$ENABLE_HERMES" "$ENABLE_OPENCLAW" "$ENABLE_VOICE" "$ENABLE_RAG" "$ENABLE_WORKFLOWS"
 '''
-    result = subprocess.run(['bash'], input=shell, capture_output=True, text=True, check=True)
-    assert result.stdout == ' '.join([pixel, pixel, 'false', 'false', 'false', 'false', 'false'])
+    result = subprocess.run(['bash'], input=shell, capture_output=True, text=True, check=True,
+        env={**os.environ, 'SOURCE_ROOT': str(ROOT), 'INSTALL_DIR': str(tmp_path)})
+    assert result.stdout == 'false true false false false false false false'
 
 
 @pytest.mark.parametrize('mode', ['direct', 'volta', 'brew', 'missing-brew', 'bad-brew'])
