@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import pytest
 
 
 def _route_state(
@@ -639,10 +640,16 @@ def test_remote_provider_peer_models_proxies_with_redacted_peer_token(
     assert "unit-test-peer-token" not in dumped
 
 
-def test_remote_provider_peer_model_load_uses_long_timeout_and_encoded_model_id(
+@pytest.mark.parametrize(
+    ("action", "method"),
+    [("load", "POST"), ("download", "POST"), ("delete", "DELETE")],
+)
+def test_remote_provider_peer_model_actions_accept_namespaced_ids(
     test_client,
     monkeypatch,
     tmp_path,
+    action,
+    method,
 ):
     state_root = tmp_path / "remote-provider"
     secret_dir = state_root / "secrets"
@@ -687,16 +694,34 @@ def test_remote_provider_peer_model_load_uses_long_timeout_and_encoded_model_id(
 
     monkeypatch.setattr(rps.httpx, "AsyncClient", FakeAsyncClient)
 
-    resp = test_client.post(
-        "/api/remote-provider/peer/models/Qwen%203.5-9B/load",
+    action_suffix = f"/{action}" if action != "delete" else ""
+    resp = test_client.request(
+        method,
+        f"/api/remote-provider/peer/models/Qwen%2FQwen%203.5%209B{action_suffix}",
         headers=test_client.auth_headers,
     )
 
     assert resp.status_code == 200
     assert resp.json() == {"status": "activated"}
-    assert captured["method"] == "POST"
-    assert captured["url"] == "https://peer.example.test/api/models/Qwen%203.5-9B/load"
-    assert captured["timeout"] == rps.PEER_PROXY_LOAD_TIMEOUT_SECONDS
+    assert captured["method"] == method
+    assert captured["url"] == f"https://peer.example.test/api/models/Qwen%2FQwen%203.5%209B{action_suffix}"
+    expected_timeout = (
+        rps.PEER_PROXY_LOAD_TIMEOUT_SECONDS if action == "load"
+        else rps.PEER_PROXY_TIMEOUT_SECONDS
+    )
+    assert captured["timeout"] == expected_timeout
+
+
+@pytest.mark.parametrize("model_id", ["org/../secret", "org//model", "../model", "org\\model"])
+def test_peer_model_id_rejects_path_traversal_and_empty_segments(model_id):
+    from fastapi import HTTPException
+
+    from routers.remote_provider_status import _safe_peer_model_id
+
+    with pytest.raises(HTTPException) as exc_info:
+        _safe_peer_model_id(model_id)
+
+    assert exc_info.value.status_code == 400
 
 
 def test_remote_provider_peer_models_fail_closed_without_peer_token(
