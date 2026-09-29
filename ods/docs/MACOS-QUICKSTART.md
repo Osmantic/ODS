@@ -4,7 +4,7 @@
 
 > **Status: Supported**
 >
-> The macOS installer runs end-to-end on Apple Silicon. One command gives you a full local AI stack with Metal-accelerated inference.
+> The macOS installer runs end-to-end on Apple Silicon. A fresh install starts with Core chat, Portal, the LiteLLM gateway, and Metal-accelerated inference; optional applications are selected separately.
 
 ---
 
@@ -37,7 +37,7 @@ The installer will:
 2. **Pick the right model** — selects optimal model size for your RAM
 3. **Download llama-server** — native macOS arm64 binary with Metal support
 4. **Download your model** — GGUF file sized for your hardware
-5. **Start Docker services** — chat UI, search, workflows, voice, and more
+5. **Start Core Docker services** — chat UI, Dashboard, and LiteLLM gateway; search, workflows, voice, and other extras are opt-in
 6. **Activate native Pixel** — use the public bundled source, with the gateway and managed helpers on macOS and ingress/sandbox services in Docker
 7. **Install OpenCode if selected** — browser-based AI coding IDE on port 3003
 
@@ -45,6 +45,14 @@ OpenCode is omitted on a fresh Core Only or noninteractive install. Select
 Full Stack, pass `--opencode`, or pass `--all` to add it. An existing loaded ODS
 OpenCode LaunchAgent stays selected on a normal rerun. `--no-opencode` disables
 future login starts while keeping the binary, config, and current session.
+
+Fresh interactive Enter and unattended installs select Core. With native Portal,
+Pixel uses its keyless `parallel-free` search provider, so Core does not start
+Token Spy or SearXNG. LiteLLM remains available to the chat UI and Portal.
+Select Full Stack or pass `--recommended` to add the optional support bundle;
+Perplexica and other selected search consumers also bring in SearXNG. Existing
+installations keep their previous default posture, and the native Pixel guard
+requires the managed update path for an already installed Portal.
 
 **Estimated time:** 5–15 minutes depending on download speed.
 
