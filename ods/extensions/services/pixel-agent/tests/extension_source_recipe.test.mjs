@@ -7,17 +7,18 @@ const source = {repository: 'https://github.com/example/project', commit: 'a'.re
   serviceId: 'example-project', name: 'Example Project', dockerfile: 'deploy/Dockerfile',
   port: 8080, healthPath: '/health', healthcheck: ['CMD', 'curl', '-f', 'http://localhost:8080/health']};
 
+const {healthPath: _health, healthcheck: _check, ...cliBase} = source;
+const cli = {...cliBase, port: 0, cliOnly: true, command: ['example-cli', 'self-test']};
+
 test('compiles only packaging conventions and preserves the researched application', () => {
-  const recipe = compileSourceRecipe(source);
-  assert.equal(recipe.manifest.service.port, 8080);
-  assert.equal(recipe.manifest.service.external_port_env, 'EXAMPLE_PROJECT_PORT');
+  const recipe = compileSourceRecipe(cli);
+  assert.equal(recipe.manifest.service.port, 0);
   const service = recipe.compose.services['example-project'];
   assert.deepEqual(service.build, {context: source.repository + '.git#' + source.commit, dockerfile: 'deploy/Dockerfile'});
   assert.equal(service.image, 'ods-source-example-project:' + source.commit);
   assert.equal(service.container_name, 'ods-example-project');
-  assert.deepEqual(service.ports, ['127.0.0.1:${EXAMPLE_PROJECT_PORT:-8080}:8080']);
-  assert.deepEqual(service.healthcheck.test, source.healthcheck);
-  assert.equal(service.command, undefined);
+  assert.deepEqual(service.command, ['example-cli', 'self-test']);
+  assert.equal(service.ports, undefined);
   assert.equal(service.user, '65532:65532');
   assert.deepEqual(service.cap_drop, ['ALL']);
   assert.deepEqual(service.security_opt, ['no-new-privileges:true']);
@@ -29,8 +30,12 @@ test('compiles only packaging conventions and preserves the researched applicati
   assert.deepEqual(recipe.compose.networks, {'example-project-sandbox': {internal: true}});
 });
 
+test('a web service is refused because the internal sandbox cannot publish a port to the host', () => {
+  assert.throws(() => compileSourceRecipe(source), /Web-service source extensions are not supported/);
+});
+
 test('inline shell variables remain in the container, not host interpolation', () => {
-  const {dockerfile, ...inline} = source;
+  const {dockerfile, ...inline} = cli;
   const recipe = compileSourceRecipe({...inline, dockerfileInline: 'FROM python:3.12-slim\nCOPY . /app\nRUN echo "$HOME"\n',
     command: ['sh', '-c', 'exec app "$PORT"']});
   const service = recipe.compose.services['example-project'];
