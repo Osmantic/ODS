@@ -1,0 +1,27 @@
+name: Audit pinned standalone ComfyUI image
+
+on:
+  push:
+    branches:
+      - codex/ods-comfy-pinned-build-audit
+
+jobs:
+  pinned-build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+      - name: Record source and runner disk
+        run: |
+          git rev-parse HEAD
+          df -h . /var/lib/docker
+          git diff --name-only 28eec048ca5dbb6d0d121076dcf5e8221bd0fb03 HEAD
+      - name: Build exact pinned image without GPU
+        run: |
+          docker build --progress=plain --tag ods-comfyui-pinned-audit \
+            --file ods/extensions/services/comfyui/Dockerfile.standalone \
+            ods/extensions/services/comfyui
+          docker image inspect ods-comfyui-pinned-audit \
+            --format '{{.Id}} {{.Size}} {{.Config.User}}'
+          docker run --rm --entrypoint python3 ods-comfyui-pinned-audit \
+            -c 'import torch, torchvision; print(torch.__version__, torchvision.__version__)'
