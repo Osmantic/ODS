@@ -2066,6 +2066,36 @@ describe('Pixel', () => {
     expect(screen.queryByText(/upstream-secret-value/)).not.toBeInTheDocument()
   })
 
+  it.each([false, true])('explains rate limits without leaking details or replaying work (restored=%s)', async restored => {
+    const error = {type:'pixel_ingress_error',code:'provider_rate_limited',message:'private-upstream-secret'}
+    const frames = [
+      JSON.stringify({choices:[{delta:{content:'Saved edits'}}]}),
+      JSON.stringify({error}),
+      JSON.stringify({choices:[{delta:{content:'False success'}}]}),
+      '[DONE]',
+    ]
+    if (restored) localStorage.setItem('ods.pixel.chat.v1', JSON.stringify({
+      schema:1,chatId:'limited-chat',requestId:'limited-attempt',inFlight:true,
+      messages:[{role:'user',content:'Continue editing'},{role:'assistant',content:''}],
+    }))
+    globalThis.fetch.mockImplementation(async url => {
+      if (url === '/api/pixel/chat/stream') return sseResponse(frames)
+      if (url === '/api/pixel/chat/result') return response({state:'interrupted',events:frames.map(frame=>'data: '+frame+'\n\n').join('')})
+      return response({available:true})
+    })
+    render(<Pixel />)
+    await screen.findByText('Available')
+    if (!restored) {
+      fireEvent.change(screen.getByPlaceholderText('Message Portal...'), {target:{value:'Continue editing'}})
+      fireEvent.click(screen.getByTitle('Send'))
+    }
+    expect(await screen.findByText(/The model provider reached its rate limit/)).toBeVisible()
+    expect(screen.getByText('Saved edits')).toBeVisible()
+    expect(screen.queryByText(/private-upstream-secret|False success/)).toBeNull()
+    await waitFor(()=>expect(JSON.parse(localStorage.getItem('ods.pixel.chat.v1')).messages.at(-1).status).toBe('error'))
+    expect(fetch.mock.calls.filter(([url])=>url==='/api/pixel/chat/stream')).toHaveLength(restored ? 0 : 1)
+  })
+
   it('marks a stream that closes without DONE as interrupted', async () => {
     globalThis.fetch.mockResolvedValueOnce(
       response({ available: true, model: 'pixel/default', detail: 'local' })

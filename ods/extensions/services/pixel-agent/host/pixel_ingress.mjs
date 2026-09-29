@@ -1232,11 +1232,16 @@ async function forwardChat(res, outgoing, token, gatewayPort, deps = defaultDeps
     );
     if (upstream.status < 200 || upstream.status >= 300) {
       await drain(upstream.body);
+      // Classify only the gateway's status, never its potentially sensitive body.
+      // A failed tool turn must not be replayed automatically.
+      const rateLimited = upstream.status === 429;
+      const message = rateLimited ? "model provider rate limit reached" : "pixel request rejected";
+      const code = rateLimited ? "provider_rate_limited" : undefined;
       if (wantsStream) {
-        res.write('data: {"error":{"message":"pixel request rejected","type":"pixel_ingress_error"}}\n\n');
+        res.write(`data: ${JSON.stringify({error:{message,type:"pixel_ingress_error",...(code ? {code} : {})}})}\n\n`);
         res.end("data: [DONE]\n\n");
       } else {
-        sendError(res, upstream.status >= 400 && upstream.status < 500 ? 400 : 502, "pixel request rejected");
+        sendError(res, rateLimited ? 429 : upstream.status >= 400 && upstream.status < 500 ? 400 : 502, message, code);
       }
       return;
     }
@@ -1338,7 +1343,7 @@ async function forwardChat(res, outgoing, token, gatewayPort, deps = defaultDeps
   }
 }
 
-function sendError(res, status, message) {
+function sendError(res, status, message, code) {
   if (res.headersSent) {
     if (!res.writableEnded) res.destroy();
     return;
@@ -1347,7 +1352,7 @@ function sendError(res, status, message) {
     "Content-Type": "application/json",
     "Cache-Control": "no-store",
   });
-  res.end(JSON.stringify({ error: { message, type: "pixel_ingress_error" } }));
+  res.end(JSON.stringify({ error: { message, type: "pixel_ingress_error", ...(code ? {code} : {}) } }));
 }
 
 function sendJson(res, status, payload) {

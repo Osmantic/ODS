@@ -64,6 +64,7 @@ function fakeGateway({
   verification = { status: "none" },
   abortReplies = [true],
   completionText = "ok",
+  completionStatus = 200,
 } = {}) {
   let abortIndex = 0;
   let completionIndex = 0;
@@ -114,7 +115,7 @@ function fakeGateway({
         res.end("data: [DONE]\n\n");
         return;
       }
-      res.writeHead(200, { "Content-Type": "application/json" });
+      res.writeHead(completionStatus, { "Content-Type": "application/json" });
       res.end(JSON.stringify(completionResponses?.[completionIndex++] ??
         { id: TEST_RUN_ID, choices: [{ message: { content: completionText } }] }));
     });
@@ -139,6 +140,30 @@ function startIngress({ token = TOKEN, gatewayPort, socket, deps } = {}) {
     server.once("error", reject);
     server.listen(socket);
   });
+}
+
+for (const stream of [false, true]) {
+  for (const status of [429, 500]) {
+    test(`sanitizes upstream ${status} while preserving rate-limit identity (stream=${stream})`, async () => {
+      let submissions = 0;
+      const gw = await fakeGateway({completionStatus:status, completionText:'private-provider-secret', onRequest:()=>submissions++});
+      const srv = await startIngress({gatewayPort:gw.port});
+      try {
+        const result = await request(srv, 'POST', '/v1/chat/completions', {
+          body:JSON.stringify({messages:[{role:'user',content:'Continue editing'}],stream}),
+          headers:{'Content-Type':'application/json'},
+        });
+        assert.equal(result.status, stream ? 200 : status === 429 ? 429 : 502);
+        assert.equal(result.body.includes('provider_rate_limited'), status === 429);
+        assert.ok(!result.body.includes('private-provider-secret'));
+        assert.equal(submissions, 1, 'never replay work after a provider failure');
+        if (stream) assert.ok(result.body.endsWith('data: [DONE]\n\n'));
+      } finally {
+        await new Promise(resolve=>srv.close(resolve));
+        await new Promise(resolve=>gw.server.close(resolve));
+      }
+    });
+  }
 }
 
 test('re-reads a briefly unavailable final receipt without resubmitting work', async()=>{
