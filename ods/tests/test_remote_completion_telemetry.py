@@ -1,12 +1,25 @@
 import json
 from pathlib import Path
 import sys
+from types import SimpleNamespace
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).parents[1] / 'bin'))
 from remote_provider.telemetry import CompletionObservation, route_fingerprint
+from remote_provider import telemetry
 
 
 ROUTE = {'routeFingerprint': 'a' * 64, 'provider': {'model': 'remote-model'}}
+
+
+@pytest.fixture
+def telemetry_clock(monkeypatch):
+    now = [1000.0]
+    # Replace only the observer's clock, not Python's shared time module.
+    monkeypatch.setattr(telemetry, 'time', SimpleNamespace(
+        monotonic=lambda: now[0], time=lambda: 1700000000.0))
+    return now
 
 
 def test_usage_is_bounded_and_never_estimated_from_text():
@@ -20,21 +33,33 @@ def test_usage_is_bounded_and_never_estimated_from_text():
         assert len(sample.buffer) <= sample.LIMIT
 
 
-def test_responses_completion_uses_actual_output_usage_and_error_invalidates_sample():
+def test_responses_completion_uses_actual_output_usage_and_error_invalidates_sample(telemetry_clock):
     sample = CompletionObservation(ROUTE)
     sample.feed(b'data: {"type":"response.completed","response":{"usage":{"output_tokens":12}}}\n\n')
-    assert sample.result()['completionTokens'] == 12
+    telemetry_clock[0] += 0.5
+    result = sample.result()
+    assert result['completionTokens'] == 12
+    assert result['elapsedMs'] == pytest.approx(500.0)
     sample.feed(b'data: {"type":"error","error":{"message":"private"}}\n\n')
     assert sample.result() is None
 
 
-def test_a_null_error_field_is_not_an_error():
+def test_a_null_error_field_is_not_an_error(telemetry_clock):
     sample = CompletionObservation(ROUTE)
     sample.feed(b'data: {"error":null,"usage":{"completion_tokens":20}}\n\ndata: [DONE]\n\n')
+    telemetry_clock[0] += 0.5
     assert sample.result()['completionTokens'] == 20
     failed = CompletionObservation(ROUTE)
     failed.feed(b'data: {"error":{"message":"x"},"usage":{"completion_tokens":20}}\n\ndata: [DONE]\n\n')
     assert failed.result() is None
+
+
+@pytest.mark.parametrize('elapsed', [0.0, -0.001, 3600.001])
+def test_completed_usage_with_invalid_elapsed_time_is_rejected(telemetry_clock, elapsed):
+    sample = CompletionObservation(ROUTE)
+    sample.feed(b'data: {"usage":{"completion_tokens":20}}\n\ndata: [DONE]\n\n')
+    telemetry_clock[0] += elapsed
+    assert sample.result() is None
 
 
 def test_malformed_provider_frames_never_escape_the_telemetry_observer():

@@ -33,6 +33,16 @@ def egress(monkeypatch):
 @pytest.mark.parametrize('ending', ['success', 'error', 'missing-usage', 'incomplete'])
 def test_completion_telemetry_preserves_response_and_only_records_confirmed_usage(egress, monkeypatch, stream, ending):
     import json
+    import itertools
+    import time
+    from types import SimpleNamespace
+    from remote_provider import telemetry
+
+    ticks = itertools.count(1000.0, 0.5)
+    # Mocked providers finish within one Windows clock tick. Keep observer
+    # timing deterministic without changing the ASGI/event-loop clocks.
+    monkeypatch.setattr(telemetry, 'time', SimpleNamespace(
+        monotonic=lambda: next(ticks), time=time.time))
     body = {'choices': [{'message': {'content': 'private answer'}}], 'usage': {'completion_tokens': 20}}
     if ending == 'missing-usage':
         body.pop('usage')
@@ -60,7 +70,7 @@ def test_completion_telemetry_preserves_response_and_only_records_confirmed_usag
         sample = client.get('/telemetry').json()['sample']
         if ending == 'success' or ending == 'incomplete' and not stream:
             assert sample['completionTokens'] == 20
-            assert sample['elapsedMs'] > 0
+            assert sample['elapsedMs'] == pytest.approx(500.0)
             assert sample['model'] == 'real-model'
             assert 'private' not in json.dumps(sample)
             route = egress._load_route()
