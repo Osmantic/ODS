@@ -1359,6 +1359,26 @@ TOWER1_PLAN = [step("assert-hidden", "#midnight-concert-card"), role_step("click
     os.environ.get("ODS_PREVIEW_BROWSER_TESTS") == "1", "real Chromium opt in"
 )
 class BrowserTests(unittest.TestCase):
+    def test_text_counter_sequence_and_delayed_update(self):
+        html = ('<output id="n">0</output><button id="add" onclick="setTimeout(()=>n.textContent=1,350)">Somar</button>'
+                '<button id="reset" onclick="n.textContent=0">Zerar</button>')
+        text = lambda value: {**step('assert-text', '#n'), 'expectedText': value}
+        result = self.check(html, [text('0'), step('click', '#add'), text('1'), step('click', '#reset'), text('0')])
+        self.assertEqual(result['status'], 'passed', result)
+        self.assertEqual([s['before']['text']['actual'] for s in result['steps'] if s['action']=='assert-text'], ['0','1','0'])
+
+    def test_text_mismatch_hidden_and_truncation_never_pass(self):
+        for html, expected in [('<p id="n">2</p>', '1'), ('<p id="n" hidden>1</p>', '1'),
+                               ('<p id="n">'+'x'*257+'</p>', 'x'*256)]:
+            with self.subTest(html=html):
+                result = self.check(html, [{**step('assert-text','#n'), 'expectedText': expected}])
+                self.assertEqual(result['status'], 'failed', result)
+
+    def test_text_uses_rendered_normalized_content_not_source(self):
+        result = self.check('<p id="n"> Olá   <span hidden>secret</span> mundo </p>',
+                            [{**step('assert-text','#n'), 'expectedText':'Olá mundo'}])
+        self.assertEqual(result['status'], 'passed', result)
+
     def check(self, html, steps, files=None, viewport=None):
         # Fixture browsers get a separate process group and deadline too. The
         # production caller uses the stricter Docker capsule, never this path.

@@ -25,7 +25,7 @@ CSP = (
     "form-action 'none'; frame-ancestors http://localhost:* http://127.0.0.1:*"
 )
 SANDBOX = "allow-scripts allow-forms allow-downloads"
-SCOPE = "Only the listed CSS layout visibility assertions and click dispatches were tested; not pixel paint, occlusion, clipping, a full accessibility audit, or overall functionality."
+SCOPE = "Only the listed CSS layout visibility, normalized visible-text assertions and click dispatches were tested; not pixel paint, occlusion, clipping, a full accessibility audit, or overall functionality."
 
 
 class Invalid(ValueError):
@@ -159,9 +159,13 @@ def validate_request(value):
     if not isinstance(steps, list) or not 1 <= len(steps) <= MAX_STEPS:
         raise Invalid("invalid steps")
     for step in steps:
-        exact(step, ("action", "locator"))
-        if step["action"] not in ("assert-visible", "assert-hidden", "click"):
+        text_step = isinstance(step, dict) and step.get("action") == "assert-text"
+        exact(step, ("action", "locator", "expectedText") if text_step else ("action", "locator"))
+        if step["action"] not in ("assert-visible", "assert-hidden", "assert-text", "click"):
             raise Invalid("invalid step")
+        if text_step and (not printable(step['expectedText'], 256, 1024)
+                          or ' '.join(step['expectedText'].split()) != step['expectedText']):
+            raise Invalid('invalid expected text')
         locator = step["locator"]
         if not isinstance(locator, dict):
             raise Invalid("invalid locator")

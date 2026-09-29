@@ -6,7 +6,8 @@ import {isDeepStrictEqual} from 'node:util';
 import {chooseTransitionTarget} from './inspection-target.mjs';
 
 export const INSPECTION_KIND = 'ods-pixel-preview-inspection';
-export const INSPECTION_SCOPE = 'Only the listed CSS layout visibility assertions and click dispatches were tested; not pixel paint, occlusion, clipping, a full accessibility audit, or overall functionality.';
+export const INSPECTION_SCOPE = 'Only the listed CSS layout visibility, normalized visible-text assertions and click dispatches were tested; not pixel paint, occlusion, clipping, a full accessibility audit, or overall functionality.';
+const LEGACY_INSPECTION_SCOPE = 'Only the listed CSS layout visibility assertions and click dispatches were tested; not pixel paint, occlusion, clipping, a full accessibility audit, or overall functionality.';
 const SOCKET = '/run/ods-pixel-inspection/control.sock';
 const HELPER = '/usr/local/libexec/ods-pixel-services/helpers/preview_inspection.py';
 const MAX_RESULT = 32768;
@@ -22,9 +23,9 @@ export const inspectionPlanHash = value => createHash('sha256').update(canonical
 export function hasVisibilityTransitionPlan(request) {
   // A click dispatch or an unchanged button does not prove its effect.
   return request.steps.some((step, index) => step.action === 'click' &&
-    request.steps.slice(0, index).some(before => before.action.startsWith('assert-') &&
+    request.steps.slice(0, index).some(before => ['assert-visible','assert-hidden'].includes(before.action) &&
       request.steps.slice(index + 1).some(after =>
-        after.action.startsWith('assert-') && after.action !== before.action &&
+        ['assert-visible','assert-hidden'].includes(after.action) && after.action !== before.action &&
         isDeepStrictEqual(before.locator, after.locator))));
 }
 
@@ -94,6 +95,7 @@ function transitionCoverageFeedback(request, result) {
   const visibilityFailure = result.steps?.find(step => step.errorCode === 'visibility_mismatch');
   if (visibilityFailure) return `Step ${visibilityFailure.index + 1} matched the element but did not observe its requested visibility. Check the actual target and its ancestors for hidden CSS, opacity and entrance animation. The inspector waits for the requested state within its bounded observation window; an opposite state remains a failure. Read the actual markup and script before changing locators or files, retain the published preview, and verify the requested behavior after any repair. Requested behavior remains unverified.`;
   if (result.status !== 'passed') return 'Requested behavior remains unverified; a failed inspection does not establish a visibility transition.';
+  if (request.steps.some(step=>step.action==='assert-text')) return 'The listed normalized visible-text values were observed in the published page. Clicks alone prove no result; text assertions before and after each click establish only those specific changes. Do not substitute simulated DOM or translated code for these browser observations.';
   if (hasVisibilityTransitionPlan(request)) return 'These steps tested opposite visibility states of the same element around a click. This does not establish every requested behavior.';
   const hasClick = request.steps.some(step => step.action === 'click');
   return 'Only the listed steps passed; no show/hide transition was tested. ' +
@@ -199,7 +201,7 @@ const INPUT_HINTS = new Map([
   ['invalid preview inspection snapshot binding','siteId does not match the snapshot sha256. Copy both from the same latest publication receipt; do not use entrySha256 or invent a digest.'],
   ['invalid preview inspection viewport','viewport must contain integer width and height from 240 to 1920.'],
   ['invalid preview inspection steps','Provide 1 to 12 supported steps per inspection.'],
-  ['invalid inspection step','Each step needs only a supported action and locator.'],
+  ['invalid inspection step','Each step needs action and locator; assert-text additionally requires expectedText (normalized visible text, 1 to 256 characters).'],
   ['invalid CSS locator','Use one bounded CSS selector, without Playwright engine prefixes or chaining.'],
   ['invalid semantic locator','Use a supported role, exact accessible name and exact:true, or a CSS selector.'],
   ['inspection request too large','Split the plan into smaller inspections.'],
@@ -211,7 +213,8 @@ export function normalizeWorkspacePreviewInspectionParams(params) {
   if(!exact(params.viewport,['width','height']) || Object.values(params.viewport).some(v=>!Number.isSafeInteger(v)||v<240||v>1920)) throw Error('invalid preview inspection viewport');
   if(!Array.isArray(params.steps)||params.steps.length<1||params.steps.length>12) throw Error('invalid preview inspection steps');
   for(const step of params.steps) {
-    if(!exact(step,['action','locator']) || !['assert-visible','assert-hidden','click'].includes(step.action)) throw Error('invalid inspection step');
+    if(!exact(step,['action','locator',...(step?.action==='assert-text'?['expectedText']:[])]) || !['assert-visible','assert-hidden','assert-text','click'].includes(step.action)) throw Error('invalid inspection step');
+    if(step.action==='assert-text' && (!printable(step.expectedText,256) || step.expectedText.replace(/\s+/g,' ').trim()!==step.expectedText)) throw Error('invalid inspection step');
     const l=step.locator;
     if(exact(l,['selector'])) {
       if(!printable(l.selector,256)||l.selector.includes('>>')||/^[A-Za-z_-]+=/.test(l.selector)) throw Error('invalid CSS locator');
@@ -221,12 +224,13 @@ export function normalizeWorkspacePreviewInspectionParams(params) {
   if(Buffer.byteLength(canonical(request))>8192) throw Error('inspection request too large');
   return request;
 }
-function stateValid(s) {
+function stateValid(s, text=false) {
   if(exact(s,['count'])) return Number.isSafeInteger(s.count)&&s.count>=0&&s.count<=100000;
-  return exact(s,['count','visible','display','visibility','opacity','hidden','hiddenUntilFound','rectCount']) && s.count===1 && ['visible','hidden','hiddenUntilFound'].every(k=>typeof s[k]==='boolean') && ['display','visibility','opacity'].every(k=>printable(s[k],64)) && Number.isSafeInteger(s.rectCount)&&s.rectCount>=0&&s.rectCount<=100000;
+  return exact(s,['count','visible','display','visibility','opacity','hidden','hiddenUntilFound','rectCount',...(text?['text']:[])]) && (!text || (exact(s.text,['actual','truncated']) && typeof s.text.actual==='string' && (s.text.actual==='' || printable(s.text.actual,256)) && typeof s.text.truncated==='boolean')) && s.count===1 && ['visible','hidden','hiddenUntilFound'].every(k=>typeof s[k]==='boolean') && ['display','visibility','opacity'].every(k=>printable(s[k],64)) && Number.isSafeInteger(s.rectCount)&&s.rectCount>=0&&s.rectCount<=100000;
 }
 export function validateWorkspacePreviewInspectionReceipt(value, request) {
-  if(!value || value.schemaVersion!==1 || value.kind!==INSPECTION_KIND || !['passed','failed'].includes(value.status) || value.siteId!==request.siteId || value.sha256!==request.sha256 || value.planSha256!==inspectionPlanHash(request) || value.scope!==INSPECTION_SCOPE) throw Error('invalid inspection binding');
+  const validScope=value?.scope===INSPECTION_SCOPE || (value?.scope===LEGACY_INSPECTION_SCOPE && !request.steps.some(step=>step.action==='assert-text'));
+  if(!value || value.schemaVersion!==1 || value.kind!==INSPECTION_KIND || !['passed','failed'].includes(value.status) || value.siteId!==request.siteId || value.sha256!==request.sha256 || value.planSha256!==inspectionPlanHash(request) || !validScope) throw Error('invalid inspection binding');
   if(value.errorCode!==undefined) {
     if(!exact(value,['schemaVersion','kind','status','errorCode','siteId','sha256','planSha256','scope'])||value.status!=='failed'||!['unavailable','output_limit','timeout','cancelled'].includes(value.errorCode)) throw Error('invalid inspection failure');
     return value;
@@ -236,15 +240,17 @@ export function validateWorkspacePreviewInspectionReceipt(value, request) {
   // Present, each must be exactly bounded.
   if(!exact(value,['schemaVersion','kind','status','siteId','sha256','planSha256','viewport','steps','diagnostics','blockedRequests',...(value.pageErrors===undefined?[]:['pageErrors']),...(value.renderedColors===undefined?[]:['renderedColors']),...(value.controls===undefined?[]:['controls']),'scope']) || (value.pageErrors!==undefined&&!pageErrorsValid(value.pageErrors)) || (value.renderedColors!==undefined&&!renderedColorsValid(value.renderedColors)) || (value.controls!==undefined&&!controlsValid(value.controls)) || canonical(value.viewport)!==canonical(request.viewport)||!Array.isArray(value.steps)||value.steps.length<1||value.steps.length>request.steps.length||!exact(value.diagnostics,['renderedHiddenAttributeCount','hiddenUntilFoundCount'])||Object.values(value.diagnostics).some(v=>!Number.isSafeInteger(v)||v<0||v>100000)||!Array.isArray(value.blockedRequests)||value.blockedRequests.length>32||value.blockedRequests.some(v=>!['navigation','network','popup','download','websocket'].includes(v))) throw Error('invalid inspection receipt');
   value.steps.forEach((step,i)=>{
+    const textStep=step.action==='assert-text', textKeys=textStep?['expectedText']:[];
+    if(textStep && step.expectedText!==request.steps[i].expectedText) throw Error('invalid text binding');
     if(step.errorCode==='invalid_selector') {
-      if(!exact(step,['index','action','locator','stable','status','errorCode'])||step.index!==i||i!==value.steps.length-1||step.action!==request.steps[i].action||canonical(step.locator)!==canonical(request.steps[i].locator)||!exact(step.locator,['selector'])||step.stable!==false||step.status!=='failed'||value.status!=='failed') throw Error('invalid selector failure evidence');
+      if(!exact(step,['index','action','locator','stable','status','errorCode',...textKeys])||step.index!==i||i!==value.steps.length-1||step.action!==request.steps[i].action||canonical(step.locator)!==canonical(request.steps[i].locator)||!exact(step.locator,['selector'])||step.stable!==false||step.status!=='failed'||value.status!=='failed') throw Error('invalid selector failure evidence');
       return;
     }
-    const keys=['index','action','locator','before','stable','status',...(step.after===undefined?[]:['after']),...(step.errorCode===undefined?[]:['errorCode'])];
-    if(!exact(step,keys)||step.index!==i||step.action!==request.steps[i].action||canonical(step.locator)!==canonical(request.steps[i].locator)||!stateValid(step.before)||typeof step.stable!=='boolean'||!['passed','failed'].includes(step.status)||(step.after!==undefined&&!stateValid(step.after))||(step.errorCode!==undefined&&!['no_match','selector_not_unique','unstable','click_failed','visibility_mismatch'].includes(step.errorCode))) throw Error('invalid action evidence');
+    const keys=['index','action','locator','before','stable','status',...textKeys,...(step.after===undefined?[]:['after']),...(step.errorCode===undefined?[]:['errorCode'])];
+    if(!exact(step,keys)||step.index!==i||step.action!==request.steps[i].action||canonical(step.locator)!==canonical(request.steps[i].locator)||!stateValid(step.before,textStep)||typeof step.stable!=='boolean'||!['passed','failed'].includes(step.status)||(step.after!==undefined&&!stateValid(step.after))||(step.errorCode!==undefined&&!['no_match','selector_not_unique','unstable','click_failed','visibility_mismatch','text_mismatch'].includes(step.errorCode))) throw Error('invalid action evidence');
     // no_match is exactly zero matches; older capsules also reported zero as selector_not_unique.
     if((step.errorCode==='no_match'&&(!exact(step.before,['count'])||step.before.count!==0))||(step.errorCode==='selector_not_unique'&&(!exact(step.before,['count'])||step.before.count===1))) throw Error('invalid match evidence');
-    if(step.status==='passed' && (!step.stable||step.before.count!==1||step.errorCode!==undefined||(step.action==='click' ? step.after===undefined : step.before.visible!==(step.action==='assert-visible')))) throw Error('unsupported inspection pass');
+    if(step.status==='passed' && (!step.stable||step.before.count!==1||step.errorCode!==undefined||(step.action==='click' ? step.after===undefined : textStep ? step.before.visible!==true || step.before.text.truncated || step.before.text.actual!==step.expectedText : step.before.visible!==(step.action==='assert-visible')))) throw Error('unsupported inspection pass');
   });
   const passed=value.steps.length===request.steps.length&&value.steps.every(s=>s.status==='passed')&&value.blockedRequests.length===0;
   if((value.status==='passed')!==passed) throw Error('invalid inspection outcome');
@@ -289,8 +295,8 @@ export function createWorkspacePreviewInspectTool({request,transport='unix',tran
   if(!['unix','native'].includes(transport))throw Error('invalid inspection transport');
   request??=transport==='unix'?unixRequest:nativeRequest;
   return {name:'pixel_ods_workspace_preview_inspect',
-    description:'Inspect an already published owned snapshot using bounded CSS or exact accessible role/name locators. Pass its exact siteId and sha256 from publication. Each step accepts exactly action and locator, with no index or other keys. A locator is {selector:"#actual-id"} or {role:"button",name:"Exact source name",exact:true}; exact:false is invalid. Immediately after publication, check each requested interaction with an initial state assertion, the relevant click, then an explicit postcondition assertion matching the requested behavior. Read actual selectors and state changes from the source; do not guess them. Do not wait until finalization. Each locator must match exactly one element. Exact role/name locators match rendered elements; assert-hidden also matches hidden ones, so one role/name can be asserted hidden, clicked into view, then asserted visible. This tests CSS layout visibility, not pixel paint, occlusion or clipping. The result also lists the rendered colors of the page by area at a desktop view as first loaded; use them to confirm a requested color change is actually visible. A click alone proves no behavioral result. Rendered hidden attributes are diagnostic; intentional CSS overrides are not automatically errors. Uncaught page script errors are reported and leave interactions unverified. Unavailable inspection is unverified, never success. No URLs or JavaScript accepted.',
-    parameters:{type:'object',additionalProperties:false,required:['siteId','sha256','viewport','steps'],properties:{siteId:{type:'string',pattern:'^site-[a-f0-9]{24}$'},sha256:{type:'string',pattern:'^[a-f0-9]{64}$',description:'Full snapshot sha256 from the same publication receipt; not entrySha256 or a site suffix.'},viewport:{type:'object',additionalProperties:false,required:['width','height'],properties:{width:{type:'integer',minimum:240,maximum:1920},height:{type:'integer',minimum:240,maximum:1920}}},steps:{type:'array',minItems:1,maxItems:12,items:{type:'object',additionalProperties:false,required:['action','locator'],properties:{action:{type:'string',enum:['assert-visible','assert-hidden','click']},locator:{oneOf:[{type:'object',additionalProperties:false,required:['selector'],properties:{selector:{type:'string',maxLength:256}}},{type:'object',additionalProperties:false,required:['role','name','exact'],properties:{role:{type:'string',enum:[...roles]},name:{type:'string',maxLength:120},exact:{const:true}}}]}}}}}},
+    description:'Inspect an already published owned snapshot using bounded CSS or exact accessible role/name locators. Pass its exact siteId and sha256 from publication. Each step accepts action and locator. assert-text also requires expectedText: the exact visible innerText after whitespace is collapsed and trimmed, 1 to 256 characters. For counters or status labels, use assert-text before and after clicking (for example 0, click Somar, 1, click Zerar, 0). This runs the real page script in Chromium; do not replace it with a reimplementation in Python or search for Node. A locator is {selector:"#actual-id"} or {role:"button",name:"Exact source name",exact:true}; exact:false is invalid. Immediately after publication, check each requested interaction with an initial state assertion, the relevant click, then an explicit postcondition assertion matching the requested behavior. Read actual selectors and state changes from the source; do not guess them. Do not wait until finalization. Each locator must match exactly one element. Exact role/name locators match rendered elements; assert-hidden also matches hidden ones, so one role/name can be asserted hidden, clicked into view, then asserted visible. This tests CSS layout visibility, not pixel paint, occlusion or clipping. The result also lists the rendered colors of the page by area at a desktop view as first loaded; use them to confirm a requested color change is actually visible. A click alone proves no behavioral result. Rendered hidden attributes are diagnostic; intentional CSS overrides are not automatically errors. Uncaught page script errors are reported and leave interactions unverified. Unavailable inspection is unverified, never success. No URLs or JavaScript accepted.',
+    parameters:{type:'object',additionalProperties:false,required:['siteId','sha256','viewport','steps'],properties:{siteId:{type:'string',pattern:'^site-[a-f0-9]{24}$'},sha256:{type:'string',pattern:'^[a-f0-9]{64}$',description:'Full snapshot sha256 from the same publication receipt; not entrySha256 or a site suffix.'},viewport:{type:'object',additionalProperties:false,required:['width','height'],properties:{width:{type:'integer',minimum:240,maximum:1920},height:{type:'integer',minimum:240,maximum:1920}}},steps:{type:'array',minItems:1,maxItems:12,items:{type:'object',additionalProperties:false,required:['action','locator'],properties:{action:{type:'string',enum:['assert-visible','assert-hidden','assert-text','click']},expectedText:{type:'string',minLength:1,maxLength:256,description:'Required only for assert-text; exact normalized visible text.'},locator:{oneOf:[{type:'object',additionalProperties:false,required:['selector'],properties:{selector:{type:'string',maxLength:256}}},{type:'object',additionalProperties:false,required:['role','name','exact'],properties:{role:{type:'string',enum:[...roles]},name:{type:'string',maxLength:120},exact:{const:true}}}]}}}}}},
     execute:async(toolCallId,params,signal)=>{
       let normalized;
       // Bad model arguments are not evidence that the installed broker is down.
@@ -324,7 +330,7 @@ export function createWorkspacePreviewInspectTool({request,transport='unix',tran
         // An incomplete inspection's evidence copy never reads "passed" overall;
         // details.receipt keeps the capsule receipt unchanged.
         const evidence=pageErrors?{...rest,pageErrors:{count:pageErrors.count}}:requirement?{...rest,status:'incomplete'}:rest;
-        const text=`${summary} ${INSPECTION_SCOPE}${palette} Evidence: ${JSON.stringify(evidence)}`;
+        const text=`${summary} ${result.scope}${palette} Evidence: ${JSON.stringify(evidence)}`;
         // Incomplete is an error outcome: it is never a pass, and the capsule
         // receipt it carries cannot bind interaction evidence.
         if (requirement) return {content:[{type:'text',text}],isError:true,details:{schemaVersion:1,kind:INSPECTION_KIND,

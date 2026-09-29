@@ -29,13 +29,15 @@ from preview_inspection_protocol import (
 )
 
 # Runs in a Chromium isolated world, not the site's mutable JS global realm.
-OBSERVE_ELEMENT = r"""function() {
+OBSERVE_ELEMENT = r"""function(includeText) {
   const element = this, style = getComputedStyle(element);
   const rects = [...element.getClientRects()].filter(r => r.width > 0 && r.height > 0);
   return {count:1, visible:element.checkVisibility({checkOpacity:true,checkVisibilityCSS:true,contentVisibilityAuto:true}) && rects.length > 0,
     display:style.display, visibility:style.visibility, opacity:style.opacity,
     hidden:element.hasAttribute('hidden'), hiddenUntilFound:element.getAttribute('hidden') === 'until-found',
-    rectCount:rects.length};
+    rectCount:rects.length,
+    ...(includeText ? (() => { const text=Array.from((element.innerText || '').replace(/\s+/g,' ').trim());
+      return {text:{actual:text.slice(0,256).join(''),truncated:text.length>256}}; })() : {})};
 }"""
 
 DIAGNOSTIC = r"""function() {
@@ -820,7 +822,7 @@ def capture_palette(browser, origin, prefix):
         context.close()
 
 
-def observe_until_stable(once, wait, expected=None):
+def observe_until_stable(once, wait, expected=None, expected_text=None):
     # Keep the 100ms fast path. A finite transition may need more samples,
     # but changing observations never become a passing assertion on timeout.
     # The broker's independent 45s capsule deadline still bounds all steps.
@@ -839,8 +841,9 @@ def observe_until_stable(once, wait, expected=None):
         # A delayed entrance can remain hidden for two identical samples.
         # Assertions wait for their expected state within the SAME deadline;
         # an unchanged opposite state still fails the caller's assertion.
-        if stable and (expected is None or current.get("count") != 1
-                       or current.get("visible") is expected):
+        text_matches = expected_text is None or current.get('text') == {'actual': expected_text, 'truncated': False}
+        if stable and (current.get("count") != 1 or
+                       ((expected is None or current.get("visible") is expected) and text_matches)):
             return current, True
         previous = current
 
@@ -1016,10 +1019,10 @@ def run_browser(bundle, playwright_factory=None):
                 )["result"]["objectId"]
                 return 1, node
 
-            def once(locator, include_hidden=False):
+            def once(locator, include_hidden=False, include_text=False):
                 owned = []
                 try:
-                    return measure(locator, include_hidden, owned)
+                    return measure(locator, include_hidden, owned, include_text)
                 finally:
                     for object_id in dict.fromkeys(owned):
                         try:
@@ -1027,7 +1030,7 @@ def run_browser(bundle, playwright_factory=None):
                         except Exception:
                             pass
 
-            def measure(locator, include_hidden, owned):
+            def measure(locator, include_hidden, owned, include_text=False):
                 if blocked:
                     raise Invalid("preview navigation or request blocked")
                 if "selector" in locator:
@@ -1078,6 +1081,7 @@ def run_browser(bundle, playwright_factory=None):
                     {
                         "objectId": node,
                         "functionDeclaration": OBSERVE_ELEMENT,
+                        "arguments": [{"value": include_text}],
                         "returnByValue": True,
                     },
                 )
@@ -1085,9 +1089,9 @@ def run_browser(bundle, playwright_factory=None):
                     raise Invalid("inspection failed")
                 return result["result"]["value"]
 
-            def observe(locator, include_hidden=False, expected=None):
+            def observe(locator, include_hidden=False, expected=None, expected_text=None):
                 return observe_until_stable(
-                    lambda: once(locator, include_hidden), page.wait_for_timeout, expected
+                    lambda: once(locator, include_hidden, expected_text is not None), page.wait_for_timeout, expected, expected_text
                 )
 
             page.wait_for_timeout(100)
@@ -1106,7 +1110,8 @@ def run_browser(bundle, playwright_factory=None):
                     # and they match Playwright's source-text names too.
                     before, stable = observe(
                         step["locator"], step["action"] == "assert-hidden",
-                        None if step["action"] == "click" else step["action"] == "assert-visible",
+                        None if step["action"] == "click" else step["action"] != "assert-hidden",
+                        step.get('expectedText'),
                     )
                 except InvalidSelector:
                     # No DOM observation exists for invalid syntax. Preserve
@@ -1148,6 +1153,12 @@ def run_browser(bundle, playwright_factory=None):
                         )
                     except Exception:
                         item["errorCode"] = "click_failed"
+                elif step['action'] == 'assert-text':
+                    matches = before.get('visible') is True and before.get('text') == {
+                        'actual': step['expectedText'], 'truncated': False}
+                    item['status'] = 'passed' if matches else 'failed'
+                    if not matches:
+                        item['errorCode'] = 'text_mismatch'
                 else:
                     expected = step["action"] == "assert-visible"
                     item["status"] = (
