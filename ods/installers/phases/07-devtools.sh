@@ -19,7 +19,11 @@ ods_progress 42 "devtools" "Installing developer tools"
 # shellcheck source=../lib/node-runtime.sh
 . "$SCRIPT_DIR/installers/lib/node-runtime.sh"
 if $DRY_RUN; then
-    log "[DRY RUN] Would install AI developer tools (Claude Code and Codex CLI)"
+    if [[ "${ENABLE_DEVTOOLS:-false}" == true ]]; then
+        log "[DRY RUN] Would install AI developer tools (Claude Code and Codex CLI)"
+    else
+        log "[DRY RUN] Developer CLIs disabled; existing binaries would be preserved"
+    fi
     if [[ "${ENABLE_OPENCODE:-false}" == "true" ]]; then
         log "[DRY RUN] Would install and configure the optional OpenCode browser IDE (user-level systemd service on port 3003)"
     else
@@ -28,7 +32,8 @@ if $DRY_RUN; then
     log "[DRY RUN] Would install ODS host agent systemd service (system-mode, port 7710)"
     log "[DRY RUN] Would install ODS mDNS announcer systemd service (if zeroconf available)"
 else
-    ai "Installing AI developer tools..."
+    if [[ "${ENABLE_DEVTOOLS:-false}" == true ]]; then
+        ai "Installing AI developer tools..."
 
     # Ensure Node.js/npm is available (needed for Claude Code and Codex)
     if ! ods_linux_node_tools_available; then
@@ -105,6 +110,9 @@ else
     else
         ai_warn "Linux Node.js 20+ and npm are not available — skipping Claude Code and Codex CLI install"
         ai "  Install Linux Node.js 22+ and re-run to add Claude Code / Codex."
+    fi
+    else
+        log "Developer CLI installation disabled; existing Claude Code and Codex binaries preserved"
     fi
 
     if [[ "${ENABLE_OPENCODE:-false}" == "true" ]]; then

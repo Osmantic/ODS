@@ -141,6 +141,12 @@ if $ODS_EXISTING_INSTALL && command -v systemctl >/dev/null 2>&1 \
     && systemctl --user is-enabled --quiet opencode-web.service 2>/dev/null; then
     ENABLE_OPENCODE=true
 fi
+ENABLE_DEVTOOLS=false
+if $ODS_EXISTING_INSTALL &&
+   [[ "$(external_llm_env_value "$INSTALL_DIR/.env" ENABLE_DEVTOOLS || true)" == true ]]; then
+    ENABLE_DEVTOOLS=true
+fi
+DEVTOOLS_EXPLICIT=false
 ENABLE_COMFYUI="$(ods_installed_service_default "$INSTALL_DIR" comfyui "$ODS_EXISTING_INSTALL")"
 ENABLE_APE="$(ods_installed_service_default "$INSTALL_DIR" ape "$ODS_EXISTING_INSTALL")"
 ENABLE_PERPLEXICA="$(ods_installed_service_default "$INSTALL_DIR" perplexica "$ODS_EXISTING_INSTALL")"
@@ -247,6 +253,8 @@ Options:
     --no-openclaw     Disable OpenClaw
     --opencode        Enable the optional OpenCode browser IDE
     --no-opencode     Disable the optional OpenCode browser IDE (default)
+    --with-devtools   Install Claude Code and Codex CLI on this host
+    --no-devtools     Skip developer CLI installation; keep existing binaries
     --comfyui         Enable ComfyUI image generation
     --no-comfyui      Disable ComfyUI image generation (saves ~34GB)
     --odsforge      Deprecated no-op; ODSForge has been removed
@@ -334,6 +342,8 @@ while [[ $# -gt 0 ]]; do
         --no-openclaw) ENABLE_OPENCLAW=false; OPENCLAW_EXPLICIT=true; shift ;;
         --opencode) ENABLE_OPENCODE=true; shift ;;
         --no-opencode) ENABLE_OPENCODE=false; shift ;;
+        --with-devtools) ENABLE_DEVTOOLS=true; DEVTOOLS_EXPLICIT=true; shift ;;
+        --no-devtools) ENABLE_DEVTOOLS=false; DEVTOOLS_EXPLICIT=true; shift ;;
         --comfyui) ENABLE_COMFYUI=true; shift ;;
         --no-comfyui) ENABLE_COMFYUI=false; shift ;;
         --odsforge) printf '%s\n' '[WARN] ODSForge has been removed; ignoring --odsforge' >&2; shift ;;
@@ -351,7 +361,7 @@ while [[ $# -gt 0 ]]; do
         # nothing serves it, and a phone clicking the invite gets
         # "site can't be reached." Operators who don't want the LAN-facing
         # surface can set ENABLE_ODS_PROXY=false in .env after install.
-        --all) ENABLE_VOICE=true; ENABLE_WORKFLOWS=true; ENABLE_RAG=true; ENABLE_RECOMMENDED=true; ENABLE_HERMES=true; ENABLE_OPENCLAW=false; ENABLE_OPENCODE=true; ENABLE_COMFYUI=true; ENABLE_APE=true; ENABLE_PERPLEXICA=true; ENABLE_PRIVACY_SHIELD=true; ENABLE_LANGFUSE=true; ENABLE_ODS_PROXY=true; shift ;;
+        --all) ENABLE_VOICE=true; ENABLE_WORKFLOWS=true; ENABLE_RAG=true; ENABLE_RECOMMENDED=true; ENABLE_HERMES=true; ENABLE_OPENCLAW=false; ENABLE_OPENCODE=true; ENABLE_DEVTOOLS=true; ENABLE_COMFYUI=true; ENABLE_APE=true; ENABLE_PERPLEXICA=true; ENABLE_PRIVACY_SHIELD=true; ENABLE_LANGFUSE=true; ENABLE_ODS_PROXY=true; shift ;;
         --non-interactive) INTERACTIVE=false; shift ;;
         --offline) OFFLINE_MODE=true; shift ;;
         --lan) BIND_ADDRESS="0.0.0.0"; BIND_ADDRESS_EXPLICIT=true; shift ;;
