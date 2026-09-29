@@ -28,6 +28,33 @@ fail() {
     exit 1
 }
 
+show_install_diagnostics() {
+    python3 - "$LOG_FILE" "$key_file" "$INSTALL_DIR/.env" <<'PY' >&2
+from pathlib import Path
+import re
+import sys
+
+log_path, key_path, env_path = map(Path, sys.argv[1:])
+secrets = []
+if key_path.exists():
+    secrets.append(key_path.read_text(encoding="utf-8").strip())
+if env_path.exists():
+    for line in env_path.read_text(encoding="utf-8", errors="replace").splitlines():
+        match = re.match(r"^(?:export )?([A-Z0-9_]+)=(.*)$", line)
+        if match and any(word in match[1] for word in ("KEY", "TOKEN", "SECRET", "PASSWORD")):
+            secrets.append(match[2].strip("\"'"))
+print("Sanitized installer log tail:")
+for line in log_path.read_text(encoding="utf-8", errors="replace").splitlines()[-90:]:
+    for secret in secrets:
+        if secret:
+            line = line.replace(secret, "<redacted>")
+    line = re.sub(r"(?i)Bearer\s+\S+", "Bearer <redacted>", line)
+    line = re.sub(r"(?i)([?&](?:key|token|secret|password)=)[^&\s]+", r"\1<redacted>", line)
+    line = re.sub(r"\b(?:sk-|mock-)[A-Za-z0-9_-]{12,}\b", "<redacted>", line)
+    print(line[:500])
+PY
+}
+
 compose_services() (
     cd "$INSTALL_DIR"
     [[ -s .compose-flags ]] || return 1
@@ -59,7 +86,8 @@ run_installer() {
         --external-llm-provider openai-compatible \
         --external-llm-model "$model" \
         --external-llm-key-file "$key_file") >>"$LOG_FILE" 2>&1; then
-        fail 'fresh standard installer did not finish; inspect private runner log'
+        show_install_diagnostics
+        fail 'fresh standard installer did not finish'
     fi
 }
 
