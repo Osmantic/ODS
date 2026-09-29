@@ -105,8 +105,13 @@ function findHealthyService(services, serviceId) {
   )
 }
 
-function pickFeatureLink(feature, services) {
+function pickFeatureLink(feature, services, portalChatAvailable = false) {
   const featureKey = normalizeServiceKey(feature?.id)
+  // The Dashboard renders Portal itself. A healthy Portal status is the
+  // authority for its chat card when Open WebUI is not in this installation.
+  if (featureKey === 'chat' && !findHealthyService(services, 'open-webui')) {
+    return portalChatAvailable ? '/' : null
+  }
   const launch = feature?.launch || FEATURE_LAUNCH_FALLBACKS[featureKey]
   if (launch?.type === 'none') return null
   if (launch?.type === 'internal') return launch.path || null
@@ -651,6 +656,31 @@ function TelemetryNotice({telemetry}) {
 export default function Dashboard({ status, loading, compact = false }) {
   const [featuresData, setFeaturesData] = useState(null)
   const [serviceResources, setServiceResources] = useState(null)
+  const [portalChatAvailable, setPortalChatAvailable] = useState(false)
+  const webuiHealthy = Boolean(findHealthyService(status?.services, 'open-webui'))
+
+  useEffect(() => {
+    if (webuiHealthy) {
+      setPortalChatAvailable(false)
+      return undefined
+    }
+    let active = true
+    let timer
+    const probe = async () => {
+      try {
+        const response = await fetch('/api/pixel/status', { cache: 'no-store' })
+        if (!response.ok) throw new Error('Portal status unavailable')
+        const data = await response.json()
+        if (active) setPortalChatAvailable(data?.available === true || data?.state === 'model_incompatible')
+      } catch {
+        if (active) setPortalChatAvailable(false)
+      } finally {
+        if (active) timer = globalThis.setTimeout(probe, 15000)
+      }
+    }
+    probe()
+    return () => { active = false; globalThis.clearTimeout(timer) }
+  }, [webuiHealthy])
 
   useEffect(() => {
     let mounted = true
@@ -895,23 +925,24 @@ export default function Dashboard({ status, loading, compact = false }) {
       {/* Feature Cards */}
       <div className="liquid-metal-sequence-grid liquid-metal-sequence-grid--features grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-2.5 mb-10">
         {features.length > 0 ? (
-          features.map(feature => (
-            <FeatureCard
+          features.map(feature => {
+            const portalChat = normalizeServiceKey(feature.id) === 'chat' && !webuiHealthy
+            return <FeatureCard
               key={feature.id}
               icon={FEATURE_ICONS[feature.icon] || MessageSquare}
               title={feature.name}
               description={feature.description}
-              href={pickFeatureLink(feature, status?.services)}
-              status={normalizeFeatureStatus(feature.status)}
-              hint={
-                feature.status === 'services_needed'
+              href={pickFeatureLink(feature, status?.services, portalChatAvailable)}
+              status={portalChat ? portalChatAvailable ? 'ready' : 'disabled' : normalizeFeatureStatus(feature.status)}
+              hint={portalChat
+                ? portalChatAvailable ? 'Portal agent chat' : 'Portal agent unavailable'
+                : feature.status === 'services_needed'
                   ? `Needs services: ${(feature.requirements?.servicesMissing || []).join(', ')}`
                   : feature.status === 'insufficient_vram'
                     ? `Needs ${feature.requirements?.vramGb || 0}GB VRAM`
-                    : undefined
-              }
+                    : undefined}
             />
-          ))
+          })
         ) : (
           <FeatureCard
             icon={MessageSquare}

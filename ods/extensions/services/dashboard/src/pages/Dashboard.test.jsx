@@ -35,6 +35,7 @@ const baseStatus = {
 let mockResources
 let mockFeatures
 let mockFeatureSuggestions
+let mockPixelStatus
 let restartCalls
 let restartDeferred
 
@@ -52,6 +53,12 @@ function installFetchMock() {
   restartCalls = []
   restartDeferred = null
   vi.stubGlobal('fetch', vi.fn(async (url, options = {}) => {
+    if (String(url).includes('/api/pixel/status')) {
+      return {
+        ok: true,
+        json: async () => mockPixelStatus,
+      }
+    }
     if (String(url).includes('/api/features')) {
       return {
         ok: true,
@@ -93,6 +100,7 @@ describe('Dashboard system overview', () => {
     document.documentElement.dataset.theme = 'light'
     mockFeatures = []
     mockFeatureSuggestions = []
+    mockPixelStatus = { available: false, state: 'unavailable' }
     mockResources = {
       services: services.map(service => ({
         id: service.name.toLowerCase().replace(/\([^)]*\)/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, ''),
@@ -571,6 +579,41 @@ describe('Dashboard system overview', () => {
     expect(screen.getByRole('link', { name: /Hermes Single Sign-On/ })).toHaveAttribute('href', '/invites')
     expect(screen.queryByRole('link', { name: /Remote Access/ })).not.toBeInTheDocument()
     expect(screen.getByText('Remote Access')).toBeInTheDocument()
+  })
+
+  it('opens Portal chat without Open WebUI when the Portal agent is available', async () => {
+    mockPixelStatus = { available: true, state: 'ready' }
+    mockFeatures = [{
+      id: 'chat', name: 'AI Chat', description: 'Chat with a model', icon: 'MessageSquare',
+      status: 'services_needed', launch: { type: 'service', service: 'open-webui' },
+      requirements: { servicesMissing: ['llama-server', 'open-webui'] },
+    }]
+
+    await renderDashboard({
+      ...baseStatus,
+      services: services.filter(service => !service.name.startsWith('Open WebUI')),
+    })
+
+    expect(await screen.findByRole('link', { name: /AI Chat/ })).toHaveAttribute('href', '/')
+    expect(screen.getByTitle('Chat with a model Portal agent chat')).toBeInTheDocument()
+    expect(fetch).toHaveBeenCalledWith('/api/pixel/status', { cache: 'no-store' })
+  })
+
+  it('does not offer a dead chat link when both Open WebUI and Portal are unavailable', async () => {
+    mockFeatures = [{
+      id: 'chat', name: 'AI Chat', description: 'Chat with a model', icon: 'MessageSquare',
+      status: 'services_needed', launch: { type: 'service', service: 'open-webui' },
+      requirements: { servicesMissing: ['llama-server', 'open-webui'] },
+    }]
+
+    await renderDashboard({
+      ...baseStatus,
+      services: services.filter(service => !service.name.startsWith('Open WebUI')),
+    })
+
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith('/api/pixel/status', { cache: 'no-store' }))
+    expect(screen.queryByRole('link', { name: /AI Chat/ })).not.toBeInTheDocument()
+    expect(screen.getByTitle('Chat with a model Portal agent unavailable')).toBeInTheDocument()
   })
 
   it('keeps legacy feature cards away from raw backend API ports', async () => {
