@@ -85,7 +85,13 @@ try {
     Assert-Reasoning (Get-ODSNativeReasoningArgs -Executable $withReasoning -Mode "" -FallbackFormat "none") @("--reasoning", "off") "b9014 default"
     Assert-Reasoning (Get-ODSNativeReasoningArgs -Executable $withReasoning -Mode "auto" -FallbackFormat "auto") @("--reasoning", "auto") "b9014 auto"
     Assert-Reasoning (Get-ODSNativeReasoningArgs -Executable $withReasoning -Mode "deepseek" -FallbackFormat "deepseek") @("--reasoning-format", "deepseek") "format name"
-    Assert-Reasoning (Get-ODSNativeReasoningArgs -Executable $withReasoning -Mode "OFF" -FallbackFormat "OFF") @("--reasoning-format", "OFF") "case-sensitive mode"
+    # Modes are case-insensitive, as in ods-host-agent.py and bootstrap-upgrade.sh.
+    # The launchers' switch already maps OFF to the "none" format, so a
+    # case-sensitive mode here turned OFF into --reasoning-format none alone:
+    # b9014's default --reasoning auto then kept thinking on in the reply.
+    Assert-Reasoning (Get-ODSNativeReasoningArgs -Executable $withReasoning -Mode "OFF" -FallbackFormat "none") @("--reasoning", "off") "b9014 OFF"
+    Assert-Reasoning (Get-ODSNativeReasoningArgs -Executable $withReasoning -Mode "Auto" -FallbackFormat "Auto") @("--reasoning", "auto") "b9014 Auto"
+    Assert-Reasoning (Get-ODSNativeReasoningArgs -Executable $b8248Reasoning -Mode "Off" -FallbackFormat "none") @("--reasoning-format", "none", "--reasoning-budget", "0") "b8248 Off"
     Assert-Reasoning (Get-ODSNativeReasoningArgs -Executable $b8248Reasoning -Mode "off" -FallbackFormat "none") @("--reasoning-format", "none", "--reasoning-budget", "0") "b8248 off"
     Assert-Reasoning (Get-ODSNativeReasoningArgs -Executable $b8248Reasoning -Mode "" -FallbackFormat "none") @("--reasoning-format", "none", "--reasoning-budget", "0") "b8248 default"
     Assert-Reasoning (Get-ODSNativeReasoningArgs -Executable $b8248Reasoning -Mode "on" -FallbackFormat "deepseek") @("--reasoning-format", "deepseek") "b8248 on"
