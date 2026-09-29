@@ -159,12 +159,12 @@ def validate_config(config):
     if native and (
         not isinstance(config["docker"], str)
         or not re.fullmatch(
-            r"(?:/Applications/Docker\.app/Contents/Resources/bin/docker|/(?:opt/homebrew|usr/local)/Cellar/docker/(?!\.{1,2}/)[A-Za-z0-9._+-]+/bin/docker)",
+            r"(?:/Applications/Docker\.app/Contents/Resources/bin/docker|/Applications/OrbStack\.app/Contents/MacOS/xbin/docker|/(?:opt/homebrew|usr/local)/Cellar/docker/(?!\.{1,2}/)[A-Za-z0-9._+-]+/bin/docker)",
             config["docker"],
         )
         or not isinstance(config["dockerSocket"], str)
         or not re.fullmatch(
-            r"/Users/(?!\.{1,2}/)[A-Za-z0-9._-]+/(?:\.docker/run/docker\.sock|\.colima/[A-Za-z0-9_-]+/docker\.sock)",
+            r"/Users/(?!\.{1,2}/)[A-Za-z0-9._-]+/(?:\.(?:docker|orbstack)/run/docker\.sock|\.colima/[A-Za-z0-9_-]+/docker\.sock)",
             config["dockerSocket"],
         )
         or not isinstance(config["dockerSha256"], str)
@@ -186,7 +186,7 @@ def native_binding(*, docker_binary, docker_host, owner_uid):
     home = Path(pwd.getpwuid(owner_uid).pw_dir)
     if not re.fullmatch(
         re.escape(str(home))
-        + r"/(?:\.docker/run/docker\.sock|\.colima/[A-Za-z0-9_-]+/docker\.sock)",
+        + r"/(?:\.(?:docker|orbstack)/run/docker\.sock|\.colima/[A-Za-z0-9_-]+/docker\.sock)",
         endpoint[7:],
     ):
         raise ValueError("native-inspection-socket-owner-mismatch")

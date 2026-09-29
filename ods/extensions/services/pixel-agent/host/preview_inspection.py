@@ -93,13 +93,13 @@ def load_config():
         if (
             str(binary) != config["docker"]
             or not re.fullmatch(
-                r"(?:/Applications/Docker\.app/Contents/Resources/bin/docker|/(?:opt/homebrew|usr/local)/Cellar/docker/(?!\.{1,2}/)[A-Za-z0-9._+-]+/bin/docker)",
+                r"(?:/Applications/Docker\.app/Contents/Resources/bin/docker|/Applications/OrbStack\.app/Contents/MacOS/xbin/docker|/(?:opt/homebrew|usr/local)/Cellar/docker/(?!\.{1,2}/)[A-Za-z0-9._+-]+/bin/docker)",
                 str(binary),
             )
             or not isinstance(endpoint, str)
             or not re.fullmatch(
                 re.escape(str(home))
-                + r"/(?:\.docker/run/docker\.sock|\.colima/[A-Za-z0-9_-]+/docker\.sock)",
+                + r"/(?:\.(?:docker|orbstack)/run/docker\.sock|\.colima/[A-Za-z0-9_-]+/docker\.sock)",
                 endpoint,
             )
             or not isinstance(config["dockerSha256"], str)
