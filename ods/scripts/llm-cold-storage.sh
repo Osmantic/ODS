@@ -28,8 +28,9 @@ esac
 LOG_FILE="${LOG_FILE:-$HOME/.local/log/llm-cold-storage.log}"
 MAX_IDLE_DAYS=7
 
-# Ensure the log directory exists
+# Ensure the log and cold storage directories exist
 mkdir -p "$(dirname "$LOG_FILE")"
+mkdir -p "$COLD_DIR"
 
 # Models to never archive (currently serving or critical)
 PROTECTED_MODELS=(
@@ -127,7 +128,7 @@ do_archive() {
             else
                 log "ARCHIVING: $name ($size, idle ${idle_days}d)"
                 # Move to cold storage
-                mv "$model_dir" "$COLD_DIR/$name"
+                mv "${model_dir%/}" "$COLD_DIR/$name"
                 # Create symlink so HF cache still resolves
                 ln -s "$COLD_DIR/$name" "${model_dir%/}"
                 log "ARCHIVED: $name -> $COLD_DIR/$name"
@@ -182,7 +183,7 @@ do_restore_all() {
         fi
 
         log "RESTORING: $name"
-        mv "$cold_model" "$cache_path"
+        mv "${cold_model%/}" "$cache_path"
         log "RESTORED: $name"
     done
     log "========== All models restored =========="

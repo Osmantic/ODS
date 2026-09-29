@@ -234,7 +234,9 @@ jobs:
         run: bash tests/run-bats.sh
 
       - name: Cold storage relative-path round trips
-        run: python3 tests/test-cold-storage-relative-links.py
+        run: |
+          python3 tests/test-cold-storage-relative-links.py
+          python3 tests/test_cold_storage_initial_directory.py
 
       - name: Tier Map Unit Tests
         run: bash tests/test-tier-map.sh
