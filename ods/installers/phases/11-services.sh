@@ -152,6 +152,36 @@ _phase11_recreate_exited_services() {
         >> "$LOG_FILE" 2>&1
 }
 
+# Docker's global `ps` sees containers from every project on the daemon. Keep
+# launch recovery scoped to services declared by this Compose project, and do
+# not revive orphaned containers left behind by older project definitions.
+_phase11_start_created_containers() {
+    local created_output container_id
+    local -a created_ids=()
+
+    if ! created_output="$($DOCKER_COMPOSE_CMD "${COMPOSE_FLAGS_ARR[@]}" \
+        ps --all --orphans=false --status created --quiet 2>>"$LOG_FILE")"; then
+        log "Could not enumerate created compose containers for bounded launch recovery."
+        return 1
+    fi
+
+    while IFS= read -r container_id; do
+        [[ -n "$container_id" ]] || continue
+        if [[ ! "$container_id" =~ ^[[:xdigit:]]{12,64}$ ]]; then
+            log "Refusing malformed created compose container ID during launch recovery."
+            return 1
+        fi
+        created_ids+=("$container_id")
+        if (( ${#created_ids[@]} > 64 )); then
+            log "Refusing more than 64 created compose containers during launch recovery."
+            return 1
+        fi
+    done <<< "$created_output"
+
+    (( ${#created_ids[@]} > 0 )) || return 0
+    $DOCKER_CMD start "${created_ids[@]}" >>"$LOG_FILE" 2>&1
+}
+
 _phase11_download_hf_artifact() {
     local url="$1" destination="$2" log_file="$3"
     local helper="$INSTALL_DIR/scripts/download-hf-artifact.py"
@@ -1273,7 +1303,7 @@ MODELS_INI_EOF
     # starting other containers. Some end up in "Created", others never got
     # past "Creating" because their dependencies weren't ready yet.
     # Step 1: start any containers already in Created state
-    $DOCKER_CMD start $($DOCKER_CMD ps -a --filter status=created -q) 2>/dev/null || true
+    _phase11_start_created_containers || true
     # Step 2: wait for services to stabilize, then compose pass
     sleep 10
     # Preserve the recovery result. A successful recovery must be allowed to
@@ -1287,7 +1317,7 @@ MODELS_INI_EOF
         compose_ok=true
     fi
     # Step 3: catch any stragglers from the second pass
-    $DOCKER_CMD start $($DOCKER_CMD ps -a --filter status=created -q) 2>/dev/null || true
+    _phase11_start_created_containers || true
 
     # If ODS_AGENT_BIND is unset, the Linux host-agent binds to the ODS
     # Docker network gateway once that network exists. Phase 07 may have
