@@ -31,6 +31,8 @@
 #   .\install-windows.ps1 --Cloud          # Cloud-only (no local GPU)
 #   .\install-windows.ps1 --DryRun         # Validate without installing
 #   .\install-windows.ps1 --All            # Enable all optional services
+#   .\install-windows.ps1 -DevTools       # Install OpenCode, Claude Code, Codex CLI
+#   .\install-windows.ps1 -NoDevTools     # Disable their login task on a rerun
 #   .\install-windows.ps1 --Hermes         # Enable Hermes Agent
 #   .\install-windows.ps1 -NoHermes        # Disable Hermes Agent
 #   .\install-windows.ps1 -NoBootstrap     # Wait for full model before launch
@@ -57,6 +59,8 @@ param(
     [switch]$Cloud,
     [switch]$Comfyui,
     [switch]$NoComfyui,
+    [switch]$DevTools,
+    [switch]$NoDevTools,
     [switch]$Lan,
     [switch]$Langfuse,
     [switch]$NoLangfuse,
@@ -91,6 +95,7 @@ $LibDir = Join-Path $ScriptDir "lib"
 . (Join-Path $LibDir "opencode-config.ps1")
 . (Join-Path $LibDir "readiness-summary.ps1")
 . (Join-Path $LibDir "service-plan.ps1")
+. (Join-Path $LibDir "devtools-selection.ps1")
 
 # Preserve the caller's Docker client configuration before any installer phase
 # changes location. Docker accepts relative DOCKER_CONFIG values, whose meaning
@@ -125,12 +130,25 @@ $openClawFlag   = $OpenClaw.IsPresent
 $allFlag        = $All.IsPresent
 $comfyuiFlag    = $Comfyui.IsPresent
 $noComfyuiFlag  = $NoComfyui.IsPresent
+$devToolsFlag   = $DevTools.IsPresent
+$noDevToolsFlag = $NoDevTools.IsPresent
 $lanFlag        = $Lan.IsPresent
 $langfuseFlag   = $Langfuse.IsPresent
 $noLangfuseFlag = $NoLangfuse.IsPresent
 $noBootstrapFlag = $NoBootstrap.IsPresent
 $installDir     = $script:ODS_INSTALL_DIR
 $sourceRoot     = $SourceRoot
+$enableDevTools = Resolve-ODSWindowsDevToolsSelection `
+    -ExplicitEnable $devToolsFlag -ExplicitDisable $noDevToolsFlag -All $allFlag `
+    -TaskName $script:OPENCODE_TASK_NAME `
+    -ExpectedLauncher (Join-Path $script:OPENCODE_DIR 'start-opencode.ps1')
+if ($noDevToolsFlag -and -not $dryRun) {
+    if (Disable-ODSWindowsOpenCodeLoginTask `
+        -TaskName $script:OPENCODE_TASK_NAME `
+        -ExpectedLauncher (Join-Path $script:OPENCODE_DIR 'start-opencode.ps1')) {
+        Write-AI 'Disabled the ODS OpenCode login task; existing binaries and sessions remain.'
+    }
+}
 
 # ── Phase dispatcher ──────────────────────────────────────────────────────────
 function Get-UsableWindowsBash {
@@ -2597,6 +2615,7 @@ if ($SummaryJsonPath) {
             comfyui      = $enableComfyui
             deepResearch = $enableDeepResearch
             privacyShield = $enablePrivacyShield
+            devTools     = $enableDevTools
         }
         healthy    = $allHealthy
         timestamp  = (Get-Date -Format "o")
