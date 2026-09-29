@@ -85,15 +85,54 @@ external_llm_container_url() {
     printf '%s\n' "$url"
 }
 
+# Read a credential without putting it in an installer argument, log, or curl
+# command line. The installed copy is mounted into LiteLLM read-only.
+external_llm_read_api_key() {
+    local path="${1:-}"
+    EXTERNAL_LLM_KEY_PATH="$path" python3 - <<'PY'
+import os
+import stat
+import sys
+
+path = os.environ.get("EXTERNAL_LLM_KEY_PATH", "")
+try:
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    info = os.fstat(fd)
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():
+        raise ValueError()
+    if stat.S_IMODE(info.st_mode) not in (0o600, 0o400) or not 0 < info.st_size <= 4096:
+        raise ValueError()
+    with os.fdopen(fd, "rb") as handle:
+        value = handle.read()
+    value = value.removesuffix(b"\n")
+    if not value or any(byte < 33 or byte > 126 for byte in value):
+        raise ValueError()
+    sys.stdout.write(value.decode("ascii"))
+except (OSError, ValueError):
+    print("External LLM key file must be owner-owned, private, and contain one printable ASCII line.", file=sys.stderr)
+    sys.exit(1)
+PY
+}
+
+external_llm_curl() {
+    local key_file="${EXTERNAL_LLM_API_KEY_FILE:-}" key
+    if [[ -n "$key_file" ]]; then
+        key="$(external_llm_read_api_key "$key_file")" || return 1
+        curl -H @<(printf 'Authorization: Bearer %s\n' "$key") "$@"
+    else
+        curl "$@"
+    fi
+}
+
 external_llm_models() {
     local provider="${1:-}" url="${2:-}" response
     url="$(external_llm_host_url "$url")"
     case "$provider" in
         ollama)
-            response="$(curl -fsS --max-time 5 "${url}/api/tags" 2>/dev/null)" || return 1
+            response="$(external_llm_curl -fsS --max-time 5 "${url}/api/tags" 2>/dev/null)" || return 1
             ;;
         lmstudio|openai-compatible)
-            response="$(curl -fsS --max-time 5 "${url}/v1/models" 2>/dev/null)" || return 1
+            response="$(external_llm_curl -fsS --max-time 5 "${url}/v1/models" 2>/dev/null)" || return 1
             ;;
         *)
             return 2
@@ -165,7 +204,7 @@ PY
     # installer makes its first real completion. Retry once after a transport
     # failure, but never accept discovery alone as proof of working inference.
     for attempt in 1 2; do
-        if curl -fsS --max-time "${EXTERNAL_LLM_PROBE_TIMEOUT:-60}" \
+        if external_llm_curl -fsS --max-time "${EXTERNAL_LLM_PROBE_TIMEOUT:-60}" \
             -H "Content-Type: application/json" \
             -d "$body" \
             "${url}/v1/chat/completions" >/dev/null; then

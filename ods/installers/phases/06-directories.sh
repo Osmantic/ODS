@@ -904,6 +904,33 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
         fi
         EXTERNAL_LLM_ACTIVE=true
         LLM_MODEL="$EXTERNAL_SELECTED_MODEL"
+        _external_key_target="$INSTALL_DIR/config/litellm/external-upstream.key"
+        [[ ! -L "$_external_key_target" && ( ! -e "$_external_key_target" || -f "$_external_key_target" ) ]] || {
+            error "External LLM key destination must be a regular file."
+            return 1
+        }
+        if [[ -n "${EXTERNAL_LLM_API_KEY_FILE:-}" ]]; then
+            external_llm_read_api_key "$EXTERNAL_LLM_API_KEY_FILE" >/dev/null || return 1
+            if [[ "$EXTERNAL_LLM_API_KEY_FILE" != "$_external_key_target" ]]; then
+                _external_key_tmp="$(mktemp "${_external_key_target}.XXXXXX")" || return 1
+                chmod 600 "$_external_key_tmp"
+                if ! external_llm_read_api_key "$EXTERNAL_LLM_API_KEY_FILE" >"$_external_key_tmp"; then
+                    rm -f -- "$_external_key_tmp"
+                    error "Could not stage the external LLM key."
+                    return 1
+                fi
+                mv -f -- "$_external_key_tmp" "$_external_key_target"
+            fi
+        elif [[ "${EXTERNAL_LLM_API_KEY_RESET:-false}" == "true" ]]; then
+            (umask 077; : >"$_external_key_target")
+        elif [[ ! -e "$_external_key_target" ]]; then
+            (umask 077; : >"$_external_key_target")
+        fi
+        chmod 600 "$_external_key_target"
+        if [[ -s "$_external_key_target" ]]; then
+            EXTERNAL_LLM_API_KEY_FILE="$_external_key_target"
+        fi
+        unset _external_key_tmp _external_key_target
     fi
     LLAMA_SERVER_MEMORY_LIMIT_VALUE=""
     if [[ "$GPU_BACKEND" == "nvidia" && "$EXTERNAL_LLM_ACTIVE" != "true" && "${ODS_MODE:-local}" != "cloud" ]]; then
@@ -1606,13 +1633,17 @@ ENV_EOF
     if [[ "$EXTERNAL_LLM_ACTIVE" == "true" ]]; then
         # Fail installation if the external route cannot be materialized. Pixel
         # must never bind its authenticated gateway to a stale local template.
+        _external_render_auth=()
+        [[ -n "${EXTERNAL_LLM_API_KEY_FILE:-}" ]] && _external_render_auth+=(--external-llm-authenticated)
         if ! "${ODS_PYTHON_CMD:-python3}" "$SCRIPT_DIR/scripts/render-runtime-configs.py" \
             --surface litellm-external --model "$EXTERNAL_SELECTED_MODEL" \
             --llm-base-url "$EXTERNAL_LLM_CONTAINER_URL_VALUE" \
+            "${_external_render_auth[@]}" \
             --output-root "$INSTALL_DIR" --write >> "$LOG_FILE" 2>&1; then
             error "Runtime config renderer failed for the external model gateway"
             return 1
         fi
+        unset _external_render_auth
     elif [[ "$GPU_BACKEND" == "amd" || "$LEMONADE_EXTERNAL_VALUE" == "true" ]]; then
         _phase06_step "render-amd-litellm-config"
         mkdir -p "$INSTALL_DIR/config/litellm"

@@ -116,6 +116,7 @@ run_phase_case() {
     unset EXTERNAL_LLM_URL EXTERNAL_LLM_CONTAINER_URL EXTERNAL_LLM_PROVIDER
     unset EXTERNAL_LLM_MODEL EXTERNAL_LLM_AUTO_REUSE EXTERNAL_LLM_DISABLE
     unset EXTERNAL_LLM_RESET SKIP_MODEL_DOWNLOAD LEMONADE_EXTERNAL
+    unset EXTERNAL_LLM_API_KEY_FILE EXTERNAL_LLM_API_KEY_RESET EXTERNAL_LLM_API_KEY_DISABLE
 
     case "$case_name" in
         default)
@@ -142,13 +143,17 @@ run_phase_case() {
             EXTERNAL_LLM_PROVIDER="ollama"
             EXTERNAL_LLM_MODEL="qwen3.5:9b"
             ;;
-        explicit-openai|detect-openai)
+        explicit-openai|detect-openai|explicit-switch|explicit-same|explicit-same-no-key)
             MOCK_LMSTUDIO=up
             MOCK_OLLAMA=down
             EXTERNAL_LLM_URL="http://10.0.2.2:18080"
             EXTERNAL_LLM_PROVIDER="openai-compatible"
             [[ "$case_name" != detect-openai ]] || EXTERNAL_LLM_PROVIDER=auto
             EXTERNAL_LLM_MODEL="local-model"
+            if [[ "$case_name" == explicit-same || "$case_name" == explicit-same-no-key ]]; then
+                EXTERNAL_LLM_URL="http://127.0.0.1:18080"
+            fi
+            [[ "$case_name" != explicit-same-no-key ]] || EXTERNAL_LLM_API_KEY_DISABLE=true
             ;;
         explicit-cloud)
             MOCK_OLLAMA=up
@@ -222,6 +227,32 @@ if output="$(run_phase_case persisted "$TEMP_DIR/persisted"; printf '%s|%s\n' \
         "rerun revalidates and preserves a reachable external selection"
 else
     fail "persisted external selection rerun completes"
+fi
+
+for route_case in explicit-switch explicit-same explicit-same-no-key; do
+    mkdir -p "$TEMP_DIR/$route_case/config/litellm"
+    printf 'EXTERNAL_LLM_URL=http://127.0.0.1:18080\n' >"$TEMP_DIR/$route_case/.env"
+    printf 'test-secret-123\n' >"$TEMP_DIR/$route_case/config/litellm/external-upstream.key"
+    chmod 600 "$TEMP_DIR/$route_case/config/litellm/external-upstream.key"
+done
+if output="$(run_phase_case explicit-switch "$TEMP_DIR/explicit-switch"; printf '%s|%s\n' \
+    "${EXTERNAL_LLM_API_KEY_FILE:-}" "${EXTERNAL_LLM_API_KEY_RESET:-}")"; then
+    assert_eq "$output" '|true' 'new external endpoint never inherits the previous key'
+else
+    fail 'new external endpoint validation completes without old key'
+fi
+if output="$(run_phase_case explicit-same-no-key "$TEMP_DIR/explicit-same-no-key"; printf '%s|%s\n' \
+    "${EXTERNAL_LLM_API_KEY_FILE:-}" "${EXTERNAL_LLM_API_KEY_RESET:-}")"; then
+    assert_eq "$output" '|true' '--no-external-llm-key stops saved key reuse'
+else
+    fail '--no-external-llm-key route validation completes'
+fi
+if output="$(run_phase_case explicit-same "$TEMP_DIR/explicit-same"; printf '%s|%s\n' \
+    "${EXTERNAL_LLM_API_KEY_FILE:-}" "${EXTERNAL_LLM_API_KEY_RESET:-}")"; then
+    assert_eq "$output" "$TEMP_DIR/explicit-same/config/litellm/external-upstream.key|false" \
+        'same external endpoint reuses its installed private key'
+else
+    fail 'same external endpoint key reuse completes'
 fi
 
 mkdir -p "$TEMP_DIR/disabled"
@@ -355,9 +386,28 @@ run_phase06_env_cycle() (
     grep -q 'model: "openai/qwen3.5:9b"' "$install_dir/config/litellm/local.yaml"
     grep -q 'api_base: "http://host.docker.internal:11434/v1"' "$install_dir/config/litellm/local.yaml"
     grep -q 'master_key: os.environ/LITELLM_MASTER_KEY' "$install_dir/config/litellm/local.yaml"
+    [[ -f "$install_dir/config/litellm/external-upstream.key" ]]
+    [[ ! -s "$install_dir/config/litellm/external-upstream.key" ]]
+    [[ "$(stat -c '%a' "$install_dir/config/litellm/external-upstream.key")" == 600 ]]
+    grep -q 'api_key: not-needed' "$install_dir/config/litellm/local.yaml"
     grep -qx 'EXTERNAL_LLM_PROVIDER=ollama' "$install_dir/.env"
     grep -qx 'SKIP_MODEL_DOWNLOAD=true' "$install_dir/.env"
     grep -qx 'MODEL_RECOMMENDED_MODEL=qwen3-1.7b' "$install_dir/.env"
+
+    printf 'test-secret-123\n' >"$TEMP_DIR/operator-key"
+    chmod 600 "$TEMP_DIR/operator-key"
+    export EXTERNAL_LLM_API_KEY_FILE="$TEMP_DIR/operator-key"
+    source "$install_dir/installers/phases/06-directories.sh"
+    [[ "$(cat "$install_dir/config/litellm/external-upstream.key")" == test-secret-123 ]]
+    grep -q 'api_key: os.environ/EXTERNAL_LLM_API_KEY' "$install_dir/config/litellm/local.yaml"
+
+    unset EXTERNAL_LLM_API_KEY_FILE
+    export EXTERNAL_LLM_API_KEY_RESET=true
+    export EXTERNAL_LLM_URL=http://127.0.0.1:18080
+    export EXTERNAL_LLM_CONTAINER_URL=http://host.docker.internal:18080
+    source "$install_dir/installers/phases/06-directories.sh"
+    [[ ! -s "$install_dir/config/litellm/external-upstream.key" ]]
+    grep -q 'api_key: not-needed' "$install_dir/config/litellm/local.yaml"
 
     export LLM_MODEL=qwen3-1.7b
     export GGUF_FILE=Qwen3-1.7B-Q4_K_M.gguf
