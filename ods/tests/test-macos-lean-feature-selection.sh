@@ -18,8 +18,38 @@ ai_err() { printf '%s\n' "$*" >&2; }
 ai_ok() { :; }
 log() { :; }
 eval "$(sed -n '/^_macos_resolve_support_services() {/,/^}/p' "$installer")"
+eval "$(sed -n '/^_macos_apply_fresh_feature_defaults() {/,/^}/p' "$installer")"
 eval "$(sed -n '/^_macos_set_builtin_compose_state() {/,/^}/p' "$installer")"
 eval "$(sed -n '/^_macos_sync_builtin_compose_states() {/,/^}/p' "$installer")"
+
+NON_INTERACTIVE=true DRY_RUN=false ALL_FEATURES=false
+RECOMMENDED_EXPLICIT=false HERMES_EXPLICIT=false
+ENABLE_RECOMMENDED=true ENABLE_HERMES=true
+_macos_apply_fresh_feature_defaults
+[[ "$ENABLE_RECOMMENDED" == false && "$ENABLE_HERMES" == false ]] \
+    || { echo 'FAIL: fresh unattended install did not select Core' >&2; exit 1; }
+
+ENABLE_RECOMMENDED=true ENABLE_HERMES=true ALL_FEATURES=true
+_macos_apply_fresh_feature_defaults
+[[ "$ENABLE_RECOMMENDED" == true && "$ENABLE_HERMES" == true ]] \
+    || { echo 'FAIL: --all lost the Full selection' >&2; exit 1; }
+
+ALL_FEATURES=false RECOMMENDED_EXPLICIT=true HERMES_EXPLICIT=true
+_macos_apply_fresh_feature_defaults
+[[ "$ENABLE_RECOMMENDED" == true && "$ENABLE_HERMES" == true ]] \
+    || { echo 'FAIL: explicit support selections were overwritten' >&2; exit 1; }
+
+RECOMMENDED_EXPLICIT=false HERMES_EXPLICIT=false
+printf 'ODS_MODE=local\n' > "$INSTALL_DIR/.env"
+_macos_apply_fresh_feature_defaults
+[[ "$ENABLE_RECOMMENDED" == true && "$ENABLE_HERMES" == true ]] \
+    || { echo 'FAIL: existing install selection changed' >&2; exit 1; }
+
+rm "$INSTALL_DIR/.env"
+NON_INTERACTIVE=false DRY_RUN=true
+_macos_apply_fresh_feature_defaults
+[[ "$ENABLE_RECOMMENDED" == false && "$ENABLE_HERMES" == false ]] \
+    || { echo 'FAIL: fresh dry-run did not report Core' >&2; exit 1; }
 
 reset_features() {
     ENABLE_RECOMMENDED=false ENABLE_PIXEL=true CLOUD_MODE=false

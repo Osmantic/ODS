@@ -101,9 +101,11 @@ ENABLE_VOICE=false
 ENABLE_WORKFLOWS=false
 ENABLE_RAG=false
 ENABLE_RECOMMENDED=true
+RECOMMENDED_EXPLICIT=false
 # Hermes Agent is the new default agent as of 2026-05-12. OpenClaw is
 # deprecated and gates behind --openclaw for the deprecation release.
 ENABLE_HERMES=true
+HERMES_EXPLICIT=false
 ENABLE_OPENCLAW=false
 ENABLE_OPENCODE=false
 OPENCODE_ENABLE_EXPLICIT=false
@@ -142,10 +144,10 @@ while [[ $# -gt 0 ]]; do
         --voice)         ENABLE_VOICE=true; shift ;;
         --workflows)     ENABLE_WORKFLOWS=true; shift ;;
         --rag)           ENABLE_RAG=true; shift ;;
-        --recommended)   ENABLE_RECOMMENDED=true; shift ;;
-        --no-recommended) ENABLE_RECOMMENDED=false; shift ;;
-        --hermes)        ENABLE_HERMES=true; shift ;;
-        --no-hermes)     ENABLE_HERMES=false; shift ;;
+        --recommended)   ENABLE_RECOMMENDED=true; RECOMMENDED_EXPLICIT=true; shift ;;
+        --no-recommended) ENABLE_RECOMMENDED=false; RECOMMENDED_EXPLICIT=true; shift ;;
+        --hermes)        ENABLE_HERMES=true; HERMES_EXPLICIT=true; shift ;;
+        --no-hermes)     ENABLE_HERMES=false; HERMES_EXPLICIT=true; shift ;;
         --openclaw)      ENABLE_OPENCLAW=true; OPENCLAW_EXPLICIT=true; shift ;;
         --no-openclaw)   ENABLE_OPENCLAW=false; OPENCLAW_EXPLICIT=true; shift ;;
         --opencode)     ENABLE_OPENCODE=true; OPENCODE_ENABLE_EXPLICIT=true; shift ;;
@@ -348,6 +350,17 @@ _macos_resolve_support_services() {
         esac
     fi
     ENABLE_WEB_SEARCH=$ENABLE_SEARXNG
+}
+
+_macos_apply_fresh_feature_defaults() {
+    # Unattended and dry-run fresh installs should match the interactive Core
+    # default. An existing installation and explicit selections keep their
+    # previous behavior; the native Pixel lifecycle guard still owns reruns.
+    if [[ ! -f "${INSTALL_DIR}/.env" ]] && ! $ALL_FEATURES \
+        && { $NON_INTERACTIVE || $DRY_RUN; }; then
+        $RECOMMENDED_EXPLICIT || ENABLE_RECOMMENDED=false
+        $HERMES_EXPLICIT || ENABLE_HERMES=false
+    fi
 }
 
 _macos_patch_hermes_persisted_config() {
@@ -1223,6 +1236,7 @@ _ensure_macos_pyyaml() {
 
 # Resolve install directory
 INSTALL_DIR="${ODS_INSTALL_DIR}"
+_macos_apply_fresh_feature_defaults
 if ! $OPENCODE_ENABLE_EXPLICIT && ! $OPENCODE_DISABLE_EXPLICIT && ! $ALL_FEATURES; then
     if ods_macos_opencode_retained "$OPENCODE_PLIST" "$OPENCODE_PLIST_LABEL" \
         "$OPENCODE_BUN_TMPDIR" "$(id -u)"; then
