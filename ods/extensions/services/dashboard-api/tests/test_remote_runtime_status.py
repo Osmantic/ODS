@@ -20,6 +20,8 @@ REMOTE = {
 @pytest.fixture
 def status_helpers(monkeypatch):
     monkeypatch.setattr(main, 'get_cloud_throughput', AsyncMock(return_value={}))
+    # The app lifespan owns this client; these tests call the builder directly.
+    monkeypatch.setattr(main.app.state, 'cloud_telemetry_client', object(), raising=False)
     for name, value in {
         "get_gpu_info": None, "get_bootstrap_status": BootstrapStatus(active=False),
         "get_model_info": ModelInfo(name="Stale-Claude", size_gb=0, context_length=200000),
