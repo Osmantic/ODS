@@ -1743,6 +1743,11 @@ async def api_update_settings(request: Request):
                     val = agent_updates[key]
                     if val is not None:
                         val = int(val)
+                        if key == "session_char_limit" and val < 10000:
+                            return JSONResponse(
+                                {"error": "session_char_limit must be >= 10000"},
+                                status_code=400,
+                            )
                     settings["agents"][agent_name][key] = val
             # Per-agent filter overrides
             if "filters" in agent_updates:
