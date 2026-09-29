@@ -29,4 +29,17 @@ check_defaults() (
 
 check_defaults false false
 check_defaults true true
+check_gateway_default() (
+    local dir
+    dir="$(mktemp -d)"
+    trap 'rm -f -- "$dir/.env"; rmdir -- "$dir"' EXIT
+    INSTALL_DIR="$dir"
+    printf 'ODS_GATEWAY_ONLY=true\nENABLE_OPEN_WEBUI=false\n' > "$dir/.env"
+    eval "$defaults"
+    [[ "$ODS_GATEWAY_ONLY" == true && "$ENABLE_OPEN_WEBUI" == false ]] || {
+        echo 'FAIL: retained API-only gateway selection was lost' >&2
+        exit 1
+    }
+)
+check_gateway_default
 echo 'PASS: Linux fresh and markerless legacy installer defaults are distinct'
