@@ -310,6 +310,12 @@ def test_build_captures_only_fixed_inputs_and_immutable_id(
 
 
 def test_mac_endpoint_is_owner_bound_not_environment(tmp_path, monkeypatch):
+    original_is_dir = Path.is_dir
+    provider_dirs = [
+        "/Applications/OrbStack.app/Contents/MacOS/xbin",
+        "/Applications/Docker.app/Contents/Resources/bin",
+    ]
+    monkeypatch.setattr(Path, "is_dir", lambda path: str(path) in provider_dirs or original_is_dir(path))
     monkeypatch.setattr(
         module,
         "native_binding",
@@ -339,11 +345,16 @@ def test_mac_endpoint_is_owner_bound_not_environment(tmp_path, monkeypatch):
     monkeypatch.setattr(module.platform, "machine", lambda: "arm64")
     monkeypatch.setenv("DOCKER_HOST", "tcp://untrusted.invalid:2375")
     monkeypatch.setenv("DOCKER_CONTEXT", "untrusted-context")
+    monkeypatch.setenv("PATH", "/tmp/untrusted-bin")
     for name in module.BUILD_FILES:
         (tmp_path / name).write_bytes(b"fixed input")
         (tmp_path / name).chmod(0o644)
 
     def run(argv, **kw):
+        assert kw["env"] == {
+            "HOME": "/Users/approved-owner",
+            "PATH": ":".join(["/opt/homebrew/Cellar/docker/29.4.3/bin", *provider_dirs, "/usr/bin", "/bin"]),
+        }
         assert argv[1:3] == [
             "--host",
             "unix:///Users/approved-owner/.colima/ods-fleet/docker.sock",

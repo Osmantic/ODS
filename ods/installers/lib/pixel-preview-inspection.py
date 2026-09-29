@@ -262,6 +262,17 @@ def build_config(*, source, owner_uid, transport, docker_binary=None, docker_hos
         docker, endpoint = docker_path(transport), "unix:///var/run/docker.sock"
     argv = [docker, "--host", endpoint]
     environment = {"PATH": "/usr/bin:/bin", "HOME": pwd.getpwuid(owner_uid).pw_dir}
+    if native:
+        # A standalone CLI may use the engine application's credential helper.
+        # Include only fixed provider locations, never the caller's PATH.
+        directories = [str(Path(docker).parent)]
+        for directory in (
+            "/Applications/OrbStack.app/Contents/MacOS/xbin",
+            "/Applications/Docker.app/Contents/Resources/bin",
+        ):
+            if Path(directory).is_dir() and directory not in directories:
+                directories.append(directory)
+        environment["PATH"] = ":".join([*directories, "/usr/bin", "/bin"])
     snapshots = {name: source_bytes(Path(source) / name) for name in BUILD_FILES}
     with tempfile.TemporaryDirectory(prefix="ods-inspection-build-") as temporary:
         root = Path(temporary)
