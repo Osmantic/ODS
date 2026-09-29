@@ -24,7 +24,7 @@ $script:stopCalls = 0
 $script:removedPaths = @()
 $script:warnings = @()
 $script:messages = @()
-$env:APPDATA = "C:\Users\TestUser\AppData\Roaming"
+$env:APPDATA = Join-Path ([System.IO.Path]::GetTempPath()) "OllamaSessionStopTest"
 
 function Get-Process {
     param([string]$Name, $ErrorAction)
@@ -43,7 +43,7 @@ function Start-Sleep { param([int]$Seconds) }
 function Read-Host { param([string]$Prompt); "y" }
 function Test-Path {
     param([string]$Path)
-    return $Path -like "*\Startup\Ollama.lnk"
+    return $Path -match '[/\\]Startup[/\\]Ollama\.lnk$'
 }
 function Remove-Item {
     param([string]$Path, [switch]$Force, $ErrorAction)
