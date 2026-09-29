@@ -1401,6 +1401,28 @@ MODELS_INI_EOF
     fi
 
     if $compose_ok; then
+        # A service hidden behind a Compose profile is not removed by `up
+        # --remove-orphans` on an upgrade because it is still declared in the
+        # project. Stop only this project's WebUI service; keep its data and
+        # container available for an explicit --with-webui rollback.
+        if [[ "${ODS_GATEWAY_ONLY:-false}" == true && "${ENABLE_OPEN_WEBUI:-true}" != true ]]; then
+            if ! $DOCKER_COMPOSE_CMD --profile gateway-webui "${COMPOSE_FLAGS_ARR[@]}" \
+                stop open-webui >> "$LOG_FILE" 2>&1; then
+                ai_bad "Could not stop the previous ODS Open WebUI service."
+                exit 1
+            fi
+            if ! _gateway_webui_running="$($DOCKER_COMPOSE_CMD --profile gateway-webui \
+                "${COMPOSE_FLAGS_ARR[@]}" ps --status running -q open-webui 2>>"$LOG_FILE")"; then
+                ai_bad "Could not verify the ODS Open WebUI service stopped."
+                exit 1
+            fi
+            if [[ -n "$_gateway_webui_running" ]]; then
+                ai_bad "ODS Open WebUI is still running after gateway-only selection."
+                exit 1
+            fi
+            unset _gateway_webui_running
+            ai_ok "Open WebUI stopped; its data remains available for rollback"
+        fi
         if $_compose_started_with_delayed_health; then
             ui_status_line warn "Containers launched; waiting on health checks"
             echo ""
@@ -1411,7 +1433,11 @@ MODELS_INI_EOF
             fi
             ui_status_line ok "All containers launched"
             echo ""
-            ai_ok "Services started (llama-server)"
+            if [[ -n "${EXTERNAL_LLM_URL:-}" ]]; then
+                ai_ok "Services started (external model through LiteLLM)"
+            else
+                ai_ok "Services started (llama-server)"
+            fi
         fi
 
         # Re-render data/persona/SOUL.md now that services are actually
