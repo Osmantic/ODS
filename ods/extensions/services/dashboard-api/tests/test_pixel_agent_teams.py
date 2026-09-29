@@ -316,6 +316,38 @@ async def test_question_pauses_and_answer_continues_only_that_child(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_readonly_clarification_keeps_assignment_in_the_current_request(tmp_path):
+    questions = [{'id': 'scope', 'question': 'Which files?', 'options': ['Snake', 'Other']}]
+    calls = []
+
+    async def run(owner, agent):
+        calls.append(copy.deepcopy(agent))
+        frames = finish('Which files?', 'pending', questions) if agent['role'] == 'explorer' and agent['turn'] == 0 else finish('Observed result')
+        for frame in frames:
+            yield frame
+
+    manager = TeamManager(TeamStore(tmp_path / 'teams'), run, yes)
+    initial = manager.start(OWNER, 'chat', 'clarification', 'Create and publish Snake', 3,
+                            'Archived teammate report: do not publish')
+    await settle(manager)
+    assert manager.list(OWNER, 'chat')[0]['status'] == 'waiting'
+    manager.answer(OWNER, initial['id'], '0', {'scope': 'Create files in /workspace/Snake'})
+    await settle(manager)
+
+    current = calls[1]['messages'][-1]
+    assert current['role'] == 'user'
+    assert current['content'].startswith("You are the Explorer in the owner's Portal team.")
+    assert 'Your assignment:' in current['content']
+    assert 'Owner clarification answers:\nWhich files?\nCreate files in /workspace/Snake' in current['content']
+    assert 'Archived teammate report' not in current['content']
+    assert calls[1]['context_messages'][-1] == current
+    assert calls[0]['chat_id'] == calls[1]['chat_id']
+    saved = manager.store.get(OWNER, initial['id'])['agents'][0]
+    assert saved['conversation'][2] == {'role': 'user', 'content': 'Which files?\nCreate files in /workspace/Snake'}
+    assert manager.list(OWNER, 'chat')[0]['status'] == 'completed'
+
+
+@pytest.mark.asyncio
 async def test_cancel_survives_activity_updates_and_does_not_start_next_agent(tmp_path):
     started, proceed = asyncio.Event(), asyncio.Event()
     calls = []

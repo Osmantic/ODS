@@ -542,7 +542,15 @@ class TeamManager:
             if len(combined) > 4000:
                 raise TeamConflict('Please shorten these answers; the goal can retain up to 4,000 characters of clarification.')
             agent['goal_answers'] = combined
-        agent["messages"].append({"role": "user", "content": goal_prompt(row, agent) if row.get('mode') == 'goal' else content})
+        current = goal_prompt(row, agent) if row.get('mode') == 'goal' else content
+        if row.get('mode') != 'goal' and agent['role'] != 'builder':
+            # The retained transport forwards only the latest user request.
+            # Keep read-only assignment guidance on clarification turns too;
+            # teammate reports stay in archived context, not this envelope.
+            current = (self._prompt(row, agent) +
+                       '\n\nContinue this worker\'s paused turn using the answers below. Preserve prior work.\n'
+                       'Owner clarification answers:\n' + content)
+        agent["messages"].append({"role": "user", "content": current})
         agent["conversation"].append({"role": "user", "content": content})
         agent["turn"] += 1
         agent['clarifications'] = agent.get('clarifications', 0) + 1
