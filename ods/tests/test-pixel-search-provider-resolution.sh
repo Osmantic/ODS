@@ -55,6 +55,20 @@ fi
     exit 1
 }
 
+for invalid in '' unsupported; do
+    if (
+        ods_pixel_run_as_owner() { printf '%s\n' "$invalid"; }
+        ods_pixel_resolve_search_provider
+    ) > "$scratch/invalid.stdout" 2> "$scratch/invalid.stderr"; then
+        echo 'FAIL: invalid search selector output was accepted' >&2
+        exit 1
+    fi
+    [[ ! -s "$scratch/invalid.stdout" ]] || {
+        echo 'FAIL: invalid search selector output escaped to stdout' >&2
+        exit 1
+    }
+done
+
 python3 - "$SCRIPT_DIR/config/extensions-catalog.json" <<'PY'
 import json
 import sys
