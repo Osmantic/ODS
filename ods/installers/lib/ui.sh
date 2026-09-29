@@ -676,6 +676,7 @@ show_install_menu() {
             [[ "${HERMES_EXPLICIT:-false}" == true ]] || ENABLE_HERMES=true
             [[ "${OPENCLAW_EXPLICIT:-false}" == true ]] || ENABLE_OPENCLAW=false
             ENABLE_OPENCODE=true
+            [[ "${DEVTOOLS_EXPLICIT:-false}" == true ]] || ENABLE_DEVTOOLS=true
             ENABLE_COMFYUI=true
             ENABLE_APE=true
             ENABLE_PERPLEXICA=true
@@ -703,6 +704,7 @@ show_install_menu() {
             [[ "${HERMES_EXPLICIT:-false}" == true ]] || ENABLE_HERMES=false
             [[ "${OPENCLAW_EXPLICIT:-false}" == true ]] || ENABLE_OPENCLAW=false
             ENABLE_OPENCODE=false
+            [[ "${DEVTOOLS_EXPLICIT:-false}" == true ]] || ENABLE_DEVTOOLS=false
             ENABLE_COMFYUI=false
             ENABLE_APE=false
             ENABLE_PERPLEXICA=false

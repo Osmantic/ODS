@@ -72,6 +72,11 @@ cd ODS
 ./install.sh
 ```
 
+On Linux, the Core Only and API-only gateway choices skip the optional Node.js,
+Claude Code, and Codex CLI install. Use `./install.sh --with-devtools` to add
+those host tools; `--no-devtools` skips future installs without removing any
+existing binaries. The Custom menu offers the same separate choice.
+
 The installer auto-detects your GPU, picks the right model, generates secure passwords, and starts everything. Open **http://localhost:3000** and start chatting.
 
 On Linux Docker installs, llama-server is exposed to the host on **http://localhost:11434** (`OLLAMA_PORT`) and runs on `8080` inside Docker. Use `llama-server:8080` only from other containers on the ODS network. macOS native Metal and Windows native/Lemonade paths use **http://localhost:8080** unless overridden.

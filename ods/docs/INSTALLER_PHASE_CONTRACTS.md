@@ -35,7 +35,7 @@ For the file map and mod recipes, see
 | 04 requirements | Resource and port preflight | Tier, selected services, disk/RAM/ports | Warnings or blocking errors | Safe to rerun | Port conflict, low disk, low memory, stale service holding a port |
 | 05 docker | Docker and runtime prerequisites | OS/package manager, GPU backend | Docker, Compose, GPU runtime packages | Do not reinstall unnecessarily | Package repo failure, daemon unavailable, NVIDIA/ROCm toolkit mismatch |
 | 06 directories | Filesystem layout and generated config | Repo path, `.env.example`, selected services | Install dirs, `.env`, generated config, data dirs | Preserve secrets and user state | Permission mismatch, stale generated config, missing data dirs |
-| 07 devtools | Optional developer tools | Feature flags, user shell | Codex/Claude/OpenCode helpers | Skip already-installed tools | Network failure, unsupported host shell |
+| 07 devtools | Optional developer tools and host helpers | `ENABLE_DEVTOOLS`, `ENABLE_OPENCODE`, user shell | Opt-in Codex/Claude CLIs, separate OpenCode, host agent and mDNS | Preserve installed binaries when CLIs are disabled | Network failure, unsupported host shell |
 | 08 images | Image pull/build plan | Compose set, service manifests, GPU backend | Pulled/built images | Resume pulls/builds where possible | Registry failure, source build timeout, bad image tag |
 | 09 offline | Offline/air-gapped helpers | Offline flags, cached assets | Offline cache/config | Safe when disabled | Missing cache, stale artifact checksum |
 | 10 AMD tuning | AMD APU host tuning | AMD detection, privileges | sysctl/modprobe/GRUB/tuned changes | Avoid duplicate host config | Insufficient privilege, unsupported kernel/ROCm state |
