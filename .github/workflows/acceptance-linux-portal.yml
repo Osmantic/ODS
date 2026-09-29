@@ -20,14 +20,14 @@ jobs:
     steps:
       - name: Checkout acceptance harness
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-      - name: Checkout exact product PR head
+      - name: Checkout exact Portal acceptance candidate
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
-          ref: dc758b9c97353aeebe3e51944cd427d49ade534c
+          ref: 54186765bfb2ab562003e6e135ea11b92aa9fd9c
           path: product
       - name: Record exact source and runner capacity
         run: |
-          test "$(git -C product rev-parse HEAD)" = dc758b9c97353aeebe3e51944cd427d49ade534c
+          test "$(git -C product rev-parse HEAD)" = 54186765bfb2ab562003e6e135ea11b92aa9fd9c
           docker version
           docker info --format '{{.OperatingSystem}}'
           df -h / "$RUNNER_TEMP"
