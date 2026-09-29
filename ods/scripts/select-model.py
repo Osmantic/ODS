@@ -168,7 +168,9 @@ def usable_memory_gb(backend: str, memory_type: str, vram_mb: int, ram_gb: int) 
         # Macs/APUs are not handed a model that technically fits but thrashes.
         return max(float(ram_gb) * 0.55, 2.0), "unified system memory"
     if backend_key in {"cpu", "none", "unknown"} or vram_mb <= 0:
-        return min(max(float(ram_gb) * 0.35, 3.0), 8.0), "system RAM"
+        # Do not floor the model budget above available headroom on small
+        # hosts. At 4 GB, a 3 GB floor leaves only 1 GB for Linux and ODS.
+        return min(max(float(ram_gb), 0.0) * 0.35, 8.0), "system RAM"
     return float(vram_mb) / 1024.0, "GPU VRAM"
 
 
