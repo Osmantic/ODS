@@ -39,8 +39,16 @@ def proposal():
                    security_opt=['no-new-privileges:true'], read_only=True,
                    cpus=2, mem_limit='2g', pids_limit=256,
                    networks=['apache-answer-sandbox'])
+    # The sandbox network is internal, so a source service publishes no port.
+    service.pop('ports', None)
     value['compose']['networks'] = {'apache-answer-sandbox': {'internal': True}}
     return value
+
+
+def test_source_service_cannot_publish_a_port_from_its_internal_sandbox():
+    value = proposal()
+    value['compose']['services']['apache-answer']['ports'] = ['127.0.0.1:8080:8080']
+    assert validate_recipe(value, SCHEMA, set(), scan)['valid'] is False
 
 
 @pytest.mark.parametrize('build', [
