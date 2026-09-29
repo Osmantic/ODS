@@ -45,8 +45,11 @@ expect 'Full Stack still enables Hermes without a flag' 1 false false true
 expect 'Core Only still disables Hermes without a flag' 2 false true false
 expect 'Fresh Enter selects Core Only' '' false true false
 expect 'Fresh invalid choice selects Core Only' x false true false
-expect 'Existing Enter retains Full Stack default' '' false false true HERMES true
-expect 'Existing invalid choice retains Full Stack default' x false false true HERMES true
+expect 'Existing Enter keeps disabled Hermes' '' false false false HERMES true
+expect 'Existing invalid choice keeps disabled Hermes' x false false false HERMES true
+expect 'Existing Enter keeps enabled Hermes' '' false true true HERMES true
+expect 'Existing Keep current keeps disabled Hermes' 4 false false false HERMES true
+expect 'Fresh Keep current resolves to Core Only' 4 false true false HERMES false
 
 for choice in 1 2 3 x ''; do
     expect "Menu '$choice' keeps explicit --no-openclaw" "$choice" true false false OPENCLAW

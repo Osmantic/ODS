@@ -93,6 +93,7 @@ source "$SCRIPT_DIR/installers/lib/progress.sh"
 source "$SCRIPT_DIR/installers/lib/model-lifecycle-lock.sh"
 source "$SCRIPT_DIR/installers/lib/cli-link.sh"
 source "$SCRIPT_DIR/installers/lib/install-mode.sh"
+source "$SCRIPT_DIR/installers/lib/installed-feature-state.sh"
 source "$SCRIPT_DIR/installers/lib/external-services.sh"
 source "$SCRIPT_DIR/installers/lib/pixel-integration.sh"
 source "$SCRIPT_DIR/installers/lib/pixel-host-install.sh"
@@ -109,36 +110,41 @@ PREFLIGHT_ONLY=false
 SKIP_DOCKER=false
 FORCE=false
 TIER=""
-# Fresh installs start with chat and the model route. Existing installs keep
-# their previous installer defaults until feature-state migration is explicit.
+# Fresh installs start with chat and the model route. On a rerun, the installed
+# Compose selection is the default so previously disabled services stay off.
+# Older installations without a state marker retain their legacy default.
 ODS_EXISTING_INSTALL=false
 [[ -f "$INSTALL_DIR/.env" ]] && ODS_EXISTING_INSTALL=true
-ENABLE_VOICE="$ODS_EXISTING_INSTALL"
-ENABLE_WORKFLOWS="$ODS_EXISTING_INSTALL"
-ENABLE_RAG="$ODS_EXISTING_INSTALL"
-ENABLE_RECOMMENDED="$ODS_EXISTING_INSTALL"
+ENABLE_VOICE="$(ods_installed_service_default "$INSTALL_DIR" whisper "$ODS_EXISTING_INSTALL")"
+ENABLE_WORKFLOWS="$(ods_installed_service_default "$INSTALL_DIR" n8n "$ODS_EXISTING_INSTALL")"
+ENABLE_RAG="$(ods_installed_service_default "$INSTALL_DIR" qdrant "$ODS_EXISTING_INSTALL")"
+ENABLE_RECOMMENDED="$(ods_installed_service_default "$INSTALL_DIR" token-spy "$ODS_EXISTING_INSTALL")"
 # Pixel is the core conversational experience on qualified Linux hosts after a separate
 # written license agreement is acknowledged. Existing ODS tools remain available.
 # OpenClaw is deprecated and remains explicit opt-in.
-ENABLE_HERMES="$ODS_EXISTING_INSTALL"
+ENABLE_HERMES="$(ods_installed_service_default "$INSTALL_DIR" hermes "$ODS_EXISTING_INSTALL")"
 ENABLE_PIXEL="${ENABLE_PIXEL:-auto}"
 PIXEL_EXPLICIT=false
 HERMES_EXPLICIT=false
 ENABLE_OPENCLAW=false
 OPENCLAW_EXPLICIT=false
 ENABLE_OPENCODE=false
-ENABLE_COMFYUI="$ODS_EXISTING_INSTALL"
-ENABLE_APE="$ODS_EXISTING_INSTALL"
-ENABLE_PERPLEXICA="$ODS_EXISTING_INSTALL"
-ENABLE_PRIVACY_SHIELD="$ODS_EXISTING_INSTALL"
-ENABLE_ODS_PROXY=false
-ENABLE_TAILSCALE=false
-ENABLE_BRAVE_SEARCH=false
-# Langfuse (LLM observability) defaults OFF on all tiers because its
+if $ODS_EXISTING_INSTALL && command -v systemctl >/dev/null 2>&1 \
+    && systemctl --user is-enabled --quiet opencode-web.service 2>/dev/null; then
+    ENABLE_OPENCODE=true
+fi
+ENABLE_COMFYUI="$(ods_installed_service_default "$INSTALL_DIR" comfyui "$ODS_EXISTING_INSTALL")"
+ENABLE_APE="$(ods_installed_service_default "$INSTALL_DIR" ape "$ODS_EXISTING_INSTALL")"
+ENABLE_PERPLEXICA="$(ods_installed_service_default "$INSTALL_DIR" perplexica "$ODS_EXISTING_INSTALL")"
+ENABLE_PRIVACY_SHIELD="$(ods_installed_service_default "$INSTALL_DIR" privacy-shield "$ODS_EXISTING_INSTALL")"
+ENABLE_ODS_PROXY="$(ods_installed_service_default "$INSTALL_DIR" ods-proxy false)"
+ENABLE_TAILSCALE="$(ods_installed_service_default "$INSTALL_DIR" tailscale false)"
+ENABLE_BRAVE_SEARCH="$(ods_installed_service_default "$INSTALL_DIR" brave-search false)"
+# Langfuse (LLM observability) defaults OFF on fresh installs because its
 # clickhouse + postgres + minio stack adds ~500MB baseline memory that is
 # nontrivial even on Tier 3+ systems. Users opt in via --langfuse, --all,
 # the Custom menu, or post-install `ods enable langfuse`.
-ENABLE_LANGFUSE=false
+ENABLE_LANGFUSE="$(ods_installed_service_default "$INSTALL_DIR" langfuse false)"
 INTERACTIVE=true
 ODS_MODE_EXPLICIT=false
 [[ -n "${ODS_MODE:-}" ]] && ODS_MODE_EXPLICIT=true

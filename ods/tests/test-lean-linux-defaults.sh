@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# Fresh CLI installs should stay small; reruns retain their previous default posture.
+# Fresh CLI installs should stay small; reruns recover installed selections.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$ROOT/installers/lib/installed-feature-state.sh"
 defaults="$(sed -n '/^DRY_RUN=false$/,/^INTERACTIVE=true$/p' "$ROOT/install-core.sh")"
 [[ -n "$defaults" ]] || { echo 'FAIL: installer defaults block missing' >&2; exit 1; }
 
@@ -27,4 +28,4 @@ check_defaults() (
 
 check_defaults false false
 check_defaults true true
-echo 'PASS: Linux fresh and existing installer defaults are distinct'
+echo 'PASS: Linux fresh and markerless legacy installer defaults are distinct'

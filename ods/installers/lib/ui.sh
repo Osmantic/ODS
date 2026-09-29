@@ -635,7 +635,7 @@ show_tier_recommendation() {
 # Show installation menu
 show_install_menu() {
     local default_choice=2
-    [[ "${ODS_EXISTING_INSTALL:-false}" == true ]] && default_choice=1
+    [[ "${ODS_EXISTING_INSTALL:-false}" == true ]] && default_choice=4
     echo ""
     ai "Choose the services you want to install."
     echo ""
@@ -650,10 +650,16 @@ show_install_menu() {
     echo -e "  ${BGRN}[3]${NC} Custom"
     echo "      Choose exactly what you want"
     echo ""
+    if [[ "${ODS_EXISTING_INSTALL:-false}" == true ]]; then
+        echo -e "  ${BGRN}[4]${NC} Keep current selection"
+        echo "      Preserve optional services already installed"
+        echo ""
+    fi
     read -p "  Select an option [$default_choice]: " -r INSTALL_CHOICE < /dev/tty
     INSTALL_CHOICE="${INSTALL_CHOICE:-$default_choice}"
     case "$INSTALL_CHOICE" in
         1|2|3) ;;
+        4) [[ "${ODS_EXISTING_INSTALL:-false}" == true ]] || INSTALL_CHOICE="$default_choice" ;;
         *) warn "Invalid choice '$INSTALL_CHOICE', using option $default_choice"; INSTALL_CHOICE="$default_choice" ;;
     esac
     echo ""
@@ -706,6 +712,10 @@ show_install_menu() {
         3)
             signal "Acknowledged."
             log "Selected: Custom"
+            ;;
+        4)
+            signal "Acknowledged."
+            log "Selected: Keep current selection"
             ;;
     esac
 }
