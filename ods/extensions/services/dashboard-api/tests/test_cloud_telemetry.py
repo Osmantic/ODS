@@ -32,9 +32,7 @@ def test_rejects_stale_identity_or_malformed_measurements(changes):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('case', ['measured', 'oversized', 'redirect', 'offline'])
-async def test_fetch_is_bounded_and_remote_failures_leave_status_available(monkeypatch, case):
-    real_client = httpx.AsyncClient
-
+async def test_fetch_is_bounded_and_remote_failures_leave_status_available(case):
     def handler(request):
         assert str(request.url) == 'http://egress.internal:8091/telemetry'
         if case == 'offline':
@@ -45,8 +43,8 @@ async def test_fetch_is_bounded_and_remote_failures_leave_status_available(monke
             return httpx.Response(302, headers={'location': 'http://other.internal/'})
         return httpx.Response(200, json={'sample': {**SAMPLE, 'sampledAt': time.time() * 1000}})
 
-    monkeypatch.setattr(httpx, 'AsyncClient', lambda **kwargs: real_client(transport=httpx.MockTransport(handler), **kwargs))
-    result = await get_cloud_throughput(RUNTIME, 'http://egress.internal:8091')
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler), follow_redirects=False) as client:
+        result = await get_cloud_throughput(RUNTIME, 'http://egress.internal:8091', client)
     assert result.get('tokens_per_second') == (50 if case == 'measured' else None)
 
 
