@@ -104,7 +104,9 @@ def validate_flags(install_dir, flags):
         ok, problems = namespace['_scan_user_compose_content'](
             path, trusted, accelerator, extension_id=directory.name)
         if not ok:
-            raise ValueError(f'Cached extension {directory.name} requires review: ' + '; '.join(problems))
+            raise ValueError(f'Cached extension {directory.name} requires review: ' + '; '.join(problems)
+                             + f". To recover, run 'ods disable {directory.name}' (it stops the extension safely"
+                             + ' and keeps its data), then reinstall it from the dashboard Extensions page.')
         scanned.add(str(path.resolve()))
         documents.append((path, namespace['_compose_policy_load'](path.read_text(encoding='utf-8'))))
 
