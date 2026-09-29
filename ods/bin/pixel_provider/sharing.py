@@ -99,7 +99,14 @@ class SharingStore(ProviderStore):
         device = {name: settings[name] for name in settings if name != 'ttlSeconds'}
         device.update(id='device-' + secrets.token_hex(8), tokenHash=hashlib.sha256(key.encode()).hexdigest(),
                       createdAt=stamp, expiresAt=stamp + settings['ttlSeconds'], revoked=False)
-        saved = self._change(expected_revision, lambda doc: doc['devices'].append(device))
+        def update(doc):
+            # Revoked and expired credentials can never authenticate again.
+            # Retire them atomically so old records don't consume the bounded
+            # device list forever.
+            doc['devices'] = [item for item in doc['devices']
+                              if not item['revoked'] and item['expiresAt'] > stamp]
+            doc['devices'].append(device)
+        saved = self._change(expected_revision, update)
         return {'configuration': public_sharing(saved), 'credential': {'id': device['id'], 'key': key},
                 'model': PUBLIC_MODEL}
 

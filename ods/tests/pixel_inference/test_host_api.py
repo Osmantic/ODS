@@ -95,6 +95,22 @@ def test_disable_and_revoke_do_not_need_active_route(owner):
         assert request(owner,'revoke',{'expectedRevision':2,'deviceId':issued['credential']['id']})[0] == 200
 
 
+def test_revoked_device_slots_are_reclaimed_on_next_issue(owner):
+    revision = request(owner)[1]['configuration']['revision']
+    for _ in range(64):
+        status, issued, _ = request(owner, 'issue', {'expectedRevision':revision,'settings':settings()})
+        assert status == 200
+        revision = issued['configuration']['revision']
+        status, revoked, _ = request(owner, 'revoke', {'expectedRevision':revision,
+            'deviceId':issued['credential']['id']})
+        assert status == 200
+        revision = revoked['configuration']['revision']
+
+    status, issued, _ = request(owner, 'issue', {'expectedRevision':revision,'settings':settings()})
+    assert status == 200
+    assert len(issued['configuration']['devices']) == 1
+
+
 def test_corrupt_state_is_unavailable_not_empty(owner):
     request(owner,'issue',{'expectedRevision':0,'settings':settings()})
     path = owner[0].DATA_DIR / 'pixel-inference/inference-sharing.json'

@@ -131,6 +131,7 @@ export default function PixelSharingSettings() {
   const validDays = Number.isInteger(days) && days >= 1 && days <= 365
   const activeDevice = config?.devices.some(device => !device.revoked && device.expiresAt * 1000 > now
     && device.catalogId === route?.catalogId && device.runtimeModelId === route?.runtimeModelId)
+  const activeDeviceCount = config?.devices.filter(device => !device.revoked && device.expiresAt * 1000 > now).length || 0
 
   function issue() {
     if (locked || !route || !validLabel || !validDays) return
@@ -195,7 +196,7 @@ export default function PixelSharingSettings() {
       <div className="grid gap-3 md:grid-cols-[1fr_10rem_auto] items-end">
         <label className="text-sm">Device label<input className={inputStyle} value={label} maxLength={256} onChange={event => setLabel(event.target.value)} placeholder="My laptop" disabled={locked} /></label>
         <label className="text-sm">Expires in days<input className={inputStyle} type="number" min={1} max={365} value={days} onChange={event => setDays(event.target.value === '' ? '' : Number(event.target.value))} disabled={locked} /></label>
-        <button className={buttonStyle} disabled={locked || !route || !validLabel || !validDays || config.devices.length >= 64} onClick={issue}>Create device key</button>
+        <button className={buttonStyle} disabled={locked || !route || !validLabel || !validDays || activeDeviceCount >= 64} onClick={issue}>Create device key</button>
       </div>
       {issued && <div className="rounded-lg border border-theme-border p-4 space-y-3">
         <h3 className="font-medium">One-time connection settings</h3>
