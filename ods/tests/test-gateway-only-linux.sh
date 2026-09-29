@@ -42,6 +42,7 @@ with_ui="$(resolve true)"
 SCRIPT_DIR="$ROOT"
 source "$ROOT/installers/lib/compose-select.sh"
 gateway_compose_stub() {
+    [[ -z "${GATEWAY_TEST_CWD:-}" || "$PWD" == "$GATEWAY_TEST_CWD" ]] || return 1
     case "${GATEWAY_TEST_MODE:-}" in
         safe) printf 'dashboard\nlitellm\n' ;;
         managed) printf 'litellm\nllama-server\nmodel-router\n' ;;
@@ -49,7 +50,8 @@ gateway_compose_stub() {
     esac
 }
 DOCKER_COMPOSE_CMD=gateway_compose_stub
-GATEWAY_TEST_MODE=safe ods_gateway_assert_no_managed_inference -f fake.yml
+GATEWAY_TEST_CWD="$fixture" INSTALL_DIR="$fixture" GATEWAY_TEST_MODE=safe \
+    ods_gateway_assert_no_managed_inference -f fake.yml
 if GATEWAY_TEST_MODE=managed ods_gateway_assert_no_managed_inference -f fake.yml 2>/dev/null; then
     echo 'FAIL: gateway-only accepted active managed inference' >&2; exit 1;
 fi
