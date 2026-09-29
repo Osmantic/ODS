@@ -1,5 +1,6 @@
 # Independent Windows ComfyUI project. The installer supplies an absolute data
 # path and uses a fixed Compose project that cannot select the full ODS stack.
+name: ods-comfyui-standalone
 services:
   comfyui:
     build:

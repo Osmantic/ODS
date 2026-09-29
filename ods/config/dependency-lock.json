@@ -68,6 +68,12 @@
       "value": "nvidia/cuda:12.8.0-runtime-ubuntu22.04@sha256:b0e5afeabc356a9c41148c50f219d3117d46cb6ec23c590e3a0ebaa1db0ff946"
     },
     {
+      "id": "comfyui.standalone-nvidia-runtime",
+      "type": "image",
+      "path": "extensions/services/comfyui/Dockerfile.standalone",
+      "value": "nvidia/cuda:12.8.0-runtime-ubuntu22.04@sha256:b0e5afeabc356a9c41148c50f219d3117d46cb6ec23c590e3a0ebaa1db0ff946"
+    },
+    {
       "id": "dashboard.node",
       "type": "image",
       "path": "extensions/services/dashboard/Dockerfile",
@@ -348,6 +354,11 @@
     }
   ],
   "allow_local_images": [
+    {
+      "path": "extensions/services/comfyui/compose.standalone.nvidia.yaml",
+      "value": "ods-comfyui-standalone:0.16.4-cu128",
+      "reason": "Windows standalone ComfyUI is built locally from the adjacent pinned Dockerfile by its opt-in installer."
+    },
     {
       "path": "extensions/services/pixel-inference/compose.yaml.disabled",
       "value": "ods-pixel-inference:local",
