@@ -8,6 +8,7 @@ image_plan() (
     export SCRIPT_DIR="$ROOT_DIR" LOG_FILE=/dev/null DRY_RUN=true COMPOSE_FLAGS=''
     export GPU_BACKEND="$1" ODS_MODE="$2" EXTERNAL_LLM_URL="$3"
     export LEMONADE_EXTERNAL="$4" ENABLE_PERPLEXICA="$5" ENABLE_COMFYUI="$6"
+    export ENABLE_OPEN_WEBUI="${7:-true}"
     export ENABLE_VOICE=false ENABLE_WORKFLOWS=false ENABLE_RAG=false
     export ENABLE_QDRANT=false ENABLE_EMBEDDINGS=false ENABLE_HERMES=false
     export ENABLE_OPENCLAW=false
@@ -44,6 +45,10 @@ done
 
 plan="$(image_plan cpu local 'http://host.docker.internal:11434' false false false)"
 assert_image "$plan" 'LLAMA-SERVER' absent 'external CPU'
+
+plan="$(image_plan nvidia local 'http://127.0.0.1:18080' false false false false)"
+assert_image "$plan" 'LLAMA-SERVER' absent 'gateway-only external route'
+assert_image "$plan" 'OPEN WEBUI' absent 'gateway-only without UI'
 
 plan="$(image_plan amd local '' false false false)"
 assert_image "$plan" 'LEMONADE — downloading the brain' present 'managed AMD'

@@ -115,6 +115,14 @@ TIER=""
 # Older installations without a state marker retain their legacy default.
 ODS_EXISTING_INSTALL=false
 [[ -f "$INSTALL_DIR/.env" ]] && ODS_EXISTING_INSTALL=true
+ODS_GATEWAY_ONLY=false
+ENABLE_OPEN_WEBUI=true
+if $ODS_EXISTING_INSTALL &&
+   [[ "$(external_llm_env_value "$INSTALL_DIR/.env" ODS_GATEWAY_ONLY || true)" == true ]]; then
+    ODS_GATEWAY_ONLY=true
+    ENABLE_OPEN_WEBUI="$(external_llm_env_value "$INSTALL_DIR/.env" ENABLE_OPEN_WEBUI || true)"
+    [[ "$ENABLE_OPEN_WEBUI" == true ]] || ENABLE_OPEN_WEBUI=false
+fi
 ENABLE_VOICE="$(ods_installed_service_default "$INSTALL_DIR" whisper "$ODS_EXISTING_INSTALL")"
 ENABLE_WORKFLOWS="$(ods_installed_service_default "$INSTALL_DIR" n8n "$ODS_EXISTING_INSTALL")"
 ENABLE_RAG="$(ods_installed_service_default "$INSTALL_DIR" qdrant "$ODS_EXISTING_INSTALL")"
@@ -210,6 +218,10 @@ Options:
                       External provider: auto, ollama, lmstudio, or openai-compatible
     --external-llm-model M
                       Exact model id exposed by the external provider
+    --gateway-only    API-first install using a verified external model; skip Open WebUI
+                      and ODS-managed llama-server (requires --external-llm-url)
+    --with-webui      Keep Open WebUI in a gateway-only install
+    --no-gateway-only Return a gateway install to the ordinary UI selection
     --external-llm-key-file PATH
                       Owner-only API key file for an authenticated external model
     --no-external-llm-key
@@ -298,6 +310,9 @@ while [[ $# -gt 0 ]]; do
         --external-llm-url) EXTERNAL_LLM_URL="$2"; shift 2 ;;
         --external-llm-provider) EXTERNAL_LLM_PROVIDER="$2"; shift 2 ;;
         --external-llm-model) EXTERNAL_LLM_MODEL="$2"; shift 2 ;;
+        --gateway-only) ODS_GATEWAY_ONLY=true; ENABLE_OPEN_WEBUI=false; ODS_MODE=local; ODS_MODE_EXPLICIT=true; shift ;;
+        --with-webui) ENABLE_OPEN_WEBUI=true; shift ;;
+        --no-gateway-only) ODS_GATEWAY_ONLY=false; ENABLE_OPEN_WEBUI=true; shift ;;
         --external-llm-key-file) EXTERNAL_LLM_API_KEY_FILE="$2"; EXTERNAL_LLM_API_KEY_DISABLE=false; shift 2 ;;
         --no-external-llm-key) EXTERNAL_LLM_API_KEY_FILE=""; EXTERNAL_LLM_API_KEY_DISABLE=true; shift ;;
         --reuse-external-llm) EXTERNAL_LLM_AUTO_REUSE=true; shift ;;
@@ -346,6 +361,30 @@ while [[ $# -gt 0 ]]; do
         *) printf '[ERROR] Unknown option: %s\n' "$1" >&2; exit 1 ;;
     esac
 done
+
+if $ODS_GATEWAY_ONLY; then
+    if [[ "$ODS_MODE" != local || "$EXTERNAL_LLM_DISABLE" == true ]]; then
+        echo "--gateway-only requires the local external-model route" >&2
+        exit 1
+    fi
+    _gateway_external_url="$EXTERNAL_LLM_URL"
+    if [[ -z "$_gateway_external_url" && "$ODS_EXISTING_INSTALL" == true ]]; then
+        _gateway_external_url="$(external_llm_env_value "$INSTALL_DIR/.env" EXTERNAL_LLM_URL || true)"
+    fi
+    if [[ -z "$_gateway_external_url" ]]; then
+        echo "--gateway-only requires --external-llm-url or a saved external route" >&2
+        exit 1
+    fi
+    if [[ "$ENABLE_OPEN_WEBUI" != true ]]; then
+        if [[ "$ENABLE_PIXEL" == true ]]; then
+            echo "--pixel requires --with-webui in gateway-only mode" >&2
+            exit 1
+        fi
+        [[ "$ENABLE_PIXEL" != auto ]] || ENABLE_PIXEL=false
+    fi
+    unset _gateway_external_url
+fi
+export ODS_GATEWAY_ONLY ENABLE_OPEN_WEBUI
 
 # Validate external Lemonade VRAM from either flags or the environment before
 # any phase can evaluate it as Bash arithmetic. Empty retains auto-detection.

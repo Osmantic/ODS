@@ -49,7 +49,12 @@ show_phase 6 6 "Systems Online" "~1-2 minutes"
 
 if $DRY_RUN; then
     log "[DRY RUN] Would verify service health:"
-    log "[DRY RUN]   - llama-server, Open WebUI, Perplexica, ComfyUI"
+    if [[ -n "${EXTERNAL_LLM_URL:-}" ]]; then
+        log "[DRY RUN]   - External model through LiteLLM"
+    else
+        log "[DRY RUN]   - Managed llama-server"
+    fi
+    [[ "${ENABLE_OPEN_WEBUI:-true}" != "true" ]] || log "[DRY RUN]   - Open WebUI"
     log "[DRY RUN]   - Auto-configure Perplexica for ${LLM_MODEL:-default model}"
     [[ "$ENABLE_HERMES" == "true" ]] && log "[DRY RUN]   - Hermes Agent + hermes-proxy"
     [[ "${ENABLE_PIXEL_RUNTIME:-false}" == "true" ]] && log "[DRY RUN]   - Pixel gateway + private ingress + edge"
@@ -423,8 +428,10 @@ else
 fi
 
 # Open WebUI: 150 attempts * adaptive backoff = up to ~20 minutes
-ods_progress 89 "health" "Waiting for Chat UI"
-_check_health "Open WebUI" "http://127.0.0.1:${SERVICE_PORTS[open-webui]:-3000}${SERVICE_HEALTH[open-webui]:-/}" 150 10 "$(sr_container open-webui)"
+if [[ "${ENABLE_OPEN_WEBUI:-true}" == "true" ]]; then
+    ods_progress 89 "health" "Waiting for Chat UI"
+    _check_health "Open WebUI" "http://127.0.0.1:${SERVICE_PORTS[open-webui]:-3000}${SERVICE_HEALTH[open-webui]:-/}" 150 10 "$(sr_container open-webui)"
+fi
 # Perplexica: 150 attempts * adaptive backoff = up to ~20 minutes
 if [[ "${ENABLE_PERPLEXICA:-false}" == "true" ]]; then
     ods_progress 91 "health" "Waiting for Research engine"

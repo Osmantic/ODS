@@ -343,7 +343,8 @@ if [[ "${ENABLE_VOICE:-false}" == "true" ]]; then
 fi
 
 # Port conflict detection with detailed process information
-PORTS_TO_CHECK="${SERVICE_PORTS[open-webui]:-3000}"
+PORTS_TO_CHECK=""
+[[ "${ENABLE_OPEN_WEBUI:-true}" != "true" ]] || PORTS_TO_CHECK="${SERVICE_PORTS[open-webui]:-3000}"
 [[ -z "${EXTERNAL_LLM_URL:-}" ]] && PORTS_TO_CHECK="${SERVICE_PORTS[llama-server]:-8080} ${PORTS_TO_CHECK}"
 [[ "$ENABLE_VOICE" == "true" ]] && PORTS_TO_CHECK="$PORTS_TO_CHECK ${SERVICE_PORTS[whisper]:-9000} ${SERVICE_PORTS[tts]:-8880}"
 [[ "$ENABLE_WORKFLOWS" == "true" ]] && PORTS_TO_CHECK="$PORTS_TO_CHECK ${SERVICE_PORTS[n8n]:-5678}"

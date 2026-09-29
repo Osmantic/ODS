@@ -103,6 +103,8 @@ lemonade_external = (
     )
 )
 external_llm = bool(os.environ.get("EXTERNAL_LLM_URL", "").strip())
+gateway_only = os.environ.get("ODS_GATEWAY_ONLY", "").lower() == "true"
+enable_open_webui = os.environ.get("ENABLE_OPEN_WEBUI", "true").lower() == "true"
 
 IS_DARWIN = platform.system() == "Darwin"
 APPLE_OVERLAY = "installers/macos/docker-compose.macos.yml" if IS_DARWIN else "docker-compose.apple.yml"
@@ -1464,6 +1466,12 @@ if external_llm:
         print("ERROR: EXTERNAL_LLM_URL is set but docker-compose.external-llm.yml is missing", file=sys.stderr)
         sys.exit(1)
     resolved.append("docker-compose.external-llm.yml")
+
+if gateway_only and not enable_open_webui:
+    if not (script_dir / "docker-compose.gateway-only.yml").exists():
+        print("ERROR: gateway-only WebUI overlay is missing", file=sys.stderr)
+        sys.exit(1)
+    resolved.append("docker-compose.gateway-only.yml")
 
 # Optional owner-registered model directories. Unlike untrusted extension
 # mounts, these explicitly authorized absolute roots must match the bounded
