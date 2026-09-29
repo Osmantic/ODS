@@ -1216,6 +1216,9 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
     else
         GPU_ASSIGNMENT_JSON_B64=""
     fi
+    # Resolve before opening .env for writing; a here-document lookup would
+    # read the already-truncated file and lose a retained host port override.
+    DASHBOARD_API_PORT_VALUE="$(_env_get DASHBOARD_API_PORT 3002)"
 
     # Generate .env file
     if [[ "${ENABLE_PIXEL_RUNTIME:-false}" == true ]]; then
@@ -1427,6 +1430,7 @@ fi)
 #=== Ports ===
 OLLAMA_PORT=$(dotenv_value "${OLLAMA_PORT_VALUE}")
 WEBUI_PORT=3000
+DASHBOARD_API_PORT=$(dotenv_value "${DASHBOARD_API_PORT_VALUE}")
 SEARXNG_PORT=8888
 PERPLEXICA_PORT=3004
 WHISPER_PORT=$(dotenv_value "${WHISPER_PORT_VALUE}")

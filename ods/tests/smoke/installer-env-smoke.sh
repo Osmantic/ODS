@@ -195,8 +195,10 @@ export ENABLE_OPENCLAW=true
 
     # An owner override must survive subsequent installs.
     sed -i 's/^TTS_WORKERS=.*/TTS_WORKERS=3/' \"\$INSTALL_DIR/.env\"
+    sed -i 's/^DASHBOARD_API_PORT=.*/DASHBOARD_API_PORT=13002/' \"\$INSTALL_DIR/.env\"
     source installers/phases/06-directories.sh
     grep -qx 'TTS_WORKERS=3' \"\$INSTALL_DIR/.env\" || exit 1
+    grep -qx 'DASHBOARD_API_PORT=13002' \"\$INSTALL_DIR/.env\" || exit 1
 " 2>/dev/null; then
     ENV_GENERATED=true
     pass ".env generation completed"
