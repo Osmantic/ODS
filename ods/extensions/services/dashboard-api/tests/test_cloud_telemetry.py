@@ -15,6 +15,8 @@ def test_completion_rate_is_measured_not_local_and_expires():
     assert value['tokens_per_second'] == 50
     assert value['throughput_mode'] == 'cloud_request_average'
     assert value['throughput_state'] == 'retained'
+    # Dashboard's public inference timestamps use Unix seconds, including local metrics.
+    assert value['throughput_sampled_at'] == SAMPLE['sampledAt'] / 1000
     assert project_completion({'sample': SAMPLE}, RUNTIME, now=1300001) == {}
     assert project_completion({'sample': SAMPLE}, RUNTIME, now=999999) == {}
 

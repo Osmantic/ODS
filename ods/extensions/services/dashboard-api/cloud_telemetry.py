@@ -29,7 +29,7 @@ def project_completion(value, runtime, now=None):
     if not math.isfinite(rate):
         return {}
     return {'tokens_per_second': round(rate, 2), 'throughput_mode': 'cloud_request_average',
-            'throughput_state': 'retained', 'throughput_sampled_at': stamp,
+            'throughput_state': 'retained', 'throughput_sampled_at': stamp / 1000,
             'throughput_model': sample['model']}
 
 
