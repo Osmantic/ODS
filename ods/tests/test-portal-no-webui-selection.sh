@@ -19,6 +19,17 @@ grep -q 'requires --pixel' "$fixture/output" || {
 [[ ! -e "$fixture/install" && ! -e "$fixture/log" ]] || {
     echo 'FAIL: missing Portal path changed installation state' >&2; exit 1;
 }
+for optional in --voice --rag; do
+    if env -u ODS_GATEWAY_ONLY -u ENABLE_OPEN_WEBUI \
+        INSTALL_DIR="$fixture/install" LOG_FILE="$fixture/log" \
+        "$ROOT/install-core.sh" --no-webui --pixel "$optional" \
+        --non-interactive --skip-docker >"$fixture/output" 2>&1; then
+        echo "FAIL: $optional accepted without its WebUI controls" >&2; exit 1
+    fi
+    grep -q 'currently require Open WebUI' "$fixture/output" || {
+        echo "FAIL: $optional dependency error was unclear" >&2; exit 1
+    }
+done
 
 resolve() {
     ODS_GATEWAY_ONLY=false ENABLE_OPEN_WEBUI="$1" \
