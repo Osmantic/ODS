@@ -1,0 +1,7 @@
+# API-first gateway installs keep the WebUI image and container out of the
+# active Compose project. Existing WebUI data remains on disk for rollback.
+services:
+  open-webui:
+    profiles:
+      - gateway-webui
+    restart: "no"

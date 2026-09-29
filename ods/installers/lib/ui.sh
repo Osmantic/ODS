@@ -741,7 +741,9 @@ show_success_card() {
     echo -e "${GRN}+--------------------------------------------------------------+${NC}"
     echo -e "${GRN}|${NC}                                                              ${GRN}|${NC}"
     printf "${GRN}|${NC}   Dashboard:   ${WHT}%-43s${NC} ${GRN}|${NC}\n" "${dashboard_url}"
-    printf "${GRN}|${NC}   Chat:        ${WHT}%-43s${NC} ${GRN}|${NC}\n" "${webui_url}"
+    if [[ -n "$webui_url" ]]; then
+        printf "${GRN}|${NC}   Chat:        ${WHT}%-43s${NC} ${GRN}|${NC}\n" "${webui_url}"
+    fi
     echo -e "${GRN}|${NC}                                                              ${GRN}|${NC}"
     if [[ -n "$ip_addr" ]]; then
         echo -e "${GRN}|${NC}   ${AMB}Access from other devices:${NC}                               ${GRN}|${NC}"
