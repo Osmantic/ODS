@@ -204,6 +204,7 @@ def test_build_captures_only_fixed_inputs_and_immutable_id(
     tmp_path, monkeypatch, fault
 ):
     monkeypatch.setattr(module, "docker_path", lambda transport: "/usr/bin/docker")
+    monkeypatch.setattr(module.pwd, "getpwuid", lambda uid: SimpleNamespace(pw_dir="/home/owner"))
     monkeypatch.setattr(module.platform, "machine", lambda: "x86_64")
     for name in module.BUILD_FILES:
         (tmp_path / name).write_bytes(b"fixed input " + name.encode())
@@ -245,13 +246,17 @@ def test_build_captures_only_fixed_inputs_and_immutable_id(
         assert len(calls) == 2
 
 
-def test_mac_endpoint_is_owner_bound_not_environment(tmp_path, monkeypatch):
+@pytest.mark.parametrize("resolved_binary", [
+    "/opt/homebrew/Cellar/docker/29.4.3/bin/docker",
+    "/Applications/Docker.app/Contents/Resources/bin/docker",
+])
+def test_mac_endpoint_is_owner_bound_not_environment(tmp_path, monkeypatch, resolved_binary):
     monkeypatch.setattr(
         module,
         "native_binding",
         lambda **kw: (
             (
-                "/opt/homebrew/Cellar/docker/29.4.3/bin/docker",
+                resolved_binary,
                 "unix:///Users/approved-owner/.colima/ods-fleet/docker.sock",
                 {
                     "dockerSocket": "/Users/approved-owner/.colima/ods-fleet/docker.sock",
@@ -275,11 +280,16 @@ def test_mac_endpoint_is_owner_bound_not_environment(tmp_path, monkeypatch):
     monkeypatch.setattr(module.platform, "machine", lambda: "arm64")
     monkeypatch.setenv("DOCKER_HOST", "tcp://untrusted.invalid:2375")
     monkeypatch.setenv("DOCKER_CONTEXT", "untrusted-context")
+    monkeypatch.setenv("PATH", "/tmp/untrusted-bin")
     for name in module.BUILD_FILES:
         (tmp_path / name).write_bytes(b"fixed input")
         (tmp_path / name).chmod(0o644)
 
     def run(argv, **kw):
+        assert kw["env"] == {
+            "HOME": "/Users/approved-owner",
+            "PATH": str(Path(resolved_binary).parent) + ":/usr/bin:/bin",
+        }
         assert argv[1:3] == [
             "--host",
             "unix:///Users/approved-owner/.colima/ods-fleet/docker.sock",
