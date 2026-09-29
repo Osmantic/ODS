@@ -39,7 +39,12 @@ The installer will:
 4. **Download your model** — GGUF file sized for your hardware
 5. **Start Docker services** — chat UI, search, workflows, voice, and more
 6. **Activate native Pixel** — use the public bundled source, with the gateway and managed helpers on macOS and ingress/sandbox services in Docker
-7. **Install OpenCode** — browser-based AI coding IDE on port 3003
+7. **Install OpenCode if selected** — browser-based AI coding IDE on port 3003
+
+OpenCode is omitted on a fresh Core Only or noninteractive install. Select
+Full Stack, pass `--opencode`, or pass `--all` to add it. An existing loaded ODS
+OpenCode LaunchAgent stays selected on a normal rerun. `--no-opencode` disables
+future login starts while keeping the binary, config, and current session.
 
 **Estimated time:** 5–15 minutes depending on download speed.
 
@@ -49,7 +54,7 @@ The installer will:
 
 - **Chat UI:** http://localhost:3000
 - **Dashboard:** http://localhost:3001
-- **OpenCode (IDE):** http://localhost:3003
+- **OpenCode (IDE, when selected):** http://localhost:3003
 
 The normal loopback-only install opens the Chat UI directly without an account.
 A network-bound or ODS proxy install keeps authentication enabled and prompts
@@ -63,7 +68,7 @@ the first user to create the admin account.
 macOS Host
   ├── llama-server (native, Metal GPU acceleration)
   ├── Pixel gateway + managed host helpers (native)
-  ├── OpenCode web IDE (native, LaunchAgent)
+  ├── OpenCode web IDE (optional native LaunchAgent)
   └── Docker Desktop
         ├── Open WebUI (port 3000)
         ├── Dashboard (port 3001)
@@ -145,9 +150,9 @@ Override: `./install.sh --tier 3`
 | Config | `~/ods/.env` |
 | Models | `~/ods/data/models/` |
 | llama-server binary | `~/ods/llama-server/` |
-| OpenCode | `~/.opencode/bin/opencode` |
-| OpenCode config | `~/.config/opencode/opencode.json` |
-| LaunchAgent (OpenCode) | `~/Library/LaunchAgents/com.ods.opencode-web.plist` |
+| OpenCode, when selected | `~/.opencode/bin/opencode` |
+| OpenCode config, when selected | `~/.config/opencode/opencode.json` |
+| OpenCode LaunchAgent, when selected | `~/Library/LaunchAgents/com.ods.opencode-web.plist` |
 | CLI tool | `~/ods/ods-macos.sh` |
 
 ---
