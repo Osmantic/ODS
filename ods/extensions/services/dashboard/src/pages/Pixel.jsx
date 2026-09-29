@@ -420,6 +420,13 @@ export function latestProjectPublication(publication,messages) {
   return [...messages].reverse().map(messagePublication).find(item=>item.publication?.relativeDirectory===publication?.relativeDirectory)?.publication || publication
 }
 
+// Publications a chat already carries were shown when they were produced;
+// opening the chat again must not pop the workspace open for them.
+function shownPublicationKeys(chat) {
+  return new Set((chat?.messages || []).filter(message=>message.teamId && message.publication)
+    .map(message=>`${chat.chatId}:${message.teamId}:${message.publication.sha256}`))
+}
+
 function teamPublication(team) {
   return [...(team.agents || [])].reverse().filter(agent=>agent.status==='completed')
     .map(agent=>messagePublication({role:'assistant',publication:agent.publication}).publication).find(Boolean) || null
@@ -613,9 +620,7 @@ export default function Pixel({ systemStatus = null }) {
     setWorkspaceRequest({chatId:chatIdRef.current,kind:'agents'})
   },[teams.selected])
   const teamAttempt=useRef(null)
-  const shownTeamPublications=useRef(new Set((initialChat?.messages || [])
-    .filter(message=>message.teamId && message.publication)
-    .map(message=>`${initialChat.chatId}:${message.teamId}:${message.publication.sha256}`)))
+  const shownTeamPublications=useRef(shownPublicationKeys(initialChat))
   useEffect(()=>{
     const last=messages.at(-1)
     const team=teams.teams.find(t=>t.id===last?.teamId)
@@ -1373,6 +1378,7 @@ export default function Pixel({ systemStatus = null }) {
       if (!chat || chat.chatId === chatIdRef.current) return
       conversationWriter.current = createConversationWriter(chat.persistenceSnapshot)
       chatIdRef.current = chat.chatId
+      shownTeamPublications.current = shownPublicationKeys(chat)
       requestIdRef.current = chat.requestId
       contextStartRef.current = chat.contextStart
       compactionRequestRef.current = chat.compactionRequestId
