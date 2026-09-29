@@ -41,6 +41,7 @@ test: ## Run unit and contract tests
 	@bash tests/test-phase03-no-gpu-assignment-message.sh
 	@bash tests/contracts/test-preflight-fixtures.sh
 	@bash tests/test-preflight-resolver-bug.sh
+	@bash tests/test-tier0-memory-overlay.sh
 	@bash tests/test-linux-cloud-mode.sh
 	@echo ""
 	@echo "=== Linux install preflight ==="
