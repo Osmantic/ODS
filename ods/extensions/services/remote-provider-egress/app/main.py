@@ -449,7 +449,8 @@ async def forward(full_path: str, request: Request) -> Response:
             if sample:
                 app.state.completion_sample = sample
         except (ValueError, RecursionError):
-            pass
+            # A provider body that is not bounded JSON is not a usable sample.
+            observation.invalid = True
     return Response(
         content=upstream.content,
         status_code=upstream.status_code,
