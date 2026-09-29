@@ -16,6 +16,43 @@
 #   Add new container images or change image tags here.
 # ============================================================================
 
+_phase08_check_docker_data_root_space() {
+    # Image layers live in Docker's data-root, which can be on a different
+    # filesystem from INSTALL_DIR. The install preflight's 15 GB Docker-image
+    # allowance must therefore be available on this filesystem too.
+    [[ "$(uname -s)" == "Linux" ]] || return 0
+
+    local docker_root available_kb available_gb minimum_kb
+    minimum_kb=$((15 * 1024 * 1024))
+    docker_root="$($DOCKER_CMD info --format '{{.DockerRootDir}}' 2>>"$LOG_FILE" || true)"
+    if [[ -z "$docker_root" || "$docker_root" == "<no value>" ]]; then
+        # The podman-docker compatibility CLI exposes its store path under
+        # Store.GraphRoot rather than DockerRootDir.
+        docker_root="$($DOCKER_CMD info --format '{{.Store.GraphRoot}}' 2>>"$LOG_FILE" || true)"
+    fi
+    if [[ -z "$docker_root" || "$docker_root" == "<no value>" || ! -d "$docker_root" ]]; then
+        ai_bad "Could not determine the local Docker data-root before image downloads."
+        ai "Check that Docker is running and its data directory is accessible, then retry."
+        return 1
+    fi
+
+    available_kb="$(df -Pk "$docker_root" 2>>"$LOG_FILE" | tail -n 1 | awk '{print $4}')"
+    if ! [[ "$available_kb" =~ ^[0-9]+$ ]]; then
+        ai_bad "Could not measure free space on Docker's data-root filesystem: $docker_root"
+        return 1
+    fi
+
+    available_gb=$((available_kb / 1024 / 1024))
+    if (( available_kb < minimum_kb )); then
+        ai_bad "Docker's data-root filesystem has ${available_gb}GB free; at least 15GB is required before image downloads."
+        ai "Free space on $docker_root or move Docker's data-root to a larger filesystem, then retry."
+        return 1
+    fi
+
+    ai "Docker data-root filesystem has ${available_gb}GB free."
+    return 0
+}
+
 ods_progress 48 "images" "Downloading container images"
 if [[ "$GPU_BACKEND" == "nvidia" && "${ENABLE_COMFYUI:-}" == "true" ]]; then
     show_phase 4 6 "Downloading Modules" "~5-10 min + ~30 min ComfyUI build"
@@ -181,6 +218,10 @@ else
                 fi
             fi
         fi
+    fi
+
+    if ! _phase08_check_docker_data_root_space; then
+        exit 1
     fi
 
     echo ""

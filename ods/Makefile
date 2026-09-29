@@ -42,6 +42,7 @@ test: ## Run unit and contract tests
 	@bash tests/contracts/test-preflight-fixtures.sh
 	@bash tests/test-preflight-resolver-bug.sh
 	@bash tests/test-linux-cloud-mode.sh
+	@bash tests/test-phase08-docker-data-root-space.sh
 	@echo ""
 	@echo "=== Linux install preflight ==="
 	@bash tests/test-linux-install-preflight.sh
