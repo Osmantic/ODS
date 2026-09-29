@@ -30,23 +30,27 @@ case "${LEMONADE_EXTERNAL:-false}" in
     true|TRUE|1|yes|YES|on|ON) _lemonade_external=true ;;
     *) _lemonade_external=false ;;
 esac
-if [[ "$_lemonade_external" == "true" ]]; then
-    # The external host owns inference. In WSL the Linux capability probe can
-    # legitimately fall back to CPU even though Windows Lemonade has full NPU/
-    # GPU access; pulling a dormant llama.cpp image wastes time and disk and
-    # makes the installation plan lie about which model path will run.
-    :
-elif [[ "$GPU_BACKEND" == "amd" ]]; then
-    _lemonade_image="${LEMONADE_SERVER_IMAGE:-${BACKEND_LEMONADE_CONTAINER_IMAGE:-ghcr.io/lemonade-sdk/lemonade-server:v10.2.0@sha256:08edbf1128a7fd82b39f1de72c2f70c013f2ecfefac6a99c52bcf58eba532a3a}}"
-    PULL_LIST+=("${_lemonade_image}|LEMONADE — downloading the brain (AMD ROCm)")
-    [[ "$ENABLE_COMFYUI" == "true" ]] && PULL_LIST+=("ignatberesnev/comfyui-gfx1151:v0.2@sha256:a38260b56a94fdf5aa9f951a96a73ef1987b70ebcbd4757447708a756a67abc0|COMFYUI — image generation engine (gfx1151)")
-elif [[ "$GPU_BACKEND" == "cpu" ]]; then
-    PULL_LIST+=("${LLAMA_SERVER_IMAGE:-ghcr.io/ggml-org/llama.cpp:server-b9014@sha256:2e7953dfef88f302bf0683bffa7dc1f8d86ef75910380bc41126ec5b8bedaf53}|LLAMA-SERVER — downloading the brain (CPU)")
-else
-    PULL_LIST+=("${LLAMA_SERVER_IMAGE:-ghcr.io/ggml-org/llama.cpp:server-cuda-b9014@sha256:fcf285820892e7ce3218379634e3590826fc697e8b6745b9392072462e355c4f}|LLAMA-SERVER — downloading the brain (NVIDIA CUDA)")
+if [[ "${ODS_MODE:-local}" != "cloud" && "$_lemonade_external" != "true" && -z "${EXTERNAL_LLM_URL:-}" ]]; then
+    # Cloud and external routes do not run ODS-managed inference. In WSL the
+    # Linux capability probe can report CPU while Windows owns the model, so
+    # selecting this image from GPU_BACKEND alone wastes time and disk.
+    if [[ "$GPU_BACKEND" == "amd" ]]; then
+        _lemonade_image="${LEMONADE_SERVER_IMAGE:-${BACKEND_LEMONADE_CONTAINER_IMAGE:-ghcr.io/lemonade-sdk/lemonade-server:v10.2.0@sha256:08edbf1128a7fd82b39f1de72c2f70c013f2ecfefac6a99c52bcf58eba532a3a}}"
+        PULL_LIST+=("${_lemonade_image}|LEMONADE — downloading the brain (AMD ROCm)")
+    elif [[ "$GPU_BACKEND" == "intel" ]]; then
+        PULL_LIST+=("${LLAMA_SERVER_IMAGE:-ghcr.io/ggml-org/llama.cpp:server-intel-b9014@sha256:9c7bbaad3663523a3deb8927d3cfbf58d33f00a7634c69843e9eeeda01568c1b}|LLAMA-SERVER — downloading the brain (Intel)")
+    elif [[ "$GPU_BACKEND" == "sycl" ]]; then
+        # The Arc overlay builds ods-llama-sycl:local; there is no remote image to pre-pull.
+        :
+    elif [[ "$GPU_BACKEND" == "cpu" ]]; then
+        PULL_LIST+=("${LLAMA_SERVER_IMAGE:-ghcr.io/ggml-org/llama.cpp:server-b9014@sha256:2e7953dfef88f302bf0683bffa7dc1f8d86ef75910380bc41126ec5b8bedaf53}|LLAMA-SERVER — downloading the brain (CPU)")
+    else
+        PULL_LIST+=("${LLAMA_SERVER_IMAGE:-ghcr.io/ggml-org/llama.cpp:server-cuda-b9014@sha256:fcf285820892e7ce3218379634e3590826fc697e8b6745b9392072462e355c4f}|LLAMA-SERVER — downloading the brain (NVIDIA CUDA)")
+    fi
 fi
+[[ "$GPU_BACKEND" == "amd" && "${ENABLE_COMFYUI:-false}" == "true" ]] && PULL_LIST+=("ignatberesnev/comfyui-gfx1151:v0.2@sha256:a38260b56a94fdf5aa9f951a96a73ef1987b70ebcbd4757447708a756a67abc0|COMFYUI — image generation engine (gfx1151)")
 PULL_LIST+=("ghcr.io/open-webui/open-webui:v0.7.2@sha256:16d9a3615b45f14a0c89f7ad7a3bf151f923ed32c2e68f9204eb17d1ce40774b|OPEN WEBUI — interface module")
-PULL_LIST+=("itzcrazykns1337/vane:v1.12.2@sha256:61f2bbf3386ff3df08911fb3de0e1893b04702a4d49ef13fbadbda937b47ab7c|PERPLEXICA — deep research engine")
+[[ "${ENABLE_PERPLEXICA:-false}" == "true" ]] && PULL_LIST+=("itzcrazykns1337/vane:v1.12.2@sha256:61f2bbf3386ff3df08911fb3de0e1893b04702a4d49ef13fbadbda937b47ab7c|PERPLEXICA — deep research engine")
 if [[ "$ENABLE_VOICE" == "true" ]]; then
     if [[ "$GPU_BACKEND" == "nvidia" && "${WHISPER_ACCELERATION:-cuda}" == "cuda" ]]; then
         PULL_LIST+=("ghcr.io/speaches-ai/speaches:0.9.0-rc.3-cuda@sha256:f4eb14d1c53b19c5bd1f76d10ea9fc10288ceaf82dca09506d3f0ef92ee943de|WHISPER — ears online (Speaches STT, CUDA)")
