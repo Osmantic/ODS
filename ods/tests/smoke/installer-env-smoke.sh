@@ -199,6 +199,7 @@ export ENABLE_OPENCLAW=true
     source installers/phases/06-directories.sh
     grep -qx 'TTS_WORKERS=3' \"\$INSTALL_DIR/.env\" || exit 1
     grep -qx 'DASHBOARD_API_PORT=13002' \"\$INSTALL_DIR/.env\" || exit 1
+    [[ \"\$DASHBOARD_API_PORT\" == 13002 ]] || exit 1
 " 2>/dev/null; then
     ENV_GENERATED=true
     pass ".env generation completed"

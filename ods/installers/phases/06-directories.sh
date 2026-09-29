@@ -1219,6 +1219,9 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
     # Resolve before opening .env for writing; a here-document lookup would
     # read the already-truncated file and lose a retained host port override.
     DASHBOARD_API_PORT_VALUE="$(_env_get DASHBOARD_API_PORT 3002)"
+    # Phase 05 renders Pixel's extension-manager unit from this shell value.
+    # Keep it aligned with the retained .env port on an upgrade.
+    DASHBOARD_API_PORT="$DASHBOARD_API_PORT_VALUE"
 
     # Generate .env file
     if [[ "${ENABLE_PIXEL_RUNTIME:-false}" == true ]]; then
