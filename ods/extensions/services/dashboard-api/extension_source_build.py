@@ -24,6 +24,10 @@ def verify_source_runtime(candidate, service):
     if (service.get('networks') != [network] or 'network_mode' in service
             or candidate['compose'].get('networks', {}).get(network) != {'internal': True}):
         raise ValueError('Source runtime requires its own internal sandbox network')
+    if service.get('ports'):
+        # An internal network cannot publish ports, so this service would be
+        # unreachable. Web-service source recipes are refused at generation.
+        raise ValueError('Source runtime cannot publish ports: its sandbox network is internal')
     cpus, pids = service.get('cpus'), service.get('pids_limit')
     memory = service.get('mem_limit')
     if (isinstance(cpus, bool) or not isinstance(cpus, (int, float)) or not 0 < cpus <= 32
