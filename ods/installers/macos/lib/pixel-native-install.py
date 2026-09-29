@@ -213,9 +213,14 @@ def main():
                 ref=args.ref)
     except (ValueError, OSError, KeyError, subprocess.SubprocessError) as error:
         # Error codes contain no captured subprocess output, environment or keys.
-        guidance = ERROR_GUIDANCE.get(str(error),
+        code = str(error)
+        guidance = ERROR_GUIDANCE.get(code,
             'Check prerequisites and private preparation/activation receipts; do not reset them.')
-        print('Native Pixel installation stopped (' + type(error).__name__ + '). ' + guidance, file=sys.stderr)
+        # Name the failed step; any other exception text may carry paths or output.
+        reason = type(error).__name__
+        if re.fullmatch(r'[a-z0-9]+(?:-[a-z0-9]+)+', code):
+            reason += ': ' + code
+        print('Native Pixel installation stopped (' + reason + '). ' + guidance, file=sys.stderr)
         return 1
     return 0
 
