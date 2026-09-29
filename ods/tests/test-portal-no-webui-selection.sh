@@ -46,6 +46,9 @@ with_ui="$(resolve true)"
 SCRIPT_DIR="$ROOT"
 source "$ROOT/installers/lib/compose-select.sh"
 portal_compose_stub() {
+    if [[ "${PORTAL_TEST_REQUIRE_GID:-}" == true ]]; then
+        [[ "${PIXEL_INGRESS_GID:-}" == 1 ]] || return 1
+    fi
     case "${PORTAL_TEST_MODE:-}" in
         safe) printf 'dashboard\npixel-edge\n' ;;
         unsafe) printf 'dashboard\npixel-edge\nopen-webui\n' ;;
@@ -54,6 +57,11 @@ portal_compose_stub() {
 }
 DOCKER_COMPOSE_CMD=portal_compose_stub
 INSTALL_DIR="$fixture" PORTAL_TEST_MODE=safe ods_compose_assert_no_webui -f fake.yml
+PIXEL_INGRESS_GID='' PORTAL_TEST_REQUIRE_GID=true INSTALL_DIR="$fixture" \
+    PORTAL_TEST_MODE=safe ods_compose_assert_no_webui_before_pixel_identity -f fake.yml
+[[ -z "${PIXEL_INGRESS_GID:-}" ]] || {
+    echo 'FAIL: early Compose check leaked its placeholder Pixel GID' >&2; exit 1;
+}
 if INSTALL_DIR="$fixture" PORTAL_TEST_MODE=unsafe \
     ods_compose_assert_no_webui -f fake.yml 2>/dev/null; then
     echo 'FAIL: active WebUI bypassed the no-WebUI guard' >&2; exit 1;
