@@ -2096,6 +2096,29 @@ describe('Pixel', () => {
     expect(fetch.mock.calls.filter(([url])=>url==='/api/pixel/chat/stream')).toHaveLength(restored ? 0 : 1)
   })
 
+  it.each([
+    ['partial text', 'Saved edits', 'Saved edits'],
+    ['no text', '', 'Portal could not complete the response. Check saved work before continuing.'],
+  ])('keeps the previous wording for a recovered generic failure (%s)', async (_name, partial, expected) => {
+    const frames = [
+      ...(partial ? [JSON.stringify({choices:[{delta:{content:partial}}]})] : []),
+      JSON.stringify({error:{message:'private-upstream-secret'}}),
+      '[DONE]',
+    ]
+    localStorage.setItem('ods.pixel.chat.v1', JSON.stringify({
+      schema:1,chatId:'generic-chat',requestId:'generic-attempt',inFlight:true,
+      messages:[{role:'user',content:'Continue editing'},{role:'assistant',content:''}],
+    }))
+    globalThis.fetch.mockImplementation(async url => {
+      if (url === '/api/pixel/chat/result') return response({state:'interrupted',events:frames.map(frame=>'data: '+frame+'\n\n').join('')})
+      return response({available:true})
+    })
+    render(<Pixel />)
+    await screen.findByText('Available')
+    await waitFor(()=>expect(JSON.parse(localStorage.getItem('ods.pixel.chat.v1')).messages.at(-1).content).toBe(expected))
+    expect(screen.queryByText(/private-upstream-secret/)).toBeNull()
+  })
+
   it('marks a stream that closes without DONE as interrupted', async () => {
     globalThis.fetch.mockResolvedValueOnce(
       response({ available: true, model: 'pixel/default', detail: 'local' })
