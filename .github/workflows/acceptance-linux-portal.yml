@@ -1,0 +1,38 @@
+name: Acceptance Linux Portal default
+
+on:
+  push:
+    branches:
+      - codex/ods-portal-live-audit
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: portal-live-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  portal-install-addback:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Checkout acceptance harness
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - name: Checkout exact product PR head
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          ref: dc758b9c97353aeebe3e51944cd427d49ade534c
+          path: product
+      - name: Record exact source and runner capacity
+        run: |
+          test "$(git -C product rev-parse HEAD)" = dc758b9c97353aeebe3e51944cd427d49ade534c
+          docker version
+          docker info --format '{{.OperatingSystem}}'
+          df -h / "$RUNNER_TEMP"
+          cat /proc/1/comm
+      - name: Exercise Portal default and WebUI Library add-back
+        env:
+          ODS_ACCEPTANCE_PRODUCT_ROOT: ${{ github.workspace }}/product/ods
+        run: bash ods/tests/acceptance/portal-default-journey.sh
