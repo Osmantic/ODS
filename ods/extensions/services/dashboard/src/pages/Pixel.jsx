@@ -420,6 +420,11 @@ export function latestProjectPublication(publication,messages) {
   return [...messages].reverse().map(messagePublication).find(item=>item.publication?.relativeDirectory===publication?.relativeDirectory)?.publication || publication
 }
 
+function teamPublication(team) {
+  return [...(team.agents || [])].reverse().filter(agent=>agent.status==='completed')
+    .map(agent=>messagePublication({role:'assistant',publication:agent.publication}).publication).find(Boolean) || null
+}
+
 function messageOutcome(message) {
   return message.role === 'assistant' && ['done', 'error', 'stopped'].includes(message.status)
     ? {status:message.status} : {}
@@ -608,6 +613,21 @@ export default function Pixel({ systemStatus = null }) {
     setWorkspaceRequest({chatId:chatIdRef.current,kind:'agents'})
   },[teams.selected])
   const teamAttempt=useRef(null)
+  const shownTeamPublications=useRef(new Set((initialChat?.messages || [])
+    .filter(message=>message.teamId && message.publication)
+    .map(message=>`${initialChat.chatId}:${message.teamId}:${message.publication.sha256}`)))
+  useEffect(()=>{
+    const last=messages.at(-1)
+    const team=teams.teams.find(t=>t.id===last?.teamId)
+    if(!team || ACTIVE_TEAMS.has(team.status))return
+    const publication=teamPublication(team)
+    if(!publication)return
+    const key=`${chatIdRef.current}:${team.id}:${publication.sha256}`
+    if(shownTeamPublications.current.has(key))return
+    shownTeamPublications.current.add(key)
+    setPreview(publication);setPreviewRefresh(0);setWorkspaceOpen(true);setPreviewCollapsed(false)
+    setWorkspaceRequest({chatId:chatIdRef.current,siteId:publication.siteId,kind:'preview'})
+  },[teams.teams,messages])
   useEffect(()=>{
     if(!teams.teams.length)return
     setMessages(previous=>{
@@ -617,21 +637,24 @@ export default function Pixel({ systemStatus = null }) {
         const team=teams.teams.find(t=>t.id===message.teamId || t.request_id===message.teamRequestId)
         if(!team)return message
         const content=teamSummary(team)
+        const publication=teamPublication(team)
+        const published=publication ? {publication,beforePublication:message.beforePublication || null} : {}
         if(team.mode==='goal') {
           const agent=team.agents[0], active=['queued','running'].includes(team.status)
           const observed=parseTaskActivity(agent?.activity,agent?.activity?.runId)
           const plan=observed?.goal?.steps.length ? observed.goal : agent?.goal_plan || observed?.goal || message.task?.goal
           const task=observed ? {...observed,goal:plan || null} : message.task ? {...message.task} : undefined
           if(task?.goal && ['failed','cancelled','interrupted'].includes(team.status))task.goal={...task.goal,status:'blocked',summary:(agent?.error || team.notice || 'This goal was stopped. Review the saved work before continuing.').slice(0,300)}
-          const next={...message,teamId:team.id,goalMode:true,content,task,status:active?'streaming':'done',
+          const next={...message,...published,teamId:team.id,goalMode:true,content,task,status:active?'streaming':'done',
             questions:agent?.questions || undefined,goalNotice:agent?.error || team.notice || '',goalState:team.status}
           if(JSON.stringify(message)===JSON.stringify(next))return message
           changed=true;return next
         }
         const projectTasks=teamProjectTasks(team,message.projectTasks)
         if(message.content===content && message.teamId===team.id
+          && (!publication || message.publication?.sha256===publication.sha256)
           && JSON.stringify(message.projectTasks || [])===JSON.stringify(projectTasks))return message
-        changed=true;return {...message,teamId:team.id,content,...(projectTasks.length ? {projectTasks} : {})}
+        changed=true;return {...message,...published,teamId:team.id,content,...(projectTasks.length ? {projectTasks} : {})}
       })
       return changed ? next : previous
     })

@@ -26,6 +26,34 @@ MAX_TEAMS = 128
 MAX_BYTES = 4 * 1024 * 1024
 
 
+def publication_receipt(frame):
+    """Retain only the host's terminal, bounded snapshot projection, never prose URLs."""
+    marker = frame.get('pixel')
+    if not isinstance(marker, dict) or set(marker) != {'schemaVersion', 'preview'} or marker['schemaVersion'] != 1:
+        return None
+    value = marker['preview']
+    keys = {'schemaVersion', 'kind', 'relativeDirectory', 'siteId', 'port', 'url', 'files', 'bytes', 'sha256', 'entrySha256'}
+    if not isinstance(value, dict) or set(value) != keys or len(json.dumps(value)) > 4096:
+        return None
+    if value['schemaVersion'] != 1 or value['kind'] != 'ods-pixel-workspace-preview':
+        return None
+    for field in ('sha256', 'entrySha256'):
+        if not isinstance(value[field], str) or not re.fullmatch(r'[a-f0-9]{64}', value[field]):
+            return None
+    if value['siteId'] != 'site-' + value['sha256'][:24]:
+        return None
+    for field, maximum in [('port', 65535), ('files', 128), ('bytes', 16 * 1024 * 1024)]:
+        if type(value[field]) is not int or not 1 <= value[field] <= maximum:
+            return None
+    directory = value['relativeDirectory']
+    if (not isinstance(directory, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._/-]{0,511}', directory)
+            or any(part in {'.', '..'} for part in directory.split('/'))):
+        return None
+    if value['url'] != f"http://{value['siteId']}.localhost:{value['port']}/{value['siteId']}/":
+        return None
+    return copy.deepcopy(value)
+
+
 def project_receipts_valid(task):
     """Preserve only bounded, structured host associations across team reloads."""
     projects = task.get('projects')
@@ -338,6 +366,7 @@ class TeamManager:
                     agent["started"] = agent["started"] or time.time()
                     self._save(owner, row)
                     content, outcome, questions, done, error = "", None, None, False, False
+                    publication = None
                     # Never reuse an earlier turn's completion plan as a fresh receipt.
                     agent['activity'] = None
                     last_save = 0
@@ -364,6 +393,7 @@ class TeamManager:
                             # projection. Preserve its schema so the UI can validate too.
                             agent["activity"] = {k: task[k] for k in ["schemaVersion", "runId", "startedAt", "finishedAt", "state", "calls", "failures", "blocked", "truncated", "activities", "events", "context", "goal", "projects"] if k in task}
                         if choice.get("finish_reason") == "stop":
+                            publication = publication_receipt(frame)
                             receipt = frame.get("pixel_outcome", {})
                             if receipt.get("schemaVersion") == 1 and receipt.get("status") in {"none", "passed", "pending", "failed"}:
                                 outcome = receipt["status"]
@@ -375,6 +405,8 @@ class TeamManager:
                             self._save(owner, row)
                             last_save = time.monotonic()
                     stopped = self.store.get(owner, row["id"])["stop_requested"]
+                    if done and not error and outcome in {'none', 'passed'} and publication:
+                        agent['publication'] = publication
                     row["stop_requested"] = stopped
                     if content:
                         agent["conversation"].append({"role": "assistant", "content": content})

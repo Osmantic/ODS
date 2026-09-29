@@ -8,6 +8,44 @@ import {conversationProject} from '../lib/conversationProjects'
 beforeEach(()=>{localStorage.clear();sessionStorage.clear()})
 afterEach(()=>{vi.unstubAllGlobals();vi.restoreAllMocks()})
 
+it('delivers a confirmed team preview, persists it and does not reopen it on every poll',async()=>{
+  const id='c'.repeat(32),sha256='a'.repeat(64),siteId=`site-${sha256.slice(0,24)}`
+  const publication={schemaVersion:1,kind:'ods-pixel-workspace-preview',relativeDirectory:'Playground/snake',
+    siteId,port:9437,url:`http://${siteId}.localhost:9437/${siteId}/`,files:3,bytes:1000,sha256,entrySha256:'b'.repeat(64)}
+  const agent={id:'0',name:'Builder',role:'builder',status:'completed',conversation:[{role:'assistant',content:'Published game'}],publication}
+  const team={id,status:'completed',goal:'Build game',agents:[agent]}
+  saveConversation({schema:1,chatId:'team-preview',messages:[{role:'user',content:'Build game'},{role:'assistant',teamId:id,content:'Working'}]})
+  let controller={teams:[team],busy:false,error:'',selected:null,select:vi.fn()}
+  vi.spyOn(portalTeams,'usePortalTeams').mockImplementation(()=>controller)
+  vi.stubGlobal('fetch',vi.fn(async()=>({ok:true,json:async()=>({available:true})})))
+  const view=render(<Pixel/> )
+  expect(await screen.findByTitle('Interactive Portal preview')).toHaveAttribute('src',`/pixel-preview/${siteId}/__ods_view__.html`)
+  await waitFor(()=>expect(readConversations()[0].messages[1].publication).toEqual(publication))
+  fireEvent.click(screen.getByRole('button',{name:'Close preview',exact:true}))
+  controller={...controller,teams:[{...team}]}
+  view.rerender(<Pixel/> )
+  expect(screen.queryByTitle('Interactive Portal preview')).toBeNull()
+  view.unmount()
+  render(<Pixel/> )
+  expect(screen.queryByTitle('Interactive Portal preview')).toBeNull()
+  fireEvent.click(screen.getByRole('button',{name:'Workspace',exact:true}))
+  expect(await screen.findByTitle('Interactive Portal preview')).toBeVisible()
+  expect(readConversations()[0].messages[1].publication).toEqual(publication)
+})
+
+it.each(['failed','running','malformed'])('does not promote an unconfirmed team preview (%s)',async state=>{
+  const id='d'.repeat(32),sha256='a'.repeat(64),siteId=`site-${sha256.slice(0,24)}`
+  const publication={schemaVersion:1,kind:'ods-pixel-workspace-preview',relativeDirectory:'demo',siteId,
+    port:9437,url:state==='malformed'?'https://untrusted.example/':`http://${siteId}.localhost:9437/${siteId}/`,files:1,bytes:1,sha256,entrySha256:'b'.repeat(64)}
+  saveConversation({schema:1,chatId:'unconfirmed-preview',messages:[{role:'user',content:'Build game'},{role:'assistant',teamId:id,content:'Working'}]})
+  vi.spyOn(portalTeams,'usePortalTeams').mockReturnValue({teams:[{id,status:state==='malformed'?'completed':state,agents:[{id:'0',name:'Builder',role:'builder',status:state==='malformed'?'completed':state,publication,conversation:[]}]}],busy:false,error:'',selected:null,select:vi.fn()})
+  vi.stubGlobal('fetch',vi.fn(async()=>({ok:true,json:async()=>({available:true})})))
+  render(<Pixel/> )
+  await screen.findByText('Available')
+  expect(screen.queryByTitle('Interactive Portal preview')).toBeNull()
+  expect(readConversations()[0].messages[1].publication).toBeUndefined()
+})
+
 it('persists team project observations when the summary stays identical and restores them after reload',async()=>{
   const id='a'.repeat(32)
   const activity={schemaVersion:4,runId:'chatcmpl_11111111-1111-4111-8111-111111111111',

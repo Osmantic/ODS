@@ -16,6 +16,40 @@ import security
 OWNER = 'a' * 64
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize('ending', ['complete', 'interrupted', 'error', 'malformed', 'prose'])
+async def test_team_retains_only_confirmed_host_publications(tmp_path, ending):
+    publication = {'schemaVersion': 1, 'kind': 'ods-pixel-workspace-preview',
+                   'relativeDirectory': 'Playground/snake', 'siteId': 'site-' + 'a' * 24,
+                   'port': 9437, 'url': 'http://site-' + 'a' * 24 + '.localhost:9437/site-' + 'a' * 24 + '/',
+                   'files': 3, 'bytes': 1000, 'sha256': 'a' * 64, 'entrySha256': 'b' * 64}
+
+    async def run(owner, agent):
+        for frame in finish(publication['url']):
+            if frame.get('choices', [{}])[0].get('finish_reason') == 'stop' and ending != 'prose':
+                frame['pixel'] = {'schemaVersion': 1, 'preview': copy.deepcopy(publication)}
+                if ending == 'malformed':
+                    frame['pixel']['preview']['url'] = 'https://untrusted.example/'
+            if frame.get('_done'):
+                if ending == 'error':
+                    yield {'error': {'message': 'failed'}}
+                if ending == 'interrupted':
+                    frame['_state'] = 'interrupted'
+            yield frame
+
+    manager = TeamManager(TeamStore(tmp_path / 'teams'), run, yes)
+    row = manager.start(OWNER, 'chat', 'attempt', 'Publish the game', 1, '')
+    await settle(manager)
+    stored = manager.store.get(OWNER, row['id'])
+    viewed = manager.view(stored)
+    if ending == 'complete':
+        assert viewed['agents'][0]['publication'] == publication
+        reloaded = TeamManager(TeamStore(tmp_path / 'teams'), run, yes)
+        assert reloaded.list(OWNER, 'chat')[0]['agents'][0]['publication'] == publication
+    else:
+        assert 'publication' not in viewed['agents'][0]
+
+
 def finish(content='Actual result', status='none', questions=None):
     yield {'choices': [{'delta': {'content': content}}]}
     frame = {'choices': [{'delta': {}, 'finish_reason': 'stop'}], 'pixel_outcome': {'schemaVersion': 1, 'status': status}}
