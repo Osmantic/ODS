@@ -5642,7 +5642,14 @@ def _precreate_data_dirs(service_id: str):
                 continue
             try:
                 dir_path.mkdir(parents=True, exist_ok=True)
-                if uid is not None and os.getuid() == 0:
+                # Native Windows lacks POSIX ownership APIs; directory creation
+                # still lets Compose prepare the extension mount.
+                if (
+                    uid is not None
+                    and hasattr(os, "getuid")
+                    and hasattr(os, "chown")
+                    and os.getuid() == 0
+                ):
                     # Defense-in-depth: the installer preflight already
                     # blocks non-POSIX filesystems at INSTALL_DIR, but
                     # runtime extension installs (post-setup) can still
