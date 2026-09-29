@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-28T20:06:41Z",
+  "generated_at": "2026-09-29T21:40:12Z",
   "schema_version": "1.0.0",
   "extensions": [
     {
@@ -8517,8 +8517,7 @@
       ],
       "compose_file": "",
       "depends_on": [
-        "litellm",
-        "searxng"
+        "litellm"
       ],
       "port": 0,
       "external_port_default": 0,
@@ -8566,15 +8565,13 @@
           "requirements": {
             "services": [
               "pixel-agent",
-              "litellm",
-              "searxng"
+              "litellm"
             ],
             "vram_gb": 0
           },
           "enabled_services_all": [
             "pixel-agent",
-            "litellm",
-            "searxng"
+            "litellm"
           ],
           "setup_time": "~1 minute",
           "priority": 60,
