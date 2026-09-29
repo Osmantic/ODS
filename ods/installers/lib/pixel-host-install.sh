@@ -142,6 +142,33 @@ PY
     fi
 }
 
+# Resolve Pixel search before phase 03 chooses Compose services. Use the same
+# owner-private onboarding selector as phase 11, and the explicit > installed
+# .env precedence that phase 06 applies. Never source .env as shell code.
+ods_pixel_resolve_search_provider() {
+    local requested="${PIXEL_WEB_SEARCH_PROVIDER:-}" raw owner home answers helper
+    [[ -n "${INSTALL_DIR:-}" && -n "${SCRIPT_DIR:-}" ]] || return 1
+    if [[ -z "$requested" && -f "$INSTALL_DIR/.env" ]]; then
+        if ! declare -F safe_env_decode_value >/dev/null 2>&1; then
+            # shellcheck source=../../lib/safe-env.sh
+            source "$SCRIPT_DIR/lib/safe-env.sh"
+        fi
+        raw="$(grep -m1 '^PIXEL_WEB_SEARCH_PROVIDER=' "$INSTALL_DIR/.env" 2>/dev/null | cut -d= -f2- || true)"
+        requested="$(safe_env_decode_value "$raw")"
+    fi
+    case "$requested" in
+        ""|searxng|parallel-free) ;;
+        *) printf '%s\n' 'error: invalid Pixel web search provider' >&2; return 1 ;;
+    esac
+    owner="${PIXEL_SERVICE_USER:-$(ods_pixel_install_owner)}" || return 1
+    home="$(ods_pixel_owner_home "$owner")" || return 1
+    answers="$INSTALL_DIR/data/pixel/onboarding.json"
+    helper="$SCRIPT_DIR/extensions/services/pixel-agent/host/native_search.py"
+    [[ -f "$helper" ]] || return 1
+    ods_pixel_run_as_owner "$owner" "$home" python3 "$helper" \
+        --answers-file "$answers" --provider "$requested"
+}
+
 ods_pixel_run_as_owner_with_umask() {
     local owner="$1" home="$2" requested_umask="$3"
     shift 3
@@ -4499,10 +4526,7 @@ ods_pixel_install_default_agent() {
     # transition gate. Start the edge before the host ingress is installed;
     # its transition endpoint is independent of upstream chat readiness, and
     # the final access reproof below still runs only after ingress is healthy.
-    # Pixel's plan preflight probes SearXNG even when its agentic web-search
-    # provider is Parallel. ODS also shares SearXNG with OWUI/Perplexica, so
-    # a clean install must start it before Pixel plans its host deployment.
-    local -a pixel_prerequisites=(litellm dashboard-api pixel-edge pixel-model-relay searxng)
+    local -a pixel_prerequisites=(litellm dashboard-api pixel-edge pixel-model-relay)
     # Managed inference needs the router before the relay's real model probe.
     # Cloud/external installs instead bind the relay to authenticated LiteLLM;
     # their Compose overlays intentionally profile model-router out.
@@ -4603,6 +4627,14 @@ ods_pixel_install_default_agent() {
         searxng|parallel-free) ;;
         *) ai_bad "Pixel returned an invalid native search provider."; return 1 ;;
     esac
+    if [[ -n "${PIXEL_RESOLVED_WEB_SEARCH_PROVIDER:-}" &&
+          "$web_search_provider" != "$PIXEL_RESOLVED_WEB_SEARCH_PROVIDER" ]]; then
+        ai_bad "Pixel's web search choice changed after Compose services were selected. Retry without altering the onboarding contract."
+        return 1
+    fi
+    if [[ "$web_search_provider" == searxng ]]; then
+        pixel_prerequisites+=(searxng)
+    fi
     if grep -Fxq 'PIXEL_RUNTIME_BIND_PROPAGATION=rshared' "${INSTALL_DIR:?}/.env"; then
         # Pixel Edge starts here, before the WSL runtime bridge is installed.
         # Create the fixed empty targets on WSL's shared tmpfs so its rshared
@@ -4625,9 +4657,11 @@ ods_pixel_install_default_agent() {
     fi
     _ods_pixel_wait_model_gateway "ODS Pixel model relay" "${PIXEL_MODEL_RELAY_PORT:-4006}" \
         "${PIXEL_MODEL_RELAY_KEY:-}" "$gateway_alias" 180
-    _ods_pixel_wait_http "ODS local search" \
-        "http://127.0.0.1:${SEARXNG_PORT:-8888}/search?q=pixel-preflight&format=json" \
-        90 '.results | type == "array"'
+    if [[ "$web_search_provider" == searxng ]]; then
+        _ods_pixel_wait_http "ODS local search" \
+            "http://127.0.0.1:${SEARXNG_PORT:-8888}/search?q=pixel-preflight&format=json" \
+            90 '.results | type == "array"'
+    fi
     _ods_pixel_wait_http "ODS control API" \
         "http://127.0.0.1:${DASHBOARD_API_PORT:-3002}/health" 90
 

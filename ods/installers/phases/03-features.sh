@@ -370,11 +370,23 @@ if ! $DRY_RUN; then
     [[ "$_switchboard_mode" == "legacy" || "$_switchboard_mode" == "observe" ]] || _pixel_support_services=true
     unset _switchboard_mode
     _sync_extension_compose "$_pixel_support_services" litellm    "LiteLLM"       "no enabled feature routes through the LiteLLM gateway"
-    # SearXNG backs Pixel, Open WebUI web search, Perplexica, and agent web tools.
+    PIXEL_RESOLVED_WEB_SEARCH_PROVIDER=""
+    if [[ "${ENABLE_PIXEL_RUNTIME:-false}" == "true" ]]; then
+        if ! declare -F ods_pixel_resolve_search_provider >/dev/null 2>&1; then
+            # shellcheck source=../lib/pixel-host-install.sh
+            source "$SCRIPT_DIR/installers/lib/pixel-host-install.sh"
+        fi
+        PIXEL_RESOLVED_WEB_SEARCH_PROVIDER="$(ods_pixel_resolve_search_provider)" || {
+            ai_bad "Could not resolve Pixel's owner-private web search choice before selecting services."
+            return 1 2>/dev/null || exit 1
+        }
+    fi
+    # SearXNG backs Pixel only when its selected provider needs it; Perplexica
+    # and the other agent tools retain their independent search dependency.
     # It is not only a recommended extra — --no-recommended with Perplexica
     # still needs the search backend.
     if [[ "${ENABLE_RECOMMENDED:-false}" == "true" ||
-          "${ENABLE_PIXEL_RUNTIME:-false}" == "true" ||
+          "$PIXEL_RESOLVED_WEB_SEARCH_PROVIDER" == "searxng" ||
           "${ENABLE_PERPLEXICA:-false}" == "true" ||
           "${ENABLE_HERMES:-false}" == "true" ||
           "${ENABLE_OPENCLAW:-false}" == "true" ]]; then

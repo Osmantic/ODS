@@ -39,6 +39,7 @@ run_case() {
         ENABLE_COMFYUI=false
         ENABLE_LANGFUSE=false
         ENABLE_RECOMMENDED=false
+        ENABLE_PIXEL=false
         ENABLE_PIXEL_RUNTIME=false
         ENABLE_APE=false
         ENABLE_PERPLEXICA=false
