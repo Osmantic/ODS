@@ -267,13 +267,16 @@ _phase12_verify_external_llm_completion() {
 
     ai "Verifying the external model route from the ODS Docker network..."
     response="$(
-        "${docker_cmd_arr[@]}" exec "$dashboard_container" python -c '
+        if [[ -n "${EXTERNAL_LLM_API_KEY_FILE:-}" ]]; then
+            external_llm_read_api_key "$EXTERNAL_LLM_API_KEY_FILE"
+        fi | "${docker_cmd_arr[@]}" exec -i "$dashboard_container" python -c '
 import json
 import sys
 import urllib.request
 
 base = sys.argv[1].rstrip("/")
 model = sys.argv[2]
+key = sys.stdin.read()
 payload = json.dumps({
     "model": model,
     "messages": [{"role": "user", "content": "Reply with OK."}],
@@ -281,10 +284,13 @@ payload = json.dumps({
     "temperature": 0,
     "stream": False,
 }).encode()
+headers = {"Content-Type": "application/json"}
+if key:
+    headers["Authorization"] = "Bearer " + key
 request = urllib.request.Request(
     base + "/v1/chat/completions",
     data=payload,
-    headers={"Content-Type": "application/json"},
+    headers=headers,
 )
 with urllib.request.urlopen(request, timeout=90) as result:
     body = json.load(result)

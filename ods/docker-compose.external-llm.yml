@@ -5,6 +5,8 @@
 # as well as Docker Desktop.
 services:
   litellm:
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - type: bind
         source: ./config/litellm/external-upstream.key
