@@ -165,7 +165,14 @@ _ods_model_is_current_pick() {
     return 0
 }
 HERMES_CONTEXT_BELOW_FLOOR=false
-if [[ "${ENABLE_HERMES:-false}" == "true" && "${ODS_MODE:-local}" != "cloud" ]]; then
+if [[ "${ENABLE_HERMES:-false}" == "true" && "${ODS_MODE:-local}" != "cloud" \
+    && -n "${EXTERNAL_LLM_URL:-}" ]]; then
+    HERMES_CONTEXT_SIZE="${HERMES_CONTEXT_SIZE:-65536}"
+    if (( MAX_CONTEXT < HERMES_CONTEXT_SIZE )); then
+        HERMES_CONTEXT_BELOW_FLOOR=true
+        ai_warn "ODS Talk needs ${HERMES_CONTEXT_SIZE} tokens, but the external model serves ${MAX_CONTEXT}; Talk stays unavailable with this model."
+    fi
+elif [[ "${ENABLE_HERMES:-false}" == "true" && "${ODS_MODE:-local}" != "cloud" ]]; then
     HERMES_CONTEXT_SIZE="${HERMES_CONTEXT_SIZE:-65536}"
     if [[ "${MAX_CONTEXT:-0}" =~ ^[0-9]+$ ]] && (( MAX_CONTEXT < HERMES_CONTEXT_SIZE )); then
         if ! declare -F ods_catalog_fit_check >/dev/null 2>&1 \
