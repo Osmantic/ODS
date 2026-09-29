@@ -51,6 +51,9 @@ export function createHistoryHydrator({getSessionEntry,patchSessionEntry,resolve
       }
       if(appended) await publishUpdate();
     });
+    // Record the changed transcript before sealing: a failed seal is retried,
+    // and the retry appends nothing, so it would never reach this update.
+    if(appended) await patchSessionEntry({...scope,update:current=>current.sessionId===entry.sessionId?{updatedAt:now(),totalTokensFresh:false}:null});
     if(messages.length) {
       // The pinned runtime treats a transcript containing only user messages
       // as an unfinished first turn and clears it when preparing a run. Use
@@ -62,7 +65,6 @@ export function createHistoryHydrator({getSessionEntry,patchSessionEntry,resolve
         text:'Portal imported historical reference. No task has been executed or verified.'});
       if(sealed?.ok!==true) throw failure('history-seal-unconfirmed');
     }
-    if(appended) await patchSessionEntry({...scope,update:current=>current.sessionId===entry.sessionId?{updatedAt:now(),totalTokensFresh:false}:null});
     return {schemaVersion:1,hydrated:true,revision,messages:messages.length,appended};
   };
 }
