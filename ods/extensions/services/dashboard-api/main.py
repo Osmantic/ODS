@@ -1067,6 +1067,12 @@ def _prepare_env_save(payload: dict[str, Any]) -> tuple[str, list[dict[str, Any]
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
+    # Reuse the internal connection across status polls instead of starting a
+    # fresh DNS/TCP lookup on every sample while the host is busy.
+    app.state.cloud_telemetry_client = httpx.AsyncClient(
+        timeout=3, follow_redirects=False, trust_env=False,
+        limits=httpx.Limits(max_connections=2, max_keepalive_connections=1),
+    )
     background_tasks = [
         asyncio.create_task(collect_metrics()),
         asyncio.create_task(_poll_service_health()),
@@ -1075,6 +1081,7 @@ async def _lifespan(app: FastAPI):
     try:
         yield
     finally:
+        await app.state.cloud_telemetry_client.aclose()
         for task in background_tasks:
             task.cancel()
         await asyncio.gather(*background_tasks, return_exceptions=True)
@@ -1566,7 +1573,9 @@ async def _build_api_status() -> dict:
     if remote_runtime or cloud_mode:
         loaded_model, llama_metrics_data = None, {}
         if remote_runtime:
-            llama_metrics_data = await get_cloud_throughput(remote_runtime, remote_provider_status.EGRESS_URL)
+            llama_metrics_data = await get_cloud_throughput(
+                remote_runtime, remote_provider_status.EGRESS_URL,
+                getattr(app.state, 'cloud_telemetry_client', None))
         context_size = remote_runtime["contextLength"] if remote_runtime else None
     else:
         loaded_model = await get_loaded_model()

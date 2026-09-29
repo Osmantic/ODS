@@ -48,3 +48,19 @@ async def test_fetch_is_bounded_and_remote_failures_leave_status_available(monke
     monkeypatch.setattr(httpx, 'AsyncClient', lambda **kwargs: real_client(transport=httpx.MockTransport(handler), **kwargs))
     result = await get_cloud_throughput(RUNTIME, 'http://egress.internal:8091')
     assert result.get('tokens_per_second') == (50 if case == 'measured' else None)
+
+
+@pytest.mark.asyncio
+async def test_status_polls_reuse_client_without_closing_it():
+    calls = []
+
+    def handler(request):
+        calls.append(str(request.url))
+        return httpx.Response(200, json={'sample': {**SAMPLE, 'sampledAt': time.time() * 1000}})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        for _ in range(2):
+            result = await get_cloud_throughput(RUNTIME, 'http://egress.internal:8091', client)
+            assert result['tokens_per_second'] == 50
+            assert not client.is_closed
+    assert calls == ['http://egress.internal:8091/telemetry'] * 2
