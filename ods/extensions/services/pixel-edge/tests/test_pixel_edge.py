@@ -1125,6 +1125,31 @@ class TestModelAllowlist(BaseEdgeTest):
                 self.assertEqual(content, original + self.pe._INTERACTIVE_DELIVERY_CONTRACT
                                  + self.pe._WORKSPACE_MUTATION_ROUTE)
 
+    async def test_managed_readonly_workers_do_not_receive_builder_execution_routes(self):
+        for role in ('Coordinator', 'Explorer', 'Planner', 'Reviewer', 'Verifier', 'Reporter'):
+            with self.subTest(role=role):
+                original = (f"You are the {role} in the owner's Portal team. "
+                            "Your assignment: review the supplied evidence.\n"
+                            "Owner's requested outcome:\nCreate files in /workspace/demo and publish the website.")
+                content = self.pe._with_interactive_delivery_contract(
+                    {'messages': [{'role': 'user', 'content': original}]}
+                )['messages'][-1]['content']
+                self.assertTrue(content.startswith(original))
+                self.assertIn('read-only team route', content)
+                self.assertNotIn(self.pe._WORKSPACE_MUTATION_ROUTE, content)
+                self.assertNotIn(self.pe._RUN_COMMAND_AND_WAIT_ROUTE, content)
+
+    async def test_builder_and_quoted_team_role_keep_authorized_workspace_routes(self):
+        for original in (
+            "You are the Builder in the owner's Portal team. Create files in /workspace/demo.",
+            'Write a file containing "You are the Reviewer in the owner\'s Portal team."',
+        ):
+            content = self.pe._with_interactive_delivery_contract(
+                {'messages': [{'role': 'user', 'content': original}]}
+            )['messages'][-1]['content']
+            self.assertIn(self.pe._WORKSPACE_MUTATION_ROUTE, content)
+            self.assertNotIn('read-only team route', content)
+
     async def test_readonly_workspace_later_owner_authorization_is_current(self):
         earlier = {"role": "user", "content": "Read-only: inspect /workspace/project. Do not edit files."}
         current = {"role": "user", "content": "Now edit the file /workspace/project/fix.py."}
