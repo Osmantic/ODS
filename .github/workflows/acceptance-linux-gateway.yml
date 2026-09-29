@@ -1,0 +1,29 @@
+name: Acceptance Linux gateway
+
+on:
+  push:
+    branches:
+      - codex/ods-gateway-live-audit
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gateway-live-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gateway-install-rollback:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 70
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - name: Record exact source and runner capacity
+        run: |
+          git rev-parse HEAD
+          docker version
+          docker info --format '{{.OperatingSystem}}'
+          df -h / "$RUNNER_TEMP"
+      - name: Exercise fresh gateway install and rollback
+        run: bash ods/tests/acceptance/gateway-only-journey.sh
