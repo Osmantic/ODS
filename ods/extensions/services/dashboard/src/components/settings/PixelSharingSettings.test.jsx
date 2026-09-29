@@ -112,6 +112,24 @@ it('revocation removes the retained one-time key', async () => {
   expect(screen.getByRole('button', { name: 'Revoke Laptop' })).toBeDisabled()
 })
 
+it('allows a replacement key when the device history contains only revoked or expired keys', async () => {
+  const oldDevices = Array.from({length:64}, (_, index) => ({
+    ...device(), id: `device-${index.toString(16).padStart(16, '0')}`,
+    revoked: index < 32, expiresAt: index < 32 ? now + 86400 : now - 1,
+  }))
+  const replacement = {...device(), id: 'device-' + 'c'.repeat(16)}
+  const {fetchMock} = setup(snapshot(128, oldDevices), () => response({
+    ...snapshot(129, [replacement]), credential: {id: replacement.id, key}, model: 'ods/shared',
+  }))
+  await screen.findByText('GLM')
+  fireEvent.change(screen.getByLabelText('Device label'), {target: {value: 'Replacement laptop'}})
+  const create = screen.getByRole('button', {name: 'Create device key'})
+  expect(create).toBeEnabled()
+  fireEvent.click(create)
+  await screen.findByLabelText('Device API key')
+  expect(fetchMock.mock.calls.some(([url]) => url.endsWith('/issue'))).toBe(true)
+})
+
 it('start requires confirmation, passes exact revision and accepts HTTP 202', async () => {
   const { fetchMock } = setup(snapshot(1, [device()]), () => response(snapshot(2, [device()], 'starting'), 202))
   await screen.findByText('stopped')
