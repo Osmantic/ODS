@@ -1259,6 +1259,36 @@ MODELS_INI_EOF
     fi
     ai_ok "Compose configuration valid"
 
+    if [[ "${ODS_GATEWAY_ONLY:-false}" == true ]]; then
+        # `--remove-orphans` does not stop a service still declared behind a
+        # profile. An upgrade from local inference can otherwise leave the old
+        # llama-server holding GPU memory after the gateway install succeeds.
+        # Check the effective Compose service set before stopping anything: a
+        # caller-selected profile must never start managed inference here.
+        if ! ods_gateway_assert_no_managed_inference "${COMPOSE_FLAGS_ARR[@]}" \
+            2>>"$LOG_FILE"; then
+            ai_bad "Gateway-only Compose could start ODS-managed inference; inspect $LOG_FILE and clear COMPOSE_PROFILES."
+            exit 1
+        fi
+        if ! $DOCKER_COMPOSE_CMD --profile local-inference \
+            "${COMPOSE_FLAGS_ARR[@]}" stop llama-server model-router >>"$LOG_FILE" 2>&1; then
+            ai_bad "Could not stop the previous ODS managed-inference services."
+            exit 1
+        fi
+        if ! _gateway_inference_running="$($DOCKER_COMPOSE_CMD \
+            --profile local-inference "${COMPOSE_FLAGS_ARR[@]}" \
+            ps --status running -q llama-server model-router 2>>"$LOG_FILE")"; then
+            ai_bad "Could not verify ODS managed inference stopped."
+            exit 1
+        fi
+        if [[ -n "$_gateway_inference_running" ]]; then
+            ai_bad "ODS managed inference is still running after gateway-only selection."
+            exit 1
+        fi
+        unset _gateway_inference_running
+        ai_ok "Previous ODS managed inference stopped; model data retained"
+    fi
+
     if ! _phase11_prefetch_embeddings_model; then
         exit 1
     fi
