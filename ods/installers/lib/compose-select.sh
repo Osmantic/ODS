@@ -127,3 +127,15 @@ ods_gateway_assert_no_managed_inference() {
     fi
     return 0
 }
+
+# A caller can inherit COMPOSE_PROFILES=gateway-webui. Check the effective
+# service set before pulling or starting a Portal-only stack.
+ods_compose_assert_no_webui() {
+    local services compose_root="${INSTALL_DIR:-$PWD}"
+    services="$(cd "$compose_root" && $DOCKER_COMPOSE_CMD "$@" config --services)" || return 1
+    if grep -qx 'open-webui' <<< "$services"; then
+        printf 'No-WebUI Compose still enables Open WebUI. Clear COMPOSE_PROFILES and retry.\n' >&2
+        return 1
+    fi
+    return 0
+}

@@ -42,4 +42,17 @@ check_gateway_default() (
     }
 )
 check_gateway_default
+check_portal_only_default() (
+    local dir
+    dir="$(mktemp -d)"
+    trap 'rm -f -- "$dir/.env"; rmdir -- "$dir"' EXIT
+    INSTALL_DIR="$dir"
+    printf 'ODS_GATEWAY_ONLY=false\nENABLE_OPEN_WEBUI=false\n' > "$dir/.env"
+    eval "$defaults"
+    [[ "$ODS_GATEWAY_ONLY" == false && "$ENABLE_OPEN_WEBUI" == false ]] || {
+        echo 'FAIL: retained ordinary Portal-only selection was lost' >&2
+        exit 1
+    }
+)
+check_portal_only_default
 echo 'PASS: Linux fresh and markerless legacy installer defaults are distinct'
