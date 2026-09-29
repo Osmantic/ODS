@@ -23,7 +23,7 @@ import {
   resolveActiveEmbeddedRunSessionId,
 } from "openclaw/plugin-sdk/agent-harness-runtime";
 import {getSessionEntry, patchSessionEntry, resolveStorePath} from "openclaw/plugin-sdk/session-store-runtime";
-import {withSessionTranscriptWriteLock} from 'openclaw/plugin-sdk/session-transcript-runtime';
+import {withSessionTranscriptWriteLock,appendAssistantMirrorMessageByIdentity} from 'openclaw/plugin-sdk/session-transcript-runtime';
 import {
   extractBasicHtmlContent,
   fetchWithWebToolsNetworkGuard,
@@ -289,7 +289,7 @@ export default definePluginEntry({
           : accessRuntime.acquire(token, revision),
         release:token => accessRuntime.release(token), owns:token => accessRuntime.owns(token)},
     });
-    registerHistoryIntegration(api,{compactor:contextCompaction,getSessionEntry,patchSessionEntry,resolveStorePath,withSessionTranscriptWriteLock});
+    registerHistoryIntegration(api,{compactor:contextCompaction,getSessionEntry,patchSessionEntry,resolveStorePath,withSessionTranscriptWriteLock,appendAssistantMirrorMessageByIdentity});
     // One system prompt for every Pixel chat: no per-chat session key or id.
     registerStableRuntimeLine(api);
     const statusFile = statusFileFromEnv();
