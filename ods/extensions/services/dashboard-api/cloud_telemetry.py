@@ -3,7 +3,6 @@ import asyncio
 import json
 import math
 import time
-from contextlib import AsyncExitStack
 
 import httpx
 
@@ -34,23 +33,20 @@ def project_completion(value, runtime, now=None):
             'throughput_model': sample['model']}
 
 
-async def get_cloud_throughput(runtime, base_url, client=None):
+async def get_cloud_throughput(runtime, base_url, client):
+    """`client` is the shared, redirect-free client owned by the app lifespan."""
     if runtime.get('source') != 'remote-provider' or not runtime.get('routeFingerprint'):
         return {}
     try:
         async with asyncio.timeout(3):
-            async with AsyncExitStack() as stack:
-                if client is None:
-                    client = await stack.enter_async_context(httpx.AsyncClient(
-                        timeout=3, follow_redirects=False, trust_env=False))
-                async with client.stream('GET', base_url.rstrip('/') + '/telemetry', timeout=3) as response:
-                    if response.status_code != 200:
+            async with client.stream('GET', base_url.rstrip('/') + '/telemetry', timeout=3) as response:
+                if response.status_code != 200:
+                    return {}
+                body = b''
+                async for chunk in response.aiter_bytes():
+                    if len(body) + len(chunk) > 4096:
                         return {}
-                    body = b''
-                    async for chunk in response.aiter_bytes():
-                        if len(body) + len(chunk) > 4096:
-                            return {}
-                        body += chunk
-            return project_completion(json.loads(body), runtime)
+                    body += chunk
+        return project_completion(json.loads(body), runtime)
     except (httpx.HTTPError, TimeoutError, ValueError):
         return {}
