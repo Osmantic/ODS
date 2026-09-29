@@ -21,11 +21,54 @@ def egress(monkeypatch):
     spec.loader.exec_module(module)
     monkeypatch.setattr(module, "_load_route", lambda: {
         "enabled": True, "transport": "direct",
+        "routeFingerprint": "a" * 64,
         "provider": {"baseUrl": "https://provider.example/v1", "model": "real-model"},
     })
     monkeypatch.setattr(module, "validate_direct_provider_resolution", lambda route: [])
     monkeypatch.setattr(module, "read_provider_secret", lambda path: "provider-token")
     yield module
+
+
+@pytest.mark.parametrize('stream', [False, True])
+@pytest.mark.parametrize('ending', ['success', 'error', 'missing-usage', 'incomplete'])
+def test_completion_telemetry_preserves_response_and_only_records_confirmed_usage(egress, monkeypatch, stream, ending):
+    import json
+    body = {'choices': [{'message': {'content': 'private answer'}}], 'usage': {'completion_tokens': 20}}
+    if ending == 'missing-usage':
+        body.pop('usage')
+    if ending == 'error':
+        body['error'] = {'message': 'private provider error'}
+    wire = json.dumps(body).encode()
+    if stream:
+        wire = b'data: ' + wire + b'\n\n'
+        if ending != 'incomplete':
+            wire += b'data: [DONE]\n\n'
+
+    class Fragmented(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            for offset in range(0, len(wire), 7):
+                yield wire[offset:offset + 7]
+
+    def provider(request):
+        return httpx.Response(429 if ending == 'error' else 200, stream=Fragmented())
+
+    with TestClient(egress.app) as client:
+        transport = httpx.AsyncClient(transport=httpx.MockTransport(provider))
+        monkeypatch.setattr(egress, '_http_client', lambda key='': transport)
+        response = client.post('/v1/chat/completions', json={'model': 'ods/current', 'stream': stream})
+        assert response.content == wire
+        sample = client.get('/telemetry').json()['sample']
+        if ending == 'success' or ending == 'incomplete' and not stream:
+            assert sample['completionTokens'] == 20
+            assert sample['elapsedMs'] > 0
+            assert sample['model'] == 'real-model'
+            assert 'private' not in json.dumps(sample)
+            route = egress._load_route()
+            monkeypatch.setattr(egress, '_load_route', lambda: {**route, 'routeFingerprint': 'b' * 64})
+            assert client.get('/telemetry').json() == {'sample': None}
+        else:
+            assert sample is None
+        client.portal.call(transport.aclose)
 
 
 @pytest.mark.parametrize("endpoint", ["chat/completions", "completions", "responses"])

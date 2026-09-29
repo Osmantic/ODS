@@ -19,6 +19,7 @@ REMOTE = {
 
 @pytest.fixture
 def status_helpers(monkeypatch):
+    monkeypatch.setattr(main, 'get_cloud_throughput', AsyncMock(return_value={}))
     for name, value in {
         "get_gpu_info": None, "get_bootstrap_status": BootstrapStatus(active=False),
         "get_model_info": ModelInfo(name="Stale-Claude", size_gb=0, context_length=200000),
@@ -35,6 +36,20 @@ def status_helpers(monkeypatch):
     for name, mock in mocks.items():
         monkeypatch.setattr(main, name, mock)
     return mocks
+
+
+@pytest.mark.asyncio
+async def test_remote_provider_uses_only_its_own_completion_measurement(monkeypatch, status_helpers):
+    monkeypatch.setattr(main, 'async_request_agent_json', AsyncMock(return_value={'activeRuntime': REMOTE}))
+    monkeypatch.setattr(main, 'get_cloud_throughput', AsyncMock(return_value={
+        'tokens_per_second': 12.5, 'throughput_mode': 'cloud_request_average',
+        'throughput_state': 'retained', 'throughput_model': REMOTE['model']}))
+    result = await main._build_api_status()
+    assert result['model']['tokensPerSecond'] == result['inference']['tokensPerSecond'] == 12.5
+    assert result['inference']['loadedModel'] is None
+    assert result['inference']['throughputMode'] == 'cloud_request_average'
+    for mock in status_helpers.values():
+        mock.assert_not_awaited()
 
 
 @pytest.mark.asyncio

@@ -53,6 +53,12 @@ function installFetchMock() {
 }
 
 describe('Dashboard cloud inference', () => {
+  it('labels provider completion throughput as a request average including latency',async()=>{
+    render(<Dashboard status={{...cloudStatus,inference:{...cloudStatus.inference,
+      tokensPerSecond:12.5,throughputMode:'cloud_request_average',throughputState:'retained'}}} loading={false}/> )
+    expect((await screen.findAllByText('Last cloud request · includes latency'))[0]).toBeVisible()
+    expect(screen.queryByText('Runtime reading')).toBeNull()
+  })
   beforeEach(() => {
     installFetchMock()
     localStorage.clear()
