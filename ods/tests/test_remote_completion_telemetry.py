@@ -28,6 +28,15 @@ def test_responses_completion_uses_actual_output_usage_and_error_invalidates_sam
     assert sample.result() is None
 
 
+def test_a_null_error_field_is_not_an_error():
+    sample = CompletionObservation(ROUTE)
+    sample.feed(b'data: {"error":null,"usage":{"completion_tokens":20}}\n\ndata: [DONE]\n\n')
+    assert sample.result()['completionTokens'] == 20
+    failed = CompletionObservation(ROUTE)
+    failed.feed(b'data: {"error":{"message":"x"},"usage":{"completion_tokens":20}}\n\ndata: [DONE]\n\n')
+    assert failed.result() is None
+
+
 def test_malformed_provider_frames_never_escape_the_telemetry_observer():
     sample = CompletionObservation(ROUTE)
     sample.feed(b'data: ' + b'[' * 1500 + b'0' + b']' * 1500 + b'\n\n')
