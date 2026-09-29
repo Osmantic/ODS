@@ -880,6 +880,9 @@ bash tests/test-systemctl-user-env.sh
 echo "[contract] Linux installer/background model lifecycle serialization"
 bash tests/test-linux-installer-model-lifecycle-lock.sh
 
+echo "[contract] non-interactive Linux install stops on hard preflight blockers"
+bash tests/test-phase04-noninteractive-blockers.sh
+
 echo "[contract] Podman and no-sudo rootless lifecycle"
 bash tests/test-podman-rootless-contracts.sh
 bash tests/test-installer-noninteractive-sudo.sh

@@ -367,6 +367,9 @@ if [[ "$REQUIREMENTS_MET" != "true" ]]; then
         warn "Continuing despite unmet requirements at user request."
     elif $DRY_RUN; then
         log "[DRY RUN] Would prompt to continue despite unmet requirements"
+    else
+        error "Cannot continue non-interactive installation with unmet requirements."
+        exit 1
     fi
 fi
 
