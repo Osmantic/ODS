@@ -63,6 +63,11 @@ jobs:
         env:
           OPENCLAW_PACKAGE_DIR: ${{ runner.temp }}/read-runtime/node_modules/openclaw
         run: node --test ods/extensions/services/pixel-agent/tests/runtime_read_range.integration.mjs
+      - name: Verify concurrent workspace creation and no-follow boundaries
+        if: runner.os != 'Windows'
+        env:
+          OPENCLAW_PACKAGE_DIR: ${{ runner.temp }}/read-runtime/node_modules/openclaw
+        run: python3 ods/extensions/services/pixel-agent/tests/test_runtime_sandbox_mkdir.py
       - name: Verify every tool result reaches the model with the pinned projection
         shell: bash
         env:

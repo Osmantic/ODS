@@ -1,0 +1,12 @@
+{
+  "version": "2026.6.33",
+  "sourceSha256": "77cc292c61e4538f939624a62160f259248c19048f56f4c858c249bc2108ff18",
+  "patchedSha256": "9c27359f3955300ac2ec929787697d31f6f39011ced84e78003adca101139493",
+  "replacements": [
+    [
+      "                os.mkdir(segment, 0o777, dir_fd=current_fd)",
+      "                try:\n                    os.mkdir(segment, 0o777, dir_fd=current_fd)\n                except FileExistsError:\n                    pass"
+    ]
+  ],
+  "previousReplacements": {}
+}

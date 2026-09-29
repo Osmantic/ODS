@@ -47,7 +47,8 @@ def run(installation, **kwargs):
 @pytest.mark.parametrize("module_name", [repair_module.COMPLETION_MODULE, repair_module.IMAGE_MODULE,
                                          repair_module.COMPACTION_IDLE_MODULE, repair_module.COMPACTION_BUDGET_MODULE,
                                          repair_module.TOOL_RESULT_PROJECTION_MODULE,
-                                         repair_module.DIAGNOSTIC_STREAM_MODULE])
+                                         repair_module.DIAGNOSTIC_STREAM_MODULE,
+                                         *repair_module.SANDBOX_MKDIR_MODULES.values()])
 def test_additional_module_has_separate_exact_byte_custody(installation, module_name):
     runtime, state, manifest, module, original, patched = installation
     completion = module.with_name(module_name)

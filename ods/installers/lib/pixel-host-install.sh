@@ -4574,6 +4574,8 @@ ods_pixel_install_default_agent() {
         && -f "$plugin_root/host/openclaw-compaction-idle.json" \
         && -f "$plugin_root/host/openclaw-compaction-resume.json" \
         && -f "$plugin_root/host/openclaw-read-range.json" \
+        && -f "$plugin_root/host/openclaw-sandbox-mkdir-bridge.json" \
+        && -f "$plugin_root/host/openclaw-sandbox-mkdir-secure.json" \
         && -f "$plugin_root/host/openclaw-tool-result-projection.json" \
         && -f "$plugin_root/host/openclaw-diagnostic-stream-writes.json" \
         && -f "$plugin_root/host/openclaw-image-envelope.json" \
@@ -4892,7 +4894,7 @@ ods_pixel_install_default_agent() {
         --restore-foreign "$home/.openclaw/ods-runtime-patches" \
         --known tool-recovery completion-recovery image-envelope compaction-export \
             compaction-idle compaction-resume read-range tool-result-projection \
-            diagnostic-stream-writes compaction-budget \
+            diagnostic-stream-writes compaction-budget sandbox-mkdir-bridge sandbox-mkdir-secure \
         >>"$pixel_log" 2>&1; then
         ai_bad "Pixel could not restore OpenClaw runtime patches left by another ODS build. See $pixel_log."
         return 1
@@ -4960,6 +4962,19 @@ ods_pixel_install_default_agent() {
         ai_bad "Pixel's compaction continuation repair could not verify its package bytes. See $pixel_log."
         return 1
     fi
+    # Parallel writes may create the same parent directory. Reopen it with the
+    # pinned no-follow directory flags after EEXIST; never accept a symlink.
+    local mkdir_module
+    for mkdir_module in bridge secure; do
+        if ! ods_pixel_run_as_owner "$owner" "$home" python3 \
+            "$plugin_root/host/openclaw_tool_recovery.py" \
+            --openclaw-bin "$openclaw_bin" --sandbox-mkdir "$mkdir_module" \
+            --state-dir "$home/.openclaw/ods-runtime-patches/sandbox-mkdir-$mkdir_module" \
+            >>"$pixel_log" 2>&1; then
+            ai_bad "Pixel's concurrent workspace directory repair could not verify its package bytes. See $pixel_log."
+            return 1
+        fi
+    done
     # Preserve the real line count when a read starts beyond EOF. A silent
     # empty success makes the model keep requesting higher invalid offsets.
     if ! ods_pixel_run_as_owner "$owner" "$home" python3 \
