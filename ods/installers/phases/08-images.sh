@@ -40,7 +40,7 @@ if [[ "${ENABLE_OPEN_WEBUI:-true}" != true && "${DRY_RUN:-false}" != true ]]; th
         exit 1
     }
     read -ra _no_webui_compose_flags <<< "$COMPOSE_FLAGS"
-    if ! ods_compose_assert_no_webui "${_no_webui_compose_flags[@]}" 2>>"$LOG_FILE"; then
+    if ! ods_compose_assert_no_webui_before_pixel_identity "${_no_webui_compose_flags[@]}" 2>>"$LOG_FILE"; then
         ai_bad "No-WebUI Compose could start Open WebUI; inspect $LOG_FILE and clear COMPOSE_PROFILES."
         exit 1
     fi
