@@ -189,6 +189,7 @@ source "${LIB_DIR}/detection.sh"
 source "${LIB_DIR}/preflight-fs.sh"
 source "${LIB_DIR}/env-generator.sh"
 source "${LIB_DIR}/installed-footprint.sh"
+source "${LIB_DIR}/host-agent-listener.sh"
 if [[ -f "${SOURCE_ROOT}/installers/lib/compose-failure-report.sh" ]]; then
     source "${SOURCE_ROOT}/installers/lib/compose-failure-report.sh"
 fi
@@ -3208,6 +3209,10 @@ if [[ -f "${INSTALL_DIR}/bin/ods-host-agent.py" ]] && [[ -n "$AGENT_PYTHON" ]]; 
 AGENT_PLIST_EOF
 
     launchctl bootout "gui/$(id -u)/${ODS_AGENT_PLIST_LABEL}" >/dev/null 2>&1 || true
+    if ! macos_retire_owned_host_agent_listener "$_agent_probe_host" "$ODS_AGENT_PORT" "$INSTALL_DIR"; then
+        ai_err "Port ${ODS_AGENT_PORT} still has a listener that cannot be safely retired as this ODS host agent."
+        exit 1
+    fi
     _agent_bootstrap_err="$(launchctl bootstrap "gui/$(id -u)" "$ODS_AGENT_PLIST" 2>&1)" && _agent_bootstrap_rc=0 || _agent_bootstrap_rc=$?
     if [[ $_agent_bootstrap_rc -eq 0 ]]; then
         # `launchctl bootstrap` can succeed (definition loaded) while launchd
