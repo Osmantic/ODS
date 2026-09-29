@@ -132,6 +132,47 @@ describe('Settings', () => {
   afterEach(() => {
     vi.restoreAllMocks()
     globalThis.localStorage.removeItem('ods-theme')
+    globalThis.localStorage.removeItem('ods-settings-apply-plan-v1')
+  })
+
+  test('restores a saved runtime apply action when the reloaded API payload has no plan', async () => {
+    localStorage.setItem('ods-settings-apply-plan-v1', JSON.stringify({
+      status: 'ready',
+      supported: true,
+      services: ['open-webui'],
+      changedKeys: ['RAG_OPENAI_API_KEY'],
+      manualKeys: [],
+      inactiveServices: [],
+      summary: 'Saved changes are ready to apply to open-webui.',
+      postApplyActions: [],
+    }))
+
+    renderSettings()
+
+    expect(await screen.findByRole('button', { name: 'Apply changes' })).toBeEnabled()
+  })
+
+  test('clears the persisted runtime apply action after apply succeeds', async () => {
+    localStorage.setItem('ods-settings-apply-plan-v1', JSON.stringify({
+      status: 'ready',
+      supported: true,
+      services: ['open-webui'],
+      changedKeys: ['RAG_OPENAI_API_KEY'],
+      manualKeys: [],
+      inactiveServices: [],
+      summary: 'Saved changes are ready to apply to open-webui.',
+      postApplyActions: [],
+    }))
+    const { fetchMock } = renderSettings(url => (
+      url === '/api/settings/env/apply'
+        ? response({ success: true, message: 'Applied runtime changes to open-webui.' })
+        : null
+    ))
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Apply changes' }))
+
+    await waitFor(() => expect(localStorage.getItem('ods-settings-apply-plan-v1')).toBeNull())
+    expect(fetchMock.mock.calls.some(([url]) => url === '/api/settings/env/apply')).toBe(true)
   })
 
   test('renders storage capacity and an ODS data breakdown from the API contract', async () => {
