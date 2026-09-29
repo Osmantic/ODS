@@ -105,6 +105,10 @@ ENABLE_RECOMMENDED=true
 # deprecated and gates behind --openclaw for the deprecation release.
 ENABLE_HERMES=true
 ENABLE_OPENCLAW=false
+ENABLE_OPENCODE=false
+OPENCODE_ENABLE_EXPLICIT=false
+OPENCODE_DISABLE_EXPLICIT=false
+OPENCODE_DISABLE_SELECTED=false
 ENABLE_PIXEL=true
 ENABLE_BRAVE_SEARCH=false
 ENABLE_APE=true
@@ -143,6 +147,8 @@ while [[ $# -gt 0 ]]; do
         --no-hermes)     ENABLE_HERMES=false; shift ;;
         --openclaw)      ENABLE_OPENCLAW=true; OPENCLAW_EXPLICIT=true; shift ;;
         --no-openclaw)   ENABLE_OPENCLAW=false; OPENCLAW_EXPLICIT=true; shift ;;
+        --opencode)     ENABLE_OPENCODE=true; OPENCODE_ENABLE_EXPLICIT=true; shift ;;
+        --no-opencode)  ENABLE_OPENCODE=false; OPENCODE_DISABLE_EXPLICIT=true; shift ;;
         --pixel)        ENABLE_PIXEL=true; shift ;;
         --no-pixel)     ENABLE_PIXEL=false; shift ;;
         --langfuse)      ENABLE_LANGFUSE=true; shift ;;
@@ -154,6 +160,11 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+if $OPENCODE_ENABLE_EXPLICIT && $OPENCODE_DISABLE_EXPLICIT; then
+    echo "--opencode and --no-opencode cannot be used together" >&2
+    exit 1
+fi
+
 if $ALL_FEATURES; then
     ENABLE_VOICE=true
     ENABLE_WORKFLOWS=true
@@ -164,6 +175,7 @@ if $ALL_FEATURES; then
     # in the next release.
     ENABLE_HERMES=true
     $OPENCLAW_EXPLICIT || ENABLE_OPENCLAW=false
+    $OPENCODE_DISABLE_EXPLICIT || ENABLE_OPENCODE=true
     ENABLE_APE=true
     ENABLE_PERPLEXICA=true
     ENABLE_PRIVACY_SHIELD=true
@@ -179,6 +191,7 @@ SOURCE_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 # ── Source libraries ──
 LIB_DIR="${SCRIPT_DIR}/lib"
 source "${LIB_DIR}/constants.sh"
+source "${LIB_DIR}/opencode-selection.sh"
 source "${LIB_DIR}/ui.sh"
 macos_apply_presentation_mode
 source "${LIB_DIR}/bridge-manager.sh"
@@ -1179,6 +1192,23 @@ _ensure_macos_pyyaml() {
 
 # Resolve install directory
 INSTALL_DIR="${ODS_INSTALL_DIR}"
+if ! $OPENCODE_ENABLE_EXPLICIT && ! $OPENCODE_DISABLE_EXPLICIT && ! $ALL_FEATURES; then
+    if ods_macos_opencode_retained "$OPENCODE_PLIST" "$OPENCODE_PLIST_LABEL" \
+        "$OPENCODE_BUN_TMPDIR" "$(id -u)"; then
+        ENABLE_OPENCODE=true
+    fi
+fi
+if $ENABLE_OPENCODE && [[ -e "$OPENCODE_PLIST" || -L "$OPENCODE_PLIST" ]] \
+    && ! ods_macos_opencode_plist_owned "$OPENCODE_PLIST" "$OPENCODE_PLIST_LABEL" "$OPENCODE_BUN_TMPDIR"; then
+    ai_err "The OpenCode LaunchAgent path is not an ODS-owned plist; refusing to replace it."
+    exit 1
+fi
+if $ENABLE_OPENCODE && launchctl print "gui/$(id -u)/${OPENCODE_PLIST_LABEL}" >/dev/null 2>&1 \
+    && ! ods_macos_opencode_loaded_owned "$OPENCODE_PLIST" "$OPENCODE_PLIST_LABEL" \
+        "$OPENCODE_BUN_TMPDIR" "$(id -u)"; then
+    ai_err "The loaded OpenCode service is not backed by an ODS-owned plist; refusing to stop it."
+    exit 1
+fi
 
 # --preflight-only runs while get-ods.sh --force still has the installation it
 # is about to replace on disk. installers/reinstall-preflight.sh measures what
@@ -1593,13 +1623,16 @@ if ! $NON_INTERACTIVE && ! $ALL_FEATURES && ! $DRY_RUN; then
     echo -e "  ${WHT}[3]${NC} Custom       -- Choose individually"
     echo ""
 
-    read -r -p "  Selection (1/2/3): " feature_choice < /dev/tty
-    case "${feature_choice:-1}" in
+    _macos_feature_default=2
+    [[ -f "${INSTALL_DIR}/.env" ]] && _macos_feature_default=1
+    read -r -p "  Selection (1/2/3) [${_macos_feature_default}]: " feature_choice < /dev/tty
+    case "${feature_choice:-$_macos_feature_default}" in
         1)
             ENABLE_VOICE=true; ENABLE_WORKFLOWS=true
             ENABLE_RAG=true; ENABLE_HERMES=true
             ENABLE_RECOMMENDED=true
             ENABLE_OPENCLAW=false  # deprecated; Hermes is the default
+            if [[ -n "$feature_choice" ]] && ! $OPENCODE_DISABLE_EXPLICIT; then ENABLE_OPENCODE=true; fi
             ENABLE_APE=true
             ENABLE_PERPLEXICA=true
             ENABLE_PRIVACY_SHIELD=true
@@ -1610,6 +1643,10 @@ if ! $NON_INTERACTIVE && ! $ALL_FEATURES && ! $DRY_RUN; then
             ENABLE_RAG=false; ENABLE_RECOMMENDED=false
             ENABLE_HERMES=false
             ENABLE_OPENCLAW=false
+            if ! $OPENCODE_ENABLE_EXPLICIT; then
+                ENABLE_OPENCODE=false
+                OPENCODE_DISABLE_SELECTED=true
+            fi
             ENABLE_APE=false
             ENABLE_PERPLEXICA=false
             ENABLE_PRIVACY_SHIELD=false
@@ -1628,6 +1665,15 @@ if ! $NON_INTERACTIVE && ! $ALL_FEATURES && ! $DRY_RUN; then
             [[ "$yn" =~ ^[nN] ]] && ENABLE_HERMES=false || ENABLE_HERMES=true
             read -r -p "  Enable OpenClaw (DEPRECATED — Hermes replaces it)? [y/N] " yn < /dev/tty
             [[ "$yn" =~ ^[yY] ]] && ENABLE_OPENCLAW=true
+            if ! $OPENCODE_ENABLE_EXPLICIT && ! $OPENCODE_DISABLE_EXPLICIT; then
+                read -r -p "  Enable OpenCode browser IDE? [y/N] " yn < /dev/tty
+                if [[ "$yn" =~ ^[yY] ]]; then
+                    ENABLE_OPENCODE=true
+                else
+                    ENABLE_OPENCODE=false
+                    OPENCODE_DISABLE_SELECTED=true
+                fi
+            fi
             read -r -p "  Enable Perplexica deep research? [y/N] " yn < /dev/tty
             [[ "$yn" =~ ^[yY] ]] && ENABLE_PERPLEXICA=true
             read -r -p "  Enable Privacy Shield? [y/N] " yn < /dev/tty
@@ -1640,13 +1686,18 @@ if ! $NON_INTERACTIVE && ! $ALL_FEATURES && ! $DRY_RUN; then
             ENABLE_RAG=true; ENABLE_HERMES=true
             ENABLE_RECOMMENDED=true
             ENABLE_OPENCLAW=false  # deprecated; Hermes is the default
+            $OPENCODE_DISABLE_EXPLICIT || ENABLE_OPENCODE=true
             ENABLE_APE=true
             ENABLE_PERPLEXICA=true
             ENABLE_PRIVACY_SHIELD=true
             ENABLE_LANGFUSE=true
             ;;
     esac
+    unset _macos_feature_default
 fi
+
+$OPENCODE_DISABLE_EXPLICIT && ENABLE_OPENCODE=false
+$OPENCODE_ENABLE_EXPLICIT && ENABLE_OPENCODE=true
 
 if $ENABLE_PIXEL; then
     ENABLE_HERMES=false
@@ -1756,6 +1807,7 @@ info_box "  Recommended:" "$(if $ENABLE_RECOMMENDED; then echo enabled; else ech
 info_box "  Hermes:" "$(if $ENABLE_HERMES; then echo enabled; else echo disabled; fi)"
 info_box "  Portal (native):" "$(if $ENABLE_PIXEL; then echo enabled; else echo disabled; fi)"
 info_box "  OpenClaw:" "$(if $ENABLE_OPENCLAW; then echo "enabled (DEPRECATED)"; else echo disabled; fi)"
+info_box "  OpenCode:" "$(if $ENABLE_OPENCODE; then echo enabled; else echo disabled; fi)"
 info_box "  Perplexica:" "$(if $ENABLE_PERPLEXICA; then echo enabled; else echo disabled; fi)"
 info_box "  Privacy Shield:" "$(if $ENABLE_PRIVACY_SHIELD; then echo enabled; else echo disabled; fi)"
 info_box "  Langfuse:" "$(if $ENABLE_LANGFUSE; then echo enabled; else echo disabled; fi)"
@@ -1783,6 +1835,13 @@ if $DRY_RUN; then
     $ENABLE_HERMES && ai "[DRY RUN] Would configure Hermes Agent (data: ${INSTALL_DIR}/data/hermes)"
     $ENABLE_OPENCLAW && ai "[DRY RUN] Would configure OpenClaw"
     $ENABLE_LANGFUSE && ai "[DRY RUN] Would enable Langfuse (LLM observability)"
+    $ENABLE_OPENCODE && ai "[DRY RUN] Would install and start OpenCode"
+    if ! $ENABLE_OPENCODE; then
+        ai "[DRY RUN] Would skip OpenCode download and LaunchAgent"
+        if $OPENCODE_DISABLE_EXPLICIT || $OPENCODE_DISABLE_SELECTED; then
+            ai "[DRY RUN] Would disable future ODS OpenCode login starts when owned"
+        fi
+    fi
 else
     # Create directory structure
     mkdir -p "${INSTALL_DIR}/config/searxng"
@@ -2577,7 +2636,9 @@ else
     launchctl bootout "gui/$(id -u)/${ODS_AGENT_PLIST_LABEL}" 2>/dev/null || true
     launchctl bootout "gui/$(id -u)/${HOST_AGENT_BRIDGE_PLIST_LABEL}" 2>/dev/null || true
     rm -f "$HOST_AGENT_BRIDGE_PLIST" 2>/dev/null || true
-    launchctl bootout "gui/$(id -u)/${OPENCODE_PLIST_LABEL}" 2>/dev/null || true
+    if $ENABLE_OPENCODE; then
+        launchctl bootout "gui/$(id -u)/${OPENCODE_PLIST_LABEL}" 2>/dev/null || true
+    fi
     for _legacy_plist_label in \
         com.ods.full-model-download; do
         launchctl bootout "gui/$(id -u)/${_legacy_plist_label}" 2>/dev/null || true
@@ -3023,7 +3084,24 @@ for service in (data.get("services") or {}).values():
         fi
     fi
 
-    # ── Install & start OpenCode (native host binary) ──
+    # ── Install & start OpenCode only when selected ──
+    if $OPENCODE_DISABLE_EXPLICIT || $OPENCODE_DISABLE_SELECTED; then
+        if ods_macos_opencode_plist_owned \
+            "$OPENCODE_PLIST" "$OPENCODE_PLIST_LABEL" "$OPENCODE_BUN_TMPDIR"; then
+            if launchctl print "gui/$(id -u)/${OPENCODE_PLIST_LABEL}" >/dev/null 2>&1 \
+                && ! ods_macos_opencode_loaded_owned "$OPENCODE_PLIST" "$OPENCODE_PLIST_LABEL" \
+                    "$OPENCODE_BUN_TMPDIR" "$(id -u)"; then
+                ai_warn "A foreign OpenCode service uses the ODS label; leaving it untouched."
+            else
+                launchctl disable "gui/$(id -u)/${OPENCODE_PLIST_LABEL}" || {
+                    ai_err "Could not disable the ODS OpenCode login service."
+                    exit 1
+                }
+                ai "Disabled future OpenCode login starts; any current session remains running."
+            fi
+        fi
+    fi
+    if $ENABLE_OPENCODE; then
     chapter "OPENCODE (AI CODING IDE)"
 
     _install_opencode || true  # Optional IDE failure is reported; do not start an old/unverified version.
@@ -3133,6 +3211,10 @@ PLIST_EOF
         # Unload existing (if any) and load new plist. bootout legitimately
         # errors when no service is loaded, so we keep that suppressed; the
         # bootstrap call surfaces real failures (e.g. launchd throttle EIO).
+        launchctl enable "gui/$(id -u)/${OPENCODE_PLIST_LABEL}" || {
+            ai_err "Could not enable the ODS OpenCode login service."
+            exit 1
+        }
         launchctl bootout "gui/$(id -u)/${OPENCODE_PLIST_LABEL}" >/dev/null 2>&1 || true
         _opencode_bootstrap_err="$(launchctl bootstrap "gui/$(id -u)" "$OPENCODE_PLIST" 2>&1)" && _opencode_bootstrap_rc=0 || _opencode_bootstrap_rc=$?
         if [[ $_opencode_bootstrap_rc -eq 0 ]]; then
@@ -3141,6 +3223,7 @@ PLIST_EOF
             ai_warn "OpenCode LaunchAgent failed (rc=${_opencode_bootstrap_rc}): ${_opencode_bootstrap_err}"
             ai_warn "Start manually: ${OPENCODE_BIN} web --port 3003"
         fi
+    fi
     fi
 fi
 
@@ -3302,7 +3385,7 @@ else
 fi
 $ENABLE_VOICE && HEALTH_NAMES+=("Whisper (STT)") && HEALTH_URLS+=("http://127.0.0.1:${WHISPER_PORT:-9000}/health") && HEALTH_CONTAINERS+=("ods-whisper")
 $ENABLE_WORKFLOWS && HEALTH_NAMES+=("n8n (Workflows)") && HEALTH_URLS+=("http://127.0.0.1:5678/healthz") && HEALTH_CONTAINERS+=("ods-n8n")
-[[ -x "$OPENCODE_BIN" ]] && HEALTH_NAMES+=("OpenCode (IDE)") && HEALTH_URLS+=("http://127.0.0.1:${OPENCODE_PORT}") && HEALTH_CONTAINERS+=("")
+$ENABLE_OPENCODE && [[ -x "$OPENCODE_BIN" ]] && HEALTH_NAMES+=("OpenCode (IDE)") && HEALTH_URLS+=("http://127.0.0.1:${OPENCODE_PORT}") && HEALTH_CONTAINERS+=("")
 
 for ((idx=0; idx<${#HEALTH_NAMES[@]}; idx++)); do
     NAME="${HEALTH_NAMES[$idx]}"
@@ -3538,7 +3621,7 @@ fi
     $ENABLE_PERPLEXICA && printf 'Perplexica|http://127.0.0.1:3004|ods-perplexica|http://localhost:3004\n'
     $ENABLE_VOICE && printf 'Whisper (STT)|http://127.0.0.1:%s/health|ods-whisper|http://localhost:%s\n' "${WHISPER_PORT:-9000}" "${WHISPER_PORT:-9000}"
     $ENABLE_WORKFLOWS && printf 'n8n|http://127.0.0.1:5678/healthz|ods-n8n|http://localhost:5678\n'
-    [[ -x "$OPENCODE_BIN" ]] && printf 'OpenCode (IDE)|http://127.0.0.1:%s||http://localhost:%s\n' "$OPENCODE_PORT" "$OPENCODE_PORT"
+    $ENABLE_OPENCODE && [[ -x "$OPENCODE_BIN" ]] && printf 'OpenCode (IDE)|http://127.0.0.1:%s||http://localhost:%s\n' "$OPENCODE_PORT" "$OPENCODE_PORT"
 } | ods_readiness_summary "./ods-macos.sh status" "$ODS_LOG_FILE" "http://localhost:3001"
 
 show_success_card
