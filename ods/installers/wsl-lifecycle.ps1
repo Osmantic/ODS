@@ -537,19 +537,21 @@ function Start-ODSWslLifetime($Identity) {
     $task = Get-ScheduledTask -TaskName $Identity.taskName -ErrorAction SilentlyContinue
     if ($task) {
         $task=Assert-ODSWslTask $Identity
-        if ($task.State -in @('Running','Queued')) { throw 'Existing lifecycle controller is active but not ready; inspect its runtime record' }
-        Unregister-ScheduledTask -TaskName $Identity.taskName -Confirm:$false
+        if ($task.State -ne 'Ready') { throw 'Existing lifecycle controller is not ready; inspect its runtime record' }
     }
     # Immutable for the duration of this run; commands use the current source,
     # while an already-running controller continues using its private copy.
     Write-ODSPrivateBytes (Join-Path $Identity.directory 'controller.ps1') ([IO.File]::ReadAllBytes($script:ODSWslLifecycleSource))
     $generation=[guid]::NewGuid().ToString('N')
     Write-ODSWslJson (Join-Path $Identity.directory 'request.json') @{ generation=$generation; action='run' }
-    $action=New-ScheduledTaskAction -Execute (Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe') -Argument (Get-ODSWslTaskArguments $Identity)
-    $principal=New-ScheduledTaskPrincipal -UserId $Identity.ownerSid -LogonType Interactive -RunLevel Limited
-    $settings=New-ScheduledTaskSettingsSet -Hidden -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
-    Register-ScheduledTask -TaskName $Identity.taskName -Action $action -Principal $principal -Settings $settings -Description 'ODS owned WSL lifetime. On-demand only; explicit stop is never restarted automatically.' | Out-Null
-    $null=Assert-ODSWslTask $Identity
+    if (-not $task) {
+        $action=New-ScheduledTaskAction -Execute (Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe') -Argument (Get-ODSWslTaskArguments $Identity)
+        $principal=New-ScheduledTaskPrincipal -UserId $Identity.ownerSid -LogonType Interactive -RunLevel Limited
+        $settings=New-ScheduledTaskSettingsSet -Hidden -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+        Register-ScheduledTask -TaskName $Identity.taskName -Action $action -Principal $principal -Settings $settings -Description 'ODS owned WSL lifetime. On-demand only; explicit stop is never restarted automatically.' | Out-Null
+    }
+    $task=Assert-ODSWslTask $Identity
+    if ($task.State -ne 'Ready') { throw 'Existing lifecycle controller became active before start; inspect its runtime record' }
     Assert-ODSWslStartupStillWanted
     Start-ScheduledTask -TaskName $Identity.taskName
     for ($attempt=0; $attempt -lt 60; $attempt++) {

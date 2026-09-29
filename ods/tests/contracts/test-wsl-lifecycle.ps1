@@ -172,6 +172,10 @@ try {
     Check ($startResult.state -eq 'running' -and $script:registered -eq 1 -and $script:startCount -eq 1) 'start creates exact task and waits for matching controller generation'
     $again=Start-ODSWslLifetime $a
     Check ($again.state -eq 'running' -and $script:registered -eq 1 -and $script:startCount -eq 1) 'repeated start reuses the live holder'
+    function Unregister-ScheduledTask { throw 'an owned ready task must not be unregistered' }
+    Write-ODSWslJson (Join-Path $a.directory 'runtime.json') @{state='stopped';generation='fixture'}
+    $resumed=Start-ODSWslLifetime $a
+    Check ($resumed.state -eq 'running' -and $script:registered -eq 1 -and $script:startCount -eq 2) 'stopped owned task is reused without elevated registration rights'
     # This simulated record intentionally references this test process; retire
     # the record before exercising stop dispatch, never attempt to stop it.
     Write-ODSWslJson (Join-Path $a.directory 'runtime.json') @{state='stopped';generation='fixture'}
