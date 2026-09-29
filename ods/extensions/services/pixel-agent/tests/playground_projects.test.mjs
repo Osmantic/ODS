@@ -83,6 +83,24 @@ test('new PT/EN projects include native tools and retain ordinary constraints',(
   for(const prompt of ['Não crie um site.','Do not create a game.','Explain how to create a project.','Create a button for this app.','Crie um botão para esse site.','Edite o projeto existente.','Make the game harder.','Faça o jogo ficar mais difícil.']) assert.equal(requestsNewPlaygroundProject(prompt),false,prompt);
 });
 
+test('running an existing build does not reserve a new Playground project',t=>{
+  for (const prompt of [
+    'Execute o script test existente e o build.',
+    'Run the test script and the build.',
+    'Run npm run build for the project.',
+    'Use pnpm build to validate the app.',
+  ]) {
+    assert.equal(requestsNewPlaygroundProject(prompt),false,prompt);
+    const {root}=fixture(t);
+    const guard=createToolLoopGuard();
+    const context={agentId:'pixel',runId:'existing-build',sessionId:'owner-session'};
+    guard.observeRun(context,'pixel',{prompt},{workspaceRoot:root,executionHost:'sandbox'});
+    const result=guard.beforeToolCall({toolName:'exec',params:{command:'node --version'}},context);
+    assert.notEqual(result?.block,true,result?.blockReason);
+  }
+  assert.equal(requestsNewPlaygroundProject('Run the tests, then build a new weather app.'),true);
+});
+
 test('creates a real descriptive project, routes files of every type and stores no prompt or identity',t=>{
   const {root,state,call}=fixture(t);
   assert.equal(call('write',{path:'weather-tool/main.py',content:'print(1)'}).params.path,'Playground/weather-tool/main.py');
