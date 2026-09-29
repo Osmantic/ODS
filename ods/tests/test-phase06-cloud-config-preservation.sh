@@ -47,6 +47,36 @@ for fixture in leaf-link leaf-writable parent-link parent-writable root-link roo
     [[ ! -e "$inst/canary" ]] || fail "source copied before $fixture refusal"
     pass "$fixture refuses before source copying"
 done
+# Installs made before phase 06 normalized code modes (v2.6.0 and earlier),
+# under the user-private-group umask 002, carry group-writable directories and
+# a 664 cloud.yaml. The copy check runs before that normalization, so it must
+# tighten the owner's own private group bit instead of refusing every upgrade.
+# A shared group keeps refusing. `id` is stubbed so the runner's groups do not
+# decide the outcome.
+group_writable_install() {
+    setup "$1"
+    printf 'owner-provider\n' > "$inst/config/litellm/cloud.yaml"
+    chmod 775 "$inst" "$inst/config" "$inst/config/litellm"
+    chmod 664 "$inst/config/litellm/cloud.yaml"
+}
+group_modes() {
+    stat -c '%a' "$inst" "$inst/config" "$inst/config/litellm" "$inst/config/litellm/cloud.yaml" | tr '\n' ' '
+}
+group_writable_install private-group
+id() { if [[ "${1:-}" == -gn ]]; then builtin command id -un; else builtin command id "$@"; fi; }
+copy || fail 'user-private-group upgrade refused'
+unset -f id
+[[ -e "$inst/canary" ]] || fail 'user-private-group upgrade did not copy the source'
+[[ "$(cat "$inst/config/litellm/cloud.yaml")" == owner-provider ]] || fail 'user-private-group upgrade changed the provider'
+[[ "$(group_modes)" == '755 755 755 644 ' ]] || fail "user-private-group modes not tightened: $(group_modes)"
+pass 'user-private-group modes are tightened and the upgrade proceeds'
+group_writable_install shared-group
+id() { if [[ "${1:-}" == -gn ]]; then printf 'users\n'; else builtin command id "$@"; fi; }
+if copy; then fail 'shared-group writable provider accepted'; fi
+unset -f id
+[[ ! -e "$inst/canary" ]] || fail 'source copied before shared-group refusal'
+[[ "$(group_modes)" == '775 775 775 664 ' ]] || fail "shared-group refusal changed modes: $(group_modes)"
+pass 'shared-group writable provider refuses before source copying'
 setup no-rsync
 printf 'owner-provider\n' > "$inst/config/litellm/cloud.yaml"
 command() { if [[ "${1:-}" == -v && "${2:-}" == rsync ]]; then return 1; fi; builtin command "$@"; }
