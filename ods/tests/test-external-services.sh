@@ -183,6 +183,21 @@ run_phase_case() {
 TEMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TEMP_DIR"' EXIT
 
+cat > "$TEMP_DIR/commented.env" <<'EOF'
+EXTERNAL_LLM_URL=http://127.0.0.1:11434 # retained endpoint
+ODS_GATEWAY_ONLY=true # preserve API-only selection
+ENABLE_DEVTOOLS=false # preserve lean host tools
+EXTERNAL_LLM_MODEL="model # literal" # trailing comment
+EOF
+assert_eq "$(external_llm_env_value "$TEMP_DIR/commented.env" EXTERNAL_LLM_URL)" \
+    "http://127.0.0.1:11434" "retained route follows Compose inline-comment grammar"
+assert_eq "$(external_llm_env_value "$TEMP_DIR/commented.env" ODS_GATEWAY_ONLY)" \
+    "true" "gateway-only selection survives an inline comment"
+assert_eq "$(external_llm_env_value "$TEMP_DIR/commented.env" ENABLE_DEVTOOLS)" \
+    "false" "developer-tool selection survives an inline comment"
+assert_eq "$(external_llm_env_value "$TEMP_DIR/commented.env" EXTERNAL_LLM_MODEL)" \
+    "model # literal" "quoted hash stays inside a model name"
+
 for external_case in explicit-openai detect-openai; do
     if output="$(run_phase_case "$external_case" "$TEMP_DIR/$external_case"; printf '%s|%s\n' \
         "${EXTERNAL_LLM_PROVIDER:-}" "${EXTERNAL_LLM_MODEL:-}")"; then

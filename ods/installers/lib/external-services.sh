@@ -1,6 +1,11 @@
 #!/bin/bash
 # External Ollama / LM Studio discovery and validation helpers.
 
+# A retained route must be decoded with the same Compose-compatible grammar
+# used when .env is loaded for the rest of the installer.
+# shellcheck source=../../lib/safe-env.sh
+source "$(dirname "${BASH_SOURCE[0]}")/../../lib/safe-env.sh"
+
 external_llm_normalize_model_name() {
     local value="${1:-}"
     value="${value##*/}"
@@ -192,9 +197,6 @@ external_llm_env_value() {
     local env_file="${1:-}" key="${2:-}" value
     [[ -f "$env_file" ]] || return 1
     value="$(grep -m1 "^${key}=" "$env_file" 2>/dev/null | cut -d= -f2- || true)"
-    value="${value%\"}"
-    value="${value#\"}"
-    value="${value%\'}"
-    value="${value#\'}"
-    printf '%s\n' "$value"
+    safe_env_decode_value "$value"
+    printf '\n'
 }
