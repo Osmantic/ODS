@@ -21,8 +21,6 @@ jobs:
       contents: write
       id-token: write
       attestations: write
-    env:
-      GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
@@ -56,6 +54,8 @@ jobs:
             ${{ runner.temp }}/ods-release/SHA256SUMS
       - name: Create a new draft; never overwrite or publish an existing release
         env:
+          # Scoped to the one step that calls gh; third-party actions above never see it.
+          GH_TOKEN: ${{ github.token }}
           BUNDLE: ${{ steps.attest.outputs.bundle-path }}
         run: |
           set -euo pipefail
