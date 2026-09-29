@@ -481,8 +481,11 @@ class SystemdAccessBridge:
         else:
             marker = private_json(marker_path, owner.pw_uid, 65536)
             if (marker.get("schema_version") != 2 or marker.get("manager") != "ods"
-                    or marker.get("state") not in allowed_states
                     or Path(marker.get("install_dir", "")).resolve() != self.install):
+                raise AccessError("managed-owner-mismatch")
+            if marker.get("state") == "installing" and not allow_installing:
+                raise AccessError("managed-installation-incomplete")
+            if marker.get("state") not in allowed_states:
                 raise AccessError("managed-owner-mismatch")
         config = private_json(home / ".openclaw/openclaw.json", owner.pw_uid)
         binary = self.installed_binary

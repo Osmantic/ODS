@@ -81,7 +81,9 @@ export default function PixelAccessCard({ showHeading = true }) {
       <dt>Effective</dt><dd>{!stale && status.runtime_verified ? modeName(status.effective_mode) : 'Not verified'}</dd>
       <dt>Agent runtime</dt><dd>{surfaceName(status.surface)}</dd>
     </dl> : !error ? <p role="status">Checking Portal permissions…</p> : null}
-    {!status?.available && status ? <p role="status">{status.pending
+    {!status?.available && status ? <p role="status">{status.reason === 'managed-installation-incomplete'
+      ? 'The Portal installation or update has not completed its runtime verification. Resume the ODS installer on the agent host, then refresh this status. Permission changes remain unavailable until verification completes.'
+      : status.pending
       ? 'Checking Portal while the access transition is unfinished. Controls return when the running gateway can be verified.'
       : 'The access controller is unavailable on the agent runtime. Install or repair the managed runtime integration before changing permissions.'}</p> : null}
     {status?.busy ? <p role="status">Portal is working. Access changes wait until its runs and tools finish.</p> : null}
