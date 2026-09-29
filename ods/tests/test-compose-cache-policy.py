@@ -348,10 +348,24 @@ def test_disabled_base_does_not_leave_cached_accelerator_enabled(installed):
         POLICY.validate_flags(installed, ['-f', str(overlay)])
 
 
-def test_missing_policy_fails_closed_only_for_extensions(installed):
+def test_missing_policy_fails_closed_only_for_extensions(installed, monkeypatch):
+    monkeypatch.setattr(POLICY, '__file__', str(installed / 'scripts/compose-cache-policy.py'))
     (installed / 'scripts/resolve-compose-stack.sh').unlink()
     assert POLICY.validate_flags(installed, ['-f', 'base.yml']) == ['-f', 'base.yml']
     with pytest.raises(ValueError, match='security policy is missing'):
+        POLICY.validate_flags(installed, flags())
+
+
+def test_candidate_policy_does_not_execute_older_installed_resolver(installed):
+    (installed / 'scripts/resolve-compose-stack.sh').write_text(
+        '_LOOPBACK_VAR_DEFAULT_RE = re.compile("x")\n'
+        'raise RuntimeError("old policy must not execute")\n'
+        'def _load_compose_mapping(path, label): pass\n')
+    assert POLICY.validate_flags(installed, flags()) == flags()
+    document = json.loads(fragment(installed).read_text())
+    document['services']['example']['privileged'] = True
+    fragment(installed).write_text(json.dumps(document))
+    with pytest.raises(ValueError, match='requires review'):
         POLICY.validate_flags(installed, flags())
 
 
