@@ -38,7 +38,7 @@ import { conversationProject } from '../lib/conversationProjects'
 import PortalStreamingText from '../components/PortalStreamingText'
 import PortalResponseActions from '../components/PortalResponseActions'
 import PortalResponseError from '../components/PortalResponseError'
-import {portalResponseFailure} from '../lib/portalResponseFailure'
+import {isProviderRateLimit, portalResponseFailure} from '../lib/portalResponseFailure'
 import {publicationDisplayText} from '../lib/publicationDisplay'
 import {isQuestionAnswer, parseQuestionsFrame, questionMetadata} from '../lib/pixelQuestions'
 import PixelTurnNavigation from '../components/PixelTurnNavigation'
@@ -441,7 +441,13 @@ function retainedResult(events) {
     try {
       const frame = JSON.parse(payload)
       if (failed) continue
-      if (frame?.error) { failed = true; failureMessage = portalResponseFailure(frame.error); continue }
+      if (frame?.error) {
+        failed = true
+        // Only a known public code changes the recovered text; any other
+        // failure keeps the wording it had before.
+        if (isProviderRateLimit(frame.error)) failureMessage = portalResponseFailure(frame.error)
+        continue
+      }
       if (isCleanContextRecoveryFrame(frame)) {
         content = 'Portal did not start this attempt. Send your message again to continue.'
         failed = true
@@ -1050,6 +1056,8 @@ export default function Pixel({ systemStatus = null }) {
 
             try {
               const frame = JSON.parse(payload)
+              // Error is terminal for this reply. Late deltas must not turn a
+              // failed response back into an apparently running/successful one.
               if (receivedError) continue
               if (frame?.error) {
                 receivedError = true
@@ -1060,9 +1068,6 @@ export default function Pixel({ systemStatus = null }) {
                 }))
                 continue
               }
-              // Error is terminal for this reply. Late deltas must not turn a
-              // failed response back into an apparently running/successful one.
-              if (receivedError) continue
               if (isCleanContextRecoveryFrame(frame)) recoveryEligible = true
               const candidatePreview = parseVerifiedPreviewFrame(frame)
               if (candidatePreview) verifiedPreview = candidatePreview
