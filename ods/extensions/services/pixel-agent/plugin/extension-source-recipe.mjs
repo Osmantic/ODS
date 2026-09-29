@@ -127,6 +127,13 @@ export function compileSourceRecipe(source) {
     'WORKDIR /opt/ods',
     '',
   ].join('\n') : source.dockerfileInline;
+  // The source sandbox network is internal, and Docker does not publish ports
+  // from an internal network, so a web service would install, pass its
+  // in-container healthcheck and still be unreachable from the host. Refuse it
+  // here rather than ship an extension that cannot be used.
+  if (!cliOnly) {
+    throw Error('Web-service source extensions are not supported yet: the isolated source sandbox has no network path to the host, so the service would be unreachable. Only CLI tools and Python libraries can be installed from source (cliOnly=true, port=0). No proposal was submitted.');
+  }
   const portVariable = serviceId.replace(/-/g, '_').toUpperCase() + '_PORT';
   const service = {
     container_name: `ods-${serviceId}`,
