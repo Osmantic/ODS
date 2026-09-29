@@ -56,6 +56,9 @@ if $DRY_RUN; then
 else
     _summary_chat_url=""
     [[ "${ENABLE_OPEN_WEBUI:-true}" != "true" ]] || _summary_chat_url="http://localhost:3000"
+    if [[ -z "$_summary_chat_url" && "${ENABLE_PIXEL_RUNTIME:-false}" == true ]]; then
+        _summary_chat_url="http://localhost:${SERVICE_PORTS[dashboard]:-3001}/pixel"
+    fi
     show_success_card "$_summary_chat_url" "http://localhost:3001" "$LOCAL_IP"
     unset _summary_chat_url
 fi
@@ -145,7 +148,7 @@ if [[ -n "${EXTERNAL_LLM_URL:-}" || "${ODS_MODE:-local}" == "cloud" || "${ODS_MO
 else
     echo "  • LLM API:       http://localhost:${SERVICE_PORTS[llama-server]:-11434}/v1  (llama-server)"
 fi
-[[ "${ENABLE_PIXEL_RUNTIME:-false}" == "true" ]] && echo "  • Portal:        http://localhost:${SERVICE_PORTS[dashboard]:-3001}/pixel  (core agent; default Open WebUI model)"
+[[ "${ENABLE_PIXEL_RUNTIME:-false}" == "true" ]] && echo "  • Portal:        http://localhost:${SERVICE_PORTS[dashboard]:-3001}/pixel  (core agent)"
 [[ "${ENABLE_PERPLEXICA:-false}" == "true" ]] && echo "  • Perplexica:    http://localhost:${SERVICE_PORTS[perplexica]:-3004}"
 [[ "${ENABLE_COMFYUI:-false}" == "true" ]] && echo "  • ComfyUI:       http://localhost:${SERVICE_PORTS[comfyui]:-8188}"
 [[ "$ENABLE_HERMES" == "true" ]] && echo "  • Hermes: http://localhost:${SERVICE_PORTS[hermes-proxy]:-9120}"
@@ -174,7 +177,7 @@ else
     echo "  • Model: $LLM_MODEL"
 fi
 if [[ "${ENABLE_PIXEL_RUNTIME:-false}" == "true" ]]; then
-    echo "  • Portal assistant: enabled (default Open WebUI model)"
+    echo "  • Portal assistant: enabled"
 elif [[ "${ENABLE_HERMES:-false}" == "true" ]]; then
     echo "  • Hermes Agent: enabled"
 fi
@@ -479,7 +482,7 @@ echo ""
 echo -e "  ${BGRN}Dashboard${NC}    ${WHT}http://localhost:${DASHBOARD_PORT}${NC}"
 [[ "${ENABLE_OPEN_WEBUI:-true}" != "true" ]] || echo -e "  ${BGRN}Chat${NC}         ${WHT}http://localhost:${WEBUI_PORT}${NC}"
 [[ "${ENABLE_PIXEL_RUNTIME:-false}" == "true" ]] && \
-echo -e "  ${BGRN}Portal${NC}       ${WHT}http://localhost:${DASHBOARD_PORT}/pixel${NC}  ${AMB}(core agent; default in Open WebUI)${NC}"
+echo -e "  ${BGRN}Portal${NC}       ${WHT}http://localhost:${DASHBOARD_PORT}/pixel${NC}  ${AMB}(core agent)${NC}"
 [[ "$ENABLE_HERMES" == "true" ]] && \
 echo -e "  ${BGRN}Hermes${NC}       ${WHT}http://localhost:${SERVICE_PORTS[hermes-proxy]:-9120}${NC}"
 [[ "$ENABLE_OPENCLAW" == "true" ]] && \

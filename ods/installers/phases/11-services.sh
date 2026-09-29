@@ -1259,6 +1259,12 @@ MODELS_INI_EOF
     fi
     ai_ok "Compose configuration valid"
 
+    if [[ "${ENABLE_OPEN_WEBUI:-true}" != true ]] &&
+       ! ods_compose_assert_no_webui "${COMPOSE_FLAGS_ARR[@]}" 2>>"$LOG_FILE"; then
+        ai_bad "No-WebUI Compose could start Open WebUI; inspect $LOG_FILE and clear COMPOSE_PROFILES."
+        exit 1
+    fi
+
     if [[ "${ODS_GATEWAY_ONLY:-false}" == true ]]; then
         # `--remove-orphans` does not stop a service still declared behind a
         # profile. An upgrade from local inference can otherwise leave the old
@@ -1435,7 +1441,7 @@ MODELS_INI_EOF
         # --remove-orphans` on an upgrade because it is still declared in the
         # project. Stop only this project's WebUI service; keep its data and
         # container available for an explicit --with-webui rollback.
-        if [[ "${ODS_GATEWAY_ONLY:-false}" == true && "${ENABLE_OPEN_WEBUI:-true}" != true ]]; then
+        if [[ "${ENABLE_OPEN_WEBUI:-true}" != true ]]; then
             if ! $DOCKER_COMPOSE_CMD --profile gateway-webui "${COMPOSE_FLAGS_ARR[@]}" \
                 stop open-webui >> "$LOG_FILE" 2>&1; then
                 ai_bad "Could not stop the previous ODS Open WebUI service."
@@ -1447,7 +1453,7 @@ MODELS_INI_EOF
                 exit 1
             fi
             if [[ -n "$_gateway_webui_running" ]]; then
-                ai_bad "ODS Open WebUI is still running after gateway-only selection."
+                ai_bad "ODS Open WebUI is still running after no-WebUI selection."
                 exit 1
             fi
             unset _gateway_webui_running
