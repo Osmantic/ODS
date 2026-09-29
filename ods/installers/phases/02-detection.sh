@@ -214,9 +214,18 @@ if [[ $GPU_COUNT -gt 0 && "$GPU_BACKEND" == "nvidia" ]]; then
             ai_bad "NVIDIA driver $DRIVER_VERSION is too old. llama-server (CUDA) requires driver >= $MIN_DRIVER_VERSION."
             if nvidia_blackwell_hardware_detected; then
                 ai_bad "This is a Blackwell GPU, so install an NVIDIA open kernel module driver."
-                ai "  sudo apt install nvidia-open"
-                ai "  # or: sudo apt install nvidia-driver-${MIN_DRIVER_VERSION}-open"
+                if [[ "${PKG_MANAGER:-}" == "apt" ]]; then
+                    ai "  sudo apt install nvidia-open"
+                    ai "  # or: sudo apt install nvidia-driver-${MIN_DRIVER_VERSION}-open"
+                else
+                    ai "  Install an NVIDIA open kernel module driver >= ${MIN_DRIVER_VERSION} from your distribution's configured driver source."
+                fi
                 error "Blackwell requires driver >= ${MIN_DRIVER_VERSION} with open kernel modules."
+            fi
+            if [[ "${PKG_MANAGER:-}" != "apt" ]]; then
+                ai_bad "Automatic NVIDIA driver repair is not supported for ${DISTRO_ID:-this distribution} (${PKG_MANAGER:-unknown} package manager)."
+                ai "Upgrade the NVIDIA driver to >= ${MIN_DRIVER_VERSION} using your distribution's configured driver source, reboot, then re-run ODS."
+                error "Compatible NVIDIA driver required."
             fi
             ai "Attempting to install a compatible driver..."
             if ! $DRY_RUN; then
@@ -229,8 +238,15 @@ if [[ $GPU_COUNT -gt 0 && "$GPU_BACKEND" == "nvidia" ]]; then
                 else
                     ods_sudo apt-get install -y "nvidia-driver-${MIN_DRIVER_VERSION}" 2>>"$LOG_FILE" || true
                 fi
-                # Check if upgrade succeeded
+
+                # Check if the Debian-family package upgrade succeeded.
+                _nvidia_driver_installed=false
                 if dpkg -l "nvidia-driver-${MIN_DRIVER_VERSION}"* 2>/dev/null | grep -q "^ii"; then
+                    _nvidia_driver_installed=true
+                fi
+
+                # Check if upgrade succeeded
+                if [[ "$_nvidia_driver_installed" == "true" ]]; then
                     ai_ok "NVIDIA driver ${MIN_DRIVER_VERSION} installed."
                     ai_warn "A REBOOT is required before continuing."
                     ai "After rebooting, re-run this installer. It will pick up where it left off."
