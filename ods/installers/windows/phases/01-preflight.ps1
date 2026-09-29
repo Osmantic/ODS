@@ -303,44 +303,46 @@ Write-AISuccess "Source tree OK"
 # ── Ollama conflict detection ────────────────────────────────────────────────
 # Ollama defaults to port 11434. On Windows, it runs as a tray app and
 # Open WebUI may auto-discover it (shadowing llama-server on 8080).
-$_ollamaProc = Get-Process -Name "ollama" -ErrorAction SilentlyContinue
-if ($_ollamaProc) {
+function Invoke-ODSWindowsOllamaConflictPrompt {
+    param([bool]$NonInteractive)
+
+    $_ollamaProc = Get-Process -Name "ollama" -ErrorAction SilentlyContinue
+    if (-not $_ollamaProc) { return }
+
     Write-AIWarn "Ollama is running (PID $($_ollamaProc.Id)) and may conflict with ODS."
     Write-AI "  Open WebUI can auto-discover Ollama and prefer it over llama-server,"
     Write-AI "  causing 'model not found' errors in OpenCode and other host tools."
     Write-Host ""
-    if (-not $nonInteractive) {
-        $ollamaChoice = Read-Host "  Stop Ollama for this session? [Y/n]"
-        if ($ollamaChoice -notmatch "^[nN]") {
-            Stop-Process -Name "ollama" -Force -ErrorAction SilentlyContinue
-            Start-Sleep -Seconds 2
-            $_ollamaStill = Get-Process -Name "ollama" -ErrorAction SilentlyContinue
-            if ($_ollamaStill) {
-                Write-AIWarn "Ollama restarted automatically (likely in Windows Startup)."
-                # Remove the startup shortcut so it does not respawn on next login
-                $_lnk = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\Startup\Ollama.lnk"
-                if (Test-Path $_lnk) {
-                    Remove-Item $_lnk -Force -ErrorAction SilentlyContinue
-                    Stop-Process -Name "ollama" -Force -ErrorAction SilentlyContinue
-                    Start-Sleep -Seconds 2
-                    if (-not (Get-Process -Name "ollama" -ErrorAction SilentlyContinue)) {
-                        Write-AISuccess "Ollama stopped and removed from Windows Startup"
-                    } else {
-                        Write-AIWarn "Could not fully stop Ollama. Port conflicts may occur."
-                        Write-AI "  Fix: Settings > Apps > Startup > disable Ollama"
-                    }
-                } else {
-                    Write-AIWarn "Remove Ollama from Startup: Settings > Apps > Startup"
-                }
-            } else {
-                Write-AISuccess "Ollama stopped"
-            }
+    if ($NonInteractive) {
+        Write-AIWarn "Ollama detected (PID $($_ollamaProc.Id)). Stop it manually to avoid conflicts."
+        return
+    }
+
+    $ollamaChoice = Read-Host "  Stop Ollama for this session? [Y/n]"
+    if ($ollamaChoice -match "^[nN]") {
+        Write-AIWarn "Ollama left running. Open WebUI may prefer it over llama-server."
+        return
+    }
+
+    Stop-Process -Name "ollama" -Force -ErrorAction SilentlyContinue
+    Start-Sleep -Seconds 2
+    $_ollamaStill = Get-Process -Name "ollama" -ErrorAction SilentlyContinue
+    if ($_ollamaStill) {
+        Write-AIWarn "Ollama is still running or restarted automatically."
+        # The prompt grants permission to stop Ollama for this session only.
+        # Never delete a user's Startup shortcut without separate consent.
+        $_lnk = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\Startup\Ollama.lnk"
+        if (Test-Path $_lnk) {
+            Write-AI "  Its Windows Startup shortcut was left unchanged."
+            Write-AI "  To disable future starts, use Settings > Apps > Startup."
         } else {
-            Write-AIWarn "Ollama left running. Open WebUI may prefer it over llama-server."
+            Write-AI "  Fix: Settings > Apps > Startup > disable Ollama if it is listed."
         }
     } else {
-        Write-AIWarn "Ollama detected (PID $($_ollamaProc.Id)). Stop it manually to avoid conflicts."
+        Write-AISuccess "Ollama stopped for this session"
     }
 }
+
+Invoke-ODSWindowsOllamaConflictPrompt -NonInteractive $nonInteractive
 
 Write-AISuccess "Pre-flight checks passed"
