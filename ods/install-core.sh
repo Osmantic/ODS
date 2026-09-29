@@ -230,7 +230,7 @@ Options:
                       Exact model id exposed by the external provider
     --gateway-only    API-first install using a verified external model; skip Open WebUI
                       and ODS-managed llama-server (requires --external-llm-url)
-    --with-webui      Keep Open WebUI in a gateway-only install
+    --with-webui      Keep or restore Open WebUI
     --no-webui        Use Portal as the only chat UI (requires --pixel on a fresh ordinary install)
     --no-gateway-only Return a gateway install to the ordinary UI selection
     --external-llm-key-file PATH
@@ -381,6 +381,12 @@ done
 if ! $ODS_GATEWAY_ONLY && [[ "$ENABLE_OPEN_WEBUI" != true ]] &&
    ! $ODS_EXISTING_INSTALL && [[ "$ENABLE_PIXEL" != true ]]; then
     echo "--no-webui on a fresh ordinary install requires --pixel so Portal supplies chat" >&2
+    exit 1
+fi
+if [[ "$ENABLE_OPEN_WEBUI" != true ]] &&
+   { [[ "$ENABLE_VOICE" == true ]] || [[ "$ENABLE_RAG" == true ]] ||
+     [[ "$ENABLE_ODS_PROXY" == true ]]; }; then
+    echo "Voice, RAG documents, and ODS proxy currently require Open WebUI; use --with-webui or leave those services off" >&2
     exit 1
 fi
 
