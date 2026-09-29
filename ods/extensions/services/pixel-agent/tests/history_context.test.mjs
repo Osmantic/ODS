@@ -27,6 +27,8 @@ test('an unconfirmed import receipt fails closed and can be retried without dupl
   f.deps.appendAssistantMirrorMessageByIdentity=async()=>({ok:false});
   const messages=[{role:'assistant',content:'Untrusted teammate report'}];
   await assert.rejects(createHistoryHydrator(f.deps)({user,messages}),/history-seal-unconfirmed/);
+  // The transcript grew before the seal failed, so cached token totals are stale now.
+  assert.equal(f.entry.totalTokensFresh,false);
   f.deps.appendAssistantMirrorMessageByIdentity=seal;
   assert.equal((await createHistoryHydrator(f.deps)({user,messages})).appended,0);
   assert.equal(f.events.length,1);
