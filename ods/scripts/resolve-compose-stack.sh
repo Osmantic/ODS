@@ -1467,9 +1467,9 @@ if external_llm:
         sys.exit(1)
     resolved.append("docker-compose.external-llm.yml")
 
-if gateway_only and not enable_open_webui:
+if not enable_open_webui:
     if not (script_dir / "docker-compose.gateway-only.yml").exists():
-        print("ERROR: gateway-only WebUI overlay is missing", file=sys.stderr)
+        print("ERROR: no-WebUI Compose overlay is missing", file=sys.stderr)
         sys.exit(1)
     resolved.append("docker-compose.gateway-only.yml")
 

@@ -154,6 +154,11 @@ else
     log "Pixel is unavailable or disabled; existing ODS tools remain available"
 fi
 export PIXEL_AGENT_MODE ENABLE_PIXEL_RUNTIME ENABLE_PIXEL
+if [[ "${ENABLE_OPEN_WEBUI:-true}" != true && "${ODS_GATEWAY_ONLY:-false}" != true &&
+      "$ENABLE_PIXEL_RUNTIME" != true ]]; then
+    ai_bad "Portal is required when Open WebUI is disabled on an ordinary install."
+    return 1 2>/dev/null || exit 1
+fi
 
 # Hermes needs a 64K context. Raising the context grows the KV cache, so the
 # raise is re-checked against the same hardware envelope phase 02 selected
