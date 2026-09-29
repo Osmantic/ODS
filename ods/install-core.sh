@@ -110,13 +110,14 @@ PREFLIGHT_ONLY=false
 SKIP_DOCKER=false
 FORCE=false
 TIER=""
-# Fresh installs start with chat and the model route. On a rerun, the installed
-# Compose selection is the default so previously disabled services stay off.
-# Older installations without a state marker retain their legacy default.
+# Phase 03 selects Portal chat on fresh, qualified Pixel hosts. Keep WebUI as
+# the provisional choice until that host check completes. Reruns retain their
+# installed selection, and older installs without the key keep WebUI.
 ODS_EXISTING_INSTALL=false
 [[ -f "$INSTALL_DIR/.env" ]] && ODS_EXISTING_INSTALL=true
 ODS_GATEWAY_ONLY=false
 ENABLE_OPEN_WEBUI=true
+WEBUI_EXPLICIT=false
 if $ODS_EXISTING_INSTALL &&
    [[ "$(external_llm_env_value "$INSTALL_DIR/.env" ODS_GATEWAY_ONLY || true)" == true ]]; then
     ODS_GATEWAY_ONLY=true
@@ -323,10 +324,10 @@ while [[ $# -gt 0 ]]; do
         --external-llm-url) EXTERNAL_LLM_URL="$2"; shift 2 ;;
         --external-llm-provider) EXTERNAL_LLM_PROVIDER="$2"; shift 2 ;;
         --external-llm-model) EXTERNAL_LLM_MODEL="$2"; shift 2 ;;
-        --gateway-only) ODS_GATEWAY_ONLY=true; ENABLE_OPEN_WEBUI=false; ODS_MODE=local; ODS_MODE_EXPLICIT=true; shift ;;
-        --with-webui) ENABLE_OPEN_WEBUI=true; shift ;;
-        --no-webui) ENABLE_OPEN_WEBUI=false; shift ;;
-        --no-gateway-only) ODS_GATEWAY_ONLY=false; ENABLE_OPEN_WEBUI=true; shift ;;
+        --gateway-only) ODS_GATEWAY_ONLY=true; ENABLE_OPEN_WEBUI=false; WEBUI_EXPLICIT=true; ODS_MODE=local; ODS_MODE_EXPLICIT=true; shift ;;
+        --with-webui) ENABLE_OPEN_WEBUI=true; WEBUI_EXPLICIT=true; shift ;;
+        --no-webui) ENABLE_OPEN_WEBUI=false; WEBUI_EXPLICIT=true; shift ;;
+        --no-gateway-only) ODS_GATEWAY_ONLY=false; ENABLE_OPEN_WEBUI=true; WEBUI_EXPLICIT=true; shift ;;
         --external-llm-key-file) EXTERNAL_LLM_API_KEY_FILE="$2"; EXTERNAL_LLM_API_KEY_DISABLE=false; shift 2 ;;
         --no-external-llm-key) EXTERNAL_LLM_API_KEY_FILE=""; EXTERNAL_LLM_API_KEY_DISABLE=true; shift ;;
         --reuse-external-llm) EXTERNAL_LLM_AUTO_REUSE=true; shift ;;
@@ -367,7 +368,7 @@ while [[ $# -gt 0 ]]; do
         # nothing serves it, and a phone clicking the invite gets
         # "site can't be reached." Operators who don't want the LAN-facing
         # surface can set ENABLE_ODS_PROXY=false in .env after install.
-        --all) ENABLE_VOICE=true; ENABLE_WORKFLOWS=true; ENABLE_RAG=true; ENABLE_RECOMMENDED=true; ENABLE_HERMES=true; ENABLE_OPENCLAW=false; ENABLE_OPENCODE=true; ENABLE_DEVTOOLS=true; ENABLE_COMFYUI=true; ENABLE_APE=true; ENABLE_PERPLEXICA=true; ENABLE_PRIVACY_SHIELD=true; ENABLE_LANGFUSE=true; ENABLE_ODS_PROXY=true; ENABLE_OPEN_WEBUI=true; shift ;;
+        --all) ENABLE_VOICE=true; ENABLE_WORKFLOWS=true; ENABLE_RAG=true; ENABLE_RECOMMENDED=true; ENABLE_HERMES=true; ENABLE_OPENCLAW=false; ENABLE_OPENCODE=true; ENABLE_DEVTOOLS=true; ENABLE_COMFYUI=true; ENABLE_APE=true; ENABLE_PERPLEXICA=true; ENABLE_PRIVACY_SHIELD=true; ENABLE_LANGFUSE=true; ENABLE_ODS_PROXY=true; ENABLE_OPEN_WEBUI=true; WEBUI_EXPLICIT=true; shift ;;
         --non-interactive) INTERACTIVE=false; shift ;;
         --offline) OFFLINE_MODE=true; shift ;;
         --lan) BIND_ADDRESS="0.0.0.0"; BIND_ADDRESS_EXPLICIT=true; shift ;;
