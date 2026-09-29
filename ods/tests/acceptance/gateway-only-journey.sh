@@ -114,7 +114,7 @@ python3 - "$key_file" <<'PY'
 import secrets
 import sys
 with open(sys.argv[1], "w", encoding="ascii") as stream:
-    stream.write("mock-" + secrets.token_hex(24) + "\n")
+    stream.write("mock-" + secrets.token_hex(24))
 PY
 chmod 600 "$key_file"
 
