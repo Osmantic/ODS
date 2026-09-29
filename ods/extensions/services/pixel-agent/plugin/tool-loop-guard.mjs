@@ -4468,6 +4468,13 @@ function canonicalWebFetchSucceeded(event) {
   );
 }
 
+function repositoryExtractionSucceeded(result, repository) {
+  return !result?.isError && result?.details?.boundary === 'public-web-read-only' &&
+    canonicalGitHubSourceMatches(result.details.source_url, repository) &&
+    result.content?.some(part => part?.type === 'text' &&
+      typeof part.text === 'string' && part.text.includes('EXTERNAL_UNTRUSTED_CONTENT'));
+}
+
 function runIdentity(event, context) {
   const runId = context?.runId ?? event?.runId;
   const sessionId = context?.sessionId;
@@ -10698,6 +10705,13 @@ export function createToolLoopGuard({
       }
     }
     if (state.githubCanonicalUrl) {
+      const extraction = toolName === 'pixel_ods_web_extract' ? event
+        : toolName === 'tool_call'
+          ? toolSearchSelectedToolEvent(event, 'pixel_ods_web_extract', 'pixel-ods') : undefined;
+      if (extraction && !toolCallFailed(extraction) &&
+          repositoryExtractionSucceeded(extraction.result, state.githubCanonicalUrl)) {
+        state.githubCanonicalSatisfied = true;
+      }
       const submission = operationsSubmission(event, toolName);
       if (submission) state.operationsSubmittedJobs.set(submission.jobId, submission);
       if (toolName === "pixel_ops_job_get" || toolName === "pixel_ops_job_wait") {
@@ -12534,10 +12548,7 @@ export function createToolLoopGuard({
     },
     observeRepositorySource(runId, result) {
       const state = runs.get(runId);
-      if (!state?.githubCanonicalUrl || result?.isError ||
-          result?.details?.boundary !== 'public-web-read-only' ||
-          !canonicalGitHubSourceMatches(result.details.source_url, state.githubCanonicalUrl) ||
-          !result.content?.some(part => part?.type === 'text' && part.text?.includes('EXTERNAL_UNTRUSTED_CONTENT'))) return;
+      if (!state?.githubCanonicalUrl || !repositoryExtractionSucceeded(result, state.githubCanonicalUrl)) return;
       state.githubCanonicalSatisfied = true;
     },
     afterToolCall,
