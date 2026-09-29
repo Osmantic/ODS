@@ -1575,7 +1575,7 @@ async def _build_api_status() -> dict:
         if remote_runtime:
             llama_metrics_data = await get_cloud_throughput(
                 remote_runtime, remote_provider_status.EGRESS_URL,
-                getattr(app.state, 'cloud_telemetry_client', None))
+                app.state.cloud_telemetry_client)
         context_size = remote_runtime["contextLength"] if remote_runtime else None
     else:
         loaded_model = await get_loaded_model()
