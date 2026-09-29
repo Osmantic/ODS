@@ -36,4 +36,37 @@ with_ui="$(resolve true)"
     && "$with_ui" != *'docker-compose.gateway-only.yml'* ]] || {
     echo 'FAIL: opted-in WebUI remained profiled out' >&2; exit 1;
 }
+
+# The installer checks the final active service set before any image pull and
+# again before launch. An inherited Compose profile must fail closed.
+SCRIPT_DIR="$ROOT"
+source "$ROOT/installers/lib/compose-select.sh"
+gateway_compose_stub() {
+    case "${GATEWAY_TEST_MODE:-}" in
+        safe) printf 'dashboard\nlitellm\n' ;;
+        managed) printf 'litellm\nllama-server\nmodel-router\n' ;;
+        *) return 1 ;;
+    esac
+}
+DOCKER_COMPOSE_CMD=gateway_compose_stub
+GATEWAY_TEST_MODE=safe ods_gateway_assert_no_managed_inference -f fake.yml
+if GATEWAY_TEST_MODE=managed ods_gateway_assert_no_managed_inference -f fake.yml 2>/dev/null; then
+    echo 'FAIL: gateway-only accepted active managed inference' >&2; exit 1;
+fi
+if GATEWAY_TEST_MODE=error ods_gateway_assert_no_managed_inference -f fake.yml 2>/dev/null; then
+    echo 'FAIL: gateway-only accepted an unverified Compose service set' >&2; exit 1;
+fi
+
+if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
+    cd "$ROOT"
+    compose_flags=(-f docker-compose.base.yml -f docker-compose.cpu.yml
+        -f extensions/services/litellm/compose.yaml
+        -f docker-compose.external-llm.yml -f docker-compose.gateway-only.yml)
+    if COMPOSE_PROFILES=local-inference WEBUI_SECRET=testing \
+        EXTERNAL_LLM_CONTAINER_URL=http://host.docker.internal:18080 \
+        DOCKER_COMPOSE_CMD='docker compose' \
+        ods_gateway_assert_no_managed_inference "${compose_flags[@]}" 2>/dev/null; then
+        echo 'FAIL: inherited local-inference profile bypassed gateway guard' >&2; exit 1;
+    fi
+fi
 echo 'PASS: gateway-only requires an upstream and selects the API-only stack'

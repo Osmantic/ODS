@@ -17,6 +17,23 @@
 # ============================================================================
 
 ods_progress 48 "images" "Downloading container images"
+if [[ "${ODS_GATEWAY_ONLY:-false}" == true && "${DRY_RUN:-false}" != true ]]; then
+    # Compose merges profile lists from overlays. A caller's inherited
+    # COMPOSE_PROFILES=local-inference can therefore re-enable a managed model
+    # even though the external route normally profiles it out. Fail before
+    # pulling an unnecessary image; Phase 11 rechecks before container launch.
+    [[ -n "${COMPOSE_FLAGS:-}" ]] || {
+        ai_bad "Gateway-only Compose selection is unavailable before image pulls."
+        exit 1
+    }
+    read -ra _gateway_compose_flags <<< "$COMPOSE_FLAGS"
+    if ! ods_gateway_assert_no_managed_inference "${_gateway_compose_flags[@]}" \
+        2>>"$LOG_FILE"; then
+        ai_bad "Gateway-only Compose could start ODS-managed inference; inspect $LOG_FILE and clear COMPOSE_PROFILES."
+        exit 1
+    fi
+    unset _gateway_compose_flags
+fi
 if [[ "$GPU_BACKEND" == "nvidia" && "${ENABLE_COMFYUI:-}" == "true" ]]; then
     show_phase 4 6 "Downloading Modules" "~5-10 min + ~30 min ComfyUI build"
 else

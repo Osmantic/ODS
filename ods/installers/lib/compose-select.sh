@@ -112,3 +112,15 @@ resolve_compose_config() {
 
     log "Compose selection: $COMPOSE_FLAGS"
 }
+
+# Compose overlays append profile lists. Verify the effective service set, not
+# only the selected files, before an API-only gateway pulls or starts images.
+ods_gateway_assert_no_managed_inference() {
+    local services
+    services="$($DOCKER_COMPOSE_CMD "$@" config --services)" || return 1
+    if grep -Eq '^(llama-server|model-router)$' <<< "$services"; then
+        printf 'Gateway-only Compose includes ODS-managed inference. Clear COMPOSE_PROFILES and retry.\n' >&2
+        return 1
+    fi
+    return 0
+}
