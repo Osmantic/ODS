@@ -1,0 +1,25 @@
+name: Release tree portability
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  committed-tree:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+        with:
+          python-version: '3.11'
+      - run: python -m pip install 'pytest==8.4.2' 'PyYAML==6.0.3'
+      # Every committed path matters, even when the packaging code is unchanged.
+      # Cross-platform producer contracts retain their narrower path filter.
+      - run: python -m pytest .github/scripts/test_release_source.py -q -k real_repository_source

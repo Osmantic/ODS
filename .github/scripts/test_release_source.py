@@ -2,8 +2,11 @@
 import copy
 import importlib.util
 import json
+import os
 from pathlib import Path
+import shutil
 import subprocess
+import sys
 import tarfile
 import zipfile
 
@@ -102,6 +105,7 @@ def test_exact_archives_ignore_working_changes_and_bind_inventory(repo, tmp_path
     (root / 'install.sh').write_text('uncommitted change')
     first, second = tmp_path / 'first', tmp_path / 'second'
     for output in (first, second):
+        release.git(root, 'config', 'tar.umask', '0077' if output == second else '0002')
         release.package_source(root, identity, output)
         sbom = {'spdxVersion': 'SPDX-2.3', 'documentNamespace': 'https://example.invalid/test-sbom'}
         (output / 'source.spdx.json').write_text(json.dumps(sbom))
@@ -137,19 +141,94 @@ def test_release_job_is_tag_only_pinned_and_draft_only():
     config = yaml.load((ROOT / '.github/workflows/release-provenance.yml').read_text(), Loader=yaml.BaseLoader)
     assert set(config['on']) == {'push', 'workflow_dispatch'}
     assert config['on']['push'] == {'tags': ['v*']}
-    job = config['jobs']['draft']
-    # The write-scoped token may only reach the step that runs gh.
-    assert 'GH_TOKEN' not in job.get('env', {})
-    assert set(job['steps'][-1]['env']) >= {'GH_TOKEN', 'BUNDLE'}
-    assert not any('GH_TOKEN' in step.get('env', {}) for step in job['steps'][:-1])
-    assert "github.repository == 'Osmantic/ODS'" in job['if']
-    assert "startsWith(github.ref, 'refs/tags/v')" in job['if']
-    for step in job['steps']:
-        if 'uses' in step:
-            assert release.SHA.fullmatch(step['uses'].split('@', 1)[1])
+    prepare, attest, job = (config['jobs'][key] for key in ('prepare', 'attest', 'draft'))
+    assert "github.repository == 'Osmantic/ODS'" in prepare['if']
+    assert "startsWith(github.ref, 'refs/tags/v')" in prepare['if']
+    assert attest['needs'] == 'prepare' and job['needs'] == 'attest'
+    # Actions can read github.token even without an explicit env assignment.
+    # The SBOM executes on a different runner with no write or OIDC permission.
+    assert prepare['permissions'] == {'contents': 'read'}
+    assert attest['permissions'] == {'contents': 'read', 'id-token': 'write', 'attestations': 'write'}
+    assert job['permissions'] == {'actions': 'read', 'contents': 'write'}
+    assert all('uses' not in step for step in job['steps'])
+    assert len(job['steps']) == 1
+    assert set(job['steps'][0]['env']) == {'GH_TOKEN', 'SOURCE_ARTIFACT'}
+    assert job['steps'][0]['env']['SOURCE_ARTIFACT'] == '${{ needs.attest.outputs.artifact }}'
+    verify = next(step for step in prepare['steps'] if 'release_source.py prepare' in step.get('run', ''))
+    assert verify['env']['GH_TOKEN'] == '${{ github.token }}'
+    assert any(step.get('uses', '').startswith('anchore/sbom-action@') for step in prepare['steps'])
+    for current in (prepare, attest, job):
+        assert 'GH_TOKEN' not in current.get('env', {})
+        for step in current['steps']:
+            if 'uses' in step:
+                assert release.SHA.fullmatch(step['uses'].split('@', 1)[1])
     publish = job['steps'][-1]['run']
+    assert 'gh run download "$GITHUB_RUN_ID"' in publish
+    assert 'sha256sum --check --strict SHA256SUMS' in publish
+    assert 'GITHUB_SHA' in publish
     assert 'gh release create' in publish and '--verify-tag --draft' in publish
     assert '--clobber' not in publish and 'gh release edit' not in publish
+
+
+def test_release_artifacts_are_attempt_bound_and_never_upload_the_extracted_source():
+    config = yaml.load((ROOT / '.github/workflows/release-provenance.yml').read_text(), Loader=yaml.BaseLoader)
+    for name in ('prepare', 'attest'):
+        job = config['jobs'][name]
+        upload = next(step for step in job['steps'] if step.get('uses', '').startswith('actions/upload-artifact@'))
+        assert upload['with']['name'] == job['outputs']['artifact']
+        assert '${{ github.run_attempt }}' in upload['with']['name']
+        assert upload['with']['if-no-files-found'] == 'error'
+    paths = config['jobs']['prepare']['steps'][-1]['with']['path'].splitlines()
+    assert len(paths) == 5
+    assert all(not path.endswith('/source') and not path.endswith('/*') for path in paths)
+    download = config['jobs']['attest']['steps'][0]['with']
+    assert download['name'] == '${{ needs.prepare.outputs.artifact }}'
+
+
+@pytest.mark.skipif(sys.platform == 'win32' or not shutil.which('bash'), reason='Executes the Ubuntu release shell step')
+@pytest.mark.parametrize('damage', [None, 'tampered', 'wrong-commit', 'missing-bundle'])
+def test_draft_shell_checks_downloaded_evidence_before_release_create(repo, tmp_path, damage):
+    root, identity = repo
+    source = tmp_path / 'artifact'
+    release.package_source(root, identity, source)
+    (source / 'source.spdx.json').write_text(json.dumps({'spdxVersion': 'SPDX-2.3', 'documentNamespace': 'fixture'}))
+    if damage == 'wrong-commit':
+        (source / 'source-identity.json').write_text(json.dumps(dict(identity, commit='a' * 40)))
+    release.finalize(source)
+    (source / 'provenance.sigstore.jsonl').write_text('fixture only, never accepted as real provenance')
+    if damage == 'tampered':
+        next(source.glob('*.zip')).write_bytes(b'tampered')
+    elif damage == 'missing-bundle':
+        (source / 'provenance.sigstore.jsonl').unlink()
+    # A PATH fixture captures gh operations; no API call or real release occurs.
+    bin_dir = tmp_path / 'bin'
+    bin_dir.mkdir()
+    cli = bin_dir / 'gh'
+    cli.write_text(f'#!{sys.executable}\n' + '''import json, os, pathlib, shutil, sys
+a=sys.argv[1:]
+assert os.environ['GH_TOKEN']=='fixture-read-write-token'
+if a[:2]==['run','download']:
+    assert a[2]=='123' and a[a.index('--name')+1]=='ods-attested-source-1'
+    target=pathlib.Path(a[a.index('--dir')+1]); target.mkdir(parents=True)
+    for p in pathlib.Path(os.environ['FIXTURE_ARTIFACT']).iterdir():
+        if p.is_file() and p.name!='source-identity.json': shutil.copyfile(p,target/p.name)
+elif a[:2]==['release','create']:
+    assert '--draft' in a and '--verify-tag' in a
+    pathlib.Path(os.environ['FIXTURE_CALL']).write_text(json.dumps(a))
+else: raise AssertionError(a)
+''')
+    cli.chmod(0o755)
+    call = tmp_path / 'release-call.json'
+    config = yaml.load((ROOT / '.github/workflows/release-provenance.yml').read_text(), Loader=yaml.BaseLoader)
+    script = config['jobs']['draft']['steps'][0]['run']
+    env = dict(os.environ, PATH=str(bin_dir) + os.pathsep + os.environ['PATH'],
+               GH_TOKEN='fixture-read-write-token', GITHUB_RUN_ID='123',
+               GITHUB_REF='refs/tags/' + identity['tag'], GITHUB_SHA=identity['commit'],
+               SOURCE_ARTIFACT='ods-attested-source-1', RUNNER_TEMP=str(tmp_path / 'runner'),
+               FIXTURE_ARTIFACT=str(source), FIXTURE_CALL=str(call))
+    completed = subprocess.run(['bash', '-c', script], env=env, capture_output=True, text=True)
+    assert (completed.returncode == 0) is (damage is None), completed.stderr
+    assert call.exists() is (damage is None)
 
 
 def test_real_repository_source_can_be_packaged(tmp_path):
