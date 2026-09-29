@@ -981,7 +981,9 @@ def _safe_peer_model_id(model_id: str) -> str:
     model = _safe_text(model_id, max_length=256)
     if not model:
         raise HTTPException(status_code=400, detail="Remote peer model id is required.")
-    if "/" in model or "\\" in model or model in {".", ".."}:
+    # Model registries commonly namespace IDs (for example, org/model). Keep
+    # those separators while rejecting path traversal and empty segments.
+    if "\\" in model or any(part in {"", ".", ".."} for part in model.split("/")):
         raise HTTPException(status_code=400, detail="Remote peer model id is invalid.")
     return model
 
@@ -1162,7 +1164,7 @@ async def remote_provider_peer_cancel_download() -> Any:
 
 
 @router.post(
-    "/api/remote-provider/peer/models/{model_id}/download",
+    "/api/remote-provider/peer/models/{model_id:path}/download",
     dependencies=[Depends(verify_api_key)],
 )
 async def remote_provider_peer_download_model(model_id: str) -> Any:
@@ -1174,7 +1176,7 @@ async def remote_provider_peer_download_model(model_id: str) -> Any:
 
 
 @router.post(
-    "/api/remote-provider/peer/models/{model_id}/load",
+    "/api/remote-provider/peer/models/{model_id:path}/load",
     dependencies=[Depends(verify_api_key)],
 )
 async def remote_provider_peer_load_model(model_id: str) -> Any:
@@ -1187,7 +1189,7 @@ async def remote_provider_peer_load_model(model_id: str) -> Any:
 
 
 @router.delete(
-    "/api/remote-provider/peer/models/{model_id}",
+    "/api/remote-provider/peer/models/{model_id:path}",
     dependencies=[Depends(verify_api_key)],
 )
 async def remote_provider_peer_delete_model(model_id: str) -> Any:
