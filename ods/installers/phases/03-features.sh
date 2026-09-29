@@ -154,6 +154,20 @@ else
     log "Pixel is unavailable or disabled; existing ODS tools remain available"
 fi
 export PIXEL_AGENT_MODE ENABLE_PIXEL_RUNTIME ENABLE_PIXEL
+
+# Fresh ordinary installs use Portal as chat when Pixel is qualified. Delay
+# this choice until Pixel resolution so unsupported hosts keep WebUI, and
+# retain WebUI for features that still rely on its voice, RAG, or LAN proxy.
+# Existing installs and explicit CLI selections remain authoritative.
+if ods_should_default_portal_chat \
+      "${ODS_EXISTING_INSTALL:-false}" "${WEBUI_EXPLICIT:-false}" \
+      "${ODS_GATEWAY_ONLY:-false}" "$ENABLE_PIXEL_RUNTIME" \
+      "${ENABLE_VOICE:-false}" "${ENABLE_RAG:-false}" \
+      "${ENABLE_ODS_PROXY:-false}"; then
+    ENABLE_OPEN_WEBUI=false
+    log "Portal selected as the default chat UI; Open WebUI remains available in the Extensions Library"
+fi
+
 if [[ "${ENABLE_OPEN_WEBUI:-true}" != true && "${ODS_GATEWAY_ONLY:-false}" != true &&
       "$ENABLE_PIXEL_RUNTIME" != true ]]; then
     ai_bad "Portal is required when Open WebUI is disabled on an ordinary install."
