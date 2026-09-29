@@ -15,7 +15,8 @@ jobs:
         run: |
           git rev-parse HEAD
           df -h . /var/lib/docker
-          git diff --name-only 28eec048ca5dbb6d0d121076dcf5e8221bd0fb03 HEAD
+          git fetch --no-tags --depth=1 origin 28eec048ca5dbb6d0d121076dcf5e8221bd0fb03
+          git diff --name-only FETCH_HEAD HEAD
       - name: Build exact pinned image without GPU
         run: |
           docker build --progress=plain --tag ods-comfyui-pinned-audit \
