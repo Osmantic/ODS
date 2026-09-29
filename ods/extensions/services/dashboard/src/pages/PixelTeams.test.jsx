@@ -2,7 +2,7 @@ import {fireEvent,screen,waitFor} from '@testing-library/react'
 import {render} from '../test/test-utils'
 import Pixel from './Pixel'
 import * as portalTeams from '../lib/portalTeams'
-import {saveConversation,readConversations} from '../lib/pixelConversations'
+import {saveConversation,readConversations,SELECT_EVENT} from '../lib/pixelConversations'
 import {conversationProject} from '../lib/conversationProjects'
 
 beforeEach(()=>{localStorage.clear();sessionStorage.clear()})
@@ -31,6 +31,25 @@ it('delivers a confirmed team preview, persists it and does not reopen it on eve
   fireEvent.click(screen.getByRole('button',{name:'Workspace',exact:true}))
   expect(await screen.findByTitle('Interactive Portal preview')).toBeVisible()
   expect(readConversations()[0].messages[1].publication).toEqual(publication)
+})
+
+it('does not pop the workspace open when the user switches to a chat whose team already published',async()=>{
+  const id='e'.repeat(32),sha256='a'.repeat(64),siteId=`site-${sha256.slice(0,24)}`
+  const publication={schemaVersion:1,kind:'ods-pixel-workspace-preview',relativeDirectory:'Playground/snake',
+    siteId,port:9437,url:`http://${siteId}.localhost:9437/${siteId}/`,files:3,bytes:1000,sha256,entrySha256:'b'.repeat(64)}
+  const team={id,status:'completed',goal:'Build game',agents:[{id:'0',name:'Builder',role:'builder',status:'completed',conversation:[],publication}]}
+  const now=vi.spyOn(Date,'now')
+  now.mockReturnValue(1000)
+  saveConversation({schema:1,chatId:'published-chat',messages:[{role:'user',content:'Build game'},{role:'assistant',teamId:id,content:'Done',publication}]})
+  now.mockReturnValue(2000)
+  saveConversation({schema:1,chatId:'current-chat',messages:[{role:'user',content:'Hello'},{role:'assistant',content:'Hi'}]})
+  vi.spyOn(portalTeams,'usePortalTeams').mockReturnValue({teams:[team],busy:false,error:'',selected:null,select:vi.fn()})
+  vi.stubGlobal('fetch',vi.fn(async()=>({ok:true,json:async()=>({available:true})})))
+  render(<Pixel/> )
+  await screen.findByText('Available')
+  window.dispatchEvent(new CustomEvent(SELECT_EVENT,{detail:'published-chat'}))
+  await screen.findByText('Done')
+  expect(screen.queryByTitle('Interactive Portal preview')).toBeNull()
 })
 
 it.each(['failed','running','malformed'])('does not promote an unconfirmed team preview (%s)',async state=>{
