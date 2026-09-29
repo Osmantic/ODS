@@ -63,7 +63,8 @@ def package_source(root, identity, output):
     tree.mkdir()
     # git archive also honors core.autocrlf: do not let the build host change
     # source bytes. Repository .gitattributes remain the reviewed authority.
-    raw = git(root, '-c', 'core.autocrlf=false', '-c', 'core.eol=lf',
+    # tar.umask is pinned so member modes never depend on runner git config.
+    raw = git(root, '-c', 'core.autocrlf=false', '-c', 'core.eol=lf', '-c', 'tar.umask=0022',
               'archive', '--format=tar', identity['commit'])
     members = []
     seen = set()
