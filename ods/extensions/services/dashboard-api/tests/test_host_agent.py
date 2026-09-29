@@ -4534,6 +4534,36 @@ class TestHandleEnvUpdate:
         backup_files = list((data_dir / "config-backups").glob(".env.backup.*"))
         assert len(backup_files) == 1
 
+    def test_save_preserves_symlinked_env_target(self, env_update_env):
+        install_dir, data_dir = env_update_env
+        env_path = install_dir / ".env"
+        managed_env = install_dir.parent / "managed.env"
+        managed_env.write_text(
+            "ODS_AGENT_KEY=existing\nGGUF_FILE=/models/old.gguf\n",
+            encoding="utf-8",
+        )
+        env_path.unlink()
+        try:
+            env_path.symlink_to(managed_env)
+        except (OSError, NotImplementedError):
+            pytest.skip("symlink creation is unavailable")
+
+        handler = _FakeHandler(
+            _make_body("ODS_AGENT_KEY=updated\nGGUF_FILE=/models/new.gguf\n")
+        )
+        _mod.AgentHandler._handle_env_update(handler)
+
+        assert handler.response_code == 200
+        assert env_path.is_symlink()
+        assert managed_env.read_text(encoding="utf-8") == (
+            "ODS_AGENT_KEY=updated\nGGUF_FILE=/models/new.gguf\n"
+        )
+        backup_files = list((data_dir / "config-backups").glob(".env.backup.*"))
+        assert len(backup_files) == 1
+        assert backup_files[0].read_text(encoding="utf-8") == (
+            "ODS_AGENT_KEY=existing\nGGUF_FILE=/models/old.gguf\n"
+        )
+
     def test_same_second_updates_create_distinct_backups(
         self, env_update_env, monkeypatch,
     ):
