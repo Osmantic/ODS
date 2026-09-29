@@ -34,17 +34,20 @@
 Write-Phase -Phase 3 -Total 13 -Name "FEATURE SELECTION" -Estimate "interactive"
 
 # ── Defaults from CLI flags ────────────────────────────────────────────────────
-$enableVoice         = $voiceFlag -or $allFlag
-$enableWorkflows     = $workflowsFlag -or $allFlag
-$enableRag           = $ragFlag -or $allFlag
-$enableRecommended   = (-not $noRecommendedFlag) -and ($recommendedFlag -or $allFlag -or (-not $nonInteractive))
-if ($nonInteractive -and -not $noRecommendedFlag) { $enableRecommended = $true }
-$enableHermes        = (-not $noHermesFlag) -and ($hermesFlag -or $allFlag -or (-not $nonInteractive))
-if ($nonInteractive -and -not $noHermesFlag) { $enableHermes = $true }
-$enableOpenClaw      = $openClawFlag
-$enableComfyui       = -not $noComfyuiFlag
-$enableDeepResearch  = $true
-$enablePrivacyShield = $true
+$installedSelection = Get-ODSWindowsInstalledFeatureSelection -InstallDir $installDir
+$priorFeatures = if ($installedSelection.Kind -eq "preserved") { $installedSelection.Features } else { @{} }
+if ($installedSelection.Kind -eq "unknown" -and ($nonInteractive -or $dryRun) -and -not $allFlag) {
+    throw "Existing ODS feature selection is unknown ($($installedSelection.Reason)). Choose Full Stack or Core Only interactively, or pass -All."
+}
+$enableVoice         = $voiceFlag -or $allFlag -or [bool]$priorFeatures.Voice
+$enableWorkflows     = $workflowsFlag -or $allFlag -or [bool]$priorFeatures.Workflows
+$enableRag           = $ragFlag -or $allFlag -or [bool]$priorFeatures.Rag
+$enableRecommended   = (-not $noRecommendedFlag) -and ($recommendedFlag -or $allFlag -or [bool]$priorFeatures.Recommended)
+$enableHermes        = (-not $noHermesFlag) -and ($hermesFlag -or $allFlag -or [bool]$priorFeatures.Hermes)
+$enableOpenClaw      = $openClawFlag -or [bool]$priorFeatures.OpenClaw
+$enableComfyui       = (-not $noComfyuiFlag) -and ($comfyuiFlag -or $allFlag -or [bool]$priorFeatures.Comfyui)
+$enableDeepResearch  = $allFlag -or [bool]$priorFeatures.DeepResearch
+$enablePrivacyShield = $allFlag -or [bool]$priorFeatures.PrivacyShield
 $enableBraveSearch   = $false
 $enableODSProxy    = $false
 $enableRemoteAccess  = $false
@@ -52,7 +55,16 @@ $enableRemoteAccess  = $false
 # stack adds ~500MB baseline memory. Opt in via -Langfuse, -All, the Custom
 # menu, or post-install `ods enable langfuse`. -NoLangfuse is honored as an
 # explicit override so a -All run can still suppress Langfuse.
-$enableLangfuse   = ($langfuseFlag -or $allFlag) -and (-not $noLangfuseFlag)
+$enableLangfuse   = ($langfuseFlag -or $allFlag -or [bool]$priorFeatures.Langfuse) -and (-not $noLangfuseFlag)
+
+function Read-ODSWindowsFeatureChoice {
+    param([string]$Prompt, [bool]$Default)
+    $suffix = if ($Default) { '[Y/n]' } else { '[y/N]' }
+    $answer = Read-Host "  $Prompt $suffix"
+    if ($answer -match '^[yY]') { return $true }
+    if ($answer -match '^[nN]') { return $false }
+    return $Default
+}
 
 # ── Interactive menu (skipped in non-interactive / dry-run / --All mode) ──────
 if (-not $nonInteractive -and -not $allFlag -and -not $dryRun) {
@@ -62,10 +74,25 @@ if (-not $nonInteractive -and -not $allFlag -and -not $dryRun) {
     Write-Host "  [1] Full Stack   -- Voice + Workflows + RAG + Hermes + research tools" -ForegroundColor Green
     Write-Host "  [2] Core Only    -- Chat + LLM inference (lean, fastest startup)" -ForegroundColor White
     Write-Host "  [3] Custom       -- Choose each feature individually" -ForegroundColor White
+    if ($installedSelection.Kind -eq "preserved") {
+        Write-Host "  [4] Keep current -- Preserve installed service choices" -ForegroundColor White
+    }
     Write-Host ""
 
-    $choice = Read-Host "  Selection [1/2/3] (default: 1)"
+    $defaultChoice = switch ($installedSelection.Kind) {
+        "preserved" { "4" }
+        "fresh" { "2" }
+        default { "" }
+    }
+    if ($installedSelection.Kind -eq "unknown") {
+        Write-AIWarn "Existing selection is unknown: $($installedSelection.Reason). Choose Full Stack, Core Only, or Custom explicitly."
+    }
+    $choice = Read-Host "  Selection [1/2/3/4] (default: $defaultChoice)"
+    if ([string]::IsNullOrWhiteSpace($choice)) { $choice = $defaultChoice }
     switch ($choice) {
+        "4" {
+            if ($installedSelection.Kind -ne "preserved") { throw "No installed feature selection is available to keep." }
+        }
         "2" {
             $enableVoice     = $false
             $enableWorkflows = $false
@@ -80,16 +107,16 @@ if (-not $nonInteractive -and -not $allFlag -and -not $dryRun) {
         }
         "3" {
             Write-Host ""
-            $enableVoice     = (Read-Host "  Enable Voice (Whisper STT + Kokoro TTS)?  [y/N]") -match "^[yY]"
-            $enableWorkflows = (Read-Host "  Enable Workflows (n8n, 400+ integrations)? [y/N]") -match "^[yY]"
-            $enableRag       = (Read-Host "  Enable RAG (Qdrant vector DB + embeddings)? [y/N]") -match "^[yY]"
-            $enableRecommended = (Read-Host "  Enable recommended web/API support (LiteLLM + SearXNG + Token Spy)? [Y/n]") -notmatch "^[nN]"
-            $enableHermes    = (Read-Host "  Enable Hermes Agent (default AI agent)? [Y/n]") -notmatch "^[nN]"
-            $enableOpenClaw  = (Read-Host "  Enable OpenClaw (DEPRECATED; Hermes replaces it)? [y/N]") -match "^[yY]"
-            $enableComfyui   = (Read-Host "  Enable image generation (ComfyUI + SDXL Lightning, ~6.5GB)? [y/N]") -match "^[yY]"
-            $enableDeepResearch = (Read-Host "  Enable Perplexica deep research? [Y/n]") -notmatch "^[nN]"
-            $enablePrivacyShield = (Read-Host "  Enable Privacy Shield PII protection? [Y/n]") -notmatch "^[nN]"
-            $enableLangfuse  = (Read-Host "  Enable Langfuse (LLM observability, ~500MB)? [y/N]") -match "^[yY]"
+            $enableVoice = Read-ODSWindowsFeatureChoice 'Enable Voice (Whisper STT + Kokoro TTS)?' $enableVoice
+            $enableWorkflows = Read-ODSWindowsFeatureChoice 'Enable Workflows (n8n, 400+ integrations)?' $enableWorkflows
+            $enableRag = Read-ODSWindowsFeatureChoice 'Enable RAG (Qdrant + embeddings)?' $enableRag
+            $enableRecommended = Read-ODSWindowsFeatureChoice 'Enable recommended web/API support?' $enableRecommended
+            $enableHermes = Read-ODSWindowsFeatureChoice 'Enable Hermes Agent?' $enableHermes
+            $enableOpenClaw = Read-ODSWindowsFeatureChoice 'Enable deprecated OpenClaw?' $enableOpenClaw
+            $enableComfyui = Read-ODSWindowsFeatureChoice 'Enable image generation (ComfyUI, ~6.5GB)?' $enableComfyui
+            $enableDeepResearch = Read-ODSWindowsFeatureChoice 'Enable Perplexica deep research?' $enableDeepResearch
+            $enablePrivacyShield = Read-ODSWindowsFeatureChoice 'Enable Privacy Shield?' $enablePrivacyShield
+            $enableLangfuse = Read-ODSWindowsFeatureChoice 'Enable Langfuse observability?' $enableLangfuse
 
             # Warn on low-tier
             if ($enableComfyui -and ($selectedTier -eq "0" -or $selectedTier -eq "1")) {
@@ -97,8 +124,7 @@ if (-not $nonInteractive -and -not $allFlag -and -not $dryRun) {
                 $enableComfyui = (Read-Host "  Continue with image generation enabled? [y/N]") -match "^[yY]"
             }
         }
-        default {
-            # "" (Enter) and "1" both select Full Stack
+        "1" {
             $enableVoice     = $true
             $enableWorkflows = $true
             $enableRag       = $true
@@ -117,15 +143,31 @@ if (-not $nonInteractive -and -not $allFlag -and -not $dryRun) {
                 Write-AI "  You can enable it later with: ods enable comfyui"
             }
         }
+        default { throw "Choose a valid feature selection (1, 2, 3, or 4 when available)." }
     }
 }
 
+# Explicit CLI selections win over menu choices and preserved state.
+if ($voiceFlag) { $enableVoice = $true }
+if ($workflowsFlag) { $enableWorkflows = $true }
+if ($ragFlag) { $enableRag = $true }
+if ($recommendedFlag) { $enableRecommended = $true }
+if ($hermesFlag) { $enableHermes = $true }
+if ($openClawFlag) { $enableOpenClaw = $true }
+if ($comfyuiFlag) { $enableComfyui = $true }
+if ($langfuseFlag) { $enableLangfuse = $true }
 if ($noHermesFlag) {
     $enableHermes = $false
 }
 
 if ($noRecommendedFlag) {
     $enableRecommended = $false
+}
+if ($noComfyuiFlag) {
+    $enableComfyui = $false
+}
+if ($noLangfuseFlag) {
+    $enableLangfuse = $false
 }
 
 # Tier safety net: disable ComfyUI on Tier 0/1 or CLOUD in non-interactive mode.

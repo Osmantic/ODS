@@ -35,6 +35,7 @@ function New-ODSWindowsServicePlan {
         [bool]$EnableComfyui,
         [bool]$EnableDeepResearch,
         [bool]$EnablePrivacyShield,
+        [bool]$EnableLangfuse = $false,
         [bool]$EnableBraveSearch = $false,
         [bool]$EnableODSProxy = $false,
         [bool]$EnableRemoteAccess = $false
@@ -76,6 +77,7 @@ function New-ODSWindowsServicePlan {
     $plan["comfyui"] = New-ODSWindowsServicePlanEntry "comfyui" $EnableComfyui "image" "image generation not enabled"
     $plan["perplexica"] = New-ODSWindowsServicePlanEntry "perplexica" $EnableDeepResearch "research" "deep research not enabled"
     $plan["privacy-shield"] = New-ODSWindowsServicePlanEntry "privacy-shield" $EnablePrivacyShield "privacy" "privacy shield not enabled"
+    $plan["langfuse"] = New-ODSWindowsServicePlanEntry "langfuse" $EnableLangfuse "observability" "Langfuse not enabled"
 
     $plan["brave-search"] = New-ODSWindowsServicePlanEntry "brave-search" $EnableBraveSearch "search" "Brave Search API not configured"
     $plan["ods-proxy"] = New-ODSWindowsServicePlanEntry "ods-proxy" $EnableODSProxy "networking" "LAN web proxy not enabled"

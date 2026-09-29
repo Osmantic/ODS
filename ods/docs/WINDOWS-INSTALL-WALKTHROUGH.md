@@ -101,7 +101,16 @@ The installer will:
 - Check prerequisites (WSL2, Docker, NVIDIA/AMD runtime path)
 - Create the runtime directory at `$env:USERPROFILE\ods` by default,
   or at the path passed to `-InstallDir`
-- Download and start all services
+- Download and start the selected services
+
+A fresh native install selects **Core Only** when you press Enter. Optional
+voice, workflows, RAG, Hermes, ComfyUI, Perplexica, Privacy Shield, and Langfuse
+stay off until selected. Choose **Full Stack** or pass `-All` to opt in. A normal
+rerun reads the installed `.compose-flags` selection before copying source
+files, so Enter keeps the existing enabled services. If that record is missing
+or incomplete on an existing installation, choose a feature set explicitly;
+the installer will not silently treat it as a fresh Core install. Selection
+changes do not delete the optional services' data directories.
 
 ### Important: repo checkout vs runtime directory
 

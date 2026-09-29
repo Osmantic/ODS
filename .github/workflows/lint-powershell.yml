@@ -68,6 +68,15 @@ jobs:
           }
           if ($failed) { exit 1 }
 
+      - name: Native Windows lean selection (PowerShell 7)
+        shell: pwsh
+        run: ./tests/test-windows-lean-defaults.ps1
+
+      - name: Native Windows lean selection (Windows PowerShell)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./tests/test-windows-lean-defaults.ps1
+
       - name: Windows Portal Setup Contracts (PowerShell 7)
         shell: pwsh
         run: ./tests/contracts/test-windows-portal-setup.ps1
