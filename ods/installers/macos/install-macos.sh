@@ -118,6 +118,7 @@ ENABLE_ODS_PROXY=false
 ENABLE_TAILSCALE=false
 ENABLE_SEARXNG=false
 ENABLE_WEB_SEARCH=false
+ENABLE_LITELLM=false
 # Langfuse defaults OFF because its clickhouse + postgres + minio stack adds
 # ~500MB baseline memory. Enable via --langfuse, --all, or post-install
 # `ods enable langfuse`. --no-langfuse honored as explicit override so a
@@ -299,7 +300,7 @@ _macos_set_builtin_compose_state() {
 }
 
 _macos_sync_builtin_compose_states() {
-    _macos_set_builtin_compose_state litellm "$ENABLE_RECOMMENDED"
+    _macos_set_builtin_compose_state litellm "$ENABLE_LITELLM"
     _macos_set_builtin_compose_state searxng "$ENABLE_SEARXNG"
     _macos_set_builtin_compose_state token-spy "$ENABLE_RECOMMENDED"
     _macos_set_builtin_compose_state whisper "$ENABLE_VOICE"
@@ -317,6 +318,36 @@ _macos_sync_builtin_compose_states() {
     _macos_set_builtin_compose_state tailscale "$ENABLE_TAILSCALE"
     _macos_set_builtin_compose_state langfuse "$ENABLE_LANGFUSE"
     _macos_set_builtin_compose_state brave-search "${ENABLE_BRAVE_SEARCH:-false}"
+}
+
+_macos_resolve_support_services() {
+    # The gateway serves the base chat UI, Portal and cloud mode. Selecting it
+    # must not pull the optional recommended support bundle.
+    ENABLE_LITELLM=true
+
+    ENABLE_SEARXNG=false
+    if $ENABLE_RECOMMENDED || $ENABLE_PERPLEXICA || $ENABLE_HERMES || $ENABLE_OPENCLAW; then
+        ENABLE_SEARXNG=true
+    fi
+    if $ENABLE_PIXEL; then
+        # Match native onboarding: the installed environment wins, then
+        # retained private answers, then the fresh parallel-free default.
+        local provider
+        provider="$(read_env_value "${INSTALL_DIR}/.env" PIXEL_WEB_SEARCH_PROVIDER)"
+        provider="${provider#\"}"; provider="${provider%\"}"
+        provider="${provider#\'}"; provider="${provider%\'}"
+        if [[ -z "$provider" ]]; then
+            local answers="${INSTALL_DIR}/data/pixel-native/preparation/onboarding.json"
+            provider="$(/usr/bin/python3 "${SOURCE_ROOT}/extensions/services/pixel-agent/host/native_search.py" \
+                --answers-file "$answers")" || return 1
+        fi
+        case "$provider" in
+            searxng) ENABLE_SEARXNG=true ;;
+            parallel-free) ;;
+            *) ai_err "Unsupported Pixel search provider: ${provider}"; return 1 ;;
+        esac
+    fi
+    ENABLE_WEB_SEARCH=$ENABLE_SEARXNG
 }
 
 _macos_patch_hermes_persisted_config() {
@@ -1659,7 +1690,7 @@ if ! $NON_INTERACTIVE && ! $ALL_FEATURES && ! $DRY_RUN; then
             [[ "$yn" =~ ^[yY] ]] && ENABLE_WORKFLOWS=true
             read -r -p "  Enable RAG (Qdrant + embeddings)? [y/N] " yn < /dev/tty
             [[ "$yn" =~ ^[yY] ]] && ENABLE_RAG=true
-            read -r -p "  Enable recommended support (LiteLLM + SearXNG + Token Spy)? [Y/n] " yn < /dev/tty
+            read -r -p "  Enable extra support (SearXNG + Token Spy)? [Y/n] " yn < /dev/tty
             [[ "$yn" =~ ^[nN] ]] && ENABLE_RECOMMENDED=false || ENABLE_RECOMMENDED=true
             read -r -p "  Enable Hermes Agent (default AI agent)? [Y/n] " yn < /dev/tty
             [[ "$yn" =~ ^[nN] ]] && ENABLE_HERMES=false || ENABLE_HERMES=true
@@ -1702,26 +1733,14 @@ $OPENCODE_ENABLE_EXPLICIT && ENABLE_OPENCODE=true
 if $ENABLE_PIXEL; then
     ENABLE_HERMES=false
     ENABLE_OPENCLAW=false
-    # Pixel requires the shared model gateway and search support even when the
-    # owner selects Core Only. Voice, RAG and workflows remain independent.
-    ENABLE_RECOMMENDED=true
-fi
-
-if $CLOUD_MODE && ! $ENABLE_RECOMMENDED; then
-    ai "Cloud mode requires the LiteLLM gateway; enabling recommended support"
-    ENABLE_RECOMMENDED=true
 fi
 if ! $ENABLE_HERMES && ! $ENABLE_OPENCLAW; then
     ENABLE_APE=false
 fi
 
-# SearXNG backs Open WebUI web search, Perplexica, and agent web tools.
-if $ENABLE_RECOMMENDED || $ENABLE_PERPLEXICA || $ENABLE_HERMES || $ENABLE_OPENCLAW; then
-    ENABLE_SEARXNG=true
-else
-    ENABLE_SEARXNG=false
-fi
-ENABLE_WEB_SEARCH=$ENABLE_SEARXNG
+# SearXNG backs optional search consumers. Native Pixel defaults to its own
+# keyless provider; a retained SearXNG choice remains authoritative.
+_macos_resolve_support_services || exit 1
 
 # Hermes needs 64K context; the raise grows the KV cache, so it is re-checked
 # with the selector against the same unified-memory budget (see
@@ -1803,7 +1822,8 @@ ai "Features:"
 info_box "  Voice:" "$(if $ENABLE_VOICE; then echo enabled; else echo disabled; fi)"
 info_box "  Workflows:" "$(if $ENABLE_WORKFLOWS; then echo enabled; else echo disabled; fi)"
 info_box "  RAG:" "$(if $ENABLE_RAG; then echo enabled; else echo disabled; fi)"
-info_box "  Recommended:" "$(if $ENABLE_RECOMMENDED; then echo enabled; else echo disabled; fi)"
+info_box "  Search + Token Spy:" "$(if $ENABLE_RECOMMENDED; then echo enabled; else echo disabled; fi)"
+info_box "  LiteLLM gateway:" "$(if $ENABLE_LITELLM; then echo enabled; else echo disabled; fi)"
 info_box "  Hermes:" "$(if $ENABLE_HERMES; then echo enabled; else echo disabled; fi)"
 info_box "  Portal (native):" "$(if $ENABLE_PIXEL; then echo enabled; else echo disabled; fi)"
 info_box "  OpenClaw:" "$(if $ENABLE_OPENCLAW; then echo "enabled (DEPRECATED)"; else echo disabled; fi)"
@@ -2565,7 +2585,8 @@ else
             # Check feature flags
             SKIP=false
             case "$SVC_NAME" in
-                litellm|token-spy) $ENABLE_RECOMMENDED || SKIP=true ;;
+                litellm)       $ENABLE_LITELLM || SKIP=true ;;
+                token-spy)     $ENABLE_RECOMMENDED || SKIP=true ;;
                 searxng)       $ENABLE_SEARXNG || SKIP=true ;;
                 whisper|tts)   $ENABLE_VOICE || SKIP=true ;;
                 n8n)           $ENABLE_WORKFLOWS || SKIP=true ;;
