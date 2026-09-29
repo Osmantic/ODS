@@ -4,6 +4,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$ROOT/installers/lib/installed-feature-state.sh"
+source "$ROOT/installers/lib/external-services.sh"
 defaults="$(sed -n '/^DRY_RUN=false$/,/^INTERACTIVE=true$/p' "$ROOT/install-core.sh")"
 [[ -n "$defaults" ]] || { echo 'FAIL: installer defaults block missing' >&2; exit 1; }
 

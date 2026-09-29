@@ -3,6 +3,7 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$ROOT/installers/lib/installed-feature-state.sh"
+source "$ROOT/installers/lib/external-services.sh"
 defaults="$(sed -n '/^DRY_RUN=false$/,/^INTERACTIVE=true$/p' "$ROOT/install-core.sh")"
 [[ -n "$defaults" ]] || { echo 'FAIL: installer defaults block missing' >&2; exit 1; }
 
@@ -44,6 +45,12 @@ eval "$defaults"
 }
 [[ "$ENABLE_VOICE" == false && "$ENABLE_PERPLEXICA" == false ]] || {
     echo 'FAIL: disabled selected features were enabled on rerun' >&2; exit 1;
+}
+
+printf 'ODS_GATEWAY_ONLY=true\nENABLE_OPEN_WEBUI=false\n' >"$INSTALL_DIR/.env"
+eval "$defaults"
+[[ "$ODS_GATEWAY_ONLY" == true && "$ENABLE_OPEN_WEBUI" == false ]] || {
+    echo 'FAIL: API-only gateway selection was lost on rerun' >&2; exit 1;
 }
 
 # Explicit --all remains after this block in install-core.sh and overrides it.
