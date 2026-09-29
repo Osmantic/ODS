@@ -58,6 +58,28 @@ class RelativeArchiveLinks(unittest.TestCase):
                 self.assertEqual((model / "weights.bin").read_bytes(), b"fixture weights")
                 self.assertFalse((cold / name).exists())
 
+    def test_restore_rejects_name_that_escapes_storage_roots(self):
+        with tempfile.TemporaryDirectory(prefix="ods-cold-restore-confinement-") as directory:
+            root = Path(directory)
+            cold = root / "cold"
+            cache = root / "cache/nested/hub"
+            victim = root / "outside"
+            (cold / "models--").mkdir(parents=True)
+            (cache / "models--").mkdir(parents=True)
+            victim.mkdir()
+            (victim / "sentinel.txt").write_text("must stay outside storage roots")
+            env = {**os.environ, "COLD_DIR": str(cold), "HF_CACHE": str(cache),
+                   "LOG_FILE": str(root / "logs/cold.log")}
+
+            result = subprocess.run(
+                ["bash", str(SCRIPT), "--restore", "models--/../../outside"],
+                env=env, capture_output=True, text=True, check=False, timeout=10,
+            )
+
+            self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual((victim / "sentinel.txt").read_text(), "must stay outside storage roots")
+            self.assertFalse((root / "cache/nested/outside").exists())
+
 
 if __name__ == "__main__":
     unittest.main()
