@@ -34,7 +34,10 @@ import '../wallpaper-themes.css'
 import { dashboardHost, serviceUrl } from '../lib/serviceUrls'
 import {
   clearSettingsFollowUp,
+  loadSettingsApplyPlan,
   loadSettingsFollowUp,
+  mergeSettingsApplyPlans,
+  saveSettingsApplyPlan,
   saveSettingsFollowUp,
   settleSettingsApplyPlan,
 } from '../utils/settingsApplyPlan'
@@ -198,7 +201,8 @@ export default function Settings({ activeSection = 'all' }) {
     setEnvIssues(payload?.issues || [])
     setEnvRevealSecrets({})
     setEnvClearedSecrets([])
-    setEnvApplyPlan(payload?.applyPlan || null)
+    const applyPlan = mergeSettingsApplyPlans(loadSettingsApplyPlan(), payload?.applyPlan)
+    setEnvApplyPlan(saveSettingsApplyPlan(applyPlan))
     setEnvActiveSection(current => (current && payload?.sections?.some(section => section.id === current)) ? current : (payload?.sections?.[0]?.id || null))
   }
 
@@ -326,7 +330,7 @@ export default function Settings({ activeSection = 'all' }) {
         body: JSON.stringify({ service_ids: envApplyPlan.services }),
       })
       const { remainingPlan, followUpPlan } = settleSettingsApplyPlan(envApplyPlan)
-      setEnvApplyPlan(remainingPlan)
+      setEnvApplyPlan(saveSettingsApplyPlan(remainingPlan))
       if (followUpPlan) {
         setEnvFollowUpPlan(saveSettingsFollowUp(followUpPlan))
       }
