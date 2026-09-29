@@ -15,13 +15,14 @@ fail=0
 # The colors and flags below are read by the eval'd show_install_menu.
 # shellcheck disable=SC2034
 expect() {
-    local label="$1" choice="$2" explicit="$3" initial="$4" want="$5" agent="${6:-HERMES}" got
+    local label="$1" choice="$2" explicit="$3" initial="$4" want="$5" agent="${6:-HERMES}" existing="${7:-false}" got
     got="$(
         ai() { :; }; ai_warn() { :; }; warn() { :; }; log() { :; }; signal() { :; }
         BGRN='' AMB='' NC=''
         eval "$menu_source"
         printf -v "${agent}_EXPLICIT" '%s' "$explicit"
         printf -v "ENABLE_${agent}" '%s' "$initial"
+        ODS_EXISTING_INSTALL="$existing"
         TIER=3
         show_install_menu >/dev/null <<<"$choice"
         selected_var="ENABLE_${agent}"
@@ -42,6 +43,10 @@ expect 'Invalid choice keeps explicit --no-hermes' x true false false
 expect 'Core Only keeps explicit --hermes' 2 true true true
 expect 'Full Stack still enables Hermes without a flag' 1 false false true
 expect 'Core Only still disables Hermes without a flag' 2 false true false
+expect 'Fresh Enter selects Core Only' '' false true false
+expect 'Fresh invalid choice selects Core Only' x false true false
+expect 'Existing Enter retains Full Stack default' '' false false true HERMES true
+expect 'Existing invalid choice retains Full Stack default' x false false true HERMES true
 
 for choice in 1 2 3 x ''; do
     expect "Menu '$choice' keeps explicit --no-openclaw" "$choice" true false false OPENCLAW

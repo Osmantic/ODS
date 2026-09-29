@@ -634,22 +634,28 @@ show_tier_recommendation() {
 
 # Show installation menu
 show_install_menu() {
+    local default_choice=2
+    [[ "${ODS_EXISTING_INSTALL:-false}" == true ]] && default_choice=1
     echo ""
-    ai "Choose how deep you want to go. I can install everything, or keep it minimal."
+    ai "Choose the services you want to install."
     echo ""
-    echo -e "  ${BGRN}[1]${NC} Full Stack ${AMB}(recommended — just press Enter)${NC}"
+    echo -e "  ${BGRN}[1]${NC} Full Stack"
     echo "      Chat + Voice + Workflows + Document Q&A + AI Agents"
     echo "      ~16GB download, all features enabled"
     echo ""
-    echo -e "  ${BGRN}[2]${NC} Core Only"
+    echo -e "  ${BGRN}[2]${NC} Core Only ${AMB}(recommended for new installs)${NC}"
     echo "      Chat interface + API"
     echo "      ~12GB download, minimal footprint"
     echo ""
     echo -e "  ${BGRN}[3]${NC} Custom"
     echo "      Choose exactly what you want"
     echo ""
-    read -p "  Select an option [1]: " -r INSTALL_CHOICE < /dev/tty
-    INSTALL_CHOICE="${INSTALL_CHOICE:-1}"
+    read -p "  Select an option [$default_choice]: " -r INSTALL_CHOICE < /dev/tty
+    INSTALL_CHOICE="${INSTALL_CHOICE:-$default_choice}"
+    case "$INSTALL_CHOICE" in
+        1|2|3) ;;
+        *) warn "Invalid choice '$INSTALL_CHOICE', using option $default_choice"; INSTALL_CHOICE="$default_choice" ;;
+    esac
     echo ""
     case "$INSTALL_CHOICE" in
         1)
@@ -700,34 +706,6 @@ show_install_menu() {
         3)
             signal "Acknowledged."
             log "Selected: Custom"
-            ;;
-        *)
-            warn "Invalid choice '$INSTALL_CHOICE', defaulting to Full Stack"
-            ENABLE_VOICE=true
-            ENABLE_WORKFLOWS=true
-            ENABLE_RAG=true
-            ENABLE_RECOMMENDED=true
-            # --hermes/--no-hermes on the command line wins over the preset
-            # (the Windows Pixel path passes --no-hermes).
-            [[ "${HERMES_EXPLICIT:-false}" == true ]] || ENABLE_HERMES=true
-            [[ "${OPENCLAW_EXPLICIT:-false}" == true ]] || ENABLE_OPENCLAW=false
-            ENABLE_OPENCODE=true
-            ENABLE_COMFYUI=true
-            ENABLE_APE=true
-            ENABLE_PERPLEXICA=true
-            ENABLE_PRIVACY_SHIELD=true
-            ENABLE_LANGFUSE=true
-
-            # Disable image generation on low-tier systems (insufficient RAM/VRAM)
-            # ComfyUI requires shm_size 8GB + 24GB memory limit
-            case "${TIER:-}" in
-                0|1)
-                    ENABLE_COMFYUI=false
-                    log "ComfyUI auto-disabled for Tier $TIER (insufficient RAM/VRAM)"
-                    ai_warn "Image generation (ComfyUI) disabled — your hardware doesn't have enough RAM."
-                    ai "  You can enable it later with: ods enable comfyui"
-                    ;;
-            esac
             ;;
     esac
 }

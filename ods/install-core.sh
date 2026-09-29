@@ -2,7 +2,7 @@
 # ============================================================================
 # ODS Installer — Orchestrator
 # ============================================================================
-# Unified installer - voice-enabled by default, uses docker-compose.yml
+# Unified installer, uses docker-compose.yml
 # profiles for optional features.
 # Mission: M5 (Clonable ODS Setup Server)
 #
@@ -109,24 +109,28 @@ PREFLIGHT_ONLY=false
 SKIP_DOCKER=false
 FORCE=false
 TIER=""
-ENABLE_VOICE=true
-ENABLE_WORKFLOWS=true
-ENABLE_RAG=true
-ENABLE_RECOMMENDED=true
+# Fresh installs start with chat and the model route. Existing installs keep
+# their previous installer defaults until feature-state migration is explicit.
+ODS_EXISTING_INSTALL=false
+[[ -f "$INSTALL_DIR/.env" ]] && ODS_EXISTING_INSTALL=true
+ENABLE_VOICE="$ODS_EXISTING_INSTALL"
+ENABLE_WORKFLOWS="$ODS_EXISTING_INSTALL"
+ENABLE_RAG="$ODS_EXISTING_INSTALL"
+ENABLE_RECOMMENDED="$ODS_EXISTING_INSTALL"
 # Pixel is the core conversational experience on qualified Linux hosts after a separate
 # written license agreement is acknowledged. Existing ODS tools remain available.
 # OpenClaw is deprecated and remains explicit opt-in.
-ENABLE_HERMES=true
+ENABLE_HERMES="$ODS_EXISTING_INSTALL"
 ENABLE_PIXEL="${ENABLE_PIXEL:-auto}"
 PIXEL_EXPLICIT=false
 HERMES_EXPLICIT=false
 ENABLE_OPENCLAW=false
 OPENCLAW_EXPLICIT=false
 ENABLE_OPENCODE=false
-ENABLE_COMFYUI=true
-ENABLE_APE=true
-ENABLE_PERPLEXICA=true
-ENABLE_PRIVACY_SHIELD=true
+ENABLE_COMFYUI="$ODS_EXISTING_INSTALL"
+ENABLE_APE="$ODS_EXISTING_INSTALL"
+ENABLE_PERPLEXICA="$ODS_EXISTING_INSTALL"
+ENABLE_PRIVACY_SHIELD="$ODS_EXISTING_INSTALL"
 ENABLE_ODS_PROXY=false
 ENABLE_TAILSCALE=false
 ENABLE_BRAVE_SEARCH=false
