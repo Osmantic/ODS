@@ -115,12 +115,15 @@ function Assert-PortFree {
 
 function Wait-ComfyuiHealthy {
     $deadline = (Get-Date).AddMinutes(5)
+    $lastInspectError = ''
     while ((Get-Date) -lt $deadline) {
         $health = Invoke-BoundedDockerQuery -Arguments @(
             '--context', 'desktop-linux', 'inspect', '--format',
             '{{.State.Health.Status}}', $ContainerName)
         if ($health.ExitCode -ne 0) {
-            throw "Could not inspect the standalone ComfyUI container: $($health.Error)"
+            $lastInspectError = $health.Error
+            Start-Sleep -Seconds 5
+            continue
         }
         if ($health.Output -eq 'healthy') {
             try {
@@ -132,7 +135,7 @@ function Wait-ComfyuiHealthy {
         if ($health.Output -eq 'unhealthy') { break }
         Start-Sleep -Seconds 5
     }
-    throw "Standalone ComfyUI did not become healthy. Inspect: docker --context desktop-linux logs $ContainerName"
+    throw "Standalone ComfyUI did not become healthy. Last inspect error: $lastInspectError. Inspect: docker --context desktop-linux logs $ContainerName"
 }
 
 function Assert-ComfyuiCuda {
@@ -189,8 +192,10 @@ $env:ODS_COMFYUI_DATA_ROOT = $NormalizedRoot
 $env:ODS_COMFYUI_PORT = [string]$Port
 $compose = @('--context', 'desktop-linux', 'compose', '-p', $ProjectName,
     '-f', $ComposeFile)
-$services = @(& docker @compose config --services)
-if ($LASTEXITCODE -ne 0 -or $services.Count -ne 1 -or $services[0] -ne 'comfyui') {
+$env:COMPOSE_FILE = $ComposeFile
+$services = Invoke-BoundedDockerQuery -Arguments @('--context', 'desktop-linux',
+    'compose', '-p', $ProjectName, 'config', '--services')
+if ($services.ExitCode -ne 0 -or $services.Output -ne 'comfyui') {
     throw 'Standalone Compose must resolve exactly one ComfyUI service.'
 }
 
@@ -227,8 +232,8 @@ if ($existing) {
     }
 }
 
-Assert-PortFree -Number $Port
 if (-not $existing) {
+    Assert-PortFree -Number $Port
     # A new CUDA/PyTorch build needs room in Docker Desktop's Windows disk
     # image and the bind-mount drive. A healthy or stopped installation can be
     # resumed after those files already exist, even if free space fell below

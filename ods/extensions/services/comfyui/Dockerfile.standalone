@@ -18,7 +18,8 @@ RUN git clone --branch v0.16.4 --depth 1 \
         https://github.com/comfyanonymous/ComfyUI.git "$COMFYUI_DIR" \
     && test "$(git -C "$COMFYUI_DIR" rev-parse HEAD)" = a7a6335be538f55faa2abf7404c9b8e970847d1f \
     && cd "$COMFYUI_DIR" \
-    && pip3 install --no-cache-dir -r requirements.txt
+    && pip3 install --no-cache-dir -r requirements.txt \
+    && python3 -c "import torch, torchvision; assert torch.__version__ == '2.11.0+cu128'; assert torchvision.__version__ == '0.26.0+cu128'"
 
 RUN useradd -m -u 1000 -s /bin/bash comfyui \
     && chown -R comfyui:comfyui "$COMFYUI_DIR"
