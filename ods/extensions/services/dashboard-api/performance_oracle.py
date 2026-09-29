@@ -873,7 +873,7 @@ def _usable_model_memory_gb(gpu_info: Optional[GPUInfo], system_ram_gb: int | No
         return max(ram_gb * 0.55, 2.0)
     if backend in {"cpu", "none", "unknown"} or total_gb <= 0:
         ram_gb = system_ram_gb if system_ram_gb is not None else _system_ram_gb()
-        return min(max(ram_gb * 0.35, 3.0), 8.0)
+        return min(max(ram_gb, 0.0) * 0.35, 8.0)
     return total_gb
 
 

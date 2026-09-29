@@ -81,7 +81,8 @@ class TestParamScaleSources:
 class TestArchitectureAwareKvCache:
 
     @pytest.mark.parametrize("backend,kind,ram,vram", [
-        ("cpu", "discrete", 8, 0), ("cpu", "discrete", 32, 0),
+        ("cpu", "discrete", 4, 0), ("cpu", "discrete", 8, 0),
+        ("cpu", "discrete", 32, 0),
         ("amd", "unified", 16, 8192), ("amd", "unified", 64, 32768),
         ("nvidia", "discrete", 8, 24576),
     ])

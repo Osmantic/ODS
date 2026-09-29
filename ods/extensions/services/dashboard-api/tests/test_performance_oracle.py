@@ -1541,6 +1541,28 @@ def test_pre_download_ranker_prefers_capable_8gb_model_over_bootstrap(data_dir):
     assert ranked[0]["id"] == "qwen3.5-9b-q4"
 
 
+def test_pre_download_ranker_does_not_recommend_three_gb_model_on_4gb_cpu(data_dir):
+    model = {
+        "id": "qwen3.5-2b-q4",
+        "name": "Qwen 3.5 2B",
+        "family": "qwen",
+        "gguf_file": "Qwen3.5-2B-Q4_K_M.gguf",
+        "gguf_url": "https://example.invalid/qwen3.5-2b.gguf",
+        "size_mb": 1281,
+        "vram_required_gb": 3,
+        "context_length": 65536,
+        "specialty": "Fast",
+        "llm_model_name": "qwen3.5-2b",
+    }
+
+    ranked = rank_pre_download_models(
+        [model], _gpu(name="CPU", total_mb=0, backend="cpu"),
+        profile="qwen", installable_only=True, system_ram_gb=4,
+    )
+
+    assert ranked == []
+
+
 def test_pre_download_ranker_accounts_for_long_context_kv_on_4gb_gpu(data_dir, tmp_path):
     catalog = [
         {
