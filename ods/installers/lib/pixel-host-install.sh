@@ -146,7 +146,7 @@ PY
 # owner-private onboarding selector as phase 11, and the explicit > installed
 # .env precedence that phase 06 applies. Never source .env as shell code.
 ods_pixel_resolve_search_provider() {
-    local requested="${PIXEL_WEB_SEARCH_PROVIDER:-}" raw owner home answers helper
+    local requested="${PIXEL_WEB_SEARCH_PROVIDER:-}" raw owner home answers helper resolved
     [[ -n "${INSTALL_DIR:-}" && -n "${SCRIPT_DIR:-}" ]] || return 1
     if [[ -z "$requested" && -f "$INSTALL_DIR/.env" ]]; then
         if ! declare -F safe_env_decode_value >/dev/null 2>&1; then
@@ -165,8 +165,12 @@ ods_pixel_resolve_search_provider() {
     answers="$INSTALL_DIR/data/pixel/onboarding.json"
     helper="$SCRIPT_DIR/extensions/services/pixel-agent/host/native_search.py"
     [[ -f "$helper" ]] || return 1
-    ods_pixel_run_as_owner "$owner" "$home" python3 "$helper" \
-        --answers-file "$answers" --provider "$requested"
+    resolved="$(ods_pixel_run_as_owner "$owner" "$home" python3 "$helper" \
+        --answers-file "$answers" --provider "$requested")" || return 1
+    case "$resolved" in
+        searxng|parallel-free) printf '%s\n' "$resolved" ;;
+        *) printf '%s\n' 'error: Pixel search selector returned an invalid provider' >&2; return 1 ;;
+    esac
 }
 
 ods_pixel_run_as_owner_with_umask() {
