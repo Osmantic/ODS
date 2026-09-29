@@ -518,8 +518,8 @@ test('simple source proposals use the same scoped API and immutable recipe valid
   let submitted;
   const tool = createExtensionProposalTool(context, {submit: async payload => { if(payload.action==='github-request-propose')submitted = payload; return receipt; }});
   const source = {repository: args.candidate.repository, commit: args.candidate.commit,
-    serviceId: 'example', name: 'Example', dockerfile: 'Dockerfile', port: 8080, healthPath: '/health',
-    healthcheck: ['CMD', 'curl', '-f', 'http://localhost:8080/health']};
+    serviceId: 'example', name: 'Example', dockerfile: 'Dockerfile', port: 0, cliOnly: true,
+    command: ['example', 'self-test']};
   assert.equal((await tool.execute('id', {chatId: 'chat', requestId: 'turn', source})).isError, undefined);
   assert.equal(submitted.action, 'github-request-propose');
   assert.equal(submitted.candidate.manifest.service.id, 'example');
@@ -774,10 +774,13 @@ test('flat source capability preserves the same compiled request and validation 
   assert.match(mismatch.content[0].text,/runtime=cli/);
   assert.equal(mismatch.details.proposalSubmitted,false);
   assert.deepEqual(calls,[]);
+  // A web service would be unreachable behind the internal source sandbox.
   const web={...input,runtime:'http',port:8080,healthPath:'/health',verificationCommand:['curl','-f','http://localhost:8080/health']};
-  await flat.execute('web',web);
-  assert.deepEqual(calls[1].candidate.compose.services.example.healthcheck.test,['CMD',...web.verificationCommand]);
-  assert.equal(calls[1].candidate.compose.services.example.command,undefined);
+  const submittedBefore=calls.filter(payload=>payload.action==='github-request-propose').length;
+  const refused=await flat.execute('web',web);
+  assert.equal(refused.isError,true);
+  assert.match(refused.content[0].text,/Web-service source extensions are not supported/);
+  assert.equal(calls.filter(payload=>payload.action==='github-request-propose').length,submittedBefore);
 });
 
 test('flat source proposal also pins HEAD while advanced candidates keep a full SHA requirement', async () => {
