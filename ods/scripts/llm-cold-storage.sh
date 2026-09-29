@@ -150,6 +150,15 @@ do_restore() {
         name="models--$(echo "$name" | sed 's/\//--/g')"
     fi
 
+    # A caller may provide the already-normalized cache name, so validate it
+    # after conversion as well. Without this, a slash in a `models--...`
+    # argument can escape both storage roots when the intermediate directory
+    # exists, moving an unrelated directory during restore.
+    if [[ ! "$name" =~ ^models--[A-Za-z0-9._-]+$ || "$name" == *..* ]]; then
+        echo "ERROR: Invalid model name: $name" >&2
+        return 1
+    fi
+
     local cold_path="$COLD_DIR/$name"
     local cache_path="$HF_CACHE/$name"
 
