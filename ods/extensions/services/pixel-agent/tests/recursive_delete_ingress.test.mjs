@@ -38,7 +38,7 @@ function observedDelivery(variant) {
   const denied=guard.beforeToolCall({toolName:'exec',params:{command:'rm -rf /workspace/scratch'}},
     {...context,toolCallId:'denied'});
   assert.equal(denied?.blockReason,RECURSIVE_DELETE_REQUIRES_OWNER_REASON);
-  assert.equal(guard.beforeAgentFinalize({lastAssistantMessage:'All done'},context),undefined);
+  assert.equal(guard.beforeAgentFinalize({lastAssistantMessage:'All done'},context)?.action,'finalize');
   assert.equal(guard.beforeToolCall({toolName:'read',params:{path:'forest/index.html'}},
     {...context,toolCallId:'after-denial'})?.block,true);
   return guard.deliveryVerificationForRun(runId);
