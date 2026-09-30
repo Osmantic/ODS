@@ -1,0 +1,31 @@
+name: Acceptance Linux Perplexica Library add-back
+
+on:
+  push:
+    branches:
+      - codex/ods-perplexica-library-audit
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: perplexica-library-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  perplexica-library:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout acceptance harness
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - name: Checkout exact Perplexica Library candidate
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          ref: 136ef5eb25a773d11bdae3f6662d4adf4648316b
+          path: product
+      - name: Exercise Perplexica add-back on installed ODS
+        env:
+          ODS_ACCEPTANCE_PRODUCT_ROOT: ${{ github.workspace }}/product/ods
+        run: bash ods/tests/acceptance/perplexica-library-journey.sh
