@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Disposable runner proof for a pinned #6970 stack plus the #6964 GID fix.
+# Disposable runner proof for the exact current #6970 stack.
 set -euo pipefail
 
 product="${ODS_ACCEPTANCE_PRODUCT_ROOT:?product checkout is required}"
 harness="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-expected=54186765bfb2ab562003e6e135ea11b92aa9fd9c
+expected=9f579707d72b163b99fffc06b79652fc2eb258cd
 audit_root="${RUNNER_TEMP:?runner temp is required}/ods-portal-acceptance"
 export INSTALL_DIR="$audit_root/install"
 export LOG_FILE="$audit_root/install.log"
