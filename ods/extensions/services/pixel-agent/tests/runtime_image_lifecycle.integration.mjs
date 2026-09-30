@@ -14,7 +14,9 @@ import {createContextCompaction} from '../plugin/context-compaction.mjs';
 const packageRoot=process.env.OPENCLAW_PACKAGE;
 assert.ok(packageRoot,'Set OPENCLAW_PACKAGE to the installed pinned package (read-only).');
 assert.equal(JSON.parse(fs.readFileSync(path.join(packageRoot,'package.json'))).version,'2026.6.33');
-const temporary=fs.mkdtempSync(path.join(os.tmpdir(),'ods-native-image-delete-'));fs.chmodSync(temporary,0o700);
+// macOS exposes its temporary directory through /var -> /private/var. Supply
+// the canonical fixture root, as required by native transcript custody.
+const temporary=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'ods-native-image-delete-')));fs.chmodSync(temporary,0o700);
 process.env.OPENCLAW_STATE_DIR=temporary;
 process.env.OPENCLAW_CONFIG_PATH=path.join(temporary,'openclaw.json');
 const sessions=path.join(temporary,'agents','pixel','sessions');fs.mkdirSync(sessions,{recursive:true,mode:0o700});
