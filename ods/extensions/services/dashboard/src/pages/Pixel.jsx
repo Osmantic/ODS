@@ -1246,6 +1246,11 @@ export default function Pixel({ systemStatus = null }) {
         }))
       }
     } finally {
+      // The stream may close as soon as the agent aborts while the Stop
+      // endpoint is still draining managed jobs. Keep this turn's identity
+      // until that bounded acknowledgement settles. A normal DONE already
+      // clears requestIdRef, so its successful answer still wins the race.
+      if (isCurrentTurn() && stopRequestRef.current?.settled) await stopRequestRef.current.settled
       if (isCurrentTurn()) {
         setSending(false)
         setStopping(false)
@@ -1267,6 +1272,8 @@ export default function Pixel({ systemStatus = null }) {
     // Bound the acknowledgement independently of the live chat stream.
     // A deadline is uncertainty, never permission to claim the task stopped.
     const stopRequest = new AbortController()
+    let settleStop
+    stopRequest.settled = new Promise(resolve => { settleStop = resolve })
     stopRequestRef.current = stopRequest
     const timeout = setTimeout(() => stopRequest.abort(), 15000)
     setStopping(true)
@@ -1319,6 +1326,7 @@ export default function Pixel({ systemStatus = null }) {
         stopRequestRef.current = null
         setStopping(false)
       }
+      settleStop()
     }
   }, [stopping, interrupted, updateRestoredActivity])
 
