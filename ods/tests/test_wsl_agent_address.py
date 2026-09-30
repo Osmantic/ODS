@@ -91,9 +91,9 @@ class TestFirstWrite(Base):
         self.assertIn('# comment\n', text)
         self.assertIn('FOO=bar\n', text)
         self.assertIn('SECRET=abc\n', text)
-        self.assertIn('ODS_AGENT_BIND=127.0.0.1\n', text)
+        self.assertIn('ODS_AGENT_BIND=10.1.2.3\n', text)
         self.assertIn('ODS_AGENT_HOST=host.docker.internal\n', text)
-        self.assertIn('ODS_AGENT_ADDRESS_MODE=wsl-nat-loopback\n', text)
+        self.assertIn('ODS_AGENT_ADDRESS_MODE=wsl-nat-bridge\n', text)
 
     def test_rerun_byte_identity(self):
         self.write_env('FOO=bar\n')
@@ -105,16 +105,17 @@ class TestFirstWrite(Base):
         self.assertEqual(self.read_bytes(), first)
         self.assertEqual(self.stat_env().st_ino, first_stat.st_ino)
 
-    def test_wsl_ip_change_keeps_loopback_route(self):
+    def test_wsl_ip_change_updates_private_bind(self):
         self.write_env('FOO=bar\n')
         self.run_helper()
         first = self.read_bytes()
         first_stat = self.stat_env()
         result = self.run_helper(runner=_runner_factory(address='10.9.9.9'))
-        self.assertFalse(result['changed'])
+        self.assertTrue(result['changed'])
         self.assertEqual(result['address'], 'host.docker.internal')
-        self.assertEqual(self.read_bytes(), first)
-        self.assertEqual(self.stat_env().st_ino, first_stat.st_ino)
+        self.assertNotEqual(self.read_bytes(), first)
+        self.assertNotEqual(self.stat_env().st_ino, first_stat.st_ino)
+        self.assertIn('ODS_AGENT_BIND=10.9.9.9\n', self.env.read_text())
 
     def test_legacy_wsl_eth0_route_migrates(self):
         self.write_env('FOO=bar\nODS_AGENT_BIND=10.1.2.3\nODS_AGENT_HOST=10.1.2.3\n'
@@ -122,9 +123,17 @@ class TestFirstWrite(Base):
         result = self.run_helper()
         self.assertTrue(result['changed'])
         self.assertIn('FOO=bar\n', self.env.read_text())
-        self.assertIn('ODS_AGENT_BIND=127.0.0.1\n', self.env.read_text())
+        self.assertIn('ODS_AGENT_BIND=10.1.2.3\n', self.env.read_text())
         self.assertIn('ODS_AGENT_HOST=host.docker.internal\n', self.env.read_text())
-        self.assertIn('ODS_AGENT_ADDRESS_MODE=wsl-nat-loopback\n', self.env.read_text())
+        self.assertIn('ODS_AGENT_ADDRESS_MODE=wsl-nat-bridge\n', self.env.read_text())
+
+    def test_loopback_route_migrates(self):
+        self.write_env('ODS_AGENT_BIND=127.0.0.1\nODS_AGENT_HOST=host.docker.internal\n'
+                       'ODS_AGENT_ADDRESS_MODE=wsl-nat-loopback\n')
+        result = self.run_helper()
+        self.assertTrue(result['changed'])
+        self.assertIn('ODS_AGENT_BIND=10.1.2.3\n', self.env.read_text())
+        self.assertIn('ODS_AGENT_ADDRESS_MODE=wsl-nat-bridge\n', self.env.read_text())
 
     def test_private_write_mode(self):
         self.write_env('FOO=bar\n')
