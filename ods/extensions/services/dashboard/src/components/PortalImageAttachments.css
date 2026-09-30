@@ -3,7 +3,11 @@
 .portal-image-attachments ul{display:flex;flex-wrap:wrap;gap:.5rem;padding:0;margin:0 0 .6rem;list-style:none}
 .portal-image-attachments li{display:flex;align-items:center;gap:.6rem;max-width:100%;padding:.45rem;border:1px solid color-mix(in srgb,currentColor 18%,transparent);border-radius:.8rem;background:color-mix(in srgb,currentColor 3%,transparent)}
 .portal-image-attachments li>img{width:3.1rem;height:3.1rem;object-fit:cover;border-radius:.5rem;background:color-mix(in srgb,currentColor 8%,transparent)}
-.portal-image-attachment-copy{display:flex;flex-direction:column;max-width:13rem;gap:.15rem}
+.portal-image-attachment-copy{display:flex;flex-direction:column;min-width:0;flex:1;max-width:13rem;gap:.15rem}
+.portal-image-attachments li>img{flex-shrink:0}
+.portal-image-error{font-size:.68rem}
+.portal-image-error summary{cursor:pointer;color:var(--text-secondary)}
+.portal-image-error span{display:block;max-width:100%;overflow-wrap:anywhere;padding-top:.3rem}
 .portal-image-attachment-copy strong{font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .portal-image-attachment-copy small{opacity:.8;font-size:.68rem}
 .portal-image-attachments button{padding:.3rem;border-radius:.4rem;flex-shrink:0}

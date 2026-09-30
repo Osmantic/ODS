@@ -58,7 +58,13 @@ export async function uploadPortalImage(chatId, file, signal) {
   if (signal?.aborted) throw new DOMException('Aborted','AbortError')
   const response = await fetch(`/api/pixel/images/${encodeURIComponent(chatId)}`, {method:'POST', headers:{'Content-Type':file.type}, body:file, signal})
   let body
-  try {body = await response.json()} catch {throw new Error('The image upload could not be confirmed. Retry without changing your draft.')}
+  try {body = await response.json()} catch {
+    const message = response.status === 413 ? 'Image exceeds the upload limit.'
+      : response.status === 401 ? 'Sign in again to upload this image.'
+      : response.status >= 500 ? 'Upload service unavailable. Retry shortly.'
+      : 'Upload could not be confirmed. Retry.'
+    throw new Error(message)
+  }
   if (!response.ok) throw new Error(typeof body?.detail === 'string' && body.detail.length < 240 ? body.detail : 'The image could not be uploaded. Your draft is unchanged.')
   const receipt = imageReceipt(body)
   if (receipt.sha256 !== digest || receipt.bytes !== file.size || receipt.media_type !== file.type) throw new Error('The uploaded image differs from your selected file. Your draft is unchanged.')

@@ -27,8 +27,8 @@ export default function PortalImageAttachments({attachments,chatId,disabled,hasH
       {attachments.items.map((item,index)=><li key={item.key}>
         <img src={item.preview || imageUrl(chatId,item.receipt?.id)} alt={`Image attachment ${index+1}`}/>
         <div className="portal-image-attachment-copy"><strong>{item.file?.name || `Image ${index+1}`}</strong>
-          <small>{item.status==='uploading'?'Saving privately…':item.status==='removing'?'Removing attachment…':item.status==='failed'?'Upload not confirmed':`${item.receipt.width} × ${item.receipt.height} · Ready`}</small>
-          {item.error && <span role="alert">{item.error}</span>}
+          <small>{item.status==='uploading'?'Uploading…':item.status==='removing'?'Removing…':item.status==='failed'?'Upload failed':`${item.receipt.width} × ${item.receipt.height} · Ready`}</small>
+          {item.error && <details className="portal-image-error"><summary>Details</summary><span role="alert">{item.error}</span></details>}
         </div>
         {item.status==='uploading' && <Loader2 size={14} className="animate-spin" aria-label="Uploading image"/>}
         {item.status==='failed' && <button type="button" disabled={disabled} aria-label={`Retry image ${index+1}`} onClick={()=>attachments.retry(item)}><RotateCw size={14}/></button>}
@@ -36,12 +36,10 @@ export default function PortalImageAttachments({attachments,chatId,disabled,hasH
       </li>)}
     </ul>}
     {attachments.error && <p role="alert">{attachments.error}</p>}
-    {needed && <div className="portal-image-route" role="group" aria-label="Image model capability">
-      {!verified?<><span>The current model route is not verified. Your attachments stay in the draft.</span><button type="button" disabled={disabled} onClick={onRefresh}>Refresh model status</button></>
-        :policy==='unsupported'?<span>This model is declared text-only. Choose an image-capable model; Portal will keep your draft.</span>
-        :policy==='supported'?<span>Images will be sent to the selected model when you send this message.</span>
-        :<label><input type="checkbox" checked={consented} disabled={disabled} onChange={event=>onConsent(event.target.checked)}/><span>Image support is unknown for this model. Allow an image test on this route.</span></label>}
+    {needed && (!verified || policy!=='supported') && <div className="portal-image-route" role="group" aria-label="Image model capability">
+      {!verified?<><span>Model not verified</span><button type="button" disabled={disabled} onClick={onRefresh}>Refresh</button></>
+        :policy==='unsupported'?<span>Text-only model. Choose a vision model.</span>
+        :<label title="Image support is unverified. Your next message will test this model with the attached images."><input type="checkbox" checked={consented} disabled={disabled} onChange={event=>onConsent(event.target.checked)}/><span>Try images with this model</span></label>}
     </div>}
-    {attachments.items.length>0 && <p className="portal-image-private-note">Stored privately in this conversation · Up to 4 images, 8 MiB combined. Unsent uploads may expire after 7 days without use.</p>}
   </div>
 }
