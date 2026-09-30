@@ -5,7 +5,12 @@
 ods_installed_service_default() {
     local install_dir="$1" service="$2" fallback="$3"
     local compose="$install_dir/extensions/services/$service/compose.yaml"
-    if [[ -f "$compose" ]]; then
+    # Only an installed tree (its .env exists) has a previous selection to
+    # honor. A fresh source layout may carry optional compose files for every
+    # service, so an existing compose.yaml there must NOT enable a feature.
+    if [[ ! -f "$install_dir/.env" ]]; then
+        printf '%s\n' "$fallback"
+    elif [[ -f "$compose" ]]; then
         printf '%s\n' true
     elif [[ -f "${compose}.disabled" ]]; then
         printf '%s\n' false
