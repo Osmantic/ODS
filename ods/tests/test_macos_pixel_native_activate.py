@@ -14,7 +14,7 @@ module = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(module)
 
 
-@pytest.mark.parametrize('fault', [None, 'configure', 'environment', 'keys', 'files', 'config', 'existing',
+@pytest.mark.parametrize('fault', [None, 'no-webui', 'configure', 'environment', 'keys', 'files', 'config', 'existing',
     'prerequisites', 'infrastructure', 'protected', 'health', 'webui-routing', 'unsafe-recipe', 'recipe-alias'])
 def test_prepared_activation_validates_and_orders_real_entry_points(tmp_path, monkeypatch, fault):
     monkeypatch.setattr(module.sys, 'platform', 'darwin')
@@ -105,6 +105,12 @@ def test_prepared_activation_validates_and_orders_real_entry_points(tmp_path, mo
         if argv[-2:] == ['config', '--quiet']:
             events.append('config')
             return SimpleNamespace(returncode=1 if fault == 'config' else 0)
+        if argv[-3:] == ['config', '--format', 'json']:
+            events.append('services')
+            services = {'dashboard-api': {}, 'model-router': {}}
+            if fault != 'no-webui':
+                services['open-webui'] = {}
+            return SimpleNamespace(returncode=0, stdout=json.dumps({'services': services}))
         if argv[-1] == 'open-webui':
             events.append('webui-routing')
             assert '--wait' in argv
@@ -119,12 +125,13 @@ def test_prepared_activation_validates_and_orders_real_entry_points(tmp_path, mo
     def activate():
         return module.activate(preparation=preparation, install_dir=install_dir, ods_source=install_dir,
             compose_files=files, configure_stack=fault == 'configure')
-    if fault not in (None, 'configure'):
+    if fault not in (None, 'no-webui', 'configure'):
         with pytest.raises(ValueError): activate()
     else:
         assert activate() == journal
         assert events == ['plan', 'bind'] + (['persist'] if fault == 'configure' else []) + [
-            'config', 'prerequisites', 'infrastructure', 'protected', 'health', 'webui-routing']
+            'config', 'services', 'prerequisites', 'infrastructure', 'protected', 'health'] + (
+            [] if fault == 'no-webui' else ['webui-routing'])
         if fault == 'configure':
             assert (preparation / 'environment-before-native.env').read_text() == before
             assert env_path.read_text().startswith('LLM_MODEL=owner-selected\n')
@@ -137,7 +144,7 @@ def test_prepared_activation_validates_and_orders_real_entry_points(tmp_path, mo
         assert journal.read_text() == 'do not overwrite'
     else:
         record = json.loads(journal.read_text())
-        assert record['status'] == ('ready' if fault in (None, 'configure') else 'error')
+        assert record['status'] == ('ready' if fault in (None, 'no-webui', 'configure') else 'error')
         assert 'private failure text' not in journal.read_text()
         assert journal.stat().st_mode & 0o777 == 0o600
-        if fault not in (None, 'configure'): assert record['requiresRecovery'] is True
+        if fault not in (None, 'no-webui', 'configure'): assert record['requiresRecovery'] is True

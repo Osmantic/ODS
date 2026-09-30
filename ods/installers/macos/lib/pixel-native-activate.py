@@ -100,6 +100,12 @@ def activate(*, preparation, install_dir, ods_source, compose_files, configure_s
     # Validate Compose interpolation before recording or starting an attempt.
     if run('config', '--quiet').returncode:
         raise ValueError('native-compose-configuration-invalid')
+    selected_stack = run('config', '--format', 'json')
+    if selected_stack.returncode:
+        raise ValueError('native-compose-configuration-invalid')
+    selected_services = json.loads(selected_stack.stdout).get('services', {})
+    if not isinstance(selected_services, dict):
+        raise ValueError('native-compose-services-invalid')
     record = {'schemaVersion': 1, 'phase': 'infrastructure', 'status': 'activating',
         'runtimeDigest': receipt['runtimeDigest'], 'serviceDigest': receipt['serviceDigest']}
     def checkpoint():
@@ -132,10 +138,11 @@ def activate(*, preparation, install_dir, ods_source, compose_files, configure_s
         record['phase'] = 'final-health'
         checkpoint()
         compose.wait_ready(run)
-        record['phase'] = 'webui-routing'
-        checkpoint()
-        if run('up', '-d', '--wait', '--wait-timeout', '120', 'open-webui', timeout=180).returncode:
-            raise ValueError('native-webui-routing-failed')
+        if 'open-webui' in selected_services:
+            record['phase'] = 'webui-routing'
+            checkpoint()
+            if run('up', '-d', '--wait', '--wait-timeout', '120', 'open-webui', timeout=180).returncode:
+                raise ValueError('native-webui-routing-failed')
         record.update(phase='services-ready', status='ready')
         checkpoint()
     except BaseException:

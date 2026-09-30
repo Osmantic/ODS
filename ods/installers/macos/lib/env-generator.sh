@@ -740,6 +740,7 @@ EMBEDDINGS_MEMORY_LIMIT=${embeddings_memory_limit}
 
 #=== Web UI Settings ===
 # Loopback installs open directly. Network-bound installs require a login.
+ENABLE_OPEN_WEBUI=${ENABLE_OPEN_WEBUI:-false}
 WEBUI_AUTH=${webui_auth}
 ENABLE_WEB_SEARCH=${ENABLE_WEB_SEARCH:-true}
 WEB_SEARCH_ENGINE=searxng
