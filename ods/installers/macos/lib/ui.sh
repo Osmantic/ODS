@@ -276,6 +276,12 @@ verify_sha256() {
 show_success_card() {
     local webui_port="${1:-3000}"
     local dashboard_port="${2:-3001}"
+    local chat_port="$webui_port"
+    local chat_label="Chat UI:"
+    if [[ "${ENABLE_OPEN_WEBUI:-true}" != true ]]; then
+        chat_port="$dashboard_port"
+        chat_label="Chat (Portal):"
+    fi
 
     # Detect local IP for network access
     local local_ip
@@ -286,13 +292,13 @@ show_success_card() {
     echo ""
     echo -e "       ${BMAG}THE ODS GATEWAY IS OPEN${NC}"
     echo ""
-    echo -e "       ${DGRN}Chat UI:${NC}    ${WHT}http://localhost:${webui_port}${NC}"
+    echo -e "       ${DGRN}${chat_label}${NC}    ${WHT}http://localhost:${chat_port}${NC}"
     echo -e "       ${DGRN}Dashboard:${NC}  ${WHT}http://localhost:${dashboard_port}${NC}"
     local _bind
     _bind=$(grep "^BIND_ADDRESS=" "$ODS_INSTALL_DIR/.env" 2>/dev/null | cut -d= -f2- | tr -d '"' || echo "127.0.0.1")
     [[ -z "$_bind" ]] && _bind="127.0.0.1"
     if [[ "$_bind" == "0.0.0.0" ]]; then
-        echo -e "       ${DGRN}Network:${NC}    ${WHT}http://${local_ip}:${webui_port}${NC}"
+        echo -e "       ${DGRN}Network:${NC}    ${WHT}http://${local_ip}:${chat_port}${NC}"
     else
         echo -e "       ${DGRN}LAN access:${NC} ${DIM}Set BIND_ADDRESS=0.0.0.0 in .env${NC}"
     fi
