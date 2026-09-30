@@ -9481,6 +9481,8 @@ export function createToolLoopGuard({
     if (typeof runId === "string" && runId) {
       const state = stateFor(runId);
       state.artifactOwnerInteractive = ownerInteractiveTurn(context, agentId);
+      state.artifactSurfaceReason = state.artifactOwnerInteractive ? undefined :
+        context.trigger == null ? 'trigger-unavailable' : context.trigger !== 'user' ? 'noninteractive-turn' : 'owner-session-required';
       state.completionAssurance.begin(currentOwnerIntentText(event?.messages, event?.prompt), event);
       const ownerIntent=currentOwnerIntentText(event?.messages,event?.prompt);
       if (ownerIntent) state.extensionCompletionGate ??= createExtensionCompletionGate(ownerIntent);
@@ -12413,11 +12415,25 @@ export function createToolLoopGuard({
     return { status: "none", ...staleExecWarningSuppression };
   }
 
-  function artifactScopeState(scope) {
+  function workspaceArtifactUnavailableReason(scope) {
     const state=runs.get(scope?.runId);
-    return state && scope.agentId === 'pixel' && state.artifactOwnerInteractive && !state.managedTeamWorker && !state.runEnded && !state.clientCancelled &&
-      state.currentSessionId === scope.sessionId && state.currentSessionKey === scope.sessionKey &&
-      sessionRuns.get(scope.sessionId) === scope.runId ? state : undefined;
+    if (!state || scope.agentId !== 'pixel') return 'run-unavailable';
+    if (state.managedTeamWorker) return 'team-surface-unsupported';
+    if (!state.artifactOwnerInteractive) return state.artifactSurfaceReason ?? 'owner-session-required';
+    if (state.clientCancelled) return 'run-cancelled';
+    if (state.runEnded) return 'run-ended';
+    if (state.currentSessionId !== scope.sessionId || state.currentSessionKey !== scope.sessionKey ||
+        sessionRuns.get(scope.sessionId) !== scope.runId) return 'run-superseded';
+    if (state.progressBudget.exhausted) return 'progress-budget-exhausted';
+    if (state.ownerQuestions) return 'owner-question-pending';
+    if ((state.artifactAttempts ?? 0) >= 4) return 'publication-attempt-limit';
+    return undefined;
+  }
+  function artifactScopeState(scope) {
+    const reason=workspaceArtifactUnavailableReason(scope);
+    // The fourth reserved call may still accept its receipt. The limit applies
+    // to reserving the next publication, not to finishing the current one.
+    return !reason || reason === 'publication-attempt-limit' ? runs.get(scope.runId) : undefined;
   }
   function deliveryVerificationForRun(runId) {
     const result=baseDeliveryVerificationForRun(runId);
@@ -12533,9 +12549,10 @@ export function createToolLoopGuard({
   }
 
   return {
+    workspaceArtifactUnavailableReason,
     reserveWorkspaceArtifact(scope) {
-      const state=artifactScopeState(scope);
-      if (!state || state.progressBudget.exhausted || state.ownerQuestions || (state.artifactAttempts ?? 0) >= 4) return false;
+      if (workspaceArtifactUnavailableReason(scope)) return false;
+      const state=runs.get(scope.runId);
       state.artifactAttempts=(state.artifactAttempts ?? 0)+1;
       return true;
     },

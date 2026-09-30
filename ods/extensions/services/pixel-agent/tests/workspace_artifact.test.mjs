@@ -11,7 +11,7 @@ function fixture(request=async()=>host) {
  const guard=createToolLoopGuard();guard.observeRun(context,'pixel',{prompt:'Deliver the report as a document.'});
  const admission=createWorkspaceArtifactAdmission();
  const event={toolName:ARTIFACT_TOOL,params:args};
- const tool=createWorkspaceArtifactTool(context,{admission,reserve:s=>guard.reserveWorkspaceArtifact(s),accept:(s,r)=>guard.acceptWorkspaceArtifact(s,r),request});
+ const tool=createWorkspaceArtifactTool(context,{admission,reserve:s=>guard.reserveWorkspaceArtifact(s),unavailableReason:s=>guard.workspaceArtifactUnavailableReason(s),accept:(s,r)=>guard.acceptWorkspaceArtifact(s,r),request});
  return {guard,admission,event,tool};
 }
 test('actual registration includes exact bounded schema and no model-supplied receipt',async()=>{
@@ -82,4 +82,36 @@ test('unsupported team roles and noninteractive surfaces are rejected before bro
  }
  const f=fixture();f.guard.observeRun({...context,sessionKey:'agent:pixel:subagent:other'},'pixel',{prompt:'Report'});
  assert.equal(f.guard.reserveWorkspaceArtifact({...context,sessionKey:'agent:pixel:subagent:other'}),false);
+});
+
+test('wrong path field gives schema correction without consuming admission or a publication attempt',async()=>{
+ let calls=0;const f=fixture(async()=>{calls++;return host});
+ assert.match(f.tool.description,/relativePath.*Playground\/report\.pdf/);
+ f.admission.before(f.event,context);
+ const rejected=await f.tool.execute(context.toolCallId,{path:args.relativePath,secret:'never-echo-this-value'});
+ assert.equal(rejected.details.code,'invalid-arguments');assert.match(rejected.content[0].text,/relativePath, not path/);
+ assert.match(rejected.content[0].text,/No document publication was attempted/);assert.doesNotMatch(rejected.content[0].text,/never-echo-this-value/);
+ assert.equal(calls,0);
+ // The invalid input was rejected before take() or reserve(): this admitted
+ // call can still consume its exact correct request once.
+ const corrected=await f.tool.execute(context.toolCallId,args);assert.equal(corrected.isError,undefined);assert.equal(calls,1);
+ assert.deepEqual(f.guard.deliveryVerificationForRun(context.runId).artifacts,[receipt]);
+});
+test('admission, transport and invalid broker receipts have distinct bounded diagnostics',async()=>{
+ const unbound=fixture();assert.equal((await unbound.tool.execute(context.toolCallId,args)).details.code,'admission-unavailable');
+ for(const [request,code] of [[async()=>{throw new Error('secret transport detail')},'publication-unavailable'],[async()=>({...host,readbackVerified:false}),'receipt-unverified']]) {
+  const f=fixture(request);f.admission.before(f.event,context);const result=await f.tool.execute(context.toolCallId,args);
+  assert.equal(result.details.code,code);assert.doesNotMatch(result.content[0].text,/secret transport detail/);
+  assert.ok(result.content[0].text.length<1024);assert.equal(f.guard.deliveryVerificationForRun('run').artifacts,undefined);
+ }
+});
+
+test('missing runtime trigger and exhausted attempts are distinct reasons, never guessed from unavailable',async()=>{
+ const f=fixture();f.guard.observeRun({...context,trigger:undefined},'pixel',{prompt:'Deliver report'});
+ f.admission.before(f.event,context);const missing=await f.tool.execute(context.toolCallId,args);
+ assert.equal(missing.details.code,'trigger-unavailable');assert.match(missing.content[0].text,/not an exhausted publication limit/);
+ assert.equal(f.guard.workspaceArtifactUnavailableReason(context),'trigger-unavailable');
+ const budget=fixture();for(let i=0;i<4;i++)assert.equal(budget.guard.reserveWorkspaceArtifact(context),true);
+ assert.equal(budget.guard.workspaceArtifactUnavailableReason(context),'publication-attempt-limit');
+ assert.equal(budget.guard.acceptWorkspaceArtifact(context,receipt),true,'fourth reserved receipt remains accepted');
 });

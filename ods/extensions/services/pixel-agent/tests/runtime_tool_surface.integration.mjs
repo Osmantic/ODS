@@ -281,6 +281,11 @@ test('document delivery is discoverable and callable through actual pinned ToolS
  const found=await byName.tool_search.execute('find',{query:'pixel_ods_workspace_artifact',limit:5});assert.ok(found.details.some(x=>x.name===ARTIFACT_TOOL));
  const described=await byName.tool_describe.execute('describe',{id:ARTIFACT_TOOL});assert.deepEqual(described.details.parameters,{type:'object',additionalProperties:false,required:['relativePath'],properties:{relativePath:{type:'string',minLength:1,maxLength:512}}});
  const args={relativePath:'project/report.md'};
+ // Live cloud regression: the model searched the tool but guessed `path`.
+ // The actual dispatcher must return schema guidance before any broker work.
+ admission.before({toolName:'tool_call',params:{id:ARTIFACT_TOOL,args:{path:args.relativePath}}},owner);
+ const malformed=await byName.tool_call.execute('deliver',{id:ARTIFACT_TOOL,args:{path:args.relativePath}});
+ assert.match(JSON.stringify(malformed),/invalid-arguments/);assert.match(JSON.stringify(malformed),/relativePath, not path/);assert.equal(requests,0);
  admission.before({toolName:'tool_call',params:{id:ARTIFACT_TOOL,args}},owner);
  const delivered=await byName.tool_call.execute('deliver',{id:ARTIFACT_TOOL,args});assert.equal(delivered.isError,undefined);assert.equal(requests,1);assert.deepEqual(guard.deliveryVerificationForRun(owner.runId).artifacts,[receipt]);
  admission.before({toolName:'tool_call',params:{id:ARTIFACT_TOOL,args:{relativePath:'../secret.pdf'}}},owner);

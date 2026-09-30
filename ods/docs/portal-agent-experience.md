@@ -228,7 +228,10 @@ Portal can attach an existing workspace document with the specialist tool
 `pixel_ods_workspace_artifact` in an ordinary owner-interactive Portal turn. Team
 workers, subagents and background goal rounds cannot attach documents through
 this surface yet; their publication attempts are rejected before contacting the
-broker. The tool takes one `relativePath`; it does not accept
+broker. The tool takes one `relativePath`, for example
+`{"relativePath":"Playground/report.pdf"}`. A misspelled argument such as `path`
+is rejected before publication with exact schema guidance; it is not reported
+as a file-permission failure. The tool does not accept
 content, host paths, URLs or a destination. A website and `index.html` are not
 required. Markdown, TXT, CSV, TSV, JSON, PDF, ZIP, RAR, DOCX, XLSX and PPTX are
 supported as opaque files, up to 4 MiB each and four publication attempts per

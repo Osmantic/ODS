@@ -74,25 +74,58 @@ export function createWorkspaceArtifactAdmission() {
   };
 }
 
-export function createWorkspaceArtifactTool(context, {admission,reserve,accept,request,transport='unix'}={}) {
+export function createWorkspaceArtifactTool(context, {admission,reserve,accept,unavailableReason,request,transport='unix'}={}) {
   if (!['unix','docker-desktop'].includes(transport)) throw new Error('invalid-artifact-transport');
   request ??= transport === 'docker-desktop' ? dockerWorkspacePreviewRequest : socketRequest;
   return {
     name:ARTIFACT_TOOL,
-    description:'For an ordinary owner-interactive Portal chat turn only (not teams, subagents or background goals), deliver one owner-requested document or archive already created in the Pixel workspace, without creating a website or opening its preview. Pass a workspace-relative file path; accepted formats are Markdown, TXT, CSV, TSV, JSON, PDF, ZIP, RAR, DOCX, XLSX and PPTX, at most 4 MiB each and four publication attempts per response. Returns a verified immutable download receipt; the Portal supplies the download control. Do not emit MEDIA paths or invent URLs. Publishing verifies bytes, not document rendering, archive integrity or correctness; perform those checks separately. No arbitrary host files, directories, dependencies, execution or network destinations.',
+    description:'For an ordinary owner-interactive Portal chat turn only (not teams, subagents or background goals), deliver one owner-requested document or archive already created in the Pixel workspace, without creating a website or opening its preview. Required argument: relativePath, for example {"relativePath":"Playground/report.pdf"}. The argument name path is not supported. Discover the exact schema with tool_describe if needed. Accepted formats are Markdown, TXT, CSV, TSV, JSON, PDF, ZIP, RAR, DOCX, XLSX and PPTX, at most 4 MiB each and four publication attempts per response. Returns a verified immutable download receipt; the Portal supplies the download control. Do not emit MEDIA paths or invent URLs. Publishing verifies bytes, not document rendering, archive integrity or correctness; perform those checks separately. No arbitrary host files, directories, dependencies, execution or network destinations.',
     parameters:{type:'object',additionalProperties:false,required:['relativePath'],properties:{relativePath:{type:'string',minLength:1,maxLength:512}}},
     async execute(id,params,signal) {
+      const fail=(code,text,status='failed')=>({isError:true,details:{status,kind:'ods-pixel-workspace-artifact',code},content:[{type:'text',text}]});
+      let payload;
       try {
-        const payload=normalizeWorkspaceArtifact(params);
-        const scope=admission.take(id,payload,context);
-        if (signal?.aborted) throw new Error('artifact-run-unavailable');
-        if (!reserve(scope)) return {isError:true,details:{status:'unavailable',kind:'ods-pixel-workspace-artifact'},content:[{type:'text',text:'No document publication was attempted. This download tool requires the current ordinary owner-interactive Portal chat turn and fewer than four publication attempts. Team workers, subagents and background goal turns cannot attach files through this surface. Preserve the workspace file and hand its exact relative path to the owner chat; do not claim it was attached.'}]};
-        const result=artifactReceipt(await request(payload,{signal}),payload);
-        if (signal?.aborted || !accept(scope,result)) throw new Error('artifact-run-unavailable');
-        return {details:result,content:[{type:'text',text:'Verified document snapshot prepared for this response. '+ARTIFACT_BOUNDARY+'\n'+JSON.stringify(result)}]};
+        payload=normalizeWorkspaceArtifact(params);
       } catch {
-        return {isError:true,details:{status:'failed',kind:'ods-pixel-workspace-artifact'},content:[{type:'text',text:'No verified document download was attached. Preserve the workspace file. Check its workspace-relative path, supported format, 4 MiB limit, ownership and absence of links; do not relax permissions blindly. A cancelled publication may have completed on the host but grants no delivered receipt.'}]};
+        return fail('invalid-arguments','No document publication was attempted: invalid arguments. Use exactly {"relativePath":"Playground/report.pdf"}, replacing only the example value with the actual workspace-relative file. The argument is relativePath, not path; no other fields are accepted. Call tool_describe with id "pixel_ods_workspace_artifact" for its exact schema, then retry with the corrected arguments. Paths must use 1 to 12 slash-separated ASCII components (letters, digits, dot, underscore or hyphen), start each component with a letter or digit, and stay within 512 characters and 128 per component. Use a supported document extension. This argument rejection says nothing about file permissions or broker availability.');
       }
+      let scope;
+      try {
+        scope=admission.take(id,payload,context);
+      } catch {
+        return fail('admission-unavailable','No document publication was attempted: this call has no matching active policy admission. Use a fresh normal tool call in the current owner chat; do not reuse a previous call identity, bypass policy or change file permissions. Preserve the workspace file.');
+      }
+      if (signal?.aborted) return fail('publication-cancelled','The document call was cancelled before publication. No broker request was sent. Preserve the workspace file.');
+      if (!reserve(scope)) {
+        const reasons={
+          'trigger-unavailable':'The runtime did not identify this turn as owner-interactive. This is a runtime integration limitation, not an exhausted publication limit.',
+          'noninteractive-turn':'This is a background or other noninteractive turn; document cards require an ordinary owner chat turn.',
+          'owner-session-required':'This session is not the ordinary owner Portal chat surface.',
+          'team-surface-unsupported':'Team workers cannot attach documents through this surface yet. Hand the exact workspace-relative path to the owner chat.',
+          'run-cancelled':'The owner cancelled this run.',
+          'run-ended':'This run has already ended.',
+          'run-superseded':'A newer run or different session superseded this call.',
+          'progress-budget-exhausted':'The current run has reached its overall progress budget.',
+          'owner-question-pending':'The current run is waiting for the owner to answer a question.',
+          'publication-attempt-limit':'This run has already reserved four document publication attempts.',
+        };
+        const code=unavailableReason?.(scope);
+        return fail(Object.hasOwn(reasons,code)?code:'run-unavailable','No document publication was attempted. '+(reasons[code]??'The current run is unavailable for document delivery.')+' Preserve the workspace file. Do not claim it was attached or infer another failure cause.','unavailable');
+      }
+      let response;
+      try {
+        response=await request(payload,{signal});
+      } catch {
+        return fail(signal?.aborted?'publication-cancelled':'publication-unavailable','No verified document receipt was returned by the publication transport. Publication may have completed on the host, but no download is attached. Preserve the file; this does not establish a file-permission problem. Do not relax permissions or invent a download URL.');
+      }
+      let result;
+      try {
+        result=artifactReceipt(response,payload);
+      } catch {
+        return fail('receipt-unverified','The publication service did not return a valid matching byte-verified receipt, so no download is attached. The failure does not prove file corruption or incorrect permissions. Preserve the file; verify its actual workspace path, supported format, size and link/ownership status before retrying. Do not relax permissions blindly or invent a URL.');
+      }
+      if (signal?.aborted || !accept(scope,result)) return fail('delivery-no-longer-active','A verified snapshot was prepared, but the originating run is no longer eligible to deliver it. No download is attached to this response. Preserve the workspace file; do not claim delivery or attach the receipt to another conversation.');
+      return {details:result,content:[{type:'text',text:'Verified document snapshot prepared for this response. '+ARTIFACT_BOUNDARY+'\n'+JSON.stringify(result)}]};
     },
   };
 }

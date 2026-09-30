@@ -739,6 +739,7 @@ export default definePluginEntry({
       : researchToolWhenAvailable(perplexicaAvailability, researchTool)), { names: ["pixel_ods_research"] });
     api.registerTool(onlyPixel(context => createWorkspaceArtifactTool(context, {
       admission:artifactAdmission, reserve:scope=>toolLoopGuard.reserveWorkspaceArtifact(scope),
+      unavailableReason:scope=>toolLoopGuard.workspaceArtifactUnavailableReason(scope),
       accept:(scope,receipt)=>toolLoopGuard.acceptWorkspaceArtifact(scope,receipt),
       transport:api.pluginConfig?.workspacePreviewTransport,
     })), {names:['pixel_ods_workspace_artifact']});
