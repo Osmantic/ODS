@@ -116,6 +116,33 @@ it('lets an errored bundled n8n be retried or disabled without a remove control'
   expect(screen.queryByRole('button',{name:'Remove n8n (Workflows)'})).toBeNull()
 })
 
+it('reports a failed bundled n8n start and refreshes to a retryable card', async () => {
+  const ext = {id:'n8n',name:'n8n (Workflows)',source:'core',status:'disabled',
+    library_manageable:true,library_selected:false,features:[baseFeature]}
+  const fetchMock = vi.fn(async (url) => {
+    const u = String(url)
+    if (u.includes('/api/extensions/catalog')) {
+      return makeJsonResponse({agent_available:true,extensions:[ext],
+        summary:baseSummary({total:1,error:ext.status === 'error' ? 1 : 0})})
+    }
+    if (u.includes('/api/templates')) return makeJsonResponse({templates:[]})
+    if (u.endsWith('/api/extensions/n8n/enable')) {
+      Object.assign(ext,{status:'error',library_selected:true,error_message:'Host agent failed to start extension.'})
+      return makeJsonResponse({enabled_services:['n8n'],failed_services:['n8n'],restart_required:true})
+    }
+    throw new Error(`Unmocked fetch: ${u}`)
+  })
+  vi.stubGlobal('fetch', fetchMock)
+  render(<Extensions compact />)
+  fireEvent.click(await screen.findByRole('button',{name:'Add n8n (Workflows)'}))
+  fireEvent.click(screen.getByRole('button',{name:'Enable'}))
+  expect(await screen.findByText(/was selected but did not start/)).toBeVisible()
+  expect(await screen.findByRole('button',{name:'Retry n8n (Workflows)'})).toBeVisible()
+  expect(screen.getByRole('button',{name:'Disable n8n (Workflows)'})).toBeVisible()
+  expect(fetchMock.mock.calls.filter(([url]) => String(url).includes('/api/extensions/catalog')).length)
+    .toBeGreaterThanOrEqual(2)
+})
+
 describe('Extensions page — unhealthy + install derivations', () => {
   it('shows starter collections as a matching paginated library with an explicit preview', async () => {
     vi.stubGlobal('fetch', vi.fn(async url => String(url).includes('/api/templates')

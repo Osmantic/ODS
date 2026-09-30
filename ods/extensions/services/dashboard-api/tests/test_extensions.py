@@ -108,6 +108,21 @@ class TestExtensionsCatalog:
         assert n8n["status"] == "disabled"
         assert n8n["library_selected"] is False
 
+        enabled.write_text("services: {n8n: {image: n8n}}\n", encoding="utf-8")
+        with patch("helpers.get_cached_services", return_value=[]):
+            response = test_client.get("/api/extensions/catalog", headers=test_client.auth_headers)
+        n8n = next(item for item in response.json()["extensions"] if item["id"] == "n8n")
+        assert "library_manageable" not in n8n
+        assert "library_selected" not in n8n
+
+        enabled.unlink()
+        disabled.unlink()
+        with patch("helpers.get_cached_services", return_value=[]):
+            response = test_client.get("/api/extensions/catalog", headers=test_client.auth_headers)
+        n8n = next(item for item in response.json()["extensions"] if item["id"] == "n8n")
+        assert "library_manageable" not in n8n
+        assert "library_selected" not in n8n
+
     def test_disabled_builtin_remains_discoverable_without_install_authority(self, test_client, monkeypatch, tmp_path):
         catalog = [{**_make_catalog_ext("native-editor", "Native Editor"), "catalog_source": "builtin"}]
         _patch_extensions_config(monkeypatch, catalog, tmp_path=tmp_path)
