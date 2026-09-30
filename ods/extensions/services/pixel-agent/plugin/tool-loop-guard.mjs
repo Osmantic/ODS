@@ -6887,6 +6887,7 @@ function execTargetsNonPublicAddress(event) {
 export function createToolLoopGuard({
   abortRun,
   abortRunAndDrain,
+  cancelProjectRun,
   execControl,
   evidenceArtifactWriter,
   onWorkspaceMutation = () => {},
@@ -9895,7 +9896,19 @@ export function createToolLoopGuard({
     if (!aborted && sessionCancellations.get(active.sessionKey) === cancellation) {
       sessionCancellations.delete(active.sessionKey);
     }
-    const cancelled = aborted && executionSignalled;
+    // The model stream and shell process group do not own independently
+    // accepted project jobs. Drain the run first, then require the project
+    // adapter to settle only this captured run's work before acknowledging Stop.
+    let projectsStopped = typeof cancelProjectRun !== 'function';
+    if (aborted && typeof cancelProjectRun === 'function') {
+      try {
+        projectsStopped = await cancelProjectRun({runId: active.runId,
+          sessionId: active.sessionId, sessionKey: active.sessionKey}) === true;
+      } catch (error) {
+        warn(`Pixel client-cancel project cleanup failed: ${String(error)}`);
+      }
+    }
+    const cancelled = aborted && executionSignalled && projectsStopped;
     if (executionSignalled && typeof execControl?.clear === "function") {
       const cleanup = setTimeout(() => {
         try {

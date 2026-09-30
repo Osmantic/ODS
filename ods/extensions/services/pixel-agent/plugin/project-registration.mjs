@@ -5,7 +5,7 @@ const portalOwner = context => context?.agentId === 'pixel'
   && typeof context.sessionKey === 'string'
   && /^agent:pixel:openai-user:ods-[a-f0-9]{64}$/.test(context.sessionKey);
 
-export function registerProjectBuild(api, wrap = factory => factory) {
+export function registerProjectBuild(api, wrap = factory => factory, runControl) {
   const socketPath = api.pluginConfig?.projectBuildSocket;
   if (typeof socketPath !== 'string' || !socketPath.startsWith('/') || socketPath.includes('\0')) return;
   api.on('before_prompt_build', (_event, context) => {
@@ -14,6 +14,12 @@ export function registerProjectBuild(api, wrap = factory => factory) {
   });
   api.registerTool(wrap(context => {
     if (!portalOwner(context)) return null;
-    return createProjectBuildTool({request: createProjectTransport({socketPath, sessionId: context.sessionKey})});
+    const request = createProjectTransport({socketPath, sessionId: context.sessionKey});
+    const tool = createProjectBuildTool({request});
+    if (!runControl) return tool;
+    return {...tool, execute: async (id, params, signal) => {
+      const bound = runControl.bind(id, params, context, request);
+      return createProjectBuildTool({request: bound}).execute(id, params, signal);
+    }};
   }), {names: ['pixel_ods_project_build']});
 }
