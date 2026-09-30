@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Disposable installed upgrade proof for the exact current-main and Portal heads.
+# Disposable installed upgrade proof for exact old-main and broker custody heads.
 set -euo pipefail
 
 baseline="${ODS_ACCEPTANCE_BASELINE_ROOT:?baseline checkout is required}"
@@ -73,7 +73,7 @@ run_installer() {
 [[ "${GITHUB_ACTIONS:-}" == true ]] || fail 'refusing non-disposable host'
 [[ "$RUNNER_TEMP" == /* && "$INSTALL_DIR" == "$RUNNER_TEMP"/* ]] || fail 'install path is outside runner temp'
 [[ "$(git -C "$(dirname "$baseline")" rev-parse HEAD)" == 21797f99c255b4a847fc05615f15c3a8ac3476e4 ]] || fail 'baseline source changed'
-[[ "$(git -C "$(dirname "$candidate")" rev-parse HEAD)" == 9f579707d72b163b99fffc06b79652fc2eb258cd ]] || fail 'candidate source changed'
+[[ "$(git -C "$(dirname "$candidate")" rev-parse HEAD)" == 5fb216e25fb7005bb506771fc10826f2cb945821 ]] || fail 'candidate source changed'
 [[ "$(cat /proc/1/comm)" == systemd ]] || fail 'runner is not a Pixel-qualified systemd host'
 docker info >/dev/null || fail 'isolated Docker Engine unavailable'
 [[ ! -e "$INSTALL_DIR" ]] || fail 'fresh install path is not empty'
@@ -124,7 +124,15 @@ sudo find /var/lib/pixel-ops-broker -mindepth 1 -maxdepth 1 \
     -printf '%f type=%y mode=%m uid=%U gid=%G\n' | sort
 sudo python3 "$harness/pixel-skel-inventory.py"
 
-run_installer "$candidate" 'Portal candidate upgrade'
+# Preserve a unique broker record to prove the transition never classifies
+# copied skeleton files as disposable user data.
+printf 'retained-broker-data\n' | sudo tee /var/lib/pixel-ops-broker/ods-acceptance-sentinel.txt >/dev/null
+sudo chown pixel-ops-broker:pixel-ops /var/lib/pixel-ops-broker/ods-acceptance-sentinel.txt
+sudo chmod 0600 /var/lib/pixel-ops-broker/ods-acceptance-sentinel.txt
+broker_sentinel_hash="$(sudo sha256sum /var/lib/pixel-ops-broker/ods-acceptance-sentinel.txt | cut -d' ' -f1)"
+broker_root_inode="$(sudo stat -c '%i' /var/lib/pixel-ops-broker)"
+
+run_installer "$candidate" 'broker custody candidate upgrade'
 grep -qx 'ENABLE_OPEN_WEBUI=true' "$INSTALL_DIR/.env" \
     || fail 'Portal upgrade changed the existing WebUI selection'
 [[ "$(sha256sum "$INSTALL_DIR/data/open-webui/acceptance-sentinel.txt" | cut -d' ' -f1)" == "$sentinel_hash" ]] \
@@ -133,8 +141,30 @@ grep -qx 'ENABLE_OPEN_WEBUI=true' "$INSTALL_DIR/.env" \
     || fail 'Portal upgrade stopped selected WebUI'
 curl -fLsS --max-time 30 http://127.0.0.1:3000/ >/dev/null \
     || fail 'WebUI was not reachable after Portal upgrade'
-python3 "$harness/portal-requests.py" status "$INSTALL_DIR/.env" \
-    || fail 'Portal was not ready after upgrade'
 docker ps -a --format '{{.Names}}' | grep -Eq '^ods-llama-server$' \
     && fail 'external-route upgrade started llama-server'
-printf 'PASS: Portal upgrade retained WebUI choice, data and availability without llama-server\n'
+systemctl is-active --quiet pixel-ops-broker.service \
+    || fail 'new Pixel Operations Broker is not active after upgrade'
+sudo python3 - "$broker_root_inode" "$broker_sentinel_hash" <<'PY'
+import hashlib
+import pathlib
+import stat
+import sys
+
+old_inode = int(sys.argv[1])
+old_hash = sys.argv[2]
+root = pathlib.Path('/var/lib')
+holders = list(root.glob('.pixel-ops-broker-custody-*/state'))
+assert len(holders) == 1, f'expected one retained broker home, got {len(holders)}'
+saved = holders[0]
+holder = saved.parent
+assert holder.lstat().st_uid == 0
+assert stat.S_IMODE(holder.lstat().st_mode) == 0o700
+assert saved.stat().st_ino == old_inode
+assert hashlib.sha256((saved / 'ods-acceptance-sentinel.txt').read_bytes()).hexdigest() == old_hash
+assert (saved / '.composer').is_dir()
+assert (saved / '.ghcup').is_symlink()
+assert pathlib.Path('/var/lib/pixel-ops-broker').stat().st_ino != old_inode
+print('PASS: old broker home and unique data retained in root-only custody; fresh broker active')
+PY
+printf 'PASS: upgrade retained WebUI choice, data, availability, and local Pixel without llama-server\n'

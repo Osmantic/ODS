@@ -1,4 +1,4 @@
-name: Acceptance Linux Portal retained WebUI upgrade
+name: Acceptance Linux Pixel broker custody upgrade
 
 on:
   push:
@@ -25,15 +25,15 @@ jobs:
         with:
           ref: 21797f99c255b4a847fc05615f15c3a8ac3476e4
           path: baseline
-      - name: Checkout exact Portal default candidate
+      - name: Checkout exact broker custody candidate
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
-          ref: 9f579707d72b163b99fffc06b79652fc2eb258cd
+          ref: 5fb216e25fb7005bb506771fc10826f2cb945821
           path: candidate
       - name: Record exact source and runner capacity
         run: |
           test "$(git -C baseline rev-parse HEAD)" = 21797f99c255b4a847fc05615f15c3a8ac3476e4
-          test "$(git -C candidate rev-parse HEAD)" = 9f579707d72b163b99fffc06b79652fc2eb258cd
+          test "$(git -C candidate rev-parse HEAD)" = 5fb216e25fb7005bb506771fc10826f2cb945821
           docker version
           df -h / "$RUNNER_TEMP"
           cat /proc/1/comm
