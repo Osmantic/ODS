@@ -67,13 +67,11 @@ fn probe_version(command: &mut Command) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{check, probe_version};
-    use std::ffi::OsString;
     use std::path::PathBuf;
     use std::process::Command;
 
     struct CommandFixtures {
         directory: PathBuf,
-        previous_path: Option<OsString>,
     }
 
     impl CommandFixtures {
@@ -89,7 +87,6 @@ mod tests {
             std::fs::create_dir_all(&directory).unwrap();
             let fixtures = Self {
                 directory: directory.clone(),
-                previous_path: std::env::var_os("PATH"),
             };
             let source = directory.join("fixture.rs");
             std::fs::write(
@@ -145,35 +142,71 @@ fn main() {
                 directory.join(format!("docker-compose{}", std::env::consts::EXE_SUFFIX)),
             )
             .unwrap();
-            let mut paths = vec![directory.clone()];
-            if let Some(ref previous) = fixtures.previous_path {
-                paths.extend(std::env::split_paths(previous));
-            }
-            std::env::set_var("PATH", std::env::join_paths(paths).unwrap());
             fixtures
-        }
-
-        fn mode(&self, value: &str) {
-            std::fs::write(self.directory.join("mode"), value).unwrap();
         }
     }
 
     impl Drop for CommandFixtures {
         fn drop(&mut self) {
-            match self.previous_path.take() {
-                Some(value) => std::env::set_var("PATH", value),
-                None => std::env::remove_var("PATH"),
-            }
             let _ = std::fs::remove_dir_all(&self.directory);
         }
     }
 
     #[test]
     fn readiness_requires_the_command_used_by_installers() {
-        let fixtures = CommandFixtures::new();
+        let directory = match std::env::var_os("ODS_DOCKER_FIXTURE_CHILD") {
+            Some(directory) => PathBuf::from(directory),
+            None => {
+                let fixtures = CommandFixtures::new();
+                // Windows searches the executable directory before PATH. Run
+                // only this test from beside the fixtures, with no host PATH.
+                let driver = fixtures
+                    .directory
+                    .join(format!("probe-tests{}", std::env::consts::EXE_SUFFIX));
+                std::fs::copy(std::env::current_exe().unwrap(), &driver).unwrap();
+                #[cfg(target_os = "windows")]
+                {
+                    // Native Tauri test binaries also load WebView2Loader.dll.
+                    // Cargo normally supplies its directory through PATH.
+                    let current_exe = std::env::current_exe().unwrap();
+                    let executable_directory = current_exe.parent().unwrap();
+                    for directory in [executable_directory, executable_directory.parent().unwrap()]
+                    {
+                        let loader = directory.join("WebView2Loader.dll");
+                        if loader.is_file() {
+                            std::fs::copy(&loader, fixtures.directory.join("WebView2Loader.dll"))
+                                .unwrap();
+                        }
+                    }
+                }
+                let output = Command::new(driver)
+                    .args([
+                        "readiness_requires_the_command_used_by_installers",
+                        "--nocapture",
+                    ])
+                    .current_dir(&fixtures.directory)
+                    .env("PATH", &fixtures.directory)
+                    .env("ODS_DOCKER_FIXTURE_CHILD", &fixtures.directory)
+                    .output()
+                    .unwrap();
+                assert!(
+                    output.status.success(),
+                    "Child status: {}\n{}\n{}",
+                    output.status,
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                );
+                return;
+            }
+        };
+        assert_eq!(
+            std::env::current_exe().unwrap().parent(),
+            Some(directory.as_path())
+        );
         for mode in ["missing", "empty", "failed-output", "supported"] {
-            fixtures.mode(mode);
+            std::fs::write(directory.join("mode"), mode).unwrap();
             let status = check();
+            assert_eq!(status.version.as_deref(), Some("Docker version 27.5.1"));
             assert!(status.installed && status.running);
             assert_eq!(
                 status.compose_installed,
