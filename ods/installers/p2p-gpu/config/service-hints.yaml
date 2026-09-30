@@ -1,0 +1,23 @@
+# P2P GPU deployment hints — service-specific overrides for the setup script.
+# These supplement manifest.yaml defaults ONLY within the p2p-gpu context.
+# When upstream adopts proxy_mode/startup_behavior as first-class manifest
+# fields, delete this file and remove the hints merge in lib/services.sh.
+
+comfyui:
+  proxy_mode: root
+  startup_behavior: heavy
+
+dashboard:
+  proxy_mode: root
+
+open-webui:
+  proxy_mode: root
+
+perplexica:
+  startup_behavior: heavy
+
+tts:
+  startup_behavior: heavy
+
+whisper:
+  startup_behavior: heavy
