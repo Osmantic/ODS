@@ -172,6 +172,10 @@ services:
       interval: 2s
       timeout: 1s
       retries: 2
+  perplexica:
+    image: busybox:1.36
+    entrypoint: ["sleep"]
+    command: ["120"]
 YAML
 local_definition="$INSTALL_DIR/extensions/services/perplexica/compose.yaml.disabled"
 local_overlay="$INSTALL_DIR/extensions/services/perplexica/compose.local.yaml"
@@ -181,9 +185,9 @@ local_overlay="$INSTALL_DIR/extensions/services/perplexica/compose.local.yaml"
 local_stack=(docker compose -p ods-perplexica-unhealthy \
     --project-directory "$INSTALL_DIR" \
     --env-file "$audit_root/local-empty.env" \
-    -f "$audit_root/unhealthy-llama.yml" \
     -f "$local_definition" \
-    -f "$local_overlay")
+    -f "$local_overlay" \
+    -f "$audit_root/unhealthy-llama.yml")
 "${local_stack[@]}" config --format json >"$audit_root/local-compose.json" \
     || fail 'managed-local Perplexica Compose did not render'
 python3 - "$audit_root/local-compose.json" <<'PY' || fail 'managed-local health guard missing'
@@ -193,13 +197,16 @@ import sys
 with open(sys.argv[1], encoding="utf-8") as stream:
     config = json.load(stream)
 assert config["services"]["perplexica"]["depends_on"]["llama-server"]["condition"] == "service_healthy"
+assert config["services"]["perplexica"]["image"] == "busybox:1.36"
 PY
 if timeout 120s "${local_stack[@]}" up -d --wait perplexica \
     >"$audit_root/unhealthy-start.log" 2>&1; then
     fail 'managed-local Perplexica started with an unhealthy llama-server'
 fi
-grep -Eiq 'unhealthy|dependency failed' "$audit_root/unhealthy-start.log" \
-    || fail 'managed-local start failed for a reason other than llama health'
+if ! grep -Eiq 'unhealthy|dependency failed' "$audit_root/unhealthy-start.log"; then
+    tail -n 12 "$audit_root/unhealthy-start.log" >&2
+    fail 'managed-local start failed for a reason other than llama health'
+fi
 stub_id="$("${local_stack[@]}" ps -q llama-server)"
 [[ -n "$stub_id" && "$(docker inspect --format '{{.State.Health.Status}}' "$stub_id")" == unhealthy ]] \
     || fail 'managed-local llama stand-in was not unhealthy'
