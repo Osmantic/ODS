@@ -23,11 +23,11 @@ jobs:
       - name: Checkout exact Hermes add-back candidate
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
-          ref: 3f413199bcf1caf59430273870079a5b98bb41f4
+          ref: 05437a639d0fe905639d4e7ad888cd76fbafa3e9
           path: product
       - name: Record source and runner capacity
         run: |
-          test "$(git -C product rev-parse HEAD)" = 3f413199bcf1caf59430273870079a5b98bb41f4
+          test "$(git -C product rev-parse HEAD)" = 05437a639d0fe905639d4e7ad888cd76fbafa3e9
           docker version
           df -h / "$RUNNER_TEMP"
       - name: Exercise Hermes external gateway add-back
