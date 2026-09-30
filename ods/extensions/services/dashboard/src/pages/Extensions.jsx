@@ -1036,7 +1036,7 @@ function ExtensionCard({ ext, gpuBackend, agentAvailable, onDetails, onConsole, 
             <button
               disabled={actionDisabled}
               title={disabledTitle}
-              onClick={() => onAction(ext, 'enable')}
+              onClick={() => onAction(ext, ext.id === 'opencode' ? 'install' : 'enable')}
               className="flex items-center gap-1.5 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.08em] rounded-lg bg-blue-500/15 text-blue-400 hover:bg-blue-500/25 transition-colors disabled:opacity-50"
             >
               {isMutating ? <Loader2 size={12} className="animate-spin" /> : <><RefreshCw size={12} /> Retry</>}
