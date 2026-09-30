@@ -237,7 +237,7 @@ fi
 printf 'PASS: external Perplexica add-back kept managed llama-server absent\n'
 
 mock_hits_before="$(grep -c 'accept=chat' "$mock_log" || true)"
-python3 - "$audit_root/perplexica-query.json" <<'PY' || fail 'Perplexica did not complete a model-backed search request'
+if ! python3 - "$audit_root/perplexica-query.json" <<'PY'
 import json
 import sys
 import urllib.error
@@ -257,17 +257,20 @@ assert any(p["id"] == chat["providerId"] and
 assert any(p["id"] == embedding["providerId"] and
            any(m["key"] == embedding["key"] for m in p["embeddingModels"])
            for p in providers), "default embedding model is not registered"
-payload = {"sources": ["web"], "query": "ODS acceptance model route check",
+payload = {"sources": [], "query": "ODS acceptance model route check",
            "chatModel": chat, "embeddingModel": embedding,
            "stream": False, "optimizationMode": "speed"}
 request = urllib.request.Request(
     base + "/api/search", data=json.dumps(payload).encode("utf-8"),
     headers={"Content-Type": "application/json"}, method="POST")
 try:
-    with urllib.request.urlopen(request, timeout=180) as response:
+    with urllib.request.urlopen(request, timeout=90) as response:
         result = json.load(response)
 except urllib.error.HTTPError as error:
     print(f"Perplexica search returned HTTP {error.code}", file=sys.stderr)
+    raise SystemExit(1)
+except (TimeoutError, urllib.error.URLError) as error:
+    print(f"Perplexica search transport: {type(error).__name__}", file=sys.stderr)
     raise SystemExit(1)
 assert isinstance(result.get("message"), str) and "OK" in result["message"], \
     "Perplexica returned no mock-backed answer"
@@ -275,6 +278,26 @@ with open(sys.argv[1], "w", encoding="utf-8") as stream:
     json.dump({"message_present": True, "sources_count": len(result.get("sources") or [])}, stream)
 print("PASS: Perplexica returned a mock-backed search answer")
 PY
+then
+    python3 - "$mock_log" "$mock_hits_before" <<'PY' >&2
+from pathlib import Path
+import subprocess
+import sys
+
+mock = Path(sys.argv[1]).read_text(encoding="utf-8", errors="replace")
+before = int(sys.argv[2])
+after = mock.count("accept=chat")
+print(f"Perplexica query diagnostic: accepted upstream chats before={before} after={after}")
+for marker in ("reject=model-or-messages", "reject=request-json", "unauthorized"):
+    print(f"Perplexica query diagnostic: mock {marker}={mock.count(marker)}")
+result = subprocess.run(["docker", "logs", "--tail", "250", "ods-perplexica"],
+                        capture_output=True, text=True, timeout=20)
+logs = (result.stdout + result.stderr).lower()
+for marker in ("embedding", "searxng", "timeout", "fetch failed", "download", "error"):
+    print(f"Perplexica query diagnostic: container {marker}={logs.count(marker)}")
+PY
+    fail 'Perplexica did not complete a model-backed no-source request'
+fi
 mock_hits_after="$(grep -c 'accept=chat' "$mock_log" || true)"
 (( mock_hits_after > mock_hits_before )) || fail 'Perplexica search did not reach the selected external model'
 printf 'PASS: selected external model received Perplexica completion\n'
