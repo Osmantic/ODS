@@ -1,16 +1,16 @@
-name: Acceptance Linux Pixel conditional search
+name: Acceptance Linux Pixel search binding
 
 on:
   push:
     branches:
-      - codex/ods-pixel-search-live-audit
+      - codex/ods-pixel-search-port-audit
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: pixel-search-live-${{ github.ref }}
+  group: pixel-search-binding-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -23,11 +23,11 @@ jobs:
       - name: Checkout exact conditional-search candidate
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
-          ref: 960f66d83fa029ee3216ccdf154d2ee2a0c603eb
+          ref: ee7a9ecbc26b6320685b456f3d87002cae3853f7
           path: product
       - name: Record exact source and runner capacity
         run: |
-          test "$(git -C product rev-parse HEAD)" = 960f66d83fa029ee3216ccdf154d2ee2a0c603eb
+          test "$(git -C product rev-parse HEAD)" = ee7a9ecbc26b6320685b456f3d87002cae3853f7
           docker version
           df -h / "$RUNNER_TEMP"
           cat /proc/1/comm

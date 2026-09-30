@@ -117,8 +117,10 @@ def main():
                         answer.append(chunk)
         assert done and "OK" in "".join(answer), "Portal chat did not complete with the mock answer"
         print("PASS: Portal streamed a real mock-upstream chat completion")
-    elif action == "search":
-        body = {"chat_id": "odssearchacceptance", "request_id": "odssearchacceptancefirst",
+    elif action in {"search", "search-port"}:
+        suffix = "port" if action == "search-port" else "first"
+        body = {"chat_id": "odssearchacceptance" + suffix,
+                "request_id": "odssearchacceptance" + suffix,
                 "messages": [{"role": "user", "content":
                               "ODS_SEARCH_PROBE: use web_search to find OpenAI's official website."}]}
         answer = []

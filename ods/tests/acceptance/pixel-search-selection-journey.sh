@@ -4,7 +4,7 @@ set -euo pipefail
 
 product="${ODS_ACCEPTANCE_PRODUCT_ROOT:?product checkout is required}"
 harness="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-expected=960f66d83fa029ee3216ccdf154d2ee2a0c603eb
+expected=ee7a9ecbc26b6320685b456f3d87002cae3853f7
 audit_root="${RUNNER_TEMP:?runner temp is required}/ods-pixel-search-acceptance"
 export INSTALL_DIR="$audit_root/install"
 export LOG_FILE="$audit_root/install.log"
@@ -23,6 +23,10 @@ trap cleanup EXIT
 
 fail() {
     printf 'FAIL: %s\n' "$*" >&2
+    if [[ -f "$mock_log" ]]; then
+        printf 'Mock upstream diagnostic tail:\n' >&2
+        tail -n 60 "$mock_log" >&2
+    fi
     docker ps --format '{{.Names}} {{.Status}}' >&2 || true
     exit 1
 }
@@ -63,9 +67,9 @@ compose_services() (
 )
 
 run_installer() {
-    local label="$1" provider="$2"
-    printf 'Installing %s with Pixel search provider %s\n' "$label" "$provider"
-    if ! (umask 022; cd "$product" && PIXEL_WEB_SEARCH_PROVIDER="$provider" timeout 2400s bash install-core.sh \
+    local label="$1" provider="$2" search_port="${3:-8888}"
+    printf 'Installing %s with Pixel search provider %s on port %s\n' "$label" "$provider" "$search_port"
+    if ! (umask 022; cd "$product" && PIXEL_WEB_SEARCH_PROVIDER="$provider" SEARXNG_PORT="$search_port" timeout 2400s bash install-core.sh \
         --non-interactive --skip-docker --no-bootstrap --no-recommended --no-hermes \
         --external-llm-url "http://127.0.0.1:$mock_port" \
         --external-llm-provider openai-compatible \
@@ -149,5 +153,34 @@ curl -fsS --max-time 30 'http://127.0.0.1:8888/search?q=OpenAI%20official%20webs
     | python3 -c 'import json,sys; value=json.load(sys.stdin); assert isinstance(value.get("results"),list) and any(isinstance(item.get("url"),str) and item["url"].startswith("http") for item in value["results"])' \
     || fail 'selected SearXNG did not return a URL-bearing search result'
 printf 'PASS: selected SearXNG serves a URL-bearing search result\n'
-python3 "$harness/portal-requests.py" search "$INSTALL_DIR/.env" \
-    || fail 'installed Pixel web_search did not return a result through Portal'
+search_before_ok=false
+if python3 "$harness/portal-requests.py" search "$INSTALL_DIR/.env"; then
+    search_before_ok=true
+fi
+
+run_installer 'same-provider SearXNG port change' searxng 8899
+grep -qx 'SEARXNG_PORT=8899' "$INSTALL_DIR/.env" \
+    || fail 'new SearXNG port was not persisted'
+python3 - "$HOME/.openclaw/openclaw.json" <<'PY' \
+    || fail 'same-provider rerun kept the old Pixel search origin'
+import json, pathlib, sys
+config = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding='utf-8'))
+assert config['tools']['web']['search'] == {'provider': 'searxng'}
+assert config['plugins']['entries']['searxng']['config']['webSearch']['baseUrl'] == 'http://127.0.0.1:8899'
+PY
+[[ "$(docker inspect --format '{{.State.Running}}' ods-searxng)" == true ]] \
+    || fail 'SearXNG is not running after its port change'
+curl -fsS --max-time 30 'http://127.0.0.1:8899/search?q=OpenAI%20official%20website&format=json' \
+    | python3 -c 'import json,sys; value=json.load(sys.stdin); assert any(isinstance(item.get("url"),str) and item["url"].startswith("http") for item in value.get("results",[]))' \
+    || fail 'new SearXNG origin did not return a URL-bearing result'
+if curl -fsS --max-time 2 'http://127.0.0.1:8888/search?q=stale&format=json' >/dev/null 2>&1; then
+    fail 'old SearXNG origin still served after the port change'
+fi
+search_after_ok=false
+if python3 "$harness/portal-requests.py" search-port "$INSTALL_DIR/.env"; then
+    search_after_ok=true
+fi
+printf 'PASS: same-provider rerun changed the Pixel binding and SearXNG origin\n'
+[[ "$search_before_ok" == true ]] || fail 'selected Pixel web_search did not return a result through Portal'
+[[ "$search_after_ok" == true ]] || fail 'Pixel web_search did not use the new SearXNG origin'
+printf 'PASS: real Pixel web_search reached both selected SearXNG origins\n'
