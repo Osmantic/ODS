@@ -17735,6 +17735,13 @@ def _atomic_write_json(path: Path, value: dict, mode: int = 0o600) -> None:
     _atomic_write_text(path, json.dumps(value, indent=2) + "\n", mode)
 
 
+def _opencode_external_model(env: dict) -> str:
+    """Return the configured external model only when its upstream is selected."""
+    if str(env.get("EXTERNAL_LLM_URL") or "").strip():
+        return str(env.get("EXTERNAL_LLM_MODEL") or "").strip()
+    return ""
+
+
 def _opencode_route(env: dict) -> tuple[str, str]:
     """Return the host-visible OpenAI-compatible endpoint and API key."""
     if _normal_switchboard_mode(env) == "enabled":
@@ -17742,6 +17749,13 @@ def _opencode_route(env: dict) -> tuple[str, str]:
         api_key = str(env.get("LITELLM_KEY") or "")
         if not api_key:
             raise RuntimeError("LITELLM_KEY is required to update the OpenCode switchboard route")
+        return f"http://127.0.0.1:{port}/v1", api_key
+
+    if _opencode_external_model(env):
+        port = str(env.get("LITELLM_PORT") or "4000")
+        api_key = str(env.get("LITELLM_KEY") or "")
+        if not api_key:
+            raise RuntimeError("LITELLM_KEY is required to update the OpenCode external model route")
         return f"http://127.0.0.1:{port}/v1", api_key
 
     gpu_backend = str(env.get("GPU_BACKEND") or "nvidia").lower()
@@ -17772,6 +17786,9 @@ def _opencode_model_route(env: dict, model_id: str) -> tuple[str, str, str]:
     provider_id = "llama-server"
     if _normal_switchboard_mode(env) == "enabled":
         return provider_id, "ods/current", "ods/current"
+    external_model = _opencode_external_model(env)
+    if external_model:
+        return provider_id, external_model, external_model
     return provider_id, model_id, model_id
 
 
@@ -17842,7 +17859,9 @@ def _update_opencode_config(
             providers[provider_id] = provider
         provider["npm"] = "@ai-sdk/openai-compatible"
         provider["name"] = (
-            "ODS switchboard" if route_model_id == "ods/current" else "llama-server (local)"
+            "ODS switchboard" if _normal_switchboard_mode(env) == "enabled"
+            else "External LLM via ODS gateway" if _opencode_external_model(env)
+            else "llama-server (local)"
         )
         options = provider.setdefault("options", {})
         if not isinstance(options, dict):
@@ -18193,16 +18212,8 @@ def _opencode_setup_issue(env: dict, system: str | None = None) -> str | None:
     ):
         if not required.is_file():
             return f"This ODS installation is missing {required.name}; update ODS first."
-    external = str(env.get("EXTERNAL_LLM_URL") or "").strip() and str(
-        env.get("EXTERNAL_LLM_MODEL") or ""
-    ).strip()
     if _normal_switchboard_mode(env) != "enabled":
-        if external:
-            return (
-                "This installation routes an external model without the ODS switchboard. "
-                "Re-run the installer with --opencode to set OpenCode up."
-            )
-        if not str(env.get("LLM_MODEL") or "").strip():
+        if not _opencode_external_model(env) and not str(env.get("LLM_MODEL") or "").strip():
             return "No active model is configured yet. Activate a model, then set OpenCode up."
     return None
 

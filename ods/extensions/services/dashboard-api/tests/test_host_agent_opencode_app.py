@@ -325,14 +325,21 @@ def test_setup_requires_the_shipped_unit_template(tmp_path, monkeypatch):
     assert "opencode-web.service" in _mod._opencode_setup_issue({"ODS_MODEL_SWITCHBOARD": "enabled"}, "Linux")
 
 
-def test_setup_refuses_an_external_route_without_the_switchboard(tmp_path, monkeypatch):
+def test_setup_offers_an_external_route_without_the_switchboard(tmp_path, monkeypatch):
     _setup_ready_install(tmp_path, monkeypatch)
-    issue = _mod._opencode_setup_issue({
+    env = {
         "ODS_MODEL_SWITCHBOARD": "observe",
         "EXTERNAL_LLM_URL": "https://llm.example.test/v1",
         "EXTERNAL_LLM_MODEL": "remote",
-    }, "Linux")
-    assert "--opencode" in issue
+        "LITELLM_PORT": "4400",
+        "LITELLM_KEY": "test-key",
+        "OLLAMA_PORT": "8080",
+    }
+    assert _mod._opencode_setup_issue(env, "Linux") is None
+    assert _mod._opencode_route(env) == ("http://127.0.0.1:4400/v1", "test-key")
+    assert _mod._opencode_model_route(env, "local") == ("llama-server", "remote", "remote")
+    with pytest.raises(RuntimeError, match="LITELLM_KEY"):
+        _mod._opencode_route({**env, "LITELLM_KEY": ""})
 
 
 def test_setup_needs_a_model_without_the_switchboard(tmp_path, monkeypatch):
@@ -575,6 +582,34 @@ def test_setup_installs_configures_and_starts_the_managed_service(tmp_path, monk
                             ["restart", "opencode-web.service"]]
     assert ["loginctl", "enable-linger", "ods-owner"] in commands
     assert [status for _, status, _ in progress] == ["pulling", "starting", "starting", "started"]
+
+
+@pytest.mark.skipif(os.name == "nt", reason="systemd unit rendering requires POSIX paths")
+def test_setup_external_model_uses_authenticated_gateway(tmp_path, monkeypatch, _isolated):
+    home = _isolated
+    _prepare_setup(tmp_path, monkeypatch, home)
+    env = {
+        **SETUP_ENV,
+        "ODS_MODEL_SWITCHBOARD": "observe",
+        "EXTERNAL_LLM_URL": "https://llm.example.test/v1",
+        "EXTERNAL_LLM_MODEL": "remote-model",
+        "LITELLM_PORT": "4400",
+        "OLLAMA_PORT": "8080",
+    }
+
+    _mod._setup_managed_opencode(env)
+
+    config = json.loads((home / ".config" / "opencode" / "opencode.json").read_text())
+    assert config["model"] == "llama-server/remote-model"
+    provider = config["provider"]["llama-server"]
+    assert provider["name"] == "External LLM via ODS gateway"
+    assert provider["options"] == {
+        "baseURL": "http://127.0.0.1:4400/v1", "apiKey": "sk-test-gateway",
+    }
+    assert provider["models"]["remote-model"]["limit"] == {
+        "context": 32768, "output": 8192,
+    }
+    assert json.loads((home / ".config" / "opencode" / "config.json").read_text()) == config
 
 
 @pytest.mark.skipif(os.name == "nt", reason="systemd unit rendering requires POSIX paths")
