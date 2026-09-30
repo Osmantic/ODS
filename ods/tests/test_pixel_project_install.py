@@ -60,6 +60,103 @@ def test_controller_task_budget_is_bounded_with_room_for_docker_cli_plugins(pyth
     assert '--storage-max-jobs' not in unit  # Existing default admission unchanged.
 
 
+def previous_unit_bytes(deployment):
+    """Golden unit format from ba0f33c70, independent of the new renderer."""
+    owner = pwd.getpwuid(deployment['ownerUid'])
+    workspace = deployment['workspace'].replace('\\', '\\\\').replace('"', '\\"').replace('%', '%%')
+    python = (' --python-image ' + deployment['pythonImageId']) if 'pythonImageId' in deployment else ''
+    storage = ''
+    if 'storageLimits' in deployment:
+        limits = deployment['storageLimits']
+        storage = (f" --storage-bytes {limits['jobBytes']} --storage-total-bytes {limits['totalBytes']}"
+                   f" --storage-max-jobs {limits['maxJobs']}")
+    return f'''[Unit]
+Description=ODS Portal isolated project executor
+After=docker.service
+
+[Service]
+Type=simple
+User={owner.pw_name}
+ExecStart=/usr/bin/python3 -B {installer.PROGRAM_ROOT}/project_service.py --workspace "{workspace}" --state-root {installer.STATE} --image {deployment['imageId']}{python}{storage}
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=300
+StateDirectory=ods-pixel-project
+StateDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths="{workspace}" {installer.STATE}
+RestrictAddressFamilies=AF_UNIX
+CapabilityBoundingSet=
+MemoryMax=768M
+TasksMax=64
+
+[Install]
+WantedBy=multi-user.target
+'''.encode()
+
+
+@pytest.fixture
+def previous_installation(tmp_path, monkeypatch):
+    runtime, source = tmp_path / 'runtime', tmp_path / 'source'
+    runtime.mkdir()
+    source.mkdir()
+    monkeypatch.setattr(installer, 'PROGRAM_ROOT', runtime)
+    monkeypatch.setattr(installer, 'UNIT', tmp_path / 'unit.service')
+    monkeypatch.setattr(installer, 'CONFIG', tmp_path / 'config.json')
+    # Explicit disposable custody adapters; no root/systemd service is touched.
+    monkeypatch.setattr(installer.os, 'geteuid', lambda: 0)
+    monkeypatch.setattr(installer.common, 'protected_parent', lambda *args, **kwargs: None)
+    monkeypatch.setattr(installer.common, 'protected_file', lambda path: path.read_bytes())
+    monkeypatch.setattr(installer.subprocess, 'run', lambda *args, **kwargs: subprocess.CompletedProcess([], 3))
+    for name in installer.FILES:
+        (source / name).write_bytes(b'# reviewed candidate\n')
+        (runtime / name).write_bytes(b'# previous installation\n')
+    return source
+
+
+@pytest.mark.parametrize('python_image', [None, 'sha256:' + 'b' * 64])
+def test_exact_previous_unit_migrates_then_same_candidate_replays(previous_installation, python_image):
+    deployment = config()
+    if python_image:
+        deployment.update(pythonImageId=python_image,
+                          storageLimits={'jobBytes': 512 * 1024**2, 'totalBytes': 1024**3, 'maxJobs': 2})
+    installer.CONFIG.write_text(json.dumps(deployment))
+    installer.UNIT.write_bytes(previous_unit_bytes(deployment))
+    installer.check_existing_owner(deployment)
+    installer.install_linux(previous_installation, deployment)
+    assert installer.UNIT.read_bytes() == installer.unit_bytes(deployment)
+    assert b'TasksMax=128\n' in installer.UNIT.read_bytes()
+    installer.check_existing_owner(deployment)
+    installer.install_linux(previous_installation, deployment)
+    assert all((installer.PROGRAM_ROOT / name).read_bytes() == b'# reviewed candidate\n' for name in installer.FILES)
+
+
+@pytest.mark.parametrize('old,new', [
+    (b'TasksMax=64', b'TasksMax=infinity'), (b'TasksMax=64', b'TasksMax=256'),
+    (b'NoNewPrivileges=true', b'NoNewPrivileges=false'),
+    (b'User=', b'User=other-'), (b'--image sha256:aaaa', b'--image sha256:bbbb'),
+    (b'--python-image sha256:bbbb', b'--python-image sha256:cccc'),
+    (b'/project_service.py', b'/foreign.py'),
+    (b'workspace-pixel', b'workspace-foreign'),
+    (b'[Install]', b'ExecStartPost=/bin/true\n[Install]'),
+])
+def test_previous_format_cannot_hide_changed_identity_or_directives(previous_installation, old, new):
+    deployment = {**config(), 'pythonImageId': 'sha256:' + 'b' * 64}
+    installer.CONFIG.write_text(json.dumps(deployment))
+    previous = previous_unit_bytes(deployment)
+    assert old in previous
+    installer.UNIT.write_bytes(previous.replace(old, new))
+    before = {path: path.read_bytes() for path in [installer.UNIT, installer.CONFIG, *installer.PROGRAM_ROOT.iterdir()]}
+    with pytest.raises(ValueError, match='service identity mismatch'):
+        installer.install_linux(previous_installation, deployment)
+    assert all(path.read_bytes() == value for path, value in before.items())
+
+
 @pytest.mark.parametrize('change', [{'imageId': 'node:latest'}, {'pythonImageId': 'python:latest'},
                                   {'pythonImageId': None}, {'ownerUid': 0},
                                   {'workspace': '/tmp/other-project'}, {'extra': True}])

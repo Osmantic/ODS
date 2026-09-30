@@ -53,7 +53,7 @@ def validate_config(value):
     return owner
 
 
-def unit_bytes(config):
+def _unit_bytes(config, *, previous_task_budget=False):
     owner = validate_config(config)
     # systemd expands percent specifiers even inside quotes.
     workspace = config['workspace'].replace('\\', '\\\\').replace('"', '\\"').replace('%', '%%')
@@ -63,6 +63,10 @@ def unit_bytes(config):
         limits = config['storageLimits']
         storage_arguments = (f" --storage-bytes {limits['jobBytes']} --storage-total-bytes {limits['totalBytes']}"
                              f" --storage-max-jobs {limits['maxJobs']}")
+    task_budget = 'TasksMax=64' if previous_task_budget else (
+        '# Docker info discovers CLI plugins concurrently. Keep room for their threads\n'
+        '# plus the single executor, capability probe and serialized owner connection.\n'
+        'TasksMax=128')
     return f'''[Unit]
 Description=ODS Portal isolated project executor
 After=docker.service
@@ -86,13 +90,15 @@ ReadWritePaths="{workspace}" {STATE}
 RestrictAddressFamilies=AF_UNIX
 CapabilityBoundingSet=
 MemoryMax=768M
-# Docker info discovers CLI plugins concurrently. Keep room for their threads
-# plus the single executor, capability probe and serialized owner connection.
-TasksMax=128
+{task_budget}
 
 [Install]
 WantedBy=multi-user.target
 '''.encode()
+
+
+def unit_bytes(config):
+    return _unit_bytes(config)
 
 
 def build_config(source, owner_uid):
@@ -130,7 +136,12 @@ def check_existing_owner(config):
             raise ValueError('project upgrade owner mismatch')
         if os.path.lexists(UNIT):
             common.protected_parent(UNIT.parent)
-            if common.protected_file(UNIT) != unit_bytes(previous):
+            # Recognize only the exact previously generated 64-task unit.
+            # Owner, paths, both immutable images and all hardening settings
+            # remain bound to the protected previous configuration. Never
+            # normalize, remove directives from, or execute the installed unit.
+            if common.protected_file(UNIT) not in (
+                    unit_bytes(previous), _unit_bytes(previous, previous_task_budget=True)):
                 raise ValueError('project service identity mismatch')
     elif os.path.lexists(UNIT) or os.path.lexists(PROGRAM_ROOT):
         raise ValueError('project installation identity missing')
