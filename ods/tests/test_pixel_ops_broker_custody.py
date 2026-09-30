@@ -20,6 +20,27 @@ def custody_code() -> str:
     return source[start:end]
 
 
+def classify(root: Path, mode: str) -> str:
+    source = UNINSTALL.read_text(encoding="utf-8")
+    start = source.index('state_cleanup_action = "remove"')
+    end = source.index('\nprint("present|', start)
+    namespace = {
+        "os": os,
+        "pathlib": __import__("pathlib"),
+        "stat": stat,
+        "state_dir": root,
+        "state_cleanup_mode": mode,
+        "broker_uid": os.getuid(),
+        "broker_gid": os.getgid(),
+        "owner_uid": os.getuid(),
+        "root_uid": os.getuid(),
+        "root_gid": os.getgid(),
+        "exists": lambda path: path.exists() or path.is_symlink(),
+    }
+    exec(compile(source[start:end], str(UNINSTALL), "exec"), namespace)
+    return namespace["state_cleanup_action"]
+
+
 def invoke(root: Path) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [sys.executable, "-c", custody_code(), str(root), str(os.getuid()),
@@ -81,6 +102,25 @@ class BrokerCustodyTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0)
         self.assertEqual(result.stdout.strip(), "absent")
         self.assertFalse(list(self.root.glob(".pixel-ops-broker-custody-*")))
+
+    def test_clean_source_transition_does_not_need_custody(self) -> None:
+        root = self.root / "pixel-ops-broker"
+        root.mkdir(mode=0o750)
+        (root / "results").mkdir(mode=0o700)
+        receipt = root / "results" / "receipt"
+        receipt.write_text("safe", encoding="utf-8")
+        receipt.chmod(0o600)
+        self.assertEqual(classify(root, "source-transition"), "remove")
+
+    def test_legacy_child_is_preserved_only_on_source_transition(self) -> None:
+        root = self.root / "pixel-ops-broker"
+        root.mkdir(mode=0o750)
+        inherited = root / ".composer"
+        inherited.mkdir(mode=0o755)
+        inherited.chmod(0o755)
+        self.assertEqual(classify(root, "source-transition"), "preserve")
+        with self.assertRaises(SystemExit):
+            classify(root, "strict")
 
 
 if __name__ == "__main__":

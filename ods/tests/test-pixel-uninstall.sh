@@ -1041,6 +1041,19 @@ else
     fail "verified Operations Broker deployment could not be removed"
 fi
 
+write_ops_fixture
+clean_custody_before="$(find "${OPS_STATE%/*}" -maxdepth 1 -type d -name '.pixel-ops-broker-custody-*' | wc -l)"
+if ods_pixel_uninstall_managed "$INSTALL_DIR" "$HOME_DIR" source-transition; then
+    if [[ ! -e "$OPS_STATE" \
+        && "$(find "${OPS_STATE%/*}" -maxdepth 1 -type d -name '.pixel-ops-broker-custody-*' | wc -l)" == "$clean_custody_before" ]]; then
+        pass "clean source rebind uses verified cleanup without retaining another home"
+    else
+        fail "clean source rebind retained an unnecessary broker-home copy"
+    fi
+else
+    fail "clean source rebind could not retire its broker home"
+fi
+
 # A source rebind preserves the complete prior broker home. Legacy useradd
 # copied arbitrary /etc/skel entries there, so content classification cannot
 # safely decide which bytes to delete. The ordinary uninstall tests below

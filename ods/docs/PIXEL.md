@@ -756,17 +756,18 @@ ODS `data/` tree. The bounded deactivation prevents a retired ODS install from
 blocking a later fresh install at a different path without treating ambient
 Pixel state as ODS-owned.
 
-An installer **source transition** uses a different broker-state path from
-rollback or full uninstall. After stopping the old broker, it moves the entire
-old `/var/lib/pixel-ops-broker` home into a root-only private sibling named
-`.pixel-ops-broker-custody-*/state`, then installs a fresh broker home. This
-preserves any unique files as well as `/etc/skel` entries copied by older
+An installer **source transition** first applies the same strict broker-home
+validation as uninstall. A clean home follows the ordinary verified cleanup
+path. If a child fails that deletion guard, ODS stops the old broker and moves
+the entire old `/var/lib/pixel-ops-broker` home into a root-only private sibling
+named `.pixel-ops-broker-custody-*/state`, then installs a fresh broker home.
+This preserves any unique files as well as `/etc/skel` entries copied by older
 Pixel installers; the installer prints the exact retained path. ODS does not
 automatically restore or delete that retained state. Review it after the
 upgrade, especially if you need prior Operations Broker receipts or artifacts;
-repeated source transitions can consume disk space until old custody trees
-are reviewed and removed by the owner. Rollback and full uninstall continue
-to use the strict validated removal path described above.
+retained custody consumes disk space until reviewed and removed by the owner.
+Rollback and full uninstall continue to use the strict validated removal path
+described above.
 
 ## Qualification gate
 

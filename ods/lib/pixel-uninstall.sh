@@ -532,7 +532,7 @@ ods_pixel_uninstall_managed() {
     local runtime_attestation_state
     local retire_openclaw_config openclaw_config_sha256
     local release_identity_sha256 install_manifest_sha256 retired_release_path
-    local ops_plan="absent||||" ops_state_status ops_uid ops_gid ops_user_present ops_group_present ops_custody_path
+    local ops_plan="absent|||||" ops_state_status ops_uid ops_gid ops_user_present ops_group_present ops_state_action ops_custody_path
     local ops_passwd_entry="" ops_group_entry="" ops_user_group_ids="" ops_user_group_names="" ops_artifacts_present=false
     local pixel_lock_fd="" owner_uid
     local root_artifacts_present=false owner_gid owner_name access_artifacts_present=false access_plan="absent"
@@ -1939,6 +1939,7 @@ if exists(policy_parent):
             or contents != expected_contents):
         raise SystemExit("unsafe Pixel Operations Broker policy directory")
 
+state_cleanup_action = "remove"
 if exists(state_dir):
     root = state_dir.lstat()
     if (not stat.S_ISDIR(root.st_mode) or stat.S_ISLNK(root.st_mode)
@@ -1961,8 +1962,9 @@ if exists(state_dir):
         if mount_path == state_absolute or state_absolute in mount_path.parents:
             raise SystemExit(f"mount inside Pixel Operations Broker state: {mount_path}")
     if state_cleanup_mode == "source-transition":
-        # A source transition retains the entire old home, including any
-        # inherited /etc/skel entries or unique state, without walking it.
+        # If an entry fails the normal deletion guard, the entire old home
+        # must be retained on this source transition. Validate its parent
+        # before allowing that possible custody operation.
         parent = state_dir.parent
         parent_info = parent.lstat()
         if (not stat.S_ISDIR(parent_info.st_mode) or stat.S_ISLNK(parent_info.st_mode)
@@ -1970,54 +1972,72 @@ if exists(state_dir):
                 or parent_info.st_mode & 0o022
                 or parent.resolve(strict=True) != parent):
             raise SystemExit("unsafe Pixel Operations Broker custody parent")
-    else:
-        root_device = root.st_dev
-        bounded_service_profiles = {
-            state_dir / ".bash_logout",
-            state_dir / ".bashrc",
-            state_dir / ".profile",
-        }
-        for current, directories, files in os.walk(state_dir, topdown=True, followlinks=False):
-            for name in (*directories, *files):
-                path = pathlib.Path(current) / name
-                info = path.lstat()
-                if (stat.S_ISLNK(info.st_mode) or info.st_dev != root_device
-                        or info.st_uid not in {broker_uid, owner_uid}
-                        or info.st_gid != broker_gid):
-                    raise SystemExit(f"unsafe Pixel Operations Broker state entry: {path}")
-                if path in bounded_service_profiles:
-                    if (not stat.S_ISREG(info.st_mode) or info.st_uid != broker_uid
-                            or info.st_nlink != 1
-                            or stat.S_IMODE(info.st_mode) not in {0o600, 0o640, 0o644}
-                            or info.st_size > 64 * 1024):
-                        raise SystemExit(f"unsafe Pixel Operations service profile: {path}")
-                    continue
-                if info.st_mode & 0o007:
-                    raise SystemExit(f"unsafe Pixel Operations Broker state entry: {path}")
-                if stat.S_ISDIR(info.st_mode):
-                    if info.st_mode & (stat.S_ISUID | stat.S_ISVTX):
-                        raise SystemExit(f"unsafe Pixel Operations Broker state directory: {path}")
-                elif stat.S_ISREG(info.st_mode):
-                    if info.st_nlink != 1 or info.st_mode & (stat.S_ISUID | stat.S_ISGID | stat.S_ISVTX):
-                        raise SystemExit(f"unsafe Pixel Operations Broker state file: {path}")
-                else:
-                    raise SystemExit(f"special file in Pixel Operations Broker state: {path}")
+    root_device = root.st_dev
+    bounded_service_profiles = {
+        state_dir / ".bash_logout",
+        state_dir / ".bashrc",
+        state_dir / ".profile",
+    }
+    state_error = None
+    def fail_walk(error):
+        raise error
+    for current, directories, files in os.walk(
+            state_dir, topdown=True, followlinks=False, onerror=fail_walk):
+        for name in (*directories, *files):
+            path = pathlib.Path(current) / name
+            info = path.lstat()
+            if (stat.S_ISLNK(info.st_mode) or info.st_dev != root_device
+                    or info.st_uid not in {broker_uid, owner_uid}
+                    or info.st_gid != broker_gid):
+                state_error = f"unsafe Pixel Operations Broker state entry: {path}"
+                break
+            if path in bounded_service_profiles:
+                if (not stat.S_ISREG(info.st_mode) or info.st_uid != broker_uid
+                        or info.st_nlink != 1
+                        or stat.S_IMODE(info.st_mode) not in {0o600, 0o640, 0o644}
+                        or info.st_size > 64 * 1024):
+                    state_error = f"unsafe Pixel Operations service profile: {path}"
+                    break
+                continue
+            if info.st_mode & 0o007:
+                state_error = f"unsafe Pixel Operations Broker state entry: {path}"
+                break
+            if stat.S_ISDIR(info.st_mode):
+                if info.st_mode & (stat.S_ISUID | stat.S_ISVTX):
+                    state_error = f"unsafe Pixel Operations Broker state directory: {path}"
+                    break
+            elif stat.S_ISREG(info.st_mode):
+                if info.st_nlink != 1 or info.st_mode & (stat.S_ISUID | stat.S_ISGID | stat.S_ISVTX):
+                    state_error = f"unsafe Pixel Operations Broker state file: {path}"
+                    break
+            else:
+                state_error = f"special file in Pixel Operations Broker state: {path}"
+                break
+        if state_error:
+            break
+    if state_error:
+        if state_cleanup_mode == "source-transition":
+            state_cleanup_action = "preserve"
+        else:
+            raise SystemExit(state_error)
 
-print("present|{}|{}|{}|{}".format(
+print("present|{}|{}|{}|{}|{}".format(
     broker_uid,
     broker_gid,
     "true" if passwd else "false",
     "true" if group else "false",
+    state_cleanup_action,
 ))
 PY
         )"; then
             log_error "ODS-managed Pixel Operations validation failed; leaving every Pixel artifact untouched"
             return 1
         fi
-        IFS='|' read -r ops_state_status ops_uid ops_gid ops_user_present ops_group_present <<<"$ops_plan"
+        IFS='|' read -r ops_state_status ops_uid ops_gid ops_user_present ops_group_present ops_state_action <<<"$ops_plan"
         [[ "$ops_state_status" == present && "$ops_uid" =~ ^[0-9]+$ && "$ops_gid" =~ ^[0-9]+$ \
             && ( "$ops_user_present" == true || "$ops_user_present" == false ) \
-            && ( "$ops_group_present" == true || "$ops_group_present" == false ) ]] || {
+            && ( "$ops_group_present" == true || "$ops_group_present" == false ) \
+            && ( "$ops_state_action" == remove || "$ops_state_action" == preserve ) ]] || {
             log_error "ODS-managed Pixel Operations cleanup plan is invalid"
             return 1
         }
@@ -2502,7 +2522,7 @@ PY
     fi
 
     if [[ "$ops_artifacts_present" == true ]]; then
-        if [[ "$ops_state_cleanup_mode" == source-transition ]]; then
+        if [[ "$ops_state_cleanup_mode" == source-transition && "$ops_state_action" == preserve ]]; then
             # Preserve the whole former broker home after the service stops.
             # Older installers copied /etc/skel into it, including links and
             # large trees. Renaming into root-only custody does not traverse
@@ -2619,7 +2639,10 @@ bounded_service_profiles = {
     root / ".bashrc",
     root / ".profile",
 }
-for current, directories, files in os.walk(root, topdown=True, followlinks=False):
+def fail_walk(error):
+    raise error
+for current, directories, files in os.walk(
+        root, topdown=True, followlinks=False, onerror=fail_walk):
     for name in (*directories, *files):
         path = pathlib.Path(current) / name
         info = path.lstat()
