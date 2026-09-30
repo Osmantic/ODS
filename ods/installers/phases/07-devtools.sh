@@ -19,7 +19,11 @@ ods_progress 42 "devtools" "Installing developer tools"
 # shellcheck source=../lib/node-runtime.sh
 . "$SCRIPT_DIR/installers/lib/node-runtime.sh"
 if $DRY_RUN; then
-    log "[DRY RUN] Would install AI developer tools (Claude Code and Codex CLI)"
+    if [[ "${ENABLE_DEVTOOLS:-false}" == true ]]; then
+        log "[DRY RUN] Would install AI developer tools (Claude Code and Codex CLI)"
+    else
+        log "[DRY RUN] Developer CLIs disabled; existing binaries would be preserved"
+    fi
     if [[ "${ENABLE_OPENCODE:-false}" == "true" ]]; then
         log "[DRY RUN] Would install and configure the optional OpenCode browser IDE (user-level systemd service on port 3003)"
     else
@@ -28,7 +32,8 @@ if $DRY_RUN; then
     log "[DRY RUN] Would install ODS host agent systemd service (system-mode, port 7710)"
     log "[DRY RUN] Would install ODS mDNS announcer systemd service (if zeroconf available)"
 else
-    ai "Installing AI developer tools..."
+    if [[ "${ENABLE_DEVTOOLS:-false}" == true ]]; then
+        ai "Installing AI developer tools..."
 
     # Ensure Node.js/npm is available (needed for Claude Code and Codex)
     if ! ods_linux_node_tools_available; then
@@ -105,6 +110,9 @@ else
     else
         ai_warn "Linux Node.js 20+ and npm are not available — skipping Claude Code and Codex CLI install"
         ai "  Install Linux Node.js 22+ and re-run to add Claude Code / Codex."
+    fi
+    else
+        log "Developer CLI installation disabled; existing Claude Code and Codex binaries preserved"
     fi
 
     if [[ "${ENABLE_OPENCODE:-false}" == "true" ]]; then
@@ -364,7 +372,13 @@ _ods_start_session_host_agent() {
         fi
     fi
 
-    if ODS_AGENT_FORCE_SESSION=true "$INSTALL_DIR/ods-cli" agent start >> "$LOG_FILE" 2>&1; then
+    # The installer holds its model lifecycle flock across this phase. Close
+    # only the child's inherited descriptor before ods-cli daemonizes; the
+    # long-lived session agent must not keep the installer's lock forever.
+    if ( [[ -z "${ODS_MODEL_LIFECYCLE_LOCK_FD:-}" ]] \
+            || exec {ODS_MODEL_LIFECYCLE_LOCK_FD}>&-; \
+         ODS_AGENT_FORCE_SESSION=true "$INSTALL_DIR/ods-cli" agent start \
+            >> "$LOG_FILE" 2>&1 ); then
         ai_ok "ODS host agent started for this session (background mode)"
         ai "  Run 'ods agent start' after reboot or login to start it again."
         return 0

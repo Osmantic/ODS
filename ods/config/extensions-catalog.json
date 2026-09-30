@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-28T20:06:41Z",
+  "generated_at": "2026-09-30T06:18:48Z",
   "schema_version": "1.0.0",
   "extensions": [
     {
@@ -8364,8 +8364,7 @@
       ],
       "compose_file": "compose.yaml",
       "depends_on": [
-        "searxng",
-        "llama-server"
+        "searxng"
       ],
       "port": 3000,
       "external_port_default": 3004,
@@ -8517,8 +8516,7 @@
       ],
       "compose_file": "",
       "depends_on": [
-        "litellm",
-        "searxng"
+        "litellm"
       ],
       "port": 0,
       "external_port_default": 0,
@@ -8566,15 +8564,13 @@
           "requirements": {
             "services": [
               "pixel-agent",
-              "litellm",
-              "searxng"
+              "litellm"
             ],
             "vram_gb": 0
           },
           "enabled_services_all": [
             "pixel-agent",
-            "litellm",
-            "searxng"
+            "litellm"
           ],
           "setup_time": "~1 minute",
           "priority": 60,

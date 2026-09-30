@@ -7,6 +7,14 @@ set -euo pipefail
 
 # Require Bash 4+ (associative arrays used by service registry and ods-cli)
 if (( BASH_VERSINFO[0] < 4 )); then
+    # macOS starts env bash with Apple's Bash 3.2 even after Homebrew installs
+    # Bash 4+. Re-exec the installed modern Bash before using associative arrays.
+    for _ods_modern_bash in /opt/homebrew/bin/bash /usr/local/bin/bash; do
+        if [[ -x "$_ods_modern_bash" ]] &&
+            "$_ods_modern_bash" -c '(( BASH_VERSINFO[0] >= 4 ))' >/dev/null 2>&1; then
+            exec "$_ods_modern_bash" "$0" "$@"
+        fi
+    done
     echo -e "\033[0;31m✗\033[0m ods-cli requires Bash 4.0+ (you have $BASH_VERSION)" >&2
     echo "  macOS ships Bash 3.2 due to licensing. Install a modern version:" >&2
     echo "    brew install bash" >&2

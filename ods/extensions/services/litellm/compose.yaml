@@ -31,6 +31,9 @@ services:
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |
+        if [ -s /run/secrets/ods-external-llm-api-key ]; then
+          export EXTERNAL_LLM_API_KEY="$$(cat /run/secrets/ods-external-llm-api-key)"
+        fi
         CONFIG_PATH=$$(sh /app/ods-select-config.sh)
         if [ -z "$$CONFIG_PATH" ] || [ ! -r "$$CONFIG_PATH" ]; then
           echo "ERROR: LiteLLM config selector returned an unreadable path: $${CONFIG_PATH:-<empty>}" >&2

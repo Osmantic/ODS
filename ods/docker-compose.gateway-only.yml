@@ -1,0 +1,7 @@
+# API-first gateway and explicit Portal-only installs keep the WebUI image and
+# container out of the active Compose project. Data remains for rollback.
+services:
+  open-webui:
+    profiles:
+      - gateway-webui
+    restart: "no"

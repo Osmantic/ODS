@@ -112,3 +112,42 @@ resolve_compose_config() {
 
     log "Compose selection: $COMPOSE_FLAGS"
 }
+
+# Compose overlays append profile lists. Verify the effective service set, not
+# only the selected files, before an API-only gateway pulls or starts images.
+ods_gateway_assert_no_managed_inference() {
+    local services compose_root="${INSTALL_DIR:-$PWD}"
+    # Phase 08 still runs from the source checkout during an upgrade. Resolve
+    # against the installed project, whose generated .env supplies Compose
+    # interpolation values and reflects the runtime selection being changed.
+    services="$(cd "$compose_root" && $DOCKER_COMPOSE_CMD "$@" config --services)" || return 1
+    if grep -Eq '^(llama-server|model-router)$' <<< "$services"; then
+        printf 'Gateway-only Compose includes ODS-managed inference. Clear COMPOSE_PROFILES and retry.\n' >&2
+        return 1
+    fi
+    return 0
+}
+
+# A caller can inherit COMPOSE_PROFILES=gateway-webui. Check the effective
+# service set before pulling or starting a Portal-only stack.
+ods_compose_assert_no_webui() {
+    local services compose_root="${INSTALL_DIR:-$PWD}"
+    services="$(cd "$compose_root" && $DOCKER_COMPOSE_CMD "$@" config --services)" || return 1
+    if grep -qx 'open-webui' <<< "$services"; then
+        printf 'No-WebUI Compose still enables Open WebUI. Clear COMPOSE_PROFILES and retry.\n' >&2
+        return 1
+    fi
+    return 0
+}
+
+# Phase 08 checks the selected service list before image pulls, while Pixel's
+# private ingress group is created in Phase 11. Compose interpolates every
+# selected service even for `config --services`, so supply a numeric GID only
+# within this read-only early check. Phase 11 validates the real installed GID
+# before starting containers and repeats the no-WebUI check.
+ods_compose_assert_no_webui_before_pixel_identity() (
+    if [[ -z "${PIXEL_INGRESS_GID:-}" ]]; then
+        export PIXEL_INGRESS_GID=1
+    fi
+    ods_compose_assert_no_webui "$@"
+)

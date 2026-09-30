@@ -5678,6 +5678,23 @@ def resolve_compose_flags() -> list:
         env["ODS_PYTHON_CMD"] = _to_bash_path(Path(sys.executable))
     install_env = load_env(INSTALL_DIR / ".env")
     ods_mode = install_env.get("ODS_MODE", "").strip() or "local"
+    # The host agent can outlive an installer rerun or an owner WebUI toggle.
+    # These selectors must come from the installed state rather than its
+    # startup environment when the Compose cache is refreshed. The resolver
+    # needs only external-route presence, never the credential-bearing URL.
+    for selector in (
+        "ENABLE_OPEN_WEBUI", "ODS_GATEWAY_ONLY", "EXTERNAL_LLM_URL",
+        "ODS_EXTERNAL_LLM_SELECTED",
+        "LEMONADE_EXTERNAL", "AMD_INFERENCE_RUNTIME",
+        "AMD_INFERENCE_MANAGED", "WHISPER_ACCELERATION",
+        "ODS_SKIP_GPU_OVERLAYS",
+    ):
+        env.pop(selector, None)
+        if selector not in ("EXTERNAL_LLM_URL", "ODS_EXTERNAL_LLM_SELECTED") and selector in install_env:
+            env[selector] = install_env[selector]
+    env["ODS_EXTERNAL_LLM_SELECTED"] = (
+        "true" if install_env.get("EXTERNAL_LLM_URL", "").strip() else "false"
+    )
     cmd = [
         bash, _to_bash_path(script),
         "--script-dir", _to_bash_path(INSTALL_DIR),
@@ -5995,6 +6012,114 @@ def docker_compose_action(service_id: str, action: str) -> tuple:
         return (True, "") if result.returncode == 0 else (False, result.stderr[:500])
     except subprocess.TimeoutExpired:
         return False, f"Docker compose operation timed out ({timeout}s)"
+
+
+def _webui_selection_state() -> dict:
+    """Report the installed choice without exposing the owner's environment."""
+    env_path = INSTALL_DIR / ".env"
+    if not env_path.is_file() or env_path.is_symlink():
+        raise RuntimeError("The installed environment is unavailable")
+    selected = load_env(env_path).get("ENABLE_OPEN_WEBUI", "true").strip().lower() == "true"
+    return {
+        "enabled": selected,
+        "supported": platform.system() == "Linux",
+    }
+
+
+def _enable_webui_selection() -> tuple[int, dict]:
+    """Add the base WebUI service to a Linux install without touching its data.
+
+    The existing .env choice and Compose resolver remain authoritative. Keep
+    the bind-mounted .env inode, and restore its exact bytes if startup fails.
+    """
+    if platform.system() != "Linux":
+        return 501, {"code": "unsupported_platform", "error": "WebUI add-back is available on Linux only"}
+    service_lock = _service_locks["open-webui"]
+    if not service_lock.acquire(blocking=False):
+        return 409, {"code": "operation_in_progress", "error": "Open WebUI is being changed"}
+    if not _model_activate_lock.acquire(blocking=False):
+        service_lock.release()
+        return 409, {"code": "configuration_in_use", "error": "ODS configuration is being changed"}
+
+    env_path = INSTALL_DIR / ".env"
+    original = None
+    changed = False
+    attempted_start = False
+    flags = None
+    compose_env = None
+    try:
+        if not env_path.is_file() or env_path.is_symlink():
+            return 409, {"code": "missing_install", "error": "The installed environment is unavailable"}
+        original = env_path.read_bytes()
+        env_text = original.decode("utf-8")
+        installed = load_env(env_path)
+        if installed.get("ENABLE_OPEN_WEBUI", "true").strip().lower() == "true":
+            if not _capture_container_state("ods-webui").get("running"):
+                return 503, {"code": "selected_but_stopped", "error": "Open WebUI is selected but not running; inspect its service state"}
+            return 200, {"enabled": True, "action": "already_selected"}
+
+        changed = True  # A failed in-place write may have written a prefix.
+        _write_bound_env_text(env_path, _upsert_env_text(env_text, "ENABLE_OPEN_WEBUI", "true"))
+        invalidate_compose_cache()
+        flags = resolve_compose_flags()
+        compose_env = os.environ.copy()
+        compose_env.pop("COMPOSE_PROFILES", None)
+        for selector in (
+            "ENABLE_OPEN_WEBUI", "ODS_GATEWAY_ONLY", "EXTERNAL_LLM_URL",
+            "LEMONADE_EXTERNAL", "AMD_INFERENCE_RUNTIME",
+            "AMD_INFERENCE_MANAGED", "WHISPER_ACCELERATION",
+            "ODS_SKIP_GPU_OVERLAYS",
+        ):
+            compose_env.pop(selector, None)
+            if selector in installed:
+                compose_env[selector] = installed[selector]
+        compose_env["ENABLE_OPEN_WEBUI"] = "true"
+
+        def compose(*arguments: str):
+            return subprocess.run(
+                ["docker", "compose", *flags, *arguments], cwd=str(INSTALL_DIR),
+                env=compose_env, capture_output=True, text=True,
+                timeout=SUBPROCESS_TIMEOUT_START,
+            )
+
+        configured = compose("config", "--services")
+        if configured.returncode != 0 or "open-webui" not in configured.stdout.splitlines():
+            raise RuntimeError("The selected Compose stack does not expose Open WebUI")
+        attempted_start = True
+        # Compose pulls this one image when missing. --no-deps must not wake a
+        # managed model on an external LiteLLM route.
+        if compose("up", "-d", "--no-deps", "open-webui").returncode != 0:
+            raise RuntimeError("Could not start Open WebUI")
+        _wait_for_container_health("ods-webui", attempts=75)
+        return 200, {"enabled": True, "action": "enabled"}
+    except (OSError, UnicodeError, ValueError, RuntimeError, subprocess.SubprocessError) as exc:
+        logger.warning("Open WebUI add-back failed: %s", type(exc).__name__)
+        stopped = not attempted_start
+        if attempted_start and flags is not None and compose_env is not None:
+            try:
+                if not _capture_container_state("ods-webui").get("running"):
+                    stopped = True
+                else:
+                    stop = subprocess.run(
+                        ["docker", "compose", *flags, "stop", "open-webui"],
+                        cwd=str(INSTALL_DIR), capture_output=True, text=True,
+                        timeout=SUBPROCESS_TIMEOUT_STOP, env=compose_env,
+                    )
+                    stopped = stop.returncode == 0 and not _capture_container_state("ods-webui").get("running")
+            except (OSError, RuntimeError, subprocess.SubprocessError):
+                stopped = False
+        if not stopped:
+            return 503, {"code": "reconciliation_required", "error": "Open WebUI startup failed; verify the running service before retrying", "enabled": True}
+        if changed and original is not None:
+            try:
+                _write_bound_env_bytes(env_path, original)
+                invalidate_compose_cache()
+            except (OSError, RuntimeError):
+                return 503, {"code": "reconciliation_required", "error": "Open WebUI startup failed and its prior selection could not be restored"}
+        return 502, {"code": "enable_failed", "error": "Open WebUI could not be added; the prior selection was restored", "enabled": False}
+    finally:
+        _model_activate_lock.release()
+        service_lock.release()
 
 
 def _proxy_compose_enabled() -> bool:
@@ -8615,6 +8740,8 @@ class AgentHandler(BaseHTTPRequestHandler):
             self._handle_gpu_metrics()
         elif path == "/v1/llm/status":
             self._handle_llm_status()
+        elif path == "/v1/webui/selection":
+            self._handle_webui_selection(change=False)
         elif path == "/v1/service/health":
             self._handle_service_health()
         elif path == "/v1/service/stats":
@@ -9259,6 +9386,8 @@ class AgentHandler(BaseHTTPRequestHandler):
             self._handle_extension_configure()
         elif self.path == "/v1/env/update":
             self._handle_env_update()
+        elif self.path == "/v1/webui/selection":
+            self._handle_webui_selection(change=True)
         elif self.path == "/v1/setup/persona":
             self._handle_setup_persona()
         elif self.path == "/v1/setup/complete":
@@ -10498,6 +10627,26 @@ class AgentHandler(BaseHTTPRequestHandler):
             json_response(self, 500, {"error": "Configuration could not be saved; inspect the retained backup before retrying"})
         finally:
             _model_activate_lock.release()
+
+    def _handle_webui_selection(self, *, change: bool):
+        if not check_auth(self):
+            return
+        if change:
+            body = read_json_body(self)
+            if body is None:
+                return
+            if not isinstance(body, dict) or set(body) != {"enabled"} or body["enabled"] is not True:
+                json_response(self, 400, {"code": "invalid_request", "error": "Only enabling Open WebUI is supported"}, no_store=True)
+                return
+            status, result = _enable_webui_selection()
+            json_response(self, status, result, no_store=True)
+            return
+        try:
+            result = _webui_selection_state()
+        except (OSError, RuntimeError, UnicodeError):
+            json_response(self, 503, {"code": "selection_unavailable", "error": "Open WebUI selection is unavailable"}, no_store=True)
+            return
+        json_response(self, 200, result, no_store=True)
 
     def _handle_env_update(self):
         """Write a validated .env file. Dashboard-api delegates here because the

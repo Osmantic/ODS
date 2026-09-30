@@ -2,7 +2,7 @@
 # ============================================================================
 # ODS Installer — Orchestrator
 # ============================================================================
-# Unified installer - voice-enabled by default, uses docker-compose.yml
+# Unified installer, uses docker-compose.yml
 # profiles for optional features.
 # Mission: M5 (Clonable ODS Setup Server)
 #
@@ -93,6 +93,7 @@ source "$SCRIPT_DIR/installers/lib/progress.sh"
 source "$SCRIPT_DIR/installers/lib/model-lifecycle-lock.sh"
 source "$SCRIPT_DIR/installers/lib/cli-link.sh"
 source "$SCRIPT_DIR/installers/lib/install-mode.sh"
+source "$SCRIPT_DIR/installers/lib/installed-feature-state.sh"
 source "$SCRIPT_DIR/installers/lib/external-services.sh"
 source "$SCRIPT_DIR/installers/lib/pixel-integration.sh"
 source "$SCRIPT_DIR/installers/lib/pixel-host-install.sh"
@@ -109,32 +110,60 @@ PREFLIGHT_ONLY=false
 SKIP_DOCKER=false
 FORCE=false
 TIER=""
-ENABLE_VOICE=true
-ENABLE_WORKFLOWS=true
-ENABLE_RAG=true
-ENABLE_RECOMMENDED=true
+# Phase 03 selects Portal chat on fresh, qualified Pixel hosts. Keep WebUI as
+# the provisional choice until that host check completes. Reruns retain their
+# installed selection, and older installs without the key keep WebUI.
+ODS_EXISTING_INSTALL=false
+[[ -f "$INSTALL_DIR/.env" ]] && ODS_EXISTING_INSTALL=true
+ODS_GATEWAY_ONLY=false
+ENABLE_OPEN_WEBUI=true
+WEBUI_EXPLICIT=false
+if $ODS_EXISTING_INSTALL &&
+   [[ "$(external_llm_env_value "$INSTALL_DIR/.env" ODS_GATEWAY_ONLY || true)" == true ]]; then
+    ODS_GATEWAY_ONLY=true
+    ENABLE_OPEN_WEBUI="$(external_llm_env_value "$INSTALL_DIR/.env" ENABLE_OPEN_WEBUI || true)"
+    [[ "$ENABLE_OPEN_WEBUI" == true ]] || ENABLE_OPEN_WEBUI=false
+fi
+if $ODS_EXISTING_INSTALL &&
+   [[ "$(external_llm_env_value "$INSTALL_DIR/.env" ENABLE_OPEN_WEBUI || true)" == false ]]; then
+    ENABLE_OPEN_WEBUI=false
+fi
+ENABLE_VOICE="$(ods_installed_service_default "$INSTALL_DIR" whisper "$ODS_EXISTING_INSTALL")"
+ENABLE_WORKFLOWS="$(ods_installed_service_default "$INSTALL_DIR" n8n "$ODS_EXISTING_INSTALL")"
+ENABLE_RAG="$(ods_installed_service_default "$INSTALL_DIR" qdrant "$ODS_EXISTING_INSTALL")"
+ENABLE_RECOMMENDED="$(ods_installed_service_default "$INSTALL_DIR" token-spy "$ODS_EXISTING_INSTALL")"
 # Pixel is the core conversational experience on qualified Linux hosts after a separate
 # written license agreement is acknowledged. Existing ODS tools remain available.
 # OpenClaw is deprecated and remains explicit opt-in.
-ENABLE_HERMES=true
+ENABLE_HERMES="$(ods_installed_service_default "$INSTALL_DIR" hermes "$ODS_EXISTING_INSTALL")"
 ENABLE_PIXEL="${ENABLE_PIXEL:-auto}"
 PIXEL_EXPLICIT=false
 HERMES_EXPLICIT=false
 ENABLE_OPENCLAW=false
 OPENCLAW_EXPLICIT=false
 ENABLE_OPENCODE=false
-ENABLE_COMFYUI=true
-ENABLE_APE=true
-ENABLE_PERPLEXICA=true
-ENABLE_PRIVACY_SHIELD=true
-ENABLE_ODS_PROXY=false
-ENABLE_TAILSCALE=false
-ENABLE_BRAVE_SEARCH=false
-# Langfuse (LLM observability) defaults OFF on all tiers because its
+if $ODS_EXISTING_INSTALL && command -v systemctl >/dev/null 2>&1 \
+    && systemctl --user is-enabled --quiet opencode-web.service 2>/dev/null; then
+    ENABLE_OPENCODE=true
+fi
+ENABLE_DEVTOOLS=false
+if $ODS_EXISTING_INSTALL &&
+   [[ "$(external_llm_env_value "$INSTALL_DIR/.env" ENABLE_DEVTOOLS || true)" == true ]]; then
+    ENABLE_DEVTOOLS=true
+fi
+DEVTOOLS_EXPLICIT=false
+ENABLE_COMFYUI="$(ods_installed_service_default "$INSTALL_DIR" comfyui "$ODS_EXISTING_INSTALL")"
+ENABLE_APE="$(ods_installed_service_default "$INSTALL_DIR" ape "$ODS_EXISTING_INSTALL")"
+ENABLE_PERPLEXICA="$(ods_installed_service_default "$INSTALL_DIR" perplexica "$ODS_EXISTING_INSTALL")"
+ENABLE_PRIVACY_SHIELD="$(ods_installed_service_default "$INSTALL_DIR" privacy-shield "$ODS_EXISTING_INSTALL")"
+ENABLE_ODS_PROXY="$(ods_installed_service_default "$INSTALL_DIR" ods-proxy false)"
+ENABLE_TAILSCALE="$(ods_installed_service_default "$INSTALL_DIR" tailscale false)"
+ENABLE_BRAVE_SEARCH="$(ods_installed_service_default "$INSTALL_DIR" brave-search false)"
+# Langfuse (LLM observability) defaults OFF on fresh installs because its
 # clickhouse + postgres + minio stack adds ~500MB baseline memory that is
 # nontrivial even on Tier 3+ systems. Users opt in via --langfuse, --all,
 # the Custom menu, or post-install `ods enable langfuse`.
-ENABLE_LANGFUSE=false
+ENABLE_LANGFUSE="$(ods_installed_service_default "$INSTALL_DIR" langfuse false)"
 INTERACTIVE=true
 ODS_MODE_EXPLICIT=false
 [[ -n "${ODS_MODE:-}" ]] && ODS_MODE_EXPLICIT=true
@@ -158,6 +187,8 @@ SUMMARY_JSON_FILE="${SUMMARY_JSON_FILE:-}"
 EXTERNAL_LLM_URL="${EXTERNAL_LLM_URL:-}"
 EXTERNAL_LLM_PROVIDER="${EXTERNAL_LLM_PROVIDER:-auto}"
 EXTERNAL_LLM_MODEL="${EXTERNAL_LLM_MODEL:-}"
+EXTERNAL_LLM_API_KEY_FILE="${EXTERNAL_LLM_API_KEY_FILE:-}"
+EXTERNAL_LLM_API_KEY_DISABLE=false
 EXTERNAL_LLM_AUTO_REUSE="${EXTERNAL_LLM_AUTO_REUSE:-false}"
 EXTERNAL_LLM_DISABLE=false
 ODS_RESELECT_MODEL="${ODS_RESELECT_MODEL:-false}"
@@ -198,6 +229,15 @@ Options:
                       External provider: auto, ollama, lmstudio, or openai-compatible
     --external-llm-model M
                       Exact model id exposed by the external provider
+    --gateway-only    API-first install using a verified external model; skip Open WebUI
+                      and ODS-managed llama-server (requires --external-llm-url)
+    --with-webui      Keep or restore Open WebUI
+    --no-webui        Use Portal as the only chat UI (requires --pixel on a fresh ordinary install)
+    --no-gateway-only Return a gateway install to the ordinary UI selection
+    --external-llm-key-file PATH
+                      Owner-only API key file for an authenticated external model
+    --no-external-llm-key
+                      Stop sending the saved key to the selected external model
     --reuse-external-llm
                       Allow non-interactive reuse of a detected matching model
     --no-external-llm
@@ -219,6 +259,8 @@ Options:
     --no-openclaw     Disable OpenClaw
     --opencode        Enable the optional OpenCode browser IDE
     --no-opencode     Disable the optional OpenCode browser IDE (default)
+    --with-devtools   Install Claude Code and Codex CLI on this host
+    --no-devtools     Skip developer CLI installation; keep existing binaries
     --comfyui         Enable ComfyUI image generation
     --no-comfyui      Disable ComfyUI image generation (saves ~34GB)
     --odsforge      Deprecated no-op; ODSForge has been removed
@@ -282,6 +324,12 @@ while [[ $# -gt 0 ]]; do
         --external-llm-url) EXTERNAL_LLM_URL="$2"; shift 2 ;;
         --external-llm-provider) EXTERNAL_LLM_PROVIDER="$2"; shift 2 ;;
         --external-llm-model) EXTERNAL_LLM_MODEL="$2"; shift 2 ;;
+        --gateway-only) ODS_GATEWAY_ONLY=true; ENABLE_OPEN_WEBUI=false; WEBUI_EXPLICIT=true; ODS_MODE=local; ODS_MODE_EXPLICIT=true; shift ;;
+        --with-webui) ENABLE_OPEN_WEBUI=true; WEBUI_EXPLICIT=true; shift ;;
+        --no-webui) ENABLE_OPEN_WEBUI=false; WEBUI_EXPLICIT=true; shift ;;
+        --no-gateway-only) ODS_GATEWAY_ONLY=false; ENABLE_OPEN_WEBUI=true; WEBUI_EXPLICIT=true; shift ;;
+        --external-llm-key-file) EXTERNAL_LLM_API_KEY_FILE="$2"; EXTERNAL_LLM_API_KEY_DISABLE=false; shift 2 ;;
+        --no-external-llm-key) EXTERNAL_LLM_API_KEY_FILE=""; EXTERNAL_LLM_API_KEY_DISABLE=true; shift ;;
         --reuse-external-llm) EXTERNAL_LLM_AUTO_REUSE=true; shift ;;
         --no-external-llm) EXTERNAL_LLM_DISABLE=true; shift ;;
         --reselect-model) ODS_RESELECT_MODEL=true; shift ;;
@@ -301,6 +349,8 @@ while [[ $# -gt 0 ]]; do
         --no-openclaw) ENABLE_OPENCLAW=false; OPENCLAW_EXPLICIT=true; shift ;;
         --opencode) ENABLE_OPENCODE=true; shift ;;
         --no-opencode) ENABLE_OPENCODE=false; shift ;;
+        --with-devtools) ENABLE_DEVTOOLS=true; DEVTOOLS_EXPLICIT=true; shift ;;
+        --no-devtools) ENABLE_DEVTOOLS=false; DEVTOOLS_EXPLICIT=true; shift ;;
         --comfyui) ENABLE_COMFYUI=true; shift ;;
         --no-comfyui) ENABLE_COMFYUI=false; shift ;;
         --odsforge) printf '%s\n' '[WARN] ODSForge has been removed; ignoring --odsforge' >&2; shift ;;
@@ -318,7 +368,7 @@ while [[ $# -gt 0 ]]; do
         # nothing serves it, and a phone clicking the invite gets
         # "site can't be reached." Operators who don't want the LAN-facing
         # surface can set ENABLE_ODS_PROXY=false in .env after install.
-        --all) ENABLE_VOICE=true; ENABLE_WORKFLOWS=true; ENABLE_RAG=true; ENABLE_RECOMMENDED=true; ENABLE_HERMES=true; ENABLE_OPENCLAW=false; ENABLE_OPENCODE=true; ENABLE_COMFYUI=true; ENABLE_APE=true; ENABLE_PERPLEXICA=true; ENABLE_PRIVACY_SHIELD=true; ENABLE_LANGFUSE=true; ENABLE_ODS_PROXY=true; shift ;;
+        --all) ENABLE_VOICE=true; ENABLE_WORKFLOWS=true; ENABLE_RAG=true; ENABLE_RECOMMENDED=true; ENABLE_HERMES=true; ENABLE_OPENCLAW=false; ENABLE_OPENCODE=true; ENABLE_DEVTOOLS=true; ENABLE_COMFYUI=true; ENABLE_APE=true; ENABLE_PERPLEXICA=true; ENABLE_PRIVACY_SHIELD=true; ENABLE_LANGFUSE=true; ENABLE_ODS_PROXY=true; ENABLE_OPEN_WEBUI=true; WEBUI_EXPLICIT=true; shift ;;
         --non-interactive) INTERACTIVE=false; shift ;;
         --offline) OFFLINE_MODE=true; shift ;;
         --lan) BIND_ADDRESS="0.0.0.0"; BIND_ADDRESS_EXPLICIT=true; shift ;;
@@ -328,6 +378,42 @@ while [[ $# -gt 0 ]]; do
         *) printf '[ERROR] Unknown option: %s\n' "$1" >&2; exit 1 ;;
     esac
 done
+
+if ! $ODS_GATEWAY_ONLY && [[ "$ENABLE_OPEN_WEBUI" != true ]] &&
+   ! $ODS_EXISTING_INSTALL && [[ "$ENABLE_PIXEL" != true ]]; then
+    echo "--no-webui on a fresh ordinary install requires --pixel so Portal supplies chat" >&2
+    exit 1
+fi
+if [[ "$ENABLE_OPEN_WEBUI" != true ]] &&
+   { [[ "$ENABLE_VOICE" == true ]] || [[ "$ENABLE_RAG" == true ]] ||
+     [[ "$ENABLE_ODS_PROXY" == true ]]; }; then
+    echo "Voice, RAG documents, and ODS proxy currently require Open WebUI; use --with-webui or leave those services off" >&2
+    exit 1
+fi
+
+if $ODS_GATEWAY_ONLY; then
+    if [[ "$ODS_MODE" != local || "$EXTERNAL_LLM_DISABLE" == true ]]; then
+        echo "--gateway-only requires the local external-model route" >&2
+        exit 1
+    fi
+    _gateway_external_url="$EXTERNAL_LLM_URL"
+    if [[ -z "$_gateway_external_url" && "$ODS_EXISTING_INSTALL" == true ]]; then
+        _gateway_external_url="$(external_llm_env_value "$INSTALL_DIR/.env" EXTERNAL_LLM_URL || true)"
+    fi
+    if [[ -z "$_gateway_external_url" ]]; then
+        echo "--gateway-only requires --external-llm-url or a saved external route" >&2
+        exit 1
+    fi
+    if [[ "$ENABLE_OPEN_WEBUI" != true ]]; then
+        if [[ "$ENABLE_PIXEL" == true ]]; then
+            echo "--pixel requires --with-webui in gateway-only mode" >&2
+            exit 1
+        fi
+        [[ "$ENABLE_PIXEL" != auto ]] || ENABLE_PIXEL=false
+    fi
+    unset _gateway_external_url
+fi
+export ODS_GATEWAY_ONLY ENABLE_OPEN_WEBUI
 
 # Validate external Lemonade VRAM from either flags or the environment before
 # any phase can evaluate it as Bash arithmetic. Empty retains auto-detection.

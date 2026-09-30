@@ -373,6 +373,32 @@ def _is_one_shot_extension(ext: dict) -> bool:
     return ext.get("port") == 0 and ext.get("startup_check", False) is False
 
 
+_LIBRARY_QUALIFIED_BUILTINS = frozenset({"n8n"})
+
+
+def _qualified_builtin_selection(service_id: str) -> dict:
+    """Expose Add controls only for individually qualified built-in services."""
+    if service_id not in _LIBRARY_QUALIFIED_BUILTINS or service_id in ALWAYS_ON_SERVICES:
+        return {}
+    directory = EXTENSIONS_DIR / service_id
+    if directory.is_symlink() or not directory.is_dir():
+        return {}
+    enabled = directory / "compose.yaml"
+    disabled = directory / "compose.yaml.disabled"
+    try:
+        states = []
+        for path in (enabled, disabled):
+            try:
+                states.append(stat.S_ISREG(path.lstat().st_mode))
+            except FileNotFoundError:
+                states.append(False)
+    except OSError:
+        return {}
+    if states.count(True) != 1:
+        return {}
+    return {"library_manageable": True, "library_selected": states[0]}
+
+
 
 def _compute_extension_status(ext: dict, services_by_id: dict) -> str:
     """Compute the runtime status of an extension."""
@@ -408,6 +434,21 @@ def _compute_extension_status(ext: dict, services_by_id: dict) -> str:
                 svc = services_by_id.get(ext_id)
                 if not (svc and svc.status == "healthy"):
                     return "installing"
+
+    # The process imported SERVICES before a Library action could have
+    # activated this optional fragment. Use the current selection plus the
+    # polled health result so Add/Retry/Disable remain truthful without an API
+    # restart. Error/install progress above still takes precedence.
+    selection = _qualified_builtin_selection(ext_id)
+    if selection:
+        if not selection["library_selected"]:
+            return "disabled"
+        svc = services_by_id.get(ext_id)
+        if svc and svc.status == "healthy":
+            return "enabled"
+        if svc and svc.status in {"unhealthy", "degraded"}:
+            return "unhealthy"
+        return "stopped"
 
     # Core service loaded from manifests
     if ext_id in SERVICES:
@@ -1081,7 +1122,15 @@ def _scan_compose_content(
                     raise HTTPException(status_code=400,
                         detail=f"Service '{svc_name}' uses a local build without a verified source recipe") from None
         extra_hosts = svc_def.get("extra_hosts")
-        if extra_hosts and not trusted:
+        # Shipped built-ins can use the same single host-gateway bridge as
+        # curated library recipes. Keep user/imported recipes untrusted, even
+        # when they copy the exact mapping from a built-in Compose file.
+        builtin_host_gateway = (
+            builtin
+            and compose_path.resolve().is_relative_to(EXTENSIONS_DIR.resolve())
+            and extra_hosts == ["host.docker.internal:host-gateway"]
+        )
+        if extra_hosts and not trusted and not builtin_host_gateway:
             raise HTTPException(
                 status_code=400,
                 detail=f"Extension rejected: extra_hosts in {svc_name}",
@@ -1594,6 +1643,52 @@ def _current_extension_catalog():
     return merge_local_catalog(installed, EXTENSIONS_LIBRARY_DIR, schema, proposals_only=True)
 
 
+@router.get("/api/webui/selection")
+async def webui_selection(api_key: str = Depends(verify_api_key)):
+    """Expose the installed base-service choice to its Extensions Library tile."""
+    try:
+        result = await asyncio.to_thread(request_agent_json, "GET", "/v1/webui/selection", timeout=5)
+    except AgentClientError:
+        raise HTTPException(status_code=503, detail="Open WebUI selection is unavailable") from None
+    if (not isinstance(result, dict) or type(result.get("enabled")) is not bool
+            or type(result.get("supported")) is not bool):
+        raise HTTPException(status_code=502, detail="Open WebUI selection could not be verified")
+    return JSONResponse({"enabled": result["enabled"], "supported": result["supported"]},
+                        headers={"Cache-Control": "no-store"})
+
+
+@router.post("/api/webui/selection")
+async def enable_webui_from_library(request: Request, api_key: str = Depends(verify_api_key)):
+    """Add WebUI through its dedicated host-owned Linux selection path."""
+    try:
+        payload = await request.json()
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid Open WebUI selection") from None
+    if not isinstance(payload, dict) or set(payload) != {"enabled"} or payload["enabled"] is not True:
+        raise HTTPException(status_code=400, detail="Only adding Open WebUI is supported")
+    try:
+        result = await asyncio.to_thread(request_agent_json, "POST", "/v1/webui/selection",
+                                         payload={"enabled": True}, timeout=900)
+    except AgentHTTPError as exc:
+        code = exc.status_code
+        if code == 501:
+            detail = "Adding Open WebUI from the Library is available on Linux only"
+        elif code == 409:
+            detail = "Open WebUI selection is currently unavailable or another operation is in progress"
+        elif code == 503:
+            detail = "Open WebUI requires inspection before another change"
+        else:
+            code, detail = 502, "Open WebUI could not be added; inspect its selection before retrying"
+        raise HTTPException(status_code=code, detail=detail) from None
+    except AgentClientError:
+        raise HTTPException(status_code=503, detail="Open WebUI result could not be confirmed") from None
+    if (not isinstance(result, dict) or result.get("enabled") is not True
+            or result.get("action") not in {"enabled", "already_selected"}):
+        raise HTTPException(status_code=502, detail="Open WebUI result could not be verified")
+    return JSONResponse({"enabled": True, "action": result["action"]},
+                        headers={"Cache-Control": "no-store"})
+
+
 @router.get("/api/extensions/catalog")
 async def extensions_catalog(
     category: Optional[str] = None,
@@ -1677,6 +1772,7 @@ async def extensions_catalog(
             "depends_on": ext.get("depends_on", []),
             "dependents": [],
             "dependency_status": {},
+            **_qualified_builtin_selection(ext_id),
             **update_state,
         }
         llm_contract = _llm_contract_for_extension(ext)
@@ -3112,6 +3208,7 @@ async def extension_detail(
         "error_message": error_message,
         "source": source,
         "installable": installable,
+        **_qualified_builtin_selection(service_id),
         "llm": llm_contract,
         "public_url": public_url,
         "integration": integration,

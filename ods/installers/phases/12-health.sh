@@ -49,7 +49,12 @@ show_phase 6 6 "Systems Online" "~1-2 minutes"
 
 if $DRY_RUN; then
     log "[DRY RUN] Would verify service health:"
-    log "[DRY RUN]   - llama-server, Open WebUI, Perplexica, ComfyUI"
+    if [[ -n "${EXTERNAL_LLM_URL:-}" ]]; then
+        log "[DRY RUN]   - External model through LiteLLM"
+    else
+        log "[DRY RUN]   - Managed llama-server"
+    fi
+    [[ "${ENABLE_OPEN_WEBUI:-true}" != "true" ]] || log "[DRY RUN]   - Open WebUI"
     log "[DRY RUN]   - Auto-configure Perplexica for ${LLM_MODEL:-default model}"
     [[ "$ENABLE_HERMES" == "true" ]] && log "[DRY RUN]   - Hermes Agent + hermes-proxy"
     [[ "${ENABLE_PIXEL_RUNTIME:-false}" == "true" ]] && log "[DRY RUN]   - Pixel gateway + private ingress + edge"
@@ -267,13 +272,16 @@ _phase12_verify_external_llm_completion() {
 
     ai "Verifying the external model route from the ODS Docker network..."
     response="$(
-        "${docker_cmd_arr[@]}" exec "$dashboard_container" python -c '
+        if [[ -n "${EXTERNAL_LLM_API_KEY_FILE:-}" ]]; then
+            external_llm_read_api_key "$EXTERNAL_LLM_API_KEY_FILE"
+        fi | "${docker_cmd_arr[@]}" exec -i "$dashboard_container" python -c '
 import json
 import sys
 import urllib.request
 
 base = sys.argv[1].rstrip("/")
 model = sys.argv[2]
+key = sys.stdin.read()
 payload = json.dumps({
     "model": model,
     "messages": [{"role": "user", "content": "Reply with OK."}],
@@ -281,10 +289,13 @@ payload = json.dumps({
     "temperature": 0,
     "stream": False,
 }).encode()
+headers = {"Content-Type": "application/json"}
+if key:
+    headers["Authorization"] = "Bearer " + key
 request = urllib.request.Request(
     base + "/v1/chat/completions",
     data=payload,
-    headers={"Content-Type": "application/json"},
+    headers=headers,
 )
 with urllib.request.urlopen(request, timeout=90) as result:
     body = json.load(result)
@@ -417,8 +428,10 @@ else
 fi
 
 # Open WebUI: 150 attempts * adaptive backoff = up to ~20 minutes
-ods_progress 89 "health" "Waiting for Chat UI"
-_check_health "Open WebUI" "http://127.0.0.1:${SERVICE_PORTS[open-webui]:-3000}${SERVICE_HEALTH[open-webui]:-/}" 150 10 "$(sr_container open-webui)"
+if [[ "${ENABLE_OPEN_WEBUI:-true}" == "true" ]]; then
+    ods_progress 89 "health" "Waiting for Chat UI"
+    _check_health "Open WebUI" "http://127.0.0.1:${SERVICE_PORTS[open-webui]:-3000}${SERVICE_HEALTH[open-webui]:-/}" 150 10 "$(sr_container open-webui)"
+fi
 # Perplexica: 150 attempts * adaptive backoff = up to ~20 minutes
 if [[ "${ENABLE_PERPLEXICA:-false}" == "true" ]]; then
     ods_progress 91 "health" "Waiting for Research engine"
@@ -716,8 +729,8 @@ if [[ "$HEALTH_FAILURES" -gt 0 ]]; then
     if [[ "$EMBEDDINGS_HEALTH_FAILED" == "true" ]]; then
         ai_warn "Embeddings/RAG was selected, but the embeddings service did not become healthy."
         ai_warn "This often means text-embeddings-inference stalled while downloading its ONNX model from Hugging Face."
-        ai_warn "Recovery: docker compose logs embeddings"
-        ai_warn "Then retry after network/CDN recovery: docker compose up -d embeddings"
+        ai_warn "Recovery: cd \"$INSTALL_DIR\" && ./ods-cli logs embeddings"
+        ai_warn "Then retry after network/CDN recovery: cd \"$INSTALL_DIR\" && ./ods-cli start embeddings"
         exit 1
     fi
     if [[ "${COMPOSE_STARTED_WITH_DELAYED_HEALTH:-false}" == "true" ]]; then

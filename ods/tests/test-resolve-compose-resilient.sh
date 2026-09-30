@@ -42,6 +42,21 @@ if [[ ! -f "$ROOT_DIR/scripts/resolve-compose-stack.sh" ]]; then
 fi
 pass "resolve-compose-stack.sh exists"
 
+# The long-lived host agent sends an external-route presence marker after
+# reading the installed .env. It must select the external overlay without
+# carrying a potentially credential-bearing upstream URL in its environment.
+marker_flags=$(ODS_EXTERNAL_LLM_SELECTED=true EXTERNAL_LLM_URL="" \
+    ODS_GATEWAY_ONLY=true ENABLE_OPEN_WEBUI=false ODS_MODE=local \
+    bash "$ROOT_DIR/scripts/resolve-compose-stack.sh" \
+        --script-dir "$ROOT_DIR" --tier 1 --gpu-backend cpu 2>/dev/null)
+if contains_path "$marker_flags" "docker-compose.external-llm.yml" \
+    && contains_path "$marker_flags" "docker-compose.gateway-only.yml" \
+    && ! contains_path "$marker_flags" "perplexica/compose.local.yaml"; then
+    pass "Persisted external-route marker excludes managed Perplexica inference"
+else
+    fail "Persisted external-route marker resolved a local Perplexica dependency"
+fi
+
 # 2. --skip-broken flag is accepted
 help_exit=0
 bash "$ROOT_DIR/scripts/resolve-compose-stack.sh" --help 2>&1 | grep -q "skip-broken" || help_exit=$?
@@ -664,6 +679,18 @@ real_external_flags=$(EXTERNAL_LLM_URL="http://127.0.0.1:11434" \
     bash "$ROOT_DIR/scripts/resolve-compose-stack.sh" \
     --script-dir "$ROOT_DIR" --tier 1 --gpu-backend nvidia --skip-broken \
     2>/dev/null)
+
+real_managed_flags=$(EXTERNAL_LLM_URL="" \
+    ODS_MODE=local \
+    bash "$ROOT_DIR/scripts/resolve-compose-stack.sh" \
+    --script-dir "$ROOT_DIR" --tier 1 --gpu-backend nvidia --skip-broken \
+    2>/dev/null)
+if printf '%s\n' "$real_managed_flags" | grep -Fq \
+    "extensions/services/perplexica/compose.local.yaml"; then
+    pass "Managed-local Perplexica keeps its llama-server health overlay"
+else
+    fail "Managed-local Perplexica lost its llama-server health overlay"
+fi
 
 if printf '%s\n' "$real_external_flags" | grep -Fq "compose.local.yaml"; then
     fail "External-LLM stack retained a local llama-server dependency overlay"

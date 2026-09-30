@@ -103,6 +103,17 @@ def test_request_half_close_still_receives_complete_response():
         assert finished.wait(2)
 
 
+def test_upstream_eof_releases_slot_when_client_keeps_write_open():
+    with _live_tunnel() as (client, upstream, proxy, finished):
+        # The native server has finished its response, but a VM-side HTTP
+        # client can keep its write half open after receiving the bridge FIN.
+        upstream.shutdown(socket.SHUT_WR)
+        assert client.recv(1) == b""
+        assert finished.wait(2), "completed upstream retained the bridge slot"
+        assert proxy._connection_slots.acquire(blocking=False)
+        proxy._connection_slots.release()
+
+
 class _HttpHandler(socketserver.BaseRequestHandler):
     def handle(self) -> None:
         self.request.recv(4096)

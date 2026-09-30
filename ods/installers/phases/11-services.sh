@@ -26,6 +26,56 @@ if ! declare -F ui_status_line >/dev/null 2>&1; then
     }
 fi
 
+_phase11_prepare_uid1000_bind_data() {
+    local base="$1" host_uid host_gid path owner
+    shift
+    local -a writable=("$@") targets=() container_targets=()
+
+    # These images run as UID 1000. On a multi-user host the installing
+    # account can have another UID, so its bind mounts need a scoped repair.
+    # Rootless Docker has its own namespace repair.
+    [[ "${_phase06_rootless:-false}" == "true" ]] && return 0
+    host_uid="$(id -u)" || return 1
+    [[ "$host_uid" == 1000 ]] && return 0
+    host_gid="$(id -g)" || return 1
+    [[ "$host_gid" =~ ^[0-9]+$ ]] || return 1
+    [[ -d "$base" && ! -L "$base" ]] || {
+        ai_bad "UID 1000 data root is not a real directory: $base"
+        return 1
+    }
+    for path in "${writable[@]}"; do
+        [[ -d "$base/$path" && ! -L "$base/$path" ]] || {
+            ai_bad "UID 1000 bind source is not a real directory: $base/$path"
+            return 1
+        }
+        targets+=("$base/$path")
+        container_targets+=("/data/$path")
+    done
+
+    if ods_sudo_available; then
+        ods_sudo chown -h -R "1000:$host_gid" "${targets[@]}" || return 1
+        ods_sudo chmod -R ug+rwX "${targets[@]}" || return 1
+    else
+        _ods_rootless_ensure_helper_image || return 1
+        # Docker access already granted to the installer can perform this
+        # repair inside an exact bind mount, without changing host privilege.
+        docker_run run --rm --network none --user 0:0 \
+            --mount "type=bind,src=$base,dst=/data" \
+            "$ODS_ROOTLESS_HELPER_IMAGE" sh -ec '
+                gid="$1"; shift
+                chown -h -R "1000:$gid" "$@"
+                chmod -R ug+rwX "$@"
+            ' sh "$host_gid" "${container_targets[@]}" || return 1
+    fi
+    for path in "${writable[@]}"; do
+        owner="$(stat -c '%u:%g' "$base/$path")" || return 1
+        [[ "$owner" == "1000:$host_gid" && -w "$base/$path" ]] || {
+            ai_bad "UID 1000 bind source is not writable by the container and install group: $base/$path"
+            return 1
+        }
+    done
+}
+
 _phase11_refresh_litellm() {
     local services
     if ! services="$($DOCKER_COMPOSE_CMD "${COMPOSE_FLAGS_ARR[@]}" config --services 2>>"$LOG_FILE")"; then
@@ -983,6 +1033,11 @@ else
         # NVIDIA ComfyUI also needs output/input/workflows bind-mount dirs
         if [[ "$GPU_BACKEND" == "nvidia" ]]; then
             mkdir -p "$INSTALL_DIR/data/comfyui"/{output,input,workflows,user}
+            if ! _phase11_prepare_uid1000_bind_data \
+                "$INSTALL_DIR/data/comfyui" models output input user; then
+                ai_bad "Could not prepare NVIDIA ComfyUI data for its container user."
+                exit 1
+            fi
         fi
 
         SDXL_MODEL="sdxl_lightning_4step.safetensors"
@@ -1032,6 +1087,16 @@ else
             ai "SDXL Lightning downloading in background (~6.5GB). ComfyUI will be ready once complete."
         else
             ai_ok "SDXL Lightning model already present"
+        fi
+    fi
+
+    # Speaches writes its Hugging Face model cache as UID 1000. Docker would
+    # otherwise mount a fresh cache owned by a different install account.
+    if [[ -f "$INSTALL_DIR/extensions/services/whisper/compose.yaml" ]]; then
+        mkdir -p "$INSTALL_DIR/data/whisper"
+        if ! _phase11_prepare_uid1000_bind_data "$INSTALL_DIR/data/whisper" .; then
+            ai_bad "Could not prepare the speech model cache for its container user."
+            exit 1
         fi
     fi
 
@@ -1259,6 +1324,42 @@ MODELS_INI_EOF
     fi
     ai_ok "Compose configuration valid"
 
+    if [[ "${ENABLE_OPEN_WEBUI:-true}" != true ]] &&
+       ! ods_compose_assert_no_webui "${COMPOSE_FLAGS_ARR[@]}" 2>>"$LOG_FILE"; then
+        ai_bad "No-WebUI Compose could start Open WebUI; inspect $LOG_FILE and clear COMPOSE_PROFILES."
+        exit 1
+    fi
+
+    if [[ "${ODS_GATEWAY_ONLY:-false}" == true ]]; then
+        # `--remove-orphans` does not stop a service still declared behind a
+        # profile. An upgrade from local inference can otherwise leave the old
+        # llama-server holding GPU memory after the gateway install succeeds.
+        # Check the effective Compose service set before stopping anything: a
+        # caller-selected profile must never start managed inference here.
+        if ! ods_gateway_assert_no_managed_inference "${COMPOSE_FLAGS_ARR[@]}" \
+            2>>"$LOG_FILE"; then
+            ai_bad "Gateway-only Compose could start ODS-managed inference; inspect $LOG_FILE and clear COMPOSE_PROFILES."
+            exit 1
+        fi
+        if ! $DOCKER_COMPOSE_CMD --profile local-inference \
+            "${COMPOSE_FLAGS_ARR[@]}" stop llama-server model-router >>"$LOG_FILE" 2>&1; then
+            ai_bad "Could not stop the previous ODS managed-inference services."
+            exit 1
+        fi
+        if ! _gateway_inference_running="$($DOCKER_COMPOSE_CMD \
+            --profile local-inference "${COMPOSE_FLAGS_ARR[@]}" \
+            ps --status running -q llama-server model-router 2>>"$LOG_FILE")"; then
+            ai_bad "Could not verify ODS managed inference stopped."
+            exit 1
+        fi
+        if [[ -n "$_gateway_inference_running" ]]; then
+            ai_bad "ODS managed inference is still running after gateway-only selection."
+            exit 1
+        fi
+        unset _gateway_inference_running
+        ai_ok "Previous ODS managed inference stopped; model data retained"
+    fi
+
     if ! _phase11_prefetch_embeddings_model; then
         exit 1
     fi
@@ -1401,6 +1502,28 @@ MODELS_INI_EOF
     fi
 
     if $compose_ok; then
+        # A service hidden behind a Compose profile is not removed by `up
+        # --remove-orphans` on an upgrade because it is still declared in the
+        # project. Stop only this project's WebUI service; keep its data and
+        # container available for an explicit --with-webui rollback.
+        if [[ "${ENABLE_OPEN_WEBUI:-true}" != true ]]; then
+            if ! $DOCKER_COMPOSE_CMD --profile gateway-webui "${COMPOSE_FLAGS_ARR[@]}" \
+                stop open-webui >> "$LOG_FILE" 2>&1; then
+                ai_bad "Could not stop the previous ODS Open WebUI service."
+                exit 1
+            fi
+            if ! _gateway_webui_running="$($DOCKER_COMPOSE_CMD --profile gateway-webui \
+                "${COMPOSE_FLAGS_ARR[@]}" ps --status running -q open-webui 2>>"$LOG_FILE")"; then
+                ai_bad "Could not verify the ODS Open WebUI service stopped."
+                exit 1
+            fi
+            if [[ -n "$_gateway_webui_running" ]]; then
+                ai_bad "ODS Open WebUI is still running after no-WebUI selection."
+                exit 1
+            fi
+            unset _gateway_webui_running
+            ai_ok "Open WebUI stopped; its data remains available for rollback"
+        fi
         if $_compose_started_with_delayed_health; then
             ui_status_line warn "Containers launched; waiting on health checks"
             echo ""
@@ -1411,7 +1534,11 @@ MODELS_INI_EOF
             fi
             ui_status_line ok "All containers launched"
             echo ""
-            ai_ok "Services started (llama-server)"
+            if [[ -n "${EXTERNAL_LLM_URL:-}" ]]; then
+                ai_ok "Services started (external model through LiteLLM)"
+            else
+                ai_ok "Services started (llama-server)"
+            fi
         fi
 
         # Re-render data/persona/SOUL.md now that services are actually

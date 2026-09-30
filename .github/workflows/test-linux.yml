@@ -488,7 +488,11 @@ jobs:
           bash tests/contracts/test-installer-contracts.sh
           bash tests/test-linux-ollama-port-override.sh
           bash tests/test-external-services.sh
+          bash tests/test-gateway-only-linux.sh
+          bash tests/test-portal-no-webui-selection.sh
+          bash tests/test-linux-devtools-opt-in.sh
           bash tests/test-dashboard-data-permissions.sh
+          bash tests/test-extensions-library-copy.sh
           sudo -n python3 tests/test_dashboard_data_permissions.py
           bash tests/test-resolve-compose-resilient.sh
           bash tests/test-phase03-multigpu-tty.sh
