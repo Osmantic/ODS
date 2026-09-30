@@ -1085,6 +1085,8 @@ def run_browser(bundle, playwright_factory=None):
             page.goto(
                 origin + "/__ods_inspection__.html", wait_until="load", timeout=8000
             )
+            if blocked:
+                raise BlockedRequest()
             frame = page.frame(name="inspection")
             if frame is None or frame.url != origin + prefix:
                 raise Invalid("preview frame unavailable")
@@ -1108,7 +1110,7 @@ def run_browser(bundle, playwright_factory=None):
 
             def evaluate(function, arguments=None):
                 if blocked:
-                    raise Invalid("preview navigation or request blocked")
+                    raise BlockedRequest()
                 result = cdp.send(
                     "Runtime.callFunctionOn",
                     {
@@ -1190,7 +1192,7 @@ def run_browser(bundle, playwright_factory=None):
 
             def measure(locator, include_hidden, owned, include_text=False, select_value=None, arm_download=False):
                 if blocked:
-                    raise Invalid("preview navigation or request blocked")
+                    raise BlockedRequest()
                 if "selector" in locator:
                     selection = evaluate(
                         SELECTOR_COUNT,
@@ -1350,7 +1352,7 @@ def run_browser(bundle, playwright_factory=None):
                             )
                         ).click(timeout=2000)
                         if blocked:
-                            raise Invalid("preview navigation or request blocked")
+                            raise BlockedRequest()
                         after, after_stable = observe(step["locator"])
                         item.update(
                             after=after,
@@ -1425,6 +1427,10 @@ def run_browser(bundle, playwright_factory=None):
         server.server_close()
 
 
+class BlockedRequest(Invalid):
+    """A request or navigation was denied by this capsule's policy guard."""
+
+
 def main():
     request = None
     try:
@@ -1434,6 +1440,8 @@ def main():
         bundle = strict_json(raw)
         request, _ = validate_bundle(bundle)
         result = run_browser(bundle)
+    except BlockedRequest:
+        result = failure("request_blocked", request)
     except Exception:
         result = failure("unavailable", request)
     encoded = canonical(result)

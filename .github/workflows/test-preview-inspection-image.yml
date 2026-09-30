@@ -10,6 +10,8 @@ on:
       - 'ods/extensions/services/pixel-agent/host/preview_inspection*.py'
       - 'ods/tests/test_preview_inspection_permissions.py'
       - 'ods/tests/test_preview_inspection_download.py'
+      - 'ods/tests/test_preview_inspection_blocked.py'
+      - 'ods/extensions/services/pixel-agent/tests/inspection_blocked.test.mjs'
       - 'ods/extensions/services/pixel-agent/plugin/workspace-preview-inspect.mjs'
       - 'ods/extensions/services/pixel-agent/tests/inspection_download.test.mjs'
   push:
@@ -22,6 +24,8 @@ on:
       - 'ods/extensions/services/pixel-agent/host/preview_inspection*.py'
       - 'ods/tests/test_preview_inspection_permissions.py'
       - 'ods/tests/test_preview_inspection_download.py'
+      - 'ods/tests/test_preview_inspection_blocked.py'
+      - 'ods/extensions/services/pixel-agent/tests/inspection_blocked.test.mjs'
       - 'ods/extensions/services/pixel-agent/plugin/workspace-preview-inspect.mjs'
       - 'ods/extensions/services/pixel-agent/tests/inspection_download.test.mjs'
 
@@ -46,5 +50,5 @@ jobs:
       - name: Verify snapshot downloads with real isolated Chromium
         run: |
           docker build --iidfile "$RUNNER_TEMP/inspection-image-id" -f ods/extensions/services/pixel-agent/host/Dockerfile.inspection ods/extensions/services/pixel-agent/host
-          ODS_INSPECTION_TEST_IMAGE="$(cat "$RUNNER_TEMP/inspection-image-id")" python -m pytest -q ods/tests/test_preview_inspection_download.py
-          node --test ods/extensions/services/pixel-agent/tests/inspection_download.test.mjs ods/extensions/services/pixel-agent/tests/inspection_select.test.mjs
+          ODS_INSPECTION_TEST_IMAGE="$(cat "$RUNNER_TEMP/inspection-image-id")" python -m pytest -q ods/tests/test_preview_inspection_download.py ods/tests/test_preview_inspection_blocked.py
+          node --test ods/extensions/services/pixel-agent/tests/inspection_download.test.mjs ods/extensions/services/pixel-agent/tests/inspection_select.test.mjs ods/extensions/services/pixel-agent/tests/inspection_blocked.test.mjs
