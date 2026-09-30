@@ -44,11 +44,15 @@ const sources=new Map([
 const loader=registerHooks({load(url,context,next){return sources.has(url)?{format:'module',source:sources.get(url),shortCircuit:true}:next(url,context);}});
 const native=await import(pathToFileURL(path.join(root,'dist/proxy-Bsfwfsp-.js')));
 const {compactEmbeddedAgentSessionDirect}=await import(pathToFileURL(path.join(root,'dist/compact-DuWIsaq_.js')));
+const {i:openStateDatabase,n:closeStateDatabases}=await import(pathToFileURL(path.join(root,'dist/openclaw-state-db-BtpXMqJX.js')));
 test.after(async()=>{
+  // The native compaction wrapper caches the shared SQLite connection. Windows
+  // correctly refuses to remove that open file; close its actual owner first.
+  const {db}=openStateDatabase();
+  closeStateDatabases();
+  assert.equal(db.isOpen,false,'native shared state handle must be closed before cleanup');
   loader.deregister();
-  // Windows may still be releasing native file/directory handles. Bound the
-  // cleanup retries; persistent failures must continue to fail the fixture.
-  await fs.promises.rm(temporary,{recursive:true,force:true,maxRetries:5,retryDelay:100});
+  await fs.promises.rm(temporary,{recursive:true,force:true});
 });
 
 function harness(entries) {

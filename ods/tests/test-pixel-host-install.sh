@@ -3174,7 +3174,7 @@ import pathlib,sys
 text=pathlib.Path(sys.argv[1]).read_text()
 reconcile=text.index("if ! reconcile_ods_managed_pixel_model")
 discard=text.index("discard_active_model_config_snapshot", reconcile)
-cleanup=text.index("# â”€â”€ Phase 5b: Remove bootstrap model", reconcile)
+cleanup=text.index("# ── Phase 5b: Remove bootstrap model", reconcile)
 assert reconcile < discard < cleanup
 ' "$ROOT/scripts/bootstrap-upgrade.sh"
 
