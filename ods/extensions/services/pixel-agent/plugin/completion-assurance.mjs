@@ -18,7 +18,17 @@ function sourceReadsRequested(text) {
   const value = normalize(text);
   if (/^(?:translate|traduza|explain how|explique como)\b/.test(value.trim()) ||
       /\b(?:do not|don't|never|without|nao|sem)\b[^.!?\n]{0,45}\b(?:open|read|fetch|abrir|abra|ler|leia)\b/.test(value)) return false;
-  return /\b(?:open|read|fetch|abra|abrir|leia|ler)\b[^.!?\n]{0,100}\b(?:sources?|pages?|links?|urls?|fontes?|paginas?)\b/.test(value);
+  for (const read of value.matchAll(/\b(?:open|read|fetch|abra|abrir|leia|ler)\b/g)) {
+    let objects = value.slice(read.index + read[0].length).split(/[.!?\n]/, 1)[0].slice(0, 100);
+    // A file read followed by a separate delivery action does not read that
+    // action's links. Keep coordinated objects ("files and sources") and
+    // examine every read verb, so mixed file/web tasks still require receipts.
+    const file = /\b(?:files?|arquivos?)\b/.exec(objects);
+    const delivery = /\b(?:deliver|provide|publish|return|give|send|share|entreg(?:ue|ar)|fornec(?:a|er)|publi(?:que|car)|retorn(?:e|ar)|envi(?:e|ar)|compartilh(?:e|ar))\b/.exec(objects);
+    if (file && delivery && file.index < delivery.index) objects = objects.slice(0, delivery.index);
+    if (/\b(?:sources?|pages?|links?|urls?|fontes?|paginas?)\b/.test(objects)) return true;
+  }
+  return false;
 }
 
 // Only current-run, successful page receipts establish that a page was read.
