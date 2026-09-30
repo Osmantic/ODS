@@ -5718,14 +5718,32 @@ function hasWorkspaceHtmlTarget(text) {
   return /\b[A-Za-z0-9_-][A-Za-z0-9._/-]{0,511}\.html?\b/i.test(paths);
 }
 
+// Owner phrasings that make delivery optional. The preparation verbs are a
+// closed list on purpose: "No need to explain, publish it" must stay a
+// publication request, so an arbitrary verb never joins the declined list.
+const OPTIONAL_DELIVERY_PATTERNS = (() => {
+  const negator = String.raw`(?:no\s+need\s+to|(?:do\s+not|don['’]t)\s+(?:need|have)\s+to|need\s+not|needn['’]t)`;
+  const preparation = String.raw`(?:(?:build|compile|run|test|install|bundle|package|lint)\s*(?:,\s*(?:(?:and|or)\s+)?|(?:and|or)\s+))*`;
+  const delivery = String.raw`(?:publish|republish|preview|display|serve|deploy)`;
+  const ptNegator = String.raw`nao\s+(?:precisa|precisamos|e\s+necessario|ha\s+necessidade\s+de)`;
+  const ptPreparation = String.raw`(?:(?:compilar|construir|executar|testar|instalar)\s*(?:,\s*(?:(?:e|ou)\s+)?|(?:e|ou)\s+))*`;
+  const ptDelivery = String.raw`(?:publicar|republicar|mostrar|abrir\s+(?:uma?\s+)?previa)`;
+  const gerund = String.raw`(?:publish(?:ing)?|republish(?:ing)?|preview(?:ing)?|display(?:ing)?|serving|deploy(?:ing|ment)?|publication)`;
+  return [
+    new RegExp(String.raw`\b${negator}\s+${preparation}${delivery}\b`, 'i'),
+    new RegExp(String.raw`\bno\s+need\s+for\s+(?:an?\s+)?(?:preview|publication|publishing|deployment)\b`, 'i'),
+    new RegExp(String.raw`\b${gerund}\s+(?:is\s+not|isn['’]t)\s+(?:necessary|required|needed)\b`, 'i'),
+    new RegExp(String.raw`\b${ptNegator}\s+${ptPreparation}${ptDelivery}\b`, 'i'),
+  ];
+})();
+
 function ownerDeclinesPreviewDelivery(text) {
   // Optional build work must not become mandatory publication after a JSX/HTML
   // write. Match only a coordinated delivery verb, not another clause's task.
   const prose = workspacePreviewInstructionText(text).normalize('NFD').replace(/[\u0300-\u036f]/g, '');
   let optional = false;
   for (const clause of prose.split(/[!?;\n]+|\.(?=\s|$)|\b(?:but|however|instead|then|mas|porem)\b/i)) {
-    if (/\b(?:no\s+need\s+to|(?:do\s+not|don['’]t)\s+need\s+to|need\s+not)\s+(?:(?:build|compile|run|test)\s*(?:,\s*(?:(?:and|or)\s+)?|(?:and|or)\s+))*(?:publish|republish|preview|display|serve)\b/i.test(clause)
-      || /\bnao\s+(?:precisa|precisamos|e\s+necessario)\s+(?:(?:compilar|construir|executar|testar)\s*(?:,\s*(?:(?:e|ou)\s+)?|(?:e|ou)\s+))*(?:publicar|republicar|mostrar|abrir\s+(?:uma?\s+)?previa)\b/i.test(clause)) optional = true;
+    if (OPTIONAL_DELIVERY_PATTERNS.some(pattern => pattern.test(clause))) optional = true;
     // A later independent, explicit publication command still has to be
     // verified. This is not permission to override an actual "do not publish".
     else if (hasExplicitWorkspacePreviewDirective(clause)) optional = false;
