@@ -149,6 +149,10 @@ jobs:
             for repository in "${1:-/etc/zypp/repos.d}"/*.repo; do
               [ -f "$repository" ] || continue
               sed -i -E 's#^([[:space:]]*(baseurl|gpgkey)[[:space:]]*=[[:space:]]*)http://download\.opensuse\.org/#\1https://download.opensuse.org/#' "$repository"
+              # GitHub runners have repeatedly failed to refresh the OSS
+              # metadata through the mirror route. Use openSUSE's official CDN
+              # for that base URL, leaving the GPG key and checks unchanged.
+              sed -i -E 's#^([[:space:]]*baseurl[[:space:]]*=[[:space:]]*)https://download\.opensuse\.org/tumbleweed/repo/oss(/.*)?$#\1https://cdn.opensuse.org/tumbleweed/repo/oss\2#' "$repository"
             done
           }
 
