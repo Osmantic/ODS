@@ -5718,6 +5718,19 @@ function hasWorkspaceHtmlTarget(text) {
   return /\b[A-Za-z0-9_-][A-Za-z0-9._/-]{0,511}\.html?\b/i.test(paths);
 }
 
+function independentEnglishPreviewAfterConstraint(clause) {
+  const negative = /\b(?:do\s+not|don['’]t|never|must\s+not|should\s+not|avoid|skip|without)\s+([^.!?;\n]*)/i.exec(clause);
+  if (!negative) return '';
+  // "Do not create a site and publish" coordinates prohibited actions.
+  // "Do not use dependencies and publish" instead limits implementation.
+  // Negative alternatives (or/nor) never become positive delivery here.
+  if (/^(?:(?:try|attempt)\s+to\s+)?(?:create|build|edit|write|run|execute|make|develop|design|generate|implement|change|modify|show|preview|view|open|serve|publish|republish|display)\b/i.test(negative[1])
+    || /\b(?:or|nor)\s+(?:publish|republish|preview|display|serve|show|open|view)\b/i.test(negative[1])) return '';
+  if (!/^without\b/i.test(negative[0]) && !/^(?:use|require|depend|include)\b/i.test(negative[1])) return '';
+  const delivery = /\band\s+(?:publish|republish|preview|display|serve|show|open|view)\b/i.exec(negative[1]);
+  return delivery ? negative[1].slice(delivery.index) : '';
+}
+
 function ownerForbidsWorkspacePreview(messages, prompt) {
   const text = currentOwnerIntentText(messages, prompt)
     .replace(/(?:\x60{3}|~{3})[\s\S]*?(?:\x60{3}|~{3})/g, " ")
@@ -5731,7 +5744,7 @@ function ownerForbidsWorkspacePreview(messages, prompt) {
   // files, but publish the existing site" remains a publication request.
   const coordinatedProhibition = text
     .split(/[!?;\n]+|\.(?=\s|$)|\b(?:but|however|instead|then)\b/i)
-    .some((clause) => /\b(?:do\s+not|don['’]t|never|must\s+not|should\s+not|avoid|skip|without)\b[^.!?;\n]{0,160}\b(?:and|or|nor)\s+(?:show(?:ing)?|preview(?:ing)?|view(?:ing)?|open(?:ing)?|serv(?:e|ing)|publish(?:ing)?|republish(?:ing)?|display(?:ing)?)\b/i.test(clause));
+    .some((clause) => !independentEnglishPreviewAfterConstraint(clause) && /\b(?:do\s+not|don['’]t|never|must\s+not|should\s+not|avoid|skip|without)\b[^.!?;\n]{0,160}\b(?:and|or|nor)\s+(?:show(?:ing)?|preview(?:ing)?|view(?:ing)?|open(?:ing)?|serv(?:e|ing)|publish(?:ing)?|republish(?:ing)?|display(?:ing)?)\b/i.test(clause));
   if (coordinatedProhibition) return true;
   return portuguesePreviewForbidden(text) || /\b(?:only|just)\s+(?:the\s+)?(?:code|source(?:\s+code)?)\b/i.test(text) || /\b(?:do\s+not|don['’]t|never|must\s+not|should\s+not|avoid|skip|without)\s+(?:(?:try|attempt)\s+to\s+)?(?:(?:create|build|edit|write|run|execute)\s*(?:,\s*|and\s+|or\s+))*(?:show(?:ing)?|preview(?:ing)?|view(?:ing)?|open(?:ing)?|serv(?:e|ing)|publish(?:ing)?|republish(?:ing)?|display(?:ing)?)\b/i.test(text);
 }
@@ -5998,7 +6011,7 @@ export function userMessageRequestsWorkspacePreview(messages, prompt = undefined
   // independent actions after "but", "instead", "then", or a sentence boundary.
   const actionText = text.replace(
     /\b(?:do\s+not|don['’]t|never|must\s+not|should\s+not|not\s+a\s+request\s+to|avoid|skip|without|no)\b(?:(?!\b(?:but|instead|then)\b)[^.!?;\n])*/gi,
-    " "
+    clause => independentEnglishPreviewAfterConstraint(clause) || " "
   ).replace(
     /\b(?:preserve|keep)\s+(?:(?:all|my|the|these|those|other|existing|current|saved|working)\s+)*(?:apps?|applications?)\b(?:\s+unchanged)?/gi,
     " "

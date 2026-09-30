@@ -9,6 +9,9 @@ for (const prompt of [
   'Crie os arquivos para download. Não construa um site nem mostre uma pré-visualização.',
   'Crie um CSV. Não edite os arquivos existentes ou publique um preview.',
   'Create downloadable files. Do not create a website nor publish a preview.',
+  'Create downloadable files. Do not create a website and publish a preview.',
+  'Create downloadable files. Do not try to create a website and publish a preview.',
+  'Create downloadable files. Do not use libraries or publish a preview.',
 ]) {
   test(`a declined preview error does not invent a website delivery obligation: ${prompt}`, () => {
     const guard=createToolLoopGuard();
@@ -35,6 +38,9 @@ test('independent positive publication and real websites keep their verification
     'Crie um site sem dependências e publique uma prévia.',
     'Não use bibliotecas externas e publique o site.',
     'Crie uma página sem imagens e publique o preview.',
+    'Create a website without dependencies and publish a preview.',
+    'Do not use external libraries and publish the website.',
+    'Create the files without images and publish the website.',
     'Não altere os arquivos. Publique o site existente.',
     'Do not delete the files, but publish the existing website.']) {
     const guard=createToolLoopGuard();
