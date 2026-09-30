@@ -28,13 +28,40 @@ class ProjectJobs:
     def _blocking(db, request):
         # One authenticated owner per controller. Isolate by mutable project;
         # fixed diagnostics have no project target and are isolated by runtime.
-        row = db.execute("""SELECT id FROM jobs WHERE state='unconfirmed'
+        rows = db.execute("""SELECT * FROM jobs WHERE state='unconfirmed'
             AND json_extract(request,'$.project')=?
             AND COALESCE(json_extract(request,'$.kind'),'build')=?
             AND (?='build' OR json_extract(request,'$.runtime')=?)
-            ORDER BY updated,id LIMIT 1""", (request['project'], request.get('kind', 'build'),
-                request.get('kind', 'build'), request.get('runtime'))).fetchone()
-        return row['id'] if row else None
+            ORDER BY updated,id""", (request['project'], request.get('kind', 'build'),
+                request.get('kind', 'build'), request.get('runtime'))).fetchall()
+        for row in rows:
+            from project_owner_resolution import read_resolution
+            state_root = str(Path(db.execute('PRAGMA database_list').fetchone()[2]).parent)
+            resolution = read_resolution(row['id'], state_root, ProjectJobs.receipt_hash(row))
+            if resolution is None or not ProjectJobs._valid_resolution(row, resolution):
+                return row['id']
+        return None
+
+    @staticmethod
+    def receipt_hash(row):
+        """Bind every original persisted field; later receipt changes reclose the fence."""
+        return hashlib.sha256(ProjectJobs._json(dict(row)).encode()).hexdigest()
+
+    @staticmethod
+    def _valid_resolution(row, resolution):
+        try:
+            record = json.loads(resolution['record'])
+            return (resolution['receipt_hash'] == ProjectJobs.receipt_hash(row)
+                    and hashlib.sha256(resolution['record'].encode()).hexdigest() == resolution['record_hash']
+                    and record['kind'] == 'owner-attested-retry-resolution'
+                    and record['job'] == row['id']
+                    and record['receiptSha256'] == resolution['receipt_hash']
+                    and record['historicalOutcome'] == 'unknown'
+                    and record['sameEngineAttested'] is True
+                    and record['currentResourcesAbsent'] is True
+                    and record['engineBootTime'] > row['updated'])
+        except (KeyError, TypeError, ValueError):
+            return False
     def __init__(self, root):
         root = Path(root)
         root.mkdir(mode=0o700, parents=False, exist_ok=True)
@@ -56,6 +83,26 @@ class ProjectJobs:
                 state TEXT NOT NULL, steps TEXT NOT NULL DEFAULT '[]',
                 output TEXT, cancel_requested INTEGER NOT NULL DEFAULT 0,
                 updated REAL NOT NULL)""")
+
+    def original_receipt(self, job):
+        with self._connect() as db:
+            row = db.execute('SELECT * FROM jobs WHERE id=?', (job,)).fetchone()
+        if row is None:
+            raise KeyError(job)
+        return dict(row)
+
+    def record_owner_resolution(self, job, expected_hash, record):
+        """Offline owner CLI only. Never changes the historical job or replays it."""
+        encoded = self._json(record)
+        resolution = {'receipt_hash': expected_hash, 'record': encoded,
+                      'record_hash': hashlib.sha256(encoded.encode()).hexdigest()}
+        with self._connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            row = db.execute('SELECT * FROM jobs WHERE id=?', (job,)).fetchone()
+            if row is None or row['state'] != 'unconfirmed' or not self._valid_resolution(row, resolution):
+                raise ValueError('original receipt changed or resolution invalid')
+            from project_owner_resolution import write_resolution
+            write_resolution(job, resolution)
 
     @contextmanager
     def _connect(self):
