@@ -417,6 +417,9 @@ else
             # Token Spy's persistent directory intentionally belongs to its
             # container UID 1000; phase 06 verifies that identity below.
             [[ "$_data_dir" == "$INSTALL_DIR/data/token-spy/" ]] && continue
+            # APE's private governance state/audit directory intentionally
+            # belongs to the APE container UID; phase 06 prepares it below.
+            [[ "$_data_dir" == "$INSTALL_DIR/data/ape/" ]] && continue
             if [[ -d "$_data_dir" ]] && ! [[ -w "$_data_dir" ]]; then
                 _phase06_repair_host_path "$_data_dir" "container-owned data directory" || return 1
             fi
@@ -439,6 +442,7 @@ else
                 [[ "${ENABLE_HERMES:-false}" == "true" && "$_d" == "$INSTALL_DIR/data/hermes/" ]] && continue
                 [[ "$_d" == "$INSTALL_DIR/data/pixel-chat-results/" ]] && continue
                 [[ "$_d" == "$INSTALL_DIR/data/token-spy/" ]] && continue
+                [[ "$_d" == "$INSTALL_DIR/data/ape/" ]] && continue
                 [[ -d "$_d" ]] && ! [[ -w "$_d" ]] && _cant_write="$_cant_write ${_d#"$INSTALL_DIR"/}"
             done
         done
@@ -650,6 +654,60 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
             return 1
         fi
         unset _token_spy_chown
+    fi
+
+    # APE (Agent Policy Engine) persists private governance state and the
+    # audit log to the data/ape bind mount. Its image runs as the system user
+    # created by `adduser --system --no-create-home ape`, which on the pinned
+    # python:3.12-slim base resolves to UID 100 / GID 65534 (nogroup),
+    # independently of the installer owner. A rootful install would otherwise
+    # leave data/ape owned by the invoking account under the invoking umask, so
+    # the container cannot create state.json/audit.jsonl and crash-loops with
+    # PermissionError. Prepare the private state directory for the APE
+    # container UID/GID without a broad chmod 777 and without following
+    # symlinks (chown -h so a link is never dereferenced; no -R across a
+    # symlinked ancestor because install, data, and ape must be physical directories).
+    # Scope: only data/ape. This block is a no-op on rootless installs, which
+    # ods_fix_rootless_ownership prepares separately.
+    if ! $_phase06_rootless \
+        && [[ -f "$INSTALL_DIR/extensions/services/ape/compose.yaml" ]] \
+        && grep -Eq '^[[:space:]]*-?[[:space:]]*(\./)?data/ape:/data/ape(:[^[:space:]]*)?[[:space:]]*$' \
+            "$INSTALL_DIR/extensions/services/ape/compose.yaml"; then
+        _ape_uid=100
+        _ape_gid=65534
+        # These IDs match the pinned image and the rootless repair contract.
+        # Refuse links in the bind source and its install-owned ancestry before
+        # privileged recursive ownership changes.
+        [[ -d "$INSTALL_DIR" && ! -L "$INSTALL_DIR" \
+            && -d "$INSTALL_DIR/data" && ! -L "$INSTALL_DIR/data" \
+            && -d "$INSTALL_DIR/data/ape" && ! -L "$INSTALL_DIR/data/ape" ]] || {
+            error "Cannot safely prepare data/ape: expected real install, data, and APE directories."
+            return 1
+        }
+        if ods_sudo_available; then
+            ods_sudo chown -h -R "$_ape_uid:$_ape_gid" "$INSTALL_DIR/data/ape" \
+                && ods_sudo chmod 700 "$INSTALL_DIR/data/ape" || {
+                error "Cannot prepare data/ape for APE container UID $_ape_uid. Grant privileged access or repair its ownership, then re-run the installer."
+                return 1
+            }
+        else
+            _ods_rootless_ensure_helper_image || return 1
+            if ! docker_run run --rm --network none --user 0:0 \
+                --mount "type=bind,src=$INSTALL_DIR/data/ape,dst=/data" \
+                "$ODS_ROOTLESS_HELPER_IMAGE" sh -ec '
+                    chown -h -R "$1:$2" /data
+                    chmod 700 /data
+                ' sh "$_ape_uid" "$_ape_gid"; then
+                error "Cannot prepare data/ape for APE container UID $_ape_uid. Grant privileged access or repair its ownership, then re-run the installer."
+                return 1
+            fi
+        fi
+        _ape_meta=$(stat -c '%u:%g:%a' "$INSTALL_DIR/data/ape" 2>/dev/null || true)
+        if [[ "$_ape_meta" != "$_ape_uid:$_ape_gid:700" ]]; then
+            error "data/ape ownership/mode verification failed: got ${_ape_meta:-unreadable}, expected $_ape_uid:$_ape_gid:700."
+            return 1
+        fi
+        unset _ape_meta _ape_uid _ape_gid
     fi
 
     # ── .env merge logic: preserve user-configured values on re-install ──

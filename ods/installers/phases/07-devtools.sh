@@ -232,6 +232,10 @@ else
   "\$schema": "https://opencode.ai/config.json",
   "model": "llama-server/${_opencode_model_id}",
   "small_model": "llama-server/${_opencode_model_id}",
+  "agent": {
+    "build": {"model": "llama-server/${_opencode_model_id}"},
+    "plan": {"model": "llama-server/${_opencode_model_id}"}
+  },
   "provider": {
     "llama-server": {
       "npm": "@ai-sdk/openai-compatible",
@@ -269,15 +273,28 @@ OPENCODE_EOF
                     --arg provider_name "$_opencode_provider_name" \
                     --argjson context "$_opencode_context" \
                     --argjson output "$_opencode_output_limit" \
-                    '.["$schema"] = "https://opencode.ai/config.json"
-                     | .model = ("llama-server/" + $model_id)
-                     | .small_model = ("llama-server/" + $model_id)
-                     | .provider = (.provider // {})
-                     | .provider["llama-server"] = (.provider["llama-server"] // {})
-                     | .provider["llama-server"].npm = "@ai-sdk/openai-compatible"
-                     | .provider["llama-server"].name = $provider_name
-                     | .provider["llama-server"].options = {"baseURL": $url, "apiKey": $key}
-                     | .provider["llama-server"].models = {
+                    '. as $previous
+                      | ($previous.model | if type == "string" then startswith("llama-server/") else false end) as $ods_previous
+                      | .["$schema"] = "https://opencode.ai/config.json"
+                      | .model = ("llama-server/" + $model_id)
+                      | .small_model = ("llama-server/" + $model_id)
+                      | .agent = (if .agent == null then {} else .agent end)
+                      | if (.agent | type) == "object" then
+                          .agent.build = (if .agent.build == null then {} else .agent.build end)
+                          | .agent.plan = (if .agent.plan == null then {} else .agent.plan end)
+                          | if (.agent.build | type) == "object" then
+                              .agent.build.model = (if .agent.build.model == null or ($ods_previous and .agent.build.model == $previous.model) then ("llama-server/" + $model_id) else .agent.build.model end)
+                            else . end
+                          | if (.agent.plan | type) == "object" then
+                              .agent.plan.model = (if .agent.plan.model == null or ($ods_previous and .agent.plan.model == $previous.model) then ("llama-server/" + $model_id) else .agent.plan.model end)
+                            else . end
+                        else . end
+                      | .provider = (.provider // {})
+                      | .provider["llama-server"] = (.provider["llama-server"] // {})
+                      | .provider["llama-server"].npm = "@ai-sdk/openai-compatible"
+                      | .provider["llama-server"].name = $provider_name
+                      | .provider["llama-server"].options = {"baseURL": $url, "apiKey": $key}
+                      | .provider["llama-server"].models = {
                          ($model_id): {
                            "name": $model_name,
                            "limit": {"context": $context, "output": $output}
