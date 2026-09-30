@@ -67,6 +67,18 @@ if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; 
         -f "$root/docker-compose.gateway-only.yml" config --images)"
     [[ "$lean_images" != *'open-webui'* ]] \
         || { echo 'fresh Core still pulls WebUI image' >&2; exit 1; }
+    pixel_services="$(env WEBUI_SECRET=test-placeholder PIXEL_OPENWEBUI_KEY=test-placeholder \
+        DASHBOARD_API_KEY=test-placeholder PIXEL_INGRESS_GID=1000 PIXEL_NATIVE_UID=1000 \
+        PIXEL_INGRESS_RUNTIME_DIR=/tmp PIXEL_PREVIEW_RUNTIME_DIR=/tmp \
+        PIXEL_NATIVE_WORKSPACE=/tmp PIXEL_NATIVE_CONFIG_PATH=/tmp/gateway.json \
+        PIXEL_NATIVE_INGRESS_IMAGE=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+        "${compose_base[@]}" -f "$root/docker-compose.gateway-only.yml" \
+        -f "$root/extensions/services/pixel-edge/compose.yaml.disabled" \
+        -f "$root/installers/macos/pixel-native.compose.yaml.disabled" config --services)"
+    grep -qx 'pixel-edge' <<< "$pixel_services" \
+        || { echo 'lean native Pixel lost its Edge service' >&2; exit 1; }
+    ! grep -qx 'open-webui' <<< "$pixel_services" \
+        || { echo 'native Pixel overlay reselected WebUI' >&2; exit 1; }
 else
     echo 'SKIP: Docker Compose unavailable for real service/image selection'
 fi
