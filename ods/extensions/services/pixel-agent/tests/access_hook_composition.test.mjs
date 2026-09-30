@@ -13,7 +13,7 @@ const source = fs.readFileSync(process.env.PIXEL_PLUGIN_ENTRY ??
 const start = source.indexOf('    if (!managedRuntime) {');
 const end = source.indexOf('    api.registerHttpRoute(', start);
 assert.ok(start >= 0 && end > start, 'expected tool lifecycle registration block');
-function hooks(guardResult, managedRuntime = false) {
+function hooks(guardResult, managedRuntime = false, delivery = {}) {
   const callbacks = {}, calls = [], activity = [], bundleAdmission = createWorkspaceBundleAdmission();
   const runtime = {
     isProbe: context => context?.runId === 'private-proof',
@@ -37,7 +37,7 @@ function hooks(guardResult, managedRuntime = false) {
     },
     goalProgress: {before() {}, update() {}, finish() {}},
     bundleAdmission, managedRuntime, accessRuntime: runtime, withPixelCronDeliveryDefault,
-    delegationDelivery:{end(){},blocked(){},before(){},after(){}},
+    delegationDelivery:{end(){},blocked(){},before(){},after(){},admission(){},...delivery},
     withPixelSubagentWorkspace, resolveUserPath: value=>value,
     resolveAgentWorkspaceDir:config=>config?.agents?.list?.find(agent=>agent.id==='pixel')?.workspace,
     AGENT_ID: 'pixel',
@@ -96,9 +96,15 @@ test('result observations and internal proof behavior remain composed', async ()
 });
 
 for (const managed of [false, true]) {
+  test(`cancel fence blocks before inference without acquiring another native slot (managed=${managed})`, () => {
+    const denied={outcome:'block',reason:'ods-delegation-interrupted'};
+    const {callbacks,calls}=hooks(undefined,managed,{admission:()=>denied});
+    assert.equal(callbacks.before_agent_run(event,context),denied);
+    assert.deepEqual(calls,[]);
+  });
   test(`agent activity ends without duplicate managed admission/cleanup (managed=${managed})`, () => {
     const {callbacks, calls, activity} = hooks(undefined, managed);
-    assert.equal(typeof callbacks.before_agent_run, managed ? 'undefined' : 'function');
+    assert.equal(typeof callbacks.before_agent_run, 'function');
     callbacks.before_agent_run?.(event, context);
     callbacks.agent_end(event, context);
     assert.deepEqual(calls, managed ? [] : ['run-admit', 'run-finish']);
@@ -108,6 +114,23 @@ for (const managed of [false, true]) {
     assert.deepEqual(activity, [], 'private proofs must not create workbench activity');
   });
 }
+
+test('cancelled announcement is fenced before actual prompt hook registers guard or workbench activity',async()=>{
+  const begin=source.indexOf('    api.on("before_prompt_build",');
+  const finish=source.indexOf('    api.on("model_call_started",',begin);
+  assert.ok(begin>=0 && finish>begin);
+  let callback;const calls=[];
+  vm.runInNewContext(source.slice(begin,finish),{
+    api:{config:{},on:(_name,fn)=>{callback=fn;}},AGENT_ID:'pixel',
+    privateBrowserAccessForAgent:()=>false,executionHostForAgent:()=> 'gateway',
+    toolLoopGuard:{observeRun:()=>calls.push('guard'),ownerIntentEventForRun:(_id,e)=>e,promptContextForRun:()=>undefined,verificationStatus:()=>undefined},
+    accessRuntime:{isProbe:()=>false},delegationDelivery:{admission:()=>({outcome:'block'}),observe:()=>calls.push('observe'),promptContext:()=>undefined},
+    goalProgress:{begin:()=>calls.push('goal'),active:()=>false},taskActivity:{begin:()=>calls.push('activity')},
+    promptContractForAgent:()=>undefined,configuredContextWindow:32768,configuredLeanPrompt:true,
+  });
+  await callback({prompt:'late child event'},context);
+  assert.deepEqual(calls,[],'a late announcement cannot replace the active owner or start workbench activity');
+});
 
 
 test('bundle scope is recorded only after guard and native admission both permit the call',async()=>{

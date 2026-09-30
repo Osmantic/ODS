@@ -1,4 +1,6 @@
 // Actual pinned gateway, native child/announce and offline model. Only temporary state.
+// cancel qualifies an existing chat: real warmup, history ledger/context, two
+// active children, Stop, immediate owner followup, then both late announcements.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createServer} from 'node:http';
@@ -10,16 +12,19 @@ import {join} from 'node:path';
 import {createHash} from 'node:crypto';
 import {pathToFileURL} from 'node:url';
 import {createIngressServer} from '../host/pixel_ingress.mjs';
+import {createChatHistoryLedger} from '../host/chat_history_ledger.mjs';
 import {setTimeout as delay} from 'node:timers/promises';
 const installed=process.env.OPENCLAW_PACKAGE_DIR;
 const sha=value=>createHash('sha256').update(value).digest('hex');
 
-for(const interim of ['final','silent','waiting','extra-yield'])
+for(const interim of ['final','silent','waiting','extra-yield','cancel'])
 test(`real gateway deferred delegation waits for two children and a verified revised terminal answer: interim=${interim}`,
   {skip:!installed || process.platform==='win32',timeout:120000},async()=>{
   const root=mkdtempSync(join(tmpdir(),'ods-delegation-hooks-'));
   const pkg=join(root,'package'), workspace=join(root,'workspace'), plugin=join(root,'plugin');
   let child, ingress, log='', revision=false, requests=0, askedFinalYield=false;
+  const heldChildren=[];
+  const prior=[{role:'user',content:'WARMUP_FIXTURE'},{role:'assistant',content:'READY'}];
   const childTexts=['CHILD_VERIFIED_0: ORIGINAL_CART_EVIDENCE_914','CHILD_VERIFIED_1: ORIGINAL_ACCESSIBILITY_EVIDENCE_731'];
   const consolidatedRequests=[],providerTrace=[];
   cpSync(installed,pkg,{recursive:true});
@@ -38,15 +43,25 @@ test(`real gateway deferred delegation waits for two children and a verified rev
   }
   mkdirSync(workspace);mkdirSync(plugin);
   const eventsFile=join(root,'hooks.jsonl');
-  for(const name of ['subagent-delivery.mjs','owner-visible-reply.mjs']) cpSync(new URL('../plugin/'+name,import.meta.url),join(plugin,name));
+  cpSync(new URL('../plugin/',import.meta.url),plugin,{recursive:true});
+  if(process.env.ODS_DELIVERY_FIXTURE_MODULE)cpSync(process.env.ODS_DELIVERY_FIXTURE_MODULE,join(plugin,'subagent-delivery.mjs'));
   writeFileSync(join(plugin,'package.json'),JSON.stringify({name:'delivery-fixture',version:'1.0.0',type:'module',openclaw:{extensions:['./index.mjs']}}));
   writeFileSync(join(plugin,'openclaw.plugin.json'),JSON.stringify({id:'delivery-fixture',activation:{onStartup:true},configSchema:{type:'object',properties:{}}}));
   writeFileSync(join(plugin,'index.mjs'),`
     import {appendFileSync} from 'node:fs';
     import {subagentDeliveryFor} from './subagent-delivery.mjs';
-    import {getSessionEntry,resolveStorePath} from ${JSON.stringify(pathToFileURL(join(pkg,'dist/plugin-sdk/session-store-runtime.js')).href)};
+    import {createToolLoopGuard,createRunAbortAdapter} from './tool-loop-guard.mjs';
+    import {createContextCompaction} from './context-compaction.mjs';
+    import {createHistoryHydrator} from './history-context.mjs';
+    import {withSessionTranscriptWriteLock,appendAssistantMirrorMessageByIdentity} from ${JSON.stringify(pathToFileURL(join(pkg,'dist/plugin-sdk/session-transcript-runtime.js')).href)};
+    import {abortAgentHarnessRun,abortAndDrainAgentHarnessRun,resolveActiveEmbeddedRunSessionId} from ${JSON.stringify(pathToFileURL(join(pkg,'dist/plugin-sdk/agent-harness-runtime.js')).href)};
+    import {getSessionEntry,patchSessionEntry,resolveStorePath} from ${JSON.stringify(pathToFileURL(join(pkg,'dist/plugin-sdk/session-store-runtime.js')).href)};
     import {extractAssistantVisibleText} from ${JSON.stringify(pathToFileURL(join(pkg,'dist/plugin-sdk/agent-runtime.js')).href)};
-    let revised=false;const sharedGuard={};
+    let revised=false,contextCompaction;const sharedGuard=createToolLoopGuard({
+      abortRun:createRunAbortAdapter({resolveSessionId:resolveActiveEmbeddedRunSessionId,abort:abortAgentHarnessRun}),
+      abortRunAndDrain:(sessionId,sessionKey)=>abortAndDrainAgentHarnessRun({
+        sessionId:resolveActiveEmbeddedRunSessionId(sessionKey)||sessionId,sessionKey,settleMs:4000,forceClear:false,reason:'ods_client_disconnect'}),
+      execControl:{signal:()=>true}});
     const record=(hook,event,ctx,extra={})=>appendFileSync(${JSON.stringify(eventsFile)},JSON.stringify({
       hook,agentId:ctx.agentId,runId:ctx.runId,sessionId:ctx.sessionId,sessionKey:ctx.sessionKey,trigger:ctx.trigger,
       provenance:ctx.inputProvenance,success:event.success,text:event.lastAssistantMessage,
@@ -54,11 +69,44 @@ test(`real gateway deferred delegation waits for two children and a verified rev
       lastStopReason:[...(event.messages??[])].reverse().find(m=>m.role==='assistant')?.stopReason,
       lastText:[...(event.messages??[])].reverse().find(m=>m.role==='assistant')?.content?.filter(c=>c.type==='text').map(c=>c.text).join(''),...extra})+'\\n');
     export default {id:'delivery-fixture',register(api){
+      contextCompaction??=createContextCompaction({readConfig:()=>api.config,
+        readSession:scope=>getSessionEntry({...scope,storePath:resolveStorePath(api.config?.session?.store,{agentId:'pixel'})}),
+        callGateway:async()=>{throw new Error('compaction not requested by this fixture');},
+        admission:{status:()=>({available:true,phase:'idle'}),owns:()=>false},
+        activeSession:key=>Boolean(resolveActiveEmbeddedRunSessionId(key))});
+      api.registerHttpRoute({path:'/pixel-ods/context',auth:'gateway',match:'exact',handler:async(req,res)=>{
+        const parts=[];for await(const p of req)parts.push(p);const {user}=JSON.parse(Buffer.concat(parts));
+        const result=contextCompaction.context(user);record('context',{}, {},{user,result});
+        res.writeHead(200,{'content-type':'application/json'});res.end(JSON.stringify(result));return true;
+      }});
+      const hydrate=createHistoryHydrator({getSessionEntry,patchSessionEntry,resolveStorePath,withSessionTranscriptWriteLock,appendAssistantMirrorMessageByIdentity,readConfig:()=>api.config});
+      api.registerHttpRoute({path:'/pixel-ods/history',auth:'gateway',match:'exact',handler:async(req,res)=>{
+        const parts=[];for await(const p of req)parts.push(p);const body=JSON.parse(Buffer.concat(parts));
+        const result=await hydrate(body);record('history',{}, {},{result});
+        res.writeHead(200,{'content-type':'application/json'});res.end(JSON.stringify(result));return true;
+      }});
       const registry=subagentDeliveryFor(sharedGuard,{finalText:extractAssistantVisibleText,
+        abortSession:async sessionKey=>{
+          const sessionId=resolveActiveEmbeddedRunSessionId(sessionKey);if(!sessionId)return true;
+          await abortAndDrainAgentHarnessRun({sessionId,sessionKey,settleMs:4000,forceClear:false,reason:'ods_client_disconnect'});
+          return !resolveActiveEmbeddedRunSessionId(sessionKey);
+        },
         resolveOwnerSession:sessionKey=>getSessionEntry({sessionKey,storePath:resolveStorePath(api.config?.session?.store,{agentId:'pixel'})})});
-      api.on('before_prompt_build',(event,ctx)=>{registry.observe(event,ctx);record('prompt',event,ctx);return {prependContext:registry.promptContext(ctx)};});
+      api.on('before_prompt_build',(event,ctx)=>{
+        if(registry.admission?.(ctx)){record('prompt-denied',event,ctx);return;}
+        registry.observe(event,ctx);if(${JSON.stringify(interim)}==='cancel')sharedGuard.observeRun(ctx,'pixel');
+        record('prompt',event,ctx);return {prependContext:registry.promptContext(ctx)};
+      });
+      api.on('before_agent_run',(event,ctx)=>{const decision=registry.admission?.(ctx);record('admission',{},ctx,{decision});return decision;});
+      api.registerHttpRoute({path:'/pixel-ods/abort',auth:'gateway',match:'exact',handler:async(req,res)=>{
+        const parts=[];for await(const p of req)parts.push(p);const {user}=JSON.parse(Buffer.concat(parts));
+        const delegated=registry.cancel(user),parent=sharedGuard.abortUserRun(user);
+        const [d,p]=await Promise.all([delegated,parent]);
+        record('cancel',{}, {},{result:d,parent:p});
+        res.writeHead(200,{'content-type':'application/json'});res.end(JSON.stringify({aborted:d.tracked?d.aborted:p}));return true;
+      }});
       api.on('before_tool_call',(event,ctx)=>{const decision=registry.blocked(ctx,event);registry.before(event,ctx,decision);record('before-tool',event,ctx,{toolName:event.toolName,toolCallId:ctx.toolCallId,params:event.params,decision});return decision;});
-      api.on('subagent_spawned',(event,ctx)=>{registry.nativeSpawn(event,ctx);record('spawned',event,ctx,{event,ctx});});
+      api.on('subagent_spawned',(event,ctx)=>{const result=registry.nativeSpawn(event,ctx);record('spawned',event,ctx,{event,ctx});return result;});
       api.registerHttpRoute({path:'/pixel-ods/subagent-delivery',auth:'gateway',match:'exact',handler:async(req,res)=>{
         const parts=[];for await(const p of req)parts.push(p);const {user,runId}=JSON.parse(Buffer.concat(parts));
         const result=registry.read(user,runId);record('delivery',{}, {runId},{result,entryId:getSessionEntry({sessionKey:'agent:pixel:openai-user:'+user,storePath:resolveStorePath(api.config?.session?.store,{agentId:'pixel'})})?.sessionId});
@@ -82,6 +130,7 @@ test(`real gateway deferred delegation waits for two children and a verified rev
     const chunks=[];for await(const chunk of req)chunks.push(chunk);
     const body=JSON.parse(Buffer.concat(chunks));requests++;
     const all=JSON.stringify(body.messages);
+    const currentUser=JSON.stringify(body.messages.filter(m=>m.role==='user').at(-1)?.content);
     const userMessages=body.messages.filter(m=>m.role==='user').map(m=>typeof m.content==='string'?m.content:JSON.stringify(m.content)).join('\n');
     const trace={request:requests,lastRole:body.messages.at(-1)?.role,childTask:userMessages.includes('CHILD_FIXTURE_TASK'),announcement:userMessages.includes('Internal task completion event'),revision,markers:childTexts.map(value=>all.includes(value))};
     providerTrace.push(trace);if(providerTrace.length>40)providerTrace.shift();
@@ -90,10 +139,18 @@ test(`real gateway deferred delegation waits for two children and a verified rev
     if(userMessages.includes('FAIL_FIXTURE')) {
       trace.branch='provider-error';res.writeHead(400,{'Content-Type':'application/json'});
       res.end(JSON.stringify({error:{message:'offline fixture provider refusal',type:'invalid_request_error'}}));return;
+    } else if(currentUser.includes('WARMUP_FIXTURE')&&!currentUser.includes('Delegate two')&&!userMessages.includes('RECOVER_AFTER_STOP')&&!userMessages.includes('CHILD_FIXTURE_TASK')) {
+      trace.branch='warmup';delta={role:'assistant',content:'READY'};
+    } else if(userMessages.includes('RECOVER_AFTER_STOP')) {
+      trace.branch='recovery';delta={role:'assistant',content:'19'};
     } else if(userMessages.includes('HELLO_FIXTURE')) {
       trace.branch='greeting';delta={role:'assistant',content:'HELLO_VERIFIED'};
     } else if(userMessages.includes('CHILD_FIXTURE_TASK')&&!userMessages.includes('Internal task completion event')) {
       trace.branch='child';
+      if(interim==='cancel'){
+        heldChildren.push(res);res.writeHead(200,{'Content-Type':'text/event-stream'});
+        res.write('data: '+JSON.stringify({id:'fixture',object:'chat.completion.chunk',choices:[{index:0,delta:{role:'assistant',content:'CHILD_REVIEW_IN_PROGRESS'},finish_reason:null}]})+'\n\n');return;
+      }
       if(interim!=='final'&&userMessages.includes('CHILD_FIXTURE_TASK 1')) {
         // Release child two only after the first announced parent turn has
         // actually ended. This reproduces the live partial-completion ordering.
@@ -142,10 +199,58 @@ test(`real gateway deferred delegation waits for two children and a verified rev
     let ready=false;
     for(let i=0;i<250;i++){try{ready=(await fetch(`http://127.0.0.1:${port}/health`,{signal:AbortSignal.timeout(500)})).ok;}catch{}if(ready)break;assert.equal(child.exitCode,null,log);await delay(100);}
     assert.ok(ready,log);
-    ingress=createIngressServer({token:'fixture-only-0123456789abcdef',gatewayPort:port});
+    ingress=createIngressServer({token:'fixture-only-0123456789abcdef',gatewayPort:port,...interim==='cancel'?{historyLedger:createChatHistoryLedger(join(root,'history-ledger'))}:{}});
     await new Promise(resolve=>ingress.listen(0,'127.0.0.1',resolve));
     const ingressPort=ingress.address().port;
-    const response=await fetch(`http://127.0.0.1:${ingressPort}/v1/chat/completions`,{method:'POST',headers:{Authorization:'Bearer fixture-only-0123456789abcdef','Content-Type':'application/json'},body:JSON.stringify({model:'openclaw:pixel',stream:true,user:'delegation-fixture',messages:[{role:'user',content:'Delegate two read-only reviews, yield, and consolidate the result.'}]}),signal:AbortSignal.timeout(45000)});
+    if(interim==='cancel') {
+      const warmup=await fetch(`http://127.0.0.1:${ingressPort}/v1/chat/completions`,{method:'POST',headers:{Authorization:'Bearer fixture-only-0123456789abcdef','Content-Type':'application/json'},body:JSON.stringify({model:'openclaw:pixel',stream:true,user:'delegation-fixture',messages:[prior[0]],request_id:'cancel-warmup',history_snapshot:{schemaVersion:1,messages:[prior[0]]}}),signal:AbortSignal.timeout(30000)});
+      assert.ok((await warmup.text()).includes('READY'));
+    }
+    const responsePromise=fetch(`http://127.0.0.1:${ingressPort}/v1/chat/completions`,{method:'POST',headers:{Authorization:'Bearer fixture-only-0123456789abcdef','Content-Type':'application/json'},body:JSON.stringify({model:'openclaw:pixel',stream:true,user:'delegation-fixture',messages:[{role:'user',content:'Delegate two read-only reviews, yield, and consolidate the result.'}],...interim==='cancel'?{request_id:'cancel-original',history_snapshot:{schemaVersion:1,messages:[...prior,{role:'user',content:'Delegate two read-only reviews, yield, and consolidate the result.'}]}}:{}}),signal:AbortSignal.timeout(45000)});
+    if(interim==='cancel') {
+      const initialBody=responsePromise.then(response=>response.text()).catch(error=>{assert.ok(['terminated','AbortError'].includes(error.message)||error.name==='AbortError');return '';});
+      const readEvents=()=>existsSync(eventsFile)?readFileSync(eventsFile,'utf8').trim().split('\n').filter(Boolean).map(JSON.parse):[];
+      let events=[];
+      for(let i=0;i<250;i++){
+        events=readEvents();
+        if(heldChildren.length===2&&events.some(e=>e.hook==='tool'&&e.toolName==='sessions_yield'))break;
+        await delay(50);
+      }
+      assert.equal(heldChildren.length,2,'both actual child providers must be active before Stop');
+      assert.ok(events.some(e=>e.hook==='tool'&&e.toolName==='sessions_yield'));
+      const original=events.filter(e=>e.hook==='prompt'&&!e.sessionKey?.includes(':subagent:')).at(-1);
+      const stop=await fetch(`http://127.0.0.1:${ingressPort}/v1/chat/cancel`,{method:'POST',headers:{Authorization:'Bearer fixture-only-0123456789abcdef','Content-Type':'application/json'},body:JSON.stringify({user:'delegation-fixture'}),signal:AbortSignal.timeout(15000)});
+      const stopped=await stop.json().catch(error=>{throw new Error("stop response: "+error.message)});assert.equal(stopped.aborted,true,JSON.stringify(stopped));
+      const followup=await fetch(`http://127.0.0.1:${ingressPort}/v1/chat/completions`,{method:'POST',headers:{Authorization:'Bearer fixture-only-0123456789abcdef','Content-Type':'application/json'},body:JSON.stringify({model:'openclaw:pixel',stream:true,user:'delegation-fixture',messages:[{role:'user',content:'RECOVER_AFTER_STOP: do not continue the review or use tools. Answer only 17 + 2.'}],request_id:'cancel-followup',history_snapshot:{schemaVersion:1,messages:[...prior,{role:'user',content:'Delegate two read-only reviews, yield, and consolidate the result.'},{role:'user',content:'RECOVER_AFTER_STOP: do not continue the review or use tools. Answer only 17 + 2.'}]}}),signal:AbortSignal.timeout(30000)});
+      const visible=await followup.text().catch(error=>{throw new Error("followup response: "+error.message)});
+      assert.equal(followup.status,200,visible);
+      const chunks=visible.split('\n').filter(x=>x.startsWith('data: ')&&x!=='data: [DONE]').map(x=>JSON.parse(x.slice(6)));
+      assert.equal(chunks.flatMap(c=>c.choices??[]).map(c=>c.delta?.content??'').join(''),'19',visible);
+      assert.equal(providerTrace.filter(e=>e.branch==='recovery').length,1,'same-chat owner prompt reaches the actual provider once');
+      for(let i=0;i<200;i++){
+        events=readEvents();
+        if(new Set(events.filter(e=>e.hook==='admission'&&e.provenance?.sourceTool==='subagent_announce'&&e.decision?.outcome==='block'&&events.some(end=>end.hook==='end'&&end.runId===e.runId)).map(e=>e.provenance.sourceSessionKey)).size===2)break;
+        await delay(50);
+      }
+      const blockedChildren=new Set(events.filter(e=>e.hook==='admission'&&e.provenance?.sourceTool==='subagent_announce'&&e.decision?.outcome==='block'&&events.some(end=>end.hook==='end'&&end.runId===e.runId)).map(e=>e.provenance.sourceSessionKey));
+      assert.equal(blockedChildren.size,2,JSON.stringify({events,log}));
+      for(const key of blockedChildren)assert.ok(events.some(e=>e.hook==='end'&&e.sessionKey===key&&e.lastStopReason==='aborted'&&e.success===false),'both native child runs confirm abortion');
+      assert.equal(providerTrace.filter(e=>e.announcement).length,0,'after both late announcements, no announcement reached the model');
+      assert.equal(providerTrace.filter(e=>e.branch==='recovery').length,1,'after draining both late announcements, only the actual owner followup generated');
+      assert.equal(requests,6,'warmup + owner spawn/yield + two children + owner followup only');
+      assert.equal(providerTrace.filter(e=>e.branch==='parent-announcement').length,0,'cancelled native announcements never reach the provider');
+      assert.ok(!(await initialBody).includes('CONSOLIDATED'));
+      events=readEvents();
+      const transcript=readFileSync(join(root,'state','agents','pixel','sessions',original.sessionId+'.jsonl'),'utf8').trim().split('\n').map(JSON.parse);
+      const redacted=transcript.filter(e=>e.message?.idempotencyKey?.startsWith('hook-block:before_agent_run:'));
+      if(process.env.ODS_HOOK_EVIDENCE_PATH)writeFileSync(process.env.ODS_HOOK_EVIDENCE_PATH+'.cancel-transcript',JSON.stringify(transcript,null,2));
+      assert.ok(transcript.filter(e=>e.message?.role==='user').every(e=>!JSON.stringify(e).includes('CHILD_REVIEW_IN_PROGRESS')),'cancelled child output is never promoted to an owner message');
+      assert.ok(redacted.every(e=>!JSON.stringify(e).includes('CHILD_VERIFIED')));
+      assert.ok(!events.some(e=>e.hook==='tool'&&e.runId?.startsWith('announce:')),'cancelled announcements execute no tools');
+      if(process.env.ODS_HOOK_EVIDENCE_PATH)writeFileSync(process.env.ODS_HOOK_EVIDENCE_PATH+'.cancel',JSON.stringify({events,providerTrace,visible,redacted},null,2));
+      return;
+    }
+    const response=await responsePromise;
     const body=await response.text();assert.equal(response.status,200,body+'\n'+log);
     assert.ok(body.includes('CONSOLIDATED_VERIFIED'),body);assert.ok(!body.includes('Waiting for the review.'),body);assert.ok(!body.includes('CONSOLIDATED_REVIEW'),body);
     let events=[];

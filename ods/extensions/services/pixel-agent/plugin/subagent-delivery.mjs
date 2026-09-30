@@ -38,6 +38,8 @@ export function createSubagentDelivery({agentId = 'pixel', now = Date.now,
   const childPrefix = `agent:${agentId}:subagent:`;
   const childKey = value => typeof value === 'string' && value.startsWith(childPrefix) && UUID.test(value.slice(childPrefix.length));
   const fail = chain => { chain.failed = true; chain.ready = null; };
+  const pendingSpawn = chain => [...runs.values()].some(run=>run.chain===chain
+    && [...run.calls.values()].includes('sessions_spawn'));
   function access() { try { return accessIdentity(); } catch { return null; } }
   function valid(chain) {
     if (chain.failed || now() - chain.started > ttlMs || !chain.access || access() !== chain.access) { fail(chain); return false; }
@@ -106,12 +108,12 @@ export function createSubagentDelivery({agentId = 'pixel', now = Date.now,
     if (provenance || context.trigger !== 'user' || !ORIGINAL.test(context.runId)) return;
     if (context.sessionKey && !(context.sessionKey.startsWith(prefix) && USER.test(context.sessionKey.slice(prefix.length)))) return;
     for (const chain of roots.values()) if (chain.sessionId === context.sessionId) {
-      const releasable=!chain.children.size || chain.delivered && chain.ready;
+      const releasable=(!chain.children.size || chain.delivered && chain.ready) && !pendingSpawn(chain);
       fail(chain); if (releasable) remove(chain);
     }
     if (roots.size >= maximumRuns) {
-      for (const chain of roots.values()) if ((!chain.children.size && (chain.failed || chain.delivered))
-          || chain.delivered && chain.ready) remove(chain);
+      for (const chain of roots.values()) if (!pendingSpawn(chain) && ((!chain.children.size && (chain.failed || chain.delivered))
+          || chain.delivered && chain.ready)) remove(chain);
     }
     if (roots.size >= maximumRuns) return; // Never evict a live owner's request.
     const chain = {id:context.runId,sessionId:context.sessionId,sessionKey:context.sessionKey,
@@ -133,18 +135,39 @@ export function createSubagentDelivery({agentId = 'pixel', now = Date.now,
     if (!UUID.test(event?.runId ?? '') || !childKey(event.childSessionKey)
         || context?.childSessionKey !== event.childSessionKey || context?.runId !== event.runId
         || !string(context.requesterSessionKey)) return;
+    // Native child session keys identify one spawn. Duplicate or conflicting
+    // hook delivery cannot erase/rebind the original cancellation fence.
+    if (spawned.has(event.childSessionKey)) return;
     if (spawned.size >= maximumRuns * maximumChildren) return;
-    spawned.set(event.childSessionKey,{runId:event.runId,parent:context.requesterSessionKey,at:now()});
+    // The child can already be running before the sessions_spawn tool reply.
+    // Retain cancel-only custody from the trusted native event plus exactly
+    // one pending owner spawn. Delivery still requires the accepted reply.
+    const pending=[...roots.values()].filter(chain=>chain.sessionKey===context.requesterSessionKey && pendingSpawn(chain));
+    const cancelled=pending.filter(chain=>chain.cancelRequested).map(chain=>chain.id);
+    const record={runId:event.runId,parent:context.requesterSessionKey,at:now(),
+      ...(pending.length===1 ? {chainId:pending[0].id} : {}),...(cancelled.length ? {denied:true,cancelledChainIds:cancelled,abortConfirmed:false} : {})};
+    spawned.set(event.childSessionKey,record);
+    // Stop may win before the native child receipt exists. The saved pending
+    // intent fences that later child and drains it; an ambiguous overlap with
+    // a new spawn is denied, never adopted into the newer owner's delivery.
+    if (cancelled.length) return Promise.resolve().then(()=>abortSession(event.childSessionKey))
+      .then(result=>record.abortConfirmed=result===true).catch(()=>false);
   }
   function after(event, context) {
     const run = owned(context), callId = context?.toolCallId ?? event?.toolCallId;
-    if (!run) return;
+    if (!run) {
+      const previous=runs.get(context?.runId);
+      if (context?.agentId===agentId && previous && (!context.sessionId || context.sessionId===previous.chain.sessionId)
+          && (!context.sessionKey || context.sessionKey===previous.chain.sessionKey)
+          && previous.calls.get(callId)===(context.toolName ?? event?.toolName)) previous.calls.delete(callId);
+      return;
+    }
     const name = run.calls.get(callId); run.calls.delete(callId);
     if (!name || (context.toolName ?? event.toolName) !== name || event.error || event.result?.isError) return;
     const result = event.result?.details;
     if (name === 'sessions_spawn' && result?.status === 'accepted' && childKey(result.childSessionKey) && UUID.test(result.runId ?? '')) {
       const record = spawned.get(result.childSessionKey);
-      if (!record || record.runId !== result.runId || record.parent !== run.chain.sessionKey) {fail(run.chain); return;}
+      if (!record || record.denied || record.runId !== result.runId || record.parent !== run.chain.sessionKey) {fail(run.chain); return;}
       if (run.chain.children.size >= maximumChildren) {fail(run.chain); return;}
       const previous = run.chain.children.get(result.childSessionKey);
       if (previous && previous.runId !== result.runId) {fail(run.chain); return;}
@@ -214,11 +237,18 @@ export function createSubagentDelivery({agentId = 'pixel', now = Date.now,
     return {...base,status:'ready',text:chain.ready.text,verification};
   }
   async function cancel(user) {
-    const selected = [...roots.values()].filter(chain => USER.test(user) && chain.sessionKey === prefix + user && (chain.delegated || chain.children.size));
+    const provisional=chain=>[...spawned.entries()].filter(([,record])=>record.chainId===chain.id || record.cancelledChainIds?.includes(chain.id));
+    const selected = [...roots.values()].filter(chain => USER.test(user) && chain.sessionKey === prefix + user
+      && (chain.delegated || chain.children.size || provisional(chain).length || pendingSpawn(chain)));
     const keys = new Set();
-    for (const chain of selected) {fail(chain); keys.add(chain.sessionKey); for (const key of chain.children.keys()) keys.add(key);}
+    for (const chain of selected) {
+      chain.cancelRequested=true; fail(chain); keys.add(chain.sessionKey);
+      for (const key of chain.children.keys()) keys.add(key);
+      for (const [key] of provisional(chain)) keys.add(key);
+    }
     const results = await Promise.all([...keys].map(async key => {try {return await abortSession(key) === true;} catch {return false;}}));
-    return {tracked:selected.length > 0,aborted:results.length > 0 && results.every(Boolean)};
+    const lateConfirmed=selected.every(chain=>provisional(chain).every(([key,record])=>keys.has(key) || record.abortConfirmed===true));
+    return {tracked:selected.length > 0,aborted:results.length > 0 && results.every(Boolean) && !selected.some(pendingSpawn) && lateConfirmed};
   }
   function finalRun(user,runId) {
     const chain=roots.get(runId);
@@ -243,7 +273,27 @@ export function createSubagentDelivery({agentId = 'pixel', now = Date.now,
     if (Buffer.byteLength(projection) > MAX_CHAIN_ANNOUNCEMENT_BYTES) {fail(run.chain); return;}
     return projection;
   }
-  function blocked(context, event) {
+  function admission(context) {
+    if (context?.agentId !== agentId) return;
+    expire();
+    const denied = () => ({outcome:'block',reason:'ods-delegation-interrupted',message:FAILED});
+    // This hook also runs before observe has registered the announcement.
+    // Authorize from the original exact native spawn receipt, never from a
+    // newer owner run, a prompt string, or the shared parent session alone.
+    if (typeof context.runId === 'string' && context.runId.startsWith(`announce:v1:${childPrefix}`)
+        && typeof context.sessionKey === 'string' && context.sessionKey.startsWith(prefix)) {
+      const provenance=context.inputProvenance;
+      if (provenance?.kind!=='inter_session' || provenance.sourceTool!=='subagent_announce'
+          || !childKey(provenance.sourceSessionKey)) return denied();
+      const matches=[...roots.values()].filter(chain=>chain.sessionId===context.sessionId
+        && chain.sessionKey===context.sessionKey && valid(chain)
+        && context.runId===`announce:v1:${provenance.sourceSessionKey}:${chain.children.get(provenance.sourceSessionKey)?.runId}`);
+      if (matches.length!==1 || !ownerMatches(matches[0],context.sessionKey.slice(prefix.length))) return denied();
+    }
+    const rejected=blocked(context,undefined,true);
+    return rejected?.block ? denied() : undefined;
+  }
+  function blocked(context, event, beforeObserve=false) {
     if (context?.agentId !== agentId) return;
     // After restart/expiry there is no trusted owner request to continue. A
     // native announcement may still arrive, but cannot resume its mutations
@@ -251,7 +301,13 @@ export function createSubagentDelivery({agentId = 'pixel', now = Date.now,
     // their existing admission rules.
     if (typeof context.runId==='string' && context.runId.startsWith(`announce:v1:${childPrefix}`)
         && typeof context.sessionKey==='string' && context.sessionKey.startsWith(prefix)
-        && !runs.has(context.runId)) return {block:true,blockReason:FAILED};
+        && !beforeObserve && !runs.has(context.runId)) return {block:true,blockReason:FAILED};
+    const provisional=spawned.get(context.sessionKey);
+    if (provisional?.denied && provisional.runId===context.runId) return {block:true,blockReason:FAILED};
+    if (provisional?.chainId && provisional.runId===context.runId) {
+      const chain=roots.get(provisional.chainId);
+      if (!chain || !valid(chain)) return {block:true,blockReason:FAILED};
+    }
     for (const chain of roots.values()) {
       const child=chain.children.get(context.sessionKey);
       const related=child?.runId===context.runId || context.sessionId===chain.sessionId &&
@@ -264,6 +320,6 @@ export function createSubagentDelivery({agentId = 'pixel', now = Date.now,
       return {block:true,blockReason:'No registered child completion event is pending. Review the current event and the earlier child results supplied in this run, then consolidate the owner response. This yield was not executed.'};
     }
   }
-  return {observe,before,after,nativeSpawn,finalize,end,read,finalRun,cancel,blocked,promptContext,
+  return {observe,before,after,nativeSpawn,finalize,end,read,finalRun,cancel,blocked,promptContext,admission,
     invalidate:() => {for (const chain of roots.values()) fail(chain);}};
 }

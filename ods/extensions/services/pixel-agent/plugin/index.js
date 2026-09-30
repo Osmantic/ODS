@@ -373,6 +373,10 @@ export default definePluginEntry({
     // continuation. Give the Pixel agent an explicit, trusted prompt contract
     // so every ODS lookup is followed by a user-visible answer.
     api.on("before_prompt_build", async (event, context) => {
+      // A canceled child's queued announcement must not replace the guard's
+      // active owner mapping. The enforced before_agent_run gate below also
+      // rejects it before inference; this prompt hook cannot veto execution.
+      if (!accessRuntime.isProbe(context) && delegationDelivery.admission(context)) return;
       const privateBrowserAccess = privateBrowserAccessForAgent(api.config, AGENT_ID);
       const workspaceRoot = api.config?.agents?.list?.find(agent => agent.id === AGENT_ID)?.workspace
         ?? api.config?.agents?.defaults?.workspace;
@@ -420,7 +424,11 @@ export default definePluginEntry({
       }
     });
     if (!managedRuntime) {
-      api.on("before_agent_run", (event, context) => accessRuntime.admit(undefined, context));
+      api.on("before_agent_run", (event, context) =>
+        (!accessRuntime.isProbe(context) && delegationDelivery.admission(context)) || accessRuntime.admit(undefined, context));
+    } else {
+      api.on("before_agent_run", (_event, context) =>
+        accessRuntime.isProbe(context) ? undefined : delegationDelivery.admission(context));
     }
     api.on("agent_end", (event, context) => {
       delegationDelivery.end(event,context);
@@ -431,6 +439,8 @@ export default definePluginEntry({
     });
     api.on("before_tool_call", async (event, context) => {
       if (accessRuntime.isProbe(context)) return;
+      const interrupted=delegationDelivery.blocked(context,event);
+      if (interrupted) return interrupted;
       let guard = withPixelCronDeliveryDefault(
         await toolLoopGuard.beforeToolCall(event, context, AGENT_ID),
         event, context, AGENT_ID,
@@ -559,8 +569,11 @@ export default definePluginEntry({
           sendJson(res, parsed.status, { error: "invalid cancellation request" });
           return true;
         }
-        const delegated=await delegationDelivery.cancel(parsed.user);
-        const parentAborted=await toolLoopGuard.abortUserRun(parsed.user);
+        // Both synchronous fences are installed before either native abort
+        // awaits drainage; queued announcements cannot steal owner custody.
+        const delegatedPending=delegationDelivery.cancel(parsed.user);
+        const parentPending=toolLoopGuard.abortUserRun(parsed.user);
+        const [delegated,parentAborted]=await Promise.all([delegatedPending,parentPending]);
         sendJson(res, 200, { aborted: delegated.tracked ? delegated.aborted : parentAborted });
         return true;
       },

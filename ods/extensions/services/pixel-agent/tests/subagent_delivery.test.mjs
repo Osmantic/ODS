@@ -13,6 +13,89 @@ const childRun='33333333-2222-4333-8444-555555555555';
 const owner={agentId:'pixel',runId:id,sessionId:'owner-session',sessionKey:'agent:pixel:openai-user:'+user,trigger:'user'};
 const continuation={...owner,runId:`announce:v1:${child}:${childRun}`,
   inputProvenance:{kind:'inter_session',sourceTool:'subagent_announce',sourceSessionKey:child}};
+
+test('cancelled native announcements are denied before prompt registration and inference; next owner remains admitted',async()=>{
+  const f=fixture();f.spawn();f.yieldTurn();
+  assert.equal(f.registry.admission(continuation),undefined,'registered live child is admitted before observe');
+  await f.registry.cancel(user);
+  assert.equal(f.registry.admission(continuation).outcome,'block');
+  const next={...owner,runId:'chatcmpl_99999999-2222-4333-8444-555555555555'};
+  assert.equal(f.registry.admission(next),undefined);
+  f.registry.observe({prompt:'Return 19 without tools'},next);
+  assert.equal(f.registry.admission(continuation).outcome,'block','late event cannot enter a newer owner turn');
+  assert.equal(f.registry.read(user,next.runId).status,'not-delegated');
+  assert.equal(createSubagentDelivery().admission(continuation).outcome,'block','restart without custody fails closed');
+  assert.equal(f.registry.admission({...continuation,sessionId:'other-native-session',sessionKey:'agent:pixel:main'}),undefined,'unrelated native sessions unchanged');
+});
+
+test('announcement admission requires exact live owner child run and current custody',()=>{
+  const f=fixture();f.spawn();f.yieldTurn();
+  for(const changed of [{sessionId:'foreign'}, {runId:continuation.runId+'extra'},
+    {inputProvenance:{...continuation.inputProvenance,sourceSessionKey:child.replace('22222222','44444444')}},
+    {inputProvenance:undefined}]) {
+    assert.equal(f.registry.admission({...continuation,...changed}).outcome,'block');
+  }
+  assert.equal(f.registry.admission(continuation),undefined);
+  f.revoke();assert.equal(f.registry.admission(continuation).outcome,'block');
+});
+
+test('Stop between native spawn and tool reply aborts the exact provisional child without claiming delivery',async()=>{
+  const f=fixture();
+  const ctx={...owner,toolName:'sessions_spawn',toolCallId:'pending-spawn'};
+  f.registry.before({params:{runtime:'subagent',mode:'run'}},ctx);
+  f.registry.nativeSpawn({runId:childRun,childSessionKey:child},{runId:childRun,childSessionKey:child,requesterSessionKey:owner.sessionKey});
+  assert.equal(f.registry.read(user,id).status,'not-delegated','spawn receipt alone is not accepted delegation');
+  assert.deepEqual(await f.registry.cancel(user),{tracked:true,aborted:false},'pending tool must settle before Stop is confirmed');
+  assert.deepEqual(new Set(f.aborts),new Set([owner.sessionKey,child]));
+  f.registry.nativeSpawn({runId:childRun,childSessionKey:child},{runId:childRun,childSessionKey:child,requesterSessionKey:owner.sessionKey});
+  assert.equal(f.registry.admission({...owner,runId:childRun,sessionKey:child,sessionId:'child-session'}).outcome,'block');
+  f.registry.after({result:{details:{status:'accepted',runId:childRun,childSessionKey:child}}},ctx);
+  assert.equal(f.registry.read(user,id).status,'interrupted');
+  assert.deepEqual(await f.registry.cancel(user),{tracked:true,aborted:true});
+});
+
+test('Stop before native spawn receipt fences and drains the later exact child; a completed failed call cannot bind new spawns',async()=>{
+  const f=fixture(),ctx={...owner,toolName:'sessions_spawn',toolCallId:'pending-spawn'};
+  f.registry.before({params:{runtime:'subagent',mode:'run'}},ctx);
+  assert.deepEqual(await f.registry.cancel(user),{tracked:true,aborted:false},'unknown pending spawn cannot be acknowledged as stopped');
+  await f.registry.nativeSpawn({runId:childRun,childSessionKey:child},{runId:childRun,childSessionKey:child,requesterSessionKey:owner.sessionKey});
+  assert.deepEqual(new Set(f.aborts),new Set([owner.sessionKey,child]));
+  assert.equal(f.registry.admission({...owner,runId:childRun,sessionKey:child,sessionId:'child-session'}).outcome,'block');
+  f.registry.after({error:'aborted'},ctx);
+  const next={...owner,runId:'chatcmpl_99999999-2222-4333-8444-555555555555'};
+  f.registry.observe({},next);
+  const nextChild=child.replace('22222222','77777777'),nextRun=childRun.replace('33333333','88888888');
+  f.spawn(nextChild,nextRun,next);
+  assert.equal(f.registry.admission({...next,runId:nextRun,sessionKey:nextChild,sessionId:'new-child-session'}),undefined);
+});
+
+test('overlapping cancelled and new pending spawn intents never adopt an ambiguous child into the new request',async()=>{
+  const f=fixture(),old={...owner,toolName:'sessions_spawn',toolCallId:'old-pending'};
+  f.registry.before({params:{runtime:'subagent',mode:'run'}},old);
+  await f.registry.cancel(user);
+  const next={...owner,runId:'chatcmpl_99999999-2222-4333-8444-555555555555'};
+  f.registry.observe({},next);
+  const pending={...next,toolName:'sessions_spawn',toolCallId:'new-pending'};
+  f.registry.before({params:{runtime:'subagent',mode:'run'}},pending);
+  await f.registry.nativeSpawn({runId:childRun,childSessionKey:child},{runId:childRun,childSessionKey:child,requesterSessionKey:owner.sessionKey});
+  assert.ok(f.aborts.includes(child));
+  assert.equal(f.registry.admission({...owner,runId:childRun,sessionKey:child,sessionId:'child-session'}).outcome,'block');
+  f.registry.after({result:{details:{status:'accepted',runId:childRun,childSessionKey:child}}},pending);
+  assert.equal(f.registry.read(user,next.runId).status,'interrupted','native event does not distinguish which pending request owns it');
+});
+
+for(const childAborted of [false,true])test(`Stop acknowledgement includes child discovered while parent drain awaits (childAborted=${childAborted})`,async()=>{
+  let releaseParent;
+  const parentDrain=new Promise(resolve=>{releaseParent=resolve;});
+  const f=fixture({abortSession:async key=>key===owner.sessionKey ? parentDrain : childAborted});
+  const ctx={...owner,toolName:'sessions_spawn',toolCallId:'pending-spawn'};
+  f.registry.before({params:{runtime:'subagent',mode:'run'}},ctx);
+  const cancel=f.registry.cancel(user);
+  await f.registry.nativeSpawn({runId:childRun,childSessionKey:child},{runId:childRun,childSessionKey:child,requesterSessionKey:owner.sessionKey});
+  f.registry.after({result:{details:{status:'accepted',runId:childRun,childSessionKey:child}}},ctx);
+  releaseParent(true);
+  assert.deepEqual(await cancel,{tracked:true,aborted:childAborted});
+});
 function fixture(options={}) {
   let clock=1, access='current';const aborts=[];
   const registry=createSubagentDelivery({now:()=>clock,accessIdentity:()=>access,
