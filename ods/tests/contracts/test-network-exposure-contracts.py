@@ -207,6 +207,12 @@ def test_dashboard_admin_api_requires_sign_in_off_the_machine() -> None:
             "auth_request /_ods_dashboard_gate;" in block,
             "every location that adds the dashboard API key must pass the sign-in gate: " + block.splitlines()[0],
         )
+    enable = next(block for block in blocks if block.startswith(
+        "    location ~ ^/api/extensions/[a-z0-9_-]+/enable$"))
+    assert_true(
+        "proxy_read_timeout 720s;" in enable and "proxy_send_timeout 720s;" in enable,
+        "cold Library enables must outlast the host agent's 660-second request budget",
+    )
     talk = next(block for block in blocks if block.startswith("    location ^~ /api/talk/"))
     assert_true("DASHBOARD_API_KEY" not in talk, "ODS Talk must not receive the dashboard admin key")
     assert_true(

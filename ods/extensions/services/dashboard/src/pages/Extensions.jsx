@@ -320,7 +320,10 @@ export default function Extensions({ compact = false }) {
       }
       const opts = {
         method: action === 'uninstall' || action === 'purge' ? 'DELETE' : 'POST',
-        signal: AbortSignal.timeout(action === 'update' || action === 'rollback' ? 30 * 60 * 1000 : 300000),
+        signal: AbortSignal.timeout(
+          action === 'update' || action === 'rollback' ? 30 * 60 * 1000
+            : action === 'enable' ? 13 * 60 * 1000 : 300000,
+        ),
       }
       if (action === 'purge') {
         opts.headers = { 'Content-Type': 'application/json' }

@@ -162,6 +162,7 @@ it('lets an errored bundled n8n be retried or disabled without a remove control'
 })
 
 it('reports a failed bundled n8n start and refreshes to a retryable card', async () => {
+  const timeoutSpy = vi.spyOn(globalThis.AbortSignal, 'timeout').mockReturnValue(new AbortController().signal)
   const ext = {id:'n8n',name:'n8n (Workflows)',source:'core',status:'disabled',
     library_manageable:true,library_selected:false,features:[baseFeature]}
   const fetchMock = vi.fn(async (url) => {
@@ -186,6 +187,7 @@ it('reports a failed bundled n8n start and refreshes to a retryable card', async
   expect(screen.getByRole('button',{name:'Disable n8n (Workflows)'})).toBeVisible()
   expect(fetchMock.mock.calls.filter(([url]) => String(url).includes('/api/extensions/catalog')).length)
     .toBeGreaterThanOrEqual(2)
+  expect(timeoutSpy).toHaveBeenCalledWith(13 * 60 * 1000)
 })
 
 describe('Extensions page — unhealthy + install derivations', () => {
