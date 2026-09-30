@@ -62,10 +62,15 @@ it.each(['model','provider'])('retains confirmed B through missing runtime and s
     await act(async()=>vi.advanceTimersByTimeAsync(3000))
     expect(screen.getByRole('button',{name:measuredB})).toBeVisible()
     if(!value.runtime) {
-      fireEvent.click(screen.getByRole('button',{name:'Choose model: Choose model'}))
+      const modelLabel=value.available?'Choose model: Choose model':'Model unavailable'
+      fireEvent.click(screen.getByRole('button',{name:modelLabel}))
       await act(async()=>{})
       expect(screen.getByRole('dialog',{name:'Choose model'})).toHaveTextContent('The conversation’s model source is not confirmed.')
-      fireEvent.click(screen.getByRole('button',{name:'Choose model: Choose model'}))
+      if(!value.available) {
+        expect(screen.getByRole('textbox')).toBeDisabled()
+        expect(screen.getByRole('dialog',{name:'Choose model'})).toHaveTextContent('Portal is unavailable. Model selection is not currently verified.')
+      }
+      fireEvent.click(screen.getByRole('button',{name:modelLabel}))
     }
   }
   expect(calls('/api/pixel/chat/context')).toHaveLength(reads)
