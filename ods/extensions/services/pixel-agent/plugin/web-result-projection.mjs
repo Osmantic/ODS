@@ -1,4 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
+import { webFetchBinaryBody } from "./document-body.mjs";
+import { PDF_TEXT_LIMITS } from "./pdf-text.mjs";
 
 const record = (value) => Boolean(value) && typeof value === "object" && !Array.isArray(value);
 
@@ -16,11 +18,56 @@ export function successfulTruncatedFetch(result) {
 }
 
 export function projectNativeFetchGuidance(message, successfulTruncated) {
+  // A binary body's receipt (binaryFetchReceipt) replaces the result instead.
+  if (record(successfulTruncated)) return projectBinaryFetch(message, successfulTruncated);
   if (successfulTruncated !== true || !record(message) || message.role !== 'toolResult' ||
       message.toolName !== 'web_fetch' || message.isError === true || !Array.isArray(message.content) ||
       message.content.length === 0 || !message.content.every(block => block?.type === 'text' && typeof block.text === 'string')) return undefined;
   // Preserve the persisted text/details exactly, including any framework cap.
   return {...message, content:[...message.content, {type:'text', text:TRUNCATED_FETCH_EXTRACTION_GUIDANCE}]};
+}
+
+// web_fetch returns a PDF or image as undecoded bytes (document-body.mjs).
+// Those bytes never go back to the model: the persisted result is replaced by
+// a receipt that says the page was not read and, for a PDF, points to the ODS
+// reader, which extracts bounded text. Persisted results reach the live model
+// request through the ODS runtime repair, so this also applies to the run
+// that made the call. The URL is the one the model requested.
+export function binaryFetchReceipt(result) {
+  const details = result?.details;
+  if (result?.isError === true || !record(details) || !Number.isInteger(details.status) ||
+      details.status < 200 || details.status >= 300) return undefined;
+  const body = webFetchBinaryBody(details);
+  if (!body) return undefined;
+  let url;
+  try {
+    const parsed = new URL(details.url);
+    if (['http:', 'https:'].includes(parsed.protocol) && !parsed.username && !parsed.password &&
+        parsed.href.length <= 1024) url = parsed.href;
+  } catch { /* No usable URL: the note names none. */ }
+  return {...body, ...(url ? {url} : {})};
+}
+
+export function binaryFetchNote(receipt) {
+  const size = Number.isSafeInteger(receipt?.chars) ? `, ${receipt.chars} characters of undecoded bytes` : '';
+  const document = receipt?.kind === 'pdf' ? 'a PDF document' : 'a binary document';
+  const target = receipt?.url ? `{"url":${JSON.stringify(receipt.url)}}` : 'the PDF URL';
+  return `ODS read receipt (not source evidence): web_fetch returned ${document} ` +
+    `(${receipt?.contentType ?? 'unknown'}${size}). Its bytes were removed from this result: the page was not read ` +
+    'and is not evidence. ' + (receipt?.kind === 'pdf'
+    ? `To read its text, discover pixel_ods_web_extract and call it with ${target}, adding a short literal "query" ` +
+      `for one detail; it extracts the text of the first ${PDF_TEXT_LIMITS.maxPages} pages of a PDF up to ` +
+      `${PDF_TEXT_LIMITS.maxBytes / (1024 * 1024)} MB. Use it only within the remaining page-reading allowance, and do not fetch this PDF with web_fetch again.`
+    : 'Use another source for text evidence, and do not fetch this URL with web_fetch again.');
+}
+
+// Native web_fetch: the receipt captured from the bound call replaces the
+// persisted text blocks; details (the framework's own copy) are unchanged.
+// tool-loop-guard.mjs reaches it through projectNativeFetchGuidance.
+export function projectBinaryFetch(message, receipt) {
+  if (!record(receipt) || !['pdf', 'binary'].includes(receipt.kind) || !record(message) ||
+      message.role !== 'toolResult' || message.toolName !== 'web_fetch' || message.isError === true) return undefined;
+  return {...message, content: [{type: 'text', text: binaryFetchNote(receipt)}]};
 }
 
 const MAX_SEARCH_TEXT_CHARS = 256 * 1024;
@@ -160,6 +207,14 @@ export function projectWebResult(message, envelope, allowFetchGuidance = true) {
   }
   const failed = message.isError === true || result.isError === true;
   const identity = { id: tool.id, source: tool.source, sourceName: tool.sourceName, name: tool.name };
+  const binary = !failed && tool.name === "web_fetch" ? binaryFetchReceipt(result) : undefined;
+  if (binary) {
+    // No model-visible copy of the bytes; details keep the bound envelope.
+    return { ...message, content: [
+      { type: "text", text: JSON.stringify({ tool: identity, result: { binaryBody: true } }) },
+      { type: "text", text: binaryFetchNote(binary) },
+    ], details: envelope };
+  }
   return {
     ...message,
     ...(failed ? { isError: true } : {}),
