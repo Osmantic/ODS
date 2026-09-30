@@ -2,7 +2,9 @@
 
 import asyncio
 import logging
+from contextlib import ExitStack
 
+import yaml
 from fastapi import APIRouter, Depends, HTTPException
 
 from config import EXTENSION_CATALOG, GPU_BACKEND, SERVICES, TEMPLATES, USER_EXTENSIONS_DIR
@@ -162,6 +164,84 @@ async def apply_template(template_id: str, api_key: str = Depends(verify_api_key
         raise HTTPException(status_code=404, detail=f"Template not found: {template_id}")
 
     from helpers import get_cached_services, get_all_services
+
+    service_list = get_cached_services()
+    if service_list is None:
+        service_list = await get_all_services()
+    # One worker owns the complete physical transaction. HTTP cancellation
+    # cannot close its file locks while a host call is still running.
+    return await asyncio.to_thread(_apply_template_guarded, template, service_list)
+
+
+def _template_operation_ids(template, read_direct_deps, validate_service_id):
+    """Collect reachable IDs without changing per-service cycle/error reporting."""
+    visited = set()
+
+    def visit(sid):
+        if sid in visited:
+            return
+        try:
+            validate_service_id(sid)
+        except HTTPException:
+            return
+        visited.add(sid)
+        try:
+            dependencies = read_direct_deps(sid)
+        except HTTPException:
+            return  # The normal apply flow reports this service's invalid plan.
+        for dep in dependencies:
+            visit(dep)
+
+    for sid in template.get("services", []):
+        visit(sid)
+    return sorted(visited)
+
+
+def _apply_template_guarded(template, service_list):
+    from routers.extensions import (
+        _extension_operation_lock, _extensions_lock, _read_direct_deps,
+        _validate_service_id,
+    )
+
+    def operation_ids():
+        with _extensions_lock():
+            return _template_operation_ids(template, _read_direct_deps, _validate_service_id)
+
+    for _attempt in range(3):
+        planned = operation_ids()
+        with ExitStack() as locks:
+            # A common order prevents opposite template orders from deadlocking.
+            for sid in planned:
+                locks.enter_context(_extension_operation_lock(sid))
+            if operation_ids() != planned:
+                continue  # Release all locks before acquiring a revised plan.
+            return _apply_template_services(template, service_list)
+    raise HTTPException(status_code=409, detail="Template dependencies changed during preparation; retry apply.")
+
+
+def _healthy_template_definition(service_id):
+    """A cached health result cannot bypass a disable completed before admission."""
+    if service_id in _BASE_COMPOSE_SERVICES:
+        return True
+    from routers.extensions import _resolve_extension_dir, _installation_plan_service
+
+    try:
+        directory = _resolve_extension_dir(service_id)
+    except HTTPException:
+        return False
+    # The selected user definition shadows bundled metadata, including type.
+    if (directory / "compose.yaml").is_file():
+        return True
+    if (directory / "compose.yaml.disabled").exists():
+        return False
+    try:
+        service = _installation_plan_service(service_id)
+    except (ValueError, OSError, UnicodeError, yaml.YAMLError):
+        return False  # Normal apply reports the missing or invalid definition.
+    return isinstance(service, dict) and service.get("type", "docker") != "docker"
+
+
+def _apply_template_services(template, service_list):
     from routers.extensions import (
         _activate_service, _extensions_lock, _call_agent, _call_agent_hook,
         _get_missing_deps_transitive, _read_direct_deps, _validate_service_id,
@@ -171,10 +251,8 @@ async def apply_template(template_id: str, api_key: str = Depends(verify_api_key
         _compute_extension_status,
     )
 
-    # Blocking sections run in the thread pool so the event loop stays
-    # responsive: urllib install fetches use 300s timeouts, and host-agent
-    # calls block on the network. _extensions_lock cannot cross thread
-    # boundaries, so each lock acquisition runs inside a single off-loop call.
+    # This entire lifecycle runs in the guarded worker. Keep global filesystem
+    # sections short; per-service operation locks also cover hooks and starts.
     def _install_with_lock(sid: str) -> None:
         with _extensions_lock():
             _install_from_library(sid)
@@ -225,10 +303,12 @@ async def apply_template(template_id: str, api_key: str = Depends(verify_api_key
                 _call_agent_invalidate_compose_cache()
         return deps_enabled, main_result, None
 
-    service_list = get_cached_services()
-    if service_list is None:
-        service_list = await get_all_services()
-    services_by_id = {s.id: s for s in service_list}
+    # Validate cached health once, before activation can recreate an enabled
+    # compose file. Both root and runtime-dependency shortcuts use this view.
+    services_by_id = {
+        service.id: service for service in service_list
+        if service.status != "healthy" or _healthy_template_definition(service.id)
+    }
 
     catalog_by_id = {entry["id"]: entry for entry in EXTENSION_CATALOG}
     results = {}
@@ -252,9 +332,7 @@ async def apply_template(template_id: str, api_key: str = Depends(verify_api_key
         # One-shot tools have no healthy daemon to observe. Reuse catalog
         # readiness so an already installed CLI is not invoked by reapplying.
         ext = catalog_by_id.get(svc_id)
-        if ext and await asyncio.to_thread(
-            _compute_extension_status, ext, services_by_id,
-        ) == "cli_installed":
+        if ext and _compute_extension_status(ext, services_by_id) == "cli_installed":
             results[svc_id] = "already_enabled"
             continue
 
@@ -274,7 +352,7 @@ async def apply_template(template_id: str, api_key: str = Depends(verify_api_key
             installable = _is_installable(svc_id)
             installed_dir_exists = (USER_EXTENSIONS_DIR / svc_id).is_dir()
             has_install_error = (
-                await asyncio.to_thread(_has_error_progress, svc_id)
+                _has_error_progress(svc_id)
                 if installable and installed_dir_exists
                 else False
             )
@@ -283,21 +361,19 @@ async def apply_template(template_id: str, api_key: str = Depends(verify_api_key
             )
             if needs_library_install:
                 try:
-                    await asyncio.to_thread(_install_with_lock, svc_id)
+                    _install_with_lock(svc_id)
                     library_installed.append(svc_id)
-                    config_synced = await asyncio.to_thread(_sync_extension_config, svc_id)
+                    config_synced = _sync_extension_config(svc_id)
                     if not config_synced:
                         message = "extension config sync failed; retry template apply after restoring the host agent"
-                        await asyncio.to_thread(_write_error_progress, svc_id, message)
+                        _write_error_progress(svc_id, message)
                         results[svc_id] = f"skipped: {message}"
                         warnings.append(f"{svc_id}: {message}")
                         continue
-                    post_install_ok = await asyncio.to_thread(
-                        _call_agent_hook, svc_id, "post_install",
-                    )
+                    post_install_ok = _call_agent_hook(svc_id, "post_install")
                     if not post_install_ok:
                         message = "post_install hook failed; retry template apply after fixing the hook"
-                        await asyncio.to_thread(_write_error_progress, svc_id, message)
+                        _write_error_progress(svc_id, message)
                         results[svc_id] = f"skipped: {message}"
                         warnings.append(f"{svc_id}: {message}")
                         continue
@@ -313,17 +389,13 @@ async def apply_template(template_id: str, api_key: str = Depends(verify_api_key
             # Resolve the complete runtime dependency tree separately from the
             # activation plan. An existing compose.yaml means enabled on disk,
             # but does not prove that the dependency container is running.
-            runtime_deps = await asyncio.to_thread(
-                _runtime_dependency_order, svc_id, _read_direct_deps,
-            )
+            runtime_deps = _runtime_dependency_order(svc_id, _read_direct_deps)
 
             # Dep-aware enable: resolve missing deps, activate leaves first.
             # _activate_service checks both user-installed and built-in extension dirs.
-            missing_deps = await asyncio.to_thread(_get_missing_deps_transitive, svc_id)
+            missing_deps = _get_missing_deps_transitive(svc_id)
 
-            deps_enabled, result, activation_error = await asyncio.to_thread(
-                _activate_with_lock, svc_id, missing_deps, results,
-            )
+            deps_enabled, result, activation_error = _activate_with_lock(svc_id, missing_deps, results)
             for dep in deps_enabled:
                 enabled_services.append(dep)
                 results[dep] = "enabled_as_dependency"
@@ -383,7 +455,7 @@ async def apply_template(template_id: str, api_key: str = Depends(verify_api_key
     # but stopped until a manual full-stack restart.
     failed_services: list[str] = []
     for svc_id in enabled_services:
-        direct_deps = await asyncio.to_thread(_read_direct_deps, svc_id)
+        direct_deps = _read_direct_deps(svc_id)
         blocked_deps = [dep for dep in direct_deps if dep in failed_services]
         if blocked_deps:
             results[svc_id] = "enabled_but_dependency_failed"
@@ -399,9 +471,7 @@ async def apply_template(template_id: str, api_key: str = Depends(verify_api_key
             # install time; starting them without it reproduces the hook's
             # documented first-start failure. Hooks are no-ops when
             # undeclared and idempotent by lifecycle contract.
-            post_install_ok = await asyncio.to_thread(
-                _call_agent_hook, svc_id, "post_install",
-            )
+            post_install_ok = _call_agent_hook(svc_id, "post_install")
             if not post_install_ok:
                 results[svc_id] = "enabled_but_post_install_failed"
                 failed_services.append(svc_id)
@@ -410,14 +480,14 @@ async def apply_template(template_id: str, api_key: str = Depends(verify_api_key
                 )
                 continue
 
-        pre_start_ok = await asyncio.to_thread(_call_agent_hook, svc_id, "pre_start")
+        pre_start_ok = _call_agent_hook(svc_id, "pre_start")
         if not pre_start_ok:
             results[svc_id] = "enabled_but_pre_start_failed"
             failed_services.append(svc_id)
             warnings.append(f"{svc_id}: pre_start hook failed; service was not started")
             continue
 
-        start_ok = await asyncio.to_thread(_call_agent, "start", svc_id)
+        start_ok = _call_agent("start", svc_id)
         if not start_ok:
             if svc_id in library_installed:
                 results[svc_id] = "library_installed_but_start_failed"
@@ -426,7 +496,7 @@ async def apply_template(template_id: str, api_key: str = Depends(verify_api_key
             failed_services.append(svc_id)
             continue
 
-        post_start_ok = await asyncio.to_thread(_call_agent_hook, svc_id, "post_start")
+        post_start_ok = _call_agent_hook(svc_id, "post_start")
         if not post_start_ok:
             warnings.append(f"{svc_id}: post_start hook failed; manual configuration may be needed")
 
@@ -438,7 +508,7 @@ async def apply_template(template_id: str, api_key: str = Depends(verify_api_key
     restart_required = bool(failed_services)
 
     return {
-        "template_id": template_id,
+        "template_id": template["id"],
         "results": results,
         "enabled_count": len(enabled_services),
         "started_count": len(enabled_services) - len(failed_services),
