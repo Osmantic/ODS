@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Disposable installed upgrade proof for exact old-main and broker custody heads.
+# Disposable retained-WebUI upgrade proof for exact pre-lean and Portal heads.
 set -euo pipefail
 
 baseline="${ODS_ACCEPTANCE_BASELINE_ROOT:?baseline checkout is required}"
@@ -73,7 +73,7 @@ run_installer() {
 [[ "${GITHUB_ACTIONS:-}" == true ]] || fail 'refusing non-disposable host'
 [[ "$RUNNER_TEMP" == /* && "$INSTALL_DIR" == "$RUNNER_TEMP"/* ]] || fail 'install path is outside runner temp'
 [[ "$(git -C "$(dirname "$baseline")" rev-parse HEAD)" == 9b95d08ae9e9f79af8410dfcea442df6b99db0ba ]] || fail 'baseline source changed'
-[[ "$(git -C "$(dirname "$candidate")" rev-parse HEAD)" == 0430743987b7ae9644ae1f3e041a7d50780d703f ]] || fail 'candidate source changed'
+[[ "$(git -C "$(dirname "$candidate")" rev-parse HEAD)" == 3714b4ac2f9c6c8244782eb7e271087cdec71f1c ]] || fail 'candidate source changed'
 [[ "$(cat /proc/1/comm)" == systemd ]] || fail 'runner is not a Pixel-qualified systemd host'
 docker info >/dev/null || fail 'isolated Docker Engine unavailable'
 [[ ! -e "$INSTALL_DIR" ]] || fail 'fresh install path is not empty'
@@ -99,7 +99,7 @@ done
 curl -fsS --max-time 2 "http://127.0.0.1:$mock_port/healthz" >/dev/null \
     || fail 'mock upstream did not start'
 
-run_installer "$baseline" 'current main baseline'
+run_installer "$baseline" 'pre-lean main baseline'
 grep -qx 'ENABLE_OPEN_WEBUI=true' "$INSTALL_DIR/.env" \
     || fail 'baseline standard install did not select WebUI'
 curl -fLsS --max-time 30 http://127.0.0.1:3000/ >/dev/null \
@@ -107,7 +107,7 @@ curl -fLsS --max-time 30 http://127.0.0.1:3000/ >/dev/null \
 mkdir -p "$INSTALL_DIR/data/open-webui"
 printf 'retained-webui-data\n' >"$INSTALL_DIR/data/open-webui/acceptance-sentinel.txt"
 sentinel_hash="$(sha256sum "$INSTALL_DIR/data/open-webui/acceptance-sentinel.txt" | cut -d' ' -f1)"
-printf 'PASS: current main installed WebUI with retained-data sentinel\n'
+printf 'PASS: pre-lean main installed WebUI with retained-data sentinel\n'
 
 # The retained Pixel runtime is part of this upgrade proof. Report only
 # ownership/mode metadata for a state entry if the fail-closed source
@@ -132,7 +132,7 @@ sudo chmod 0600 /var/lib/pixel-ops-broker/ods-acceptance-sentinel.txt
 broker_sentinel_hash="$(sudo sha256sum /var/lib/pixel-ops-broker/ods-acceptance-sentinel.txt | cut -d' ' -f1)"
 broker_root_inode="$(sudo stat -c '%i' /var/lib/pixel-ops-broker)"
 
-run_installer "$candidate" 'broker custody candidate upgrade'
+run_installer "$candidate" 'current-main Portal integration upgrade'
 grep -qx 'ENABLE_OPEN_WEBUI=true' "$INSTALL_DIR/.env" \
     || fail 'Portal upgrade changed the existing WebUI selection'
 [[ "$(sha256sum "$INSTALL_DIR/data/open-webui/acceptance-sentinel.txt" | cut -d' ' -f1)" == "$sentinel_hash" ]] \
