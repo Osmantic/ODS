@@ -18361,8 +18361,9 @@ def _probe_opencode_web(port: int, timeout: float = 2.0) -> dict:
     """Probe OpenCode's own health route on host loopback.
 
     ``GET /global/health`` returns ``{"healthy": true, "version": ...}``.
-    Anything else answering on the port is reported as reachable but not
-    healthy, so an unrelated process is never presented as OpenCode.
+    Anything else answering or accepting connections on the port is reported
+    as reachable but not healthy, so an unrelated process is never presented
+    as OpenCode or replaced during setup.
     """
     opener = urllib_request.build_opener(urllib_request.ProxyHandler({}))
     started = time.monotonic()
@@ -18381,7 +18382,15 @@ def _probe_opencode_web(port: int, timeout: float = 2.0) -> dict:
         result["reachable"] = True
         exc.close()
     except (OSError, ValueError):
-        pass
+        if not result["reachable"]:
+            # A listener can hold the port without answering HTTP. Confirm a
+            # failed health request with a short TCP connect before allowing
+            # setup or start to claim this port.
+            try:
+                with socket.create_connection(("127.0.0.1", int(port)), timeout=min(timeout, 0.25)):
+                    result["reachable"] = True
+            except (OSError, ValueError):
+                pass
     result["response_time_ms"] = round((time.monotonic() - started) * 1000, 1)
     return result
 
@@ -18491,7 +18500,7 @@ def _opencode_app_status(env: dict | None = None) -> dict:
         state = "starting" if active else "stopped"
     setup_issue = None if state == "running" else _opencode_setup_issue(env, system)
     if port_in_use and setup_issue is None:
-        setup_issue = f"Port {port} is answering, but ODS cannot verify it as the managed OpenCode service. Stop it before setup."
+        setup_issue = f"Port {port} is occupied, but ODS cannot verify it as the managed OpenCode service. Stop it before setup."
     return {
         "state": state,
         "platform": system.lower(),
@@ -19017,7 +19026,7 @@ def _begin_opencode_setup(env: dict) -> tuple[int, dict]:
             }
         if status["portInUse"]:
             return 409, {
-                "error": f"Port {status['port']} is answering, but ODS cannot verify the managed OpenCode service",
+                "error": f"Port {status['port']} is occupied, but ODS cannot verify the managed OpenCode service",
                 "code": "opencode_port_in_use",
                 "status": status,
             }
@@ -19053,7 +19062,7 @@ def _begin_opencode_start(env: dict) -> tuple[int, dict]:
         }
     if status["portInUse"]:
         return 409, {
-            "error": f"Port {status['port']} is answering, but ODS cannot verify the managed OpenCode service",
+            "error": f"Port {status['port']} is occupied, but ODS cannot verify the managed OpenCode service",
             "code": "opencode_port_in_use",
             "status": status,
         }
