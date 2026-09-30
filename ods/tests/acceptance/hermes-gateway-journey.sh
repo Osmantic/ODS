@@ -43,6 +43,16 @@ PY
         docker logs ods-dashboard-api --tail 100 2>&1 \
             | grep -Ei 'hermes|Host agent unreachable' | tail -n 15 \
             | python3 -c 'import sys; from pathlib import Path; key=Path(sys.argv[1]).read_text().strip(); print(sys.stdin.read().replace(key,"[redacted]"))' "$key_file" >&2 || true
+        if [[ "$*" == *'Hermes Library add-back reported failure'* ]]; then
+            image='nousresearch/hermes-agent:v2026.9.24@sha256:fca358f12efd65bfaaca05884166f15c0e2788375ca30d77061ac1ebc96452b7'
+            if timeout 180s docker pull "$image" >"$root/hermes-pull-diagnostic.log" 2>&1; then
+                printf 'Diagnostic direct Hermes image pull succeeded.\n' >&2
+            else
+                printf 'Diagnostic direct Hermes image pull failed:\n' >&2
+                tail -n 18 "$root/hermes-pull-diagnostic.log" \
+                    | python3 -c 'import sys; from pathlib import Path; key=Path(sys.argv[1]).read_text().strip(); print(sys.stdin.read().replace(key,"[redacted]"))' "$key_file" >&2 || true
+            fi
+        fi
     fi
     docker ps --format '{{.Names}} {{.Status}}' >&2 || true
     exit 1
