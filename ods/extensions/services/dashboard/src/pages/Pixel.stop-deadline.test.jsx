@@ -109,7 +109,10 @@ it.each(['error','done'])('keeps exact Stop acknowledgement authoritative after 
     ? 'data: {"error":{"message":"This operation was aborted"}}\n\n'
     : 'data: {"choices":[{"delta":{"content":"Completed normally"}}]}\n\ndata: [DONE]\n\n')})})
   await act(async()=>{resolveCancel(json({aborted:true}))})
-  if(outcome==='error')expect(await screen.findByText('Response stopped')).toBeInTheDocument()
+  if(outcome==='error') {
+    expect(await screen.findByText('Response stopped')).toBeInTheDocument()
+    expect(screen.queryByText('Portal could not complete the response.')).toBeNull()
+  }
   else {
     expect(await screen.findByText('Completed normally')).toBeInTheDocument()
     expect(screen.queryByText('Response stopped')).toBeNull()

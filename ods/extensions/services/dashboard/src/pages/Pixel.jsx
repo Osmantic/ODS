@@ -985,6 +985,9 @@ export default function Pixel({ systemStatus = null }) {
     // this generation may update the response, workspace, or sending state.
     const isCurrentTurn = () => !controller.signal.aborted && abortRef.current === controller
     let latestAssistantText = ''
+    // Preserve actual model text, not a synthetic stream failure shown while
+    // the independently acknowledged owner Stop is still settling.
+    controller.responseText = () => latestAssistantText
     let extensionInstallationStarted = false
     let streamAttemptCount = 0
 
@@ -1305,7 +1308,7 @@ export default function Pixel({ systemStatus = null }) {
       abortRef.current = null
       requestIdRef.current = null
       setMessages(previous => replaceLastAssistant(previous, {
-        content: stoppedContent(previous.at(-1)?.content),
+        content: stoppedContent(controller?.responseText?.() ?? previous.at(-1)?.content),
         status: 'stopped',
       }))
       setSending(false)
