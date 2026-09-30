@@ -331,7 +331,7 @@ else
     mkdir -p "$INSTALL_DIR"/config/{n8n,litellm,openclaw,searxng}
 
     _phase06_repair_host_path() {
-        local target="$1" description="$2"
+        local target="$1" description="$2" target_parent
 
         if $_phase06_rootless; then
             local relative="${target#"$INSTALL_DIR"/}"
@@ -343,8 +343,30 @@ else
             return 0
         fi
         if ! ods_sudo_available; then
-            error "Cannot repair $description without privileged access: $target. Fix its ownership manually, then re-run ODS."
-            return 1
+            # A rootful Docker daemon can repair a container-owned ODS path
+            # through an exact bind mount without granting host sudo. Never
+            # follow a replaced top-level directory or an arbitrary path.
+            target_parent="${target%/}"
+            target_parent="${target_parent%/*}"
+            if [[ "$target_parent" != "$INSTALL_DIR/data" \
+               && "$target_parent" != "$INSTALL_DIR/config" ]] \
+               || [[ ! -d "$target" || -L "${target%/}" \
+                   || -L "$target_parent" || -L "$INSTALL_DIR" ]]; then
+                error "Refusing unsafe $description repair: $target"
+                return 1
+            fi
+            _ods_rootless_ensure_helper_image || return 1
+            if ! docker_run run --rm --network none --user 0:0 \
+                --mount "type=bind,src=${target%/},dst=/data" \
+                "$ODS_ROOTLESS_HELPER_IMAGE" chown -h -R "$(id -u):$(id -g)" /data; then
+                error "Could not repair $description with scoped Docker access: $target"
+                return 1
+            fi
+            [[ -w "$target" ]] || {
+                error "Repaired $description is still not writable: $target"
+                return 1
+            }
+            return 0
         fi
         if ! ods_sudo chown -R "$(id -u):$(id -g)" "$target" 2>/dev/null; then
             error "Failed to repair $description: $target"
