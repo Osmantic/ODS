@@ -77,13 +77,17 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.log_message("accept=chat bytes=%d messages=%d stream=%s",
                          size, len(request["messages"]), request.get("stream") is True)
         structured = isinstance(request.get("response_format"), dict)
+        web_case = any(
+            "ODS acceptance web query" in str(message.get("content", ""))
+            for message in request["messages"] if isinstance(message, dict)
+        )
         content = "OK"
         if structured:
             # Vane's first model call classifies the question with a JSON schema.
             # A plain answer makes its async search fail while /api/search waits.
             content = json.dumps({
                 "classification": {
-                    "skipSearch": True,
+                    "skipSearch": not web_case,
                     "personalSearch": False,
                     "academicSearch": False,
                     "discussionSearch": False,
@@ -95,13 +99,30 @@ class Handler(http.server.BaseHTTPRequestHandler):
             })
         self.log_message("accept=chat-kind structured=%s", structured)
         if request.get("stream") is True:
+            has_tools = isinstance(request.get("tools"), list) and bool(request["tools"])
+            previous_tool_result = any(
+                isinstance(message, dict) and message.get("role") == "tool"
+                for message in request["messages"]
+            )
+            if has_tools and not previous_tool_result:
+                self.log_message("accept=tool-web")
+                first_delta = {"role": "assistant", "tool_calls": [{
+                    "index": 0, "id": "call-ods-acceptance", "type": "function",
+                    "function": {"name": "web_search", "arguments": json.dumps({
+                        "type": "web_search", "queries": ["Python programming language"],
+                    })},
+                }]}
+                finish_reason = "tool_calls"
+            else:
+                first_delta = {"role": "assistant", "content": "OK"}
+                finish_reason = "stop"
             events = [
                 {"id": "chatcmpl-ods-acceptance", "object": "chat.completion.chunk",
                  "created": 0, "model": self.model,
-                 "choices": [{"index": 0, "delta": {"role": "assistant", "content": "OK"}, "finish_reason": None}]},
+                 "choices": [{"index": 0, "delta": first_delta, "finish_reason": None}]},
                 {"id": "chatcmpl-ods-acceptance", "object": "chat.completion.chunk",
                  "created": 0, "model": self.model,
-                 "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]},
+                 "choices": [{"index": 0, "delta": {}, "finish_reason": finish_reason}]},
             ]
             body = ("".join("data: " + json.dumps(event) + "\n\n" for event in events)
                     + "data: [DONE]\n\n").encode("utf-8")

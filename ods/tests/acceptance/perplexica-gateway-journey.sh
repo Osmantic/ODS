@@ -302,6 +302,55 @@ mock_hits_after="$(grep -c 'accept=chat' "$mock_log" || true)"
 (( mock_hits_after > mock_hits_before )) || fail 'Perplexica search did not reach the selected external model'
 printf 'PASS: selected external model received Perplexica completion\n'
 
+python3 - <<'PY' || fail 'SearXNG web source was unavailable on this runner'
+import json
+import urllib.parse
+import urllib.request
+
+query = urllib.parse.urlencode({"q": "Python programming language", "format": "json"})
+with urllib.request.urlopen("http://127.0.0.1:8888/search?" + query, timeout=90) as response:
+    result = json.load(response)
+assert len(result.get("results") or []) > 0, "SearXNG returned no web results"
+print("PASS: selected SearXNG returned web results")
+PY
+
+mock_web_calls_before="$(grep -c 'accept=tool-web' "$mock_log" || true)"
+python3 - "$audit_root/perplexica-web-query.json" <<'PY' || fail 'Perplexica did not complete a SearXNG-backed web query'
+import json
+import sys
+import urllib.request
+
+base = "http://127.0.0.1:3004"
+with urllib.request.urlopen(base + "/api/config", timeout=10) as response:
+    values = json.load(response)["values"]
+prefs = values["preferences"]
+payload = {
+    "sources": ["web"],
+    "query": "ODS acceptance web query: what is Python programming language?",
+    "chatModel": {"providerId": prefs["defaultChatProvider"],
+                  "key": prefs["defaultChatModel"]},
+    "embeddingModel": {"providerId": prefs["defaultEmbeddingProvider"],
+                       "key": prefs["defaultEmbeddingModel"]},
+    "stream": False,
+    "optimizationMode": "speed",
+}
+request = urllib.request.Request(
+    base + "/api/search", data=json.dumps(payload).encode("utf-8"),
+    headers={"Content-Type": "application/json"}, method="POST")
+with urllib.request.urlopen(request, timeout=240) as response:
+    result = json.load(response)
+assert isinstance(result.get("message"), str) and "OK" in result["message"]
+sources = result.get("sources") or []
+assert sources and all(source.get("metadata", {}).get("url", "").startswith("http")
+                       for source in sources), "web answer has no cited sources"
+with open(sys.argv[1], "w", encoding="utf-8") as stream:
+    json.dump({"message_present": True, "sources_count": len(sources)}, stream)
+print("PASS: Perplexica returned a model-backed answer with web source URLs")
+PY
+mock_web_calls_after="$(grep -c 'accept=tool-web' "$mock_log" || true)"
+(( mock_web_calls_after > mock_web_calls_before )) || fail 'model never requested Vane web_search tool'
+printf 'PASS: selected external model invoked Vane web_search\n'
+
 docker exec -u 0 ods-perplexica sh -c 'printf retained-perplexica-data >/home/vane/data/ods-acceptance-sentinel'     || fail 'could not write Perplexica data sentinel'
 curl -fsS --max-time 180 -X POST http://127.0.0.1:3001/api/extensions/perplexica/disable     >"$audit_root/perplexica-disable.json" || fail 'Perplexica Disable failed'
 [[ -f "$INSTALL_DIR/extensions/services/perplexica/compose.yaml.disabled" ]]     || fail 'Perplexica definition remained enabled after Disable'
