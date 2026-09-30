@@ -7,6 +7,27 @@
 # shellcheck source=installers/lib/pixel-integration.sh
 source "$(dirname "${BASH_SOURCE[0]}")/pixel-integration.sh"
 
+_ods_pixel_reconcile_workspace_guidance() {
+    local owner="$1" home="$2" workspace="$3"
+    local -a guidance_options=()
+    [[ "${4:-live}" != generated ]] || guidance_options=(--generated)
+    ods_pixel_run_as_owner "$owner" "$home" /usr/bin/python3 -B \
+        "${INSTALL_DIR:?}/installers/lib/pixel-workspace-guidance.py" --workspace "$workspace" "${guidance_options[@]}"
+}
+
+_ods_pixel_migrate_live_workspace_guidance() {
+    local owner="$1" home="$2" pixel_log="$3" workspace_guidance_status
+    if ! workspace_guidance_status="$(_ods_pixel_reconcile_workspace_guidance "$owner" "$home" "$home/.openclaw/workspace-pixel" 2>>"$pixel_log")"; then
+        # Guidance repair is optional for an existing owner workspace. Preserve
+        # unsafe/custom files and keep the verified runtime upgrade available.
+        workspace_guidance_status='{"status":"manual-review-required"}'
+    fi
+    printf '%s\n' "$workspace_guidance_status" >>"$pixel_log"
+    if [[ "$workspace_guidance_status" == *'"manual-review-required"'* ]]; then
+        ai_warn "Portal preserved custom or unverified workspace guidance. Review AGENTS.md or MEMORY.md against your selected model route."
+    fi
+}
+
 _ods_pixel_default_output_tokens() {
     # Shared usability default, not an assertion of provider output capacity.
     # Unknown model families remain usable; no model-name or reasoning policy.
@@ -2008,6 +2029,7 @@ _ods_pixel_restore_model_reconciliation() {
     _ods_pixel_atomic_replace_managed_file "$owner" "$home" "$backup/rollback-onboarding.json" "$answers" || return 1
     _ods_pixel_atomic_replace_managed_file "$owner" "$home" "$backup/pixel-managed.json" "$home/.config/ods/pixel-managed.json" || return 1
     if ! ods_pixel_run_as_owner "$owner" "$home" "$pixel_root/pixel" configure --answers "$answers" --force \
+        || ! _ods_pixel_reconcile_workspace_guidance "$owner" "$home" "$pixel_root/.generated/workspace" generated \
         || ! _ods_pixel_install_onboarding_mirror "$owner" "$home" "$answers" \
         || ! ods_pixel_run_as_owner "$owner" "$home" "$pixel_root/pixel" plan \
         || ! _ods_pixel_recreate_agent_sandbox "$owner" "$home" "$openclaw_bin" \
@@ -2142,6 +2164,11 @@ ods_pixel_reconcile_promoted_model() {
             && ! ods_pixel_run_as_owner "$owner" "$home" "$pixel_root/pixel" configure --answers "$answers" --force; then
             failed=true
             failure_phase="pixel-configure"
+        fi
+        if [[ "$failed" == false ]] \
+            && ! _ods_pixel_reconcile_workspace_guidance "$owner" "$home" "$pixel_root/.generated/workspace" generated; then
+            failed=true
+            failure_phase="workspace-guidance"
         fi
         if [[ "$failed" == false ]] \
             && ! ods_pixel_run_as_owner "$owner" "$home" "$pixel_root/pixel" plan; then
@@ -4734,6 +4761,10 @@ ods_pixel_install_default_agent() {
             ai_bad "Pixel configure failed. See $pixel_log for the exact Pixel error."
             return 1
         fi
+        if ! _ods_pixel_reconcile_workspace_guidance "$owner" "$home" "$pixel_root/.generated/workspace" generated >>"$pixel_log" 2>&1; then
+            ai_bad "Could not safely prepare Portal workspace guidance. See $pixel_log."
+            return 1
+        fi
         if ! ods_pixel_run_as_owner "$owner" "$home" "$pixel_root/pixel" plan >>"$pixel_log" 2>&1; then
             ai_bad "Pixel plan failed. See $pixel_log for the exact Pixel error."
             return 1
@@ -4854,6 +4885,9 @@ ods_pixel_install_default_agent() {
             ods_pixel_run_as_owner "$owner" "$home" rm -f -- "$apply_attempt" || return 1
         fi
     fi
+    # Both a fresh apply and the already-active-contract path reach this owner
+    # migration. It leaves custom text intact and precedes the gateway restart.
+    _ods_pixel_migrate_live_workspace_guidance "$owner" "$home" "$pixel_log"
     # Record the verified Pixel release before applying the ODS-owned runtime
     # overlay. If power is lost between the atomic config update and gateway
     # verification, the next installer run can safely enter the exact-source
