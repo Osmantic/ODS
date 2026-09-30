@@ -17,9 +17,10 @@ describe('Pixel workspace navigation', () => {
     expect(screen.getByTestId('ods-logo')).toBe(logo)
     expect(logo).toBeVisible()
     expect(screen.queryByRole('link', {name:'Pixel',exact:true})).toBeNull()
-    expect(screen.queryByRole('link', {name:'Integrations',exact:true})).toBeNull()
     expect(screen.queryByRole('link', {name:'Remote GPU',exact:true})).toBeNull()
     expect(screen.getByRole('link', {name:'Extensions',exact:true})).toBeVisible()
+    // Integrations is a top-level ODS page again (2.x behaviour; 3.0 hid it in Settings).
+    expect(screen.getByRole('link', {name:'Integrations',exact:true}).getAttribute('href')).toBe('/extensions/integrations')
   })
   it('keeps the ODS dashboard separate from the conversational home', () => {
     expect(coreRoutes.find(route => route.id === 'dashboard').path).toBe('/dashboard')

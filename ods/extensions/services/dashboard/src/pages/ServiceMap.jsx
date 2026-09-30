@@ -3,6 +3,7 @@ import { ExternalLink, GitBranch, RefreshCw, X } from 'lucide-react'
 import { serviceUrl } from '../lib/serviceUrls'
 import PanelSelect from '../components/PanelSelect'
 import IntegrationSnapshotDownload from '../components/IntegrationSnapshotDownload'
+import { formatCheckedAt } from '../lib/checkedAt'
 
 const POLL_INTERVAL = 10000
 const POLL_TIMEOUT = 15000
@@ -224,7 +225,7 @@ function ServiceNode({ node, pos, selected, onSelect, compact = false }) {
   )
 }
 
-function DetailPanel({ node, edges, onClose, inline = false }) {
+function DetailPanel({ node, edges, onClose, checkedAt, inline = false }) {
   if (!node) return null
   const meta = statusMeta(node.status)
   const upstream = edges.filter(edge => edge.target === node.id)
@@ -244,6 +245,7 @@ function DetailPanel({ node, edges, onClose, inline = false }) {
         <div className="flex justify-between"><span className="text-theme-text-muted">Status</span><span className={meta.text}>{node.status}</span></div>
         <div className="flex justify-between"><span className="text-theme-text-muted">Port</span><span className="font-mono text-theme-text">{node.port}</span></div>
         <div className="flex justify-between"><span className="text-theme-text-muted">Layer</span><span className="text-theme-text">{node.category}</span></div>
+        {checkedAt && <div className="flex justify-between"><span className="text-theme-text-muted">Last check</span><span className="text-theme-text" title={checkedAt}>{formatCheckedAt(checkedAt).replace(/^Checked /, '')}</span></div>}
         {upstream.length > 0 && <DependencyList label="Used by" edges={upstream} field="source" />}
         {downstream.length > 0 && <DependencyList label="Depends on" edges={downstream} field="target" />}
         {url && <a href={url} target="_blank" rel="noreferrer" className="flex items-center gap-1.5 text-theme-accent hover:underline"><ExternalLink size={12} />Open service</a>}
@@ -269,7 +271,7 @@ function DependencyList({ label, edges, field }) {
   )
 }
 
-function CompactIntegrations({ nodes, edges, capturedAt, refresh, error }) {
+function CompactIntegrations({ nodes, edges, capturedAt, checkedAt, refresh, error, title = 'Integrations' }) {
   const [view, setView] = useState('list')
   const [search, setSearch] = useState('')
   const [filter, setFilter] = useState('all')
@@ -290,12 +292,12 @@ function CompactIntegrations({ nodes, edges, capturedAt, refresh, error }) {
     height += Math.ceil(members.length / 2) * 100 + 25
   }
   return <section className="portal-integrations">
-    <header className="integrations-header"><div><h2>Integrations</h2><p>{nodes.length} services · {nodes.filter(node => node.status === 'healthy').length} healthy</p></div><button type="button" aria-label="Refresh integrations" onClick={refresh}><RefreshCw size={15} /></button></header>
+    <header className="integrations-header"><div><h2>{title}</h2><p>{nodes.length} services · {nodes.filter(node => node.status === 'healthy').length} healthy{checkedAt && <> · <span title={checkedAt}>{formatCheckedAt(checkedAt).toLowerCase()}</span></>}</p></div><button type="button" aria-label={title === 'Integrations' ? 'Refresh integrations' : `Refresh ${title}`} onClick={refresh}><RefreshCw size={15} /></button></header>
     <IntegrationSnapshotDownload nodes={nodes} edges={edges} capturedAt={capturedAt} refreshFailed={Boolean(error)} />
     <nav className="settings-view-tabs" aria-label="Integration views"><button type="button" aria-pressed={view === 'list'} onClick={() => setView('list')}>Service list</button><button type="button" aria-pressed={view === 'map'} onClick={() => setView('map')}>View map</button></nav>
     {error && <p role="alert" className="text-red-400">Status could not be refreshed. {error}</p>}
     <div className="integrations-filters"><input type="search" aria-label="Search integrations" placeholder="Search services…" value={search} onChange={event => setSearch(event.target.value)} /><PanelSelect label="Service status" value={filter} onChange={setFilter} options={[{value:'all',label:'All statuses'},{value:'healthy',label:'Healthy'},{value:'attention',label:'Not healthy'}]} /></div>
-    <div ref={detailRef}><DetailPanel inline node={selected} edges={edges} onClose={() => setSelectedId(null)} /></div>
+    <div ref={detailRef}><DetailPanel inline node={selected} edges={edges} checkedAt={checkedAt} onClose={() => setSelectedId(null)} /></div>
     {!visible.length ? <p className="integrations-empty">{nodes.length ? 'No matching services.' : 'No services reported.'}</p> : view === 'list' ? <div className="integrations-list">
       {LAYERS.map(layer => {
         const members = visible.filter(node => node.category === layer).sort((a, b) => a.name.localeCompare(b.name))
@@ -321,7 +323,7 @@ function CompactIntegrations({ nodes, edges, capturedAt, refresh, error }) {
   </section>
 }
 
-export default function ServiceMap({ compact = false }) {
+export default function ServiceMap({ compact = false, title }) {
   const [topology, setTopology] = useState({ nodes: [], edges: [] })
   const [selectedNode, setSelectedNode] = useState(null)
   const [loading, setLoading] = useState(true)
@@ -347,7 +349,10 @@ export default function ServiceMap({ compact = false }) {
       })()
       const data = await Promise.race([snapshot, aborted])
       if (activeRequest.current !== controller) return
-      setTopology({ ...buildTopology(data), capturedAt: new Date().toISOString() })
+      const capturedAt = new Date().toISOString()
+      // Prefer the server's own health-poll time; older APIs only give ours.
+      const checkedAt = Number.isFinite(Date.parse(data?.servicesCheckedAt || '')) ? data.servicesCheckedAt : capturedAt
+      setTopology({ ...buildTopology(data), capturedAt, checkedAt })
       setError(null)
     } catch (err) {
       if (activeRequest.current === controller) setError(err.message)
@@ -377,7 +382,7 @@ export default function ServiceMap({ compact = false }) {
     }
   }, [fetchTopology])
 
-  const { nodes, edges, capturedAt } = topology
+  const { nodes, edges, capturedAt, checkedAt } = topology
   const { positions, layerY, svgWidth, svgHeight } = useMemo(() => computeLayout(nodes), [nodes])
   const counts = useMemo(() => ({
     healthy: nodes.filter(node => node.status === 'healthy').length,
@@ -395,7 +400,7 @@ export default function ServiceMap({ compact = false }) {
     return <div role="alert" className="text-sm text-red-400">Topology data unavailable: {error}<button className="ml-3" onClick={fetchTopology}>Retry</button></div>
   }
 
-  if (compact) return <CompactIntegrations nodes={nodes} edges={edges} capturedAt={capturedAt} refresh={fetchTopology} error={error} />
+  if (compact) return <CompactIntegrations nodes={nodes} edges={edges} capturedAt={capturedAt} checkedAt={checkedAt} refresh={fetchTopology} error={error} title={title} />
 
   return (
     <div className="p-8">
@@ -451,7 +456,7 @@ export default function ServiceMap({ compact = false }) {
           {edgeLabels.map(label => <span key={label} className="flex items-center gap-1.5 text-xs text-theme-text-muted"><span className="inline-block h-2 w-2 rounded-full" style={{ background: EDGE_META[label] || '#6b7280' }} />{label}</span>)}
         </div>
 
-        <DetailPanel node={selectedNode} edges={edges} onClose={() => setSelectedNode(null)} />
+        <DetailPanel node={selectedNode} edges={edges} checkedAt={checkedAt} onClose={() => setSelectedNode(null)} />
       </div>
     </div>
   )

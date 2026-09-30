@@ -139,6 +139,19 @@ Environment variables (set in `.env`):
 
 Core services cannot be installed, enabled, disabled, or uninstalled via these endpoints (returns 403). The catalog endpoint also reports whether the [host agent](../../../docs/HOST-AGENT-API.md) is available (`agent_available` field).
 
+### Custom integrations
+
+Systems ODS does not run (a hosted decision API, a data engine on the LAN) that the owner wants to watch on the dashboard's Integrations page. ODS services themselves report through `/api/status`, which also carries `servicesCheckedAt`, the time of the last service health poll.
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| `GET` | `/api/integrations/custom` | Yes | List custom integrations with their last check. Entries whose check is older than 60 s are re-checked first (`?refresh=none` skips that) |
+| `POST` | `/api/integrations/custom` | Yes | Add `{name, url, notes?}` and check it immediately. 400 for an invalid URL, 409 for a duplicate URL or when 25 entries exist |
+| `POST` | `/api/integrations/custom/{id}/check` | Yes | Check one integration now |
+| `DELETE` | `/api/integrations/custom/{id}` | Yes | Stop checking an integration (the other system is never contacted) |
+
+A check is one `GET` with a 5 s timeout. It follows no redirects, sends no credentials or cookies, and never reads the response body. The result is `healthy` (2xx), `degraded` (3xx, 401, 403), `unhealthy` (other codes) or `down` (no answer), with the HTTP code, latency and time. URLs with a user name, password, query string or fragment are refused, and so are link-local, multicast, unspecified and cloud metadata addresses, both as literals and after DNS resolution. The list is stored in `$ODS_DATA_DIR/integrations/custom.json`. An unreadable file is reported (503) and never overwritten.
+
 ## Authentication
 
 Protected endpoints always require Bearer authentication. When `DASHBOARD_API_KEY` is set in `.env`, use that key:
