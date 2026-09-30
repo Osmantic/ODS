@@ -27,7 +27,7 @@ fail() {
 
 [[ "${GITHUB_ACTIONS:-}" == true ]] || fail 'refusing non-disposable host'
 [[ "$RUNNER_TEMP" == /* && "$INSTALL_DIR" == "$RUNNER_TEMP"/* ]] || fail 'install path is outside runner temp'
-[[ "$(git -C "$(dirname "$product")" rev-parse HEAD)" == c36282fc227a05b8dd68b9859d8dff0d4b057a05 ]] || fail 'product source changed'
+[[ "$(git -C "$(dirname "$product")" rev-parse HEAD)" == 56113ce18f9697bb820cb16fd9a8ad04d0a054f6 ]] || fail 'product source changed'
 [[ "$(cat /proc/1/comm)" == systemd ]] || fail 'runner is not a Pixel-qualified systemd host'
 docker info >/dev/null || fail 'isolated Docker Engine unavailable'
 [[ ! -e "$INSTALL_DIR" ]] || fail 'fresh install path is not empty'
