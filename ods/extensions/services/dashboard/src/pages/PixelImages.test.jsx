@@ -60,6 +60,19 @@ it('removes uploaded drafts through the scoped endpoint and preserves them if cl
   expect(fetchMock.mock.calls.some(([url,options])=>url.endsWith(`/${imageId}`) && options?.method==='DELETE')).toBe(true)
 })
 
+it('holds sending and persists the draft while image removal is unconfirmed',async()=>{
+  await ready();await choose()
+  let finish
+  fetchMock.mockImplementationOnce(()=>new Promise(resolve=>{finish=resolve}))
+  fireEvent.click(screen.getByRole('button',{name:'Remove image 1'}))
+  expect(await screen.findByText('Removing attachment…')).toBeVisible()
+  expect(screen.getByTitle('Send')).toBeDisabled()
+  expect(screen.getByRole('button',{name:'Remove image 1'})).toBeDisabled()
+  expect(stored().draftImages[0].id).toBe(imageId)
+  await act(async()=>finish(response({discarded:true,retained:false})))
+  await waitFor(()=>expect(screen.queryByRole('list',{name:'Attached images'})).toBeNull())
+})
+
 it('selects locally, uploads original bytes privately, then sends an image-only real composer turn with v2 refs',async()=>{
   await ready()
   const file=fixtureFile()

@@ -27,12 +27,12 @@ export default function PortalImageAttachments({attachments,chatId,disabled,hasH
       {attachments.items.map((item,index)=><li key={item.key}>
         <img src={item.preview || imageUrl(chatId,item.receipt?.id)} alt={`Image attachment ${index+1}`}/>
         <div className="portal-image-attachment-copy"><strong>{item.file?.name || `Image ${index+1}`}</strong>
-          <small>{item.status==='uploading'?'Saving privately…':item.status==='failed'?'Upload not confirmed':`${item.receipt.width} × ${item.receipt.height} · Ready`}</small>
+          <small>{item.status==='uploading'?'Saving privately…':item.status==='removing'?'Removing attachment…':item.status==='failed'?'Upload not confirmed':`${item.receipt.width} × ${item.receipt.height} · Ready`}</small>
           {item.error && <span role="alert">{item.error}</span>}
         </div>
         {item.status==='uploading' && <Loader2 size={14} className="animate-spin" aria-label="Uploading image"/>}
         {item.status==='failed' && <button type="button" disabled={disabled} aria-label={`Retry image ${index+1}`} onClick={()=>attachments.retry(item)}><RotateCw size={14}/></button>}
-        <button type="button" disabled={disabled} aria-label={`Remove image ${index+1}`} onClick={()=>attachments.remove(item.key)}><X size={14}/></button>
+        <button type="button" disabled={disabled || item.status==='removing'} aria-label={`Remove image ${index+1}`} onClick={()=>attachments.remove(item.key)}><X size={14}/></button>
       </li>)}
     </ul>}
     {attachments.error && <p role="alert">{attachments.error}</p>}

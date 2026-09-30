@@ -4,6 +4,7 @@ import {discardPortalImage, draftImageReceipts, IMAGE_TYPES, MAX_IMAGE_BYTES, MA
 export default function usePortalImages(chatId, initial = []) {
   const [state,setState] = useState(() => ({chatId,items:draftImageReceipts(initial).map(receipt=>({key:receipt.id,receipt,status:'ready'})),error:''}))
   const current = useRef(state), scope = useRef(chatId), jobs = useRef(new Map()), counter = useRef(0)
+  const generation = useRef(0)
   current.current = state; scope.current = chatId
   const update = useCallback(fn => setState(previous => {
     const next = fn(previous); current.current=next; return next
@@ -14,16 +15,23 @@ export default function usePortalImages(chatId, initial = []) {
   },[])
   useEffect(() => () => dispose(),[dispose])
   const replace = useCallback((nextChat, receipts=[]) => {
+    generation.current++
     dispose();scope.current=nextChat
     const next={chatId:nextChat,items:draftImageReceipts(receipts).map(receipt=>({key:receipt.id,receipt,status:'ready'})),error:''}
     current.current=next;setState(next)
   },[dispose])
   const remove = useCallback(async key => {
-    const at=scope.current, selected=current.current.items.find(item=>item.key===key)
+    const at=scope.current, epoch=generation.current, selected=current.current.items.find(item=>item.key===key)
+    if(!selected || selected.status==='removing')return
     if(selected?.receipt) {
+      update(previous=>({...previous,error:'',items:previous.items.map(item=>item.key===key?{...item,status:'removing'}:item)}))
       try {await discardPortalImage(at,selected.receipt.id)}
-      catch(error) {if(scope.current===at)update(previous=>({...previous,error:error.message}));return}
-      if(scope.current!==at)return
+      catch(error) {
+        if(scope.current===at && generation.current===epoch)update(previous=>({...previous,error:error.message,
+          items:previous.items.map(item=>item.key===key?{...item,status:'ready'}:item)}))
+        return
+      }
+      if(scope.current!==at || generation.current!==epoch)return
     }
     jobs.current.get(key)?.abort();jobs.current.delete(key)
     update(previous=>({...previous,error:'',items:previous.items.filter(item=>{
@@ -67,6 +75,6 @@ export default function usePortalImages(chatId, initial = []) {
   },[run,update])
   const items=state.chatId===chatId?state.items:[]
   return {items,error:state.chatId===chatId?state.error:'',choose,remove,retry:run,replace,
-    clear:()=>replace(chatId),receipts:items.filter(item=>item.status==='ready').map(item=>item.receipt),
+    clear:()=>replace(chatId),receipts:items.filter(item=>item.status==='ready' || item.status==='removing').map(item=>item.receipt),
     busy:items.some(item=>item.status!=='ready')}
 }
