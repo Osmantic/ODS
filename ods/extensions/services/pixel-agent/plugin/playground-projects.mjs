@@ -37,6 +37,7 @@ export function requestsNewPlaygroundProject(intent) {
     // A build command or noun is not the creation verb "build". Keep real
     // creation clauses (including later clauses) eligible for project routing.
     .replace(/\b(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?build\b/gi, ' ')
+    .replace(/\b(?:(?:run|execute|rode|rodar)|cargo|gradle|gradlew|vite|webpack|rollup|astro|nuxt)\s+build\b/gi, ' ')
     .replace(/\b(?:the|o)\s+build\b/gi, ' ');
   // Continuation quotes the old creation request, not a new reservation.
   // Core tool policy still controls every inspection and mutation.
