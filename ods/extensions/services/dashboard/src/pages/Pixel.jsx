@@ -1753,7 +1753,7 @@ export default function Pixel({ systemStatus = null }) {
               <PixelDraftPreview key={`draft-preview-${chatIdRef.current}`} input={command?.task ?? goalDraft?.task ?? input}/>
             </PixelComposerTools>
             <div className="pixel-composer-limits">
-              <PortalModelSelector activeModel={activeModel} runtimeSource={agentRuntime?.source} busy={sending || restoredActive || restoredChecking || stopping || teams.busy || contextControl.busy || status!=='available'} onSwitchingChange={setModelSwitching} onSettled={()=>setModelStatusRefresh(value=>value+1)}/>
+              <PortalModelSelector activeModel={activeModel} runtimeSource={agentRuntime?.source} availability={status} displayScope={chatIdRef.current} runtimeFingerprint={agentRuntime?.routeFingerprint} runtimeObservation={agentRuntime} busy={sending || restoredActive || restoredChecking || stopping || teams.busy || contextControl.busy || status!=='available'} onSwitchingChange={setModelSwitching} onSettled={()=>setModelStatusRefresh(value=>value+1)}/>
               <PortalContextRing capacityLabel={activeContext} context={contextControl.context} capacity={contextControl.observedCapacity || agentRuntime?.contextLength} pending={sending || restoredActive || contextControl.busy} onRefresh={()=>void contextControl.refresh()}/>
             </div>
           </div>

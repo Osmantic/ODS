@@ -1,6 +1,7 @@
 .portal-model-selector { position:relative; min-width:0; font-size:12px; }
 .portal-model-trigger { display:flex; align-items:center; justify-content:flex-end; gap:6px; max-width:210px; padding:5px 6px; border:0; border-radius:7px; background:transparent; color:rgb(var(--theme-text-muted)); font:inherit; cursor:pointer; }
 .portal-model-trigger > span { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.portal-model-trigger > .portal-model-unavailable { flex-shrink:0; }
 .portal-model-trigger > svg { flex-shrink:0; }
 .portal-model-trigger:hover,.portal-model-trigger[aria-expanded=true] { color:rgb(var(--theme-text)); background:rgb(var(--theme-text) / .045); }
 .portal-model-menu { position:absolute; right:0; bottom:calc(100% + 10px); z-index:65; width:320px; max-width:calc(100vw - 32px); max-height:min(480px,70dvh); overflow:auto; padding:8px; border:1px solid rgb(var(--theme-border) / .7); border-radius:15px; background:rgb(var(--theme-card) / .96); color:rgb(var(--theme-text)); box-shadow:0 14px 40px #0004; backdrop-filter:blur(22px); -webkit-backdrop-filter:blur(22px); text-align:left; white-space:normal; scrollbar-width:thin; scrollbar-color:rgb(var(--theme-text) / .25) transparent; }

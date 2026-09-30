@@ -46,19 +46,41 @@ export default function PortalModelSelector(props) {
   const lastCatalogSource=useRef(props.runtimeSource)
   const confirmedSource=['remote-provider','local-switchboard','external-host'].includes(props.runtimeSource)
   useEffect(()=>{if(confirmedSource)lastCatalogSource.current=props.runtimeSource},[props.runtimeSource,confirmedSource])
+  const lastLabel=useRef({scope:props.displayScope,value:null})
+  // A fresh validated poll can confirm the new chat's label even when its
+  // primitive fields are unchanged. Availability/source still gate the hint.
+  useEffect(()=>{
+    if(lastLabel.current.scope!==props.displayScope){lastLabel.current={scope:props.displayScope,value:null};return}
+    if(!props.availability || props.availability==='switching'
+      || confirmedSource && props.runtimeSource!=='remote-provider'
+      || props.runtimeFingerprint && props.runtimeFingerprint!==lastLabel.current.value?.fingerprint)lastLabel.current.value=null
+    if(props.availability==='available' && props.runtimeSource==='remote-provider' && props.activeModel)
+      lastLabel.current.value={model:props.activeModel,fingerprint:props.runtimeFingerprint}
+  },[props.availability,props.displayScope,props.runtimeSource,props.runtimeFingerprint,props.activeModel,props.runtimeObservation,confirmedSource])
+  // This is a diagnostic label only. Never pass it as an active model/source.
+  const remembered=lastLabel.current.scope===props.displayScope
+    && (!confirmedSource || props.runtimeSource==='remote-provider')
+    && (!props.runtimeFingerprint || props.runtimeFingerprint===lastLabel.current.value?.fingerprint)
+      ?lastLabel.current.value:null
+  const unavailableLabel=props.availability==='unavailable'?{
+    text:remembered?`${modelDisplayName(remembered.model,true)} · unavailable`:'Model unavailable',
+    model:remembered?modelDisplayName(remembered.model,true):null,
+    label:remembered?`Last confirmed model: ${modelDisplayName(remembered.model,true)}; Portal unavailable`:'Model unavailable',
+    title:remembered?`Last confirmed model: ${modelDisplayName(remembered.model)}. Portal is unavailable; selection is not currently verified.`:'Portal is unavailable. Model selection is not currently verified.',
+  }:null
   // Remember only which reads to suppress, even before the first menu opening.
   // Selection and mutation authorization still require the current source.
   const observeCatalog=(confirmedSource?props.runtimeSource:lastCatalogSource.current)!=='remote-provider'
-  if(started)return <LoadedModelSelector {...props} observeCatalog={observeCatalog}/>
+  if(started)return <LoadedModelSelector {...props} observeCatalog={observeCatalog} unavailableLabel={unavailableLabel}/>
   return <div className="portal-model-selector"><button type="button" className="portal-model-trigger"
-    aria-label={`Choose model: ${modelDisplayName(props.activeModel,true)}`} aria-haspopup="dialog" aria-expanded="false"
-    title={modelDisplayName(props.activeModel)} onClick={()=>setStarted(true)}>
-    <span>{modelDisplayName(props.activeModel,true)}</span><ChevronDown size={12} aria-hidden="true"/>
+    aria-label={unavailableLabel?.label || `Choose model: ${modelDisplayName(props.activeModel,true)}`} aria-haspopup="dialog" aria-expanded="false"
+    title={unavailableLabel?.title || modelDisplayName(props.activeModel)} onClick={()=>setStarted(true)}>
+    <span>{unavailableLabel?.model || unavailableLabel?.text || modelDisplayName(props.activeModel,true)}</span>{unavailableLabel?.model && <span className="portal-model-unavailable"> · unavailable</span>}<ChevronDown size={12} aria-hidden="true"/>
   </button></div>
 }
 
 /** Once opened, retain the hook even while closed so an accepted swap stays observed. */
-function LoadedModelSelector({activeModel='',runtimeSource,observeCatalog,busy=false,onSwitchingChange,onSettled}) {
+function LoadedModelSelector({activeModel='',runtimeSource,observeCatalog,unavailableLabel,busy=false,onSwitchingChange,onSettled}) {
   const catalog=useModels({observe:observeCatalog})
   const {currentModel,activationReadyModel,loading,error,canActivateModels,activationModeError,activationLoading,modelLifecycle,externalLemonade,modelManagement,runtimeActionLoading,actionLoadingModels=[],loadModel,refresh,clearMutationError}=catalog
   const models=Array.isArray(catalog.models)?catalog.models:[]
@@ -124,10 +146,10 @@ function LoadedModelSelector({activeModel='',runtimeSource,observeCatalog,busy=f
     }
   }
   const reason=switching?'':confirmation?unavailable(confirmation):remote?'This conversation uses a remote provider.':managementUnavailable?activationModeError || 'Runtime management could not be verified. Refresh the model list.':external?'This model is managed on the external host.':!local?'The conversation’s model source is not confirmed.':busy?'The current task is still running.':!canActivateModels && !loading?activationModeError:''
-  const showActiveFallback=activeModel && !current
+  const showActiveFallback=!unavailableLabel && activeModel && !current
   return <div ref={root} className="portal-model-selector">
-    <button ref={trigger} type="button" className="portal-model-trigger" aria-label={`Choose model: ${modelDisplayName(activeName,true)}`} aria-haspopup="dialog" aria-expanded={open} aria-controls={open?id:undefined} title={modelDisplayName(activeName)} onClick={()=>{if(open)close();else {setOpen(true);if(observeCatalog)void refresh()}}}>
-      {switching && <Loader2 size={12} className="portal-model-loading" aria-hidden="true"/>}<span>{modelDisplayName(activeName,true)}</span><ChevronDown size={12} aria-hidden="true"/>
+    <button ref={trigger} type="button" className="portal-model-trigger" aria-label={unavailableLabel?.label || `Choose model: ${modelDisplayName(activeName,true)}`} aria-haspopup="dialog" aria-expanded={open} aria-controls={open?id:undefined} title={unavailableLabel?.title || modelDisplayName(activeName)} onClick={()=>{if(open)close();else {setOpen(true);if(observeCatalog)void refresh()}}}>
+      {switching && <Loader2 size={12} className="portal-model-loading" aria-hidden="true"/>}<span>{unavailableLabel?.model || unavailableLabel?.text || modelDisplayName(activeName,true)}</span>{unavailableLabel?.model && <span className="portal-model-unavailable"> · unavailable</span>}<ChevronDown size={12} aria-hidden="true"/>
     </button>
     <section id={id} role="dialog" aria-label="Choose model" className="portal-model-menu" hidden={!open} style={!open?{display:'none'}:undefined}>
       <header><strong>{confirmation?'Switch model':'Model'}</strong>{switching && <span role="status">Switching…</span>}</header>
@@ -148,7 +170,8 @@ function LoadedModelSelector({activeModel='',runtimeSource,observeCatalog,busy=f
           {installed.map(model=>{const selected=model.id===selectedId,disabled=unavailable(model);return <button key={model.id} role="menuitemradio" aria-checked={selected} type="button" className="portal-model-option" disabled={!selected && Boolean(disabled)} title={disabled || modelDisplayName(model)} onClick={()=>{if(selected)close(true);else if(!disabled)setConfirmId(model.id)}}><span><strong>{modelDisplayName(model)}</strong><small>{details(model)}</small></span>{model.id===activationLoading?<Loader2 size={15} className="portal-model-loading" aria-hidden="true"/>:selected?<Check size={15} aria-hidden="true"/>:null}</button>})}
         </div>
         {loading && observeCatalog && <p role="status" className="portal-model-notice">Loading models…</p>}
-        {!loading && !installed.length && !showActiveFallback && <p className="portal-model-notice">No installed models found.</p>}
+        {unavailableLabel && <p role="status" className="portal-model-notice">Portal is unavailable. Model selection is not currently verified.</p>}
+        {!unavailableLabel && !loading && !installed.length && !showActiveFallback && <p className="portal-model-notice">No installed models found.</p>}
         {reason && <p className="portal-model-notice" role="status">{reason}</p>}
         {(localError || error) && <p role="alert" className="portal-model-notice">{localError || error} {observeCatalog && <button type="button" onClick={()=>void refresh()}>Refresh</button>}</p>}
         {external

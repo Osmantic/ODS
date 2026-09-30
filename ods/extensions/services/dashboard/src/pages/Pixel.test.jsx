@@ -783,7 +783,7 @@ describe('Pixel', () => {
     expect(stalledSignal.aborted).toBe(true)
     expect(screen.getByText('Degraded')).toBeInTheDocument()
     expect(screen.getByRole('textbox')).toBeDisabled()
-    fireEvent.click(screen.getByRole('button',{name:'Choose model: Choose model'}))
+    fireEvent.click(screen.getByRole('button',{name:'Last confirmed model: cloud model; Portal unavailable'}))
     await act(async()=>{})
     expect(screen.getByText('The conversation’s model source is not confirmed.')).toBeVisible()
     expect(screen.queryByRole('button',{name:'Switch model',exact:true})).toBeNull()
@@ -845,7 +845,7 @@ describe('Pixel', () => {
     await act(async()=>{})
     expect(screen.getByText('Degraded')).toBeInTheDocument()
     expect(screen.getByRole('textbox')).toBeDisabled()
-    fireEvent.click(screen.getByRole('button',{name:'Choose model: Choose model'}))
+    fireEvent.click(screen.getByRole('button',{name:'Model unavailable'}))
     await act(async()=>{})
     const localReads = () => fetch.mock.calls.filter(([url])=>url.startsWith('/api/models')).length
     expect(localReads()).toBeGreaterThan(0)
