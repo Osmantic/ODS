@@ -159,3 +159,53 @@ def test_real_host_http_route_is_authenticated_bounded_and_does_not_log_input(
         server.shutdown()
         server.server_close()
         worker.join(timeout=2)
+
+
+def test_real_dashboard_login_cookie_reaches_terminal_without_auth_mocks(
+    tmp_path, monkeypatch
+):
+    import dashboard_password
+    import security
+    from routers import dashboard_session
+
+    monkeypatch.setattr(dashboard_password, "PASSWORD_FILE", tmp_path / "password.json")
+    dashboard_password.save("isolated-test-password")
+    host = AsyncMock(return_value={"session": "a" * 64, "state": "running"})
+    monkeypatch.setattr(terminal, "async_request_json", host)
+    app = FastAPI()
+    app.include_router(dashboard_session.router)
+    app.include_router(terminal.router)
+    with TestClient(app, base_url="http://localhost") as browser:
+        login = browser.post(
+            "/api/auth/dashboard-session/login",
+            json={"password": "isolated-test-password"},
+        )
+        assert login.status_code == 200
+        assert browser.get("/api/auth/dashboard-session/verify").status_code == 204
+        headers = {
+            "Authorization": "Bearer " + security.DASHBOARD_API_KEY,
+            "Origin": "http://localhost",
+            "Sec-Fetch-Site": "same-origin",
+        }
+        body = {
+            "action": "start",
+            "job": "ops-1790800000000-" + "a" * 12,
+            "plan": "b" * 64,
+        }
+        assert (
+            browser.post(
+                "/api/pixel/approval-terminal", json=body, headers=headers
+            ).status_code
+            == 200
+        )
+        host.assert_awaited_once()
+        host.reset_mock()
+        # Genuine rotation invalidates the old signature, even with current API auth.
+        dashboard_password.save("rotated-test-password")
+        assert (
+            browser.post(
+                "/api/pixel/approval-terminal", json=body, headers=headers
+            ).status_code
+            == 401
+        )
+        host.assert_not_awaited()
