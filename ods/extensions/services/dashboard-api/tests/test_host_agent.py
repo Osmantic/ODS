@@ -13,7 +13,9 @@ import threading
 import time
 import types
 from contextlib import nullcontext
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path, PurePosixPath
+from urllib.parse import unquote
 
 import pytest
 
@@ -24,6 +26,60 @@ _spec = importlib.util.spec_from_file_location("ods_host_agent", _agent_path)
 _mod = importlib.util.module_from_spec(_spec)
 sys.modules["ods_host_agent"] = _mod
 _spec.loader.exec_module(_mod)
+
+
+def test_library_whisper_start_downloads_missing_model_and_reuses_cache(tmp_path, monkeypatch):
+    model = "Systran/faster-whisper-base"
+    calls = []
+    cached = set()
+
+    class ModelsHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            calls.append(("GET", self.path))
+            if self.path == "/v1/models":
+                self.send_response(200)
+            elif self.path.startswith("/v1/models/") and unquote(self.path[11:]) in cached:
+                self.send_response(200)
+            else:
+                self.send_response(404)
+            self.end_headers()
+
+        def do_POST(self):
+            calls.append(("POST", self.path))
+            if self.path.startswith("/v1/models/"):
+                cached.add(unquote(self.path[11:]))
+                self.send_response(200)
+            else:
+                self.send_response(404)
+            self.end_headers()
+
+        def log_message(self, *_args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), ModelsHandler)
+    worker = threading.Thread(target=server.serve_forever, daemon=True)
+    worker.start()
+    try:
+        (tmp_path / ".env").write_text(
+            f"AUDIO_STT_MODEL={model}\nWHISPER_PORT={server.server_port}\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(_mod, "INSTALL_DIR", tmp_path)
+        expected_path = "/v1/models/Systran%2Ffaster-whisper-base"
+        assert _mod._whisper_model_ready_after_start(5) == (True, "")
+        assert calls.count(("POST", expected_path)) == 1
+        assert _mod._whisper_model_ready_after_start(5) == (True, "")
+        assert calls.count(("POST", expected_path)) == 1
+    finally:
+        server.shutdown()
+        server.server_close()
+        worker.join(timeout=5)
+
+
+def test_library_whisper_start_rejects_oversized_port_without_network(tmp_path, monkeypatch):
+    (tmp_path / ".env").write_text("WHISPER_PORT=" + "9" * 5000 + "\n", encoding="utf-8")
+    monkeypatch.setattr(_mod, "INSTALL_DIR", tmp_path)
+    assert _mod._whisper_model_ready_after_start(0)[0] is False
 
 
 def test_core_recreation_excludes_unrelated_secrets_but_keeps_overlays_and_dependencies(tmp_path, monkeypatch):

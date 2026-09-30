@@ -41,7 +41,7 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path, PureWindowsPath
 from socketserver import ThreadingMixIn
 from urllib import error as urllib_error, request as urllib_request
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlparse
 
 # Model Switchboard (PR 1, observe mode): stdlib-only sibling package. The
 # import is fail-open — a missing/broken package disables state recording but
@@ -5951,7 +5951,67 @@ def _extension_stop_targets(service_id: str) -> list[str]:
     return targets
 
 
+def _whisper_model_ready_after_start(max_wait_seconds: float = 480) -> tuple[bool, str]:
+    """Make a Library-started Whisper usable, as installer Phase 12 does."""
+    try:
+        env = load_env(INSTALL_DIR / ".env")
+    except (OSError, UnicodeError, ValueError):
+        return False, "Whisper started, but its selected model could not be read; run ods repair voice"
+    model = str(env.get("AUDIO_STT_MODEL") or "Systran/faster-whisper-base").strip()
+    raw_port = str(env.get("WHISPER_PORT") or "9000").strip()
+    if (not model or len(model) > 256 or any(ord(char) < 32 or ord(char) == 127 for char in model)
+            or not raw_port.isascii() or not raw_port.isdecimal() or len(raw_port) > 5
+            or not 1 <= int(raw_port) <= 65535):
+        return False, "Whisper started, but its selected model or port is invalid; run ods repair voice"
+
+    base_url = f"http://127.0.0.1:{int(raw_port)}/v1/models"
+    model_url = f"{base_url}/{quote(model, safe='')}"
+    deadline = time.monotonic() + max(0.0, max_wait_seconds)
+
+    def probe(url: str) -> bool:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        try:
+            with urllib_request.urlopen(url, timeout=min(5, remaining)) as response:
+                return response.status == 200
+        except (urllib_error.URLError, TimeoutError, OSError):
+            return False
+
+    ready_deadline = min(deadline, time.monotonic() + 30)
+    while time.monotonic() < ready_deadline:
+        if probe(base_url):
+            break
+        time.sleep(min(1, max(0, ready_deadline - time.monotonic())))
+    else:
+        return False, "Whisper started, but its models API is not ready; run ods repair voice"
+
+    if probe(model_url):
+        return True, ""
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        return False, "Whisper started, but its model is not cached; run ods repair voice"
+    try:
+        request = urllib_request.Request(model_url, data=b"", method="POST")
+        with urllib_request.urlopen(request, timeout=min(30, remaining)) as response:
+            if not 200 <= response.status < 300:
+                return False, "Whisper started, but its model download was rejected; run ods repair voice"
+    except urllib_error.HTTPError:
+        # A concurrent download or transient failure can still populate the cache.
+        pass
+    except (urllib_error.URLError, TimeoutError, OSError):
+        # Speaches can continue downloading after the trigger times out.
+        pass
+
+    while time.monotonic() < deadline:
+        if probe(model_url):
+            return True, ""
+        time.sleep(min(5, max(0, deadline - time.monotonic())))
+    return False, "Whisper started, but its model is not cached; run ods repair voice"
+
+
 def docker_compose_action(service_id: str, action: str) -> tuple:
+    action_deadline = time.monotonic() + 630
     try:
         flags = resolve_compose_flags()
         if service_id == "hermes" and action == "start":
@@ -6020,6 +6080,10 @@ def docker_compose_action(service_id: str, action: str) -> tuple:
                 _write_progress(service_id, 'started' if ok else 'error', 'CLI verification complete' if ok else 'CLI verification failed',
                                 error=error or None, exit_verified=ok)
                 return ok, error
+        if result.returncode == 0 and action == "start" and service_id == "whisper":
+            return _whisper_model_ready_after_start(
+                max_wait_seconds=min(480, max(0, action_deadline - time.monotonic()))
+            )
         return (True, "") if result.returncode == 0 else (False, result.stderr[:500])
     except subprocess.TimeoutExpired:
         return False, f"Docker compose operation timed out ({timeout}s)"

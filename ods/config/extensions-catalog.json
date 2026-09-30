@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-30T08:36:54Z",
+  "generated_at": "2026-09-30T11:32:07Z",
   "schema_version": "1.0.0",
   "extensions": [
     {
@@ -11497,13 +11497,15 @@
           "requirements": {
             "services": [
               "whisper",
-              "tts"
+              "tts",
+              "open-webui"
             ],
-            "vram_gb": 6
+            "vram_gb": 0
           },
           "enabled_services_all": [
             "whisper",
-            "tts"
+            "tts",
+            "open-webui"
           ],
           "setup_time": "~5 minutes",
           "priority": 2,
