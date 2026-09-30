@@ -8443,8 +8443,16 @@ export function createToolLoopGuard({
       const selected = toolName === "tool_call"
         ? wrappedToolParams?.args : normalizedParams ?? event?.params;
       const unrelatedWorkspaceObservation = state?.workspaceExtensionIsolated && !state.operationsRequired;
-      const params = unrelatedWorkspaceObservation ? undefined
-        : permittedHostObservationParams(selected, state?.hostObservationPolicy);
+      if (unrelatedWorkspaceObservation) return {
+        block: true,
+        blockReason: "This workspace-only request does not authorize host inspection. " +
+          "Changing the arguments does not grant host access; do not retry this observation " +
+          "or substitute a host command. Continue inspecting the project and sandbox with " +
+          "workspace tools. If host facts are necessary, ask the owner for that specific " +
+          "read-only inspection. Missing workspace dependencies remain a reported limitation, " +
+          "not permission to install an unrelated host service.",
+      };
+      const params = permittedHostObservationParams(selected, state?.hostObservationPolicy);
       if (!params) return {
         block: true,
         blockReason: "Pixel could not validate this host observation against the current request. " +
