@@ -18213,6 +18213,8 @@ def _opencode_setup_issue(env: dict, system: str | None = None) -> str | None:
         if not required.is_file():
             return f"This ODS installation is missing {required.name}; update ODS first."
     if _normal_switchboard_mode(env) != "enabled":
+        if _opencode_external_model(env) and not str(env.get("LITELLM_KEY") or "").strip():
+            return "The external model gateway key is missing. Repair LiteLLM before setting OpenCode up."
         if not _opencode_external_model(env) and not str(env.get("LLM_MODEL") or "").strip():
             return "No active model is configured yet. Activate a model, then set OpenCode up."
     return None

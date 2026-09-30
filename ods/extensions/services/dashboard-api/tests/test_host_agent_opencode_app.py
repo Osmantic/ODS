@@ -338,6 +338,7 @@ def test_setup_offers_an_external_route_without_the_switchboard(tmp_path, monkey
     assert _mod._opencode_setup_issue(env, "Linux") is None
     assert _mod._opencode_route(env) == ("http://127.0.0.1:4400/v1", "test-key")
     assert _mod._opencode_model_route(env, "local") == ("llama-server", "remote", "remote")
+    assert "gateway key" in _mod._opencode_setup_issue({**env, "LITELLM_KEY": ""}, "Linux")
     with pytest.raises(RuntimeError, match="LITELLM_KEY"):
         _mod._opencode_route({**env, "LITELLM_KEY": ""})
 
