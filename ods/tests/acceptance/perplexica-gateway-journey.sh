@@ -29,9 +29,20 @@ fail() {
 
 compose_services() (
     cd "$INSTALL_DIR"
-    [[ -s .compose-flags ]] || return 1
     local -a flags=()
-    read -r -a flags < .compose-flags
+    if [[ -s .compose-flags ]]; then
+        read -r -a flags < .compose-flags
+    else
+        # Dashboard enable deliberately invalidates the installer cache. On
+        # this isolated CPU gateway runner, resolve the newly enabled graph
+        # with the same persisted route selectors the host agent now uses.
+        local resolved
+        resolved="$(ODS_EXTERNAL_LLM_SELECTED=true ODS_GATEWAY_ONLY=true \
+            ENABLE_OPEN_WEBUI=false ODS_MODE=local \
+            bash scripts/resolve-compose-stack.sh --script-dir "$INSTALL_DIR" \
+                --tier 1 --gpu-backend cpu --ods-mode local)" || return 1
+        read -r -a flags <<<"$resolved"
+    fi
     docker compose "${flags[@]}" config --services
 )
 
