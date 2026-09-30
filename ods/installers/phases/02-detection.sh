@@ -126,27 +126,7 @@ else
     ai "Detecting GPU..."
     detect_gpu || true
 
-    if [[ "${CAP_PROFILE_LOADED:-false}" == "true" ]]; then
-        case "${CAP_LLM_BACKEND:-}" in
-            amd)    GPU_BACKEND="amd" ;;
-            intel)  GPU_BACKEND="intel" ;;
-            cpu)    GPU_BACKEND="cpu" ;;
-            apple)  GPU_BACKEND="apple" ;;
-            jetson)
-                if [[ "${ODS_ENABLE_EXPERIMENTAL_JETSON:-0}" == "1" ]]; then
-                    GPU_BACKEND="jetson"
-                else
-                    GPU_BACKEND="cpu"
-                fi
-                ;;
-            *) GPU_BACKEND="nvidia" ;;
-        esac
-        [[ -n "${CAP_GPU_MEMORY_TYPE:-}" ]] && GPU_MEMORY_TYPE="${CAP_GPU_MEMORY_TYPE}"
-        [[ -n "${CAP_GPU_NAME:-}" ]] && GPU_NAME="${CAP_GPU_NAME}"
-        [[ -n "${CAP_GPU_VRAM_MB:-}" ]] && GPU_VRAM="${CAP_GPU_VRAM_MB}"
-        [[ -n "${CAP_GPU_COUNT:-}" ]] && GPU_COUNT="${CAP_GPU_COUNT}"
-        log "Capabilities override detection: backend=${GPU_BACKEND}, memory=${GPU_MEMORY_TYPE}, tier=${CAP_RECOMMENDED_TIER:-unknown}"
-    fi
+    apply_capability_gpu_override
 
     if [[ "$GPU_BACKEND" == "amd" ]] && ! amd_gpu_runtime_devices_available; then
         _amd_missing_devices="$(amd_gpu_missing_devices_csv)"

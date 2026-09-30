@@ -296,3 +296,44 @@ _setup_amd_sysfs() {
     assert_equal "$GPU_BACKEND"     "amd"
     assert_equal "$GPU_MEMORY_TYPE" "discrete"
 }
+
+# ── apply_capability_gpu_override ───────────────────────────────────────────
+
+@test "apply_capability_gpu_override: keeps a detected Intel Arc the profile calls cpu" {
+    # The capability profile has no Intel hardware class, so an Arc host
+    # classifies as cpu_fallback (backend cpu, tier T1).
+    GPU_BACKEND=intel GPU_NAME="Intel Arc A770" GPU_VRAM=16384 GPU_COUNT=1
+    GPU_MEMORY_TYPE=discrete
+    CAP_PROFILE_LOADED=true CAP_LLM_BACKEND=cpu CAP_RECOMMENDED_TIER=T1
+    CAP_GPU_NAME="" CAP_GPU_VRAM_MB=0 CAP_GPU_COUNT=0 CAP_GPU_MEMORY_TYPE=none
+
+    apply_capability_gpu_override
+
+    assert_equal "$GPU_BACKEND" "intel"
+    assert_equal "$GPU_VRAM" "16384"
+    assert_equal "$GPU_COUNT" "1"
+    assert_equal "$GPU_MEMORY_TYPE" "discrete"
+    # Phase 02 then picks ARC/ARC_LITE from VRAM instead of the profile's T1.
+    assert_equal "$CAP_RECOMMENDED_TIER" ""
+}
+
+@test "apply_capability_gpu_override: profile still overrides other backends" {
+    GPU_BACKEND=nvidia GPU_VRAM=0 GPU_COUNT=0 GPU_MEMORY_TYPE=""
+    CAP_PROFILE_LOADED=true CAP_LLM_BACKEND=amd CAP_RECOMMENDED_TIER=SH_LARGE
+    CAP_GPU_NAME="Strix Halo" CAP_GPU_VRAM_MB=98304 CAP_GPU_COUNT=1 CAP_GPU_MEMORY_TYPE=unified
+
+    apply_capability_gpu_override
+
+    assert_equal "$GPU_BACKEND" "amd"
+    assert_equal "$GPU_VRAM" "98304"
+    assert_equal "$GPU_MEMORY_TYPE" "unified"
+    assert_equal "$CAP_RECOMMENDED_TIER" "SH_LARGE"
+}
+
+@test "apply_capability_gpu_override: no-op without a loaded profile" {
+    GPU_BACKEND=intel CAP_PROFILE_LOADED=false CAP_LLM_BACKEND=cpu
+
+    apply_capability_gpu_override
+
+    assert_equal "$GPU_BACKEND" "intel"
+}
