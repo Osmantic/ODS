@@ -144,7 +144,7 @@ export default function OpenCodeApp() {
           <span className="opencode-symbol"><Code size={20} /></span>
           <div>
             <h1>OpenCode</h1>
-            <p>AI coding assistant that runs on this ODS machine and uses your active ODS model.</p>
+            <p>AI coding assistant for this ODS machine, configured with your current ODS model route.</p>
           </div>
         </div>
         <div className={`opencode-state is-${copy.tone}`} role="status" aria-label={`OpenCode is ${copy.label.toLowerCase()}`}>
@@ -169,6 +169,9 @@ export default function OpenCodeApp() {
         <section className="opencode-panel opencode-primary" aria-label="OpenCode actions">
           {setupError && state !== 'not_installed' && (
             <p className="opencode-error" role="alert">Last setup failed: {setupError}</p>
+          )}
+          {state === 'running' && (
+            <p>Check OpenCode's selected model before sending. It may remember a provider from an earlier session.</p>
           )}
           {state === 'running' && openUrl && (
             <>
