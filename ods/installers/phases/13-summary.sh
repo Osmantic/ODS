@@ -468,7 +468,10 @@ else
 fi
 echo ""
 DASHBOARD_PORT="${SERVICE_PORTS[dashboard]:-3001}"
-DASHBOARD_REMOTE_PORT="${DASHBOARD_REMOTE_PORT:-3011}"
+_dashboard_remote_port_config="$(sed -n 's/^DASHBOARD_REMOTE_PORT=//p' "$INSTALL_DIR/.env" 2>/dev/null | head -n 1 | tr -d '"\r' || true)"
+DASHBOARD_REMOTE_PORT="${_dashboard_remote_port_config:-${DASHBOARD_REMOTE_PORT:-3011}}"
+[[ "$DASHBOARD_REMOTE_PORT" =~ ^[0-9]+$ ]] || DASHBOARD_REMOTE_PORT=3011
+unset _dashboard_remote_port_config
 WEBUI_PORT="${SERVICE_PORTS[open-webui]:-3000}"
 OPENCLAW_PORT="${SERVICE_PORTS[openclaw]:-7860}"
 LOCAL_IP=$(hostname -I 2>/dev/null | awk '{print $1}' || echo "")
