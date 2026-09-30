@@ -96,7 +96,7 @@ wait_hermes() {
     return 1
 }
 
-[[ "$(git -C "$product" rev-parse HEAD)" == 7ce0d9fdf428a85e58e9d99308e0802cc640a1ef ]] \
+[[ "$(git -C "$product" rev-parse HEAD)" == 82137a48e3d2d97cdfc9c1d5c2b9331d4c959235 ]] \
     || fail 'wrong product checkout'
 command -v docker >/dev/null || fail 'Docker CLI missing'
 docker info >/dev/null || fail 'isolated Docker Engine unavailable'
