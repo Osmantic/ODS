@@ -28,12 +28,12 @@ jobs:
       - name: Checkout exact current-main Portal integration candidate
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
-          ref: 3714b4ac2f9c6c8244782eb7e271087cdec71f1c
+          ref: c5bf679be9fa0da794d2307bc264cdcb0727e25d
           path: candidate
       - name: Record exact source and runner capacity
         run: |
           test "$(git -C baseline rev-parse HEAD)" = 9b95d08ae9e9f79af8410dfcea442df6b99db0ba
-          test "$(git -C candidate rev-parse HEAD)" = 3714b4ac2f9c6c8244782eb7e271087cdec71f1c
+          test "$(git -C candidate rev-parse HEAD)" = c5bf679be9fa0da794d2307bc264cdcb0727e25d
           docker version
           df -h / "$RUNNER_TEMP"
           cat /proc/1/comm
