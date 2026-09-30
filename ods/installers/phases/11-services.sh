@@ -214,10 +214,10 @@ _phase11_prefetch_embeddings_model() {
         fi
     fi
     if ! "$python_cmd" -c "import huggingface_hub, hf_xet" >/dev/null 2>&1; then
-        ai_bad "Could not install huggingface_hub[hf_xet] for embeddings prefetch."
-        ai "Install it manually and re-run:"
-        ai "  $python_cmd -m pip install --user 'huggingface_hub[hf_xet]>=0.27'"
-        return 1
+        ai_warn "Could not install huggingface_hub[hf_xet] for optional embeddings prefetch."
+        ai "Skipping embeddings prefetch; TEI will download the model when it starts."
+        ai "To pre-cache it on the host, install: $python_cmd -m pip install --user 'huggingface_hub[hf_xet]>=0.27'"
+        return 0
     fi
 
     mkdir -p "$cache_dir"
