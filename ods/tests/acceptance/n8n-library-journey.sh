@@ -165,3 +165,21 @@ PY
 [[ "$(docker inspect --format '{{.State.StartedAt}}|{{.RestartCount}}' ods-dashboard-api)" == "$api_instance" ]] \
     || fail 'Dashboard API restarted during n8n Disable'
 printf 'PASS: Library Disable retained n8n data and restored addable state\n'
+
+# Finish the first-run gate, then use the real Dashboard controls through its
+# local nginx listener. Nginx supplies the API credential to the browser.
+curl -fsS --max-time 15 -X POST http://127.0.0.1:3001/api/setup/complete >/dev/null \
+    || fail 'fresh-run setup could not be completed for n8n browser acceptance'
+(cd "$harness/n8n-browser" && npm ci --no-audit --no-fund \
+    && npx playwright install --with-deps chromium \
+    && ODS_N8N_BROWSER_URL=http://127.0.0.1:3001 node check.mjs) \
+    || fail 'installed n8n Library browser Add/Disable journey failed'
+[[ "$(sha256sum "$sentinel" | cut -d ' ' -f 1)" == "$sentinel_hash" ]] \
+    || fail 'browser Library actions changed retained n8n data'
+if docker inspect ods-n8n >/dev/null 2>&1; then
+    [[ "$(docker inspect --format '{{.State.Running}}' ods-n8n)" == false ]] \
+        || fail 'browser Library Disable left n8n running'
+fi
+[[ "$(docker inspect --format '{{.State.StartedAt}}|{{.RestartCount}}' ods-dashboard-api)" == "$api_instance" ]] \
+    || fail 'Dashboard API restarted during browser Library actions'
+printf 'PASS: browser Library actions retained n8n data and API process\n'
