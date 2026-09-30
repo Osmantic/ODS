@@ -160,6 +160,50 @@ if comm -13 "$audit_root/images-before.txt" "$audit_root/images-after.txt" \
     fail 'fresh gateway pulled an unselected optional image'
 fi
 
+# Exercise the actual managed-local overlay with a tiny unhealthy stand-in.
+# This checks the start guard without allocating a GGUF or GPU on CI.
+cat >"$audit_root/unhealthy-llama.yml" <<'YAML'
+services:
+  llama-server:
+    image: busybox:1.36
+    command: ["sleep", "120"]
+    healthcheck:
+      test: ["CMD", "false"]
+      interval: 2s
+      timeout: 1s
+      retries: 2
+YAML
+local_stack=(docker compose -p ods-perplexica-unhealthy \
+    --project-directory "$product" \
+    -f "$audit_root/unhealthy-llama.yml" \
+    -f "$product/extensions/services/perplexica/compose.yaml" \
+    -f "$product/extensions/services/perplexica/compose.local.yaml")
+"${local_stack[@]}" config --format json >"$audit_root/local-compose.json" \
+    || fail 'managed-local Perplexica Compose did not render'
+python3 - "$audit_root/local-compose.json" <<'PY' || fail 'managed-local health guard missing'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as stream:
+    config = json.load(stream)
+assert config["services"]["perplexica"]["depends_on"]["llama-server"]["condition"] == "service_healthy"
+PY
+if timeout 120s "${local_stack[@]}" up -d --wait perplexica \
+    >"$audit_root/unhealthy-start.log" 2>&1; then
+    fail 'managed-local Perplexica started with an unhealthy llama-server'
+fi
+grep -Eiq 'unhealthy|dependency failed' "$audit_root/unhealthy-start.log" \
+    || fail 'managed-local start failed for a reason other than llama health'
+stub_id="$("${local_stack[@]}" ps -q llama-server)"
+[[ -n "$stub_id" && "$(docker inspect --format '{{.State.Health.Status}}' "$stub_id")" == unhealthy ]] \
+    || fail 'managed-local llama stand-in was not unhealthy'
+if docker ps --format '{{.Names}}' | grep -qx ods-perplexica; then
+    fail 'managed-local Perplexica started before llama-server was healthy'
+fi
+"${local_stack[@]}" down --volumes --remove-orphans >/dev/null \
+    || fail 'could not clean disposable unhealthy-llama project'
+printf 'PASS: managed-local Perplexica waits for healthy llama-server\n'
+
 [[ -n "$product" ]] || fail 'product checkout is required'
 [[ "$(git -C "$product" rev-parse HEAD)" == 58400b77468b12d97c2f6ec7b9308eb338d3e2e5 ]] || fail 'wrong product checkout'
 
