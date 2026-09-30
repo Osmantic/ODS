@@ -28,8 +28,47 @@ fail() {
     exit 1
 }
 
+capture_probe() {
+    local label="$1"
+    shift
+    if "$@" >"$audit_root/$label.json" 2>"$audit_root/$label.err"; then
+        printf '0\n' >"$audit_root/$label.rc"
+    else
+        printf '%s\n' "$?" >"$audit_root/$label.rc"
+    fi
+}
+
+collect_pixel_probes() {
+    [[ -f /opt/pixel-ops-broker/ods-extension-search.py ]] || return 0
+    capture_probe extension-search sudo -u pixel-ops-broker /usr/bin/python3 \
+        /opt/pixel-ops-broker/ods-extension-search.py \
+        /opt/pixel-ops-broker/ods-extension-catalog.json all
+    local probe_id
+    probe_id="$(python3 - "$audit_root/extension-search.json" <<'PY'
+import json, sys
+try:
+    value = json.load(open(sys.argv[1], encoding="utf-8"))
+    print(value["matches"][0]["id"])
+except (OSError, ValueError, KeyError, IndexError, TypeError):
+    pass
+PY
+    )"
+    if [[ "$probe_id" =~ ^[a-z0-9][a-z0-9._-]{0,63}$ ]]; then
+        capture_probe extension-manager sudo -u pixel-ops-broker /usr/bin/python3 \
+            /opt/pixel-ops-broker/ods-extension-manager.py client \
+            /run/ods-pixel-manager/extension-manager.sock inspect "$probe_id"
+    fi
+    capture_probe artifact-promoter /usr/bin/python3 \
+        /usr/local/libexec/ods-pixel-artifact-promoter.py health \
+        /run/ods-pixel-artifact-promoter/promoter.sock
+    capture_probe workspace-preview /usr/bin/python3 \
+        /usr/local/libexec/ods-pixel-workspace-preview.py health \
+        /run/ods-pixel-preview/control.sock
+}
+
 show_install_diagnostics() {
     if [[ -e "$INSTALL_DIR/logs/pixel-install.log" ]]; then
+        collect_pixel_probes
         sudo journalctl -u pixel-ingress.service -u openclaw-gateway.service \
             -u pixel-extension-manager.service -u pixel-artifact-promoter.service \
             -u pixel-workspace-preview.service -n 90 --no-pager -o short-iso \
@@ -44,12 +83,14 @@ show_install_diagnostics() {
         done
     fi
     python3 - "$LOG_FILE" "$key_file" "$INSTALL_DIR/.env" \
-        "$INSTALL_DIR/logs/pixel-install.log" "$audit_root/pixel-journal.log" <<'PY' >&2
+        "$INSTALL_DIR/logs/pixel-install.log" "$audit_root/pixel-journal.log" \
+        "$audit_root" <<'PY' >&2
 from pathlib import Path
+import json
 import re
 import sys
 
-log_path, key_path, env_path, pixel_path, journal_path = map(Path, sys.argv[1:])
+log_path, key_path, env_path, pixel_path, journal_path, audit_path = map(Path, sys.argv[1:])
 secrets = []
 if key_path.exists():
     secrets.append(key_path.read_text(encoding="utf-8").strip())
@@ -72,6 +113,29 @@ for label, path, limit in (("installer", log_path, 55), ("Pixel", pixel_path, 70
         line = re.sub(r"\b(?:sk-|mock-)[A-Za-z0-9_-]{12,}\b", "<redacted>", line)
         line = re.sub(r"\b[A-Za-z0-9_/-]{40,}\b", "<redacted>", line)
         print(line[:500])
+for label in ("extension-search", "extension-manager", "artifact-promoter", "workspace-preview"):
+    status = audit_path / f"{label}.rc"
+    if not status.exists():
+        continue
+    print(f"{label} read-only probe exit={status.read_text(encoding='ascii').strip()}")
+    output = audit_path / f"{label}.json"
+    if output.exists():
+        try:
+            value = json.loads(output.read_text(encoding="utf-8"))
+            if isinstance(value, dict):
+                fields = ("schemaVersion", "kind", "query", "action", "extensionId", "outcome",
+                          "status", "changed", "externalEffectOccurred", "boundary")
+                print(json.dumps({field: value[field] for field in fields if field in value})[:700])
+        except (OSError, ValueError):
+            print("probe returned non-JSON output")
+    error = audit_path / f"{label}.err"
+    if error.exists():
+        for line in error.read_text(encoding="utf-8", errors="replace").splitlines()[-4:]:
+            for secret in secrets:
+                if secret:
+                    line = line.replace(secret, "<redacted>")
+            line = re.sub(r"\b[A-Za-z0-9_/-]{40,}\b", "<redacted>", line)
+            print("probe stderr: " + line[:400])
 PY
 }
 
