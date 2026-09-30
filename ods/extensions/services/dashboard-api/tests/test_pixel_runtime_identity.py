@@ -15,6 +15,8 @@ from routers import pixel
 import security
 from pixel_runtime_identity import project_runtime_identity as project_runtime_identity, unknown_runtime_identity
 
+pytestmark = pytest.mark.usefixtures("mock_edge_read_transport")
+
 
 def observed():
     value = unknown_runtime_identity()

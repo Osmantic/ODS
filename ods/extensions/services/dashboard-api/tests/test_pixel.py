@@ -31,6 +31,8 @@ import pixel_runtime_state  # noqa: E402
 import pixel_chat_identity  # noqa: E402
 from pixel_runtime_state import pixel_stream_active  # noqa: E402
 
+pytestmark = pytest.mark.usefixtures("mock_edge_read_transport")
+
 
 EDGE_KEY = "e" * 64
 UNVERIFIED_READINESS = {

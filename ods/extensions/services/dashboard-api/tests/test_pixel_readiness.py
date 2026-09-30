@@ -9,6 +9,8 @@ from test_pixel import FakeClient, FakeResponse
 from test_pixel_runtime_identity import observed
 from routers import pixel
 
+pytestmark = pytest.mark.usefixtures("mock_edge_read_transport")
+
 
 ACCESS = dict(available=True, surface="darwin", configured_mode="sandboxed", effective_mode="sandboxed",
               runtime_verified=True, revision="a" * 64, busy=False, pending=False, reason=None, scope="owner-host")
