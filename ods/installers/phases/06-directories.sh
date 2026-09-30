@@ -608,6 +608,16 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
         _token_spy_chown=(chown -R 1000:1000 "$INSTALL_DIR/data/token-spy")
         if ods_sudo_available; then
             _token_spy_chown=(ods_sudo "${_token_spy_chown[@]}")
+        elif [[ "$(id -u)" != 1000 ]]; then
+            # Docker access can perform this scoped repair without host sudo.
+            [[ -d "$INSTALL_DIR/data/token-spy" && ! -L "$INSTALL_DIR/data/token-spy" ]] || {
+                error "Cannot safely prepare data/token-spy: expected a real directory."
+                return 1
+            }
+            _ods_rootless_ensure_helper_image || return 1
+            _token_spy_chown=(docker_run run --rm --network none --user 0:0
+                --mount "type=bind,src=$INSTALL_DIR/data/token-spy,dst=/data"
+                "$ODS_ROOTLESS_HELPER_IMAGE" chown -h -R 1000:1000 /data)
         fi
         if ! "${_token_spy_chown[@]}"; then
             error "Cannot prepare data/token-spy for container UID 1000. Grant privileged access or repair its ownership, then re-run the installer."
