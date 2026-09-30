@@ -1037,6 +1037,34 @@ describe('Pixel', () => {
     expect(screen.queryByText('Qwen3.5-9B-Q4_K_M.gguf')).not.toBeInTheDocument()
   })
 
+  it.each(['unknown', 'supported', 'unsupported'])('keeps the selected model label with %s image capability', async imageInput => {
+    globalThis.fetch.mockResolvedValue(response({
+      available: true, model: 'pixel/default',
+      runtime: {source: 'remote-provider', model: 'deepseek-v4.1-flash',
+        contextLength: 131072, maxTokens: 8192, reasoning: false,
+        routeFingerprint: 'a'.repeat(64), imageInput},
+    }))
+    render(<Pixel />)
+    await waitFor(() => expect(screen.getByRole('button', {name: /Choose model: deepseek/i})).toBeInTheDocument())
+    expect(screen.queryByText('Model unverified')).not.toBeInTheDocument()
+  })
+
+  it.each([
+    {imageInput: true}, {imageInput: 'vision'}, {imageInput: 'unknown\n'},
+    {imageInput: 'unknown', endpoint: 'https://foreign.example'},
+    {imageInput: 'unknown', routeFingerprint: 'a'.repeat(64) + '\n'},
+  ])('does not confirm malformed extended model metadata %j', async invalid => {
+    globalThis.fetch.mockResolvedValue(response({
+      available: true, model: 'pixel/default',
+      runtime: {source: 'remote-provider', model: 'untrusted-runtime-name',
+        contextLength: 131072, maxTokens: 8192, reasoning: false,
+        routeFingerprint: 'a'.repeat(64), ...invalid},
+    }))
+    render(<Pixel />)
+    await waitFor(() => expect(screen.getByText('Available')).toBeInTheDocument())
+    expect(screen.queryByRole('button', {name: /Choose model: untrusted/i})).not.toBeInTheDocument()
+  })
+
   it('shows a callable 8K remote model without imposing a larger context floor', async () => {
     globalThis.fetch.mockResolvedValue(
       response({

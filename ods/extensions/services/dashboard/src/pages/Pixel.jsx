@@ -808,8 +808,11 @@ export default function Pixel({ systemStatus = null }) {
         const validRemoteRuntime = [
           ['contextLength', 'maxTokens', 'model', 'reasoning', 'source'].join('\n'),
           ['contextLength', 'maxTokens', 'model', 'reasoning', 'routeFingerprint', 'source'].join('\n'),
+          ['contextLength', 'imageInput', 'maxTokens', 'model', 'reasoning', 'source'].join('\n'),
+          ['contextLength', 'imageInput', 'maxTokens', 'model', 'reasoning', 'routeFingerprint', 'source'].join('\n'),
         ].includes(runtimeKeys)
           && runtime.source === 'remote-provider'
+          && (runtime.imageInput === undefined || ['supported', 'unsupported', 'unknown'].includes(runtime.imageInput))
           && (runtime.routeFingerprint === undefined || typeof runtime.routeFingerprint === 'string'
             && runtime.routeFingerprint.length === 64 && /^[a-f0-9]{64}$/.test(runtime.routeFingerprint))
           && Number.isInteger(runtime.maxTokens)

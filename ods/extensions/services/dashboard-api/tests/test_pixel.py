@@ -653,6 +653,18 @@ def test_active_runtime_projection_accepts_a_constrained_adaptive_context():
     assert pixel._active_runtime_projection({"activeRuntime": runtime}) == runtime
 
 
+@pytest.mark.parametrize('image_input', ['supported', 'unsupported', 'unknown'])
+def test_active_runtime_image_capability_is_projected_without_inventing_support(image_input):
+    runtime = {'source': 'remote-provider', 'model': 'deepseek-v4.1-flash',
+               'contextLength': 131072, 'maxTokens': 8192, 'reasoning': False,
+               'routeFingerprint': 'a' * 64, 'imageInput': image_input}
+    assert pixel._active_runtime_projection({'activeRuntime': runtime}) == runtime
+    for invalid in (None, True, False, [], {}, 'vision', 'unknown\n'):
+        assert pixel._active_runtime_projection({'activeRuntime': {**runtime, 'imageInput': invalid}}) is None
+    for extra in ({'endpoint': 'https://private.example'}, {'routeFingerprint': 'a' * 64 + '\n'}):
+        assert pixel._active_runtime_projection({'activeRuntime': {**runtime, **extra}}) is None
+
+
 def test_active_remote_runtime_projects_only_a_valid_route_fingerprint():
     runtime = {"source": "remote-provider", "model": "same-model", "contextLength": 8192,
                "maxTokens": 1024, "reasoning": False, "routeFingerprint": "a" * 64}
