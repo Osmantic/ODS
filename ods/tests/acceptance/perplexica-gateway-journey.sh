@@ -211,7 +211,7 @@ fi
 printf 'PASS: managed-local Perplexica waits for healthy llama-server\n'
 
 [[ -n "$product" ]] || fail 'product checkout is required'
-[[ "$(git -C "$product" rev-parse HEAD)" == 58400b77468b12d97c2f6ec7b9308eb338d3e2e5 ]] || fail 'wrong product checkout'
+[[ "$(git -C "$product" rev-parse HEAD)" == 73d55cde11ca282ff33ea71f99bbe6e584b6fd11 ]] || fail 'wrong product checkout'
 
 curl -fsS --max-time 30 http://127.0.0.1:3001/api/extensions/perplexica/install-plan     >"$audit_root/perplexica-plan.json" || fail 'Perplexica install plan unavailable'
 python3 - "$audit_root/perplexica-plan.json" <<'PY' || fail 'external-model plan is blocked'
