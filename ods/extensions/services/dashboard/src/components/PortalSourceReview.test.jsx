@@ -122,3 +122,15 @@ it('groups repeated edits under one file and lets the user inspect each revision
  expect(review.getByLabelText('Changes to main.jsx')).toHaveTextContent('source = true')
  expect(review.queryByText(/Changes reported by this tool/)).toBeNull()
 })
+
+it('keeps same-named files in different folders independently selectable',async()=>{
+ const date='2026-09-15T10:00:00.000Z'
+ const events=['app/page.js','app/games/page.js'].map((file,index)=>({sequence:index+1,kind:'edit',state:'completed',startedAt:date,finishedAt:date,display:{type:'tool',label:'Writing a file',detail:'page.js',sources:[],steps:[],change:{file,kind:'write',before:'',after:`export const page = ${index}`,truncated:false}}}))
+ const task={schemaVersion:3,runId:'chatcmpl_11111111-2222-4333-8444-555555555555',startedAt:date,finishedAt:date,state:'completed',calls:2,failures:0,blocked:0,truncated:false,activities:[{kind:'edit',calls:2,failures:0,blocked:0}],events,context:null,goal:null}
+ render(<PortalWorkspace task={task} request={{kind:'review'}}/>)
+ fireEvent.click(await screen.findByRole('button',{name:'Open app/page.js'}))
+ expect(screen.getByLabelText('Changes to app/page.js')).toHaveTextContent('page = 0')
+ fireEvent.click(screen.getByRole('button',{name:'Open app/games/page.js'}))
+ expect(screen.getByLabelText('Changes to app/games/page.js')).toHaveTextContent('page = 1')
+ expect(screen.queryByLabelText('Edit revision')).toBeNull()
+})
