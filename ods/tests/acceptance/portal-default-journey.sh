@@ -71,6 +71,7 @@ PY
 show_install_diagnostics() {
     if [[ -e "$INSTALL_DIR/logs/pixel-install.log" ]]; then
         collect_pixel_probes
+        docker logs --tail 100 ods-dashboard-api >"$audit_root/dashboard-api.log" 2>&1 || true
         sudo journalctl -u pixel-ingress.service -u openclaw-gateway.service \
             -u pixel-extension-manager.service -u pixel-artifact-promoter.service \
             -u pixel-workspace-preview.service -n 90 --no-pager -o short-iso \
@@ -86,13 +87,13 @@ show_install_diagnostics() {
     fi
     python3 - "$LOG_FILE" "$key_file" "$INSTALL_DIR/.env" \
         "$INSTALL_DIR/logs/pixel-install.log" "$audit_root/pixel-journal.log" \
-        "$audit_root" <<'PY' >&2
+        "$audit_root" "$audit_root/dashboard-api.log" <<'PY' >&2
 from pathlib import Path
 import json
 import re
 import sys
 
-log_path, key_path, env_path, pixel_path, journal_path, audit_path = map(Path, sys.argv[1:])
+log_path, key_path, env_path, pixel_path, journal_path, audit_path, api_path = map(Path, sys.argv[1:])
 secrets = []
 if key_path.exists():
     secrets.append(key_path.read_text(encoding="utf-8").strip())
@@ -102,7 +103,7 @@ if env_path.exists():
         if match and any(word in match[1] for word in ("KEY", "TOKEN", "SECRET", "PASSWORD")):
             secrets.append(match[2].strip("\"'"))
 for label, path, limit in (("installer", log_path, 55), ("Pixel", pixel_path, 70),
-                           ("systemd", journal_path, 70)):
+                           ("systemd", journal_path, 70), ("Dashboard API", api_path, 90)):
     if not path.exists():
         continue
     print(f"Sanitized {label} log tail:")

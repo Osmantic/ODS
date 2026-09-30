@@ -64,6 +64,7 @@ def main() -> int:
     if result["portValid"] and result["credentialShapeValid"]:
         port = int(port_text)
         result["health"] = request(port, key, "/health")
+        result["catalog"] = request(port, key, "/api/extensions/catalog")
         result["detail"] = request(port, key, f"/api/extensions/{extension_id}")
         result["plan"] = request(port, key, f"/api/extensions/{extension_id}/install-plan")
     print(json.dumps(result, sort_keys=True))
