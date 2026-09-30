@@ -111,21 +111,18 @@ it.each([[413,'Image exceeds the upload limit.'],[500,'Upload service unavailabl
   expect(calls('/api/pixel/chat/stream')).toHaveLength(0)
 })
 
-it('requires explicit unknown consent on the current route and resets it when the route changes',async()=>{
+it('treats Send as an image attempt on the currently selected verified route without a checkbox',async()=>{
   policy='unknown'
   await ready();await choose()
-  fireEvent.click(screen.getByTitle('Send'))
+  expect(screen.queryByRole('checkbox')).toBeNull()
+  expect(screen.queryByRole('group',{name:'Image model capability'})).toBeNull()
   expect(calls('/api/pixel/chat/stream')).toHaveLength(0)
-  expect(screen.getByRole('alert')).toHaveTextContent('Allow an image test')
-  const checkbox=screen.getByRole('checkbox',{name:/Try images with this model/})
-  fireEvent.click(checkbox)
-  expect(checkbox).toBeChecked()
   route='b'.repeat(64)
   // Context ring uses the real context hook/endpoint, not mocked component state.
   vi.spyOn(Date,'now').mockReturnValue(Date.now()+2000)
   fireEvent.click(screen.getByRole('button',{name:/Token usage unavailable|tokens used/}))
-  await waitFor(()=>expect(screen.getByRole('checkbox',{name:/Try images with this model/})).not.toBeChecked())
-  fireEvent.click(screen.getByRole('checkbox',{name:/Try images with this model/}))
+  await waitFor(()=>expect(calls('/api/pixel/chat/context').length).toBeGreaterThan(1))
+  await act(async()=>{})
   fireEvent.click(screen.getByTitle('Send'))
   await waitFor(()=>expect(calls('/api/pixel/chat/stream')).toHaveLength(1))
   expect(JSON.parse(calls('/api/pixel/chat/stream')[0][1].body).image_route).toEqual({routeFingerprint:route,unknownConsent:true})
@@ -277,11 +274,11 @@ it('restores ready attachments across reload and keeps them with draft text afte
   expect(screen.getByRole('list',{name:'Attached images'})).toBeVisible()
 })
 
-it('preserves refs in a later text turn and asks unknown consent for rereading history',async()=>{
+it('preserves image history without requiring a checkbox on later turns',async()=>{
   policy='unknown'
   saveConversation({schema:1,chatId:'history-images',messages:[{role:'user',content:'',images:[{id:imageId,sha256:receipt.sha256}]},{role:'assistant',content:'An image was attached'}],draft:'Read that image again'})
   await ready()
-  fireEvent.click(await screen.findByRole('checkbox',{name:/Try images with this model/}))
+  expect(screen.queryByRole('checkbox')).toBeNull()
   fireEvent.click(screen.getByTitle('Send'))
   await waitFor(()=>expect(calls('/api/pixel/chat/stream')).toHaveLength(1))
   const sent=JSON.parse(calls('/api/pixel/chat/stream')[0][1].body)

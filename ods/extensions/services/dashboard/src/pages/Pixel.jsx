@@ -14,7 +14,7 @@ import {ACTIVE_TEAMS,agentCommand,teamMetadata,teamProjectTasks,teamRequest,team
 import PixelTextFileInput from '../components/PixelTextFileInput'
 import PortalImageAttachments, {PortalImagePicker, PortalConversationImages} from '../components/PortalImageAttachments'
 import usePortalImages from '../hooks/usePortalImages'
-import {draftImageReceipts, messageImageRefs, imageRoute, imageRouteIdentity} from '../lib/pixelImages'
+import {draftImageReceipts, messageImageRefs, imageRoute} from '../lib/pixelImages'
 import PixelDraftPreview from '../components/PixelDraftPreview'
 import PixelDictation from '../components/PixelDictation'
 import PixelCommandSearch, { OPEN_PIXEL_SEARCH } from '../components/PixelCommandSearch'
@@ -610,7 +610,6 @@ export default function Pixel({ systemStatus = null }) {
   const restoredActivityRef = useRef(restoredActivity)
   const chatIdRef = useRef(initialChat?.chatId || makeChatId())
   const images = usePortalImages(chatIdRef.current, initialChat?.draftImages)
-  const [imageConsent,setImageConsent] = useState(null)
   const imageDraftKey = JSON.stringify(images.receipts)
   const hasImageHistory = messages.some(message=>message.role==='user' && message.images?.length)
   const { state: extensionInstallation, start: startExtensionInstallation, stop: stopExtensionInstallation, resume: resumeExtensionInstallation } = useExtensionInstallation(chatIdRef.current)
@@ -704,8 +703,6 @@ export default function Pixel({ systemStatus = null }) {
     },
   })
   const imageModel=contextControl.observedModel
-  const imageFingerprint=imageRouteIdentity(imageModel)
-  useEffect(()=>{setImageConsent(null)},[chatIdRef.current,imageFingerprint])
   const compactConversation=useCallback(async()=>{
     const accepted=await contextControl.compact()
     if(accepted && (compactCommand(input) || input==='/'))setInput(value=>value===input?'':value)
@@ -955,7 +952,7 @@ export default function Pixel({ systemStatus = null }) {
     const needsImageRoute=turnImages.length>0 || hasImageHistory
     let selectedImageRoute
     if(needsImageRoute) {
-      try {selectedImageRoute=imageRoute(imageModel,imageConsent)}
+      try {selectedImageRoute=imageRoute(imageModel)}
       catch(error){setStopError(error.message);return}
     }
     if(teams.busy)return
@@ -1287,7 +1284,7 @@ export default function Pixel({ systemStatus = null }) {
         void contextControl.refresh(true)
       }
     }
-  }, [input, messages, preview, workspaceOpen, sending, modelSwitching, status, restoredActive, restoredChecking, updateRestoredActivity, teams.busy, teams.start,compactConversation,contextControl.busy,contextControl.historyUnknown,contextControl.refresh,startExtensionInstallation,startGithubExtensionRequest,images,imageModel,imageConsent,hasImageHistory])
+  }, [input, messages, preview, workspaceOpen, sending, modelSwitching, status, restoredActive, restoredChecking, updateRestoredActivity, teams.busy, teams.start,compactConversation,contextControl.busy,contextControl.historyUnknown,contextControl.refresh,startExtensionInstallation,startGithubExtensionRequest,images,imageModel,hasImageHistory])
 
   const stopStreaming = useCallback(async () => {
     const controller = abortRef.current
@@ -1712,7 +1709,7 @@ export default function Pixel({ systemStatus = null }) {
           const files=Array.from(event.dataTransfer?.files || [])
           if(files.length){event.preventDefault();images.choose(files)}
         }}>
-          <PortalImageAttachments attachments={images} chatId={chatIdRef.current} disabled={isDisabled} hasHistory={hasImageHistory} model={imageModel} consented={Boolean(imageFingerprint && imageConsent===imageFingerprint)} onConsent={checked=>setImageConsent(checked?imageFingerprint:null)} onRefresh={()=>void contextControl.refresh(true)}/>
+          <PortalImageAttachments attachments={images} chatId={chatIdRef.current} disabled={isDisabled} hasHistory={hasImageHistory} model={imageModel} onRefresh={()=>void contextControl.refresh(true)}/>
           {command && <div className="mb-2 flex flex-wrap items-center gap-2 rounded-xl bg-theme-card/70 px-3 py-2 text-xs text-theme-text-secondary" role="group" aria-label="Agent team mode"><span className="font-medium text-theme-text">Agent team</span><span>Describe your task. Portal will choose the team.</span><button type="button" disabled={isDisabled} onClick={()=>setInput(command.task)} className="ml-auto whitespace-nowrap rounded px-2 py-1 hover:bg-theme-border/30">Exit team mode</button></div>}
           {goalDraft && <div className="portal-goal-mode" role="group" aria-label="Goal mode"><span>Goal</span><small>Describe the outcome. Portal will plan, work and check its progress.</small><button type="button" disabled={isDisabled} onClick={()=>setInput(goalDraft.task)}>Exit goal mode</button></div>}
           {teams.error && <p role="alert" className="text-xs text-theme-text-secondary">{teams.error}</p>}

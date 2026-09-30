@@ -19,7 +19,7 @@ export function PortalConversationImages({chatId,images}) {
     </figure>)}
   </div>
 }
-export default function PortalImageAttachments({attachments,chatId,disabled,hasHistory,model,consented,onConsent,onRefresh}) {
+export default function PortalImageAttachments({attachments,chatId,disabled,hasHistory,model,onRefresh}) {
   const needed=attachments.items.length>0 || hasHistory
   const policy=model?.imageInput, verified=Boolean(imageRouteIdentity(model))
   return <div className="portal-image-attachments">
@@ -36,10 +36,9 @@ export default function PortalImageAttachments({attachments,chatId,disabled,hasH
       </li>)}
     </ul>}
     {attachments.error && <p role="alert">{attachments.error}</p>}
-    {needed && (!verified || policy!=='supported') && <div className="portal-image-route" role="group" aria-label="Image model capability">
+    {needed && (!verified || policy==='unsupported') && <div className="portal-image-route" role="group" aria-label="Image model capability">
       {!verified?<><span>Model not verified</span><button type="button" disabled={disabled} onClick={onRefresh}>Refresh</button></>
-        :policy==='unsupported'?<span>Text-only model. Choose a vision model.</span>
-        :<label title="Image support is unverified. Your next message will test this model with the attached images."><input type="checkbox" checked={consented} disabled={disabled} onChange={event=>onConsent(event.target.checked)}/><span>Try images with this model</span></label>}
+        :<span>Text-only model. Choose a vision model.</span>}
     </div>}
   </div>
 }

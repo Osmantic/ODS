@@ -89,10 +89,11 @@ export async function discardPortalImage(chatId, id) {
     throw error
   } finally {clearTimeout(timer)}
 }
-export function imageRoute(model, consentFingerprint) {
+export function imageRoute(model) {
   const routeFingerprint=imageRouteIdentity(model)
   if (!routeFingerprint) throw new Error('The current model route is not verified yet. Refresh its status before sending images; your draft is preserved.')
   if (model.imageInput === 'unsupported') throw new Error('This model is declared text-only. Choose an image-capable model to use these attachments.')
-  if (model.imageInput !== 'supported' && consentFingerprint !== routeFingerprint) throw new Error('Image support is unknown for this model. Allow an image test on this route before sending.')
+  // Sending an image is the user's request to try the selected model. Bind
+  // that attempt to this verified route; no separate checkbox is necessary.
   return {routeFingerprint, unknownConsent:model.imageInput !== 'supported'}
 }
