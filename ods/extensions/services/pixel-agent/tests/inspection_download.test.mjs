@@ -53,4 +53,33 @@ test('tool schema advertises the file identity and explicit action',()=>{
   assert.ok(schema.action.enum.includes('download'));
   assert.equal(schema.expectedBytes.maximum,4194304);
   assert.equal(schema.expectedSha256.pattern,'^[a-f0-9]{64}$');
+  assert.match(createWorkspacePreviewInspectTool().description,/download step performs the click itself/);
+  assert.match(createWorkspacePreviewInspectTool().description,/Do not precede it with an ordinary click on the download control/);
+});
+
+test('unavailable receipt scope cannot assert that download bytes were captured',async()=>{
+  const request=normalize(params());
+  const failed={schemaVersion:1,kind:INSPECTION_KIND,status:'failed',errorCode:'unavailable',
+    siteId:request.siteId,sha256:request.sha256,planSha256:inspectionPlanHash(request),scope:INSPECTION_SCOPE+DOWNLOAD_INSPECTION_SCOPE};
+  const output=await createWorkspacePreviewInspectTool({request:async()=>failed}).execute('id',params());
+  assert.equal(output.isError,true);
+  assert.doesNotMatch(output.content[0].text,/was captured/);
+  assert.match(output.content[0].text,/A failed or unavailable receipt does not verify a download/);
+});
+
+test('ordinary click that starts a download reports policy failure and actionable plan guidance',async()=>{
+  const p=params([{action:'click',locator:{role:'link',name:'Download',exact:true}},download]);
+  const request=normalize(p), result=receipt(request);
+  result.status='failed';result.blockedRequests=['download'];
+  delete result.steps[0].download;
+  Object.assign(result.steps[0],{status:'failed',errorCode:'unexpected_download'});
+  validate(result,request);
+  const output=await createWorkspacePreviewInspectTool({request:async()=>result}).execute('id',p);
+  assert.equal(output.isError,true);
+  assert.equal(output.details.steps[0].errorCode,'unexpected_download');
+  assert.match(output.content[0].text,/That step performs the click itself/);
+  assert.match(output.content[0].text,/without an ordinary click on that control/);
+  assert.doesNotMatch(output.content[0].text,/was captured/);
+  const forged=structuredClone(result);forged.blockedRequests=[];
+  assert.throws(()=>validate(forged,request));
 });

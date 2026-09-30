@@ -6,6 +6,7 @@ import json
 import os
 import subprocess
 import threading
+import time
 import urllib.request
 import zipfile
 from types import SimpleNamespace
@@ -54,6 +55,12 @@ def test_only_one_final_download():
     request['steps'].append(copy.deepcopy(request['steps'][0]))
     with pytest.raises(protocol.Invalid):
         protocol.validate_request(request)
+
+
+def test_unavailable_download_scope_does_not_claim_capture():
+    result = protocol.failure('unavailable', download_bundle()['request'])
+    assert 'was captured' not in result['scope']
+    assert 'A failed or unavailable receipt does not verify a download' in result['scope']
 
 
 def test_missing_file_or_wrong_length_fails_before_browser():
@@ -130,8 +137,13 @@ class TestDockerDownloads:
     def inspect(self, value):
         config = {'docker': '/usr/bin/docker', 'imageId': os.environ['ODS_INSPECTION_TEST_IMAGE'],
                   'ownerUid': os.getuid(), 'transport': 'local', 'snapshotRoot': '/unused'}
-        result = subprocess.run(broker.capsule_argv(config, 'ods-download-test-' + os.urandom(8).hex()),
-                                input=protocol.canonical(value), capture_output=True, timeout=50)
+        name = 'ods-download-test-' + os.urandom(8).hex()
+        try:
+            result = subprocess.run(broker.capsule_argv(config, name),
+                                    input=protocol.canonical(value), capture_output=True, timeout=50)
+        finally:
+            # A killed Docker CLI does not remove a still-running capsule.
+            subprocess.run([*broker.docker_prefix(config), 'rm', '-f', name], capture_output=True, timeout=10)
         assert result.returncode == 0, result.stderr.decode()[-2000:]
         return json.loads(result.stdout)
 
@@ -140,6 +152,25 @@ class TestDockerDownloads:
         assert result['status'] == 'passed', result
         assert result['steps'][0]['download'] == {'bytes': len(PDF), 'sha256': hashlib.sha256(PDF).hexdigest(),
                                                   'completed': True, 'eventCount': 1, 'trustedClick': True}
+
+    @pytest.mark.parametrize('href', ['artifact.pdf', 'artifact.pdf?v=1', '%61rtifact.pdf'])
+    def test_ordinary_click_before_final_download_reports_bounded_policy_failure(self, href):
+        value = download_bundle(f'<a id="download" href="{href}" download>Download</a>')
+        locator = {'role': 'link', 'name': 'Download', 'exact': True}
+        value['request']['steps'] = [
+            {'action': 'assert-visible', 'locator': locator},
+            {'action': 'assert-text', 'locator': locator, 'expectedText': 'Download'},
+            {'action': 'click', 'locator': locator}, download_step(),
+        ]
+        started = time.monotonic()
+        result = self.inspect(value)
+        assert time.monotonic() - started < 15
+        assert result['status'] == 'failed', result
+        assert result['steps'][-1]['index'] == 2
+        assert result['steps'][-1]['errorCode'] == 'unexpected_download', result
+        assert result['blockedRequests'] == ['download'], result
+        assert not any(step.get('download') for step in result['steps'])
+        assert 'was captured' not in result['scope']
 
     def test_publisher_attachment_link_without_download_attribute(self):
         result = self.inspect(download_bundle('<a id="download" href="artifact.pdf">Download</a>'))

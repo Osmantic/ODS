@@ -857,7 +857,7 @@ class SnapshotDownload:
                 self.cancel(self.guid)
 
 
-def guard_requests(context, page, origin, prefix, blocked, download=None):
+def guard_requests(context, page, origin, prefix, blocked, download=None, download_urls=()):
     """Allow only GETs of the wrapper and this site's files from the loopback
     server, and at most the wrapper and site-entry navigations. Everything
     else, popups, downloads and websockets are recorded (bounded) and stopped."""
@@ -886,11 +886,24 @@ def guard_requests(context, page, origin, prefix, blocked, download=None):
         if safe:
             route.continue_()
         else:
+            # The publisher ignores queries and decodes static snapshot paths.
+            # Classify those aliases too; admission still requires the exact
+            # canonical URL in the active download branch above.
+            snapshot_url = parsed.scheme + '://' + parsed.netloc + urllib.parse.unquote(parsed.path)
+            unexpected_download = req.is_navigation_request() and req.method == 'GET' and snapshot_url in download_urls
             if len(blocked) < 32:
                 blocked.append(
-                    "navigation" if req.is_navigation_request() else "network"
+                    "download" if unexpected_download
+                    else "navigation" if req.is_navigation_request() else "network"
                 )
             route.abort()
+            if unexpected_download:
+                # click() can return before this blocked navigation arrives.
+                # A post-click AX query already in flight can then wait forever
+                # on the aborted frame. This page can no longer pass; closing
+                # only it interrupts that query and retains the failed-step
+                # evidence instead of exhausting the broker's global deadline.
+                page.close(run_before_unload=False)
 
     context.route("**/*", route_handler)
     context.on(
@@ -1064,7 +1077,8 @@ def run_browser(bundle, playwright_factory=None):
             page = context.new_page()
             page.set_default_timeout(2000)
             download = SnapshotDownload(browser, context, page, blocked) if request['steps'][-1]['action'] == 'download' else None
-            guard_requests(context, page, origin, prefix, blocked, download)
+            download_urls = {origin + prefix + name for name in files if name.lower().endswith(('.pdf', '.zip'))}
+            guard_requests(context, page, origin, prefix, blocked, download, download_urls)
             # Registered before navigation so startup exceptions are included.
             # Page-scoped (not context-wide): blocked popups are never recorded.
             page.on("pageerror", page_errors.record)
@@ -1344,7 +1358,7 @@ def run_browser(bundle, playwright_factory=None):
                             status="passed" if after_stable else "failed",
                         )
                     except Exception:
-                        item["errorCode"] = "click_failed"
+                        item["errorCode"] = "unexpected_download" if 'download' in blocked else "click_failed"
                 elif step['action'] == 'assert-text':
                     matches = before.get('visible') is True and before.get('text') == {
                         'actual': step['expectedText'], 'truncated': False}

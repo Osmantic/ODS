@@ -12,6 +12,10 @@ An inspection may contain one final `download` step with its normal locator plus
 snapshot-relative PDF or ZIP, with 1–4,194,304 bytes. The expected length and
 SHA-256 are checked against the independently rehashed snapshot bundle before
 Chromium starts. No URL or script is accepted as part of the action.
+The `download` step performs its own click: use any visibility/text assertions
+followed directly by `download`, without a preceding ordinary click on that
+download control. A blocked attempt from an ordinary click is reported as
+`unexpected_download`, not a verified delivery or evidence of a broken page.
 
 The actual control is clicked in Chromium inside the unchanged opaque iframe
 sandbox. Only during this action may its exact canonical artifact URL navigate.
@@ -39,11 +43,16 @@ CSP, CORS and X-Preview-SHA256. PDF/ZIP use the publisher's actual
 #6980, including links without a download attribute. The inspector does not add
 an attachment override that differs from the published page.
 
-The receipt proves only bytes captured inside this capsule after the observed
+A passed download receipt proves only bytes captured inside this capsule after the observed
 click during the bounded window. It does not prove causal behavior of arbitrary
 page timers, future downloads, delivery to the user's computer, PDF rendering,
 ZIP CRC/member correctness, extraction, execution, or overall website quality.
 Download bytes and suggested filenames never appear in receipts or logs.
+Failed and unavailable receipt scopes describe the verification boundary only;
+they do not assert that any download was captured. A blocked snapshot-document
+navigation closes only the rejected private page, interrupting a post-click AX
+query that could otherwise remain pending on the aborted frame until the broker
+deadline. Earlier step evidence and the policy failure remain in the receipt.
 
 Verification: `ods/tests/test_preview_inspection_download.py` includes protocol,
 publisher-header parity and opt-in Docker tests. Set `ODS_INSPECTION_TEST_IMAGE`

@@ -29,7 +29,7 @@ SCOPE = "Only the listed CSS layout visibility, normalized visible-text assertio
 SELECT_SCOPE = SCOPE + " Native single-select values were observed only for explicit select-option steps."
 SELECT_CAPABILITY = "native-single-select-v1"
 DOWNLOAD_CAPABILITY = "snapshot-download-v1"
-DOWNLOAD_SCOPE = " A single final download was captured only inside the capsule and matched the declared snapshot file bytes; not a download to the user's computer, PDF quality, or ZIP content validation."
+DOWNLOAD_SCOPE = " Download verification is limited to one final step whose own click must produce matching snapshot bytes inside the capsule. A failed or unavailable receipt does not verify a download; no delivery to the user's computer, PDF quality, or ZIP content validation is established."
 
 
 def inspection_scope(request):
