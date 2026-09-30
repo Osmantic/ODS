@@ -43,3 +43,11 @@ def test_add_back_reconciliation_failure_is_not_reported_as_success(test_client)
     assert response.status_code == 503
     assert "inspection" in response.json()["detail"].lower()
     assert "private host detail" not in response.text
+
+
+def test_unsupported_platform_message_is_not_linux_specific(test_client):
+    with patch("routers.extensions.request_agent_json", side_effect=AgentHTTPError(501, "private host detail")):
+        response = test_client.post("/api/webui/selection", json={"enabled": True}, headers=test_client.auth_headers)
+    assert response.status_code == 501
+    assert "unavailable on this platform" in response.json()["detail"]
+    assert "private host detail" not in response.text

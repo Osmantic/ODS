@@ -1659,7 +1659,7 @@ async def webui_selection(api_key: str = Depends(verify_api_key)):
 
 @router.post("/api/webui/selection")
 async def enable_webui_from_library(request: Request, api_key: str = Depends(verify_api_key)):
-    """Add WebUI through its dedicated host-owned Linux selection path."""
+    """Add WebUI through its dedicated host-owned selection path."""
     try:
         payload = await request.json()
     except ValueError:
@@ -1672,7 +1672,7 @@ async def enable_webui_from_library(request: Request, api_key: str = Depends(ver
     except AgentHTTPError as exc:
         code = exc.status_code
         if code == 501:
-            detail = "Adding Open WebUI from the Library is available on Linux only"
+            detail = "Adding Open WebUI from the Library is unavailable on this platform"
         elif code == 409:
             detail = "Open WebUI selection is currently unavailable or another operation is in progress"
         elif code == 503:

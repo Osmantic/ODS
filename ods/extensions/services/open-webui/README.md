@@ -1,12 +1,12 @@
 # open-webui
 
-Primary chat interface for ODS
+Optional chat interface for ODS
 
 ## Overview
 
-Open WebUI is the main user-facing web application bundled with ODS. It provides a full-featured chat UI backed by the local llama-server LLM, with integrated web search via SearXNG, image generation via ComfyUI, and voice input/output via Whisper (STT) and Kokoro (TTS).
+Dashboard/Portal provides the standard ODS chat and agent experience. Open WebUI is an optional additional chat interface backed by the configured ODS model route. It can integrate with SearXNG, ComfyUI, Whisper, and Kokoro when those services are installed.
 
-Open WebUI is served at `http://localhost:3000` and communicates with llama-server through the OpenAI-compatible API.
+When selected, Open WebUI is served at `http://localhost:3000` and communicates through the configured OpenAI-compatible model gateway.
 
 ## Features
 
@@ -61,9 +61,9 @@ User accounts, chat history, and uploaded documents are stored in `data/open-web
 
 ## First Use
 
-1. Open `http://localhost:3000` in your browser
-2. Start chatting; a normal loopback-only ODS install does not require an account
-3. On a LAN/network deployment, create the first admin account when prompted
+1. If a lean installation omitted Open WebUI, choose **Add Open WebUI** in Dashboard → Extensions Library. Linux and macOS support this action; it downloads only the WebUI image and reuses retained chat data. On macOS, rerunning the installer with `--with-webui` also selects it.
+2. Open `http://localhost:3000` in your browser.
+3. Start chatting; a normal loopback-only ODS install does not require an account. On a LAN/network deployment, create the first admin account when prompted.
 
 ## Troubleshooting
 
