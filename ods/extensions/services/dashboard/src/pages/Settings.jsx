@@ -419,7 +419,7 @@ export default function Settings({ activeSection = 'all' }) {
         <div hidden={!visible('connections')}><PixelProviderSettings showHeading={activeSection === 'all'} /></div>
         <div hidden={!visible('connections')}><details className="settings-agent-behavior"><summary>Agent behavior</summary><PixelRuntimeSettings /></details></div>
         <div hidden={!visible('sharing')}><PixelSharingSettings /></div>
-        <div hidden={!visible('access')}><PixelAccessCard showHeading={activeSection === 'all'} /></div>
+        <div hidden={!visible('access')}><PixelAccessCard active={visible('access')} showHeading={activeSection === 'all'} /></div>
         <div hidden={!visible('services')}><RoutingTableCard
           services={services}
           counts={routeCounts}
