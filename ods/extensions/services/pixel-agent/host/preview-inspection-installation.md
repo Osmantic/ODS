@@ -37,3 +37,21 @@ stops the broker before the publisher, then removes only fixed known artifacts.
 Content-addressed Docker images remain ordinary build cache. Complete older
 native service bundles remain readable for rollback and uninstall; a partial
 inspection bundle cannot pass as a legacy bundle.
+
+The installer creates a private build context and inherits the owner's umask.
+With umask 077, staged inputs are mode 0600. The Dockerfile fixes the lock and
+Python source permissions to 0444 inside the image so UID 65534 can read them;
+the host's source and staging permissions are not widened. This uses the same
+Docker BuildKit `COPY --chmod` support already used by bundled runtime images.
+
+The private-context CI job runs the actual installer build, records mode 0600
+inputs, checks imports and read-only image files as UID 65534, then verifies a
+small page through the production isolated capsule. To reproduce on Linux/WSL
+as an ordinary Docker-enabled user, run from `ods`:
+
+```sh
+ODS_INSPECTION_BUILD_TESTS=1 python3 -m pytest -q tests/test_preview_inspection_permissions.py
+```
+
+The opt-in test builds only the fixed inspector image. It does not install
+services, change permissions on existing host files or publish an image.
