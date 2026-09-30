@@ -20,6 +20,7 @@ export function historySnapshot(messages) {
 const token=(value,maximum=100_000_000)=>Number.isSafeInteger(value) && value>=0 && value<=maximum
 const text=(value,max)=>typeof value==='string' && value.length>0 && value.length<=max && !/[\u0000-\u001f\u007f]/.test(value)
 const routeFingerprint=value=>typeof value==='string' && value.length===64 && /^[a-f0-9]{64}$/.test(value)
+const contextRetryDelays=[2000,5000,10000]
 export function parseConversationContext(value) {
   if(!value || value.schemaVersion!==1 || !['ready','missing','busy','unavailable'].includes(value.status))return null
   const {context,compaction,history,model}=value
@@ -72,13 +73,15 @@ export function usePortalContext({chatId,runtimeKey:legacyRuntimeKey,runtimeIden
     if(!sameChat)acceptedModel.current=null
   }
   const runtimeKey=typed?`identity-${runtime.current.epoch}`:legacyRuntimeKey
-  const [view,setView]=useState({chatId,runtimeKey,context:null,observedCapacity:null,phase:initialRequestId?'checking':'idle',notice:'',historyUnknown:false,resolving:false,recoveryNotice:''})
+  const [view,setView]=useState({chatId,runtimeKey,context:null,observedCapacity:null,phase:initialRequestId?'checking':'idle',notice:'',historyUnknown:false,resolving:false,recoveryNotice:'',readUnavailable:false})
   const current=useRef({}),pending=useRef(initialRequestId || null),requests=useRef(new Set()),query=useRef(null),mutation=useRef(false)
   const refreshQueued=useRef(false)
   const generation=useRef(0),lastQuery=useRef(0),priorRuntime=useRef(runtimeKey)
   const priorChat=useRef(chatId),lastMeasurement=useRef(null),invalidatedMeasurement=useRef(null)
   const lastManual=useRef(initialRequestId || null)
-  current.current={chatId,runtimeKey,runtimeIdentity:typed?runtime.current.identity:null,capacity,blocked,onPendingChange,historyUnknown:view.chatId===chatId && view.runtimeKey===runtimeKey && view.historyUnknown}
+  const contextRetries=useRef(0),priorAvailability=useRef({chatId,runtimeKey,blocked})
+  current.current={chatId,runtimeKey,runtimeIdentity:typed?runtime.current.identity:null,capacity,blocked,onPendingChange,historyUnknown:view.chatId===chatId && view.runtimeKey===runtimeKey && view.historyUnknown,
+    readUnavailable:view.chatId===chatId && view.runtimeKey===runtimeKey && view.readUnavailable}
   const publish=useCallback(update=>setView(previous=>({...previous,...update,chatId:current.current.chatId,runtimeKey:current.current.runtimeKey})),[])
   const persist=useCallback(id=>{current.current.onPendingChange(id,current.current.chatId);pending.current=id},[])
 
@@ -117,7 +120,9 @@ export function usePortalContext({chatId,runtimeKey:legacyRuntimeKey,runtimeIden
       try {persist(null)}catch {notice+=' The result could not be saved in this browser; reload to check it again.'}
     }
     const historyUnknown=snapshot.history.status==='unknown'
-    publish({context,phase,notice,historyUnknown,...(snapshot.model?{observedCapacity:modelMatches?snapshot.model.contextWindow:null}:{}),...(!historyUnknown?{recoveryNotice:''}:{})})
+    const readUnavailable=snapshot.status==='unavailable'
+    if(!readUnavailable)contextRetries.current=0
+    publish({context,phase,notice,historyUnknown,readUnavailable,...(snapshot.model?{observedCapacity:modelMatches?snapshot.model.contextWindow:null}:{}),...(!historyUnknown?{recoveryNotice:''}:{})})
   },[persist,publish])
 
   const refresh=useCallback(async(force=false)=>{
@@ -143,7 +148,7 @@ export function usePortalContext({chatId,runtimeKey:legacyRuntimeKey,runtimeIden
             // snapshot as the completed turn's current measurement.
             if(!refreshQueued.current)accept(snapshot)
           }catch {
-            if(at===generation.current && !refreshQueued.current)publish({...(pending.current?{phase:'unknown',notice:'Waiting for compaction confirmation…'}:{})})
+            if(at===generation.current && !refreshQueued.current)publish({readUnavailable:true,...(pending.current?{phase:'unknown',notice:'Waiting for compaction confirmation…'}:{})})
           }finally {clearTimeout(timer);requests.current.delete(controller)}
         }while(at===generation.current && refreshQueued.current && !mutation.current)
       }finally {if(at===generation.current)query.current=null}
@@ -158,7 +163,8 @@ export function usePortalContext({chatId,runtimeKey:legacyRuntimeKey,runtimeIden
     if(priorChat.current!==chatId){lastMeasurement.current=null;invalidatedMeasurement.current=null;lastManual.current=pending.current}
     else if(priorRuntime.current && priorRuntime.current!==runtimeKey)invalidatedMeasurement.current=lastMeasurement.current
     priorChat.current=chatId
-    publish({context:null,observedCapacity:null,phase:pending.current?'checking':'idle',notice:pending.current?'Checking compaction status…':'',historyUnknown:false,resolving:false,recoveryNotice:''})
+    contextRetries.current=0
+    publish({context:null,observedCapacity:null,phase:pending.current?'checking':'idle',notice:pending.current?'Checking compaction status…':'',historyUnknown:false,resolving:false,recoveryNotice:'',readUnavailable:false})
     priorRuntime.current=runtimeKey
     void refresh(true)
     return ()=>{generation.current+=1;requests.current.forEach(controller=>controller.abort());requests.current.clear();query.current=null;refreshQueued.current=false}
@@ -166,10 +172,25 @@ export function usePortalContext({chatId,runtimeKey:legacyRuntimeKey,runtimeIden
   },[chatId,runtimeKey,publish,refresh])
 
   useEffect(()=>{
-    if(view.chatId!==chatId || view.runtimeKey!==runtimeKey || !(pending.current || ['running','busy'].includes(view.phase) || view.historyUnknown))return
-    const timer=setTimeout(()=>void refresh(true),['unknown','unavailable'].includes(view.phase)?5000:2000)
+    if(view.chatId!==chatId || view.runtimeKey!==runtimeKey)return
+    const observingOperation=pending.current || ['running','busy'].includes(view.phase) || view.historyUnknown
+    const retryRead=!observingOperation && view.readUnavailable && contextRetries.current<contextRetryDelays.length
+    if(!observingOperation && !retryRead)return
+    const delay=retryRead?contextRetryDelays[contextRetries.current]:['unknown','unavailable'].includes(view.phase)?5000:2000
+    const timer=setTimeout(()=>{if(retryRead)contextRetries.current+=1;void refresh(true)},delay)
     return ()=>clearTimeout(timer)
   },[view,chatId,runtimeKey,refresh])
+
+  useEffect(()=>{
+    const previous=priorAvailability.current
+    priorAvailability.current={chatId,runtimeKey,blocked}
+    // A backend outage can outlast the bounded idle retries. Its recovery is
+    // another reason to inspect this same conversation without replaying work.
+    if(previous.chatId===chatId && previous.runtimeKey===runtimeKey && previous.blocked && !blocked && current.current.readUnavailable) {
+      contextRetries.current=0
+      void refresh(true)
+    }
+  },[blocked,chatId,runtimeKey,refresh])
 
   const compact=useCallback(async()=>{
     if(current.current.blocked || current.current.historyUnknown || mutation.current)return false
