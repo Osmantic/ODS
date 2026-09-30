@@ -64,8 +64,8 @@ can change those selections.
 
 ## Open the UI
 
-- **Chat UI:** http://localhost:3000
-- **Dashboard:** http://localhost:3001
+- **Dashboard and Portal chat (Core):** http://localhost:3001
+- **Open WebUI (when selected):** http://localhost:3000
 - **OpenCode (IDE, when selected):** http://localhost:3003
 
 The normal loopback-only install opens the Chat UI directly without an account.
