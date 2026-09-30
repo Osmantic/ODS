@@ -90,6 +90,37 @@ def test_library_whisper_start_rejects_oversized_port_without_network(tmp_path, 
     assert _mod._whisper_model_ready_after_start(0)[0] is False
 
 
+def test_library_whisper_start_reports_permanent_model_rejection(tmp_path, monkeypatch):
+    class RejectingModelsHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200 if self.path == "/v1/models" else 404)
+            self.end_headers()
+
+        def do_POST(self):
+            self.send_response(404)
+            self.end_headers()
+
+        def log_message(self, *_args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), RejectingModelsHandler)
+    worker = threading.Thread(target=server.serve_forever, daemon=True)
+    worker.start()
+    try:
+        (tmp_path / ".env").write_text(
+            f"WHISPER_PORT={server.server_port}\n", encoding="utf-8",
+        )
+        monkeypatch.setattr(_mod, "INSTALL_DIR", tmp_path)
+        started = time.monotonic()
+        ok, error = _mod._whisper_model_ready_after_start(5)
+        assert not ok and "HTTP 404" in error
+        assert time.monotonic() - started < 2
+    finally:
+        server.shutdown()
+        server.server_close()
+        worker.join(timeout=5)
+
+
 def test_core_recreation_excludes_unrelated_secrets_but_keeps_overlays_and_dependencies(tmp_path, monkeypatch):
     monkeypatch.setattr(_mod, 'INSTALL_DIR', tmp_path)
     monkeypatch.setattr(_mod, 'EXTENSIONS_DIR', tmp_path / 'extensions')

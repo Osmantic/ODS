@@ -6009,9 +6009,13 @@ def _whisper_model_ready_after_start(
         with urllib_request.urlopen(request, timeout=min(30, remaining)) as response:
             if not 200 <= response.status < 300:
                 return False, "Whisper started, but its model download was rejected; run ods repair voice"
-    except urllib_error.HTTPError:
+    except urllib_error.HTTPError as exc:
+        if 400 <= exc.code < 500 and exc.code not in (408, 409, 429):
+            return False, (
+                f"Whisper model download was rejected (HTTP {exc.code}); "
+                "check AUDIO_STT_MODEL or run ods repair voice"
+            )
         # A concurrent download or transient failure can still populate the cache.
-        pass
     except (urllib_error.URLError, TimeoutError, OSError):
         # Speaches can continue downloading after the trigger times out.
         pass
