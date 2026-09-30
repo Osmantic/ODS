@@ -92,6 +92,43 @@ assert message["role"] == "assistant" and message["content"].strip() == "OK"
 PY
 }
 
+probe_extension_reads() {
+    python3 - "$INSTALL_DIR/.env" <<'PY'
+import json
+import urllib.error
+import urllib.request
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as stream:
+    values = dict(line.rstrip("\n").split("=", 1) for line in stream
+                  if "=" in line and not line.startswith("#"))
+key = values.get("DASHBOARD_API_KEY", "").strip()
+if len(key) >= 2 and key[0] in "\"'" and key[-1] == key[0]:
+    key = key[1:-1]
+if not key:
+    raise SystemExit("installed Dashboard API credential is missing")
+port = values.get("DASHBOARD_API_PORT", "3002").strip().strip("\"'")
+for path in ("/api/extensions/actual-budget", "/api/extensions/actual-budget/install-plan"):
+    request = urllib.request.Request(
+        f"http://127.0.0.1:{port}{path}",
+        headers={"Authorization": "Bearer " + key, "Accept": "application/json"},
+    )
+    try:
+        response = urllib.request.urlopen(request, timeout=45)
+    except urllib.error.HTTPError as error:
+        response = error
+    with response:
+        status = response.status
+        content_type = response.headers.get_content_type()
+        keys = []
+        if 200 <= status < 300 and content_type == "application/json":
+            value = json.load(response)
+            if isinstance(value, dict):
+                keys = sorted(value)
+        print(f"MAIN_EXTENSION_READ path={path} status={status} content_type={content_type} keys={keys}")
+PY
+}
+
 run_installer() {
     local stage="$1"
     shift
@@ -134,6 +171,7 @@ docker image ls --format '{{.Repository}}' | sort -u >"$audit_root/images-before
 run_installer fresh --gateway-only --external-llm-key-file "$key_file"
 assert_gateway
 assert_litellm_completion
+probe_extension_reads
 
 installed_key="$INSTALL_DIR/config/litellm/external-upstream.key"
 [[ "$(stat -c %a "$installed_key")" == 600 ]] || fail 'installed upstream key mode is not 600'
