@@ -16836,21 +16836,32 @@ def _patch_hermes_config_text(
     lines = text.splitlines()
     if api_key:
         # A retained owner file may use a quoted key or spaces before ':'.
+        # Count only direct model fields, not a nested owner's api_key.
         # Refuse ambiguous duplicates rather than leave Hermes using a stale key.
         model_section = False
+        field_indent = None
         key_count = 0
         for line in lines:
             if re.match(r"^model:\s*(?:#.*)?$", line):
                 model_section = True
+                field_indent = None
+                key_count = 0
             elif model_section and line and not line.startswith((" ", "\t", "#")):
                 model_section = False
-            elif model_section and re.match(r"^  (?:api_key|['\"]api_key['\"])\s*:", line):
-                key_count += 1
-        if key_count > 1:
-            raise ValueError("Hermes model config contains duplicate api_key fields")
+            elif model_section and line.strip() and not line.lstrip().startswith("#"):
+                indent = line[:len(line) - len(line.lstrip())]
+                if field_indent is None:
+                    field_indent = indent
+                if indent == field_indent and re.match(
+                    r"^\s+(?:api_key|['\"]api_key['\"])\s*:", line
+                ):
+                    key_count += 1
+                    if key_count > 1:
+                        raise ValueError("Hermes model config contains duplicate api_key fields")
     in_model_block = False
     model_block_found = False
     model_indent = "  "
+    model_field_indent = None
     model_fields = set()
     changed = False
     new_lines = []
@@ -16864,7 +16875,7 @@ def _patch_hermes_config_text(
             new_lines.append(f"{model_indent}base_url: {json.dumps(base_url)}")
             changed = True
         if api_key and "api_key" not in model_fields:
-            new_lines.append(f"{model_indent}api_key: {json.dumps(api_key)}")
+            new_lines.append(f"{model_field_indent or model_indent}api_key: {json.dumps(api_key)}")
             changed = True
         if context_length and "context_length" not in model_fields:
             new_lines.append(f"{model_indent}context_length: {int(context_length)}")
@@ -16877,15 +16888,21 @@ def _patch_hermes_config_text(
         if re.match(r"^model:\s*(?:#.*)?$", line):
             in_model_block = True
             model_block_found = True
+            model_indent = "  "
+            model_field_indent = None
             model_fields = set()
             new_lines.append(line)
             continue
         if in_model_block and line and not line.startswith((" ", "\t", "#")):
             add_missing_model_fields()
             in_model_block = False
+        if in_model_block and line.strip() and not line.lstrip().startswith("#"):
+            indent = line[:len(line) - len(line.lstrip())]
+            if model_field_indent is None:
+                model_field_indent = indent
+                model_indent = indent
         if in_model_block and re.match(r"^\s+default:\s*", line):
             model_fields.add("default")
-            model_indent = line[:len(line) - len(line.lstrip())]
             indent = line[:len(line) - len(line.lstrip())]
             new_line = f"{indent}default: {json.dumps(model_name)}"
             new_lines.append(new_line)
@@ -16893,23 +16910,22 @@ def _patch_hermes_config_text(
             continue
         if base_url and in_model_block and re.match(r"^\s+base_url:\s*", line):
             model_fields.add("base_url")
-            model_indent = line[:len(line) - len(line.lstrip())]
             indent = line[:len(line) - len(line.lstrip())]
             new_line = f"{indent}base_url: {json.dumps(base_url)}"
             new_lines.append(new_line)
             changed = changed or new_line != line
             continue
-        if api_key and in_model_block and re.match(r"^  (?:api_key|['\"]api_key['\"])\s*:", line):
+        if api_key and in_model_block and model_field_indent and re.match(
+            rf"^{re.escape(model_field_indent)}(?:api_key|['\"]api_key['\"])\s*:", line
+        ):
             model_fields.add("api_key")
-            model_indent = "  "
-            indent = "  "
+            indent = model_field_indent
             new_line = f"{indent}api_key: {json.dumps(api_key)}"
             new_lines.append(new_line)
             changed = changed or new_line != line
             continue
         if context_length and in_model_block and re.match(r"^\s+context_length:\s*", line):
             model_fields.add("context_length")
-            model_indent = line[:len(line) - len(line.lstrip())]
             indent = line[:len(line) - len(line.lstrip())]
             new_line = f"{indent}context_length: {int(context_length)}"
             new_lines.append(new_line)
@@ -16919,7 +16935,6 @@ def _patch_hermes_config_text(
             # Preserve an operator's explicit output cap. ODS only supplies
             # its bounded default when the field is absent.
             model_fields.add("max_tokens")
-            model_indent = line[:len(line) - len(line.lstrip())]
             new_lines.append(line)
             continue
         if context_length and re.match(r"^\s+context_length:\s*", line):

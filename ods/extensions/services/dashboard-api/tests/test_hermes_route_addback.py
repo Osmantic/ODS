@@ -139,6 +139,37 @@ def test_quoted_api_key_is_replaced_without_duplicate_and_ambiguous_owner_file_f
     assert live_path.read_bytes() == before
 
 
+def test_retained_four_space_api_key_replaced_at_model_level(tmp_path, monkeypatch, caplog):
+    _, live_path = write_install(
+        tmp_path, external_env(),
+        live='model:\n    default: "old"\n    api_key: "stale-secret"\n'
+             '    owner_nested:\n        api_key: "nested-owner-key"\n'
+             'other:\n  owner_value: retained\n',
+    )
+    monkeypatch.setattr(agent, "INSTALL_DIR", tmp_path)
+
+    assert agent._prepare_hermes_route_for_start() == (True, "")
+    text = live_path.read_text(encoding="utf-8")
+    config = yaml.safe_load(text)
+    assert config["model"]["api_key"] == 'private-"key\\value'
+    assert config["model"]["owner_nested"]["api_key"] == "nested-owner-key"
+    assert config["other"]["owner_value"] == "retained"
+    assert sum(line.startswith('    api_key: ') for line in text.splitlines()) == 1
+    assert "stale-secret" not in text
+    assert "stale-secret" not in caplog.text
+    assert 'private-"key\\value' not in caplog.text
+
+    live_path.write_text(
+        'model:\n    api_key: "first"\n    "api_key": "second"\n',
+        encoding="utf-8",
+    )
+    before = live_path.read_bytes()
+    assert agent._prepare_hermes_route_for_start()[0] is False
+    assert live_path.read_bytes() == before
+    assert "first" not in caplog.text
+    assert "second" not in caplog.text
+
+
 def test_external_compose_plan_refuses_stale_local_overlay(tmp_path, monkeypatch):
     write_install(tmp_path, external_env())
     monkeypatch.setattr(agent, "INSTALL_DIR", tmp_path)
