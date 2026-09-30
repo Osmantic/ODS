@@ -1,0 +1,36 @@
+name: Acceptance Linux WebUI Library add-back
+
+on:
+  push:
+    branches:
+      - codex/ods-webui-library-live-audit
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: webui-library-live-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  webui-library-addback:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    steps:
+      - name: Checkout acceptance harness
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - name: Checkout exact Portal acceptance candidate
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          ref: 54186765bfb2ab562003e6e135ea11b92aa9fd9c
+          path: product
+      - name: Verify source and isolated Docker Engine
+        run: |
+          test "$(git -C product rev-parse HEAD)" = 54186765bfb2ab562003e6e135ea11b92aa9fd9c
+          docker info --format '{{.OperatingSystem}}'
+          df -h / "$RUNNER_TEMP"
+      - name: Exercise installed Dashboard Library WebUI add-back
+        env:
+          ODS_ACCEPTANCE_PRODUCT_ROOT: ${{ github.workspace }}/product/ods
+        run: bash ods/tests/acceptance/webui-library-journey.sh
