@@ -41,6 +41,23 @@ class ReleaseGenerationTests(unittest.TestCase):
     def test_checked_in_generation_is_current(self):
         self.run_node(self.root, "scripts/generate-release-files.mjs", "--check")
 
+    def test_export_links_only_to_available_audit_evidence(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = self.copy_repository(Path(temporary))
+            matrix = json.loads((root / "OPENCLAW-COMPATIBILITY.json").read_text(encoding="utf-8"))
+            audit = matrix["combinations"][0]["evidence"]["liveAudit"]
+            evidence = root / audit
+            evidence.parent.mkdir(parents=True, exist_ok=True)
+            evidence.write_text("# Fixture evidence\n", encoding="utf-8")
+            self.run_node(root, "scripts/generate-release-files.mjs", "--write")
+            self.assertIn(f"[audit]({audit})", (root / "OPENCLAW-COMPATIBILITY.md").read_text(encoding="utf-8"))
+            evidence.unlink()
+            self.run_node(root, "scripts/generate-release-files.mjs", "--write")
+            table = (root / "OPENCLAW-COMPATIBILITY.md").read_text(encoding="utf-8")
+            self.assertNotIn(f"[audit]({audit})", table)
+            self.assertIn(f"Historical audit not included in this source export (`{audit}`)", table)
+            self.assertEqual(matrix, json.loads((root / "OPENCLAW-COMPATIBILITY.json").read_text(encoding="utf-8")))
+
     def test_drift_is_rejected_and_regeneration_repairs_it(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = self.copy_repository(Path(temporary))

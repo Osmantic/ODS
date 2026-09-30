@@ -12,7 +12,7 @@ import sys
 
 
 HERE = Path(__file__).resolve().parent
-DEFAULT_REF = '6efbbf342d60ad41f067f560dda90b5dda6765dd'
+DEFAULT_REF = '9f3b6ecd25db3ab51bef4091473d88ee5824bc3b'
 INGRESS_IMAGE = 'node:24-bookworm-slim'
 FRAGMENTS = ('extensions/services/pixel-model-relay/compose.yaml.disabled',
     'extensions/services/pixel-edge/compose.yaml.disabled',
