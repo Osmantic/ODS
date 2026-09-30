@@ -431,7 +431,7 @@ def _opencode_extension_status(svc) -> str:
 
 
 def _opencode_catalog_fields(status: str) -> dict:
-    """Library affordances for OpenCode: Linux setup and the app page."""
+    """Library affordances for OpenCode: host setup and the app page."""
     from helpers import get_opencode_lifecycle  # noqa: PLC0415 - avoid import cycle
 
     lifecycle = get_opencode_lifecycle() or {}
