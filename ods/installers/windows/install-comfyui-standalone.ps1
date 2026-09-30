@@ -139,8 +139,10 @@ function Wait-ComfyuiHealthy {
 }
 
 function Assert-ComfyuiCuda {
-    & docker --context desktop-linux exec $ContainerName python3 /opt/cuda-smoke.py
-    if ($LASTEXITCODE -ne 0) {
+    $smoke = Invoke-BoundedDockerQuery -Arguments @(
+        '--context', 'desktop-linux', 'exec', $ContainerName,
+        'python3', '/opt/cuda-smoke.py') -TimeoutSeconds 180
+    if ($smoke.ExitCode -ne 0) {
         throw 'ComfyUI responds over HTTP, but its CUDA runtime failed a real GPU operation.'
     }
 }
