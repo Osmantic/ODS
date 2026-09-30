@@ -3,7 +3,7 @@ name: Acceptance Linux gateway
 on:
   push:
     branches:
-      - codex/ods-gateway-live-audit
+      - codex/ods-gateway-final-live-audit
   workflow_dispatch:
 
 permissions:
