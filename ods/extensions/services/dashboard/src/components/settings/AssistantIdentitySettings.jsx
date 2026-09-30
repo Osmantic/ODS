@@ -5,11 +5,19 @@ import { normalizeDisplayName } from '../../lib/portalIdentity'
 export default function AssistantIdentitySettings() {
   const { document, ready, busy, error, notice, reload, save } = usePortalIdentity()
   const [draft, setDraft] = useState('')
-  const previousDocument = useRef(null)
+  const edited = useRef(false)
   useEffect(() => {
-    const previous = previousDocument.current
-    previousDocument.current = document
-    if (document) setDraft(current => !previous || current === previous.displayName ? document.displayName : current)
+    if (!document) return
+    // Preserve a draft the user typed until it is reconciled with a saved name. Comparing
+    // only against the previously committed document is unsafe: when the install read and a
+    // refresh settle in a single commit the intermediate saved name is never observed, so a
+    // typed draft must be preserved explicitly. The flag clears only once the draft matches
+    // the saved name (adopted or just saved), so a refresh never discards an unsaved edit.
+    setDraft(current => {
+      const keepTypedDraft = edited.current && current !== document.displayName
+      if (!keepTypedDraft) edited.current = false
+      return keepTypedDraft ? current : document.displayName
+    })
   }, [document])
   async function submit(event) {
     event.preventDefault()
@@ -21,7 +29,7 @@ export default function AssistantIdentitySettings() {
     <form onSubmit={submit} className="space-y-3">
       <label className="profile-name-label">Assistant display name
         <input autoComplete="off" maxLength={60}
-          placeholder="Assistant name" value={draft} onChange={event => setDraft(event.target.value)} disabled={busy || !ready}/>
+          placeholder="Assistant name" value={draft} onChange={event => { edited.current = true; setDraft(event.target.value) }} disabled={busy || !ready}/>
       </label>
       {document && <p>Last confirmed name: {document.displayName}</p>}
       <div className="profile-settings-actions assistant-identity-actions">

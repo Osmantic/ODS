@@ -49,6 +49,28 @@ it('preserves an unsaved name through refresh and offers explicit adoption of th
   expect(input).toHaveValue('Other')
 })
 
+it('preserves a draft typed before the install name is first observed', async () => {
+  // Regression: when the install read and a refresh settle in a single commit the saved name
+  // that was on screen is never observed, so a draft cannot be compared against the previous
+  // document. The typed draft must survive on its own; the same path is hit whenever the user
+  // types before the first read resolves.
+  const pending = deferred()
+  fetch.mockReturnValueOnce(pending.promise).mockResolvedValueOnce(response(identity('Other',3)))
+  render(editor())
+  const input = screen.getByLabelText('Assistant display name')
+  fireEvent.change(input,{target:{value:'My draft'}})
+  refresh()
+  await act(async () => pending.resolve(response(identity('Old',2))))
+  await waitFor(() => expect(saved()).toBe('Old'))
+  refresh()
+  await waitFor(() => expect(saved()).toBe('Other'))
+  expect(input).toHaveValue('My draft')
+  expect(screen.getByText('Last confirmed name: Other')).toBeVisible()
+  expect(postCalls()).toHaveLength(0)
+  fireEvent.click(screen.getByRole('button',{name:'Use saved name'}))
+  expect(input).toHaveValue('Other')
+})
+
 it('keeps the proposed name after a conflict and saves only against the refreshed revision', async () => {
   fetch.mockResolvedValueOnce(response(identity('Old',2)))
     .mockResolvedValueOnce(new globalThis.Response('{}',{status:409}))
