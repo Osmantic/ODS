@@ -201,7 +201,7 @@ def test_ordinary_docker_binary_does_not_provision_another_cli(tmp_path, monkeyp
     assert module.native_docker_binary(binary) == str(binary.resolve())
 
 
-@pytest.mark.parametrize('fault', [None, 'ref', 'compose', 'remote', 'project', 'services', 'image', 'probe', 'prepare', 'activate'])
+@pytest.mark.parametrize('fault', [None, 'no-webui', 'ref', 'compose', 'remote', 'project', 'services', 'image', 'probe', 'prepare', 'activate'])
 def test_initial_installer_connects_resolved_stack_and_native_activation(tmp_path, monkeypatch, fault):
     install_dir = tmp_path / 'ODS with spaces'
     (install_dir / 'data').mkdir(parents=True)
@@ -231,8 +231,10 @@ def test_initial_installer_connects_resolved_stack_and_native_activation(tmp_pat
         if 'compose' in argv:
             events.append('compose')
             assert argv[argv.index('--project-directory') + 1] == str(install_dir)
+            services = ('dashboard-api', 'model-router') if fault == 'no-webui' else (
+                'dashboard-api', 'model-router', 'open-webui')
             return json.dumps({'name': 'INVALID!' if fault == 'project' else 'ods-fixture',
-                'services': {} if fault == 'services' else dict.fromkeys(('dashboard-api', 'model-router', 'open-webui'), {})})
+                'services': {} if fault == 'services' else dict.fromkeys(services, {})})
         if 'pull' in argv:
             events.append('pull')
             return ''
@@ -261,7 +263,7 @@ def test_initial_installer_connects_resolved_stack_and_native_activation(tmp_pat
         return module.install(install_dir=install_dir, ods_source=install_dir,
             compose_files=[] if fault == 'compose' else files[:1],
             ref='invalid' if fault == 'ref' else module.DEFAULT_REF)
-    if fault:
+    if fault and fault != 'no-webui':
         with pytest.raises(ValueError): run()
         if fault not in ('prepare', 'activate'):
             assert not (install_dir / 'data/pixel-native').exists()

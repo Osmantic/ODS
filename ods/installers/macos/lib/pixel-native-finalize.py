@@ -271,7 +271,10 @@ def refresh_clients(install_dir):
     resolved = json.loads(run('config', '--format', 'json').stdout)
     if resolved.get('name') != transport['project']:
         raise ValueError('native-compose-project-mismatch')
-    for name in ('dashboard-api', 'open-webui'):
+    client_names = ['dashboard-api']
+    if 'open-webui' in resolved.get('services', {}):
+        client_names.append('open-webui')
+    for name in client_names:
         definition = resolved.get('services', {}).get(name)
         if type(definition) is not dict:
             raise ValueError('native-client-service-missing')
@@ -281,7 +284,7 @@ def refresh_clients(install_dir):
         if any(str(host).split('=', 1)[0].split(':', 1)[0].lower().rstrip('.') == 'pixel-edge' for host in hosts):
             raise ValueError('native-client-has-legacy-edge-route')
     run('up', '-d', '--no-deps', '--wait', '--wait-timeout', '120',
-        'dashboard-api', 'open-webui', timeout=180)
+        *client_names, timeout=180)
     probe = ('import urllib.request; '
         'response=urllib.request.build_opener(urllib.request.ProxyHandler({})).open('
         '"http://pixel-edge:9595/health",timeout=15); '

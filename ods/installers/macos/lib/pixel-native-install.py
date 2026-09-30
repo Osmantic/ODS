@@ -203,7 +203,7 @@ def install(*, install_dir, ods_source, compose_files, ref=DEFAULT_REF, prompt_f
     project = stack.get('name', '')
     if not re.fullmatch('[a-z0-9][a-z0-9_-]{0,127}', project):
         raise ValueError('resolved-compose-project-required')
-    if not {'dashboard-api', 'model-router', 'open-webui'} <= set(stack.get('services', {})):
+    if not {'dashboard-api', 'model-router'} <= set(stack.get('services', {})):
         raise ValueError('native-base-services-required')
     node, npm = node_tools()
     command([docker, 'pull', '--platform', 'linux/arm64', INGRESS_IMAGE], env=env, timeout=600)
