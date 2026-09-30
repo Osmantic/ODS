@@ -23,7 +23,7 @@ jobs:
       - name: Checkout exact broker-home candidate
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
-          ref: 34965cdf4413f76409ed8d14df48d3c83bb96956
+          ref: dfdc5fd56715339867e2010cba15adbdeaef3a40
           path: product
       - name: Exercise fresh broker home on installed ODS
         env:
