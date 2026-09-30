@@ -2030,9 +2030,142 @@ _ods_pixel_apply_runtime_budget() {
     printf '%s\n' changed
 }
 
+_ods_pixel_verify_current_runtime() {
+    local owner="$1" home="$2" pixel_root="$3" transaction_id="${4:-}"
+    local verify_attempt owns_transaction=false openclaw_bin
+    local -a verify_arguments=()
+    if [[ -z "$transaction_id" ]]; then
+        # Standalone sandboxed installations retain Pixel's strict verifier.
+        # A relaxed boundary is never inferred to be authorized from systemd:
+        # acquire a protected transaction and let its fresh runtime proof
+        # establish the configured mode before verifying this exact process.
+        if [[ "$(systemctl show openclaw-gateway.service -p ProtectHome --value)" != tmpfs \
+            || "$(systemctl show openclaw-gateway.service -p ProtectSystem --value)" != strict ]]; then
+            openclaw_bin="$(_ods_pixel_openclaw_bin "$owner" "$home")" || return 1
+            _ods_pixel_install_access_service "$owner" "$openclaw_bin" || return 1
+            transaction_id="$(_ods_pixel_model_transition begin "$owner" "$home")" || return 1
+            [[ "$transaction_id" =~ ^[a-f0-9]{64}$ ]] || return 1
+            owns_transaction=true
+        fi
+    fi
+    if [[ -n "$transaction_id" ]]; then
+        [[ "$transaction_id" =~ ^[a-f0-9]{64}$ ]] || return 1
+        verify_arguments=(--ods-model-transaction "$transaction_id")
+    fi
+    for verify_attempt in 1 2 3; do
+        if ods_pixel_run_as_owner "$owner" "$home" "$pixel_root/pixel" verify "${verify_arguments[@]}"; then
+            if [[ "$owns_transaction" == true ]]; then
+                _ods_pixel_model_transition finish "$owner" "$home" "$transaction_id" applied || return 1
+            fi
+            return 0
+        fi
+        if (( verify_attempt < 3 )); then
+            printf '%s\n' "Pixel verification did not settle after gateway restart (attempt ${verify_attempt}/3); retrying..." >&2
+            sleep 2
+        fi
+    done
+    if [[ "$owns_transaction" == true ]]; then
+        printf 'Pixel verification failed; admission remains held for transaction %s. Repair the reported verification failure before recovery.\n' "$transaction_id" >&2
+    fi
+    return 1
+}
+
+_ods_pixel_resume_completed_release() {
+    local owner="$1" home="$2" pixel_root="$3" contract_sha="$4"
+    local status resume transaction_id outcome config_sha observed
+    local helper=/usr/local/libexec/ods-pixel-access/pixel_model_transition.py
+    [[ -f "$helper" && ! -L "$helper" ]] || return 0
+    status="$(_ods_pixel_model_transition status "$owner" "$home")" || return 1
+    resume="$(printf '%s' "$status" | python3 -c '
+import json,re,sys
+d=json.load(sys.stdin)
+if d == {"pending":False}:
+    raise SystemExit(0)
+c=d.get("release_completion")
+if (d.get("pending") is not True or d.get("kind")!="model"
+    or not isinstance(c,dict) or set(c)!={"outcome","config_sha256"}
+    or c["outcome"] not in ("apply","rollback")
+    or not all(isinstance(v,str) and re.fullmatch("[a-f0-9]{64}",v)
+               for v in (d.get("transaction_id"),c["config_sha256"]))):
+    raise SystemExit("Pixel has an unfinished transaction without a verified release completion; explicit recovery is required")
+print(d["transaction_id"],c["outcome"],c["config_sha256"])
+')" || return 1
+    [[ -n "$resume" ]] || return 0
+    read -r transaction_id outcome config_sha <<< "$resume"
+    observed="$(ods_pixel_run_as_owner "$owner" "$home" sha256sum "$home/.openclaw/openclaw.json")" || return 1
+    [[ "${observed%% *}" == "$config_sha" ]] || return 1
+    # Root finish independently requires the durable release completion and
+    # re-proves the process before releasing either admission gate. This also
+    # handles a lost reply after native/edge release without applying again.
+    if [[ "$outcome" == apply ]]; then
+        _ods_pixel_model_transition finish "$owner" "$home" "$transaction_id" applied || return 1
+    else
+        _ods_pixel_model_transition finish "$owner" "$home" "$transaction_id" rolled-back || return 1
+        return 0
+    fi
+    # Bind this source only after the full vendor verifier accepts it. A later
+    # install of different source cannot turn an old receipt into a new pin.
+    _ods_pixel_verify_current_runtime "$owner" "$home" "$pixel_root" || return 1
+    _ods_pixel_mark_verified_installing "$owner" "$home" "$contract_sha" "$pixel_root"
+}
+
+_ods_pixel_begin_release_transition() {
+    local owner="$1" home="$2" openclaw_bin transaction_id
+    # First installation and the ordinary sandboxed boundary need no access
+    # migration. A relaxed boundary merely selects the coordinator: only its
+    # authenticated begin/verification establishes the actual permission mode.
+    [[ -f "$home/.openclaw/openclaw.json" ]] || return 0
+    # configure may generate the initial native config before apply installs
+    # any gateway. There is no previous access boundary to migrate in that case.
+    if [[ ! -e "$home/.local/share/pixel/current" && ! -L "$home/.local/share/pixel/current" \
+        && ! -e "$home/.local/share/pixel/runtime-attestation.json" \
+        && ! -L "$home/.local/share/pixel/runtime-attestation.json" \
+        && "$(systemctl show openclaw-gateway.service -p LoadState --value)" == not-found ]]; then
+        return 0
+    fi
+    if [[ "$(systemctl show openclaw-gateway.service -p ProtectHome --value)" == tmpfs \
+        && "$(systemctl show openclaw-gateway.service -p ProtectSystem --value)" == strict ]]; then
+        return 0
+    fi
+    openclaw_bin="$(_ods_pixel_openclaw_bin "$owner" "$home")" || return 1
+    _ods_pixel_install_access_service "$owner" "$openclaw_bin" >&2 || return 1
+    transaction_id="$(_ods_pixel_model_transition begin "$owner" "$home")" || return 1
+    [[ "$transaction_id" =~ ^[a-f0-9]{64}$ ]] || return 1
+    printf '%s\n' "$transaction_id"
+}
+
+_ods_pixel_finish_release_transition() {
+    local owner="$1" home="$2" pixel_root="$3" transaction_id="$4" config_sha attempt proved=false
+    [[ "$transaction_id" =~ ^[a-f0-9]{64}$ ]] || return 1
+    config_sha="$(ods_pixel_run_as_owner "$owner" "$home" sha256sum "$home/.openclaw/openclaw.json")" || return 1
+    config_sha=${config_sha%% *}
+    [[ "$config_sha" =~ ^[a-f0-9]{64}$ ]] || return 1
+    # Retirement of the owner journal requires a fresh root runtime proof.
+    # If the reply is lost, replay this finish; never start another migration
+    # or restore only the JSON file over its associated permission receipt.
+    for attempt in 1 2 3; do
+        if ods_pixel_run_as_owner "$owner" "$home" python3 -I \
+            "$pixel_root/scripts/lib/ods-release-access.py" finish \
+            "$transaction_id" "$config_sha" apply >/dev/null; then
+            proved=true
+            break
+        fi
+        (( attempt == 3 )) || sleep 2
+    done
+    [[ "$proved" == true ]] || return 1
+    for attempt in 1 2 3; do
+        if _ods_pixel_model_transition finish "$owner" "$home" "$transaction_id" applied; then
+            return 0
+        fi
+        (( attempt == 3 )) || sleep 2
+    done
+    return 1
+}
+
 _ods_pixel_restart_gateway_and_verify() {
     local owner="$1" home="$2" pixel_root="$3" attempt ready=false previous_pid current_pid gateway_port
-    local verify_attempt
+    local transaction_id="${4:-}"
+    [[ -z "$transaction_id" || "$transaction_id" =~ ^[a-f0-9]{64}$ ]] || return 1
     # Background model promotion does not inherit Phase 06's gateway-port
     # environment. Verify the installed, owner-validated endpoint rather than
     # probing the default port and leaving the model hold unreleased.
@@ -2094,16 +2227,7 @@ _ods_pixel_restart_gateway_and_verify() {
     # complete verification command; every attempt remains fail closed and a
     # persistent version, root, policy, or endpoint mismatch still aborts the
     # model transaction and triggers rollback.
-    for verify_attempt in 1 2 3; do
-        if ods_pixel_run_as_owner "$owner" "$home" "$pixel_root/pixel" verify; then
-            return 0
-        fi
-        if (( verify_attempt < 3 )); then
-            printf '%s\n' "Pixel verification did not settle after gateway restart (attempt ${verify_attempt}/3); retrying..." >&2
-            sleep 2
-        fi
-    done
-    return 1
+    _ods_pixel_verify_current_runtime "$owner" "$home" "$pixel_root" "$transaction_id"
 }
 
 _ods_pixel_wait_access_reconcile() {
@@ -2181,7 +2305,7 @@ _ods_pixel_restore_model_reconciliation() {
         || ! _ods_pixel_install_onboarding_mirror "$owner" "$home" "$answers" \
         || ! ods_pixel_run_as_owner "$owner" "$home" "$pixel_root/pixel" plan \
         || ! _ods_pixel_recreate_agent_sandbox "$owner" "$home" "$openclaw_bin" \
-        || ! _ods_pixel_restart_gateway_and_verify "$owner" "$home" "$pixel_root" \
+        || ! _ods_pixel_restart_gateway_and_verify "$owner" "$home" "$pixel_root" "$transaction_id" \
         || ! _ods_pixel_reverify_unless_model_held "$owner" "$home" "$transaction_id" \
         || ! _ods_pixel_restart_ingress_and_verify "$owner" "$home" "$answers"; then
         if [[ -f "$backup/runtime-attestation.json" && ! -L "$backup/runtime-attestation.json" ]]; then
@@ -2351,7 +2475,7 @@ ods_pixel_reconcile_promoted_model() {
         failure_phase="sandbox-recreate"
     fi
     if [[ "$failed" == false ]] \
-        && ! _ods_pixel_restart_gateway_and_verify "$owner" "$home" "$pixel_root"; then
+        && ! _ods_pixel_restart_gateway_and_verify "$owner" "$home" "$pixel_root" "$model_transaction"; then
         failed=true
         failure_phase="gateway-restart-verify"
     fi
@@ -2422,6 +2546,47 @@ ods_pixel_reconcile_promoted_model() {
     return 1
 }
 
+_ods_pixel_reprove_access_marker_if_needed() {
+    local owner="$1" home="$2" openclaw_bin="$3" check
+    [[ -e "$home/.config/ods/pixel-managed.json" ]] || return 0
+    if ods_pixel_run_as_owner "$owner" "$home" python3 - \
+        "$home/.config/ods/pixel-managed.json" "$home/.openclaw/openclaw.json" "${INSTALL_DIR:?}" "$home" <<'PY'
+import hashlib, json, os, pathlib, re, sys
+marker = json.load(open(sys.argv[1]))
+# A new bootstrap has no access mode to reprove. Do not treat a missing config
+# on an active/partial release as a fresh install.
+initial = (
+    set(marker) == {"schema_version", "manager", "state", "initial_active_state",
+                    "install_dir", "pixel_source_ref"}
+    and marker.get("schema_version") == 2 and marker.get("manager") == "ods"
+    and marker.get("state") == "installing" and marker.get("initial_active_state") == "absent"
+    and marker.get("install_dir") == sys.argv[3]
+    and isinstance(marker.get("pixel_source_ref"), str)
+    and re.fullmatch(r"[0-9a-f]{40}", marker["pixel_source_ref"])
+)
+if initial and not os.path.lexists(sys.argv[2]) and not any(
+    os.path.lexists(pathlib.Path(sys.argv[4]) / ".local/share/pixel" / name)
+    for name in ("current", "runtime-attestation.json", ".ods-uninstall-current",
+                 ".ods-uninstall-runtime-attestation")
+):
+    raise SystemExit(0)
+config = json.load(open(sys.argv[2]))
+observed = hashlib.sha256(b"ods-pixel-openclaw-v1\0" + json.dumps(config, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+raise SystemExit(0 if marker.get("configuration_sha256") == observed else 3)
+PY
+    then
+        return 0
+    else
+        check=$?
+    fi
+    [[ "$check" == 3 ]] || return 1
+    # The protected coordinator distinguishes the exact legacy access change
+    # from unrelated drift, obtains fresh runtime proof and retains install state.
+    _ods_pixel_install_access_service "$owner" "$openclaw_bin" || return 1
+    ods_sudo python3 -I /usr/local/libexec/ods-pixel-access/access_mode_server.py \
+        --reprove-installer-access
+}
+
 _ods_pixel_install_access_service() {
     local owner="$1" openclaw_bin="$2" adopt_existing="${3:-false}" activate="${4:-true}" home gateway_port
     [[ "$adopt_existing" == true || "$adopt_existing" == false ]] || return 1
@@ -2475,7 +2640,7 @@ def write(path, content, mode, uid=0, gid=0):
         if os.path.exists(temporary): os.unlink(temporary)
 
 host = source / 'extensions/services/pixel-agent/host'
-for name in ('access_mode_server.py', 'unix_peer.py', 'access_mode_worker.py', 'pixel_access_mode.py', 'access_mode_config.py', 'settings_transaction.py', 'provider_transaction.py', 'model_transaction.py'):
+for name in ('access_mode_server.py', 'unix_peer.py', 'access_mode_worker.py', 'pixel_access_mode.py', 'access_mode_config.py', 'settings_transaction.py', 'provider_transaction.py', 'model_transaction.py', 'access_release_transaction.py'):
     write(target / name, (host / name).read_bytes(), 0o644)
 write(target / 'pixel_access_bridge.py', (source / 'bin/pixel_access_bridge.py').read_bytes(), 0o644)
 write(target / 'pixel_gateway_service.py', (source / 'bin/pixel_gateway_service.py').read_bytes(), 0o644)
@@ -4882,6 +5047,14 @@ ods_pixel_install_default_agent() {
         return 1
     }
     [[ "$contract_sha256" =~ ^[0-9a-f]{64}$ ]] || return 1
+    if ! _ods_pixel_resume_completed_release "$owner" "$home" "$pixel_root" "$contract_sha256" >>"$pixel_log" 2>&1; then
+        ai_bad "Pixel has a pending update that could not be reverified safely. See $pixel_log before retrying."
+        return 1
+    fi
+    if ! _ods_pixel_reprove_access_marker_if_needed "$owner" "$home" "$openclaw_bin" >>"$pixel_log" 2>&1; then
+        ai_bad "Pixel's existing access mode could not be reverified before upgrade. See $pixel_log."
+        return 1
+    fi
     if _ods_pixel_managed_contract_matches "$owner" "$home" "$contract_sha256"; then
         reuse_active=true
     fi
@@ -4907,7 +5080,7 @@ ods_pixel_install_default_agent() {
             ai_bad "Pixel's root-custodied Operations policy does not match the ODS-managed policy."
             return 1
         fi
-        if ! ods_pixel_run_as_owner "$owner" "$home" "$pixel_root/pixel" verify >>"$pixel_log" 2>&1; then
+        if ! _ods_pixel_verify_current_runtime "$owner" "$home" "$pixel_root" >>"$pixel_log" 2>&1; then
             ai_bad "The existing ODS-managed Pixel contract failed exact-source verification. See $pixel_log."
             return 1
         fi
@@ -4984,7 +5157,7 @@ ods_pixel_install_default_agent() {
                     ai_bad "The ODS-managed Pixel gateway did not become healthy after sandbox recovery. See $pixel_log."
                     return 1
                 fi
-                if ! ods_pixel_run_as_owner "$owner" "$home" "$pixel_root/pixel" verify \
+                if ! _ods_pixel_verify_current_runtime "$owner" "$home" "$pixel_root" \
                     >>"$pixel_log" 2>&1; then
                     ai_bad "The recovered ODS-managed Pixel contract failed verification. See $pixel_log."
                     return 1
@@ -4999,14 +5172,23 @@ ods_pixel_install_default_agent() {
                 fi
             fi
         else
+            local release_transaction=''
+            local -a release_arguments=()
+            release_transaction="$(_ods_pixel_begin_release_transition "$owner" "$home")" || {
+                ai_bad "Could not acquire the existing Pixel access state for release update; resolve any pending transaction before retrying."
+                return 1
+            }
+            if [[ -n "$release_transaction" ]]; then
+                release_arguments=(--ods-release-transaction "$release_transaction")
+            fi
             apply_attempt="$(ods_pixel_run_as_owner "$owner" "$home" \
                 mktemp "$INSTALL_DIR/logs/.pixel-apply.XXXXXXXX")" || return 1
             ods_pixel_run_as_owner "$owner" "$home" chmod 0600 "$apply_attempt" || return 1
             if {
                 ods_pixel_run_as_owner "$owner" "$home" env \
                     PATH="$home/.openclaw/.ods-exec-control:$PATH" \
-                    "$pixel_root/pixel" apply --confirm </dev/null &&
-                ods_pixel_run_as_owner "$owner" "$home" "$pixel_root/pixel" verify
+                    "$pixel_root/pixel" apply --confirm "${release_arguments[@]}" </dev/null &&
+                _ods_pixel_verify_current_runtime "$owner" "$home" "$pixel_root" "$release_transaction"
             } >"$apply_attempt" 2>&1; then
                 ods_pixel_run_as_owner "$owner" "$home" cat "$apply_attempt" >>"$pixel_log" 2>&1 || return 1
             else
@@ -5018,8 +5200,8 @@ ods_pixel_install_default_agent() {
                     if ! {
                         ods_pixel_run_as_owner "$owner" "$home" env \
                             PATH="$home/.openclaw/.ods-exec-control:$PATH" \
-                            "$pixel_root/pixel" apply --confirm </dev/null &&
-                        ods_pixel_run_as_owner "$owner" "$home" "$pixel_root/pixel" verify
+                            "$pixel_root/pixel" apply --confirm "${release_arguments[@]}" </dev/null &&
+                        _ods_pixel_verify_current_runtime "$owner" "$home" "$pixel_root" "$release_transaction"
                     } >"$apply_attempt" 2>&1; then
                         ods_pixel_run_as_owner "$owner" "$home" cat "$apply_attempt" >>"$pixel_log" 2>&1 || true
                         ods_pixel_run_as_owner "$owner" "$home" rm -f -- "$apply_attempt" || true
@@ -5032,6 +5214,11 @@ ods_pixel_install_default_agent() {
                     ai_bad "Pixel apply or verify failed. See $pixel_log for the exact Pixel error."
                     return 1
                 fi
+            fi
+            if [[ -n "$release_transaction" ]] && ! _ods_pixel_finish_release_transition \
+                "$owner" "$home" "$pixel_root" "$release_transaction" >>"$pixel_log" 2>&1; then
+                ai_bad "Pixel release verification could not finish its access transaction; admission remains held for recovery. See $pixel_log."
+                return 1
             fi
             ods_pixel_run_as_owner "$owner" "$home" rm -f -- "$apply_attempt" || return 1
         fi

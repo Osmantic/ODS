@@ -2,6 +2,7 @@
 import hashlib
 import json
 import socket
+import struct
 import sys
 from pathlib import Path
 
@@ -11,11 +12,13 @@ ACCESS_SOCKET_PATH = ("/private/var/run/ods-pixel-access/control.sock"
 
 
 def request_access(operation, request=None, *, settings_data_dir=None):
-    if operation not in ("status", "change", "model-status", "model-begin", "model-finish",
+    if operation not in ("status", "change", "model-status", "model-begin", "model-finish", "installer-model-verify",
+                         "installer-release-prepare", "installer-release-publish", "installer-release-finish", "installer-release-abort",
                           "settings-status", "settings-change", "provider-status", "provider-change"):
         raise ValueError("invalid access operation")
     payload = {"operation": operation}
-    if operation in ("change", "model-finish", "settings-change", "provider-change"): payload["request"] = request
+    if operation.startswith("installer-") or operation in ("change", "model-finish", "settings-change", "provider-change"):
+        payload["request"] = request
     if operation.startswith(("settings-", "provider-")):
         # Supplied by the host agent's actual DATA_DIR, never the HTTP request.
         if settings_data_dir is None or not Path(settings_data_dir).is_absolute():
@@ -24,6 +27,14 @@ def request_access(operation, request=None, *, settings_data_dir=None):
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
         connection.settimeout(1850 if operation == "model-begin" else 335)
         connection.connect(ACCESS_SOCKET_PATH)
+        if operation.startswith("installer-"):
+            # This response is an authority input to the Linux installer, not
+            # merely a UI status. Authenticate the root peer before sending.
+            if sys.platform != "linux" or not hasattr(socket, "SO_PEERCRED"):
+                raise ValueError("installer verification requires Linux peer credentials")
+            credentials = connection.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i"))
+            if struct.unpack("3i", credentials)[1] != 0:
+                raise ValueError("installer verification requires root coordinator")
         connection.sendall(json.dumps(payload).encode() + b"\n")
         with connection.makefile("rb") as stream:
             raw = stream.readline(65537)

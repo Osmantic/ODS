@@ -12,8 +12,8 @@ The visible source is duplicated into `vendor/pixel.bundle` solely so existing
 Pixel installation code can use exact-commit Git verification without network
 or private credentials. The bundle contains one new synthetic root commit with
 public Osmantic release identity and no ancestors. Its commit is
-`6e82d4c974be8c7b5aebe3a4ffd5374e20ad0ac5`, and its SHA-256 is
-`115da4c894a40991c40fc3f5ff94cb2763b4b9395d875e1b781f234d563fc79b`.
+`5c435da0bdf9d7f3ca9206d26b64b331cc2ea9fc`, and its SHA-256 is
+`c3e57f3da38e588e158856e1dec753fa936d107369bc31f5c329c11b4829e853`.
 Run `python3 scripts/verify-pixel-bundle.py` to check the bundle against the
 visible source, tracked executable modes, and those pins. The `pixel` launcher
 and the install/bootstrap scripts must retain executable Git modes.
@@ -59,3 +59,18 @@ the lane; the router rejects a qualification for another model. Pixel's OpenRout
 profile has a placeholder `anthropic/claude-sonnet-4-5` default, which is never
 sent because that lane is owner-pinned. `tests/test-cloud-model-ids.py` tracks
 both IDs and fails once a re-vendor drops them.
+
+## ODS access-release coordination adaptation
+
+This change adds the public installer-only access proof and release-transaction
+helpers and forwards the exact held transaction through apply/verify. It does not
+change the original upstream export identity described above.
+
+The replacement bundle was generated locally from the visible public ODS vendor
+source and its tracked executable modes, using the same synthetic single-root
+packaging procedure and metadata required by `scripts/verify-pixel-bundle.py`.
+The retained Osmantic packaging author/message and synthetic timestamp are
+reproducibility metadata, not an upstream signature or approval of these edits.
+No private repository, private history or signing credential was used. Two
+independent regenerations produced identical bytes; every source blob and mode
+was verified. Existing source-digest and installer custody checks remain active.

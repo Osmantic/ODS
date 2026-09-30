@@ -43,6 +43,9 @@ OPS_PASSWD_STATE="$TEST_ROOT/ops-passwd"
 OPS_GROUP_STATE="$TEST_ROOT/ops-group"
 mkdir -p "$MOCK_BIN" "$SYSTEMD_DIR" "$ETC_DIR" "$LIBEXEC_DIR" "$HOME_DIR"
 
+# This host-service fixture must never inspect or remove the live inspection service.
+_ods_pixel_inspection_cleanup() { return 0; }
+
 cat >"$MOCK_BIN/sudo" <<'SH'
 #!/usr/bin/env bash
 if [[ "${SUDO_FAIL_OPS_ARTIFACT_REMOVAL:-false}" == true \
@@ -318,6 +321,7 @@ write_access_fixture() {
         "extensions/services/pixel-agent/host/settings_transaction.py"
         "extensions/services/pixel-agent/host/provider_transaction.py"
         "extensions/services/pixel-agent/host/model_transaction.py"
+        "extensions/services/pixel-agent/host/access_release_transaction.py"
         "bin/pixel_access_bridge.py"
         "bin/pixel_gateway_service.py"
         "bin/pixel_access_client.py"
@@ -2295,6 +2299,40 @@ for scenario in foreign modified_unit modified_program relay_key state_symlink p
     fi
     unset ACCESS_STOP_FAIL ACCESS_STILL_ACTIVE
 done
+
+write_access_fixture
+for receipt in release-intent release-prepared release-completed; do
+    printf '{}\n' > "$ACCESS_STATE/$receipt.json"
+    chmod 0600 "$ACCESS_STATE/$receipt.json"
+done
+if ods_pixel_uninstall_managed "$INSTALL_DIR" "$HOME_DIR" \
+    && [[ ! -e "$ACCESS_STATE" ]]; then
+    pass "completed release coordinator state permits verified cleanup"
+else
+    fail "completed release coordinator state stranded the installation"
+fi
+
+write_access_fixture
+printf '{}\n' > "$ACCESS_STATE/access-before.json"
+chmod 0600 "$ACCESS_STATE/access-before.json"
+if ods_pixel_uninstall_managed "$INSTALL_DIR" "$HOME_DIR" \
+    && [[ ! -e "$ACCESS_STATE" ]]; then
+    pass "completed access transition snapshot permits verified cleanup"
+else
+    fail "completed access transition snapshot stranded the installation"
+fi
+
+write_access_fixture
+printf '{}\n' > "$ACCESS_STATE/access-before.json"
+chmod 0666 "$ACCESS_STATE/access-before.json"
+if ods_pixel_uninstall_managed "$INSTALL_DIR" "$HOME_DIR"; then
+    fail "writable access transition snapshot was accepted"
+else
+    [[ -e "$ACCESS_STATE/access-before.json" && ! -s "$SYSTEMCTL_LOG" ]] \
+        && pass "unsafe access snapshot fails before service mutation" \
+        || fail "unsafe access snapshot caused partial cleanup"
+fi
+
 
 printf 'Results: %d passed, %d failed\n' "$PASS" "$FAIL"
 (( FAIL == 0 ))

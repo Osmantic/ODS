@@ -24,6 +24,14 @@ import pixel_access_protocol as protocol
 
 def request(operation="settings-apply", **changes):
     value = dict(operation=operation, openclaw="/usr/bin/openclaw", config_sha256="a" * 64, confirmed=False)
+    if operation.startswith('release-'):
+        value['transaction_id'] = 'b' * 64
+        if operation == 'release-prepare':
+            value.update(candidate_path='/home/owner/.openclaw/candidate.json', candidate_sha256='c' * 64, receipt_sha256='d' * 64)
+        elif operation == 'release-abort':
+            value['receipt_sha256'] = 'd' * 64
+        elif operation != 'release-baseline':
+            value['release_outcome'] = 'apply'
     if operation in ("settings-apply", "settings-recover", "provider-change", "provider-recover", "model-begin", "model-apply", "model-rollback", "model-finish"):
         value["transaction_id"] = "b" * 64
     if operation == "model-apply":
@@ -50,6 +58,34 @@ def request(operation="settings-apply", **changes):
 def test_exact_operation_frames_round_trip(operation):
     value = request(operation)
     assert protocol.request(protocol.read_frame(io.StringIO(json.dumps(value) + "\n"), protocol.MAX_REQUEST)) == value
+
+
+@pytest.mark.parametrize('operation', ['release-prepare', 'release-recover', 'release-finish', 'release-baseline', 'release-abort'])
+def test_release_operations_are_private_and_cannot_grant_access(operation):
+    with pytest.raises(protocol.ProtocolError):
+        protocol.control_request({'operation': operation, 'request': {}})
+    for change in ({'confirmed': True}, {'transaction_id': 'invalid'}, {'config_path': '/tmp/target'}):
+        with pytest.raises(protocol.ProtocolError):
+            protocol.request(request(operation, **change))
+    with pytest.raises(protocol.ProtocolError):
+        protocol.hook_reply(operation, 'restart', True)
+
+
+@pytest.mark.parametrize('path', ['relative', '/a/../b', '/a//b', '/a/./b', '/a\nb', '/a\x00b'])
+def test_release_candidate_requires_canonical_path(path):
+    with pytest.raises(protocol.ProtocolError):
+        protocol.request(request('release-prepare', candidate_path=path))
+
+
+def test_release_finish_requires_typed_runtime_proof():
+    assert protocol.hook_reply('release-finish', 'release-verify', 'verified') == 'verified'
+    for value in (True, None, 'success', {}):
+        with pytest.raises(protocol.ProtocolError):
+            protocol.hook_reply('release-finish', 'release-verify', value)
+    with pytest.raises(protocol.ProtocolError):
+        protocol.hook_reply('release-recover', 'release-verify', 'verified')
+    with pytest.raises(protocol.ProtocolError):
+        protocol.result('release-finish', {'configSha256': 'a' * 64, 'configPath': '/private'})
 
 
 @pytest.mark.parametrize('source', ['relative', '/a/../b', '/a//b', '/a/./b', '/a\nb', '/a\x00b'])

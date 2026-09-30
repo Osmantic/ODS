@@ -8,7 +8,19 @@ source "$ROOT/scripts/lib/common.sh"
 source "$ROOT/scripts/lib/release-build.sh"
 # shellcheck source=scripts/lib/broker-bytes.sh
 source "$ROOT/scripts/lib/broker-bytes.sh"
-[[ ${1:-} == --confirm && $# == 1 ]] || pixel_die "Usage: ./pixel apply --confirm"
+[[ ${1:-} == --confirm ]] || pixel_die "Usage: ./pixel apply --confirm [--ods-model-transaction HEX64 | --ods-release-transaction HEX64]"
+shift
+ods_verify_arguments=()
+ods_release_transaction=''
+ods_release_prepared=0
+ods_release_before=''
+ods_release_after=''
+if [[ $# -gt 0 ]]; then
+  [[ $# == 2 && ( $1 == --ods-model-transaction || $1 == --ods-release-transaction ) && $2 =~ ^[a-f0-9]{64}$ ]] \
+    || pixel_die "Usage: ./pixel apply --confirm [--ods-model-transaction HEX64 | --ods-release-transaction HEX64]"
+  ods_verify_arguments=(--ods-model-transaction "$2")
+  [[ $1 != --ods-release-transaction ]] || ods_release_transaction=$2
+fi
 pixel_load_env
 # Fail closed before any mutation unless either the root-custodied release operator or
 # the explicitly selected reviewed direct-sudo fallback can perform broker reconciliation.
@@ -158,8 +170,16 @@ rollback_apply() {
   if ! ( pixel_invalidate_runtime_attestation "$PIXEL_INSTALL_DIR/runtime-attestation.json" ); then
     attestation_invalidation_failed=1
   fi
-  [[ -f "$backup/openclaw.json" ]] && install -m 600 "$backup/openclaw.json" "$OPENCLAW_HOME/openclaw.json"
-  [[ $had_config == 0 ]] && rm -f -- "$OPENCLAW_HOME/openclaw.json"
+  access_restore_failed=0
+  if [[ $ods_release_prepared == 1 ]]; then
+    if ! restored_access=$(python3 -I "$ROOT/scripts/lib/ods-release-access.py" publish "$ods_release_transaction" rollback) \
+        || [[ "$restored_access" != "$ods_release_before" ]]; then
+      access_restore_failed=1
+    fi
+  else
+    [[ -f "$backup/openclaw.json" ]] && install -m 600 "$backup/openclaw.json" "$OPENCLAW_HOME/openclaw.json"
+    [[ $had_config == 0 ]] && rm -f -- "$OPENCLAW_HOME/openclaw.json"
+  fi
   if [[ -n "$previous_target" ]]; then
     pixel_atomic_symlink "$previous_target" "$PIXEL_INSTALL_DIR/current"
   else
@@ -182,8 +202,8 @@ rollback_apply() {
   pixel_courier_systemctl daemon-reload >/dev/null 2>&1 || true
   if [[ "$stage" == "$PIXEL_INSTALL_DIR/releases/."*.stage.* ]]; then rm -rf -- "$stage"; fi
   if [[ $release_created == 1 && "$release" == "$PIXEL_INSTALL_DIR/releases/$release_version" && -d "$release" ]]; then rm -rf -- "$release"; fi
-  if [[ $sandbox_restore_failed == 1 || $broker_restore_failed == 1 || $attestation_invalidation_failed == 1 ]]; then
-    pixel_warn "Apply compensation could not reconcile every sandbox, broker, and attestation runtime fact exactly; Pixel gateway and courier remain stopped"
+  if [[ $sandbox_restore_failed == 1 || $broker_restore_failed == 1 || $attestation_invalidation_failed == 1 || $access_restore_failed == 1 ]]; then
+    pixel_warn "Apply compensation could not reconcile every sandbox, broker, access receipt, and attestation runtime fact exactly; Pixel gateway and courier remain stopped"
     exit "$status"
   fi
   if [[ $had_unit == 1 ]]; then pixel_systemctl enable "$PIXEL_SYSTEMD_UNIT" >/dev/null 2>&1 || true; pixel_systemctl restart "$PIXEL_SYSTEMD_UNIT" >/dev/null 2>&1 || true; fi
@@ -193,6 +213,13 @@ rollback_apply() {
     pixel_courier_systemctl restart "$courier_unit" >/dev/null 2>&1 || true
   else
     pixel_courier_systemctl disable --now "$courier_unit" >/dev/null 2>&1 || true
+  fi
+  if [[ $ods_release_prepared == 1 ]]; then
+    if ! python3 -I "$ROOT/scripts/lib/ods-release-access.py" finish "$ods_release_transaction" "$ods_release_before" rollback >/dev/null; then
+      pixel_systemctl stop "$PIXEL_SYSTEMD_UNIT" >/dev/null 2>&1 || true
+      pixel_courier_systemctl stop "$courier_unit" >/dev/null 2>&1 || true
+      pixel_warn "Restored access could not be verified; admission remains held and Pixel remains stopped"
+    fi
   fi
   exit "$status"
 }
@@ -285,6 +312,15 @@ finally:
     os.close(directory)
 PY
 fi
+if [[ -n "$ods_release_transaction" ]]; then
+  candidate_sha=$(sha256sum "$candidate")
+  candidate_sha=${candidate_sha%% *}
+  prepared_access=$(python3 -I "$ROOT/scripts/lib/ods-release-access.py" prepare "$ods_release_transaction" "$candidate" "$candidate_sha")
+  read -r ods_release_before ods_release_after <<< "$prepared_access"
+  [[ "$ods_release_before" =~ ^[a-f0-9]{64}$ && "$ods_release_after" =~ ^[a-f0-9]{64}$ ]] \
+    || pixel_die "ODS release preparation returned invalid hashes"
+  ods_release_prepared=1
+fi
 live_mutation_started=1
 pixel_systemctl stop "$PIXEL_SYSTEMD_UNIT" >/dev/null 2>&1 || true
 pixel_courier_systemctl stop "$courier_unit" >/dev/null 2>&1 || true
@@ -308,7 +344,12 @@ install -m 600 "$ROOT/.generated/workspace/WEB-NAVIGATION.md" "$PIXEL_WORKSPACE/
 install -m 700 "$ROOT/.generated/workspace/scripts/browse.sh" "$ROOT/.generated/workspace/scripts/research-ledger.py" "$PIXEL_WORKSPACE/scripts/"
 if [[ ${PIXEL_LIMB_WEB_ENABLED:-1} == 0 ]]; then rm -f -- "$PIXEL_WORKSPACE/scripts/browse.sh" "$PIXEL_WORKSPACE/WEB-NAVIGATION.md"; fi
 install -d -m 700 "$PIXEL_WORKSPACE/media/webq" "$PIXEL_WORKSPACE/media/inbound"
-install -m 600 "$candidate" "$OPENCLAW_HOME/openclaw.json"
+if [[ $ods_release_prepared == 1 ]]; then
+  published_access=$(python3 -I "$ROOT/scripts/lib/ods-release-access.py" publish "$ods_release_transaction" apply)
+  [[ "$published_access" == "$ods_release_after" ]] || pixel_die "ODS release publication does not match its prepared configuration"
+else
+  install -m 600 "$candidate" "$OPENCLAW_HOME/openclaw.json"
+fi
 install -m 600 "$ROOT/.generated/gateway.env" "$agent_env_dir/gateway.env"
 pixel_gateway_install_unit "$ROOT/.generated/openclaw-gateway.service" "$unit_path"
 if [[ ${PIXEL_WEB_COURIER_ENABLED:-1} == 1 ]]; then
@@ -335,7 +376,7 @@ if [[ ${PIXEL_WEB_COURIER_ENABLED:-1} == 1 ]]; then
   pixel_courier_systemctl enable "$courier_unit"
   pixel_courier_systemctl restart "$courier_unit"
 fi
-bash "$ROOT/scripts/verify.sh"
+bash "$ROOT/scripts/verify.sh" "${ods_verify_arguments[@]}"
 marker="$OPENCLAW_HOME/backups/last-apply"
 marker_temporary=$(mktemp "$OPENCLAW_HOME/backups/.last-apply.XXXXXXXX")
 printf '%s\n' "$backup" > "$marker_temporary"

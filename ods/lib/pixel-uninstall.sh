@@ -170,6 +170,7 @@ sources = {
     "settings_transaction.py": install / "extensions/services/pixel-agent/host/settings_transaction.py",
     "provider_transaction.py": install / "extensions/services/pixel-agent/host/provider_transaction.py",
     "model_transaction.py": install / "extensions/services/pixel-agent/host/model_transaction.py",
+    "access_release_transaction.py": install / "extensions/services/pixel-agent/host/access_release_transaction.py",
     "pixel_access_bridge.py": install / "bin/pixel_access_bridge.py",
     "pixel_gateway_service.py": install / "bin/pixel_gateway_service.py",
     "pixel_access_client.py": install / "bin/pixel_access_client.py",
@@ -195,10 +196,10 @@ for name in (
 # absence.  If either side exists, normal byte and completeness validation
 # remains mandatory, so a partial current bundle still fails closed.
 expected_sources = set(sources)
-legacy_gateway = "pixel_gateway_service.py"
-if (not present(sources[legacy_gateway])
-        and not present(program / legacy_gateway)):
-    expected_sources.remove(legacy_gateway)
+for later_module in ("pixel_gateway_service.py", "access_release_transaction.py"):
+    if (not present(sources[later_module])
+            and not present(program / later_module)):
+        expected_sources.remove(later_module)
 
 relay_key = config.parent / "pixel-access-relay.key"
 artifacts = (unit, program, config, relay_key, state_root, probe_owner, dropin,
@@ -325,6 +326,11 @@ state_limits = {
     "verified.json": 256 * 1024,
     "service-baseline.json": 64 * 1024,
     "model-before.json": 8 * 1024 * 1024,
+    "access-before.json": 8 * 1024 * 1024,
+    "release-intent.json": 8192,
+    "release-baseline.json": 8192,
+    "release-prepared.json": 8192,
+    "release-completed.json": 8192,
     "model-completed.json": 256 * 1024,
     "model-promotion-completed.json": 256 * 1024,
     "model-route-completed.json": 256 * 1024,

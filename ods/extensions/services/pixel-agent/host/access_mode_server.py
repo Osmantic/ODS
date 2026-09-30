@@ -25,7 +25,7 @@ PROGRAM = Path(__file__).resolve().parent
 protected(PROGRAM)
 for name in ("access_mode_server.py", "unix_peer.py", "pixel_access_bridge.py", "pixel_access_client.py", "pixel_access_reconcile.py",
              "pixel_model_transition.py", "pixel_gateway_service.py",
-             "access_mode_worker.py", "pixel_access_mode.py", "access_mode_config.py",
+             "access_mode_worker.py", "pixel_access_mode.py", "access_mode_config.py", "access_release_transaction.py",
              "settings_transaction.py", "pixel_access_protocol.py", "pixel_settings/__init__.py",
              "pixel_settings/contract.py", "pixel_settings/projection.py", "pixel_settings/runtime.py", "pixel_settings/coordinator.py",
              "pixel_provider/__init__.py", "pixel_provider/config.py", "pixel_provider/store.py",
@@ -45,7 +45,7 @@ from pixel_access_protocol import control_request, decode_frame
 from unix_peer import peer_ids
 
 
-def main():
+def main(*, reprove_installer_access=False):
     if os.geteuid() != 0: raise RuntimeError("root service required")
     settings = private_json("/etc/ods/pixel-access.json", 0, 8192)
     owner = pwd.getpwnam(settings["owner"])
@@ -91,6 +91,11 @@ def main():
                                    gateway_owner=owner.pw_name, settings_data_dir=settings.get("settings_data_dir"),
                                    gateway_binding=settings.get('gateway_binding'),
                                    gateway_port=settings.get('gateway_port'))
+    if reprove_installer_access:
+        # Root-only CLI ceremony; deliberately absent from the socket protocol.
+        # Uses the same installed custody checks, credentials and lifecycle lock.
+        print(json.dumps(make_adapter().reprove_installer_access(), separators=(",", ":")))
+        return
     address = ("/private/var/run/ods-pixel-access/control.sock"
                if platform.system() == "Darwin" else "/run/ods-pixel-access/control.sock")
 
@@ -115,6 +120,24 @@ def main():
                     status, body = 200, adapter.change(request["request"])
                 elif request == {"operation": "model-begin"}:
                     status, body = 200, adapter.model_begin()
+                elif request["operation"] == "installer-model-verify":
+                    status, body = 200, adapter.verify_installer_model_access(request["request"]["transaction_id"])
+                elif request['operation'].startswith('installer-release-'):
+                    # These are local owner/root operations under an existing
+                    # held transaction, never dashboard permission overrides.
+                    payload = request['request']
+                    operation = request['operation']
+                    if operation == 'installer-release-prepare':
+                        body = adapter.prepare_release_access(payload['transaction_id'],
+                            payload['candidate_path'], payload['candidate_sha256'])
+                    elif operation == 'installer-release-publish':
+                        body = adapter.publish_release_access(payload['transaction_id'], payload['outcome'])
+                    elif operation == 'installer-release-abort':
+                        body = adapter.abort_release_access(payload['transaction_id'])
+                    else:
+                        body = adapter.finish_release_access(payload['transaction_id'],
+                            payload['config_sha256'], payload['outcome'])
+                    status = 200
                 elif set(request) == {"operation", "request"} and request["operation"] == "model-finish":
                     status, body = 200, adapter.model_finish(request["request"])
                 elif request["operation"].startswith("settings-"):
@@ -159,4 +182,9 @@ def main():
         server.serve_forever()
 
 
-if __name__ == "__main__": main()
+if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--reprove-installer-access", action="store_true")
+    options = parser.parse_args()
+    main(reprove_installer_access=options.reprove_installer_access)
