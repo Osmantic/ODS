@@ -18803,7 +18803,7 @@ def _start_managed_opencode() -> None:
         loaded = _opencode_macos_loaded_output(binary) is not None
         prior_disabled = _opencode_macos_disabled()
         enable_attempted = False
-        bootstrap_succeeded = False
+        bootstrap_attempted = False
         try:
             if prior_disabled:
                 enable_attempted = True
@@ -18817,16 +18817,16 @@ def _start_managed_opencode() -> None:
                 if loaded
                 else ["launchctl", "bootstrap", f"gui/{os.getuid()}", str(_opencode_macos_plist_path())]
             )
+            bootstrap_attempted = not loaded
             step = subprocess.run(command, capture_output=True, text=True, timeout=30)
             if step.returncode != 0:
                 raise RuntimeError(f"Could not start OpenCode: {(step.stderr or step.stdout or '').strip()[:300]}")
-            bootstrap_succeeded = not loaded
             if _opencode_macos_loaded_output(binary) is None:
                 raise RuntimeError("OpenCode LaunchAgent did not remain loaded")
             _wait_for_opencode_health()
         except (RuntimeError, OSError, subprocess.SubprocessError) as exc:
             rollback_errors = []
-            if bootstrap_succeeded:
+            if bootstrap_attempted:
                 try:
                     if _opencode_macos_loaded_output(binary) is not None:
                         step = subprocess.run(
@@ -19127,7 +19127,7 @@ def _setup_managed_opencode_macos(env: dict) -> None:
     plist_written = False
     config_changed = False
     enabled = False
-    bootstrap_succeeded = False
+    bootstrap_attempted = False
     try:
         _write_progress(_OPENCODE_PROGRESS_ID, "pulling", "Downloading the reviewed OpenCode release")
         candidate = str(binary) if binary_snapshot["exists"] and os.access(binary, os.X_OK) else ""
@@ -19163,15 +19163,16 @@ def _setup_managed_opencode_macos(env: dict) -> None:
                 raise RuntimeError(f"Could not enable OpenCode: {(step.stderr or step.stdout or '').strip()[:300]}")
         # Re-check the label at the mutation boundary. Never replace a job
         # loaded from a different path or with different arguments.
-        _opencode_macos_loaded_output(binary)
+        if _opencode_macos_loaded_output(binary) is not None:
+            raise RuntimeError("OpenCode LaunchAgent was loaded during setup; try again")
         _write_progress(_OPENCODE_PROGRESS_ID, "starting", "Starting OpenCode")
+        bootstrap_attempted = True
         step = subprocess.run(
             ["launchctl", "bootstrap", f"gui/{os.getuid()}", str(plist_path)],
             capture_output=True, text=True, timeout=30,
         )
         if step.returncode != 0:
             raise RuntimeError(f"Could not bootstrap OpenCode: {(step.stderr or step.stdout or '').strip()[:300]}")
-        bootstrap_succeeded = True
         step = subprocess.run(
             ["launchctl", "kickstart", "-p", _opencode_macos_target()],
             capture_output=True, text=True, timeout=30,
@@ -19183,7 +19184,7 @@ def _setup_managed_opencode_macos(env: dict) -> None:
         _wait_for_opencode_health()
     except Exception as exc:
         rollback_errors = []
-        if bootstrap_succeeded:
+        if bootstrap_attempted:
             try:
                 if _opencode_macos_loaded_output(binary) is not None:
                     step = subprocess.run(

@@ -585,6 +585,57 @@ def test_macos_start_kicks_a_loaded_agent_or_bootstraps_it(monkeypatch, _isolate
     assert commands[1] == (expected or ["launchctl", "bootstrap", "gui/501", plist])
 
 
+def test_macos_start_cleans_up_a_partial_owned_bootstrap(monkeypatch):
+    monkeypatch.setattr(_mod.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(_mod.os, "getuid", lambda: 501, raising=False)
+    monkeypatch.setattr(_mod, "_opencode_macos_plist_binary", lambda: Path("/home/owner/opencode"))
+    monkeypatch.setattr(_mod, "_opencode_macos_disabled", lambda: False)
+    loaded = [False]
+    monkeypatch.setattr(_mod, "_opencode_macos_loaded_output", lambda binary: "owned job" if loaded[0] else None)
+    commands = []
+
+    def run(command, **kwargs):
+        commands.append(command)
+        if command[1] == "bootstrap":
+            loaded[0] = True
+            return subprocess.CompletedProcess(command, 1, stdout="", stderr="partial bootstrap")
+        if command[1] == "bootout":
+            loaded[0] = False
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(_mod.subprocess, "run", run)
+    with pytest.raises(RuntimeError, match="Could not start OpenCode"):
+        _mod._start_managed_opencode()
+    assert [command[1] for command in commands] == ["bootstrap", "bootout"]
+    assert loaded == [False]
+
+
+def test_macos_start_does_not_bootout_a_foreign_partial_job(monkeypatch):
+    monkeypatch.setattr(_mod.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(_mod.os, "getuid", lambda: 501, raising=False)
+    monkeypatch.setattr(_mod, "_opencode_macos_plist_binary", lambda: Path("/home/owner/opencode"))
+    monkeypatch.setattr(_mod, "_opencode_macos_disabled", lambda: False)
+    bootstrap_attempted = [False]
+
+    def loaded_output(binary):
+        if bootstrap_attempted[0]:
+            raise RuntimeError("Another loaded LaunchAgent uses the ODS OpenCode label")
+        return None
+
+    commands = []
+
+    def run(command, **kwargs):
+        commands.append(command)
+        bootstrap_attempted[0] = True
+        return subprocess.CompletedProcess(command, 1, stdout="", stderr="foreign label")
+
+    monkeypatch.setattr(_mod, "_opencode_macos_loaded_output", loaded_output)
+    monkeypatch.setattr(_mod.subprocess, "run", run)
+    with pytest.raises(RuntimeError, match="rollback failed"):
+        _mod._start_managed_opencode()
+    assert [command[1] for command in commands] == ["bootstrap"]
+
+
 def test_windows_start_uses_the_scheduled_task_control(monkeypatch):
     monkeypatch.setattr(_mod.platform, "system", lambda: "Windows")
     actions = []
@@ -623,9 +674,12 @@ SETUP_ENV = {
 }
 
 
-@pytest.mark.parametrize("bootstrap_fails,prior_data", [(False, False), (True, False), (True, True)])
+@pytest.mark.parametrize("bootstrap_fails,prior_data,partial_bootstrap", [
+    (False, False, False), (True, False, False), (True, True, False),
+    (True, False, True),
+])
 def test_macos_retained_setup_installs_or_rolls_back_without_pixel(
-    tmp_path, monkeypatch, _isolated, bootstrap_fails, prior_data,
+    tmp_path, monkeypatch, _isolated, bootstrap_fails, prior_data, partial_bootstrap,
 ):
     _setup_ready_install(tmp_path, monkeypatch)
     owner_uid = getattr(os, "getuid", lambda: 0)()
@@ -663,6 +717,8 @@ def test_macos_retained_setup_installs_or_rolls_back_without_pixel(
             return subprocess.CompletedProcess(command, 0, stdout=f"{binary}\n", stderr="")
         if command[1] == "bootstrap":
             if bootstrap_fails:
+                if partial_bootstrap:
+                    loaded = True
                 return subprocess.CompletedProcess(command, 1, stdout="", stderr="simulated bootstrap failure")
             loaded = True
         elif command[1] == "bootout":
@@ -681,9 +737,11 @@ def test_macos_retained_setup_installs_or_rolls_back_without_pixel(
             assert not binary.exists()
             assert not config_path.exists()
         assert not plist.exists()
-        assert [command[1] for command in commands if command[0] == "launchctl"] == [
-            "enable", "bootstrap", "disable",
-        ]
+        expected = ["enable", "bootstrap"]
+        if partial_bootstrap:
+            expected.append("bootout")
+        expected.append("disable")
+        assert [command[1] for command in commands if command[0] == "launchctl"] == expected
     else:
         _mod._setup_managed_opencode_macos(dict(SETUP_ENV))
         assert binary.is_file()
