@@ -9480,9 +9480,24 @@ export function createToolLoopGuard({
     }
     if (typeof runId === "string" && runId) {
       const state = stateFor(runId);
-      state.artifactOwnerInteractive = ownerInteractiveTurn(context, agentId);
+      // Prompt hooks carry trigger, while tool hooks can supply a previously
+      // missing session key but omit trigger. Merge only trusted hook metadata
+      // for this exact run; missing fields must not erase earlier evidence.
+      const artifactContext=state.artifactOwnerContext ??= {};
+      for (const key of ['agentId','runId','sessionId','sessionKey']) {
+        if (typeof context[key] !== 'string' || !context[key]) continue;
+        if (artifactContext[key] && artifactContext[key] !== context[key]) state.artifactIdentityConflict=true;
+        else artifactContext[key]=context[key];
+      }
+      if (typeof context.trigger === 'string' && context.trigger) {
+        if (context.trigger !== 'user') state.artifactNoninteractiveObserved=true;
+        artifactContext.trigger=context.trigger;
+      }
+      state.artifactOwnerInteractive = !state.artifactIdentityConflict && !state.artifactNoninteractiveObserved &&
+        ownerInteractiveTurn(artifactContext, agentId);
       state.artifactSurfaceReason = state.artifactOwnerInteractive ? undefined :
-        context.trigger == null ? 'trigger-unavailable' : context.trigger !== 'user' ? 'noninteractive-turn' : 'owner-session-required';
+        state.artifactIdentityConflict ? 'run-identity-conflict' : state.artifactNoninteractiveObserved ? 'noninteractive-turn' :
+        artifactContext.trigger == null ? 'trigger-unavailable' : 'owner-session-required';
       state.completionAssurance.begin(currentOwnerIntentText(event?.messages, event?.prompt), event);
       const ownerIntent=currentOwnerIntentText(event?.messages,event?.prompt);
       if (ownerIntent) state.extensionCompletionGate ??= createExtensionCompletionGate(ownerIntent);

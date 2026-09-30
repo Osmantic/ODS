@@ -107,11 +107,41 @@ test('admission, transport and invalid broker receipts have distinct bounded dia
 });
 
 test('missing runtime trigger and exhausted attempts are distinct reasons, never guessed from unavailable',async()=>{
- const f=fixture();f.guard.observeRun({...context,trigger:undefined},'pixel',{prompt:'Deliver report'});
- f.admission.before(f.event,context);const missing=await f.tool.execute(context.toolCallId,args);
+ const f=fixture();f.guard.observeRun({...context,runId:'missing-trigger',trigger:undefined},'pixel',{prompt:'Deliver report'});
+ const missingScope={...context,runId:'missing-trigger',trigger:undefined};
+ f.admission.before(f.event,missingScope);const missing=await f.tool.execute(context.toolCallId,args);
  assert.equal(missing.details.code,'trigger-unavailable');assert.match(missing.content[0].text,/not an exhausted publication limit/);
- assert.equal(f.guard.workspaceArtifactUnavailableReason(context),'trigger-unavailable');
+ assert.equal(f.guard.workspaceArtifactUnavailableReason(missingScope),'trigger-unavailable');
  const budget=fixture();for(let i=0;i<4;i++)assert.equal(budget.guard.reserveWorkspaceArtifact(context),true);
  assert.equal(budget.guard.workspaceArtifactUnavailableReason(context),'publication-attempt-limit');
  assert.equal(budget.guard.acceptWorkspaceArtifact(context,receipt),true,'fourth reserved receipt remains accepted');
+});
+
+test('real before-tool refresh keeps prompt trigger and enriches its missing session key',async()=>{
+ for(const omittedKey of [false,true]) {
+  const guard=createToolLoopGuard(),admission=createWorkspaceArtifactAdmission();let calls=0;
+  const promptContext={...context,...(omittedKey?{sessionKey:undefined}: {})};
+  guard.observeRun(promptContext,'pixel',{prompt:'Deliver report.md'});
+  const toolContext={...context,trigger:undefined,toolName:'tool_call'};
+  const event={toolName:'tool_call',toolCallId:context.toolCallId,params:{id:ARTIFACT_TOOL,args}};
+  const decision=guard.beforeToolCall(event,toolContext);
+  admission.before(event,toolContext,decision);
+  assert.equal(guard.workspaceArtifactUnavailableReason(toolContext),undefined);
+  const tool=createWorkspaceArtifactTool(context,{admission,reserve:s=>guard.reserveWorkspaceArtifact(s),unavailableReason:s=>guard.workspaceArtifactUnavailableReason(s),accept:(s,r)=>guard.acceptWorkspaceArtifact(s,r),request:async()=>{calls++;return host}});
+  const result=await tool.execute(`tool_search_code:artifact:${ARTIFACT_TOOL}:1`,args);
+  assert.equal(result.isError,undefined);assert.equal(calls,1);assert.deepEqual(guard.deliveryVerificationForRun('run').artifacts,[receipt]);
+ }
+});
+test('explicit later background trigger or foreign session revokes merged identity permanently for that run',()=>{
+ for(const later of [{trigger:'cron'},{trigger:'heartbeat'},{trigger:'user',sessionKey:'agent:pixel:openai-user:ods-'+ 'b'.repeat(64)},{sessionId:'different-session'}]) {
+  const f=fixture();const changed={...context,trigger:undefined,...later};
+  f.guard.beforeToolCall({toolName:'read',params:{path:'report.md'}},changed);
+  assert.equal(f.guard.reserveWorkspaceArtifact(context),false);
+  assert.match(f.guard.workspaceArtifactUnavailableReason(context),/noninteractive-turn|run-identity-conflict/);
+  f.guard.observeRun(context,'pixel',{prompt:'Owner message cannot silently undo conflicting runtime metadata'});
+  assert.equal(f.guard.reserveWorkspaceArtifact(context),false);
+  const fresh={...context,runId:'fresh-owner-run'};
+  f.guard.observeRun(fresh,'pixel',{prompt:'A separate owner turn'});
+  assert.equal(f.guard.reserveWorkspaceArtifact(fresh),true,'revocation never leaks across run IDs');
+ }
 });

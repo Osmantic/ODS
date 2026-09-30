@@ -286,7 +286,10 @@ test('document delivery is discoverable and callable through actual pinned ToolS
  admission.before({toolName:'tool_call',params:{id:ARTIFACT_TOOL,args:{path:args.relativePath}}},owner);
  const malformed=await byName.tool_call.execute('deliver',{id:ARTIFACT_TOOL,args:{path:args.relativePath}});
  assert.match(JSON.stringify(malformed),/invalid-arguments/);assert.match(JSON.stringify(malformed),/relativePath, not path/);assert.equal(requests,0);
- admission.before({toolName:'tool_call',params:{id:ARTIFACT_TOOL,args}},owner);
+ const toolContext={...owner,trigger:undefined,toolName:'tool_call'};
+ const admittedEvent={toolName:'tool_call',toolCallId:owner.toolCallId,params:{id:ARTIFACT_TOOL,args}};
+ const decision=guard.beforeToolCall(admittedEvent,toolContext);
+ admission.before(admittedEvent,toolContext,decision);
  const delivered=await byName.tool_call.execute('deliver',{id:ARTIFACT_TOOL,args});assert.equal(delivered.isError,undefined);assert.equal(requests,1);assert.deepEqual(guard.deliveryVerificationForRun(owner.runId).artifacts,[receipt]);
  admission.before({toolName:'tool_call',params:{id:ARTIFACT_TOOL,args:{relativePath:'../secret.pdf'}}},owner);
  await byName.tool_call.execute('deliver',{id:ARTIFACT_TOOL,args:{relativePath:'../secret.pdf'}});assert.equal(requests,1);

@@ -98,6 +98,7 @@ export function createWorkspaceArtifactTool(context, {admission,reserve,accept,u
       if (signal?.aborted) return fail('publication-cancelled','The document call was cancelled before publication. No broker request was sent. Preserve the workspace file.');
       if (!reserve(scope)) {
         const reasons={
+          'run-identity-conflict':'The runtime reported conflicting session identities for this run; document delivery is refused without transferring authority to another session.',
           'trigger-unavailable':'The runtime did not identify this turn as owner-interactive. This is a runtime integration limitation, not an exhausted publication limit.',
           'noninteractive-turn':'This is a background or other noninteractive turn; document cards require an ordinary owner chat turn.',
           'owner-session-required':'This session is not the ordinary owner Portal chat surface.',
