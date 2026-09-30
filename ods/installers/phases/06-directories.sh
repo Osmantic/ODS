@@ -27,6 +27,9 @@
 #   or change directory layout here.
 # ============================================================================
 
+# shellcheck source=installers/lib/extensions-library-copy.sh
+source "$SCRIPT_DIR/installers/lib/extensions-library-copy.sh"
+
 ods_progress 38 "directories" "Preparing installation directory"
 chapter "SETTING UP INSTALLATION"
 
@@ -500,12 +503,7 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
         if [[ -d "$_candidate" ]]; then _ext_lib_src="$_candidate"; break; fi
     done
     if [[ -n "$_ext_lib_src" ]]; then
-        mkdir -p "$INSTALL_DIR/data/extensions-library"
-        cp -r "$_ext_lib_src/." "$INSTALL_DIR/data/extensions-library/"
-        [[ ! -L "$INSTALL_DIR/data/extensions-library" ]] \
-            || error "Installed extension library cannot be a symlink"
-        find -P "$INSTALL_DIR/data/extensions-library" \( -type d -o -type f \) \
-            -exec chmod go-w {} + \
+        ods_copy_extensions_library "$_ext_lib_src" "$INSTALL_DIR/data" \
             || error "Could not secure the installed extension library"
         ai_ok "Extensions library copied to data/extensions-library/ (from $_ext_lib_src)"
     else
