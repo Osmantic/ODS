@@ -66,7 +66,7 @@ it('keeps a typed draft when the install name changes under it on an ordinary re
   expect(postCalls()).toHaveLength(0)
 })
 
-it('holds an adopted saved name across a later refresh when nothing else was typed', async () => {
+it('follows later saved names after explicitly adopting the current name', async () => {
   // After the user adopts the saved name, the field follows the install again: a later refresh
   // must deliver the newest saved name instead of pinning the value that was adopted.
   fetch.mockResolvedValueOnce(response(identity('Old',2))).mockResolvedValueOnce(response(identity('Other',3)))
@@ -103,17 +103,17 @@ it('holds a Reset to Portal draft and requires an explicit save instead of a sil
   expect(JSON.parse(postCalls()[0][1].body)).toEqual({expectedRevision:3,displayName:'Portal'})
 })
 
-it('holds a reverted draft across a later refresh rather than re-adopting the saved name', async () => {
-  // Reverting the field back to the saved name is an edit (local intent), not an adoption:
-  // only an explicit save or "Use saved name" makes the field follow the install again.
+it('follows saved names again after reverting an edit to the confirmed name', async () => {
+  // Returning to the confirmed name leaves no unsaved change to protect.
   fetch.mockResolvedValueOnce(response(identity('Old',2))).mockResolvedValueOnce(response(identity('Other',3)))
   const user = userEvent.setup()
   render(editor())
   await waitFor(() => expect(saveButton()).toBeEnabled())
+  await typeDraft(user,'Temporary draft')
   await typeDraft(user,'Old')
   refresh()
   await waitFor(() => expect(saved()).toBe('Other'))
-  expect(screen.getByLabelText('Assistant display name')).toHaveValue('Old')
+  expect(screen.getByLabelText('Assistant display name')).toHaveValue('Other')
   expect(postCalls()).toHaveLength(0)
 })
 
