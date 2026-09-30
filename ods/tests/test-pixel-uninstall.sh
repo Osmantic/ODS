@@ -1097,6 +1097,9 @@ fi
 
 write_ops_fixture
 printf '%s\n' 'resumable custody' >"$OPS_STATE/retained-retry.txt"
+# Exercise the preserve path: a clean broker home is removed, while a legacy
+# skeleton link requires whole-home custody before artifact cleanup.
+ln -s /etc/passwd "$OPS_STATE/.ghcup"
 custody_before="$(find "${OPS_STATE%/*}" -maxdepth 1 -type d -name '.pixel-ops-broker-custody-*' | wc -l)"
 export SUDO_FAIL_OPS_ARTIFACT_REMOVAL=true
 if ods_pixel_uninstall_managed "$INSTALL_DIR" "$HOME_DIR" source-transition; then
