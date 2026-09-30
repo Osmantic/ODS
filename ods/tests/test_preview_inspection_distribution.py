@@ -268,6 +268,7 @@ def test_build_captures_only_fixed_inputs_and_immutable_id(
     monkeypatch.setattr(module, 'pwd', SimpleNamespace(
         getpwuid=lambda uid: SimpleNamespace(pw_dir=str(tmp_path))))
     monkeypatch.setattr(module, "docker_path", lambda transport: "/usr/bin/docker")
+    monkeypatch.setattr(module.pwd, "getpwuid", lambda uid: SimpleNamespace(pw_dir="/home/owner"))
     monkeypatch.setattr(module.platform, "machine", lambda: "x86_64")
     for name in module.BUILD_FILES:
         (tmp_path / name).write_bytes(b"fixed input " + name.encode())
@@ -309,7 +310,11 @@ def test_build_captures_only_fixed_inputs_and_immutable_id(
         assert len(calls) == 2
 
 
-def test_mac_endpoint_is_owner_bound_not_environment(tmp_path, monkeypatch):
+@pytest.mark.parametrize("resolved_binary", [
+    "/opt/homebrew/Cellar/docker/29.4.3/bin/docker",
+    "/Applications/Docker.app/Contents/Resources/bin/docker",
+])
+def test_mac_endpoint_is_owner_bound_not_environment(tmp_path, monkeypatch, resolved_binary):
     original_is_dir = Path.is_dir
     provider_dirs = [
         "/Applications/OrbStack.app/Contents/MacOS/xbin",
@@ -321,7 +326,7 @@ def test_mac_endpoint_is_owner_bound_not_environment(tmp_path, monkeypatch):
         "native_binding",
         lambda **kw: (
             (
-                "/opt/homebrew/Cellar/docker/29.4.3/bin/docker",
+                resolved_binary,
                 "unix:///Users/approved-owner/.colima/ods-fleet/docker.sock",
                 {
                     "dockerSocket": "/Users/approved-owner/.colima/ods-fleet/docker.sock",
@@ -353,7 +358,7 @@ def test_mac_endpoint_is_owner_bound_not_environment(tmp_path, monkeypatch):
     def run(argv, **kw):
         assert kw["env"] == {
             "HOME": "/Users/approved-owner",
-            "PATH": ":".join(["/opt/homebrew/Cellar/docker/29.4.3/bin", *provider_dirs, "/usr/bin", "/bin"]),
+            "PATH": ":".join(dict.fromkeys([str(Path(resolved_binary).parent), *provider_dirs, "/usr/bin", "/bin"])),
         }
         assert argv[1:3] == [
             "--host",
