@@ -104,9 +104,11 @@ def run_stage(image: str, job: str, stage: str, *, cancel: threading.Event,
         reader.start()
     deadline = time.monotonic() + timeout
     interrupted = None
+    requested_interruption = None
     while process.poll() is None:
         if cancel.wait(0.05) or time.monotonic() >= deadline:
             interrupted = "cancelled" if cancel.is_set() else "timed_out"
+            requested_interruption = interrupted
             # This exact name belongs to this invocation; no broad cleanup.
             try:
                 stopped = subprocess.run(["docker", "stop", "--time", "1", job + "-" + stage],
@@ -124,6 +126,13 @@ def run_stage(image: str, job: str, stage: str, *, cancel: threading.Event,
         interrupted = interrupted or "unconfirmed"
     for reader in readers:
         reader.join(timeout=5)
+    if interrupted == "unconfirmed" and requested_interruption:
+        # Stop acknowledgement can race container creation or normal exit.
+        # Only identity-checked Docker evidence can confirm it is now stopped;
+        # the attached CLI exiting alone does not prove container termination.
+        observed = observe_stage(image, job, stage)
+        if observed.get("evidence") == "docker-state" and observed["status"] in ("succeeded", "failed"):
+            interrupted = requested_interruption
     return {"status": interrupted or ("succeeded" if code == 0 else "failed"),
             "exitCode": code, "started": True,
             "stdout": buffers[0].decode("utf-8", errors="replace"),

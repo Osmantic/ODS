@@ -1,4 +1,5 @@
 import json
+import io
 import os
 from pathlib import Path
 import subprocess
@@ -7,6 +8,7 @@ import tempfile
 import threading
 import unittest
 import uuid
+from unittest.mock import Mock, patch
 
 HOST = Path(__file__).resolve().parents[1] / "host"
 sys.path.insert(0, str(HOST))
@@ -16,6 +18,28 @@ from project_artifacts import collect_artifacts, import_artifacts
 
 
 class ProjectStageInputTests(unittest.TestCase):
+    def test_failed_stop_without_verified_exit_remains_unconfirmed(self):
+        for evidence in ({"status": "running", "evidence": "docker-state"},
+                         {"status": "unconfirmed", "evidence": "unavailable"},
+                         {"status": "unconfirmed", "evidence": "identity-mismatch"}):
+            with self.subTest(evidence=evidence):
+                cancel = threading.Event()
+                process = Mock(stdout=io.BytesIO(b""), stderr=io.BytesIO(b""))
+                process.poll.return_value = None
+                process.wait.return_value = 0
+
+                def request_cancel(_timeout):
+                    cancel.set()
+                    return True
+
+                with patch.object(cancel, "wait", side_effect=request_cancel), \
+                        patch("project_runtime.subprocess.Popen", return_value=process), \
+                        patch("project_runtime.subprocess.run", return_value=Mock(returncode=1)), \
+                        patch("project_runtime.observe_stage", return_value=evidence):
+                    result = run_stage("sha256:" + "a" * 64, "ods-project-" + "a" * 24,
+                                       "build", cancel=cancel)
+                self.assertEqual(result["status"], "unconfirmed")
+
     def test_no_mutable_image_or_host_path_or_custom_stage(self):
         for image, job, stage in (("node:latest", "ods-project-" + "a" * 24, "build"),
                                   ("sha256:" + "a" * 64, "/home/user", "build"),
@@ -92,6 +116,28 @@ class ProjectStageRuntimeTests(unittest.TestCase):
         self.assertEqual(result["status"], "cancelled")
         container = json.loads(subprocess.check_output(["docker", "inspect", self.job + "-build"]))[0]
         self.assertFalse(container["State"]["Running"])
+
+    def test_cancel_stop_failure_reconciles_exact_exited_container(self):
+        self.seed("console.log('completed before stop acknowledgement');")
+        cancel = threading.Event()
+        original_run = subprocess.run
+
+        def stop_race(args, **kwargs):
+            if args[:2] == ["docker", "stop"]:
+                return subprocess.CompletedProcess(args, 1, b"", b"stop unavailable")
+            return original_run(args, **kwargs)
+
+        def request_cancel(_timeout):
+            cancel.set()
+            return True
+
+        with patch.object(cancel, "wait", side_effect=request_cancel), \
+                patch("project_runtime.subprocess.run", side_effect=stop_race):
+            result = run_stage(self.image, self.job, "build", cancel=cancel)
+        self.assertEqual(result["status"], "cancelled")
+        self.assertEqual(result["exitCode"], 0)
+        evidence = observe_stage(self.image, self.job, "build")
+        self.assertEqual(evidence["status"], "succeeded")
 
     def test_snapshot_transport_and_offline_build_leave_source_unchanged(self):
         with tempfile.TemporaryDirectory() as root:
