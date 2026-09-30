@@ -27,7 +27,7 @@ afterEach(()=>vi.unstubAllGlobals())
 
 it('keeps complete source separate from compiled output without reloading the preview',async()=>{
  const {container}=render(<PortalWorkspace preview={data.preview} access={{frameUrl:'/preview',url:'/preview',sandbox:'allow-scripts'}} title="Built site" request={{kind:'review',siteId}}/>)
- const frame=container.querySelector('iframe')
+ const frame=await screen.findByTitle('Built site')
  expect(await screen.findByRole('navigation',{name:'Project source files'})).toBeVisible()
  fireEvent.click(screen.getByRole('button',{name:'Open src/main.jsx'}))
  expect(screen.getByLabelText('Source code for src/main.jsx')).toHaveTextContent('Original source')
