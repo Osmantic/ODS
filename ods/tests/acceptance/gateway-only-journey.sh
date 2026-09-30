@@ -145,6 +145,7 @@ run_installer() {
 command -v docker >/dev/null || fail 'Docker CLI missing'
 docker info >/dev/null || fail 'isolated Docker Engine unavailable'
 [[ ! -e "$INSTALL_DIR" ]] || fail 'fresh install directory already exists'
+previous_umask="$(umask)"
 umask 077
 mkdir -p "$audit_root"
 python3 - "$key_file" <<'PY'
@@ -154,6 +155,7 @@ with open(sys.argv[1], "w", encoding="ascii") as stream:
     stream.write("mock-" + secrets.token_hex(24))
 PY
 chmod 600 "$key_file"
+umask "$previous_umask"
 
 python3 "$root/tests/acceptance/mock-openai-upstream.py" \
     --key-file "$key_file" --port "$mock_port" >"$mock_log" 2>&1 &
