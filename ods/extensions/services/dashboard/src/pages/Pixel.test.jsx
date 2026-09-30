@@ -781,6 +781,45 @@ describe('Pixel', () => {
     expect(screen.getByRole('textbox')).toBeEnabled()
   })
 
+  it('recovers cloud after opening the selector during an initial backend outage and stops local reads', async () => {
+    vi.useFakeTimers()
+    let recovered = false
+    globalThis.fetch.mockImplementation(async url => {
+      if (url === '/api/pixel/status') return recovered
+        ? response({available:true,runtime:{source:'remote-provider',model:'cloud-model',contextLength:32768,maxTokens:4096,reasoning:false}})
+        : response({},503)
+      if (url.startsWith('/api/models')) return response({},503)
+      return response({})
+    })
+    render(<Pixel />)
+    await act(async()=>{})
+    expect(screen.getByText('Degraded')).toBeInTheDocument()
+    expect(screen.getByRole('textbox')).toBeDisabled()
+    fireEvent.click(screen.getByRole('button',{name:'Choose model: Choose model'}))
+    await act(async()=>{})
+    const localReads = () => fetch.mock.calls.filter(([url])=>url.startsWith('/api/models')).length
+    expect(localReads()).toBeGreaterThan(0)
+    expect(screen.getByText('The conversation’s model source is not confirmed.')).toBeVisible()
+    expect(screen.queryByRole('button',{name:'Switch model',exact:true})).toBeNull()
+
+    recovered = true
+    await act(async()=>{await vi.advanceTimersByTimeAsync(3000)})
+    expect(screen.getByText('Available')).toBeInTheDocument()
+    expect(screen.getByRole('textbox')).toBeEnabled()
+    expect(screen.getByRole('button',{name:'Choose model: cloud model'})).toBeInTheDocument()
+    expect(screen.getByRole('link',{name:'Provider settings'})).toBeVisible()
+    // A genuine catalog error can remain visible without blocking cloud chat.
+    expect(screen.getByRole('alert')).toHaveTextContent('Failed to fetch models')
+    const readsAtRecovery = localReads()
+    await act(async()=>{await vi.advanceTimersByTimeAsync(60000)})
+    fireEvent.click(screen.getByRole('button',{name:'Choose model: cloud model'}))
+    fireEvent.click(screen.getByRole('button',{name:'Choose model: cloud model'}))
+    await act(async()=>{})
+    expect(localReads()).toBe(readsAtRecovery)
+    expect(screen.getByRole('textbox')).toBeEnabled()
+    expect(fetch.mock.calls.filter(([url,options])=>url.startsWith('/api/models') && options?.method === 'POST')).toHaveLength(0)
+  })
+
   it('shows available state when status succeeds', async () => {
     globalThis.fetch.mockResolvedValue(response({ available: true, model: 'pixel/default', detail: 'local' }))
 
