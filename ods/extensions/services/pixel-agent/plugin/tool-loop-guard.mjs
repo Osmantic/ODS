@@ -5796,10 +5796,12 @@ function hasPortugueseWorkspacePreviewDirective(text) {
     .normalize('NFD').replace(/[\u0300-\u036f]/g, '');
   if (!portuguesePreviewForbidden(portuguese)) {
     const directives = portuguese.matchAll(
-      /(?:^|[.!?;\n]|\be\s+)\s*(?:(?:depois|entao)\s+)?(?:por\s+favor[, ]+)?(?:(?:so|somente|apenas)\s+)?(?:publique|republique)\s+([^!?;\n]{1,512})/gi
+      /(?:^|[.!?;\n]|\be\s+)\s*(?:(?:depois|entao)\s+)?(?:por\s+favor[, ]+)?(?:(?:so|somente|apenas)\s+)?(?:publique|republique)\s+((?:(?!\.(?=\s|$))[^!?;\n]){1,512})/gi
     );
     for (const match of directives) {
-      const target = match[1];
+      // The publication's object ends at its sentence or a "sem" constraint.
+      // A later prohibition on creating a site is not this command's target.
+      const target = match[1].split(/\.(?=\s|$)|\bsem\b/i)[0];
       if (hasWorkspaceHtmlTarget(target) || /\b(?:site|website|pagina|preview)\b/i.test(target)) return true;
       // A conditional publication is still a requested delivery, not proof
       // that tests passed. Existing execution/readback gates remain in force.

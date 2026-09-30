@@ -59,3 +59,14 @@ test('a failed requested preview still reports incomplete website delivery',()=>
   assert.equal(guard.verificationForRun(context.runId).status,'failed');
   assert.match(guard.verificationForRun(context.runId).text,/website/);
 });
+
+
+test('file publication cannot acquire a website target from a later sentence or constraint',()=>{
+  const prompt='Os nomes na resposta não são links nem botões de download. Publique os arquivos pela ferramenta de entrega de arquivos do Portal. Antes, corrija o ZIP: preserve src/inventario.py, tests/test_inventario.py e tools/gerar_lock.py nos caminhos originais, junto de main.py e dos manifests. Achatar a estrutura quebra os imports e a descoberta de testes. Verifique a listagem final e entregue PDF e ZIP com downloads clicáveis, sem criar site nem novo projeto.';
+  const guard=createToolLoopGuard(),context={agentId:'pixel',runId:'files-only',sessionId:'files-only'};
+  guard.observeRun(context,'pixel',{prompt});
+  assert.equal(userMessageRequestsWorkspacePreview([],prompt),false);
+  assert.equal(guard.verificationForRun(context.runId).status,'none');
+  for(const value of ['Publique os arquivos sem criar site nem novo projeto.','Publique os arquivos. Não crie site.'])assert.equal(userMessageRequestsWorkspacePreview([],value),false,value);
+  for(const value of ['Publique o site sem alterar os arquivos.','Publique os arquivos. Depois publique o site.'])assert.equal(userMessageRequestsWorkspacePreview([],value),true,value);
+});

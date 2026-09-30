@@ -447,3 +447,18 @@ test('explicit workspace intent cannot authorize traversal at the full publicati
     assert.equal(fs.existsSync(path.join(root,'Playground')),false);
   }
 });
+
+test('delivery folder and archive contents do not request a fresh project', t=>{
+  const prompt='Conclua a entrega já solicitada, sem remover nada. Crie uma pasta de entrega nova, copie o PDF verificado do build e gere o ZIP com os fontes, lock, testes e script de hashes. Confira os arquivos e publique os dois downloads. Não precisa limpar diretórios nem pedir outra confirmação para essas etapas.';
+  assert.equal(requestsNewPlaygroundProject(prompt),false);
+  const {root}=fixture(t), guard=createToolLoopGuard();
+  const context={agentId:'pixel',runId:'delivery-existing',sessionId:'delivery-existing'};
+  guard.observeRun(context,'pixel',{prompt},{workspaceRoot:root});
+  const decision=guard.beforeToolCall({toolName:'exec',toolCallId:'inspect-delivery',params:{command:'pwd'}},context);
+  assert.notEqual(decision?.block,true,decision?.blockReason);
+  for(const value of ['Create a delivery folder and generate a ZIP with sources, tests and the script.',
+    'Gere um ZIP contendo código, testes e script.']) assert.equal(requestsNewPlaygroundProject(value),false,value);
+  for(const value of ['Create a Python script and generate a ZIP with tests.',
+    'Gere um ZIP com os fontes e crie um script novo.',
+    'Create a ZIP with sources and build a new website.']) assert.equal(requestsNewPlaygroundProject(value),true,value);
+});
