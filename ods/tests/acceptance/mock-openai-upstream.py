@@ -76,6 +76,24 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self.reply(400, {"error": {"message": "wrong model or messages"}})
         self.log_message("accept=chat bytes=%d messages=%d stream=%s",
                          size, len(request["messages"]), request.get("stream") is True)
+        structured = isinstance(request.get("response_format"), dict)
+        content = "OK"
+        if structured:
+            # Vane's first model call classifies the question with a JSON schema.
+            # A plain answer makes its async search fail while /api/search waits.
+            content = json.dumps({
+                "classification": {
+                    "skipSearch": True,
+                    "personalSearch": False,
+                    "academicSearch": False,
+                    "discussionSearch": False,
+                    "showWeatherWidget": False,
+                    "showStockWidget": False,
+                    "showCalculationWidget": False,
+                },
+                "standaloneFollowUp": "ODS acceptance model route check",
+            })
+        self.log_message("accept=chat-kind structured=%s", structured)
         if request.get("stream") is True:
             events = [
                 {"id": "chatcmpl-ods-acceptance", "object": "chat.completion.chunk",
@@ -100,7 +118,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             "model": self.model,
             "choices": [{
                 "index": 0,
-                "message": {"role": "assistant", "content": "OK"},
+                "message": {"role": "assistant", "content": content},
                 "finish_reason": "stop",
             }],
             "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
