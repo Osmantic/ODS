@@ -31,13 +31,13 @@ def run_selection(tmp_path, *, managed=True, same=False, enable=True, both=False
         source = installed
     script = ('set -euo pipefail\nHOME="$1"; SCRIPT_DIR="$2"; INSTALL_DIR="$3"\n'
               'log(){ :; }; error(){ printf "%s\\n" "$*" >&2; return 1; }\n'
-              'ENABLE_PIXEL_RUNTIME=true\n' + feature_functions() + '\n'
+              'ENABLE_PIXEL_RUNTIME=true\nods_pixel_install_owner(){ printf fixture-owner; }\n' + feature_functions() + '\n'
               '_sync_extension_compose "$4" whisper fixture fixture\n')
     if apply:
         # Simulate only the already-authenticated copy result or completed uninstall.
         if token:
             script += ('ODS_PIXEL_SOURCE_TRANSACTION="' + 'a' * 64 + '"\n'
-                       '_ods_pixel_check_source_transaction(){ return 0; }\n'
+                       '_ods_pixel_check_source_transaction(){ [[ "$#" == 1 && "$1" == fixture-owner ]]; }\n'
                        'rm -f "$INSTALL_DIR/extensions/services/whisper/compose.yaml.disabled"\n'
                        'cp "$SCRIPT_DIR/extensions/services/whisper/compose.yaml" "$INSTALL_DIR/extensions/services/whisper/compose.yaml"\n')
         if disable:
@@ -127,7 +127,7 @@ def test_topology_is_deferred_until_held_downstream(tmp_path):
     tail = PHASE.read_text().split('# Keep generated topology outside', 1)[1]
     tail = '# Keep generated topology outside' + tail
     script = ('set -euo pipefail\nHOME="$1"; SCRIPT_DIR="$2"; INSTALL_DIR="$3"; TOPOLOGY_FILE="$4"\n'
-              'DRY_RUN=false; _ODS_DEFERRED_FEATURE_SELECTION=()\n'
+              'DRY_RUN=false; _ODS_DEFERRED_FEATURE_SELECTION=()\nods_pixel_install_owner(){ printf fixture-owner; }\n'
               'error(){ printf "%s\\n" "$*" >&2; return 1; }; log(){ :; }\n'
               + feature_functions() + '\n' + tail + '\n'
               '[[ "$(cat "$INSTALL_DIR/config/gpu-topology.json")" == "old topology" ]]\n'
@@ -137,7 +137,7 @@ def test_topology_is_deferred_until_held_downstream(tmp_path):
               'ODS_PIXEL_SOURCE_TRANSACTION="held"\n'
               '_ods_pixel_check_source_transaction(){ return 1; }\n'
               'if _ods_apply_deferred_feature_state; then exit 91; fi\n'
-              '_ods_pixel_check_source_transaction(){ return 0; }\n'
+              '_ods_pixel_check_source_transaction(){ [[ "$#" == 1 && "$1" == fixture-owner ]]; }\n'
               '_ods_apply_deferred_feature_state\n')
     result = subprocess.run(['/bin/bash', '-c', script, 'topology-test', str(home), str(source), str(installed), str(generated)], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
@@ -197,3 +197,31 @@ def test_phase06_applies_deferred_selection_after_authenticated_copy_and_downstr
     reconcile = phase.index('_ods_apply_deferred_feature_state ||', generic_copy)
     assert stage < hold < copy < downstream < generic_copy < reconcile
     assert phase.index('ods_pixel_uninstall_managed', downstream) < reconcile
+
+
+@pytest.mark.parametrize('status,expected', [
+    ({'pending': True, 'transaction': 'a'*64, 'phase': 'applied', 'mode': 'full-access'}, 0),
+    ({'pending': True, 'transaction': 'b'*64, 'phase': 'applied', 'mode': 'full-access'}, 1),
+    ({'pending': True, 'transaction': 'a'*64, 'phase': 'held', 'mode': 'full-access'}, 1),
+    ({'pending': False, 'transaction': 'a'*64, 'phase': 'applied', 'mode': 'full-access'}, 1),
+    ({'pending': True, 'transaction': 'a'*64, 'phase': 'applied', 'mode': 'unknown'}, 1),
+])
+def test_deferred_apply_uses_real_owner_resolver_and_checker_signature(tmp_path, status, expected):
+    import json
+    host = (ROOT / 'installers/lib/pixel-host-install.sh').read_text()
+    def function(name):
+        start = host.index(name + '() {')
+        return host[start:host.index('\n}\n', start)+3]
+    owner = subprocess.check_output(['id', '-un'], text=True).strip()
+    script = ('set -euo pipefail\nHOME="$1"; INSTALL_DIR="$1"; SCRIPT_DIR="$1"; INSTALL_USER="$2"\n'
+              'ODS_PIXEL_SOURCE_TRANSACTION="' + 'a'*64 + '"\n'
+              + function('ods_pixel_install_owner') + '\n'
+              + function('_ods_pixel_check_source_transaction') + '\n'
+              + '_ods_pixel_source_upgrade(){ [[ "$#" == 2 && "$1" == status && "$2" == "$INSTALL_USER" ]] || return 79; cat "$HOME/status.json"; }\n'
+              + feature_functions() + '\n_ods_apply_deferred_feature_state\n')
+    (tmp_path/'status.json').write_text(json.dumps(status))
+    result = subprocess.run(['/bin/bash', '-c', script, 'real-signature', str(tmp_path), owner], capture_output=True, text=True)
+    assert result.returncode == expected, result.stderr
+    # A malformed/root owner is rejected by the existing real resolver.
+    refused = subprocess.run(['/bin/bash', '-c', script, 'real-signature', str(tmp_path), 'root'], capture_output=True, text=True)
+    assert refused.returncode != 0

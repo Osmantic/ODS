@@ -368,10 +368,11 @@ _sync_extension_compose() {
 # Held transactions already projected exact counterpart removals; no late code
 # renames are allowed to invalidate their after-inventory.
 _ods_apply_deferred_feature_state() {
-    local i svc flag candidate installed temporary
+    local i svc flag candidate installed temporary owner
     local -a selection=("${_ODS_DEFERRED_FEATURE_SELECTION[@]}")
     if [[ -n "${ODS_PIXEL_SOURCE_TRANSACTION:-}" ]]; then
-        _ods_pixel_check_source_transaction || return 1
+        owner="$(ods_pixel_install_owner)" || return 1
+        _ods_pixel_check_source_transaction "$owner" || return 1
     fi
     for ((i=0; i<${#selection[@]}; i+=2)); do
         svc="${selection[i]}"
