@@ -1,0 +1,38 @@
+name: Acceptance Linux Extensions Library umask
+
+on:
+  push:
+    branches:
+      - codex/ods-library-umask-audit
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: library-umask-live-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  library-install-rerun:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 65
+    steps:
+      - name: Checkout acceptance harness
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - name: Checkout exact Extensions Library candidate
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          ref: 8746cb0147b296b73c9acbcd58c0acadce3d57b5
+          path: product
+      - name: Record exact source and runner capacity
+        run: |
+          test "$(git -C product rev-parse HEAD)" = 8746cb0147b296b73c9acbcd58c0acadce3d57b5
+          docker version
+          docker info --format '{{.OperatingSystem}}'
+          df -h / "$RUNNER_TEMP"
+          cat /proc/1/comm
+      - name: Exercise restrictive-umask install and rerun
+        env:
+          ODS_ACCEPTANCE_PRODUCT_ROOT: ${{ github.workspace }}/product/ods
+        run: bash ods/tests/acceptance/library-umask-journey.sh
