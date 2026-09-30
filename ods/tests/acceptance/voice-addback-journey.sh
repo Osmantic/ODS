@@ -25,6 +25,43 @@ fail() {
     exit 1
 }
 
+diagnose_whisper() {
+    local model_url='http://127.0.0.1:9000/v1/models/Systran%2Ffaster-whisper-base'
+    local response="$audit_root/whisper-diagnostic-response.txt" code
+    code="$(curl -sS --max-time 10 -o "$response" -w '%{http_code}' "$model_url" || true)"
+    printf 'DIAG: selected Whisper model cache GET HTTP %s\n' "$code" >&2
+    code="$(curl -sS --max-time 20 -X POST -o "$response" -w '%{http_code}' "$model_url" || true)"
+    printf 'DIAG: selected Whisper model download POST HTTP %s\n' "$code" >&2
+    python3 - "$response" <<'PY' >&2
+import pathlib, re, sys
+path = pathlib.Path(sys.argv[1])
+body = path.read_text(errors="replace") if path.exists() else ""
+body = re.sub(r"https?://\S+", "[url]", body)
+body = re.sub(r"(?i)(token|authorization|key)[=:][^\s,}]+", r"\1=[redacted]", body)
+print("DIAG: model POST response:", body[:300])
+PY
+    curl -sS --max-time 5 http://127.0.0.1:3001/api/extensions/whisper/progress \
+        -o "$audit_root/whisper-progress.json" || true
+    python3 - "$audit_root/whisper-progress.json" <<'PY' >&2
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+try:
+    row = json.loads(path.read_text())
+except (OSError, ValueError):
+    row = {}
+print("DIAG: extension progress:", {key: str(row.get(key, ""))[:200]
+                                   for key in ("status", "phase", "error", "message")})
+PY
+    docker logs --tail 100 ods-whisper 2>&1 | python3 -c '
+import re, sys
+lines = [line.strip() for line in sys.stdin if re.search(r"error|fail|download|model|traceback", line, re.I)]
+for line in lines[-15:]:
+    line = re.sub(r"https?://\S+", "[url]", line)
+    line = re.sub(r"(?i)(token|authorization|key)[=:][^\s,}]+", r"\1=[redacted]", line)
+    print("DIAG: Whisper log:", line[:300])
+' >&2 || true
+}
+
 wait_health() {
     local service="$1" url="$2" attempts="${3:-60}"
     for ((i=0; i<attempts; i++)); do
@@ -50,20 +87,24 @@ except (OSError, ValueError):
     detail = "unreadable response"
 print("Library enable detail:", str(detail)[:400])
 PY
+        [[ "$service" != whisper ]] || diagnose_whisper
         fail "$service Library enable returned HTTP $code"
     fi
-    python3 - "$output" "$service" <<'PY' || fail "$service Library enable did not succeed"
+    if ! python3 - "$output" "$service" <<'PY'; then
 import json, sys
 value = json.load(open(sys.argv[1], encoding="utf-8"))
 assert sys.argv[2] in value.get("enabled_services", []), value
 assert not value.get("failed_services"), value
 PY
+        [[ "$service" != whisper ]] || diagnose_whisper
+        fail "$service Library enable did not succeed"
+    fi
     printf 'PASS: %s enabled from installed Library\n' "$service"
 }
 
 command -v docker >/dev/null || fail 'Docker CLI missing'
 docker info >/dev/null || fail 'Docker Engine unavailable'
-[[ "$(git -C "$product" rev-parse HEAD)" == 45f1f6153d9032937f282de0064a3b4358ecdd7a ]] \
+[[ "$(git -C "$product" rev-parse HEAD)" == 911775a6d335f42e1438a4822eb0bb8483e39c98 ]] \
     || fail 'wrong product checkout'
 [[ ! -e "$INSTALL_DIR" ]] || fail 'install directory is not fresh'
 mkdir -p "$audit_root"
