@@ -246,7 +246,9 @@ if ($installerExitCode -eq 0 -and $lifetimeRequired -and '--pixel' -cin $Passthr
         # A prior explicit stop preference is preserved across installer reruns.
         if ($DockerDesktopPath -or (Test-Path -LiteralPath (Join-Path $lifetimeIdentity.directory 'startup-config.json'))) {
             Enable-ODSWslStartup $lifetimeIdentity $DockerDesktopPath
-            Write-Host "Durable lifecycle: powershell -File `"$(Join-Path $lifetimeIdentity.directory 'startup.ps1')`" -Action status -Distro `"$Distro`" -InstallRoot `"$linuxInstallRoot`"$stateHint"
+            # The delegated child shares the caller's console. Write-Host can block
+            # here when the non-interactive caller redirects its output to a log.
+            [Console]::Error.WriteLine("Durable lifecycle: powershell -File `"$(Join-Path $lifetimeIdentity.directory 'startup.ps1')`" -Action status -Distro `"$Distro`" -InstallRoot `"$linuxInstallRoot`"$stateHint")
         } else {
             Write-Warning 'Use the Windows Portal setup entry point to enable verified sign-in recovery.'
         }
