@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {createHash} from 'node:crypto';
+import {spawnSync} from 'node:child_process';
 import {createChatImageStore, createChatImageReadHandler, normalizeChatImageReference, CHAT_IMAGE_CACHE_BYTES} from '../host/chat_image_store.mjs';
 import {createChatImageReadTool} from '../plugin/chat-image-read.mjs';
 
@@ -18,6 +19,29 @@ function setup(t, options) {
   const directory = path.join(temporary,'private');
   return {directory, store:createChatImageStore(directory, options)};
 }
+
+test('a process dying after publish recovers without deleting the published image', t => {
+  const {directory,store}=setup(t);
+  const moduleUrl=new URL('../host/chat_image_store.mjs',import.meta.url).href;
+  const script=`import fs from 'node:fs'; import {createChatImageStore} from ${JSON.stringify(moduleUrl)};
+    const original=fs.linkSync; fs.linkSync=(...args)=>{original(...args);process.exit(91)};
+    createChatImageStore(${JSON.stringify(directory)}).put(${JSON.stringify(user)},
+      [{...${JSON.stringify({...image,data:undefined})},data:Buffer.from(${JSON.stringify(data.toString('base64'))},'base64')}],${JSON.stringify([ref(image)])});`;
+  const child=spawnSync(process.execPath,['--input-type=module','-e',script],{encoding:'utf8'});
+  assert.equal(child.status,91,child.stderr);
+  assert.ok(fs.readdirSync(directory).some(name=>name.includes('.tmp-')));
+  assert.deepEqual(store.put(user,[image],[ref(image)]),[ref(image)]);
+  assert.deepEqual(store.read(user,ref(image),[ref(image)]).data,data);
+  assert.equal(fs.readdirSync(directory).length,1);
+});
+
+test('a live writer lease refuses a second writer without removing either image or lease', t => {
+  const {directory,store}=setup(t);
+  const lease=path.join(directory,`.write-lock-${process.pid}-${'a'.repeat(32)}`);
+  fs.writeFileSync(lease,'',{mode:0o600});
+  assert.throws(()=>store.put(user,[image],[ref(image)]),error=>error.code==='image-storage-busy');
+  assert.deepEqual(fs.readdirSync(directory),[path.basename(lease)]);
+});
 
 test('immutable private copy survives restart and transcript pruning, with exact digest', async t => {
   const {directory, store} = setup(t);

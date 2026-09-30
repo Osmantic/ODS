@@ -109,6 +109,32 @@ function readRecord(file, user, reference) {
 export function createChatImageStore(directory, {maxBytes = CHAT_IMAGE_CACHE_BYTES} = {}) {
   if (!Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > CHAT_IMAGE_CACHE_BYTES) fail('invalid-image-storage-limit', 400);
   prepareDirectory(directory);
+  function writerLease() {
+    // Publish our unique lease before observing contenders. Two concurrent
+    // publishers can both refuse, but cannot both observe exclusive custody.
+    // Dead leases have unique names: recovery never unlinks a replacement
+    // writer's shared lock pathname.
+    const name = `.write-lock-${process.pid}-${randomBytes(16).toString('hex')}`;
+    const file = path.join(directory, name);
+    const fd = fs.openSync(file, 'wx', 0o600);
+    fs.closeSync(fd);
+    const release = () => {try {fs.unlinkSync(file);} catch (error) {if(error.code !== 'ENOENT')throw error;}};
+    try {
+      for (const candidate of fs.readdirSync(directory)) {
+        if (candidate === name || !candidate.startsWith('.write-lock')) continue;
+        const match = /^\.write-lock-([1-9][0-9]*)-([a-f0-9]{32})$/.exec(candidate);
+        if (!match || !Number.isSafeInteger(Number(match[1]))) fail('image-storage-busy', 503);
+        const other = path.join(directory, candidate);
+        let stat;
+        try {stat = privateStat(other);} catch(error) {if(error.code === 'ENOENT')continue;throw error;}
+        if(stat.size !== 0)fail('image-storage-unavailable',503);
+        try {process.kill(Number(match[1]), 0);fail('image-storage-busy',503);}
+        catch(error) {if(error.code !== 'ESRCH')fail('image-storage-busy',503);}
+        try {fs.unlinkSync(other);} catch(error) {if(error.code !== 'ENOENT')throw error;}
+      }
+      return release;
+    } catch(error) {release();throw error;}
+  }
   function filename(user, reference) {
     if (typeof user !== 'string' || user.length !== 68 || !USER.test(user)) fail('invalid-image-user', 400);
     normalizeChatImageReference({id:reference.id, sha256:reference.sha256});
@@ -130,10 +156,23 @@ export function createChatImageStore(directory, {maxBytes = CHAT_IMAGE_CACHE_BYT
       return {image, file:filename(user, image), bytes:encode(user, image)};
     });
     if (total > CHAT_IMAGE_BYTES) fail('image-turn-too-large', 413);
-    const lock = path.join(directory, '.write-lock');
-    try {fs.mkdirSync(lock, {mode:0o700});} catch (error) {if (error.code === 'EEXIST') fail('image-storage-busy', 503); throw error;}
+    const release = writerLease();
     try {
-      const entries = fs.readdirSync(directory).filter(name => name !== '.write-lock');
+      for (const name of fs.readdirSync(directory)) {
+        if (!/^ods-[a-f0-9]{64}--img-[a-f0-9]{32}\.image\.tmp-[a-f0-9]{32}$/.test(name)) continue;
+        const temporary = path.join(directory, name), stat = fs.lstatSync(temporary);
+        if (!stat.isFile() || stat.isSymbolicLink() || ![1,2].includes(stat.nlink)
+            || process.platform !== 'win32' && (stat.uid !== process.getuid() || stat.mode & 0o077)) fail('image-storage-unavailable',503);
+        if (stat.nlink === 2) {
+          const published = fs.lstatSync(temporary.slice(0, -37));
+          if (!published.isFile() || published.isSymbolicLink() || published.dev !== stat.dev || published.ino !== stat.ino
+              || published.nlink !== 2) fail('image-storage-unavailable',503);
+        }
+        // Only the unpublished temporary name is removed. A link published
+        // immediately before a crash remains intact and becomes readable.
+        fs.unlinkSync(temporary);
+      }
+      const entries = fs.readdirSync(directory).filter(name => !name.startsWith('.write-lock-'));
       if (entries.length > MAX_FILES) fail('image-storage-limit', 507);
       let occupied = 0;
       for (const name of entries) {
@@ -167,7 +206,7 @@ export function createChatImageStore(directory, {maxBytes = CHAT_IMAGE_CACHE_BYT
       finally {if (directoryFd !== undefined) fs.closeSync(directoryFd);}
       return images.map(({id, sha256}) => ({id, sha256}));
     } catch (error) {if (error instanceof ChatImageError) throw error; fail('image-storage-unavailable', 503);}
-    finally {fs.rmdirSync(lock);}
+    finally {release();}
   }
   return {put, read};
 }
