@@ -40,3 +40,37 @@ test('the scripts sharing the name rules run; both role/name matchers keep the p
   const controls = new vm.Script(`(${scripts.CONTROL_NAMES})`).runInContext(vm.createContext({document: {querySelectorAll: () => []}}));
   assert.deepEqual(JSON.parse(JSON.stringify(controls(48))), {count: 0, items: []});
 });
+
+// The native fill denylist decides whether the capsule may type into a field at
+// all, so it is exercised against a minimal DOM instead of only compiled.
+function fillEligibility(attributes, label = '') {
+  const context = vm.createContext({});
+  class Input { constructor() { this.type = 'text'; this.value = ''; this.readOnly = false; } }
+  class TextArea {}
+  context.HTMLInputElement = Input; context.HTMLTextAreaElement = TextArea; context.HTMLSelectElement = class {};
+  context.getComputedStyle = () => ({display: 'block', visibility: 'visible', opacity: '1'});
+  context.document = {getElementById: () => null};
+  const element = Object.assign(new Input(), {
+    labels: label ? [{textContent: label}] : [],
+    getClientRects: () => [{width: 10, height: 10}],
+    checkVisibility: () => true,
+    hasAttribute: () => false,
+    getAttribute: name => attributes[name] ?? null,
+    matches: () => false,
+  });
+  const observe = new vm.Script(`(${capsuleScripts().OBSERVE_ELEMENT})`).runInContext(context);
+  return observe.call(element, false, null, 'value', false).input.eligible;
+}
+
+test('native text fill refuses fields whose name, label or autocomplete marks them sensitive', () => {
+  assert.equal(fillEligibility({name: 'nickname'}), true);
+  assert.equal(fillEligibility({name: 'shipping-note'}), true, 'a substring of an ordinary word is not a secret');
+  for (const [attributes, label] of [
+    [{name: 'password'}, ''], [{id: 'api-key'}, ''], [{'aria-label': 'One-time code'}, ''],
+    [{name: 'cvv'}, ''], [{name: 'cvc'}, ''], [{name: 'pin'}, ''], [{id: 'user_pin'}, ''], [{name: 'ssn'}, ''],
+    [{name: 'iban'}, ''], [{name: 'passphrase'}, ''], [{name: 'passcode'}, ''], [{name: 'mfa'}, ''],
+    [{name: 'private_key'}, ''], [{name: 'seed-phrase'}, ''], [{name: 'security_code'}, ''],
+    [{name: 'x'}, 'Social security number'], [{name: 'x'}, 'Account number'], [{name: 'x'}, 'Routing number'],
+    [{name: 'x'}, 'CPF'],
+  ]) assert.equal(fillEligibility(attributes, label), false, JSON.stringify([attributes, label]));
+});
