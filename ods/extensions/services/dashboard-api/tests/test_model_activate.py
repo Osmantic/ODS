@@ -4880,7 +4880,7 @@ def test_managed_pixel_reconcile_uses_positional_args_and_minimal_environment(
         max_tokens=4096,
         reasoning=True,
     ) == "reconciled"
-    assert captured["argv"][-8:] == [
+    assert captured["argv"][-9:] == [
         str(install_dir),
         "pixel-owner",
         str(home),
@@ -4889,6 +4889,7 @@ def test_managed_pixel_reconcile_uses_positional_args_and_minimal_environment(
         "4096",
         "true",
         "",
+        "unknown",
     ]
     assert captured["kwargs"]["timeout"] == 900
     assert captured["kwargs"]["check"] is False
@@ -5241,7 +5242,7 @@ class TestModelActivateRollback:
         assert reconciliations == [(
             "new-model.gguf",
             65536,
-            {"max_tokens": 8192, "reasoning": False},
+            {"max_tokens": 8192, "reasoning": False, "image_input": "unknown"},
         )]
         response = handler.parse_response()
         assert response["consumers"]["pixel"] == "reconciled"
@@ -5320,8 +5321,8 @@ class TestModelActivateRollback:
         assert "simulated Pixel reconciliation failure" in response["error"]
         assert runtime_restarts == ["new-model", "old-model"]
         assert reconciliations == [
-            ("new-model.gguf", 4096, {"max_tokens": 1024, "reasoning": False}),
-            ("old-model.gguf", 4096, {"max_tokens": 1024, "reasoning": False}),
+            ("new-model.gguf", 4096, {"max_tokens": 1024, "reasoning": False, "image_input": "unknown"}),
+            ("old-model.gguf", 4096, {"max_tokens": 1024, "reasoning": False, "image_input": "unknown"}),
         ]
         assert _mod.load_env(env_path)["LLM_MODEL"] == "old-model"
 
