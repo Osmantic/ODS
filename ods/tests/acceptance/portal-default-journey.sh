@@ -29,12 +29,27 @@ fail() {
 }
 
 show_install_diagnostics() {
-    python3 - "$LOG_FILE" "$key_file" "$INSTALL_DIR/.env" <<'PY' >&2
+    if [[ -e "$INSTALL_DIR/logs/pixel-install.log" ]]; then
+        sudo journalctl -u pixel-ingress.service -u openclaw-gateway.service \
+            -u pixel-extension-manager.service -u pixel-artifact-promoter.service \
+            -u pixel-workspace-preview.service -n 90 --no-pager -o short-iso \
+            >"$audit_root/pixel-journal.log" 2>&1 || true
+        for unit in pixel-ingress.service openclaw-gateway.service \
+            pixel-extension-manager.service pixel-artifact-promoter.service \
+            pixel-workspace-preview.service; do
+            printf '%s: ' "$unit" >&2
+            systemctl show "$unit" -p ActiveState -p SubState -p Result \
+                -p ExecMainStatus --no-pager | tr '\n' ' ' >&2 || true
+            printf '\n' >&2
+        done
+    fi
+    python3 - "$LOG_FILE" "$key_file" "$INSTALL_DIR/.env" \
+        "$INSTALL_DIR/logs/pixel-install.log" "$audit_root/pixel-journal.log" <<'PY' >&2
 from pathlib import Path
 import re
 import sys
 
-log_path, key_path, env_path = map(Path, sys.argv[1:])
+log_path, key_path, env_path, pixel_path, journal_path = map(Path, sys.argv[1:])
 secrets = []
 if key_path.exists():
     secrets.append(key_path.read_text(encoding="utf-8").strip())
@@ -43,15 +58,20 @@ if env_path.exists():
         match = re.match(r"^(?:export )?([A-Z0-9_]+)=(.*)$", line)
         if match and any(word in match[1] for word in ("KEY", "TOKEN", "SECRET", "PASSWORD")):
             secrets.append(match[2].strip("\"'"))
-print("Sanitized installer log tail:")
-for line in log_path.read_text(encoding="utf-8", errors="replace").splitlines()[-90:]:
-    for secret in secrets:
-        if secret:
-            line = line.replace(secret, "<redacted>")
-    line = re.sub(r"(?i)Bearer\s+\S+", "Bearer <redacted>", line)
-    line = re.sub(r"(?i)([?&](?:key|token|secret|password)=)[^&\s]+", r"\1<redacted>", line)
-    line = re.sub(r"\b(?:sk-|mock-)[A-Za-z0-9_-]{12,}\b", "<redacted>", line)
-    print(line[:500])
+for label, path, limit in (("installer", log_path, 55), ("Pixel", pixel_path, 70),
+                           ("systemd", journal_path, 70)):
+    if not path.exists():
+        continue
+    print(f"Sanitized {label} log tail:")
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines()[-limit:]:
+        for secret in secrets:
+            if secret:
+                line = line.replace(secret, "<redacted>")
+        line = re.sub(r"(?i)Bearer\s+\S+", "Bearer <redacted>", line)
+        line = re.sub(r"(?i)([?&](?:key|token|secret|password)=)[^&\s]+", r"\1<redacted>", line)
+        line = re.sub(r"\b(?:sk-|mock-)[A-Za-z0-9_-]{12,}\b", "<redacted>", line)
+        line = re.sub(r"\b[A-Za-z0-9_/-]{40,}\b", "<redacted>", line)
+        print(line[:500])
 PY
 }
 
@@ -146,6 +166,8 @@ printf 'PASS: fresh installed Portal stack excluded optional images and containe
 wait_portal
 check_api selection-off || fail 'Library did not report WebUI as addable'
 check_api chat || fail 'Portal chat did not complete through the mock upstream'
+grep -q '"POST /v1/chat/completions HTTP/1.1" 200' "$mock_log" \
+    || fail 'mock upstream did not receive the installed Portal chat'
 
 # The API retains a completed response independently of the browser. This is
 # not a claim that the browser's conversation-history UI has been exercised.
@@ -177,6 +199,8 @@ check_api selection-off || fail 'failed add-back left WebUI selected'
 cmp -s "$audit_root/base-before.yml" "$INSTALL_DIR/docker-compose.base.yml" \
     && fail 'failure injection did not modify only the installed Compose file'
 cp "$audit_root/base-before.yml" "$INSTALL_DIR/docker-compose.base.yml"
+cmp -s "$audit_root/base-before.yml" "$INSTALL_DIR/docker-compose.base.yml" \
+    || fail 'failure injection Compose file was not restored'
 [[ "$(sha256sum "$INSTALL_DIR/data/open-webui/acceptance-sentinel.txt" | cut -d' ' -f1)" == "$sentinel_hash" ]] \
     || fail 'failed add-back changed retained WebUI data'
 printf 'PASS: controlled WebUI startup failure restored the prior selection and data\n'

@@ -53,7 +53,7 @@ def main():
         print("PASS: installed WebUI selection is on")
     elif action == "add-webui":
         result = get_json(key, "POST", "/api/webui/selection", {"enabled": True}, timeout=900)
-        assert result.get("enabled") is True and result.get("action") in {"enabled", "already_selected"}, result
+        assert result.get("enabled") is True and result.get("action") == "enabled", result
         print("PASS: Dashboard API added Open WebUI")
     elif action == "expect-add-failure":
         try:
