@@ -95,6 +95,13 @@ uploads. The browser lists members, the owner selects text files, reviews the
 exact quoted message, then inserts it into the draft. Only Send transmits that
 message to the selected model. The model receives neither the ZIP bytes nor a
 file handle. Binary/PDF contents and unselected members are explicitly unread.
+CRLF and CR line endings are normalized to LF before the exact-text review, so
+the review, browser composer and sent text agree even after editing the draft.
+Member byte counts and SHA-256 hashes still identify the original archive bytes;
+the quoted text explicitly states this distinction. The ordinary text-file
+picker uses the same LF message convention and explains it before insertion;
+it leaves the original file untouched. Cover its real FileReader path with both
+direct Send and edit-then-Send as well.
 
 The compressed archive limit is 4 MiB, with at most 64 entries. A selected UTF-8
 member may expand to 256 KiB and the selection to 1 MiB; the resulting draft must
@@ -113,7 +120,8 @@ Exercise a ZIP containing a short brief, a CSV, buggy source and an unread PNG:
    switch while reading must cancel the operation without moving old content
    into the new conversation.
 3. Insert into an existing draft and verify the preview matches the inserted
-   content, including Unicode. Exceeding the draft limit blocks insertion without
+   content, including Unicode and mixed CRLF/CR/LF source lines. Compare the sent
+   request both with and without a subsequent composer edit. Exceeding the draft limit blocks insertion without
    shortening either the draft or file contents. Focus returns to the composer.
 4. Send a natural task that requires all selected files, such as calculating CSV
    totals using the brief and diagnosing the source bug. Independently calculate

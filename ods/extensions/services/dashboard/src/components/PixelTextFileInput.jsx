@@ -8,12 +8,15 @@ const EXTENSIONS = /\.(txt|md|markdown|csv|tsv|json|jsonl|yaml|yml|toml|xml|html
 const MAX_BYTES = 16 * 1024
 
 function quotedFile(name, text) {
+  // Normalize before review and insertion, matching the browser textarea value.
+  text = text.replace(/\r\n?/g, '\n')
   const fence = '`'.repeat(Math.max(2, ...[...text.matchAll(/`+/g)].map(match => match[0].length)) + 1)
   return `\n\nFile: ${JSON.stringify(name)}\n${fence}text\n${text}\n${fence}\n`
 }
 
 export default function PixelTextFileInput({ input, disabled, limit, onInsert, conversationId }) {
   const field = useRef(null)
+  const trigger = useRef(null)
   const reader = useRef(null)
   const archiveRead = useRef(null)
   const generation = useRef(0)
@@ -76,15 +79,16 @@ export default function PixelTextFileInput({ input, disabled, limit, onInsert, c
   const fits = file && appendComposerText(input, file.text).length <= limit
   return <div className="pixel-text-file-input text-xs text-theme-text-secondary">
     <input ref={field} type="file" aria-label="Choose text file" accept=".txt,.md,.csv,.tsv,.json,.jsonl,.yaml,.yml,.toml,.xml,.html,.css,.js,.jsx,.ts,.tsx,.py,.sh,.log,.zip" hidden disabled={disabled} onChange={choose}/>
-    <button type="button" aria-label="Add text file" title="Add text file or review a ZIP" disabled={disabled || reading} onClick={() => field.current?.click()}><Paperclip size={16}/></button>
+    <button ref={trigger} type="button" aria-label="Add text file" title="Add text file or review a ZIP" disabled={disabled || reading} onClick={() => field.current?.click()}><Paperclip size={16}/></button>
     {reading && <div className="pixel-attachment-reading" role="status">Reading local file… <button type="button" onClick={discard}>Cancel reading</button></div>}
     {error && <p role="alert">{error}</p>}
     {file && <div role="group" aria-label="Review text file">
       <p>{file.name} · Text will be inserted into your draft. It is sent to the selected model only when you send the message.</p>
+      <p>Line endings are normalized for the message; the original file is unchanged.</p>
       {!fits && <p role="alert">The file and draft exceed the message limit. Shorten the draft or choose a smaller file.</p>}
       <button type="button" disabled={disabled || !fits} onClick={() => { onInsert(file.text); setFile(null) }}>Insert file text</button>
       <button type="button" onClick={() => setFile(null)}>Discard file</button>
     </div>}
-    {archive && <PixelZipTextReview file={archive.file} archive={archive.metadata} input={input} disabled={disabled} limit={limit} onInsert={onInsert} onClose={discard}/>}
+    {archive && <PixelZipTextReview returnFocusRef={trigger} file={archive.file} archive={archive.metadata} input={input} disabled={disabled} limit={limit} onInsert={onInsert} onClose={discard}/>}
   </div>
 }
