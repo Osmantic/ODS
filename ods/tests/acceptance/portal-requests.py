@@ -144,8 +144,18 @@ def main():
                     chunk = choice.get("delta", {}).get("content")
                     if isinstance(chunk, str):
                         answer.append(chunk)
-        assert done and "ODS_SEARCH_TOOL_RESULT_SEEN" in "".join(answer), (
-            "Pixel did not execute web_search and return a result with a URL")
+        rendered = "".join(answer)
+        print("Pixel search stream shape: " + json.dumps({
+            "done": done,
+            "characters": len(rendered),
+            "chunks": len(answer),
+            "result_seen": "ODS_SEARCH_TOOL_RESULT_SEEN" in rendered,
+            "result_empty": "ODS_SEARCH_TOOL_RESULT_EMPTY" in rendered,
+            "ordinary_mock_reply": rendered == "OK",
+        }), file=sys.stderr)
+        assert done, "Pixel search stream ended without [DONE]"
+        assert "ODS_SEARCH_TOOL_RESULT_SEEN" in rendered, (
+            "Pixel search stream completed without a URL-bearing web_search tool result")
         print("PASS: installed Pixel web_search returned a URL-bearing tool result to chat")
     elif action == "result":
         result = get_json(key, "POST", "/api/pixel/chat/result",

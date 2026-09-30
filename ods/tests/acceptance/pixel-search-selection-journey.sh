@@ -4,7 +4,7 @@ set -euo pipefail
 
 product="${ODS_ACCEPTANCE_PRODUCT_ROOT:?product checkout is required}"
 harness="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-expected=ee7a9ecbc26b6320685b456f3d87002cae3853f7
+expected=d82d4820530d1b513c1ee208eda6dfb8efaef248
 audit_root="${RUNNER_TEMP:?runner temp is required}/ods-pixel-search-acceptance"
 export INSTALL_DIR="$audit_root/install"
 export LOG_FILE="$audit_root/install.log"
@@ -24,8 +24,9 @@ trap cleanup EXIT
 fail() {
     printf 'FAIL: %s\n' "$*" >&2
     if [[ -f "$mock_log" ]]; then
-        printf 'Mock upstream diagnostic tail:\n' >&2
-        tail -n 60 "$mock_log" >&2
+        printf 'Mock upstream search diagnostic tail:\n' >&2
+        grep -E 'search_probe_|search_tool_result_seen|accept=chat|reject=' "$mock_log" \
+            | tail -n 35 >&2 || true
     fi
     docker ps --format '{{.Names}} {{.Status}}' >&2 || true
     exit 1
@@ -156,6 +157,10 @@ printf 'PASS: selected SearXNG serves a URL-bearing search result\n'
 search_before_ok=false
 if python3 "$harness/portal-requests.py" search "$INSTALL_DIR/.env"; then
     search_before_ok=true
+else
+    printf 'Selected-search mock request shape:\n' >&2
+    grep -E 'search_probe_|search_tool_result_seen|accept=chat|reject=' "$mock_log" \
+        | tail -n 18 >&2 || true
 fi
 
 run_installer 'same-provider SearXNG port change' searxng 8899
@@ -179,6 +184,10 @@ fi
 search_after_ok=false
 if python3 "$harness/portal-requests.py" search-port "$INSTALL_DIR/.env"; then
     search_after_ok=true
+else
+    printf 'Port-change search mock request shape:\n' >&2
+    grep -E 'search_probe_|search_tool_result_seen|accept=chat|reject=' "$mock_log" \
+        | tail -n 18 >&2 || true
 fi
 printf 'PASS: same-provider rerun changed the Pixel binding and SearXNG origin\n'
 [[ "$search_before_ok" == true ]] || fail 'selected Pixel web_search did not return a result through Portal'

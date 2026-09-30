@@ -112,6 +112,27 @@ class Handler(http.server.BaseHTTPRequestHandler):
             and "ODS_SEARCH_PROBE" in json.dumps(message)
             for message in request["messages"] if isinstance(message, dict)
         )
+        marker_anywhere = "ODS_SEARCH_PROBE" in json.dumps(request["messages"])
+        if marker_anywhere or any(
+            isinstance(message, dict) and message.get("role") == "tool"
+            for message in request["messages"]
+        ):
+            tool_names = [item.get("function", {}).get("name")
+                          for item in (request.get("tools") or [])
+                          if isinstance(item, dict) and item.get("type") == "function"
+                          and isinstance(item.get("function"), dict)]
+            tool_messages = [item for item in request["messages"]
+                             if isinstance(item, dict) and item.get("role") == "tool"]
+            self.log_message(
+                "search_probe_shape marker_user=%s marker_anywhere=%s roles=%s "
+                "web_search_offered=%s tool_messages=%d matching_tool_result=%s",
+                probe, marker_anywhere,
+                [item.get("role") for item in request["messages"][-12:]
+                 if isinstance(item, dict)],
+                "web_search" in tool_names, len(tool_messages),
+                any(item.get("tool_call_id") == "call_ods_web_search"
+                    for item in tool_messages),
+            )
         if probe:
             tool_results = [message for message in request["messages"]
                             if isinstance(message, dict) and message.get("role") == "tool"
