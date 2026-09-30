@@ -3,6 +3,7 @@ import {useEffect,useRef,useState} from 'react'
 // No transcript persistence, automatic input or model access. This panel is
 // application chrome; never mount it inside the untrusted Preview iframe.
 export function terminalText(value) {
+  // eslint-disable-next-line no-control-regex -- Strip untrusted ANSI/OSC and C0 controls before rendering private terminal output as text.
   return value.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g,'').replace(/\x1b\][\s\S]*?(?:\x07|\x1b\\)/g,'').replace(/[\x00-\x08\x0b-\x1f\x7f]/g,'')
 }
 
