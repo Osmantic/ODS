@@ -179,7 +179,27 @@ curl -fsS --max-time 20 http://127.0.0.1:8888/healthz >/dev/null \
     || fail 'SearXNG health endpoint unavailable after startup wait'
 printf 'PASS: SearXNG enabled and healthy\n'
 
-curl -fsS --max-time 900 -X POST http://127.0.0.1:3001/api/extensions/perplexica/enable     >"$audit_root/perplexica-enable.json" || fail 'Perplexica enable request failed'
+perplexica_code="$(curl -sS --max-time 900 -o "$audit_root/perplexica-enable.json" \
+    -w '%{http_code}' -X POST http://127.0.0.1:3001/api/extensions/perplexica/enable || true)"
+if [[ "$perplexica_code" != 200 ]]; then
+    python3 - "$audit_root/perplexica-enable.json" "$key_file" <<'PY' >&2
+import json
+import re
+import sys
+from pathlib import Path
+
+response = Path(sys.argv[1])
+secret = Path(sys.argv[2]).read_text(encoding="ascii").strip()
+try:
+    detail = json.loads(response.read_text(encoding="utf-8")).get("detail", "")
+except (OSError, ValueError):
+    detail = "unreadable API response"
+message = str(detail).replace(secret, "<redacted>")
+message = re.sub(r"(?i)Bearer\s+\S+", "Bearer <redacted>", message)
+print("Perplexica enable detail (sanitized):", message[:500])
+PY
+    fail "Perplexica enable returned HTTP $perplexica_code"
+fi
 python3 - "$audit_root/perplexica-enable.json" <<'PY' || fail 'Perplexica failed to start'
 import json, sys
 value = json.load(open(sys.argv[1], encoding="utf-8"))
