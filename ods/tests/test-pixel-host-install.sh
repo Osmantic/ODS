@@ -3241,5 +3241,228 @@ cleanup=text.index("# ── Phase 5b: Remove bootstrap model", reconcile)
 assert reconcile < discard < cleanup
 ' "$ROOT/scripts/bootstrap-upgrade.sh"
 
+# Behavior regression: the reuse_active branch must stay unchanged without
+# FORCE and must run the ordered sandbox recovery only when FORCE=true. The
+# production branch is extracted into a fixture (not the two branches copied)
+# so these tests exercise the real installer code paths and diagnostics.
+installer_source="$ROOT/installers/lib/pixel-host-install.sh"
+reuse_fixture="$TEST_ROOT/reuse-active-fixture.sh"
+python3 - "$installer_source" "$reuse_fixture" <<'PY'
+import pathlib, sys
+source = pathlib.Path(sys.argv[1]).read_text()
+start = source.index('if [[ "$reuse_active" == true ]]; then')
+stop = source.index('\n    else\n', source.index('ai "The exact ODS-managed Pixel contract is already active'))
+pathlib.Path(sys.argv[2]).write_text(
+    '#!/usr/bin/env bash\nset -euo pipefail\n\n# Extracted verbatim from pixel-host-install.sh.\n'
+    + source[start:stop]
+    + '\nfi\n'
+)
+PY
+
+reuse_log="$TEST_ROOT/reuse-actions.log"
+reuse_verify_log="$TEST_ROOT/reuse-verify.log"
+run_reuse_auth_branch() {
+    local force_value="$1"
+    ( set -euo pipefail
+        owner=test-owner
+        home="/home/$owner"
+        pixel_root="$TEST_ROOT/pixel-root"
+        pixel_log="$TEST_ROOT/pixel.log"
+        operations_policy="$TEST_ROOT/ops-policy"
+        answers="$TEST_ROOT/answers.json"
+        pixel_gateway_port=18789
+        openclaw_bin="$TEST_ROOT/openclaw"
+        FORCE="$force_value"
+        reuse_active=true
+        : >"$reuse_log"
+        : >"$reuse_verify_log"
+        ai() { :; }
+        ai_bad() { :; }
+        journal() { printf '%s\n' "$*" >>"$reuse_log"; }
+        # This extracted branch exercises ordering; the transaction-aware
+        # verifier has separate tests. Never invoke its host probes here.
+        _ods_pixel_verify_current_runtime() { ods_pixel_run_as_owner "$1" "$2" "$3/pixel" verify; }
+        ods_pixel_run_as_owner() {
+            local source_owner="$1" target_home="$2"; shift 2
+            if [[ "${2:-}" == ops-broker ]]; then
+                journal run-as-owner "$source_owner" ops-broker
+                return 0
+            fi
+            if [[ "${2:-}" == verify ]]; then
+                journal run-as-owner "$source_owner" verify
+                return 0
+            fi
+            journal run-as-owner "$source_owner" "${2:-}"
+            return 0
+        }
+        _ods_pixel_harden_operations_state_profiles() { journal harden operations; return 0; }
+        _ods_pixel_verify_operations_policy_custody() { journal verify-custody "$1" "$2"; return 0; }
+        _ods_pixel_recreate_agent_sandbox() {
+            journal recreate-sandbox "$1" "$2"
+            return 0
+        }
+        _ods_pixel_wait_gateway() { journal wait-gateway "$1" "$2"; return 0; }
+        ods_pixel_reconcile_promoted_model() { journal reconcile-model "$1" "$2"; return 0; }
+        ods_sudo() {
+            journal ods-sudo "$*"
+            return 0
+        }
+        source "$reuse_fixture"
+    ) >>"$reuse_verify_log" 2>&1
+}
+
+if run_reuse_auth_branch false; then
+    if ! grep -qE 'systemctl|recreate-sandbox|wait-gateway' "$reuse_log" \
+        && grep -q 'run-as-owner .* verify' "$reuse_log"; then
+        pass "reuse_active without FORCE verifies without sandbox recovery"
+    else
+        fail "reuse_active without FORCE ran recovery or skipped verify"
+    fi
+else
+    fail "reuse_active without FORCE rejected a valid exact contract"
+fi
+
+if run_reuse_auth_branch true; then
+    if grep -qx 'ods-sudo systemctl stop openclaw-gateway.service' "$reuse_log" \
+        && grep -qx 'recreate-sandbox test-owner /home/test-owner' "$reuse_log" \
+        && grep -qx 'ods-sudo systemctl start openclaw-gateway.service' "$reuse_log" \
+        && grep -qx 'wait-gateway 60 18789' "$reuse_log" \
+        && grep -qx 'run-as-owner test-owner verify' "$reuse_log"; then
+        stop_line="$(grep -n 'ods-sudo systemctl stop openclaw-gateway.service' "$reuse_log" | head -1 | cut -d: -f1)"
+        retire_line="$(grep -n 'recreate-sandbox' "$reuse_log" | head -1 | cut -d: -f1)"
+        start_line="$(grep -n 'ods-sudo systemctl start openclaw-gateway.service' "$reuse_log" | head -1 | cut -d: -f1)"
+        health_line="$(grep -n 'wait-gateway' "$reuse_log" | head -1 | cut -d: -f1)"
+        verify_line="$(grep -n 'run-as-owner test-owner verify' "$reuse_log" | head -1 | cut -d: -f1)"
+        if (( stop_line < retire_line && retire_line < start_line \
+            && start_line < health_line && health_line < verify_line )); then
+            pass "reuse_active with FORCE runs ordered stop/retire/start/wait/verify"
+        else
+            fail "reuse_active FORCE recovery steps ran out of order"
+        fi
+    else
+        fail "reuse_active with FORCE did not run the full recovery sequence"
+    fi
+else
+    fail "reuse_active with FORCE failed an otherwise healthy recovery"
+fi
+
+inject_reuse_action_failure() {
+    local action="$1" force_value="${2:-true}"
+    ( set -euo pipefail
+        owner=test-owner
+        home="/home/$owner"
+        pixel_root="$TEST_ROOT/pixel-root"
+        pixel_log="$TEST_ROOT/pixel.log"
+        operations_policy="$TEST_ROOT/ops-policy"
+        answers="$TEST_ROOT/answers.json"
+        pixel_gateway_port=18789
+        openclaw_bin="$TEST_ROOT/openclaw"
+        FORCE="$force_value"
+        reuse_active=true
+        last_bad=""
+        : >"$reuse_log"
+        : >"$reuse_verify_log"
+        ai() { :; }
+        ai_bad() { last_bad="$1"; }
+        journal() { printf '%s\n' "$*" >>"$reuse_log"; }
+        _ods_pixel_verify_current_runtime() { ods_pixel_run_as_owner "$1" "$2" "$3/pixel" verify; }
+        ods_pixel_run_as_owner() {
+            shift 2
+            if [[ "${2:-}" == ops-broker ]]; then return 0; fi
+            if [[ "${2:-}" == verify ]]; then
+                journal run-as-owner verify
+                [[ "$action" == verify ]] && return 1
+                return 0
+            fi
+            return 0
+        }
+        _ods_pixel_harden_operations_state_profiles() { return 0; }
+        _ods_pixel_verify_operations_policy_custody() { return 0; }
+        _ods_pixel_recreate_agent_sandbox() {
+            journal recreate-sandbox "$1" "$2"
+            [[ "$action" == retire ]] && return 1
+            return 0
+        }
+        _ods_pixel_wait_gateway() { journal wait-gateway; [[ "$action" == wait ]] && return 1; return 0; }
+        ods_sudo() {
+            journal ods-sudo "$*"
+            if [[ "$action" == stop && "$*" == "systemctl stop"* ]]; then return 1; fi
+            if [[ "$action" == start && "$*" == "systemctl start"* ]]; then return 1; fi
+            return 0
+        }
+        local branch_status=0
+        source "$reuse_fixture" || branch_status=$?
+        printf 'RESULT bad=%s\n' "$last_bad"
+        return "$branch_status"
+    ) >>"$reuse_verify_log" 2>&1
+}
+
+if ! inject_reuse_action_failure stop; then
+    if grep -q 'could not enter maintenance mode' "$reuse_verify_log" \
+        && ! grep -q 'recreate-sandbox' "$reuse_log"; then
+        pass "reuse_active FORCE fails closed when the gateway cannot stop"
+    else
+        fail "reuse_active FORCE stop failure did not fail closed before retire"
+    fi
+else
+    fail "reuse_active FORCE stop failure was not propagated"
+fi
+
+if ! inject_reuse_action_failure retire; then
+    if grep -q 'could not retire its stale agent sandbox' "$reuse_verify_log" \
+        && grep -q 'ods-sudo systemctl start' "$reuse_log" \
+        && ! grep -q 'wait-gateway' "$reuse_log"; then
+        pass "reuse_active FORCE restores the gateway on sandbox cleanup failure"
+    else
+        fail "reuse_active FORCE did not restore the gateway after cleanup failure"
+    fi
+else
+    fail "reuse_active FORCE sandbox cleanup failure was not propagated"
+fi
+
+if ! inject_reuse_action_failure start; then
+    if grep -q 'could not restart after forced sandbox recovery' "$reuse_verify_log" \
+        && ! grep -q 'wait-gateway' "$reuse_log"; then
+        pass "reuse_active FORCE fails closed when the gateway cannot restart"
+    else
+        fail "reuse_active FORCE restart failure did not fail closed before wait"
+    fi
+else
+    fail "reuse_active FORCE restart failure was not propagated"
+fi
+
+if ! inject_reuse_action_failure wait; then
+    if grep -q 'did not become healthy after forced sandbox recovery' "$reuse_verify_log" \
+        && ! grep -q 'run-as-owner verify' "$reuse_log"; then
+        pass "reuse_active FORCE fails closed when the gateway does not become healthy"
+    else
+        fail "reuse_active FORCE health failure did not fail closed before verify"
+    fi
+else
+    fail "reuse_active FORCE health failure was not propagated"
+fi
+
+if ! inject_reuse_action_failure verify; then
+    if grep -q 'failed exact-source verification' "$reuse_verify_log" \
+        && grep -q 'run-as-owner verify' "$reuse_log"; then
+        pass "reuse_active FORCE still fails closed on verifier failure"
+    else
+        fail "reuse_active FORCE verifier failure did not fail closed"
+    fi
+else
+    fail "reuse_active FORCE verifier failure was not propagated"
+fi
+
+if ! inject_reuse_action_failure verify false; then
+    if grep -q 'failed exact-source verification' "$reuse_verify_log" \
+        && ! grep -qE 'systemctl|recreate-sandbox|wait-gateway' "$reuse_log"; then
+        pass "non-force exact reuse still rejects verifier failure without recovery"
+    else
+        fail "non-force reuse bypassed verification or ran recovery"
+    fi
+else
+    fail "non-force reuse swallowed verifier failure"
+fi
+
 printf '\nResults: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

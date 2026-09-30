@@ -445,12 +445,31 @@ run_phase06_env_cycle() (
     grep -qx 'SKIP_MODEL_DOWNLOAD=false' "$install_dir/.env"
     grep -q 'api_base: http://llama-server:8080/v1' "$install_dir/config/litellm/local.yaml"
     ! grep -q 'host.docker.internal:11434\|openai/qwen3.5:9b' "$install_dir/config/litellm/local.yaml"
+
+    # A Windows external Lemonade reinstall can inherit the local route from
+    # an earlier CPU fallback. Recompute only that obsolete route.
+    export EXTERNAL_LLM_RESET=false
+    export LEMONADE_EXTERNAL=true
+    export LEMONADE_BASE_URL=http://localhost:13305
+    export LEMONADE_CONTAINER_BASE_URL=http://host.docker.internal:8080
+    export LEMONADE_MODEL=test-lemonade-model
+    export ODS_MODE=lemonade
+    source "$install_dir/installers/phases/06-directories.sh"
+    grep -qx 'LLM_API_URL=http://litellm:4000' "$install_dir/.env"
+
+    sed -i 's#^LLM_API_URL=.*#LLM_API_URL=http://llama-server:8080/v1#' "$install_dir/.env"
+    source "$install_dir/installers/phases/06-directories.sh"
+    grep -qx 'LLM_API_URL=http://litellm:4000' "$install_dir/.env"
+
+    sed -i 's#^LLM_API_URL=.*#LLM_API_URL=http://custom-litellm:4000#' "$install_dir/.env"
+    source "$install_dir/installers/phases/06-directories.sh"
+    grep -qx 'LLM_API_URL=http://custom-litellm:4000' "$install_dir/.env"
 )
 
 if run_phase06_env_cycle; then
-    pass "phase 06 persists external routing and restores managed inference on reset"
+    pass "phase 06 preserves external routing, restores managed inference, and repairs stale Lemonade routes"
 else
-    fail "phase 06 external routing/reset cycle"
+    fail "phase 06 external routing/reset/Lemonade cycle"
 fi
 
 run_phase06_amd_external() (

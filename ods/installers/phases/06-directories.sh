@@ -1064,6 +1064,15 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
         OPEN_WEBUI_LLM_API_KEY_VALUE=""
     else
         LLM_API_URL_VALUE=$(_env_get LLM_API_URL "$_default_llm_api_url")
+        # A retained local route cannot serve an external Lemonade install.
+        # Preserve other existing values as operator-selected endpoints.
+        if [[ "$LEMONADE_EXTERNAL_VALUE" == "true" ]]; then
+            case "$LLM_API_URL_VALUE" in
+                http://llama-server:8080|http://llama-server:8080/v1)
+                    LLM_API_URL_VALUE="$_default_llm_api_url"
+                    ;;
+            esac
+        fi
     fi
     if [[ "$EXTERNAL_LLM_ACTIVE" != "true" && "${EXTERNAL_LLM_RESET:-false}" != "true" && "$ODS_MODEL_SWITCHBOARD_VALUE" == "enabled" ]]; then
         OPEN_WEBUI_LLM_BASE_URL_VALUE=$(_env_get OPEN_WEBUI_LLM_BASE_URL "http://litellm:4000")
