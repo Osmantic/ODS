@@ -62,6 +62,7 @@ from performance_oracle import (
     read_env_value,
 )
 from security import verify_api_key
+from setup_chat_route import resolve_chat_route
 
 logger = logging.getLogger(__name__)
 
@@ -2048,12 +2049,27 @@ async def _run_current_model_benchmark(model_id: str, max_tokens: int) -> dict:
         "context length, and GPU memory bandwidth. Continue until the token budget ends."
     )
 
+    try:
+        benchmark_url, _, headers = resolve_chat_route(f"http://{host}:{port}")
+    except ValueError as exc:
+        raise HTTPException(status_code=503, detail="The configured benchmark inference route is invalid") from exc
+    endpoint = urlsplit(benchmark_url)
+    gateway = (
+        endpoint.scheme == "http"
+        and endpoint.hostname in {"litellm", "ods-litellm"}
+        and endpoint.port == 4000
+    )
+    # The installed gateway aliases track its active backend. Direct runtimes
+    # must receive the observed identity: stale .env model names can auto-load
+    # a different model and incorrectly attribute its speed to this target.
+    benchmark_model = "ods/current" if gateway else loaded_model
     started = time.perf_counter()
     async with httpx.AsyncClient(timeout=max(60.0, max_tokens * 3.0)) as client:
         resp = await client.post(
-            f"http://{host}:{port}{api_prefix}/chat/completions",
+            benchmark_url,
+            headers=headers,
             json={
-                "model": loaded_model,
+                "model": benchmark_model,
                 "messages": [{"role": "user", "content": prompt}],
                 "temperature": 0,
                 "max_tokens": max_tokens,
