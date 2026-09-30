@@ -2,6 +2,7 @@
 """Private request helper for the disposable Portal acceptance runner."""
 
 import json
+import re
 import sys
 import urllib.error
 import urllib.request
@@ -78,6 +79,17 @@ def main():
                     continue
                 event = json.loads(line[6:])
                 if "error" in event:
+                    error = event["error"]
+                    summary = {"eventKeys": sorted(event)}
+                    if isinstance(error, dict):
+                        for field in ("code", "type", "status"):
+                            value = error.get(field)
+                            if isinstance(value, int) or (isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9._-]{1,80}", value)):
+                                summary[field] = value
+                        summary["errorKeys"] = sorted(error)
+                    else:
+                        summary["errorType"] = type(error).__name__
+                    print("Portal error event summary: " + json.dumps(summary), file=sys.stderr)
                     raise AssertionError("Portal returned an error event")
                 for choice in event.get("choices", []):
                     chunk = choice.get("delta", {}).get("content")
