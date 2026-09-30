@@ -89,6 +89,9 @@ test('running an existing build does not reserve a new Playground project',t=>{
     'Run the test script and the build.',
     'Run npm run build for the project.',
     'Use pnpm build to validate the app.',
+    'Execute build and check the app.',
+    'Use gradle build to validate the app.',
+    'Run cargo build and check the project.',
   ]) {
     assert.equal(requestsNewPlaygroundProject(prompt),false,prompt);
     const {root}=fixture(t);
@@ -99,6 +102,11 @@ test('running an existing build does not reserve a new Playground project',t=>{
     assert.notEqual(result?.block,true,result?.blockReason);
   }
   assert.equal(requestsNewPlaygroundProject('Run the tests, then build a new weather app.'),true);
+  // Only unambiguous build commands are stripped: "go build" / "next build"
+  // can still be the creation verb, and a later creation clause stays eligible.
+  assert.equal(requestsNewPlaygroundProject('Go build a new weather app.'),true);
+  assert.equal(requestsNewPlaygroundProject('Next build a new website.'),true);
+  assert.equal(requestsNewPlaygroundProject('Create a new site and run vite build.'),true);
 });
 
 test('creates a real descriptive project, routes files of every type and stores no prompt or identity',t=>{
