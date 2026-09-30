@@ -44,7 +44,12 @@ const sources=new Map([
 const loader=registerHooks({load(url,context,next){return sources.has(url)?{format:'module',source:sources.get(url),shortCircuit:true}:next(url,context);}});
 const native=await import(pathToFileURL(path.join(root,'dist/proxy-Bsfwfsp-.js')));
 const {compactEmbeddedAgentSessionDirect}=await import(pathToFileURL(path.join(root,'dist/compact-DuWIsaq_.js')));
-test.after(()=>{loader.deregister();fs.rmSync(temporary,{recursive:true,force:true});});
+test.after(async()=>{
+  loader.deregister();
+  // Windows may still be releasing native file/directory handles. Bound the
+  // cleanup retries; persistent failures must continue to fail the fixture.
+  await fs.promises.rm(temporary,{recursive:true,force:true,maxRetries:5,retryDelay:100});
+});
 
 function harness(entries) {
   const storage=new native.l({entries}),session=new native.P(storage);
