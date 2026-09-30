@@ -57,6 +57,8 @@ PY
         capture_probe extension-manager sudo -u pixel-ops-broker /usr/bin/python3 \
             /opt/pixel-ops-broker/ods-extension-manager.py client \
             /run/ods-pixel-manager/extension-manager.sock inspect "$probe_id"
+        capture_probe dashboard-extension python3 "$harness/portal-diagnostics.py" \
+            "$INSTALL_DIR/.env" "$probe_id"
     fi
     capture_probe artifact-promoter /usr/bin/python3 \
         /usr/local/libexec/ods-pixel-artifact-promoter.py health \
@@ -113,7 +115,8 @@ for label, path, limit in (("installer", log_path, 55), ("Pixel", pixel_path, 70
         line = re.sub(r"\b(?:sk-|mock-)[A-Za-z0-9_-]{12,}\b", "<redacted>", line)
         line = re.sub(r"\b[A-Za-z0-9_/-]{40,}\b", "<redacted>", line)
         print(line[:500])
-for label in ("extension-search", "extension-manager", "artifact-promoter", "workspace-preview"):
+for label in ("extension-search", "extension-manager", "dashboard-extension",
+              "artifact-promoter", "workspace-preview"):
     status = audit_path / f"{label}.rc"
     if not status.exists():
         continue
@@ -123,6 +126,9 @@ for label in ("extension-search", "extension-manager", "artifact-promoter", "wor
         try:
             value = json.loads(output.read_text(encoding="utf-8"))
             if isinstance(value, dict):
+                if label == "dashboard-extension":
+                    print(json.dumps(value)[:1200])
+                    continue
                 fields = ("schemaVersion", "kind", "query", "action", "extensionId", "outcome",
                           "status", "changed", "externalEffectOccurred", "boundary")
                 print(json.dumps({field: value[field] for field in fields if field in value})[:700])
@@ -271,9 +277,21 @@ printf 'PASS: controlled WebUI startup failure restored the prior selection and 
 
 check_api add-webui || fail 'Library add-back failed after restoring the image'
 check_api selection-on || fail 'Library add-back was not retained'
-compose_services | grep -qx open-webui || fail 'WebUI was not added to the active Compose stack'
+[[ "$(docker inspect --format '{{.HostConfig.RestartPolicy.Name}}' ods-webui)" == unless-stopped ]] \
+    || fail 'Library-added WebUI lacks restart persistence'
 curl -fLsS --max-time 30 http://127.0.0.1:3000/ >/dev/null \
     || fail 'WebUI was not reachable after Library add-back'
+docker restart ods-webui >/dev/null || fail 'Library-added WebUI could not restart'
+webui_ready=false
+for attempt in {1..40}; do
+    if curl -fLsS --max-time 8 http://127.0.0.1:3000/ >/dev/null 2>&1; then
+        webui_ready=true
+        break
+    fi
+    sleep 3
+done
+[[ "$webui_ready" == true ]] || fail 'Library-added WebUI did not recover after restart'
+check_api selection-on || fail 'WebUI choice changed after container restart'
 [[ "$(sha256sum "$INSTALL_DIR/data/open-webui/acceptance-sentinel.txt" | cut -d' ' -f1)" == "$sentinel_hash" ]] \
     || fail 'Library add-back changed retained WebUI data'
 docker ps -a --format '{{.Names}}' | grep -Eq '^ods-llama-server$' \
