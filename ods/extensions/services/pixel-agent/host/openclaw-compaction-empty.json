@@ -1,7 +1,7 @@
 {
   "version": "2026.6.33",
   "sourceSha256": "0cb612bf4a5c25e09e99b31d89cef12ff6151a6c20b4c960d0c5e06465236aff",
-  "patchedSha256": "724abca2876c4ca0f2881330f8fc72cfcd276937c6584302205e845a696e4d25",
+  "patchedSha256": "12fe33a44b48cfe9c5fe95e3f797371ff1e33d548877a95e5d5d0199088738fd",
   "replacements": [
     [
       "\tconst fileOps = extractFileOperations(messagesToSummarize, pathEntries, prevCompactionIndex);",
@@ -10,7 +10,22 @@
     [
       "\tconst { firstKeptEntryId, messagesToSummarize, turnPrefixMessages, isSplitTurn, tokensBefore, previousSummary, fileOps, settings } = preparation;",
       "\tconst { firstKeptEntryId, messagesToSummarize, turnPrefixMessages, isSplitTurn, tokensBefore, previousSummary, fileOps, settings } = preparation;\n\tif (messagesToSummarize.length === 0 && turnPrefixMessages.length === 0) return err(new CompactionError(\"summarization_failed\", \"No compactable conversation messages; history remains unchanged\"));"
+    ],
+    [
+      "\t\t\tif (!preparation) throw new AgentHarnessError(\"compaction\", \"Nothing to compact\");",
+      "\t\t\t// Typed pre-provider no-work outcome; never classify provider error text as success.\n\t\t\tif (!preparation) throw new AgentHarnessError(\"compaction_not_needed\", \"Nothing to compact\");"
     ]
   ],
-  "previousReplacements": {}
+  "previousReplacements": {
+    "724abca2876c4ca0f2881330f8fc72cfcd276937c6584302205e845a696e4d25": [
+      [
+        "\tconst fileOps = extractFileOperations(messagesToSummarize, pathEntries, prevCompactionIndex);",
+        "\t// Keeping the entire history cannot produce a useful compaction checkpoint.\n\tif (messagesToSummarize.length === 0 && turnPrefixMessages.length === 0) return ok(void 0);\n\tconst fileOps = extractFileOperations(messagesToSummarize, pathEntries, prevCompactionIndex);"
+      ],
+      [
+        "\tconst { firstKeptEntryId, messagesToSummarize, turnPrefixMessages, isSplitTurn, tokensBefore, previousSummary, fileOps, settings } = preparation;",
+        "\tconst { firstKeptEntryId, messagesToSummarize, turnPrefixMessages, isSplitTurn, tokensBefore, previousSummary, fileOps, settings } = preparation;\n\tif (messagesToSummarize.length === 0 && turnPrefixMessages.length === 0) return err(new CompactionError(\"summarization_failed\", \"No compactable conversation messages; history remains unchanged\"));"
+      ]
+    ]
+  }
 }

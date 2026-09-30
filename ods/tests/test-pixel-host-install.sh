@@ -3071,8 +3071,8 @@ assert "--state-dir \"$home/.openclaw/ods-runtime-patches/sandbox-mkdir-$mkdir_m
 managed.extend(["sandbox-mkdir-bridge", "sandbox-mkdir-secure"])
 known = installer[foreign_restore:own_repair].split("--known", 1)[1].split(">>", 1)[0]
 assert sorted(known.replace("\\", " ").split()) == sorted(managed)
-assert len(set(managed)) == len(managed) == 15
-assert {"context-usage", "compaction-empty", "hook-provenance"}.issubset(managed)
+assert len(set(managed)) == len(managed) == 17
+assert {"context-usage", "yield-usage", "compaction-empty", "compaction-no-work", "hook-provenance"}.issubset(managed)
 assert installer.index("_ods_pixel_refresh_plugin_registry") < installer.index("_ods_pixel_mark_ready")
 assert "ods_linux_node_tools_available" in text
 assert "runtime_token_file=\"/run/ods-pixel/openclaw.json\"" in text
@@ -3174,7 +3174,7 @@ import pathlib,sys
 text=pathlib.Path(sys.argv[1]).read_text()
 reconcile=text.index("if ! reconcile_ods_managed_pixel_model")
 discard=text.index("discard_active_model_config_snapshot", reconcile)
-cleanup=text.index("# ── Phase 5b: Remove bootstrap model", reconcile)
+cleanup=text.index("# â”€â”€ Phase 5b: Remove bootstrap model", reconcile)
 assert reconcile < discard < cleanup
 ' "$ROOT/scripts/bootstrap-upgrade.sh"
 

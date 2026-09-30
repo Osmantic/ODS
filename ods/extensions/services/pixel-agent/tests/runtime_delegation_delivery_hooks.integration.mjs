@@ -14,19 +14,23 @@ import {setTimeout as delay} from 'node:timers/promises';
 const installed=process.env.OPENCLAW_PACKAGE_DIR;
 const sha=value=>createHash('sha256').update(value).digest('hex');
 
-for(const interim of ['final','silent','waiting'])
+for(const interim of ['final','silent','waiting','extra-yield'])
 test(`real gateway deferred delegation waits for two children and a verified revised terminal answer: interim=${interim}`,
   {skip:!installed || process.platform==='win32',timeout:120000},async()=>{
   const root=mkdtempSync(join(tmpdir(),'ods-delegation-hooks-'));
   const pkg=join(root,'package'), workspace=join(root,'workspace'), plugin=join(root,'plugin');
-  let child, ingress, log='', revision=false, requests=0;
+  let child, ingress, log='', revision=false, requests=0, askedFinalYield=false;
+  const childTexts=['CHILD_VERIFIED_0: ORIGINAL_CART_EVIDENCE_914','CHILD_VERIFIED_1: ORIGINAL_ACCESSIBILITY_EVIDENCE_731'];
+  const consolidatedRequests=[],providerTrace=[];
   cpSync(installed,pkg,{recursive:true});
   assert.equal(JSON.parse(readFileSync(join(pkg,'package.json'))).version,'2026.6.33');
   for(const [name,module] of [['hook-provenance','hook-agent-context-ugCMMoT5.js'],
-    ['context-usage','attempt-execution-DnVHak5f.js'],['compaction-empty','proxy-Bsfwfsp-.js']]) {
+    ['context-usage','attempt-execution-DnVHak5f.js'],['compaction-budget','selection-BEwSQKM-.js'],['yield-usage','embedded-agent-CJx-nG3W.js'],['compaction-empty','proxy-Bsfwfsp-.js']]) {
     const recipe=JSON.parse(readFileSync(new URL(`../host/openclaw-${name}.json`,import.meta.url)));
     const target=join(pkg,'dist',module);let text=readFileSync(target,'utf8');
     if(sha(text)!==recipe.patchedSha256) {
+      const predecessor=recipe.previousReplacements?.[sha(text)];
+      if(predecessor)for(const [before,after] of [...predecessor].reverse()){assert.equal(text.split(after).length,2);text=text.replace(after,before);}
       assert.equal(sha(text),recipe.sourceSha256);
       for(const [before,after] of recipe.replacements){assert.equal(text.split(before).length,2);text=text.replace(before,after);}
       assert.equal(sha(text),recipe.patchedSha256);writeFileSync(target,text);
@@ -52,8 +56,8 @@ test(`real gateway deferred delegation waits for two children and a verified rev
     export default {id:'delivery-fixture',register(api){
       const registry=subagentDeliveryFor(sharedGuard,{finalText:extractAssistantVisibleText,
         resolveOwnerSession:sessionKey=>getSessionEntry({sessionKey,storePath:resolveStorePath(api.config?.session?.store,{agentId:'pixel'})})});
-      api.on('before_prompt_build',(event,ctx)=>{registry.observe(event,ctx);record('prompt',event,ctx);});
-      api.on('before_tool_call',(event,ctx)=>{registry.before(event,ctx);record('before-tool',event,ctx,{toolName:event.toolName,toolCallId:ctx.toolCallId,params:event.params});});
+      api.on('before_prompt_build',(event,ctx)=>{registry.observe(event,ctx);record('prompt',event,ctx);return {prependContext:registry.promptContext(ctx)};});
+      api.on('before_tool_call',(event,ctx)=>{const decision=registry.blocked(ctx,event);registry.before(event,ctx,decision);record('before-tool',event,ctx,{toolName:event.toolName,toolCallId:ctx.toolCallId,params:event.params,decision});return decision;});
       api.on('subagent_spawned',(event,ctx)=>{registry.nativeSpawn(event,ctx);record('spawned',event,ctx,{event,ctx});});
       api.registerHttpRoute({path:'/pixel-ods/subagent-delivery',auth:'gateway',match:'exact',handler:async(req,res)=>{
         const parts=[];for await(const p of req)parts.push(p);const {user,runId}=JSON.parse(Buffer.concat(parts));
@@ -79,14 +83,17 @@ test(`real gateway deferred delegation waits for two children and a verified rev
     const body=JSON.parse(Buffer.concat(chunks));requests++;
     const all=JSON.stringify(body.messages);
     const userMessages=body.messages.filter(m=>m.role==='user').map(m=>typeof m.content==='string'?m.content:JSON.stringify(m.content)).join('\n');
+    const trace={request:requests,lastRole:body.messages.at(-1)?.role,childTask:userMessages.includes('CHILD_FIXTURE_TASK'),announcement:userMessages.includes('Internal task completion event'),revision,markers:childTexts.map(value=>all.includes(value))};
+    providerTrace.push(trace);if(providerTrace.length>40)providerTrace.shift();
     let delta,finish='stop';
     const deferred=(id,name,args)=>({index:0,id,type:'function',function:{name:'tool_call',arguments:JSON.stringify({id:name,args})}});
     if(userMessages.includes('FAIL_FIXTURE')) {
-      res.writeHead(400,{'Content-Type':'application/json'});
+      trace.branch='provider-error';res.writeHead(400,{'Content-Type':'application/json'});
       res.end(JSON.stringify({error:{message:'offline fixture provider refusal',type:'invalid_request_error'}}));return;
     } else if(userMessages.includes('HELLO_FIXTURE')) {
-      delta={role:'assistant',content:'HELLO_VERIFIED'};
+      trace.branch='greeting';delta={role:'assistant',content:'HELLO_VERIFIED'};
     } else if(userMessages.includes('CHILD_FIXTURE_TASK')&&!userMessages.includes('Internal task completion event')) {
+      trace.branch='child';
       if(interim!=='final'&&userMessages.includes('CHILD_FIXTURE_TASK 1')) {
         // Release child two only after the first announced parent turn has
         // actually ended. This reproduces the live partial-completion ordering.
@@ -98,12 +105,19 @@ test(`real gateway deferred delegation waits for two children and a verified rev
         }
         assert.ok(firstEnded,'first parent announcement must finish while the second child is pending');
       } else await delay(300);
-      delta={role:'assistant',content:'CHILD_VERIFIED'};
+      delta={role:'assistant',content:childTexts[userMessages.includes('CHILD_FIXTURE_TASK 1')?1:0]};
     } else if(userMessages.includes('Internal task completion event') || userMessages.includes('CONSOLIDATED_REVIEW') || revision) {
-      const finished=readFileSync(eventsFile,'utf8').trim().split('\n').filter(Boolean).map(JSON.parse)
-        .filter(e=>e.hook==='end'&&e.sessionKey?.includes(':subagent:')&&e.lastText==='CHILD_VERIFIED').length;
-      if(interim!=='final'&&finished<2)delta={role:'assistant',content:interim==='silent'?'NO_REPLY':'One review arrived; waiting for the second.'};
-      else {delta={role:'assistant',content:revision?'CONSOLIDATED_VERIFIED':'CONSOLIDATED_REVIEW'};revision=true;}
+      trace.branch='parent-announcement';
+      const observed=readFileSync(eventsFile,'utf8').trim().split('\n').filter(Boolean).map(JSON.parse);
+      const finished=observed.filter(e=>e.hook==='end'&&e.sessionKey?.includes(':subagent:')&&childTexts.includes(e.lastText)).length;
+      const announced=new Set(observed.filter(e=>e.hook==='prompt'&&e.provenance?.sourceTool==='subagent_announce').map(e=>e.provenance.sourceSessionKey)).size;
+      if(finished<2||announced<2)delta={role:'assistant',content:interim==='silent'?'NO_REPLY':'One review arrived; waiting for the second.'};
+      else if(interim==='extra-yield'&&!askedFinalYield) {
+        askedFinalYield=true;delta={role:'assistant',tool_calls:[deferred('unneeded-yield','sessions_yield',{})]};finish='tool_calls';
+      } else {
+        const evidence=childTexts.map(text=>all.includes(text));consolidatedRequests.push(evidence);
+        delta={role:'assistant',content:evidence.every(Boolean)?(revision||interim==='extra-yield'?'CONSOLIDATED_VERIFIED':'CONSOLIDATED_REVIEW'):'MISSING_SIBLING_EVIDENCE'};revision=true;
+      }
     } else if(all.includes('childSessionKey')) {
       delta={role:'assistant',tool_calls:[deferred('yield-fixture','sessions_yield',{})]};finish='tool_calls';
     } else {
@@ -142,13 +156,13 @@ test(`real gateway deferred delegation waits for two children and a verified rev
     }
     assert.ok(events.some(e=>e.hook==='end'&&e.lastText==='CONSOLIDATED_VERIFIED'),JSON.stringify({body,events,requests,log}));
     const original=events.find(e=>e.hook==='prompt'&&!e.sessionKey?.includes(':subagent:'));
-    const verifiedRun=events.find(e=>e.hook==='finalize'&&e.text==='CONSOLIDATED_REVIEW')?.runId;
+    const verifiedRun=events.find(e=>e.hook==='finalize'&&e.text===(interim==='extra-yield'?'CONSOLIDATED_VERIFIED':'CONSOLIDATED_REVIEW'))?.runId;
     const announcement=events.find(e=>e.hook==='prompt'&&e.runId===verifiedRun&&e.provenance?.sourceTool==='subagent_announce');
     assert.ok(announcement,JSON.stringify(events));
     assert.equal(announcement.sessionId,original.sessionId);
     const scoped=events.filter(e=>e.runId===announcement.runId);
     const finals=scoped.filter(e=>e.hook==='finalize');
-    assert.deepEqual(finals.map(e=>[e.text,e.revise]),[['CONSOLIDATED_REVIEW',true],['CONSOLIDATED_VERIFIED',false]]);
+    assert.deepEqual(finals.map(e=>[e.text,e.revise]),interim==='extra-yield'?[['CONSOLIDATED_VERIFIED',false]]:[['CONSOLIDATED_REVIEW',true],['CONSOLIDATED_VERIFIED',false]]);
     assert.equal(scoped.filter(e=>e.hook==='end').length,1);
     assert.equal(scoped.at(-1).hook,'end');assert.equal(scoped.at(-1).success,true);
     assert.equal(scoped.at(-1).lastText,'CONSOLIDATED_VERIFIED');
@@ -160,6 +174,7 @@ test(`real gateway deferred delegation waits for two children and a verified rev
     assert.ok(yieldIndex<originalEvents.findIndex(e=>e.hook==='end'));
     assert.ok(finals.every(e=>e.provenance===undefined),'lifecycle helper sparsifies provenance; use earlier bound prompt identity');
     assert.equal(events.filter(e=>e.hook==='spawned').length,2);
+    assert.ok(consolidatedRequests.length>=(interim==='extra-yield'?1:2));assert.ok(consolidatedRequests.every(pair=>pair.every(Boolean)),'provider must really receive both distinct child report bodies');
     if(interim!=='final') {
       const firstEnd=events.findIndex(e=>e.hook==='end'&&e.runId?.startsWith('announce:'));
       const childEnds=events.map((e,i)=>[e,i]).filter(([e])=>e.hook==='end'&&e.sessionKey?.includes(':subagent:'));
@@ -167,7 +182,8 @@ test(`real gateway deferred delegation waits for two children and a verified rev
       assert.equal(events[firstEnd].lastText,interim==='silent'?'NO_REPLY':'One review arrived; waiting for the second.');
       assert.ok(!body.includes('One review arrived; waiting for the second.'));
     }
-    assert.equal(events.filter(e=>e.hook==='end'&&e.sessionKey?.includes(':subagent:')&&e.lastText==='CHILD_VERIFIED').length,2);
+    assert.equal(events.filter(e=>e.hook==='end'&&e.sessionKey?.includes(':subagent:')&&childTexts.includes(e.lastText)).length,2);
+    if(interim==='extra-yield')assert.ok(events.some(e=>e.hook==='before-tool'&&e.toolName==='sessions_yield'&&e.decision?.block),'native deferred yield is blocked after both results and the model can still finalize');
     const innerSpawns=originalEvents.filter(e=>e.hook==='tool'&&e.toolName==='sessions_spawn');
     assert.equal(innerSpawns.length,2);
     for(const spawned of innerSpawns) {
@@ -207,9 +223,13 @@ test(`real gateway deferred delegation waits for two children and a verified rev
         assert.ok(!relevant.some(e=>e.hook==='finalize'),'provider failure must not create a final-answer candidate');
       }
     }
-    if(process.env.ODS_HOOK_EVIDENCE_PATH)writeFileSync(process.env.ODS_HOOK_EVIDENCE_PATH+'.'+interim,JSON.stringify({requests,body,events},null,2));
+    const transcript=readFileSync(join(root,'state','agents','pixel','sessions',original.sessionId+'.jsonl'),'utf8').trim().split('\n').map(JSON.parse);
+    const mirrors=transcript.filter(e=>e.message?.api==='cli').map(e=>e.message);
+    assert.ok(mirrors.length>0);
+    assert.ok(mirrors.every(message=>message.usage?.totalTokens===530),JSON.stringify(mirrors.map(message=>message.usage)));
+    if(process.env.ODS_HOOK_EVIDENCE_PATH)writeFileSync(process.env.ODS_HOOK_EVIDENCE_PATH+'.'+interim,JSON.stringify({requests,body,events,providerTrace,consolidatedRequests},null,2));
   } finally {
-    if(process.env.ODS_HOOK_EVIDENCE_PATH)writeFileSync(process.env.ODS_HOOK_EVIDENCE_PATH+'.'+interim+'.debug',JSON.stringify({log,events:existsSync(eventsFile)?readFileSync(eventsFile,'utf8'):''},null,2));
+    if(process.env.ODS_HOOK_EVIDENCE_PATH)writeFileSync(process.env.ODS_HOOK_EVIDENCE_PATH+'.'+interim+'.debug',JSON.stringify({log:log.slice(-131072),events:existsSync(eventsFile)?readFileSync(eventsFile,'utf8').slice(-524288):'',providerTrace,consolidatedRequests},null,2));
     if(child&&child.exitCode===null){const done=once(child,'close');process.kill(-child.pid,'SIGTERM');await Promise.race([done,delay(3000)]);if(child.exitCode===null)process.kill(-child.pid,'SIGKILL');}
     if(ingress){ingress.closeAllConnections();await new Promise(resolve=>ingress.close(resolve));}
     upstream.closeAllConnections();await new Promise(resolve=>upstream.close(resolve));

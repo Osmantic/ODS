@@ -4752,7 +4752,9 @@ ods_pixel_install_default_agent() {
         && -f "$plugin_root/host/openclaw-diagnostic-stream-writes.json" \
         && -f "$plugin_root/host/openclaw-image-envelope.json" \
         && -f "$plugin_root/host/openclaw-context-usage.json" \
+        && -f "$plugin_root/host/openclaw-yield-usage.json" \
         && -f "$plugin_root/host/openclaw-compaction-empty.json" \
+        && -f "$plugin_root/host/openclaw-compaction-no-work.json" \
         && -f "$plugin_root/host/openclaw-hook-provenance.json" \
         && -f "$plugin_root/host/pixel-ops-broker-ods.conf" \
         && -f "$plugin_root/host/cancellable-exec.sh" \
@@ -5079,7 +5081,7 @@ ods_pixel_install_default_agent() {
         --restore-foreign "$home/.openclaw/ods-runtime-patches" \
         --known tool-recovery completion-recovery image-envelope compaction-export \
             compaction-idle compaction-resume read-range tool-result-projection \
-            diagnostic-stream-writes compaction-budget context-usage compaction-empty hook-provenance sandbox-mkdir-bridge sandbox-mkdir-secure \
+            diagnostic-stream-writes compaction-budget context-usage yield-usage compaction-empty compaction-no-work hook-provenance sandbox-mkdir-bridge sandbox-mkdir-secure \
         >>"$pixel_log" 2>&1; then
         ai_bad "Pixel could not restore OpenClaw runtime patches left by another ODS build. See $pixel_log."
         return 1
@@ -5222,10 +5224,26 @@ ods_pixel_install_default_agent() {
     fi
     if ! ods_pixel_run_as_owner "$owner" "$home" python3 \
         "$plugin_root/host/openclaw_tool_recovery.py" \
+        --openclaw-bin "$openclaw_bin" --yield-usage \
+        --state-dir "$home/.openclaw/ods-runtime-patches/yield-usage" \
+        >>"$pixel_log" 2>&1; then
+        ai_bad "Pixel's yield-usage repair could not verify its package bytes. See $pixel_log."
+        return 1
+    fi
+    if ! ods_pixel_run_as_owner "$owner" "$home" python3 \
+        "$plugin_root/host/openclaw_tool_recovery.py" \
         --openclaw-bin "$openclaw_bin" --compaction-empty \
         --state-dir "$home/.openclaw/ods-runtime-patches/compaction-empty" \
         >>"$pixel_log" 2>&1; then
         ai_bad "Pixel's compaction-empty repair could not verify its package bytes. See $pixel_log."
+        return 1
+    fi
+    if ! ods_pixel_run_as_owner "$owner" "$home" python3 \
+        "$plugin_root/host/openclaw_tool_recovery.py" \
+        --openclaw-bin "$openclaw_bin" --compaction-no-work \
+        --state-dir "$home/.openclaw/ods-runtime-patches/compaction-no-work" \
+        >>"$pixel_log" 2>&1; then
+        ai_bad "Pixel's compaction-no-work repair could not verify its package bytes. See $pixel_log."
         return 1
     fi
     # OpenClaw persists plugin descriptors separately from its live config.

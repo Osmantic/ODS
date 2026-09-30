@@ -12,8 +12,9 @@ const sha = value => createHash('sha256').update(value).digest('hex');
 function reviewed(name, module) {
   const recipe = JSON.parse(fs.readFileSync(new URL(`../host/openclaw-${name}.json`, import.meta.url)));
   let original = fs.readFileSync(path.join(root, 'dist', module), 'utf8');
-  if (sha(original) === recipe.patchedSha256) {
-    for (const [before, after] of [...recipe.replacements].reverse()) {
+  const applied=sha(original)===recipe.patchedSha256 ? recipe.replacements : recipe.previousReplacements?.[sha(original)];
+  if (applied) {
+    for (const [before, after] of [...applied].reverse()) {
       assert.equal(original.split(after).length, 2);
       original = original.replace(after, before);
     }
@@ -151,4 +152,88 @@ if(process.env.ODS_COMPACTION_TRANSCRIPT) test('original local 21-event regressi
   assert.equal(original.messagesToSummarize.length,0);
   assert.equal(original.turnPrefixMessages.length,0);
   assert.equal(fixed.j(rows,settings).value,undefined);
+});
+
+
+// Run the exact installed caller with its real normalization/accumulator helpers.
+// A yield's synthetic zero-usage abort previously hid the preceding model call.
+const yielded = reviewed('yield-usage', 'embedded-agent-CJx-nG3W.js');
+const selection = reviewed('compaction-budget', 'selection-BEwSQKM-.js');
+function currentYieldAssistant(messagesSnapshot, prePromptMessageCount=0) {
+  const start=selection.patched.indexOf('currentAttemptAssistant = yieldDetected');
+  const end=selection.patched.indexOf('attemptUsage = getUsageTotals();',start);
+  assert.ok(start>0&&end>start);
+  return new Function('snapshotSelection','prePromptMessageCount',
+    'const yieldDetected=true; let currentAttemptAssistant;\n'+selection.patched.slice(start,end)+'return currentAttemptAssistant;')({messagesSnapshot},prePromptMessageCount);
+}
+const {i:hasNonzeroUsage,o:normalizeUsage} = await import(pathToFileURL(path.join(root,'dist/usage-C67Kbb7n.js')));
+const {C:createUsageAccumulator,w:mergeUsageIntoAccumulator,l:buildUsageAgentMetaFields} =
+  await import(pathToFileURL(path.join(root,'dist/selection-BEwSQKM-.js')));
+function yieldAccounting(source, attempt) {
+  const start=source.includes('const yieldAssistant =') ? source.indexOf('const yieldAssistant =') : source.indexOf('const lastAssistantUsage = normalizeUsage(sessionLastAssistant?.usage);');
+  const end=source.indexOf('const breakerStep =',start);
+  const metaStart=source.indexOf('const usageMeta = buildUsageAgentMetaFields({');
+  const metaEnd=source.indexOf('const reportedModelRef =',metaStart);
+  assert.ok(start>0&&end>start&&metaStart>end&&metaEnd>metaStart);
+  const execute=new Function('normalizeUsage','hasNonzeroUsage','mergeUsageIntoAccumulator','buildUsageAgentMetaFields','createUsageAccumulator','attempt',
+    'const sessionLastAssistant=attempt.lastAssistant, currentAttemptAssistant=attempt.currentAttemptAssistant; const usageAccumulator=createUsageAccumulator(); let lastRunPromptUsage,lastTurnTotal;\n'
+    +source.slice(start,end)+source.slice(metaStart,metaEnd)+'\nreturn {usageMeta,usageAccumulator,lastRunPromptUsage,lastTurnTotal};');
+  return execute(normalizeUsage,hasNonzeroUsage,mergeUsageIntoAccumulator,buildUsageAgentMetaFields,createUsageAccumulator,{...attempt,currentAttemptAssistant:currentYieldAssistant(attempt.messagesSnapshot??[],attempt.prePromptMessageCount??0)});
+}
+const measured={role:'assistant',stopReason:'toolUse',usage:{input:27846,output:75,totalTokens:27921}};
+const synthetic={role:'assistant',stopReason:'aborted',usage:{input:0,output:0,totalTokens:0}};
+const yieldedAttempt={yieldDetected:true,lastAssistant:undefined,messagesSnapshot:[measured,synthetic],attemptUsage:{input:136627,output:1547,total:138174}};
+
+test('native yield uses the last measured model call rather than run-wide billing',()=>{
+  const before=yieldAccounting(yielded.original,yieldedAttempt),after=yieldAccounting(yielded.patched,yieldedAttempt);
+  assert.equal(before.usageMeta.lastCallUsage.total,138174);
+  assert.equal(after.usageMeta.lastCallUsage.total,27921);
+  assert.equal(after.lastTurnTotal,27921);
+  assert.deepEqual(after.usageAccumulator,before.usageAccumulator,'accumulated billing is unchanged');
+});
+
+test('yield accounting excludes failed/aborted synthetic messages and preserves native cache normalization',()=>{
+  const call={...measured,usage:{input:20000,output:20,cacheRead:600,cacheWrite:200,totalTokens:20820}};
+  const failed={role:'assistant',stopReason:'error',usage:{input:99999,output:1,totalTokens:100000}};
+  const aborted={...failed,stopReason:'aborted'};
+  const after=yieldAccounting(yielded.patched,{...yieldedAttempt,lastAssistant:aborted,messagesSnapshot:[call,failed,aborted]});
+  assert.deepEqual(after.usageMeta.lastCallUsage,normalizeUsage(call.usage));
+  assert.equal(after.lastTurnTotal,20820);
+});
+
+test('yield without any measured successful assistant does not invent context from billing or zero',()=>{
+  const after=yieldAccounting(yielded.patched,{...yieldedAttempt,messagesSnapshot:[synthetic]});
+  assert.equal(after.usageMeta.lastCallUsage,undefined);
+  assert.equal(after.usageMeta.promptTokens,undefined);
+  assert.equal(after.lastRunPromptUsage,undefined);
+  assert.equal(after.lastTurnTotal,undefined);
+  assert.equal(after.usageMeta.usage.input,136627);
+});
+
+test('non-yield accounting keeps the existing native normalization and error fallback',()=>{
+  for(const lastAssistant of [measured,synthetic,undefined]) {
+    const input={...yieldedAttempt,yieldDetected:false,lastAssistant};
+    assert.deepEqual(yieldAccounting(yielded.patched,input),yieldAccounting(yielded.original,input));
+  }
+});
+
+
+test('missing current usage does not backfill an older historical assistant measurement',()=>{
+  for(const usage of [undefined,{input:0,output:0,totalTokens:0}]) {
+    const unmeasured={role:'assistant',stopReason:'toolUse',usage};
+    const after=yieldAccounting(yielded.patched,{...yieldedAttempt,messagesSnapshot:[measured,unmeasured,synthetic]});
+    assert.equal(after.usageMeta.lastCallUsage,undefined);
+    assert.equal(after.lastRunPromptUsage,undefined);
+  }
+});
+
+
+test('yield selection ignores historical assistants and projected nested tool-call messages',()=>{
+  const historical={...measured,usage:{input:99000,output:9,totalTokens:99009}};
+  assert.equal(currentYieldAssistant([historical,synthetic],1),undefined);
+  // The reviewed selector consumes snapshotSelection's raw messages, not the
+  // later projected messagesSnapshot containing this synthetic tool_call.
+  const selected=currentYieldAssistant([historical,measured,synthetic],1);
+  assert.equal(selected,measured);
+  assert.equal(yieldAccounting(yielded.patched,{...yieldedAttempt,prePromptMessageCount:1,messagesSnapshot:[historical,synthetic]}).usageMeta.lastCallUsage,undefined);
 });
