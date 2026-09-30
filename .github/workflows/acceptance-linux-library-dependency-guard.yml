@@ -23,7 +23,7 @@ jobs:
       - name: Checkout exact Library dependency guard candidate
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
-          ref: 1e7a0ebee8e7812c52c6af47987c880dc83b8b15
+          ref: c6ab17790b7e2310bd09f0d15ab97d0d7439773a
           path: product
       - name: Exercise Library dependency guard on installed ODS
         env:
