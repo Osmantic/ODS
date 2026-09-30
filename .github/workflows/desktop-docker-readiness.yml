@@ -17,7 +17,7 @@ permissions:
   contents: read
 
 jobs:
-  readiness:
+  docker-command-readiness:
     strategy:
       fail-fast: false
       matrix:
