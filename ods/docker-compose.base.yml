@@ -357,7 +357,9 @@ services:
       - ODS_FLEET_PROBE_KEY_PATH=/state/fleet-probe.key
     volumes:
       - ${ODS_DATA_DIR:-./data}:/state:ro
-      - ${ODS_CONFIG_DIR:-./config}/model-router/endpoints.json:/config/endpoints.json:ro
+      # The renderer atomically replaces endpoints.json; mount its parent so
+      # the router sees the new inode without a container recreate.
+      - ${ODS_CONFIG_DIR:-./config}/model-router:/config:ro
     deploy:
       resources:
         limits:
