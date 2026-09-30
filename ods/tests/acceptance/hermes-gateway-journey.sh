@@ -252,7 +252,8 @@ print("Hermes route diagnostic:", {
 assert model["default"] == "ods-acceptance-mock"
 assert model["base_url"] == "http://litellm:4000/v1"
 assert model["api_key"] == key and key
-assert stat.S_IMODE(live.stat().st_mode) == 0o600
+# Host pre-start writes 0600; Hermes may add owner-group read after startup.
+assert stat.S_IMODE(live.stat().st_mode) in (0o600, 0o640)
 assert key not in template.read_text(encoding="utf-8")
 print("PASS: Hermes selected external model in private live config")
 PY
