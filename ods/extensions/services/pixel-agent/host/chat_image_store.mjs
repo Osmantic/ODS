@@ -135,6 +135,22 @@ export function createChatImageStore(directory, {maxBytes = CHAT_IMAGE_CACHE_BYT
       return release;
     } catch(error) {release();throw error;}
   }
+  function recoverTemporaryNames() {
+    for (const name of fs.readdirSync(directory)) {
+      if (!/^ods-[a-f0-9]{64}--img-[a-f0-9]{32}\.image\.tmp-[a-f0-9]{32}$/.test(name)) continue;
+      const temporary = path.join(directory, name), stat = fs.lstatSync(temporary);
+      if (!stat.isFile() || stat.isSymbolicLink() || ![1,2].includes(stat.nlink)
+          || process.platform !== 'win32' && (stat.uid !== process.getuid() || stat.mode & 0o077)) fail('image-storage-unavailable',503);
+      if (stat.nlink === 2) {
+        const published = fs.lstatSync(temporary.slice(0, -37));
+        if (!published.isFile() || published.isSymbolicLink() || published.dev !== stat.dev || published.ino !== stat.ino
+            || published.nlink !== 2) fail('image-storage-unavailable',503);
+      }
+      // Only the unpublished temporary name is removed. A link published
+      // immediately before a crash remains intact and becomes readable.
+      fs.unlinkSync(temporary);
+    }
+  }
   function filename(user, reference) {
     if (typeof user !== 'string' || user.length !== 68 || !USER.test(user)) fail('invalid-image-user', 400);
     normalizeChatImageReference({id:reference.id, sha256:reference.sha256});
@@ -158,20 +174,7 @@ export function createChatImageStore(directory, {maxBytes = CHAT_IMAGE_CACHE_BYT
     if (total > CHAT_IMAGE_BYTES) fail('image-turn-too-large', 413);
     const release = writerLease();
     try {
-      for (const name of fs.readdirSync(directory)) {
-        if (!/^ods-[a-f0-9]{64}--img-[a-f0-9]{32}\.image\.tmp-[a-f0-9]{32}$/.test(name)) continue;
-        const temporary = path.join(directory, name), stat = fs.lstatSync(temporary);
-        if (!stat.isFile() || stat.isSymbolicLink() || ![1,2].includes(stat.nlink)
-            || process.platform !== 'win32' && (stat.uid !== process.getuid() || stat.mode & 0o077)) fail('image-storage-unavailable',503);
-        if (stat.nlink === 2) {
-          const published = fs.lstatSync(temporary.slice(0, -37));
-          if (!published.isFile() || published.isSymbolicLink() || published.dev !== stat.dev || published.ino !== stat.ino
-              || published.nlink !== 2) fail('image-storage-unavailable',503);
-        }
-        // Only the unpublished temporary name is removed. A link published
-        // immediately before a crash remains intact and becomes readable.
-        fs.unlinkSync(temporary);
-      }
+      recoverTemporaryNames();
       const entries = fs.readdirSync(directory).filter(name => !name.startsWith('.write-lock-'));
       if (entries.length > MAX_FILES) fail('image-storage-limit', 507);
       let occupied = 0;
@@ -208,6 +211,8 @@ export function createChatImageStore(directory, {maxBytes = CHAT_IMAGE_CACHE_BYT
     } catch (error) {if (error instanceof ChatImageError) throw error; fail('image-storage-unavailable', 503);}
     finally {release();}
   }
+  const releaseStartup = writerLease();
+  try {recoverTemporaryNames();} finally {releaseStartup();}
   return {put, read};
 }
 

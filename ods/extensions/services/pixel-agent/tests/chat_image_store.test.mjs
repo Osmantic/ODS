@@ -30,6 +30,8 @@ test('a process dying after publish recovers without deleting the published imag
   const child=spawnSync(process.execPath,['--input-type=module','-e',script],{encoding:'utf8'});
   assert.equal(child.status,91,child.stderr);
   assert.ok(fs.readdirSync(directory).some(name=>name.includes('.tmp-')));
+  const restarted=createChatImageStore(directory);
+  assert.deepEqual(restarted.read(user,ref(image),[ref(image)]).data,data);
   assert.deepEqual(store.put(user,[image],[ref(image)]),[ref(image)]);
   assert.deepEqual(store.read(user,ref(image),[ref(image)]).data,data);
   assert.equal(fs.readdirSync(directory).length,1);
@@ -39,8 +41,27 @@ test('a live writer lease refuses a second writer without removing either image 
   const {directory,store}=setup(t);
   const lease=path.join(directory,`.write-lock-${process.pid}-${'a'.repeat(32)}`);
   fs.writeFileSync(lease,'',{mode:0o600});
+  assert.throws(()=>createChatImageStore(directory),error=>error.code==='image-storage-busy');
   assert.throws(()=>store.put(user,[image],[ref(image)]),error=>error.code==='image-storage-busy');
   assert.deepEqual(fs.readdirSync(directory),[path.basename(lease)]);
+});
+
+test('startup discards an interrupted unpublished copy and keeps prior published images', t => {
+  const {directory,store}=setup(t);
+  store.put(user,[image],[ref(image)]);
+  const second={...image,id:`img-${'2'.repeat(32)}`};
+  const moduleUrl=new URL('../host/chat_image_store.mjs',import.meta.url).href;
+  const script=`import fs from 'node:fs';import {createChatImageStore} from ${JSON.stringify(moduleUrl)};
+    const store=createChatImageStore(${JSON.stringify(directory)});
+    const original=fs.writeFileSync;fs.writeFileSync=(...args)=>{original(...args);process.exit(92)};
+    store.put(${JSON.stringify(user)},[{...${JSON.stringify({...second,data:undefined})},data:Buffer.from(${JSON.stringify(data.toString('base64'))},'base64')}],${JSON.stringify([ref(second)])});`;
+  const child=spawnSync(process.execPath,['--input-type=module','-e',script],{encoding:'utf8'});
+  assert.equal(child.status,92,child.stderr);
+  assert.ok(fs.readdirSync(directory).some(name=>name.includes('.tmp-')));
+  const restarted=createChatImageStore(directory);
+  assert.deepEqual(restarted.read(user,ref(image),[ref(image)]).data,data);
+  assert.throws(()=>restarted.read(user,ref(second),[ref(second)]),error=>error.code==='image-copy-unavailable');
+  assert.equal(fs.readdirSync(directory).length,1);
 });
 
 test('immutable private copy survives restart and transcript pruning, with exact digest', async t => {
