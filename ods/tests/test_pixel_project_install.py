@@ -37,6 +37,21 @@ def test_invalid_deployment_is_rejected(change):
         installer.unit_bytes({**config(), **change})
 
 
+@pytest.mark.parametrize('limits', [None, {}, {'jobBytes': True, 'totalBytes': 1024**3, 'maxJobs': 2},
+                                   {'jobBytes': 1024**3, 'totalBytes': 1, 'maxJobs': 2},
+                                   {'jobBytes': 1024**3, 'totalBytes': 2 * 1024**3, 'maxJobs': 9}])
+def test_invalid_storage_policy_is_rejected(limits):
+    with pytest.raises(ValueError):
+        installer.unit_bytes({**config(), 'storageLimits': limits})
+
+
+def test_explicit_storage_policy_is_installer_owned_and_distributed():
+    limits = {'jobBytes': 512 * 1024**2, 'totalBytes': 1024**3, 'maxJobs': 2}
+    unit = installer.unit_bytes({**config(), 'storageLimits': limits}).decode()
+    assert '--storage-bytes 536870912 --storage-total-bytes 1073741824 --storage-max-jobs 2' in unit
+    assert 'project_storage.py' in installer.FILES
+
+
 @pytest.mark.skipif(os.environ.get('ODS_TEST_PROJECT_NODE') != '1', reason='real Docker build opt-in')
 def test_fixed_runtime_build_returns_immutable_configuration(tmp_path):
     source = HELPER.parents[2] / 'extensions/services/pixel-agent/host/Dockerfile.project-node'

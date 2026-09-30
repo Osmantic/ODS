@@ -13,6 +13,8 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "host"))
 from project_controller import ProjectController
+from project_runtime import deadline_command
+from project_storage import volume_options, DEFAULT_JOB_BYTES
 
 
 @unittest.skipUnless(os.name == "posix", "private POSIX controller state")
@@ -23,6 +25,9 @@ class ProjectRecoveryTests(unittest.TestCase):
         self.controller = ProjectController(self.temp.name, Path(self.temp.name) / "state",
                                             "sha256:" + "a" * 64, authorize=lambda *_: True)
         self.addCleanup(self.controller.close)
+        cleanup = patch.object(self.controller, '_cleanup', return_value=[])
+        cleanup.start()
+        self.addCleanup(cleanup.stop)
         request = {"project": "project", "sourceSha256": "b" * 64,
                    "image": self.controller.image, "outputDirectory": "out"}
         self.job = self.controller.jobs.create("c" * 64, request)[0]
@@ -32,18 +37,25 @@ class ProjectRecoveryTests(unittest.TestCase):
         self.container = {
             "Id": "d" * 64, "Image": self.controller.image, "Name": "/" + self.job + "-acquire",
             "Config": {"Image": self.controller.image,
-                       "Cmd": ["npm", "ci", "--ignore-scripts", "--no-audit", "--no-fund",
-                               "--registry=https://registry.npmjs.org"],
+                       "Cmd": deadline_command(["npm", "ci", "--ignore-scripts", "--no-audit", "--no-fund",
+                               "--registry=https://registry.npmjs.org"]),
                        "User": "1000:1000", "Labels": {"org.osmantic.ods.project-job": self.job}},
             "HostConfig": {"NetworkMode": "bridge", "ReadonlyRootfs": True, "Privileged": False,
                            "CapDrop": ["ALL"], "SecurityOpt": ["no-new-privileges"],
-                           "Memory": 2 * 1024 ** 3, "NanoCpus": 2 * 10 ** 9, "PidsLimit": 256},
+                           "Memory": 2 * 1024 ** 3, "MemorySwap": 2 * 1024 ** 3,
+                           "NanoCpus": 2 * 10 ** 9, "PidsLimit": 256},
             "Mounts": [{"Type": "volume", "Name": self.job, "Destination": "/home/node"}],
             "State": {"Running": True, "Status": "running", "StartedAt": "2026-01-01", "ExitCode": 0},
         }
 
     def docker(self, args, **kwargs):
         self.commands.append(args)
+        if args[:3] == ['docker', 'volume', 'inspect']:
+            value = {'Name': self.job, 'Driver': 'local', 'Scope': 'local',
+                     'Options': volume_options(DEFAULT_JOB_BYTES),
+                     'Labels': {'org.osmantic.ods.project-job': self.job,
+                                'org.osmantic.ods.project-storage': 'tmpfs-v1'}}
+            return subprocess.CompletedProcess(args, 0, json.dumps([value]).encode())
         if args[:3] == ["docker", "container", "ls"]:
             return subprocess.CompletedProcess(args, 0, (self.container["Id"] + "\n").encode())
         if args[:2] == ["docker", "inspect"]:
@@ -68,6 +80,19 @@ class ProjectRecoveryTests(unittest.TestCase):
         self.assertTrue(result["output"]["artifactImportUnconfirmed"])
         self.assertEqual(result["steps"], [])
         self.assertFalse(self.controller.jobs.claim(self.job))
+
+    def test_unconfirmed_recorded_stage_is_the_stage_recovery_must_confirm(self):
+        # A CLI timeout records the current stage, not an unseen next stage.
+        with self.controller.jobs._connect() as db:
+            db.execute("UPDATE jobs SET state='running' WHERE id=?", (self.job,))
+        self.controller.jobs.record_stage(self.job, 'acquire', {'status': 'unconfirmed', 'exitCode': None})
+        self.assertEqual(self.cancel()['state'], 'cancelled')
+
+    def test_recovery_cleanup_uses_original_verified_image_after_service_upgrade(self):
+        original = self.controller.image
+        self.controller.image = 'sha256:' + 'e' * 64
+        self.assertEqual(self.cancel()['state'], 'cancelled')
+        self.controller._cleanup.assert_called_once_with(self.job, image=original)
 
     def test_restarted_reconcile_reports_runtime_without_resuming_execution(self):
         with patch("project_runtime.subprocess.run", side_effect=self.docker):
@@ -170,7 +195,7 @@ class ProjectRecoveryTests(unittest.TestCase):
             with self.subTest(stage=stage):
                 from project_runtime import recover_job
                 self.container["Name"] = "/" + self.job + "-" + stage
-                self.container["Config"]["Cmd"] = ["tar", "-xf", "-", "--no-same-owner"]
+                self.container["Config"]["Cmd"] = deadline_command(["tar", "-xf", "-", "--no-same-owner"], 60)
                 self.container["HostConfig"]["NetworkMode"] = "none"
                 self.container["State"].update(Running=True, Status="running")
                 with patch("project_runtime.subprocess.run", side_effect=self.docker):
@@ -235,15 +260,16 @@ time.sleep(120)
                 row = controller.jobs.observe(job)
                 self.assertEqual(row["state"], "cancelled", row)
                 self.assertTrue(row["output"]["artifactImportUnconfirmed"])
-                actual = json.loads(subprocess.check_output(["docker", "inspect", job + "-test"]))[0]
-                self.assertFalse(actual["State"]["Running"])
+                self.assertNotEqual(subprocess.run(["docker", "inspect", job + "-test"], capture_output=True).returncode, 0)
+                self.assertEqual(controller.storage._read(), {})
                 self.assertFalse(controller.jobs.claim(job))
                 self.assertFalse((project / "ods-builds").exists())
                 self.assertEqual({p.name: p.read_bytes() for p in project.iterdir()}, original)
                 # A same-name/image/label container with a different command
                 # is not ours to stop, even when it mounts this job's volume.
                 from project_runtime import recover_job, stage_arguments
-                subprocess.run(["docker", "rm", job + "-test"], check=True, capture_output=True, timeout=15)
+                controller.storage.reserve(image, job)
+                controller.storage.create_volume(job)
                 args = stage_arguments(image, job, "test")
                 args = args[:args.index(image) + 1] + ["node", "-e", "setInterval(()=>{},1000)"]
                 subprocess.run([*args[:2], "-d", *args[2:]], check=True, capture_output=True, timeout=15)
@@ -259,7 +285,7 @@ time.sleep(120)
                     controller.close()
                 if job and re.fullmatch(r"ods-project-[a-f0-9]{24}", job):
                     # Fixture-created random identity only, never broad cleanup.
-                    for stage in ("seed-manifests", "seed-source", "acquire", "test", "build"):
+                    for stage in ("seed-manifests", "seed-source", "acquire", "test", "build", "keeper"):
                         subprocess.run(["docker", "rm", "-f", job + "-" + stage], capture_output=True, timeout=15)
                     subprocess.run(["docker", "volume", "rm", job], capture_output=True, timeout=15)
 

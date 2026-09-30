@@ -15,6 +15,11 @@ import threading
 import time
 
 from project_runtime_protocol import validate_project_lock
+from project_storage import KEEPER_SECONDS, verify_volume
+
+
+def deadline_command(command, seconds=240):
+    return ['timeout', '--signal=TERM', '--kill-after=5s', str(seconds) + 's', *command]
 
 
 def verify_runtime(image):
@@ -48,8 +53,8 @@ def seed_project(image: str, job: str, snapshot: dict, *, manifests_only: bool) 
     args = stage_arguments(image, job, "build")
     args[args.index("--name") + 1] = job + ("-seed-manifests" if manifests_only else "-seed-source")
     args = args[:args.index(image) + 1]
-    subprocess.run([*args[:2], "-i", *args[2:], "tar", "-xf", "-", "--no-same-owner"],
-                   input=payload, capture_output=True, check=True, timeout=60)
+    subprocess.run([*args[:2], "-i", *args[2:], *deadline_command(["tar", "-xf", "-", "--no-same-owner"], 60)],
+                   input=payload, capture_output=True, check=True, timeout=70)
 
 
 def stage_arguments(image: str, job: str, stage: str) -> list[str]:
@@ -62,6 +67,7 @@ def stage_arguments(image: str, job: str, stage: str) -> list[str]:
                     "--registry=https://registry.npmjs.org"],
         "test": ["npm", "test"],
         "build": ["npm", "run", "build"],
+        "keeper": ["sleep", str(KEEPER_SECONDS)],
     }
     if stage not in commands:
         raise ValueError("unsupported project stage")
@@ -70,10 +76,19 @@ def stage_arguments(image: str, job: str, stage: str) -> list[str]:
             "--network", "bridge" if stage == "acquire" else "none",
             "--read-only", "--user", "1000:1000", "--cap-drop", "ALL",
             "--security-opt", "no-new-privileges", "--pids-limit", "256",
-            "--memory", "2g", "--cpus", "2", "--log-driver", "none",
+            "--memory", "2g", "--memory-swap", "2g", "--cpus", "2", "--log-driver", "none",
             "--tmpfs", "/tmp:rw,nosuid,nodev,size=256m",
-            "--mount", "type=volume,source=" + job + ",target=/home/node",
-            "--workdir", "/home/node", image, *commands[stage]]
+            "--mount", "type=volume,source=" + job + ",target=/home/node,volume-nocopy",
+            "--workdir", "/home/node", image,
+            *(commands[stage] if stage == 'keeper' else deadline_command(commands[stage]))]
+
+
+def start_keeper(image, job):
+    args = stage_arguments(image, job, 'keeper')
+    subprocess.run([*args[:2], '-d', *args[2:]], capture_output=True, timeout=15, check=True)
+    evidence = observe_stage(image, job, 'keeper')
+    if evidence.get('status') != 'running' or evidence.get('evidence') != 'docker-state':
+        raise ValueError('project storage keeper not confirmed')
 
 
 def run_stage(image: str, job: str, stage: str, *, cancel: threading.Event,
@@ -126,14 +141,14 @@ def run_stage(image: str, job: str, stage: str, *, cancel: threading.Event,
         interrupted = interrupted or "unconfirmed"
     for reader in readers:
         reader.join(timeout=5)
-    if interrupted == "unconfirmed" and requested_interruption:
-        # Stop acknowledgement can race container creation or normal exit.
-        # Only identity-checked Docker evidence can confirm it is now stopped;
-        # the attached CLI exiting alone does not prove container termination.
-        observed = observe_stage(image, job, stage)
-        if observed.get("evidence") == "docker-state" and observed["status"] in ("succeeded", "failed"):
-            interrupted = requested_interruption
-    return {"status": interrupted or ("succeeded" if code == 0 else "failed"),
+    # CLI disconnection (including a nonzero exit) is not proof of termination.
+    # Never release the bounded volume while a late Docker run may still use it.
+    observed = observe_stage(image, job, stage)
+    if observed.get("evidence") != "docker-state" or observed['status'] not in ('succeeded', 'failed'):
+        interrupted = 'unconfirmed'
+    elif interrupted == 'unconfirmed' and requested_interruption:
+        interrupted = requested_interruption
+    return {"status": interrupted or ("timed_out" if code == 124 else "succeeded" if code == 0 else "failed"),
             "exitCode": code, "started": True,
             "stdout": buffers[0].decode("utf-8", errors="replace"),
             "stderr": buffers[1].decode("utf-8", errors="replace"),
@@ -148,17 +163,27 @@ def observe_stage(image: str, job: str, stage: str, *, container_id=None, timeou
     """
     seed = stage in ("seed-manifests", "seed-source")
     args = stage_arguments(image, job, "build" if seed else stage)
-    command = ["tar", "-xf", "-", "--no-same-owner"] if seed else args[args.index(image) + 1:]
+    command = deadline_command(["tar", "-xf", "-", "--no-same-owner"], 60) if seed else args[args.index(image) + 1:]
     unknown = {"status": "unconfirmed", "exitCode": None, "evidence": "unavailable"}
+    deadline = time.monotonic() + timeout
+    def remaining():
+        left = deadline - time.monotonic()
+        if left <= 0:
+            raise subprocess.TimeoutExpired('project observation', timeout)
+        return left
     try:
         read = subprocess.run(["docker", "inspect", container_id or job + "-" + stage],
-                              capture_output=True, timeout=timeout, check=False)
+                              capture_output=True, timeout=remaining(), check=False)
         if read.returncode != 0 or len(read.stdout) > 1024 * 1024:
             return unknown
         values = json.loads(read.stdout)
         if not isinstance(values, list) or len(values) != 1:
             return unknown
         value = values[0]
+        volume_read = subprocess.run(['docker', 'volume', 'inspect', job], capture_output=True, timeout=remaining(), check=False)
+        if (volume_read.returncode or len(volume_read.stdout) > 16384
+                or not verify_volume(json.loads(volume_read.stdout)[0], job)):
+            return {**unknown, 'evidence': 'identity-mismatch'}
         config, host, state = value["Config"], value["HostConfig"], value["State"]
         volumes = [m for m in value["Mounts"] if m["Type"] == "volume"]
         if (config["Image"] != image or config["Cmd"] != command
@@ -172,6 +197,7 @@ def observe_stage(image: str, job: str, stage: str, *, container_id=None, timeou
                 or host.get("CapAdd") not in (None, []) or host.get("CapDrop") != ["ALL"]
                 or "no-new-privileges" not in (host.get("SecurityOpt") or [])
                 or host.get("Memory") != 2 * 1024 ** 3 or host.get("NanoCpus") != 2 * 10 ** 9
+                or host.get('MemorySwap') != 2 * 1024 ** 3
                 or host.get("PidsLimit") != 256
                 or any(m["Type"] == "bind" for m in value["Mounts"])
                 or len(volumes) != 1 or volumes[0]["Name"] != job
@@ -224,7 +250,7 @@ def recover_job(image: str, job: str, *, cancel=False, required_stage=None, time
             if read.returncode or len(read.stdout) > 4096:
                 return unknown
             ids.update(read.stdout.decode("ascii").split())
-        if not ids or len(ids) > 5 or any(not re.fullmatch(r"[a-f0-9]{64}", cid) for cid in ids):
+        if not ids or len(ids) > 6 or any(not re.fullmatch(r"[a-f0-9]{64}", cid) for cid in ids):
             return unknown
         stages = {}
         for cid in sorted(ids):
@@ -238,7 +264,7 @@ def recover_job(image: str, job: str, *, cancel=False, required_stage=None, time
             if not isinstance(name, str):
                 return unknown
             stage = name.removeprefix("/" + job + "-")
-            if stage not in ("seed-manifests", "seed-source", "acquire", "test", "build"):
+            if stage not in ("seed-manifests", "seed-source", "acquire", "test", "build", "keeper"):
                 return {**unknown, "evidence": "identity-mismatch"}
             evidence = observe_stage(image, job, stage, container_id=cid, timeout=remaining())
             if evidence.get("evidence") != "docker-state":
