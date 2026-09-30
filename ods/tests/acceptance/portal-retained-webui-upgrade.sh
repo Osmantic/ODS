@@ -109,6 +109,14 @@ printf 'retained-webui-data\n' >"$INSTALL_DIR/data/open-webui/acceptance-sentine
 sentinel_hash="$(sha256sum "$INSTALL_DIR/data/open-webui/acceptance-sentinel.txt" | cut -d' ' -f1)"
 printf 'PASS: current main installed WebUI with retained-data sentinel\n'
 
+# The retained Pixel runtime is part of this upgrade proof. Report only
+# ownership/mode metadata for a state entry if the fail-closed source
+# transition later rejects it; no file contents or private keys are logged.
+if [[ -e /var/lib/pixel-ops-broker/.composer || -L /var/lib/pixel-ops-broker/.composer ]]; then
+    sudo stat -c 'Prior Pixel state entry: %F mode=%a uid=%u gid=%g links=%h device=%d path=%n' \
+        /var/lib/pixel-ops-broker /var/lib/pixel-ops-broker/.composer
+fi
+
 run_installer "$candidate" 'Portal candidate upgrade'
 grep -qx 'ENABLE_OPEN_WEBUI=true' "$INSTALL_DIR/.env" \
     || fail 'Portal upgrade changed the existing WebUI selection'
