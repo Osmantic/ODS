@@ -28,12 +28,12 @@ jobs:
       - name: Checkout exact broker custody candidate
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
-          ref: 5fb216e25fb7005bb506771fc10826f2cb945821
+          ref: 7814980c66baca6ddecf4a450959768d4c998070
           path: candidate
       - name: Record exact source and runner capacity
         run: |
           test "$(git -C baseline rev-parse HEAD)" = 21797f99c255b4a847fc05615f15c3a8ac3476e4
-          test "$(git -C candidate rev-parse HEAD)" = 5fb216e25fb7005bb506771fc10826f2cb945821
+          test "$(git -C candidate rev-parse HEAD)" = 7814980c66baca6ddecf4a450959768d4c998070
           docker version
           df -h / "$RUNNER_TEMP"
           cat /proc/1/comm
