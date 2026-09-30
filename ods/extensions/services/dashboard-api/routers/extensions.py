@@ -373,7 +373,7 @@ def _is_one_shot_extension(ext: dict) -> bool:
     return ext.get("port") == 0 and ext.get("startup_check", False) is False
 
 
-_LIBRARY_QUALIFIED_BUILTINS = frozenset({"n8n"})
+_LIBRARY_QUALIFIED_BUILTINS = frozenset({"n8n", "perplexica"})
 
 
 def _qualified_builtin_selection(service_id: str) -> dict:

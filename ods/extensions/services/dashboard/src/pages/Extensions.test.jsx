@@ -151,6 +151,37 @@ it('offers Add for qualified bundled n8n while keeping other built-ins managed b
   expect(screen.queryByRole('button',{name:'Disable Dashboard'})).toBeNull()
 })
 
+it('shows bundled Perplexica in Available and asks before adding SearXNG', async () => {
+  const catalog = {agent_available:true,extensions:[
+    {id:'perplexica',name:'Perplexica (Deep Research)',source:'core',status:'disabled',
+      library_manageable:true,library_selected:false,features:[baseFeature]},
+    {id:'n8n',name:'n8n (Workflows)',source:'core',status:'disabled',
+      library_manageable:true,library_selected:false,features:[baseFeature]},
+  ],summary:baseSummary({total:2})}
+  const fetchMock = vi.fn(async (url, options = {}) => {
+    const target = String(url)
+    if (target === '/api/extensions/catalog') return makeJsonResponse(catalog)
+    if (target === '/api/webui/selection') return makeJsonResponse({enabled:true,supported:false})
+    if (target === '/api/templates') return makeJsonResponse({templates:[]})
+    if (target === '/api/extensions/perplexica/enable' && options.method === 'POST') {
+      return makeJsonResponse({detail:{missing_dependencies:['searxng']}}, {ok:false,status:400})
+    }
+    throw new Error(`Unmocked fetch: ${target}`)
+  })
+  vi.stubGlobal('fetch', fetchMock)
+  render(<Extensions compact />)
+  fireEvent.click(await screen.findByRole('button',{name:'Available 2'}))
+  expect(screen.getByRole('button',{name:'Add Perplexica (Deep Research)'})).toBeVisible()
+  expect(screen.getByRole('button',{name:'Add n8n (Workflows)'})).toBeVisible()
+  expect(screen.getByRole('button',{name:'Installed 0'})).toBeVisible()
+  fireEvent.click(screen.getByRole('button',{name:'Add Perplexica (Deep Research)'}))
+  fireEvent.click(screen.getByRole('button',{name:'Enable'}))
+  expect(await screen.findByRole('dialog',{name:'Enable dependencies'})).toHaveTextContent('searxng')
+  expect(fetchMock).toHaveBeenCalledWith('/api/extensions/perplexica/enable', expect.objectContaining({method:'POST'}))
+  fireEvent.click(screen.getByRole('button',{name:'Cancel'}))
+  expect(fetchMock).not.toHaveBeenCalledWith('/api/extensions/perplexica/enable?auto_enable_deps=true', expect.anything())
+})
+
 it('lets an errored bundled n8n be retried or disabled without a remove control', async () => {
   installFetchMock({agent_available:true,extensions:[
     {id:'n8n',name:'n8n (Workflows)',source:'core',status:'error',library_manageable:true,library_selected:true,features:[baseFeature]},

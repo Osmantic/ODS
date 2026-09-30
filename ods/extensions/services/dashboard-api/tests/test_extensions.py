@@ -72,6 +72,43 @@ def _patch_extensions_config(monkeypatch, catalog, services=None,
 
 class TestExtensionsCatalog:
 
+    def test_perplexica_library_addback_tracks_selection_and_health(
+            self, test_client, monkeypatch, tmp_path):
+        catalog = [{**_make_catalog_ext("perplexica", "Perplexica"), "catalog_source": "builtin"}]
+        _patch_extensions_config(monkeypatch, catalog, tmp_path=tmp_path)
+        builtin = tmp_path / "builtin" / "perplexica"
+        builtin.mkdir(parents=True)
+        disabled = builtin / "compose.yaml.disabled"
+        enabled = builtin / "compose.yaml"
+        disabled.write_text("services: {perplexica: {image: test/perplexica}}\n", encoding="utf-8")
+        monkeypatch.setattr("routers.extensions.EXTENSIONS_DIR", builtin.parent)
+
+        def catalog_row(services):
+            with patch("helpers.get_cached_services", return_value=services):
+                response = test_client.get("/api/extensions/catalog", headers=test_client.auth_headers)
+            assert response.status_code == 200
+            return next(item for item in response.json()["extensions"] if item["id"] == "perplexica")
+
+        row = catalog_row([])
+        assert row["source"] == "core"
+        assert row["status"] == "disabled"
+        assert row["library_manageable"] is True
+        assert row["library_selected"] is False
+
+        disabled.rename(enabled)
+        row = catalog_row([])
+        assert row["status"] == "stopped"
+        assert row["library_selected"] is True
+
+        row = catalog_row([_make_service_status("perplexica")])
+        assert row["status"] == "enabled"
+        assert row["library_selected"] is True
+
+        enabled.rename(disabled)
+        row = catalog_row([])
+        assert row["status"] == "disabled"
+        assert row["library_selected"] is False
+
     def test_qualified_builtin_changes_from_addable_to_healthy_without_api_restart(
             self, test_client, monkeypatch, tmp_path):
         catalog = [
