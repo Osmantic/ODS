@@ -14,7 +14,8 @@ import {setTimeout as delay} from 'node:timers/promises';
 const installed=process.env.OPENCLAW_PACKAGE_DIR;
 const sha=value=>createHash('sha256').update(value).digest('hex');
 
-test('real gateway deferred delegation waits for two children and a verified revised terminal answer through ingress',
+for(const interim of ['final','silent','waiting'])
+test(`real gateway deferred delegation waits for two children and a verified revised terminal answer: interim=${interim}`,
   {skip:!installed || process.platform==='win32',timeout:120000},async()=>{
   const root=mkdtempSync(join(tmpdir(),'ods-delegation-hooks-'));
   const pkg=join(root,'package'), workspace=join(root,'workspace'), plugin=join(root,'plugin');
@@ -86,9 +87,23 @@ test('real gateway deferred delegation waits for two children and a verified rev
     } else if(userMessages.includes('HELLO_FIXTURE')) {
       delta={role:'assistant',content:'HELLO_VERIFIED'};
     } else if(userMessages.includes('CHILD_FIXTURE_TASK')&&!userMessages.includes('Internal task completion event')) {
-      await delay(300);delta={role:'assistant',content:'CHILD_VERIFIED'};
+      if(interim!=='final'&&userMessages.includes('CHILD_FIXTURE_TASK 1')) {
+        // Release child two only after the first announced parent turn has
+        // actually ended. This reproduces the live partial-completion ordering.
+        let firstEnded=false;
+        for(let i=0;i<250;i++) {
+          const events=existsSync(eventsFile)?readFileSync(eventsFile,'utf8').trim().split('\n').filter(Boolean).map(JSON.parse):[];
+          firstEnded=events.some(e=>e.hook==='end'&&e.runId?.startsWith('announce:'));
+          if(firstEnded)break;await delay(50);
+        }
+        assert.ok(firstEnded,'first parent announcement must finish while the second child is pending');
+      } else await delay(300);
+      delta={role:'assistant',content:'CHILD_VERIFIED'};
     } else if(userMessages.includes('Internal task completion event') || userMessages.includes('CONSOLIDATED_REVIEW') || revision) {
-      delta={role:'assistant',content:revision?'CONSOLIDATED_VERIFIED':'CONSOLIDATED_REVIEW'};revision=true;
+      const finished=readFileSync(eventsFile,'utf8').trim().split('\n').filter(Boolean).map(JSON.parse)
+        .filter(e=>e.hook==='end'&&e.sessionKey?.includes(':subagent:')&&e.lastText==='CHILD_VERIFIED').length;
+      if(interim!=='final'&&finished<2)delta={role:'assistant',content:interim==='silent'?'NO_REPLY':'One review arrived; waiting for the second.'};
+      else {delta={role:'assistant',content:revision?'CONSOLIDATED_VERIFIED':'CONSOLIDATED_REVIEW'};revision=true;}
     } else if(all.includes('childSessionKey')) {
       delta={role:'assistant',tool_calls:[deferred('yield-fixture','sessions_yield',{})]};finish='tool_calls';
     } else {
@@ -127,7 +142,8 @@ test('real gateway deferred delegation waits for two children and a verified rev
     }
     assert.ok(events.some(e=>e.hook==='end'&&e.lastText==='CONSOLIDATED_VERIFIED'),JSON.stringify({body,events,requests,log}));
     const original=events.find(e=>e.hook==='prompt'&&!e.sessionKey?.includes(':subagent:'));
-    const announcement=events.find(e=>e.hook==='prompt'&&e.provenance?.sourceTool==='subagent_announce');
+    const verifiedRun=events.find(e=>e.hook==='finalize'&&e.text==='CONSOLIDATED_REVIEW')?.runId;
+    const announcement=events.find(e=>e.hook==='prompt'&&e.runId===verifiedRun&&e.provenance?.sourceTool==='subagent_announce');
     assert.ok(announcement,JSON.stringify(events));
     assert.equal(announcement.sessionId,original.sessionId);
     const scoped=events.filter(e=>e.runId===announcement.runId);
@@ -144,6 +160,13 @@ test('real gateway deferred delegation waits for two children and a verified rev
     assert.ok(yieldIndex<originalEvents.findIndex(e=>e.hook==='end'));
     assert.ok(finals.every(e=>e.provenance===undefined),'lifecycle helper sparsifies provenance; use earlier bound prompt identity');
     assert.equal(events.filter(e=>e.hook==='spawned').length,2);
+    if(interim!=='final') {
+      const firstEnd=events.findIndex(e=>e.hook==='end'&&e.runId?.startsWith('announce:'));
+      const childEnds=events.map((e,i)=>[e,i]).filter(([e])=>e.hook==='end'&&e.sessionKey?.includes(':subagent:'));
+      assert.equal(childEnds.length,2);assert.ok(firstEnd<childEnds[1][1],'interim parent completion precedes second child completion');
+      assert.equal(events[firstEnd].lastText,interim==='silent'?'NO_REPLY':'One review arrived; waiting for the second.');
+      assert.ok(!body.includes('One review arrived; waiting for the second.'));
+    }
     assert.equal(events.filter(e=>e.hook==='end'&&e.sessionKey?.includes(':subagent:')&&e.lastText==='CHILD_VERIFIED').length,2);
     const innerSpawns=originalEvents.filter(e=>e.hook==='tool'&&e.toolName==='sessions_spawn');
     assert.equal(innerSpawns.length,2);
@@ -184,9 +207,9 @@ test('real gateway deferred delegation waits for two children and a verified rev
         assert.ok(!relevant.some(e=>e.hook==='finalize'),'provider failure must not create a final-answer candidate');
       }
     }
-    if(process.env.ODS_HOOK_EVIDENCE_PATH)writeFileSync(process.env.ODS_HOOK_EVIDENCE_PATH,JSON.stringify({requests,body,events},null,2));
+    if(process.env.ODS_HOOK_EVIDENCE_PATH)writeFileSync(process.env.ODS_HOOK_EVIDENCE_PATH+'.'+interim,JSON.stringify({requests,body,events},null,2));
   } finally {
-    if(process.env.ODS_HOOK_EVIDENCE_PATH)writeFileSync(process.env.ODS_HOOK_EVIDENCE_PATH+'.debug',JSON.stringify({log,events:existsSync(eventsFile)?readFileSync(eventsFile,'utf8'):''},null,2));
+    if(process.env.ODS_HOOK_EVIDENCE_PATH)writeFileSync(process.env.ODS_HOOK_EVIDENCE_PATH+'.'+interim+'.debug',JSON.stringify({log,events:existsSync(eventsFile)?readFileSync(eventsFile,'utf8'):''},null,2));
     if(child&&child.exitCode===null){const done=once(child,'close');process.kill(-child.pid,'SIGTERM');await Promise.race([done,delay(3000)]);if(child.exitCode===null)process.kill(-child.pid,'SIGKILL');}
     if(ingress){ingress.closeAllConnections();await new Promise(resolve=>ingress.close(resolve));}
     upstream.closeAllConnections();await new Promise(resolve=>upstream.close(resolve));

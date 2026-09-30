@@ -103,6 +103,31 @@ test('all registered children must announce before a consolidated answer is read
   f.registry.observe({},next);f.final('Both verified',next);assert.equal(f.registry.read(user,id).text,'Both verified');
 });
 
+for (const mode of ['silent-hook','silent-no-hook','empty-no-hook','partial-text']) {
+  test(`partial child announcement stays pending without publishing ${mode}`,()=>{
+    const f=fixture(),second=child.replace('22222222','aaaaaaaa'),secondRun=childRun.replace('33333333','bbbbbbbb');
+    f.spawn();f.spawn(second,secondRun);f.yieldTurn();f.registry.observe({},continuation);
+    const text=mode==='empty-no-hook'?'':mode==='partial-text'?'Still waiting for the other review.':'NO_REPLY';
+    if(mode==='silent-hook'||mode==='partial-text')f.registry.finalize({lastAssistantMessage:text},continuation);
+    f.registry.end({success:true,messages:[{role:'assistant',stopReason:'stop',content:[{type:'text',text}]}]},continuation);
+    const interim=f.registry.read(user,id);
+    assert.equal(interim.status,'waiting');assert.ok(!('text' in interim));
+    const next={...continuation,runId:`announce:v1:${second}:${secondRun}`,inputProvenance:{...continuation.inputProvenance,sourceSessionKey:second}};
+    f.registry.observe({},next);f.final('Both reviews consolidated',next);
+    assert.equal(f.registry.read(user,id).text,'Both reviews consolidated');
+  });
+}
+
+for (const fault of ['error','aborted','failed','cancel']) {
+  test(`pending sibling does not conceal a ${fault} in its parent continuation`,async()=>{
+    const f=fixture();f.spawn();f.spawn(child.replace('22222222','aaaaaaaa'),childRun.replace('33333333','bbbbbbbb'));
+    f.yieldTurn();f.registry.observe({},continuation);
+    if(fault==='cancel')await f.registry.cancel(user);
+    else f.registry.end({success:fault!=='failed',messages:[{role:'assistant',stopReason:fault==='failed'?'stop':fault,content:[]}]},continuation);
+    assert.equal(f.registry.read(user,id).status,'interrupted');
+  });
+}
+
 test('cancel fences late answers before bounded exact-session abort attempts',async()=>{
   const f=fixture();f.spawn();f.yieldTurn();f.registry.observe({},continuation);
   assert.deepEqual(await f.registry.cancel(other),{tracked:false,aborted:false});

@@ -147,6 +147,11 @@ export function createSubagentDelivery({agentId = 'pixel', now = Date.now,
     const run = owned(context);
     if (!run || run.id === run.chain.id || run.id !== run.chain.currentRun || run.yielded || decision?.action === 'revise') return;
     const text = event?.lastAssistantMessage;
+    // A successful native announcement can deliberately say NO_REPLY while
+    // another registered child is still working/queued. It is not the owner's
+    // final answer and must neither be published nor revoke that later result.
+    if (typeof text==='string' && silentReplyText(text)
+        && [...run.chain.children.values()].some(child=>!child.announced)) {run.candidate=null;return;}
     if (typeof text !== 'string' || silentReplyText(text) || Buffer.byteLength(text) > 256 * 1024
         || /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(text)) {fail(run.chain); return;}
     run.candidate = text;
@@ -161,6 +166,8 @@ export function createSubagentDelivery({agentId = 'pixel', now = Date.now,
     const terminal = Array.isArray(event.messages) ? event.messages.findLast(message => message?.role === 'assistant') : undefined;
     if (['error','aborted'].includes(terminal?.stopReason)) {fail(run.chain); return;}
     if (!run.candidate) {
+      if (event?.success===true && ['stop','end_turn'].includes(terminal?.stopReason)
+          && [...run.chain.children.values()].some(child=>!child.announced)) return;
       if (run.id !== run.chain.id && ['stop','end_turn'].includes(terminal?.stopReason)) fail(run.chain);
       return;
     }
