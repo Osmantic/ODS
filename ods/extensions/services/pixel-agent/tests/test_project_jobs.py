@@ -44,6 +44,28 @@ class ProjectJobTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.jobs.create("a" * 64, {**self.request, "sourceSha256": "c" * 64})
 
+    def test_exclusive_restart_marks_interruption_without_replay(self):
+        running = self.create()
+        self.jobs.claim(running)
+        self.jobs.record_stage(running, "acquire", {"status": "succeeded", "exitCode": 0})
+        queued, _ = self.jobs.create("b" * 64, self.request)
+        cancelled, _ = self.jobs.create("c" * 64, self.request)
+        self.jobs.request_cancel(cancelled)
+        before = self.jobs.observe(cancelled)
+        restarted = ProjectJobs(self.root)
+        restarted.recover_interrupted()
+        row = restarted.observe(running)
+        self.assertEqual(row["state"], "unconfirmed")
+        self.assertTrue(row["output"]["recoveryRequired"])
+        self.assertEqual([step["stage"] for step in row["steps"]], ["acquire"])
+        self.assertEqual(restarted.observe(queued)["state"], "failed")
+        self.assertEqual(restarted.observe(cancelled), before)
+        self.assertFalse(restarted.claim(queued))
+        self.assertFalse(restarted.claim(running))
+        self.assertEqual(restarted.create("a" * 64, self.request), (running, False))
+        restarted.recover_interrupted()
+        self.assertEqual(restarted.observe(running), row)
+
     def test_cancelled_queue_never_starts(self):
         job = self.create()
         self.assertEqual(self.jobs.request_cancel(job)["state"], "cancelled")

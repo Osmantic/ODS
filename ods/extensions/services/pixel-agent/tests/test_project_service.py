@@ -32,6 +32,11 @@ class ProjectServiceTests(unittest.TestCase):
             # Explicit test scope; no installed policy or owner grant is changed.
             controller = ProjectController(root, root / "state", iid.read_text().strip(),
                                            authorize=lambda project, *_: project == "project")
+            interrupted, _ = controller.jobs.create("a" * 64, {
+                "project": "project", "sourceSha256": "b" * 64,
+                "image": controller.image, "outputDirectory": "out",
+            })
+            controller.jobs.claim(interrupted)
             stop, ready = threading.Event(), threading.Event()
             errors = []
             def server():
@@ -43,6 +48,7 @@ class ProjectServiceTests(unittest.TestCase):
             thread.start()
             try:
                 self.assertTrue(ready.wait(10), errors)
+                self.assertEqual(controller.observe(interrupted)["state"], "unconfirmed")
                 with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as probe:
                     probe.settimeout(5)
                     probe.connect(str(root / "state" / "control.sock"))

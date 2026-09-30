@@ -4,7 +4,7 @@
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 
-export async function registeredPixelTools({inspection = true} = {}) {
+export async function registeredPixelTools({inspection = true, project = true} = {}) {
   const entry = new URL('../plugin/index.js', import.meta.url);
   const source = await readFile(entry, 'utf8');
   const isolated = source.replace(/from\s+(['"])([^'"]+)\1/g, (match, quote, specifier) => {

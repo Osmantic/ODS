@@ -21,12 +21,20 @@ def serve(controller, stop, *, ready=None):
     socket_path = root / "control.sock"
     lock = os.open(root / "service.lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
     bound = None
+    owns_lock = False
     try:
         info = os.fstat(lock)
         if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
                 or info.st_nlink != 1 or info.st_mode & 0o077):
             raise ValueError("unsafe project service lock")
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        owns_lock = True
+        # No earlier service or this process can be executing queued callbacks
+        # while we relabel interrupted records. Never replay accepted work.
+        with controller.lock:
+            if controller.futures:
+                raise ValueError("project service requires an idle controller")
+            controller.jobs.recover_interrupted()
         # Only one service can own this private state; stale socket cleanup is
         # allowed only after acquiring its lifetime lock and checking ownership.
         try:
@@ -72,7 +80,13 @@ def serve(controller, stop, *, ready=None):
                     socket_path.unlink()
             except FileNotFoundError:
                 pass
-        os.close(lock)
+        try:
+            if owns_lock:
+                # Retain exclusive ownership while accepted work drains, so a
+                # replacement cannot relabel jobs still executing here.
+                controller.close()
+        finally:
+            os.close(lock)
 
 
 def main():

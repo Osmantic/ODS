@@ -148,6 +148,24 @@ class ProjectJobs:
                        (time.time(), job))
         return self.observe(job)
 
+    def recover_interrupted(self):
+        """Called only by the service holding its exclusive lifetime lock.
+
+        Queued work never claimed execution. Running work may still have a
+        Docker process or imported files, so restart cannot assert failure,
+        cancellation or success. Preserve its stage evidence for reconciliation.
+        """
+        with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            for state, outcome, message in (
+                ("queued", "failed", "Service restarted before execution; this job was not replayed."),
+                ("running", "unconfirmed", "Service restarted during execution; inspect the job before retrying."
+                 " Containers or output may remain; this job was not replayed."),
+            ):
+                db.execute("UPDATE jobs SET state=?,output=?,updated=? WHERE state=?",
+                           (outcome, self._json({"error": message, "recoveryRequired": state == "running"}),
+                            time.time(), state))
+
     def controller_failure(self, job, reason, *, state="unconfirmed"):
         # A controller exception alone cannot establish that Docker stopped or
         # that artifact import had no effect. Callers must prove a narrower state.
