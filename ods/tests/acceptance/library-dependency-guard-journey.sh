@@ -27,7 +27,7 @@ fail() {
 
 [[ "${GITHUB_ACTIONS:-}" == true ]] || fail 'refusing non-disposable host'
 [[ "$RUNNER_TEMP" == /* && "$INSTALL_DIR" == "$RUNNER_TEMP"/* ]] || fail 'install path is outside runner temp'
-[[ "$(git -C "$(dirname "$product")" rev-parse HEAD)" == 01995e75e72b8c9a982163320e67429af635f658 ]] || fail 'product source changed'
+[[ "$(git -C "$(dirname "$product")" rev-parse HEAD)" == 83e6e5a5936ff61b705a441e418ec1410df0c999 ]] || fail 'product source changed'
 [[ "$(cat /proc/1/comm)" == systemd ]] || fail 'runner is not a Pixel-qualified systemd host'
 docker info >/dev/null || fail 'isolated Docker Engine unavailable'
 [[ ! -e "$INSTALL_DIR" ]] || fail 'fresh install path is not empty'
@@ -161,7 +161,9 @@ networks:
     external: true
     name: ods-network
 YAML
-chown -R 1000:1000 "$consumer_dir"
+# Match the installed user-extension owner instead of assuming a container UID.
+# This runner is disposable and the files contain no owner data or secrets.
+sudo chown -R --reference="$INSTALL_DIR/data/user-extensions" "$consumer_dir"
 curl -fsS --max-time 900 -X POST http://127.0.0.1:3001/api/extensions/n8n-consumer/enable \
     >"$audit_root/consumer-enable.json" || fail 'disposable dependent did not enable'
 python3 - "$audit_root/consumer-enable.json" <<'PY'
