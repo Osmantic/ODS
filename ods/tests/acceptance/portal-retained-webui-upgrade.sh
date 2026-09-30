@@ -73,7 +73,7 @@ run_installer() {
 [[ "${GITHUB_ACTIONS:-}" == true ]] || fail 'refusing non-disposable host'
 [[ "$RUNNER_TEMP" == /* && "$INSTALL_DIR" == "$RUNNER_TEMP"/* ]] || fail 'install path is outside runner temp'
 [[ "$(git -C "$(dirname "$baseline")" rev-parse HEAD)" == 9b95d08ae9e9f79af8410dfcea442df6b99db0ba ]] || fail 'baseline source changed'
-[[ "$(git -C "$(dirname "$candidate")" rev-parse HEAD)" == 3714b4ac2f9c6c8244782eb7e271087cdec71f1c ]] || fail 'candidate source changed'
+[[ "$(git -C "$(dirname "$candidate")" rev-parse HEAD)" == c5bf679be9fa0da794d2307bc264cdcb0727e25d ]] || fail 'candidate source changed'
 [[ "$(cat /proc/1/comm)" == systemd ]] || fail 'runner is not a Pixel-qualified systemd host'
 docker info >/dev/null || fail 'isolated Docker Engine unavailable'
 [[ ! -e "$INSTALL_DIR" ]] || fail 'fresh install path is not empty'
