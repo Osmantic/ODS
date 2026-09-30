@@ -102,6 +102,15 @@ export function createProjectBuildTool({request, wait = (ms, signal) => delay(ms
         diagnosticSubmitted=normalized.action==='diagnose';
         let raw = await request(normalized, {toolCallId, signal});
         if (normalized.action === 'capabilities') return capabilityToolResult(tool, raw, capabilityMaxChars);
+        if(raw?.status==='recovery-required') {
+          if(raw.schemaVersion!==1 || raw.kind!=='ods-project-job' || raw.executionStarted!==false
+              || !['executionStarted,kind,schemaVersion,status','executionStarted,jobId,kind,schemaVersion,status'].includes(Object.keys(raw).sort().join(','))
+              || raw.jobId!==undefined && !JOB.test(raw.jobId)) throw Error('unconfirmed recovery refusal');
+          const details={...raw,nextAction:{code:'recover-owned-job',automaticRetry:false,
+            ...(raw.jobId ? {tool:tool.name,action:'observe',jobId:raw.jobId} : {})},
+            message:'No new job was started. Resolve the earlier uncertain execution before submitting this project again.'};
+          return {isError:true,content:[{type:'text',text:JSON.stringify(details)}],details};
+        }
         if (normalized.action === 'diagnose' && raw?.kind==='ods-project-diagnostic') {
           const receipt=validateDiagnostic(raw,normalized.runtime);
           return {isError:receipt.code!=='ready',content:[{type:'text',text:JSON.stringify(receipt)}],details:receipt};

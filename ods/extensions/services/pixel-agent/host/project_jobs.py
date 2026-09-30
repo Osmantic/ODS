@@ -17,7 +17,24 @@ import time
 from project_snapshot import _component
 
 
+class ProjectRecoveryRequired(ValueError):
+    def __init__(self, job):
+        super().__init__('recover uncertain work for this project before resubmitting')
+        self.job = job
+
+
 class ProjectJobs:
+    @staticmethod
+    def _blocking(db, request):
+        # One authenticated owner per controller. Isolate by mutable project;
+        # fixed diagnostics have no project target and are isolated by runtime.
+        row = db.execute("""SELECT id FROM jobs WHERE state='unconfirmed'
+            AND json_extract(request,'$.project')=?
+            AND COALESCE(json_extract(request,'$.kind'),'build')=?
+            AND (?='build' OR json_extract(request,'$.runtime')=?)
+            ORDER BY updated,id LIMIT 1""", (request['project'], request.get('kind', 'build'),
+                request.get('kind', 'build'), request.get('runtime'))).fetchone()
+        return row['id'] if row else None
     def __init__(self, root):
         root = Path(root)
         root.mkdir(mode=0o700, parents=False, exist_ok=True)
@@ -90,6 +107,9 @@ class ProjectJobs:
                 if previous["request_hash"] != digest:
                     raise ValueError("request key reused for different input")
                 return previous["id"], False
+            blocker = self._blocking(db, request)
+            if blocker:
+                raise ProjectRecoveryRequired(blocker)
             job = "ods-project-" + secrets.token_hex(12)
             db.execute("INSERT INTO jobs(id,request_key,request_hash,request,state,updated) VALUES(?,?,?,?,?,?)",
                        (job, request_key, digest, encoded, "queued", time.time()))
@@ -108,8 +128,24 @@ class ProjectJobs:
 
     def claim(self, job):
         with self._connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            row = db.execute("SELECT request,state FROM jobs WHERE id=?", (job,)).fetchone()
+            if row and row['state'] == 'queued':
+                blocker = self._blocking(db, json.loads(row['request']))
+                if blocker:
+                    db.execute("UPDATE jobs SET state='failed',output=?,updated=? WHERE id=?", (
+                        self._json({'code': 'recovery-required', 'recoveryJobId': blocker,
+                                    'executionStarted': False, 'retryEligible': False}), time.time(), job))
+                    return False
             return db.execute("UPDATE jobs SET state='running',updated=? WHERE id=? AND state='queued' AND cancel_requested=0",
                               (time.time(), job)).rowcount == 1
+
+    def preflight_failed(self, job):
+        with self._connect() as db:
+            db.execute("UPDATE jobs SET state='failed',output=?,updated=? WHERE id=? AND state='running' AND steps='[]'", (
+                self._json({'code': 'engine-info-unavailable', 'executionStarted': False,
+                            'retryEligible': True, 'automaticRetry': False,
+                            'error': 'The read-only engine query failed before project execution.'}), time.time(), job))
 
     def record_stage(self, job, stage, result):
         if stage not in ("acquire", "test", "build", "diagnose") or not isinstance(result, dict):

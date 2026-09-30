@@ -30,6 +30,10 @@ class StorageAdmissionError(ValueError):
         self.code = code
 
 
+class ReadOnlyPreflightError(StorageAdmissionError):
+    """The fixed read-only engine-info query failed before reservation intent."""
+
+
 def validate_limits(job_bytes, total_bytes, max_jobs):
     if (type(job_bytes) is not int or not 32 * MIB <= job_bytes <= 4096 * MIB
             or type(total_bytes) is not int or not job_bytes <= total_bytes <= 8192 * MIB
@@ -74,8 +78,14 @@ def engine_headroom(image):
         match = re.fullmatch(r'(MemTotal|MemAvailable):\s+([0-9]+) kB', line)
         if match:
             found[match[1]] = int(match[2]) * 1024
-    capacity = subprocess.run(['docker', 'info', '--format', '{{.MemTotal}}'],
-                              capture_output=True, timeout=5, check=True)
+    try:
+        capacity = subprocess.run(['docker', 'info', '--format', '{{.MemTotal}}'],
+                                  capture_output=True, timeout=5, check=True)
+    except (OSError, subprocess.SubprocessError):
+        # The preceding disposable probe returned; this query cannot create a
+        # job container, volume or reservation. Do not apply this classification
+        # to a timeout of docker run or to any later reservation write.
+        raise ReadOnlyPreflightError('engine-info-unavailable', 'engine memory query unavailable') from None
     total = int(capacity.stdout)
     if set(found) != {'MemTotal', 'MemAvailable'} or not 0 < found['MemAvailable'] <= found['MemTotal']:
         raise ValueError('engine memory evidence unavailable')

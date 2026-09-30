@@ -3,6 +3,7 @@ const CODES=new Set(['ready','missing','unavailable','incompatible','unsupported
 const CHECKS=['node','npm','python','pip','venv','scratch'];
 const FAILURE_PHASES=new Set(['configuration','authorization','storage-reservation','storage-create','execution','output-validation']);
 const FAILURE_CODES=new Set(['storage-recovery-required','storage-capacity-reserved','engine-headroom-insufficient',
+  'engine-info-unavailable',
   'operation-timeout','command-failed','host-io-error','invalid-evidence','authorization-revoked','probe-failed']);
 export function validateDiagnostic(value, runtime) {
   if (!value || value.schemaVersion!==1 || value.kind!=='ods-project-diagnostic' || value.scope!=='managed-executor'

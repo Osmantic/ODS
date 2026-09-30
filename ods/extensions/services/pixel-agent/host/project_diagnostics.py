@@ -10,6 +10,7 @@ CHECKS = ('node', 'npm', 'python', 'pip', 'venv', 'scratch')
 CODES = {'ready', 'missing', 'unavailable', 'incompatible', 'unsupported'}
 FAILURE_PHASES = {'configuration', 'authorization', 'storage-reservation', 'storage-create', 'execution', 'output-validation'}
 FAILURE_CODES = {'storage-recovery-required', 'storage-capacity-reserved', 'engine-headroom-insufficient',
+                 'engine-info-unavailable',
                  'operation-timeout', 'command-failed', 'host-io-error', 'invalid-evidence', 'authorization-revoked', 'probe-failed'}
 
 

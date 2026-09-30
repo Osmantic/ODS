@@ -176,8 +176,9 @@ def test_failed_preflight_persists_bounded_cause_without_raw_output(tmp_path, er
         # Reopen the durable database: this must survive final receipt writing,
         # rather than disappearing when controller_failure gets overwritten.
         row = ProjectJobs(tmp_path / 'state').observe(job)
-        assert row['state'] == 'failed' and row['steps'] == []
-        assert row['output']['cleanup'] == 'not-started'
+        known_refusal = isinstance(error, StorageAdmissionError)
+        assert row['state'] == ('failed' if known_refusal else 'unconfirmed') and row['steps'] == []
+        assert row['output']['cleanup'] == ('not-started' if known_refusal else 'unconfirmed')
         assert row['output']['failure'] == {'phase': 'storage-reservation', 'code': expected}
         assert 'PRIVATE' not in json.dumps(row)
         create.assert_not_called()

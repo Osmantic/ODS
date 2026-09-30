@@ -15,7 +15,7 @@ from project_jobs import ProjectJobs
 from project_runtime import recover_job, run_stage, seed_project, start_keeper, observe_stage
 from project_runtime_protocol import select_project_runtime
 from project_capabilities import probe_python_runtime, cleanup_pending_probe, ProbeCleanupPending
-from project_storage import ProjectStorage, verify_volume
+from project_storage import ProjectStorage, verify_volume, ReadOnlyPreflightError, StorageAdmissionError
 from project_snapshot import snapshot_project
 from project_diagnostics import SCRATCH_BYTES, diagnostic_digest, diagnostic_output, validate_diagnostic, diagnostic_failure
 
@@ -159,6 +159,7 @@ class ProjectController:
         storage = ProjectStorage(self.storage.state, job_bytes=min(self.storage.job_bytes, SCRATCH_BYTES),
                                  total_bytes=self.storage.total_bytes, max_jobs=self.storage.max_jobs)
         resources_started, report, code = False, None, 'unavailable'
+        reservation_attempted = False
         phase, failure = 'configuration', None
         try:
             if image != (self.python_image if runtime == 'python' else self.image):
@@ -169,6 +170,7 @@ class ProjectController:
                 self.jobs.controller_failure(job, 'cancelled before diagnostic execution', state='cancelled')
                 return
             phase = 'storage-reservation'
+            reservation_attempted = True
             storage.reserve(image, job)
             resources_started = True
             phase = 'storage-create'
@@ -194,7 +196,9 @@ class ProjectController:
             failure = diagnostic_failure(error, phase)
             steps = self.jobs.observe(job)['steps']
             stopped = bool(steps and steps[-1]['status'] in ('succeeded', 'failed', 'cancelled', 'timed_out'))
-            self.jobs.controller_failure(job, 'diagnostic execution unavailable', state='failed' if stopped or not resources_started else 'unconfirmed')
+            readonly_refusal = phase == 'storage-reservation' and isinstance(error, StorageAdmissionError)
+            self.jobs.controller_failure(job, 'diagnostic execution unavailable',
+                state='failed' if stopped or not reservation_attempted or readonly_refusal else 'unconfirmed')
         finally:
             state = self.jobs.observe(job)['state']
             # A successful diagnostic stage is terminal, unlike the build pipeline.
@@ -207,6 +211,10 @@ class ProjectController:
                 warnings = self._cleanup(job, image=image, runtime=runtime) if known_terminal else [
                     'Unconfirmed execution: bounded storage remains reserved.']
                 cleanup = 'unconfirmed' if warnings else 'confirmed'
+            elif reservation_attempted and state == 'unconfirmed':
+                # A write can fail after committing the reservation. Neither
+                # absence of a returned value nor zero stages proves no effect.
+                cleanup = 'unconfirmed'
             output = diagnostic_output(runtime, report=report, code=code, cleanup=cleanup,
                                        scratch_bytes=storage.job_bytes, failure=failure)
             self.jobs.diagnostic_result(job, output)
@@ -301,6 +309,11 @@ class ProjectController:
             relative = import_artifacts(self.workspace, request["project"], job, artifacts)
             self.jobs.complete(job, {"sha256": artifacts["sha256"], "files": len(artifacts["files"]),
                                     "bytes": artifacts["bytes"], "relativeDirectory": relative})
+        except ReadOnlyPreflightError:
+            if resources_started:
+                self.jobs.controller_failure(job, 'execution outcome requires recovery')
+            else:
+                self.jobs.preflight_failed(job)
         except Exception as error:
             self.jobs.controller_failure(job, error)
         finally:
