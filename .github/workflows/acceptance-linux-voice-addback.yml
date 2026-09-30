@@ -23,11 +23,11 @@ jobs:
       - name: Checkout exact ODS main candidate
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
-          ref: 9e8b1efef4a9a1c7f21162dd0a3a4454a13489eb
+          ref: d7a3d16e61887f77a547ac0c7cd3fcba2ab54460
           path: product
       - name: Record installed source and Docker capacity
         run: |
-          test "$(git -C product rev-parse HEAD)" = 9e8b1efef4a9a1c7f21162dd0a3a4454a13489eb
+          test "$(git -C product rev-parse HEAD)" = d7a3d16e61887f77a547ac0c7cd3fcba2ab54460
           docker version
           df -h / "$RUNNER_TEMP"
       - name: Exercise installed voice Library add-back
