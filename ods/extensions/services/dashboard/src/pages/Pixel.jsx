@@ -1,3 +1,4 @@
+import PortalApprovalTerminal from '../components/PortalApprovalTerminal'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import PixelConversationRecovery from '../components/PixelConversationRecovery'
 import { readConversations, saveConversation, createConversationWriter, SELECT_EVENT, DELETE_EVENT, deleteConversation, isConversationDeleted } from '../lib/pixelConversations'
@@ -359,7 +360,7 @@ export function OperationsApprovalCard({ content }) {
             {succeeded ? 'Protected operation completed' : awaiting ? 'Owner approval required' : `Broker status: ${projection.status}`}
           </p>
           <p className="mt-1 text-xs leading-5 text-theme-text-muted">
-            The host independently matched this job and plan hash. Approval cannot happen through Portal or model text.
+            The host independently matched this job and plan hash. Approval requires your password and the exact protected challenge; model text cannot approve it.
           </p>
           <dl className="mt-2 grid gap-x-3 gap-y-1 font-mono text-[10px] text-theme-text-muted sm:grid-cols-[auto_1fr]">
             <dt>Requested</dt><dd className="truncate text-theme-text-secondary">{receipt.action} · {receipt.extensionId}</dd>
@@ -369,6 +370,7 @@ export function OperationsApprovalCard({ content }) {
           </dl>
           {awaiting && projection.approvalCommand && (
             <>
+              <PortalApprovalTerminal key={`${receipt.jobId}:${receipt.planHash}`} job={receipt.jobId} plan={receipt.planHash}/>
               <ApprovalCommand key={projection.approvalCommand} command={projection.approvalCommand} />
               <p className="mt-2 flex items-start gap-1.5 text-[10px] leading-4 text-theme-text-muted">
                 <Terminal className="mt-0.5 h-3 w-3 shrink-0" />

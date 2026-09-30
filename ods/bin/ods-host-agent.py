@@ -151,6 +151,8 @@ ODS_VERSION = "3.0.0"
 SERVICE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 PIXEL_OPS_JOB_ID_RE = re.compile(r"^ops-[0-9]{13}-[a-f0-9]{12}$")
 PIXEL_OPS_PLAN_HASH_RE = re.compile(r"^[a-f0-9]{64}$")
+_approval_terminals = None
+_approval_terminals_lock = threading.Lock()
 PIXEL_OPS_STATUS_HELPER = Path("/usr/local/libexec/ods-pixel-extension-manager.py")
 PIXEL_OPS_STATUS_SOCKET = "/run/ods-pixel-manager/extension-manager.sock"
 PIXEL_OPS_STATUS_KIND = "ods-pixel-operations-status"
@@ -9403,6 +9405,46 @@ class AgentHandler(BaseHTTPRequestHandler):
             return
         json_response(self, 200, metrics)
 
+    def _handle_pixel_approval_terminal(self):
+        if not check_auth(self):
+            return
+        if platform.system() != "Linux":
+            json_response(self, 503, {"error": "approval-terminal-unsupported"})
+            return
+        try:
+            self.connection.settimeout(3)
+            length = int(self.headers.get("Content-Length", "0"))
+            if not 0 < length <= 4096:
+                raise ValueError()
+            body = json.loads(self.rfile.read(length))
+            global _approval_terminals
+            with _approval_terminals_lock:
+                if _approval_terminals is None:
+                    import importlib.util
+                    source = INSTALL_DIR / "extensions/services/pixel-agent/host/approval_terminal.py"
+                    spec = importlib.util.spec_from_file_location("ods_approval_terminal", source)
+                    module = importlib.util.module_from_spec(spec)
+                    spec.loader.exec_module(module)
+                    def awaiting(job, plan):
+                        info = PIXEL_OPS_STATUS_HELPER.lstat()
+                        if (not stat_mod.S_ISREG(info.st_mode) or info.st_nlink != 1
+                                or info.st_uid != 0 or info.st_mode & 0o022):
+                            return False
+                        result = subprocess.run(["/usr/bin/python3", str(PIXEL_OPS_STATUS_HELPER), "status",
+                            PIXEL_OPS_STATUS_SOCKET, job, plan], cwd="/", env={"PATH":"/usr/bin:/bin"},
+                            capture_output=True, timeout=5, check=False)
+                        if result.returncode or len(result.stdout)>65536:
+                            return False
+                        value = json.loads(result.stdout)
+                        return (value.get("jobId")==job and value.get("planHash")==plan
+                            and value.get("status")=="awaiting-approval" and value.get("approvalRequired") is True)
+                    _approval_terminals = module.ApprovalTerminals(INSTALL_DIR, awaiting)
+            result = _approval_terminals.request(body)
+            json_response(self, 200, result)
+        except Exception:
+            # Never log request bodies, private terminal text or exception details.
+            json_response(self, 409, {"error": "approval-terminal-unavailable"})
+
     def do_POST(self):
         # Several legacy endpoints intentionally ignore an optional body, and
         # rejected requests may return before consuming one. Close POST
@@ -9410,7 +9452,9 @@ class AgentHandler(BaseHTTPRequestHandler):
         # parsed as the next request on an HTTP/1.1 keep-alive connection. GET
         # polling remains reusable, which is where connection churn matters.
         self.close_connection = True
-        if self.path == "/v1/pixel/access-mode":
+        if self.path == "/v1/pixel/approval-terminal":
+            self._handle_pixel_approval_terminal()
+        elif self.path == "/v1/pixel/access-mode":
             self._handle_pixel_access_mode(True)
         elif self.path == "/v1/pixel/apps/open":
             self._handle_pixel_open_app()
