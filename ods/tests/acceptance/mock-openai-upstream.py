@@ -60,13 +60,22 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self.reply(401, {"error": {"message": "unauthorized"}})
         try:
             size = int(self.headers.get("Content-Length", "0"))
-            if not 0 < size <= 65536:
+            if not 0 < size <= 4 * 1024 * 1024:
+                self.log_message("reject=body-size bytes=%d", size)
                 raise ValueError("invalid body size")
             request = json.loads(self.rfile.read(size))
+            if not isinstance(request, dict):
+                raise ValueError("request must be an object")
         except (ValueError, json.JSONDecodeError):
+            self.log_message("reject=request-json")
             return self.reply(400, {"error": {"message": "invalid request"}})
         if request.get("model") != self.model or not isinstance(request.get("messages"), list):
+            self.log_message("reject=model-or-messages bytes=%d model_match=%s messages_list=%s",
+                             size, request.get("model") == self.model,
+                             isinstance(request.get("messages"), list))
             return self.reply(400, {"error": {"message": "wrong model or messages"}})
+        self.log_message("accept=chat bytes=%d messages=%d stream=%s",
+                         size, len(request["messages"]), request.get("stream") is True)
         if request.get("stream") is True:
             events = [
                 {"id": "chatcmpl-ods-acceptance", "object": "chat.completion.chunk",
