@@ -4,7 +4,7 @@ set -euo pipefail
 
 product="${ODS_ACCEPTANCE_PRODUCT_ROOT:?product checkout is required}"
 harness="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-expected=d82d4820530d1b513c1ee208eda6dfb8efaef248
+expected=c00633804b601e30b1986edea4ff0bbe91e5e7dd
 audit_root="${RUNNER_TEMP:?runner temp is required}/ods-pixel-search-acceptance"
 export INSTALL_DIR="$audit_root/install"
 export LOG_FILE="$audit_root/install.log"
