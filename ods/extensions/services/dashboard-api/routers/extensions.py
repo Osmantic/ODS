@@ -25,7 +25,7 @@ from pydantic import BaseModel
 from config import (
     ALWAYS_ON_SERVICES, CORE_SERVICE_IDS, DATA_DIR,
     EXTENSION_CATALOG, EXTENSIONS_DIR,
-    EXTENSIONS_LIBRARY_DIR, GPU_BACKEND, SERVICES,
+    EXTENSIONS_LIBRARY_DIR, GPU_BACKEND, LIBRARY_MANAGEABLE_BUILTINS, SERVICES,
     USER_EXTENSIONS_DIR,
 )
 from host_agent_client import (
@@ -373,12 +373,9 @@ def _is_one_shot_extension(ext: dict) -> bool:
     return ext.get("port") == 0 and ext.get("startup_check", False) is False
 
 
-_LIBRARY_QUALIFIED_BUILTINS = frozenset({"n8n", "perplexica"})
-
-
 def _qualified_builtin_selection(service_id: str) -> dict:
     """Expose Add controls only for individually qualified built-in services."""
-    if service_id not in _LIBRARY_QUALIFIED_BUILTINS or service_id in ALWAYS_ON_SERVICES:
+    if service_id not in LIBRARY_MANAGEABLE_BUILTINS or service_id in ALWAYS_ON_SERVICES:
         return {}
     directory = EXTENSIONS_DIR / service_id
     if directory.is_symlink() or not directory.is_dir():
