@@ -590,7 +590,10 @@ export function createExecCancellationControl({
 
   return {
     resolveWorkdir(value, workspaceRoot) {
-      return executionHost === "gateway" && platform === "darwin"
+      // Full Access also runs natively on Linux/WSL. Sandbox aliases must
+      // resolve against that configured workspace before core exec can fall
+      // back to the gateway process cwd. Sandbox execution stays unchanged.
+      return executionHost === "gateway" && ["darwin", "linux"].includes(platform)
         ? nativeExecWorkdir(value, workspaceRoot) : undefined;
     },
     prepare(runId, command) {
