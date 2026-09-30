@@ -115,7 +115,13 @@ printf 'PASS: current main installed WebUI with retained-data sentinel\n'
 if [[ -e /var/lib/pixel-ops-broker/.composer || -L /var/lib/pixel-ops-broker/.composer ]]; then
     sudo stat -c 'Prior Pixel state entry: %F mode=%a uid=%u gid=%g links=%h device=%d path=%n' \
         /var/lib/pixel-ops-broker /var/lib/pixel-ops-broker/.composer
+    printf 'Prior Pixel .composer first-level entry classes:\n'
+    sudo find /var/lib/pixel-ops-broker/.composer -mindepth 1 -maxdepth 1 \
+        -printf '%y mode=%m uid=%U gid=%G\n' | sort | uniq -c
 fi
+printf 'Prior Pixel state top-level metadata:\n'
+sudo find /var/lib/pixel-ops-broker -mindepth 1 -maxdepth 1 \
+    -printf '%f type=%y mode=%m uid=%U gid=%G\n' | sort
 
 run_installer "$candidate" 'Portal candidate upgrade'
 grep -qx 'ENABLE_OPEN_WEBUI=true' "$INSTALL_DIR/.env" \
