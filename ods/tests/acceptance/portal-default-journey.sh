@@ -4,7 +4,7 @@ set -euo pipefail
 
 product="${ODS_ACCEPTANCE_PRODUCT_ROOT:?product checkout is required}"
 harness="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-expected=c5bf679be9fa0da794d2307bc264cdcb0727e25d
+expected=50a32ab5ebc1b2377f7809b6c8ec423bc39887be
 audit_root="${RUNNER_TEMP:?runner temp is required}/ods-portal-acceptance"
 export INSTALL_DIR="$audit_root/install"
 export LOG_FILE="$audit_root/install.log"

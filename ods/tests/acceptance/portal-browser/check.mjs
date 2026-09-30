@@ -34,8 +34,13 @@ try {
   await page.reload({ waitUntil: 'domcontentloaded' })
   await expect(page.locator('[data-pixel-message-index]').filter({ hasText: prompt })).toBeVisible({ timeout: 60_000 })
   await expect(page.locator('[data-pixel-response]').last()).toContainText('OK', { timeout: 60_000 })
+  await page.goto(`${base}/dashboard`, { waitUntil: 'domcontentloaded' })
+  const chatCard = page.getByRole('link', { name: /AI Chat/ })
+  await expect(chatCard).toHaveAttribute('href', '/', { timeout: 60_000 })
+  await chatCard.click()
+  await expect(composer).toBeVisible({ timeout: 60_000 })
   assert.deepEqual(pageErrors, [])
-  console.log('PASS: installed Portal browser chat and reload history')
+  console.log('PASS: installed Portal browser chat, reload history, and Dashboard card route')
 } finally {
   await browser.close()
 }
