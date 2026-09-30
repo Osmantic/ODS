@@ -72,7 +72,7 @@ if (-not $nonInteractive -and -not $allFlag -and -not $dryRun) {
     Write-Host "  Choose your ODS configuration:" -ForegroundColor White
     Write-Host ""
     Write-Host "  [1] Full Stack   -- Voice + Workflows + RAG + Hermes + research tools" -ForegroundColor Green
-    Write-Host "  [2] Core Only    -- Chat + LLM inference (lean, fastest startup)" -ForegroundColor White
+    Write-Host "  [2] Core Only    -- Local model chat; no Dashboard agent" -ForegroundColor White
     Write-Host "  [3] Custom       -- Choose each feature individually" -ForegroundColor White
     if ($installedSelection.Kind -eq "preserved") {
         Write-Host "  [4] Keep current -- Preserve installed service choices" -ForegroundColor White
@@ -246,6 +246,10 @@ Write-InfoBox "  Workflows (n8n):"          $(if ($enableWorkflows) { "enabled" 
 Write-InfoBox "  RAG (Qdrant + embeddings):" $(if ($enableRag)      { "enabled" } else { "disabled" })
 Write-InfoBox "  Recommended web/API:"       $(if ($enableRecommended) { "enabled" } else { "disabled" })
 Write-InfoBox "  Agents (Hermes):"           $(if ($enableHermes)   { "enabled" } else { "disabled" })
+if (-not $enableHermes -and -not $enableOpenClaw) {
+    Write-AI "This native Windows selection provides model chat without an action-capable Dashboard agent."
+    Write-AI "For Pixel in Portal, run .\install.ps1 from the ODS repository root to use the supported Windows/WSL2 path."
+}
 Write-InfoBox "  Legacy OpenClaw:"           $(if ($enableOpenClaw) { "enabled (DEPRECATED)" } else { "disabled" })
 Write-InfoBox "  Image gen (ComfyUI):"        $(if ($enableComfyui)  { "enabled" } else { "disabled" })
 Write-InfoBox "  Deep research:"              $(if ($enableDeepResearch) { "enabled" } else { "disabled" })
