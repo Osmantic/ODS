@@ -1,0 +1,31 @@
+name: Acceptance Linux Library dependency guard
+
+on:
+  push:
+    branches:
+      - codex/ods-library-guard-audit
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: library-guard-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  library-guard:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout acceptance harness
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - name: Checkout exact Library dependency guard candidate
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          ref: 01995e75e72b8c9a982163320e67429af635f658
+          path: product
+      - name: Exercise Library dependency guard on installed ODS
+        env:
+          ODS_ACCEPTANCE_PRODUCT_ROOT: ${{ github.workspace }}/product/ods
+        run: bash ods/tests/acceptance/library-dependency-guard-journey.sh
