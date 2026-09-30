@@ -10,17 +10,25 @@ from routers import pixel
 
 
 @pytest.mark.asyncio
-async def test_status_reuses_connection_across_normal_poll_interval(monkeypatch):
+@pytest.mark.parametrize('read_identity', [False, True])
+async def test_status_reuses_connection_across_normal_poll_interval(monkeypatch, read_identity):
+    from test_pixel_runtime_identity import observed
+
     connections = []
     writers = []
+    requests = []
+    identity = observed()
+    config = {'key': 'test-key'}
 
     async def reply(reader, writer):
         connections.append(writer)
         writers.append(writer)
         try:
             while True:
-                await reader.readuntil(b'\r\n\r\n')
-                body = json.dumps({'data': [{'id': 'portal/default'}]}).encode()
+                headers = (await reader.readuntil(b'\r\n\r\n')).decode('ascii')
+                requests.append(headers)
+                body = json.dumps(identity if headers.startswith('GET /v1/runtime-identity ')
+                                  else {'data': [{'id': 'portal/default'}]}).encode()
                 writer.write(b'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: '
                              + str(len(body)).encode() + b'\r\n\r\n' + body)
                 await writer.drain()
@@ -32,21 +40,30 @@ async def test_status_reuses_connection_across_normal_poll_interval(monkeypatch)
 
     server = await asyncio.start_server(reply, '127.0.0.1', 0)
     port = server.sockets[0].getsockname()[1]
-    monkeypatch.setattr(pixel, '_pixel_config', lambda: (f'http://127.0.0.1:{port}', 'test-key'))
+    monkeypatch.setattr(pixel, '_pixel_config', lambda: (f'http://127.0.0.1:{port}', config['key']))
     monkeypatch.setattr(pixel, '_host_model_status', AsyncMock(return_value={}))
     monkeypatch.setattr(pixel, '_model_readiness_issue_for_status', AsyncMock(return_value=None))
     monkeypatch.setattr(pixel, '_local_inference_issue', AsyncMock(return_value=None))
     monkeypatch.setattr(pixel, '_active_runtime_projection', lambda value: {'source': 'remote-provider', 'model': 'cloud'})
     monkeypatch.setattr(pixel, '_model_support_from_status', lambda value: None)
-    monkeypatch.setattr(pixel, '_current_runtime_identity', AsyncMock(return_value=pixel.unknown_runtime_identity()))
+    if not read_identity:
+        monkeypatch.setattr(pixel, '_current_runtime_identity', AsyncMock(return_value=pixel.unknown_runtime_identity()))
     monkeypatch.setattr(pixel, '_current_access_readiness', AsyncMock(return_value=(None, 'access-probe-unavailable')))
     try:
         async with httpx.AsyncClient(trust_env=False, limits=httpx.Limits(keepalive_expiry=30)) as client:
             monkeypatch.setattr(pixel, 'get_edge_read_client', lambda: client, raising=False)
-            assert (await pixel.pixel_status())['available'] is True
+            first = await pixel.pixel_status()
+            assert first['available'] is True
+            config['key'] = 'rotated-key'
             await asyncio.sleep(5.1)
-            assert (await pixel.pixel_status())['available'] is True
+            second = await pixel.pixel_status()
+            assert second['available'] is True
             assert len(connections) == 1
+            if read_identity:
+                assert first['runtimeIdentity'] == second['runtimeIdentity'] == identity
+                assert [request.split(' ')[1] for request in requests] == ['/v1/models', '/v1/runtime-identity'] * 2
+                assert all('Authorization: Bearer test-key\r\n' in request for request in requests[:2])
+                assert all('Authorization: Bearer rotated-key\r\n' in request for request in requests[2:])
             server.close()
             for writer in writers:
                 writer.close()

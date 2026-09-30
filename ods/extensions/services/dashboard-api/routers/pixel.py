@@ -509,11 +509,12 @@ async def _current_access_readiness():
 async def _current_runtime_identity(edge_url, key):
     try:
         async with async_timeout(_READINESS_PROBE_SECONDS):
-            async with httpx.AsyncClient(timeout=httpx.Timeout(_READINESS_PROBE_SECONDS), trust_env=False, follow_redirects=False) as client:
-                async with client.stream("GET", f"{edge_url}/v1/runtime-identity",
-                                         headers=_edge_headers(key, accept="application/json")) as response:
-                    if response.status_code == 200 and response.headers.get("content-type", "").lower().startswith("application/json"):
-                        return project_runtime_identity(json.loads(await _bounded_response_bytes(response, 8192)))
+            client = get_edge_read_client()
+            async with client.stream("GET", f"{edge_url}/v1/runtime-identity",
+                                     headers=_edge_headers(key, accept="application/json"),
+                                     timeout=httpx.Timeout(_READINESS_PROBE_SECONDS)) as response:
+                if response.status_code == 200 and response.headers.get("content-type", "").lower().startswith("application/json"):
+                    return project_runtime_identity(json.loads(await _bounded_response_bytes(response, 8192)))
     except (httpx.HTTPError, asyncio.TimeoutError, ValueError, TypeError, RecursionError):
         pass
     return unknown_runtime_identity()
