@@ -96,7 +96,7 @@ wait_hermes() {
     return 1
 }
 
-[[ "$(git -C "$product" rev-parse HEAD)" == a4b0d4701d0508d1c54adec2333d17d5340000be ]] \
+[[ "$(git -C "$product" rev-parse HEAD)" == 26b320d9b1356ef136ec21d5b6016d2e18a1450e ]] \
     || fail 'wrong product checkout'
 command -v docker >/dev/null || fail 'Docker CLI missing'
 docker info >/dev/null || fail 'isolated Docker Engine unavailable'
@@ -205,6 +205,10 @@ assert "hermes" in result.get("enabled_services", []), result
 assert "searxng" in result.get("enabled_services", []), result
 PY
 wait_hermes || fail 'Hermes did not become healthy after Library add-back'
+[[ -f "$INSTALL_DIR/data/persona/SOUL.md" && -s "$INSTALL_DIR/data/persona/SOUL.md" ]] \
+    || fail 'Hermes persona was not materialized as a nonempty file'
+[[ "$(stat -c %a "$INSTALL_DIR/data/persona/SOUL.md")" == 644 ]] \
+    || fail 'Hermes persona file mode is not readable by its container'
 for _ in {1..36}; do
     curl -fsS --max-time 5 http://127.0.0.1:8888/healthz >/dev/null 2>&1 && break
     sleep 5
