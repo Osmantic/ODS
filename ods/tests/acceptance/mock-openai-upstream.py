@@ -123,27 +123,50 @@ class Handler(http.server.BaseHTTPRequestHandler):
                           and isinstance(item.get("function"), dict)]
             tool_messages = [item for item in request["messages"]
                              if isinstance(item, dict) and item.get("role") == "tool"]
+            search_exchange = None
+            for index in range(len(request["messages"]) - 1, 0, -1):
+                tool_message = request["messages"][index]
+                assistant_message = request["messages"][index - 1]
+                if not (isinstance(tool_message, dict) and tool_message.get("role") == "tool"
+                        and isinstance(assistant_message, dict)
+                        and assistant_message.get("role") == "assistant"):
+                    continue
+                search_call = next((call for call in (assistant_message.get("tool_calls") or [])
+                                    if isinstance(call, dict)
+                                    and isinstance(call.get("function"), dict)
+                                    and call["function"].get("name") == "web_search"), None)
+                if search_call is not None:
+                    search_exchange = (search_call, tool_message)
+                    break
             self.log_message(
                 "search_probe_shape marker_user=%s marker_anywhere=%s roles=%s "
-                "web_search_offered=%s tool_messages=%d matching_tool_result=%s",
+                "web_search_offered=%s tool_messages=%d search_exchange=%s dynamic_id_match=%s",
                 probe, marker_anywhere,
                 [item.get("role") for item in request["messages"][-12:]
                  if isinstance(item, dict)],
                 "web_search" in tool_names, len(tool_messages),
-                any(item.get("tool_call_id") == "call_ods_web_search"
-                    for item in tool_messages),
+                search_exchange is not None,
+                search_exchange is not None and
+                search_exchange[0].get("id") == search_exchange[1].get("tool_call_id"),
             )
         if probe:
-            tool_results = [message for message in request["messages"]
-                            if isinstance(message, dict) and message.get("role") == "tool"
-                            and message.get("tool_call_id") == "call_ods_web_search"]
-            if tool_results:
-                content = tool_results[-1].get("content")
+            if search_exchange is not None:
+                search_call, tool_result = search_exchange
+                content = tool_result.get("content")
                 rendered = content if isinstance(content, str) else json.dumps(content)
                 has_url = "http://" in rendered or "https://" in rendered
-                self.log_message("search_tool_result_seen=%s bytes=%d", has_url, len(rendered))
-                final = "ODS_SEARCH_TOOL_RESULT_SEEN" if has_url else "ODS_SEARCH_TOOL_RESULT_EMPTY"
+                id_matches = (search_call.get("id") is not None and
+                              search_call.get("id") == tool_result.get("tool_call_id"))
+                self.log_message("search_tool_result_seen=%s dynamic_id_match=%s bytes=%d",
+                                 has_url, id_matches, len(rendered))
+                final = ("ODS_SEARCH_TOOL_RESULT_SEEN" if has_url and id_matches
+                         else "ODS_SEARCH_TOOL_RESULT_UNCORRELATED" if has_url
+                         else "ODS_SEARCH_TOOL_RESULT_EMPTY")
                 return self.completion(request, {"role": "assistant", "content": final}, "stop")
+            if tool_messages:
+                self.log_message("search_probe_tool_without_search_call count=%d", len(tool_messages))
+                return self.completion(request, {"role": "assistant", "content":
+                                                 "ODS_SEARCH_TOOL_RESULT_UNCORRELATED"}, "stop")
             web_tool = next((item for item in (request.get("tools") or [])
                              if isinstance(item, dict) and item.get("type") == "function"
                              and item.get("function", {}).get("name") == "web_search"), None)
