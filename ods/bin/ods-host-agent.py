@@ -6011,7 +6011,6 @@ def _whisper_model_ready_after_start(max_wait_seconds: float = 480) -> tuple[boo
 
 
 def docker_compose_action(service_id: str, action: str) -> tuple:
-    action_deadline = time.monotonic() + 630
     try:
         flags = resolve_compose_flags()
         if service_id == "hermes" and action == "start":
@@ -6033,6 +6032,7 @@ def docker_compose_action(service_id: str, action: str) -> tuple:
             return True, ""
         except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as recovery_error:
             return False, f"Could not stop verified ODS containers: {recovery_error}"
+    action_deadline = time.monotonic() + 630
     compose_env = os.environ.copy()
     if action == "start":
         if service_id == "ods-proxy":
