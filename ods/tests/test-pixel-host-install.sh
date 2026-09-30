@@ -1898,11 +1898,21 @@ assert agent["tools"]["deny"] == []
 assert {"pixel_ods_status", "pixel_ods_apps_list", "pixel_ods_extensions", "pixel_ods_host_observe", "pixel_ods_host_command_propose", "pixel_ods_evidence_report", "pixel_ods_evidence_readback", "pixel_ods_research","pixel_ods_web_extract", "pixel_ods_download_promote", "pixel_ods_workspace_preview","pixel_ods_workspace_bundle","pixel_ods_ask_user","pixel_ods_goal", "pixel_ods_activity", "pixel_ods_history", "pixel_ods_image_read", "pixel_ods_skill", "pixel_ods_extension_proposal"}.issubset(value["tools"]["alsoAllow"])
 assert {"web_search", "web_fetch", "pixel_ods_status", "pixel_ods_apps_list", "pixel_ods_extensions", "pixel_ods_host_observe", "pixel_ods_host_command_propose", "pixel_ods_evidence_report", "pixel_ods_evidence_readback", "pixel_ods_research","pixel_ods_web_extract", "pixel_ods_download_promote", "pixel_ods_workspace_preview","pixel_ods_workspace_bundle","pixel_ods_ask_user","pixel_ods_goal", "pixel_ods_activity", "pixel_ods_history", "pixel_ods_image_read", "pixel_ods_skill", "pixel_ods_extension_proposal"}.issubset(value["tools"]["sandbox"]["tools"]["allow"])
 assert value["plugins"]["entries"]["pixel-ods"]["hooks"]["allowConversationAccess"] is True
-assert value["plugins"]["entries"]["pixel-ods"]["config"] == {
+pixel_config = value["plugins"]["entries"]["pixel-ods"]["config"]
+expected_pixel_config = {
     "modelContextWindow": model["contextWindow"],
     "leanPrompt": lean_prompt,
     "perplexicaPort": value["plugins"]["entries"]["pixel-ods"]["config"]["perplexicaPort"],
 }
+if "modelImageInput" in pixel_config:
+    image_input = pixel_config["modelImageInput"]
+    assert image_input in ("supported", "unsupported", "unknown")
+    expected_pixel_config["modelImageInput"] = image_input
+    assert model["input"] == (["text"] if image_input == "unsupported" else ["text", "image"])
+if "modelRouteFingerprint" in pixel_config:
+    assert re.fullmatch(r"[a-f0-9]{64}", pixel_config["modelRouteFingerprint"])
+    expected_pixel_config["modelRouteFingerprint"] = pixel_config["modelRouteFingerprint"]
+assert pixel_config == expected_pixel_config
 assert 1 <= value["plugins"]["entries"]["pixel-ods"]["config"]["perplexicaPort"] <= 65535
 assert "pixel_web_extract" not in value["tools"]["alsoAllow"]
 assert "pixel_web_extract" not in value["tools"]["sandbox"]["tools"]["allow"]
@@ -2114,6 +2124,9 @@ value.update({
 target.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
 PY
 chmod 0600 "$runtime_transition_answers"
+# Render the native image-input metadata from this exact route contract.
+check test "$(_ods_pixel_apply_runtime_budget "$owner" "$runtime_home" \
+    "$runtime_full_candidate" "$runtime_validator" "$runtime_transition_answers")" = changed
 check _ods_pixel_candidate_is_managed_runtime_update "$owner" "$runtime_home" \
     "$runtime_full_candidate" "$runtime_transition_answers"
 cp "$runtime_full_candidate" "$runtime_config"
@@ -2341,7 +2354,7 @@ if _ods_pixel_update_onboarding_model "$owner" "$reconcile_home" "$reconcile_ans
 else
     pass "undersized Pixel model context rejected"
 fi
-check test "$(_ods_pixel_apply_runtime_budget "$owner" "$reconcile_home" "$reconcile_candidate" "$runtime_validator")" = changed
+check test "$(_ods_pixel_apply_runtime_budget "$owner" "$reconcile_home" "$reconcile_candidate" "$runtime_validator" "$reconcile_answers")" = changed
 check python3 -c 'import json,sys; v=json.load(open(sys.argv[1])); a=v["agents"]["list"][0]; m=v["models"]["providers"]["ods-local"]["models"][0]; assert m["reasoning"] is True and m["compat"] == {"thinkingFormat":"qwen-chat-template"} and a["thinkingDefault"] == "low" and a["params"]["chat_template_kwargs"]["enable_thinking"] is True' "$reconcile_candidate"
 check _ods_pixel_candidate_is_managed_runtime_update "$owner" "$reconcile_home" "$reconcile_candidate" "$reconcile_answers"
 cp "$reconcile_config" "$TEST_ROOT/reconcile-config-with-control-bind.json"
@@ -2415,7 +2428,7 @@ model.pop("compat", None)
 path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
 PY
 chmod 0600 "$non_qwen_answers" "$non_qwen_candidate"
-check test "$(_ods_pixel_apply_runtime_budget "$owner" "$reconcile_home" "$non_qwen_candidate" "$runtime_validator")" = changed
+check test "$(_ods_pixel_apply_runtime_budget "$owner" "$reconcile_home" "$non_qwen_candidate" "$runtime_validator" "$non_qwen_answers")" = changed
 check _ods_pixel_candidate_is_managed_runtime_update "$owner" "$reconcile_home" \
     "$non_qwen_candidate" "$non_qwen_answers"
 check _ods_pixel_atomic_replace_managed_file "$owner" "$reconcile_home" \
@@ -2465,7 +2478,7 @@ target.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
 PY
 chmod 0600 "$gateway_answers" "$gateway_candidate"
 gateway_budget_status="$(_ods_pixel_apply_runtime_budget "$owner" "$reconcile_home" \
-    "$gateway_candidate" "$runtime_validator")"
+    "$gateway_candidate" "$runtime_validator" "$gateway_answers")"
 check test "$gateway_budget_status" = changed
 check _ods_pixel_candidate_is_managed_runtime_update "$owner" "$reconcile_home" \
     "$gateway_candidate" "$gateway_answers"
