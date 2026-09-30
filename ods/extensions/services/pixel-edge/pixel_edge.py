@@ -1165,6 +1165,15 @@ def _parse_image_envelope(body):
     return data
 
 
+async def _encoded_image_envelope(data):
+    # Avoid materializing a full JSON string plus its UTF-8 copy alongside the
+    # decoded image/history envelope. Each encoded output chunk stays bounded.
+    for token in json.JSONEncoder().iterencode(data):
+        for start in range(0, len(token), 32768):
+            yield token[start:start + 32768].encode("utf-8")
+        await asyncio.sleep(0)
+
+
 async def _handle_admitted_chat(request, image_turn, reservation, limit):
 
     try:
@@ -1245,8 +1254,10 @@ async def _handle_admitted_chat(request, image_turn, reservation, limit):
                                 sock_connect=_CONNECT_TIMEOUT,
                                 sock_read=_SOCK_READ_TIMEOUT)
         async with ClientSession(connector=connector, timeout=timeout) as session:
+            payload = ({"data": _encoded_image_envelope(upstream_data)} if image_turn
+                       else {"json": upstream_data})
             async with session.post("http://pixel-upstream/v1/chat/completions",
-                                    json=upstream_data, headers=fwd_headers) as resp:
+                                    **payload, headers=fwd_headers) as resp:
                 ctype = resp.headers.get("Content-Type", "").lower()
 
                 if resp.status >= 400:

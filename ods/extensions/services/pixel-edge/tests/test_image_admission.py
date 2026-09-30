@@ -27,6 +27,14 @@ class ImageAdmissionTest(BaseEdgeTest):
     def headers(self):
         return {**self.auth(), 'Content-Type': 'application/json', 'X-ODS-Image-Turn': '1'}
 
+    async def test_image_forward_serialization_is_chunked_and_lossless(self):
+        data = image_request(128 * 1024)
+        data['escaped'] = '\\"\r\n\x00\U0001f642' * 20000
+        chunks = [chunk async for chunk in self.pe._encoded_image_envelope(data)]
+        self.assertGreater(len(chunks), 10)
+        self.assertTrue(all(0 < len(chunk) <= 32768 for chunk in chunks))
+        self.assertEqual(json.loads(b''.join(chunks)), data)
+
     async def test_marked_image_over_legacy_size_reaches_upstream_with_bound_header(self):
         # The old eight MiB transport rejects this valid seven MiB image.
         self.up_runner.app._client_max_size = 16 * 1024 * 1024 + 1
