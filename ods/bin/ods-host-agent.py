@@ -18532,12 +18532,12 @@ def _opencode_macos_loaded_output(binary: Path | None) -> str | None:
         raise RuntimeError(f"Could not inspect OpenCode LaunchAgent: {detail.strip()[:300]}")
     lines = [line.strip() for line in (result.stdout or "").splitlines()]
     try:
-        start = lines.index("arguments = {")
+        path_index = lines.index(f"path = {_opencode_macos_plist_path()}")
+        start = lines.index("arguments = {", path_index + 1)
         end = lines.index("}", start + 1)
     except ValueError:
         raise RuntimeError("Loaded OpenCode LaunchAgent arguments could not be verified") from None
-    if (binary is None or f"path = {_opencode_macos_plist_path()}" not in lines
-            or "program = /bin/sh" not in lines
+    if (binary is None or "program = /bin/sh" not in lines[path_index + 1:start]
             or lines[start + 1:end] != _opencode_macos_arguments(binary)):
         raise RuntimeError("Another loaded LaunchAgent uses the ODS OpenCode label")
     return result.stdout
@@ -19125,6 +19125,7 @@ def _setup_managed_opencode_macos(env: dict) -> None:
     binary_snapshot = _snapshot_managed_opencode_binary()
     prior_disabled = _opencode_macos_disabled()
     plist_written = False
+    config_changed = False
     enabled = False
     bootstrap_succeeded = False
     try:
@@ -19142,14 +19143,15 @@ def _setup_managed_opencode_macos(env: dict) -> None:
         if Path(lines[-1]) != binary or not binary.is_file() or not os.access(binary, os.X_OK):
             raise RuntimeError("OpenCode installer did not return the managed executable")
 
-        _write_progress(_OPENCODE_PROGRESS_ID, "starting", "Connecting OpenCode to the active ODS model")
-        _update_opencode_config(env, config_snapshot, model_id, context_length, display_name=model_id)
         (Path.home() / "Library" / "Logs" / "ODS").mkdir(parents=True, exist_ok=True)
         _opencode_macos_bun_tmpdir().parent.mkdir(parents=True, exist_ok=True)
         _create_opencode_macos_plist(plist_path, _render_opencode_macos_plist(binary))
         plist_written = True
         if _opencode_macos_plist_binary() != binary:
             raise RuntimeError("OpenCode LaunchAgent could not be verified after writing")
+        _write_progress(_OPENCODE_PROGRESS_ID, "starting", "Connecting OpenCode to the active ODS model")
+        config_changed = True  # A failed write may have changed one compatibility file.
+        _update_opencode_config(env, config_snapshot, model_id, context_length, display_name=model_id)
         # A prior ODS selection may have left a launchd disabled override.
         if prior_disabled:
             enabled = True
@@ -19206,10 +19208,11 @@ def _setup_managed_opencode_macos(env: dict) -> None:
                     )
             except (OSError, subprocess.SubprocessError) as rollback_exc:
                 rollback_errors.append(f"disable: {rollback_exc}")
-        try:
-            _restore_opencode_config(config_snapshot)
-        except (OSError, RuntimeError) as rollback_exc:
-            rollback_errors.append(f"config: {rollback_exc}")
+        if config_changed:
+            try:
+                _restore_opencode_config(config_snapshot)
+            except (OSError, RuntimeError) as rollback_exc:
+                rollback_errors.append(f"config: {rollback_exc}")
         if plist_written:
             try:
                 current_binary = _opencode_macos_plist_binary()
