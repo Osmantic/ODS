@@ -755,6 +755,56 @@ describe('Pixel', () => {
     expect(screen.getByText('Available')).toBeInTheDocument()
   })
 
+  it('recovers confirmed cloud after a stalled status body and first selector opening during the outage without local model requests', async () => {
+    vi.useFakeTimers()
+    let finishStalled, stalledSignal
+    let statusCalls = 0
+    const cloud = {available:true,runtime:{source:'remote-provider',model:'cloud-model',contextLength:32768,maxTokens:4096,reasoning:false}}
+    globalThis.fetch.mockImplementation((url, options) => {
+      if (url !== '/api/pixel/status') return Promise.resolve(response({},503))
+      statusCalls += 1
+      if (statusCalls === 2) {
+        stalledSignal = options.signal
+        return Promise.resolve({ok:true,json:()=>new Promise(resolve => { finishStalled = resolve })})
+      }
+      return Promise.resolve(response(cloud))
+    })
+    const localRequests = () => fetch.mock.calls.filter(([url])=>url.startsWith('/api/models'))
+    render(<Pixel />)
+    await act(async()=>{})
+    expect(screen.getByText('Available')).toBeInTheDocument()
+    expect(screen.getByRole('button',{name:'Choose model: cloud model'})).toHaveTextContent('cloud model')
+    fireEvent.change(screen.getByRole('textbox'),{target:{value:'Keep this cloud draft'}})
+    expect(localRequests()).toHaveLength(0)
+
+    await act(async()=>{await vi.advanceTimersByTimeAsync(3000)})
+    expect(statusCalls).toBe(2)
+    await act(async()=>{await vi.advanceTimersByTimeAsync(15000)})
+    expect(stalledSignal.aborted).toBe(true)
+    expect(screen.getByText('Degraded')).toBeInTheDocument()
+    expect(screen.getByRole('textbox')).toBeDisabled()
+    fireEvent.click(screen.getByRole('button',{name:'Choose model: Choose model'}))
+    await act(async()=>{})
+    expect(screen.getByText('The conversation’s model source is not confirmed.')).toBeVisible()
+    expect(screen.queryByRole('button',{name:'Switch model',exact:true})).toBeNull()
+    expect(localRequests()).toHaveLength(0)
+
+    await act(async()=>{await vi.advanceTimersByTimeAsync(3000)})
+    expect(screen.getByText('Available')).toBeInTheDocument()
+    expect(screen.getByRole('button',{name:'Choose model: cloud model'})).toHaveTextContent('cloud model')
+    expect(screen.getByRole('link',{name:'Provider settings'})).toBeVisible()
+    expect(screen.getByRole('textbox')).toBeEnabled()
+    expect(screen.getByRole('textbox')).toHaveValue('Keep this cloud draft')
+    await act(async()=>{finishStalled({available:false})})
+    await act(async()=>{await vi.advanceTimersByTimeAsync(60000)})
+    fireEvent.click(screen.getByRole('button',{name:'Choose model: cloud model'}))
+    fireEvent.click(screen.getByRole('button',{name:'Choose model: cloud model'}))
+    await act(async()=>{})
+    expect(screen.getByText('Available')).toBeInTheDocument()
+    expect(screen.getByRole('textbox')).toBeEnabled()
+    expect(localRequests()).toHaveLength(0)
+  })
+
   it('restores the cloud composer despite an unavailable local activation catalog', async () => {
     vi.useFakeTimers()
     let available = true, catalogFailed = false, remote = false
