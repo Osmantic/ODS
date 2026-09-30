@@ -7,7 +7,7 @@ import PixelSnapshotChanges from './PixelSnapshotChanges'
 import PortalFileTree from './PortalFileTree'
 import PortalFileTreeResize,{useFileTreeResize} from './PortalFileTreeResize'
 import PortalSubagents from './PortalSubagents'
-import PortalLiveReview from './PortalLiveReview'
+import PortalLiveReview,{completedReviewChanges} from './PortalLiveReview'
 import PortalSourceReview from './PortalSourceReview'
 import './portal-workspace.css'
 
@@ -22,6 +22,8 @@ export default function PortalWorkspace({preview,before,access,title,request,onR
   const panelDomId=key=>`${workspaceId}-panel-${key.startsWith('file:')?'file':key}`
   const [treeOpen,setTreeOpen]=useState(false),[reviewPath,setReviewPath]=useState(null),[options,setOptions]=useState(false),[retry,setRetry]=useState(0)
   const [reviewMode,setReviewMode]=useState(preview?.source?'source':'output')
+  const hasEdits=completedReviewChanges(task).length>0
+  const visibleReviewMode=reviewMode==='edits' && !hasEdits?(preview?.source?'source':'output'):reviewMode
   const consumed=useRef(null),root=useRef(null)
   const treeLayout=useFileTreeResize(root,{narrowBelow:561})
   useEffect(()=>{
@@ -103,14 +105,13 @@ export default function PortalWorkspace({preview,before,access,title,request,onR
       </div>
       {active==='review' && <div className="portal-workbench-review" id={panelDomId('review')} role="tabpanel" aria-labelledby={tabDomId('review')}>
         <div className="portal-review-scope" role="group" aria-label="Review scope">
-          {preview.source && <button type="button" aria-pressed={reviewMode==='source'} onClick={()=>setReviewMode('source')}>Source files</button>}
-          <button type="button" aria-pressed={reviewMode==='output'} onClick={()=>setReviewMode('output')}>Published output</button>
-          <button type="button" aria-pressed={reviewMode==='edits'} onClick={()=>setReviewMode('edits')}>File edits</button>
+          {preview.source && <button type="button" aria-pressed={visibleReviewMode==='source'} onClick={()=>setReviewMode('source')}>Source files</button>}
+          <button type="button" aria-pressed={visibleReviewMode==='output'} onClick={()=>setReviewMode('output')}>Published output</button>
+          {hasEdits && <button type="button" aria-pressed={visibleReviewMode==='edits'} onClick={()=>setReviewMode('edits')}>File edits</button>}
         </div>
-        {reviewMode==='output' && !preview.source && <p className="portal-source-notice">Files published for this preview. No separate project source snapshot was attached.</p>}
-        {reviewMode==='source' && preview.source && <PortalSourceReview key={`${preview.siteId}/${preview.source.sourceId}`} preview={preview} refresh={refresh}/>}
-        {reviewMode==='edits' && <><p className="portal-source-notice">Changes recorded by tools in this response.</p><PortalLiveReview task={task} hasPublication/></>}
-        <div hidden={reviewMode!=='output'} className="portal-review-output">
+        {visibleReviewMode==='source' && preview.source && <PortalSourceReview key={`${preview.siteId}/${preview.source.sourceId}`} preview={preview} refresh={refresh}/>}
+        {visibleReviewMode==='edits' && <PortalLiveReview task={task} hasPublication/>}
+        <div hidden={visibleReviewMode!=='output'} className="portal-review-output">
         {error && <p className="portal-source-notice" role="status">Project files unavailable. <button type="button" onClick={()=>setRetry(value=>value+1)}>Retry files</button></p>}
         <PixelSnapshotChanges key={`${preview.siteId}/${refresh}`} preview={preview} rootPath={preview.relativeDirectory} before={before} projectFiles={files} selectedPath={reviewPath} onSelectFile={path=>setReviewPath(path)} onOpenFile={file=>openFile(file.path)}/>
         </div>

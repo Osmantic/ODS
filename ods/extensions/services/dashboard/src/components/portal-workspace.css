@@ -140,3 +140,9 @@
 .pixel-app .pixel-chat-preview-layout .portal-review-diff > pre { scrollbar-gutter:stable; scrollbar-width:auto; }
 .pixel-app .pixel-chat-preview-layout .portal-review-diff > pre::-webkit-scrollbar { width:12px; height:12px; }
 .pixel-app .pixel-chat-preview-layout .portal-review-diff > pre::-webkit-scrollbar-thumb { border:2px solid transparent; background-clip:padding-box; }
+
+.portal-live-review-files { display:flex; flex:1; min-height:0; padding:0; container-type:inline-size; }
+.portal-live-review-files > aside { flex:0 0 180px; min-height:0; overflow:auto; border-right:1px solid rgb(var(--theme-border)); }
+.portal-live-review-files > .portal-live-review-content { flex:1; min-height:0; overflow:auto; padding:12px; }
+.portal-live-review-content > select { margin-bottom:10px; padding:5px 8px; background:rgb(var(--theme-text) / .06); border-radius:5px; }
+@container (max-width:460px) { .portal-live-review-files > aside { flex-basis:130px; } }

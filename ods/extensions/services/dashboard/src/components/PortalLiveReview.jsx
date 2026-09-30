@@ -1,5 +1,5 @@
 import {useEffect,useState} from 'react'
-import {FilePenLine} from 'lucide-react'
+import PortalFileTree from './PortalFileTree'
 import {parseTaskActivity} from '../lib/pixelTaskActivity'
 import PortalActivityChange from './PortalActivityChange'
 import './portal-agent-activity.css'
@@ -38,10 +38,14 @@ export default function PortalLiveReview({task,hasPublication=false}) {
     })
   },[task])
   const current=entries.find(entry=>entry.id===selected) || entries.at(-1)
-  if(!current)return hasPublication?<section className="portal-live-review" aria-label="Recent file changes"><p className="portal-source-notice" role="status">No completed file edits were recorded for this response.</p><p className="portal-source-notice">Publishing existing files does not create an edit history. Open Published output to inspect the files in this preview.</p></section>:null
-  return <section className="portal-live-review" data-published={hasPublication} aria-label="Recent file changes">
-      <nav aria-label="Completed file edits">{entries.map((entry,index)=><button key={entry.id} type="button" aria-pressed={entry.id===current.id} onClick={()=>setSelected(entry.id)}><FilePenLine size={13}/><span>{entry.change.file}</span><small>{index+1}</small></button>)}</nav>
-      <div className="portal-live-review-content"><PortalActivityChange key={current.id} change={current.change}/></div>
-    <small className="portal-live-review-note">Tool-reported changes · excerpts may be shortened. The website preview updates after publication.</small>
+  if(!current)return null
+  const paths=[...new Set(entries.map(entry=>entry.change.file))]
+  const fileEntries=entries.filter(entry=>entry.change.file===current.change.file)
+  return <section className="portal-live-review portal-live-review-files" data-published={hasPublication} aria-label="Recent file changes">
+    <aside><PortalFileTree files={paths.map(path=>({path}))} selectedPath={current.change.file} onSelectFile={path=>setSelected(entries.findLast(entry=>entry.change.file===path).id)} label="Completed file edits" filterLabel="Filter edited files"/></aside>
+    <div className="portal-live-review-content">
+      {fileEntries.length>1 && <select aria-label="Edit revision" value={current.id} onChange={event=>setSelected(event.target.value)}>{fileEntries.map((entry,index)=><option key={entry.id} value={entry.id}>Edit {index+1}</option>)}</select>}
+      <PortalActivityChange key={current.id} change={current.change} compact/>
+    </div>
   </section>
 }

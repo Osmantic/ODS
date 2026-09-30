@@ -126,12 +126,12 @@ export default function PixelFileChanges({changes = [], files, comparisonReady=t
     onOpenFile(requestedFile)
   }, [comparisonReady,requestedFile,changes,onOpenFile])
   if (!treeFiles.length) return null
-  const treeOpen = treePreference ?? !narrow
+  const treeOpen = treePreference ?? true
   const selectFile = (path, file) => {
     if (hasManifest && !file.change) { onOpenFile?.(file); return }
     setLocalPath(path)
     onSelectFile?.(path,file)
-    if (narrow) setTreePreference(false)
+
   }
   return <div ref={panel} className={`pixel-file-changes portal-review-layout${treeOpen ? ' has-files' : ''}${narrow ? ' is-narrow' : ' portal-tree-split'}`} style={treeLayout.style} aria-label="File changes">
     {selected ? <FileChange key={selected.path} file={selected} onPreview={onPreview} onOpenFile={onOpenFile} treeOpen={treeOpen} onToggleTree={() => setTreePreference(!treeOpen)}/> : <section className="portal-review-diff pixel-code-block" aria-label="Project files">
