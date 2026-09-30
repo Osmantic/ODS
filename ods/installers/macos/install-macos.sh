@@ -3542,3 +3542,8 @@ fi
 } | ods_readiness_summary "./ods-macos.sh status" "$ODS_LOG_FILE" "http://localhost:3001"
 
 show_success_card
+
+# The macOS compose stack publishes DASHBOARD_PORT from the installed .env.
+. "$SCRIPT_DIR/../lib/progress.sh"
+_portal_port="$(read_env_value "$INSTALL_DIR/.env" "DASHBOARD_PORT")"
+ods_portal_receipt "$ENABLE_PIXEL" "${_portal_port:-3001}" "$DRY_RUN"

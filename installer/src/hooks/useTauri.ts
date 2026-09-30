@@ -80,6 +80,7 @@ export interface InstallState {
   progress_pct: number;
   progress_message: string;
   reboot_pending: boolean;
+  portal_url: string | null;
 }
 
 // Tauri command wrappers
@@ -112,3 +113,5 @@ export const getInstallState = () =>
   invoke<InstallState>("get_install_state");
 
 export const openODSserver = () => invoke("open_ods");
+
+export const getPortalUrl = () => invoke<string | null>("get_portal_url");
