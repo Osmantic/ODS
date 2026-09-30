@@ -74,16 +74,60 @@ class Handler(http.server.BaseHTTPRequestHandler):
                              size, request.get("model") == self.model,
                              isinstance(request.get("messages"), list))
             return self.reply(400, {"error": {"message": "wrong model or messages"}})
-        self.log_message("accept=chat bytes=%d messages=%d stream=%s",
-                         size, len(request["messages"]), request.get("stream") is True)
+        response_format = request.get("response_format")
+        tools = request.get("tools")
+        tool_names = [item.get("function", {}).get("name", "") for item in tools] if isinstance(tools, list) else []
+        self.log_message("accept=chat bytes=%d messages=%d stream=%s format=%s tools=%s",
+                         size, len(request["messages"]), request.get("stream") is True,
+                         response_format.get("type") if isinstance(response_format, dict) else "none",
+                         ",".join(tool_names))
+        if isinstance(response_format, dict) and response_format.get("type") == "json_schema":
+            # Vane classifies each request through OpenAI's structured parse API.
+            # Return exactly its classifier schema so the mock tests research,
+            # instead of a parser rejection before any web search occurs.
+            classification = {
+                "classification": {
+                    "skipSearch": False,
+                    "personalSearch": False,
+                    "academicSearch": False,
+                    "discussionSearch": False,
+                    "showWeatherWidget": False,
+                    "showStockWidget": False,
+                    "showCalculationWidget": False,
+                },
+                "standaloneFollowUp": "What is the Linux kernel?",
+            }
+            self.log_message("accept=classify")
+            return self.reply(200, {
+                "id": "chatcmpl-ods-classify", "object": "chat.completion",
+                "created": 0, "model": self.model,
+                "choices": [{"index": 0, "message": {"role": "assistant",
+                             "content": json.dumps(classification)}, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            })
         if request.get("stream") is True:
+            has_tool_result = any(message.get("role") == "tool" for message in request["messages"]
+                                  if isinstance(message, dict))
+            if "web_search" in tool_names and not has_tool_result:
+                self.log_message("accept=tool-call name=web_search")
+                delta = {"role": "assistant", "tool_calls": [{
+                    "index": 0, "id": "call_ods_web_search", "type": "function",
+                    "function": {"name": "web_search", "arguments": json.dumps({
+                        "type": "web_search", "queries": ["Linux kernel"],
+                    })},
+                }]}
+                finish_reason = "tool_calls"
+            else:
+                self.log_message("accept=%s", "research-finish" if tool_names else "writer")
+                delta = {"role": "assistant", "content": "OK"}
+                finish_reason = "stop"
             events = [
                 {"id": "chatcmpl-ods-acceptance", "object": "chat.completion.chunk",
                  "created": 0, "model": self.model,
-                 "choices": [{"index": 0, "delta": {"role": "assistant", "content": "OK"}, "finish_reason": None}]},
+                 "choices": [{"index": 0, "delta": delta, "finish_reason": None}]},
                 {"id": "chatcmpl-ods-acceptance", "object": "chat.completion.chunk",
                  "created": 0, "model": self.model,
-                 "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]},
+                 "choices": [{"index": 0, "delta": {}, "finish_reason": finish_reason}]},
             ]
             body = ("".join("data: " + json.dumps(event) + "\n\n" for event in events)
                     + "data: [DONE]\n\n").encode("utf-8")

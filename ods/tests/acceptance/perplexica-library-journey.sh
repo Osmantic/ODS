@@ -23,7 +23,37 @@ fail() {
     printf 'FAIL: %s\n' "$*" >&2
     docker ps --format '{{.Names}} {{.Status}}' >&2 || true
     if [[ -f "$audit_root/mock.log" ]]; then
-        tail -n 20 "$audit_root/mock.log" >&2 || true
+        printf 'Mock completion stages (request text and credentials omitted):\n' >&2
+        grep -E 'accept=|reject=' "$audit_root/mock.log" | tail -n 50 >&2 || true
+    fi
+    # Vane can leave non-streaming /api/search open if its background agent
+    # rejects. Keep only error-shaped lines and redact all generated secrets.
+    if docker ps --format '{{.Names}}' | grep -Fxq ods-perplexica; then
+        python3 - "$INSTALL_DIR/.env" "$key_file" <<'PY' >&2 || true
+import os, re, subprocess, sys
+secrets = []
+if os.path.isfile(sys.argv[1]):
+    for line in open(sys.argv[1], encoding="utf-8", errors="replace"):
+        if "=" not in line or line.lstrip().startswith("#"):
+            continue
+        key, value = line.rstrip("\n").split("=", 1)
+        if any(word in key.upper() for word in ("KEY", "TOKEN", "SECRET", "PASSWORD")):
+            value = value.strip().strip("\"'")
+            if len(value) >= 8:
+                secrets.append(value)
+if os.path.isfile(sys.argv[2]):
+    secrets.append(open(sys.argv[2], encoding="ascii").read().strip())
+result = subprocess.run(["docker", "logs", "--tail", "150", "ods-perplexica"],
+                        capture_output=True, text=True, timeout=15, check=False)
+print("Perplexica error diagnostics (secrets redacted):")
+for line in (result.stdout + result.stderr).splitlines():
+    if not re.search(r"error|fail|reject|timeout|fetch|download|unhandled", line, re.I):
+        continue
+    for secret in secrets:
+        line = line.replace(secret, "[redacted]")
+    line = re.sub(r"(?i)(bearer\s+)\S+", r"\1[redacted]", line)
+    print(line[:700])
+PY
     fi
     exit 1
 }
@@ -171,12 +201,16 @@ python3 - "$audit_root/search-response.json" <<'PY' || fail 'Perplexica research
 import json,sys
 response=json.load(open(sys.argv[1],encoding="utf-8"))
 assert isinstance(response.get("message"),str) and response["message"].strip(), list(response)
-assert isinstance(response.get("sources"),list), list(response)
+assert isinstance(response.get("sources"),list) and response["sources"], list(response)
 print("PASS: Perplexica accepted a research request and returned an answer")
 PY
 requests_after="$(grep -Fc 'accept=chat' "$audit_root/mock.log" || true)"
 [[ "$requests_after" -gt "$requests_before" ]] \
     || fail 'research did not reach the authenticated ODS external model route'
+for stage in 'accept=classify' 'accept=tool-call name=web_search' 'accept=writer'; do
+    grep -Fq "$stage" "$audit_root/mock.log" \
+        || fail "research did not reach mock stage $stage"
+done
 printf 'PASS: Perplexica research used the selected external model through LiteLLM\n'
 
 sentinel="/home/vane/data/.ods-acceptance-sentinel"
