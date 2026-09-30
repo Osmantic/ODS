@@ -1,0 +1,36 @@
+name: Acceptance Linux voice add-back
+
+on:
+  push:
+    branches:
+      - codex/ods-voice-addback-audit
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: voice-addback-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  voice-addback:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Checkout acceptance harness
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - name: Checkout exact ODS main candidate
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          ref: 2ca9fe9d2dea43cec5297cf863062b85767aa45f
+          path: product
+      - name: Record installed source and Docker capacity
+        run: |
+          test "$(git -C product rev-parse HEAD)" = 2ca9fe9d2dea43cec5297cf863062b85767aa45f
+          docker version
+          df -h / "$RUNNER_TEMP"
+      - name: Exercise installed voice Library add-back
+        run: |
+          ODS_ACCEPTANCE_PRODUCT_ROOT="$GITHUB_WORKSPACE/product/ods" \
+            bash ods/tests/acceptance/voice-addback-journey.sh
