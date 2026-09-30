@@ -169,7 +169,14 @@ value = json.load(open(sys.argv[1], encoding="utf-8"))
 assert "searxng" in value.get("enabled_services", []), value
 assert value.get("failed_services") == [], value
 PY
-curl -fsS --max-time 20 http://127.0.0.1:8888/healthz >/dev/null     || fail 'SearXNG health endpoint unavailable'
+for _ in {1..36}; do
+    if curl -fsS --max-time 5 http://127.0.0.1:8888/healthz >/dev/null 2>&1; then
+        break
+    fi
+    sleep 5
+done
+curl -fsS --max-time 20 http://127.0.0.1:8888/healthz >/dev/null \
+    || fail 'SearXNG health endpoint unavailable after startup wait'
 printf 'PASS: SearXNG enabled and healthy\n'
 
 curl -fsS --max-time 900 -X POST http://127.0.0.1:3001/api/extensions/perplexica/enable     >"$audit_root/perplexica-enable.json" || fail 'Perplexica enable request failed'
@@ -179,7 +186,14 @@ value = json.load(open(sys.argv[1], encoding="utf-8"))
 assert "perplexica" in value.get("enabled_services", []), value
 assert value.get("failed_services") == [], value
 PY
-curl -fLsS --max-time 20 http://127.0.0.1:3004/ >/dev/null     || fail 'Perplexica UI endpoint unavailable'
+for _ in {1..60}; do
+    if curl -fLsS --max-time 5 http://127.0.0.1:3004/ >/dev/null 2>&1; then
+        break
+    fi
+    sleep 5
+done
+curl -fLsS --max-time 20 http://127.0.0.1:3004/ >/dev/null \
+    || fail 'Perplexica UI endpoint unavailable after startup wait'
 printf 'PASS: Perplexica enabled and healthy on external-model gateway\n'
 
 services="$(compose_services)" || fail 'enabled Compose selection cannot be resolved'
