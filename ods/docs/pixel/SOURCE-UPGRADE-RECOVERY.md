@@ -1,5 +1,37 @@
 # Linux/WSL Pixel source upgrades
 
+## Final runtime overlay and access proof
+
+The vendor release receipt describes the release configuration. The ODS installer
+may subsequently apply its fixed runtime-budget overlay. Completing that source
+transaction requires reproducing the final configuration **byte for byte** from
+the original authenticated release snapshot and the renderer in the protected
+source plan. It does not rewrite the original release or access receipts.
+
+The coordinator reconstructs the Full Access revocation baseline from the
+original candidate and before-receipt, repeats derivation after a fresh runtime
+probe, and rechecks source, snapshots, process identity, proof and held admission
+before recording a separate completion. Cloud route fingerprints and local
+model identity come from the original snapshot. Sandbox follows its existing
+fresh-proof completion path; this derivation never enables Full Access.
+
+If the original snapshot lacks the inspector or project socket, the new channel
+also needs a protected deployment configuration for the same owner, service
+files matching the source plan, the installer's exact unit contract, an active
+unit without extra drop-ins, a matching Unix peer PID, and immutable installed
+image identity. Inspector image validation uses the original installer's closed
+image contract. These checks are repeated around rendering; changed provisioning
+keeps admission held. Project support is available only when that source plan
+contains its installer and runtime files. Existing tool authorization still
+applies; a socket does not grant project execution authority.
+
+This is a proof of the installed channel and deterministic configuration overlay,
+not an attestation of how a Docker image was built. The isolated tests use actual
+installer validators and Unix peer credentials with explicit disposable Docker
+and systemd adapters; they do not qualify a complete systemd/Compose installation.
+After downstream mutations, failure remains **resume-only for the same reviewed
+candidate**, not a promise of global rollback.
+
 An existing ODS-managed Pixel installation can change public source releases
 without uninstalling its access controller or recreating its permission
 preference. The installation owner and installation directory must remain the

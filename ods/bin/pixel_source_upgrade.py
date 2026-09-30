@@ -19,6 +19,9 @@ import os
 from pathlib import Path, PurePosixPath
 import re
 import stat
+import socket
+import struct
+import subprocess
 import sys
 import tempfile
 
@@ -39,6 +42,63 @@ MIRROR_LEAVES = frozenset(('/etc/ods/pixel-access.json', '/etc/ods/pixel-access-
                          '/etc/systemd/system/ods-pixel-access.service'))
 SYSTEM_ROOT = Path('/')
 SYSTEM_UID = 0
+
+# The renderer is the exact root-custodied source blob, never an owner-selected
+# command. It runs as the installation owner over disposable private copies.
+_OVERLAY_CHILD = r'''
+import contextlib, hashlib, io, json, os, pathlib, sys, tempfile
+value = json.load(sys.stdin)
+with tempfile.TemporaryDirectory(prefix='ods-source-overlay-') as temporary:
+    folder = pathlib.Path(temporary)
+    path = folder / 'config.json'
+    path.write_text(value['config'], encoding='utf-8')
+    path.chmod(0o600)
+    answers = folder / 'answers.json'
+    answers.write_text(json.dumps(value['answers']), encoding='utf-8')
+    answers.chmod(0o600)
+    sys.argv = ['pixel-runtime-budget.py', str(path), str(value['port']), str(answers),
+                value['home'], value['transport'], value['socket']]
+    output = io.StringIO()
+    with contextlib.redirect_stdout(output):
+        try:
+            exec(compile(value['renderer'], 'pixel-runtime-budget.py', 'exec'), {'__name__': '__main__'})
+        except SystemExit as error:
+            if error.code not in (None, 0):
+                raise
+    name = output.getvalue().strip()
+    result = path if name == 'unchanged' else pathlib.Path(name)
+    if (result.parent != folder or result.is_symlink() or not result.is_file()
+            or result.stat().st_size > 2 * 1024 * 1024
+            or result != path and not result.name.startswith('.ods-pixel-runtime-budget.')):
+        raise SystemExit(1)
+    print(hashlib.sha256(result.read_bytes()).hexdigest())
+'''
+
+# Only validation functions of the exact source-plan installer are called. No
+# build, installation, service mutation, or model/workspace code is executed.
+_PROVISION_CHILD = r'''
+import importlib.util, json, pathlib, sys, tempfile
+value = json.load(sys.stdin)
+with tempfile.TemporaryDirectory(prefix='ods-source-provision-') as temporary:
+    root = pathlib.Path(temporary)
+    for name, source in value['sources'].items():
+        path = root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(source, encoding='utf-8')
+    path = root / value['installer']
+    spec = importlib.util.spec_from_file_location('ods_provision_contract', path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    module.validate_config(value['config'])
+    if value['kind'] == 'inspection':
+        module.validate_image(value['images'][0], value['config']['imageId'])
+        module.docker_path('local')
+        files, unit = module.RUNTIME_FILES, None
+    else:
+        files, unit = module.FILES, module.unit_bytes(value['config']).decode('utf-8')
+        module.common.docker_path('local')
+    print(json.dumps({'files': list(files), 'unit': unit}))
+'''
 
 
 class UpgradeError(RuntimeError):
@@ -116,6 +176,353 @@ def release_guard(state, install, uid, transaction, outcome, *, state_uid=0):
     # The new protected guard is retained even when the source is restored.
     # Downgrading it under a live hold would remove the completion barrier.
     manager.verify_mirror()
+
+
+def _overlay_private(root, name, uid):
+    item, raw = read_file(Path(root), name, uid)
+    if item is None or item['mode'] & 0o077 or len(raw) > 2 * 1024 * 1024:
+        raise UpgradeError('source-overlay-state-unsafe')
+    return raw
+
+
+def _overlay_json(raw):
+    def pairs(items):
+        result = {}
+        for key, value in items:
+            if key in result:
+                raise ValueError('duplicate')
+            result[key] = value
+        return result
+    value = json.loads(raw, object_pairs_hook=pairs)
+    if type(value) is not dict:
+        raise UpgradeError('source-overlay-state-invalid')
+    encoded(value)  # Reject non-finite JSON values as well.
+    return value
+
+
+def _overlay_candidate(install, source_ref, uid):
+    """Read a pinned private candidate beneath the installer's shared data dir.
+
+    data/ may legitimately be group-writable; data/pixel/ and every private
+    descendant still require owner custody. Descriptor traversal never follows
+    links, and parent identities are rechecked before returning. The caller
+    authenticates these bytes against the root release-intent SHA separately.
+    """
+    names = ('data', 'pixel', 'source-' + source_ref, 'dist', 'openclaw.json')
+    fds = [os.open(install, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)]
+    links = []
+    try:
+        for index, name in enumerate(names):
+            parent = fds[-1]
+            flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+            if index < len(names) - 1:
+                flags |= os.O_DIRECTORY
+            fd = os.open(name, flags, dir_fd=parent)
+            fds.append(fd)
+            info = os.fstat(fd)
+            mask = 0o002 if index == 0 else 0o077 if index in (1, 4) else 0o022
+            if (info.st_uid != uid or info.st_mode & mask
+                    or index < 4 and not stat.S_ISDIR(info.st_mode)
+                    or index == 4 and (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
+                                      or info.st_size > 2 * 1024 * 1024)):
+                raise UpgradeError('source-overlay-candidate-unsafe')
+            links.append((parent, name, info.st_dev, info.st_ino))
+        before = os.fstat(fds[-1])
+        with os.fdopen(fds[-1], 'rb', closefd=False) as handle:
+            raw = handle.read(2 * 1024 * 1024 + 1)
+        after = os.fstat(fds[-1])
+        if len(raw) > 2 * 1024 * 1024 or (before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (
+                after.st_size, after.st_mtime_ns, after.st_ctime_ns):
+            raise UpgradeError('source-overlay-candidate-changed')
+        for parent, name, device, inode in links:
+            current = os.stat(name, dir_fd=parent, follow_symlinks=False)
+            if (current.st_dev, current.st_ino) != (device, inode):
+                raise UpgradeError('source-overlay-candidate-changed')
+        root = os.stat(install, follow_symlinks=False)
+        opened = os.fstat(fds[0])
+        if (root.st_dev, root.st_ino) != (opened.st_dev, opened.st_ino):
+            raise UpgradeError('source-overlay-candidate-changed')
+        return raw
+    finally:
+        for fd in reversed(fds):
+            os.close(fd)
+
+
+def _provision_contract(manager, plan, kind, config, images):
+    installer = 'installers/lib/pixel-' + ('preview-inspection' if kind == 'inspection' else 'project-runtime') + '.py'
+    names = {installer, 'installers/lib/pixel-preview-inspection.py',
+             'extensions/services/pixel-agent/host/preview_inspection_protocol.py'}
+    sources = {name: manager._blob(plan['after'][name]['sha256']).decode('utf-8') for name in names}
+    result = subprocess.run([sys.executable, '-I', '-c', _PROVISION_CHILD],
+        input=json.dumps(dict(installer=installer, sources=sources, kind=kind,
+                             config=config, images=images)).encode(),
+        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=15,
+        env={'PATH': '/usr/bin:/bin', 'LANG': 'C.UTF-8'}, cwd='/')
+    if result.returncode or len(result.stdout) > 16384:
+        raise UpgradeError('source-overlay-provision-contract-invalid')
+    value = _overlay_json(result.stdout)
+    if (set(value) != {'files', 'unit'} or type(value['files']) is not list
+            or not 1 <= len(value['files']) <= 32
+            or any(type(name) is not str or not re.fullmatch(r'[a-z_]+\.py', name) for name in value['files'])):
+        raise UpgradeError('source-overlay-provision-contract-invalid')
+    return value
+
+
+def _provision_peer(path):
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+        connection.settimeout(2)
+        connection.connect(str(path))
+        return struct.unpack('3i', connection.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))[:2]
+
+
+def _prove_provision(bridge, manager, plan, kind):
+    """Bound installed channel proof, not an attestation of image build inputs.
+
+    This is only used for an absent capability in the original release. The
+    trusted installer source, protected deployment config and running unit/peer
+    must agree. No HTTP request, browser operation, project job or grant occurs.
+    """
+    inspection = kind == 'inspection'
+    stem = 'ods-pixel-inspection' if inspection else 'ods-pixel-project'
+    unit_name = 'pixel-preview-inspection.service' if inspection else stem + '.service'
+    program = 'usr/local/libexec/' + stem
+    config_name = 'etc/' + stem + '.json'
+    evidence = {}
+    def protected(name):
+        item, raw = read_file(SYSTEM_ROOT, name, SYSTEM_UID)
+        if item is None or len(raw) > 2 * 1024 * 1024:
+            raise UpgradeError('source-overlay-provision-file-invalid')
+        evidence[name] = item
+        return raw
+    config = _overlay_json(protected(config_name))
+    if config.get('ownerUid') != bridge.owner.pw_uid:
+        raise UpgradeError('source-overlay-provision-owner-mismatch')
+    if inspection and config.get('transport') != 'local':
+        raise UpgradeError('source-overlay-provision-contract-invalid')
+    images = []
+    for key in ('imageId', 'pythonImageId'):
+        image = config.get(key)
+        if key == 'pythonImageId' and image is None:
+            continue
+        if type(image) is not str or not re.fullmatch(r'sha256:[a-f0-9]{64}', image):
+            raise UpgradeError('source-overlay-provision-image-invalid')
+        rows = json.loads(bridge.command(['/usr/bin/docker', 'image', 'inspect', image], timeout=5))
+        if type(rows) is not list or len(rows) != 1 or rows[0].get('Id') != image:
+            raise UpgradeError('source-overlay-provision-image-invalid')
+        images.append(rows)
+    contract = _provision_contract(manager, plan, kind, config, images)
+    for name in contract['files']:
+        raw = protected(program + '/' + name)
+        source = plan['after']['extensions/services/pixel-agent/host/' + name]
+        if sha(raw) != source['sha256']:
+            raise UpgradeError('source-overlay-provision-source-changed')
+    unit_path = 'etc/systemd/system/' + unit_name
+    unit = protected(unit_path)
+    expected = (manager._blob(plan['after']['extensions/services/pixel-agent/host/' + unit_name]['sha256'])
+                if inspection else contract['unit'].encode('utf-8'))
+    if unit != expected:
+        raise UpgradeError('source-overlay-provision-unit-changed')
+    properties = 'LoadState,ActiveState,SubState,MainPID,User,FragmentPath,DropInPaths,NeedDaemonReload'
+    def active():
+        raw = bridge.command(['/usr/bin/systemctl', 'show', unit_name, '--property=' + properties], timeout=5)
+        rows = dict(line.split('=', 1) for line in raw.splitlines())
+        if (set(rows) != set(properties.split(',')) or rows['LoadState'] != 'loaded'
+                or rows['ActiveState'] != 'active' or rows['SubState'] != 'running'
+                or rows['User'] != ('root' if inspection else bridge.owner.pw_name)
+                or rows['FragmentPath'] != '/' + unit_path or rows['DropInPaths']
+                or rows['NeedDaemonReload'] != 'no' or not rows['MainPID'].isdigit()
+                or int(rows['MainPID']) <= 1):
+            raise UpgradeError('source-overlay-provision-unit-unavailable')
+        return rows
+    status = active()
+    socket_path = SYSTEM_ROOT / ('run/ods-pixel-inspection/control.sock' if inspection
+                                  else 'var/lib/ods-pixel-project/control.sock')
+    socket_uid = SYSTEM_UID if inspection else bridge.owner.pw_uid
+    directory(socket_path.parent, socket_uid)
+    info = socket_path.lstat()
+    if (not stat.S_ISSOCK(info.st_mode) or info.st_uid != socket_uid or info.st_mode & 0o007
+            or _provision_peer(socket_path) != (int(status['MainPID']), socket_uid)):
+        raise UpgradeError('source-overlay-provision-peer-mismatch')
+    # The owner must also be able to reach the provisioned channel. Inspector
+    # uses its existing supplementary ods-pixel group; project is owner-private.
+    if os.geteuid() == 0:
+        groups = os.getgrouplist(bridge.owner.pw_name, bridge.owner.pw_gid)
+        check = subprocess.run([sys.executable, '-I', '-c',
+            'import socket,sys; s=socket.socket(socket.AF_UNIX); s.settimeout(2); s.connect(sys.argv[1]); s.close()',
+            str(socket_path)], user=bridge.owner.pw_uid, group=bridge.owner.pw_gid,
+            extra_groups=groups, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=4)
+        if check.returncode:
+            raise UpgradeError('source-overlay-provision-owner-unavailable')
+    if active() != status or any(read_file(SYSTEM_ROOT, name, SYSTEM_UID)[0] != item for name, item in evidence.items()):
+        raise UpgradeError('source-overlay-provision-changed')
+    return dict(files=evidence, unit=status, socket=[info.st_dev, info.st_ino], images=images)
+
+
+def _render_overlay(renderer, anchor, home, uid, gid, *, provision=None):
+    config = _overlay_json(anchor)
+    args = config['plugins']['entries']['pixel-ods']['config']
+    port = args['perplexicaPort']
+    provision = provision or {}
+    transport = 'unix' if 'inspection' in provision else args.get('workspacePreviewInspectionTransport', '')
+    socket = args.get('projectBuildSocket', '')
+    if 'project' in provision:
+        socket = '/var/lib/ods-pixel-project/control.sock'
+    providers = config['models']['providers']
+    provider = next(iter(providers)) if len(providers) == 1 else None
+    if provider not in ('ods-gateway', 'ods-local'):
+        raise UpgradeError('source-overlay-contract-unavailable')
+    model = providers[provider]['models'][0]
+    image_policy = args.get('modelImageInput', 'unknown')
+    # Derive inputs from the completed release, not the current config/answers.
+    # New channels require the separately verified protected provisioning proof.
+    if (type(port) is not int or not 1 <= port <= 65535 or transport != 'unix'
+            or socket not in ('', '/var/lib/ods-pixel-project/control.sock')
+            or image_policy not in ('unknown', 'supported', 'unsupported')
+            or provider == 'ods-gateway' and (type(args.get('modelRouteFingerprint')) is not str
+                or not HEX.fullmatch(args['modelRouteFingerprint']))
+            or provider == 'ods-local' and 'modelRouteFingerprint' in args):
+        raise UpgradeError('source-overlay-contract-unavailable')
+    answers = dict(modelProvider=provider, modelId=model['id'], modelName=model['name'],
+                   modelImageInput=image_policy)
+    if provider == 'ods-gateway':
+        answers['modelRouteFingerprint'] = args['modelRouteFingerprint']
+    payload = dict(renderer=renderer.decode('utf-8'), config=anchor.decode('utf-8'),
+                   port=port, transport=transport, socket=socket, home=str(home / '.openclaw'),
+                   answers=answers)
+    identity = dict(user=uid, group=gid, extra_groups=[]) if os.geteuid() == 0 else {}
+    if not identity and (os.geteuid() != uid or os.getegid() != gid):
+        raise UpgradeError('source-overlay-owner-mismatch')
+    result = subprocess.run([sys.executable, '-I', '-c', _OVERLAY_CHILD],
+        input=json.dumps(payload).encode('utf-8'), stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL, cwd='/', timeout=20,
+        env={'PATH': '/usr/bin:/bin', 'HOME': str(home), 'LANG': 'C.UTF-8'}, **identity)
+    if result.returncode or len(result.stdout) != 65:
+        raise UpgradeError('source-overlay-render-failed')
+    value = result.stdout.decode('ascii').strip()
+    if not HEX.fullmatch(value):
+        raise UpgradeError('source-overlay-render-failed')
+    return value
+
+
+def prove_runtime_overlay(bridge, transaction, config_sha, outcome):
+    """Prove the exact ODS overlay; never alter receipts or release admission.
+
+    Called under the coordinator lock with its native/Edge leases held. The
+    caller must repeat this proof after a NEW runtime attestation, and compare
+    both results before writing a separate completion and releasing its gates.
+    Legacy owner snapshots are authenticated by the root preparation digests;
+    the original candidate also reconstructs the receipt's revocation baseline.
+    """
+    from access_mode_config import rebase_enabled
+    if outcome != 'applied':
+        raise UpgradeError('source-overlay-outcome-invalid')
+    uid, gid = bridge.owner.pw_uid, bridge.owner.pw_gid
+    home = Path(bridge.owner.pw_dir)
+    if uid <= 0 or home != Path(bridge.home) or home.resolve() != home:
+        raise UpgradeError('source-overlay-owner-mismatch')
+    directory(home, uid)
+    manager = SourceUpgrade(bridge.state / 'source-upgrade', bridge.install, uid)
+    plan = manager.journal()
+    if (plan is None or plan['phase'] != 'complete' or plan['outcome'] != 'applied'
+            or plan['hold'] != transaction):
+        raise UpgradeError('source-overlay-plan-required')
+    release_guard(bridge.state, bridge.install, uid, transaction, outcome)
+    pending = bridge.model_journal(transaction)
+    if pending['configured_mode'] != 'full-access' or pending['phase'] not in ('held', 'finishing', 'error'):
+        raise UpgradeError('source-overlay-hold-required')
+    native, edge = bridge.native(), bridge.edge()
+    if (not bridge.owns_native_hold(native, pending['token']) or edge.get('phase') != 'held'
+            or edge.get('streams') or edge.get('revision') != pending['edge_revision']):
+        raise UpgradeError('source-overlay-hold-required')
+    # No live proof is inferred from these records. They authenticate only the
+    # immutable input and the original, already completed access migration.
+    root_records = {}
+    for name in ('release-intent', 'release-baseline', 'release-prepared', 'release-completed'):
+        raw = _overlay_private(bridge.state, name + '.json', 0)
+        root_records[name] = (_overlay_json(raw), sha(raw))
+    intent, baseline, prepared, completed = (root_records[name][0] for name in
+        ('release-intent', 'release-baseline', 'release-prepared', 'release-completed'))
+    if (set(intent) != {'transactionId', 'candidateSha256'}
+            or set(baseline) != {'transactionId', 'configSha256', 'receiptSha256'}
+            or set(prepared) != {'transactionId', 'candidateSha256', 'beforeSha', 'afterSha'}
+            or completed != dict(transactionId=transaction, configSha256=prepared.get('afterSha'), outcome='apply')
+            or any(value.get('transactionId') != transaction for value in (intent, baseline, prepared))
+            or prepared['beforeSha'] != baseline['configSha256']
+            or prepared['candidateSha256'] != intent['candidateSha256']):
+        raise UpgradeError('source-overlay-release-unbound')
+    owner_root = home / '.openclaw/.ods-access-mode'
+    directory(owner_root, uid, private=True)
+    if os.path.lexists(owner_root / 'access-release-journal.json'):
+        raise UpgradeError('source-overlay-release-pending')
+    records = [_overlay_private(owner_root, name, uid) for name in (
+        'access-release-config-before.json', 'access-release-config-after.json',
+        'access-release-receipt-before.json', 'access-release-receipt-after.json',
+        'access-release-completed.json', 'pixel-access-mode.json')]
+    before, anchor, receipt_before, receipt_after, owner_completed, receipt_live = records
+    if (sha(before) != baseline['configSha256'] or sha(anchor) != prepared['afterSha']
+            or sha(receipt_before) != baseline['receiptSha256']
+            or receipt_after != encoded(_overlay_json(receipt_live))):
+        raise UpgradeError('source-overlay-snapshot-changed')
+    candidate = _overlay_candidate(bridge.install, plan['identity']['afterRef'], uid)
+    if sha(candidate) != intent['candidateSha256']:
+        raise UpgradeError('source-overlay-candidate-changed')
+    original_receipt = _overlay_json(receipt_before)
+    migrated, restore_baseline = rebase_enabled(_overlay_json(before), _overlay_json(candidate),
+                                               original_receipt['baseline'])
+    if (encoded(migrated) != anchor or encoded(dict(original_receipt, baseline=restore_baseline,
+            config_sha256=sha(anchor))) != receipt_after):
+        raise UpgradeError('source-overlay-receipt-unbound')
+    path = home / '.openclaw/openclaw.json'
+    if (original_receipt.get('status') != 'full-access' or original_receipt.get('config_path') != str(path)
+            or _overlay_json(owner_completed) != dict(transactionId=transaction, configPath=str(path),
+                configSha256=sha(anchor), receiptSha256=sha(receipt_after), outcome='apply')):
+        raise UpgradeError('source-overlay-owner-completion-invalid')
+    current = _overlay_private(home, '.openclaw/openclaw.json', uid)
+    if sha(current) != config_sha:
+        raise UpgradeError('source-overlay-config-changed')
+    renderer_item = plan['after']['installers/lib/pixel-runtime-budget.py']
+    renderer = manager._blob(renderer_item['sha256'])
+    anchor_args = _overlay_json(anchor)['plugins']['entries']['pixel-ods']['config']
+    promoted = []
+    if anchor_args.get('workspacePreviewInspectionTransport') in (None, ''):
+        promoted.append('inspection')
+    if (not anchor_args.get('projectBuildSocket')
+            and 'installers/lib/pixel-project-runtime.py' in plan['after']):
+        promoted.append('project')
+    provision = {kind: _prove_provision(bridge, manager, plan, kind) for kind in promoted}
+    render_args = dict(provision=provision) if provision else {}
+    if len(renderer) > 256 * 1024 or _render_overlay(renderer, anchor, home, uid, gid, **render_args) != config_sha:
+        raise UpgradeError('source-overlay-not-derived')
+    if {kind: _prove_provision(bridge, manager, plan, kind) for kind in promoted} != provision:
+        raise UpgradeError('source-overlay-provision-changed')
+    # Rendering is a subprocess. A same-owner edit, revocation, source change,
+    # or process restart during that interval invalidates the entire evidence.
+    release_guard(bridge.state, bridge.install, uid, transaction, outcome)
+    if (manager.journal() != plan or manager._blob(renderer_item['sha256']) != renderer
+            or bridge.model_journal(transaction) != pending
+            or os.path.lexists(owner_root / 'access-release-journal.json')
+            or _overlay_private(home, '.openclaw/openclaw.json', uid) != current
+            or _overlay_candidate(bridge.install, plan['identity']['afterRef'], uid) != candidate
+            or any(sha(_overlay_private(bridge.state, name + '.json', 0)) != item[1]
+                for name, item in root_records.items())
+            or [_overlay_private(owner_root, name, uid) for name in (
+                'access-release-config-before.json', 'access-release-config-after.json',
+                'access-release-receipt-before.json', 'access-release-receipt-after.json',
+                'access-release-completed.json', 'pixel-access-mode.json')] != records):
+        raise UpgradeError('source-overlay-state-changed')
+    current_native, current_edge = bridge.native(), bridge.edge()
+    if (not bridge.owns_native_hold(current_native, pending['token'])
+            or current_native.get('pid') != native.get('pid')
+            or current_edge.get('phase') != 'held' or current_edge.get('streams')
+            or current_edge.get('revision') != edge.get('revision')):
+        raise UpgradeError('source-overlay-runtime-changed')
+    result = dict(version=1, transactionId=transaction, sourcePlanSha256=sha(encoded(plan)),
+        rendererSha256=sha(renderer), beforeSha256=sha(anchor), configSha256=config_sha,
+        candidateSha256=sha(candidate), ownerSnapshots=[sha(raw) for raw in records],
+        rootRecords={key: value[1] for key, value in root_records.items()})
+    if provision:
+        result['provisionSha256'] = sha(encoded(provision))
+    return result
 
 
 def relative(value):

@@ -1706,9 +1706,51 @@ class SystemdAccessBridge:
                 if (request["outcome"] == "rolled-back"
                         and config.get("config_sha256") != pending["start_config_sha256"]):
                     raise AccessError("rollback-config-mismatch")
-                self.require_release_completion(pending['transaction_id'],
+                overlay = self.require_release_completion(pending['transaction_id'],
                                                 config.get('config_sha256'), request['outcome'])
                 self.verify_held_mode(token, pending["configured_mode"])
+                if overlay is not None:
+                    # A receipt for the original release cannot attest a later
+                    # installer overlay. Reprove its exact derivation AFTER the
+                    # fresh native probe; never refresh the original receipt.
+                    after = self.require_release_completion(pending['transaction_id'],
+                        config.get('config_sha256'), request['outcome'])
+                    if after != overlay or self.worker().get('config_sha256') != config['config_sha256']:
+                        raise AccessError('source-overlay-state-changed')
+                    verified = private_json(self.state / 'verified.json', 0, 8192)
+                    current_native, current_edge = self.native(), self.edge()
+                    if (verified.get('config_sha256') != config['config_sha256']
+                            or verified.get('boundary') != self.unit_boundary()
+                            or current_native.get('pid') != verified.get('pid')
+                            or current_native.get('proof') != verified.get('proof')
+                            or current_native.get('phase') != 'held' or current_native.get('active')
+                            or current_native.get('stopped') or current_edge.get('phase') != 'held'
+                            or current_edge.get('streams') or current_edge.get('revision') != pending['edge_revision']):
+                        raise AccessError('source-overlay-runtime-changed')
+                    completion_path = self.state / 'source-overlay-completed.json'
+                    if os.path.lexists(completion_path):
+                        previous = private_json(completion_path, 0, 8192)
+                        if previous != overlay:
+                            # Retain one bounded historical receipt. A different
+                            # completed transaction is not authority for this one,
+                            # but must not prevent the next independently proved
+                            # source update. Same-transaction drift always fails.
+                            if (type(previous) is not dict or set(previous) - {'provisionSha256'} != set(overlay) - {'provisionSha256'}
+                                    or 'provisionSha256' in previous and (type(previous['provisionSha256']) is not str
+                                        or not HEX.fullmatch(previous['provisionSha256']))
+                                    or previous.get('version') != 1
+                                    or previous.get('transactionId') == pending['transaction_id']
+                                    or any(type(previous.get(key)) is not str or not HEX.fullmatch(previous[key])
+                                        for key in ('transactionId', 'sourcePlanSha256', 'rendererSha256',
+                                            'beforeSha256', 'configSha256', 'candidateSha256'))
+                                    or type(previous.get('ownerSnapshots')) is not list
+                                    or len(previous['ownerSnapshots']) != 6
+                                    or any(type(v) is not str or not HEX.fullmatch(v) for v in previous['ownerSnapshots'])
+                                    or type(previous.get('rootRecords')) is not dict
+                                    or set(previous['rootRecords']) != set(overlay['rootRecords'])
+                                    or any(type(v) is not str or not HEX.fullmatch(v) for v in previous['rootRecords'].values())):
+                                raise AccessError('source-overlay-completion-changed')
+                    atomic_json(completion_path, overlay)
                 pending["phase"] = "releasing"
                 atomic_json(self.state / "transition.json", pending)
                 # Keep edge admission closed until the native runtime release
@@ -1779,7 +1821,15 @@ class SystemdAccessBridge:
         expected = dict(transactionId=transaction_id, configSha256=config_sha,
                         outcome='apply' if outcome == 'applied' else 'rollback')
         if completed != expected:
-            raise AccessError('release-completion-required')
+            if platform.system() != 'Linux' or outcome != 'applied':
+                raise AccessError('release-completion-required')
+            from pixel_source_upgrade import prove_runtime_overlay, UpgradeError
+            try:
+                return prove_runtime_overlay(self, transaction_id, config_sha, outcome)
+            except UpgradeError as error:
+                raise AccessError(str(error)) from None
+            except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
+                raise AccessError('source-overlay-proof-failed') from None
 
     def prepare_access_marker(self, pending, expected_sha):
         # The root journal retains the exact pre-transition configuration.
