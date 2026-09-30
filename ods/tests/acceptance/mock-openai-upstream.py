@@ -41,6 +41,37 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def authorized(self) -> bool:
         return self.headers.get("Authorization") == "Bearer " + self.key
 
+    def completion(self, request: dict, message: dict, finish: str):
+        if request.get("stream") is True:
+            delta = dict(message)
+            if "tool_calls" in delta:
+                delta["tool_calls"] = [
+                    {"index": index, **call}
+                    for index, call in enumerate(delta["tool_calls"])
+                ]
+            events = [
+                {"id": "chatcmpl-ods-acceptance", "object": "chat.completion.chunk",
+                 "created": 0, "model": self.model,
+                 "choices": [{"index": 0, "delta": delta, "finish_reason": None}]},
+                {"id": "chatcmpl-ods-acceptance", "object": "chat.completion.chunk",
+                 "created": 0, "model": self.model,
+                 "choices": [{"index": 0, "delta": {}, "finish_reason": finish}]},
+            ]
+            body = ("".join("data: " + json.dumps(event) + "\n\n" for event in events)
+                    + "data: [DONE]\n\n").encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+        return self.reply(200, {
+            "id": "chatcmpl-ods-acceptance", "object": "chat.completion",
+            "created": 0, "model": self.model,
+            "choices": [{"index": 0, "message": message, "finish_reason": finish}],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+        })
+
     def do_GET(self):
         if self.path == "/healthz":
             return self.reply(200, {"status": "ok"})
@@ -76,35 +107,34 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self.reply(400, {"error": {"message": "wrong model or messages"}})
         self.log_message("accept=chat bytes=%d messages=%d stream=%s",
                          size, len(request["messages"]), request.get("stream") is True)
-        if request.get("stream") is True:
-            events = [
-                {"id": "chatcmpl-ods-acceptance", "object": "chat.completion.chunk",
-                 "created": 0, "model": self.model,
-                 "choices": [{"index": 0, "delta": {"role": "assistant", "content": "OK"}, "finish_reason": None}]},
-                {"id": "chatcmpl-ods-acceptance", "object": "chat.completion.chunk",
-                 "created": 0, "model": self.model,
-                 "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]},
-            ]
-            body = ("".join("data: " + json.dumps(event) + "\n\n" for event in events)
-                    + "data: [DONE]\n\n").encode("utf-8")
-            self.send_response(200)
-            self.send_header("Content-Type", "text/event-stream")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-            return
-        return self.reply(200, {
-            "id": "chatcmpl-ods-acceptance",
-            "object": "chat.completion",
-            "created": 0,
-            "model": self.model,
-            "choices": [{
-                "index": 0,
-                "message": {"role": "assistant", "content": "OK"},
-                "finish_reason": "stop",
-            }],
-            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
-        })
+        probe = any(
+            message.get("role") == "user"
+            and "ODS_SEARCH_PROBE" in json.dumps(message)
+            for message in request["messages"] if isinstance(message, dict)
+        )
+        if probe:
+            tool_results = [message for message in request["messages"]
+                            if isinstance(message, dict) and message.get("role") == "tool"
+                            and message.get("tool_call_id") == "call_ods_web_search"]
+            if tool_results:
+                content = tool_results[-1].get("content")
+                rendered = content if isinstance(content, str) else json.dumps(content)
+                has_url = "http://" in rendered or "https://" in rendered
+                self.log_message("search_tool_result_seen=%s bytes=%d", has_url, len(rendered))
+                final = "ODS_SEARCH_TOOL_RESULT_SEEN" if has_url else "ODS_SEARCH_TOOL_RESULT_EMPTY"
+                return self.completion(request, {"role": "assistant", "content": final}, "stop")
+            web_tool = next((item for item in (request.get("tools") or [])
+                             if isinstance(item, dict) and item.get("type") == "function"
+                             and item.get("function", {}).get("name") == "web_search"), None)
+            if web_tool is None:
+                self.log_message("search_probe_missing_web_search_tool")
+                return self.reply(422, {"error": {"message": "web_search not offered"}})
+            arguments = json.dumps({"query": "OpenAI official website"}, separators=(",", ":"))
+            call = {"id": "call_ods_web_search", "type": "function",
+                    "function": {"name": "web_search", "arguments": arguments}}
+            self.log_message("search_probe_issued_web_search")
+            return self.completion(request, {"role": "assistant", "tool_calls": [call]}, "tool_calls")
+        return self.completion(request, {"role": "assistant", "content": "OK"}, "stop")
 
 
 def main():

@@ -117,6 +117,34 @@ def main():
                         answer.append(chunk)
         assert done and "OK" in "".join(answer), "Portal chat did not complete with the mock answer"
         print("PASS: Portal streamed a real mock-upstream chat completion")
+    elif action == "search":
+        body = {"chat_id": "odssearchacceptance", "request_id": "odssearchacceptancefirst",
+                "messages": [{"role": "user", "content":
+                              "ODS_SEARCH_PROBE: use web_search to find OpenAI's official website."}]}
+        answer = []
+        done = False
+        with request(key, "POST", "/api/pixel/chat/stream", body, timeout=1200) as response:
+            for raw in response:
+                line = raw.decode("utf-8", errors="replace").strip()
+                if line == "data: [DONE]":
+                    done = True
+                    break
+                if not line.startswith("data: "):
+                    continue
+                event = json.loads(line[6:])
+                if "error" in event:
+                    error = event["error"]
+                    summary = {"eventKeys": sorted(event),
+                               "errorKeys": sorted(error) if isinstance(error, dict) else []}
+                    print("Pixel search error event summary: " + json.dumps(summary), file=sys.stderr)
+                    raise AssertionError("Pixel search returned an error event")
+                for choice in event.get("choices", []):
+                    chunk = choice.get("delta", {}).get("content")
+                    if isinstance(chunk, str):
+                        answer.append(chunk)
+        assert done and "ODS_SEARCH_TOOL_RESULT_SEEN" in "".join(answer), (
+            "Pixel did not execute web_search and return a result with a URL")
+        print("PASS: installed Pixel web_search returned a URL-bearing tool result to chat")
     elif action == "result":
         result = get_json(key, "POST", "/api/pixel/chat/result",
                           {"chat_id": "odsacceptance", "request_id": "odsacceptancefirst"})

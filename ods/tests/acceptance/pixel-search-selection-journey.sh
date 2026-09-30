@@ -109,6 +109,13 @@ run_installer 'fresh Pixel' parallel-free
 systemctl is-active --quiet pixel-ops-broker.service || fail 'Pixel broker is not active'
 grep -qx 'PIXEL_WEB_SEARCH_PROVIDER=parallel-free' "$INSTALL_DIR/.env" \
     || fail 'parallel-free selection was not persisted'
+python3 - "$HOME/.openclaw/openclaw.json" <<'PY' \
+    || fail 'installed Pixel did not bind the parallel-free search provider'
+import json, pathlib, sys
+config = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding='utf-8'))
+assert config['tools']['web']['search']['provider'] == 'parallel-free'
+assert 'searxng' not in config.get('plugins', {}).get('entries', {})
+PY
 services="$(compose_services)" || fail 'installed Compose selection cannot be resolved'
 grep -qx searxng <<<"$services" && fail 'fresh parallel-free Pixel selected SearXNG'
 docker ps -a --format '{{.Names}}' | grep -Eq '^ods-searxng$' \
@@ -125,11 +132,20 @@ printf 'PASS: ordinary Dashboard Pixel chat reached the mock model after the lea
 run_installer 'selected local-search rerun' searxng
 grep -qx 'PIXEL_WEB_SEARCH_PROVIDER=searxng' "$INSTALL_DIR/.env" \
     || fail 'SearXNG selection was not persisted'
+python3 - "$HOME/.openclaw/openclaw.json" <<'PY' \
+    || fail 'installed Pixel did not bind the SearXNG search provider'
+import json, pathlib, sys
+config = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding='utf-8'))
+assert config['tools']['web']['search']['provider'] == 'searxng'
+assert 'searxng' in config.get('plugins', {}).get('entries', {})
+PY
 services="$(compose_services)" || fail 'selected Compose selection cannot be resolved'
 grep -qx searxng <<<"$services" || fail 'selected Pixel omitted SearXNG Compose service'
 [[ "$(docker inspect --format '{{.State.Running}}' ods-searxng)" == true ]] \
     || fail 'selected SearXNG is not running'
-curl -fsS --max-time 20 'http://127.0.0.1:8888/search?q=ods-acceptance&format=json' \
-    | python3 -c 'import json,sys; value=json.load(sys.stdin); assert isinstance(value.get("results"),list)' \
-    || fail 'selected SearXNG did not return JSON search results'
-printf 'PASS: selected SearXNG runs and serves its installed search endpoint\n'
+curl -fsS --max-time 30 'http://127.0.0.1:8888/search?q=OpenAI%20official%20website&format=json' \
+    | python3 -c 'import json,sys; value=json.load(sys.stdin); assert isinstance(value.get("results"),list) and any(isinstance(item.get("url"),str) and item["url"].startswith("http") for item in value["results"])' \
+    || fail 'selected SearXNG did not return a URL-bearing search result'
+printf 'PASS: selected SearXNG serves a URL-bearing search result\n'
+python3 "$harness/portal-requests.py" search "$INSTALL_DIR/.env" \
+    || fail 'installed Pixel web_search did not return a result through Portal'
