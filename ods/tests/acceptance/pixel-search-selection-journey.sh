@@ -4,7 +4,7 @@ set -euo pipefail
 
 product="${ODS_ACCEPTANCE_PRODUCT_ROOT:?product checkout is required}"
 harness="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-expected=84429a578769c0da7290f66e78a4289a60bbc7f5
+expected=960f66d83fa029ee3216ccdf154d2ee2a0c603eb
 audit_root="${RUNNER_TEMP:?runner temp is required}/ods-pixel-search-acceptance"
 export INSTALL_DIR="$audit_root/install"
 export LOG_FILE="$audit_root/install.log"
@@ -136,6 +136,8 @@ python3 - "$HOME/.openclaw/openclaw.json" <<'PY' \
     || fail 'installed Pixel did not bind the SearXNG search provider'
 import json, pathlib, sys
 config = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding='utf-8'))
+print('Pixel provider after selected rerun:', repr(config.get('tools', {}).get('web', {}).get('search', {}).get('provider')))
+print('SearXNG plugin registered:', 'searxng' in config.get('plugins', {}).get('entries', {}))
 assert config['tools']['web']['search']['provider'] == 'searxng'
 assert 'searxng' in config.get('plugins', {}).get('entries', {})
 PY

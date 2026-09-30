@@ -23,11 +23,11 @@ jobs:
       - name: Checkout exact conditional-search candidate
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
-          ref: 84429a578769c0da7290f66e78a4289a60bbc7f5
+          ref: 960f66d83fa029ee3216ccdf154d2ee2a0c603eb
           path: product
       - name: Record exact source and runner capacity
         run: |
-          test "$(git -C product rev-parse HEAD)" = 84429a578769c0da7290f66e78a4289a60bbc7f5
+          test "$(git -C product rev-parse HEAD)" = 960f66d83fa029ee3216ccdf154d2ee2a0c603eb
           docker version
           df -h / "$RUNNER_TEMP"
           cat /proc/1/comm
