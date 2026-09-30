@@ -454,7 +454,8 @@ def test_model_readback_never_serves_expired_value_during_refresh(model_readback
 def test_model_readback_failed_refresh_revokes_still_fresh_value(model_readback,monkeypatch,failure):
     clock,jobs,_=model_readback
     read=host._cached_managed_pixel_runtime_contract
-    read();jobs.pop()()
+    read()
+    jobs.pop()()
     clock[0]+=10
     assert read()==OLD and len(jobs)==1
     def failed():
@@ -469,7 +470,8 @@ def test_model_readback_failed_refresh_revokes_still_fresh_value(model_readback,
 def test_model_readback_rejects_old_worker_after_config_change(model_readback,monkeypatch,poll_changed_key):
     clock,jobs,env=model_readback
     read=host._cached_managed_pixel_runtime_contract
-    read();jobs.pop()()
+    read()
+    jobs.pop()()
     clock[0]+=10
     assert read()==OLD and len(jobs)==1
     env.write_text('two-new-provider')
@@ -486,7 +488,8 @@ def test_model_readback_rejects_old_worker_after_config_change(model_readback,mo
 def test_model_readback_does_not_return_old_value_after_immediate_failed_refresh(model_readback,monkeypatch):
     clock,jobs,_=model_readback
     read=host._cached_managed_pixel_runtime_contract
-    read();jobs.pop()()
+    read()
+    jobs.pop()()
     clock[0]+=10
     class ImmediateThread:
         def __init__(self,target,**_):self.target=target
@@ -515,7 +518,8 @@ def test_model_readback_old_worker_cannot_publish_after_key_changes_back(model_r
 def test_model_readback_retries_after_worker_start_failure(model_readback,monkeypatch):
     clock,jobs,_=model_readback
     read=host._cached_managed_pixel_runtime_contract
-    read();jobs.pop()()
+    read()
+    jobs.pop()()
     clock[0]+=10
     regular_thread=host.threading.Thread
     class FailedThread:
