@@ -116,9 +116,11 @@ class ProjectServiceTests(unittest.TestCase):
             (project / "build.cjs").write_text("const f=require('fs');f.mkdirSync('out');f.writeFileSync('out/index.html','<h1>Tool built</h1>')")
             # Explicit test scope; no installed policy or owner grant is changed.
             controller = ProjectController(root, root / "state", iid.read_text().strip(),
-                                           authorize=lambda project, *_: project == "project")
+                                           authorize=lambda project, *_: project in {"project", "interrupted-project"})
+            # Startup retains uncertain work, but an independent project's
+            # service/Node integration can proceed without bypassing its fence.
             interrupted, _ = controller.jobs.create("a" * 64, {
-                "project": "project", "sourceSha256": "b" * 64,
+                "project": "interrupted-project", "sourceSha256": "b" * 64,
                 "image": controller.image, "outputDirectory": "out",
             })
             controller.jobs.claim(interrupted)
@@ -160,6 +162,7 @@ class ProjectServiceTests(unittest.TestCase):
                 receipt = json.loads(result.stdout)
                 self.assertEqual((root / receipt["output"]["relativeDirectory"] / "index.html").read_text(), "<h1>Tool built</h1>")
                 self.assertFalse((project / "out").exists())
+                self.assertEqual(controller.observe(interrupted)['state'], 'unconfirmed')
             finally:
                 stop.set()
                 thread.join(15)
