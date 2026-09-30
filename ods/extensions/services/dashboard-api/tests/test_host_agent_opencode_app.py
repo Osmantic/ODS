@@ -130,6 +130,31 @@ def test_probe_reports_closed_port_as_unreachable():
     assert probe["healthy"] is False
 
 
+def test_silent_tcp_listener_blocks_setup_before_mutation(monkeypatch):
+    # A listener holding the port but not answering HTTP must not pass the
+    # admission check and start an avoidable download or LaunchAgent write.
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(8)
+        port = listener.getsockname()[1]
+        probe = _mod._probe_opencode_web(port, timeout=0.1)
+        assert probe["reachable"] is True
+        assert probe["healthy"] is False
+
+        real_probe = _mod._probe_opencode_web
+        monkeypatch.setattr(_mod, "_probe_opencode_web", lambda selected: real_probe(selected, timeout=0.1))
+        monkeypatch.setattr(_mod, "_opencode_port", lambda: port)
+        monkeypatch.setattr(_mod, "_opencode_service_registered", lambda system=None: False)
+        monkeypatch.setattr(_mod, "_opencode_setup_issue", lambda env, system=None: None)
+        status = _mod._opencode_app_status({})
+        assert status["portInUse"] is True
+        assert status["setupSupported"] is False
+        code, body = _mod._begin_opencode_setup({})
+        assert code == 409
+        assert body["code"] == "opencode_port_in_use"
+        assert _mod._opencode_setup_thread is None
+
+
 # --- lifecycle status -----------------------------------------------------------
 
 
