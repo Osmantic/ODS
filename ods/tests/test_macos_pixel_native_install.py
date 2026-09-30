@@ -299,6 +299,8 @@ ENABLE_HERMES=false; ENABLE_OPENCLAW=false; ENABLE_APE=false
 ENABLE_PERPLEXICA=false; ENABLE_VOICE=false; ENABLE_RAG=false; ENABLE_WORKFLOWS=false
 ENABLE_OPENCODE=false; OPENCODE_ENABLE_EXPLICIT=false; OPENCODE_DISABLE_EXPLICIT=false
 OPENCODE_DISABLE_SELECTED=false
+ENABLE_OPEN_WEBUI=false; WEBUI_RETAINED=""; WEBUI_ENABLE_EXPLICIT=false; WEBUI_DISABLE_EXPLICIT=false
+ENABLE_ODS_PROXY=false
 read_env_value() { printf '\\n'; }
 ai_err() { printf '%s\\n' "$*" >&2; }
 ''' + script[resolver_start:resolver_stop] + '\nENABLE_PIXEL=' + pixel + '\n' + script[start:stop] + '''
