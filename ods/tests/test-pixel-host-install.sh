@@ -1043,12 +1043,28 @@ fi
 
 # A normal upgrade has no shell-level Pixel ref. Its persisted bundled ref is
 # the old release, so the new verified bundle must advance it before the
-# pre-copy transition retires the old marker from the present checkout.
+# pre-copy transition verifies the old checkout and acquires a source hold.
 printf 'PIXEL_SOURCE_URL=bundled\nPIXEL_SOURCE_REF=%s\n' \
     "$previous_source_ref" > "$transition_install/.env"
 phase06_pre_copy="$(sed -n '/^    _env_existing=""/,/^    unset _phase06_pixel_marker _phase06_pixel_source_transition/p' \
     "$ROOT/installers/phases/06-directories.sh")"
 _phase06_pre_copy_fixture() { eval "$phase06_pre_copy"; }
+_phase06_source_hold_fixture() {
+    # Disposable adapters: exercise the literal phase without sudo, services,
+    # source replacement or the protected coordinator on the test host.
+    ods_sudo() { return 1; }
+    _ods_pixel_openclaw_bin() { printf '%s\n' /fixture/openclaw; }
+    _ods_pixel_install_access_service() { printf '%s\n' guard >> "$INSTALL_DIR/upgrade-steps"; }
+    _ods_pixel_source_upgrade() {
+        printf '%s\n' "$1" >> "$INSTALL_DIR/upgrade-steps"
+        case "$1" in
+            status) printf '%s\n' '{"transaction":null,"phase":"staged"}' ;;
+            hold) printf '%064d\n' 1 ;;
+            stage|copy|downstream) ;;
+            *) return 1 ;;
+        esac
+    }
+}
 if (
     unset PIXEL_SOURCE_URL PIXEL_SOURCE_REF PIXEL_SOURCE_DIR
     HOME="$transition_home"
@@ -1061,11 +1077,14 @@ if (
     ods_pixel_install_owner() { printf '%s\n' "$owner"; }
     ods_pixel_owner_home() { printf '%s\n' "$transition_home"; }
     ods_pixel_uninstall_managed() { : > "$transition_install/retired"; }
+    _phase06_source_hold_fixture
     source "$ROOT/lib/safe-env.sh"
     _phase06_pre_copy_fixture
     [[ "$_phase06_requested_pixel_url" == bundled \
         && "$_phase06_requested_pixel_ref" == "$ODS_PIXEL_BUNDLED_REF" \
-        && -f "$transition_install/retired" ]]
+        && ! -e "$transition_install/retired" \
+        && "$(cat "$INSTALL_DIR/upgrade-steps")" == $'stage\nstatus\nguard\nhold\ncopy\ndownstream' \
+        && "$ODS_PIXEL_SOURCE_TRANSACTION" == "$(printf '%064d' 1)" ]]
 ); then
     pass "persisted old bundled Pixel ref advances and transitions before source copy"
 else
@@ -1134,16 +1153,18 @@ if (
         printf '%s\n' "$legacy_checkout"
     }
     ods_pixel_uninstall_managed() { : > "$legacy_install/retired"; }
+    _phase06_source_hold_fixture
     source "$ROOT/lib/safe-env.sh"
     _phase06_pre_copy_fixture
     [[ "$_phase06_requested_pixel_url" == bundled \
         && "$_phase06_requested_pixel_ref" == "$ODS_PIXEL_BUNDLED_REF" \
         && -f "$legacy_install/old-checkout-verified" \
-        && -f "$legacy_install/retired" ]]
+        && ! -e "$legacy_install/retired" \
+        && "$(cat "$INSTALL_DIR/upgrade-steps")" == $'stage\nstatus\nguard\nhold\ncopy\ndownstream' ]]
 ); then
-    pass "canonical legacy environment and marker retire from local checkout before source copy"
+    pass "canonical legacy environment verifies local checkout and holds source upgrade"
 else
-    fail "canonical legacy environment did not retire its old managed Pixel safely"
+    fail "canonical legacy environment did not safely hold its managed Pixel source upgrade"
 fi
 printf 'PIXEL_SOURCE_URL=https://example.invalid/custom-pixel.git\nPIXEL_SOURCE_REF=%s\n' \
     b33730436baf5d98bf58f7d57c090318fe19f433 > "$transition_install/.env"
