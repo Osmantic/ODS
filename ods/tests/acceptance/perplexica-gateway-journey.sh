@@ -173,11 +173,17 @@ services:
       timeout: 1s
       retries: 2
 YAML
+local_definition="$INSTALL_DIR/extensions/services/perplexica/compose.yaml.disabled"
+local_overlay="$INSTALL_DIR/extensions/services/perplexica/compose.local.yaml"
+[[ -f "$local_definition" && -f "$local_overlay" ]] \
+    || fail 'installed managed-local Perplexica definitions are missing'
+: >"$audit_root/local-empty.env"
 local_stack=(docker compose -p ods-perplexica-unhealthy \
-    --project-directory "$product" \
+    --project-directory "$INSTALL_DIR" \
+    --env-file "$audit_root/local-empty.env" \
     -f "$audit_root/unhealthy-llama.yml" \
-    -f "$product/extensions/services/perplexica/compose.yaml" \
-    -f "$product/extensions/services/perplexica/compose.local.yaml")
+    -f "$local_definition" \
+    -f "$local_overlay")
 "${local_stack[@]}" config --format json >"$audit_root/local-compose.json" \
     || fail 'managed-local Perplexica Compose did not render'
 python3 - "$audit_root/local-compose.json" <<'PY' || fail 'managed-local health guard missing'
