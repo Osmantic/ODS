@@ -507,8 +507,10 @@ pass "dashboard-api readiness fails closed and never logs the host-agent key"
         || fail "macOS cloud mode does not select the cloud compose overlay"
     grep -Fq '$CLOUD_MODE && _hermes_model="default"' "$INSTALLER" \
         || fail "cloud rerun does not replace the persisted Hermes model"
-    grep -Fq 'HEALTH_NAMES=("LiteLLM gateway" "Chat UI (Open WebUI)")' "$INSTALLER" \
+    grep -Fq 'HEALTH_NAMES=("LiteLLM gateway")' "$INSTALLER" \
         || fail "cloud verification still waits for native llama-server"
+    grep -Fq '$ENABLE_OPEN_WEBUI && HEALTH_NAMES+=("Chat UI (Open WebUI)")' "$INSTALLER" \
+        || fail "cloud verification cannot check selected Open WebUI"
     grep -Fq "pgrep -f '[/]llama-server'" "$INSTALLER" \
         || fail "cloud transition does not reap install-owned native llama processes"
     stop_line="$(grep -n 'Stopping the old direct native listener before recreating the loopback Colima bridge' "$INSTALLER" | cut -d: -f1)"
