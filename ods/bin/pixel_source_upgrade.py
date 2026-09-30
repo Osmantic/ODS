@@ -803,6 +803,47 @@ class SourceUpgrade:
             finally:
                 os.close(fd)
 
+    def _renew_unheld_scratch_after_remount(self):
+        """Allocate a fresh empty buffer after a device-number change, never adopt it.
+
+        Only an unchanged, unheld staged plan may do this. In-flight upgrades
+        retain their original fail-closed identity checks. Preserve the old
+        buffer and its exact receipt as an audit blob.
+        """
+        value = self.journal()
+        if (value is None or value['phase'] != 'staged' or value['hold'] is not None
+                or os.path.lexists(self.state.parent / 'transition.json')):
+            return
+        item, raw = read_file(self.state, 'source-scratch.json', self.state_uid)
+        if item is None:
+            return
+        record = json.loads(raw)
+        parent = self.install.stat()
+        if (type(record) is not dict or set(record) != {'version','name','parent','identity'}
+                or record['version'] != 1 or type(record['name']) is not str
+                or not re.fullmatch(r'\.ods-source-staging-[a-f0-9]{32}', record['name'])
+                or any(type(record[k]) is not list or len(record[k]) != 2
+                       or any(type(n) is not int or n < 0 for n in record[k])
+                       for k in ('parent', 'identity'))):
+            return
+        if (record['parent'][0] == parent.st_dev or record['parent'][1] != parent.st_ino
+                or record['identity'][0] != record['parent'][0]):
+            return
+        fd = os.open(self.install / record['name'], os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            info = os.fstat(fd)
+            if (info.st_dev != parent.st_dev or info.st_ino != record['identity'][1]
+                    or info.st_uid != self.state_uid or stat.S_IMODE(info.st_mode) != 0o700
+                    or os.listdir(fd) or inventory(self.install, self.uid) != value['before']):
+                raise UpgradeError('source-scratch-remount-refused')
+            # No bytes from the old buffer are reused and no old path is removed.
+            self._write(sha(raw), raw)
+            self._write('source-scratch.json', encoded(dict(version=1,
+                name='.ods-source-staging-' + os.urandom(16).hex(),
+                parent=[parent.st_dev, parent.st_ino], identity=None)))
+        finally:
+            os.close(fd)
+
     def _prepare_scratch(self):
         with self._scratch(prepare=True) as (scratch, validate):
             self._clear_scratch(scratch, validate)
@@ -986,6 +1027,7 @@ class SourceUpgrade:
                 raise UpgradeError("source-candidate-changed")
             else:
                 if existing['phase'] == 'staged' and existing['hold'] is None:
+                    self._renew_unheld_scratch_after_remount()
                     self._prepare_scratch()
                 return existing
         before = inventory(self.install, self.uid)
@@ -1010,6 +1052,7 @@ class SourceUpgrade:
             self._write(name, preserved_mirror)
         self._save(value)
         self.journal()  # validate the complete serialized contract before use
+        self._renew_unheld_scratch_after_remount()
         self._prepare_scratch()
         return value
 
