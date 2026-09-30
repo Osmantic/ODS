@@ -4,6 +4,7 @@
 import json
 import re
 import sys
+import time
 import urllib.error
 import urllib.request
 
@@ -57,13 +58,22 @@ def main():
         assert result.get("enabled") is True and result.get("action") == "enabled", result
         print("PASS: Dashboard API added Open WebUI")
     elif action == "expect-add-failure":
-        try:
-            get_json(key, "POST", "/api/webui/selection", {"enabled": True}, timeout=900)
-        except urllib.error.HTTPError as error:
-            assert error.code in {502, 503}, error.code
-            print("PASS: failed Open WebUI start was reported as failure")
-        else:
-            raise AssertionError("failed Open WebUI start was reported as success")
+        busy = 0
+        for attempt in range(21):
+            try:
+                get_json(key, "POST", "/api/webui/selection", {"enabled": True}, timeout=900)
+            except urllib.error.HTTPError as error:
+                code = error.code
+                error.close()
+                if code == 409 and attempt < 20:
+                    busy += 1
+                    time.sleep(3)
+                    continue
+                assert code in {502, 503}, f"unexpected WebUI add-back HTTP {code}; busy retries={busy}"
+                print(f"PASS: failed Open WebUI start was reported as failure (busy retries={busy})")
+                break
+            else:
+                raise AssertionError("failed Open WebUI start was reported as success")
     elif action == "chat":
         body = {"chat_id": "odsacceptance", "request_id": "odsacceptancefirst",
                 "messages": [{"role": "user", "content": "Reply OK."}]}

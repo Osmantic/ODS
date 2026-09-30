@@ -272,7 +272,10 @@ modified = text.replace(original, "    image: ghcr.io/open-webui/ods-acceptance-
 assert modified != text
 path.write_text(modified, encoding="utf-8")
 PY
-check_api expect-add-failure || fail 'host agent did not report failed WebUI startup'
+if ! check_api expect-add-failure; then
+    show_install_diagnostics
+    fail 'host agent did not report failed WebUI startup'
+fi
 cmp -s "$audit_root/env-before" "$INSTALL_DIR/.env" || fail 'failed add-back changed the installed selection'
 check_api selection-off || fail 'failed add-back left WebUI selected'
 cmp -s "$audit_root/base-before.yml" "$INSTALL_DIR/docker-compose.base.yml" \
