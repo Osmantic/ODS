@@ -5,6 +5,7 @@ import {
   ODS_COMPACT_CONVERSATION_CONTRACT,
   ODS_CONVERSATION_CONTRACT,
   ODS_SEPTEMBER16_CONVERSATION_CONTRACT,
+  SEARCH_READ_CONTRACT,
   ODS_EXTENSION_CATALOG_CONTRACT,
   ODS_EXTENSION_GITHUB_CONTRACT,
   ODS_EXTENSION_INVENTORY_CONTRACT,
@@ -436,10 +437,17 @@ test("restores the full September 16 operating core while retaining compact fall
   // SHA-256 of the evaluated full core at 44fb4335 and pre-merge 15eb56fa.
   assert.equal(createHash('sha256').update(ODS_SEPTEMBER16_CONVERSATION_CONTRACT).digest('hex'),
     '94d4a2c3cf7c7469219f0592a4a6f9e451dff0e92b8918bfb1adbbc1827c97de');
-  const oldCompact = ODS_COMPACT_CONVERSATION_CONTRACT.slice(0, -(PREVIEW_RUNTIME_CONTRACT.length + 1));
+  // The compact fallback differs from its pinned bytes only by the shared
+  // search-and-read routing sentence, which replaced its research opener.
+  const oldCompact = ODS_COMPACT_CONVERSATION_CONTRACT.slice(0, -(PREVIEW_RUNTIME_CONTRACT.length + 1))
+    .replace(SEARCH_READ_CONTRACT, 'Research with web_search and web_fetch/pixel_ods_web_extract, or an exposed browser.');
   assert.equal(oldCompact.length, 3087);
   assert.equal(createHash('sha256').update(oldCompact).digest('hex'),
     '9223e1d30c01d44bf709012903027276dbbf8724e4fa53ec0766bd02e9a377f0');
+  for (const contract of [ODS_CONVERSATION_CONTRACT, ODS_COMPACT_CONVERSATION_CONTRACT]) {
+    assert.equal(contract.split(SEARCH_READ_CONTRACT).length, 2);
+  }
+  assert.ok(!ODS_SEPTEMBER16_CONVERSATION_CONTRACT.includes('pixel_ods_search_read'));
   assert.ok(ODS_COMPACT_CONVERSATION_CONTRACT.endsWith(' ' + PREVIEW_RUNTIME_CONTRACT));
   assert.ok(ODS_CONVERSATION_CONTRACT.startsWith(ODS_SEPTEMBER16_CONVERSATION_CONTRACT + ' '));
   assert.ok(ODS_CONVERSATION_CONTRACT.length < 20000);

@@ -63,9 +63,9 @@ export function displayForActivity(event, context, previous=null) {
       }
     }
   }
-  if(['web_search','web_fetch','pixel_ods_research','pixel_ods_web_extract','browser'].includes(name)) {
+  if(['web_search','web_fetch','pixel_ods_research','pixel_ods_web_extract','pixel_ods_search_read','browser'].includes(name)) {
     display.type='search';display.label=text(args.query ?? args.search ?? args.search_query,160)||previous?.label||'Browsing the web';
-    const link=source({url:args.url});
+    const link=source({url:args.url ?? (Array.isArray(args.urls) ? args.urls[0] : undefined)});
     if(link && !display.sources.some(s=>s.url===link.url))display.sources.push(link);
     // Core tools and the installed researcher expose structured sources. Do
     // not scrape freeform text or mistake the wrapper envelope for evidence.

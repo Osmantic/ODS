@@ -25,6 +25,7 @@
       "pixel_ods_evidence_report",
       "pixel_ods_evidence_readback",
       "pixel_ods_web_extract",
+      "pixel_ods_search_read",
       "pixel_ods_download_promote",
       "pixel_ods_workspace_preview",
       "pixel_ods_workspace_bundle",

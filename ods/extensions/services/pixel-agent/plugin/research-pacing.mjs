@@ -15,7 +15,7 @@ export const SEARCH_PACING_STREAK = 3;
 
 export const SEARCH_PACING_REASON =
   "Pixel paused this search: the last searches in this response returned leads that have not been read yet. " +
-  "Read the most relevant result URLs now with web_fetch or pixel_ods_web_extract, then search again only for a fact those pages leave open. " +
+  "Read the most relevant result URLs now with web_fetch or pixel_ods_web_extract, or several at once with pixel_ods_search_read (urls), then search again only for a fact those pages leave open. " +
   "If none of the leads fits the request, you may search again with a different query. This pause did not use the search allowance.";
 
 const MAX_RECALLED_URLS = 5;
@@ -73,15 +73,22 @@ export function searchLeadUrls(results) {
   return urls;
 }
 
-export function duplicateSearchReason(previousQuery, urls) {
+// `readUrls` are pages an earlier pixel_ods_search_read already read (with
+// receipts in this response); the other result URLs are leads.
+export function duplicateSearchReason(previousQuery, urls, readUrls = []) {
   const query = String(previousQuery).replace(/\s+/g, " ").trim().slice(0, MAX_RECALLED_QUERY_CHARS);
-  const leads = urls.slice(0, MAX_RECALLED_URLS);
+  const read = new Set(readUrls);
+  const pages = readUrls.slice(0, MAX_RECALLED_URLS);
+  const leads = urls.filter((url) => !read.has(url)).slice(0, MAX_RECALLED_URLS);
   return `Pixel did not repeat this search: an earlier search in this response (${JSON.stringify(query)}) ` +
     "already covered the same terms, and its results may no longer be visible after context compaction. " +
+    (pages.length > 0
+      ? `Pages it already read in this response: ${pages.join(" , ")} . To see one again, read it with pixel_ods_web_extract. `
+      : "") +
     (leads.length > 0
-      ? `Its result URLs, which are untrusted leads and not verified evidence: ${leads.join(" , ")} . ` +
-        "Read the relevant ones with web_fetch or pixel_ods_web_extract, or search for a different missing fact. "
-      : "Search for a different missing fact instead. ") +
+      ? `Its ${pages.length ? "other " : ""}result URLs, which are untrusted leads and not verified evidence: ${leads.join(" , ")} . ` +
+        "Read the relevant ones with web_fetch, pixel_ods_web_extract or pixel_ods_search_read (urls), or search for a different missing fact. "
+      : pages.length ? "" : "Search for a different missing fact instead. ") +
     "Do not invent URLs. This refusal did not use the search allowance.";
 }
 

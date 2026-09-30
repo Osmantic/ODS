@@ -4,7 +4,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {botChallenge, chromeMajorVersion, createPublicPageReader, createPublicWebExtractTool,
-  PUBLIC_PAGE_PRODUCT_TOKEN, publicPageRequestHeaders, readableHtml} from '../plugin/web-extract.mjs';
+  PLAIN_RETRY_MIN_SECONDS, PUBLIC_PAGE_PRODUCT_TOKEN, publicPageRequestHeaders, readableHtml} from '../plugin/web-extract.mjs';
 import {createHostCitationVerifier} from '../plugin/citation-verification.mjs';
 import {createCompletionAssurance} from '../plugin/completion-assurance.mjs';
 
@@ -186,6 +186,34 @@ test('the plain fallback follows only a plain 403 or 406, once, and never a chal
   const redirected = await run([[406], [200]], {finalUrls: [JOURNEY, 'http://169.254.169.254/latest/meta-data/']});
   assert.deepEqual(redirected.page, {ok: false, reason: 'blocked'});
   assert.deepEqual(redirected.released, [0, 1]);
+});
+
+test('the plain fallback runs inside the read timeout, never after it', async () => {
+  // Each request takes `ms` on the caller's clock; the first is refused.
+  const run = async (ms, timeoutSeconds) => {
+    let clock = 1_000;
+    const calls = [];
+    const reader = createPublicPageReader({
+      guardedFetch: async options => {
+        calls.push(options);
+        clock += ms;
+        return {response: new Response(calls.length === 1 ? '' : '<title>Journey</title><p>Oct 28, 2026</p>',
+          {status: calls.length === 1 ? 406 : 200, headers: {'Content-Type': 'text/html'}}),
+        finalUrl: options.url, release: () => {}};
+      },
+      readResponseText: wholeBody, extractBasicHtmlContent: plainText, monotonic: () => clock});
+    return {page: await reader(JOURNEY, {timeoutSeconds}), seconds: calls.map(call => call.timeoutSeconds)};
+  };
+  // pixel_ods_search_read's 12 s read: a refusal after 3 s leaves 9 s.
+  assert.deepEqual(await run(3_000, 12).then(({page, seconds}) => [page.ok, page.requests, seconds]), [true, 2, [12, 9]]);
+  // The default 20 s read: a refusal after 0.4 s leaves 19 s, not another 20.
+  assert.deepEqual((await run(400, 20)).seconds, [20, 19]);
+  // Less than PLAIN_RETRY_MIN_SECONDS left: the refusal is the answer.
+  for (const [ms, timeoutSeconds] of [[10_500, 12], [3_200, 4], [1_000, 1]]) {
+    const {page, seconds} = await run(ms, timeoutSeconds);
+    assert.deepEqual([page.ok, page.status, page.requests, seconds.length], [false, 406, 1, 1], `${ms} ms of ${timeoutSeconds} s`);
+  }
+  assert.equal(PLAIN_RETRY_MIN_SECONDS, 2);
 });
 
 for (const rule of ['arena', 'arenaStrict']) test(`replay: the arena page that web_fetch got as HTTP 406 yields a read receipt and host verification (${rule})`, async () => {
