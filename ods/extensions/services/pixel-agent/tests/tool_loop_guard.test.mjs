@@ -746,6 +746,21 @@ test("an edit prohibition does not block an independently requested existing pre
   assert.notEqual(call(guard, "pixel_ods_workspace_preview", { event: { params } })?.block, true);
 });
 
+test('external publication restrictions preserve explicitly requested ODS previews', () => {
+  for (const restriction of ['Não publique fora do ODS.', 'Do not publish outside ODS.']) {
+    for (const localBan of ['', ' Do not show a preview.', ' Não mostre a prévia.']) {
+      const {write, params} = seedNamedPreview(createToolLoopGuard());
+      const guard = createToolLoopGuard();
+      guard.observeRun({agentId:'pixel',runId:'run-1',sessionId:'session-1'}, 'pixel', {
+        prompt:`Update the preview of ${write.path}. ${restriction}${localBan}`,
+      });
+      afterCall(guard,'read',{event:{params:{path:write.path},result:{content:[{type:'text',text:write.content}]}}});
+      const result=call(guard,'pixel_ods_workspace_preview',{event:{params}});
+      assert.equal(result?.block === true, Boolean(localBan), restriction + localBan);
+    }
+  }
+});
+
 test("optional workspace evidence does not require publishing a preview", () => {
   const guard = createToolLoopGuard();
   guard.observeRun({ agentId: "pixel", runId: "run-1", sessionId: "session-1" }, "pixel", { prompt: "Explain the saved implementation." });
