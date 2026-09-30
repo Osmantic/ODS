@@ -674,14 +674,18 @@ SETUP_ENV = {
 }
 
 
-@pytest.mark.parametrize("bootstrap_fails,prior_data,partial_bootstrap,concurrent_load", [
-    (False, False, False, False), (True, False, False, False),
-    (True, True, False, False), (True, False, True, False),
-    (False, False, False, True),
+@pytest.mark.parametrize("bootstrap_fails,prior_data,partial_bootstrap,concurrent_load,bootout_mode", [
+    (False, False, False, False, "unloaded"),
+    (True, False, False, False, "unloaded"),
+    (True, True, False, False, "unloaded"),
+    (True, False, True, False, "unloaded"),
+    (False, False, False, True, "unloaded"),
+    (True, True, True, False, "failed"),
+    (True, False, True, False, "persisted"),
 ])
 def test_macos_retained_setup_installs_or_rolls_back_without_pixel(
     tmp_path, monkeypatch, _isolated, bootstrap_fails, prior_data, partial_bootstrap,
-    concurrent_load,
+    concurrent_load, bootout_mode,
 ):
     _setup_ready_install(tmp_path, monkeypatch)
     owner_uid = getattr(os, "getuid", lambda: 0)()
@@ -702,10 +706,15 @@ def test_macos_retained_setup_installs_or_rolls_back_without_pixel(
         config_path.write_text(prior_config)
     monkeypatch.setattr(_mod, "_opencode_macos_plist_binary", lambda: binary if plist.exists() else None)
     loaded = False
+    concurrent_loaded = False
     commands = []
 
     def loaded_output(_binary):
-        return "state = running" if loaded or (concurrent_load and plist.exists()) else None
+        nonlocal loaded, concurrent_loaded
+        if concurrent_load and plist.exists() and not concurrent_loaded:
+            loaded = True
+            concurrent_loaded = True
+        return "state = running" if loaded else None
 
     def run(command, **kwargs):
         nonlocal loaded
@@ -724,31 +733,47 @@ def test_macos_retained_setup_installs_or_rolls_back_without_pixel(
                 return subprocess.CompletedProcess(command, 1, stdout="", stderr="simulated bootstrap failure")
             loaded = True
         elif command[1] == "bootout":
-            loaded = False
+            if bootout_mode == "unloaded":
+                loaded = False
+            elif bootout_mode == "failed":
+                return subprocess.CompletedProcess(command, 1, stdout="", stderr="simulated bootout failure")
         return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
 
     monkeypatch.setattr(_mod, "_opencode_macos_loaded_output", loaded_output)
     monkeypatch.setattr(_mod.subprocess, "run", run)
     if bootstrap_fails or concurrent_load:
-        expected_error = (
+        retained_files = bootout_mode != "unloaded"
+        expected_error = "OpenCode rollback failed" if retained_files else (
             "OpenCode LaunchAgent was loaded during setup" if concurrent_load
             else "Could not bootstrap OpenCode"
         )
         with pytest.raises(RuntimeError, match=expected_error):
             _mod._setup_managed_opencode_macos(dict(SETUP_ENV))
-        if prior_data:
+        if retained_files:
+            assert loaded
+            assert binary.read_bytes() == b"reviewed-release-fixture"
+            assert plist.is_file()
+            expected_model = "owner/cloud-model" if prior_data else "llama-server/ods/current"
+            assert json.loads(config_path.read_text())["agent"]["build"]["model"] == expected_model
+            if prior_data:
+                backups = list(binary.parent.glob(".ods-opencode-backup-*/opencode"))
+                assert len(backups) == 1
+                assert backups[0].read_bytes() == b"previous-owner-binary"
+        elif prior_data:
             assert binary.read_bytes() == b"previous-owner-binary"
             assert config_path.read_text() == prior_config
         else:
             assert not binary.exists()
             assert not config_path.exists()
-        assert not plist.exists()
+        if not retained_files:
+            assert not plist.exists()
         expected = ["enable"]
         if not concurrent_load:
             expected.append("bootstrap")
         if partial_bootstrap or concurrent_load:
             expected.append("bootout")
-        expected.append("disable")
+        if not retained_files:
+            expected.append("disable")
         assert [command[1] for command in commands if command[0] == "launchctl"] == expected
     else:
         _mod._setup_managed_opencode_macos(dict(SETUP_ENV))

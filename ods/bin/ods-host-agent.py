@@ -19184,6 +19184,7 @@ def _setup_managed_opencode_macos(env: dict) -> None:
         _wait_for_opencode_health()
     except Exception as exc:
         rollback_errors = []
+        cleanup_safe = True
         # A concurrent owner may have loaded the plist we just created before
         # our bootstrap call. It still points to this exact ODS-owned file and
         # must be unloaded before the transaction removes that file or binary.
@@ -19198,8 +19199,19 @@ def _setup_managed_opencode_macos(env: dict) -> None:
                         rollback_errors.append(
                             f"bootout: {(step.stderr or step.stdout or '').strip()[:300]}"
                         )
+                    if _opencode_macos_loaded_output(binary) is not None:
+                        cleanup_safe = False
+                        rollback_errors.append("bootout: OpenCode LaunchAgent remains loaded")
             except (RuntimeError, OSError, subprocess.SubprocessError) as rollback_exc:
+                cleanup_safe = False
                 rollback_errors.append(f"bootout: {rollback_exc}")
+        if not cleanup_safe:
+            # Keep the running job's config, plist and executable in place.
+            # The old executable hard link remains available for a later repair.
+            raise RuntimeError(
+                f"{exc}; OpenCode rollback failed: {'; '.join(rollback_errors)}; "
+                "retained OpenCode files because launchd unload was not verified"
+            ) from exc
         if enabled:
             try:
                 step = subprocess.run(
