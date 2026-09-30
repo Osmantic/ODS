@@ -43,7 +43,13 @@ function quickSwitchProfile(model) {
 /** A closed, unused selector must not start model-catalog requests or polling. */
 export default function PortalModelSelector(props) {
   const [started,setStarted]=useState(false)
-  if(started)return <LoadedModelSelector {...props}/>
+  const lastCatalogSource=useRef(props.runtimeSource)
+  const confirmedSource=['remote-provider','local-switchboard','external-host'].includes(props.runtimeSource)
+  useEffect(()=>{if(confirmedSource)lastCatalogSource.current=props.runtimeSource},[props.runtimeSource,confirmedSource])
+  // Remember only which reads to suppress, even before the first menu opening.
+  // Selection and mutation authorization still require the current source.
+  const observeCatalog=(confirmedSource?props.runtimeSource:lastCatalogSource.current)!=='remote-provider'
+  if(started)return <LoadedModelSelector {...props} observeCatalog={observeCatalog}/>
   return <div className="portal-model-selector"><button type="button" className="portal-model-trigger"
     aria-label={`Choose model: ${modelDisplayName(props.activeModel,true)}`} aria-haspopup="dialog" aria-expanded="false"
     title={modelDisplayName(props.activeModel)} onClick={()=>setStarted(true)}>
@@ -52,13 +58,7 @@ export default function PortalModelSelector(props) {
 }
 
 /** Once opened, retain the hook even while closed so an accepted swap stays observed. */
-function LoadedModelSelector({activeModel='',runtimeSource,busy=false,onSwitchingChange,onSettled}) {
-  const lastCatalogSource=useRef(runtimeSource)
-  const confirmedSource=['remote-provider','local-switchboard','external-host'].includes(runtimeSource)
-  useEffect(()=>{if(confirmedSource)lastCatalogSource.current=runtimeSource},[runtimeSource,confirmedSource])
-  // Remember only which catalog reads to suppress during a status outage.
-  // Selection and mutation authorization still require the current source.
-  const observeCatalog=(confirmedSource?runtimeSource:lastCatalogSource.current)!=='remote-provider'
+function LoadedModelSelector({activeModel='',runtimeSource,observeCatalog,busy=false,onSwitchingChange,onSettled}) {
   const catalog=useModels({observe:observeCatalog})
   const {currentModel,activationReadyModel,loading,error,canActivateModels,activationModeError,activationLoading,modelLifecycle,externalLemonade,modelManagement,runtimeActionLoading,actionLoadingModels=[],loadModel,refresh,clearMutationError}=catalog
   const models=Array.isArray(catalog.models)?catalog.models:[]

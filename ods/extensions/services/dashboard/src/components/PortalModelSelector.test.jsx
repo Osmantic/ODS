@@ -259,6 +259,21 @@ it.each(['local-switchboard','external-host'])('resumes catalog observation when
   expect(fetch.mock.calls.filter(([url])=>url==='/api/models')).toHaveLength(2)
 })
 
+it('remembers cloud before the first menu opening during a status outage',async()=>{
+  vi.useFakeTimers()
+  const {rerender}=render(view({runtimeSource:'remote-provider',activeModel:'cloud-model'}))
+  rerender(view({runtimeSource:undefined,activeModel:''}))
+  fireEvent.click(screen.getByRole('button',{name:'Choose model: Choose model'}))
+  await act(async()=>{await vi.advanceTimersByTimeAsync(60000)})
+  expect(fetch.mock.calls.filter(([url])=>url.startsWith('/api/models'))).toHaveLength(0)
+  expect(screen.getByText('The conversation’s model source is not confirmed.')).toBeVisible()
+  expect(screen.queryByRole('button',{name:'Switch model',exact:true})).toBeNull()
+  rerender(view({runtimeSource:'local-switchboard'}))
+  await act(async()=>{})
+  expect(fetch.mock.calls.filter(([url])=>url==='/api/models')).toHaveLength(1)
+  expect(screen.getByRole('menuitemradio',{name:/Qwen 3.5 2B/})).toBeEnabled()
+})
+
 it('keeps local catalog reads suppressed through a cloud status outage without authorizing a switch',async()=>{
   vi.useFakeTimers()
   const {rerender}=render(view({runtimeSource:'remote-provider',activeModel:'cloud-model'}))
