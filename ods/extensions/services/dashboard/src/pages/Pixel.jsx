@@ -1275,7 +1275,7 @@ export default function Pixel({ systemStatus = null }) {
     let settleStop
     stopRequest.settled = new Promise(resolve => { settleStop = resolve })
     stopRequestRef.current = stopRequest
-    const timeout = setTimeout(() => stopRequest.abort(), 15000)
+    const timeout = setTimeout(() => stopRequest.abort(), 30000)
     setStopping(true)
     setStopError('')
     try {

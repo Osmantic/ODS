@@ -44,7 +44,7 @@ _CHAT_STREAM_TIMEOUT_SECONDS = 2040.0
 _CLIENT_DISCONNECT_POLL_SECONDS = 0.25
 _STREAM_KEEPALIVE_SECONDS = 15.0
 _STREAM_KEEPALIVE = b": pixel working\n\n"
-_CLIENT_CANCEL_TIMEOUT_SECONDS = 7.0
+_CLIENT_CANCEL_TIMEOUT_SECONDS = 27.0
 _MAX_KEY_LENGTH = 4096
 _MAX_STATUS_BYTES = 64 * 1024
 _READINESS_PROBE_SECONDS = 4.0
@@ -648,7 +648,8 @@ def _error_event(message: str) -> bytes:
 
 async def _cancel_edge_run(edge_url: str, key: str, chat_id: str) -> bool:
     """Best-effort cancellation over the fixed authenticated internal edge."""
-    timeout = httpx.Timeout(connect=2.0, read=5.0, write=2.0, pool=2.0)
+    # Edge can wait 20 s for harness and managed-project cleanup.
+    timeout = httpx.Timeout(connect=2.0, read=22.0, write=2.0, pool=2.0)
     try:
         async with httpx.AsyncClient(
             timeout=timeout,

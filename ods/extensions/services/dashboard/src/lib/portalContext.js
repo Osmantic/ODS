@@ -210,7 +210,7 @@ export function usePortalContext({chatId,runtimeKey:legacyRuntimeKey,runtimeIden
     const at=generation.current,identity=current.current.chatId,controller=new AbortController()
     mutation.current=true;requests.current.add(controller)
     publish({resolving:true,recoveryNotice:'Confirming the previous turn has stopped…'})
-    const timer=setTimeout(()=>controller.abort(),15000)
+    const timer=setTimeout(()=>controller.abort(),30000)
     try {
       // This explicit owner action resolves uncertain history. Merely loading
       // a conversation or reading its context must never cancel work.

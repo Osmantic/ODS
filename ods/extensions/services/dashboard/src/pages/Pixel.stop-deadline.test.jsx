@@ -52,7 +52,7 @@ it.each(['headers','body'])('makes Stop retryable after a stalled %s without dis
   fireEvent.click(screen.getByTitle('Stop'))
   await act(async()=>{})
   expect(screen.getByTitle('Stopping')).toBeDisabled()
-  await act(async()=>{await vi.advanceTimersByTimeAsync(15000)})
+  await act(async()=>{await vi.advanceTimersByTimeAsync(30000)})
   expect(screen.getByText('Stop was not confirmed. Portal is still connected; retry Stop.')).toBeInTheDocument()
   expect(cancelSignal.aborted).toBe(true)
   expect(streamSignal.aborted).toBe(false)
@@ -65,6 +65,20 @@ it.each(['headers','body'])('makes Stop retryable after a stalled %s without dis
   expect(screen.getByText('Response stopped')).toBeInTheDocument()
   expect(streamSignal.aborted).toBe(true)
   expect(fetch.mock.calls.filter(([url])=>url==='/api/pixel/chat/cancel')).toHaveLength(2)
+})
+
+it('waits for managed-job cleanup before accepting an exact Stop acknowledgement', async () => {
+  transport('body')
+  await start()
+  vi.useFakeTimers()
+  fireEvent.click(screen.getByTitle('Stop'))
+  await act(async()=>{})
+  await act(async()=>{await vi.advanceTimersByTimeAsync(20000)})
+  expect(cancelSignal.aborted).toBe(false)
+  expect(screen.getByTitle('Stopping')).toBeDisabled()
+  await act(async()=>{resolveCancel({aborted:true})})
+  expect(screen.getByText('Response stopped')).toBeInTheDocument()
+  expect(streamSignal.aborted).toBe(true)
 })
 
 it('aborts a pending Stop request when the chat unmounts', async () => {
