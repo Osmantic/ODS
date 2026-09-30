@@ -27,7 +27,7 @@ fail() {
 
 [[ "${GITHUB_ACTIONS:-}" == true ]] || fail 'refusing non-disposable host'
 [[ "$RUNNER_TEMP" == /* && "$INSTALL_DIR" == "$RUNNER_TEMP"/* ]] || fail 'install path is outside runner temp'
-[[ "$(git -C "$(dirname "$product")" rev-parse HEAD)" == c6cb82a1ad3f5c9b18b7aa54a22ea54724c481c6 ]] || fail 'product source changed'
+[[ "$(git -C "$(dirname "$product")" rev-parse HEAD)" == 2780f511327fa2462ee537482390ef0f004616dd ]] || fail 'product source changed'
 [[ "$(cat /proc/1/comm)" == systemd ]] || fail 'runner is not a Pixel-qualified systemd host'
 docker info >/dev/null || fail 'isolated Docker Engine unavailable'
 [[ ! -e "$INSTALL_DIR" ]] || fail 'fresh install path is not empty'
@@ -70,6 +70,9 @@ if docker image ls --format '{{.Repository}}' | grep -Eq '^n8nio/n8n$'; then
 fi
 printf 'PASS: fresh installed Core omitted the n8n fragment and image\n'
 
+api_instance="$(docker inspect --format '{{.State.StartedAt}}|{{.RestartCount}}' ods-dashboard-api)" \
+    || fail 'Dashboard API was not running before n8n Add'
+
 curl -fsS --max-time 30 http://127.0.0.1:3001/api/extensions/catalog >"$audit_root/catalog-before.json" \
     || fail 'installed Library catalog unavailable'
 python3 - "$audit_root/catalog-before.json" <<'PY'
@@ -93,7 +96,7 @@ python3 - "$audit_root/enable.json" <<'PY'
 import json, sys
 value = json.load(open(sys.argv[1], encoding="utf-8"))
 assert "n8n" in value.get("enabled_services", []), value
-assert "n8n" not in value.get("failed_services", []), value
+assert value.get("failed_services") == [], value
 print("PASS: bundled n8n Library Add returned no failed service")
 PY
 [[ -f "$INSTALL_DIR/extensions/services/n8n/compose.yaml" ]] \
@@ -105,6 +108,8 @@ for attempt in {1..90}; do
     sleep 5
 done
 [[ "$health" == healthy ]] || fail 'n8n container did not become healthy'
+docker exec ods-n8n test -f /tmp/.n8n/ods-acceptance-retain.txt \
+    || fail 'n8n container did not mount the retained data directory'
 printf 'PASS: n8n container became healthy after Library backend enable\n'
 
 catalog_status=""
@@ -125,7 +130,9 @@ PY
 done
 printf 'Catalog n8n status after healthy start: %s\n' "$catalog_status"
 [[ "$catalog_status" == enabled ]] || fail 'Library catalog did not observe healthy n8n after enable'
-printf 'PASS: Library catalog reports n8n enabled without Dashboard API restart\n'
+[[ "$(docker inspect --format '{{.State.StartedAt}}|{{.RestartCount}}' ods-dashboard-api)" == "$api_instance" ]] \
+    || fail 'Dashboard API restarted during n8n Add'
+printf 'PASS: Library catalog reports n8n enabled with the original Dashboard API process\n'
 
 curl -fsS --max-time 180 -X POST http://127.0.0.1:3001/api/extensions/n8n/disable \
     >"$audit_root/disable.json" || fail 'n8n Library Disable endpoint failed'
@@ -141,6 +148,10 @@ PY
     || fail 'n8n fragment still selected after Disable'
 [[ "$(sha256sum "$sentinel" | cut -d ' ' -f 1)" == "$sentinel_hash" ]] \
     || fail 'n8n data sentinel changed after Disable'
+if docker inspect ods-n8n >/dev/null 2>&1; then
+    [[ "$(docker inspect --format '{{.State.Running}}' ods-n8n)" == false ]] \
+        || fail 'n8n container kept running after Disable'
+fi
 curl -fsS --max-time 30 http://127.0.0.1:3001/api/extensions/catalog >"$audit_root/catalog-disabled.json" \
     || fail 'Library catalog unavailable after Disable'
 python3 - "$audit_root/catalog-disabled.json" <<'PY'
@@ -151,4 +162,6 @@ assert item["status"] == "disabled", item
 assert item["library_selected"] is False, item
 print("PASS: Library catalog reports n8n disabled without Dashboard API restart")
 PY
+[[ "$(docker inspect --format '{{.State.StartedAt}}|{{.RestartCount}}' ods-dashboard-api)" == "$api_instance" ]] \
+    || fail 'Dashboard API restarted during n8n Disable'
 printf 'PASS: Library Disable retained n8n data and restored addable state\n'

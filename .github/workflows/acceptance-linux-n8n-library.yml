@@ -23,7 +23,7 @@ jobs:
       - name: Checkout exact n8n Library candidate
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
-          ref: c6cb82a1ad3f5c9b18b7aa54a22ea54724c481c6
+          ref: 2780f511327fa2462ee537482390ef0f004616dd
           path: product
       - name: Exercise bundled n8n Add and Disable on installed ODS
         env:
