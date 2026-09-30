@@ -198,6 +198,7 @@ def test_dashboard_admin_api_requires_sign_in_off_the_machine() -> None:
     nginx_conf = read(SERVICES / "dashboard" / "nginx.conf")
     entrypoint = read(SERVICES / "dashboard" / "entrypoint.sh")
     compose = read(ROOT / "docker-compose.base.yml")
+    summary = read(ROOT / "installers" / "phases" / "13-summary.sh")
 
     blocks = re.findall(r"(?ms)^    location [^\n]*\{\n.*?^    \}", nginx_conf)
     keyed = [block for block in blocks if 'Authorization "Bearer ${DASHBOARD_API_KEY}"' in block]
@@ -228,6 +229,10 @@ def test_dashboard_admin_api_requires_sign_in_off_the_machine() -> None:
     assert_true(
         "LOCAL_LISTENER=off" in entrypoint and 's|__ODS_LOCAL_LISTENER__|${LOCAL_LISTENER}|g' in entrypoint,
         "an unknown dashboard bind must disable the local no-sign-in listener",
+    )
+    assert_true(
+        'http://${LOCAL_IP}:${DASHBOARD_REMOTE_PORT}' in summary,
+        "the installer must show the signed-in network port, not the loopback dashboard port",
     )
 
 
