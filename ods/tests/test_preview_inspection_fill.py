@@ -32,9 +32,61 @@ class FillProtocol(unittest.TestCase):
         self.assertEqual(process.call_count,1)
         snapshot.assert_not_called()
 
+    def test_text_only_v1_image_is_not_advertised_as_number_capable(self):
+        request=bundle('<input type="number">', steps=[fill('3')])['request']
+        config={'ownerUid':os.getuid(), 'docker':'/usr/bin/docker','transport':'local','imageId':'sha256:'+'a'*64}
+        with patch.object(broker,'bounded_process',return_value=b'native-text-fill-v1\n') as process, patch.object(broker,'snapshot_bundle') as snapshot:
+            result=broker.inspect_request(request, config)
+        self.assertEqual(result['errorCode'], 'unsupported_capability')
+        self.assertEqual(process.call_count,1)
+        snapshot.assert_not_called()
+
 
 @unittest.skipUnless(os.environ.get('ODS_PREVIEW_BROWSER_TESTS')=='1' or os.environ.get('ODS_INSPECTION_TEST_IMAGE'), 'requires isolated real browser')
 class RealFill(unittest.TestCase):
+    def test_number_split_form_and_invalid_zero_use_real_handlers(self):
+        html='''<input id="amount" type="number" value="160" min="0" step="0.01">
+        <input id="people" type="number" value="4" min="1" step="1" required>
+        <button id="calculate">Calcular</button><h1>40.00</h1><p id="error"></p><script>
+        document.querySelector('#calculate').onclick=()=>{
+          const amount=document.querySelector('#amount'), people=document.querySelector('#people');
+          if(!amount.checkValidity()||!people.checkValidity()){
+            document.querySelector('#error').textContent='Quantidade inválida'; return;
+          }
+          document.querySelector('h1').textContent=(Number(amount.value)/Number(people.value)).toFixed(2);
+        };</script>'''
+        result=execute_real(bundle(html,steps=[text('40.00'),fill('100','#amount'),fill('3','#people'),
+            {'action':'click','locator':{'selector':'#calculate'}},text('33.33'),fill('0','#people'),
+            {'action':'click','locator':{'selector':'#calculate'}},text('Quantidade inválida','#error')]))
+        self.assertEqual(result['status'],'passed',result)
+        numeric=result['steps'][5]['after']['input']['numeric']
+        self.assertTrue(numeric['rangeUnderflow'])
+        self.assertTrue(result['steps'][5]['after']['input']['matches'])
+
+    def test_number_clear_and_constraints_are_observed_not_rejected(self):
+        result=execute_real(bundle('<input id="task" type="number" value="834739" min="1" max="10" step="2" required>',
+            steps=[fill(''),fill('0'),fill('11'),fill('2'),fill('3')]))
+        self.assertEqual(result['status'],'passed',result)
+        for index,flag in enumerate(('valueMissing','rangeUnderflow','rangeOverflow','stepMismatch')):
+            self.assertTrue(result['steps'][index]['after']['input']['numeric'][flag])
+        self.assertFalse(result['steps'][4]['after']['input']['numeric']['stepMismatch'])
+        self.assertNotIn('834739',json.dumps(result))
+
+    def test_number_nonfinite_locale_and_invalid_syntax_never_pass(self):
+        for value in ('NaN','Infinity','-Infinity','1e999','1,5',' 3 ','+1','0x10','1.','--1'):
+            with self.subTest(value=value):
+                result=execute_real(bundle('<input id="task" type="number" value="834739">',steps=[fill(value)]))
+                self.assertEqual(result['steps'][0]['errorCode'],'numeric_value_required',result)
+                self.assertNotIn('834739',json.dumps(result))
+
+    def test_numeric_sensitive_or_readonly_fields_remain_denied(self):
+        for attributes,code in [('aria-label="Security code"','text_field_required'),
+                                ('autocomplete="cc-number"','text_field_required'),
+                                ('readonly','field_not_editable'),('disabled','field_not_editable')]:
+            result=execute_real(bundle(f'<input id="task" type="number" value="834739" {attributes}>',steps=[fill('3')]))
+            self.assertEqual(result['steps'][0]['errorCode'],code,result)
+            self.assertNotIn('834739',json.dumps(result))
+
     def test_fill_add_complete_filter_uses_real_page_event_handlers(self):
         html='''<input id="task" aria-label="Tarefa"><button id="add">Adicionar</button><button id="done">Concluir</button>
         <select id="filter"><option value="all">Todas</option><option value="pending">Pendentes</option></select>
@@ -51,6 +103,22 @@ class RealFill(unittest.TestCase):
         result=execute_real(bundle(html,steps=steps))
         self.assertEqual(result['status'],'passed',result)
         self.assertEqual(result['steps'][0]['after']['input'],{'eligible':True,'disabled':False,'readOnly':False,'matches':True})
+
+    @unittest.skipUnless(os.environ.get('ODS_INSPECTION_REACT_ROOT'), 'requires existing React UMD assets, no download')
+    def test_real_react_controlled_number_updates_state(self):
+        root=Path(os.environ['ODS_INSPECTION_REACT_ROOT'])
+        react=(root/'react/umd/react.production.min.js').read_bytes()
+        dom=(root/'react-dom/umd/react-dom.production.min.js').read_bytes()
+        html="""<div id="root"></div><script src="react.js"></script><script src="react-dom.js"></script><script>
+        function App(){const [value,setValue]=React.useState('160');const [saved,setSaved]=React.useState('40');
+          return React.createElement('div',null,React.createElement('input',{id:'task',type:'number',value,onChange:e=>setValue(e.target.value)}),
+            React.createElement('button',{id:'save',onClick:()=>setSaved(String(Number(value)/4))},'Calcular'),React.createElement('h1',null,saved));}
+        ReactDOM.createRoot(document.querySelector('#root')).render(React.createElement(App));
+        </script>"""
+        result=execute_real(bundle(html,{'react.js':react,'react-dom.js':dom},steps=[fill('100'),
+            {'action':'click','locator':{'selector':'#save'}},text('25'),fill('-1.25e2'),
+            {'action':'click','locator':{'selector':'#save'}},text('-31.25')]))
+        self.assertEqual(result['status'],'passed',result)
 
     @unittest.skipUnless(os.environ.get('ODS_INSPECTION_REACT_ROOT'), 'requires existing React UMD assets, no download')
     def test_real_react_controlled_input_updates_state_and_renders(self):

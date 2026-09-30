@@ -20,10 +20,31 @@ test('old image fill failure is actionable without suggesting a website rewrite'
  for(const key of ['viewport','steps','diagnostics','blockedRequests']) delete result[key];
  result.status='failed';result.errorCode='unsupported_capability';
  const output=await createWorkspacePreviewInspectTool({request:async()=>result}).execute('fill',params('QA'));
- assert.equal(output.isError,true);assert.match(output.content[0].text,/text-field filling/);assert.match(output.content[0].text,/Update the ODS inspector/);
+ assert.equal(output.isError,true);assert.match(output.content[0].text,/text\/number-field filling/);assert.match(output.content[0].text,/Update the ODS inspector/);
 });
 test('sensitive field refusal stays unverified with no original value',async()=>{
  const request=normalize(params('QA'));const result=receipt(request);result.status='failed';result.steps[0].status='failed';result.steps[0].errorCode='text_field_required';result.steps[0].before.input.eligible=false;delete result.steps[0].after;
  const output=await createWorkspacePreviewInspectTool({request:async()=>result}).execute('fill',params('QA'));
  assert.equal(output.isError,true);assert.match(output.content[0].text,/synthetic/);assert.match(output.content[0].text,/not verified/);
+});
+
+test('numeric receipts expose only bounded constraint flags and cannot forge a fill',()=>{
+ const request=normalize(params('0')),good=receipt(request);
+ const numeric={syntaxValid:true,valueMissing:false,rangeUnderflow:true,rangeOverflow:false,stepMismatch:false,badInput:false};
+ good.steps[0].before.input.numeric={...numeric,rangeUnderflow:false};
+ good.steps[0].after.input.numeric=numeric;
+ assert.equal(validate(good,request).status,'passed','constraint-invalid synthetic values are intentional test inputs');
+ for(const change of [r=>r.steps[0].after.input.numeric.syntaxValid=false,
+   r=>r.steps[0].after.input.numeric.badInput='false',r=>r.steps[0].after.input.numeric.previousValue='secret',
+   r=>delete r.steps[0].after.input.numeric.rangeUnderflow]){
+  const bad=structuredClone(good);change(bad);assert.throws(()=>validate(bad,request));
+ }
+});
+
+test('invalid number syntax has actionable same-snapshot feedback',async()=>{
+ const request=normalize(params('Infinity')),result=receipt(request);
+ result.status='failed';result.steps[0].status='failed';result.steps[0].errorCode='numeric_value_required';delete result.steps[0].after;
+ result.steps[0].before.input.numeric={syntaxValid:false,valueMissing:false,rangeUnderflow:false,rangeOverflow:false,stepMismatch:false,badInput:false};
+ const output=await createWorkspacePreviewInspectTool({request:async()=>result}).execute('fill',params('Infinity'));
+ assert.equal(output.isError,true);assert.match(output.content[0].text,/finite decimal/);assert.match(output.content[0].text,/same snapshot/);
 });

@@ -74,3 +74,33 @@ test('native text fill refuses fields whose name, label or autocomplete marks th
     [{name: 'x'}, 'CPF'],
   ]) assert.equal(fillEligibility(attributes, label), false, JSON.stringify([attributes, label]));
 });
+
+test('native numeric fill rejects nonfinite syntax before invoking any setter or event', () => {
+  let writes=0,events=0;
+  class Input {
+    constructor() { this.type='number';this.previous='834739';this.readOnly=false;
+      this.validity={valueMissing:false,rangeUnderflow:false,rangeOverflow:false,stepMismatch:false,badInput:false}; }
+    get value() { return this.previous; }
+    set value(value) { writes++;this.previous=value; }
+  }
+  const context=vm.createContext({HTMLInputElement:Input,HTMLTextAreaElement:class {},HTMLSelectElement:class {},
+    InputEvent:class {},Event:class {},getComputedStyle:()=>({display:'block',visibility:'visible',opacity:'1'}),
+    document:{getElementById:()=>null}});
+  const element=Object.assign(new Input(),{labels:[],getClientRects:()=>[{width:10,height:10}],
+    checkVisibility:()=>true,hasAttribute:()=>false,getAttribute:()=>null,matches:()=>false,
+    dispatchEvent:()=>{events++;}});
+  const observe=new vm.Script(`(${capsuleScripts().OBSERVE_ELEMENT})`).runInContext(context);
+  for(const value of ['NaN','Infinity','1e999','1,5',' 3 ','+1','0x10','1.']) {
+    const result=observe.call(element,false,null,value,true);
+    assert.equal(result.input.numeric.syntaxValid,false);
+    assert.equal(result.input.matches,false);
+    assert.equal(writes,0);assert.equal(events,0);
+    assert.equal(JSON.stringify(result).includes('834739'),false);
+  }
+  for(const value of ['100','0','.5','-1.25e2','']) {
+    const result=observe.call(element,false,null,value,true);
+    assert.equal(result.input.numeric.syntaxValid,true);
+    assert.equal(result.input.matches,true);
+  }
+  assert.equal(writes,5);assert.equal(events,10);
+});

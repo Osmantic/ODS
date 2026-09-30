@@ -200,7 +200,7 @@ def image():
                 "Labels": {
                     "org.osmantic.ods.component": "pixel-preview-inspection",
                     "org.osmantic.ods.inspection.protocol": "1",
-                    "org.osmantic.ods.inspection.fill": "native-text-fill-v1",
+                    "org.osmantic.ods.inspection.fill": "native-text-number-fill-v2",
                     "org.osmantic.ods.inspection.select": "native-single-select-v1",
                     "org.osmantic.ods.inspection.playwright": "1.62.0",
                 },

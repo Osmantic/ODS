@@ -334,12 +334,12 @@ counts the matchers' style and label reads to keep their work linear. Set
 smoke, observed hidden-flex regression, hung-script, and cancellation cleanup.
 These test-only variables never select a production image or grant authority.
 
-## Native text-field input
+## Native text and number input
 
 `fill` takes exactly `action`, `locator`, and `value`: 0–256 printable Unicode
 characters, up to 1024 UTF-8 bytes, within the existing 8192-byte request cap.
 Use only synthetic test data. One visible, enabled, editable native
-`input[type=text]`, `input[type=search]`, or `textarea` is supported. Password,
+`input[type=text]`, `input[type=search]`, `input[type=number]`, or `textarea` is supported. Password,
 file and other input types, contenteditable, disabled/readonly fields and
 credential/payment autocomplete metadata are refused. Known sensitive field
 names are also refused; this is not a claim of universal semantic PII detection.
@@ -353,8 +353,23 @@ Existing value content is never included in observations; receipts bind the
 requested value and booleans for eligibility/editability/exact value match.
 A fill pass proves only the bounded fill operation, not the whole form.
 
+Numbers use a finite decimal or exponent string with a dot separator, such as
+`100`, `0`, `.5`, or `-1.25e2`. An empty string clears the field and permits
+required-field tests. NaN, infinity (including overflow), commas, whitespace,
+hex and incomplete numeric syntax are refused **before** the setter runs with
+`numeric_value_required`. No coercion or locale conversion silently changes the
+requested value. Exact readback still determines whether the fill passed.
+
+Synthetic values that violate `min`, `max`, `step` or `required` are intentionally
+allowed: they are necessary to test the actual page's validation. Numeric
+observations add an exact `numeric` object with boolean `syntaxValid`,
+`valueMissing`, `rangeUnderflow`, `rangeOverflow`, `stepMismatch` and `badInput`.
+These flags neither expose the old value nor claim the form is valid. Use the
+page's actual button and assert its visible calculated result or error. CSS
+locators work for number fields; no additional accessible roles are introduced.
+
 The immutable capsule must advertise
-`org.osmantic.ods.inspection.fill=native-text-fill-v1`. The broker checks this
+`org.osmantic.ods.inspection.fill=native-text-number-fill-v2`. The broker checks this
 before snapshot reads or execution; mixed old images fail closed with
 `unsupported_capability`. Deploy protocol, broker, plugin and rebuilt capsule
 together. No network, navigation, file or download permissions are added.

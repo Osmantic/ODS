@@ -54,7 +54,13 @@ OBSERVE_ELEMENT = r"""function(includeText, selectValue, fillValue, performFill)
     })() : {}),
     ...(fillValue !== null && fillValue !== undefined ? (() => {
       const input = element instanceof HTMLInputElement;
-      const native = (input && ['text','search'].includes(element.type)) || element instanceof HTMLTextAreaElement;
+      const number = input && element.type === 'number';
+      const native = (input && ['text','search','number'].includes(element.type)) || element instanceof HTMLTextAreaElement;
+      // HTML number syntax, not locale-formatted text, NaN or infinity. Empty
+      // deliberately remains available for required-field validation tests.
+      const numericSyntax = !number || fillValue === '' || (
+        /^-?(?:[0-9]+(?:\.[0-9]+)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?$/.test(fillValue)
+        && Number.isFinite(Number(fillValue)));
       const attributes = ['name','id','aria-label','autocomplete'].map(a => element.getAttribute(a) || '');
       if (native) {
         for (const label of element.labels || []) attributes.push(label.textContent || '');
@@ -68,14 +74,18 @@ OBSERVE_ELEMENT = r"""function(includeText, selectValue, fillValue, performFill)
       const disabled = element.matches(':disabled') || element.getAttribute('aria-disabled') === 'true';
       const readOnly = Boolean(element.readOnly) || element.getAttribute('aria-readonly') === 'true';
       const visible = element.checkVisibility({checkOpacity:true,checkVisibilityCSS:true,contentVisibilityAuto:true}) && rects.length > 0;
-      if (performFill && eligible && !disabled && !readOnly && visible) {
+      if (performFill && eligible && numericSyntax && !disabled && !readOnly && visible) {
         const prototype = input ? HTMLInputElement.prototype : HTMLTextAreaElement.prototype;
         Object.getOwnPropertyDescriptor(prototype, 'value').set.call(element, fillValue);
         element.dispatchEvent(new InputEvent('input', {bubbles:true,composed:true,inputType:'insertText',data:fillValue}));
         element.dispatchEvent(new Event('change', {bubbles:true}));
       }
       // Never expose a pre-existing field value, including denied fields.
-      return {input: {eligible, disabled, readOnly, matches: eligible && element.value === fillValue}};
+      return {input: {eligible, disabled, readOnly, matches: eligible && numericSyntax && element.value === fillValue,
+        ...(number && eligible ? {numeric: {syntaxValid:numericSyntax,
+          valueMissing:element.validity.valueMissing, rangeUnderflow:element.validity.rangeUnderflow,
+          rangeOverflow:element.validity.rangeOverflow, stepMismatch:element.validity.stepMismatch,
+          badInput:element.validity.badInput}} : {})}};
     })() : {}),
     ...(includeText ? (() => { const text=Array.from((element.innerText || '').replace(/\s+/g,' ').trim());
       return {text:{actual:text.slice(0,256).join(''),truncated:text.length>256}}; })() : {})};
@@ -1339,6 +1349,8 @@ def run_browser(bundle, playwright_factory=None):
                     field = before['input']
                     if not field['eligible']:
                         item['errorCode'] = 'text_field_required'
+                    elif field.get('numeric', {}).get('syntaxValid') is False:
+                        item['errorCode'] = 'numeric_value_required'
                     elif field['disabled'] or field['readOnly'] or not before['visible']:
                         item['errorCode'] = 'field_not_editable'
                     else:
