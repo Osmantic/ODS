@@ -46,3 +46,14 @@ it('opens actual file edits and command details without claiming failed edits su
  rerender(<PortalAgentActivity task={{...value,events:value.events.map((event,i)=>i===2?{...event,state:'failed'}:event)}} active/>);
  expect(screen.queryByLabelText('Changes to app.js')).toBeNull();
 });
+it('adds a measured model output count only while the model, not a tool, is producing the step',()=>{
+ const running={...task,state:'running',finishedAt:null}
+ const {rerender}=render(<PortalAgentActivity task={running} active liveOutputTokens={3412}/>);
+ expect(screen.getByRole('button',{name:/3,412 tokens/})).toBeVisible();
+ rerender(<PortalAgentActivity task={{...running,events:running.events.map((e,i)=>i===2?{...e,state:'running',finishedAt:null}:e)}} active liveOutputTokens={3412}/>);
+ expect(screen.queryByText(/tokens/)).toBeNull();
+ rerender(<PortalAgentActivity task={running} active liveOutputTokens={0}/>);
+ expect(screen.queryByText(/tokens/)).toBeNull();
+ rerender(<PortalAgentActivity task={task} liveOutputTokens={3412}/>);
+ expect(screen.queryByText(/tokens/)).toBeNull();
+});

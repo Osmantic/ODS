@@ -787,6 +787,7 @@ class TestGetLlamaMetrics:
             "throughput_state": "unavailable",
             "throughput_sampled_at": None,
             "inference_active": None,
+            "live_output_tokens": None,
             "token_count_mode": "cumulative",
         }
         assert helpers._get_lifetime_tokens() == 100
@@ -1576,6 +1577,7 @@ class TestLemonadeMetrics:
             "throughput_state": "measured",
             "throughput_sampled_at": 1000.0,
             "inference_active": None,
+            "live_output_tokens": None,
         }
         assert not token_file.exists()
 
@@ -1609,6 +1611,7 @@ class TestLemonadeMetrics:
             "throughput_state": "unavailable",
             "throughput_sampled_at": None,
             "inference_active": None,
+            "live_output_tokens": None,
         }
 
     @pytest.mark.asyncio
@@ -1638,6 +1641,7 @@ class TestLemonadeMetrics:
             "throughput_state": "unavailable",
             "throughput_sampled_at": None,
             "inference_active": None,
+            "live_output_tokens": None,
         }
 
     @pytest.mark.asyncio
@@ -1679,6 +1683,7 @@ class TestLemonadeMetrics:
             "throughput_state": "measured",
             "throughput_sampled_at": 1000.0,
             "inference_active": None,
+            "live_output_tokens": None,
         }
         assert [call.args[0] for call in client.get.await_args_list] == [
             "http://llama-server:8080/api/v1/stats",
