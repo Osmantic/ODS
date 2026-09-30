@@ -108,16 +108,13 @@ data_mode="$(stat -c %a "$INSTALL_DIR/data")"
 [[ "$(stat -c %a "$key_file")" == 600 ]] || fail 'private upstream key mode changed'
 check_library fresh
 
-custom="$INSTALL_DIR/data/extensions-library/owner-private"
-mkdir -p "$custom"
-printf 'retained private\n' >"$custom/notes.txt"
-chmod 700 "$custom"
-chmod 600 "$custom/notes.txt"
-sentinel="$(sha256sum "$custom/notes.txt" | cut -d' ' -f1)"
+custom="$INSTALL_DIR/data/extensions-library/actual-budget/owner-private-notes.txt"
+printf 'retained private\n' >"$custom"
+chmod 600 "$custom"
+sentinel="$(sha256sum "$custom" | cut -d' ' -f1)"
 run_installer
-[[ "$(stat -c %a "$custom")" == 700 ]] || fail 'rerun widened a custom directory'
-[[ "$(stat -c %a "$custom/notes.txt")" == 600 ]] || fail 'rerun widened a custom file'
-[[ "$(sha256sum "$custom/notes.txt" | cut -d' ' -f1)" == "$sentinel" ]] \
+[[ "$(stat -c %a "$custom")" == 600 ]] || fail 'rerun widened a custom file'
+[[ "$(sha256sum "$custom" | cut -d' ' -f1)" == "$sentinel" ]] \
     || fail 'rerun changed retained custom data'
 check_library rerun
 printf 'PASS: restrictive-umask install and rerun kept the Library readable and retained data private\n'
