@@ -189,9 +189,10 @@ class ProjectController:
             else:
                 failure = {'phase': 'execution', 'code': 'probe-failed'}
         except PermissionError as error:
-            code = 'denied'
+            code = 'denied' if phase == 'authorization' else 'unavailable'
             failure = diagnostic_failure(error, phase)
-            self.jobs.controller_failure(job, 'diagnostic authorization revoked', state='unconfirmed' if resources_started else 'failed')
+            self.jobs.controller_failure(job, 'diagnostic access unavailable',
+                state='unconfirmed' if reservation_attempted else 'failed')
         except (OSError, ValueError, TypeError, subprocess.SubprocessError) as error:
             failure = diagnostic_failure(error, phase)
             steps = self.jobs.observe(job)['steps']

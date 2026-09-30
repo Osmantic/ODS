@@ -122,14 +122,15 @@ def test_probe_run_timeout_never_claims_safe_retry(controller):
     assert controller.jobs.observe(job)['state'] == 'unconfirmed'
 
 
-def test_diagnostic_reservation_write_uncertainty_cannot_retry_same_runtime(controller):
+@pytest.mark.parametrize('failure', [OSError, PermissionError])
+def test_diagnostic_reservation_write_uncertainty_cannot_retry_same_runtime(controller, failure):
     req = {'project': 'ods-diagnostic', 'kind': 'diagnostic', 'runtime': 'npm',
            'sourceSha256': diagnostic_digest('npm'), 'image': controller.image, 'outputDirectory': 'diagnostic'}
     job, _ = controller.jobs.create('a' * 64, req)
     original = ProjectStorage._write
     def interrupted_write(storage, value):
         original(storage, value)
-        raise OSError('after reservation rename')
+        raise failure('after reservation rename')
     with patch('project_storage.engine_storage_jobs', return_value=set()), \
             patch('project_storage.engine_headroom', return_value=(16 * 1024**3, 16 * 1024**3)), \
             patch.object(ProjectStorage, '_write', interrupted_write):
