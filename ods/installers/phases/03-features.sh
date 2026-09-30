@@ -110,6 +110,21 @@ if ! $INTERACTIVE && [[ "$ENABLE_COMFYUI" == "true" ]]; then
     esac
 fi
 
+# The ComfyUI extension has only AMD and NVIDIA Docker overlays. A host GPU
+# served by an external runtime does not make those devices available inside
+# this install (for example, AMD Lemonade on Windows with a CPU-only WSL VM).
+# Resolve this before compose selection and the later ComfyUI health gate.
+if [[ "${ENABLE_COMFYUI:-false}" == "true" ]]; then
+    case "${GPU_BACKEND:-cpu}" in
+        amd|nvidia) ;;
+        *)
+            ENABLE_COMFYUI=false
+            log "ComfyUI auto-disabled: GPU backend ${GPU_BACKEND:-cpu} has no ComfyUI container overlay"
+            ai_warn "Image generation (ComfyUI) needs an AMD or NVIDIA GPU accessible to Docker; disabled on this host."
+            ;;
+    esac
+fi
+
 # Pixel is the preferred agent on qualified hosts. ODS platform support is
 # unchanged; auto mode falls back to Hermes without failing.
 if ! PIXEL_AGENT_MODE="$(ods_pixel_resolve_enablement "${ENABLE_PIXEL:-auto}" 2>/dev/null)"; then
