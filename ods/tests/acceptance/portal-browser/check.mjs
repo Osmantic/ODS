@@ -36,7 +36,29 @@ try {
   await expect(page.locator('[data-pixel-response]').last()).toContainText('OK', { timeout: 60_000 })
   await page.goto(`${base}/dashboard`, { waitUntil: 'domcontentloaded' })
   const chatCard = page.getByRole('link', { name: /AI Chat/ })
-  await expect(chatCard).toHaveAttribute('href', '/', { timeout: 60_000 })
+  try {
+    await expect(chatCard).toHaveAttribute('href', '/', { timeout: 60_000 })
+  } catch (error) {
+    const diagnostic = await page.evaluate(async () => {
+      const read = async path => {
+        try {
+          const response = await fetch(path, { cache: 'no-store' })
+          return { http: response.status, body: response.ok ? await response.json() : {} }
+        } catch { return { http: 0, body: {} } }
+      }
+      const [pixel, features] = await Promise.all([read('/api/pixel/status'), read('/api/features')])
+      return {
+        path: location.pathname,
+        pixel: { http: pixel.http, available: pixel.body.available, state: pixel.body.state },
+        features: { http: features.http, ids: (features.body.features || []).map(feature => feature.id), chat: (features.body.features || []).find(feature => feature.id === 'chat')?.status },
+      }
+    })
+    console.log('Dashboard card diagnostic:', JSON.stringify({ ...diagnostic,
+      chatTextCount: await page.getByText('AI Chat', { exact: true }).count(),
+      panelCount: await page.locator('aside[aria-label="Workspace panel"]').count(),
+      pageErrors }))
+    throw error
+  }
   await chatCard.click()
   await expect(composer).toBeVisible({ timeout: 60_000 })
   assert.deepEqual(pageErrors, [])
