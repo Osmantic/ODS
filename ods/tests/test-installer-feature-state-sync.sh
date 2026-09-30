@@ -88,6 +88,7 @@ run_case() {
         # shellcheck source=../installers/lib/external-services.sh
         source "$ROOT_DIR/installers/lib/external-services.sh"
         # shellcheck source=/dev/null
+        source "$(dirname "$FEATURES_PHASE")/../lib/installed-feature-state.sh"
         source "$FEATURES_PHASE" >/dev/null
         printf '%s\n' "$ENABLE_COMFYUI" >"$test_root/comfyui-selection"
         printf '%s\n' "$ENABLE_BRAVE_SEARCH" >"$test_root/brave-selection"

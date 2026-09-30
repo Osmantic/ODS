@@ -113,6 +113,7 @@ error() {
 }
 
 # shellcheck source=/dev/null
+source "$(dirname "$FEATURES_PHASE")/../lib/installed-feature-state.sh"
 source "$FEATURES_PHASE"
 
 jq -e '.gpu_assignment.services.llama_server.gpus | length > 0' \
