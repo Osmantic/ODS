@@ -10389,7 +10389,12 @@ export function createToolLoopGuard({
     const previewEvent = toolName === WORKSPACE_PREVIEW_TOOL
       ? event
       : wrappedPreviewEvent;
-    if (previewEvent) {
+    // A rejected publication contrary to the owner's instructions creates no
+    // preview obligation. Keep other verification failures intact, and still
+    // reject an unexpected success receipt instead of accepting publication.
+    const declinedPreviewError = state.ownerIntentObserved &&
+      state.workspacePreviewForbidden && previewEvent?.result?.isError === true;
+    if (previewEvent && !declinedPreviewError) {
       state.workspacePreviewAttempted = true;
       const requestedDirectory = normalizeWorkspaceFilePath(
         previewEvent?.params?.relativeDirectory
