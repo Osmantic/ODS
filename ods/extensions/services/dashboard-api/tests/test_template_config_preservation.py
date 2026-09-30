@@ -38,6 +38,16 @@ def test_chat_playground_preserves_owner_config(tmp_path, monkeypatch, layout):
     data = install / "data"
     builtin = tmp_path / "builtin"
     builtin.mkdir()
+    # Cached healthy peers must have a currently enabled selected definition.
+    for sid in shipped_template["services"]:
+        if sid == "sillytavern":
+            continue
+        peer = builtin / sid
+        peer.mkdir()
+        (peer / "manifest.yaml").write_text(
+            yaml.safe_dump({"service": {"id": sid, "depends_on": []}}), encoding="utf-8"
+        )
+        (peer / "compose.yaml").write_text("services: {}\n", encoding="utf-8")
     target = install / "config" / "sillytavern" / "config.yaml"
     owner_config = "securityOverride: false\nwhitelistMode: true\nwhitelist: ['127.0.0.1']\n"
     if layout != "missing":
