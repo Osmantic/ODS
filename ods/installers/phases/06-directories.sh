@@ -392,6 +392,9 @@ else
             [[ "${ENABLE_HERMES:-false}" == "true" && "$_data_dir" == "$INSTALL_DIR/data/hermes/" ]] && continue
             # Private retained chat results belong to Dashboard UID 1000.
             [[ "$_data_dir" == "$INSTALL_DIR/data/pixel-chat-results/" ]] && continue
+            # Token Spy's persistent directory intentionally belongs to its
+            # container UID 1000; phase 06 verifies that identity below.
+            [[ "$_data_dir" == "$INSTALL_DIR/data/token-spy/" ]] && continue
             if [[ -d "$_data_dir" ]] && ! [[ -w "$_data_dir" ]]; then
                 _phase06_repair_host_path "$_data_dir" "container-owned data directory" || return 1
             fi
@@ -413,6 +416,7 @@ else
             for _d in "$INSTALL_DIR/$_root"/*/; do
                 [[ "${ENABLE_HERMES:-false}" == "true" && "$_d" == "$INSTALL_DIR/data/hermes/" ]] && continue
                 [[ "$_d" == "$INSTALL_DIR/data/pixel-chat-results/" ]] && continue
+                [[ "$_d" == "$INSTALL_DIR/data/token-spy/" ]] && continue
                 [[ -d "$_d" ]] && ! [[ -w "$_d" ]] && _cant_write="$_cant_write ${_d#"$INSTALL_DIR"/}"
             done
         done

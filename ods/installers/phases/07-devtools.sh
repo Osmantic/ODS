@@ -372,7 +372,13 @@ _ods_start_session_host_agent() {
         fi
     fi
 
-    if ODS_AGENT_FORCE_SESSION=true "$INSTALL_DIR/ods-cli" agent start >> "$LOG_FILE" 2>&1; then
+    # The installer holds its model lifecycle flock across this phase. Close
+    # only the child's inherited descriptor before ods-cli daemonizes; the
+    # long-lived session agent must not keep the installer's lock forever.
+    if ( [[ -z "${ODS_MODEL_LIFECYCLE_LOCK_FD:-}" ]] \
+            || exec {ODS_MODEL_LIFECYCLE_LOCK_FD}>&-; \
+         ODS_AGENT_FORCE_SESSION=true "$INSTALL_DIR/ods-cli" agent start \
+            >> "$LOG_FILE" 2>&1 ); then
         ai_ok "ODS host agent started for this session (background mode)"
         ai "  Run 'ods agent start' after reboot or login to start it again."
         return 0
