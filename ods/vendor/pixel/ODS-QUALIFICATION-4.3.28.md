@@ -63,3 +63,14 @@ not present in the export. No audit document or signature is fabricated to make
 that checker appear green. Focused public consistency and source-byte/mode
 verification are reported separately. This candidate remains `candidate` until
 the complete disposable installation and intended physical acceptance finish.
+
+## Preserved Portal QA correction: waiting-plan expiry
+
+This ODS-maintained candidate includes the previously local O01 correction:
+operations plans that expire while awaiting approval or emergency resume become
+failed without dispatching an operation or granting approval. Integrity is
+checked before settling expiry, and execution still enforces its own deadline.
+The real broker fixture covers both paused and unpaused states, the exact
+deadline and idempotent rescheduling. All 55 broker tests passed in WSL on
+2026-09-30. This is source/package qualification, not a protected live broker
+upgrade or a claim of upstream release signing.

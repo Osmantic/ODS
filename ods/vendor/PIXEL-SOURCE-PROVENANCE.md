@@ -12,8 +12,8 @@ The visible source is duplicated into `vendor/pixel.bundle` solely so existing
 Pixel installation code can use exact-commit Git verification without network
 or private credentials. The bundle contains one new synthetic root commit with
 public Osmantic release identity and no ancestors. Its commit is
-`beeac1bb62b0f8d3bfe3fa51dfaba6428f99e758`, and its SHA-256 is
-`486fa9e1eedba1d872ebb1cdd66c39739730d95bfb90e2e5c061ae80e961f434`.
+`6efbbf342d60ad41f067f560dda90b5dda6765dd`, and its SHA-256 is
+`9b3ba65e55b022678198b8fb2f3d60bd53a085b4cdb68840a3bd2cbfb429b7a7`.
 Run `python3 scripts/verify-pixel-bundle.py` to check the bundle against the
 visible source, tracked executable modes, and those pins. The `pixel` launcher
 and the install/bootstrap scripts must retain executable Git modes.
@@ -92,3 +92,9 @@ commit is advertised. Runtime versions, dependency versions, image digests and
 trust anchors are unchanged. No release signature was generated and no private
 repository was accessed. Existing clients prepared with the previous public
 4.3.27 bundle remain readable through their exact retained receipt identity.
+
+The 4.3.28 candidate was rebuilt before publication to preserve the Portal QA
+waiting-plan expiry correction. Both paused and approval-pending expired plans
+settle without execution; all 55 broker tests passed. Two independent builds
+verified identical bundle bytes and every source blob/mode. This replaces an
+unpublished candidate and does not claim a protected live broker upgrade.
