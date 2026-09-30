@@ -36,7 +36,10 @@ export function displayForActivity(event, context, previous=null) {
     const path=args.path ?? args.file_path ?? args.filePath;
     if(typeof path==='string')display.detail=text(path.split(/[\\/]/).filter(Boolean).at(-1),120)||null;
   }
-  if(['exec','shell','bash'].includes(name) && typeof args.command==='string')display.detail=text(excerpt(args.command).text,400)||null;
+  // The completion hook receives runtime-transformed arguments (including the
+  // cancellation wrapper). Keep the original, already filtered public command;
+  // replacing it could expose encoded sensitive text and hide useful progress.
+  if(['exec','shell','bash'].includes(name) && !previous && typeof args.command==='string')display.detail=text(excerpt(args.command).text,400)||null;
   // The UI exposes changes only after the associated tool reports completion.
   if(['write','edit','apply_patch'].includes(name)) {
     const patch=args.patch ?? args.input;
