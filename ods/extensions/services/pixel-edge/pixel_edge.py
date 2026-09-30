@@ -1149,8 +1149,41 @@ def _has_current_images(data):
                 for part in message["content"]))) for message in messages)
 
 
+class ImageEnvelopeComplexity(ValueError):
+    pass
+
+
+def _check_image_structure(body):
+    # 2000 history messages with four two-field references each require fewer
+    # than 80000 delimiters. 128 Ki leaves room for the envelope and current
+    # message while bounding object/list amplification before JSON allocation.
+    structural = depth = 0
+    quoted = escaped = False
+    for character in body:
+        if quoted:
+            if escaped:
+                escaped = False
+            elif character == '\\':
+                escaped = True
+            elif character == '"':
+                quoted = False
+        elif character == '"':
+            quoted = True
+        elif character in '{}[],:':
+            structural += 1
+            if character in '{[':
+                depth += 1
+            elif character in '}]':
+                depth -= 1
+            if structural > 128 * 1024 or depth > 32:
+                raise ImageEnvelopeComplexity('image envelope structure limit')
+    # Syntax, escapes, duplicate keys and schema remain the JSON decoder's job.
+
+
 def _parse_image_envelope(body):
+    _check_image_structure(body)
     data = strict_json(body)
+    del body  # Release encoded source before decoding/hash-checking images.
     route = data.get("image_route") if isinstance(data, dict) else None
     snapshot = data.get("history_snapshot") if isinstance(data, dict) else None
     messages = data.get("messages") if isinstance(data, dict) else None
@@ -1165,6 +1198,12 @@ def _parse_image_envelope(body):
     return data
 
 
+def _parse_owned_image_envelope(holder):
+    # Transfer the sole encoded-source reference to the worker. The HTTP
+    # coroutine and executor argument tuple must not retain it during hashing.
+    return _parse_image_envelope(holder.pop())
+
+
 async def _encoded_image_envelope(data):
     # Avoid materializing a full JSON string plus its UTF-8 copy alongside the
     # decoded image/history envelope. Each encoded output chunk stays bounded.
@@ -1174,6 +1213,27 @@ async def _encoded_image_envelope(data):
         await asyncio.sleep(0)
 
 
+async def _read_image_envelope(content, limit):
+    # The internal API uses ensure_ascii=True. Keeping the JSON source ASCII
+    # avoids a single literal emoji widening an entire base64 envelope to four
+    # bytes per character. JSON escapes still preserve arbitrary Unicode text.
+    chunks = []
+    pending = bytearray()
+    size = 0
+    async for chunk in content.iter_any():
+        size += len(chunk)
+        if size > limit:
+            raise ValueError("request too large")
+        for offset in range(0, len(chunk), 65536):
+            pending.extend(chunk[offset:offset + 65536])
+            if len(pending) >= 65536:
+                chunks.append(pending.decode("ascii"))
+                pending.clear()
+    if pending:
+        chunks.append(pending.decode("ascii"))
+    return "".join(chunks)
+
+
 async def _handle_admitted_chat(request, image_turn, reservation, limit):
 
     try:
@@ -1181,9 +1241,11 @@ async def _handle_admitted_chat(request, image_turn, reservation, limit):
         # Request.read() otherwise applies aiohttp's default 1 MiB cap first.
         if image_turn:
             async with asyncio.timeout(_IMAGE_BODY_TIMEOUT):
-                body = await _read_bounded(request.content, limit)
+                body = await _read_image_envelope(request.content, limit)
         else:
             body = await _read_bounded(request.content, limit)
+    except UnicodeDecodeError:
+        return web.json_response({"error": "image envelope requires ASCII-escaped JSON"}, status=400)
     except ValueError:
         return web.json_response({"error": "request too large"}, status=413)
     except TimeoutError:
@@ -1192,7 +1254,14 @@ async def _handle_admitted_chat(request, image_turn, reservation, limit):
         return web.json_response({"error": "bad request"}, status=400)
 
     try:
-        data = await reservation[0].run(_parse_image_envelope, body) if image_turn else json.loads(body)
+        if image_turn:
+            source_holder = [body]
+            del body
+            data = await reservation[0].run(_parse_owned_image_envelope, source_holder)
+        else:
+            data = json.loads(body)
+    except ImageEnvelopeComplexity:
+        return web.json_response({"error": "image envelope structure limit"}, status=413)
     except (json.JSONDecodeError, ValueError, RecursionError):
         return web.json_response({"error": "invalid JSON"}, status=400)
 
@@ -1212,7 +1281,8 @@ async def _handle_admitted_chat(request, image_turn, reservation, limit):
                                      headers={"Retry-After": "1", "Cache-Control": "no-store"})
     if not image_turn and not valid_history_snapshot(data):
         return web.json_response({"error": "invalid conversation history"}, status=400)
-    del body  # Do not retain a second full encoded envelope through streaming.
+    if not image_turn:
+        del body  # Do not retain a second full encoded envelope through streaming.
 
     req_model = data.get("model", "")
     if req_model not in _ALLOWED_MODELS:
@@ -1258,6 +1328,10 @@ async def _handle_admitted_chat(request, image_turn, reservation, limit):
                        else {"json": upstream_data})
             async with session.post("http://pixel-upstream/v1/chat/completions",
                                     **payload, headers=fwd_headers) as resp:
+                if image_turn:
+                    # Request encoding owns its data until sending finishes;
+                    # the response stream needs none of the image/history tree.
+                    del payload, upstream_data, data
                 ctype = resp.headers.get("Content-Type", "").lower()
 
                 if resp.status >= 400:

@@ -41,6 +41,14 @@ base64 encoding; normal requests retain their previous limit. Compressed chat
 request bodies are refused, preventing automatic decompression before the
 bounded reader. Browser-to-API chat still carries references, not image bytes.
 
+The Edge container limit is 192 MiB (previously 128 MiB); its 32 MiB reservation
+is unchanged. A repeated maximum-image/near-maximum-history fixture with Unicode
+peaked near 125 MiB after copy reductions, leaving insufficient margin under the
+old limit. This is a ceiling, not a promise of permanent RAM use. One image turn
+is admitted at a time. The internal image envelope uses ASCII-escaped JSON to
+preserve Unicode without widening the whole base64-bearing source string;
+structural depth and token counts are bounded before allocating parsed objects.
+
 ## Qualification still required
 
 - Real cloud visual recognition and unsupported-provider responses.

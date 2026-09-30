@@ -4,6 +4,7 @@ import hashlib
 import gzip
 import json
 import threading
+import tracemalloc
 from unittest.mock import patch
 
 from aiohttp import web
@@ -34,6 +35,60 @@ class ImageAdmissionTest(BaseEdgeTest):
         self.assertGreater(len(chunks), 10)
         self.assertTrue(all(0 < len(chunk) <= 32768 for chunk in chunks))
         self.assertEqual(json.loads(b''.join(chunks)), data)
+
+    async def test_internal_unicode_uses_json_escapes_without_literal_widening(self):
+        data = image_request()
+        text = 'Ol\u00e1 \U0001f642'
+        data['history_snapshot']['messages'][-1]['content'] = text
+        data['messages'][-1]['content'].insert(0, {'type': 'text', 'text': text})
+        response = await self.client.post('http://edge/v1/chat/completions', headers=self.headers(),
+                                          data=json.dumps(data, ensure_ascii=False).encode())
+        self.assertEqual(response.status, 400)
+        self.assertEqual(self.up_runner.app['chat_requests'], [])
+        response = await self.client.post('http://edge/v1/chat/completions', headers=self.headers(),
+                                          data=json.dumps(data, ensure_ascii=True).encode('ascii'))
+        self.assertEqual(response.status, 200, await response.text())
+        self.assertEqual(self.up_runner.app['chat_requests'][0]['history_snapshot']['messages'][-1]['content'], text)
+
+    async def test_structure_budget_accepts_maximum_history_and_all_image_references(self):
+        data = image_request()
+        archived = data['history_snapshot']['messages'][0]
+        references = [{**archived['images'][0], 'id': 'img-' + str(index) * 32} for index in range(4)]
+        archived['images'] = references
+        data['messages'][0]['images'] = references
+        data['messages'][0]['content'] *= 4
+        data['history_snapshot']['messages'] = [archived] * 2000
+        parsed = self.pe._parse_image_envelope(json.dumps(data))
+        self.assertEqual(len(parsed['history_snapshot']['messages']), 2000)
+
+    async def test_structure_budget_precedes_decoder_and_preserves_string_escapes(self):
+        for body in ('[' * 33 + '0' + ']' * 33, '[' + '0,' * (128 * 1024) + '0]'):
+            with patch.object(self.pe, 'strict_json', side_effect=AssertionError('must not allocate JSON')):
+                with self.assertRaises(self.pe.ImageEnvelopeComplexity):
+                    self.pe._parse_image_envelope(body)
+            response = await self.client.post('http://edge/v1/chat/completions', headers=self.headers(), data=body)
+            self.assertEqual(response.status, 413)
+        data = image_request()
+        data['escaped'] = ('\\"{},:[]' * 20000) + '\u00e1\U0001f642'
+        self.assertEqual(self.pe._parse_image_envelope(json.dumps(data))['escaped'], data['escaped'])
+        for invalid in ('{"a":"unterminated', '{"a":"\\q"}', '{"a":1,"a":2}'):
+            response = await self.client.post('http://edge/v1/chat/completions', headers=self.headers(), data=invalid)
+            self.assertEqual(response.status, 400)
+
+    async def test_fragmented_wire_reader_bounds_chunk_object_overhead(self):
+        size = 256 * 1024
+        class Content:
+            async def iter_any(self):
+                for _ in range(size):
+                    yield b'x'
+        tracemalloc.start()
+        try:
+            result = await self.pe._read_image_envelope(Content(), size)
+            _, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+        self.assertEqual(result, 'x' * size)
+        self.assertLess(peak, 4 * size)
 
     async def test_marked_image_over_legacy_size_reaches_upstream_with_bound_header(self):
         # The old eight MiB transport rejects this valid seven MiB image.

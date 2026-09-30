@@ -40,12 +40,20 @@ def matches_archived_message(message, archived):
         match = _DATA.fullmatch(url)
         if match is None:
             return False
+        encoded = match[2]
         try:
-            data = base64.b64decode(match[2], validate=True)
+            data = base64.b64decode(encoded, validate=True)
         except (ValueError, binascii.Error):
             return False
         total += len(data)
-        if not data or total > MAX_IMAGE_BYTES or base64.b64encode(data).decode("ascii") != match[2]:
+        if not data or total > MAX_IMAGE_BYTES:
+            return False
+        # The strict alphabet/padding decoder validates all complete quanta.
+        # Only the final quantum can contain unused nonzero padding bits;
+        # comparing that quantum preserves canonicality without recopying the
+        # entire (up to 11 MiB) encoded image twice.
+        tail_size = len(data) % 3 or 3
+        if base64.b64encode(data[-tail_size:]).decode("ascii") != encoded[-4:]:
             return False
         if not isinstance(reference, dict) or hashlib.sha256(data).hexdigest() != reference.get("sha256"):
             return False
