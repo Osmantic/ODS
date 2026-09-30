@@ -1,0 +1,95 @@
+#!/usr/bin/env bash
+# Disposable installed upgrade proof for the exact current-main and Portal heads.
+set -euo pipefail
+
+baseline="${ODS_ACCEPTANCE_BASELINE_ROOT:?baseline checkout is required}"
+candidate="${ODS_ACCEPTANCE_CANDIDATE_ROOT:?candidate checkout is required}"
+harness="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+audit_root="${RUNNER_TEMP:?runner temp is required}/ods-portal-upgrade"
+export INSTALL_DIR="$audit_root/install"
+export LOG_FILE="$audit_root/install.log"
+key_file="$audit_root/mock.key"
+mock_log="$audit_root/mock.log"
+mock_port=18080
+mock_pid=""
+
+cleanup() {
+    if [[ -n "$mock_pid" ]]; then
+        kill "$mock_pid" 2>/dev/null || true
+        wait "$mock_pid" 2>/dev/null || true
+    fi
+}
+trap cleanup EXIT
+
+fail() {
+    printf 'FAIL: %s\n' "$*" >&2
+    docker ps --format '{{.Names}} {{.Status}}' >&2 || true
+    exit 1
+}
+
+run_installer() {
+    local source="$1" label="$2"
+    printf 'Installing %s at %s\n' "$label" "$(git -C "$(dirname "$source")" rev-parse --short=12 HEAD)"
+    if ! (umask 022; cd "$source" && timeout 2400s bash install-core.sh \
+        --non-interactive --skip-docker --no-bootstrap \
+        --external-llm-url "http://127.0.0.1:$mock_port" \
+        --external-llm-provider openai-compatible \
+        --external-llm-model ods-acceptance-mock \
+        --external-llm-key-file "$key_file") >>"$LOG_FILE" 2>&1; then
+        fail "$label installer did not finish; logs retained on disposable runner"
+    fi
+}
+
+[[ "${GITHUB_ACTIONS:-}" == true ]] || fail 'refusing non-disposable host'
+[[ "$RUNNER_TEMP" == /* && "$INSTALL_DIR" == "$RUNNER_TEMP"/* ]] || fail 'install path is outside runner temp'
+[[ "$(git -C "$(dirname "$baseline")" rev-parse HEAD)" == 21797f99c255b4a847fc05615f15c3a8ac3476e4 ]] || fail 'baseline source changed'
+[[ "$(git -C "$(dirname "$candidate")" rev-parse HEAD)" == 9f579707d72b163b99fffc06b79652fc2eb258cd ]] || fail 'candidate source changed'
+[[ "$(cat /proc/1/comm)" == systemd ]] || fail 'runner is not a Pixel-qualified systemd host'
+docker info >/dev/null || fail 'isolated Docker Engine unavailable'
+[[ ! -e "$INSTALL_DIR" ]] || fail 'fresh install path is not empty'
+if docker ps -a --format '{{.Names}}' | grep -Eq '^ods-'; then
+    fail 'pre-existing ODS containers on runner'
+fi
+
+umask 077
+mkdir -p "$audit_root"
+python3 - "$key_file" <<'PY'
+import secrets, sys
+with open(sys.argv[1], "w", encoding="ascii") as stream:
+    stream.write("mock-" + secrets.token_hex(24))
+PY
+chmod 600 "$key_file"
+python3 "$harness/mock-openai-upstream.py" --key-file "$key_file" \
+    --port "$mock_port" >"$mock_log" 2>&1 &
+mock_pid=$!
+for attempt in {1..30}; do
+    curl -fsS --max-time 2 "http://127.0.0.1:$mock_port/healthz" >/dev/null 2>&1 && break
+    sleep 1
+done
+curl -fsS --max-time 2 "http://127.0.0.1:$mock_port/healthz" >/dev/null \
+    || fail 'mock upstream did not start'
+
+run_installer "$baseline" 'current main baseline'
+grep -qx 'ENABLE_OPEN_WEBUI=true' "$INSTALL_DIR/.env" \
+    || fail 'baseline standard install did not select WebUI'
+curl -fLsS --max-time 30 http://127.0.0.1:3000/ >/dev/null \
+    || fail 'baseline WebUI was not reachable'
+mkdir -p "$INSTALL_DIR/data/open-webui"
+printf 'retained-webui-data\n' >"$INSTALL_DIR/data/open-webui/acceptance-sentinel.txt"
+sentinel_hash="$(sha256sum "$INSTALL_DIR/data/open-webui/acceptance-sentinel.txt" | cut -d' ' -f1)"
+printf 'PASS: current main installed WebUI with retained-data sentinel\n'
+
+run_installer "$candidate" 'Portal candidate upgrade'
+grep -qx 'ENABLE_OPEN_WEBUI=true' "$INSTALL_DIR/.env" \
+    || fail 'Portal upgrade changed the existing WebUI selection'
+[[ "$(sha256sum "$INSTALL_DIR/data/open-webui/acceptance-sentinel.txt" | cut -d' ' -f1)" == "$sentinel_hash" ]] \
+    || fail 'Portal upgrade changed retained WebUI data'
+[[ "$(docker inspect --format '{{.State.Running}}' ods-webui)" == true ]] \
+    || fail 'Portal upgrade stopped selected WebUI'
+curl -fLsS --max-time 30 http://127.0.0.1:3000/ >/dev/null \
+    || fail 'WebUI was not reachable after Portal upgrade'
+python3 "$harness/portal-requests.py" status "$INSTALL_DIR/.env" \
+    || fail 'Portal was not ready after upgrade'
+docker ps -a --format '{{.Names}}' | grep -Eq '^ods-llama-server$' \
+    && fail 'external-route upgrade started llama-server'
+printf 'PASS: Portal upgrade retained WebUI choice, data and availability without llama-server\n'

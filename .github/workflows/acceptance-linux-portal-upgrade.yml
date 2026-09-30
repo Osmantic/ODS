@@ -1,0 +1,44 @@
+name: Acceptance Linux Portal retained WebUI upgrade
+
+on:
+  push:
+    branches:
+      - codex/ods-portal-upgrade-audit
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: portal-upgrade-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  retained-webui-upgrade:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Checkout acceptance harness
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - name: Checkout exact current-main baseline
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          ref: 21797f99c255b4a847fc05615f15c3a8ac3476e4
+          path: baseline
+      - name: Checkout exact Portal default candidate
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          ref: 9f579707d72b163b99fffc06b79652fc2eb258cd
+          path: candidate
+      - name: Record exact source and runner capacity
+        run: |
+          test "$(git -C baseline rev-parse HEAD)" = 21797f99c255b4a847fc05615f15c3a8ac3476e4
+          test "$(git -C candidate rev-parse HEAD)" = 9f579707d72b163b99fffc06b79652fc2eb258cd
+          docker version
+          df -h / "$RUNNER_TEMP"
+          cat /proc/1/comm
+      - name: Install baseline and upgrade without changing WebUI choice
+        env:
+          ODS_ACCEPTANCE_BASELINE_ROOT: ${{ github.workspace }}/baseline/ods
+          ODS_ACCEPTANCE_CANDIDATE_ROOT: ${{ github.workspace }}/candidate/ods
+        run: bash ods/tests/acceptance/portal-retained-webui-upgrade.sh
