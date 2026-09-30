@@ -2,6 +2,7 @@ import { StrictMode } from 'react'
 import { MemoryRouter } from 'react-router-dom'
 import { act, cleanup, fireEvent, screen, waitFor } from '@testing-library/react'
 import { render } from '../test/test-utils'
+import userEvent from '@testing-library/user-event'
 import { PortalIdentityProvider, usePortalIdentity } from './PortalIdentityContext'
 import AssistantIdentitySettings from '../components/settings/AssistantIdentitySettings'
 import Sidebar from '../components/Sidebar'
@@ -18,6 +19,7 @@ const saveButton = () => screen.getByRole('button', { name: 'Save name', exact: 
 const refresh = () => fireEvent.click(screen.getByRole('button', { name: 'Refresh saved name' }))
 const edit = name => { fireEvent.change(screen.getByLabelText('Assistant display name'), { target: { value: name } }); fireEvent.click(saveButton()) }
 const postCalls = () => fetch.mock.calls.filter(([, options]) => options.method === 'POST')
+const typeDraft = async (user, text) => { const field = screen.getByLabelText('Assistant display name'); await user.click(field); await user.clear(field); await user.keyboard(text) }
 beforeEach(() => { vi.stubGlobal('fetch', vi.fn()); globalThis.localStorage.clear() })
 afterEach(() => { cleanup(); vi.useRealTimers(); vi.unstubAllGlobals() })
 
@@ -49,26 +51,70 @@ it('preserves an unsaved name through refresh and offers explicit adoption of th
   expect(input).toHaveValue('Other')
 })
 
-it('preserves a draft typed before the install name is first observed', async () => {
-  // Regression: when the install read and a refresh settle in a single commit the saved name
-  // that was on screen is never observed, so a draft cannot be compared against the previous
-  // document. The typed draft must survive on its own; the same path is hit whenever the user
-  // types before the first read resolves.
-  const pending = deferred()
-  fetch.mockReturnValueOnce(pending.promise).mockResolvedValueOnce(response(identity('Other',3)))
+it('keeps a typed draft when the install name changes under it on an ordinary refresh', async () => {
+  // An install-side change to the same field is delivered to a mounted screen through an
+  // ordinary refresh. A draft in progress must survive it rather than be silently replaced.
+  fetch.mockResolvedValueOnce(response(identity('Old',2))).mockResolvedValueOnce(response(identity('Other',3)))
+  const user = userEvent.setup()
   render(editor())
-  const input = screen.getByLabelText('Assistant display name')
-  fireEvent.change(input,{target:{value:'My draft'}})
-  refresh()
-  await act(async () => pending.resolve(response(identity('Old',2))))
-  await waitFor(() => expect(saved()).toBe('Old'))
+  await waitFor(() => expect(saveButton()).toBeEnabled())
+  await typeDraft(user,'Prefer me')
   refresh()
   await waitFor(() => expect(saved()).toBe('Other'))
-  expect(input).toHaveValue('My draft')
   expect(screen.getByText('Last confirmed name: Other')).toBeVisible()
+  expect(screen.getByLabelText('Assistant display name')).toHaveValue('Prefer me')
   expect(postCalls()).toHaveLength(0)
-  fireEvent.click(screen.getByRole('button',{name:'Use saved name'}))
-  expect(input).toHaveValue('Other')
+})
+
+it('holds an adopted saved name across a later refresh when nothing else was typed', async () => {
+  // After the user adopts the saved name, the field follows the install again: a later refresh
+  // must deliver the newest saved name instead of pinning the value that was adopted.
+  fetch.mockResolvedValueOnce(response(identity('Old',2))).mockResolvedValueOnce(response(identity('Other',3)))
+    .mockResolvedValueOnce(response(identity('Newer',4)))
+  const user = userEvent.setup()
+  render(editor())
+  await waitFor(() => expect(saveButton()).toBeEnabled())
+  await typeDraft(user,'Prefer me')
+  refresh()
+  await waitFor(() => expect(saved()).toBe('Other'))
+  await user.click(screen.getByRole('button',{name:'Use saved name'}))
+  expect(screen.getByLabelText('Assistant display name')).toHaveValue('Other')
+  refresh()
+  await waitFor(() => expect(saved()).toBe('Newer'))
+  expect(screen.getByLabelText('Assistant display name')).toHaveValue('Newer')
+  expect(postCalls()).toHaveLength(0)
+})
+
+it('holds a Reset to Portal draft and requires an explicit save instead of a silent save', async () => {
+  // Reset is local intent with no write. A refresh must not overwrite the reset, and it must
+  // never fire the save on its own.
+  fetch.mockResolvedValueOnce(response(identity('Old',2))).mockResolvedValueOnce(response(identity('Other',3)))
+  const user = userEvent.setup()
+  render(editor())
+  await waitFor(() => expect(saveButton()).toBeEnabled())
+  await user.click(screen.getByRole('button',{name:'Reset to Portal'}))
+  expect(screen.getByLabelText('Assistant display name')).toHaveValue('Portal')
+  refresh()
+  await waitFor(() => expect(saved()).toBe('Other'))
+  expect(screen.getByLabelText('Assistant display name')).toHaveValue('Portal')
+  expect(postCalls()).toHaveLength(0)
+  await user.click(saveButton())
+  await waitFor(() => expect(postCalls()).toHaveLength(1))
+  expect(JSON.parse(postCalls()[0][1].body)).toEqual({expectedRevision:3,displayName:'Portal'})
+})
+
+it('holds a reverted draft across a later refresh rather than re-adopting the saved name', async () => {
+  // Reverting the field back to the saved name is an edit (local intent), not an adoption:
+  // only an explicit save or "Use saved name" makes the field follow the install again.
+  fetch.mockResolvedValueOnce(response(identity('Old',2))).mockResolvedValueOnce(response(identity('Other',3)))
+  const user = userEvent.setup()
+  render(editor())
+  await waitFor(() => expect(saveButton()).toBeEnabled())
+  await typeDraft(user,'Old')
+  refresh()
+  await waitFor(() => expect(saved()).toBe('Other'))
+  expect(screen.getByLabelText('Assistant display name')).toHaveValue('Old')
+  expect(postCalls()).toHaveLength(0)
 })
 
 it('keeps the proposed name after a conflict and saves only against the refreshed revision', async () => {
