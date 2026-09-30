@@ -41,7 +41,8 @@ SSH_STATE_ENV_KEYS = {
     "controlHost": "REMOTE_LLM_SSH_CONTROL_HOST",
     "controlPort": "REMOTE_LLM_SSH_CONTROL_PORT",
 }
-DEFAULT_MAX_BODY_BYTES = 4 * 1024 * 1024
+# Portal image turns include base64 images and conversation/tool context.
+DEFAULT_MAX_BODY_BYTES = 16 * 1024 * 1024
 DEFAULT_SECRET_PATH = Path("/state/remote-provider/secrets/provider-api-key")
 AddressResolver = Callable[..., list[tuple[Any, ...]]]
 HOP_BY_HOP_HEADERS = {

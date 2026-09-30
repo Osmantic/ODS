@@ -791,6 +791,15 @@ class TestForwarding:
                            headers={"content-type": "application/json"})
         assert resp.status_code == 413
 
+    def test_large_image_body_is_forwarded(self, router):
+        mod, client, write_state, calls = router
+        write_state()
+        messages = [{"role": "user", "content": [{"type": "image_url", "image_url": {
+            "url": "data:image/png;base64," + "a" * (5 * 1024 * 1024)}}]}]
+        resp = client.post("/v1/chat/completions", json={"model": "ods/current", "messages": messages})
+        assert resp.status_code == 200
+        assert calls
+
     def test_malformed_json_rejected(self, router):
         mod, client, write_state, calls = router
         write_state()
