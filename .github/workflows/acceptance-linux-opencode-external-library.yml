@@ -1,0 +1,31 @@
+name: Acceptance Linux OpenCode external Library add-back
+
+on:
+  push:
+    branches:
+      - codex/ods-opencode-external-audit
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: opencode-external-library-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  opencode-external-library:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout acceptance harness
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - name: Checkout exact OpenCode Library candidate
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          ref: 129bb83a182a798345fe04fdc724365d9ed2f603
+          path: product
+      - name: Exercise installed external-model OpenCode add-back
+        env:
+          ODS_ACCEPTANCE_PRODUCT_ROOT: ${{ github.workspace }}/product/ods
+        run: bash ods/tests/acceptance/opencode-external-library-journey.sh
