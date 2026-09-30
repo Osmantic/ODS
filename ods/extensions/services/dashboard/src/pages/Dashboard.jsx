@@ -745,6 +745,11 @@ export default function Dashboard({ status, loading, compact = false }) {
     }
     return []
   }, [featuresData])
+  const compactChatFeature = features.find(feature => normalizeServiceKey(feature.id) === 'chat') || {
+    id: 'chat', name: 'AI Chat', description: 'Chat with your AI model',
+    launch: { type: 'service', service: 'open-webui' },
+  }
+  const compactChatHref = pickFeatureLink(compactChatFeature, status?.services, portalChatAvailable)
   const serviceRows = useMemo(
     () => buildServiceRows(status?.services, serviceResources?.services),
     [status?.services, serviceResources?.services]
@@ -899,7 +904,20 @@ export default function Dashboard({ status, loading, compact = false }) {
     }
   )
 
-  if (compact) return <><TelemetryNotice telemetry={status?.clientTelemetry}/><CompactDashboard metrics={systemMetrics} services={status?.services || []} health={health}/></>
+  if (compact) return <>
+    <TelemetryNotice telemetry={status?.clientTelemetry}/>
+    <div className="px-3 pt-3">
+      <FeatureCard
+        icon={MessageSquare}
+        title={compactChatFeature.name}
+        description={compactChatFeature.description}
+        href={compactChatHref}
+        status={compactChatHref ? 'ready' : 'disabled'}
+        hint={compactChatHref ? webuiHealthy ? 'Open WebUI chat' : 'Portal agent chat' : 'Chat unavailable'}
+      />
+    </div>
+    <CompactDashboard metrics={systemMetrics} services={status?.services || []} health={health}/>
+  </>
 
   return (
     <div className="p-8">
