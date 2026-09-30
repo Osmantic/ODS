@@ -17039,6 +17039,10 @@ def _prepare_hermes_route_for_start() -> tuple[bool, str]:
         live = INSTALL_DIR / "data" / "hermes" / "config.yaml"
         if not template.is_file():
             return False, "Hermes configuration template is missing"
+        if template.is_symlink() or not stat_mod.S_ISREG(template.lstat().st_mode):
+            return False, "Hermes route config path is not a regular file"
+        if live.is_symlink() or (live.exists() and not stat_mod.S_ISREG(live.lstat().st_mode)):
+            return False, "Hermes route config path is not a regular file"
 
         def patch(path: Path, *, private_key: str | None = None) -> str:
             original = path.read_text(encoding="utf-8")

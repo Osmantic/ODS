@@ -7,6 +7,7 @@ import stat
 import subprocess
 from pathlib import Path
 
+import pytest
 import yaml
 
 
@@ -237,6 +238,45 @@ def test_quoted_retained_route_keys_are_replaced_without_duplicates(tmp_path, mo
     ]
     for field in ("default", "base_url", "api_key", "context_length", "max_tokens"):
         assert direct_fields.count(field) == 1
+
+
+def test_matching_retained_route_symlink_fails_closed(tmp_path, monkeypatch):
+    template, live_path = write_install(
+        tmp_path, external_env(),
+        live='model:\n  default: "old"\n  base_url: "http://old/v1"\n',
+    )
+    monkeypatch.setattr(agent, "INSTALL_DIR", tmp_path)
+    assert agent._prepare_hermes_route_for_start() == (True, "")
+
+    owner_target = tmp_path / "owner-config.yaml"
+    live_path.rename(owner_target)
+    before_target = owner_target.read_bytes()
+    before_template = template.read_bytes()
+    try:
+        live_path.symlink_to(owner_target)
+    except (OSError, NotImplementedError):
+        pytest.skip("This host cannot create a file symlink")
+    assert agent._prepare_hermes_route_for_start() == (
+        False, "Hermes route config path is not a regular file"
+    )
+    assert owner_target.read_bytes() == before_target
+    assert template.read_bytes() == before_template
+
+
+def test_nonregular_retained_route_fails_closed(tmp_path, monkeypatch):
+    template, live_path = write_install(
+        tmp_path, external_env(),
+        live='model:\n  default: "old"\n  base_url: "http://old/v1"\n',
+    )
+    monkeypatch.setattr(agent, "INSTALL_DIR", tmp_path)
+    before_template = template.read_bytes()
+    live_path.unlink()
+    live_path.mkdir()
+    assert agent._prepare_hermes_route_for_start() == (
+        False, "Hermes route config path is not a regular file"
+    )
+    assert live_path.is_dir()
+    assert template.read_bytes() == before_template
 
 
 def test_external_compose_plan_refuses_stale_local_overlay(tmp_path, monkeypatch):
