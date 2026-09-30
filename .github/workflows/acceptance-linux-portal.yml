@@ -23,11 +23,11 @@ jobs:
       - name: Checkout exact Portal acceptance candidate
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
-          ref: 9f579707d72b163b99fffc06b79652fc2eb258cd
+          ref: 67dc0bd1613bc2c4fc337fb1cc8608f9859b1196
           path: product
       - name: Record exact source and runner capacity
         run: |
-          test "$(git -C product rev-parse HEAD)" = 9f579707d72b163b99fffc06b79652fc2eb258cd
+          test "$(git -C product rev-parse HEAD)" = 67dc0bd1613bc2c4fc337fb1cc8608f9859b1196
           docker version
           docker info --format '{{.OperatingSystem}}'
           df -h / "$RUNNER_TEMP"
