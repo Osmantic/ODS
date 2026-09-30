@@ -1122,7 +1122,15 @@ def _scan_compose_content(
                     raise HTTPException(status_code=400,
                         detail=f"Service '{svc_name}' uses a local build without a verified source recipe") from None
         extra_hosts = svc_def.get("extra_hosts")
-        if extra_hosts and not trusted:
+        # Shipped built-ins can use the same single host-gateway bridge as
+        # curated library recipes. Keep user/imported recipes untrusted, even
+        # when they copy the exact mapping from a built-in Compose file.
+        builtin_host_gateway = (
+            builtin
+            and compose_path.resolve().is_relative_to(EXTENSIONS_DIR.resolve())
+            and extra_hosts == ["host.docker.internal:host-gateway"]
+        )
+        if extra_hosts and not trusted and not builtin_host_gateway:
             raise HTTPException(
                 status_code=400,
                 detail=f"Extension rejected: extra_hosts in {svc_name}",
