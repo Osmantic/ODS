@@ -6412,6 +6412,7 @@ class TestRootlessDataOwnershipRepair:
     def test_failure_prevents_compose_start(self, monkeypatch):
         compose_calls = []
         monkeypatch.setattr(_mod, "resolve_compose_flags", lambda: ["-f", "base.yml"])
+        monkeypatch.setattr(_mod, "_prepare_hermes_route_for_start", lambda: (True, ""))
         monkeypatch.setattr(_mod, "_precreate_data_dirs", lambda _sid: None)
         monkeypatch.setattr(
             _mod,
