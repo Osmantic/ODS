@@ -5665,6 +5665,33 @@ def invalidate_compose_cache() -> None:
     (INSTALL_DIR / ".compose-flags").unlink(missing_ok=True)
 
 
+def _macos_native_pixel_compose_flags(flags: list[str]) -> list[str]:
+    """Keep host-agent Compose selection aligned with the installed Mac CLI."""
+    if platform.system() != "Darwin":
+        return flags
+    preparation = INSTALL_DIR / "data/pixel-native/preparation"
+    if not any(os.path.lexists(preparation / name) for name in
+               ("activation.json", "selection-update.json")):
+        return flags
+    helper = INSTALL_DIR / "installers/macos/lib/pixel-native-stack.py"
+    if not helper.is_file() or helper.is_symlink():
+        raise RuntimeError("Mac native Pixel Compose selector is unavailable")
+    try:
+        result = subprocess.run(
+            [sys.executable, str(helper), "--install-dir", str(INSTALL_DIR),
+             "--flags", " ".join(flags)],
+            cwd=str(INSTALL_DIR), capture_output=True, text=True, timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise RuntimeError("Mac native Pixel Compose selection needs recovery") from exc
+    if result.returncode != 0:
+        raise RuntimeError("Mac native Pixel Compose selection needs recovery")
+    selected = result.stdout.strip().split()
+    if not selected or len(selected) % 2 or any(value != "-f" for value in selected[::2]):
+        raise RuntimeError("Mac native Pixel Compose selector returned invalid flags")
+    return selected
+
+
 def resolve_compose_flags() -> list:
     flags_file = INSTALL_DIR / ".compose-flags"
     if flags_file.exists():
@@ -5689,7 +5716,7 @@ def resolve_compose_flags() -> list:
             active_mount = _model_stores.active_compose_overlay(INSTALL_DIR, load_env(INSTALL_DIR / ".env").get("ODS_ACTIVE_MODEL_STORE", "default"))
             if active_mount:
                 flags.extend(["-f", str(active_mount)])
-            return flags
+            return _macos_native_pixel_compose_flags(flags)
 
     script = INSTALL_DIR / "scripts" / "resolve-compose-stack.sh"
     # Contract note: every resolver launch below must include --gpu-count and
@@ -5749,7 +5776,7 @@ def resolve_compose_flags() -> list:
         raise RuntimeError(
             f"compose resolver failed: {detail[:1000]}",
         ) from exc
-    return result.stdout.strip().split()
+    return _macos_native_pixel_compose_flags(result.stdout.strip().split())
 
 
 # Filesystem types that silently ignore POSIX ownership/permissions.
@@ -6156,18 +6183,18 @@ def _webui_selection_state() -> dict:
     selected = load_env(env_path).get("ENABLE_OPEN_WEBUI", "true").strip().lower() == "true"
     return {
         "enabled": selected,
-        "supported": platform.system() == "Linux",
+        "supported": platform.system() in {"Linux", "Darwin"},
     }
 
 
 def _enable_webui_selection() -> tuple[int, dict]:
-    """Add the base WebUI service to a Linux install without touching its data.
+    """Add the base WebUI service without touching its retained data.
 
     The existing .env choice and Compose resolver remain authoritative. Keep
     the bind-mounted .env inode, and restore its exact bytes if startup fails.
     """
-    if platform.system() != "Linux":
-        return 501, {"code": "unsupported_platform", "error": "WebUI add-back is available on Linux only"}
+    if platform.system() not in {"Linux", "Darwin"}:
+        return 501, {"code": "unsupported_platform", "error": "WebUI add-back is unavailable on this platform"}
     service_lock = _service_locks["open-webui"]
     if not service_lock.acquire(blocking=False):
         return 409, {"code": "operation_in_progress", "error": "Open WebUI is being changed"}
