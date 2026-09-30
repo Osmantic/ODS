@@ -726,6 +726,35 @@ describe('Pixel', () => {
     expect(screen.getAllByText(/Edge unreachable/).length).toBeGreaterThan(0)
   })
 
+  it.each(['request', 'body'])('recovers after a stalled status %s without accepting its late response', async phase => {
+    vi.useFakeTimers()
+    let finishStalled, stalledSignal
+    let calls = 0
+    globalThis.fetch.mockImplementation((url, options) => {
+      if (url !== '/api/pixel/status') return Promise.resolve(response({}))
+      calls += 1
+      if (calls === 1) return Promise.resolve(response({available:false}))
+      if (calls === 2) {
+        stalledSignal = options.signal
+        const pending = new Promise(resolve => { finishStalled = resolve })
+        return phase === 'request' ? pending : Promise.resolve({ok:true,json:()=>pending})
+      }
+      return Promise.resolve(response({available:true,runtime:{source:'remote-provider',model:'cloud-model',contextLength:32768,maxTokens:4096,reasoning:false}}))
+    })
+    render(<Pixel />)
+    await act(async () => { await vi.advanceTimersByTimeAsync(3000) })
+    expect(screen.getByText('Degraded')).toBeInTheDocument()
+    expect(calls).toBe(2)
+    await act(async () => { await vi.advanceTimersByTimeAsync(15000) })
+    expect(stalledSignal.aborted).toBe(true)
+    expect(screen.getByText('Degraded')).toBeInTheDocument()
+    await act(async () => { await vi.advanceTimersByTimeAsync(3000) })
+    expect(screen.getByText('Available')).toBeInTheDocument()
+    expect(screen.getByRole('button',{name:'Choose model: cloud model'})).toBeInTheDocument()
+    await act(async () => { finishStalled(phase === 'request' ? response({available:false}) : {available:false}) })
+    expect(screen.getByText('Available')).toBeInTheDocument()
+  })
+
   it('shows available state when status succeeds', async () => {
     globalThis.fetch.mockResolvedValue(response({ available: true, model: 'pixel/default', detail: 'local' }))
 

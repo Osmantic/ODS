@@ -779,14 +779,29 @@ export default function Pixel({ systemStatus = null }) {
   }, [interrupted, sending, activityRefresh, updateRestoredActivity])
 
   useEffect(() => {
-    const controller = new AbortController()
+    let controller = null
     let stopped = false
     let poll = null
+    let deadline = null
     async function fetchStatus() {
+      controller = new AbortController()
+      const requestController = controller
       try {
-        const response = await fetch('/api/pixel/status', { signal: controller.signal, cache: 'no-store' })
-        if (!response.ok) throw new Error('status unavailable')
-        const data = await response.json()
+        // Bound both headers and body so a stalled request cannot suspend recovery.
+        // Racing also discards a late response from a transport that ignores abort.
+        const data = await Promise.race([
+          (async () => {
+            const response = await fetch('/api/pixel/status', { signal: requestController.signal, cache: 'no-store' })
+            if (!response.ok) throw new Error('status unavailable')
+            return response.json()
+          })(),
+          new Promise((_, reject) => {
+            deadline = globalThis.setTimeout(() => {
+              reject(new Error('status timeout'))
+              requestController.abort()
+            }, 15000)
+          }),
+        ])
         if (stopped) return
         setRuntimeIdentity(data?.runtimeIdentity ?? null)
         setRuntimeReadiness(data?.readiness ?? null)
@@ -862,6 +877,7 @@ export default function Pixel({ systemStatus = null }) {
           setStatusDetail('Could not reach Portal backend')
         }
       } finally {
+        globalThis.clearTimeout(deadline)
         if (!stopped) poll = globalThis.setTimeout(fetchStatus, STATUS_POLL_MS)
       }
     }
@@ -869,7 +885,8 @@ export default function Pixel({ systemStatus = null }) {
     return () => {
       stopped = true
       if (poll !== null) globalThis.clearTimeout(poll)
-      controller.abort()
+      globalThis.clearTimeout(deadline)
+      controller?.abort()
     }
   }, [modelStatusRefresh])
 
