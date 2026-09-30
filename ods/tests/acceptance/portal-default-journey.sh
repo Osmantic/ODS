@@ -171,7 +171,7 @@ wait_portal() {
 
 run_installer() {
     printf 'Installing exact product head %s\n' "$expected"
-    if ! (cd "$product" && timeout 2400s bash install-core.sh \
+    if ! (umask 022; cd "$product" && timeout 2400s bash install-core.sh \
         --non-interactive --skip-docker --no-bootstrap \
         --external-llm-url "http://127.0.0.1:$mock_port" \
         --external-llm-provider openai-compatible \
