@@ -405,6 +405,130 @@ def test_recovery_endpoint_uses_only_owned_journal_and_releases_lifecycle_lock(m
     assert actions==([('begin','model_recovery'),('recover',None),('end','model_recovery')] if body=={} else [])
 
 
+@pytest.fixture
+def model_readback(tmp_path,monkeypatch):
+    monkeypatch.setattr(host,'INSTALL_DIR',tmp_path)
+    monkeypatch.setattr(host,'_remote_provider_route_state_path',lambda:tmp_path/'route.json')
+    (tmp_path/'.env').write_text('one')
+    clock=[100.0]
+    jobs=[]
+    class Thread:
+        def __init__(self,target,**_):self.target=target
+        def start(self):jobs.append(self.target)
+    monkeypatch.setattr(host.threading,'Thread',Thread)
+    monkeypatch.setattr(host.time,'monotonic',lambda:clock[0])
+    monkeypatch.setattr(host,'_managed_pixel_runtime_contract',lambda:copy.deepcopy(OLD))
+    monkeypatch.setattr(host,'_pixel_model_read_cache',{})
+    return clock,jobs,tmp_path/'.env'
+
+
+def test_model_readback_refreshes_before_expiry_with_one_worker(model_readback):
+    clock,jobs,_=model_readback
+    read=host._cached_managed_pixel_runtime_contract
+    assert read() is None
+    jobs.pop()()
+    # Keep crossing the original TTL with newly confirmed, never stale proof.
+    for _ in range(4):
+        clock[0]+=5
+        assert read()==OLD
+        assert len(jobs)==1
+        assert all(read()==OLD for _ in range(8)) and len(jobs)==1
+        jobs.pop()()
+        assert read()==OLD and not jobs
+
+
+def test_model_readback_never_serves_expired_value_during_refresh(model_readback):
+    clock,jobs,_=model_readback
+    read=host._cached_managed_pixel_runtime_contract
+    assert read() is None
+    jobs.pop()()
+    clock[0]+=10
+    assert read()==OLD and len(jobs)==1
+    clock[0]+=5
+    assert read() is None and len(jobs)==1
+    jobs.pop()()
+    assert read()==OLD
+
+
+@pytest.mark.parametrize('failure',[None,RuntimeError('denied')])
+def test_model_readback_failed_refresh_revokes_still_fresh_value(model_readback,monkeypatch,failure):
+    clock,jobs,_=model_readback
+    read=host._cached_managed_pixel_runtime_contract
+    read();jobs.pop()()
+    clock[0]+=10
+    assert read()==OLD and len(jobs)==1
+    def failed():
+        if failure:raise failure
+        return None
+    monkeypatch.setattr(host,'_managed_pixel_runtime_contract',failed)
+    jobs.pop()()
+    assert read() is None
+
+
+@pytest.mark.parametrize('poll_changed_key',[True,False])
+def test_model_readback_rejects_old_worker_after_config_change(model_readback,monkeypatch,poll_changed_key):
+    clock,jobs,env=model_readback
+    read=host._cached_managed_pixel_runtime_contract
+    read();jobs.pop()()
+    clock[0]+=10
+    assert read()==OLD and len(jobs)==1
+    env.write_text('two-new-provider')
+    if poll_changed_key:
+        assert read() is None and len(jobs)==1
+    jobs.pop()()
+    # Old worker must neither qualify the new generation nor prevent its readback.
+    assert read() is None and len(jobs)==1
+    monkeypatch.setattr(host,'_managed_pixel_runtime_contract',lambda:copy.deepcopy(NEW))
+    jobs.pop()()
+    assert read()==NEW
+
+
+def test_model_readback_does_not_return_old_value_after_immediate_failed_refresh(model_readback,monkeypatch):
+    clock,jobs,_=model_readback
+    read=host._cached_managed_pixel_runtime_contract
+    read();jobs.pop()()
+    clock[0]+=10
+    class ImmediateThread:
+        def __init__(self,target,**_):self.target=target
+        def start(self):self.target()
+    monkeypatch.setattr(host.threading,'Thread',ImmediateThread)
+    monkeypatch.setattr(host,'_managed_pixel_runtime_contract',lambda:None)
+    assert read() is None
+
+
+def test_model_readback_old_worker_cannot_publish_after_key_changes_back(model_readback,monkeypatch):
+    _,jobs,_=model_readback
+    key=['original']
+    monkeypatch.setattr(host,'_managed_pixel_readback_key',lambda:key[0])
+    read=host._cached_managed_pixel_runtime_contract
+    assert read() is None
+    key[0]='changed'
+    assert read() is None and len(jobs)==1
+    key[0]='original'
+    assert read() is None and len(jobs)==1
+    jobs.pop()()
+    assert read() is None and len(jobs)==1
+    jobs.pop()()
+    assert read()==OLD
+
+
+def test_model_readback_retries_after_worker_start_failure(model_readback,monkeypatch):
+    clock,jobs,_=model_readback
+    read=host._cached_managed_pixel_runtime_contract
+    read();jobs.pop()()
+    clock[0]+=10
+    regular_thread=host.threading.Thread
+    class FailedThread:
+        def __init__(self,**_):pass
+        def start(self):raise RuntimeError('cannot start thread')
+    monkeypatch.setattr(host.threading,'Thread',FailedThread)
+    assert read() is None
+    monkeypatch.setattr(host.threading,'Thread',regular_thread)
+    assert read()==OLD and len(jobs)==1
+    jobs.pop()()
+    assert read()==OLD
+
+
 def test_background_model_readback_is_unknown_until_confirmed_and_invalidates_after_config_change(tmp_path,monkeypatch):
     monkeypatch.setattr(host,'INSTALL_DIR',tmp_path)
     monkeypatch.setattr(host,'_remote_provider_route_state_path',lambda:tmp_path/'route.json')
