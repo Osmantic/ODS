@@ -59,7 +59,7 @@ function Set-WindowsOpenCodeDefaultAgentModels {
         $selected = if ($modelProperty) { $modelProperty.Value } else { $null }
         $followsPreviousOdsRoute = (
             $PreviousModelRef.StartsWith('llama-server/') -and
-            $selected -eq $PreviousModelRef
+            $selected -ceq $PreviousModelRef
         )
         if ($null -eq $selected -or $followsPreviousOdsRoute) {
             Set-OpenCodeObjectProperty -Target $slot -Name 'model' -Value $ModelRef

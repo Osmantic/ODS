@@ -9,7 +9,7 @@ $root = Split-Path -Parent $PSScriptRoot
 
 function Assert-Equal {
     param($Actual, $Expected, [string]$Label)
-    if ($Actual -ne $Expected) {
+    if ($Actual -cne $Expected) {
         throw "$Label expected '$Expected', got '$Actual'"
     }
 }
@@ -107,6 +107,18 @@ MAX_CONTEXT=65536
         -ModelId 'ods/current' -ModelName 'Current' -ContextLimit 32768
     Assert-Equal $cloudOpenCode.agent.build.model `
         'owner/cloud-model' "OpenCode does not adopt a prior cloud agent route"
+
+    $caseDistinctOpenCode = New-WindowsOpenCodeConfigObject `
+        -LlmEndpoint @{ BaseUrl = 'http://127.0.0.1:4000/v1' } `
+        -ModelId 'old-model' -ModelName 'Old model' -ContextLimit 32768
+    Set-OpenCodeObjectProperty -Target $caseDistinctOpenCode.agent.build `
+        -Name 'model' -Value 'llama-server/OLD-MODEL'
+    $caseDistinctOpenCode = Update-WindowsOpenCodeConfigObject `
+        -Config $caseDistinctOpenCode `
+        -LlmEndpoint @{ BaseUrl = 'http://127.0.0.1:4000/v1' } `
+        -ModelId 'ods/current' -ModelName 'Current' -ContextLimit 32768
+    Assert-Equal $caseDistinctOpenCode.agent.build.model `
+        'llama-server/OLD-MODEL' "OpenCode retains case-distinct owner model"
 
     Set-Content -LiteralPath (Join-Path $openCodeInstall ".env") -Value @(
         "LLM_URL=http://127.0.0.1:11435"
