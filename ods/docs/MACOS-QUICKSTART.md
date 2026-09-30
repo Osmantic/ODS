@@ -30,7 +30,7 @@ command. The hosted installer and an unqualified clone select `main`, not the
 beta. Back up existing configuration and data before updating. The base
 installer intentionally stops on an existing native Pixel installation instead
 of overwriting protected runtime state. It is not a native Pixel upgrade path;
-use only a separately qualified native update procedure for that installation.
+use a separately qualified native update procedure when one is available.
 
 The installer will:
 
@@ -68,9 +68,10 @@ can change those selections.
 - **Open WebUI (when selected):** http://localhost:3000
 - **OpenCode (IDE, when selected):** http://localhost:3003
 
-The normal loopback-only install opens the Chat UI directly without an account.
-A network-bound or ODS proxy install keeps authentication enabled and prompts
-the first user to create the admin account.
+The normal loopback-only install opens Dashboard and Portal chat locally without
+an account. Network-bound or ODS proxy access requires Dashboard sign-in with
+the configured password or a one-time link from `ods dashboard-login`. Open
+WebUI, when selected, has its own sign-in.
 
 ---
 
@@ -82,7 +83,7 @@ macOS Host
   ├── Pixel gateway + managed host helpers (native)
   ├── OpenCode web IDE (optional native LaunchAgent)
   └── Docker Desktop
-        ├── Open WebUI (port 3000)
+        ├── Open WebUI (port 3000, when selected)
         ├── Dashboard (port 3001)
         ├── LiteLLM API Gateway (port 4000)
         ├── n8n Workflows (port 5678)
