@@ -560,6 +560,33 @@ def _prepare_setup(tmp_path, monkeypatch, home, *, installer_rc=0, fail_action=N
     return install, commands, progress, binary
 
 
+def test_default_agent_models_follow_ods_route_without_replacing_owner_models():
+    config = {
+        "agent": {
+            "build": {"model": "custom-cloud/owner-model", "temperature": 0.2},
+            "plan": {"temperature": 0.1},
+            "reviewer": {"model": "custom-cloud/review-model"},
+        },
+    }
+    _mod._opencode_set_default_agent_models(
+        config, "llama-server/old-model", "llama-server/ods/current",
+    )
+    assert config["agent"]["build"] == {
+        "model": "custom-cloud/owner-model", "temperature": 0.2,
+    }
+    assert config["agent"]["plan"] == {
+        "model": "llama-server/ods/current", "temperature": 0.1,
+    }
+    assert config["agent"]["reviewer"] == {"model": "custom-cloud/review-model"}
+
+    following = {"agent": {"build": {"model": "llama-server/old-model"}}}
+    _mod._opencode_set_default_agent_models(
+        following, "llama-server/old-model", "llama-server/new-model",
+    )
+    assert following["agent"]["build"]["model"] == "llama-server/new-model"
+    assert following["agent"]["plan"]["model"] == "llama-server/new-model"
+
+
 @pytest.mark.skipif(os.name == "nt", reason="systemd unit rendering requires POSIX paths")
 def test_setup_installs_configures_and_starts_the_managed_service(tmp_path, monkeypatch, _isolated):
     home = _isolated
@@ -573,6 +600,8 @@ def test_setup_installs_configures_and_starts_the_managed_service(tmp_path, monk
     assert "__" not in unit
     config = json.loads((home / ".config" / "opencode" / "opencode.json").read_text())
     assert config["model"] == "llama-server/ods/current"
+    assert config["agent"]["build"]["model"] == "llama-server/ods/current"
+    assert config["agent"]["plan"]["model"] == "llama-server/ods/current"
     provider = config["provider"]["llama-server"]
     assert provider["options"] == {"baseURL": "http://127.0.0.1:4000/v1", "apiKey": "sk-test-gateway"}
     assert provider["models"]["ods/current"]["limit"] == {"context": 32768, "output": 8192}
@@ -602,6 +631,8 @@ def test_setup_external_model_uses_authenticated_gateway(tmp_path, monkeypatch, 
 
     config = json.loads((home / ".config" / "opencode" / "opencode.json").read_text())
     assert config["model"] == "llama-server/remote-model"
+    assert config["agent"]["build"]["model"] == "llama-server/remote-model"
+    assert config["agent"]["plan"]["model"] == "llama-server/remote-model"
     provider = config["provider"]["llama-server"]
     assert provider["name"] == "External LLM via ODS gateway"
     assert provider["options"] == {

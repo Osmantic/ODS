@@ -17797,6 +17797,37 @@ def _opencode_output_limit(context_length: int) -> int:
     return min(32768, max(1, context_length // 4))
 
 
+def _opencode_set_default_agent_models(config: dict, previous_model_ref: object, model_ref: str) -> None:
+    """Give new sessions an ODS model without replacing an independent agent choice.
+
+    OpenCode's web composer resolves the selected agent before its root model.
+    The v1.18.32 web fallback can ignore a configured root model with a nested
+    model ID such as ``ods/current``. Keep the built-in agents on the managed
+    route while leaving an owner's different explicit agent model alone.
+    """
+    agents = config.get("agent")
+    if agents is None:
+        agents = {}
+        config["agent"] = agents
+    if not isinstance(agents, dict):
+        return
+    for name in ("build", "plan"):
+        agent = agents.get(name)
+        if agent is None:
+            agent = {}
+            agents[name] = agent
+        if not isinstance(agent, dict):
+            continue
+        selected = agent.get("model")
+        follows_previous_ods_route = (
+            isinstance(previous_model_ref, str)
+            and previous_model_ref.startswith("llama-server/")
+            and selected == previous_model_ref
+        )
+        if selected is None or follows_previous_ods_route:
+            agent["model"] = model_ref
+
+
 def _opencode_config_matches(
     config: object,
     provider_id: str,
@@ -17848,6 +17879,7 @@ def _update_opencode_config(
         config["model"] = model_ref
         config["small_model"] = model_ref
         config.setdefault("$schema", "https://opencode.ai/config.json")
+        _opencode_set_default_agent_models(config, previous_model_ref, model_ref)
 
         providers = config.setdefault("provider", {})
         if not isinstance(providers, dict):
