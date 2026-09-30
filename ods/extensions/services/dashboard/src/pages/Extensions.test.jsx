@@ -7,7 +7,7 @@ import Extensions from './Extensions' // eslint-disable-line no-unused-vars
  * Tests for the Extensions page rendering of unhealthy/installable derivations
  * (PR #1037 added the unhealthy poller + UI surface). Specifically asserts:
  *   - StatusBadge text for unhealthy
- *   - isToggleable (Extensions.jsx L626) — user-only across enabled/disabled/error/stopped/unhealthy
+ *   - isToggleable — user extensions and qualified optional built-ins only
  *   - showInstall   (Extensions.jsx L628) — not_installed && ext.installable
  *   - Check Logs CTA for unhealthy user extensions
  *
@@ -90,6 +90,30 @@ beforeEach(() => {
 afterEach(() => {
   vi.restoreAllMocks()
   vi.unstubAllGlobals()
+})
+
+it('offers Add for qualified bundled n8n while keeping other built-ins managed by ODS', async () => {
+  installFetchMock({agent_available:true,extensions:[
+    {id:'n8n',name:'n8n (Workflows)',source:'core',status:'disabled',library_manageable:true,library_selected:false,features:[baseFeature]},
+    {id:'hermes',name:'Hermes',source:'core',status:'disabled',features:[baseFeature]},
+    {id:'dashboard',name:'Dashboard',source:'core',status:'enabled',features:[baseFeature]},
+  ],summary:baseSummary({total:3})})
+  render(<Extensions compact />)
+  fireEvent.click(await screen.findByRole('button',{name:'Add n8n (Workflows)'}))
+  expect(screen.getByRole('dialog',{name:'Confirm action'})).toHaveTextContent('Enable n8n (Workflows)?')
+  expect(screen.queryByRole('button',{name:'Add Hermes'})).toBeNull()
+  expect(screen.queryByRole('button',{name:'Enable Hermes'})).toBeNull()
+  expect(screen.queryByRole('button',{name:'Disable Dashboard'})).toBeNull()
+})
+
+it('lets an errored bundled n8n be retried or disabled without a remove control', async () => {
+  installFetchMock({agent_available:true,extensions:[
+    {id:'n8n',name:'n8n (Workflows)',source:'core',status:'error',library_manageable:true,library_selected:true,features:[baseFeature]},
+  ],summary:baseSummary({total:1,error:1})})
+  render(<Extensions compact />)
+  expect(await screen.findByRole('button',{name:'Retry n8n (Workflows)'})).toBeVisible()
+  expect(screen.getByRole('button',{name:'Disable n8n (Workflows)'})).toBeVisible()
+  expect(screen.queryByRole('button',{name:'Remove n8n (Workflows)'})).toBeNull()
 })
 
 describe('Extensions page — unhealthy + install derivations', () => {

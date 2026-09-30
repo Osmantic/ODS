@@ -354,6 +354,14 @@ export default function Extensions({ compact = false }) {
       }
       const data = await res.json()
 
+      if (action === 'enable' && Array.isArray(data.failed_services)
+        && data.failed_services.includes(serviceId)) {
+        const ext = extensions.find(item => item.id === serviceId)
+        setToast({ type: 'error', text: `${ext?.name || serviceId} was selected but did not start. Inspect its error, then retry or disable it.` })
+        await fetchCatalog()
+        return
+      }
+
       if (action === 'install' || action === 'enable') {
         // Refresh catalog to show "installing" state, then let the
         // catalog-driven poller handle the rest (toast + final refresh)
@@ -793,11 +801,15 @@ function ExtensionCard({ ext, gpuBackend, agentAvailable, onDetails, onConsole, 
 
   const isCore = ext.source === 'core'
   const isUserExt = ext.source === 'user'
+  const isManagedBuiltin = isCore && ext.library_manageable === true
   const isError = status === 'error'
   const isStopped = status === 'stopped'
   const isUnhealthy = status === 'unhealthy'
   const isCliInstalled = status === 'cli_installed'
-  const isToggleable = isUserExt && (status === 'enabled' || status === 'cli_installed' || status === 'disabled' || status === 'error' || status === 'stopped' || status === 'unhealthy')
+  const isToggleable = (isUserExt || (isManagedBuiltin && ext.library_selected === true))
+    && (status === 'enabled' || status === 'cli_installed' || status === 'disabled' || status === 'error' || status === 'stopped' || status === 'unhealthy')
+  const showManagedAdd = isManagedBuiltin && ext.library_selected === false && status === 'disabled'
+  const showManagedRetry = isManagedBuiltin && ext.library_selected === true && (isError || isStopped || isUnhealthy)
   const showRemove = isUserExt && (status === 'disabled' || isError)
   const showInstall = status === 'not_installed' && ext.installable
   const showUpdate = isUserExt && ext.installable && (
@@ -825,7 +837,7 @@ function ExtensionCard({ ext, gpuBackend, agentAvailable, onDetails, onConsole, 
           </div>
           <div className="flex flex-wrap items-center justify-end gap-2">
             <LlmSwapBadge llm={ext.llm} />
-            {isCore ? (
+            {isCore && !isManagedBuiltin ? (
               <span
                 className="text-[10px] px-2 py-0.5 rounded-full bg-blue-500/10 text-blue-400 border border-blue-500/15 uppercase tracking-wider cursor-help"
                 title="Built-in service — managed by ODS"
@@ -901,6 +913,16 @@ function ExtensionCard({ ext, gpuBackend, agentAvailable, onDetails, onConsole, 
       {/* Card footer */}
       <div className="extension-actions flex flex-wrap items-center justify-between gap-2">
         <div className="flex flex-wrap gap-1.5">
+          {(showManagedAdd || showManagedRetry) && (
+            <button
+              disabled={actionDisabled}
+              title={disabledTitle || 'Existing service data and settings will be reused'}
+              onClick={() => onAction(ext, 'enable')}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.08em] rounded-lg bg-theme-accent text-white hover:bg-theme-accent-hover transition-colors disabled:opacity-50 shadow-sm shadow-theme-accent/20"
+            >
+              {isMutating ? <Loader2 size={12} className="animate-spin" /> : <><Download size={12} /> {showManagedAdd ? `Add ${ext.name}` : `Retry ${ext.name}`}</>}
+            </button>
+          )}
           {showInstall && (
             <button
               disabled={actionDisabled}
