@@ -436,6 +436,7 @@ def _read_manifest_file(path: Path) -> dict[str, Any]:
 
 def load_extension_manifests(
     manifest_dir: Path, gpu_backend: str,
+    *, only_service_ids: frozenset[str] | None = None,
 ) -> tuple[dict[str, dict[str, Any]], list[dict[str, Any]], list[dict[str, str]]]:
     """Load service and feature definitions from extension manifests.
 
@@ -455,6 +456,8 @@ def load_extension_manifests(
 
     manifest_files: list[Path] = []
     for item in sorted(manifest_dir.iterdir()):
+        if only_service_ids is not None and item.name not in only_service_ids:
+            continue
         if item.is_dir():
             for name in ("manifest.yaml", "manifest.yml", "manifest.json"):
                 candidate = item / name

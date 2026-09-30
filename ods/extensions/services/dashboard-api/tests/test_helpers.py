@@ -655,6 +655,7 @@ class TestGetAllServices:
 
     @pytest.mark.asyncio
     async def test_returns_all_statuses(self, monkeypatch):
+        monkeypatch.setattr("helpers.load_extension_manifests", lambda *args, **kwargs: ({}, [], []))
         fake_services = {
             "svc-a": {"name": "Service A", "port": 8001, "external_port": 8001, "health": "/health", "host": "localhost"},
             "svc-b": {"name": "Service B", "port": 8002, "external_port": 8002, "health": "/health", "host": "localhost"},
@@ -674,6 +675,7 @@ class TestGetAllServices:
 
     @pytest.mark.asyncio
     async def test_exception_in_one_service_returns_down(self, monkeypatch):
+        monkeypatch.setattr("helpers.load_extension_manifests", lambda *args, **kwargs: ({}, [], []))
         fake_services = {
             "ok-svc": {"name": "OK", "port": 8001, "external_port": 8001, "health": "/health", "host": "localhost"},
             "bad-svc": {"name": "Bad", "port": 8002, "external_port": 8002, "health": "/health", "host": "localhost"},
@@ -697,9 +699,36 @@ class TestGetAllServices:
 
     @pytest.mark.asyncio
     async def test_empty_services_returns_empty(self, monkeypatch):
+        monkeypatch.setattr("helpers.load_extension_manifests", lambda *args, **kwargs: ({}, [], []))
         monkeypatch.setattr("helpers.SERVICES", {})
         result = await get_all_services()
         assert result == []
+
+    @pytest.mark.asyncio
+    async def test_newly_selected_builtin_appears_then_disappears_without_restart(self, monkeypatch):
+        monkeypatch.setattr("helpers.SERVICES", {"dashboard": {
+            "name": "Dashboard", "host": "dashboard", "port": 3001,
+            "external_port": 3001, "health": "/",
+        }})
+        selected = False
+        n8n_config = {"name": "n8n", "host": "n8n", "port": 5678,
+                      "external_port": 5678, "health": "/healthz"}
+
+        def current_manifests(*args, **kwargs):
+            assert kwargs["only_service_ids"] == frozenset({"n8n"})
+            return ({"n8n": n8n_config} if selected else {}), [], []
+
+        async def fake_health(sid, cfg):
+            return ServiceStatus(id=sid, name=cfg["name"], port=cfg["port"],
+                                 external_port=cfg["external_port"], status="healthy")
+
+        monkeypatch.setattr("helpers.load_extension_manifests", current_manifests)
+        monkeypatch.setattr("helpers.check_service_health", fake_health)
+        assert {item.id for item in await get_all_services()} == {"dashboard"}
+        selected = True
+        assert {item.id for item in await get_all_services()} == {"dashboard", "n8n"}
+        selected = False
+        assert {item.id for item in await get_all_services()} == {"dashboard"}
 
 
 # --- get_llama_metrics ---

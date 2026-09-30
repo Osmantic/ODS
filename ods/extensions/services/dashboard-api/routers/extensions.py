@@ -373,6 +373,32 @@ def _is_one_shot_extension(ext: dict) -> bool:
     return ext.get("port") == 0 and ext.get("startup_check", False) is False
 
 
+_LIBRARY_QUALIFIED_BUILTINS = frozenset({"n8n"})
+
+
+def _qualified_builtin_selection(service_id: str) -> dict:
+    """Expose Add controls only for individually qualified built-in services."""
+    if service_id not in _LIBRARY_QUALIFIED_BUILTINS or service_id in ALWAYS_ON_SERVICES:
+        return {}
+    directory = EXTENSIONS_DIR / service_id
+    if directory.is_symlink() or not directory.is_dir():
+        return {}
+    enabled = directory / "compose.yaml"
+    disabled = directory / "compose.yaml.disabled"
+    try:
+        states = []
+        for path in (enabled, disabled):
+            try:
+                states.append(stat.S_ISREG(path.lstat().st_mode))
+            except FileNotFoundError:
+                states.append(False)
+    except OSError:
+        return {}
+    if states.count(True) != 1:
+        return {}
+    return {"library_manageable": True, "library_selected": states[0]}
+
+
 
 def _compute_extension_status(ext: dict, services_by_id: dict) -> str:
     """Compute the runtime status of an extension."""
@@ -408,6 +434,21 @@ def _compute_extension_status(ext: dict, services_by_id: dict) -> str:
                 svc = services_by_id.get(ext_id)
                 if not (svc and svc.status == "healthy"):
                     return "installing"
+
+    # The process imported SERVICES before a Library action could have
+    # activated this optional fragment. Use the current selection plus the
+    # polled health result so Add/Retry/Disable remain truthful without an API
+    # restart. Error/install progress above still takes precedence.
+    selection = _qualified_builtin_selection(ext_id)
+    if selection:
+        if not selection["library_selected"]:
+            return "disabled"
+        svc = services_by_id.get(ext_id)
+        if svc and svc.status == "healthy":
+            return "enabled"
+        if svc and svc.status in {"unhealthy", "degraded"}:
+            return "unhealthy"
+        return "stopped"
 
     # Core service loaded from manifests
     if ext_id in SERVICES:
@@ -1677,6 +1718,7 @@ async def extensions_catalog(
             "depends_on": ext.get("depends_on", []),
             "dependents": [],
             "dependency_status": {},
+            **_qualified_builtin_selection(ext_id),
             **update_state,
         }
         llm_contract = _llm_contract_for_extension(ext)
@@ -3112,6 +3154,7 @@ async def extension_detail(
         "error_message": error_message,
         "source": source,
         "installable": installable,
+        **_qualified_builtin_selection(service_id),
         "llm": llm_contract,
         "public_url": public_url,
         "integration": integration,

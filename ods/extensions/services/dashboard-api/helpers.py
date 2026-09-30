@@ -18,7 +18,10 @@ from typing import Optional
 import aiohttp
 import httpx
 
-from config import SERVICES, INSTALL_DIR, DATA_DIR, LLM_BACKEND, read_live_env_value
+from config import (
+    SERVICES, INSTALL_DIR, DATA_DIR, LLM_BACKEND, EXTENSIONS_DIR, GPU_BACKEND,
+    load_extension_manifests, read_live_env_value,
+)
 from env_values import parse_env_value
 from host_metrics import apple_host_metrics, linux_scope, windows_host_metrics
 from host_agent_client import AgentClientError, async_request_json as request_agent_json
@@ -1010,11 +1013,28 @@ async def get_all_services() -> list[ServiceStatus]:
     Uses ``return_exceptions=True`` so that one misbehaving service
     cannot take down the entire status response.
     """
-    tasks = [check_service_health(sid, cfg) for sid, cfg in SERVICES.items()]
+    # The API can stay up while Library actions rename an optional built-in's
+    # Compose fragment. Refresh only qualified later-add services here so an
+    # omitted service becomes visible after Add, and disappears after Disable,
+    # without changing the import-time registry or probing every omitted app.
+    service_configs = dict(SERVICES)
+    try:
+        current_optional, _, _ = await asyncio.to_thread(
+            load_extension_manifests, EXTENSIONS_DIR, GPU_BACKEND,
+            only_service_ids=frozenset({"n8n"}),
+        )
+    except OSError as exc:
+        logger.warning("Optional n8n manifest refresh failed: %s", exc)
+    else:
+        if "n8n" in current_optional:
+            service_configs.setdefault("n8n", current_optional["n8n"])
+        else:
+            service_configs.pop("n8n", None)
+    tasks = [check_service_health(sid, cfg) for sid, cfg in service_configs.items()]
     results = await asyncio.gather(*tasks, return_exceptions=True)
 
     statuses: list[ServiceStatus] = []
-    for (sid, cfg), result in zip(SERVICES.items(), results):
+    for (sid, cfg), result in zip(service_configs.items(), results):
         if isinstance(result, BaseException):
             logger.warning("Health check for %s raised %s: %s", sid, type(result).__name__, result)
             statuses.append(ServiceStatus(
@@ -1050,7 +1070,7 @@ async def get_all_services() -> list[ServiceStatus]:
 
     reconciled: list[ServiceStatus] = []
     for status in statuses:
-        config = SERVICES.get(status.id, {})
+        config = service_configs.get(status.id, {})
         item = by_service.get(status.id) or by_name.get(str(config.get("container_name") or ""))
         replacement = status.status
         if item and config.get("type", "docker") == "docker":
