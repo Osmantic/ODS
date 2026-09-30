@@ -27,8 +27,14 @@ async def get_agent_metrics_html(api_key: str = Depends(verify_api_key)):
 
     cluster_class = "status-ok" if cluster.get("failover_ready") else "status-warn"
     failover_text = "Ready \u2705" if cluster.get("failover_ready") else "Single GPU \u26a0\ufe0f"
-    last_update = agent.get("last_update", "")
-    last_update_time = last_update.split("T")[1][:8] if "T" in last_update else "N/A"
+    last_update = agent.get("last_update") or ""
+    if not isinstance(last_update, str):
+        last_update = str(last_update)
+    last_update_time = (
+        last_update.split("T")[1][:8]
+        if "T" in last_update and len(last_update.split("T")) > 1
+        else "N/A"
+    )
 
     # Escape all interpolated values for HTML safety
     def esc(value):
