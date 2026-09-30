@@ -23,7 +23,7 @@ jobs:
       - name: Checkout exact SearXNG Library candidate
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
-          ref: f6ae076c77a0d3422c2917bb4109b09f1a4c3dc6
+          ref: c36282fc227a05b8dd68b9859d8dff0d4b057a05
           path: product
       - name: Exercise SearXNG add-back on installed ODS
         env:
