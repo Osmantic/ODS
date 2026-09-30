@@ -2,10 +2,27 @@
 import hashlib
 import json
 import re
+import subprocess
+from project_storage import StorageAdmissionError
 
 SCRATCH_BYTES = 64 * 1024 * 1024
 CHECKS = ('node', 'npm', 'python', 'pip', 'venv', 'scratch')
 CODES = {'ready', 'missing', 'unavailable', 'incompatible', 'unsupported'}
+FAILURE_PHASES = {'configuration', 'authorization', 'storage-reservation', 'storage-create', 'execution', 'output-validation'}
+FAILURE_CODES = {'storage-recovery-required', 'storage-capacity-reserved', 'engine-headroom-insufficient',
+                 'operation-timeout', 'command-failed', 'host-io-error', 'invalid-evidence', 'authorization-revoked', 'probe-failed'}
+
+
+def diagnostic_failure(error, phase):
+    if phase not in FAILURE_PHASES:
+        raise ValueError('invalid diagnostic failure phase')
+    code = ('authorization-revoked' if isinstance(error, PermissionError) else
+            'operation-timeout' if isinstance(error, subprocess.TimeoutExpired) else
+            'command-failed' if isinstance(error, subprocess.SubprocessError) else
+            'host-io-error' if isinstance(error, OSError) else 'invalid-evidence')
+    if isinstance(error, StorageAdmissionError) and error.code in FAILURE_CODES:
+        code = error.code
+    return {'phase': phase, 'code': code}
 
 PYTHON_PROBE = r'''import json, pathlib, shutil, subprocess, tempfile, venv
 checks = {}
@@ -82,7 +99,7 @@ def validate_diagnostic(payload, runtime):
     return value
 
 
-def diagnostic_output(runtime, *, report=None, code='unavailable', cleanup='unconfirmed', scratch_bytes=SCRATCH_BYTES):
+def diagnostic_output(runtime, *, report=None, code='unavailable', cleanup='unconfirmed', scratch_bytes=SCRATCH_BYTES, failure=None):
     next_action = ({'code': 'recover-owned-job', 'tool': 'pixel_ods_project_build', 'action': 'cancel'}
                    if cleanup == 'unconfirmed' else
                    {'code': 'prepare-locked-project', 'tool': 'pixel_ods_project_build', 'action': 'submit',
@@ -91,8 +108,14 @@ def diagnostic_output(runtime, *, report=None, code='unavailable', cleanup='unco
                     'dependencyPolicy': 'exact-versions-and-wheel-sha256' if runtime == 'python' else 'matching-npm-lock',
                     'stages': ['acquire', 'test', 'build']}
                    if code == 'ready' else {'code': 'inspect-runtime-configuration', 'automaticInstall': False})
-    return {'schemaVersion': 1, 'kind': 'ods-project-diagnostic', 'scope': 'managed-executor',
+    result = {'schemaVersion': 1, 'kind': 'ods-project-diagnostic', 'scope': 'managed-executor',
             'runtime': runtime, 'code': code, 'checks': report['checks'] if report else {},
             'cleanup': cleanup, 'network': 'none', 'scratchLimitBytes': scratch_bytes,
             'nextAction': next_action,
             'chatSandboxVerified': False}
+    if failure is not None:
+        if (type(failure) is not dict or set(failure) != {'phase', 'code'}
+                or failure.get('phase') not in FAILURE_PHASES or failure.get('code') not in FAILURE_CODES):
+            raise ValueError('invalid diagnostic failure')
+        result['failure'] = failure
+    return result

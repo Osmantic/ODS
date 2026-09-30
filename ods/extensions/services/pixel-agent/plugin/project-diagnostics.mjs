@@ -1,6 +1,9 @@
 // Receipts describe the managed executor only, never the conversational sandbox.
 const CODES=new Set(['ready','missing','unavailable','incompatible','unsupported','denied']);
 const CHECKS=['node','npm','python','pip','venv','scratch'];
+const FAILURE_PHASES=new Set(['configuration','authorization','storage-reservation','storage-create','execution','output-validation']);
+const FAILURE_CODES=new Set(['storage-recovery-required','storage-capacity-reserved','engine-headroom-insufficient',
+  'operation-timeout','command-failed','host-io-error','invalid-evidence','authorization-revoked','probe-failed']);
 export function validateDiagnostic(value, runtime) {
   if (!value || value.schemaVersion!==1 || value.kind!=='ods-project-diagnostic' || value.scope!=='managed-executor'
       || !['npm','python'].includes(value.runtime) || (runtime && value.runtime!==runtime)
@@ -17,5 +20,8 @@ export function validateDiagnostic(value, runtime) {
             || !/^[\x20-\x7e]{1,96}$/.test(check.version)))) throw Error('invalid diagnostic check');
   }
   if(value.code==='ready' && keys.length!==CHECKS.length) throw Error('missing diagnostic evidence');
+  if(value.failure!==undefined && (!value.failure || Object.keys(value.failure).sort().join(',')!=='code,phase'
+      || !FAILURE_PHASES.has(value.failure.phase) || !FAILURE_CODES.has(value.failure.code)
+      || value.code==='ready')) throw Error('invalid diagnostic failure');
   return value;
 }

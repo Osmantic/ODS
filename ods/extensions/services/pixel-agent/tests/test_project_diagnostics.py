@@ -16,6 +16,7 @@ from project_controller import ProjectController
 from project_diagnostics import CHECKS, diagnostic_digest, validate_diagnostic
 from project_runtime import stage_arguments
 from project_jobs import ProjectJobs
+from project_storage import StorageAdmissionError
 
 
 def test_diagnostic_dispatch_is_typed_and_returns_a_separate_job_purpose():
@@ -150,6 +151,37 @@ def test_diagnostic_denial_never_queues_or_touches_workspace(tmp_path):
                 controller.diagnose('a' * 64, 'npm')
         queued.assert_not_called()
         snapshot.assert_not_called()
+    finally:
+        controller.close()
+
+
+@pytest.mark.parametrize('error,expected', [
+    (StorageAdmissionError('engine-headroom-insufficient', 'PRIVATE arbitrary detail'), 'engine-headroom-insufficient'),
+    (StorageAdmissionError('storage-recovery-required', 'PRIVATE'), 'storage-recovery-required'),
+    (StorageAdmissionError('storage-capacity-reserved', 'PRIVATE'), 'storage-capacity-reserved'),
+    (subprocess.TimeoutExpired(['docker', 'PRIVATE'], 10, output=b'PRIVATE'), 'operation-timeout'),
+    (subprocess.CalledProcessError(125, ['docker', 'PRIVATE'], stderr=b'PRIVATE'), 'command-failed'),
+    (ValueError('PRIVATE'), 'invalid-evidence'),
+])
+def test_failed_preflight_persists_bounded_cause_without_raw_output(tmp_path, error, expected):
+    controller = ProjectController(tmp_path, tmp_path / 'state', 'sha256:' + 'a' * 64, authorize=lambda *args: True)
+    request = {'project': 'ods-diagnostic', 'kind': 'diagnostic', 'runtime': 'npm',
+               'sourceSha256': diagnostic_digest('npm'), 'image': controller.image, 'outputDirectory': 'diagnostic'}
+    job, _ = controller.jobs.create('a' * 64, request)
+    try:
+        with patch('project_controller.ProjectStorage.reserve', side_effect=error), \
+                patch('project_controller.ProjectStorage.create_volume') as create, \
+                patch('project_controller.run_stage') as run:
+            controller._diagnose(job, request, threading.Event())
+        # Reopen the durable database: this must survive final receipt writing,
+        # rather than disappearing when controller_failure gets overwritten.
+        row = ProjectJobs(tmp_path / 'state').observe(job)
+        assert row['state'] == 'failed' and row['steps'] == []
+        assert row['output']['cleanup'] == 'not-started'
+        assert row['output']['failure'] == {'phase': 'storage-reservation', 'code': expected}
+        assert 'PRIVATE' not in json.dumps(row)
+        create.assert_not_called()
+        run.assert_not_called()
     finally:
         controller.close()
 

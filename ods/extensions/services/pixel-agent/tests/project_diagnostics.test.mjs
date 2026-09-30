@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {createProjectBuildTool,normalizeProjectBuild} from '../plugin/project-build.mjs';
 import {createProjectRunControl} from '../plugin/project-run-control.mjs';
 import {displayForActivity} from '../plugin/activity-display.mjs';
+import {validateDiagnostic} from '../plugin/project-diagnostics.mjs';
 
 const scope={agentId:'pixel',runId:'probe-run',sessionId:'probe-session',sessionKey:'owner-probe'};
 const params={action:'diagnose',runtime:'python'},name='pixel_ods_project_build';
@@ -74,4 +75,17 @@ test('lost or mismatched diagnostic submission cannot acknowledge Stop',async()=
     try {await request(normalizeProjectBuild(params),{});}catch{}
     assert.equal(await control.cancel(scope),false);
   }
+});
+
+test('bounded preflight cause survives tool projection and rejects arbitrary details',async()=>{
+  const evidence={...output,code:'unavailable',checks:{},cleanup:'not-started',
+    failure:{phase:'storage-reservation',code:'operation-timeout'}};
+  const result=await createProjectBuildTool({request:async()=>({...receipt('failed'),output:evidence})}).execute('probe',params);
+  assert.deepEqual(result.details.output.failure,evidence.failure);
+  assert.equal(result.details.status,'failed');
+  for(const failure of [null,{phase:'secret command',code:'operation-timeout'},
+    {phase:'storage-reservation',code:'raw stderr'}, {...evidence.failure,stderr:'private'}, 'private']) {
+    assert.throws(()=>validateDiagnostic({...evidence,failure}));
+  }
+  assert.throws(()=>validateDiagnostic({...output,failure:evidence.failure}));
 });

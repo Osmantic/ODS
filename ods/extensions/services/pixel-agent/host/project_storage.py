@@ -23,6 +23,13 @@ KEEPER_SECONDS = 1200
 MAX_INODES = 65536
 
 
+class StorageAdmissionError(ValueError):
+    """Closed diagnostic reason; never includes Docker output or paths."""
+    def __init__(self, code, message):
+        super().__init__(message)
+        self.code = code
+
+
 def validate_limits(job_bytes, total_bytes, max_jobs):
     if (type(job_bytes) is not int or not 32 * MIB <= job_bytes <= 4096 * MIB
             or type(total_bytes) is not int or not job_bytes <= total_bytes <= 8192 * MIB
@@ -151,16 +158,16 @@ class ProjectStorage:
             if job in value:
                 raise ValueError('project storage reservation already exists')
             if engine_storage_jobs() - value.keys():
-                raise ValueError('unaccounted project storage requires recovery')
+                raise StorageAdmissionError('storage-recovery-required', 'unaccounted project storage requires recovery')
             if len(value) >= self.max_jobs or sum(value.values()) + self.job_bytes > self.total_bytes:
-                raise ValueError('project storage capacity reserved; recover prior jobs first')
+                raise StorageAdmissionError('storage-capacity-reserved', 'project storage capacity reserved; recover prior jobs first')
             total, available = engine_headroom(image)
             # An orphaned stage can still grow to its cgroup maximum. Reserve
             # its worst case as well as tmpfs bytes; current usage alone is not
             # a promise that an older job will remain small.
             required = sum(value.values()) + self.job_bytes + (len(value) + 1) * (STAGE_MEMORY + HEADROOM)
             if required > total or required > available:
-                raise ValueError('insufficient verified engine memory headroom')
+                raise StorageAdmissionError('engine-headroom-insufficient', 'insufficient verified engine memory headroom')
             # Intent precedes Docker resources, so a crash cannot erase their budget.
             value[job] = self.job_bytes
             self._write(value)

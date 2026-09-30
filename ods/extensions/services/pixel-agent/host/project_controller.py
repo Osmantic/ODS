@@ -17,7 +17,7 @@ from project_runtime_protocol import select_project_runtime
 from project_capabilities import probe_python_runtime, cleanup_pending_probe, ProbeCleanupPending
 from project_storage import ProjectStorage, verify_volume
 from project_snapshot import snapshot_project
-from project_diagnostics import SCRATCH_BYTES, diagnostic_digest, diagnostic_output, validate_diagnostic
+from project_diagnostics import SCRATCH_BYTES, diagnostic_digest, diagnostic_output, validate_diagnostic, diagnostic_failure
 
 
 class ProjectController:
@@ -159,28 +159,39 @@ class ProjectController:
         storage = ProjectStorage(self.storage.state, job_bytes=min(self.storage.job_bytes, SCRATCH_BYTES),
                                  total_bytes=self.storage.total_bytes, max_jobs=self.storage.max_jobs)
         resources_started, report, code = False, None, 'unavailable'
+        phase, failure = 'configuration', None
         try:
             if image != (self.python_image if runtime == 'python' else self.image):
                 raise ValueError('job runtime no longer matches installed configuration')
+            phase = 'authorization'
             self._require(None, 'execute', request)
             if cancel.is_set():
                 self.jobs.controller_failure(job, 'cancelled before diagnostic execution', state='cancelled')
                 return
+            phase = 'storage-reservation'
             storage.reserve(image, job)
             resources_started = True
+            phase = 'storage-create'
             storage.create_volume(job)
+            phase = 'authorization'
             self._require(None, 'execute', request)
+            phase = 'execution'
             result = run_stage(image, job, 'diagnose', cancel=cancel, runtime=runtime, timeout=35)
             self.jobs.record_stage(job, 'diagnose', result)
             if result['status'] == 'succeeded' and not result.get('truncated', {}).get('stdout'):
+                phase = 'output-validation'
                 report = validate_diagnostic(result.get('stdout'), runtime)
                 required = ('python', 'pip', 'venv', 'scratch') if runtime == 'python' else ('node', 'npm', 'scratch')
                 codes = [report['checks'][name]['code'] for name in required]
                 code = next((value for value in ('missing', 'incompatible', 'unavailable', 'unsupported') if value in codes), 'ready')
-        except PermissionError:
+            else:
+                failure = {'phase': 'execution', 'code': 'probe-failed'}
+        except PermissionError as error:
             code = 'denied'
+            failure = diagnostic_failure(error, phase)
             self.jobs.controller_failure(job, 'diagnostic authorization revoked', state='unconfirmed' if resources_started else 'failed')
-        except (OSError, ValueError, TypeError, subprocess.SubprocessError):
+        except (OSError, ValueError, TypeError, subprocess.SubprocessError) as error:
+            failure = diagnostic_failure(error, phase)
             steps = self.jobs.observe(job)['steps']
             stopped = bool(steps and steps[-1]['status'] in ('succeeded', 'failed', 'cancelled', 'timed_out'))
             self.jobs.controller_failure(job, 'diagnostic execution unavailable', state='failed' if stopped or not resources_started else 'unconfirmed')
@@ -197,7 +208,7 @@ class ProjectController:
                     'Unconfirmed execution: bounded storage remains reserved.']
                 cleanup = 'unconfirmed' if warnings else 'confirmed'
             output = diagnostic_output(runtime, report=report, code=code, cleanup=cleanup,
-                                       scratch_bytes=storage.job_bytes)
+                                       scratch_bytes=storage.job_bytes, failure=failure)
             self.jobs.diagnostic_result(job, output)
             self.jobs.cleanup_warnings(job, warnings)
 
