@@ -78,6 +78,8 @@ if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; 
         -f docker-compose.gateway-only.yml)
     DOCKER_COMPOSE_CMD='docker compose'
     INSTALL_DIR="$ROOT" ods_compose_assert_no_webui "${flags[@]}"
+    PIXEL_INGRESS_GID='' INSTALL_DIR="$ROOT" \
+        ods_compose_assert_no_webui_before_pixel_identity "${flags[@]}"
     if COMPOSE_PROFILES=gateway-webui INSTALL_DIR="$ROOT" \
         ods_compose_assert_no_webui "${flags[@]}" 2>/dev/null; then
         echo 'FAIL: inherited gateway-webui profile bypassed the guard' >&2
