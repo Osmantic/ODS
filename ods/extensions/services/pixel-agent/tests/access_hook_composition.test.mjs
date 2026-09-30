@@ -37,6 +37,7 @@ function hooks(guardResult, managedRuntime = false) {
     },
     goalProgress: {before() {}, update() {}, finish() {}},
     bundleAdmission, managedRuntime, accessRuntime: runtime, withPixelCronDeliveryDefault,
+    delegationDelivery:{end(){},blocked(){},before(){},after(){}},
     withPixelSubagentWorkspace, resolveUserPath: value=>value,
     resolveAgentWorkspaceDir:config=>config?.agents?.list?.find(agent=>agent.id==='pixel')?.workspace,
     AGENT_ID: 'pixel',

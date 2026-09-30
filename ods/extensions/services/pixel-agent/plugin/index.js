@@ -3,6 +3,7 @@ import {registerBootstrapCapabilities} from './bootstrap-capabilities.mjs';
 import {registerStableRuntimeLine} from './runtime-line.mjs';
 import {createRuntimeIdentity} from './runtime-identity.mjs';
 import {fileURLToPath} from 'node:url';
+import {subagentDeliveryFor,delegationAccessIdentity} from './subagent-delivery.mjs';
 import {createActivityTool, ACTIVITY_CONTRACT} from './activity-display.mjs';
 import {previewRecoveryAllowed} from './preview-delivery-recovery.mjs';
 import {compactToolResultEnvelope} from './tool-result-envelope.mjs';
@@ -27,6 +28,7 @@ import {getSessionEntry, patchSessionEntry, resolveStorePath} from "openclaw/plu
 import {withSessionTranscriptWriteLock,appendAssistantMirrorMessageByIdentity} from 'openclaw/plugin-sdk/session-transcript-runtime';
 import {
   extractBasicHtmlContent,
+  extractAssistantVisibleText,
   fetchWithWebToolsNetworkGuard,
   readResponseText,
   resolveAgentWorkspaceDir,
@@ -340,6 +342,27 @@ export default definePluginEntry({
       createTools: createOpenClawCodingTools, resolveSandbox: resolveSandboxContext,
       execControl: () => execCancellationControl,
     });
+    const delegationDelivery = subagentDeliveryFor(toolLoopGuard, {
+      agentId:AGENT_ID,
+      finalText:extractAssistantVisibleText,
+      accessIdentity:() => {
+        const state=accessRuntime.status();
+        return delegationAccessIdentity(api.runtime?.config?.current?.() ?? api.config,state);
+      },
+      resolveOwnerSession:sessionKey => {
+        const config=api.runtime?.config?.current?.() ?? api.config;
+        return getSessionEntry({sessionKey,storePath:resolveStorePath(config?.session?.store,{agentId:AGENT_ID})});
+      },
+      verificationForRun:runId => toolLoopGuard.deliveryVerificationForRun(runId),
+      abortSession:async sessionKey => {
+        const sessionId=resolveActiveEmbeddedRunSessionId(sessionKey);
+        if (!sessionId) return true; // Native active-run registry reports no running harness.
+        await abortAndDrainAgentHarnessRun({sessionId,sessionKey,settleMs:4000,forceClear:false,reason:'ods_client_disconnect'});
+        return !resolveActiveEmbeddedRunSessionId(sessionKey);
+      },
+    });
+    api.on('subagent_spawned',(event,context)=>delegationDelivery.nativeSpawn(event,context));
+    api.on('gateway_stop',()=>delegationDelivery.invalidate());
     const executeBundle = createWorkspaceBundleService({runHelper: bundleExecution.runHelper,
       invalidatePreview: scope => toolLoopGuard.invalidateWorkspaceBundle(scope)});
     api.registerTool(onlyPixel(context => createWorkspaceBundleTool(context, {
@@ -355,6 +378,7 @@ export default definePluginEntry({
         ?? api.config?.agents?.defaults?.workspace;
       const executionHost = executionHostForAgent(api.config, AGENT_ID);
       toolLoopGuard.observeRun(context, AGENT_ID, event, { privateBrowserAccess, workspaceRoot, executionHost });
+      if (!accessRuntime.isProbe(context)) delegationDelivery.observe(event,context);
       const ownerEvent = toolLoopGuard.ownerIntentEventForRun(context?.runId ?? event?.runId, event);
       if (!accessRuntime.isProbe(context)) { goalProgress.begin(ownerEvent, context); taskActivity.begin(ownerEvent, context); }
       const contract = promptContractForAgent(context, AGENT_ID, ownerEvent, {
@@ -397,6 +421,7 @@ export default definePluginEntry({
       api.on("before_agent_run", (event, context) => accessRuntime.admit(undefined, context));
     }
     api.on("agent_end", (event, context) => {
+      delegationDelivery.end(event,context);
       toolLoopGuard.endPreviewRevalidation(event, context);
       toolLoopGuard.observeAgentEnd(event, context);
       if (!accessRuntime.isProbe(context)) { goalProgress.finish(event, context); taskActivity.finish(event, context); }
@@ -412,12 +437,14 @@ export default definePluginEntry({
       guard = withPixelSubagentWorkspace(guard, event, context, AGENT_ID, runtimeConfig,
         scope => getSessionEntry({...scope,
           storePath: resolveStorePath(runtimeConfig?.session?.store, {agentId: AGENT_ID})}), {resolveUserPath, resolveAgentWorkspaceDir});
-      const decision = guard?.block ? guard : goalProgress.before(event, context) ?? accessRuntime.beforeTool(event, context) ?? guard;
+      const decision = guard?.block ? guard : delegationDelivery.blocked(context) ?? goalProgress.before(event, context) ?? accessRuntime.beforeTool(event, context) ?? guard;
+      delegationDelivery.before(event,context,decision);
       bundleAdmission.before(event, context, decision);
       taskActivity.before(event, context, decision?.block === true);
       return decision;
     });
     api.on("after_tool_call", (event, context) => {
+      delegationDelivery.after(event,context);
       bundleAdmission.after(event, context);
       accessRuntime.afterTool(event, context);
       if (!accessRuntime.isProbe(context)) {
@@ -453,6 +480,7 @@ export default definePluginEntry({
           if (value.operation === "acquire") {
             result = managedRuntime ? await managedRuntime.acquireTransition(value.token, value.revision)
               : accessRuntime.acquire(value.token, value.revision);
+            delegationDelivery.invalidate();
           }
           else if (value.operation === "release") result = accessRuntime.release(value.token);
           else if (value.operation === "probe") {
@@ -508,9 +536,11 @@ export default definePluginEntry({
       await toolLoopGuard.verifyCitedPages(event, context, AGENT_ID);
       const guardDecision = toolLoopGuard.beforeAgentFinalize(event, context, AGENT_ID);
       const verification = toolLoopGuard.deliveryVerificationForRun(context?.runId ?? event?.runId);
-      return goalProgress.finalize(event, context, {guardDecision,
+      const decision = goalProgress.finalize(event, context, {guardDecision,
         allowed:toolLoopGuard.continuationAllowed(context?.runId ?? event?.runId),
         waiting:verification?.status === 'pending'});
+      delegationDelivery.finalize(event,context,decision);
+      return decision;
     });
     // Delivery rewriting is limited to host-authoritative failed or pending
     // verification state. It neither requests nor receives conversation data.
@@ -527,7 +557,9 @@ export default definePluginEntry({
           sendJson(res, parsed.status, { error: "invalid cancellation request" });
           return true;
         }
-        sendJson(res, 200, { aborted: await toolLoopGuard.abortUserRun(parsed.user) });
+        const delegated=await delegationDelivery.cancel(parsed.user);
+        const parentAborted=await toolLoopGuard.abortUserRun(parsed.user);
+        sendJson(res, 200, { aborted: delegated.tracked ? delegated.aborted : parentAborted });
         return true;
       },
     });
@@ -540,6 +572,22 @@ export default definePluginEntry({
         return true;
       },
     });
+    api.registerHttpRoute({path:'/pixel-ods/subagent-delivery',auth:'gateway',match:'exact',
+      handler:async (req,res) => {
+        if (req.method !== 'POST') {sendJson(res,405,{error:'invalid delivery request'});return true;}
+        try {
+          if (String(req.headers['content-type'] ?? '').split(';',1)[0].trim() !== 'application/json') throw Error();
+          const chunks=[];let bytes=0;
+          for await (const chunk of req) {bytes+=chunk.length;if(bytes>ABORT_BODY_LIMIT)throw Error();chunks.push(chunk);}
+          const value=JSON.parse(Buffer.concat(chunks).toString('utf8'));
+          if (!value || Object.keys(value).sort().join()!=='runId,user' || !OPENAI_RUN_ID.test(value.runId ?? '') || !/^ods-[a-f0-9]{64}$/.test(value.user ?? '')) throw Error();
+          const finalRun=delegationDelivery.finalRun(value.user,value.runId);
+          if (finalRun) await toolLoopGuard.settleDelivery(finalRun);
+          // Recheck cancellation/access/owner custody after asynchronous receipt settlement.
+          sendJson(res,200,delegationDelivery.read(value.user,value.runId));
+        } catch {sendJson(res,409,{error:'delegated delivery unavailable'});}
+        return true;
+      }});
     for (const operation of ['context','compact']) {
       api.registerHttpRoute({path:`/pixel-ods/${operation}`,auth:'gateway',match:'exact',
         handler:async (req,res) => {

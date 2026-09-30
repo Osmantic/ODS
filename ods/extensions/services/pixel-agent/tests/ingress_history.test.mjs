@@ -23,6 +23,7 @@ async function fixture(t) {
     if(req.url==='/pixel-ods/history') return res.end(JSON.stringify({schemaVersion:1,hydrated:true}));
     if(req.url==='/pixel-ods/compact') {native.status='ready';native.compaction={...native.compaction,status:'completed',requestId:body.request_id,count:native.compaction.count+1};return res.end(JSON.stringify(native));}
     if(req.url==='/pixel-ods/verification') return res.end(JSON.stringify({status:'none'}));
+    if(req.url==='/pixel-ods/subagent-delivery') return res.end(JSON.stringify({schemaVersion:1,kind:'ods-subagent-delivery',runId:body.runId,status:'not-delegated'}));
     if(req.url==='/v1/chat/completions') {if(chatFailure){res.statusCode=500;return res.end('{}')}return res.end(JSON.stringify({id:runId,choices:[{message:{role:'assistant',content:answer}}]}));}
     res.statusCode=404;res.end('{}');
   });

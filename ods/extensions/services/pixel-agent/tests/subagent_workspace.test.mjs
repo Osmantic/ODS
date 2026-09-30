@@ -29,6 +29,7 @@ function fixture(t) {
     api:{config,on:(name,callback)=>{callbacks[name]=callback;}},
     AGENT_ID:'pixel',toolLoopGuard:guard,accessRuntime:runtime,
     goalProgress:{before(){}},bundleAdmission:{before(){}},taskActivity:{before(){}},
+    delegationDelivery:{blocked(){},before(){}},
     withPixelCronDeliveryDefault,withPixelSubagentWorkspace,
     getSessionEntry:scope=>{assert.equal(scope.sessionKey,ctx.sessionKey);return session;},
     resolveStorePath:()=>'/fixture/session-store',

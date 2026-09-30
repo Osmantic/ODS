@@ -897,6 +897,42 @@ async function verificationForRun(runId, token, gatewayPort, signal, deps) {
   }
 }
 
+// A native sessions_yield response is an introduction, not the completed owner
+// answer. Keep this exact request open for its registered parent continuation.
+// Polling reads host receipts only; it never invokes the model or replays tools.
+async function awaitSubagentDelivery(completion, user, token, gatewayPort, signal, deps) {
+  const runId=completion?.id;
+  if (!OPENAI_RUN_ID.test(runId ?? '') || !/^ods-[a-f0-9]{64}$/.test(user ?? '')) throw new HttpError(502,'delegated delivery unavailable');
+  for (;;) {
+    if (signal.aborted) throw new HttpError(502,'delegated delivery interrupted');
+    const response=await deps.fetch(`http://127.0.0.1:${gatewayPort}/pixel-ods/subagent-delivery`,{
+      method:'POST',headers:{authorization:`Bearer ${token}`,'content-type':'application/json',accept:'application/json'},
+      body:JSON.stringify({user,runId}),redirect:'error',signal:AbortSignal.any([signal,AbortSignal.timeout(5000)]),
+    });
+    if (response.status !== 200 || !String(response.headers.get('content-type') ?? '').startsWith('application/json')) {
+      await drain(response.body);throw new HttpError(502,'delegated delivery unavailable');
+    }
+    const value=JSON.parse((await readBounded(response.body,MAX_VERIFICATION_RESPONSE)).toString('utf8'));
+    const keys=value && typeof value==='object' && !Array.isArray(value) ? Object.keys(value).sort().join() : '';
+    const baseKeys='kind,runId,schemaVersion,status';
+    if (value?.schemaVersion!==1 || value.kind!=='ods-subagent-delivery' || value.runId!==runId) throw new HttpError(502,'delegated delivery invalid');
+    if (value.status==='not-delegated' && keys===baseKeys) return {completion};
+    if (value.status==='ready' && keys==='kind,runId,schemaVersion,status,text,verification') {
+      if (typeof value.text!=='string' || !value.text.trim() || Buffer.byteLength(value.text)>256*1024
+          || /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(value.text)) throw new HttpError(502,'delegated delivery invalid');
+      const verification=parseVerificationResponse(value.verification,runId);
+      const {usage,...original}=completion; // Original introduction usage is not the continuation's token measurement.
+      return {completion:{...original,choices:[{index:0,message:{role:'assistant',content:value.text},finish_reason:'stop'}]},verification};
+    }
+    if (value.status!=='waiting' || keys!==baseKeys) throw new HttpError(502,'delegated delivery interrupted');
+    await new Promise(resolve=>{
+      const timer=deps.setTimeout(done,600);
+      function done() {deps.clearTimeout(timer);signal.removeEventListener('abort',done);resolve();}
+      signal.addEventListener('abort',done,{once:true});if(signal.aborted)done();
+    });
+  }
+}
+
 function missingVisibleAssistantText(content) {
   return typeof content === 'string' && (!content.trim() ||
     ['NO_REPLY', 'No response from OpenClaw.', EMPTY_ASSISTANT_RESPONSE].includes(content.trim()));
@@ -1273,8 +1309,11 @@ async function forwardChat(res, outgoing, token, gatewayPort, deps = defaultDeps
         completion = await maybeContinueUnfinishedExtensionDecision(completion, gatewayOutgoing, token,
           gatewayPort, controller.signal, deps);
         completionRunId = completion?.id;
+        deliveryStage = "subagent-delivery";
+        const delegated = await awaitSubagentDelivery(completion,outgoing.user,token,gatewayPort,controller.signal,deps);
+        completion = delegated.completion;
         deliveryStage = "verification";
-        const verification = deliveryVerification(completion, await verificationForRun(
+        const verification = deliveryVerification(completion, delegated.verification ?? await verificationForRun(
           completion?.id,
           token,
           gatewayPort,
@@ -1311,7 +1350,9 @@ async function forwardChat(res, outgoing, token, gatewayPort, deps = defaultDeps
       gatewayPort, controller.signal, deps);
     completion = await maybeContinueUnfinishedExtensionDecision(completion, gatewayOutgoing, token,
       gatewayPort, controller.signal, deps);
-    const verification = deliveryVerification(completion, await verificationForRun(
+    const delegated = await awaitSubagentDelivery(completion,outgoing.user,token,gatewayPort,controller.signal,deps);
+    completion = delegated.completion;
+    const verification = deliveryVerification(completion, delegated.verification ?? await verificationForRun(
       completion?.id,
       token,
       gatewayPort,
@@ -1830,7 +1871,10 @@ async function handleChat(req, res, token, gatewayPort, deps, historyLedger, his
   try {
     if(!parsed.history_snapshot && raw.length>MAX_BODY) throw new HistoryError('request-too-large',413);
     user=computeSessionUser(parsed);
-    const outgoing = buildOutgoing(parsed, user);
+    // Native anonymous requests already use a fresh session. Give that exact
+    // request an opaque identity so delegated delivery also has custody. This
+    // does not turn an anonymous history snapshot into a stable owner session.
+    const outgoing = buildOutgoing(parsed, user ?? (!parsed.history_snapshot ? `ods-${randomBytes(32).toString('hex')}` : undefined));
     if(historyLedger && user) release=historyLedger.lock(user);
     if(!parsed.history_snapshot) {await forwardChat(res,outgoing,token,gatewayPort,deps,{},activeGatewayTransports);return;}
     if(!historyLedger || !user) throw new HistoryError('history-storage-unavailable',503);

@@ -61,6 +61,13 @@ for (const wrapped of [false,true]) test(`native pending handoff: wrapped=${wrap
       result:{details:{tool:{id:'openclaw:pixel-ods:'+name,name,source:'openclaw',sourceName:'pixel-ods'},result}}}
       :{toolName:name,params:{},result};
     export default {id:'pending-fixture',register(api){
+      // This isolated fixture has no spawning tools; explicitly declare the
+      // nondelegated gateway contract used by the paired ingress.
+      api.registerHttpRoute({path:'/pixel-ods/subagent-delivery',auth:'gateway',match:'exact',handler:async(req,res)=>{
+        let body='';for await(const part of req)body+=part;
+        res.writeHead(200,{'Content-Type':'application/json'});
+        res.end(JSON.stringify({schemaVersion:1,kind:'ods-subagent-delivery',runId:JSON.parse(body).runId,status:'not-delegated'}));return true;
+      }});
       for (const [path,method] of [
         ['/pixel-ods/verification','deliveryVerificationForRun'],
         ['/pixel-ods/read-only-extension-continuation','readOnlyExtensionRecoveryForRun'],
