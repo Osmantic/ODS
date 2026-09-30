@@ -701,8 +701,12 @@ async def pixel_chat_cancel(body: ChatCancelRequest, owner: str = Depends(verify
         store = _chat_results()
         identity = (owner_namespace(owner), body.chat_id, body.request_id)
         row = _result_state(store, identity)
-        # A late Stop for a completed/unknown attempt must not stop a newer run.
-        if row is None or row["state"] not in {"active", "unresolved"}:
+        # Interrupted receipts still need native abort/idle confirmation. An
+        # old receipt must never cancel a successor in the same conversation.
+        if row is None or row["state"] not in {"active", "unresolved", "interrupted"}:
+            return {"aborted": False}
+        recovering_interrupted = row["state"] == "interrupted"
+        if recovering_interrupted and not store.is_latest(identity):
             return {"aborted": False}
         if identity[:2] in _result_stops:
             return {"aborted": False}
@@ -721,6 +725,8 @@ async def pixel_chat_cancel(body: ChatCancelRequest, owner: str = Depends(verify
                 entry = store.get(identity)
                 if entry is None or entry["state"] == "complete":
                     return {"aborted": False}
+                if recovering_interrupted:
+                    return {"aborted": store.confirm_interrupted_cancel(identity)}
                 store.finish(identity, "cancelled")
             return {"aborted": aborted}
         finally:
