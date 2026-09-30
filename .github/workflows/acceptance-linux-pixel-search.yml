@@ -1,0 +1,37 @@
+name: Acceptance Linux Pixel conditional search
+
+on:
+  push:
+    branches:
+      - codex/ods-pixel-search-live-audit
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pixel-search-live-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pixel-search-selection:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Checkout acceptance harness
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - name: Checkout exact conditional-search candidate
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          ref: 84429a578769c0da7290f66e78a4289a60bbc7f5
+          path: product
+      - name: Record exact source and runner capacity
+        run: |
+          test "$(git -C product rev-parse HEAD)" = 84429a578769c0da7290f66e78a4289a60bbc7f5
+          docker version
+          df -h / "$RUNNER_TEMP"
+          cat /proc/1/comm
+      - name: Exercise unselected and selected SearXNG on installed Pixel
+        env:
+          ODS_ACCEPTANCE_PRODUCT_ROOT: ${{ github.workspace }}/product/ods
+        run: bash ods/tests/acceptance/pixel-search-selection-journey.sh
