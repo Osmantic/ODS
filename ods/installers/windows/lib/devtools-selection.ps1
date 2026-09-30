@@ -28,7 +28,9 @@ function Test-ODSWindowsOpenCodeTaskOwned {
     if ($actions.Count -ne 1 -or $null -eq $actions[0]) { return $false }
     $action = $actions[0]
     $expectedArguments = '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "' + $ExpectedLauncher + '"'
-    $expectedDirectory = Split-Path -Parent $ExpectedLauncher
+    # Tests execute on Linux pwsh too; Split-Path there does not recognize a
+    # Windows backslash path. The installed launcher is always a Windows path.
+    $expectedDirectory = $ExpectedLauncher -replace '[\\/][^\\/]+$', ''
     return (([string]$action.Execute) -ieq 'powershell.exe' -and
         ([string]$action.Arguments) -ieq $expectedArguments -and
         ([string]$action.WorkingDirectory) -ieq $expectedDirectory)
