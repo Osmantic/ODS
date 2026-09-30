@@ -22,6 +22,28 @@ trap cleanup EXIT
 
 fail() {
     printf 'FAIL: %s\n' "$*" >&2
+    if [[ -f "$root/hermes-enable.json" ]]; then
+        printf 'Hermes diagnostic (private values redacted):\n' >&2
+        for source in "$INSTALL_DIR/data/extension-progress/hermes.json"; do
+            if [[ -f "$source" ]]; then
+                python3 - "$source" "$key_file" <<'PY' >&2 || true
+import json
+import sys
+from pathlib import Path
+key = Path(sys.argv[2]).read_text(encoding="ascii").strip()
+data = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+print(json.dumps({name: str(data.get(name, "")).replace(key, "[redacted]")
+                  for name in ("status", "message", "error")}, sort_keys=True))
+PY
+            fi
+        done
+        journalctl -u ods-host-agent.service --since '4 minutes ago' --no-pager 2>/dev/null \
+            | grep -Ei 'hermes|compose.*fail|extension.*start' | tail -n 15 \
+            | python3 -c 'import sys; from pathlib import Path; key=Path(sys.argv[1]).read_text().strip(); print(sys.stdin.read().replace(key,"[redacted]"))' "$key_file" >&2 || true
+        docker logs ods-dashboard-api --tail 100 2>&1 \
+            | grep -Ei 'hermes|Host agent unreachable' | tail -n 15 \
+            | python3 -c 'import sys; from pathlib import Path; key=Path(sys.argv[1]).read_text().strip(); print(sys.stdin.read().replace(key,"[redacted]"))' "$key_file" >&2 || true
+    fi
     docker ps --format '{{.Names}} {{.Status}}' >&2 || true
     exit 1
 }
@@ -48,7 +70,7 @@ wait_hermes() {
     return 1
 }
 
-[[ "$(git -C "$product" rev-parse HEAD)" == 3c2746e9792ab66ce5fe60f360115870c5051025 ]] \
+[[ "$(git -C "$product" rev-parse HEAD)" == a4b0d4701d0508d1c54adec2333d17d5340000be ]] \
     || fail 'wrong product checkout'
 command -v docker >/dev/null || fail 'Docker CLI missing'
 docker info >/dev/null || fail 'isolated Docker Engine unavailable'
