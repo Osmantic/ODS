@@ -859,6 +859,33 @@ if (model.get("id") != "ods/current" or model.get("name") != expected_name
 PY
 }
 
+_ods_pixel_search_provider_matches_contract() {
+    local owner="$1" home="$2" answers="$3" live
+    live="$home/.openclaw/openclaw.json"
+    ods_pixel_run_as_owner "$owner" "$home" python3 - "$live" "$answers" <<'PY'
+import json, os, pathlib, stat, sys
+
+documents = []
+for raw in sys.argv[1:]:
+    path = pathlib.Path(raw)
+    info = path.lstat()
+    if (not stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode)
+            or info.st_nlink != 1 or info.st_uid != os.getuid()
+            or info.st_mode & 0o077 or info.st_size > 2 * 1024 * 1024):
+        raise SystemExit(1)
+    value = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(value, dict):
+        raise SystemExit(1)
+    documents.append(value)
+live, contract = documents
+selected = contract.get("webSearchProvider", "searxng")
+active = live.get("tools", {}).get("web", {}).get("search", {}).get("provider")
+if selected not in {"searxng", "parallel-free"} or active not in {"searxng", "parallel-free"}:
+    raise SystemExit(1)
+raise SystemExit(0 if selected == active else 1)
+PY
+}
+
 _ods_pixel_stage_stable_alias_candidate() {
     local owner="$1" home="$2" answers="$3" live
     live="$home/.openclaw/openclaw.json"
@@ -1263,11 +1290,11 @@ PY
 _ods_pixel_candidate_is_managed_runtime_update() {
     local owner="$1" home="$2" candidate="$3" answers="$4" live
     live="$home/.openclaw/openclaw.json"
-    ods_pixel_run_as_owner "$owner" "$home" python3 - "$live" "$candidate" "$answers" <<'PY'
+    ods_pixel_run_as_owner "$owner" "$home" python3 - "$live" "$candidate" "$answers" "${INSTALL_DIR:?}" <<'PY'
 import copy, json, os, pathlib, re, stat, sys
 
 values = []
-for raw in sys.argv[1:]:
+for raw in sys.argv[1:4]:
     path = pathlib.Path(raw)
     info = path.lstat()
     if (not stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode) or info.st_nlink != 1
@@ -1649,6 +1676,88 @@ else:
         normalized_agent_params.pop(key, None)
 if not normalized_agent_params:
     normalized_agent.pop("params", None)
+selected_search = contract.get("webSearchProvider")
+if selected_search is not None:
+    if selected_search not in {"searxng", "parallel-free"}:
+        raise SystemExit("invalid selected Pixel search provider")
+    live_search = live.get("tools", {}).get("web", {}).get("search")
+    candidate_search = candidate.get("tools", {}).get("web", {}).get("search")
+    if candidate_search != {"provider": selected_search}:
+        raise SystemExit("candidate search provider differs from onboarding")
+    if live_search != candidate_search:
+        if live_search not in ({"provider": "searxng"}, {"provider": "parallel-free"}):
+            raise SystemExit("live search provider is outside the ODS contract")
+        extensions = contract.get("gatewayExtensions")
+        if not isinstance(extensions, list):
+            raise SystemExit("invalid search extension contract")
+        parallel = [item for item in extensions if isinstance(item, dict) and item.get("id") == "parallel"]
+        parallel_path = str(pathlib.Path(sys.argv[4]) / "data/pixel/native-search/parallel-2026.6.33")
+        if selected_search == "parallel-free":
+            if (len(parallel) != 1 or parallel[0].get("path") != parallel_path
+                    or not isinstance(parallel[0].get("sha256"), str)
+                    or not re.fullmatch(r"[0-9a-f]{64}", parallel[0]["sha256"])):
+                raise SystemExit("parallel search extension is not bound to its pinned path and digest")
+        elif parallel:
+            raise SystemExit("SearXNG selection unexpectedly includes the parallel extension")
+        elif (not isinstance(contract.get("searxngBaseUrl"), str)
+                or not re.fullmatch(r"http://127\.0\.0\.1:[1-9][0-9]{0,4}", contract["searxngBaseUrl"])
+                or int(contract["searxngBaseUrl"].rsplit(":", 1)[1]) > 65535):
+            raise SystemExit("SearXNG selection lacks a loopback search origin")
+
+        def without_search(values):
+            if (not isinstance(values, list)
+                    or any(not isinstance(item, str) for item in values)
+                    or len(values) != len(set(values))):
+                raise SystemExit("invalid search plugin list")
+            return [item for item in values if item not in {"parallel", "searxng"}]
+
+        before_allow = normalized_plugins.get("allow")
+        after_allow = candidate.get("plugins", {}).get("allow")
+        if without_search(before_allow) != without_search(after_allow):
+            raise SystemExit("candidate changes unrelated plugin allowlist")
+        expected_plugin = "parallel" if selected_search == "parallel-free" else "searxng"
+        if ([item for item in after_allow if item in {"parallel", "searxng"}]
+                != [expected_plugin]):
+            raise SystemExit("candidate search plugin allowlist is invalid")
+
+        candidate_entries = candidate.get("plugins", {}).get("entries")
+        if not isinstance(candidate_entries, dict):
+            raise SystemExit("invalid candidate plugin entries")
+        for plugin_id in ("parallel", "searxng"):
+            normalized_plugin_entries.pop(plugin_id, None)
+        unrelated_entries = {key: value for key, value in candidate_entries.items()
+                             if key not in {"parallel", "searxng"}}
+        if normalized_plugin_entries != unrelated_entries:
+            raise SystemExit("candidate changes unrelated plugin entries")
+        if selected_search == "parallel-free":
+            if candidate_entries.get("parallel") != {"enabled": True} or "searxng" in candidate_entries:
+                raise SystemExit("candidate parallel plugin registration is invalid")
+        else:
+            expected_entry = {"enabled": True, "config": {"webSearch": {
+                "baseUrl": contract.get("searxngBaseUrl")}}}
+            if (candidate_entries.get("searxng") != expected_entry
+                    or "parallel" in candidate_entries):
+                raise SystemExit("candidate SearXNG plugin registration is invalid")
+
+        before_load = normalized_plugins.get("load")
+        after_load = candidate.get("plugins", {}).get("load")
+        if not isinstance(before_load, dict) or not isinstance(after_load, dict):
+            raise SystemExit("invalid search plugin load policy")
+        before_paths, after_paths = before_load.get("paths"), after_load.get("paths")
+        if (not isinstance(before_paths, list) or not isinstance(after_paths, list)
+                or any(not isinstance(item, str) for item in before_paths + after_paths)
+                or len(before_paths) != len(set(before_paths))
+                or len(after_paths) != len(set(after_paths))
+                or [path for path in before_paths if path != parallel_path]
+                != [path for path in after_paths if path != parallel_path]):
+            raise SystemExit("candidate changes unrelated plugin load paths")
+        if (parallel_path in after_paths) != (selected_search == "parallel-free"):
+            raise SystemExit("candidate search plugin path selection is invalid")
+
+        normalized_web["search"] = copy.deepcopy(candidate_search)
+        normalized_plugins["allow"] = copy.deepcopy(after_allow)
+        normalized_plugin_entries[expected_plugin] = copy.deepcopy(candidate_entries[expected_plugin])
+        normalized_plugins["load"]["paths"] = copy.deepcopy(after_paths)
 if normalized != candidate:
     raise SystemExit("candidate changes more than the ODS managed model/runtime fields")
 PY
@@ -2143,7 +2252,12 @@ ods_pixel_reconcile_promoted_model() {
                 fi
             fi
         fi
-        stable_alias=true
+        # The stable-alias shortcut copies the live config and only changes
+        # model fields. A new search choice needs the same-source renderer so
+        # its selected plugin registration can be validated and applied.
+        if _ods_pixel_search_provider_matches_contract "$owner" "$home" "$answers"; then
+            stable_alias=true
+        fi
     fi
 
     backup="$(_ods_pixel_model_reconciliation_snapshot "$owner" "$home" "$answers")" || return 1

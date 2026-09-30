@@ -2472,6 +2472,76 @@ check _ods_pixel_candidate_is_managed_runtime_update "$owner" "$reconcile_home" 
 cp "$reconcile_config" "$TEST_ROOT/pre-gateway-alias-config.json"
 cp "$gateway_candidate" "$reconcile_config"
 chmod 0600 "$reconcile_config"
+search_parallel_live="$TEST_ROOT/search-parallel-live.json"
+search_searx_candidate="$TEST_ROOT/search-searx-candidate.json"
+search_parallel_answers="$TEST_ROOT/search-parallel-answers.json"
+search_searx_answers="$TEST_ROOT/search-searx-answers.json"
+python3 - "$gateway_candidate" "$gateway_answers" "$INSTALL_DIR" \
+    "$search_parallel_live" "$search_searx_candidate" \
+    "$search_parallel_answers" "$search_searx_answers" <<'PY'
+import copy, json, pathlib, sys
+
+source, contract_source, install_root, parallel_file, searx_file, parallel_answers, searx_answers = map(pathlib.Path, sys.argv[1:])
+parallel_path = str(install_root / "data/pixel/native-search/parallel-2026.6.33")
+base = json.loads(source.read_text(encoding="utf-8"))
+contract = json.loads(contract_source.read_text(encoding="utf-8"))
+parallel = copy.deepcopy(base)
+parallel.setdefault("tools", {}).setdefault("web", {})["search"] = {"provider": "parallel-free"}
+plugins = parallel.setdefault("plugins", {})
+plugins["allow"] = ["pixel-ods", "parallel", "llama-cpp"]
+plugins.setdefault("entries", {}).pop("searxng", None)
+plugins["entries"]["parallel"] = {"enabled": True}
+plugins["load"] = {"paths": ["/opt/ods/pixel-ods", parallel_path]}
+searx = copy.deepcopy(parallel)
+searx["tools"]["web"]["search"] = {"provider": "searxng"}
+searx["plugins"]["allow"] = ["pixel-ods", "searxng", "llama-cpp"]
+searx["plugins"]["entries"].pop("parallel")
+searx["plugins"]["entries"]["searxng"] = {
+    "enabled": True, "config": {"webSearch": {"baseUrl": "http://127.0.0.1:8888"}}}
+searx["plugins"]["load"]["paths"] = ["/opt/ods/pixel-ods"]
+bound = [item for item in contract["gatewayExtensions"] if item["id"] != "parallel"]
+parallel_contract = dict(contract, webSearchProvider="parallel-free",
+                         gatewayExtensions=bound + [{"id": "parallel", "path": parallel_path,
+                                                     "sha256": "b" * 64}])
+searx_contract = dict(contract, webSearchProvider="searxng",
+                      searxngBaseUrl="http://127.0.0.1:8888", gatewayExtensions=bound)
+for path, value in ((parallel_file, parallel), (searx_file, searx),
+                    (parallel_answers, parallel_contract), (searx_answers, searx_contract)):
+    path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    path.chmod(0o600)
+PY
+cp "$search_parallel_live" "$reconcile_config"
+chmod 0600 "$reconcile_config"
+check _ods_pixel_search_provider_matches_contract "$owner" "$reconcile_home" "$search_parallel_answers"
+if _ods_pixel_search_provider_matches_contract "$owner" "$reconcile_home" "$search_searx_answers" >/dev/null 2>&1; then
+    fail "changed Pixel search provider skipped the model-only shortcut"
+else
+    pass "changed Pixel search provider requires rendered reconciliation"
+fi
+check _ods_pixel_candidate_is_managed_runtime_update "$owner" "$reconcile_home" \
+    "$search_searx_candidate" "$search_searx_answers"
+cp "$search_searx_candidate" "$TEST_ROOT/search-searx-clean.json"
+python3 - "$search_searx_candidate" <<'PY'
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+value = json.loads(path.read_text(encoding="utf-8"))
+value["gateway"]["bind"] = "lan"
+path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+PY
+if _ods_pixel_candidate_is_managed_runtime_update "$owner" "$reconcile_home" \
+    "$search_searx_candidate" "$search_searx_answers" >/dev/null 2>&1; then
+    fail "search change allowed an unrelated gateway bind change"
+else
+    pass "search change rejects unrelated Pixel configuration drift"
+fi
+cp "$TEST_ROOT/search-searx-clean.json" "$search_searx_candidate"
+cp "$search_searx_candidate" "$reconcile_config"
+chmod 0600 "$reconcile_config"
+check _ods_pixel_search_provider_matches_contract "$owner" "$reconcile_home" "$search_searx_answers"
+check _ods_pixel_candidate_is_managed_runtime_update "$owner" "$reconcile_home" \
+    "$search_parallel_live" "$search_parallel_answers"
+cp "$gateway_candidate" "$reconcile_config"
+chmod 0600 "$reconcile_config"
 check _ods_pixel_uses_stable_model_alias "$owner" "$reconcile_home" "$gateway_answers"
 check _ods_pixel_stable_alias_matches_promoted_model "$owner" "$reconcile_home" \
     "$gateway_answers" qwen-gateway 65536 4096 false
