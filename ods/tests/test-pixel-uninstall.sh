@@ -172,13 +172,24 @@ assert hook in phase
 assert phase.index(hook) < phase.index('_phase06_step "copy-source"')
 assert '_ods_pixel_source_transition_required' in phase
 assert '_phase06_step "rebind-pixel-source"' in phase
-assert 'ods_pixel_uninstall_managed "$INSTALL_DIR" "$_phase06_pixel_home" source-transition' in phase
+assert 'ods_pixel_uninstall_managed "$INSTALL_DIR" "$_phase06_pixel_home" source-transition' not in phase
+upgrade_steps = [
+    '_ods_pixel_source_upgrade stage "$_phase06_pixel_owner"',
+    '_ods_pixel_install_access_service "$_phase06_pixel_owner"',
+    '_ods_pixel_source_upgrade hold "$_phase06_pixel_owner"',
+    '_ods_pixel_source_upgrade copy "$_phase06_pixel_owner"',
+    '_ods_pixel_source_upgrade downstream "$_phase06_pixel_owner"',
+    '_phase06_step "copy-source"',
+]
+positions = [phase.index(step) for step in upgrade_steps]
+assert positions == sorted(positions)
+assert 'export ODS_PIXEL_SOURCE_TRANSACTION' in phase
 assert phase.index('_phase06_step "rebind-pixel-source"') < phase.index('_phase06_step "copy-source"')
 PY
 then
-    pass "Pixel reruns retire disabled or superseded managed host runtimes before source replacement"
+    pass "Pixel reruns deactivate disabled runtimes and hold source upgrades before replacement"
 else
-    fail "Pixel rerun does not safely deactivate managed host runtime before source replacement"
+    fail "Pixel rerun does not safely deactivate or hold managed runtime before source replacement"
 fi
 
 if python3 - "$ROOT_DIR/lib/pixel-uninstall.sh" <<'PY'
