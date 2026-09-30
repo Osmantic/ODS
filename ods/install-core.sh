@@ -25,7 +25,7 @@ cleanup_on_error() {
     local exit_code=$?
     echo ""
     echo -e "${RED:-}[ERROR] Installation failed during phase: ${INSTALL_PHASE}${NC:-}"
-    echo -e "${AMB:-}        Log file: ${LOG_FILE:-/tmp/ods-install.log}${NC:-}"
+    echo -e "${AMB:-}        Log file: ${LOG_FILE:-${HOME:-/tmp}/.ods-install.log}${NC:-}"
     echo ""
     echo "The install did not complete. Partial state may exist at:"
     echo "  ${INSTALL_DIR:-~/ods}"
@@ -54,7 +54,7 @@ interrupt_handler() {
         if declare -F cancel_active_download >/dev/null 2>&1; then
             cancel_active_download
         fi
-        echo -e "${GRN:-}    Log file: ${LOG_FILE:-/tmp/ods-install.log}${NC:-}"
+        echo -e "${GRN:-}    Log file: ${LOG_FILE:-${HOME:-/tmp}/.ods-install.log}${NC:-}"
         exit 130
     fi
     LAST_SIGINT=$now

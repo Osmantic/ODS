@@ -36,6 +36,28 @@ pass 'validator errors retain keys and line numbers without raw values'
 
 source "$ROOT_DIR/installers/lib/secure-log.sh"
 
+mkdir "$TMP_DIR/home"
+printf 'another user log must remain untouched\n' >"$TMP_DIR/ods-install.log"
+env -u LOG_FILE HOME="$TMP_DIR/home" TMPDIR="$TMP_DIR" bash -c '
+    source "$1/installers/lib/constants.sh"
+    source "$1/installers/lib/secure-log.sh"
+    [[ "$LOG_FILE" == "$HOME/.ods-install.log" ]] || exit 1
+    ods_prepare_install_log "$LOG_FILE" || exit 1
+    [[ -f "$LOG_FILE" && -O "$LOG_FILE" ]] || exit 1
+' _ "$ROOT_DIR" || fail 'default log is not prepared in the installing user home'
+[[ "$(stat -c '%a' "$TMP_DIR/home/.ods-install.log")" == 600 ]] || fail 'default log is not private'
+[[ "$(cat "$TMP_DIR/ods-install.log")" == 'another user log must remain untouched' ]] || fail 'shared legacy log was changed'
+pass 'default log avoids a shared /tmp path and remains private'
+
+LOG_FILE="$TMP_DIR/override.log" HOME="$TMP_DIR/home" bash -c '
+    source "$1/installers/lib/constants.sh"
+    source "$1/installers/lib/secure-log.sh"
+    [[ "$LOG_FILE" == "$2" ]] || exit 1
+    ods_prepare_install_log "$LOG_FILE"
+' _ "$ROOT_DIR" "$TMP_DIR/override.log" || fail 'explicit LOG_FILE override was not honored'
+[[ "$(stat -c '%a' "$TMP_DIR/override.log")" == 600 ]] || fail 'explicit log is not private'
+pass 'explicit LOG_FILE override is retained'
+
 LOG_FILE="$TMP_DIR/help.log" bash "$ROOT_DIR/install.sh" --help \
     >"$TMP_DIR/help.out" 2>&1 || fail '--help failed'
 [[ ! -e "$TMP_DIR/help.log" ]] || fail '--help created an installer log'

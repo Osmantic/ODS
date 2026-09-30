@@ -26,7 +26,9 @@ else
     INSTALL_DIR="${INSTALL_DIR:-$HOME/ods}"
 fi
 
-LOG_FILE="${LOG_FILE:-${TMPDIR:-/tmp}/ods-install.log}"
+# Keep the default diagnostic log within the installing user's own home.
+# A shared /tmp filename can belong to another user on multi-user hosts.
+LOG_FILE="${LOG_FILE:-$HOME/.ods-install.log}"
 CAPABILITY_PROFILE_FILE="${CAPABILITY_PROFILE_FILE:-${TMPDIR:-/tmp}/ods-capabilities.json}"
 PREFLIGHT_REPORT_FILE="${PREFLIGHT_REPORT_FILE:-${TMPDIR:-/tmp}/ods-preflight-report.json}"
 INSTALL_START_EPOCH=$(date +%s)
