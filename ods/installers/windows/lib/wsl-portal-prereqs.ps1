@@ -92,7 +92,17 @@ function Assert-ODSPortalHostCapacity([bool]$WslReady) {
 # --------------------------------------------------------------- Docker Desktop
 
 function Get-ODSPortalDockerDesktop {
-    $root = Join-Path $env:ProgramFiles 'Docker\Docker'
+    # Preserve the all-users preference, then recognize Docker's documented
+    # per-user WSL 2 installation without requesting a second installation.
+    $roots = @((Join-Path $env:ProgramFiles 'Docker\Docker'),
+        (Join-Path $env:LOCALAPPDATA 'Programs\DockerDesktop'))
+    $root = $roots[0]
+    foreach ($candidate in $roots) {
+        if (Test-Path -LiteralPath (Join-Path $candidate 'Docker Desktop.exe')) {
+            $root = $candidate
+            break
+        }
+    }
     $exe = Join-Path $root 'Docker Desktop.exe'
     $cli = Join-Path $root 'resources\bin\docker.exe'
     return [pscustomobject]@{ Installed = (Test-Path -LiteralPath $exe); Exe = $exe; Cli = $cli }

@@ -32,6 +32,48 @@ Check ($text -notmatch 'DryRun' -and $text -notmatch '-Rag' -and $text -notmatch
 $installDir = $call.CommandElements | Where-Object { $_ -is [System.Management.Automation.Language.StringConstantExpressionAst] -and $_.Value -like '/home/*' }
 Check ($installDir.Value -eq "/home/o'brien/ods `$(x)" -and $installDir.StringConstantType -eq 'SingleQuoted') 'resume values are single-quoted literals'
 
+# Both documented Docker installation modes must reach the same setup path.
+$originalProgramFiles = $env:ProgramFiles
+$originalLocalAppData = $env:LOCALAPPDATA
+try {
+    $env:ProgramFiles = Join-Path ([IO.Path]::GetTempPath()) 'ODS Program Files fixture'
+    $env:LOCALAPPDATA = Join-Path ([IO.Path]::GetTempPath()) 'ODS Local AppData fixture'
+    & {
+        . (Join-Path $PSScriptRoot '../../installers/windows/lib/wsl-portal-setup.ps1')
+        $allUsers = Join-Path $env:ProgramFiles 'Docker/Docker'
+        $perUser = Join-Path $env:LOCALAPPDATA 'Programs/DockerDesktop'
+        function Test-Path { param([string]$LiteralPath)
+            return $LiteralPath -in $script:dockerFiles
+        }
+        foreach ($case in @(
+            @{ roots=@($perUser); expected=$perUser; name='per-user' },
+            @{ roots=@($allUsers); expected=$allUsers; name='all-users' },
+            @{ roots=@($allUsers,$perUser); expected=$allUsers; name='both locations' },
+            @{ roots=@(); expected=$allUsers; name='missing' })) {
+            $script:dockerFiles = @($case.roots | ForEach-Object { Join-Path $_ 'Docker Desktop.exe' })
+            $desktop = Get-ODSPortalDockerDesktop
+            Check ($desktop.Installed -eq ($case.roots.Count -gt 0)) "detects Docker state for $($case.name)"
+            Check ($desktop.Exe -eq (Join-Path $case.expected 'Docker Desktop.exe')) "selects Desktop executable for $($case.name)"
+            Check ($desktop.Cli -eq (Join-Path $case.expected 'resources/bin/docker.exe')) "selects matching CLI for $($case.name)"
+        }
+        $script:dockerFiles = @((Join-Path $perUser 'Docker Desktop.exe'), (Join-Path $perUser 'resources/bin/docker.exe'))
+        function Invoke-ODSPortalDockerCli([string]$Cli, [string[]]$Arguments) {
+            $script:probedDockerCli = $Cli
+            return [pscustomobject]@{ Code=0; Output='29.3.1' }
+        }
+        function Wait-ODSPortalDistroDocker { return $true }
+        function Invoke-ODSPortalWsl { return [pscustomobject]@{ Code=0; Output='ready' } }
+        function Confirm-ODSPortalPreparation { throw 'Existing Docker must not prompt for installation' }
+        function Install-ODSPortalDockerDesktop { throw 'Existing Docker must not be reinstalled' }
+        $result = Initialize-ODSPortalDocker 'Ubuntu-24.04' @{} '' $true
+        Check ($null -eq $result) 'non-interactive setup accepts an existing per-user Docker installation'
+        Check ($script:probedDockerCli -eq (Join-Path $perUser 'resources/bin/docker.exe')) 'Docker readiness uses the discovered per-user CLI'
+    }
+} finally {
+    $env:ProgramFiles = $originalProgramFiles
+    $env:LOCALAPPDATA = $originalLocalAppData
+}
+
 # Capacity gate: disk first, then virtualization only when WSL is not ready.
 function Get-ODSPortalFreeSystemGB { return $script:free }
 function Test-ODSPortalVirtualization { $script:virtChecked = $true; return $script:virt }
