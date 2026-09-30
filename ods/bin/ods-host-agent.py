@@ -5678,6 +5678,22 @@ def resolve_compose_flags() -> list:
         env["ODS_PYTHON_CMD"] = _to_bash_path(Path(sys.executable))
     install_env = load_env(INSTALL_DIR / ".env")
     ods_mode = install_env.get("ODS_MODE", "").strip() or "local"
+    # Extension toggles re-resolve after the installer has exited. Use the
+    # persisted route, not this long-running agent's stale launch environment.
+    # The resolver needs URL presence only; keep a credential-bearing upstream
+    # URL out of the resolver subprocess environment.
+    for key in (
+        "ODS_GATEWAY_ONLY", "ENABLE_OPEN_WEBUI", "LEMONADE_EXTERNAL",
+        "AMD_INFERENCE_RUNTIME", "AMD_INFERENCE_MANAGED", "WHISPER_ACCELERATION",
+    ):
+        if key in install_env:
+            env[key] = install_env[key]
+        else:
+            env.pop(key, None)
+    env.pop("EXTERNAL_LLM_URL", None)
+    env["ODS_EXTERNAL_LLM_SELECTED"] = (
+        "true" if install_env.get("EXTERNAL_LLM_URL", "").strip() else "false"
+    )
     cmd = [
         bash, _to_bash_path(script),
         "--script-dir", _to_bash_path(INSTALL_DIR),

@@ -102,7 +102,14 @@ lemonade_external = (
         and os.environ.get("AMD_INFERENCE_MANAGED", "").lower() == "false"
     )
 )
-external_llm = bool(os.environ.get("EXTERNAL_LLM_URL", "").strip())
+# The host agent passes only a presence marker, keeping an upstream URL that
+# may contain credentials out of the resolver child process. Installer calls
+# without the marker retain their existing EXTERNAL_LLM_URL behavior.
+external_selection = os.environ.get("ODS_EXTERNAL_LLM_SELECTED")
+external_llm = (
+    external_selection.lower() == "true" if external_selection is not None
+    else bool(os.environ.get("EXTERNAL_LLM_URL", "").strip())
+)
 gateway_only = os.environ.get("ODS_GATEWAY_ONLY", "").lower() == "true"
 enable_open_webui = os.environ.get("ENABLE_OPEN_WEBUI", "true").lower() == "true"
 
