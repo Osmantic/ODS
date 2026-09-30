@@ -18914,7 +18914,10 @@ def _setup_managed_opencode_macos(env: dict) -> None:
         _wait_for_opencode_health()
     except Exception as exc:
         rollback_errors = []
-        if bootstrap_attempted:
+        # A concurrent owner may have loaded the plist we just created before
+        # our bootstrap call. It still points to this exact ODS-owned file and
+        # must be unloaded before the transaction removes that file or binary.
+        if bootstrap_attempted or plist_written:
             try:
                 if _opencode_macos_loaded_output(binary) is not None:
                     step = subprocess.run(
