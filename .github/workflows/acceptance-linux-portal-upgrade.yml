@@ -23,7 +23,7 @@ jobs:
       - name: Checkout exact current-main baseline
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
-          ref: 21797f99c255b4a847fc05615f15c3a8ac3476e4
+          ref: 9b95d08ae9e9f79af8410dfcea442df6b99db0ba
           path: baseline
       - name: Checkout exact broker custody candidate
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
@@ -32,7 +32,7 @@ jobs:
           path: candidate
       - name: Record exact source and runner capacity
         run: |
-          test "$(git -C baseline rev-parse HEAD)" = 21797f99c255b4a847fc05615f15c3a8ac3476e4
+          test "$(git -C baseline rev-parse HEAD)" = 9b95d08ae9e9f79af8410dfcea442df6b99db0ba
           test "$(git -C candidate rev-parse HEAD)" = 0430743987b7ae9644ae1f3e041a7d50780d703f
           docker version
           df -h / "$RUNNER_TEMP"
