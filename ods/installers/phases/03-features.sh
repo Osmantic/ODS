@@ -459,7 +459,9 @@ if ! $DRY_RUN; then
     if [[ "${ENABLE_BRAVE_SEARCH:-false}" == true ]]; then
         _brave_key_present=false
         if [[ ${BRAVE_SEARCH_API_KEY+x} ]]; then
-            [[ -n "$BRAVE_SEARCH_API_KEY" ]] && _brave_key_present=true
+            if [[ -n "$BRAVE_SEARCH_API_KEY" ]]; then
+                _brave_key_present=true
+            fi
         elif declare -F external_llm_env_value >/dev/null 2>&1 &&
              [[ -n "$(external_llm_env_value "${INSTALL_DIR:-}/.env" BRAVE_SEARCH_API_KEY 2>/dev/null || true)" ]]; then
             _brave_key_present=true
