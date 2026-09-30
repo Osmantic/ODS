@@ -5,6 +5,7 @@ mod commands;
 mod docker;
 mod gpu;
 mod installer;
+mod install_lock;
 mod platform;
 mod state;
 
