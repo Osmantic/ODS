@@ -52,7 +52,11 @@ def tree(path):
 
 for name in NAMES:
     state_path, skel_path = STATE / name, SKEL / name
-    state_tree, skel_tree = tree(state_path), tree(skel_path)
+    try:
+        state_tree, skel_tree = tree(state_path), tree(skel_path)
+    except ValueError as error:
+        print(f"Pixel skel candidate {name}: comparison={error}")
+        continue
     if state_tree is None:
         print(f"Pixel skel candidate {name}: state=absent")
         continue
