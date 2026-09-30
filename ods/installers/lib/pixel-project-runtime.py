@@ -86,7 +86,9 @@ ReadWritePaths="{workspace}" {STATE}
 RestrictAddressFamilies=AF_UNIX
 CapabilityBoundingSet=
 MemoryMax=768M
-TasksMax=64
+# Docker info discovers CLI plugins concurrently. Keep room for their threads
+# plus the single executor, capability probe and serialized owner connection.
+TasksMax=128
 
 [Install]
 WantedBy=multi-user.target

@@ -44,6 +44,22 @@ def test_unit_runs_as_owner_and_never_enables_full_access():
     assert 'enable_full_access' not in unit
 
 
+@pytest.mark.parametrize('python_image', [None, 'sha256:' + 'b' * 64])
+def test_controller_task_budget_is_bounded_with_room_for_docker_cli_plugins(python_image):
+    deployment = config()
+    if python_image:
+        deployment['pythonImageId'] = python_image
+    unit = installer.unit_bytes(deployment).decode()
+    settings = dict(line.split('=', 1) for line in unit.splitlines()
+                    if '=' in line and not line.startswith('#'))
+    # Real Docker Desktop CLI discovery hit 64 and denied forks; a disposable
+    # 128-task comparison peaked at 81 with zero denials. No unlimited setting.
+    assert settings['TasksMax'] == '128'
+    assert settings['MemoryMax'] == '768M'
+    assert settings['NoNewPrivileges'] == 'true'
+    assert '--storage-max-jobs' not in unit  # Existing default admission unchanged.
+
+
 @pytest.mark.parametrize('change', [{'imageId': 'node:latest'}, {'pythonImageId': 'python:latest'},
                                   {'pythonImageId': None}, {'ownerUid': 0},
                                   {'workspace': '/tmp/other-project'}, {'extra': True}])
