@@ -666,7 +666,7 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
     # PermissionError. Prepare the private state directory for the APE
     # container UID/GID without a broad chmod 777 and without following
     # symlinks (chown -h so a link is never dereferenced; no -R across a
-    # symlinked ancestor because data/ape itself must be a physical directory).
+    # symlinked ancestor because install, data, and ape must be physical directories).
     # Scope: only data/ape. This block is a no-op on rootless installs, which
     # ods_fix_rootless_ownership prepares separately.
     if ! $_phase06_rootless \
@@ -675,28 +675,13 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
             "$INSTALL_DIR/extensions/services/ape/compose.yaml"; then
         _ape_uid=100
         _ape_gid=65534
-        # Prefer the exact identity baked into the built image; fall back to the
-        # Dockerfile-resolved defaults when the image is not present yet. The
-        # image `USER ape` is a name, not numeric, so resolve it to IDs via the
-        # image's own /etc/passwd instead of trusting the tag.
-        if docker image inspect ods-ape:latest >/dev/null 2>&1; then
-            _ape_ids=$(docker image inspect --format '{{.Config.User}}' ods-ape:latest 2>/dev/null || true)
-            if [[ "$_ape_ids" =~ ^[0-9]+:[0-9]+$ ]]; then
-                _ape_uid="${_ape_ids%%:*}"
-                _ape_gid="${_ape_ids##*:}"
-            elif [[ -n "$_ape_ids" ]]; then
-                _ape_resolved=$(docker run --rm --network none --entrypoint id ods-ape:latest -u "$_ape_ids" 2>/dev/null || true)
-                if [[ "$_ape_resolved" =~ ^[0-9]+:[0-9]+$ || "$_ape_resolved" =~ ^[0-9]+$ ]]; then
-                    _ape_uid="${_ape_resolved%%:*}"
-                    _ape_gid="${_ape_resolved##*:}"
-                    [[ "$_ape_resolved" == *:* ]] || _ape_gid=65534
-                fi
-                unset _ape_resolved
-            fi
-            unset _ape_ids
-        fi
-        [[ -d "$INSTALL_DIR/data/ape" && ! -L "$INSTALL_DIR/data/ape" ]] || {
-            error "Cannot safely prepare data/ape: expected a real directory."
+        # These IDs match the pinned image and the rootless repair contract.
+        # Refuse links in the bind source and its install-owned ancestry before
+        # privileged recursive ownership changes.
+        [[ -d "$INSTALL_DIR" && ! -L "$INSTALL_DIR" \
+            && -d "$INSTALL_DIR/data" && ! -L "$INSTALL_DIR/data" \
+            && -d "$INSTALL_DIR/data/ape" && ! -L "$INSTALL_DIR/data/ape" ]] || {
+            error "Cannot safely prepare data/ape: expected real install, data, and APE directories."
             return 1
         }
         if ods_sudo_available; then
