@@ -180,6 +180,4 @@ if docker inspect ods-n8n >/dev/null 2>&1; then
     [[ "$(docker inspect --format '{{.State.Running}}' ods-n8n)" == false ]] \
         || fail 'browser Library Disable left n8n running'
 fi
-[[ "$(docker inspect --format '{{.State.StartedAt}}|{{.RestartCount}}' ods-dashboard-api)" == "$api_instance" ]] \
-    || fail 'Dashboard API restarted during browser Library actions'
-printf 'PASS: browser Library actions retained n8n data and API process\n'
+printf 'PASS: browser Library actions retained n8n data\n'

@@ -1,9 +1,13 @@
 import assert from 'node:assert/strict'
+import { execFileSync } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
 import { chromium, expect } from '@playwright/test'
 
 const base = process.env.ODS_N8N_BROWSER_URL
 assert.match(base || '', /^http:\/\/127\.0\.0\.1:\d+$/)
+const apiIdentity = () => execFileSync('docker', [
+  'inspect', '--format', '{{.State.StartedAt}}|{{.RestartCount}}', 'ods-dashboard-api',
+], { encoding: 'utf8' }).trim()
 
 const browser = await chromium.launch({ headless: true })
 try {
@@ -20,6 +24,7 @@ try {
 
   await page.goto(`${base}/extensions`, { waitUntil: 'domcontentloaded', timeout: 60_000 })
   await page.getByLabel('Search extensions').fill('n8n')
+  const beforeLibraryActions = apiIdentity()
   const add = page.getByRole('button', { name: 'Add n8n (Workflows)' })
   await expect(add).toBeVisible({ timeout: 60_000 })
   await add.click()
@@ -33,6 +38,7 @@ try {
   assert.equal((await enabledResponse).status(), 200)
   const disable = page.getByRole('button', { name: 'Disable n8n (Workflows)' })
   await expect(disable).toBeVisible({ timeout: 180_000 })
+  assert.equal(apiIdentity(), beforeLibraryActions, 'Dashboard API restarted during browser Add')
   console.log('PASS: browser Library Add reached enabled n8n card')
 
   await disable.click()
@@ -43,6 +49,7 @@ try {
   await dialog.getByRole('button', { name: 'Disable' }).click()
   assert.equal((await disabledResponse).status(), 200)
   await expect(add).toBeVisible({ timeout: 60_000 })
+  assert.equal(apiIdentity(), beforeLibraryActions, 'Dashboard API restarted during browser Disable')
   assert.deepEqual(pageErrors, [])
   console.log('PASS: browser Library Disable restored addable n8n card')
 } finally {
