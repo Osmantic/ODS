@@ -1,0 +1,36 @@
+name: Acceptance Linux Hermes external gateway
+
+on:
+  push:
+    branches:
+      - codex/ods-hermes-gateway-audit
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hermes-gateway-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  hermes-external-gateway:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Checkout acceptance harness
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - name: Checkout exact Hermes add-back candidate
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          ref: 3c2746e9792ab66ce5fe60f360115870c5051025
+          path: product
+      - name: Record source and runner capacity
+        run: |
+          test "$(git -C product rev-parse HEAD)" = 3c2746e9792ab66ce5fe60f360115870c5051025
+          docker version
+          df -h / "$RUNNER_TEMP"
+      - name: Exercise Hermes external gateway add-back
+        run: |
+          ODS_ACCEPTANCE_PRODUCT_ROOT="$GITHUB_WORKSPACE/product/ods" \
+            bash ods/tests/acceptance/hermes-gateway-journey.sh
