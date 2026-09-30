@@ -77,12 +77,45 @@ test('observation remains bounded and abort does not claim cancellation', async 
     calls++; return {...success(),status:'running',steps:[],output:null};
   }});
   assert.equal((await tool.execute('observe',{action:'observe',jobId:job})).details.status,'running');
-  assert.equal(calls,6);
+  assert.equal(calls,49);
   const abort = new AbortController();
   const interrupted = createProjectBuildTool({wait:async()=>abort.abort(),request:async()=>{
     return {...success(),status:'running',steps:[],output:null};
   }});
   assert.equal((await interrupted.execute('observe',{action:'observe',jobId:job},abort.signal)).details.status,'unconfirmed');
+});
+
+test('long observation completes within one call and slow reads respect the wall-clock budget', async () => {
+  let elapsed = 0, calls = 0;
+  const tool = createProjectBuildTool({now:()=>elapsed, wait:async ms=>{elapsed+=ms;}, request:async()=>{
+    calls++; return elapsed >= 150000 ? success() : {...success(),status:'running',steps:[],output:null};
+  }});
+  assert.equal((await tool.execute('observe',{action:'observe',jobId:job})).details.status,'succeeded');
+  assert.equal(elapsed,150000);
+  assert.equal(calls,31);
+  elapsed=0; calls=0;
+  const slow = createProjectBuildTool({now:()=>elapsed,wait:async ms=>{elapsed+=ms;},request:async()=>{
+    calls++; elapsed+=10000; return {...success(),status:'running',steps:[],output:null};
+  }});
+  assert.equal((await slow.execute('observe',{action:'observe',jobId:job})).details.status,'running');
+  assert.equal(elapsed,240000); // includes the initial read; no new request at the deadline
+  assert.equal(calls,16);
+});
+
+test('observation stops immediately on denial or a lost response after waiting', async () => {
+  for (const outcome of ['denied', 'offline']) {
+    let calls = 0, waits = 0;
+    const tool = createProjectBuildTool({wait:async()=>{waits++;},request:async()=>{
+      calls++;
+      if (calls === 1) return {...success(),status:'running',steps:[],output:null};
+      if (outcome === 'offline') throw Error('offline');
+      return {schemaVersion:1,kind:'ods-project-job',status:'denied'};
+    }});
+    const result = await tool.execute('observe',{action:'observe',jobId:job});
+    assert.equal(result.details.status,outcome === 'offline' ? 'unconfirmed' : 'denied');
+    assert.equal(calls,2);
+    assert.equal(waits,1);
+  }
 });
 
 test('Portal transcript receives native failure markers without changing job evidence', async () => {

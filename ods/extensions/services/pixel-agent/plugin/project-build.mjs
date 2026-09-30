@@ -39,11 +39,11 @@ function validateReceipt(value, params) {
   return value;
 }
 
-export function createProjectBuildTool({request, wait = (ms, signal) => delay(ms, undefined, {signal})} = {}) {
+export function createProjectBuildTool({request, wait = (ms, signal) => delay(ms, undefined, {signal}), now = () => performance.now()} = {}) {
   if (typeof request !== 'function') throw Error('authenticated project transport required');
   return {
     name: 'pixel_ods_project_build',
-    description: 'Acquire locked npm dependencies, run the existing project tests and build in an isolated managed job. Submit an existing workspace project with package.json and package-lock.json and its output directory (out or dist). Observe the returned jobId until terminal; never resubmit an unknown outcome. Cancellation is requested, not confirmed, until the returned state says cancelled. Successful output is a generated workspace directory, not a published site: publish and inspect it separately. Preserve the project framework and report actual failures; do not replace a failing project with a static mock.',
+    description: 'Acquire locked npm dependencies, run the existing project tests and build in an isolated managed job. Submit an existing workspace project with package.json and package-lock.json and its output directory (out or dist). Observe the returned jobId until terminal; observe waits for up to four minutes and returns early on completion. Use observe directly, not shell sleep commands. Never resubmit an unknown outcome. Cancellation is requested, not confirmed, until the returned state says cancelled. Successful output is a generated workspace directory, not a published site: publish and inspect it separately. Preserve the project framework and report actual failures; do not replace a failing project with a static mock.',
     parameters: {type: 'object', additionalProperties: false, required: ['action'], properties: {
       action: {type: 'string', enum: ['submit', 'observe', 'cancel']},
       project: {type: 'string'}, outputDirectory: {type: 'string'}, jobId: {type: 'string'},
@@ -52,16 +52,20 @@ export function createProjectBuildTool({request, wait = (ms, signal) => delay(ms
       try {
         signal?.throwIfAborted();
         const normalized = normalizeProjectBuild(params);
+        const deadline = now() + 240000;
         let raw = await request(normalized, {toolCallId, signal});
         // Pace read-only observations inside one tool call. This leaves the
         // controller socket free for cancellation between requests and avoids
         // spending model turns on identical instantaneous running receipts.
         // Never retry submission, unknown responses or transport failures.
         if (normalized.action === 'observe') {
-          for (let poll = 0; poll < 5 && ['queued','running'].includes(raw?.status); poll++) {
+          for (let poll = 0; poll < 48 && ['queued','running'].includes(raw?.status); poll++) {
             validateReceipt(raw, normalized);
-            await wait(5000, signal);
+            const remaining = deadline - now();
+            if (remaining <= 0) break;
+            await wait(Math.min(5000, remaining), signal);
             signal?.throwIfAborted();
+            if (now() >= deadline) break;
             raw = await request(normalized, {toolCallId, signal});
           }
         }
