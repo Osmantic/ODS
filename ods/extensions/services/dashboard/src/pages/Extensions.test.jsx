@@ -36,10 +36,11 @@ const baseSummary = (overrides = {}) => ({
 
 const baseFeature = { category: 'tools', icon: 'Box' }
 
-const installFetchMock = (catalogFixture, templates = []) => {
+const installFetchMock = (catalogFixture, templates = [], webuiSelection = { enabled: true, supported: false }) => {
   const fetchMock = vi.fn(async (url) => {
     const u = String(url)
     if (u.includes('/api/extensions/catalog')) return makeJsonResponse(catalogFixture)
+    if (u === '/api/webui/selection') return makeJsonResponse(webuiSelection)
     if (u.includes('/api/templates')) return makeJsonResponse({ templates })
     throw new Error(`Unmocked fetch: ${u}`)
   })
@@ -59,6 +60,50 @@ it('hides unsupported extensions from results, categories and counts without hid
   expect(screen.queryByText('Unsupported flag')).toBeNull()
   expect(screen.queryByRole('option',{name:'hidden-category'})).toBeNull()
   expect(screen.getByRole('button',{name:'All 1'})).toBeVisible()
+})
+
+it('adds Open WebUI from the available library without offering generic core controls', async () => {
+  const catalog = {
+    agent_available: true,
+    extensions: [{ id: 'open-webui', name: 'Open WebUI', source: 'core', status: 'disabled', features: [baseFeature], description: 'Chat service' }],
+    summary: baseSummary({ total: 1, installed: 1 }),
+  }
+  let enabled = false
+  const fetchMock = vi.fn(async (url, options = {}) => {
+    const target = String(url)
+    if (target === '/api/extensions/catalog') return makeJsonResponse(catalog)
+    if (target === '/api/webui/selection' && options.method === 'POST') {
+      expect(JSON.parse(options.body)).toEqual({ enabled: true })
+      enabled = true
+      return makeJsonResponse({ enabled: true, action: 'enabled' })
+    }
+    if (target === '/api/webui/selection') return makeJsonResponse({ enabled, supported: true })
+    if (target === '/api/templates') return makeJsonResponse({ templates: [] })
+    throw new Error(`Unmocked fetch: ${target}`)
+  })
+  vi.stubGlobal('fetch', fetchMock)
+  render(<Extensions compact />)
+  expect(await screen.findByRole('button', { name: 'Available 1' })).toBeVisible()
+  fireEvent.click(screen.getByRole('button', { name: 'Available 1' }))
+  expect(screen.getByRole('button', { name: 'Add Open WebUI' })).toBeVisible()
+  expect(screen.queryByRole('button', { name: 'Enable Open WebUI' })).toBeNull()
+  fireEvent.click(screen.getByRole('button', { name: 'Add Open WebUI' }))
+  const dialog = screen.getByRole('dialog', { name: 'Confirm action' })
+  expect(dialog).toHaveTextContent('Add Open WebUI')
+  fireEvent.click(screen.getByRole('button', { name: 'Add' }))
+  await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/webui/selection', expect.objectContaining({ method: 'POST' })))
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Available 0' })).toBeVisible())
+})
+
+it('does not offer WebUI add-back when the host does not support it', async () => {
+  installFetchMock({
+    agent_available: true,
+    extensions: [{ id: 'open-webui', name: 'Open WebUI', source: 'core', status: 'disabled', features: [baseFeature] }],
+    summary: baseSummary({ total: 1, installed: 1 }),
+  })
+  render(<Extensions compact />)
+  expect(await screen.findByText('Open WebUI')).toBeVisible()
+  expect(screen.queryByRole('button', { name: 'Add Open WebUI' })).toBeNull()
 })
 
 it('hides collections that require unsupported services while retaining usable collections', async () => {
@@ -117,6 +162,7 @@ it('lets an errored bundled n8n be retried or disabled without a remove control'
 })
 
 it('reports a failed bundled n8n start and refreshes to a retryable card', async () => {
+  const timeoutSpy = vi.spyOn(globalThis.AbortSignal, 'timeout').mockReturnValue(new AbortController().signal)
   const ext = {id:'n8n',name:'n8n (Workflows)',source:'core',status:'disabled',
     library_manageable:true,library_selected:false,features:[baseFeature]}
   const fetchMock = vi.fn(async (url) => {
@@ -141,6 +187,7 @@ it('reports a failed bundled n8n start and refreshes to a retryable card', async
   expect(screen.getByRole('button',{name:'Disable n8n (Workflows)'})).toBeVisible()
   expect(fetchMock.mock.calls.filter(([url]) => String(url).includes('/api/extensions/catalog')).length)
     .toBeGreaterThanOrEqual(2)
+  expect(timeoutSpy).toHaveBeenCalledWith(13 * 60 * 1000)
 })
 
 describe('Extensions page — unhealthy + install derivations', () => {

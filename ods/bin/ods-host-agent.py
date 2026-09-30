@@ -41,7 +41,7 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path, PureWindowsPath
 from socketserver import ThreadingMixIn
 from urllib import error as urllib_error, request as urllib_request
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlparse
 
 # Model Switchboard (PR 1, observe mode): stdlib-only sibling package. The
 # import is fail-open — a missing/broken package disables state recording but
@@ -5678,6 +5678,23 @@ def resolve_compose_flags() -> list:
         env["ODS_PYTHON_CMD"] = _to_bash_path(Path(sys.executable))
     install_env = load_env(INSTALL_DIR / ".env")
     ods_mode = install_env.get("ODS_MODE", "").strip() or "local"
+    # The host agent can outlive an installer rerun or an owner WebUI toggle.
+    # These selectors must come from the installed state rather than its
+    # startup environment when the Compose cache is refreshed. The resolver
+    # needs only external-route presence, never the credential-bearing URL.
+    for selector in (
+        "ENABLE_OPEN_WEBUI", "ODS_GATEWAY_ONLY", "EXTERNAL_LLM_URL",
+        "ODS_EXTERNAL_LLM_SELECTED",
+        "LEMONADE_EXTERNAL", "AMD_INFERENCE_RUNTIME",
+        "AMD_INFERENCE_MANAGED", "WHISPER_ACCELERATION",
+        "ODS_SKIP_GPU_OVERLAYS",
+    ):
+        env.pop(selector, None)
+        if selector not in ("EXTERNAL_LLM_URL", "ODS_EXTERNAL_LLM_SELECTED") and selector in install_env:
+            env[selector] = install_env[selector]
+    env["ODS_EXTERNAL_LLM_SELECTED"] = (
+        "true" if install_env.get("EXTERNAL_LLM_URL", "").strip() else "false"
+    )
     cmd = [
         bash, _to_bash_path(script),
         "--script-dir", _to_bash_path(INSTALL_DIR),
@@ -5868,7 +5885,7 @@ _ROOTLESS_BIND_OWNERSHIP_SERVICES = {
 
 
 def _repair_rootless_data_ownership(service_id: str) -> None:
-    """Apply the built-in rootless bind-mount ownership contract before start."""
+    """Prepare built-in bind mounts before a container starts."""
     if platform.system() != "Linux" or service_id not in _ROOTLESS_BIND_OWNERSHIP_SERVICES:
         return
 
@@ -5879,9 +5896,17 @@ def _repair_rootless_data_ownership(service_id: str) -> None:
     if not bash:
         raise RuntimeError("Bash is required for Docker rootless ownership repair")
 
+    command = [bash, str(helper), str(INSTALL_DIR), service_id]
+    if service_id == "whisper":
+        # A lean install skips Phase 11's UID 1000 cache preparation. The
+        # Library add-back must prepare it for rootful as well as rootless Docker.
+        command = [
+            bash, "-c", 'source "$1"; ods_prepare_whisper_cache_ownership "$2"',
+            "ods-whisper-cache", str(helper), str(INSTALL_DIR),
+        ]
     try:
         result = subprocess.run(
-            [bash, str(helper), str(INSTALL_DIR), service_id],
+            command,
             cwd=str(INSTALL_DIR),
             env=os.environ.copy(),
             capture_output=True,
@@ -5934,9 +5959,89 @@ def _extension_stop_targets(service_id: str) -> list[str]:
     return targets
 
 
+def _whisper_model_ready_after_start(
+    max_wait_seconds: float = 480, compose_env: dict[str, str] | None = None,
+) -> tuple[bool, str]:
+    """Make a Library-started Whisper usable, as installer Phase 12 does."""
+    try:
+        env = load_env(INSTALL_DIR / ".env")
+    except (OSError, UnicodeError, ValueError):
+        return False, "Whisper started, but its selected model could not be read; run ods repair voice"
+    # Compose process environment overrides .env interpolation. Probe the same
+    # model and published port that the just-started container received.
+    if compose_env is not None:
+        for key in ("AUDIO_STT_MODEL", "WHISPER_PORT", "GPU_BACKEND", "WHISPER_ACCELERATION"):
+            if key in compose_env:
+                env[key] = compose_env[key]
+    fallback_model = (
+        "deepdml/faster-whisper-large-v3-turbo-ct2"
+        if env.get("GPU_BACKEND") == "nvidia" and env.get("WHISPER_ACCELERATION", "cuda") == "cuda"
+        else "Systran/faster-whisper-base"
+    )
+    model = str(env.get("AUDIO_STT_MODEL") or fallback_model).strip()
+    raw_port = str(env.get("WHISPER_PORT") or "9000").strip()
+    if (not model or len(model) > 256 or any(ord(char) < 32 or ord(char) == 127 for char in model)
+            or not raw_port.isascii() or not raw_port.isdecimal() or len(raw_port) > 5
+            or not 1 <= int(raw_port) <= 65535):
+        return False, "Whisper started, but its selected model or port is invalid; run ods repair voice"
+
+    base_url = f"http://127.0.0.1:{int(raw_port)}/v1/models"
+    model_url = f"{base_url}/{quote(model, safe='')}"
+    deadline = time.monotonic() + max(0.0, max_wait_seconds)
+
+    def probe(url: str) -> bool:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        try:
+            with urllib_request.urlopen(url, timeout=min(5, remaining)) as response:
+                return response.status == 200
+        except (urllib_error.URLError, TimeoutError, OSError):
+            return False
+
+    ready_deadline = min(deadline, time.monotonic() + 30)
+    while time.monotonic() < ready_deadline:
+        if probe(base_url):
+            break
+        time.sleep(min(1, max(0, ready_deadline - time.monotonic())))
+    else:
+        return False, "Whisper started, but its models API is not ready; run ods repair voice"
+
+    if probe(model_url):
+        return True, ""
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        return False, "Whisper started, but its model is not cached; run ods repair voice"
+    try:
+        request = urllib_request.Request(model_url, data=b"", method="POST")
+        with urllib_request.urlopen(request, timeout=min(30, remaining)) as response:
+            if not 200 <= response.status < 300:
+                return False, "Whisper started, but its model download was rejected; run ods repair voice"
+    except urllib_error.HTTPError as exc:
+        if 400 <= exc.code < 500 and exc.code not in (408, 409, 429):
+            return False, (
+                f"Whisper model download was rejected (HTTP {exc.code}); "
+                "check AUDIO_STT_MODEL or run ods repair voice"
+            )
+        # A concurrent download or transient failure can still populate the cache.
+    except (urllib_error.URLError, TimeoutError, OSError):
+        # Speaches can continue downloading after the trigger times out.
+        pass
+
+    while time.monotonic() < deadline:
+        if probe(model_url):
+            return True, ""
+        time.sleep(min(5, max(0, deadline - time.monotonic())))
+    return False, "Whisper started, but its model is not cached; run ods repair voice"
+
+
 def docker_compose_action(service_id: str, action: str) -> tuple:
     try:
         flags = resolve_compose_flags()
+        if service_id == "hermes" and action == "start":
+            plan_error = _hermes_compose_plan_error(flags)
+            if plan_error:
+                return False, plan_error
     except (OSError, ValueError, RuntimeError) as exc:
         if action != "stop":
             return False, str(exc)
@@ -5952,6 +6057,7 @@ def docker_compose_action(service_id: str, action: str) -> tuple:
             return True, ""
         except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as recovery_error:
             return False, f"Could not stop verified ODS containers: {recovery_error}"
+    action_deadline = time.monotonic() + 630
     compose_env = os.environ.copy()
     if action == "start":
         if service_id == "ods-proxy":
@@ -5963,6 +6069,13 @@ def docker_compose_action(service_id: str, action: str) -> tuple:
             if not ok:
                 return False, error
             compose_env["WEBUI_AUTH"] = "true"
+        elif service_id == "hermes":
+            ok, error = _prepare_hermes_route_for_start()
+            if not ok:
+                return False, error
+            ok, error = _prepare_hermes_persona_for_start()
+            if not ok:
+                return False, error
         _precreate_data_dirs(service_id)
         try:
             _repair_rootless_data_ownership(service_id)
@@ -5992,9 +6105,122 @@ def docker_compose_action(service_id: str, action: str) -> tuple:
                 _write_progress(service_id, 'started' if ok else 'error', 'CLI verification complete' if ok else 'CLI verification failed',
                                 error=error or None, exit_verified=ok)
                 return ok, error
+        if result.returncode == 0 and action == "start" and service_id == "whisper":
+            return _whisper_model_ready_after_start(
+                max_wait_seconds=min(480, max(0, action_deadline - time.monotonic())),
+                compose_env=compose_env,
+            )
         return (True, "") if result.returncode == 0 else (False, result.stderr[:500])
     except subprocess.TimeoutExpired:
         return False, f"Docker compose operation timed out ({timeout}s)"
+
+
+def _webui_selection_state() -> dict:
+    """Report the installed choice without exposing the owner's environment."""
+    env_path = INSTALL_DIR / ".env"
+    if not env_path.is_file() or env_path.is_symlink():
+        raise RuntimeError("The installed environment is unavailable")
+    selected = load_env(env_path).get("ENABLE_OPEN_WEBUI", "true").strip().lower() == "true"
+    return {
+        "enabled": selected,
+        "supported": platform.system() == "Linux",
+    }
+
+
+def _enable_webui_selection() -> tuple[int, dict]:
+    """Add the base WebUI service to a Linux install without touching its data.
+
+    The existing .env choice and Compose resolver remain authoritative. Keep
+    the bind-mounted .env inode, and restore its exact bytes if startup fails.
+    """
+    if platform.system() != "Linux":
+        return 501, {"code": "unsupported_platform", "error": "WebUI add-back is available on Linux only"}
+    service_lock = _service_locks["open-webui"]
+    if not service_lock.acquire(blocking=False):
+        return 409, {"code": "operation_in_progress", "error": "Open WebUI is being changed"}
+    if not _model_activate_lock.acquire(blocking=False):
+        service_lock.release()
+        return 409, {"code": "configuration_in_use", "error": "ODS configuration is being changed"}
+
+    env_path = INSTALL_DIR / ".env"
+    original = None
+    changed = False
+    attempted_start = False
+    flags = None
+    compose_env = None
+    try:
+        if not env_path.is_file() or env_path.is_symlink():
+            return 409, {"code": "missing_install", "error": "The installed environment is unavailable"}
+        original = env_path.read_bytes()
+        env_text = original.decode("utf-8")
+        installed = load_env(env_path)
+        if installed.get("ENABLE_OPEN_WEBUI", "true").strip().lower() == "true":
+            if not _capture_container_state("ods-webui").get("running"):
+                return 503, {"code": "selected_but_stopped", "error": "Open WebUI is selected but not running; inspect its service state"}
+            return 200, {"enabled": True, "action": "already_selected"}
+
+        changed = True  # A failed in-place write may have written a prefix.
+        _write_bound_env_text(env_path, _upsert_env_text(env_text, "ENABLE_OPEN_WEBUI", "true"))
+        invalidate_compose_cache()
+        flags = resolve_compose_flags()
+        compose_env = os.environ.copy()
+        compose_env.pop("COMPOSE_PROFILES", None)
+        for selector in (
+            "ENABLE_OPEN_WEBUI", "ODS_GATEWAY_ONLY", "EXTERNAL_LLM_URL",
+            "LEMONADE_EXTERNAL", "AMD_INFERENCE_RUNTIME",
+            "AMD_INFERENCE_MANAGED", "WHISPER_ACCELERATION",
+            "ODS_SKIP_GPU_OVERLAYS",
+        ):
+            compose_env.pop(selector, None)
+            if selector in installed:
+                compose_env[selector] = installed[selector]
+        compose_env["ENABLE_OPEN_WEBUI"] = "true"
+
+        def compose(*arguments: str):
+            return subprocess.run(
+                ["docker", "compose", *flags, *arguments], cwd=str(INSTALL_DIR),
+                env=compose_env, capture_output=True, text=True,
+                timeout=SUBPROCESS_TIMEOUT_START,
+            )
+
+        configured = compose("config", "--services")
+        if configured.returncode != 0 or "open-webui" not in configured.stdout.splitlines():
+            raise RuntimeError("The selected Compose stack does not expose Open WebUI")
+        attempted_start = True
+        # Compose pulls this one image when missing. --no-deps must not wake a
+        # managed model on an external LiteLLM route.
+        if compose("up", "-d", "--no-deps", "open-webui").returncode != 0:
+            raise RuntimeError("Could not start Open WebUI")
+        _wait_for_container_health("ods-webui", attempts=75)
+        return 200, {"enabled": True, "action": "enabled"}
+    except (OSError, UnicodeError, ValueError, RuntimeError, subprocess.SubprocessError) as exc:
+        logger.warning("Open WebUI add-back failed: %s", type(exc).__name__)
+        stopped = not attempted_start
+        if attempted_start and flags is not None and compose_env is not None:
+            try:
+                if not _capture_container_state("ods-webui").get("running"):
+                    stopped = True
+                else:
+                    stop = subprocess.run(
+                        ["docker", "compose", *flags, "stop", "open-webui"],
+                        cwd=str(INSTALL_DIR), capture_output=True, text=True,
+                        timeout=SUBPROCESS_TIMEOUT_STOP, env=compose_env,
+                    )
+                    stopped = stop.returncode == 0 and not _capture_container_state("ods-webui").get("running")
+            except (OSError, RuntimeError, subprocess.SubprocessError):
+                stopped = False
+        if not stopped:
+            return 503, {"code": "reconciliation_required", "error": "Open WebUI startup failed; verify the running service before retrying", "enabled": True}
+        if changed and original is not None:
+            try:
+                _write_bound_env_bytes(env_path, original)
+                invalidate_compose_cache()
+            except (OSError, RuntimeError):
+                return 503, {"code": "reconciliation_required", "error": "Open WebUI startup failed and its prior selection could not be restored"}
+        return 502, {"code": "enable_failed", "error": "Open WebUI could not be added; the prior selection was restored", "enabled": False}
+    finally:
+        _model_activate_lock.release()
+        service_lock.release()
 
 
 def _proxy_compose_enabled() -> bool:
@@ -8615,6 +8841,8 @@ class AgentHandler(BaseHTTPRequestHandler):
             self._handle_gpu_metrics()
         elif path == "/v1/llm/status":
             self._handle_llm_status()
+        elif path == "/v1/webui/selection":
+            self._handle_webui_selection(change=False)
         elif path == "/v1/service/health":
             self._handle_service_health()
         elif path == "/v1/service/stats":
@@ -9259,6 +9487,8 @@ class AgentHandler(BaseHTTPRequestHandler):
             self._handle_extension_configure()
         elif self.path == "/v1/env/update":
             self._handle_env_update()
+        elif self.path == "/v1/webui/selection":
+            self._handle_webui_selection(change=True)
         elif self.path == "/v1/setup/persona":
             self._handle_setup_persona()
         elif self.path == "/v1/setup/complete":
@@ -10499,6 +10729,26 @@ class AgentHandler(BaseHTTPRequestHandler):
         finally:
             _model_activate_lock.release()
 
+    def _handle_webui_selection(self, *, change: bool):
+        if not check_auth(self):
+            return
+        if change:
+            body = read_json_body(self)
+            if body is None:
+                return
+            if not isinstance(body, dict) or set(body) != {"enabled"} or body["enabled"] is not True:
+                json_response(self, 400, {"code": "invalid_request", "error": "Only enabling Open WebUI is supported"}, no_store=True)
+                return
+            status, result = _enable_webui_selection()
+            json_response(self, status, result, no_store=True)
+            return
+        try:
+            result = _webui_selection_state()
+        except (OSError, RuntimeError, UnicodeError):
+            json_response(self, 503, {"code": "selection_unavailable", "error": "Open WebUI selection is unavailable"}, no_store=True)
+            return
+        json_response(self, 200, result, no_store=True)
+
     def _handle_env_update(self):
         """Write a validated .env file. Dashboard-api delegates here because the
         container mount is :ro — only the host agent may write secrets to disk.
@@ -11370,6 +11620,11 @@ class AgentHandler(BaseHTTPRequestHandler):
             _install_operation_context.value = operation
             try:
                 flags = resolve_compose_flags()
+                if service_id == "hermes":
+                    plan_error = _hermes_compose_plan_error(flags)
+                    if plan_error:
+                        _write_progress(service_id, "error", "Installation failed", error=plan_error)
+                        return
 
                 ext_dir = _find_ext_dir(service_id)
                 if ext_dir is None:
@@ -11434,6 +11689,15 @@ class AgentHandler(BaseHTTPRequestHandler):
                 flags = pull_flags
                 # Step 3: Start
                 _write_progress(service_id, "starting", "Starting container...")
+                if service_id == "hermes":
+                    route_ready, route_error = _prepare_hermes_route_for_start()
+                    if not route_ready:
+                        _write_progress(service_id, "error", "Installation failed", error=route_error)
+                        return
+                    persona_ready, persona_error = _prepare_hermes_persona_for_start()
+                    if not persona_ready:
+                        _write_progress(service_id, "error", "Installation failed", error=persona_error)
+                        return
                 _precreate_data_dirs(service_id)
                 try:
                     _repair_rootless_data_ownership(service_id)
@@ -16656,23 +16920,61 @@ def _patch_hermes_config_text(
     base_url: str | None = None,
     context_length: int | None = None,
     max_tokens: int = 1024,
+    api_key: str | None = None,
 ) -> tuple[str, bool]:
     """Return Hermes YAML with its routing fields updated line-for-line."""
     lines = text.splitlines()
+    model_section_pattern = r"^(?:model|\"model\"|'model')\s*:\s*(?:#.*)?$"
+
+    def direct_model_field(line: str, field: str) -> bool:
+        if not model_field_indent:
+            return False
+        indent = re.escape(model_field_indent)
+        return bool(re.match(rf"^{indent}(?:{field}|\"{field}\"|'{field}')\s*:", line))
+
+    if api_key:
+        # A retained owner file may use a quoted key or spaces before ':'.
+        # Count only direct model fields, not a nested owner's api_key.
+        # Refuse ambiguous duplicates rather than leave Hermes using a stale key.
+        model_section = False
+        field_indent = None
+        key_count = 0
+        for line in lines:
+            if re.match(model_section_pattern, line):
+                model_section = True
+                field_indent = None
+                key_count = 0
+            elif model_section and line and not line.startswith((" ", "\t", "#")):
+                model_section = False
+            elif model_section and line.strip() and not line.lstrip().startswith("#"):
+                indent = line[:len(line) - len(line.lstrip())]
+                if field_indent is None:
+                    field_indent = indent
+                if indent == field_indent and re.match(
+                    r"^\s+(?:api_key|['\"]api_key['\"])\s*:", line
+                ):
+                    key_count += 1
+                    if key_count > 1:
+                        raise ValueError("Hermes model config contains duplicate api_key fields")
     in_model_block = False
     model_block_found = False
     model_indent = "  "
+    model_field_indent = None
     model_fields = set()
     changed = False
     new_lines = []
+    yaml_key_path = []
 
     def add_missing_model_fields() -> None:
         nonlocal changed
         if "default" not in model_fields:
-            new_lines.append(f'{model_indent}default: "{model_name}"')
+            new_lines.append(f"{model_indent}default: {json.dumps(model_name)}")
             changed = True
         if base_url and "base_url" not in model_fields:
-            new_lines.append(f'{model_indent}base_url: "{base_url}"')
+            new_lines.append(f"{model_indent}base_url: {json.dumps(base_url)}")
+            changed = True
+        if api_key and "api_key" not in model_fields:
+            new_lines.append(f"{model_field_indent or model_indent}api_key: {json.dumps(api_key)}")
             changed = True
         if context_length and "context_length" not in model_fields:
             new_lines.append(f"{model_indent}context_length: {int(context_length)}")
@@ -16682,47 +16984,66 @@ def _patch_hermes_config_text(
             changed = True
 
     for line in lines:
-        if re.match(r"^model:\s*(?:#.*)?$", line):
+        # Track simple mapping paths so the separate auxiliary compression
+        # context follows the selected model without changing owner submaps.
+        key_match = re.match(r"^([ ]*)(['\"]?)([A-Za-z_][A-Za-z0-9_-]*)\2\s*:", line)
+        if key_match:
+            key_indent = len(key_match.group(1))
+            while yaml_key_path and yaml_key_path[-1][0] >= key_indent:
+                yaml_key_path.pop()
+            yaml_key_path.append((key_indent, key_match.group(3)))
+        current_key_path = tuple(key for _, key in yaml_key_path)
+        if re.match(model_section_pattern, line):
             in_model_block = True
             model_block_found = True
+            model_indent = "  "
+            model_field_indent = None
             model_fields = set()
             new_lines.append(line)
             continue
         if in_model_block and line and not line.startswith((" ", "\t", "#")):
             add_missing_model_fields()
             in_model_block = False
-        if in_model_block and re.match(r"^\s+default:\s*", line):
+        if in_model_block and line.strip() and not line.lstrip().startswith("#"):
+            indent = line[:len(line) - len(line.lstrip())]
+            if model_field_indent is None:
+                model_field_indent = indent
+                model_indent = indent
+        if in_model_block and direct_model_field(line, "default"):
             model_fields.add("default")
-            model_indent = line[:len(line) - len(line.lstrip())]
             indent = line[:len(line) - len(line.lstrip())]
-            new_line = f'{indent}default: "{model_name}"'
+            new_line = f"{indent}default: {json.dumps(model_name)}"
             new_lines.append(new_line)
             changed = changed or new_line != line
             continue
-        if base_url and in_model_block and re.match(r"^\s+base_url:\s*", line):
+        if base_url and in_model_block and direct_model_field(line, "base_url"):
             model_fields.add("base_url")
-            model_indent = line[:len(line) - len(line.lstrip())]
             indent = line[:len(line) - len(line.lstrip())]
-            new_line = f'{indent}base_url: "{base_url}"'
+            new_line = f"{indent}base_url: {json.dumps(base_url)}"
             new_lines.append(new_line)
             changed = changed or new_line != line
             continue
-        if context_length and in_model_block and re.match(r"^\s+context_length:\s*", line):
+        if api_key and in_model_block and direct_model_field(line, "api_key"):
+            model_fields.add("api_key")
+            indent = model_field_indent
+            new_line = f"{indent}api_key: {json.dumps(api_key)}"
+            new_lines.append(new_line)
+            changed = changed or new_line != line
+            continue
+        if context_length and in_model_block and direct_model_field(line, "context_length"):
             model_fields.add("context_length")
-            model_indent = line[:len(line) - len(line.lstrip())]
             indent = line[:len(line) - len(line.lstrip())]
             new_line = f"{indent}context_length: {int(context_length)}"
             new_lines.append(new_line)
             changed = changed or new_line != line
             continue
-        if in_model_block and re.match(r"^\s+max_tokens:\s*", line):
+        if in_model_block and direct_model_field(line, "max_tokens"):
             # Preserve an operator's explicit output cap. ODS only supplies
             # its bounded default when the field is absent.
             model_fields.add("max_tokens")
-            model_indent = line[:len(line) - len(line.lstrip())]
             new_lines.append(line)
             continue
-        if context_length and re.match(r"^\s+context_length:\s*", line):
+        if context_length and current_key_path == ("auxiliary", "compression", "context_length"):
             indent = line[:len(line) - len(line.lstrip())]
             new_line = f"{indent}context_length: {int(context_length)}"
             new_lines.append(new_line)
@@ -16737,10 +17058,12 @@ def _patch_hermes_config_text(
             new_lines.append("")
         new_lines.extend([
             "model:",
-            f'{model_indent}default: "{model_name}"',
+            f"{model_indent}default: {json.dumps(model_name)}",
         ])
         if base_url:
-            new_lines.append(f'{model_indent}base_url: "{base_url}"')
+            new_lines.append(f"{model_indent}base_url: {json.dumps(base_url)}")
+        if api_key:
+            new_lines.append(f"{model_indent}api_key: {json.dumps(api_key)}")
         if context_length:
             new_lines.append(f"{model_indent}context_length: {int(context_length)}")
         if max_tokens:
@@ -16748,6 +17071,137 @@ def _patch_hermes_config_text(
         changed = True
 
     return "\n".join(new_lines) + "\n", changed
+
+
+def _hermes_selected_model(env: dict) -> str:
+    """Use the model identity selected by the installer, not the template stub."""
+    if str(env.get("LLM_BACKEND") or "").lower() == "external":
+        return str(env.get("EXTERNAL_LLM_MODEL") or env.get("LLM_MODEL") or "").strip()
+    if str(env.get("ODS_MODEL_SWITCHBOARD") or "enabled").lower() == "enabled":
+        return "ods/current"
+    if str(env.get("ODS_MODE") or "").lower() == "cloud":
+        return str(env.get("LLM_MODEL") or "default").strip()
+    if str(env.get("GPU_BACKEND") or "").lower() == "amd" or str(env.get("LLM_BACKEND") or "").lower() == "lemonade":
+        selected = str(env.get("LEMONADE_MODEL") or "").strip()
+        if selected:
+            return selected
+        gguf = str(env.get("GGUF_FILE") or "").strip()
+        return f"extra.{gguf}" if gguf else ""
+    return str(env.get("GGUF_FILE") or env.get("LLM_MODEL") or "").strip()
+
+
+def _hermes_compose_plan_error(flags: list[str]) -> str:
+    """Fail closed if stale Compose flags could start managed llama externally."""
+    try:
+        env = load_env(INSTALL_DIR / ".env")
+    except (OSError, UnicodeError):
+        return "Could not read the selected Hermes model route"
+    if str(env.get("LLM_BACKEND") or "").lower() != "external":
+        return ""
+    if any(str(flag).replace("\\", "/").endswith("/hermes/compose.local.yaml") for flag in flags):
+        return "External Hermes route includes a managed llama dependency; refresh the Compose plan"
+    return ""
+
+
+def _prepare_hermes_route_for_start() -> tuple[bool, str]:
+    """Prepare private Hermes config before first start or external add-back.
+
+    Hermes copies its mounted template only if data/hermes/config.yaml does not
+    exist. Its YAML base_url overrides OPENAI_BASE_URL, so Compose environment
+    alone cannot make a later Library add-back use the selected gateway.
+    """
+    try:
+        env = load_env(INSTALL_DIR / ".env")
+        model_name = _hermes_selected_model(env)
+        base_url = str(env.get("HERMES_LLM_BASE_URL") or "").strip()
+        api_key = str(env.get("HERMES_LLM_API_KEY") or "")
+        raw_context = str(env.get("MAX_CONTEXT") or env.get("CTX_SIZE") or "65536").strip()
+        try:
+            context_length = int(raw_context)
+        except ValueError:
+            return False, "Hermes MAX_CONTEXT/CTX_SIZE must be an integer"
+        if not model_name or not base_url or context_length <= 0:
+            return False, "Hermes selected model route is incomplete"
+        if str(env.get("LLM_BACKEND") or "").lower() == "external" and not api_key.strip():
+            return False, "Hermes external gateway key is missing"
+
+        template = INSTALL_DIR / "extensions" / "services" / "hermes" / "cli-config.yaml.template"
+        live = INSTALL_DIR / "data" / "hermes" / "config.yaml"
+        if not template.is_file():
+            return False, "Hermes configuration template is missing"
+        if template.is_symlink() or not stat_mod.S_ISREG(template.lstat().st_mode):
+            return False, "Hermes route config path is not a regular file"
+        if live.is_symlink() or (live.exists() and not stat_mod.S_ISREG(live.lstat().st_mode)):
+            return False, "Hermes route config path is not a regular file"
+
+        def patch(path: Path, *, private_key: str | None = None) -> str:
+            original = path.read_text(encoding="utf-8")
+            updated, changed = _patch_hermes_config_text(
+                original, model_name, base_url=base_url,
+                context_length=context_length, api_key=private_key,
+            )
+            private_mode = private_key is not None and os.name != "nt"
+            mode_needs_repair = private_mode and stat_mod.S_IMODE(path.stat().st_mode) != 0o600
+            if changed or mode_needs_repair:
+                _atomic_write_text(path, updated, mode=0o600 if private_mode else None)
+            return updated
+
+        template_text = patch(template)  # Never put the private key in product source.
+        if not live.exists():
+            live.parent.mkdir(parents=True, exist_ok=True)
+            live_text, _ = _patch_hermes_config_text(
+                template_text, model_name, base_url=base_url,
+                context_length=context_length, api_key=api_key or None,
+            )
+            _atomic_write_text(live, live_text, mode=0o600)
+        elif str(env.get("LLM_BACKEND") or "").lower() == "external":
+            # External selection must replace a stale local route. Preserve
+            # unrelated owner settings, sessions, skills, and other data.
+            patch(live, private_key=api_key)
+        return True, ""
+    except ValueError as exc:
+        logger.warning("Hermes route configuration is ambiguous: %s", type(exc).__name__)
+        return False, "Hermes route configuration is invalid or has duplicate keys"
+    except (OSError, UnicodeError, RuntimeError) as exc:
+        logger.warning("Could not prepare Hermes selected model route: %s", type(exc).__name__)
+        return False, "Could not read or write Hermes route files; check installation permissions"
+
+
+def _prepare_hermes_persona_for_start() -> tuple[bool, str]:
+    """Make the Hermes file bind source regular before Compose can create a dir."""
+    output = INSTALL_DIR / "data" / "persona" / "SOUL.md"
+    builder = INSTALL_DIR / "scripts" / "build-installation-context.py"
+    template = INSTALL_DIR / "extensions" / "services" / "hermes" / "SOUL.md.template"
+    try:
+        if output.is_symlink():
+            return False, "Hermes persona path is a symlink; repair it before starting"
+        output.parent.resolve().relative_to(INSTALL_DIR.resolve())
+        if output.is_file():
+            return True, ""
+        if output.exists():
+            # An earlier Compose attempt may have made the absent file mount
+            # into an empty directory. Never remove owner data from it.
+            output.rmdir()
+        if not builder.is_file() or not template.is_file():
+            return False, "Hermes persona builder or template is missing"
+        env = load_env(INSTALL_DIR / ".env")
+        cmd = [sys.executable, str(builder), "--template", str(template),
+               "--env", str(INSTALL_DIR / ".env"), "--output", str(output)]
+        if (str(env.get("LLM_BACKEND") or "").lower() == "lemonade"
+                and str(env.get("AMD_INFERENCE_RUNTIME") or "").lower() == "lemonade"):
+            cmd.extend(["--profile", "local-lemonade"])
+        result = subprocess.run(
+            cmd, cwd=str(INSTALL_DIR), capture_output=True, text=True,
+            timeout=60,
+        )
+        if result.returncode != 0 or output.is_symlink() or not output.is_file():
+            return False, "Could not generate Hermes installation persona"
+        if os.name != "nt":
+            output.chmod(0o644)
+        return True, ""
+    except (OSError, ValueError, UnicodeError, subprocess.TimeoutExpired) as exc:
+        logger.warning("Could not prepare Hermes persona: %s", type(exc).__name__)
+        return False, "Could not prepare Hermes persona; check installation data permissions"
 
 
 def _patch_hermes_model_config(

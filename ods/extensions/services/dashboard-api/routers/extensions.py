@@ -1122,7 +1122,15 @@ def _scan_compose_content(
                     raise HTTPException(status_code=400,
                         detail=f"Service '{svc_name}' uses a local build without a verified source recipe") from None
         extra_hosts = svc_def.get("extra_hosts")
-        if extra_hosts and not trusted:
+        # Shipped built-ins can use the same single host-gateway bridge as
+        # curated library recipes. Keep user/imported recipes untrusted, even
+        # when they copy the exact mapping from a built-in Compose file.
+        builtin_host_gateway = (
+            builtin
+            and compose_path.resolve().is_relative_to(EXTENSIONS_DIR.resolve())
+            and extra_hosts == ["host.docker.internal:host-gateway"]
+        )
+        if extra_hosts and not trusted and not builtin_host_gateway:
             raise HTTPException(
                 status_code=400,
                 detail=f"Extension rejected: extra_hosts in {svc_name}",
@@ -1633,6 +1641,52 @@ def _current_extension_catalog():
     schema = EXTENSIONS_DIR.parent / 'schema' / 'service-manifest.v1.json'
     installed = merge_local_catalog(EXTENSION_CATALOG, USER_EXTENSIONS_DIR, schema)
     return merge_local_catalog(installed, EXTENSIONS_LIBRARY_DIR, schema, proposals_only=True)
+
+
+@router.get("/api/webui/selection")
+async def webui_selection(api_key: str = Depends(verify_api_key)):
+    """Expose the installed base-service choice to its Extensions Library tile."""
+    try:
+        result = await asyncio.to_thread(request_agent_json, "GET", "/v1/webui/selection", timeout=5)
+    except AgentClientError:
+        raise HTTPException(status_code=503, detail="Open WebUI selection is unavailable") from None
+    if (not isinstance(result, dict) or type(result.get("enabled")) is not bool
+            or type(result.get("supported")) is not bool):
+        raise HTTPException(status_code=502, detail="Open WebUI selection could not be verified")
+    return JSONResponse({"enabled": result["enabled"], "supported": result["supported"]},
+                        headers={"Cache-Control": "no-store"})
+
+
+@router.post("/api/webui/selection")
+async def enable_webui_from_library(request: Request, api_key: str = Depends(verify_api_key)):
+    """Add WebUI through its dedicated host-owned Linux selection path."""
+    try:
+        payload = await request.json()
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid Open WebUI selection") from None
+    if not isinstance(payload, dict) or set(payload) != {"enabled"} or payload["enabled"] is not True:
+        raise HTTPException(status_code=400, detail="Only adding Open WebUI is supported")
+    try:
+        result = await asyncio.to_thread(request_agent_json, "POST", "/v1/webui/selection",
+                                         payload={"enabled": True}, timeout=900)
+    except AgentHTTPError as exc:
+        code = exc.status_code
+        if code == 501:
+            detail = "Adding Open WebUI from the Library is available on Linux only"
+        elif code == 409:
+            detail = "Open WebUI selection is currently unavailable or another operation is in progress"
+        elif code == 503:
+            detail = "Open WebUI requires inspection before another change"
+        else:
+            code, detail = 502, "Open WebUI could not be added; inspect its selection before retrying"
+        raise HTTPException(status_code=code, detail=detail) from None
+    except AgentClientError:
+        raise HTTPException(status_code=503, detail="Open WebUI result could not be confirmed") from None
+    if (not isinstance(result, dict) or result.get("enabled") is not True
+            or result.get("action") not in {"enabled", "already_selected"}):
+        raise HTTPException(status_code=502, detail="Open WebUI result could not be verified")
+    return JSONResponse({"enabled": True, "action": result["action"]},
+                        headers={"Cache-Control": "no-store"})
 
 
 @router.get("/api/extensions/catalog")

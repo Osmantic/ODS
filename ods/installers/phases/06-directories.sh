@@ -354,7 +354,7 @@ else
     mkdir -p "$INSTALL_DIR"/config/{n8n,litellm,openclaw,searxng}
 
     _phase06_repair_host_path() {
-        local target="$1" description="$2"
+        local target="$1" description="$2" target_parent
 
         if $_phase06_rootless; then
             local relative="${target#"$INSTALL_DIR"/}"
@@ -366,8 +366,30 @@ else
             return 0
         fi
         if ! ods_sudo_available; then
-            error "Cannot repair $description without privileged access: $target. Fix its ownership manually, then re-run ODS."
-            return 1
+            # A rootful Docker daemon can repair a container-owned ODS path
+            # through an exact bind mount without granting host sudo. Never
+            # follow a replaced top-level directory or an arbitrary path.
+            target_parent="${target%/}"
+            target_parent="${target_parent%/*}"
+            if [[ "$target_parent" != "$INSTALL_DIR/data" \
+               && "$target_parent" != "$INSTALL_DIR/config" ]] \
+               || [[ ! -d "$target" || -L "${target%/}" \
+                   || -L "$target_parent" || -L "$INSTALL_DIR" ]]; then
+                error "Refusing unsafe $description repair: $target"
+                return 1
+            fi
+            _ods_rootless_ensure_helper_image || return 1
+            if ! docker_run run --rm --network none --user 0:0 \
+                --mount "type=bind,src=${target%/},dst=/data" \
+                "$ODS_ROOTLESS_HELPER_IMAGE" chown -h -R "$(id -u):$(id -g)" /data; then
+                error "Could not repair $description with scoped Docker access: $target"
+                return 1
+            fi
+            [[ -w "$target" ]] || {
+                error "Repaired $description is still not writable: $target"
+                return 1
+            }
+            return 0
         fi
         if ! ods_sudo chown -R "$(id -u):$(id -g)" "$target" 2>/dev/null; then
             error "Failed to repair $description: $target"
@@ -384,18 +406,26 @@ else
         && [[ "${ENABLE_HERMES:-false}" == "true" && -d "$INSTALL_DIR/data/hermes" ]]; then
         _hermes_metadata=$(stat -c '%u:%g:%a' "$INSTALL_DIR/data/hermes" 2>/dev/null || true)
         if [[ "$_hermes_metadata" != "$_phase06_compose_uid:$_phase06_compose_gid:700" ]]; then
-            if ! ods_sudo_available; then
-                error "Hermes requires data/hermes ownership $_phase06_compose_uid:$_phase06_compose_gid and mode 700 with a rootful runtime. Grant privileged access or disable Hermes, then re-run ODS."
-                return 1
+            # A fresh no-sudo install creates this directory as the invoking
+            # user, often with mode 755/775. That user can make it private
+            # directly; privileged repair is only needed for foreign owners.
+            if [[ "${_hermes_metadata%:*}" == "$_phase06_compose_uid:$_phase06_compose_gid" ]] \
+                && chmod 700 "$INSTALL_DIR/data/hermes" 2>/dev/null; then
+                :
+            else
+                if ! ods_sudo_available; then
+                    error "Hermes requires data/hermes ownership $_phase06_compose_uid:$_phase06_compose_gid and mode 700 with a rootful runtime. Grant privileged access or disable Hermes, then re-run ODS."
+                    return 1
+                fi
+                ods_sudo chown -R "$_phase06_compose_uid:$_phase06_compose_gid" "$INSTALL_DIR/data/hermes" 2>/dev/null || {
+                    error "Failed to restore data/hermes ownership to $_phase06_compose_uid:$_phase06_compose_gid"
+                    return 1
+                }
+                ods_sudo chmod 700 "$INSTALL_DIR/data/hermes" 2>/dev/null || {
+                    error "Failed to preserve private mode 700 on data/hermes"
+                    return 1
+                }
             fi
-            ods_sudo chown -R "$_phase06_compose_uid:$_phase06_compose_gid" "$INSTALL_DIR/data/hermes" 2>/dev/null || {
-                error "Failed to restore data/hermes ownership to $_phase06_compose_uid:$_phase06_compose_gid"
-                return 1
-            }
-            ods_sudo chmod 700 "$INSTALL_DIR/data/hermes" 2>/dev/null || {
-                error "Failed to preserve private mode 700 on data/hermes"
-                return 1
-            }
         fi
         unset _hermes_metadata
     fi
@@ -407,6 +437,9 @@ else
             [[ "${ENABLE_HERMES:-false}" == "true" && "$_data_dir" == "$INSTALL_DIR/data/hermes/" ]] && continue
             # Private retained chat results belong to Dashboard UID 1000.
             [[ "$_data_dir" == "$INSTALL_DIR/data/pixel-chat-results/" ]] && continue
+            # Token Spy's persistent directory intentionally belongs to its
+            # container UID 1000; phase 06 verifies that identity below.
+            [[ "$_data_dir" == "$INSTALL_DIR/data/token-spy/" ]] && continue
             if [[ -d "$_data_dir" ]] && ! [[ -w "$_data_dir" ]]; then
                 _phase06_repair_host_path "$_data_dir" "container-owned data directory" || return 1
             fi
@@ -428,6 +461,7 @@ else
             for _d in "$INSTALL_DIR/$_root"/*/; do
                 [[ "${ENABLE_HERMES:-false}" == "true" && "$_d" == "$INSTALL_DIR/data/hermes/" ]] && continue
                 [[ "$_d" == "$INSTALL_DIR/data/pixel-chat-results/" ]] && continue
+                [[ "$_d" == "$INSTALL_DIR/data/token-spy/" ]] && continue
                 [[ -d "$_d" ]] && ! [[ -w "$_d" ]] && _cant_write="$_cant_write ${_d#"$INSTALL_DIR"/}"
             done
         done
@@ -637,6 +671,16 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
         _token_spy_chown=(chown -R 1000:1000 "$INSTALL_DIR/data/token-spy")
         if ods_sudo_available; then
             _token_spy_chown=(ods_sudo "${_token_spy_chown[@]}")
+        elif [[ "$(id -u)" != 1000 ]]; then
+            # Docker access can perform this scoped repair without host sudo.
+            [[ -d "$INSTALL_DIR/data/token-spy" && ! -L "$INSTALL_DIR/data/token-spy" ]] || {
+                error "Cannot safely prepare data/token-spy: expected a real directory."
+                return 1
+            }
+            _ods_rootless_ensure_helper_image || return 1
+            _token_spy_chown=(docker_run run --rm --network none --user 0:0
+                --mount "type=bind,src=$INSTALL_DIR/data/token-spy,dst=/data"
+                "$ODS_ROOTLESS_HELPER_IMAGE" chown -h -R 1000:1000 /data)
         fi
         if ! "${_token_spy_chown[@]}"; then
             error "Cannot prepare data/token-spy for container UID 1000. Grant privileged access or repair its ownership, then re-run the installer."

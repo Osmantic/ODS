@@ -16,6 +16,15 @@ check_defaults() (
     [[ "$existing" == true ]] && : >"$dir/.env"
     eval "$defaults"
     [[ "$ODS_EXISTING_INSTALL" == "$existing" ]] || exit 1
+    [[ "$WEBUI_EXPLICIT" == false ]] || exit 1
+    [[ "$ENABLE_OPEN_WEBUI" == true ]] || {
+        echo "FAIL: initial WebUI fallback was lost on existing=$existing" >&2
+        exit 1
+    }
+    [[ "$ENABLE_ODS_PROXY" == false ]] || {
+        echo "FAIL: unexpected LAN proxy default would require WebUI" >&2
+        exit 1
+    }
     for flag in ENABLE_VOICE ENABLE_WORKFLOWS ENABLE_RAG ENABLE_RECOMMENDED \
                 ENABLE_HERMES ENABLE_COMFYUI ENABLE_APE ENABLE_PERPLEXICA \
                 ENABLE_PRIVACY_SHIELD; do
@@ -55,4 +64,22 @@ check_portal_only_default() (
     }
 )
 check_portal_only_default
-echo 'PASS: Linux fresh and markerless legacy installer defaults are distinct'
+check_portal_chat_choice() {
+    local label="$1" expected="$2" actual=false
+    shift 2
+    ods_should_default_portal_chat "$@" && actual=true
+    [[ "$actual" == "$expected" ]] || {
+        echo "FAIL: $label selected Portal=$actual; expected $expected" >&2
+        exit 1
+    }
+}
+check_portal_chat_choice 'fresh qualified Pixel' true false false false true false false false
+check_portal_chat_choice 'unqualified Pixel fallback' false false false false false false false false
+check_portal_chat_choice 'explicit WebUI' false false true false true false false false
+check_portal_chat_choice 'legacy upgrade' false true false false true false false false
+check_portal_chat_choice 'gateway-only' false false false true true false false false
+check_portal_chat_choice 'voice needs WebUI' false false false false true true false false
+check_portal_chat_choice 'RAG needs WebUI' false false false false true false true false
+check_portal_chat_choice 'LAN proxy needs WebUI' false false false false true false false true
+
+echo 'PASS: Linux fresh and legacy defaults preserve a safe chat UI'

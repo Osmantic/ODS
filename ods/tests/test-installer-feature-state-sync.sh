@@ -7,6 +7,7 @@ FEATURES_PHASE="$ROOT_DIR/installers/phases/03-features.sh"
 run_case() {
     local selected="$1" source_state="$2" comfyui_requested="${3:-false}"
     local gpu_backend="${4:-cpu}" comfyui_expected="${5:-false}"
+    local brave_requested="${6:-false}" brave_key_mode="${7:-none}"
     local test_root source_root install_root
     test_root="$(mktemp -d)"
     source_root="$test_root/source"
@@ -16,7 +17,9 @@ run_case() {
     mkdir -p "$source_root/extensions/services/openclaw" \
         "$install_root/extensions/services/openclaw" \
         "$source_root/extensions/services/comfyui" \
-        "$install_root/extensions/services/comfyui"
+        "$install_root/extensions/services/comfyui" \
+        "$source_root/extensions/services/brave-search" \
+        "$install_root/extensions/services/brave-search"
     printf 'services: {}\n' \
         >"$source_root/extensions/services/openclaw/compose.yaml${source_state}"
 
@@ -30,6 +33,11 @@ run_case() {
     # current WSL backend exposes no Docker GPU. Selection must reconcile it.
     printf 'services: {}\n' >"$source_root/extensions/services/comfyui/compose.yaml"
     printf 'services: {}\n' >"$install_root/extensions/services/comfyui/compose.yaml"
+    printf 'services: {}\n' >"$source_root/extensions/services/brave-search/compose.yaml"
+    printf 'services: {}\n' >"$install_root/extensions/services/brave-search/compose.yaml"
+    if [[ "$brave_key_mode" == file || "$brave_key_mode" == empty-override ]]; then
+        printf 'BRAVE_SEARCH_API_KEY="fixture-value"\n' >"$install_root/.env"
+    fi
 
     (
         INTERACTIVE=false
@@ -53,7 +61,10 @@ run_case() {
         ENABLE_PRIVACY_SHIELD=false
         ENABLE_ODS_PROXY=false
         ENABLE_TAILSCALE=false
-        ENABLE_BRAVE_SEARCH=false
+        ENABLE_BRAVE_SEARCH="$brave_requested"
+        unset BRAVE_SEARCH_API_KEY
+        if [[ "$brave_key_mode" == env ]]; then BRAVE_SEARCH_API_KEY=fixture-value; fi
+        if [[ "$brave_key_mode" == empty-override ]]; then BRAVE_SEARCH_API_KEY=; fi
         GPU_COUNT=1
         GPU_BACKEND="$gpu_backend"
         HOST_ARCH=x86_64
@@ -64,7 +75,7 @@ run_case() {
         LLM_MODEL_SIZE_MB=0
 
         ods_progress() { :; }
-        ai_warn() { :; }
+        ai_warn() { printf '%s\n' "$1" >"$test_root/warning"; }
         log() { :; }
         warn() { :; }
         success() { :; }
@@ -74,12 +85,15 @@ run_case() {
         show_phase() { :; }
         show_install_menu() { :; }
 
+        # shellcheck source=../installers/lib/external-services.sh
+        source "$ROOT_DIR/installers/lib/external-services.sh"
         # shellcheck source=/dev/null
         source "$FEATURES_PHASE" >/dev/null
         printf '%s\n' "$ENABLE_COMFYUI" >"$test_root/comfyui-selection"
+        printf '%s\n' "$ENABLE_BRAVE_SEARCH" >"$test_root/brave-selection"
     )
 
-    local expected_suffix unexpected_suffix
+    local expected_suffix unexpected_suffix brave_expected=false
     if [[ "$selected" == "true" ]]; then
         expected_suffix=""
         unexpected_suffix=".disabled"
@@ -88,6 +102,10 @@ run_case() {
         unexpected_suffix=""
     fi
 
+    if [[ "$brave_requested" == true &&
+          ( "$brave_key_mode" == env || "$brave_key_mode" == file ) ]]; then
+        brave_expected=true
+    fi
     for root in "$source_root" "$install_root"; do
         test -f "$root/extensions/services/openclaw/compose.yaml${expected_suffix}"
         test ! -e "$root/extensions/services/openclaw/compose.yaml${unexpected_suffix}"
@@ -98,8 +116,19 @@ run_case() {
             test ! -e "$root/extensions/services/comfyui/compose.yaml"
             test -f "$root/extensions/services/comfyui/compose.yaml.disabled"
         fi
+        if [[ "$brave_expected" == true ]]; then
+            test -f "$root/extensions/services/brave-search/compose.yaml"
+            test ! -e "$root/extensions/services/brave-search/compose.yaml.disabled"
+        else
+            test ! -e "$root/extensions/services/brave-search/compose.yaml"
+            test -f "$root/extensions/services/brave-search/compose.yaml.disabled"
+        fi
     done
     [[ "$(cat "$test_root/comfyui-selection")" == "$comfyui_expected" ]]
+    [[ "$(cat "$test_root/brave-selection")" == "$brave_expected" ]]
+    if [[ "$brave_requested" == true && "$brave_expected" == false ]]; then
+        grep -Fq 'Brave Search was skipped because BRAVE_SEARCH_API_KEY is missing' "$test_root/warning"
+    fi
 }
 
 run_case false ""
@@ -107,5 +136,9 @@ run_case true ".disabled"
 run_case false "" true cpu false
 run_case false "" true amd true
 run_case false "" true nvidia true
+run_case false "" false cpu false true none
+run_case false "" false cpu false true env
+run_case false "" false cpu false true file
+run_case false "" false cpu false true empty-override
 
 echo "PASS: feature selection reconciles source and installed compose states"
