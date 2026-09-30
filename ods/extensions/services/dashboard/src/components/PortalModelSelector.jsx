@@ -62,11 +62,15 @@ export default function PortalModelSelector(props) {
     && (!confirmedSource || props.runtimeSource==='remote-provider')
     && (!props.runtimeFingerprint || props.runtimeFingerprint===lastLabel.current.value?.fingerprint)
       ?lastLabel.current.value:null
-  const unavailableLabel=props.availability==='unavailable'?{
-    text:remembered?`${modelDisplayName(remembered.model,true)} · unavailable`:'Model unavailable',
+  const unverified=props.availability==='available' && !confirmedSource && !props.activeModel
+  const qualifier=unverified?'unverified':'unavailable'
+  const notice=unverified?'Model selection is not currently verified.':'Portal is unavailable. Model selection is not currently verified.'
+  const unavailableLabel=props.availability==='unavailable' || unverified?{
+    text:remembered?`${modelDisplayName(remembered.model,true)} · ${qualifier}`:`Model ${qualifier}`,
     model:remembered?modelDisplayName(remembered.model,true):null,
-    label:remembered?`Last confirmed model: ${modelDisplayName(remembered.model,true)}; Portal unavailable`:'Model unavailable',
-    title:remembered?`Last confirmed model: ${modelDisplayName(remembered.model)}. Portal is unavailable; selection is not currently verified.`:'Portal is unavailable. Model selection is not currently verified.',
+    qualifier,notice,
+    label:remembered?`Last confirmed model: ${modelDisplayName(remembered.model,true)}; ${unverified?'model unverified':'Portal unavailable'}`:`Model ${qualifier}`,
+    title:remembered?`Last confirmed model: ${modelDisplayName(remembered.model)}. ${notice}`:notice,
   }:null
   // Remember only which reads to suppress, even before the first menu opening.
   // Selection and mutation authorization still require the current source.
@@ -75,7 +79,7 @@ export default function PortalModelSelector(props) {
   return <div className="portal-model-selector"><button type="button" className="portal-model-trigger"
     aria-label={unavailableLabel?.label || `Choose model: ${modelDisplayName(props.activeModel,true)}`} aria-haspopup="dialog" aria-expanded="false"
     title={unavailableLabel?.title || modelDisplayName(props.activeModel)} onClick={()=>setStarted(true)}>
-    <span>{unavailableLabel?.model || unavailableLabel?.text || modelDisplayName(props.activeModel,true)}</span>{unavailableLabel?.model && <span className="portal-model-unavailable"> · unavailable</span>}<ChevronDown size={12} aria-hidden="true"/>
+    <span>{unavailableLabel?.model || unavailableLabel?.text || modelDisplayName(props.activeModel,true)}</span>{unavailableLabel?.model && <span className="portal-model-unavailable"> · {unavailableLabel.qualifier}</span>}<ChevronDown size={12} aria-hidden="true"/>
   </button></div>
 }
 
@@ -149,7 +153,7 @@ function LoadedModelSelector({activeModel='',runtimeSource,observeCatalog,unavai
   const showActiveFallback=!unavailableLabel && activeModel && !current
   return <div ref={root} className="portal-model-selector">
     <button ref={trigger} type="button" className="portal-model-trigger" aria-label={unavailableLabel?.label || `Choose model: ${modelDisplayName(activeName,true)}`} aria-haspopup="dialog" aria-expanded={open} aria-controls={open?id:undefined} title={unavailableLabel?.title || modelDisplayName(activeName)} onClick={()=>{if(open)close();else {setOpen(true);if(observeCatalog)void refresh()}}}>
-      {switching && <Loader2 size={12} className="portal-model-loading" aria-hidden="true"/>}<span>{unavailableLabel?.model || unavailableLabel?.text || modelDisplayName(activeName,true)}</span>{unavailableLabel?.model && <span className="portal-model-unavailable"> · unavailable</span>}<ChevronDown size={12} aria-hidden="true"/>
+      {switching && <Loader2 size={12} className="portal-model-loading" aria-hidden="true"/>}<span>{unavailableLabel?.model || unavailableLabel?.text || modelDisplayName(activeName,true)}</span>{unavailableLabel?.model && <span className="portal-model-unavailable"> · {unavailableLabel.qualifier}</span>}<ChevronDown size={12} aria-hidden="true"/>
     </button>
     <section id={id} role="dialog" aria-label="Choose model" className="portal-model-menu" hidden={!open} style={!open?{display:'none'}:undefined}>
       <header><strong>{confirmation?'Switch model':'Model'}</strong>{switching && <span role="status">Switching…</span>}</header>
@@ -170,7 +174,7 @@ function LoadedModelSelector({activeModel='',runtimeSource,observeCatalog,unavai
           {installed.map(model=>{const selected=model.id===selectedId,disabled=unavailable(model);return <button key={model.id} role="menuitemradio" aria-checked={selected} type="button" className="portal-model-option" disabled={!selected && Boolean(disabled)} title={disabled || modelDisplayName(model)} onClick={()=>{if(selected)close(true);else if(!disabled)setConfirmId(model.id)}}><span><strong>{modelDisplayName(model)}</strong><small>{details(model)}</small></span>{model.id===activationLoading?<Loader2 size={15} className="portal-model-loading" aria-hidden="true"/>:selected?<Check size={15} aria-hidden="true"/>:null}</button>})}
         </div>
         {loading && observeCatalog && <p role="status" className="portal-model-notice">Loading models…</p>}
-        {unavailableLabel && <p role="status" className="portal-model-notice">Portal is unavailable. Model selection is not currently verified.</p>}
+        {unavailableLabel && <p role="status" className="portal-model-notice">{unavailableLabel.notice}</p>}
         {!unavailableLabel && !loading && !installed.length && !showActiveFallback && <p className="portal-model-notice">No installed models found.</p>}
         {reason && <p className="portal-model-notice" role="status">{reason}</p>}
         {(localError || error) && <p role="alert" className="portal-model-notice">{localError || error} {observeCatalog && <button type="button" onClick={()=>void refresh()}>Refresh</button>}</p>}

@@ -20,6 +20,36 @@ beforeEach(()=>{
 afterEach(()=>{vi.useRealTimers();vi.unstubAllGlobals()})
 const posts=()=>fetch.mock.calls.filter(([,options])=>options?.method==='POST')
 
+it.each([false,true])('keeps a cloud label diagnostic when available status loses runtime proof (opened: %s)',async opened=>{
+ vi.useFakeTimers()
+ const cloud={availability:'available',displayScope:'chat-a',runtimeSource:'remote-provider',activeModel:'cloud-model',runtimeFingerprint:'a'.repeat(64)}
+ const {rerender}=render(view(cloud))
+ if(opened)fireEvent.click(screen.getByRole('button',{name:'Choose model: cloud model'}))
+ const unknown={...cloud,runtimeSource:undefined,activeModel:'',runtimeFingerprint:undefined,runtimeObservation:null}
+ rerender(view(unknown))
+ const trigger=screen.getByRole('button',{name:'Last confirmed model: cloud model; model unverified'})
+ expect(trigger).toHaveTextContent('cloud model · unverified')
+ if(!opened)fireEvent.click(trigger)
+ await act(async()=>{await vi.advanceTimersByTimeAsync(60000)})
+ expect(screen.getByText('Model selection is not currently verified.')).toBeVisible()
+ expect(screen.queryByRole('menuitemradio',{checked:true})).toBeNull()
+ expect(screen.queryByText('No installed models found.')).toBeNull()
+ expect(fetch.mock.calls.filter(([url])=>url.startsWith('/api/models'))).toHaveLength(0)
+ expect(posts()).toHaveLength(0)
+ rerender(view({...unknown,displayScope:'chat-b'}))
+ expect(screen.getByRole('button',{name:'Model unverified'})).toBeVisible()
+ rerender(view({...cloud,displayScope:'chat-b',activeModel:'new-cloud-model',runtimeFingerprint:'b'.repeat(64),runtimeObservation:{}}))
+ expect(screen.getByRole('button',{name:'Choose model: new cloud model'})).toBeVisible()
+ rerender(view({...unknown,displayScope:'chat-b'}))
+ expect(screen.getByRole('button',{name:'Last confirmed model: new cloud model; model unverified'})).toBeVisible()
+})
+
+it('does not invent a selection on initially available status without runtime proof',()=>{
+ render(view({availability:'available',runtimeSource:undefined,activeModel:''}))
+ expect(screen.getByRole('button',{name:'Model unverified'})).toBeVisible()
+ expect(screen.queryByRole('button',{name:/Last confirmed/})).toBeNull()
+})
+
 it.each([false,true])('labels an unavailable cloud model only as last confirmed (menu opened: %s)',async opened=>{
   vi.useFakeTimers()
   const cloud={availability:'available',displayScope:'chat-a',runtimeSource:'remote-provider',activeModel:'cloud-model',runtimeFingerprint:'a'.repeat(64)}

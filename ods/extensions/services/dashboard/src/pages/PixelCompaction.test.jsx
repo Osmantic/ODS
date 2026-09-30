@@ -62,7 +62,7 @@ it.each(['model','provider'])('retains confirmed B through missing runtime and s
     await act(async()=>vi.advanceTimersByTimeAsync(3000))
     expect(screen.getByRole('button',{name:measuredB})).toBeVisible()
     if(!value.runtime) {
-      const modelLabel=value.available?'Choose model: Choose model':'Model unavailable'
+      const modelLabel=value.available?'Model unverified':'Model unavailable'
       fireEvent.click(screen.getByRole('button',{name:modelLabel}))
       await act(async()=>{})
       expect(screen.getByRole('dialog',{name:'Choose model'})).toHaveTextContent('The conversation’s model source is not confirmed.')
