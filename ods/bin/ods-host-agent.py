@@ -5951,12 +5951,20 @@ def _extension_stop_targets(service_id: str) -> list[str]:
     return targets
 
 
-def _whisper_model_ready_after_start(max_wait_seconds: float = 480) -> tuple[bool, str]:
+def _whisper_model_ready_after_start(
+    max_wait_seconds: float = 480, compose_env: dict[str, str] | None = None,
+) -> tuple[bool, str]:
     """Make a Library-started Whisper usable, as installer Phase 12 does."""
     try:
         env = load_env(INSTALL_DIR / ".env")
     except (OSError, UnicodeError, ValueError):
         return False, "Whisper started, but its selected model could not be read; run ods repair voice"
+    # Compose process environment overrides .env interpolation. Probe the same
+    # model and published port that the just-started container received.
+    if compose_env is not None:
+        for key in ("AUDIO_STT_MODEL", "WHISPER_PORT", "GPU_BACKEND", "WHISPER_ACCELERATION"):
+            if key in compose_env:
+                env[key] = compose_env[key]
     fallback_model = (
         "deepdml/faster-whisper-large-v3-turbo-ct2"
         if env.get("GPU_BACKEND") == "nvidia" and env.get("WHISPER_ACCELERATION", "cuda") == "cuda"
@@ -6087,7 +6095,8 @@ def docker_compose_action(service_id: str, action: str) -> tuple:
                 return ok, error
         if result.returncode == 0 and action == "start" and service_id == "whisper":
             return _whisper_model_ready_after_start(
-                max_wait_seconds=min(480, max(0, action_deadline - time.monotonic()))
+                max_wait_seconds=min(480, max(0, action_deadline - time.monotonic())),
+                compose_env=compose_env,
             )
         return (True, "") if result.returncode == 0 else (False, result.stderr[:500])
     except subprocess.TimeoutExpired:

@@ -28,12 +28,13 @@ sys.modules["ods_host_agent"] = _mod
 _spec.loader.exec_module(_mod)
 
 
-@pytest.mark.parametrize("model,settings", [
-    ("Systran/faster-whisper-base", "AUDIO_STT_MODEL=Systran/faster-whisper-base\n"),
-    ("deepdml/faster-whisper-large-v3-turbo-ct2", "GPU_BACKEND=nvidia\n"),
+@pytest.mark.parametrize("model,settings,override", [
+    ("Systran/faster-whisper-base", "AUDIO_STT_MODEL=Systran/faster-whisper-base\n", False),
+    ("deepdml/faster-whisper-large-v3-turbo-ct2", "GPU_BACKEND=nvidia\n", False),
+    ("Systran/faster-whisper-base", "AUDIO_STT_MODEL=stale/model\nWHISPER_PORT=1\n", True),
 ])
 def test_library_whisper_start_downloads_missing_model_and_reuses_cache(
-    tmp_path, monkeypatch, model, settings,
+    tmp_path, monkeypatch, model, settings, override,
 ):
     calls = []
     cached = set()
@@ -66,14 +67,16 @@ def test_library_whisper_start_downloads_missing_model_and_reuses_cache(
     worker.start()
     try:
         (tmp_path / ".env").write_text(
-            f"{settings}WHISPER_PORT={server.server_port}\n",
+            settings + ("" if override else f"WHISPER_PORT={server.server_port}\n"),
             encoding="utf-8",
         )
         monkeypatch.setattr(_mod, "INSTALL_DIR", tmp_path)
         expected_path = "/v1/models/" + model.replace("/", "%2F")
-        assert _mod._whisper_model_ready_after_start(5) == (True, "")
+        compose_env = ({"AUDIO_STT_MODEL": model, "WHISPER_PORT": str(server.server_port)}
+                       if override else None)
+        assert _mod._whisper_model_ready_after_start(5, compose_env) == (True, "")
         assert calls.count(("POST", expected_path)) == 1
-        assert _mod._whisper_model_ready_after_start(5) == (True, "")
+        assert _mod._whisper_model_ready_after_start(5, compose_env) == (True, "")
         assert calls.count(("POST", expected_path)) == 1
     finally:
         server.shutdown()
