@@ -183,6 +183,12 @@ class PythonDockerRuntimeTests(unittest.TestCase):
         self.assertEqual(result['status'], 'failed', result)
         self.assertIn('completion receipt', result['stderr'])
 
+    def test_all_skipped_tests_are_not_execution_evidence(self):
+        self.prepare(test='import unittest\n@unittest.skip("not implemented")\nclass T(unittest.TestCase):\n def test_placeholder(self): pass\n')
+        result = run_stage(self.image, self.job, 'test', cancel=threading.Event(), runtime='python')
+        self.assertEqual(result['status'], 'failed', result)
+        self.assertIn('completion receipt', result['stderr'])
+
     def test_failing_assertion_blocks_build(self):
         self.prepare(test='import unittest\nclass T(unittest.TestCase):\n def test_failure(self): self.fail("deliberate failure")\n')
         result = run_stage(self.image, self.job, 'test', cancel=threading.Event(), runtime='python')

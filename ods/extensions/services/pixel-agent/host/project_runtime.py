@@ -69,7 +69,7 @@ subprocess.run([python, '-I', '-m', 'pip', '--isolated', '--disable-pip-version-
 # before unittest discovery finishes. Require bounded completion evidence from
 # the runner as well. This is execution evidence, not trust in project tests.
 read_fd, write_fd = os.pipe()
-runner = "import json, os, sys, unittest; receipt=int(sys.argv[1]); sys.path.insert(0, '/home/node'); suite=unittest.defaultTestLoader.discover('/home/node/tests'); count=suite.countTestCases(); print('ODS discovered tests:', count, flush=True); result=unittest.TextTestRunner(verbosity=2).run(suite); os.write(receipt, json.dumps({'tests':count,'success':result.wasSuccessful()}).encode()); os.close(receipt); sys.exit(0 if count and result.wasSuccessful() else 1)"
+runner = "import json, os, sys, unittest; receipt=int(sys.argv[1]); sys.path.insert(0, '/home/node'); suite=unittest.defaultTestLoader.discover('/home/node/tests'); count=suite.countTestCases(); print('ODS discovered tests:', count, flush=True); result=unittest.TextTestRunner(verbosity=2).run(suite); executed=result.testsRun-len(result.skipped); os.write(receipt, json.dumps({'tests':executed,'success':result.wasSuccessful()}).encode()); os.close(receipt); sys.exit(0 if executed and result.wasSuccessful() else 1)"
 try:
     result = subprocess.run([python, '-I', '-c', runner, str(write_fd)], pass_fds=(write_fd,))
 finally:
