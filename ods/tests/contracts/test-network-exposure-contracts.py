@@ -220,13 +220,14 @@ def test_dashboard_admin_api_requires_sign_in_off_the_machine() -> None:
         "only the loopback-published listener may skip sign-in, and only for loopback hosts without forwarding",
     )
     assert_true(
-        "- ODS_DASHBOARD_BIND=${BIND_ADDRESS:-127.0.0.1}" in compose
-        and '"${BIND_ADDRESS:-127.0.0.1}:${DASHBOARD_PORT:-3001}:3001"' in compose,
-        "the dashboard must learn the address its port 3001 is published on",
+        "- ODS_DASHBOARD_BIND=127.0.0.1" in compose
+        and '"127.0.0.1:${DASHBOARD_PORT:-3001}:3001"' in compose
+        and '"${BIND_ADDRESS:-127.0.0.1}:${DASHBOARD_REMOTE_PORT:-3011}:3011"' in compose,
+        "the unauthenticated dashboard listener must be host-loopback only; the network listener needs sign-in",
     )
     assert_true(
         "LOCAL_LISTENER=off" in entrypoint and 's|__ODS_LOCAL_LISTENER__|${LOCAL_LISTENER}|g' in entrypoint,
-        "network-exposed binds must disable the local no-sign-in listener",
+        "an unknown dashboard bind must disable the local no-sign-in listener",
     )
 
 

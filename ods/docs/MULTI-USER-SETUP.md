@@ -90,7 +90,7 @@ Recommended exposure profile for a small-team deployment:
 | Service | Expose to LAN? | Notes |
 |---|---|---|
 | `open-webui` (3000) | Yes | The user-facing chat UI; has per-account auth |
-| `dashboard` (3001) | No | Operator surface; keep VPN-only or admin-only |
+| `dashboard` (3011 network, 3001 local) | No | Operator surface; keep VPN-only or admin-only |
 | `dashboard-api` (3002) | No | Same — controls system state, no per-user RBAC |
 | `llama-server` (8080) | If users need raw API | OpenAI-compatible; protected by `LITELLM_KEY` if routed via litellm |
 | `litellm` (4000) | If users need API | Master-key auth — same key for everyone |
