@@ -11,6 +11,10 @@ def dispatch_project(controller, request, *, request_key=None):
     if not isinstance(request, dict) or request.get("schemaVersion") != 1:
         raise ValueError("invalid project request")
     action = request.get("action")
+    if action == 'capabilities':
+        if set(request) != {'schemaVersion', 'action', 'runtime'} or request['runtime'] != 'python':
+            raise ValueError('invalid runtime capability request')
+        return controller.capabilities(request['runtime'])
     if action == "submit":
         if set(request) != {"schemaVersion", "action", "project", "outputDirectory"}:
             raise ValueError("invalid project submission")

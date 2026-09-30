@@ -5,6 +5,7 @@ the adapter to real owner policy; neither tool arguments nor these job records
 provide authority. Existing jobs are observed, never automatically replayed.
 """
 from concurrent.futures import ThreadPoolExecutor
+import copy
 import json
 import subprocess
 import threading
@@ -13,6 +14,7 @@ from project_artifacts import collect_artifacts, import_artifacts
 from project_jobs import ProjectJobs
 from project_runtime import run_stage, seed_project
 from project_runtime_protocol import select_project_runtime
+from project_capabilities import probe_python_runtime, cleanup_pending_probe, ProbeCleanupPending
 from project_snapshot import snapshot_project
 
 
@@ -26,6 +28,69 @@ class ProjectController:
         self.pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ods-project")
         self.lock = threading.Lock()
         self.futures, self.cancellations = {}, {}
+        self._capability_cache = (None, None)
+        self._pending_capability_cleanup = None
+        self._capability_stop, self._capability_thread = threading.Event(), None
+
+    def initialize_capabilities(self, *, cancel=None):
+        """One service-owned probe attempt; never invoked by model tool requests."""
+        image = self.python_image
+        if self._pending_capability_cleanup is not None:
+            pending = self._pending_capability_cleanup
+            try:
+                cleanup_pending_probe(pending.image, pending.name)
+            except (OSError, ValueError, subprocess.SubprocessError):
+                return
+            self._pending_capability_cleanup = None
+        if cancel is not None and cancel.is_set():
+            return
+        cached_image, cached_evidence = self._capability_cache
+        if not image or (cached_image == image and cached_evidence is not None):
+            return
+        self._capability_cache = (image, None)
+        try:
+            evidence = probe_python_runtime(image, cancel=cancel)
+        except ProbeCleanupPending as pending:
+            self._pending_capability_cleanup = pending
+            return
+        except (OSError, ValueError, TypeError, subprocess.SubprocessError):
+            # Identity discovery must not take the existing executor offline.
+            # No facts from an earlier image or inferred host data are returned.
+            return
+        if self.python_image == image and not (cancel is not None and cancel.is_set()):
+            self._capability_cache = (image, evidence)
+
+    def start_capability_probe(self):
+        """One service-owned worker; no tool request starts or retries probes."""
+        if not self.python_image or self._capability_thread is not None:
+            return
+        def collect():
+            failures = 0
+            while not self._capability_stop.is_set():
+                self.initialize_capabilities(cancel=self._capability_stop)
+                cached_image, cached_evidence = self._capability_cache
+                available = cached_image == self.python_image and cached_evidence is not None
+                delay = 60 if available else (1, 5, 15, 60)[min(failures, 3)]
+                failures = 0 if available else failures + 1
+                if self._capability_stop.wait(delay):
+                    return
+        self._capability_thread = threading.Thread(target=collect, name='ods-project-capabilities', daemon=True)
+        self._capability_thread.start()
+
+    def capabilities(self, runtime):
+        if runtime != 'python':
+            raise ValueError('unsupported capability runtime')
+        self._require(None, 'capabilities')
+        response = {'schemaVersion': 1, 'kind': 'ods-project-capabilities', 'runtime': runtime,
+                    'scope': 'installed-image-only', 'status': 'unavailable'}
+        image = self.python_image
+        cached_image, cached_evidence = self._capability_cache
+        if not image:
+            return {**response, 'reason': 'runtime-not-installed'}
+        if cached_image != image or cached_evidence is None:
+            return {**response, 'reason': 'runtime-probe-unavailable'}
+        return {**response, 'status': 'ready', 'image': image,
+                **copy.deepcopy(cached_evidence)}
 
     def _require(self, project, action, binding=None):
         if self.authorize(project, action, binding) is not True:
@@ -147,4 +212,11 @@ class ProjectController:
         return warnings
 
     def close(self):
-        self.pool.shutdown(wait=True)
+        self._capability_stop.set()
+        try:
+            if self._capability_thread is not None:
+                self._capability_thread.join(timeout=10)
+                if self._capability_thread.is_alive():
+                    raise RuntimeError('capability probe shutdown unconfirmed')
+        finally:
+            self.pool.shutdown(wait=True)

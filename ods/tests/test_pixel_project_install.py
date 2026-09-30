@@ -1,4 +1,5 @@
 import importlib.util
+import ast
 import os
 from pathlib import Path
 import pwd
@@ -17,6 +18,19 @@ def config():
     owner = pwd.getpwuid(os.getuid())
     return {'ownerUid': owner.pw_uid, 'imageId': 'sha256:' + 'a' * 64,
             'workspace': str(Path(owner.pw_dir) / '.openclaw/workspace-pixel')}
+
+
+def test_runtime_distribution_includes_capability_probe_and_all_local_imports():
+    source = HELPER.parents[2] / 'extensions/services/pixel-agent/host'
+    assert 'project_capabilities.py' in installer.FILES
+    for name in installer.FILES:
+        path = source / name
+        assert path.is_file()
+        for node in ast.walk(ast.parse(path.read_text())):
+            if isinstance(node, ast.ImportFrom) and node.module:
+                local = node.module.split('.')[0] + '.py'
+                if (source / local).is_file():
+                    assert local in installer.FILES, f'{name} depends on missing {local}'
 
 
 def test_unit_runs_as_owner_and_never_enables_full_access():

@@ -33,4 +33,7 @@ test('installed capability guides the owner to managed builds without granting a
   assert.match(result.appendSystemContext, /Python 3.11/);
   assert.match(result.appendSystemContext, /verified PyPI wheel SHA-256/);
   assert.match(result.appendSystemContext, /even when the conversational sandbox lacks pip/);
+  assert.match(result.appendSystemContext, /action capabilities and runtime python/);
+  assert.match(result.appendSystemContext, /never the host or conversational sandbox architecture/);
+  assert.match(result.appendSystemContext, /do not claim the lock is portable/);
 });

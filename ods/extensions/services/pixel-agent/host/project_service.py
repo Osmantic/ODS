@@ -60,6 +60,7 @@ def serve(controller, stop, *, ready=None):
             bound = socket_path.lstat()
             listener.listen(8)
             listener.settimeout(0.2)
+            controller.start_capability_probe()
             if ready is not None:
                 ready.set()
             while not stop.is_set():

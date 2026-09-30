@@ -22,6 +22,7 @@ UNIT = Path('/etc/systemd/system/ods-pixel-project.service')
 CONFIG = Path('/etc/ods-pixel-project.json')
 STATE = '/var/lib/ods-pixel-project'
 FILES = ('project_service.py', 'project_controller.py', 'project_runtime.py', 'project_runtime_protocol.py',
+         'project_capabilities.py',
          'project_snapshot.py', 'project_jobs.py', 'project_artifacts.py', 'project_dispatch.py',
          'project_transport.py', 'project_authority.py', 'unix_peer.py')
 
