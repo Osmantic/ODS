@@ -13,6 +13,14 @@ test('optional publication does not become required for requested source files',
     'Create a website. No need to publish it.',
     'Create the website source. You do not need to build and publish it.',
     'Crie um site. Não precisa compilar, publicar ou abrir uma prévia agora.',
+    // The same intent in other natural phrasings.
+    "Create a website. You don't have to publish it.",
+    "Create a website. You needn't publish it.",
+    'Create a website. No need to install, build or publish it.',
+    'Create a website. No need to build or deploy it.',
+    'Create a website. Publishing is not necessary.',
+    'Create a website. No need for a preview.',
+    'Crie um site. Não há necessidade de publicar.',
   ]) assert.equal(userMessageRequestsWorkspacePreview([], prompt), false, prompt);
 });
 
@@ -23,6 +31,11 @@ test('an unrelated optional action does not cancel requested publication', () =>
     'Create a website. No need to build it again. Publish the existing website.',
     'Create a website. No need to publish the notes, but publish the website.',
     'Crie um site. Não precisa publicar as notas; publique o site.',
+    // An arbitrary verb must not join the declined list.
+    'Create a website. No need to explain, publish it right away.',
+    "Create a website. You don't have to explain, just publish it.",
+    'Create a website. Publishing is necessary.',
+    "Create a website. You don't have to test it. Publish the site.",
   ]) assert.equal(userMessageRequestsWorkspacePreview([], prompt), true, prompt);
 });
 
