@@ -17,6 +17,7 @@ from project_runtime_protocol import select_project_runtime
 from project_capabilities import probe_python_runtime, cleanup_pending_probe, ProbeCleanupPending
 from project_storage import ProjectStorage, verify_volume
 from project_snapshot import snapshot_project
+from project_diagnostics import SCRATCH_BYTES, diagnostic_digest, diagnostic_output, validate_diagnostic
 
 
 class ProjectController:
@@ -128,6 +129,78 @@ class ProjectController:
         self._require(row["request"]["project"], "observe", row["request"])
         return row
 
+    def diagnose(self, request_key, runtime):
+        if runtime not in ('npm', 'python'):
+            raise ValueError('unsupported diagnostic runtime')
+        self._require(None, 'execute')
+        image = self.python_image if runtime == 'python' else self.image
+        if not image:
+            return diagnostic_output(runtime, code='unavailable', cleanup='not-started')
+        request = {'project': 'ods-diagnostic', 'kind': 'diagnostic', 'runtime': runtime,
+                   'sourceSha256': diagnostic_digest(runtime), 'image': image, 'outputDirectory': 'diagnostic'}
+        with self.lock:
+            for completed in [key for key, future in self.futures.items() if future.done()]:
+                self.futures.pop(completed)
+                self.cancellations.pop(completed, None)
+            if sum(not future.done() for future in self.futures.values()) >= 8:
+                raise RuntimeError('project queue is full')
+            self._require(None, 'execute', request)
+            job, created = self.jobs.create(request_key, request)
+            if created:
+                cancel = threading.Event()
+                self.cancellations[job] = cancel
+                self.futures[job] = self.pool.submit(self._diagnose, job, request, cancel)
+        return self.jobs.observe(job)
+
+    def _diagnose(self, job, request, cancel):
+        if not self.jobs.claim(job):
+            return
+        runtime, image = request['runtime'], request['image']
+        storage = ProjectStorage(self.storage.state, job_bytes=min(self.storage.job_bytes, SCRATCH_BYTES),
+                                 total_bytes=self.storage.total_bytes, max_jobs=self.storage.max_jobs)
+        resources_started, report, code = False, None, 'unavailable'
+        try:
+            if image != (self.python_image if runtime == 'python' else self.image):
+                raise ValueError('job runtime no longer matches installed configuration')
+            self._require(None, 'execute', request)
+            if cancel.is_set():
+                self.jobs.controller_failure(job, 'cancelled before diagnostic execution', state='cancelled')
+                return
+            storage.reserve(image, job)
+            resources_started = True
+            storage.create_volume(job)
+            self._require(None, 'execute', request)
+            result = run_stage(image, job, 'diagnose', cancel=cancel, runtime=runtime, timeout=35)
+            self.jobs.record_stage(job, 'diagnose', result)
+            if result['status'] == 'succeeded' and not result.get('truncated', {}).get('stdout'):
+                report = validate_diagnostic(result.get('stdout'), runtime)
+                required = ('python', 'pip', 'venv', 'scratch') if runtime == 'python' else ('node', 'npm', 'scratch')
+                codes = [report['checks'][name]['code'] for name in required]
+                code = next((value for value in ('missing', 'incompatible', 'unavailable', 'unsupported') if value in codes), 'ready')
+        except PermissionError:
+            code = 'denied'
+            self.jobs.controller_failure(job, 'diagnostic authorization revoked', state='unconfirmed' if resources_started else 'failed')
+        except (OSError, ValueError, TypeError, subprocess.SubprocessError):
+            steps = self.jobs.observe(job)['steps']
+            stopped = bool(steps and steps[-1]['status'] in ('succeeded', 'failed', 'cancelled', 'timed_out'))
+            self.jobs.controller_failure(job, 'diagnostic execution unavailable', state='failed' if stopped or not resources_started else 'unconfirmed')
+        finally:
+            state = self.jobs.observe(job)['state']
+            # A successful diagnostic stage is terminal, unlike the build pipeline.
+            steps = self.jobs.observe(job)['steps']
+            known_terminal = state in ('succeeded', 'failed', 'cancelled') or (
+                state == 'running' and len(steps) == 1 and steps[0]['status'] == 'succeeded')
+            warnings = []
+            cleanup = 'not-started'
+            if resources_started:
+                warnings = self._cleanup(job, image=image, runtime=runtime) if known_terminal else [
+                    'Unconfirmed execution: bounded storage remains reserved.']
+                cleanup = 'unconfirmed' if warnings else 'confirmed'
+            output = diagnostic_output(runtime, report=report, code=code, cleanup=cleanup,
+                                       scratch_bytes=storage.job_bytes)
+            self.jobs.diagnostic_result(job, output)
+            self.jobs.cleanup_warnings(job, warnings)
+
     def cancel(self, job):
         row = self.jobs.observe(job)
         self._require(row["request"]["project"], "cancel", row["request"])
@@ -151,7 +224,16 @@ class ProjectController:
     def _retry_cleanup(self, job, request):
         # Retry only resource removal; do not rewrite a terminal job outcome.
         self._require(request['project'], 'cancel', request)
-        self.jobs.cleanup_warnings(job, self._cleanup(job, image=request['image'], runtime=request.get('runtime', 'npm')))
+        warnings = self._cleanup(job, image=request['image'], runtime=request.get('runtime', 'npm'))
+        output = self.jobs.observe(job).get('output') or {}
+        if request.get('kind') == 'diagnostic' and output.get('kind') == 'ods-project-diagnostic':
+            updated = {**output, **diagnostic_output(request['runtime'], report=output,
+                       code=output['code'], cleanup='unconfirmed' if warnings else 'confirmed',
+                       scratch_bytes=output['scratchLimitBytes'])}
+            if not warnings:
+                updated.pop('cleanupWarnings', None)
+            self.jobs.diagnostic_result(job, updated)
+        self.jobs.cleanup_warnings(job, warnings)
 
     def _recover_cancel(self, job, request):
         # Recheck policy after queueing; stored job metadata grants no authority.
@@ -161,7 +243,7 @@ class ProjectController:
             self.jobs.recovery_result(job, {"status": "unconfirmed", "evidence": "authorization-denied"})
             raise
         row = self.jobs.observe(job)
-        stages = ("acquire", "test", "build")
+        stages = ('diagnose',) if request.get('kind') == 'diagnostic' else ("acquire", "test", "build")
         expected = stages[len(row["steps"])] if len(row["steps"]) < len(stages) else None
         if row['steps'] and row['steps'][-1]['status'] == 'unconfirmed':
             expected = row['steps'][-1]['stage']
@@ -169,7 +251,7 @@ class ProjectController:
         self.jobs.recovery_result(job, evidence)
         if evidence.get('status') == 'cancelled':
             # Tmpfs contents are ephemeral; retain receipts, not reserved RAM.
-            self.jobs.cleanup_warnings(job, self._cleanup(job, image=request['image'], runtime=request.get('runtime', 'npm')))
+            self._retry_cleanup(job, request)
 
     def _work(self, job, request, source, cancel):
         if not self.jobs.claim(job):
@@ -223,7 +305,7 @@ class ProjectController:
     def _cleanup(self, job, *, image=None, runtime='npm'):
         image = self.image if image is None else image
         warnings = []
-        for stage in ("seed-manifests", "seed-source", "acquire", "test", "build", "keeper"):
+        for stage in ("seed-manifests", "seed-source", "acquire", "test", "build", "keeper", "diagnose"):
             try:
                 name = job + "-" + stage
                 result = subprocess.run(["docker", "inspect", name], capture_output=True, timeout=10)

@@ -60,24 +60,30 @@ export function createProjectRunControl({wait = ms => delay(ms), now = () => per
     }
     if (run.stopping) throw Error('project run is stopping');
     return async (normalized, options) => {
-      if (run.stopping && normalized.action === 'submit') throw Error('project run is stopping');
+      const createsJob=['submit','diagnose'].includes(normalized.action);
+      if (run.stopping && createsJob) throw Error('project run is stopping');
       run.pending++;
       try {
         const receipt = await request(normalized, options);
         if (receipt?.schemaVersion === 1 && receipt.kind === 'ods-project-job' &&
             /^ods-project-[a-f0-9]{24}$/.test(receipt.jobId ?? '') &&
-            (normalized.action === 'submit' ? receipt.project === normalized.project : receipt.jobId === normalized.jobId)) {
+            (normalized.action === 'submit' ? receipt.project === normalized.project
+              : normalized.action==='diagnose' ? receipt.purpose==='diagnostic' && receipt.project===null
+                && receipt.scope==='managed-executor' && receipt.runtime===normalized.runtime : receipt.jobId === normalized.jobId)) {
           // Merely observing a previous run's job does not transfer ownership
           // to this run's Stop button.
-          if (normalized.action === 'submit' || run.jobs.has(receipt.jobId)) {
+          if (createsJob || run.jobs.has(receipt.jobId)) {
             run.jobs.set(receipt.jobId, {receipt, request});
           }
-        } else if (normalized.action === 'submit' && !['denied', 'invalid-request'].includes(receipt?.status)) {
+        } else if (createsJob && !['denied', 'invalid-request'].includes(receipt?.status)
+            && !(normalized.action==='diagnose' && receipt?.kind==='ods-project-diagnostic'
+              && receipt.scope==='managed-executor' && receipt.runtime===normalized.runtime
+              && receipt.code==='unavailable' && receipt.cleanup==='not-started')) {
           run.unknown = true;
         }
         return receipt;
       } catch (error) {
-        if (normalized.action === 'submit') run.unknown = true;
+        if (createsJob) run.unknown = true;
         throw error;
       } finally { run.pending--; }
     };

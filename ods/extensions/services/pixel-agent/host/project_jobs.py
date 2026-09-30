@@ -61,8 +61,15 @@ class ProjectJobs:
         if not isinstance(request_key, str) or not re.fullmatch(r"[a-f0-9]{64}", request_key):
             raise ValueError("controller request key required")
         fields = {"project", "sourceSha256", "image", "outputDirectory"}
+        diagnostic = (isinstance(request, dict) and set(request) == fields | {'kind', 'runtime'}
+                      and request['kind'] == 'diagnostic' and request['runtime'] in ('npm', 'python')
+                      and request['project'] == 'ods-diagnostic' and request['outputDirectory'] == 'diagnostic')
+        if diagnostic:
+            from project_diagnostics import diagnostic_digest
+            if request['sourceSha256'] != diagnostic_digest(request['runtime']):
+                raise ValueError('diagnostic program binding mismatch')
         if not isinstance(request, dict) or not (
-                set(request) == fields or
+                diagnostic or set(request) == fields or
                 (set(request) == fields | {"runtime"} and request["runtime"] == "python")):
             raise ValueError("exact project execution request required")
         project = request["project"]
@@ -105,7 +112,7 @@ class ProjectJobs:
                               (time.time(), job)).rowcount == 1
 
     def record_stage(self, job, stage, result):
-        if stage not in ("acquire", "test", "build") or not isinstance(result, dict):
+        if stage not in ("acquire", "test", "build", "diagnose") or not isinstance(result, dict):
             raise ValueError("invalid stage result")
         status = result.get("status")
         if status not in ("succeeded", "failed", "cancelled", "timed_out", "unconfirmed"):
@@ -114,11 +121,11 @@ class ProjectJobs:
             raise ValueError("success requires zero exit status")
         with self._connect() as db:
             db.execute("BEGIN IMMEDIATE")
-            row = db.execute("SELECT state,steps FROM jobs WHERE id=?", (job,)).fetchone()
+            row = db.execute("SELECT state,steps,request FROM jobs WHERE id=?", (job,)).fetchone()
             if row is None or row["state"] != "running":
                 raise ValueError("job is not running")
             steps = json.loads(row["steps"])
-            expected = ("acquire", "test", "build")
+            expected = ('diagnose',) if json.loads(row['request']).get('kind') == 'diagnostic' else ("acquire", "test", "build")
             if len(steps) >= len(expected) or expected[len(steps)] != stage:
                 raise ValueError("stage order or duplicate result")
             steps.append({**result, "stage": stage})
@@ -150,6 +157,29 @@ class ProjectJobs:
             db.execute("UPDATE jobs SET cancel_requested=1,state=CASE WHEN state='queued' THEN 'cancelled' ELSE state END,updated=? WHERE id=? AND state IN ('queued','running','unconfirmed')",
                        (time.time(), job))
         return self.observe(job)
+
+    def diagnostic_result(self, job, output):
+        """Record a fixed probe's receipt without asserting an imported artifact."""
+        from project_diagnostics import validate_diagnostic
+        with self._connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            row = db.execute('SELECT state,steps,request,cancel_requested FROM jobs WHERE id=?', (job,)).fetchone()
+            if row is None or json.loads(row['request']).get('kind') != 'diagnostic':
+                raise ValueError('diagnostic job required')
+            runtime = json.loads(row['request'])['runtime']
+            if output.get('checks'):
+                validate_diagnostic(self._json({'schemaVersion': 1, 'scope': 'managed-executor',
+                                               'runtime': runtime, 'checks': output['checks']}), runtime)
+            state = row['state']
+            if state == 'running':
+                steps = json.loads(row['steps'])
+                if len(steps) != 1 or steps[0]['stage'] != 'diagnose' or steps[0]['status'] != 'succeeded':
+                    raise ValueError('diagnostic execution evidence incomplete')
+                state = 'cancelled' if row['cancel_requested'] else 'succeeded'
+            if state == 'queued':
+                raise ValueError('diagnostic has not run')
+            db.execute('UPDATE jobs SET state=?,output=?,updated=? WHERE id=?',
+                       (state, self._json(output), time.time(), job))
 
     def recover_interrupted(self):
         """Called only by the service holding its exclusive lifetime lock.
@@ -200,9 +230,10 @@ class ProjectJobs:
                                                        runtime=row["request"].get("runtime", "npm"))}
         if row["state"] != "running":
             return {"job": row, "runtime": None}
-        stages = ("acquire", "test", "build")
+        stages = ('diagnose',) if row['request'].get('kind') == 'diagnostic' else ("acquire", "test", "build")
         if len(row["steps"]) >= len(stages):
-            return {"job": row, "runtime": {"status": "awaiting-artifact-import"}}
+            status = 'awaiting-diagnostic-receipt' if row['request'].get('kind') == 'diagnostic' else 'awaiting-artifact-import'
+            return {"job": row, "runtime": {"status": status}}
         stage = stages[len(row["steps"])]
         runtime_args = {"runtime": "python"} if row["request"].get("runtime") == "python" else {}
         evidence = observer(row["request"]["image"], job, stage, **runtime_args)
@@ -222,11 +253,13 @@ class ProjectJobs:
         """Record stopped execution, without claiming lost import/exit evidence."""
         with self._connect() as db:
             db.execute("BEGIN IMMEDIATE")
-            row = db.execute("SELECT state,output,cancel_requested FROM jobs WHERE id=?", (job,)).fetchone()
+            row = db.execute("SELECT state,output,cancel_requested,request FROM jobs WHERE id=?", (job,)).fetchone()
             if row is None or row["state"] != "unconfirmed":
                 return
             output = json.loads(row["output"]) if row["output"] else {}
-            output.update(runtimeRecovery=evidence, artifactImportUnconfirmed=True)
+            output.update(runtimeRecovery=evidence)
+            if json.loads(row['request']).get('kind') != 'diagnostic':
+                output['artifactImportUnconfirmed'] = True
             confirmed = (row["cancel_requested"] and evidence.get("status") == "cancelled"
                          and evidence.get("evidence") == "docker-state")
             db.execute("UPDATE jobs SET state=?,output=?,updated=? WHERE id=?",

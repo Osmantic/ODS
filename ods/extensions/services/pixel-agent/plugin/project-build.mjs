@@ -2,6 +2,7 @@
 // transport; there is deliberately no shell fallback or implicit permission.
 import {setTimeout as delay} from 'node:timers/promises';
 import {capabilityToolResult, capabilityUnavailable} from './project-capabilities.mjs';
+import {validateDiagnostic} from './project-diagnostics.mjs';
 const JOB = /^ods-project-[a-f0-9]{24}$/;
 const PATH = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const STATES = new Set(['queued', 'running', 'succeeded', 'failed', 'cancelled', 'unconfirmed']);
@@ -11,6 +12,8 @@ export function normalizeProjectBuild(params) {
   const keys = Object.keys(params).sort().join(',');
   if (params.action === 'capabilities') {
     if (keys !== 'action,runtime' || params.runtime !== 'python') throw Error('invalid capability query');
+  } else if (params.action === 'diagnose') {
+    if (keys !== 'action,runtime' || !['npm','python'].includes(params.runtime)) throw Error('invalid diagnostic request');
   } else if (params.action === 'submit') {
     if (keys !== 'action,outputDirectory,project' || typeof params.project !== 'string'
         || params.project.length > 1024 || params.project.split('/').length > 8
@@ -23,12 +26,22 @@ export function normalizeProjectBuild(params) {
 }
 
 function validateReceipt(value, params) {
+  const diagnostic=value?.purpose==='diagnostic';
   if (!value || value.schemaVersion !== 1 || value.kind !== 'ods-project-job'
       || typeof value.jobId !== 'string' || !JOB.test(value.jobId) || !STATES.has(value.status)
-      || typeof value.project !== 'string' || typeof value.cancelRequested !== 'boolean'
+      || (diagnostic ? value.project!==null || value.scope!=='managed-executor' || !['npm','python'].includes(value.runtime) : typeof value.project !== 'string')
+      || typeof value.cancelRequested !== 'boolean'
       || !Array.isArray(value.steps) || value.steps.length > 3
-      || (params.action === 'submit' ? value.project !== params.project : value.jobId !== params.jobId)) {
+      || (params.action === 'submit' ? diagnostic || value.project !== params.project
+        : params.action === 'diagnose' ? !diagnostic || value.runtime!==params.runtime : value.jobId !== params.jobId)) {
     throw Error('unconfirmed controller response');
+  }
+  if(diagnostic) {
+    if(value.steps.length>1 || value.steps.some(step=>step.stage!=='diagnose')) throw Error('invalid diagnostic stages');
+    if(value.output?.kind==='ods-project-diagnostic') validateDiagnostic(value.output,value.runtime);
+    if(value.status==='succeeded' && (value.steps.length!==1 || value.steps[0].status!=='succeeded'
+      || value.steps[0].exitCode!==0 || value.output?.kind!=='ods-project-diagnostic')) throw Error('incomplete diagnostic evidence');
+    return value;
   }
   if (value.status === 'succeeded') {
     if (value.steps.length !== 3 || value.steps.some((step, i) =>
@@ -46,19 +59,31 @@ export function createProjectBuildTool({request, wait = (ms, signal) => delay(ms
   if (typeof request !== 'function') throw Error('authenticated project transport required');
   const tool = {
     name: 'pixel_ods_project_build',
-    description: 'Managed dependency acquisition, tests and build; no host install. First call {action:capabilities,runtime:python} before choosing Python wheel hashes: complete ABI/tags describe only the installed executor image, never host architecture or universal portability. Query grants no execution permission. Submit requires project and outputDirectory (e.g. out). npm: package.json + matching package-lock.json; npm test then npm run build. Python 3.11: ods-project.json exactly {"runtime":"python"}; requirements.lock with exact package==version and verified --hash=sha256: wheel hashes, including all transitive dependencies; empty lock supports stdlib. Require main.py and passing tests/test_*.py unittest tests. Public PyPI wheels only; no URLs, sdists, editable or unpinned installs. Acquisition precedes project code; tests/build are offline, nonroot. Observe jobId until terminal (waits up to four minutes); never resubmit an unknown outcome. Cancellation is confirmed only by cancelled status. Output is generated files, not a published site; deliver files or publish/inspect separately. Preserve the requested framework and report real failures; never substitute a static mock.',
+    description: 'Managed npm/Python jobs; no host shell fallback. Diagnose with {action:"diagnose",runtime:"python"} (or npm): fixed offline tool/venv/scratch checks, automatic owned cleanup, structured nextAction. This checks the executor, not the chat sandbox. For Python wheel hashes first query {action:"capabilities",runtime:"python"}; use actual installed ABI/tags, never guessed host compatibility. Submit a project and outputDirectory: npm needs package.json + matching package-lock.json; Python needs ods-project.json runtime python, exact/hash-pinned requirements.lock (all transitive public wheels), main.py and unittest tests/test_*.py. Empty Python lock permits stdlib. Acquire precedes offline tests/build. Observe jobId until terminal; never resubmit unknown outcomes. Cancelled confirms Stop. Output files are not a published site; publish/inspect separately. Preserve requested frameworks and report denied, missing or incompatible resources.',
     parameters: {type: 'object', additionalProperties: false, required: ['action'], properties: {
-      action: {type: 'string', enum: ['capabilities', 'submit', 'observe', 'cancel']},
-      runtime: {type: 'string', enum: ['python']},
+      action: {type: 'string', enum: ['capabilities', 'diagnose', 'submit', 'observe', 'cancel']},
+      runtime: {type: 'string', enum: ['npm', 'python']},
       project: {type: 'string'}, outputDirectory: {type: 'string'}, jobId: {type: 'string'},
     }},
     execute: async (toolCallId, params, signal) => {
+      let diagnosticSubmitted=false;
       try {
         signal?.throwIfAborted();
+        if(params?.action==='diagnose' && Object.keys(params).sort().join(',')==='action,runtime'
+            && typeof params.runtime==='string' && !['npm','python'].includes(params.runtime)) {
+          const receipt={schemaVersion:1,kind:'ods-project-diagnostic',scope:'managed-executor',code:'unsupported',
+            supportedRuntimes:['npm','python'],nextAction:{code:'choose-supported-runtime'}};
+          return {isError:true,content:[{type:'text',text:JSON.stringify(receipt)}],details:receipt};
+        }
         const normalized = normalizeProjectBuild(params);
         const deadline = now() + 240000;
+        diagnosticSubmitted=normalized.action==='diagnose';
         let raw = await request(normalized, {toolCallId, signal});
         if (normalized.action === 'capabilities') return capabilityToolResult(tool, raw, capabilityMaxChars);
+        if (normalized.action === 'diagnose' && raw?.kind==='ods-project-diagnostic') {
+          const receipt=validateDiagnostic(raw,normalized.runtime);
+          return {isError:receipt.code!=='ready',content:[{type:'text',text:JSON.stringify(receipt)}],details:receipt};
+        }
         // Pace read-only observations inside one tool call. This leaves the
         // controller socket free for cancellation between requests and avoids
         // spending model turns on identical instantaneous running receipts.
@@ -77,15 +102,27 @@ export function createProjectBuildTool({request, wait = (ms, signal) => delay(ms
         if (raw?.schemaVersion === 1 && raw.kind === 'ods-project-job'
             && ['denied', 'invalid-request'].includes(raw.status)
             && Object.keys(raw).sort().join(',') === 'kind,schemaVersion,status') {
+          const details=normalized.action==='diagnose'?{...raw,code:raw.status,scope:'managed-executor',runtime:normalized.runtime,
+            nextAction:{code:raw.status==='denied'?'review-portal-permissions':'correct-request',automaticInstall:false}}:raw;
+          if(normalized.action==='diagnose') return {isError:true,content:[{type:'text',text:JSON.stringify(details)}],details};
           return {isError: true, content: [{type: 'text', text: raw.status === 'denied'
             ? 'Project operation denied by the controller. Review Portal permissions; do not bypass them.'
-            : 'Project request rejected as invalid. Correct the parameters before trying again.'}], details: raw};
+            : 'Project request rejected as invalid. Correct the parameters before trying again.'}], details};
         }
         const receipt = validateReceipt(raw, normalized);
-        return {isError: ['failed', 'unconfirmed'].includes(receipt.status),
+        return {isError: ['failed', 'unconfirmed'].includes(receipt.status)
+            || (receipt.purpose==='diagnostic' && receipt.output?.code
+              && (receipt.output.code!=='ready' || receipt.output.cleanup==='unconfirmed')),
           content: [{type: 'text', text: JSON.stringify(receipt)}], details: receipt};
       } catch {
         if (params?.action === 'capabilities') return capabilityUnavailable();
+        if(params?.action==='diagnose') {
+          const receipt={schemaVersion:1,kind:'ods-project-job',scope:'managed-executor',
+            status:diagnosticSubmitted?'unconfirmed':'invalid-request',code:diagnosticSubmitted?'unavailable':'invalid-request',
+            nextAction:{code:diagnosticSubmitted?'recover-unknown-job':'correct-request',automaticRetry:false},
+            message:diagnosticSubmitted?'Execution outcome is unknown; do not resubmit automatically.':'Use only action diagnose and runtime npm or python.'};
+          return {isError:true,content:[{type:'text',text:JSON.stringify(receipt)}],details:receipt};
+        }
         // A lost response or abort is not proof that the accepted job stopped.
         const receipt = {schemaVersion: 1, kind: 'ods-project-job', status: 'unconfirmed',
           ...(JOB.test(params?.jobId ?? '') ? {jobId: params.jobId} : {}),
