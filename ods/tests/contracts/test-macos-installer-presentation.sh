@@ -57,4 +57,18 @@ if [[ "$phases" != "1,2,3,4,5,6" ]]; then
     exit 1
 fi
 
+ENABLE_OPEN_WEBUI=false
+printf 'BIND_ADDRESS=0.0.0.0\n' > "$ODS_HOME/.env"
+lean_card="$(show_success_card 3000 3001)"
+[[ "$lean_card" == *'Chat (Portal):'* && "$lean_card" == *'http://localhost:3001'* ]] \
+    || { echo '[FAIL] Lean Mac success card did not point chat to Portal' >&2; exit 1; }
+[[ "$lean_card" != *'http://localhost:3000'* && "$lean_card" == *'http://your-ip:3001'* ]] \
+    || { echo '[FAIL] Lean Mac success card advertised an unavailable WebUI port' >&2; exit 1; }
+
+ENABLE_OPEN_WEBUI=true
+webui_card="$(show_success_card 3000 3001)"
+[[ "$webui_card" == *'Chat UI:'* && "$webui_card" == *'http://localhost:3000'* \
+    && "$webui_card" == *'http://your-ip:3000'* ]] \
+    || { echo '[FAIL] Selected Mac WebUI did not keep its chat links' >&2; exit 1; }
+
 echo "[PASS] macOS installer presentation preserves the six-phase plain-output contract"
