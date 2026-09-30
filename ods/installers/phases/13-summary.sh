@@ -468,6 +468,10 @@ else
 fi
 echo ""
 DASHBOARD_PORT="${SERVICE_PORTS[dashboard]:-3001}"
+_dashboard_remote_port_config="$(sed -n 's/^DASHBOARD_REMOTE_PORT=//p' "$INSTALL_DIR/.env" 2>/dev/null | head -n 1 | tr -d '"\r' || true)"
+DASHBOARD_REMOTE_PORT="${_dashboard_remote_port_config:-${DASHBOARD_REMOTE_PORT:-3011}}"
+[[ "$DASHBOARD_REMOTE_PORT" =~ ^[0-9]+$ ]] || DASHBOARD_REMOTE_PORT=3011
+unset _dashboard_remote_port_config
 WEBUI_PORT="${SERVICE_PORTS[open-webui]:-3000}"
 OPENCLAW_PORT="${SERVICE_PORTS[openclaw]:-7860}"
 LOCAL_IP=$(hostname -I 2>/dev/null | awk '{print $1}' || echo "")
@@ -495,7 +499,7 @@ if [[ -n "$LOCAL_IP" ]]; then
     _bind=$(grep "^BIND_ADDRESS=" "$INSTALL_DIR/.env" 2>/dev/null | cut -d= -f2- | tr -d '"' || echo "127.0.0.1")
     [[ -z "$_bind" ]] && _bind="127.0.0.1"
     if [[ "$_bind" == "0.0.0.0" ]]; then
-        echo -e "  ${AMB}On your network:${NC}  ${WHT}http://${LOCAL_IP}:${DASHBOARD_PORT}${NC}"
+        echo -e "  ${AMB}On your network:${NC}  ${WHT}http://${LOCAL_IP}:${DASHBOARD_REMOTE_PORT}${NC}"
         echo -e "  ${DIM}Each browser signs in once: run 'ods dashboard-login' for a link${NC}"
     else
         echo -e "  ${AMB}LAN access:${NC}      ${DIM}Reinstall with --lan or set BIND_ADDRESS=0.0.0.0 in .env${NC}"

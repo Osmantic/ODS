@@ -349,6 +349,16 @@ run_phase06_env_cycle() (
     export EXTERNAL_LLM_MODEL=qwen3.5:9b
     export LEMONADE_EXTERNAL=false
 
+    # This fixture exercises ONLY external routing/.env generation. The copied
+    # tree still contains the real APE compose with its ./data/ape:/data/ape:z
+    # bind, so phase 06's private-state preparation would run here and (on the
+    # non-1000 CI runner) correctly fail ownership verification for a directory
+    # this fixture never provisions or asserts. Drop only the unrelated APE
+    # service declaration so the fixture stays isolated to its stated scope;
+    # the dedicated real-image APE ownership probe covers that contract.
+    printf 'services:\n  ape-not-a-bind-fixture:\n    image: scratch\n' \
+        >"$install_dir/extensions/services/ape/compose.yaml"
+
     # shellcheck source=../installers/lib/constants.sh
     source "$install_dir/installers/lib/constants.sh"
     # shellcheck source=../installers/lib/logging.sh
@@ -445,12 +455,31 @@ run_phase06_env_cycle() (
     grep -qx 'SKIP_MODEL_DOWNLOAD=false' "$install_dir/.env"
     grep -q 'api_base: http://llama-server:8080/v1' "$install_dir/config/litellm/local.yaml"
     ! grep -q 'host.docker.internal:11434\|openai/qwen3.5:9b' "$install_dir/config/litellm/local.yaml"
+
+    # A Windows external Lemonade reinstall can inherit the local route from
+    # an earlier CPU fallback. Recompute only that obsolete route.
+    export EXTERNAL_LLM_RESET=false
+    export LEMONADE_EXTERNAL=true
+    export LEMONADE_BASE_URL=http://localhost:13305
+    export LEMONADE_CONTAINER_BASE_URL=http://host.docker.internal:8080
+    export LEMONADE_MODEL=test-lemonade-model
+    export ODS_MODE=lemonade
+    source "$install_dir/installers/phases/06-directories.sh"
+    grep -qx 'LLM_API_URL=http://litellm:4000' "$install_dir/.env"
+
+    sed -i 's#^LLM_API_URL=.*#LLM_API_URL=http://llama-server:8080/v1#' "$install_dir/.env"
+    source "$install_dir/installers/phases/06-directories.sh"
+    grep -qx 'LLM_API_URL=http://litellm:4000' "$install_dir/.env"
+
+    sed -i 's#^LLM_API_URL=.*#LLM_API_URL=http://custom-litellm:4000#' "$install_dir/.env"
+    source "$install_dir/installers/phases/06-directories.sh"
+    grep -qx 'LLM_API_URL=http://custom-litellm:4000' "$install_dir/.env"
 )
 
 if run_phase06_env_cycle; then
-    pass "phase 06 persists external routing and restores managed inference on reset"
+    pass "phase 06 preserves external routing, restores managed inference, and repairs stale Lemonade routes"
 else
-    fail "phase 06 external routing/reset cycle"
+    fail "phase 06 external routing/reset/Lemonade cycle"
 fi
 
 run_phase06_amd_external() (
@@ -489,6 +518,12 @@ run_phase06_amd_external() (
     export EXTERNAL_LLM_PROVIDER=ollama
     export EXTERNAL_LLM_MODEL=qwen3.5:9b
     export LEMONADE_EXTERNAL=false
+
+    # Same isolation as run_phase06_env_cycle: this AMD external-reuse fixture
+    # asserts only the .env routing contract, so remove the unrelated APE bind
+    # service that the fixture neither provisions nor verifies.
+    printf 'services:\n  ape-not-a-bind-fixture:\n    image: scratch\n' \
+        >"$install_dir/extensions/services/ape/compose.yaml"
 
     source "$install_dir/installers/lib/constants.sh"
     source "$install_dir/installers/lib/logging.sh"

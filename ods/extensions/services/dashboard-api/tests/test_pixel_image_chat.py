@@ -100,7 +100,7 @@ def test_legacy_text_serialization_keeps_exact_shape():
     assert body.messages[0].model_dump() == value
 
 
-def test_missing_image_does_not_reserve_or_start_retained_attempt(turn, tmp_path, monkeypatch):
+def test_missing_image_retains_terminal_rejection_without_starting_agent(turn, tmp_path, monkeypatch):
     value, _ = turn
     value["messages"][0]["images"][0]["id"] = "img-" + "0" * 32
     body = pixel.ChatStreamRequest.model_validate(value)
@@ -114,6 +114,49 @@ def test_missing_image_does_not_reserve_or_start_retained_attempt(turn, tmp_path
         with pytest.raises(HTTPException) as error:
             asyncio.run(pixel._retained_chat_stream(None, body, "owner"))
         assert error.value.status_code == 409
-        assert store.get((owner_namespace("owner"), "chat", "turn")) is None
+        key = (owner_namespace("owner"), "chat", "turn")
+        assert store.get(key)["state"] == "interrupted"
+        assert not store.has_pending(key[:2])
+        assert key not in pixel._result_tasks
+        assert key not in pixel._result_preflights
+        data = b"".join(row["data"] for row in store.chunks(key))
+        assert b"Portal did not start this attempt" in data
+        assert b"data: [DONE]" in data
+    finally:
+        store.close()
+
+
+def test_retained_image_turn_prepares_bytes_inside_reserved_preflight(turn, tmp_path, monkeypatch):
+    value, image = turn
+    body = pixel.ChatStreamRequest.model_validate(value)
+    store = ChatResultStore(tmp_path / "receipts")
+    key = (owner_namespace("owner"), "chat", "turn")
+    monkeypatch.setattr(pixel, "_result_store", store)
+    monkeypatch.setattr(pixel, "_result_tasks", {})
+    monkeypatch.setattr(pixel, "_result_preflights", set())
+    monkeypatch.setenv("PIXEL_OPENWEBUI_KEY", "x" * 64)
+    original_prepare = pixel._prepare_chat_messages
+    captured = []
+    async def ready():
+        return None
+    async def prepare(body, owner):
+        assert store.get(key)["state"] == "active"
+        assert key in pixel._result_preflights
+        return await original_prepare(body, owner)
+    async def producer(store, identity, body, config, messages, *, owner):
+        captured.extend(messages)
+        store.finish(identity, "complete")
+    monkeypatch.setattr(pixel, "_model_readiness_issue", ready)
+    monkeypatch.setattr(pixel, "_prepare_chat_messages", prepare)
+    monkeypatch.setattr(pixel, "_produce_retained_result", producer)
+    async def run():
+        await pixel._retained_chat_stream(None, body, "owner")
+        await pixel._result_tasks[key]
+    try:
+        asyncio.run(run())
+        block = captured[-1]["content"][0]
+        assert base64.b64decode(block["image_url"]["url"].split(",")[1]) == image
+        assert store.get(key)["state"] == "complete"
+        assert key not in pixel._result_preflights
     finally:
         store.close()

@@ -2488,6 +2488,10 @@ for path in (target, *target.parents):
     info = path.lstat()
     if stat.S_ISLNK(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
         raise SystemExit("Pixel access program directory is not root protected")
+# These are public programs executed by the unprivileged gateway owner.
+# mkdir's requested mode is masked by sudo/the caller's umask, including 0077.
+# Normalize only this owned directory after validating its protected custody.
+os.chmod(target, 0o755, follow_symlinks=False)
 
 def write(path, content, mode, uid=0, gid=0):
     if path.exists() or path.is_symlink():
@@ -2520,6 +2524,7 @@ settings_package.mkdir(mode=0o755, exist_ok=True)
 info = settings_package.lstat()
 if not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
     raise SystemExit("Pixel settings program directory is not root protected")
+os.chmod(settings_package, 0o755, follow_symlinks=False)
 for name in ('__init__.py', 'contract.py', 'projection.py', 'runtime.py', 'coordinator.py'):
     write(settings_package / name, (source / 'bin/pixel_settings' / name).read_bytes(), 0o644)
 provider_package = target / 'pixel_provider'
@@ -2527,6 +2532,7 @@ provider_package.mkdir(mode=0o755, exist_ok=True)
 info = provider_package.lstat()
 if not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
     raise SystemExit("Pixel provider program directory is not root protected")
+os.chmod(provider_package, 0o755, follow_symlinks=False)
 for name in ('__init__.py', 'config.py', 'store.py', 'activation_config.py',
              'managed_deployment.py', 'service_environment.py', 'service_activation.py',
              'runtime_custody.py', 'coordinator.py'):
@@ -4940,6 +4946,31 @@ ods_pixel_install_default_agent() {
         if ! _ods_pixel_verify_operations_policy_custody "$owner" "$home" "$operations_policy"; then
             ai_bad "Pixel's root-custodied Operations policy does not match the ODS-managed policy."
             return 1
+        fi
+        if [[ "${FORCE:-false}" == true ]]; then
+            # Forced reinstall retires an interrupted agent sandbox while
+            # the gateway is stopped, then runs the unchanged verifier.
+            if ! ods_sudo systemctl stop openclaw-gateway.service >>"$pixel_log" 2>&1; then
+                ai_bad "The ODS-managed Pixel gateway could not enter maintenance mode. See $pixel_log."
+                return 1
+            fi
+            if ! _ods_pixel_recreate_agent_sandbox "$owner" "$home" "$openclaw_bin" \
+                >>"$pixel_log" 2>&1; then
+                # Restore the previously configured service when cleanup
+                # fails; the installer still fails closed and does not claim
+                # the sandbox boundary was refreshed.
+                ods_sudo systemctl start openclaw-gateway.service >>"$pixel_log" 2>&1 || true
+                ai_bad "Pixel could not retire its stale agent sandbox during forced recovery. See $pixel_log."
+                return 1
+            fi
+            if ! ods_sudo systemctl start openclaw-gateway.service >>"$pixel_log" 2>&1; then
+                ai_bad "The ODS-managed Pixel gateway could not restart after forced sandbox recovery. See $pixel_log."
+                return 1
+            fi
+            if ! _ods_pixel_wait_gateway 60 "$pixel_gateway_port"; then
+                ai_bad "The ODS-managed Pixel gateway did not become healthy after forced sandbox recovery. See $pixel_log."
+                return 1
+            fi
         fi
         if ! ods_pixel_run_as_owner "$owner" "$home" "$pixel_root/pixel" verify >>"$pixel_log" 2>&1; then
             ai_bad "The existing ODS-managed Pixel contract failed exact-source verification. See $pixel_log."

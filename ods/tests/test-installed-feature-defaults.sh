@@ -2,6 +2,7 @@
 # A rerun must recover the selected optional services before it parses flags.
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$ROOT/installers/lib/constants.sh"
 source "$ROOT/installers/lib/installed-feature-state.sh"
 source "$ROOT/installers/lib/external-services.sh"
 defaults="$(sed -n '/^DRY_RUN=false$/,/^INTERACTIVE=true$/p' "$ROOT/install-core.sh")"
@@ -52,6 +53,34 @@ eval "$defaults"
 [[ "$ODS_GATEWAY_ONLY" == true && "$ENABLE_OPEN_WEBUI" == false ]] || {
     echo 'FAIL: API-only gateway selection was lost on rerun' >&2; exit 1;
 }
+
+# Library setup enables a user service. An unattended installer rerun may lack
+# login-session environment even though the user manager is reachable through
+# the installer's ods_systemctl_user helper. Preserve that selected add-back.
+(
+    : >"$INSTALL_DIR/.env"
+    mkdir -p "$fixture/home/.config/systemd/user" "$fixture/mock-bin"
+    : >"$fixture/home/.config/systemd/user/opencode-web.service"
+    cat >"$fixture/mock-bin/systemctl" <<'MOCK_SYSTEMCTL'
+#!/usr/bin/env bash
+[[ "$*" == '--user is-enabled --quiet opencode-web.service' ]] || exit 2
+[[ -f "$HOME/.config/systemd/user/opencode-web.service" ]] || exit 3
+[[ "${XDG_RUNTIME_DIR:-}" == "/run/user/$(id -u)" ]] || exit 4
+[[ "${DBUS_SESSION_BUS_ADDRESS:-}" == "unix:path=$XDG_RUNTIME_DIR/bus" ]] || exit 5
+MOCK_SYSTEMCTL
+    chmod +x "$fixture/mock-bin/systemctl"
+    export HOME="$fixture/home" PATH="$fixture/mock-bin:$PATH"
+    unset XDG_RUNTIME_DIR DBUS_SESSION_BUS_ADDRESS
+    if systemctl --user is-enabled --quiet opencode-web.service; then
+        echo 'FAIL: headless OpenCode fixture unexpectedly has login-session environment' >&2
+        exit 1
+    fi
+    eval "$defaults"
+    [[ "$ENABLE_OPENCODE" == true ]] || {
+        echo 'FAIL: enabled Library OpenCode was lost on headless installer rerun' >&2
+        exit 1
+    }
+)
 
 # Explicit --all remains after this block in install-core.sh and overrides it.
 defaults_line="$(awk '/^INTERACTIVE=true$/ { print NR; exit }' "$ROOT/install-core.sh")"

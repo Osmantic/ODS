@@ -8183,6 +8183,10 @@ class TestModelActivateRollback:
                 "model": "llama-server/old-model",
                 "small_model": "llama-server/old-model",
                 "theme": "system",
+                "agent": {
+                    "build": {"model": "custom-cloud/owner-model", "temperature": 0.2},
+                    "reviewer": {"model": "custom-cloud/review-model"},
+                },
                 "provider": {
                     "custom-cloud": {"npm": "@ai-sdk/openai"},
                     "llama-server": {
@@ -8221,6 +8225,11 @@ class TestModelActivateRollback:
             config = json.loads(path.read_text(encoding="utf-8"))
             assert config["model"] == f"llama-server/{expected_model_id}"
             assert config["small_model"] == f"llama-server/{expected_model_id}"
+            assert config["agent"]["build"]["model"] == (
+                "custom-cloud/owner-model" if path == primary
+                else f"llama-server/{expected_model_id}"
+            )
+            assert config["agent"]["plan"]["model"] == f"llama-server/{expected_model_id}"
             provider = config["provider"]["llama-server"]
             assert provider["options"]["baseURL"] == "http://127.0.0.1:8080/v1"
             assert provider["options"]["apiKey"] == "no-key"
@@ -8235,6 +8244,10 @@ class TestModelActivateRollback:
             "npm": "@ai-sdk/openai"
         }
         assert primary_config["provider"]["llama-server"]["options"]["timeout"] == 900
+        assert primary_config["agent"]["build"]["temperature"] == 0.2
+        assert primary_config["agent"]["reviewer"] == {
+            "model": "custom-cloud/review-model"
+        }
         assert compat_config["compat_only"] is True
 
     def test_switchboard_activation_routes_opencode_through_stable_alias(
@@ -8289,6 +8302,8 @@ class TestModelActivateRollback:
             assert config["theme"] == "system"
             assert config["model"] == "llama-server/ods/current"
             assert config["small_model"] == "llama-server/ods/current"
+            assert config["agent"]["build"]["model"] == "llama-server/ods/current"
+            assert config["agent"]["plan"]["model"] == "llama-server/ods/current"
             provider = config["provider"]["llama-server"]
             assert provider["name"] == "ODS switchboard"
             assert provider["options"] == {
