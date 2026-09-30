@@ -76,7 +76,7 @@ def _shape(payload: dict[str, Any]) -> dict[str, Any]:
     version = payload.get("version")
     progress = _progress()
     if progress and (
-        state in ("running", "stopped", "starting")
+        state == "running"
         or (state != "installing" and progress["status"] != "error")
     ):
         # A finished run is history. Surface an in-flight setup, or the failure

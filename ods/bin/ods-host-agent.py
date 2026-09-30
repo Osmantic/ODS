@@ -18232,7 +18232,7 @@ def _opencode_app_status(env: dict | None = None) -> dict:
         state = "starting" if active else "stopped"
     setup_issue = None if state == "running" else _opencode_setup_issue(env, system)
     if port_in_use and setup_issue is None:
-        setup_issue = f"Port {port} is already in use. Stop the other program before setting up OpenCode."
+        setup_issue = f"Port {port} is answering, but ODS cannot verify it as the managed OpenCode service. Stop it before setup."
     return {
         "state": state,
         "platform": system.lower(),
@@ -18290,15 +18290,41 @@ def _start_managed_opencode() -> None:
     _wait_for_opencode_health()
 
 
-def _opencode_setup_candidate() -> str:
-    """Mirror the installer's binary discovery for the reviewed-release reuse."""
-    managed = Path.home() / ".opencode" / "bin" / "opencode"
-    if managed.is_file() and os.access(managed, os.X_OK):
-        return str(managed)
-    found = shutil.which("opencode")
-    if found and os.path.isabs(found) and Path(found).is_file() and os.access(found, os.X_OK):
-        return found
-    return ""
+def _snapshot_managed_opencode_binary() -> dict:
+    """Keep the prior managed executable inode until setup has proved healthy."""
+    path = Path.home() / ".opencode" / "bin" / "opencode"
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError:
+        return {"path": path, "exists": False}
+    if not stat_mod.S_ISREG(metadata.st_mode) or metadata.st_uid != os.getuid():
+        raise RuntimeError(f"Refusing to replace an unsafe OpenCode executable: {path}")
+    backup_dir = Path(tempfile.mkdtemp(prefix=".ods-opencode-backup-", dir=path.parent))
+    backup = backup_dir / "opencode"
+    try:
+        # The reviewed installer replaces the executable by rename. A hard
+        # link preserves its old inode without copying the large binary.
+        os.link(path, backup)
+    except OSError:
+        backup_dir.rmdir()
+        raise
+    return {"path": path, "exists": True, "backup": backup, "backup_dir": backup_dir}
+
+
+def _finish_managed_opencode_binary_snapshot(snapshot: dict, *, restore: bool) -> None:
+    path = snapshot["path"]
+    if restore:
+        if path.is_symlink():
+            raise RuntimeError(f"Refusing to replace an unexpected OpenCode symlink: {path}")
+        if snapshot["exists"]:
+            os.replace(snapshot["backup"], path)
+        elif path.exists():
+            if not path.is_file():
+                raise RuntimeError(f"Refusing to remove an unexpected OpenCode path: {path}")
+            path.unlink()
+    if snapshot["exists"]:
+        snapshot["backup"].unlink(missing_ok=True)
+        snapshot["backup_dir"].rmdir()
 
 
 def _render_opencode_unit(template: str, binary: Path) -> str:
@@ -18408,21 +18434,6 @@ def _setup_managed_opencode(env: dict) -> None:
     shipped ``opencode/opencode-web.service`` template, as phase 07 does.
     """
     runtime = INSTALL_DIR / "installers" / "lib" / "opencode-runtime.sh"
-    _write_progress(_OPENCODE_PROGRESS_ID, "pulling", "Downloading the reviewed OpenCode release")
-    result = subprocess.run(
-        ["bash", "-c", '. "$1" && ods_install_opencode "$2"', "ods-opencode-setup",
-         str(runtime), _opencode_setup_candidate()],
-        capture_output=True, text=True, timeout=900, env=os.environ.copy(),
-    )
-    lines = [line.strip() for line in (result.stdout or "").splitlines() if line.strip()]
-    if result.returncode != 0 or not lines:
-        detail = (result.stderr or "").strip().splitlines()[-1:] or ["no output"]
-        raise RuntimeError(f"OpenCode download or verification failed: {detail[0][:300]}")
-    binary = Path(lines[-1])
-    if not binary.is_absolute() or not binary.is_file():
-        raise RuntimeError("OpenCode installer did not return a usable executable")
-
-    _write_progress(_OPENCODE_PROGRESS_ID, "starting", "Connecting OpenCode to the active ODS model")
     try:
         context_length = int(str(env.get("MAX_CONTEXT") or env.get("CTX_SIZE") or "65536").strip())
     except ValueError as exc:
@@ -18430,19 +18441,37 @@ def _setup_managed_opencode(env: dict) -> None:
     if context_length < 1024:
         raise RuntimeError("OpenCode requires a context of at least 1024 tokens")
     model_id = str(env.get("LLM_MODEL") or "").strip() or "ods/current"
+    _opencode_route(env)  # Fail before download if the model gateway has no usable key.
     config_snapshot = _capture_opencode_config(assume_installed=True)
     if config_snapshot is None:
         raise RuntimeError("OpenCode configuration could not be prepared")
     template = (INSTALL_DIR / "opencode" / "opencode-web.service").read_text(encoding="utf-8")
-    rendered_unit = _render_opencode_unit(template, binary)
+    managed_binary = Path.home() / ".opencode" / "bin" / "opencode"
+    rendered_unit = _render_opencode_unit(template, managed_binary)
     unit_path = _opencode_linux_unit_path()
     unit_snapshot = _snapshot_text_file(unit_path)
     user_env = _opencode_user_service_env()
     prior_enabled, prior_active = _opencode_prior_systemd_state(user_env)
+    binary_snapshot = _snapshot_managed_opencode_binary()
     unit_changed = False
     enable_attempted = False
     restart_attempted = False
     try:
+        _write_progress(_OPENCODE_PROGRESS_ID, "pulling", "Downloading the reviewed OpenCode release")
+        candidate = str(managed_binary) if binary_snapshot["exists"] and os.access(managed_binary, os.X_OK) else ""
+        result = subprocess.run(
+            ["bash", "-c", '. "$1" && ods_install_opencode "$2"', "ods-opencode-setup",
+             str(runtime), candidate],
+            capture_output=True, text=True, timeout=900, env=os.environ.copy(),
+        )
+        lines = [line.strip() for line in (result.stdout or "").splitlines() if line.strip()]
+        if result.returncode != 0 or not lines:
+            detail = (result.stderr or "").strip().splitlines()[-1:] or ["no output"]
+            raise RuntimeError(f"OpenCode download or verification failed: {detail[0][:300]}")
+        binary = Path(lines[-1])
+        if binary != managed_binary or not binary.is_file() or not os.access(binary, os.X_OK):
+            raise RuntimeError("OpenCode installer did not return the managed executable")
+        _write_progress(_OPENCODE_PROGRESS_ID, "starting", "Connecting OpenCode to the active ODS model")
         _update_opencode_config(env, config_snapshot, model_id, context_length, display_name=model_id)
         unit_changed = True  # atomic write can fail after replacing the destination
         _atomic_write_text(unit_path, rendered_unit, 0o644)
@@ -18462,16 +18491,25 @@ def _setup_managed_opencode(env: dict) -> None:
                 raise RuntimeError(f"{' '.join(command[1:])} failed: {detail[:300]}")
         _wait_for_opencode_health()
     except Exception as exc:
-        rollback_errors = _rollback_opencode_setup(
+        rollback_errors = []
+        try:
+            _finish_managed_opencode_binary_snapshot(binary_snapshot, restore=True)
+        except (OSError, RuntimeError) as rollback_exc:
+            rollback_errors.append(f"binary: {rollback_exc}")
+        rollback_errors.extend(_rollback_opencode_setup(
             config_snapshot, unit_path, unit_snapshot, user_env,
             prior_enabled, prior_active,
             unit_changed=unit_changed,
             enable_attempted=enable_attempted,
             restart_attempted=restart_attempted,
-        )
+        ))
         if rollback_errors:
             raise RuntimeError(f"{exc}; OpenCode rollback failed: {'; '.join(rollback_errors)}") from exc
         raise
+    try:
+        _finish_managed_opencode_binary_snapshot(binary_snapshot, restore=False)
+    except OSError as exc:
+        logger.warning("OpenCode started, but its old binary backup could not be removed: %s", exc)
     # Keep the user service running after logout, as the installer does. This
     # is best effort because some hosts require an administrator to allow it.
     user = os.environ.get("USER") or os.environ.get("LOGNAME") or ""
@@ -18520,7 +18558,7 @@ def _begin_opencode_setup(env: dict) -> tuple[int, dict]:
             }
         if status["portInUse"]:
             return 409, {
-                "error": f"Port {status['port']} is used by another program, so OpenCode cannot be set up",
+                "error": f"Port {status['port']} is answering, but ODS cannot verify the managed OpenCode service",
                 "code": "opencode_port_in_use",
                 "status": status,
             }
@@ -18556,7 +18594,7 @@ def _begin_opencode_start(env: dict) -> tuple[int, dict]:
         }
     if status["portInUse"]:
         return 409, {
-            "error": f"Port {status['port']} is used by another program, so OpenCode cannot start",
+            "error": f"Port {status['port']} is answering, but ODS cannot verify the managed OpenCode service",
             "code": "opencode_port_in_use",
             "status": status,
         }

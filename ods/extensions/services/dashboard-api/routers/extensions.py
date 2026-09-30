@@ -449,13 +449,6 @@ def _opencode_extension_action(action: str) -> dict:
     try:
         body = request_agent_json("POST", f"/v1/opencode/{action}", timeout=timeout)
     except AgentHTTPError as exc:
-        if action == "start" and exc.status_code == 409:
-            try:
-                code = json.loads(exc.response_text or "{}").get("code")
-            except (ValueError, AttributeError):
-                code = None
-            if code == "opencode_not_installed":
-                return _opencode_extension_action("setup")
         status_code = exc.status_code if exc.status_code in (409, 502, 504) else 502
         raise HTTPException(status_code=status_code, detail=exc.detail) from exc
     except AgentClientError as exc:
@@ -4419,8 +4412,7 @@ def enable_extension(
     """Enable an installed extension, optionally auto-enabling dependencies."""
     _validate_service_id(service_id)
     if service_id == "opencode" and service_id in SERVICES:
-        # Host application: start the installed service, or set it up when
-        # a failed setup is retried from the library card.
+        # Start never triggers a download. Owners can select Install explicitly.
         return _opencode_extension_action("start")
     _assert_not_core(service_id)
 

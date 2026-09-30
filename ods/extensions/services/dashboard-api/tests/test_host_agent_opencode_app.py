@@ -503,7 +503,7 @@ SETUP_ENV = {
 
 
 def _prepare_setup(tmp_path, monkeypatch, home, *, installer_rc=0, fail_action=None,
-                   prior_enabled=False, prior_active=False, binary=None):
+                   prior_enabled=False, prior_active=False, prior_loaded=False):
     install = _setup_ready_install(tmp_path, monkeypatch)
     monkeypatch.setattr(_mod, "_opencode_user_service_env", lambda: {"XDG_RUNTIME_DIR": "/run/user/1000"})
     monkeypatch.setattr(_mod, "_wait_for_opencode_health", lambda attempts=30: None)
@@ -517,7 +517,7 @@ def _prepare_setup(tmp_path, monkeypatch, home, *, installer_rc=0, fail_action=N
     )
     monkeypatch.setenv("USER", "ods-owner")
     commands = []
-    binary = binary or home / ".opencode" / "bin" / "opencode"
+    binary = home / ".opencode" / "bin" / "opencode"
     fail_seen = False
 
     def fake_run(command, **kwargs):
@@ -528,13 +528,16 @@ def _prepare_setup(tmp_path, monkeypatch, home, *, installer_rc=0, fail_action=N
             if installer_rc:
                 return subprocess.CompletedProcess(command, installer_rc, stdout="", stderr="OpenCode archive SHA256 mismatch\n")
             binary.parent.mkdir(parents=True, exist_ok=True)
-            binary.write_text("#!/bin/sh\n")
+            staged = binary.with_suffix(".new")
+            staged.write_text("#!/bin/sh\n")
+            staged.chmod(0o755)
+            os.replace(staged, binary)
             return subprocess.CompletedProcess(command, 0, stdout=f"{binary}\n", stderr="")
         if command[0] == "systemctl":
             if command[2] == "show":
                 state = (
-                    f"LoadState={'loaded' if prior_enabled or prior_active else 'not-found'}\n"
-                    f"UnitFileState={'enabled' if prior_enabled else 'disabled' if prior_active else ''}\n"
+                    f"LoadState={'loaded' if prior_enabled or prior_active or prior_loaded else 'not-found'}\n"
+                    f"UnitFileState={'enabled' if prior_enabled else 'disabled' if prior_active or prior_loaded else ''}\n"
                     f"ActiveState={'active' if prior_active else 'inactive'}\n"
                 )
                 return subprocess.CompletedProcess(command, 0, stdout=state, stderr="")
@@ -575,19 +578,19 @@ def test_setup_installs_configures_and_starts_the_managed_service(tmp_path, monk
 
 
 @pytest.mark.skipif(os.name == "nt", reason="systemd unit rendering requires POSIX paths")
-def test_setup_reuses_a_reviewed_binary_outside_the_managed_directory(tmp_path, monkeypatch, _isolated):
+def test_setup_ignores_an_unrelated_path_binary(tmp_path, monkeypatch, _isolated):
     home = _isolated
-    existing = tmp_path / "usr-local-bin" / "opencode"
-    _prepare_setup(tmp_path, monkeypatch, home, binary=existing)
+    _, commands, _, binary = _prepare_setup(tmp_path, monkeypatch, home)
 
     _mod._setup_managed_opencode(dict(SETUP_ENV))
 
     unit = (home / ".config" / "systemd" / "user" / "opencode-web.service").read_text()
-    assert f"ExecStart={existing} serve --port 3003 --hostname 127.0.0.1" in unit
-    assert f"Environment=PATH={existing.parent}:" in unit
+    assert f"ExecStart={binary} serve --port 3003 --hostname 127.0.0.1" in unit
+    assert next(command for command in commands if command[0] == "bash")[5] == ""
     assert (home / ".config" / "opencode" / "opencode.json").is_file()
 
 
+@pytest.mark.skipif(os.name == "nt", reason="systemd unit rendering requires POSIX paths")
 def test_setup_download_failure_changes_nothing(tmp_path, monkeypatch, _isolated):
     home = _isolated
     _, commands, _, _ = _prepare_setup(tmp_path, monkeypatch, home, installer_rc=1)
@@ -595,7 +598,8 @@ def test_setup_download_failure_changes_nothing(tmp_path, monkeypatch, _isolated
         _mod._setup_managed_opencode(dict(SETUP_ENV))
     assert not (home / ".config" / "systemd" / "user" / "opencode-web.service").exists()
     assert not (home / ".config" / "opencode" / "opencode.json").exists()
-    assert all(command[0] == "bash" for command in commands)
+    assert not (home / ".opencode" / "bin" / "opencode").exists()
+    assert [command[0] for command in commands] == ["systemctl", "bash"]
 
 
 @pytest.mark.skipif(os.name == "nt", reason="systemd unit rendering requires POSIX paths")
@@ -606,14 +610,40 @@ def test_setup_reports_a_failed_service_start(tmp_path, monkeypatch, _isolated):
 
 
 @pytest.mark.skipif(os.name == "nt", reason="systemd unit rendering requires POSIX paths")
+def test_setup_enable_failure_restores_previous_config_unit_and_service_state(
+    tmp_path, monkeypatch, _isolated,
+):
+    home = _isolated
+    old_unit = home / ".config" / "systemd" / "user" / "opencode-web.service"
+    old_unit.parent.mkdir(parents=True)
+    old_unit.write_bytes(b"[Service]\nExecStart=/old/opencode\n")
+    old_unit.chmod(0o600)
+    old_config = home / ".config" / "opencode" / "opencode.json"
+    old_config.parent.mkdir(parents=True)
+    old_config.write_bytes(b'{"model":"old/model"}\n')
+    _, commands, _, _ = _prepare_setup(
+        tmp_path, monkeypatch, home, fail_action="enable", prior_loaded=True,
+    )
+    with pytest.raises(RuntimeError, match="enable opencode-web.service failed: unit failed"):
+        _mod._setup_managed_opencode(dict(SETUP_ENV))
+    assert old_unit.read_bytes() == b"[Service]\nExecStart=/old/opencode\n"
+    assert old_unit.stat().st_mode & 0o777 == 0o600
+    assert old_config.read_bytes() == b'{"model":"old/model"}\n'
+    assert not (home / ".config" / "opencode" / "config.json").exists()
+    systemctl = [command[2] for command in commands if command[0] == "systemctl"]
+    assert systemctl == ["show", "daemon-reload", "enable", "disable", "daemon-reload"]
+
+
+@pytest.mark.skipif(os.name == "nt", reason="systemd unit rendering requires POSIX paths")
 def test_setup_restart_failure_restores_new_config_and_unit(tmp_path, monkeypatch, _isolated):
     home = _isolated
-    _, commands, _, _ = _prepare_setup(tmp_path, monkeypatch, home, fail_action="restart")
+    _, commands, _, binary = _prepare_setup(tmp_path, monkeypatch, home, fail_action="restart")
     with pytest.raises(RuntimeError, match="restart opencode-web.service failed: unit failed"):
         _mod._setup_managed_opencode(dict(SETUP_ENV))
     assert not (home / ".config" / "opencode" / "opencode.json").exists()
     assert not (home / ".config" / "opencode" / "config.json").exists()
     assert not (home / ".config" / "systemd" / "user" / "opencode-web.service").exists()
+    assert not binary.exists()
     systemctl = [command[2] for command in commands if command[0] == "systemctl"]
     assert systemctl == ["show", "daemon-reload", "enable", "restart",
                          "stop", "disable", "daemon-reload"]
@@ -643,6 +673,22 @@ def test_setup_failure_restores_existing_unit_without_disabling_active_service(
     systemctl = [command[2] for command in commands if command[0] == "systemctl"]
     assert systemctl == ["show", "daemon-reload", "enable", "restart",
                          "daemon-reload", "restart"]
+
+
+@pytest.mark.skipif(os.name == "nt", reason="systemd unit rendering requires POSIX paths")
+def test_setup_failure_restores_previous_managed_binary(tmp_path, monkeypatch, _isolated):
+    home = _isolated
+    old_binary = home / ".opencode" / "bin" / "opencode"
+    old_binary.parent.mkdir(parents=True)
+    old_binary.write_bytes(b"old-opencode-binary")
+    old_binary.chmod(0o755)
+    _, commands, _, _ = _prepare_setup(tmp_path, monkeypatch, home, fail_action="restart")
+    with pytest.raises(RuntimeError, match="restart opencode-web.service failed"):
+        _mod._setup_managed_opencode(dict(SETUP_ENV))
+    assert old_binary.read_bytes() == b"old-opencode-binary"
+    assert old_binary.stat().st_mode & 0o777 == 0o755
+    assert next(command for command in commands if command[0] == "bash")[5] == str(old_binary)
+    assert list(old_binary.parent.glob(".ods-opencode-backup-*")) == []
 
 
 def test_wait_for_health_rejects_an_unrelated_web_page(monkeypatch):

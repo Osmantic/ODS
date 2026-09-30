@@ -203,6 +203,15 @@ def test_status_shows_the_last_setup_failure_until_opencode_is_set_up(app_api, m
     assert app_api.get("/api/apps/opencode", headers=app_api.auth_headers).json()["progress"] is None
 
 
+@pytest.mark.parametrize("state", ["stopped", "starting"])
+def test_status_keeps_setup_failure_after_restoring_an_existing_service(app_api, monkeypatch, state):
+    write_progress(app_api.data_dir, "error", "OpenCode restart failed; prior unit restored")
+    monkeypatch.setattr(app_api.router, "request_agent_json", AsyncMock(return_value=lifecycle(state)))
+    body = app_api.get("/api/apps/opencode", headers=app_api.auth_headers).json()
+    assert body["state"] == state
+    assert body["progress"]["error"] == "OpenCode restart failed; prior unit restored"
+
+
 def test_status_shows_setup_progress_while_installing(app_api, monkeypatch):
     write_progress(app_api.data_dir, "pulling")
     monkeypatch.setattr(app_api.router, "request_agent_json", AsyncMock(return_value=lifecycle("installing")))
@@ -377,7 +386,7 @@ def test_library_install_sets_opencode_up_on_the_host(test_client, monkeypatch, 
     assert calls == [("POST", "/v1/opencode/setup")]
 
 
-def test_library_start_falls_back_to_setup_when_never_installed(test_client, monkeypatch, tmp_path):
+def test_library_start_never_installs_without_an_install_action(test_client, monkeypatch, tmp_path):
     _patch_library(monkeypatch, tmp_path)
     calls = []
 
@@ -386,12 +395,12 @@ def test_library_start_falls_back_to_setup_when_never_installed(test_client, mon
         if path == "/v1/opencode/start":
             body = {"error": "OpenCode is not set up", "code": "opencode_not_installed"}
             raise AgentHTTPError(409, body["error"], json.dumps(body))
-        return {"accepted": True, "status": lifecycle("installing")}
+        raise AssertionError("Start must not trigger setup")
 
     monkeypatch.setattr("routers.extensions.request_agent_json", fake)
     response = test_client.post("/api/extensions/opencode/enable", headers=test_client.auth_headers)
-    assert response.status_code == 200
-    assert calls == ["/v1/opencode/start", "/v1/opencode/setup"]
+    assert response.status_code == 409
+    assert calls == ["/v1/opencode/start"]
 
 
 def test_library_start_reports_host_failures(test_client, monkeypatch, tmp_path):

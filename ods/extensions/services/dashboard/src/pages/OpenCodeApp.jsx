@@ -167,6 +167,9 @@ export default function OpenCodeApp() {
 
       {app && (
         <section className="opencode-panel opencode-primary" aria-label="OpenCode actions">
+          {setupError && state !== 'not_installed' && (
+            <p className="opencode-error" role="alert">Last setup failed: {setupError}</p>
+          )}
           {state === 'running' && openUrl && (
             <>
               <p>OpenCode is ready. It opens in a new tab.</p>
@@ -201,7 +204,7 @@ export default function OpenCodeApp() {
             <>
               <p>
                 {app.portInUse
-                  ? `OpenCode is set up, but another program is using port ${port}. Stop that program, then start OpenCode.`
+                  ? `OpenCode is set up, but port ${port} is answering without verified managed health. Stop that listener or wait for OpenCode to become healthy, then try again.`
                   : 'OpenCode is set up but not running.'}
               </p>
               <button type="button" className="opencode-button is-primary" disabled={!!busy || !app.startSupported || app.portInUse} onClick={() => act('start')}>

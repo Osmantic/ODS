@@ -100,6 +100,16 @@ describe('OpenCodeApp', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('did not become healthy')
   })
 
+  test('shows a failed setup after restoring a stopped service', async () => {
+    routes['GET /api/apps/opencode'] = () => response(200, app('stopped', {
+      progress: { status: 'error', error: 'Previous unit restored after restart failed' },
+    }))
+    render(<OpenCodeApp />)
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('Last setup failed: Previous unit restored')
+    expect(screen.getByRole('button', { name: /Start OpenCode/ })).toBeEnabled()
+  })
+
   test('sets OpenCode up on Linux when it was never installed', async () => {
     let setup = false
     routes['GET /api/apps/opencode'] = () => response(200, setup
@@ -141,11 +151,11 @@ describe('OpenCodeApp', () => {
     expect(screen.getByRole('button', { name: /Try setup again/ })).toBeEnabled()
   })
 
-  test('says so when another program holds the OpenCode port', async () => {
+  test('explains an unverified listener on the OpenCode port', async () => {
     routes['GET /api/apps/opencode'] = () => response(200, app('stopped', { portInUse: true }))
     render(<OpenCodeApp />)
 
-    expect(await screen.findByText(/another program is using port 3003/)).toBeInTheDocument()
+    expect(await screen.findByText(/port 3003 is answering without verified managed health/)).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /Start OpenCode/ })).toBeDisabled()
   })
 
