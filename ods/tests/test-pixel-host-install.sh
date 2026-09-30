@@ -2538,6 +2538,35 @@ cp "$TEST_ROOT/search-searx-clean.json" "$search_searx_candidate"
 cp "$search_searx_candidate" "$reconcile_config"
 chmod 0600 "$reconcile_config"
 check _ods_pixel_search_provider_matches_contract "$owner" "$reconcile_home" "$search_searx_answers"
+search_searx_port_answers="$TEST_ROOT/search-searx-port-onboarding.json"
+search_searx_port_candidate="$TEST_ROOT/search-searx-port-candidate.json"
+cp "$search_searx_answers" "$search_searx_port_answers"
+cp "$search_searx_candidate" "$search_searx_port_candidate"
+python3 - "$search_searx_port_answers" "$search_searx_port_candidate" <<'PY'
+import json, pathlib, sys
+answers_path, candidate_path = map(pathlib.Path, sys.argv[1:])
+origin = "http://127.0.0.1:8899"
+for path in (answers_path, candidate_path):
+    value = json.loads(path.read_text(encoding="utf-8"))
+    if path == answers_path:
+        value["searxngBaseUrl"] = origin
+    else:
+        value["plugins"]["entries"]["searxng"]["config"]["webSearch"]["baseUrl"] = origin
+    path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+PY
+chmod 0600 "$search_searx_port_answers" "$search_searx_port_candidate"
+if _ods_pixel_search_provider_matches_contract "$owner" "$reconcile_home" \
+    "$search_searx_port_answers" >/dev/null 2>&1; then
+    fail "changed SearXNG origin skipped rendered reconciliation"
+else
+    pass "changed SearXNG origin requires rendered reconciliation"
+fi
+check _ods_pixel_candidate_is_managed_runtime_update "$owner" "$reconcile_home" \
+    "$search_searx_port_candidate" "$search_searx_port_answers"
+cp "$search_searx_port_candidate" "$reconcile_config"
+chmod 0600 "$reconcile_config"
+check _ods_pixel_search_provider_matches_contract "$owner" "$reconcile_home" \
+    "$search_searx_port_answers"
 check _ods_pixel_candidate_is_managed_runtime_update "$owner" "$reconcile_home" \
     "$search_parallel_live" "$search_parallel_answers"
 cp "$gateway_candidate" "$reconcile_config"

@@ -862,11 +862,13 @@ PY
 _ods_pixel_search_provider_matches_contract() {
     local owner="$1" home="$2" answers="$3" live
     live="$home/.openclaw/openclaw.json"
-    ods_pixel_run_as_owner "$owner" "$home" python3 - "$live" "$answers" <<'PY'
-import json, os, pathlib, stat, sys
+    ods_pixel_run_as_owner "$owner" "$home" python3 - "$live" "$answers" "${INSTALL_DIR:?}" <<'PY'
+import json, os, pathlib, re, stat, sys
 
+if len(sys.argv) != 4:
+    raise SystemExit(1)
 documents = []
-for raw in sys.argv[1:]:
+for raw in sys.argv[1:3]:
     path = pathlib.Path(raw)
     info = path.lstat()
     if (not stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode)
@@ -879,10 +881,38 @@ for raw in sys.argv[1:]:
     documents.append(value)
 live, contract = documents
 selected = contract.get("webSearchProvider", "searxng")
-active = live.get("tools", {}).get("web", {}).get("search", {}).get("provider")
-if selected not in {"searxng", "parallel-free"} or active not in {"searxng", "parallel-free"}:
+search = live.get("tools", {}).get("web", {}).get("search")
+plugins = live.get("plugins")
+if (selected not in {"searxng", "parallel-free"}
+        or search != {"provider": selected} or not isinstance(plugins, dict)):
     raise SystemExit(1)
-raise SystemExit(0 if selected == active else 1)
+allow = plugins.get("allow")
+entries = plugins.get("entries")
+load = plugins.get("load")
+paths = load.get("paths") if isinstance(load, dict) else None
+if (not isinstance(allow, list) or not isinstance(entries, dict)
+        or not isinstance(paths, list) or "pixel-ods" not in allow):
+    raise SystemExit(1)
+parallel_path = str(pathlib.Path(sys.argv[3]) / "data/pixel/native-search/parallel-2026.6.33")
+if selected == "searxng":
+    origin = contract.get("searxngBaseUrl")
+    if (not isinstance(origin, str)
+            or not re.fullmatch(r"http://127\.0\.0\.1:[1-9][0-9]{0,4}", origin)
+            or int(origin.rsplit(":", 1)[1]) > 65535
+            or "searxng" not in allow or "parallel" in allow
+            or entries.get("searxng") != {"enabled": True, "config": {"webSearch": {"baseUrl": origin}}}
+            or "parallel" in entries or parallel_path in paths):
+        raise SystemExit(1)
+else:
+    extensions = contract.get("gatewayExtensions")
+    parallel = [item for item in extensions if isinstance(item, dict) and item.get("id") == "parallel"] if isinstance(extensions, list) else []
+    if (len(parallel) != 1 or parallel[0].get("path") != parallel_path
+            or not isinstance(parallel[0].get("sha256"), str)
+            or not re.fullmatch(r"[0-9a-f]{64}", parallel[0]["sha256"])
+            or "parallel" not in allow or "searxng" in allow
+            or entries.get("parallel") != {"enabled": True}
+            or "searxng" in entries or parallel_path not in paths):
+        raise SystemExit(1)
 PY
 }
 
@@ -1684,7 +1714,7 @@ if selected_search is not None:
     candidate_search = candidate.get("tools", {}).get("web", {}).get("search")
     if candidate_search != {"provider": selected_search}:
         raise SystemExit("candidate search provider differs from onboarding")
-    if live_search != candidate_search:
+    if live_search != candidate_search or normalized_plugins != candidate.get("plugins"):
         if live_search not in ({"provider": "searxng"}, {"provider": "parallel-free"}):
             raise SystemExit("live search provider is outside the ODS contract")
         extensions = contract.get("gatewayExtensions")
