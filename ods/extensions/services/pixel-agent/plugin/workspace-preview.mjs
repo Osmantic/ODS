@@ -213,6 +213,7 @@ function socketRequest(payload, { socketPath = SOCKET_PATH, signal, timeoutMs = 
 }
 
 const FAILURE_MESSAGES = {
+  writable_file: "A regular project file is writable by its group or by other users. Inspect file modes inside the selected static output directory and remove only group/other write permission from the affected generated files (chmod go-w on those files), then retry. Adding read or execute permission does not remove write permission. Do not change parent directories, ownership, host settings, or unrelated files; do not delete or rename output to bypass validation.",
   invalid_json_artifact: "A .json artifact is not valid unambiguous UTF-8 JSON. Generate serialized data from the actual final files using a JSON serializer, parse it back, and compare the decoded contents with those files before retrying. Do not hand-transcribe escaped source code or rename required files to bypass validation.",
   unsupported_file_type: "The project contains an unsupported preview file type. Inspect its file list and keep unrelated files outside the static site directory; CSV and TSV data files are supported.",
   missing_entry: "The selected directory needs a nonempty index.html at its root. Check the directory and entry file before retrying.",

@@ -1,6 +1,20 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+test("writable output refusal explains narrowing permissions without changing the host", async () => {
+  const tool = createWorkspacePreviewTool({request: async () => ({
+    schemaVersion: 1, kind: 'ods-pixel-workspace-preview', status: 'failed',
+    boundary: testing.BOUNDARY, error: 'ODS workspace preview publication failed',
+    errorCode: 'writable_file',
+  })});
+  const result = await tool.execute('writable-build', {relativeDirectory: 'demo-site'});
+  assert.equal(result.isError, true);
+  assert.equal(result.details.errorCode, 'writable_file');
+  assert.match(result.content[0].text, /chmod go-w/);
+  assert.match(result.content[0].text, /Adding read or execute permission does not remove write permission/);
+  assert.match(result.content[0].text, /Do not change parent directories/);
+});
+
 import {
   createWorkspacePreviewTool,
   EMPTY_PUBLISHED_FILES_PREFIX,
