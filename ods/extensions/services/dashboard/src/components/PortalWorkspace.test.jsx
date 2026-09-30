@@ -17,6 +17,20 @@ beforeEach(()=>{
  vi.stubGlobal('fetch',vi.fn(async url=>({ok:true,headers:new Map(),arrayBuffer:async()=>new TextEncoder().encode(url.includes('__ods_manifest__')?JSON.stringify(manifest):url.includes('__ods_changes__')?JSON.stringify(comparison):sources[Object.keys(sources).find(path=>url.endsWith('/'+path))]).buffer})))
 })
 afterEach(()=>vi.unstubAllGlobals())
+it('explains a missing publication instead of leaving a broken iframe and comparison, and can retry',async()=>{
+ const available=fetch
+ vi.stubGlobal('fetch',vi.fn(async()=>({ok:false,status:404})))
+ const {container}=render(<PortalWorkspace {...props}/>)
+ expect(await screen.findByText('Published preview unavailable')).toBeVisible()
+ expect(container.querySelector('iframe')).toBeNull()
+ fireEvent.click(screen.getByRole('tab',{name:'Review'}))
+ expect(screen.queryByText('File comparison unavailable.')).toBeNull()
+ expect(screen.getByText(/does not mean your workspace source files were deleted/)).toBeVisible()
+ vi.stubGlobal('fetch',available)
+ fireEvent.click(screen.getByRole('button',{name:'Check publication again'}))
+ await waitFor(()=>expect(screen.queryByText('Published preview unavailable')).toBeNull())
+ expect(await screen.findByLabelText('Diff for index.html')).toBeVisible()
+})
 it('opens Subagents without a publication and keeps it independent of preview files',async()=>{
  const {rerender}=render(<PortalWorkspace {...props} preview={null} access={null} agents={agents} request={{kind:'agents'}}/>)
  expect(screen.getByRole('tabpanel',{name:'Subagents'})).toBeVisible()

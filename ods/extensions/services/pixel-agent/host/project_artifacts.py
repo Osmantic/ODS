@@ -22,6 +22,11 @@ class InvalidProjectArtifacts(ValueError):
     pass
 
 
+class MissingProjectOutput(InvalidProjectArtifacts):
+    """The stopped build exists but Docker confirms its requested path is absent."""
+    pass
+
+
 def import_artifacts(workspace: str, project: str, job: str, artifacts: dict) -> str:
     """Import validated output create-only; never replace project source files.
 
@@ -163,7 +168,15 @@ def collect_artifacts(image: str, job: str, output_directory: str) -> dict:
             payload = process.stdout.read(MAX_ARCHIVE + 1)
             if len(payload) > MAX_ARCHIVE:
                 raise InvalidProjectArtifacts("artifact stream too large")
-            if process.wait(timeout=5) != 0:
+            code = process.wait(timeout=5)
+            if code != 0:
+                errors.seek(0)
+                diagnostic = errors.read(4097)
+                expected = f"Error response from daemon: Could not find the file /home/node/{output_directory}/. in container {name}"
+                if code == 1 and not payload and diagnostic.strip() == expected.encode('utf-8'):
+                    raise MissingProjectOutput(
+                        f"Build completed, but outputDirectory '{output_directory}' was not created. "
+                        "Read the build configuration or main.py and submit a new job with its actual output directory; no files were imported.")
                 raise InvalidProjectArtifacts("artifact collection failed")
         finally:
             watchdog.cancel()

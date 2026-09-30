@@ -5,9 +5,12 @@ import sys
 import tarfile
 import tempfile
 import unittest
+import json
+import subprocess
+from unittest.mock import patch, MagicMock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "host"))
-from project_artifacts import InvalidProjectArtifacts, decode_artifacts, import_artifacts
+from project_artifacts import InvalidProjectArtifacts, MissingProjectOutput, collect_artifacts, decode_artifacts, import_artifacts
 
 
 def packed(entries):
@@ -23,6 +26,27 @@ def packed(entries):
 
 
 class ProjectArtifactsTests(unittest.TestCase):
+    def test_only_exact_missing_path_response_is_recoverable(self):
+        image, job = 'sha256:' + 'a' * 64, 'ods-project-' + 'b' * 24
+        exact = f'Error response from daemon: Could not find the file /home/node/dist/. in container {job}-build'
+        container = {'State': {'Running': False, 'ExitCode': 0},
+                     'Config': {'Image': image, 'Labels': {'org.osmantic.ods.project-job': job}},
+                     'HostConfig': {'NetworkMode': 'none'}}
+        for message, expected in ((exact, MissingProjectOutput), ('Cannot connect to the Docker daemon', InvalidProjectArtifacts),
+                                  (exact.replace('/dist/', '/out/'), InvalidProjectArtifacts)):
+            with self.subTest(message=message):
+                def copy(*args, **kwargs):
+                    kwargs['stderr'].write(message.encode())
+                    process = MagicMock()
+                    process.stdout = io.BytesIO(b'')
+                    process.wait.return_value = 1
+                    process.poll.return_value = 1
+                    return process
+                with patch('project_artifacts.subprocess.run', return_value=subprocess.CompletedProcess([], 0, json.dumps([container]).encode())), patch('project_artifacts.subprocess.Popen', side_effect=copy):
+                    with self.assertRaises(expected) as raised:
+                        collect_artifacts(image, job, 'dist')
+                    self.assertIs(type(raised.exception), expected)
+
     def test_framework_paths_and_exact_bytes(self):
         data = packed([("./index.html", tarfile.REGTYPE, b"<h1>actual</h1>\n"),
                        ("./_next/static/app.js", tarfile.REGTYPE, b"boot();")])
