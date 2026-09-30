@@ -357,6 +357,9 @@ def test_macos_cloud_route_matches_the_initial_installer(monkeypatch):
     }
     assert _mod._opencode_route(env) == ("http://127.0.0.1:4400/v1", "test-key")
     assert _mod._opencode_model_route(env, "unused") == ("llama-server", "default", "default")
+    env["ODS_MODEL_SWITCHBOARD"] = "enabled"
+    assert _mod._opencode_route(env) == ("http://127.0.0.1:4400/v1", "test-key")
+    assert _mod._opencode_model_route(env, "unused") == ("llama-server", "ods/current", "ods/current")
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX LaunchAgent ownership and mode")
@@ -370,6 +373,46 @@ def test_macos_setup_refuses_a_foreign_plist(tmp_path, monkeypatch, _isolated):
     with pytest.raises(RuntimeError, match="does not match"):
         _mod._setup_managed_opencode_macos(dict(SETUP_ENV))
     assert plist.is_file()
+
+
+def test_macos_plist_race_never_rewrites_owner_config(tmp_path, monkeypatch, _isolated):
+    _setup_ready_install(tmp_path, monkeypatch)
+    owner_uid = getattr(os, "getuid", lambda: 0)()
+    monkeypatch.setattr(_mod.os, "getuid", lambda: owner_uid, raising=False)
+    monkeypatch.setattr(_mod, "_opencode_setup_issue", lambda env, system=None: None)
+    monkeypatch.setattr(_mod, "_opencode_macos_disabled", lambda: False)
+    monkeypatch.setattr(_mod, "_write_progress", lambda *args, **kwargs: None)
+
+    def raced_plist(path, content):
+        raise RuntimeError("raced plist")
+
+    monkeypatch.setattr(_mod, "_create_opencode_macos_plist", raced_plist)
+    monkeypatch.setattr(
+        _mod, "_update_opencode_config",
+        lambda *args, **kwargs: pytest.fail("owner config changed before plist custody"),
+    )
+    monkeypatch.setattr(
+        _mod, "_restore_opencode_config",
+        lambda snapshot: pytest.fail("untouched owner config was rewritten"),
+    )
+    config = _isolated / ".config" / "opencode" / "opencode.json"
+    config.parent.mkdir(parents=True)
+    original = '{"model":"owner/cloud-model"}\n'
+    config.write_text(original)
+    binary = _isolated / ".opencode" / "bin" / "opencode"
+
+    def install(command, **kwargs):
+        assert command[0] == "bash"
+        binary.parent.mkdir(parents=True, exist_ok=True)
+        binary.write_bytes(b"reviewed-release-fixture")
+        binary.chmod(0o755)
+        return subprocess.CompletedProcess(command, 0, stdout=f"{binary}\n", stderr="")
+
+    monkeypatch.setattr(_mod.subprocess, "run", install)
+    with pytest.raises(RuntimeError, match="raced plist"):
+        _mod._setup_managed_opencode_macos(dict(SETUP_ENV))
+    assert config.read_text() == original
+    assert not binary.exists()
 
 
 def test_setup_requires_systemctl(tmp_path, monkeypatch):
