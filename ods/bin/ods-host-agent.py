@@ -5957,7 +5957,12 @@ def _whisper_model_ready_after_start(max_wait_seconds: float = 480) -> tuple[boo
         env = load_env(INSTALL_DIR / ".env")
     except (OSError, UnicodeError, ValueError):
         return False, "Whisper started, but its selected model could not be read; run ods repair voice"
-    model = str(env.get("AUDIO_STT_MODEL") or "Systran/faster-whisper-base").strip()
+    fallback_model = (
+        "deepdml/faster-whisper-large-v3-turbo-ct2"
+        if env.get("GPU_BACKEND") == "nvidia" and env.get("WHISPER_ACCELERATION", "cuda") == "cuda"
+        else "Systran/faster-whisper-base"
+    )
+    model = str(env.get("AUDIO_STT_MODEL") or fallback_model).strip()
     raw_port = str(env.get("WHISPER_PORT") or "9000").strip()
     if (not model or len(model) > 256 or any(ord(char) < 32 or ord(char) == 127 for char in model)
             or not raw_port.isascii() or not raw_port.isdecimal() or len(raw_port) > 5
