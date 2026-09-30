@@ -150,7 +150,7 @@ if comm -13 "$audit_root/images-before.txt" "$audit_root/images-after.txt" \
 fi
 
 [[ -n "$product" ]] || fail 'product checkout is required'
-[[ "$(git -C "$product" rev-parse HEAD)" == 63f1fc260482ecdb80dbd5bcf47a626dd2301e96 ]] || fail 'wrong product checkout'
+[[ "$(git -C "$product" rev-parse HEAD)" == 58400b77468b12d97c2f6ec7b9308eb338d3e2e5 ]] || fail 'wrong product checkout'
 
 curl -fsS --max-time 30 http://127.0.0.1:3001/api/extensions/perplexica/install-plan     >"$audit_root/perplexica-plan.json" || fail 'Perplexica install plan unavailable'
 python3 - "$audit_root/perplexica-plan.json" <<'PY' || fail 'external-model plan is blocked'
