@@ -42,8 +42,9 @@ def execute(action, transaction_id=None, outcome=None, *, request=None):
                 or not HEX.fullmatch(body["config_sha256"])):
             raise RuntimeError("installer-model-verification-failed")
         return body
-    if action == "begin" and transaction_id is None and outcome is None:
-        status, body = request("model-begin")
+    if action in ("begin", "source-begin") and transaction_id is None and outcome is None:
+        status, body = (request("installer-source-begin", {}) if action == "source-begin"
+                        else request("model-begin"))
         if (status != 200 or set(body) != {"status", "transaction_id"}
                 or body.get("status") != "held"
                 or type(body.get("transaction_id")) is not str

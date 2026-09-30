@@ -1109,11 +1109,25 @@ class SystemdAccessBridge:
             return None
         return value
 
-    def model_begin(self):
+    def model_begin(self, *, installer_source=False):
         with self.bounded(MODEL_DRAIN_TIMEOUT + 30), self.locked():
             if self.pending() is not None:
+                if installer_source:
+                    return self.resume_source_begin()
                 raise AccessError("transition-recovery-required")
             snapshot = self.inspect(allow_installing=True)
+            source_plan = None
+            if installer_source or (platform.system() == 'Linux' and os.path.lexists(self.state / 'source-upgrade')):
+                if platform.system() != 'Linux' or (installer_source and os.geteuid() != 0):
+                    raise AccessError('source-installer-root-required')
+                from pixel_source_upgrade import begin_plan, UpgradeError
+                try:
+                    source_plan = begin_plan(self.state, self.install, self.owner, installer=installer_source)
+                    if (source_plan is not None and snapshot['_config'].get('config_sha256')
+                            != source_plan.journal()['identity']['configSha256']):
+                        raise AccessError('source-owner-state-changed')
+                except UpgradeError as error:
+                    raise AccessError(str(error)) from None
             configured_mode = snapshot["configured_mode"]
             trusted_snapshot = (
                 snapshot["available"] is True
@@ -1156,6 +1170,17 @@ class SystemdAccessBridge:
                        "edge_revision": snapshot["_edge"]["revision"],
                        "configured_mode": snapshot["configured_mode"],
                        "start_config_sha256": snapshot["_config"]["config_sha256"]}
+            if source_plan is not None:
+                # Reserve the source token before the ordinary model journal.
+                # If interrupted between these two durable writes, only this
+                # root-only operation may resume the same staged transaction.
+                previous = source_plan.journal()['hold']
+                if previous is not None:
+                    pending['transaction_id'] = previous
+                try:
+                    source_plan.bind(pending['transaction_id'], lambda _token: None)
+                except UpgradeError as error:
+                    raise AccessError(str(error)) from None
             # Durable intent precedes both admission-gate acquisition calls.
             atomic_json(self.state / "transition.json", pending)
             try:
@@ -1190,6 +1215,62 @@ class SystemdAccessBridge:
                 self.model_error(pending, error)
                 if isinstance(error, AccessError): raise
                 raise AccessError("model-transition-failed") from None
+
+    def resume_source_begin(self):
+        """Recover only an exact source acquisition interrupted before copying.
+
+        Called under model_begin's existing root lock/deadline. It neither
+        adopts an arbitrary model hold nor changes a permission preference.
+        """
+        if platform.system() != 'Linux' or os.geteuid() != 0:
+            raise AccessError('source-installer-root-required')
+        self.discover(allow_installing=True)
+        from pixel_source_upgrade import begin_plan, UpgradeError
+        try:
+            manager = begin_plan(self.state, self.install, self.owner, installer=True)
+            plan = manager.journal()
+            pending = self.model_journal(plan['hold'])
+            if (plan['phase'] != 'held' or pending['phase'] not in ('acquiring', 'draining', 'error')
+                    or pending['start_config_sha256'] != plan['identity']['configSha256']):
+                raise AccessError('source-acquisition-recovery-required')
+        except UpgradeError as error:
+            raise AccessError(str(error)) from None
+        try:
+            token = pending['token']
+            edge = self.edge()
+            operation = {'idle': 'drain', 'held': 'acquire', 'interrupted': 'recover'}.get(edge.get('phase'))
+            if operation is None:
+                raise AccessError('model-lease-lost')
+            edge = self.edge(operation, token, edge['revision'])
+            pending.update(phase='draining', edge_revision=edge['revision'])
+            pending.pop('error', None)
+            atomic_json(self.state / 'transition.json', pending)
+            deadline = time.monotonic() + MODEL_DRAIN_TIMEOUT
+            while True:
+                native = self.native(timeout=5)
+                edge = self.edge('acquire', token, pending['edge_revision'])
+                if (native.get('phase') in ('idle', 'held', 'interrupted') and not native.get('active')
+                        and not native.get('stopped') and edge.get('phase') == 'held' and not edge.get('streams')):
+                    native = self.native('acquire', token, timeout=5)
+                    if native.get('phase') != 'held' or native.get('active'):
+                        raise AccessError('native-lease-unconfirmed')
+                    break
+                if time.monotonic() >= deadline:
+                    raise AccessError('runtime-busy')
+                time.sleep(1)
+            current = self.worker()
+            if (current.get('configured_status') != pending['configured_mode']
+                    or current.get('config_sha256') != pending['start_config_sha256']):
+                raise AccessError('source-owner-state-changed')
+            self.verify_held_mode(token, pending['configured_mode'])
+            pending['phase'] = 'held'
+            atomic_json(self.state / 'transition.json', pending)
+            return {'status': 'held', 'transaction_id': pending['transaction_id']}
+        except Exception as error:
+            self.model_error(pending, error)
+            if isinstance(error, AccessError):
+                raise
+            raise AccessError('source-acquisition-recovery-failed') from None
 
     def verify_installer_model_access(self, transaction_id):
         """Re-prove an installer's held model transaction without releasing it.
@@ -1563,6 +1644,14 @@ class SystemdAccessBridge:
                 or request["outcome"] not in ("applied", "rolled-back")):
             raise AccessError("invalid-request")
         with self.bounded(300), self.locked():
+            if platform.system() == "Linux" and os.path.lexists(self.state / 'source-upgrade'):
+                from pixel_source_upgrade import release_guard, UpgradeError
+                try:
+                    self.discover(allow_installing=True)
+                    release_guard(self.state, self.install, self.owner.pw_uid,
+                                  request['transaction_id'], request['outcome'])
+                except UpgradeError as error:
+                    raise AccessError(str(error)) from None
             completion = self.model_completion(request)
             if completion is not None:
                 # The socket reply may have been lost after both gates released.

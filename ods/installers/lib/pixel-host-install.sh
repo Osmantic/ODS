@@ -347,6 +347,24 @@ _ods_pixel_source_transition_required() {
     return 1
 }
 
+# Local installer-only custody operations. The root helper validates the real
+# install/owner and protected coordinator; the environment handle is merely a
+# convenience and never the authority to write files or release admission.
+_ods_pixel_source_upgrade() {
+    local action="$1" owner="$2"
+    shift 2
+    local helper="${SCRIPT_DIR:?}/bin/pixel_source_upgrade.py"
+    [[ -f "$helper" && ! -L "$helper" ]] || return 1
+    ods_sudo python3 -I "$helper" "$action" "${INSTALL_DIR:?}" "$owner" "$@"
+}
+
+_ods_pixel_check_source_transaction() {
+    local owner="$1" result
+    [[ "${ODS_PIXEL_SOURCE_TRANSACTION:-}" =~ ^[a-f0-9]{64}$ ]] || return 1
+    result="$(_ods_pixel_source_upgrade status "$owner")" || return 1
+    printf '%s' "$result" | python3 -c 'import json,sys; d=json.load(sys.stdin); sys.exit(0 if d.get("pending") is True and d.get("transaction")==sys.argv[1] and d.get("phase")=="applied" and d.get("mode") in ("sandboxed","full-access") else 1)' "$ODS_PIXEL_SOURCE_TRANSACTION"
+}
+
 # A failed test or operator cleanup can remove the ODS checkout while leaving
 # an interrupted, marker-bound Pixel host deployment. Reconstruct only the
 # marker's exact prior commit from the currently authorized source repository
@@ -2034,6 +2052,10 @@ _ods_pixel_verify_current_runtime() {
     local owner="$1" home="$2" pixel_root="$3" transaction_id="${4:-}"
     local verify_attempt owns_transaction=false openclaw_bin
     local -a verify_arguments=()
+    if [[ -z "$transaction_id" && -n "${ODS_PIXEL_SOURCE_TRANSACTION:-}" ]]; then
+        _ods_pixel_check_source_transaction "$owner" || return 1
+        transaction_id="$ODS_PIXEL_SOURCE_TRANSACTION"
+    fi
     if [[ -z "$transaction_id" ]]; then
         # Standalone sandboxed installations retain Pixel's strict verifier.
         # A relaxed boundary is never inferred to be authorized from systemd:
@@ -2076,6 +2098,14 @@ _ods_pixel_resume_completed_release() {
     local helper=/usr/local/libexec/ods-pixel-access/pixel_model_transition.py
     [[ -f "$helper" && ! -L "$helper" ]] || return 0
     status="$(_ods_pixel_model_transition status "$owner" "$home")" || return 1
+    if [[ -n "${ODS_PIXEL_SOURCE_TRANSACTION:-}" ]]; then
+        _ods_pixel_check_source_transaction "$owner" || return 1
+        if printf '%s' "$status" | python3 -c 'import json,sys; d=json.load(sys.stdin); sys.exit(0 if d.get("transaction_id")==sys.argv[1] and "release_completion" not in d else 1)' "$ODS_PIXEL_SOURCE_TRANSACTION"; then
+            # This exact source update acquired admission before Phase06 copy.
+            # No release has been applied yet; continue the same staged plan.
+            return 0
+        fi
+    fi
     resume="$(printf '%s' "$status" | python3 -c '
 import json,re,sys
 d=json.load(sys.stdin)
@@ -2111,6 +2141,11 @@ print(d["transaction_id"],c["outcome"],c["config_sha256"])
 
 _ods_pixel_begin_release_transition() {
     local owner="$1" home="$2" openclaw_bin transaction_id
+    if [[ -n "${ODS_PIXEL_SOURCE_TRANSACTION:-}" ]]; then
+        _ods_pixel_check_source_transaction "$owner" || return 1
+        printf '%s\n' "$ODS_PIXEL_SOURCE_TRANSACTION"
+        return 0
+    fi
     # First installation and the ordinary sandboxed boundary need no access
     # migration. A relaxed boundary merely selects the coordinator: only its
     # authenticated begin/verification establishes the actual permission mode.
@@ -2137,6 +2172,14 @@ _ods_pixel_begin_release_transition() {
 _ods_pixel_finish_release_transition() {
     local owner="$1" home="$2" pixel_root="$3" transaction_id="$4" config_sha attempt proved=false
     [[ "$transaction_id" =~ ^[a-f0-9]{64}$ ]] || return 1
+    if [[ "$transaction_id" == "${ODS_PIXEL_SOURCE_TRANSACTION:-}" ]]; then
+        _ods_pixel_check_source_transaction "$owner" || return 1
+        if _ods_pixel_source_upgrade status "$owner" | jq -e '.mode == "sandboxed"' >/dev/null; then
+            # Sandbox has no enabled receipt to migrate. Keep the same hold
+            # through the ODS overlay and final runtime verification.
+            return 0
+        fi
+    fi
     config_sha="$(ods_pixel_run_as_owner "$owner" "$home" sha256sum "$home/.openclaw/openclaw.json")" || return 1
     config_sha=${config_sha%% *}
     [[ "$config_sha" =~ ^[a-f0-9]{64}$ ]] || return 1
@@ -2278,6 +2321,11 @@ _ods_pixel_model_transition() {
         finish)
             [[ "$transaction_id" =~ ^[0-9a-f]{64}$
                 && ( "$outcome" == applied || "$outcome" == rolled-back ) ]] || return 1
+            if [[ "$transaction_id" == "${ODS_PIXEL_SOURCE_TRANSACTION:-}" ]]; then
+                [[ "$outcome" == applied ]] || return 1
+                _ods_pixel_check_source_transaction "$owner"
+                return
+            fi
             ods_pixel_run_as_owner "$owner" "$home" python3 -I "$helper" \
                 finish --transaction "$transaction_id" "$outcome"
             ;;
@@ -2547,6 +2595,10 @@ ods_pixel_reconcile_promoted_model() {
 }
 
 _ods_pixel_reprove_access_marker_if_needed() {
+    if [[ -n "${ODS_PIXEL_SOURCE_TRANSACTION:-}" ]]; then
+        _ods_pixel_check_source_transaction "$1"
+        return
+    fi
     local owner="$1" home="$2" openclaw_bin="$3" check
     [[ -e "$home/.config/ods/pixel-managed.json" ]] || return 0
     if ods_pixel_run_as_owner "$owner" "$home" python3 - \
@@ -2589,6 +2641,7 @@ PY
 
 _ods_pixel_install_access_service() {
     local owner="$1" openclaw_bin="$2" adopt_existing="${3:-false}" activate="${4:-true}" home gateway_port
+    local code_source="${5:-${INSTALL_DIR:?}}"
     [[ "$adopt_existing" == true || "$adopt_existing" == false ]] || return 1
     [[ "$activate" == true || "$activate" == false ]] || return 1
     home="$(ods_pixel_owner_home "$owner")" || return 1
@@ -2598,10 +2651,11 @@ _ods_pixel_install_access_service() {
     gateway_port="$(_ods_pixel_installed_gateway_port "$owner" "$home")" || return 1
     # This coordinator is privileged. Never run or import its implementation
     # from the owner's mutable checkout, even when the host agent is unprivileged.
-    ods_sudo python3 - "${INSTALL_DIR:?}" "$owner" "$openclaw_bin" "$gateway_port" "$adopt_existing" "$activate" <<'PY'
-import fcntl, hashlib, json, os, pathlib, pwd, shlex, socket, stat, subprocess, sys, tempfile, time
+    ods_sudo python3 - "${INSTALL_DIR:?}" "$owner" "$openclaw_bin" "$gateway_port" "$adopt_existing" "$activate" "$code_source" <<'PY'
+import fcntl, hashlib, json, os, pathlib, pwd, re, shlex, socket, stat, subprocess, sys, tempfile, time, types
 sys.dont_write_bytecode = True
 source = pathlib.Path(sys.argv[1])
+code_source = pathlib.Path(sys.argv[7])
 owner = pwd.getpwnam(sys.argv[2])
 if owner.pw_uid == 0:
     raise SystemExit("Pixel access requires a non-root gateway owner")
@@ -2615,7 +2669,60 @@ info = os.fstat(lock)
 if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_nlink != 1 or info.st_mode & 0o077:
     raise SystemExit("Pixel access state lock is unsafe")
 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-if (state / 'transition.json').exists():
+source_upgrade = None
+completed_source_upgrade = None
+if os.path.lexists(state / 'source-upgrade/source-upgrade.json'):
+    # The installer itself is already the operator's privileged entry point.
+    # Load the exact staged helper, then bind every protected write to that
+    # root-custodied plan; no owner socket can select code or paths.
+    snapshot_root = state / 'source-upgrade'
+    snapshot_info = snapshot_root.lstat()
+    if not stat.S_ISDIR(snapshot_info.st_mode) or snapshot_info.st_uid != 0 or snapshot_info.st_mode & 0o077:
+        raise SystemExit('Source upgrade snapshot custody changed')
+    def snapshot_bytes(name):
+        fd = os.open(snapshot_root / name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(fd, 'rb') as handle:
+            info = os.fstat(handle.fileno())
+            if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid != 0
+                    or info.st_mode & 0o077 or info.st_size > 64 * 1024 * 1024):
+                raise SystemExit('Source upgrade snapshot custody changed')
+            value = handle.read(64 * 1024 * 1024 + 1)
+            if len(value) > 64 * 1024 * 1024:
+                raise SystemExit('Source upgrade snapshot is too large')
+            return value
+    staged = json.loads(snapshot_bytes('source-upgrade.json'))
+    helper_hash = staged['candidate']['bin/pixel_source_upgrade.py']['sha256']
+    if not isinstance(helper_hash, str) or not re.fullmatch(r'[a-f0-9]{64}', helper_hash):
+        raise SystemExit('Source upgrade helper identity is invalid')
+    helper_bytes = snapshot_bytes(helper_hash)
+    if hashlib.sha256(helper_bytes).hexdigest() != helper_hash:
+        raise SystemExit('Source upgrade helper snapshot changed')
+    module = types.ModuleType('ods_source_upgrade')
+    # Execute only the previously staged root-private helper, never code read
+    # anew from the owner's mutable incoming checkout during bootstrap.
+    exec(compile(helper_bytes, str(snapshot_root / helper_hash), 'exec'), module.__dict__)
+    source_upgrade = module.SourceUpgrade(state / 'source-upgrade', source, owner.pw_uid)
+    plan = source_upgrade.journal()
+    if plan['phase'] == 'complete':
+        if os.path.lexists(state / 'transition.json'):
+            raise SystemExit('Recover the existing Pixel access transition before upgrading its coordinator')
+        if code_source != source:
+            raise SystemExit('Stage the new source before upgrading its coordinator')
+        # A released update does not freeze owner-managed extensions. The
+        # retained protected mirror remains authoritative for coordinator
+        # rewrites; changes to that code/config require a new staged update.
+        source_upgrade.verify_mirror()
+        completed_source_upgrade = source_upgrade
+        source_upgrade = None
+    else:
+        expected_source = plan['after'] if code_source == source else plan['candidate']
+        if module.inventory(code_source, owner.pw_uid, candidate=code_source != source) != expected_source:
+            raise SystemExit('Source upgrade candidate changed before coordinator handoff')
+        if os.path.lexists(state / 'transition.json'):
+            module._pending(state, plan['hold'])
+            if plan['phase'] != 'applied':
+                raise SystemExit('Source upgrade code is not fully installed')
+elif (state / 'transition.json').exists():
     raise SystemExit("Recover the existing Pixel access transition before upgrading its coordinator")
 target = pathlib.Path('/usr/local/libexec/ods-pixel-access')
 target.mkdir(mode=0o755, parents=True, exist_ok=True)
@@ -2625,10 +2732,18 @@ for path in (target, *target.parents):
         raise SystemExit("Pixel access program directory is not root protected")
 
 def write(path, content, mode, uid=0, gid=0):
+    if completed_source_upgrade is not None:
+        completed_source_upgrade.verify_mirror()
+        expected = completed_source_upgrade._mirror_record()['after'].get(str(path))
+        wanted = dict(sha256=hashlib.sha256(content).hexdigest(), mode=mode, uid=uid, gid=gid)
+        if expected != wanted:
+            raise SystemExit('Stage a source upgrade before changing its protected coordinator')
     if path.exists() or path.is_symlink():
         info = path.lstat()
         if not stat.S_ISREG(info.st_mode) or info.st_uid != uid or info.st_nlink != 1 or info.st_mode & 0o022:
             raise SystemExit("Refusing an unsafe Pixel access program/configuration path")
+    if source_upgrade is not None:
+        source_upgrade.record_mirror_write(path, content, mode, uid, gid)
     fd, temporary = tempfile.mkstemp(prefix='.ods-access-install-', dir=path.parent)
     try:
         os.fchmod(fd, mode)
@@ -2639,24 +2754,25 @@ def write(path, content, mode, uid=0, gid=0):
     finally:
         if os.path.exists(temporary): os.unlink(temporary)
 
-host = source / 'extensions/services/pixel-agent/host'
+host = code_source / 'extensions/services/pixel-agent/host'
 for name in ('access_mode_server.py', 'unix_peer.py', 'access_mode_worker.py', 'pixel_access_mode.py', 'access_mode_config.py', 'settings_transaction.py', 'provider_transaction.py', 'model_transaction.py', 'access_release_transaction.py'):
     write(target / name, (host / name).read_bytes(), 0o644)
-write(target / 'pixel_access_bridge.py', (source / 'bin/pixel_access_bridge.py').read_bytes(), 0o644)
-write(target / 'pixel_gateway_service.py', (source / 'bin/pixel_gateway_service.py').read_bytes(), 0o644)
-write(target / 'pixel_access_client.py', (source / 'bin/pixel_access_client.py').read_bytes(), 0o644)
-write(target / 'pixel_access_reconcile.py', (source / 'bin/pixel_access_reconcile.py').read_bytes(), 0o644)
-write(target / 'pixel_model_transition.py', (source / 'bin/pixel_model_transition.py').read_bytes(), 0o644)
-write(target / 'pixel_access_protocol.py', (source / 'bin/pixel_access_protocol.py').read_bytes(), 0o644)
+write(target / 'pixel_access_bridge.py', (code_source / 'bin/pixel_access_bridge.py').read_bytes(), 0o644)
+write(target / 'pixel_gateway_service.py', (code_source / 'bin/pixel_gateway_service.py').read_bytes(), 0o644)
+write(target / 'pixel_access_client.py', (code_source / 'bin/pixel_access_client.py').read_bytes(), 0o644)
+write(target / 'pixel_access_reconcile.py', (code_source / 'bin/pixel_access_reconcile.py').read_bytes(), 0o644)
+write(target / 'pixel_model_transition.py', (code_source / 'bin/pixel_model_transition.py').read_bytes(), 0o644)
+write(target / 'pixel_source_upgrade.py', (code_source / 'bin/pixel_source_upgrade.py').read_bytes(), 0o644)
+write(target / 'pixel_access_protocol.py', (code_source / 'bin/pixel_access_protocol.py').read_bytes(), 0o644)
 for name in ('pixel_model_contract.py', 'pixel_model_coordinator.py'):
-    write(target / name, (source / 'bin' / name).read_bytes(), 0o644)
+    write(target / name, (code_source / 'bin' / name).read_bytes(), 0o644)
 settings_package = target / 'pixel_settings'
 settings_package.mkdir(mode=0o755, exist_ok=True)
 info = settings_package.lstat()
 if not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
     raise SystemExit("Pixel settings program directory is not root protected")
 for name in ('__init__.py', 'contract.py', 'projection.py', 'runtime.py', 'coordinator.py'):
-    write(settings_package / name, (source / 'bin/pixel_settings' / name).read_bytes(), 0o644)
+    write(settings_package / name, (code_source / 'bin/pixel_settings' / name).read_bytes(), 0o644)
 provider_package = target / 'pixel_provider'
 provider_package.mkdir(mode=0o755, exist_ok=True)
 info = provider_package.lstat()
@@ -2665,7 +2781,7 @@ if not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode) or info.st_uid !
 for name in ('__init__.py', 'config.py', 'store.py', 'activation_config.py',
              'managed_deployment.py', 'service_environment.py', 'service_activation.py',
              'runtime_custody.py', 'coordinator.py'):
-    write(provider_package / name, (source / 'bin/pixel_provider' / name).read_bytes(), 0o644)
+    write(provider_package / name, (code_source / 'bin/pixel_provider' / name).read_bytes(), 0o644)
 config_dir = pathlib.Path('/etc/ods')
 config_dir.mkdir(mode=0o755, exist_ok=True)
 info = config_dir.lstat()
@@ -4852,6 +4968,13 @@ ods_pixel_install_default_agent() {
         ai_bad "Pixel requires a valid loopback gateway port."
         return 1
     }
+    if [[ -n "${ODS_PIXEL_SOURCE_TRANSACTION:-}" ]]; then
+        _ods_pixel_check_source_transaction "$owner" || return 1
+        # From here generated config, native package repairs and auxiliary
+        # services may change. Failure is resume-only under the durable hold;
+        # restoring just the checkout would not restore the whole runtime.
+        _ods_pixel_source_upgrade downstream "$owner" || return 1
+    fi
     _ods_pixel_assert_managed_state "$owner" "$home" || return 1
     gateway_port_status=0
     _ods_pixel_existing_gateway_port_matches "$owner" "$home" "$pixel_gateway_port" \
@@ -5166,7 +5289,8 @@ ods_pixel_install_default_agent() {
                 ai "The exact Pixel release is active with an older ODS route; reconciling the reviewed model/runtime policy..."
                 if ! ods_pixel_reconcile_promoted_model "$owner" "$home" \
                     "$(_ods_pixel_runtime_model_identity)" installing "" "" "" \
-                    "$(jq -r '.modelRouteFingerprint // ""' "$answers")" >>"$pixel_log" 2>&1; then
+                    "$(jq -r '.modelRouteFingerprint // ""' "$answers")" \
+                    "${ODS_PIXEL_SOURCE_TRANSACTION:-}" >>"$pixel_log" 2>&1; then
                     ai_bad "The ODS-managed Pixel model route could not be reconciled safely. See $pixel_log."
                     return 1
                 fi
@@ -5180,6 +5304,10 @@ ods_pixel_install_default_agent() {
             }
             if [[ -n "$release_transaction" ]]; then
                 release_arguments=(--ods-release-transaction "$release_transaction")
+                if [[ "$release_transaction" == "${ODS_PIXEL_SOURCE_TRANSACTION:-}" ]] \
+                    && _ods_pixel_source_upgrade status "$owner" | jq -e '.mode == "sandboxed"' >/dev/null; then
+                    release_arguments=(--ods-model-transaction "$release_transaction")
+                fi
             fi
             apply_attempt="$(ods_pixel_run_as_owner "$owner" "$home" \
                 mktemp "$INSTALL_DIR/logs/.pixel-apply.XXXXXXXX")" || return 1
@@ -5447,6 +5575,13 @@ ods_pixel_install_default_agent() {
     if ! _ods_pixel_install_access_service "$owner" "$openclaw_bin"; then
         ai_bad "Pixel access coordinator installation failed; access mode changes remain unavailable."
         return 1
+    fi
+    if [[ -n "${ODS_PIXEL_SOURCE_TRANSACTION:-}" ]]; then
+        _ods_pixel_source_upgrade finish "$owner" || {
+            ai_bad "Pixel source update requires recovery; admission remains protected until its exact runtime is proved."
+            return 1
+        }
+        unset ODS_PIXEL_SOURCE_TRANSACTION
     fi
     if ! _ods_pixel_reverify_access_after_gateway_restart "$owner" "$home" true \
         >>"$pixel_log" 2>&1; then

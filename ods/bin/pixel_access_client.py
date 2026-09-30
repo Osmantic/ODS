@@ -13,7 +13,7 @@ ACCESS_SOCKET_PATH = ("/private/var/run/ods-pixel-access/control.sock"
 
 def request_access(operation, request=None, *, settings_data_dir=None):
     if operation not in ("status", "change", "model-status", "model-begin", "model-finish", "installer-model-verify",
-                         "installer-release-prepare", "installer-release-publish", "installer-release-finish", "installer-release-abort",
+                         "installer-release-prepare", "installer-release-publish", "installer-release-finish", "installer-release-abort", "installer-source-begin",
                           "settings-status", "settings-change", "provider-status", "provider-change"):
         raise ValueError("invalid access operation")
     payload = {"operation": operation}
@@ -25,7 +25,7 @@ def request_access(operation, request=None, *, settings_data_dir=None):
             raise ValueError("unqualified settings data directory")
         payload["data_dir_id"] = hashlib.sha256(str(Path(settings_data_dir)).encode("utf-8")).hexdigest()
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
-        connection.settimeout(1850 if operation == "model-begin" else 335)
+        connection.settimeout(1850 if operation in ("model-begin", "installer-source-begin") else 335)
         connection.connect(ACCESS_SOCKET_PATH)
         if operation.startswith("installer-"):
             # This response is an authority input to the Linux installer, not

@@ -83,6 +83,7 @@ def control_request(value):
             "change": {"operation", "request"},
             "model-begin": {"operation"}, "model-finish": {"operation", "request"},
             "installer-model-verify": {"operation", "request"},
+            "installer-source-begin": {"operation", "request"},
             "installer-release-prepare": {"operation", "request"},
             "installer-release-publish": {"operation", "request"},
             "installer-release-finish": {"operation", "request"},
@@ -103,6 +104,8 @@ def control_request(value):
         raise ProtocolError("invalid-request")
     if "request" in value and type(value["request"]) is not dict:
         raise ProtocolError("invalid-request")
+    if operation == 'installer-source-begin' and value['request'] != {}:
+        raise ProtocolError('invalid-request')
     if operation.startswith('installer-release-'):
         payload = value['request']
         action = operation.removeprefix('installer-release-')

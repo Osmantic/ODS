@@ -35,6 +35,8 @@ for name in ("access_mode_server.py", "unix_peer.py", "pixel_access_bridge.py", 
     protected(PROGRAM / name)
 for name in ("pixel_model_contract.py", "pixel_model_coordinator.py", "model_transaction.py"):
     protected(PROGRAM / name)
+if platform.system() == "Linux":
+    protected(PROGRAM / "pixel_source_upgrade.py")
 if platform.system() == "Darwin":
     for name in ("pixel_macos_custody.py", "pixel_macos_process.py", "pixel_macos_policy.py"):
         protected(PROGRAM / name)
@@ -109,7 +111,7 @@ def main(*, reprove_installer_access=False):
                 raw = self.rfile.readline(2049)
                 if len(raw) > 2048 or not raw.endswith(b"\n"): raise ValueError()
                 request = control_request(decode_frame(raw.decode("utf-8"), 2048))
-                if request["operation"] in ("model-begin", "model-route-begin"):
+                if request["operation"] in ("model-begin", "model-route-begin", "installer-source-begin"):
                     self.connection.settimeout(1850)
                 adapter = make_adapter()
                 if request == {"operation": "status"}:
@@ -120,6 +122,10 @@ def main(*, reprove_installer_access=False):
                     status, body = 200, adapter.change(request["request"])
                 elif request == {"operation": "model-begin"}:
                     status, body = 200, adapter.model_begin()
+                elif request['operation'] == 'installer-source-begin':
+                    if uid != 0:
+                        raise PermissionError()
+                    status, body = 200, adapter.model_begin(installer_source=True)
                 elif request["operation"] == "installer-model-verify":
                     status, body = 200, adapter.verify_installer_model_access(request["request"]["transaction_id"])
                 elif request['operation'].startswith('installer-release-'):

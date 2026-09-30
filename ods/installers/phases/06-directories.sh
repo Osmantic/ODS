@@ -249,26 +249,49 @@ else
         _ods_pixel_source_transition_required \
             "$_phase06_pixel_owner" "$_phase06_pixel_home" "$_phase06_requested_pixel_ref" "$SCRIPT_DIR" \
             || _phase06_pixel_source_transition=$?
+        if [[ "$_phase06_pixel_source_transition" == 0 || "$_phase06_pixel_source_transition" == 1 ]] \
+            && ods_sudo test -d /var/lib/ods-pixel-access/source-upgrade; then
+            _phase06_source_status="$(_ods_pixel_source_upgrade status "$_phase06_pixel_owner")" || return 1
+            if jq -e '.pending == true and .phase == "complete"' <<<"$_phase06_source_status" >/dev/null; then
+                _ods_pixel_source_upgrade finish "$_phase06_pixel_owner" || return 1
+            elif jq -e '.pending == true' <<<"$_phase06_source_status" >/dev/null; then
+                _phase06_pixel_source_transition=0
+            fi
+            unset _phase06_source_status
+        fi
         case "$_phase06_pixel_source_transition" in
             0)
-                if ! declare -F ods_pixel_uninstall_managed >/dev/null 2>&1; then
-                    # shellcheck source=../../lib/pixel-uninstall.sh
-                    source "$SCRIPT_DIR/lib/pixel-uninstall.sh"
-                fi
                 _phase06_step "rebind-pixel-source"
-                ai "Retiring the verified prior Pixel source before applying the new immutable source..."
+                ai "Preparing the verified Pixel source upgrade while preserving its access mode..."
                 if ! _ods_pixel_restore_transition_source \
                     "$_phase06_pixel_owner" "$_phase06_pixel_home" "$_phase06_requested_pixel_ref" >/dev/null; then
-                    error "Could not verify the prior Pixel checkout for safe retirement. Restore its local backup before retrying; no private repository was contacted."
+                    error "Could not verify the prior Pixel checkout for safe upgrade. Restore its local backup before retrying; no private repository was contacted."
                     return 1
                 fi
-                # Source transitions retain the old broker home in private
-                # custody. Older Pixel installers copied /etc/skel into that
-                # home, which the strict removal path correctly rejects.
-                if ! ods_pixel_uninstall_managed "$INSTALL_DIR" "$_phase06_pixel_home" source-transition; then
-                    error "Could not safely retire the prior ODS-managed Pixel source."
+                if ! _ods_pixel_source_upgrade stage "$_phase06_pixel_owner" \
+                    "$SCRIPT_DIR" "$_phase06_requested_pixel_ref"; then
+                    error "Could not stage the exact Pixel source upgrade; the active source and access state were left intact."
                     return 1
                 fi
+                _phase06_pixel_binary="$(_ods_pixel_openclaw_bin "$_phase06_pixel_owner" "$_phase06_pixel_home")" || return 1
+                # Install the source-release guard in the protected controller
+                # before taking its hold. The helper journals every mirror
+                # replacement first and keeps the actual installation binding.
+                _phase06_source_status="$(_ods_pixel_source_upgrade status "$_phase06_pixel_owner")" || return 1
+                if jq -e '.transaction == null and .phase == "staged"' <<<"$_phase06_source_status" >/dev/null; then
+                    _ods_pixel_install_access_service "$_phase06_pixel_owner" \
+                        "$_phase06_pixel_binary" false true "$SCRIPT_DIR" || return 1
+                fi
+                unset _phase06_source_status
+                ODS_PIXEL_SOURCE_TRANSACTION="$(_ods_pixel_source_upgrade hold "$_phase06_pixel_owner")" || return 1
+                [[ "$ODS_PIXEL_SOURCE_TRANSACTION" =~ ^[a-f0-9]{64}$ ]] || return 1
+                export ODS_PIXEL_SOURCE_TRANSACTION
+                _ods_pixel_source_upgrade copy "$_phase06_pixel_owner" || return 1
+                # Everything after this boundary can update Compose/env/data
+                # and native services. Recovery must resume this same candidate;
+                # a source-only rollback would no longer restore the installer.
+                _ods_pixel_source_upgrade downstream "$_phase06_pixel_owner" || return 1
+                unset _phase06_pixel_binary
                 ;;
             1) ;;
             *)
@@ -427,7 +450,14 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
             return 1
         }
         # Ensure scripts are executable
-        chmod +x "$INSTALL_DIR"/*.sh "$INSTALL_DIR"/scripts/*.sh "$INSTALL_DIR"/ods-cli 2>>"$LOG_FILE" || warn "Some scripts may not be executable — verify after install"
+        if [[ -n "${ODS_PIXEL_SOURCE_TRANSACTION:-}" ]]; then
+            # Protected source modes were installed from the exact staged
+            # inventory; do not mutate them after hashing, including custom
+            # scripts retained from the previous installation.
+            chmod +x "$INSTALL_DIR"/*.sh "$INSTALL_DIR"/ods-cli 2>>"$LOG_FILE" || warn "Some scripts may not be executable — verify after install"
+        else
+            chmod +x "$INSTALL_DIR"/*.sh "$INSTALL_DIR"/scripts/*.sh "$INSTALL_DIR"/ods-cli 2>>"$LOG_FILE" || warn "Some scripts may not be executable — verify after install"
+        fi
         ai_ok "Source files installed"
     else
         log "Running in-place (source == install dir), skipping file copy"
