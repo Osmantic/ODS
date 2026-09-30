@@ -21,7 +21,11 @@ param(
 $ErrorActionPreference = "Stop"
 $checks = @()
 $requestedInstallRoot = $InstallRoot
+$requestedDockerDesktopPath = $DockerDesktopPath
 . (Join-Path $PSScriptRoot "wsl-lifecycle.ps1") -Distro $Distro -StateRoot $StateRoot
+# Dot-sourcing binds the lifecycle script's own DockerDesktopPath parameter in
+# this scope. Keep the verified path supplied by the Portal entry point.
+$DockerDesktopPath = $requestedDockerDesktopPath
 
 function Write-Section([string]$Message) {
     Write-Host ""
