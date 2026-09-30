@@ -52,6 +52,17 @@ PY
                 tail -n 18 "$root/hermes-pull-diagnostic.log" \
                     | python3 -c 'import sys; from pathlib import Path; key=Path(sys.argv[1]).read_text().strip(); print(sys.stdin.read().replace(key,"[redacted]"))' "$key_file" >&2 || true
             fi
+            if [[ -s "$INSTALL_DIR/.compose-flags" ]]; then
+                read -r -a diagnostic_flags <"$INSTALL_DIR/.compose-flags"
+                if (cd "$INSTALL_DIR" && timeout 180s docker compose "${diagnostic_flags[@]}" up -d hermes) \
+                    >"$root/hermes-compose-diagnostic.log" 2>&1; then
+                    printf 'Diagnostic direct Compose start succeeded after failed agent start.\n' >&2
+                else
+                    printf 'Diagnostic direct Compose start failed:\n' >&2
+                    tail -n 22 "$root/hermes-compose-diagnostic.log" \
+                        | python3 -c 'import sys; from pathlib import Path; key=Path(sys.argv[1]).read_text().strip(); print(sys.stdin.read().replace(key,"[redacted]"))' "$key_file" >&2 || true
+                fi
+            fi
         fi
     fi
     docker ps --format '{{.Names}} {{.Status}}' >&2 || true
