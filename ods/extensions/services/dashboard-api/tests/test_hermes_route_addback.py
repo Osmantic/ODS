@@ -204,6 +204,41 @@ def test_nested_owner_fields_are_not_treated_as_model_route(tmp_path, monkeypatc
     assert config["other"]["context_length"] == 999
 
 
+def test_quoted_retained_route_keys_are_replaced_without_duplicates(tmp_path, monkeypatch):
+    _, live_path = write_install(
+        tmp_path, external_env(),
+        live='"model":\n'
+             '    "default": "old-model"\n'
+             "    'base_url': 'http://old/v1'\n"
+             '    "api_key": "old-secret"\n'
+             "    'context_length': 131072\n"
+             '    "max_tokens": 777\n'
+             '"auxiliary":\n  "compression":\n    "context_length": 131072\n',
+    )
+    monkeypatch.setattr(agent, "INSTALL_DIR", tmp_path)
+
+    assert agent._prepare_hermes_route_for_start() == (True, "")
+    text = live_path.read_text(encoding="utf-8")
+    config = yaml.safe_load(text)
+    assert config["model"] == {
+        "default": "provider/model-a",
+        "base_url": "http://litellm:4000/v1",
+        "api_key": 'private-"key\\value',
+        "context_length": 65536,
+        "max_tokens": 777,
+    }
+    assert config["auxiliary"]["compression"]["context_length"] == 65536
+    assert "old-secret" not in text
+    model_text = text.split('"auxiliary":', 1)[0]
+    direct_fields = [
+        line[4:].split(":", 1)[0].strip().strip("'\"")
+        for line in model_text.splitlines()
+        if line.startswith("    ") and not line.startswith("     ")
+    ]
+    for field in ("default", "base_url", "api_key", "context_length", "max_tokens"):
+        assert direct_fields.count(field) == 1
+
+
 def test_external_compose_plan_refuses_stale_local_overlay(tmp_path, monkeypatch):
     write_install(tmp_path, external_env())
     monkeypatch.setattr(agent, "INSTALL_DIR", tmp_path)

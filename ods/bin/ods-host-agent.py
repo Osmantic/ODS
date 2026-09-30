@@ -16834,6 +16834,14 @@ def _patch_hermes_config_text(
 ) -> tuple[str, bool]:
     """Return Hermes YAML with its routing fields updated line-for-line."""
     lines = text.splitlines()
+    model_section_pattern = r"^(?:model|\"model\"|'model')\s*:\s*(?:#.*)?$"
+
+    def direct_model_field(line: str, field: str) -> bool:
+        if not model_field_indent:
+            return False
+        indent = re.escape(model_field_indent)
+        return bool(re.match(rf"^{indent}(?:{field}|\"{field}\"|'{field}')\s*:", line))
+
     if api_key:
         # A retained owner file may use a quoted key or spaces before ':'.
         # Count only direct model fields, not a nested owner's api_key.
@@ -16842,7 +16850,7 @@ def _patch_hermes_config_text(
         field_indent = None
         key_count = 0
         for line in lines:
-            if re.match(r"^model:\s*(?:#.*)?$", line):
+            if re.match(model_section_pattern, line):
                 model_section = True
                 field_indent = None
                 key_count = 0
@@ -16888,14 +16896,14 @@ def _patch_hermes_config_text(
     for line in lines:
         # Track simple mapping paths so the separate auxiliary compression
         # context follows the selected model without changing owner submaps.
-        key_match = re.match(r"^([ ]*)([A-Za-z_][A-Za-z0-9_-]*)\s*:", line)
+        key_match = re.match(r"^([ ]*)(['\"]?)([A-Za-z_][A-Za-z0-9_-]*)\2\s*:", line)
         if key_match:
             key_indent = len(key_match.group(1))
             while yaml_key_path and yaml_key_path[-1][0] >= key_indent:
                 yaml_key_path.pop()
-            yaml_key_path.append((key_indent, key_match.group(2)))
+            yaml_key_path.append((key_indent, key_match.group(3)))
         current_key_path = tuple(key for _, key in yaml_key_path)
-        if re.match(r"^model:\s*(?:#.*)?$", line):
+        if re.match(model_section_pattern, line):
             in_model_block = True
             model_block_found = True
             model_indent = "  "
@@ -16911,45 +16919,35 @@ def _patch_hermes_config_text(
             if model_field_indent is None:
                 model_field_indent = indent
                 model_indent = indent
-        if in_model_block and model_field_indent and re.match(
-            rf"^{re.escape(model_field_indent)}default:\s*", line
-        ):
+        if in_model_block and direct_model_field(line, "default"):
             model_fields.add("default")
             indent = line[:len(line) - len(line.lstrip())]
             new_line = f"{indent}default: {json.dumps(model_name)}"
             new_lines.append(new_line)
             changed = changed or new_line != line
             continue
-        if base_url and in_model_block and model_field_indent and re.match(
-            rf"^{re.escape(model_field_indent)}base_url:\s*", line
-        ):
+        if base_url and in_model_block and direct_model_field(line, "base_url"):
             model_fields.add("base_url")
             indent = line[:len(line) - len(line.lstrip())]
             new_line = f"{indent}base_url: {json.dumps(base_url)}"
             new_lines.append(new_line)
             changed = changed or new_line != line
             continue
-        if api_key and in_model_block and model_field_indent and re.match(
-            rf"^{re.escape(model_field_indent)}(?:api_key|['\"]api_key['\"])\s*:", line
-        ):
+        if api_key and in_model_block and direct_model_field(line, "api_key"):
             model_fields.add("api_key")
             indent = model_field_indent
             new_line = f"{indent}api_key: {json.dumps(api_key)}"
             new_lines.append(new_line)
             changed = changed or new_line != line
             continue
-        if context_length and in_model_block and model_field_indent and re.match(
-            rf"^{re.escape(model_field_indent)}context_length:\s*", line
-        ):
+        if context_length and in_model_block and direct_model_field(line, "context_length"):
             model_fields.add("context_length")
             indent = line[:len(line) - len(line.lstrip())]
             new_line = f"{indent}context_length: {int(context_length)}"
             new_lines.append(new_line)
             changed = changed or new_line != line
             continue
-        if in_model_block and model_field_indent and re.match(
-            rf"^{re.escape(model_field_indent)}max_tokens:\s*", line
-        ):
+        if in_model_block and direct_model_field(line, "max_tokens"):
             # Preserve an operator's explicit output cap. ODS only supplies
             # its bounded default when the field is absent.
             model_fields.add("max_tokens")
