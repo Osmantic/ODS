@@ -9,10 +9,10 @@ source "$(dirname "${BASH_SOURCE[0]}")/pixel-integration.sh"
 
 _ods_pixel_reconcile_workspace_guidance() {
     local owner="$1" home="$2" workspace="$3"
-    local -a guidance_options=()
-    [[ "${4:-live}" != generated ]] || guidance_options=(--generated)
+    local -a guidance_options=(--workspace "$workspace")
+    [[ "${4:-live}" != generated ]] || guidance_options+=(--generated)
     ods_pixel_run_as_owner "$owner" "$home" /usr/bin/python3 -B \
-        "${INSTALL_DIR:?}/installers/lib/pixel-workspace-guidance.py" --workspace "$workspace" "${guidance_options[@]}"
+        "${INSTALL_DIR:?}/installers/lib/pixel-workspace-guidance.py" "${guidance_options[@]}"
 }
 
 _ods_pixel_migrate_live_workspace_guidance() {
