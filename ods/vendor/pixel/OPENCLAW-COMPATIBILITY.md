@@ -28,6 +28,7 @@ This table is generated from `OPENCLAW-COMPATIBILITY.json`. Do not edit it direc
 | 3.2.2 | 2026.6.33 | @openclaw/discord@2026.6.33<br>@openclaw/searxng-plugin@2026.6.33<br>@openclaw/llama-cpp-provider@2026.6.33 | supported | 2026-08-07 | [audit](LIVE-AUDIT.md) / `95b044bd5173` |
 | 3.2.1 | 2026.6.33 | @openclaw/discord@2026.6.33<br>@openclaw/searxng-plugin@2026.6.33<br>@openclaw/llama-cpp-provider@2026.6.33 | supported | 2026-08-07 | [audit](LIVE-AUDIT.md) / `bf7e9689b2fc` |
 | 3.2.0 | 2026.6.33 | @openclaw/discord@2026.6.33<br>@openclaw/searxng-plugin@2026.6.33<br>@openclaw/llama-cpp-provider@2026.6.33 | supported | 2026-08-05 | [audit](LIVE-AUDIT.md) / `f324c433f9b3` |
+| 4.3.28 | 2026.6.33 | @openclaw/discord@2026.6.33<br>@openclaw/searxng-plugin@2026.6.33<br>@openclaw/llama-cpp-provider@2026.6.33 | candidate | 2026-09-30 | [audit](ODS-QUALIFICATION-4.3.28.md) / `62ac4f546d35` |
 | 4.3.27 | 2026.6.33 | @openclaw/discord@2026.6.33<br>@openclaw/searxng-plugin@2026.6.33<br>@openclaw/llama-cpp-provider@2026.6.33 | candidate | 2026-09-14 | [audit](LIVE-AUDIT-4.3.27.md) / `5983c27edb1c` |
 | 4.3.13 | 2026.6.33 | @openclaw/discord@2026.6.33<br>@openclaw/searxng-plugin@2026.6.33<br>@openclaw/llama-cpp-provider@2026.6.33 | candidate | 2026-08-26 | [audit](LIVE-AUDIT-4.3.13.md) / `019de422a057` |
 | 4.1.0 | 2026.6.33 | @openclaw/discord@2026.6.33<br>@openclaw/searxng-plugin@2026.6.33<br>@openclaw/llama-cpp-provider@2026.6.33 | candidate | 2026-08-11 | [audit](LIVE-AUDIT-4.1.0.md) / `0b1d6e51632a` |

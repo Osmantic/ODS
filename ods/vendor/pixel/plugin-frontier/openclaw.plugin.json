@@ -2,7 +2,7 @@
   "id": "pixel-frontier-broker",
   "name": "Pixel Frontier Broker",
   "description": "Typed, privacy-compiled frontier-model review requests through an isolated broker.",
-  "version": "4.3.27",
+  "version": "4.3.28",
   "configSchema": {
     "type": "object",
     "additionalProperties": false,

@@ -23,7 +23,7 @@ def test_bundled_pixel_pin_tracks_parent_installer():
     phase = (root/'installers/phases/06-directories.sh').read_text()
     integration = (root/'installers/lib/pixel-integration.sh').read_text()
     verifier = (root/'scripts/verify-pixel-bundle.py').read_text()
-    bundled_ref = '5c435da0bdf9d7f3ca9206d26b64b331cc2ea9fc'
+    bundled_ref = 'beeac1bb62b0f8d3bfe3fa51dfaba6428f99e758'
     assert f"ODS_PIXEL_BUNDLED_REF='{bundled_ref}'" in integration
     assert 'PIXEL_SOURCE_REF "$ODS_PIXEL_BUNDLED_REF"' in phase
     assert f'PIXEL_SOURCE_REF={bundled_ref}' in (root/'.env.example').read_text()
@@ -100,8 +100,9 @@ def test_archive_rejects_missing_or_changed_bundle_without_git(tmp_path,monkeypa
     '70f44c90ac40b8409ebc965becc5b085a053e270',
     '9409d1ae894394a4848bf5b41a6323e64c577f06',
     '6e82d4c974be8c7b5aebe3a4ffd5374e20ad0ac5',
+    '5c435da0bdf9d7f3ca9206d26b64b331cc2ea9fc',
     mod.PIXEL_COMMIT,
-), ids=('legacy', 'native-search', 'pre-access-release', 'current'))
+), ids=('legacy', 'native-search', 'pre-access-release', 'access-release-4.3.27', 'current'))
 def client_dir(tmp_path,request):
     tmp_path.chmod(0o700)
     (tmp_path/'pixel-source').mkdir(mode=0o700)

@@ -24,14 +24,15 @@ from .connection import normalize_connection
 from .connection_transport import probe_connection
 from .store import MAX_BYTES, StoreError, decode_document
 
-PIXEL_COMMIT = '5c435da0bdf9d7f3ca9206d26b64b331cc2ea9fc'
-PIXEL_BUNDLE_SHA256 = 'c3e57f3da38e588e158856e1dec753fa936d107369bc31f5c329c11b4829e853'
+PIXEL_COMMIT = 'beeac1bb62b0f8d3bfe3fa51dfaba6428f99e758'
+PIXEL_BUNDLE_SHA256 = '486fa9e1eedba1d872ebb1cdd66c39739730d95bfb90e2e5c061ae80e961f434'
 PIXEL_BUNDLE = Path(__file__).resolve().parents[2]/'vendor/pixel.bundle'
 # Preparation follows the current paired installer. Loading must not rewrite or
 # invalidate clients prepared with an earlier supported renderer. These exact
 # receipt identities do not certify custody of an owner's writable source tree.
 PREPARED_PIXEL_COMMITS = frozenset((
     PIXEL_COMMIT,
+    '5c435da0bdf9d7f3ca9206d26b64b331cc2ea9fc',
     '6e82d4c974be8c7b5aebe3a4ffd5374e20ad0ac5',
     'b33730436baf5d98bf58f7d57c090318fe19f433',
     '9409d1ae894394a4848bf5b41a6323e64c577f06',

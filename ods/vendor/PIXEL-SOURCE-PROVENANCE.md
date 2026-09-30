@@ -12,8 +12,8 @@ The visible source is duplicated into `vendor/pixel.bundle` solely so existing
 Pixel installation code can use exact-commit Git verification without network
 or private credentials. The bundle contains one new synthetic root commit with
 public Osmantic release identity and no ancestors. Its commit is
-`5c435da0bdf9d7f3ca9206d26b64b331cc2ea9fc`, and its SHA-256 is
-`c3e57f3da38e588e158856e1dec753fa936d107369bc31f5c329c11b4829e853`.
+`beeac1bb62b0f8d3bfe3fa51dfaba6428f99e758`, and its SHA-256 is
+`486fa9e1eedba1d872ebb1cdd66c39739730d95bfb90e2e5c061ae80e961f434`.
 Run `python3 scripts/verify-pixel-bundle.py` to check the bundle against the
 visible source, tracked executable modes, and those pins. The `pixel` launcher
 and the install/bootstrap scripts must retain executable Git modes.
@@ -74,3 +74,21 @@ reproducibility metadata, not an upstream signature or approval of these edits.
 No private repository, private history or signing credential was used. Two
 independent regenerations produced identical bytes; every source blob and mode
 was verified. Existing source-digest and installer custody checks remain active.
+
+## ODS-maintained 4.3.28 source-upgrade candidate
+
+The current bundle advances the public ODS-maintained source to 4.3.28 so the
+existing increasing-version checks can reconcile the access/release helpers
+without changing an installed same-version release in place. It does not claim
+an upstream/private Pixel release. The functional source checkpoint is
+`62ac4f546d356c3897c2587381e2686a1393f6e9`;
+`pixel/ODS-QUALIFICATION-4.3.28.md` records the tests and remaining physical
+qualification limits. The previous compatibility records remain historical.
+
+Two independent builds produced byte-identical bundles and verified every blob
+and Git executable mode against the public source. The source contains 1,307
+files, including 96 executable entrypoints; only the single synthetic root
+commit is advertised. Runtime versions, dependency versions, image digests and
+trust anchors are unchanged. No release signature was generated and no private
+repository was accessed. Existing clients prepared with the previous public
+4.3.27 bundle remain readable through their exact retained receipt identity.
