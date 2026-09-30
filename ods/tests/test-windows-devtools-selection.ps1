@@ -22,12 +22,25 @@ function Disable-ScheduledTask {
 }
 
 $launcher = 'C:\Users\test\.opencode\start-opencode.ps1'
-$arguments = '-NoProfile -File "C:\Users\test\.opencode\start-opencode.ps1"'
+$arguments = '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "C:\Users\test\.opencode\start-opencode.ps1"'
 $base = @{TaskName='ODSOpenCodeWeb'; ExpectedLauncher=$launcher}
 
 Assert-ODSDevTools (-not (Resolve-ODSWindowsDevToolsSelection @base)) 'fresh install skips developer tools'
-$script:mockTask = [pscustomobject]@{State='Ready'; Actions=@([pscustomobject]@{Execute='powershell.exe'; Arguments=$arguments})}
+$script:mockTask = [pscustomobject]@{State='Ready'; Actions=@([pscustomobject]@{Execute='powershell.exe'; Arguments=$arguments; WorkingDirectory='C:\Users\test\.opencode'})}
 Assert-ODSDevTools (Resolve-ODSWindowsDevToolsSelection @base) 'enabled ODS task retains developer tools'
+$script:mockTask.Actions[0].Arguments = $arguments + ' -Command "foreign"'
+Assert-ODSDevTools (-not (Resolve-ODSWindowsDevToolsSelection @base)) 'task with extra command does not retain developer tools'
+Assert-ODSDevTools (-not (Disable-ODSWindowsOpenCodeLoginTask @base)) 'task with extra command is not disabled'
+$script:mockTask.Actions[0].Arguments = $arguments
+$script:mockTask.Actions += [pscustomobject]@{Execute='cmd.exe'; Arguments='/c foreign'; WorkingDirectory='C:\Users\test\.opencode'}
+Assert-ODSDevTools (-not (Resolve-ODSWindowsDevToolsSelection @base)) 'task with extra action does not retain developer tools'
+$script:mockTask.Actions = @($script:mockTask.Actions[0])
+$script:mockTask.Actions[0].Execute = 'C:\other\powershell.exe'
+Assert-ODSDevTools (-not (Resolve-ODSWindowsDevToolsSelection @base)) 'foreign executable named powershell.exe is rejected'
+$script:mockTask.Actions[0].Execute = 'powershell.exe'
+$script:mockTask.Actions[0].WorkingDirectory = 'C:\other'
+Assert-ODSDevTools (-not (Resolve-ODSWindowsDevToolsSelection @base)) 'foreign working directory is rejected'
+$script:mockTask.Actions[0].WorkingDirectory = 'C:\Users\test\.opencode'
 $script:mockTask.State = 'Disabled'
 Assert-ODSDevTools (-not (Resolve-ODSWindowsDevToolsSelection @base)) 'disabled ODS task stays disabled'
 $script:mockTask.State = 'Unknown'

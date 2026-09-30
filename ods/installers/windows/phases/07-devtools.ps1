@@ -122,6 +122,14 @@ exit `$LASTEXITCODE
 
     $_ocTaskArgument = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$($_ocLauncherPath)`""
     $_ocStarted = $false
+    # Selection was checked before the installer phases, but a same-name
+    # task may have changed while earlier phases ran. Check again before
+    # stopping or replacing it.
+    $_existingOpenCodeTask = Get-ScheduledTask -TaskName $script:OPENCODE_TASK_NAME -ErrorAction SilentlyContinue
+    if ($_existingOpenCodeTask -and -not (Test-ODSWindowsOpenCodeTaskOwned `
+        -Task $_existingOpenCodeTask -ExpectedLauncher $_ocLauncherPath)) {
+        throw 'A non-ODS scheduled task now uses the OpenCode task name.'
+    }
     try {
         try { Stop-ScheduledTask -TaskName $script:OPENCODE_TASK_NAME -ErrorAction SilentlyContinue } catch { }
         try { Unregister-ScheduledTask -TaskName $script:OPENCODE_TASK_NAME -Confirm:$false -ErrorAction SilentlyContinue } catch { }

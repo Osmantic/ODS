@@ -6,20 +6,17 @@ function Test-ODSWindowsOpenCodeTaskOwned {
         [Parameter(Mandatory = $true)]$Task,
         [Parameter(Mandatory = $true)][string]$ExpectedLauncher
     )
-    foreach ($action in @($Task.Actions)) {
-        if ($null -eq $action -or [string]::IsNullOrWhiteSpace([string]$action.Execute)) {
-            continue
-        }
-        if ((Split-Path -Leaf ([string]$action.Execute)) -ieq 'powershell.exe' -and
-            [string]$action.Arguments -and
-            ([string]$action.Arguments).IndexOf(
-                $ExpectedLauncher,
-                [System.StringComparison]::OrdinalIgnoreCase
-            ) -ge 0) {
-            return $true
-        }
-    }
-    return $false
+    # The installer owns exactly one fixed action. A substring match would
+    # accept a foreign task that mentions this launcher while executing a
+    # different command, and -NoDevTools could then disable that task.
+    $actions = @($Task.Actions)
+    if ($actions.Count -ne 1 -or $null -eq $actions[0]) { return $false }
+    $action = $actions[0]
+    $expectedArguments = '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "' + $ExpectedLauncher + '"'
+    $expectedDirectory = Split-Path -Parent $ExpectedLauncher
+    return (([string]$action.Execute) -ieq 'powershell.exe' -and
+        ([string]$action.Arguments) -ieq $expectedArguments -and
+        ([string]$action.WorkingDirectory) -ieq $expectedDirectory)
 }
 
 function Resolve-ODSWindowsDevToolsSelection {
