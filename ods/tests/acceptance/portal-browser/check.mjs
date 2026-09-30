@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { randomBytes } from 'node:crypto'
 import { chromium, expect } from '@playwright/test'
 
 const base = process.env.ODS_PORTAL_BROWSER_URL
@@ -11,6 +12,11 @@ try {
   page.on('pageerror', error => pageErrors.push(error.message))
 
   await page.goto(base, { waitUntil: 'domcontentloaded', timeout: 60_000 })
+  await expect(page.getByRole('heading', { name: 'Choose your password' })).toBeVisible({ timeout: 60_000 })
+  const password = randomBytes(32).toString('base64url')
+  await page.getByLabel('New password').fill(password)
+  await page.getByLabel('Confirm password').fill(password)
+  await page.getByRole('button', { name: 'Save password' }).click()
   const composer = page.locator('textarea.pixel-composer-input')
   await expect(composer).toBeVisible({ timeout: 60_000 })
   await expect(composer).toBeEnabled({ timeout: 60_000 })
