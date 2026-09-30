@@ -1,7 +1,7 @@
 import {isDeepStrictEqual} from 'node:util';
 import {randomUUID} from 'node:crypto';
 import {setTimeout as delay} from 'node:timers/promises';
-import {normalizeProjectBuild} from './project-build.mjs';
+import {normalizeProjectBuild, projectManifestRejection} from './project-build.mjs';
 
 const NAME = 'pixel_ods_project_build';
 const terminal = value => ['succeeded', 'failed', 'cancelled'].includes(value?.status);
@@ -87,7 +87,8 @@ export function createProjectRunControl({wait = ms => delay(ms), now = () => per
           if (createsJob || run.jobs.has(receipt.jobId)) {
             run.jobs.set(receipt.jobId, {receipt, request});
           }
-        } else if (createsJob && !['denied', 'invalid-request'].includes(receipt?.status) && !recoveryRefusal(receipt)
+        } else if (createsJob && !(receipt?.status==='denied' || receipt?.status==='invalid-request'
+            && (!Object.hasOwn(receipt,'issue') || projectManifestRejection(receipt))) && !recoveryRefusal(receipt)
             && !(normalized.action==='diagnose' && receipt?.kind==='ods-project-diagnostic'
               && receipt.scope==='managed-executor' && receipt.runtime===normalized.runtime
               && receipt.code==='unavailable' && receipt.cleanup==='not-started')) {

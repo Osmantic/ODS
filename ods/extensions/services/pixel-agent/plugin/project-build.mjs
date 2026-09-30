@@ -10,6 +10,29 @@ class ProjectRequestError extends Error {
   constructor(field, hint) { super('invalid project request'); this.field=field; this.hint=hint; }
 }
 const invalid = (field, hint) => { throw new ProjectRequestError(field, hint); };
+const MANIFEST_FILES = ['ods-project.json','package.json','package-lock.json','requirements.lock'];
+const MANIFEST_ISSUES = {
+  'manifest-missing': [MANIFEST_FILES, 'Provide the indicated manifest within its supported size limit.'],
+  'manifest-encoding': [MANIFEST_FILES, 'Save the indicated manifest as valid UTF-8 text.'],
+  'manifest-json': [MANIFEST_FILES.slice(0,3), 'Correct the indicated JSON manifest; the Python profile must not contain duplicate keys.'],
+  'python-profile': [['ods-project.json'], 'Use exactly {"runtime":"python"} in ods-project.json.'],
+  'python-lock-sha256': [['requirements.lock'], 'Each dependency, including every transitive dependency, must have 1–64 --hash=sha256: values, each containing exactly 64 hexadecimal digits and an exact version pin. Fetch the correct compatible wheel digest from registry metadata; do not trim, pad or invent a hash.'],
+  'python-lock-pin': [['requirements.lock'], 'Use exact name==version public-index pins for every direct and transitive dependency, followed by SHA-256 wheel hashes; no URLs, options or version ranges.'],
+  'python-lock-format': [['requirements.lock'], 'Check duplicate names, continuation lines, supported ASCII syntax and the 256 KiB/512-package limits.'],
+  'python-entrypoints': [['ods-project.json'], 'Provide main.py and at least one tests/test_*.py unittest file in the Python project.'],
+  'npm-lock-format': [['package-lock.json'], 'Provide an npm v3 lock matching package.json with canonical public npm URLs and valid SHA-512 integrity; local, Git and workspace dependencies are unsupported.'],
+};
+
+export function projectManifestRejection(raw) {
+  if (raw?.schemaVersion!==1 || raw.kind!=='ods-project-job' || raw.status!=='invalid-request'
+      || raw.executionStarted!==false || Object.keys(raw).sort().join(',')!=='executionStarted,issue,kind,schemaVersion,status'
+      || !raw.issue || Object.keys(raw.issue).sort().join(',')!=='code,file'
+      || typeof raw.issue.code!=='string' || typeof raw.issue.file!=='string'
+      || !Object.hasOwn(MANIFEST_ISSUES,raw.issue.code)) return undefined;
+  const [files,hint]=MANIFEST_ISSUES[raw.issue.code];
+  if (!files.includes(raw.issue.file)) return undefined;
+  return {...raw,hint,nextAction:{code:'correct-project-input',automaticRetry:false}};
+}
 
 export function normalizeProjectBuild(params) {
   if (!params || typeof params !== 'object' || Array.isArray(params)) throw Error('invalid request');
@@ -102,6 +125,11 @@ export function createProjectBuildTool({request, wait = (ms, signal) => delay(ms
         diagnosticSubmitted=normalized.action==='diagnose';
         let raw = await request(normalized, {toolCallId, signal});
         if (normalized.action === 'capabilities') return capabilityToolResult(tool, raw, capabilityMaxChars);
+        if (raw?.status==='invalid-request' && Object.hasOwn(raw,'issue')) {
+          const details=normalized.action==='submit' && projectManifestRejection(raw);
+          if (!details) throw Error('unconfirmed project input rejection');
+          return {isError:true,content:[{type:'text',text:JSON.stringify(details)}],details};
+        }
         if(raw?.status==='recovery-required') {
           if(raw.schemaVersion!==1 || raw.kind!=='ods-project-job' || raw.executionStarted!==false
               || !['executionStarted,kind,schemaVersion,status','executionStarted,jobId,kind,schemaVersion,status'].includes(Object.keys(raw).sort().join(','))
