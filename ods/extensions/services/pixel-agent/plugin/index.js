@@ -285,9 +285,10 @@ export default definePluginEntry({
       },
       activeSession:key => Boolean(resolveActiveEmbeddedRunSessionId(key)),
       admission:{status:() => currentManagedRuntime?.status() ?? accessRuntime.status(),
-        acquire:(token, revision) => currentManagedRuntime ? currentManagedRuntime.acquireTransition(token, revision)
-          : accessRuntime.acquire(token, revision),
-        release:token => accessRuntime.release(token), owns:token => accessRuntime.owns(token)},
+        acquire:(token, revision) => currentManagedRuntime ? currentManagedRuntime.acquireMaintenance(token, revision)
+          : accessRuntime.acquireMaintenance(token, revision),
+        release:token => currentManagedRuntime ? currentManagedRuntime.releaseMaintenance(token)
+          : accessRuntime.releaseMaintenance(token), owns:token => accessRuntime.owns(token)},
     });
     registerHistoryIntegration(api,{compactor:contextCompaction,getSessionEntry,patchSessionEntry,resolveStorePath,withSessionTranscriptWriteLock,appendAssistantMirrorMessageByIdentity});
     // One system prompt for every Pixel chat: no per-chat session key or id.
