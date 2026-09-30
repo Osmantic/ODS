@@ -121,6 +121,10 @@ ENABLE_TAILSCALE=false
 ENABLE_SEARXNG=false
 ENABLE_WEB_SEARCH=false
 ENABLE_LITELLM=false
+ENABLE_OPEN_WEBUI=false
+WEBUI_ENABLE_EXPLICIT=false
+WEBUI_DISABLE_EXPLICIT=false
+WEBUI_RETAINED=""
 # Langfuse defaults OFF because its clickhouse + postgres + minio stack adds
 # ~500MB baseline memory. Enable via --langfuse, --all, or post-install
 # `ods enable langfuse`. --no-langfuse honored as explicit override so a
@@ -152,6 +156,8 @@ while [[ $# -gt 0 ]]; do
         --no-openclaw)   ENABLE_OPENCLAW=false; OPENCLAW_EXPLICIT=true; shift ;;
         --opencode)     ENABLE_OPENCODE=true; OPENCODE_ENABLE_EXPLICIT=true; shift ;;
         --no-opencode)  ENABLE_OPENCODE=false; OPENCODE_DISABLE_EXPLICIT=true; shift ;;
+        --with-webui)   ENABLE_OPEN_WEBUI=true; WEBUI_ENABLE_EXPLICIT=true; shift ;;
+        --no-webui)     ENABLE_OPEN_WEBUI=false; WEBUI_DISABLE_EXPLICIT=true; shift ;;
         --pixel)        ENABLE_PIXEL=true; shift ;;
         --no-pixel)     ENABLE_PIXEL=false; shift ;;
         --langfuse)      ENABLE_LANGFUSE=true; shift ;;
@@ -165,6 +171,10 @@ done
 
 if $OPENCODE_ENABLE_EXPLICIT && $OPENCODE_DISABLE_EXPLICIT; then
     echo "--opencode and --no-opencode cannot be used together" >&2
+    exit 1
+fi
+if $WEBUI_ENABLE_EXPLICIT && $WEBUI_DISABLE_EXPLICIT; then
+    echo "--with-webui and --no-webui cannot be used together" >&2
     exit 1
 fi
 
@@ -183,6 +193,7 @@ if $ALL_FEATURES; then
     ENABLE_PERPLEXICA=true
     ENABLE_PRIVACY_SHIELD=true
     ENABLE_ODS_PROXY=true
+    $WEBUI_DISABLE_EXPLICIT || ENABLE_OPEN_WEBUI=true
     # --all enables Langfuse unless the user explicitly passed --no-langfuse.
     $NO_LANGFUSE_EXPLICIT || ENABLE_LANGFUSE=true
 fi
@@ -360,6 +371,19 @@ _macos_apply_fresh_feature_defaults() {
         && { $NON_INTERACTIVE || $DRY_RUN; }; then
         $RECOMMENDED_EXPLICIT || ENABLE_RECOMMENDED=false
         $HERMES_EXPLICIT || ENABLE_HERMES=false
+    fi
+}
+
+_macos_resolve_webui_selection() {
+    [[ -f "${INSTALL_DIR}/.env" ]] || return 0
+    WEBUI_RETAINED="$(read_env_value "${INSTALL_DIR}/.env" ENABLE_OPEN_WEBUI)"
+    case "$WEBUI_RETAINED" in
+        "") WEBUI_RETAINED=true ;;  # Older Mac installs always selected WebUI.
+        true|false) ;;
+        *) ai_err "Invalid retained ENABLE_OPEN_WEBUI selection"; return 1 ;;
+    esac
+    if ! $WEBUI_ENABLE_EXPLICIT && ! $WEBUI_DISABLE_EXPLICIT && ! $ALL_FEATURES; then
+        ENABLE_OPEN_WEBUI="$WEBUI_RETAINED"
     fi
 }
 
@@ -1237,6 +1261,7 @@ _ensure_macos_pyyaml() {
 # Resolve install directory
 INSTALL_DIR="${ODS_INSTALL_DIR}"
 _macos_apply_fresh_feature_defaults
+_macos_resolve_webui_selection || exit 1
 if ! $OPENCODE_ENABLE_EXPLICIT && ! $OPENCODE_DISABLE_EXPLICIT && ! $ALL_FEATURES; then
     if ods_macos_opencode_retained "$OPENCODE_PLIST" "$OPENCODE_PLIST_LABEL" \
         "$OPENCODE_BUN_TMPDIR" "$(id -u)"; then
@@ -1682,6 +1707,7 @@ if ! $NON_INTERACTIVE && ! $ALL_FEATURES && ! $DRY_RUN; then
             ENABLE_PERPLEXICA=true
             ENABLE_PRIVACY_SHIELD=true
             ENABLE_LANGFUSE=true
+            ENABLE_OPEN_WEBUI=true
             ;;
         2)
             ENABLE_VOICE=false; ENABLE_WORKFLOWS=false
@@ -1696,6 +1722,7 @@ if ! $NON_INTERACTIVE && ! $ALL_FEATURES && ! $DRY_RUN; then
             ENABLE_PERPLEXICA=false
             ENABLE_PRIVACY_SHIELD=false
             ENABLE_LANGFUSE=false
+            ENABLE_OPEN_WEBUI=false
             ;;
         3)
             read -r -p "  Enable Voice (Whisper + Kokoro)? [y/N] " yn < /dev/tty
@@ -1721,6 +1748,8 @@ if ! $NON_INTERACTIVE && ! $ALL_FEATURES && ! $DRY_RUN; then
             fi
             read -r -p "  Enable Perplexica deep research? [y/N] " yn < /dev/tty
             [[ "$yn" =~ ^[yY] ]] && ENABLE_PERPLEXICA=true
+            read -r -p "  Add Open WebUI alongside Portal? [y/N] " yn < /dev/tty
+            [[ "$yn" =~ ^[yY] ]] && ENABLE_OPEN_WEBUI=true || ENABLE_OPEN_WEBUI=false
             read -r -p "  Enable Privacy Shield? [y/N] " yn < /dev/tty
             [[ "$yn" =~ ^[yY] ]] && ENABLE_PRIVACY_SHIELD=true
             read -r -p "  Enable Langfuse (LLM observability, ~500MB)? [y/N] " yn < /dev/tty
@@ -1736,9 +1765,21 @@ if ! $NON_INTERACTIVE && ! $ALL_FEATURES && ! $DRY_RUN; then
             ENABLE_PERPLEXICA=true
             ENABLE_PRIVACY_SHIELD=true
             ENABLE_LANGFUSE=true
+            ENABLE_OPEN_WEBUI=true
             ;;
     esac
     unset _macos_feature_default
+fi
+
+if [[ -z "${feature_choice:-}" && -n "$WEBUI_RETAINED" ]] \
+    && ! $WEBUI_ENABLE_EXPLICIT && ! $WEBUI_DISABLE_EXPLICIT && ! $ALL_FEATURES; then
+    ENABLE_OPEN_WEBUI="$WEBUI_RETAINED"
+fi
+$WEBUI_DISABLE_EXPLICIT && ENABLE_OPEN_WEBUI=false
+$WEBUI_ENABLE_EXPLICIT && ENABLE_OPEN_WEBUI=true
+if $ENABLE_ODS_PROXY && ! $ENABLE_OPEN_WEBUI; then
+    ai_err "ODS proxy requires Open WebUI; choose --with-webui or omit --no-webui."
+    exit 1
 fi
 
 $OPENCODE_DISABLE_EXPLICIT && ENABLE_OPENCODE=false
@@ -2034,6 +2075,9 @@ else
     _previous_llm_bind="$(read_env_value "${INSTALL_DIR}/.env" "BIND_ADDRESS")"
     _previous_macos_gateway="$(read_env_value "${INSTALL_DIR}/.env" "ODS_MACOS_HOST_GATEWAY")"
     generate_ods_env "$INSTALL_DIR" "$SELECTED_TIER" "$FORCE"
+    # generate_ods_env preserves existing .env without --force. Persist an
+    # explicit addback or opt-out there too, so cache rebuilds keep the choice.
+    upsert_env_value "${INSTALL_DIR}/.env" "ENABLE_OPEN_WEBUI" "$ENABLE_OPEN_WEBUI"
     # Reinstalls preserve .env, including an earlier AirPlay port remap.
     # Use that same port for Compose, model downloads and readiness checks.
     WHISPER_PORT="$(read_env_value "$INSTALL_DIR/.env" "WHISPER_PORT")"
@@ -2263,9 +2307,12 @@ if $DRY_RUN; then
     ai "[DRY RUN] Would download llama-server (Metal build)"
     ai "[DRY RUN] Would start native llama-server on port 8080"
     ai "[DRY RUN] Would run: docker compose up -d --remove-orphans --no-build --pull never"
-    if $ENABLE_PIXEL; then
-        ai "[DRY RUN] Would prepare and activate native Pixel after the base stack, then bind Open WebUI to Pixel Edge"
+    if $ENABLE_OPEN_WEBUI; then
+        ai "[DRY RUN] Would include Open WebUI alongside Dashboard/Portal"
+    else
+        ai "[DRY RUN] Would skip Open WebUI image and container; retain its data"
     fi
+    $ENABLE_PIXEL && ai "[DRY RUN] Would prepare and activate native Pixel after the base stack"
 else
     # Change to install directory for docker compose
     cd "$INSTALL_DIR"
@@ -2555,6 +2602,9 @@ else
     else
         # Normal macOS mode: native llama-server
         COMPOSE_FLAGS+=("-f" "installers/macos/docker-compose.macos.yml")
+    fi
+    if ! $ENABLE_OPEN_WEBUI; then
+        COMPOSE_FLAGS+=("-f" "docker-compose.gateway-only.yml")
     fi
 
     # Discover enabled extension compose fragments via manifests
@@ -3085,7 +3135,7 @@ for service in (data.get("services") or {}).values():
             -f extensions/services/pixel-edge/compose.yaml.disabled
             -f installers/macos/pixel-native.compose.yaml.disabled
         )
-        ai_ok "Native Pixel activated; Open WebUI now routes through Pixel Edge"
+        ai_ok "Native Pixel activated for Dashboard/Portal"
     fi
 
     # Save compose flags for ods-macos.sh
@@ -3407,18 +3457,20 @@ CLOUD_REQUIRED_HEALTHY=true
 # services wait on `docker inspect ... .State.Health.Status == healthy`;
 # host-native services fall back to an HTTP probe on 127.0.0.1.
 if $CLOUD_MODE; then
-    HEALTH_NAMES=("LiteLLM gateway" "Chat UI (Open WebUI)")
-    HEALTH_URLS=("http://127.0.0.1:4000/health/readiness" "http://127.0.0.1:3000")
-    HEALTH_CONTAINERS=("ods-litellm" "ods-webui")
+    HEALTH_NAMES=("LiteLLM gateway")
+    HEALTH_URLS=("http://127.0.0.1:4000/health/readiness")
+    HEALTH_CONTAINERS=("ods-litellm")
 else
     _health_bind="127.0.0.1"
     _health_llama_host="$(macos_bind_probe_host "${_health_bind:-127.0.0.1}")"
     _health_llama_port="$(read_env_value "$INSTALL_DIR/.env" "ODS_NATIVE_LLAMA_PORT")"
     [[ "$_health_llama_port" =~ ^[0-9]+$ ]] || _health_llama_port="8080"
-    HEALTH_NAMES=("LLM (llama-server)" "Chat UI (Open WebUI)")
-    HEALTH_URLS=("http://${_health_llama_host}:${_health_llama_port}/health" "http://127.0.0.1:3000")
-    HEALTH_CONTAINERS=("" "ods-webui")
+    HEALTH_NAMES=("LLM (llama-server)")
+    HEALTH_URLS=("http://${_health_llama_host}:${_health_llama_port}/health")
+    HEALTH_CONTAINERS=("")
 fi
+$ENABLE_OPEN_WEBUI && HEALTH_NAMES+=("Chat UI (Open WebUI)") \
+    && HEALTH_URLS+=("http://127.0.0.1:3000") && HEALTH_CONTAINERS+=("ods-webui")
 $ENABLE_VOICE && HEALTH_NAMES+=("Whisper (STT)") && HEALTH_URLS+=("http://127.0.0.1:${WHISPER_PORT:-9000}/health") && HEALTH_CONTAINERS+=("ods-whisper")
 $ENABLE_WORKFLOWS && HEALTH_NAMES+=("n8n (Workflows)") && HEALTH_URLS+=("http://127.0.0.1:5678/healthz") && HEALTH_CONTAINERS+=("ods-n8n")
 $ENABLE_OPENCODE && [[ -x "$OPENCODE_BIN" ]] && HEALTH_NAMES+=("OpenCode (IDE)") && HEALTH_URLS+=("http://127.0.0.1:${OPENCODE_PORT}") && HEALTH_CONTAINERS+=("")
@@ -3647,7 +3699,7 @@ fi
 
 {
     printf 'Dashboard|http://127.0.0.1:3001|ods-dashboard|http://localhost:3001\n'
-    printf 'Chat UI (Open WebUI)|http://127.0.0.1:3000|ods-webui|http://localhost:3000\n'
+    $ENABLE_OPEN_WEBUI && printf 'Chat UI (Open WebUI)|http://127.0.0.1:3000|ods-webui|http://localhost:3000\n'
     if $CLOUD_MODE; then
         printf 'LiteLLM|http://127.0.0.1:4000/health/readiness|ods-litellm|http://localhost:4000\n'
     else
