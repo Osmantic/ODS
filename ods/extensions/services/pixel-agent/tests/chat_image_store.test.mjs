@@ -137,6 +137,51 @@ test('global physical quota refuses new images without evicting existing receipt
   assert.throws(() => createChatImageStore(directory,{maxBytes:CHAT_IMAGE_CACHE_BYTES+1}), {code:'invalid-image-storage-limit'});
 });
 
+function fillDeletionFences(directory,count) {
+  for(let index=0;index<count;index++)fs.writeFileSync(path.join(directory,`ods-${index.toString(16).padStart(64,'0')}.deleted`),'',{mode:0o600});
+}
+
+test('deletion at the persistent entry limit releases its own image without evicting foreign receipts or fences',t=>{
+  const {directory,store}=setup(t);store.put(user,[image],[ref(image)]);store.put(other,[image],[ref(image)]);
+  fillDeletionFences(directory,4094);assert.equal(fs.readdirSync(directory).length,4096);
+  const foreign=path.join(directory,`${other}--${image.id}.image`), before=fs.readFileSync(foreign);
+  assert.deepEqual(store.deleteConversation(user),{deleted:true});
+  assert.equal(fs.readdirSync(directory).length,4096);
+  assert.deepEqual(fs.readFileSync(foreign),before);assert.deepEqual(store.read(other,ref(image),[ref(image)]).data,data);
+  assert.equal(fs.readdirSync(directory).filter(name=>name.endsWith('.deleted')).length,4095);
+  assert.deepEqual(store.deleteConversation(user),{deleted:true});
+  assert.throws(()=>store.deleteConversation(`ods-${'c'.repeat(64)}`),{code:'image-storage-limit'});
+  assert.equal(fs.readdirSync(directory).length,4096);
+});
+
+test('a full-cache deletion interrupted after its durable fence retries after process restart',t=>{
+  const {directory,store}=setup(t);store.put(user,[image],[ref(image)]);store.put(other,[image],[ref(image)]);
+  fillDeletionFences(directory,4094);
+  const own=path.join(directory,`${user}--${image.id}.image`), foreign=path.join(directory,`${other}--${image.id}.image`);
+  const foreignBytes=fs.readFileSync(foreign),moduleUrl=new URL('../host/chat_image_store.mjs',import.meta.url).href;
+  const script=`import fs from 'node:fs';import {createChatImageStore} from ${JSON.stringify(moduleUrl)};
+    const store=createChatImageStore(${JSON.stringify(directory)}),unlink=fs.unlinkSync;
+    fs.unlinkSync=(target,...args)=>{if(target===${JSON.stringify(own)})process.exit(93);return unlink(target,...args)};
+    store.deleteConversation(${JSON.stringify(user)});`;
+  const child=spawnSync(process.execPath,['--input-type=module','-e',script],{encoding:'utf8'});
+  assert.equal(child.status,93,child.stderr);
+  assert.equal(fs.statSync(path.join(directory,`${user}.deleted`)).size,0);
+  assert.equal(fs.readdirSync(directory).filter(name=>!name.startsWith('.write-lock-')).length,4097);
+  assert.equal(fs.existsSync(own),true);
+  const restarted=createChatImageStore(directory);
+  assert.throws(()=>restarted.put(user,[image],[ref(image)]),{code:'conversation-deleted'});
+  assert.deepEqual(restarted.deleteConversation(user),{deleted:true});
+  assert.equal(fs.existsSync(own),false);assert.equal(fs.readdirSync(directory).length,4096);
+  assert.deepEqual(fs.readFileSync(foreign),foreignBytes);
+  assert.equal(fs.readdirSync(directory).filter(name=>name.endsWith('.deleted')).length,4095);
+});
+
+test('deleting an empty conversation at 4095 entries does not count its writer lease as stored data',t=>{
+  const {directory,store}=setup(t);fillDeletionFences(directory,4095);
+  assert.deepEqual(store.deleteConversation(user),{deleted:true});
+  assert.equal(fs.readdirSync(directory).length,4096);
+});
+
 test('tampered bytes and persisted cross-chat metadata never become tool images', t => {
   const {directory, store} = setup(t);
   store.put(user,[image],[ref(image)]);

@@ -960,6 +960,38 @@ async def handle_chat_context(request: web.Request):
             request.app[_COMPACTIONS_KEY][identity] = (token, task)
 
 
+async def handle_chat_images_delete(request: web.Request):
+    fail = _check_auth(request)
+    if fail is not None:
+        return fail
+    if request.content_type != "application/json" or request.query_string:
+        return web.json_response({"error": "invalid image deletion request"}, status=400)
+    try:
+        data = strict_json(await _read_bounded(request.content, 512))
+        if (not isinstance(data, dict) or set(data) != {"user"}
+                or not isinstance(data["user"], str) or not _SAFE_CHAT_ID.fullmatch(data["user"])):
+            raise ValueError("invalid request")
+    except (ValueError, TypeError, UnicodeError, RecursionError):
+        return web.json_response({"error": "invalid image deletion request"}, status=400)
+    if request.app[_CANCEL_EVENTS_KEY].get(data["user"]) or any(user == data["user"] for user, _ in request.app[_COMPACTIONS_KEY]):
+        return web.json_response({"error": "conversation_busy"}, status=409)
+    try:
+        async with ClientSession(connector=UnixConnector(path=_SOCKET_PATH), timeout=ClientTimeout(total=18)) as session:
+            async with session.post("http://pixel-upstream/v1/chat/images-delete", json=data,
+                                    headers={"Content-Type": "application/json", "Accept": "application/json"}) as upstream:
+                if upstream.status in {409, 423, 429}:
+                    return web.json_response({"error": "conversation_busy"}, status=upstream.status)
+                if upstream.status != 200 or "application/json" not in upstream.headers.get("Content-Type", "").lower():
+                    raise ValueError("invalid deletion receipt")
+                receipt = strict_json(await _read_bounded(upstream.content, 256))
+                if (receipt != {"schemaVersion": 1, "deleted": True}
+                        or type(receipt.get("schemaVersion")) is not int or receipt.get("deleted") is not True):
+                    raise ValueError("invalid deletion receipt")
+        return web.json_response(receipt, headers={"Cache-Control": "no-store"})
+    except Exception:
+        return web.json_response({"error": "conversation image deletion unconfirmed; retry"}, status=503)
+
+
 def _finish_chat_activity(app, chat_id, cancel_event, terminal):
     active = app[_CANCEL_EVENTS_KEY].get(chat_id)
     if active is None:
@@ -1763,6 +1795,7 @@ def create_app() -> web.Application:
     app.router.add_post("/v1/chat/cancel", handle_chat_cancel)
     app.router.add_post("/v1/chat/activity", handle_chat_activity)
     app.router.add_post("/v1/chat/context", handle_chat_context)
+    app.router.add_post("/v1/chat/images-delete", handle_chat_images_delete)
     app.router.add_post("/v1/chat/compact", handle_chat_context)
     # Catch-all registered last: unmatched paths AND unmatched methods → 404.
     app.router.add_route("*", "/{tail:.*}", handle_not_found)

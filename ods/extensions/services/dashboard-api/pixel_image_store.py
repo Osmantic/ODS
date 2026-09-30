@@ -18,6 +18,7 @@ from pixel_image_input import validate_image
 
 MAX_STORE_BYTES = 128 * 1024 * 1024
 MAX_STORE_IMAGES = 512
+MAX_DELETED_CONVERSATIONS = 8192
 DRAFT_TTL_SECONDS = 7 * 24 * 60 * 60
 _OWNER = re.compile(r"[a-f0-9]{64}")
 _CHAT = re.compile(r"[A-Za-z0-9_-]{1,128}")
@@ -25,6 +26,10 @@ _IDENTITY = re.compile(r"img-[a-f0-9]{32}")
 
 
 class ImageStoreCapacity(ValueError):
+    pass
+
+
+class ConversationDeleted(ValueError):
     pass
 
 
@@ -56,6 +61,7 @@ class ImageStore:
             fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
             os.close(fd)
         self.db = sqlite3.connect(path, timeout=2)
+        self.db.execute("PRAGMA secure_delete=ON")
         self.db.row_factory = sqlite3.Row
         self.db.execute("""CREATE TABLE IF NOT EXISTS images (
             owner TEXT NOT NULL, chat TEXT NOT NULL, id TEXT NOT NULL,
@@ -72,9 +78,33 @@ class ImageStore:
         if "draft_expires_at" not in columns:
             self.db.execute("ALTER TABLE images ADD COLUMN draft_expires_at REAL")
             self.db.commit()
+        self.db.execute("CREATE TABLE IF NOT EXISTS deleted_conversations (owner TEXT NOT NULL, chat TEXT NOT NULL, completed INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(owner,chat))")
+        self.db.commit()
 
     def close(self):
         self.db.close()
+
+    def deletion(self, owner, chat):
+        _scope(owner, chat)
+        row = self.db.execute("SELECT completed FROM deleted_conversations WHERE owner=? AND chat=?", (owner, chat)).fetchone()
+        return None if row is None else {"completed": bool(row["completed"])}
+
+    def assert_available(self, owner, chat):
+        if self.deletion(owner, chat) is not None:
+            raise ConversationDeleted("This conversation is being deleted or was deleted. Start a new conversation.")
+
+    def begin_delete(self, owner, chat):
+        _scope(owner, chat)
+        self.db.execute("BEGIN IMMEDIATE")
+        try:
+            if self.deletion(owner, chat) is None and self.db.execute("SELECT COUNT(*) FROM deleted_conversations").fetchone()[0] >= MAX_DELETED_CONVERSATIONS:
+                raise ImageStoreCapacity("Conversation deletion records are full. Existing deletion fences were preserved.")
+            self.db.execute("INSERT OR IGNORE INTO deleted_conversations(owner,chat) VALUES (?,?)", (owner, chat))
+            self.db.commit()
+        except BaseException:
+            self.db.rollback()
+            raise
+        return self.deletion(owner, chat)
 
     @staticmethod
     def _public(row):
@@ -85,6 +115,7 @@ class ImageStore:
         image = validate_image(data, media_type)
         self.db.execute("BEGIN IMMEDIATE")
         try:
+            self.assert_available(owner, chat)
             # Only uploads never retained by a send attempt can expire. Legacy
             # rows without a deadline are preserved. An active thumbnail read
             # or repeated upload renews the draft lease.
@@ -115,6 +146,7 @@ class ImageStore:
 
     def get(self, owner, chat, identity):
         _scope(owner, chat)
+        self.assert_available(owner, chat)
         if not isinstance(identity, str) or not _IDENTITY.fullmatch(identity):
             raise ValueError("Invalid image identity")
         row = self.db.execute("SELECT * FROM images WHERE owner=? AND chat=? AND id=?",
@@ -131,8 +163,12 @@ class ImageStore:
 
     def delete_conversation(self, owner, chat):
         _scope(owner, chat)
+        self.begin_delete(owner, chat)
         with self.db:
+            self.db.execute("INSERT OR IGNORE INTO deleted_conversations(owner,chat) VALUES (?,?)", (owner, chat))
             self.db.execute("DELETE FROM images WHERE owner=? AND chat=?", (owner, chat))
+            self.db.execute("UPDATE deleted_conversations SET completed=1 WHERE owner=? AND chat=?", (owner, chat))
+        return {"deleted": True}
 
     def retain(self, owner, chat, references):
         """Protect resolved bytes before a chat can dispatch them.
@@ -141,7 +177,9 @@ class ImageStore:
         prevents a concurrent draft removal from breaking a sent conversation.
         """
         _scope(owner, chat)
-        with self.db:
+        self.db.execute("BEGIN IMMEDIATE")
+        try:
+            self.assert_available(owner, chat)
             for reference in references:
                 changed = self.db.execute(
                     "UPDATE images SET retained=1 WHERE owner=? AND chat=? AND id=? AND sha256=?",
@@ -149,6 +187,10 @@ class ImageStore:
                 )
                 if changed.rowcount != 1:
                     raise ValueError("Conversation image disappeared before retention")
+            self.db.commit()
+        except BaseException:
+            self.db.rollback()
+            raise
 
     def discard_draft(self, owner, chat, identity):
         """Remove only an unsubmitted upload, with an idempotent receipt."""

@@ -67,7 +67,7 @@ export function createChatHistoryLedger(directory) {
   fs.mkdirSync(directory,{recursive:true,mode:0o700});
   privateStat(directory,true);
   const active=new Set(), inflight=new Set();
-  function filename(user) {if(!USER.test(user)) throw new HistoryError('invalid_history_user',400);return path.join(directory,`${user}.json`)}
+  function filename(user) {if(typeof user!=='string' || user.length!==68 || !USER.test(user)) throw new HistoryError('invalid_history_user',400);return path.join(directory,`${user}.json`)}
   function read(user) {
     const file=filename(user);
     try {
@@ -76,7 +76,7 @@ export function createChatHistoryLedger(directory) {
       const fd=fs.openSync(file,fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0));
       let data;
       try {const held=fs.fstatSync(fd);if(held.ino!==stat.ino || held.dev!==stat.dev) throw new HistoryError('history_storage_unavailable',503);data=JSON.parse(fs.readFileSync(fd,'utf8'))} finally {fs.closeSync(fd)}
-      if(data.schemaVersion!==1 || data.user!==user || !Array.isArray(data.messages) || !Number.isInteger(data.acknowledgedMessages) || data.acknowledgedMessages<0 || data.acknowledgedMessages>data.messages.length || !['ready','pending','unknown'].includes(data.status)) throw new HistoryError('history_storage_unavailable',503);
+      if(data.schemaVersion!==1 || data.user!==user || !Array.isArray(data.messages) || !Number.isInteger(data.acknowledgedMessages) || data.acknowledgedMessages<0 || data.acknowledgedMessages>data.messages.length || !['ready','pending','unknown','deleted'].includes(data.status)) throw new HistoryError('history_storage_unavailable',503);
       if(data.status==='pending' && !inflight.has(user)) return {...data,status:'unknown',reason:'history-outcome-unknown'};
       return data;
     } catch(error) {if(error.code==='ENOENT') return null;if(error instanceof HistoryError) throw error;throw new HistoryError('history_storage_unavailable',503)}
@@ -119,11 +119,13 @@ export function createChatHistoryLedger(directory) {
   }
   function projection(user) {
     const state=read(user);
+    if(state?.status==='deleted') throw new HistoryError('conversation-deleted',410);
     return {revision:state?.revision || null,acknowledgedMessages:state?.acknowledgedMessages || 0,status:state?.status || 'ready',reason:state?.reason || null};
   }
   function prepare(user,requestId,snapshot,native) {
     if(!REQUEST.test(requestId || '')) throw new HistoryError('invalid_request_id',400);
     const messages=validateHistorySnapshot(snapshot), revision=digest(messages), previous=read(user);
+    if(previous?.status==='deleted') throw new HistoryError('conversation-deleted',410);
     if(native.status==='busy') throw new HistoryError('history_busy',409);
     if(!['ready','missing'].includes(native.status)) throw new HistoryError('context_unavailable',503);
     const seen=previous?.requests?.find(item=>item.id===requestId);
@@ -183,6 +185,7 @@ export function createChatHistoryLedger(directory) {
   function search(user,{query='',offset=0,limit=5}={}) {
     if(typeof query!=='string' || query.length>200 || !Number.isInteger(offset) || offset<0 || offset>HISTORY_MESSAGES || !Number.isInteger(limit) || limit<1 || limit>20) throw new HistoryError('invalid_history_query',400);
     const state=read(user), matches=[], needle=query.toLocaleLowerCase();
+    if(state?.status==='deleted') throw new HistoryError('conversation-deleted',410);
     let bytes=0,nextOffset=null;
     for(let index=offset;index<(state?.messages.length || 0);index++) {
       const message=state.messages[index], position=needle?message.content.toLocaleLowerCase().indexOf(needle):0;
@@ -195,5 +198,11 @@ export function createChatHistoryLedger(directory) {
     }
     return {schemaVersion:1,source:'archived-conversation',untrusted:true,revision:state?.revision || null,totalMessages:state?.messages.length || 0,messages:matches,nextOffset};
   }
-  return {read,projection,lock,prepare,complete,uncertain,abandon,interrupt,search};
+  function deleteConversation(user) {
+    if(!active.has(user)) throw new HistoryError('history-lock-required',409);
+    const prior=read(user);
+    if(prior && !['ready','deleted'].includes(prior.status)) throw new HistoryError('history-outcome-unknown',409);
+    write(user,{schemaVersion:1,user,messages:[],acknowledgedMessages:0,status:'deleted',reason:'conversation-deleted',revision:null,requests:[]});
+  }
+  return {read,projection,lock,prepare,complete,uncertain,abandon,interrupt,search,deleteConversation};
 }

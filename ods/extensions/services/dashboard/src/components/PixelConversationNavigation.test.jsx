@@ -1,4 +1,4 @@
-import {render,screen,fireEvent,within} from '@testing-library/react'
+import {render,screen,fireEvent,within,act} from '@testing-library/react'
 import PixelConversationNavigation from './PixelConversationNavigation'
 import {saveConversation,readConversations,DELETE_EVENT,SELECT_EVENT,deleteConversation} from '../lib/pixelConversations'
 import {saveConversationLabels,conversationLabels} from '../lib/pixelConversationLabels'
@@ -9,13 +9,13 @@ beforeEach(()=>{
   HTMLDialogElement.prototype.close = function(){this.removeAttribute('open')}
   saveConversation({schema:1,chatId:'delete-test',messages:[{role:'user',content:'Disposable test'}]})
 })
-afterEach(()=>{delete HTMLDialogElement.prototype.showModal; delete HTMLDialogElement.prototype.close; vi.restoreAllMocks()})
+afterEach(()=>{delete HTMLDialogElement.prototype.showModal; delete HTMLDialogElement.prototype.close; vi.restoreAllMocks();vi.useRealTimers()})
 test('delete control does not select the chat; cancellation preserves it',()=>{
   const select = vi.fn(); window.addEventListener(SELECT_EVENT,select)
   render(<PixelConversationNavigation collapsed={false}/>)
   fireEvent.click(screen.getByRole('button',{name:'Delete chat: Disposable test'}))
   const dialog=screen.getByRole('dialog',{name:'Delete this chat?'})
-  expect(within(dialog).getByText(/Workspace files and published previews are kept/)).toBeVisible()
+  expect(within(dialog).getByText(/Workspace files, published previews and external backups are kept/)).toBeVisible()
   expect(select).not.toHaveBeenCalled()
   fireEvent.click(within(dialog).getByRole('button',{name:'Cancel'}))
   expect(readConversations()).toHaveLength(1)
@@ -35,6 +35,31 @@ test('deletes after confirmation and shows refusal errors without hiding the cha
   expect(readConversations()).toEqual([])
   expect(screen.queryByRole('button',{name:'Disposable test',exact:true})).not.toBeInTheDocument()
   window.removeEventListener(DELETE_EVENT,handle)
+})
+
+test('a missing acknowledgement times out without hiding history and a late prior callback cannot close a retry',()=>{
+  vi.useFakeTimers()
+  const callbacks=[];const handler=event=>callbacks.push(event.detail.complete)
+  window.addEventListener(DELETE_EVENT,handler)
+  const view=render(<PixelConversationNavigation collapsed={false}/>)
+  fireEvent.click(screen.getByRole('button',{name:'Delete chat: Disposable test'}))
+  fireEvent.click(screen.getByRole('button',{name:'Delete chat',exact:true}))
+  expect(screen.getByRole('button',{name:'Deleting…'})).toBeDisabled()
+  act(()=>vi.advanceTimersByTime(35000))
+  expect(screen.getByRole('alert')).toHaveTextContent('Deletion was not confirmed')
+  expect(readConversations()).toHaveLength(1)
+  fireEvent.click(screen.getByRole('button',{name:'Delete chat',exact:true}))
+  act(()=>callbacks[0](''))
+  expect(screen.getByRole('dialog',{name:'Delete this chat?'})).toBeVisible()
+  expect(screen.getByRole('button',{name:'Deleting…'})).toBeDisabled()
+  act(()=>callbacks[1]('Still busy'))
+  expect(screen.getByRole('alert')).toHaveTextContent('Still busy')
+  fireEvent.click(screen.getByRole('button',{name:'Delete chat',exact:true}))
+  view.unmount()
+  expect(vi.getTimerCount()).toBe(0)
+  act(()=>callbacks[2](''))
+  expect(readConversations()).toHaveLength(1)
+  window.removeEventListener(DELETE_EVENT,handler)
 })
 
 test.each([null, {role:'user', content:42}])('keeps the sidebar usable beside malformed retained messages: %j', message => {

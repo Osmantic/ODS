@@ -79,6 +79,7 @@ import { createAccessRuntime, executionHostForAgent } from "./access-runtime.mjs
 import { createManagedRuntimeRegistry } from "./managed-runtime-lifecycle.mjs";
 import {createContextCompaction, readContextRequest, prepareStableContextModel} from './context-compaction.mjs';
 import {registerHistoryIntegration} from './history-context.mjs';
+import {createConversationImageLifecycle} from './conversation-image-lifecycle.mjs';
 import {createChatImageReadTool,CHAT_IMAGE_READ_TOOL} from './chat-image-read.mjs';
 import {readConversationImage,readConversationImagePolicy} from './chat-image-transport.mjs';
 import {createExtensionProposalTool, createSourceProposalTool, createPythonLibraryProposalTool, createExtensionRequestStatusTool, createExtensionRequestPrepareTool, createExtensionRequestAdvanceTool, createExtensionRequestRetryTool, submitExtensionProposal} from './extension-proposal.mjs';
@@ -95,6 +96,7 @@ const taskActivity = createTaskActivity({agentId:AGENT_ID, goalForRun:id=>goalPr
 let execCancellationControl;
 let accessRuntime;
 let contextCompaction;
+let conversationImageLifecycle;
 let currentManagedRuntime;
 const managedRuntimeRegistry = createManagedRuntimeRegistry();
 const evidenceArtifactWriter = createEvidenceArtifactWriter();
@@ -287,11 +289,21 @@ export default definePluginEntry({
       },
       activeSession:key => Boolean(resolveActiveEmbeddedRunSessionId(key)),
       admission:{status:() => currentManagedRuntime?.status() ?? accessRuntime.status(),
-        acquire:(token, revision) => currentManagedRuntime ? currentManagedRuntime.acquireTransition(token, revision)
-          : accessRuntime.acquire(token, revision),
-        release:token => accessRuntime.release(token), owns:token => accessRuntime.owns(token)},
+        acquire:(token, revision) => currentManagedRuntime ? currentManagedRuntime.acquireMaintenance(token, revision)
+          : accessRuntime.acquireMaintenance(token, revision),
+        release:token => currentManagedRuntime ? currentManagedRuntime.releaseMaintenance(token)
+          : accessRuntime.releaseMaintenance(token), owns:token => accessRuntime.owns(token)},
     });
     registerHistoryIntegration(api,{compactor:contextCompaction,getSessionEntry,patchSessionEntry,resolveStorePath,withSessionTranscriptWriteLock,appendAssistantMirrorMessageByIdentity});
+    conversationImageLifecycle ??= createConversationImageLifecycle({
+      readConfig:()=>api.runtime?.config?.current?.()??api.config,
+      getSessionEntry,patchSessionEntry,resolveStorePath,callGateway:callGatewayTool,compactor:contextCompaction,
+    });
+    conversationImageLifecycle.register(api);
+    api.on('before_agent_run',(_event,context)=>{
+      try {conversationImageLifecycle.observe(context);}
+      catch {return {outcome:'block',reason:'conversation-image-custody-unavailable',message:'This conversation is deleted or its private image custody could not be confirmed. Start a new conversation or retry after checking storage.'};}
+    });
     api.registerTool(onlyPixel(context=>createChatImageReadTool(context,{
       getSessionEntry,resolveStorePath,
       readConfig:()=>api.runtime?.config?.current?.()??api.config,
@@ -404,6 +416,7 @@ export default definePluginEntry({
       api.on("before_agent_run", (event, context) => accessRuntime.admit(undefined, context));
     }
     api.on("agent_end", (event, context) => {
+      try {conversationImageLifecycle.observe(context);}catch {api.logger.warn('Portal conversation image custody could not be updated.');}
       toolLoopGuard.endPreviewRevalidation(event, context);
       toolLoopGuard.observeAgentEnd(event, context);
       if (!accessRuntime.isProbe(context)) { goalProgress.finish(event, context); taskActivity.finish(event, context); }

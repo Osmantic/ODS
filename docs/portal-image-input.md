@@ -28,6 +28,14 @@ the attachment; accepting a file is not evidence of visual understanding.
   Images retained by a send attempt never expire through this cleanup.
 - JSON conversation export is not an image backup. Import into another chat
   does not transfer access to private image bytes. Attach the images again.
+- Deleting a conversation waits for authenticated confirmation before removing
+  its browser history. The API and native runtime retain deletion records so
+  stale uploads and conversation replay cannot restore its images. Failed
+  deletion keeps the conversation visible and can be retried.
+- Deletion removes private image copies and registered native session
+  transcripts, including archives created by the pinned runtime. It preserves
+  workspace files and published previews. Unregistered legacy transcripts,
+  external backups, exports and provider retention are outside this cleanup.
 
 ## Resource boundaries
 
@@ -56,7 +64,8 @@ structural depth and token counts are bounded before allocating parsed objects.
   against the combined installed services.
 - Conversation deletion across both image stores and recovery from a native
   cache writer interruption. Interrupted uploads use the unsent-draft lease;
-  browser acceptance of that recovery remains required.
+  isolated lifecycle and native SDK tests exist, but browser acceptance of
+  that recovery remains required.
 - Integration with the separate ZIP text-import change and other pending
   Portal updates; clean-install and upgrade acceptance.
 - Exact-head CI, including real grammar compilation and the pinned runtime

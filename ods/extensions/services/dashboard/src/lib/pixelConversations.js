@@ -128,6 +128,22 @@ export function conversationTitle(chat) {
   return conversationLabels(chat.chatId).title || chat.messages.find(message => message.role === 'user' && typeof message.content === 'string')?.content.trim().slice(0, 80) || chat.draft?.trim().slice(0, 80) || 'Untitled conversation'
 }
 
+export async function purgeConversationImages(chatId) {
+  if(typeof chatId!=='string' || !/^[A-Za-z0-9_-]{1,128}$/.test(chatId) || chatId.length>128)throw new Error('Invalid conversation.')
+  const chat=readConversations().find(item=>item.chatId===chatId)
+  if(chat?.inFlight || chat?.interrupted || chat?.compactionRequestId)throw new Error('Finish, stop or recover this conversation before deleting it.')
+  const controller=new AbortController(), timer=setTimeout(()=>controller.abort(),30000)
+  try {
+    const response=await fetch(`/api/pixel/images/${encodeURIComponent(chatId)}`,{method:'DELETE',signal:controller.signal})
+    let receipt;try {receipt=await response.json()}catch {throw new Error('Deletion is not confirmed. Your local history is preserved; retry deletion.')}
+    if(!response.ok)throw new Error(typeof receipt?.detail==='string' && receipt.detail.length<300?receipt.detail:'Deletion is not confirmed. Your local history is preserved; retry deletion.')
+    if(Object.keys(receipt||{}).sort().join()!=='deleted,schemaVersion' || receipt.schemaVersion!==1 || receipt.deleted!==true)throw new Error('Deletion is not confirmed. Your local history is preserved; retry deletion.')
+  } catch(error) {
+    if(error?.name==='AbortError')throw new Error('Deletion timed out. Your local history is preserved; retry deletion to confirm cleanup.')
+    throw error
+  } finally {clearTimeout(timer)}
+}
+
 export function deleteConversation(chatId) {
   const entries = loadConversations(true)
   const chat = entries.find(item => valid(item) && item.chatId === chatId)

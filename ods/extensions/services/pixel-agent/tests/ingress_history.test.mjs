@@ -23,6 +23,7 @@ async function fixture(t) {
     if(req.url==='/pixel-ods/context') return res.end(JSON.stringify(native));
     if(req.url==='/pixel-ods/abort') return res.end(JSON.stringify({aborted:true}));
     if(req.url==='/pixel-ods/history') return res.end(JSON.stringify({schemaVersion:1,hydrated:true}));
+    if(req.url==='/pixel-ods/images-bind') return res.end(JSON.stringify({schemaVersion:1,bound:true}));
     if(req.url==='/pixel-ods/compact') {native.status='ready';native.compaction={...native.compaction,status:'completed',requestId:body.request_id,count:native.compaction.count+1};return res.end(JSON.stringify(native));}
     if(req.url==='/pixel-ods/verification') return res.end(JSON.stringify({status:'none'}));
     if(req.url==='/v1/chat/completions') {if(chatFailure){res.statusCode=500;return res.end('{}')}return res.end(JSON.stringify({id:runId,choices:[{message:{role:'assistant',content:answer}}]}));}
@@ -48,6 +49,9 @@ test('image turn reaches gateway as bytes, caches privately and replays without 
     history_snapshot:{schemaVersion:2,messages:[archived]},
     messages:[{...archived,content:[{type:'image_url',image_url:{url:'data:image/png;base64,'+data.toString('base64')}}]}]};
   assert.equal((await f.post('/v1/chat/completions',body)).status,200);
+  const binding=f.calls.findIndex(call=>call.path==='/pixel-ods/images-bind');
+  assert.ok(binding>=0 && binding<f.calls.findIndex(call=>call.path==='/v1/chat/completions'));
+  assert.deepEqual(f.calls[binding].body,{user});
   const delivered=f.calls.find(call=>call.path==='/v1/chat/completions').body.messages.at(-1);
   assert.deepEqual(delivered.content[0],body.messages[0].content[0]);
   assert.equal('images' in delivered,false);

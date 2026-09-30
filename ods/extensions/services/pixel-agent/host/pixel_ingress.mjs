@@ -1685,6 +1685,10 @@ export function createIngressServer({ token, gatewayPort, deps = defaultDeps, hi
       void handleImageRead(req,res,{policyOnly:pathname.endsWith('image-policy'),imageStore,historyLedger,imageRoutes,token,gatewayPort,deps});
       return;
     }
+    if(pathname==='/v1/chat/images-delete') {
+      void handleImageDelete(req,res,{imageStore,historyLedger,imageRoutes,token,gatewayPort,deps});
+      return;
+    }
     if (pathname === '/v1/access-mode') {
       void handleAccessMode(req, res, {ownerKey:typeof accessOwnerKey === 'function' ? accessOwnerKey() : accessOwnerKey});
       return;
@@ -1815,6 +1819,33 @@ async function handleCancel(req, res, token, gatewayPort, deps, ledger, historyA
   } catch {sendError(res,503,'cancellation-unconfirmed');}
 }
 
+async function handleImageDelete(req,res,{imageStore,historyLedger,imageRoutes,token,gatewayPort,deps}) {
+  let release;
+  try {
+    if(req.method!=='POST' || req.url!=='/v1/chat/images-delete' || String(req.headers['content-type']||'').split(';',1)[0]!=='application/json') throw new HistoryError('invalid-image-deletion-request',400);
+    const body=JSON.parse((await readBody(req,512)).toString('utf8'));
+    if(!body || Object.keys(body).join()!=='user' || typeof body.user!=='string' || body.user.length>128 || !/^[A-Za-z0-9_-]+$/.test(body.user)) throw new HistoryError('invalid-image-deletion-request',400);
+    if(!historyLedger || !imageStore) throw new HistoryError('image-storage-unavailable',503);
+    const user=computeSessionUser({user:body.user});release=historyLedger.lock(user);
+    const state=historyLedger.read(user);
+    if(state && !['ready','deleted'].includes(state.status)) throw new HistoryError('history-outcome-unknown',409);
+    if(state?.status!=='deleted') {
+      const native=await nativeContextRequest('context',{user},token,gatewayPort,deps);
+      if(native.status==='busy' || native.compaction.status==='running')throw new HistoryError('history-busy',409);
+      if(!['ready','missing'].includes(native.status) || native.compaction.status==='unknown')throw new HistoryError('context-unavailable',503);
+      historyLedger.deleteConversation(user);
+    }
+    imageRoutes.delete(user);
+    // Native transcript deletion has its own durable journal, maintenance
+    // lease and exact SDK binding. Cache/API copies are not the only copies.
+    const receipt=await nativeContextRequest('images-delete',{user},token,gatewayPort,deps);
+    if(receipt?.schemaVersion!==1 || receipt.deleted!==true)throw new HistoryError('image-deletion-unconfirmed',503);
+    imageStore.deleteConversation(user);
+    sendJson(res,200,{schemaVersion:1,deleted:true});
+  } catch(error) {sendError(res,error instanceof HistoryError || error instanceof ChatImageError?error.status:400,error instanceof HistoryError || error instanceof ChatImageError?error.message:'invalid-image-deletion-request');}
+  finally {try {release?.();}catch{/* Keep failed lock custody closed. */}}
+}
+
 async function handleImageRead(req,res,{policyOnly,imageStore,historyLedger,imageRoutes,token,gatewayPort,deps}) {
   try {
     if(req.method!=='POST') {sendError(res,405,'method not allowed');return;}
@@ -1870,6 +1901,7 @@ async function handleChat(req, res, token, gatewayPort, deps, historyLedger, his
     user=computeSessionUser(parsed);
     const outgoing = buildOutgoing(parsed, user);
     if(historyLedger && user) release=historyLedger.lock(user);
+    if(historyLedger?.read(user)?.status==='deleted')throw new HistoryError('conversation-deleted',410);
     if(!parsed.history_snapshot) {await forwardChat(res,outgoing,token,gatewayPort,deps,{},activeGatewayTransports);return;}
     if(!historyLedger || !user) throw new HistoryError('history-storage-unavailable',503);
     const native=await nativeContextRequest('context',{user},token,gatewayPort,deps);
@@ -1877,6 +1909,8 @@ async function handleChat(req, res, token, gatewayPort, deps, historyLedger, his
     if(hasImages) validateImageRoute(parsed.image_route,native.model);
     prepared=historyLedger.prepare(user,parsed.request_id,parsed.history_snapshot,native);
     if(hasImages) {
+      const binding=await nativeContextRequest('images-bind',{user},token,gatewayPort,deps);
+      if(binding?.schemaVersion!==1 || binding.bound!==true)throw new HistoryError('image-custody-unavailable',503);
       if(!imageRoutes.has(user) && imageRoutes.size>=1024) throw new ChatImageError('image-session-capacity',503);
       imageRoutes.set(user,{...parsed.image_route});
     } else imageRoutes.delete(user);
@@ -1949,7 +1983,7 @@ async function nativeContextRequest(operation,body,token,gatewayPort,deps,outerS
     const response=await deps.fetch(`http://127.0.0.1:${gatewayPort}/pixel-ods/${operation}`,{method:'POST',headers:upstreamHeaders(false,token),body:JSON.stringify(body),redirect:'error',signal:controller.signal});
     if(response.status!==200 || !String(response.headers.get('content-type') || '').startsWith('application/json')) {await drain(response.body);throw new HistoryError(response.status===409?'context-busy':'context-unavailable',response.status===409?409:503);}
     const value=JSON.parse((await readBounded(response.body,32768)).toString('utf8'));
-    if(operation==='history') return value;
+    if(operation==='history' || operation==='images-delete' || operation==='images-bind') return value;
     if(value?.schemaVersion!==1 || !['ready','missing','busy','unavailable'].includes(value.status) || !['idle','running','completed','skipped','failed','unknown'].includes(value.compaction?.status) || !Number.isInteger(value.compaction?.count)) throw new HistoryError('context-unavailable',503);
     return value;
   } catch(error) {if(error instanceof HistoryError) throw error;throw new HistoryError('context-unavailable',503)}
@@ -1972,6 +2006,7 @@ async function handleContextControl(req,res,pathname,token,gatewayPort,deps,ledg
     const compact=pathname==='/v1/chat/compact';
     if(Object.keys(body).sort().join()!==(compact?'request_id,user':'user') || !/^[A-Za-z0-9_-]{1,128}$/.test(body.user || '') || (compact && !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(body.request_id || ''))) throw new HistoryError('invalid-context-request',400);
     const user=computeSessionUser({user:body.user});
+    if(ledger.read(user)?.status==='deleted')throw new HistoryError('conversation-deleted',410);
     if(compact) {
       release=ledger.lock(user);
       if(ledger.projection(user).status!=='ready') throw new HistoryError('history-outcome-unknown',409);

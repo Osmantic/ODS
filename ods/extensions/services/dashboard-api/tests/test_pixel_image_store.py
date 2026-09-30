@@ -5,7 +5,7 @@ import pytest
 from PIL import Image
 
 import pixel_image_store as store_module
-from pixel_image_store import ImageStore, ImageStoreCapacity
+from pixel_image_store import ImageStore, ImageStoreCapacity, ConversationDeleted
 
 
 def png(color="red"):
@@ -29,7 +29,8 @@ def test_scope_persistence_and_conversation_deletion(tmp_path):
     store.delete_conversation("b" * 64, "chat-1")
     assert store.get("a" * 64, "chat-1", receipt["id"])
     store.delete_conversation("a" * 64, "chat-1")
-    assert store.get("a" * 64, "chat-1", receipt["id"]) is None
+    with pytest.raises(ConversationDeleted):
+        store.get("a" * 64, "chat-1", receipt["id"])
     assert store.get("a" * 64, "chat-2", other["id"])
     store.close()
 

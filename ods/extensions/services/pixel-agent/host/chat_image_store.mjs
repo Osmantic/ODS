@@ -159,6 +159,7 @@ export function createChatImageStore(directory, {maxBytes = CHAT_IMAGE_CACHE_BYT
   }
   function read(user, reference, refs) {
     normalizeChatImageReference(reference); admitted(reference, refs);
+    assertAvailable(user);
     try {return readRecord(filename(user, reference), user, reference);}
     catch (error) {if (error.code === 'ENOENT') fail('image-copy-unavailable', 404); if (error instanceof ChatImageError) throw error; fail('image-storage-unavailable', 503);}
   }
@@ -174,11 +175,13 @@ export function createChatImageStore(directory, {maxBytes = CHAT_IMAGE_CACHE_BYT
     if (total > CHAT_IMAGE_BYTES) fail('image-turn-too-large', 413);
     const release = writerLease();
     try {
+      assertAvailable(user);
       recoverTemporaryNames();
       const entries = fs.readdirSync(directory).filter(name => !name.startsWith('.write-lock-'));
       if (entries.length > MAX_FILES) fail('image-storage-limit', 507);
       let occupied = 0;
       for (const name of entries) {
+        if(/^ods-[a-f0-9]{64}\.deleted$/.test(name)) {if(privateStat(path.join(directory,name)).size!==0)fail('image-storage-unavailable',503);continue;}
         if (![112,149].includes(name.length) || !/^ods-[a-f0-9]{64}--img-[a-f0-9]{32}\.image(?:\.tmp-[a-f0-9]{32})?$/.test(name)) fail('image-storage-unavailable', 503);
         occupied += privateStat(path.join(directory, name)).size;
       }
@@ -213,7 +216,53 @@ export function createChatImageStore(directory, {maxBytes = CHAT_IMAGE_CACHE_BYT
   }
   const releaseStartup = writerLease();
   try {recoverTemporaryNames();} finally {releaseStartup();}
-  return {put, read};
+  function deletionFile(user) {
+    if(typeof user!=='string' || user.length!==68 || !USER.test(user)) fail('invalid-image-user',400);
+    return path.join(directory,`${user}.deleted`);
+  }
+  function assertAvailable(user) {
+    try {const stat=privateStat(deletionFile(user));if(stat.size!==0)fail('image-storage-unavailable',503);}
+    catch(error) {if(error.code==='ENOENT')return;throw error;}
+    fail('conversation-deleted',410);
+  }
+  function deleteConversation(user) {
+    const tombstone=deletionFile(user), release=writerLease();
+    try {
+      recoverTemporaryNames();
+      const entries=fs.readdirSync(directory).filter(name=>{
+        if(!/^\.write-lock-[1-9][0-9]*-[a-f0-9]{32}$/.test(name))return true;
+        // writerLease validated other contenders; only our private empty lease
+        // remains. A lock is not a persistent image or deletion record.
+        if(privateStat(path.join(directory,name)).size!==0)fail('image-storage-unavailable',503);
+        return false;
+      });
+      const ownFiles=entries.filter(name=>name.startsWith(`${user}--`)).map(name=>{
+        if(!/^ods-[a-f0-9]{64}--img-[a-f0-9]{32}\.image$/.test(name))fail('image-storage-unavailable',503);
+        const file=path.join(directory,name);privateStat(file);return file;
+      });
+      // Reserve against the completed purge, not the temporary extra fence.
+      // At most one empty entry can exceed the cap under this exclusive lease;
+      // an existing fence also permits retry after a crash at that boundary.
+      if(!fs.existsSync(tombstone) && (entries.length>MAX_FILES || entries.length-ownFiles.length+1>MAX_FILES))fail('image-storage-limit',507);
+      let fd;
+      try {fd=fs.openSync(tombstone,'wx',0o600);fs.fsyncSync(fd);}
+      catch(error) {if(error.code!=='EEXIST')throw error;if(privateStat(tombstone).size!==0)fail('image-storage-unavailable',503);}
+      finally {if(fd!==undefined)fs.closeSync(fd);}
+      let fenceDirectory;
+      try {fenceDirectory=fs.openSync(directory,'r');fs.fsyncSync(fenceDirectory);}
+      catch(error) {if(process.platform!=='win32')throw error;}
+      finally {if(fenceDirectory!==undefined)fs.closeSync(fenceDirectory);}
+      // The durable fence precedes unlinking: a partial purge is retriable and
+      // can never accept new bytes under the deleted conversation identity.
+      for(const file of ownFiles) {privateStat(file);fs.unlinkSync(file);}
+      let directoryFd;
+      try {directoryFd=fs.openSync(directory,'r');fs.fsyncSync(directoryFd);}
+      catch(error) {if(!['EINVAL','ENOTSUP','EBADF','EISDIR','EPERM','EACCES'].includes(error.code))throw error;}
+      finally {if(directoryFd!==undefined)fs.closeSync(directoryFd);}
+      return {deleted:true};
+    } finally {release();}
+  }
+  return {put, read,deleteConversation};
 }
 
 // Called only after ingress authentication. The user comes from the trusted

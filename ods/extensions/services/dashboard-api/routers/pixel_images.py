@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 
 from pixel_chat_results import owner_namespace
 from pixel_image_input import ImageInputError, MAX_IMAGE_BYTES
-from pixel_image_store import ImageStore, ImageStoreCapacity
+from pixel_image_store import ImageStore, ImageStoreCapacity, ConversationDeleted
 from pixel_image_transport import ImageResolutionError, resolve_image_parts
 from pixel_image_admission import ImageWorkBudget
 from security import verify_api_key
@@ -62,6 +62,8 @@ async def _call(method, *args, reservation=None):
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except ImageStoreCapacity as exc:
         raise HTTPException(status_code=507, detail=str(exc)) from exc
+    except ConversationDeleted as exc:
+        raise HTTPException(status_code=410, detail=str(exc)) from exc
     except Exception as exc:
         # Do not expose paths, image data, credentials, or decoder diagnostics.
         logger.warning("Portal image storage operation failed (%s)", type(exc).__name__)
@@ -75,6 +77,42 @@ async def resolve_message_images(owner: str, chat_id: str, text: str, references
     """Resolve every immutable reference before admitting a new chat attempt."""
     _check_scope(chat_id)
     return await _call(resolve_image_parts, owner_namespace(owner), chat_id, text, references)
+
+
+async def conversation_storage(method, owner, chat_id):
+    """Small lifecycle transactions do not consume the image decoder lease."""
+    try:
+        return await asyncio.to_thread(_storage_call, method, owner_namespace(owner), chat_id)
+    except ConversationDeleted as exc:
+        raise HTTPException(410, str(exc)) from None
+    except ImageStoreCapacity as exc:
+        raise HTTPException(507, str(exc)) from None
+    except Exception as exc:
+        logger.warning("Portal conversation lifecycle unavailable (%s)", type(exc).__name__)
+        raise HTTPException(503, "Conversation image deletion could not be confirmed. Retry before deleting local history.") from None
+
+
+@router.delete("/{chat_id}")
+async def delete_conversation_images(chat_id: str, response: Response, owner: str = Depends(verify_api_key)):
+    from routers import pixel
+    _check_scope(chat_id)
+    state = await conversation_storage("deletion", owner, chat_id)
+    if state and state["completed"]:
+        response.headers.update(_PRIVATE_HEADERS)
+        return {"schemaVersion": 1, "deleted": True}
+    if pixel._chat_results().has_pending((owner_namespace(owner), chat_id)):
+        raise HTTPException(409, "Finish, stop or recover this conversation before deleting its images.")
+    if state is None:
+        native = await pixel._chat_context_request(pixel.ChatCancelRequest(chat_id=chat_id))
+        if native.get("status") not in {"ready", "missing"} or native.get("history", {}).get("status") != "ready" or native.get("compaction", {}).get("status") in {"running", "unknown"}:
+            raise HTTPException(409, "Finish, stop or recover this conversation before deleting its images.")
+        # This intent blocks uploads and new API admissions across processes.
+        # Lost replies leave it pending; retry always asks native custody again.
+        await conversation_storage("begin_delete", owner, chat_id)
+    await pixel._delete_native_conversation_images(chat_id)
+    await conversation_storage("delete_conversation", owner, chat_id)
+    response.headers.update(_PRIVATE_HEADERS)
+    return {"schemaVersion": 1, "deleted": True}
 
 
 @router.post("/{chat_id}", status_code=201)

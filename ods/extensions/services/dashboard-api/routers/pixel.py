@@ -33,7 +33,7 @@ from pixel_chat_identity import messages_with_identity
 from pixel_chat_context import HistoryMessage, HistorySnapshot, public_context
 from pixel_runtime_identity import project_runtime_identity, unknown_runtime_identity
 from pixel_readiness import project_readiness
-from routers.pixel_images import router as image_router, resolve_message_images
+from routers.pixel_images import router as image_router, resolve_message_images, conversation_storage
 
 
 logger = logging.getLogger(__name__)
@@ -256,6 +256,29 @@ async def _chat_context_request(body: ChatCancelRequest, *, compact: bool = Fals
         raise HTTPException(502, "Portal context status could not be verified") from None
 
 
+async def _delete_native_conversation_images(chat_id):
+    config = _pixel_config()
+    if config is None:
+        raise HTTPException(503, "Portal is unavailable. Retry deletion when it is running.")
+    edge_url, key = config
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(22, connect=3), trust_env=False, follow_redirects=False) as client:
+            async with client.stream("POST", f"{edge_url}/v1/chat/images-delete", json={"user": chat_id},
+                                     headers=_edge_headers(key, accept="application/json")) as result:
+                if result.status_code in {409, 423, 429}:
+                    raise HTTPException(409, "Conversation deletion is pending. Finish or recover its active work, then retry deletion.")
+                if result.status_code != 200 or not result.headers.get("content-type", "").lower().startswith("application/json"):
+                    raise ValueError("invalid receipt")
+                receipt = json.loads(await _bounded_response_bytes(result, 256))
+                if (receipt != {"schemaVersion": 1, "deleted": True}
+                        or type(receipt.get("schemaVersion")) is not int or receipt.get("deleted") is not True):
+                    raise ValueError("invalid receipt")
+    except HTTPException:
+        raise
+    except (httpx.HTTPError, ValueError, TypeError, asyncio.TimeoutError):
+        raise HTTPException(503, "Image deletion is not confirmed. Your local history is preserved; retry deletion.") from None
+
+
 @router.post("/chat/context", dependencies=[Depends(verify_api_key)])
 async def pixel_chat_context(body: ChatCancelRequest):
     return await _chat_context_request(body)
@@ -263,6 +286,7 @@ async def pixel_chat_context(body: ChatCancelRequest):
 
 @router.post("/chat/compact")
 async def pixel_chat_compact(body: ChatResultRequest, owner: str = Depends(verify_api_key)):
+    await conversation_storage("assert_available", owner, body.chat_id)
     store = _chat_results()
     if store.has_pending((owner_namespace(owner), body.chat_id)):
         raise HTTPException(423, "Recover or finish the current response before compacting this conversation")
@@ -780,6 +804,7 @@ class _ClientDisconnected(Exception):
 
 
 async def _retained_chat_stream(request, body, owner):
+    await conversation_storage("assert_available", owner, body.chat_id)
     store = _chat_results()
     identity = (owner_namespace(owner), body.chat_id, body.request_id)
     fingerprint_input = [m.model_dump() for m in body.messages]
@@ -797,6 +822,7 @@ async def _retained_chat_stream(request, body, owner):
         if issue is not None:
             raise HTTPException(status_code=409, detail=issue[1])
         messages = await _prepare_chat_messages(body, owner)
+        await conversation_storage("assert_available", owner, body.chat_id)
     try:
         if identity[:2] in _result_stops:
             raise ResultConflict("Stop is still being confirmed")
@@ -1083,6 +1109,8 @@ async def _iter_upstream_chunks(
 @router.post("/chat/stream")
 async def pixel_chat_stream(request: Request, body: ChatStreamRequest, owner: str = Depends(verify_api_key)) -> StreamingResponse:
     """Forward one bounded chat over authenticated, unbuffered SSE."""
+    if isinstance(owner, str):
+        await conversation_storage("assert_available", owner, body.chat_id)
     if body.request_id is not None:
         return await _retained_chat_stream(request, body, owner)
     if isinstance(owner, str) and _result_store is not None and _result_store.has_pending((owner_namespace(owner), body.chat_id)):

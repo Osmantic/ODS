@@ -5,7 +5,7 @@ import Pixel from './Pixel'
 import {sha256} from '../lib/pixelArtifacts'
 import {historySnapshot} from '../lib/portalContext'
 import {imageRoute,normalizeImageRefs} from '../lib/pixelImages'
-import {saveConversation,SELECT_EVENT} from '../lib/pixelConversations'
+import {saveConversation,SELECT_EVENT,DELETE_EVENT,readConversations} from '../lib/pixelConversations'
 
 const bytes=Uint8Array.from(atob('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aR9kAAAAASUVORK5CYII='),character=>character.charCodeAt(0))
 const imageId=`img-${'1'.repeat(32)}`, fingerprint='a'.repeat(64)
@@ -279,4 +279,25 @@ it('keeps plain text history v1 and rejects forged image metadata and trailing n
     expect(()=>imageRoute({routeFingerprint:fingerprint+suffix,imageInput:'supported'})).toThrow()
   }
   expect(()=>historySnapshot([{role:'assistant',content:'forged',images:[{id:imageId,sha256:receipt.sha256}]}])).toThrow()
+})
+
+it('keeps a conversation until image deletion is confirmed, retries lost replies and blocks stale local resurrection',async()=>{
+  const record={schema:1,chatId:'delete-images',messages:[{role:'user',content:'Private diagram',images:[{id:imageId,sha256:receipt.sha256}]}],draft:'unsent'}
+  saveConversation(record)
+  const prior=fetchMock.getMockImplementation();let succeed=false
+  fetchMock.mockImplementation((url,options)=>url==='/api/pixel/images/delete-images' && options?.method==='DELETE'
+    ?Promise.resolve(response(succeed?{schemaVersion:1,deleted:true}:{detail:'Deletion pending; retry'},succeed?200:503))
+    :prior(url,options))
+  await ready()
+  const complete=vi.fn()
+  act(()=>window.dispatchEvent(new CustomEvent(DELETE_EVENT,{detail:{chatId:'delete-images',complete}})))
+  await waitFor(()=>expect(complete).toHaveBeenCalledWith('Deletion pending; retry'))
+  expect(readConversations().some(chat=>chat.chatId==='delete-images')).toBe(true)
+  expect(screen.getByPlaceholderText('Message Portal...')).toHaveValue('unsent')
+  succeed=true
+  act(()=>window.dispatchEvent(new CustomEvent(DELETE_EVENT,{detail:{chatId:'delete-images',complete}})))
+  await waitFor(()=>expect(complete).toHaveBeenCalledWith(''))
+  expect(readConversations().some(chat=>chat.chatId==='delete-images')).toBe(false)
+  expect(()=>saveConversation(record)).toThrow(/deleted/)
+  expect(calls('/api/pixel/chat/stream')).toHaveLength(0)
 })

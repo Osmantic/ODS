@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import PixelConversationRecovery from '../components/PixelConversationRecovery'
-import { readConversations, saveConversation, createConversationWriter, SELECT_EVENT, DELETE_EVENT, deleteConversation, isConversationDeleted } from '../lib/pixelConversations'
+import { readConversations, saveConversation, createConversationWriter, SELECT_EVENT, DELETE_EVENT, deleteConversation, purgeConversationImages, isConversationDeleted } from '../lib/pixelConversations'
 import {usePixelAutoScroll} from '../lib/usePixelAutoScroll'
 import { Link } from 'react-router-dom'
 import PixelAdvice from '../components/PixelAdvice.jsx'
@@ -1384,6 +1384,7 @@ export default function Pixel({ systemStatus = null }) {
           if(!Array.isArray(result.teams))throw new Error('Could not verify the team status before deleting this conversation.')
           if(result.teams.some(team=>ACTIVE_TEAMS.has(team.status))){complete('Stop the agent team before deleting this conversation.');return}
         }
+        await purgeConversationImages(chatId)
         deleteConversation(chatId)
         if (chatId === chatIdRef.current) startNewChat()
         complete('')

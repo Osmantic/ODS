@@ -119,6 +119,12 @@ jobs:
         env:
           OPENCLAW_PACKAGE: ${{ runner.temp }}/read-runtime/node_modules/openclaw
         run: node --test ods/extensions/services/pixel-agent/tests/runtime_diagnostic_stream_writes.integration.mjs
+      - name: Verify image custody, history hydration and transcript purge with pinned native SDK
+        if: runner.os != 'Windows'
+        shell: bash
+        env:
+          OPENCLAW_PACKAGE: ${{ runner.temp }}/read-runtime/node_modules/openclaw
+        run: node --test ods/extensions/services/pixel-agent/tests/runtime_image_lifecycle.integration.mjs
       - name: Verify imported history survives native session startup with real Pixel runtime
         if: runner.os != 'Windows'
         shell: bash

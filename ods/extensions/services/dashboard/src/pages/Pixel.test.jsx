@@ -310,13 +310,13 @@ describe('Pixel', () => {
 
   it('deletes the selected idle chat and starts an empty one without resurrecting it', async () => {
     saveConversation({schema:1,chatId:'delete-current',messages:[{role:'user',content:'Disposable current chat'}]})
-    globalThis.fetch.mockResolvedValue(response({available:true,model:'pixel/default'}))
+    globalThis.fetch.mockImplementation(url=>Promise.resolve(response(url==='/api/pixel/images/delete-current'?{schemaVersion:1,deleted:true}:{available:true,model:'pixel/default'})))
     render(<Pixel/>)
     await waitFor(()=>expect(screen.getByText('Available')).toBeInTheDocument())
     expect(screen.getByText('Disposable current chat')).toBeVisible()
     const complete=vi.fn()
     act(()=>window.dispatchEvent(new CustomEvent(DELETE_EVENT,{detail:{chatId:'delete-current',complete}})))
-    expect(complete).toHaveBeenCalledWith('')
+    await waitFor(()=>expect(complete).toHaveBeenCalledWith(''))
     await waitFor(()=>expect(screen.queryByText('Disposable current chat')).not.toBeInTheDocument())
     expect(readConversations().some(chat=>chat.chatId==='delete-current')).toBe(false)
     expect(JSON.parse(localStorage.getItem('ods.pixel.chat.v1')).chatId).not.toBe('delete-current')
