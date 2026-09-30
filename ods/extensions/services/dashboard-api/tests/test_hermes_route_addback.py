@@ -151,6 +151,7 @@ def test_hermes_start_prepares_route_before_compose_up(monkeypatch):
     monkeypatch.setattr(agent, "resolve_compose_flags", lambda: [])
     monkeypatch.setattr(agent, "_hermes_compose_plan_error", lambda flags: "")
     monkeypatch.setattr(agent, "_prepare_hermes_route_for_start", lambda: (order.append("route") or (True, "")))
+    monkeypatch.setattr(agent, "_prepare_hermes_persona_for_start", lambda: (order.append("persona") or (True, "")))
     monkeypatch.setattr(agent, "_precreate_data_dirs", lambda service: None)
     monkeypatch.setattr(agent, "_repair_rootless_data_ownership", lambda service: None)
     monkeypatch.setattr(agent, "_find_ext_dir", lambda service: None)
@@ -158,7 +159,42 @@ def test_hermes_start_prepares_route_before_compose_up(monkeypatch):
         order.append("compose") or subprocess.CompletedProcess(command, 0, "", "")))
 
     assert agent.docker_compose_action("hermes", "start") == (True, "")
-    assert order == ["route", "compose"]
+    assert order == ["route", "persona", "compose"]
+
+
+def test_hermes_persona_repairs_empty_mount_directory_without_deleting_owner_data(tmp_path, monkeypatch):
+    monkeypatch.setattr(agent, "INSTALL_DIR", tmp_path)
+    builder = tmp_path / "scripts/build-installation-context.py"
+    builder.parent.mkdir(parents=True)
+    builder.write_text("# test builder\n", encoding="utf-8")
+    template = tmp_path / "extensions/services/hermes/SOUL.md.template"
+    template.parent.mkdir(parents=True)
+    template.write_text("Hermes persona\n", encoding="utf-8")
+    (tmp_path / ".env").write_text("LLM_BACKEND=external\n", encoding="utf-8")
+    output = tmp_path / "data/persona/SOUL.md"
+    output.mkdir(parents=True)
+    calls = []
+
+    def render(cmd, **kwargs):
+        calls.append(cmd)
+        assert cmd[cmd.index("--template") + 1] == str(template)
+        assert cmd[cmd.index("--output") + 1] == str(output)
+        output.write_text("Hermes persona\n", encoding="utf-8")
+        return subprocess.CompletedProcess(cmd, 0, "changed", "")
+
+    monkeypatch.setattr(agent.subprocess, "run", render)
+    assert agent._prepare_hermes_persona_for_start() == (True, "")
+    assert output.is_file()
+    if os.name != "nt":
+        assert stat.S_IMODE(output.stat().st_mode) == 0o644
+    assert agent._prepare_hermes_persona_for_start() == (True, "")
+    assert len(calls) == 1
+
+    output.unlink()
+    output.mkdir()
+    (output / "owner.txt").write_text("keep", encoding="utf-8")
+    assert agent._prepare_hermes_persona_for_start()[0] is False
+    assert (output / "owner.txt").read_text(encoding="utf-8") == "keep"
 
 
 def test_hermes_external_plan_keeps_search_without_managed_llama():

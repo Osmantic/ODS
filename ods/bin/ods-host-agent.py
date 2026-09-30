@@ -5988,6 +5988,9 @@ def docker_compose_action(service_id: str, action: str) -> tuple:
             ok, error = _prepare_hermes_route_for_start()
             if not ok:
                 return False, error
+            ok, error = _prepare_hermes_persona_for_start()
+            if not ok:
+                return False, error
         _precreate_data_dirs(service_id)
         try:
             _repair_rootless_data_ownership(service_id)
@@ -11601,6 +11604,10 @@ class AgentHandler(BaseHTTPRequestHandler):
                     if not route_ready:
                         _write_progress(service_id, "error", "Installation failed", error=route_error)
                         return
+                    persona_ready, persona_error = _prepare_hermes_persona_for_start()
+                    if not persona_ready:
+                        _write_progress(service_id, "error", "Installation failed", error=persona_error)
+                        return
                 _precreate_data_dirs(service_id)
                 try:
                     _repair_rootless_data_ownership(service_id)
@@ -17033,6 +17040,43 @@ def _prepare_hermes_route_for_start() -> tuple[bool, str]:
     except (OSError, UnicodeError, RuntimeError) as exc:
         logger.warning("Could not prepare Hermes selected model route: %s", type(exc).__name__)
         return False, "Could not read or write Hermes route files; check installation permissions"
+
+
+def _prepare_hermes_persona_for_start() -> tuple[bool, str]:
+    """Make the Hermes file bind source regular before Compose can create a dir."""
+    output = INSTALL_DIR / "data" / "persona" / "SOUL.md"
+    builder = INSTALL_DIR / "scripts" / "build-installation-context.py"
+    template = INSTALL_DIR / "extensions" / "services" / "hermes" / "SOUL.md.template"
+    try:
+        if output.is_symlink():
+            return False, "Hermes persona path is a symlink; repair it before starting"
+        output.parent.resolve().relative_to(INSTALL_DIR.resolve())
+        if output.is_file():
+            return True, ""
+        if output.exists():
+            # An earlier Compose attempt may have made the absent file mount
+            # into an empty directory. Never remove owner data from it.
+            output.rmdir()
+        if not builder.is_file() or not template.is_file():
+            return False, "Hermes persona builder or template is missing"
+        env = load_env(INSTALL_DIR / ".env")
+        cmd = [sys.executable, str(builder), "--template", str(template),
+               "--env", str(INSTALL_DIR / ".env"), "--output", str(output)]
+        if (str(env.get("LLM_BACKEND") or "").lower() == "lemonade"
+                and str(env.get("AMD_INFERENCE_RUNTIME") or "").lower() == "lemonade"):
+            cmd.extend(["--profile", "local-lemonade"])
+        result = subprocess.run(
+            cmd, cwd=str(INSTALL_DIR), capture_output=True, text=True,
+            timeout=60,
+        )
+        if result.returncode != 0 or output.is_symlink() or not output.is_file():
+            return False, "Could not generate Hermes installation persona"
+        if os.name != "nt":
+            output.chmod(0o644)
+        return True, ""
+    except (OSError, ValueError, UnicodeError, subprocess.TimeoutExpired) as exc:
+        logger.warning("Could not prepare Hermes persona: %s", type(exc).__name__)
+        return False, "Could not prepare Hermes persona; check installation data permissions"
 
 
 def _patch_hermes_model_config(
