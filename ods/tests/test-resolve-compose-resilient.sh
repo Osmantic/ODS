@@ -665,6 +665,18 @@ real_external_flags=$(EXTERNAL_LLM_URL="http://127.0.0.1:11434" \
     --script-dir "$ROOT_DIR" --tier 1 --gpu-backend nvidia --skip-broken \
     2>/dev/null)
 
+real_managed_flags=$(EXTERNAL_LLM_URL="" \
+    ODS_MODE=local \
+    bash "$ROOT_DIR/scripts/resolve-compose-stack.sh" \
+    --script-dir "$ROOT_DIR" --tier 1 --gpu-backend nvidia --skip-broken \
+    2>/dev/null)
+if printf '%s\n' "$real_managed_flags" | grep -Fq \
+    "extensions/services/perplexica/compose.local.yaml"; then
+    pass "Managed-local Perplexica keeps its llama-server health overlay"
+else
+    fail "Managed-local Perplexica lost its llama-server health overlay"
+fi
+
 if printf '%s\n' "$real_external_flags" | grep -Fq "compose.local.yaml"; then
     fail "External-LLM stack retained a local llama-server dependency overlay"
 else
