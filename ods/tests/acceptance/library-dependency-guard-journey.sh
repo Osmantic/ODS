@@ -27,7 +27,7 @@ fail() {
 
 [[ "${GITHUB_ACTIONS:-}" == true ]] || fail 'refusing non-disposable host'
 [[ "$RUNNER_TEMP" == /* && "$INSTALL_DIR" == "$RUNNER_TEMP"/* ]] || fail 'install path is outside runner temp'
-[[ "$(git -C "$(dirname "$product")" rev-parse HEAD)" == 450f66e078b1ed5e951459bde250b3fd207bbc4a ]] || fail 'product source changed'
+[[ "$(git -C "$(dirname "$product")" rev-parse HEAD)" == 17801826adfcab756868c036a139c7704204a79e ]] || fail 'product source changed'
 [[ "$(cat /proc/1/comm)" == systemd ]] || fail 'runner is not a Pixel-qualified systemd host'
 docker info >/dev/null || fail 'isolated Docker Engine unavailable'
 [[ ! -e "$INSTALL_DIR" ]] || fail 'fresh install path is not empty'
@@ -161,9 +161,17 @@ networks:
     external: true
     name: ods-network
 YAML
-# Match the installed user-extension owner instead of assuming a container UID.
-# This runner is disposable and the files contain no owner data or secrets.
-sudo chown -R --reference="$INSTALL_DIR/data/user-extensions" "$consumer_dir"
+# Match the installed Dashboard API process, which reads and later renames
+# user definitions. The runner is disposable and these files contain no owner data.
+api_uid="$(docker exec ods-dashboard-api id -u)"
+api_gid="$(docker exec ods-dashboard-api id -g)"
+[[ "$api_uid" =~ ^[0-9]+$ && "$api_gid" =~ ^[0-9]+$ ]] \
+    || fail 'Dashboard API UID/GID probe failed'
+sudo chown -R "$api_uid:$api_gid" "$consumer_dir"
+docker exec ods-dashboard-api test -r /data/user-extensions/n8n-consumer/manifest.yaml \
+    || fail 'Dashboard API cannot read disposable dependent manifest'
+docker exec ods-dashboard-api test -w /data/user-extensions/n8n-consumer \
+    || fail 'Dashboard API cannot update disposable dependent definition'
 consumer_enable_code="$(curl -sS --max-time 900 \
     -o "$audit_root/consumer-enable.json" -w '%{http_code}' \
     -X POST http://127.0.0.1:3001/api/extensions/n8n-consumer/enable || true)"
