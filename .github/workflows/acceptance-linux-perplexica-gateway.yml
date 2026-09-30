@@ -1,0 +1,37 @@
+name: Acceptance Linux Perplexica external gateway
+
+on:
+  push:
+    branches:
+      - codex/ods-perplexica-gateway-audit
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: perplexica-gateway-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  perplexica-external-gateway:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Checkout acceptance harness
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - name: Checkout exact Perplexica dependency candidate
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          ref: dae6dc25cc8dd13f9829e19667345475761467f6
+          path: product
+      - name: Record exact source and runner capacity
+        run: |
+          test "$(git -C product rev-parse HEAD)" = dae6dc25cc8dd13f9829e19667345475761467f6
+          docker version
+          df -h / "$RUNNER_TEMP"
+          cat /proc/1/comm
+      - name: Exercise external gateway Perplexica add-back
+        run: |
+          ODS_ACCEPTANCE_PRODUCT_ROOT="$GITHUB_WORKSPACE/product/ods" \
+            bash ods/tests/acceptance/perplexica-gateway-journey.sh
