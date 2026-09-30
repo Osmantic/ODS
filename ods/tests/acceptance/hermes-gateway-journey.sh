@@ -52,8 +52,13 @@ PY
                 tail -n 18 "$root/hermes-pull-diagnostic.log" \
                     | python3 -c 'import sys; from pathlib import Path; key=Path(sys.argv[1]).read_text().strip(); print(sys.stdin.read().replace(key,"[redacted]"))' "$key_file" >&2 || true
             fi
-            if [[ -s "$INSTALL_DIR/.compose-flags" ]]; then
-                read -r -a diagnostic_flags <"$INSTALL_DIR/.compose-flags"
+            diagnostic_resolved="$(cd "$INSTALL_DIR" && \
+                ODS_EXTERNAL_LLM_SELECTED=true ODS_GATEWAY_ONLY=true \
+                ENABLE_OPEN_WEBUI=false ODS_MODE=local \
+                bash scripts/resolve-compose-stack.sh --script-dir "$INSTALL_DIR" \
+                    --tier 1 --gpu-backend cpu --ods-mode local)" || diagnostic_resolved=""
+            if [[ -n "$diagnostic_resolved" ]]; then
+                read -r -a diagnostic_flags <<<"$diagnostic_resolved"
                 if (cd "$INSTALL_DIR" && timeout 180s docker compose "${diagnostic_flags[@]}" up -d hermes) \
                     >"$root/hermes-compose-diagnostic.log" 2>&1; then
                     printf 'Diagnostic direct Compose start succeeded after failed agent start.\n' >&2
