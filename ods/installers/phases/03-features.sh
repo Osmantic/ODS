@@ -456,6 +456,20 @@ if ! $DRY_RUN; then
     _sync_extension_compose "${ENABLE_ODS_PROXY:-false}" ods-proxy "ODS proxy" "LAN web proxy not enabled"
     _sync_extension_compose "${ENABLE_TAILSCALE:-false}" tailscale "Tailscale"  "remote access not enabled"
     _sync_extension_compose "${ENABLE_LANGFUSE:-}"   langfuse   "Langfuse"      "LLM observability not enabled"
+    if [[ "${ENABLE_BRAVE_SEARCH:-false}" == true ]]; then
+        _brave_key_present=false
+        if [[ ${BRAVE_SEARCH_API_KEY+x} ]]; then
+            [[ -n "$BRAVE_SEARCH_API_KEY" ]] && _brave_key_present=true
+        elif declare -F external_llm_env_value >/dev/null 2>&1 &&
+             [[ -n "$(external_llm_env_value "${INSTALL_DIR:-}/.env" BRAVE_SEARCH_API_KEY 2>/dev/null || true)" ]]; then
+            _brave_key_present=true
+        fi
+        if ! $_brave_key_present; then
+            ENABLE_BRAVE_SEARCH=false
+            ai_warn "Brave Search was skipped because BRAVE_SEARCH_API_KEY is missing. Add the key to .env, then run 'ods enable brave-search'."
+        fi
+        unset _brave_key_present
+    fi
     _sync_extension_compose "${ENABLE_BRAVE_SEARCH:-false}" brave-search "Brave Search" "Brave Search API not enabled"
 
 fi
