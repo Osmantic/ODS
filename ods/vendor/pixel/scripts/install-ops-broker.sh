@@ -23,7 +23,10 @@ id "$PIXEL_OPS_READER_USER" >/dev/null 2>&1 || pixel_die "Operations reader user
 
 if ! getent group "$PIXEL_OPS_BROKER_GROUP" >/dev/null; then sudo groupadd --system "$PIXEL_OPS_BROKER_GROUP"; fi
 if ! getent passwd "$PIXEL_OPS_BROKER_USER" >/dev/null; then
-  sudo useradd --system --gid "$PIXEL_OPS_BROKER_GROUP" --home-dir "$PIXEL_OPS_BROKER_STATE_DIR" --create-home --shell /usr/sbin/nologin "$PIXEL_OPS_BROKER_USER"
+  # install -d below creates this state root with exact ownership and mode.
+  # useradd --create-home would copy /etc/skel into broker state, including
+  # host-specific links and world-readable directories that safe cleanup rejects.
+  sudo useradd --system --gid "$PIXEL_OPS_BROKER_GROUP" --home-dir "$PIXEL_OPS_BROKER_STATE_DIR" --no-create-home --shell /usr/sbin/nologin "$PIXEL_OPS_BROKER_USER"
 fi
 # The gateway must never join the authority-bearing broker group: that group can read
 # policy. Direct ACLs expose only the request/result projection and work immediately for

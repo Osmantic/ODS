@@ -12,8 +12,8 @@ The visible source is duplicated into `vendor/pixel.bundle` solely so existing
 Pixel installation code can use exact-commit Git verification without network
 or private credentials. The bundle contains one new synthetic root commit with
 public Osmantic release identity and no ancestors. Its commit is
-`6e82d4c974be8c7b5aebe3a4ffd5374e20ad0ac5`, and its SHA-256 is
-`115da4c894a40991c40fc3f5ff94cb2763b4b9395d875e1b781f234d563fc79b`.
+`2c1b18fcf11aa87a369875e3f3a6f1f4a1495688`, and its SHA-256 is
+`4322a91f2413195af3be3fd7ab034dbeacf60a3016769a1799ad03df86a896d0`.
 Run `python3 scripts/verify-pixel-bundle.py` to check the bundle against the
 visible source, tracked executable modes, and those pins. The `pixel` launcher
 and the install/bootstrap scripts must retain executable Git modes.
@@ -36,6 +36,13 @@ validation. Native boundary tests cover 25 and 32 accepted tools and 33 rejected
 the ODS installer additionally configures the pinned bundle using its actual
 generated extension tool list. The bundle retains its public synthetic identity
 and timestamp, contains one root commit, and two regenerations were byte-identical.
+
+The broker-home adaptation uses `useradd --no-create-home` so the Operations
+Broker state root is created only by Pixel's explicit `install -d` call.
+This prevents `/etc/skel` from copying host-specific links and public-mode
+directories into privileged broker state. The visible source and bundled commit
+contain the same change; the public synthetic identity and timestamp remain
+unchanged, and two bundle regenerations matched byte-for-byte.
 
 ## Pending upstream change: Anthropic work-provider model
 
