@@ -117,6 +117,66 @@ class TestStaleRunningSelection(Base):
         self.assertEqual(reason, "healthy")
 
 
+class TestWindowsReadonlyV9fsBind(Base):
+    def setUp(self):
+        super().setUp()
+        self.src = str(self.host)
+        self.dst = "/model-stores/windows-lemonade"
+        self.host_identity = {"device": 198, "inode": 41376821576481630, "filetype": "dir"}
+        self.container_identity = {**self.host_identity, "device": 112}
+        self.mount = {"Type": "bind", "Source": self.src,
+                      "Destination": self.dst, "RW": False}
+
+    def test_readonly_v9fs_device_drift_is_healthy_before_and_after_recreate(self):
+        container = {"State": {"Status": "running"}, "Mounts": [self.mount]}
+        with mock.patch.object(H, "host_stat", return_value=self.host_identity), \
+             mock.patch.object(H, "exec_stat", return_value=self.container_identity), \
+             mock.patch.object(H, "run", return_value=cp("v9fs\n")) as probe, \
+             mock.patch.object(H, "inspect_container", return_value=container):
+            self.assertEqual(H.classify_running("dashboard", [(self.src, self.dst, True)]),
+                             (False, "healthy"))
+            with mock.patch.object(H, "compose_ps", return_value=[
+                    {"Service": "dashboard-api", "Name": "dashboard"}]):
+                self.assertEqual(H.verify([], "dashboard-api", [(self.src, self.dst, True)]),
+                                 (True, "ok"))
+        self.assertEqual(probe.call_count, 4)
+
+    def test_v9fs_inode_drift_stays_stale(self):
+        changed = {**self.container_identity, "inode": 2}
+        with mock.patch.object(H, "host_stat", return_value=self.host_identity), \
+             mock.patch.object(H, "exec_stat", return_value=changed), \
+             mock.patch.object(H, "run") as probe:
+            self.assertEqual(H.classify_running("dashboard", [(self.src, self.dst, True)]),
+                             (True, f"stale-bind:{self.dst}"))
+        probe.assert_not_called()
+
+    def test_native_filesystem_device_drift_stays_stale(self):
+        with mock.patch.object(H, "host_stat", return_value=self.host_identity), \
+             mock.patch.object(H, "exec_stat", return_value=self.container_identity), \
+             mock.patch.object(H, "run", return_value=cp("ext2/ext3\n")), \
+             mock.patch.object(H, "inspect_container") as inspect:
+            self.assertEqual(H.classify_running("dashboard", [(self.src, self.dst, True)]),
+                             (True, f"stale-bind:{self.dst}"))
+        inspect.assert_not_called()
+
+    def test_writable_v9fs_remains_strict_and_requires_backup(self):
+        with mock.patch.object(H, "host_stat", return_value=self.host_identity), \
+             mock.patch.object(H, "exec_stat", return_value=self.container_identity), \
+             mock.patch.object(H, "run") as probe:
+            self.assertEqual(H.classify_running("dashboard", [(self.src, self.dst, False)]),
+                             (True, f"stale-bind:{self.dst}"))
+        probe.assert_not_called()
+
+    def test_mismatched_inspected_mount_fails_closed(self):
+        wrong = {**self.mount, "Source": "/unexpected/source"}
+        with mock.patch.object(H, "host_stat", return_value=self.host_identity), \
+             mock.patch.object(H, "exec_stat", return_value=self.container_identity), \
+             mock.patch.object(H, "run", return_value=cp("v9fs\n")), \
+             mock.patch.object(H, "inspect_container", return_value={"Mounts": [wrong]}):
+            with self.assertRaisesRegex(RuntimeError, "unexpected read-only bind"):
+                H.classify_running("dashboard", [(self.src, self.dst, True)])
+
+
 class TestPrevalidateAllBeforeRecreate(Base):
     def test_missing_later_source_fails_before_recreate(self):
         good = self.host
