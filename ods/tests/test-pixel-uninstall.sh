@@ -45,6 +45,11 @@ mkdir -p "$MOCK_BIN" "$SYSTEMD_DIR" "$ETC_DIR" "$LIBEXEC_DIR" "$HOME_DIR"
 
 cat >"$MOCK_BIN/sudo" <<'SH'
 #!/usr/bin/env bash
+if [[ "${SUDO_FAIL_OPS_ARTIFACT_REMOVAL:-false}" == true \
+    && "${1:-}" == rm && "${2:-}" == -f \
+    && "$*" == *"${ODS_PIXEL_UNINSTALL_OPS_ENV:-/etc/pixel-ops-broker.env}"* ]]; then
+    exit 1
+fi
 exec "$@"
 SH
 cat >"$MOCK_BIN/systemctl" <<'SH'
@@ -1075,6 +1080,31 @@ PY
     fi
 else
     fail "source rebind could not preserve the legacy broker home"
+fi
+
+write_ops_fixture
+printf '%s\n' 'resumable custody' >"$OPS_STATE/retained-retry.txt"
+custody_before="$(find "${OPS_STATE%/*}" -maxdepth 1 -type d -name '.pixel-ops-broker-custody-*' | wc -l)"
+export SUDO_FAIL_OPS_ARTIFACT_REMOVAL=true
+if ods_pixel_uninstall_managed "$INSTALL_DIR" "$HOME_DIR" source-transition; then
+    fail "source rebind ignored a broker-artifact removal failure"
+elif [[ ! -e "$OPS_STATE" \
+    && -e "$SYSTEMD_DIR/pixel-ops-broker.service" \
+    && "$(find "${OPS_STATE%/*}" -maxdepth 1 -type d -name '.pixel-ops-broker-custody-*' | wc -l)" == "$((custody_before + 1))" ]]; then
+    pass "interrupted source rebind retains broker state before artifact removal"
+else
+    fail "interrupted source rebind did not retain the broker home safely"
+fi
+unset SUDO_FAIL_OPS_ARTIFACT_REMOVAL
+if ods_pixel_uninstall_managed "$INSTALL_DIR" "$HOME_DIR" source-transition; then
+    if [[ ! -e "$SYSTEMD_DIR/pixel-ops-broker.service" \
+        && "$(find "${OPS_STATE%/*}" -maxdepth 1 -type d -name '.pixel-ops-broker-custody-*' | wc -l)" == "$((custody_before + 1))" ]]; then
+        pass "source rebind resumes after custody without moving or deleting it twice"
+    else
+        fail "resumed source rebind lost custody or retained broker artifacts"
+    fi
+else
+    fail "source rebind could not resume after custody"
 fi
 
 write_inspection_contract_fixture() {
