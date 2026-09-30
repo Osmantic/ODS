@@ -236,6 +236,49 @@ if docker ps --format '{{.Names}}' | grep -Eq 'ods-llama|ods-llama-server'; then
 fi
 printf 'PASS: external Perplexica add-back kept managed llama-server absent\n'
 
+mock_hits_before="$(grep -c 'accept=chat' "$mock_log" || true)"
+python3 - "$audit_root/perplexica-query.json" <<'PY' || fail 'Perplexica did not complete a model-backed search request'
+import json
+import sys
+import urllib.error
+import urllib.request
+
+base = "http://127.0.0.1:3004"
+with urllib.request.urlopen(base + "/api/config", timeout=10) as response:
+    values = json.load(response)["values"]
+prefs = values["preferences"]
+providers = values["modelProviders"]
+chat = {"providerId": prefs["defaultChatProvider"], "key": prefs["defaultChatModel"]}
+embedding = {"providerId": prefs["defaultEmbeddingProvider"],
+             "key": prefs["defaultEmbeddingModel"]}
+assert any(p["id"] == chat["providerId"] and
+           any(m["key"] == chat["key"] for m in p["chatModels"])
+           for p in providers), "default chat model is not registered"
+assert any(p["id"] == embedding["providerId"] and
+           any(m["key"] == embedding["key"] for m in p["embeddingModels"])
+           for p in providers), "default embedding model is not registered"
+payload = {"sources": ["web"], "query": "ODS acceptance model route check",
+           "chatModel": chat, "embeddingModel": embedding,
+           "stream": False, "optimizationMode": "speed"}
+request = urllib.request.Request(
+    base + "/api/search", data=json.dumps(payload).encode("utf-8"),
+    headers={"Content-Type": "application/json"}, method="POST")
+try:
+    with urllib.request.urlopen(request, timeout=180) as response:
+        result = json.load(response)
+except urllib.error.HTTPError as error:
+    print(f"Perplexica search returned HTTP {error.code}", file=sys.stderr)
+    raise SystemExit(1)
+assert isinstance(result.get("message"), str) and "OK" in result["message"], \
+    "Perplexica returned no mock-backed answer"
+with open(sys.argv[1], "w", encoding="utf-8") as stream:
+    json.dump({"message_present": True, "sources_count": len(result.get("sources") or [])}, stream)
+print("PASS: Perplexica returned a mock-backed search answer")
+PY
+mock_hits_after="$(grep -c 'accept=chat' "$mock_log" || true)"
+(( mock_hits_after > mock_hits_before )) || fail 'Perplexica search did not reach the selected external model'
+printf 'PASS: selected external model received Perplexica completion\n'
+
 docker exec -u 0 ods-perplexica sh -c 'printf retained-perplexica-data >/home/vane/data/ods-acceptance-sentinel'     || fail 'could not write Perplexica data sentinel'
 curl -fsS --max-time 180 -X POST http://127.0.0.1:3001/api/extensions/perplexica/disable     >"$audit_root/perplexica-disable.json" || fail 'Perplexica Disable failed'
 [[ -f "$INSTALL_DIR/extensions/services/perplexica/compose.yaml.disabled" ]]     || fail 'Perplexica definition remained enabled after Disable'
