@@ -42,6 +42,7 @@ HTTP_SOCKET_PATH = pathlib.Path("/run/ods-pixel-preview/http.sock")
 PROFILE_ID: str | None = None
 PATH_COMPONENT = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 SITE_ID = re.compile(r"site-[a-f0-9]{24}")
+DOWNLOAD_ONLY_SUFFIXES = frozenset({".pdf", ".zip", ".rar"})
 ALLOWED_SUFFIXES = frozenset(
     {
         ".html", ".htm", ".css", ".js", ".mjs", ".json", ".svg",
@@ -49,7 +50,7 @@ ALLOWED_SUFFIXES = frozenset(
         ".woff", ".woff2", ".ttf", ".txt", ".map", ".csv", ".tsv",
         ".md", ".markdown",
     }
-)
+) | DOWNLOAD_ONLY_SUFFIXES
 MAX_REQUEST_BYTES = 2048
 MAX_RESPONSE_BYTES = 8192
 MAX_FILES = 128
@@ -721,9 +722,14 @@ class PreviewHandler(http.server.BaseHTTPRequestHandler):
             self.send_error(404)
             return
         target, body = result
-        content_type = _preview_content_type(target, body)
+        download_only = target.suffix.lower() in DOWNLOAD_ONLY_SUFFIXES
+        content_type = "application/octet-stream" if download_only else _preview_content_type(target, body)
         self.send_response(200)
         self.send_header("Content-Type", content_type)
+        if download_only:
+            # Validated snapshot filenames cannot inject header bytes.
+            # Documents/archives are opaque downloads, never rendered or unpacked.
+            self.send_header("Content-Disposition", f'attachment; filename="{target.name}"')
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Security-Policy", CSP)
