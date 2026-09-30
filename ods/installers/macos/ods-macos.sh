@@ -854,6 +854,12 @@ cmd_status() {
     if webui_is_selected "$flags"; then
         ep_names+=("Chat UI (Open WebUI)")
         ep_urls+=("http://127.0.0.1:3000")
+    else
+        local selection_rc=$?
+        if [[ "$selection_rc" == 2 ]]; then
+            ai_err "Cannot resolve Compose configuration for status."
+            return 1
+        fi
     fi
 
     for ((i=0; i<${#ep_names[@]}; i++)); do
