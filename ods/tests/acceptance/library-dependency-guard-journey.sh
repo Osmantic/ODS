@@ -169,8 +169,10 @@ api_gid="$(docker exec ods-dashboard-api id -g)"
     || fail 'Dashboard API UID/GID probe failed'
 sudo chown -R "$api_uid:$api_gid" "$consumer_dir"
 # This fresh fixture creates user-extensions under the audit's umask 077.
-# The API must be able to traverse its parent, not just own the child.
+# The API must write the child, while the host agent must traverse/read both.
 sudo chown "$api_uid:$api_gid" "$INSTALL_DIR/data/user-extensions"
+sudo chmod 0755 "$INSTALL_DIR/data/user-extensions" "$consumer_dir"
+sudo chmod 0644 "$consumer_dir/manifest.yaml" "$consumer_dir/compose.yaml.disabled"
 if ! docker exec ods-dashboard-api test -x /data/user-extensions; then
     docker exec ods-dashboard-api stat -c '%A %u:%g %n' /data /data/user-extensions >&2 || true
     fail 'Dashboard API cannot traverse disposable extension root'
@@ -179,6 +181,8 @@ docker exec ods-dashboard-api test -r /data/user-extensions/n8n-consumer/manifes
     || fail 'Dashboard API cannot read disposable dependent manifest'
 docker exec ods-dashboard-api test -w /data/user-extensions/n8n-consumer \
     || fail 'Dashboard API cannot update disposable dependent definition'
+[[ -r "$consumer_dir/manifest.yaml" && -r "$consumer_dir/compose.yaml.disabled" ]] \
+    || fail 'host agent cannot read disposable dependent definition'
 consumer_enable_code="$(curl -sS --max-time 900 \
     -o "$audit_root/consumer-enable.json" -w '%{http_code}' \
     -X POST http://127.0.0.1:3001/api/extensions/n8n-consumer/enable || true)"
@@ -212,13 +216,40 @@ for label, path, count in (("API response", response, 12), ("Dashboard API log",
 PY
     fail "disposable dependent enable returned HTTP $consumer_enable_code"
 fi
-python3 - "$audit_root/consumer-enable.json" <<'PY'
+if ! python3 - "$audit_root/consumer-enable.json" <<'PY'
 import json, sys
 value = json.load(open(sys.argv[1], encoding="utf-8"))
 assert "n8n-consumer" in value.get("enabled_services", []), value
 assert value.get("failed_services") == [], value
 print("PASS: disposable dependent enabled through installed API")
 PY
+then
+    sudo journalctl -u ods-host-agent.service -n 80 --no-pager \
+        >"$audit_root/host-agent.log" 2>&1 || true
+    docker logs --tail 80 ods-dashboard-api >"$audit_root/dashboard-api.log" 2>&1 || true
+    python3 - "$audit_root/host-agent.log" "$audit_root/dashboard-api.log" \
+        "$key_file" "$INSTALL_DIR/.env" <<'PY' >&2
+from pathlib import Path
+import re
+import sys
+
+agent_log, api_log, key_file, env_file = map(Path, sys.argv[1:])
+secrets = [key_file.read_text(encoding="utf-8").strip()] if key_file.exists() else []
+if env_file.exists():
+    for line in env_file.read_text(encoding="utf-8", errors="replace").splitlines():
+        match = re.match(r"^(?:export )?([A-Z0-9_]+)=(.*)$", line)
+        if match and any(word in match[1] for word in ("KEY", "TOKEN", "SECRET", "PASSWORD")):
+            secrets.append(match[2].strip("\"'"))
+for label, path in (("Host agent log", agent_log), ("Dashboard API log", api_log)):
+    print(label + " (sanitized tail):")
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines()[-80:]:
+        for secret in secrets:
+            if secret:
+                line = line.replace(secret, "<redacted>")
+        print(re.sub(r"(?i)Bearer\s+\S+", "Bearer <redacted>", line)[:500])
+PY
+    fail 'disposable dependent did not start through installed API'
+fi
 [[ "$(docker inspect --format '{{.State.Running}}' ods-n8n-consumer)" == true ]] \
     || fail 'disposable dependent container is not running'
 n8n_started="$(docker inspect --format '{{.State.StartedAt}}' ods-n8n)"
