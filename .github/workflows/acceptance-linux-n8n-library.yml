@@ -1,0 +1,31 @@
+name: Acceptance Linux bundled n8n Library
+
+on:
+  push:
+    branches:
+      - codex/ods-n8n-library-audit
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: n8n-library-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  n8n-library:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout acceptance harness
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - name: Checkout exact n8n Library candidate
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          ref: c6cb82a1ad3f5c9b18b7aa54a22ea54724c481c6
+          path: product
+      - name: Exercise bundled n8n Add and Disable on installed ODS
+        env:
+          ODS_ACCEPTANCE_PRODUCT_ROOT: ${{ github.workspace }}/product/ods
+        run: bash ods/tests/acceptance/n8n-library-journey.sh
