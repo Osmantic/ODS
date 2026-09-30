@@ -147,7 +147,7 @@ class ProjectJobs:
 
     def request_cancel(self, job):
         with self._connect() as db:
-            db.execute("UPDATE jobs SET cancel_requested=1,state=CASE WHEN state='queued' THEN 'cancelled' ELSE state END,updated=? WHERE id=? AND state IN ('queued','running')",
+            db.execute("UPDATE jobs SET cancel_requested=1,state=CASE WHEN state='queued' THEN 'cancelled' ELSE state END,updated=? WHERE id=? AND state IN ('queued','running','unconfirmed')",
                        (time.time(), job))
         return self.observe(job)
 
@@ -194,6 +194,10 @@ class ProjectJobs:
             from project_runtime import observe_stage
             observer = observe_stage
         row = self.observe(job)
+        if row["state"] == "unconfirmed":
+            from project_runtime import recover_job
+            return {"job": row, "runtime": recover_job(row["request"]["image"], job,
+                                                       runtime=row["request"].get("runtime", "npm"))}
         if row["state"] != "running":
             return {"job": row, "runtime": None}
         stages = ("acquire", "test", "build")
@@ -213,3 +217,17 @@ class ProjectJobs:
                     raise
             row = self.observe(job)
         return {"job": row, "runtime": evidence}
+
+    def recovery_result(self, job, evidence):
+        """Record stopped execution, without claiming lost import/exit evidence."""
+        with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute("SELECT state,output,cancel_requested FROM jobs WHERE id=?", (job,)).fetchone()
+            if row is None or row["state"] != "unconfirmed":
+                return
+            output = json.loads(row["output"]) if row["output"] else {}
+            output.update(runtimeRecovery=evidence, artifactImportUnconfirmed=True)
+            confirmed = (row["cancel_requested"] and evidence.get("status") == "cancelled"
+                         and evidence.get("evidence") == "docker-state")
+            db.execute("UPDATE jobs SET state=?,output=?,updated=? WHERE id=?",
+                       ("cancelled" if confirmed else "unconfirmed", self._json(output), time.time(), job))

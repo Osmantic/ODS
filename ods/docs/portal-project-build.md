@@ -25,6 +25,13 @@ macOS provisioning and scoped Sandbox approval are not implemented yet.
   observed; it must not trigger resubmission under a new identity.
 - Cancellation is confirmed only after execution stops. Restart does not replay
   an interrupted build automatically.
+- After a crash, an authorized cancellation can stop orphaned containers whose
+  immutable IDs, image, command, isolation settings and private job volume are
+  verified. Recovery has a total deadline and runs in the controller worker;
+  missing, foreign or unresponsive resources leave cancellation unconfirmed.
+  Stopped containers and volumes remain as recovery evidence. A cancelled
+  execution does not establish whether an artifact import completed before the
+  crash; recovery does not import, delete or roll back workspace files.
 
 ## Validation and remaining work
 
@@ -34,7 +41,13 @@ checks. That installation also included the framework-preview fixes in PR #6959;
 this result does not establish that the new capability alone fixes Next previews.
 
 Before declaring this workflow generally ready, validate natural-language tool
-discovery, cancellation and recovery across service restarts, scoped Sandbox
+discovery, installed-service lifecycle, scoped Sandbox
 approval, and macOS provisioning. Disk quotas and history retention also remain
 open. The initial tool supports this specific npm workflow, not arbitrary host
 package installation or every project ecosystem.
+
+An isolated Docker regression kills its own controller subprocess during npm
+execution and verifies that a replacement cancels the exact orphan without
+replay or source changes. Negative tests cover foreign containers, absent
+resources, a nonresponsive Docker client and policy revocation while queued.
+This does not qualify a fresh machine installation or macOS/Sandbox execution.

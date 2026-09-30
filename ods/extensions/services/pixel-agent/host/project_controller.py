@@ -12,7 +12,7 @@ import threading
 
 from project_artifacts import collect_artifacts, import_artifacts
 from project_jobs import ProjectJobs
-from project_runtime import run_stage, seed_project
+from project_runtime import recover_job, run_stage, seed_project
 from project_runtime_protocol import select_project_runtime
 from project_capabilities import probe_python_runtime, cleanup_pending_probe, ProbeCleanupPending
 from project_snapshot import snapshot_project
@@ -133,7 +133,26 @@ class ProjectController:
             result = self.jobs.request_cancel(job)
             if job in self.cancellations:
                 self.cancellations[job].set()
+            future = self.futures.get(job)
+            if result["state"] == "unconfirmed" and (future is None or future.done()):
+                if sum(not f.done() for f in self.futures.values()) >= 8:
+                    raise RuntimeError("project queue is full")
+                self.futures[job] = self.pool.submit(self._recover_cancel, job, row["request"])
         return result
+
+    def _recover_cancel(self, job, request):
+        # Recheck policy after queueing; stored job metadata grants no authority.
+        try:
+            self._require(request["project"], "cancel", request)
+        except PermissionError:
+            self.jobs.recovery_result(job, {"status": "unconfirmed", "evidence": "authorization-denied"})
+            raise
+        row = self.jobs.observe(job)
+        stages = ("acquire", "test", "build")
+        expected = stages[len(row["steps"])] if len(row["steps"]) < len(stages) else None
+        self.jobs.recovery_result(job, recover_job(request["image"], job, cancel=True,
+                                                 required_stage=expected, timeout=10,
+                                                 runtime=request.get("runtime", "npm")))
 
     def _work(self, job, request, source, cancel):
         if not self.jobs.claim(job):
