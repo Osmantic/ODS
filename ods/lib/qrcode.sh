@@ -1,6 +1,36 @@
 #!/bin/bash
+# ============================================================================
 # ODS — ASCII QR Code Generator
-# Generates simple QR codes for terminal display without external dependencies
+# ============================================================================
+# Part of: lib/
+# Purpose: Terminal QR codes and access cards for the post-install summary.
+#
+# Expects: BOLD, NC, CYAN, GREEN colour variables (empty is fine);
+#          format_duration() from lib/progress.sh, sourced below.
+# Provides: print_dashboard_qr(), print_url_box(), print_success_card(),
+#           print_install_summary()
+#
+# Usage:
+#   . "$ODS_DIR/lib/qrcode.sh"
+# ============================================================================
+
+# print_install_summary() calls format_duration(), which is defined in
+# lib/progress.sh. Nothing sourced progress.sh alongside this file, so
+# following the usage above and calling print_install_summary died with
+# "format_duration: command not found" (exit 127) — and aborted the caller
+# outright under `set -euo pipefail`.
+if ! declare -F format_duration >/dev/null 2>&1; then
+    _ods_qrcode_lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    if [[ -f "$_ods_qrcode_lib_dir/progress.sh" ]]; then
+        # progress.sh returns non-zero on Bash 3.2 after printing its own
+        # upgrade guidance. Surface that as a warning rather than aborting a
+        # sourcing script that only wanted the QR helpers.
+        # shellcheck source=progress.sh
+        . "$_ods_qrcode_lib_dir/progress.sh" \
+            || { declare -f warn &>/dev/null && warn "lib/progress.sh unavailable; print_install_summary will not render a duration"; }
+    fi
+    unset _ods_qrcode_lib_dir
+fi
 
 # ═══════════════════════════════════════════════════════════════
 # QR CODE DISPLAY
