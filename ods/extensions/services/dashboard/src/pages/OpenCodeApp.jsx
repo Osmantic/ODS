@@ -226,8 +226,8 @@ export default function OpenCodeApp() {
               {app.setupSupported ? (
                 <>
                   <p className="opencode-note">
-                    Setup downloads the ODS-reviewed OpenCode release, checks its SHA-256 checksum, points it at your
-                    active ODS model, and runs it as a user service that listens only on 127.0.0.1:{port}.
+                    Setup downloads the ODS-reviewed OpenCode release, checks its SHA-256 checksum, configures your
+                    active ODS model route as the default, and runs it as a user service that listens only on 127.0.0.1:{port}.
                   </p>
                   <button type="button" className="opencode-button is-primary" disabled={!!busy} onClick={() => act('setup')}>
                     {busy === 'setup' ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}
@@ -252,7 +252,7 @@ export default function OpenCodeApp() {
               <li>Open OpenCode from here or from <strong>Applications</strong> in the sidebar.</li>
               <li>Choose the project folder to work in. OpenCode runs as your user on this machine, so it can read and change any file your account can.</li>
               <li>Describe what you want. OpenCode edits files and can run commands; review its changes before you rely on them.</li>
-              <li>It uses your active ODS model. When you switch models in <strong>Models</strong>, ODS updates OpenCode too.</li>
+              <li>ODS configures your active model route as OpenCode's default. OpenCode may keep a model selected in an earlier session, so check its model picker before sending. Switching models in <strong>Models</strong> updates the configured default.</li>
             </ol>
             <p className="opencode-note">Prefer a terminal? On this machine, attach to the same sessions with:</p>
             <CommandLine command={attachCommand(app.platform, port)} label="terminal attach command" />

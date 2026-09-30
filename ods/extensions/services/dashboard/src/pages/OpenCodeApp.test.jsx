@@ -59,6 +59,7 @@ describe('OpenCodeApp', () => {
     expect(open).toHaveAttribute('target', '_blank')
     expect(screen.getByRole('status')).toHaveTextContent('Running · v1.18.32')
     expect(screen.getByText('How to use it')).toBeInTheDocument()
+    expect(screen.getByText(/may keep a model selected in an earlier session/)).toBeInTheDocument()
     expect(screen.getByLabelText('terminal attach command')).toHaveTextContent('~/.opencode/bin/opencode attach http://localhost:3003')
   })
 
