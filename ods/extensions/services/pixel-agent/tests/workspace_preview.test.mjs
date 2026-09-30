@@ -34,6 +34,21 @@ function succeededResponse(overrides = {}) {
   };
 }
 
+test('captures only an explicitly requested ancestor source directory and requires its receipt', async()=>{
+  const source={schemaVersion:1,sourceId:'source-'+ 'c'.repeat(24),sha256:'c'.repeat(64),relativeDirectory:'demo',files:2,bytes:80,omitted:{directories:1,files:0,sensitiveFiles:0}};
+  for(const directory of ['../demo','elsewhere','demo/dist/inside','demoSibling'])
+    assert.throws(()=>normalizeWorkspacePreviewParams({relativeDirectory:'demo/dist',sourceDirectory:directory}));
+  for(const override of [source,undefined,{...source,relativeDirectory:'elsewhere'},{...source,files:129},{...source,extra:true}]) {
+    const tool=createWorkspacePreviewTool({request:async request=>{
+      assert.equal(request.sourceDirectory,'demo');
+      return succeededResponse({relativeDirectory:'demo/dist',...(override?{source:override}:{})});
+    }});
+    const result=await tool.execute('capture',{relativeDirectory:'demo/dist',sourceDirectory:'demo'});
+    assert.equal(result.isError,override===source?undefined:true);
+    if(override===source)assert.deepEqual(result.details.source,source);
+  }
+});
+
 test("normalizes only one bounded workspace-relative directory", () => {
   assert.deepEqual(normalizeWorkspacePreviewParams({ relativeDirectory: "demo-site" }), {
     schemaVersion: 1,
@@ -63,7 +78,7 @@ test("rejects every ODS-authored creative scaffold or extra request field", () =
 
 test("exposes a publish-only schema with no creative generator input", () => {
   const tool = createWorkspacePreviewTool({ request: async () => succeededResponse() });
-  assert.deepEqual(Object.keys(tool.parameters.properties), ["relativeDirectory"]);
+  assert.deepEqual(Object.keys(tool.parameters.properties).sort(), ["relativeDirectory", "sourceDirectory"]);
   assert.equal(tool.parameters.additionalProperties, false);
   assert.match(tool.description, /already created by the active model/);
   assert.match(tool.description, /never supplies creative starter bytes/i);
@@ -339,5 +354,16 @@ test("rejects empty-file lists that are unsafe, unbounded or inconsistent with t
     assert.equal(result.isError, true, JSON.stringify(fields));
     assert.equal(result.details.status, "failed");
     assert.doesNotMatch(JSON.stringify(result), /private\.txt|secret\.txt/);
+  }
+});
+
+
+test('source capture failure codes remain actionable without exposing host details',async()=>{
+  for(const [errorCode,expected] of [['source_store_full',/128-capture or 64 MiB/],['source_capture_limit',/256 KiB/],['source_capture_changed',/writes to finish/],['no_eligible_source',/no eligible UTF-8/]]) {
+    const tool=createWorkspacePreviewTool({request:async()=>({schemaVersion:1,kind:'ods-pixel-workspace-preview',status:'failed',boundary:testing.BOUNDARY,error:'ODS workspace preview publication failed',errorCode})});
+    const result=await tool.execute('source-failure',{relativeDirectory:'demo/dist',sourceDirectory:'demo'});
+    assert.equal(result.isError,true);
+    assert.equal(result.details.errorCode,errorCode);
+    assert.match(result.content[0].text,expected);
   }
 });

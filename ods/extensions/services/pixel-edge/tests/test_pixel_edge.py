@@ -532,6 +532,22 @@ class TestPreviewRelay(BaseEdgeTest):
             self.assertEqual(resp.status, 401)
             self.assertNotIn("Access-Control-Allow-Origin", resp.headers)
 
+    async def test_source_review_uses_authenticated_relay_without_preview_cors(self):
+        route='/preview/site-'+'a'*24+'/__ods_source__/source-'+'b'*24+'.json'
+        async with self.client.get('http://localhost'+route) as response:
+            self.assertEqual(response.status,401)
+        async with self.client.get('http://localhost'+route,headers={'Authorization':'Bearer incorrect-key','Origin':'null'}) as response:
+            self.assertEqual(response.status,401)
+        async with self.client.get('http://localhost'+route,headers={'Origin':'null'}) as response:
+            self.assertEqual(response.status,401)
+        async with self.client.get('http://localhost'+route,headers={**self.auth(),'Origin':'null'}) as response:
+            self.assertEqual(response.status,200)
+            self.assertNotIn('Access-Control-Allow-Origin',response.headers)
+            self.assertEqual(response.headers['Cross-Origin-Resource-Policy'],'same-origin')
+            self.assertEqual(response.headers['Content-Type'],'application/json; charset=utf-8')
+            self.assertIn("default-src 'none'",response.headers['Content-Security-Policy'])
+        self.assertEqual(self.pe._preview_upstream_path('site-'+'a'*24,'__ods_source__/../../secret.json'),None)
+
     async def test_preview_relays_exact_bytes_with_an_opaque_browser_sandbox(self):
         site_id = "site-" + "a" * 24
         async with self.client.get(

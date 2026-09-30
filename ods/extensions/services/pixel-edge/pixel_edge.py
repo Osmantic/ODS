@@ -1471,6 +1471,8 @@ def _preview_upstream_path(site_id: str, tail: str) -> str | None:
         return f"/{site_id}/{tail}"
     if re.fullmatch(r"__ods_changes__/(?:initial|site-[a-f0-9]{24})\.json", tail):
         return f"/{site_id}/{tail}"
+    if re.fullmatch(r'__ods_source__/source-[a-f0-9]{24}\.json', tail):
+        return f'/{site_id}/{tail}'
     # Match the host static server: a directory URL selects its index file.
     if tail.endswith("/"):
         tail += "index.html"
@@ -1550,6 +1552,11 @@ async def handle_preview(request: web.Request):
         "X-Content-Type-Options": "nosniff",
         "X-Preview-SHA256": digest,
     }
+    if '/__ods_source__/' in upstream_path:
+        headers.pop('Access-Control-Allow-Origin', None)
+        headers['Cross-Origin-Resource-Policy'] = 'same-origin'
+        headers['Content-Security-Policy'] = "sandbox; default-src 'none'; frame-ancestors 'none'"
+        headers['Content-Type'] = 'application/json; charset=utf-8'
     return web.Response(status=200, body=body, headers=headers)
 
 

@@ -122,6 +122,19 @@
 .portal-live-review-note { display:block; padding:8px 0; font-size:11px; }
 
 .portal-workbench-live:empty { display:none; }
+.portal-review-scope { display:flex;gap:6px;padding:8px 12px;border-bottom:1px solid rgb(var(--theme-border)); }
+.portal-review-scope button { padding:6px 10px;border-radius:6px;font-size:12px; }
+.portal-review-scope button[aria-pressed=true] { background:rgb(var(--theme-text) / .08); }
+.portal-review-output { flex:1;min-height:0;display:flex; }
+.portal-review-output[hidden] { display:none; }
+.portal-source-review { min-height:0;display:flex;flex-direction:column;flex:1;overflow:auto; }
+.portal-source-review-layout { display:flex;flex:1;min-height:160px; }
+.portal-source-review-layout > aside { flex:0 0 190px;overflow:auto;border-right:1px solid rgb(var(--theme-border)); }
+.portal-source-review-code { flex:1;min-width:0;overflow:auto; }
+.portal-source-review-code > header { display:flex;align-items:center;gap:12px;padding:10px;font-size:12px; }
+.portal-source-review-code > header > span { flex:1;overflow-wrap:anywhere; }
+.portal-source-review-code pre { padding:12px;font-size:12px;overflow:auto; }
+@media(max-width:640px) { .portal-source-review-layout { flex-direction:column; }.portal-source-review-layout > aside { flex-basis:150px; } }
 
 /* Reserve a scroll lane separate from the tree's resize handle. */
 .pixel-app .pixel-chat-preview-layout .portal-review-diff > pre { scrollbar-gutter:stable; scrollbar-width:auto; }

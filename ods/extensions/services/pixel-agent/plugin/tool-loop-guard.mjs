@@ -10,6 +10,7 @@
 // OpenClaw's public harness runtime.
 
 import { createHash, randomBytes } from "node:crypto";
+import { validSourceReview, normalizeWorkspacePreviewParams } from './workspace-preview.mjs';
 import * as fs from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
@@ -6456,7 +6457,8 @@ function workspacePreviewOutcome(event, expectedDirectory, state) {
     details.httpStatus !== 200 ||
     details.readbackVerified !== true ||
     details.executable !== false ||
-    details.overwritten !== false
+    details.overwritten !== false ||
+    (Object.hasOwn(details, 'source') && !validSourceReview(details.source, details.relativeDirectory))
   ) {
     return undefined;
   }
@@ -6476,6 +6478,7 @@ function workspacePreviewOutcome(event, expectedDirectory, state) {
     bytes: details.bytes,
     sha256: details.sha256,
     entrySha256: details.entrySha256,
+    ...(details.source ? {source:details.source} : {}),
   };
 }
 
@@ -8124,14 +8127,20 @@ export function createToolLoopGuard({
         return { block: true, blockReason: workspacePreviewMissingEntryReason(state, directory) };
       }
       state.workspacePreviewDirectory = directory;
+      const publicationArgs = {relativeDirectory:directory};
+      if (Object.hasOwn(args ?? {}, 'sourceDirectory')) {
+        publicationArgs.sourceDirectory = args.sourceDirectory;
+        try { normalizeWorkspacePreviewParams(publicationArgs); }
+        catch { return {block:true,blockReason:'Source review requires an explicit workspace-relative project directory containing the selected publication directory. Preserve the project; do not substitute another source root.'}; }
+      }
       if (toolName === "tool_call") {
         pendingParams = {
           ...pendingParams,
           id: WORKSPACE_PREVIEW_TOOL,
-          args: { relativeDirectory: directory },
+          args: publicationArgs,
         };
       } else {
-        normalizedParams = { relativeDirectory: directory };
+        normalizedParams = publicationArgs;
         pendingParams = normalizedParams;
       }
     }
