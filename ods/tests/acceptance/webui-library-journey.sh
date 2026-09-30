@@ -207,9 +207,21 @@ printf 'PASS: failed Library add-back restored selection and data\n'
 
 check_api add-webui || fail 'Library did not add WebUI'
 check_api selection-on || fail 'Library did not retain WebUI choice'
-compose_services | grep -qx open-webui || fail 'WebUI missing from active Compose stack'
+[[ "$(docker inspect --format '{{.HostConfig.RestartPolicy.Name}}' ods-webui)" == unless-stopped ]] \
+    || fail 'Library-added WebUI lacks restart persistence'
 curl -fLsS --max-time 30 http://127.0.0.1:3000/ >/dev/null \
     || fail 'Library-added WebUI is unreachable'
+docker restart ods-webui >/dev/null || fail 'Library-added WebUI could not restart'
+webui_ready=false
+for attempt in {1..40}; do
+    if curl -fLsS --max-time 8 http://127.0.0.1:3000/ >/dev/null 2>&1; then
+        webui_ready=true
+        break
+    fi
+    sleep 3
+done
+[[ "$webui_ready" == true ]] || fail 'Library-added WebUI did not recover after restart'
+check_api selection-on || fail 'WebUI choice changed after container restart'
 assert_litellm_completion
 [[ "$(sha256sum "$INSTALL_DIR/data/open-webui/acceptance-sentinel.txt" | cut -d' ' -f1)" == "$sentinel_hash" ]] \
     || fail 'Library add-back changed retained WebUI data'
