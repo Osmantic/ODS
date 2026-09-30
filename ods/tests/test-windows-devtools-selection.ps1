@@ -9,9 +9,14 @@ function Assert-ODSDevTools {
 
 $script:mockTask = $null
 $script:disableCalls = 0
+$script:taskLookupFailure = $false
 function Get-ScheduledTask {
     param([string]$TaskName, [string]$ErrorAction)
-    if ($null -eq $script:mockTask) { throw 'Task not found' }
+    if ($script:taskLookupFailure) { throw 'Scheduler access failed' }
+    if ($null -eq $script:mockTask) {
+        Write-Error 'Task not found' -ErrorId 'CmdletizationQuery_NotFound_TaskName' `
+            -Category ObjectNotFound -ErrorAction Stop
+    }
     return $script:mockTask
 }
 function Disable-ScheduledTask {
@@ -26,6 +31,11 @@ $arguments = '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "C:\U
 $base = @{TaskName='ODSOpenCodeWeb'; ExpectedLauncher=$launcher}
 
 Assert-ODSDevTools (-not (Resolve-ODSWindowsDevToolsSelection @base)) 'fresh install skips developer tools'
+$script:taskLookupFailure = $true
+$lookupRejected = $false
+try { Resolve-ODSWindowsDevToolsSelection @base -ExplicitEnable $true | Out-Null } catch { $lookupRejected = $true }
+Assert-ODSDevTools $lookupRejected 'scheduler lookup failure is not treated as task absence'
+$script:taskLookupFailure = $false
 $script:mockTask = [pscustomobject]@{State='Ready'; Actions=@([pscustomobject]@{Execute='powershell.exe'; Arguments=$arguments; WorkingDirectory='C:\Users\test\.opencode'})}
 Assert-ODSDevTools (Resolve-ODSWindowsDevToolsSelection @base) 'enabled ODS task retains developer tools'
 $script:mockTask.Actions[0].Arguments = $arguments + ' -Command "foreign"'

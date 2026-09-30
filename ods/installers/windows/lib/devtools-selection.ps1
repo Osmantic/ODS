@@ -1,6 +1,21 @@
 # Developer tools are optional on a fresh native Windows install. An enabled
 # ODS-owned OpenCode login task records the legacy installer's prior selection.
 # A disabled task is an owner decision and must not be re-enabled by a rerun.
+function Get-ODSWindowsOpenCodeTask {
+    param([Parameter(Mandatory = $true)][string]$TaskName)
+    try {
+        return Get-ScheduledTask -TaskName $TaskName -ErrorAction Stop
+    } catch {
+        # Missing is a normal first-install state. Permission and scheduler
+        # errors are not proof of absence; refuse to overwrite an unknown task.
+        if ($_.CategoryInfo.Category -eq [System.Management.Automation.ErrorCategory]::ObjectNotFound -and
+            $_.FullyQualifiedErrorId -like 'CmdletizationQuery_NotFound_TaskName,*') {
+            return $null
+        }
+        throw
+    }
+}
+
 function Test-ODSWindowsOpenCodeTaskOwned {
     param(
         [Parameter(Mandatory = $true)]$Task,
@@ -33,11 +48,7 @@ function Resolve-ODSWindowsDevToolsSelection {
     }
     if ($ExplicitDisable) { return $false }
 
-    try {
-        $task = Get-ScheduledTask -TaskName $TaskName -ErrorAction Stop
-    } catch {
-        $task = $null
-    }
+    $task = Get-ODSWindowsOpenCodeTask -TaskName $TaskName
     if ($ExplicitEnable -or $All) {
         if ($null -ne $task -and
             -not (Test-ODSWindowsOpenCodeTaskOwned -Task $task -ExpectedLauncher $ExpectedLauncher)) {
@@ -58,11 +69,7 @@ function Disable-ODSWindowsOpenCodeLoginTask {
         [Parameter(Mandatory = $true)][string]$TaskName,
         [Parameter(Mandatory = $true)][string]$ExpectedLauncher
     )
-    try {
-        $task = Get-ScheduledTask -TaskName $TaskName -ErrorAction Stop
-    } catch {
-        return $false
-    }
+    $task = Get-ODSWindowsOpenCodeTask -TaskName $TaskName
     if ($null -eq $task -or
         -not (Test-ODSWindowsOpenCodeTaskOwned -Task $task -ExpectedLauncher $ExpectedLauncher)) {
         return $false

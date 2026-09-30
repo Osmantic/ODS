@@ -125,7 +125,7 @@ exit `$LASTEXITCODE
     # Selection was checked before the installer phases, but a same-name
     # task may have changed while earlier phases ran. Check again before
     # stopping or replacing it.
-    $_existingOpenCodeTask = Get-ScheduledTask -TaskName $script:OPENCODE_TASK_NAME -ErrorAction SilentlyContinue
+    $_existingOpenCodeTask = Get-ODSWindowsOpenCodeTask -TaskName $script:OPENCODE_TASK_NAME
     if ($_existingOpenCodeTask -and -not (Test-ODSWindowsOpenCodeTaskOwned `
         -Task $_existingOpenCodeTask -ExpectedLauncher $_ocLauncherPath)) {
         throw 'A non-ODS scheduled task now uses the OpenCode task name.'
