@@ -1,6 +1,6 @@
 use crate::state::{InstallPhase, InstallState};
 use serde::Serialize;
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::{Arc, Mutex};
@@ -308,15 +308,16 @@ fn run_clone_command(command: &mut Command, state: &Arc<Mutex<InstallState>>) ->
     let stderr = clone.stderr.take().expect("clone stderr is piped");
     *ACTIVE_CHILD.lock().unwrap() = Some((clone, Arc::clone(state)));
     let stderr_handle = thread::spawn(move || {
-        BufReader::new(stderr).lines().collect::<Result<Vec<_>, _>>()
+        let mut bytes = Vec::new();
+        BufReader::new(stderr).read_to_end(&mut bytes).map(|_| bytes)
     });
     let status = wait_active_child(state);
-    let stderr_lines = stderr_handle.join()
+    let stderr_bytes = stderr_handle.join()
         .map_err(|_| "Git clone stderr reader panicked.".to_string())?
         .map_err(|e| format!("Failed to read git clone diagnostics: {e}"))?;
     let status = status?;
     if !status.success() {
-        return Err(format!("Git clone failed for ODS ref '{}': {}", install_ref(), stderr_lines.join("\n")));
+        return Err(format!("Git clone failed for ODS ref '{}': {}", install_ref(), String::from_utf8_lossy(&stderr_bytes)));
     }
     Ok(())
 }
@@ -640,13 +641,13 @@ mod tests {
         if cfg!(target_os = "windows") {
             let mut command = Command::new("powershell.exe");
             command.args(["-NoProfile", "-Command", &format!(
-                "[Console]::Out.Write(('x' * 262144)); [Console]::Error.WriteLine(('x' * 262144)); if ('{mode}' -eq 'wait') {{ Start-Sleep -Seconds 5 }}; if ('{mode}' -eq 'failure') {{ [Console]::Error.WriteLine('Fixture clone failure'); exit 7 }}; exit 0"
+                "[Console]::Out.Write(('x' * 262144)); [Console]::Error.WriteLine(('x' * 262144)); [Console]::OpenStandardError().WriteByte(255); if ('{mode}' -eq 'wait') {{ Start-Sleep -Seconds 5 }}; if ('{mode}' -eq 'failure') {{ [Console]::Error.WriteLine('Fixture clone failure'); exit 7 }}; exit 0"
             )]);
             command
         } else {
             let mut command = Command::new("bash");
             command.args(["-c", &format!(
-                "printf '%262144s' ''; printf '%262144s\\n' '' >&2; if [ '{mode}' = wait ]; then deadline=$((SECONDS+5)); while ((SECONDS < deadline)); do :; done; fi; if [ '{mode}' = failure ]; then printf 'Fixture clone failure\\n' >&2; exit 7; fi"
+                "printf '%262144s' ''; printf '%262144s\\n' '' >&2; printf '\\377' >&2; if [ '{mode}' = wait ]; then deadline=$((SECONDS+5)); while ((SECONDS < deadline)); do :; done; fi; if [ '{mode}' = failure ]; then printf 'Fixture clone failure\\n' >&2; exit 7; fi"
             )]);
             command
         }
