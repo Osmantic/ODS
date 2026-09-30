@@ -633,9 +633,9 @@ _SWITCHBOARD_ROUTE_ENV_KEYS = (
 
 
 def _prepare_initial_switchboard_verification() -> bool:
-    """Reset route-proof cancellation only while no lifecycle owner exists."""
+    """Defer route proof while a live or durable model transition owns it."""
     with _model_lifecycle_state_lock:
-        if _model_lifecycle_operation:
+        if _model_lifecycle_operation or _pixel_model_transition_pending_for_route_proof():
             _switchboard_initial_verify_cancel.set()
             return False
         _switchboard_initial_verify_cancel.clear()
@@ -2647,17 +2647,27 @@ def _publish_verified_initial_switchboard_route(
         "vision": bool(model.get("vision")),
         "agentViable": _model_agent_viable(model, context_length),
     }
-    _switchboard_state.record_verified_route(
-        state_path,
-        catalog_id=model_id or llm_model_name or gguf_file,
-        runtime_model_id=runtime_identity,
-        backend_kind=backend_kind,
-        endpoint_id=endpoint_id,
-        native_route=native_route,
-        context_length=context_length,
-        capabilities=capabilities,
-        proof_identity=runtime_identity,
-    )
+    # A model transition can begin while the slow runtime proof is in flight.
+    # Serialize the final write with lifecycle admission and recheck the
+    # durable journal: a held transaction's before-state must stay immutable
+    # across a host-agent restart as well as within this process.
+    with _model_lifecycle_state_lock:
+        if _model_lifecycle_operation or _pixel_model_transition_pending_for_route_proof():
+            _switchboard_initial_verify_cancel.set()
+            return False
+        if not _switchboard_state_needs_current_env_verification(state_path, fresh_env):
+            return False
+        _switchboard_state.record_verified_route(
+            state_path,
+            catalog_id=model_id or llm_model_name or gguf_file,
+            runtime_model_id=runtime_identity,
+            backend_kind=backend_kind,
+            endpoint_id=endpoint_id,
+            native_route=native_route,
+            context_length=context_length,
+            capabilities=capabilities,
+            proof_identity=runtime_identity,
+        )
     logger.info(
         "switchboard initial route verified (%s): %s",
         reason,
@@ -4351,6 +4361,15 @@ def _pixel_model_recovery_status() -> dict:
     if journal is None:
         return {'pending':False,'phase':'idle','transactionId':None}
     return {'pending':journal['phase']!='completed','phase':journal['phase'],'transactionId':journal['transactionId']}
+
+
+def _pixel_model_transition_pending_for_route_proof() -> bool:
+    """Fail closed when route proof cannot establish transition custody."""
+    try:
+        return bool(_pixel_model_recovery_status()['pending'])
+    except Exception:
+        logger.warning('Initial route proof deferred: model transition state is unavailable')
+        return True
 
 
 def _read_remote_provider_activation_state() -> dict | None:
