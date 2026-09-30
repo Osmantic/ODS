@@ -33,6 +33,40 @@ function Get-WindowsOpenCodeOutputLimit {
     return [long][Math]::Min(32768.0, [Math]::Floor($ContextLimit / 4))
 }
 
+function Set-WindowsOpenCodeDefaultAgentModels {
+    param(
+        [Parameter(Mandatory = $true)] [object]$Config,
+        [Parameter(Mandatory = $true)] [string]$ModelRef,
+        [string]$PreviousModelRef = ""
+    )
+
+    $agentProperty = $Config.PSObject.Properties['agent']
+    if (-not $agentProperty -or $null -eq $agentProperty.Value) {
+        Set-OpenCodeObjectProperty -Target $Config -Name 'agent' -Value ([pscustomobject]@{})
+    } elseif ($agentProperty.Value -isnot [pscustomobject]) {
+        return
+    }
+    $agents = $Config.agent
+    foreach ($name in @('build', 'plan')) {
+        $slotProperty = $agents.PSObject.Properties[$name]
+        if (-not $slotProperty -or $null -eq $slotProperty.Value) {
+            Set-OpenCodeObjectProperty -Target $agents -Name $name -Value ([pscustomobject]@{})
+        } elseif ($slotProperty.Value -isnot [pscustomobject]) {
+            continue
+        }
+        $slot = $agents.PSObject.Properties[$name].Value
+        $modelProperty = $slot.PSObject.Properties['model']
+        $selected = if ($modelProperty) { $modelProperty.Value } else { $null }
+        $followsPreviousOdsRoute = (
+            $PreviousModelRef.StartsWith('llama-server/') -and
+            $selected -eq $PreviousModelRef
+        )
+        if ($null -eq $selected -or $followsPreviousOdsRoute) {
+            Set-OpenCodeObjectProperty -Target $slot -Name 'model' -Value $ModelRef
+        }
+    }
+}
+
 function New-WindowsOpenCodeConfigObject {
     param(
         [hashtable]$LlmEndpoint,
@@ -43,7 +77,7 @@ function New-WindowsOpenCodeConfigObject {
         [string]$ProviderName = "llama-server (local)"
     )
 
-    return [pscustomobject]@{
+    $config = [pscustomobject]@{
         '$schema' = "https://opencode.ai/config.json"
         model = "llama-server/$ModelId"
         small_model = "llama-server/$ModelId"
@@ -67,6 +101,8 @@ function New-WindowsOpenCodeConfigObject {
             }
         }
     }
+    Set-WindowsOpenCodeDefaultAgentModels -Config $config -ModelRef "llama-server/$ModelId"
+    return $config
 }
 
 function Update-WindowsOpenCodeConfigObject {
@@ -90,9 +126,11 @@ function Update-WindowsOpenCodeConfigObject {
             -ProviderName $ProviderName
     }
 
+    $previousModelRef = if ($Config.PSObject.Properties['model']) { [string]$Config.model } else { "" }
     Set-OpenCodeObjectProperty -Target $Config -Name '$schema' -Value "https://opencode.ai/config.json"
     Set-OpenCodeObjectProperty -Target $Config -Name 'model' -Value "llama-server/$ModelId"
     Set-OpenCodeObjectProperty -Target $Config -Name 'small_model' -Value "llama-server/$ModelId"
+    Set-WindowsOpenCodeDefaultAgentModels -Config $Config -ModelRef "llama-server/$ModelId" -PreviousModelRef $previousModelRef
 
     if (-not $Config.PSObject.Properties['provider'] -or $null -eq $Config.provider) {
         Set-OpenCodeObjectProperty -Target $Config -Name 'provider' -Value ([pscustomobject]@{})
