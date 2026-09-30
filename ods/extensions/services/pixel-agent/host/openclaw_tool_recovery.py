@@ -28,6 +28,9 @@ COMPACTION_BUDGET_MODULE = "selection-BEwSQKM-.js"
 READ_RANGE_MODULE = "openclaw-tools-iHHy99PD.js"
 SANDBOX_MKDIR_MODULES = {"bridge": "browser-bridges-D-At-KLc.js", "secure": "secure-temp-dir-XAWcZnE2.js"}
 TOOL_RESULT_PROJECTION_MODULE = "tool-result-truncation-CbxVHy2D.js"
+HOOK_PROVENANCE_MODULE = "hook-agent-context-ugCMMoT5.js"
+CONTEXT_USAGE_MODULE = "attempt-execution-DnVHak5f.js"
+COMPACTION_EMPTY_MODULE = "proxy-Bsfwfsp-.js"
 DIAGNOSTIC_STREAM_MODULE = "attempt.model-diagnostic-events-DqqiPQPY.js"
 VERSION = "2026.6.33"
 SHA256 = re.compile(r"[0-9a-f]{64}")
@@ -125,7 +128,8 @@ def repair(runtime_root, state_dir, *, restore=False, manifest_path=MANIFEST,
            module_name=MODULE):
     if module_name not in {MODULE, COMPLETION_MODULE, IMAGE_MODULE, COMPACTION_MODULE, COMPACTION_IDLE_MODULE,
                            COMPACTION_RESUME_MODULE, COMPACTION_BUDGET_MODULE, READ_RANGE_MODULE,
-                           TOOL_RESULT_PROJECTION_MODULE, DIAGNOSTIC_STREAM_MODULE, *SANDBOX_MKDIR_MODULES.values()}:
+                           TOOL_RESULT_PROJECTION_MODULE, DIAGNOSTIC_STREAM_MODULE, CONTEXT_USAGE_MODULE,
+                           COMPACTION_EMPTY_MODULE, HOOK_PROVENANCE_MODULE, *SANDBOX_MKDIR_MODULES.values()}:
         raise ValueError("unsupported runtime repair module")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     package = json.loads((runtime_root / "package.json").read_text(encoding="utf-8"))
@@ -331,6 +335,9 @@ def main():
     selection.add_argument("--compaction-idle", action="store_true")
     selection.add_argument("--compaction-resume", action="store_true")
     selection.add_argument("--compaction-budget", action="store_true")
+    selection.add_argument("--hook-provenance", action="store_true")
+    selection.add_argument("--context-usage", action="store_true")
+    selection.add_argument("--compaction-empty", action="store_true")
     selection.add_argument("--read-range", action="store_true")
     selection.add_argument("--sandbox-mkdir", choices=tuple(SANDBOX_MKDIR_MODULES))
     selection.add_argument("--tool-result-projection", action="store_true")
@@ -360,6 +367,15 @@ def main():
     elif args.compaction_budget:
         options = {"module_name": COMPACTION_BUDGET_MODULE,
                    "manifest_path": MANIFEST.with_name("openclaw-compaction-budget.json")}
+    elif args.hook_provenance:
+        options = {"module_name": HOOK_PROVENANCE_MODULE,
+                   "manifest_path": MANIFEST.with_name("openclaw-hook-provenance.json")}
+    elif args.context_usage:
+        options = {"module_name": CONTEXT_USAGE_MODULE,
+                   "manifest_path": MANIFEST.with_name("openclaw-context-usage.json")}
+    elif args.compaction_empty:
+        options = {"module_name": COMPACTION_EMPTY_MODULE,
+                   "manifest_path": MANIFEST.with_name("openclaw-compaction-empty.json")}
     elif args.read_range:
         options = {"module_name": READ_RANGE_MODULE,
                    "manifest_path": MANIFEST.with_name("openclaw-read-range.json")}

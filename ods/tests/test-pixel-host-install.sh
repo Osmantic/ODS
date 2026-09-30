@@ -2877,7 +2877,8 @@ assert "api.on(\"before_prompt_build\"" in text
 assert "api.on(\"model_call_started\"" in text
 assert "api.on(\"before_agent_finalize\"" in text
 assert "api.on(\"tool_result_persist\"" in text
-assert "promptContractForAgent(context, AGENT_ID, event, {" in text
+assert "promptContractForAgent(context, AGENT_ID, ownerEvent, {" in text
+assert "ownerEvent = toolLoopGuard.ownerIntentEventForRun(context?.runId ?? event?.runId, event)" in text
 assert "verificationStatus: toolLoopGuard.verificationStatus(context?.runId)" in text
 ' "$plugin/index.js"
 # Dollar expressions below are literal source-code assertions.
@@ -3070,7 +3071,8 @@ assert "--state-dir \"$home/.openclaw/ods-runtime-patches/sandbox-mkdir-$mkdir_m
 managed.extend(["sandbox-mkdir-bridge", "sandbox-mkdir-secure"])
 known = installer[foreign_restore:own_repair].split("--known", 1)[1].split(">>", 1)[0]
 assert sorted(known.replace("\\", " ").split()) == sorted(managed)
-assert len(set(managed)) == len(managed) == 12
+assert len(set(managed)) == len(managed) == 15
+assert {"context-usage", "compaction-empty", "hook-provenance"}.issubset(managed)
 assert installer.index("_ods_pixel_refresh_plugin_registry") < installer.index("_ods_pixel_mark_ready")
 assert "ods_linux_node_tools_available" in text
 assert "runtime_token_file=\"/run/ods-pixel/openclaw.json\"" in text

@@ -21,6 +21,7 @@ import {
   abortAndDrainAgentHarnessRun,
   callGatewayTool,
   resolveActiveEmbeddedRunSessionId,
+  resolveUserPath,
 } from "openclaw/plugin-sdk/agent-harness-runtime";
 import {getSessionEntry, patchSessionEntry, resolveStorePath} from "openclaw/plugin-sdk/session-store-runtime";
 import {withSessionTranscriptWriteLock,appendAssistantMirrorMessageByIdentity} from 'openclaw/plugin-sdk/session-transcript-runtime';
@@ -28,6 +29,7 @@ import {
   extractBasicHtmlContent,
   fetchWithWebToolsNetworkGuard,
   readResponseText,
+  resolveAgentWorkspaceDir,
 } from "openclaw/plugin-sdk/agent-runtime";
 import {
   appsPayload,
@@ -50,6 +52,7 @@ import {
   privateBrowserAccessForAgent,
 } from "./tool-loop-guard.mjs";
 import { withPixelCronDeliveryDefault } from "./cron-delivery-default.mjs";
+import { withPixelSubagentWorkspace } from "./subagent-workspace.mjs";
 import { createPublicPageReader, createPublicWebExtractTool } from "./web-extract.mjs";
 import { citationPageReadsAllowed, createHostCitationVerifier } from "./citation-verification.mjs";
 import { createStopSynthesisClient } from "./stop-synthesis.mjs";
@@ -352,15 +355,16 @@ export default definePluginEntry({
         ?? api.config?.agents?.defaults?.workspace;
       const executionHost = executionHostForAgent(api.config, AGENT_ID);
       toolLoopGuard.observeRun(context, AGENT_ID, event, { privateBrowserAccess, workspaceRoot, executionHost });
-      if (!accessRuntime.isProbe(context)) { goalProgress.begin(event, context); taskActivity.begin(event, context); }
-      const contract = promptContractForAgent(context, AGENT_ID, event, {
+      const ownerEvent = toolLoopGuard.ownerIntentEventForRun(context?.runId ?? event?.runId, event);
+      if (!accessRuntime.isProbe(context)) { goalProgress.begin(ownerEvent, context); taskActivity.begin(ownerEvent, context); }
+      const contract = promptContractForAgent(context, AGENT_ID, ownerEvent, {
         verificationStatus: toolLoopGuard.verificationStatus(context?.runId),
         configuredContextWindow,
         configuredLeanPrompt,
         privateBrowserAccess,
         executionHost,
       });
-      const repositoryEvidence = contract ? await extensionRepositoryContext(event,
+      const repositoryEvidence = contract ? await extensionRepositoryContext(ownerEvent,
         result => toolLoopGuard.observeRepositorySource(context?.runId ?? event?.runId, result)) : '';
       // Per-attempt, model-only context: not part of the cached system prompt.
       const cancelContext = toolLoopGuard.promptContextForRun(context?.runId ?? event?.runId);
@@ -400,10 +404,14 @@ export default definePluginEntry({
     });
     api.on("before_tool_call", async (event, context) => {
       if (accessRuntime.isProbe(context)) return;
-      const guard = withPixelCronDeliveryDefault(
+      let guard = withPixelCronDeliveryDefault(
         await toolLoopGuard.beforeToolCall(event, context, AGENT_ID),
         event, context, AGENT_ID,
       );
+      const runtimeConfig = api.runtime?.config?.current?.() ?? api.config;
+      guard = withPixelSubagentWorkspace(guard, event, context, AGENT_ID, runtimeConfig,
+        scope => getSessionEntry({...scope,
+          storePath: resolveStorePath(runtimeConfig?.session?.store, {agentId: AGENT_ID})}), {resolveUserPath, resolveAgentWorkspaceDir});
       const decision = guard?.block ? guard : goalProgress.before(event, context) ?? accessRuntime.beforeTool(event, context) ?? guard;
       bundleAdmission.before(event, context, decision);
       taskActivity.before(event, context, decision?.block === true);

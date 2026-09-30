@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import vm from 'node:vm';
 import {createWorkspaceBundleAdmission} from '../plugin/workspace-bundle.mjs';
 import {withPixelCronDeliveryDefault} from '../plugin/cron-delivery-default.mjs';
+import {withPixelSubagentWorkspace} from '../plugin/subagent-workspace.mjs';
 
 // Exercise the actual registration callbacks without importing the installed
 // OpenClaw SDK. This is a source composition fixture, not gateway qualification.
@@ -35,7 +36,10 @@ function hooks(guardResult, managedRuntime = false) {
       finish: () => activity.push('finish'),
     },
     goalProgress: {before() {}, update() {}, finish() {}},
-    bundleAdmission, managedRuntime, accessRuntime: runtime, withPixelCronDeliveryDefault, AGENT_ID: 'pixel',
+    bundleAdmission, managedRuntime, accessRuntime: runtime, withPixelCronDeliveryDefault,
+    withPixelSubagentWorkspace, resolveUserPath: value=>value,
+    resolveAgentWorkspaceDir:config=>config?.agents?.list?.find(agent=>agent.id==='pixel')?.workspace,
+    AGENT_ID: 'pixel',
   });
   return {callbacks, calls, runtime, activity, bundleAdmission};
 }

@@ -64,6 +64,9 @@ SHARED_REPAIRS = (
     ('openclaw-sandbox-mkdir-secure.json', 'secure-temp-dir-XAWcZnE2.js'),
     ('openclaw-tool-result-projection.json', 'tool-result-truncation-CbxVHy2D.js'),
     ('openclaw-diagnostic-stream-writes.json', 'attempt.model-diagnostic-events-DqqiPQPY.js'),
+    ('openclaw-hook-provenance.json', 'hook-agent-context-ugCMMoT5.js'),
+    ('openclaw-context-usage.json', 'attempt-execution-DnVHak5f.js'),
+    ('openclaw-compaction-empty.json', 'proxy-Bsfwfsp-.js'),
     ('openclaw-compaction-budget.json', 'selection-BEwSQKM-.js'),
 )
 
