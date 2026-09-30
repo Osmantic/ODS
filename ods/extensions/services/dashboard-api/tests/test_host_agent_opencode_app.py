@@ -674,12 +674,14 @@ SETUP_ENV = {
 }
 
 
-@pytest.mark.parametrize("bootstrap_fails,prior_data,partial_bootstrap", [
-    (False, False, False), (True, False, False), (True, True, False),
-    (True, False, True),
+@pytest.mark.parametrize("bootstrap_fails,prior_data,partial_bootstrap,concurrent_load", [
+    (False, False, False, False), (True, False, False, False),
+    (True, True, False, False), (True, False, True, False),
+    (False, False, False, True),
 ])
 def test_macos_retained_setup_installs_or_rolls_back_without_pixel(
     tmp_path, monkeypatch, _isolated, bootstrap_fails, prior_data, partial_bootstrap,
+    concurrent_load,
 ):
     _setup_ready_install(tmp_path, monkeypatch)
     owner_uid = getattr(os, "getuid", lambda: 0)()
@@ -703,7 +705,7 @@ def test_macos_retained_setup_installs_or_rolls_back_without_pixel(
     commands = []
 
     def loaded_output(_binary):
-        return "state = running" if loaded else None
+        return "state = running" if loaded or (concurrent_load and plist.exists()) else None
 
     def run(command, **kwargs):
         nonlocal loaded
@@ -727,8 +729,12 @@ def test_macos_retained_setup_installs_or_rolls_back_without_pixel(
 
     monkeypatch.setattr(_mod, "_opencode_macos_loaded_output", loaded_output)
     monkeypatch.setattr(_mod.subprocess, "run", run)
-    if bootstrap_fails:
-        with pytest.raises(RuntimeError, match="Could not bootstrap OpenCode"):
+    if bootstrap_fails or concurrent_load:
+        expected_error = (
+            "OpenCode LaunchAgent was loaded during setup" if concurrent_load
+            else "Could not bootstrap OpenCode"
+        )
+        with pytest.raises(RuntimeError, match=expected_error):
             _mod._setup_managed_opencode_macos(dict(SETUP_ENV))
         if prior_data:
             assert binary.read_bytes() == b"previous-owner-binary"
@@ -737,8 +743,10 @@ def test_macos_retained_setup_installs_or_rolls_back_without_pixel(
             assert not binary.exists()
             assert not config_path.exists()
         assert not plist.exists()
-        expected = ["enable", "bootstrap"]
-        if partial_bootstrap:
+        expected = ["enable"]
+        if not concurrent_load:
+            expected.append("bootstrap")
+        if partial_bootstrap or concurrent_load:
             expected.append("bootout")
         expected.append("disable")
         assert [command[1] for command in commands if command[0] == "launchctl"] == expected
