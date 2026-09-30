@@ -63,7 +63,7 @@ PY
 
 command -v docker >/dev/null || fail 'Docker CLI missing'
 docker info >/dev/null || fail 'Docker Engine unavailable'
-[[ "$(git -C "$product" rev-parse HEAD)" == 2ca9fe9d2dea43cec5297cf863062b85767aa45f ]] \
+[[ "$(git -C "$product" rev-parse HEAD)" == 53c9fdcb933c6ce82c07ca8b0c1b8d0302d19235 ]] \
     || fail 'wrong product checkout'
 [[ ! -e "$INSTALL_DIR" ]] || fail 'install directory is not fresh'
 mkdir -p "$audit_root"
