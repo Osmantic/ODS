@@ -20,6 +20,13 @@ test('unknown routes, malformed identity and invalid capacity fail closed',()=>{
 });
 test('Python owner projection and current-process JavaScript projection agree',()=>{
   const cases=[config()];
+  for(const capability of ['supported','unsupported','unknown',true,null,'vision']) {
+    const value=config();value.plugins.entries['pixel-ods'].config.modelImageInput=capability;
+    value.models.providers['ods-gateway'].models[0].input=capability==='unsupported'?['text']:['text','image'];
+    cases.push(value);
+  }
+  const dropped=config();dropped.plugins.entries['pixel-ods'].config.modelImageInput='supported';
+  dropped.models.providers['ods-gateway'].models[0].input=['text'];cases.push(dropped);
   let c=config();delete c.plugins.entries['pixel-ods'].config.modelRouteFingerprint;delete c.agents.list[0].contextTokens;delete c.agents.list[0].params;cases.push(c);
   c=config();c.agents.list[0].params={max_completion_tokens:2048,temperature:0.7};cases.push(c);
   c=config();c.agents.list[0].params.maxTokens=null;cases.push(c);

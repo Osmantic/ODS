@@ -20,6 +20,8 @@ import { pathToFileURL } from "node:url";
 import { parseTaskActivity } from "./task_activity_schema.mjs";
 import { parseQuestions } from "./questions_schema.mjs";
 import {createChatHistoryLedger,HistoryError} from './chat_history_ledger.mjs';
+import {createChatImageStore,createChatImageReadHandler,ChatImageError} from './chat_image_store.mjs';
+import {decodeChatImageTurn,nativeHistoryMessages,validateImageRoute} from './chat_image_transport.mjs';
 import {handleAccessMode, handleModelControl, readAccessOwnerKey} from './access_mode_relay.mjs';
 
 // ---------------------------------------------------------------------------
@@ -28,6 +30,7 @@ import {handleAccessMode, handleModelControl, readAccessOwnerKey} from './access
 
 const MAX_BODY = 2 * 1024 * 1024; // 2 MiB request body cap
 const MAX_HISTORY_BODY = 8 * 1024 * 1024;
+const MAX_IMAGE_BODY = 16 * 1024 * 1024;
 const MAX_NONSTREAM_RESPONSE = 2 * 1024 * 1024; // 2 MiB non-stream response cap
 const MAX_STREAM_RESPONSE = 4 * 1024 * 1024; // 4 MiB terminal completion cap for SSE clients
 // A broad typed host report can legitimately include bounded summaries for
@@ -1658,11 +1661,13 @@ export async function writeStatus(
   return projection;
 }
 
-export function createIngressServer({ token, gatewayPort, deps = defaultDeps, historyLedger = null, accessOwnerKey = null }) {
+export function createIngressServer({ token, gatewayPort, deps = defaultDeps, historyLedger = null, imageStore = null, accessOwnerKey = null }) {
   // Cancellation is scoped to this ingress instance and the opaque ODS user.
   // A Set preserves correct behavior if one chat has overlapping transports.
   const activeGatewayTransports = new Map();
   const historyAborters=new Map();
+  const imageRoutes=new Map();
+  let imageTurnActive=false;
   return http.createServer((req, res) => {
     let pathname;
     try {
@@ -1674,6 +1679,10 @@ export function createIngressServer({ token, gatewayPort, deps = defaultDeps, hi
 
     if (pathname === '/v1/model-control') {
       void handleModelControl(req, res, {ownerKey:typeof accessOwnerKey === 'function' ? accessOwnerKey() : accessOwnerKey});
+      return;
+    }
+    if(pathname==='/v1/chat/image' || pathname==='/v1/chat/image-policy') {
+      void handleImageRead(req,res,{policyOnly:pathname.endsWith('image-policy'),imageStore,historyLedger,imageRoutes,token,gatewayPort,deps});
       return;
     }
     if (pathname === '/v1/access-mode') {
@@ -1713,7 +1722,12 @@ export function createIngressServer({ token, gatewayPort, deps = defaultDeps, hi
         sendError(res, 415, "content type must be application/json");
         return;
       }
-      void handleChat(req, res, token, gatewayPort, deps, historyLedger, historyAborters, activeGatewayTransports);
+      const imageTurn=req.headers['x-ods-image-turn'];
+      if(imageTurn!==undefined && imageTurn!=='1') {sendError(res,400,'invalid image turn');return;}
+      if(imageTurn && imageTurnActive) {sendError(res,429,'image turn capacity is busy');return;}
+      if(imageTurn) imageTurnActive=true;
+      void handleChat(req, res, token, gatewayPort, deps, historyLedger, historyAborters, activeGatewayTransports, imageStore, imageRoutes,
+        Boolean(imageTurn)).finally(()=>{if(imageTurn) imageTurnActive=false;});
       return;
     }
 
@@ -1801,10 +1815,31 @@ async function handleCancel(req, res, token, gatewayPort, deps, ledger, historyA
   } catch {sendError(res,503,'cancellation-unconfirmed');}
 }
 
-async function handleChat(req, res, token, gatewayPort, deps, historyLedger, historyAborters, activeGatewayTransports) {
+async function handleImageRead(req,res,{policyOnly,imageStore,historyLedger,imageRoutes,token,gatewayPort,deps}) {
+  try {
+    if(req.method!=='POST') {sendError(res,405,'method not allowed');return;}
+    if(String(req.headers['content-type']||'').split(';',1)[0].trim()!=='application/json') {sendError(res,415,'content type must be application/json');return;}
+    const body=JSON.parse((await readBody(req,1024)).toString('utf8'));
+    if(!body || Object.keys(body).sort().join()!==(policyOnly?'user':'id,sha256,user')
+        || typeof body.user!=='string' || body.user.length!==68 || !/^ods-[a-f0-9]{64}$/.test(body.user))
+      throw new ChatImageError('invalid-image-request',400);
+    if(!imageStore || !historyLedger || !imageRoutes.has(body.user)) throw new ChatImageError('image-input-unverified',409);
+    const native=await nativeContextRequest('context',{user:body.user},token,gatewayPort,deps);
+    if(!['ready','busy'].includes(native.status)) throw new ChatImageError('image-input-unverified',409);
+    const policy=validateImageRoute(imageRoutes.get(body.user),native.model);
+    if(policyOnly) {sendJson(res,200,{schemaVersion:1,policy});return;}
+    const reader=createChatImageReadHandler(imageStore,user=>(historyLedger.read(user)?.messages||[]).flatMap(message=>message.images||[]));
+    sendJson(res,200,await reader(body.user,{id:body.id,sha256:body.sha256}));
+  } catch(error) {
+    const known=error instanceof ChatImageError || error instanceof HistoryError || error instanceof HttpError;
+    sendError(res,known?error.status:400,known?error.message:'invalid image request');
+  }
+}
+
+async function handleChat(req, res, token, gatewayPort, deps, historyLedger, historyAborters, activeGatewayTransports, imageStore, imageRoutes, imageTurn=false) {
   let raw;
   try {
-    raw = await readBody(req, MAX_HISTORY_BODY);
+    raw = await readBody(req, imageTurn?MAX_IMAGE_BODY:MAX_HISTORY_BODY);
   } catch (error) {
     sendError(
       res,
@@ -1828,6 +1863,9 @@ async function handleChat(req, res, token, gatewayPort, deps, historyLedger, his
 
   let release,prepared,submitted=false,completed=false,user;
   try {
+    const latestSubmitted=[...(parsed.messages||[])].reverse().find(message=>message?.role==='user');
+    if(imageTurn!==Boolean(latestSubmitted?.images?.length)) throw new ChatImageError('invalid-image-turn',400);
+    if(imageTurn && parsed.history_snapshot?.schemaVersion!==2) throw new ChatImageError('invalid-image-turn',400);
     if(!parsed.history_snapshot && raw.length>MAX_BODY) throw new HistoryError('request-too-large',413);
     user=computeSessionUser(parsed);
     const outgoing = buildOutgoing(parsed, user);
@@ -1835,7 +1873,13 @@ async function handleChat(req, res, token, gatewayPort, deps, historyLedger, his
     if(!parsed.history_snapshot) {await forwardChat(res,outgoing,token,gatewayPort,deps,{},activeGatewayTransports);return;}
     if(!historyLedger || !user) throw new HistoryError('history-storage-unavailable',503);
     const native=await nativeContextRequest('context',{user},token,gatewayPort,deps);
+    const hasImages=parsed.history_snapshot?.messages?.some(message=>message?.images?.length);
+    if(hasImages) validateImageRoute(parsed.image_route,native.model);
     prepared=historyLedger.prepare(user,parsed.request_id,parsed.history_snapshot,native);
+    if(hasImages) {
+      if(!imageRoutes.has(user) && imageRoutes.size>=1024) throw new ChatImageError('image-session-capacity',503);
+      imageRoutes.set(user,{...parsed.image_route});
+    } else imageRoutes.delete(user);
     if(prepared.replay) {
       const result=prepared.replay;
       if(outgoing.stream) {res.writeHead(200,{'Content-Type':'text/event-stream','Cache-Control':'no-store'});res.end(completionSse(applyVerificationToCompletion(result.completion,result.verification),result.verification));}
@@ -1844,14 +1888,23 @@ async function handleChat(req, res, token, gatewayPort, deps, historyLedger, his
     }
     const latest=[...(outgoing.messages || [])].reverse().find(message=>message.role==='user');
     if(!latest) throw new HistoryError('invalid-history-input',400);
+    const archivedLatest=prepared.state.messages.at(-1);
+    const images=decodeChatImageTurn(latest,archivedLatest);
+    if(images.length) {
+      if(!imageStore) throw new ChatImageError('image-storage-unavailable',503);
+      imageStore.put(user,images,prepared.state.messages.flatMap(message=>message.images||[]));
+    }
+    const nativeLatest={role:latest.role,content:latest.content};
+    if(images.length) nativeLatest.content=[...latest.content,{type:'text',text:
+      nativeHistoryMessages([{role:'user',content:'',images:archivedLatest.images}])[0].content}];
     // Identity/delivery policy belongs to the trusted API/edge messages. The
     // snapshot is data only; it cannot introduce system/developer instructions.
-    outgoing.messages=[...(outgoing.messages || []).filter(message=>message.role==='system'),...prepared.delta.slice(0,-1),latest];
+    outgoing.messages=[...(outgoing.messages || []).filter(message=>message.role==='system'),...nativeHistoryMessages(prepared.delta.slice(0,-1)),nativeLatest];
     await forwardChat(res,outgoing,token,gatewayPort,deps,{
       onController:controller=>historyAborters?.set(user,{requestId:parsed.request_id,controller}),
       beforeRequest:async signal=>{
         if(!prepared.hydrate) return;
-        const seeded=await nativeContextRequest('history',{user,request_id:parsed.request_id,messages:prepared.archive},token,gatewayPort,deps,signal,30000);
+        const seeded=await nativeContextRequest('history',{user,request_id:parsed.request_id,messages:nativeHistoryMessages(prepared.archive)},token,gatewayPort,deps,signal,30000);
         if(seeded?.hydrated!==true) throw new HistoryError('history-preparation-failed',503);
         const request_id=`history-${createHash('sha256').update(`${parsed.request_id}:${prepared.state.revision}`).digest('hex')}`;
         let state=await nativeContextRequest('compact',{user,request_id},token,gatewayPort,deps,signal);
@@ -1877,8 +1930,8 @@ async function handleChat(req, res, token, gatewayPort, deps, historyLedger, his
   } catch (error) {
     sendError(
       res,
-      error instanceof HttpError || error instanceof HistoryError ? error.status : 400,
-      error instanceof HttpError || error instanceof HistoryError ? error.message : "invalid request body"
+      error instanceof HttpError || error instanceof HistoryError || error instanceof ChatImageError ? error.status : 400,
+      error instanceof HttpError || error instanceof HistoryError || error instanceof ChatImageError ? error.message : "invalid request body"
     );
   } finally {
     if(historyAborters?.get(user)?.requestId===prepared?.state?.requestId) historyAborters.delete(user);
@@ -1961,10 +2014,11 @@ export async function start(cfg = configFromEnv(), opts = {}) {
     startupStage = "socket-prepare";
     prepareSocketPath(cfg.socketPath);
     const historyLedger=createChatHistoryLedger(cfg.chatStateDir || path.join(path.dirname(cfg.socketPath),'chat-state'));
+    const imageStore=createChatImageStore(path.join(cfg.chatStateDir || path.join(path.dirname(cfg.socketPath),'chat-state'),'images'));
     // Re-read on access requests so credential rotation or first installation
     // does not restart an active chat. Missing/unsafe key disables only access.
     const accessOwnerKey = () => readAccessOwnerKey(cfg.accessOwnerKeyFile, opts.euid);
-    server = createIngressServer({ token, gatewayPort: cfg.gatewayPort, deps, historyLedger, accessOwnerKey });
+    server = createIngressServer({ token, gatewayPort: cfg.gatewayPort, deps, historyLedger, imageStore, accessOwnerKey });
     startupStage = "socket-listen";
     await listenUnix(server, cfg.socketPath);
     startupStage = "runtime-state";

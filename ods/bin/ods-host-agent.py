@@ -3183,6 +3183,29 @@ def _pixel_max_tokens_for_context(context_length: int) -> int:
     return min(8192, max(1, context_length // 4))
 
 
+def _pixel_model_image_input(model_id: str) -> str:
+    """Read an explicit capability only from the exact public curated record.
+
+    Imported records and runtime advisory booleans can contain synthesized
+    defaults. Their false value is not evidence that image input is unsupported.
+    """
+    try:
+        path = INSTALL_DIR / "config" / "model-library.json"
+        if path.stat().st_size > 8 * 1024 * 1024:
+            return "unknown"
+        document = json.loads(path.read_text(encoding="utf-8"))
+        records = document.get("models") if isinstance(document, dict) else None
+        if not isinstance(records, list):
+            return "unknown"
+        matches = [record for record in records if isinstance(record, dict)
+                   and model_id in [record.get(key) for key in ("id", "llm_model_name", "gguf_file")]]
+        if len(matches) != 1 or type(matches[0].get("vision")) is not bool:
+            return "unknown"
+        return "supported" if matches[0]["vision"] else "unsupported"
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return "unknown"
+
+
 def _reconcile_ods_managed_pixel_model(
     model: str,
     context_length: int,
@@ -3190,6 +3213,7 @@ def _reconcile_ods_managed_pixel_model(
     max_tokens: int = 4096,
     reasoning: bool = False,
     route_fingerprint: str | None = None,
+    image_input: str | None = None,
 ) -> str:
     """Transactionally bind the managed Pixel gateway to an activated model."""
     identity = _ods_managed_pixel_identity()
@@ -3197,6 +3221,8 @@ def _reconcile_ods_managed_pixel_model(
         return "not_installed"
     if not _valid_pixel_model_name(model):
         raise RuntimeError("The promoted Pixel model identity is invalid")
+    if image_input is not None and image_input not in ("supported", "unsupported", "unknown"):
+        raise RuntimeError("The promoted Pixel image-input policy is invalid")
     if not isinstance(context_length, int) or isinstance(context_length, bool) \
             or not 4096 <= context_length <= 10_000_000:
         raise RuntimeError("Pixel requires a model context between 4096 and 10000000 tokens")
@@ -3245,6 +3271,7 @@ target_context="$5"
 target_max_tokens="$6"
 target_reasoning="$7"
 target_route_fingerprint="$8"
+target_image_input="$9"
 INTERACTIVE=false
 DRY_RUN=false
 log() { printf '%s\n' "$*" >&2; }
@@ -3263,7 +3290,7 @@ export INSTALL_DIR INTERACTIVE DRY_RUN ODS_SUDO_AVAILABLE
 . "$INSTALL_DIR/installers/lib/sudo.sh"
 . "$INSTALL_DIR/installers/lib/pixel-host-install.sh"
 ods_pixel_reconcile_promoted_model "$owner" "$home" "$target_model" ready \
-    "$target_context" "$target_max_tokens" "$target_reasoning" "$target_route_fingerprint"
+    "$target_context" "$target_max_tokens" "$target_reasoning" "$target_route_fingerprint" "" "$target_image_input"
 '''
     child_env = {
         "HOME": str(home),
@@ -3283,6 +3310,7 @@ ods_pixel_reconcile_promoted_model "$owner" "$home" "$target_model" ready \
                 str(context_length), str(max_tokens),
                 "true" if reasoning else "false",
                 route_fingerprint or "",
+                image_input or "unknown",
             ],
             env=child_env,
             capture_output=True,
@@ -3810,6 +3838,8 @@ def _remote_provider_runtime_contract(route: dict) -> dict[str, object]:
         "maxTokens": max_tokens,
         "reasoning": reasoning,
         "routeFingerprint": _remote_provider_route_fingerprint(route),
+        # This remote-route schema does not carry a verified vision capability.
+        "imageInput": "unknown",
     }
 
 
@@ -3869,6 +3899,7 @@ def _valid_managed_pixel_runtime_contract(value: object) -> bool:
         and type(max_tokens) is int
         and 1 <= max_tokens <= context_length
         and type(reasoning) is bool
+        and ("imageInput" not in value or value["imageInput"] in ("supported", "unsupported", "unknown"))
         and ("routeFingerprint" not in value or (
             isinstance(value["routeFingerprint"], str)
             and re.fullmatch(r"[a-f0-9]{64}", value["routeFingerprint"]) is not None
@@ -4182,7 +4213,13 @@ def _pixel_local_identity_matches(config: dict, identity: str, expected: str) ->
 def _prove_pixel_model_contract(config: dict, contract: dict) -> bool:
     if 'routeFingerprint' in contract:
         route = _read_remote_provider_route_state_for_update()
-        if _remote_provider_runtime_contract(route) != contract:
+        expected = _remote_provider_runtime_contract(route)
+        observed = dict(contract)
+        # This endpoint proves route identity, not image understanding. The
+        # native model transaction separately verifies the transport policy.
+        expected.pop('imageInput', None)
+        observed.pop('imageInput', None)
+        if not _valid_managed_pixel_runtime_contract(contract) or expected != observed:
             return False
         _verify_litellm_route(config, model='ods/current')
         return True
@@ -4417,6 +4454,11 @@ def _active_remote_provider_pixel_runtime() -> dict[str, object] | None:
             and "routeFingerprint" not in activation["remote"]
         if legacy:
             runtime.pop("routeFingerprint")
+        if (isinstance(activation, dict) and isinstance(activation.get("remote"), dict)
+                and "imageInput" not in activation["remote"]):
+            # Preserve legacy read-only status, without qualifying a new
+            # activation's exact-contract fast path or claiming image support.
+            runtime.pop("imageInput")
         if (
             not isinstance(activation, dict)
             or activation.get("phase") != "active"
@@ -4433,6 +4475,12 @@ def _active_remote_provider_pixel_runtime() -> dict[str, object] | None:
         ):
             return None
         observed = _cached_managed_pixel_runtime_contract() if env.get('PIXEL_OPENWEBUI_KEY') else _managed_pixel_runtime_contract()
+        if (isinstance(observed, dict) and "imageInput" not in runtime
+                and observed.get("imageInput") == "unknown"):
+            # An installer can explicitly migrate the previous implicit unknown
+            # without rewriting a remote activation receipt. Read-only status
+            # stays valid; the returned legacy contract still misses the field.
+            observed = {key: value for key, value in observed.items() if key != "imageInput"}
         if observed != runtime:
             return None
         return runtime
@@ -4545,6 +4593,8 @@ def _managed_pixel_runtime_contract() -> dict[str, object] | None:
     }
     if provider == "ods-gateway" and "modelRouteFingerprint" in value:
         contract["routeFingerprint"] = value["modelRouteFingerprint"]
+    if "modelImageInput" in value:
+        contract["imageInput"] = value["modelImageInput"]
     if not _valid_managed_pixel_runtime_contract(contract):
         raise RuntimeError("ODS-managed Pixel onboarding runtime contract is invalid")
     return contract
@@ -4559,6 +4609,7 @@ def _reconcile_managed_pixel_contract(contract: dict[str, object] | None) -> str
         max_tokens=int(contract["maxTokens"]),
         reasoning=bool(contract["reasoning"]),
         route_fingerprint=contract.get("routeFingerprint"),
+        image_input=contract.get("imageInput"),
     )
 
 
@@ -13185,6 +13236,7 @@ class AgentHandler(BaseHTTPRequestHandler):
         final_runtime_proof: dict[str, object] | None = None
         gpu_assignment_plan: dict | None = None
         previous_pixel_context: int | None = None
+        previous_pixel_image_input = "unknown"
         router_target_published = False
         previous_router_active = {}
         wsl_changed_digest = None
@@ -13451,6 +13503,7 @@ class AgentHandler(BaseHTTPRequestHandler):
                         previous_pixel_context,
                         max_tokens=_pixel_max_tokens_for_context(previous_pixel_context),
                         reasoning=previous_reasoning,
+                        image_input=previous_pixel_image_input,
                     )
                     if restored_pixel != "reconciled":
                         raise RuntimeError(
@@ -14211,6 +14264,9 @@ class AgentHandler(BaseHTTPRequestHandler):
                         "Final runtime proof returned an invalid Pixel model identity; "
                         "rolling back to the previous model"
                     )
+                if pixel_transaction is None:
+                    previous_pixel_contract = _managed_pixel_runtime_contract()
+                    previous_pixel_image_input = (previous_pixel_contract or {}).get("imageInput", "unknown")
                 pixel_reconcile_attempted = True
                 if pixel_transaction is not None and (
                     final_runtime_proof.get('contextVerified') is not True
@@ -14222,11 +14278,13 @@ class AgentHandler(BaseHTTPRequestHandler):
                     'contextLength': int(context_length),
                     'maxTokens': _pixel_max_tokens_for_context(int(context_length)),
                     'reasoning': _pixel_model_reasoning_capable(str(llm_model_name), env),
+                    'imageInput': _pixel_model_image_input(model_id),
                 }
                 pixel_status = (pixel_transaction.apply(pixel_target) if pixel_transaction is not None
                     else _reconcile_ods_managed_pixel_model(
                         pixel_runtime_identity, int(context_length),
-                        max_tokens=pixel_target['maxTokens'], reasoning=pixel_target['reasoning']))
+                        max_tokens=pixel_target['maxTokens'], reasoning=pixel_target['reasoning'],
+                        image_input=pixel_target['imageInput']))
                 if pixel_status == "not_installed":
                     pixel_reconcile_attempted = False
                 consumers = {
@@ -15203,6 +15261,7 @@ def _adopt_external_lemonade_model(expected_model_id: str) -> dict:
         "contextLength": context_length,
         "maxTokens": _pixel_max_tokens_for_context(context_length),
         "reasoning": _pixel_model_reasoning_capable(expected_model_id, env),
+        "imageInput": _pixel_model_image_input(expected_model_id),
     }
     original_env = _snapshot_text_file(env_path)
     hermes_path = INSTALL_DIR / "data" / "hermes" / "config.yaml"

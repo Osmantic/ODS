@@ -30,9 +30,10 @@ from security import verify_api_key
 from config import read_live_env_value
 from helpers import get_loaded_model, get_llama_context_size
 from pixel_chat_identity import messages_with_identity
-from pixel_chat_context import HistorySnapshot, public_context
+from pixel_chat_context import HistoryMessage, HistorySnapshot, public_context
 from pixel_runtime_identity import project_runtime_identity, unknown_runtime_identity
 from pixel_readiness import project_readiness
+from routers.pixel_images import router as image_router, resolve_message_images
 
 
 logger = logging.getLogger(__name__)
@@ -107,15 +108,16 @@ def _pixel_config() -> tuple[str, str] | None:
     return _validate_edge_url(raw_url), raw_key
 
 
-def _edge_headers(key: str, *, accept: str) -> dict[str, str]:
+def _edge_headers(key: str, *, accept: str, image_turn: bool = False) -> dict[str, str]:
     return {
         "Authorization": f"Bearer {key}",
         "Accept": accept,
         "Content-Type": "application/json",
+        **({"X-ODS-Image-Turn": "1"} if image_turn else {}),
     }
 
 
-class _Message(BaseModel):
+class _Message(HistoryMessage):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     role: str
@@ -129,6 +131,12 @@ class _Message(BaseModel):
         return value
 
 
+class ImageRoute(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    routeFingerprint: str = Field(min_length=64, max_length=64, pattern=r"^[a-f0-9]{64}$")
+    unknownConsent: bool
+
+
 class ChatStreamRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
@@ -136,6 +144,7 @@ class ChatStreamRequest(BaseModel):
     request_id: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_-]{1,128}$")
     messages: list[_Message] = Field(min_length=1, max_length=50)
     history_snapshot: HistorySnapshot | None = None
+    image_route: ImageRoute | None = None
 
     @field_validator("chat_id")
     @classmethod
@@ -154,6 +163,15 @@ class ChatStreamRequest(BaseModel):
 
     @model_validator(mode="after")
     def _history_matches_turn(self):
+        image_messages = [index for index, message in enumerate(self.messages) if message.images is not None]
+        history_images = self.history_snapshot is not None and any(message.images for message in self.history_snapshot.messages)
+        if (image_messages or history_images) and self.image_route is None:
+            raise ValueError("Image conversations require a confirmed model route")
+        if image_messages:
+            if image_messages != [len(self.messages) - 1]:
+                raise ValueError("Earlier image messages belong in the persistent history snapshot")
+            if self.request_id is None or self.history_snapshot is None or self.history_snapshot.schemaVersion != 2:
+                raise ValueError("Image turns require persistent version 2 history and a request_id")
         if self.history_snapshot is not None:
             if self.request_id is None:
                 raise ValueError("Persistent history requires a request_id")
@@ -178,6 +196,7 @@ class ChatCancelRequest(BaseModel):
 
 
 router = APIRouter(prefix="/api/pixel", tags=["pixel"])
+router.include_router(image_router)
 
 _result_store: ChatResultStore | None = None
 _result_tasks: dict[tuple[str, str, str], asyncio.Task] = {}
@@ -766,6 +785,8 @@ async def _retained_chat_stream(request, body, owner):
     fingerprint_input = [m.model_dump() for m in body.messages]
     if body.history_snapshot is not None:
         fingerprint_input = {"messages": fingerprint_input, "history_snapshot": body.history_snapshot.model_dump()}
+    if body.image_route is not None:
+        fingerprint_input = {"conversation": fingerprint_input, "image_route": body.image_route.model_dump()}
     fingerprint = hashlib.sha256(json.dumps(fingerprint_input, sort_keys=True, ensure_ascii=True).encode()).hexdigest()
     existing = store.get(identity)
     if existing is None:
@@ -775,7 +796,7 @@ async def _retained_chat_stream(request, body, owner):
         issue = await _model_readiness_issue()
         if issue is not None:
             raise HTTPException(status_code=409, detail=issue[1])
-        messages = await messages_with_identity(body.messages)
+        messages = await _prepare_chat_messages(body, owner)
     try:
         if identity[:2] in _result_stops:
             raise ResultConflict("Stop is still being confirmed")
@@ -846,7 +867,7 @@ async def _produce_retained_result(store, identity, body, config, messages, *, o
             async with httpx.AsyncClient(timeout=timeout, trust_env=False, follow_redirects=False) as client:
                 async with client.stream("POST", f"{edge_url}/v1/chat/completions",
                         json=_edge_chat_body(body, messages, extension_context=extension_context),
-                        headers=_edge_headers(key, accept="text/event-stream")) as upstream:
+                        headers=_edge_headers(key, accept="text/event-stream", image_turn=bool(body.messages[-1].images))) as upstream:
                     rejected = 400 <= upstream.status_code < 500
                     if upstream.status_code != 200 or not upstream.headers.get("content-type", "").lower().startswith("text/event-stream"):
                         raise ValueError("Invalid upstream stream")
@@ -946,6 +967,30 @@ async def _produce_retained_result(store, identity, body, config, messages, *, o
             store.finish(identity, state)
 
 
+async def _prepare_chat_messages(body, owner):
+    if body.image_route is not None:
+        state = await _chat_context_request(ChatCancelRequest(chat_id=body.chat_id))
+        model = state.get("model") or {}
+        if (model.get("imageRouteFingerprint") or model.get("routeFingerprint")) != body.image_route.routeFingerprint:
+            raise HTTPException(409, "The model route changed. Review the selected model before sending images.")
+        capability = model.get("imageInput")
+        if capability == "unsupported":
+            raise HTTPException(409, "The selected model is declared text-only. Choose an image-capable model.")
+        if capability not in {"supported", "unknown"}:
+            raise HTTPException(409, "Image support for the selected runtime has not been verified.")
+        if capability == "unknown" and not body.image_route.unknownConsent:
+            raise HTTPException(409, "Image support is unknown. Confirm an image test on this model route first.")
+    messages = await messages_with_identity(body.messages)
+    latest = body.messages[-1]
+    if latest.images is not None:
+        parts = await resolve_message_images(owner, body.chat_id, latest.content,
+                                             [image.model_dump() for image in latest.images])
+        # Identity injection inserts a system message; the final owner turn
+        # remains last. Preserve references for Edge/ingress integrity checks.
+        messages[-1] = {**messages[-1], "content": parts}
+    return messages
+
+
 def _edge_chat_body(body, messages, *, extension_context=None):
     from extension_requests import model_request_context
     latest = body.messages[-1] if body.messages else None
@@ -957,6 +1002,8 @@ def _edge_chat_body(body, messages, *, extension_context=None):
     if body.history_snapshot is not None:
         result["history_snapshot"] = body.history_snapshot.model_dump()
         result["request_id"] = body.request_id
+    if body.image_route is not None:
+        result["image_route"] = body.image_route.model_dump()
     return result
 
 

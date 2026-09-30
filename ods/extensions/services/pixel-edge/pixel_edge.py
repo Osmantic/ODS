@@ -26,6 +26,7 @@ from aiohttp import web, ClientSession, UnixConnector, TCPConnector, ClientTimeo
 from transition_gate import TransitionGate, GateError, strict_json, valid_binding
 from runtime_identity import project_runtime_identity, unknown_runtime_identity
 from chat_context import project_context, valid_history_snapshot
+from image_admission import ImageWorkBudget
 from access_mode import (public_status as public_access_status, valid_change as valid_access_change,
                          valid_model_control, public_model_control)
 
@@ -200,6 +201,8 @@ _HOP_BY_HOP = frozenset({
 })
 
 _MAX_BODY = 8 * 1024 * 1024          # Full history envelope; ingress validates 4 MiB text
+_MAX_IMAGE_BODY = 16 * 1024 * 1024  # Encoded envelope, not an extra text allowance
+_IMAGE_BODY_TIMEOUT = 30
 _MAX_CANCEL_BODY = 256
 _MAX_RESPONSE_BYTES = 2 * 1024 * 1024  # 2 MiB non-stream response cap
 _MAX_CANCEL_RESPONSE_BYTES = 1024
@@ -335,6 +338,7 @@ _CHAT_ACTIVITY_KEY = web.AppKey("pixel_chat_activity", dict)
 _ACTIVE_REQUESTS_KEY = web.AppKey("pixel_active_requests", set)
 _COMPACTIONS_KEY = web.AppKey("pixel_compactions", dict)
 _TRANSITION_GATE_KEY = web.AppKey("pixel_transition_gate", TransitionGate)
+_IMAGE_WORK_KEY = web.AppKey("pixel_image_work", ImageWorkBudget)
 
 
 def _validate_config() -> str:
@@ -1114,27 +1118,92 @@ async def handle_chat_completions(request: web.Request):
         return web.json_response({"error": "Content-Type must be application/json"},
                                  status=415)
 
-    if request.content_length and request.content_length > _MAX_BODY:
+    encodings = request.headers.getall("Content-Encoding", [])
+    if encodings and [value.strip().lower() for value in encodings] != ["identity"]:
+        return web.json_response({"error": "compressed chat requests are not supported"}, status=415)
+    flags = request.headers.getall("X-ODS-Image-Turn", [])
+    if flags not in ([], ["1"]):
+        return web.json_response({"error": "invalid image envelope"}, status=400)
+    image_turn = bool(flags)
+    limit = _MAX_IMAGE_BODY if image_turn else _MAX_BODY
+    if request.content_length and request.content_length > limit:
         return web.json_response({"error": "request too large"}, status=413)
+    lease = request.app[_IMAGE_WORK_KEY].acquire() if image_turn else None
+    if image_turn and lease is None:
+        return web.json_response({"error": "image processing busy; retry shortly"}, status=429,
+                                 headers={"Retry-After": "1", "Cache-Control": "no-store"})
+    reservation = [lease]
+    try:
+        return await _handle_admitted_chat(request, image_turn, reservation, limit)
+    finally:
+        if reservation[0] is not None:
+            reservation[0].release()
+
+
+def _has_current_images(data):
+    messages = data.get("messages") if isinstance(data, dict) else None
+    return isinstance(messages, list) and any(
+        isinstance(message, dict) and ("images" in message or (
+            isinstance(message.get("content"), list) and any(
+                isinstance(part, dict) and part.get("type") == "image_url"
+                for part in message["content"]))) for message in messages)
+
+
+def _parse_image_envelope(body):
+    data = strict_json(body)
+    route = data.get("image_route") if isinstance(data, dict) else None
+    snapshot = data.get("history_snapshot") if isinstance(data, dict) else None
+    messages = data.get("messages") if isinstance(data, dict) else None
+    if (not isinstance(route, dict) or set(route) != {"routeFingerprint", "unknownConsent"}
+            or not valid_binding(route.get("routeFingerprint")) or type(route.get("unknownConsent")) is not bool
+            or not isinstance(snapshot, dict) or snapshot.get("schemaVersion") != 2
+            or not isinstance(messages, list) or not messages
+            or not isinstance(messages[-1], dict) or not messages[-1].get("images")
+            or any(_has_current_images({"messages": [message]}) for message in messages[:-1])
+            or not valid_history_snapshot(data)):
+        raise ValueError("invalid image envelope")
+    return data
+
+
+async def _handle_admitted_chat(request, image_turn, reservation, limit):
 
     try:
         # Enforce this route's cap for both Content-Length and chunked bodies.
         # Request.read() otherwise applies aiohttp's default 1 MiB cap first.
-        body = await _read_bounded(request.content, _MAX_BODY)
+        if image_turn:
+            async with asyncio.timeout(_IMAGE_BODY_TIMEOUT):
+                body = await _read_bounded(request.content, limit)
+        else:
+            body = await _read_bounded(request.content, limit)
     except ValueError:
         return web.json_response({"error": "request too large"}, status=413)
+    except TimeoutError:
+        return web.json_response({"error": "image request timed out"}, status=408)
     except Exception:
         return web.json_response({"error": "bad request"}, status=400)
 
     try:
-        data = json.loads(body)
+        data = await reservation[0].run(_parse_image_envelope, body) if image_turn else json.loads(body)
     except (json.JSONDecodeError, ValueError, RecursionError):
         return web.json_response({"error": "invalid JSON"}, status=400)
 
     if not isinstance(data, dict):
         return web.json_response({"error": "JSON object required"}, status=400)
-    if not valid_history_snapshot(data):
+    # Image bytes cannot evade their resource slot by omitting the explicit
+    # envelope header. Old text/history-only requests retain their 8 MiB cap.
+    if not image_turn and _has_current_images(data):
+        if data.get('history_snapshot') is not None or any(
+                isinstance(message, dict) and 'images' in message for message in data['messages']):
+            return web.json_response({"error": "image envelope required"}, status=400)
+        # Preserve the existing small OpenAI multimodal surface without giving
+        # it the larger, reference-bound Portal envelope allowance.
+        reservation[0] = request.app[_IMAGE_WORK_KEY].acquire()
+        if reservation[0] is None:
+            return web.json_response({"error": "image processing busy; retry shortly"}, status=429,
+                                     headers={"Retry-After": "1", "Cache-Control": "no-store"})
+    if not image_turn and not valid_history_snapshot(data):
         return web.json_response({"error": "invalid conversation history"}, status=400)
+    del body  # Do not retain a second full encoded envelope through streaming.
 
     req_model = data.get("model", "")
     if req_model not in _ALLOWED_MODELS:
@@ -1153,6 +1222,9 @@ async def handle_chat_completions(request: web.Request):
 
     fwd_headers = _sanitize_headers(dict(request.headers))
     fwd_headers["Content-Type"] = "application/json"
+    if image_turn:
+        # Never forward an unvalidated caller-supplied image-header value.
+        fwd_headers["X-ODS-Image-Turn"] = "1"
 
     try:
         await request.app[_TRANSITION_GATE_KEY].admit(request_token)
@@ -1562,7 +1634,12 @@ async def handle_not_found(_request: web.Request):
 # ---------------------------------------------------------------------------
 
 def create_app() -> web.Application:
-    app = web.Application()
+    # Transport inflation happens before route body limits. The internal API
+    # sends uncompressed JSON; do not allow a compressed body to bypass caps.
+    app = web.Application(handler_args={"auto_decompress": False})
+    # The 128 MiB Edge budget permits one decoded image envelope at a time.
+    # Text, health and cancellation do not queue behind this image-only lease.
+    app[_IMAGE_WORK_KEY] = ImageWorkBudget(1)
     app[_CANCEL_EVENTS_KEY] = {}
     app[_CHAT_ACTIVITY_KEY] = {}
     app[_ACTIVE_REQUESTS_KEY] = set()

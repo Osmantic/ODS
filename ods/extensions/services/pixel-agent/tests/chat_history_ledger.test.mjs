@@ -10,6 +10,34 @@ const ready={status:'ready',sessionRevision:'one',compaction:{count:0}};
 const u=content=>({role:'user',content}),a=content=>({role:'assistant',content});
 const snapshot=messages=>({schemaVersion:1,messages});
 function fixture(t) {const dir=fs.mkdtempSync(path.join(os.tmpdir(),'ods-history-'));fs.chmodSync(dir,0o700);t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));return {dir,ledger:createChatHistoryLedger(dir)}}
+
+test('image references survive restart, acknowledgement and lost-session hydration',t=>{
+  const {dir,ledger}=fixture(t),reference={id:'img-'+'c'.repeat(32),sha256:'d'.repeat(64)};
+  const firstMessage={role:'user',content:'',images:[reference]};
+  const first=ledger.prepare(user,'image-first',{schemaVersion:2,messages:[firstMessage]},ready);
+  assert.deepEqual(first.delta,[firstMessage]);
+  ledger.complete(user,first,{id:'image-result'},null,ready);
+  const restored=createChatHistoryLedger(dir);
+  const followup={schemaVersion:2,messages:[firstMessage,a('Observed the picture'),u('Read the picture again')]};
+  const next=restored.prepare(user,'image-followup',followup,{...ready,status:'missing'});
+  assert.deepEqual(next.archive[0],firstMessage);
+  assert.deepEqual(restored.search(user).messages[0].images,[reference]);
+  assert.equal(restored.search(other).messages.length,0);
+  restored.complete(user,next,{},null,ready);
+  const changed=structuredClone(followup);changed.messages[0].images[0].sha256='e'.repeat(64);changed.messages.push(u('Another turn'));
+  assert.throws(()=>restored.prepare(user,'changed',changed,ready),/history-changed/);
+});
+
+test('image snapshots reject URLs, assistant images, duplicate and inconsistent references',()=>{
+  const ref={id:'img-'+'c'.repeat(32),sha256:'d'.repeat(64)};
+  for(const messages of [
+    [{role:'assistant',content:'x',images:[ref]},u('next')],
+    [{role:'user',content:'x',images:[ref,ref]}],
+    [{role:'user',content:'x',images:[{...ref,url:'https://example.com/image'}]}],
+    [{role:'user',content:'x',images:[ref]},{role:'user',content:'x',images:[{...ref,sha256:'e'.repeat(64)}]}],
+  ]) assert.throws(()=>validateHistorySnapshot({schemaVersion:2,messages}),/invalid-history-images/);
+  assert.throws(()=>validateHistorySnapshot({schemaVersion:1,messages:[{role:'user',content:'x',images:[ref]}]}),/invalid-history-images/);
+});
 test('durable cursor sends only new input after restart and native compaction rotation',t=>{
   const {dir,ledger}=fixture(t), first=ledger.prepare(user,'first',snapshot([u('hello')]),ready);
   ledger.complete(user,first,{id:'response'},null,ready);

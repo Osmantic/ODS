@@ -14,15 +14,31 @@ export class HistoryError extends Error {
   constructor(code,status=409) { super(code.replaceAll('_','-')); this.code=this.message; this.status=status; }
 }
 export function validateHistorySnapshot(value) {
-  if (!value || Object.keys(value).sort().join() !== 'messages,schemaVersion' || value.schemaVersion !== 1 || !Array.isArray(value.messages) || !value.messages.length || value.messages.length > HISTORY_MESSAGES) throw new HistoryError('invalid_history_snapshot',400);
+  if (!value || Object.keys(value).sort().join() !== 'messages,schemaVersion' || ![1,2].includes(value.schemaVersion) || !Array.isArray(value.messages) || !value.messages.length || value.messages.length > HISTORY_MESSAGES) throw new HistoryError('invalid_history_snapshot',400);
   let bytes=0;
+  const imageHashes=new Map();
   const messages=value.messages.map(message => {
-    if (!message || Object.keys(message).sort().join() !== 'content,role' || !['user','assistant'].includes(message.role) || typeof message.content !== 'string' || /\u0000/.test(message.content)) throw new HistoryError('invalid_history_snapshot',400);
+    const hasImages=message && Object.hasOwn(message,'images');
+    if (!message || Object.keys(message).sort().join() !== (hasImages?'content,images,role':'content,role') || !['user','assistant'].includes(message.role) || typeof message.content !== 'string' || /\u0000/.test(message.content)) throw new HistoryError('invalid_history_snapshot',400);
+    let images;
+    if(hasImages) {
+      if(value.schemaVersion!==2 || message.role!=='user' || !Array.isArray(message.images) || !message.images.length || message.images.length>4) throw new HistoryError('invalid_history_images',400);
+      const seen=new Set();
+      images=message.images.map(image=>{
+        if(!image || Object.keys(image).sort().join()!=='id,sha256'
+          || typeof image.id!=='string' || image.id.length!==36 || !/^img-[a-f0-9]{32}$/.test(image.id)
+          || typeof image.sha256!=='string' || image.sha256.length!==64 || !/^[a-f0-9]{64}$/.test(image.sha256)
+          || seen.has(image.id) || imageHashes.has(image.id) && imageHashes.get(image.id)!==image.sha256) throw new HistoryError('invalid_history_images',400);
+        seen.add(image.id);imageHashes.set(image.id,image.sha256);
+        bytes+=image.id.length+image.sha256.length;
+        return {id:image.id,sha256:image.sha256};
+      });
+    }
     bytes+=Buffer.byteLength(message.content,'utf8');
     if (bytes>HISTORY_BYTES) throw new HistoryError('history_too_large',413);
-    return {role:message.role,content:message.content};
+    return {role:message.role,content:message.content,...(images?{images}:{})};
   });
-  if (messages.at(-1).role !== 'user' || !messages.at(-1).content.trim()) throw new HistoryError('invalid_history_snapshot',400);
+  if (messages.at(-1).role !== 'user' || !messages.at(-1).content.trim() && !messages.at(-1).images?.length) throw new HistoryError('invalid_history_snapshot',400);
   return messages;
 }
 function privateStat(file,directory=false) {
@@ -172,8 +188,10 @@ export function createChatHistoryLedger(directory) {
       const message=state.messages[index], position=needle?message.content.toLocaleLowerCase().indexOf(needle):0;
       if(position<0) continue;
       const start=Math.max(0,position-300), excerpt=message.content.slice(start,start+2400);
-      if(matches.length>=limit || bytes+Buffer.byteLength(excerpt)>10000) {nextOffset=index;break;}
-      matches.push({index,role:message.role,content:excerpt,truncated:start>0 || start+excerpt.length<message.content.length});bytes+=Buffer.byteLength(excerpt);
+      const entryBytes=Buffer.byteLength(excerpt)+Buffer.byteLength(JSON.stringify(message.images??[]));
+      if(matches.length>=limit || bytes+entryBytes>10000) {nextOffset=index;break;}
+      matches.push({index,role:message.role,content:excerpt,truncated:start>0 || start+excerpt.length<message.content.length,
+        ...(message.images?{images:message.images}:{})});bytes+=entryBytes;
     }
     return {schemaVersion:1,source:'archived-conversation',untrusted:true,revision:state?.revision || null,totalMessages:state?.messages.length || 0,messages:matches,nextOffset};
   }

@@ -47,6 +47,7 @@ path = pathlib.Path(out)
 # Preserve it for the same model route and context; explicit model settings are
 # still applied by _ods_pixel_update_onboarding_model.
 route_fingerprint = None
+image_input = "unknown"
 try:
     previous_fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
 except FileNotFoundError:
@@ -80,6 +81,14 @@ else:
     if all(previous.get(key) == value for key, value in same_model.items()):
         max_tokens = str(previous["modelMaxTokens"])
         route_fingerprint = previous.get("modelRouteFingerprint")
+        previous_image_input = previous.get("modelImageInput", "unknown")
+        if previous_image_input not in ("supported", "unsupported", "unknown"):
+            raise SystemExit("invalid existing ODS Pixel image-input contract")
+        # A remote alias can keep its URL/name while its route revision changes.
+        # This renderer has no fresh remote fingerprint proof; reconciliation
+        # must restore any stronger declaration from the current route contract.
+        if route_fingerprint is None:
+            image_input = previous_image_input
         if route_fingerprint is not None and (not isinstance(route_fingerprint, str)
                 or not re.fullmatch(r"[a-f0-9]{64}", route_fingerprint)):
             raise SystemExit("invalid existing ODS Pixel route identity")
@@ -104,6 +113,9 @@ payload = {
     "modelReasoning": reasoning == "true",
     "modelContextWindow": int(context),
     "modelMaxTokens": int(max_tokens),
+    # Unknown permits image transport, not a claim that this model has vision.
+    # The Portal requires informed consent for a test on an unknown route.
+    "modelImageInput": image_input,
     "modelPrivateHosts": [],
     "webSearchProvider": web_search_provider,
     "searxngBaseUrl": f"http://127.0.0.1:{search_port}",
@@ -116,7 +128,7 @@ payload = {
         "id": "pixel-ods",
         "path": plugin_path,
         "sha256": plugin_digest,
-        "tools": ["pixel_ods_status", "pixel_ods_apps_list", "pixel_ods_extensions", "pixel_ods_host_observe", "pixel_ods_host_command_propose", "pixel_ods_evidence_report", "pixel_ods_evidence_readback", "pixel_ods_research", "pixel_ods_web_extract", "pixel_ods_download_promote", "pixel_ods_workspace_preview", "pixel_ods_workspace_bundle", "pixel_ods_workspace_preview_inspect", "pixel_ods_ask_user", "pixel_ods_goal", "pixel_ods_activity", "pixel_ods_history", "pixel_ods_skill", "pixel_ods_extension_proposal", "pixel_ods_source_proposal", "pixel_ods_python_library_proposal", "pixel_ods_extension_request_status", "pixel_ods_extension_request_prepare", "pixel_ods_extension_request_advance", "pixel_ods_extension_request_retry"],
+        "tools": ["pixel_ods_status", "pixel_ods_apps_list", "pixel_ods_extensions", "pixel_ods_host_observe", "pixel_ods_host_command_propose", "pixel_ods_evidence_report", "pixel_ods_evidence_readback", "pixel_ods_research", "pixel_ods_web_extract", "pixel_ods_download_promote", "pixel_ods_workspace_preview", "pixel_ods_workspace_bundle", "pixel_ods_workspace_preview_inspect", "pixel_ods_ask_user", "pixel_ods_goal", "pixel_ods_activity", "pixel_ods_history", "pixel_ods_image_read", "pixel_ods_skill", "pixel_ods_extension_proposal", "pixel_ods_source_proposal", "pixel_ods_python_library_proposal", "pixel_ods_extension_request_status", "pixel_ods_extension_request_prepare", "pixel_ods_extension_request_advance", "pixel_ods_extension_request_retry"],
     }],
     "localCapabilityPacks": [],
     "agentSkills": [],

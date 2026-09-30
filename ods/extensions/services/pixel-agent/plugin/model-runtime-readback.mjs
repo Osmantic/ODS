@@ -31,6 +31,13 @@ export function readRuntimeModel(config, metadata) {
     if(provider!=='ods-gateway'||typeof value!=='string'||value.length!==64||!/^[a-f0-9]{64}$/.test(value))throw invalid();
     contract.routeFingerprint=value;
   }
+  if('modelImageInput' in settings) {
+    const capability=settings.modelImageInput;
+    const expected=capability==='unsupported'?['text']:['text','image'];
+    if(!['supported','unsupported','unknown'].includes(capability)
+      || JSON.stringify(row.input)!==JSON.stringify(expected))throw invalid();
+    contract.imageInput=capability;
+  }
   const defaults=config.agents.defaults??{},compaction=defaults.compaction??{};
   const layers=[defaults.params??{},defaults.models?.[selected]?.params??{},agent.params??{}];
   let output=contract.maxTokens,declared=false,resolved=false;

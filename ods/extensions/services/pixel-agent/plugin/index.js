@@ -79,6 +79,8 @@ import { createAccessRuntime, executionHostForAgent } from "./access-runtime.mjs
 import { createManagedRuntimeRegistry } from "./managed-runtime-lifecycle.mjs";
 import {createContextCompaction, readContextRequest, prepareStableContextModel} from './context-compaction.mjs';
 import {registerHistoryIntegration} from './history-context.mjs';
+import {createChatImageReadTool,CHAT_IMAGE_READ_TOOL} from './chat-image-read.mjs';
+import {readConversationImage,readConversationImagePolicy} from './chat-image-transport.mjs';
 import {createExtensionProposalTool, createSourceProposalTool, createPythonLibraryProposalTool, createExtensionRequestStatusTool, createExtensionRequestPrepareTool, createExtensionRequestAdvanceTool, createExtensionRequestRetryTool, submitExtensionProposal} from './extension-proposal.mjs';
 import { createOpenClawCodingTools, resolveSandboxContext, OPENCLAW_VERSION } from "openclaw/plugin-sdk/agent-harness";
 
@@ -290,6 +292,15 @@ export default definePluginEntry({
         release:token => accessRuntime.release(token), owns:token => accessRuntime.owns(token)},
     });
     registerHistoryIntegration(api,{compactor:contextCompaction,getSessionEntry,patchSessionEntry,resolveStorePath,withSessionTranscriptWriteLock,appendAssistantMirrorMessageByIdentity});
+    api.registerTool(onlyPixel(context=>createChatImageReadTool(context,{
+      getSessionEntry,resolveStorePath,
+      readConfig:()=>api.runtime?.config?.current?.()??api.config,
+      readImage:readConversationImage,
+      imagePolicyForContext:async trustedContext=>{
+        const user=trustedContext.sessionKey.slice('agent:pixel:openai-user:'.length);
+        return (await readConversationImagePolicy(user)).policy;
+      },
+    })),{names:[CHAT_IMAGE_READ_TOOL]});
     // One system prompt for every Pixel chat: no per-chat session key or id.
     registerStableRuntimeLine(api);
     const statusFile = statusFileFromEnv();

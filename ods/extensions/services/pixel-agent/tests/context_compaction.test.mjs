@@ -16,6 +16,27 @@ function observed(runtime,event,context) {
   runtime.observeModelOutput({...event,lastAssistant:{...event.lastAssistant,timestamp:Date.now()+10000}},ctx);
 }
 const deferred = () => {let resolve,reject;const promise = new Promise((ok,no) => {resolve=ok;reject=no;});return {promise,resolve,reject};};
+test('image capability belongs to the selected native model and matching input config',t => {
+  const f=fixture(t);
+  const config=f.args.readConfig();
+  f.args.readConfig=()=>config;
+  config.plugins={entries:{'pixel-ods':{config:{modelImageInput:'unknown'}}}};
+  const row=config.models.providers['ods-gateway'].models[0];
+  row.input=['text','image'];
+  assert.equal(createContextCompaction(f.args).context(user).model.imageInput,'unknown');
+  const fingerprint=createContextCompaction(f.args).context(user).model.imageRouteFingerprint;
+  assert.match(fingerprint,/^[a-f0-9]{64}$/);
+  config.models.providers['ods-gateway'].baseUrl='http://127.0.0.1:4000/v1';
+  assert.notEqual(createContextCompaction(f.args).context(user).model.imageRouteFingerprint,fingerprint);
+  config.plugins.entries['pixel-ods'].config.modelImageInput='supported';
+  assert.equal(createContextCompaction(f.args).context(user).model.imageInput,'supported');
+  row.input=['text'];
+  assert.equal(createContextCompaction(f.args).context(user).status,'unavailable');
+  config.plugins.entries['pixel-ods'].config.modelImageInput='unsupported';
+  assert.equal(createContextCompaction(f.args).context(user).model.imageInput,'unsupported');
+  f.entry={...f.entry,modelOverride:'other-model'};
+  assert.equal(createContextCompaction(f.args).context(user).model?.imageInput,undefined);
+});
 function fixture(t, overrides = {}) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(),'ods-context-'));
   fs.chmodSync(directory,0o700);

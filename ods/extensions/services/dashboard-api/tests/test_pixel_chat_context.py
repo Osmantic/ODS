@@ -96,6 +96,17 @@ def test_public_context_retains_route_identity_without_remote_connection_details
             public_context(value)
 
 
+def test_public_context_preserves_explicit_image_capability_only():
+    for capability in ("supported", "unsupported", "unknown"):
+        value = state()
+        value["model"]["imageInput"] = capability
+        assert public_context(value)["model"]["imageInput"] == capability
+    value["model"]["imageInput"] = True
+    with pytest.raises(ValidationError):
+        public_context(value)
+    assert "imageInput" not in public_context(state())["model"]
+
+
 def test_compaction_is_started_once_and_context_reads_never_start_model_work(store, monkeypatch):
     calls = []
     value = state()

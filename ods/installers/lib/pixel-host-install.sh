@@ -784,16 +784,19 @@ PY
 _ods_pixel_stable_alias_matches_promoted_model() {
     local owner="$1" home="$2" answers="$3" promoted_model="$4"
     local promoted_context="${5:-}" promoted_max_tokens="${6:-}" promoted_reasoning="${7:-}" config
-    local route_fingerprint="${8:-}"
+    local route_fingerprint="${8:-}" image_input="${9:-unknown}"
     config="$home/.openclaw/openclaw.json"
     ods_pixel_run_as_owner "$owner" "$home" python3 - \
         "$answers" "$config" "$promoted_model" "$promoted_context" \
-        "$promoted_max_tokens" "$promoted_reasoning" "$route_fingerprint" <<'PY'
+        "$promoted_max_tokens" "$promoted_reasoning" "$route_fingerprint" "$image_input" <<'PY'
 import json, os, pathlib, re, stat, sys
 
 answers_path, config_path = map(pathlib.Path, sys.argv[1:3])
 promoted_model, context_raw, max_tokens_raw, reasoning_raw = sys.argv[3:7]
 route_fingerprint = sys.argv[7] or None
+image_input = sys.argv[8]
+if image_input not in ("supported", "unsupported", "unknown"):
+    raise SystemExit("invalid promoted Pixel image-input contract")
 if route_fingerprint is not None and not re.fullmatch(r"[a-f0-9]{64}", route_fingerprint):
     raise SystemExit(1)
 if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+:/ @(),=-]{0,255}", promoted_model):
@@ -814,6 +817,9 @@ for path in (answers_path, config_path):
     documents.append(value)
 
 answers, config = documents
+if (answers.get("modelImageInput", "unknown") != image_input
+        or config.get("plugins", {}).get("entries", {}).get("pixel-ods", {}).get("config", {}).get("modelImageInput") != image_input):
+    raise SystemExit(1)
 if (answers.get("modelRouteFingerprint") != route_fingerprint
         or config.get("plugins", {}).get("entries", {}).get("pixel-ods", {}).get("config", {}).get("modelRouteFingerprint") != route_fingerprint):
     raise SystemExit(1)
@@ -854,7 +860,8 @@ if not isinstance(models, list) or len(models) != 1 or not isinstance(models[0],
 model = models[0]
 if (model.get("id") != "ods/current" or model.get("name") != expected_name
         or model.get("contextWindow") != context or model.get("maxTokens") != max_tokens
-        or model.get("reasoning") is not reasoning):
+        or model.get("reasoning") is not reasoning
+        or model.get("input") != (["text"] if image_input == "unsupported" else ["text", "image"])):
     raise SystemExit(1)
 PY
 }
@@ -977,6 +984,11 @@ model["name"] = name
 model["contextWindow"] = context
 model["maxTokens"] = max_tokens
 model["reasoning"] = reasoning
+image_input = contract.get("modelImageInput", "unknown")
+if image_input not in ("supported", "unsupported", "unknown"):
+    raise SystemExit("invalid promoted Pixel image-input contract")
+plugin_config["modelImageInput"] = image_input
+model["input"] = ["text"] if image_input == "unsupported" else ["text", "image"]
 agent = next(
     item for item in candidate["agents"]["list"]
     if isinstance(item, dict) and item.get("id") == "pixel"
@@ -1178,6 +1190,14 @@ contract["modelApiKey"] = provider_value.get("apiKey")
 contract["modelContextWindow"] = context_window
 contract["modelMaxTokens"] = max_tokens
 contract["modelReasoning"] = reasoning
+image_input = live.get("plugins", {}).get("entries", {}).get("pixel-ods", {}).get("config", {}).get("modelImageInput")
+if image_input is not None:
+    if (image_input not in ("supported", "unsupported", "unknown")
+            or models[0].get("input") != (["text"] if image_input == "unsupported" else ["text", "image"])):
+        raise SystemExit("invalid live Pixel image-input contract")
+    contract["modelImageInput"] = image_input
+else:
+    contract.pop("modelImageInput", None)
 route_fingerprint = live.get("plugins", {}).get("entries", {}).get("pixel-ods", {}).get("config", {}).get("modelRouteFingerprint")
 if route_fingerprint is not None and (not isinstance(route_fingerprint, str)
         or not re.fullmatch(r"[a-f0-9]{64}", route_fingerprint)):
@@ -1200,15 +1220,18 @@ PY
 _ods_pixel_update_onboarding_model() {
     local owner="$1" home="$2" answers="$3" model="$4"
     local context="${5:-}" max_tokens="${6:-}" reasoning="${7:-}"
-    local route_fingerprint="${8:-}"
+    local route_fingerprint="${8:-}" image_input="${9:-unknown}"
     ods_pixel_run_as_owner "$owner" "$home" python3 - \
-        "$answers" "$model" "$context" "$max_tokens" "$reasoning" "$route_fingerprint" <<'PY'
+        "$answers" "$model" "$context" "$max_tokens" "$reasoning" "$route_fingerprint" "$image_input" <<'PY'
 import json, os, pathlib, re, stat, sys, tempfile
 
 path = pathlib.Path(sys.argv[1])
 model = sys.argv[2]
 context_raw, max_tokens_raw, reasoning_raw = sys.argv[3:6]
 route_fingerprint = sys.argv[6] or None
+image_input = sys.argv[7]
+if image_input not in ("supported", "unsupported", "unknown"):
+    raise SystemExit("invalid promoted Pixel image-input contract")
 if route_fingerprint is not None and not re.fullmatch(r"[a-f0-9]{64}", route_fingerprint):
     raise SystemExit("invalid promoted Pixel route identity")
 if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+:/ @(),=-]{0,255}", model):
@@ -1298,6 +1321,7 @@ else:
     # rolled forward, then persist only the canonical alias.
     value["modelId"] = "ods/current"
     value["modelName"] = f"ODS Current ({model})"
+value["modelImageInput"] = image_input
 if provider == "ods-gateway" and route_fingerprint is not None:
     value["modelRouteFingerprint"] = route_fingerprint
 else:
@@ -1418,6 +1442,10 @@ expected_model = {
     "maxTokens": contract.get("modelMaxTokens"),
     "reasoning": contract.get("modelReasoning"),
 }
+image_input = contract.get("modelImageInput", "unknown")
+if image_input not in ("supported", "unsupported", "unknown"):
+    raise SystemExit("invalid candidate Pixel image-input contract")
+expected_model["input"] = ["text"] if image_input == "unsupported" else ["text", "image"]
 for key, expected in expected_model.items():
     if candidate_model.get(key) != expected:
         raise SystemExit(f"candidate model field does not match onboarding: {key}")
@@ -1451,6 +1479,7 @@ normalized_model["name"] = model_name
 normalized_model["contextWindow"] = contract.get("modelContextWindow")
 normalized_model["maxTokens"] = contract.get("modelMaxTokens")
 normalized_model["reasoning"] = contract.get("modelReasoning")
+normalized_model["input"] = expected_model["input"]
 normalized_agent["model"] = f"{provider}/{model_id}"
 normalized_defaults = normalized_agents.get("defaults") if isinstance(normalized_agents, dict) else None
 normalized_session = normalized.get("session")
@@ -1539,6 +1568,7 @@ if (not isinstance(normalized_compaction, dict)
     raise SystemExit("live Pixel runtime policy is outside the ODS contract")
 normalized_agent_experimental["localModelLean"] = False
 normalized_pixel_config["modelContextWindow"] = normalized_context_window
+normalized_pixel_config["modelImageInput"] = image_input
 normalized_pixel_config["leanPrompt"] = normalized_lean_prompt
 route_fingerprint = contract.get("modelRouteFingerprint")
 if route_fingerprint is not None and (provider != "ods-gateway" or not isinstance(route_fingerprint, str)
@@ -1636,7 +1666,7 @@ normalized_agent_tools["deny"] = [
     if item not in {
         "web_search", "web_fetch", "pixel_ods_status", "pixel_ods_apps_list", "pixel_ods_extensions", "pixel_ods_host_observe", "pixel_ods_host_command_propose",
         "pixel_ods_evidence_report", "pixel_ods_evidence_readback",
-        "pixel_ods_research", "pixel_ods_web_extract", "pixel_ods_download_promote", "pixel_ods_workspace_preview", "pixel_ods_workspace_bundle", "pixel_ods_ask_user", "pixel_ods_goal", "pixel_ods_activity", "pixel_ods_history", "pixel_ods_skill", "pixel_ods_extension_proposal", "pixel_ods_source_proposal", "pixel_ods_python_library_proposal", "pixel_ods_extension_request_status", "pixel_ods_extension_request_prepare", "pixel_ods_extension_request_advance", "pixel_ods_extension_request_retry",
+        "pixel_ods_research", "pixel_ods_web_extract", "pixel_ods_download_promote", "pixel_ods_workspace_preview", "pixel_ods_workspace_bundle", "pixel_ods_ask_user", "pixel_ods_goal", "pixel_ods_activity", "pixel_ods_history", "pixel_ods_image_read", "pixel_ods_skill", "pixel_ods_extension_proposal", "pixel_ods_source_proposal", "pixel_ods_python_library_proposal", "pixel_ods_extension_request_status", "pixel_ods_extension_request_prepare", "pixel_ods_extension_request_advance", "pixel_ods_extension_request_retry",
         "pixel_web_extract"
     }
 ]
@@ -1646,7 +1676,7 @@ for extension_tool in (
     "cron", "create_goal", "get_goal", "update_goal", "update_plan",
     "pixel_ods_status", "pixel_ods_apps_list", "pixel_ods_extensions", "pixel_ods_host_observe", "pixel_ods_host_command_propose",
     "pixel_ods_evidence_report", "pixel_ods_evidence_readback",
-    "pixel_ods_research", "pixel_ods_web_extract", "pixel_ods_download_promote", "pixel_ods_workspace_preview", "pixel_ods_workspace_bundle", "pixel_ods_ask_user", "pixel_ods_goal", "pixel_ods_activity", "pixel_ods_history", "pixel_ods_skill", "pixel_ods_extension_proposal", "pixel_ods_source_proposal", "pixel_ods_python_library_proposal", "pixel_ods_extension_request_status", "pixel_ods_extension_request_prepare", "pixel_ods_extension_request_advance", "pixel_ods_extension_request_retry"
+    "pixel_ods_research", "pixel_ods_web_extract", "pixel_ods_download_promote", "pixel_ods_workspace_preview", "pixel_ods_workspace_bundle", "pixel_ods_ask_user", "pixel_ods_goal", "pixel_ods_activity", "pixel_ods_history", "pixel_ods_image_read", "pixel_ods_skill", "pixel_ods_extension_proposal", "pixel_ods_source_proposal", "pixel_ods_python_library_proposal", "pixel_ods_extension_request_status", "pixel_ods_extension_request_prepare", "pixel_ods_extension_request_advance", "pixel_ods_extension_request_retry"
 ):
     if extension_tool not in normalized_also_allow:
         normalized_also_allow.append(extension_tool)
@@ -1654,7 +1684,7 @@ for permitted_tool in (
     "cron", "create_goal", "get_goal", "update_goal", "update_plan",
     "web_search", "web_fetch", "pixel_ods_status", "pixel_ods_apps_list", "pixel_ods_extensions", "pixel_ods_host_observe", "pixel_ods_host_command_propose",
     "pixel_ods_evidence_report", "pixel_ods_evidence_readback",
-    "pixel_ods_research", "pixel_ods_web_extract", "pixel_ods_download_promote", "pixel_ods_workspace_preview", "pixel_ods_workspace_bundle", "pixel_ods_ask_user", "pixel_ods_goal", "pixel_ods_activity", "pixel_ods_history", "pixel_ods_skill", "pixel_ods_extension_proposal", "pixel_ods_source_proposal", "pixel_ods_python_library_proposal", "pixel_ods_extension_request_status", "pixel_ods_extension_request_prepare", "pixel_ods_extension_request_advance", "pixel_ods_extension_request_retry"
+    "pixel_ods_research", "pixel_ods_web_extract", "pixel_ods_download_promote", "pixel_ods_workspace_preview", "pixel_ods_workspace_bundle", "pixel_ods_ask_user", "pixel_ods_goal", "pixel_ods_activity", "pixel_ods_history", "pixel_ods_image_read", "pixel_ods_skill", "pixel_ods_extension_proposal", "pixel_ods_source_proposal", "pixel_ods_python_library_proposal", "pixel_ods_extension_request_status", "pixel_ods_extension_request_prepare", "pixel_ods_extension_request_advance", "pixel_ods_extension_request_retry"
 ):
     if permitted_tool not in normalized_sandbox_allow:
         normalized_sandbox_allow.append(permitted_tool)
@@ -1887,7 +1917,7 @@ _ods_pixel_refresh_plugin_registry() {
     registry="$(ods_pixel_run_as_owner "$owner" "$home" "$openclaw_bin" \
         plugins registry --refresh --json 2>/dev/null)" || return 1
     jq -e --arg root "$plugin_root" '
-        (["pixel_ods_apps_list", "pixel_ods_download_promote", "pixel_ods_evidence_readback", "pixel_ods_evidence_report", "pixel_ods_extensions", "pixel_ods_host_command_propose", "pixel_ods_host_observe", "pixel_ods_status", "pixel_ods_research", "pixel_ods_web_extract", "pixel_ods_workspace_preview", "pixel_ods_workspace_bundle", "pixel_ods_workspace_preview_inspect", "pixel_ods_ask_user", "pixel_ods_goal", "pixel_ods_activity", "pixel_ods_history", "pixel_ods_skill", "pixel_ods_extension_proposal", "pixel_ods_source_proposal", "pixel_ods_python_library_proposal", "pixel_ods_extension_request_status", "pixel_ods_extension_request_prepare", "pixel_ods_extension_request_advance", "pixel_ods_extension_request_retry"] | sort) as $tools
+        (["pixel_ods_apps_list", "pixel_ods_download_promote", "pixel_ods_evidence_readback", "pixel_ods_evidence_report", "pixel_ods_extensions", "pixel_ods_host_command_propose", "pixel_ods_host_observe", "pixel_ods_status", "pixel_ods_research", "pixel_ods_web_extract", "pixel_ods_workspace_preview", "pixel_ods_workspace_bundle", "pixel_ods_workspace_preview_inspect", "pixel_ods_ask_user", "pixel_ods_goal", "pixel_ods_activity", "pixel_ods_history", "pixel_ods_image_read", "pixel_ods_skill", "pixel_ods_extension_proposal", "pixel_ods_source_proposal", "pixel_ods_python_library_proposal", "pixel_ods_extension_request_status", "pixel_ods_extension_request_prepare", "pixel_ods_extension_request_advance", "pixel_ods_extension_request_retry"] | sort) as $tools
         | .refreshed == true
         and .registry.version == 1
         and .registry.refreshReason == "manual"
@@ -1907,7 +1937,7 @@ _ods_pixel_verify_plugin_loaded() {
     local owner="$1" home="$2" openclaw_bin="$3" plugin_root="$4"
     ods_pixel_run_as_owner "$owner" "$home" "$openclaw_bin" plugins list --json 2>/dev/null \
         | jq -e --arg root "$plugin_root" '
-            ["pixel_ods_apps_list", "pixel_ods_download_promote", "pixel_ods_evidence_readback", "pixel_ods_evidence_report", "pixel_ods_extensions", "pixel_ods_host_command_propose", "pixel_ods_host_observe", "pixel_ods_status", "pixel_ods_research", "pixel_ods_web_extract", "pixel_ods_workspace_preview", "pixel_ods_workspace_bundle", "pixel_ods_workspace_preview_inspect", "pixel_ods_ask_user", "pixel_ods_goal", "pixel_ods_activity", "pixel_ods_history", "pixel_ods_skill", "pixel_ods_extension_proposal", "pixel_ods_source_proposal", "pixel_ods_python_library_proposal", "pixel_ods_extension_request_status", "pixel_ods_extension_request_prepare", "pixel_ods_extension_request_advance", "pixel_ods_extension_request_retry"] as $tools
+            ["pixel_ods_apps_list", "pixel_ods_download_promote", "pixel_ods_evidence_readback", "pixel_ods_evidence_report", "pixel_ods_extensions", "pixel_ods_host_command_propose", "pixel_ods_host_observe", "pixel_ods_status", "pixel_ods_research", "pixel_ods_web_extract", "pixel_ods_workspace_preview", "pixel_ods_workspace_bundle", "pixel_ods_workspace_preview_inspect", "pixel_ods_ask_user", "pixel_ods_goal", "pixel_ods_activity", "pixel_ods_history", "pixel_ods_image_read", "pixel_ods_skill", "pixel_ods_extension_proposal", "pixel_ods_source_proposal", "pixel_ods_python_library_proposal", "pixel_ods_extension_request_status", "pixel_ods_extension_request_prepare", "pixel_ods_extension_request_advance", "pixel_ods_extension_request_retry"] as $tools
             | [
                 .plugins[]?
                 | select(
@@ -2222,7 +2252,7 @@ _ods_pixel_reconciliation_source_url() {
 ods_pixel_reconcile_promoted_model() {
     local owner="$1" home="$2" promoted_model="$3" final_state="${4:-ready}"
     local promoted_context="${5:-}" promoted_max_tokens="${6:-}" promoted_reasoning="${7:-}"
-    local route_fingerprint="${8:-}" borrowed_transaction="${9:-}"
+    local route_fingerprint="${8:-}" borrowed_transaction="${9:-}" image_input="${10:-unknown}"
     local source_ref source_root source_url pixel_root answers candidate backup contract_sha256 openclaw_bin failed=false
     local model_transaction="" release_failed=false
     local stable_alias=false staged_alias_candidate=""
@@ -2256,7 +2286,7 @@ ods_pixel_reconcile_promoted_model() {
     if _ods_pixel_uses_stable_model_alias "$owner" "$home" "$answers"; then
         if _ods_pixel_stable_alias_matches_promoted_model "$owner" "$home" "$answers" \
             "$promoted_model" "$promoted_context" "$promoted_max_tokens" \
-            "$promoted_reasoning" "$route_fingerprint"; then
+            "$promoted_reasoning" "$route_fingerprint" "$image_input"; then
             contract_sha256="$(_ods_pixel_contract_sha256 "$owner" "$home" "$answers")" || return 1
             # This is a no-op model reconciliation only when the complete
             # ODS-managed contract is already active. A same-model installer
@@ -2300,7 +2330,7 @@ ods_pixel_reconcile_promoted_model() {
     fi
 
     if ! _ods_pixel_update_onboarding_model "$owner" "$home" "$answers" "$promoted_model" \
-        "$promoted_context" "$promoted_max_tokens" "$promoted_reasoning" "$route_fingerprint"; then
+        "$promoted_context" "$promoted_max_tokens" "$promoted_reasoning" "$route_fingerprint" "$image_input"; then
         failed=true
         failure_phase="onboarding-update"
     fi
@@ -4437,6 +4467,8 @@ EOF
         and (.boundary | type == "string")' <<<"$extension_probe" >/dev/null || return 1
     ods_sudo install -o root -g root -m 0755 "$plugin_root/host/pixel_ingress.mjs" /usr/local/libexec/ods-pixel-ingress.mjs
     ods_sudo install -o root -g root -m 0644 "$plugin_root/host/chat_history_ledger.mjs" /usr/local/libexec/chat_history_ledger.mjs
+    ods_sudo install -o root -g root -m 0644 "$plugin_root/host/chat_image_store.mjs" /usr/local/libexec/chat_image_store.mjs
+    ods_sudo install -o root -g root -m 0644 "$plugin_root/host/chat_image_transport.mjs" /usr/local/libexec/chat_image_transport.mjs
     ods_sudo install -o root -g root -m 0644 "$plugin_root/host/access_mode_relay.mjs" /usr/local/libexec/access_mode_relay.mjs
     ods_sudo install -o root -g root -m 0644 "$plugin_root/host/task_activity_schema.mjs" /usr/local/libexec/task_activity_schema.mjs
     ods_sudo install -o root -g root -m 0644 "$plugin_root/host/questions_schema.mjs" /usr/local/libexec/questions_schema.mjs
@@ -4720,6 +4752,8 @@ ods_pixel_install_default_agent() {
         && -f "$plugin_root/plugin/history-context.mjs" \
         && -f "$plugin_root/host/pixel_ingress.mjs" \
         && -f "$plugin_root/host/chat_history_ledger.mjs" \
+        && -f "$plugin_root/host/chat_image_store.mjs" \
+        && -f "$plugin_root/host/chat_image_transport.mjs" \
         && -f "$plugin_root/host/access_mode_relay.mjs" \
         && -f "$plugin_root/host/task_activity_schema.mjs" \
         && -f "$plugin_root/host/questions_schema.mjs" \
@@ -4993,7 +5027,8 @@ ods_pixel_install_default_agent() {
                 ai "The exact Pixel release is active with an older ODS route; reconciling the reviewed model/runtime policy..."
                 if ! ods_pixel_reconcile_promoted_model "$owner" "$home" \
                     "$(_ods_pixel_runtime_model_identity)" installing "" "" "" \
-                    "$(jq -r '.modelRouteFingerprint // ""' "$answers")" >>"$pixel_log" 2>&1; then
+                    "$(jq -r '.modelRouteFingerprint // ""' "$answers")" "" \
+                    "$(jq -r '.modelImageInput // "unknown"' "$answers")" >>"$pixel_log" 2>&1; then
                     ai_bad "The ODS-managed Pixel model route could not be reconciled safely. See $pixel_log."
                     return 1
                 fi
