@@ -93,7 +93,7 @@ try {
     $script:descendant = $false; $script:foreignParent = $false; $script:lookalikeDir = $false; $script:oldListener = $false
     $script:healthy = $true; $script:failConfig = $false; $script:failLoad = $false
     $script:workers = $false; $script:exitBeforeFailure = $false; $script:reusedRoot = $false
-    $script:killFailure = 0; $script:runtimeHandles = @{}
+    $script:killFailure = 0; $script:killExitRace = $false; $script:runtimeHandles = @{}
     $script:failOwnershipWrites = $false; $script:denyRecordOnFailure = $false; $script:runtimeExitCode = 0
     $script:privateWriter = ${function:Write-ODSPrivateEnvFile}
     function Write-ODSPrivateEnvFile { param($Path, $Content)
@@ -139,7 +139,11 @@ try {
         $handle = [pscustomobject]@{ Id = $Id; Handle = $Id; Path = $node.ExecutablePath
             StartTime = $node.CreationDate; HasExited = $false }
         $handle | Add-Member ScriptMethod Kill {
-            if ($script:killFailure -eq $this.Id) { throw [System.ComponentModel.Win32Exception]::new('mock cleanup denied') }
+            if ($script:killFailure -eq $this.Id) {
+                $script:calls.Add("kill-error:$($this.Id)")
+                if ($script:killExitRace) { $this.HasExited = $true }
+                throw [System.ComponentModel.Win32Exception]::new('mock cleanup denied')
+            }
             $script:calls.Add("kill:$($this.Id)"); $this.HasExited = $true
         }
         $handle | Add-Member ScriptMethod WaitForExit { param($Milliseconds) return $this.HasExited }
@@ -226,7 +230,7 @@ try {
     }
     $ownershipPath = Join-Path $runtimeDir 'process-ownership.json'
     $script:workers = $true; $script:descendant = $true
-    foreach ($failure in @('failConfig', 'failLoad', 'root-exited', 'root-pid-reused', 'ownership-write-failure', 'nonzero-root-exit', 'partial-cleanup')) {
+    foreach ($failure in @('failConfig', 'failLoad', 'root-exited', 'root-pid-reused', 'ownership-write-failure', 'nonzero-root-exit', 'partial-cleanup', 'exited-on-kill-error')) {
         $script:launched = $false; $script:calls.Clear()
         $script:failConfig = $failure -in @('failConfig', 'ownership-write-failure')
         $script:failLoad = -not $script:failConfig -and $failure -ne 'nonzero-root-exit'
@@ -234,15 +238,20 @@ try {
         $script:runtimeExitCode = if ($failure -eq 'nonzero-root-exit') { 7 } else { 0 }
         $script:exitBeforeFailure = $failure -in @('root-exited', 'root-pid-reused')
         $script:reusedRoot = $failure -eq 'root-pid-reused'
-        $script:killFailure = if ($failure -eq 'partial-cleanup') { 4243 } else { 0 }
+        $script:killFailure = if ($failure -in @('partial-cleanup', 'exited-on-kill-error')) { 4243 } else { 0 }
+        $script:killExitRace = $failure -eq 'exited-on-kill-error'
         $message = ''
         try { $null = Invoke-ODSPortalLemonadeRuntime $registration.Plan $registration.ReadyPath } catch { $message = $_.Exception.Message }
         Assert-Restart ($message -and -not (Test-Path -LiteralPath $registration.ReadyPath) -and
             -not $script:calls.Contains('kill:4999') -and -not $script:calls.Contains('kill:4245')) "$failure never publishes readiness or kills an unrelated process"
+        if ($failure -eq 'exited-on-kill-error') {
+            Assert-Restart ($script:calls.Contains('kill-error:4243') -and $script:runtimeHandles[4243].HasExited) 'an access error is ignored only after the same owned process handle proves exit'
+        }
         if ($failure -eq 'partial-cleanup') {
             $script:partialOwnership = Get-Content -LiteralPath $ownershipPath -Raw -Encoding UTF8
             $savedOwnership = $script:partialOwnership | ConvertFrom-Json
-            Assert-Restart ($savedOwnership.Processes.Count -eq 3 -and $script:child.HasExited -and
+            Assert-Restart ($message -match 'Could not stop owned Lemonade process 4243' -and
+                $savedOwnership.Processes.Count -eq 3 -and $script:child.HasExited -and
                 -not $script:runtimeHandles[4243].HasExited -and -not $script:runtimeHandles[4244].HasExited) 'partial cleanup keeps exact descendant identities after its parent exits'
             Remove-Item -LiteralPath $ownershipPath -Force
         } elseif ($failure -eq 'ownership-write-failure') {
@@ -259,7 +268,7 @@ try {
         }
     }
     $script:workers = $false; $script:exitBeforeFailure = $false; $script:reusedRoot = $false
-    $script:killFailure = 0; $script:failConfig = $false; $script:failLoad = $false
+    $script:killFailure = 0; $script:killExitRace = $false; $script:failConfig = $false; $script:failLoad = $false
     $script:runtimeExitCode = 0; $script:denyRecordOnFailure = $false
     $script:occupied = $true; $script:launched = $false; $script:calls.Clear()
     $message = ''
