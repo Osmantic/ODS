@@ -17,6 +17,8 @@ from project_runtime import verify_runtime
 def serve(controller, stop, *, ready=None):
     """Use the already validated private state directory for socket and lock."""
     verify_runtime(controller.image)
+    if controller.python_image:
+        verify_runtime(controller.python_image, runtime="python")
     root = controller.jobs.path.parent
     socket_path = root / "control.sock"
     lock = os.open(root / "service.lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
@@ -94,6 +96,7 @@ def main():
     parser.add_argument("--workspace", required=True)
     parser.add_argument("--state-root", required=True)
     parser.add_argument("--image", required=True)
+    parser.add_argument("--python-image")
     options = parser.parse_args()
     if os.getuid() == 0:
         parser.error("run as the configured non-root workspace owner")
@@ -103,7 +106,7 @@ def main():
     for number in (signal.SIGTERM, signal.SIGINT):
         signal.signal(number, lambda *_: stop.set())
     controller = ProjectController(options.workspace, options.state_root, options.image,
-                                   authorize=ManagedFullAccessPolicy())
+                                   authorize=ManagedFullAccessPolicy(), python_image=options.python_image)
     try:
         serve(controller, stop)
     finally:

@@ -4400,7 +4400,7 @@ _ods_pixel_install_project_runtime() {
     ods_sudo systemctl start ods-pixel-project.service || return 1
     ods_pixel_run_as_owner "$owner" "$home" /usr/bin/python3 - "$config" <<'PY' || return 1
 import json, socket, sys, time
-expected = json.loads(sys.argv[1])['imageId']
+expected = json.loads(sys.argv[1])
 for attempt in range(30):
     try:
         with socket.socket(socket.AF_UNIX) as client:
@@ -4410,7 +4410,8 @@ for attempt in range(30):
             with client.makefile('rb') as stream:
                 result = json.loads(stream.readline(8192))
         if (result.get('kind') == 'ods-project-runtime' and result.get('status') == 'ready'
-                and result.get('image') == expected
+                and result.get('image') == expected['imageId']
+                and result.get('runtimes') == {'npm': expected['imageId'], 'python': expected['pythonImageId']}
                 and result.get('executionPolicy') == 'runtime-verified-full-access'):
             break
     except (OSError, ValueError):

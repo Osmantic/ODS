@@ -30,21 +30,54 @@ def test_unit_runs_as_owner_and_never_enables_full_access():
     assert 'enable_full_access' not in unit
 
 
-@pytest.mark.parametrize('change', [{'imageId': 'node:latest'}, {'ownerUid': 0},
+@pytest.mark.parametrize('change', [{'imageId': 'node:latest'}, {'pythonImageId': 'python:latest'},
+                                  {'pythonImageId': None}, {'ownerUid': 0},
                                   {'workspace': '/tmp/other-project'}, {'extra': True}])
 def test_invalid_deployment_is_rejected(change):
     with pytest.raises(ValueError):
         installer.unit_bytes({**config(), **change})
 
 
+def test_upgrade_keeps_legacy_unit_identity_and_adds_configured_python_image():
+    legacy = config()
+    assert '--python-image' not in installer.unit_bytes(legacy).decode()
+    upgraded = {**legacy, 'pythonImageId': 'sha256:' + 'b' * 64}
+    assert ' --python-image sha256:' + 'b' * 64 in installer.unit_bytes(upgraded).decode()
+    assert installer.validate_config(legacy) == installer.validate_config(upgraded)
+
+
+def test_build_includes_both_reviewed_images_and_no_project_files(tmp_path, monkeypatch):
+    source = tmp_path / 'source'
+    source.mkdir()
+    (source / 'Dockerfile.project-node').write_bytes(b'node definition')
+    (source / 'Dockerfile.project-python').write_bytes(b'python definition')
+    (source / 'untrusted.py').write_bytes(b'not in build context')
+    definitions = []
+
+    def build(argv, **kwargs):
+        context = Path(argv[-1])
+        assert set(path.name for path in context.iterdir()) == {'Dockerfile'}
+        definitions.append((context / 'Dockerfile').read_bytes())
+        Path(argv[argv.index('--iidfile') + 1]).write_text('sha256:' + ('a' if len(definitions) == 1 else 'b') * 64)
+        return subprocess.CompletedProcess(argv, 0)
+
+    monkeypatch.setattr(installer.subprocess, 'run', build)
+    result = installer.build_config(source, os.getuid())
+    assert definitions == [b'node definition', b'python definition']
+    assert result['imageId'] != result['pythonImageId']
+    installer.validate_config(result)
+
+
 @pytest.mark.skipif(os.environ.get('ODS_TEST_PROJECT_NODE') != '1', reason='real Docker build opt-in')
 def test_fixed_runtime_build_returns_immutable_configuration(tmp_path):
-    source = HELPER.parents[2] / 'extensions/services/pixel-agent/host/Dockerfile.project-node'
-    (tmp_path / 'Dockerfile.project-node').write_bytes(source.read_bytes())
-    (tmp_path / 'Dockerfile.project-node').chmod(0o600)
+    source = HELPER.parents[2] / 'extensions/services/pixel-agent/host'
+    for name in ('Dockerfile.project-node', 'Dockerfile.project-python'):
+        (tmp_path / name).write_bytes((source / name).read_bytes())
+        (tmp_path / name).chmod(0o600)
     result = installer.build_config(tmp_path, os.getuid())
     assert result['imageId'].startswith('sha256:')
     assert len(result['imageId']) == 71
+    assert len(result['pythonImageId']) == 71
     installer.validate_config(result)
 
 

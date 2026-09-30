@@ -12,15 +12,16 @@ import threading
 from project_artifacts import collect_artifacts, import_artifacts
 from project_jobs import ProjectJobs
 from project_runtime import run_stage, seed_project
-from project_runtime_protocol import validate_project_lock
+from project_runtime_protocol import select_project_runtime
 from project_snapshot import snapshot_project
 
 
 class ProjectController:
-    def __init__(self, workspace, state_root, image, *, authorize):
+    def __init__(self, workspace, state_root, image, *, authorize, python_image=None):
         if not callable(authorize):
             raise ValueError("an external authorization adapter is required")
         self.workspace, self.image, self.authorize = str(workspace), image, authorize
+        self.python_image = python_image
         self.jobs = ProjectJobs(state_root)
         self.pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ods-project")
         self.lock = threading.Lock()
@@ -39,10 +40,14 @@ class ProjectController:
             if sum(not f.done() for f in self.futures.values()) >= 8:
                 raise RuntimeError("project queue is full")
             source = snapshot_project(self.workspace, project)
-            files = source["files"]
-            validate_project_lock(json.loads(files["package.json"]), json.loads(files["package-lock.json"]))
+            runtime = select_project_runtime(source["files"])
+            image = self.python_image if runtime == "python" else self.image
+            if not image:
+                raise ValueError("managed Python runtime is not installed")
             request = {"project": project, "sourceSha256": source["sha256"],
-                       "image": self.image, "outputDirectory": output_directory}
+                       "image": image, "outputDirectory": output_directory}
+            if runtime == "python":
+                request["runtime"] = runtime
             self._require(project, "execute", request)
             job, created = self.jobs.create(request_key, request)
             if created:
@@ -69,7 +74,11 @@ class ProjectController:
         if not self.jobs.claim(job):
             return
         resources_started = False
+        image, runtime = request["image"], request.get("runtime", "npm")
         try:
+            configured = self.python_image if runtime == "python" else self.image
+            if runtime not in ("npm", "python") or image != configured:
+                raise ValueError("job runtime no longer matches installed configuration")
             self._require(request["project"], "execute", request)
             found = subprocess.run(["docker", "volume", "inspect", job], capture_output=True, timeout=15)
             if found.returncode == 0:
@@ -77,12 +86,12 @@ class ProjectController:
             subprocess.run(["docker", "volume", "create", "--label", "org.osmantic.ods.project-job=" + job, job],
                            check=True, capture_output=True, timeout=15)
             resources_started = True
-            seed_project(self.image, job, source, manifests_only=True)
+            seed_project(image, job, source, manifests_only=True, runtime=runtime)
             for stage in ("acquire", "test", "build"):
                 self._require(request["project"], "execute", request)
                 if stage == "test" and not cancel.is_set():
-                    seed_project(self.image, job, source, manifests_only=False)
-                result = run_stage(self.image, job, stage, cancel=cancel)
+                    seed_project(image, job, source, manifests_only=False, runtime=runtime)
+                result = run_stage(image, job, stage, cancel=cancel, runtime=runtime)
                 self.jobs.record_stage(job, stage, result)
                 if result["status"] != "succeeded":
                     return
@@ -90,7 +99,7 @@ class ProjectController:
             if cancel.is_set():
                 self.jobs.controller_failure(job, "cancelled before artifact import", state="cancelled")
                 return
-            artifacts = collect_artifacts(self.image, job, request["outputDirectory"])
+            artifacts = collect_artifacts(image, job, request["outputDirectory"])
             # Collection may take time: recheck owner authority and cancellation
             # immediately before writing anything back to the workspace.
             self._require(request["project"], "import", request)
@@ -104,9 +113,10 @@ class ProjectController:
             self.jobs.controller_failure(job, error)
         finally:
             if resources_started:
-                self.jobs.cleanup_warnings(job, self._cleanup(job))
+                self.jobs.cleanup_warnings(job, self._cleanup(job, image=image))
 
-    def _cleanup(self, job):
+    def _cleanup(self, job, *, image=None):
+        image = self.image if image is None else image
         warnings = []
         for stage in ("seed-manifests", "seed-source", "acquire", "test", "build"):
             try:
@@ -115,7 +125,7 @@ class ProjectController:
                 if result.returncode != 0:
                     continue
                 container = json.loads(result.stdout)[0]
-                if (container["Config"]["Image"] != self.image
+                if (container["Config"]["Image"] != image
                         or container["Config"].get("Labels", {}).get("org.osmantic.ods.project-job") != job):
                     warnings.append("container identity mismatch: " + stage)
                     continue

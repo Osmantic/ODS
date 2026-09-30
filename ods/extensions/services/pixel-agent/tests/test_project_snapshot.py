@@ -45,6 +45,35 @@ class ProjectSnapshotTests(unittest.TestCase):
         with self.assertRaises(OSError):
             snapshot_project(str(self.root), "alias")
 
+    def test_python_environment_and_installer_configs_never_enter_snapshot(self):
+        for name in (".venv", "venv", "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache",
+                     ".tox", ".nox", ".hypothesis", ".cache", ".uv", ".pip"):
+            (self.project / name).mkdir()
+            (self.project / name / "secret").write_text("CACHED TOKEN")
+        for name in (".pypirc", "pip.conf", "pip.ini", "uv.toml"):
+            (self.project / name).write_text("credentials and alternate index")
+        (self.project / "main.py").write_text("print('project')")
+        (self.project / "requirements.lock").write_text("# stdlib")
+        (self.project / "config").mkdir()
+        (self.project / "config" / "pip.conf").write_text("TOKEN")
+        result = snapshot_project(str(self.root), "projeto")
+        self.assertEqual(set(result["files"]), {"package.json", "main.py", "requirements.lock"})
+        self.assertIn("config/pip.conf", result["omitted"])
+        self.assertNotIn(b"CACHED TOKEN", result["archive"])
+
+    def test_reserved_python_paths_cannot_seed_or_overwrite_executor_state(self):
+        for name in sorted(project_snapshot.RESERVED):
+            with self.subTest(name=name):
+                path = self.project / name
+                path.write_text("malicious wheel or environment")
+                with self.assertRaises(UnsafeProjectSource):
+                    snapshot_project(str(self.root), "projeto")
+                path.unlink()
+        (self.project / "nested").mkdir()
+        (self.project / "nested" / ".ods-python-wheels").mkdir()
+        with self.assertRaises(UnsafeProjectSource):
+            snapshot_project(str(self.root), "projeto")
+
     def test_rejects_hardlinks_and_traversal(self):
         target = self.root / "outside"
         target.write_text("PRIVATE")
