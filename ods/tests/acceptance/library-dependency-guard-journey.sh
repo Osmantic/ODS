@@ -27,7 +27,7 @@ fail() {
 
 [[ "${GITHUB_ACTIONS:-}" == true ]] || fail 'refusing non-disposable host'
 [[ "$RUNNER_TEMP" == /* && "$INSTALL_DIR" == "$RUNNER_TEMP"/* ]] || fail 'install path is outside runner temp'
-[[ "$(git -C "$(dirname "$product")" rev-parse HEAD)" == 17801826adfcab756868c036a139c7704204a79e ]] || fail 'product source changed'
+[[ "$(git -C "$(dirname "$product")" rev-parse HEAD)" == 1e7a0ebee8e7812c52c6af47987c880dc83b8b15 ]] || fail 'product source changed'
 [[ "$(cat /proc/1/comm)" == systemd ]] || fail 'runner is not a Pixel-qualified systemd host'
 docker info >/dev/null || fail 'isolated Docker Engine unavailable'
 [[ ! -e "$INSTALL_DIR" ]] || fail 'fresh install path is not empty'
@@ -168,6 +168,13 @@ api_gid="$(docker exec ods-dashboard-api id -g)"
 [[ "$api_uid" =~ ^[0-9]+$ && "$api_gid" =~ ^[0-9]+$ ]] \
     || fail 'Dashboard API UID/GID probe failed'
 sudo chown -R "$api_uid:$api_gid" "$consumer_dir"
+# This fresh fixture creates user-extensions under the audit's umask 077.
+# The API must be able to traverse its parent, not just own the child.
+sudo chown "$api_uid:$api_gid" "$INSTALL_DIR/data/user-extensions"
+if ! docker exec ods-dashboard-api test -x /data/user-extensions; then
+    docker exec ods-dashboard-api stat -c '%A %u:%g %n' /data /data/user-extensions >&2 || true
+    fail 'Dashboard API cannot traverse disposable extension root'
+fi
 docker exec ods-dashboard-api test -r /data/user-extensions/n8n-consumer/manifest.yaml \
     || fail 'Dashboard API cannot read disposable dependent manifest'
 docker exec ods-dashboard-api test -w /data/user-extensions/n8n-consumer \
