@@ -23,19 +23,27 @@ CONFIG = Path('/etc/ods-pixel-project.json')
 STATE = '/var/lib/ods-pixel-project'
 FILES = ('project_service.py', 'project_controller.py', 'project_runtime.py', 'project_runtime_protocol.py',
          'project_capabilities.py',
+         'project_storage.py',
          'project_snapshot.py', 'project_jobs.py', 'project_artifacts.py', 'project_dispatch.py',
          'project_transport.py', 'project_authority.py', 'unix_peer.py')
 
 
 def validate_config(value):
-    if (not isinstance(value, dict) or set(value) not in (
-            {'ownerUid', 'imageId', 'workspace'}, {'ownerUid', 'imageId', 'pythonImageId', 'workspace'})
+    if (not isinstance(value, dict) or set(value) - {'pythonImageId', 'storageLimits'} != {'ownerUid', 'imageId', 'workspace'}
             or type(value['ownerUid']) is not int or value['ownerUid'] <= 0
             or not isinstance(value['imageId'], str) or not re.fullmatch(r'sha256:[a-f0-9]{64}', value['imageId'])):
         raise ValueError('invalid project deployment')
     if 'pythonImageId' in value and (not isinstance(value['pythonImageId'], str)
             or not re.fullmatch(r'sha256:[a-f0-9]{64}', value['pythonImageId'])):
         raise ValueError('invalid Python project deployment')
+    limits = value.get('storageLimits')
+    if 'storageLimits' in value:
+        if (type(limits) is not dict or set(limits) != {'jobBytes', 'totalBytes', 'maxJobs'}
+                or any(type(v) is not int for v in limits.values())
+                or not 32 * 1024**2 <= limits['jobBytes'] <= 4096 * 1024**2
+                or not limits['jobBytes'] <= limits['totalBytes'] <= 8192 * 1024**2
+                or not 1 <= limits['maxJobs'] <= 8):
+            raise ValueError('invalid project storage policy')
     owner = pwd.getpwuid(value['ownerUid'])
     if (not re.fullmatch(r'[a-zA-Z_][a-zA-Z0-9_-]*', owner.pw_name)
             or value['workspace'] != str(Path(owner.pw_dir) / '.openclaw/workspace-pixel')
@@ -49,6 +57,11 @@ def unit_bytes(config):
     # systemd expands percent specifiers even inside quotes.
     workspace = config['workspace'].replace('\\', '\\\\').replace('"', '\\"').replace('%', '%%')
     python_argument = (' --python-image ' + config['pythonImageId']) if 'pythonImageId' in config else ''
+    storage_arguments = ''
+    if 'storageLimits' in config:
+        limits = config['storageLimits']
+        storage_arguments = (f" --storage-bytes {limits['jobBytes']} --storage-total-bytes {limits['totalBytes']}"
+                             f" --storage-max-jobs {limits['maxJobs']}")
     return f'''[Unit]
 Description=ODS Portal isolated project executor
 After=docker.service
@@ -56,7 +69,7 @@ After=docker.service
 [Service]
 Type=simple
 User={owner.pw_name}
-ExecStart=/usr/bin/python3 -B {PROGRAM_ROOT}/project_service.py --workspace "{workspace}" --state-root {STATE} --image {config['imageId']}{python_argument}
+ExecStart=/usr/bin/python3 -B {PROGRAM_ROOT}/project_service.py --workspace "{workspace}" --state-root {STATE} --image {config['imageId']}{python_argument}{storage_arguments}
 Environment=PATH=/usr/local/bin:/usr/bin:/bin
 Restart=on-failure
 RestartSec=5

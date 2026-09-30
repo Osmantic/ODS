@@ -13,11 +13,26 @@ from unittest.mock import Mock, patch
 HOST = Path(__file__).resolve().parents[1] / "host"
 sys.path.insert(0, str(HOST))
 from project_runtime import run_stage, stage_arguments, seed_project, observe_stage
+from project_runtime import start_keeper
+from project_storage import ProjectStorage
 from project_snapshot import snapshot_project
 from project_artifacts import collect_artifacts, import_artifacts
 
 
 class ProjectStageInputTests(unittest.TestCase):
+    def test_cli_exit_does_not_authorize_cleanup_of_unconfirmed_container(self):
+        for code in (0, 1):
+            with self.subTest(code=code):
+                process = Mock(stdout=io.BytesIO(b''), stderr=io.BytesIO(b''))
+                process.poll.return_value = code
+                process.wait.return_value = code
+                with patch('project_runtime.subprocess.Popen', return_value=process), \
+                        patch('project_runtime.observe_stage', return_value={
+                            'status': 'unconfirmed', 'evidence': 'unavailable'}):
+                    result = run_stage('sha256:' + 'a' * 64, 'ods-project-' + 'a' * 24,
+                                       'build', cancel=threading.Event())
+                self.assertEqual(result['status'], 'unconfirmed')
+
     def test_failed_stop_without_verified_exit_remains_unconfirmed(self):
         for evidence in ({"status": "running", "evidence": "docker-state"},
                          {"status": "unconfirmed", "evidence": "unavailable"},
@@ -68,11 +83,18 @@ class ProjectStageRuntimeTests(unittest.TestCase):
 
     def setUp(self):
         self.job = "ods-project-" + uuid.uuid4().hex[:24]
+        self.storage_temp = tempfile.TemporaryDirectory()
+        self.storage = ProjectStorage(self.storage_temp.name)
+        self.storage.reserve(self.image, self.job)
+        self.storage.create_volume(self.job)
+        start_keeper(self.image, self.job)
 
     def tearDown(self):
-        for stage in ("init", "build", "test", "acquire", "seed-manifests", "seed-source"):
+        for stage in ("init", "build", "test", "acquire", "seed-manifests", "seed-source", "keeper"):
             subprocess.run(["docker", "rm", "-f", self.job + "-" + stage], capture_output=True)
         subprocess.run(["docker", "volume", "rm", self.job], capture_output=True)
+        self.storage.release_removed(self.job)
+        self.storage_temp.cleanup()
 
     def seed(self, code):
         args = stage_arguments(self.image, self.job, "build")

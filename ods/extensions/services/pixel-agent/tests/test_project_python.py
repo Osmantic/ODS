@@ -14,7 +14,8 @@ from unittest.mock import patch
 HOST = Path(__file__).resolve().parents[1] / "host"
 sys.path.insert(0, str(HOST))
 from project_controller import ProjectController  # noqa: E402
-from project_runtime import stage_arguments, seed_project, run_stage, observe_stage  # noqa: E402
+from project_runtime import stage_arguments, seed_project, run_stage, observe_stage, start_keeper  # noqa: E402
+from project_storage import ProjectStorage, MIB  # noqa: E402
 from project_snapshot import snapshot_project  # noqa: E402
 
 IMAGE = "sha256:" + "a" * 64
@@ -49,6 +50,8 @@ class PythonStageBoundaryTests(unittest.TestCase):
             self.assertEqual(args[args.index('--network') + 1], 'bridge' if stage == 'acquire' else 'none')
             self.assertEqual(args[args.index('--user') + 1], '1000:1000')
             command = args[args.index(IMAGE) + 1:]
+            self.assertEqual(command[:4], ['timeout', '--signal=TERM', '--kill-after=5s', '240s'])
+            self.assertEqual(args[args.index('--memory-swap') + 1], '2g')
             self.assertIn('-I', command)
             if stage == 'acquire':
                 self.assertIn('--require-hashes', command)
@@ -116,14 +119,26 @@ class PythonDockerRuntimeTests(unittest.TestCase):
     def setUp(self):
         self.root = tempfile.TemporaryDirectory()
         self.job = 'ods-project-' + uuid.uuid4().hex[:24]
+        self.storage = None
+
+    def bounded_storage(self, size=1024 * MIB):
+        state = Path(self.root.name) / 'private-storage'
+        state.mkdir(mode=0o700)
+        self.storage = ProjectStorage(state, job_bytes=size)
+        self.storage.reserve(self.image, self.job)
+        self.storage.create_volume(self.job)
+        start_keeper(self.image, self.job, runtime='python')
 
     def tearDown(self):
-        for stage in ('seed-manifests', 'seed-source', 'acquire', 'test', 'build'):
+        for stage in ('seed-manifests', 'seed-source', 'acquire', 'test', 'build', 'keeper'):
             subprocess.run(['docker', 'rm', '-f', self.job + '-' + stage], capture_output=True, timeout=20)
         subprocess.run(['docker', 'volume', 'rm', self.job], capture_output=True, timeout=20)
+        if self.storage is not None:
+            self.storage.release_removed(self.job)
         self.root.cleanup()
 
     def prepare(self, **kwargs):
+        self.bounded_storage()
         project = fixture(self.root.name, **kwargs)
         # Hostile Python bootstrap names must not execute during acquisition.
         (project / 'sitecustomize.py').write_text('raise RuntimeError("untrusted startup hook")')
@@ -164,12 +179,29 @@ class PythonDockerRuntimeTests(unittest.TestCase):
         self.assertNotEqual(lookup.returncode, 0)
 
     def test_bad_hash_fails_before_source_execution(self):
+        self.bounded_storage()
         fixture(self.root.name, lock=LOCK.replace('2cbf', '3cbf'))
         source = snapshot_project(self.root.name, 'project')
         seed_project(self.image, self.job, source, manifests_only=True, runtime='python')
         result = run_stage(self.image, self.job, 'acquire', cancel=threading.Event(), runtime='python')
         self.assertEqual(result['status'], 'failed', result)
         self.assertIn('HASHES', result['stderr'])
+
+    def test_python_volume_enforces_real_byte_limit(self):
+        self.bounded_storage(32 * MIB)
+        program = """import errno, pathlib
+try:
+ with pathlib.Path('/home/node/fill').open('wb') as f:
+  for _ in range(40): f.write(b'x' * 1024 * 1024)
+except OSError as e:
+ assert e.errno == errno.ENOSPC
+else:
+ raise AssertionError('tmpfs quota was not enforced')
+"""
+        result = subprocess.run(['docker', 'exec', self.job + '-keeper', 'python', '-I', '-c', program],
+                                capture_output=True, timeout=15)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.storage._read(), {self.job: 32 * MIB})
 
     def test_zero_tests_and_failed_tests_cannot_pass(self):
         self.prepare(test='print("deliberately no tests")')

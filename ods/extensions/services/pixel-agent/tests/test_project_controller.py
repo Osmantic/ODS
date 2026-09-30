@@ -67,6 +67,9 @@ class ProjectControllerPolicyTests(unittest.TestCase):
                     return {}
                 try:
                     with ExitStack() as mocks:
+                        mocks.enter_context(patch.object(controller.storage, 'reserve'))
+                        mocks.enter_context(patch.object(controller.storage, 'create_volume'))
+                        mocks.enter_context(patch('project_controller.start_keeper'))
                         mocks.enter_context(patch("project_controller.subprocess.run", side_effect=[
                             subprocess.CompletedProcess([], 1), subprocess.CompletedProcess([], 0)]))
                         mocks.enter_context(patch("project_controller.seed_project"))
@@ -81,6 +84,53 @@ class ProjectControllerPolicyTests(unittest.TestCase):
                     self.assertFalse(controller.jobs.claim(job))
                 finally:
                     controller.close()
+
+    def test_uncertain_docker_creation_retains_bounded_volume_and_reservation(self):
+        for uncertain in ('keeper', 'seed', 'stage'):
+            with self.subTest(uncertain=uncertain), tempfile.TemporaryDirectory() as root:
+                controller = ProjectController(root, Path(root) / 'state', 'sha256:' + 'a' * 64,
+                                               authorize=lambda *_: True)
+                request = {'project': 'project', 'sourceSha256': 'b' * 64,
+                           'image': controller.image, 'outputDirectory': 'out'}
+                job, _ = controller.jobs.create('a' * 64, request)
+                try:
+                    with ExitStack() as mocks:
+                        mocks.enter_context(patch.object(controller.storage, 'reserve'))
+                        mocks.enter_context(patch.object(controller.storage, 'create_volume'))
+                        mocks.enter_context(patch('project_controller.start_keeper',
+                            side_effect=subprocess.TimeoutExpired('docker', 15) if uncertain == 'keeper' else None))
+                        mocks.enter_context(patch('project_controller.seed_project',
+                            side_effect=subprocess.TimeoutExpired('docker', 70) if uncertain == 'seed' else None))
+                        mocks.enter_context(patch('project_controller.run_stage',
+                            return_value={'status': 'unconfirmed', 'exitCode': None}))
+                        cleanup = mocks.enter_context(patch.object(controller, '_cleanup', return_value=[]))
+                        controller._work(job, request, {}, threading.Event())
+                        self.assertEqual(controller.jobs.observe(job)['state'], 'unconfirmed')
+                        cleanup.assert_not_called()
+                finally:
+                    controller.close()
+
+    def test_terminal_cancel_retries_owned_cleanup_without_rewriting_outcome(self):
+        with tempfile.TemporaryDirectory() as root:
+            controller = ProjectController(root, Path(root) / 'state', 'sha256:' + 'a' * 64,
+                                           authorize=lambda *_: True)
+            request = {'project': 'project', 'sourceSha256': 'b' * 64,
+                       'image': controller.image, 'outputDirectory': 'out'}
+            job, _ = controller.jobs.create('a' * 64, request)
+            controller.jobs.claim(job)
+            controller.jobs.controller_failure(job, 'test failed', state='failed')
+            controller.jobs.cleanup_warnings(job, ['storage capacity remains reserved'])
+            controller.image = 'sha256:' + 'c' * 64
+            try:
+                with patch.object(controller, '_cleanup', return_value=[]) as cleanup:
+                    controller.cancel(job)
+                    controller.close()
+                    cleanup.assert_called_once_with(job, image=request['image'], runtime='npm')
+                row = controller.jobs.observe(job)
+                self.assertEqual(row['state'], 'failed')
+                self.assertEqual(row['output']['error'], 'test failed')
+            finally:
+                controller.close()
 
 
 @unittest.skipUnless(os.environ.get("ODS_TEST_PROJECT_NODE") == "1", "real Docker opt-in")

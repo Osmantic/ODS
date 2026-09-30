@@ -82,6 +82,27 @@ def test_build_includes_both_reviewed_images_and_no_project_files(tmp_path, monk
     installer.validate_config(result)
 
 
+@pytest.mark.parametrize('limits', [None, {}, {'jobBytes': True, 'totalBytes': 1024**3, 'maxJobs': 2},
+                                   {'jobBytes': 1024**3, 'totalBytes': 1, 'maxJobs': 2},
+                                   {'jobBytes': 1024**3, 'totalBytes': 2 * 1024**3, 'maxJobs': 9}])
+def test_invalid_storage_policy_is_rejected(limits):
+    with pytest.raises(ValueError):
+        installer.unit_bytes({**config(), 'storageLimits': limits})
+
+
+@pytest.mark.parametrize('python_image', [None, 'sha256:' + 'b' * 64])
+def test_explicit_storage_policy_is_installer_owned_and_distributed(python_image):
+    limits = {'jobBytes': 512 * 1024**2, 'totalBytes': 1024**3, 'maxJobs': 2}
+    selected = {**config(), 'storageLimits': limits}
+    if python_image is not None:
+        selected['pythonImageId'] = python_image
+    unit = installer.unit_bytes(selected).decode()
+    assert '--storage-bytes 536870912 --storage-total-bytes 1073741824 --storage-max-jobs 2' in unit
+    if python_image is not None:
+        assert '--python-image ' + python_image in unit
+    assert 'project_storage.py' in installer.FILES
+
+
 @pytest.mark.skipif(os.environ.get('ODS_TEST_PROJECT_NODE') != '1', reason='real Docker build opt-in')
 def test_fixed_runtime_build_returns_immutable_configuration(tmp_path):
     source = HELPER.parents[2] / 'extensions/services/pixel-agent/host'

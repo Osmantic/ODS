@@ -12,6 +12,7 @@ from project_authority import ManagedFullAccessPolicy
 from project_controller import ProjectController
 from project_transport import serve_project_connection
 from project_runtime import verify_runtime
+from project_storage import DEFAULT_JOB_BYTES, DEFAULT_TOTAL_BYTES, DEFAULT_MAX_JOBS
 
 
 def serve(controller, stop, *, ready=None):
@@ -98,6 +99,9 @@ def main():
     parser.add_argument("--state-root", required=True)
     parser.add_argument("--image", required=True)
     parser.add_argument("--python-image")
+    parser.add_argument('--storage-bytes', type=int, default=DEFAULT_JOB_BYTES)
+    parser.add_argument('--storage-total-bytes', type=int, default=DEFAULT_TOTAL_BYTES)
+    parser.add_argument('--storage-max-jobs', type=int, default=DEFAULT_MAX_JOBS)
     options = parser.parse_args()
     if os.getuid() == 0:
         parser.error("run as the configured non-root workspace owner")
@@ -107,7 +111,10 @@ def main():
     for number in (signal.SIGTERM, signal.SIGINT):
         signal.signal(number, lambda *_: stop.set())
     controller = ProjectController(options.workspace, options.state_root, options.image,
-                                   authorize=ManagedFullAccessPolicy(), python_image=options.python_image)
+                                   authorize=ManagedFullAccessPolicy(), python_image=options.python_image, storage_limits={
+                                       'job_bytes': options.storage_bytes,
+                                       'total_bytes': options.storage_total_bytes,
+                                       'max_jobs': options.storage_max_jobs})
     try:
         serve(controller, stop)
     finally:
