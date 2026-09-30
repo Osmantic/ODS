@@ -1,0 +1,206 @@
+"""Provision the fixed project executor without modifying Portal permissions.
+
+The calling installer owns service start/health and only then enables the tool.
+This helper is not yet called by the main installer.
+"""
+import argparse
+import importlib.util
+import json
+import os
+from pathlib import Path
+import pwd
+import re
+import subprocess
+import sys
+import tempfile
+
+spec = importlib.util.spec_from_file_location('inspection_install', Path(__file__).with_name('pixel-preview-inspection.py'))
+common = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(common)
+
+PROGRAM_ROOT = Path('/usr/local/libexec/ods-pixel-project')
+UNIT = Path('/etc/systemd/system/ods-pixel-project.service')
+CONFIG = Path('/etc/ods-pixel-project.json')
+STATE = '/var/lib/ods-pixel-project'
+FILES = ('project_service.py', 'project_controller.py', 'project_runtime.py', 'project_runtime_protocol.py',
+         'project_snapshot.py', 'project_jobs.py', 'project_artifacts.py', 'project_dispatch.py',
+         'project_transport.py', 'project_authority.py', 'unix_peer.py')
+
+
+def validate_config(value):
+    if (not isinstance(value, dict) or set(value) != {'ownerUid', 'imageId', 'workspace'}
+            or type(value['ownerUid']) is not int or value['ownerUid'] <= 0
+            or not isinstance(value['imageId'], str) or not re.fullmatch(r'sha256:[a-f0-9]{64}', value['imageId'])):
+        raise ValueError('invalid project deployment')
+    owner = pwd.getpwuid(value['ownerUid'])
+    if (not re.fullmatch(r'[a-zA-Z_][a-zA-Z0-9_-]*', owner.pw_name)
+            or value['workspace'] != str(Path(owner.pw_dir) / '.openclaw/workspace-pixel')
+            or any(c in value['workspace'] for c in '\n\r\x00')):
+        raise ValueError('invalid project owner workspace')
+    return owner
+
+
+def unit_bytes(config):
+    owner = validate_config(config)
+    # systemd expands percent specifiers even inside quotes.
+    workspace = config['workspace'].replace('\\', '\\\\').replace('"', '\\"').replace('%', '%%')
+    return f'''[Unit]
+Description=ODS Portal isolated project executor
+After=docker.service
+
+[Service]
+Type=simple
+User={owner.pw_name}
+ExecStart=/usr/bin/python3 -B {PROGRAM_ROOT}/project_service.py --workspace "{workspace}" --state-root {STATE} --image {config['imageId']}
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=300
+StateDirectory=ods-pixel-project
+StateDirectoryMode=0700
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths="{workspace}" {STATE}
+RestrictAddressFamilies=AF_UNIX
+CapabilityBoundingSet=
+MemoryMax=768M
+TasksMax=64
+
+[Install]
+WantedBy=multi-user.target
+'''.encode()
+
+
+def build_config(source, owner_uid):
+    owner = pwd.getpwuid(owner_uid)
+    if os.getuid() != owner_uid or owner_uid == 0:
+        raise ValueError('build as the workspace owner')
+    with tempfile.TemporaryDirectory(prefix='ods-project-image-') as directory:
+        root = Path(directory)
+        (root / 'Dockerfile').write_bytes(common.source_bytes(Path(source) / 'Dockerfile.project-node', owner_uid))
+        image_file = root / 'image-id'
+        subprocess.run(['/usr/bin/docker', 'build', '--iidfile', str(image_file), str(root)],
+                       check=True, stdout=sys.stderr, timeout=600)
+        image = image_file.read_text().strip()
+    config = {'ownerUid': owner_uid, 'imageId': image,
+              'workspace': str(Path(owner.pw_dir) / '.openclaw/workspace-pixel')}
+    validate_config(config)
+    return config
+
+
+def check_existing_owner(config):
+    if os.geteuid() != 0 or sys.platform != 'linux':
+        raise ValueError('Linux root installer required')
+    validate_config(config)
+    if os.path.lexists(CONFIG):
+        common.protected_parent(CONFIG.parent)
+        previous = json.loads(common.protected_file(CONFIG))
+        validate_config(previous)
+        if previous['ownerUid'] != config['ownerUid']:
+            raise ValueError('project upgrade owner mismatch')
+        if os.path.lexists(UNIT):
+            common.protected_parent(UNIT.parent)
+            if common.protected_file(UNIT) != unit_bytes(previous):
+                raise ValueError('project service identity mismatch')
+    elif os.path.lexists(UNIT) or os.path.lexists(PROGRAM_ROOT):
+        raise ValueError('project installation identity missing')
+
+
+def install_linux(source, config):
+    check_existing_owner(config)
+    # Capture and validate every input before writing any installed file.
+    files = {PROGRAM_ROOT / name: common.source_bytes(Path(source) / name, config['ownerUid']) for name in FILES}
+    files[UNIT] = unit_bytes(config)
+    files[CONFIG] = (json.dumps(config, sort_keys=True) + '\n').encode()
+    state = subprocess.run(['systemctl', 'is-active', '--quiet', UNIT.name],
+                           capture_output=True, timeout=15)
+    if state.returncode not in (3, 4):
+        raise ValueError('stop project service before updating runtime files')
+    for path in files:
+        common.protected_parent(path.parent, create=True)
+        if os.path.lexists(path):
+            common.protected_file(path)
+    for path, body in files.items():
+        fd, temporary = tempfile.mkstemp(prefix='.' + path.name, dir=path.parent)
+        try:
+            with os.fdopen(fd, 'wb') as stream:
+                stream.write(body)
+                os.fchmod(stream.fileno(), 0o644)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, path)
+        finally:
+            if os.path.lexists(temporary):
+                os.unlink(temporary)
+
+
+def cleanup_linux(source, owner_uid, *, remove=False):
+    """Validate the complete installed file set before any removal.
+
+    Keep job state, workspace outputs and Docker caches. The caller stops and
+    disables the service before requesting removal; this helper checks stopped
+    state too, and never runs a recursive delete.
+    """
+    if os.geteuid() != 0 or sys.platform != 'linux':
+        raise ValueError('Linux root installer required')
+    for parent in (PROGRAM_ROOT.parent, UNIT.parent, CONFIG.parent):
+        common.protected_parent(parent)
+    present = [path for path in (CONFIG, UNIT, *(PROGRAM_ROOT / name for name in FILES)) if os.path.lexists(path)]
+    if not present:
+        return []
+    if not os.path.lexists(CONFIG):
+        raise ValueError('project installation identity missing; inspection required')
+    config = json.loads(common.protected_file(CONFIG))
+    validate_config(config)
+    if config['ownerUid'] != owner_uid:
+        raise ValueError('project installation owner mismatch')
+    expected = {PROGRAM_ROOT / name: common.source_bytes(Path(source) / name, owner_uid) for name in FILES}
+    expected[UNIT] = unit_bytes(config)
+    expected[CONFIG] = (json.dumps(config, sort_keys=True) + '\n').encode()
+    if os.path.lexists(PROGRAM_ROOT):
+        common.protected_parent(PROGRAM_ROOT)
+        if set(PROGRAM_ROOT.iterdir()) - {PROGRAM_ROOT / name for name in FILES}:
+            raise ValueError('unexpected project runtime files')
+    for path in present:
+        if common.protected_file(path) != expected[path]:
+            raise ValueError('project installed source mismatch')
+    if remove:
+        state = subprocess.run(['systemctl', 'is-active', '--quiet', UNIT.name],
+                               capture_output=True, timeout=15)
+        if state.returncode not in (3, 4):
+            raise ValueError('project service stop is not confirmed')
+        for path in present:
+            # Recheck each exact file immediately before unlinking it.
+            if common.protected_file(path) != expected[path]:
+                raise ValueError('project installed source changed during removal')
+            path.unlink()
+        if PROGRAM_ROOT.exists():
+            PROGRAM_ROOT.rmdir()
+    return [str(path) for path in present]
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('action', choices=['build', 'check-install', 'install-linux', 'check-cleanup', 'cleanup-linux'])
+    parser.add_argument('--source', required=True)
+    parser.add_argument('--owner-uid', type=int)
+    args = parser.parse_args()
+    if args.action == 'build':
+        print(json.dumps(build_config(args.source, args.owner_uid)))
+    elif args.action in ('install-linux', 'check-install'):
+        raw = sys.stdin.buffer.read(8193)
+        if len(raw) > 8192:
+            raise ValueError('deployment configuration too large')
+        if args.action == 'check-install':
+            check_existing_owner(json.loads(raw))
+        else:
+            install_linux(args.source, json.loads(raw))
+    else:
+        print(json.dumps(cleanup_linux(args.source, args.owner_uid, remove=args.action == 'cleanup-linux')))
+
+
+if __name__ == '__main__':
+    main()

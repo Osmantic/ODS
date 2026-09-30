@@ -1,4 +1,5 @@
 import {createAgentSkillTool} from './agent-skills.mjs';
+import {registerProjectBuild} from './project-registration.mjs';
 import {registerBootstrapCapabilities} from './bootstrap-capabilities.mjs';
 import {registerStableRuntimeLine} from './runtime-line.mjs';
 import {createRuntimeIdentity} from './runtime-identity.mjs';
@@ -737,6 +738,7 @@ export default definePluginEntry({
     registerTool(api, createAskUserTool(), {names:['pixel_ods_ask_user']});
     registerTool(api, createGoalProgressTool(), {names:['pixel_ods_goal']});
     registerTool(api, createActivityTool(), {names:['pixel_ods_activity']});
+    registerProjectBuild(api, onlyPixel);
     api.registerTool(onlyPixel(context => createExtensionProposalTool(context)), {names:['pixel_ods_extension_proposal']});
     api.registerTool(onlyPixel(context => createSourceProposalTool(context)), {names:['pixel_ods_source_proposal']});
     api.registerTool(onlyPixel(context => createPythonLibraryProposalTool(context)), {names:['pixel_ods_python_library_proposal']});

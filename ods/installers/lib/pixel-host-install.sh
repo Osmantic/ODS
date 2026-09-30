@@ -1582,6 +1582,18 @@ for tools in (normalized_tools['alsoAllow'], normalized_sandbox_tools['allow']):
         tools.remove(inspection_tool)
 if inspection_enabled:
     normalized_agent_tools['deny'] = [tool for tool in normalized_agent_tools['deny'] if tool != inspection_tool]
+project_socket = normalized_pixel_config.get('projectBuildSocket')
+project_enabled = (isinstance(project_socket, str) and project_socket.startswith('/')
+                   and '\x00' not in project_socket and 2 <= len(project_socket) <= 100)
+project_tool = 'pixel_ods_project_build'
+for tools in (normalized_tools['alsoAllow'], normalized_sandbox_tools['allow']):
+    if project_enabled and project_tool not in tools:
+        tools.append(project_tool)
+        tools.sort()
+    elif not project_enabled and project_tool in tools:
+        tools.remove(project_tool)
+if project_enabled:
+    normalized_agent_tools['deny'] = [tool for tool in normalized_agent_tools['deny'] if tool != project_tool]
 if "qwen" in model_label and contract.get("modelReasoning") is True:
     normalized_model["compat"] = {"thinkingFormat": "qwen-chat-template"}
     normalized_agent["thinkingDefault"] = "low"
@@ -1717,7 +1729,7 @@ _ods_pixel_refresh_plugin_registry() {
     registry="$(ods_pixel_run_as_owner "$owner" "$home" "$openclaw_bin" \
         plugins registry --refresh --json 2>/dev/null)" || return 1
     jq -e --arg root "$plugin_root" '
-        (["pixel_ods_apps_list", "pixel_ods_download_promote", "pixel_ods_evidence_readback", "pixel_ods_evidence_report", "pixel_ods_extensions", "pixel_ods_host_command_propose", "pixel_ods_host_observe", "pixel_ods_status", "pixel_ods_research", "pixel_ods_web_extract", "pixel_ods_workspace_preview", "pixel_ods_workspace_bundle", "pixel_ods_workspace_preview_inspect", "pixel_ods_ask_user", "pixel_ods_goal", "pixel_ods_activity", "pixel_ods_history", "pixel_ods_skill", "pixel_ods_extension_proposal", "pixel_ods_source_proposal", "pixel_ods_python_library_proposal", "pixel_ods_extension_request_status", "pixel_ods_extension_request_prepare", "pixel_ods_extension_request_advance", "pixel_ods_extension_request_retry"] | sort) as $tools
+        (["pixel_ods_apps_list", "pixel_ods_download_promote", "pixel_ods_evidence_readback", "pixel_ods_evidence_report", "pixel_ods_extensions", "pixel_ods_host_command_propose", "pixel_ods_host_observe", "pixel_ods_status", "pixel_ods_research", "pixel_ods_web_extract", "pixel_ods_workspace_preview", "pixel_ods_project_build", "pixel_ods_workspace_bundle", "pixel_ods_workspace_preview_inspect", "pixel_ods_ask_user", "pixel_ods_goal", "pixel_ods_activity", "pixel_ods_history", "pixel_ods_skill", "pixel_ods_extension_proposal", "pixel_ods_source_proposal", "pixel_ods_python_library_proposal", "pixel_ods_extension_request_status", "pixel_ods_extension_request_prepare", "pixel_ods_extension_request_advance", "pixel_ods_extension_request_retry"] | sort) as $tools
         | .refreshed == true
         and .registry.version == 1
         and .registry.refreshReason == "manual"
@@ -1737,7 +1749,7 @@ _ods_pixel_verify_plugin_loaded() {
     local owner="$1" home="$2" openclaw_bin="$3" plugin_root="$4"
     ods_pixel_run_as_owner "$owner" "$home" "$openclaw_bin" plugins list --json 2>/dev/null \
         | jq -e --arg root "$plugin_root" '
-            ["pixel_ods_apps_list", "pixel_ods_download_promote", "pixel_ods_evidence_readback", "pixel_ods_evidence_report", "pixel_ods_extensions", "pixel_ods_host_command_propose", "pixel_ods_host_observe", "pixel_ods_status", "pixel_ods_research", "pixel_ods_web_extract", "pixel_ods_workspace_preview", "pixel_ods_workspace_bundle", "pixel_ods_workspace_preview_inspect", "pixel_ods_ask_user", "pixel_ods_goal", "pixel_ods_activity", "pixel_ods_history", "pixel_ods_skill", "pixel_ods_extension_proposal", "pixel_ods_source_proposal", "pixel_ods_python_library_proposal", "pixel_ods_extension_request_status", "pixel_ods_extension_request_prepare", "pixel_ods_extension_request_advance", "pixel_ods_extension_request_retry"] as $tools
+            ["pixel_ods_apps_list", "pixel_ods_download_promote", "pixel_ods_evidence_readback", "pixel_ods_evidence_report", "pixel_ods_extensions", "pixel_ods_host_command_propose", "pixel_ods_host_observe", "pixel_ods_status", "pixel_ods_research", "pixel_ods_web_extract", "pixel_ods_workspace_preview", "pixel_ods_project_build", "pixel_ods_workspace_bundle", "pixel_ods_workspace_preview_inspect", "pixel_ods_ask_user", "pixel_ods_goal", "pixel_ods_activity", "pixel_ods_history", "pixel_ods_skill", "pixel_ods_extension_proposal", "pixel_ods_source_proposal", "pixel_ods_python_library_proposal", "pixel_ods_extension_request_status", "pixel_ods_extension_request_prepare", "pixel_ods_extension_request_advance", "pixel_ods_extension_request_retry"] as $tools
             | [
                 .plugins[]?
                 | select(
@@ -1832,7 +1844,7 @@ _ods_pixel_recreate_agent_sandbox() {
 
 _ods_pixel_apply_runtime_budget() {
     local owner="$1" home="$2" config="$3" openclaw_bin="$4" staged
-    local answers="${5:-}" inspection_transport="${6:-}"
+    local answers="${5:-}" inspection_transport="${6:-}" project_socket="${7:-}"
     # ODS qualifies Pixel on CPU-only hosts. The first local 9B turn can spend
     # more than five minutes loading and prefilling its managed context, while
     # OpenClaw's default session watchdogs assume a responsive remote model.
@@ -1841,7 +1853,7 @@ _ods_pixel_apply_runtime_budget() {
     local budget_writer
     budget_writer="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/pixel-runtime-budget.py"
     staged="$(ods_pixel_run_as_owner "$owner" "$home" python3 "$budget_writer" \
-        "$config" "${PERPLEXICA_PORT:-3004}" "$answers" "$home/.openclaw" "$inspection_transport")" || return 1
+        "$config" "${PERPLEXICA_PORT:-3004}" "$answers" "$home/.openclaw" "$inspection_transport" "$project_socket")" || return 1
     if [[ "$staged" == unchanged ]]; then
         printf '%s\n' unchanged
         return 0
@@ -4374,6 +4386,42 @@ PY
         | jq -e '.schemaVersion == 1 and .kind == "ods-pixel-preview-inspection" and .status == "ready"' >/dev/null
 }
 
+_ods_pixel_install_project_runtime() {
+    local owner="$1" home="$2" source="$3" config
+    local installer="${INSTALL_DIR:?}/installers/lib/pixel-project-runtime.py"
+    config="$(ods_pixel_run_as_owner "$owner" "$home" /usr/bin/python3 "$installer" build \
+        --source "$source" --owner-uid "$(id -u "$owner")")" || return 1
+    printf '%s\n' "$config" | ods_sudo /usr/bin/python3 -B "$installer" check-install --source "$source" || return 1
+    if [[ -e /etc/systemd/system/ods-pixel-project.service ]]; then
+        ods_sudo systemctl stop ods-pixel-project.service || return 1
+    fi
+    printf '%s\n' "$config" | ods_sudo /usr/bin/python3 -B "$installer" install-linux --source "$source" || return 1
+    ods_sudo systemctl daemon-reload || return 1
+    ods_sudo systemctl start ods-pixel-project.service || return 1
+    ods_pixel_run_as_owner "$owner" "$home" /usr/bin/python3 - "$config" <<'PY' || return 1
+import json, socket, sys, time
+expected = json.loads(sys.argv[1])['imageId']
+for attempt in range(30):
+    try:
+        with socket.socket(socket.AF_UNIX) as client:
+            client.settimeout(20)
+            client.connect('/var/lib/ods-pixel-project/control.sock')
+            client.sendall(b'{"schemaVersion":1,"action":"health"}\n')
+            with client.makefile('rb') as stream:
+                result = json.loads(stream.readline(8192))
+        if (result.get('kind') == 'ods-project-runtime' and result.get('status') == 'ready'
+                and result.get('image') == expected
+                and result.get('executionPolicy') == 'runtime-verified-full-access'):
+            break
+    except (OSError, ValueError):
+        pass
+    if attempt == 29:
+        raise SystemExit('Project executor did not pass installation health')
+    time.sleep(.2)
+PY
+    ods_sudo systemctl enable ods-pixel-project.service || return 1
+}
+
 _ods_pixel_wait_ingress() {
     local owner="$1" home="$2" attempts="${3:-60}" delay="${4:-1}" response
     [[ "$attempts" =~ ^[0-9]+$ && "$attempts" -ge 1 && "$attempts" -le 300 ]] || return 1
@@ -5053,8 +5101,9 @@ ods_pixel_install_default_agent() {
     # Enable the deferred inspector only after its exact image, broker and
     # owner transport have passed installation health. Existing model-budget
     # reconciliation never grants this capability to an older installation.
+    _ods_pixel_install_project_runtime "$owner" "$home" "$plugin_root/host" || return 1
     runtime_budget_status="$(_ods_pixel_apply_runtime_budget "$owner" "$home" \
-        "$home/.openclaw/openclaw.json" "$openclaw_bin" "$answers" unix)" || return 1
+        "$home/.openclaw/openclaw.json" "$openclaw_bin" "$answers" unix /var/lib/ods-pixel-project/control.sock)" || return 1
     case "$runtime_budget_status" in
         changed) _ods_pixel_restart_gateway_and_verify "$owner" "$home" "$pixel_root" || return 1 ;;
         unchanged) ;;
