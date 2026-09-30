@@ -5731,13 +5731,18 @@ function ownerForbidsWorkspacePreview(messages, prompt) {
   // files, but publish the existing site" remains a publication request.
   const coordinatedProhibition = text
     .split(/[!?;\n]+|\.(?=\s|$)|\b(?:but|however|instead|then)\b/i)
-    .some((clause) => /\b(?:do\s+not|don['’]t|never|must\s+not|should\s+not|avoid|skip|without)\b[^.!?;\n]{0,160}\b(?:and|or)\s+(?:show(?:ing)?|preview(?:ing)?|view(?:ing)?|open(?:ing)?|serv(?:e|ing)|publish(?:ing)?|republish(?:ing)?|display(?:ing)?)\b/i.test(clause));
+    .some((clause) => /\b(?:do\s+not|don['’]t|never|must\s+not|should\s+not|avoid|skip|without)\b[^.!?;\n]{0,160}\b(?:and|or|nor)\s+(?:show(?:ing)?|preview(?:ing)?|view(?:ing)?|open(?:ing)?|serv(?:e|ing)|publish(?:ing)?|republish(?:ing)?|display(?:ing)?)\b/i.test(clause));
   if (coordinatedProhibition) return true;
   return portuguesePreviewForbidden(text) || /\b(?:only|just)\s+(?:the\s+)?(?:code|source(?:\s+code)?)\b/i.test(text) || /\b(?:do\s+not|don['’]t|never|must\s+not|should\s+not|avoid|skip|without)\s+(?:(?:try|attempt)\s+to\s+)?(?:(?:create|build|edit|write|run|execute)\s*(?:,\s*|and\s+|or\s+))*(?:show(?:ing)?|preview(?:ing)?|view(?:ing)?|open(?:ing)?|serv(?:e|ing)|publish(?:ing)?|republish(?:ing)?|display(?:ing)?)\b/i.test(text);
 }
 
 function portuguesePreviewForbidden(text) {
   const prose = text.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  // Negation includes coordinated actions with their own objects. Contrast
+  // and sentence boundaries keep unrelated later requests independent.
+  const coordinated = prose.split(/[!?;\n]+|\.(?=\s|$)|\b(?:mas|porem|contudo|depois)\b/i)
+    .some(clause => /\b(?:nao|nunca|sem|evite)\b[^.!?;\n]{0,160}\b(?:e|ou|nem)\s+(?:(?:re)?publ(?:ic|iq)\w*|mostr\w*|abrir|abra|pre-?visualiz\w*)\b/i.test(clause));
+  if (coordinated) return true;
   return /\b(?:nao|nunca|sem|evite)\s+(?:(?:criar|crie|fazer|faca|editar|edite)\s+(?:e|ou)\s+)?(?:(?:re)?publ(?:ic|iq)\w*|mostr\w*|abrir|abra|preview|pre-?visualiz\w*)\b/i.test(prose)
     || /\b(?:so|somente|apenas)\s+(?:o\s+)?codigo\b/i.test(prose);
 }
