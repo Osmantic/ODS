@@ -262,7 +262,10 @@ else
                     error "Could not verify the prior Pixel checkout for safe retirement. Restore its local backup before retrying; no private repository was contacted."
                     return 1
                 fi
-                if ! ods_pixel_uninstall_managed "$INSTALL_DIR" "$_phase06_pixel_home"; then
+                # Source transitions retain the old broker home in private
+                # custody. Older Pixel installers copied /etc/skel into that
+                # home, which the strict removal path correctly rejects.
+                if ! ods_pixel_uninstall_managed "$INSTALL_DIR" "$_phase06_pixel_home" source-transition; then
                     error "Could not safely retire the prior ODS-managed Pixel source."
                     return 1
                 fi

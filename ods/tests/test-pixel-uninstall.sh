@@ -164,6 +164,7 @@ assert hook in phase
 assert phase.index(hook) < phase.index('_phase06_step "copy-source"')
 assert '_ods_pixel_source_transition_required' in phase
 assert '_phase06_step "rebind-pixel-source"' in phase
+assert 'ods_pixel_uninstall_managed "$INSTALL_DIR" "$_phase06_pixel_home" source-transition' in phase
 assert phase.index('_phase06_step "rebind-pixel-source"') < phase.index('_phase06_step "copy-source"')
 PY
 then
@@ -1033,6 +1034,47 @@ if ods_pixel_uninstall_managed "$INSTALL_DIR" "$HOME_DIR"; then
     fi
 else
     fail "verified Operations Broker deployment could not be removed"
+fi
+
+# A source rebind preserves the complete prior broker home. Legacy useradd
+# copied arbitrary /etc/skel entries there, so content classification cannot
+# safely decide which bytes to delete. The ordinary uninstall tests below
+# still require strict refusal for symlinks and hardlinks.
+write_ops_fixture
+mkdir -m 0700 "$OPS_STATE/.composer"
+printf '%s\n' 'retained user data' >"$OPS_STATE/.composer/sentinel"
+ln -s /etc/passwd "$OPS_STATE/.ghcup"
+ln "$OPS_STATE/results/ops-test.json" "$TEST_ROOT/outside-broker-hardlink"
+if ods_pixel_uninstall_managed "$INSTALL_DIR" "$HOME_DIR" source-transition; then
+    if python3 - "$OPS_STATE" "$TEST_ROOT/outside-broker-hardlink" "$SYSTEMD_DIR" <<'PY'
+import os
+import pathlib
+import stat
+import sys
+
+old_root = pathlib.Path(sys.argv[1])
+outside = pathlib.Path(sys.argv[2])
+systemd_dir = pathlib.Path(sys.argv[3])
+holders = list(old_root.parent.glob('.pixel-ops-broker-custody-*'))
+assert not old_root.exists()
+assert len(holders) == 1
+holder = holders[0]
+assert stat.S_IMODE(holder.lstat().st_mode) == 0o700
+saved = holder / 'state'
+assert saved.is_dir()
+assert (saved / '.composer/sentinel').read_text().strip() == 'retained user data'
+assert (saved / '.ghcup').is_symlink()
+assert os.readlink(saved / '.ghcup') == '/etc/passwd'
+assert (saved / 'results/ops-test.json').stat().st_ino == outside.stat().st_ino
+assert not (systemd_dir / 'pixel-ops-broker.service').exists()
+PY
+    then
+        pass "source rebind preserves legacy and unique broker state in private custody"
+    else
+        fail "source rebind lost broker state or left the old deployment active"
+    fi
+else
+    fail "source rebind could not preserve the legacy broker home"
 fi
 
 write_inspection_contract_fixture() {

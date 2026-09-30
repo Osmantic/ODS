@@ -450,7 +450,7 @@ PY
 }
 
 ods_pixel_uninstall_managed() {
-    local install_dir="$1" owner_home="$2"
+    local install_dir="$1" owner_home="$2" ops_state_cleanup_mode="${3:-strict}"
     local marker="$owner_home/.config/ods/pixel-managed.json"
     local systemd_dir="${ODS_PIXEL_UNINSTALL_SYSTEMD_DIR:-/etc/systemd/system}"
     local etc_dir="${ODS_PIXEL_UNINSTALL_ETC_DIR:-/etc/ods}"
@@ -532,10 +532,15 @@ ods_pixel_uninstall_managed() {
     local runtime_attestation_state
     local retire_openclaw_config openclaw_config_sha256
     local release_identity_sha256 install_manifest_sha256 retired_release_path
-    local ops_plan="absent||||" ops_state_status ops_uid ops_gid ops_user_present ops_group_present
+    local ops_plan="absent||||" ops_state_status ops_uid ops_gid ops_user_present ops_group_present ops_custody_path
     local ops_passwd_entry="" ops_group_entry="" ops_user_group_ids="" ops_user_group_names="" ops_artifacts_present=false
     local pixel_lock_fd="" owner_uid
     local root_artifacts_present=false owner_gid owner_name access_artifacts_present=false access_plan="absent"
+
+    [[ "$ops_state_cleanup_mode" == strict || "$ops_state_cleanup_mode" == source-transition ]] || {
+        log_error "Refusing unknown Pixel Operations state cleanup mode"
+        return 1
+    }
 
     [[ "$install_dir" == /* && "$install_dir" != / && -d "$install_dir" && ! -L "$install_dir" ]] || {
         log_error "Refusing Pixel cleanup for an invalid ODS install directory"
@@ -1589,7 +1594,8 @@ PY
             "$install_dir/data/pixel/source-$pixel_source_ref/.generated/ops-broker.env" \
             "$install_dir/data/pixel/source-$pixel_source_ref/deploy/ops-broker/broker.py" \
             "$release_path/install-manifest.sha256" \
-            "$release_path/deployment-inputs.sha256" "$install_manifest_sha256" <<'PY'
+            "$release_path/deployment-inputs.sha256" "$install_manifest_sha256" \
+            "$ops_state_cleanup_mode" <<'PY'
 import hashlib
 import os
 import pathlib
@@ -1633,6 +1639,7 @@ import sys
     release_manifest_raw,
     deployment_inputs_raw,
     expected_release_manifest_sha256,
+    state_cleanup_mode,
 ) = sys.argv[1:]
 
 root_uid = int(root_uid_raw)
@@ -1953,37 +1960,48 @@ if exists(state_dir):
         mount_path = pathlib.Path(os.path.abspath(mount_text))
         if mount_path == state_absolute or state_absolute in mount_path.parents:
             raise SystemExit(f"mount inside Pixel Operations Broker state: {mount_path}")
-    root_device = root.st_dev
-    bounded_service_profiles = {
-        state_dir / ".bash_logout",
-        state_dir / ".bashrc",
-        state_dir / ".profile",
-    }
-    for current, directories, files in os.walk(state_dir, topdown=True, followlinks=False):
-        for name in (*directories, *files):
-            path = pathlib.Path(current) / name
-            info = path.lstat()
-            if (stat.S_ISLNK(info.st_mode) or info.st_dev != root_device
-                    or info.st_uid not in {broker_uid, owner_uid}
-                    or info.st_gid != broker_gid):
-                raise SystemExit(f"unsafe Pixel Operations Broker state entry: {path}")
-            if path in bounded_service_profiles:
-                if (not stat.S_ISREG(info.st_mode) or info.st_uid != broker_uid
-                        or info.st_nlink != 1
-                        or stat.S_IMODE(info.st_mode) not in {0o600, 0o640, 0o644}
-                        or info.st_size > 64 * 1024):
-                    raise SystemExit(f"unsafe Pixel Operations service profile: {path}")
-                continue
-            if info.st_mode & 0o007:
-                raise SystemExit(f"unsafe Pixel Operations Broker state entry: {path}")
-            if stat.S_ISDIR(info.st_mode):
-                if info.st_mode & (stat.S_ISUID | stat.S_ISVTX):
-                    raise SystemExit(f"unsafe Pixel Operations Broker state directory: {path}")
-            elif stat.S_ISREG(info.st_mode):
-                if info.st_nlink != 1 or info.st_mode & (stat.S_ISUID | stat.S_ISGID | stat.S_ISVTX):
-                    raise SystemExit(f"unsafe Pixel Operations Broker state file: {path}")
-            else:
-                raise SystemExit(f"special file in Pixel Operations Broker state: {path}")
+    if state_cleanup_mode == "source-transition":
+        # A source transition retains the entire old home, including any
+        # inherited /etc/skel entries or unique state, without walking it.
+        parent = state_dir.parent
+        parent_info = parent.lstat()
+        if (not stat.S_ISDIR(parent_info.st_mode) or stat.S_ISLNK(parent_info.st_mode)
+                or parent_info.st_uid != root_uid or parent_info.st_gid != root_gid
+                or parent_info.st_mode & 0o022
+                or parent.resolve(strict=True) != parent):
+            raise SystemExit("unsafe Pixel Operations Broker custody parent")
+    else:
+        root_device = root.st_dev
+        bounded_service_profiles = {
+            state_dir / ".bash_logout",
+            state_dir / ".bashrc",
+            state_dir / ".profile",
+        }
+        for current, directories, files in os.walk(state_dir, topdown=True, followlinks=False):
+            for name in (*directories, *files):
+                path = pathlib.Path(current) / name
+                info = path.lstat()
+                if (stat.S_ISLNK(info.st_mode) or info.st_dev != root_device
+                        or info.st_uid not in {broker_uid, owner_uid}
+                        or info.st_gid != broker_gid):
+                    raise SystemExit(f"unsafe Pixel Operations Broker state entry: {path}")
+                if path in bounded_service_profiles:
+                    if (not stat.S_ISREG(info.st_mode) or info.st_uid != broker_uid
+                            or info.st_nlink != 1
+                            or stat.S_IMODE(info.st_mode) not in {0o600, 0o640, 0o644}
+                            or info.st_size > 64 * 1024):
+                        raise SystemExit(f"unsafe Pixel Operations service profile: {path}")
+                    continue
+                if info.st_mode & 0o007:
+                    raise SystemExit(f"unsafe Pixel Operations Broker state entry: {path}")
+                if stat.S_ISDIR(info.st_mode):
+                    if info.st_mode & (stat.S_ISUID | stat.S_ISVTX):
+                        raise SystemExit(f"unsafe Pixel Operations Broker state directory: {path}")
+                elif stat.S_ISREG(info.st_mode):
+                    if info.st_nlink != 1 or info.st_mode & (stat.S_ISUID | stat.S_ISGID | stat.S_ISVTX):
+                        raise SystemExit(f"unsafe Pixel Operations Broker state file: {path}")
+                else:
+                    raise SystemExit(f"special file in Pixel Operations Broker state: {path}")
 
 print("present|{}|{}|{}|{}".format(
     broker_uid,
@@ -2484,6 +2502,78 @@ PY
     fi
 
     if [[ "$ops_artifacts_present" == true ]]; then
+        if [[ "$ops_state_cleanup_mode" == source-transition ]]; then
+            # Preserve the whole former broker home after the service stops.
+            # Older installers copied /etc/skel into it, including links and
+            # large trees. Renaming into root-only custody does not traverse
+            # or remove any of those entries.
+            if ! ops_custody_path="$(sudo python3 - "$ops_state" "$ops_uid" "$ops_gid" "$root_uid" "$root_gid" <<'PY'
+import os
+import pathlib
+import stat
+import sys
+import tempfile
+
+root = pathlib.Path(sys.argv[1])
+broker_uid = int(sys.argv[2])
+broker_gid = int(sys.argv[3])
+root_uid = int(sys.argv[4])
+root_gid = int(sys.argv[5])
+if not root.is_absolute() or root == pathlib.Path("/") or root.name != "pixel-ops-broker":
+    raise SystemExit("unsafe Pixel Operations Broker custody root")
+if not root.exists() and not root.is_symlink():
+    print("absent")
+    raise SystemExit(0)
+parent = root.parent
+parent_info = parent.lstat()
+state_info = root.lstat()
+if (not stat.S_ISDIR(parent_info.st_mode) or stat.S_ISLNK(parent_info.st_mode)
+        or parent_info.st_uid != root_uid or parent_info.st_gid != root_gid
+        or parent_info.st_mode & 0o022 or parent.resolve(strict=True) != parent
+        or not stat.S_ISDIR(state_info.st_mode) or stat.S_ISLNK(state_info.st_mode)
+        or state_info.st_uid != broker_uid or state_info.st_gid != broker_gid
+        or stat.S_IMODE(state_info.st_mode) != 0o750
+        or state_info.st_dev != parent_info.st_dev):
+    raise SystemExit("unsafe Pixel Operations Broker custody path")
+root_absolute = pathlib.Path(os.path.abspath(root))
+try:
+    mount_lines = pathlib.Path("/proc/self/mountinfo").read_text(encoding="utf-8").splitlines()
+except OSError as error:
+    raise SystemExit("cannot inspect mounts before Pixel Operations custody") from error
+for line in mount_lines:
+    fields = line.split()
+    if len(fields) < 5:
+        raise SystemExit("invalid mount table while preserving Pixel Operations state")
+    mount_text = fields[4]
+    for encoded, decoded in ((r"\040", " "), (r"\011", "\t"), (r"\012", "\n"), (r"\134", "\\")):
+        mount_text = mount_text.replace(encoded, decoded)
+    mount_path = pathlib.Path(os.path.abspath(mount_text))
+    if mount_path == root_absolute or root_absolute in mount_path.parents:
+        raise SystemExit(f"mount inside Pixel Operations Broker custody state: {mount_path}")
+holder = pathlib.Path(tempfile.mkdtemp(prefix=".pixel-ops-broker-custody-", dir=parent))
+try:
+    os.chown(holder, root_uid, root_gid)
+    os.rename(root, holder / "state")
+    for directory in (holder, parent):
+        fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+except BaseException:
+    if not (holder / "state").exists():
+        holder.rmdir()
+    raise
+print(holder / "state")
+PY
+            )"; then
+                log_error "Could not preserve Pixel Operations Broker state for the source transition"
+                return 1
+            fi
+            if [[ "$ops_custody_path" != absent ]]; then
+                log_info "Retained the prior Pixel Operations Broker state at $ops_custody_path for review; it is not removed automatically."
+            fi
+        else
         # Remove the broker's bounded state only after the service is inactive.
         # The privileged helper rechecks every entry immediately before the
         # recursive operation and rejects links, devices, mounts, hardlinks,
@@ -2559,6 +2649,7 @@ PY
         then
             log_error "Could not remove the verified Pixel Operations Broker state"
             return 1
+        fi
         fi
         if ! sudo rm -f -- "$ops_unit" "$ops_dropin" "$ops_env" "$ops_policy" "$ops_program" \
             "$ops_extension_program" "$ops_extension_catalog" "$ops_extension_manager" "$ops_unix_peer" \
