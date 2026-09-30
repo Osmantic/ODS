@@ -30,7 +30,7 @@ def invoke(root: Path) -> subprocess.CompletedProcess[str]:
     )
 
 
-@unittest.skipUnless(os.name == "posix", "POSIX custody")
+@unittest.skipUnless(sys.platform.startswith("linux"), "Linux mount custody")
 class BrokerCustodyTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
