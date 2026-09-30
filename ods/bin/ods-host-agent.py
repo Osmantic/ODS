@@ -5680,17 +5680,21 @@ def resolve_compose_flags() -> list:
     ods_mode = install_env.get("ODS_MODE", "").strip() or "local"
     # The host agent can outlive an installer rerun or an owner WebUI toggle.
     # These selectors must come from the installed state rather than its
-    # startup environment when the Compose cache is refreshed. The external
-    # route URL stays inside this private child environment, never in logs.
+    # startup environment when the Compose cache is refreshed. The resolver
+    # needs only external-route presence, never the credential-bearing URL.
     for selector in (
         "ENABLE_OPEN_WEBUI", "ODS_GATEWAY_ONLY", "EXTERNAL_LLM_URL",
+        "ODS_EXTERNAL_LLM_SELECTED",
         "LEMONADE_EXTERNAL", "AMD_INFERENCE_RUNTIME",
         "AMD_INFERENCE_MANAGED", "WHISPER_ACCELERATION",
         "ODS_SKIP_GPU_OVERLAYS",
     ):
         env.pop(selector, None)
-        if selector in install_env:
+        if selector not in ("EXTERNAL_LLM_URL", "ODS_EXTERNAL_LLM_SELECTED") and selector in install_env:
             env[selector] = install_env[selector]
+    env["ODS_EXTERNAL_LLM_SELECTED"] = (
+        "true" if install_env.get("EXTERNAL_LLM_URL", "").strip() else "false"
+    )
     cmd = [
         bash, _to_bash_path(script),
         "--script-dir", _to_bash_path(INSTALL_DIR),

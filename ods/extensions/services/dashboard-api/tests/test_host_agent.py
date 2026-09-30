@@ -942,6 +942,78 @@ class TestMacosDirectBindBridgeCollision:
 
 class TestResolveComposeFlags:
 
+    def test_reresolve_uses_persisted_gateway_route_without_upstream_url(
+        self, tmp_path, monkeypatch,
+    ):
+        install_dir = tmp_path / "ods"
+        scripts_dir = install_dir / "scripts"
+        scripts_dir.mkdir(parents=True)
+        (scripts_dir / "resolve-compose-stack.sh").write_text("#!/usr/bin/env bash\n")
+        upstream = "https://private.example.test/token-in-url"
+        (install_dir / ".env").write_text(
+            "ODS_MODE=local\nODS_GATEWAY_ONLY=true\nENABLE_OPEN_WEBUI=false\n"
+            f"EXTERNAL_LLM_URL={upstream}\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(_mod, "INSTALL_DIR", install_dir)
+        monkeypatch.setattr(_mod, "TIER", "1")
+        monkeypatch.setattr(_mod, "GPU_BACKEND", "nvidia")
+        monkeypatch.setattr(_mod, "GPU_COUNT", "1")
+        monkeypatch.setattr(_mod.platform, "system", lambda: "Linux")
+        monkeypatch.setattr(_mod, "_find_usable_bash", lambda: "/bin/bash")
+        monkeypatch.setenv("ODS_GATEWAY_ONLY", "false")
+        monkeypatch.setenv("ENABLE_OPEN_WEBUI", "true")
+        monkeypatch.setenv("EXTERNAL_LLM_URL", "http://stale.example.test")
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append((cmd, kwargs))
+            return subprocess.CompletedProcess(
+                args=cmd, returncode=0,
+                stdout="-f docker-compose.base.yml -f docker-compose.external-llm.yml\n",
+                stderr="",
+            )
+
+        monkeypatch.setattr(_mod.subprocess, "run", fake_run)
+        assert resolve_compose_flags()[-2:] == ["-f", "docker-compose.external-llm.yml"]
+        env = calls[0][1]["env"]
+        assert env["ODS_EXTERNAL_LLM_SELECTED"] == "true"
+        assert env["ODS_GATEWAY_ONLY"] == "true"
+        assert env["ENABLE_OPEN_WEBUI"] == "false"
+        assert "EXTERNAL_LLM_URL" not in env
+        assert upstream not in str(calls)
+
+    def test_reresolve_keeps_local_route_when_agent_environment_is_stale(
+        self, tmp_path, monkeypatch,
+    ):
+        install_dir = tmp_path / "ods"
+        scripts_dir = install_dir / "scripts"
+        scripts_dir.mkdir(parents=True)
+        (scripts_dir / "resolve-compose-stack.sh").write_text("#!/usr/bin/env bash\n")
+        (install_dir / ".env").write_text("ODS_MODE=local\n", encoding="utf-8")
+        monkeypatch.setattr(_mod, "INSTALL_DIR", install_dir)
+        monkeypatch.setattr(_mod, "TIER", "1")
+        monkeypatch.setattr(_mod, "GPU_BACKEND", "nvidia")
+        monkeypatch.setattr(_mod, "GPU_COUNT", "1")
+        monkeypatch.setattr(_mod.platform, "system", lambda: "Linux")
+        monkeypatch.setattr(_mod, "_find_usable_bash", lambda: "/bin/bash")
+        monkeypatch.setenv("EXTERNAL_LLM_URL", "http://stale.example.test")
+        monkeypatch.setenv("ODS_GATEWAY_ONLY", "true")
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append((cmd, kwargs))
+            return subprocess.CompletedProcess(
+                args=cmd, returncode=0, stdout="-f docker-compose.base.yml\n", stderr="",
+            )
+
+        monkeypatch.setattr(_mod.subprocess, "run", fake_run)
+        assert resolve_compose_flags() == ["-f", "docker-compose.base.yml"]
+        env = calls[0][1]["env"]
+        assert env["ODS_EXTERNAL_LLM_SELECTED"] == "false"
+        assert "EXTERNAL_LLM_URL" not in env
+        assert "ODS_GATEWAY_ONLY" not in env
+
     def test_windows_passes_host_python_to_bash_resolver(self, tmp_path, monkeypatch):
         install_dir = tmp_path / "ods"
         scripts_dir = install_dir / "scripts"
