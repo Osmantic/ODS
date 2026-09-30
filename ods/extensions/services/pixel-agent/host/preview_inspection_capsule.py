@@ -34,7 +34,7 @@ from preview_inspection_protocol import (
 )
 
 # Runs in a Chromium isolated world, not the site's mutable JS global realm.
-OBSERVE_ELEMENT = r"""function(includeText, selectValue) {
+OBSERVE_ELEMENT = r"""function(includeText, selectValue, fillValue, performFill) {
   const element = this, style = getComputedStyle(element);
   const rects = [...element.getClientRects()].filter(r => r.width > 0 && r.height > 0);
   return {count:1, visible:element.checkVisibility({checkOpacity:true,checkVisibilityCSS:true,contentVisibilityAuto:true}) && rects.length > 0,
@@ -51,6 +51,31 @@ OBSERVE_ELEMENT = r"""function(includeText, selectValue) {
         optionCount: native && element.options.length > 1000 ? 1001 : options.length,
         optionDisabled: options.some(o => o.matches(':disabled')),
         value: value.slice(0,256).join(''), truncated: value.length > 256}};
+    })() : {}),
+    ...(fillValue !== null && fillValue !== undefined ? (() => {
+      const input = element instanceof HTMLInputElement;
+      const native = (input && ['text','search'].includes(element.type)) || element instanceof HTMLTextAreaElement;
+      const attributes = ['name','id','aria-label','autocomplete'].map(a => element.getAttribute(a) || '');
+      if (native) {
+        for (const label of element.labels || []) attributes.push(label.textContent || '');
+        const references = (element.getAttribute('aria-labelledby') || '').split(/\s+/);
+        if (references.length > 16) attributes.push('secret');
+        else for (const id of references) attributes.push(document.getElementById(id)?.textContent || '');
+      }
+      const sensitive = attributes.some(a => a.length > 512 || /password|passwd|secret|token|api.?key|credential|credit|card|cc-|one-time|otp|senha|segredo/i.test(a));
+      const autocomplete = (element.getAttribute('autocomplete') || '').toLowerCase();
+      const eligible = native && !sensitive && ['', 'on', 'off'].includes(autocomplete);
+      const disabled = element.matches(':disabled') || element.getAttribute('aria-disabled') === 'true';
+      const readOnly = Boolean(element.readOnly) || element.getAttribute('aria-readonly') === 'true';
+      const visible = element.checkVisibility({checkOpacity:true,checkVisibilityCSS:true,contentVisibilityAuto:true}) && rects.length > 0;
+      if (performFill && eligible && !disabled && !readOnly && visible) {
+        const prototype = input ? HTMLInputElement.prototype : HTMLTextAreaElement.prototype;
+        Object.getOwnPropertyDescriptor(prototype, 'value').set.call(element, fillValue);
+        element.dispatchEvent(new InputEvent('input', {bubbles:true,composed:true,inputType:'insertText',data:fillValue}));
+        element.dispatchEvent(new Event('change', {bubbles:true}));
+      }
+      // Never expose a pre-existing field value, including denied fields.
+      return {input: {eligible, disabled, readOnly, matches: eligible && element.value === fillValue}};
     })() : {}),
     ...(includeText ? (() => { const text=Array.from((element.innerText || '').replace(/\s+/g,' ').trim());
       return {text:{actual:text.slice(0,256).join(''),truncated:text.length>256}}; })() : {})};
@@ -1179,10 +1204,10 @@ def run_browser(bundle, playwright_factory=None):
                 )["result"]["objectId"]
                 return 1, node
 
-            def once(locator, include_hidden=False, include_text=False, select_value=None, arm_download=False):
+            def once(locator, include_hidden=False, include_text=False, select_value=None, arm_download=False, fill_value=None, perform_fill=False):
                 owned = []
                 try:
-                    return measure(locator, include_hidden, owned, include_text, select_value, arm_download)
+                    return measure(locator, include_hidden, owned, include_text, select_value, arm_download, fill_value, perform_fill)
                 finally:
                     for object_id in dict.fromkeys(owned):
                         try:
@@ -1190,7 +1215,7 @@ def run_browser(bundle, playwright_factory=None):
                         except Exception:
                             pass
 
-            def measure(locator, include_hidden, owned, include_text=False, select_value=None, arm_download=False):
+            def measure(locator, include_hidden, owned, include_text=False, select_value=None, arm_download=False, fill_value=None, perform_fill=False):
                 if blocked:
                     raise BlockedRequest()
                 if "selector" in locator:
@@ -1243,7 +1268,7 @@ def run_browser(bundle, playwright_factory=None):
                     {
                         "objectId": node,
                         "functionDeclaration": OBSERVE_ELEMENT,
-                        "arguments": [{"value": include_text}, {"value": select_value}],
+                        "arguments": [{"value": include_text}, {"value": select_value}, {"value": fill_value}, {"value": perform_fill}],
                         "returnByValue": True,
                     },
                 )
@@ -1251,9 +1276,9 @@ def run_browser(bundle, playwright_factory=None):
                     raise Invalid("inspection failed")
                 return result["result"]["value"]
 
-            def observe(locator, include_hidden=False, expected=None, expected_text=None, select_value=None):
+            def observe(locator, include_hidden=False, expected=None, expected_text=None, select_value=None, fill_value=None):
                 return observe_until_stable(
-                    lambda: once(locator, include_hidden, expected_text is not None, select_value), page.wait_for_timeout, expected, expected_text
+                    lambda: once(locator, include_hidden, expected_text is not None, select_value, fill_value=fill_value), page.wait_for_timeout, expected, expected_text
                 )
 
             page.wait_for_timeout(100)
@@ -1272,9 +1297,10 @@ def run_browser(bundle, playwright_factory=None):
                     # and they match Playwright's source-text names too.
                     before, stable = observe(
                         step["locator"], step["action"] == "assert-hidden",
-                        None if step["action"] in ("click", "select-option", "download") else step["action"] != "assert-hidden",
+                        None if step["action"] in ("click", "select-option", "fill", "download") else step["action"] != "assert-hidden",
                         step.get('expectedText'),
-                        step.get('value'),
+                        step.get('value') if step['action'] == 'select-option' else None,
+                        step.get('value') if step['action'] == 'fill' else None,
                     )
                 except InvalidSelector:
                     # No DOM observation exists for invalid syntax. Preserve
@@ -1309,6 +1335,27 @@ def run_browser(bundle, playwright_factory=None):
                         item['status'] = 'passed'
                     except Exception:
                         item['errorCode'] = 'download_unverified'
+                elif step['action'] == 'fill':
+                    field = before['input']
+                    if not field['eligible']:
+                        item['errorCode'] = 'text_field_required'
+                    elif field['disabled'] or field['readOnly'] or not before['visible']:
+                        item['errorCode'] = 'field_not_editable'
+                    else:
+                        try:
+                            written = once(step['locator'], fill_value=step['value'], perform_fill=True)
+                            if written.get('count') != 1 or not written.get('input', {}).get('matches'):
+                                raise Invalid('field changed')
+                            after, after_stable = observe(step['locator'], fill_value=step['value'])
+                            item.update(after=after, stable=after_stable)
+                            field = after.get('input', {})
+                            if (after_stable and after.get('visible') and field.get('eligible')
+                                    and not field.get('disabled') and not field.get('readOnly') and field.get('matches')):
+                                item['status'] = 'passed'
+                            else:
+                                item['errorCode'] = 'fill_mismatch'
+                        except Exception:
+                            item['errorCode'] = 'fill_failed'
                 elif step['action'] == 'select-option':
                     selection = before['selection']
                     if not selection['native'] or selection['multiple']:

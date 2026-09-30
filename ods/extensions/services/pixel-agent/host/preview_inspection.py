@@ -22,6 +22,7 @@ from preview_inspection_protocol import (
     MAX_REQUEST,
     MAX_RESULT,
     SELECT_CAPABILITY,
+    FILL_CAPABILITY,
     DOWNLOAD_CAPABILITY,
     canonical,
     exact,
@@ -272,6 +273,13 @@ def inspect_request(request, config, cancelled=None):
              '{{index .Config.Labels "org.osmantic.ods.inspection.download"}}', config['imageId']],
             b'', timeout=5, limit=128, cancelled=cancelled)
         if capability.decode().strip() != DOWNLOAD_CAPABILITY:
+            return failure('unsupported_capability', request)
+    if any(step['action'] == 'fill' for step in request['steps']):
+        capability = bounded_process(
+            [*docker_prefix(config), 'image', 'inspect', '--format',
+             '{{index .Config.Labels "org.osmantic.ods.inspection.fill"}}', config['imageId']],
+            b'', timeout=5, limit=128, cancelled=cancelled)
+        if capability.decode().strip() != FILL_CAPABILITY:
             return failure('unsupported_capability', request)
     if any(step['action'] == 'select-option' for step in request['steps']):
         capability = bounded_process(

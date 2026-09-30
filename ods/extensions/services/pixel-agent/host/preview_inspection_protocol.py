@@ -28,12 +28,15 @@ SANDBOX = "allow-scripts allow-forms allow-downloads"
 SCOPE = "Only the listed CSS layout visibility, normalized visible-text assertions and click dispatches were tested; not pixel paint, occlusion, clipping, a full accessibility audit, or overall functionality."
 SELECT_SCOPE = SCOPE + " Native single-select values were observed only for explicit select-option steps."
 SELECT_CAPABILITY = "native-single-select-v1"
+FILL_CAPABILITY = "native-text-fill-v1"
+FILL_SCOPE = " Native non-sensitive text fields were filled only with explicit synthetic values; this does not test keyboard behavior or submit forms."
 DOWNLOAD_CAPABILITY = "snapshot-download-v1"
 DOWNLOAD_SCOPE = " Download verification is limited to one final step whose own click must produce matching snapshot bytes inside the capsule. A failed or unavailable receipt does not verify a download; no delivery to the user's computer, PDF quality, or ZIP content validation is established."
 
 
 def inspection_scope(request):
     scope = SELECT_SCOPE if any(s['action'] == 'select-option' for s in request['steps']) else SCOPE
+    scope += FILL_SCOPE if any(s['action'] == 'fill' for s in request['steps']) else ''
     return scope + (DOWNLOAD_SCOPE if request['steps'][-1]['action'] == 'download' else '')
 
 
@@ -169,11 +172,11 @@ def validate_request(value):
         raise Invalid("invalid steps")
     for index, step in enumerate(steps):
         text_step = isinstance(step, dict) and step.get("action") == "assert-text"
-        select_step = isinstance(step, dict) and step.get("action") == "select-option"
+        select_step = isinstance(step, dict) and step.get("action") in ("select-option", "fill")
         download_step = isinstance(step, dict) and step.get("action") == "download"
         extra = ("expectedText",) if text_step else ("value",) if select_step else ("path", "expectedBytes", "expectedSha256") if download_step else ()
         exact(step, ("action", "locator", *extra))
-        if step["action"] not in ("assert-visible", "assert-hidden", "assert-text", "click", "select-option", "download"):
+        if step["action"] not in ("assert-visible", "assert-hidden", "assert-text", "click", "select-option", "fill", "download"):
             raise Invalid("invalid step")
         if download_step and (
             index != len(steps) - 1 or not isinstance(step['path'], str)
