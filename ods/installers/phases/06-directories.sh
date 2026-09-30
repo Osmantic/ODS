@@ -361,18 +361,26 @@ else
         && [[ "${ENABLE_HERMES:-false}" == "true" && -d "$INSTALL_DIR/data/hermes" ]]; then
         _hermes_metadata=$(stat -c '%u:%g:%a' "$INSTALL_DIR/data/hermes" 2>/dev/null || true)
         if [[ "$_hermes_metadata" != "$_phase06_compose_uid:$_phase06_compose_gid:700" ]]; then
-            if ! ods_sudo_available; then
-                error "Hermes requires data/hermes ownership $_phase06_compose_uid:$_phase06_compose_gid and mode 700 with a rootful runtime. Grant privileged access or disable Hermes, then re-run ODS."
-                return 1
+            # A fresh no-sudo install creates this directory as the invoking
+            # user, often with mode 755/775. That user can make it private
+            # directly; privileged repair is only needed for foreign owners.
+            if [[ "${_hermes_metadata%:*}" == "$_phase06_compose_uid:$_phase06_compose_gid" ]] \
+                && chmod 700 "$INSTALL_DIR/data/hermes" 2>/dev/null; then
+                :
+            else
+                if ! ods_sudo_available; then
+                    error "Hermes requires data/hermes ownership $_phase06_compose_uid:$_phase06_compose_gid and mode 700 with a rootful runtime. Grant privileged access or disable Hermes, then re-run ODS."
+                    return 1
+                fi
+                ods_sudo chown -R "$_phase06_compose_uid:$_phase06_compose_gid" "$INSTALL_DIR/data/hermes" 2>/dev/null || {
+                    error "Failed to restore data/hermes ownership to $_phase06_compose_uid:$_phase06_compose_gid"
+                    return 1
+                }
+                ods_sudo chmod 700 "$INSTALL_DIR/data/hermes" 2>/dev/null || {
+                    error "Failed to preserve private mode 700 on data/hermes"
+                    return 1
+                }
             fi
-            ods_sudo chown -R "$_phase06_compose_uid:$_phase06_compose_gid" "$INSTALL_DIR/data/hermes" 2>/dev/null || {
-                error "Failed to restore data/hermes ownership to $_phase06_compose_uid:$_phase06_compose_gid"
-                return 1
-            }
-            ods_sudo chmod 700 "$INSTALL_DIR/data/hermes" 2>/dev/null || {
-                error "Failed to preserve private mode 700 on data/hermes"
-                return 1
-            }
         fi
         unset _hermes_metadata
     fi
