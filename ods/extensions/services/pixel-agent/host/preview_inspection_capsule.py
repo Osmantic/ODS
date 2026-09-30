@@ -2,11 +2,15 @@
 """Untrusted site execution lives only in the short-lived no-network capsule."""
 
 import collections
+import hashlib
 import http.server
 import itertools
 import mimetypes
+import os
+from pathlib import Path
 import re
 import struct
+import stat
 import sys
 import threading
 import time
@@ -19,6 +23,7 @@ from preview_inspection_protocol import (
     KIND,
     MAX_BUNDLE,
     MAX_RESULT,
+    MAX_FILE,
     SANDBOX,
     canonical,
     failure,
@@ -743,7 +748,116 @@ def wrapper_document(prefix):
     ).encode()
 
 
-def guard_requests(context, page, origin, prefix, blocked):
+class SnapshotDownload:
+    """One observed Chromium download, never a page-controlled filesystem name.
+
+    CDP's GUID naming plus the separate 4 MiB tmpfs bound storage BEFORE any
+    event callback. A renderer can race callbacks; cancellation alone is not a
+    disk quota. No bytes or filenames are exported from this directory.
+    """
+    def __init__(self, browser, context, page, blocked):
+        mount = next((line.split() for line in Path('/proc/self/mountinfo').read_text().splitlines()
+                      if line.split()[4] == '/downloads'), None)
+        info = os.statvfs('/downloads')
+        if (not mount or mount[mount.index('-') + 1] != 'tmpfs'
+                or not {'noexec', 'nosuid', 'nodev'}.issubset(set(mount[5].split(',')))
+                or info.f_blocks * info.f_frsize > MAX_FILE):
+            raise Invalid('private download quota unavailable')
+        self.cdp = browser.new_browser_cdp_session()
+        session = context.new_cdp_session(page)
+        self.context_id = session.send('Target.getTargetInfo')['targetInfo']['browserContextId']
+        session.detach()
+        self.blocked, self.page = blocked, page
+        self.active, self.url, self.frame_id = False, None, None
+        self.guid, self.state, self.events = None, None, 0
+        self.clicked = False
+        self.cdp.on('Browser.downloadWillBegin', self.begin)
+        self.cdp.on('Browser.downloadProgress', self.progress)
+        self.behavior('deny')
+
+    def behavior(self, behavior):
+        self.cdp.send('Browser.setDownloadBehavior', dict(behavior=behavior,
+            browserContextId=self.context_id, downloadPath='/downloads', eventsEnabled=True))
+
+    def cancel(self, guid):
+        self.cdp.send('Browser.cancelDownload', dict(guid=guid, browserContextId=self.context_id))
+
+    def arm(self, cdp, world, node):
+        # Binding exists ONLY in this isolated execution context. Neither a
+        # page function with the same name nor dispatchEvent can forge it.
+        name = '__odsSnapshotDownloadClick'
+        cdp.send('Runtime.addBinding', {'name': name, 'executionContextId': world})
+
+        def clicked(event):
+            if (self.active and event.get('executionContextId') == world
+                    and event.get('name') == name and event.get('payload') == 'trusted-click'):
+                self.clicked = True
+
+        cdp.on('Runtime.bindingCalled', clicked)
+        result = cdp.send('Runtime.callFunctionOn', {
+            'objectId': node,
+            'functionDeclaration': '''function() {
+                EventTarget.prototype.addEventListener.call(this, 'click', event => {
+                    if (event.isTrusted && event.button === 0) __odsSnapshotDownloadClick('trusted-click');
+                }, {capture: true});
+            }''',
+            'returnByValue': True,
+        })
+        if result.get('exceptionDetails'):
+            raise Invalid('trusted click observation unavailable')
+
+    def begin(self, event):
+        self.events += 1
+        guid = event['guid']
+        if (not self.active or not self.clicked or self.events != 1 or event['url'] != self.url
+                or event['frameId'] != self.frame_id or not re.fullmatch('[a-fA-F0-9-]{36}', guid)):
+            if len(self.blocked) < 32:
+                self.blocked.append('download')
+            self.cancel(guid)
+            return
+        self.guid = guid
+
+    def progress(self, event):
+        if event['guid'] != self.guid:
+            return
+        if event['receivedBytes'] > MAX_FILE or event.get('totalBytes', 0) > MAX_FILE:
+            self.cancel(self.guid)
+            self.state = 'canceled'
+        else:
+            self.state = event['state']
+
+    def capture(self, target, step, url, frame_id):
+        self.url, self.frame_id, self.active = url, frame_id, True
+        deadline = time.monotonic() + 5
+        self.behavior('allowAndName')
+        try:
+            target.click(timeout=2000)
+            while self.state not in ('completed', 'canceled') and not self.blocked and time.monotonic() < deadline:
+                self.page.wait_for_timeout(50)
+            # Observe a bounded settling interval; no claim about future page
+            # behavior beyond this window. It catches immediate/delayed extras.
+            if self.state == 'completed':
+                self.page.wait_for_timeout(250)
+            if self.state != 'completed' or self.events != 1 or self.blocked:
+                raise Invalid('download not verified')
+            descriptor = os.open('/downloads/' + self.guid, os.O_RDONLY | os.O_NOFOLLOW)
+            with os.fdopen(descriptor, 'rb') as stream:
+                info = os.fstat(stream.fileno())
+                if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_size != step['expectedBytes']:
+                    raise Invalid('download size mismatch')
+                data = stream.read(MAX_FILE + 1)
+            digest = hashlib.sha256(data).hexdigest()
+            if len(data) != step['expectedBytes'] or digest != step['expectedSha256']:
+                raise Invalid('download bytes mismatch')
+            return {'bytes': len(data), 'sha256': digest, 'completed': True, 'eventCount': 1, 'trustedClick': True}
+        finally:
+            self.active = False
+            self.behavior('deny')
+            if self.guid and self.state != 'completed':
+                self.cancel(self.guid)
+
+
+def guard_requests(context, page, origin, prefix, blocked, download=None):
     """Allow only GETs of the wrapper and this site's files from the loopback
     server, and at most the wrapper and site-entry navigations. Everything
     else, popups, downloads and websockets are recorded (bounded) and stopped."""
@@ -754,7 +868,7 @@ def guard_requests(context, page, origin, prefix, blocked):
         req = route.request
         parsed = urllib.parse.urlsplit(req.url)
         safe = (
-            req.method == "GET"
+            req.method in ("GET", "HEAD")
             and parsed.scheme == "http"
             and "http://" + parsed.netloc == origin
             and (
@@ -766,9 +880,8 @@ def guard_requests(context, page, origin, prefix, blocked):
             navigation_count += 1
             safe = (
                 safe
-                and navigation_count <= 2
-                and req.url
-                in (origin + "/__ods_inspection__.html", origin + prefix)
+                and ((navigation_count <= 2 and req.url in (origin + "/__ods_inspection__.html", origin + prefix))
+                     or (download is not None and download.active and req.method == 'GET' and req.url == download.url))
             )
         if safe:
             route.continue_()
@@ -787,13 +900,14 @@ def guard_requests(context, page, origin, prefix, blocked):
             popup.close(),
         ),
     )
-    page.on(
-        "download",
-        lambda download: (
-            blocked.append("download") if len(blocked) < 32 else None,
-            download.cancel(),
-        ),
-    )
+    if download is None:
+        page.on(
+            "download",
+            lambda download: (
+                blocked.append("download") if len(blocked) < 32 else None,
+                download.cancel(),
+            ),
+        )
     page.on(
         "websocket",
         lambda _: blocked.append("websocket") if len(blocked) < 32 else None,
@@ -867,11 +981,14 @@ def run_browser(bundle, playwright_factory=None):
     page_errors = PageErrors()
 
     class Handler(http.server.BaseHTTPRequestHandler):
+        server_version = 'ODSPreview'
+        sys_version = ''
         def log_message(self, *_):
             pass
 
-        def do_GET(self):
+        def _send(self, include_body):
             path = urllib.parse.urlsplit(self.path).path
+            name = ''
             if path == "/__ods_inspection__.html":
                 body = wrapper_document(prefix)
                 mime = "text/html"
@@ -885,7 +1002,7 @@ def run_browser(bundle, playwright_factory=None):
             else:
                 self.send_error(404)
                 return
-            if path.endswith((".md", ".markdown")):
+            if path.lower().endswith((".md", ".markdown")):
                 mime = "text/plain"
             if mime.startswith("text/") or mime == "application/javascript":
                 try:
@@ -893,8 +1010,15 @@ def run_browser(bundle, playwright_factory=None):
                     mime += "; charset=utf-8"
                 except UnicodeDecodeError:
                     pass
+            download_only = name.lower().endswith(('.pdf', '.zip'))
+            if download_only:
+                mime = 'application/octet-stream'
             self.send_response(200)
             self.send_header("Content-Type", mime)
+            if download_only:
+                # Exactly the publisher's opaque-document policy (#6980),
+                # not an inspector-only attachment override.
+                self.send_header('Content-Disposition', f'attachment; filename="{name.rsplit("/", 1)[-1]}"')
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Content-Security-Policy", CSP)
             self.send_header("X-Content-Type-Options", "nosniff")
@@ -906,8 +1030,16 @@ def run_browser(bundle, playwright_factory=None):
             )
             self.send_header("Referrer-Policy", "no-referrer")
             self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Preview-SHA256", hashlib.sha256(body).hexdigest())
             self.end_headers()
-            self.wfile.write(body)
+            if include_body:
+                self.wfile.write(body)
+
+        def do_GET(self):
+            self._send(True)
+
+        def do_HEAD(self):
+            self._send(False)
 
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -931,7 +1063,8 @@ def run_browser(bundle, playwright_factory=None):
             )
             page = context.new_page()
             page.set_default_timeout(2000)
-            guard_requests(context, page, origin, prefix, blocked)
+            download = SnapshotDownload(browser, context, page, blocked) if request['steps'][-1]['action'] == 'download' else None
+            guard_requests(context, page, origin, prefix, blocked, download)
             # Registered before navigation so startup exceptions are included.
             # Page-scoped (not context-wide): blocked popups are never recorded.
             page.on("pageerror", page_errors.record)
@@ -1030,10 +1163,10 @@ def run_browser(bundle, playwright_factory=None):
                 )["result"]["objectId"]
                 return 1, node
 
-            def once(locator, include_hidden=False, include_text=False, select_value=None):
+            def once(locator, include_hidden=False, include_text=False, select_value=None, arm_download=False):
                 owned = []
                 try:
-                    return measure(locator, include_hidden, owned, include_text, select_value)
+                    return measure(locator, include_hidden, owned, include_text, select_value, arm_download)
                 finally:
                     for object_id in dict.fromkeys(owned):
                         try:
@@ -1041,7 +1174,7 @@ def run_browser(bundle, playwright_factory=None):
                         except Exception:
                             pass
 
-            def measure(locator, include_hidden, owned, include_text=False, select_value=None):
+            def measure(locator, include_hidden, owned, include_text=False, select_value=None, arm_download=False):
                 if blocked:
                     raise Invalid("preview navigation or request blocked")
                 if "selector" in locator:
@@ -1087,6 +1220,8 @@ def run_browser(bundle, playwright_factory=None):
                     if count != 1:
                         return {"count": count}
                 owned.append(node)
+                if arm_download:
+                    download.arm(cdp, world, node)
                 result = cdp.send(
                     "Runtime.callFunctionOn",
                     {
@@ -1121,7 +1256,7 @@ def run_browser(bundle, playwright_factory=None):
                     # and they match Playwright's source-text names too.
                     before, stable = observe(
                         step["locator"], step["action"] == "assert-hidden",
-                        None if step["action"] in ("click", "select-option") else step["action"] != "assert-hidden",
+                        None if step["action"] in ("click", "select-option", "download") else step["action"] != "assert-hidden",
                         step.get('expectedText'),
                         step.get('value'),
                     )
@@ -1144,6 +1279,20 @@ def run_browser(bundle, playwright_factory=None):
                     item["errorCode"] = "selector_not_unique"
                 elif not stable:
                     item["errorCode"] = "unstable"
+                elif step['action'] == 'download':
+                    try:
+                        if not before['visible'] or blocked:
+                            raise Invalid('download control unavailable')
+                        armed = once(step['locator'], arm_download=True)
+                        if armed.get('count') != 1 or not armed.get('visible'):
+                            raise Invalid('download control changed')
+                        target = (frame.locator('css=' + step['locator']['selector'])
+                                  if 'selector' in step['locator'] else frame.get_by_role(
+                                      step['locator']['role'], name=step['locator']['name'], exact=True))
+                        item['download'] = download.capture(target, step, origin + prefix + step['path'], frame_id)
+                        item['status'] = 'passed'
+                    except Exception:
+                        item['errorCode'] = 'download_unverified'
                 elif step['action'] == 'select-option':
                     selection = before['selection']
                     if not selection['native'] or selection['multiple']:
@@ -1216,6 +1365,11 @@ def run_browser(bundle, playwright_factory=None):
             # not the post-click condition; callers must assert that condition.
             # Page exceptions are separate evidence: they never change a step
             # or receipt status, and callers must not treat them as verified.
+            context.close()
+            if download is not None:
+                # Browser-level download events must not bleed from the later,
+                # independent palette context into this completed inspection.
+                download.cdp.detach()
             result = {
                 "schemaVersion": 1,
                 "kind": KIND,
@@ -1234,7 +1388,6 @@ def run_browser(bundle, playwright_factory=None):
                 **page_errors.receipt(),
                 "scope": inspection_scope(request),
             }
-            context.close()
             # After the step context is closed, so its receipt is final. The
             # palette is separate evidence: it never changes a step or status,
             # and it is omitted (as by older capsules) when capture fails.
