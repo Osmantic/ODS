@@ -6455,6 +6455,27 @@ class TestPrecreateDataDirs:
 
 
 class TestRootlessDataOwnershipRepair:
+    def test_whisper_uses_rootful_or_rootless_cache_preparation(self, tmp_path, monkeypatch):
+        helper = tmp_path / "lib" / "rootless-ownership.sh"
+        helper.parent.mkdir()
+        helper.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+        calls = []
+        monkeypatch.setattr(_mod, "INSTALL_DIR", tmp_path)
+        monkeypatch.setattr(_mod.platform, "system", lambda: "Linux")
+        monkeypatch.setattr(_mod, "_find_usable_bash", lambda: "/bin/bash")
+        monkeypatch.setattr(
+            _mod.subprocess, "run",
+            lambda cmd, **kwargs: calls.append(cmd) or subprocess.CompletedProcess(cmd, 0, "", ""),
+        )
+
+        _mod._repair_rootless_data_ownership("whisper")
+
+        assert calls == [[
+            "/bin/bash", "-c",
+            'source "$1"; ods_prepare_whisper_cache_ownership "$2"',
+            "ods-whisper-cache", str(helper), str(tmp_path),
+        ]]
+
     def test_runs_targeted_helper_for_builtin_linux_service(
         self, tmp_path, monkeypatch,
     ):

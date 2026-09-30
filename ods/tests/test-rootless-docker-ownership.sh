@@ -150,6 +150,34 @@ pass "targeted repair covers newly enabled service only"
 : > "$CALLS"
 (
     source "$LIB"
+    ods_docker_rootless_state() { return 1; }
+    uname() { printf 'Linux\n'; }
+    id() { [[ "$1" == -g ]] && printf '4242\n'; }
+    _ods_rootless_ensure_helper_image() { return 0; }
+    _ods_rootless_fix_directory() {
+        printf '%s|%s|%s|%s\n' "$2" "$3" "$4" "$5" >> "$CALLS"
+    }
+    ods_prepare_whisper_cache_ownership "$INSTALL_DIR"
+)
+grep -q '^data/whisper|1000:4242|ods-whisper|775$' "$CALLS" \
+    || fail "rootful Library Whisper cache was not prepared for UID 1000"
+pass "rootful Library Whisper add-back prepares its UID 1000 cache"
+
+: > "$CALLS"
+(
+    source "$LIB"
+    ods_docker_rootless_state() { return 0; }
+    uname() { printf 'Linux\n'; }
+    ods_fix_rootless_ownership() { printf '%s|%s\n' "$1" "$2" >> "$CALLS"; }
+    ods_prepare_whisper_cache_ownership "$INSTALL_DIR"
+)
+grep -q "^$INSTALL_DIR|whisper$" "$CALLS" \
+    || fail "rootless Library Whisper cache bypassed namespace repair"
+pass "rootless Library Whisper add-back keeps its namespace repair"
+
+: > "$CALLS"
+(
+    source "$LIB"
     ods_docker_rootless_state() { return 0; }
     uname() { printf 'Linux\n'; }
     _ods_rootless_ensure_helper_image() { return 0; }

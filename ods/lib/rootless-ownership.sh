@@ -395,6 +395,29 @@ ods_fix_rootless_ownership() {
     echo "[ods] Rootless ownership is ready."
 }
 
+# The ordinary installer prepares this UID 1000 cache in Phase 11. A lean
+# install omits Whisper there, so a later Library enable must do the same work
+# before Speaches starts. Use Docker's exact bind mount to work without sudo.
+ods_prepare_whisper_cache_ownership() {
+    local install_dir="$1" rootless_state=0 host_gid
+    [[ -n "$install_dir" && "$(uname -s)" == Linux ]] || return 1
+    ods_docker_rootless_state || rootless_state=$?
+    case "$rootless_state" in
+        0) ods_fix_rootless_ownership "$install_dir" whisper; return ;;
+        1) ;;
+        *) return 1 ;;
+    esac
+
+    host_gid=$(id -g) || return 1
+    [[ "$host_gid" =~ ^[0-9]+$ ]] || return 1
+    [[ -d "$install_dir/data/whisper" && ! -L "$install_dir/data/whisper" ]] || {
+        echo "[error] Whisper cache is not a real directory." >&2
+        return 1
+    }
+    _ods_rootless_ensure_helper_image || return 1
+    _ods_rootless_fix_directory "$install_dir" data/whisper "1000:$host_gid" ods-whisper 775
+}
+
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
     ods_fix_rootless_ownership "${1:-}" "${2:-}"
 fi

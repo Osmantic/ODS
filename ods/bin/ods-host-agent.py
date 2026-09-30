@@ -5885,7 +5885,7 @@ _ROOTLESS_BIND_OWNERSHIP_SERVICES = {
 
 
 def _repair_rootless_data_ownership(service_id: str) -> None:
-    """Apply the built-in rootless bind-mount ownership contract before start."""
+    """Prepare built-in bind mounts before a container starts."""
     if platform.system() != "Linux" or service_id not in _ROOTLESS_BIND_OWNERSHIP_SERVICES:
         return
 
@@ -5896,9 +5896,17 @@ def _repair_rootless_data_ownership(service_id: str) -> None:
     if not bash:
         raise RuntimeError("Bash is required for Docker rootless ownership repair")
 
+    command = [bash, str(helper), str(INSTALL_DIR), service_id]
+    if service_id == "whisper":
+        # A lean install skips Phase 11's UID 1000 cache preparation. The
+        # Library add-back must prepare it for rootful as well as rootless Docker.
+        command = [
+            bash, "-c", 'source "$1"; ods_prepare_whisper_cache_ownership "$2"',
+            "ods-whisper-cache", str(helper), str(INSTALL_DIR),
+        ]
     try:
         result = subprocess.run(
-            [bash, str(helper), str(INSTALL_DIR), service_id],
+            command,
             cwd=str(INSTALL_DIR),
             env=os.environ.copy(),
             capture_output=True,
