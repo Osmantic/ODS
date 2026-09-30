@@ -146,6 +146,7 @@ describe('OpenCodeApp', () => {
     render(<OpenCodeApp />)
 
     expect(await screen.findByText(/another program is using port 3003/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Start OpenCode/ })).toBeDisabled()
   })
 
   test('surfaces an unreachable host agent with a retry', async () => {

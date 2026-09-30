@@ -204,7 +204,7 @@ export default function OpenCodeApp() {
                   ? `OpenCode is set up, but another program is using port ${port}. Stop that program, then start OpenCode.`
                   : 'OpenCode is set up but not running.'}
               </p>
-              <button type="button" className="opencode-button is-primary" disabled={!!busy || !app.startSupported} onClick={() => act('start')}>
+              <button type="button" className="opencode-button is-primary" disabled={!!busy || !app.startSupported || app.portInUse} onClick={() => act('start')}>
                 {busy === 'start' ? <Loader2 size={14} className="animate-spin" /> : <Play size={14} />}
                 {busy === 'start' ? 'Starting…' : 'Start OpenCode'}
               </button>

@@ -9,7 +9,6 @@ import socket
 import subprocess
 import sys
 import threading
-import types
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -153,12 +152,30 @@ UNREACHABLE = {"reachable": False, "healthy": False, "version": None}
 HEALTHY = {"reachable": True, "healthy": True, "version": "1.18.32"}
 
 
-def test_running_opencode_is_reported_without_asking_the_service_manager(monkeypatch):
-    status, calls = _status_with(monkeypatch, probe=HEALTHY, registered=True)
+def test_running_opencode_requires_its_registered_active_service(monkeypatch):
+    status, calls = _status_with(monkeypatch, probe=HEALTHY, registered=True, active=True)
     assert status["state"] == "running"
     assert status["version"] == "1.18.32"
     assert status["installed"] is True
+    assert calls == ["service"]
+
+
+def test_healthy_unmanaged_opencode_is_not_adopted(monkeypatch):
+    status, calls = _status_with(monkeypatch, probe=HEALTHY, registered=False)
+    assert status["state"] == "not_installed"
+    assert status["installed"] is False
+    assert status["healthy"] is False
+    assert status["portInUse"] is True
+    assert status["setupSupported"] is False
     assert calls == []
+
+
+def test_healthy_port_does_not_mask_a_stopped_managed_service(monkeypatch):
+    status, calls = _status_with(monkeypatch, probe=HEALTHY, registered=True, active=False)
+    assert status["state"] == "stopped"
+    assert status["healthy"] is False
+    assert status["portInUse"] is True
+    assert calls == ["service"]
 
 
 def test_never_set_up_is_not_installed_rather_than_offline(monkeypatch):
@@ -485,7 +502,8 @@ SETUP_ENV = {
 }
 
 
-def _prepare_setup(tmp_path, monkeypatch, home, *, installer_rc=0, systemctl_rc=0, binary=None):
+def _prepare_setup(tmp_path, monkeypatch, home, *, installer_rc=0, fail_action=None,
+                   prior_enabled=False, prior_active=False, binary=None):
     install = _setup_ready_install(tmp_path, monkeypatch)
     monkeypatch.setattr(_mod, "_opencode_user_service_env", lambda: {"XDG_RUNTIME_DIR": "/run/user/1000"})
     monkeypatch.setattr(_mod, "_wait_for_opencode_health", lambda attempts=30: None)
@@ -500,8 +518,10 @@ def _prepare_setup(tmp_path, monkeypatch, home, *, installer_rc=0, systemctl_rc=
     monkeypatch.setenv("USER", "ods-owner")
     commands = []
     binary = binary or home / ".opencode" / "bin" / "opencode"
+    fail_seen = False
 
     def fake_run(command, **kwargs):
+        nonlocal fail_seen
         commands.append(command)
         if command[0] == "bash":
             assert command[4] == str(install / "installers" / "lib" / "opencode-runtime.sh")
@@ -511,13 +531,25 @@ def _prepare_setup(tmp_path, monkeypatch, home, *, installer_rc=0, systemctl_rc=
             binary.write_text("#!/bin/sh\n")
             return subprocess.CompletedProcess(command, 0, stdout=f"{binary}\n", stderr="")
         if command[0] == "systemctl":
-            return subprocess.CompletedProcess(command, systemctl_rc, stdout="", stderr="unit failed" if systemctl_rc else "")
+            if command[2] == "show":
+                state = (
+                    f"LoadState={'loaded' if prior_enabled or prior_active else 'not-found'}\n"
+                    f"UnitFileState={'enabled' if prior_enabled else 'disabled' if prior_active else ''}\n"
+                    f"ActiveState={'active' if prior_active else 'inactive'}\n"
+                )
+                return subprocess.CompletedProcess(command, 0, stdout=state, stderr="")
+            failed = command[2] == fail_action and not fail_seen
+            if failed:
+                fail_seen = True
+            return subprocess.CompletedProcess(command, 1 if failed else 0,
+                                               stdout="", stderr="unit failed" if failed else "")
         return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
 
     monkeypatch.setattr(_mod.subprocess, "run", fake_run)
     return install, commands, progress, binary
 
 
+@pytest.mark.skipif(os.name == "nt", reason="systemd unit rendering requires POSIX paths")
 def test_setup_installs_configures_and_starts_the_managed_service(tmp_path, monkeypatch, _isolated):
     home = _isolated
     _, commands, progress, binary = _prepare_setup(tmp_path, monkeypatch, home)
@@ -535,11 +567,14 @@ def test_setup_installs_configures_and_starts_the_managed_service(tmp_path, monk
     assert provider["models"]["ods/current"]["limit"] == {"context": 32768, "output": 8192}
     assert json.loads((home / ".config" / "opencode" / "config.json").read_text()) == config
     systemctl = [command[2:] for command in commands if command[0] == "systemctl"]
-    assert systemctl == [["daemon-reload"], ["enable", "opencode-web.service"], ["restart", "opencode-web.service"]]
+    assert systemctl[0][0] == "show"
+    assert systemctl[1:] == [["daemon-reload"], ["enable", "opencode-web.service"],
+                            ["restart", "opencode-web.service"]]
     assert ["loginctl", "enable-linger", "ods-owner"] in commands
     assert [status for _, status, _ in progress] == ["pulling", "starting", "starting", "started"]
 
 
+@pytest.mark.skipif(os.name == "nt", reason="systemd unit rendering requires POSIX paths")
 def test_setup_reuses_a_reviewed_binary_outside_the_managed_directory(tmp_path, monkeypatch, _isolated):
     home = _isolated
     existing = tmp_path / "usr-local-bin" / "opencode"
@@ -563,10 +598,61 @@ def test_setup_download_failure_changes_nothing(tmp_path, monkeypatch, _isolated
     assert all(command[0] == "bash" for command in commands)
 
 
+@pytest.mark.skipif(os.name == "nt", reason="systemd unit rendering requires POSIX paths")
 def test_setup_reports_a_failed_service_start(tmp_path, monkeypatch, _isolated):
-    _prepare_setup(tmp_path, monkeypatch, _isolated, systemctl_rc=1)
+    _prepare_setup(tmp_path, monkeypatch, _isolated, fail_action="daemon-reload")
     with pytest.raises(RuntimeError, match="daemon-reload failed: unit failed"):
         _mod._setup_managed_opencode(dict(SETUP_ENV))
+
+
+@pytest.mark.skipif(os.name == "nt", reason="systemd unit rendering requires POSIX paths")
+def test_setup_restart_failure_restores_new_config_and_unit(tmp_path, monkeypatch, _isolated):
+    home = _isolated
+    _, commands, _, _ = _prepare_setup(tmp_path, monkeypatch, home, fail_action="restart")
+    with pytest.raises(RuntimeError, match="restart opencode-web.service failed: unit failed"):
+        _mod._setup_managed_opencode(dict(SETUP_ENV))
+    assert not (home / ".config" / "opencode" / "opencode.json").exists()
+    assert not (home / ".config" / "opencode" / "config.json").exists()
+    assert not (home / ".config" / "systemd" / "user" / "opencode-web.service").exists()
+    systemctl = [command[2] for command in commands if command[0] == "systemctl"]
+    assert systemctl == ["show", "daemon-reload", "enable", "restart",
+                         "stop", "disable", "daemon-reload"]
+
+
+@pytest.mark.skipif(os.name == "nt", reason="systemd unit rendering requires POSIX paths")
+def test_setup_failure_restores_existing_unit_without_disabling_active_service(
+    tmp_path, monkeypatch, _isolated,
+):
+    home = _isolated
+    old_unit = home / ".config" / "systemd" / "user" / "opencode-web.service"
+    old_unit.parent.mkdir(parents=True)
+    old_unit.write_text("[Service]\nExecStart=/old/opencode\n")
+    old_unit.chmod(0o600)
+    old_config = home / ".config" / "opencode" / "opencode.json"
+    old_config.parent.mkdir(parents=True)
+    old_config.write_text('{"model":"old/model"}\n')
+    _, commands, _, _ = _prepare_setup(
+        tmp_path, monkeypatch, home, fail_action="restart",
+        prior_enabled=True, prior_active=True,
+    )
+    with pytest.raises(RuntimeError, match="restart opencode-web.service failed: unit failed"):
+        _mod._setup_managed_opencode(dict(SETUP_ENV))
+    assert old_unit.read_text() == "[Service]\nExecStart=/old/opencode\n"
+    assert old_unit.stat().st_mode & 0o777 == 0o600
+    assert old_config.read_text() == '{"model":"old/model"}\n'
+    systemctl = [command[2] for command in commands if command[0] == "systemctl"]
+    assert systemctl == ["show", "daemon-reload", "enable", "restart",
+                         "daemon-reload", "restart"]
+
+
+def test_wait_for_health_rejects_an_unrelated_web_page(monkeypatch):
+    server = _serve("<html>not OpenCode</html>", content_type="text/html")
+    monkeypatch.setattr(_mod, "_opencode_port", lambda: server.server_address[1])
+    try:
+        with pytest.raises(RuntimeError, match="/global/health"):
+            _mod._wait_for_opencode_health(attempts=1)
+    finally:
+        server.shutdown()
 
 
 def test_setup_rejects_paths_the_unit_cannot_quote(tmp_path):
@@ -611,6 +697,22 @@ def test_setup_is_not_repeated_while_running(monkeypatch):
     code, body = _mod._begin_opencode_setup({})
     assert code == 200
     assert body["accepted"] is False
+
+
+def test_setup_refuses_a_foreign_process_on_its_port(monkeypatch):
+    monkeypatch.setattr(_mod, "_opencode_setup_issue", lambda env, system=None: None)
+    _fixed_status(monkeypatch, state="not_installed", registered=False, portInUse=True)
+    code, body = _mod._begin_opencode_setup({})
+    assert code == 409
+    assert body["code"] == "opencode_port_in_use"
+
+
+def test_setup_refuses_to_restart_an_already_starting_service(monkeypatch):
+    monkeypatch.setattr(_mod, "_opencode_setup_issue", lambda env, system=None: None)
+    _fixed_status(monkeypatch, state="starting")
+    code, body = _mod._begin_opencode_setup({})
+    assert code == 409
+    assert body["code"] == "opencode_starting"
 
 
 # --- HTTP handlers ---------------------------------------------------------------

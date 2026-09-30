@@ -18028,18 +18028,13 @@ def _capture_managed_opencode_state() -> dict:
 
 
 def _wait_for_opencode_health(attempts: int = 30) -> None:
-    url = f"http://127.0.0.1:{_opencode_port()}/"
+    port = _opencode_port()
     for attempt in range(attempts):
-        try:
-            request = urllib_request.Request(url, method="GET")
-            with urllib_request.urlopen(request, timeout=3) as response:
-                if 200 <= response.status < 500:
-                    return
-        except (OSError, urllib_error.URLError):
-            pass
+        if _probe_opencode_web(port, timeout=3)["healthy"]:
+            return
         if attempt + 1 < attempts:
             time.sleep(1)
-    raise RuntimeError(f"Managed OpenCode did not become healthy at {url}")
+    raise RuntimeError(f"Managed OpenCode did not become healthy at http://127.0.0.1:{port}/global/health")
 
 
 def _restart_managed_opencode(state: dict | None = None) -> bool:
@@ -18224,28 +18219,31 @@ def _opencode_app_status(env: dict | None = None) -> dict:
     port = _opencode_port()
     probe = _probe_opencode_web(port)
     registered = _opencode_service_registered(system)
-    active = None
-    if probe["healthy"]:
-        state = "running"
-    elif _opencode_setup_in_progress():
+    active = _opencode_service_active() if registered else None
+    managed_healthy = bool(registered and active is True and probe["healthy"])
+    port_in_use = bool(probe["reachable"] and not managed_healthy)
+    if _opencode_setup_in_progress():
         state = "installing"
+    elif managed_healthy:
+        state = "running"
     elif not registered:
         state = "not_installed"
     else:
-        active = _opencode_service_active()
         state = "starting" if active else "stopped"
     setup_issue = None if state == "running" else _opencode_setup_issue(env, system)
+    if port_in_use and setup_issue is None:
+        setup_issue = f"Port {port} is already in use. Stop the other program before setting up OpenCode."
     return {
         "state": state,
         "platform": system.lower(),
         "port": port,
-        "installed": bool(registered or probe["healthy"]),
+        "installed": registered,
         "registered": registered,
         "serviceActive": active,
-        "healthy": probe["healthy"],
+        "healthy": managed_healthy,
         "reachable": probe["reachable"],
-        "portInUse": bool(probe["reachable"] and not probe["healthy"]),
-        "version": probe["version"],
+        "portInUse": port_in_use,
+        "version": probe["version"] if managed_healthy else None,
         "responseTimeMs": probe["response_time_ms"],
         "startSupported": bool(registered),
         "setupSupported": setup_issue is None and state != "running",
@@ -18319,6 +18317,88 @@ def _render_opencode_unit(template: str, binary: Path) -> str:
     )
 
 
+def _opencode_prior_systemd_state(user_env: dict[str, str]) -> tuple[bool, bool]:
+    """Capture a known user-unit state before setup changes its files or service."""
+    result = subprocess.run(
+        ["systemctl", "--user", "show", _OPENCODE_LINUX_UNIT,
+         "--property=LoadState,UnitFileState,ActiveState"],
+        capture_output=True, text=True, timeout=15, env=user_env,
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip()
+        raise RuntimeError(f"Could not inspect OpenCode before setup: {detail[:300]}")
+    values = dict(
+        line.split("=", 1) for line in result.stdout.splitlines() if "=" in line
+    )
+    load = values.get("LoadState")
+    unit_file = values.get("UnitFileState")
+    active = values.get("ActiveState")
+    if load == "not-found" and unit_file == "" and active == "inactive":
+        return False, False
+    if load != "loaded" or unit_file not in {"enabled", "disabled"} or active not in {"active", "inactive"}:
+        raise RuntimeError(
+            "OpenCode has an unsupported systemd state; use the installer to repair it "
+            f"({load or 'unknown'}, {unit_file or 'unknown'}, {active or 'unknown'})"
+        )
+    return unit_file == "enabled", active == "active"
+
+
+def _rollback_opencode_setup(
+    config_snapshot: dict,
+    unit_path: Path,
+    unit_snapshot: dict,
+    user_env: dict[str, str],
+    prior_enabled: bool,
+    prior_active: bool,
+    *,
+    unit_changed: bool,
+    enable_attempted: bool,
+    restart_attempted: bool,
+) -> list[str]:
+    """Restore setup-owned files and only the service state setup changed."""
+    errors = []
+
+    def run_action(action: str) -> None:
+        try:
+            step = subprocess.run(
+                ["systemctl", "--user", action, _OPENCODE_LINUX_UNIT],
+                capture_output=True, text=True, timeout=60, env=user_env,
+            )
+            if step.returncode != 0:
+                errors.append(f"{action}: {(step.stderr or step.stdout or '').strip()[:300]}")
+        except (OSError, subprocess.SubprocessError) as exc:
+            errors.append(f"{action}: {exc}")
+
+    # Stop or disable only changes this setup may have made. Do it while the
+    # new unit still exists, so systemd can find it even on a fresh install.
+    if restart_attempted and not prior_active:
+        run_action("stop")
+    if enable_attempted and not prior_enabled:
+        run_action("disable")
+    try:
+        _restore_opencode_config(config_snapshot)
+    except (OSError, RuntimeError) as exc:
+        errors.append(f"config: {exc}")
+    if unit_changed:
+        try:
+            _restore_text_file(unit_path, unit_snapshot)
+        except (OSError, RuntimeError) as exc:
+            errors.append(f"unit: {exc}")
+        try:
+            step = subprocess.run(
+                ["systemctl", "--user", "daemon-reload"],
+                capture_output=True, text=True, timeout=60, env=user_env,
+            )
+            if step.returncode != 0:
+                errors.append(f"daemon-reload: {(step.stderr or step.stdout or '').strip()[:300]}")
+        except (OSError, subprocess.SubprocessError) as exc:
+            errors.append(f"daemon-reload: {exc}")
+    if restart_attempted and prior_active:
+        # A previously running service must use its restored unit and config.
+        run_action("restart")
+    return errors
+
+
 def _setup_managed_opencode(env: dict) -> None:
     """Install the reviewed OpenCode release and its managed Linux service.
 
@@ -18350,39 +18430,60 @@ def _setup_managed_opencode(env: dict) -> None:
     if context_length < 1024:
         raise RuntimeError("OpenCode requires a context of at least 1024 tokens")
     model_id = str(env.get("LLM_MODEL") or "").strip() or "ods/current"
-    snapshot = _capture_opencode_config(assume_installed=True)
-    if snapshot is None:
+    config_snapshot = _capture_opencode_config(assume_installed=True)
+    if config_snapshot is None:
         raise RuntimeError("OpenCode configuration could not be prepared")
-    try:
-        _update_opencode_config(env, snapshot, model_id, context_length, display_name=model_id)
-    except Exception:
-        _restore_opencode_config(snapshot)
-        raise
-
     template = (INSTALL_DIR / "opencode" / "opencode-web.service").read_text(encoding="utf-8")
-    _atomic_write_text(_opencode_linux_unit_path(), _render_opencode_unit(template, binary), 0o644)
-
-    _write_progress(_OPENCODE_PROGRESS_ID, "starting", "Starting OpenCode")
+    rendered_unit = _render_opencode_unit(template, binary)
+    unit_path = _opencode_linux_unit_path()
+    unit_snapshot = _snapshot_text_file(unit_path)
     user_env = _opencode_user_service_env()
-    for command in (
-        ["systemctl", "--user", "daemon-reload"],
-        ["systemctl", "--user", "enable", _OPENCODE_LINUX_UNIT],
-        ["systemctl", "--user", "restart", _OPENCODE_LINUX_UNIT],
-    ):
-        step = subprocess.run(command, capture_output=True, text=True, timeout=60, env=user_env)
-        if step.returncode != 0:
-            detail = (step.stderr or step.stdout or "").strip()
-            raise RuntimeError(f"{' '.join(command[1:])} failed: {detail[:300]}")
+    prior_enabled, prior_active = _opencode_prior_systemd_state(user_env)
+    unit_changed = False
+    enable_attempted = False
+    restart_attempted = False
+    try:
+        _update_opencode_config(env, config_snapshot, model_id, context_length, display_name=model_id)
+        unit_changed = True  # atomic write can fail after replacing the destination
+        _atomic_write_text(unit_path, rendered_unit, 0o644)
+        _write_progress(_OPENCODE_PROGRESS_ID, "starting", "Starting OpenCode")
+        for command in (
+            ["systemctl", "--user", "daemon-reload"],
+            ["systemctl", "--user", "enable", _OPENCODE_LINUX_UNIT],
+            ["systemctl", "--user", "restart", _OPENCODE_LINUX_UNIT],
+        ):
+            if command[2] == "enable":
+                enable_attempted = True
+            elif command[2] == "restart":
+                restart_attempted = True
+            step = subprocess.run(command, capture_output=True, text=True, timeout=60, env=user_env)
+            if step.returncode != 0:
+                detail = (step.stderr or step.stdout or "").strip()
+                raise RuntimeError(f"{' '.join(command[1:])} failed: {detail[:300]}")
+        _wait_for_opencode_health()
+    except Exception as exc:
+        rollback_errors = _rollback_opencode_setup(
+            config_snapshot, unit_path, unit_snapshot, user_env,
+            prior_enabled, prior_active,
+            unit_changed=unit_changed,
+            enable_attempted=enable_attempted,
+            restart_attempted=restart_attempted,
+        )
+        if rollback_errors:
+            raise RuntimeError(f"{exc}; OpenCode rollback failed: {'; '.join(rollback_errors)}") from exc
+        raise
     # Keep the user service running after logout, as the installer does. This
     # is best effort because some hosts require an administrator to allow it.
     user = os.environ.get("USER") or os.environ.get("LOGNAME") or ""
     if user and shutil.which("loginctl"):
-        linger = subprocess.run(
-            ["loginctl", "enable-linger", user], capture_output=True, text=True, timeout=15,
-        )
-        if linger.returncode != 0:
-            logger.warning("Could not enable linger for OpenCode; it may stop after logout")
-    _wait_for_opencode_health()
+        try:
+            linger = subprocess.run(
+                ["loginctl", "enable-linger", user], capture_output=True, text=True, timeout=15,
+            )
+            if linger.returncode != 0:
+                logger.warning("Could not enable linger for OpenCode; it may stop after logout")
+        except (OSError, subprocess.SubprocessError) as exc:
+            logger.warning("Could not enable linger for OpenCode: %s", exc)
     _write_progress(_OPENCODE_PROGRESS_ID, "started", "OpenCode is ready")
 
 
@@ -18411,6 +18512,18 @@ def _begin_opencode_setup(env: dict) -> tuple[int, dict]:
         status = _opencode_app_status(env)
         if status["state"] == "running":
             return 200, {"accepted": False, "status": status}
+        if status["state"] == "starting":
+            return 409, {
+                "error": "OpenCode is already starting; wait for it to become ready or use the installer to repair it",
+                "code": "opencode_starting",
+                "status": status,
+            }
+        if status["portInUse"]:
+            return 409, {
+                "error": f"Port {status['port']} is used by another program, so OpenCode cannot be set up",
+                "code": "opencode_port_in_use",
+                "status": status,
+            }
         acquired, active = _begin_model_lifecycle("opencode_setup")
         if not acquired:
             return 409, _model_lifecycle_conflict("OpenCode setup", active)
