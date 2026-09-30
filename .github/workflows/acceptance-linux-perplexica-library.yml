@@ -23,7 +23,7 @@ jobs:
       - name: Checkout exact Perplexica Library candidate
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
-          ref: 136ef5eb25a773d11bdae3f6662d4adf4648316b
+          ref: 3a8c351aef8782cc2cd29029e69d3195571a2c38
           path: product
       - name: Exercise Perplexica add-back on installed ODS
         env:
