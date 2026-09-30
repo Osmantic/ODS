@@ -122,6 +122,7 @@ fi
 printf 'Prior Pixel state top-level metadata:\n'
 sudo find /var/lib/pixel-ops-broker -mindepth 1 -maxdepth 1 \
     -printf '%f type=%y mode=%m uid=%U gid=%G\n' | sort
+sudo python3 "$harness/pixel-skel-inventory.py"
 
 run_installer "$candidate" 'Portal candidate upgrade'
 grep -qx 'ENABLE_OPEN_WEBUI=true' "$INSTALL_DIR/.env" \
