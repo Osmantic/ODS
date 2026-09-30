@@ -5718,6 +5718,21 @@ function hasWorkspaceHtmlTarget(text) {
   return /\b[A-Za-z0-9_-][A-Za-z0-9._/-]{0,511}\.html?\b/i.test(paths);
 }
 
+function ownerDeclinesPreviewDelivery(text) {
+  // Optional build work must not become mandatory publication after a JSX/HTML
+  // write. Match only a coordinated delivery verb, not another clause's task.
+  const prose = workspacePreviewInstructionText(text).normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  let optional = false;
+  for (const clause of prose.split(/[!?;\n]+|\.(?=\s|$)|\b(?:but|however|instead|then|mas|porem)\b/i)) {
+    if (/\b(?:no\s+need\s+to|(?:do\s+not|don['’]t)\s+need\s+to|need\s+not)\s+(?:(?:build|compile|run|test)\s*(?:,\s*(?:(?:and|or)\s+)?|(?:and|or)\s+))*(?:publish|republish|preview|display|serve)\b/i.test(clause)
+      || /\bnao\s+(?:precisa|precisamos|e\s+necessario)\s+(?:(?:compilar|construir|executar|testar)\s*(?:,\s*(?:(?:e|ou)\s+)?|(?:e|ou)\s+))*(?:publicar|republicar|mostrar|abrir\s+(?:uma?\s+)?previa)\b/i.test(clause)) optional = true;
+    // A later independent, explicit publication command still has to be
+    // verified. This is not permission to override an actual "do not publish".
+    else if (hasExplicitWorkspacePreviewDirective(clause)) optional = false;
+  }
+  return optional;
+}
+
 function ownerForbidsWorkspacePreview(messages, prompt) {
   const text = currentOwnerIntentText(messages, prompt)
     .replace(/(?:\x60{3}|~{3})[\s\S]*?(?:\x60{3}|~{3})/g, " ")
@@ -5732,7 +5747,7 @@ function ownerForbidsWorkspacePreview(messages, prompt) {
   const coordinatedProhibition = text
     .split(/[!?;\n]+|\.(?=\s|$)|\b(?:but|however|instead|then)\b/i)
     .some((clause) => /\b(?:do\s+not|don['’]t|never|must\s+not|should\s+not|avoid|skip|without)\b[^.!?;\n]{0,160}\b(?:and|or)\s+(?:show(?:ing)?|preview(?:ing)?|view(?:ing)?|open(?:ing)?|serv(?:e|ing)|publish(?:ing)?|republish(?:ing)?|display(?:ing)?)\b/i.test(clause));
-  if (coordinatedProhibition) return true;
+  if (coordinatedProhibition || ownerDeclinesPreviewDelivery(text)) return true;
   return portuguesePreviewForbidden(text) || /\b(?:only|just)\s+(?:the\s+)?(?:code|source(?:\s+code)?)\b/i.test(text) || /\b(?:do\s+not|don['’]t|never|must\s+not|should\s+not|avoid|skip|without)\s+(?:(?:try|attempt)\s+to\s+)?(?:(?:create|build|edit|write|run|execute)\s*(?:,\s*|and\s+|or\s+))*(?:show(?:ing)?|preview(?:ing)?|view(?:ing)?|open(?:ing)?|serv(?:e|ing)|publish(?:ing)?|republish(?:ing)?|display(?:ing)?)\b/i.test(text);
 }
 
@@ -5986,7 +6001,7 @@ function clauseRequestsVisualArtifact(clause, actionPattern, targetPattern) {
 export function userMessageRequestsWorkspacePreview(messages, prompt = undefined) {
   const text = workspacePreviewInstructionText(currentOwnerIntentText(messages, prompt));
   if (!text) return false;
-  if (portuguesePreviewForbidden(text)) return false;
+  if (portuguesePreviewForbidden(text) || ownerDeclinesPreviewDelivery(text)) return false;
   // Classify visual targets and actions from the same positive request text.
   // A no-website constraint on a Python task is not a website request. Keep
   // independent actions after "but", "instead", "then", or a sentence boundary.
