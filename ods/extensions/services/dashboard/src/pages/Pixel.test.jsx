@@ -4,6 +4,7 @@ import { act } from '@testing-library/react'
 import {saveProfile} from '../lib/localProfile'
 import {saveConversation,readConversations,DELETE_EVENT} from '../lib/pixelConversations'
 import { StrictMode } from 'react'
+import {loadSnapshotFiles} from '../lib/pixelArtifacts'
 
 // The repository's base ESLint profile does not mark JSX identifiers as uses.
 // eslint-disable-next-line no-unused-vars
@@ -284,7 +285,7 @@ describe('Pixel', () => {
     expect(screen.queryByTitle('Interactive Portal preview')).not.toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'Open the verified preview' })).toHaveAttribute('href', `/pixel-preview/${siteId}/`)
     fireEvent.click(screen.getByRole('button',{name:'Workspace',exact:true}))
-    expect(screen.getByTitle('Interactive Portal preview')).toHaveAttribute('src', `/pixel-preview/${siteId}/__ods_view__.html`)
+    expect(await screen.findByTitle('Interactive Portal preview')).toHaveAttribute('src', `/pixel-preview/${siteId}/__ods_view__.html`)
   })
 
   it('opens the workspace without a preview and only drafts a publication request', async () => {
@@ -500,10 +501,10 @@ describe('Pixel', () => {
     expect(frame).toBeInTheDocument()
     fireEvent.click(screen.getByTitle('Collapse preview'))
     expect(frame).not.toBeVisible()
-    expect(screen.getByTitle('Interactive Portal preview')).toBe(frame)
+    expect(await screen.findByTitle('Interactive Portal preview')).toBe(frame)
     fireEvent.click(screen.getByTitle('Expand preview'))
     expect(frame).toBeVisible()
-    expect(screen.getByTitle('Interactive Portal preview')).toBe(frame)
+    expect(await screen.findByTitle('Interactive Portal preview')).toBe(frame)
     fireEvent.click(screen.getByTitle('Start a new chat'))
     await waitFor(() => {
       const stored = JSON.parse(globalThis.localStorage.getItem('ods.pixel.chat.v1'))
@@ -2182,6 +2183,10 @@ describe('Pixel', () => {
   })
 
   it.each(['Files','Review'])('reloads the active %s inspector after a failed fetch',async tab=>{
+    if(tab==='Files') {
+      const actual=await vi.importActual('../lib/pixelArtifacts')
+      loadSnapshotFiles.mockImplementationOnce(actual.loadSnapshotFiles).mockImplementationOnce(actual.loadSnapshotFiles)
+    }
     const sha256='a'.repeat(64),siteId=`site-${sha256.slice(0,24)}`
     localStorage.setItem('ods.pixel.chat.v1',JSON.stringify({schema:1,chatId:'reload_inspector',messages:[{role:'user',content:'Inspect project'}],preview:{schemaVersion:1,kind:'ods-pixel-workspace-preview',relativeDirectory:'demo',siteId,port:9437,url:`http://${siteId}.localhost:9437/${siteId}/`,files:1,bytes:100,sha256,entrySha256:'b'.repeat(64)}}))
     globalThis.fetch.mockImplementation(async url=>url==='/api/pixel/status' ? response({available:true}) : {ok:false})
@@ -2196,10 +2201,10 @@ describe('Pixel', () => {
     await waitFor(()=>expect(requests()).toBe(before+1))
     if(tab==='Files') expect(screen.getByRole('button',{name:'Browse files'})).toHaveAttribute('aria-pressed','true')
     expect(screen.getByRole('tab',{name:tab==='Files'?'Preview':'Review'})).toHaveAttribute('aria-selected','true')
-    expect(screen.getAllByTitle('Interactive Portal preview')).toHaveLength(1)
+    expect(screen.queryAllByTitle('Interactive Portal preview')).toHaveLength(tab==='Files'?0:1)
     if(tab==='Files') fireEvent.click(screen.getByRole('button',{name:'Browse files'}))
     else fireEvent.click(screen.getByRole('tab',{name:'Preview'}))
-    expect(screen.getAllByTitle('Interactive Portal preview')).toHaveLength(1)
+    expect(screen.queryAllByTitle('Interactive Portal preview')).toHaveLength(tab==='Files'?0:1)
     expect(screen.getByRole('tabpanel',{name:'Preview'})).toBeVisible()
     expect(screen.queryByRole('tabpanel',{name:'Review'})).toBeNull()
     expect(screen.queryByText('Files unavailable.')).toBeNull()
@@ -2237,3 +2242,10 @@ describe('Pixel', () => {
 beforeEach(()=>{vi.spyOn(Number.prototype,'toLocaleString').mockImplementation(function(locales,options){
   return new Intl.NumberFormat(locales || 'en-US',options).format(this.valueOf())
 })})
+
+// These suites exercise conversation/publication selection, not manifest transport.
+// Workspace and artifact suites cover missing, corrupt and delayed manifests.
+vi.mock('../lib/pixelArtifacts',async importOriginal=>({
+  ...await importOriginal(),
+  loadSnapshotFiles:vi.fn(async preview=>[{path:'index.html',bytes:preview.bytes,sha256:preview.entrySha256}]),
+}))

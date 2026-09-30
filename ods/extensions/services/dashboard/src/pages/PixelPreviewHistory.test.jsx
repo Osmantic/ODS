@@ -19,7 +19,7 @@ function seed(extra=[]) {
 it('shows the latest verified project publication without a historical selector or submitting work',async()=>{
   seed();render(<Pixel/>);await screen.findByText('Available')
   expect(screen.queryByLabelText('Published version')).toBeNull()
-  expect(screen.getByTitle('Interactive Portal preview')).toHaveAttribute('src',`/pixel-preview/${latest.siteId}/__ods_view__.html`)
+  expect(await screen.findByTitle('Interactive Portal preview')).toHaveAttribute('src',`/pixel-preview/${latest.siteId}/__ods_view__.html`)
   expect(fetch.mock.calls.some(([url])=>url==='/api/pixel/chat/stream')).toBe(false)
   await waitFor(()=>expect(JSON.parse(localStorage.getItem('ods.pixel.chat.v1')).messages).toHaveLength(4))
 })
@@ -27,5 +27,12 @@ it('deduplicates retained snapshots and excludes malformed publication metadata'
   seed([{role:'assistant',content:'Repeated',publication:latest},{role:'assistant',content:'Invalid',publication:{...publication('c'),url:'https://invalid.example/'}}])
   render(<Pixel/>);await screen.findByText('Available')
   expect(screen.queryByLabelText('Published version')).toBeNull()
-  expect(screen.getByTitle('Interactive Portal preview')).toHaveAttribute('src',`/pixel-preview/${latest.siteId}/__ods_view__.html`)
+  expect(await screen.findByTitle('Interactive Portal preview')).toHaveAttribute('src',`/pixel-preview/${latest.siteId}/__ods_view__.html`)
 })
+
+// These suites exercise conversation/publication selection, not manifest transport.
+// Workspace and artifact suites cover missing, corrupt and delayed manifests.
+vi.mock('../lib/pixelArtifacts',async importOriginal=>({
+  ...await importOriginal(),
+  loadSnapshotFiles:vi.fn(async preview=>[{path:'index.html',bytes:preview.bytes,sha256:preview.entrySha256}]),
+}))
