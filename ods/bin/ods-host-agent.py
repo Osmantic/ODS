@@ -16865,6 +16865,7 @@ def _patch_hermes_config_text(
     model_fields = set()
     changed = False
     new_lines = []
+    yaml_key_path = []
 
     def add_missing_model_fields() -> None:
         nonlocal changed
@@ -16885,6 +16886,15 @@ def _patch_hermes_config_text(
             changed = True
 
     for line in lines:
+        # Track simple mapping paths so the separate auxiliary compression
+        # context follows the selected model without changing owner submaps.
+        key_match = re.match(r"^([ ]*)([A-Za-z_][A-Za-z0-9_-]*)\s*:", line)
+        if key_match:
+            key_indent = len(key_match.group(1))
+            while yaml_key_path and yaml_key_path[-1][0] >= key_indent:
+                yaml_key_path.pop()
+            yaml_key_path.append((key_indent, key_match.group(2)))
+        current_key_path = tuple(key for _, key in yaml_key_path)
         if re.match(r"^model:\s*(?:#.*)?$", line):
             in_model_block = True
             model_block_found = True
@@ -16901,14 +16911,18 @@ def _patch_hermes_config_text(
             if model_field_indent is None:
                 model_field_indent = indent
                 model_indent = indent
-        if in_model_block and re.match(r"^\s+default:\s*", line):
+        if in_model_block and model_field_indent and re.match(
+            rf"^{re.escape(model_field_indent)}default:\s*", line
+        ):
             model_fields.add("default")
             indent = line[:len(line) - len(line.lstrip())]
             new_line = f"{indent}default: {json.dumps(model_name)}"
             new_lines.append(new_line)
             changed = changed or new_line != line
             continue
-        if base_url and in_model_block and re.match(r"^\s+base_url:\s*", line):
+        if base_url and in_model_block and model_field_indent and re.match(
+            rf"^{re.escape(model_field_indent)}base_url:\s*", line
+        ):
             model_fields.add("base_url")
             indent = line[:len(line) - len(line.lstrip())]
             new_line = f"{indent}base_url: {json.dumps(base_url)}"
@@ -16924,20 +16938,24 @@ def _patch_hermes_config_text(
             new_lines.append(new_line)
             changed = changed or new_line != line
             continue
-        if context_length and in_model_block and re.match(r"^\s+context_length:\s*", line):
+        if context_length and in_model_block and model_field_indent and re.match(
+            rf"^{re.escape(model_field_indent)}context_length:\s*", line
+        ):
             model_fields.add("context_length")
             indent = line[:len(line) - len(line.lstrip())]
             new_line = f"{indent}context_length: {int(context_length)}"
             new_lines.append(new_line)
             changed = changed or new_line != line
             continue
-        if in_model_block and re.match(r"^\s+max_tokens:\s*", line):
+        if in_model_block and model_field_indent and re.match(
+            rf"^{re.escape(model_field_indent)}max_tokens:\s*", line
+        ):
             # Preserve an operator's explicit output cap. ODS only supplies
             # its bounded default when the field is absent.
             model_fields.add("max_tokens")
             new_lines.append(line)
             continue
-        if context_length and re.match(r"^\s+context_length:\s*", line):
+        if context_length and current_key_path == ("auxiliary", "compression", "context_length"):
             indent = line[:len(line) - len(line.lstrip())]
             new_line = f"{indent}context_length: {int(context_length)}"
             new_lines.append(new_line)

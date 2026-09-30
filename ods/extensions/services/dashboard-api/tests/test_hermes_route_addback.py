@@ -170,6 +170,40 @@ def test_retained_four_space_api_key_replaced_at_model_level(tmp_path, monkeypat
     assert "second" not in caplog.text
 
 
+def test_nested_owner_fields_are_not_treated_as_model_route(tmp_path, monkeypatch):
+    _, live_path = write_install(
+        tmp_path, external_env(),
+        live='model:\n    owner_nested:\n'
+             '        default: "owner-model"\n'
+             '        base_url: "http://owner/v1"\n'
+             '        context_length: 123\n'
+             '        max_tokens: 77\n'
+             'auxiliary:\n  compression:\n'
+             '    context_length: 131072\n'
+             '    owner_nested:\n      context_length: 42\n'
+             'other:\n  context_length: 999\n',
+    )
+    monkeypatch.setattr(agent, "INSTALL_DIR", tmp_path)
+
+    assert agent._prepare_hermes_route_for_start() == (True, "")
+    config = yaml.safe_load(live_path.read_text(encoding="utf-8"))
+    model = config["model"]
+    assert model["default"] == "provider/model-a"
+    assert model["base_url"] == "http://litellm:4000/v1"
+    assert model["api_key"] == 'private-"key\\value'
+    assert model["context_length"] == 65536
+    assert model["max_tokens"] == 1024
+    assert model["owner_nested"] == {
+        "default": "owner-model",
+        "base_url": "http://owner/v1",
+        "context_length": 123,
+        "max_tokens": 77,
+    }
+    assert config["auxiliary"]["compression"]["context_length"] == 65536
+    assert config["auxiliary"]["compression"]["owner_nested"]["context_length"] == 42
+    assert config["other"]["context_length"] == 999
+
+
 def test_external_compose_plan_refuses_stale_local_overlay(tmp_path, monkeypatch):
     write_install(tmp_path, external_env())
     monkeypatch.setattr(agent, "INSTALL_DIR", tmp_path)
