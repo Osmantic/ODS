@@ -27,9 +27,10 @@ cd ODS/ods
 
 For the public beta, add `--single-branch --branch public-beta` to the clone
 command. The hosted installer and an unqualified clone select `main`, not the
-beta. Back up existing configuration and data before updating. Existing native
-Pixel installations use the managed native update/migration path; the base
-installer intentionally stops instead of overwriting protected runtime state.
+beta. Back up existing configuration and data before updating. The base
+installer intentionally stops on an existing native Pixel installation instead
+of overwriting protected runtime state. It is not a native Pixel upgrade path;
+use only a separately qualified native update procedure for that installation.
 
 The installer will:
 
@@ -42,17 +43,20 @@ The installer will:
 7. **Install OpenCode if selected** — browser-based AI coding IDE on port 3003
 
 OpenCode is omitted on a fresh Core Only or noninteractive install. Select
-Full Stack, pass `--opencode`, or pass `--all` to add it. An existing loaded ODS
-OpenCode LaunchAgent stays selected on a normal rerun. `--no-opencode` disables
-future login starts while keeping the binary, config, and current session.
+Full Stack, pass `--opencode`, or pass `--all` to add it. Where a base-installer
+rerun is supported, an existing loaded ODS OpenCode LaunchAgent stays selected;
+`--no-opencode` disables future login starts while keeping the binary, config,
+and current session. A Mac with installed native Pixel stops before these
+rerun selections are applied.
 
 Fresh interactive Enter and unattended installs select Core. With native Portal,
 Pixel uses its keyless `parallel-free` search provider, so Core does not start
 Token Spy or SearXNG. LiteLLM remains available to the chat UI and Portal.
 Select Full Stack or pass `--recommended` to add the optional support bundle;
-Perplexica and other selected search consumers also bring in SearXNG. Existing
-installations keep their previous default posture, and the native Pixel guard
-requires the managed update path for an already installed Portal.
+Perplexica and other selected search consumers also bring in SearXNG. Where a
+base-installer rerun is supported, existing selections keep their previous
+default posture. An installed native Pixel stops the base installer before it
+can change those selections.
 
 **Estimated time:** 5–15 minutes depending on download speed.
 
