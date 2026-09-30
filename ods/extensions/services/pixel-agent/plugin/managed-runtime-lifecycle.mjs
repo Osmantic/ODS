@@ -180,11 +180,13 @@ export function createManagedRuntimeRegistry({environment = process.env,
         }
         function status() {
           const base = accessRuntime.status(), command = commands.status();
-          if (!valid() || command.unknown || command.closed) return {...base, available: false, phase: 'unavailable', revision: null};
+          const activity = {...base.activity, selected: selected.size, selecting: selecting.size,
+            commands: command.active, commandCleanupUnknown: command.unknown};
+          if (!valid() || command.unknown || command.closed) return {...base, activity, available: false, phase: 'unavailable', revision: null};
           // Preserve the public access status shape. Count extra reservations
           // conservatively; never expose the deployment, route or credentials.
           const active = Math.max(base.active, command.active, selected.size + selecting.size);
-          return {...base, active, phase: active && base.phase === 'idle' ? 'busy' : base.phase};
+          return {...base, activity, active, phase: active && base.phase === 'idle' ? 'busy' : base.phase};
         }
         function heldControlSnapshot() {
           const base = accessRuntime.status(), command = commands.status();
