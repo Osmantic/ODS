@@ -27,7 +27,7 @@ fail() {
 
 [[ "${GITHUB_ACTIONS:-}" == true ]] || fail 'refusing non-disposable host'
 [[ "$RUNNER_TEMP" == /* && "$INSTALL_DIR" == "$RUNNER_TEMP"/* ]] || fail 'install path is outside runner temp'
-[[ "$(git -C "$(dirname "$product")" rev-parse HEAD)" == 83e6e5a5936ff61b705a441e418ec1410df0c999 ]] || fail 'product source changed'
+[[ "$(git -C "$(dirname "$product")" rev-parse HEAD)" == 450f66e078b1ed5e951459bde250b3fd207bbc4a ]] || fail 'product source changed'
 [[ "$(cat /proc/1/comm)" == systemd ]] || fail 'runner is not a Pixel-qualified systemd host'
 docker info >/dev/null || fail 'isolated Docker Engine unavailable'
 [[ ! -e "$INSTALL_DIR" ]] || fail 'fresh install path is not empty'
@@ -164,8 +164,39 @@ YAML
 # Match the installed user-extension owner instead of assuming a container UID.
 # This runner is disposable and the files contain no owner data or secrets.
 sudo chown -R --reference="$INSTALL_DIR/data/user-extensions" "$consumer_dir"
-curl -fsS --max-time 900 -X POST http://127.0.0.1:3001/api/extensions/n8n-consumer/enable \
-    >"$audit_root/consumer-enable.json" || fail 'disposable dependent did not enable'
+consumer_enable_code="$(curl -sS --max-time 900 \
+    -o "$audit_root/consumer-enable.json" -w '%{http_code}' \
+    -X POST http://127.0.0.1:3001/api/extensions/n8n-consumer/enable || true)"
+if [[ "$consumer_enable_code" != 200 ]]; then
+    docker logs --tail 80 ods-dashboard-api >"$audit_root/dashboard-api.log" 2>&1 || true
+    python3 - "$audit_root/consumer-enable.json" "$audit_root/dashboard-api.log" \
+        "$key_file" "$INSTALL_DIR/.env" <<'PY' >&2
+from pathlib import Path
+import re
+import sys
+
+response, logs, key_file, env_file = map(Path, sys.argv[1:])
+secrets = []
+if key_file.exists():
+    secrets.append(key_file.read_text(encoding="utf-8").strip())
+if env_file.exists():
+    for line in env_file.read_text(encoding="utf-8", errors="replace").splitlines():
+        match = re.match(r"^(?:export )?([A-Z0-9_]+)=(.*)$", line)
+        if match and any(word in match[1] for word in ("KEY", "TOKEN", "SECRET", "PASSWORD")):
+            secrets.append(match[2].strip("\"'"))
+for label, path, count in (("API response", response, 12), ("Dashboard API log", logs, 80)):
+    if not path.exists():
+        continue
+    print(label + " (sanitized tail):")
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines()[-count:]:
+        for secret in secrets:
+            if secret:
+                line = line.replace(secret, "<redacted>")
+        line = re.sub(r"(?i)Bearer\s+\S+", "Bearer <redacted>", line)
+        print(line[:500])
+PY
+    fail "disposable dependent enable returned HTTP $consumer_enable_code"
+fi
 python3 - "$audit_root/consumer-enable.json" <<'PY'
 import json, sys
 value = json.load(open(sys.argv[1], encoding="utf-8"))
