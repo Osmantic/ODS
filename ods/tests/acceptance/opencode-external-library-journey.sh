@@ -30,7 +30,7 @@ fail() {
 
 [[ "${GITHUB_ACTIONS:-}" == true ]] || fail 'refusing non-disposable host'
 [[ "$RUNNER_TEMP" == /* && "$INSTALL_DIR" == "$RUNNER_TEMP"/* ]] || fail 'install path is outside runner temp'
-[[ "$(git -C "$(dirname "$product")" rev-parse HEAD)" == 129bb83a182a798345fe04fdc724365d9ed2f603 ]] \
+[[ "$(git -C "$(dirname "$product")" rev-parse HEAD)" == e2470c4a2d7dbb73900c6b13668004637d569490 ]] \
     || fail 'product source changed'
 [[ "$(cat /proc/1/comm)" == systemd ]] || fail 'runner is not a systemd host'
 docker info >/dev/null || fail 'isolated Docker Engine unavailable'

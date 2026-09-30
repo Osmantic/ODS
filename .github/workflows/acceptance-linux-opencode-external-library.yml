@@ -23,7 +23,7 @@ jobs:
       - name: Checkout exact OpenCode Library candidate
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
-          ref: 129bb83a182a798345fe04fdc724365d9ed2f603
+          ref: e2470c4a2d7dbb73900c6b13668004637d569490
           path: product
       - name: Exercise installed external-model OpenCode add-back
         env:
