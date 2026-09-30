@@ -683,6 +683,15 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
         error "OLLAMA_PORT must be a port from 1 to 65535"
         return 1
     fi
+    # Keep the selected SearXNG origin consistent across Compose and Pixel on
+    # a rerun. An explicit port override wins over the retained installed port.
+    SEARXNG_PORT_VALUE="$(_env_get_explicit_first SEARXNG_PORT 8888)"
+    if [[ ! "$SEARXNG_PORT_VALUE" =~ ^[1-9][0-9]{0,4}$ ]] \
+        || (( 10#$SEARXNG_PORT_VALUE > 65535 )); then
+        error "SEARXNG_PORT must be a port from 1 to 65535"
+        return 1
+    fi
+    SEARXNG_PORT="$SEARXNG_PORT_VALUE"
 
     # Secrets: reuse existing values, generate only if missing
     WEBUI_SECRET=$(_phase06_env_hex_secret WEBUI_SECRET 32)
@@ -1465,7 +1474,7 @@ fi)
 OLLAMA_PORT=$(dotenv_value "${OLLAMA_PORT_VALUE}")
 WEBUI_PORT=3000
 DASHBOARD_API_PORT=$(dotenv_value "${DASHBOARD_API_PORT_VALUE}")
-SEARXNG_PORT=8888
+SEARXNG_PORT=$(dotenv_value "${SEARXNG_PORT_VALUE}")
 PERPLEXICA_PORT=3004
 WHISPER_PORT=$(dotenv_value "${WHISPER_PORT_VALUE}")
 TTS_PORT=8880
