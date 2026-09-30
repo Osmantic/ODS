@@ -266,6 +266,9 @@ rm -rf "$_pre_ods_guard_tmp"
 echo "[contract] forced bootstrap reinstall distinguishes owned and foreign Compose stacks"
 bash tests/test-bootstrap-force-own-compose.sh
 
+echo "[contract] existing-install start advice works from any directory"
+bash tests/test-bootstrap-recovery-guidance.sh
+
 echo "[contract] bootstrap download finalization is non-destructive"
 bash tests/test-bootstrap-upgrade-download-finalization.sh
 
