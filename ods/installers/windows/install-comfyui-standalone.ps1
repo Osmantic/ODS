@@ -197,6 +197,11 @@ if ($composeVersion.ExitCode -ne 0 -or -not $composeVersion.Output) {
     throw 'The Docker Compose plugin is required.'
 }
 
+$temporaryEnvironment = @{}
+foreach ($name in @('ODS_COMFYUI_DATA_ROOT', 'ODS_COMFYUI_PORT', 'COMPOSE_FILE')) {
+    $temporaryEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
+}
+try {
 $env:ODS_COMFYUI_DATA_ROOT = $NormalizedRoot
 $env:ODS_COMFYUI_PORT = [string]$Port
 $compose = @('--context', 'desktop-linux', 'compose', '-p', $ProjectName,
@@ -284,3 +289,11 @@ if ($LASTEXITCODE -ne 0) { throw 'Standalone ComfyUI launch failed; data was pre
 Wait-ComfyuiHealthy
 Assert-ComfyuiCuda
 Write-Host "Standalone ComfyUI is healthy at http://127.0.0.1:$Port/"
+} finally {
+    # An owner can invoke this script with & from an existing PowerShell
+    # session. Do not leave this isolated project's Compose selection or data
+    # root in that session after success, a dry run, or a failed build.
+    foreach ($name in @('ODS_COMFYUI_DATA_ROOT', 'ODS_COMFYUI_PORT', 'COMPOSE_FILE')) {
+        [Environment]::SetEnvironmentVariable($name, $temporaryEnvironment[$name], 'Process')
+    }
+}
