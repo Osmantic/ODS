@@ -142,10 +142,4 @@
 .pixel-app .pixel-chat-preview-layout .portal-review-diff > pre::-webkit-scrollbar-thumb { border:2px solid transparent; background-clip:padding-box; }
 
 .portal-live-review-files { display:flex; flex:1; min-height:0; padding:0; container-type:inline-size; }
-.portal-live-review-files > aside { order:2; flex:0 0 180px; min-height:0; overflow:auto; border-left:1px solid rgb(var(--theme-border)); }
-.portal-live-review-files > .portal-live-review-content { display:flex; flex-direction:column; flex:1; min-height:0; overflow:hidden; padding:0; }
-.portal-live-review-content > .portal-agent-change { display:flex; flex-direction:column; flex:1; min-height:0; margin:0; border:0; border-radius:0; }
-.portal-live-review-content > .portal-agent-change > header { flex-shrink:0; }
-.portal-live-review-content > .portal-agent-change > pre { flex:1; min-height:0; max-height:none; scrollbar-gutter:stable; }
-.portal-live-review-content > select { margin-bottom:10px; padding:5px 8px; background:rgb(var(--theme-text) / .06); border-radius:5px; }
-@container (max-width:460px) { .portal-live-review-files > aside { flex-basis:130px; } }
+.portal-live-review-files .portal-review-file-header > select { max-width:85px; padding:3px 5px; background:rgb(var(--theme-text) / .06); border-radius:5px; font:inherit; }
