@@ -26,6 +26,68 @@ PROTOCOL_SPEC.loader.exec_module(protocol)
 IMAGE = "sha256:" + "a" * 64
 
 
+@pytest.mark.parametrize('docker,socket', [
+    ('/Applications/OrbStack.app/Contents/MacOS/xbin/docker', '/Users/owner/.orbstack/run/docker.sock'),
+    ('/Applications/Docker.app/Contents/Resources/bin/docker', '/Users/owner/.docker/run/docker.sock'),
+    ('/opt/homebrew/Cellar/docker/29.4.3/bin/docker', '/Users/owner/.colima/default/docker.sock'),
+])
+def test_native_engine_paths_pass_installer_and_runtime(tmp_path, monkeypatch, docker, socket):
+    import hashlib
+    host = ROOT / 'extensions/services/pixel-agent/host'
+    monkeypatch.syspath_prepend(str(host))
+    spec = importlib.util.spec_from_file_location('engine_binding_runtime', host / 'preview_inspection.py')
+    runtime = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(runtime)
+    executable = tmp_path / 'docker-fixture'
+    executable.write_bytes(b'fixed executable fixture; never executed')
+    executable.chmod(0o700)
+    uid = os.getuid()
+    if uid == 0:
+        pytest.skip('owner-side native binding requires a non-root test runner')
+    document = dict(imageId=IMAGE, docker=docker, dockerSocket=socket,
+        dockerSha256=hashlib.sha256(executable.read_bytes()).hexdigest(), ownerUid=uid,
+        transport='docker-desktop', snapshotRoot='/previews')
+    assert module.validate_config(document) == document
+    monkeypatch.setattr(runtime, 'CONFIG', SimpleNamespace(
+        lstat=lambda: SimpleNamespace(st_mode=stat.S_IFREG | 0o644, st_uid=0),
+        read_bytes=lambda: json.dumps(document).encode()))
+    class BoundExecutable:
+        def __str__(self): return docker
+        def __fspath__(self): return str(executable)
+        def resolve(self, **kwargs): return self
+        def stat(self): return executable.stat()
+        def lstat(self): return executable.lstat()
+    path_type = Path
+    socket_info = SimpleNamespace(st_mode=stat.S_IFSOCK | 0o600, st_uid=uid)
+    bound_path = lambda path: (
+        BoundExecutable() if path == docker else
+        SimpleNamespace(stat=lambda: socket_info)
+        if path == socket else path_type(path))
+    monkeypatch.setattr(runtime, 'pathlib', SimpleNamespace(Path=bound_path))
+    monkeypatch.setattr(runtime, 'pwd', SimpleNamespace(getpwuid=lambda _: SimpleNamespace(pw_dir='/Users/owner')))
+    original_open = os.open
+    with monkeypatch.context() as binding_patch:
+        binding_patch.setattr(module, 'Path', bound_path)
+        binding_patch.setattr(module, 'pwd', runtime.pwd)
+        binding_patch.setattr(module.os, 'open', lambda path, *args, **kwargs:
+            original_open(executable if path == docker else path, *args, **kwargs))
+        selected, endpoint, binding = module.native_binding(
+            docker_binary=docker, docker_host='unix://' + socket, owner_uid=uid)
+        assert selected == docker and endpoint == 'unix://' + socket
+        assert binding['dockerSha256'] == document['dockerSha256']
+        with pytest.raises(ValueError, match='socket-owner-mismatch'):
+            module.native_binding(docker_binary=docker,
+                docker_host='unix://' + socket.replace('/owner/', '/someone-else/'), owner_uid=uid)
+    assert runtime.load_config() == document
+    socket_info.st_uid = uid + 1
+    with pytest.raises(runtime.Invalid, match='unsafe native Docker socket'):
+        runtime.load_config()
+    socket_info.st_uid = uid
+    document['dockerSha256'] = 'f' * 64
+    with pytest.raises(runtime.Invalid, match='binary changed'):
+        runtime.load_config()
+
+
 @pytest.mark.parametrize(
     "fault",
     [
@@ -203,7 +265,10 @@ def test_source_refuses_symlinks_and_group_write(tmp_path):
 def test_build_captures_only_fixed_inputs_and_immutable_id(
     tmp_path, monkeypatch, fault
 ):
+    monkeypatch.setattr(module, 'pwd', SimpleNamespace(
+        getpwuid=lambda uid: SimpleNamespace(pw_dir=str(tmp_path))))
     monkeypatch.setattr(module, "docker_path", lambda transport: "/usr/bin/docker")
+    monkeypatch.setattr(module.pwd, "getpwuid", lambda uid: SimpleNamespace(pw_dir="/home/owner"))
     monkeypatch.setattr(module.platform, "machine", lambda: "x86_64")
     for name in module.BUILD_FILES:
         (tmp_path / name).write_bytes(b"fixed input " + name.encode())
@@ -245,13 +310,23 @@ def test_build_captures_only_fixed_inputs_and_immutable_id(
         assert len(calls) == 2
 
 
-def test_mac_endpoint_is_owner_bound_not_environment(tmp_path, monkeypatch):
+@pytest.mark.parametrize("resolved_binary", [
+    "/opt/homebrew/Cellar/docker/29.4.3/bin/docker",
+    "/Applications/Docker.app/Contents/Resources/bin/docker",
+])
+def test_mac_endpoint_is_owner_bound_not_environment(tmp_path, monkeypatch, resolved_binary):
+    original_is_dir = Path.is_dir
+    provider_dirs = [
+        "/Applications/OrbStack.app/Contents/MacOS/xbin",
+        "/Applications/Docker.app/Contents/Resources/bin",
+    ]
+    monkeypatch.setattr(Path, "is_dir", lambda path: str(path) in provider_dirs or original_is_dir(path))
     monkeypatch.setattr(
         module,
         "native_binding",
         lambda **kw: (
             (
-                "/opt/homebrew/Cellar/docker/29.4.3/bin/docker",
+                resolved_binary,
                 "unix:///Users/approved-owner/.colima/ods-fleet/docker.sock",
                 {
                     "dockerSocket": "/Users/approved-owner/.colima/ods-fleet/docker.sock",
@@ -275,11 +350,16 @@ def test_mac_endpoint_is_owner_bound_not_environment(tmp_path, monkeypatch):
     monkeypatch.setattr(module.platform, "machine", lambda: "arm64")
     monkeypatch.setenv("DOCKER_HOST", "tcp://untrusted.invalid:2375")
     monkeypatch.setenv("DOCKER_CONTEXT", "untrusted-context")
+    monkeypatch.setenv("PATH", "/tmp/untrusted-bin")
     for name in module.BUILD_FILES:
         (tmp_path / name).write_bytes(b"fixed input")
         (tmp_path / name).chmod(0o644)
 
     def run(argv, **kw):
+        assert kw["env"] == {
+            "HOME": "/Users/approved-owner",
+            "PATH": ":".join(dict.fromkeys([str(Path(resolved_binary).parent), *provider_dirs, "/usr/bin", "/bin"])),
+        }
         assert argv[1:3] == [
             "--host",
             "unix:///Users/approved-owner/.colima/ods-fleet/docker.sock",
@@ -309,8 +389,12 @@ def test_mac_endpoint_is_owner_bound_not_environment(tmp_path, monkeypatch):
     [
         ("docker", "/tmp/docker"),
         ("docker", "/opt/homebrew/Cellar/docker/../bin/docker"),
+        ("docker", "/Applications/OrbStack.app/Contents/MacOS/xbin/../docker"),
+        ("docker", "/tmp/OrbStack.app/Contents/MacOS/xbin/docker"),
         ("dockerSocket", "tcp://remote:2375"),
         ("dockerSocket", "/Users/owner/.colima/../docker.sock"),
+        ("dockerSocket", "/Users/owner/.orbstack/../run/docker.sock"),
+        ("dockerSocket", "/Users/owner/.orbstack/run/other.sock"),
         ("dockerSocket", "/tmp/docker.sock"),
         ("dockerSha256", "mutable"),
         ("dockerSha256", "a" * 63),
