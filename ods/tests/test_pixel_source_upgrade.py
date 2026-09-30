@@ -929,3 +929,60 @@ exercise() {
     assert result.stderr.splitlines() == expected
     assert result.returncode == (1 if failure else 0)
 
+
+
+@pytest.mark.parametrize('enabled', [True, False])
+@pytest.mark.parametrize('boundary', ['intent', 'extensions/services/whisper/compose.yaml', 'extensions/services/whisper/compose.yaml.disabled', 'applied'])
+def test_feature_only_counterpart_removal_resumes_exactly(trees, enabled, boundary):
+    manager, old, new, identity = trees
+    identity['afterRef'] = identity['beforeRef']
+    for root in (old, new):
+        (root / 'extensions/services/whisper').mkdir(parents=True)
+    active = 'extensions/services/whisper/compose.yaml'
+    disabled = active + '.disabled'
+    (old / active).write_text('old enabled')
+    (old / disabled).write_text('old disabled')
+    selected = active if enabled else disabled
+    opposite = disabled if enabled else active
+    (new / selected).write_text('selected bytes')
+    custom = old / 'extensions/services/owner-custom'
+    custom.mkdir()
+    (custom / 'compose.yaml').write_text('owner enabled')
+    (custom / 'compose.yaml.disabled').write_text('owner disabled')
+    before = upgrade.inventory(old, os.getuid())
+    verify, _ = held(manager, new, identity)
+    def crash(point):
+        if point == boundary:
+            raise RuntimeError('interrupted feature exchange')
+    with pytest.raises(RuntimeError, match='interrupted feature exchange'):
+        manager.publish(verify, checkpoint=crash)
+    restarted = upgrade.SourceUpgrade(manager.state, old, os.getuid(), state_uid=os.getuid())
+    (new / selected).write_text('different candidate')
+    with pytest.raises(upgrade.UpgradeError, match='source-candidate-changed'):
+        restarted.stage(new, os.getuid(), identity)
+    (new / selected).write_text('selected bytes')
+    restarted.stage(new, os.getuid(), identity)
+    restarted.publish(verify)
+    assert (old / selected).read_text() == 'selected bytes'
+    assert not (old / opposite).exists()
+    assert (custom / 'compose.yaml').read_text() == 'owner enabled'
+    assert (custom / 'compose.yaml.disabled').read_text() == 'owner disabled'
+    def missing_fresh_proof(*_):
+        raise RuntimeError('fresh runtime proof required')
+    with pytest.raises(RuntimeError, match='fresh runtime proof required'):
+        restarted.finish(missing_fresh_proof)
+    assert restarted.journal()['phase'] == 'applied'
+    restarted.publish(verify, rollback=True)
+    assert upgrade.inventory(old, os.getuid()) == before
+
+
+def test_feature_projection_is_closed_to_actual_phase03_services():
+    phase = (MODULE.parents[1] / 'installers/phases/03-features.sh').read_text()
+    names = set(re.findall(r'^    _sync_extension_compose "[^"\n]*"\s+([a-z0-9-]+)', phase, re.M))
+    assert names == upgrade.FEATURE_COMPOSE_SERVICES
+    before = {'extensions/services/owner-custom/compose.yaml': {'owner': True}}
+    candidate = {'extensions/services/owner-custom/compose.yaml.disabled': {'owner': True}}
+    assert upgrade.installed_projection(before, candidate) == {**before, **candidate}
+    pair = 'extensions/services/whisper/compose.yaml'
+    with pytest.raises(upgrade.UpgradeError, match='source-feature-selection-ambiguous'):
+        upgrade.installed_projection({}, {pair: {}, pair+'.disabled': {}})

@@ -463,6 +463,13 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
         log "Running in-place (source == install dir), skipping file copy"
     fi
 
+    if declare -F _ods_apply_deferred_feature_state >/dev/null; then
+        _ods_apply_deferred_feature_state || {
+            error "Deferred feature reconciliation failed; resume the same installer candidate."
+            return 1
+        }
+    fi
+
     # A Windows-mounted WSL checkout can surface every source entry as 0777.
     # Product config and extension code must never remain ambiently writable
     # after installation. Do not follow links; downstream trust checks reject

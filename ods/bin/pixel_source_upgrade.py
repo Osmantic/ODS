@@ -67,12 +67,27 @@ def mount_id(fd):
         raise UpgradeError('source-filesystem-proof-unavailable') from None
 
 
+FEATURE_COMPOSE_SERVICES = frozenset({
+    'litellm', 'searxng', 'token-spy', 'whisper', 'tts', 'n8n', 'qdrant',
+    'embeddings', 'hermes', 'hermes-proxy', 'pixel-edge', 'pixel-model-relay',
+    'openclaw', 'ape', 'comfyui', 'perplexica', 'privacy-shield', 'ods-proxy',
+    'tailscale', 'langfuse', 'brave-search',
+})
+
+
 def installed_projection(before, candidate):
     after = {**before, **candidate}
-    # Phase06's existing Pixel compose reconciliation removes only this stale
-    # disabled copy. Stage that deletion explicitly, never delete other extras.
-    if 'extensions/services/pixel-edge/compose.yaml' in candidate:
-        after.pop('extensions/services/pixel-edge/compose.yaml.disabled', None)
+    # Only Phase03's closed feature selection can retire its exact counterpart.
+    # Unknown extensions and absent candidate pairs retain their installed data.
+    for service in FEATURE_COMPOSE_SERVICES:
+        enabled = f'extensions/services/{service}/compose.yaml'
+        disabled = enabled + '.disabled'
+        if enabled in candidate and disabled in candidate:
+            raise UpgradeError('source-feature-selection-ambiguous')
+        if enabled in candidate:
+            after.pop(disabled, None)
+        elif disabled in candidate:
+            after.pop(enabled, None)
     return after
 
 

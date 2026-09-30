@@ -316,8 +316,8 @@ print(f"{state}|{source_ref}")
 PY
 }
 
-# Return 0 when an exact ODS-managed Pixel deployment must be retired before
-# the installer copies newer source over the installed ownership evidence.
+# Return 0 when an exact ODS-managed Pixel deployment needs a held transaction
+# before the installer copies source over its installed ownership evidence.
 # Return 1 when no transition is needed, and 2 for unsafe or ambiguous state.
 _ods_pixel_source_transition_required() {
     local owner="$1" home="$2" requested_ref="$3" transition state source_ref
@@ -330,6 +330,7 @@ _ods_pixel_source_transition_required() {
     # its installed source until cleanup can validate privileged mirrors, even
     # when an upgrade retains the same developer Pixel checkout.
     local incoming_root="${4:-}" relative comparison
+    [[ "${_ODS_PIXEL_FEATURE_SOURCE_CHANGED:-false}" == true ]] && return 0
     [[ -n "$incoming_root" ]] || return 1
     for relative in installers/lib/pixel-host-install.sh bin \
         extensions/services/pixel-agent/host extensions/services/pixel-agent/plugin; do
