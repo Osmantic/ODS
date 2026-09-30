@@ -285,7 +285,12 @@ async def apply_template(template_id: str, api_key: str = Depends(verify_api_key
                 try:
                     await asyncio.to_thread(_install_with_lock, svc_id)
                     library_installed.append(svc_id)
-                    config_synced = await asyncio.to_thread(_sync_extension_config, svc_id)
+                    # Host configuration survives removal and failed starts.
+                    # Seed missing defaults without replacing owner settings,
+                    # matching the individual library-install lifecycle.
+                    config_synced = await asyncio.to_thread(
+                        _sync_extension_config, svc_id, preserve_existing=True,
+                    )
                     if not config_synced:
                         message = "extension config sync failed; retry template apply after restoring the host agent"
                         await asyncio.to_thread(_write_error_progress, svc_id, message)
