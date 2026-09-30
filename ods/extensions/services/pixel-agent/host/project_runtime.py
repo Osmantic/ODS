@@ -140,17 +140,19 @@ def run_stage(image: str, job: str, stage: str, *, cancel: threading.Event,
             "truncated": {"stdout": truncated[0], "stderr": truncated[1]}}
 
 
-def observe_stage(image: str, job: str, stage: str) -> dict:
+def observe_stage(image: str, job: str, stage: str, *, container_id=None, timeout=15) -> dict:
     """Read existing Docker evidence after interruption; never launch/retry.
 
     A failed lookup means unknown, including when Docker itself is unavailable.
     Recovered exit status cannot recreate lost stdout or assert test counts.
     """
-    args = stage_arguments(image, job, stage)
+    seed = stage in ("seed-manifests", "seed-source")
+    args = stage_arguments(image, job, "build" if seed else stage)
+    command = ["tar", "-xf", "-", "--no-same-owner"] if seed else args[args.index(image) + 1:]
     unknown = {"status": "unconfirmed", "exitCode": None, "evidence": "unavailable"}
     try:
-        read = subprocess.run(["docker", "inspect", job + "-" + stage],
-                              capture_output=True, timeout=15, check=False)
+        read = subprocess.run(["docker", "inspect", container_id or job + "-" + stage],
+                              capture_output=True, timeout=timeout, check=False)
         if read.returncode != 0 or len(read.stdout) > 1024 * 1024:
             return unknown
         values = json.loads(read.stdout)
@@ -159,9 +161,11 @@ def observe_stage(image: str, job: str, stage: str) -> dict:
         value = values[0]
         config, host, state = value["Config"], value["HostConfig"], value["State"]
         volumes = [m for m in value["Mounts"] if m["Type"] == "volume"]
-        if (config["Image"] != image or config["Cmd"] != args[args.index(image) + 1:]
+        if (config["Image"] != image or config["Cmd"] != command
+                or (container_id is not None and (value.get("Id") != container_id
+                    or value.get("Name") != "/" + job + "-" + stage or value.get("Image") != image))
                 or config.get("Entrypoint") not in (None, []) or config["User"] != "1000:1000"
-                or config.get("Labels", {}).get("org.osmantic.ods.project-job") != job
+                or (config.get("Labels") or {}).get("org.osmantic.ods.project-job") != job
                 or host["NetworkMode"] != ("bridge" if stage == "acquire" else "none")
                 or host["ReadonlyRootfs"] is not True
                 or host.get("Privileged") is not False
@@ -185,5 +189,76 @@ def observe_stage(image: str, job: str, stage: str) -> dict:
         return {"status": "succeeded" if code == 0 else "failed", "exitCode": code,
                 "evidence": "docker-state", "stdout": "", "stderr": "",
                 "outputUnavailable": True, "truncated": {"stdout": True, "stderr": True}}
+    except (OSError, subprocess.TimeoutExpired, ValueError, KeyError, TypeError):
+        return unknown
+
+
+def recover_job(image: str, job: str, *, cancel=False, required_stage=None, timeout=5) -> dict:
+    """Observe orphaned resources; only stop fully verified immutable IDs.
+
+    The exclusive service lifetime lock must exclude the original controller.
+    No replay, removal, workspace import or inference from a missing container.
+    Retain stopped resources as crash evidence; a cancel receipt says nothing
+    about whether an artifact import occurred before the controller died.
+    """
+    stage_arguments(image, job, "build")
+    if not 0 < timeout <= 10:
+        raise ValueError("invalid recovery deadline")
+    deadline = time.monotonic() + timeout
+    def remaining():
+        budget = deadline - time.monotonic()
+        if budget <= 0:
+            raise subprocess.TimeoutExpired("docker recovery", timeout)
+        return budget
+    def command(args):
+        return subprocess.run(args, capture_output=True, timeout=remaining(), check=False)
+    unknown = {"status": "unconfirmed", "evidence": "unavailable"}
+    try:
+        # Include renamed job containers and foreign containers using its volume,
+        # as well as expected names whose label/volume has been substituted.
+        ids = set()
+        for selector in ("name=^/" + job + "-", "volume=" + job,
+                         "label=org.osmantic.ods.project-job=" + job):
+            read = command(["docker", "container", "ls", "--all", "--no-trunc",
+                            "--filter", selector, "--format", "{{.ID}}"])
+            if read.returncode or len(read.stdout) > 4096:
+                return unknown
+            ids.update(read.stdout.decode("ascii").split())
+        if not ids or len(ids) > 5 or any(not re.fullmatch(r"[a-f0-9]{64}", cid) for cid in ids):
+            return unknown
+        stages = {}
+        for cid in sorted(ids):
+            read = command(["docker", "inspect", cid])
+            if read.returncode or len(read.stdout) > 1024 * 1024:
+                return unknown
+            values = json.loads(read.stdout)
+            if not isinstance(values, list) or len(values) != 1:
+                return unknown
+            name = values[0].get("Name", "")
+            if not isinstance(name, str):
+                return unknown
+            stage = name.removeprefix("/" + job + "-")
+            if stage not in ("seed-manifests", "seed-source", "acquire", "test", "build"):
+                return {**unknown, "evidence": "identity-mismatch"}
+            evidence = observe_stage(image, job, stage, container_id=cid, timeout=remaining())
+            if evidence.get("evidence") != "docker-state":
+                return {**unknown, "evidence": evidence["evidence"]}
+            stages[cid] = (stage, evidence)
+        if cancel:
+            for cid, (stage, evidence) in stages.items():
+                if evidence["status"] == "running":
+                    # A stop exit code alone is not termination evidence.
+                    command(["docker", "stop", "--time", "1", cid])
+                verified = observe_stage(image, job, stage, container_id=cid, timeout=remaining())
+                if verified.get("evidence") != "docker-state" or verified["status"] not in ("succeeded", "failed"):
+                    return unknown
+            # Prior completed stages cannot prove that a pending docker run
+            # for the next ledger stage will not create its container later.
+            # Stop verified resources, but do not acknowledge that unseen stage.
+            if required_stage is not None and required_stage not in {s for s, _ in stages.values()}:
+                return unknown
+            return {"status": "cancelled", "evidence": "docker-state", "containers": len(stages)}
+        return {"status": "running" if any(e["status"] == "running" for _, e in stages.values()) else "stopped",
+                "evidence": "docker-state", "containers": len(stages)}
     except (OSError, subprocess.TimeoutExpired, ValueError, KeyError, TypeError):
         return unknown
