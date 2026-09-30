@@ -63,7 +63,11 @@ function LoadedModelSelector({activeModel='',runtimeSource,busy=false,onSwitchin
   const root=useRef(null),trigger=useRef(null),list=useRef(null),mounted=useRef(true),submitLock=useRef(false)
   const managementUnavailable=externalLemonade===true && modelManagement?.managed==null
   const id=useId(),remote=runtimeSource==='remote-provider',external=runtimeSource==='external-host' && !managementUnavailable && modelManagement?.managed!==true,local=runtimeSource==='local-switchboard' || (runtimeSource==='external-host' && modelManagement?.managed===true)
-  const switching=pending || recoveryBusy || Boolean(activationLoading || runtimeActionLoading) || Boolean(modelLifecycle?.active && modelLifecycle.operation==='model_activation')
+  // A confirmed cloud route is independent of the local catalog's lifecycle,
+  // which may remain stale after a catalog failure. Keep mutations initiated
+  // here blocking until their own completion, even if the route changes.
+  const switching=pending || recoveryBusy || Boolean(runtimeActionLoading)
+    || (!remote && (Boolean(activationLoading) || Boolean(modelLifecycle?.active && modelLifecycle.operation==='model_activation')))
   const current=local?models.find(model=>model.id===currentModel):null
   const selectedId=local && activationReadyModel===currentModel?currentModel:null
   const activeName=current || activeModel

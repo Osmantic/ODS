@@ -217,6 +217,32 @@ it('routes remote-provider conversations to their settings instead of switching 
   expect(posts()).toHaveLength(0)
 })
 
+it('does not report a catalog activation as switching for a confirmed cloud runtime',async()=>{
+  lifecycle={active:true,operation:'model_activation',modelId:target}
+  const switching=vi.fn()
+  render(view({runtimeSource:'remote-provider',activeModel:'cloud-model',onSwitchingChange:switching}))
+  fireEvent.click(screen.getByRole('button',{name:'Choose model: cloud model'}))
+  await screen.findByRole('menuitemradio',{name:/Qwen 3.5 2B/})
+  expect(switching).not.toHaveBeenCalledWith(true)
+  expect(screen.queryByText('Switching…')).toBeNull()
+})
+
+it('keeps a submitted local mutation busy after the runtime changes to cloud and preserves its error',async()=>{
+  let finish
+  postResult=new Promise(resolve=>{finish=resolve})
+  const switching=vi.fn()
+  const {rerender}=render(view({onSwitchingChange:switching}))
+  await open()
+  fireEvent.click(screen.getByRole('menuitemradio',{name:/Qwen 3.5 2B/}))
+  fireEvent.click(screen.getByRole('button',{name:'Switch model',exact:true}))
+  rerender(view({runtimeSource:'remote-provider',activeModel:'cloud-model',onSwitchingChange:switching}))
+  expect(switching).toHaveBeenLastCalledWith(true)
+  await act(async()=>finish({ok:false,status:409,json:async()=>({detail:'Local mutation failed'})}))
+  expect(screen.getByRole('alert')).toHaveTextContent('Local mutation failed')
+  expect(switching).toHaveBeenLastCalledWith(false)
+  expect(posts()).toHaveLength(1)
+})
+
 it('identifies a fixed external-host model and never offers a local switch',async()=>{
   render(view({runtimeSource:'external-host',activeModel:'Qwen3.5-9B-Q4_K_M.gguf'}))
   fireEvent.click(screen.getByRole('button',{name:'Choose model: Qwen 3.5 9B'}))
