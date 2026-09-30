@@ -143,8 +143,15 @@ function Assert-ComfyuiCuda {
         '--context', 'desktop-linux', 'exec', $ContainerName,
         'python3', '/opt/cuda-smoke.py') -TimeoutSeconds 180
     if ($smoke.ExitCode -ne 0) {
-        throw 'ComfyUI responds over HTTP, but its CUDA runtime failed a real GPU operation.'
+        $detail = if ($smoke.Error) { $smoke.Error } else { $smoke.Output }
+        $message = 'ComfyUI responds over HTTP, but its CUDA runtime failed a real GPU operation.'
+        if ($detail) {
+            if ($detail.Length -gt 2048) { $detail = $detail.Substring(0, 2048) + '...' }
+            $message += " Detail: $detail"
+        }
+        throw $message
     }
+    if ($smoke.Output) { Write-Output $smoke.Output }
 }
 
 if ($Root -match '[\x00-\x1f\x7f]') { throw 'DataRoot contains control characters.' }
