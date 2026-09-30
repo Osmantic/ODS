@@ -7,10 +7,58 @@ import sys
 import tempfile
 import threading
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "host"))
 from project_controller import ProjectController
 from project_service import serve
+
+
+class ProjectServiceLockTests(unittest.TestCase):
+    def test_replacement_cannot_recover_jobs_while_previous_worker_drains(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            image = "sha256:" + "a" * 64
+            controller = ProjectController(root, root / "state", image, authorize=lambda *_: True)
+            replacement = ProjectController(root, root / "state", image, authorize=lambda *_: True)
+            stop, ready, draining, release = [threading.Event() for _ in range(4)]
+            errors = []
+            original_close = controller.close
+
+            def drain():
+                draining.set()
+                if not release.wait(10):
+                    raise TimeoutError("test did not release worker drain")
+                original_close()
+
+            def run():
+                try:
+                    serve(controller, stop, ready=ready)
+                except Exception as error:
+                    errors.append(error)
+
+            with patch("project_service.verify_runtime"), patch.object(controller, "close", side_effect=drain):
+                thread = threading.Thread(target=run)
+                thread.start()
+                try:
+                    self.assertTrue(ready.wait(5), errors)
+                    job, _ = controller.jobs.create("b" * 64, {
+                        "project": "project", "sourceSha256": "c" * 64,
+                        "image": image, "outputDirectory": "out",
+                    })
+                    controller.jobs.claim(job)
+                    stop.set()
+                    self.assertTrue(draining.wait(5), errors)
+                    with self.assertRaises(BlockingIOError):
+                        serve(replacement, threading.Event())
+                    self.assertEqual(replacement.observe(job)["state"], "running")
+                finally:
+                    stop.set()
+                    release.set()
+                    thread.join(10)
+                    replacement.close()
+            self.assertFalse(thread.is_alive())
+            self.assertEqual(errors, [])
 
 
 @unittest.skipUnless(os.environ.get("ODS_TEST_PROJECT_NODE") == "1", "real Docker opt-in")
