@@ -1,0 +1,31 @@
+name: Acceptance Linux Pixel broker clean home
+
+on:
+  push:
+    branches:
+      - codex/ods-pixel-skel-audit
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pixel-skel-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  clean-broker-home:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - name: Checkout acceptance harness
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - name: Checkout exact broker-home candidate
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          ref: 34965cdf4413f76409ed8d14df48d3c83bb96956
+          path: product
+      - name: Exercise fresh broker home on installed ODS
+        env:
+          ODS_ACCEPTANCE_PRODUCT_ROOT: ${{ github.workspace }}/product/ods
+        run: bash ods/tests/acceptance/pixel-skel-fresh-journey.sh
