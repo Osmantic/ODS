@@ -242,6 +242,13 @@ key = values["HERMES_LLM_API_KEY"].strip().strip('"').strip("'")
 live = root / "data/hermes/config.yaml"
 template = root / "extensions/services/hermes/cli-config.yaml.template"
 model = yaml.safe_load(live.read_text(encoding="utf-8"))["model"]
+print("Hermes route diagnostic:", {
+    "model_default": model.get("default"),
+    "base_url": model.get("base_url"),
+    "api_key_present": bool(model.get("api_key")),
+    "api_key_matches_env": model.get("api_key") == key,
+    "mode": oct(stat.S_IMODE(live.stat().st_mode)),
+}, flush=True)
 assert model["default"] == "ods-acceptance-mock"
 assert model["base_url"] == "http://litellm:4000/v1"
 assert model["api_key"] == key and key
