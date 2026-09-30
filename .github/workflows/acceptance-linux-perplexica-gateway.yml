@@ -23,11 +23,11 @@ jobs:
       - name: Checkout exact Perplexica dependency candidate
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
-          ref: 73d55cde11ca282ff33ea71f99bbe6e584b6fd11
+          ref: 623510b5bb5f4f05ee52c161c6230e12debca5d5
           path: product
       - name: Record exact source and runner capacity
         run: |
-          test "$(git -C product rev-parse HEAD)" = 73d55cde11ca282ff33ea71f99bbe6e584b6fd11
+          test "$(git -C product rev-parse HEAD)" = 623510b5bb5f4f05ee52c161c6230e12debca5d5
           docker version
           df -h / "$RUNNER_TEMP"
           cat /proc/1/comm
