@@ -23,6 +23,9 @@ the attachment; accepting a file is not evidence of visual understanding.
 - Removing an unsubmitted attachment discards its API upload only after server
   confirmation. Images retained by a send attempt are protected from draft
   removal. Failed dispatch can conservatively retain an unused image.
+- Unsent uploads unused for seven days can be reclaimed during later uploads.
+  Reading the image or uploading the same bytes again renews that draft lease.
+  Images retained by a send attempt never expire through this cleanup.
 - JSON conversation export is not an image backup. Import into another chat
   does not transfer access to private image bytes. Attach the images again.
 
@@ -43,8 +46,9 @@ bounded reader. Browser-to-API chat still carries references, not image bytes.
 - Real cloud visual recognition and unsupported-provider responses.
 - Authenticated browser upload, paste/drop, reload, retry and model switching
   against the combined installed services.
-- Conversation deletion across both image stores, abandoned in-flight upload
-  cleanup and recovery from a native cache writer interruption.
+- Conversation deletion across both image stores and recovery from a native
+  cache writer interruption. Interrupted uploads use the unsent-draft lease;
+  browser acceptance of that recovery remains required.
 - Integration with the separate ZIP text-import change and other pending
   Portal updates; clean-install and upgrade acceptance.
 - Exact-head CI, including real grammar compilation and the pinned runtime

@@ -42,6 +42,6 @@ export default function PortalImageAttachments({attachments,chatId,disabled,hasH
         :policy==='supported'?<span>Images will be sent to the selected model when you send this message.</span>
         :<label><input type="checkbox" checked={consented} disabled={disabled} onChange={event=>onConsent(event.target.checked)}/><span>Image support is unknown for this model. Allow an image test on this route.</span></label>}
     </div>}
-    {attachments.items.length>0 && <p className="portal-image-private-note">Stored privately in this conversation · Up to 4 images, 8 MiB combined</p>}
+    {attachments.items.length>0 && <p className="portal-image-private-note">Stored privately in this conversation · Up to 4 images, 8 MiB combined. Unsent uploads may expire after 7 days without use.</p>}
   </div>
 }

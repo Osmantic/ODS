@@ -96,6 +96,27 @@ def test_schema_upgrade_does_not_treat_existing_images_as_disposable(tmp_path):
     store.close()
 
 
+def test_abandoned_upload_expires_but_active_draft_and_sent_images_do_not(tmp_path, monkeypatch):
+    now = [1000.0]
+    monkeypatch.setattr(store_module.time, "time", lambda: now[0])
+    store = ImageStore(tmp_path / "private")
+    owner = "a" * 64
+    orphan = store.put(owner, "orphan", png(), "image/png")
+    active = store.put(owner, "active", png(), "image/png")
+    sent = store.put(owner, "sent", png(), "image/png")
+    store.retain(owner, "sent", [sent])
+    monkeypatch.setattr(store_module, "MAX_STORE_IMAGES", 3)
+    now[0] += store_module.DRAFT_TTL_SECONDS - 1
+    assert store.get(owner, "active", active["id"])
+    now[0] += 2
+    replacement = store.put(owner, "replacement", png("blue"), "image/png")
+    assert store.get(owner, "orphan", orphan["id"]) is None
+    assert store.get(owner, "active", active["id"])
+    assert store.get(owner, "sent", sent["id"])
+    assert store.get(owner, "replacement", replacement["id"])
+    store.close()
+
+
 def test_byte_quota_and_transaction_recovery(tmp_path, monkeypatch):
     store = ImageStore(tmp_path / "private")
     monkeypatch.setattr(store_module, "MAX_STORE_BYTES", len(png()) - 1)

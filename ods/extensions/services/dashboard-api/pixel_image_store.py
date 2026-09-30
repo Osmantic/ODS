@@ -10,6 +10,7 @@ from pathlib import Path
 import re
 import sqlite3
 import stat
+import time
 import uuid
 
 from pixel_image_input import validate_image
@@ -17,6 +18,7 @@ from pixel_image_input import validate_image
 
 MAX_STORE_BYTES = 128 * 1024 * 1024
 MAX_STORE_IMAGES = 512
+DRAFT_TTL_SECONDS = 7 * 24 * 60 * 60
 _OWNER = re.compile(r"[a-f0-9]{64}")
 _CHAT = re.compile(r"[A-Za-z0-9_-]{1,128}")
 _IDENTITY = re.compile(r"img-[a-f0-9]{32}")
@@ -67,6 +69,9 @@ class ImageStore:
             # Never infer that they are disposable during a schema upgrade.
             self.db.execute("ALTER TABLE images ADD COLUMN retained INTEGER NOT NULL DEFAULT 1")
             self.db.commit()
+        if "draft_expires_at" not in columns:
+            self.db.execute("ALTER TABLE images ADD COLUMN draft_expires_at REAL")
+            self.db.commit()
 
     def close(self):
         self.db.close()
@@ -80,19 +85,27 @@ class ImageStore:
         image = validate_image(data, media_type)
         self.db.execute("BEGIN IMMEDIATE")
         try:
+            # Only uploads never retained by a send attempt can expire. Legacy
+            # rows without a deadline are preserved. An active thumbnail read
+            # or repeated upload renews the draft lease.
+            now = time.time()
+            self.db.execute("DELETE FROM images WHERE retained=0 AND draft_expires_at<=?", (now,))
             old = self.db.execute("SELECT * FROM images WHERE owner=? AND chat=? AND sha256=?",
                                   (owner, chat, image.sha256)).fetchone()
             if old is not None:
                 if hashlib.sha256(old["data"]).hexdigest() != image.sha256:
                     raise ValueError("Stored image integrity check failed")
+                self.db.execute("UPDATE images SET draft_expires_at=? WHERE owner=? AND chat=? AND id=? AND retained=0",
+                                (now + DRAFT_TTL_SECONDS, owner, chat, old["id"]))
                 self.db.commit()
                 return self._public(old)
             usage = self.db.execute("SELECT COUNT(*), COALESCE(SUM(length(data)),0) FROM images").fetchone()
             if usage[0] >= MAX_STORE_IMAGES or usage[1] + len(data) > MAX_STORE_BYTES:
                 raise ImageStoreCapacity("Image storage is full; existing conversation images were preserved.")
             identity = "img-" + uuid.uuid4().hex
-            self.db.execute("INSERT INTO images (owner,chat,id,sha256,media_type,width,height,data,retained) VALUES (?,?,?,?,?,?,?,?,0)",
-                            (owner, chat, identity, image.sha256, image.media_type, image.width, image.height, data))
+            self.db.execute("INSERT INTO images (owner,chat,id,sha256,media_type,width,height,data,retained,draft_expires_at) VALUES (?,?,?,?,?,?,?,?,0,?)",
+                            (owner, chat, identity, image.sha256, image.media_type, image.width, image.height, data,
+                             now + DRAFT_TTL_SECONDS))
             self.db.commit()
             return dict(id=identity, sha256=image.sha256, media_type=image.media_type,
                         width=image.width, height=image.height)
@@ -110,6 +123,10 @@ class ImageStore:
             return None
         if hashlib.sha256(row["data"]).hexdigest() != row["sha256"]:
             raise ValueError("Stored image integrity check failed")
+        if not row["retained"]:
+            with self.db:
+                self.db.execute("UPDATE images SET draft_expires_at=? WHERE owner=? AND chat=? AND id=?",
+                                (time.time() + DRAFT_TTL_SECONDS, owner, chat, identity))
         return {**self._public(row), "data": row["data"]}
 
     def delete_conversation(self, owner, chat):
