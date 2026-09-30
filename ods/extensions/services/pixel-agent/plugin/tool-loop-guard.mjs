@@ -5738,10 +5738,11 @@ function ownerForbidsWorkspacePreview(messages, prompt) {
 
 function portuguesePreviewForbidden(text) {
   const prose = text.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
-  // Negation includes coordinated actions with their own objects. Contrast
-  // and sentence boundaries keep unrelated later requests independent.
+  // Negative alternatives include their own objects ("não crie site nem
+  // publique preview"). An additive "e publique" after a separate constraint
+  // such as "sem dependências" remains a positive delivery request.
   const coordinated = prose.split(/[!?;\n]+|\.(?=\s|$)|\b(?:mas|porem|contudo|depois)\b/i)
-    .some(clause => /\b(?:nao|nunca|sem|evite)\b[^.!?;\n]{0,160}\b(?:e|ou|nem)\s+(?:(?:re)?publ(?:ic|iq)\w*|mostr\w*|abrir|abra|pre-?visualiz\w*)\b/i.test(clause));
+    .some(clause => /\b(?:nao|nunca|evite)\b[^.!?;\n]{0,160}\b(?:ou|nem)\s+(?:(?:re)?publ(?:ic|iq)\w*|mostr\w*|abrir|abra|pre-?visualiz\w*)\b/i.test(clause));
   if (coordinated) return true;
   return /\b(?:nao|nunca|sem|evite)\s+(?:(?:criar|crie|fazer|faca|editar|edite)\s+(?:e|ou)\s+)?(?:(?:re)?publ(?:ic|iq)\w*|mostr\w*|abrir|abra|preview|pre-?visualiz\w*)\b/i.test(prose)
     || /\b(?:so|somente|apenas)\s+(?:o\s+)?codigo\b/i.test(prose);

@@ -32,6 +32,9 @@ for (const prompt of [
 
 test('independent positive publication and real websites keep their verification obligation',()=>{
   for (const prompt of ['Crie um site e publique preview.',
+    'Crie um site sem dependências e publique uma prévia.',
+    'Não use bibliotecas externas e publique o site.',
+    'Crie uma página sem imagens e publique o preview.',
     'Não altere os arquivos. Publique o site existente.',
     'Do not delete the files, but publish the existing website.']) {
     const guard=createToolLoopGuard();
