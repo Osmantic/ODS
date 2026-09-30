@@ -56,6 +56,35 @@ test('confirmed policy denial remains distinct from a lost response', async () =
   assert.equal((await tool.execute('call', submit)).details.status, 'denied');
 });
 
+test('observation waits for real completion without another submission', async () => {
+  const actions = [], waits = [];
+  const tool = createProjectBuildTool({
+    wait: async ms => waits.push(ms),
+    request: async params => {
+      actions.push(params.action);
+      return actions.length < 3 ? {...success(),status:'running',steps:[],output:null} : success();
+    },
+  });
+  const result = await tool.execute('observe', {action:'observe',jobId:job});
+  assert.equal(result.details.status,'succeeded');
+  assert.deepEqual(actions,['observe','observe','observe']);
+  assert.deepEqual(waits,[5000,5000]);
+});
+
+test('observation remains bounded and abort does not claim cancellation', async () => {
+  let calls = 0;
+  const tool = createProjectBuildTool({wait:async()=>{},request:async()=>{
+    calls++; return {...success(),status:'running',steps:[],output:null};
+  }});
+  assert.equal((await tool.execute('observe',{action:'observe',jobId:job})).details.status,'running');
+  assert.equal(calls,6);
+  const abort = new AbortController();
+  const interrupted = createProjectBuildTool({wait:async()=>abort.abort(),request:async()=>{
+    return {...success(),status:'running',steps:[],output:null};
+  }});
+  assert.equal((await interrupted.execute('observe',{action:'observe',jobId:job},abort.signal)).details.status,'unconfirmed');
+});
+
 test('Portal transcript receives native failure markers without changing job evidence', async () => {
   for (const status of ['failed', 'unconfirmed']) {
     const receipt = {...success(), status, output: null};

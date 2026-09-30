@@ -1,5 +1,6 @@
 // Candidate capability. Registration requires an authenticated controller
 // transport; there is deliberately no shell fallback or implicit permission.
+import {setTimeout as delay} from 'node:timers/promises';
 const JOB = /^ods-project-[a-f0-9]{24}$/;
 const PATH = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const STATES = new Set(['queued', 'running', 'succeeded', 'failed', 'cancelled', 'unconfirmed']);
@@ -38,7 +39,7 @@ function validateReceipt(value, params) {
   return value;
 }
 
-export function createProjectBuildTool({request} = {}) {
+export function createProjectBuildTool({request, wait = (ms, signal) => delay(ms, undefined, {signal})} = {}) {
   if (typeof request !== 'function') throw Error('authenticated project transport required');
   return {
     name: 'pixel_ods_project_build',
@@ -51,7 +52,19 @@ export function createProjectBuildTool({request} = {}) {
       try {
         signal?.throwIfAborted();
         const normalized = normalizeProjectBuild(params);
-        const raw = await request(normalized, {toolCallId, signal});
+        let raw = await request(normalized, {toolCallId, signal});
+        // Pace read-only observations inside one tool call. This leaves the
+        // controller socket free for cancellation between requests and avoids
+        // spending model turns on identical instantaneous running receipts.
+        // Never retry submission, unknown responses or transport failures.
+        if (normalized.action === 'observe') {
+          for (let poll = 0; poll < 5 && ['queued','running'].includes(raw?.status); poll++) {
+            validateReceipt(raw, normalized);
+            await wait(5000, signal);
+            signal?.throwIfAborted();
+            raw = await request(normalized, {toolCallId, signal});
+          }
+        }
         if (raw?.schemaVersion === 1 && raw.kind === 'ods-project-job'
             && ['denied', 'invalid-request'].includes(raw.status)
             && Object.keys(raw).sort().join(',') === 'kind,schemaVersion,status') {
