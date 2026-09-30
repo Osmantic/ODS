@@ -38,7 +38,7 @@ export default function PortalLiveReview({task,hasPublication=false}) {
     })
   },[task])
   const current=entries.find(entry=>entry.id===selected) || entries.at(-1)
-  if(!current)return null
+  if(!current)return hasPublication?<section className="portal-live-review" aria-label="Recent file changes"><p className="portal-source-notice" role="status">No completed file edits were recorded for this response.</p><p className="portal-source-notice">Publishing existing files does not create an edit history. Open Published output to inspect the files in this preview.</p></section>:null
   return <section className="portal-live-review" data-published={hasPublication} aria-label="Recent file changes">
       <nav aria-label="Completed file edits">{entries.map((entry,index)=><button key={entry.id} type="button" aria-pressed={entry.id===current.id} onClick={()=>setSelected(entry.id)}><FilePenLine size={13}/><span>{entry.change.file}</span><small>{index+1}</small></button>)}</nav>
       <div className="portal-live-review-content"><PortalActivityChange key={current.id} change={current.change}/></div>

@@ -50,7 +50,7 @@ it('keeps old publications usable and explicitly identifies their scope',async()
  const {source,...old}=data.preview
  render(<PortalWorkspace preview={old} access={{frameUrl:'/preview',url:'/preview',sandbox:'allow-scripts'}} request={{kind:'review',siteId}}/>)
  expect(screen.queryByRole('button',{name:'Source files'})).toBeNull()
- expect(screen.getByText(/not a complete project source snapshot/)).toBeVisible()
+ expect(screen.getByText(/No separate project source snapshot was attached/)).toBeVisible()
  expect(await screen.findByRole('button',{name:'Open index.html'})).toBeVisible()
  expect(fetch.mock.calls.some(([url])=>url.includes('__ods_source__'))).toBe(false)
 })
@@ -92,7 +92,22 @@ it('keeps completed source edit excerpts accessible after a built publication',a
  fireEvent.click(screen.getByRole('button',{name:'File edits'}))
  expect(await screen.findByRole('navigation',{name:'Completed file edits'})).toBeVisible()
  expect(within(screen.getByRole('tabpanel',{name:'Review'})).getByLabelText('Changes to main.jsx')).toHaveTextContent('export const source = true')
- expect(screen.getByText(/filtered excerpts, not complete source files/)).toBeVisible()
+ expect(screen.getByText('Changes recorded by tools in this response.')).toBeVisible()
+ expect(screen.queryByText('No completed file edits were recorded for this response.')).toBeNull()
+})
+
+it('explains an empty edit history without treating publication as an edit or showing source warnings',async()=>{
+ const {source,...old}=data.preview
+ render(<PortalWorkspace preview={old} access={{frameUrl:'/preview',url:'/preview',sandbox:'allow-scripts'}} request={{kind:'review',siteId}}/>)
+ await screen.findByRole('button',{name:'Open index.html'})
+ fireEvent.click(screen.getByRole('button',{name:'File edits'}))
+ expect(screen.getByText('No completed file edits were recorded for this response.')).toBeVisible()
+ expect(screen.getByText(/Publishing existing files does not create an edit history/)).toBeVisible()
+ expect(screen.queryByText(/No separate project source snapshot was attached/)).toBeNull()
+ expect(screen.queryByRole('navigation',{name:'Completed file edits'})).toBeNull()
+ fireEvent.click(screen.getByRole('button',{name:'Published output'}))
+ expect(await screen.findByRole('button',{name:'Open index.html'})).toBeVisible()
+ expect(screen.getByText(/No separate project source snapshot was attached/)).toBeVisible()
 })
 
 it('does not show stale copy completion after changing the selected source',async()=>{

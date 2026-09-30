@@ -107,9 +107,9 @@ export default function PortalWorkspace({preview,before,access,title,request,onR
           <button type="button" aria-pressed={reviewMode==='output'} onClick={()=>setReviewMode('output')}>Published output</button>
           <button type="button" aria-pressed={reviewMode==='edits'} onClick={()=>setReviewMode('edits')}>File edits</button>
         </div>
-        {!preview.source && <p className="portal-source-notice">This publication contains browser output, not a complete project source snapshot. Original source may remain in the workspace.</p>}
+        {reviewMode==='output' && !preview.source && <p className="portal-source-notice">Files published for this preview. No separate project source snapshot was attached.</p>}
         {reviewMode==='source' && preview.source && <PortalSourceReview key={`${preview.siteId}/${preview.source.sourceId}`} preview={preview} refresh={refresh}/>}
-        {reviewMode==='edits' && <><p className="portal-source-notice">Completed tool edits from this response; filtered excerpts, not complete source files.</p><PortalLiveReview task={task} hasPublication/></>}
+        {reviewMode==='edits' && <><p className="portal-source-notice">Changes recorded by tools in this response.</p><PortalLiveReview task={task} hasPublication/></>}
         <div hidden={reviewMode!=='output'} className="portal-review-output">
         {error && <p className="portal-source-notice" role="status">Project files unavailable. <button type="button" onClick={()=>setRetry(value=>value+1)}>Retry files</button></p>}
         <PixelSnapshotChanges key={`${preview.siteId}/${refresh}`} preview={preview} rootPath={preview.relativeDirectory} before={before} projectFiles={files} selectedPath={reviewPath} onSelectFile={path=>setReviewPath(path)} onOpenFile={file=>openFile(file.path)}/>
