@@ -1,0 +1,85 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {ARTIFACT_TOOL, ARTIFACT_BOUNDARY, normalizeWorkspaceArtifact, validDeliveredArtifacts, artifactReceipt, createWorkspaceArtifactAdmission, createWorkspaceArtifactTool} from '../plugin/workspace-artifact.mjs';
+import {createToolLoopGuard} from '../plugin/tool-loop-guard.mjs';
+import {registeredPixelTools} from './tool-grammar-registration.mjs';
+const context={trigger:'user',agentId:'pixel',runId:'run',sessionId:'session',sessionKey:'agent:pixel:openai-user:ods-'+ 'a'.repeat(64),toolCallId:'artifact'};
+const args={relativePath:'project/report.md'}, payload=normalizeWorkspaceArtifact(args);
+const receipt={schemaVersion:1,kind:'ods-pixel-workspace-artifact',...args,siteId:'site-'+ 'a'.repeat(24),sha256:'a'.repeat(64),file:{path:'report.md',bytes:10,sha256:'b'.repeat(64)}};
+const host={...receipt,status:'succeeded',httpStatus:200,readbackVerified:true,executable:false,overwritten:false,boundary:ARTIFACT_BOUNDARY};
+function fixture(request=async()=>host) {
+ const guard=createToolLoopGuard();guard.observeRun(context,'pixel',{prompt:'Deliver the report as a document.'});
+ const admission=createWorkspaceArtifactAdmission();
+ const event={toolName:ARTIFACT_TOOL,params:args};
+ const tool=createWorkspaceArtifactTool(context,{admission,reserve:s=>guard.reserveWorkspaceArtifact(s),accept:(s,r)=>guard.acceptWorkspaceArtifact(s,r),request});
+ return {guard,admission,event,tool};
+}
+test('actual registration includes exact bounded schema and no model-supplied receipt',async()=>{
+ const tool=(await registeredPixelTools()).find(t=>t.name===ARTIFACT_TOOL);assert.ok(tool);
+ assert.deepEqual(tool.parameters,{type:'object',additionalProperties:false,required:['relativePath'],properties:{relativePath:{type:'string',minLength:1,maxLength:512}}});
+ assert.equal((await tool.execute('unbound',args)).isError,true);
+});
+test('paths and exact receipts reject expansion, traversal and model URL/content injection',()=>{
+ for(const name of ['report.md','report.PDF','a.docx','a.xlsx','a.pptx','a.zip','a.rar']) assert.equal(normalizeWorkspaceArtifact({relativePath:'project/'+name}).relativePath,'project/'+name);
+ for(const value of [{...args,url:'https://elsewhere'}, {...args,bytes:1}, {relativePath:'/etc/a.pdf'}, {relativePath:'../a.pdf'}, {relativePath:'a/.hidden.md'}, {relativePath:'a/a.docm'}, {relativePath:'a/b.html'}, {relativePath:'a/'.repeat(12)+'b.pdf'}, {relativePath:'a/'.repeat(11)+'b'.repeat(129)+'.md'}]) assert.throws(()=>normalizeWorkspaceArtifact(value));
+ assert.deepEqual(artifactReceipt(host,payload),receipt);
+ for(const bad of [{...host,readbackVerified:false},{...host,relativePath:'other/report.md'},{...host,file:{...host.file,bytes:4194305}},{...host,file:{...host.file,path:'other.md'}},{...host,url:'http://evil'},{...host,siteId:'site-'+ 'c'.repeat(24)}])assert.throws(()=>artifactReceipt(bad,payload));
+ assert.equal(validDeliveredArtifacts([receipt,receipt]),false);assert.equal(validDeliveredArtifacts([]),true);
+});
+test('exact direct and deferred calls consume policy admission once with session binding',()=>{
+ for(const deferred of [false,true]) {
+  const admission=createWorkspaceArtifactAdmission();
+  const event=deferred?{toolName:'tool_call',params:{id:'openclaw:pixel-ods:'+ARTIFACT_TOOL,args}}:{toolName:ARTIFACT_TOOL,params:args};
+  const id=deferred?`tool_search_code:artifact:${ARTIFACT_TOOL}:1`:context.toolCallId;
+  admission.before(event,context,{block:true});assert.throws(()=>admission.take(id,payload,context));
+  admission.before(event,context);assert.throws(()=>admission.take(id,{...payload,relativePath:'other.md'},context));
+  assert.throws(()=>admission.take(id,payload,{...context,sessionId:'foreign'}));
+  assert.deepEqual(admission.take(id,payload,context),context);assert.throws(()=>admission.take(id,payload,context));
+  admission.after(event,context);assert.throws(()=>admission.take(id,payload,context));
+ }
+});
+test('only broker-verified admitted calls attach immutable cloned metadata to current run',async()=>{
+ const f=fixture();assert.equal((await f.tool.execute(context.toolCallId,args)).isError,true);
+ f.admission.before(f.event,context);assert.equal((await f.tool.execute(context.toolCallId,args)).isError,undefined);
+ const delivered=f.guard.deliveryVerificationForRun('run');assert.deepEqual(delivered.artifacts,[receipt]);
+ delivered.artifacts[0].file.bytes=99;assert.equal(f.guard.deliveryVerificationForRun('run').artifacts[0].file.bytes,10);
+ assert.equal(f.guard.deliveryVerificationForRun('foreign').artifacts,undefined);
+});
+test('cancelled, superseded and foreign runs cannot reserve or accept document delivery',async()=>{
+ for(const mode of ['signal','superseded','foreign','ended']) {
+  let release;const f=fixture(()=>new Promise(resolve=>release=resolve));const signal=new AbortController();
+  f.admission.before(f.event,context);const running=f.tool.execute(context.toolCallId,args,signal.signal);
+  if(mode==='signal')signal.abort();
+  else if(mode==='ended')f.guard.observeAgentEnd({},context);
+  else if(mode==='superseded')f.guard.observeRun({...context,runId:'next'},'pixel',{prompt:'new task'});
+  else f.guard.observeRun({...context,runId:'next',sessionKey:'foreign'},'pixel',{prompt:'new task'});
+  release(host);assert.equal((await running).isError,true);assert.equal(f.guard.deliveryVerificationForRun('run').artifacts,undefined);
+ }
+ const f=fixture();assert.equal(f.guard.reserveWorkspaceArtifact({...context,sessionKey:'foreign'}),false);
+ assert.equal(f.guard.acceptWorkspaceArtifact(context,receipt),false);
+});
+test('four failed attempts consume the bound and forged receipts never attach',async()=>{
+ let calls=0;const f=fixture(async()=>{calls++;return {...host,readbackVerified:false};});
+ for(let i=0;i<6;i++){f.admission.before(f.event,context);assert.equal((await f.tool.execute(context.toolCallId,args)).isError,true);}
+ assert.equal(calls,4);assert.equal(f.guard.deliveryVerificationForRun('run').artifacts,undefined);
+});
+
+test('owner Stop invalidates a pending broker receipt even when transport completes',async()=>{
+ let release;const f=fixture(()=>new Promise(resolve=>release=resolve));
+ f.admission.before(f.event,context);const running=f.tool.execute(context.toolCallId,args);
+ await f.guard.abortUserRun('ods-'+ 'a'.repeat(64));release(host);
+ assert.equal((await running).isError,true);assert.equal(f.guard.deliveryVerificationForRun('run').artifacts,undefined);
+ assert.equal(f.guard.reserveWorkspaceArtifact(context),false);
+});
+
+test('unsupported team roles and noninteractive surfaces are rejected before broker publication',async()=>{
+ for(const role of ['Builder','Coordinator','Explorer','Reviewer',null]) {
+  let calls=0;const f=fixture(async()=>{calls++;return host});
+  const scope=role?context:{...context,trigger:'cron'};
+  f.guard.observeRun(scope,'pixel',{prompt:role?`You are the ${role} in the owner's Portal team.\nDeliver report.md`:'Background goal round'});
+  f.admission.before(f.event,context);const result=await f.tool.execute(context.toolCallId,args);
+  assert.equal(result.isError,true);assert.equal(calls,0);assert.match(result.content[0].text,/No document publication was attempted/);
+ }
+ const f=fixture();f.guard.observeRun({...context,sessionKey:'agent:pixel:subagent:other'},'pixel',{prompt:'Report'});
+ assert.equal(f.guard.reserveWorkspaceArtifact({...context,sessionKey:'agent:pixel:subagent:other'}),false);
+});

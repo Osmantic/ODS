@@ -1,3 +1,4 @@
+import {validDeliveredArtifact} from './workspace-artifact.mjs';
 // Pixel per-run tool-loop guard.
 //
 // OpenClaw's built-in identical-call detector blocks a repeated tool call, but
@@ -9479,6 +9480,7 @@ export function createToolLoopGuard({
     }
     if (typeof runId === "string" && runId) {
       const state = stateFor(runId);
+      state.artifactOwnerInteractive = ownerInteractiveTurn(context, agentId);
       state.completionAssurance.begin(currentOwnerIntentText(event?.messages, event?.prompt), event);
       const ownerIntent=currentOwnerIntentText(event?.messages,event?.prompt);
       if (ownerIntent) state.extensionCompletionGate ??= createExtensionCompletionGate(ownerIntent);
@@ -12411,7 +12413,21 @@ export function createToolLoopGuard({
     return { status: "none", ...staleExecWarningSuppression };
   }
 
+  function artifactScopeState(scope) {
+    const state=runs.get(scope?.runId);
+    return state && scope.agentId === 'pixel' && state.artifactOwnerInteractive && !state.managedTeamWorker && !state.runEnded && !state.clientCancelled &&
+      state.currentSessionId === scope.sessionId && state.currentSessionKey === scope.sessionKey &&
+      sessionRuns.get(scope.sessionId) === scope.runId ? state : undefined;
+  }
   function deliveryVerificationForRun(runId) {
+    const result=baseDeliveryVerificationForRun(runId);
+    const state=runs.get(runId);
+    const artifacts=state?.workspaceArtifacts;
+    return artifacts?.length && !state.clientCancelled && ['none','passed','failed'].includes(result.status)
+      ? {...result,artifacts:structuredClone(artifacts)} : result;
+  }
+
+  function baseDeliveryVerificationForRun(runId) {
     const verification = verificationForRun(runId);
     const state = runs.get(runId);
     if (state?.extensionCompletionGate?.active && !state.extensionCompletionGate.verification && verification.status === 'none') {
@@ -12517,6 +12533,21 @@ export function createToolLoopGuard({
   }
 
   return {
+    reserveWorkspaceArtifact(scope) {
+      const state=artifactScopeState(scope);
+      if (!state || state.progressBudget.exhausted || state.ownerQuestions || (state.artifactAttempts ?? 0) >= 4) return false;
+      state.artifactAttempts=(state.artifactAttempts ?? 0)+1;
+      return true;
+    },
+    acceptWorkspaceArtifact(scope,receipt) {
+      const state=artifactScopeState(scope);
+      if (!state || !state.artifactAttempts || !validDeliveredArtifact(receipt)) return false;
+      const artifacts=state.workspaceArtifacts ??= [];
+      if (artifacts.some(item=>item.siteId === receipt.siteId && item.file.path === receipt.file.path)) return true;
+      if (artifacts.length >= 4) return false;
+      artifacts.push(structuredClone(receipt));
+      return true;
+    },
     beforeToolCall,
     invalidateWorkspaceBundle(context) {
       const state = runs.get(context?.runId);

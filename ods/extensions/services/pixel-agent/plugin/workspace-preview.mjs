@@ -164,7 +164,7 @@ function emptyPathFeedback(response) {
     [...shown, ...(omitted > 0 ? [`${omitted} more`] : [])].join(", ") + ". ";
 }
 
-function socketRequest(payload, { socketPath = SOCKET_PATH, signal, timeoutMs = 30_000 } = {}) {
+export function socketRequest(payload, { socketPath = SOCKET_PATH, signal, timeoutMs = 30_000 } = {}) {
   if (signal?.aborted) return Promise.reject(new Error("Pixel workspace preview cancelled"));
   return new Promise((resolve, reject) => {
     const connection = net.createConnection({ path: socketPath });

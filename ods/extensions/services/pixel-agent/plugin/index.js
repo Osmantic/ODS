@@ -1,3 +1,4 @@
+import {createWorkspaceArtifactAdmission,createWorkspaceArtifactTool} from './workspace-artifact.mjs';
 import {createAgentSkillTool} from './agent-skills.mjs';
 import {registerBootstrapCapabilities} from './bootstrap-capabilities.mjs';
 import {registerStableRuntimeLine} from './runtime-line.mjs';
@@ -98,6 +99,7 @@ const managedRuntimeRegistry = createManagedRuntimeRegistry();
 const evidenceArtifactWriter = createEvidenceArtifactWriter();
 let perplexicaAvailability;
 const bundleAdmission = createWorkspaceBundleAdmission();
+const artifactAdmission = createWorkspaceArtifactAdmission();
 
 // Restrict tool registration to the Pixel agent. Tools are only offered to the
 // agent id declared by this plugin (see openclaw.plugin.json); this guards the
@@ -406,11 +408,13 @@ export default definePluginEntry({
       );
       const decision = guard?.block ? guard : goalProgress.before(event, context) ?? accessRuntime.beforeTool(event, context) ?? guard;
       bundleAdmission.before(event, context, decision);
+      artifactAdmission.before(event, context, decision);
       taskActivity.before(event, context, decision?.block === true);
       return decision;
     });
     api.on("after_tool_call", (event, context) => {
       bundleAdmission.after(event, context);
+      artifactAdmission.after(event, context);
       accessRuntime.afterTool(event, context);
       if (!accessRuntime.isProbe(context)) {
         goalProgress.update(event, context);
@@ -733,6 +737,11 @@ export default definePluginEntry({
       outputChars: () => researchOutputChars(api.runtime?.config?.current?.() ?? api.config, AGENT_ID) });
     api.registerTool(onlyPixel(discovery ? () => researchTool
       : researchToolWhenAvailable(perplexicaAvailability, researchTool)), { names: ["pixel_ods_research"] });
+    api.registerTool(onlyPixel(context => createWorkspaceArtifactTool(context, {
+      admission:artifactAdmission, reserve:scope=>toolLoopGuard.reserveWorkspaceArtifact(scope),
+      accept:(scope,receipt)=>toolLoopGuard.acceptWorkspaceArtifact(scope,receipt),
+      transport:api.pluginConfig?.workspacePreviewTransport,
+    })), {names:['pixel_ods_workspace_artifact']});
     registerTool(api, createAgentSkillTool(), {names:['pixel_ods_skill']});
     registerTool(api, createAskUserTool(), {names:['pixel_ods_ask_user']});
     registerTool(api, createGoalProgressTool(), {names:['pixel_ods_goal']});

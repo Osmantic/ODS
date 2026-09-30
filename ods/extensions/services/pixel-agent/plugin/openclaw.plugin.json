@@ -28,6 +28,7 @@
       "pixel_ods_download_promote",
       "pixel_ods_workspace_preview",
       "pixel_ods_workspace_bundle",
+      "pixel_ods_workspace_artifact",
       "pixel_ods_workspace_preview_inspect",
       "pixel_ods_research",
       "pixel_ods_extension_request_advance",
@@ -36,6 +37,7 @@
     ]
   },
   "toolMetadata": {
+    "pixel_ods_workspace_artifact": {"replaySafe": false},
     "pixel_ods_workspace_bundle": {
       "replaySafe": false
     },

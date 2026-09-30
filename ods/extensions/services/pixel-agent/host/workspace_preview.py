@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Snapshot and serve bounded static sites from Pixel's owner workspace.
+"""Snapshot and serve bounded sites or single documents from the owner workspace.
 
-The control socket accepts only one relative workspace directory. Every
+The control socket accepts one relative site directory or document file. Every
 regular file is reopened without symlink traversal, bounded, hashed, and copied
 create-only into a private state directory. A separate loopback HTTP listener
 serves only those immutable snapshots with browser-hardening headers.
@@ -51,6 +51,9 @@ ALLOWED_SUFFIXES = frozenset(
         ".md", ".markdown",
     }
 ) | DOWNLOAD_ONLY_SUFFIXES
+ARTIFACT_SUFFIXES = frozenset({'.md', '.markdown', '.txt', '.csv', '.tsv', '.json', '.pdf', '.zip', '.rar', '.docx', '.xlsx', '.pptx'})
+ARTIFACT_KIND = 'ods-pixel-workspace-artifact'
+ARTIFACT_BOUNDARY = 'Create-only single-file snapshot from the configured Pixel workspace; byte integrity only, no execution or document-quality claim.'
 MAX_REQUEST_BYTES = 2048
 MAX_RESPONSE_BYTES = 8192
 MAX_FILES = 128
@@ -163,6 +166,14 @@ def parse_request(payload: bytes) -> dict[str, Any]:
         value = json.loads(payload.decode("utf-8"), object_pairs_hook=_json_object)
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise PreviewError("invalid preview request") from exc
+    if isinstance(value, dict) and value.get('action') == 'publish-artifact':
+        if (set(value) != {'schemaVersion', 'action', 'relativePath'} or PROFILE_ID is not None
+                or type(value.get('schemaVersion')) is not int or value['schemaVersion'] != 1):
+            raise PreviewError('invalid artifact request')
+        parts = _parts(value.get('relativePath'))
+        if pathlib.PurePosixPath(parts[-1]).suffix.lower() not in ARTIFACT_SUFFIXES:
+            raise PreviewError('unsupported preview file type')
+        return value
     if (
         not isinstance(value, dict)
         or not isinstance(value.get("action"), str)
@@ -459,6 +470,108 @@ def publish_snapshot(
     }
 
 
+def publish_artifact(workspace, previews, relative_path, owner_uid):
+    """Capture exactly one owner file through descriptor-relative no-link opens."""
+    _safe_root(workspace, owner_uid)
+    _safe_root(previews, owner_uid)
+    parts = _parts(relative_path)
+    filename = parts[-1]
+    if pathlib.PurePosixPath(filename).suffix.lower() not in ARTIFACT_SUFFIXES:
+        raise PreviewError('unsupported preview file type')
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    current = os.open(workspace, directory_flags)
+    try:
+        root_info = os.fstat(current)
+        if root_info.st_uid != owner_uid or root_info.st_mode & 0o022:
+            raise PreviewError('unsafe preview directory')
+        for component in parts[:-1]:
+            child = os.open(component, directory_flags, dir_fd=current)
+            os.close(current)
+            current = child
+            info = os.fstat(current)
+            if info.st_uid != owner_uid or info.st_mode & 0o022:
+                raise PreviewError('unsafe preview directory')
+        descriptor = os.open(filename, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK, dir_fd=current)
+        try:
+            before = os.fstat(descriptor)
+            if (not stat.S_ISREG(before.st_mode) or before.st_uid != owner_uid or before.st_nlink != 1
+                    or before.st_mode & 0o022 or not 0 <= before.st_size <= MAX_FILE_BYTES):
+                raise PreviewError('unsafe preview file')
+            chunks = bytearray()
+            while len(chunks) <= MAX_FILE_BYTES:
+                chunk = os.read(descriptor, min(65536, MAX_FILE_BYTES + 1 - len(chunks)))
+                if not chunk:
+                    break
+                chunks.extend(chunk)
+            after = os.fstat(descriptor)
+            def identity(info):
+                return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns, info.st_mode, info.st_uid, info.st_nlink)
+            if len(chunks) != before.st_size or identity(before) != identity(after):
+                raise PreviewError('preview source changed')
+            data = bytes(chunks)
+            # Some filesystems can retain timestamps across rapid same-size writes.
+            # Re-read the held descriptor rather than accepting a torn first read.
+            os.lseek(descriptor, 0, os.SEEK_SET)
+            with os.fdopen(os.dup(descriptor), 'rb') as stream:
+                repeated = stream.read(MAX_FILE_BYTES + 1)
+            if repeated != data or identity(before) != identity(os.fstat(descriptor)):
+                raise PreviewError('preview source changed')
+        finally:
+            os.close(descriptor)
+    finally:
+        os.close(current)
+    digest = hashlib.sha256()
+    encoded_name = filename.encode('utf-8')
+    digest.update(len(encoded_name).to_bytes(4, 'big'))
+    digest.update(encoded_name)
+    digest.update(len(data).to_bytes(8, 'big'))
+    digest.update(data)
+    full_digest = digest.hexdigest()
+    site_id = 'site-' + full_digest[:24]
+    destination = previews / site_id
+    if not destination.exists():
+        temporary = pathlib.Path(tempfile.mkdtemp(prefix='.artifact-', dir=previews))
+        try:
+            os.chmod(temporary, 0o700)
+            fd = os.open(temporary / filename, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o400)
+            try:
+                view = memoryview(data)
+                while view:
+                    written = os.write(fd, view)
+                    if written <= 0:
+                        raise PreviewError('incomplete preview write')
+                    view = view[written:]
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+            os.rename(temporary, destination)
+        except Exception:
+            shutil.rmtree(temporary, ignore_errors=True)
+            raise
+    root = os.open(destination, directory_flags)
+    try:
+        root_info = os.fstat(root)
+        if root_info.st_uid != owner_uid or stat.S_IMODE(root_info.st_mode) != 0o700 or os.listdir(root) != [filename]:
+            raise PreviewError('unsafe preview snapshot')
+        fd = os.open(filename, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK, dir_fd=root)
+        try:
+            info = os.fstat(fd)
+            if (not stat.S_ISREG(info.st_mode) or info.st_uid != owner_uid or info.st_nlink != 1
+                    or stat.S_IMODE(info.st_mode) != 0o400 or info.st_size != len(data)):
+                raise PreviewError('unsafe preview snapshot')
+            with os.fdopen(os.dup(fd), 'rb') as stream:
+                if stream.read(MAX_FILE_BYTES + 1) != data:
+                    raise PreviewError('preview snapshot verification failed')
+        finally:
+            os.close(fd)
+    finally:
+        os.close(root)
+    return {'schemaVersion': 1, 'kind': ARTIFACT_KIND, 'status': 'succeeded', 'relativePath': relative_path,
+            'siteId': site_id, 'sha256': full_digest,
+            'file': {'path': filename, 'bytes': len(data), 'sha256': hashlib.sha256(data).hexdigest()},
+            'executable': False, 'overwritten': False, 'boundary': ARTIFACT_BOUNDARY}
+
+
 def verify_current_snapshot(workspace, previews, request, owner_uid):
     """Read-only point-in-time equality, never a new publication or execution."""
     manifest = json.loads(snapshot_manifest(previews, request["siteId"]))
@@ -722,7 +835,7 @@ class PreviewHandler(http.server.BaseHTTPRequestHandler):
             self.send_error(404)
             return
         target, body = result
-        download_only = target.suffix.lower() in DOWNLOAD_ONLY_SUFFIXES
+        download_only = target.suffix.lower() in (DOWNLOAD_ONLY_SUFFIXES | {".docx", ".xlsx", ".pptx"})
         content_type = "application/octet-stream" if download_only else _preview_content_type(target, body)
         self.send_response(200)
         self.send_header("Content-Type", content_type)
@@ -783,12 +896,12 @@ class PreviewUnixHTTPServer(socketserver.ThreadingUnixStreamServer):
         super().__init__(address, PreviewHandler)
 
 
-def _verify_http(port: int, site_id: str, entry_sha256: str) -> None:
+def _verify_http(port: int, site_id: str, entry_sha256: str, filename: str = "") -> None:
     connection = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
     try:
         connection.request(
             "GET",
-            f"/{site_id}/",
+            f"/{site_id}/{filename}",
             headers={"Host": f"{site_id}.localhost:{port}"},
         )
         response = connection.getresponse()
@@ -853,7 +966,11 @@ def _serve_connection(
             }
         else:
             request = parse_request(raw)
-            if request["action"] == "verify-current":
+            if request['action'] == 'publish-artifact':
+                response = publish_artifact(workspace, previews, request['relativePath'], owner_uid)
+                _verify_http(port, response['siteId'], response['file']['sha256'], response['file']['path'])
+                response.update({'httpStatus': 200, 'readbackVerified': True})
+            elif request["action"] == "verify-current":
                 response = verify_current_snapshot(workspace, previews, request, owner_uid)
             else:
                 response = publish_snapshot(
