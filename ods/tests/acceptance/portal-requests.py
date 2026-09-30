@@ -59,18 +59,28 @@ def main():
         print("PASS: Dashboard API added Open WebUI")
     elif action == "expect-add-failure":
         busy = 0
+        started = time.monotonic()
         for attempt in range(21):
             try:
                 get_json(key, "POST", "/api/webui/selection", {"enabled": True}, timeout=900)
             except urllib.error.HTTPError as error:
                 code = error.code
                 error.close()
-                if code == 409 and attempt < 20:
-                    busy += 1
-                    time.sleep(3)
-                    continue
-                assert code in {502, 503}, f"unexpected WebUI add-back HTTP {code}; busy retries={busy}"
-                print(f"PASS: failed Open WebUI start was reported as failure (busy retries={busy})")
+                if code == 409:
+                    selection = get_json(key, "GET", "/api/webui/selection", timeout=5)
+                    assert selection == {"enabled": False, "supported": True}, (
+                        "WebUI selection unavailable after HTTP 409", sorted(selection)
+                    )
+                    if attempt < 20:
+                        busy += 1
+                        time.sleep(3)
+                        continue
+                assert code in {502, 503}, (
+                    f"unexpected WebUI add-back HTTP {code}; busy retries={busy}; "
+                    f"elapsed={time.monotonic() - started:.1f}s"
+                )
+                print(f"PASS: failed Open WebUI start was reported as failure "
+                      f"(busy retries={busy}, elapsed={time.monotonic() - started:.1f}s)")
                 break
             else:
                 raise AssertionError("failed Open WebUI start was reported as success")

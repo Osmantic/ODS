@@ -254,6 +254,15 @@ docker restart ods-dashboard-api >/dev/null || fail 'Dashboard API restart faile
 wait_portal
 check_api result || fail 'Portal completion receipt did not survive API restart'
 
+# Exercise the actual Dashboard UI through its local nginx listener. Nginx
+# supplies the API credential; the browser never receives the private key.
+curl -fsS --max-time 15 -X POST http://127.0.0.1:3001/api/setup/complete >/dev/null \
+    || fail 'fresh-run setup could not be completed for browser acceptance'
+(cd "$harness/portal-browser" && npm ci --no-audit --no-fund \
+    && npx playwright install --with-deps chromium \
+    && ODS_PORTAL_BROWSER_URL=http://127.0.0.1:3001 node check.mjs) \
+    || fail 'installed Portal browser chat or reload history failed'
+
 mkdir -p "$INSTALL_DIR/data/open-webui"
 printf 'retained-webui-data\n' >"$INSTALL_DIR/data/open-webui/acceptance-sentinel.txt"
 sentinel_hash="$(sha256sum "$INSTALL_DIR/data/open-webui/acceptance-sentinel.txt" | cut -d' ' -f1)"
