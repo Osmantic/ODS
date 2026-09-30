@@ -449,15 +449,23 @@ detect_gpu() {
             local vendor device
             vendor=$(cat "$card_dir/vendor" 2>/dev/null) || continue
             device=$(cat "$card_dir/device" 2>/dev/null) || continue
-            # Intel vendor ID: 0x8086, Arc device IDs: 0x56a0-0x56c1 (Alchemist), 0x5690-0x569f (DG2)
-            if [[ "$vendor" == "0x8086" ]] && [[ "$device" =~ ^0x(56[a-c][0-9a-f]|569[0-9a-f])$ ]]; then
+            # Intel vendor ID: 0x8086, Arc device IDs: 0x56a0-0x56c1 (Alchemist), 0x5690-0x569f (DG2), 0xe202-0xe223 (Battlemage)
+            if [[ "$vendor" == "0x8086" ]] && [[ "$device" =~ ^0x(56[a-c][0-9a-f]|569[0-9a-f]|e2[0-2][0-9a-d])$ ]]; then
                 GPU_BACKEND="intel"
                 GPU_MEMORY_TYPE="discrete"
                 GPU_DEVICE_ID="$device"
                 GPU_COUNT=1
-                # Try to get VRAM size from sysfs (lmem_total_bytes on Arc)
                 local vram_bytes
-                vram_bytes=$(cat "$card_dir/lmem_total_bytes" 2>/dev/null) || vram_bytes=0
+                # Try to get VRAM size from BAR 2 (universal when ReBAR enabled)
+                vram_bytes=$(awk 'NR==3 { print strtonum($2) - strtonum($1) + 1 }' "$card_dir/resource") || vram_bytes=0
+                # Test for 256 MiB threshold (268435456 bytes), might indicate missing ReBAR
+                if (( vram_bytes <= 268435456 )); then
+                    log "GPU: Detected $vram_bytes Bytes of VRAM"
+                    log "This is below threshold and might indicate ReBAR is disabled or detection failed"
+                    log "Trying legacy VRAM detection method"
+                    # Try to get VRAM size from sysfs (lmem_total_bytes on i915 driver)
+                    vram_bytes=$(cat "$card_dir/lmem_total_bytes" 2>/dev/null) || vram_bytes=0
+                fi
                 GPU_VRAM=$(( vram_bytes / 1048576 ))  # in MB
                 # Try marketing name from sysfs or lspci
                 if [[ -f "$card_dir/product_name" ]]; then
