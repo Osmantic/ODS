@@ -56,6 +56,12 @@
       "value": "node:22-bookworm-slim@sha256:7af03b14a13c8cdd38e45058fd957bf00a72bbe17feac43b1c15a689c029c732"
     },
     {
+      "id": "pixel-project.python",
+      "type": "image",
+      "path": "extensions/services/pixel-agent/host/Dockerfile.project-python",
+      "value": "python:3.11-slim-bookworm@sha256:a36c24f9cbdf4fd0f52d67f0823eeac19c2028c637cecc392d97f980d4fec56b"
+    },
+    {
       "id": "brave-search.node",
       "type": "image",
       "path": "extensions/services/brave-search/Dockerfile",
