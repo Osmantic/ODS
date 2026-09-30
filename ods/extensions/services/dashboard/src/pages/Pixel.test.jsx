@@ -757,22 +757,23 @@ describe('Pixel', () => {
 
   it('restores the cloud composer despite an unavailable local activation catalog', async () => {
     vi.useFakeTimers()
-    let available = true, catalogFailed = false
+    let available = true, catalogFailed = false, remote = false
     globalThis.fetch.mockImplementation(async url => {
-      if (url === '/api/pixel/status') return response({available,runtime:available ? {source:'remote-provider',model:'cloud-model',contextLength:32768,maxTokens:4096,reasoning:false} : undefined})
+      if (url === '/api/pixel/status') return response({available,runtime:available ? remote ? {source:'remote-provider',model:'cloud-model',contextLength:32768,maxTokens:4096,reasoning:false} : {source:'local-switchboard',model:'local-model',contextLength:32768} : undefined})
       if (url === '/api/models') return catalogFailed ? response({},503) : response({models:[],modelLifecycle:{active:true,operation:'model_activation',modelId:'local-model'}})
       if (url === '/api/models/recovery') return response({pending:false,phase:'idle'})
       return response({})
     })
     render(<Pixel />)
     await act(async()=>{})
-    fireEvent.click(screen.getByRole('button',{name:'Choose model: cloud model'}))
+    fireEvent.click(screen.getByRole('button',{name:'Choose model: local model'}))
     await act(async()=>{})
     available = false
     catalogFailed = true
     await act(async()=>{await vi.advanceTimersByTimeAsync(3000)})
     expect(screen.getByRole('textbox')).toBeDisabled()
     available = true
+    remote = true
     await act(async()=>{await vi.advanceTimersByTimeAsync(3000)})
     expect(screen.getByRole('alert')).toHaveTextContent('Failed to fetch models')
     expect(screen.getByText('Available')).toBeInTheDocument()

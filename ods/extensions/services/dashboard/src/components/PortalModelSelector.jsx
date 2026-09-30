@@ -53,10 +53,16 @@ export default function PortalModelSelector(props) {
 
 /** Once opened, retain the hook even while closed so an accepted swap stays observed. */
 function LoadedModelSelector({activeModel='',runtimeSource,busy=false,onSwitchingChange,onSettled}) {
-  const catalog=useModels()
+  const lastCatalogSource=useRef(runtimeSource)
+  const confirmedSource=['remote-provider','local-switchboard','external-host'].includes(runtimeSource)
+  useEffect(()=>{if(confirmedSource)lastCatalogSource.current=runtimeSource},[runtimeSource,confirmedSource])
+  // Remember only which catalog reads to suppress during a status outage.
+  // Selection and mutation authorization still require the current source.
+  const observeCatalog=(confirmedSource?runtimeSource:lastCatalogSource.current)!=='remote-provider'
+  const catalog=useModels({observe:observeCatalog})
   const {currentModel,activationReadyModel,loading,error,canActivateModels,activationModeError,activationLoading,modelLifecycle,externalLemonade,modelManagement,runtimeActionLoading,actionLoadingModels=[],loadModel,refresh,clearMutationError}=catalog
   const models=Array.isArray(catalog.models)?catalog.models:[]
-  const installed=models.filter(model=>model && typeof model.id==='string' && ['loaded','downloaded'].includes(model.status))
+  const installed=models.filter(model=>observeCatalog && model && typeof model.id==='string' && ['loaded','downloaded'].includes(model.status))
     .map(quickSwitchProfile)
   const [open,setOpen]=useState(true),[confirmId,setConfirmId]=useState(null),[pending,setPending]=useState(false),[localError,setLocalError]=useState('')
   const [recoveryPending,setRecoveryPending]=useState(false),[recoveryBusy,setRecoveryBusy]=useState(false)
@@ -120,7 +126,7 @@ function LoadedModelSelector({activeModel='',runtimeSource,busy=false,onSwitchin
   const reason=switching?'':confirmation?unavailable(confirmation):remote?'This conversation uses a remote provider.':managementUnavailable?activationModeError || 'Runtime management could not be verified. Refresh the model list.':external?'This model is managed on the external host.':!local?'The conversation’s model source is not confirmed.':busy?'The current task is still running.':!canActivateModels && !loading?activationModeError:''
   const showActiveFallback=activeModel && !current
   return <div ref={root} className="portal-model-selector">
-    <button ref={trigger} type="button" className="portal-model-trigger" aria-label={`Choose model: ${modelDisplayName(activeName,true)}`} aria-haspopup="dialog" aria-expanded={open} aria-controls={open?id:undefined} title={modelDisplayName(activeName)} onClick={()=>{if(open)close();else {setOpen(true);void refresh()}}}>
+    <button ref={trigger} type="button" className="portal-model-trigger" aria-label={`Choose model: ${modelDisplayName(activeName,true)}`} aria-haspopup="dialog" aria-expanded={open} aria-controls={open?id:undefined} title={modelDisplayName(activeName)} onClick={()=>{if(open)close();else {setOpen(true);if(observeCatalog)void refresh()}}}>
       {switching && <Loader2 size={12} className="portal-model-loading" aria-hidden="true"/>}<span>{modelDisplayName(activeName,true)}</span><ChevronDown size={12} aria-hidden="true"/>
     </button>
     <section id={id} role="dialog" aria-label="Choose model" className="portal-model-menu" hidden={!open} style={!open?{display:'none'}:undefined}>
@@ -141,15 +147,15 @@ function LoadedModelSelector({activeModel='',runtimeSource,busy=false,onSwitchin
           {showActiveFallback && <div role="menuitemradio" aria-checked="true" className="portal-model-option"><span><strong>{modelDisplayName(activeModel)}</strong><small>{remote?'Remote provider':external?'External host':'Active model'}</small></span><Check size={15} aria-hidden="true"/></div>}
           {installed.map(model=>{const selected=model.id===selectedId,disabled=unavailable(model);return <button key={model.id} role="menuitemradio" aria-checked={selected} type="button" className="portal-model-option" disabled={!selected && Boolean(disabled)} title={disabled || modelDisplayName(model)} onClick={()=>{if(selected)close(true);else if(!disabled)setConfirmId(model.id)}}><span><strong>{modelDisplayName(model)}</strong><small>{details(model)}</small></span>{model.id===activationLoading?<Loader2 size={15} className="portal-model-loading" aria-hidden="true"/>:selected?<Check size={15} aria-hidden="true"/>:null}</button>})}
         </div>
-        {loading && <p role="status" className="portal-model-notice">Loading models…</p>}
+        {loading && observeCatalog && <p role="status" className="portal-model-notice">Loading models…</p>}
         {!loading && !installed.length && !showActiveFallback && <p className="portal-model-notice">No installed models found.</p>}
         {reason && <p className="portal-model-notice" role="status">{reason}</p>}
-        {(localError || error) && <p role="alert" className="portal-model-notice">{localError || error} <button type="button" onClick={()=>void refresh()}>Refresh</button></p>}
+        {(localError || error) && <p role="alert" className="portal-model-notice">{localError || error} {observeCatalog && <button type="button" onClick={()=>void refresh()}>Refresh</button>}</p>}
         {external
           ? <p className="portal-model-notice">Change this model on its external host.</p>
           : <Link className="portal-model-manage" to={remote?'/pixel/settings?section=connections':'/models'}><SlidersHorizontal size={14} aria-hidden="true"/>{remote?'Provider settings':'Manage models'}</Link>}
       </>}
-      <PortalModelRecovery active={open} refreshKey={`${pending}:${Boolean(activationLoading)}`} onPendingChange={setRecoveryPending} onBusyChange={setRecoveryBusy} onRecovered={()=>{setLocalError('');clearMutationError();void refresh();onSettled?.()}}/>
+      <PortalModelRecovery active={open && observeCatalog} refreshKey={`${pending}:${Boolean(activationLoading)}`} onPendingChange={setRecoveryPending} onBusyChange={setRecoveryBusy} onRecovered={()=>{setLocalError('');clearMutationError();void refresh();onSettled?.()}}/>
     </section>
   </div>
 }
