@@ -62,7 +62,7 @@ OBSERVE_ELEMENT = r"""function(includeText, selectValue, fillValue, performFill)
         if (references.length > 16) attributes.push('secret');
         else for (const id of references) attributes.push(document.getElementById(id)?.textContent || '');
       }
-      const sensitive = attributes.some(a => a.length > 512 || /password|passwd|secret|token|api.?key|credential|credit|card|cc-|one-time|otp|senha|segredo/i.test(a));
+      const sensitive = attributes.some(a => a.length > 512 || /password|passwd|passphrase|passcode|secret|token|api.?key|private.?key|seed.?phrase|credential|credit|card|cc-|cvv|cvc|security.?code|social.?security|(?:account|routing).?number|iban|one-time|otp|senha|segredo|(?:^|[^a-z0-9])(?:pin|ssn|cpf|mfa|2fa)(?:$|[^a-z0-9])/i.test(a));
       const autocomplete = (element.getAttribute('autocomplete') || '').toLowerCase();
       const eligible = native && !sensitive && ['', 'on', 'off'].includes(autocomplete);
       const disabled = element.matches(':disabled') || element.getAttribute('aria-disabled') === 'true';
