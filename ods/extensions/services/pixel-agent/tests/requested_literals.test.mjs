@@ -197,15 +197,15 @@ function workspace(files, relativeDirectory = DIRECTORY) {
   return root;
 }
 
-test('workspace snapshots include generated framework assets that start with an underscore', t => {
+test('workspace snapshots check requested text with dynamic framework asset paths', t => {
   const literals = extractRequestedLiterals(FLEET_CREATE);
-  const files = {'index.html': eventPage(), '_next/static/app.js': 'export {}', '_astro/page.css': 'body{}'};
+  const files = {'index.html': eventPage(), '_next/static/chunks/app/[slug]/page.js': 'export {}', '_next/static/app.js':'export {}', '_astro/page.css':'body{}'};
   const preview = snapshot(files);
   const root = workspace(files);
   t.after(() => fs.rmSync(root, {recursive: true, force: true}));
   assert.deepEqual([...requestedTextCheck(literals, preview, {receipt: preview, workspaceRoot: root}).missing], [{text: 'Dawn jazz'}]);
-  // The reserved ODS virtual route prefix and dot-directories stay refused.
-  for (const name of ['__ods_route/x.js', '.hidden/x.js']) {
+  // A framework path does not relax the hidden and reserved path boundary.
+  for (const name of ['__ods_route/x.js', '__pycache__/x.js', '.hidden/x.js']) {
     const reserved = {'index.html': eventPage(), [name]: 'x'};
     const reservedRoot = workspace(reserved);
     t.after(() => fs.rmSync(reservedRoot, {recursive: true, force: true}));
