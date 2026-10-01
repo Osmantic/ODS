@@ -14,6 +14,8 @@ from routers import pixel
 from routers import pixel_teams
 from pixel_chat_context import HistorySnapshot, MAX_HISTORY_BYTES, public_context
 
+pytestmark = pytest.mark.usefixtures("mock_edge_read_transport")
+
 
 def state():
     return {
@@ -114,7 +116,10 @@ def test_compaction_is_started_once_and_context_reads_never_start_model_work(sto
     assert [url.rsplit("/", 1)[-1] for url, _ in calls] == ["compact", "context"]
     assert calls[0][1]["json"] == {"user": "context-test", "request_id": "compact-1"}
     assert calls[1][1]["json"] == {"user": "context-test"}
-    assert "summary" not in json.dumps(calls)
+    assert "summary" not in json.dumps([(url, {key: value for key, value in kwargs.items() if key != "timeout"})
+                                        for url, kwargs in calls])
+    assert all(kwargs['timeout'].as_dict() == {'connect': 3.0, 'read': 20.0, 'write': 5.0, 'pool': 3.0}
+               for _, kwargs in calls)
 
 
 def test_unresolved_response_blocks_compaction_without_calling_gateway(store, monkeypatch):

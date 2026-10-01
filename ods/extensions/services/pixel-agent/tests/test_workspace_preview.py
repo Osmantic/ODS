@@ -41,6 +41,45 @@ def test_framework_export_underscore_assets_keep_reserved_routes_private(tmp_pat
         MODULE._source_files(tmp_path, "export", os.getuid())
 
 
+@pytest.mark.parametrize("mode", [0o664, 0o646, 0o666])
+def test_generated_asset_writable_permissions_are_actionable_without_relaxation(tmp_path, mode):
+    site = tmp_path / "site"
+    site.mkdir(mode=0o700)
+    entry = site / "index.html"
+    entry.write_text("<!doctype html><script src='app.js'></script>")
+    entry.chmod(0o600)
+    asset = site / "app.js"
+    asset.write_text("console.log('preview');")
+    asset.chmod(mode)
+    with pytest.raises(MODULE.PreviewError, match="writable preview file") as caught:
+        MODULE._source_files(tmp_path, "site", os.getuid())
+    code = MODULE.PREVIEW_FAILURE_CODES[str(caught.value)]
+    assert MODULE._error_result(code)["errorCode"] == "writable_file"
+    assert stat.S_IMODE(asset.stat().st_mode) == mode
+    asset.chmod(mode & ~0o022)
+    assert len(MODULE._source_files(tmp_path, "site", os.getuid())) == 2
+
+
+@pytest.mark.parametrize("kind", ["symlink", "hardlink", "unsafe-name"])
+def test_permission_coaching_never_masks_other_unsafe_file_properties(tmp_path, kind):
+    site = tmp_path / "site"
+    site.mkdir(mode=0o700)
+    (site / "index.html").write_text("<!doctype html><h1>Test</h1>")
+    asset = site / ("bad name.js" if kind == "unsafe-name" else "app.js")
+    original = tmp_path / "source.js"
+    original.write_text("console.log('test');")
+    original.chmod(0o666)
+    if kind == "symlink":
+        asset.symlink_to(original)
+    elif kind == "hardlink":
+        os.link(original, asset)
+    else:
+        asset.write_bytes(original.read_bytes())
+        asset.chmod(0o666)
+    with pytest.raises(MODULE.PreviewError, match="^unsafe preview file$"):
+        MODULE._source_files(tmp_path, "site", os.getuid())
+
+
 @pytest.mark.parametrize("fault", [None, "foreign-owner", "different-inode",
     "group-writable", "non-root-mount-owner"])
 def test_virtiofs_mount_root_requires_same_private_owner_inode(tmp_path, monkeypatch, fault):
