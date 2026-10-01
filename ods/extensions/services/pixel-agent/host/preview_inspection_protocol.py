@@ -219,8 +219,8 @@ def validate_bundle(bundle):
             or len(name.split("/")) > 12
             or name <= previous
             or any(
-                not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", p)
-                or p in (".", "..")
+                not re.fullmatch(r"(?!__ods_)[A-Za-z0-9_\[][A-Za-z0-9._\[\]-]{0,127}", p)
+                or p in (".", "..", "__pycache__")
                 for p in name.split("/")
             )
         ):

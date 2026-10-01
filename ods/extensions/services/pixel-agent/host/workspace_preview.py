@@ -287,6 +287,7 @@ def _source_files(
             relative = source.relative_to(current).as_posix()
             if (
                 not stat.S_ISREG(info.st_mode)
+                or name in GENERATED_CACHE_DIRECTORY_NAMES
                 or stat.S_ISLNK(info.st_mode)
                 or info.st_nlink != 1
                 or info.st_uid != owner_uid

@@ -154,6 +154,17 @@ class ObservationTests(unittest.TestCase):
 
 
 class ProtocolTests(unittest.TestCase):
+    def test_framework_snapshot_asset_paths(self):
+        files = {"index.html": b"<h1>App</h1>",
+                 "_next/static/app/[slug]/page.js": b"console.log(2)",
+                 "_next/static/app.js": b"console.log(1)",
+                 "__next._full.txt": b"payload"}
+        _, accepted = protocol.validate_bundle(bundle("", files=files))
+        self.assertEqual(accepted, files)
+        for name in ("__ods_view__.html", "__pycache__/cache.js", ".hidden/app.js", "_next/../secret.js"):
+            with self.subTest(name=name), self.assertRaises(protocol.Invalid):
+                protocol.validate_bundle(bundle("", files={"index.html": b"ok", name: b"bad"}))
+
     def test_production_frame_contract(self):
         import workspace_preview as publisher
 

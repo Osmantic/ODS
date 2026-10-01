@@ -243,7 +243,7 @@ const FAILURE_MESSAGES = {
   missing_entry: "The selected directory needs a nonempty index.html at its root. Check the directory and entry file before retrying.",
   too_many_files: "The selected site exceeds 128 files. Keep dependencies, build caches, and unrelated files outside the published directory.",
   snapshot_too_large: "The selected site exceeds 16 MiB. Reduce or optimize its static assets before retrying.",
-  unsafe_file: "A project file failed validation. Check for empty or oversized files (4 MiB maximum each), symlinks, hard links, unsafe names, or ownership/permission problems; do not blindly relax permissions.",
+  unsafe_file: "A project file failed validation. Check for an empty index.html or oversized files (4 MiB maximum each), symlinks, hard links, unsafe names, or ownership/permission problems. Files must belong to the workspace owner and must not be writable by group or others (for example, mode 0664 is rejected). Inspect the exact files; remove excessive write permissions only within the intended publication directory, never broaden access or blindly change ownership.",
   unsafe_directory: "The selected directory failed validation. Check its path, ownership, permissions, and symlinks; do not blindly relax permissions.",
 };
 
