@@ -1297,7 +1297,14 @@ def _manager(install, owner, *, create=False):
     if account.pw_uid == 0 or not install.is_absolute() or install.resolve() != install:
         raise UpgradeError("source-owner-invalid")
     state = Path("/var/lib/ods-pixel-access")
-    directory(state, 0, private=True)
+    try:
+        directory(state, 0, private=True)
+    except FileNotFoundError:
+        raise UpgradeError("source-controller-state-missing") from None
+    try:
+        Path("/etc/ods/pixel-access.json").lstat()
+    except FileNotFoundError:
+        raise UpgradeError("source-controller-config-missing") from None
     settings, _ = _protected_json("/etc/ods/pixel-access.json")
     if settings.get("install_dir") != str(install) or settings.get("owner") != owner:
         raise UpgradeError("source-controller-install-mismatch")
@@ -1453,10 +1460,27 @@ def main(argv):
         client("finish", transaction, value["outcome"])
 
 
+def _failure_message(error):
+    # Only fixed error codes select diagnostics; exception text can contain
+    # private paths/configuration. Absence is not proof of a never-ready install:
+    # an ordinary reinstall can also leave an installing marker.
+    reason = {
+        "source-controller-state-missing": "The protected Pixel access coordinator state is missing.",
+        "source-controller-config-missing": "The protected Pixel access coordinator configuration is missing.",
+        "source-ready-baseline-required": "The existing Pixel installation has no ready source-upgrade baseline.",
+    }.get(str(error)) if isinstance(error, UpgradeError) else None
+    if reason:
+        return (reason + " Automatic source upgrade is refused. Restore the complete matching prior "
+                "installation state, or use an owner-authorized clean install. "
+                "Do not recreate protected state or discard any existing admission hold.")
+    return ("Pixel source upgrade is incomplete. Preserve any existing admission hold and protected "
+            "source snapshots; recover the verified installation state before retrying.")
+
+
 if __name__ == "__main__":
     try:
         main(sys.argv[1:])
-    except (UpgradeError, OSError, ValueError, RuntimeError):
+    except (UpgradeError, OSError, ValueError, RuntimeError) as error:
         # Paths, config values and snapshot payloads are never diagnostic text.
-        print("Pixel source upgrade is incomplete; keep admission held and resume the same reviewed installer.", file=sys.stderr)
+        print(_failure_message(error), file=sys.stderr)
         raise SystemExit(1) from None
