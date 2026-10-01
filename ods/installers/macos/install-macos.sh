@@ -2040,19 +2040,27 @@ if $ENABLE_HERMES && ! $CLOUD_MODE && ! $GATEWAY_ONLY; then
 fi
 
 ai "Features:"
+_rag_summary=disabled
+if _macos_effective_service_enabled qdrant "$ENABLE_RAG" \
+    && _macos_effective_service_enabled embeddings "$ENABLE_RAG"; then
+    _rag_summary=enabled
+elif _macos_effective_service_enabled qdrant "$ENABLE_RAG" \
+    || _macos_effective_service_enabled embeddings "$ENABLE_RAG"; then
+    _rag_summary=partial
+fi
 info_box "  Voice:" "$(if _macos_effective_service_enabled whisper "$ENABLE_VOICE" || _macos_effective_service_enabled tts "$ENABLE_VOICE"; then echo enabled; else echo disabled; fi)"
 info_box "  Workflows:" "$(if _macos_effective_service_enabled n8n "$ENABLE_WORKFLOWS"; then echo enabled; else echo disabled; fi)"
-info_box "  RAG:" "$(if $ENABLE_RAG; then echo enabled; else echo disabled; fi)"
+info_box "  RAG:" "$_rag_summary"
 info_box "  SearXNG search:" "$(if $ENABLE_SEARXNG; then echo enabled; else echo disabled; fi)"
-info_box "  Token Spy:" "$(if $ENABLE_RECOMMENDED; then echo enabled; else echo disabled; fi)"
+info_box "  Token Spy:" "$(if _macos_effective_service_enabled token-spy "$ENABLE_RECOMMENDED"; then echo enabled; else echo disabled; fi)"
 info_box "  LiteLLM gateway:" "$(if $ENABLE_LITELLM; then echo enabled; else echo disabled; fi)"
 info_box "  Hermes:" "$(if _macos_effective_service_enabled hermes "$ENABLE_HERMES"; then echo enabled; else echo disabled; fi)"
 info_box "  Portal (native):" "$(if $ENABLE_PIXEL; then echo enabled; else echo disabled; fi)"
 info_box "  OpenClaw:" "$(if _macos_effective_service_enabled openclaw "$ENABLE_OPENCLAW"; then echo "enabled (DEPRECATED)"; else echo disabled; fi)"
 info_box "  OpenCode:" "$(if $ENABLE_OPENCODE; then echo enabled; else echo disabled; fi)"
 info_box "  Perplexica:" "$(if _macos_effective_service_enabled perplexica "$ENABLE_PERPLEXICA"; then echo enabled; else echo disabled; fi)"
-info_box "  Privacy Shield:" "$(if $ENABLE_PRIVACY_SHIELD; then echo enabled; else echo disabled; fi)"
-info_box "  Langfuse:" "$(if $ENABLE_LANGFUSE; then echo enabled; else echo disabled; fi)"
+info_box "  Privacy Shield:" "$(if _macos_effective_service_enabled privacy-shield "$ENABLE_PRIVACY_SHIELD"; then echo enabled; else echo disabled; fi)"
+info_box "  Langfuse:" "$(if _macos_effective_service_enabled langfuse "$ENABLE_LANGFUSE"; then echo enabled; else echo disabled; fi)"
 # The macOS installer doesn't currently ship a ComfyUI container — none of
 # the published ComfyUI images target Apple Silicon Metal, and the upstream
 # Python build under MPS is non-trivial to package as a Docker service.
