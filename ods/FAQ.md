@@ -217,7 +217,7 @@ cd ODS
 .\ods\installers\windows\ods.ps1 uninstall --force
 ```
 
-To pause services, use `ods stop`. It keeps the stopped containers so the uninstaller can verify which Docker volumes belong to this installation. If you need to run Docker Compose manually, ODS does not use a top-level `docker-compose.yml`; use the saved flags:
+On Linux and macOS, use `ods stop` to pause services. It keeps the stopped containers so the uninstaller can verify which Docker volumes belong to this installation. If you need to run Docker Compose manually on those platforms, ODS does not use a top-level `docker-compose.yml`; use the saved flags:
 
 ```bash
 cd ~/ods
