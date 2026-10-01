@@ -75,6 +75,8 @@ test: ## Run unit and contract tests
 	@bash tests/test-ods-doctor-env-reader.sh
 	@echo "=== Docker rootless bind-mount ownership ==="
 	@bash tests/test-rootless-docker-ownership.sh
+	@echo "=== APE private state bind ownership ==="
+	@bash tests/test-ape-data-ownership.sh
 	@bash tests/test-dashboard-data-permissions.sh
 	@python3 tests/test_dashboard_data_permissions.py
 	@bash tests/test-token-spy-install-owner.sh

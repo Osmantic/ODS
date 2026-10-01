@@ -34,6 +34,7 @@ YIELD_USAGE_MODULE = "embedded-agent-CJx-nG3W.js"
 COMPACTION_EMPTY_MODULE = "proxy-Bsfwfsp-.js"
 COMPACTION_NO_WORK_MODULE = "compact-DuWIsaq_.js"
 DIAGNOSTIC_STREAM_MODULE = "attempt.model-diagnostic-events-DqqiPQPY.js"
+COMMAND_ATTEMPT_MODULE = "payloads-CC0zlj7W.js"
 VERSION = "2026.6.33"
 SHA256 = re.compile(r"[0-9a-f]{64}")
 RUNTIME_MODULE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,254}\.js")
@@ -130,7 +131,7 @@ def repair(runtime_root, state_dir, *, restore=False, manifest_path=MANIFEST,
            module_name=MODULE):
     if module_name not in {MODULE, COMPLETION_MODULE, IMAGE_MODULE, COMPACTION_MODULE, COMPACTION_IDLE_MODULE,
                            COMPACTION_RESUME_MODULE, COMPACTION_BUDGET_MODULE, READ_RANGE_MODULE,
-                           TOOL_RESULT_PROJECTION_MODULE, DIAGNOSTIC_STREAM_MODULE, CONTEXT_USAGE_MODULE, YIELD_USAGE_MODULE,
+                           TOOL_RESULT_PROJECTION_MODULE, DIAGNOSTIC_STREAM_MODULE, COMMAND_ATTEMPT_MODULE, CONTEXT_USAGE_MODULE, YIELD_USAGE_MODULE,
                            COMPACTION_EMPTY_MODULE, COMPACTION_NO_WORK_MODULE, HOOK_PROVENANCE_MODULE, *SANDBOX_MKDIR_MODULES.values()}:
         raise ValueError("unsupported runtime repair module")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -346,6 +347,7 @@ def main():
     selection.add_argument("--sandbox-mkdir", choices=tuple(SANDBOX_MKDIR_MODULES))
     selection.add_argument("--tool-result-projection", action="store_true")
     selection.add_argument("--diagnostic-stream-writes", action="store_true")
+    selection.add_argument("--command-attempt-warning", action="store_true")
     selection.add_argument("--restore-foreign", type=Path, metavar="PATCHES_ROOT",
                            help="restore and archive patch sets not named by --known")
     args = parser.parse_args()
@@ -395,6 +397,9 @@ def main():
     elif args.compaction_no_work:
         options = {"module_name": COMPACTION_NO_WORK_MODULE,
                    "manifest_path": MANIFEST.with_name("openclaw-compaction-no-work.json")}
+    elif args.command_attempt_warning:
+        options = {"module_name": COMMAND_ATTEMPT_MODULE,
+                   "manifest_path": MANIFEST.with_name("openclaw-command-attempt-warning.json")}
     elif args.diagnostic_stream_writes:
         options = {"module_name": DIAGNOSTIC_STREAM_MODULE,
                    "manifest_path": MANIFEST.with_name("openclaw-diagnostic-stream-writes.json")}

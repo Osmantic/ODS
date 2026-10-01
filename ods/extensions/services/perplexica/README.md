@@ -4,7 +4,7 @@ AI-powered deep research and answer engine for ODS
 
 ## Overview
 
-Perplexica is an open-source alternative to Perplexity AI. It combines SearXNG web search with your local LLM to answer questions with cited, up-to-date information. Instead of retrieving a static knowledge cutoff, Perplexica searches the web in real time and synthesizes results into a comprehensive answer.
+Perplexica is an open-source alternative to Perplexity AI. It combines SearXNG web search with the selected ODS model route to answer questions with cited, up-to-date information. Instead of retrieving a static knowledge cutoff, Perplexica searches the web in real time and synthesizes results into a comprehensive answer.
 
 Upstream renamed the project to **Vane** in March 2026
 ([ItzCrazyKns/Vane](https://github.com/ItzCrazyKns/Vane)); the UI now says
@@ -63,12 +63,13 @@ update `compose.yaml`, `config/dependency-lock.json`,
 
 ## Dependencies
 
-Perplexica requires two services to be running and healthy before it starts:
+Perplexica needs SearXNG and a working model route:
 
 | Service | Role |
 |---------|------|
 | `searxng` | Provides web search results |
-| `llama-server` | LLM inference for synthesizing answers |
+| `llama-server` on managed-local installs | Local inference; the Compose local overlay waits for it to be healthy |
+| Selected external model on external-route installs | Inference through the configured ODS gateway; no managed llama-server is started for Perplexica |
 
 ## Configuration
 
@@ -109,8 +110,8 @@ Environment variables (set in `.env`):
                     ┌──────────────┴──────────────┐
                     ▼                             ▼
              ┌────────────┐               ┌──────────────┐
-             │  SearXNG   │               │ llama-server │
-             │ (Web Search│               │    (LLM)     │
+             │  SearXNG   │               │ Selected ODS │
+             │ (Web Search│               │ model route  │
              └────────────┘               └──────────────┘
 ```
 
@@ -118,7 +119,7 @@ Environment variables (set in `.env`):
 1. User submits a question
 2. Perplexica generates search queries and sends them to SearXNG
 3. SearXNG returns ranked web results
-4. Perplexica sends the results + question to llama-server
+4. Perplexica sends the results and question to the selected local or external model route
 5. LLM synthesizes a cited answer and streams it back to the browser
 
 ## Resource Limits
@@ -163,11 +164,12 @@ docker compose logs ods-perplexica
 - Test: `docker compose exec perplexica wget -qO- http://searxng:8080/healthz`
 
 **LLM not responding:**
-- Confirm llama-server is running: `docker compose ps ods-llama-server`
-- Verify the `LLM_API_URL` in `.env` points to the correct host
+- On managed-local installs, confirm llama-server is healthy: `docker compose ps ods-llama-server`
+- On external-route installs, verify the configured upstream is reachable and the selected model works through LiteLLM
+- Verify the `LLM_API_URL` in `.env` points to the intended route
 
 **Slow or incomplete answers:**
-- Perplexica performance is limited by LLM inference speed. Ensure llama-server has GPU access.
+- Perplexica performance is limited by the selected model's inference speed. On managed-local installs, check GPU access for llama-server.
 - Reduce the number of search results by adjusting SearXNG settings
 - ODS disables Perplexica's internal `scrape_url` action at startup (see Image pin), so a request that names a URL is answered from search results.
 

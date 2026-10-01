@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
 import {createWorkspaceBundleAdmission} from '../plugin/workspace-bundle.mjs';
+import {createProjectRunControl} from '../plugin/project-run-control.mjs';
 import {withPixelCronDeliveryDefault} from '../plugin/cron-delivery-default.mjs';
 import {withPixelSubagentWorkspace} from '../plugin/subagent-workspace.mjs';
 
@@ -15,6 +16,7 @@ const end = source.indexOf('    api.registerHttpRoute(', start);
 assert.ok(start >= 0 && end > start, 'expected tool lifecycle registration block');
 function hooks(guardResult, managedRuntime = false, delivery = {}) {
   const callbacks = {}, calls = [], activity = [], bundleAdmission = createWorkspaceBundleAdmission();
+  const projectRunControl = createProjectRunControl();
   const runtime = {
     isProbe: context => context?.runId === 'private-proof',
     beforeTool: () => { calls.push('admit'); },
@@ -36,13 +38,13 @@ function hooks(guardResult, managedRuntime = false, delivery = {}) {
       finish: () => activity.push('finish'),
     },
     goalProgress: {before() {}, update() {}, finish() {}},
-    bundleAdmission, managedRuntime, accessRuntime: runtime, withPixelCronDeliveryDefault,
+    bundleAdmission, projectRunControl, managedRuntime, accessRuntime: runtime, withPixelCronDeliveryDefault,
     delegationDelivery:{end(){},blocked(){},before(){},after(){},admission(){},...delivery},
     withPixelSubagentWorkspace, resolveUserPath: value=>value,
     resolveAgentWorkspaceDir:config=>config?.agents?.list?.find(agent=>agent.id==='pixel')?.workspace,
     AGENT_ID: 'pixel',
   });
-  return {callbacks, calls, runtime, activity, bundleAdmission};
+  return {callbacks, calls, runtime, activity, bundleAdmission, projectRunControl};
 }
 const context = {agentId: 'pixel', runId: 'cron-request', toolName: 'cron'};
 const event = {toolCallId: 'cron-1', toolName: 'cron', params: {
@@ -146,5 +148,20 @@ test('bundle scope is recorded only after guard and native admission both permit
     else assert.deepEqual(bundleAdmission.take('bundle',args,ctx),ctx);
     callbacks.after_tool_call(event,ctx);
     assert.throws(()=>bundleAdmission.take('bundle',args,ctx),/unbound/);
+  }
+});
+
+test('project job binding follows actual admission and cannot survive denied or completed calls',async()=>{
+  const args={action:'submit',project:'demo',outputDirectory:'dist'};
+  const ctx={agentId:'pixel',runId:'run',sessionId:'session',sessionKey:'key',toolCallId:'project'};
+  const event={toolName:'pixel_ods_project_build',toolCallId:'project',params:args};
+  for(const held of [false,true]) {
+    const {callbacks,runtime,projectRunControl}=hooks();
+    if(held)runtime.beforeTool=()=>({block:true});
+    await callbacks.before_tool_call(event,ctx);
+    if(held)assert.throws(()=>projectRunControl.bind('project',args,ctx,()=>{}),/not bound/);
+    else assert.equal(typeof projectRunControl.bind('project',args,ctx,()=>{}),'function');
+    callbacks.after_tool_call(event,ctx);
+    assert.throws(()=>projectRunControl.bind('project',args,ctx,()=>{}),/not bound/);
   }
 });

@@ -111,11 +111,52 @@ test('native exec selects the configured workspace without altering command text
   }
 });
 
-test('native cwd translation is limited to macOS gateway execution',()=>{
-  for (const [executionHost,platform] of [['sandbox','darwin'],['sandbox','linux'],['gateway','linux'],['gateway','win32']]) {
+test('native cwd translation is limited to POSIX gateway execution',()=>{
+  for (const [executionHost,platform] of [['sandbox','darwin'],['sandbox','linux'],['gateway','win32']]) {
     assert.equal(createExecCancellationControl({executionHost,platform}).resolveWorkdir('/workspace',undefined),undefined);
   }
-  assert.equal(createExecCancellationControl({executionHost:'gateway',platform:'darwin'}).resolveWorkdir('/workspace',undefined).block,true);
+  for (const platform of ['darwin','linux'])
+    assert.equal(createExecCancellationControl({executionHost:'gateway',platform}).resolveWorkdir('/workspace',undefined).block,true);
+});
+
+test('Linux Full Access resolves normalized project cwd and rejects missing cwd before execution',t=>{
+  const actual=mkdtempSync(path.join(tmpdir(),'pixel linux gateway cwd '));
+  t.after(()=>rmSync(actual,{recursive:true,force:true}));
+  const directory='Playground/sales-report';
+  mkdirSync(path.join(actual,directory),{recursive:true});
+  writeFileSync(path.join(actual,directory,'vendas.csv'),'item,total\nbook,12.50\n');
+  const control=createExecCancellationControl({executionHost:'gateway',platform:'linux'});
+  for (const tool of ['exec','tool_call']) {
+    let prepared;
+    const guard=createToolLoopGuard({execControl:{
+      resolveWorkdir:control.resolveWorkdir,
+      prepare:(_run,command)=>{prepared=command;return command;},
+    }});
+    guard.observeRun(context,'pixel',{prompt:'Check the existing project files.'},
+      {workspaceRoot:actual,executionHost:'gateway'});
+    // The model used a correct relative workdir in the real failure. Earlier
+    // normalization adds /workspace; the final gate must translate that alias
+    // for the selected execution host before it reaches core exec.
+    const args={command:'sha256sum vendas.csv',workdir:directory};
+    const decision=guard.beforeToolCall({toolName:tool,
+      params:tool==='exec'?args:{id:'openclaw:core:exec',args}},context);
+    assert.notEqual(decision?.block,true);
+    const executed=tool==='exec'?decision.params:decision.params.args;
+    assert.equal(executed.workdir,path.join(actual,directory));
+    assert.equal(executed.command,args.command);
+    assert.equal(prepared,args.command);
+    assert.equal(args.workdir,directory,'do not mutate the model request');
+    const bytes=execFileSync(process.execPath,['-e','process.stdout.write(require("node:fs").readFileSync("vendas.csv"))'],
+      {cwd:executed.workdir,encoding:'utf8'});
+    assert.equal(bytes,'item,total\nbook,12.50\n');
+    prepared=undefined;
+    const missing={command:'printf must-not-execute',workdir:directory+'/missing'};
+    const blocked=guard.beforeToolCall({toolName:tool,
+      params:tool==='exec'?missing:{id:'openclaw:core:exec',args:missing}},context);
+    assert.equal(blocked?.block,true);
+    assert.match(blocked.blockReason,/Nothing was executed/);
+    assert.equal(prepared,undefined,'missing cwd is refused before command preparation');
+  }
 });
 
 test('plugin passes inherited workspace to evidence tracking for absolute macOS paths',()=>{

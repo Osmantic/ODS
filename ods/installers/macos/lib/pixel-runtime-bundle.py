@@ -69,6 +69,7 @@ SHARED_REPAIRS = (
     ('openclaw-yield-usage.json', 'embedded-agent-CJx-nG3W.js'),
     ('openclaw-compaction-empty.json', 'proxy-Bsfwfsp-.js'),
     ('openclaw-compaction-no-work.json', 'compact-DuWIsaq_.js'),
+    ('openclaw-command-attempt-warning.json', 'payloads-CC0zlj7W.js'),
     ('openclaw-compaction-budget.json', 'selection-BEwSQKM-.js'),
 )
 

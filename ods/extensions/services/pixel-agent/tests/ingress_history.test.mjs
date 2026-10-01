@@ -11,7 +11,7 @@ const rawUser='history-canary', user=computeSessionUser({user:rawUser});
 const runId='chatcmpl_11111111-2222-4333-8444-555555555555';
 const state=()=>({schemaVersion:1,status:'ready',sessionExists:true,sessionRevision:'a'.repeat(64),context:{used:100,window:32000,measuredAt:1},model:{id:'test',provider:'local',contextWindow:32000},compaction:{status:'idle',requestId:null,tokensBefore:null,tokensAfter:null,reason:null,count:0}});
 const listen=server=>new Promise(resolve=>server.listen(0,'127.0.0.1',()=>resolve(server.address().port)));
-async function fixture(t) {
+async function fixture(t, verification={status:'none'}) {
   const dir=fs.mkdtempSync(path.join(os.tmpdir(),'ods-ingress-history-'));fs.chmodSync(dir,0o700);
   const ledger=createChatHistoryLedger(dir),calls=[],native=state();let chatFailure=false,answer='answer';
   const gateway=http.createServer(async(req,res)=>{
@@ -22,7 +22,7 @@ async function fixture(t) {
     if(req.url==='/pixel-ods/abort') return res.end(JSON.stringify({aborted:true}));
     if(req.url==='/pixel-ods/history') return res.end(JSON.stringify({schemaVersion:1,hydrated:true}));
     if(req.url==='/pixel-ods/compact') {native.status='ready';native.compaction={...native.compaction,status:'completed',requestId:body.request_id,count:native.compaction.count+1};return res.end(JSON.stringify(native));}
-    if(req.url==='/pixel-ods/verification') return res.end(JSON.stringify({status:'none'}));
+    if(req.url==='/pixel-ods/verification') return res.end(JSON.stringify(verification));
     if(req.url==='/pixel-ods/subagent-delivery') return res.end(JSON.stringify({schemaVersion:1,kind:'ods-subagent-delivery',runId:body.runId,status:'not-delegated'}));
     if(req.url==='/v1/chat/completions') {if(chatFailure){res.statusCode=500;return res.end('{}')}return res.end(JSON.stringify({id:runId,choices:[{message:{role:'assistant',content:answer}}]}));}
     res.statusCode=404;res.end('{}');
@@ -82,4 +82,18 @@ test('Stop confirms an unknown outcome as interrupted so the next turn sends onl
   assert.equal(f.ledger.projection(user).status,'ready');
   assert.equal((await f.chat('next',[u('old task'),u('different task')])).status,200);
   assert.deepEqual(f.calls.filter(c=>c.path==='/v1/chat/completions').at(-1).body.messages,[{role:'system',content:'Trusted identity'},u('different task\nDelivery contract')]);
+});
+
+
+test('incomplete attribution is a delivered outcome, not an interrupted turn',async t=>{
+  const text='Research summary. Source check: attribution remains incomplete.';
+  const f=await fixture(t,{status:'failed',text});
+  const result=await f.chat('uncited',[u('Research official sources')]);
+  assert.equal(result.status,200);
+  assert.equal(result.value.choices[0].message.content,text);
+  assert.equal(f.ledger.read(user).lastResult.verification.status,'failed');
+  assert.notEqual(f.ledger.projection(user).status,'unknown');
+  const next=await f.chat('next',[u('Research official sources'),a(text),u('Explain the limitation')]);
+  assert.equal(next.status,200,'the next owner message needs no interrupted-turn resolution');
+  assert.equal(f.calls.filter(c=>c.path==='/v1/chat/completions').length,2);
 });

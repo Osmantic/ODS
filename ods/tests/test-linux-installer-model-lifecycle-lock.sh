@@ -164,3 +164,37 @@ events="$(cat "$tmp/events")"
 [[ ! -e "$install_dir/data/models/Bootstrap.gguf" && -s "$install_dir/data/models/Full.gguf" ]] \
     || fail "serialized handoff did not leave the full model as the final state"
 pass "concurrent download stays parallel while activation waits for installer compose"
+
+# A no-sudo install starts the host agent as a session daemon during phase 07.
+# The daemon must not retain the installer flock after its parent releases it.
+agent_dir="$tmp/agent-install"
+mkdir -p "$agent_dir"
+cat > "$agent_dir/ods-cli" <<'CLI'
+#!/usr/bin/env bash
+sleep 10 >/dev/null 2>&1 &
+printf '%s\n' "$!" > "$ODS_TEST_AGENT_PID_FILE"
+CLI
+chmod +x "$agent_dir/ods-cli"
+awk '/^_ods_start_session_host_agent\(\)/ {copy=1} copy {print} copy && /^}/ {exit}' \
+    "$ROOT_DIR/installers/phases/07-devtools.sh" > "$tmp/session-agent-function.sh"
+[[ -s "$tmp/session-agent-function.sh" ]] || fail "missing session host-agent start function"
+. "$tmp/session-agent-function.sh"
+ai() { :; }
+ai_ok() { :; }
+ai_warn() { :; }
+AGENT_PYTHON=/bin/true
+INSTALL_DIR="$agent_dir"
+LOG_FILE="$tmp/session-agent.log"
+export ODS_TEST_AGENT_PID_FILE="$tmp/session-agent.pid"
+ods_model_lifecycle_lock_acquire "$agent_dir" "test session agent"
+_ods_start_session_host_agent || fail "fixture session agent did not start"
+agent_pid="$(cat "$ODS_TEST_AGENT_PID_FILE")"
+kill -0 "$agent_pid" || fail "fixture session agent did not stay alive"
+ods_model_lifecycle_lock_release
+agent_lock="$(ods_model_lifecycle_lock_file "$agent_dir")"
+exec {agent_probe_fd}>"$agent_lock"
+flock -xn "$agent_probe_fd" || fail "session host agent retained installer model lifecycle lock"
+flock -u "$agent_probe_fd"
+exec {agent_probe_fd}>&-
+kill "$agent_pid" 2>/dev/null || true
+pass "session host agent does not inherit installer lifecycle lock"

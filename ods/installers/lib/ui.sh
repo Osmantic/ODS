@@ -444,7 +444,16 @@ pull_with_progress() {
         continue
       fi
     else
+      local pull_status=$?
       cat "$attempt_log" >> "$LOG_FILE" 2>&1 || true
+
+      # Docker Desktop's credential helper can fail outside the interactive
+      # Windows logon session. Retrying the same helper cannot restore it.
+      if grep -qiE 'error getting credentials|logon session does not exist|credential helper.*(failed|error|unavailable)' "$attempt_log"; then
+        rm -f "$attempt_log"
+        ui_status_line error "[$count/$total] $label (Docker credential helper failed; check Docker config/session)"
+        return 1
+      fi
 
       # Check for non-retryable errors
       if grep -qiE 'unauthorized|denied|not[[:space:]-]?found|\b404\b|no space left on device|cannot connect to the docker daemon|is the docker daemon running' "$attempt_log"; then
@@ -454,14 +463,14 @@ pull_with_progress() {
       fi
 
       # Check for timeout
-      if grep -qiE 'timeout|timed out' "$attempt_log" || ! kill -0 "$pull_pid" 2>/dev/null; then
+      if (( pull_status == 124 )) || grep -qiE 'timeout|timed out' "$attempt_log"; then
         rm -f "$attempt_log"
         ui_status_line error "[$count/$total] $label (network timeout on attempt $attempt)"
         continue
       fi
 
       rm -f "$attempt_log"
-      ui_status_line error "[$count/$total] $label (attempt $attempt failed)"
+      ui_status_line error "[$count/$total] $label (attempt $attempt failed; see installer log)"
     fi
   done
 

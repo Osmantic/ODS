@@ -44,7 +44,7 @@ _CHAT_STREAM_TIMEOUT_SECONDS = 2040.0
 _CLIENT_DISCONNECT_POLL_SECONDS = 0.25
 _STREAM_KEEPALIVE_SECONDS = 15.0
 _STREAM_KEEPALIVE = b": pixel working\n\n"
-_CLIENT_CANCEL_TIMEOUT_SECONDS = 7.0
+_CLIENT_CANCEL_TIMEOUT_SECONDS = 27.0
 _MAX_KEY_LENGTH = 4096
 _MAX_STATUS_BYTES = 64 * 1024
 _READINESS_PROBE_SECONDS = 4.0
@@ -181,6 +181,7 @@ router = APIRouter(prefix="/api/pixel", tags=["pixel"])
 
 _result_store: ChatResultStore | None = None
 _result_tasks: dict[tuple[str, str, str], asyncio.Task] = {}
+_result_preflights: set[tuple[str, str, str]] = set()
 _result_stops: set[tuple[str, str]] = set()
 _result_abort_ack: set[tuple[str, str, str]] = set()
 
@@ -195,7 +196,8 @@ def _chat_results() -> ChatResultStore:
 def _result_state(store, identity):
     row = store.get(identity)
     task = _result_tasks.get(identity)
-    if row is not None and row["state"] == "active" and (task is None or task.done()):
+    if (row is not None and row["state"] == "active" and identity not in _result_preflights
+            and (task is None or task.done())):
         # A producer may fail while committing its last bytes. The API process
         # being alive does not prove that this particular task is still running.
         row["state"] = "unresolved"
@@ -648,7 +650,8 @@ def _error_event(message: str) -> bytes:
 
 async def _cancel_edge_run(edge_url: str, key: str, chat_id: str) -> bool:
     """Best-effort cancellation over the fixed authenticated internal edge."""
-    timeout = httpx.Timeout(connect=2.0, read=5.0, write=2.0, pool=2.0)
+    # Edge can wait 20 s for harness and managed-project cleanup.
+    timeout = httpx.Timeout(connect=2.0, read=22.0, write=2.0, pool=2.0)
     try:
         async with httpx.AsyncClient(
             timeout=timeout,
@@ -701,8 +704,16 @@ async def pixel_chat_cancel(body: ChatCancelRequest, owner: str = Depends(verify
         store = _chat_results()
         identity = (owner_namespace(owner), body.chat_id, body.request_id)
         row = _result_state(store, identity)
-        # A late Stop for a completed/unknown attempt must not stop a newer run.
-        if row is None or row["state"] not in {"active", "unresolved"}:
+        # Interrupted receipts still need native abort/idle confirmation. An
+        # old receipt must never cancel a successor in the same conversation.
+        if row is None or row["state"] not in {"active", "unresolved", "interrupted"}:
+            return {"aborted": False}
+        recovering_interrupted = row["state"] == "interrupted"
+        if recovering_interrupted and not store.is_latest(identity):
+            return {"aborted": False}
+        # A reserved attempt can still be checking local readiness and identity.
+        # There is no native run to cancel until its producer has been created.
+        if identity in _result_preflights:
             return {"aborted": False}
         if identity[:2] in _result_stops:
             return {"aborted": False}
@@ -721,6 +732,8 @@ async def pixel_chat_cancel(body: ChatCancelRequest, owner: str = Depends(verify
                 entry = store.get(identity)
                 if entry is None or entry["state"] == "complete":
                     return {"aborted": False}
+                if recovering_interrupted:
+                    return {"aborted": store.confirm_interrupted_cancel(identity)}
                 store.finish(identity, "cancelled")
             return {"aborted": aborted}
         finally:
@@ -767,15 +780,6 @@ async def _retained_chat_stream(request, body, owner):
     if body.history_snapshot is not None:
         fingerprint_input = {"messages": fingerprint_input, "history_snapshot": body.history_snapshot.model_dump()}
     fingerprint = hashlib.sha256(json.dumps(fingerprint_input, sort_keys=True, ensure_ascii=True).encode()).hexdigest()
-    existing = store.get(identity)
-    if existing is None:
-        config = _pixel_config()
-        if config is None:
-            raise HTTPException(status_code=503, detail="Portal is not enabled")
-        issue = await _model_readiness_issue()
-        if issue is not None:
-            raise HTTPException(status_code=409, detail=issue[1])
-        messages = await messages_with_identity(body.messages)
     try:
         if identity[:2] in _result_stops:
             raise ResultConflict("Stop is still being confirmed")
@@ -785,15 +789,35 @@ async def _retained_chat_stream(request, body, owner):
     except ResultCapacity as exc:
         raise HTTPException(status_code=507, detail=str(exc)) from None
     if created:
-        begin_pixel_stream()
-        task = asyncio.create_task(_produce_retained_result(store, identity, body, config, messages, owner=owner))
-        _result_tasks[identity] = task
-        def release(finished):
-            _result_tasks.pop(identity, None)
-            end_pixel_stream()
-            if not finished.cancelled() and finished.exception() is not None:
-                logger.error("Pixel result persistence failed (%s)", type(finished.exception()).__name__)
-        task.add_done_callback(release)
+        _result_preflights.add(identity)
+        try:
+            try:
+                config = _pixel_config()
+                if config is None:
+                    raise HTTPException(status_code=503, detail="Portal is not enabled")
+                issue = await _model_readiness_issue()
+                if issue is not None:
+                    raise HTTPException(status_code=409, detail=issue[1])
+                messages = await messages_with_identity(body.messages)
+            except Exception:
+                # The attempt ID was committed, but no producer or agent turn
+                # was started. Retain an exact terminal receipt for reloads.
+                text = "Portal did not start this attempt. Restore its connection and send your message again."
+                frame = {"choices": [{"delta": {"content": text}}]}
+                data = f"data: {json.dumps(frame)}\n\n".encode() + _error_event(text) + b"data: [DONE]\n\n"
+                store.reject_before_submission(identity, data)
+                raise
+            begin_pixel_stream()
+            task = asyncio.create_task(_produce_retained_result(store, identity, body, config, messages, owner=owner))
+            _result_tasks[identity] = task
+            def release(finished):
+                _result_tasks.pop(identity, None)
+                end_pixel_stream()
+                if not finished.cancelled() and finished.exception() is not None:
+                    logger.error("Pixel result persistence failed (%s)", type(finished.exception()).__name__)
+            task.add_done_callback(release)
+        finally:
+            _result_preflights.discard(identity)
 
     async def subscribe():
         after = -1

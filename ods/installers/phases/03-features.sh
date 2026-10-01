@@ -154,6 +154,20 @@ else
     log "Pixel is unavailable or disabled; existing ODS tools remain available"
 fi
 export PIXEL_AGENT_MODE ENABLE_PIXEL_RUNTIME ENABLE_PIXEL
+
+# Fresh ordinary installs use Portal as chat when Pixel is qualified. Delay
+# this choice until Pixel resolution so unsupported hosts keep WebUI, and
+# retain WebUI for features that still rely on its voice, RAG, or LAN proxy.
+# Existing installs and explicit CLI selections remain authoritative.
+if ods_should_default_portal_chat \
+      "${ODS_EXISTING_INSTALL:-false}" "${WEBUI_EXPLICIT:-false}" \
+      "${ODS_GATEWAY_ONLY:-false}" "$ENABLE_PIXEL_RUNTIME" \
+      "${ENABLE_VOICE:-false}" "${ENABLE_RAG:-false}" \
+      "${ENABLE_ODS_PROXY:-false}"; then
+    ENABLE_OPEN_WEBUI=false
+    log "Portal selected as the default chat UI; Open WebUI remains available in the Extensions Library"
+fi
+
 if [[ "${ENABLE_OPEN_WEBUI:-true}" != true && "${ODS_GATEWAY_ONLY:-false}" != true &&
       "$ENABLE_PIXEL_RUNTIME" != true ]]; then
     ai_bad "Portal is required when Open WebUI is disabled on an ordinary install."
@@ -442,6 +456,22 @@ if ! $DRY_RUN; then
     _sync_extension_compose "${ENABLE_ODS_PROXY:-false}" ods-proxy "ODS proxy" "LAN web proxy not enabled"
     _sync_extension_compose "${ENABLE_TAILSCALE:-false}" tailscale "Tailscale"  "remote access not enabled"
     _sync_extension_compose "${ENABLE_LANGFUSE:-}"   langfuse   "Langfuse"      "LLM observability not enabled"
+    if [[ "${ENABLE_BRAVE_SEARCH:-false}" == true ]]; then
+        _brave_key_present=false
+        if [[ ${BRAVE_SEARCH_API_KEY+x} ]]; then
+            if [[ -n "$BRAVE_SEARCH_API_KEY" ]]; then
+                _brave_key_present=true
+            fi
+        elif declare -F external_llm_env_value >/dev/null 2>&1 &&
+             [[ -n "$(external_llm_env_value "${INSTALL_DIR:-}/.env" BRAVE_SEARCH_API_KEY 2>/dev/null || true)" ]]; then
+            _brave_key_present=true
+        fi
+        if ! $_brave_key_present; then
+            ENABLE_BRAVE_SEARCH=false
+            ai_warn "Brave Search was skipped because BRAVE_SEARCH_API_KEY is missing. Add the key to .env, then run 'ods enable brave-search'."
+        fi
+        unset _brave_key_present
+    fi
     _sync_extension_compose "${ENABLE_BRAVE_SEARCH:-false}" brave-search "Brave Search" "Brave Search API not enabled"
 
 fi
@@ -483,7 +513,11 @@ log "All services enabled (core install)"
 # No GPU (CPU-only) — nothing to assign. Say so plainly instead of falling
 # into the single-GPU branch below and logging "Single GPU detected".
 if [[ "${GPU_COUNT:-0}" -eq 0 ]]; then
-    log "No GPU detected — skipping GPU assignment (CPU-only mode)."
+    if [[ "${ODS_MODE:-local}" == "cloud" ]]; then
+        log "Cloud mode — GPU detection was skipped; no local model GPU assignment is required."
+    else
+        log "No GPU detected — skipping GPU assignment (CPU-only mode)."
+    fi
     return
 fi
 
