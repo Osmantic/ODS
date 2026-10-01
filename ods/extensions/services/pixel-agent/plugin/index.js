@@ -1,6 +1,9 @@
 import {createAgentSkillTool} from './agent-skills.mjs';
+import {registerProjectBuild} from './project-registration.mjs';
+import {createProjectRunControl} from './project-run-control.mjs';
 import {registerBootstrapCapabilities} from './bootstrap-capabilities.mjs';
 import {registerStableRuntimeLine} from './runtime-line.mjs';
+import {executionLocationContext} from './execution-location.mjs';
 import {createRuntimeIdentity} from './runtime-identity.mjs';
 import {fileURLToPath} from 'node:url';
 import {createActivityTool, ACTIVITY_CONTRACT} from './activity-display.mjs';
@@ -87,6 +90,7 @@ let runtimeIdentity;
 const ABORT_BODY_LIMIT = 256;
 const OPENAI_RUN_ID = /^chatcmpl_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const toolLoopGuardRegistry = createToolLoopGuardRegistry();
+const projectRunControl = createProjectRunControl();
 const goalProgress = createGoalProgress({agentId:AGENT_ID});
 const workspaceProjects = createWorkspaceProjects();
 const taskActivity = createTaskActivity({agentId:AGENT_ID, goalForRun:id=>goalProgress.projection(id),projectsForSession:key=>workspaceProjects.forSession(key)});
@@ -285,9 +289,10 @@ export default definePluginEntry({
       },
       activeSession:key => Boolean(resolveActiveEmbeddedRunSessionId(key)),
       admission:{status:() => currentManagedRuntime?.status() ?? accessRuntime.status(),
-        acquire:(token, revision) => currentManagedRuntime ? currentManagedRuntime.acquireTransition(token, revision)
-          : accessRuntime.acquire(token, revision),
-        release:token => accessRuntime.release(token), owns:token => accessRuntime.owns(token)},
+        acquire:(token, revision) => currentManagedRuntime ? currentManagedRuntime.acquireMaintenance(token, revision)
+          : accessRuntime.acquireMaintenance(token, revision),
+        release:token => currentManagedRuntime ? currentManagedRuntime.releaseMaintenance(token)
+          : accessRuntime.releaseMaintenance(token), owns:token => accessRuntime.owns(token)},
     });
     registerHistoryIntegration(api,{compactor:contextCompaction,getSessionEntry,patchSessionEntry,resolveStorePath,withSessionTranscriptWriteLock,appendAssistantMirrorMessageByIdentity});
     // One system prompt for every Pixel chat: no per-chat session key or id.
@@ -310,6 +315,7 @@ export default definePluginEntry({
           reason: "ods_client_disconnect",
         }),
       execControl: execCancellationControl,
+      cancelProjectRun: scope => projectRunControl.cancel(scope),
       evidenceArtifactWriter,
       onWorkspaceMutation:mutation=>workspaceProjects.record(mutation),
       verifyWorkspacePreview:createWorkspacePreviewVerifier({transport:api.pluginConfig?.workspacePreviewTransport}),
@@ -364,7 +370,7 @@ export default definePluginEntry({
         result => toolLoopGuard.observeRepositorySource(context?.runId ?? event?.runId, result)) : '';
       // Per-attempt, model-only context: not part of the cached system prompt.
       const cancelContext = toolLoopGuard.promptContextForRun(context?.runId ?? event?.runId);
-      return contract ? { ...contract, ...(cancelContext ? {prependContext:cancelContext} : {}), ...(goalProgress.active(context?.runId ?? event?.runId) ? {appendContext:GOAL_CONTRACT} : {}), appendSystemContext: `${ACTIVITY_CONTRACT} ${goalProgress.active(context?.runId ?? event?.runId) ? GOAL_CONTRACT : ""} ${contract.appendSystemContext} ${executionContext()} ${repositoryEvidence}` } : undefined;
+      return contract ? { ...contract, ...(cancelContext ? {prependContext:cancelContext} : {}), ...(goalProgress.active(context?.runId ?? event?.runId) ? {appendContext:GOAL_CONTRACT} : {}), appendSystemContext: `${ACTIVITY_CONTRACT} ${executionLocationContext(context, AGENT_ID)} ${goalProgress.active(context?.runId ?? event?.runId) ? GOAL_CONTRACT : ""} ${contract.appendSystemContext} ${executionContext()} ${repositoryEvidence}` } : undefined;
     });
     api.on("model_call_started", (event, context) =>
       toolLoopGuard.observeModelCall(event, context, AGENT_ID)
@@ -406,11 +412,13 @@ export default definePluginEntry({
       );
       const decision = guard?.block ? guard : goalProgress.before(event, context) ?? accessRuntime.beforeTool(event, context) ?? guard;
       bundleAdmission.before(event, context, decision);
+      projectRunControl.before(event, context, decision);
       taskActivity.before(event, context, decision?.block === true);
       return decision;
     });
     api.on("after_tool_call", (event, context) => {
       bundleAdmission.after(event, context);
+      projectRunControl.after(event, context);
       accessRuntime.afterTool(event, context);
       if (!accessRuntime.isProbe(context)) {
         goalProgress.update(event, context);
@@ -737,6 +745,7 @@ export default definePluginEntry({
     registerTool(api, createAskUserTool(), {names:['pixel_ods_ask_user']});
     registerTool(api, createGoalProgressTool(), {names:['pixel_ods_goal']});
     registerTool(api, createActivityTool(), {names:['pixel_ods_activity']});
+    registerProjectBuild(api, onlyPixel, projectRunControl);
     api.registerTool(onlyPixel(context => createExtensionProposalTool(context)), {names:['pixel_ods_extension_proposal']});
     api.registerTool(onlyPixel(context => createSourceProposalTool(context)), {names:['pixel_ods_source_proposal']});
     api.registerTool(onlyPixel(context => createPythonLibraryProposalTool(context)), {names:['pixel_ods_python_library_proposal']});

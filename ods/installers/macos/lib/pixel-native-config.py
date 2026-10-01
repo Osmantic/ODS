@@ -30,6 +30,14 @@ NODE_SPEC = importlib.util.spec_from_file_location('native_config_node',
     Path(__file__).with_name('pixel-native-node.py'))
 native_node = importlib.util.module_from_spec(NODE_SPEC)
 NODE_SPEC.loader.exec_module(native_node)
+
+
+def migrate_workspace_guidance(workspace, *, generated=False):
+    spec = importlib.util.spec_from_file_location('ods_workspace_guidance',
+        Path(__file__).resolve().parents[2] / 'lib/pixel-workspace-guidance.py')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.migrate_workspace(workspace, generated=generated)
 INSPECTION_SPEC = importlib.util.spec_from_file_location('native_inspection_install',
     Path(__file__).parents[2] / 'lib/pixel-preview-inspection.py')
 inspection_install = importlib.util.module_from_spec(INSPECTION_SPEC)
@@ -448,6 +456,7 @@ def prepare(*, source, ref, answers, node, sandbox_image, destination, runtime,
                'PATH': str(node.parent) + ':/usr/bin:/bin:/usr/sbin:/sbin'}
         bootstrap.command([str(node), str(checkout / 'scripts/configure.mjs'),
                            '--answers', str(snapshot)], cwd=checkout, env=env)
+        migrate_workspace_guidance(checkout / '.generated/workspace', generated=True)
         values = generated_environment(checkout / '.env')
         values.update(OPENCLAW_HOME=str(isolated_home / 'empty-openclaw'),
                       PIXEL_SANDBOX_IMAGE=sandbox_image,
