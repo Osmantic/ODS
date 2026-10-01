@@ -1009,3 +1009,86 @@ def test_workflow_enable_rejects_path_traversal_in_catalog_file(test_client, mon
     )
     assert resp.status_code == 400
     assert resp.json()["detail"] == "Invalid workflow file path"
+
+
+@pytest.mark.asyncio
+async def test_enable_workflow_activation_failure(test_client, tmp_path, monkeypatch):
+    """Test that enable returns correct message when activation fails.
+    
+    This tests the case where n8n rejects activation (e.g., manual-trigger workflow).
+    The activation PATCH returns 400, so activated should be False and the message
+    should not claim the workflow is active.
+    
+    This addresses the test gap identified in issue #3588.
+    """
+    import routers.workflows as wf_mod
+
+    # Mock the catalog with a workflow
+    catalog = {
+        "workflows": [
+            {
+                "id": "test-wf",
+                "name": "Test Workflow",
+                "description": "Test workflow",
+                "file": "test.json",
+                "dependencies": [],
+                "icon": "Workflow",
+                "category": "general"
+            }
+        ],
+        "categories": {"general": {"name": "General", "icon": "Cog"}}
+    }
+    catalog_file = tmp_path / "catalog.json"
+    catalog_file.write_text(json.dumps(catalog))
+    monkeypatch.setattr(wf_mod, "WORKFLOW_CATALOG_FILE", catalog_file)
+
+    # Mock the workflow file to exist
+    workflow_file = tmp_path / "test.json"
+    workflow_file.write_text(json.dumps({"nodes": []}))
+    monkeypatch.setattr(wf_mod, "WORKFLOW_DIR", tmp_path)
+
+    # Mock dependencies to be met
+    async def _no_missing_deps(*args, **kwargs):
+        return {}
+    monkeypatch.setattr(wf_mod, "check_workflow_dependencies", _no_missing_deps)
+
+    # Mock the n8n response: POST succeeds (200), but PATCH activation fails (400)
+    create_resp = AsyncMock()
+    create_resp.status = 201
+    create_resp.json = AsyncMock(return_value={"data": {"id": "n8n-99"}})
+
+    activate_resp = AsyncMock()
+    activate_resp.status = 400  # Activation fails!
+
+    # Create context managers (matching the pattern in test_workflow_enable_success)
+    create_ctx = AsyncMock()
+    create_ctx.__aenter__ = AsyncMock(return_value=create_resp)
+    create_ctx.__aexit__ = AsyncMock(return_value=False)
+
+    activate_ctx = AsyncMock()
+    activate_ctx.__aenter__ = AsyncMock(return_value=activate_resp)
+    activate_ctx.__aexit__ = AsyncMock(return_value=False)
+
+    session_mock = AsyncMock()
+    session_mock.post = MagicMock(return_value=create_ctx)
+    session_mock.patch = MagicMock(return_value=activate_ctx)
+    session_mock.__aenter__ = AsyncMock(return_value=session_mock)
+    session_mock.__aexit__ = AsyncMock(return_value=False)
+
+    with patch("routers.workflows.aiohttp.ClientSession", return_value=session_mock):
+        resp = test_client.post(
+            "/api/workflows/test-wf/enable",
+            headers=test_client.auth_headers,
+        )
+
+    assert resp.status_code == 200
+    data = resp.json()
+    
+    # Assert that activated is False
+    assert data["activated"] is False
+    
+    # Assert the message does NOT claim it's active
+    assert "is now active" not in data["message"]
+    
+    # Assert the message correctly says it could not be activated
+    assert "could not be activated" in data["message"]
