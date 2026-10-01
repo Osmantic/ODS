@@ -99,7 +99,7 @@ class UninstallVolumeTests(unittest.TestCase):
         (self.root / "docker-compose.base.yml").write_text("services: {}\n", encoding="utf-8")
         shutil.copyfile(
             ROOT / "extensions/services/perplexica/compose.yaml",
-            self.root / "extensions/services/perplexica/compose.yaml",
+            self.root / "extensions/services/perplexica/compose.yaml.disabled",
         )
         self.snapshot = Path(self.temp.name) / "snapshot.json"
         self.snapshot.touch()
@@ -119,14 +119,17 @@ class UninstallVolumeTests(unittest.TestCase):
         self.assertEqual(set(self.fake.removed), set(captured["volumes"]))
         self.assertEqual(self.fake.foreign, {"ods-pixel-retired-research", "ods-unrelated"})
 
-    def test_candidate_recipe_proves_disabled_volume_after_installed_recipe_is_removed(self):
+    def test_candidate_recipe_requires_installed_disabled_receipt(self):
         trusted = Path(self.temp.name) / "candidate"
         recipe = trusted / "extensions/services/perplexica/compose.yaml"
         recipe.parent.mkdir(parents=True)
         shutil.copyfile(ROOT / "extensions/services/perplexica/compose.yaml", recipe)
-        (self.root / "extensions/services/perplexica/compose.yaml").unlink()
+        installed_recipe = self.root / "extensions/services/perplexica/compose.yaml.disabled"
+        original = installed_recipe.read_text(encoding="utf-8")
+        installed_recipe.unlink()
         with self.assertRaisesRegex(ValueError, "not linked"):
-            MODULE.preflight(self.root, self.snapshot, [])
+            MODULE.preflight(self.root, self.snapshot, [], trusted_root=trusted)
+        installed_recipe.write_text(original, encoding="utf-8")
         MODULE.preflight(self.root, self.snapshot, [], trusted_root=trusted)
         self.fake.containers = []
         MODULE.complete(self.root, self.snapshot, trusted_root=trusted)
@@ -189,13 +192,25 @@ class UninstallVolumeTests(unittest.TestCase):
         self.assertFalse(self.fake.removed)
 
     def test_disabled_external_recipe_is_not_inferred_as_owned(self):
-        recipe = self.root / "extensions/services/perplexica/compose.yaml"
+        recipe = self.root / "extensions/services/perplexica/compose.yaml.disabled"
         recipe.write_text("volumes:\n  shared:\n    external: \"true\" # owner supplied\n",
                           encoding="utf-8")
         self.fake.volumes = {"ods_shared": self.fake._volume("ods_shared", "shared")}
         self.fake.containers[0]["Mounts"] = [{"Type": "volume", "Name": "ods_shared"}]
         with self.assertRaisesRegex(ValueError, "not linked"):
             MODULE.preflight(self.root, self.snapshot, [])
+        self.assertFalse(self.fake.removed)
+
+    def test_candidate_plain_recipe_cannot_override_installed_external_intent(self):
+        trusted = Path(self.temp.name) / "candidate"
+        recipe = trusted / "extensions/services/perplexica/compose.yaml"
+        recipe.parent.mkdir(parents=True)
+        shutil.copyfile(ROOT / "extensions/services/perplexica/compose.yaml", recipe)
+        installed = self.root / "extensions/services/perplexica/compose.yaml.disabled"
+        installed.write_text("volumes:\n  perplexica-data:\n    external: true\n"
+                             "  perplexica-uploads:\n", encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "not linked"):
+            MODULE.preflight(self.root, self.snapshot, [], trusted_root=trusted)
         self.assertFalse(self.fake.removed)
 
     def test_selected_volume_requires_matching_compose_volume_key(self):
@@ -206,6 +221,17 @@ class UninstallVolumeTests(unittest.TestCase):
             "com.docker.compose.volume"
         ] = "foreign-data"
         with self.assertRaisesRegex(ValueError, "conflicting Compose label"):
+            MODULE.preflight(self.root, self.snapshot, [])
+        self.assertFalse(self.fake.removed)
+
+    def test_detached_selected_volume_is_not_assumed_to_belong_to_this_install(self):
+        self.fake.config["volumes"] = {
+            "foreign-data": {"name": "ods_foreign-data"}
+        }
+        self.fake.volumes["ods_foreign-data"] = self.fake._volume(
+            "ods_foreign-data", "foreign-data"
+        )
+        with self.assertRaisesRegex(ValueError, "no verified ODS container mount"):
             MODULE.preflight(self.root, self.snapshot, [])
         self.assertFalse(self.fake.removed)
 
@@ -230,6 +256,27 @@ class UninstallVolumeTests(unittest.TestCase):
         }
         self.fake.containers[0]["Mounts"].append({"Type": "volume", "Name": name})
         with self.assertRaisesRegex(ValueError, "unproven ownership"):
+            MODULE.preflight(self.root, self.snapshot, [])
+        self.assertFalse(self.fake.removed)
+
+    def test_user_named_hex_volume_without_anonymous_marker_is_not_deleted(self):
+        name = "c" * 64
+        self.fake.volumes[name] = {
+            "Name": name, "Driver": "local",
+            "CreatedAt": "2026-10-01T00:00:00Z", "Labels": None,
+        }
+        self.fake.containers[0]["Mounts"].append({"Type": "volume", "Name": name})
+        with self.assertRaisesRegex(ValueError, "unproven ownership"):
+            MODULE.preflight(self.root, self.snapshot, [])
+        self.assertFalse(self.fake.removed)
+
+    def test_detached_unlabelled_recipe_volume_blocks_success(self):
+        self.fake.volumes["ods_perplexica-data"]["Labels"] = None
+        self.fake.containers[0]["Mounts"] = [
+            mount for mount in self.fake.containers[0]["Mounts"]
+            if mount["Name"] != "ods_perplexica-data"
+        ]
+        with self.assertRaisesRegex(ValueError, "lacks Compose ownership labels"):
             MODULE.preflight(self.root, self.snapshot, [])
         self.assertFalse(self.fake.removed)
 

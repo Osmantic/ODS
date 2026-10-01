@@ -68,16 +68,19 @@ def project_config(root: Path, flags: list[str]) -> tuple[str, dict[str, str], d
     return project, selected, external
 
 
-def trusted_plain_volume_keys(root: Path) -> set[str]:
+def trusted_plain_volume_keys(root: Path, disabled_only: bool = False) -> set[str]:
     """Read only plain top-level volume declarations in shipped recipes.
 
     Complex declarations are deliberately not inferred as owned. A disabled
     recipe must also leave a verified container mounting the volume.
     """
-    paths = list(root.glob("docker-compose*.yml"))
+    paths = [] if disabled_only else list(root.glob("docker-compose*.yml"))
     for directory in ("extensions/services", "extensions/library/services"):
-        paths.extend((root / directory).glob("*/compose*.yaml"))
-        paths.extend((root / directory).glob("*/compose*.yml"))
+        suffixes = ("*.yaml.disabled", "*.yml.disabled") if disabled_only else (
+            "*.yaml", "*.yml",
+        )
+        for suffix in suffixes:
+            paths.extend((root / directory).glob(f"*/compose{suffix}"))
     states: dict[str, set[str]] = {}
     declaration = re.compile(r"^  ([A-Za-z0-9][A-Za-z0-9_.-]*):\s*(?:\{\})?\s*$")
     for path in paths:
@@ -109,6 +112,13 @@ def trusted_plain_volume_keys(root: Path) -> set[str]:
                 # external/name, makes the declaration too complex to infer.
                 state = "complex"
     return {key for key, values in states.items() if values == {"owned"}}
+
+
+def disabled_volume_keys(root: Path, trusted_root: Path) -> set[str]:
+    installed = trusted_plain_volume_keys(root, disabled_only=True)
+    if trusted_root == root:
+        return installed
+    return installed & trusted_plain_volume_keys(trusted_root)
 
 
 def project_containers(root: Path, project: str) -> tuple[set[str], set[str]]:
@@ -214,7 +224,17 @@ def preflight(root: Path, snapshot: Path, flags: list[str], keep_data: bool = Fa
         }), encoding="utf-8")
         return
     volumes = project_volumes(root, project)
-    trusted = trusted_plain_volume_keys(trusted_root)
+    trusted = disabled_volume_keys(root, trusted_root)
+    expected_names = set(selected) | {
+        f"{project}_{key}" for key in trusted_plain_volume_keys(trusted_root)
+    } | {
+        f"{project}_{key}" for key in trusted_plain_volume_keys(root, disabled_only=True)
+    }
+    all_names = set(docker(root, "volume", "ls", "--quiet").split())
+    unlabelled_expected = (all_names & expected_names) - set(volumes) - set(external)
+    if unlabelled_expected:
+        name = sorted(unlabelled_expected)[0]
+        raise ValueError(f"Volume {name} matches an ODS recipe but lacks Compose ownership labels")
     if volumes and not container_ids:
         raise ValueError("ODS project volumes remain but no container proves the installation path")
     owned = {}
@@ -228,6 +248,8 @@ def preflight(root: Path, snapshot: Path, flags: list[str], keep_data: bool = Fa
             continue
         if name in selected and key != selected[name]:
             raise ValueError(f"Selected volume {name} has a conflicting Compose label")
+        if name in selected and name not in mounted:
+            raise ValueError(f"Selected volume {name} has no verified ODS container mount")
         if name in selected or (name in mounted and key in trusted and
                                 name == f"{project}_{key}"):
             owned[name] = fingerprint(row)
@@ -239,7 +261,7 @@ def preflight(root: Path, snapshot: Path, flags: list[str], keep_data: bool = Fa
     for name, row in inspect_volumes(root, other_mounts).items():
         labels = row.get("Labels") or {}
         if (not CONTAINER_RE.fullmatch(name) or
-                labels not in ({}, {"com.docker.volume.anonymous": ""}) or
+                labels != {"com.docker.volume.anonymous": ""} or
                 row.get("Driver") != "local"):
             raise ValueError(f"Mounted volume {name} has unproven ownership; purge refused")
         anonymous[name] = fingerprint(row)
@@ -254,6 +276,7 @@ def preflight(root: Path, snapshot: Path, flags: list[str], keep_data: bool = Fa
         "external": external,
         "selected": selected,
         "trustedUsed": sorted(trusted_used),
+        "expectedNames": sorted(expected_names),
         "flags": flags,
     }
     snapshot.write_text(json.dumps(record, sort_keys=True), encoding="utf-8")
@@ -270,6 +293,11 @@ def complete(root: Path, snapshot: Path, trusted_root: Path | None = None) -> No
         raise ValueError("Uninstall volume snapshot is invalid")
     project = record["project"]
     before = record["volumes"]
+    expected_names = record.get("expectedNames")
+    if (not isinstance(expected_names, list) or
+            any(not isinstance(name, str) or not VOLUME_RE.fullmatch(name)
+                for name in expected_names)):
+        raise ValueError("Uninstall volume snapshot is invalid")
     anonymous = record.get("anonymous")
     if not isinstance(anonymous, dict) or any(
             not CONTAINER_RE.fullmatch(name) or not isinstance(value, dict)
@@ -282,7 +310,8 @@ def complete(root: Path, snapshot: Path, trusted_root: Path | None = None) -> No
     if (current_project != project or
             current_selected != record.get("selected") or
             current_external != record.get("external") or
-            not set(record.get("trustedUsed", [])).issubset(trusted_plain_volume_keys(trusted_root))):
+            not set(record.get("trustedUsed", [])).issubset(
+                disabled_volume_keys(root, trusted_root))):
         raise ValueError("Compose ownership changed during uninstall; installation retained")
     remaining = project_volumes(root, project)
     external = record.get("external")
@@ -298,6 +327,8 @@ def complete(root: Path, snapshot: Path, trusted_root: Path | None = None) -> No
             raise ValueError(f"Volume {name} changed during uninstall; installation retained")
     check_volume_consumers(root, set(remaining), set())
     all_names = set(docker(root, "volume", "ls", "--quiet").split())
+    if (all_names & set(expected_names)) - set(remaining) - set(external):
+        raise ValueError("Unlabelled ODS-like volume appeared during uninstall; installation retained")
     anonymous_remaining = inspect_volumes(root, set(anonymous) & all_names)
     for name, row in anonymous_remaining.items():
         if fingerprint(row) != anonymous[name]:
@@ -309,8 +340,11 @@ def complete(root: Path, snapshot: Path, trusted_root: Path | None = None) -> No
         docker(root, "volume", "rm", name)
     if set(project_volumes(root, project)) - set(external):
         raise ValueError("Compose volumes remain after cleanup; installation retained")
-    if set(anonymous) & set(docker(root, "volume", "ls", "--quiet").split()):
+    final_names = set(docker(root, "volume", "ls", "--quiet").split())
+    if set(anonymous) & final_names:
         raise ValueError("Anonymous ODS volumes remain after cleanup; installation retained")
+    if (set(expected_names) & final_names) - set(external):
+        raise ValueError("ODS recipe volumes remain after cleanup; installation retained")
 
 
 def main() -> int:
