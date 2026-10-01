@@ -194,6 +194,12 @@ export function createSubagentDelivery({agentId = 'pixel', now = Date.now,
   function end(event, context) {
     const run = owned(context);
     if (!run || run.id !== run.chain.currentRun) return;
+    // Ordinary owner attempts have no delegated delivery to resolve. Native
+    // context recovery can end a preflight attempt with only historical
+    // messages before retrying the same run; their old stop reason must not
+    // revoke the owner's run. Stop/access fences still apply through owned().
+    if (run.id === run.chain.id && !run.chain.children.size
+        && !pendingSpawn(run.chain) && !run.chain.delegated) return;
     if (event?.success === false || event.error) {fail(run.chain); return;}
     // Existing conversation-hook permission already supplies the native
     // terminal message. Examine only its public text/stop reason; never retain

@@ -14,6 +14,19 @@ const owner={agentId:'pixel',runId:id,sessionId:'owner-session',sessionKey:'agen
 const continuation={...owner,runId:`announce:v1:${child}:${childRun}`,
   inputProvenance:{kind:'inter_session',sourceTool:'subagent_announce',sourceSessionKey:child}};
 
+test('ordinary owner context recovery ignores historical failure but retains later delegation custody',()=>{
+  const f=fixture();
+  f.registry.end({success:true,messages:[{role:'assistant',stopReason:'aborted',content:[]}]},owner);
+  assert.equal(f.registry.admission(owner),undefined);
+  f.registry.observe({prompt:'same owner after native context truncation'},owner);
+  assert.equal(f.registry.read(user,id).status,'not-delegated');
+  f.spawn();f.yieldTurn();
+  assert.equal(f.registry.admission(continuation),undefined);
+  f.registry.observe({prompt:'registered child completion'},continuation);
+  f.registry.end({success:false,error:'real child failure'},continuation);
+  assert.equal(f.registry.admission(continuation).outcome,'block');
+});
+
 test('cancelled native announcements are denied before prompt registration and inference; next owner remains admitted',async()=>{
   const f=fixture();f.spawn();f.yieldTurn();
   assert.equal(f.registry.admission(continuation),undefined,'registered live child is admitted before observe');
