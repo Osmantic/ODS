@@ -56,6 +56,9 @@ if $DRY_RUN; then
 else
     _summary_chat_url=""
     [[ "${ENABLE_OPEN_WEBUI:-true}" != "true" ]] || _summary_chat_url="http://localhost:3000"
+    if [[ -z "$_summary_chat_url" && "${ENABLE_PIXEL_RUNTIME:-false}" == true ]]; then
+        _summary_chat_url="http://localhost:${SERVICE_PORTS[dashboard]:-3001}/pixel"
+    fi
     show_success_card "$_summary_chat_url" "http://localhost:3001" "$LOCAL_IP"
     unset _summary_chat_url
 fi
@@ -145,7 +148,7 @@ if [[ -n "${EXTERNAL_LLM_URL:-}" || "${ODS_MODE:-local}" == "cloud" || "${ODS_MO
 else
     echo "  • LLM API:       http://localhost:${SERVICE_PORTS[llama-server]:-11434}/v1  (llama-server)"
 fi
-[[ "${ENABLE_PIXEL_RUNTIME:-false}" == "true" ]] && echo "  • Portal:        http://localhost:${SERVICE_PORTS[dashboard]:-3001}/pixel  (core agent; default Open WebUI model)"
+[[ "${ENABLE_PIXEL_RUNTIME:-false}" == "true" ]] && echo "  • Portal:        http://localhost:${SERVICE_PORTS[dashboard]:-3001}/pixel  (core agent)"
 [[ "${ENABLE_PERPLEXICA:-false}" == "true" ]] && echo "  • Perplexica:    http://localhost:${SERVICE_PORTS[perplexica]:-3004}"
 [[ "${ENABLE_COMFYUI:-false}" == "true" ]] && echo "  • ComfyUI:       http://localhost:${SERVICE_PORTS[comfyui]:-8188}"
 [[ "$ENABLE_HERMES" == "true" ]] && echo "  • Hermes: http://localhost:${SERVICE_PORTS[hermes-proxy]:-9120}"
@@ -174,7 +177,7 @@ else
     echo "  • Model: $LLM_MODEL"
 fi
 if [[ "${ENABLE_PIXEL_RUNTIME:-false}" == "true" ]]; then
-    echo "  • Portal assistant: enabled (default Open WebUI model)"
+    echo "  • Portal assistant: enabled"
 elif [[ "${ENABLE_HERMES:-false}" == "true" ]]; then
     echo "  • Hermes Agent: enabled"
 fi
@@ -465,6 +468,10 @@ else
 fi
 echo ""
 DASHBOARD_PORT="${SERVICE_PORTS[dashboard]:-3001}"
+_dashboard_remote_port_config="$(sed -n 's/^DASHBOARD_REMOTE_PORT=//p' "$INSTALL_DIR/.env" 2>/dev/null | head -n 1 | tr -d '"\r' || true)"
+DASHBOARD_REMOTE_PORT="${_dashboard_remote_port_config:-${DASHBOARD_REMOTE_PORT:-3011}}"
+[[ "$DASHBOARD_REMOTE_PORT" =~ ^[0-9]+$ ]] || DASHBOARD_REMOTE_PORT=3011
+unset _dashboard_remote_port_config
 WEBUI_PORT="${SERVICE_PORTS[open-webui]:-3000}"
 OPENCLAW_PORT="${SERVICE_PORTS[openclaw]:-7860}"
 LOCAL_IP=$(hostname -I 2>/dev/null | awk '{print $1}' || echo "")
@@ -479,7 +486,7 @@ echo ""
 echo -e "  ${BGRN}Dashboard${NC}    ${WHT}http://localhost:${DASHBOARD_PORT}${NC}"
 [[ "${ENABLE_OPEN_WEBUI:-true}" != "true" ]] || echo -e "  ${BGRN}Chat${NC}         ${WHT}http://localhost:${WEBUI_PORT}${NC}"
 [[ "${ENABLE_PIXEL_RUNTIME:-false}" == "true" ]] && \
-echo -e "  ${BGRN}Portal${NC}       ${WHT}http://localhost:${DASHBOARD_PORT}/pixel${NC}  ${AMB}(core agent; default in Open WebUI)${NC}"
+echo -e "  ${BGRN}Portal${NC}       ${WHT}http://localhost:${DASHBOARD_PORT}/pixel${NC}  ${AMB}(core agent)${NC}"
 [[ "$ENABLE_HERMES" == "true" ]] && \
 echo -e "  ${BGRN}Hermes${NC}       ${WHT}http://localhost:${SERVICE_PORTS[hermes-proxy]:-9120}${NC}"
 [[ "$ENABLE_OPENCLAW" == "true" ]] && \
@@ -492,7 +499,7 @@ if [[ -n "$LOCAL_IP" ]]; then
     _bind=$(grep "^BIND_ADDRESS=" "$INSTALL_DIR/.env" 2>/dev/null | cut -d= -f2- | tr -d '"' || echo "127.0.0.1")
     [[ -z "$_bind" ]] && _bind="127.0.0.1"
     if [[ "$_bind" == "0.0.0.0" ]]; then
-        echo -e "  ${AMB}On your network:${NC}  ${WHT}http://${LOCAL_IP}:${DASHBOARD_PORT}${NC}"
+        echo -e "  ${AMB}On your network:${NC}  ${WHT}http://${LOCAL_IP}:${DASHBOARD_REMOTE_PORT}${NC}"
         echo -e "  ${DIM}Each browser signs in once: run 'ods dashboard-login' for a link${NC}"
     else
         echo -e "  ${AMB}LAN access:${NC}      ${DIM}Reinstall with --lan or set BIND_ADDRESS=0.0.0.0 in .env${NC}"

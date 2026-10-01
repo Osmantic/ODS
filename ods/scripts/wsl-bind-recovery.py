@@ -263,14 +263,45 @@ def prevalidate_binds(binds):
             raise RuntimeError(f"unsupported host filetype for {src}")
 
 
+def bind_view_matches(container_name, src, dst, read_only, host=None, seen=None):
+    host = host if host is not None else host_stat(src)
+    seen = seen if seen is not None else exec_stat(container_name, dst)
+    if (host["device"], host["inode"], host["filetype"]) == (
+            seen["device"], seen["inode"], seen["filetype"]):
+        return True
+    if (not read_only or host["inode"] != seen["inode"] or
+            host["filetype"] != seen["filetype"]):
+        return False
+
+    # Docker Desktop exposes a Windows v9fs bind through a different mount
+    # namespace. Its st_dev may change while the object inode stays the same.
+    # Keep the strict identity check for writable and native Linux binds.
+    try:
+        host_fs = run(["stat", "-f", "-c", "%T", "--", src], PROBE_TIMEOUT).stdout.strip()
+        seen_fs = run(["docker", "exec", container_name, "stat", "-f", "-c",
+                       "%T", "--", dst], PROBE_TIMEOUT).stdout.strip()
+    except subprocess.SubprocessError as exc:
+        raise RuntimeError(f"filesystem probe failed for {container_name}:{dst}: {exc}")
+    if host_fs != "v9fs" or seen_fs != "v9fs":
+        return False
+
+    container = inspect_container(container_name)
+    if not container or not isinstance(container.get("Mounts"), list):
+        raise RuntimeError(f"mount inspection failed for {container_name}:{dst}")
+    mounts = [m for m in container["Mounts"] if m.get("Destination") == dst]
+    if (len(mounts) != 1 or mounts[0].get("Type") != "bind" or
+            mounts[0].get("Source") != src or mounts[0].get("RW") is not False):
+        raise RuntimeError(f"unexpected read-only bind declaration for {container_name}:{dst}")
+    return True
+
+
 def classify_running(container_name, binds):
     prevalidate_binds(binds)
     stale_target = ""
-    for src, dst, _ro in binds:
+    for src, dst, ro in binds:
         host = host_stat(src)
         seen = exec_stat(container_name, dst)
-        if (host["device"], host["inode"], host["filetype"]) != (
-                seen["device"], seen["inode"], seen["filetype"]):
+        if not bind_view_matches(container_name, src, dst, ro, host, seen):
             stale_target = stale_target or dst
     return (True, f"stale-bind:{stale_target}") if stale_target else (False, "healthy")
 
@@ -462,11 +493,10 @@ def verify(flags, service, expected_binds):
             return False, f"state={state}"
         try:
             prevalidate_binds(expected_binds)
-            for src, dst, _ro in expected_binds:
+            for src, dst, ro in expected_binds:
                 host = host_stat(src)
                 seen = exec_stat(name, dst)
-                if (host["device"], host["inode"], host["filetype"]) != (
-                        seen["device"], seen["inode"], seen["filetype"]):
+                if not bind_view_matches(name, src, dst, ro, host, seen):
                     return False, f"stale-bind:{dst}"
         except RuntimeError as exc:
             return False, f"verify-error:{exc}"

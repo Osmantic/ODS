@@ -474,6 +474,7 @@ run_phase03_rag_guard() {
     INSTALL_CHOICE=1
     TIER=1
     ODS_MODE=local
+    ENABLE_PIXEL=false
     ENABLE_RAG=true
     ENABLE_HERMES=false
     ENABLE_OPENCLAW=false
@@ -629,11 +630,12 @@ done
 
 echo "[contract] SearXNG follows web search consumers, not only --recommended"
 bash tests/test-pixel-support-services.sh
+bash tests/test-pixel-search-provider-resolution.sh
 bash tests/test-pixel-model-relay-compose.sh
 grep -qE 'ENABLE_RECOMMENDED:-false' "$features_phase" \
   || { echo "[FAIL] ENABLE_SEARXNG derivation must consult ENABLE_RECOMMENDED"; exit 1; }
-grep -qE 'ENABLE_PIXEL_RUNTIME:-false' "$features_phase" \
-  || { echo "[FAIL] ENABLE_SEARXNG derivation must consult ENABLE_PIXEL_RUNTIME"; exit 1; }
+grep -Fq '"$PIXEL_RESOLVED_WEB_SEARCH_PROVIDER" == "searxng"' "$features_phase" \
+  || { echo "[FAIL] ENABLE_SEARXNG derivation must consult Pixel's selected provider"; exit 1; }
 grep -qE 'ENABLE_PERPLEXICA:-false' "$features_phase" \
   || { echo "[FAIL] ENABLE_SEARXNG derivation must consult ENABLE_PERPLEXICA"; exit 1; }
 grep -qE 'ENABLE_HERMES:-false' "$features_phase" \

@@ -25,6 +25,24 @@ test('blocked calls cannot masquerade as public progress, file details exclude d
  assert.ok(!JSON.stringify(displayForActivity({params:{command:'curl -H "Authorization: Bearer secret"'}},{toolName:'exec'})).includes('secret'));
  assert.equal(displayForActivity({params:{command:'npm test'}},{toolName:'exec'}).detail,'npm test');
 });
+test('completed exec keeps the original filtered display when the runtime wraps execution',()=>{
+ for (const command of ['printf "ação verificada"', 'curl -H "Authorization: Bearer secret" https://example.com']) {
+  for (const wrapped of [false,true]) {
+   const tracker=createTaskActivity();
+   const ctx={...context,toolName:wrapped?'tool_call':'exec'};
+   const eventFor=command=>({params:wrapped?{id:'openclaw:core:exec',args:{command}}:{command}});
+   tracker.begin({},ctx);tracker.before(eventFor(command),ctx);
+   const before=tracker.projection(runId).events[0].display.detail;
+   const transport=`/run/pixel-ods-control/cancellable-exec.sh ${'a'.repeat(64)} ${Buffer.from(command).toString('base64')}`;
+   tracker.after({...eventFor(transport),result:{details:{exitCode:0}}},ctx);
+   const row=tracker.projection(runId);
+   assert.equal(row.events[0].display.detail,before);
+   assert.ok(parseTaskActivity(row,runId));
+   assert.ok(!JSON.stringify(row).includes('cancellable-exec.sh'));
+   assert.ok(!JSON.stringify(row).includes('secret'));
+  }
+ }
+});
 test('projects bounded edit receipts while excluding credential files and sensitive lines',()=>{
  const value=displayForActivity({params:{path:'src/main.js',oldText:'const n = 1;',newText:'const n = 2;'}},{toolName:'edit'});
  assert.equal(value.change.file,'main.js');assert.equal(value.change.before,'const n = 1;');assert.equal(value.change.after,'const n = 2;');

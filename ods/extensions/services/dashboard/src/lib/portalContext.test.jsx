@@ -183,6 +183,80 @@ it('loads usage on entering a chat without a hover and does not turn global runt
   expect(result.current.context.used).toBe(1200)
 })
 
+it('recovers an idle unavailable context with bounded retries and a fresh read when availability returns',async()=>{
+  vi.useFakeTimers()
+  try {
+    let available=false
+    const persist=vi.fn()
+    globalThis.fetch=vi.fn().mockImplementation(async()=>response(available?context():{...context(),status:'unavailable',context:null}))
+    const props={chatId:'a',runtimeIdentity:{model:'small',source:'remote-provider'},blocked:true,onPendingChange:persist}
+    const {result,rerender}=renderHook(value=>usePortalContext(value),{initialProps:props})
+    await act(async()=>{})
+    expect(result.current.phase).toBe('idle')
+    expect(result.current.busy).toBe(false)
+    for(const delay of [2000,5000,10000])await act(async()=>vi.advanceTimersByTimeAsync(delay))
+    expect(fetch).toHaveBeenCalledTimes(4)
+    await act(async()=>vi.advanceTimersByTimeAsync(60000))
+    expect(fetch).toHaveBeenCalledTimes(4)
+    available=true
+    rerender({...props,blocked:false})
+    await act(async()=>{})
+    expect(result.current.context?.used).toBe(1200)
+    await act(async()=>vi.advanceTimersByTimeAsync(60000))
+    expect(fetch).toHaveBeenCalledTimes(5)
+    expect(fetch.mock.calls.every(([url,options])=>url==='/api/pixel/chat/context' && JSON.parse(options.body).chat_id==='a')).toBe(true)
+    expect(persist).not.toHaveBeenCalled()
+  }finally {vi.useRealTimers()}
+})
+
+it.each(['snapshot','transport'])('refreshes idle usage after a temporary %s failure without a hover',async failure=>{
+  vi.useFakeTimers()
+  try {
+    globalThis.fetch=vi.fn().mockResolvedValue(response(context()))
+    const {result}=renderHook(()=>usePortalContext({chatId:'a',runtimeKey:'small',onPendingChange:vi.fn()}))
+    await act(async()=>{})
+    if(failure==='snapshot')fetch.mockResolvedValueOnce(response({...context(),status:'unavailable',context:null}))
+    else fetch.mockRejectedValueOnce(new Error('temporary outage'))
+    await act(async()=>result.current.refresh(true))
+    expect(result.current.context?.used).toBe(failure==='snapshot'?undefined:1200)
+    fetch.mockResolvedValue(response(context(1400)))
+    await act(async()=>vi.advanceTimersByTimeAsync(2000))
+    expect(result.current.context.used).toBe(1400)
+    await act(async()=>vi.advanceTimersByTimeAsync(60000))
+    expect(fetch).toHaveBeenCalledTimes(3)
+  }finally {vi.useRealTimers()}
+})
+
+it('cancels idle retry timers and ignores their late responses when switching conversations',async()=>{
+  vi.useFakeTimers()
+  try {
+    let finishOld
+    globalThis.fetch=vi.fn()
+      .mockResolvedValueOnce(response({...context(),status:'unavailable',context:null}))
+      .mockImplementationOnce(()=>new Promise(resolve=>{finishOld=()=>resolve(response({...context(),status:'unavailable',context:null}))}))
+      .mockResolvedValue(response(context(300)))
+    const props={chatId:'a',runtimeKey:'small',blocked:true,onPendingChange:vi.fn()}
+    const {result,rerender}=renderHook(value=>usePortalContext(value),{initialProps:props})
+    await act(async()=>{})
+    await act(async()=>vi.advanceTimersByTimeAsync(2000))
+    rerender({...props,chatId:'b',blocked:false})
+    await act(async()=>{})
+    expect(result.current.context.used).toBe(300)
+    await act(async()=>finishOld())
+    await act(async()=>vi.advanceTimersByTimeAsync(60000))
+    expect(result.current.context.used).toBe(300)
+    expect(fetch.mock.calls.map(([,options])=>JSON.parse(options.body).chat_id)).toEqual(['a','a','b'])
+    // A timer that has not fired is also retired with its conversation.
+    fetch.mockResolvedValueOnce(response({...context(),status:'unavailable',context:null}))
+    await act(async()=>result.current.refresh(true))
+    rerender({...props,chatId:'c',blocked:false})
+    await act(async()=>{})
+    await act(async()=>vi.advanceTimersByTimeAsync(60000))
+    expect(result.current.context.used).toBe(300)
+    expect(fetch.mock.calls.map(([,options])=>JSON.parse(options.body).chat_id)).toEqual(['a','a','b','b','c'])
+  }finally {vi.useRealTimers()}
+})
+
 it('retains authoritative measured usage when source and advertised capacity hydrate for the same model',async()=>{
   const measured={...context(14320),model:{...context().model,contextWindow:65536},context:{...context(14320).context,window:65536}}
   globalThis.fetch=vi.fn().mockResolvedValue(response(measured))
@@ -410,4 +484,55 @@ it('prefers native session context over a changed advertised capacity for the sa
   globalThis.fetch.mockResolvedValue(response(next))
   await act(async()=>result.current.refresh(true))
   expect(result.current.context?.window).toBe(8192)
+})
+
+it('keeps polling an observed automatic compaction after a read failure and shows its terminal failure',async()=>{
+  const id=`history-${'b'.repeat(64)}`
+  const running={...context(),compaction:{status:'running',requestId:id,count:0}}
+  globalThis.fetch=vi.fn().mockResolvedValue(response(running))
+  const {result}=renderHook(()=>usePortalContext({chatId:'automatic',runtimeKey:'small',capacity:4096,onPendingChange:vi.fn()}))
+  await waitFor(()=>expect(result.current.phase).toBe('running'))
+  fetch.mockResolvedValue({ok:false,status:503,json:async()=>({error:'unavailable'})})
+  await act(async()=>result.current.refresh(true))
+  expect(result.current.phase).toBe('unknown')
+  expect(result.current.notice).toBe('Waiting for compaction confirmation…')
+  const failed={...context(),compaction:{status:'failed',requestId:id,reason:'runtime-failed',count:0}}
+  fetch.mockResolvedValue(response(failed))
+  await waitFor(()=>expect(result.current.phase).toBe('failed'),{timeout:7000})
+  expect(result.current.busy).toBe(false)
+  expect(result.current.notice).toContain('Context compaction failed')
+  expect(fetch.mock.calls.every(([url])=>url.endsWith('/context'))).toBe(true)
+},10000)
+
+it.each(['completed','failed','runtime-restarted'])('stops automatic compaction polling after %s and retains the confirmed result on read failure',async outcome=>{
+  vi.useFakeTimers()
+  try {
+    const id='history-auto'
+    globalThis.fetch=vi.fn().mockResolvedValue(response({...context(),compaction:{status:'running',requestId:id}}))
+    const {result}=renderHook(()=>usePortalContext({chatId:'automatic',runtimeKey:'small',capacity:4096,onPendingChange:vi.fn()}))
+    await act(async()=>{})
+    expect(result.current.phase).toBe('running')
+    fetch.mockResolvedValue(response({...context(),compaction:{requestId:id,status:outcome==='runtime-restarted'?'unknown':outcome,...(outcome==='runtime-restarted'?{reason:outcome}:{})}}))
+    await act(async()=>result.current.refresh(true))
+    const phase=outcome==='runtime-restarted'?'interrupted':outcome
+    expect(result.current.phase).toBe(phase)
+    const calls=fetch.mock.calls.length
+    await act(async()=>vi.advanceTimersByTimeAsync(10000))
+    expect(fetch).toHaveBeenCalledTimes(calls)
+    fetch.mockRejectedValue(new Error('offline'))
+    await act(async()=>result.current.refresh(true))
+    expect(result.current.phase).toBe(phase)
+    expect(result.current.busy).toBe(false)
+  }finally {vi.useRealTimers()}
+})
+
+it('does not carry automatic compaction tracking into another conversation',async()=>{
+  globalThis.fetch=vi.fn().mockResolvedValue(response({...context(),compaction:{status:'running',requestId:'history-first'}}))
+  const {result,rerender}=renderHook(({chatId})=>usePortalContext({chatId,runtimeKey:'small',capacity:4096,onPendingChange:vi.fn()}),{initialProps:{chatId:'first'}})
+  await waitFor(()=>expect(result.current.phase).toBe('running'))
+  fetch.mockRejectedValue(new Error('offline'))
+  rerender({chatId:'second'})
+  await act(async()=>{})
+  expect(result.current.phase).toBe('idle')
+  expect(result.current.busy).toBe(false)
 })

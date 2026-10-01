@@ -33,7 +33,12 @@ function plainIntent(value) {
 export function requestsNewPlaygroundProject(intent) {
   // Filenames and path components are operands, not project-category words.
   // For example, creating macos-tool-check/probe.txt is not creating a tool.
-  const text = plainIntent(intent).replace(/\b[A-Za-z0-9_]+(?:[-./\\][A-Za-z0-9_]+)+\b/g, ' ');
+  const text = plainIntent(intent).replace(/\b[A-Za-z0-9_]+(?:[-./\\][A-Za-z0-9_]+)+\b/g, ' ')
+    // A build command or noun is not the creation verb "build". Keep real
+    // creation clauses (including later clauses) eligible for project routing.
+    .replace(/\b(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?build\b/gi, ' ')
+    .replace(/\b(?:(?:run|execute|rode|rodar)|cargo|gradle|gradlew|vite|webpack|rollup|astro|nuxt)\s+build\b/gi, ' ')
+    .replace(/\b(?:the|o)\s+build\b/gi, ' ');
   // Continuation quotes the old creation request, not a new reservation.
   // Core tool policy still controls every inspection and mutation.
   if (/^\s*(?:\/goal\s+)?Continue the goal from the preceding conversation using the existing work\./i.test(text)) return false;

@@ -201,7 +201,7 @@ def _build_services(env: dict[str, str], device_name: str, ip: str) -> list[Serv
     if _direct_ports_lan_reachable(env):
         direct: list[tuple[str, int, str, dict[str, str]]] = [
             # (suffix, port, label, extra_txt)
-            ("dashboard",     _safe_port(env, "DASHBOARD_PORT", 3001),     "ODS Dashboard", {"path": "/"}),
+            ("dashboard",     _safe_port(env, "DASHBOARD_REMOTE_PORT", 3011), "ODS Dashboard", {"path": "/"}),
             ("chat",          _safe_port(env, "WEBUI_PORT", 3000),         "ODS Chat",      {"path": "/"}),
             ("dashboard-api", _safe_port(env, "DASHBOARD_API_PORT", 3002), "ODS API",       {"path": "/health"}),
             # Announce unconditionally when direct ports are LAN-reachable:
@@ -282,7 +282,7 @@ class Announcer:
             device_name,
             ip,
             _normalized_bind_address(env),
-            _safe_port(env, "DASHBOARD_PORT", 3001),
+            _safe_port(env, "DASHBOARD_REMOTE_PORT", 3011),
             _safe_port(env, "WEBUI_PORT", 3000),
             _safe_port(env, "DASHBOARD_API_PORT", 3002),
             _safe_port(env, "HERMES_PORT", 9119),

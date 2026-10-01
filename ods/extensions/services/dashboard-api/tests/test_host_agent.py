@@ -13,7 +13,9 @@ import threading
 import time
 import types
 from contextlib import nullcontext
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path, PurePosixPath
+from urllib.parse import unquote
 
 import pytest
 
@@ -24,6 +26,99 @@ _spec = importlib.util.spec_from_file_location("ods_host_agent", _agent_path)
 _mod = importlib.util.module_from_spec(_spec)
 sys.modules["ods_host_agent"] = _mod
 _spec.loader.exec_module(_mod)
+
+
+@pytest.mark.parametrize("model,settings,override", [
+    ("Systran/faster-whisper-base", "AUDIO_STT_MODEL=Systran/faster-whisper-base\n", False),
+    ("deepdml/faster-whisper-large-v3-turbo-ct2", "GPU_BACKEND=nvidia\n", False),
+    ("Systran/faster-whisper-base", "AUDIO_STT_MODEL=stale/model\nWHISPER_PORT=1\n", True),
+])
+def test_library_whisper_start_downloads_missing_model_and_reuses_cache(
+    tmp_path, monkeypatch, model, settings, override,
+):
+    calls = []
+    cached = set()
+
+    class ModelsHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            calls.append(("GET", self.path))
+            if self.path == "/v1/models":
+                self.send_response(200)
+            elif self.path.startswith("/v1/models/") and unquote(self.path[11:]) in cached:
+                self.send_response(200)
+            else:
+                self.send_response(404)
+            self.end_headers()
+
+        def do_POST(self):
+            calls.append(("POST", self.path))
+            if self.path.startswith("/v1/models/"):
+                cached.add(unquote(self.path[11:]))
+                self.send_response(200)
+            else:
+                self.send_response(404)
+            self.end_headers()
+
+        def log_message(self, *_args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), ModelsHandler)
+    worker = threading.Thread(target=server.serve_forever, daemon=True)
+    worker.start()
+    try:
+        (tmp_path / ".env").write_text(
+            settings + ("" if override else f"WHISPER_PORT={server.server_port}\n"),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(_mod, "INSTALL_DIR", tmp_path)
+        expected_path = "/v1/models/" + model.replace("/", "%2F")
+        compose_env = ({"AUDIO_STT_MODEL": model, "WHISPER_PORT": str(server.server_port)}
+                       if override else None)
+        assert _mod._whisper_model_ready_after_start(5, compose_env) == (True, "")
+        assert calls.count(("POST", expected_path)) == 1
+        assert _mod._whisper_model_ready_after_start(5, compose_env) == (True, "")
+        assert calls.count(("POST", expected_path)) == 1
+    finally:
+        server.shutdown()
+        server.server_close()
+        worker.join(timeout=5)
+
+
+def test_library_whisper_start_rejects_oversized_port_without_network(tmp_path, monkeypatch):
+    (tmp_path / ".env").write_text("WHISPER_PORT=" + "9" * 5000 + "\n", encoding="utf-8")
+    monkeypatch.setattr(_mod, "INSTALL_DIR", tmp_path)
+    assert _mod._whisper_model_ready_after_start(0)[0] is False
+
+
+def test_library_whisper_start_reports_permanent_model_rejection(tmp_path, monkeypatch):
+    class RejectingModelsHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200 if self.path == "/v1/models" else 404)
+            self.end_headers()
+
+        def do_POST(self):
+            self.send_response(404)
+            self.end_headers()
+
+        def log_message(self, *_args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), RejectingModelsHandler)
+    worker = threading.Thread(target=server.serve_forever, daemon=True)
+    worker.start()
+    try:
+        (tmp_path / ".env").write_text(
+            f"WHISPER_PORT={server.server_port}\n", encoding="utf-8",
+        )
+        monkeypatch.setattr(_mod, "INSTALL_DIR", tmp_path)
+        started = time.monotonic()
+        ok, error = _mod._whisper_model_ready_after_start(5)
+        assert not ok and "HTTP 404" in error
+        assert time.monotonic() - started < 2
+    finally:
+        server.shutdown()
+        server.server_close()
+        worker.join(timeout=5)
 
 
 def test_core_recreation_excludes_unrelated_secrets_but_keeps_overlays_and_dependencies(tmp_path, monkeypatch):
@@ -941,6 +1036,78 @@ class TestMacosDirectBindBridgeCollision:
 
 
 class TestResolveComposeFlags:
+
+    def test_reresolve_uses_persisted_gateway_route_without_upstream_url(
+        self, tmp_path, monkeypatch,
+    ):
+        install_dir = tmp_path / "ods"
+        scripts_dir = install_dir / "scripts"
+        scripts_dir.mkdir(parents=True)
+        (scripts_dir / "resolve-compose-stack.sh").write_text("#!/usr/bin/env bash\n")
+        upstream = "https://private.example.test/token-in-url"
+        (install_dir / ".env").write_text(
+            "ODS_MODE=local\nODS_GATEWAY_ONLY=true\nENABLE_OPEN_WEBUI=false\n"
+            f"EXTERNAL_LLM_URL={upstream}\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(_mod, "INSTALL_DIR", install_dir)
+        monkeypatch.setattr(_mod, "TIER", "1")
+        monkeypatch.setattr(_mod, "GPU_BACKEND", "nvidia")
+        monkeypatch.setattr(_mod, "GPU_COUNT", "1")
+        monkeypatch.setattr(_mod.platform, "system", lambda: "Linux")
+        monkeypatch.setattr(_mod, "_find_usable_bash", lambda: "/bin/bash")
+        monkeypatch.setenv("ODS_GATEWAY_ONLY", "false")
+        monkeypatch.setenv("ENABLE_OPEN_WEBUI", "true")
+        monkeypatch.setenv("EXTERNAL_LLM_URL", "http://stale.example.test")
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append((cmd, kwargs))
+            return subprocess.CompletedProcess(
+                args=cmd, returncode=0,
+                stdout="-f docker-compose.base.yml -f docker-compose.external-llm.yml\n",
+                stderr="",
+            )
+
+        monkeypatch.setattr(_mod.subprocess, "run", fake_run)
+        assert resolve_compose_flags()[-2:] == ["-f", "docker-compose.external-llm.yml"]
+        env = calls[0][1]["env"]
+        assert env["ODS_EXTERNAL_LLM_SELECTED"] == "true"
+        assert env["ODS_GATEWAY_ONLY"] == "true"
+        assert env["ENABLE_OPEN_WEBUI"] == "false"
+        assert "EXTERNAL_LLM_URL" not in env
+        assert upstream not in str(calls)
+
+    def test_reresolve_keeps_local_route_when_agent_environment_is_stale(
+        self, tmp_path, monkeypatch,
+    ):
+        install_dir = tmp_path / "ods"
+        scripts_dir = install_dir / "scripts"
+        scripts_dir.mkdir(parents=True)
+        (scripts_dir / "resolve-compose-stack.sh").write_text("#!/usr/bin/env bash\n")
+        (install_dir / ".env").write_text("ODS_MODE=local\n", encoding="utf-8")
+        monkeypatch.setattr(_mod, "INSTALL_DIR", install_dir)
+        monkeypatch.setattr(_mod, "TIER", "1")
+        monkeypatch.setattr(_mod, "GPU_BACKEND", "nvidia")
+        monkeypatch.setattr(_mod, "GPU_COUNT", "1")
+        monkeypatch.setattr(_mod.platform, "system", lambda: "Linux")
+        monkeypatch.setattr(_mod, "_find_usable_bash", lambda: "/bin/bash")
+        monkeypatch.setenv("EXTERNAL_LLM_URL", "http://stale.example.test")
+        monkeypatch.setenv("ODS_GATEWAY_ONLY", "true")
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append((cmd, kwargs))
+            return subprocess.CompletedProcess(
+                args=cmd, returncode=0, stdout="-f docker-compose.base.yml\n", stderr="",
+            )
+
+        monkeypatch.setattr(_mod.subprocess, "run", fake_run)
+        assert resolve_compose_flags() == ["-f", "docker-compose.base.yml"]
+        env = calls[0][1]["env"]
+        assert env["ODS_EXTERNAL_LLM_SELECTED"] == "false"
+        assert "EXTERNAL_LLM_URL" not in env
+        assert "ODS_GATEWAY_ONLY" not in env
 
     def test_windows_passes_host_python_to_bash_resolver(self, tmp_path, monkeypatch):
         install_dir = tmp_path / "ods"
@@ -6288,6 +6455,27 @@ class TestPrecreateDataDirs:
 
 
 class TestRootlessDataOwnershipRepair:
+    def test_whisper_uses_rootful_or_rootless_cache_preparation(self, tmp_path, monkeypatch):
+        helper = tmp_path / "lib" / "rootless-ownership.sh"
+        helper.parent.mkdir()
+        helper.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+        calls = []
+        monkeypatch.setattr(_mod, "INSTALL_DIR", tmp_path)
+        monkeypatch.setattr(_mod.platform, "system", lambda: "Linux")
+        monkeypatch.setattr(_mod, "_find_usable_bash", lambda: "/bin/bash")
+        monkeypatch.setattr(
+            _mod.subprocess, "run",
+            lambda cmd, **kwargs: calls.append(cmd) or subprocess.CompletedProcess(cmd, 0, "", ""),
+        )
+
+        _mod._repair_rootless_data_ownership("whisper")
+
+        assert calls == [[
+            "/bin/bash", "-c",
+            'source "$1"; ods_prepare_whisper_cache_ownership "$2"',
+            "ods-whisper-cache", str(helper), str(tmp_path),
+        ]]
+
     def test_runs_targeted_helper_for_builtin_linux_service(
         self, tmp_path, monkeypatch,
     ):
@@ -6340,6 +6528,8 @@ class TestRootlessDataOwnershipRepair:
     def test_failure_prevents_compose_start(self, monkeypatch):
         compose_calls = []
         monkeypatch.setattr(_mod, "resolve_compose_flags", lambda: ["-f", "base.yml"])
+        monkeypatch.setattr(_mod, "_prepare_hermes_route_for_start", lambda: (True, ""))
+        monkeypatch.setattr(_mod, "_prepare_hermes_persona_for_start", lambda: (True, ""))
         monkeypatch.setattr(_mod, "_precreate_data_dirs", lambda _sid: None)
         monkeypatch.setattr(
             _mod,

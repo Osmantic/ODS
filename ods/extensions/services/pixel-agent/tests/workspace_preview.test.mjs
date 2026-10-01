@@ -1,6 +1,20 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+test("writable output refusal explains narrowing permissions without changing the host", async () => {
+  const tool = createWorkspacePreviewTool({request: async () => ({
+    schemaVersion: 1, kind: 'ods-pixel-workspace-preview', status: 'failed',
+    boundary: testing.BOUNDARY, error: 'ODS workspace preview publication failed',
+    errorCode: 'writable_file',
+  })});
+  const result = await tool.execute('writable-build', {relativeDirectory: 'demo-site'});
+  assert.equal(result.isError, true);
+  assert.equal(result.details.errorCode, 'writable_file');
+  assert.match(result.content[0].text, /chmod go-w/);
+  assert.match(result.content[0].text, /Adding read or execute permission does not remove write permission/);
+  assert.match(result.content[0].text, /Do not change parent directories/);
+});
+
 import {
   createWorkspacePreviewTool,
   EMPTY_PUBLISHED_FILES_PREFIX,
@@ -33,6 +47,24 @@ function succeededResponse(overrides = {}) {
     ...overrides,
   };
 }
+
+test("accepts framework asset receipts without relaxing publication roots", async () => {
+  const paths = ["__next._full.txt", "_next/static/app.js", "index.html"];
+  const tool = createWorkspacePreviewTool({request: async () => succeededResponse({
+    publishedPaths: paths, publishedPathsOmitted: 0,
+    publishedEmptyPaths: ["__next._full.txt"], publishedEmptyPathsOmitted: 0,
+  })});
+  const result = await tool.execute("framework", {relativeDirectory: "demo-site"});
+  assert.equal(result.isError, undefined);
+  assert.equal(result.details.readbackVerified, true);
+  assert.throws(() => normalizeWorkspacePreviewParams({relativeDirectory: "_private"}));
+  for (const path of ["__ods_view__.html", "_next/../secret", "_next/.hidden", "__pycache__/cache.js"]) {
+    const bad = createWorkspacePreviewTool({request: async () => succeededResponse({
+      files: 2, publishedPaths: [path, "index.html"].sort(), publishedPathsOmitted: 0,
+    })});
+    assert.equal((await bad.execute("invalid", {relativeDirectory: "demo-site"})).isError, true);
+  }
+});
 
 test("normalizes only one bounded workspace-relative directory", () => {
   assert.deepEqual(normalizeWorkspacePreviewParams({ relativeDirectory: "demo-site" }), {
