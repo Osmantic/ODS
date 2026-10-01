@@ -49,6 +49,10 @@ declare -A SERVICE_SOCKET_ONLY  # service_id → "1" iff manifest sets socket_on
 declare -A SERVICE_NAMES        # service_id → display name
 declare -A SERVICE_SETUP_HOOKS  # service_id → absolute path to setup script
 declare -A SERVICE_GPU_BACKENDS # service_id → space-separated GPU backends (amd, nvidia, apple, cpu)
+# Service deployment type from the manifest (`type:` field). Defaults to
+# `docker` when the manifest omits it. Used by ods-cli to route lifecycle
+# commands to the correct backend (Docker compose vs. host systemd).
+declare -A SERVICE_TYPES        # service_id → docker|host-systemd
 declare -a SERVICE_IDS          # ordered list of all service IDs
 
 sr_load() {
@@ -227,6 +231,12 @@ for service_dir in _all_service_dirs:
             gpu_backends = ["amd", "nvidia", "apple"]
         backends_str = " ".join(str(b) for b in gpu_backends)
         print(f'SERVICE_GPU_BACKENDS["{_esc(sid)}"]="{_esc(backends_str)}"')
+        # Deployment type. Defaults to `docker` when the manifest omits it,
+        # so absence of a compose fragment is NOT used as host-type detection.
+        service_type = s.get("type", "docker")
+        if not isinstance(service_type, str) or not service_type:
+            service_type = "docker"
+        print(f'SERVICE_TYPES["{_esc(sid)}"]="{_esc(service_type)}"')
     except Exception as exc:
         print(f'# ERROR: failed to parse {manifest_path}: {exc}', file=sys.stderr)
         continue
