@@ -20,6 +20,87 @@ beforeEach(()=>{
 afterEach(()=>{vi.useRealTimers();vi.unstubAllGlobals()})
 const posts=()=>fetch.mock.calls.filter(([,options])=>options?.method==='POST')
 
+it.each([false,true])('keeps a cloud label diagnostic when available status loses runtime proof (opened: %s)',async opened=>{
+ vi.useFakeTimers()
+ const cloud={availability:'available',displayScope:'chat-a',runtimeSource:'remote-provider',activeModel:'cloud-model',runtimeFingerprint:'a'.repeat(64)}
+ const {rerender}=render(view(cloud))
+ if(opened)fireEvent.click(screen.getByRole('button',{name:'Choose model: cloud model'}))
+ const unknown={...cloud,runtimeSource:undefined,activeModel:'',runtimeFingerprint:undefined,runtimeObservation:null}
+ rerender(view(unknown))
+ const trigger=screen.getByRole('button',{name:'Last confirmed model: cloud model; model unverified'})
+ expect(trigger).toHaveTextContent('cloud model · unverified')
+ if(!opened)fireEvent.click(trigger)
+ await act(async()=>{await vi.advanceTimersByTimeAsync(60000)})
+ expect(screen.getByText('Model selection is not currently verified.')).toBeVisible()
+ expect(screen.queryByRole('menuitemradio',{checked:true})).toBeNull()
+ expect(screen.queryByText('No installed models found.')).toBeNull()
+ expect(fetch.mock.calls.filter(([url])=>url.startsWith('/api/models'))).toHaveLength(0)
+ expect(posts()).toHaveLength(0)
+ rerender(view({...unknown,displayScope:'chat-b'}))
+ expect(screen.getByRole('button',{name:'Model unverified'})).toBeVisible()
+ rerender(view({...cloud,displayScope:'chat-b',activeModel:'new-cloud-model',runtimeFingerprint:'b'.repeat(64),runtimeObservation:{}}))
+ expect(screen.getByRole('button',{name:'Choose model: new cloud model'})).toBeVisible()
+ rerender(view({...unknown,displayScope:'chat-b'}))
+ expect(screen.getByRole('button',{name:'Last confirmed model: new cloud model; model unverified'})).toBeVisible()
+})
+
+it('does not invent a selection on initially available status without runtime proof',()=>{
+ render(view({availability:'available',runtimeSource:undefined,activeModel:''}))
+ expect(screen.getByRole('button',{name:'Model unverified'})).toBeVisible()
+ expect(screen.queryByRole('button',{name:/Last confirmed/})).toBeNull()
+})
+
+it.each([false,true])('labels an unavailable cloud model only as last confirmed (menu opened: %s)',async opened=>{
+  vi.useFakeTimers()
+  const cloud={availability:'available',displayScope:'chat-a',runtimeSource:'remote-provider',activeModel:'cloud-model',runtimeFingerprint:'a'.repeat(64)}
+  const {rerender}=render(view(cloud))
+  if(opened)fireEvent.click(screen.getByRole('button',{name:'Choose model: cloud model'}))
+  rerender(view({...cloud,availability:'unavailable',runtimeSource:undefined,activeModel:'',runtimeFingerprint:undefined,busy:true}))
+  const trigger=screen.getByRole('button',{name:'Last confirmed model: cloud model; Portal unavailable'})
+  expect(trigger).toHaveTextContent('cloud model · unavailable')
+  if(!opened)fireEvent.click(trigger)
+  await act(async()=>{await vi.advanceTimersByTimeAsync(60000)})
+  expect(screen.getByText('Portal is unavailable. Model selection is not currently verified.')).toBeVisible()
+  expect(screen.queryByText('No installed models found.')).toBeNull()
+  expect(screen.queryByRole('menuitemradio',{checked:true})).toBeNull()
+  expect(fetch.mock.calls.filter(([url])=>url.startsWith('/api/models'))).toHaveLength(0)
+  expect(posts()).toHaveLength(0)
+  rerender(view(cloud))
+  expect(screen.getByRole('button',{name:'Choose model: cloud model'})).toBeVisible()
+})
+
+it('does not guess a model on an initially unavailable Portal',()=>{
+  render(view({availability:'unavailable',displayScope:'chat-a',runtimeSource:undefined,activeModel:''}))
+  expect(screen.getByRole('button',{name:'Model unavailable'})).toHaveTextContent('Model unavailable')
+  expect(screen.queryByRole('button',{name:/Last confirmed/})).toBeNull()
+})
+
+it.each(['scope','source','fingerprint'])('clears the diagnostic cloud label on a %s change',kind=>{
+  const cloud={availability:'available',displayScope:'chat-a',runtimeSource:'remote-provider',activeModel:'cloud-model',runtimeFingerprint:'a'.repeat(64)}
+  const {rerender}=render(view(cloud))
+  const changed={scope:{displayScope:'chat-b'},source:{runtimeSource:'local-switchboard'},fingerprint:{runtimeFingerprint:'b'.repeat(64)}}[kind]
+  rerender(view({...cloud,availability:'unavailable',activeModel:'',runtimeSource:undefined,...changed}))
+  expect(screen.getByRole('button',{name:'Model unavailable'})).toBeVisible()
+  rerender(view({...cloud,...changed,availability:'unavailable',activeModel:'',runtimeSource:undefined,runtimeFingerprint:undefined}))
+  expect(screen.getByRole('button',{name:'Model unavailable'})).toBeVisible()
+})
+
+it.each([false,true])('requires a fresh confirmed observation to restore the label after a chat change (fresh: %s)',fresh=>{
+  const observation={source:'remote-provider',model:'cloud-model'}
+  const cloud={availability:'available',displayScope:'chat-a',runtimeSource:'remote-provider',activeModel:'cloud-model',runtimeObservation:observation}
+  const {rerender}=render(view(cloud))
+  rerender(view({...cloud,displayScope:'chat-b'}))
+  if(fresh)rerender(view({...cloud,displayScope:'chat-b',runtimeObservation:{...observation}}))
+  rerender(view({...cloud,displayScope:'chat-b',availability:'unavailable',runtimeSource:undefined,activeModel:'',runtimeObservation:null}))
+  expect(screen.getByRole('button',{name:fresh?'Last confirmed model: cloud model; Portal unavailable':'Model unavailable'})).toBeVisible()
+})
+
+it('does not treat a fresh observation alone as available cloud proof',()=>{
+  const {rerender}=render(view({availability:'unavailable',displayScope:'chat-a',runtimeSource:'remote-provider',activeModel:'cloud-model',runtimeObservation:{}}))
+  rerender(view({availability:'unavailable',displayScope:'chat-a',runtimeSource:'remote-provider',activeModel:'cloud-model',runtimeObservation:{}}))
+  expect(screen.getByRole('button',{name:'Model unavailable'})).toBeVisible()
+})
+
 it('keeps recovery accessible for an unknown model source and observes it after closing the menu',async()=>{
   let resolveRecovery
   const state={pending:true,phase:'applied',transactionId:'a'.repeat(64)}
@@ -31,10 +112,11 @@ it('keeps recovery accessible for an unknown model source and observes it after 
     return {ok:true,json:async()=>payload()}
   }))
   const switching=vi.fn(),settled=vi.fn()
-  render(view({runtimeSource:undefined,onSwitchingChange:switching,onSettled:settled}))
+  const {rerender}=render(view({runtimeSource:undefined,onSwitchingChange:switching,onSettled:settled}))
   await open()
   fireEvent.click(await screen.findByRole('button',{name:'Recover model switch'}))
   expect(switching).toHaveBeenLastCalledWith(true)
+  rerender(view({runtimeSource:'remote-provider',activeModel:'cloud-model',onSwitchingChange:switching,onSettled:settled}))
   fireEvent.keyDown(window,{key:'Escape'})
   expect(screen.queryByRole('dialog')).toBeNull()
   expect(switching).toHaveBeenLastCalledWith(true)
@@ -211,10 +293,124 @@ it('prevents a pending confirmation from switching models after a task starts',a
 it('routes remote-provider conversations to their settings instead of switching an unrelated local model',async()=>{
   render(view({runtimeSource:'remote-provider',activeModel:'gpt-5.2'}))
   fireEvent.click(screen.getByRole('button',{name:'Choose model: gpt 5.2'}))
-  await waitFor(()=>expect(screen.getByRole('menuitemradio',{name:/Qwen 3.5 2B/})).toBeDisabled())
+  expect(screen.queryByRole('menuitemradio',{name:/Qwen 3.5 2B/})).toBeNull()
   expect(screen.getByRole('link',{name:'Provider settings'})).toHaveAttribute('href','/pixel/settings?section=connections')
   expect(screen.getByRole('menuitemradio',{name:/gpt 5.2/})).toHaveAttribute('aria-checked','true')
   expect(posts()).toHaveLength(0)
+})
+
+it('does not report a catalog activation as switching for a confirmed cloud runtime',async()=>{
+  lifecycle={active:true,operation:'model_activation',modelId:target}
+  const switching=vi.fn()
+  const {rerender}=render(view({onSwitchingChange:switching}))
+  await open()
+  expect(switching).toHaveBeenLastCalledWith(true)
+  rerender(view({runtimeSource:'remote-provider',activeModel:'cloud-model',onSwitchingChange:switching}))
+  expect(switching).toHaveBeenLastCalledWith(false)
+  expect(screen.queryByText('Switching…')).toBeNull()
+})
+
+it('opens and reopens cloud settings without starting local catalog observation',async()=>{
+  vi.useFakeTimers()
+  render(view({runtimeSource:'remote-provider',activeModel:'cloud-model'}))
+  const trigger=screen.getByRole('button',{name:'Choose model: cloud model'})
+  fireEvent.click(trigger)
+  await act(async()=>{})
+  expect(screen.getByRole('link',{name:'Provider settings'})).toBeVisible()
+  expect(screen.queryByText('Loading models…')).toBeNull()
+  fireEvent.click(screen.getByRole('button',{name:'Choose model: cloud model'}))
+  fireEvent.click(screen.getByRole('button',{name:'Choose model: cloud model'}))
+  await act(async()=>{await vi.advanceTimersByTimeAsync(90000)})
+  expect(fetch.mock.calls.filter(([url])=>url.startsWith('/api/models'))).toHaveLength(0)
+})
+
+it.each(['local-switchboard','external-host'])('resumes catalog observation when cloud changes to %s',async source=>{
+  vi.useFakeTimers()
+  const {rerender}=render(view({runtimeSource:'remote-provider',activeModel:'cloud-model'}))
+  fireEvent.click(screen.getByRole('button',{name:'Choose model: cloud model'}))
+  await act(async()=>{})
+  expect(fetch.mock.calls.filter(([url])=>url==='/api/models')).toHaveLength(0)
+  rerender(view({runtimeSource:source}))
+  await act(async()=>{})
+  expect(fetch.mock.calls.filter(([url])=>url==='/api/models')).toHaveLength(1)
+  await act(async()=>{await vi.advanceTimersByTimeAsync(30000)})
+  expect(fetch.mock.calls.filter(([url])=>url==='/api/models')).toHaveLength(2)
+  rerender(view({runtimeSource:'remote-provider',activeModel:'cloud-model'}))
+  await act(async()=>{await vi.advanceTimersByTimeAsync(60000)})
+  expect(fetch.mock.calls.filter(([url])=>url==='/api/models')).toHaveLength(2)
+})
+
+it('remembers cloud before the first menu opening during a status outage',async()=>{
+  vi.useFakeTimers()
+  const {rerender}=render(view({runtimeSource:'remote-provider',activeModel:'cloud-model'}))
+  rerender(view({runtimeSource:undefined,activeModel:''}))
+  fireEvent.click(screen.getByRole('button',{name:'Choose model: Choose model'}))
+  await act(async()=>{await vi.advanceTimersByTimeAsync(60000)})
+  expect(fetch.mock.calls.filter(([url])=>url.startsWith('/api/models'))).toHaveLength(0)
+  expect(screen.getByText('The conversation’s model source is not confirmed.')).toBeVisible()
+  expect(screen.queryByRole('button',{name:'Switch model',exact:true})).toBeNull()
+  rerender(view({runtimeSource:'local-switchboard'}))
+  await act(async()=>{})
+  expect(fetch.mock.calls.filter(([url])=>url==='/api/models')).toHaveLength(1)
+  expect(screen.getByRole('menuitemradio',{name:/Qwen 3.5 2B/})).toBeEnabled()
+})
+
+it('keeps local catalog reads suppressed through a cloud status outage without authorizing a switch',async()=>{
+  vi.useFakeTimers()
+  const {rerender}=render(view({runtimeSource:'remote-provider',activeModel:'cloud-model'}))
+  fireEvent.click(screen.getByRole('button',{name:'Choose model: cloud model'}))
+  await act(async()=>{})
+  rerender(view({runtimeSource:undefined,activeModel:''}))
+  expect(screen.getByText('The conversation’s model source is not confirmed.')).toBeVisible()
+  fireEvent.click(screen.getByRole('button',{name:'Choose model: Choose model'}))
+  fireEvent.click(screen.getByRole('button',{name:'Choose model: Choose model'}))
+  await act(async()=>{await vi.advanceTimersByTimeAsync(60000)})
+  rerender(view({runtimeSource:'remote-provider',activeModel:'cloud-model'}))
+  await act(async()=>{await vi.advanceTimersByTimeAsync(30000)})
+  expect(fetch.mock.calls.filter(([url])=>url.startsWith('/api/models'))).toHaveLength(0)
+  expect(screen.queryByRole('button',{name:'Switch model',exact:true})).toBeNull()
+})
+
+it('keeps confirming an accepted local activation after switching to a cloud route',async()=>{
+  vi.useFakeTimers()
+  const switching=vi.fn(),settled=vi.fn()
+  const {rerender}=render(view({onSwitchingChange:switching,onSettled:settled}))
+  fireEvent.click(screen.getByRole('button',{name:'Choose model: Qwen 3.5 4B'}))
+  await act(async()=>{})
+  fireEvent.click(screen.getByRole('menuitemradio',{name:/Qwen 3.5 2B/}))
+  fireEvent.click(screen.getByRole('button',{name:'Switch model',exact:true}))
+  await act(async()=>{})
+  rerender(view({runtimeSource:'remote-provider',activeModel:'cloud-model',onSwitchingChange:switching,onSettled:settled}))
+  expect(switching).toHaveBeenLastCalledWith(true)
+  current=target;ready=null
+  await act(async()=>{await vi.advanceTimersByTimeAsync(5000)})
+  expect(settled).not.toHaveBeenCalled()
+  ready=target
+  await act(async()=>{await vi.advanceTimersByTimeAsync(5000)})
+  expect(settled).toHaveBeenCalledOnce()
+  expect(switching).toHaveBeenLastCalledWith(false)
+  const reads=fetch.mock.calls.filter(([url])=>url==='/api/models').length
+  await act(async()=>{await vi.advanceTimersByTimeAsync(60000)})
+  expect(fetch.mock.calls.filter(([url])=>url==='/api/models')).toHaveLength(reads)
+  expect(posts()).toHaveLength(1)
+})
+
+it('keeps a submitted local mutation busy after the runtime changes to cloud and preserves its error',async()=>{
+  let finish
+  postResult=new Promise(resolve=>{finish=resolve})
+  const switching=vi.fn()
+  const {rerender}=render(view({availability:'available',displayScope:'chat-a',onSwitchingChange:switching}))
+  await open()
+  fireEvent.click(screen.getByRole('menuitemradio',{name:/Qwen 3.5 2B/}))
+  fireEvent.click(screen.getByRole('button',{name:'Switch model',exact:true}))
+  rerender(view({availability:'available',displayScope:'chat-a',runtimeSource:'remote-provider',activeModel:'cloud-model',onSwitchingChange:switching}))
+  rerender(view({availability:'unavailable',displayScope:'chat-b',runtimeSource:undefined,activeModel:'',busy:true,onSwitchingChange:switching}))
+  expect(screen.getByRole('button',{name:'Model unavailable'})).toBeVisible()
+  expect(switching).toHaveBeenLastCalledWith(true)
+  await act(async()=>finish({ok:false,status:409,json:async()=>({detail:'Local mutation failed'})}))
+  expect(screen.getByRole('alert')).toHaveTextContent('Local mutation failed')
+  expect(switching).toHaveBeenLastCalledWith(false)
+  expect(posts()).toHaveLength(1)
 })
 
 it('identifies a fixed external-host model and never offers a local switch',async()=>{
