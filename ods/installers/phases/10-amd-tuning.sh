@@ -177,7 +177,8 @@ GTT_EOF
             if _phase10_privileged cp "$_gtt_tmp" /etc/modprobe.d/amdgpu_llm_optimized.conf 2>/dev/null; then
                 # Rebuild initramfs so the new modprobe config takes effect on next boot.
                 _phase10_privileged update-initramfs -u >> "$LOG_FILE" 2>&1 || \
-                    _phase10_privileged dracut --force >> "$LOG_FILE" 2>&1 || true
+                    _phase10_privileged dracut --force >> "$LOG_FILE" 2>&1 || \
+                    _phase10_privileged mkinitcpio -P >> "$LOG_FILE" 2>&1 || true
                 ai_ok "GTT memory tuning installed (gttsize=${gtt_size}MB of ${total_ram_mb}MB, ${gtt_pct}%)"
                 _amd_needs_reboot=true
             else
