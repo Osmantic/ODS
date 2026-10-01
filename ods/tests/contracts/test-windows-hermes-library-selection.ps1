@@ -63,6 +63,37 @@ try {
     $menu = Resolve-ODSWindowsHermesSelection -InstallDir $installDir -ComputedHermes $false -MenuExplicit $true
     Assert-Selection (-not $menu.Hermes -and -not $menu.Proxy) "Explicit Core menu choice was ignored"
 
+    $choices = @(
+        @{ Name = "quiet"; Flags = @{} },
+        @{ Name = "enable"; Flags = @{ CliEnable = $true } },
+        @{ Name = "disable"; Flags = @{ CliDisable = $true } },
+        @{ Name = "all"; Flags = @{ All = $true } },
+        @{ Name = "menu"; Flags = @{ MenuExplicit = $true } }
+    )
+    foreach ($ambiguous in @(
+        @{ Service = "hermes"; AddedMarker = "$hermesActive.disabled" },
+        @{ Service = "hermes-proxy"; AddedMarker = $proxyActive }
+    )) {
+        Set-Content -LiteralPath $ambiguous.AddedMarker -Value "services: {}"
+        $markers = @($hermesActive, "$hermesActive.disabled", $proxyActive, "$proxyActive.disabled", $sentinel)
+        $beforeHashes = @($markers | Where-Object { Test-Path -LiteralPath $_ } | ForEach-Object {
+            "$_|$((Get-FileHash -LiteralPath $_ -Algorithm SHA256).Hash)"
+        }) -join "|"
+        foreach ($choice in $choices) {
+            $args = @{ InstallDir = $installDir; ComputedHermes = $false }
+            foreach ($flag in $choice.Flags.GetEnumerator()) { $args[$flag.Key] = $flag.Value }
+            $rejected = $false
+            try { $null = Resolve-ODSWindowsHermesSelection @args }
+            catch { $rejected = $_.Exception.Message -like "Ambiguous installed $($ambiguous.Service) selection:*" }
+            Assert-Selection $rejected "Ambiguous $($ambiguous.Service) markers bypassed by $($choice.Name) choice"
+            $afterHashes = @($markers | Where-Object { Test-Path -LiteralPath $_ } | ForEach-Object {
+                "$_|$((Get-FileHash -LiteralPath $_ -Algorithm SHA256).Hash)"
+            }) -join "|"
+            Assert-Selection ($beforeHashes -eq $afterHashes) "Rejected $($choice.Name) choice changed markers or data"
+        }
+        Remove-Item -LiteralPath $ambiguous.AddedMarker -Force
+    }
+
     Move-Item -LiteralPath $hermesActive -Destination "$hermesActive.disabled"
     Move-Item -LiteralPath "$proxyActive.disabled" -Destination $proxyActive
     $before = @(Get-ChildItem -LiteralPath $hermesDir, $proxyDir -File | Select-Object -ExpandProperty FullName | Sort-Object)
