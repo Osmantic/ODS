@@ -900,7 +900,11 @@ LLAMA_ARG_CACHE_RAM=512
 
 These are an example qualification profile, not universal defaults. An unset
 `LLAMA_ARG_CTX_CHECKPOINTS` now means 32 checkpoints on the default runtime,
-not the b8210 default of 8. Checkpoint reduction was never qualified, and more
+not the b8210 default of 8, or 64 per slot with the shared-slot layout
+(`--parallel 2 --kv-unified --cache-ram 0`) that hybrid catalog models get on
+Macs with at most 16 GiB; see `extensions/services/llama-server/README.md`.
+Setting `LLAMA_ARG_CTX_CHECKPOINTS`, `LLAMA_ARG_CACHE_RAM` or `LLAMA_PARALLEL`
+turns that layout off. Checkpoint reduction was never qualified, and more
 checkpoints are: on the Mac mini M4 with Qwen3.5-9B and b8210, editing turn 3's
 tool result after 12 appended tool turns took 84.3 s with 8 checkpoints and
 33.4 s with 32 (9,092 of 14,410 prompt tokens reused). Appends cost the same

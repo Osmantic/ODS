@@ -721,16 +721,16 @@ start_native_llama() {
     if [[ "$MACOS_NATIVE_PROFILE" == true ]]; then
         llama_args+=(--reasoning-format "$reasoning_fmt" "${MACOS_NATIVE_PROFILE_ARGS[@]}")
     else
-    llama_args+=(--parallel "${ENV_LLAMA_PARALLEL:-1}")
     [[ -n "${ENV_LLAMA_ARG_FLASH_ATTN:-}" ]] && llama_args+=(--flash-attn "$ENV_LLAMA_ARG_FLASH_ATTN")
     [[ -n "${ENV_LLAMA_ARG_CACHE_TYPE_K:-}" ]] && llama_args+=(--cache-type-k "$ENV_LLAMA_ARG_CACHE_TYPE_K")
     [[ -n "${ENV_LLAMA_ARG_CACHE_TYPE_V:-}" ]] && llama_args+=(--cache-type-v "$ENV_LLAMA_ARG_CACHE_TYPE_V")
     [[ -n "${ENV_LLAMA_ARG_N_CPU_MOE:-}" ]] && llama_args+=(--n-cpu-moe "$ENV_LLAMA_ARG_N_CPU_MOE")
     [[ -n "${ENV_LLAMA_ARG_SPEC_TYPE:-}" ]] && llama_args+=(--spec-type "$ENV_LLAMA_ARG_SPEC_TYPE")
-    # Draft flags, --ctx-checkpoints 32, the ngram-mod default and the reasoning
+    # --parallel (LLAMA_PARALLEL or the default slot layout for this model),
+    # draft flags, --ctx-checkpoints, the ngram-mod default and the reasoning
     # flags (--reasoning on b9014, else this --reasoning-format) are spelled
     # for, and only added when supported by, the selected runtime.
-    macos_resolve_checkpoint_args "$INSTALL_DIR" "$LLAMA_SERVER_BIN" "$reasoning_fmt" || return 1
+    macos_resolve_checkpoint_args "$INSTALL_DIR" "$LLAMA_SERVER_BIN" "$reasoning_fmt" "$model_path" || return 1
     llama_args+=(${MACOS_NATIVE_CHECKPOINT_ARGS[@]+"${MACOS_NATIVE_CHECKPOINT_ARGS[@]}"})
     fi
 
