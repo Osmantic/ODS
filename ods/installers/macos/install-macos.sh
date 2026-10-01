@@ -3770,7 +3770,7 @@ if $CLOUD_MODE || $GATEWAY_ONLY; then
     if $GATEWAY_ONLY && [[ "$_cloud_auth_ok" == true ]]; then
         _gateway_smoke_body="$(python3 - <<'PY'
 import json
-print(json.dumps({"model": "ods/current", "messages": [{"role": "user", "content": "Reply with OK."}], "max_tokens": 64, "stream": False}))
+print(json.dumps({"model": "ods/current", "messages": [{"role": "user", "content": "Reply with OK."}], "max_tokens": 256, "stream": False}))
 PY
 )"
         _gateway_smoke_response="$(curl -fsS --connect-timeout 5 --max-time 120 \
