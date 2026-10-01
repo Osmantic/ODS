@@ -51,6 +51,17 @@ try {
         [string]::IsNullOrWhiteSpace($observeEnv['OPEN_WEBUI_LLM_BASE_URL']) -and
         [string]::IsNullOrWhiteSpace($observeEnv['OPEN_WEBUI_LLM_API_KEY'])) 'Observe install retained an orphaned gateway route'
 
+    $amdObserve = Join-Path $scratch 'amd-observe'
+    New-Item -ItemType Directory -Path $amdObserve -Force | Out-Null
+    New-ODSEnv -InstallDir $amdObserve -TierConfig $tier -Tier 'SH' -GpuBackend 'amd' `
+        -ODSMode 'local' -AmdInferenceRuntime 'lemonade' -AmdInferenceLocation 'host' `
+        -AmdInferencePort '8080' -SwitchboardMode 'observe' -SystemRamGB 32 | Out-Null
+    $amdEnv = Read-Route $amdObserve
+    $amdPlan = New-ODSWindowsServicePlan -EnableRecommended $false -EnableHermes $true `
+        -UseLemonade $true -SwitchboardMode (Get-ODSWindowsEffectiveSwitchboardMode -InstallDir $amdObserve)
+    Assert-Route ($amdEnv['HERMES_LLM_BASE_URL'] -eq 'http://litellm:4000/v1' -and
+        $amdPlan['litellm'].Enabled) 'AMD observe agent route lost its gateway'
+
     $cloudCore = Join-Path $scratch 'cloud-core'
     New-Item -ItemType Directory -Path $cloudCore -Force | Out-Null
     New-ODSEnv -InstallDir $cloudCore -TierConfig $tier -Tier 'CLOUD' -GpuBackend 'none' `

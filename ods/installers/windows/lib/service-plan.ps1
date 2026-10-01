@@ -57,6 +57,7 @@ function New-ODSWindowsServicePlan {
         [bool]$EnableODSProxy = $false,
         [bool]$EnableRemoteAccess = $false,
         [bool]$CloudMode = $false,
+        [bool]$UseLemonade = $false,
         [string]$SwitchboardMode = "enabled"
     )
 
@@ -69,7 +70,10 @@ function New-ODSWindowsServicePlan {
         -EnableOpenClaw $EnableOpenClaw
     # Native OpenCode and the switchboard readiness check use LiteLLM's host
     # port. Keep this gateway whenever the stable ods/current route is enabled.
-    $needsLiteLlm = ($EnableRecommended -or $CloudMode -or $SwitchboardMode -eq "enabled")
+    # Lemonade's legacy AMD path still feeds opted-in Hermes and Perplexica
+    # through LiteLLM when the switchboard itself is in observe/legacy mode.
+    $needsLiteLlm = ($EnableRecommended -or $CloudMode -or $SwitchboardMode -eq "enabled" -or
+        ($UseLemonade -and ($EnableHermes -or $EnableDeepResearch)))
     $plan["litellm"] = New-ODSWindowsServicePlanEntry "litellm" $needsLiteLlm "gateway" "LiteLLM gateway not required"
     $plan["searxng"] = New-ODSWindowsServicePlanEntry "searxng" $enableSearxng "search" "web search backend not required"
     $plan["token-spy"] = New-ODSWindowsServicePlanEntry "token-spy" $EnableRecommended "recommended" "recommended services not enabled"

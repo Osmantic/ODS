@@ -999,6 +999,7 @@ litellm_settings:
         $servicePlan = New-ODSWindowsServicePlan `
             -EnableRecommended $enableRecommended `
             -CloudMode $cloudMode `
+            -UseLemonade $useLemonade `
             -SwitchboardMode (Get-ODSWindowsEffectiveSwitchboardMode -InstallDir $installDir -RequestedMode $env:ODS_MODEL_SWITCHBOARD) `
             -EnableVoice $enableVoice `
             -EnableWorkflows $enableWorkflows `
@@ -2113,6 +2114,7 @@ if ($dryRun) {
     $_dryRunServicePlan = New-ODSWindowsServicePlan `
         -EnableRecommended $enableRecommended `
         -CloudMode $cloudMode `
+        -UseLemonade $useLemonade `
         -SwitchboardMode (Get-ODSWindowsEffectiveSwitchboardMode -InstallDir $installDir -RequestedMode $env:ODS_MODEL_SWITCHBOARD) `
         -EnableVoice $enableVoice `
         -EnableWorkflows $enableWorkflows `

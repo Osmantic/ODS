@@ -130,8 +130,11 @@ try {
     }
     [IO.File]::WriteAllText((Join-Path $switchboardCore '.env'),
         "ODS_MODE=local`nODS_MODEL_SWITCHBOARD=observe`nOPEN_WEBUI_LLM_BASE_URL=http://litellm:4000`n")
-    if ((Invoke-Selection -Path $switchboardCore).Recommended) {
-        throw 'Switchboard-to-observe rerun expanded the gateway into Recommended services'
+    if ((Get-ODSWindowsInstalledFeatureSelection -InstallDir $switchboardCore).Kind -ne 'unknown') {
+        throw 'Ambiguous switchboard-to-observe gateway selection did not fail closed'
+    }
+    if ((Invoke-Selection -Path $switchboardCore -Interactive $true -MenuAnswer '2').Recommended) {
+        throw 'Explicit Core choice during switchboard-to-observe transition enabled Recommended services'
     }
     $partialLocalGateway = Join-Path $scratch 'partial-local-gateway'
     Set-InstalledFixture -Path $partialLocalGateway -Services @('litellm')
@@ -182,6 +185,13 @@ try {
     if (-not $plan['litellm'].Enabled) { throw 'Native Core lost its switchboard gateway' }
     $observePlan = New-ODSWindowsServicePlan -EnableRecommended $false -SwitchboardMode 'observe'
     if ($observePlan['litellm'].Enabled) { throw 'Observe mode selected an unnecessary gateway' }
+    $amdHermesPlan = New-ODSWindowsServicePlan -EnableRecommended $false -SwitchboardMode 'observe' `
+        -UseLemonade $true -EnableHermes $true
+    $amdResearchPlan = New-ODSWindowsServicePlan -EnableRecommended $false -SwitchboardMode 'observe' `
+        -UseLemonade $true -EnableDeepResearch $true
+    if (-not $amdHermesPlan['litellm'].Enabled -or -not $amdResearchPlan['litellm'].Enabled) {
+        throw 'Opted-in AMD observe consumers lost their LiteLLM provider'
+    }
     $cloudPlan = New-ODSWindowsServicePlan -EnableRecommended $false -CloudMode $true
     if (-not $cloudPlan['litellm'].Enabled -or $cloudPlan['token-spy'].Enabled -or $cloudPlan['searxng'].Enabled) {
         throw 'Cloud Core did not select only its required gateway'
