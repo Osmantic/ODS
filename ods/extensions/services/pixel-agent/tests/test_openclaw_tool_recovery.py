@@ -504,6 +504,11 @@ def test_unchanged_compaction_repair_checks_its_dependency(compaction_installati
 @pytest.mark.parametrize('environment,manifest_name,module_name', [
     ('OPENCLAW_TOOL_SEARCH_MODULE', 'openclaw-image-envelope.json', repair_module.IMAGE_MODULE),
     ('OPENCLAW_SELECTION_MODULE', 'openclaw-compaction-budget.json', repair_module.COMPACTION_BUDGET_MODULE),
+    ('OPENCLAW_HOOK_CONTEXT_MODULE', 'openclaw-hook-provenance.json', repair_module.HOOK_PROVENANCE_MODULE),
+    ('OPENCLAW_ATTEMPT_EXECUTION_MODULE', 'openclaw-context-usage.json', repair_module.CONTEXT_USAGE_MODULE),
+    ('OPENCLAW_EMBEDDED_AGENT_MODULE', 'openclaw-yield-usage.json', repair_module.YIELD_USAGE_MODULE),
+    ('OPENCLAW_CORE_PROXY_MODULE', 'openclaw-compaction-empty.json', repair_module.COMPACTION_EMPTY_MODULE),
+    ('OPENCLAW_COMPACT_MODULE', 'openclaw-compaction-no-work.json', repair_module.COMPACTION_NO_WORK_MODULE),
     ('OPENCLAW_READ_MODULE', 'openclaw-read-range.json', repair_module.READ_RANGE_MODULE),
     ('OPENCLAW_TRUNCATION_MODULE', 'openclaw-tool-result-projection.json', repair_module.TOOL_RESULT_PROJECTION_MODULE),
     ('OPENCLAW_COMPACTION_RESUME_MODULE', 'openclaw-compaction-resume.json', repair_module.COMPACTION_RESUME_MODULE),

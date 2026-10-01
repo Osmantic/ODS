@@ -30,6 +30,7 @@ function Get-ODSWslIdentity { param($Distro,$InstallRoot)
 }
 function Get-ScheduledTask { param($TaskName,$ErrorAction)
     if($TaskName -ceq ($identity.taskName+'-Startup')){return $script:startupTask}
+    if($TaskName -ceq ($identity.taskName+'-Relay')){return $null} # no relay in this startup fixture
     if($TaskName -cne $identity.taskName){throw 'Unexpected task lookup'}
     [pscustomobject]@{
         Actions=@([pscustomobject]@{Execute=(Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe');Arguments=(Get-ODSWslTaskArguments $identity)})
@@ -249,7 +250,7 @@ try {
     $parameterNames=@([Management.Automation.Language.Parser]::ParseFile(
         (Join-Path $PSScriptRoot '../../installers/wsl-lifecycle.ps1'),[ref]$null,[ref]$null
     ).ParamBlock.Parameters | ForEach-Object { $_.Name.VariablePath.UserPath })
-    Check (($parameterNames -join ',') -ceq 'Action,Distro,InstallRoot,InstanceDirectory,ValidateOnly,StateRoot,DockerDesktopPath') 'public script preserves all legacy positional parameters before the new optional Docker path'
+    Check (($parameterNames -join ',') -ceq 'Action,Distro,InstallRoot,InstanceDirectory,ValidateOnly,StateRoot,DockerDesktopPath,RetireRelay') 'public script preserves all existing positional parameters before the optional relay retirement flag'
     Write-Host "Passed $count startup contracts; no WSL Docker Scheduler or service action ran."
 } finally {
     if(Test-Path -LiteralPath $fixture){

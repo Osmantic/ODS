@@ -55,3 +55,18 @@ test('observing an old job does not adopt it for a new run Stop', async () => {
   assert.equal(await control.cancel(scope),true);
   assert.deepEqual(actions,['observe']);
 });
+
+test('read-only capability queries cannot adopt jobs or leave unknown execution on Stop', async () => {
+  const control = createProjectRunControl();
+  const query = {action:'capabilities',runtime:'python'};
+  let reject;
+  control.before({toolName:name,params:query},{...scope,toolCallId:'caps'});
+  const request = control.bind('caps',query,scope,()=>new Promise((_, failure)=>{reject=failure;}));
+  const pending = request(normalizeProjectBuild(query),{});
+  assert.equal(await control.cancel(scope),true);
+  reject(Error('probe lost'));
+  await assert.rejects(pending);
+  assert.equal(await control.cancel(scope),true);
+  assert.throws(()=>request(normalizeProjectBuild(params),{}),/cannot execute/);
+  assert.throws(()=>control.bind('caps',query,scope,()=>{}),/not bound/);
+});

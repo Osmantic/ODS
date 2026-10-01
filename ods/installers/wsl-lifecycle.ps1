@@ -2,15 +2,17 @@
 # functions only. The separate native Windows/Docker Desktop path does not use it.
 [CmdletBinding()]
 param(
-    [ValidateSet('start','status','stop','restart','release','hold','autostart','disable-startup','enable-startup')][string]$Action = 'status',
+    [ValidateSet('start','status','stop','restart','release','hold','relay-hold','autostart','disable-startup','enable-startup')][string]$Action = 'status',
     [string]$Distro,
     [string]$InstallRoot,
     [string]$InstanceDirectory,
     [switch]$ValidateOnly,
     [string]$StateRoot,
-    [string]$DockerDesktopPath
+    [string]$DockerDesktopPath,
+    [switch]$RetireRelay
 )
 $ErrorActionPreference = 'Stop'
+if ($RetireRelay -and $Action -ne 'disable-startup') { throw 'RetireRelay is supported only for disable-startup' }
 $script:ODSWslLifecycleSource = $PSCommandPath
 $script:ODSWslStartupDeadline = $null
 $script:ODSWslStartupIdentity = $null
@@ -155,37 +157,183 @@ function Stop-ODSOwnedProcess($Expected) {
     if (-not $process.WaitForExit(10000)) { throw 'Owned WSL client did not exit' }
 }
 
+function Get-ODSWslRelayTaskArguments($Identity) {
+    $arguments='-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "{0}" -Action relay-hold -InstanceDirectory "{1}"' -f (Join-Path $Identity.directory 'relay-controller.ps1'),$Identity.directory
+    if ($script:ODSWslStateRoot) { $arguments += ' -StateRoot "{0}"' -f $script:ODSWslStateRoot }
+    $arguments
+}
+
+function Assert-ODSWslRelayTask($Identity) {
+    $task=Get-ScheduledTask -TaskName ($Identity.taskName+'-Relay') -ErrorAction SilentlyContinue
+    if (-not $task) { throw 'Owned WSL relay task is missing' }
+    $expectedExe=Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\v1.0\powershell.exe'
+    $sid=$task.Principal.UserId
+    if ($sid -notmatch '^S-1-') { $sid=([Security.Principal.NTAccount]::new($sid)).Translate([Security.Principal.SecurityIdentifier]).Value }
+    if (@($task.Actions).Count -ne 1 -or $task.Actions[0].Execute -ine $expectedExe -or
+        $task.Actions[0].Arguments -cne (Get-ODSWslRelayTaskArguments $Identity) -or
+        @($task.Triggers | Where-Object { $null -ne $_ }).Count -ne 0 -or
+        $sid -ine $Identity.ownerSid -or $task.Principal.LogonType -ne 'Interactive' -or
+        $task.Principal.RunLevel -ne 'Limited' -or $task.Settings.ExecutionTimeLimit -ne 'PT0S' -or
+        $task.Settings.RestartCount -ne 0 -or $task.Settings.MultipleInstances -ne 'IgnoreNew') {
+        throw 'WSL relay task identity changed; no task or process was modified'
+    }
+    $task
+}
+
 function Start-ODSWslAgentRelay($Identity) {
+    $null=Assert-ODSWslManifest $Identity
     $source=Join-Path (Split-Path -Parent $script:ODSWslLifecycleSource) 'wsl-agent-relay.ps1'
     if (-not (Test-Path -LiteralPath $source -PathType Leaf)) { throw 'ODS WSL agent relay source is missing' }
     $destination=Join-Path $Identity.directory 'agent-relay.ps1'
+    $controller=Join-Path $Identity.directory 'relay-controller.ps1'
     $recordPath=Join-Path $Identity.directory 'agent-relay-process.json'
+    $taskName=$Identity.taskName+'-Relay'
+    $task=Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+    if ($task) { $task=Assert-ODSWslRelayTask $Identity }
     $record=Read-ODSWslJson $recordPath
-    if ($record -and (Test-ODSProcessIdentity $record (Get-ODSProcessIdentity $record.pid))) {
-        if (Test-Path -LiteralPath $destination -PathType Leaf) {
-            Assert-ODSPrivatePath $destination
-            if ((Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash -ceq (Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash) { return }
-        }
-        Stop-ODSOwnedProcess $record
+    $runtime=Read-ODSWslJson (Join-Path $Identity.directory 'relay-runtime.json')
+    $request=Read-ODSWslJson (Join-Path $Identity.directory 'relay-request.json')
+    # A legacy caller-owned process is not durable, even when its source matches.
+    if ($task -and $task.State -eq 'Running' -and $request -and $request.action -eq 'run' -and
+        $runtime -and $runtime.generation -ceq $request.generation -and $runtime.state -eq 'running' -and
+        (Test-ODSProcessIdentity $runtime.controller (Get-ODSProcessIdentity $runtime.controller.pid)) -and
+        (Test-ODSProcessIdentity $record $runtime.child) -and
+        (Test-ODSProcessIdentity $record (Get-ODSProcessIdentity $record.pid)) -and
+        (Test-Path -LiteralPath $destination -PathType Leaf) -and (Test-Path -LiteralPath $controller -PathType Leaf)) {
+        Assert-ODSPrivatePath $destination
+        Assert-ODSPrivatePath $controller
+        if ((Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash -ceq (Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash -and
+            (Get-FileHash -LiteralPath $script:ODSWslLifecycleSource -Algorithm SHA256).Hash -ceq (Get-FileHash -LiteralPath $controller -Algorithm SHA256).Hash) { return }
     }
-    if ($record) { Remove-Item -LiteralPath $recordPath -Force }
+    Stop-ODSWslAgentRelay $Identity
     Write-ODSPrivateBytes $destination ([IO.File]::ReadAllBytes($source))
-    $powershell=Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\v1.0\powershell.exe'
-    $arguments='-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "{0}" -Distro "{1}"' -f $destination,$Identity.distro
-    $process=Start-Process -FilePath $powershell -ArgumentList $arguments -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $Identity.directory 'agent-relay.stdout') -RedirectStandardError (Join-Path $Identity.directory 'agent-relay.stderr')
-    Start-Sleep -Seconds 2
-    if ($process.HasExited) { throw 'ODS WSL agent relay exited before startup; inspect private agent-relay.stderr' }
-    $actual=Get-ODSProcessIdentity $process.Id
-    if (-not $actual -or $actual.commandLine -notlike '*agent-relay.ps1*') { throw 'Could not verify ODS WSL agent relay process identity' }
-    Write-ODSWslJson $recordPath $actual
+    # Keep this copy independent of the already-running WSL holder controller.
+    Write-ODSPrivateBytes $controller ([IO.File]::ReadAllBytes($script:ODSWslLifecycleSource))
+    if (-not $task) {
+        $action=New-ScheduledTaskAction -Execute (Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\v1.0\powershell.exe') -Argument (Get-ODSWslRelayTaskArguments $Identity)
+        $principal=New-ScheduledTaskPrincipal -UserId $Identity.ownerSid -LogonType Interactive -RunLevel Limited
+        $settings=New-ScheduledTaskSettingsSet -Hidden -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+        Register-ScheduledTask -TaskName $taskName -Action $action -Principal $principal -Settings $settings -Description 'ODS owned WSL agent relay. On-demand only; independent of the launching terminal.' | Out-Null
+    }
+    $task=Assert-ODSWslRelayTask $Identity
+    if ($task.State -ne 'Ready') { throw 'Owned WSL relay task is not ready' }
+    $generation=[guid]::NewGuid().ToString('N')
+    $requestPath=Join-Path $Identity.directory 'relay-request.json'
+    Write-ODSWslJson $requestPath @{generation=$generation;action='run'}
+    $started=$false
+    try {
+        Assert-ODSWslStartupStillWanted
+        Start-ScheduledTask -TaskName $taskName
+        for ($attempt=0; $attempt -lt 60; $attempt++) {
+            Assert-ODSWslStartupStillWanted
+            $runtime=Read-ODSWslJson (Join-Path $Identity.directory 'relay-runtime.json')
+            if ($runtime -and $runtime.generation -ceq $generation) {
+                if ($runtime.state -eq 'running' -and
+                    (Test-ODSProcessIdentity $runtime.controller (Get-ODSProcessIdentity $runtime.controller.pid)) -and
+                    (Test-ODSProcessIdentity $runtime.child (Get-ODSProcessIdentity $runtime.child.pid))) { $started=$true; return }
+                if ($runtime.state -in @('failed','exited','stopped')) { throw "WSL relay startup failed: $($runtime.error)" }
+            }
+            Start-Sleep -Milliseconds 500
+        }
+        throw 'WSL relay startup timed out; inspect relay-runtime.json'
+    } finally {
+        # A queued task must not start after the caller reports failure.
+        if (-not $started) { Write-ODSWslJson $requestPath @{generation=$generation;action='stop'} }
+    }
 }
 
 function Stop-ODSWslAgentRelay($Identity) {
+    $taskName=$Identity.taskName+'-Relay'
+    $task=Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+    if ($task) { $null=Assert-ODSWslRelayTask $Identity }
     $recordPath=Join-Path $Identity.directory 'agent-relay-process.json'
     $record=Read-ODSWslJson $recordPath
-    if (-not $record) { return }
-    Stop-ODSOwnedProcess $record
-    Remove-Item -LiteralPath $recordPath -Force
+    if ($task) {
+        $request=Read-ODSWslJson (Join-Path $Identity.directory 'relay-request.json')
+        Write-ODSWslJson (Join-Path $Identity.directory 'relay-request.json') @{generation=$request.generation;action='stop'}
+        for ($attempt=0; $attempt -lt 30; $attempt++) {
+            $task=Assert-ODSWslRelayTask $Identity
+            if ($task.State -eq 'Ready') { break }
+            Start-Sleep -Milliseconds 500
+        }
+        if ($task.State -ne 'Ready') {
+            # Only this exact validated, on-demand owner task may be cancelled.
+            $null=Assert-ODSWslRelayTask $Identity
+            Stop-ScheduledTask -TaskName $taskName
+            for ($attempt=0; $attempt -lt 20; $attempt++) {
+                $task=Assert-ODSWslRelayTask $Identity
+                if ($task.State -eq 'Ready') { break }
+                Start-Sleep -Milliseconds 250
+            }
+            if ($task.State -ne 'Ready') { throw 'Owned WSL relay task did not stop' }
+        }
+        # A controller may have published its child after the initial read.
+        $record=Read-ODSWslJson $recordPath
+    }
+    if ($record) {
+        Stop-ODSOwnedProcess $record
+        Remove-Item -LiteralPath $recordPath -Force
+    }
+}
+
+function Invoke-ODSWslRelayHolder([string]$Directory) {
+    if ($script:ODSWslStateRoot) { Assert-ODSPrivatePath $script:ODSWslStateRoot -Directory }
+    Assert-ODSPrivatePath $Directory -Directory
+    $manifest=Read-ODSWslJson (Join-Path $Directory 'instance.json')
+    $identity=Get-ODSWslIdentity $manifest.distro $manifest.installRoot
+    if ($Directory -cne $identity.directory) { throw 'Relay controller directory does not match its identity' }
+    $null=Assert-ODSWslManifest $identity
+    $null=Assert-ODSWslRelayTask $identity
+    $lock=Open-ODSPrivateLock (Join-Path $Directory 'relay-controller.lock')
+    $runtime=$null
+    $child=$null
+    try {
+        $request=Read-ODSWslJson (Join-Path $Directory 'relay-request.json')
+        if (-not $request -or $request.action -ne 'run') { return }
+        $runtime=@{generation=$request.generation;state='starting';controller=(Get-ODSProcessIdentity $PID);child=$null;startedUtc=[DateTime]::UtcNow.ToString('o');error=$null}
+        $source=Join-Path $Directory 'agent-relay.ps1'
+        Assert-ODSPrivatePath $source
+        $powershell=Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\v1.0\powershell.exe'
+        $arguments='-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "{0}" -Distro "{1}"' -f $source,$identity.distro
+        $current=Read-ODSWslJson (Join-Path $Directory 'relay-request.json')
+        if (-not $current -or $current.generation -cne $request.generation -or $current.action -ne 'run') { $runtime.state='stopped'; return }
+        # Task Scheduler owns this parent, so terminal/SSH exit cannot reap it.
+        $child=Start-Process -FilePath $powershell -ArgumentList $arguments -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $Directory 'agent-relay.stdout') -RedirectStandardError (Join-Path $Directory 'agent-relay.stderr')
+        $null=$child.Handle
+        $runtime.child=Get-ODSProcessIdentity $child.Id
+        if (-not $runtime.child) { throw 'WSL relay exited before identity capture' }
+        Write-ODSWslJson (Join-Path $Directory 'agent-relay-process.json') $runtime.child
+        Start-Sleep -Seconds 2
+        $child.Refresh()
+        if ($child.HasExited) { throw 'WSL relay exited before startup; inspect private agent-relay.stderr' }
+        $runtime.state='running'; Write-ODSWslJson (Join-Path $Directory 'relay-runtime.json') $runtime
+        while (-not $child.HasExited) {
+            $current=Read-ODSWslJson (Join-Path $Directory 'relay-request.json')
+            if (-not $current -or $current.generation -cne $request.generation -or $current.action -ne 'run') {
+                Stop-ODSOwnedProcess $runtime.child
+                $runtime.state='stopped'
+                break
+            }
+            Start-Sleep -Milliseconds 500
+            $child.Refresh()
+        }
+        if ($runtime.state -ne 'stopped') { $runtime.state='exited' }
+        $child.WaitForExit()
+        $runtime.exitCode=$child.ExitCode
+    } catch {
+        if ($runtime) {
+            $runtime.state='failed'; $runtime.error=$_.Exception.Message
+            if ($runtime.child) { Stop-ODSOwnedProcess $runtime.child }
+        }
+        throw
+    } finally {
+        try {
+            if ($runtime) { $runtime.endedUtc=[DateTime]::UtcNow.ToString('o'); Write-ODSWslJson (Join-Path $Directory 'relay-runtime.json') $runtime }
+        } finally {
+            if ($child) { $child.Dispose() }
+            $lock.Dispose()
+        }
+    }
 }
 
 function Update-ODSWslAgentAddress($Identity) {
@@ -306,14 +454,18 @@ function Assert-ODSWslStartupStillWanted {
     if ((Get-ODSWslUtcNow) -ge $script:ODSWslStartupDeadline) { throw 'WSL startup deadline exceeded; inspect startup-status.json and retry start after Docker is ready' }
 }
 
-function Disable-ODSWslStartup($Identity,[switch]$ValidateOnly) {
+function Disable-ODSWslStartup($Identity,[switch]$ValidateOnly,[switch]$RetireRelay) {
     $task=Get-ScheduledTask -TaskName ($Identity.taskName + '-Startup') -ErrorAction SilentlyContinue
+    $relayTask=$null
+    if ($RetireRelay) { $relayTask=Get-ScheduledTask -TaskName ($Identity.taskName + '-Relay') -ErrorAction SilentlyContinue }
     if (-not (Test-Path -LiteralPath $Identity.directory)) {
-        if ($task) { throw 'Startup task exists without its owner manifest; refusing to modify it' }
-        return [pscustomobject]@{scope='wsl-startup';state='unmanaged';identity=$Identity}
+        if ($task -or $relayTask) { throw 'Windows task exists without its owner manifest; refusing to modify it' }
+        return [pscustomobject]@{scope='wsl-startup';state='unmanaged';identity=$Identity;relayRetirement='unmanaged'}
     }
     $null=Assert-ODSWslManifest $Identity
     if ($task) { $null=Assert-ODSWslStartupTask $Identity }
+    # Uninstall validates every task it will retire before changing startup intent.
+    if ($relayTask) { $null=Assert-ODSWslRelayTask $Identity }
     $null=Get-ODSWslStartupIntent $Identity
     $lock=$null
     try {
@@ -324,14 +476,17 @@ function Disable-ODSWslStartup($Identity,[switch]$ValidateOnly) {
                 $lock=[IO.File]::Open($path,'Open','ReadWrite','None')
             }
             Assert-ODSWslCommandSettled $Identity -ValidateOnly
-            return [pscustomobject]@{scope='wsl-startup';state='validated';identity=$Identity}
+            return [pscustomobject]@{scope='wsl-startup';state='validated';identity=$Identity;relayRetirement=$(if ($RetireRelay) { 'validated' } else { 'not-requested' })}
         }
         Set-ODSWslStartupIntent $Identity $false
         if ($task) { Disable-ScheduledTask -TaskName ($Identity.taskName + '-Startup') | Out-Null }
         # Uninstall must not remove Linux assets while an old start is draining.
         $lock=Open-ODSWslCommandLock $Identity
         Assert-ODSWslCommandSettled $Identity
-        [pscustomobject]@{scope='wsl-startup';state='disabled';identity=$Identity}
+        # Ordinary login opt-out leaves manually running services alone. Only
+        # explicit uninstall retirement stops the independently owned relay.
+        if ($RetireRelay) { Stop-ODSWslAgentRelay $Identity }
+        [pscustomobject]@{scope='wsl-startup';state='disabled';identity=$Identity;relayRetirement=$(if ($RetireRelay) { 'stopped' } else { 'not-requested' })}
     } finally { if ($lock) { $lock.Dispose() } }
 }
 
@@ -796,10 +951,11 @@ function Invoke-ODSWslStack($Identity,[string]$Action) {
     }
 }
 
-function Invoke-ODSWslLifecycle([string]$Action,[string]$Distro,[string]$InstallRoot,[switch]$ValidateOnly,[string]$DockerDesktopPath) {
+function Invoke-ODSWslLifecycle([string]$Action,[string]$Distro,[string]$InstallRoot,[switch]$ValidateOnly,[string]$DockerDesktopPath,[switch]$RetireRelay) {
     # Uninstall already supplies the installation's canonical distro. Never
     # enter or even query WSL while withdrawing Windows sign-in permission.
-    if ($Action -eq 'disable-startup') { return Disable-ODSWslStartup (Get-ODSWslIdentity $Distro $InstallRoot) -ValidateOnly:$ValidateOnly }
+    if ($RetireRelay -and $Action -ne 'disable-startup') { throw 'RetireRelay is supported only for disable-startup' }
+    if ($Action -eq 'disable-startup') { return Disable-ODSWslStartup (Get-ODSWslIdentity $Distro $InstallRoot) -ValidateOnly:$ValidateOnly -RetireRelay:$RetireRelay }
     # Repair an already-managed installation's Windows sign-in task without
     # rerunning the installer or entering WSL. Uses the canonical identity
     # directly; the distro need not be registered for this Windows-only repair.
@@ -874,6 +1030,7 @@ function Invoke-ODSWslLifecycle([string]$Action,[string]$Distro,[string]$Install
 if ($MyInvocation.InvocationName -ne '.') {
     [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false)
     if ($Action -eq 'hold') { Invoke-ODSWslHolder $InstanceDirectory }
+    elseif ($Action -eq 'relay-hold') { Invoke-ODSWslRelayHolder $InstanceDirectory }
     elseif ($Action -eq 'autostart') { Invoke-ODSWslStartup $InstanceDirectory }
-    else { Invoke-ODSWslLifecycle $Action $Distro $InstallRoot -DockerDesktopPath $DockerDesktopPath -ValidateOnly:$ValidateOnly | ConvertTo-Json -Depth 8 }
+    else { Invoke-ODSWslLifecycle $Action $Distro $InstallRoot -DockerDesktopPath $DockerDesktopPath -ValidateOnly:$ValidateOnly -RetireRelay:$RetireRelay | ConvertTo-Json -Depth 8 }
 }

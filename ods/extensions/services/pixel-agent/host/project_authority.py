@@ -40,7 +40,7 @@ class ManagedFullAccessPolicy:
     def __call__(self, project, action, binding=None):
         # The authenticated owner can always observe or request a stop, even
         # after revocation. These actions do not submit new execution.
-        if action in ("observe", "cancel"):
+        if action in ("observe", "cancel", "capabilities"):
             return True
         if action not in ("snapshot", "execute", "import"):
             return False

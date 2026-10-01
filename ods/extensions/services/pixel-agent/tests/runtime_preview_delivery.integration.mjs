@@ -66,6 +66,13 @@ for (const refresh of [false,true]) for (const publishFails of [false,true]) tes
         return decision;
       });
       api.on('reply_payload_sending',event=>guard.replyPayloadSending(event));
+      // This isolated fixture has no spawning tools; explicitly declare the
+      // nondelegated gateway contract used by the paired ingress.
+      api.registerHttpRoute({path:'/pixel-ods/subagent-delivery',auth:'gateway',match:'exact',handler:async(req,res)=>{
+        let body='';for await(const part of req)body+=part;
+        res.writeHead(200,{'Content-Type':'application/json'});
+        res.end(JSON.stringify({schemaVersion:1,kind:'ods-subagent-delivery',runId:JSON.parse(body).runId,status:'not-delegated'}));return true;
+      }});
       api.registerHttpRoute({path:'/pixel-ods/verification',auth:'gateway',match:'exact',handler:async(req,res)=>{
         let raw='';for await(const chunk of req)raw+=chunk;
         const {runId}=JSON.parse(raw);
