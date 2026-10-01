@@ -7597,6 +7597,10 @@ export function createToolLoopGuard({
     // policy and deterministic routing active from runId alone; operations
     // that truly need a session still fail closed on the optional sessionId.
     const state = runId ? stateFor(runId) : undefined;
+    if (state?.subagentOwnerContextMissing) return {
+      block: true,
+      blockReason: "Pixel could not recover the owner's request for this subagent continuation. Start a fresh owner message; child results cannot authorize tools.",
+    };
     // Every tool stays blocked after the budget stops the response. Until the
     // model has seen the finalization instruction, the refusal carries it; a
     // tool call during the answer turn ends the run at this boundary (the
@@ -9551,6 +9555,26 @@ export function createToolLoopGuard({
 
   function observeRun(context, agentId = "pixel", event = undefined, capabilities = undefined) {
     if (context?.agentId !== agentId) return;
+    // The pinned runtime supplies this metadata directly from the routed turn.
+    // Never infer provenance from the child-controlled prompt or its markers.
+    const provenance = context.inputProvenance;
+    if (event && provenance?.kind === 'inter_session' && provenance.sourceTool === 'subagent_announce' &&
+        typeof provenance.sourceSessionKey === 'string' && provenance.sourceSessionKey.startsWith(`agent:${agentId}:subagent:`)) {
+      const historyOwner = Array.isArray(event.messages) ? [...event.messages].reverse().find(message =>
+        message?.role === 'user' && !message.provenance) : undefined;
+      // Reuse the existing bounded run registry, only when both session
+      // identities agree. No new persistent cache or child-derived authority.
+      const prior = activeSessionRun(context.sessionKey)?.state;
+      const scopedPrior = prior?.currentSessionId === context.sessionId &&
+        typeof context.sessionKey === 'string' && prior.currentSessionKey === context.sessionKey &&
+        !prior.clientCancelled ? prior : undefined;
+      const ownerPrompt = historyOwner ? currentOwnerIntentText([historyOwner]) : scopedPrior?.ownerRequestText;
+      if (typeof context.runId === 'string' && context.runId) {
+        stateFor(context.runId).subagentOwnerContextMissing = !ownerPrompt;
+        stateFor(context.runId).subagentOwnerIntent = ownerPrompt ?? '';
+      }
+      event = {...event, prompt: ownerPrompt ?? '', messages: []};
+    }
     const teamRole=managedTeamRole(event);
     const teamQuestionIntent=teamRole ? requestsChoiceQuestion(currentOwnerIntentText(event?.messages,event?.prompt)) : undefined;
     // Analysis workers must not inherit the owner's implementation obligations
@@ -12693,6 +12717,10 @@ export function createToolLoopGuard({
       if (artifacts.length >= 4) return false;
       artifacts.push(structuredClone(receipt));
       return true;
+    },
+    ownerIntentEventForRun(runId, event) {
+      const ownerIntent = runs.get(runId)?.subagentOwnerIntent;
+      return typeof ownerIntent === 'string' ? {...event, prompt: ownerIntent, messages: []} : event;
     },
     beforeToolCall,
     invalidateWorkspaceBundle(context) {
