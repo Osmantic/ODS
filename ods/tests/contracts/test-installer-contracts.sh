@@ -318,6 +318,9 @@ bash tests/test-macos-cli-compose-failure.sh
 echo "[contract] macOS Core omits optional Open WebUI"
 bash tests/test-macos-webui-optional.sh
 
+echo "[contract] macOS external gateway resolver omits native inference"
+bash tests/test-macos-external-gateway-resolver.sh
+
 echo "[contract] macOS .env upsert preserves secrets and recovers from write failure"
 bash tests/test-macos-env-upsert.sh
 

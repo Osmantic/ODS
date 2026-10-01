@@ -139,6 +139,19 @@ if lemonade_external and ods_mode == "lemonade":
     elif existing(["docker-compose.base.yml"]):
         resolved = ["docker-compose.base.yml"]
         primary = "docker-compose.base.yml"
+elif gateway_only and gpu_backend == "apple":
+    # An external gateway on macOS must not inherit the native Metal overlay:
+    # that overlay starts llama-server-ready even after managed inference is
+    # profiled out. The cloud overlay has no native listener or readiness
+    # sidecar; the external overlay below supplies the actual model route.
+    if ods_mode != "local" or not external_llm:
+        print("ERROR: Apple gateway-only requires a local external model route", file=sys.stderr)
+        sys.exit(1)
+    if not existing(["docker-compose.base.yml", "docker-compose.cloud.yml"]):
+        print("ERROR: Apple gateway-only requires the base and cloud Compose overlays", file=sys.stderr)
+        sys.exit(1)
+    resolved = ["docker-compose.base.yml", "docker-compose.cloud.yml"]
+    primary = "docker-compose.cloud.yml"
 elif profile_overlays and existing(profile_overlays):
     resolved = profile_overlays
     primary = profile_overlays[-1]
