@@ -165,7 +165,9 @@ export function createSubagentDelivery({agentId = 'pixel', now = Date.now,
     const name = run.calls.get(callId); run.calls.delete(callId);
     if (!name || (context.toolName ?? event.toolName) !== name || event.error || event.result?.isError) return;
     const result = event.result?.details;
-    if (name === 'sessions_spawn' && result?.status === 'accepted' && childKey(result.childSessionKey) && UUID.test(result.runId ?? '')) {
+    if (name === 'sessions_spawn' && result?.status === 'accepted') {
+      // An accepted child must never disappear from the delivery barrier.
+      if (!childKey(result.childSessionKey) || !UUID.test(result.runId ?? '')) {fail(run.chain); return;}
       const record = spawned.get(result.childSessionKey);
       if (!record || record.denied || record.runId !== result.runId || record.parent !== run.chain.sessionKey) {fail(run.chain); return;}
       if (run.chain.children.size >= maximumChildren) {fail(run.chain); return;}
