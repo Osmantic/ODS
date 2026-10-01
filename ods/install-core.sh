@@ -143,7 +143,7 @@ ENABLE_OPENCLAW=false
 OPENCLAW_EXPLICIT=false
 ENABLE_OPENCODE=false
 if $ODS_EXISTING_INSTALL && command -v systemctl >/dev/null 2>&1 \
-    && systemctl --user is-enabled --quiet opencode-web.service 2>/dev/null; then
+    && ods_systemctl_user is-enabled --quiet opencode-web.service 2>/dev/null; then
     ENABLE_OPENCODE=true
 fi
 ENABLE_DEVTOOLS=false

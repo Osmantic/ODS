@@ -252,7 +252,19 @@ function Stop-ODSPortalOwnedProcesses($Handles) {
     # Parents first prevent the router from launching replacement children.
     foreach ($process in $Handles) {
         if (-not $process.HasExited) {
-            try { $process.Kill() } catch [InvalidOperationException] { if (-not $process.HasExited) { throw } }
+            try { $process.Kill() } catch {
+                $cause = $_.Exception
+                while ($cause -is [System.Management.Automation.RuntimeException] -and $cause.InnerException) {
+                    $cause = $cause.InnerException
+                }
+                if ($cause -isnot [InvalidOperationException] -and
+                    $cause -isnot [System.ComponentModel.Win32Exception]) { throw }
+                # Task Scheduler may have exited this held process after HasExited
+                # but before Kill. Accept that race only if the same handle proves exit.
+                if (-not $process.WaitForExit(1000)) {
+                    throw "Could not stop owned Lemonade process $($process.Id): $($cause.Message)"
+                }
+            }
         }
     }
     foreach ($process in $Handles) {

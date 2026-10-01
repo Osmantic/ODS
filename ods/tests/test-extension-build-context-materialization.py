@@ -387,10 +387,11 @@ def discover_builds() -> list[Build]:
         if not isinstance(services, dict):
             continue
         library = LIBRARY in compose.parents
-        # Library recipes are rewritten to an absolute context under the
-        # installed recipe directory; every other Compose file is resolved
-        # against the project directory (the install root).
-        base = compose.parent if library else ROOT
+        # Library recipes and explicitly named standalone projects use their
+        # own Compose file as the project root. Ordinary ODS fragments are
+        # combined with the root Compose file and resolve against install root.
+        standalone = isinstance(data.get("name"), str) and bool(data["name"])
+        base = compose.parent if library or standalone else ROOT
         for name, service in services.items():
             build = service.get("build") if isinstance(service, dict) else None
             if build is None:

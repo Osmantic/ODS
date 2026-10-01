@@ -692,6 +692,20 @@ else
     fail "Managed-local Perplexica lost its llama-server health overlay"
 fi
 
+if printf '%s\n' "$real_managed_flags" | grep -Fq \
+    "extensions/services/hermes/compose.local.yaml"; then
+    pass "Managed-local Hermes keeps its llama-server health overlay"
+else
+    fail "Managed-local Hermes lost its llama-server health overlay"
+fi
+
+if printf '%s\n' "$real_external_flags" | grep -Fq \
+    "extensions/services/hermes/compose.local.yaml"; then
+    fail "External-LLM Hermes retained a managed llama-server dependency"
+else
+    pass "External-LLM Hermes omits its managed llama-server dependency"
+fi
+
 if printf '%s\n' "$real_external_flags" | grep -Fq "compose.local.yaml"; then
     fail "External-LLM stack retained a local llama-server dependency overlay"
 else

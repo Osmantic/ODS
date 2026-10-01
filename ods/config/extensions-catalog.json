@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-30T06:18:48Z",
+  "generated_at": "2026-09-30T11:32:07Z",
   "schema_version": "1.0.0",
   "extensions": [
     {
@@ -3592,14 +3592,13 @@
     {
       "id": "hermes",
       "name": "Hermes Agent",
-      "description": "Hermes Agent (Nous Research) — a self-improving generalist agent with persistent memory, autonomous skill creation, and 70+ built-in tools. ODS runs the upstream image pinned by version, points it at the local LLM (llama-server), and ships no messaging-platform adapters (Telegram / Discord / Slack / etc.) since the web dashboard is the surface we ship. The container runs `hermes gateway run` with the dashboard embedded (HERMES_DASHBOARD=1) so the scheduler that fires cron jobs actually runs.\n",
+      "description": "Hermes Agent (Nous Research) — a self-improving generalist agent with persistent memory, autonomous skill creation, and 70+ built-in tools. ODS runs the upstream image pinned by version, points it at the selected model route, and ships no messaging-platform adapters (Telegram / Discord / Slack / etc.) since the web dashboard is the surface we ship. The container runs `hermes gateway run` with the dashboard embedded (HERMES_DASHBOARD=1) so the scheduler that fires cron jobs actually runs.\n",
       "category": "recommended",
       "gpu_backends": [
         "all"
       ],
       "compose_file": "compose.yaml",
       "depends_on": [
-        "llama-server",
         "searxng"
       ],
       "port": 9119,
@@ -7656,8 +7655,8 @@
           "setup_time": "Ready",
           "priority": 6,
           "launch": {
-            "type": "service",
-            "service": "opencode"
+            "type": "internal",
+            "path": "/apps/opencode"
           },
           "gpu_backends": [
             "all"
@@ -11498,13 +11497,15 @@
           "requirements": {
             "services": [
               "whisper",
-              "tts"
+              "tts",
+              "open-webui"
             ],
-            "vram_gb": 6
+            "vram_gb": 0
           },
           "enabled_services_all": [
             "whisper",
-            "tts"
+            "tts",
+            "open-webui"
           ],
           "setup_time": "~5 minutes",
           "priority": 2,

@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 FEATURES_PHASE="$ROOT_DIR/installers/phases/03-features.sh"
+source "$ROOT_DIR/installers/lib/installed-feature-state.sh"
 
 run_case() {
     local selected="$1" source_state="$2" comfyui_requested="${3:-false}"

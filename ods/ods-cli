@@ -6894,7 +6894,7 @@ _dashboard_lan_ip() {
 
 cmd_dashboard_login() {
     [[ $# -eq 0 ]] || error "Usage: ods dashboard-login"
-    local response_file http_code token port bind device fragment lan_ip
+    local response_file http_code token port remote_port bind device fragment lan_ip
     response_file=$(mktemp "${TMPDIR:-/tmp}/ods-dashboard-login.XXXXXX") \
         || error "Could not create a temporary response file"
     chmod 600 "$response_file"
@@ -6915,6 +6915,8 @@ cmd_dashboard_login() {
 
     port="$(_env_get_raw DASHBOARD_PORT)"
     [[ "$port" =~ ^[0-9]+$ ]] || port="3001"
+    remote_port="$(_env_get_raw DASHBOARD_REMOTE_PORT)"
+    [[ "$remote_port" =~ ^[0-9]+$ ]] || remote_port="3011"
     bind="$(_env_get_raw BIND_ADDRESS)"
     device="$(_env_get_raw ODS_DEVICE_NAME)"
     [[ "$device" =~ ^[A-Za-z0-9-]+$ ]] || device="ods"
@@ -6932,18 +6934,14 @@ cmd_dashboard_login() {
                 warn "Could not detect this machine's LAN address; use its IP address below."
                 lan_ip=""
             fi
-            echo "  http://${lan_ip:-<this-machine-ip>}:${port}/${fragment}"
+            echo "  http://${lan_ip:-<this-machine-ip>}:${remote_port}/${fragment}"
             ;;
-        *) echo "  http://${bind}:${port}/${fragment}" ;;
+        *) echo "  http://${bind}:${remote_port}/${fragment}" ;;
     esac
     echo "  Any other address for this ODS: add ${fragment} to the end of the URL."
     echo ""
-    case "$bind" in
-        ""|127.*|localhost|::1)
-            echo "On this machine, http://localhost:${port} never asks you to sign in." ;;
-        *)
-            echo "BIND_ADDRESS exposes the dashboard to your network, so every browser signs in once (30 days)." ;;
-    esac
+    echo "On this machine, http://localhost:${port} never asks you to sign in."
+    echo "Network dashboard addresses require sign-in once per browser (30 days)."
 }
 
 #=============================================================================

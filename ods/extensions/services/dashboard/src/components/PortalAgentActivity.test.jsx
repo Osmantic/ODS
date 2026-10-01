@@ -5,6 +5,27 @@ const start='2026-09-15T10:00:00.000Z',end='2026-09-15T10:00:05.000Z'
 const display=(type,label,extra={})=>({type,label,detail:null,sources:[],steps:[],change:null,...extra})
 const displays=[display('text','Conferindo a documentação.'),display('search','React reference',{sources:[{title:'Official docs',url:'https://react.dev/reference'}]}),display('tool','Reading a file',{detail:'app.jsx'}),display('steps','Check the result',{steps:[{id:'check',title:'Run checks',status:'completed'}]}),display('trace','Asking for your input')]
 const task={schemaVersion:3,runId:'chatcmpl_11111111-2222-4333-8444-555555555555',startedAt:start,finishedAt:end,state:'completed',calls:5,failures:0,blocked:0,truncated:false,activities:[{kind:'unknown',calls:5,failures:0,blocked:0}],events:displays.map((display,i)=>({sequence:i+1,kind:'unknown',state:'completed',startedAt:start,finishedAt:end,display})),context:null,goal:null}
+it('does not invent a completed duration from a persisted running receipt after reload',()=>{
+ vi.useFakeTimers()
+ try {
+  vi.setSystemTime(new Date('2026-09-15T10:02:25.000Z'))
+  const unfinished={...task,state:'running',finishedAt:null}
+  const first=render(<PortalAgentActivity task={unfinished} active/> )
+  first.rerender(<PortalAgentActivity task={unfinished}/>)
+  expect(screen.getByRole('button',{name:'Activity recorded'})).toHaveAttribute('aria-expanded','false')
+  expect(screen.queryByText(/^Worked for /)).toBeNull()
+  first.unmount()
+  vi.setSystemTime(new Date('2026-09-15T10:03:10.000Z'))
+  const restored=render(<PortalAgentActivity task={JSON.parse(JSON.stringify(unfinished))}/>)
+  expect(screen.getByRole('button',{name:'Activity recorded'})).toBeVisible()
+  restored.rerender(<PortalAgentActivity task={task}/>)
+  expect(screen.getByRole('button',{name:'Worked for 5s'})).toBeVisible()
+  restored.unmount()
+  vi.setSystemTime(new Date('2026-09-16T10:00:00.000Z'))
+  render(<PortalAgentActivity task={JSON.parse(JSON.stringify(task))}/>)
+  expect(screen.getByRole('button',{name:'Worked for 5s'})).toBeVisible()
+ } finally {vi.useRealTimers()}
+})
 it('renders an empty file without crashing and distinguishes completed recovery from failed work',()=>{
  expect(activityChangeRows({kind:'patch',before:'',after:'--- old.txt\n+++ new.txt\n@@ -1 +1 @@\n--- heading\n+++ heading'})).toEqual([{type:'remove',text:'-- heading'},{type:'add',text:'++ heading'}]);
  render(<PortalActivityChange change={{file:'empty.txt',kind:'write',before:'',after:'',truncated:false}}/>);

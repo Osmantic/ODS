@@ -61,11 +61,12 @@ class DashboardLoginCliTests(unittest.TestCase):
         proxy = self.install / "extensions/services/ods-proxy"
         proxy.mkdir(parents=True)
         (proxy / "compose.yaml").write_text("services: {}\n", encoding="utf-8")
-        result = self.run_cli("BIND_ADDRESS=100.64.0.7\nODS_DEVICE_NAME=kitchen\nDASHBOARD_PORT=3005\n")
+        result = self.run_cli("BIND_ADDRESS=100.64.0.7\nODS_DEVICE_NAME=kitchen\nDASHBOARD_PORT=3005\nDASHBOARD_REMOTE_PORT=3111\n")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("http://dashboard.kitchen.local/#ods-login=" + TOKEN, result.stdout)
-        self.assertIn("http://100.64.0.7:3005/#ods-login=" + TOKEN, result.stdout)
-        self.assertIn("every browser signs in", result.stdout)
+        self.assertIn("http://100.64.0.7:3111/#ods-login=" + TOKEN, result.stdout)
+        self.assertIn("http://localhost:3005 never asks", result.stdout)
+        self.assertIn("Network dashboard addresses require sign-in", result.stdout)
 
     def test_refusals_and_arguments_fail_without_printing_a_link(self):
         StubDashboardApi.status = 403

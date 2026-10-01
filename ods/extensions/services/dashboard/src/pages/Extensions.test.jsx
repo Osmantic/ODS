@@ -161,7 +161,18 @@ it('lets an errored bundled n8n be retried or disabled without a remove control'
   expect(screen.queryByRole('button',{name:'Remove n8n (Workflows)'})).toBeNull()
 })
 
+it('makes an OpenCode setup retry an explicit install action', async () => {
+  installFetchMock({agent_available:true,extensions:[
+    {id:'opencode',name:'OpenCode',source:'core',status:'error',installable:true,
+      app_path:'/apps/opencode',features:[baseFeature]},
+  ],summary:baseSummary({total:1,error:1})})
+  render(<Extensions compact />)
+  fireEvent.click(await screen.findByRole('button',{name:'Retry'}))
+  expect(screen.getByRole('dialog',{name:'Confirm action'})).toHaveTextContent('Install OpenCode? This will download and start the service.')
+})
+
 it('reports a failed bundled n8n start and refreshes to a retryable card', async () => {
+  const timeoutSpy = vi.spyOn(globalThis.AbortSignal, 'timeout').mockReturnValue(new AbortController().signal)
   const ext = {id:'n8n',name:'n8n (Workflows)',source:'core',status:'disabled',
     library_manageable:true,library_selected:false,features:[baseFeature]}
   const fetchMock = vi.fn(async (url) => {
@@ -186,6 +197,7 @@ it('reports a failed bundled n8n start and refreshes to a retryable card', async
   expect(screen.getByRole('button',{name:'Disable n8n (Workflows)'})).toBeVisible()
   expect(fetchMock.mock.calls.filter(([url]) => String(url).includes('/api/extensions/catalog')).length)
     .toBeGreaterThanOrEqual(2)
+  expect(timeoutSpy).toHaveBeenCalledWith(13 * 60 * 1000)
 })
 
 describe('Extensions page — unhealthy + install derivations', () => {

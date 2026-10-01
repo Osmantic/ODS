@@ -8,6 +8,7 @@ import { dockerWorkspacePreviewRequest } from "./workspace-preview-docker.mjs";
 
 const SOCKET_PATH = "/run/ods-pixel-preview/control.sock";
 const PATH_COMPONENT = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+const ASSET_COMPONENT = /^(?!__ods_)(?!__pycache__$)[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$/;
 const SITE_ID = /^site-[a-f0-9]{24}$/;
 const SHA256 = /^[a-f0-9]{64}$/;
 const MAX_RESPONSE_BYTES = 8192;
@@ -135,7 +136,7 @@ function validResponse(value, request) {
 function validPathList(paths, omitted) {
   return Array.isArray(paths) && paths.length <= 32 &&
     paths.every((path) => typeof path === "string" &&
-      path.length >= 1 && path.split("/").every((part) => PATH_COMPONENT.test(part))) &&
+      path.length >= 1 && path.split("/").every((part) => ASSET_COMPONENT.test(part))) &&
     paths.reduce((size, path) => size + path.length, 0) <= 2048 &&
     paths.every((path, index) => index === 0 || paths[index - 1] < path) &&
     Number.isInteger(omitted) && omitted >= 0;
@@ -219,7 +220,7 @@ const FAILURE_MESSAGES = {
   missing_entry: "The selected directory needs a nonempty index.html at its root. Check the directory and entry file before retrying.",
   too_many_files: "The selected site exceeds 128 files. Keep dependencies, build caches, and unrelated files outside the published directory.",
   snapshot_too_large: "The selected site exceeds 16 MiB. Reduce or optimize its static assets before retrying.",
-  unsafe_file: "A project file failed validation. Check for empty or oversized files (4 MiB maximum each), symlinks, hard links, unsafe names, or ownership/permission problems; do not blindly relax permissions.",
+  unsafe_file: "A project file failed validation. Check for an empty index.html or oversized files (4 MiB maximum each), symlinks, hard links, unsafe names, or ownership/permission problems. Files must belong to the workspace owner and must not be writable by group or others (for example, mode 0664 is rejected). Inspect the exact files; remove excessive write permissions only within the intended publication directory, never broaden access or blindly change ownership.",
   unsafe_directory: "The selected directory failed validation. Check its path, ownership, permissions, and symlinks; do not blindly relax permissions.",
 };
 
@@ -275,7 +276,7 @@ export function createWorkspacePreviewTool({ request, transport = "unix" } = {})
   return {
     name: "pixel_ods_workspace_preview",
     description:
-      "Publish and verify a static visual artifact already created by the active model in Pixel's writable workspace. Pass only relativeDirectory after writing the complete site, app, SVG, game, or visualization with workspace tools. ODS never supplies creative starter bytes: it validates and snapshots the model-authored files, then returns the only localhost URL Pixel may claim is browser-accessible. Never start a sandbox server. " + PREVIEW_RUNTIME_CONTRACT + " " + DERIVED_ARTIFACT_CONTRACT,
+      "Publish and verify a static visual artifact already created by the active model in Pixel's writable workspace. Pass only relativeDirectory after writing the complete site, app, SVG, game, or visualization with workspace tools. PDF, ZIP and RAR files may accompany index.html as downloadable attachments (4 MiB/file, 16 MiB/publication). Link them from the index. Verify document rendering and archive integrity separately: publication proves byte integrity, not content quality. ODS never supplies creative starter bytes: it validates and snapshots the model-authored files, then returns the only localhost URL Pixel may claim is browser-accessible. Never start a sandbox server. " + PREVIEW_RUNTIME_CONTRACT + " " + DERIVED_ARTIFACT_CONTRACT,
     parameters: {
       type: "object",
       additionalProperties: false,
