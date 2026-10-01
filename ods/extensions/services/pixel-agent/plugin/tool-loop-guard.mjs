@@ -261,6 +261,7 @@ const WORKSPACE_PREVIEW_FAILURE_REASONS = Object.freeze({
   too_many_files: "the directory exceeds the preview file-count limit",
   snapshot_too_large: "the directory exceeds the preview size limit",
   unsafe_file: "a file failed the preview safety checks",
+  writable_file: "a generated file allows group/other writes; remove only those write bits on affected output files, never broaden permissions or change parent directories",
   unsafe_directory: "the directory failed the preview path or permission checks",
   cancelled: "waiting for the preview was cancelled; publication may still be pending",
   unavailable: "the preview was unavailable; the tool supplied no more specific verified cause",

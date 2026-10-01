@@ -4476,31 +4476,62 @@ _pixel_model_read_cache = {}
 _pixel_model_read_lock = threading.Lock()
 
 
+def _managed_pixel_readback_key():
+    files=[]
+    for path in (INSTALL_DIR/'.env',_pixel_model_journal_path(),_remote_provider_route_state_path()):
+        try:
+            info=path.stat()
+            files.append((info.st_mtime_ns,info.st_size))
+        except FileNotFoundError:files.append(None)
+    return (str(INSTALL_DIR),tuple(files))
+
+
 def _cached_managed_pixel_runtime_contract() -> dict | None:
-    """A poll never waits for Docker; expired/unconfirmed identity is unknown."""
+    """Refresh before expiry without extending a proof's 15-second lifetime."""
     try:
-        files=[]
-        for path in (INSTALL_DIR/'.env',_pixel_model_journal_path(),_remote_provider_route_state_path()):
-            try:
-                info=path.stat()
-                files.append((info.st_mtime_ns,info.st_size))
-            except FileNotFoundError:files.append(None)
-        key=(str(INSTALL_DIR),tuple(files))
+        key=_managed_pixel_readback_key()
     except OSError:return None
     with _pixel_model_read_lock:
-        if _pixel_model_read_cache.get('key')==key and time.monotonic()-_pixel_model_read_cache.get('at',0)<15:
-            value=_pixel_model_read_cache.get('value')
-            return dict(value) if isinstance(value,dict) else None
-        if _pixel_model_read_cache.get('fetching'):
-            return None
-        _pixel_model_read_cache.update(key=key,fetching=True,at=0,value=None)
+        if _pixel_model_read_cache.get('key')!=key:
+            # Preserve the single in-flight worker, but revoke its generation.
+            _pixel_model_read_cache.update(key=key,generation=object(),at=None,value=None)
+        at=_pixel_model_read_cache.get('at')
+        age=time.monotonic()-at if at is not None else float('inf')
+        value=_pixel_model_read_cache.get('value')
+        current=dict(value) if age<15 and isinstance(value,dict) else None
+        # Leave up to ten seconds for native readback before the hard expiry.
+        if age<5 or _pixel_model_read_cache.get('fetching'):
+            return current
+        generation=_pixel_model_read_cache['generation']
+        _pixel_model_read_cache['fetching']=True
     def refresh():
         try:value=_managed_pixel_runtime_contract()
         except Exception:value=None
+        # Inputs may change without another poll while the native proof runs.
+        try:observed_key=_managed_pixel_readback_key()
+        except OSError:observed_key=None
         with _pixel_model_read_lock:
-            if _pixel_model_read_cache.get('key')==key:
-                _pixel_model_read_cache.update(value=value,at=time.monotonic(),fetching=False)
-    threading.Thread(target=refresh,name='ods-managed-model-readback',daemon=True).start()
+            if _pixel_model_read_cache.get('generation') is generation:
+                if observed_key==key:
+                    # A failed verification revokes even a still-fresh value.
+                    _pixel_model_read_cache.update(value=value,at=time.monotonic())
+                else:
+                    _pixel_model_read_cache.update(value=None,at=None)
+            _pixel_model_read_cache['fetching']=False
+    try:
+        threading.Thread(target=refresh,name='ods-managed-model-readback',daemon=True).start()
+    except RuntimeError:
+        # A worker that could not start must not suppress every later refresh.
+        with _pixel_model_read_lock:
+            _pixel_model_read_cache['fetching']=False
+        return None
+    with _pixel_model_read_lock:
+        # The worker can finish before start() returns; honor fresh failure.
+        at=_pixel_model_read_cache.get('at')
+        value=_pixel_model_read_cache.get('value')
+        if (_pixel_model_read_cache.get('generation') is generation and at is not None
+                and time.monotonic()-at<15 and isinstance(value,dict)):
+            return dict(value)
     return None
 
 
