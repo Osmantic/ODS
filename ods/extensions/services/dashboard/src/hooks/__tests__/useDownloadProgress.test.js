@@ -48,6 +48,36 @@ describe('useDownloadProgress', () => {
     expect(result.current.progress.model).toBe('test-model')
   })
 
+  test('clears stale curl percentage when Hugging Face fallback is indeterminate', async () => {
+    fetch
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({
+          status: 'downloading', model: 'test-model', bytesDownloaded: 68, bytesTotal: 100,
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({
+          status: 'downloading', model: 'test-model', progressKind: 'indeterminate',
+          bytesDownloaded: 68, bytesTotal: 100, error: 'Hugging Face Hub fallback active',
+        }),
+      })
+
+    const { result } = renderHook(() => useDownloadProgress())
+    await waitFor(() => expect(result.current.progress?.percent).toBe(68))
+    await act(async () => {
+      await result.current.refresh()
+    })
+    expect(result.current.progress).toMatchObject({
+      indeterminate: true,
+      percent: null,
+      bytesDownloaded: 0,
+      bytesTotal: 0,
+      message: 'Hugging Face Hub fallback active',
+    })
+  })
+
   test('clamps progress percentage at 100 when downloaded bytes exceed total', async () => {
     fetch.mockResolvedValue({
       ok: true,

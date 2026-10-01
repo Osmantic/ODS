@@ -58,8 +58,9 @@ export function useDownloadProgress(pollIntervalMs = 1000) {
       setStatusError(null)
       
       if (data.status === 'downloading' || data.status === 'verifying') {
-        const downloaded = data.bytesDownloaded || 0
-        const total = data.bytesTotal || 0
+        const indeterminate = data.progressKind === 'indeterminate'
+        const downloaded = indeterminate ? 0 : (data.bytesDownloaded || 0)
+        const total = indeterminate ? 0 : (data.bytesTotal || 0)
         const rawPercent = total > 0 ? (downloaded / total) * 100 : 0
         const percent = Math.min(100, Math.max(0, rawPercent))
 
@@ -67,7 +68,9 @@ export function useDownloadProgress(pollIntervalMs = 1000) {
         setProgress({
           model: data.model,
           status: data.status,
-          percent,
+          percent: indeterminate ? null : percent,
+          indeterminate,
+          message: indeterminate ? data.error : null,
           bytesDownloaded: downloaded,
           bytesTotal: total,
           speedMbps: data.speedBytesPerSec ? data.speedBytesPerSec / (1024 * 1024) : 0,
