@@ -86,7 +86,7 @@ if [[ -f "$SCRIPT_DIR/installers/lib/background-tasks.sh" ]]; then
     . "$SCRIPT_DIR/installers/lib/background-tasks.sh"
 
     # Check if any background tasks are registered
-    if [[ -f "$BG_TASK_REGISTRY" ]]; then
+    if [[ -n "${BG_TASK_REGISTRY:-}" && -f "$BG_TASK_REGISTRY" ]]; then
         echo ""
         ai "Checking background tasks..."
         bg_task_summary >> "$LOG_FILE" 2>&1
