@@ -177,6 +177,63 @@ main() {
     mkdir -p "$stub_dir"
     make_stub_bin "$stub_dir"
 
+    # Docker may still have ODS containers even when its CLI has disappeared
+    # from this shell's PATH. In that state no ownership or completion proof is
+    # possible, so refuse before retiring services or deleting owner data.
+    cat > "$TMP_DIR/hide-docker-cli.sh" <<'EOF'
+ODS_DOCKER_PROBE_COUNT=0
+command() {
+    if [[ "${1:-}" == "-v" && "${2:-}" == "docker" ]]; then
+        ODS_DOCKER_PROBE_COUNT=$((ODS_DOCKER_PROBE_COUNT + 1))
+        if (( ODS_DOCKER_PROBE_COUNT >= ODS_DOCKER_MISSING_AT )); then return 1; fi
+    fi
+    builtin command "$@"
+}
+EOF
+    local missing_at mode
+    for missing_at in 1 2 3; do
+        for mode in purge keep-data; do
+            local no_docker_install="$TMP_DIR/no-docker-$missing_at-$mode-install"
+            local no_docker_home="$TMP_DIR/no-docker-$missing_at-$mode-home"
+            local no_docker_log="$TMP_DIR/no-docker-$missing_at-$mode.log"
+            local no_docker_sudo="$TMP_DIR/no-docker-$missing_at-$mode-sudo.log"
+            make_install "$no_docker_install"
+            mkdir -p "$no_docker_home/.local/bin"
+            ln -s "$no_docker_install/ods-cli" "$no_docker_home/.local/bin/ods"
+            printf 'retain owner data\n' > "$no_docker_install/data/owner.txt"
+            cat > "$no_docker_install/lib/pixel-uninstall.sh" <<'EOF'
+ods_pixel_uninstall_managed() { touch "$INSTALL_DIR/pixel-retired"; }
+EOF
+            : > "$no_docker_log"
+            : > "$no_docker_sudo"
+            local -a no_docker_args=()
+            [[ "$mode" == keep-data ]] && no_docker_args=(--keep-data)
+            if BASH_ENV="$TMP_DIR/hide-docker-cli.sh" ODS_DOCKER_MISSING_AT="$missing_at" \
+                DOCKER_LOG="$no_docker_log" SUDO_LOG="$no_docker_sudo" \
+                run_uninstall "$no_docker_install" "$no_docker_home" "$stub_dir" \
+                    "${no_docker_args[@]}" 2>"$TMP_DIR/no-docker-error"; then
+                fail "uninstall must refuse when Docker CLI disappears at probe $missing_at ($mode)"
+            fi
+            [[ -f "$no_docker_install/ods-uninstall.sh" &&
+               -f "$no_docker_install/data/owner.txt" &&
+               -L "$no_docker_home/.local/bin/ods" ]] ||
+                fail "missing Docker CLI must retain installed files, data, and links ($missing_at/$mode)"
+            if [[ "$missing_at" -lt 3 ]]; then
+                [[ ! -e "$no_docker_install/pixel-retired" && ! -s "$no_docker_sudo" ]] ||
+                    fail "early missing Docker CLI must refuse before Pixel or sudo ($missing_at/$mode)"
+                grep -qiF 'installation untouched' "$TMP_DIR/no-docker-error" ||
+                    fail "early Docker refusal must explain intact installation ($missing_at/$mode)"
+            else
+                grep -qF 'Pixel or host services may already be retired' "$TMP_DIR/no-docker-error" ||
+                    fail "late Docker refusal must disclose partial service retirement ($mode)"
+            fi
+            if grep -Eq ' down |^volume rm ' "$no_docker_log"; then
+                fail "missing Docker CLI must not attempt unverified Docker cleanup ($missing_at/$mode)"
+            fi
+        done
+    done
+    pass "missing Docker CLI refuses purge and keep-data at all three custody gates"
+
     # Refusal must precede every privileged/service cleanup and preserve data.
     local unsafe_install="$TMP_DIR/unsafe-install" unsafe_home="$TMP_DIR/unsafe-home"
     local unsafe_docker="$TMP_DIR/unsafe-docker.log" unsafe_sudo="$TMP_DIR/unsafe-sudo.log"
