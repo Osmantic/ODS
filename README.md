@@ -26,7 +26,7 @@ It should feel that way for everyone.
 
 </div>
 
-ODS sets up a model route, Dashboard, and browser chat, then lets you add tools such as Open WebUI, n8n, ComfyUI, and privacy services when you need them. Fresh Linux and recommended Windows/WSL installs start with Core; the list below includes optional services:
+ODS sets up a model route, Dashboard, and browser chat. On Portal-qualified Linux and the recommended Windows/WSL path, fresh Core uses Portal chat and lets you add Open WebUI and other supported services from the Extensions Library. Available features include:
 
 - **Local model inference** — run open models on your own hardware
 - **ChatGPT-style web UI** — talk to your models from any browser
@@ -174,14 +174,14 @@ Windows recovery note: if the runtime folder is partial and `.\ods.ps1` is missi
 |----------|--------|
 | **What is it?** | A local AI server stack for your own hardware, with a one-command Linux/macOS installer and a PowerShell installer for Windows. |
 | **Who is it for?** | People who want private AI at home, in a lab, or on a workstation without hand-wiring a dozen services. |
-| **What do I get?** | A selected model route, Dashboard and browser chat. Voice, workflows, RAG, search, image generation, privacy tools, observability, and developer tools are available as optional services; fresh Linux and recommended Windows/WSL installs start with Core. |
+| **What do I get?** | A selected model route, Dashboard and browser chat. Portal-qualified Linux and recommended Windows/WSL Core use Portal chat; other hosts keep their supported chat path. Additional services include voice, workflows, RAG, search, image generation, privacy tools, observability, and developer tools; defaults vary by platform. |
 | **What does it run on?** | Linux, Windows with WSL2/Docker Desktop, and macOS Apple Silicon. |
 | **Is cloud required?** | No. Local mode is the default; cloud and hybrid API modes are optional. |
 
 | If you know... | ODS adds... |
 |----------------|----------------------|
 | **Ollama / llama.cpp** | The surrounding server stack: chat, dashboard, voice, RAG, workflows, agents, privacy, and service management. |
-| **Open WebUI** | Dashboard and Portal chat in fresh Linux/WSL Core; add Open WebUI from the Extensions Library when you want its separate interface. |
+| **Open WebUI** | Dashboard and Portal chat on Portal-qualified Linux/WSL Core; add Open WebUI from the Extensions Library when you want its separate interface. |
 | **AnythingLLM** | Broader local AI appliance behavior beyond RAG: inference, chat, voice, workflows, image generation, and ops. |
 | **n8n self-hosted AI starter kits** | Workflow automation as one part of a larger private AI server. |
 
@@ -289,7 +289,7 @@ See the [macOS Quickstart](ods/docs/MACOS-QUICKSTART.md) for details.
 ## What's In The Box
 
 ### Chat & Inference
-- **Open WebUI** — optional on fresh Linux/WSL Core; a separate chat interface with conversation history, web search, document upload, and [30+ languages](https://docs.openwebui.com)
+- **Open WebUI** — optional on fresh Portal-qualified Linux/WSL Core; a separate chat interface with conversation history, web search, document upload, and [30+ languages](https://docs.openwebui.com)
 - **llama-server** — high-performance LLM inference with continuous batching, auto-selected for your GPU; Linux Docker host API defaults to `localhost:11434`, native macOS/Windows paths use `localhost:8080`, and container API runs on `8080`
 - **LiteLLM** — API gateway supporting local/cloud/hybrid modes
 - **TEI Embeddings** — text embedding service for RAG and search workflows
