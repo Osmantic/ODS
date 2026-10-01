@@ -455,6 +455,7 @@ def provisioned_overlay(monkeypatch, request):
         f.images = [dict(Id=image, Os='linux', Architecture={'x86_64': 'amd64', 'aarch64': 'arm64'}[platform.machine()],
             Config=dict(User='65534:65534', Entrypoint=['python3', '/source/preview_inspection_capsule.py'], Labels={
                 'org.osmantic.ods.component': 'pixel-preview-inspection', 'org.osmantic.ods.inspection.protocol': '1',
+                'org.osmantic.ods.inspection.select': 'native-single-select-v1',
                 'org.osmantic.ods.inspection.playwright': '1.62.0'}))]
         contract = upgrade._provision_contract(f.manager, f.manager.journal(), kind, config, [f.images])
         for name in contract['files']:
@@ -506,7 +507,7 @@ def test_first_inspector_requires_exact_provisioned_service_and_real_peer(provis
     assert all(path.read_bytes() == raw for path, raw in before.items())
 
 
-@pytest.mark.parametrize('fault', ['owner', 'image', 'unit', 'file', 'peer', 'dropin', 'reload', 'config-during-render'])
+@pytest.mark.parametrize('fault', ['owner', 'image', 'select-label', 'unit', 'file', 'peer', 'dropin', 'reload', 'config-during-render'])
 def test_new_inspector_provision_fault_never_releases(provisioned_overlay, monkeypatch, fault):
     f = provisioned_overlay
     config_path = upgrade.SYSTEM_ROOT / 'etc/ods-pixel-inspection.json'
@@ -516,6 +517,8 @@ def test_new_inspector_provision_fault_never_releases(provisioned_overlay, monke
         save(config_path, value)
     elif fault == 'image':
         f.images[0]['Config']['User'] = 'root'
+    elif fault == 'select-label':
+        del f.images[0]['Config']['Labels']['org.osmantic.ods.inspection.select']
     elif fault == 'unit':
         save(upgrade.SYSTEM_ROOT / 'etc/systemd/system/pixel-preview-inspection.service', b'forged')
     elif fault == 'file':
