@@ -62,6 +62,10 @@ if [[ "${1:-}" == "compose" && " $* " == *" down "* ]]; then
     [[ "${DOCKER_DOWN_EXIT_CODE:-0}" == "0" ]] || printf 'fixture Compose diagnostic\n' >&2
     exit "${DOCKER_DOWN_EXIT_CODE:-0}"
 fi
+if [[ "${1:-}" == "inspect" ]]; then
+    printf '[]\n'
+    exit 0
+fi
 exit 0
 EOF
     chmod +x "$stub_dir/docker"
@@ -270,8 +274,8 @@ EOF
     ln -s "$install_keep/ods-cli" "$home_keep/.local/bin/ods"
     DOCKER_LOG="$log_keep" SUDO_LOG="$sudo_log" run_uninstall "$install_keep" "$home_keep" "$stub_dir" --keep-data
 
-    grep -qF 'compose -f docker-compose.base.yml -f docker-compose.cpu.yml down --remove-orphans' "$log_keep" \
-        || fail "uninstall must use saved .compose-flags for docker compose down"
+    grep -qF 'compose -f docker-compose.base.yml -f docker-compose.cpu.yml --profile * down --remove-orphans' "$log_keep" \
+        || fail "uninstall must use saved .compose-flags and all profiles for docker compose down"
     if grep -qF 'down -v --remove-orphans' "$log_keep"; then
         fail "--keep-data must not remove compose volumes with -v"
     fi
@@ -288,8 +292,8 @@ EOF
     make_install "$install_purge"
     DOCKER_LOG="$log_purge" SUDO_LOG="$sudo_log" run_uninstall "$install_purge" "$home_purge" "$stub_dir"
 
-    grep -qF 'compose -f docker-compose.base.yml -f docker-compose.cpu.yml down --remove-orphans' "$log_purge" \
-        || fail "normal uninstall must stop Compose without deleting volumes before custody review"
+    grep -qF 'compose -f docker-compose.base.yml -f docker-compose.cpu.yml --profile * down --remove-orphans' "$log_purge" \
+        || fail "normal uninstall must stop Compose with all profiles without deleting volumes before custody review"
     if grep -qF 'down -v' "$log_purge"; then
         fail "normal uninstall must not let Compose delete volumes before custody review"
     fi
@@ -306,8 +310,8 @@ EOF
         run_uninstall "$failed_install" "$failed_home" "$stub_dir" 2>"$TMP_DIR/failed-error"; then
         fail "Compose down failure must fail uninstall"
     fi
-    grep -qF 'compose -f docker-compose.base.yml -f docker-compose.cpu.yml down --remove-orphans' "$failed_docker" \
-        || fail "failure fixture must reach the existing Compose down command"
+    grep -qF 'compose -f docker-compose.base.yml -f docker-compose.cpu.yml --profile * down --remove-orphans' "$failed_docker" \
+        || fail "failure fixture must reach the profile-aware Compose down command"
     assert_no_name_cleanup "$failed_docker"
     [[ -f "$failed_install/ods-uninstall.sh" && -f "$failed_install/data/owner.txt" && \
         -L "$failed_home/.local/bin/ods" ]] \
@@ -323,6 +327,74 @@ EOF
         || fail "Compose failure must disclose the partial retirement state"
     rm -f -- "$diagnostic"
     pass "Compose down failure retains remaining installation without a name-based fallback"
+
+    # A surviving owned container (e.g. a profile-disabled service that
+    # `down` did not enumerate) must block install-root deletion and must
+    # not be removed by name.
+    local survivor_install="$TMP_DIR/survivor-install" survivor_home="$TMP_DIR/survivor-home"
+    local survivor_docker="$TMP_DIR/survivor-docker.log" survivor_sudo="$TMP_DIR/survivor-sudo.log"
+    local survivor_stub="$TMP_DIR/survivor-bin"
+    make_install "$survivor_install"
+    mkdir -p "$survivor_home" "$survivor_stub"
+    printf 'retain owner data\n' > "$survivor_install/data/owner.txt"
+    # Override the docker stub to report a surviving owned container after
+    # down, and to fail if any name-based removal is attempted. Use a
+    # separate stub directory so earlier tests are unaffected.
+    cp "$stub_dir/systemctl" "$stub_dir/sudo" "$stub_dir/id" "$stub_dir/pgrep" "$stub_dir/uname" "$survivor_stub/"
+    cat > "$survivor_stub/docker" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${DOCKER_LOG:?}"
+if [[ "${1:-}" == "compose" && " $* " == *" config --format json "* ]]; then
+    printf '{"name":"ods","volumes":{}}\n'
+    exit 0
+fi
+if [[ "${1:-}" == "compose" && " $* " == *" down "* ]]; then
+    exit 0
+fi
+if [[ "${1:-}" == "ps" ]]; then
+    if [[ " $* " == *" label=com.docker.compose.project=ods"* ]]; then
+        printf '%s\n' "$(printf 'a%.0s' {1..64})"
+        exit 0
+    fi
+    exit 0
+fi
+if [[ "${1:-}" == "inspect" ]]; then
+    printf '[{"Id":"%s","Config":{"Labels":{"com.docker.compose.project":"ods","com.docker.compose.service":"llama-server","com.docker.compose.project.working_dir":"%s","com.docker.compose.project.config_files":"%s/docker-compose.base.yml"}},"Mounts":[]}]\n' \
+        "$(printf 'a%.0s' {1..64})" "$SURVIVOR_INSTALL" "$SURVIVOR_INSTALL"
+    exit 0
+fi
+exit 0
+EOF
+    chmod +x "$survivor_stub/docker"
+    if DOCKER_LOG="$survivor_docker" SUDO_LOG="$survivor_sudo" \
+        SURVIVOR_INSTALL="$survivor_install" \
+        run_uninstall "$survivor_install" "$survivor_home" "$survivor_stub" 2>"$TMP_DIR/survivor-error"; then
+        fail "surviving owned container must block uninstall"
+    fi
+    [[ -f "$survivor_install/ods-uninstall.sh" && -f "$survivor_install/data/owner.txt" ]] \
+        || fail "surviving owned container must retain installation and data"
+    grep -qF 'Owned ODS containers remain after Compose down' "$TMP_DIR/survivor-error" \
+        || fail "surviving owned container must explain the refusal"
+    assert_no_name_cleanup "$survivor_docker"
+    pass "surviving owned container blocks uninstall without name-based removal"
+
+    : > "$survivor_docker"
+    if DOCKER_LOG="$survivor_docker" SUDO_LOG="$survivor_sudo" \
+        SURVIVOR_INSTALL="$survivor_install" \
+        run_uninstall "$survivor_install" "$survivor_home" "$survivor_stub" --keep-data 2>"$TMP_DIR/survivor-keep-error"; then
+        fail "--keep-data must still reject a surviving owned container"
+    fi
+    [[ -f "$survivor_install/ods-uninstall.sh" && -f "$survivor_install/data/owner.txt" ]] \
+        || fail "--keep-data survivor refusal must retain installation and data"
+    grep -qF 'Owned ODS containers remain after Compose down' "$TMP_DIR/survivor-keep-error" \
+        || fail "--keep-data must reach the owned-container completion gate"
+    grep -qF -- '--profile * down --remove-orphans' "$survivor_docker" \
+        || fail "--keep-data must request all profiles"
+    if grep -Eq '^volume rm | down -v' "$survivor_docker"; then
+        fail "--keep-data survivor refusal must not remove volumes"
+    fi
+    assert_no_name_cleanup "$survivor_docker"
+    pass "--keep-data still rejects surviving containers and retains data"
 
     mapfile -t sudo_calls < "$sudo_log"
     local sudo_credentials_seen=0

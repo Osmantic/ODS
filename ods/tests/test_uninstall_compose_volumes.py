@@ -332,6 +332,93 @@ class UninstallVolumeTests(unittest.TestCase):
         self.assertNotIn(name, self.fake.removed)
         self.assertIn(name, diagnostic.getvalue())
 
+    def test_containers_complete_passes_when_no_owned_container_remains(self):
+        MODULE.preflight(self.root, self.snapshot, [])
+        self.fake.containers = []
+        MODULE.containers_complete(self.root, self.snapshot)
+
+    def test_containers_complete_blocks_when_profile_disabled_container_survives(self):
+        # Reproduces the Strixy failure: a container created under a profile
+        # the current saved stack no longer activates survives `down`.
+        MODULE.preflight(self.root, self.snapshot, [])
+        # Simulate `docker compose down` leaving the owned container running.
+        with self.assertRaisesRegex(ValueError, "Owned ODS containers remain"):
+            MODULE.containers_complete(self.root, self.snapshot)
+
+    def test_containers_complete_blocks_when_bind_only_container_survives(self):
+        # A profile-disabled service with no volumes still counts as owned.
+        self.fake.containers[0]["Mounts"] = [{"Type": "bind", "Source": str(self.root / "data/models")}]
+        self.fake.volumes = {}
+        MODULE.preflight(self.root, self.snapshot, [])
+        with self.assertRaisesRegex(ValueError, "Owned ODS containers remain"):
+            MODULE.containers_complete(self.root, self.snapshot)
+
+    def test_containers_complete_fails_closed_on_foreign_same_project_container(self):
+        # A container with the same project label but a different working_dir
+        # is not owned by this installation. The existing project_containers
+        # proof already fails closed on it, and the gate must surface that as
+        # a failure rather than silently passing.
+        MODULE.preflight(self.root, self.snapshot, [])
+        self.fake.containers = []
+        foreign = {
+            "Id": "b" * 64,
+            "Config": {"Labels": {
+                "com.docker.compose.project": "ods",
+                "com.docker.compose.service": "llama-server",
+                "com.docker.compose.project.working_dir": "/other/ods",
+                "com.docker.compose.project.config_files": "/other/ods/docker-compose.base.yml",
+            }},
+            "Mounts": [],
+        }
+        self.fake.containers = [foreign]
+        with self.assertRaisesRegex(ValueError, "another installation"):
+            MODULE.containers_complete(self.root, self.snapshot)
+
+    def test_containers_complete_blocks_when_new_owned_container_appears(self):
+        MODULE.preflight(self.root, self.snapshot, [])
+        self.fake.containers = []
+        # A new container appears after preflight with the same ownership
+        # proof. It is not in the recorded set, so the gate must refuse.
+        new_id = "c" * 64
+        new_container = {
+            "Id": new_id,
+            "Config": {"Labels": {
+                "com.docker.compose.project": "ods",
+                "com.docker.compose.service": "llama-server",
+                "com.docker.compose.project.working_dir": str(self.root),
+                "com.docker.compose.project.config_files": str(self.root / "docker-compose.base.yml"),
+            }},
+            "Mounts": [],
+        }
+        self.fake.containers = [new_container]
+        with self.assertRaisesRegex(ValueError, "Unexpected ODS-project containers"):
+            MODULE.containers_complete(self.root, self.snapshot)
+
+    def test_keep_data_preflight_records_owned_containers(self):
+        # --keep-data must not skip container verification: the snapshot must
+        # still record the owned-container proof so the completion gate can
+        # run.
+        MODULE.preflight(self.root, self.snapshot, [], keep_data=True)
+        record = json.loads(self.snapshot.read_text(encoding="utf-8"))
+        self.assertEqual(record["ownedContainers"], [CONTAINER_ID])
+        self.assertEqual(record["trustedSource"], str(self.root))
+        with self.assertRaisesRegex(ValueError, "Owned ODS containers remain"):
+            MODULE.containers_complete(self.root, self.snapshot)
+        self.fake.containers = []
+        MODULE.containers_complete(self.root, self.snapshot)
+
+    def test_containers_complete_rejects_invalid_snapshot(self):
+        self.snapshot.write_text("{}", encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "snapshot is invalid"):
+            MODULE.containers_complete(self.root, self.snapshot)
+
+    def test_containers_complete_rejects_project_rename(self):
+        MODULE.preflight(self.root, self.snapshot, [])
+        self.fake.containers = []
+        self.fake.config["name"] = "renamed"
+        with self.assertRaisesRegex(ValueError, "project identity changed"):
+            MODULE.containers_complete(self.root, self.snapshot)
+
 
 if __name__ == "__main__":
     unittest.main()
