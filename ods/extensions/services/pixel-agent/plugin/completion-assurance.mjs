@@ -21,8 +21,17 @@ function sourceReadsRequested(text) {
   // prohibition. Keep explicit mid-sentence "without/sem reading" opt-outs.
   const commands = value.replace(/\b(?:if|se)\s+(?:(?:a|an|the|uma?|as?|o)\s+)?(?:sources?|pages?|fontes?|paginas?)\s+(?:cannot|can't|can not|does not|doesn't|nao)\s+(?:be\s+)?(?:open(?:ed)?|read|abrir|abrirem|abr[ea]|for\s+(?:aberta|lida))\b/g, ' ');
   if (/\b(?:do not|don't|never|without|nao|sem)\b[^.!?\n]{0,45}\b(?:open|read|fetch|opening|reading|fetching|abrir|abra|ler|leia)\b/.test(commands)) return false;
-  return /\b(?:open|read|fetch|abra|abrir|leia|ler)\b[^.!?\n]{0,100}\b(?:sources?|pages?|links?|urls?|fontes?|paginas?)\b/.test(value) ||
-    /\b(?:sources?|documentation|repositories|fontes?|documentacao|repositorios?)\b[^.!?\n]{0,100}\b(?:consultad[ao]s?|consulted|read|opened)\b/.test(value) ||
+  for (const read of value.matchAll(/\b(?:open|read|fetch|abra|abrir|leia|ler)\b/g)) {
+    let objects = value.slice(read.index + read[0].length).split(/[.!?\n]/, 1)[0].slice(0, 100);
+    // A file read followed by a separate delivery action does not read that
+    // action's links. Keep coordinated objects ("files and sources") and
+    // examine every read verb, so mixed file/web tasks still require receipts.
+    const file = /\b(?:files?|arquivos?)\b/.exec(objects);
+    const delivery = /\b(?:deliver|provide|publish|return|give|send|share|entreg(?:ue|ar)|fornec(?:a|er)|publi(?:que|car)|retorn(?:e|ar)|envi(?:e|ar)|compartilh(?:e|ar))\b/.exec(objects);
+    if (file && delivery && file.index < delivery.index) objects = objects.slice(0, delivery.index);
+    if (/\b(?:sources?|pages?|links?|urls?|fontes?|paginas?)\b/.test(objects)) return true;
+  }
+  return /\b(?:sources?|documentation|repositories|fontes?|documentacao|repositorios?)\b[^.!?\n]{0,100}\b(?:consultad[ao]s?|consulted|read|opened)\b/.test(value) ||
     /\b(?:official|oficia(?:l|is))\b[^.!?\n]{0,60}\b(?:sources?|documentation|repositories|fontes?|documentacao|repositorios?)\b/.test(value) ||
     /\b(?:sources?|documentation|repositories|fontes?|documentacao|repositorios?)\b[^.!?\n]{0,60}\b(?:official|oficia(?:l|is))\b/.test(value);
 }
@@ -102,17 +111,87 @@ const CITATION_URL = /https?:\/\/[^\s<>"`\\\]|]+/gi;
 const UNREAD_LABEL = /\b(?:unverified|unread|not (?:opened|read|verified)|could not (?:open|read|verify)|unable to (?:open|read|verify)|search (?:lead|snippet) only|nao (?:verificad[ao]|lid[ao]|abert[ao])|nao consegui (?:abrir|ler|verificar))\b/;
 const count = (value, character) => value.split(character).length - 1;
 
+function escapedAt(text, index) {
+  let slashes = 0;
+  while (index > 0 && text[--index] === '\\') slashes++;
+  return slashes % 2 === 1;
+}
+
+// Formatting is literal inside code. Scan once so many citations do not each
+// rescan the answer. Unclosed code is treated conservatively as literal too.
+function citationCodeRanges(text) {
+  const ranges = [];
+  let offset = 0, fence, inline;
+  for (const line of text.split('\n')) {
+    const end = offset + line.length + 1;
+    // Fences may be nested inside list items and block quotes. Their container
+    // markers are not part of the fenced text, where emphasis stays literal.
+    const container = /^(?: {0,3}(?:> ?|(?:[-+*]|\d{1,9}[.)])[ \t]))+/.exec(line)?.[0] ?? '';
+    const quoted = /^(?: {0,3}> ?)+/.exec(line)?.[0] ?? '';
+    // A list marker inside an existing fence is literal text, not a new
+    // container. Likewise, an extra quote marker cannot close its parent fence.
+    const blockLine = line.slice(fence ? quoted.length : container.length);
+    const marker = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(blockLine);
+    if (fence) {
+      if (count(quoted, '>') === fence.quotes && marker && marker[1][0] === fence.character && marker[1].length >= fence.length && !marker[2].trim()) {
+        ranges.push([fence.start, end]);
+        fence = undefined;
+      }
+    } else if (!inline && marker && (marker[1][0] !== '`' || !marker[2].includes('`'))) {
+      fence = {start: offset, character: marker[1][0], length: marker[1].length, quotes: count(container, '>')};
+    } else if (!inline && /^(?: {4}|\t)/.test(blockLine)) {
+      ranges.push([offset, end]);
+    } else {
+      for (const tick of line.matchAll(/`+/g)) {
+        const index = offset + tick.index;
+        if (inline) {
+          if (tick[0].length === inline.length) {
+            ranges.push([inline.start, index + tick[0].length]);
+            inline = undefined;
+          }
+        } else if (!escapedAt(text, index)) {
+          inline = {start: index, length: tick[0].length};
+        }
+      }
+    }
+    offset = end;
+  }
+  if (fence || inline) ranges.push([(fence ?? inline).start, text.length]);
+  return ranges;
+}
+
+function citationWrapper(text, index) {
+  const prefixStart = Math.max(0, index - 4);
+  const opening = /(\*{1,3}|_{1,3}|~~)$/.exec(text.slice(prefixStart, index));
+  if (!opening) return;
+  const start = prefixStart + opening.index;
+  if (text[start - 1] === opening[0][0] || escapedAt(text, start)) return;
+  // Underscore emphasis cannot open inside a word. A URL's own underscores
+  // or asterisks remain untouched unless there is matching surrounding markup.
+  if (opening[0][0] === '_' && /[\p{L}\p{N}]/u.test(text[start - 1] ?? '')) return;
+  return opening[0];
+}
+
 // Every URL in the text with its exact span. With a `read` key set, a public
 // URL whose key is not in it is unread, and `labelled` records whether the
 // answer itself marks that link as unverified or not opened.
 export function citationSpans(text, read) {
   const matches = [...text.matchAll(CITATION_URL)];
+  const code = citationCodeRanges(text);
+  let codeIndex = 0;
   return matches.map((match, i) => {
     let raw = match[0];
+    while (codeIndex < code.length && code[codeIndex][1] <= match.index) codeIndex++;
+    const literal = codeIndex < code.length && code[codeIndex][0] <= match.index;
+    let wrapper = literal ? undefined : citationWrapper(text, match.index);
     for (let previous; previous !== raw;) {
       previous = raw;
       raw = raw.replace(/[.,;:!?]+$/, '');
       while (raw.endsWith(')') && count(raw, ')') > count(raw, '(')) raw = raw.slice(0, -1);
+      if (wrapper && raw.endsWith(wrapper) && raw[raw.length - wrapper.length - 1] !== wrapper[0]) {
+        raw = raw.slice(0, -wrapper.length);
+        wrapper = undefined;
+      }
     }
     const key = citationKey(raw);
     const span = {index: match.index, raw, key, href: publicSourceUrl(raw), read: Boolean(key && read?.has(key)), labelled: false};

@@ -44,6 +44,8 @@ def test_shared_contract_and_private_output(contract):
     assert value["workspace"] == str(Path(args[2]) / ".openclaw/workspace-pixel")
     assert "pixel_ods_workspace_preview" in value["gatewayExtensions"][0]["tools"]
     assert "pixel_ods_workspace_bundle" in value["gatewayExtensions"][0]["tools"]
+    assert "pixel_ods_workspace_artifact" in value["gatewayExtensions"][0]["tools"]
+    assert "pixel_ods_image_read" in value["gatewayExtensions"][0]["tools"]
     assert {'pixel_ods_python_library_proposal', 'pixel_ods_extension_request_status',
             'pixel_ods_extension_request_prepare', 'pixel_ods_extension_request_advance'}.issubset(value['gatewayExtensions'][0]['tools'])
     assert value["operationsLimbEnabled"] is True
@@ -64,6 +66,65 @@ def test_update_preserves_budget_only_for_same_route(contract):
     assert render(args).returncode == 0
     assert json.loads(answers.read_text())["modelMaxTokens"] == 4096
     assert "modelRouteFingerprint" not in json.loads(answers.read_text())
+
+
+@pytest.mark.parametrize("policy", ["supported", "unsupported", "unknown"])
+def test_image_policy_is_preserved_only_for_same_unambiguous_route(contract, policy):
+    answers, args = contract
+    assert render(args).returncode == 0
+    value = json.loads(answers.read_text())
+    assert value["modelImageInput"] == "unknown"
+    value["modelImageInput"] = policy
+    answers.write_text(json.dumps(value))
+    assert render(args).returncode == 0
+    assert json.loads(answers.read_text())["modelImageInput"] == policy
+    args[3] = "another-model"
+    assert render(args).returncode == 0
+    assert json.loads(answers.read_text())["modelImageInput"] == "unknown"
+
+
+def test_remote_route_without_fresh_fingerprint_cannot_preserve_vision_claim(contract):
+    answers, args = contract
+    assert render(args).returncode == 0
+    value = json.loads(answers.read_text())
+    value.update(modelImageInput="supported", modelRouteFingerprint="a" * 64)
+    answers.write_text(json.dumps(value))
+    assert render(args).returncode == 0
+    assert json.loads(answers.read_text())["modelImageInput"] == "unknown"
+
+
+def test_image_policy_invalid_existing_value_is_not_rewritten(contract):
+    answers, args = contract
+    assert render(args).returncode == 0
+    value = json.loads(answers.read_text())
+    value["modelImageInput"] = True
+    answers.write_text(json.dumps(value))
+    before = answers.read_bytes()
+    assert render(args).returncode != 0
+    assert answers.read_bytes() == before
+
+
+def test_shell_model_switch_updates_and_clears_image_policy(contract):
+    answers, args = contract
+    assert render(args).returncode == 0
+    script = '''
+source "$1/pixel-host-install.sh"
+ods_pixel_run_as_owner() { shift 2; "$@"; }
+_ods_pixel_update_onboarding_model fixture "$2" "$3" "$4" 16384 4096 false "" "${5:-unknown}"
+'''
+    for model, policy in [("vision-model", "supported"), ("text-model", "unsupported"), ("legacy-model", None)]:
+        command = ["bash", "-eu", "-c", script, "onboarding-test", str(LIB), args[2], str(answers), model]
+        if policy is not None:
+            command.append(policy)
+        result = subprocess.run(command, capture_output=True, text=True)
+        assert result.returncode == 0, result.stderr
+        value = json.loads(answers.read_text())
+        assert value["modelName"] == f"ODS Current ({model})"
+        assert value["modelImageInput"] == (policy or "unknown")
+    before = answers.read_bytes()
+    result = subprocess.run([*command, "true"], capture_output=True, text=True)
+    assert result.returncode != 0
+    assert answers.read_bytes() == before
 
 
 @pytest.mark.parametrize("index,value", [(4, "2048"), (4, "10000001"),

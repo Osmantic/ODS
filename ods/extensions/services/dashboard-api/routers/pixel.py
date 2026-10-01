@@ -30,9 +30,10 @@ from security import verify_api_key
 from config import read_live_env_value
 from helpers import get_loaded_model, get_llama_context_size
 from pixel_chat_identity import messages_with_identity
-from pixel_chat_context import HistorySnapshot, public_context
+from pixel_chat_context import HistoryMessage, HistorySnapshot, public_context
 from pixel_runtime_identity import project_runtime_identity, unknown_runtime_identity
 from pixel_readiness import project_readiness
+from routers.pixel_images import router as image_router, resolve_message_images, conversation_storage
 from pixel_edge_read_client import borrow_edge_read_client, get_edge_read_client
 
 
@@ -108,15 +109,16 @@ def _pixel_config() -> tuple[str, str] | None:
     return _validate_edge_url(raw_url), raw_key
 
 
-def _edge_headers(key: str, *, accept: str) -> dict[str, str]:
+def _edge_headers(key: str, *, accept: str, image_turn: bool = False) -> dict[str, str]:
     return {
         "Authorization": f"Bearer {key}",
         "Accept": accept,
         "Content-Type": "application/json",
+        **({"X-ODS-Image-Turn": "1"} if image_turn else {}),
     }
 
 
-class _Message(BaseModel):
+class _Message(HistoryMessage):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     role: str
@@ -130,6 +132,12 @@ class _Message(BaseModel):
         return value
 
 
+class ImageRoute(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    routeFingerprint: str = Field(min_length=64, max_length=64, pattern=r"^[a-f0-9]{64}$")
+    unknownConsent: bool
+
+
 class ChatStreamRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
@@ -137,6 +145,7 @@ class ChatStreamRequest(BaseModel):
     request_id: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_-]{1,128}$")
     messages: list[_Message] = Field(min_length=1, max_length=50)
     history_snapshot: HistorySnapshot | None = None
+    image_route: ImageRoute | None = None
 
     @field_validator("chat_id")
     @classmethod
@@ -155,6 +164,15 @@ class ChatStreamRequest(BaseModel):
 
     @model_validator(mode="after")
     def _history_matches_turn(self):
+        image_messages = [index for index, message in enumerate(self.messages) if message.images is not None]
+        history_images = self.history_snapshot is not None and any(message.images for message in self.history_snapshot.messages)
+        if (image_messages or history_images) and self.image_route is None:
+            raise ValueError("Image conversations require a confirmed model route")
+        if image_messages:
+            if image_messages != [len(self.messages) - 1]:
+                raise ValueError("Earlier image messages belong in the persistent history snapshot")
+            if self.request_id is None or self.history_snapshot is None or self.history_snapshot.schemaVersion != 2:
+                raise ValueError("Image turns require persistent version 2 history and a request_id")
         if self.history_snapshot is not None:
             if self.request_id is None:
                 raise ValueError("Persistent history requires a request_id")
@@ -179,6 +197,7 @@ class ChatCancelRequest(BaseModel):
 
 
 router = APIRouter(prefix="/api/pixel", tags=["pixel"])
+router.include_router(image_router)
 
 _result_store: ChatResultStore | None = None
 _result_tasks: dict[tuple[str, str, str], asyncio.Task] = {}
@@ -244,6 +263,29 @@ async def _chat_context_request(body: ChatCancelRequest, *, compact: bool = Fals
         raise HTTPException(502, "Portal context status could not be verified") from None
 
 
+async def _delete_native_conversation_images(chat_id):
+    config = _pixel_config()
+    if config is None:
+        raise HTTPException(503, "Portal is unavailable. Retry deletion when it is running.")
+    edge_url, key = config
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(22, connect=3), trust_env=False, follow_redirects=False) as client:
+            async with client.stream("POST", f"{edge_url}/v1/chat/images-delete", json={"user": chat_id},
+                                     headers=_edge_headers(key, accept="application/json")) as result:
+                if result.status_code in {409, 423, 429}:
+                    raise HTTPException(409, "Conversation deletion is pending. Finish or recover its active work, then retry deletion.")
+                if result.status_code != 200 or not result.headers.get("content-type", "").lower().startswith("application/json"):
+                    raise ValueError("invalid receipt")
+                receipt = json.loads(await _bounded_response_bytes(result, 256))
+                if (receipt != {"schemaVersion": 1, "deleted": True}
+                        or type(receipt.get("schemaVersion")) is not int or receipt.get("deleted") is not True):
+                    raise ValueError("invalid receipt")
+    except HTTPException:
+        raise
+    except (httpx.HTTPError, ValueError, TypeError, asyncio.TimeoutError):
+        raise HTTPException(503, "Image deletion is not confirmed. Your local history is preserved; retry deletion.") from None
+
+
 @router.post("/chat/context", dependencies=[Depends(verify_api_key)])
 async def pixel_chat_context(body: ChatCancelRequest):
     return await _chat_context_request(body)
@@ -251,6 +293,7 @@ async def pixel_chat_context(body: ChatCancelRequest):
 
 @router.post("/chat/compact")
 async def pixel_chat_compact(body: ChatResultRequest, owner: str = Depends(verify_api_key)):
+    await conversation_storage("assert_available", owner, body.chat_id)
     store = _chat_results()
     if store.has_pending((owner_namespace(owner), body.chat_id)):
         raise HTTPException(423, "Recover or finish the current response before compacting this conversation")
@@ -781,11 +824,14 @@ class _ClientDisconnected(Exception):
 
 
 async def _retained_chat_stream(request, body, owner):
+    await conversation_storage("assert_available", owner, body.chat_id)
     store = _chat_results()
     identity = (owner_namespace(owner), body.chat_id, body.request_id)
     fingerprint_input = [m.model_dump() for m in body.messages]
     if body.history_snapshot is not None:
         fingerprint_input = {"messages": fingerprint_input, "history_snapshot": body.history_snapshot.model_dump()}
+    if body.image_route is not None:
+        fingerprint_input = {"conversation": fingerprint_input, "image_route": body.image_route.model_dump()}
     fingerprint = hashlib.sha256(json.dumps(fingerprint_input, sort_keys=True, ensure_ascii=True).encode()).hexdigest()
     try:
         if identity[:2] in _result_stops:
@@ -805,7 +851,8 @@ async def _retained_chat_stream(request, body, owner):
                 issue = await _model_readiness_issue()
                 if issue is not None:
                     raise HTTPException(status_code=409, detail=issue[1])
-                messages = await messages_with_identity(body.messages)
+                messages = await _prepare_chat_messages(body, owner)
+                await conversation_storage("assert_available", owner, body.chat_id)
             except Exception:
                 # The attempt ID was committed, but no producer or agent turn
                 # was started. Retain an exact terminal receipt for reloads.
@@ -866,6 +913,7 @@ async def _produce_retained_result(store, identity, body, config, messages, *, o
     failed = False
     stopped = False
     rejected = False
+    oversized_image = False
     try:
         extension_context = None
         if owner is not None and body.messages and body.messages[-1].role == 'user':
@@ -876,8 +924,9 @@ async def _produce_retained_result(store, identity, body, config, messages, *, o
         async with async_timeout(_CHAT_STREAM_TIMEOUT_SECONDS):
             async with httpx.AsyncClient(timeout=timeout, trust_env=False, follow_redirects=False) as client:
                 async with client.stream("POST", f"{edge_url}/v1/chat/completions",
-                        json=_edge_chat_body(body, messages, extension_context=extension_context),
-                        headers=_edge_headers(key, accept="text/event-stream")) as upstream:
+                        **_edge_request_arguments(_edge_chat_body(body, messages, extension_context=extension_context),
+                                                  image_turn=bool(body.messages[-1].images)),
+                        headers=_edge_headers(key, accept="text/event-stream", image_turn=bool(body.messages[-1].images))) as upstream:
                     rejected = 400 <= upstream.status_code < 500
                     if upstream.status_code != 200 or not upstream.headers.get("content-type", "").lower().startswith("text/event-stream"):
                         raise ValueError("Invalid upstream stream")
@@ -941,6 +990,10 @@ async def _produce_retained_result(store, identity, body, config, messages, *, o
                             raise ResultCapacity("SSE line limit")
                     if not done_seen:
                         failed = True
+    except HTTPException as exc:
+        oversized_image = exc.status_code == 413 and bool(body.messages[-1].images)
+        rejected = oversized_image
+        failed = True
     except asyncio.CancelledError:
         cancelled = identity in _result_abort_ack
         failed = not cancelled
@@ -958,6 +1011,7 @@ async def _produce_retained_result(store, identity, body, config, messages, *, o
         try:
             if not done_seen:
                 text = ("Portal was stopped." if cancelled else
+                        "This image turn exceeds the 16 MiB encoded limit. Reduce attachments or conversation text." if oversized_image else
                         "Portal did not accept this turn. Check the conversation's context status before continuing." if rejected else
                         "Portal could not complete the response. Check saved work before continuing.")
                 store.append(identity, _error_event(text) + b"data: [DONE]\n\n", terminal=True)
@@ -977,6 +1031,53 @@ async def _produce_retained_result(store, identity, body, config, messages, *, o
             store.finish(identity, state)
 
 
+async def _prepare_chat_messages(body, owner):
+    if body.image_route is not None:
+        state = await _chat_context_request(ChatCancelRequest(chat_id=body.chat_id))
+        model = state.get("model") or {}
+        if (model.get("imageRouteFingerprint") or model.get("routeFingerprint")) != body.image_route.routeFingerprint:
+            raise HTTPException(409, "The model route changed. Review the selected model before sending images.")
+        capability = model.get("imageInput")
+        if capability == "unsupported":
+            raise HTTPException(409, "The selected model is declared text-only. Choose an image-capable model.")
+        if capability not in {"supported", "unknown"}:
+            raise HTTPException(409, "Image support for the selected runtime has not been verified.")
+        if capability == "unknown" and not body.image_route.unknownConsent:
+            raise HTTPException(409, "Image support is unknown. Confirm an image test on this model route first.")
+    messages = await messages_with_identity(body.messages)
+    latest = body.messages[-1]
+    if latest.images is not None:
+        parts = await resolve_message_images(owner, body.chat_id, latest.content,
+                                             [image.model_dump() for image in latest.images])
+        # Identity injection inserts a system message; the final owner turn
+        # remains last. Preserve references for Edge/ingress integrity checks.
+        messages[-1] = {**messages[-1], "content": parts}
+        _image_json_size(_edge_chat_body(body, messages))
+    return messages
+
+
+def _image_json_size(payload):
+    total = 0
+    for token in json.JSONEncoder(ensure_ascii=True).iterencode(payload):
+        total += len(token)
+        if total > 16 * 1024 * 1024:
+            raise HTTPException(413, "Image turn exceeds the 16 MiB encoded limit. Reduce attachments or conversation text.")
+    return total
+
+
+def _edge_request_arguments(payload, *, image_turn):
+    if not image_turn:
+        return {"json": payload}
+    _image_json_size(payload)
+
+    async def encoded():
+        for token in json.JSONEncoder(ensure_ascii=True).iterencode(payload):
+            for offset in range(0, len(token), 32768):
+                yield token[offset:offset + 32768].encode("ascii")
+            await asyncio.sleep(0)
+    return {"content": encoded()}
+
+
 def _edge_chat_body(body, messages, *, extension_context=None):
     from extension_requests import model_request_context
     latest = body.messages[-1] if body.messages else None
@@ -988,6 +1089,8 @@ def _edge_chat_body(body, messages, *, extension_context=None):
     if body.history_snapshot is not None:
         result["history_snapshot"] = body.history_snapshot.model_dump()
         result["request_id"] = body.request_id
+    if body.image_route is not None:
+        result["image_route"] = body.image_route.model_dump()
     return result
 
 
@@ -1037,6 +1140,8 @@ async def _iter_upstream_chunks(
 @router.post("/chat/stream")
 async def pixel_chat_stream(request: Request, body: ChatStreamRequest, owner: str = Depends(verify_api_key)) -> StreamingResponse:
     """Forward one bounded chat over authenticated, unbuffered SSE."""
+    if isinstance(owner, str):
+        await conversation_storage("assert_available", owner, body.chat_id)
     if body.request_id is not None:
         return await _retained_chat_stream(request, body, owner)
     if isinstance(owner, str) and _result_store is not None and _result_store.has_pending((owner_namespace(owner), body.chat_id)):

@@ -15,6 +15,43 @@ from project_service import serve
 
 
 class ProjectServiceLockTests(unittest.TestCase):
+    def test_slow_capability_probe_does_not_delay_ready_or_cached_reads(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            image = 'sha256:' + 'a' * 64
+            controller = ProjectController(root, root / 'state', image, authorize=lambda *_: True,
+                                           python_image=image)
+            stop, ready, probing = threading.Event(), threading.Event(), threading.Event()
+            errors = []
+            def probe(_image, *, cancel):
+                probing.set()
+                if not cancel.wait(5):
+                    raise TimeoutError('test shutdown did not stop probe')
+                raise InterruptedError('service stopped')
+            def run():
+                try:
+                    serve(controller, stop, ready=ready)
+                except Exception as error:
+                    errors.append(error)
+            with patch('project_service.verify_runtime'), patch('project_controller.probe_python_runtime', side_effect=probe):
+                thread = threading.Thread(target=run)
+                thread.start()
+                try:
+                    self.assertTrue(probing.wait(1))
+                    self.assertTrue(ready.wait(1))
+                    self.assertEqual(controller.capabilities('python')['status'], 'unavailable')
+                    job, _ = controller.jobs.create('a' * 64, {'project': 'project', 'sourceSha256': 'b' * 64,
+                                                            'image': image, 'outputDirectory': 'out'})
+                    self.assertEqual(controller.observe(job)['state'], 'queued')
+                    controller.cancel(job)
+                finally:
+                    stop.set()
+                    thread.join(3)
+                    controller.close()
+            self.assertFalse(thread.is_alive())
+            self.assertFalse(controller._capability_thread.is_alive())
+            self.assertEqual(errors, [])
+
     def test_replacement_cannot_recover_jobs_while_previous_worker_drains(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -79,9 +116,11 @@ class ProjectServiceTests(unittest.TestCase):
             (project / "build.cjs").write_text("const f=require('fs');f.mkdirSync('out');f.writeFileSync('out/index.html','<h1>Tool built</h1>')")
             # Explicit test scope; no installed policy or owner grant is changed.
             controller = ProjectController(root, root / "state", iid.read_text().strip(),
-                                           authorize=lambda project, *_: project == "project")
+                                           authorize=lambda project, *_: project in {"project", "interrupted-project"})
+            # Startup retains uncertain work, but an independent project's
+            # service/Node integration can proceed without bypassing its fence.
             interrupted, _ = controller.jobs.create("a" * 64, {
-                "project": "project", "sourceSha256": "b" * 64,
+                "project": "interrupted-project", "sourceSha256": "b" * 64,
                 "image": controller.image, "outputDirectory": "out",
             })
             controller.jobs.claim(interrupted)
@@ -123,6 +162,7 @@ class ProjectServiceTests(unittest.TestCase):
                 receipt = json.loads(result.stdout)
                 self.assertEqual((root / receipt["output"]["relativeDirectory"] / "index.html").read_text(), "<h1>Tool built</h1>")
                 self.assertFalse((project / "out").exists())
+                self.assertEqual(controller.observe(interrupted)['state'], 'unconfirmed')
             finally:
                 stop.set()
                 thread.join(15)

@@ -141,18 +141,20 @@ _get_base_compose_flags() {
     # Fallback: dynamic resolution via resolve-compose-stack.sh so user-installed
     # extensions in data/user-extensions/ are discovered when the .compose-flags
     # cache is missing or stale. Mirrors ods-cli's get_compose_flags fallback.
-    local ods_mode
+    local ods_mode webui_enabled
     ods_mode="$(read_env_value "${INSTALL_DIR}/.env" "ODS_MODE")"
     ods_mode="${ods_mode#\"}"
     ods_mode="${ods_mode%\"}"
     ods_mode="${ods_mode#\'}"
     ods_mode="${ods_mode%\'}"
     [[ -n "$ods_mode" ]] || ods_mode="local"
+    webui_enabled="$(read_env_value "${INSTALL_DIR}/.env" "ENABLE_OPEN_WEBUI")"
+    [[ -n "$webui_enabled" ]] || webui_enabled=true
     if [[ -x "${INSTALL_DIR}/scripts/resolve-compose-stack.sh" ]]; then
         # Pass --gpu-count for parity with the Linux paths even though there's
         # currently no docker-compose.multigpu-apple.yml — keeps the contract
         # uniform across all resolver call sites.
-        "${INSTALL_DIR}/scripts/resolve-compose-stack.sh" \
+        ENABLE_OPEN_WEBUI="$webui_enabled" "${INSTALL_DIR}/scripts/resolve-compose-stack.sh" \
             --script-dir "$INSTALL_DIR" \
             --tier "${TIER:-1}" \
             --gpu-backend "${GPU_BACKEND:-apple}" \
@@ -166,6 +168,10 @@ _get_base_compose_flags() {
         flags="$flags -f docker-compose.cloud.yml"
     elif [[ -f "${INSTALL_DIR}/installers/macos/docker-compose.macos.yml" ]]; then
         flags="$flags -f installers/macos/docker-compose.macos.yml"
+    fi
+    if [[ "$(read_env_value "${INSTALL_DIR}/.env" "ENABLE_OPEN_WEBUI")" == false ]] \
+        && [[ -f "${INSTALL_DIR}/docker-compose.gateway-only.yml" ]]; then
+        flags="$flags -f docker-compose.gateway-only.yml"
     fi
     macos_model_store_compose_flags "$flags"
 }
@@ -504,6 +510,16 @@ proxy_is_enabled() {
         || [[ -f "${INSTALL_DIR}/data/user-extensions/ods-proxy/compose.yaml" ]]
 }
 
+webui_is_selected() {
+    local flags="$1"
+    local services
+    # Explicit `compose up open-webui` bypasses profiles. Check the selected
+    # project first so restart cannot pull an intentionally omitted image.
+    # shellcheck disable=SC2086
+    services="$(docker compose $flags config --services 2>/dev/null)" || return 2
+    grep -qx 'open-webui' <<< "$services"
+}
+
 require_proxy_auth() {
     local env_file="${INSTALL_DIR}/.env"
     [[ -f "$env_file" ]] || {
@@ -519,6 +535,10 @@ require_proxy_auth() {
 
 prepare_proxy_start() {
     local flags="$1"
+    if ! webui_is_selected "$flags"; then
+        ai_err "ODS proxy requires Open WebUI; re-run the installer with --with-webui."
+        return 1
+    fi
     require_proxy_auth || return 1
     ai "Applying authenticated Open WebUI configuration..."
     # shellcheck disable=SC2086
@@ -829,8 +849,18 @@ cmd_status() {
     echo -e "  ${DGRN}$(printf -- '-%.0s' {1..40})${NC}"
 
     # Parallel arrays (Bash 3.2 compatible)
-    local ep_names=("$CLI_LLM_NAME" "Chat UI" "Dashboard" "OpenCode (IDE)")
-    local ep_urls=("$CLI_LLM_HEALTH_URL" "http://127.0.0.1:3000" "http://127.0.0.1:3001" "http://127.0.0.1:3003")
+    local ep_names=("$CLI_LLM_NAME" "Dashboard" "OpenCode (IDE)")
+    local ep_urls=("$CLI_LLM_HEALTH_URL" "http://127.0.0.1:3001" "http://127.0.0.1:3003")
+    if webui_is_selected "$flags"; then
+        ep_names+=("Chat UI (Open WebUI)")
+        ep_urls+=("http://127.0.0.1:3000")
+    else
+        local selection_rc=$?
+        if [[ "$selection_rc" == 2 ]]; then
+            ai_err "Cannot resolve Compose configuration for status."
+            return 1
+        fi
+    fi
 
     for ((i=0; i<${#ep_names[@]}; i++)); do
         local name="${ep_names[$i]}"
@@ -872,6 +902,19 @@ cmd_start() {
 
     local flags
     flags=$(get_compose_flags)
+    if [[ "$service" == "open-webui" ]]; then
+        if webui_is_selected "$flags"; then
+            :
+        else
+            local selection_rc=$?
+            if [[ "$selection_rc" == 2 ]]; then
+                ai_err "Failed to start open-webui: Compose configuration could not be resolved."
+            else
+                ai_err "Open WebUI is not selected. Re-run the installer with --with-webui."
+            fi
+            return 1
+        fi
+    fi
 
     if [[ "$service" == "ods-proxy" ]]; then
         prepare_proxy_start "$flags" || return 1
@@ -936,8 +979,10 @@ cmd_stop() {
         ai_ok "${service} stopped"
     else
         ai "Stopping all services..."
+        # Keep Compose containers and their install-path labels for a later
+        # uninstall ownership check. Native llama is stopped separately.
         # shellcheck disable=SC2086
-        docker compose $flags down
+        docker compose $flags stop
 
         # Stop native llama-server
         if [[ -f "$LLAMA_SERVER_PID_FILE" ]]; then
@@ -956,6 +1001,19 @@ cmd_restart() {
 
     local flags
     flags=$(get_compose_flags)
+    if [[ "$service" == "open-webui" ]]; then
+        if webui_is_selected "$flags"; then
+            :
+        else
+            local selection_rc=$?
+            if [[ "$selection_rc" == 2 ]]; then
+                ai_err "Failed to restart open-webui: Compose configuration could not be resolved."
+            else
+                ai_err "Open WebUI is not selected. Re-run the installer with --with-webui."
+            fi
+            return 1
+        fi
+    fi
 
     if [[ "$service" == "ods-proxy" ]]; then
         prepare_proxy_start "$flags" || return 1

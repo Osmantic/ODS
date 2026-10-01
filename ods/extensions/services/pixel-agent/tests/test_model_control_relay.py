@@ -24,6 +24,22 @@ STATE=dict(schemaVersion=1,status='held',revision=REV,contract=TARGET,pending=Tr
 
 
 class ModelControlTests(unittest.TestCase):
+    def test_image_capability_survives_each_projection_without_widening_contract(self):
+        for module in (relay, edge):
+            for optional in ({}, {'routeFingerprint': REV}, *(
+                    {'imageInput': capability, **fingerprint}
+                    for capability in ('supported', 'unsupported', 'unknown')
+                    for fingerprint in ({}, {'routeFingerprint': REV}))):
+                target = {**TARGET, **optional}
+                value = {**STATE, 'contract': target}
+                self.assertEqual(module.public_model_control(value), value)
+                self.assertTrue(module.valid_model_control({'operation': 'model-apply',
+                    'request': {'transactionId': TX, 'target': target}}))
+            for invalid in (None, True, False, 1, [], {}, 'vision', 'unknown\n'):
+                self.assertFalse(module.valid_model_contract({**TARGET, 'imageInput': invalid}))
+            for extra in ({'path': '/etc'}, {'routeFingerprint': REV + '\n'}):
+                self.assertFalse(module.valid_model_contract({**TARGET, 'imageInput': 'unknown', **extra}))
+
     def test_host_and_edge_validation_share_the_same_contract(self):
         names={'valid_model_contract','_model_hex','valid_model_control','public_model_control'}
         def functions(path):

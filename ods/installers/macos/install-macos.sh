@@ -101,10 +101,16 @@ ENABLE_VOICE=false
 ENABLE_WORKFLOWS=false
 ENABLE_RAG=false
 ENABLE_RECOMMENDED=true
+RECOMMENDED_EXPLICIT=false
 # Hermes Agent is the new default agent as of 2026-05-12. OpenClaw is
 # deprecated and gates behind --openclaw for the deprecation release.
 ENABLE_HERMES=true
+HERMES_EXPLICIT=false
 ENABLE_OPENCLAW=false
+ENABLE_OPENCODE=false
+OPENCODE_ENABLE_EXPLICIT=false
+OPENCODE_DISABLE_EXPLICIT=false
+OPENCODE_DISABLE_SELECTED=false
 ENABLE_PIXEL=true
 ENABLE_BRAVE_SEARCH=false
 ENABLE_APE=true
@@ -114,6 +120,11 @@ ENABLE_ODS_PROXY=false
 ENABLE_TAILSCALE=false
 ENABLE_SEARXNG=false
 ENABLE_WEB_SEARCH=false
+ENABLE_LITELLM=false
+ENABLE_OPEN_WEBUI=false
+WEBUI_ENABLE_EXPLICIT=false
+WEBUI_DISABLE_EXPLICIT=false
+WEBUI_RETAINED=""
 # Langfuse defaults OFF because its clickhouse + postgres + minio stack adds
 # ~500MB baseline memory. Enable via --langfuse, --all, or post-install
 # `ods enable langfuse`. --no-langfuse honored as explicit override so a
@@ -137,12 +148,16 @@ while [[ $# -gt 0 ]]; do
         --voice)         ENABLE_VOICE=true; shift ;;
         --workflows)     ENABLE_WORKFLOWS=true; shift ;;
         --rag)           ENABLE_RAG=true; shift ;;
-        --recommended)   ENABLE_RECOMMENDED=true; shift ;;
-        --no-recommended) ENABLE_RECOMMENDED=false; shift ;;
-        --hermes)        ENABLE_HERMES=true; shift ;;
-        --no-hermes)     ENABLE_HERMES=false; shift ;;
+        --recommended)   ENABLE_RECOMMENDED=true; RECOMMENDED_EXPLICIT=true; shift ;;
+        --no-recommended) ENABLE_RECOMMENDED=false; RECOMMENDED_EXPLICIT=true; shift ;;
+        --hermes)        ENABLE_HERMES=true; HERMES_EXPLICIT=true; shift ;;
+        --no-hermes)     ENABLE_HERMES=false; HERMES_EXPLICIT=true; shift ;;
         --openclaw)      ENABLE_OPENCLAW=true; OPENCLAW_EXPLICIT=true; shift ;;
         --no-openclaw)   ENABLE_OPENCLAW=false; OPENCLAW_EXPLICIT=true; shift ;;
+        --opencode)     ENABLE_OPENCODE=true; OPENCODE_ENABLE_EXPLICIT=true; shift ;;
+        --no-opencode)  ENABLE_OPENCODE=false; OPENCODE_DISABLE_EXPLICIT=true; shift ;;
+        --with-webui)   ENABLE_OPEN_WEBUI=true; WEBUI_ENABLE_EXPLICIT=true; shift ;;
+        --no-webui)     ENABLE_OPEN_WEBUI=false; WEBUI_DISABLE_EXPLICIT=true; shift ;;
         --pixel)        ENABLE_PIXEL=true; shift ;;
         --no-pixel)     ENABLE_PIXEL=false; shift ;;
         --langfuse)      ENABLE_LANGFUSE=true; shift ;;
@@ -154,6 +169,15 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+if $OPENCODE_ENABLE_EXPLICIT && $OPENCODE_DISABLE_EXPLICIT; then
+    echo "--opencode and --no-opencode cannot be used together" >&2
+    exit 1
+fi
+if $WEBUI_ENABLE_EXPLICIT && $WEBUI_DISABLE_EXPLICIT; then
+    echo "--with-webui and --no-webui cannot be used together" >&2
+    exit 1
+fi
+
 if $ALL_FEATURES; then
     ENABLE_VOICE=true
     ENABLE_WORKFLOWS=true
@@ -164,10 +188,12 @@ if $ALL_FEATURES; then
     # in the next release.
     ENABLE_HERMES=true
     $OPENCLAW_EXPLICIT || ENABLE_OPENCLAW=false
+    $OPENCODE_DISABLE_EXPLICIT || ENABLE_OPENCODE=true
     ENABLE_APE=true
     ENABLE_PERPLEXICA=true
     ENABLE_PRIVACY_SHIELD=true
     ENABLE_ODS_PROXY=true
+    $WEBUI_DISABLE_EXPLICIT || ENABLE_OPEN_WEBUI=true
     # --all enables Langfuse unless the user explicitly passed --no-langfuse.
     $NO_LANGFUSE_EXPLICIT || ENABLE_LANGFUSE=true
 fi
@@ -179,6 +205,7 @@ SOURCE_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 # ── Source libraries ──
 LIB_DIR="${SCRIPT_DIR}/lib"
 source "${LIB_DIR}/constants.sh"
+source "${LIB_DIR}/opencode-selection.sh"
 source "${LIB_DIR}/ui.sh"
 macos_apply_presentation_mode
 source "${LIB_DIR}/bridge-manager.sh"
@@ -286,7 +313,7 @@ _macos_set_builtin_compose_state() {
 }
 
 _macos_sync_builtin_compose_states() {
-    _macos_set_builtin_compose_state litellm "$ENABLE_RECOMMENDED"
+    _macos_set_builtin_compose_state litellm "$ENABLE_LITELLM"
     _macos_set_builtin_compose_state searxng "$ENABLE_SEARXNG"
     _macos_set_builtin_compose_state token-spy "$ENABLE_RECOMMENDED"
     _macos_set_builtin_compose_state whisper "$ENABLE_VOICE"
@@ -304,6 +331,60 @@ _macos_sync_builtin_compose_states() {
     _macos_set_builtin_compose_state tailscale "$ENABLE_TAILSCALE"
     _macos_set_builtin_compose_state langfuse "$ENABLE_LANGFUSE"
     _macos_set_builtin_compose_state brave-search "${ENABLE_BRAVE_SEARCH:-false}"
+}
+
+_macos_resolve_support_services() {
+    # The gateway serves the base chat UI, Portal and cloud mode. Selecting it
+    # must not pull the optional recommended support bundle.
+    ENABLE_LITELLM=true
+
+    ENABLE_SEARXNG=false
+    if $ENABLE_RECOMMENDED || $ENABLE_PERPLEXICA || $ENABLE_HERMES || $ENABLE_OPENCLAW; then
+        ENABLE_SEARXNG=true
+    fi
+    if $ENABLE_PIXEL; then
+        # Match native onboarding: the installed environment wins, then
+        # retained private answers, then the fresh parallel-free default.
+        local provider
+        provider="$(read_env_value "${INSTALL_DIR}/.env" PIXEL_WEB_SEARCH_PROVIDER)"
+        provider="${provider#\"}"; provider="${provider%\"}"
+        provider="${provider#\'}"; provider="${provider%\'}"
+        if [[ -z "$provider" ]]; then
+            local answers="${INSTALL_DIR}/data/pixel-native/preparation/onboarding.json"
+            provider="$(/usr/bin/python3 "${SOURCE_ROOT}/extensions/services/pixel-agent/host/native_search.py" \
+                --answers-file "$answers")" || return 1
+        fi
+        case "$provider" in
+            searxng) ENABLE_SEARXNG=true ;;
+            parallel-free) ;;
+            *) ai_err "Unsupported Pixel search provider: ${provider}"; return 1 ;;
+        esac
+    fi
+    ENABLE_WEB_SEARCH=$ENABLE_SEARXNG
+}
+
+_macos_apply_fresh_feature_defaults() {
+    # Unattended and dry-run fresh installs should match the interactive Core
+    # default. An existing installation and explicit selections keep their
+    # previous behavior; the native Pixel lifecycle guard still owns reruns.
+    if [[ ! -f "${INSTALL_DIR}/.env" ]] && ! $ALL_FEATURES \
+        && { $NON_INTERACTIVE || $DRY_RUN; }; then
+        $RECOMMENDED_EXPLICIT || ENABLE_RECOMMENDED=false
+        $HERMES_EXPLICIT || ENABLE_HERMES=false
+    fi
+}
+
+_macos_resolve_webui_selection() {
+    [[ -f "${INSTALL_DIR}/.env" ]] || return 0
+    WEBUI_RETAINED="$(read_env_value "${INSTALL_DIR}/.env" ENABLE_OPEN_WEBUI)"
+    case "$WEBUI_RETAINED" in
+        "") WEBUI_RETAINED=true ;;  # Older Mac installs always selected WebUI.
+        true|false) ;;
+        *) ai_err "Invalid retained ENABLE_OPEN_WEBUI selection"; return 1 ;;
+    esac
+    if ! $WEBUI_ENABLE_EXPLICIT && ! $WEBUI_DISABLE_EXPLICIT && ! $ALL_FEATURES; then
+        ENABLE_OPEN_WEBUI="$WEBUI_RETAINED"
+    fi
 }
 
 _macos_patch_hermes_persisted_config() {
@@ -1179,6 +1260,25 @@ _ensure_macos_pyyaml() {
 
 # Resolve install directory
 INSTALL_DIR="${ODS_INSTALL_DIR}"
+_macos_apply_fresh_feature_defaults
+_macos_resolve_webui_selection || exit 1
+if ! $OPENCODE_ENABLE_EXPLICIT && ! $OPENCODE_DISABLE_EXPLICIT && ! $ALL_FEATURES; then
+    if ods_macos_opencode_retained "$OPENCODE_PLIST" "$OPENCODE_PLIST_LABEL" \
+        "$OPENCODE_BUN_TMPDIR" "$(id -u)"; then
+        ENABLE_OPENCODE=true
+    fi
+fi
+if $ENABLE_OPENCODE && [[ -e "$OPENCODE_PLIST" || -L "$OPENCODE_PLIST" ]] \
+    && ! ods_macos_opencode_plist_owned "$OPENCODE_PLIST" "$OPENCODE_PLIST_LABEL" "$OPENCODE_BUN_TMPDIR"; then
+    ai_err "The OpenCode LaunchAgent path is not an ODS-owned plist; refusing to replace it."
+    exit 1
+fi
+if $ENABLE_OPENCODE && launchctl print "gui/$(id -u)/${OPENCODE_PLIST_LABEL}" >/dev/null 2>&1 \
+    && ! ods_macos_opencode_loaded_owned "$OPENCODE_PLIST" "$OPENCODE_PLIST_LABEL" \
+        "$OPENCODE_BUN_TMPDIR" "$(id -u)"; then
+    ai_err "The loaded OpenCode service is not backed by an ODS-owned plist; refusing to stop it."
+    exit 1
+fi
 
 # --preflight-only runs while get-ods.sh --force still has the installation it
 # is about to replace on disk. installers/reinstall-preflight.sh measures what
@@ -1593,27 +1693,36 @@ if ! $NON_INTERACTIVE && ! $ALL_FEATURES && ! $DRY_RUN; then
     echo -e "  ${WHT}[3]${NC} Custom       -- Choose individually"
     echo ""
 
-    read -r -p "  Selection (1/2/3): " feature_choice < /dev/tty
-    case "${feature_choice:-1}" in
+    _macos_feature_default=2
+    [[ -f "${INSTALL_DIR}/.env" ]] && _macos_feature_default=1
+    read -r -p "  Selection (1/2/3) [${_macos_feature_default}]: " feature_choice < /dev/tty
+    case "${feature_choice:-$_macos_feature_default}" in
         1)
             ENABLE_VOICE=true; ENABLE_WORKFLOWS=true
             ENABLE_RAG=true; ENABLE_HERMES=true
             ENABLE_RECOMMENDED=true
             ENABLE_OPENCLAW=false  # deprecated; Hermes is the default
+            if [[ -n "$feature_choice" ]] && ! $OPENCODE_DISABLE_EXPLICIT; then ENABLE_OPENCODE=true; fi
             ENABLE_APE=true
             ENABLE_PERPLEXICA=true
             ENABLE_PRIVACY_SHIELD=true
             ENABLE_LANGFUSE=true
+            ENABLE_OPEN_WEBUI=true
             ;;
         2)
             ENABLE_VOICE=false; ENABLE_WORKFLOWS=false
             ENABLE_RAG=false; ENABLE_RECOMMENDED=false
             ENABLE_HERMES=false
             ENABLE_OPENCLAW=false
+            if ! $OPENCODE_ENABLE_EXPLICIT; then
+                ENABLE_OPENCODE=false
+                OPENCODE_DISABLE_SELECTED=true
+            fi
             ENABLE_APE=false
             ENABLE_PERPLEXICA=false
             ENABLE_PRIVACY_SHIELD=false
             ENABLE_LANGFUSE=false
+            ENABLE_OPEN_WEBUI=false
             ;;
         3)
             read -r -p "  Enable Voice (Whisper + Kokoro)? [y/N] " yn < /dev/tty
@@ -1622,14 +1731,25 @@ if ! $NON_INTERACTIVE && ! $ALL_FEATURES && ! $DRY_RUN; then
             [[ "$yn" =~ ^[yY] ]] && ENABLE_WORKFLOWS=true
             read -r -p "  Enable RAG (Qdrant + embeddings)? [y/N] " yn < /dev/tty
             [[ "$yn" =~ ^[yY] ]] && ENABLE_RAG=true
-            read -r -p "  Enable recommended support (LiteLLM + SearXNG + Token Spy)? [Y/n] " yn < /dev/tty
+            read -r -p "  Enable extra support (SearXNG + Token Spy)? [Y/n] " yn < /dev/tty
             [[ "$yn" =~ ^[nN] ]] && ENABLE_RECOMMENDED=false || ENABLE_RECOMMENDED=true
             read -r -p "  Enable Hermes Agent (default AI agent)? [Y/n] " yn < /dev/tty
             [[ "$yn" =~ ^[nN] ]] && ENABLE_HERMES=false || ENABLE_HERMES=true
             read -r -p "  Enable OpenClaw (DEPRECATED — Hermes replaces it)? [y/N] " yn < /dev/tty
             [[ "$yn" =~ ^[yY] ]] && ENABLE_OPENCLAW=true
+            if ! $OPENCODE_ENABLE_EXPLICIT && ! $OPENCODE_DISABLE_EXPLICIT; then
+                read -r -p "  Enable OpenCode browser IDE? [y/N] " yn < /dev/tty
+                if [[ "$yn" =~ ^[yY] ]]; then
+                    ENABLE_OPENCODE=true
+                else
+                    ENABLE_OPENCODE=false
+                    OPENCODE_DISABLE_SELECTED=true
+                fi
+            fi
             read -r -p "  Enable Perplexica deep research? [y/N] " yn < /dev/tty
             [[ "$yn" =~ ^[yY] ]] && ENABLE_PERPLEXICA=true
+            read -r -p "  Add Open WebUI alongside Portal? [y/N] " yn < /dev/tty
+            [[ "$yn" =~ ^[yY] ]] && ENABLE_OPEN_WEBUI=true || ENABLE_OPEN_WEBUI=false
             read -r -p "  Enable Privacy Shield? [y/N] " yn < /dev/tty
             [[ "$yn" =~ ^[yY] ]] && ENABLE_PRIVACY_SHIELD=true
             read -r -p "  Enable Langfuse (LLM observability, ~500MB)? [y/N] " yn < /dev/tty
@@ -1640,37 +1760,42 @@ if ! $NON_INTERACTIVE && ! $ALL_FEATURES && ! $DRY_RUN; then
             ENABLE_RAG=true; ENABLE_HERMES=true
             ENABLE_RECOMMENDED=true
             ENABLE_OPENCLAW=false  # deprecated; Hermes is the default
+            $OPENCODE_DISABLE_EXPLICIT || ENABLE_OPENCODE=true
             ENABLE_APE=true
             ENABLE_PERPLEXICA=true
             ENABLE_PRIVACY_SHIELD=true
             ENABLE_LANGFUSE=true
+            ENABLE_OPEN_WEBUI=true
             ;;
     esac
+    unset _macos_feature_default
 fi
+
+if [[ -z "${feature_choice:-}" && -n "$WEBUI_RETAINED" ]] \
+    && ! $WEBUI_ENABLE_EXPLICIT && ! $WEBUI_DISABLE_EXPLICIT && ! $ALL_FEATURES; then
+    ENABLE_OPEN_WEBUI="$WEBUI_RETAINED"
+fi
+$WEBUI_DISABLE_EXPLICIT && ENABLE_OPEN_WEBUI=false
+$WEBUI_ENABLE_EXPLICIT && ENABLE_OPEN_WEBUI=true
+if $ENABLE_ODS_PROXY && ! $ENABLE_OPEN_WEBUI; then
+    ai_err "ODS proxy requires Open WebUI; choose --with-webui or omit --no-webui."
+    exit 1
+fi
+
+$OPENCODE_DISABLE_EXPLICIT && ENABLE_OPENCODE=false
+$OPENCODE_ENABLE_EXPLICIT && ENABLE_OPENCODE=true
 
 if $ENABLE_PIXEL; then
     ENABLE_HERMES=false
     ENABLE_OPENCLAW=false
-    # Pixel requires the shared model gateway and search support even when the
-    # owner selects Core Only. Voice, RAG and workflows remain independent.
-    ENABLE_RECOMMENDED=true
-fi
-
-if $CLOUD_MODE && ! $ENABLE_RECOMMENDED; then
-    ai "Cloud mode requires the LiteLLM gateway; enabling recommended support"
-    ENABLE_RECOMMENDED=true
 fi
 if ! $ENABLE_HERMES && ! $ENABLE_OPENCLAW; then
     ENABLE_APE=false
 fi
 
-# SearXNG backs Open WebUI web search, Perplexica, and agent web tools.
-if $ENABLE_RECOMMENDED || $ENABLE_PERPLEXICA || $ENABLE_HERMES || $ENABLE_OPENCLAW; then
-    ENABLE_SEARXNG=true
-else
-    ENABLE_SEARXNG=false
-fi
-ENABLE_WEB_SEARCH=$ENABLE_SEARXNG
+# SearXNG backs optional search consumers. Native Pixel defaults to its own
+# keyless provider; a retained SearXNG choice remains authoritative.
+_macos_resolve_support_services || exit 1
 
 # Hermes needs 64K context; the raise grows the KV cache, so it is re-checked
 # with the selector against the same unified-memory budget (see
@@ -1752,10 +1877,13 @@ ai "Features:"
 info_box "  Voice:" "$(if $ENABLE_VOICE; then echo enabled; else echo disabled; fi)"
 info_box "  Workflows:" "$(if $ENABLE_WORKFLOWS; then echo enabled; else echo disabled; fi)"
 info_box "  RAG:" "$(if $ENABLE_RAG; then echo enabled; else echo disabled; fi)"
-info_box "  Recommended:" "$(if $ENABLE_RECOMMENDED; then echo enabled; else echo disabled; fi)"
+info_box "  SearXNG search:" "$(if $ENABLE_SEARXNG; then echo enabled; else echo disabled; fi)"
+info_box "  Token Spy:" "$(if $ENABLE_RECOMMENDED; then echo enabled; else echo disabled; fi)"
+info_box "  LiteLLM gateway:" "$(if $ENABLE_LITELLM; then echo enabled; else echo disabled; fi)"
 info_box "  Hermes:" "$(if $ENABLE_HERMES; then echo enabled; else echo disabled; fi)"
 info_box "  Portal (native):" "$(if $ENABLE_PIXEL; then echo enabled; else echo disabled; fi)"
 info_box "  OpenClaw:" "$(if $ENABLE_OPENCLAW; then echo "enabled (DEPRECATED)"; else echo disabled; fi)"
+info_box "  OpenCode:" "$(if $ENABLE_OPENCODE; then echo enabled; else echo disabled; fi)"
 info_box "  Perplexica:" "$(if $ENABLE_PERPLEXICA; then echo enabled; else echo disabled; fi)"
 info_box "  Privacy Shield:" "$(if $ENABLE_PRIVACY_SHIELD; then echo enabled; else echo disabled; fi)"
 info_box "  Langfuse:" "$(if $ENABLE_LANGFUSE; then echo enabled; else echo disabled; fi)"
@@ -1783,6 +1911,13 @@ if $DRY_RUN; then
     $ENABLE_HERMES && ai "[DRY RUN] Would configure Hermes Agent (data: ${INSTALL_DIR}/data/hermes)"
     $ENABLE_OPENCLAW && ai "[DRY RUN] Would configure OpenClaw"
     $ENABLE_LANGFUSE && ai "[DRY RUN] Would enable Langfuse (LLM observability)"
+    $ENABLE_OPENCODE && ai "[DRY RUN] Would install and start OpenCode"
+    if ! $ENABLE_OPENCODE; then
+        ai "[DRY RUN] Would skip OpenCode download and LaunchAgent"
+        if $OPENCODE_DISABLE_EXPLICIT || $OPENCODE_DISABLE_SELECTED; then
+            ai "[DRY RUN] Would disable future ODS OpenCode login starts when owned"
+        fi
+    fi
 else
     # Create directory structure
     mkdir -p "${INSTALL_DIR}/config/searxng"
@@ -1940,6 +2075,9 @@ else
     _previous_llm_bind="$(read_env_value "${INSTALL_DIR}/.env" "BIND_ADDRESS")"
     _previous_macos_gateway="$(read_env_value "${INSTALL_DIR}/.env" "ODS_MACOS_HOST_GATEWAY")"
     generate_ods_env "$INSTALL_DIR" "$SELECTED_TIER" "$FORCE"
+    # generate_ods_env preserves existing .env without --force. Persist an
+    # explicit addback or opt-out there too, so cache rebuilds keep the choice.
+    upsert_env_value "${INSTALL_DIR}/.env" "ENABLE_OPEN_WEBUI" "$ENABLE_OPEN_WEBUI"
     # Reinstalls preserve .env, including an earlier AirPlay port remap.
     # Use that same port for Compose, model downloads and readiness checks.
     WHISPER_PORT="$(read_env_value "$INSTALL_DIR/.env" "WHISPER_PORT")"
@@ -2169,9 +2307,12 @@ if $DRY_RUN; then
     ai "[DRY RUN] Would download llama-server (Metal build)"
     ai "[DRY RUN] Would start native llama-server on port 8080"
     ai "[DRY RUN] Would run: docker compose up -d --remove-orphans --no-build --pull never"
-    if $ENABLE_PIXEL; then
-        ai "[DRY RUN] Would prepare and activate native Pixel after the base stack, then bind Open WebUI to Pixel Edge"
+    if $ENABLE_OPEN_WEBUI; then
+        ai "[DRY RUN] Would include Open WebUI alongside Dashboard/Portal"
+    else
+        ai "[DRY RUN] Would skip Open WebUI image and container; retain its data"
     fi
+    $ENABLE_PIXEL && ai "[DRY RUN] Would prepare and activate native Pixel after the base stack"
 else
     # Change to install directory for docker compose
     cd "$INSTALL_DIR"
@@ -2462,6 +2603,9 @@ else
         # Normal macOS mode: native llama-server
         COMPOSE_FLAGS+=("-f" "installers/macos/docker-compose.macos.yml")
     fi
+    if ! $ENABLE_OPEN_WEBUI; then
+        COMPOSE_FLAGS+=("-f" "docker-compose.gateway-only.yml")
+    fi
 
     # Discover enabled extension compose fragments via manifests
     EXT_DIR="${INSTALL_DIR}/extensions/services"
@@ -2506,7 +2650,8 @@ else
             # Check feature flags
             SKIP=false
             case "$SVC_NAME" in
-                litellm|token-spy) $ENABLE_RECOMMENDED || SKIP=true ;;
+                litellm)       $ENABLE_LITELLM || SKIP=true ;;
+                token-spy)     $ENABLE_RECOMMENDED || SKIP=true ;;
                 searxng)       $ENABLE_SEARXNG || SKIP=true ;;
                 whisper|tts)   $ENABLE_VOICE || SKIP=true ;;
                 n8n)           $ENABLE_WORKFLOWS || SKIP=true ;;
@@ -2577,7 +2722,9 @@ else
     launchctl bootout "gui/$(id -u)/${ODS_AGENT_PLIST_LABEL}" 2>/dev/null || true
     launchctl bootout "gui/$(id -u)/${HOST_AGENT_BRIDGE_PLIST_LABEL}" 2>/dev/null || true
     rm -f "$HOST_AGENT_BRIDGE_PLIST" 2>/dev/null || true
-    launchctl bootout "gui/$(id -u)/${OPENCODE_PLIST_LABEL}" 2>/dev/null || true
+    if $ENABLE_OPENCODE; then
+        launchctl bootout "gui/$(id -u)/${OPENCODE_PLIST_LABEL}" 2>/dev/null || true
+    fi
     for _legacy_plist_label in \
         com.ods.full-model-download; do
         launchctl bootout "gui/$(id -u)/${_legacy_plist_label}" 2>/dev/null || true
@@ -2988,7 +3135,7 @@ for service in (data.get("services") or {}).values():
             -f extensions/services/pixel-edge/compose.yaml.disabled
             -f installers/macos/pixel-native.compose.yaml.disabled
         )
-        ai_ok "Native Pixel activated; Open WebUI now routes through Pixel Edge"
+        ai_ok "Native Pixel activated for Dashboard/Portal"
     fi
 
     # Save compose flags for ods-macos.sh
@@ -3023,7 +3170,24 @@ for service in (data.get("services") or {}).values():
         fi
     fi
 
-    # ── Install & start OpenCode (native host binary) ──
+    # ── Install & start OpenCode only when selected ──
+    if $OPENCODE_DISABLE_EXPLICIT || $OPENCODE_DISABLE_SELECTED; then
+        if ods_macos_opencode_plist_owned \
+            "$OPENCODE_PLIST" "$OPENCODE_PLIST_LABEL" "$OPENCODE_BUN_TMPDIR"; then
+            if launchctl print "gui/$(id -u)/${OPENCODE_PLIST_LABEL}" >/dev/null 2>&1 \
+                && ! ods_macos_opencode_loaded_owned "$OPENCODE_PLIST" "$OPENCODE_PLIST_LABEL" \
+                    "$OPENCODE_BUN_TMPDIR" "$(id -u)"; then
+                ai_warn "A foreign OpenCode service uses the ODS label; leaving it untouched."
+            else
+                launchctl disable "gui/$(id -u)/${OPENCODE_PLIST_LABEL}" || {
+                    ai_err "Could not disable the ODS OpenCode login service."
+                    exit 1
+                }
+                ai "Disabled future OpenCode login starts; any current session remains running."
+            fi
+        fi
+    fi
+    if $ENABLE_OPENCODE; then
     chapter "OPENCODE (AI CODING IDE)"
 
     _install_opencode || true  # Optional IDE failure is reported; do not start an old/unverified version.
@@ -3133,6 +3297,10 @@ PLIST_EOF
         # Unload existing (if any) and load new plist. bootout legitimately
         # errors when no service is loaded, so we keep that suppressed; the
         # bootstrap call surfaces real failures (e.g. launchd throttle EIO).
+        launchctl enable "gui/$(id -u)/${OPENCODE_PLIST_LABEL}" || {
+            ai_err "Could not enable the ODS OpenCode login service."
+            exit 1
+        }
         launchctl bootout "gui/$(id -u)/${OPENCODE_PLIST_LABEL}" >/dev/null 2>&1 || true
         _opencode_bootstrap_err="$(launchctl bootstrap "gui/$(id -u)" "$OPENCODE_PLIST" 2>&1)" && _opencode_bootstrap_rc=0 || _opencode_bootstrap_rc=$?
         if [[ $_opencode_bootstrap_rc -eq 0 ]]; then
@@ -3141,6 +3309,7 @@ PLIST_EOF
             ai_warn "OpenCode LaunchAgent failed (rc=${_opencode_bootstrap_rc}): ${_opencode_bootstrap_err}"
             ai_warn "Start manually: ${OPENCODE_BIN} web --port 3003"
         fi
+    fi
     fi
 fi
 
@@ -3288,21 +3457,23 @@ CLOUD_REQUIRED_HEALTHY=true
 # services wait on `docker inspect ... .State.Health.Status == healthy`;
 # host-native services fall back to an HTTP probe on 127.0.0.1.
 if $CLOUD_MODE; then
-    HEALTH_NAMES=("LiteLLM gateway" "Chat UI (Open WebUI)")
-    HEALTH_URLS=("http://127.0.0.1:4000/health/readiness" "http://127.0.0.1:3000")
-    HEALTH_CONTAINERS=("ods-litellm" "ods-webui")
+    HEALTH_NAMES=("LiteLLM gateway")
+    HEALTH_URLS=("http://127.0.0.1:4000/health/readiness")
+    HEALTH_CONTAINERS=("ods-litellm")
 else
     _health_bind="127.0.0.1"
     _health_llama_host="$(macos_bind_probe_host "${_health_bind:-127.0.0.1}")"
     _health_llama_port="$(read_env_value "$INSTALL_DIR/.env" "ODS_NATIVE_LLAMA_PORT")"
     [[ "$_health_llama_port" =~ ^[0-9]+$ ]] || _health_llama_port="8080"
-    HEALTH_NAMES=("LLM (llama-server)" "Chat UI (Open WebUI)")
-    HEALTH_URLS=("http://${_health_llama_host}:${_health_llama_port}/health" "http://127.0.0.1:3000")
-    HEALTH_CONTAINERS=("" "ods-webui")
+    HEALTH_NAMES=("LLM (llama-server)")
+    HEALTH_URLS=("http://${_health_llama_host}:${_health_llama_port}/health")
+    HEALTH_CONTAINERS=("")
 fi
+$ENABLE_OPEN_WEBUI && HEALTH_NAMES+=("Chat UI (Open WebUI)") \
+    && HEALTH_URLS+=("http://127.0.0.1:3000") && HEALTH_CONTAINERS+=("ods-webui")
 $ENABLE_VOICE && HEALTH_NAMES+=("Whisper (STT)") && HEALTH_URLS+=("http://127.0.0.1:${WHISPER_PORT:-9000}/health") && HEALTH_CONTAINERS+=("ods-whisper")
 $ENABLE_WORKFLOWS && HEALTH_NAMES+=("n8n (Workflows)") && HEALTH_URLS+=("http://127.0.0.1:5678/healthz") && HEALTH_CONTAINERS+=("ods-n8n")
-[[ -x "$OPENCODE_BIN" ]] && HEALTH_NAMES+=("OpenCode (IDE)") && HEALTH_URLS+=("http://127.0.0.1:${OPENCODE_PORT}") && HEALTH_CONTAINERS+=("")
+$ENABLE_OPENCODE && [[ -x "$OPENCODE_BIN" ]] && HEALTH_NAMES+=("OpenCode (IDE)") && HEALTH_URLS+=("http://127.0.0.1:${OPENCODE_PORT}") && HEALTH_CONTAINERS+=("")
 
 for ((idx=0; idx<${#HEALTH_NAMES[@]}; idx++)); do
     NAME="${HEALTH_NAMES[$idx]}"
@@ -3528,7 +3699,7 @@ fi
 
 {
     printf 'Dashboard|http://127.0.0.1:3001|ods-dashboard|http://localhost:3001\n'
-    printf 'Chat UI (Open WebUI)|http://127.0.0.1:3000|ods-webui|http://localhost:3000\n'
+    $ENABLE_OPEN_WEBUI && printf 'Chat UI (Open WebUI)|http://127.0.0.1:3000|ods-webui|http://localhost:3000\n'
     if $CLOUD_MODE; then
         printf 'LiteLLM|http://127.0.0.1:4000/health/readiness|ods-litellm|http://localhost:4000\n'
     else
@@ -3538,7 +3709,9 @@ fi
     $ENABLE_PERPLEXICA && printf 'Perplexica|http://127.0.0.1:3004|ods-perplexica|http://localhost:3004\n'
     $ENABLE_VOICE && printf 'Whisper (STT)|http://127.0.0.1:%s/health|ods-whisper|http://localhost:%s\n' "${WHISPER_PORT:-9000}" "${WHISPER_PORT:-9000}"
     $ENABLE_WORKFLOWS && printf 'n8n|http://127.0.0.1:5678/healthz|ods-n8n|http://localhost:5678\n'
-    [[ -x "$OPENCODE_BIN" ]] && printf 'OpenCode (IDE)|http://127.0.0.1:%s||http://localhost:%s\n' "$OPENCODE_PORT" "$OPENCODE_PORT"
+    if $ENABLE_OPENCODE && [[ -x "$OPENCODE_BIN" ]]; then
+        printf 'OpenCode (IDE)|http://127.0.0.1:%s||http://localhost:%s\n' "$OPENCODE_PORT" "$OPENCODE_PORT"
+    fi
 } | ods_readiness_summary "./ods-macos.sh status" "$ODS_LOG_FILE" "http://localhost:3001"
 
 show_success_card

@@ -42,6 +42,12 @@ export async function sha256(bytes) {
 export async function loadSnapshotFiles(preview, signal) {
   if (!isSnapshotId(preview.siteId) || !DIGEST.test(preview.sha256)) throw new Error('Invalid snapshot')
   const response = await fetch(`/pixel-preview/${preview.siteId}/__ods_manifest__.json`, {signal, cache:'no-store'})
+  if (response.status === 404) {
+    await response.body?.cancel()
+    const error = new Error('Published snapshot unavailable')
+    error.code = 'snapshot-unavailable'
+    throw error
+  }
   const bytes = await readBoundedBytes(response, 256 * 1024)
   const manifest = JSON.parse(new TextDecoder('utf-8', {fatal:true}).decode(bytes))
   if (manifest.schemaVersion !== 1 || manifest.siteId !== preview.siteId

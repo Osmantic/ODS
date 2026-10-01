@@ -15,7 +15,10 @@ def agent(tmp_path, monkeypatch):
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
+    module._test_real_resolve_compose_flags = module.resolve_compose_flags
     monkeypatch.setattr(module, "INSTALL_DIR", tmp_path)
+    monkeypatch.setattr(module, "EXTENSIONS_DIR", tmp_path / "extensions/services")
+    monkeypatch.setattr(module, "USER_EXTENSIONS_DIR", tmp_path / "data/user-extensions")
     monkeypatch.setattr(module.platform, "system", lambda: "Linux")
     monkeypatch.setattr(module, "resolve_compose_flags", lambda: ["-f", "base.yml"])
     monkeypatch.setattr(module, "_wait_for_container_health", lambda *_args, **_kwargs: None)
@@ -71,6 +74,61 @@ def test_add_back_starts_only_webui_and_keeps_retained_data(agent, monkeypatch):
     assert all("COMPOSE_PROFILES" not in kwargs["env"] for _, kwargs in calls)
 
 
+def test_mac_local_add_back_uses_saved_auth_and_bind(agent, monkeypatch):
+    module, root = agent
+    monkeypatch.setattr(module.platform, "system", lambda: "Darwin")
+    with (root / ".env").open("a", encoding="utf-8") as env_file:
+        env_file.write("BIND_ADDRESS=127.0.0.1\nWEBUI_AUTH=false\n")
+    monkeypatch.setenv("BIND_ADDRESS", "0.0.0.0")
+    monkeypatch.setenv("WEBUI_AUTH", "true")
+    calls = compose_responses(agent, monkeypatch)
+
+    status, result = module._enable_webui_selection()
+
+    assert (status, result) == (200, {"enabled": True, "action": "enabled"})
+    up_env = next(kwargs["env"] for command, kwargs in calls if "up" in command)
+    assert up_env["BIND_ADDRESS"] == "127.0.0.1"
+    assert up_env["WEBUI_AUTH"] == "false"
+    assert module.load_env(root / ".env")["WEBUI_AUTH"] == "false"
+
+
+@pytest.mark.parametrize("bind,proxy", [("0.0.0.0", "false"), ("127.0.0.1", "true")])
+def test_mac_network_add_back_enforces_auth_before_start(agent, monkeypatch, bind, proxy):
+    module, root = agent
+    monkeypatch.setattr(module.platform, "system", lambda: "Darwin")
+    with (root / ".env").open("a", encoding="utf-8") as env_file:
+        env_file.write(f"BIND_ADDRESS={bind}\nENABLE_ODS_PROXY={proxy}\nWEBUI_AUTH=false\n")
+    original_inode = (root / ".env").stat().st_ino
+    monkeypatch.setenv("WEBUI_AUTH", "false")
+    calls = compose_responses(agent, monkeypatch)
+
+    status, result = module._enable_webui_selection()
+
+    assert (status, result) == (200, {"enabled": True, "action": "enabled"})
+    assert (root / ".env").stat().st_ino == original_inode
+    assert module.load_env(root / ".env")["WEBUI_AUTH"] == "true"
+    assert module.load_env(root / ".env")["ENABLE_OPEN_WEBUI"] == "true"
+    assert all(kwargs["env"]["WEBUI_AUTH"] == "true" for _, kwargs in calls)
+    assert (root / "data/open-webui/retained-chat.db").read_bytes() == b"private retained chat"
+
+
+@pytest.mark.parametrize("fail_at", ["config", "up"])
+def test_mac_network_add_back_failure_restores_auth_and_selection(agent, monkeypatch, fail_at):
+    module, root = agent
+    monkeypatch.setattr(module.platform, "system", lambda: "Darwin")
+    with (root / ".env").open("a", encoding="utf-8") as env_file:
+        env_file.write("BIND_ADDRESS=0.0.0.0\nWEBUI_AUTH=false\n")
+    original = (root / ".env").read_bytes()
+    calls = compose_responses(agent, monkeypatch, fail_at=fail_at)
+
+    status, result = module._enable_webui_selection()
+
+    assert status == 502 and result["code"] == "enable_failed"
+    assert (root / ".env").read_bytes() == original
+    assert (root / "data/open-webui/retained-chat.db").read_bytes() == b"private retained chat"
+    assert all(kwargs["env"]["WEBUI_AUTH"] == "true" for _, kwargs in calls)
+
+
 @pytest.mark.parametrize("fail_at", ["config", "up"])
 def test_failed_add_back_restores_exact_selection_without_touching_data(agent, monkeypatch, fail_at):
     module, root = agent
@@ -113,14 +171,114 @@ def test_failed_start_uses_same_installed_selectors_for_rollback(agent, monkeypa
     assert up_env["EXTERNAL_LLM_URL"] == "https://model.example.test/v1"
 
 
-def test_selection_reports_linux_support_and_rejects_other_platform(agent, monkeypatch):
+def test_selection_reports_mac_support_and_rejects_windows(agent, monkeypatch):
     module, root = agent
     assert module._webui_selection_state() == {"enabled": False, "supported": True}
     original = (root / ".env").read_bytes()
     monkeypatch.setattr(module.platform, "system", lambda: "Darwin")
+    assert module._webui_selection_state() == {"enabled": False, "supported": True}
+    monkeypatch.setattr(module.platform, "system", lambda: "Windows")
     assert module._webui_selection_state() == {"enabled": False, "supported": False}
     assert module._enable_webui_selection()[0] == 501
     assert (root / ".env").read_bytes() == original
+
+
+def test_mac_add_back_uses_existing_transaction_and_retains_data(agent, monkeypatch):
+    module, root = agent
+    monkeypatch.setattr(module.platform, "system", lambda: "Darwin")
+    calls = compose_responses(agent, monkeypatch)
+
+    status, result = module._enable_webui_selection()
+
+    assert (status, result) == (200, {"enabled": True, "action": "enabled"})
+    assert (root / "data/open-webui/retained-chat.db").read_bytes() == b"private retained chat"
+    assert any(command[-4:] == ["up", "-d", "--no-deps", "open-webui"] for command, _ in calls)
+
+
+def test_mac_native_pixel_flags_are_added_only_for_an_active_selection(agent, monkeypatch):
+    module, root = agent
+    monkeypatch.setattr(module.platform, "system", lambda: "Darwin")
+    calls = []
+    def run(command, **kwargs):
+        calls.append((command, kwargs))
+        return subprocess.CompletedProcess(command, 0,
+            stdout="-f docker-compose.base.yml -f installers/macos/pixel-native.compose.yaml.disabled\n")
+    monkeypatch.setattr(module.subprocess, "run", run)
+    base = ["-f", "docker-compose.base.yml"]
+    assert module._macos_native_pixel_compose_flags(base) == base
+    assert not calls
+
+    preparation = root / "data/pixel-native/preparation"
+    preparation.mkdir(parents=True)
+    (preparation / "activation.json").write_text("{}", encoding="utf-8")
+    helper = root / "installers/macos/lib/pixel-native-stack.py"
+    helper.parent.mkdir(parents=True)
+    helper.write_text("fixture", encoding="utf-8")
+    assert module._macos_native_pixel_compose_flags(base) == [
+        "-f", "docker-compose.base.yml", "-f", "installers/macos/pixel-native.compose.yaml.disabled"]
+    assert calls[0][0] == [sys.executable, str(helper), "--install-dir", str(root),
+                           "--flags", "-f docker-compose.base.yml"]
+    assert calls[0][1]["cwd"] == str(root)
+
+
+def test_mac_native_pixel_selection_failure_is_not_silently_ignored(agent, monkeypatch):
+    module, root = agent
+    monkeypatch.setattr(module.platform, "system", lambda: "Darwin")
+    preparation = root / "data/pixel-native/preparation"
+    preparation.mkdir(parents=True)
+    (preparation / "selection-update.json").write_text("{}", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="selector is unavailable"):
+        module._macos_native_pixel_compose_flags(["-f", "docker-compose.base.yml"])
+    helper = root / "installers/macos/lib/pixel-native-stack.py"
+    helper.parent.mkdir(parents=True)
+    helper.write_text("fixture", encoding="utf-8")
+    monkeypatch.setattr(module.subprocess, "run", lambda command, **kwargs:
+                        subprocess.CompletedProcess(command, 1, "", "invalid receipt"))
+    with pytest.raises(RuntimeError, match="needs recovery"):
+        module._macos_native_pixel_compose_flags(["-f", "docker-compose.base.yml"])
+
+
+@pytest.mark.parametrize("cached", [True, False])
+def test_mac_host_agent_resolver_keeps_native_pixel_selection(agent, monkeypatch, cached):
+    module, root = agent
+    monkeypatch.setattr(module.platform, "system", lambda: "Darwin")
+    preparation = root / "data/pixel-native/preparation"
+    preparation.mkdir(parents=True)
+    (preparation / "activation.json").write_text("{}", encoding="utf-8")
+    helper = root / "installers/macos/lib/pixel-native-stack.py"
+    helper.parent.mkdir(parents=True)
+    helper.write_text("fixture", encoding="utf-8")
+    if cached:
+        (root / ".compose-flags").write_text("-f docker-compose.base.yml\n", encoding="utf-8")
+    else:
+        resolver = root / "scripts/resolve-compose-stack.sh"
+        resolver.parent.mkdir(parents=True)
+        resolver.write_text("fixture", encoding="utf-8")
+        monkeypatch.setattr(module, "_find_usable_bash", lambda: "/bin/bash")
+    calls = []
+    def run(command, **kwargs):
+        calls.append(command)
+        output = ("-f docker-compose.base.yml\n" if str(command[1]).endswith("resolve-compose-stack.sh")
+                  else "-f docker-compose.base.yml -f installers/macos/pixel-native.compose.yaml.disabled\n")
+        return subprocess.CompletedProcess(command, 0, stdout=output)
+    monkeypatch.setattr(module.subprocess, "run", run)
+
+    assert module._test_real_resolve_compose_flags() == [
+        "-f", "docker-compose.base.yml", "-f", "installers/macos/pixel-native.compose.yaml.disabled"]
+    assert calls[-1][1] == str(helper)
+    assert len(calls) == (1 if cached else 2)
+
+
+def test_mac_add_back_restores_selection_if_native_pixel_resolution_fails(agent, monkeypatch):
+    module, root = agent
+    monkeypatch.setattr(module.platform, "system", lambda: "Darwin")
+    original = (root / ".env").read_bytes()
+    monkeypatch.setattr(module, "resolve_compose_flags",
+                        lambda: (_ for _ in ()).throw(RuntimeError("native Pixel needs recovery")))
+    status, result = module._enable_webui_selection()
+    assert status == 502 and result["code"] == "enable_failed"
+    assert (root / ".env").read_bytes() == original
+    assert (root / "data/open-webui/retained-chat.db").read_bytes() == b"private retained chat"
 
 
 def test_stale_add_request_does_not_claim_running_webui(agent, monkeypatch):

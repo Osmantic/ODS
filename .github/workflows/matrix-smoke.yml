@@ -281,6 +281,9 @@ jobs:
       - name: macOS Installer Presentation Contract
         run: /bin/bash tests/contracts/test-macos-installer-presentation.sh
 
+      - name: macOS OpenCode Selection Contract
+        run: /bin/bash tests/test-macos-opencode-selection.sh
+
       - name: Native Model Store Restart Tests
         run: /bin/bash tests/test-macos-native-model-store.sh
 

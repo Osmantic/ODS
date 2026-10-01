@@ -77,19 +77,46 @@ upsert_env_value() {
     local env_path="$1"
     local key="$2"
     local value="$3"
-    if awk -v k="$key" 'index($0, k "=") == 1 { found=1; exit } END { exit !found }' "$env_path" 2>/dev/null; then
-        awk -v k="$key" -v v="$value" '
-            index($0, k "=") == 1 { print k "=" v; next }
-            { print }
-        ' "$env_path" > "${env_path}.tmp" && cat "${env_path}.tmp" > "$env_path" && rm -f "${env_path}.tmp"
-    else
-        # Appending after a last line that has no newline would join the new
-        # assignment onto that line and corrupt both keys.
-        if [[ -s "$env_path" && -n "$(tail -c 1 "$env_path")" ]]; then
-            printf '\n' >> "$env_path"
+    # The live file may be bind-mounted, so retain its inode. Stage and back up
+    # private copies before opening it for writing; a recoverable copy failure
+    # can then be rolled back without leaving a truncated or exposed .env.
+    (
+        umask 077
+        [[ ! -L "$env_path" && ( ! -e "$env_path" || -f "$env_path" ) ]] || return 1
+        stage_dir="$(mktemp -d "${env_path}.stage.XXXXXX")" || return 1
+        staged="$stage_dir/next"
+        backup=""
+        found=false
+        trap 'rm -f "$staged"; if [[ -n "$backup" ]]; then rm -f "$backup"; fi; rmdir "$stage_dir"' EXIT
+        if [[ -f "$env_path" ]]; then
+            backup="$stage_dir/previous"
+            cp "$env_path" "$backup" || return 1
+            : > "$staged" || return 1
+            while IFS= read -r line || [[ -n "$line" ]]; do
+                if [[ "$line" == "$key="* ]]; then
+                    printf '%s=%s\n' "$key" "$value" || return 1
+                    found=true
+                else
+                    printf '%s\n' "$line" || return 1
+                fi
+            done < "$env_path" > "$staged" || return 1
+            if [[ "$found" == false ]]; then
+                printf '%s=%s\n' "$key" "$value" >> "$staged" || return 1
+            fi
+            if ! cat "$staged" > "$env_path" || ! cmp -s "$staged" "$env_path"; then
+                cp "$backup" "$env_path" || {
+                    echo "ERROR: failed to restore $env_path after an incomplete write" >&2
+                    return 1
+                }
+                return 1
+            fi
+        else
+            printf '%s=%s\n' "$key" "$value" > "$staged" || return 1
+            # A hard link publishes the private file without replacing a path
+            # that another process created while we were staging it.
+            ln "$staged" "$env_path" || return 1
         fi
-        printf '%s=%s\n' "$key" "$value" >> "$env_path"
-    fi
+    )
 }
 
 cap_cpu_value() {
@@ -740,6 +767,7 @@ EMBEDDINGS_MEMORY_LIMIT=${embeddings_memory_limit}
 
 #=== Web UI Settings ===
 # Loopback installs open directly. Network-bound installs require a login.
+ENABLE_OPEN_WEBUI=${ENABLE_OPEN_WEBUI:-false}
 WEBUI_AUTH=${webui_auth}
 ENABLE_WEB_SEARCH=${ENABLE_WEB_SEARCH:-true}
 WEB_SEARCH_ENGINE=searxng

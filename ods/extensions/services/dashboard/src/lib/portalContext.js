@@ -1,5 +1,6 @@
 /* eslint-disable no-control-regex -- Reject control bytes in untrusted public input. */
 import {useCallback,useEffect,useRef,useState} from 'react'
+import {messageImageRefs} from './pixelImages'
 
 export const CONTEXT_REQUEST_ID=/^[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i
 export const compactCommand=text=>typeof text==='string' && /^\/(?:compact|compactar)\s*$/i.test(text.trim())
@@ -12,9 +13,12 @@ export function historySnapshot(messages) {
     if(!message || !['user','assistant'].includes(message.role) || typeof message.content!=='string')throw new Error('Conversation history could not be prepared. No request was sent.')
     bytes+=encoder.encode(message.content).byteLength
     if(bytes>4*1024*1024)throw new Error('This conversation exceeds the 4 MB history limit. Export it before starting a new chat.')
-    return {role:message.role,content:message.content}
+    const images=messageImageRefs(message)
+    if(images.images)bytes+=encoder.encode(JSON.stringify(images.images)).byteLength
+    if(bytes>4*1024*1024)throw new Error('This conversation exceeds the 4 MB history limit. Export it before starting a new chat.')
+    return {role:message.role,content:message.content,...images}
   })
-  return {schemaVersion:1,messages:history}
+  return {schemaVersion:history.some(message=>message.images)?2:1,messages:history}
 }
 
 const token=(value,maximum=100_000_000)=>Number.isSafeInteger(value) && value>=0 && value<=maximum
@@ -36,6 +40,8 @@ export function parseConversationContext(value) {
     || context.measuredAt!==undefined && (!text(context.measuredAt,40) || !Number.isFinite(Date.parse(context.measuredAt)))))return null
   if(model!==undefined && model!==null && (!text(model.id,512) || !text(model.provider,128) || !token(model.contextWindow,10_000_000) || model.contextWindow<1))return null
   if(model?.routeFingerprint!==undefined && !routeFingerprint(model.routeFingerprint))return null
+  if(model?.imageRouteFingerprint!==undefined && !routeFingerprint(model.imageRouteFingerprint))return null
+  if(model?.imageInput!==undefined && !['supported','unsupported','unknown'].includes(model.imageInput))return null
   return value
 }
 
@@ -126,7 +132,7 @@ export function usePortalContext({chatId,runtimeKey:legacyRuntimeKey,runtimeIden
     const historyUnknown=snapshot.history.status==='unknown'
     const readUnavailable=snapshot.status==='unavailable'
     if(!readUnavailable)contextRetries.current=0
-    publish({context,phase,notice,historyUnknown,readUnavailable,...(snapshot.model?{observedCapacity:modelMatches?snapshot.model.contextWindow:null}:{}),...(!historyUnknown?{recoveryNotice:''}:{})})
+    publish({context,phase,notice,historyUnknown,readUnavailable,observedModel:modelMatches && ['ready','missing','busy'].includes(snapshot.status)?snapshot.model || null:null,...(snapshot.model?{observedCapacity:modelMatches?snapshot.model.contextWindow:null}:{}),...(!historyUnknown?{recoveryNotice:''}:{})})
   },[persist,publish])
 
   const refresh=useCallback(async(force=false)=>{
@@ -153,7 +159,7 @@ export function usePortalContext({chatId,runtimeKey:legacyRuntimeKey,runtimeIden
             if(!refreshQueued.current)accept(snapshot)
           }catch {
             const automaticPending=observedCompaction.current?.status==='running' || observedCompaction.current?.status==='unknown' && observedCompaction.current.reason!=='runtime-restarted'
-            if(at===generation.current && !refreshQueued.current)publish({readUnavailable:true,...((pending.current || automaticPending)?{phase:'unknown',notice:'Waiting for compaction confirmation…'}:{})})
+            if(at===generation.current && !refreshQueued.current)publish({observedModel:null,readUnavailable:true,...((pending.current || automaticPending)?{phase:'unknown',notice:'Waiting for compaction confirmation…'}:{})})
           }finally {clearTimeout(timer);requests.current.delete(controller)}
         }while(at===generation.current && refreshQueued.current && !mutation.current)
       }finally {if(at===generation.current)query.current=null}
@@ -170,7 +176,7 @@ export function usePortalContext({chatId,runtimeKey:legacyRuntimeKey,runtimeIden
     else if(priorRuntime.current && priorRuntime.current!==runtimeKey)invalidatedMeasurement.current=lastMeasurement.current
     priorChat.current=chatId
     contextRetries.current=0
-    publish({context:null,observedCapacity:null,phase:pending.current?'checking':'idle',notice:pending.current?'Checking compaction status…':'',historyUnknown:false,resolving:false,recoveryNotice:'',readUnavailable:false})
+    publish({context:null,observedCapacity:null,observedModel:null,phase:pending.current?'checking':'idle',notice:pending.current?'Checking compaction status…':'',historyUnknown:false,resolving:false,recoveryNotice:'',readUnavailable:false})
     priorRuntime.current=runtimeKey
     void refresh(true)
     return ()=>{generation.current+=1;requests.current.forEach(controller=>controller.abort());requests.current.clear();query.current=null;refreshQueued.current=false}

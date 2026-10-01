@@ -10,6 +10,7 @@ MAX_REPLY = 8192
 MODULES = (
     'access_mode_server.py', 'unix_peer.py', 'access_mode_worker.py', 'pixel_access_mode.py',
     'access_mode_config.py', 'settings_transaction.py', 'provider_transaction.py', 'model_transaction.py',
+    'access_release_transaction.py',
     'pixel_access_bridge.py', 'pixel_gateway_service.py', 'pixel_access_client.py', 'pixel_access_reconcile.py',
     'pixel_model_transition.py', 'pixel_access_protocol.py', 'pixel_macos_custody.py', 'pixel_macos_process.py',
     'pixel_model_contract.py', 'pixel_model_coordinator.py', 'pixel_macos_policy.py',

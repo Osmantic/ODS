@@ -55,3 +55,55 @@ test('observing an old job does not adopt it for a new run Stop', async () => {
   assert.equal(await control.cancel(scope),true);
   assert.deepEqual(actions,['observe']);
 });
+
+test('read-only capability queries cannot adopt jobs or leave unknown execution on Stop', async () => {
+  const control = createProjectRunControl();
+  const query = {action:'capabilities',runtime:'python'};
+  let reject;
+  control.before({toolName:name,params:query},{...scope,toolCallId:'caps'});
+  const request = control.bind('caps',query,scope,()=>new Promise((_, failure)=>{reject=failure;}));
+  const pending = request(normalizeProjectBuild(query),{});
+  assert.equal(await control.cancel(scope),true);
+  reject(Error('probe lost'));
+  await assert.rejects(pending);
+  assert.equal(await control.cancel(scope),true);
+  assert.throws(()=>request(normalizeProjectBuild(params),{}),/cannot execute/);
+  assert.throws(()=>control.bind('caps',query,scope,()=>{}),/not bound/);
+});
+
+test('uncertain same-project submissions are refused but explicit confirmed-failure retry is allowed', async () => {
+  const control=createProjectRunControl(); let calls=0;
+  const submit=bind(control,async()=>{calls++;return receipt('unconfirmed');});
+  await submit(normalizeProjectBuild(params),{});
+  assert.equal((await bind(control,async()=>{calls++;})(normalizeProjectBuild(params),{})).status,'recovery-required');
+  assert.equal(calls,1);
+  const retry=createProjectRunControl();
+  await bind(retry,async()=>({...receipt('failed'),output:{executionStarted:false,retryEligible:true}}))(normalizeProjectBuild(params),{});
+  assert.equal((await bind(retry,async()=>receipt('queued'))(normalizeProjectBuild(params),{})).status,'queued');
+});
+
+test('lost reply fences the same target across owner turns without leaking prior job IDs', async () => {
+  const control=createProjectRunControl();
+  await assert.rejects(bind(control,async()=>{throw Error('reply lost');})(normalizeProjectBuild(params),{}));
+  const next={...scope,runId:'new-run',sessionId:'new-session'};
+  const refused=await bind(control,()=>assert.fail('must not submit'),next)(normalizeProjectBuild(params),{});
+  assert.equal(refused.status,'recovery-required');
+  assert.equal(refused.jobId,undefined);
+  const independent={...params,project:'independent'};
+  control.before({toolName:name,params:independent},{...next,toolCallId:'independent'});
+  const run=control.bind('independent',independent,next,async()=>({...receipt('queued'),project:'independent'}));
+  assert.equal((await run(normalizeProjectBuild(independent),{})).status,'queued');
+});
+
+test('authenticated recovery refusal does not adopt another run job for Stop', async () => {
+  const control=createProjectRunControl(); let calls=0;
+  await bind(control,async()=>{calls++;return {schemaVersion:1,kind:'ods-project-job',status:'recovery-required',executionStarted:false,jobId};})(normalizeProjectBuild(params),{});
+  assert.equal(await control.cancel(scope),true);
+  assert.equal(calls,1);
+});
+
+test('malformed recovery refusal cannot prove no execution', async () => {
+  const control=createProjectRunControl();
+  await bind(control,async()=>({schemaVersion:1,kind:'ods-project-job',status:'recovery-required',executionStarted:true}))(normalizeProjectBuild(params),{});
+  assert.equal(await control.cancel(scope),false);
+});

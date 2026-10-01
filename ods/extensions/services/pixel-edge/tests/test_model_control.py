@@ -78,6 +78,19 @@ class ModelTransportTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.calls[0][:2],('POST','Bearer '+'o'*64))
         self.assertEqual(json.loads(self.calls[0][2]),BEGIN)
 
+    async def test_image_capability_readback_and_apply_preserve_exact_contract(self):
+        for capability in ('unknown', 'supported', 'unsupported'):
+            target = {**TARGET, 'routeFingerprint': REV, 'imageInput': capability}
+            self.reply = {**STATE, 'status': 'ready', 'pending': False,
+                          'transactionId': None, 'contract': target}
+            self.assertEqual(await self.send({'operation': 'model-status'}), (200, self.reply))
+            apply = {'operation': 'model-apply', 'request': {'transactionId': TX, 'target': target}}
+            self.assertEqual((await self.send(apply))[0], 200)
+            self.assertEqual(json.loads(self.calls[-1][2]), apply)
+        for invalid in (None, True, [], {}, 'vision', 'unknown\n'):
+            self.reply = {**STATE, 'contract': {**TARGET, 'imageInput': invalid}}
+            self.assertEqual((await self.send({'operation': 'model-status'}))[0], 503)
+
     async def test_rejection_is_not_retried_or_leaked(self):
         self.reply_status=409
         self.reply={'error':'private path or credential'}

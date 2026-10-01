@@ -22,6 +22,8 @@ from preview_inspection_protocol import (
     MAX_REQUEST,
     MAX_RESULT,
     SELECT_CAPABILITY,
+    FILL_CAPABILITY,
+    DOWNLOAD_CAPABILITY,
     canonical,
     exact,
     failure,
@@ -252,6 +254,8 @@ def capsule_argv(config, name):
         "--shm-size=128m",
         "--tmpfs",
         "/tmp:rw,nosuid,nodev,size=256m,mode=1777",
+        "--tmpfs",
+        "/downloads:rw,noexec,nosuid,nodev,size=4m,mode=0700,uid=65534,gid=65534",
         "--entrypoint",
         "python3",
         config["imageId"],
@@ -263,6 +267,20 @@ def inspect_request(request, config, cancelled=None):
     validate_request(request)
     if os.getuid() not in (0, config["ownerUid"]):
         raise Invalid("unauthorized")
+    if request['steps'][-1]['action'] == 'download':
+        capability = bounded_process(
+            [*docker_prefix(config), 'image', 'inspect', '--format',
+             '{{index .Config.Labels "org.osmantic.ods.inspection.download"}}', config['imageId']],
+            b'', timeout=5, limit=128, cancelled=cancelled)
+        if capability.decode().strip() != DOWNLOAD_CAPABILITY:
+            return failure('unsupported_capability', request)
+    if any(step['action'] == 'fill' for step in request['steps']):
+        capability = bounded_process(
+            [*docker_prefix(config), 'image', 'inspect', '--format',
+             '{{index .Config.Labels "org.osmantic.ods.inspection.fill"}}', config['imageId']],
+            b'', timeout=5, limit=128, cancelled=cancelled)
+        if capability.decode().strip() != FILL_CAPABILITY:
+            return failure('unsupported_capability', request)
     if any(step['action'] == 'select-option' for step in request['steps']):
         capability = bounded_process(
             [*docker_prefix(config), 'image', 'inspect', '--format',

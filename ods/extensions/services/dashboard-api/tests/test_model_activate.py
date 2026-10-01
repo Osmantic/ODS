@@ -4854,7 +4854,7 @@ def test_managed_pixel_reconcile_uses_positional_args_and_minimal_environment(
     home.mkdir()
     (install_dir / ".env").write_text(
         "PIXEL_SOURCE_URL=bundled\n"
-        "PIXEL_SOURCE_REF=6e82d4c974be8c7b5aebe3a4ffd5374e20ad0ac5\n"
+        "PIXEL_SOURCE_REF=9f3b6ecd25db3ab51bef4091473d88ee5824bc3b\n"
         f"{gateway_setting}",
         encoding="utf-8",
     )
@@ -4880,7 +4880,7 @@ def test_managed_pixel_reconcile_uses_positional_args_and_minimal_environment(
         max_tokens=4096,
         reasoning=True,
     ) == "reconciled"
-    assert captured["argv"][-8:] == [
+    assert captured["argv"][-9:] == [
         str(install_dir),
         "pixel-owner",
         str(home),
@@ -4889,6 +4889,7 @@ def test_managed_pixel_reconcile_uses_positional_args_and_minimal_environment(
         "4096",
         "true",
         "",
+        "unknown",
     ]
     assert captured["kwargs"]["timeout"] == 900
     assert captured["kwargs"]["check"] is False
@@ -4905,7 +4906,7 @@ def test_managed_pixel_reconcile_accepts_bundled_source(
     home = tmp_path / "owner-home"
     install_dir.mkdir()
     home.mkdir()
-    source_ref = "6e82d4c974be8c7b5aebe3a4ffd5374e20ad0ac5"
+    source_ref = "9f3b6ecd25db3ab51bef4091473d88ee5824bc3b"
     source_setting = "PIXEL_SOURCE_URL=bundled\n" if explicit_source else ""
     (install_dir / ".env").write_text(
         f"{source_setting}PIXEL_SOURCE_REF={source_ref}\n",
@@ -5241,7 +5242,7 @@ class TestModelActivateRollback:
         assert reconciliations == [(
             "new-model.gguf",
             65536,
-            {"max_tokens": 8192, "reasoning": False},
+            {"max_tokens": 8192, "reasoning": False, "image_input": "unknown"},
         )]
         response = handler.parse_response()
         assert response["consumers"]["pixel"] == "reconciled"
@@ -5320,8 +5321,8 @@ class TestModelActivateRollback:
         assert "simulated Pixel reconciliation failure" in response["error"]
         assert runtime_restarts == ["new-model", "old-model"]
         assert reconciliations == [
-            ("new-model.gguf", 4096, {"max_tokens": 1024, "reasoning": False}),
-            ("old-model.gguf", 4096, {"max_tokens": 1024, "reasoning": False}),
+            ("new-model.gguf", 4096, {"max_tokens": 1024, "reasoning": False, "image_input": "unknown"}),
+            ("old-model.gguf", 4096, {"max_tokens": 1024, "reasoning": False, "image_input": "unknown"}),
         ]
         assert _mod.load_env(env_path)["LLM_MODEL"] == "old-model"
 

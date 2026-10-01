@@ -33,3 +33,10 @@ it('deduplicates retained snapshots and excludes malformed publication metadata'
   expect(screen.queryByLabelText('Published version')).toBeNull()
   expect(await screen.findByTitle('Interactive Portal preview')).toHaveAttribute('src',`/pixel-preview/${latest.siteId}/__ods_view__.html`)
 })
+
+// These suites exercise conversation/publication selection, not manifest transport.
+// Workspace and artifact suites cover missing, corrupt and delayed manifests.
+vi.mock('../lib/pixelArtifacts',async importOriginal=>({
+  ...await importOriginal(),
+  loadSnapshotFiles:vi.fn(async preview=>[{path:'index.html',bytes:preview.bytes,sha256:preview.entrySha256}]),
+}))

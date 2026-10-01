@@ -2,7 +2,7 @@ import PortalApprovalTerminal from '../components/PortalApprovalTerminal'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import PixelConversationRecovery from '../components/PixelConversationRecovery'
 import {validSourceReview} from '../lib/pixelSourceReview'
-import { readConversations, saveConversation, createConversationWriter, SELECT_EVENT, DELETE_EVENT, deleteConversation, isConversationDeleted } from '../lib/pixelConversations'
+import { readConversations, saveConversation, createConversationWriter, SELECT_EVENT, DELETE_EVENT, deleteConversation, purgeConversationImages, isConversationDeleted } from '../lib/pixelConversations'
 import {usePixelAutoScroll} from '../lib/usePixelAutoScroll'
 import { Link } from 'react-router-dom'
 import PixelAdvice from '../components/PixelAdvice.jsx'
@@ -14,6 +14,9 @@ import PixelComposerTools from '../components/PixelComposerTools'
 import PortalAgentDock from '../components/PortalAgentDock'
 import {ACTIVE_TEAMS,agentCommand,teamMetadata,teamProjectTasks,teamRequest,teamSummary,usePortalTeams} from '../lib/portalTeams'
 import PixelTextFileInput from '../components/PixelTextFileInput'
+import PortalImageAttachments, {PortalImagePicker, PortalConversationImages} from '../components/PortalImageAttachments'
+import usePortalImages from '../hooks/usePortalImages'
+import {draftImageReceipts, messageImageRefs, imageRoute} from '../lib/pixelImages'
 import PixelDraftPreview from '../components/PixelDraftPreview'
 import PixelDictation from '../components/PixelDictation'
 import PixelCommandSearch, { OPEN_PIXEL_SEARCH } from '../components/PixelCommandSearch'
@@ -45,6 +48,8 @@ import {publicationDisplayText} from '../lib/publicationDisplay'
 import {isQuestionAnswer, parseQuestionsFrame, questionMetadata} from '../lib/pixelQuestions'
 import PixelTurnNavigation from '../components/PixelTurnNavigation'
 import PixelSnapshotChanges from '../components/PixelSnapshotChanges'
+import PortalDeliveredArtifacts from '../components/PortalDeliveredArtifacts'
+import { deliveredArtifactMetadata, parseDeliveredArtifactsFrame } from '../lib/pixelDeliveredArtifacts'
 import PortalWorkspace from '../components/PortalWorkspace'
 import { parseTaskActivity, parseTaskActivityFrame } from '../lib/pixelTaskActivity'
 import MetalMetricIcon from '../components/MetalMetricIcon'
@@ -446,6 +451,7 @@ function messageOutcome(message) {
 function retainedResult(events) {
   let content = ''
   let preview = null
+  let artifacts = null
   let task = null
   let questions = null
   let done = false
@@ -472,6 +478,8 @@ function retainedResult(events) {
       }
       const candidate = parseVerifiedPreviewFrame(frame)
       if (candidate) preview = candidate
+      const candidateArtifacts = parseDeliveredArtifactsFrame(frame)
+      if (candidateArtifacts) artifacts = candidateArtifacts
       const candidateTask = parseTaskActivityFrame(frame)
       if (candidateTask) task = candidateTask
       const candidateQuestions = parseQuestionsFrame(frame)
@@ -481,7 +489,7 @@ function retainedResult(events) {
     } catch { /* The same bounded SSE boundary applies to retained results. */ }
   }
   if (failureMessage) content = content ? `${content}\n\n_${failureMessage}_` : failureMessage
-  return { content, preview: done && !failed ? preview : null, task, questions: done && !failed ? questions : null, done, failed }
+  return { content, preview: done && !failed ? preview : null, artifacts: done && !failed ? artifacts : null, task, questions: done && !failed ? questions : null, done, failed }
 }
 
 function loadStoredChat(selected) {
@@ -511,7 +519,7 @@ function loadStoredChat(selected) {
       totalBytes += new TextEncoder().encode(message.content).byteLength
       if (totalBytes > MAX_STORED_MESSAGE_BYTES) throw new Error('stored Portal chat is too large')
       const task = message.role === 'assistant' && parseTaskActivity(message.task, message.task?.runId)
-      return { role: message.role, content: message.content, ...messageOutcome(message), ...(task ? {task} : {}), ...messagePublication(message), ...questionMetadata(message), ...teamMetadata(message) }
+      return { role: message.role, content: message.content, ...messageImageRefs(message), ...messageOutcome(message), ...(task ? {task} : {}), ...messagePublication(message), ...deliveredArtifactMetadata(message), ...questionMetadata(message), ...teamMetadata(message) }
     })
     // Reuse the terminal marker validator for persisted metadata. Never infer
     // an iframe URL from conversation text, and always use the authenticated
@@ -534,6 +542,7 @@ function loadStoredChat(selected) {
       // The send limit must not truncate unsent text when restoring a draft.
       // The composer keeps sending disabled until the user shortens it.
       draft: typeof stored.draft === 'string' ? stored.draft : '',
+      draftImages: draftImageReceipts(stored.draftImages),
       requestId: SAFE_CHAT_ID.test(stored.requestId || '') ? stored.requestId : null,
       interrupted: stored.inFlight === true || stored.interrupted === true,
     }
@@ -557,6 +566,8 @@ function boundedHistory(messages, nextUserContent) {
       ? original.slice(0, MAX_INPUT_LEN - omission.length) + omission : original
     const size = encoder.encode(content).byteLength
     if (bytes + size > budget) break
+    // Earlier image identities belong only in the persistent snapshot. The
+    // legacy message list accepts image refs on the current user turn only.
     selected.unshift({ role, content })
     bytes += size
   }
@@ -610,6 +621,9 @@ export default function Pixel({ systemStatus = null }) {
   const stopRequestRef = useRef(null)
   const restoredActivityRef = useRef(restoredActivity)
   const chatIdRef = useRef(initialChat?.chatId || makeChatId())
+  const images = usePortalImages(chatIdRef.current, initialChat?.draftImages)
+  const imageDraftKey = JSON.stringify(images.receipts)
+  const hasImageHistory = messages.some(message=>message.role==='user' && message.images?.length)
   const { state: extensionInstallation, start: startExtensionInstallation, stop: stopExtensionInstallation, resume: resumeExtensionInstallation } = useExtensionInstallation(chatIdRef.current)
   const { state: githubExtensionInstallation, start: startGithubExtensionRequest,
     stop: stopGithubExtensionInstallation, resume: resumeGithubExtensionInstallation } = useGithubExtensionRequest(chatIdRef.current)
@@ -695,11 +709,12 @@ export default function Pixel({ systemStatus = null }) {
     onPendingChange:(id,chatId)=>{
       if(chatId!==chatIdRef.current)throw new Error('The conversation changed before compaction could be saved.')
       historySnapshot(messages)
-      conversationWriter.current({schema:1,chatId,requestId:requestIdRef.current,inFlight:sending,interrupted,draft:input,
+      conversationWriter.current({schema:1,chatId,requestId:requestIdRef.current,inFlight:sending,interrupted,draft:input,draftImages:images.receipts,
         messages,contextStart:contextStartRef.current,compactionRequestId:id,preview,workspaceOpen})
       compactionRequestRef.current=id
     },
   })
+  const imageModel=contextControl.observedModel
   const compactConversation=useCallback(async()=>{
     const accepted=await contextControl.compact()
     if(accepted && (compactCommand(input) || input==='/'))setInput(value=>value===input?'':value)
@@ -747,6 +762,7 @@ export default function Pixel({ systemStatus = null }) {
                 status: result.state === 'cancelled' ? 'stopped' : successful ? 'done' : 'error',
                 ...(recovered.task ? {task:recovered.task} : {}),
                 ...(successful && recovered.questions ? {questions:recovered.questions} : {}),
+                ...(successful && recovered.artifacts ? {artifacts:recovered.artifacts} : {}),
                 ...(publication ? {publication,beforePublication:before} : {}),
               })})
               if (successful && recovered.preview) {
@@ -817,8 +833,11 @@ export default function Pixel({ systemStatus = null }) {
         const validRemoteRuntime = [
           ['contextLength', 'maxTokens', 'model', 'reasoning', 'source'].join('\n'),
           ['contextLength', 'maxTokens', 'model', 'reasoning', 'routeFingerprint', 'source'].join('\n'),
+          ['contextLength', 'imageInput', 'maxTokens', 'model', 'reasoning', 'source'].join('\n'),
+          ['contextLength', 'imageInput', 'maxTokens', 'model', 'reasoning', 'routeFingerprint', 'source'].join('\n'),
         ].includes(runtimeKeys)
           && runtime.source === 'remote-provider'
+          && (runtime.imageInput === undefined || ['supported', 'unsupported', 'unknown'].includes(runtime.imageInput))
           && (runtime.routeFingerprint === undefined || typeof runtime.routeFingerprint === 'string'
             && runtime.routeFingerprint.length === 64 && /^[a-f0-9]{64}$/.test(runtime.routeFingerprint))
           && Number.isInteger(runtime.maxTokens)
@@ -926,7 +945,7 @@ export default function Pixel({ systemStatus = null }) {
     try {
       const storedMessages = messages.map(message => {
         const task = message.role === 'assistant' && parseTaskActivity(message.task, message.task?.runId)
-        return {role: message.role, content: message.content, ...messageOutcome(message), ...(task ? {task} : {}), ...messagePublication(message), ...questionMetadata(message), ...teamMetadata(message)}
+        return {role: message.role, content: message.content, ...messageImageRefs(message), ...messageOutcome(message), ...(task ? {task} : {}), ...messagePublication(message), ...deliveredArtifactMetadata(message), ...questionMetadata(message), ...teamMetadata(message)}
       })
       // Report storage limits without silently trimming previous turns.
       if (storedMessages.length > MAX_STORED_MESSAGES || storedMessages.reduce((total, message) => total + new TextEncoder().encode(message.content).byteLength, 0) > MAX_STORED_MESSAGE_BYTES) throw new Error('stored Portal chat is too large')
@@ -937,6 +956,7 @@ export default function Pixel({ systemStatus = null }) {
         inFlight: sending,
         interrupted,
         draft: input,
+        draftImages: images.receipts,
         messages: storedMessages,
         contextStart: contextStartRef.current,
         compactionRequestId: compactionRequestRef.current,
@@ -950,13 +970,21 @@ export default function Pixel({ systemStatus = null }) {
       setPersistenceError(error?.code === 'conversation-changed' ? error.message
         : 'Your browser could not save this conversation. Keep this page open to avoid losing it.')
     }
-  }, [messages, preview, workspaceOpen, sending, interrupted, input])
+  }, [messages, preview, workspaceOpen, sending, interrupted, input, imageDraftKey])
 
   const sendMessage = useCallback(async (answerOverride, continuationId = null) => {
     const trimmed = (typeof answerOverride === 'string' ? answerOverride : input).trim()
     if(compactCommand(trimmed)){await compactConversation();return}
     if(contextControl.busy || contextControl.historyUnknown)return
-    if (!trimmed || sending || modelSwitching || abortRef.current || restoredActive || restoredChecking || status !== 'available' || trimmed.length > MAX_INPUT_LEN) return
+    if ((!trimmed && !images.items.length) || sending || modelSwitching || abortRef.current || restoredActive || restoredChecking || status !== 'available' || trimmed.length > MAX_INPUT_LEN) return
+    if(images.busy){setStopError('Finish uploading or remove the failed image before sending. Your draft is preserved.');return}
+    const turnImages=typeof answerOverride==='string'?[]:images.receipts.map(({id,sha256})=>({id,sha256}))
+    const needsImageRoute=turnImages.length>0 || hasImageHistory
+    let selectedImageRoute
+    if(needsImageRoute) {
+      try {selectedImageRoute=imageRoute(imageModel)}
+      catch(error){setStopError(error.message);return}
+    }
     if(teams.busy)return
     if(goalCommand(trimmed) && !goalCommand(trimmed).task) { setStopError('Describe the goal you want to complete.'); return }
     const requestedGoal=goalCommand(trimmed)
@@ -966,6 +994,7 @@ export default function Pixel({ systemStatus = null }) {
     const extensionGoal=requestedGoal && /^\/extensions?(?:\s|$)/i.test(requestedGoal.task)
     const teamCommand=agentCommand(trimmed) || (extensionGoal ? null : requestedGoal)
     if(teamCommand) {
+      if(needsImageRoute){setStopError('Image attachments are available in ordinary Portal chat. Exit team or goal mode to send them.');return}
       if(!teamCommand.task || teamCommand.task.length>8000){setStopError('Describe what you want the team to do, in up to 8,000 characters.');return}
       const signature=JSON.stringify([chatIdRef.current,trimmed])
       if(teamAttempt.current?.signature!==signature)teamAttempt.current={signature,id:makeChatId(),context:messages.filter(m=>!m.teamRequestId).slice(-4).map(m=>`${m.role}: ${m.content.slice(0,450)}`).join('\n').slice(-1800)}
@@ -980,7 +1009,7 @@ export default function Pixel({ systemStatus = null }) {
       return
     }
 
-    const userMessage = { role: 'user', content: trimmed }
+    const userMessage = { role: 'user', content: trimmed, ...(turnImages.length?{images:turnImages}:{}) }
     const originalContextStart = contextStartRef.current
     let fullHistory
     try {fullHistory=historySnapshot([...messages.slice(originalContextStart),userMessage])}
@@ -1020,13 +1049,14 @@ export default function Pixel({ systemStatus = null }) {
       let receivedError = false
       let recoveryEligible = false
       let verifiedPreview = null
+      let verifiedArtifacts = null
       let taskActivity = null
       let questions = null
 
       try {
         const requestId = streamAttemptCount++ === 0 && typeof continuationId === 'string' && SAFE_CHAT_ID.test(continuationId)
           ? continuationId : makeChatId()
-        const body=JSON.stringify({chat_id:chatId,request_id:requestId,messages:attemptConversation,history_snapshot:snapshot})
+        const body=JSON.stringify({chat_id:chatId,request_id:requestId,messages:attemptConversation,history_snapshot:snapshot,...(selectedImageRoute?{image_route:selectedImageRoute}:{})})
         if(new TextEncoder().encode(body).byteLength>8*1024*1024)throw new Error('history-request-too-large')
         requestIdRef.current = requestId
         // Commit the attempt identity before the POST can start tool work.
@@ -1035,7 +1065,7 @@ export default function Pixel({ systemStatus = null }) {
           conversationWriter.current({
             schema: 1, chatId, requestId, inFlight: true, interrupted: false,
             messages: [...visibleConversation, { role: 'assistant', content: '' }], preview,
-            draft: typeof answerOverride === 'string' ? input : '', contextStart: contextStartRef.current, compactionRequestId:compactionRequestRef.current, workspaceOpen,
+            draft: typeof answerOverride === 'string' ? input : '', draftImages:images.receipts, contextStart: contextStartRef.current, compactionRequestId:compactionRequestRef.current, workspaceOpen,
           })
         } catch (error) {
           requestIdRef.current = null
@@ -1073,6 +1103,10 @@ export default function Pixel({ systemStatus = null }) {
             }
           }
           return { kind: 'adaptive', detail }
+        }
+        if (response.status === 422) {
+          requestIdRef.current = null
+          throw new Error('chat-request-rejected')
         }
         if (!response.ok) throw new Error('chat unavailable')
 
@@ -1124,6 +1158,8 @@ export default function Pixel({ systemStatus = null }) {
               if (isCleanContextRecoveryFrame(frame)) recoveryEligible = true
               const candidatePreview = parseVerifiedPreviewFrame(frame)
               if (candidatePreview) verifiedPreview = candidatePreview
+              const candidateArtifacts = parseDeliveredArtifactsFrame(frame)
+              if (candidateArtifacts) verifiedArtifacts = candidateArtifacts
               const candidateQuestions = parseQuestionsFrame(frame)
               if (candidateQuestions) questions = candidateQuestions
               const candidateTask = parseTaskActivityFrame(frame)
@@ -1153,6 +1189,7 @@ export default function Pixel({ systemStatus = null }) {
           receivedError,
           recoveryEligible,
           verifiedPreview,
+          verifiedArtifacts,
           taskActivity,
           questions,
         }
@@ -1178,6 +1215,7 @@ export default function Pixel({ systemStatus = null }) {
         setMessages(previous => replaceLastAssistant(previous, {
           status: 'done',
           ...(attempt.taskActivity ? {task: attempt.taskActivity} : {}),
+          ...(attempt.verifiedArtifacts ? {artifacts:attempt.verifiedArtifacts} : {}),
           ...(attempt.questions && attempt.receivedDone && !attempt.receivedError ? {questions:attempt.questions} : {}),
           ...(attempt.verifiedPreview ? {publication:attempt.verifiedPreview, beforePublication:previousPublication?.relativeDirectory === attempt.verifiedPreview.relativeDirectory ? previousPublication : null} : {}),
           ...(recovered ? { recovered: true } : {}),
@@ -1212,6 +1250,11 @@ export default function Pixel({ systemStatus = null }) {
       }
 
       if (!attempt.receivedError && attempt.receivedDone && attempt.recoveryEligible) {
+        if(needsImageRoute) {
+          setInput(trimmed)
+          setMessages(previous=>replaceLastAssistant(previous,{content:'Portal could not recover this image conversation automatically. Your draft and images are preserved. Retry here after checking the conversation status.',status:'error'}))
+          return
+        }
         const retryChatId = makeChatId()
         chatIdRef.current = retryChatId
         contextStartRef.current = originalContextStart
@@ -1257,16 +1300,21 @@ export default function Pixel({ systemStatus = null }) {
         return
       }
 
+      if(turnImages.length) {
+        if(attempt.receivedDone && !attempt.receivedError)images.clear()
+        else setInput(trimmed)
+      }
       finishAttempt(attempt)
     } catch (error) {
       if (isCurrentTurn() && error?.name !== 'AbortError') {
         const conversationChanged = error?.message === 'chat-recovery-conversation-changed'
         const storageFailed = conversationChanged || error?.message === 'chat-recovery-storage-unavailable'
         const historyTooLarge=error?.message==='history-request-too-large'
-        setInterrupted(!storageFailed && !historyTooLarge)
-        if (storageFailed || historyTooLarge) setInput(trimmed)
+        const requestRejected=error?.message==='chat-request-rejected'
+        setInterrupted(!storageFailed && !historyTooLarge && !requestRejected)
+        if (storageFailed || historyTooLarge || requestRejected || turnImages.length) setInput(trimmed)
         setMessages(previous => replaceLastAssistant(previous, {
-          content: historyTooLarge?'The encoded conversation exceeds the 8 MB request limit. No task was started. Export this conversation before starting a new chat.':conversationChanged ? 'This conversation changed in another tab. No task was started. Download a recovery copy, then reload to read the saved version.' : storageFailed ? 'Could not save the request for recovery. No task was started. Check browser storage and try again.' : latestAssistantText || 'Request failed',
+          content: requestRejected?'Portal rejected the request format (HTTP 422). No task was started. Your draft is preserved. Refresh Portal before retrying.':historyTooLarge?'The encoded conversation exceeds the 8 MB request limit. No task was started. Export this conversation before starting a new chat.':conversationChanged ? 'This conversation changed in another tab. No task was started. Download a recovery copy, then reload to read the saved version.' : storageFailed ? 'Could not save the request for recovery. No task was started. Check browser storage and try again.' : latestAssistantText || 'Request failed',
           status: 'error',
         }))
       }
@@ -1284,7 +1332,7 @@ export default function Pixel({ systemStatus = null }) {
         void contextControl.refresh(true)
       }
     }
-  }, [input, messages, preview, workspaceOpen, sending, modelSwitching, status, restoredActive, restoredChecking, updateRestoredActivity, teams.busy, teams.start,compactConversation,contextControl.busy,contextControl.historyUnknown,contextControl.refresh,startExtensionInstallation,startGithubExtensionRequest])
+  }, [input, messages, preview, workspaceOpen, sending, modelSwitching, status, restoredActive, restoredChecking, updateRestoredActivity, teams.busy, teams.start,compactConversation,contextControl.busy,contextControl.historyUnknown,contextControl.refresh,startExtensionInstallation,startGithubExtensionRequest,images,imageModel,hasImageHistory])
 
   const stopStreaming = useCallback(async () => {
     const controller = abortRef.current
@@ -1358,6 +1406,7 @@ export default function Pixel({ systemStatus = null }) {
   const startNewChat = useCallback(() => {
     if (sending || restoredActive || restoredChecking || stopping || teams.launching || contextControl.busy) return
     chatIdRef.current = makeChatId()
+    images.replace(chatIdRef.current)
     requestIdRef.current = null
     contextStartRef.current = 0
     compactionRequestRef.current = null
@@ -1369,7 +1418,7 @@ export default function Pixel({ systemStatus = null }) {
     setInterrupted(false)
     updateRestoredActivity('idle')
     inputRef.current?.focus?.()
-  }, [sending, restoredActive, restoredChecking, stopping, updateRestoredActivity, teams.launching,contextControl.busy])
+  }, [sending, restoredActive, restoredChecking, stopping, updateRestoredActivity, teams.launching,contextControl.busy,images.replace])
 
   useEffect(() => {
     const remove = async event => {
@@ -1386,6 +1435,7 @@ export default function Pixel({ systemStatus = null }) {
           if(!Array.isArray(result.teams))throw new Error('Could not verify the team status before deleting this conversation.')
           if(result.teams.some(team=>ACTIVE_TEAMS.has(team.status))){complete('Stop the agent team before deleting this conversation.');return}
         }
+        await purgeConversationImages(chatId)
         deleteConversation(chatId)
         if (chatId === chatIdRef.current) startNewChat()
         complete('')
@@ -1421,6 +1471,7 @@ export default function Pixel({ systemStatus = null }) {
       if (!chat || chat.chatId === chatIdRef.current) return
       conversationWriter.current = createConversationWriter(chat.persistenceSnapshot)
       chatIdRef.current = chat.chatId
+      images.replace(chat.chatId,chat.draftImages)
       shownTeamPublications.current = shownPublicationKeys(chat)
       requestIdRef.current = chat.requestId
       contextStartRef.current = chat.contextStart
@@ -1439,10 +1490,10 @@ export default function Pixel({ systemStatus = null }) {
     }
     window.addEventListener(SELECT_EVENT, select)
     return () => window.removeEventListener(SELECT_EVENT, select)
-  }, [sending, restoredActive, restoredChecking, stopping, updateRestoredActivity, teams.launching,contextControl.busy])
+  }, [sending, restoredActive, restoredChecking, stopping, updateRestoredActivity, teams.launching,contextControl.busy,images.replace])
 
   const inputOver = input.length > MAX_INPUT_LEN
-  const inputEmpty = !(command?.task ?? goalDraft?.task ?? input).trim()
+  const inputEmpty = !(command?.task ?? goalDraft?.task ?? input).trim() && !images.items.length
   const isDisabled = sending || modelSwitching || restoredActive || restoredChecking || stopping || teams.busy || contextControl.busy || contextControl.historyUnknown || status !== 'available'
   const composerVisible = !(workspaceExpanded && workspaceOpen && !previewCollapsed)
   const typeIntoComposer = useCallback((character, start, end) => setInput(value => {
@@ -1680,6 +1731,8 @@ export default function Pixel({ systemStatus = null }) {
                   installation={githubExtensionInstallation}
                   onConfigured={() => githubExtensionInstallation
                     ? resumeGithubExtensionInstallation() : sendMessage(messages[index - 1].content)}/>}
+              {message.role==='user' && <PortalConversationImages chatId={chatIdRef.current} images={message.images}/>}
+              {message.role === 'assistant' && message.status === 'done' && <PortalDeliveredArtifacts key={`delivered-files/${chatIdRef.current}/${index}`} artifacts={message.artifacts} />}
               {message.role === 'assistant' && message.content ? (
                 <>
                   {message.publication && <PixelSnapshotChanges preview={message.publication} before={message.beforePublication} variant="summary" onPreview={()=>openPublication(message.publication,'preview')} onReview={path=>openPublication(message.publication,'review',path)}/>}
@@ -1703,7 +1756,12 @@ export default function Pixel({ systemStatus = null }) {
 
       <div className="pixel-composer px-4 py-3 sm:px-6">
         {chatScroll.showLatest && <div className="mb-2 text-center"><button type="button" onClick={chatScroll.jumpToLatest} className="portal-jump-latest">Jump to latest</button></div>}
-        <div className={`portal-glass-composer mx-auto max-w-5xl ${messages.length===0 ? 'portal-neon-prompt' : ''}`}>
+        <div className={`portal-glass-composer mx-auto max-w-5xl ${messages.length===0 ? 'portal-neon-prompt' : ''}`} onDragOver={event=>{if(!isDisabled && Array.from(event.dataTransfer?.types || []).includes('Files'))event.preventDefault()}} onDrop={event=>{
+          if(isDisabled)return
+          const files=Array.from(event.dataTransfer?.files || [])
+          if(files.length){event.preventDefault();images.choose(files)}
+        }}>
+          <PortalImageAttachments attachments={images} chatId={chatIdRef.current} disabled={isDisabled} hasHistory={hasImageHistory} model={imageModel} onRefresh={()=>void contextControl.refresh(true)}/>
           {command && <div className="mb-2 flex flex-wrap items-center gap-2 rounded-xl bg-theme-card/70 px-3 py-2 text-xs text-theme-text-secondary" role="group" aria-label="Agent team mode"><span className="font-medium text-theme-text">Agent team</span><span>Describe your task. Portal will choose the team.</span><button type="button" disabled={isDisabled} onClick={()=>setInput(command.task)} className="ml-auto whitespace-nowrap rounded px-2 py-1 hover:bg-theme-border/30">Exit team mode</button></div>}
           {goalDraft && <div className="portal-goal-mode" role="group" aria-label="Goal mode"><span>Goal</span><small>Describe the outcome. Portal will plan, work and check its progress.</small><button type="button" disabled={isDisabled} onClick={()=>setInput(goalDraft.task)}>Exit goal mode</button></div>}
           {teams.error && <p role="alert" className="text-xs text-theme-text-secondary">{teams.error}</p>}
@@ -1712,6 +1770,7 @@ export default function Pixel({ systemStatus = null }) {
             ref={inputRef}
             value={command ? command.task : goalDraft ? goalDraft.task : input}
             onChange={(event) => setInput(command ? `/agents ${event.target.value}` : goalDraft ? `/goal ${event.target.value}` : event.target.value)}
+            onPaste={event=>{const files=Array.from(event.clipboardData?.items || []).filter(item=>item.kind==='file').map(item=>item.getAsFile()).filter(Boolean);if(files.length && !isDisabled){event.preventDefault();images.choose(files)}}}
             onKeyDown={(event) => {
               if (shouldSendMessage(event, sendKey.mode)) {
                 event.preventDefault()
@@ -1743,7 +1802,7 @@ export default function Pixel({ systemStatus = null }) {
           ) : (
             <button
               onClick={sendFromComposer}
-              disabled={isDisabled || inputOver || inputEmpty}
+              disabled={isDisabled || inputOver || inputEmpty || images.busy}
               className="inline-flex h-11 w-11 items-center justify-center rounded-xl bg-theme-accent text-white transition hover:bg-theme-accent-hover disabled:cursor-not-allowed disabled:opacity-40"
               title="Send"
             >
@@ -1766,6 +1825,7 @@ export default function Pixel({ systemStatus = null }) {
           <div className="pixel-composer-secondary">
             <PixelComposerTools input={input} disabled={isDisabled} onInsert={insertComposerText} onCompact={compactConversation}>
               <PixelTextFileInput key={`file-input-${chatIdRef.current}`} conversationId={chatIdRef.current} input={input} disabled={isDisabled} limit={MAX_INPUT_LEN} onInsert={insertComposerText}/>
+              <PortalImagePicker disabled={isDisabled} onChoose={images.choose}/>
               <PixelDraftPreview key={`draft-preview-${chatIdRef.current}`} input={command?.task ?? goalDraft?.task ?? input}/>
             </PixelComposerTools>
             <div className="pixel-composer-limits">

@@ -92,7 +92,7 @@ class ProjectRecoveryTests(unittest.TestCase):
         original = self.controller.image
         self.controller.image = 'sha256:' + 'e' * 64
         self.assertEqual(self.cancel()['state'], 'cancelled')
-        self.controller._cleanup.assert_called_once_with(self.job, image=original)
+        self.controller._cleanup.assert_called_once_with(self.job, image=original, runtime='npm')
 
     def test_restarted_reconcile_reports_runtime_without_resuming_execution(self):
         with patch("project_runtime.subprocess.run", side_effect=self.docker):
@@ -202,36 +202,85 @@ class ProjectRecoveryTests(unittest.TestCase):
                     result = recover_job(self.controller.image, self.job, cancel=True)
                 self.assertEqual(result["status"], "cancelled")
 
+    def python_job(self):
+        from project_runtime import stage_arguments
+        image = "sha256:" + "e" * 64
+        # setUp already contains an uncertain npm job. The Python recovery
+        # fixture is independent; a runtime switch must not bypass its fence.
+        request = {"project": "python-project", "sourceSha256": "b" * 64, "image": image,
+                   "outputDirectory": "out", "runtime": "python"}
+        self.job = self.controller.jobs.create("e" * 64, request)[0]
+        self.controller.jobs.claim(self.job)
+        self.controller.jobs.recover_interrupted()
+        args = stage_arguments(image, self.job, "acquire", runtime="python")
+        self.container.update(Image=image, Name="/" + self.job + "-acquire")
+        self.container["Config"].update(Image=image, Cmd=args[args.index(image) + 1:],
+                                        Labels={"org.osmantic.ods.project-job": self.job})
+        self.container["Mounts"][0]["Name"] = self.job
+
+    def test_python_restarted_cancel_uses_persisted_profile_and_image(self):
+        self.python_job()
+        result = self.cancel()
+        self.assertEqual(result["state"], "cancelled", result)
+        self.assertFalse(self.container["State"]["Running"])
+        self.assertEqual(result["request"]["runtime"], "python")
+
+    def test_python_restarted_reconcile_uses_persisted_profile(self):
+        self.python_job()
+        with patch("project_runtime.subprocess.run", side_effect=self.docker):
+            result = self.controller.jobs.reconcile(self.job)
+        self.assertEqual(result["runtime"]["status"], "running", result)
+        self.assertEqual(result["job"]["state"], "unconfirmed")
+
+    def test_python_same_image_but_npm_command_is_foreign(self):
+        self.python_job()
+        from project_runtime import stage_arguments
+        image = self.container["Image"]
+        args = stage_arguments(image, self.job, "acquire")
+        self.container["Config"]["Cmd"] = args[args.index(image) + 1:]
+        result = self.cancel()
+        self.assertEqual(result["state"], "unconfirmed")
+        self.assertTrue(self.container["State"]["Running"])
+        self.assertFalse(any(args[1] == "stop" for args in self.commands))
+
 
 @unittest.skipUnless(os.environ.get("ODS_TEST_PROJECT_NODE") == "1", "disposable Docker opt-in")
 class ProjectCrashRuntimeTests(unittest.TestCase):
+    runtime = "npm"
+
     def test_hard_killed_controller_leaves_orphan_that_replacement_can_cancel(self):
         host = Path(__file__).resolve().parents[1] / "host"
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             iid = root / "image"
             subprocess.run(["docker", "build", "--iidfile", str(iid), "-f",
-                            str(host / "Dockerfile.project-node"), str(host)],
+                            str(host / ("Dockerfile.project-python" if self.runtime == "python"
+                                        else "Dockerfile.project-node")), str(host)],
                            check=True, capture_output=True, timeout=180)
             image = iid.read_text().strip()
             project = root / "project"
-            project.mkdir()
-            package = {"private": True, "scripts": {"test": "node wait.cjs", "build": "node --version"}}
-            (project / "package.json").write_text(json.dumps(package))
-            (project / "package-lock.json").write_text(json.dumps({"lockfileVersion": 3, "packages": {"": package}}))
-            (project / "wait.cjs").write_text("setInterval(()=>{},1000);")
-            original = {p.name: p.read_bytes() for p in project.iterdir()}
+            if self.runtime == "python":
+                from test_project_python import fixture
+                fixture(root, test="import unittest, time\nclass T(unittest.TestCase):\n def test_wait(self): time.sleep(120)\n")
+            else:
+                project.mkdir()
+                package = {"private": True, "scripts": {"test": "node wait.cjs", "build": "node --version"}}
+                (project / "package.json").write_text(json.dumps(package))
+                (project / "package-lock.json").write_text(json.dumps({"lockfileVersion": 3, "packages": {"": package}}))
+                (project / "wait.cjs").write_text("setInterval(()=>{},1000);")
+            original = {str(p.relative_to(project)): p.read_bytes() for p in project.rglob("*") if p.is_file()}
             # The only killed host process is this fixture's own child PID.
             script = """
 import json, sys, time
 sys.path.insert(0, sys.argv[1])
 from project_controller import ProjectController
-c = ProjectController(sys.argv[2], sys.argv[2] + '/state', sys.argv[3], authorize=lambda *_: True)
+c = ProjectController(sys.argv[2], sys.argv[2] + '/state', sys.argv[3], authorize=lambda *_: True,
+                      python_image=sys.argv[3] if sys.argv[4] == 'python' else None)
 r = c.submit('a' * 64, 'project')
 print(r['id'], flush=True)
 time.sleep(120)
 """
-            child = subprocess.Popen([sys.executable, "-c", script, str(host), str(root), image],
+            child = subprocess.Popen([sys.executable, "-c", script, str(host), str(root), image, self.runtime],
                                      stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
             job = None
             controller = None
@@ -249,10 +298,11 @@ time.sleep(120)
                         break
                     time.sleep(0.2)
                 else:
-                    self.fail("fixture npm test did not start")
+                    self.fail("fixture test stage did not start")
                 child.kill()
                 child.communicate(timeout=10)
-                controller = ProjectController(root, root / "state", image, authorize=lambda *_: True)
+                controller = ProjectController(root, root / "state", image, authorize=lambda *_: True,
+                                               python_image=image if self.runtime == "python" else None)
                 controller.jobs.recover_interrupted()
                 self.assertEqual(controller.jobs.reconcile(job)["runtime"]["status"], "running")
                 controller.cancel(job)
@@ -264,16 +314,19 @@ time.sleep(120)
                 self.assertEqual(controller.storage._read(), {})
                 self.assertFalse(controller.jobs.claim(job))
                 self.assertFalse((project / "ods-builds").exists())
-                self.assertEqual({p.name: p.read_bytes() for p in project.iterdir()}, original)
+                self.assertEqual({str(p.relative_to(project)): p.read_bytes()
+                                  for p in project.rglob("*") if p.is_file()}, original)
                 # A same-name/image/label container with a different command
                 # is not ours to stop, even when it mounts this job's volume.
                 from project_runtime import recover_job, stage_arguments
                 controller.storage.reserve(image, job)
                 controller.storage.create_volume(job)
-                args = stage_arguments(image, job, "test")
-                args = args[:args.index(image) + 1] + ["node", "-e", "setInterval(()=>{},1000)"]
+                args = stage_arguments(image, job, "test", runtime=self.runtime)
+                foreign = (["python", "-I", "-c", "import time; time.sleep(120)"] if self.runtime == "python"
+                           else ["node", "-e", "setInterval(()=>{},1000)"])
+                args = args[:args.index(image) + 1] + foreign
                 subprocess.run([*args[:2], "-d", *args[2:]], check=True, capture_output=True, timeout=15)
-                evidence = recover_job(image, job, cancel=True)
+                evidence = recover_job(image, job, cancel=True, runtime=self.runtime)
                 self.assertEqual(evidence["evidence"], "identity-mismatch")
                 actual = json.loads(subprocess.check_output(["docker", "inspect", job + "-test"]))[0]
                 self.assertTrue(actual["State"]["Running"], "foreign command was stopped")
@@ -289,3 +342,8 @@ time.sleep(120)
                         subprocess.run(["docker", "rm", "-f", job + "-" + stage], capture_output=True, timeout=15)
                     subprocess.run(["docker", "volume", "rm", job], capture_output=True, timeout=15)
 
+
+class PythonCrashRuntimeTests(ProjectCrashRuntimeTests):
+    __unittest_skip__ = os.environ.get("ODS_TEST_PROJECT_PYTHON") != "1"
+    __unittest_skip_why__ = "disposable Python Docker opt-in"
+    runtime = "python"

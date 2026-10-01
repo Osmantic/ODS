@@ -56,6 +56,28 @@ test('confirmed policy denial remains distinct from a lost response', async () =
   assert.equal((await tool.execute('call', submit)).details.status, 'denied');
 });
 
+test('recovery refusal is actionable without a new execution or automatic retry', async () => {
+  for (const jobId of [undefined,job]) {
+    const receipt={schemaVersion:1,kind:'ods-project-job',status:'recovery-required',executionStarted:false,
+      ...(jobId ? {jobId} : {})};
+    const tool=createProjectBuildTool({request:async()=>receipt});
+    const result=await tool.execute('retry',submit);
+    assert.equal(result.isError,true);
+    assert.equal(result.details.status,'recovery-required');
+    assert.equal(result.details.executionStarted,false);
+    assert.equal(result.details.nextAction.automaticRetry,false);
+    assert.equal(result.details.nextAction.action,jobId ? 'observe' : undefined);
+  }
+});
+
+test('malformed recovery refusal cannot be interpreted as no execution', async () => {
+  for (const extra of [{executionStarted:true},{jobId:'foreign'},{secret:'unexpected'}]) {
+    const tool=createProjectBuildTool({request:async()=>({schemaVersion:1,kind:'ods-project-job',
+      status:'recovery-required',executionStarted:false,...extra})});
+    assert.equal((await tool.execute('retry',submit)).details.status,'unconfirmed');
+  }
+});
+
 test('observation waits for real completion without another submission', async () => {
   const actions = [], waits = [];
   const tool = createProjectBuildTool({

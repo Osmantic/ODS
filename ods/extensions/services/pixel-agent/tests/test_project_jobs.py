@@ -44,6 +44,28 @@ class ProjectJobTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.jobs.create("a" * 64, {**self.request, "sourceSha256": "c" * 64})
 
+    def test_python_profile_is_durable_and_bound_to_request_identity(self):
+        self.request["runtime"] = "python"
+        job = self.create()
+        self.assertEqual(ProjectJobs(self.root).observe(job)["request"], self.request)
+        without_runtime = {key: value for key, value in self.request.items() if key != "runtime"}
+        with self.assertRaises(ValueError):
+            self.jobs.create("a" * 64, without_runtime)
+        self.jobs.claim(job)
+        observed = []
+        def observer(image, job_id, stage, *, runtime):
+            observed.append((image, job_id, stage, runtime))
+            return {"status": "succeeded", "exitCode": 0, "evidence": "docker-state"}
+        row = self.jobs.reconcile(job, observer)["job"]
+        self.assertEqual(observed, [(self.request["image"], job, "acquire", "python")])
+        self.assertEqual(row["steps"][0]["status"], "succeeded")
+
+    def test_unknown_profiles_and_additional_execution_fields_are_rejected(self):
+        for extra in ({"runtime": "npm"}, {"runtime": "ruby"}, {"runtime": None},
+                      {"runtime": "python", "command": "echo injected"}, {"command": "sh"}):
+            with self.subTest(extra=extra), self.assertRaises(ValueError):
+                self.jobs.create("a" * 64, {**self.request, **extra})
+
     def test_exclusive_restart_marks_interruption_without_replay(self):
         running = self.create()
         self.jobs.claim(running)

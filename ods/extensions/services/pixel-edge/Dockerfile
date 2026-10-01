@@ -15,6 +15,8 @@ RUN pip install --no-cache-dir --require-hashes -r requirements.lock
 
 COPY pixel_edge.py ./
 COPY chat_context.py ./
+COPY image_message.py ./
+COPY image_admission.py ./
 COPY runtime_identity.py ./
 COPY access_mode.py ./
 COPY transition_gate.py ./

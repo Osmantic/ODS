@@ -315,6 +315,12 @@ bash tests/test-macos-host-agent-verification.sh
 echo "[contract] macOS CLI reports Compose start failures"
 bash tests/test-macos-cli-compose-failure.sh
 
+echo "[contract] macOS Core omits optional Open WebUI"
+bash tests/test-macos-webui-optional.sh
+
+echo "[contract] macOS .env upsert preserves secrets and recovers from write failure"
+bash tests/test-macos-env-upsert.sh
+
 echo "[contract] macOS direct binds replace conflicting Colima bridges"
 bash tests/test-macos-direct-bind-bridge.sh
 python3 tests/test_macos_native_service.py

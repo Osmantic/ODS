@@ -174,7 +174,7 @@ Options:
 
 This will remove:
     - ODS service containers
-    - ODS Docker volumes (unless --keep-data)
+    - Verified ODS Docker volumes (unless --keep-data)
     - Installation directory ($INSTALL_DIR)
     - ODS-managed Pixel host services and private configuration
     - Systemd user services (opencode-web, openclaw timers)
@@ -252,6 +252,33 @@ if command -v docker >/dev/null 2>&1; then
             log_error "Saved extension recipes require review; installation untouched. Run 'ods disable <extension>' for each extension named above (it stops it safely and keeps its data), then retry uninstall."
             exit 1
         }
+    else
+        log_error "No Compose files resolved; installation untouched. Restore the installation's Compose files, then retry uninstall."
+        exit 1
+    fi
+fi
+
+# Compose down -v cannot see volumes from disabled extension fragments. Record
+# exact ownership before retiring Pixel or system services. Keep the snapshot
+# outside the install tree so a failed purge can retain that tree for recovery.
+volume_snapshot=""
+if command -v docker >/dev/null 2>&1; then
+    volume_snapshot="$(mktemp "${TMPDIR:-/tmp}/ods-uninstall-volumes.XXXXXXXX")"
+    trap '[[ -z "$volume_snapshot" ]] || rm -f -- "$volume_snapshot"' EXIT
+    # macOS ships Bash 3.2, where expanding an empty array under nounset is
+    # an error. Pass the optional flag through explicit non-empty branches.
+    if $KEEP_DATA; then
+        if ! python3 "$SCRIPT_DIR/scripts/uninstall-compose-volumes.py" preflight \
+            "$INSTALL_DIR" "$volume_snapshot" "$SCRIPT_DIR" --keep-data "${compose_args[@]}"; then
+            log_error "Docker ownership could not be proven; installation untouched. Review the reported resource before retrying."
+            exit 1
+        fi
+    else
+        if ! python3 "$SCRIPT_DIR/scripts/uninstall-compose-volumes.py" preflight \
+            "$INSTALL_DIR" "$volume_snapshot" "$SCRIPT_DIR" "${compose_args[@]}"; then
+            log_error "Docker ownership could not be proven; installation untouched. Review the reported resource before retrying."
+            exit 1
+        fi
     fi
 fi
 
@@ -368,52 +395,32 @@ if command -v docker &>/dev/null; then
     # Use ODS's resolved compose stack. The repo does not ship a
     # top-level docker-compose.yml, so bare `docker compose down` can fail with
     # "no configuration file provided" even from the correct install dir.
-    compose_down_args=(down)
-    if [[ "$KEEP_DATA" != "true" ]]; then
-        compose_down_args+=(-v)
-    fi
-    compose_down_args+=(--remove-orphans)
+    # Do not pass -v: Compose would delete selected volumes before our
+    # postflight custody check can verify their unchanged identity.
+    compose_down_args=(down --remove-orphans)
 
-    if [[ -n "$compose_flags" ]]; then
-        validate_uninstall_compose "${compose_args[@]}" || {
-            log_error "Saved extension recipes changed during uninstall; remaining installation retained."
-            exit 1
-        }
-        docker compose "${compose_args[@]}" "${compose_down_args[@]}" 2>/dev/null || \
-            log_warn "docker compose cleanup failed; falling back to container/volume discovery"
-    else
-        log_warn "No compose files resolved; falling back to container/volume discovery"
+    validate_uninstall_compose "${compose_args[@]}" || {
+        log_error "Saved extension recipes changed during uninstall; remaining installation retained."
+        exit 1
+    }
+    # Unrelated containers and volumes can share the ods prefix. Never widen
+    # cleanup to name-based discovery, including when Compose reports failure.
+    compose_error_log="$(mktemp "${TMPDIR:-/tmp}/ods-uninstall-compose.XXXXXXXX.log")"
+    if ! docker compose "${compose_args[@]}" "${compose_down_args[@]}" 2>"$compose_error_log"; then
+        log_error "Docker Compose cleanup failed; remaining installation retained. Pixel or host services may already be retired. Details: $compose_error_log"
+        exit 1
     fi
-
-    # Remove any remaining ods-* containers.
-    # Docker's name filter matches anywhere in the name, so filter on the
-    # printed names instead: only this project's ods-<service> containers.
-    # Native Pixel retirement already stopped and receipt-bound these archived
-    # sandboxes. Keep their writable layers available for rollback.
-    ods_containers=$(docker ps -a --format "{{.Names}}" 2>/dev/null | grep -E '^ods-' |
-        grep -Ev '^ods-pixel-retired-[a-f0-9]{16}$' || true)
-    if [[ -n "$ods_containers" ]]; then
-        log_info "Removing ODS containers..."
-        echo "$ods_containers" | xargs docker rm -f 2>/dev/null || true
+    rm -f -- "$compose_error_log"
+    if [[ "$KEEP_DATA" != "true" ]] &&
+        ! python3 "$SCRIPT_DIR/scripts/uninstall-compose-volumes.py" complete \
+            "$INSTALL_DIR" "$volume_snapshot" "$SCRIPT_DIR"; then
+        log_error "Docker volume cleanup is incomplete after Pixel or host-service retirement; installation files and data retained for recovery."
+        exit 1
     fi
 
-    # Remove ods-specific Docker volumes unless data preservation was requested.
-    if [[ "$KEEP_DATA" == "true" ]]; then
-        log_info "Keeping Docker volumes (--keep-data)"
-    else
-        # Compose names project volumes ods_<volume> (docker-compose.base.yml
-        # declares `name: ods`); older installs also produced ods-<volume>.
-        # An unanchored "ods" filter would additionally select unrelated
-        # volumes that merely contain it (pods, methods, ...) and this branch
-        # removes what it finds, so anchor on the project prefix.
-        ods_volumes=$(docker volume ls --format "{{.Name}}" 2>/dev/null | grep -E '^ods[_-]' || true)
-        if [[ -n "$ods_volumes" ]]; then
-            log_info "Removing Docker volumes..."
-            echo "$ods_volumes" | xargs docker volume rm 2>/dev/null || true
-        fi
-    fi
+    [[ "$KEEP_DATA" == "true" ]] && log_info "Keeping Docker volumes (--keep-data)"
 
-    log_ok "Docker cleanup complete"
+    log_ok "Verified Docker cleanup complete"
     log_info "Docker images and shared build cache retained"
 else
     log_warn "Docker not found — skipping container cleanup"
@@ -521,7 +528,7 @@ if command -v pgrep >/dev/null 2>&1; then
         [[ -n "$_pid" ]] && _ods_uninstall_orphan_pids+=("$_pid")
     done < <(pgrep -f "$INSTALL_DIR/bin/ods-macos-llm-bridge.py" 2>/dev/null || true)
 fi
-if (( ${#_ods_uninstall_orphan_pids[@]} > 0 )); then
+if [[ -n "${_ods_uninstall_orphan_pids[0]-}" ]]; then
     log_info "  Sending SIGTERM to ${#_ods_uninstall_orphan_pids[@]} orphan PID(s): ${_ods_uninstall_orphan_pids[*]}"
     for _pid in "${_ods_uninstall_orphan_pids[@]}"; do kill "$_pid" 2>/dev/null || true; done
     sleep 2

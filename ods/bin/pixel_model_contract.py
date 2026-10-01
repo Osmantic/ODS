@@ -14,13 +14,14 @@ def checksum(value):
 
 def target(value):
     keys = {"model", "contextLength", "maxTokens", "reasoning"}
-    if (type(value) is not dict or not keys <= set(value) or set(value) - keys - {"routeFingerprint"}
+    if (type(value) is not dict or not keys <= set(value) or set(value) - keys - {"routeFingerprint", "imageInput"}
             or type(value["model"]) is not str
             or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+:/ @(),=-]{0,255}", value["model"])
             or type(value["contextLength"]) is not int or not 4096 <= value["contextLength"] <= 10_000_000
             or type(value["maxTokens"]) is not int or not 1 <= value["maxTokens"] <= value["contextLength"]
             or type(value["reasoning"]) is not bool
-            or "routeFingerprint" in value and not checksum(value["routeFingerprint"])):
+            or "routeFingerprint" in value and not checksum(value["routeFingerprint"])
+            or "imageInput" in value and value["imageInput"] not in ("supported", "unsupported", "unknown")):
         raise ModelError("invalid-model-contract")
     return dict(value)
 
@@ -61,6 +62,12 @@ def projection(config):
     if "modelRouteFingerprint" in settings:
         if provider != "ods-gateway": raise ModelError("model-route-not-managed")
         contract["routeFingerprint"] = settings["modelRouteFingerprint"]
+    if "modelImageInput" in settings:
+        capability = settings["modelImageInput"]
+        expected_input = ["text"] if capability == "unsupported" else ["text", "image"]
+        if row.get("input") != expected_input:
+            raise ModelError("model-image-input-mismatch")
+        contract["imageInput"] = capability
     contract = target(contract)
     defaults = config["agents"].get("defaults", {})
     selected = agent["model"]
@@ -109,6 +116,14 @@ def plan(config, proposed):
         label = "Current" if row["id"] == "ods/current" else "Default"
         row["name"] = "ODS " + label + " (" + proposed["model"] + ")"
     row.update(contextWindow=context, maxTokens=output, reasoning=proposed["reasoning"])
+    # Unknown permits an explicitly informed transport attempt; it is not a
+    # claim that the provider supports vision. Admission is checked separately.
+    if "imageInput" in proposed:
+        row["input"] = ["text"] if proposed["imageInput"] == "unsupported" else ["text", "image"]
+    elif "modelImageInput" in settings:
+        # A legacy caller switching routes cannot inherit the previous route's
+        # image permission. Legacy configurations without this field stay intact.
+        row["input"] = ["text"]
     agent["contextTokens"] = context
     params = agent.setdefault("params", {})
     params["maxTokens"] = output
@@ -130,6 +145,8 @@ def plan(config, proposed):
     settings = result["plugins"]["entries"]["pixel-ods"].setdefault("config", {})
     settings.update(modelContextWindow=context, leanPrompt=lean)
     settings.pop("modelRouteFingerprint", None)
+    settings.pop("modelImageInput", None)
+    if "imageInput" in proposed: settings["modelImageInput"] = proposed["imageInput"]
     if "routeFingerprint" in proposed: settings["modelRouteFingerprint"] = proposed["routeFingerprint"]
     if projection(result)["contract"] != proposed: raise ModelError("model-projection-mismatch")
     return result
