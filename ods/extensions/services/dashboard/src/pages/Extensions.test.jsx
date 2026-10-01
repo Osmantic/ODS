@@ -151,6 +151,47 @@ it('offers Add for qualified bundled n8n while keeping other built-ins managed b
   expect(screen.queryByRole('button',{name:'Disable Dashboard'})).toBeNull()
 })
 
+it('shows bundled Perplexica in Available and asks before adding SearXNG', async () => {
+  const catalog = {agent_available:true,extensions:[
+    {id:'perplexica',name:'Perplexica (Deep Research)',source:'core',status:'disabled',
+      library_manageable:true,library_selected:false,features:[baseFeature]},
+    {id:'n8n',name:'n8n (Workflows)',source:'core',status:'disabled',
+      library_manageable:true,library_selected:false,features:[baseFeature]},
+  ],summary:baseSummary({total:2})}
+  const fetchMock = vi.fn(async (url, options = {}) => {
+    const target = String(url)
+    if (target === '/api/extensions/catalog') return makeJsonResponse(catalog)
+    if (target === '/api/webui/selection') return makeJsonResponse({enabled:true,supported:false})
+    if (target === '/api/templates') return makeJsonResponse({templates:[]})
+    if (target === '/api/extensions/perplexica/enable' && options.method === 'POST') {
+      return makeJsonResponse({detail:{missing_dependencies:['searxng']}}, {ok:false,status:400})
+    }
+    if (target === '/api/extensions/perplexica/enable?auto_enable_deps=true' && options.method === 'POST') {
+      return makeJsonResponse({message:'Perplexica and SearXNG selected'})
+    }
+    throw new Error(`Unmocked fetch: ${target}`)
+  })
+  vi.stubGlobal('fetch', fetchMock)
+  render(<Extensions compact />)
+  fireEvent.click(await screen.findByRole('button',{name:'Available 2'}))
+  expect(screen.getByRole('button',{name:'Add Perplexica (Deep Research)'})).toBeVisible()
+  expect(screen.getByRole('button',{name:'Add n8n (Workflows)'})).toBeVisible()
+  expect(screen.getByRole('button',{name:'Installed 0'})).toBeVisible()
+  fireEvent.click(screen.getByRole('button',{name:'Add Perplexica (Deep Research)'}))
+  fireEvent.click(screen.getByRole('button',{name:'Enable'}))
+  expect(await screen.findByRole('dialog',{name:'Enable dependencies'})).toHaveTextContent('searxng')
+  expect(fetchMock).toHaveBeenCalledWith('/api/extensions/perplexica/enable', expect.objectContaining({method:'POST'}))
+  fireEvent.click(screen.getByRole('button',{name:'Cancel'}))
+  expect(fetchMock).not.toHaveBeenCalledWith('/api/extensions/perplexica/enable?auto_enable_deps=true', expect.anything())
+  fireEvent.click(screen.getByRole('button',{name:'Add Perplexica (Deep Research)'}))
+  fireEvent.click(screen.getByRole('button',{name:'Enable'}))
+  fireEvent.click(await screen.findByRole('button',{name:'Enable All'}))
+  await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
+    '/api/extensions/perplexica/enable?auto_enable_deps=true',
+    expect.objectContaining({method:'POST'}),
+  ))
+})
+
 it('lets an errored bundled n8n be retried or disabled without a remove control', async () => {
   installFetchMock({agent_available:true,extensions:[
     {id:'n8n',name:'n8n (Workflows)',source:'core',status:'error',library_manageable:true,library_selected:true,features:[baseFeature]},
@@ -159,6 +200,20 @@ it('lets an errored bundled n8n be retried or disabled without a remove control'
   expect(await screen.findByRole('button',{name:'Retry n8n (Workflows)'})).toBeVisible()
   expect(screen.getByRole('button',{name:'Disable n8n (Workflows)'})).toBeVisible()
   expect(screen.queryByRole('button',{name:'Remove n8n (Workflows)'})).toBeNull()
+})
+
+it('keeps an unselected bundled service with error progress available for retry', async () => {
+  installFetchMock({agent_available:true,extensions:[
+    {id:'perplexica',name:'Perplexica (Deep Research)',source:'core',status:'error',
+      library_manageable:true,library_selected:false,error_message:'Host agent could not enable the service.',
+      features:[baseFeature]},
+  ],summary:baseSummary({total:1,error:1})})
+  render(<Extensions compact />)
+  fireEvent.click(await screen.findByRole('button',{name:'Available 1'}))
+  expect(screen.getByRole('button',{name:'Installed 0'})).toBeVisible()
+  fireEvent.click(screen.getByRole('button',{name:'Retry Perplexica (Deep Research)'}))
+  expect(screen.getByRole('dialog',{name:'Confirm action'})).toHaveTextContent('Enable Perplexica (Deep Research)?')
+  expect(screen.queryByRole('button',{name:'Disable Perplexica (Deep Research)'})).toBeNull()
 })
 
 it('makes an OpenCode setup retry an explicit install action', async () => {

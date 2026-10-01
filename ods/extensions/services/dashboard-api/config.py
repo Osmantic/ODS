@@ -697,6 +697,10 @@ ALWAYS_ON_SERVICES: frozenset = frozenset({
     "remote-provider-ssh-tunnel", "open-webui", "dashboard", "dashboard-api",
 })
 
+# Built-ins qualified for Dashboard Library Add/Disable. The live health poll
+# must refresh this same set after a fragment changes without an API restart.
+LIBRARY_MANAGEABLE_BUILTINS: frozenset = frozenset({"n8n", "perplexica"})
+
 
 def load_extension_catalog() -> list[dict]:
     """Load the static extensions catalog JSON. Returns empty list on failure."""
