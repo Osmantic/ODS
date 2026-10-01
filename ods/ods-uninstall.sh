@@ -258,6 +258,22 @@ if command -v docker >/dev/null 2>&1; then
     fi
 fi
 
+# Compose down -v cannot see volumes from disabled extension fragments. Record
+# exact ownership before retiring Pixel or system services. Keep the snapshot
+# outside the install tree so a failed purge can retain that tree for recovery.
+volume_snapshot=""
+if command -v docker >/dev/null 2>&1; then
+    volume_snapshot="$(mktemp "${TMPDIR:-/tmp}/ods-uninstall-volumes.XXXXXXXX")"
+    trap '[[ -z "$volume_snapshot" ]] || rm -f -- "$volume_snapshot"' EXIT
+    volume_preflight_args=()
+    $KEEP_DATA && volume_preflight_args+=(--keep-data)
+    if ! python3 "$SCRIPT_DIR/scripts/uninstall-compose-volumes.py" preflight \
+        "$INSTALL_DIR" "$volume_snapshot" "${volume_preflight_args[@]}" "${compose_args[@]}"; then
+        log_error "Docker ownership could not be proven; installation untouched. Review the reported resource before retrying."
+        exit 1
+    fi
+fi
+
 # Fail before stopping/removing services if models cannot be retained without
 # crossing filesystems. Recheck immediately before the actual atomic rename.
 if $KEEP_MODELS; then
@@ -383,8 +399,16 @@ if command -v docker &>/dev/null; then
     }
     # Unrelated containers and volumes can share the ods prefix. Never widen
     # cleanup to name-based discovery, including when Compose reports failure.
-    if ! docker compose "${compose_args[@]}" "${compose_down_args[@]}" 2>/dev/null; then
-        log_error "Docker Compose cleanup failed; remaining installation retained. Resolve the Compose error, then retry uninstall."
+    compose_error_log="$(mktemp "${TMPDIR:-/tmp}/ods-uninstall-compose.XXXXXXXX.log")"
+    if ! docker compose "${compose_args[@]}" "${compose_down_args[@]}" 2>"$compose_error_log"; then
+        log_error "Docker Compose cleanup failed; remaining installation retained. Pixel or host services may already be retired. Details: $compose_error_log"
+        exit 1
+    fi
+    rm -f -- "$compose_error_log"
+    if [[ "$KEEP_DATA" != "true" ]] &&
+        ! python3 "$SCRIPT_DIR/scripts/uninstall-compose-volumes.py" complete \
+            "$INSTALL_DIR" "$volume_snapshot"; then
+        log_error "Docker volume cleanup is incomplete after Pixel or host-service retirement; installation files and data retained for recovery."
         exit 1
     fi
 
