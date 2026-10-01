@@ -41,7 +41,6 @@ OPS_PASSWD_STATE="$TEST_ROOT/ops-passwd"
 OPS_GROUP_STATE="$TEST_ROOT/ops-group"
 mkdir -p "$MOCK_BIN" "$SYSTEMD_DIR" "$ETC_DIR" "$LIBEXEC_DIR" "$HOME_DIR"
 
-
 # Relocate the inspection service's fixed paths as well as the configurable
 # service paths below. Mocking cleanup alone still lets the presence checks
 # discover a live host unit and call systemctl before the cleanup callback.
@@ -59,8 +58,6 @@ pathlib.Path(sys.argv[2]).write_text(source)
 PY
 # shellcheck source=/dev/null
 source "$TEST_ROOT/pixel-uninstall.sh"
-# Inspection's privileged helper has its own isolated contract tests below.
-
 
 # The no-sudo fixture temporarily removes its sudo mock. Keep a refusing
 # fallback ahead of the host PATH so timeout/exec can never find real sudo.
@@ -74,7 +71,6 @@ exit 127
 SH
 chmod +x "$HOST_GUARD_BIN/sudo"
 export HOST_GUARD_LOG
-
 # This suite models host services under TEST_ROOT. Never dispatch the real
 # inspector cleanup against /etc or /usr/local on the developer/CI machine.
 # Its real validation/removal behavior and candidate dispatch are covered by
@@ -92,7 +88,6 @@ _ods_pixel_inspection_cleanup() {
     [[ "$3" == validate-linux || "$3" == remove-linux ]] || return 1
     [[ "${INSPECTION_VALIDATE_FAIL:-false}" != true ]] || return 1
 }
-
 
 cat >"$MOCK_BIN/sudo" <<'SH'
 #!/usr/bin/env bash
