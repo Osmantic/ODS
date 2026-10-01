@@ -321,6 +321,9 @@ bash tests/test-macos-webui-optional.sh
 echo "[contract] macOS Hermes Library selection survives installer rerun"
 bash tests/test-macos-hermes-library-selection.sh
 
+echo "[contract] macOS voice Library selections survive installer rerun"
+bash tests/test-macos-voice-library-selection.sh
+
 echo "[contract] macOS .env upsert preserves secrets and recovers from write failure"
 bash tests/test-macos-env-upsert.sh
 

@@ -45,7 +45,8 @@ ENABLE_HERMES_PROXY=false
 # The retained per-service choices must still win when the installer syncs.
 printf 'services: {}\n' >"$INSTALL_DIR/extensions/services/hermes-proxy/compose.yaml"
 ENABLE_LITELLM=false ENABLE_SEARXNG=false ENABLE_RECOMMENDED=false
-ENABLE_VOICE=false ENABLE_WORKFLOWS=false ENABLE_RAG=false
+ENABLE_VOICE=false ENABLE_WHISPER=false ENABLE_TTS=false
+ENABLE_WORKFLOWS=false ENABLE_RAG=false
 ENABLE_OPENCLAW=false ENABLE_APE=false ENABLE_PERPLEXICA=false
 ENABLE_PRIVACY_SHIELD=false ENABLE_ODS_PROXY=false ENABLE_TAILSCALE=false
 ENABLE_LANGFUSE=false ENABLE_BRAVE_SEARCH=false
@@ -64,6 +65,7 @@ _macos_sync_builtin_compose_states
     && -f "$INSTALL_DIR/extensions/services/hermes-proxy/compose.yaml.disabled" ]]
 
 HERMES_EXPLICIT=false
+rm -f "$INSTALL_DIR/extensions/services/hermes-proxy/compose.yaml.disabled"
 printf 'services: {}\n' >"$INSTALL_DIR/extensions/services/hermes-proxy/compose.yaml"
 _macos_resolve_hermes_selection
 [[ "$ENABLE_HERMES" == false && "$ENABLE_HERMES_PROXY" == true ]]
@@ -73,5 +75,11 @@ if _macos_validate_hermes_selection 2>/dev/null; then
 fi
 [[ -f "$INSTALL_DIR/extensions/services/hermes/compose.yaml.disabled" \
     && -f "$INSTALL_DIR/extensions/services/hermes-proxy/compose.yaml" ]]
+
+printf 'services: {}\n' >"$INSTALL_DIR/extensions/services/hermes-proxy/compose.yaml.disabled"
+if _macos_resolve_hermes_selection 2>/dev/null; then
+    echo 'ambiguous Hermes proxy markers were accepted' >&2
+    exit 1
+fi
 
 echo 'PASS: Mac Hermes Library selections survive source refresh and explicit choices'
