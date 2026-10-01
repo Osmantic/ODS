@@ -43,27 +43,63 @@ function quickSwitchProfile(model) {
 /** A closed, unused selector must not start model-catalog requests or polling. */
 export default function PortalModelSelector(props) {
   const [started,setStarted]=useState(false)
-  if(started)return <LoadedModelSelector {...props}/>
+  const lastCatalogSource=useRef(props.runtimeSource)
+  const confirmedSource=['remote-provider','local-switchboard','external-host'].includes(props.runtimeSource)
+  useEffect(()=>{if(confirmedSource)lastCatalogSource.current=props.runtimeSource},[props.runtimeSource,confirmedSource])
+  const lastLabel=useRef({scope:props.displayScope,value:null})
+  // A fresh validated poll can confirm the new chat's label even when its
+  // primitive fields are unchanged. Availability/source still gate the hint.
+  useEffect(()=>{
+    if(lastLabel.current.scope!==props.displayScope){lastLabel.current={scope:props.displayScope,value:null};return}
+    if(!props.availability || props.availability==='switching'
+      || confirmedSource && props.runtimeSource!=='remote-provider'
+      || props.runtimeFingerprint && props.runtimeFingerprint!==lastLabel.current.value?.fingerprint)lastLabel.current.value=null
+    if(props.availability==='available' && props.runtimeSource==='remote-provider' && props.activeModel)
+      lastLabel.current.value={model:props.activeModel,fingerprint:props.runtimeFingerprint}
+  },[props.availability,props.displayScope,props.runtimeSource,props.runtimeFingerprint,props.activeModel,props.runtimeObservation,confirmedSource])
+  // This is a diagnostic label only. Never pass it as an active model/source.
+  const remembered=lastLabel.current.scope===props.displayScope
+    && (!confirmedSource || props.runtimeSource==='remote-provider')
+    && (!props.runtimeFingerprint || props.runtimeFingerprint===lastLabel.current.value?.fingerprint)
+      ?lastLabel.current.value:null
+  const unverified=props.availability==='available' && !confirmedSource && !props.activeModel
+  const qualifier=unverified?'unverified':'unavailable'
+  const notice=unverified?'Model selection is not currently verified.':'Portal is unavailable. Model selection is not currently verified.'
+  const unavailableLabel=props.availability==='unavailable' || unverified?{
+    text:remembered?`${modelDisplayName(remembered.model,true)} · ${qualifier}`:`Model ${qualifier}`,
+    model:remembered?modelDisplayName(remembered.model,true):null,
+    qualifier,notice,
+    label:remembered?`Last confirmed model: ${modelDisplayName(remembered.model,true)}; ${unverified?'model unverified':'Portal unavailable'}`:`Model ${qualifier}`,
+    title:remembered?`Last confirmed model: ${modelDisplayName(remembered.model)}. ${notice}`:notice,
+  }:null
+  // Remember only which reads to suppress, even before the first menu opening.
+  // Selection and mutation authorization still require the current source.
+  const observeCatalog=(confirmedSource?props.runtimeSource:lastCatalogSource.current)!=='remote-provider'
+  if(started)return <LoadedModelSelector {...props} observeCatalog={observeCatalog} unavailableLabel={unavailableLabel}/>
   return <div className="portal-model-selector"><button type="button" className="portal-model-trigger"
-    aria-label={`Choose model: ${modelDisplayName(props.activeModel,true)}`} aria-haspopup="dialog" aria-expanded="false"
-    title={modelDisplayName(props.activeModel)} onClick={()=>setStarted(true)}>
-    <span>{modelDisplayName(props.activeModel,true)}</span><ChevronDown size={12} aria-hidden="true"/>
+    aria-label={unavailableLabel?.label || `Choose model: ${modelDisplayName(props.activeModel,true)}`} aria-haspopup="dialog" aria-expanded="false"
+    title={unavailableLabel?.title || modelDisplayName(props.activeModel)} onClick={()=>setStarted(true)}>
+    <span>{unavailableLabel?.model || unavailableLabel?.text || modelDisplayName(props.activeModel,true)}</span>{unavailableLabel?.model && <span className="portal-model-unavailable"> · {unavailableLabel.qualifier}</span>}<ChevronDown size={12} aria-hidden="true"/>
   </button></div>
 }
 
 /** Once opened, retain the hook even while closed so an accepted swap stays observed. */
-function LoadedModelSelector({activeModel='',runtimeSource,busy=false,onSwitchingChange,onSettled}) {
-  const catalog=useModels()
+function LoadedModelSelector({activeModel='',runtimeSource,observeCatalog,unavailableLabel,busy=false,onSwitchingChange,onSettled}) {
+  const catalog=useModels({observe:observeCatalog})
   const {currentModel,activationReadyModel,loading,error,canActivateModels,activationModeError,activationLoading,modelLifecycle,externalLemonade,modelManagement,runtimeActionLoading,actionLoadingModels=[],loadModel,refresh,clearMutationError}=catalog
   const models=Array.isArray(catalog.models)?catalog.models:[]
-  const installed=models.filter(model=>model && typeof model.id==='string' && ['loaded','downloaded'].includes(model.status))
+  const installed=models.filter(model=>observeCatalog && model && typeof model.id==='string' && ['loaded','downloaded'].includes(model.status))
     .map(quickSwitchProfile)
   const [open,setOpen]=useState(true),[confirmId,setConfirmId]=useState(null),[pending,setPending]=useState(false),[localError,setLocalError]=useState('')
   const [recoveryPending,setRecoveryPending]=useState(false),[recoveryBusy,setRecoveryBusy]=useState(false)
   const root=useRef(null),trigger=useRef(null),list=useRef(null),mounted=useRef(true),submitLock=useRef(false)
   const managementUnavailable=externalLemonade===true && modelManagement?.managed==null
   const id=useId(),remote=runtimeSource==='remote-provider',external=runtimeSource==='external-host' && !managementUnavailable && modelManagement?.managed!==true,local=runtimeSource==='local-switchboard' || (runtimeSource==='external-host' && modelManagement?.managed===true)
-  const switching=pending || recoveryBusy || Boolean(activationLoading || runtimeActionLoading) || Boolean(modelLifecycle?.active && modelLifecycle.operation==='model_activation')
+  // A confirmed cloud route is independent of the local catalog's lifecycle,
+  // which may remain stale after a catalog failure. Keep mutations initiated
+  // here blocking until their own completion, even if the route changes.
+  const switching=pending || recoveryBusy || Boolean(runtimeActionLoading)
+    || (!remote && (Boolean(activationLoading) || Boolean(modelLifecycle?.active && modelLifecycle.operation==='model_activation')))
   const current=local?models.find(model=>model.id===currentModel):null
   const selectedId=local && activationReadyModel===currentModel?currentModel:null
   const activeName=current || activeModel
@@ -114,10 +150,10 @@ function LoadedModelSelector({activeModel='',runtimeSource,busy=false,onSwitchin
     }
   }
   const reason=switching?'':confirmation?unavailable(confirmation):remote?'This conversation uses a remote provider.':managementUnavailable?activationModeError || 'Runtime management could not be verified. Refresh the model list.':external?'This model is managed on the external host.':!local?'The conversation’s model source is not confirmed.':busy?'The current task is still running.':!canActivateModels && !loading?activationModeError:''
-  const showActiveFallback=activeModel && !current
+  const showActiveFallback=!unavailableLabel && activeModel && !current
   return <div ref={root} className="portal-model-selector">
-    <button ref={trigger} type="button" className="portal-model-trigger" aria-label={`Choose model: ${modelDisplayName(activeName,true)}`} aria-haspopup="dialog" aria-expanded={open} aria-controls={open?id:undefined} title={modelDisplayName(activeName)} onClick={()=>{if(open)close();else {setOpen(true);void refresh()}}}>
-      {switching && <Loader2 size={12} className="portal-model-loading" aria-hidden="true"/>}<span>{modelDisplayName(activeName,true)}</span><ChevronDown size={12} aria-hidden="true"/>
+    <button ref={trigger} type="button" className="portal-model-trigger" aria-label={unavailableLabel?.label || `Choose model: ${modelDisplayName(activeName,true)}`} aria-haspopup="dialog" aria-expanded={open} aria-controls={open?id:undefined} title={unavailableLabel?.title || modelDisplayName(activeName)} onClick={()=>{if(open)close();else {setOpen(true);if(observeCatalog)void refresh()}}}>
+      {switching && <Loader2 size={12} className="portal-model-loading" aria-hidden="true"/>}<span>{unavailableLabel?.model || unavailableLabel?.text || modelDisplayName(activeName,true)}</span>{unavailableLabel?.model && <span className="portal-model-unavailable"> · {unavailableLabel.qualifier}</span>}<ChevronDown size={12} aria-hidden="true"/>
     </button>
     <section id={id} role="dialog" aria-label="Choose model" className="portal-model-menu" hidden={!open} style={!open?{display:'none'}:undefined}>
       <header><strong>{confirmation?'Switch model':'Model'}</strong>{switching && <span role="status">Switching…</span>}</header>
@@ -137,15 +173,16 @@ function LoadedModelSelector({activeModel='',runtimeSource,busy=false,onSwitchin
           {showActiveFallback && <div role="menuitemradio" aria-checked="true" className="portal-model-option"><span><strong>{modelDisplayName(activeModel)}</strong><small>{remote?'Remote provider':external?'External host':'Active model'}</small></span><Check size={15} aria-hidden="true"/></div>}
           {installed.map(model=>{const selected=model.id===selectedId,disabled=unavailable(model);return <button key={model.id} role="menuitemradio" aria-checked={selected} type="button" className="portal-model-option" disabled={!selected && Boolean(disabled)} title={disabled || modelDisplayName(model)} onClick={()=>{if(selected)close(true);else if(!disabled)setConfirmId(model.id)}}><span><strong>{modelDisplayName(model)}</strong><small>{details(model)}</small></span>{model.id===activationLoading?<Loader2 size={15} className="portal-model-loading" aria-hidden="true"/>:selected?<Check size={15} aria-hidden="true"/>:null}</button>})}
         </div>
-        {loading && <p role="status" className="portal-model-notice">Loading models…</p>}
-        {!loading && !installed.length && !showActiveFallback && <p className="portal-model-notice">No installed models found.</p>}
+        {loading && observeCatalog && <p role="status" className="portal-model-notice">Loading models…</p>}
+        {unavailableLabel && <p role="status" className="portal-model-notice">{unavailableLabel.notice}</p>}
+        {!unavailableLabel && !loading && !installed.length && !showActiveFallback && <p className="portal-model-notice">No installed models found.</p>}
         {reason && <p className="portal-model-notice" role="status">{reason}</p>}
-        {(localError || error) && <p role="alert" className="portal-model-notice">{localError || error} <button type="button" onClick={()=>void refresh()}>Refresh</button></p>}
+        {(localError || error) && <p role="alert" className="portal-model-notice">{localError || error} {observeCatalog && <button type="button" onClick={()=>void refresh()}>Refresh</button>}</p>}
         {external
           ? <p className="portal-model-notice">Change this model on its external host.</p>
           : <Link className="portal-model-manage" to={remote?'/pixel/settings?section=connections':'/models'}><SlidersHorizontal size={14} aria-hidden="true"/>{remote?'Provider settings':'Manage models'}</Link>}
       </>}
-      <PortalModelRecovery active={open} refreshKey={`${pending}:${Boolean(activationLoading)}`} onPendingChange={setRecoveryPending} onBusyChange={setRecoveryBusy} onRecovered={()=>{setLocalError('');clearMutationError();void refresh();onSettled?.()}}/>
+      <PortalModelRecovery active={open && observeCatalog} refreshKey={`${pending}:${Boolean(activationLoading)}`} onPendingChange={setRecoveryPending} onBusyChange={setRecoveryBusy} onRecovered={()=>{setLocalError('');clearMutationError();void refresh();onSettled?.()}}/>
     </section>
   </div>
 }

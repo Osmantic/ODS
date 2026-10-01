@@ -1,5 +1,7 @@
 """Runtime availability and release identity are deliberately separate facts."""
 import copy
+import asyncio
+import time
 from datetime import datetime, timezone
 import importlib.util
 import json
@@ -14,6 +16,8 @@ from test_pixel import FakeResponse, FakeClient
 from routers import pixel
 import security
 from pixel_runtime_identity import project_runtime_identity as project_runtime_identity, unknown_runtime_identity
+
+pytestmark = pytest.mark.usefixtures("mock_edge_read_transport")
 
 
 def observed():
@@ -48,7 +52,8 @@ def test_edge_and_dashboard_share_the_projection_contract():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("kind", ["partial", "mismatch", "missing", "bad", "timeout", "nested"])
+@pytest.mark.parametrize("kind", ["partial", "mismatch", "missing", "bad", "timeout", "nested",
+                                 "oversized", "content_type", "connect_timeout", "stall"])
 async def test_status_keeps_chat_available_without_promoting_partial_identity(monkeypatch, kind):
     monkeypatch.setenv("PIXEL_OPENWEBUI_KEY", "e" * 64)
     async def host(*_args, **_kwargs):
@@ -60,6 +65,10 @@ async def test_status_keeps_chat_available_without_promoting_partial_identity(mo
     if kind == "bad":
         value.update(runtimeMatchesRelease=True, credentials="must-not-leak")
     calls = []
+    class SlowResponse(FakeResponse):
+        async def aiter_bytes(self):
+            await asyncio.sleep(10)
+            yield json.dumps(value).encode()
     class Client(FakeClient):
         def stream(self, method, url, **kwargs):
             calls.append((method, url, kwargs))
@@ -67,6 +76,14 @@ async def test_status_keeps_chat_available_without_promoting_partial_identity(mo
                 self.response = FakeResponse(chunks=[b'{"data":[{"id":"portal/default"}]}'])
             elif kind == "timeout":
                 raise pixel.httpx.ReadTimeout("private upstream token")
+            elif kind == "connect_timeout":
+                raise pixel.httpx.ConnectTimeout("private upstream token")
+            elif kind == "stall":
+                self.response = SlowResponse()
+            elif kind == "oversized":
+                self.response = FakeResponse(chunks=[b'x' * 8193])
+            elif kind == "content_type":
+                self.response = FakeResponse(content_type='text/plain', chunks=[json.dumps(value).encode()])
             elif kind == "nested":
                 # Below the wire byte cap but beyond Python's parser nesting
                 # budget. Diagnostics cannot take down healthy chat status.
@@ -76,7 +93,14 @@ async def test_status_keeps_chat_available_without_promoting_partial_identity(mo
                                              chunks=[json.dumps(value).encode()])
             return super().stream(method, url, **kwargs)
     with patch.object(pixel.httpx, "AsyncClient", side_effect=lambda **_kwargs: Client(None)):
+        started = time.monotonic()
         status = await pixel.pixel_status()
+        elapsed = time.monotonic() - started
+    if kind == 'stall':
+        assert pixel._READINESS_PROBE_SECONDS == 4.0
+        # Leave scheduler headroom on shared CI runners while still detecting
+        # the full ten-second body stall if the overall deadline is lost.
+        assert 3.8 <= elapsed < 8.0
     assert status["available"] is True
     assert status["runtimeMatchesRelease"] is (False if kind == "mismatch" else None)
     assert status["runtimeIdentity"] == (value if kind in ("partial", "mismatch") else unknown_runtime_identity())
@@ -84,6 +108,7 @@ async def test_status_keeps_chat_available_without_promoting_partial_identity(mo
     assert "must-not-leak" not in json.dumps(status)
     assert calls[-1][1] == "http://pixel-edge:9595/v1/runtime-identity"
     assert calls[-1][2]["headers"]["Authorization"] == "Bearer " + "e" * 64
+    assert calls[-1][2]['timeout'].as_dict() == {'connect': 4.0, 'read': 4.0, 'write': 4.0, 'pool': 4.0}
 
 
 @pytest.mark.parametrize("enabled", [True, False])

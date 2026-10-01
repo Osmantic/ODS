@@ -19,6 +19,25 @@ function transport(getStatus) {
   }))
 }
 
+it('retains only a diagnostic cloud label during an available access transition and recovers on polling',async()=>{
+  const runtime={source:'remote-provider',model:'cloud-model',contextLength:65536,maxTokens:4096,reasoning:false}
+  let status={available:true,runtime}
+  transport(()=>status)
+  vi.useFakeTimers()
+  render(<Pixel/>)
+  await act(async()=>{})
+  expect(screen.getByRole('button',{name:'Choose model: cloud model'})).toBeVisible()
+  status={available:true,runtime:null,readiness:{...failed(),accessState:'transitioning',reasonCode:'access-transition-pending'}}
+  await act(async()=>{await vi.advanceTimersByTimeAsync(3000)})
+  expect(screen.getByRole('button',{name:'Last confirmed model: cloud model; model unverified'})).toBeVisible()
+  expect(screen.getByRole('alert',{name:'Runtime readiness'})).toHaveTextContent('An access transition is unfinished')
+  expect(screen.getByPlaceholderText('Message Portal...')).toBeEnabled()
+  status={available:true,runtime:{...runtime,model:'recovered-cloud-model'}}
+  await act(async()=>{await vi.advanceTimersByTimeAsync(3000)})
+  expect(screen.getByRole('button',{name:'Choose model: recovered cloud model'})).toBeVisible()
+  expect(screen.queryByRole('button',{name:/Last confirmed/})).toBeNull()
+})
+
 it('makes failed access conspicuous while retaining existing safe chat controls', async () => {
   transport(() => ({available:true, model:'pixel/default', runtime:{model:'Mac fixture',contextLength:65536,source:'local-switchboard'}, readiness:failed()}))
   render(<Pixel/>)
