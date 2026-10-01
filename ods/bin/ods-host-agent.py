@@ -5665,7 +5665,13 @@ def invalidate_compose_cache() -> None:
     (INSTALL_DIR / ".compose-flags").unlink(missing_ok=True)
 
 
-def resolve_compose_flags() -> list:
+def resolve_compose_flags(*, recovery_disable_service: str | None = None) -> list:
+    """Resolve Compose flags; a target's rejected recipe may be used for safe disable.
+
+    Only the Dashboard disable path passes ``recovery_disable_service``. Its
+    selector reads the saved file list to identify shared base services, but
+    never runs Compose with these flags. Starts still require full policy.
+    """
     flags_file = INSTALL_DIR / ".compose-flags"
     if flags_file.exists():
         raw = flags_file.read_text(encoding="utf-8").strip()
@@ -5677,7 +5683,13 @@ def resolve_compose_flags() -> list:
             policy_spec = importlib.util.spec_from_file_location("_ods_compose_cache_policy", policy_path)
             policy = importlib.util.module_from_spec(policy_spec)
             policy_spec.loader.exec_module(policy)
-            policy.validate_flags(INSTALL_DIR, flags)
+            if recovery_disable_service is None:
+                policy.validate_flags(INSTALL_DIR, flags)
+            else:
+                policy.validate_flags(
+                    INSTALL_DIR, flags,
+                    recovery_disable_service=recovery_disable_service,
+                )
             active_name = ".active-model-store.compose.json"
             flags = [value for index, value in enumerate(flags)
                      if not (Path(value).name == active_name or (value == "-f" and index+1 < len(flags) and Path(flags[index+1]).name == active_name))]
@@ -5992,6 +6004,77 @@ def _extension_stop_targets(service_id: str) -> list[str]:
     return targets
 
 
+def _load_extension_selector():
+    """Load the installed CLI selector, the owner of the shared graph lock."""
+    helper_path = INSTALL_DIR / "scripts" / "extension-selection.py"
+    if not helper_path.is_file() or helper_path.is_symlink():
+        raise RuntimeError("Extension selection helper is unavailable")
+    spec = importlib.util.spec_from_file_location("_ods_extension_selection", helper_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("Cannot load extension selection helper")
+    selector = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(selector)
+    return selector
+
+
+def _apply_extension_selection(
+    service_ids: list[str], activate: bool,
+    expected_sha256: dict[str, str] | None = None,
+) -> str:
+    """Apply one selection plan on the host under the CLI's graph-wide lock.
+
+    Dashboard container locks are not an authority for a concurrent host CLI.
+    The installed selection helper checks the whole dependency graph, stops
+    exclusive owned containers on disable, then moves the marker under the
+    host-side data/.extensions-lock.
+    """
+    if (not isinstance(service_ids, list) or not service_ids or len(service_ids) > 64
+            or any(not isinstance(sid, str) or not SERVICE_ID_RE.fullmatch(sid)
+                   or sid in ALWAYS_ON_SERVICES
+                   for sid in service_ids)
+            or len(set(service_ids)) != len(service_ids)
+            or (not activate and len(service_ids) != 1)):
+        raise ValueError("Invalid optional extension selection")
+    selector = _load_extension_selector()
+    flags = (resolve_compose_flags() if activate else
+             resolve_compose_flags(recovery_disable_service=service_ids[0]))
+    # NamedTemporaryFile closes before the helper reads it, including on
+    # Windows. Its contents are only service IDs and their selection state.
+    preset_dir = INSTALL_DIR / "data"
+    if not preset_dir.is_dir() or preset_dir.is_symlink():
+        raise RuntimeError("Extension selection data directory is unavailable")
+    with tempfile.NamedTemporaryFile(
+        mode="w", encoding="utf-8", newline="\n", dir=preset_dir,
+        prefix=".extension-selection-", delete=False,
+    ) as stream:
+        for service_id in service_ids:
+            stream.write(f"{'enabled' if activate else 'disabled'}:{service_id}\n")
+        preset_path = Path(stream.name)
+    try:
+        try:
+            enabled, disabled, skipped = selector.restore_preset(
+                INSTALL_DIR, preset_path, core_services=set(ALWAYS_ON_SERVICES),
+                compose_flags=shlex.join(flags), strict=True,
+                expected_sha256=expected_sha256,
+            )
+        except selector.SelectionError as exc:
+            message = str(exc)
+            if ("Could not confirm stop" in message or "Timed out waiting" in message
+                    or message.startswith("Preset restore stopped")):
+                raise RuntimeError(message) from exc
+            raise ValueError(message) from exc
+    finally:
+        try:
+            preset_path.unlink(missing_ok=True)
+        except OSError:
+            logger.warning("Could not remove temporary extension selection file")
+    if skipped:
+        raise RuntimeError("Strict extension selection unexpectedly skipped a service")
+    if enabled + disabled == 0:
+        return "already_enabled" if activate else "already_disabled"
+    return "enabled" if activate else "disabled"
+
+
 def _whisper_model_ready_after_start(
     max_wait_seconds: float = 480, compose_env: dict[str, str] | None = None,
 ) -> tuple[bool, str]:
@@ -6068,6 +6151,39 @@ def _whisper_model_ready_after_start(
     return False, "Whisper started, but its model is not cached; run ods repair voice"
 
 
+def _run_selected_extension_up(
+    service_id: str, flags: list[str], *, env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess:
+    """Keep the final selected-marker check and Compose up under one graph lock.
+
+    Image preparation and readiness polling remain outside this critical
+    section. The CLI selector cannot disable and stop the service between
+    the marker check and the completion of ``docker compose up -d``.
+    """
+    selector = _load_extension_selector()
+    try:
+        with selector._selection_lock(INSTALL_DIR, 15.0):
+            ext_dir = _find_ext_dir(service_id)
+            if ext_dir is None or ext_dir.is_symlink():
+                raise RuntimeError(f"Extension is unavailable: {service_id}")
+            selected = ext_dir / "compose.yaml"
+            try:
+                selected_stat = selected.lstat()
+            except FileNotFoundError as exc:
+                raise RuntimeError(
+                    f"Extension selection changed before start: {service_id}"
+                ) from exc
+            if not stat_mod.S_ISREG(selected_stat.st_mode):
+                raise RuntimeError(f"Invalid selected Compose file: {service_id}")
+            return subprocess.run(
+                ["docker", "compose", *flags, "up", "-d", service_id],
+                cwd=str(INSTALL_DIR), capture_output=True, text=True,
+                timeout=SUBPROCESS_TIMEOUT_START, env=env,
+            )
+    except selector.SelectionError as exc:
+        raise RuntimeError(str(exc)) from exc
+
+
 def docker_compose_action(service_id: str, action: str) -> tuple:
     try:
         flags = resolve_compose_flags()
@@ -6125,10 +6241,13 @@ def docker_compose_action(service_id: str, action: str) -> tuple:
         return False, f"Unknown action: {action}"
     timeout = SUBPROCESS_TIMEOUT_START if action == "start" else SUBPROCESS_TIMEOUT_STOP
     try:
-        result = subprocess.run(
-            cmd, cwd=str(INSTALL_DIR),
-            capture_output=True, text=True, timeout=timeout, env=compose_env,
-        )
+        if action == "start" and service_id not in ALWAYS_ON_SERVICES:
+            result = _run_selected_extension_up(service_id, flags, env=compose_env)
+        else:
+            result = subprocess.run(
+                cmd, cwd=str(INSTALL_DIR),
+                capture_output=True, text=True, timeout=timeout, env=compose_env,
+            )
         if result.returncode == 0 and action == 'start':
             ext_dir = _find_ext_dir(service_id)
             manifest = _read_manifest(ext_dir) if ext_dir else {}
@@ -8306,7 +8425,7 @@ def _resolve_install_compose(flags: list[str]) -> tuple[str | None, str]:
 
 
 def _disable_unprepared_install(service_id: str) -> str:
-    """Take a library extension that failed before start out of the Compose project.
+    """Take a library extension that failed before this start out of Compose.
 
     Every enabled extension is merged into one Compose project, so a
     definition that cannot be resolved (a missing ``${NAME:?}`` setting) or
@@ -8319,19 +8438,20 @@ def _disable_unprepared_install(service_id: str) -> str:
     """
     ext_dir = USER_EXTENSIONS_DIR / service_id
     active = ext_dir / "compose.yaml"
-    inactive = ext_dir / "compose.yaml.disabled"
     unable = ("\nODS could not turn this extension off automatically. Disable or remove it; "
               "until then other ODS stack operations can fail with the same error.")
     try:
-        if ext_dir.is_symlink() or not ext_dir.is_dir() or active.is_symlink() or not active.exists():
+        if (service_id in ALWAYS_ON_SERVICES or ext_dir.is_symlink()
+                or not ext_dir.is_dir() or active.is_symlink() or not active.exists()):
             return ""
-        if not active.is_file() or inactive.exists() or inactive.is_symlink():
-            return unable
-        os.replace(active, inactive)
-    except OSError:
+        # This attempt has not started a container, but an earlier failed
+        # retry may have left one running. The host selector checks dependents,
+        # stops exclusive owned containers, then moves the marker under one
+        # graph lock. Its recovery flag accepts a rejected target recipe.
+        _apply_extension_selection([service_id], activate=False)
+    except Exception:
         logger.exception("Could not disable failed installation of %s", service_id)
         return unable
-    invalidate_compose_cache()
     logger.warning("Disabled %s after it failed before start; files and data were kept", service_id)
     return ("\nODS turned this extension off so the rest of the stack keeps working; its files, "
             "settings and data were kept. Resolve the error above, then retry or remove it.")
@@ -9536,6 +9656,8 @@ class AgentHandler(BaseHTTPRequestHandler):
             self._handle_extension_compose_toggle(activate=True)
         elif self.path == "/v1/extension/deactivate":
             self._handle_extension_compose_toggle(activate=False)
+        elif self.path == "/v1/extension/select":
+            self._handle_extension_selection()
         elif self.path == "/v1/extension/sync_config":
             self._handle_extension_sync_config()
         elif self.path == "/v1/service/logs":
@@ -11061,61 +11183,64 @@ class AgentHandler(BaseHTTPRequestHandler):
             json_response(self, 503 if "timed out" in err else 500, {"error": err})
 
     def _handle_extension_compose_toggle(self, activate: bool):
-        """Rename compose.yaml.disabled <-> compose.yaml for an extension.
+        """Fail closed for legacy Dashboard marker toggles.
 
-        Used by dashboard-api when the extensions mount is read-only (:ro).
-        The host agent runs on the host filesystem where the files are writable.
+        An older Dashboard holds data/.extensions-lock while making this
+        request. Routing it through the host selector would wait on its
+        caller's lock; retaining the direct rename could bypass dependency
+        checks and race the host CLI. The current Dashboard uses /select.
         """
+        if not check_auth(self):
+            return
+        json_response(self, 410, {
+            "error": "This Dashboard version cannot safely change extension selection. "
+                     "Finish updating ODS, then retry from the Extensions Library."
+        })
+
+    def _handle_extension_selection(self):
+        """Host-authoritative dependency-aware extension selection."""
         if not check_auth(self):
             return
         body = read_json_body(self)
         if body is None:
             return
-
-        # Validate service_id format and existence
-        sid = body.get("service_id", "")
-        if not isinstance(sid, str) or not SERVICE_ID_RE.match(sid):
-            json_response(self, 400, {"error": "Invalid service_id"})
+        service_ids = body.get("service_ids")
+        action = body.get("action")
+        expected_sha256 = body.get("expected_sha256")
+        if (action not in ("enable", "disable")
+                or not isinstance(service_ids, list)
+                or not service_ids or len(service_ids) > 64
+                or any(not isinstance(sid, str) or not SERVICE_ID_RE.fullmatch(sid)
+                       or sid in ALWAYS_ON_SERVICES for sid in service_ids)
+                or len(set(service_ids)) != len(service_ids)
+                or (action == "disable" and len(service_ids) != 1)):
+            json_response(self, 400, {"error": "Invalid optional extension selection"})
             return
-        ext_dir = _find_ext_dir(sid)
-        if ext_dir is None:
-            json_response(self, 404, {"error": f"Extension not found: {sid}"})
-            return
-
-        if sid in ALWAYS_ON_SERVICES:
-            json_response(self, 403, {"error": f"Cannot modify always-on service: {sid}"})
-            return
-
-        action = "activate" if activate else "deactivate"
-        if activate:
-            src = ext_dir / "compose.yaml.disabled"
-            dst = ext_dir / "compose.yaml"
-        else:
-            src = ext_dir / "compose.yaml"
-            dst = ext_dir / "compose.yaml.disabled"
-
-        lock = _service_locks[sid]
-        if not lock.acquire(blocking=False):
-            json_response(self, 409, {"error": f"Operation already in progress for {sid}"})
+        if (action == "enable" and (
+                not isinstance(expected_sha256, dict)
+                or set(expected_sha256) != set(service_ids)
+                or any(not isinstance(value, str)
+                       or re.fullmatch(r"[a-f0-9]{64}", value) is None
+                       for value in expected_sha256.values())
+        )) or (action == "disable" and expected_sha256 is not None):
+            json_response(self, 400, {"error": "Invalid expected Compose digests"})
             return
         try:
-            # Check existence inside the lock to prevent TOCTOU races
-            if not src.exists():
-                state = "enabled" if activate else "disabled"
-                json_response(self, 409, {"error": f"Extension already {state}: {sid}"})
-                return
-            # os.replace (not os.rename) — Windows os.rename raises
-            # FileExistsError when destination exists; os.replace always
-            # overwrites atomically.
-            os.replace(str(src), str(dst))
-        except OSError as exc:
-            json_response(self, 500, {"error": f"Failed to {action} extension: {exc}"})
+            outcome = _apply_extension_selection(
+                service_ids, activate=action == "enable",
+                expected_sha256=expected_sha256,
+            )
+        except ValueError as exc:
+            json_response(self, 409, {"error": str(exc)})
             return
-        finally:
-            lock.release()
-
-        logger.info("%sd extension compose: %s", action, sid)
-        json_response(self, 200, {"status": "ok", "service_id": sid, "action": action})
+        except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
+            logger.warning("Extension selection failed for %s: %s", service_ids, exc)
+            json_response(self, 502, {"error": f"Could not apply extension selection: {exc}"})
+            return
+        if outcome == "already_disabled":
+            json_response(self, 409, {"error": f"Extension already disabled: {service_ids[0]}"})
+            return
+        json_response(self, 200, {"status": "ok", "service_ids": service_ids, "action": outcome})
 
     def _handle_extension_sync_config(self):
         """Copy <ext_dir>/config/* into INSTALL_DIR/config/.
@@ -11814,11 +11939,7 @@ class AgentHandler(BaseHTTPRequestHandler):
                         error=str(exc),
                     )
                     return
-                start_result = subprocess.run(
-                    ["docker", "compose"] + flags + ["up", "-d", service_id],
-                    cwd=str(INSTALL_DIR), capture_output=True, text=True,
-                    timeout=SUBPROCESS_TIMEOUT_START,
-                )
+                start_result = _run_selected_extension_up(service_id, flags)
                 if start_result.returncode != 0:
                     _write_progress(service_id, "error", "Installation failed",
                                     error=start_result.stderr[-500:])

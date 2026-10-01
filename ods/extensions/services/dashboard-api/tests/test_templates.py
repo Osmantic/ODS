@@ -11,6 +11,9 @@ def _disable_agent_cache_invalidation():
     """Keep template unit tests isolated from the host-agent network."""
     with (
         patch("routers.extensions._call_agent_invalidate_compose_cache"),
+        patch("routers.extensions._select_extensions_on_host",
+              side_effect=lambda action, service_ids, expected_sha256=None: {
+                  "action": "enabled", "service_ids": service_ids}),
         patch("routers.extensions._sync_extension_config", return_value=True),
     ):
         yield

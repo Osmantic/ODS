@@ -31,24 +31,151 @@ def installation(monkeypatch, tmp_path, request):
     monkeypatch.setattr(extensions, "DATA_DIR", str(tmp_path))
     start = Mock(return_value=True)
     monkeypatch.setattr(extensions, "_call_agent", start)
-    monkeypatch.setattr(extensions, "_call_agent_compose_rename", rename)
+    def select(action, service_ids, expected_sha256=None):
+        assert action == "enable"
+        assert set(expected_sha256) == set(service_ids)
+        for name in service_ids:
+            if (bundled / name / "compose.yaml.disabled").exists():
+                rename("activate", name)
+        return {"action": "enabled", "service_ids": service_ids}
+
+    monkeypatch.setattr(extensions, "_select_extensions_on_host", select)
+    monkeypatch.setattr(extensions, "request_agent_json",
+                        lambda *args, **kwargs: pytest.fail("unexpected host-agent transport"))
     monkeypatch.setattr(extensions, "_call_agent_hook", Mock(return_value=True))
     monkeypatch.setattr(extensions, "_call_agent_invalidate_compose_cache", Mock())
     return bundled, start
 
 
-def disable_search(client, start):
-    response = client.post("/api/extensions/searxng/disable?include_data_info=false",
-                           headers=client.auth_headers)
-    assert response.status_code == 200
-    assert "hermes" in response.json()["dependents_warning"]
+def simulate_disabled_search(bundled, start):
+    """Retain coverage for an older or manually edited inconsistent install."""
+    (bundled / "searxng/compose.yaml").rename(
+        bundled / "searxng/compose.yaml.disabled")
     start.reset_mock()
+
+
+def test_disable_search_blocks_enabled_hermes(test_client, installation):
+    bundled, start = installation
+    response = test_client.post("/api/extensions/searxng/disable?include_data_info=false",
+                                headers=test_client.auth_headers)
+    assert response.status_code == 409
+    assert "hermes" in response.json()["detail"]
+    start.assert_not_called()
+    assert (bundled / "searxng/compose.yaml").is_file()
+
+
+def test_user_file_does_not_shadow_bundled_enabled_dependent(
+    test_client, installation,
+):
+    bundled, start = installation
+    extensions.USER_EXTENSIONS_DIR.mkdir()
+    (extensions.USER_EXTENSIONS_DIR / "hermes").write_text("not an extension directory")
+
+    response = test_client.post(
+        "/api/extensions/searxng/disable?include_data_info=false",
+        headers=test_client.auth_headers,
+    )
+
+    assert response.status_code == 409
+    assert "hermes" in response.json()["detail"]
+    start.assert_not_called()
+    assert (bundled / "searxng/compose.yaml").is_file()
+
+
+def test_disable_search_fails_closed_when_dependents_cannot_be_scanned(
+    test_client, installation, monkeypatch,
+):
+    bundled, start = installation
+    extensions.USER_EXTENSIONS_DIR.mkdir()
+    original_iterdir = Path.iterdir
+
+    def unreadable_user_extensions(path):
+        if path == extensions.USER_EXTENSIONS_DIR:
+            raise PermissionError("test: user extension directory is unreadable")
+        return original_iterdir(path)
+
+    monkeypatch.setattr(Path, "iterdir", unreadable_user_extensions)
+    response = test_client.post(
+        "/api/extensions/searxng/disable?include_data_info=false",
+        headers=test_client.auth_headers,
+    )
+
+    assert response.status_code == 503
+    assert "Cannot inspect enabled extension dependencies" in response.json()["detail"]
+    start.assert_not_called()
+    assert (bundled / "searxng/compose.yaml").is_file()
+    assert not (bundled / "searxng/compose.yaml.disabled").exists()
+
+
+@pytest.mark.parametrize("compose_depends_on", [
+    "depends_on: [n8n]",
+    "depends_on:\n      n8n:\n        condition: service_started",
+])
+def test_disable_reads_compose_deps_missing_from_manifest(
+    test_client, installation, compose_depends_on,
+):
+    bundled, start = installation
+    n8n = bundled / "n8n"
+    n8n.mkdir()
+    (n8n / "manifest.yaml").write_text("service:\n  id: n8n\n", encoding="utf-8")
+    (n8n / "compose.yaml").write_text(
+        "services:\n  n8n:\n    image: alpine:3.22\n", encoding="utf-8",
+    )
+    consumer = extensions.USER_EXTENSIONS_DIR / "n8n-consumer"
+    consumer.mkdir(parents=True)
+    (consumer / "manifest.yaml").write_text(
+        "service:\n  id: n8n-consumer\n  depends_on: []\n", encoding="utf-8",
+    )
+    (consumer / "compose.yaml").write_text(
+        "services:\n  n8n-consumer:\n    image: alpine:3.22\n"
+        f"    {compose_depends_on}\n",
+        encoding="utf-8",
+    )
+
+    response = test_client.post(
+        "/api/extensions/n8n/disable?include_data_info=false",
+        headers=test_client.auth_headers,
+    )
+
+    assert response.status_code == 409
+    assert "n8n-consumer" in response.json()["detail"]
+    start.assert_not_called()
+    assert (n8n / "compose.yaml").is_file()
+
+
+def test_disable_refuses_unresolved_compose_dependency(
+    test_client, installation,
+):
+    bundled, start = installation
+    n8n = bundled / "n8n"
+    n8n.mkdir()
+    (n8n / "manifest.yaml").write_text("service:\n  id: n8n\n", encoding="utf-8")
+    (n8n / "compose.yaml").write_text(
+        "services:\n  n8n:\n    image: alpine:3.22\n", encoding="utf-8",
+    )
+    consumer = extensions.USER_EXTENSIONS_DIR / "n8n-consumer"
+    consumer.mkdir(parents=True)
+    (consumer / "compose.yaml").write_text(
+        "services:\n  n8n-consumer:\n    image: alpine:3.22\n"
+        "    depends_on: [\"${UNRESOLVED_SERVICE}\"]\n",
+        encoding="utf-8",
+    )
+
+    response = test_client.post(
+        "/api/extensions/n8n/disable?include_data_info=false",
+        headers=test_client.auth_headers,
+    )
+
+    assert response.status_code == 503
+    assert "no service was disabled" in response.json()["detail"]
+    start.assert_not_called()
+    assert (n8n / "compose.yaml").is_file()
 
 
 def test_enable_requires_confirmation_for_disabled_transitive_service(test_client, installation):
     bundled, start = installation
     target_enabled = (bundled / "hermes-proxy" / "compose.yaml").exists()
-    disable_search(test_client, start)
+    simulate_disabled_search(bundled, start)
 
     response = test_client.post("/api/extensions/hermes-proxy/enable",
                                 headers=test_client.auth_headers)
@@ -62,7 +189,7 @@ def test_enable_requires_confirmation_for_disabled_transitive_service(test_clien
 
 def test_confirmed_enable_repairs_transitive_service_before_target(test_client, installation):
     bundled, start = installation
-    disable_search(test_client, start)
+    simulate_disabled_search(bundled, start)
     hermes_before = (bundled / "hermes" / "compose.yaml").read_bytes()
 
     response = test_client.post("/api/extensions/hermes-proxy/enable?auto_enable_deps=true",
@@ -76,6 +203,29 @@ def test_confirmed_enable_repairs_transitive_service_before_target(test_client, 
         ("start", "searxng"), ("start", "hermes-proxy"),
     ]
     assert (bundled / "hermes" / "compose.yaml").read_bytes() == hermes_before
+
+
+def test_host_rejects_stale_enable_plan_before_any_start(
+    test_client, installation, monkeypatch,
+):
+    from fastapi import HTTPException
+
+    bundled, start = installation
+    simulate_disabled_search(bundled, start)
+
+    def stale_plan(action, service_ids, expected_sha256=None):
+        assert action == "enable"
+        assert "searxng" in service_ids
+        raise HTTPException(status_code=409, detail="Dependency selection changed")
+
+    monkeypatch.setattr(extensions, "_select_extensions_on_host", stale_plan)
+    response = test_client.post(
+        "/api/extensions/hermes-proxy/enable?auto_enable_deps=true",
+        headers=test_client.auth_headers,
+    )
+    assert response.status_code == 409
+    start.assert_not_called()
+    assert (bundled / "searxng/compose.yaml.disabled").is_file()
 
 
 def test_healthy_dependency_tree_does_not_require_confirmation(test_client, installation):

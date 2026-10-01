@@ -2934,12 +2934,12 @@ cmd_enable() {
     done
     _ENABLE_VISITED+=("$service_id")
 
-    # Check built-in extensions first, then dashboard-installed user extensions
-    local ext_dir="$INSTALL_DIR/extensions/services/$service_id"
-    [[ ! -d "$ext_dir" ]] && ext_dir="$INSTALL_DIR/data/user-extensions/$service_id"
+    # Match Dashboard resolution: an installed user extension shadows a
+    # bundled definition with the same id, even when its Compose is disabled.
+    local ext_dir="$INSTALL_DIR/data/user-extensions/$service_id"
+    [[ ! -d "$ext_dir" ]] && ext_dir="$INSTALL_DIR/extensions/services/$service_id"
     [[ -d "$ext_dir" ]] || error "Unknown service: $input"
 
-    local cf="$ext_dir/compose.yaml"
     local disabled="$ext_dir/compose.yaml.disabled"
 
     # Check it's not a core service
@@ -2992,9 +2992,10 @@ cmd_enable() {
     if [[ -n "$deps" ]]; then
         local missing=()
         for dep in $deps; do
-            # Check built-in extensions first, then dashboard-installed user extensions
-            local dep_cf="$INSTALL_DIR/extensions/services/$dep/compose.yaml"
-            [[ -f "$dep_cf" ]] || dep_cf="$INSTALL_DIR/data/user-extensions/$dep/compose.yaml"
+            # An installed user extension shadows the bundled definition.
+            local dep_cf="$INSTALL_DIR/data/user-extensions/$dep/compose.yaml"
+            [[ -d "$INSTALL_DIR/data/user-extensions/$dep" ]] || \
+                dep_cf="$INSTALL_DIR/extensions/services/$dep/compose.yaml"
             local dep_cat="${SERVICE_CATEGORIES[$dep]:-optional}"
             # Core services are always available; check extension deps
             if [[ "$dep_cat" != "core" && ! -f "$dep_cf" ]]; then
@@ -3010,24 +3011,36 @@ cmd_enable() {
                     cmd_enable "$dep"
                 done
             else
-                warn "Proceeding without dependencies — $service_id may not start correctly."
+                warn "Cancelled enabling $service_id; enable its dependencies first."
+                return 1
             fi
         fi
     fi
 
-    if [[ -f "$cf" ]]; then
-        # An interrupted update can leave the compose fragment active while
-        # the persisted stack still omits it. Treat enable as an idempotent
-        # reconciliation operation on every platform.
-        _regenerate_compose_flags
-        if [[ -f "$disabled" ]]; then
-            rm -f "$disabled"
-            warn "Removed stale disabled marker for $service_id."
-        fi
+    # The helper rechecks on-disk prerequisites and commits selection under
+    # the same cross-process lock as CLI disable and Dashboard selection.
+    # It rebuilds saved flags inside that lock so concurrent writers cannot
+    # repopulate the cache from an outdated selection.
+    local selector="$INSTALL_DIR/scripts/extension-selection.py"
+    [[ -f "$selector" ]] || error "Extension selection guard missing: $selector"
+    local selector_python="${ODS_PYTHON_CMD:-python3}"
+    if [[ -f "$INSTALL_DIR/lib/python-cmd.sh" ]]; then
+        selector_python="$(. "$INSTALL_DIR/lib/python-cmd.sh"; ods_detect_python_cmd_with_module yaml)" || return 1
+    fi
+    local -a core_args=()
+    local sid
+    for sid in "${SERVICE_IDS[@]}"; do
+        [[ "${SERVICE_CATEGORIES[$sid]:-}" == "core" ]] && core_args+=(--core-service "$sid")
+    done
+    local final_state
+    final_state=$("$selector_python" "$selector" enable \
+        --install-dir "$INSTALL_DIR" --service-id "$service_id" \
+        --tier "${TIER:-1}" --gpu-backend "${GPU_BACKEND:-nvidia}" \
+        --gpu-count "${GPU_COUNT:-1}" --ods-mode "${ODS_MODE:-local}" \
+        "${core_args[@]}") || return 1
+    if [[ "$final_state" == "already-enabled" ]]; then
         success "$service_id is already enabled."
-    elif [[ -f "$disabled" ]]; then
-        mv "$disabled" "$cf"
-        _regenerate_compose_flags
+    elif [[ "$final_state" == "enabled" ]]; then
         # Check if service needs a Docker build (has Dockerfile but no image)
         if { [[ -f "$ext_dir/Dockerfile" ]] || [[ -f "$ext_dir/Dockerfile.rust" ]]; } && \
            ! docker image inspect "ods-${service_id}:latest" &>/dev/null; then
@@ -3037,7 +3050,7 @@ cmd_enable() {
             success "$service_id enabled. Run 'ods start $service_id' to launch."
         fi
     else
-        error "$service_id has no compose fragment (core service? already enabled?)"
+        error "Unexpected extension selection result for $service_id: $final_state"
     fi
 }
 
@@ -3053,50 +3066,49 @@ cmd_disable() {
 
     local service_id
     service_id=$(sr_resolve "$input")
-    # Check built-in extensions first, then dashboard-installed user extensions
-    local ext_dir="$INSTALL_DIR/extensions/services/$service_id"
-    [[ ! -d "$ext_dir" ]] && ext_dir="$INSTALL_DIR/data/user-extensions/$service_id"
+    # Match the Dashboard and selection helper's user-first shadowing.
+    local ext_dir="$INSTALL_DIR/data/user-extensions/$service_id"
+    [[ ! -d "$ext_dir" ]] && ext_dir="$INSTALL_DIR/extensions/services/$service_id"
     [[ -d "$ext_dir" ]] || error "Unknown service: $input"
-    local cf="$ext_dir/compose.yaml"
-
     # Check it's not a core service
     local cat="${SERVICE_CATEGORIES[$service_id]:-optional}"
     [[ "$cat" == "core" ]] && error "Cannot disable core service: $service_id"
 
-    # Check for reverse dependents
-    local dependents=()
-    for sid in "${SERVICE_IDS[@]}"; do
-        [[ "$sid" == "$service_id" ]] && continue
-        # Check built-in extensions first, then dashboard-installed user extensions
-        local dep_cf="$INSTALL_DIR/extensions/services/$sid/compose.yaml"
-        [[ -f "$dep_cf" ]] || dep_cf="$INSTALL_DIR/data/user-extensions/$sid/compose.yaml"
-        [[ ! -f "$dep_cf" ]] && continue
-        local deps="${SERVICE_DEPENDS[$sid]:-}"
-        for dep in $deps; do
-            if [[ "$dep" == "$service_id" ]]; then
-                dependents+=("$sid")
-                break
-            fi
-        done
-    done
-    if [[ ${#dependents[@]} -gt 0 ]]; then
-        warn "These enabled extensions depend on $service_id: ${dependents[*]}"
-        read -p "  Continue anyway? [y/N] " -n 1 -r || REPLY=""
-        echo
-        [[ ! $REPLY =~ ^[Yy]$ ]] && { log "Cancelled."; return 1; }
+    # A preliminary check avoids resolving Compose with known dependents.
+    # The helper repeats the check and holds its selection lock through the
+    # service stop and rename, so a concurrent enable cannot interleave.
+    local selector="$INSTALL_DIR/scripts/extension-selection.py"
+    [[ -f "$selector" ]] || error "Extension selection guard missing: $selector"
+    local selector_python="${ODS_PYTHON_CMD:-python3}"
+    if [[ -f "$INSTALL_DIR/lib/python-cmd.sh" ]]; then
+        selector_python="$(. "$INSTALL_DIR/lib/python-cmd.sh"; ods_detect_python_cmd_with_module yaml)" || return 1
+    fi
+    local initial_state
+    initial_state=$("$selector_python" "$selector" check-disable \
+        --install-dir "$INSTALL_DIR" --service-id "$service_id") || return 1
+    if [[ "$initial_state" == "already-disabled" ]]; then
+        success "$service_id is already disabled. Data preserved."
+        return 0
     fi
 
-    # Stop if running, then rename
-    local flags_str
+    local flags_str="" stop_mode=owned
     if flags_str=$(get_compose_flags); then
-        local -a flags
-        read -ra flags <<< "$flags_str"
-        docker compose "${flags[@]}" stop "$service_id" 2>/dev/null || true
+        stop_mode=compose
     else
-        _stop_owned_containers_for_recovery "$service_id" || return 1
+        warn "Compose validation failed; stopping only existing containers verified as belonging to this installation."
     fi
-    [[ -f "$cf" ]] && mv "$cf" "${cf}.disabled"
-    _regenerate_compose_flags
+    local -a stop_args=(--stop-mode "$stop_mode")
+    if [[ "$stop_mode" == compose ]]; then
+        stop_args+=(--compose-flags="$flags_str")
+    fi
+    local final_state
+    if ! final_state=$("$selector_python" "$selector" disable \
+        --install-dir "$INSTALL_DIR" --service-id "$service_id" \
+        "${stop_args[@]}"); then
+        return 1
+    fi
+    # The helper invalidates .compose-flags under the lock. The next Compose
+    # command resolves the current tree instead of writing a stale cache here.
     local _data_dir="$INSTALL_DIR/data/$service_id"
     if [[ -d "$_data_dir" ]]; then
         local _data_size
@@ -3271,9 +3283,9 @@ validate_preset_compatibility() {
     local missing_exts=()
     while IFS=: read -r state sid; do
         [[ -z "$sid" ]] && continue
-        # Check built-in extensions first, then dashboard-installed user extensions
-        local ext_dir="$INSTALL_DIR/extensions/services/$sid"
-        [[ -d "$ext_dir" ]] || ext_dir="$INSTALL_DIR/data/user-extensions/$sid"
+        # Match the selector's user-first shadowing.
+        local ext_dir="$INSTALL_DIR/data/user-extensions/$sid"
+        [[ -d "$ext_dir" ]] || ext_dir="$INSTALL_DIR/extensions/services/$sid"
         if [[ ! -d "$ext_dir" ]]; then
             missing_exts+=("$sid")
         fi
@@ -3315,6 +3327,13 @@ cmd_preset() {
                 local cat="${SERVICE_CATEGORIES[$sid]}"
                 [[ "$cat" == "core" ]] && continue
                 local cf="${SERVICE_COMPOSE[$sid]}"
+                # Match restore and Dashboard: a user extension shadows the
+                # bundled extension with the same service ID.
+                local user_ext_dir="$INSTALL_DIR/data/user-extensions/$sid"
+                [[ -L "$user_ext_dir" ]] && error "Invalid user extension: $sid"
+                if [[ -d "$user_ext_dir" ]]; then
+                    cf="$user_ext_dir/compose.yaml"
+                fi
                 if [[ -n "$cf" && -f "$cf" ]]; then
                     echo "enabled:$sid" >> "$state_file"
                 else
@@ -3360,41 +3379,55 @@ META
             echo ""
             [[ $REPLY =~ ^[Yy]$ ]] || { log "Cancelled."; return 0; }
 
-            # Restore .env (contains mode, model, and all config)
+            # Restore extension states under the CLI selection lock. The helper
+            # validates the final dependency graph before changing any marker.
+            if [[ -f "$preset_dir/extensions.list" ]]; then
+                local selector="$INSTALL_DIR/scripts/extension-selection.py"
+                [[ -f "$selector" ]] || error "Extension selection guard missing: $selector"
+                local selector_python="${ODS_PYTHON_CMD:-python3}"
+                if [[ -f "$INSTALL_DIR/lib/python-cmd.sh" ]]; then
+                    selector_python="$(. "$INSTALL_DIR/lib/python-cmd.sh"; ods_detect_python_cmd_with_module yaml)" || return 1
+                fi
+                local -a core_args=()
+                local sid
+                for sid in "${SERVICE_IDS[@]}"; do
+                    [[ "${SERVICE_CATEGORIES[$sid]:-}" == "core" ]] && core_args+=(--core-service "$sid")
+                done
+                # Snapshot the current selected overlays before any marker move.
+                # Inactive external-LLM overlays must not shield an optional
+                # local LiteLLM container from the preset's stop operation.
+                local current_flags
+                load_env
+                current_flags=$(get_compose_flags) || error "Could not resolve the current Compose stack"
+                local counts enabled disabled
+                if ! counts=$("$selector_python" "$selector" restore-preset \
+                    --install-dir "$INSTALL_DIR" --preset-file "$preset_dir/extensions.list" \
+                    --compose-flags "$current_flags" \
+                    "${core_args[@]}"); then
+                    warn "Preset extension selection was not fully restored. Resolve the reported issue, then retry 'ods preset load $name'."
+                    return 1
+                fi
+                [[ "$counts" =~ ^[0-9]+\ [0-9]+$ ]] || error "Invalid extension restore result: $counts"
+                read -r enabled disabled <<< "$counts"
+                success "Extensions: $enabled enabled, $disabled disabled"
+            fi
+
+            # Apply environment settings only after extension selection passed.
+            # A malformed preset must not overwrite an otherwise working .env.
             if [[ -f "$preset_dir/env" ]]; then
-                cp "$preset_dir/env" "$INSTALL_DIR/.env"
+                if ! cp "$preset_dir/env" "$INSTALL_DIR/.env"; then
+                    warn "Extensions were selected, but preset .env could not be restored. Resolve the file error and retry 'ods preset load $name'."
+                    return 1
+                fi
+                # The restored mode/config can change the resolved stack even
+                # when no extension marker changes.
+                if ! rm -f "$INSTALL_DIR/.compose-flags"; then
+                    warn "Preset .env was restored, but Compose cache could not be cleared. Repair access to .compose-flags before starting ODS."
+                    return 1
+                fi
                 local restored_mode
                 restored_mode=$(grep "^ODS_MODE=" "$INSTALL_DIR/.env" 2>/dev/null | cut -d= -f2 || true)
                 success "Restored .env (mode: ${restored_mode:-local})"
-            fi
-
-            # Restore extension states
-            if [[ -f "$preset_dir/extensions.list" ]]; then
-                local enabled=0 disabled=0
-                while IFS=: read -r state sid; do
-                    # Check built-in extensions first, then dashboard-installed user extensions
-                    local ext_dir="$INSTALL_DIR/extensions/services/$sid"
-                    [[ -d "$ext_dir" ]] || ext_dir="$INSTALL_DIR/data/user-extensions/$sid"
-                    [[ -d "$ext_dir" ]] || continue
-                    local cf="$ext_dir/compose.yaml"
-                    local cf_dis="$ext_dir/compose.yaml.disabled"
-
-                    # NB: enabled=$((enabled + 1)) not ((enabled++)) — the
-                    # post-increment form evaluates to 0 on the first hit,
-                    # which set -e treats as failure and aborts mid-restore.
-                    if [[ "$state" == "enabled" ]]; then
-                        if [[ -f "$cf_dis" && ! -f "$cf" ]]; then
-                            mv "$cf_dis" "$cf"
-                            enabled=$((enabled + 1))
-                        fi
-                    elif [[ "$state" == "disabled" ]]; then
-                        if [[ -f "$cf" ]]; then
-                            mv "$cf" "$cf_dis"
-                            disabled=$((disabled + 1))
-                        fi
-                    fi
-                done < "$preset_dir/extensions.list"
-                success "Extensions: $enabled enabled, $disabled disabled"
             fi
 
             echo ""

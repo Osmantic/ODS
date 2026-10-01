@@ -100,6 +100,9 @@ jobs:
       - run: python -m pytest ods/tests/test-compose-cache-policy.py ods/tests/test-model-store-compose-flags.py -q
       - run: python -m pytest ods/tests/test-verified-release-bootstrap.py -q
       - run: python -m pytest ods/tests/test-stop-owned-containers.py -q
+      - run: python -m pytest ods/tests/test_extension_selection.py -q
+      - if: runner.os == 'Linux'
+        run: bash ods/tests/test-cli-user-extension-deps.sh
       - if: runner.os != 'Windows'
         run: python -m pytest ods/tests/test-macos-private-opencode-route.py -q
       - if: runner.os != 'Windows'
