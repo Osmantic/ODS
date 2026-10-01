@@ -97,6 +97,7 @@ for (const deferred of [false,true]) test(`real finalization retains verified so
   vm.runInNewContext(source.slice(start,end),{
     api:{on:(_name,callback)=>{finalize=callback;}}, toolLoopGuard:guard, AGENT_ID:'pixel',
     goalProgress:{finalize:(_event,_context,decision)=>decision.guardDecision},
+    delegationDelivery:{finalize(){}},
   });
   assert.equal(await finalize(event,context),undefined);
   assert.equal(publications(),0);
