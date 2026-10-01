@@ -8,11 +8,14 @@
 # Expects: TIER (set by detection phase), error()
 # Provides: resolve_tier_config() → sets TIER_NAME, LLM_MODEL, GGUF_FILE,
 #           GGUF_URL, MAX_CONTEXT
-#
-# Modder notes:
-#   Add new tiers or change model assignments here.
-#   Each tier maps to a specific GGUF quantization and context window.
 # ============================================================================
+
+if ! declare -f error >/dev/null 2>&1; then
+    error() {
+        echo "ERROR: $*" >&2
+        return 1
+    }
+fi
 
 normalize_model_profile() {
     local profile="${1:-${MODEL_PROFILE:-qwen}}"
