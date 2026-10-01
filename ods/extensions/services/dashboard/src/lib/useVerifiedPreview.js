@@ -15,7 +15,6 @@ export default function useVerifiedPreview(preview,fallback,refresh=0) {
       .finally(()=>clearTimeout(timer))
     return()=>{current=false;controller.abort();clearTimeout(timer)}
     // The receipt and refresh key, not an ephemeral access object, own the probe.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   },[key])
   return result?.key===key?result.access:{...fallback,frameUrl:null,checking:true}
 }
