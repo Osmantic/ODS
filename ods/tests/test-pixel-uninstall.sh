@@ -43,8 +43,31 @@ OPS_PASSWD_STATE="$TEST_ROOT/ops-passwd"
 OPS_GROUP_STATE="$TEST_ROOT/ops-group"
 mkdir -p "$MOCK_BIN" "$SYSTEMD_DIR" "$ETC_DIR" "$LIBEXEC_DIR" "$HOME_DIR"
 
+# This suite models host services under TEST_ROOT. Never dispatch the real
+# inspector cleanup against /etc or /usr/local on the developer/CI machine.
+# Its real validation/removal behavior and candidate dispatch are covered by
+# test_preview_inspection_distribution.py and test_pixel_inspection_upgrade_dispatch.py.
+_ods_pixel_inspection_present() { [[ "${INSPECTION_PRESENT:-false}" == true ]]; }
+_ods_pixel_project_present() { [[ "${PROJECT_PRESENT:-false}" == true ]]; }
+_ods_pixel_project_cleanup() {
+    [[ "$1" == "$INSTALL_DIR" && "$2" == "$(id -u)" ]] || return 1
+    [[ "$3" == check-cleanup || "$3" == cleanup-linux ]] || return 1
+    [[ "${PROJECT_VALIDATE_FAIL:-false}" != true ]] || return 1
+    printf '%s\n' "$3" >>"$TEST_ROOT/project-cleanup.log"
+}
+_ods_pixel_inspection_cleanup() {
+    [[ "$1" == "$INSTALL_DIR" && "$2" == "$(id -u)" ]] || return 1
+    [[ "$3" == validate-linux || "$3" == remove-linux ]] || return 1
+    [[ "${INSPECTION_VALIDATE_FAIL:-false}" != true ]] || return 1
+}
+
 cat >"$MOCK_BIN/sudo" <<'SH'
 #!/usr/bin/env bash
+if [[ "${SUDO_FAIL_OPS_ARTIFACT_REMOVAL:-false}" == true \
+    && "${1:-}" == rm && "${2:-}" == -f \
+    && "$*" == *"${ODS_PIXEL_UNINSTALL_OPS_ENV:-/etc/pixel-ops-broker.env}"* ]]; then
+    exit 1
+fi
 exec "$@"
 SH
 cat >"$MOCK_BIN/systemctl" <<'SH'
@@ -164,6 +187,7 @@ assert hook in phase
 assert phase.index(hook) < phase.index('_phase06_step "copy-source"')
 assert '_ods_pixel_source_transition_required' in phase
 assert '_phase06_step "rebind-pixel-source"' in phase
+assert 'ods_pixel_uninstall_managed "$INSTALL_DIR" "$_phase06_pixel_home" source-transition' in phase
 assert phase.index('_phase06_step "rebind-pixel-source"') < phase.index('_phase06_step "copy-source"')
 PY
 then
@@ -1033,6 +1057,88 @@ if ods_pixel_uninstall_managed "$INSTALL_DIR" "$HOME_DIR"; then
     fi
 else
     fail "verified Operations Broker deployment could not be removed"
+fi
+
+write_ops_fixture
+clean_custody_before="$(find "${OPS_STATE%/*}" -maxdepth 1 -type d -name '.pixel-ops-broker-custody-*' | wc -l)"
+if ods_pixel_uninstall_managed "$INSTALL_DIR" "$HOME_DIR" source-transition; then
+    if [[ ! -e "$OPS_STATE" \
+        && "$(find "${OPS_STATE%/*}" -maxdepth 1 -type d -name '.pixel-ops-broker-custody-*' | wc -l)" == "$clean_custody_before" ]]; then
+        pass "clean source rebind uses verified cleanup without retaining another home"
+    else
+        fail "clean source rebind retained an unnecessary broker-home copy"
+    fi
+else
+    fail "clean source rebind could not retire its broker home"
+fi
+
+# A source rebind preserves the complete prior broker home. Legacy useradd
+# copied arbitrary /etc/skel entries there, so content classification cannot
+# safely decide which bytes to delete. The ordinary uninstall tests below
+# still require strict refusal for symlinks and hardlinks.
+write_ops_fixture
+mkdir -m 0700 "$OPS_STATE/.composer"
+printf '%s\n' 'retained user data' >"$OPS_STATE/.composer/sentinel"
+ln -s /etc/passwd "$OPS_STATE/.ghcup"
+ln "$OPS_STATE/results/ops-test.json" "$TEST_ROOT/outside-broker-hardlink"
+if ods_pixel_uninstall_managed "$INSTALL_DIR" "$HOME_DIR" source-transition; then
+    if python3 - "$OPS_STATE" "$TEST_ROOT/outside-broker-hardlink" "$SYSTEMD_DIR" <<'PY'
+import os
+import pathlib
+import stat
+import sys
+
+old_root = pathlib.Path(sys.argv[1])
+outside = pathlib.Path(sys.argv[2])
+systemd_dir = pathlib.Path(sys.argv[3])
+holders = list(old_root.parent.glob('.pixel-ops-broker-custody-*'))
+assert not old_root.exists()
+assert len(holders) == 1
+holder = holders[0]
+assert stat.S_IMODE(holder.lstat().st_mode) == 0o700
+saved = holder / 'state'
+assert saved.is_dir()
+assert (saved / '.composer/sentinel').read_text().strip() == 'retained user data'
+assert (saved / '.ghcup').is_symlink()
+assert os.readlink(saved / '.ghcup') == '/etc/passwd'
+assert (saved / 'results/ops-test.json').stat().st_ino == outside.stat().st_ino
+assert not (systemd_dir / 'pixel-ops-broker.service').exists()
+PY
+    then
+        pass "source rebind preserves legacy and unique broker state in private custody"
+    else
+        fail "source rebind lost broker state or left the old deployment active"
+    fi
+else
+    fail "source rebind could not preserve the legacy broker home"
+fi
+
+write_ops_fixture
+printf '%s\n' 'resumable custody' >"$OPS_STATE/retained-retry.txt"
+# Exercise the preserve path: a clean broker home is removed, while a legacy
+# skeleton link requires whole-home custody before artifact cleanup.
+ln -s /etc/passwd "$OPS_STATE/.ghcup"
+custody_before="$(find "${OPS_STATE%/*}" -maxdepth 1 -type d -name '.pixel-ops-broker-custody-*' | wc -l)"
+export SUDO_FAIL_OPS_ARTIFACT_REMOVAL=true
+if ods_pixel_uninstall_managed "$INSTALL_DIR" "$HOME_DIR" source-transition; then
+    fail "source rebind ignored a broker-artifact removal failure"
+elif [[ ! -e "$OPS_STATE" \
+    && -e "$SYSTEMD_DIR/pixel-ops-broker.service" \
+    && "$(find "${OPS_STATE%/*}" -maxdepth 1 -type d -name '.pixel-ops-broker-custody-*' | wc -l)" == "$((custody_before + 1))" ]]; then
+    pass "interrupted source rebind retains broker state before artifact removal"
+else
+    fail "interrupted source rebind did not retain the broker home safely"
+fi
+unset SUDO_FAIL_OPS_ARTIFACT_REMOVAL
+if ods_pixel_uninstall_managed "$INSTALL_DIR" "$HOME_DIR" source-transition; then
+    if [[ ! -e "$SYSTEMD_DIR/pixel-ops-broker.service" \
+        && "$(find "${OPS_STATE%/*}" -maxdepth 1 -type d -name '.pixel-ops-broker-custody-*' | wc -l)" == "$((custody_before + 1))" ]]; then
+        pass "source rebind resumes after custody without moving or deleting it twice"
+    else
+        fail "resumed source rebind lost custody or retained broker artifacts"
+    fi
+else
+    fail "source rebind could not resume after custody"
 fi
 
 write_inspection_contract_fixture() {
@@ -1967,6 +2073,53 @@ if ods_pixel_uninstall_managed "$INSTALL_DIR" "$HOME_DIR" \
 else
     fail "exact interrupted Pixel access installation was not cleaned"
 fi
+
+write_access_fixture
+INSPECTION_PRESENT=true
+INSPECTION_VALIDATE_FAIL=true
+if ods_pixel_uninstall_managed "$INSTALL_DIR" "$HOME_DIR"; then
+    fail "inspection validation failure was ignored"
+else
+    [[ -e "$ACCESS_STATE" && ! -s "$SYSTEMCTL_LOG" ]] \
+        && pass "inspection validation failure stops cleanup before services" \
+        || fail "inspection validation failure caused service mutation"
+fi
+unset INSPECTION_VALIDATE_FAIL INSPECTION_PRESENT
+
+write_access_fixture
+PROJECT_PRESENT=true
+PROJECT_VALIDATE_FAIL=true
+: >"$TEST_ROOT/project-cleanup.log"
+if ods_pixel_uninstall_managed "$INSTALL_DIR" "$HOME_DIR"; then
+    fail "project validation failure was ignored"
+elif [[ -e "$ACCESS_STATE" && ! -s "$SYSTEMCTL_LOG" && ! -s "$TEST_ROOT/project-cleanup.log" ]]; then
+    pass "project validation failure stops cleanup before any service mutation"
+else
+    fail "project validation failure changed installed state"
+fi
+unset PROJECT_VALIDATE_FAIL
+
+write_access_fixture
+: >"$TEST_ROOT/project-cleanup.log"
+if ods_pixel_uninstall_managed "$INSTALL_DIR" "$HOME_DIR" \
+    && [[ "$(cat "$TEST_ROOT/project-cleanup.log")" == $'check-cleanup\ncleanup-linux' ]] \
+    && grep -qx 'disable --now ods-pixel-project.service' "$SYSTEMCTL_LOG"; then
+    pass "project service validates, stops and performs exact cleanup"
+else
+    fail "project service cleanup lifecycle was incomplete"
+fi
+
+write_access_fixture
+: >"$TEST_ROOT/project-cleanup.log"
+export SYSTEMCTL_FAIL_DISABLE=true
+if ods_pixel_uninstall_managed "$INSTALL_DIR" "$HOME_DIR"; then
+    fail "project service stop failure was ignored"
+elif [[ "$(cat "$TEST_ROOT/project-cleanup.log")" == check-cleanup && -e "$ACCESS_STATE" ]]; then
+    pass "project service stop failure prevents file cleanup"
+else
+    fail "project service stop failure removed files"
+fi
+unset SYSTEMCTL_FAIL_DISABLE PROJECT_PRESENT
 
 write_access_fixture
 printf '%s\n' '# drifted' > "$LIBEXEC_DIR/ods-pixel-access/pixel_access_bridge.py"

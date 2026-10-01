@@ -61,12 +61,10 @@ Still cheaper than cloud API bills at moderate usage.
 ### What can ODS do?
 
 **Out of the box:**
-- 💬 ChatGPT-style web interface (Open WebUI)
-- 🎤 Voice transcription (Whisper)
-- 🔊 Text-to-speech (Kokoro)
-- 📄 Document Q&A with RAG (Qdrant + embeddings)
+- 💬 Dashboard/Portal agent chat on fresh qualified Linux hosts; Open WebUI remains the chat fallback on other hosts
 - 🔗 API integration (OpenAI-compatible endpoints)
-- 🤖 Agent workflows (n8n)
+
+Whisper, Kokoro, RAG, n8n, and Open WebUI on qualified Linux hosts can be added when needed. Existing installations retain their selected services. Use `--with-webui` during a Linux install or add it later from the Extensions Library.
 
 **With voice profile:**
 - 🎙️ Full voice agents (speak in, speak out)
@@ -372,7 +370,7 @@ When the full model finishes, the system swaps it in automatically — you don't
 
 | Feature | ODS | Ollama |
 |---------|--------------|--------|
-| Web UI | ✅ Built-in (Open WebUI) | ❌ Separate install |
+| Web UI | ✅ Dashboard/Portal on qualified Linux hosts; Open WebUI available in the Library | ❌ Separate install |
 | Voice | ✅ Full pipeline | ❌ Not included |
 | RAG | ✅ Built-in | ❌ Not included |
 | n8n workflows | ✅ Included | ❌ Not included |

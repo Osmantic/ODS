@@ -20,7 +20,7 @@ function harness(prompt, wrapped = false) {
   let sequence = 0;
   guard.observeRun(ctx, 'pixel', { prompt });
   function select(name, args = {}) {
-    const source = ['pixel_ods_download_promote', 'pixel_ods_extensions'].includes(name)
+    const source = ['pixel_ods_download_promote', 'pixel_ods_extensions', 'pixel_ods_web_extract'].includes(name)
       ? 'pixel-ods' : 'pixel-operations-broker';
     const toolName = wrapped && name.startsWith('pixel_') ? 'tool_call' : name;
     const params = toolName === 'tool_call' ? { id: `openclaw:${source}:${name}`, args } : args;
@@ -51,6 +51,28 @@ function harness(prompt, wrapped = false) {
     } };
 }
 function allowed(call) { assert.notEqual(call.decision?.block, true, call.decision?.blockReason); }
+
+for (const wrapped of [false, true]) {
+  for (const outcome of ['read', 'failed', 'unrelated', 'no-match']) {
+    test(`repository research recognizes observed public extraction: ${wrapped}/${outcome}`, () => {
+      const h = harness('Research https://github.com/python-humanize/humanize without installing it.', wrapped);
+      const url = 'https://raw.githubusercontent.com/python-humanize/humanize/main/README.md';
+      const call = h.select('pixel_ods_web_extract', {url});
+      allowed(call);
+      call.finish({
+        isError: outcome === 'failed',
+        details: {boundary: 'public-web-read-only', matched: outcome !== 'no-match',
+          source_url: outcome === 'unrelated' ? 'https://github.com/other/project' : url},
+        content: [{type: 'text', text: outcome === 'no-match'
+          ? 'The query was not found.' : '<<<EXTERNAL_UNTRUSTED_CONTENT>>> Source excerpt'}],
+      });
+      const answer = 'Research completed; no installation was performed.';
+      const delivered = h.guard.replyPayloadSending({runId:'acquire',kind:'final',payload:{text:answer}})?.payload?.text ?? answer;
+      if (outcome === 'read') assert.equal(delivered, answer);
+      else assert.match(delivered, /did not successfully read a source belonging/);
+    });
+  }
+}
 function submit(h, receipt = { details: { jobId: JOB, status: 'submitted', kind: 'download' } }) {
   const call = h.select('pixel_ops_download_stage', { url: URL, filename: FILE });
   allowed(call);

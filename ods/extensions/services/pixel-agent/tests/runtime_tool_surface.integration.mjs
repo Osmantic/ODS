@@ -139,7 +139,7 @@ test('targeted public extraction is directly offered with its exact bounded sche
   const extractor = createPublicWebExtractTool({
     guardedFetch: async ({url}) => {
       calls++;
-      return {response: new Response('Navigation\n'.repeat(1000) + '\nBoard power 250 W\n',
+      return {response: new Response('Board power: contents\n' + 'Navigation\n'.repeat(1000) + '\nBoard power 250 W\n',
         {headers: {'Content-Type':'text/plain'}}), finalUrl:url, release() {}};
     },
     readResponseText: async response => ({text:await response.text(), truncated:false}),
@@ -149,15 +149,33 @@ test('targeted public extraction is directly offered with its exact bounded sche
   assert.equal(direct, extractor, 'retain the policy-filtered implementation object');
   assert.deepEqual(direct.parameters, {type:'object', additionalProperties:false, required:['url'], properties:{
     url:{type:'string', minLength:10, maxLength:1024}, query:{type:'string', minLength:2, maxLength:200},
+    occurrence:{type:'integer', minimum:1, maximum:1000000},
   }});
-  const result = await direct.execute('extract', {url:'https://docs.example.org/specs', query:'Board power'});
+  const result = await direct.execute('extract', {url:'https://docs.example.org/specs', query:'Board power', occurrence:2});
   assert.equal(calls, 1);
   assert.equal(result.details.matched, true);
   assert.equal(result.details.evidence_truncated_before, true);
+  assert.equal(result.details.occurrence, 2);
+  assert.equal(result.details.match_count, 2);
   assert.match(result.content[0].text, /Board power 250 W/);
   assert.match(result.content[0].text, /EXTERNAL_UNTRUSTED_CONTENT/);
   assert.equal((await direct.execute('private', {url:'http://127.0.0.1/specs'})).isError, true);
   assert.equal(calls, 1, 'native exposure cannot bypass public URL validation');
+  for (const occurrence of [0, -1, 1.5, '2', null, 1000001]) {
+    assert.equal((await direct.execute('invalid-occurrence', {
+      url:'https://docs.example.org/specs', query:'Board power', occurrence,
+    })).isError, true);
+  }
+  assert.equal(calls, 1, 'native exposure cannot bypass occurrence validation');
+  const first = await direct.execute('first', {url:'https://docs.example.org/specs', query:'Board power', occurrence:1});
+  assert.equal(first.details.occurrence, 1);
+  assert.equal(first.details.next_occurrence, 2);
+  assert.equal(calls, 2);
+  const bounded = await direct.execute('upper-bound', {url:'https://docs.example.org/specs', query:'Board power', occurrence:1000000});
+  assert.equal(calls, 3, 'the inclusive upper bound passes input validation');
+  assert.equal(bounded.details.requested_occurrence, 1000000);
+  assert.equal(bounded.details.match_count, 2);
+  assert.equal(bounded.isError, true, 'out-of-range document selection is still an explicit error');
 });
 
 test('native extraction preserves actual runtime policy denials and ambiguity deferral', () => {

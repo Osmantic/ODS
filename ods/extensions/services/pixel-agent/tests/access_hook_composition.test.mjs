@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import vm from 'node:vm';
 import {createWorkspaceArtifactAdmission,normalizeWorkspaceArtifact} from '../plugin/workspace-artifact.mjs';
 import {createWorkspaceBundleAdmission} from '../plugin/workspace-bundle.mjs';
+import {createProjectRunControl} from '../plugin/project-run-control.mjs';
 import {withPixelCronDeliveryDefault} from '../plugin/cron-delivery-default.mjs';
 
 // Exercise the actual registration callbacks without importing the installed
@@ -15,6 +16,7 @@ const end = source.indexOf('    api.registerHttpRoute(', start);
 assert.ok(start >= 0 && end > start, 'expected tool lifecycle registration block');
 function hooks(guardResult, managedRuntime = false) {
   const callbacks = {}, calls = [], activity = [], bundleAdmission = createWorkspaceBundleAdmission(), artifactAdmission = createWorkspaceArtifactAdmission();
+  const projectRunControl = createProjectRunControl();
   const runtime = {
     isProbe: context => context?.runId === 'private-proof',
     beforeTool: () => { calls.push('admit'); },
@@ -36,9 +38,9 @@ function hooks(guardResult, managedRuntime = false) {
       finish: () => activity.push('finish'),
     },
     goalProgress: {before() {}, update() {}, finish() {}},
-    bundleAdmission, artifactAdmission, managedRuntime, accessRuntime: runtime, withPixelCronDeliveryDefault, AGENT_ID: 'pixel',
+    bundleAdmission, artifactAdmission, projectRunControl, managedRuntime, accessRuntime: runtime, withPixelCronDeliveryDefault, AGENT_ID: 'pixel',
   });
-  return {callbacks, calls, runtime, activity, bundleAdmission, artifactAdmission};
+  return {callbacks, calls, runtime, activity, bundleAdmission, artifactAdmission, projectRunControl};
 }
 const context = {agentId: 'pixel', runId: 'cron-request', toolName: 'cron'};
 const event = {toolCallId: 'cron-1', toolName: 'cron', params: {
@@ -135,5 +137,19 @@ test('document receipt scope requires both guard and native admission and ends w
     else assert.throws(()=>artifactAdmission.take('artifact',payload,ctx),/unbound/);
     callbacks.after_tool_call(event,ctx);
     assert.throws(()=>artifactAdmission.take('artifact',payload,ctx),/unbound/);
+  }
+});
+test('project job binding follows actual admission and cannot survive denied or completed calls',async()=>{
+  const args={action:'submit',project:'demo',outputDirectory:'dist'};
+  const ctx={agentId:'pixel',runId:'run',sessionId:'session',sessionKey:'key',toolCallId:'project'};
+  const event={toolName:'pixel_ods_project_build',toolCallId:'project',params:args};
+  for(const held of [false,true]) {
+    const {callbacks,runtime,projectRunControl}=hooks();
+    if(held)runtime.beforeTool=()=>({block:true});
+    await callbacks.before_tool_call(event,ctx);
+    if(held)assert.throws(()=>projectRunControl.bind('project',args,ctx,()=>{}),/not bound/);
+    else assert.equal(typeof projectRunControl.bind('project',args,ctx,()=>{}),'function');
+    callbacks.after_tool_call(event,ctx);
+    assert.throws(()=>projectRunControl.bind('project',args,ctx,()=>{}),/not bound/);
   }
 });

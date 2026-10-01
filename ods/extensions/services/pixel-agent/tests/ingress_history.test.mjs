@@ -11,9 +11,9 @@ const rawUser='history-canary', user=computeSessionUser({user:rawUser});
 const runId='chatcmpl_11111111-2222-4333-8444-555555555555';
 const state=()=>({schemaVersion:1,status:'ready',sessionExists:true,sessionRevision:'a'.repeat(64),context:{used:100,window:32000,measuredAt:1},model:{id:'test',provider:'local',contextWindow:32000},compaction:{status:'idle',requestId:null,tokensBefore:null,tokensAfter:null,reason:null,count:0}});
 const listen=server=>new Promise(resolve=>server.listen(0,'127.0.0.1',()=>resolve(server.address().port)));
-async function fixture(t) {
+async function fixture(t, verification={status:'none'}) {
   const dir=fs.mkdtempSync(path.join(os.tmpdir(),'ods-ingress-history-'));fs.chmodSync(dir,0o700);
-  const ledger=createChatHistoryLedger(dir),calls=[],native=state();let chatFailure=false,answer='answer',verification={status:'none'},spoof=null;
+  const ledger=createChatHistoryLedger(dir),calls=[],native=state();let chatFailure=false,answer='answer',spoof=null;
   const gateway=http.createServer(async(req,res)=>{
     if(req.url==='/health') {res.setHeader('content-type','application/json');return res.end('{"ok":true}');}
     let raw='';for await(const part of req) raw+=part;
@@ -113,4 +113,16 @@ test('malformed, over-limit or pending artifact receipts fail closed without pub
   {status:'none',artifacts:[{...artifact,relativePath:'../report.md'}]}, {status:'none',artifacts:[{...artifact,url:'http://evil'}]},
   {status:'pending',text:'Wait',artifacts:[artifact]}];
  for(const evidence of invalid){const f=await fixture(t);f.setVerification(evidence);const result=await f.chat('invalid',[u('Report')]);assert.equal(result.status,502);assert.equal(result.value.pixel_artifacts,undefined);}
+});
+test('incomplete attribution is a delivered outcome, not an interrupted turn',async t=>{
+  const text='Research summary. Source check: attribution remains incomplete.';
+  const f=await fixture(t,{status:'failed',text});
+  const result=await f.chat('uncited',[u('Research official sources')]);
+  assert.equal(result.status,200);
+  assert.equal(result.value.choices[0].message.content,text);
+  assert.equal(f.ledger.read(user).lastResult.verification.status,'failed');
+  assert.notEqual(f.ledger.projection(user).status,'unknown');
+  const next=await f.chat('next',[u('Research official sources'),a(text),u('Explain the limitation')]);
+  assert.equal(next.status,200,'the next owner message needs no interrupted-turn resolution');
+  assert.equal(f.calls.filter(c=>c.path==='/v1/chat/completions').length,2);
 });

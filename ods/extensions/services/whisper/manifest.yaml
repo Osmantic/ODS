@@ -28,9 +28,9 @@ features:
     icon: Mic
     category: voice
     requirements:
-      services: [whisper, tts]
-      vram_gb: 6
-    enabled_services_all: [whisper, tts]
+      services: [whisper, tts, open-webui]
+      vram_gb: 0
+    enabled_services_all: [whisper, tts, open-webui]
     setup_time: ~5 minutes
     priority: 2
     launch:

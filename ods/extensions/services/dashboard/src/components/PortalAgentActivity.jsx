@@ -50,12 +50,15 @@ export default function PortalAgentActivity({task:raw,active=false,status}) {
   const events=task?.events || task?.activities.map((row,i)=>({sequence:i+1,kind:row.kind,state:row.blocked?'blocked':row.failures?'failed':active?'running':'completed',startedAt:task.startedAt,finishedAt:null})) || []
   const progressRows=activityProgressRows(events,typeof navigator==='undefined'?'en':navigator.language)
   const start=task?.startedAt?Date.parse(task.startedAt):mountedAt.current
-  const seconds=((task?.finishedAt?Date.parse(task.finishedAt):now)-start)/1000
+  // A saved running receipt has no confirmed end, even when its response is
+  // no longer active. Reload time cannot establish a completed duration.
+  const end=task?.finishedAt?Date.parse(task.finishedAt):active?now:null
+  const seconds=end===null?null:(end-start)/1000
   const current=[...events].reverse().find(event=>event.state==='running')
   const currentType=current?.display?.type
   const progress=[...events].reverse().find(event=>event.display?.type==='text' && event.state==='completed')?.display?.label
   const activeLabel=progress || (currentType==='search' || current?.kind==='browser'?'Searching the web…':currentType==='text' || !current?'Thinking…':currentType==='steps'?'Planning…':'Working…')
-  const label=active?activeLabel:stopped?'Stopped':failed?'Needs attention':`Worked for ${activityDuration(seconds)}`
+  const label=active?activeLabel:stopped?'Stopped':failed?'Needs attention':seconds===null?'Activity recorded':`Worked for ${activityDuration(seconds)}`
   const refreshFade=()=>{const el=viewport.current;if(el)setFade({top:el.scrollTop>2,bottom:el.scrollTop+el.clientHeight<el.scrollHeight-2})}
   useEffect(()=>{
     if(!active)return

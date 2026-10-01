@@ -120,6 +120,10 @@ Each step asks before changing anything and stops with instructions if it cannot
 
 Existing native Windows installations are not automatically migrated or deleted; see [Windows Quickstart](ods/docs/WINDOWS-QUICKSTART.md#existing-native-windows-installations) before switching.
 
+If another device runs your ODS model gateway and this Windows PC only needs
+image generation, use the [standalone ComfyUI installer](ods/docs/WINDOWS-COMFYUI-STANDALONE.md).
+It keeps its Docker project and data separate from a full ODS installation.
+
 The hosted Linux/macOS endpoint proxies the current bootstrap from repository `main`.
 Reviewed merges reach it automatically after edge-cache refresh. `ODS_REF` selects a compatible repository checkout. See
 [Installer Trust](ods/docs/INSTALLER_TRUST.md) to inspect the script or install
