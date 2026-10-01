@@ -3,7 +3,7 @@ import { sha256 as hashSha256 } from '@noble/hashes/sha2.js'
 const DIGEST = /^[a-f0-9]{64}$/
 export const isSnapshotId = value => typeof value === 'string' && /^site-[a-f0-9]{24}$/.test(value)
 export const isArtifactPath = value => typeof value === 'string' && value.length <= 1664
-  && value.split('/').every(part => /^(?!__ods_)(?!__pycache__$)[A-Za-z0-9_\[][A-Za-z0-9._\[\]-]{0,127}$/.test(part))
+  && value.split('/').every(part => /^(?!__ods_)(?!__pycache__$)[A-Za-z0-9_[][A-Za-z0-9._[\]-]{0,127}$/.test(part))
 
 export async function readBoundedBytes(response, maximum) {
   if (!response.ok || Number(response.headers?.get('Content-Length')) > maximum) {
