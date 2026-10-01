@@ -2,33 +2,87 @@
 // transport; there is deliberately no shell fallback or implicit permission.
 import {setTimeout as delay} from 'node:timers/promises';
 import {capabilityToolResult, capabilityUnavailable} from './project-capabilities.mjs';
+import {validateDiagnostic} from './project-diagnostics.mjs';
 const JOB = /^ods-project-[a-f0-9]{24}$/;
 const PATH = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const STATES = new Set(['queued', 'running', 'succeeded', 'failed', 'cancelled', 'unconfirmed']);
+class ProjectRequestError extends Error {
+  constructor(field, hint) { super('invalid project request'); this.field=field; this.hint=hint; }
+}
+const invalid = (field, hint) => { throw new ProjectRequestError(field, hint); };
+const MANIFEST_FILES = ['ods-project.json','package.json','package-lock.json','requirements.lock'];
+const MANIFEST_ISSUES = {
+  'manifest-missing': [MANIFEST_FILES, 'Provide the indicated manifest within its supported size limit.'],
+  'manifest-encoding': [MANIFEST_FILES, 'Save the indicated manifest as valid UTF-8 text.'],
+  'manifest-json': [MANIFEST_FILES.slice(0,3), 'Correct the indicated JSON manifest; the Python profile must not contain duplicate keys.'],
+  'python-profile': [['ods-project.json'], 'Use exactly {"runtime":"python"} in ods-project.json.'],
+  'python-lock-sha256': [['requirements.lock'], 'Each dependency, including every transitive dependency, must have 1–64 --hash=sha256: values, each containing exactly 64 hexadecimal digits and an exact version pin. Fetch the correct compatible wheel digest from registry metadata; do not trim, pad or invent a hash.'],
+  'python-lock-pin': [['requirements.lock'], 'Use exact name==version public-index pins for every direct and transitive dependency, followed by SHA-256 wheel hashes; no URLs, options or version ranges.'],
+  'python-lock-format': [['requirements.lock'], 'Check duplicate names, continuation lines, supported ASCII syntax and the 256 KiB/512-package limits.'],
+  'python-entrypoints': [['ods-project.json'], 'Provide main.py and at least one tests/test_*.py unittest file in the Python project.'],
+  'npm-lock-format': [['package-lock.json'], 'Provide an npm v3 lock matching package.json with canonical public npm URLs and valid SHA-512 integrity; local, Git and workspace dependencies are unsupported.'],
+};
+
+export function projectManifestRejection(raw) {
+  if (raw?.schemaVersion!==1 || raw.kind!=='ods-project-job' || raw.status!=='invalid-request'
+      || raw.executionStarted!==false || Object.keys(raw).sort().join(',')!=='executionStarted,issue,kind,schemaVersion,status'
+      || !raw.issue || Object.keys(raw.issue).sort().join(',')!=='code,file'
+      || typeof raw.issue.code!=='string' || typeof raw.issue.file!=='string'
+      || !Object.hasOwn(MANIFEST_ISSUES,raw.issue.code)) return undefined;
+  const [files,hint]=MANIFEST_ISSUES[raw.issue.code];
+  if (!files.includes(raw.issue.file)) return undefined;
+  return {...raw,hint,nextAction:{code:'correct-project-input',automaticRetry:false}};
+}
 
 export function normalizeProjectBuild(params) {
   if (!params || typeof params !== 'object' || Array.isArray(params)) throw Error('invalid request');
   const keys = Object.keys(params).sort().join(',');
   if (params.action === 'capabilities') {
     if (keys !== 'action,runtime' || params.runtime !== 'python') throw Error('invalid capability query');
+  } else if (params.action === 'diagnose') {
+    if (keys !== 'action,runtime' || !['npm','python'].includes(params.runtime)) throw Error('invalid diagnostic request');
   } else if (params.action === 'submit') {
-    if (keys !== 'action,outputDirectory,project' || typeof params.project !== 'string'
+    if (Object.hasOwn(params, 'runtime')) invalid('runtime', 'Omit runtime on submit: npm or Python is inferred from the project manifests.');
+    if (keys !== 'action,outputDirectory,project') invalid('fields', 'Submit accepts only action, project and outputDirectory.');
+    if (typeof params.project !== 'string'
         || params.project.length > 1024 || params.project.split('/').length > 8
-        || !params.project.split('/').every(part => PATH.test(part) && !['.', '..'].includes(part))
-        || typeof params.outputDirectory !== 'string'
-        || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(params.outputDirectory)) throw Error('invalid submission');
+        || !params.project.split('/').every(part => PATH.test(part) && !['.', '..'].includes(part)))
+      invalid('project', 'Use a relative project directory inside the workspace, such as Playground/my-site.');
+    if (typeof params.outputDirectory !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(params.outputDirectory))
+      invalid('outputDirectory', 'Use only the output directory basename within the project, such as dist or out, not the project path.');
   } else if (!['observe', 'cancel'].includes(params.action) || keys !== 'action,jobId'
              || typeof params.jobId !== 'string' || !JOB.test(params.jobId)) throw Error('invalid observation');
   return {schemaVersion: 1, ...params};
 }
 
+export function projectInvalidRequest(params) {
+  try { normalizeProjectBuild(params); return undefined; }
+  catch (error) {
+    const details={schemaVersion:1,kind:'ods-project-job',status:'invalid-request',code:'invalid-request',
+      field:error instanceof ProjectRequestError ? error.field : 'request',
+      hint:error instanceof ProjectRequestError ? error.hint : 'Use the exact fields for the selected action from tool_describe.',
+      executionStarted:false,nextAction:{code:'correct-request',automaticRetry:false}};
+    return {isError:true,content:[{type:'text',text:JSON.stringify(details)}],details};
+  }
+}
+
 function validateReceipt(value, params) {
+  const diagnostic=value?.purpose==='diagnostic';
   if (!value || value.schemaVersion !== 1 || value.kind !== 'ods-project-job'
       || typeof value.jobId !== 'string' || !JOB.test(value.jobId) || !STATES.has(value.status)
-      || typeof value.project !== 'string' || typeof value.cancelRequested !== 'boolean'
+      || (diagnostic ? value.project!==null || value.scope!=='managed-executor' || !['npm','python'].includes(value.runtime) : typeof value.project !== 'string')
+      || typeof value.cancelRequested !== 'boolean'
       || !Array.isArray(value.steps) || value.steps.length > 3
-      || (params.action === 'submit' ? value.project !== params.project : value.jobId !== params.jobId)) {
+      || (params.action === 'submit' ? diagnostic || value.project !== params.project
+        : params.action === 'diagnose' ? !diagnostic || value.runtime!==params.runtime : value.jobId !== params.jobId)) {
     throw Error('unconfirmed controller response');
+  }
+  if(diagnostic) {
+    if(value.steps.length>1 || value.steps.some(step=>step.stage!=='diagnose')) throw Error('invalid diagnostic stages');
+    if(value.output?.kind==='ods-project-diagnostic') validateDiagnostic(value.output,value.runtime);
+    if(value.status==='succeeded' && (value.steps.length!==1 || value.steps[0].status!=='succeeded'
+      || value.steps[0].exitCode!==0 || value.output?.kind!=='ods-project-diagnostic')) throw Error('incomplete diagnostic evidence');
+    return value;
   }
   if (value.status === 'succeeded') {
     if (value.steps.length !== 3 || value.steps.some((step, i) =>
@@ -46,19 +100,49 @@ export function createProjectBuildTool({request, wait = (ms, signal) => delay(ms
   if (typeof request !== 'function') throw Error('authenticated project transport required');
   const tool = {
     name: 'pixel_ods_project_build',
-    description: 'Managed dependency acquisition, tests and build; no host install. First call {action:capabilities,runtime:python} before choosing Python wheel hashes: complete ABI/tags describe only the installed executor image, never host architecture or universal portability. Query grants no execution permission. Submit requires project and outputDirectory (e.g. out). npm: package.json + matching package-lock.json; npm test then npm run build. Python 3.11: ods-project.json exactly {"runtime":"python"}; requirements.lock with exact package==version and verified --hash=sha256: wheel hashes, including all transitive dependencies; empty lock supports stdlib. Require main.py and passing tests/test_*.py unittest tests. Public PyPI wheels only; no URLs, sdists, editable or unpinned installs. Acquisition precedes project code; tests/build are offline, nonroot. Observe jobId until terminal (waits up to four minutes); never resubmit an unknown outcome. Cancellation is confirmed only by cancelled status. Output is generated files, not a published site; deliver files or publish/inspect separately. Preserve the requested framework and report real failures; never substitute a static mock.',
+    description: 'Managed npm/Python jobs; no host shell fallback. Diagnose with {action:"diagnose",runtime:"python"} (or npm): fixed offline tool/venv/scratch checks, automatic owned cleanup, structured nextAction. This checks the executor, not the chat sandbox. For Python wheel hashes first query {action:"capabilities",runtime:"python"}; use actual installed ABI/tags, never guessed host compatibility. Submit exactly {action:"submit",project:"Playground/my-site",outputDirectory:"dist"}; runtime is inferred from manifests, so omit runtime on submit. outputDirectory is a basename inside that project (dist or out), never a full path: npm needs package.json + matching package-lock.json; Python needs ods-project.json runtime python, exact/hash-pinned requirements.lock (all transitive public wheels), main.py and unittest tests/test_*.py. Empty Python lock permits stdlib. Acquire precedes offline tests/build. Observe jobId until terminal; never resubmit unknown outcomes. Cancelled confirms Stop. Output files are not a published site; publish/inspect separately. Preserve requested frameworks and report denied, missing or incompatible resources.',
     parameters: {type: 'object', additionalProperties: false, required: ['action'], properties: {
-      action: {type: 'string', enum: ['capabilities', 'submit', 'observe', 'cancel']},
-      runtime: {type: 'string', enum: ['python']},
-      project: {type: 'string'}, outputDirectory: {type: 'string'}, jobId: {type: 'string'},
+      action: {type: 'string', enum: ['capabilities', 'diagnose', 'submit', 'observe', 'cancel']},
+      runtime: {type: 'string', enum: ['npm', 'python'],description:'Only for diagnose/capabilities. Omit for submit: manifests determine the runtime.'},
+      project: {type: 'string',description:'Workspace-relative project directory, for example Playground/my-site.'},
+      outputDirectory: {type: 'string',pattern:'^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$',description:'Submit only: basename inside the project, for example dist or out. Never include the project path.'},
+      jobId: {type: 'string'},
     }},
     execute: async (toolCallId, params, signal) => {
+      let diagnosticSubmitted=false;
       try {
         signal?.throwIfAborted();
+        if(params?.action==='diagnose' && Object.keys(params).sort().join(',')==='action,runtime'
+            && typeof params.runtime==='string' && !['npm','python'].includes(params.runtime)) {
+          const receipt={schemaVersion:1,kind:'ods-project-diagnostic',scope:'managed-executor',code:'unsupported',
+            supportedRuntimes:['npm','python'],nextAction:{code:'choose-supported-runtime'}};
+          return {isError:true,content:[{type:'text',text:JSON.stringify(receipt)}],details:receipt};
+        }
+        const invalidRequest = projectInvalidRequest(params);
+        if (invalidRequest) return invalidRequest;
         const normalized = normalizeProjectBuild(params);
         const deadline = now() + 240000;
+        diagnosticSubmitted=normalized.action==='diagnose';
         let raw = await request(normalized, {toolCallId, signal});
         if (normalized.action === 'capabilities') return capabilityToolResult(tool, raw, capabilityMaxChars);
+        if (raw?.status==='invalid-request' && Object.hasOwn(raw,'issue')) {
+          const details=normalized.action==='submit' && projectManifestRejection(raw);
+          if (!details) throw Error('unconfirmed project input rejection');
+          return {isError:true,content:[{type:'text',text:JSON.stringify(details)}],details};
+        }
+        if(raw?.status==='recovery-required') {
+          if(raw.schemaVersion!==1 || raw.kind!=='ods-project-job' || raw.executionStarted!==false
+              || !['executionStarted,kind,schemaVersion,status','executionStarted,jobId,kind,schemaVersion,status'].includes(Object.keys(raw).sort().join(','))
+              || raw.jobId!==undefined && !JOB.test(raw.jobId)) throw Error('unconfirmed recovery refusal');
+          const details={...raw,nextAction:{code:'recover-owned-job',automaticRetry:false,
+            ...(raw.jobId ? {tool:tool.name,action:'observe',jobId:raw.jobId} : {})},
+            message:'No new job was started. Resolve the earlier uncertain execution before submitting this project again.'};
+          return {isError:true,content:[{type:'text',text:JSON.stringify(details)}],details};
+        }
+        if (normalized.action === 'diagnose' && raw?.kind==='ods-project-diagnostic') {
+          const receipt=validateDiagnostic(raw,normalized.runtime);
+          return {isError:receipt.code!=='ready',content:[{type:'text',text:JSON.stringify(receipt)}],details:receipt};
+        }
         // Pace read-only observations inside one tool call. This leaves the
         // controller socket free for cancellation between requests and avoids
         // spending model turns on identical instantaneous running receipts.
@@ -77,15 +161,27 @@ export function createProjectBuildTool({request, wait = (ms, signal) => delay(ms
         if (raw?.schemaVersion === 1 && raw.kind === 'ods-project-job'
             && ['denied', 'invalid-request'].includes(raw.status)
             && Object.keys(raw).sort().join(',') === 'kind,schemaVersion,status') {
+          const details=normalized.action==='diagnose'?{...raw,code:raw.status,scope:'managed-executor',runtime:normalized.runtime,
+            nextAction:{code:raw.status==='denied'?'review-portal-permissions':'correct-request',automaticInstall:false}}:raw;
+          if(normalized.action==='diagnose') return {isError:true,content:[{type:'text',text:JSON.stringify(details)}],details};
           return {isError: true, content: [{type: 'text', text: raw.status === 'denied'
             ? 'Project operation denied by the controller. Review Portal permissions; do not bypass them.'
-            : 'Project request rejected as invalid. Correct the parameters before trying again.'}], details: raw};
+            : 'Project request rejected as invalid. Correct the parameters before trying again.'}], details};
         }
         const receipt = validateReceipt(raw, normalized);
-        return {isError: ['failed', 'unconfirmed'].includes(receipt.status),
+        return {isError: ['failed', 'unconfirmed'].includes(receipt.status)
+            || (receipt.purpose==='diagnostic' && receipt.output?.code
+              && (receipt.output.code!=='ready' || receipt.output.cleanup==='unconfirmed')),
           content: [{type: 'text', text: JSON.stringify(receipt)}], details: receipt};
       } catch {
         if (params?.action === 'capabilities') return capabilityUnavailable();
+        if(params?.action==='diagnose') {
+          const receipt={schemaVersion:1,kind:'ods-project-job',scope:'managed-executor',
+            status:diagnosticSubmitted?'unconfirmed':'invalid-request',code:diagnosticSubmitted?'unavailable':'invalid-request',
+            nextAction:{code:diagnosticSubmitted?'recover-unknown-job':'correct-request',automaticRetry:false},
+            message:diagnosticSubmitted?'Execution outcome is unknown; do not resubmit automatically.':'Use only action diagnose and runtime npm or python.'};
+          return {isError:true,content:[{type:'text',text:JSON.stringify(receipt)}],details:receipt};
+        }
         // A lost response or abort is not proof that the accepted job stopped.
         const receipt = {schemaVersion: 1, kind: 'ods-project-job', status: 'unconfirmed',
           ...(JOB.test(params?.jobId ?? '') ? {jobId: params.jobId} : {}),

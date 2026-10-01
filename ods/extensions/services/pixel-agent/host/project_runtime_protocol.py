@@ -16,6 +16,26 @@ class InvalidProjectDependencies(ValueError):
     pass
 
 
+class ProjectManifestError(InvalidProjectDependencies):
+    """Closed input guidance; never transports source text or parser errors."""
+    def __init__(self, code, file):
+        allowed = {
+            'manifest-missing': {'ods-project.json', 'package.json', 'package-lock.json', 'requirements.lock'},
+            'manifest-encoding': {'ods-project.json', 'package.json', 'package-lock.json', 'requirements.lock'},
+            'manifest-json': {'ods-project.json', 'package.json', 'package-lock.json'},
+            'python-profile': {'ods-project.json'},
+            'python-lock-sha256': {'requirements.lock'},
+            'python-lock-pin': {'requirements.lock'},
+            'python-lock-format': {'requirements.lock'},
+            'python-entrypoints': {'ods-project.json'},
+            'npm-lock-format': {'package-lock.json'},
+        }
+        if file not in allowed.get(code, set()):
+            raise ValueError('unsupported project input issue')
+        super().__init__(code)
+        self.issue = {'code': code, 'file': file}
+
+
 _NAME = re.compile(r"(?:@[a-z0-9][a-z0-9._-]*/)?[a-z0-9][a-z0-9._-]*\Z")
 _INTEGRITY = re.compile(r"sha512-([A-Za-z0-9+/]+={0,2})\Z")
 _DEPENDENCY_FIELDS = ("dependencies", "devDependencies", "optionalDependencies")
@@ -64,12 +84,12 @@ def validate_python_lock(text: str) -> dict:
         pending = ""
         match = _PYTHON_REQUIREMENT.fullmatch(tokens[0])
         if not match or len(tokens[0]) > 256:
-            raise InvalidProjectDependencies("Python dependencies require exact public-index version pins")
+            raise ProjectManifestError('python-lock-pin', 'requirements.lock')
         name = re.sub(r"[-_.]+", "-", match[1]).lower()
         if name in names or len(names) >= MAX_PYTHON_PACKAGES:
             raise InvalidProjectDependencies("duplicate or excessive Python dependencies")
         if not 1 <= len(tokens) - 1 <= 64 or any(not _PYTHON_HASH.fullmatch(token) for token in tokens[1:]):
-            raise InvalidProjectDependencies("Python dependencies require SHA-256 hashes only")
+            raise ProjectManifestError('python-lock-sha256', 'requirements.lock')
         names.add(name)
     if pending:
         raise InvalidProjectDependencies("unfinished Python lock continuation")
@@ -84,11 +104,11 @@ def select_project_runtime(files: dict) -> str:
     def decode(name, limit):
         value = files.get(name)
         if not isinstance(value, bytes) or len(value) > limit:
-            raise InvalidProjectDependencies("missing or excessive " + name)
+            raise ProjectManifestError('manifest-missing', name)
         try:
             return value.decode("utf-8")
         except UnicodeError as exc:
-            raise InvalidProjectDependencies("invalid UTF-8 in " + name) from exc
+            raise ProjectManifestError('manifest-encoding', name) from exc
 
     def unique_object(pairs):
         result = {}
@@ -98,22 +118,36 @@ def select_project_runtime(files: dict) -> str:
             result[key] = value
         return result
 
+    def manifest(name, limit, **options):
+        try:
+            return json.loads(decode(name, limit), **options)
+        except (json.JSONDecodeError, RecursionError, InvalidProjectDependencies) as exc:
+            if isinstance(exc, ProjectManifestError):
+                raise
+            raise ProjectManifestError('manifest-json', name) from exc
+
+    if "ods-project.json" not in files:
+        package = manifest('package.json', 8 * 1024 * 1024)
+        lock = manifest('package-lock.json', 8 * 1024 * 1024)
+        try:
+            validate_project_lock(package, lock)
+        except InvalidProjectDependencies as exc:
+            raise ProjectManifestError('npm-lock-format', 'package-lock.json') from exc
+        return "npm"
+    profile = manifest('ods-project.json', 8192, object_pairs_hook=unique_object)
+    if profile != {"runtime": "python"}:
+        raise ProjectManifestError('python-profile', 'ods-project.json')
     try:
-        if "ods-project.json" not in files:
-            validate_project_lock(json.loads(decode("package.json", 8 * 1024 * 1024)),
-                                  json.loads(decode("package-lock.json", 8 * 1024 * 1024)))
-            return "npm"
-        profile = json.loads(decode("ods-project.json", 8192), object_pairs_hook=unique_object)
-        if profile != {"runtime": "python"}:
-            raise InvalidProjectDependencies("ods-project.json must contain only runtime: python")
         validate_python_lock(decode("requirements.lock", MAX_PYTHON_LOCK_BYTES))
-        if not isinstance(files.get("main.py"), bytes) or not any(
-                isinstance(name, str) and re.fullmatch(r"tests/test_[A-Za-z0-9_]+\.py", name)
-                and isinstance(contents, bytes) for name, contents in files.items()):
-            raise InvalidProjectDependencies("Python projects require main.py and tests/test_*.py")
-        return "python"
-    except (json.JSONDecodeError, RecursionError) as exc:
-        raise InvalidProjectDependencies("invalid project manifest JSON") from exc
+    except ProjectManifestError:
+        raise
+    except InvalidProjectDependencies as exc:
+        raise ProjectManifestError('python-lock-format', 'requirements.lock') from exc
+    if not isinstance(files.get("main.py"), bytes) or not any(
+            isinstance(name, str) and re.fullmatch(r"tests/test_[A-Za-z0-9_]+\.py", name)
+            and isinstance(contents, bytes) for name, contents in files.items()):
+        raise ProjectManifestError('python-entrypoints', 'ods-project.json')
+    return "python"
 
 
 def validate_project_lock(package: dict, lock: dict) -> dict:

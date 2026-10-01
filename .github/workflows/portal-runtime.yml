@@ -164,6 +164,7 @@ jobs:
           python3 ods/extensions/services/pixel-agent/host/openclaw_tool_recovery.py \
             --openclaw-bin "$OPENCLAW_PACKAGE/openclaw.mjs" --state-dir "$RUNNER_TEMP/pixel-completion-repair" --completion-recovery
           node --test ods/extensions/services/pixel-agent/tests/runtime_progress_finalization.integration.mjs \
+            ods/extensions/services/pixel-agent/tests/runtime_blocked_diagnostic.integration.mjs \
             ods/extensions/services/pixel-agent/tests/runtime_stop_synthesis.integration.mjs \
             ods/extensions/services/pixel-agent/tests/runtime_owner_visible_reply.integration.mjs
   runtime:
