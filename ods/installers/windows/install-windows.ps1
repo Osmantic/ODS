@@ -906,7 +906,8 @@ if ($dryRun) {
                     $envContent = $envContent -replace "(?m)^AMD_INFERENCE_MANAGED=.*$", "AMD_INFERENCE_MANAGED=true"
                     $envContent = $envContent -replace "(?m)^LEMONADE_MODEL=.*$", "LEMONADE_MODEL="
                     if (-not $enableRecommended) {
-                        $envContent = Convert-ODSWindowsNativeFallbackHermesEnv -EnvText $envContent
+                        $envContent = Convert-ODSWindowsNativeFallbackHermesEnv `
+                            -EnvText $envContent -NativePort $script:LEMONADE_PORT
                     }
                     [System.IO.File]::WriteAllText($envPath, $envContent, (New-Object System.Text.UTF8Encoding($false)))
                     Write-AISuccess "Patched .env for llama-server backend"

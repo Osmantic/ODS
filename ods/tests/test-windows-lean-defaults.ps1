@@ -2,6 +2,7 @@ $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 . (Join-Path $root 'installers/windows/lib/installed-selection.ps1')
 . (Join-Path $root 'installers/windows/lib/service-plan.ps1')
+. (Join-Path $root 'installers/windows/lib/env-generator.ps1')
 
 function Write-Phase { }
 function Write-AI { }
@@ -121,8 +122,20 @@ try {
         throw 'A required cloud gateway was mistaken for the optional Recommended bundle'
     }
     [IO.File]::WriteAllText((Join-Path $cloudCore '.env'), 'ODS_MODE=cloud')
-    if ((Get-ODSWindowsInstalledFeatureSelection -InstallDir $cloudCore).Kind -ne 'unknown') {
-        throw 'Ambiguous legacy cloud LiteLLM-only selection was accepted as Core'
+    if ((Get-ODSWindowsInstalledFeatureSelection -InstallDir $cloudCore).Kind -ne 'intent-required') {
+        throw 'Ambiguous legacy cloud LiteLLM-only selection did not require intent'
+    }
+    try {
+        Invoke-Selection -Path $cloudCore | Out-Null
+        throw 'Legacy cloud selection silently chose Recommended'
+    } catch {
+        if ($_.Exception.Message -notmatch 'explicit Recommended choice') { throw }
+    }
+    if ((Invoke-Selection -Path $cloudCore -NoRecommended $true).Recommended) {
+        throw 'Explicit cloud Core recovery enabled Recommended services'
+    }
+    if (-not (Invoke-Selection -Path $cloudCore -Recommended $true).Recommended) {
+        throw 'Explicit cloud Recommended recovery did not enable its bundle'
     }
     [IO.File]::WriteAllText((Join-Path $cloudCore '.env'),
         "ODS_MODE=cloud`nODS_WINDOWS_RECOMMENDED_SELECTED=false`n")
@@ -153,8 +166,31 @@ try {
     }
     [IO.File]::WriteAllText((Join-Path $switchboardCore '.env'),
         "ODS_MODE=local`nODS_MODEL_SWITCHBOARD=enabled`n")
-    if ((Get-ODSWindowsInstalledFeatureSelection -InstallDir $switchboardCore).Kind -ne 'unknown') {
-        throw 'Ambiguous legacy LiteLLM-only selection was accepted as Core'
+    if ((Get-ODSWindowsInstalledFeatureSelection -InstallDir $switchboardCore).Kind -ne 'intent-required') {
+        throw 'Ambiguous legacy LiteLLM-only selection did not require intent'
+    }
+    if ((Invoke-Selection -Path $switchboardCore -NoRecommended $true).Recommended) {
+        throw 'Native legacy Core recovery enabled Recommended services'
+    }
+    $legacyMixed = Join-Path $scratch 'legacy-mixed'
+    Set-InstalledFixture -Path $legacyMixed -Services @('litellm', 'n8n', 'hermes', 'hermes-proxy')
+    [IO.File]::WriteAllText((Join-Path $legacyMixed '.env'),
+        "ODS_MODE=local`nODS_MODEL_SWITCHBOARD=enabled`n")
+    $mixedCore = Invoke-Selection -Path $legacyMixed -NoRecommended $true
+    $mixedRecommended = Invoke-Selection -Path $legacyMixed -Recommended $true
+    if (-not $mixedCore.Workflows -or -not $mixedCore.Hermes -or $mixedCore.Recommended -or
+        -not $mixedRecommended.Workflows -or -not $mixedRecommended.Hermes -or
+        -not $mixedRecommended.Recommended) {
+        throw 'Explicit legacy recovery discarded other selected services or ignored Recommended intent'
+    }
+    try {
+        Invoke-Selection -Path $legacyMixed -Recommended $true -NoRecommended $true | Out-Null
+        throw 'Contradictory legacy Recommended choices were accepted'
+    } catch {
+        if ($_.Exception.Message -notmatch 'not both') { throw }
+    }
+    if (-not (Invoke-Selection -Path $legacyMixed -All $true).Langfuse) {
+        throw 'Explicit Full Stack legacy recovery did not enable its selected services'
     }
     [IO.File]::WriteAllText((Join-Path $switchboardCore '.env'),
         "ODS_MODE=local`nODS_MODEL_SWITCHBOARD=observe`nOPEN_WEBUI_LLM_BASE_URL=http://litellm:4000`n")
@@ -193,27 +229,61 @@ try {
     Invoke-Expression $cliText.Substring($cliStart, $cliEnd - $cliStart)
     $libraryRecommended = Join-Path $scratch 'library-recommended'
     Set-InstalledFixture -Path $libraryRecommended -Services @('litellm')
+    $ownerData = "preserve-$([char]0x2713)"
     [IO.File]::WriteAllText((Join-Path $libraryRecommended '.env'),
-        "ODS_MODE=local`nODS_MODEL_SWITCHBOARD=enabled`nODS_WINDOWS_RECOMMENDED_SELECTED=false`nOWNER_DATA=preserve-this`n")
+        "ODS_MODE=local`nODS_MODEL_SWITCHBOARD=enabled`nODS_WINDOWS_RECOMMENDED_SELECTED=false`nOWNER_DATA=$ownerData`n")
     $InstallDir = $libraryRecommended
     $tokenSpyDir = Join-Path $libraryRecommended 'extensions/services/token-spy'
     New-Item -ItemType Directory -Path $tokenSpyDir -Force | Out-Null
     [IO.File]::WriteAllText((Join-Path $tokenSpyDir 'compose.yaml'), 'services: {}')
     Update-ComposeFlags -ServiceId 'token-spy' -Action 'enable'
     $afterAdd = Get-ODSWindowsInstalledFeatureSelection -InstallDir $libraryRecommended
-    $addedEnv = Get-Content -LiteralPath (Join-Path $libraryRecommended '.env') -Raw
+    $addedEnv = Get-Content -LiteralPath (Join-Path $libraryRecommended '.env') -Encoding UTF8 -Raw
     if ($afterAdd.Kind -ne 'preserved' -or -not $afterAdd.Features.Recommended -or
         $addedEnv -notmatch '(?m)^ODS_WINDOWS_RECOMMENDED_SELECTED=true\s*$' -or
-        $addedEnv -notmatch '(?m)^OWNER_DATA=preserve-this\s*$') {
+        -not $addedEnv.Contains("OWNER_DATA=$ownerData")) {
         throw 'Library Token Spy add-back did not preserve the Recommended choice and owner data'
+    }
+    if ([Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT) {
+        $acl = Get-Acl -LiteralPath (Join-Path $libraryRecommended '.env')
+        $rules = @($acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]))
+        $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User
+        if (-not $acl.AreAccessRulesProtected -or $rules.Count -ne 1 -or
+            $rules[0].IdentityReference -ne $sid -or $rules[0].IsInherited -or
+            $rules[0].FileSystemRights -ne [Security.AccessControl.FileSystemRights]::FullControl) {
+            throw 'Library Token Spy add-back published a credential-bearing .env with a nonprivate ACL'
+        }
     }
     Update-ComposeFlags -ServiceId 'token-spy' -Action 'disable'
     $afterDisable = Get-ODSWindowsInstalledFeatureSelection -InstallDir $libraryRecommended
-    $disabledEnv = Get-Content -LiteralPath (Join-Path $libraryRecommended '.env') -Raw
+    $disabledEnv = Get-Content -LiteralPath (Join-Path $libraryRecommended '.env') -Encoding UTF8 -Raw
     if ($afterDisable.Kind -ne 'preserved' -or $afterDisable.Features.Recommended -or
         $disabledEnv -notmatch '(?m)^ODS_WINDOWS_RECOMMENDED_SELECTED=false\s*$' -or
-        $disabledEnv -notmatch '(?m)^OWNER_DATA=preserve-this\s*$') {
+        -not $disabledEnv.Contains("OWNER_DATA=$ownerData")) {
         throw 'Library Token Spy disable did not preserve Core and owner data'
+    }
+    $flagsBeforeFailure = Get-Content -LiteralPath (Join-Path $libraryRecommended '.compose-flags') -Raw
+    $envBeforeFailure = Get-Content -LiteralPath (Join-Path $libraryRecommended '.env') -Encoding UTF8 -Raw
+    $privateWriter = ${function:Write-ODSPrivateEnvFile}
+    try {
+        function Write-ODSPrivateEnvFile { param($Path, $Content); throw 'Injected private publication failure' }
+        try {
+            Update-ComposeFlags -ServiceId 'token-spy' -Action 'enable'
+            throw 'Token Spy toggle ignored a private publication failure'
+        } catch {
+            if ($_.Exception.Message -notmatch 'Injected private publication failure') { throw }
+        }
+    } finally {
+        Set-Item -Path Function:Write-ODSPrivateEnvFile -Value $privateWriter
+    }
+    if ((Get-Content -LiteralPath (Join-Path $libraryRecommended '.compose-flags') -Raw) -cne $flagsBeforeFailure -or
+        (Get-Content -LiteralPath (Join-Path $libraryRecommended '.env') -Encoding UTF8 -Raw) -cne $envBeforeFailure) {
+        throw 'Failed private publication did not restore Compose flags and preserve .env'
+    }
+    [IO.File]::WriteAllText((Join-Path $libraryRecommended '.env'),
+        $envBeforeFailure.Replace('ODS_WINDOWS_RECOMMENDED_SELECTED=false', 'ODS_WINDOWS_RECOMMENDED_SELECTED=true'))
+    if ((Get-ODSWindowsInstalledFeatureSelection -InstallDir $libraryRecommended).Kind -ne 'unknown') {
+        throw 'Interrupted marker publication was accepted as a complete service selection'
     }
 
     $unknown = Join-Path $scratch 'unknown'

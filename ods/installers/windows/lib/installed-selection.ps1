@@ -87,17 +87,18 @@ function Get-ODSWindowsInstalledFeatureSelection {
             Reason = "installed recommended group has a partial selection"
         }
     }
+    $legacyIntentRequired = $false
     if ($selected.Contains("litellm") -and -not $selected.Contains("token-spy")) {
         $installedMode = $savedEnv | Where-Object { $_ -match '^ODS_MODE=' } | Select-Object -First 1
         $switchboardMode = $savedEnv | Where-Object { $_ -match '^ODS_MODEL_SWITCHBOARD=' } | Select-Object -First 1
-        if ($null -eq $recommendedIntent -or
-            ([string]$installedMode -notmatch '^ODS_MODE=cloud\s*$' -and
-             [string]$switchboardMode -notmatch '^ODS_MODEL_SWITCHBOARD=enabled\s*$')) {
+        if ([string]$installedMode -notmatch '^ODS_MODE=cloud\s*$' -and
+            [string]$switchboardMode -notmatch '^ODS_MODEL_SWITCHBOARD=enabled\s*$') {
             return [PSCustomObject]@{
                 Kind = "unknown"; Features = $null
                 Reason = "installed LiteLLM-only selection lacks a complete Core intent record"
             }
         }
+        $legacyIntentRequired = ($null -eq $recommendedIntent)
     }
 
     $features = @{
@@ -111,6 +112,12 @@ function Get-ODSWindowsInstalledFeatureSelection {
         DeepResearch = $selected.Contains("perplexica")
         PrivacyShield = $selected.Contains("privacy-shield")
         Langfuse = $selected.Contains("langfuse")
+    }
+    if ($legacyIntentRequired) {
+        return [PSCustomObject]@{
+            Kind = "intent-required"; Features = $features
+            Reason = "legacy LiteLLM-only selection has no Recommended intent marker"
+        }
     }
     return [PSCustomObject]@{ Kind = "preserved"; Features = $features; Reason = "" }
 }

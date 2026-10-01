@@ -621,7 +621,10 @@ function ConvertTo-ODSDotenvValue {
 }
 
 function Convert-ODSWindowsNativeFallbackHermesEnv {
-    param([Parameter(Mandatory = $true)][string]$EnvText)
+    param(
+        [Parameter(Mandatory = $true)][string]$EnvText,
+        [Parameter(Mandatory = $true)][ValidateRange(1, 65535)][int]$NativePort
+    )
 
     # Phase 06 may have generated a Lemonade LiteLLM route before the native
     # server is launched. If Lemonade fails, an observe/legacy service plan
@@ -632,7 +635,7 @@ function Convert-ODSWindowsNativeFallbackHermesEnv {
         return $EnvText
     }
     $EnvText = $EnvText -replace '(?m)^HERMES_LLM_BASE_URL=http://litellm:4000/v1\r?$',
-        'HERMES_LLM_BASE_URL=http://llama-server:8080/v1'
+        "HERMES_LLM_BASE_URL=http://host.docker.internal:$NativePort/v1"
     $EnvText = $EnvText -replace '(?m)^HERMES_LLM_API_KEY=[^\r\n]*\r?$',
         'HERMES_LLM_API_KEY=sk-ods-hermes-local'
     return $EnvText

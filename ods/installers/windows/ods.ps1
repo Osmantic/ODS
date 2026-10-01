@@ -51,6 +51,7 @@ $LibDir = Join-Path $ScriptDir "lib"
 . (Join-Path $LibDir "model-activation.ps1")
 . (Join-Path $LibDir "install-report.ps1")
 . (Join-Path $LibDir "tier-map.ps1")
+. (Join-Path $LibDir "env-generator.ps1")
 
 $_resolvedLemonadeExe = Resolve-ODSLemonadeExe
 if ($_resolvedLemonadeExe) { $script:LEMONADE_EXE = $_resolvedLemonadeExe }
@@ -3490,7 +3491,6 @@ function Update-ComposeFlags {
     $recommendedEnvFile = $null
     $recommendedEnvOriginal = $null
     $recommendedEnvUpdated = $null
-    $recommendedTemp = $null
     if ($ServiceId -eq "token-spy") {
         # The installer records Recommended intent so a later rerun can tell
         # Core LiteLLM from a partially written Recommended bundle. Keep that
@@ -3500,7 +3500,7 @@ function Update-ComposeFlags {
         if (-not (Test-Path -LiteralPath $recommendedEnvFile -PathType Leaf)) {
             throw "Cannot update Recommended selection without the installed .env."
         }
-        $recommendedEnvOriginal = Get-Content -LiteralPath $recommendedEnvFile -Raw
+        $recommendedEnvOriginal = Get-Content -LiteralPath $recommendedEnvFile -Encoding UTF8 -Raw
         $markerPattern = '(?m)^ODS_WINDOWS_RECOMMENDED_SELECTED=[^\r\n]*\r?$'
         $markerMatches = [regex]::Matches($recommendedEnvOriginal, $markerPattern)
         if ($markerMatches.Count -gt 1 -or
@@ -3515,20 +3515,17 @@ function Update-ComposeFlags {
             $separator = $(if ($recommendedEnvOriginal.EndsWith("`n")) { '' } else { "`n" })
             $recommendedEnvUpdated = "$recommendedEnvOriginal${separator}ODS_WINDOWS_RECOMMENDED_SELECTED=$markerValue`n"
         }
-        $recommendedTemp = "$recommendedEnvFile.$PID.tmp"
     }
     try {
         [System.IO.File]::WriteAllText($tempFile, $newContent, $utf8NoBom)
         Move-Item -LiteralPath $tempFile -Destination $flagsFile -Force
         if ($recommendedEnvFile) {
-            [System.IO.File]::WriteAllText($recommendedTemp, $recommendedEnvUpdated, $utf8NoBom)
-            Move-Item -LiteralPath $recommendedTemp -Destination $recommendedEnvFile -Force
+            # This file contains credentials. The private writer creates its
+            # staging file with a restricted ACL before writing any bytes.
+            Write-ODSPrivateEnvFile -Path $recommendedEnvFile -Content $recommendedEnvUpdated
         }
     } catch {
         Remove-Item -LiteralPath $tempFile -Force -ErrorAction SilentlyContinue
-        if ($recommendedTemp) {
-            Remove-Item -LiteralPath $recommendedTemp -Force -ErrorAction SilentlyContinue
-        }
         if ($flagsExisted) {
             [System.IO.File]::WriteAllText($flagsFile, [string]$originalContent, $utf8NoBom)
         } else {

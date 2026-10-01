@@ -35,7 +35,18 @@ Write-Phase -Phase 3 -Total 13 -Name "FEATURE SELECTION" -Estimate "interactive"
 
 # ── Defaults from CLI flags ────────────────────────────────────────────────────
 $installedSelection = Get-ODSWindowsInstalledFeatureSelection -InstallDir $installDir
-$priorFeatures = if ($installedSelection.Kind -eq "preserved") { $installedSelection.Features } else { @{} }
+$legacyIntentRequired = $installedSelection.Kind -eq "intent-required"
+if ($legacyIntentRequired -and $recommendedFlag -and $noRecommendedFlag) {
+    throw "Pass either -Recommended or -NoRecommended for legacy LiteLLM-only recovery, not both."
+}
+$explicitRecommendedIntent = $recommendedFlag -xor $noRecommendedFlag
+if ($legacyIntentRequired -and ($nonInteractive -or $dryRun) -and
+    -not ($explicitRecommendedIntent -or $allFlag)) {
+    throw "Legacy LiteLLM-only selection needs an explicit Recommended choice. Pass -Recommended or -NoRecommended; other installed features will be preserved."
+}
+$priorFeatures = if ($installedSelection.Kind -eq "preserved" -or $legacyIntentRequired) {
+    $installedSelection.Features
+} else { @{} }
 if ($installedSelection.Kind -eq "unknown" -and ($nonInteractive -or $dryRun) -and -not $allFlag) {
     throw "Existing ODS feature selection is unknown ($($installedSelection.Reason)). Choose Full Stack or Core Only interactively, or pass -All."
 }
@@ -84,8 +95,8 @@ if (-not $nonInteractive -and -not $allFlag -and -not $dryRun) {
         "fresh" { "2" }
         default { "" }
     }
-    if ($installedSelection.Kind -eq "unknown") {
-        Write-AIWarn "Existing selection is unknown: $($installedSelection.Reason). Choose Full Stack, Core Only, or Custom explicitly."
+    if ($installedSelection.Kind -eq "unknown" -or $legacyIntentRequired) {
+        Write-AIWarn "Existing selection needs a choice: $($installedSelection.Reason). Choose Full Stack, Core Only, or Custom explicitly."
     }
     $choice = Read-Host "  Selection [1/2/3/4] (default: $defaultChoice)"
     if ([string]::IsNullOrWhiteSpace($choice)) { $choice = $defaultChoice }

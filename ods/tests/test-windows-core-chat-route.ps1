@@ -63,20 +63,20 @@ try {
     Assert-Route ($amdEnv['HERMES_LLM_BASE_URL'] -eq 'http://litellm:4000/v1' -and
         $amdPlan['litellm'].Enabled) 'AMD observe agent route lost its gateway'
     $fallbackText = Convert-ODSWindowsNativeFallbackHermesEnv `
-        -EnvText (Get-Content -LiteralPath (Join-Path $amdObserve '.env') -Raw)
+        -EnvText (Get-Content -LiteralPath (Join-Path $amdObserve '.env') -Raw) -NativePort 18080
     [IO.File]::WriteAllText((Join-Path $amdObserve '.env'), $fallbackText)
     $fallbackEnv = Read-Route $amdObserve
     $fallbackPlan = New-ODSWindowsServicePlan -EnableRecommended $false -EnableHermes $true `
         -UseLemonade $false -SwitchboardMode 'observe'
-    Assert-Route ($fallbackEnv['HERMES_LLM_BASE_URL'] -eq 'http://llama-server:8080/v1' -and
+    Assert-Route ($fallbackEnv['HERMES_LLM_BASE_URL'] -eq 'http://host.docker.internal:18080/v1' -and
         $fallbackEnv['HERMES_LLM_API_KEY'] -eq 'sk-ods-hermes-local' -and
         -not $fallbackPlan['litellm'].Enabled) `
         'AMD Lemonade fallback left Hermes pointing at an omitted gateway'
     $customRoute = "ODS_MODEL_SWITCHBOARD=observe`nHERMES_LLM_BASE_URL=https://owner.example/v1`nHERMES_LLM_API_KEY=custom`n"
-    Assert-Route ((Convert-ODSWindowsNativeFallbackHermesEnv -EnvText $customRoute) -eq $customRoute) `
+    Assert-Route ((Convert-ODSWindowsNativeFallbackHermesEnv -EnvText $customRoute -NativePort 18080) -eq $customRoute) `
         'Native fallback changed an owner-selected external Hermes route'
     $enabledRoute = "ODS_MODEL_SWITCHBOARD=enabled`nHERMES_LLM_BASE_URL=http://litellm:4000/v1`nHERMES_LLM_API_KEY=custom`n"
-    Assert-Route ((Convert-ODSWindowsNativeFallbackHermesEnv -EnvText $enabledRoute) -eq $enabledRoute) `
+    Assert-Route ((Convert-ODSWindowsNativeFallbackHermesEnv -EnvText $enabledRoute -NativePort 18080) -eq $enabledRoute) `
         'Native fallback changed an enabled switchboard route'
 
     $cloudCore = Join-Path $scratch 'cloud-core'
