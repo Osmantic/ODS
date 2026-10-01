@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from typing import Any, Mapping, Optional, Sequence
+from urllib.parse import quote
 
 import httpx
 
@@ -189,7 +190,8 @@ class LemonadeClient:
         return data if isinstance(data, list) else []
 
     async def model(self, model_id: str) -> dict[str, Any]:
-        return await self._request_json("GET", f"models/{model_id}")
+        quoted_id = quote(model_id, safe="")
+        return await self._request_json("GET", f"models/{quoted_id}")
 
     async def chat_completion(
         self,
