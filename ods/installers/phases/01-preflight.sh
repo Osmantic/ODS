@@ -231,7 +231,8 @@ fi
 # — the secrets file ends up world-readable. Refuse install up front so the
 # user can pick a POSIX-native path.
 check_install_dir_filesystem() {
-    local probe="$INSTALL_DIR"
+    local probe
+    probe="$(readlink -f "$INSTALL_DIR" 2>/dev/null || echo "$INSTALL_DIR")"
     while [[ -n "$probe" && ! -e "$probe" ]]; do
         probe="$(dirname "$probe")"
     done
