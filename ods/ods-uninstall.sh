@@ -387,11 +387,9 @@ if command -v docker &>/dev/null; then
     # Use ODS's resolved compose stack. The repo does not ship a
     # top-level docker-compose.yml, so bare `docker compose down` can fail with
     # "no configuration file provided" even from the correct install dir.
-    compose_down_args=(down)
-    if [[ "$KEEP_DATA" != "true" ]]; then
-        compose_down_args+=(-v)
-    fi
-    compose_down_args+=(--remove-orphans)
+    # Do not pass -v: Compose would delete selected volumes before our
+    # postflight custody check can verify their unchanged identity.
+    compose_down_args=(down --remove-orphans)
 
     validate_uninstall_compose "${compose_args[@]}" || {
         log_error "Saved extension recipes changed during uninstall; remaining installation retained."
