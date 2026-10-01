@@ -265,12 +265,20 @@ volume_snapshot=""
 if command -v docker >/dev/null 2>&1; then
     volume_snapshot="$(mktemp "${TMPDIR:-/tmp}/ods-uninstall-volumes.XXXXXXXX")"
     trap '[[ -z "$volume_snapshot" ]] || rm -f -- "$volume_snapshot"' EXIT
-    volume_preflight_args=()
-    $KEEP_DATA && volume_preflight_args+=(--keep-data)
-    if ! python3 "$SCRIPT_DIR/scripts/uninstall-compose-volumes.py" preflight \
-        "$INSTALL_DIR" "$volume_snapshot" "$SCRIPT_DIR" "${volume_preflight_args[@]}" "${compose_args[@]}"; then
-        log_error "Docker ownership could not be proven; installation untouched. Review the reported resource before retrying."
-        exit 1
+    # macOS ships Bash 3.2, where expanding an empty array under nounset is
+    # an error. Pass the optional flag through explicit non-empty branches.
+    if $KEEP_DATA; then
+        if ! python3 "$SCRIPT_DIR/scripts/uninstall-compose-volumes.py" preflight \
+            "$INSTALL_DIR" "$volume_snapshot" "$SCRIPT_DIR" --keep-data "${compose_args[@]}"; then
+            log_error "Docker ownership could not be proven; installation untouched. Review the reported resource before retrying."
+            exit 1
+        fi
+    else
+        if ! python3 "$SCRIPT_DIR/scripts/uninstall-compose-volumes.py" preflight \
+            "$INSTALL_DIR" "$volume_snapshot" "$SCRIPT_DIR" "${compose_args[@]}"; then
+            log_error "Docker ownership could not be proven; installation untouched. Review the reported resource before retrying."
+            exit 1
+        fi
     fi
 fi
 
@@ -520,7 +528,7 @@ if command -v pgrep >/dev/null 2>&1; then
         [[ -n "$_pid" ]] && _ods_uninstall_orphan_pids+=("$_pid")
     done < <(pgrep -f "$INSTALL_DIR/bin/ods-macos-llm-bridge.py" 2>/dev/null || true)
 fi
-if (( ${#_ods_uninstall_orphan_pids[@]} > 0 )); then
+if [[ -n "${_ods_uninstall_orphan_pids[0]-}" ]]; then
     log_info "  Sending SIGTERM to ${#_ods_uninstall_orphan_pids[@]} orphan PID(s): ${_ods_uninstall_orphan_pids[*]}"
     for _pid in "${_ods_uninstall_orphan_pids[@]}"; do kill "$_pid" 2>/dev/null || true; done
     sleep 2
