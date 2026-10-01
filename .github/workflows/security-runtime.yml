@@ -109,6 +109,9 @@ jobs:
               --entrypoint python "ods-security-$SERVICE:ci" -c \
               'import json,os; assert os.geteuid()==10777; assert json.load(open("/config/endpoints.json"))["endpoints"][0]["id"] == "llama-server-default"'
           fi
+          if [ "$SERVICE" = ape ] || [ "$SERVICE" = remote-provider-egress ]; then
+            bash ods/tests/test-public-policy-mounts.sh "ods-security-$SERVICE:ci" "$SERVICE"
+          fi
 
   non-python-image-modes:
     runs-on: ubuntu-latest
