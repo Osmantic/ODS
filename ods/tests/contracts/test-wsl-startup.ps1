@@ -30,6 +30,7 @@ function Get-ODSWslIdentity { param($Distro,$InstallRoot)
 }
 function Get-ScheduledTask { param($TaskName,$ErrorAction)
     if($TaskName -ceq ($identity.taskName+'-Startup')){return $script:startupTask}
+    if($TaskName -ceq ($identity.taskName+'-Relay')){return $null} # no relay in this startup fixture
     if($TaskName -cne $identity.taskName){throw 'Unexpected task lookup'}
     [pscustomobject]@{
         Actions=@([pscustomobject]@{Execute=(Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe');Arguments=(Get-ODSWslTaskArguments $identity)})
