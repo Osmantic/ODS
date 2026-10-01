@@ -6219,8 +6219,21 @@ def _enable_webui_selection() -> tuple[int, dict]:
                 return 503, {"code": "selected_but_stopped", "error": "Open WebUI is selected but not running; inspect its service state"}
             return 200, {"enabled": True, "action": "already_selected"}
 
+        # A lean Mac install may have saved WEBUI_AUTH=false for loopback use.
+        # If the owner later exposes the bind or selects the proxy, enforce
+        # sign-in in the same bound-file write that selects WebUI. Compose must
+        # also use these installed values, not stale host-agent process env.
+        bind = installed.get("BIND_ADDRESS", "127.0.0.1").strip().lower() or "127.0.0.1"
+        auth_required = (
+            bind not in {"127.0.0.1", "::1", "localhost"}
+            or installed.get("ENABLE_ODS_PROXY", "false").strip().lower() == "true"
+            or _proxy_compose_enabled()
+        )
+        next_env_text = _upsert_env_text(env_text, "ENABLE_OPEN_WEBUI", "true")
+        if auth_required:
+            next_env_text = _upsert_env_text(next_env_text, "WEBUI_AUTH", "true")
         changed = True  # A failed in-place write may have written a prefix.
-        _write_bound_env_text(env_path, _upsert_env_text(env_text, "ENABLE_OPEN_WEBUI", "true"))
+        _write_bound_env_text(env_path, next_env_text)
         invalidate_compose_cache()
         flags = resolve_compose_flags()
         compose_env = os.environ.copy()
@@ -6229,12 +6242,14 @@ def _enable_webui_selection() -> tuple[int, dict]:
             "ENABLE_OPEN_WEBUI", "ODS_GATEWAY_ONLY", "EXTERNAL_LLM_URL",
             "LEMONADE_EXTERNAL", "AMD_INFERENCE_RUNTIME",
             "AMD_INFERENCE_MANAGED", "WHISPER_ACCELERATION",
-            "ODS_SKIP_GPU_OVERLAYS",
+            "ODS_SKIP_GPU_OVERLAYS", "BIND_ADDRESS", "WEBUI_AUTH", "ENABLE_ODS_PROXY",
         ):
             compose_env.pop(selector, None)
             if selector in installed:
                 compose_env[selector] = installed[selector]
         compose_env["ENABLE_OPEN_WEBUI"] = "true"
+        if auth_required:
+            compose_env["WEBUI_AUTH"] = "true"
 
         def compose(*arguments: str):
             return subprocess.run(
