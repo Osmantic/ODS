@@ -272,11 +272,11 @@ GTT_EOF
     else
         # Auto-install tuned for 5-8% prompt processing improvement
         ai "Installing tuned for CPU governor optimization..."
-        _inst_cmd=(apt install -y)
+        _inst_cmd=(env DEBIAN_FRONTEND=noninteractive apt-get install -y)
         case "$PKG_MANAGER" in
             dnf)    _inst_cmd=(dnf install -y) ;;
             pacman) _inst_cmd=(pacman -S --noconfirm) ;;
-            zypper) _inst_cmd=(zypper install -y) ;;
+            zypper) _inst_cmd=(zypper --non-interactive install) ;;
         esac
         if _phase10_privileged "${_inst_cmd[@]}" tuned >> "$LOG_FILE" 2>&1; then
             _phase10_privileged systemctl enable --now tuned >> "$LOG_FILE" 2>&1 && \
