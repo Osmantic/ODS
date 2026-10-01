@@ -13,7 +13,7 @@ const state=()=>({schemaVersion:1,status:'ready',sessionExists:true,sessionRevis
 const listen=server=>new Promise(resolve=>server.listen(0,'127.0.0.1',()=>resolve(server.address().port)));
 async function fixture(t, verification={status:'none'}) {
   const dir=fs.mkdtempSync(path.join(os.tmpdir(),'ods-ingress-history-'));fs.chmodSync(dir,0o700);
-  const ledger=createChatHistoryLedger(dir),calls=[],native=state();let chatFailure=false,answer='answer';
+  const ledger=createChatHistoryLedger(dir),calls=[],native=state();let chatFailure=false,answer='answer',spoof=null;
   const gateway=http.createServer(async(req,res)=>{
     if(req.url==='/health') {res.setHeader('content-type','application/json');return res.end('{"ok":true}');}
     let raw='';for await(const part of req) raw+=part;
@@ -23,7 +23,7 @@ async function fixture(t, verification={status:'none'}) {
     if(req.url==='/pixel-ods/history') return res.end(JSON.stringify({schemaVersion:1,hydrated:true}));
     if(req.url==='/pixel-ods/compact') {native.status='ready';native.compaction={...native.compaction,status:'completed',requestId:body.request_id,count:native.compaction.count+1};return res.end(JSON.stringify(native));}
     if(req.url==='/pixel-ods/verification') return res.end(JSON.stringify(verification));
-    if(req.url==='/v1/chat/completions') {if(chatFailure){res.statusCode=500;return res.end('{}')}return res.end(JSON.stringify({id:runId,choices:[{message:{role:'assistant',content:answer}}]}));}
+    if(req.url==='/v1/chat/completions') {if(chatFailure){res.statusCode=500;return res.end('{}')}return res.end(JSON.stringify({id:runId,...(spoof?{pixel_artifacts:spoof}:{}),choices:[{finish_reason:'stop',message:{role:'assistant',content:answer}}]}));}
     res.statusCode=404;res.end('{}');
   });
   const port=await listen(gateway),ingress=createIngressServer({token:'test-token',gatewayPort:port,historyLedger:ledger});
@@ -31,7 +31,7 @@ async function fixture(t, verification={status:'none'}) {
   t.after(async()=>{await Promise.all([new Promise(r=>ingress.close(r)),new Promise(r=>gateway.close(r))]);fs.rmSync(dir,{recursive:true,force:true})});
   async function post(route,body) {const response=await fetch(`http://127.0.0.1:${ingressPort}${route}`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});return {status:response.status,value:await response.json()}}
   const chat=(request_id,messages)=>post('/v1/chat/completions',{user:rawUser,request_id,history_snapshot:{schemaVersion:1,messages},messages:[{role:'system',content:'Trusted identity'},...messages.slice(-3,-1),u(messages.at(-1).content+'\nDelivery contract')],stream:false});
-  return {ledger,calls,native,post,chat,setFailure:(value=true)=>{chatFailure=value},setAnswer:value=>{answer=value}};
+  return {ledger,calls,native,post,chat,setFailure:(value=true)=>{chatFailure=value},setAnswer:value=>{answer=value},setVerification:value=>{verification=value},setSpoof:value=>{spoof=value},async stream(request_id,messages){const response=await fetch(`http://127.0.0.1:${ingressPort}/v1/chat/completions`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({user:rawUser,request_id,history_snapshot:{schemaVersion:1,messages},messages,stream:true})});return {status:response.status,text:await response.text()}}};
 }
 test('ingress delivers a delta with the edge contract, persists full snapshot and replays without rerunning',async t=>{
   const f=await fixture(t);
@@ -84,6 +84,36 @@ test('Stop confirms an unknown outcome as interrupted so the next turn sends onl
 });
 
 
+const artifact={schemaVersion:1,kind:'ods-pixel-workspace-artifact',relativePath:'project/report.md',siteId:'site-'+ 'a'.repeat(24),sha256:'a'.repeat(64),file:{path:'report.md',bytes:10,sha256:'b'.repeat(64)}};
+test('document receipt survives JSON history and SSE replay only on the terminal stop frame',async t=>{
+ const f=await fixture(t);f.setVerification({status:'none',artifacts:[artifact]});
+ const first=await f.chat('document',[u('Deliver my report')]);assert.equal(first.status,200);
+ assert.deepEqual(first.value.pixel_artifacts,{schemaVersion:1,artifacts:[artifact]});assert.equal(first.value.pixel_preview,undefined);
+ assert.deepEqual(f.ledger.read(user).lastResult.verification.artifacts,[artifact]);
+ const again=await f.stream('document',[u('Deliver my report')]);assert.equal(again.status,200);
+ const frames=again.text.split('\n').filter(x=>x.startsWith('data: {')).map(x=>JSON.parse(x.slice(6)));
+ const receipts=frames.filter(x=>x.pixel_artifacts);assert.equal(receipts.length,1);assert.equal(receipts[0].choices[0].finish_reason,'stop');
+ assert.deepEqual(receipts[0].pixel_artifacts,first.value.pixel_artifacts);
+ assert.equal(f.calls.filter(x=>x.path==='/v1/chat/completions').length,1);
+});
+test('raw MEDIA and upstream-supplied artifact metadata cannot become delivered receipts',async t=>{
+ const f=await fixture(t);f.setAnswer('MEDIA:project/report.md');f.setSpoof({schemaVersion:1,artifacts:[artifact]});
+ const result=await f.chat('fake',[u('Report')]);assert.equal(result.status,200);assert.equal(result.value.pixel_artifacts,undefined);
+ assert.equal(result.value.choices[0].message.content,'MEDIA:project/report.md');
+});
+test('empty text with verified document delivery describes the actual partial outcome',async t=>{
+ const f=await fixture(t);f.setAnswer('NO_REPLY');f.setVerification({status:'none',artifacts:[artifact]});
+ const result=await f.chat('empty-doc',[u('Report')]);assert.equal(result.status,200);
+ assert.match(result.value.choices[0].message.content,/Verified file downloads are attached/);
+ assert.doesNotMatch(result.value.choices[0].message.content,/without.*delivered result/);
+ assert.deepEqual(result.value.pixel_artifacts.artifacts,[artifact]);
+});
+test('malformed, over-limit or pending artifact receipts fail closed without publishing metadata',async t=>{
+ const invalid=[{status:'none',artifacts:[artifact,artifact]}, {status:'none',artifacts:[{...artifact,file:{...artifact.file,bytes:4194305}}]},
+  {status:'none',artifacts:[{...artifact,relativePath:'../report.md'}]}, {status:'none',artifacts:[{...artifact,url:'http://evil'}]},
+  {status:'pending',text:'Wait',artifacts:[artifact]}];
+ for(const evidence of invalid){const f=await fixture(t);f.setVerification(evidence);const result=await f.chat('invalid',[u('Report')]);assert.equal(result.status,502);assert.equal(result.value.pixel_artifacts,undefined);}
+});
 test('incomplete attribution is a delivered outcome, not an interrupted turn',async t=>{
   const text='Research summary. Source check: attribution remains incomplete.';
   const f=await fixture(t,{status:'failed',text});

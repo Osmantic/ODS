@@ -1,3 +1,4 @@
+import {validDeliveredArtifact} from './workspace-artifact.mjs';
 // Pixel per-run tool-loop guard.
 //
 // OpenClaw's built-in identical-call detector blocks a repeated tool call, but
@@ -10,6 +11,7 @@
 // OpenClaw's public harness runtime.
 
 import { createHash, randomBytes } from "node:crypto";
+import { validSourceReview, normalizeWorkspacePreviewParams } from './workspace-preview.mjs';
 import * as fs from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
@@ -6474,7 +6476,8 @@ function workspacePreviewOutcome(event, expectedDirectory, state) {
     details.httpStatus !== 200 ||
     details.readbackVerified !== true ||
     details.executable !== false ||
-    details.overwritten !== false
+    details.overwritten !== false ||
+    (Object.hasOwn(details, 'source') && !validSourceReview(details.source, details.relativeDirectory))
   ) {
     return undefined;
   }
@@ -6494,6 +6497,7 @@ function workspacePreviewOutcome(event, expectedDirectory, state) {
     bytes: details.bytes,
     sha256: details.sha256,
     entrySha256: details.entrySha256,
+    ...(details.source ? {source:details.source} : {}),
   };
 }
 
@@ -8143,14 +8147,20 @@ export function createToolLoopGuard({
         return { block: true, blockReason: workspacePreviewMissingEntryReason(state, directory) };
       }
       state.workspacePreviewDirectory = directory;
+      const publicationArgs = {relativeDirectory:directory};
+      if (Object.hasOwn(args ?? {}, 'sourceDirectory')) {
+        publicationArgs.sourceDirectory = args.sourceDirectory;
+        try { normalizeWorkspacePreviewParams(publicationArgs); }
+        catch { return {block:true,blockReason:'Source review requires an explicit workspace-relative project directory containing the selected publication directory. Preserve the project; do not substitute another source root.'}; }
+      }
       if (toolName === "tool_call") {
         pendingParams = {
           ...pendingParams,
           id: WORKSPACE_PREVIEW_TOOL,
-          args: { relativeDirectory: directory },
+          args: publicationArgs,
         };
       } else {
-        normalizedParams = { relativeDirectory: directory };
+        normalizedParams = publicationArgs;
         pendingParams = normalizedParams;
       }
     }
@@ -9506,6 +9516,24 @@ export function createToolLoopGuard({
     }
     if (typeof runId === "string" && runId) {
       const state = stateFor(runId);
+      // Prompt hooks carry trigger, while tool hooks can supply a previously
+      // missing session key but omit trigger. Merge only trusted hook metadata
+      // for this exact run; missing fields must not erase earlier evidence.
+      const artifactContext=state.artifactOwnerContext ??= {};
+      for (const key of ['agentId','runId','sessionId','sessionKey']) {
+        if (typeof context[key] !== 'string' || !context[key]) continue;
+        if (artifactContext[key] && artifactContext[key] !== context[key]) state.artifactIdentityConflict=true;
+        else artifactContext[key]=context[key];
+      }
+      if (typeof context.trigger === 'string' && context.trigger) {
+        if (context.trigger !== 'user') state.artifactNoninteractiveObserved=true;
+        artifactContext.trigger=context.trigger;
+      }
+      state.artifactOwnerInteractive = !state.artifactIdentityConflict && !state.artifactNoninteractiveObserved &&
+        ownerInteractiveTurn(artifactContext, agentId);
+      state.artifactSurfaceReason = state.artifactOwnerInteractive ? undefined :
+        state.artifactIdentityConflict ? 'run-identity-conflict' : state.artifactNoninteractiveObserved ? 'noninteractive-turn' :
+        artifactContext.trigger == null ? 'trigger-unavailable' : 'owner-session-required';
       state.completionAssurance.begin(currentOwnerIntentText(event?.messages, event?.prompt), event);
       const ownerIntent=currentOwnerIntentText(event?.messages,event?.prompt);
       if (ownerIntent) state.extensionCompletionGate ??= createExtensionCompletionGate(ownerIntent);
@@ -12457,7 +12485,35 @@ export function createToolLoopGuard({
     return { status: "none", ...staleExecWarningSuppression };
   }
 
+  function workspaceArtifactUnavailableReason(scope) {
+    const state=runs.get(scope?.runId);
+    if (!state || scope.agentId !== 'pixel') return 'run-unavailable';
+    if (state.managedTeamWorker) return 'team-surface-unsupported';
+    if (!state.artifactOwnerInteractive) return state.artifactSurfaceReason ?? 'owner-session-required';
+    if (state.clientCancelled) return 'run-cancelled';
+    if (state.runEnded) return 'run-ended';
+    if (state.currentSessionId !== scope.sessionId || state.currentSessionKey !== scope.sessionKey ||
+        sessionRuns.get(scope.sessionId) !== scope.runId) return 'run-superseded';
+    if (state.progressBudget.exhausted) return 'progress-budget-exhausted';
+    if (state.ownerQuestions) return 'owner-question-pending';
+    if ((state.artifactAttempts ?? 0) >= 4) return 'publication-attempt-limit';
+    return undefined;
+  }
+  function artifactScopeState(scope) {
+    const reason=workspaceArtifactUnavailableReason(scope);
+    // The fourth reserved call may still accept its receipt. The limit applies
+    // to reserving the next publication, not to finishing the current one.
+    return !reason || reason === 'publication-attempt-limit' ? runs.get(scope.runId) : undefined;
+  }
   function deliveryVerificationForRun(runId) {
+    const result=baseDeliveryVerificationForRun(runId);
+    const state=runs.get(runId);
+    const artifacts=state?.workspaceArtifacts;
+    return artifacts?.length && !state.clientCancelled && ['none','passed','failed'].includes(result.status)
+      ? {...result,artifacts:structuredClone(artifacts)} : result;
+  }
+
+  function baseDeliveryVerificationForRun(runId) {
     const verification = verificationForRun(runId);
     const state = runs.get(runId);
     if (state?.extensionCompletionGate?.active && !state.extensionCompletionGate.verification && verification.status === 'none') {
@@ -12563,6 +12619,22 @@ export function createToolLoopGuard({
   }
 
   return {
+    workspaceArtifactUnavailableReason,
+    reserveWorkspaceArtifact(scope) {
+      if (workspaceArtifactUnavailableReason(scope)) return false;
+      const state=runs.get(scope.runId);
+      state.artifactAttempts=(state.artifactAttempts ?? 0)+1;
+      return true;
+    },
+    acceptWorkspaceArtifact(scope,receipt) {
+      const state=artifactScopeState(scope);
+      if (!state || !state.artifactAttempts || !validDeliveredArtifact(receipt)) return false;
+      const artifacts=state.workspaceArtifacts ??= [];
+      if (artifacts.some(item=>item.siteId === receipt.siteId && item.file.path === receipt.file.path)) return true;
+      if (artifacts.length >= 4) return false;
+      artifacts.push(structuredClone(receipt));
+      return true;
+    },
     beforeToolCall,
     invalidateWorkspaceBundle(context) {
       const state = runs.get(context?.runId);
