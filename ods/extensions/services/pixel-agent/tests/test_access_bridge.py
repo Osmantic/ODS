@@ -19,6 +19,35 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[4] / "bin"))
 import pixel_access_bridge as bridge
 
 
+class LockFreeRuntimeProbeTests(unittest.TestCase):
+    def test_probe_never_reenters_owner_worker_or_persists_attestation(self):
+        for adapter_type in (bridge.SystemdAccessBridge, bridge.LaunchdAccessBridge):
+            for mode in ('sandboxed', 'full-access'):
+                with self.subTest(adapter=adapter_type.__name__, mode=mode), tempfile.TemporaryDirectory() as directory:
+                    adapter = object.__new__(adapter_type)
+                    adapter.state = Path(directory)
+                    (adapter.state / 'service-baseline.json').touch()
+                    if adapter_type is bridge.SystemdAccessBridge:
+                        baseline = 'ProtectSystem=strict\nProtectHome=tmpfs\nPrivateTmp=yes'
+                        boundary = baseline if mode == 'sandboxed' else 'ProtectSystem=no\nProtectHome=no\nPrivateTmp=yes'
+                    else:
+                        baseline = json.dumps({'definition': 'approved', 'policy': {'activeMode': 'sandboxed'}})
+                        boundary = json.dumps({'definition': 'approved', 'policy': {'activeMode': mode}})
+                    proof = {'pid': 123, 'proof': {'mode': mode}}
+                    with contextlib.ExitStack() as stack:
+                        stack.enter_context(patch.object(adapter, 'provision_probe'))
+                        stack.enter_context(patch.object(adapter, 'unit_boundary', return_value=boundary))
+                        stack.enter_context(patch.object(bridge, 'private_json', return_value={'boundary': baseline}))
+                        stack.enter_context(patch.object(adapter, 'native', return_value=proof))
+                        worker = stack.enter_context(patch.object(adapter, 'worker', side_effect=AssertionError('nested owner lock')))
+                        write = stack.enter_context(patch.object(bridge, 'atomic_json'))
+                        if adapter_type is bridge.LaunchdAccessBridge:
+                            stack.enter_context(patch.object(adapter, '_policy_activation_identity', return_value=None))
+                        self.assertEqual(adapter.probe_held_mode('a' * 64, mode), (proof, boundary))
+                        worker.assert_not_called()
+                        write.assert_not_called()
+
+
 class OwnerLauncherTests(unittest.TestCase):
     @unittest.skipUnless(os.geteuid() == 0, 'root custody fixture required')
     def test_legacy_binding_pins_unit_owner_executable_and_rejects_unit_drift(self):
@@ -148,7 +177,7 @@ class OwnerLauncherTests(unittest.TestCase):
                     self.assertEqual(process.returncode, 0)
             uid, euid, gid, groups = json.loads(output)
             self.assertEqual((uid, euid, gid), (owner.pw_uid, owner.pw_uid, owner.pw_gid))
-            self.assertEqual(sorted(groups), sorted(os.getgrouplist(owner.pw_name, owner.pw_gid)))
+            self.assertEqual(groups, [])  # Primary GID is checked above; no inherited supplementary groups.
 
 
 class HostAgentDiscoveryTests(unittest.TestCase):
@@ -293,7 +322,7 @@ class LaunchdAccessBridgeTests(unittest.TestCase):
                 self.assertEqual(result['uid'], owner.pw_uid)
                 self.assertEqual(result['euid'], owner.pw_uid)
                 self.assertEqual(result['gid'], owner.pw_gid)
-                self.assertEqual(sorted(result['groups']), sorted(os.getgrouplist(owner.pw_name, owner.pw_gid)))
+                self.assertEqual(result['groups'], [])  # Match the native launcher's deliberate group drop.
                 self.assertEqual(result['home'], owner.pw_dir)
 
     def test_discovery_uses_existing_public_macos_surface(self):
@@ -693,6 +722,10 @@ class FakeBridge(bridge.SystemdAccessBridge):
 
     def http(self, *_args, **_kwargs): return {"ok": True}
     def provision_probe(self): self.log.append("provision-probe")
+    # Installation custody is simulated here, like discover/service methods.
+    # test_access_marker.py exercises real marker custody through this engine.
+    def prepare_access_marker(self, pending, expected_sha): pass
+    def finish_access_marker(self, pending): pass
     def dropin_for(self, enabled):
         # Filesystem service adapter is simulated; never write to real systemd.
         if enabled: self.dropin.write_text("[Service]\nProtectSystem=false\nProtectHome=false\n")

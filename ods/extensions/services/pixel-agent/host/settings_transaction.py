@@ -110,6 +110,8 @@ def _requirements(expected_hash, validate_config, check_no_active_run, activate)
 
 
 def _no_pending_access(sd):
+    if os.path.lexists(os.path.join(sd, "access-release-journal.json")):
+        raise SettingsError("access-release-recovery-required")
     if os.path.lexists(os.path.join(sd, "model-journal.json")):
         raise SettingsError("model-recovery-required")
     if os.path.lexists(os.path.join(sd, "provider-journal.json")):

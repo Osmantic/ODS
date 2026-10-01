@@ -85,7 +85,7 @@ COPY --from=omp-native-extractor --chmod=0444 /omp-native/pi_natives.linux-x64-m
 COPY --from=omp-native-extractor --chmod=0444 /omp-native/pi_natives.linux-x64-baseline.node /opt/pi_natives.linux-x64-baseline.node
 
 LABEL org.opencontainers.image.title="Pixel Deep Work runner" \
-      org.opencontainers.image.version="4.3.27" \
+      org.opencontainers.image.version="4.3.28" \
       org.opencontainers.image.base.name="debian:bookworm-slim" \
       org.osmantic.pixel.node-runtime="22.23.1" \
       org.osmantic.pixel.omp-version="17.2.12" \
