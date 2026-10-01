@@ -79,7 +79,7 @@ SOURCE_ID = re.compile(r"source-[a-f0-9]{24}")
 SOURCE_SUFFIXES = frozenset({'.html', '.css', '.js', '.mjs', '.cjs', '.jsx', '.ts', '.tsx',
                              '.vue', '.svelte', '.json', '.md', '.txt', '.py'})
 SOURCE_EXCLUDED_DIRECTORIES = frozenset({'node_modules', 'dist', 'build', 'out', 'coverage',
-                                         '__pycache__', 'venv', 'env'})
+                                         '__pycache__', 'venv', 'env', 'ods-builds'})
 SOURCE_SECRET_NAME = re.compile(r'(?:^|[._-])(?:credentials?|secrets?|tokens?|passwords?)(?:[._-]|$)', re.I)
 SOURCE_SECRET_CONTENT = re.compile(r'authorization\s*[:=]|bearer\s+[A-Za-z0-9._-]+|'
                                    r'(?:api[_-]?key|access[_-]?token|password|secret)\s*[:=]\s*[\"\']?\S|'

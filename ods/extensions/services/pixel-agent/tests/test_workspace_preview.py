@@ -131,6 +131,22 @@ def test_next_dynamic_assets_and_source_paths_publish_without_reserved_metadata(
         assert MODULE.ASSET_COMPONENT.fullmatch(name) is None
 
 
+def test_review_source_excludes_previous_managed_build_generations(tmp_path):
+    workspace = tmp_path / 'workspace'
+    source = workspace / 'demo' / 'app' / 'page.js'
+    source.parent.mkdir(parents=True, mode=0o700)
+    source.write_text('export default function Page() { return null }')
+    for generation in ('previous', 'current'):
+        output = workspace / 'demo' / 'ods-builds' / generation / 'site'
+        output.mkdir(parents=True, mode=0o700)
+        (output / 'index.html').write_text('<h1>Built output</h1>')
+    captured = MODULE._capture_review_source(workspace, 'demo', os.getuid(),
+                                             'demo/ods-builds/current/site')
+    assert [entry['path'] for entry in captured['files']] == ['app/page.js']
+    assert captured['omitted']['directories'] == 1
+    assert (workspace / 'demo/ods-builds/previous/site/index.html').is_file()
+
+
 def test_manifest_rehashes_published_files_without_reading_live_workspace():
     with tempfile.TemporaryDirectory() as temporary:
         root = pathlib.Path(temporary)
