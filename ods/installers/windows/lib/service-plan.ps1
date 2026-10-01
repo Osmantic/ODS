@@ -47,6 +47,29 @@ function Get-ODSWindowsInstalledServiceSelection {
     }
     if (Test-Path -LiteralPath $active -PathType Leaf) { return $true }
     if (Test-Path -LiteralPath $disabled -PathType Leaf) { return $false }
+
+    # Older native installs recorded their selected Compose stack in this
+    # flags file before Library actions began renaming per-service fragments.
+    $flagsPath = Join-Path $InstallDir ".compose-flags"
+    $flagsItem = Get-Item -LiteralPath $flagsPath -Force -ErrorAction SilentlyContinue
+    if ($flagsItem) {
+        if ($flagsItem.PSIsContainer -or ($flagsItem.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+            throw "Unsafe installed Compose flags path: $flagsPath"
+        }
+        $tokens = @((Get-Content -LiteralPath $flagsPath -Raw -ErrorAction Stop).Trim() -split '\s+' |
+            Where-Object { $_ })
+        $baseSelected = $false
+        $serviceSelected = $false
+        for ($i = 0; $i -lt $tokens.Count; $i++) {
+            if ($tokens[$i] -ne "-f") { continue }
+            if (++$i -ge $tokens.Count) { throw "Incomplete installed Compose flags: $flagsPath" }
+            $fragment = $tokens[$i] -replace '\\', '/'
+            if ($fragment -eq "docker-compose.base.yml") { $baseSelected = $true }
+            if ($fragment -eq "extensions/services/$ServiceId/compose.yaml") { $serviceSelected = $true }
+        }
+        if (-not $baseSelected) { throw "Installed Compose flags lack base stack: $flagsPath" }
+        return $serviceSelected
+    }
     return $null
 }
 

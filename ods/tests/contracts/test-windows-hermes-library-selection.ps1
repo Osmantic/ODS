@@ -25,6 +25,14 @@ try {
     Assert-Selection (-not $emptyRetained.Hermes -and -not $emptyRetained.Proxy) "Existing install without Hermes markers enabled Hermes"
     $explicitFull = Resolve-ODSWindowsHermesSelection -InstallDir $installDir -ComputedHermes $true -All $true
     Assert-Selection ($explicitFull.Hermes -and $explicitFull.Proxy) "Explicit All did not enable Hermes and proxy"
+    $legacyFlags = Join-Path $installDir ".compose-flags"
+    Set-Content -LiteralPath $legacyFlags -Value "--env-file .env -f docker-compose.base.yml -f extensions/services/hermes/compose.yaml -f extensions/services/hermes-proxy/compose.yaml"
+    $legacy = Resolve-ODSWindowsHermesSelection -InstallDir $installDir -ComputedHermes $false
+    Assert-Selection ($legacy.Hermes -and $legacy.Proxy) "Legacy selected Hermes flags were lost without Compose markers"
+    Set-Content -LiteralPath $legacyFlags -Value "--env-file .env -f docker-compose.base.yml"
+    $legacyCore = Resolve-ODSWindowsHermesSelection -InstallDir $installDir -ComputedHermes $true
+    Assert-Selection (-not $legacyCore.Hermes -and -not $legacyCore.Proxy) "Legacy Core flags surprise-enabled Hermes"
+    Remove-Item -LiteralPath $legacyFlags -Force
     Set-Content -LiteralPath $hermesActive -Value "services: {}"
     Set-Content -LiteralPath "$proxyActive.disabled" -Value "services: {}"
     $dataDir = Join-Path $installDir "data\hermes"
