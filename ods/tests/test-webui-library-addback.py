@@ -17,6 +17,8 @@ def agent(tmp_path, monkeypatch):
     spec.loader.exec_module(module)
     module._test_real_resolve_compose_flags = module.resolve_compose_flags
     monkeypatch.setattr(module, "INSTALL_DIR", tmp_path)
+    monkeypatch.setattr(module, "EXTENSIONS_DIR", tmp_path / "extensions/services")
+    monkeypatch.setattr(module, "USER_EXTENSIONS_DIR", tmp_path / "data/user-extensions")
     monkeypatch.setattr(module.platform, "system", lambda: "Linux")
     monkeypatch.setattr(module, "resolve_compose_flags", lambda: ["-f", "base.yml"])
     monkeypatch.setattr(module, "_wait_for_container_health", lambda *_args, **_kwargs: None)
@@ -70,6 +72,61 @@ def test_add_back_starts_only_webui_and_keeps_retained_data(agent, monkeypatch):
     assert any(command[-4:] == ["up", "-d", "--no-deps", "open-webui"] for command, _ in calls)
     assert all("llama-server" not in command for command, _ in calls)
     assert all("COMPOSE_PROFILES" not in kwargs["env"] for _, kwargs in calls)
+
+
+def test_mac_local_add_back_uses_saved_auth_and_bind(agent, monkeypatch):
+    module, root = agent
+    monkeypatch.setattr(module.platform, "system", lambda: "Darwin")
+    with (root / ".env").open("a", encoding="utf-8") as env_file:
+        env_file.write("BIND_ADDRESS=127.0.0.1\nWEBUI_AUTH=false\n")
+    monkeypatch.setenv("BIND_ADDRESS", "0.0.0.0")
+    monkeypatch.setenv("WEBUI_AUTH", "true")
+    calls = compose_responses(agent, monkeypatch)
+
+    status, result = module._enable_webui_selection()
+
+    assert (status, result) == (200, {"enabled": True, "action": "enabled"})
+    up_env = next(kwargs["env"] for command, kwargs in calls if "up" in command)
+    assert up_env["BIND_ADDRESS"] == "127.0.0.1"
+    assert up_env["WEBUI_AUTH"] == "false"
+    assert module.load_env(root / ".env")["WEBUI_AUTH"] == "false"
+
+
+@pytest.mark.parametrize("bind,proxy", [("0.0.0.0", "false"), ("127.0.0.1", "true")])
+def test_mac_network_add_back_enforces_auth_before_start(agent, monkeypatch, bind, proxy):
+    module, root = agent
+    monkeypatch.setattr(module.platform, "system", lambda: "Darwin")
+    with (root / ".env").open("a", encoding="utf-8") as env_file:
+        env_file.write(f"BIND_ADDRESS={bind}\nENABLE_ODS_PROXY={proxy}\nWEBUI_AUTH=false\n")
+    original_inode = (root / ".env").stat().st_ino
+    monkeypatch.setenv("WEBUI_AUTH", "false")
+    calls = compose_responses(agent, monkeypatch)
+
+    status, result = module._enable_webui_selection()
+
+    assert (status, result) == (200, {"enabled": True, "action": "enabled"})
+    assert (root / ".env").stat().st_ino == original_inode
+    assert module.load_env(root / ".env")["WEBUI_AUTH"] == "true"
+    assert module.load_env(root / ".env")["ENABLE_OPEN_WEBUI"] == "true"
+    assert all(kwargs["env"]["WEBUI_AUTH"] == "true" for _, kwargs in calls)
+    assert (root / "data/open-webui/retained-chat.db").read_bytes() == b"private retained chat"
+
+
+@pytest.mark.parametrize("fail_at", ["config", "up"])
+def test_mac_network_add_back_failure_restores_auth_and_selection(agent, monkeypatch, fail_at):
+    module, root = agent
+    monkeypatch.setattr(module.platform, "system", lambda: "Darwin")
+    with (root / ".env").open("a", encoding="utf-8") as env_file:
+        env_file.write("BIND_ADDRESS=0.0.0.0\nWEBUI_AUTH=false\n")
+    original = (root / ".env").read_bytes()
+    calls = compose_responses(agent, monkeypatch, fail_at=fail_at)
+
+    status, result = module._enable_webui_selection()
+
+    assert status == 502 and result["code"] == "enable_failed"
+    assert (root / ".env").read_bytes() == original
+    assert (root / "data/open-webui/retained-chat.db").read_bytes() == b"private retained chat"
+    assert all(kwargs["env"]["WEBUI_AUTH"] == "true" for _, kwargs in calls)
 
 
 @pytest.mark.parametrize("fail_at", ["config", "up"])
