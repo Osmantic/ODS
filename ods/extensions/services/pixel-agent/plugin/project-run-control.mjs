@@ -37,6 +37,12 @@ export function createProjectRunControl({wait = ms => delay(ms), now = () => per
       throw Error('project call is not bound to an admitted run');
     }
     entry.used = true;
+    // The probe reads cached image metadata. It cannot create or adopt a job,
+    // and a lost metadata response must not make Stop report unknown execution.
+    if (entry.request.action === 'capabilities') return (normalized, options) => {
+      if (!isDeepStrictEqual(normalized, entry.request)) throw Error('capability query cannot execute project work');
+      return request(normalized, options);
+    };
     const identity = key(entry.scope);
     let run = runs.get(identity);
     if (!run) {

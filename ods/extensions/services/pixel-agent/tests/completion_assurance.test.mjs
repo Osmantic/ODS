@@ -339,3 +339,76 @@ test('citation fallback after an actual read cannot append other unread search l
   assert.match(guard.terminal,/Attribution remains incomplete/);
   assert.doesNotMatch(guard.terminal,/https:\/\/example.org\/lead/);
 });
+
+// A live fleet reply fetched this exact page, then bolded its URL. The closing
+// Markdown stars became part of the citation key and caused a false rejection.
+test('successful page receipts survive directly emphasized citation URLs', () => {
+  const url = 'https://docs.python.org/3/library/pathlib.html';
+  for (const wrapper of ['**', '*', '__', '_', '***', '___', '~~']) {
+    for (const suffix of ['', '.', ')']) {
+      const guard = createCompletionAssurance();
+      guard.begin('Search official sources and read them before citing the documentation.');
+      guard.observe('web_fetch', {result:{details:{status:200, url, finalUrl:url,
+        text:'Pathlib provides classes representing filesystem paths.'}}});
+      const answer = `The official documentation is ${wrapper}${url}${wrapper}${suffix} and provides filesystem path classes.`;
+      assert.deepEqual(guard.unverifiedCitations(answer), [], answer);
+      assert.equal(guard.finalize(answer), undefined, answer);
+      assert.equal(guard.terminal, undefined, answer);
+    }
+  }
+});
+
+test('citation formatting cannot grant custody of literal or unread URLs', () => {
+  const url = 'https://docs.python.org/3/library/pathlib.html';
+  const answers = [
+    `${url}*`, `${url}**`, `${url}_`, `${url}__`, `${url}~~`,
+    `\\**${url}**`, `\\_${url}_`,
+    '`**' + url + '**`', '``**' + url + '**``',
+    '```\n**' + url + '**\n```',
+    '````\n```\n**' + url + '**\n````',
+    '~~~text\n**' + url + '**\n~~~',
+    '- ~~~\n  **' + url + '**\n  ~~~',
+    '1. ~~~\n   **' + url + '**\n   ~~~',
+    '> - ~~~\n>   **' + url + '**\n>   ~~~',
+    '- > ~~~\n  > **' + url + '**\n  > ~~~',
+    '~~~text\n- ~~~\n**' + url + '**\n~~~',
+    '~~~text\n1. ~~~\n**' + url + '**\n~~~',
+    '~~~text\n> ~~~\n**' + url + '**\n~~~',
+    '> ```\n> **' + url + '**\n> ```',
+    '    **' + url + '**',
+    '-     **' + url + '**', '1.     **' + url + '**',
+    `**${url}**/unread`, `**${url}?variant=unread**`,
+    `**https://example.com/unread**`,
+  ];
+  for (const answer of answers) {
+    const guard = createCompletionAssurance();
+    guard.begin('Read the official sources before citing them.');
+    guard.observe('web_fetch', {result:{details:{status:200, url, text:'Actual page evidence.'}}});
+    assert.ok(guard.unverifiedCitations(answer).length, answer);
+    assert.equal(guard.finalize(answer)?.action, 'revise', answer);
+  }
+});
+
+test('formatting preserves literal URL punctuation and exact query identity', () => {
+  for (const url of ['https://example.org/a*b', 'https://example.org/a_b',
+    'https://example.org/a*', 'https://example.org/a_',
+    'https://example.org/Foo_(bar)', 'https://example.org/page?x=1&y=2']) {
+    const guard = createCompletionAssurance();
+    guard.begin('Read the official sources before citing them.');
+    guard.observe('web_fetch', {result:{details:{status:200, url, text:'Actual page evidence.'}}});
+    for (const answer of [`Source: ${url}`, `[Source](${url})`, '`' + url + '`']) {
+      assert.deepEqual(guard.unverifiedCitations(answer), [], answer);
+    }
+  }
+});
+
+test('closed code spans and fences do not hide a later emphasized citation', () => {
+  const url = 'https://example.org/read';
+  const guard = createCompletionAssurance();
+  guard.begin('Read sources before citing them.');
+  guard.observe('web_fetch', {result:{details:{status:200, url, text:'Actual page evidence.'}}});
+  for (const prefix of ['`code` ', '``a ` b`` ', '```\ncode\n```\n', '~~~\ncode\n~~~\n',
+    '- ~~~\n  code\n  ~~~\n', '1. ~~~\n   code\n   ~~~\n', '> ~~~\n> code\n> ~~~\n']) {
+    assert.deepEqual(guard.unverifiedCitations(prefix + `**${url}**`), [], prefix);
+  }
+});

@@ -27,6 +27,7 @@ jobs:
       - name: Project contracts and actual Docker execution
         env:
           ODS_TEST_PROJECT_NODE: '1'
+          ODS_TEST_PROJECT_PYTHON: '1'
         run: >-
           python -m pytest -q extensions/services/pixel-agent/tests/test_project_*.py
           tests/test_pixel_project_install.py tests/test_pixel_runtime_budget.py

@@ -16255,12 +16255,13 @@ test('actual registered finalize hook awaits trusted revalidation before goal an
   vm.runInNewContext(source.slice(start,end),{
     api:{on:(_name,callback)=>{finalize=callback;}},toolLoopGuard:guard,AGENT_ID:'pixel',
     goalProgress:{finalize(_event,_context,decision){order.push('goal');return decision;}},
+    delegationDelivery:{finalize(){order.push('delegation');}},
   });
   const pending=finalize({},context);
   await Promise.resolve();assert.deepEqual(order,['verify']);
   assert.equal(guard.verificationForRun('run-1').status,'failed');
   resolve(true);await pending;
-  assert.deepEqual(order,['verify','goal']);
+  assert.deepEqual(order,['verify','goal','delegation']);
   assert.equal(guard.verificationForRun('run-1').status,'passed');
 });
 
@@ -16298,6 +16299,7 @@ test('saved project gets one verified publication at finalization without replay
   vm.runInNewContext(source.slice(start,end),{
     api:{on:(_name,callback)=>{finalize=callback;}},toolLoopGuard:guard,AGENT_ID:'pixel',
     goalProgress:{finalize(_event,_context,decision){return decision;}},
+    delegationDelivery:{finalize(){}},
   });
   assert.equal((await finalize({},context)).guardDecision,undefined);
   assert.equal(await guard.recoverWorkspacePreview({},context),false);

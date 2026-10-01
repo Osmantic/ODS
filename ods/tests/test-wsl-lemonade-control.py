@@ -480,6 +480,26 @@ class StartupRetirementTests(unittest.TestCase):
                 self.assertNotIn('-StateRoot', command)
                 self.assertEqual('-ValidateOnly' in command, readonly)
                 self.assertEqual(run.call_args.kwargs['timeout'], 45)
+                self.assertNotIn('-RetireRelay', command)
+
+    def test_uninstall_explicitly_retires_relay_with_a_verified_receipt(self):
+        for readonly, state, relay in ((True, 'validated', 'validated'),
+                                       (False, 'disabled', 'stopped'),
+                                       (False, 'unmanaged', 'unmanaged')):
+            response = {**self.result(state), 'relayRetirement': relay}
+            with self.subTest(state=state), patch.object(bridge, '_run', return_value=completed(response)) as run:
+                bridge.disable_startup(self.root, ENV, validate_only=readonly, retire_relay=True)
+                self.assertIn('-RetireRelay', run.call_args.args[0])
+                self.assertEqual('-ValidateOnly' in run.call_args.args[0], readonly)
+                self.assertEqual(run.call_args.kwargs['timeout'], 45 if readonly else 90)
+                self.assertEqual(run.call_count, 1)
+
+    def test_uninstall_rejects_missing_or_wrong_relay_receipt_without_replay(self):
+        for response in (self.result('disabled'), {**self.result('disabled'), 'relayRetirement': 'validated'}):
+            with self.subTest(response=response), patch.object(bridge, '_run', return_value=completed(response)) as run:
+                with self.assertRaisesRegex(bridge.BridgeError, 'owned relay retirement'):
+                    bridge.disable_startup(self.root, ENV, retire_relay=True)
+                self.assertEqual(run.call_count, 1)
 
     def test_custom_state_root_is_forwarded_literally_for_precheck_and_retirement(self):
         for root in (r"D:\Owner's state $literal", r'\\server\private share\ODS state', 'E:/ODS/state/'):
