@@ -76,6 +76,31 @@ def test_api_auth_alone_cannot_open_human_channel(client):
     terminal.async_request_json.assert_not_awaited()
 
 
+def test_https_terminator_preserves_signed_same_origin_browser(client):
+    result = post(client, {"action": "poll", "session": "a" * 64, "cursor": 0}, **{
+        "Host": "dashboard.example:8443",
+        "Origin": "https://dashboard.example:8443",
+        "X-Forwarded-Proto": "https",
+    })
+    assert result.status_code == 200
+    terminal.async_request_json.assert_awaited_once()
+
+
+@pytest.mark.parametrize("headers", [
+    {"Origin": "http://dashboard.example", "X-Forwarded-Proto": "http"},
+    {"Origin": "https://evil.example", "X-Forwarded-Proto": "https"},
+    {"Origin": "https://dashboard.example", "X-Forwarded-Proto": "http"},
+    {"Origin": "https://dashboard.example", "X-Forwarded-Proto": "https,http"},
+    {"Origin": "http://dashboard.example", "X-Forwarded-Proto": "https"},
+    {"Origin": "https://dashboard.example", "X-Forwarded-Proto": "https", "Sec-Fetch-Site": "cross-site"},
+])
+def test_forwarded_scheme_cannot_replace_origin_or_transport_checks(client, headers):
+    result = post(client, {"action": "poll", "session": "a" * 64, "cursor": 0},
+                  **{"Host": "dashboard.example", **headers})
+    assert result.status_code == 403
+    terminal.async_request_json.assert_not_awaited()
+
+
 def test_invalid_input_never_echoes_secret_in_validation_response(client):
     secret = "private-password-DO-NOT-LOG"
     result = post(

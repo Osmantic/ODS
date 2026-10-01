@@ -15,6 +15,8 @@ host agents refuse this route. No installer or sudo policy changes are required.
 - The Dashboard route requires a signed Dashboard sign-in cookie, same-origin
   browser metadata, and HTTPS or a loopback origin. The preview iframe is not
   given access. The host route separately requires existing host-agent auth.
+  HTTPS terminators must send `X-Forwarded-Proto: https`, as for Dashboard login;
+  the terminal proxy preserves that scheme for the API's exact origin check.
 - Opening rechecks the exact protected job/hash through the installed Operations
   status helper. Only an awaiting job with approval required can start a PTY.
 - One terminal may exist at a time. A random handle and hashed browser-session
@@ -53,6 +55,13 @@ python -m pytest ods/extensions/services/pixel-agent/tests/test_approval_termina
 cd ods/extensions/services/dashboard
 npx vitest run src/components/PortalApprovalTerminal.test.jsx src/pages/Pixel.test.jsx
 npm run build
+```
+
+With an existing local nginx/dashboard image, verify the real proxy's scheme
+forwarding and authentication gate in an isolated networkless container:
+
+```sh
+ODS_NGINX_TEST_IMAGE=ods-dashboard:latest python -m pytest ods/tests/test-dashboard-approval-terminal-proxy.py
 ```
 
 The disposable Docker fixture tests the original approval helper against actual
