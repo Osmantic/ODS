@@ -5,6 +5,18 @@ service. The service checks current owner authority before accepting work,
 before each stage, and before importing results. Installing a runtime does not
 enable Full Access or permit arbitrary host commands.
 
+Submit with exactly `{"action":"submit","project":"Playground/my-site","outputDirectory":"dist"}`.
+The manifests select npm or Python; `runtime` is only a diagnose/capabilities
+parameter. `outputDirectory` is the basename inside the project, not a full
+workspace path. Invalid parameters return a field and correction hint with
+`executionStarted:false`; fixing them still requires an admitted owner call.
+
+If a diagnostic cannot start, its durable `failure` contains only a closed
+phase/code pair (for example `storage-reservation` / `operation-timeout`). It
+does not expose command arguments, exception text, paths or subprocess output.
+This preserves failure classification through final receipt writing without
+claiming that a later successful check explains an earlier transient failure.
+
 ## npm projects
 
 Existing projects keep the original behavior: `package.json` and a matching npm

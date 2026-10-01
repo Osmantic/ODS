@@ -123,6 +123,8 @@ def stage_arguments(image: str, job: str, stage: str, *, runtime: str = "npm") -
     elif runtime != "npm":
         raise ValueError("unsupported project runtime")
     commands['keeper'] = ['sleep', str(KEEPER_SECONDS)]
+    from project_diagnostics import diagnostic_command
+    commands['diagnose'] = diagnostic_command(runtime)
     if stage not in commands:
         raise ValueError("unsupported project stage")
     return ["docker", "run", "--name", job + "-" + stage,
@@ -134,7 +136,7 @@ def stage_arguments(image: str, job: str, stage: str, *, runtime: str = "npm") -
             "--tmpfs", "/tmp:rw,nosuid,nodev,size=256m",
             "--mount", "type=volume,source=" + job + ",target=/home/node,volume-nocopy",
             "--workdir", "/home/node", image,
-            *(commands[stage] if stage == 'keeper' else deadline_command(commands[stage]))]
+            *(commands[stage] if stage == 'keeper' else deadline_command(commands[stage], 30 if stage == 'diagnose' else 240))]
 
 
 def start_keeper(image, job, *, runtime='npm'):
@@ -318,7 +320,7 @@ def recover_job(image: str, job: str, *, cancel=False, required_stage=None, time
             if not isinstance(name, str):
                 return unknown
             stage = name.removeprefix("/" + job + "-")
-            if stage not in ("seed-manifests", "seed-source", "acquire", "test", "build", "keeper"):
+            if stage not in ("seed-manifests", "seed-source", "acquire", "test", "build", "keeper", "diagnose"):
                 return {**unknown, "evidence": "identity-mismatch"}
             evidence = observe_stage(image, job, stage, container_id=cid, timeout=remaining(), runtime=runtime)
             if evidence.get("evidence") != "docker-state":

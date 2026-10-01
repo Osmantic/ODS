@@ -11,6 +11,8 @@ import subprocess
 from project_dispatch import dispatch_project
 from unix_peer import peer_ids
 from project_runtime import verify_runtime
+from project_jobs import ProjectRecoveryRequired
+from project_runtime_protocol import ProjectManifestError
 
 MAX_REQUEST_BYTES = 8192
 MAX_RESPONSE_BYTES = 1024 * 1024
@@ -58,6 +60,12 @@ def serve_project_connection(connection, *, controller, owner_uid):
         result = dispatch_project(controller, envelope["request"], request_key=replay)
     except PermissionError:
         result = {"schemaVersion": 1, "kind": "ods-project-job", "status": "denied"}
+    except ProjectRecoveryRequired as error:
+        result = {'schemaVersion': 1, 'kind': 'ods-project-job', 'status': 'recovery-required',
+                  'executionStarted': False, 'jobId': error.job}
+    except ProjectManifestError as error:
+        result = {'schemaVersion': 1, 'kind': 'ods-project-job', 'status': 'invalid-request',
+                  'executionStarted': False, 'issue': error.issue}
     except (ValueError, TypeError, UnicodeError):
         result = {"schemaVersion": 1, "kind": "ods-project-job", "status": "invalid-request"}
     except (OSError, KeyError, RuntimeError, subprocess.SubprocessError):

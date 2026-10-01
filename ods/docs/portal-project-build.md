@@ -1,5 +1,45 @@
 # Managed project builds in Portal
 
+## Owner reconciliation of legacy uncertain builds
+
+An old `unconfirmed` receipt can lack evidence of whether execution or import
+occurred. Missing containers alone do not resolve that uncertainty. The offline
+owner command below preserves that original receipt and records a separate
+owner-attested resolution allowing a new request for the same project. It never
+claims success, failure, cancellation, or absence of past writes, and never
+replays work or deletes resources.
+
+This Linux/systemd recovery requires protected administrator invocation, a stopped
+project service with an empty control group, an engine VM boot newer than the
+receipt's last update, and no matching containers, volumes, reservation or output
+generation. Unavailable or ambiguous evidence leaves the retry fence in place.
+Because legacy receipts did not bind an engine identity, the owner must personally
+confirm that the displayed engine is the original one and accept the unknown
+historical execution/import outcome. Do not confirm if that engine is uncertain.
+
+Have the owner approve the exact recovery commands through the existing protected
+Operations flow. The helper must be the root-owned installed copy, never an
+owner-writable checkout. It temporarily uses the configured owner's identity to
+inspect Docker, files and the ledger; only the separate attestation is written
+as root. A model sharing the workspace UID cannot issue that attestation.
+
+The reviewable commands are:
+
+```bash
+sudo systemctl stop ods-pixel-project.service
+sudo python3 /usr/local/libexec/ods-pixel-project/project_owner_recovery.py --job <exact-job-id>
+sudo python3 /usr/local/libexec/ods-pixel-project/project_owner_recovery.py --job <exact-job-id> --receipt-sha256 <displayed-hash>
+sudo systemctl start ods-pixel-project.service
+```
+
+The second invocation displays the engine evidence and requires an exact,
+unpredictable interactive acknowledgement. Do not ask a model to enter it. No
+model tool or HTTP route exposes this operation. If any check fails, restart the
+service normally; the historical receipt and retry fence remain intact. A later
+change to the original receipt also invalidates its resolution. Recovery does
+not grant execution permission: an ordinary new submission must still satisfy
+the current access policy and source verification.
+
 The `pixel_ods_project_build` tool runs dependency acquisition, tests and builds
 for an existing npm project in the owner's Pixel workspace. Linux and WSL
 installations provision its owner service and expose the tool only after the
