@@ -90,6 +90,25 @@ jobs:
               --security-opt no-new-privileges --entrypoint sh \
               "ods-security-$SERVICE:ci" -c "test \"\$(id -u)\" -eq $uid"
           fi
+          if [ "$SERVICE" = model-router ]; then
+            scratch="$(mktemp -d)"
+            (
+              umask 077
+              mkdir -p "$scratch/config/model-router"
+              printf '{"endpoints": []}\n' > "$scratch/config/model-router/endpoints.json"
+            )
+            test "$(stat -c %a "$scratch/config/model-router")" = 700
+            test "$(stat -c %a "$scratch/config/model-router/endpoints.json")" = 600
+            python ods/scripts/render-runtime-configs.py \
+              --surface model-router-endpoints --output-root "$scratch" --write
+            test "$(stat -c %a "$scratch/config/model-router")" = 711
+            test "$(stat -c %a "$scratch/config/model-router/endpoints.json")" = 644
+            docker run --rm --network none --read-only --cap-drop ALL \
+              --security-opt no-new-privileges \
+              --mount "type=bind,src=$scratch/config/model-router,dst=/config,readonly" \
+              --entrypoint python "ods-security-$SERVICE:ci" -c \
+              'import json,os; assert os.geteuid()==10777; assert json.load(open("/config/endpoints.json"))["endpoints"][0]["id"] == "llama-server-default"'
+          fi
 
   non-python-image-modes:
     runs-on: ubuntu-latest
