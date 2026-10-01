@@ -54,6 +54,19 @@ class ProjectArtifactsTests(unittest.TestCase):
         self.assertEqual(result["files"]["index.html"], b"<h1>actual</h1>\n")
         self.assertEqual(result["sha256"], decode_artifacts(data)["sha256"])
 
+    def test_next_dynamic_route_assets_round_trip_without_renaming(self):
+        paths = ['_next/static/chunks/app/games/[slug]/page.js',
+                 '_next/static/chunks/app/docs/[...slug]/page.js',
+                 '_next/static/chunks/app/docs/[[...slug]]/page.js']
+        output = decode_artifacts(packed([(p, tarfile.REGTYPE, b'actual();') for p in paths]))
+        self.assertEqual(set(output['files']), set(paths))
+        if os.name == 'posix':
+            with tempfile.TemporaryDirectory() as root:
+                (Path(root) / 'project').mkdir()
+                imported = import_artifacts(root, 'project', 'ods-project-' + 'c' * 24, output)
+                for path in paths:
+                    self.assertEqual((Path(root) / imported / path).read_bytes(), b'actual();')
+
     def test_rejects_links_devices_and_traversal(self):
         for name, kind in (("../outside", tarfile.REGTYPE), ("/outside", tarfile.REGTYPE),
                            (".env", tarfile.REGTYPE), ("__ods_meta.json", tarfile.REGTYPE),
