@@ -202,7 +202,9 @@ def fingerprint(row: dict) -> dict:
     return {key: row.get(key) for key in ("Name", "Labels", "CreatedAt", "Driver")}
 
 
-def preflight(root: Path, snapshot: Path, flags: list[str], keep_data: bool = False) -> None:
+def preflight(root: Path, snapshot: Path, flags: list[str], keep_data: bool = False,
+              trusted_root: Path | None = None) -> None:
+    trusted_root = trusted_root or root
     project, selected, external = project_config(root, flags)
     container_ids, mounted = project_containers(root, project)
     if keep_data:
@@ -212,7 +214,7 @@ def preflight(root: Path, snapshot: Path, flags: list[str], keep_data: bool = Fa
         }), encoding="utf-8")
         return
     volumes = project_volumes(root, project)
-    trusted = trusted_plain_volume_keys(root)
+    trusted = trusted_plain_volume_keys(trusted_root)
     if volumes and not container_ids:
         raise ValueError("ODS project volumes remain but no container proves the installation path")
     owned = {}
@@ -236,7 +238,8 @@ def preflight(root: Path, snapshot: Path, flags: list[str], keep_data: bool = Fa
     other_mounts = mounted - set(volumes) - set(external)
     for name, row in inspect_volumes(root, other_mounts).items():
         labels = row.get("Labels") or {}
-        if (not CONTAINER_RE.fullmatch(name) or labels or
+        if (not CONTAINER_RE.fullmatch(name) or
+                labels not in ({}, {"com.docker.volume.anonymous": ""}) or
                 row.get("Driver") != "local"):
             raise ValueError(f"Mounted volume {name} has unproven ownership; purge refused")
         anonymous[name] = fingerprint(row)
@@ -244,6 +247,7 @@ def preflight(root: Path, snapshot: Path, flags: list[str], keep_data: bool = Fa
     record = {
         "schemaVersion": 1,
         "installDir": str(root),
+        "trustedSource": str(trusted_root),
         "project": project,
         "volumes": owned,
         "anonymous": anonymous,
@@ -255,10 +259,12 @@ def preflight(root: Path, snapshot: Path, flags: list[str], keep_data: bool = Fa
     snapshot.write_text(json.dumps(record, sort_keys=True), encoding="utf-8")
 
 
-def complete(root: Path, snapshot: Path) -> None:
+def complete(root: Path, snapshot: Path, trusted_root: Path | None = None) -> None:
+    trusted_root = trusted_root or root
     record = json.loads(snapshot.read_text(encoding="utf-8"))
     if (not isinstance(record, dict) or record.get("schemaVersion") != 1 or
             record.get("installDir") != str(root) or
+            record.get("trustedSource") != str(trusted_root) or
             not isinstance(record.get("project"), str) or
             not isinstance(record.get("volumes"), dict)):
         raise ValueError("Uninstall volume snapshot is invalid")
@@ -276,7 +282,7 @@ def complete(root: Path, snapshot: Path) -> None:
     if (current_project != project or
             current_selected != record.get("selected") or
             current_external != record.get("external") or
-            not set(record.get("trustedUsed", [])).issubset(trusted_plain_volume_keys(root))):
+            not set(record.get("trustedUsed", [])).issubset(trusted_plain_volume_keys(trusted_root))):
         raise ValueError("Compose ownership changed during uninstall; installation retained")
     remaining = project_volumes(root, project)
     external = record.get("external")
@@ -308,22 +314,25 @@ def complete(root: Path, snapshot: Path) -> None:
 
 
 def main() -> int:
-    if len(sys.argv) < 4 or sys.argv[1] not in ("preflight", "complete"):
-        print("Usage: uninstall-compose-volumes.py preflight|complete INSTALL_DIR SNAPSHOT [COMPOSE_FLAGS...]", file=sys.stderr)
+    if len(sys.argv) < 5 or sys.argv[1] not in ("preflight", "complete"):
+        print("Usage: uninstall-compose-volumes.py preflight|complete INSTALL_DIR SNAPSHOT TRUSTED_SOURCE [COMPOSE_FLAGS...]", file=sys.stderr)
         return 2
-    mode, root_arg, snapshot_arg, *flags = sys.argv[1:]
+    mode, root_arg, snapshot_arg, trusted_arg, *flags = sys.argv[1:]
     try:
         root = Path(root_arg).resolve(strict=True)
+        trusted_root = Path(trusted_arg).resolve(strict=True)
         snapshot = Path(snapshot_arg)
-        if not root.is_dir() or not snapshot.is_file() or snapshot.is_symlink():
+        if (not root.is_dir() or not trusted_root.is_dir() or
+                not snapshot.is_file() or snapshot.is_symlink()):
             raise ValueError("Installation or volume snapshot is invalid")
         if mode == "preflight":
             keep_data = bool(flags and flags[0] == "--keep-data")
-            preflight(root, snapshot, flags[1:] if keep_data else flags, keep_data)
+            preflight(root, snapshot, flags[1:] if keep_data else flags,
+                      keep_data, trusted_root)
         elif flags:
             raise ValueError("Unexpected Compose arguments for completion")
         else:
-            complete(root, snapshot)
+            complete(root, snapshot, trusted_root)
     except (OSError, ValueError, json.JSONDecodeError, subprocess.TimeoutExpired) as error:
         print(f"ODS volume custody failed: {error}", file=sys.stderr)
         return 1
