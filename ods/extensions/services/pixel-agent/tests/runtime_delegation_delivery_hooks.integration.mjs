@@ -29,7 +29,7 @@ test(`real gateway deferred delegation waits for two children and a verified rev
   const consolidatedRequests=[],providerTrace=[];
   cpSync(installed,pkg,{recursive:true});
   assert.equal(JSON.parse(readFileSync(join(pkg,'package.json'))).version,'2026.6.33');
-  for(const [name,module] of [['hook-provenance','hook-agent-context-ugCMMoT5.js'],
+  for(const [name,module] of [['hook-provenance','hook-agent-context-ugCMMoT5.js'],['run-id-redaction','redact-cvFSPoXf.js'],
     ['context-usage','attempt-execution-DnVHak5f.js'],['compaction-budget','selection-BEwSQKM-.js'],['yield-usage','embedded-agent-CJx-nG3W.js'],['compaction-empty','proxy-Bsfwfsp-.js']]) {
     const recipe=JSON.parse(readFileSync(new URL(`../host/openclaw-${name}.json`,import.meta.url)));
     const target=join(pkg,'dist',module);let text=readFileSync(target,'utf8');
@@ -40,6 +40,37 @@ test(`real gateway deferred delegation waits for two children and a verified rev
       for(const [before,after] of recipe.replacements){assert.equal(text.split(before).length,2);text=text.replace(before,after);}
       assert.equal(sha(text),recipe.patchedSha256);writeFileSync(target,text);
     }
+  }
+  // Reproduce the CI UUID/credential collision deterministically in the private
+  // package only; native spawn, tool sanitization and admission remain real.
+  const collisionRun='9c98b56b-cd0c-43b5-91fc-4591a1943618';
+  const spawnModule=join(pkg,'dist','openclaw-tools-iHHy99PD.js');
+  let spawnSource=readFileSync(spawnModule,'utf8');
+  const randomChild='const childIdem = crypto.randomUUID();';
+  assert.equal(spawnSource.split(randomChild).length,2);
+  spawnSource=spawnSource.replace(randomChild,`const childIdem = label === "fixture-review-0" ? "${collisionRun}" : crypto.randomUUID();`);
+  writeFileSync(spawnModule,spawnSource);
+  if(interim==='final') {
+    const redactor=await import(pathToFileURL(join(pkg,'dist','redact-cvFSPoXf.js')).href);
+    const redact=value=>redactor.d(value,{}), field=(key,value)=>redactor.o(key,value,{});
+    assert.equal(redact(collisionRun),collisionRun);
+    assert.equal(field('runId',collisionRun),collisionRun);
+    assert.equal(field('childSessionKey','agent:pixel:subagent:'+collisionRun),'agent:pixel:subagent:'+collisionRun);
+    assert.equal(redact(JSON.stringify({runId:collisionRun})),JSON.stringify({runId:collisionRun}));
+    for(const secret of ['fc-4591a1943618','fc-abcdef0123456789abcdef','Bearer '+collisionRun,
+      'x'+collisionRun,collisionRun+'x',collisionRun+'-extra',collisionRun.replace('9c98b56b','zz98b56b')])
+      assert.notEqual(redact(secret),secret,`credential or malformed UUID must remain masked: ${secret}`);
+    const tail=' '.repeat(24000);
+    for(const value of [' '.repeat(16383)+'x'+collisionRun+tail,' '.repeat(16348)+collisionRun+'_'+tail]) {
+      assert.notEqual(redact(value),value,'chunk edges cannot hide identifier boundaries');
+      assert.notEqual(redactor.c(value,{mode:'tools',patterns:[/(fc-[A-Za-z0-9]{10,})/g]}),value,'custom RegExp sees the same full boundary');
+    }
+    for(const offset of [16349,16363,16364,16383]) {
+      const value=' '.repeat(offset)+collisionRun+tail;
+      assert.equal(redact(value),value,'canonical UUID crossing a chunk boundary stays intact');
+    }
+    assert.notEqual(field('apiKey',collisionRun),collisionRun,'sensitive field intent still masks UUID-shaped values');
+    assert.notEqual(redactor.c(collisionRun,{mode:'tools',patterns:[collisionRun]}),collisionRun,'custom owner redaction still applies');
   }
   mkdirSync(workspace);mkdirSync(plugin);
   const eventsFile=join(root,'hooks.jsonl');
@@ -218,6 +249,8 @@ test(`real gateway deferred delegation waits for two children and a verified rev
       }
       assert.equal(heldChildren.length,2,'both actual child providers must be active before Stop');
       assert.ok(events.some(e=>e.hook==='tool'&&e.toolName==='sessions_yield'));
+      assert.ok(events.some(e=>e.hook==='tool'&&e.toolName==='sessions_spawn'&&e.result.details.runId===collisionRun),'known UUID survives native tool sanitization before Stop');
+
       const original=events.filter(e=>e.hook==='prompt'&&!e.sessionKey?.includes(':subagent:')).at(-1);
       const stop=await fetch(`http://127.0.0.1:${ingressPort}/v1/chat/cancel`,{method:'POST',headers:{Authorization:'Bearer fixture-only-0123456789abcdef','Content-Type':'application/json'},body:JSON.stringify({user:'delegation-fixture'}),signal:AbortSignal.timeout(15000)});
       const stopped=await stop.json().catch(error=>{throw new Error("stop response: "+error.message)});assert.equal(stopped.aborted,true,JSON.stringify(stopped));
@@ -291,6 +324,7 @@ test(`real gateway deferred delegation waits for two children and a verified rev
     if(interim==='extra-yield')assert.ok(events.some(e=>e.hook==='before-tool'&&e.toolName==='sessions_yield'&&e.decision?.block),'native deferred yield is blocked after both results and the model can still finalize');
     const innerSpawns=originalEvents.filter(e=>e.hook==='tool'&&e.toolName==='sessions_spawn');
     assert.equal(innerSpawns.length,2);
+    assert.ok(innerSpawns.some(e=>e.result.details.runId===collisionRun),'known UUID survives native spawn/tool/admission custody');
     for(const spawned of innerSpawns) {
       assert.match(spawned.toolCallId,/^tool_search_code:spawn-fixture-[01]:sessions_spawn:/);
       assert.ok(originalEvents.some(e=>e.hook==='before-tool'&&e.toolCallId===spawned.toolCallId));
