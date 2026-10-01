@@ -141,4 +141,50 @@ MOCK_SYSTEMCTL
 defaults_line="$(awk '/^INTERACTIVE=true$/ { print NR; exit }' "$ROOT/install-core.sh")"
 all_line="$(awk '/^[[:space:]]*--all\)/ { print NR; exit }' "$ROOT/install-core.sh")"
 [[ "$all_line" -gt "$defaults_line" ]] || { echo 'FAIL: --all precedes defaults' >&2; exit 1; }
+
+# --all seeds the full stack, but an interactive Core choice must still clear
+# its voice preset. Individual --voice/--no-voice flags remain authoritative.
+(
+    INSTALL_DIR="$fixture/fresh-all-core"
+    eval "$defaults"
+    all_clause="$(awk '/^[[:space:]]*--all\)/ {
+        sub(/^[[:space:]]*--all\)[[:space:]]*/, "")
+        sub(/[[:space:]]*shift[[:space:]]*;;[[:space:]]*$/, "")
+        print; exit
+    }' "$ROOT/install-core.sh")"
+    core_clause="$(awk '/^        2\)$/ { in_core=1; next }
+        in_core && /^            ;;$/ { exit }
+        in_core { print }' "$ROOT/installers/lib/ui.sh")"
+    [[ -n "$all_clause" && -n "$core_clause" ]] || {
+        echo 'FAIL: --all or Core menu case missing' >&2; exit 1;
+    }
+    signal() { :; }
+    log() { :; }
+    eval "$all_clause"
+    [[ "$ENABLE_WHISPER" == true && "$ENABLE_TTS" == true ]] || {
+        echo 'FAIL: --all stopped enabling both voice services' >&2; exit 1;
+    }
+    eval "$core_clause"
+    [[ "$ENABLE_WHISPER" == false && "$ENABLE_TTS" == false ]] || {
+        echo 'FAIL: interactive Core choice retained --all voice' >&2; exit 1;
+    }
+
+    eval "$defaults"
+    eval "$all_clause"
+    WHISPER_EXPLICIT=true TTS_EXPLICIT=true
+    ENABLE_WHISPER=true ENABLE_TTS=true
+    eval "$core_clause"
+    [[ "$ENABLE_WHISPER" == true && "$ENABLE_TTS" == true ]] || {
+        echo 'FAIL: Core overrode an explicit voice switch' >&2; exit 1;
+    }
+
+    eval "$defaults"
+    eval "$all_clause"
+    WHISPER_EXPLICIT=true TTS_EXPLICIT=true
+    ENABLE_WHISPER=false ENABLE_TTS=false
+    eval "$core_clause"
+    [[ "$ENABLE_WHISPER" == false && "$ENABLE_TTS" == false ]] || {
+        echo 'FAIL: Core overrode an explicit no-voice switch' >&2; exit 1;
+    }
+)
 echo 'PASS: installed optional Compose selections survive installer reruns'
