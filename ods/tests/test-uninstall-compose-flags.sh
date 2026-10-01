@@ -288,9 +288,12 @@ EOF
     make_install "$install_purge"
     DOCKER_LOG="$log_purge" SUDO_LOG="$sudo_log" run_uninstall "$install_purge" "$home_purge" "$stub_dir"
 
-    grep -qF 'compose -f docker-compose.base.yml -f docker-compose.cpu.yml down -v --remove-orphans' "$log_purge" \
-        || fail "normal uninstall must remove compose volumes with -v"
-    pass "normal uninstall removes compose volumes"
+    grep -qF 'compose -f docker-compose.base.yml -f docker-compose.cpu.yml down --remove-orphans' "$log_purge" \
+        || fail "normal uninstall must stop Compose without deleting volumes before custody review"
+    if grep -qF 'down -v' "$log_purge"; then
+        fail "normal uninstall must not let Compose delete volumes before custody review"
+    fi
+    pass "normal uninstall defers volume removal to the custody helper"
     assert_no_name_cleanup "$log_purge"
 
     local failed_install="$TMP_DIR/failed-install" failed_home="$TMP_DIR/failed-home"
@@ -303,7 +306,7 @@ EOF
         run_uninstall "$failed_install" "$failed_home" "$stub_dir" 2>"$TMP_DIR/failed-error"; then
         fail "Compose down failure must fail uninstall"
     fi
-    grep -qxF 'compose -f docker-compose.base.yml -f docker-compose.cpu.yml down -v --remove-orphans' "$failed_docker" \
+    grep -qF 'compose -f docker-compose.base.yml -f docker-compose.cpu.yml down --remove-orphans' "$failed_docker" \
         || fail "failure fixture must reach the existing Compose down command"
     assert_no_name_cleanup "$failed_docker"
     [[ -f "$failed_install/ods-uninstall.sh" && -f "$failed_install/data/owner.txt" && \

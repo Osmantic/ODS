@@ -122,6 +122,17 @@ class UninstallVolumeTests(unittest.TestCase):
         self.assertEqual(set(self.fake.removed), set(captured["volumes"]))
         self.assertEqual(self.fake.foreign, {"ods-pixel-retired-research", "ods-unrelated"})
 
+    def test_selected_volume_is_removed_only_after_down_and_reinspection(self):
+        self.fake.config["volumes"] = {
+            "perplexica-data": {"name": "ods_perplexica-data"}
+        }
+        MODULE.preflight(self.root, self.snapshot, [])
+        self.assertFalse(self.fake.removed)
+        # The shell uses Compose down without -v, so this volume still exists.
+        self.fake.containers = []
+        MODULE.complete(self.root, self.snapshot)
+        self.assertIn("ods_perplexica-data", self.fake.removed)
+
     def test_candidate_recipe_requires_installed_disabled_receipt(self):
         trusted = Path(self.temp.name) / "candidate"
         recipe = trusted / "extensions/services/perplexica/compose.yaml"
