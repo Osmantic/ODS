@@ -38,6 +38,9 @@ def serve_project_connection(connection, *, controller, owner_uid):
             verify_runtime(controller.image)
             response = {"schemaVersion": 1, "kind": "ods-project-runtime", "status": "ready",
                         "image": controller.image, "executionPolicy": "runtime-verified-full-access"}
+            if controller.python_image:
+                verify_runtime(controller.python_image, runtime="python")
+                response["runtimes"] = {"npm": controller.image, "python": controller.python_image}
             connection.sendall(json.dumps(response).encode() + b"\n")
             return
         if not isinstance(envelope, dict) or set(envelope) != {"context", "request"}:

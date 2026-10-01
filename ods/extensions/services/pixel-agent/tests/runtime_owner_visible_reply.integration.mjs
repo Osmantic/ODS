@@ -45,6 +45,13 @@ for (const replies of [['NO_REPLY',ANSWER],['NO_REPLY','NO_REPLY']]) test(`real 
     const record=x=>appendFileSync(${JSON.stringify(join(root,'events.jsonl'))},JSON.stringify(x)+'\\n');
     const guard=createToolLoopGuard({abortRun:()=>false});
     export default {id:'visible-reply-fixture',register(api){
+      // This isolated fixture has no spawning tools; explicitly declare the
+      // nondelegated gateway contract used by the paired ingress.
+      api.registerHttpRoute({path:'/pixel-ods/subagent-delivery',auth:'gateway',match:'exact',handler:async(req,res)=>{
+        let body='';for await(const part of req)body+=part;
+        res.writeHead(200,{'Content-Type':'application/json'});
+        res.end(JSON.stringify({schemaVersion:1,kind:'ods-subagent-delivery',runId:JSON.parse(body).runId,status:'not-delegated'}));return true;
+      }});
       api.registerHttpRoute({path:'/pixel-ods/verification',auth:'gateway',match:'exact',handler:async(req,res)=>{
         let body='';for await(const part of req)body+=part;
         res.writeHead(200,{'Content-Type':'application/json'});

@@ -60,7 +60,10 @@ class ProjectJobs:
     def create(self, request_key, request):
         if not isinstance(request_key, str) or not re.fullmatch(r"[a-f0-9]{64}", request_key):
             raise ValueError("controller request key required")
-        if not isinstance(request, dict) or set(request) != {"project", "sourceSha256", "image", "outputDirectory"}:
+        fields = {"project", "sourceSha256", "image", "outputDirectory"}
+        if not isinstance(request, dict) or not (
+                set(request) == fields or
+                (set(request) == fields | {"runtime"} and request["runtime"] == "python")):
             raise ValueError("exact project execution request required")
         project = request["project"]
         if (not isinstance(project, str) or len(project) > 1024 or len(project.split("/")) > 8
@@ -193,14 +196,16 @@ class ProjectJobs:
         row = self.observe(job)
         if row["state"] == "unconfirmed":
             from project_runtime import recover_job
-            return {"job": row, "runtime": recover_job(row["request"]["image"], job)}
+            return {"job": row, "runtime": recover_job(row["request"]["image"], job,
+                                                       runtime=row["request"].get("runtime", "npm"))}
         if row["state"] != "running":
             return {"job": row, "runtime": None}
         stages = ("acquire", "test", "build")
         if len(row["steps"]) >= len(stages):
             return {"job": row, "runtime": {"status": "awaiting-artifact-import"}}
         stage = stages[len(row["steps"])]
-        evidence = observer(row["request"]["image"], job, stage)
+        runtime_args = {"runtime": "python"} if row["request"].get("runtime") == "python" else {}
+        evidence = observer(row["request"]["image"], job, stage, **runtime_args)
         if evidence.get("evidence") == "docker-state" and evidence.get("status") in ("succeeded", "failed"):
             try:
                 self.record_stage(job, stage, evidence)

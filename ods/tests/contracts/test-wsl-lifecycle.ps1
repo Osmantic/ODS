@@ -334,3 +334,6 @@ try {
         Remove-Item -LiteralPath $resolved -Recurse -Force
     }
 }
+
+# The relay has independent caller-lifetime and cancellation contracts.
+& (Join-Path $PSScriptRoot 'test-wsl-relay-lifetime.ps1')

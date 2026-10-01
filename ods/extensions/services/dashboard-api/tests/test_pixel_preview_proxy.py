@@ -4,8 +4,10 @@ Uses isolated loopback ports and fixture credentials; requires nginx on PATH.
 Browser interaction/isolation is covered by pixel-agent/tests/preview_browser.test.cjs.
 """
 import ast
+import errno
 import http.client
 import http.server
+import os
 from pathlib import Path
 import shutil
 import socket
@@ -16,7 +18,39 @@ import time
 import pytest
 
 
-def test_preview_keeps_only_edge_csp_and_portal_policy_stays_strict(tmp_path):
+@pytest.fixture(params=[False, True], ids=["kernel-ports", "reuse-freed-ports"])
+def nginx_listeners(request, monkeypatch):
+    if request.param:
+        # Deterministically reproduce an allocator reusing a just-closed probe
+        # for the next probe or Gate. A bound listener must never be reused.
+        allocated = []
+        original_socket = socket.socket
+
+        class ReusingSocket(original_socket):
+            def bind(self, address):
+                if address == ("127.0.0.1", 0):
+                    for port in allocated:
+                        try:
+                            return super().bind(("127.0.0.1", port))
+                        except OSError as error:
+                            if error.errno != errno.EADDRINUSE:
+                                raise
+                    super().bind(address)
+                    allocated.append(self.getsockname()[1])
+                    return
+                return super().bind(address)
+
+        monkeypatch.setattr(socket, "socket", ReusingSocket)
+    # nginx supports inherited listening descriptors through NGINX. Keep these
+    # bound until teardown and pass them to the child, with no free-port gap.
+    with socket.socket() as local, socket.socket() as network:
+        for listener in (local, network):
+            listener.bind(("127.0.0.1", 0))
+            listener.listen(128)
+        yield local, network
+
+
+def test_preview_keeps_only_edge_csp_and_portal_policy_stays_strict(tmp_path, nginx_listeners):
     nginx = shutil.which("nginx")
     if not nginx:
         pytest.skip("real nginx is required for proxy header integration")
@@ -44,12 +78,7 @@ def test_preview_keeps_only_edge_csp_and_portal_policy_stays_strict(tmp_path):
     edge = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Edge)
     thread = threading.Thread(target=edge.serve_forever, daemon=True)
     thread.start()
-    with socket.socket() as sock:
-        sock.bind(("127.0.0.1", 0))
-        port = sock.getsockname()[1]
-    with socket.socket() as sock:
-        sock.bind(("127.0.0.1", 0))
-        network_port = sock.getsockname()[1]
+    port, network_port = (listener.getsockname()[1] for listener in nginx_listeners)
     class Gate(http.server.BaseHTTPRequestHandler):
         # Session cryptography is covered separately; this fixture exercises
         # nginx's real location selection and auth subrequest enforcement.
@@ -84,10 +113,16 @@ def test_preview_keeps_only_edge_csp_and_portal_policy_stays_strict(tmp_path):
     (tmp_path / "logs").mkdir()
     config = tmp_path / "nginx.conf"
     config.write_text(f"pid {tmp_path / 'nginx.pid'};\nerror_log stderr;\n"
-                      + "events {}\nhttp { access_log off;\n" + template + "\n}\n")
+                      + "events {}\nhttp { access_log off;\n"
+                      + "".join(f"{name}_temp_path {tmp_path / name};\n"
+                                for name in ("client_body", "proxy", "fastcgi", "uwsgi", "scgi"))
+                      + template + "\n}\n")
     log = (tmp_path / "nginx.log").open("w+")
+    descriptors = tuple(listener.fileno() for listener in nginx_listeners)
     process = subprocess.Popen([nginx, "-p", str(tmp_path), "-c", str(config),
-                                "-g", "daemon off;"], stdout=log, stderr=log)
+                                "-g", "daemon off;"], stdout=log, stderr=log,
+                               pass_fds=descriptors,
+                               env={**os.environ, "NGINX": "".join(f"{fd};" for fd in descriptors)})
 
     def request(path, host=None, headers=None, destination=None, method="GET"):
         connection = http.client.HTTPConnection("127.0.0.1", destination or port, timeout=3)
@@ -103,14 +138,17 @@ def test_preview_keeps_only_edge_csp_and_portal_policy_stays_strict(tmp_path):
 
     try:
         for _ in range(100):
-            assert process.poll() is None, "nginx fixture exited before readiness"
+            assert process.poll() is None, (tmp_path / "nginx.log").read_text()
             try:
                 portal = request("/")
-                break
+                if portal[0] == 200 and portal[2] == b"portal fixture":
+                    break
             except OSError:
-                time.sleep(0.02)
+                pass
+            time.sleep(0.02)
         else:
-            pytest.fail("nginx fixture did not become ready")
+            pytest.fail("nginx fixture did not serve the Portal body: "
+                        + (tmp_path / "nginx.log").read_text())
         status, headers, body = request("/pixel-preview/site-" + "a" * 24 + "/")
         assert status == 200 and b"<script>" in body
         assert [v for k, v in headers if k.lower() == "content-security-policy"] == [edge_csp]

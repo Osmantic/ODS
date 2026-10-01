@@ -10,7 +10,7 @@ COMPLETED = "model-completed.json"
 
 
 def _guards(sd):
-    for name in (storage.JOURNAL, "provider-journal.json"):
+    for name in (storage.JOURNAL, "provider-journal.json", "access-release-journal.json"):
         if os.path.lexists(os.path.join(sd, name)): raise ModelError("other-transition-pending")
     receipt = controller._load_receipt(sd)
     if receipt and receipt.get("status") == controller.STATUS_PENDING: raise ModelError("other-transition-pending")

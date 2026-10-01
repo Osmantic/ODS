@@ -56,6 +56,9 @@ async function fixture(t, { content = '', verification = { status: 'none', task:
         if (holdVerification) return;
         result = verification;
         break;
+      case '/pixel-ods/subagent-delivery':
+        result={schemaVersion:1,kind:'ods-subagent-delivery',runId:body.runId,status:'not-delegated'};
+        break;
       case '/pixel-ods/read-only-extension-continuation':
         result = { schemaVersion: 1, kind: 'ods-extension-read-only-continuation', eligible: false };
         break;

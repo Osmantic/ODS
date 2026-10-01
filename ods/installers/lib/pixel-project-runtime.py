@@ -1,7 +1,6 @@
 """Provision the fixed project executor without modifying Portal permissions.
 
 The calling installer owns service start/health and only then enables the tool.
-This helper is not yet called by the main installer.
 """
 import argparse
 import importlib.util
@@ -23,17 +22,20 @@ UNIT = Path('/etc/systemd/system/ods-pixel-project.service')
 CONFIG = Path('/etc/ods-pixel-project.json')
 STATE = '/var/lib/ods-pixel-project'
 FILES = ('project_service.py', 'project_controller.py', 'project_runtime.py', 'project_runtime_protocol.py',
+         'project_capabilities.py',
          'project_storage.py',
          'project_snapshot.py', 'project_jobs.py', 'project_artifacts.py', 'project_dispatch.py',
          'project_transport.py', 'project_authority.py', 'unix_peer.py')
 
 
 def validate_config(value):
-    if (not isinstance(value, dict) or set(value) not in ({'ownerUid', 'imageId', 'workspace'},
-                                                       {'ownerUid', 'imageId', 'workspace', 'storageLimits'})
+    if (not isinstance(value, dict) or set(value) - {'pythonImageId', 'storageLimits'} != {'ownerUid', 'imageId', 'workspace'}
             or type(value['ownerUid']) is not int or value['ownerUid'] <= 0
             or not isinstance(value['imageId'], str) or not re.fullmatch(r'sha256:[a-f0-9]{64}', value['imageId'])):
         raise ValueError('invalid project deployment')
+    if 'pythonImageId' in value and (not isinstance(value['pythonImageId'], str)
+            or not re.fullmatch(r'sha256:[a-f0-9]{64}', value['pythonImageId'])):
+        raise ValueError('invalid Python project deployment')
     limits = value.get('storageLimits')
     if 'storageLimits' in value:
         if (type(limits) is not dict or set(limits) != {'jobBytes', 'totalBytes', 'maxJobs'}
@@ -54,6 +56,7 @@ def unit_bytes(config):
     owner = validate_config(config)
     # systemd expands percent specifiers even inside quotes.
     workspace = config['workspace'].replace('\\', '\\\\').replace('"', '\\"').replace('%', '%%')
+    python_argument = (' --python-image ' + config['pythonImageId']) if 'pythonImageId' in config else ''
     storage_arguments = ''
     if 'storageLimits' in config:
         limits = config['storageLimits']
@@ -66,7 +69,7 @@ After=docker.service
 [Service]
 Type=simple
 User={owner.pw_name}
-ExecStart=/usr/bin/python3 -B {PROGRAM_ROOT}/project_service.py --workspace "{workspace}" --state-root {STATE} --image {config['imageId']}{storage_arguments}
+ExecStart=/usr/bin/python3 -B {PROGRAM_ROOT}/project_service.py --workspace "{workspace}" --state-root {STATE} --image {config['imageId']}{python_argument}{storage_arguments}
 Environment=PATH=/usr/local/bin:/usr/bin:/bin
 Restart=on-failure
 RestartSec=5
@@ -93,14 +96,20 @@ def build_config(source, owner_uid):
     owner = pwd.getpwuid(owner_uid)
     if os.getuid() != owner_uid or owner_uid == 0:
         raise ValueError('build as the workspace owner')
-    with tempfile.TemporaryDirectory(prefix='ods-project-image-') as directory:
-        root = Path(directory)
-        (root / 'Dockerfile').write_bytes(common.source_bytes(Path(source) / 'Dockerfile.project-node', owner_uid))
-        image_file = root / 'image-id'
-        subprocess.run(['/usr/bin/docker', 'build', '--iidfile', str(image_file), str(root)],
-                       check=True, stdout=sys.stderr, timeout=600)
-        image = image_file.read_text().strip()
-    config = {'ownerUid': owner_uid, 'imageId': image,
+    # Validate both image definitions before doing work; no project files enter
+    # this trusted build context and the model cannot supply an image reference.
+    definitions = {key: common.source_bytes(Path(source) / name, owner_uid) for key, name in (
+        ('imageId', 'Dockerfile.project-node'), ('pythonImageId', 'Dockerfile.project-python'))}
+    images = {}
+    for key, definition in definitions.items():
+        with tempfile.TemporaryDirectory(prefix='ods-project-image-') as directory:
+            root = Path(directory)
+            (root / 'Dockerfile').write_bytes(definition)
+            image_file = root / 'image-id'
+            subprocess.run(['/usr/bin/docker', 'build', '--iidfile', str(image_file), str(root)],
+                           check=True, stdout=sys.stderr, timeout=600)
+            images[key] = image_file.read_text().strip()
+    config = {'ownerUid': owner_uid, **images,
               'workspace': str(Path(owner.pw_dir) / '.openclaw/workspace-pixel')}
     validate_config(config)
     return config
@@ -138,6 +147,10 @@ def install_linux(source, config):
         common.protected_parent(path.parent, create=True)
         if os.path.lexists(path):
             common.protected_file(path)
+    # Earlier installs inherited restrictive umasks for this root-owned code
+    # directory. Repair only our validated runtime root, after the full input
+    # and installed-file preflight; the owner service must be able to traverse it.
+    PROGRAM_ROOT.chmod(0o755)
     for path, body in files.items():
         fd, temporary = tempfile.mkstemp(prefix='.' + path.name, dir=path.parent)
         try:
