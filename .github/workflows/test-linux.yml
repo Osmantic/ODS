@@ -406,7 +406,7 @@ jobs:
       - name: Installer Rerun .env Quoting Tests
         run: bash tests/test-phase06-env-rerun-quoting.sh
 
-      - name: Installer Cloud Provider Preservation Tests
+      - name: Installer Cloud Provider and Source Mode Preservation Tests
         run: bash tests/test-phase06-cloud-config-preservation.sh
 
       - name: Installer Created Container Ownership Tests
