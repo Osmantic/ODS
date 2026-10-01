@@ -147,6 +147,23 @@ function changeBinding(f) {
   f.replaceConfig(changed);
 }
 
+test('maintenance uses a distinct access API and cannot restore after owner invalidation',async()=>{
+  const f=fixture(), calls=[];
+  f.access.acquireMaintenance=()=>{calls.push('maintenance.acquire');f.hold();return f.access.status();};
+  f.access.releaseMaintenance=()=>{calls.push('maintenance.release');return f.access.status();};
+  const original=f.access.acquire;
+  f.access.acquire=(...args)=>{calls.push('transition.invalidate');return original(...args);};
+  const owner=f.register();
+  await owner.acquireMaintenance('a'.repeat(64),'synthetic-revision');
+  owner.releaseMaintenance('a'.repeat(64));
+  assert.deepEqual(calls,['maintenance.acquire','maintenance.release']);
+  changeBinding(f);
+  assert.throws(()=>owner.releaseMaintenance('a'.repeat(64)));
+  assert.equal(calls.at(-1),'transition.invalidate');
+  await assert.rejects(owner.acquireMaintenance('a'.repeat(64),'synthetic-revision'));
+  assert.equal(f.access.status().phase,'held');
+});
+
 test('existing held management channel survives drained config invalidation, not provider admission', async () => {
   const f = fixture(), owner = f.register(); f.hold(); changeBinding(f);
   assert.equal(owner.status().available, false);

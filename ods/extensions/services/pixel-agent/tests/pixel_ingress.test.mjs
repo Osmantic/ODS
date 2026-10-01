@@ -689,6 +689,33 @@ test("successful explicit cancel closes only the matching gateway transport", as
   }
 });
 
+test('cancel waits for harness drain plus managed project cleanup', async () => {
+  // Scale both clocks equally: 4 s harness + 10 s project cleanup.
+  const deps = {
+    setTimeout: (fn, ms) => setTimeout(fn, ms / 100), clearTimeout,
+    fetch: async (_url, {signal}) => {
+      await new Promise((resolve, reject) => {
+        const timer = setTimeout(resolve, 140);
+        signal.addEventListener('abort', () => {
+          clearTimeout(timer); reject(new Error('deadline'));
+        }, {once:true});
+      });
+      return new Response(JSON.stringify({aborted:true}), {
+        headers:{'Content-Type':'application/json'},
+      });
+    },
+  };
+  const srv = await startIngress({gatewayPort:18789, deps});
+  try {
+    const response = await request(srv, 'POST', '/v1/chat/cancel', {
+      body:JSON.stringify({user:'managed-project-stop'}),
+      headers:{'Content-Type':'application/json'},
+    });
+    assert.equal(response.status, 200);
+    assert.deepEqual(JSON.parse(response.body), {aborted:true});
+  } finally { await new Promise(resolve => srv.close(resolve)); }
+});
+
 test("health fails closed when the Pixel gateway is unreachable", async () => {
   const deps = {
     fetch: async () => { throw new Error("offline"); },

@@ -112,8 +112,8 @@ The dashboard manages the whole install, so it only opens without a password
 for a browser on the ODS machine itself (`http://localhost:3001`). Any other
 route needs a one-time sign-in per browser, remembered for 30 days:
 
-- LAN mode (`--lan` or `BIND_ADDRESS=0.0.0.0`) — every browser, including the
-  machine's own, signs in because port 3001 is reachable from the network.
+- LAN mode (`--lan` or `BIND_ADDRESS=0.0.0.0`) — port 3001 stays on this
+  machine's loopback and opens without sign-in. Network port 3011 requires it.
 - ODS proxy (`dashboard.<device>.local`), a reverse proxy, or Tailscale Serve
   in front of `localhost`.
 

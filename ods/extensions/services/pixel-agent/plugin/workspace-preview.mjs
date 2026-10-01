@@ -299,7 +299,7 @@ export function createWorkspacePreviewTool({ request, transport = "unix" } = {})
   return {
     name: "pixel_ods_workspace_preview",
     description:
-      "Publish and verify a static visual artifact already created by the active model in Pixel's writable workspace. Pass relativeDirectory for browser-ready output. For framework builds, also pass sourceDirectory: the existing project root containing that output; Review then shows a separate bounded source snapshot, never executes it, and preserves the built preview. Source capture excludes dependencies, generated/hidden/sensitive files; it proves captured bytes, not correspondence to the build. ODS never supplies creative starter bytes. Never start a sandbox server. " + PREVIEW_RUNTIME_CONTRACT + " " + DERIVED_ARTIFACT_CONTRACT,
+      "Publish and verify a static visual artifact already created by the active model in Pixel's writable workspace. Pass relativeDirectory for browser-ready output. For framework builds, also pass sourceDirectory: the existing project root containing that output; Review then shows a separate bounded source snapshot, never executes it, and preserves the built preview. Source capture excludes dependencies, generated/hidden/sensitive files; it proves captured bytes, not correspondence to the build. PDF, ZIP and RAR files may accompany index.html as downloadable attachments (4 MiB/file, 16 MiB/publication). Link them from the index. Verify document rendering and archive integrity separately: publication proves byte integrity, not content quality. ODS never supplies creative starter bytes. Never start a sandbox server. " + PREVIEW_RUNTIME_CONTRACT + " " + DERIVED_ARTIFACT_CONTRACT,
     parameters: {
       type: "object",
       additionalProperties: false,

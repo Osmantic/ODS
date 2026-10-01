@@ -199,7 +199,7 @@ function workspace(files, relativeDirectory = DIRECTORY) {
 
 test('workspace snapshots check requested text with dynamic framework asset paths', t => {
   const literals = extractRequestedLiterals(FLEET_CREATE);
-  const files = {'index.html': eventPage(), '_next/static/chunks/app/[slug]/page.js': 'export {}'};
+  const files = {'index.html': eventPage(), '_next/static/chunks/app/[slug]/page.js': 'export {}', '_next/static/app.js':'export {}', '_astro/page.css':'body{}'};
   const preview = snapshot(files);
   const root = workspace(files);
   t.after(() => fs.rmSync(root, {recursive: true, force: true}));

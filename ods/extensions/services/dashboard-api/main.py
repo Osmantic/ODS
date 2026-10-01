@@ -90,6 +90,7 @@ from routers import (
     pixel_scopes,
     pixel_advice_runtime,
     pixel_sharing,
+    opencode_app,
 )
 from settings import (
     _ENV_ASSIGNMENT_RE, _ENV_COMMENTED_ASSIGNMENT_RE, _SETTINGS_APPLY_ALLOWED_SERVICES, _parse_env_text, _read_env_map_from_path,
@@ -1227,6 +1228,8 @@ app.include_router(talk.router)
 app.include_router(tailscale.router)
 app.include_router(usage.router)
 app.include_router(node.router)
+from routers import pixel_approval_terminal
+app.include_router(pixel_approval_terminal.router)
 app.include_router(pixel.router)
 app.include_router(pixel_teams.router)
 app.include_router(pixel_providers.router)
@@ -1237,6 +1240,7 @@ app.include_router(pixel_handoff.router)
 app.include_router(pixel_scopes.router)
 app.include_router(pixel_advice_runtime.router)
 app.include_router(pixel_sharing.router)
+app.include_router(opencode_app.router)
 
 
 # ================================================================

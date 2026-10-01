@@ -1243,7 +1243,8 @@ async def handle_chat_cancel(request: web.Request):
         return web.json_response({"error": "invalid cancellation request"}, status=400)
 
     connector = UnixConnector(path=_SOCKET_PATH)
-    timeout = ClientTimeout(total=6, sock_connect=2, sock_read=5)
+    # Outlive the ingress's 16 s harness + managed-project cancellation budget.
+    timeout = ClientTimeout(total=20, sock_connect=2, sock_read=18)
     try:
         async with ClientSession(connector=connector, timeout=timeout) as session:
             async with session.post(
