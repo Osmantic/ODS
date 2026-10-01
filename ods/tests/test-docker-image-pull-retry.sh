@@ -138,6 +138,28 @@ exit 0
 EOF
 chmod +x "$TMP_DIR/docker-unauthorized"
 
+cat >"$TMP_DIR/docker-credential-helper-fail" <<'EOF'
+#!/usr/bin/env bash
+if [[ "$1" == "pull" ]]; then
+  printf 'pull\n' >> "$DOCKER_MOCK_STATE_FILE"
+  printf '%s\n' 'error getting credentials - err: exit status 1, out: `A specified logon session does not exist.`' >&2
+  exit 1
+fi
+exit 0
+EOF
+chmod +x "$TMP_DIR/docker-credential-helper-fail"
+
+cat >"$TMP_DIR/docker-other-fail" <<'EOF'
+#!/usr/bin/env bash
+if [[ "$1" == "pull" ]]; then
+  echo 'Using credential helper: desktop' >&2
+  echo 'unexpected Docker failure' >&2
+  exit 1
+fi
+exit 0
+EOF
+chmod +x "$TMP_DIR/docker-other-fail"
+
 # --------------------------------------------------------------------------
 # Tests
 # --------------------------------------------------------------------------
@@ -168,6 +190,34 @@ else
   print_fail
 fi
 unset SLEEP_LOG
+
+printf "  %-60s " "identifies unavailable Docker credential helper..."
+rm -f "$TMP_DIR/stdout.log" "$TMP_DIR/stderr.log"
+export DOCKER_MOCK_STATE_FILE="$TMP_DIR/state-credential-helper"
+rm -f "$DOCKER_MOCK_STATE_FILE"
+if run_pull_with_progress "$TMP_DIR/docker-credential-helper-fail" "img" "label"; then
+  print_fail "(unexpected success)"
+elif grep -q 'Docker credential helper failed' "$TMP_DIR/stdout.log" \
+  && ! grep -q 'network timeout' "$TMP_DIR/stdout.log" \
+  && [[ "$(wc -l < "$DOCKER_MOCK_STATE_FILE")" == 1 ]] \
+  && grep -q 'logon session does not exist' "$LOG_FILE"; then
+  print_pass
+else
+  print_fail "(credential helper failure was mislabeled)"
+fi
+
+printf "  %-60s " "does not label other Docker errors as timeouts..."
+rm -f "$TMP_DIR/stdout.log" "$TMP_DIR/stderr.log"
+export ODS_DOCKER_PULL_MAX_ATTEMPTS=1
+if run_pull_with_progress "$TMP_DIR/docker-other-fail" "img" "label"; then
+  print_fail "(unexpected success)"
+elif grep -q 'attempt 1 failed; see installer log' "$TMP_DIR/stdout.log" \
+  && ! grep -q 'network timeout\|Docker credential helper failed' "$TMP_DIR/stdout.log"; then
+  print_pass
+else
+  print_fail "(generic Docker failure was mislabeled)"
+fi
+unset ODS_DOCKER_PULL_MAX_ATTEMPTS
 
 printf "  %-60s " "fails fast on unauthorized (no retries)..."
 rm -f "$TMP_DIR/stdout.log" "$TMP_DIR/stderr.log"

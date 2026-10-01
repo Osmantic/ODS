@@ -1,0 +1,12 @@
+{
+  "version": "2026.6.33",
+  "sourceSha256": "5aa867278d7e072ae656250e1dc6b2bcd670c02e2bf8960012f70c9e05e99223",
+  "patchedSha256": "026b1f330b210aa931143733a518d73408422036e2ee95164132a565c298a21f",
+  "replacements": [
+    [
+      "\t\t\tconst warningText = `⚠️ ${formatToolAggregate(params.lastToolError.toolName, params.lastToolError.meta ? [params.lastToolError.meta] : void 0, { markdown: useMarkdown })} failed${warningPolicy.includeDetails && params.lastToolError.error ? `: ${params.lastToolError.error}` : \"\"}`;",
+      "\t\t\t// ODS: a pending command failure describes an attempt, not the final deliverable.\n\t\t\t// Keep the original error policy, details and mutation recovery checks.\n\t\t\tconst earlierCommandAttempt = hasUserFacingAssistantReply && isExecLikeToolName(params.lastToolError.toolName);\n\t\t\tconst warningText = `⚠️ ${earlierCommandAttempt ? \"Earlier command attempt failed: \" : \"\"}${formatToolAggregate(params.lastToolError.toolName, params.lastToolError.meta ? [params.lastToolError.meta] : void 0, { markdown: useMarkdown })}${earlierCommandAttempt ? \"\" : \" failed\"}${warningPolicy.includeDetails && params.lastToolError.error ? `: ${params.lastToolError.error}` : \"\"}`;"
+    ]
+  ],
+  "previousReplacements": {}
+}

@@ -15,6 +15,26 @@ if ! declare -F log_error >/dev/null 2>&1; then
     log_error() { printf '[ERROR] %s\n' "$*" >&2; }
 fi
 
+_ods_pixel_project_present() {
+    [[ -e /etc/ods-pixel-project.json || -L /etc/ods-pixel-project.json \
+        || -e /etc/systemd/system/ods-pixel-project.service || -L /etc/systemd/system/ods-pixel-project.service \
+        || -e /usr/local/libexec/ods-pixel-project || -L /usr/local/libexec/ods-pixel-project ]]
+}
+
+_ods_pixel_project_cleanup() {
+    local install_dir="$1" owner_uid="$2" action="$3" helper_dir
+    [[ "$action" == check-cleanup || "$action" == cleanup-linux ]] || return 1
+    helper_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../installers/lib" && pwd)" || return 1
+    sudo /usr/bin/python3 -B "$helper_dir/pixel-project-runtime.py" "$action" \
+        --source "$install_dir/extensions/services/pixel-agent/host" --owner-uid "$owner_uid"
+}
+
+_ods_pixel_inspection_present() {
+    [[ -e /etc/systemd/system/pixel-preview-inspection.service || -L /etc/systemd/system/pixel-preview-inspection.service \
+        || -e /etc/ods-pixel-inspection.json || -L /etc/ods-pixel-inspection.json \
+        || -e /usr/local/libexec/ods-pixel-inspection || -L /usr/local/libexec/ods-pixel-inspection ]]
+}
+
 _ods_pixel_inspection_cleanup() {
     local install_dir="$1" owner_uid="$2" action="$3" helper_dir helper
     [[ "$action" == validate-linux || "$action" == remove-linux ]] || return 1
@@ -2209,12 +2229,17 @@ PY
     log_info "Removing the ODS-managed Pixel host deployment..."
     # Inspection has a separate root-only Docker broker. Validate its fixed
     # artifacts before stopping anything, and retire it before its publisher.
-    local inspection_present=false
-    if [[ -e /etc/systemd/system/pixel-preview-inspection.service || -L /etc/systemd/system/pixel-preview-inspection.service \
-        || -e /etc/ods-pixel-inspection.json || -L /etc/ods-pixel-inspection.json \
-        || -e /usr/local/libexec/ods-pixel-inspection || -L /usr/local/libexec/ods-pixel-inspection ]]; then
+    local inspection_present=false project_present=false
+    if _ods_pixel_project_present; then
+        project_present=true
+        _ods_pixel_project_cleanup "$install_dir" "$owner_uid" check-cleanup || return 1
+    fi
+    if _ods_pixel_inspection_present; then
         inspection_present=true
         _ods_pixel_inspection_cleanup "$install_dir" "$owner_uid" validate-linux || return 1
+    fi
+    if "$project_present"; then
+        timeout 350s sudo systemctl disable --now ods-pixel-project.service || return 1
     fi
     if [[ -e "$gateway_unit" || -L "$gateway_unit" \
         || -e "$ingress_unit" || -L "$ingress_unit" \
@@ -2714,6 +2739,9 @@ PY
         fi
     fi
 
+    if "$project_present"; then
+        _ods_pixel_project_cleanup "$install_dir" "$owner_uid" cleanup-linux || return 1
+    fi
     if [[ "$root_artifacts_present" == "true" ]]; then
         if "$inspection_present"; then
             _ods_pixel_inspection_cleanup "$install_dir" "$owner_uid" remove-linux || return 1

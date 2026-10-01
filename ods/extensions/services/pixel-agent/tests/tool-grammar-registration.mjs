@@ -4,7 +4,7 @@
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 
-export async function registeredPixelTools({inspection = true} = {}) {
+export async function registeredPixelTools({inspection = true, project = true} = {}) {
   const entry = new URL('../plugin/index.js', import.meta.url);
   const source = await readFile(entry, 'utf8');
   const isolated = source.replace(/from\s+(['"])([^'"]+)\1/g, (match, quote, specifier) => {
@@ -31,7 +31,8 @@ export async function registeredPixelTools({inspection = true} = {}) {
   plugin.register({
     registrationMode: 'discovery',
     config: {agents: {list: [{id: 'pixel', sandbox: {mode: 'off'}, tools: {exec: {host: 'gateway'}}}]}},
-    pluginConfig: inspection ? {workspacePreviewInspectionTransport:'unix'} : {},
+    pluginConfig: {...(inspection ? {workspacePreviewInspectionTransport:'unix'} : {}),
+      ...(project ? {projectBuildSocket:'/var/lib/ods-pixel-project/control.sock'} : {})},
     logger: {warn() {}}, on() {}, registerHttpRoute() {},
     registerTool(factory, options) {
       const tool = typeof factory === 'function' ? factory(context) : factory;
@@ -42,7 +43,9 @@ export async function registeredPixelTools({inspection = true} = {}) {
     },
   });
   const manifest = JSON.parse(await readFile(new URL('../plugin/openclaw.plugin.json', import.meta.url)));
-  const expected = manifest.contracts.tools.filter(name => inspection || name !== 'pixel_ods_workspace_preview_inspect');
+  const expected = manifest.contracts.tools.filter(name =>
+    (inspection || name !== 'pixel_ods_workspace_preview_inspect')
+    && (project || name !== 'pixel_ods_project_build'));
   assert.deepEqual(tools.map(tool => tool.name).sort(), expected.sort(),
     'compile every registered tool, including future registrations');
   assert.equal(new Set(tools.map(tool => tool.name)).size, tools.length);
