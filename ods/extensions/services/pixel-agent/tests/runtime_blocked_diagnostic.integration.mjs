@@ -53,6 +53,13 @@ for(const finalMode of ['answer','tool']) test(`native blocked diagnostic preser
         api.on('before_tool_call',(e,c)=>{const d=guard.beforeToolCall(e,c);record({tool:e.toolName,blocked:d?.block===true});return d;});
         api.on('after_tool_call',(e,c)=>guard.afterToolCall(e,c));
         api.on('before_agent_finalize',(e,c)=>{const d=guard.beforeAgentFinalize(e,c);record({final:d?.action});return d;});
+        // This exec-only fixture never spawns children; satisfy the ingress's
+        // authenticated delivery query before its existing verification query.
+        api.registerHttpRoute({path:'/pixel-ods/subagent-delivery',auth:'gateway',match:'exact',handler:async(req,res)=>{
+          let body='';for await(const part of req)body+=part;
+          res.writeHead(200,{'Content-Type':'application/json'});
+          res.end(JSON.stringify({schemaVersion:1,kind:'ods-subagent-delivery',runId:JSON.parse(body).runId,status:'not-delegated'}));return true;
+        }});
         api.registerHttpRoute({path:'/pixel-ods/verification',auth:'gateway',match:'exact',handler:async(req,res)=>{
           let body='';for await(const part of req)body+=part;
           const value=guard.deliveryVerificationForRun(JSON.parse(body).runId);
