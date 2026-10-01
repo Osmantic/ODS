@@ -36,7 +36,7 @@ These are published only when `BIND_ADDRESS` is explicitly LAN-facing (for examp
 | mDNS name | Underlying port | Use case |
 |---|---|---|
 | `<device>-chat._http._tcp.local` | 3000 | Open WebUI direct (bypasses proxy) |
-| `<device>-dashboard._http._tcp.local` | 3001 | Dashboard direct |
+| `<device>-dashboard._http._tcp.local` | 3011 | Dashboard direct (sign-in required) |
 | `<device>-dashboard-api._http._tcp.local` | 3002 | Dashboard API health endpoint |
 | `<device>-hermes._http._tcp.local` | 9119 | Hermes Agent direct (when the `hermes` extension is enabled) |
 

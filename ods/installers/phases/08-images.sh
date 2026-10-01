@@ -34,6 +34,18 @@ if [[ "${ODS_GATEWAY_ONLY:-false}" == true && "${DRY_RUN:-false}" != true ]]; th
     fi
     unset _gateway_compose_flags
 fi
+if [[ "${ENABLE_OPEN_WEBUI:-true}" != true && "${DRY_RUN:-false}" != true ]]; then
+    [[ -n "${COMPOSE_FLAGS:-}" ]] || {
+        ai_bad "No-WebUI Compose selection is unavailable before image pulls."
+        exit 1
+    }
+    read -ra _no_webui_compose_flags <<< "$COMPOSE_FLAGS"
+    if ! ods_compose_assert_no_webui_before_pixel_identity "${_no_webui_compose_flags[@]}" 2>>"$LOG_FILE"; then
+        ai_bad "No-WebUI Compose could start Open WebUI; inspect $LOG_FILE and clear COMPOSE_PROFILES."
+        exit 1
+    fi
+    unset _no_webui_compose_flags
+fi
 if [[ "$GPU_BACKEND" == "nvidia" && "${ENABLE_COMFYUI:-}" == "true" ]]; then
     show_phase 4 6 "Downloading Modules" "~5-10 min + ~30 min ComfyUI build"
 else

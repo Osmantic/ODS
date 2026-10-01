@@ -10,7 +10,9 @@ import sys
 import tempfile
 
 MANAGED = ('ODS_AGENT_BIND', 'ODS_AGENT_HOST', 'ODS_AGENT_ADDRESS_MODE')
-MARKER = 'ODS_AGENT_ADDRESS_MODE=wsl-nat'
+MARKER = 'ODS_AGENT_ADDRESS_MODE=wsl-nat-bridge'
+LEGACY_MODE = 'wsl-nat'
+DOCKER_HOST = 'host.docker.internal'
 PRIVATE = tuple(ipaddress.ip_network(v) for v in ('10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16'))
 
 
@@ -79,7 +81,7 @@ def parse_env(text):
     bind = seen.get('ODS_AGENT_BIND', '')
     host = seen.get('ODS_AGENT_HOST', '')
     mode = seen.get('ODS_AGENT_ADDRESS_MODE', '')
-    if mode and mode != 'wsl-nat':
+    if mode and mode not in (LEGACY_MODE, 'wsl-nat-loopback', 'wsl-nat-bridge'):
         raise HelperError('marker')
     explicit = bool(bind or host)
     return bind, host, mode, explicit
@@ -111,8 +113,11 @@ def read_env(env, uid=None):
 def build_env(original, host):
     lines = [line for line in original.splitlines()
              if line.partition('=')[0] not in MANAGED]
+    # Docker Desktop containers cannot route directly to WSL NAT eth0. The
+    # owner-session Windows loopback relay can, and containers reach that relay
+    # through host.docker.internal. Bind only the private WSL eth0 address.
     lines.append(f'ODS_AGENT_BIND={host}')
-    lines.append(f'ODS_AGENT_HOST={host}')
+    lines.append(f'ODS_AGENT_HOST={DOCKER_HOST}')
     lines.append(MARKER)
     return '\n'.join(lines) + '\n'
 
@@ -171,7 +176,7 @@ def run(root, uid=None, runner=_run, detect=None, release=None):
     detect = detect or (lambda: detect_address(runner))
     address = detect()
     changed = write_env(root, env, original, info, address, uid=uid, detect=detect, root_info=root_info)
-    return {'changed': changed, 'mode': 'wsl-nat', 'address': address}
+    return {'changed': changed, 'mode': 'wsl-nat-bridge', 'address': DOCKER_HOST}
 
 
 def main(argv=None):

@@ -33,7 +33,7 @@ it.each(['pending', 'busy'].flatMap(state => ['headers', 'body'].map(stage => [s
   expect(screen.getByRole('button', {name: 'Enable Full Access'})).toBeEnabled()
   await tick(15000)
   expect(fetch).toHaveBeenCalledTimes(2)
-  expect(fetch.mock.calls.every(call => !call[1])).toBe(true)
+  expect(fetch.mock.calls.every(call => call[1]?.method !== 'POST')).toBe(true)
 })
 
 it('does not let an older manual inspection release the newer request to background polling', async () => {

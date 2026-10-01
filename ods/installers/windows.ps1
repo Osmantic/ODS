@@ -233,6 +233,11 @@ if ($Distro) {
 }
 $installerExitCode = $LASTEXITCODE
 if ($installerExitCode -eq 0 -and $lifetimeRequired -and '--pixel' -cin $PassthroughArgs) {
+    $agentAddress=Update-ODSWslAgentAddress $lifetimeIdentity
+    if ($agentAddress.mode -eq 'wsl-nat-bridge') {
+        if ($agentAddress.changed) { Invoke-ODSWslNativeUnit $lifetimeIdentity 'restart' 'ods-host-agent.service' }
+        Start-ODSWslAgentRelay $lifetimeIdentity
+    } else { Stop-ODSWslAgentRelay $lifetimeIdentity }
     $verifyPath = Convert-ToWslPath (Join-Path $PSScriptRoot 'verify-wsl-portal.sh')
     $verifyCommand = 'bash ' + (ConvertTo-ODSBashArgument $verifyPath) + ' ' + (ConvertTo-ODSBashArgument $linuxInstallRoot)
     # Capture stdout only (stderr stays on the console) to read the Portal URL.

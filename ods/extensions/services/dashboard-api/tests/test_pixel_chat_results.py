@@ -8,6 +8,7 @@ import sys
 import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
+from host_agent_client import AgentUnavailable
 
 os.environ.setdefault("DASHBOARD_API_KEY", "dashboard-test-key")
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -29,6 +30,7 @@ def store(tmp_path, monkeypatch):
     result = receipts.ChatResultStore(tmp_path / "receipts")
     monkeypatch.setattr(pixel, "_result_store", result)
     monkeypatch.setattr(pixel, "_result_tasks", {})
+    monkeypatch.setattr(pixel, "_result_preflights", set())
     monkeypatch.setattr(pixel, "_result_stops", set())
     monkeypatch.setattr(pixel, "_result_abort_ack", set())
     monkeypatch.setenv("PIXEL_OPENWEBUI_KEY", "e" * 64)
@@ -54,6 +56,62 @@ def test_receipt_survives_restart_without_reexecuting_and_scopes_owner(store, tm
         assert other.reserve(IDENTITY, "input-hash") is False
         with pytest.raises(receipts.ResultConflict): other.reserve(IDENTITY, "changed")
     finally: other.close()
+
+
+def test_pre_submission_rejection_is_terminal_and_frees_conversation(store, tmp_path):
+    data = b'data: {"choices":[{"delta":{"content":"No turn started"}}]}\n\ndata: [DONE]\n\n'
+    assert store.reserve(IDENTITY, "input-hash") is True
+    store.reject_before_submission(IDENTITY, data)
+    assert store.get(IDENTITY)["state"] == "interrupted"
+    assert store.chunks(IDENTITY)[0]["data"] == data
+    assert store.has_pending(IDENTITY[:2]) is False
+    with pytest.raises(receipts.ResultConflict):
+        store.reject_before_submission(IDENTITY, data)
+    assert store.reserve(IDENTITY, "input-hash") is False
+    assert store.reserve((*IDENTITY[:2], "new-attempt"), "input-hash") is True
+    other = receipts.ChatResultStore(tmp_path / "receipts")
+    try:
+        assert other.get(IDENTITY)["state"] == "interrupted"
+        assert other.chunks(IDENTITY)[0]["data"] == data
+    finally:
+        other.close()
+
+
+def test_stop_during_preflight_does_not_cancel_an_unrelated_native_run(store, monkeypatch):
+    async def run():
+        entered = asyncio.Event()
+        release = asyncio.Event()
+        async def identity(*_args, **_kwargs):
+            entered.set()
+            await release.wait()
+            raise AgentUnavailable("relay offline")
+        async def forbidden_cancel(*_args):
+            raise AssertionError("No native cancellation before submission")
+        async def forbidden_activity(*_args):
+            raise AssertionError("A live preflight is not an unresolved native run")
+        monkeypatch.setattr(pixel_chat_identity, "async_request_json", identity)
+        monkeypatch.setattr(pixel, "_cancel_edge_run", forbidden_cancel)
+        monkeypatch.setattr(pixel, "pixel_chat_activity", forbidden_activity)
+        attempt = asyncio.create_task(pixel.pixel_chat_stream(ConnectedRequest(), body(), OWNER))
+        await entered.wait()
+        assert IDENTITY in pixel._result_preflights
+        lookup = pixel.ChatResultRequest(chat_id="chat-test", request_id="attempt-one")
+        assert await pixel.pixel_chat_result(lookup, OWNER) == {"state": "active", "events": ""}
+        duplicate = await pixel.pixel_chat_stream(ConnectedRequest(), body(), OWNER)
+        assert await pixel.pixel_chat_result(lookup, OWNER) == {"state": "active", "events": ""}
+        assert await pixel.pixel_chat_cancel(
+            pixel.ChatCancelRequest(chat_id="chat-test", request_id="attempt-one"), OWNER
+        ) == {"aborted": False}
+        release.set()
+        with pytest.raises(HTTPException) as caught:
+            await attempt
+        assert caught.value.status_code == 503
+        assert store.get(IDENTITY)["state"] == "interrupted"
+        assert IDENTITY not in pixel._result_preflights
+        assert not pixel._result_tasks
+        assert b"Portal did not start this attempt." in await stream_body(duplicate)
+        assert (await pixel.pixel_chat_result(lookup, OWNER))["state"] == "interrupted"
+    asyncio.run(run())
 
 
 def test_restart_does_not_adopt_or_duplicate_unfinished_work(store, tmp_path):
@@ -179,6 +237,81 @@ def test_result_and_cancel_require_owner_authentication(store):
             payload = {"chat_id":"chat-test", "request_id":"attempt-one"}
             assert client.post('/api/pixel/chat/'+endpoint, json=payload).status_code == 401
             assert client.post('/api/pixel/chat/'+endpoint, json=payload, headers={"Authorization":"Bearer wrong"}).status_code == 403
+
+
+@pytest.mark.parametrize("ack", [True, False])
+def test_interrupted_attempt_recovery_requires_native_confirmation(store, monkeypatch, ack):
+    store.reserve(IDENTITY, "hash")
+    store.append(IDENTITY, b"retained partial output")
+    store.finish(IDENTITY, "interrupted")
+    calls = []
+
+    async def cancel(*args):
+        calls.append(args)
+        assert IDENTITY[:2] in pixel._result_stops
+        with pytest.raises(HTTPException) as blocked:
+            await pixel.pixel_chat_stream(ConnectedRequest(), body("next-attempt"), OWNER)
+        assert blocked.value.status_code == 423
+        return ack
+
+    monkeypatch.setattr(pixel, "_cancel_edge_run", cancel)
+    result = asyncio.run(pixel.pixel_chat_cancel(
+        pixel.ChatCancelRequest(chat_id=IDENTITY[1], request_id=IDENTITY[2]), OWNER))
+    assert result == {"aborted": ack}
+    assert len(calls) == 1 and calls[0][-1] == IDENTITY[1]
+    assert store.get(IDENTITY)["state"] == ("cancelled" if ack else "interrupted")
+    assert store.chunks(IDENTITY)[0]["data"] == b"retained partial output"
+    assert not pixel._result_stops
+
+
+@pytest.mark.parametrize("successor_state", ["active", "complete", "interrupted", "cancelled"])
+def test_stale_interrupted_attempt_never_aborts_successor(store, monkeypatch, successor_state):
+    store.reserve(IDENTITY, "hash")
+    store.finish(IDENTITY, "interrupted")
+    successor = (*IDENTITY[:2], "newer-attempt")
+    store.reserve(successor, "new-hash")
+    if successor_state != "active":
+        store.finish(successor, successor_state)
+
+    async def cancel(*args):
+        pytest.fail("Stale receipt must never reach native cancellation")
+
+    monkeypatch.setattr(pixel, "_cancel_edge_run", cancel)
+    assert asyncio.run(pixel.pixel_chat_cancel(
+        pixel.ChatCancelRequest(chat_id=IDENTITY[1], request_id=IDENTITY[2]), OWNER)) == {"aborted": False}
+    assert store.get(IDENTITY)["state"] == "interrupted"
+
+
+@pytest.mark.parametrize("chat,attempt,owner", [
+    ("foreign-chat", "attempt-one", OWNER),
+    ("chat-test", "foreign-attempt", OWNER),
+    ("chat-test", "attempt-one", "foreign-owner"),
+])
+def test_interrupted_recovery_keeps_exact_custody(store, monkeypatch, chat, attempt, owner):
+    store.reserve(IDENTITY, "hash")
+    store.finish(IDENTITY, "interrupted")
+
+    async def cancel(*args):
+        pytest.fail("Foreign receipt must never reach native cancellation")
+
+    monkeypatch.setattr(pixel, "_cancel_edge_run", cancel)
+    assert asyncio.run(pixel.pixel_chat_cancel(
+        pixel.ChatCancelRequest(chat_id=chat, request_id=attempt), owner)) == {"aborted": False}
+
+
+def test_interrupted_confirmation_rechecks_latest_without_trusting_wall_clock(store, monkeypatch):
+    monkeypatch.setattr(receipts.time, "time", lambda: 200)
+    store.reserve(IDENTITY, "hash")
+    store.finish(IDENTITY, "interrupted")
+    assert store.is_latest(IDENTITY)
+    monkeypatch.setattr(receipts.time, "time", lambda: 100)
+    successor = (*IDENTITY[:2], "next-attempt")
+    store.reserve(successor, "hash-next")
+    store.finish(successor, "complete")
+    assert not store.confirm_interrupted_cancel(IDENTITY)
+    assert not store.confirm_interrupted_cancel(successor)
+    assert store.get(IDENTITY)["state"] == "interrupted"
+    assert store.get(successor)["state"] == "complete"
 
 
 @pytest.mark.parametrize("ack", [True, False])
@@ -317,10 +450,12 @@ def test_done_without_user_answer_is_never_a_complete_receipt(store, monkeypatch
         assert "Portal returned no answer" in result["events"]
         assert result["events"].count("[DONE]") == 1
         assert not store.has_pending(IDENTITY[:2])
+        assert not cancels
         assert await pixel.pixel_chat_cancel(
             pixel.ChatCancelRequest(chat_id="chat-test", request_id="attempt-one"), OWNER
         ) == {"aborted": False}
-        assert not cancels
+        assert len(cancels) == 1
+        assert store.get(IDENTITY)["state"] == "interrupted"
     asyncio.run(run())
 
 

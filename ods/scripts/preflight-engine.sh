@@ -337,7 +337,14 @@ if (
         "gpu_vram_mb": int(lemonade_gpu_vram),
     }
 
-if gpu_backend == "amd":
+if tier_key == "CLOUD":
+    add_check(
+        "gpu-backend",
+        "pass",
+        "Cloud model inference does not require a local GPU.",
+        "",
+    )
+elif gpu_backend == "amd":
     add_check(
         "gpu-backend",
         "pass",
