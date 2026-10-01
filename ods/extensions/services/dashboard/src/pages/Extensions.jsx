@@ -517,9 +517,13 @@ export default function Extensions({ compact = false }) {
   const allExtensions = catalog?.extensions || []
   const extensions = allExtensions.filter(ext => !['incompatible', 'unsupported'].includes(ext.status) && ext.compatible !== false)
   const webuiCanAdd = webuiSelection?.supported === true && webuiSelection.enabled === false
+  const availableForAdd = ext => ext.status === 'not_installed'
+    || (ext.id === 'open-webui' && webuiCanAdd)
+    || (ext.source === 'core' && ext.library_manageable === true
+      && ext.library_selected === false && ext.status === 'disabled')
   const unsupportedIds = new Set(allExtensions.filter(ext => !extensions.includes(ext)).map(ext => ext.id))
   const summary = {
-    not_installed: extensions.filter(ext => ext.status === 'not_installed' || (ext.id === 'open-webui' && webuiCanAdd)).length,
+    not_installed: extensions.filter(availableForAdd).length,
     updates_available: extensions.filter(ext => ext.update_available).length,
   }
 
@@ -536,9 +540,8 @@ export default function Extensions({ compact = false }) {
   // Filter extensions
   const query = search.toLowerCase()
   const filtered = extensions.filter(ext => {
-    if (libraryView === 'installed' && (['not_installed','incompatible'].includes(ext.status) || (ext.id === 'open-webui' && webuiCanAdd))) return false
-    if (libraryView === 'available' && ext.status !== 'not_installed'
-      && !(ext.id === 'open-webui' && webuiCanAdd)) return false
+    if (libraryView === 'installed' && availableForAdd(ext)) return false
+    if (libraryView === 'available' && !availableForAdd(ext)) return false
     if (libraryView === 'updates' && !ext.update_available) return false
     if (statusFilter !== 'all' && ext.status !== statusFilter) return false
     if (category !== 'all' && !ext.features?.some(f => f.category === category)) return false
@@ -587,7 +590,7 @@ export default function Extensions({ compact = false }) {
       )}
 
       <nav className="extensions-library-tabs" aria-label="Library views">
-        {[['all','All',extensions.length],['installed','Installed',extensions.filter(ext => !['not_installed','incompatible'].includes(ext.status) && !(ext.id === 'open-webui' && webuiCanAdd)).length],['available','Available',summary.not_installed ?? 0],['updates','Updates',summary.updates_available ?? 0]].map(([id,label,count]) => <button key={id} aria-label={`${label} ${count}`} aria-pressed={libraryView === id} onClick={() => {setLibraryView(id);setStatusFilter('all')}}>{label}<span>{count}</span></button>)}
+        {[['all','All',extensions.length],['installed','Installed',extensions.filter(ext => !availableForAdd(ext)).length],['available','Available',summary.not_installed ?? 0],['updates','Updates',summary.updates_available ?? 0]].map(([id,label,count]) => <button key={id} aria-label={`${label} ${count}`} aria-pressed={libraryView === id} onClick={() => {setLibraryView(id);setStatusFilter('all')}}>{label}<span>{count}</span></button>)}
         {collections.length > 0 && <button aria-label={`Starter collections ${collections.length}`} aria-pressed={showingCollections} onClick={() => {setLibraryView('collections');setStatusFilter('all');setCategory('all')}}>Collections<span>{collections.length}</span></button>}
       </nav>
 
