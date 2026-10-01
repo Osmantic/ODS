@@ -1,11 +1,16 @@
 import {isDeepStrictEqual} from 'node:util';
 import {randomUUID} from 'node:crypto';
 import {setTimeout as delay} from 'node:timers/promises';
-import {normalizeProjectBuild} from './project-build.mjs';
+import {normalizeProjectBuild, projectManifestRejection} from './project-build.mjs';
 
 const NAME = 'pixel_ods_project_build';
 const terminal = value => ['succeeded', 'failed', 'cancelled'].includes(value?.status);
 const key = scope => JSON.stringify([scope.sessionKey, scope.sessionId, scope.runId]);
+const target = request => JSON.stringify(request.action==='diagnose' ? ['diagnostic',request.runtime] : ['project',request.project]);
+const recoveryRefusal = receipt => receipt?.schemaVersion === 1 && receipt.kind === 'ods-project-job'
+  && receipt.status === 'recovery-required' && receipt.executionStarted === false
+  && Object.keys(receipt).every(name => ['schemaVersion', 'kind', 'status', 'executionStarted', 'jobId'].includes(name))
+  && (!Object.hasOwn(receipt, 'jobId') || /^ods-project-[a-f0-9]{24}$/.test(receipt.jobId));
 
 // Shared by gateway-route and runtime registration passes. Factory contexts do
 // not carry a live run ID; only admitted hook contexts establish that binding.
@@ -55,29 +60,44 @@ export function createProjectRunControl({wait = ms => delay(ms), now = () => per
         }
       }
       if (runs.size >= 128) throw Error('project run tracking is full');
-      run = {jobs: new Map(), pending: 0, unknown: false, stopping: false};
+      run = {jobs: new Map(), pending: 0, unknown: false, unknownTargets:new Set(), stopping: false};
       runs.set(identity, run);
     }
     if (run.stopping) throw Error('project run is stopping');
     return async (normalized, options) => {
-      if (run.stopping && normalized.action === 'submit') throw Error('project run is stopping');
+      const createsJob=['submit','diagnose'].includes(normalized.action);
+      if (run.stopping && createsJob) throw Error('project run is stopping');
+      if (createsJob) {
+        const uncertain=[...run.jobs.values()].find(job=>job.receipt?.status==='unconfirmed' &&
+          (normalized.action==='submit' ? job.receipt.project===normalized.project
+            : job.receipt.purpose==='diagnostic' && job.receipt.runtime===normalized.runtime));
+        if ([...runs.values()].some(item=>item.unknownTargets.has(target(normalized))) || uncertain) return {schemaVersion:1,kind:'ods-project-job',status:'recovery-required',
+          executionStarted:false,...(uncertain ? {jobId:uncertain.receipt.jobId} : {})};
+      }
       run.pending++;
       try {
         const receipt = await request(normalized, options);
         if (receipt?.schemaVersion === 1 && receipt.kind === 'ods-project-job' &&
             /^ods-project-[a-f0-9]{24}$/.test(receipt.jobId ?? '') &&
-            (normalized.action === 'submit' ? receipt.project === normalized.project : receipt.jobId === normalized.jobId)) {
+            (normalized.action === 'submit' ? receipt.project === normalized.project
+              : normalized.action==='diagnose' ? receipt.purpose==='diagnostic' && receipt.project===null
+                && receipt.scope==='managed-executor' && receipt.runtime===normalized.runtime : receipt.jobId === normalized.jobId)) {
           // Merely observing a previous run's job does not transfer ownership
           // to this run's Stop button.
-          if (normalized.action === 'submit' || run.jobs.has(receipt.jobId)) {
+          if (createsJob || run.jobs.has(receipt.jobId)) {
             run.jobs.set(receipt.jobId, {receipt, request});
           }
-        } else if (normalized.action === 'submit' && !['denied', 'invalid-request'].includes(receipt?.status)) {
+        } else if (createsJob && !(receipt?.status==='denied' || receipt?.status==='invalid-request'
+            && (!Object.hasOwn(receipt,'issue') || projectManifestRejection(receipt))) && !recoveryRefusal(receipt)
+            && !(normalized.action==='diagnose' && receipt?.kind==='ods-project-diagnostic'
+              && receipt.scope==='managed-executor' && receipt.runtime===normalized.runtime
+              && receipt.code==='unavailable' && receipt.cleanup==='not-started')) {
           run.unknown = true;
+          run.unknownTargets.add(target(normalized));
         }
         return receipt;
       } catch (error) {
-        if (normalized.action === 'submit') run.unknown = true;
+        if (createsJob) { run.unknown = true; run.unknownTargets.add(target(normalized)); }
         throw error;
       } finally { run.pending--; }
     };

@@ -205,7 +205,9 @@ class ProjectRecoveryTests(unittest.TestCase):
     def python_job(self):
         from project_runtime import stage_arguments
         image = "sha256:" + "e" * 64
-        request = {"project": "project", "sourceSha256": "b" * 64, "image": image,
+        # setUp already contains an uncertain npm job. The Python recovery
+        # fixture is independent; a runtime switch must not bypass its fence.
+        request = {"project": "python-project", "sourceSha256": "b" * 64, "image": image,
                    "outputDirectory": "out", "runtime": "python"}
         self.job = self.controller.jobs.create("e" * 64, request)[0]
         self.controller.jobs.claim(self.job)
