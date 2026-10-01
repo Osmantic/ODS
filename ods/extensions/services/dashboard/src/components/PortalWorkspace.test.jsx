@@ -1,3 +1,6 @@
+// Conversation/review state tests isolate the asynchronous origin handshake.
+// Its real transport, timeout and stale-receipt behavior is covered in previewOrigin.test.jsx.
+vi.mock('../lib/useVerifiedPreview',()=>({default:(_preview,access)=>access}))
 import {act,fireEvent,render,screen,waitFor,within} from '@testing-library/react'
 import {createHash,webcrypto} from 'node:crypto'
 import PortalWorkspace from './PortalWorkspace'
@@ -273,4 +276,21 @@ it('does not navigate an iframe before the publication manifest is verified',asy
  await act(async()=>reject(new Error('offline')))
  expect(screen.getByText('Preview unavailable')).toBeVisible()
  expect(container.querySelector('iframe')).toBeNull()
+})
+
+it('keeps connection status and retry visible while the manifest gate blocks the iframe',async()=>{
+ const healthyFetch=fetch,onRefresh=vi.fn();let rejectManifest
+ vi.stubGlobal('fetch',vi.fn(()=>new Promise((_resolve,reject)=>{rejectManifest=reject})))
+ const view=render(<PortalWorkspace {...props} onRefresh={onRefresh}/>)
+ expect(screen.queryByTitle('Interactive Portal preview')).toBeNull()
+ expect(screen.getByRole('status')).toHaveTextContent('Connecting preview')
+ await act(async()=>{rejectManifest(new Error('offline'))})
+ expect(screen.queryByTitle('Interactive Portal preview')).toBeNull()
+ expect(screen.getByText('Preview connection unavailable.')).toBeVisible()
+ fireEvent.click(screen.getByRole('button',{name:'Retry',exact:true}))
+ expect(onRefresh).toHaveBeenCalledOnce()
+ vi.stubGlobal('fetch',healthyFetch)
+ view.rerender(<PortalWorkspace {...props} onRefresh={onRefresh} refresh={1}/>)
+ expect(await screen.findByTitle('Interactive Portal preview')).toBeVisible()
+ expect(screen.queryByText('Preview connection unavailable.')).toBeNull()
 })

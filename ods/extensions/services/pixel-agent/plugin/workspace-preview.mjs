@@ -8,7 +8,7 @@ import { dockerWorkspacePreviewRequest } from "./workspace-preview-docker.mjs";
 
 const SOCKET_PATH = "/run/ods-pixel-preview/control.sock";
 const PATH_COMPONENT = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
-const ASSET_COMPONENT = /^(?!__ods_)(?!__pycache__$)[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$/;
+const ASSET_COMPONENT = /^(?!__ods_)(?!__pycache__$)[A-Za-z0-9_\[][A-Za-z0-9._\[\]-]{0,127}$/;
 const SITE_ID = /^site-[a-f0-9]{24}$/;
 const SHA256 = /^[a-f0-9]{64}$/;
 const MAX_RESPONSE_BYTES = 8192;
@@ -40,8 +40,10 @@ export function normalizeWorkspacePreviewParams(value) {
     !value ||
     typeof value !== "object" ||
     Array.isArray(value) ||
-    Object.keys(value).sort().join("\n") !== "relativeDirectory" ||
-    !validRelativeDirectory(value.relativeDirectory)
+    Object.keys(value).sort().join("\n") !== ('sourceDirectory' in value ? 'relativeDirectory\nsourceDirectory' : 'relativeDirectory') ||
+    !validRelativeDirectory(value.relativeDirectory) ||
+    ('sourceDirectory' in value && (!validRelativeDirectory(value.sourceDirectory) ||
+      !(value.relativeDirectory === value.sourceDirectory || value.relativeDirectory.startsWith(value.sourceDirectory + '/'))))
   ) {
     throw new Error("invalid Pixel workspace preview request");
   }
@@ -49,7 +51,21 @@ export function normalizeWorkspacePreviewParams(value) {
     schemaVersion: 1,
     action: "publish",
     relativeDirectory: value.relativeDirectory,
+    ...('sourceDirectory' in value ? {sourceDirectory:value.sourceDirectory} : {}),
   };
+}
+
+export function validSourceReview(value, directory) {
+  return !!value && typeof value === 'object' && !Array.isArray(value)
+    && Object.keys(value).sort().join(',') === 'bytes,files,omitted,relativeDirectory,schemaVersion,sha256,sourceId'
+    && value.schemaVersion === 1 && validRelativeDirectory(value.relativeDirectory)
+    && (directory === value.relativeDirectory || directory?.startsWith(value.relativeDirectory + '/'))
+    && SHA256.test(value.sha256) && value.sourceId === 'source-' + value.sha256.slice(0,24)
+    && Number.isInteger(value.files) && value.files >= 1 && value.files <= 128
+    && Number.isInteger(value.bytes) && value.bytes >= 0 && value.bytes <= 1024*1024
+    && value.omitted && typeof value.omitted === 'object' && !Array.isArray(value.omitted)
+    && Object.keys(value.omitted).sort().join(',') === 'directories,files,sensitiveFiles'
+    && Object.values(value.omitted).every(n => Number.isInteger(n) && n >= 0 && n <= 16384);
 }
 
 function validResponse(value, request) {
@@ -80,6 +96,7 @@ function validResponse(value, request) {
     ...expectedKeys,
     ...(hasPaths ? ["publishedPaths", "publishedPathsOmitted"] : []),
     ...(hasEmptyPaths ? ["publishedEmptyPaths", "publishedEmptyPathsOmitted"] : []),
+    ...(value && Object.hasOwn(value, 'source') ? ['source'] : []),
   ].sort();
   if (
     !value ||
@@ -120,6 +137,9 @@ function validResponse(value, request) {
     value.publishedPaths.length + value.publishedPathsOmitted !== value.files ||
     (value.publishedPathsOmitted === 0 && !value.publishedPaths.includes(value.entryFile))
   )) throw new Error("invalid Pixel workspace preview file list");
+  if (request.sourceDirectory !== undefined
+      ? !validSourceReview(value.source, request.relativeDirectory) || value.source.relativeDirectory !== request.sourceDirectory
+      : Object.hasOwn(value, 'source')) throw new Error('invalid Pixel source review receipt');
   // Zero-byte published files: a subset of the file list, never the entry.
   if (hasEmptyPaths && (
     !hasPaths ||
@@ -214,6 +234,10 @@ function socketRequest(payload, { socketPath = SOCKET_PATH, signal, timeoutMs = 
 }
 
 const FAILURE_MESSAGES = {
+  source_capture_limit: "The requested source capture exceeds its bounded limits (128 text files, 256 KiB each, 1 MiB total, bounded directory enumeration). No complete source delivery is verified. Narrow the explicit project source selection; do not silently omit required files or publish a different project.",
+  source_store_full: "The owner's source review store has reached its 128-capture or 64 MiB limit. This attempt did not create a new source capture or website output. Existing records are preserved. Do not delete history or repeatedly republish to work around this limit; ask the owner to review storage.",
+  source_capture_changed: "Project source changed during capture. Wait for project writes to finish, then retry the exact requested source directory. No source snapshot is verified.",
+  no_eligible_source: "The source directory contains no eligible UTF-8 source files after exclusions. Verify the intended project directory; do not claim complete source delivery or substitute unrelated files.",
   writable_file: "A regular project file is writable by its group or by other users. Inspect file modes inside the selected static output directory and remove only group/other write permission from the affected generated files (chmod go-w on those files), then retry. Adding read or execute permission does not remove write permission. Do not change parent directories, ownership, host settings, or unrelated files; do not delete or rename output to bypass validation.",
   invalid_json_artifact: "A .json artifact is not valid unambiguous UTF-8 JSON. Generate serialized data from the actual final files using a JSON serializer, parse it back, and compare the decoded contents with those files before retrying. Do not hand-transcribe escaped source code or rename required files to bypass validation.",
   unsupported_file_type: "The project contains an unsupported preview file type. Inspect its file list and keep unrelated files outside the static site directory; CSV and TSV data files are supported.",
@@ -276,12 +300,13 @@ export function createWorkspacePreviewTool({ request, transport = "unix" } = {})
   return {
     name: "pixel_ods_workspace_preview",
     description:
-      "Publish and verify a static visual artifact already created by the active model in Pixel's writable workspace. Pass only relativeDirectory after writing the complete site, app, SVG, game, or visualization with workspace tools. PDF, ZIP and RAR files may accompany index.html as downloadable attachments (4 MiB/file, 16 MiB/publication). Link them from the index. Verify document rendering and archive integrity separately: publication proves byte integrity, not content quality. ODS never supplies creative starter bytes: it validates and snapshots the model-authored files, then returns the only localhost URL Pixel may claim is browser-accessible. Never start a sandbox server. " + PREVIEW_RUNTIME_CONTRACT + " " + DERIVED_ARTIFACT_CONTRACT,
+      "Publish and verify a static visual artifact already created by the active model in Pixel's writable workspace. Pass relativeDirectory for browser-ready output. For framework builds, also pass sourceDirectory: the existing project root containing that output; Review then shows a separate bounded source snapshot, never executes it, and preserves the built preview. Source capture excludes dependencies, generated/hidden/sensitive files; it proves captured bytes, not correspondence to the build. PDF, ZIP and RAR files may accompany index.html as downloadable attachments (4 MiB/file, 16 MiB/publication). Link them from the index. Verify document rendering and archive integrity separately: publication proves byte integrity, not content quality. ODS never supplies creative starter bytes. Never start a sandbox server. " + PREVIEW_RUNTIME_CONTRACT + " " + DERIVED_ARTIFACT_CONTRACT,
     parameters: {
       type: "object",
       additionalProperties: false,
       required: ["relativeDirectory"],
       properties: {
+        sourceDirectory: {type:'string',description:'Optional existing project root, workspace-relative and an ancestor of relativeDirectory. Captures eligible UTF-8 source for Review: at most 128 files, 256 KiB each and 1 MiB total. Use for framework builds; do not copy source into dist. Requested capture failures fail publication; never claim a complete project inventory.'},
         relativeDirectory: {
           type: "string",
           description:

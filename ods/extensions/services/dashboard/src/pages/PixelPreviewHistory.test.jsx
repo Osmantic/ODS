@@ -1,7 +1,11 @@
+// Conversation/review state tests isolate the asynchronous origin handshake.
+// Its real transport, timeout and stale-receipt behavior is covered in previewOrigin.test.jsx.
+vi.mock('../lib/useVerifiedPreview',()=>({default:(_preview,access)=>access}))
 import {render} from '../test/test-utils'
 import {screen,waitFor} from '@testing-library/react'
 import Pixel from './Pixel'
 import {saveConversation} from '../lib/pixelConversations'
+import {previewManifestResponse} from '../test/previewFixtures'
 
 function publication(digit) {
   const sha256=digit.repeat(64),siteId='site-'+sha256.slice(0,24)
@@ -10,7 +14,7 @@ function publication(digit) {
 const first=publication('a'), latest=publication('b')
 beforeEach(()=>{
   localStorage.clear()
-  vi.stubGlobal('fetch',vi.fn(async()=>({ok:true,json:async()=>({available:true,model:'pixel/default'}),arrayBuffer:async()=>new TextEncoder().encode('{}').buffer})))
+  vi.stubGlobal('fetch',vi.fn(async url=>url.includes('__ods_manifest__')?previewManifestResponse(url.includes(latest.siteId)?latest:first):({ok:true,json:async()=>({available:true,model:'pixel/default'}),arrayBuffer:async()=>new TextEncoder().encode('{}').buffer})))
 })
 afterEach(()=>{vi.unstubAllGlobals();vi.restoreAllMocks()})
 function seed(extra=[]) {
