@@ -14,7 +14,7 @@ import tarfile
 import threading
 import time
 
-from project_runtime_protocol import validate_project_lock
+from project_runtime_protocol import select_project_runtime
 from project_storage import KEEPER_SECONDS, verify_volume
 
 
@@ -22,27 +22,30 @@ def deadline_command(command, seconds=240):
     return ['timeout', '--signal=TERM', '--kill-after=5s', str(seconds) + 's', *command]
 
 
-def verify_runtime(image):
+def verify_runtime(image, *, runtime="npm"):
     """Confirm current Docker availability and the configured immutable image."""
-    stage_arguments(image, 'ods-project-' + '0' * 24, 'build')
+    stage_arguments(image, 'ods-project-' + '0' * 24, 'build', runtime=runtime)
     result = subprocess.run(['docker', 'image', 'inspect', '--format', '{{.Id}}', image],
                             capture_output=True, text=True, timeout=15, check=True)
     if result.stdout.strip() != image:
         raise ValueError('project runtime image identity mismatch')
 
 
-def seed_project(image: str, job: str, snapshot: dict, *, manifests_only: bool) -> None:
+def seed_project(image: str, job: str, snapshot: dict, *, manifests_only: bool, runtime: str = "npm") -> None:
     """Transfer a trusted no-follow snapshot through stdin, never a host mount.
 
     This is an internal controller primitive, not an untrusted API. The network
     acquisition stage must run before the full source transfer.
     """
     files = snapshot["files"]
-    validate_project_lock(json.loads(files["package.json"]), json.loads(files["package-lock.json"]))
+    if select_project_runtime(files) != runtime:
+        raise ValueError("snapshot runtime does not match execution binding")
     if manifests_only:
         stream = io.BytesIO()
         with tarfile.open(fileobj=stream, mode="w") as archive:
-            for name in ("package.json", "package-lock.json"):
+            manifests = (("ods-project.json", "requirements.lock") if runtime == "python"
+                         else ("package.json", "package-lock.json"))
+            for name in manifests:
                 member = tarfile.TarInfo(name)
                 member.size, member.mode = len(files[name]), 0o644
                 member.uid = member.gid = 1000
@@ -50,14 +53,53 @@ def seed_project(image: str, job: str, snapshot: dict, *, manifests_only: bool) 
         payload = stream.getvalue()
     else:
         payload = snapshot["archive"]
-    args = stage_arguments(image, job, "build")
+    args = stage_arguments(image, job, "build", runtime=runtime)
     args[args.index("--name") + 1] = job + ("-seed-manifests" if manifests_only else "-seed-source")
     args = args[:args.index(image) + 1]
     subprocess.run([*args[:2], "-i", *args[2:], *deadline_command(["tar", "-xf", "-", "--no-same-owner"], 60)],
                    input=payload, capture_output=True, check=True, timeout=70)
 
 
-def stage_arguments(image: str, job: str, stage: str) -> list[str]:
+# These programs are controller-owned, never read from the project. -I keeps
+# source, PYTHONPATH and user site packages out of the trusted bootstrap.
+PYTHON_TEST = """import json, os, pathlib, subprocess, sys
+root = pathlib.Path('/home/node')
+env = root / '.ods-python-env'
+subprocess.run([sys.executable, '-I', '-m', 'venv', str(env)], check=True)
+python = str(env / 'bin/python')
+subprocess.run([python, '-I', '-m', 'pip', '--isolated', '--disable-pip-version-check',
+    '--no-cache-dir', 'install', '--no-index', '--find-links=/home/node/.ods-python-wheels',
+    '--require-hashes', '--only-binary=:all:', '-r', '/home/node/requirements.lock'], check=True)
+# A zero exit alone is insufficient: project imports can call os._exit(0)
+# before unittest discovery finishes. Require bounded completion evidence from
+# the runner as well. This is execution evidence, not trust in project tests.
+read_fd, write_fd = os.pipe()
+runner = "import json, os, sys, unittest; receipt=int(sys.argv[1]); sys.path.insert(0, '/home/node'); suite=unittest.defaultTestLoader.discover('/home/node/tests'); count=suite.countTestCases(); print('ODS discovered tests:', count, flush=True); result=unittest.TextTestRunner(verbosity=2).run(suite); executed=result.testsRun-len(result.skipped); os.write(receipt, json.dumps({'tests':executed,'success':result.wasSuccessful()}).encode()); os.close(receipt); sys.exit(0 if executed and result.wasSuccessful() else 1)"
+try:
+    result = subprocess.run([python, '-I', '-c', runner, str(write_fd)], pass_fds=(write_fd,))
+finally:
+    os.close(write_fd)
+# A project can leave descendants holding the descriptor. Never wait for EOF.
+os.set_blocking(read_fd, False)
+try:
+    try:
+        receipt = json.loads(os.read(read_fd, 1024))
+    except (BlockingIOError, ValueError):
+        receipt = None
+finally:
+    os.close(read_fd)
+if (result.returncode != 0 or not isinstance(receipt, dict)
+        or set(receipt) != {'tests', 'success'} or type(receipt['tests']) is not int
+        or receipt['tests'] <= 0 or receipt['success'] is not True):
+    sys.exit('Python tests did not produce a successful completion receipt')
+"""
+PYTHON_BUILD = """import runpy, sys
+sys.path.insert(0, '/home/node')
+runpy.run_path('/home/node/main.py', run_name='__main__')
+"""
+
+
+def stage_arguments(image: str, job: str, stage: str, *, runtime: str = "npm") -> list[str]:
     if not re.fullmatch(r"sha256:[a-f0-9]{64}", image):
         raise ValueError("immutable local image id required")
     if not re.fullmatch(r"ods-project-[a-f0-9]{24}", job):
@@ -69,6 +111,18 @@ def stage_arguments(image: str, job: str, stage: str) -> list[str]:
         "build": ["npm", "run", "build"],
         "keeper": ["sleep", str(KEEPER_SECONDS)],
     }
+    if runtime == "python":
+        commands = {
+            "acquire": ["python", "-I", "-m", "pip", "--isolated", "--disable-pip-version-check",
+                        "--no-cache-dir", "download", "--no-deps", "--require-hashes", "--only-binary=:all:",
+                        "--index-url=https://pypi.org/simple", "--dest=/home/node/.ods-python-wheels",
+                        "-r", "/home/node/requirements.lock"],
+            "test": ["python", "-I", "-c", PYTHON_TEST],
+            "build": ["/home/node/.ods-python-env/bin/python", "-I", "-c", PYTHON_BUILD],
+        }
+    elif runtime != "npm":
+        raise ValueError("unsupported project runtime")
+    commands['keeper'] = ['sleep', str(KEEPER_SECONDS)]
     if stage not in commands:
         raise ValueError("unsupported project stage")
     return ["docker", "run", "--name", job + "-" + stage,
@@ -83,22 +137,22 @@ def stage_arguments(image: str, job: str, stage: str) -> list[str]:
             *(commands[stage] if stage == 'keeper' else deadline_command(commands[stage]))]
 
 
-def start_keeper(image, job):
-    args = stage_arguments(image, job, 'keeper')
+def start_keeper(image, job, *, runtime='npm'):
+    args = stage_arguments(image, job, 'keeper', runtime=runtime)
     subprocess.run([*args[:2], '-d', *args[2:]], capture_output=True, timeout=15, check=True)
-    evidence = observe_stage(image, job, 'keeper')
+    evidence = observe_stage(image, job, 'keeper', runtime=runtime)
     if evidence.get('status') != 'running' or evidence.get('evidence') != 'docker-state':
         raise ValueError('project storage keeper not confirmed')
 
 
 def run_stage(image: str, job: str, stage: str, *, cancel: threading.Event,
-              timeout: float = 240) -> dict:
+              timeout: float = 240, runtime: str = "npm") -> dict:
     """Observe one execution; drain bounded logs and stop its exact container.
 
     Leaves containers/volume for the caller to inspect and clean up. Never
     retries a failed or interrupted stage, and never reports it as success.
     """
-    args = stage_arguments(image, job, stage)
+    args = stage_arguments(image, job, stage, runtime=runtime)
     if not 0 < timeout <= 600:
         raise ValueError("invalid project timeout")
     if cancel.is_set():
@@ -143,7 +197,7 @@ def run_stage(image: str, job: str, stage: str, *, cancel: threading.Event,
         reader.join(timeout=5)
     # CLI disconnection (including a nonzero exit) is not proof of termination.
     # Never release the bounded volume while a late Docker run may still use it.
-    observed = observe_stage(image, job, stage)
+    observed = observe_stage(image, job, stage, runtime=runtime)
     if observed.get("evidence") != "docker-state" or observed['status'] not in ('succeeded', 'failed'):
         interrupted = 'unconfirmed'
     elif interrupted == 'unconfirmed' and requested_interruption:
@@ -155,14 +209,14 @@ def run_stage(image: str, job: str, stage: str, *, cancel: threading.Event,
             "truncated": {"stdout": truncated[0], "stderr": truncated[1]}}
 
 
-def observe_stage(image: str, job: str, stage: str, *, container_id=None, timeout=15) -> dict:
+def observe_stage(image: str, job: str, stage: str, *, runtime: str = "npm", container_id=None, timeout=15) -> dict:
     """Read existing Docker evidence after interruption; never launch/retry.
 
     A failed lookup means unknown, including when Docker itself is unavailable.
     Recovered exit status cannot recreate lost stdout or assert test counts.
     """
     seed = stage in ("seed-manifests", "seed-source")
-    args = stage_arguments(image, job, "build" if seed else stage)
+    args = stage_arguments(image, job, "build" if seed else stage, runtime=runtime)
     command = deadline_command(["tar", "-xf", "-", "--no-same-owner"], 60) if seed else args[args.index(image) + 1:]
     unknown = {"status": "unconfirmed", "exitCode": None, "evidence": "unavailable"}
     deadline = time.monotonic() + timeout
@@ -219,7 +273,7 @@ def observe_stage(image: str, job: str, stage: str, *, container_id=None, timeou
         return unknown
 
 
-def recover_job(image: str, job: str, *, cancel=False, required_stage=None, timeout=5) -> dict:
+def recover_job(image: str, job: str, *, cancel=False, required_stage=None, timeout=5, runtime="npm") -> dict:
     """Observe orphaned resources; only stop fully verified immutable IDs.
 
     The exclusive service lifetime lock must exclude the original controller.
@@ -227,7 +281,7 @@ def recover_job(image: str, job: str, *, cancel=False, required_stage=None, time
     Retain stopped resources as crash evidence; a cancel receipt says nothing
     about whether an artifact import occurred before the controller died.
     """
-    stage_arguments(image, job, "build")
+    stage_arguments(image, job, "build", runtime=runtime)
     if not 0 < timeout <= 10:
         raise ValueError("invalid recovery deadline")
     deadline = time.monotonic() + timeout
@@ -266,7 +320,7 @@ def recover_job(image: str, job: str, *, cancel=False, required_stage=None, time
             stage = name.removeprefix("/" + job + "-")
             if stage not in ("seed-manifests", "seed-source", "acquire", "test", "build", "keeper"):
                 return {**unknown, "evidence": "identity-mismatch"}
-            evidence = observe_stage(image, job, stage, container_id=cid, timeout=remaining())
+            evidence = observe_stage(image, job, stage, container_id=cid, timeout=remaining(), runtime=runtime)
             if evidence.get("evidence") != "docker-state":
                 return {**unknown, "evidence": evidence["evidence"]}
             stages[cid] = (stage, evidence)
@@ -275,7 +329,7 @@ def recover_job(image: str, job: str, *, cancel=False, required_stage=None, time
                 if evidence["status"] == "running":
                     # A stop exit code alone is not termination evidence.
                     command(["docker", "stop", "--time", "1", cid])
-                verified = observe_stage(image, job, stage, container_id=cid, timeout=remaining())
+                verified = observe_stage(image, job, stage, container_id=cid, timeout=remaining(), runtime=runtime)
                 if verified.get("evidence") != "docker-state" or verified["status"] not in ("succeeded", "failed"):
                     return unknown
             # Prior completed stages cannot prove that a pending docker run

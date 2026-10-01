@@ -1,6 +1,7 @@
 import PortalApprovalTerminal from '../components/PortalApprovalTerminal'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import PixelConversationRecovery from '../components/PixelConversationRecovery'
+import {validSourceReview} from '../lib/pixelSourceReview'
 import { readConversations, saveConversation, createConversationWriter, SELECT_EVENT, DELETE_EVENT, deleteConversation, isConversationDeleted } from '../lib/pixelConversations'
 import {usePixelAutoScroll} from '../lib/usePixelAutoScroll'
 import { Link } from 'react-router-dom'
@@ -44,6 +45,8 @@ import {publicationDisplayText} from '../lib/publicationDisplay'
 import {isQuestionAnswer, parseQuestionsFrame, questionMetadata} from '../lib/pixelQuestions'
 import PixelTurnNavigation from '../components/PixelTurnNavigation'
 import PixelSnapshotChanges from '../components/PixelSnapshotChanges'
+import PortalDeliveredArtifacts from '../components/PortalDeliveredArtifacts'
+import { deliveredArtifactMetadata, parseDeliveredArtifactsFrame } from '../lib/pixelDeliveredArtifacts'
 import PortalWorkspace from '../components/PortalWorkspace'
 import { parseTaskActivity, parseTaskActivityFrame } from '../lib/pixelTaskActivity'
 import MetalMetricIcon from '../components/MetalMetricIcon'
@@ -197,6 +200,7 @@ export function parseVerifiedPreviewFrame(frame) {
       'schemaVersion',
       'sha256',
       'siteId',
+      ...(preview && Object.hasOwn(preview,'source')?['source']:[]),
       'url',
     ].join('\n')
     || preview.schemaVersion !== 1
@@ -218,6 +222,7 @@ export function parseVerifiedPreviewFrame(frame) {
     || preview.bytes > 16 * 1024 * 1024
     || !/^[a-f0-9]{64}$/.test(preview.sha256)
     || !/^[a-f0-9]{64}$/.test(preview.entrySha256)
+    || (Object.hasOwn(preview,'source') && !validSourceReview(preview.source,preview.relativeDirectory))
   ) return null
   return { ...preview }
 }
@@ -443,6 +448,7 @@ function messageOutcome(message) {
 function retainedResult(events) {
   let content = ''
   let preview = null
+  let artifacts = null
   let task = null
   let questions = null
   let done = false
@@ -469,6 +475,8 @@ function retainedResult(events) {
       }
       const candidate = parseVerifiedPreviewFrame(frame)
       if (candidate) preview = candidate
+      const candidateArtifacts = parseDeliveredArtifactsFrame(frame)
+      if (candidateArtifacts) artifacts = candidateArtifacts
       const candidateTask = parseTaskActivityFrame(frame)
       if (candidateTask) task = candidateTask
       const candidateQuestions = parseQuestionsFrame(frame)
@@ -478,7 +486,7 @@ function retainedResult(events) {
     } catch { /* The same bounded SSE boundary applies to retained results. */ }
   }
   if (failureMessage) content = content ? `${content}\n\n_${failureMessage}_` : failureMessage
-  return { content, preview: done && !failed ? preview : null, task, questions: done && !failed ? questions : null, done, failed }
+  return { content, preview: done && !failed ? preview : null, artifacts: done && !failed ? artifacts : null, task, questions: done && !failed ? questions : null, done, failed }
 }
 
 function loadStoredChat(selected) {
@@ -508,7 +516,7 @@ function loadStoredChat(selected) {
       totalBytes += new TextEncoder().encode(message.content).byteLength
       if (totalBytes > MAX_STORED_MESSAGE_BYTES) throw new Error('stored Portal chat is too large')
       const task = message.role === 'assistant' && parseTaskActivity(message.task, message.task?.runId)
-      return { role: message.role, content: message.content, ...messageOutcome(message), ...(task ? {task} : {}), ...messagePublication(message), ...questionMetadata(message), ...teamMetadata(message) }
+      return { role: message.role, content: message.content, ...messageOutcome(message), ...(task ? {task} : {}), ...messagePublication(message), ...deliveredArtifactMetadata(message), ...questionMetadata(message), ...teamMetadata(message) }
     })
     // Reuse the terminal marker validator for persisted metadata. Never infer
     // an iframe URL from conversation text, and always use the authenticated
@@ -744,6 +752,7 @@ export default function Pixel({ systemStatus = null }) {
                 status: result.state === 'cancelled' ? 'stopped' : successful ? 'done' : 'error',
                 ...(recovered.task ? {task:recovered.task} : {}),
                 ...(successful && recovered.questions ? {questions:recovered.questions} : {}),
+                ...(successful && recovered.artifacts ? {artifacts:recovered.artifacts} : {}),
                 ...(publication ? {publication,beforePublication:before} : {}),
               })})
               if (successful && recovered.preview) {
@@ -781,14 +790,29 @@ export default function Pixel({ systemStatus = null }) {
   }, [interrupted, sending, activityRefresh, updateRestoredActivity])
 
   useEffect(() => {
-    const controller = new AbortController()
+    let controller = null
     let stopped = false
     let poll = null
+    let deadline = null
     async function fetchStatus() {
+      controller = new AbortController()
+      const requestController = controller
       try {
-        const response = await fetch('/api/pixel/status', { signal: controller.signal, cache: 'no-store' })
-        if (!response.ok) throw new Error('status unavailable')
-        const data = await response.json()
+        // Bound both headers and body so a stalled request cannot suspend recovery.
+        // Racing also discards a late response from a transport that ignores abort.
+        const data = await Promise.race([
+          (async () => {
+            const response = await fetch('/api/pixel/status', { signal: requestController.signal, cache: 'no-store' })
+            if (!response.ok) throw new Error('status unavailable')
+            return response.json()
+          })(),
+          new Promise((_, reject) => {
+            deadline = globalThis.setTimeout(() => {
+              reject(new Error('status timeout'))
+              requestController.abort()
+            }, 15000)
+          }),
+        ])
         if (stopped) return
         setRuntimeIdentity(data?.runtimeIdentity ?? null)
         setRuntimeReadiness(data?.readiness ?? null)
@@ -864,6 +888,7 @@ export default function Pixel({ systemStatus = null }) {
           setStatusDetail('Could not reach Portal backend')
         }
       } finally {
+        globalThis.clearTimeout(deadline)
         if (!stopped) poll = globalThis.setTimeout(fetchStatus, STATUS_POLL_MS)
       }
     }
@@ -871,7 +896,8 @@ export default function Pixel({ systemStatus = null }) {
     return () => {
       stopped = true
       if (poll !== null) globalThis.clearTimeout(poll)
-      controller.abort()
+      globalThis.clearTimeout(deadline)
+      controller?.abort()
     }
   }, [modelStatusRefresh])
 
@@ -906,7 +932,7 @@ export default function Pixel({ systemStatus = null }) {
     try {
       const storedMessages = messages.map(message => {
         const task = message.role === 'assistant' && parseTaskActivity(message.task, message.task?.runId)
-        return {role: message.role, content: message.content, ...messageOutcome(message), ...(task ? {task} : {}), ...messagePublication(message), ...questionMetadata(message), ...teamMetadata(message)}
+        return {role: message.role, content: message.content, ...messageOutcome(message), ...(task ? {task} : {}), ...messagePublication(message), ...deliveredArtifactMetadata(message), ...questionMetadata(message), ...teamMetadata(message)}
       })
       // Report storage limits without silently trimming previous turns.
       if (storedMessages.length > MAX_STORED_MESSAGES || storedMessages.reduce((total, message) => total + new TextEncoder().encode(message.content).byteLength, 0) > MAX_STORED_MESSAGE_BYTES) throw new Error('stored Portal chat is too large')
@@ -1000,6 +1026,7 @@ export default function Pixel({ systemStatus = null }) {
       let receivedError = false
       let recoveryEligible = false
       let verifiedPreview = null
+      let verifiedArtifacts = null
       let taskActivity = null
       let questions = null
 
@@ -1104,6 +1131,8 @@ export default function Pixel({ systemStatus = null }) {
               if (isCleanContextRecoveryFrame(frame)) recoveryEligible = true
               const candidatePreview = parseVerifiedPreviewFrame(frame)
               if (candidatePreview) verifiedPreview = candidatePreview
+              const candidateArtifacts = parseDeliveredArtifactsFrame(frame)
+              if (candidateArtifacts) verifiedArtifacts = candidateArtifacts
               const candidateQuestions = parseQuestionsFrame(frame)
               if (candidateQuestions) questions = candidateQuestions
               const candidateTask = parseTaskActivityFrame(frame)
@@ -1133,6 +1162,7 @@ export default function Pixel({ systemStatus = null }) {
           receivedError,
           recoveryEligible,
           verifiedPreview,
+          verifiedArtifacts,
           taskActivity,
           questions,
         }
@@ -1158,6 +1188,7 @@ export default function Pixel({ systemStatus = null }) {
         setMessages(previous => replaceLastAssistant(previous, {
           status: 'done',
           ...(attempt.taskActivity ? {task: attempt.taskActivity} : {}),
+          ...(attempt.verifiedArtifacts ? {artifacts:attempt.verifiedArtifacts} : {}),
           ...(attempt.questions && attempt.receivedDone && !attempt.receivedError ? {questions:attempt.questions} : {}),
           ...(attempt.verifiedPreview ? {publication:attempt.verifiedPreview, beforePublication:previousPublication?.relativeDirectory === attempt.verifiedPreview.relativeDirectory ? previousPublication : null} : {}),
           ...(recovered ? { recovered: true } : {}),
@@ -1660,6 +1691,7 @@ export default function Pixel({ systemStatus = null }) {
                   installation={githubExtensionInstallation}
                   onConfigured={() => githubExtensionInstallation
                     ? resumeGithubExtensionInstallation() : sendMessage(messages[index - 1].content)}/>}
+              {message.role === 'assistant' && message.status === 'done' && <PortalDeliveredArtifacts key={`delivered-files/${chatIdRef.current}/${index}`} artifacts={message.artifacts} />}
               {message.role === 'assistant' && message.content ? (
                 <>
                   {message.publication && <PixelSnapshotChanges preview={message.publication} before={message.beforePublication} variant="summary" onPreview={()=>openPublication(message.publication,'preview')} onReview={path=>openPublication(message.publication,'review',path)}/>}
@@ -1749,7 +1781,7 @@ export default function Pixel({ systemStatus = null }) {
               <PixelDraftPreview key={`draft-preview-${chatIdRef.current}`} input={command?.task ?? goalDraft?.task ?? input}/>
             </PixelComposerTools>
             <div className="pixel-composer-limits">
-              <PortalModelSelector activeModel={activeModel} runtimeSource={agentRuntime?.source} busy={sending || restoredActive || restoredChecking || stopping || teams.busy || contextControl.busy || status!=='available'} onSwitchingChange={setModelSwitching} onSettled={()=>setModelStatusRefresh(value=>value+1)}/>
+              <PortalModelSelector activeModel={activeModel} runtimeSource={agentRuntime?.source} availability={status} displayScope={chatIdRef.current} runtimeFingerprint={agentRuntime?.routeFingerprint} runtimeObservation={agentRuntime} busy={sending || restoredActive || restoredChecking || stopping || teams.busy || contextControl.busy || status!=='available'} onSwitchingChange={setModelSwitching} onSettled={()=>setModelStatusRefresh(value=>value+1)}/>
               <PortalContextRing capacityLabel={activeContext} context={contextControl.context} capacity={contextControl.observedCapacity || agentRuntime?.contextLength} pending={sending || restoredActive || contextControl.busy} onRefresh={()=>void contextControl.refresh()}/>
             </div>
           </div>

@@ -7,6 +7,24 @@ export function activityToolName(event, context) {
   return name==='tool_call' ? String(event?.params?.id ?? '').split(':').at(-1) : name;
 }
 const argsFor=(event,context)=>(context?.toolName ?? event?.toolName)==='tool_call' ? event?.params?.args : event?.params;
+// Preserve project folders without publishing absolute host paths. The root is
+// supplied by the configured agent runtime, never by tool arguments.
+function reviewPath(value, root) {
+  if(typeof value!=='string')return 'Patch';
+  const path=value.replaceAll('\\','/');
+  const base=path.split('/').filter(Boolean).at(-1) || 'File';
+  const workspace=typeof root==='string'?root.replaceAll('\\','/').replace(/\/$/,''):'';
+  let relative=path;
+  if(path.startsWith('/') || /^[A-Za-z]:/.test(path)) {
+    if(!workspace || !path.startsWith(workspace+'/'))return text(base,120);
+    relative=path.slice(workspace.length+1);
+  }
+  relative=relative.replace(/^\.\//,'');
+  if(!relative || relative.length>120 || /[\u0000-\u001f\u007f]/.test(relative)
+    || relative.split('/').some(part=>!part || part==='.' || part==='..' || part.startsWith('~')))
+    return text(base,120);
+  return relative;
+}
 // Display only bounded excerpts; never mirror credential files or secret-bearing
 // lines into the browser's conversation history.
 function excerpt(value) {
@@ -33,7 +51,7 @@ export function displayForActivity(event, context, previous=null) {
   const labels={read:'Reading a file',ls:'Listing files',glob:'Finding files',grep:'Searching files',write:'Writing a file',edit:'Editing a file',apply_patch:'Applying changes',exec:'Running a command',shell:'Running a command',bash:'Running a command',process:'Checking a process',tool_search:'Finding available tools',tool_describe:'Checking tool parameters',session_status:'Checking the session',pixel_ods_status:'Checking ODS',pixel_ods_workspace_preview:'Publishing a preview',pixel_ods_ask_user:'Asking for your input',sessions_spawn:'Starting an agent',sessions_send:'Coordinating an agent'};
   if(labels[name])display.label=labels[name];
   if(name==='pixel_ods_project_build') {
-    display.label=({submit:'Starting project tests and build',observe:'Checking project build',cancel:'Requesting build cancellation'})[args.action] || 'Managing project build';
+    display.label=({capabilities:'Checking project runtime compatibility',submit:'Starting project tests and build',observe:'Checking project build',cancel:'Requesting build cancellation'})[args.action] || 'Managing project build';
     // Describe the action, not an inferred successful result. Full command
     // output and arbitrary job payloads do not belong in activity metadata.
     display.detail=null;
@@ -57,7 +75,7 @@ export function displayForActivity(event, context, previous=null) {
       const before=excerpt(args.oldText ?? args.old_string ?? '');
       const after=excerpt(name==='write'?args.content:name==='edit'?args.newText ?? args.new_string:patch);
       if((name==='write' && typeof args.content==='string') || (name==='edit' && typeof (args.newText ?? args.new_string)==='string') || (name==='apply_patch' && typeof patch==='string'))
-        display.change={file:text(file,120)||'File',kind:name==='apply_patch'?'patch':name,before:before.text,after:after.text,truncated:before.truncated||after.truncated};
+        display.change={file:reviewPath(path,context?.workspaceRoot),kind:name==='apply_patch'?'patch':name,before:before.text,after:after.text,truncated:before.truncated||after.truncated};
       if(name==='edit' && Array.isArray(args.edits) && args.edits.length) {
         // Newer runtimes accept multiple independent replacements. Keep hunk
         // boundaries instead of inventing unchanged content between them.
@@ -70,7 +88,7 @@ export function displayForActivity(event, context, previous=null) {
           return ['@@ Replacement @@',prefix(before.text,'-'),prefix(after.text,'+')].filter(Boolean).join('\n');
         }).join('\n');
         const bounded=excerpt(hunks);
-        if(edits.length)display.change={file:text(file,120)||'File',kind:'patch',before:'',after:bounded.text,truncated:clipped||bounded.truncated};
+        if(edits.length)display.change={file:reviewPath(path,context?.workspaceRoot),kind:'patch',before:'',after:bounded.text,truncated:clipped||bounded.truncated};
       }
     }
   }

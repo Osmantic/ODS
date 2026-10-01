@@ -36,15 +36,15 @@ export default function PortalFileTreeResize({layout,label='Resize file list'}) 
   const {width,minimum,maximum,narrow,resize,reset}=layout
   function release(event) {
     if(!drag.current || (event && event.pointerId!==drag.current.pointerId))return
-    const id=drag.current.pointerId
+    const {pointerId:id,target}=drag.current
     drag.current=null;setDragging(false)
-    if(handle.current?.hasPointerCapture?.(id))handle.current.releasePointerCapture(id)
+    if(target?.hasPointerCapture?.(id))target.releasePointerCapture(id)
   }
   useLayoutEffect(()=>{if(narrow)release()},[narrow])
   useLayoutEffect(()=>()=>{
-    const id=drag.current?.pointerId
+    const {pointerId:id,target}=drag.current || {}
     drag.current=null
-    if(id!==undefined && handle.current?.hasPointerCapture?.(id))handle.current.releasePointerCapture(id)
+    if(id!==undefined && target?.hasPointerCapture?.(id))target.releasePointerCapture(id)
   },[])
   if(narrow)return null
   return <div ref={handle} className="portal-file-tree-resizer" data-dragging={dragging} role="separator"
@@ -52,7 +52,7 @@ export default function PortalFileTreeResize({layout,label='Resize file list'}) 
     aria-valuenow={width} aria-valuetext={`${width} pixels`} tabIndex={0}
     onPointerDown={event=>{
       if(event.button!==0 || drag.current)return
-      drag.current={pointerId:event.pointerId,x:event.clientX,width}
+      drag.current={pointerId:event.pointerId,x:event.clientX,width,target:event.currentTarget}
       event.currentTarget.setPointerCapture?.(event.pointerId)
       setDragging(true);event.preventDefault()
     }}

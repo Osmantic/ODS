@@ -85,6 +85,7 @@ export function createTaskActivity({agentId = 'pixel', now = () => new Date().to
     const promptBuildEvents = new WeakSet();
     if (event && typeof event === 'object') promptBuildEvents.add(event);
     runs.set(id, {runId:id, sessionId:context?.sessionId, sessionKey:context?.sessionKey, promptBuildEvents,
+      workspaceRoot:context?.workspaceRoot,
       startedAt:now(), finishedAt:null, state:'running', calls:new Map(), truncated:false, context:null});
   }
   function record(event, context, outcome) {
@@ -109,7 +110,7 @@ export function createTaskActivity({agentId = 'pixel', now = () => new Date().to
     // A blocked attempt must not later become a successful effect because a
     // wrapper emitted an after-hook. Duplicate hook delivery is idempotent.
     if (existing?.outcome === 'blocked' || (existing && outcome === 'running' && existing.outcome !== 'running')) return;
-    const display=outcome==='blocked' ? null : displayForActivity(event,context,existing?.display);
+    const display=outcome==='blocked' ? null : displayForActivity(event,{...context,workspaceRoot:run.workspaceRoot},existing?.display);
     // WSL/host clock sync can move wall time backwards between the tool hooks.
     // Keep the public receipt monotonic or ingress rejects the entire answer.
     const observedAt=now();

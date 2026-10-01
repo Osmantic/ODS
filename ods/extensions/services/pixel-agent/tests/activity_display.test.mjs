@@ -45,10 +45,29 @@ test('completed exec keeps the original filtered display when the runtime wraps 
 });
 test('projects bounded edit receipts while excluding credential files and sensitive lines',()=>{
  const value=displayForActivity({params:{path:'src/main.js',oldText:'const n = 1;',newText:'const n = 2;'}},{toolName:'edit'});
- assert.equal(value.change.file,'main.js');assert.equal(value.change.before,'const n = 1;');assert.equal(value.change.after,'const n = 2;');
+ assert.equal(value.change.file,'src/main.js');assert.equal(value.change.before,'const n = 1;');assert.equal(value.change.after,'const n = 2;');
  assert.equal(displayForActivity({params:{path:'.env',content:'secret'}},{toolName:'write'}).change,null);
  assert.ok(!displayForActivity({params:{path:'config.js',content:'const api_key = "secret";'}},{toolName:'write'}).change.after.includes('secret'));
  assert.equal(displayForActivity({params:{path:'long.js',content:'x'.repeat(2000)}},{toolName:'write'}).change.truncated,true);
+});
+
+test('review paths distinguish duplicate basenames and never expose host prefixes',()=>{
+ const tracker=createTaskActivity();
+ tracker.begin({}, {...context,workspaceRoot:'/home/owner/workspace'});
+ for(const [index,path] of ['app/page.js','/home/owner/workspace/app/games/page.js'].entries()) {
+  const ctx={...context,toolCallId:`write-${index}`};
+  const event={params:{id:'write',args:{path,content:'export default 1'}}};
+  tracker.before(event,ctx);tracker.after({...event,result:{}},ctx);
+ }
+ const projection=tracker.projection(runId);
+ assert.ok(parseTaskActivity(projection,runId));
+ assert.deepEqual(projection.events.map(event=>event.display.change.file),['app/page.js','app/games/page.js']);
+ assert.ok(!JSON.stringify(projection).includes('/home/owner'));
+ for(const path of ['/home/other/private.js','../outside.js','/home/owner/workspace-other/hidden.js']) {
+  const change=displayForActivity({params:{path,content:'ok'}},{toolName:'write',workspaceRoot:'/home/owner/workspace'}).change;
+  assert.ok(!change.file.includes('/'));
+ }
+ assert.equal(displayForActivity({params:{path:'C:\\work\\src\\app.js',content:'ok'}},{toolName:'write',workspaceRoot:'C:\\work'}).change.file,'src/app.js');
 });
 test('schema rejects extra content, unsafe sources and contradictory typed displays',()=>{
  const tracker=createTaskActivity();tracker.begin({},context);tracker.before({params:{id:'pixel_ods_activity',args:{message:'Checking'}}},context);
@@ -77,3 +96,4 @@ test('source titles remove the core web envelope without changing original evide
  const display=displayForActivity(event,{toolName:'web_search'});
  assert.equal(display.sources[0].title,'useState');assert.equal(event.result.details.results[0].title,title);
 });
+

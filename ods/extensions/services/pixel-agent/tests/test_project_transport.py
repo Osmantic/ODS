@@ -74,3 +74,21 @@ class ProjectTransportTests(unittest.TestCase):
         self.assertEqual(result['status'], 'unconfirmed')
         verify.assert_called_once_with(controller.image)
         controller.submit.assert_not_called()
+
+    def test_health_reports_only_configured_verified_profiles(self):
+        image, python_image = 'sha256:' + 'a' * 64, 'sha256:' + 'b' * 64
+        controller = Mock(image=image, python_image=None)
+        with patch('project_transport.verify_runtime'):
+            legacy = self.exchange(controller, {'schemaVersion': 1, 'action': 'health'})
+        self.assertEqual(legacy['status'], 'ready')
+        self.assertNotIn('runtimes', legacy)
+        controller.python_image = python_image
+        with patch('project_transport.verify_runtime') as verify:
+            result = self.exchange(controller, {'schemaVersion': 1, 'action': 'health'})
+        self.assertEqual(result['runtimes'], {'npm': image, 'python': python_image})
+        self.assertEqual(verify.call_count, 2)
+        verify.assert_called_with(python_image, runtime='python')
+        with patch('project_transport.verify_runtime', side_effect=[None, OSError('missing Python image')]):
+            failed = self.exchange(controller, {'schemaVersion': 1, 'action': 'health'})
+        self.assertEqual(failed['status'], 'unconfirmed')
+        self.assertNotIn('runtimes', failed)

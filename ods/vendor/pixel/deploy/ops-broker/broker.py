@@ -2005,6 +2005,20 @@ class Broker:
             self.result(job_id, "cancelled", completedAt=iso(), planHash=plan["planHash"], policySha256=plan["policySha256"])
             self.append_event(job_id, "job-finished", status="cancelled", policySha256=plan["policySha256"])
             return
+        # Waiting for approval or an emergency resume cannot extend a plan's
+        # lifetime. Settle expiry without dispatching any operation or granting
+        # authority; execute_plan still checks again at the execution boundary.
+        expected_hash = digest({key: value for key, value in plan.items() if key != "planHash"})
+        if plan.get("planHash") != expected_hash:
+            raise BrokerError("stored plan failed its integrity hash")
+        expires = datetime.fromisoformat(plan["expiresAt"].replace("Z", "+00:00"))
+        if utc_now() >= expires.astimezone(timezone.utc):
+            reason = "compiled plan expired before execution"
+            self.result(job_id, "failed", completedAt=iso(), error=reason,
+                        planHash=plan["planHash"], policySha256=plan["policySha256"])
+            self.append_event(job_id, "job-finished", status="failed", error=reason,
+                              policySha256=plan["policySha256"])
+            return
         if self.paused():
             self.result(job_id, "paused", planHash=plan["planHash"], policySha256=plan["policySha256"], riskTier=plan["riskTier"])
             return

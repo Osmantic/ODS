@@ -125,7 +125,7 @@ class ProjectControllerPolicyTests(unittest.TestCase):
                 with patch.object(controller, '_cleanup', return_value=[]) as cleanup:
                     controller.cancel(job)
                     controller.close()
-                    cleanup.assert_called_once_with(job, image=request['image'])
+                    cleanup.assert_called_once_with(job, image=request['image'], runtime='npm')
                 row = controller.jobs.observe(job)
                 self.assertEqual(row['state'], 'failed')
                 self.assertEqual(row['output']['error'], 'test failed')

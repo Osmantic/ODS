@@ -1,3 +1,4 @@
+import {validDeliveredArtifact} from './workspace-artifact.mjs';
 // Pixel per-run tool-loop guard.
 //
 // OpenClaw's built-in identical-call detector blocks a repeated tool call, but
@@ -10,6 +11,7 @@
 // OpenClaw's public harness runtime.
 
 import { createHash, randomBytes } from "node:crypto";
+import { validSourceReview, normalizeWorkspacePreviewParams } from './workspace-preview.mjs';
 import * as fs from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
@@ -261,6 +263,7 @@ const WORKSPACE_PREVIEW_FAILURE_REASONS = Object.freeze({
   too_many_files: "the directory exceeds the preview file-count limit",
   snapshot_too_large: "the directory exceeds the preview size limit",
   unsafe_file: "a file failed the preview safety checks",
+  writable_file: "a generated file allows group/other writes; remove only those write bits on affected output files, never broaden permissions or change parent directories",
   unsafe_directory: "the directory failed the preview path or permission checks",
   cancelled: "waiting for the preview was cancelled; publication may still be pending",
   unavailable: "the preview was unavailable; the tool supplied no more specific verified cause",
@@ -5748,6 +5751,39 @@ function localPreviewPolicyText(text) {
     .replace(/\b(?:n[aã]o|nunca)\s+(?:publique|publicar|publique novamente)\s+fora\s+do\s+ODS\b(?=\s*(?:[.!?;]|$))/gi, ' ');
 }
 
+// Owner phrasings that make delivery optional. The preparation verbs are a
+// closed list on purpose: "No need to explain, publish it" must stay a
+// publication request, so an arbitrary verb never joins the declined list.
+const OPTIONAL_DELIVERY_PATTERNS = (() => {
+  const negator = String.raw`(?:no\s+need\s+to|(?:do\s+not|don['’]t)\s+(?:need|have)\s+to|need\s+not|needn['’]t)`;
+  const preparation = String.raw`(?:(?:build|compile|run|test|install|bundle|package|lint)\s*(?:,\s*(?:(?:and|or)\s+)?|(?:and|or)\s+))*`;
+  const delivery = String.raw`(?:publish|republish|preview|display|serve|deploy)`;
+  const ptNegator = String.raw`nao\s+(?:precisa|precisamos|e\s+necessario|ha\s+necessidade\s+de)`;
+  const ptPreparation = String.raw`(?:(?:compilar|construir|executar|testar|instalar)\s*(?:,\s*(?:(?:e|ou)\s+)?|(?:e|ou)\s+))*`;
+  const ptDelivery = String.raw`(?:publicar|republicar|mostrar|abrir\s+(?:uma?\s+)?previa)`;
+  const gerund = String.raw`(?:publish(?:ing)?|republish(?:ing)?|preview(?:ing)?|display(?:ing)?|serving|deploy(?:ing|ment)?|publication)`;
+  return [
+    new RegExp(String.raw`\b${negator}\s+${preparation}${delivery}\b`, 'i'),
+    new RegExp(String.raw`\bno\s+need\s+for\s+(?:an?\s+)?(?:preview|publication|publishing|deployment)\b`, 'i'),
+    new RegExp(String.raw`\b${gerund}\s+(?:is\s+not|isn['’]t)\s+(?:necessary|required|needed)\b`, 'i'),
+    new RegExp(String.raw`\b${ptNegator}\s+${ptPreparation}${ptDelivery}\b`, 'i'),
+  ];
+})();
+
+function ownerDeclinesPreviewDelivery(text) {
+  // Optional build work must not become mandatory publication after a JSX/HTML
+  // write. Match only a coordinated delivery verb, not another clause's task.
+  const prose = workspacePreviewInstructionText(text).normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  let optional = false;
+  for (const clause of prose.split(/[!?;\n]+|\.(?=\s|$)|\b(?:but|however|instead|then|mas|porem)\b/i)) {
+    if (OPTIONAL_DELIVERY_PATTERNS.some(pattern => pattern.test(clause))) optional = true;
+    // A later independent, explicit publication command still has to be
+    // verified. This is not permission to override an actual "do not publish".
+    else if (hasExplicitWorkspacePreviewDirective(clause)) optional = false;
+  }
+  return optional;
+}
+
 function ownerForbidsWorkspacePreview(messages, prompt) {
   const text = localPreviewPolicyText(currentOwnerIntentText(messages, prompt))
     .replace(/(?:\x60{3}|~{3})[\s\S]*?(?:\x60{3}|~{3})/g, " ")
@@ -5762,7 +5798,7 @@ function ownerForbidsWorkspacePreview(messages, prompt) {
   const coordinatedProhibition = text
     .split(/[!?;\n]+|\.(?=\s|$)|\b(?:but|however|instead|then)\b/i)
     .some((clause) => !independentEnglishPreviewAfterConstraint(clause) && /\b(?:do\s+not|don['’]t|never|must\s+not|should\s+not|avoid|skip|without)\b[^.!?;\n]{0,160}\b(?:and|or|nor)\s+(?:show(?:ing)?|preview(?:ing)?|view(?:ing)?|open(?:ing)?|serv(?:e|ing)|publish(?:ing)?|republish(?:ing)?|display(?:ing)?)\b/i.test(clause));
-  if (coordinatedProhibition) return true;
+  if (coordinatedProhibition || ownerDeclinesPreviewDelivery(text)) return true;
   return portuguesePreviewForbidden(text) || /\b(?:only|just)\s+(?:the\s+)?(?:code|source(?:\s+code)?)\b/i.test(text) || /\b(?:do\s+not|don['’]t|never|must\s+not|should\s+not|avoid|skip|without)\s+(?:(?:try|attempt)\s+to\s+)?(?:(?:create|build|edit|write|run|execute)\s*(?:,\s*|and\s+|or\s+))*(?:show(?:ing)?|preview(?:ing)?|view(?:ing)?|open(?:ing)?|serv(?:e|ing)|publish(?:ing)?|republish(?:ing)?|display(?:ing)?)\b/i.test(text);
 }
 
@@ -6024,7 +6060,7 @@ function clauseRequestsVisualArtifact(clause, actionPattern, targetPattern) {
 export function userMessageRequestsWorkspacePreview(messages, prompt = undefined) {
   const text = workspacePreviewInstructionText(currentOwnerIntentText(messages, prompt));
   if (!text) return false;
-  if (portuguesePreviewForbidden(text)) return false;
+  if (portuguesePreviewForbidden(text) || ownerDeclinesPreviewDelivery(text)) return false;
   // Classify visual targets and actions from the same positive request text.
   // A no-website constraint on a Python task is not a website request. Keep
   // independent actions after "but", "instead", "then", or a sentence boundary.
@@ -6494,7 +6530,8 @@ function workspacePreviewOutcome(event, expectedDirectory, state) {
     details.httpStatus !== 200 ||
     details.readbackVerified !== true ||
     details.executable !== false ||
-    details.overwritten !== false
+    details.overwritten !== false ||
+    (Object.hasOwn(details, 'source') && !validSourceReview(details.source, details.relativeDirectory))
   ) {
     return undefined;
   }
@@ -6514,6 +6551,7 @@ function workspacePreviewOutcome(event, expectedDirectory, state) {
     bytes: details.bytes,
     sha256: details.sha256,
     entrySha256: details.entrySha256,
+    ...(details.source ? {source:details.source} : {}),
   };
 }
 
@@ -8163,14 +8201,20 @@ export function createToolLoopGuard({
         return { block: true, blockReason: workspacePreviewMissingEntryReason(state, directory) };
       }
       state.workspacePreviewDirectory = directory;
+      const publicationArgs = {relativeDirectory:directory};
+      if (Object.hasOwn(args ?? {}, 'sourceDirectory')) {
+        publicationArgs.sourceDirectory = args.sourceDirectory;
+        try { normalizeWorkspacePreviewParams(publicationArgs); }
+        catch { return {block:true,blockReason:'Source review requires an explicit workspace-relative project directory containing the selected publication directory. Preserve the project; do not substitute another source root.'}; }
+      }
       if (toolName === "tool_call") {
         pendingParams = {
           ...pendingParams,
           id: WORKSPACE_PREVIEW_TOOL,
-          args: { relativeDirectory: directory },
+          args: publicationArgs,
         };
       } else {
-        normalizedParams = { relativeDirectory: directory };
+        normalizedParams = publicationArgs;
         pendingParams = normalizedParams;
       }
     }
@@ -9526,6 +9570,24 @@ export function createToolLoopGuard({
     }
     if (typeof runId === "string" && runId) {
       const state = stateFor(runId);
+      // Prompt hooks carry trigger, while tool hooks can supply a previously
+      // missing session key but omit trigger. Merge only trusted hook metadata
+      // for this exact run; missing fields must not erase earlier evidence.
+      const artifactContext=state.artifactOwnerContext ??= {};
+      for (const key of ['agentId','runId','sessionId','sessionKey']) {
+        if (typeof context[key] !== 'string' || !context[key]) continue;
+        if (artifactContext[key] && artifactContext[key] !== context[key]) state.artifactIdentityConflict=true;
+        else artifactContext[key]=context[key];
+      }
+      if (typeof context.trigger === 'string' && context.trigger) {
+        if (context.trigger !== 'user') state.artifactNoninteractiveObserved=true;
+        artifactContext.trigger=context.trigger;
+      }
+      state.artifactOwnerInteractive = !state.artifactIdentityConflict && !state.artifactNoninteractiveObserved &&
+        ownerInteractiveTurn(artifactContext, agentId);
+      state.artifactSurfaceReason = state.artifactOwnerInteractive ? undefined :
+        state.artifactIdentityConflict ? 'run-identity-conflict' : state.artifactNoninteractiveObserved ? 'noninteractive-turn' :
+        artifactContext.trigger == null ? 'trigger-unavailable' : 'owner-session-required';
       state.completionAssurance.begin(currentOwnerIntentText(event?.messages, event?.prompt), event);
       const ownerIntent=currentOwnerIntentText(event?.messages,event?.prompt);
       if (ownerIntent) state.extensionCompletionGate ??= createExtensionCompletionGate(ownerIntent);
@@ -12482,7 +12544,35 @@ export function createToolLoopGuard({
     return { status: "none", ...staleExecWarningSuppression };
   }
 
+  function workspaceArtifactUnavailableReason(scope) {
+    const state=runs.get(scope?.runId);
+    if (!state || scope.agentId !== 'pixel') return 'run-unavailable';
+    if (state.managedTeamWorker) return 'team-surface-unsupported';
+    if (!state.artifactOwnerInteractive) return state.artifactSurfaceReason ?? 'owner-session-required';
+    if (state.clientCancelled) return 'run-cancelled';
+    if (state.runEnded) return 'run-ended';
+    if (state.currentSessionId !== scope.sessionId || state.currentSessionKey !== scope.sessionKey ||
+        sessionRuns.get(scope.sessionId) !== scope.runId) return 'run-superseded';
+    if (state.progressBudget.exhausted) return 'progress-budget-exhausted';
+    if (state.ownerQuestions) return 'owner-question-pending';
+    if ((state.artifactAttempts ?? 0) >= 4) return 'publication-attempt-limit';
+    return undefined;
+  }
+  function artifactScopeState(scope) {
+    const reason=workspaceArtifactUnavailableReason(scope);
+    // The fourth reserved call may still accept its receipt. The limit applies
+    // to reserving the next publication, not to finishing the current one.
+    return !reason || reason === 'publication-attempt-limit' ? runs.get(scope.runId) : undefined;
+  }
   function deliveryVerificationForRun(runId) {
+    const result=baseDeliveryVerificationForRun(runId);
+    const state=runs.get(runId);
+    const artifacts=state?.workspaceArtifacts;
+    return artifacts?.length && !state.clientCancelled && ['none','passed','failed'].includes(result.status)
+      ? {...result,artifacts:structuredClone(artifacts)} : result;
+  }
+
+  function baseDeliveryVerificationForRun(runId) {
     const verification = verificationForRun(runId);
     const state = runs.get(runId);
     if (state?.extensionCompletionGate?.active && !state.extensionCompletionGate.verification && verification.status === 'none') {
@@ -12588,6 +12678,22 @@ export function createToolLoopGuard({
   }
 
   return {
+    workspaceArtifactUnavailableReason,
+    reserveWorkspaceArtifact(scope) {
+      if (workspaceArtifactUnavailableReason(scope)) return false;
+      const state=runs.get(scope.runId);
+      state.artifactAttempts=(state.artifactAttempts ?? 0)+1;
+      return true;
+    },
+    acceptWorkspaceArtifact(scope,receipt) {
+      const state=artifactScopeState(scope);
+      if (!state || !state.artifactAttempts || !validDeliveredArtifact(receipt)) return false;
+      const artifacts=state.workspaceArtifacts ??= [];
+      if (artifacts.some(item=>item.siteId === receipt.siteId && item.file.path === receipt.file.path)) return true;
+      if (artifacts.length >= 4) return false;
+      artifacts.push(structuredClone(receipt));
+      return true;
+    },
     beforeToolCall,
     invalidateWorkspaceBundle(context) {
       const state = runs.get(context?.runId);

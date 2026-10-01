@@ -47,7 +47,7 @@ def _marker_digest(config):
     return hashlib.sha256(b"ods-pixel-openclaw-v1\0" + canonical).hexdigest()
 
 
-def _managed_marker(bridge):
+def _managed_marker(bridge, *, allow_installing=False):
     if bridge.surface == "darwin":
         # Native macOS installs are bound by the protected launchd deployment,
         # not the Linux/WSL owner marker.
@@ -68,8 +68,10 @@ def _managed_marker(bridge):
         marker = private_json(path, bridge.owner.pw_uid, 65536)
     except FileNotFoundError:
         raise AccessError("model-marker-missing") from None
+    except OSError:
+        raise AccessError("model-marker-unsafe") from None
     if (type(marker) is not dict or marker.get("schema_version") != 2
-            or marker.get("manager") != "ods" or marker.get("state") != "ready"
+            or marker.get("manager") != "ods" or marker.get("state") not in (("ready", "installing") if allow_installing else ("ready",))
             or marker.get("initial_active_state") != "absent"
             or marker.get("install_dir") != str(bridge.install)
             or type(marker.get("configuration_sha256")) is not str
@@ -78,8 +80,10 @@ def _managed_marker(bridge):
     return path, marker
 
 
-def _bind_managed_marker(bridge, journal, expected_sha):
-    before = private_json(bridge.state / "model-before.json", 0, 8 * 1024 * 1024)
+def _bind_managed_marker(bridge, journal, expected_sha, *, snapshot_name="model-before.json", allow_installing=False):
+    if snapshot_name not in ("model-before.json", "access-before.json"):
+        raise AccessError("invalid-marker-snapshot")
+    before = private_json(bridge.state / snapshot_name, 0, 8 * 1024 * 1024)
     prior = _marker_digest(before)
     # Pre-upgrade journals did not carry markerBeforeSha. Their root-owned
     # model-before snapshot and the still-bound owner marker can prove the
@@ -89,7 +93,7 @@ def _bind_managed_marker(bridge, journal, expected_sha):
     config, config_sha = _config(bridge)
     if config_sha != expected_sha:
         raise AccessError("model-config-changed")
-    path, marker = _managed_marker(bridge)
+    path, marker = _managed_marker(bridge, allow_installing=allow_installing)
     if marker is None:
         return
     current = _marker_digest(config)
@@ -98,7 +102,12 @@ def _bind_managed_marker(bridge, journal, expected_sha):
         try: os.fsync(directory)
         finally: os.close(directory)
         return  # A retry after the marker rename is idempotent.
-    if marker["configuration_sha256"] != prior:
+    accepted_prior = {prior}
+    if snapshot_name == "access-before.json" and "markerAppliedSha" in journal:
+        if not checksum(journal["markerAppliedSha"]):
+            raise AccessError("invalid-marker-snapshot")
+        accepted_prior.add(journal["markerAppliedSha"])
+    if marker["configuration_sha256"] not in accepted_prior:
         raise AccessError("model-marker-drifted")
     original = path.lstat()
     marker["configuration_sha256"] = current

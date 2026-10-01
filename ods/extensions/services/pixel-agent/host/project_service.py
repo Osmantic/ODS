@@ -18,6 +18,8 @@ from project_storage import DEFAULT_JOB_BYTES, DEFAULT_TOTAL_BYTES, DEFAULT_MAX_
 def serve(controller, stop, *, ready=None):
     """Use the already validated private state directory for socket and lock."""
     verify_runtime(controller.image)
+    if controller.python_image:
+        verify_runtime(controller.python_image, runtime="python")
     root = controller.jobs.path.parent
     socket_path = root / "control.sock"
     lock = os.open(root / "service.lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
@@ -59,6 +61,7 @@ def serve(controller, stop, *, ready=None):
             bound = socket_path.lstat()
             listener.listen(8)
             listener.settimeout(0.2)
+            controller.start_capability_probe()
             if ready is not None:
                 ready.set()
             while not stop.is_set():
@@ -95,6 +98,7 @@ def main():
     parser.add_argument("--workspace", required=True)
     parser.add_argument("--state-root", required=True)
     parser.add_argument("--image", required=True)
+    parser.add_argument("--python-image")
     parser.add_argument('--storage-bytes', type=int, default=DEFAULT_JOB_BYTES)
     parser.add_argument('--storage-total-bytes', type=int, default=DEFAULT_TOTAL_BYTES)
     parser.add_argument('--storage-max-jobs', type=int, default=DEFAULT_MAX_JOBS)
@@ -107,7 +111,7 @@ def main():
     for number in (signal.SIGTERM, signal.SIGINT):
         signal.signal(number, lambda *_: stop.set())
     controller = ProjectController(options.workspace, options.state_root, options.image,
-                                   authorize=ManagedFullAccessPolicy(), storage_limits={
+                                   authorize=ManagedFullAccessPolicy(), python_image=options.python_image, storage_limits={
                                        'job_bytes': options.storage_bytes,
                                        'total_bytes': options.storage_total_bytes,
                                        'max_jobs': options.storage_max_jobs})

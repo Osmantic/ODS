@@ -33,6 +33,7 @@ from pixel_chat_identity import messages_with_identity
 from pixel_chat_context import HistorySnapshot, public_context
 from pixel_runtime_identity import project_runtime_identity, unknown_runtime_identity
 from pixel_readiness import project_readiness
+from pixel_edge_read_client import borrow_edge_read_client, get_edge_read_client
 
 
 logger = logging.getLogger(__name__)
@@ -220,10 +221,14 @@ async def _chat_context_request(body: ChatCancelRequest, *, compact: bool = Fals
         # Starting a compaction returns a job receipt promptly. CPU/model time
         # belongs to the runtime job, not the browser's HTTP connection.
         timeout = httpx.Timeout(connect=3.0, read=20.0, write=5.0, pool=3.0)
-        async with httpx.AsyncClient(timeout=timeout, trust_env=False, follow_redirects=False) as client:
+        # Compaction mutates runtime state and retains its independent transport.
+        client_context = (httpx.AsyncClient(timeout=timeout, trust_env=False, follow_redirects=False)
+                          if compact else borrow_edge_read_client())
+        async with client_context as client:
             async with client.stream(
                 "POST", f"{edge_url}/v1/chat/{'compact' if compact else 'context'}",
                 json=payload, headers=_edge_headers(key, accept="application/json"),
+                timeout=timeout,
             ) as response:
                 if response.status_code in {409, 423, 429}:
                     raise HTTPException(response.status_code, "Portal is busy. Wait for the current task to finish.")
@@ -506,11 +511,12 @@ async def _current_access_readiness():
 async def _current_runtime_identity(edge_url, key):
     try:
         async with async_timeout(_READINESS_PROBE_SECONDS):
-            async with httpx.AsyncClient(timeout=httpx.Timeout(_READINESS_PROBE_SECONDS), trust_env=False, follow_redirects=False) as client:
-                async with client.stream("GET", f"{edge_url}/v1/runtime-identity",
-                                         headers=_edge_headers(key, accept="application/json")) as response:
-                    if response.status_code == 200 and response.headers.get("content-type", "").lower().startswith("application/json"):
-                        return project_runtime_identity(json.loads(await _bounded_response_bytes(response, 8192)))
+            client = get_edge_read_client()
+            async with client.stream("GET", f"{edge_url}/v1/runtime-identity",
+                                     headers=_edge_headers(key, accept="application/json"),
+                                     timeout=httpx.Timeout(_READINESS_PROBE_SECONDS)) as response:
+                if response.status_code == 200 and response.headers.get("content-type", "").lower().startswith("application/json"):
+                    return project_runtime_identity(json.loads(await _bounded_response_bytes(response, 8192)))
     except (httpx.HTTPError, asyncio.TimeoutError, ValueError, TypeError, RecursionError):
         pass
     return unknown_runtime_identity()
@@ -539,17 +545,18 @@ async def pixel_status(http_response: Response = None) -> dict[str, object]:
     edge_url, key = config
     try:
         timeout = httpx.Timeout(connect=5.0, read=5.0, write=5.0, pool=5.0)
-        async with httpx.AsyncClient(timeout=timeout, trust_env=False, follow_redirects=False) as client:
-            async with client.stream(
-                "GET",
-                f"{edge_url}/v1/models",
-                headers=_edge_headers(key, accept="application/json"),
-            ) as response:
-                if response.status_code != 200:
-                    return {"available": False, "model": None, "detail": "Portal service is unavailable"}
-                if not response.headers.get("content-type", "").lower().startswith("application/json"):
-                    return {"available": False, "model": None, "detail": "Portal service returned an invalid response"}
-                raw = await _bounded_response_bytes(response, _MAX_STATUS_BYTES)
+        client = get_edge_read_client()
+        async with client.stream(
+            "GET",
+            f"{edge_url}/v1/models",
+            headers=_edge_headers(key, accept="application/json"),
+            timeout=timeout,
+        ) as response:
+            if response.status_code != 200:
+                return {"available": False, "model": None, "detail": "Portal service is unavailable"}
+            if not response.headers.get("content-type", "").lower().startswith("application/json"):
+                return {"available": False, "model": None, "detail": "Portal service returned an invalid response"}
+            raw = await _bounded_response_bytes(response, _MAX_STATUS_BYTES)
         payload = json.loads(raw)
         models = payload.get("data") if isinstance(payload, dict) else None
         available = isinstance(models, list) and any(

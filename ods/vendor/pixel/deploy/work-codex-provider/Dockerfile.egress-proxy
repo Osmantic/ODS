@@ -26,7 +26,7 @@ RUN echo '9d1f4bcb113b3ad47966062ffa6f97a65ce0f93573451e6ec7b0dd63a72601c4  /opt
     && find /opt/pixel -type f -exec chmod 0444 {} +
 
 LABEL org.opencontainers.image.title="Pixel Codex exact-host egress proxy" \
-      org.opencontainers.image.version="4.3.27" \
+      org.opencontainers.image.version="4.3.28" \
       org.opencontainers.image.base.name="debian:bookworm-slim" \
       org.osmantic.pixel.node-runtime="22.23.1" \
       org.osmantic.pixel.egress-proxy-sha256="9d1f4bcb113b3ad47966062ffa6f97a65ce0f93573451e6ec7b0dd63a72601c4"

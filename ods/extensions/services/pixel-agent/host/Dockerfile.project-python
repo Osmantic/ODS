@@ -1,0 +1,14 @@
+# Reuse the multi-platform Python digest pinned by the Portal inspection image.
+FROM python:3.11-slim-bookworm@sha256:a36c24f9cbdf4fd0f52d67f0823eeac19c2028c637cecc392d97f980d4fec56b
+RUN groupadd --gid 1000 project \
+    && useradd --uid 1000 --gid 1000 --create-home --home-dir /home/node project
+ENV HOME=/tmp/project-home \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_CONFIG_FILE=/dev/null \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_NO_CACHE_DIR=1
+WORKDIR /home/node
+USER 1000:1000
+ENTRYPOINT []
+CMD ["python3", "--version"]

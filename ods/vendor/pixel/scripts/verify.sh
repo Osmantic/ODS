@@ -9,11 +9,15 @@ source "$ROOT/scripts/lib/broker-bytes.sh"
 source "$ROOT/scripts/lib/release-build.sh"
 
 expected_install_dir=''
+ods_model_transaction=''
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --expected-install-dir)
       [[ $# -ge 2 ]] || pixel_die "--expected-install-dir requires an absolute non-root path"
       expected_install_dir=$2; shift 2 ;;
+    --ods-model-transaction)
+      [[ $# -ge 2 && "$2" =~ ^[a-f0-9]{64}$ ]] || pixel_die "Invalid ODS model transaction"
+      ods_model_transaction=$2; shift 2 ;;
     --help|-h) echo "Usage: ./pixel verify [--expected-install-dir ABSOLUTE]"; exit 0 ;;
     *) pixel_die "Unknown verify option: $1" ;;
   esac
@@ -46,8 +50,22 @@ if [[ ${PIXEL_SKIP_ENDPOINT_CHECKS:-0} != 1 ]]; then
   [[ $(gateway_property NoNewPrivileges) == yes ]] || pixel_die "Gateway service lost NoNewPrivileges"
   [[ $(gateway_property PrivateDevices) == yes ]] || pixel_die "Gateway service can access host devices"
   [[ $(gateway_property PrivateTmp) == yes ]] || pixel_die "Gateway service does not have a private temporary directory"
-  [[ $(gateway_property ProtectHome) == tmpfs ]] || pixel_die "Gateway service can see unrelated home state"
-  [[ $(gateway_property ProtectSystem) == strict ]] || pixel_die "Gateway service system paths are writable"
+  gateway_access_mode=sandboxed
+  gateway_verified_pid=$(gateway_property MainPID)
+  if [[ -n "$ods_model_transaction" ]]; then
+    gateway_access_mode=$(python3 -I "$ROOT/scripts/lib/ods-access-proof.py" \
+      "$ods_model_transaction" "$OPENCLAW_HOME/openclaw.json" "$gateway_verified_pid") ||
+      pixel_die "ODS could not prove the selected gateway access mode"
+    [[ $(gateway_property MainPID) == "$gateway_verified_pid" ]] || pixel_die "Gateway process changed during verification"
+  fi
+  if [[ "$gateway_access_mode" == full-access ]]; then
+    [[ $(gateway_property ProtectHome) == no && $(gateway_property ProtectSystem) == no ]] ||
+      pixel_die "Gateway service does not match its proved Full Access boundary"
+  else
+    [[ "$gateway_access_mode" == sandboxed ]] || pixel_die "Unknown gateway access proof"
+    [[ $(gateway_property ProtectHome) == tmpfs ]] || pixel_die "Gateway service can see unrelated home state"
+    [[ $(gateway_property ProtectSystem) == strict ]] || pixel_die "Gateway service system paths are writable"
+  fi
   [[ $(gateway_property RestrictNamespaces) == yes ]] || pixel_die "Gateway service can create namespaces"
   [[ $(gateway_property UMask) == 0077 ]] || pixel_die "Gateway service has an unsafe file creation mask"
   [[ -z $(gateway_property CapabilityBoundingSet) ]] || pixel_die "Gateway service retained Linux capabilities"

@@ -216,6 +216,34 @@ def enable(config, baseline=None):
     return working, baseline
 
 
+def rebase_enabled(previous_config, candidate_config, previous_baseline):
+    """Carry a proved Full Access selection onto a new release configuration.
+
+    Pure transformation only: the protected caller must establish authority
+    and commit the config and new baseline in its existing held transaction.
+    Restoration must use the new release's values, not the previous release's
+    baseline. Neither input nor the previous rollback baseline is modified.
+    """
+    expected, _ = enable(previous_config, previous_baseline)
+    if expected != previous_config:
+        raise MigrationError("previous configuration is not fully enabled")
+    previous_agent = _select_agent(previous_config)
+    for path, value in ENABLED_VALUES.items():
+        actual = previous_agent
+        for key in path:
+            actual = actual[key]
+        # Python considers 0 == False; a malformed JSON number must not stand
+        # in for the explicit boolean access setting selected by the owner.
+        if type(actual) is not type(value):
+            raise MigrationError("previous configuration is not fully enabled")
+    migrated, candidate_baseline = enable(candidate_config)
+    if migrated == candidate_config:
+        # An enabled candidate cannot supply the safe restore point needed for
+        # this migration. Replays must use the transaction's saved candidate.
+        raise MigrationError("candidate already has Full Access overrides")
+    return migrated, candidate_baseline
+
+
 def restore(config, baseline):
     """Restore the pixel entry's five fields from a separately-held baseline.
 

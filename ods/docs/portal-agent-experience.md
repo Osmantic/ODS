@@ -220,3 +220,38 @@ only the public hostname is sent, without article paths, query strings or referr
 Local addresses and authenticated URLs use a globe. Missing/offline icons also
 fall back without removing or changing the link. The CSP permits only the icon
 endpoint, not arbitrary remote images. An icon is decoration, not source verification.
+
+
+## Document downloads without a website
+
+Portal can attach an existing workspace document with the specialist tool
+`pixel_ods_workspace_artifact` in an ordinary owner-interactive Portal turn. Team
+workers, subagents and background goal rounds cannot attach documents through
+this surface yet; their publication attempts are rejected before contacting the
+broker. The tool takes one `relativePath`, for example
+`{"relativePath":"Playground/report.pdf"}`. A misspelled argument such as `path`
+is rejected before publication with exact schema guidance; it is not reported
+as a file-permission failure. The tool does not accept
+content, host paths, URLs or a destination. A website and `index.html` are not
+required. Markdown, TXT, CSV, TSV, JSON, PDF, ZIP, RAR, DOCX, XLSX and PPTX are
+supported as opaque files, up to 4 MiB each and four publication attempts per
+response. Macro document extensions are not accepted.
+
+The owner-scoped broker captures the exact file with no-link descriptor reads,
+rejects unsafe ownership, permissions, hard links and changed source bytes, then
+creates an immutable snapshot and verifies its HTTP readback. The tool's policy
+admission and receipt acceptance are bound to the active run and session. Stop or
+a superseding run prevents a late receipt from being attached. Raw `MEDIA:` text
+and model-authored links never grant download authority.
+
+A successful receipt adds a file card to the answer without opening the website
+panel. Clicking Download retrieves the existing authenticated snapshot route;
+the browser checks the byte count and SHA-256 before saving. Validated receipts
+survive completed-response history and replay. A hash, network or missing-file
+failure leaves an explicit retry state. Files are not fetched before that click.
+
+This verifies delivery and byte identity, not PDF layout, archive integrity,
+Office compatibility or factual correctness. The agent must verify those aspects
+separately and report any limits. Existing website publication keeps its own
+entry-point, manifest and preview behavior. No document is executed, unpacked or
+rendered by this delivery tool.
