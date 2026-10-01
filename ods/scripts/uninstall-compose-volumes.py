@@ -68,19 +68,23 @@ def project_config(root: Path, flags: list[str]) -> tuple[str, dict[str, str], d
     return project, selected, external
 
 
-def trusted_plain_volume_keys(root: Path, disabled_only: bool = False) -> set[str]:
+def trusted_plain_volume_keys(root: Path, disabled_only: bool = False,
+                              only_file: Path | None = None) -> set[str]:
     """Read only plain top-level volume declarations in shipped recipes.
 
     Complex declarations are deliberately not inferred as owned. A disabled
     recipe must also leave a verified container mounting the volume.
     """
-    paths = [] if disabled_only else list(root.glob("docker-compose*.yml"))
-    for directory in ("extensions/services", "extensions/library/services"):
-        suffixes = ("*.yaml.disabled", "*.yml.disabled") if disabled_only else (
-            "*.yaml", "*.yml",
-        )
-        for suffix in suffixes:
-            paths.extend((root / directory).glob(f"*/compose{suffix}"))
+    paths = [only_file] if only_file is not None else (
+        [] if disabled_only else list(root.glob("docker-compose*.yml"))
+    )
+    if only_file is None:
+        for directory in ("extensions/services", "extensions/library/services"):
+            suffixes = ("*.yaml.disabled", "*.yml.disabled") if disabled_only else (
+                "*.yaml", "*.yml",
+            )
+            for suffix in suffixes:
+                paths.extend((root / directory).glob(f"*/compose{suffix}"))
     states: dict[str, set[str]] = {}
     declaration = re.compile(r"^  ([A-Za-z0-9][A-Za-z0-9_.-]*):\s*(?:\{\})?\s*$")
     for path in paths:
@@ -114,19 +118,38 @@ def trusted_plain_volume_keys(root: Path, disabled_only: bool = False) -> set[st
     return {key for key, values in states.items() if values == {"owned"}}
 
 
+def disabled_volume_provenance(root: Path, trusted_root: Path) -> dict[str, set[tuple[str, str]]]:
+    found: dict[str, set[tuple[str, str]]] = {}
+    for directory in ("extensions/services", "extensions/library/services"):
+        for suffix in ("*.yaml.disabled", "*.yml.disabled"):
+            for path in (root / directory).glob(f"*/compose{suffix}"):
+                enabled_name = path.name.removesuffix(".disabled")
+                enabled_path = path.with_name(enabled_name)
+                candidate_path = trusted_root / path.relative_to(root).with_name(enabled_name)
+                for key in trusted_plain_volume_keys(root, only_file=path):
+                    if (trusted_root != root and
+                            key not in trusted_plain_volume_keys(
+                                trusted_root, only_file=candidate_path)):
+                        continue
+                    found.setdefault(key, set()).add(
+                        (path.parent.name, str(enabled_path.resolve()))
+                    )
+    return found
+
+
 def disabled_volume_keys(root: Path, trusted_root: Path) -> set[str]:
-    installed = trusted_plain_volume_keys(root, disabled_only=True)
-    if trusted_root == root:
-        return installed
-    return installed & trusted_plain_volume_keys(trusted_root)
+    return set(disabled_volume_provenance(root, trusted_root))
 
 
-def project_containers(root: Path, project: str) -> tuple[set[str], set[str]]:
+def project_containers(
+    root: Path, project: str,
+) -> tuple[set[str], set[str], dict[str, set[tuple[str, str]]]]:
     ids = docker(root, "ps", "--all", "--quiet", "--no-trunc", "--filter",
                  f"label={PROJECT_LABEL}={project}").split()
     if any(not CONTAINER_RE.fullmatch(value) for value in ids):
         raise ValueError("Docker returned invalid container identity")
     mounted = set()
+    provenance: dict[str, set[tuple[str, str]]] = {}
     base_files = {str((root / name).resolve()) for name in
                   ("docker-compose.base.yml", "docker-compose.yml")}
     for offset in range(0, len(ids), 100):
@@ -141,6 +164,7 @@ def project_containers(root: Path, project: str) -> tuple[set[str], set[str]]:
                 raise ValueError("Docker returned invalid container labels")
             working_dir = labels.get("com.docker.compose.project.working_dir")
             files = labels.get("com.docker.compose.project.config_files")
+            service = labels.get("com.docker.compose.service")
             if (labels.get(PROJECT_LABEL) != project or
                     not isinstance(working_dir, str) or
                     not os.path.isabs(working_dir) or
@@ -148,7 +172,9 @@ def project_containers(root: Path, project: str) -> tuple[set[str], set[str]]:
                     not isinstance(files, str) or
                     not files.split(",") or
                     not os.path.isabs(files.split(",")[0]) or
-                    os.path.realpath(files.split(",")[0]) not in base_files):
+                    os.path.realpath(files.split(",")[0]) not in base_files or
+                    not isinstance(service, str) or
+                    not PROJECT_RE.fullmatch(service)):
                 raise ValueError("Compose project contains a container from another installation")
             mounts = row.get("Mounts") or []
             if not isinstance(mounts, list):
@@ -161,7 +187,12 @@ def project_containers(root: Path, project: str) -> tuple[set[str], set[str]]:
                     if not isinstance(name, str) or not VOLUME_RE.fullmatch(name):
                         raise ValueError("Docker returned invalid mounted volume")
                     mounted.add(name)
-    return set(ids), mounted
+                    for config_file in files.split(","):
+                        if os.path.isabs(config_file):
+                            provenance.setdefault(name, set()).add(
+                                (service, os.path.realpath(config_file))
+                            )
+    return set(ids), mounted, provenance
 
 
 def check_volume_consumers(root: Path, names: set[str], owned_ids: set[str]) -> None:
@@ -216,7 +247,7 @@ def preflight(root: Path, snapshot: Path, flags: list[str], keep_data: bool = Fa
               trusted_root: Path | None = None) -> None:
     trusted_root = trusted_root or root
     project, selected, external = project_config(root, flags)
-    container_ids, mounted = project_containers(root, project)
+    container_ids, mounted, mount_provenance = project_containers(root, project)
     if keep_data:
         snapshot.write_text(json.dumps({
             "schemaVersion": 1, "installDir": str(root), "project": project,
@@ -224,7 +255,7 @@ def preflight(root: Path, snapshot: Path, flags: list[str], keep_data: bool = Fa
         }), encoding="utf-8")
         return
     volumes = project_volumes(root, project)
-    trusted = disabled_volume_keys(root, trusted_root)
+    disabled = disabled_volume_provenance(root, trusted_root)
     expected_names = set(selected) | {
         f"{project}_{key}" for key in trusted_plain_volume_keys(trusted_root)
     } | {
@@ -250,8 +281,12 @@ def preflight(root: Path, snapshot: Path, flags: list[str], keep_data: bool = Fa
             raise ValueError(f"Selected volume {name} has a conflicting Compose label")
         if name in selected and name not in mounted:
             raise ValueError(f"Selected volume {name} has no verified ODS container mount")
-        if name in selected or (name in mounted and key in trusted and
-                                name == f"{project}_{key}"):
+        disabled_owned = (
+            name in mounted and key in disabled and
+            name == f"{project}_{key}" and
+            bool(mount_provenance.get(name, set()) & disabled[key])
+        )
+        if name in selected or disabled_owned:
             owned[name] = fingerprint(row)
             if name not in selected:
                 trusted_used.add(key)
@@ -313,6 +348,13 @@ def complete(root: Path, snapshot: Path, trusted_root: Path | None = None) -> No
             not set(record.get("trustedUsed", [])).issubset(
                 disabled_volume_keys(root, trusted_root))):
         raise ValueError("Compose ownership changed during uninstall; installation retained")
+    current_expected = set(current_selected) | {
+        f"{project}_{key}" for key in trusted_plain_volume_keys(trusted_root)
+    } | {
+        f"{project}_{key}" for key in trusted_plain_volume_keys(root, disabled_only=True)
+    }
+    if current_expected != set(expected_names):
+        raise ValueError("ODS recipe volume inventory changed during uninstall; installation retained")
     remaining = project_volumes(root, project)
     external = record.get("external")
     if not isinstance(external, dict) or any(
@@ -345,6 +387,16 @@ def complete(root: Path, snapshot: Path, trusted_root: Path | None = None) -> No
         raise ValueError("Anonymous ODS volumes remain after cleanup; installation retained")
     if (set(expected_names) & final_names) - set(external):
         raise ValueError("ODS recipe volumes remain after cleanup; installation retained")
+    unverified = sorted(
+        name for name in final_names
+        if name not in external and
+        (name.startswith(f"{project}_") or name.startswith(f"{project}-"))
+    )
+    if unverified:
+        print("ODS volume custody: retained unverified same-prefix volumes: "
+              + ", ".join(unverified[:20])
+              + (" (additional names omitted)" if len(unverified) > 20 else ""),
+              file=sys.stderr)
 
 
 def main() -> int:
