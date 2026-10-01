@@ -117,4 +117,49 @@ check_portal_chat_choice 'voice needs WebUI' false false false false true true f
 check_portal_chat_choice 'RAG needs WebUI' false false false false true false true false
 check_portal_chat_choice 'LAN proxy needs WebUI' false false false false true false false true
 
+check_all_then_core_menu() (
+    local dir all_clause core_clause portal_selected=false
+    dir="$(mktemp -d)"
+    trap 'rmdir -- "$dir"' EXIT
+    INSTALL_DIR="$dir"
+    eval "$defaults"
+    all_clause="$(awk '/^[[:space:]]*--all\)/ {
+        sub(/^[[:space:]]*--all\)[[:space:]]*/, "")
+        sub(/[[:space:]]*shift[[:space:]]*;;[[:space:]]*$/, "")
+        print; exit
+    }' "$ROOT/install-core.sh")"
+    [[ -n "$all_clause" ]] || { echo 'FAIL: --all case missing' >&2; exit 1; }
+    eval "$all_clause"
+    [[ "$ENABLE_VOICE" == true && "$ENABLE_ODS_PROXY" == true &&
+       "$ENABLE_OPEN_WEBUI" == true ]] || {
+        echo 'FAIL: --all stopped selecting full stack' >&2; exit 1;
+    }
+
+    core_clause="$(awk '/^        2\)$/ { in_core=1; next }
+        in_core && /^            ;;$/ { exit }
+        in_core { print }' "$ROOT/installers/lib/ui.sh")"
+    [[ -n "$core_clause" ]] || { echo 'FAIL: Core menu case missing' >&2; exit 1; }
+    signal() { :; }
+    log() { :; }
+    eval "$core_clause"
+    [[ "$ENABLE_VOICE" == false && "$ENABLE_ODS_PROXY" == false &&
+       "$WEBUI_EXPLICIT" == false ]] || {
+        echo 'FAIL: interactive Core choice retained --all voice, proxy, or WebUI pin' >&2; exit 1;
+    }
+    ods_should_default_portal_chat false "$WEBUI_EXPLICIT" false true \
+        "$ENABLE_VOICE" "$ENABLE_RAG" "$ENABLE_ODS_PROXY" && portal_selected=true
+    [[ "$portal_selected" == true ]] || {
+        echo 'FAIL: --all then Core did not select Portal chat' >&2; exit 1;
+    }
+
+    eval "$defaults"
+    eval "$all_clause"
+    WEBUI_EXPLICIT=true ENABLE_OPEN_WEBUI=true
+    eval "$core_clause"
+    [[ "$WEBUI_EXPLICIT" == true && "$ENABLE_OPEN_WEBUI" == true ]] || {
+        echo 'FAIL: Core overrode an explicit WebUI switch' >&2; exit 1;
+    }
+)
+check_all_then_core_menu
+
 echo 'PASS: Linux fresh and legacy defaults preserve a safe chat UI'
