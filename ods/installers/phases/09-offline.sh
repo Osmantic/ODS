@@ -32,21 +32,20 @@ elif [[ "$OFFLINE_MODE" == "true" ]] && ! $DRY_RUN; then
     _sed_i 's/^OPENAI_API_KEY=.*/OPENAI_API_KEY=/' "$INSTALL_DIR/.env" 2>/dev/null || true
 
     # Add offline mode config
-    cat >> "$INSTALL_DIR/.env" << 'OFFLINE_EOF'
+   _set_env_val() {
+        local key="$1" val="$2"
+        if grep -q "^${key}=" "$INSTALL_DIR/.env" 2>/dev/null; then
+            _sed_i "s|^${key}=.*|${key}=${val}|" "$INSTALL_DIR/.env"
+        else
+            echo "${key}=${val}" >> "$INSTALL_DIR/.env"
+        fi
+    }
 
-#=============================================================================
-# M1 Offline Mode Configuration
-#=============================================================================
-OFFLINE_MODE=true
-
-# Disable telemetry and update checks
-DISABLE_TELEMETRY=true
-DISABLE_UPDATE_CHECK=true
-
-# Use local RAG instead of web search
-WEB_SEARCH_ENABLED=false
-LOCAL_RAG_ENABLED=true
-OFFLINE_EOF
+    _set_env_val "OFFLINE_MODE" "true"
+    _set_env_val "DISABLE_TELEMETRY" "true"
+    _set_env_val "DISABLE_UPDATE_CHECK" "true"
+    _set_env_val "WEB_SEARCH_ENABLED" "false"
+    _set_env_val "LOCAL_RAG_ENABLED" "true"
 
     # Create OpenClaw M1 config if OpenClaw is enabled
     if [[ "$ENABLE_OPENCLAW" == "true" ]]; then
