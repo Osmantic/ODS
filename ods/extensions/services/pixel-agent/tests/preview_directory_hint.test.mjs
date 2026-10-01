@@ -53,7 +53,9 @@ test('unsafe and oversized written paths cannot appear in recovery hints',()=>{
 });
 
 test('publication forbidden by current owner remains blocked before hints',()=>{
- const {guard,context}=setup();write(guard,context,'actual/index.html');guard.observeRun(context,'pixel',{prompt:'Do not display or publish any preview.'});const rejected=preview(guard,context,'wrong');assert.equal(rejected.block,true);assert.doesNotMatch(rejected.blockReason,/This turn successfully wrote/);
+ // One run answers one owner message; a later attempt's prompt is harness text and cannot change it.
+ const guard=createToolLoopGuard();const context={agentId:'pixel',runId:'run-1',sessionId:'session-1'};guard.observeRun(context,'pixel',{prompt:'Create a new static website in actual. Do not display or publish any preview.'});
+ write(guard,context,'actual/index.html');const rejected=preview(guard,context,'wrong');assert.equal(rejected.block,true);assert.doesNotMatch(rejected.blockReason,/This turn successfully wrote/);
 });
 
 test('Tool Search hints require the matching core-write receipt, not another tool or source',()=>{
