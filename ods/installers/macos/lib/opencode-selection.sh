@@ -7,16 +7,29 @@ ods_macos_opencode_plist_value() {
     "${ODS_MACOS_PLISTBUDDY:-/usr/libexec/PlistBuddy}" -c "Print :$key" "$plist" 2>/dev/null
 }
 
+ods_macos_opencode_expected_args() {
+    local bun_tmp="$1" bin="$2"
+    printf '%s\n' \
+        /bin/sh -c \
+        'dir="$1"; shift; rm -rf "$dir" && mkdir -p -m 0700 "$dir" && export BUN_TMPDIR="$dir" && exec "$@"' \
+        ods-opencode-web "$bun_tmp" "$bin" web --port 3003 --hostname 127.0.0.1
+}
+
 ods_macos_opencode_plist_owned() {
-    local plist="$1" label="$2" bun_tmp="$3" arg5
+    local plist="$1" label="$2" bun_tmp="$3" bin expected actual arg i
     [[ -f "$plist" && ! -L "$plist" ]] || return 1
     [[ "$(ods_macos_opencode_plist_value "$plist" Label)" == "$label" ]] || return 1
-    [[ "$(ods_macos_opencode_plist_value "$plist" ProgramArguments:0)" == /bin/sh ]] || return 1
-    [[ "$(ods_macos_opencode_plist_value "$plist" ProgramArguments:1)" == -c ]] || return 1
-    [[ "$(ods_macos_opencode_plist_value "$plist" ProgramArguments:3)" == ods-opencode-web ]] || return 1
-    [[ "$(ods_macos_opencode_plist_value "$plist" ProgramArguments:4)" == "$bun_tmp" ]] || return 1
-    arg5="$(ods_macos_opencode_plist_value "$plist" ProgramArguments:5)" || return 1
-    [[ "$arg5" == /*/opencode ]]
+    bin="$(ods_macos_opencode_plist_value "$plist" ProgramArguments:5)" || return 1
+    [[ "$bin" == /*/opencode ]] || return 1
+    expected="$(ods_macos_opencode_expected_args "$bun_tmp" "$bin")"
+    actual=""
+    for ((i=0; i<11; i++)); do
+        arg="$(ods_macos_opencode_plist_value "$plist" "ProgramArguments:$i")" || return 1
+        if (( i == 0 )); then actual="$arg"; else actual="$actual"$'\n'"$arg"; fi
+    done
+    # An extra argument can change the service even when the prefix matches.
+    if ods_macos_opencode_plist_value "$plist" ProgramArguments:11 >/dev/null; then return 1; fi
+    [[ "$actual" == "$expected" ]]
 }
 
 ods_macos_opencode_disabled() {
@@ -29,22 +42,28 @@ ods_macos_opencode_disabled() {
 }
 
 ods_macos_opencode_loaded_owned() {
-    local plist="$1" label="$2" bun_tmp="$3" uid="$4" output bin
+    local plist="$1" label="$2" bun_tmp="$3" uid="$4" output bin actual expected
     ods_macos_opencode_plist_owned "$plist" "$label" "$bun_tmp" || return 1
     bin="$(ods_macos_opencode_plist_value "$plist" ProgramArguments:5)" || return 1
     output="$(launchctl print "gui/$uid/$label" 2>/dev/null)" || return 1
-    printf '%s\n' "$output" | awk -v plist="$plist" -v bun_tmp="$bun_tmp" -v bin="$bin" '
+    printf '%s\n' "$output" | awk -v plist="$plist" '
         {
             line=$0
             sub(/^[ \t]+/, "", line)
+            if (line == "arguments = {") exit
             if (line == "path = " plist) path=1
             if (line == "program = /bin/sh") program=1
-            if (line == "ods-opencode-web") marker=1
-            if (line == bun_tmp) tmp=1
-            if (line == bin) binary=1
         }
-        END { exit !(path && program && marker && tmp && binary) }
-    '
+        END { exit !(path && program) }
+    ' || return 1
+    actual="$(printf '%s\n' "$output" | awk '
+        /^[ \t]*arguments = \{$/ { inside=1; opened=1; next }
+        inside && /^[ \t]*\}$/ { closed=1; exit }
+        inside { sub(/^[ \t]+/, "", $0); print }
+        END { if (!opened || !closed) exit 1 }
+    ')" || return 1
+    expected="$(ods_macos_opencode_expected_args "$bun_tmp" "$bin")"
+    [[ "$actual" == "$expected" ]]
 }
 
 ods_macos_opencode_retained() {
