@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -21,6 +22,9 @@ def run_selector(
     max_size_mb: int = 1221,
     agent_ready_only: bool = True,
 ) -> subprocess.CompletedProcess[str]:
+    env = os.environ.copy()
+    env["ODS_FLEET_HOST_ID"] = "windows-laptop"
+    env.pop("ODS_COMPATIBILITY_HOST", None)
     return subprocess.run(
         [
             sys.executable,
@@ -50,6 +54,7 @@ def run_selector(
         check=False,
         capture_output=True,
         text=True,
+        env=env,
     )
 
 
@@ -96,6 +101,25 @@ def selector_env(text: str) -> dict[str, str]:
 
 
 def main() -> int:
+    # The catalog's 9B Pixel qualification names only windows-laptop. A
+    # generic CPU host can select the model, but cannot inherit that verdict.
+    cpu_env = os.environ.copy()
+    cpu_env["ODS_FLEET_HOST_ID"] = "unqualified-cpu-host"
+    cpu_env.pop("ODS_COMPATIBILITY_HOST", None)
+    cpu_result = subprocess.run(
+        [sys.executable, str(SELECTOR), "--catalog", str(CATALOG),
+         "--backend", "cpu", "--memory-type", "system", "--vram-mb", "0",
+         "--ram-gb", "23", "--profile", "qwen", "--tier", "1",
+         "--max-size-mb", "0", "--host-arch", "amd64",
+         "--installable-only", "--min-context", "65536", "--env"],
+        capture_output=True, text=True, check=True, env=cpu_env,
+    )
+    cpu_values = selector_env(cpu_result.stdout)
+    assert cpu_values["LLM_MODEL"] == "qwen3.5-9b"
+    assert cpu_values["PIXEL_AGENT_MODEL_READY"] == "false", (
+        "a Windows-only Pixel qualification must not suppress CPU adaptive mode"
+    )
+
     result = run_selector(CATALOG)
     assert result.returncode == 0, result.stderr
     payload = json.loads(result.stdout)

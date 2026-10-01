@@ -1469,7 +1469,8 @@ def _installable(model: dict[str, Any]) -> bool:
 
 def rank_pre_download_models(catalog: list[dict[str, Any]], gpu_info: Optional[GPUInfo],
                              profile: str = "qwen", installable_only: bool = False,
-                             limit: int = 3, system_ram_gb: int | None = None) -> list[dict[str, Any]]:
+                             limit: int = 3, system_ram_gb: int | None = None,
+                             install_dir: str | Path | None = None) -> list[dict[str, Any]]:
     """Rank catalog entries before any model is installed.
 
     Uses the installer's ranking (model_selection.rank_catalog_models) with
@@ -1487,6 +1488,7 @@ def rank_pre_download_models(catalog: list[dict[str, Any]], gpu_info: Optional[G
     ram_gb = system_ram_gb if system_ram_gb is not None else (_system_ram_gb() if gpu_info else 0)
     ranked = rank_catalog_models(
         catalog,
+        host_values=model_compatibility_runtime_context(install_dir, gpu_info)["hosts"],
         capacity_gb=capacity_gb,
         profile=normalized_profile,
         installable_only=installable_only,
@@ -1623,7 +1625,10 @@ def build_models_payload(gpu_info: Optional[GPUInfo], loaded_model: Optional[str
         install_ram_gb = 0
     if gpu_info is None:
         gpu_info = _host_amd_runtime_gpu_from_env(install_dir, install_ram_gb)
-    ranked_recommendations = rank_pre_download_models(catalog, gpu_info, profile=profile, limit=3, system_ram_gb=install_ram_gb or None)
+    ranked_recommendations = rank_pre_download_models(
+        catalog, gpu_info, profile=profile, limit=3,
+        system_ram_gb=install_ram_gb or None, install_dir=install_dir,
+    )
     recommended_entry = configured_entry or (ranked_recommendations[0] if ranked_recommendations else None)
     flags = collect_runtime_flags(install_dir)
     runtime = read_env_value("LLM_BACKEND", install_dir) or os.environ.get("LLM_BACKEND") or "llama-server"

@@ -204,7 +204,24 @@ def _status(model: dict[str, Any], flat_key: str, app_key: str) -> str:
     return normalize_key(entry.get("status")) if isinstance(entry, dict) else ""
 
 
-def pixel_agent_status(model: dict[str, Any]) -> str:
+def pixel_agent_status(model: dict[str, Any], host_values: Iterable[str] | None = None) -> str:
+    """Return Pixel evidence applicable to the current named host.
+
+    ``None`` keeps the already-resolved status on installer entries. An
+    explicit (possibly empty) host set resolves raw catalog evidence; a
+    named-host verdict cannot qualify an unrelated installation.
+    """
+    if host_values is not None:
+        compatibility = model.get("app_compatibility")
+        verdict = compatibility.get("pixel_agent") if isinstance(compatibility, dict) else None
+        if isinstance(verdict, dict):
+            scoped = verdict.get("hostScope") or verdict.get("host_scope")
+            if scoped:
+                allowed = {normalize_key(value) for value in list_value(scoped)}
+                actual = {normalize_key(value) for value in host_values}
+                if not allowed.intersection(actual):
+                    return "unknown"
+            return normalize_key(verdict.get("status")) or "unknown"
     return _status(model, "pixel_agent_status", "pixel_agent")
 
 
@@ -212,13 +229,13 @@ def agent_viability_status(model: dict[str, Any]) -> str:
     return _status(model, "agent_viability_status", "agent_viability")
 
 
-def pixel_agent_ready(model: dict[str, Any]) -> bool:
+def pixel_agent_ready(model: dict[str, Any], host_values: Iterable[str] | None = None) -> bool:
     """Require an explicit real-Pixel capability verdict for the Pixel route."""
-    return pixel_agent_status(model) in _POSITIVE_PIXEL_STATUSES
+    return pixel_agent_status(model, host_values) in _POSITIVE_PIXEL_STATUSES
 
 
-def evidence_adjustment(model: dict[str, Any]) -> int:
-    pixel = pixel_agent_status(model)
+def evidence_adjustment(model: dict[str, Any], host_values: Iterable[str] | None = None) -> int:
+    pixel = pixel_agent_status(model, host_values)
     agent = agent_viability_status(model)
     adjustment = EVIDENCE_WEIGHT if pixel in _POSITIVE_PIXEL_STATUSES else 0
     if pixel in _NEGATIVE_EVIDENCE_STATUSES or agent in _NEGATIVE_EVIDENCE_STATUSES:
@@ -367,7 +384,8 @@ def candidate_fits(candidate: Candidate) -> bool:
 def plan_candidate(model: dict[str, Any], *, capacity_gb: float, mclass: str,
                    backend: Any, memory_type: Any, vram_mb: Any, ram_gb: Any,
                    host_arch: Any, min_context: int = 0,
-                   priority: int | None = None) -> Candidate | None:
+                   priority: int | None = None,
+                   host_values: Iterable[str] | None = None) -> Candidate | None:
     """Fit ``model`` to this hardware, or return None when it cannot run here.
 
     A hardware-matching runtime profile is the model's safety contract here:
@@ -387,7 +405,7 @@ def plan_candidate(model: dict[str, Any], *, capacity_gb: float, mclass: str,
     include_host = mclass == "cpu"
     margin = fit_margin_gib(capacity_gb, mclass)
     base_priority = selection_priority(model, mclass) if priority is None else priority
-    evidence = evidence_adjustment(model)
+    evidence = evidence_adjustment(model, host_values)
 
     def _candidate(context: int, estimate: MemoryEstimate, required: float,
                    authored: bool) -> Candidate:
@@ -558,6 +576,7 @@ def rank_catalog_models(
     require_min_context: bool = False,
     include_size_tiebreak: bool = True,
     installable: Callable[[dict[str, Any]], bool] | None = None,
+    host_values: Iterable[str] | None = None,
 ) -> list[Candidate]:
     """Rank every eligible catalog model that fits this hardware.
 
@@ -576,7 +595,7 @@ def rank_catalog_models(
         for model in models:
             if installable_only and not allowed(model):
                 continue
-            if agent_ready_only and not pixel_agent_ready(model):
+            if agent_ready_only and not pixel_agent_ready(model, host_values):
                 continue
             if not family_allowed(model, profile):
                 continue
@@ -591,6 +610,7 @@ def rank_catalog_models(
                 model, capacity_gb=capacity_gb, mclass=mclass, backend=backend,
                 memory_type=memory_type, vram_mb=vram_mb, ram_gb=ram_gb,
                 host_arch=host_arch, min_context=min_context, priority=priority,
+                host_values=host_values,
             )
             if candidate is None:
                 continue

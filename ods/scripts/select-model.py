@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import platform
 import sys
 from pathlib import Path
 from typing import Any
@@ -41,6 +43,7 @@ from model_selection import (  # noqa: E402
     value_enabled as value_enabled,
 )
 from model_selection import pixel_agent_ready as _pixel_agent_ready  # noqa: E402
+from model_selection import pixel_agent_status as _pixel_agent_status  # noqa: E402
 from model_selection import usable_memory_gb as _usable_memory_gb  # noqa: E402
 
 
@@ -77,7 +80,7 @@ def effective_profile(profile: str, backend: str, tier: str) -> str:
     return "gemma4" if normalize_key(backend) in {"apple", "nvidia", "sycl"} else "qwen"
 
 
-def normalize_model(raw: dict[str, Any]) -> dict[str, Any] | None:
+def normalize_model(raw: dict[str, Any], host_values: list[str] | None = None) -> dict[str, Any] | None:
     gguf_parts = raw.get("gguf_parts") if isinstance(raw.get("gguf_parts"), list) else []
     gguf = raw.get("gguf") or raw.get("gguf_file")
     if not gguf and gguf_parts and isinstance(gguf_parts[0], dict):
@@ -107,11 +110,6 @@ def normalize_model(raw: dict[str, Any]) -> dict[str, Any] | None:
         if isinstance(app_compatibility.get("agent_viability"), dict)
         else {}
     )
-    pixel_agent = (
-        app_compatibility.get("pixel_agent")
-        if isinstance(app_compatibility.get("pixel_agent"), dict)
-        else {}
-    )
     return {
         **memory_metadata(raw),
         "id": str(model_id),
@@ -131,7 +129,7 @@ def normalize_model(raw: dict[str, Any]) -> dict[str, Any] | None:
         "install_recommendation": value_enabled(raw.get("install_recommendation", True)),
         "selection": raw.get("selection") if isinstance(raw.get("selection"), dict) else {},
         "agent_viability_status": normalize_key(agent_viability.get("status")),
-        "pixel_agent_status": normalize_key(pixel_agent.get("status")),
+        "pixel_agent_status": _pixel_agent_status(raw, host_values or []),
         "runtime_profiles": raw.get("runtime_profiles") if isinstance(raw.get("runtime_profiles"), list) else [],
     }
 
@@ -142,11 +140,19 @@ def curated_source_allowed(model: dict[str, Any]) -> bool:
 
 
 def load_catalog(path: Path) -> list[dict[str, Any]]:
+    # Match the Dashboard oracle's host identity precedence: an explicit
+    # fleet/compatibility identity wins over incidental machine hostnames.
+    explicit_hosts = [os.environ[key] for key in ("ODS_FLEET_HOST_ID", "ODS_COMPATIBILITY_HOST")
+                      if os.environ.get(key, "").strip()]
+    host_values = explicit_hosts or [value for value in (
+        os.environ.get("ODS_DEVICE_NAME", ""), os.environ.get("COMPUTERNAME", ""),
+        os.environ.get("HOSTNAME", ""), platform.node(),
+    ) if value.strip()]
     with path.open("r", encoding="utf-8") as fh:
         data = json.load(fh)
     return [
         model for model in (
-            normalize_model(raw)
+            normalize_model(raw, host_values)
             for raw in data.get("models", [])
             if curated_source_allowed(raw)
         )
