@@ -1,3 +1,5 @@
+// Team recovery uses a synthetic receipt; origin handshake has dedicated transport/browser coverage.
+vi.mock('../lib/useVerifiedPreview',()=>({default:(_preview,access)=>access}))
 import {fireEvent,screen,waitFor} from '@testing-library/react'
 import {render} from '../test/test-utils'
 import Pixel from './Pixel'

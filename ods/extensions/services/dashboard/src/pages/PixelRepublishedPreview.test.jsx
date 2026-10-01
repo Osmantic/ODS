@@ -1,3 +1,6 @@
+// Conversation/review state tests isolate the asynchronous origin handshake.
+// Its real transport, timeout and stale-receipt behavior is covered in previewOrigin.test.jsx.
+vi.mock('../lib/useVerifiedPreview',()=>({default:(_preview,access)=>access}))
 import {render} from '../test/test-utils'
 import {screen} from '@testing-library/react'
 import Pixel from './Pixel'

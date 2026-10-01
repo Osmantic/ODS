@@ -1,3 +1,6 @@
+// Conversation/review state tests isolate the asynchronous origin handshake.
+// Its real transport, timeout and stale-receipt behavior is covered in previewOrigin.test.jsx.
+vi.mock('../lib/useVerifiedPreview',()=>({default:(_preview,access)=>access}))
 import {act,fireEvent,render,screen,waitFor,within} from '@testing-library/react'
 import {createHash,webcrypto} from 'node:crypto'
 import PortalWorkspace from './PortalWorkspace'
