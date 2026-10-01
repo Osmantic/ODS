@@ -62,7 +62,9 @@ def migrate_public_identity(*, source, preparation, node):
             capture_output=True, text=True, timeout=30, check=False)
         if result.returncode:
             raise ValueError('native-portal-profile-migration-failed')
-        return {'status': 'checked', 'detail': result.stdout.strip()}
+        guidance = helper('pixel-native-config').migrate_workspace_guidance(workspace)
+        return {'status': 'manual-review-required' if 'manual-review-required' in guidance.values() else 'checked',
+                'detail': result.stdout.strip(), 'workspaceGuidance': guidance}
     except (ValueError, OSError, KeyError, TypeError, subprocess.SubprocessError):
         return {'status': 'manual-review-required'}
 

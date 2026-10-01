@@ -369,7 +369,7 @@ ods_fix_rootless_ownership() {
         _ods_rootless_fix_directory "$install_dir" data/privacy-shield "$service_uid:$service_gid" ods-privacy-shield || failures=$((failures + 1))
     fi
     if _ods_rootless_should_repair ape "$flags" "$target_service"; then
-        _ods_rootless_fix_directory "$install_dir" data/ape 100:100 ods-ape || failures=$((failures + 1))
+        _ods_rootless_fix_directory "$install_dir" data/ape 100:65534 ods-ape || failures=$((failures + 1))
     fi
     if _ods_rootless_should_repair n8n "$flags" "$target_service"; then
         _ods_rootless_fix_directory "$install_dir" data/n8n "$service_uid:$service_gid" ods-n8n || failures=$((failures + 1))

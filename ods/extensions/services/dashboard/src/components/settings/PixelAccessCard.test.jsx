@@ -6,6 +6,17 @@ const safe = {available: true, surface: 'linux-systemd', configured_mode: 'sandb
   runtime_verified: false, revision: 'a'.repeat(64), busy: false, pending: false, reason: 'runtime-proof-required'}
 afterEach(() => vi.unstubAllGlobals())
 
+it('explains incomplete installation without enabling access changes', async () => {
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ok: true, json: async () => ({
+    ...safe, available: false, revision: null, reason: 'managed-installation-incomplete',
+  })}))
+  render(<PixelAccessCard />)
+  expect(await screen.findByText(/Resume the ODS installer/)).toBeVisible()
+  expect(screen.getByRole('button', {name: 'Enable Full Access'})).toBeDisabled()
+  expect(screen.getByRole('button', {name: 'Verify Sandbox'})).toBeDisabled()
+  expect(screen.queryByText(/access controller is unavailable/)).toBeNull()
+})
+
 describe('Pixel access confirmation and effective status', () => {
   it('uses the agent runtime platform and preserves the current setting on load', async () => {
     const fetch = vi.fn().mockResolvedValue({ok:true,json:async()=>({...safe,surface:'wsl-systemd'})})
@@ -14,7 +25,7 @@ describe('Pixel access confirmation and effective status', () => {
     expect(await screen.findByText('WSL')).toBeInTheDocument()
     expect(screen.getByText('Configured').nextElementSibling).toHaveTextContent('Sandbox')
     expect(screen.getByText('Effective').nextElementSibling).toHaveTextContent('Not verified')
-    expect(fetch.mock.calls.every(call=>!call[1])).toBe(true)
+    expect(fetch.mock.calls.every(call=>call[1]?.method !== 'POST')).toBe(true)
     expect(screen.queryByRole('dialog')).toBeNull()
   })
 
@@ -51,7 +62,7 @@ describe('Pixel access confirmation and effective status', () => {
   })
 
   it('keeps a rejected change visible after the recovery inspection succeeds', async () => {
-    const fetch = vi.fn(async (_url, options) => options ? {ok: false, status: 409} : {ok: true, json: async () => safe})
+    const fetch = vi.fn(async (_url, options) => options?.method === 'POST' ? {ok: false, status: 409} : {ok: true, json: async () => safe})
     vi.stubGlobal('fetch', fetch)
     render(<PixelAccessCard />)
     await screen.findByText('Not verified')
@@ -94,13 +105,13 @@ describe('Pixel access confirmation and effective status', () => {
     expect(fetch.mock.calls.filter(call=>call[1]?.method==='POST')).toHaveLength(1)
   })
   it('does not present configured mode as effective or POST before explicit confirmation', async () => {
-    const fetch = vi.fn(async (_url, options) => ({ok: true, json: async () => options ? {...safe, pending: true} : safe}))
+    const fetch = vi.fn(async (_url, options) => ({ok: true, json: async () => options?.method === 'POST' ? {...safe, pending: true} : safe}))
     vi.stubGlobal('fetch', fetch)
     render(<PixelAccessCard />)
     await screen.findByText('Not verified')
     fireEvent.click(screen.getByRole('button', {name: 'Enable Full Access'}))
     expect(screen.getByRole('button', {name: 'Confirm and enable'})).toBeDisabled()
-    expect(fetch.mock.calls.every(call => !call[1])).toBe(true)
+    expect(fetch.mock.calls.every(call => call[1]?.method !== 'POST')).toBe(true)
     fireEvent.click(screen.getByRole('checkbox'))
     fireEvent.click(screen.getByRole('button', {name: 'Confirm and enable'}))
     await waitFor(() => expect(fetch.mock.calls.some(call => call[1]?.method === 'POST')).toBe(true))
@@ -132,7 +143,8 @@ describe('Pixel access confirmation and effective status', () => {
       fireEvent.click(screen.getByRole('button', {name: 'Confirm and enable'}))
     } else fireEvent.click(screen.getByRole('button', {name: 'Verify Sandbox'}))
     await waitFor(() => expect(fetch).toHaveBeenCalledTimes(3))
-    expect(fetch.mock.calls[1][1]).toBeUndefined()
+    expect(fetch.mock.calls[1][1].signal).toBeInstanceOf(AbortSignal)
+    expect(fetch.mock.calls[1][1].method).toBeUndefined()
     expect(JSON.parse(fetch.mock.calls[2][1].body)).toEqual({mode, revision: fresh.revision, confirmed: mode === 'full-access'})
   })
 
@@ -150,7 +162,7 @@ describe('Pixel access confirmation and effective status', () => {
     await screen.findByText('Not verified')
     fireEvent.click(screen.getByRole('button', {name: 'Verify Sandbox'}))
     await screen.findByText(/No change was requested/)
-    expect(fetch.mock.calls.every(call => !call[1])).toBe(true)
+    expect(fetch.mock.calls.every(call => call[1]?.method !== 'POST')).toBe(true)
   })
 
   it('retains safer-mode recovery when fresh inspection finds a pending transition', async () => {
@@ -164,7 +176,7 @@ describe('Pixel access confirmation and effective status', () => {
     await screen.findByText('Not verified')
     fireEvent.click(screen.getByRole('button', {name: 'Verify Sandbox'}))
     await waitFor(() => expect(fetch.mock.calls.filter(call => call[1]?.method === 'POST')).toHaveLength(1))
-    expect(JSON.parse(fetch.mock.calls.find(call => call[1])[1].body).revision).toBe(fresh.revision)
+    expect(JSON.parse(fetch.mock.calls.find(call => call[1]?.method === 'POST')[1].body).revision).toBe(fresh.revision)
   })
 
   it('does not enable Full Access when a transition begins after confirmation opens', async () => {
@@ -178,11 +190,11 @@ describe('Pixel access confirmation and effective status', () => {
     fireEvent.click(screen.getByRole('checkbox'))
     fireEvent.click(screen.getByRole('button', {name: 'Confirm and enable'}))
     await screen.findByText(/No change was requested/)
-    expect(fetch.mock.calls.every(call => !call[1])).toBe(true)
+    expect(fetch.mock.calls.every(call => call[1]?.method !== 'POST')).toBe(true)
   })
 
   it('refreshes after a rejected POST without automatically retrying the change', async () => {
-    const fetch = vi.fn(async (_url, options) => options
+    const fetch = vi.fn(async (_url, options) => options?.method === 'POST'
       ? {ok: false, status: 409}
       : {ok: true, json: async () => safe})
     vi.stubGlobal('fetch', fetch)

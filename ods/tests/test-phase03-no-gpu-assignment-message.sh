@@ -94,6 +94,7 @@ chapter() { :; }
 bootline() { :; }
 signal() { :; }
 get_rank() { printf "10\n"; }
+ods_should_default_portal_chat() { return 1; }
 error() { printf "ERROR: %s\n" "$*" >&2; return 1; }
 
 # shellcheck source=/dev/null

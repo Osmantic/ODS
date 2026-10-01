@@ -9,7 +9,8 @@ socket or browser authority.
 
 The plugin sends one JSON object with `schemaVersion: 1`, `action: "inspect"`,
 `siteId`, the full snapshot `sha256`, `viewport: {width, height}`, and `steps`.
-Each step has `action` (`assert-visible`, `assert-hidden`, or `click`) and
+Each step has `action` (`assert-visible`, `assert-hidden`, `assert-text`,
+`select-option`, or `click`) and
 `locator`. A locator is either `{selector: "CSS"}` or
 `{role: "button", name: "Show items", exact: true}`. Semantic roles are
 allowlisted. There are no URLs, executable expressions, shell commands, image
@@ -271,6 +272,38 @@ browser, invalid snapshot, or invalid receipt is explicit failed/unverified.
 There is no host-browser fallback.
 
 ## Tests
+
+Native `select-option` adds exactly one `value` string to the step: the exact
+option value, at most 256 Unicode characters / 1024 UTF-8 bytes, with no control
+characters. Empty values are allowed. The locator must uniquely identify a
+visible enabled native single-select containing one enabled matching option.
+Multiple selects, custom comboboxes and controls with over 1000 options are
+unsupported. Disabled fieldsets and option groups remain disabled. Chromium's
+normal selection operation dispatches input/change; isolated-world observations
+bind the native selected value and option state before and after. A successful
+selection alone does not prove dependent application behavior: assert the
+resulting visible text in a subsequent step. Do not redesign the page merely
+to accommodate the inspector.
+
+Selection plans use the scope suffix `Native single-select values were observed
+only for explicit select-option steps.` Existing plans and scope remain
+unchanged. The installer requires the capsule label
+`org.osmantic.ods.inspection.select=native-single-select-v1`; before any selection
+plan the broker checks the configured immutable image for that capability.
+An older capsule returns a bound `unsupported_capability` failure without
+executing the plan. Update the plugin, broker/export helper and capsule together;
+mixed older installations remain unverified, with no host-browser fallback.
+
+Downloads remain canceled. `blockedRequests: ["download"]` is explicitly an
+inspector policy limitation, not proof of a website defect or of handler
+completion. Keep the publication unchanged and report the download unverified;
+do not retry the same blocked operation. No download bytes or destinations are
+accepted by this protocol.
+
+`test_preview_select.py` and `inspection_select.test.mjs` cover exact bounded
+values, selection receipts, unsupported old images, disabled/ambiguous controls,
+normal input/change events, hostile author prototypes and unchanged download
+blocking. The Python suite uses the same opt-in Chromium/Docker settings below.
 
 `node --test tests/test-preview-inspection.mjs` checks plugin contracts,
 Unicode hash compatibility, forged/incomplete receipts, unavailable results,
