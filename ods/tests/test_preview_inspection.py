@@ -527,6 +527,28 @@ class PaletteDouble:
         self.calls.append("close")
 
 
+class SnapshotAssetGuardTests(unittest.TestCase):
+    def test_root_aliases_stay_bound_to_bundle_origin_and_get(self):
+        context = PaletteDouble(b'')
+        files = {'_next/app/[slug]/page.js': b'', 'index.html': b''}
+        origin = 'http://127.0.0.1:4321'
+        prefix = '/site-' + 'a' * 24 + '/'
+        blocked = []
+        capsule.guard_requests(context, context, origin, prefix, blocked, files)
+        for path, method, nav, expected in [
+            ('/_next/app/%5Bslug%5D/page.js', 'GET', False, 'continued'),
+            ('/_next/app/%5Bslug%5D/page.js', 'POST', False, 'aborted'),
+            ('/_next/app/%5Bslug%5D/page.js', 'GET', True, 'aborted'),
+            ('/outside.js', 'GET', False, 'aborted'),
+            ('/site-' + 'b' * 24 + '/_next/app/%5Bslug%5D/page.js', 'GET', False, 'aborted'),
+            ('http://example.invalid/_next/app/%5Bslug%5D/page.js', 'GET', False, 'aborted'),
+        ]:
+            with self.subTest(path=path, method=method, navigation=nav):
+                route = Route(origin + path if path.startswith('/') else path, nav, method)
+                context.guard(route)
+                self.assertEqual(route.outcome, expected)
+
+
 class PageErrorTests(unittest.TestCase):
     def run_scripted(self, browser):
         data = bundle("<p id=item hidden></p><button id=show>Show</button>", [
@@ -1370,6 +1392,20 @@ TOWER1_PLAN = [step("assert-hidden", "#midnight-concert-card"), role_step("click
     os.environ.get("ODS_PREVIEW_BROWSER_TESTS") == "1", "real Chromium opt in"
 )
 class BrowserTests(unittest.TestCase):
+    def test_framework_root_assets_use_only_current_snapshot(self):
+        html = '<p id="item">pending</p><script src="/_next/app/%5Bslug%5D/page.js"></script>'
+        files = {'index.html': html.encode(), '_next/app/[slug]/page.js':
+                 b'document.getElementById("item").textContent="loaded";'}
+        result = self.check(html, [{**step('assert-text', '#item'), 'expectedText': 'loaded'}], files=files)
+        self.assertEqual(result['status'], 'passed', result)
+        for url in ['/outside.js', '/site-' + 'b' * 24 + '/_next/app/%5Bslug%5D/page.js',
+                    'http://example.invalid/_next/app/%5Bslug%5D/page.js']:
+            with self.subTest(url=url):
+                rejected = html.replace('/_next/app/%5Bslug%5D/page.js', url)
+                result = self.check(rejected, [{**step('assert-text', '#item'), 'expectedText': 'loaded'}],
+                                    files={**files, 'index.html': rejected.encode()})
+                self.assertEqual(result['status'], 'failed', result)
+
     def test_text_counter_sequence_and_delayed_update(self):
         html = ('<output id="n">0</output><button id="add" onclick="setTimeout(()=>n.textContent=1,350)">Somar</button>'
                 '<button id="reset" onclick="n.textContent=0">Zerar</button>')
