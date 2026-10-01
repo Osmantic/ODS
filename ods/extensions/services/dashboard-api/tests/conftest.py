@@ -38,6 +38,27 @@ if "fcntl" not in sys.modules:
 FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures"
 
 
+@pytest.fixture
+def mock_edge_read_transport(monkeypatch):
+    """Reuse the existing fake HTTP client in legacy handler-only tests."""
+    import httpx
+    import pixel_edge_read_client
+    from routers import pixel
+
+    original_factory = httpx.AsyncClient
+    clients = {}
+
+    def get_fake():
+        factory = httpx.AsyncClient
+        assert factory is not original_factory, 'Handler test must provide a fake edge transport'
+        if factory not in clients:
+            clients[factory] = factory()
+        return clients[factory]
+
+    monkeypatch.setattr(pixel, 'get_edge_read_client', get_fake)
+    monkeypatch.setattr(pixel_edge_read_client, 'get_edge_read_client', get_fake)
+
+
 @pytest.fixture()
 def install_dir(tmp_path, monkeypatch):
     """Provide an isolated install directory with a .env file."""

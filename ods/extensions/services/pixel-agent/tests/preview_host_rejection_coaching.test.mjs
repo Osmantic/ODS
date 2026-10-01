@@ -31,7 +31,7 @@ function fixture() {
   };
 }
 
-for (const code of ['unsafe_directory', 'unsupported_file_type']) {
+for (const code of ['unsafe_directory', 'unsupported_file_type', 'writable_file']) {
   test(`a wrapped ${code} rejection is not coached back to the rejected directory`, () => {
     const invoke = fixture();
     invoke('write', {path: `${P}/report.py`, content: 'print(1)\n'}, success('written'));
