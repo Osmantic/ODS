@@ -154,7 +154,7 @@ Windows recovery note: if the runtime folder is partial and `.\ods.ps1` is missi
 
 > **API endpoint:** Linux Docker installs using managed local inference expose llama-server on **http://localhost:11434** by default (`OLLAMA_PORT`) while containers use `llama-server:8080`. macOS native Metal and Windows native/Lemonade paths use **http://localhost:8080** unless overridden. When Open WebUI is selected, it uses **http://localhost:3000**.
 
-> **No GPU?** ODS also runs in cloud mode, keeping the Core Dashboard/Portal experience while using OpenAI/Anthropic/Together APIs instead of managed local inference. Optional services remain opt-in:
+> **No GPU?** ODS also runs in cloud mode using OpenAI/Anthropic/Together APIs instead of managed local inference. On qualified Linux/WSL hosts, Core still uses Dashboard/Portal; optional services remain opt-in:
 > ```bash
 > ./install.sh --cloud
 > ```
