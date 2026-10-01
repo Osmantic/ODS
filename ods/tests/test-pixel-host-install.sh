@@ -2944,7 +2944,8 @@ assert "api.on(\"before_prompt_build\"" in text
 assert "api.on(\"model_call_started\"" in text
 assert "api.on(\"before_agent_finalize\"" in text
 assert "api.on(\"tool_result_persist\"" in text
-assert "promptContractForAgent(context, AGENT_ID, event, {" in text
+assert "promptContractForAgent(context, AGENT_ID, ownerEvent, {" in text
+assert "ownerEvent = toolLoopGuard.ownerIntentEventForRun(context?.runId ?? event?.runId, event)" in text
 assert "verificationStatus: toolLoopGuard.verificationStatus(context?.runId)" in text
 ' "$plugin/index.js"
 # Dollar expressions below are literal source-code assertions.
@@ -3137,7 +3138,8 @@ assert "--state-dir \"$home/.openclaw/ods-runtime-patches/sandbox-mkdir-$mkdir_m
 managed.extend(["sandbox-mkdir-bridge", "sandbox-mkdir-secure"])
 known = installer[foreign_restore:own_repair].split("--known", 1)[1].split(">>", 1)[0]
 assert sorted(known.replace("\\", " ").split()) == sorted(managed)
-assert len(set(managed)) == len(managed) == 13
+assert len(set(managed)) == len(managed) == 18
+assert {"context-usage", "yield-usage", "compaction-empty", "compaction-no-work", "hook-provenance"}.issubset(managed)
 assert "command-attempt-warning" in managed
 assert "--command-attempt-warning" in installer
 assert "host/openclaw-command-attempt-warning.json" in installer

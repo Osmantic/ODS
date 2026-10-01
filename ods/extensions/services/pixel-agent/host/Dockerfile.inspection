@@ -13,6 +13,7 @@ COPY --chmod=0444 preview_inspection_protocol.py preview_inspection_capsule.py /
 LABEL org.osmantic.ods.component="pixel-preview-inspection" \
       org.osmantic.ods.inspection.protocol="1" \
       org.osmantic.ods.inspection.select="native-single-select-v1" \
+      org.osmantic.ods.inspection.download="snapshot-download-v1" \
       org.osmantic.ods.inspection.playwright="1.62.0"
 USER 65534:65534
 ENTRYPOINT ["python3", "/source/preview_inspection_capsule.py"]
