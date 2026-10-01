@@ -71,12 +71,14 @@ function Resolve-ODSWindowsHermesSelection {
     } elseif (-not $All -and -not $MenuExplicit) {
         $installedHermes = Get-ODSWindowsInstalledServiceSelection -InstallDir $InstallDir -ServiceId "hermes"
         $installedProxy = Get-ODSWindowsInstalledServiceSelection -InstallDir $InstallDir -ServiceId "hermes-proxy"
-        if ($null -ne $installedHermes) { $hermes = [bool]$installedHermes }
-        if ($null -ne $installedProxy) {
-            $proxy = [bool]$installedProxy
-        } elseif ($null -ne $installedHermes) {
-            # Older native installs selected the agent and proxy together.
-            $proxy = $hermes
+        if (Test-Path -LiteralPath (Join-Path $InstallDir ".env") -PathType Leaf) {
+            # An existing install with no Hermes fragments has not selected it.
+            # Do not re-enable it from a computed default on a quiet rerun.
+            $hermes = if ($null -ne $installedHermes) { [bool]$installedHermes } else { $false }
+            $proxy = if ($null -ne $installedProxy) { [bool]$installedProxy } else {
+                # Older native installs selected the agent and proxy together.
+                $hermes
+            }
         }
     }
     if ($proxy -and -not $hermes) {

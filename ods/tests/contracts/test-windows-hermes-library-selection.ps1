@@ -21,6 +21,10 @@ try {
     Assert-Selection ($full.Hermes -and $full.Proxy) "Explicit full default lost its paired proxy"
 
     Set-Content -LiteralPath (Join-Path $installDir ".env") -Value "ODS_MODE=local"
+    $emptyRetained = Resolve-ODSWindowsHermesSelection -InstallDir $installDir -ComputedHermes $true
+    Assert-Selection (-not $emptyRetained.Hermes -and -not $emptyRetained.Proxy) "Existing install without Hermes markers enabled Hermes"
+    $explicitFull = Resolve-ODSWindowsHermesSelection -InstallDir $installDir -ComputedHermes $true -All $true
+    Assert-Selection ($explicitFull.Hermes -and $explicitFull.Proxy) "Explicit All did not enable Hermes and proxy"
     Set-Content -LiteralPath $hermesActive -Value "services: {}"
     Set-Content -LiteralPath "$proxyActive.disabled" -Value "services: {}"
     $dataDir = Join-Path $installDir "data\hermes"
