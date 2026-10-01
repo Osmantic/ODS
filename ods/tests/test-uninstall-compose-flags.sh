@@ -19,9 +19,8 @@ pass() {
 make_stub_bin() {
     local stub_dir="$1"
 
-    # The discovery fallback feeds these listings straight into `docker rm -f`
-    # and `docker volume rm`, so the stub reports unrelated names that merely
-    # contain "ods" next to this project's own.
+    # Include unrelated same-prefix resources, as well as native Pixel archives.
+    # None of these names may be passed to a name-based cleanup fallback.
     cat > "$stub_dir/docker" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "${DOCKER_LOG:?}"
@@ -44,14 +43,17 @@ emit_filtered() {
 }
 
 if [[ "${1:-}" == "ps" ]]; then
-    NAMES="ods-litellm ods-llama-server kube-pods-proxy methods-runner ods-pixel-retired-0123456789abcdef"
+    NAMES="ods-litellm ods-llama-server ods-download-test-sentinel ods-inspection-blocked-test-sentinel kube-pods-proxy methods-runner ods-pixel-retired-0123456789abcdef"
     emit_filtered "$@"
     exit 0
 fi
 if [[ "${1:-}" == "volume" && "${2:-}" == "ls" ]]; then
-    NAMES="ods_perplexica-data ods-legacy-cache k3s_pods methods_cache"
+    NAMES="ods_perplexica-data ods-legacy-cache ods_download_test_data ods-download-test-volume k3s_pods methods_cache"
     emit_filtered "$@"
     exit 0
+fi
+if [[ "${1:-}" == "compose" && " $* " == *" down "* ]]; then
+    exit "${DOCKER_DOWN_EXIT_CODE:-0}"
 fi
 exit 0
 EOF
@@ -136,8 +138,16 @@ run_uninstall() {
     DOCKER_LOG="${DOCKER_LOG:?}" \
     SUDO_LOG="${SUDO_LOG:?}" \
     SUDO_VALIDATE_EXIT_CODE="${SUDO_VALIDATE_EXIT_CODE:-0}" \
+    DOCKER_DOWN_EXIT_CODE="${DOCKER_DOWN_EXIT_CODE:-0}" \
     ODS_UNINSTALL_SYSTEMD_DIR="$install_dir/systemd" \
         bash "$install_dir/ods-uninstall.sh" --force "$@" >/dev/null
+}
+
+assert_no_name_cleanup() {
+    local docker_log="$1"
+    if grep -Eq '^(ps|rm|container rm|volume (ls|rm))( |$)' "$docker_log"; then
+        fail "uninstall must not discover or remove Docker resources by name"
+    fi
 }
 
 main() {
@@ -186,6 +196,31 @@ main() {
         || fail "missing policy failure must explain recovery"
     pass "missing policy fails closed with a recovery instruction"
 
+    local missing_install="$TMP_DIR/missing-install" missing_home="$TMP_DIR/missing-home"
+    local missing_docker="$TMP_DIR/missing-docker.log" missing_sudo="$TMP_DIR/missing-sudo.log"
+    make_install "$missing_install"
+    mkdir -p "$missing_home"
+    rm "$missing_install/.compose-flags" "$missing_install/docker-compose.base.yml" \
+        "$missing_install/docker-compose.cpu.yml"
+    # Model a resolver that cannot select any Compose files, without touching
+    # Docker or borrowing the test machine's installed stack.
+    printf '#!/bin/bash\nexit 1\n' > "$missing_install/scripts/resolve-compose-stack.sh"
+    printf 'retain owner data\n' > "$missing_install/data/owner.txt"
+    cat > "$missing_install/lib/pixel-uninstall.sh" <<'EOF'
+ods_pixel_uninstall_managed() { touch "$INSTALL_DIR/pixel-retired"; }
+EOF
+    if DOCKER_LOG="$missing_docker" SUDO_LOG="$missing_sudo" \
+        run_uninstall "$missing_install" "$missing_home" "$stub_dir" 2>"$TMP_DIR/missing-error"; then
+        fail "missing Compose flags must block uninstall"
+    fi
+    [[ ! -s "$missing_docker" && ! -s "$missing_sudo" && ! -e "$missing_install/pixel-retired" ]] \
+        || fail "missing Compose flags must be refused before Docker, sudo, or Pixel retirement"
+    [[ -f "$missing_install/ods-uninstall.sh" && -f "$missing_install/data/owner.txt" ]] \
+        || fail "missing Compose flags must preserve installation and owner data"
+    grep -qF 'No Compose files resolved; installation untouched' "$TMP_DIR/missing-error" \
+        || fail "missing Compose flags must explain the refusal"
+    pass "missing Compose flags are refused before uninstall mutation"
+
     if [[ "$(uname -s)" == "Linux" ]]; then
         local changed_install="$TMP_DIR/changed-install" changed_home="$TMP_DIR/changed-home"
         local changed_docker="$TMP_DIR/changed-docker.log"
@@ -230,6 +265,7 @@ EOF
         fail "--keep-data must not remove compose volumes with -v"
     fi
     pass "uninstall uses saved compose flags and preserves volumes with --keep-data"
+    assert_no_name_cleanup "$log_keep"
     [[ ! -L "$home_keep/.local/bin/ods" ]] \
         || fail "uninstall must remove the user-level ods CLI symlink"
     pass "uninstall removes user-level ods CLI symlink"
@@ -244,6 +280,27 @@ EOF
     grep -qF 'compose -f docker-compose.base.yml -f docker-compose.cpu.yml down -v --remove-orphans' "$log_purge" \
         || fail "normal uninstall must remove compose volumes with -v"
     pass "normal uninstall removes compose volumes"
+    assert_no_name_cleanup "$log_purge"
+
+    local failed_install="$TMP_DIR/failed-install" failed_home="$TMP_DIR/failed-home"
+    local failed_docker="$TMP_DIR/failed-docker.log" failed_sudo="$TMP_DIR/failed-sudo.log"
+    make_install "$failed_install"
+    mkdir -p "$failed_home/.local/bin"
+    ln -s "$failed_install/ods-cli" "$failed_home/.local/bin/ods"
+    printf 'retain owner data\n' > "$failed_install/data/owner.txt"
+    if DOCKER_LOG="$failed_docker" SUDO_LOG="$failed_sudo" DOCKER_DOWN_EXIT_CODE=37 \
+        run_uninstall "$failed_install" "$failed_home" "$stub_dir" 2>"$TMP_DIR/failed-error"; then
+        fail "Compose down failure must fail uninstall"
+    fi
+    grep -qxF 'compose -f docker-compose.base.yml -f docker-compose.cpu.yml down -v --remove-orphans' "$failed_docker" \
+        || fail "failure fixture must reach the existing Compose down command"
+    assert_no_name_cleanup "$failed_docker"
+    [[ -f "$failed_install/ods-uninstall.sh" && -f "$failed_install/data/owner.txt" && \
+        -L "$failed_home/.local/bin/ods" ]] \
+        || fail "Compose failure must retain remaining installation, data, and CLI link"
+    grep -qF 'Docker Compose cleanup failed; remaining installation retained' "$TMP_DIR/failed-error" \
+        || fail "Compose failure must explain the incomplete uninstall"
+    pass "Compose down failure retains remaining installation without a name-based fallback"
 
     mapfile -t sudo_calls < "$sudo_log"
     local sudo_credentials_seen=0
@@ -324,33 +381,17 @@ EOF
     fi
     pass "uninstall loads .env without executing shell substitutions"
 
-    # Docker's `--filter name=` matches anywhere in the name, so the discovery
-    # fallback must select on the project prefix (containers ods-<service>,
-    # compose volumes ods_<volume>) and leave unrelated names alone.
-    local removed_containers removed_volumes
-    removed_containers="$(grep -E '^rm -f ' "$log_purge" || true)"
-    removed_volumes="$(grep -E '^volume rm ' "$log_purge" || true)"
-
+    # These stubs exercise the removed name fallback, not Docker Compose's
+    # own project selection or the independent native Pixel retirement helper.
     local name
-    for name in ods-litellm ods-llama-server; do
-        [[ "$removed_containers" == *"$name"* ]] \
-            || fail "uninstall must remove project container $name (got: '$removed_containers')"
+    for name in ods-download-test-sentinel ods-inspection-blocked-test-sentinel \
+        kube-pods-proxy methods-runner ods-pixel-retired-0123456789abcdef \
+        ods_download_test_data ods-download-test-volume k3s_pods methods_cache; do
+        if grep -Fq "$name" "$log_purge" "$failed_docker" "$log_keep"; then
+            fail "uninstall must not pass unrelated or archived resource $name to Docker cleanup"
+        fi
     done
-    for name in kube-pods-proxy methods-runner ods-pixel-retired-0123456789abcdef; do
-        [[ "$removed_containers" != *"$name"* ]] \
-            || fail "uninstall must not remove unrelated container $name (got: '$removed_containers')"
-    done
-    pass "container discovery stays on the ods- prefix and preserves native sandbox archives"
-
-    for name in ods_perplexica-data ods-legacy-cache; do
-        [[ "$removed_volumes" == *"$name"* ]] \
-            || fail "uninstall must remove project volume $name (got: '$removed_volumes')"
-    done
-    for name in k3s_pods methods_cache; do
-        [[ "$removed_volumes" != *"$name"* ]] \
-            || fail "uninstall must not remove unrelated volume $name (got: '$removed_volumes')"
-    done
-    pass "volume discovery stays on the ods project prefix"
+    pass "same-prefix resources and native sandbox archives are excluded from name-based cleanup"
 }
 
 main "$@"
