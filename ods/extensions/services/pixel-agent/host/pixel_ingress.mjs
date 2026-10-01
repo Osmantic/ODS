@@ -752,6 +752,21 @@ async function readBounded(stream, limit) {
   }
 }
 
+function validSourceReview(value, directory) {
+  return !!value && typeof value === 'object' && !Array.isArray(value)
+    && Object.keys(value).sort().join(',') === 'bytes,files,omitted,relativeDirectory,schemaVersion,sha256,sourceId'
+    && value.schemaVersion === 1 && typeof value.relativeDirectory === 'string'
+    && value.relativeDirectory.length <= 512 && value.relativeDirectory.split('/').length <= 12
+    && value.relativeDirectory.split('/').every(part => /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(part))
+    && (directory === value.relativeDirectory || directory?.startsWith(value.relativeDirectory + '/'))
+    && /^[a-f0-9]{64}$/.test(value.sha256) && value.sourceId === 'source-' + value.sha256.slice(0,24)
+    && Number.isInteger(value.files) && value.files >= 1 && value.files <= 128
+    && Number.isInteger(value.bytes) && value.bytes >= 0 && value.bytes <= 1024*1024
+    && value.omitted && typeof value.omitted === 'object' && !Array.isArray(value.omitted)
+    && Object.keys(value.omitted).sort().join(',') === 'directories,files,sensitiveFiles'
+    && Object.values(value.omitted).every(n => Number.isInteger(n) && n >= 0 && n <= 16384);
+}
+
 function parseVerificationResponse(value, runId) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new HttpError(502, "verification state unavailable");
@@ -779,6 +794,8 @@ function parseVerificationResponse(value, runId) {
     : ["status"];
   if (suppressStaleExecWarning) expectedKeys.push("suppressStaleExecWarning");
   if (hasPreview) expectedKeys.push("preview");
+  const hasArtifacts=Object.hasOwn(value,'artifacts');
+  if (hasArtifacts) expectedKeys.push('artifacts');
   const hasTask = Object.prototype.hasOwnProperty.call(value, "task");
   if (hasTask) expectedKeys.push("task");
   const hasQuestions = Object.prototype.hasOwnProperty.call(value, 'questions');
@@ -797,6 +814,7 @@ function parseVerificationResponse(value, runId) {
     "schemaVersion",
     "sha256",
     "siteId",
+    ...(preview && Object.hasOwn(preview, 'source') ? ['source'] : []),
     "url",
   ];
   const previewValid =
@@ -826,7 +844,8 @@ function parseVerificationResponse(value, runId) {
       preview.bytes >= 1 &&
       preview.bytes <= 16 * 1024 * 1024 &&
       /^[a-f0-9]{64}$/.test(preview.sha256) &&
-      /^[a-f0-9]{64}$/.test(preview.entrySha256));
+      /^[a-f0-9]{64}$/.test(preview.entrySha256) &&
+      (!Object.hasOwn(preview, 'source') || validSourceReview(preview.source, preview.relativeDirectory)));
   if (
     Object.keys(value).sort().join("\n") !== expectedKeys.sort().join("\n") ||
     (hasRecoveryCode && hasPreview) ||
@@ -835,6 +854,7 @@ function parseVerificationResponse(value, runId) {
         value.text.length < 1 ||
         value.text.length > MAX_VERIFICATION_TEXT ||
         /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(value.text))) ||
+    (hasArtifacts && (!['none','passed','failed'].includes(status) || !validDeliveredArtifacts(value.artifacts))) ||
     !previewValid || (hasTask && !parseTaskActivity(value.task, runId)) ||
     (hasQuestions && (status !== 'pending' || !parseQuestions(value.questions)))
   ) {
@@ -903,6 +923,22 @@ function missingVisibleAssistantText(content) {
     ['NO_REPLY', 'No response from OpenClaw.', EMPTY_ASSISTANT_RESPONSE].includes(content.trim()));
 }
 
+// Standalone ingress is installed beside host helpers, without plugin code.
+// Accept only the bounded publication receipt, never model-authored MEDIA paths.
+function validDeliveredArtifacts(items) {
+  const exact=(value,keys)=>value && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).sort().join(',') === keys.split(',').sort().join(',');
+  const component=value=>typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(value);
+  const sha=value=>typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
+  return Array.isArray(items) && items.length <= 4 && items.every(item=>
+    exact(item,'schemaVersion,kind,relativePath,siteId,sha256,file') && item.schemaVersion === 1 && item.kind === 'ods-pixel-workspace-artifact' &&
+    typeof item.relativePath === 'string' && item.relativePath.length <= 512 && item.relativePath.split('/').length <= 12 &&
+    item.relativePath.split('/').every(component) && /\.(?:md|markdown|txt|csv|tsv|json|pdf|zip|rar|docx|xlsx|pptx)$/i.test(item.relativePath) &&
+    sha(item.sha256) && item.siteId === 'site-'+item.sha256.slice(0,24) && exact(item.file,'path,bytes,sha256') &&
+    component(item.file.path) && item.file.path === item.relativePath.split('/').at(-1) &&
+    Number.isSafeInteger(item.file.bytes) && item.file.bytes >= 0 && item.file.bytes <= 4*1024*1024 && sha(item.file.sha256)) &&
+    new Set(items.map(item=>item.siteId+'/'+item.file.path)).size === items.length;
+}
+
 function deliveryVerification(completion, verification) {
   const choice = completion?.choices?.length === 1 ? completion.choices[0] : undefined;
   const content = choice?.message?.content;
@@ -918,13 +954,20 @@ function deliveryVerification(completion, verification) {
   const { suppressStaleExecWarning, ...evidence } = verification;
   return {
     ...evidence, status:'failed',
-    text:'Portal ended without a visible answer or a delivered result. This request is incomplete. ' +
+    text:(verification.artifacts?.length ? 'Verified file downloads are attached, but Portal ended without a written answer. This request may be incomplete. ' : 'Portal ended without a visible answer or a delivered result. This request is incomplete. ') +
       'Earlier tool activity may have completed; check its receipts before repeating any action. ' +
       'No detailed failure reason was returned.',
   };
 }
 
 function applyVerificationToCompletion(completion, verification) {
+  const result=baseApplyVerificationToCompletion(completion,verification);
+  const {pixel_artifacts: _untrustedArtifacts, ...clean}=result;
+  return verification.artifacts?.length
+    ? {...clean,pixel_artifacts:{schemaVersion:1,artifacts:verification.artifacts}} : clean;
+}
+
+function baseApplyVerificationToCompletion(completion, verification) {
   if (verification.deliveryMode === "append") {
     const choice = completion?.choices?.[0];
     const content = choice?.message?.content;
@@ -1010,6 +1053,7 @@ function completionSse(completion, verification) {
     model,
     choices: [{ index: 0, delta, finish_reason: finishReason }],
     ...(terminal && terminalPixel ? { pixel: terminalPixel } : {}),
+    ...(terminal && verification?.artifacts?.length ? {pixel_artifacts:{schemaVersion:1,artifacts:verification.artifacts}} : {}),
     ...(terminal && verification?.task ? { pixel_task: verification.task } : {}),
     ...(terminal && verification?.questions ? { pixel_questions: {schemaVersion:1,questions:verification.questions} } : {}),
     ...(terminal ? {pixel_outcome: {schemaVersion:1,status:verification?.status ?? 'none'}} : {}),

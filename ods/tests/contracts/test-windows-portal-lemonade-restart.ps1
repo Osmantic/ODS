@@ -507,7 +507,15 @@ Start-Sleep -Seconds 120
                         $rootIdentity.ExitedAt = $parent.ExitTime
                         Assert-Restart (-not $dummyChild.HasExited) 'Windows dummy child survives its parent, exercising the original orphan failure'
                     }
-                    $owned = Get-ODSPortalOwnedProcessTree @($rootIdentity) @(CimCmdlets\Get-CimInstance Win32_Process -ErrorAction Stop)
+                    # Keep this integration fixture's snapshot confined to its
+                    # three real processes. An unrelated orphan on a busy runner
+                    # can retain a reused parent PID and correctly trigger the
+                    # production ancestry guard. The stale/recycled-PID cases
+                    # above test that refusal deterministically.
+                    $fixtureFilter = 'ProcessId = {0} OR ProcessId = {1} OR ProcessId = {2}' -f $parent.Id, $dummyChild.Id, $unrelated.Id
+                    $fixtureNodes = @(CimCmdlets\Get-CimInstance Win32_Process -Filter $fixtureFilter -ErrorAction Stop)
+                    Assert-Restart (@($fixtureNodes | Where-Object { $_.ProcessId -eq $dummyChild.Id -and $_.ParentProcessId -eq $parent.Id }).Count -eq 1) 'real dummy child has the expected CIM parent identity'
+                    $owned = Get-ODSPortalOwnedProcessTree @($rootIdentity) $fixtureNodes
                     Stop-ODSPortalOwnedProcesses $owned.Handles
                     Assert-Restart ($parent.HasExited -and $dummyChild.HasExited -and -not $unrelated.HasExited) "real cleanup (parent exited=$exitFirst) closes only its own tree and preserves the unrelated dummy"
                 } finally {

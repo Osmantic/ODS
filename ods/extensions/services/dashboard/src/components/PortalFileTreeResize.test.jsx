@@ -74,7 +74,7 @@ it('provides keyboard bounds that preserve the code area when the container shri
   expect(screen.getByRole('separator')).toHaveAttribute('aria-valuenow','220')
 })
 
-it('releases an active drag and uses a selectable drawer on narrow panels',()=>{
+it('releases an active drag and keeps a selectable file list on narrow panels',()=>{
   render(<PixelFileChanges changes={changes}/>)
   const panel=screen.getByLabelText('File changes')
   resize(panel,800)
@@ -85,13 +85,10 @@ it('releases an active drag and uses a selectable drawer on narrow panels',()=>{
   expect(separator.releasePointerCapture).toHaveBeenCalledWith(7)
   expect(screen.queryByRole('separator')).toBeNull()
   expect(panel).toHaveClass('is-narrow')
-  expect(screen.queryByRole('navigation')).toBeNull()
-  fireEvent.click(screen.getByRole('button',{name:'Toggle changed files'}))
   expect(screen.getByRole('navigation',{name:'Changed files'})).toBeVisible()
   expect(screen.queryByRole('separator')).toBeNull()
   fireEvent.click(screen.getByRole('button',{name:'Open src/app.js'}))
-  expect(screen.queryByRole('navigation')).toBeNull()
+  expect(screen.getByRole('navigation',{name:'Changed files'})).toBeVisible()
   resize(panel,800)
-  fireEvent.click(screen.getByRole('button',{name:'Toggle changed files'}))
   expect(screen.getByRole('separator')).toHaveAttribute('aria-valuenow','224')
 })

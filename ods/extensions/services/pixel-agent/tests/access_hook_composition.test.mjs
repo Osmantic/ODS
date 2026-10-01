@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
+import {createWorkspaceArtifactAdmission,normalizeWorkspaceArtifact} from '../plugin/workspace-artifact.mjs';
 import {createWorkspaceBundleAdmission} from '../plugin/workspace-bundle.mjs';
 import {createProjectRunControl} from '../plugin/project-run-control.mjs';
 import {withPixelCronDeliveryDefault} from '../plugin/cron-delivery-default.mjs';
@@ -14,7 +15,7 @@ const start = source.indexOf('    if (!managedRuntime) {');
 const end = source.indexOf('    api.registerHttpRoute(', start);
 assert.ok(start >= 0 && end > start, 'expected tool lifecycle registration block');
 function hooks(guardResult, managedRuntime = false) {
-  const callbacks = {}, calls = [], activity = [], bundleAdmission = createWorkspaceBundleAdmission();
+  const callbacks = {}, calls = [], activity = [], bundleAdmission = createWorkspaceBundleAdmission(), artifactAdmission = createWorkspaceArtifactAdmission();
   const projectRunControl = createProjectRunControl();
   const runtime = {
     isProbe: context => context?.runId === 'private-proof',
@@ -37,9 +38,9 @@ function hooks(guardResult, managedRuntime = false) {
       finish: () => activity.push('finish'),
     },
     goalProgress: {before() {}, update() {}, finish() {}},
-    bundleAdmission, projectRunControl, managedRuntime, accessRuntime: runtime, withPixelCronDeliveryDefault, AGENT_ID: 'pixel',
+    bundleAdmission, artifactAdmission, projectRunControl, managedRuntime, accessRuntime: runtime, withPixelCronDeliveryDefault, AGENT_ID: 'pixel',
   });
-  return {callbacks, calls, runtime, activity, bundleAdmission, projectRunControl};
+  return {callbacks, calls, runtime, activity, bundleAdmission, artifactAdmission, projectRunControl};
 }
 const context = {agentId: 'pixel', runId: 'cron-request', toolName: 'cron'};
 const event = {toolCallId: 'cron-1', toolName: 'cron', params: {
@@ -123,6 +124,21 @@ test('bundle scope is recorded only after guard and native admission both permit
   }
 });
 
+
+test('document receipt scope requires both guard and native admission and ends with the actual hook',async()=>{
+  const args={relativePath:'project/report.pdf'},payload=normalizeWorkspaceArtifact(args);
+  const ctx={agentId:'pixel',runId:'run',sessionId:'session',sessionKey:'key',toolCallId:'artifact'};
+  const event={toolName:'pixel_ods_workspace_artifact',toolCallId:'artifact',params:args};
+  for(const deniedBy of ['none','guard','native']) {
+    const {callbacks,runtime,artifactAdmission}=hooks(deniedBy==='guard'?{block:true}:undefined);
+    if(deniedBy==='native')runtime.beforeTool=()=>({block:true});
+    await callbacks.before_tool_call(event,ctx);
+    if(deniedBy==='none')assert.deepEqual(artifactAdmission.take('artifact',payload,ctx),ctx);
+    else assert.throws(()=>artifactAdmission.take('artifact',payload,ctx),/unbound/);
+    callbacks.after_tool_call(event,ctx);
+    assert.throws(()=>artifactAdmission.take('artifact',payload,ctx),/unbound/);
+  }
+});
 test('project job binding follows actual admission and cannot survive denied or completed calls',async()=>{
   const args={action:'submit',project:'demo',outputDirectory:'dist'};
   const ctx={agentId:'pixel',runId:'run',sessionId:'session',sessionKey:'key',toolCallId:'project'};
