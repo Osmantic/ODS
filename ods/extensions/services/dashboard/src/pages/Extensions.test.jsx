@@ -192,6 +192,49 @@ it('shows bundled Perplexica in Available and asks before adding SearXNG', async
   ))
 })
 
+it('refreshes healthy dependency cards after Enable All when progress is idle', async () => {
+  let selected = false
+  let progressCalls = 0
+  const fetchMock = vi.fn(async (url, options = {}) => {
+    const target = String(url)
+    if (target === '/api/extensions/catalog') {
+      const status = !selected ? 'disabled' : progressCalls ? 'enabled' : 'stopped'
+      return makeJsonResponse({ agent_available: true, extensions: ['perplexica', 'searxng'].map(id => ({
+        id, name: id === 'perplexica' ? 'Perplexica (Deep Research)' : 'SearXNG',
+        source: 'core', status, library_manageable: true, library_selected: selected,
+        features: [baseFeature],
+      })), summary: baseSummary({ total: 2 }) })
+    }
+    if (target === '/api/webui/selection') return makeJsonResponse({ enabled: false, supported: false })
+    if (target === '/api/templates') return makeJsonResponse({ templates: [] })
+    if (target === '/api/extensions/perplexica/enable' && options.method === 'POST') {
+      return makeJsonResponse({ detail: { missing_dependencies: ['searxng'] } }, { ok: false, status: 400 })
+    }
+    if (target === '/api/extensions/perplexica/enable?auto_enable_deps=true' && options.method === 'POST') {
+      selected = true
+      return makeJsonResponse({ enabled_services: ['searxng', 'perplexica'], failed_services: [] })
+    }
+    if (target === '/api/extensions/perplexica/progress') {
+      progressCalls += 1
+      return makeJsonResponse({ status: 'idle' })
+    }
+    throw new Error(`Unmocked fetch: ${target}`)
+  })
+  vi.stubGlobal('fetch', fetchMock)
+  render(<Extensions compact />)
+  fireEvent.click(await screen.findByRole('button', { name: 'Add Perplexica (Deep Research)' }))
+  fireEvent.click(screen.getByRole('button', { name: 'Enable' }))
+  fireEvent.click(await screen.findByRole('button', { name: 'Enable All' }))
+  expect(await screen.findByRole('button', { name: 'Retry Perplexica (Deep Research)' })).toBeVisible()
+
+  await waitFor(() => {
+    expect(screen.queryByRole('button', { name: 'Retry Perplexica (Deep Research)' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Retry SearXNG' })).toBeNull()
+    expect(screen.getAllByText('enabled')).toHaveLength(2)
+  }, { timeout: 8000 })
+  expect(progressCalls).toBeGreaterThan(0)
+})
+
 it('lets an errored bundled n8n be retried or disabled without a remove control', async () => {
   installFetchMock({agent_available:true,extensions:[
     {id:'n8n',name:'n8n (Workflows)',source:'core',status:'error',library_manageable:true,library_selected:true,features:[baseFeature]},

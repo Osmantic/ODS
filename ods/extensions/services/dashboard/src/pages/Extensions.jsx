@@ -152,8 +152,16 @@ export default function Extensions({ compact = false }) {
         recoveryTrackers.current[serviceId]?.recordSuccess()
         if (!res.ok) return
         const data = await res.json()
-        if (data.status === 'idle') return
-        setProgressMap(prev => ({ ...prev, [serviceId]: data }))
+        if (data.status === 'idle') {
+          setProgressMap(prev => {
+            if (!(serviceId in prev)) return prev
+            const next = { ...prev }
+            delete next[serviceId]
+            return next
+          })
+        } else {
+          setProgressMap(prev => ({ ...prev, [serviceId]: data }))
+        }
         if (data.status === 'error') {
           clearInterval(activePollers.current[serviceId])
           delete activePollers.current[serviceId]
@@ -161,8 +169,9 @@ export default function Extensions({ compact = false }) {
           setToast({ type: 'error', text: data.error || 'Installation failed' })
           setProgressMap(prev => { const next = { ...prev }; delete next[serviceId]; return next })
           fetchCatalog()
-        } else if (data.status === 'started') {
-          // Container is up but healthcheck may not have passed yet.
+        } else if (data.status === 'started' || data.status === 'idle') {
+          // Enable can finish without an install-progress record. Keep checking
+          // live health even when progress is idle after the selection changed.
           // Refresh catalog — if it shows "enabled" (long-running service)
           // or "cli_installed" (one-shot CLI tool whose container exits
           // after init), we're done.
