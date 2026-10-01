@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 FEATURES_PHASE="$ROOT_DIR/installers/phases/03-features.sh"
+source "$ROOT_DIR/installers/lib/installed-feature-state.sh"
 
 run_case() {
     local selected="$1" source_state="$2" comfyui_requested="${3:-false}"
@@ -40,6 +41,10 @@ run_case() {
     fi
 
     (
+        # This fixture is an unmanaged install, regardless of the developer's
+        # real Pixel management marker.
+        export HOME="$test_root/home"
+        mkdir -p "$HOME"
         INTERACTIVE=false
         DRY_RUN=false
         INSTALL_CHOICE=1

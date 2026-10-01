@@ -2,53 +2,118 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 
 const modeName = mode => mode === 'full-access' ? 'Full Access' : mode === 'sandboxed' ? 'Sandbox' : 'Not verified'
 const surfaceName = surface => ({'linux-systemd':'Linux', 'wsl-systemd':'WSL', linux:'Linux', darwin:'macOS', windows:'Windows'})[surface] || 'Unavailable'
+const verifiedMode = status => status?.available === true && status.runtime_verified === true && !status.pending && ['sandboxed', 'full-access'].includes(status.effective_mode)
 
-export default function PixelAccessCard({ showHeading = true }) {
+export default function PixelAccessCard({ showHeading = true, active = true }) {
   const [status, setStatus] = useState(null)
   const [error, setError] = useState('')
   const [changing, setChanging] = useState(false)
   const [confirming, setConfirming] = useState(false)
   const [confirmed, setConfirmed] = useState(false)
   const [stale, setStale] = useState(true)
+  const [visible, setVisible] = useState(document.visibilityState !== 'hidden')
+  const [inspectionDone, setInspectionDone] = useState(0)
   const inspection = useRef(0)
   const pendingInspection = useRef(null)
+  const inspectionController = useRef(null)
+  const recoveryAttempts = useRef(0)
   const mutation = useRef(false)
+  const mounted = useRef(false)
+  const activation = useRef(0)
+  const alive = useRef(true)
+  useEffect(() => { alive.current = true; return () => { alive.current = false } }, [])
   const refresh = useCallback(async ({forChange = false, preserveError = false, background = false} = {}) => {
+    if (!active || !mounted.current) return
     if (mutation.current && !forChange) return
+    if (background && document.visibilityState === 'hidden') return
     // Host inspections can take up to 30 seconds. A five-second poll must
     // not supersede a still-running read, including its response body.
     // Explicit refreshes retain their existing latest-request precedence.
     if (background && pendingInspection.current !== null) return
     const version = ++inspection.current
+    inspectionController.current?.abort()
+    const controller = new AbortController()
+    inspectionController.current = controller
     pendingInspection.current = version
     setStale(true)
+    let timer
     try {
-      const response = await fetch('/api/pixel/access-mode')
-      if (!response.ok) throw new Error()
-      const value = await response.json()
+      // Include body parsing in the deadline. Superseded requests cannot
+      // retain the single-flight slot or publish their eventual response.
+      const value = await Promise.race([
+        (async () => {
+          const response = await fetch('/api/pixel/access-mode', {signal: controller.signal})
+          if (!response.ok) throw new Error()
+          return response.json()
+        })(),
+        new Promise((_, reject) => {
+          const abort = () => reject(new Error('inspection-aborted'))
+          controller.signal.addEventListener('abort', abort, {once: true})
+          timer = setTimeout(() => controller.abort(), 45000)
+        }),
+      ])
       if (version !== inspection.current) return
       setStatus(value)
       setStale(false)
+      recoveryAttempts.current = verifiedMode(value) ? 0 : Math.min(recoveryAttempts.current + 1, 4)
       if (!preserveError) setError('')
       return value
-    } catch { if (version === inspection.current) setError('Portal permissions could not be checked on the agent runtime. The current mode is unconfirmed. Refresh to check the actual status before requesting another change.') }
-    finally { if (pendingInspection.current === version) pendingInspection.current = null }
-  }, [])
-  useEffect(() => { void refresh(); return () => { inspection.current++; pendingInspection.current = null } }, [refresh])
+    } catch {
+      if (version === inspection.current) {
+        recoveryAttempts.current = Math.min(recoveryAttempts.current + 1, 4)
+        setError('Portal permissions could not be checked on the agent runtime. The current mode is unconfirmed. Refresh to check the actual status before requesting another change.')
+      }
+    } finally {
+      clearTimeout(timer)
+      if (pendingInspection.current === version) {
+        pendingInspection.current = null
+        inspectionController.current = null
+        setInspectionDone(value => value + 1)
+      }
+    }
+  }, [active])
   useEffect(() => {
-    if (!status?.pending && !status?.busy) return undefined
-    const timer = setInterval(() => { void refresh({background: true}) }, 5000)
-    return () => clearInterval(timer)
-  }, [status?.pending, status?.busy, refresh])
+    if (!active) return undefined
+    activation.current++
+    mounted.current = true
+    const wake = () => {
+      setVisible(document.visibilityState !== 'hidden')
+      void refresh({background: true})
+    }
+    wake()
+    document.addEventListener('visibilitychange', wake)
+    window.addEventListener('focus', wake)
+    window.addEventListener('online', wake)
+    return () => {
+      activation.current++
+      mounted.current = false
+      inspection.current++
+      pendingInspection.current = null
+      inspectionController.current?.abort()
+      document.removeEventListener('visibilitychange', wake)
+      window.removeEventListener('focus', wake)
+      window.removeEventListener('online', wake)
+    }
+  }, [active, refresh])
+  useEffect(() => {
+    if (!active || !visible || changing || pendingInspection.current !== null) return undefined
+    if (verifiedMode(status) && !status.busy && !error) return undefined
+    const delay = status?.pending || status?.busy ? 5000
+      : Math.min(5000 * 2 ** Math.max(0, recoveryAttempts.current - 1), 30000)
+    const timer = setTimeout(() => { void refresh({background: true}) }, delay)
+    return () => clearTimeout(timer)
+  }, [active, status, error, changing, visible, inspectionDone, refresh])
 
   async function change(mode) {
     if (!status?.revision || stale || mutation.current || (mode === 'full-access' && !confirmed)) return
     mutation.current = true
+    const activationVersion = activation.current
     setChanging(true); setError('')
     try {
       // Runs can change the inspection revision while Settings remains open.
       // The host still checks this revision atomically before changing access.
       const current = await refresh({forChange: true})
+      if (!mounted.current || activationVersion !== activation.current) return
       if (!current?.available || !current?.revision) {
         setError('Current access status could not be verified. No change was requested. Refresh the status before trying again.')
         return
@@ -61,11 +126,22 @@ export default function PixelAccessCard({ showHeading = true }) {
       const response = await fetch('/api/pixel/access-mode', {method: 'POST', headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({mode, revision: current.revision, confirmed: mode === 'full-access' && confirmed})})
       if (!response.ok) throw new Error()
-      setStatus(await response.json()); setStale(false); setConfirming(false); setConfirmed(false)
+      const value = await response.json()
+      if (!mounted.current || activationVersion !== activation.current) return
+      setStatus(value); setStale(false); setConfirming(false); setConfirmed(false)
     } catch {
+      if (!mounted.current) return
       setError('The change was not verified. Refresh the status and restore Sandbox if recovery is required.')
-      await refresh({forChange: true, preserveError: true})
-    } finally { mutation.current = false; setChanging(false) }
+      if (activationVersion === activation.current) await refresh({forChange: true, preserveError: true})
+    } finally {
+      mutation.current = false
+      if (alive.current) setChanging(false)
+      // A hidden section can reopen while the request is still running.
+      // Its previous receipt must not confirm the newly visible runtime.
+      if (mounted.current && activationVersion !== activation.current) {
+        await refresh({preserveError: true})
+      }
+    }
   }
 
   const disabled = changing || stale || !status?.available || status?.busy || !status?.revision
@@ -78,10 +154,12 @@ export default function PixelAccessCard({ showHeading = true }) {
     <p className="text-sm text-theme-text-muted">The control follows the agent runtime, even when the Portal runs on a different device. Access switching currently requires Linux or WSL with systemd; native Windows and macOS adapters remain unavailable.</p>
     {status ? <dl className="grid grid-cols-2 gap-2 text-sm">
       <dt>{stale ? 'Last known configuration' : 'Configured'}</dt><dd>{modeName(status.configured_mode)}</dd>
-      <dt>Effective</dt><dd>{!stale && status.runtime_verified ? modeName(status.effective_mode) : 'Not verified'}</dd>
-      <dt>Agent runtime</dt><dd>{surfaceName(status.surface)}</dd>
+      <dt>Effective</dt><dd>{!stale && verifiedMode(status) ? modeName(status.effective_mode) : 'Not verified'}</dd>
+      <dt>Agent runtime</dt><dd>{!stale && status.available === true ? surfaceName(status.surface) : 'Not verified'}</dd>
     </dl> : !error ? <p role="status">Checking Portal permissions…</p> : null}
-    {!status?.available && status ? <p role="status">{status.pending
+    {!status?.available && status ? <p role="status">{status.reason === 'managed-installation-incomplete'
+      ? 'The Portal installation or update has not completed its runtime verification. Resume the ODS installer on the agent host, then refresh this status. Permission changes remain unavailable until verification completes.'
+      : status.pending
       ? 'Checking Portal while the access transition is unfinished. Controls return when the running gateway can be verified.'
       : 'The access controller is unavailable on the agent runtime. Install or repair the managed runtime integration before changing permissions.'}</p> : null}
     {status?.busy ? <p role="status">Portal is working. Access changes wait until its runs and tools finish.</p> : null}

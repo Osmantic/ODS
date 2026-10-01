@@ -153,7 +153,18 @@ def make_held_overlay(tmp_path, monkeypatch, provider='cloud', new_inspector=Fal
     manager.finish(lambda *_: None)
     # Produce the real installer output independently of the proof helper.
     save(config_path, anchor)
-    renderer_args = [sys.executable, '-I', str(writer), str(config_path), '3004', '', str(home / '.openclaw'), 'unix']
+    # Use the installer's explicit route contract, including image policy when
+    # the selected renderer supports it. An empty answers path omits those
+    # fields and cannot represent the completed release's actual overlay.
+    route_provider, route = next(iter(sandbox['models']['providers'].items()))
+    route_model = route['models'][0]
+    answers = dict(modelProvider=route_provider, modelId=route_model['id'],
+                   modelName=route_model['name'], modelImageInput='unknown')
+    if provider == 'cloud':
+        answers['modelRouteFingerprint'] = 'f' * 64
+    answers_path = home / 'renderer-answers.json'
+    save(answers_path, answers)
+    renderer_args = [sys.executable, '-I', str(writer), str(config_path), '3004', str(answers_path), str(home / '.openclaw'), 'unix']
     if new_project:
         renderer_args.append('/var/lib/ods-pixel-project/control.sock')
     result = subprocess.run(renderer_args, capture_output=True, text=True, timeout=15)
@@ -455,6 +466,8 @@ def provisioned_overlay(monkeypatch, request):
         f.images = [dict(Id=image, Os='linux', Architecture={'x86_64': 'amd64', 'aarch64': 'arm64'}[platform.machine()],
             Config=dict(User='65534:65534', Entrypoint=['python3', '/source/preview_inspection_capsule.py'], Labels={
                 'org.osmantic.ods.component': 'pixel-preview-inspection', 'org.osmantic.ods.inspection.protocol': '1',
+                'org.osmantic.ods.inspection.fill': 'native-text-number-fill-v2',
+                'org.osmantic.ods.inspection.select': 'native-single-select-v1',
                 'org.osmantic.ods.inspection.playwright': '1.62.0'}))]
         contract = upgrade._provision_contract(f.manager, f.manager.journal(), kind, config, [f.images])
         for name in contract['files']:
@@ -506,7 +519,7 @@ def test_first_inspector_requires_exact_provisioned_service_and_real_peer(provis
     assert all(path.read_bytes() == raw for path, raw in before.items())
 
 
-@pytest.mark.parametrize('fault', ['owner', 'image', 'unit', 'file', 'peer', 'dropin', 'reload', 'config-during-render'])
+@pytest.mark.parametrize('fault', ['owner', 'image', 'select-label', 'unit', 'file', 'peer', 'dropin', 'reload', 'config-during-render'])
 def test_new_inspector_provision_fault_never_releases(provisioned_overlay, monkeypatch, fault):
     f = provisioned_overlay
     config_path = upgrade.SYSTEM_ROOT / 'etc/ods-pixel-inspection.json'
@@ -516,6 +529,8 @@ def test_new_inspector_provision_fault_never_releases(provisioned_overlay, monke
         save(config_path, value)
     elif fault == 'image':
         f.images[0]['Config']['User'] = 'root'
+    elif fault == 'select-label':
+        del f.images[0]['Config']['Labels']['org.osmantic.ods.inspection.select']
     elif fault == 'unit':
         save(upgrade.SYSTEM_ROOT / 'etc/systemd/system/pixel-preview-inspection.service', b'forged')
     elif fault == 'file':
