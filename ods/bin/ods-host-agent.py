@@ -41,7 +41,7 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path, PureWindowsPath
 from socketserver import ThreadingMixIn
 from urllib import error as urllib_error, request as urllib_request
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlparse
 
 # Model Switchboard (PR 1, observe mode): stdlib-only sibling package. The
 # import is fail-open — a missing/broken package disables state recording but
@@ -5678,6 +5678,23 @@ def resolve_compose_flags() -> list:
         env["ODS_PYTHON_CMD"] = _to_bash_path(Path(sys.executable))
     install_env = load_env(INSTALL_DIR / ".env")
     ods_mode = install_env.get("ODS_MODE", "").strip() or "local"
+    # The host agent can outlive an installer rerun or an owner WebUI toggle.
+    # These selectors must come from the installed state rather than its
+    # startup environment when the Compose cache is refreshed. The resolver
+    # needs only external-route presence, never the credential-bearing URL.
+    for selector in (
+        "ENABLE_OPEN_WEBUI", "ODS_GATEWAY_ONLY", "EXTERNAL_LLM_URL",
+        "ODS_EXTERNAL_LLM_SELECTED",
+        "LEMONADE_EXTERNAL", "AMD_INFERENCE_RUNTIME",
+        "AMD_INFERENCE_MANAGED", "WHISPER_ACCELERATION",
+        "ODS_SKIP_GPU_OVERLAYS",
+    ):
+        env.pop(selector, None)
+        if selector not in ("EXTERNAL_LLM_URL", "ODS_EXTERNAL_LLM_SELECTED") and selector in install_env:
+            env[selector] = install_env[selector]
+    env["ODS_EXTERNAL_LLM_SELECTED"] = (
+        "true" if install_env.get("EXTERNAL_LLM_URL", "").strip() else "false"
+    )
     cmd = [
         bash, _to_bash_path(script),
         "--script-dir", _to_bash_path(INSTALL_DIR),
@@ -5868,7 +5885,7 @@ _ROOTLESS_BIND_OWNERSHIP_SERVICES = {
 
 
 def _repair_rootless_data_ownership(service_id: str) -> None:
-    """Apply the built-in rootless bind-mount ownership contract before start."""
+    """Prepare built-in bind mounts before a container starts."""
     if platform.system() != "Linux" or service_id not in _ROOTLESS_BIND_OWNERSHIP_SERVICES:
         return
 
@@ -5879,9 +5896,17 @@ def _repair_rootless_data_ownership(service_id: str) -> None:
     if not bash:
         raise RuntimeError("Bash is required for Docker rootless ownership repair")
 
+    command = [bash, str(helper), str(INSTALL_DIR), service_id]
+    if service_id == "whisper":
+        # A lean install skips Phase 11's UID 1000 cache preparation. The
+        # Library add-back must prepare it for rootful as well as rootless Docker.
+        command = [
+            bash, "-c", 'source "$1"; ods_prepare_whisper_cache_ownership "$2"',
+            "ods-whisper-cache", str(helper), str(INSTALL_DIR),
+        ]
     try:
         result = subprocess.run(
-            [bash, str(helper), str(INSTALL_DIR), service_id],
+            command,
             cwd=str(INSTALL_DIR),
             env=os.environ.copy(),
             capture_output=True,
@@ -5934,9 +5959,89 @@ def _extension_stop_targets(service_id: str) -> list[str]:
     return targets
 
 
+def _whisper_model_ready_after_start(
+    max_wait_seconds: float = 480, compose_env: dict[str, str] | None = None,
+) -> tuple[bool, str]:
+    """Make a Library-started Whisper usable, as installer Phase 12 does."""
+    try:
+        env = load_env(INSTALL_DIR / ".env")
+    except (OSError, UnicodeError, ValueError):
+        return False, "Whisper started, but its selected model could not be read; run ods repair voice"
+    # Compose process environment overrides .env interpolation. Probe the same
+    # model and published port that the just-started container received.
+    if compose_env is not None:
+        for key in ("AUDIO_STT_MODEL", "WHISPER_PORT", "GPU_BACKEND", "WHISPER_ACCELERATION"):
+            if key in compose_env:
+                env[key] = compose_env[key]
+    fallback_model = (
+        "deepdml/faster-whisper-large-v3-turbo-ct2"
+        if env.get("GPU_BACKEND") == "nvidia" and env.get("WHISPER_ACCELERATION", "cuda") == "cuda"
+        else "Systran/faster-whisper-base"
+    )
+    model = str(env.get("AUDIO_STT_MODEL") or fallback_model).strip()
+    raw_port = str(env.get("WHISPER_PORT") or "9000").strip()
+    if (not model or len(model) > 256 or any(ord(char) < 32 or ord(char) == 127 for char in model)
+            or not raw_port.isascii() or not raw_port.isdecimal() or len(raw_port) > 5
+            or not 1 <= int(raw_port) <= 65535):
+        return False, "Whisper started, but its selected model or port is invalid; run ods repair voice"
+
+    base_url = f"http://127.0.0.1:{int(raw_port)}/v1/models"
+    model_url = f"{base_url}/{quote(model, safe='')}"
+    deadline = time.monotonic() + max(0.0, max_wait_seconds)
+
+    def probe(url: str) -> bool:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        try:
+            with urllib_request.urlopen(url, timeout=min(5, remaining)) as response:
+                return response.status == 200
+        except (urllib_error.URLError, TimeoutError, OSError):
+            return False
+
+    ready_deadline = min(deadline, time.monotonic() + 30)
+    while time.monotonic() < ready_deadline:
+        if probe(base_url):
+            break
+        time.sleep(min(1, max(0, ready_deadline - time.monotonic())))
+    else:
+        return False, "Whisper started, but its models API is not ready; run ods repair voice"
+
+    if probe(model_url):
+        return True, ""
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        return False, "Whisper started, but its model is not cached; run ods repair voice"
+    try:
+        request = urllib_request.Request(model_url, data=b"", method="POST")
+        with urllib_request.urlopen(request, timeout=min(30, remaining)) as response:
+            if not 200 <= response.status < 300:
+                return False, "Whisper started, but its model download was rejected; run ods repair voice"
+    except urllib_error.HTTPError as exc:
+        if 400 <= exc.code < 500 and exc.code not in (408, 409, 429):
+            return False, (
+                f"Whisper model download was rejected (HTTP {exc.code}); "
+                "check AUDIO_STT_MODEL or run ods repair voice"
+            )
+        # A concurrent download or transient failure can still populate the cache.
+    except (urllib_error.URLError, TimeoutError, OSError):
+        # Speaches can continue downloading after the trigger times out.
+        pass
+
+    while time.monotonic() < deadline:
+        if probe(model_url):
+            return True, ""
+        time.sleep(min(5, max(0, deadline - time.monotonic())))
+    return False, "Whisper started, but its model is not cached; run ods repair voice"
+
+
 def docker_compose_action(service_id: str, action: str) -> tuple:
     try:
         flags = resolve_compose_flags()
+        if service_id == "hermes" and action == "start":
+            plan_error = _hermes_compose_plan_error(flags)
+            if plan_error:
+                return False, plan_error
     except (OSError, ValueError, RuntimeError) as exc:
         if action != "stop":
             return False, str(exc)
@@ -5952,6 +6057,7 @@ def docker_compose_action(service_id: str, action: str) -> tuple:
             return True, ""
         except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as recovery_error:
             return False, f"Could not stop verified ODS containers: {recovery_error}"
+    action_deadline = time.monotonic() + 630
     compose_env = os.environ.copy()
     if action == "start":
         if service_id == "ods-proxy":
@@ -5963,6 +6069,13 @@ def docker_compose_action(service_id: str, action: str) -> tuple:
             if not ok:
                 return False, error
             compose_env["WEBUI_AUTH"] = "true"
+        elif service_id == "hermes":
+            ok, error = _prepare_hermes_route_for_start()
+            if not ok:
+                return False, error
+            ok, error = _prepare_hermes_persona_for_start()
+            if not ok:
+                return False, error
         _precreate_data_dirs(service_id)
         try:
             _repair_rootless_data_ownership(service_id)
@@ -5992,9 +6105,122 @@ def docker_compose_action(service_id: str, action: str) -> tuple:
                 _write_progress(service_id, 'started' if ok else 'error', 'CLI verification complete' if ok else 'CLI verification failed',
                                 error=error or None, exit_verified=ok)
                 return ok, error
+        if result.returncode == 0 and action == "start" and service_id == "whisper":
+            return _whisper_model_ready_after_start(
+                max_wait_seconds=min(480, max(0, action_deadline - time.monotonic())),
+                compose_env=compose_env,
+            )
         return (True, "") if result.returncode == 0 else (False, result.stderr[:500])
     except subprocess.TimeoutExpired:
         return False, f"Docker compose operation timed out ({timeout}s)"
+
+
+def _webui_selection_state() -> dict:
+    """Report the installed choice without exposing the owner's environment."""
+    env_path = INSTALL_DIR / ".env"
+    if not env_path.is_file() or env_path.is_symlink():
+        raise RuntimeError("The installed environment is unavailable")
+    selected = load_env(env_path).get("ENABLE_OPEN_WEBUI", "true").strip().lower() == "true"
+    return {
+        "enabled": selected,
+        "supported": platform.system() == "Linux",
+    }
+
+
+def _enable_webui_selection() -> tuple[int, dict]:
+    """Add the base WebUI service to a Linux install without touching its data.
+
+    The existing .env choice and Compose resolver remain authoritative. Keep
+    the bind-mounted .env inode, and restore its exact bytes if startup fails.
+    """
+    if platform.system() != "Linux":
+        return 501, {"code": "unsupported_platform", "error": "WebUI add-back is available on Linux only"}
+    service_lock = _service_locks["open-webui"]
+    if not service_lock.acquire(blocking=False):
+        return 409, {"code": "operation_in_progress", "error": "Open WebUI is being changed"}
+    if not _model_activate_lock.acquire(blocking=False):
+        service_lock.release()
+        return 409, {"code": "configuration_in_use", "error": "ODS configuration is being changed"}
+
+    env_path = INSTALL_DIR / ".env"
+    original = None
+    changed = False
+    attempted_start = False
+    flags = None
+    compose_env = None
+    try:
+        if not env_path.is_file() or env_path.is_symlink():
+            return 409, {"code": "missing_install", "error": "The installed environment is unavailable"}
+        original = env_path.read_bytes()
+        env_text = original.decode("utf-8")
+        installed = load_env(env_path)
+        if installed.get("ENABLE_OPEN_WEBUI", "true").strip().lower() == "true":
+            if not _capture_container_state("ods-webui").get("running"):
+                return 503, {"code": "selected_but_stopped", "error": "Open WebUI is selected but not running; inspect its service state"}
+            return 200, {"enabled": True, "action": "already_selected"}
+
+        changed = True  # A failed in-place write may have written a prefix.
+        _write_bound_env_text(env_path, _upsert_env_text(env_text, "ENABLE_OPEN_WEBUI", "true"))
+        invalidate_compose_cache()
+        flags = resolve_compose_flags()
+        compose_env = os.environ.copy()
+        compose_env.pop("COMPOSE_PROFILES", None)
+        for selector in (
+            "ENABLE_OPEN_WEBUI", "ODS_GATEWAY_ONLY", "EXTERNAL_LLM_URL",
+            "LEMONADE_EXTERNAL", "AMD_INFERENCE_RUNTIME",
+            "AMD_INFERENCE_MANAGED", "WHISPER_ACCELERATION",
+            "ODS_SKIP_GPU_OVERLAYS",
+        ):
+            compose_env.pop(selector, None)
+            if selector in installed:
+                compose_env[selector] = installed[selector]
+        compose_env["ENABLE_OPEN_WEBUI"] = "true"
+
+        def compose(*arguments: str):
+            return subprocess.run(
+                ["docker", "compose", *flags, *arguments], cwd=str(INSTALL_DIR),
+                env=compose_env, capture_output=True, text=True,
+                timeout=SUBPROCESS_TIMEOUT_START,
+            )
+
+        configured = compose("config", "--services")
+        if configured.returncode != 0 or "open-webui" not in configured.stdout.splitlines():
+            raise RuntimeError("The selected Compose stack does not expose Open WebUI")
+        attempted_start = True
+        # Compose pulls this one image when missing. --no-deps must not wake a
+        # managed model on an external LiteLLM route.
+        if compose("up", "-d", "--no-deps", "open-webui").returncode != 0:
+            raise RuntimeError("Could not start Open WebUI")
+        _wait_for_container_health("ods-webui", attempts=75)
+        return 200, {"enabled": True, "action": "enabled"}
+    except (OSError, UnicodeError, ValueError, RuntimeError, subprocess.SubprocessError) as exc:
+        logger.warning("Open WebUI add-back failed: %s", type(exc).__name__)
+        stopped = not attempted_start
+        if attempted_start and flags is not None and compose_env is not None:
+            try:
+                if not _capture_container_state("ods-webui").get("running"):
+                    stopped = True
+                else:
+                    stop = subprocess.run(
+                        ["docker", "compose", *flags, "stop", "open-webui"],
+                        cwd=str(INSTALL_DIR), capture_output=True, text=True,
+                        timeout=SUBPROCESS_TIMEOUT_STOP, env=compose_env,
+                    )
+                    stopped = stop.returncode == 0 and not _capture_container_state("ods-webui").get("running")
+            except (OSError, RuntimeError, subprocess.SubprocessError):
+                stopped = False
+        if not stopped:
+            return 503, {"code": "reconciliation_required", "error": "Open WebUI startup failed; verify the running service before retrying", "enabled": True}
+        if changed and original is not None:
+            try:
+                _write_bound_env_bytes(env_path, original)
+                invalidate_compose_cache()
+            except (OSError, RuntimeError):
+                return 503, {"code": "reconciliation_required", "error": "Open WebUI startup failed and its prior selection could not be restored"}
+        return 502, {"code": "enable_failed", "error": "Open WebUI could not be added; the prior selection was restored", "enabled": False}
+    finally:
+        _model_activate_lock.release()
+        service_lock.release()
 
 
 def _proxy_compose_enabled() -> bool:
@@ -8615,6 +8841,8 @@ class AgentHandler(BaseHTTPRequestHandler):
             self._handle_gpu_metrics()
         elif path == "/v1/llm/status":
             self._handle_llm_status()
+        elif path == "/v1/webui/selection":
+            self._handle_webui_selection(change=False)
         elif path == "/v1/service/health":
             self._handle_service_health()
         elif path == "/v1/service/stats":
@@ -8663,6 +8891,8 @@ class AgentHandler(BaseHTTPRequestHandler):
             self._handle_pixel_access_mode(False)
         elif path == "/v1/host/port":
             self._handle_host_port_status(parse_qs(parsed.query))
+        elif path == "/v1/opencode/status" and not parsed.query:
+            self._handle_opencode_status()
         elif path == "/v1/setup/state":
             self._handle_setup_state()
         else:
@@ -8848,6 +9078,32 @@ class AgentHandler(BaseHTTPRequestHandler):
         except (OSError, RuntimeError) as exc:
             logger.exception("Could not read setup state")
             json_response(self, 500, {"error": f"Could not read setup state: {exc}"})
+
+    def _handle_opencode_status(self):
+        """Report the ODS-managed OpenCode lifecycle for the dashboard."""
+        if not check_auth(self):
+            return
+        try:
+            json_response(self, 200, _opencode_app_status(), no_store=True)
+        except (RuntimeError, OSError, ValueError) as exc:
+            logger.warning("OpenCode status failed: %s", exc)
+            json_response(self, 500, {"error": "OpenCode status is unavailable"})
+
+    def _handle_opencode_action(self, action: str):
+        """Start the installed OpenCode service or set it up (Linux)."""
+        if not check_auth(self):
+            return
+        discard_request_body(self)
+        env = load_env(INSTALL_DIR / ".env")
+        try:
+            if action == "start":
+                code, body = _begin_opencode_start(env)
+            else:
+                code, body = _begin_opencode_setup(env)
+        except (RuntimeError, OSError, ValueError) as exc:
+            logger.warning("OpenCode %s failed: %s", action, exc)
+            code, body = 500, {"error": f"OpenCode {action} failed", "code": f"opencode_{action}_failed"}
+        json_response(self, code, body, no_store=True)
 
     def _handle_host_port_status(self, query: dict[str, list[str]]):
         """Return whether a host-local TCP port is reachable.
@@ -9186,6 +9442,8 @@ class AgentHandler(BaseHTTPRequestHandler):
             self._handle_pixel_access_mode(True)
         elif self.path == "/v1/pixel/apps/open":
             self._handle_pixel_open_app()
+        elif self.path in ("/v1/opencode/start", "/v1/opencode/setup"):
+            self._handle_opencode_action(self.path.rsplit("/", 1)[-1])
         elif self.path in ("/v1/extension/start", "/v1/extension/stop"):
             action = "start" if self.path.endswith("/start") else "stop"
             self._handle_extension(action)
@@ -9259,6 +9517,8 @@ class AgentHandler(BaseHTTPRequestHandler):
             self._handle_extension_configure()
         elif self.path == "/v1/env/update":
             self._handle_env_update()
+        elif self.path == "/v1/webui/selection":
+            self._handle_webui_selection(change=True)
         elif self.path == "/v1/setup/persona":
             self._handle_setup_persona()
         elif self.path == "/v1/setup/complete":
@@ -10499,6 +10759,26 @@ class AgentHandler(BaseHTTPRequestHandler):
         finally:
             _model_activate_lock.release()
 
+    def _handle_webui_selection(self, *, change: bool):
+        if not check_auth(self):
+            return
+        if change:
+            body = read_json_body(self)
+            if body is None:
+                return
+            if not isinstance(body, dict) or set(body) != {"enabled"} or body["enabled"] is not True:
+                json_response(self, 400, {"code": "invalid_request", "error": "Only enabling Open WebUI is supported"}, no_store=True)
+                return
+            status, result = _enable_webui_selection()
+            json_response(self, status, result, no_store=True)
+            return
+        try:
+            result = _webui_selection_state()
+        except (OSError, RuntimeError, UnicodeError):
+            json_response(self, 503, {"code": "selection_unavailable", "error": "Open WebUI selection is unavailable"}, no_store=True)
+            return
+        json_response(self, 200, result, no_store=True)
+
     def _handle_env_update(self):
         """Write a validated .env file. Dashboard-api delegates here because the
         container mount is :ro — only the host agent may write secrets to disk.
@@ -11370,6 +11650,11 @@ class AgentHandler(BaseHTTPRequestHandler):
             _install_operation_context.value = operation
             try:
                 flags = resolve_compose_flags()
+                if service_id == "hermes":
+                    plan_error = _hermes_compose_plan_error(flags)
+                    if plan_error:
+                        _write_progress(service_id, "error", "Installation failed", error=plan_error)
+                        return
 
                 ext_dir = _find_ext_dir(service_id)
                 if ext_dir is None:
@@ -11434,6 +11719,15 @@ class AgentHandler(BaseHTTPRequestHandler):
                 flags = pull_flags
                 # Step 3: Start
                 _write_progress(service_id, "starting", "Starting container...")
+                if service_id == "hermes":
+                    route_ready, route_error = _prepare_hermes_route_for_start()
+                    if not route_ready:
+                        _write_progress(service_id, "error", "Installation failed", error=route_error)
+                        return
+                    persona_ready, persona_error = _prepare_hermes_persona_for_start()
+                    if not persona_ready:
+                        _write_progress(service_id, "error", "Installation failed", error=persona_error)
+                        return
                 _precreate_data_dirs(service_id)
                 try:
                     _repair_rootless_data_ownership(service_id)
@@ -16656,23 +16950,61 @@ def _patch_hermes_config_text(
     base_url: str | None = None,
     context_length: int | None = None,
     max_tokens: int = 1024,
+    api_key: str | None = None,
 ) -> tuple[str, bool]:
     """Return Hermes YAML with its routing fields updated line-for-line."""
     lines = text.splitlines()
+    model_section_pattern = r"^(?:model|\"model\"|'model')\s*:\s*(?:#.*)?$"
+
+    def direct_model_field(line: str, field: str) -> bool:
+        if not model_field_indent:
+            return False
+        indent = re.escape(model_field_indent)
+        return bool(re.match(rf"^{indent}(?:{field}|\"{field}\"|'{field}')\s*:", line))
+
+    if api_key:
+        # A retained owner file may use a quoted key or spaces before ':'.
+        # Count only direct model fields, not a nested owner's api_key.
+        # Refuse ambiguous duplicates rather than leave Hermes using a stale key.
+        model_section = False
+        field_indent = None
+        key_count = 0
+        for line in lines:
+            if re.match(model_section_pattern, line):
+                model_section = True
+                field_indent = None
+                key_count = 0
+            elif model_section and line and not line.startswith((" ", "\t", "#")):
+                model_section = False
+            elif model_section and line.strip() and not line.lstrip().startswith("#"):
+                indent = line[:len(line) - len(line.lstrip())]
+                if field_indent is None:
+                    field_indent = indent
+                if indent == field_indent and re.match(
+                    r"^\s+(?:api_key|['\"]api_key['\"])\s*:", line
+                ):
+                    key_count += 1
+                    if key_count > 1:
+                        raise ValueError("Hermes model config contains duplicate api_key fields")
     in_model_block = False
     model_block_found = False
     model_indent = "  "
+    model_field_indent = None
     model_fields = set()
     changed = False
     new_lines = []
+    yaml_key_path = []
 
     def add_missing_model_fields() -> None:
         nonlocal changed
         if "default" not in model_fields:
-            new_lines.append(f'{model_indent}default: "{model_name}"')
+            new_lines.append(f"{model_indent}default: {json.dumps(model_name)}")
             changed = True
         if base_url and "base_url" not in model_fields:
-            new_lines.append(f'{model_indent}base_url: "{base_url}"')
+            new_lines.append(f"{model_indent}base_url: {json.dumps(base_url)}")
+            changed = True
+        if api_key and "api_key" not in model_fields:
+            new_lines.append(f"{model_field_indent or model_indent}api_key: {json.dumps(api_key)}")
             changed = True
         if context_length and "context_length" not in model_fields:
             new_lines.append(f"{model_indent}context_length: {int(context_length)}")
@@ -16682,47 +17014,66 @@ def _patch_hermes_config_text(
             changed = True
 
     for line in lines:
-        if re.match(r"^model:\s*(?:#.*)?$", line):
+        # Track simple mapping paths so the separate auxiliary compression
+        # context follows the selected model without changing owner submaps.
+        key_match = re.match(r"^([ ]*)(['\"]?)([A-Za-z_][A-Za-z0-9_-]*)\2\s*:", line)
+        if key_match:
+            key_indent = len(key_match.group(1))
+            while yaml_key_path and yaml_key_path[-1][0] >= key_indent:
+                yaml_key_path.pop()
+            yaml_key_path.append((key_indent, key_match.group(3)))
+        current_key_path = tuple(key for _, key in yaml_key_path)
+        if re.match(model_section_pattern, line):
             in_model_block = True
             model_block_found = True
+            model_indent = "  "
+            model_field_indent = None
             model_fields = set()
             new_lines.append(line)
             continue
         if in_model_block and line and not line.startswith((" ", "\t", "#")):
             add_missing_model_fields()
             in_model_block = False
-        if in_model_block and re.match(r"^\s+default:\s*", line):
+        if in_model_block and line.strip() and not line.lstrip().startswith("#"):
+            indent = line[:len(line) - len(line.lstrip())]
+            if model_field_indent is None:
+                model_field_indent = indent
+                model_indent = indent
+        if in_model_block and direct_model_field(line, "default"):
             model_fields.add("default")
-            model_indent = line[:len(line) - len(line.lstrip())]
             indent = line[:len(line) - len(line.lstrip())]
-            new_line = f'{indent}default: "{model_name}"'
+            new_line = f"{indent}default: {json.dumps(model_name)}"
             new_lines.append(new_line)
             changed = changed or new_line != line
             continue
-        if base_url and in_model_block and re.match(r"^\s+base_url:\s*", line):
+        if base_url and in_model_block and direct_model_field(line, "base_url"):
             model_fields.add("base_url")
-            model_indent = line[:len(line) - len(line.lstrip())]
             indent = line[:len(line) - len(line.lstrip())]
-            new_line = f'{indent}base_url: "{base_url}"'
+            new_line = f"{indent}base_url: {json.dumps(base_url)}"
             new_lines.append(new_line)
             changed = changed or new_line != line
             continue
-        if context_length and in_model_block and re.match(r"^\s+context_length:\s*", line):
+        if api_key and in_model_block and direct_model_field(line, "api_key"):
+            model_fields.add("api_key")
+            indent = model_field_indent
+            new_line = f"{indent}api_key: {json.dumps(api_key)}"
+            new_lines.append(new_line)
+            changed = changed or new_line != line
+            continue
+        if context_length and in_model_block and direct_model_field(line, "context_length"):
             model_fields.add("context_length")
-            model_indent = line[:len(line) - len(line.lstrip())]
             indent = line[:len(line) - len(line.lstrip())]
             new_line = f"{indent}context_length: {int(context_length)}"
             new_lines.append(new_line)
             changed = changed or new_line != line
             continue
-        if in_model_block and re.match(r"^\s+max_tokens:\s*", line):
+        if in_model_block and direct_model_field(line, "max_tokens"):
             # Preserve an operator's explicit output cap. ODS only supplies
             # its bounded default when the field is absent.
             model_fields.add("max_tokens")
-            model_indent = line[:len(line) - len(line.lstrip())]
             new_lines.append(line)
             continue
-        if context_length and re.match(r"^\s+context_length:\s*", line):
+        if context_length and current_key_path == ("auxiliary", "compression", "context_length"):
             indent = line[:len(line) - len(line.lstrip())]
             new_line = f"{indent}context_length: {int(context_length)}"
             new_lines.append(new_line)
@@ -16737,10 +17088,12 @@ def _patch_hermes_config_text(
             new_lines.append("")
         new_lines.extend([
             "model:",
-            f'{model_indent}default: "{model_name}"',
+            f"{model_indent}default: {json.dumps(model_name)}",
         ])
         if base_url:
-            new_lines.append(f'{model_indent}base_url: "{base_url}"')
+            new_lines.append(f"{model_indent}base_url: {json.dumps(base_url)}")
+        if api_key:
+            new_lines.append(f"{model_indent}api_key: {json.dumps(api_key)}")
         if context_length:
             new_lines.append(f"{model_indent}context_length: {int(context_length)}")
         if max_tokens:
@@ -16748,6 +17101,137 @@ def _patch_hermes_config_text(
         changed = True
 
     return "\n".join(new_lines) + "\n", changed
+
+
+def _hermes_selected_model(env: dict) -> str:
+    """Use the model identity selected by the installer, not the template stub."""
+    if str(env.get("LLM_BACKEND") or "").lower() == "external":
+        return str(env.get("EXTERNAL_LLM_MODEL") or env.get("LLM_MODEL") or "").strip()
+    if str(env.get("ODS_MODEL_SWITCHBOARD") or "enabled").lower() == "enabled":
+        return "ods/current"
+    if str(env.get("ODS_MODE") or "").lower() == "cloud":
+        return str(env.get("LLM_MODEL") or "default").strip()
+    if str(env.get("GPU_BACKEND") or "").lower() == "amd" or str(env.get("LLM_BACKEND") or "").lower() == "lemonade":
+        selected = str(env.get("LEMONADE_MODEL") or "").strip()
+        if selected:
+            return selected
+        gguf = str(env.get("GGUF_FILE") or "").strip()
+        return f"extra.{gguf}" if gguf else ""
+    return str(env.get("GGUF_FILE") or env.get("LLM_MODEL") or "").strip()
+
+
+def _hermes_compose_plan_error(flags: list[str]) -> str:
+    """Fail closed if stale Compose flags could start managed llama externally."""
+    try:
+        env = load_env(INSTALL_DIR / ".env")
+    except (OSError, UnicodeError):
+        return "Could not read the selected Hermes model route"
+    if str(env.get("LLM_BACKEND") or "").lower() != "external":
+        return ""
+    if any(str(flag).replace("\\", "/").endswith("/hermes/compose.local.yaml") for flag in flags):
+        return "External Hermes route includes a managed llama dependency; refresh the Compose plan"
+    return ""
+
+
+def _prepare_hermes_route_for_start() -> tuple[bool, str]:
+    """Prepare private Hermes config before first start or external add-back.
+
+    Hermes copies its mounted template only if data/hermes/config.yaml does not
+    exist. Its YAML base_url overrides OPENAI_BASE_URL, so Compose environment
+    alone cannot make a later Library add-back use the selected gateway.
+    """
+    try:
+        env = load_env(INSTALL_DIR / ".env")
+        model_name = _hermes_selected_model(env)
+        base_url = str(env.get("HERMES_LLM_BASE_URL") or "").strip()
+        api_key = str(env.get("HERMES_LLM_API_KEY") or "")
+        raw_context = str(env.get("MAX_CONTEXT") or env.get("CTX_SIZE") or "65536").strip()
+        try:
+            context_length = int(raw_context)
+        except ValueError:
+            return False, "Hermes MAX_CONTEXT/CTX_SIZE must be an integer"
+        if not model_name or not base_url or context_length <= 0:
+            return False, "Hermes selected model route is incomplete"
+        if str(env.get("LLM_BACKEND") or "").lower() == "external" and not api_key.strip():
+            return False, "Hermes external gateway key is missing"
+
+        template = INSTALL_DIR / "extensions" / "services" / "hermes" / "cli-config.yaml.template"
+        live = INSTALL_DIR / "data" / "hermes" / "config.yaml"
+        if not template.is_file():
+            return False, "Hermes configuration template is missing"
+        if template.is_symlink() or not stat_mod.S_ISREG(template.lstat().st_mode):
+            return False, "Hermes route config path is not a regular file"
+        if live.is_symlink() or (live.exists() and not stat_mod.S_ISREG(live.lstat().st_mode)):
+            return False, "Hermes route config path is not a regular file"
+
+        def patch(path: Path, *, private_key: str | None = None) -> str:
+            original = path.read_text(encoding="utf-8")
+            updated, changed = _patch_hermes_config_text(
+                original, model_name, base_url=base_url,
+                context_length=context_length, api_key=private_key,
+            )
+            private_mode = private_key is not None and os.name != "nt"
+            mode_needs_repair = private_mode and stat_mod.S_IMODE(path.stat().st_mode) != 0o600
+            if changed or mode_needs_repair:
+                _atomic_write_text(path, updated, mode=0o600 if private_mode else None)
+            return updated
+
+        template_text = patch(template)  # Never put the private key in product source.
+        if not live.exists():
+            live.parent.mkdir(parents=True, exist_ok=True)
+            live_text, _ = _patch_hermes_config_text(
+                template_text, model_name, base_url=base_url,
+                context_length=context_length, api_key=api_key or None,
+            )
+            _atomic_write_text(live, live_text, mode=0o600)
+        elif str(env.get("LLM_BACKEND") or "").lower() == "external":
+            # External selection must replace a stale local route. Preserve
+            # unrelated owner settings, sessions, skills, and other data.
+            patch(live, private_key=api_key)
+        return True, ""
+    except ValueError as exc:
+        logger.warning("Hermes route configuration is ambiguous: %s", type(exc).__name__)
+        return False, "Hermes route configuration is invalid or has duplicate keys"
+    except (OSError, UnicodeError, RuntimeError) as exc:
+        logger.warning("Could not prepare Hermes selected model route: %s", type(exc).__name__)
+        return False, "Could not read or write Hermes route files; check installation permissions"
+
+
+def _prepare_hermes_persona_for_start() -> tuple[bool, str]:
+    """Make the Hermes file bind source regular before Compose can create a dir."""
+    output = INSTALL_DIR / "data" / "persona" / "SOUL.md"
+    builder = INSTALL_DIR / "scripts" / "build-installation-context.py"
+    template = INSTALL_DIR / "extensions" / "services" / "hermes" / "SOUL.md.template"
+    try:
+        if output.is_symlink():
+            return False, "Hermes persona path is a symlink; repair it before starting"
+        output.parent.resolve().relative_to(INSTALL_DIR.resolve())
+        if output.is_file():
+            return True, ""
+        if output.exists():
+            # An earlier Compose attempt may have made the absent file mount
+            # into an empty directory. Never remove owner data from it.
+            output.rmdir()
+        if not builder.is_file() or not template.is_file():
+            return False, "Hermes persona builder or template is missing"
+        env = load_env(INSTALL_DIR / ".env")
+        cmd = [sys.executable, str(builder), "--template", str(template),
+               "--env", str(INSTALL_DIR / ".env"), "--output", str(output)]
+        if (str(env.get("LLM_BACKEND") or "").lower() == "lemonade"
+                and str(env.get("AMD_INFERENCE_RUNTIME") or "").lower() == "lemonade"):
+            cmd.extend(["--profile", "local-lemonade"])
+        result = subprocess.run(
+            cmd, cwd=str(INSTALL_DIR), capture_output=True, text=True,
+            timeout=60,
+        )
+        if result.returncode != 0 or output.is_symlink() or not output.is_file():
+            return False, "Could not generate Hermes installation persona"
+        if os.name != "nt":
+            output.chmod(0o644)
+        return True, ""
+    except (OSError, ValueError, UnicodeError, subprocess.TimeoutExpired) as exc:
+        logger.warning("Could not prepare Hermes persona: %s", type(exc).__name__)
+        return False, "Could not prepare Hermes persona; check installation data permissions"
 
 
 def _patch_hermes_model_config(
@@ -17192,8 +17676,12 @@ def _opencode_installed() -> bool:
     )
 
 
-def _capture_opencode_config() -> dict | None:
-    """Snapshot OpenCode config, using either compatibility file as a source."""
+def _capture_opencode_config(assume_installed: bool = False) -> dict | None:
+    """Snapshot OpenCode config, using either compatibility file as a source.
+
+    ``assume_installed`` is for dashboard setup, which has just resolved the
+    executable itself (possibly an existing one outside ``~/.opencode``).
+    """
     paths = _opencode_config_paths()
     files: dict[Path, dict] = {}
     parsed_sources: list[tuple[Path, dict]] = []
@@ -17227,7 +17715,11 @@ def _capture_opencode_config() -> dict | None:
             "OpenCode config is malformed and cannot be updated safely: "
             + "; ".join(parse_errors)
         )
-    if not any(item["exists"] for item in files.values()) and not _opencode_installed():
+    if (
+        not any(item["exists"] for item in files.values())
+        and not assume_installed
+        and not _opencode_installed()
+    ):
         return None
     source: dict = {}
     for _path, parsed in sorted(
@@ -17243,6 +17735,13 @@ def _atomic_write_json(path: Path, value: dict, mode: int = 0o600) -> None:
     _atomic_write_text(path, json.dumps(value, indent=2) + "\n", mode)
 
 
+def _opencode_external_model(env: dict) -> str:
+    """Return the configured external model only when its upstream is selected."""
+    if str(env.get("EXTERNAL_LLM_URL") or "").strip():
+        return str(env.get("EXTERNAL_LLM_MODEL") or "").strip()
+    return ""
+
+
 def _opencode_route(env: dict) -> tuple[str, str]:
     """Return the host-visible OpenAI-compatible endpoint and API key."""
     if _normal_switchboard_mode(env) == "enabled":
@@ -17250,6 +17749,13 @@ def _opencode_route(env: dict) -> tuple[str, str]:
         api_key = str(env.get("LITELLM_KEY") or "")
         if not api_key:
             raise RuntimeError("LITELLM_KEY is required to update the OpenCode switchboard route")
+        return f"http://127.0.0.1:{port}/v1", api_key
+
+    if _opencode_external_model(env):
+        port = str(env.get("LITELLM_PORT") or "4000")
+        api_key = str(env.get("LITELLM_KEY") or "")
+        if not api_key:
+            raise RuntimeError("LITELLM_KEY is required to update the OpenCode external model route")
         return f"http://127.0.0.1:{port}/v1", api_key
 
     gpu_backend = str(env.get("GPU_BACKEND") or "nvidia").lower()
@@ -17280,12 +17786,46 @@ def _opencode_model_route(env: dict, model_id: str) -> tuple[str, str, str]:
     provider_id = "llama-server"
     if _normal_switchboard_mode(env) == "enabled":
         return provider_id, "ods/current", "ods/current"
+    external_model = _opencode_external_model(env)
+    if external_model:
+        return provider_id, external_model, external_model
     return provider_id, model_id, model_id
 
 
 def _opencode_output_limit(context_length: int) -> int:
     """Leave prompt room after a model switch, as the fresh installers do."""
     return min(32768, max(1, context_length // 4))
+
+
+def _opencode_set_default_agent_models(config: dict, previous_model_ref: object, model_ref: str) -> None:
+    """Give new sessions an ODS model without replacing an independent agent choice.
+
+    OpenCode's web composer resolves the selected agent before its root model.
+    The v1.18.32 web fallback can ignore a configured root model with a nested
+    model ID such as ``ods/current``. Keep the built-in agents on the managed
+    route while leaving an owner's different explicit agent model alone.
+    """
+    agents = config.get("agent")
+    if agents is None:
+        agents = {}
+        config["agent"] = agents
+    if not isinstance(agents, dict):
+        return
+    for name in ("build", "plan"):
+        agent = agents.get(name)
+        if agent is None:
+            agent = {}
+            agents[name] = agent
+        if not isinstance(agent, dict):
+            continue
+        selected = agent.get("model")
+        follows_previous_ods_route = (
+            isinstance(previous_model_ref, str)
+            and previous_model_ref.startswith("llama-server/")
+            and selected == previous_model_ref
+        )
+        if selected is None or follows_previous_ods_route:
+            agent["model"] = model_ref
 
 
 def _opencode_config_matches(
@@ -17339,6 +17879,7 @@ def _update_opencode_config(
         config["model"] = model_ref
         config["small_model"] = model_ref
         config.setdefault("$schema", "https://opencode.ai/config.json")
+        _opencode_set_default_agent_models(config, previous_model_ref, model_ref)
 
         providers = config.setdefault("provider", {})
         if not isinstance(providers, dict):
@@ -17350,7 +17891,9 @@ def _update_opencode_config(
             providers[provider_id] = provider
         provider["npm"] = "@ai-sdk/openai-compatible"
         provider["name"] = (
-            "ODS switchboard" if route_model_id == "ods/current" else "llama-server (local)"
+            "ODS switchboard" if _normal_switchboard_mode(env) == "enabled"
+            else "External LLM via ODS gateway" if _opencode_external_model(env)
+            else "llama-server (local)"
         )
         options = provider.setdefault("options", {})
         if not isinstance(options, dict):
@@ -17449,6 +17992,19 @@ if ($action -eq 'inspect') {
     if ($owned.Count -gt 0) { 'true' } else { 'false' }
     exit 0
 }
+if ($action -eq 'start') {
+    if ($owned.Count -gt 0) { 'true'; exit 0 }
+    # Prefer the installer's task: its launcher confines Bun's temp copies.
+    try {
+        Start-ScheduledTask -TaskName 'ODSOpenCodeWeb' -ErrorAction Stop
+    } catch {
+        Start-Process -FilePath $exe `
+            -ArgumentList @('web', '--port', [string]$port, '--hostname', '127.0.0.1') `
+            -WindowStyle Hidden | Out-Null
+    }
+    'true'
+    exit 0
+}
 if ($action -ne 'restart') { throw "Unsupported OpenCode action: $action" }
 if ($owned.Count -eq 0) { 'false'; exit 0 }
 foreach ($process in $owned) {
@@ -17523,18 +18079,13 @@ def _capture_managed_opencode_state() -> dict:
 
 
 def _wait_for_opencode_health(attempts: int = 30) -> None:
-    url = f"http://127.0.0.1:{_opencode_port()}/"
+    port = _opencode_port()
     for attempt in range(attempts):
-        try:
-            request = urllib_request.Request(url, method="GET")
-            with urllib_request.urlopen(request, timeout=3) as response:
-                if 200 <= response.status < 500:
-                    return
-        except (OSError, urllib_error.URLError):
-            pass
+        if _probe_opencode_web(port, timeout=3)["healthy"]:
+            return
         if attempt + 1 < attempts:
             time.sleep(1)
-    raise RuntimeError(f"Managed OpenCode did not become healthy at {url}")
+    raise RuntimeError(f"Managed OpenCode did not become healthy at http://127.0.0.1:{port}/global/health")
 
 
 def _restart_managed_opencode(state: dict | None = None) -> bool:
@@ -17571,6 +18122,537 @@ def _restart_managed_opencode(state: dict | None = None) -> bool:
         raise RuntimeError(f"Could not restart managed OpenCode: {detail[:300]}")
     _wait_for_opencode_health()
     return True
+
+
+# ---------------------------------------------------------------------------
+# OpenCode as a dashboard application
+#
+# OpenCode is a host process (systemd user unit, LaunchAgent, or scheduled
+# task), not a container. A TCP probe alone cannot tell "the owner never
+# selected OpenCode" from "the installed service stopped", so the dashboard
+# used to show a permanent "Offline" entry on installs that never had it.
+# These helpers report the managed lifecycle explicitly and let the dashboard
+# start an installed service or, on Linux, set up the reviewed release.
+# ---------------------------------------------------------------------------
+
+_OPENCODE_LINUX_UNIT = "opencode-web.service"
+_OPENCODE_MACOS_LABEL = "com.ods.opencode-web"
+_OPENCODE_PROGRESS_ID = "opencode"
+_OPENCODE_VERSION_RE = re.compile(r"^[0-9A-Za-z][0-9A-Za-z.+-]{0,63}$")
+_opencode_setup_lock = threading.Lock()
+_opencode_setup_thread: threading.Thread | None = None
+
+
+def _opencode_linux_unit_path() -> Path:
+    return Path.home() / ".config" / "systemd" / "user" / _OPENCODE_LINUX_UNIT
+
+
+def _opencode_macos_plist_path() -> Path:
+    return Path.home() / "Library" / "LaunchAgents" / f"{_OPENCODE_MACOS_LABEL}.plist"
+
+
+def _opencode_service_registered(system: str | None = None) -> bool:
+    """Return whether ODS registered its managed OpenCode web service."""
+    system = system or platform.system()
+    if system == "Linux":
+        return _opencode_linux_unit_path().is_file()
+    if system == "Darwin":
+        return _opencode_macos_plist_path().is_file()
+    if system == "Windows":
+        # The Windows installer always registers ODSOpenCodeWeb together with
+        # the managed binary; start falls back to the binary when the task is
+        # missing.
+        return (Path.home() / ".opencode" / "bin" / "opencode.exe").is_file()
+    return False
+
+
+def _probe_opencode_web(port: int, timeout: float = 2.0) -> dict:
+    """Probe OpenCode's own health route on host loopback.
+
+    ``GET /global/health`` returns ``{"healthy": true, "version": ...}``.
+    Anything else answering on the port is reported as reachable but not
+    healthy, so an unrelated process is never presented as OpenCode.
+    """
+    opener = urllib_request.build_opener(urllib_request.ProxyHandler({}))
+    started = time.monotonic()
+    result = {"reachable": False, "healthy": False, "version": None}
+    try:
+        request = urllib_request.Request(f"http://127.0.0.1:{int(port)}/global/health")
+        with opener.open(request, timeout=timeout) as response:
+            result["reachable"] = True
+            payload = json.loads(response.read(4096).decode("utf-8"))
+        if isinstance(payload, dict) and payload.get("healthy") is True:
+            result["healthy"] = True
+            version = payload.get("version")
+            if isinstance(version, str) and _OPENCODE_VERSION_RE.fullmatch(version):
+                result["version"] = version
+    except urllib_error.HTTPError as exc:
+        result["reachable"] = True
+        exc.close()
+    except (OSError, ValueError):
+        pass
+    result["response_time_ms"] = round((time.monotonic() - started) * 1000, 1)
+    return result
+
+
+def _opencode_service_active() -> bool | None:
+    """Return the service manager's view, or None when it cannot be read."""
+    try:
+        if platform.system() == "Darwin":
+            # A loaded LaunchAgent is not necessarily running; only a live
+            # process means OpenCode is still starting rather than stopped.
+            result = subprocess.run(
+                ["launchctl", "print", f"gui/{os.getuid()}/{_OPENCODE_MACOS_LABEL}"],
+                capture_output=True, text=True, timeout=15,
+            )
+            return result.returncode == 0 and re.search(
+                r"^\s*state = running\s*$", result.stdout or "", re.MULTILINE,
+            ) is not None
+        return bool(_capture_managed_opencode_state().get("active"))
+    except (RuntimeError, OSError, subprocess.SubprocessError, ValueError):
+        return None
+
+
+def _opencode_setup_in_progress() -> bool:
+    thread = _opencode_setup_thread
+    return bool(thread is not None and thread.is_alive())
+
+
+def _opencode_setup_issue(env: dict, system: str | None = None) -> str | None:
+    """Explain why dashboard setup is unavailable, or return None."""
+    system = system or platform.system()
+    if system != "Linux":
+        return (
+            "OpenCode is set up by the ODS installer on this platform. "
+            "Re-run the installer to repair it."
+        )
+    if shutil.which("systemctl") is None:
+        return "Dashboard setup needs systemd user services (systemctl was not found)."
+    getuid = getattr(os, "getuid", None)
+    runtime_dir = os.environ.get("XDG_RUNTIME_DIR") or (
+        f"/run/user/{getuid()}" if callable(getuid) else ""
+    )
+    if not runtime_dir or not Path(runtime_dir, "bus").exists():
+        return (
+            "Dashboard setup needs a running systemd user session for this account. "
+            "Run 'loginctl enable-linger' for the ODS user, then try again."
+        )
+    for required in (
+        INSTALL_DIR / "installers" / "lib" / "opencode-runtime.sh",
+        INSTALL_DIR / "installers" / "lib" / "opencode-release.tsv",
+        INSTALL_DIR / "opencode" / "opencode-web.service",
+    ):
+        if not required.is_file():
+            return f"This ODS installation is missing {required.name}; update ODS first."
+    if _normal_switchboard_mode(env) != "enabled":
+        if _opencode_external_model(env) and not str(env.get("LITELLM_KEY") or "").strip():
+            return "The external model gateway key is missing. Repair LiteLLM before setting OpenCode up."
+        if not _opencode_external_model(env) and not str(env.get("LLM_MODEL") or "").strip():
+            return "No active model is configured yet. Activate a model, then set OpenCode up."
+    return None
+
+
+def _opencode_app_status(env: dict | None = None) -> dict:
+    """Return the dashboard-facing OpenCode lifecycle state.
+
+    States: ``running`` (health route answered), ``installing`` (dashboard
+    setup in progress), ``not_installed`` (no ODS-managed service), ``starting``
+    (service manager active, health pending) and ``stopped``.
+    """
+    env = env if env is not None else load_env(INSTALL_DIR / ".env")
+    system = platform.system()
+    port = _opencode_port()
+    probe = _probe_opencode_web(port)
+    registered = _opencode_service_registered(system)
+    active = _opencode_service_active() if registered else None
+    managed_healthy = bool(registered and active is True and probe["healthy"])
+    port_in_use = bool(probe["reachable"] and not managed_healthy)
+    if _opencode_setup_in_progress():
+        state = "installing"
+    elif managed_healthy:
+        state = "running"
+    elif not registered:
+        state = "not_installed"
+    else:
+        state = "starting" if active else "stopped"
+    setup_issue = None if state == "running" else _opencode_setup_issue(env, system)
+    if port_in_use and setup_issue is None:
+        setup_issue = f"Port {port} is answering, but ODS cannot verify it as the managed OpenCode service. Stop it before setup."
+    return {
+        "state": state,
+        "platform": system.lower(),
+        "port": port,
+        "installed": registered,
+        "registered": registered,
+        "serviceActive": active,
+        "healthy": managed_healthy,
+        "reachable": probe["reachable"],
+        "portInUse": port_in_use,
+        "version": probe["version"] if managed_healthy else None,
+        "responseTimeMs": probe["response_time_ms"],
+        "startSupported": bool(registered),
+        "setupSupported": setup_issue is None and state != "running",
+        "setupIssue": setup_issue,
+    }
+
+
+def _start_managed_opencode() -> None:
+    """Start the registered ODS OpenCode service and prove its health route."""
+    system = platform.system()
+    if system == "Linux":
+        user_env = _opencode_user_service_env()
+        # A crash loop can leave the unit in start-limit-hit; clear that one
+        # unit so an explicit owner start is honoured.
+        subprocess.run(
+            ["systemctl", "--user", "reset-failed", _OPENCODE_LINUX_UNIT],
+            capture_output=True, text=True, timeout=15, env=user_env,
+        )
+        result = subprocess.run(
+            ["systemctl", "--user", "start", _OPENCODE_LINUX_UNIT],
+            capture_output=True, text=True, timeout=60, env=user_env,
+        )
+    elif system == "Darwin":
+        target = f"gui/{os.getuid()}/{_OPENCODE_MACOS_LABEL}"
+        loaded = subprocess.run(
+            ["launchctl", "print", target], capture_output=True, text=True, timeout=15,
+        ).returncode == 0
+        command = (
+            ["launchctl", "kickstart", target]
+            if loaded
+            else ["launchctl", "bootstrap", f"gui/{os.getuid()}", str(_opencode_macos_plist_path())]
+        )
+        result = subprocess.run(command, capture_output=True, text=True, timeout=30)
+    elif system == "Windows":
+        if not _run_windows_opencode_control("start"):
+            raise RuntimeError("The ODS OpenCode task could not be started")
+        _wait_for_opencode_health()
+        return
+    else:
+        raise RuntimeError(f"OpenCode start is not supported on {system}")
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip()
+        raise RuntimeError(f"Could not start OpenCode: {detail[:300]}")
+    _wait_for_opencode_health()
+
+
+def _snapshot_managed_opencode_binary() -> dict:
+    """Keep the prior managed executable inode until setup has proved healthy."""
+    path = Path.home() / ".opencode" / "bin" / "opencode"
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError:
+        return {"path": path, "exists": False}
+    if not stat_mod.S_ISREG(metadata.st_mode) or metadata.st_uid != os.getuid():
+        raise RuntimeError(f"Refusing to replace an unsafe OpenCode executable: {path}")
+    backup_dir = Path(tempfile.mkdtemp(prefix=".ods-opencode-backup-", dir=path.parent))
+    backup = backup_dir / "opencode"
+    try:
+        # The reviewed installer replaces the executable by rename. A hard
+        # link preserves its old inode without copying the large binary.
+        os.link(path, backup)
+    except OSError:
+        backup_dir.rmdir()
+        raise
+    return {"path": path, "exists": True, "backup": backup, "backup_dir": backup_dir}
+
+
+def _finish_managed_opencode_binary_snapshot(snapshot: dict, *, restore: bool) -> None:
+    path = snapshot["path"]
+    if restore:
+        if path.is_symlink():
+            raise RuntimeError(f"Refusing to replace an unexpected OpenCode symlink: {path}")
+        if snapshot["exists"]:
+            os.replace(snapshot["backup"], path)
+        elif path.exists():
+            if not path.is_file():
+                raise RuntimeError(f"Refusing to remove an unexpected OpenCode path: {path}")
+            path.unlink()
+    if snapshot["exists"]:
+        snapshot["backup"].unlink(missing_ok=True)
+        snapshot["backup_dir"].rmdir()
+
+
+def _render_opencode_unit(template: str, binary: Path) -> str:
+    home = str(Path.home())
+    for value in (home, str(binary)):
+        # The unit uses these paths unquoted in ExecStart/WorkingDirectory and
+        # inside quoted Environment= values; systemd also expands '%'.
+        if not os.path.isabs(value) or any(
+            character.isspace() or character in '%"\\' for character in value
+        ):
+            raise RuntimeError(f"Unsupported path for the OpenCode service: {value!r}")
+    return (
+        template.replace("__HOME__", home)
+        .replace("__OPENCODE_BIN_DIR__", str(binary.parent))
+        .replace("__OPENCODE_BIN__", str(binary))
+    )
+
+
+def _opencode_prior_systemd_state(user_env: dict[str, str]) -> tuple[bool, bool]:
+    """Capture a known user-unit state before setup changes its files or service."""
+    result = subprocess.run(
+        ["systemctl", "--user", "show", _OPENCODE_LINUX_UNIT,
+         "--property=LoadState,UnitFileState,ActiveState"],
+        capture_output=True, text=True, timeout=15, env=user_env,
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip()
+        raise RuntimeError(f"Could not inspect OpenCode before setup: {detail[:300]}")
+    values = dict(
+        line.split("=", 1) for line in result.stdout.splitlines() if "=" in line
+    )
+    load = values.get("LoadState")
+    unit_file = values.get("UnitFileState")
+    active = values.get("ActiveState")
+    if load == "not-found" and unit_file == "" and active == "inactive":
+        return False, False
+    if load != "loaded" or unit_file not in {"enabled", "disabled"} or active not in {"active", "inactive"}:
+        raise RuntimeError(
+            "OpenCode has an unsupported systemd state; use the installer to repair it "
+            f"({load or 'unknown'}, {unit_file or 'unknown'}, {active or 'unknown'})"
+        )
+    return unit_file == "enabled", active == "active"
+
+
+def _rollback_opencode_setup(
+    config_snapshot: dict,
+    unit_path: Path,
+    unit_snapshot: dict,
+    user_env: dict[str, str],
+    prior_enabled: bool,
+    prior_active: bool,
+    *,
+    unit_changed: bool,
+    enable_attempted: bool,
+    restart_attempted: bool,
+) -> list[str]:
+    """Restore setup-owned files and only the service state setup changed."""
+    errors = []
+
+    def run_action(action: str) -> None:
+        try:
+            step = subprocess.run(
+                ["systemctl", "--user", action, _OPENCODE_LINUX_UNIT],
+                capture_output=True, text=True, timeout=60, env=user_env,
+            )
+            if step.returncode != 0:
+                errors.append(f"{action}: {(step.stderr or step.stdout or '').strip()[:300]}")
+        except (OSError, subprocess.SubprocessError) as exc:
+            errors.append(f"{action}: {exc}")
+
+    # Stop or disable only changes this setup may have made. Do it while the
+    # new unit still exists, so systemd can find it even on a fresh install.
+    if restart_attempted and not prior_active:
+        run_action("stop")
+    if enable_attempted and not prior_enabled:
+        run_action("disable")
+    try:
+        _restore_opencode_config(config_snapshot)
+    except (OSError, RuntimeError) as exc:
+        errors.append(f"config: {exc}")
+    if unit_changed:
+        try:
+            _restore_text_file(unit_path, unit_snapshot)
+        except (OSError, RuntimeError) as exc:
+            errors.append(f"unit: {exc}")
+        try:
+            step = subprocess.run(
+                ["systemctl", "--user", "daemon-reload"],
+                capture_output=True, text=True, timeout=60, env=user_env,
+            )
+            if step.returncode != 0:
+                errors.append(f"daemon-reload: {(step.stderr or step.stdout or '').strip()[:300]}")
+        except (OSError, subprocess.SubprocessError) as exc:
+            errors.append(f"daemon-reload: {exc}")
+    if restart_attempted and prior_active:
+        # A previously running service must use its restored unit and config.
+        run_action("restart")
+    return errors
+
+
+def _setup_managed_opencode(env: dict) -> None:
+    """Install the reviewed OpenCode release and its managed Linux service.
+
+    The binary step reuses ``installers/lib/opencode-runtime.sh`` (pinned
+    release, SHA256 verification, staged version check). The model route uses
+    the same writer as model activation, and the unit is rendered from the
+    shipped ``opencode/opencode-web.service`` template, as phase 07 does.
+    """
+    runtime = INSTALL_DIR / "installers" / "lib" / "opencode-runtime.sh"
+    try:
+        context_length = int(str(env.get("MAX_CONTEXT") or env.get("CTX_SIZE") or "65536").strip())
+    except ValueError as exc:
+        raise RuntimeError("MAX_CONTEXT must be a number to configure OpenCode") from exc
+    if context_length < 1024:
+        raise RuntimeError("OpenCode requires a context of at least 1024 tokens")
+    model_id = str(env.get("LLM_MODEL") or "").strip() or "ods/current"
+    _opencode_route(env)  # Fail before download if the model gateway has no usable key.
+    config_snapshot = _capture_opencode_config(assume_installed=True)
+    if config_snapshot is None:
+        raise RuntimeError("OpenCode configuration could not be prepared")
+    template = (INSTALL_DIR / "opencode" / "opencode-web.service").read_text(encoding="utf-8")
+    managed_binary = Path.home() / ".opencode" / "bin" / "opencode"
+    rendered_unit = _render_opencode_unit(template, managed_binary)
+    unit_path = _opencode_linux_unit_path()
+    unit_snapshot = _snapshot_text_file(unit_path)
+    user_env = _opencode_user_service_env()
+    prior_enabled, prior_active = _opencode_prior_systemd_state(user_env)
+    binary_snapshot = _snapshot_managed_opencode_binary()
+    unit_changed = False
+    enable_attempted = False
+    restart_attempted = False
+    try:
+        _write_progress(_OPENCODE_PROGRESS_ID, "pulling", "Downloading the reviewed OpenCode release")
+        candidate = str(managed_binary) if binary_snapshot["exists"] and os.access(managed_binary, os.X_OK) else ""
+        result = subprocess.run(
+            ["bash", "-c", '. "$1" && ods_install_opencode "$2"', "ods-opencode-setup",
+             str(runtime), candidate],
+            capture_output=True, text=True, timeout=900, env=os.environ.copy(),
+        )
+        lines = [line.strip() for line in (result.stdout or "").splitlines() if line.strip()]
+        if result.returncode != 0 or not lines:
+            detail = (result.stderr or "").strip().splitlines()[-1:] or ["no output"]
+            raise RuntimeError(f"OpenCode download or verification failed: {detail[0][:300]}")
+        binary = Path(lines[-1])
+        if binary != managed_binary or not binary.is_file() or not os.access(binary, os.X_OK):
+            raise RuntimeError("OpenCode installer did not return the managed executable")
+        _write_progress(_OPENCODE_PROGRESS_ID, "starting", "Connecting OpenCode to the active ODS model")
+        _update_opencode_config(env, config_snapshot, model_id, context_length, display_name=model_id)
+        unit_changed = True  # atomic write can fail after replacing the destination
+        _atomic_write_text(unit_path, rendered_unit, 0o644)
+        _write_progress(_OPENCODE_PROGRESS_ID, "starting", "Starting OpenCode")
+        for command in (
+            ["systemctl", "--user", "daemon-reload"],
+            ["systemctl", "--user", "enable", _OPENCODE_LINUX_UNIT],
+            ["systemctl", "--user", "restart", _OPENCODE_LINUX_UNIT],
+        ):
+            if command[2] == "enable":
+                enable_attempted = True
+            elif command[2] == "restart":
+                restart_attempted = True
+            step = subprocess.run(command, capture_output=True, text=True, timeout=60, env=user_env)
+            if step.returncode != 0:
+                detail = (step.stderr or step.stdout or "").strip()
+                raise RuntimeError(f"{' '.join(command[1:])} failed: {detail[:300]}")
+        _wait_for_opencode_health()
+    except Exception as exc:
+        rollback_errors = []
+        try:
+            _finish_managed_opencode_binary_snapshot(binary_snapshot, restore=True)
+        except (OSError, RuntimeError) as rollback_exc:
+            rollback_errors.append(f"binary: {rollback_exc}")
+        rollback_errors.extend(_rollback_opencode_setup(
+            config_snapshot, unit_path, unit_snapshot, user_env,
+            prior_enabled, prior_active,
+            unit_changed=unit_changed,
+            enable_attempted=enable_attempted,
+            restart_attempted=restart_attempted,
+        ))
+        if rollback_errors:
+            raise RuntimeError(f"{exc}; OpenCode rollback failed: {'; '.join(rollback_errors)}") from exc
+        raise
+    try:
+        _finish_managed_opencode_binary_snapshot(binary_snapshot, restore=False)
+    except OSError as exc:
+        logger.warning("OpenCode started, but its old binary backup could not be removed: %s", exc)
+    # Keep the user service running after logout, as the installer does. This
+    # is best effort because some hosts require an administrator to allow it.
+    user = os.environ.get("USER") or os.environ.get("LOGNAME") or ""
+    if user and shutil.which("loginctl"):
+        try:
+            linger = subprocess.run(
+                ["loginctl", "enable-linger", user], capture_output=True, text=True, timeout=15,
+            )
+            if linger.returncode != 0:
+                logger.warning("Could not enable linger for OpenCode; it may stop after logout")
+        except (OSError, subprocess.SubprocessError) as exc:
+            logger.warning("Could not enable linger for OpenCode: %s", exc)
+    _write_progress(_OPENCODE_PROGRESS_ID, "started", "OpenCode is ready")
+
+
+def _run_opencode_setup(env: dict) -> None:
+    try:
+        _setup_managed_opencode(env)
+    except Exception as exc:  # noqa: BLE001 - reported to the owner via progress
+        logger.warning("OpenCode setup failed: %s", exc)
+        try:
+            _write_progress(_OPENCODE_PROGRESS_ID, "error", "OpenCode setup failed", error=str(exc)[:500])
+        except OSError:
+            logger.exception("Could not record OpenCode setup failure")
+    finally:
+        _end_model_lifecycle("opencode_setup")
+
+
+def _begin_opencode_setup(env: dict) -> tuple[int, dict]:
+    """Start dashboard setup in the background; returns (HTTP code, body)."""
+    global _opencode_setup_thread
+    issue = _opencode_setup_issue(env)
+    if issue:
+        return 409, {"error": issue, "code": "opencode_setup_unsupported"}
+    with _opencode_setup_lock:
+        if _opencode_setup_in_progress():
+            return 202, {"accepted": True, "status": _opencode_app_status(env)}
+        status = _opencode_app_status(env)
+        if status["state"] == "running":
+            return 200, {"accepted": False, "status": status}
+        if status["state"] == "starting":
+            return 409, {
+                "error": "OpenCode is already starting; wait for it to become ready or use the installer to repair it",
+                "code": "opencode_starting",
+                "status": status,
+            }
+        if status["portInUse"]:
+            return 409, {
+                "error": f"Port {status['port']} is answering, but ODS cannot verify the managed OpenCode service",
+                "code": "opencode_port_in_use",
+                "status": status,
+            }
+        acquired, active = _begin_model_lifecycle("opencode_setup")
+        if not acquired:
+            return 409, _model_lifecycle_conflict("OpenCode setup", active)
+        try:
+            _write_progress(_OPENCODE_PROGRESS_ID, "pulling", "Preparing OpenCode setup")
+            thread = threading.Thread(
+                target=_run_opencode_setup, args=(env,), name="opencode-setup", daemon=True,
+            )
+            _opencode_setup_thread = thread
+            thread.start()
+        except Exception:
+            _opencode_setup_thread = None
+            _end_model_lifecycle("opencode_setup")
+            raise
+    return 202, {"accepted": True, "status": {**status, "state": "installing"}}
+
+
+def _begin_opencode_start(env: dict) -> tuple[int, dict]:
+    """Start the registered service synchronously; returns (HTTP code, body)."""
+    status = _opencode_app_status(env)
+    if status["state"] == "running":
+        return 200, {"started": False, "status": status}
+    if status["state"] == "installing":
+        return 409, {"error": "OpenCode setup is still running", "code": "opencode_installing", "status": status}
+    if not status["registered"]:
+        return 409, {
+            "error": "OpenCode is not set up on this ODS installation",
+            "code": "opencode_not_installed",
+            "status": status,
+        }
+    if status["portInUse"]:
+        return 409, {
+            "error": f"Port {status['port']} is answering, but ODS cannot verify the managed OpenCode service",
+            "code": "opencode_port_in_use",
+            "status": status,
+        }
+    acquired, active = _begin_model_lifecycle("opencode_start")
+    if not acquired:
+        return 409, _model_lifecycle_conflict("starting OpenCode", active)
+    try:
+        _start_managed_opencode()
+    except (RuntimeError, OSError, subprocess.SubprocessError) as exc:
+        return 502, {"error": str(exc)[:500], "code": "opencode_start_failed", "status": _opencode_app_status(env)}
+    finally:
+        _end_model_lifecycle("opencode_start")
+    return 200, {"started": True, "status": _opencode_app_status(env)}
 
 
 def _perplexica_config_url(env: dict) -> str:

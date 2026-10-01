@@ -15,6 +15,14 @@ layout = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(layout)
 
 
+def test_compose_discovery_supports_orbstack_without_docker_desktop(monkeypatch):
+    directory = Path('/Applications/OrbStack.app/Contents/MacOS/xbin')
+    monkeypatch.setattr(Path, 'is_file', lambda path: path == directory / 'docker-compose')
+    monkeypatch.setattr(layout.os, 'access', lambda path, mode: path == directory / 'docker-compose')
+    assert layout.compose_plugin_directory(Path('/opt/homebrew/Cellar/docker/29.8.1/bin/docker'),
+                                           '/Users/owner') == directory
+
+
 @pytest.fixture
 def inputs(tmp_path, monkeypatch):
     monkeypatch.setattr(layout.sys, 'platform', 'darwin')

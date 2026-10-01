@@ -161,38 +161,39 @@ function keywordEvidence(text, query) {
   return best;
 }
 
-export function selectEvidenceWindow(text, query) {
+// All offsets refer to UTF-16 positions in extracted readable text, not HTML.
+// Count without retaining every offset: even a dense one-megabyte response
+// needs constant auxiliary memory. Each response still exposes <=6000 chars.
+export function selectEvidenceWindow(text, query, occurrence = 1) {
   if (typeof text !== "string" || !text) return null;
-  let index = -1;
-  let matchedQuery = query;
-  for (const candidate of candidateQueries(query)) {
-    // Keep queries literal, including identifiers with regexp punctuation.
-    // Lowercasing the document first changes offsets for characters such as İ.
-    const literal = candidate.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    index = new RegExp(literal, "iu").exec(text)?.index ?? -1;
-    if (index >= 0) {
-      matchedQuery = candidate;
-      break;
-    }
+  if (!Number.isSafeInteger(occurrence) || occurrence < 1 || occurrence > MAX_RESPONSE_BYTES) {
+    throw new Error("occurrence must be a positive integer within the response bound");
   }
-  if (index < 0) {
-    const keywordMatch = keywordEvidence(text, query);
-    if (!keywordMatch) return null;
-    return {
-      matchedQuery: keywordMatch.matched.join(" + "),
-      text: text.slice(keywordMatch.start, keywordMatch.end).trim(),
-      truncatedBefore: keywordMatch.start > 0,
-      truncatedAfter: keywordMatch.end < text.length,
-    };
-  }
-
-  const { start, end } = evidenceBounds(text, index);
-  return {
-    matchedQuery,
-    text: text.slice(start, end).trim(),
-    truncatedBefore: start > 0,
-    truncatedAfter: end < text.length,
+  const excerpt = (start, end) => {
+    const raw = text.slice(start, end);
+    const leading = raw.length - raw.trimStart().length;
+    const body = raw.trim();
+    return {text: body, startOffset: start + leading, endOffset: start + leading + body.length,
+      truncatedBefore: start > 0, truncatedAfter: end < text.length};
   };
+  for (const candidate of candidateQueries(query)) {
+    const literal = candidate.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    let matchCount = 0, index;
+    for (const match of text.matchAll(new RegExp(literal, "giu"))) {
+      if (++matchCount === occurrence) index = match.index;
+    }
+    if (!matchCount) continue;
+    const metadata = {matchedQuery: candidate, matchKind: 'literal', matchCount, occurrence,
+      nextOccurrence: occurrence < matchCount ? occurrence + 1 : null};
+    if (index === undefined) return {...metadata, outOfRange: true};
+    const {start, end} = evidenceBounds(text, index);
+    return {...metadata, matchOffset: index, ...excerpt(start, end)};
+  }
+  // Keyword clustering is a best window, not a literal occurrence list.
+  if (occurrence !== 1) return {matchKind: 'keywords', navigationUnsupported: true};
+  const match = keywordEvidence(text, query);
+  if (!match) return null;
+  return {matchedQuery: match.matched.join(" + "), matchKind: 'keywords', ...excerpt(match.start, match.end)};
 }
 
 // The page request, shaped like a browser's top-level navigation. Measured on
@@ -491,7 +492,7 @@ export function createPublicWebExtractTool({
   return {
     name: "pixel_ods_web_extract",
     description:
-      "Read one public HTTP(S) page through OpenClaw's strict SSRF guard. Omit query for a bounded page overview. Set query to a literal identifier such as '--parallel' or 'Path.exists' for targeted extraction beyond a truncated prefix. Short multi-keyword queries require 2-3 terms in one window. For GitHub start with the repository page and follow observed file links instead of guessing branches or filenames. A missing raw GitHub file falls back once to the repository overview, explicitly identified as a different source. It requests the page as a browser-compatible navigation, so it can read some public pages that refused web_fetch (for example HTTP 403 or 406); try it at most once for such a URL. It does not run JavaScript and never solves or bypasses bot challenges: a challenge or block is reported as not read. Never use for local/private/raw-IP destinations.",
+      "Read one public HTTP(S) page through OpenClaw's strict SSRF guard. Omit query for a bounded page overview. Set query to a literal identifier such as '--parallel' or 'Path.exists' for targeted extraction beyond a truncated prefix. For a repeated literal heading (including a table of contents), use occurrence (1-based) to read later matches; match counts and UTF-16 offsets describe only the bounded extracted text, not the original HTML. Short multi-keyword queries select a best window and do not support occurrence navigation. For GitHub start with the repository page and follow observed file links instead of guessing branches or filenames. A missing raw GitHub file falls back once to the repository overview, explicitly identified as a different source. It requests the page as a browser-compatible navigation, so it can read some public pages that refused web_fetch (for example HTTP 403 or 406); try it at most once for such a URL. It does not run JavaScript and never solves or bypasses bot challenges: a challenge or block is reported as not read. Never use for local/private/raw-IP destinations.",
     parameters: {
       type: "object",
       additionalProperties: false,
@@ -501,6 +502,7 @@ export function createPublicWebExtractTool({
         // more. Keep this runtime-enforced bound below that parser ceiling.
         url: { type: "string", minLength: 10, maxLength: MAX_URL_CHARS },
         query: { type: "string", minLength: 2, maxLength: MAX_QUERY_CHARS },
+        occurrence: { type: "integer", minimum: 1, maximum: MAX_RESPONSE_BYTES },
       },
     },
     execute: (_toolCallId, params, signal) => execute(_toolCallId, params, signal),
@@ -509,6 +511,7 @@ export function createPublicWebExtractTool({
   async function execute(_toolCallId, params, signal, recoveryAttempted = false) {
       let url;
       let query;
+      let occurrence;
       try {
         // Smaller models sometimes put the sole page URL in query. This
         // unambiguous alias still passes the same URL and SSRF validation;
@@ -521,6 +524,11 @@ export function createPublicWebExtractTool({
         // alias; an explicitly supplied query must still validate as written.
         const requestedQuery = queryIsUrl ? undefined : params?.query === undefined ? params?.identifier : params.query;
         query = requestedQuery === undefined ? undefined : normalizedQuery(requestedQuery);
+        occurrence = params?.occurrence ?? 1;
+        if ((params?.occurrence !== undefined && query === undefined) || !Number.isSafeInteger(occurrence) ||
+            occurrence < 1 || occurrence > MAX_RESPONSE_BYTES || params?.occurrence === null) {
+          throw new Error("occurrence requires a query and an integer from 1 to 1000000");
+        }
       } catch (error) {
         return textResult(`Pixel blocked targeted web extraction: ${error.message}`, {
           boundary: "public-web-read-only",
@@ -589,7 +597,17 @@ export function createPublicWebExtractTool({
             evidence_truncated_after: extractedText.length > MAX_EVIDENCE_CHARS,
           });
         }
-        const evidence = selectEvidenceWindow(extractedText, query);
+        const evidence = selectEvidenceWindow(extractedText, query, occurrence);
+        if (evidence?.outOfRange || evidence?.navigationUnsupported) {
+          return textResult(evidence.outOfRange
+            ? `Requested occurrence ${occurrence} is out of range: ${evidence.matchCount} literal matches in the bounded extracted text. Choose an occurrence from 1 to ${evidence.matchCount}; this is not evidence about the requested fact.`
+            : 'Occurrence navigation requires a literal query match. Use a shorter exact heading or omit occurrence to select a keyword window; no evidence was returned.', {
+            boundary: 'public-web-read-only', matched: false, source_url: finalUrl,
+            response_truncated: page.truncated, match_kind: evidence.matchKind,
+            ...(evidence.matchCount !== undefined ? {match_count: evidence.matchCount} : {}),
+            requested_occurrence: occurrence,
+          }, true);
+        }
         if (!evidence) {
           const qualifier = page.truncated ? " within the bounded response" : " on the page";
           return textResult(
@@ -602,10 +620,24 @@ export function createPublicWebExtractTool({
             }
           );
         }
-        return textResult(wrappedEvidence(evidence.text, finalUrl), {
+        // Native tool consumers may receive content without details. Keep
+        // bounded navigation metadata visible outside untrusted page markers.
+        const navigation = evidence.matchKind === 'literal'
+          ? `Literal occurrence ${evidence.occurrence} of ${evidence.matchCount}; next occurrence: ${evidence.nextOccurrence ?? 'none'}. Match offset: ${evidence.matchOffset}. `
+          : 'Keyword window; literal occurrence navigation is unavailable. ';
+        const metadata = `ODS extraction metadata (not page evidence): ${navigation}` +
+          `Excerpt offsets [${evidence.startOffset}, ${evidence.endOffset}) in bounded extracted text (UTF-16, not HTML). ` +
+          `Response truncated: ${page.truncated === true}. Counts do not establish that the requested fact is true.\n`;
+        return textResult(metadata + wrappedEvidence(evidence.text, finalUrl), {
           boundary: "public-web-read-only",
           matched: true,
           matched_query: evidence.matchedQuery,
+          match_kind: evidence.matchKind,
+          ...(evidence.matchKind === 'literal' ? {match_count: evidence.matchCount, occurrence: evidence.occurrence,
+            next_occurrence: evidence.nextOccurrence, match_offset: evidence.matchOffset} : {}),
+          offset_basis: 'extracted-text-utf16',
+          evidence_start_offset: evidence.startOffset,
+          evidence_end_offset: evidence.endOffset,
           source_url: finalUrl,
           response_truncated: page.truncated,
           evidence_truncated_before: evidence.truncatedBefore,

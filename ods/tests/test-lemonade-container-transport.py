@@ -22,13 +22,18 @@ API_BASE = "http://host.docker.internal:13305/api/v1"
 
 
 class OwnershipTests(unittest.TestCase):
+    def test_router_compose_mount_matches_host_agent_contract(self):
+        compose = (Path(__file__).parents[1] / "docker-compose.base.yml").read_text(encoding="utf-8")
+        self.assertIn("${ODS_CONFIG_DIR:-./config}/model-router:/config:ro", compose)
+        self.assertIn("${ODS_DATA_DIR:-./data}:/state:ro", compose)
+
     def setUp(self):
         self.root = Path(tempfile.gettempdir(), "ods-transport-fixture").resolve()
         self.info = dict(Id=CONTAINER_ID, Running=True, Project="ods", Service="model-router",
                          Mounts=[dict(Type="bind", RW=False, Destination=destination,
                                       Source=str(self.root / source))
                                  for destination, source in (("/state", "data"),
-                                     ("/config/endpoints.json", "config/model-router/endpoints.json"))])
+                                     ("/config", "config/model-router"))])
 
     def process(self, stdout=b"", code=0, stderr=b""):
         return subprocess.CompletedProcess([], code, stdout, stderr)
@@ -79,6 +84,9 @@ class OwnershipTests(unittest.TestCase):
                 changed = copy.deepcopy(self.info)
                 changed["Mounts"][index][key] = value
                 changes.append(changed)
+        changed = copy.deepcopy(self.info)
+        changed["Mounts"][1]["Destination"] = "/config/endpoints.json"
+        changes.append(changed)
         changed = copy.deepcopy(self.info)
         changed["Mounts"].append(changed["Mounts"][0])
         changes.append(changed)

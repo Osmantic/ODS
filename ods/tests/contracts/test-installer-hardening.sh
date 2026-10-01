@@ -690,7 +690,9 @@ assert_contains "installers/phases/06-directories.sh" 'find -P "\$_installed_cod
 assert_contains "installers/phases/06-directories.sh" '"\$INSTALL_DIR/bin"' "Linux installer does not normalize installed command modes"
 assert_contains "installers/phases/06-directories.sh" 'find -P "\$INSTALL_DIR" -maxdepth 1' "Linux installer does not normalize root executable modes"
 assert_contains "installers/phases/06-directories.sh" 'chmod go-w \{\} \+' "Linux installer leaves copied product code ambiently writable"
-assert_contains "installers/phases/06-directories.sh" 'find -P "\$INSTALL_DIR/data/extensions-library"' "Linux installer does not normalize copied extension-library modes"
+assert_contains "installers/phases/06-directories.sh" 'ods_copy_extensions_library' "Linux installer does not stage readable extension-library templates"
+assert_contains "installers/lib/extensions-library-copy.sh" 'chmod go\+rX,go-w' "Linux installer does not repair extension-library file readability"
+assert_contains "installers/lib/extensions-library-copy.sh" 'find -P "\$target_dir"' "Linux installer does not secure retained extension-library entries"
 
 echo "[contract] Windows phase 06 stages the extension library"
 win_phase06="installers/windows/phases/06-directories.ps1"

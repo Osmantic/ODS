@@ -508,6 +508,7 @@ def test_unchanged_compaction_repair_checks_its_dependency(compaction_installati
     ('OPENCLAW_TRUNCATION_MODULE', 'openclaw-tool-result-projection.json', repair_module.TOOL_RESULT_PROJECTION_MODULE),
     ('OPENCLAW_COMPACTION_RESUME_MODULE', 'openclaw-compaction-resume.json', repair_module.COMPACTION_RESUME_MODULE),
     ('OPENCLAW_DIAGNOSTIC_EVENTS_MODULE', 'openclaw-diagnostic-stream-writes.json', repair_module.DIAGNOSTIC_STREAM_MODULE),
+    ('OPENCLAW_PAYLOADS_MODULE', 'openclaw-command-attempt-warning.json', repair_module.COMMAND_ATTEMPT_MODULE),
 ])
 def test_reviewed_runtime_migrations_round_trip(tmp_path, environment, manifest_name, module_name):
     candidate_path = os.environ.get(environment)

@@ -126,6 +126,7 @@ def validate_image(image, image_id):
         != ["python3", "/source/preview_inspection_capsule.py"]
         or labels.get("org.osmantic.ods.component") != "pixel-preview-inspection"
         or labels.get("org.osmantic.ods.inspection.protocol") != "1"
+        or labels.get("org.osmantic.ods.inspection.select") != "native-single-select-v1"
         or labels.get("org.osmantic.ods.inspection.playwright") != "1.62.0"
     ):
         raise ValueError("inspection-image-contract-mismatch")
@@ -159,12 +160,12 @@ def validate_config(config):
     if native and (
         not isinstance(config["docker"], str)
         or not re.fullmatch(
-            r"(?:/Applications/Docker\.app/Contents/Resources/bin/docker|/(?:opt/homebrew|usr/local)/Cellar/docker/(?!\.{1,2}/)[A-Za-z0-9._+-]+/bin/docker)",
+            r"(?:/Applications/Docker\.app/Contents/Resources/bin/docker|/Applications/OrbStack\.app/Contents/MacOS/xbin/docker|/(?:opt/homebrew|usr/local)/Cellar/docker/(?!\.{1,2}/)[A-Za-z0-9._+-]+/bin/docker)",
             config["docker"],
         )
         or not isinstance(config["dockerSocket"], str)
         or not re.fullmatch(
-            r"/Users/(?!\.{1,2}/)[A-Za-z0-9._-]+/(?:\.docker/run/docker\.sock|\.colima/[A-Za-z0-9_-]+/docker\.sock)",
+            r"/Users/(?!\.{1,2}/)[A-Za-z0-9._-]+/(?:\.(?:docker|orbstack)/run/docker\.sock|\.colima/[A-Za-z0-9_-]+/docker\.sock)",
             config["dockerSocket"],
         )
         or not isinstance(config["dockerSha256"], str)
@@ -186,7 +187,7 @@ def native_binding(*, docker_binary, docker_host, owner_uid):
     home = Path(pwd.getpwuid(owner_uid).pw_dir)
     if not re.fullmatch(
         re.escape(str(home))
-        + r"/(?:\.docker/run/docker\.sock|\.colima/[A-Za-z0-9_-]+/docker\.sock)",
+        + r"/(?:\.(?:docker|orbstack)/run/docker\.sock|\.colima/[A-Za-z0-9_-]+/docker\.sock)",
         endpoint[7:],
     ):
         raise ValueError("native-inspection-socket-owner-mismatch")
@@ -262,6 +263,17 @@ def build_config(*, source, owner_uid, transport, docker_binary=None, docker_hos
         docker, endpoint = docker_path(transport), "unix:///var/run/docker.sock"
     argv = [docker, "--host", endpoint]
     environment = {"PATH": "/usr/bin:/bin", "HOME": pwd.getpwuid(owner_uid).pw_dir}
+    if native:
+        # A standalone CLI may use the engine application's credential helper.
+        # Include only fixed provider locations, never the caller's PATH.
+        directories = [str(Path(docker).parent)]
+        for directory in (
+            "/Applications/OrbStack.app/Contents/MacOS/xbin",
+            "/Applications/Docker.app/Contents/Resources/bin",
+        ):
+            if Path(directory).is_dir() and directory not in directories:
+                directories.append(directory)
+        environment["PATH"] = ":".join([*directories, "/usr/bin", "/bin"])
     snapshots = {name: source_bytes(Path(source) / name) for name in BUILD_FILES}
     with tempfile.TemporaryDirectory(prefix="ods-inspection-build-") as temporary:
         root = Path(temporary)

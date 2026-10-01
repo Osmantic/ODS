@@ -110,6 +110,21 @@ if ! $INTERACTIVE && [[ "$ENABLE_COMFYUI" == "true" ]]; then
     esac
 fi
 
+# The ComfyUI extension has only AMD and NVIDIA Docker overlays. A host GPU
+# served by an external runtime does not make those devices available inside
+# this install (for example, AMD Lemonade on Windows with a CPU-only WSL VM).
+# Resolve this before compose selection and the later ComfyUI health gate.
+if [[ "${ENABLE_COMFYUI:-false}" == "true" ]]; then
+    case "${GPU_BACKEND:-cpu}" in
+        amd|nvidia) ;;
+        *)
+            ENABLE_COMFYUI=false
+            log "ComfyUI auto-disabled: GPU backend ${GPU_BACKEND:-cpu} has no ComfyUI container overlay"
+            ai_warn "Image generation (ComfyUI) needs an AMD or NVIDIA GPU accessible to Docker; disabled on this host."
+            ;;
+    esac
+fi
+
 # Pixel is the preferred agent on qualified hosts. ODS platform support is
 # unchanged; auto mode falls back to Hermes without failing.
 if ! PIXEL_AGENT_MODE="$(ods_pixel_resolve_enablement "${ENABLE_PIXEL:-auto}" 2>/dev/null)"; then
@@ -139,6 +154,25 @@ else
     log "Pixel is unavailable or disabled; existing ODS tools remain available"
 fi
 export PIXEL_AGENT_MODE ENABLE_PIXEL_RUNTIME ENABLE_PIXEL
+
+# Fresh ordinary installs use Portal as chat when Pixel is qualified. Delay
+# this choice until Pixel resolution so unsupported hosts keep WebUI, and
+# retain WebUI for features that still rely on its voice, RAG, or LAN proxy.
+# Existing installs and explicit CLI selections remain authoritative.
+if ods_should_default_portal_chat \
+      "${ODS_EXISTING_INSTALL:-false}" "${WEBUI_EXPLICIT:-false}" \
+      "${ODS_GATEWAY_ONLY:-false}" "$ENABLE_PIXEL_RUNTIME" \
+      "${ENABLE_VOICE:-false}" "${ENABLE_RAG:-false}" \
+      "${ENABLE_ODS_PROXY:-false}"; then
+    ENABLE_OPEN_WEBUI=false
+    log "Portal selected as the default chat UI; Open WebUI remains available in the Extensions Library"
+fi
+
+if [[ "${ENABLE_OPEN_WEBUI:-true}" != true && "${ODS_GATEWAY_ONLY:-false}" != true &&
+      "$ENABLE_PIXEL_RUNTIME" != true ]]; then
+    ai_bad "Portal is required when Open WebUI is disabled on an ordinary install."
+    return 1 2>/dev/null || exit 1
+fi
 
 # Hermes needs a 64K context. Raising the context grows the KV cache, so the
 # raise is re-checked against the same hardware envelope phase 02 selected
@@ -370,11 +404,23 @@ if ! $DRY_RUN; then
     [[ "$_switchboard_mode" == "legacy" || "$_switchboard_mode" == "observe" ]] || _pixel_support_services=true
     unset _switchboard_mode
     _sync_extension_compose "$_pixel_support_services" litellm    "LiteLLM"       "no enabled feature routes through the LiteLLM gateway"
-    # SearXNG backs Pixel, Open WebUI web search, Perplexica, and agent web tools.
+    PIXEL_RESOLVED_WEB_SEARCH_PROVIDER=""
+    if [[ "${ENABLE_PIXEL_RUNTIME:-false}" == "true" ]]; then
+        if ! declare -F ods_pixel_resolve_search_provider >/dev/null 2>&1; then
+            # shellcheck source=../lib/pixel-host-install.sh
+            source "$SCRIPT_DIR/installers/lib/pixel-host-install.sh"
+        fi
+        PIXEL_RESOLVED_WEB_SEARCH_PROVIDER="$(ods_pixel_resolve_search_provider)" || {
+            ai_bad "Could not resolve Pixel's owner-private web search choice before selecting services."
+            return 1 2>/dev/null || exit 1
+        }
+    fi
+    # SearXNG backs Pixel only when its selected provider needs it; Perplexica
+    # and the other agent tools retain their independent search dependency.
     # It is not only a recommended extra — --no-recommended with Perplexica
     # still needs the search backend.
     if [[ "${ENABLE_RECOMMENDED:-false}" == "true" ||
-          "${ENABLE_PIXEL_RUNTIME:-false}" == "true" ||
+          "$PIXEL_RESOLVED_WEB_SEARCH_PROVIDER" == "searxng" ||
           "${ENABLE_PERPLEXICA:-false}" == "true" ||
           "${ENABLE_HERMES:-false}" == "true" ||
           "${ENABLE_OPENCLAW:-false}" == "true" ]]; then
@@ -410,6 +456,22 @@ if ! $DRY_RUN; then
     _sync_extension_compose "${ENABLE_ODS_PROXY:-false}" ods-proxy "ODS proxy" "LAN web proxy not enabled"
     _sync_extension_compose "${ENABLE_TAILSCALE:-false}" tailscale "Tailscale"  "remote access not enabled"
     _sync_extension_compose "${ENABLE_LANGFUSE:-}"   langfuse   "Langfuse"      "LLM observability not enabled"
+    if [[ "${ENABLE_BRAVE_SEARCH:-false}" == true ]]; then
+        _brave_key_present=false
+        if [[ ${BRAVE_SEARCH_API_KEY+x} ]]; then
+            if [[ -n "$BRAVE_SEARCH_API_KEY" ]]; then
+                _brave_key_present=true
+            fi
+        elif declare -F external_llm_env_value >/dev/null 2>&1 &&
+             [[ -n "$(external_llm_env_value "${INSTALL_DIR:-}/.env" BRAVE_SEARCH_API_KEY 2>/dev/null || true)" ]]; then
+            _brave_key_present=true
+        fi
+        if ! $_brave_key_present; then
+            ENABLE_BRAVE_SEARCH=false
+            ai_warn "Brave Search was skipped because BRAVE_SEARCH_API_KEY is missing. Add the key to .env, then run 'ods enable brave-search'."
+        fi
+        unset _brave_key_present
+    fi
     _sync_extension_compose "${ENABLE_BRAVE_SEARCH:-false}" brave-search "Brave Search" "Brave Search API not enabled"
 
 fi

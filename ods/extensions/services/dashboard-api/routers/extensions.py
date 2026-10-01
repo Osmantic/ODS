@@ -373,10 +373,97 @@ def _is_one_shot_extension(ext: dict) -> bool:
     return ext.get("port") == 0 and ext.get("startup_check", False) is False
 
 
+_LIBRARY_QUALIFIED_BUILTINS = frozenset({"n8n"})
+
+
+def _qualified_builtin_selection(service_id: str) -> dict:
+    """Expose Add controls only for individually qualified built-in services."""
+    if service_id not in _LIBRARY_QUALIFIED_BUILTINS or service_id in ALWAYS_ON_SERVICES:
+        return {}
+    directory = EXTENSIONS_DIR / service_id
+    if directory.is_symlink() or not directory.is_dir():
+        return {}
+    enabled = directory / "compose.yaml"
+    disabled = directory / "compose.yaml.disabled"
+    try:
+        states = []
+        for path in (enabled, disabled):
+            try:
+                states.append(stat.S_ISREG(path.lstat().st_mode))
+            except FileNotFoundError:
+                states.append(False)
+    except OSError:
+        return {}
+    if states.count(True) != 1:
+        return {}
+    return {"library_manageable": True, "library_selected": states[0]}
+
+
+
+_OPENCODE_EXTENSION_STATUS = {
+    "degraded": "installing",
+    "down": "stopped",
+    "not_deployed": "not_installed",
+}
+
+
+def _opencode_extension_status(svc) -> str:
+    """OpenCode is a host application: report its lifecycle, not container state.
+
+    ``helpers._check_opencode_health`` maps the host agent's lifecycle onto
+    healthy / degraded (starting or setting up) / down (installed, stopped) /
+    not_deployed (never set up). A dashboard setup writes the same progress
+    records as library installs, so the card shows its phase and failure.
+    """
+    status = svc.status if svc else None
+    if status == "healthy":
+        return "enabled"
+    progress = _read_progress("opencode")
+    if progress:
+        phase = progress.get("status")
+        if phase in ("pulling", "starting") and not _is_stale(
+            progress.get("updated_at", ""), max_age_seconds=900,
+        ):
+            return "installing"
+        if phase == "error" and status in (None, "not_deployed"):
+            return "error"
+    return _OPENCODE_EXTENSION_STATUS.get(status, "disabled")
+
+
+def _opencode_catalog_fields(status: str) -> dict:
+    """Library affordances for OpenCode: Linux setup and the app page."""
+    from helpers import get_opencode_lifecycle  # noqa: PLC0415 - avoid import cycle
+
+    lifecycle = get_opencode_lifecycle() or {}
+    issue = lifecycle.get("setupIssue")
+    return {
+        "installable": status in ("not_installed", "error") and lifecycle.get("setupSupported") is True,
+        "app_path": "/apps/opencode",
+        "setup_issue": issue if isinstance(issue, str) else None,
+    }
+
+
+def _opencode_extension_action(action: str) -> dict:
+    """Route the library's Install/Start for OpenCode to the host lifecycle."""
+    timeout = 150 if action == "start" else 30
+    try:
+        body = request_agent_json("POST", f"/v1/opencode/{action}", timeout=timeout)
+    except AgentHTTPError as exc:
+        status_code = exc.status_code if exc.status_code in (409, 502, 504) else 502
+        raise HTTPException(status_code=status_code, detail=exc.detail) from exc
+    except AgentClientError as exc:
+        raise HTTPException(
+            status_code=503, detail="Host agent is unavailable; OpenCode cannot be managed right now",
+        ) from exc
+    status = body.get("status") if isinstance(body.get("status"), dict) else {}
+    return {"id": "opencode", "action": action, "state": status.get("state")}
+
 
 def _compute_extension_status(ext: dict, services_by_id: dict) -> str:
     """Compute the runtime status of an extension."""
     ext_id = ext["id"]
+    if ext_id == "opencode" and ext_id in SERVICES:
+        return _opencode_extension_status(services_by_id.get(ext_id))
     one_shot = _is_one_shot_extension(ext)
 
     # Check for in-flight install operations (progress files take priority)
@@ -408,6 +495,21 @@ def _compute_extension_status(ext: dict, services_by_id: dict) -> str:
                 svc = services_by_id.get(ext_id)
                 if not (svc and svc.status == "healthy"):
                     return "installing"
+
+    # The process imported SERVICES before a Library action could have
+    # activated this optional fragment. Use the current selection plus the
+    # polled health result so Add/Retry/Disable remain truthful without an API
+    # restart. Error/install progress above still takes precedence.
+    selection = _qualified_builtin_selection(ext_id)
+    if selection:
+        if not selection["library_selected"]:
+            return "disabled"
+        svc = services_by_id.get(ext_id)
+        if svc and svc.status == "healthy":
+            return "enabled"
+        if svc and svc.status in {"unhealthy", "degraded"}:
+            return "unhealthy"
+        return "stopped"
 
     # Core service loaded from manifests
     if ext_id in SERVICES:
@@ -1081,7 +1183,15 @@ def _scan_compose_content(
                     raise HTTPException(status_code=400,
                         detail=f"Service '{svc_name}' uses a local build without a verified source recipe") from None
         extra_hosts = svc_def.get("extra_hosts")
-        if extra_hosts and not trusted:
+        # Shipped built-ins can use the same single host-gateway bridge as
+        # curated library recipes. Keep user/imported recipes untrusted, even
+        # when they copy the exact mapping from a built-in Compose file.
+        builtin_host_gateway = (
+            builtin
+            and compose_path.resolve().is_relative_to(EXTENSIONS_DIR.resolve())
+            and extra_hosts == ["host.docker.internal:host-gateway"]
+        )
+        if extra_hosts and not trusted and not builtin_host_gateway:
             raise HTTPException(
                 status_code=400,
                 detail=f"Extension rejected: extra_hosts in {svc_name}",
@@ -1594,6 +1704,52 @@ def _current_extension_catalog():
     return merge_local_catalog(installed, EXTENSIONS_LIBRARY_DIR, schema, proposals_only=True)
 
 
+@router.get("/api/webui/selection")
+async def webui_selection(api_key: str = Depends(verify_api_key)):
+    """Expose the installed base-service choice to its Extensions Library tile."""
+    try:
+        result = await asyncio.to_thread(request_agent_json, "GET", "/v1/webui/selection", timeout=5)
+    except AgentClientError:
+        raise HTTPException(status_code=503, detail="Open WebUI selection is unavailable") from None
+    if (not isinstance(result, dict) or type(result.get("enabled")) is not bool
+            or type(result.get("supported")) is not bool):
+        raise HTTPException(status_code=502, detail="Open WebUI selection could not be verified")
+    return JSONResponse({"enabled": result["enabled"], "supported": result["supported"]},
+                        headers={"Cache-Control": "no-store"})
+
+
+@router.post("/api/webui/selection")
+async def enable_webui_from_library(request: Request, api_key: str = Depends(verify_api_key)):
+    """Add WebUI through its dedicated host-owned Linux selection path."""
+    try:
+        payload = await request.json()
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid Open WebUI selection") from None
+    if not isinstance(payload, dict) or set(payload) != {"enabled"} or payload["enabled"] is not True:
+        raise HTTPException(status_code=400, detail="Only adding Open WebUI is supported")
+    try:
+        result = await asyncio.to_thread(request_agent_json, "POST", "/v1/webui/selection",
+                                         payload={"enabled": True}, timeout=900)
+    except AgentHTTPError as exc:
+        code = exc.status_code
+        if code == 501:
+            detail = "Adding Open WebUI from the Library is available on Linux only"
+        elif code == 409:
+            detail = "Open WebUI selection is currently unavailable or another operation is in progress"
+        elif code == 503:
+            detail = "Open WebUI requires inspection before another change"
+        else:
+            code, detail = 502, "Open WebUI could not be added; inspect its selection before retrying"
+        raise HTTPException(status_code=code, detail=detail) from None
+    except AgentClientError:
+        raise HTTPException(status_code=503, detail="Open WebUI result could not be confirmed") from None
+    if (not isinstance(result, dict) or result.get("enabled") is not True
+            or result.get("action") not in {"enabled", "already_selected"}):
+        raise HTTPException(status_code=502, detail="Open WebUI result could not be verified")
+    return JSONResponse({"enabled": True, "action": result["action"]},
+                        headers={"Cache-Control": "no-store"})
+
+
 @router.get("/api/extensions/catalog")
 async def extensions_catalog(
     category: Optional[str] = None,
@@ -1677,8 +1833,11 @@ async def extensions_catalog(
             "depends_on": ext.get("depends_on", []),
             "dependents": [],
             "dependency_status": {},
+            **_qualified_builtin_selection(ext_id),
             **update_state,
         }
+        if ext_id == "opencode" and ext_id in SERVICES:
+            enriched.update(_opencode_catalog_fields(status))
         llm_contract = _llm_contract_for_extension(ext)
         if llm_contract is not None:
             enriched["llm"] = llm_contract
@@ -3104,7 +3263,7 @@ async def extension_detail(
         if _progress and _progress.get("error"):
             error_message = _progress["error"]
 
-    return {
+    detail = {
         "id": ext["id"],
         "name": ext["name"],
         "description": ext.get("description", ""),
@@ -3112,6 +3271,7 @@ async def extension_detail(
         "error_message": error_message,
         "source": source,
         "installable": installable,
+        **_qualified_builtin_selection(service_id),
         "llm": llm_contract,
         "public_url": public_url,
         "integration": integration,
@@ -3129,6 +3289,21 @@ async def extension_detail(
             "cli_disable": f"ods disable {service_id}",
         },
     }
+    if service_id == "opencode" and service_id in SERVICES:
+        # OpenCode is a host application, not a Compose extension: 'ods
+        # enable opencode' does not apply. Point owners and agents at the
+        # dashboard page that starts it or, on Linux, sets it up.
+        fields = _opencode_catalog_fields(status)
+        detail.update(fields)
+        detail["setup_instructions"] = {
+            "steps": [
+                f"Open the OpenCode page in the ODS dashboard ({fields['app_path']})",
+                "Start OpenCode there when it is stopped; on Linux, set it up there when it is not installed",
+                "OpenCode listens only on this machine; the page shows how to reach it from another device",
+            ],
+            "app_path": fields["app_path"],
+        }
+    return detail
 
 
 # --- Mutation endpoints ---
@@ -3578,6 +3753,8 @@ def _rewrite_build_context(compose_path: Path, final_dir: Path) -> None:
 @router.post("/api/extensions/{service_id}/install")
 @_serialize_extension_operation
 def install_extension(service_id: str, api_key: str = Depends(verify_api_key)):
+    if service_id == "opencode" and service_id in SERVICES:
+        return _opencode_extension_action("setup")
     return _install_extension(service_id, api_key=api_key)
 
 
@@ -4234,6 +4411,9 @@ def enable_extension(
 ):
     """Enable an installed extension, optionally auto-enabling dependencies."""
     _validate_service_id(service_id)
+    if service_id == "opencode" and service_id in SERVICES:
+        # Start never triggers a download. Owners can select Install explicitly.
+        return _opencode_extension_action("start")
     _assert_not_core(service_id)
 
     ext_dir = _resolve_extension_dir(service_id)

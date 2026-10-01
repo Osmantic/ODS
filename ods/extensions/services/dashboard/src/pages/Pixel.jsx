@@ -1743,7 +1743,7 @@ export default function Pixel({ systemStatus = null }) {
           </div>}
           <div className="pixel-composer-secondary">
             <PixelComposerTools input={input} disabled={isDisabled} onInsert={insertComposerText} onCompact={compactConversation}>
-              <PixelTextFileInput key={`file-input-${chatIdRef.current}`} input={input} disabled={isDisabled} limit={MAX_INPUT_LEN} onInsert={insertComposerText}/>
+              <PixelTextFileInput key={`file-input-${chatIdRef.current}`} conversationId={chatIdRef.current} input={input} disabled={isDisabled} limit={MAX_INPUT_LEN} onInsert={insertComposerText}/>
               <PixelDraftPreview key={`draft-preview-${chatIdRef.current}`} input={command?.task ?? goalDraft?.task ?? input}/>
             </PixelComposerTools>
             <div className="pixel-composer-limits">

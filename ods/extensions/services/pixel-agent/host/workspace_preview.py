@@ -41,7 +41,11 @@ SOCKET_PATH = pathlib.Path("/run/ods-pixel-preview/control.sock")
 HTTP_SOCKET_PATH = pathlib.Path("/run/ods-pixel-preview/http.sock")
 PROFILE_ID: str | None = None
 PATH_COMPONENT = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
+# Generated framework assets may start with underscore (_next, _astro).
+# Keep ODS virtual HTTP routes reserved and directory selection unchanged.
+ASSET_COMPONENT = re.compile(r"(?!__ods_)[A-Za-z0-9_][A-Za-z0-9._-]{0,127}")
 SITE_ID = re.compile(r"site-[a-f0-9]{24}")
+DOWNLOAD_ONLY_SUFFIXES = frozenset({".pdf", ".zip", ".rar"})
 ALLOWED_SUFFIXES = frozenset(
     {
         ".html", ".htm", ".css", ".js", ".mjs", ".json", ".svg",
@@ -49,7 +53,7 @@ ALLOWED_SUFFIXES = frozenset(
         ".woff", ".woff2", ".ttf", ".txt", ".map", ".csv", ".tsv",
         ".md", ".markdown",
     }
-)
+) | DOWNLOAD_ONLY_SUFFIXES
 MAX_REQUEST_BYTES = 2048
 MAX_RESPONSE_BYTES = 8192
 MAX_FILES = 128
@@ -248,7 +252,7 @@ def _source_files(
                 or stat.S_ISLNK(info.st_mode)
                 or info.st_uid != owner_uid
                 or info.st_mode & 0o022
-                or PATH_COMPONENT.fullmatch(directory) is None
+                or ASSET_COMPONENT.fullmatch(directory) is None
             ):
                 raise PreviewError("unsafe preview directory")
         directories[:] = pruned
@@ -262,12 +266,13 @@ def _source_files(
             relative = source.relative_to(current).as_posix()
             if (
                 not stat.S_ISREG(info.st_mode)
+                or name in GENERATED_CACHE_DIRECTORY_NAMES
                 or stat.S_ISLNK(info.st_mode)
                 or info.st_nlink != 1
                 or info.st_uid != owner_uid
                 or info.st_mode & 0o022
                 or not (1 if relative == "index.html" else 0) <= info.st_size <= MAX_FILE_BYTES
-                or any(PATH_COMPONENT.fullmatch(part) is None for part in relative.split("/"))
+                or any(ASSET_COMPONENT.fullmatch(part) is None for part in relative.split("/"))
             ):
                 raise PreviewError("unsafe preview file")
             if pathlib.PurePosixPath(relative).suffix.lower() not in ALLOWED_SUFFIXES:
@@ -519,8 +524,8 @@ def _published_path_feedback(paths, empty_paths=()):
 def snapshot_manifest(previews: pathlib.Path, site_id: str) -> bytes:
     """Describe only a rehashed published snapshot, never the live workspace.
 
-    The reserved HTTP filename cannot be supplied by a generated site (its
-    leading underscore is excluded by PATH_COMPONENT). Old snapshots work
+    The reserved HTTP filename cannot be supplied by a generated site (the
+    __ods_ prefix is excluded by ASSET_COMPONENT). Old snapshots work
     without migration or adding metadata files to their content hash.
     """
     if SITE_ID.fullmatch(site_id) is None:
@@ -692,7 +697,7 @@ class PreviewHandler(http.server.BaseHTTPRequestHandler):
         styled_view = parts[1:] == ["__ods_view__.html"]
         if styled_view:
             parts[-1] = "index.html"
-        if any(PATH_COMPONENT.fullmatch(part) is None for part in parts[1:]):
+        if any(ASSET_COMPONENT.fullmatch(part) is None for part in parts[1:]):
             return None
         target = self.server.preview_root.joinpath(*parts)  # type: ignore[attr-defined]
         try:
@@ -721,9 +726,14 @@ class PreviewHandler(http.server.BaseHTTPRequestHandler):
             self.send_error(404)
             return
         target, body = result
-        content_type = _preview_content_type(target, body)
+        download_only = target.suffix.lower() in DOWNLOAD_ONLY_SUFFIXES
+        content_type = "application/octet-stream" if download_only else _preview_content_type(target, body)
         self.send_response(200)
         self.send_header("Content-Type", content_type)
+        if download_only:
+            # Validated snapshot filenames cannot inject header bytes.
+            # Documents/archives are opaque downloads, never rendered or unpacked.
+            self.send_header("Content-Disposition", f'attachment; filename="{target.name}"')
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Security-Policy", CSP)

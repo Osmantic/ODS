@@ -163,6 +163,44 @@ fixture_python() { printf '%s\n' "$@"; }
     assert '--preflight-only' in result.stdout.splitlines()
 
 
+@pytest.mark.parametrize('installed', [True, False])
+@pytest.mark.parametrize('fault', [None, 'no-brew', 'version', 'path'])
+def test_orbstack_multicall_uses_unlinked_standalone_cli(monkeypatch, installed, fault):
+    orb = '/Applications/OrbStack.app/Contents/MacOS/xbin/docker-tools'
+    selected = '/opt/homebrew/Cellar/docker/29.8.1/bin/docker'
+    calls = []
+    monkeypatch.setattr(module.shutil, 'which', lambda name: None if fault == 'no-brew' else '/opt/homebrew/bin/brew')
+    def resolve(path, **kwargs):
+        if str(path).endswith('xbin/docker'):
+            return Path(orb)
+        return Path('/tmp/docker' if fault == 'path' else selected)
+    monkeypatch.setattr(Path, 'resolve', resolve)
+    monkeypatch.setattr(Path, 'is_file', lambda path: installed)
+    def command(argv, **kwargs):
+        calls.append(argv)
+        if '--prefix' in argv:
+            return '/opt/homebrew/opt/docker'
+        if 'install' in argv:
+            assert argv == ['/opt/homebrew/bin/brew', 'install', '--formula', '--skip-link', 'docker']
+            return ''
+        assert argv == [selected, '--version']
+        return 'bad version' if fault == 'version' else 'Docker version 29.8.1, build fixture'
+    monkeypatch.setattr(module, 'command', command)
+    if fault:
+        with pytest.raises(ValueError, match='native-orbstack-standalone-docker'):
+            module.native_docker_binary('/Applications/OrbStack.app/Contents/MacOS/xbin/docker')
+    else:
+        assert module.native_docker_binary('/Applications/OrbStack.app/Contents/MacOS/xbin/docker') == selected
+        assert sum('install' in argv for argv in calls) == int(not installed)
+
+
+def test_ordinary_docker_binary_does_not_provision_another_cli(tmp_path, monkeypatch):
+    binary = tmp_path / 'docker'
+    binary.touch()
+    monkeypatch.setattr(module, 'command', lambda *a, **k: pytest.fail('must not provision'))
+    assert module.native_docker_binary(binary) == str(binary.resolve())
+
+
 @pytest.mark.parametrize('fault', [None, 'ref', 'compose', 'remote', 'project', 'services', 'image', 'probe', 'prepare', 'activate'])
 def test_initial_installer_connects_resolved_stack_and_native_activation(tmp_path, monkeypatch, fault):
     install_dir = tmp_path / 'ODS with spaces'

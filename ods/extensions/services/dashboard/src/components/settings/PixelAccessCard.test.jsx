@@ -6,6 +6,17 @@ const safe = {available: true, surface: 'linux-systemd', configured_mode: 'sandb
   runtime_verified: false, revision: 'a'.repeat(64), busy: false, pending: false, reason: 'runtime-proof-required'}
 afterEach(() => vi.unstubAllGlobals())
 
+it('explains incomplete installation without enabling access changes', async () => {
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ok: true, json: async () => ({
+    ...safe, available: false, revision: null, reason: 'managed-installation-incomplete',
+  })}))
+  render(<PixelAccessCard />)
+  expect(await screen.findByText(/Resume the ODS installer/)).toBeVisible()
+  expect(screen.getByRole('button', {name: 'Enable Full Access'})).toBeDisabled()
+  expect(screen.getByRole('button', {name: 'Verify Sandbox'})).toBeDisabled()
+  expect(screen.queryByText(/access controller is unavailable/)).toBeNull()
+})
+
 describe('Pixel access confirmation and effective status', () => {
   it('uses the agent runtime platform and preserves the current setting on load', async () => {
     const fetch = vi.fn().mockResolvedValue({ok:true,json:async()=>({...safe,surface:'wsl-systemd'})})
