@@ -1,4 +1,6 @@
 import {createAgentSkillTool} from './agent-skills.mjs';
+import {registerProjectBuild} from './project-registration.mjs';
+import {createProjectRunControl} from './project-run-control.mjs';
 import {registerBootstrapCapabilities} from './bootstrap-capabilities.mjs';
 import {registerStableRuntimeLine} from './runtime-line.mjs';
 import {createRuntimeIdentity} from './runtime-identity.mjs';
@@ -87,6 +89,7 @@ let runtimeIdentity;
 const ABORT_BODY_LIMIT = 256;
 const OPENAI_RUN_ID = /^chatcmpl_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const toolLoopGuardRegistry = createToolLoopGuardRegistry();
+const projectRunControl = createProjectRunControl();
 const goalProgress = createGoalProgress({agentId:AGENT_ID});
 const workspaceProjects = createWorkspaceProjects();
 const taskActivity = createTaskActivity({agentId:AGENT_ID, goalForRun:id=>goalProgress.projection(id),projectsForSession:key=>workspaceProjects.forSession(key)});
@@ -310,6 +313,7 @@ export default definePluginEntry({
           reason: "ods_client_disconnect",
         }),
       execControl: execCancellationControl,
+      cancelProjectRun: scope => projectRunControl.cancel(scope),
       evidenceArtifactWriter,
       onWorkspaceMutation:mutation=>workspaceProjects.record(mutation),
       verifyWorkspacePreview:createWorkspacePreviewVerifier({transport:api.pluginConfig?.workspacePreviewTransport}),
@@ -406,11 +410,13 @@ export default definePluginEntry({
       );
       const decision = guard?.block ? guard : goalProgress.before(event, context) ?? accessRuntime.beforeTool(event, context) ?? guard;
       bundleAdmission.before(event, context, decision);
+      projectRunControl.before(event, context, decision);
       taskActivity.before(event, context, decision?.block === true);
       return decision;
     });
     api.on("after_tool_call", (event, context) => {
       bundleAdmission.after(event, context);
+      projectRunControl.after(event, context);
       accessRuntime.afterTool(event, context);
       if (!accessRuntime.isProbe(context)) {
         goalProgress.update(event, context);
@@ -737,6 +743,7 @@ export default definePluginEntry({
     registerTool(api, createAskUserTool(), {names:['pixel_ods_ask_user']});
     registerTool(api, createGoalProgressTool(), {names:['pixel_ods_goal']});
     registerTool(api, createActivityTool(), {names:['pixel_ods_activity']});
+    registerProjectBuild(api, onlyPixel, projectRunControl);
     api.registerTool(onlyPixel(context => createExtensionProposalTool(context)), {names:['pixel_ods_extension_proposal']});
     api.registerTool(onlyPixel(context => createSourceProposalTool(context)), {names:['pixel_ods_source_proposal']});
     api.registerTool(onlyPixel(context => createPythonLibraryProposalTool(context)), {names:['pixel_ods_python_library_proposal']});

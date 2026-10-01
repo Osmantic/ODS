@@ -2,6 +2,7 @@ import { StrictMode } from 'react'
 import { MemoryRouter } from 'react-router-dom'
 import { act, cleanup, fireEvent, screen, waitFor } from '@testing-library/react'
 import { render } from '../test/test-utils'
+import userEvent from '@testing-library/user-event'
 import { PortalIdentityProvider, usePortalIdentity } from './PortalIdentityContext'
 import AssistantIdentitySettings from '../components/settings/AssistantIdentitySettings'
 import Sidebar from '../components/Sidebar'
@@ -18,6 +19,7 @@ const saveButton = () => screen.getByRole('button', { name: 'Save name', exact: 
 const refresh = () => fireEvent.click(screen.getByRole('button', { name: 'Refresh saved name' }))
 const edit = name => { fireEvent.change(screen.getByLabelText('Assistant display name'), { target: { value: name } }); fireEvent.click(saveButton()) }
 const postCalls = () => fetch.mock.calls.filter(([, options]) => options.method === 'POST')
+const typeDraft = async (user, text) => { const field = screen.getByLabelText('Assistant display name'); await user.click(field); await user.clear(field); await user.keyboard(text) }
 beforeEach(() => { vi.stubGlobal('fetch', vi.fn()); globalThis.localStorage.clear() })
 afterEach(() => { cleanup(); vi.useRealTimers(); vi.unstubAllGlobals() })
 
@@ -47,6 +49,72 @@ it('preserves an unsaved name through refresh and offers explicit adoption of th
   expect(postCalls()).toHaveLength(0)
   fireEvent.click(screen.getByRole('button',{name:'Use saved name'}))
   expect(input).toHaveValue('Other')
+})
+
+it('keeps a typed draft when the install name changes under it on an ordinary refresh', async () => {
+  // An install-side change to the same field is delivered to a mounted screen through an
+  // ordinary refresh. A draft in progress must survive it rather than be silently replaced.
+  fetch.mockResolvedValueOnce(response(identity('Old',2))).mockResolvedValueOnce(response(identity('Other',3)))
+  const user = userEvent.setup()
+  render(editor())
+  await waitFor(() => expect(saveButton()).toBeEnabled())
+  await typeDraft(user,'Prefer me')
+  refresh()
+  await waitFor(() => expect(saved()).toBe('Other'))
+  expect(screen.getByText('Last confirmed name: Other')).toBeVisible()
+  expect(screen.getByLabelText('Assistant display name')).toHaveValue('Prefer me')
+  expect(postCalls()).toHaveLength(0)
+})
+
+it('follows later saved names after explicitly adopting the current name', async () => {
+  // After the user adopts the saved name, the field follows the install again: a later refresh
+  // must deliver the newest saved name instead of pinning the value that was adopted.
+  fetch.mockResolvedValueOnce(response(identity('Old',2))).mockResolvedValueOnce(response(identity('Other',3)))
+    .mockResolvedValueOnce(response(identity('Newer',4)))
+  const user = userEvent.setup()
+  render(editor())
+  await waitFor(() => expect(saveButton()).toBeEnabled())
+  await typeDraft(user,'Prefer me')
+  refresh()
+  await waitFor(() => expect(saved()).toBe('Other'))
+  await user.click(screen.getByRole('button',{name:'Use saved name'}))
+  expect(screen.getByLabelText('Assistant display name')).toHaveValue('Other')
+  refresh()
+  await waitFor(() => expect(saved()).toBe('Newer'))
+  expect(screen.getByLabelText('Assistant display name')).toHaveValue('Newer')
+  expect(postCalls()).toHaveLength(0)
+})
+
+it('holds a Reset to Portal draft and requires an explicit save instead of a silent save', async () => {
+  // Reset is local intent with no write. A refresh must not overwrite the reset, and it must
+  // never fire the save on its own.
+  fetch.mockResolvedValueOnce(response(identity('Old',2))).mockResolvedValueOnce(response(identity('Other',3)))
+  const user = userEvent.setup()
+  render(editor())
+  await waitFor(() => expect(saveButton()).toBeEnabled())
+  await user.click(screen.getByRole('button',{name:'Reset to Portal'}))
+  expect(screen.getByLabelText('Assistant display name')).toHaveValue('Portal')
+  refresh()
+  await waitFor(() => expect(saved()).toBe('Other'))
+  expect(screen.getByLabelText('Assistant display name')).toHaveValue('Portal')
+  expect(postCalls()).toHaveLength(0)
+  await user.click(saveButton())
+  await waitFor(() => expect(postCalls()).toHaveLength(1))
+  expect(JSON.parse(postCalls()[0][1].body)).toEqual({expectedRevision:3,displayName:'Portal'})
+})
+
+it('follows saved names again after reverting an edit to the confirmed name', async () => {
+  // Returning to the confirmed name leaves no unsaved change to protect.
+  fetch.mockResolvedValueOnce(response(identity('Old',2))).mockResolvedValueOnce(response(identity('Other',3)))
+  const user = userEvent.setup()
+  render(editor())
+  await waitFor(() => expect(saveButton()).toBeEnabled())
+  await typeDraft(user,'Temporary draft')
+  await typeDraft(user,'Old')
+  refresh()
+  await waitFor(() => expect(saved()).toBe('Other'))
+  expect(screen.getByLabelText('Assistant display name')).toHaveValue('Other')
+  expect(postCalls()).toHaveLength(0)
 })
 
 it('keeps the proposed name after a conflict and saves only against the refreshed revision', async () => {

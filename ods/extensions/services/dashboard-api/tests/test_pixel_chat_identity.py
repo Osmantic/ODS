@@ -92,9 +92,12 @@ def test_new_turns_use_live_saved_name_and_replay_keeps_its_original_result(stor
 
 @pytest.mark.parametrize('retained', [False, True])
 @pytest.mark.parametrize('failure', ['offline', 'malformed'])
-def test_unconfirmed_identity_does_not_start_a_turn_or_reserve_a_receipt(store, monkeypatch, retained, failure):
+def test_unconfirmed_identity_does_not_start_a_turn_and_retains_exact_rejection(store, monkeypatch, retained, failure):
     async def run():
+        calls = 0
         async def identity(*args, **kwargs):
+            nonlocal calls
+            calls += 1
             if failure == 'offline':
                 raise AgentUnavailable('private details')
             return {'displayName':'wrong schema'}
@@ -107,4 +110,16 @@ def test_unconfirmed_identity_does_not_start_a_turn_or_reserve_a_receipt(store, 
         assert 'private details' not in caught.value.detail
         assert not pixel._result_tasks
         assert not store.has_pending((pixel.owner_namespace(OWNER),'identity-test'))
+        if retained:
+            key = (pixel.owner_namespace(OWNER), 'identity-test', 'failed')
+            assert store.get(key)['state'] == 'interrupted'
+            result = await pixel.pixel_chat_result(pixel.ChatResultRequest(chat_id='identity-test', request_id='failed'), OWNER)
+            assert result['state'] == 'interrupted'
+            assert 'Portal did not start this attempt.' in result['events']
+            assert 'private details' not in result['events']
+            assert b'Portal did not start this attempt.' in await stream_body(
+                await pixel.pixel_chat_stream(ConnectedRequest(), body, OWNER))
+            assert calls == 1
+        else:
+            assert calls == 1
     asyncio.run(run())

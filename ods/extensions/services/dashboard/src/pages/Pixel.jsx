@@ -1002,6 +1002,9 @@ export default function Pixel({ systemStatus = null }) {
     // this generation may update the response, workspace, or sending state.
     const isCurrentTurn = () => !controller.signal.aborted && abortRef.current === controller
     let latestAssistantText = ''
+    // Preserve actual model text, not a synthetic stream failure shown while
+    // the independently acknowledged owner Stop is still settling.
+    controller.responseText = () => latestAssistantText
     let extensionInstallationStarted = false
     let streamAttemptCount = 0
 
@@ -1263,6 +1266,11 @@ export default function Pixel({ systemStatus = null }) {
         }))
       }
     } finally {
+      // The stream may close as soon as the agent aborts while the Stop
+      // endpoint is still draining managed jobs. Keep this turn's identity
+      // until that bounded acknowledgement settles. A normal DONE already
+      // clears requestIdRef, so its successful answer still wins the race.
+      if (isCurrentTurn() && stopRequestRef.current?.settled) await stopRequestRef.current.settled
       if (isCurrentTurn()) {
         setSending(false)
         setStopping(false)
@@ -1284,8 +1292,10 @@ export default function Pixel({ systemStatus = null }) {
     // Bound the acknowledgement independently of the live chat stream.
     // A deadline is uncertainty, never permission to claim the task stopped.
     const stopRequest = new AbortController()
+    let settleStop
+    stopRequest.settled = new Promise(resolve => { settleStop = resolve })
     stopRequestRef.current = stopRequest
-    const timeout = setTimeout(() => stopRequest.abort(), 15000)
+    const timeout = setTimeout(() => stopRequest.abort(), 30000)
     setStopping(true)
     setStopError('')
     try {
@@ -1315,7 +1325,7 @@ export default function Pixel({ systemStatus = null }) {
       abortRef.current = null
       requestIdRef.current = null
       setMessages(previous => replaceLastAssistant(previous, {
-        content: stoppedContent(previous.at(-1)?.content),
+        content: stoppedContent(controller?.responseText?.() ?? previous.at(-1)?.content),
         status: 'stopped',
       }))
       setSending(false)
@@ -1336,6 +1346,7 @@ export default function Pixel({ systemStatus = null }) {
         stopRequestRef.current = null
         setStopping(false)
       }
+      settleStop()
     }
   }, [stopping, interrupted, updateRestoredActivity])
 

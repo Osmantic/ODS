@@ -73,6 +73,7 @@ for switchboard_case in "${switchboard_cases[@]}"; do
             done
             declare -A selected=()
             _sync_extension_compose() { selected["$2"]="$1"; }
+            ods_pixel_resolve_search_provider() { printf '%s\n' parallel-free; }
             # The block is trusted repository source; only compose selection is mocked.
             source /dev/stdin <<< "$block"
 
@@ -81,7 +82,7 @@ for switchboard_case in "${switchboard_cases[@]}"; do
             expected_gateway=false
             expected_search=false
             if ((mask & 35)) || [[ "$mode" == enabled ]]; then expected_gateway=true; fi
-            if ((mask & 31)); then expected_search=true; fi
+            if ((mask & 29)); then expected_search=true; fi
             [[ "${selected[litellm]:-missing}" == "$expected_gateway" ]] || {
                 echo "FAIL: LiteLLM selection for mask $mask with switchboard $switchboard_case ($mode)"; exit 1;
             }
@@ -97,6 +98,24 @@ for switchboard_case in "${switchboard_cases[@]}"; do
     done
     checked=$((checked + 1))
 done
+
+# Pixel's own local-search choice retains SearXNG even without other consumers.
+(
+    INSTALL_DIR="$tmp_dir/explicit-searxng"
+    mkdir -p "$INSTALL_DIR"
+    ODS_MODEL_SWITCHBOARD=legacy
+    EXTERNAL_LLM_URL=""
+    ENABLE_RECOMMENDED=false ENABLE_PIXEL_RUNTIME=true ENABLE_PERPLEXICA=false
+    ENABLE_HERMES=false ENABLE_OPENCLAW=false
+    declare -A selected=()
+    _sync_extension_compose() { selected["$2"]="$1"; }
+    ods_pixel_resolve_search_provider() { printf '%s\n' searxng; }
+    source /dev/stdin <<< "$block"
+    [[ "${selected[searxng]:-missing}" == true && "$ENABLE_SEARXNG" == true &&
+       "$PIXEL_RESOLVED_WEB_SEARCH_PROVIDER" == searxng ]] || {
+        echo 'FAIL: Pixel SearXNG provider must select local search'; exit 1;
+    }
+)
 # Literal whitespace and hashes inside quotes are not valid routing modes.
 # These fixed expectations deliberately do not reuse expected_mode's parser.
 for literal in "'legacy # literal'" '"observe # literal"' "' legacy '" '"ob serve"'; do

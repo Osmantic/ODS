@@ -278,10 +278,13 @@ async def test_explicit_cancel_forwards_only_validated_chat_id_and_edge_key():
         pixel.httpx,
         "AsyncClient",
         return_value=CancelAwareClient(FakeResponse(), calls),
-    ):
+    ) as client_factory:
         result = await pixel.pixel_chat_cancel(body)
 
     assert result == {"aborted": True}
+    # Edge owns a bounded 20 s cancellation; do not sever its acknowledgement.
+    assert client_factory.call_args.kwargs["timeout"].read > 20
+    assert pixel._CLIENT_CANCEL_TIMEOUT_SECONDS > client_factory.call_args.kwargs["timeout"].read
     assert len(calls) == 1
     assert calls[0]["method"] == "POST"
     assert calls[0]["url"] == "http://pixel-edge:9595/v1/chat/cancel"

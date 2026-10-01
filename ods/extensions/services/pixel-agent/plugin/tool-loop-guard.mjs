@@ -4468,6 +4468,13 @@ function canonicalWebFetchSucceeded(event) {
   );
 }
 
+function repositoryExtractionSucceeded(result, repository) {
+  return !result?.isError && result?.details?.boundary === 'public-web-read-only' &&
+    canonicalGitHubSourceMatches(result.details.source_url, repository) &&
+    result.content?.some(part => part?.type === 'text' &&
+      typeof part.text === 'string' && part.text.includes('EXTERNAL_UNTRUSTED_CONTENT'));
+}
+
 function runIdentity(event, context) {
   const runId = context?.runId ?? event?.runId;
   const sessionId = context?.sessionId;
@@ -5718,8 +5725,15 @@ function hasWorkspaceHtmlTarget(text) {
   return /\b[A-Za-z0-9_-][A-Za-z0-9._/-]{0,511}\.html?\b/i.test(paths);
 }
 
+function localPreviewPolicyText(text) {
+  // The snapshot is served inside ODS. An external-publication restriction
+  // does not forbid that snapshot; retain every other prohibition verbatim.
+  return text.replace(/\b(?:do\s+not|don['’]t|never)\s+(?:publish|deploy)\s+(?:it\s+)?outside\s+(?:of\s+)?ODS\b(?=\s*(?:[.!?;]|$))/gi, ' ')
+    .replace(/\b(?:n[aã]o|nunca)\s+(?:publique|publicar|publique novamente)\s+fora\s+do\s+ODS\b(?=\s*(?:[.!?;]|$))/gi, ' ');
+}
+
 function ownerForbidsWorkspacePreview(messages, prompt) {
-  const text = currentOwnerIntentText(messages, prompt)
+  const text = localPreviewPolicyText(currentOwnerIntentText(messages, prompt))
     .replace(/(?:\x60{3}|~{3})[\s\S]*?(?:\x60{3}|~{3})/g, " ")
     .replace(/^\s*>[^\n]*/gm, " ")
     .replace(/"[^"\n]*"|\x60[^\x60\n]*\x60/g, " ");
@@ -5737,7 +5751,7 @@ function ownerForbidsWorkspacePreview(messages, prompt) {
 }
 
 function portuguesePreviewForbidden(text) {
-  const prose = text.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  const prose = localPreviewPolicyText(text).normalize('NFD').replace(/[\u0300-\u036f]/g, '');
   return /\b(?:nao|nunca|sem|evite)\s+(?:(?:criar|crie|fazer|faca|editar|edite)\s+(?:e|ou)\s+)?(?:(?:re)?publ(?:ic|iq)\w*|mostr\w*|abrir|abra|preview|pre-?visualiz\w*)\b/i.test(prose)
     || /\b(?:so|somente|apenas)\s+(?:o\s+)?codigo\b/i.test(prose);
 }
@@ -6887,6 +6901,7 @@ function execTargetsNonPublicAddress(event) {
 export function createToolLoopGuard({
   abortRun,
   abortRunAndDrain,
+  cancelProjectRun,
   execControl,
   evidenceArtifactWriter,
   onWorkspaceMutation = () => {},
@@ -8443,8 +8458,16 @@ export function createToolLoopGuard({
       const selected = toolName === "tool_call"
         ? wrappedToolParams?.args : normalizedParams ?? event?.params;
       const unrelatedWorkspaceObservation = state?.workspaceExtensionIsolated && !state.operationsRequired;
-      const params = unrelatedWorkspaceObservation ? undefined
-        : permittedHostObservationParams(selected, state?.hostObservationPolicy);
+      if (unrelatedWorkspaceObservation) return {
+        block: true,
+        blockReason: "This workspace-only request does not authorize host inspection. " +
+          "Changing the arguments does not grant host access; do not retry this observation " +
+          "or substitute a host command. Continue inspecting the project and sandbox with " +
+          "workspace tools. If host facts are necessary, ask the owner for that specific " +
+          "read-only inspection. Missing workspace dependencies remain a reported limitation, " +
+          "not permission to install an unrelated host service.",
+      };
+      const params = permittedHostObservationParams(selected, state?.hostObservationPolicy);
       if (!params) return {
         block: true,
         blockReason: "Pixel could not validate this host observation against the current request. " +
@@ -9895,7 +9918,19 @@ export function createToolLoopGuard({
     if (!aborted && sessionCancellations.get(active.sessionKey) === cancellation) {
       sessionCancellations.delete(active.sessionKey);
     }
-    const cancelled = aborted && executionSignalled;
+    // The model stream and shell process group do not own independently
+    // accepted project jobs. Drain the run first, then require the project
+    // adapter to settle only this captured run's work before acknowledging Stop.
+    let projectsStopped = typeof cancelProjectRun !== 'function';
+    if (aborted && typeof cancelProjectRun === 'function') {
+      try {
+        projectsStopped = await cancelProjectRun({runId: active.runId,
+          sessionId: active.sessionId, sessionKey: active.sessionKey}) === true;
+      } catch (error) {
+        warn(`Pixel client-cancel project cleanup failed: ${String(error)}`);
+      }
+    }
+    const cancelled = aborted && executionSignalled && projectsStopped;
     if (executionSignalled && typeof execControl?.clear === "function") {
       const cleanup = setTimeout(() => {
         try {
@@ -10698,6 +10733,13 @@ export function createToolLoopGuard({
       }
     }
     if (state.githubCanonicalUrl) {
+      const extraction = toolName === 'pixel_ods_web_extract' ? event
+        : toolName === 'tool_call'
+          ? toolSearchSelectedToolEvent(event, 'pixel_ods_web_extract', 'pixel-ods') : undefined;
+      if (extraction && !toolCallFailed(extraction) &&
+          repositoryExtractionSucceeded(extraction.result, state.githubCanonicalUrl)) {
+        state.githubCanonicalSatisfied = true;
+      }
       const submission = operationsSubmission(event, toolName);
       if (submission) state.operationsSubmittedJobs.set(submission.jobId, submission);
       if (toolName === "pixel_ops_job_get" || toolName === "pixel_ops_job_wait") {
@@ -12534,10 +12576,7 @@ export function createToolLoopGuard({
     },
     observeRepositorySource(runId, result) {
       const state = runs.get(runId);
-      if (!state?.githubCanonicalUrl || result?.isError ||
-          result?.details?.boundary !== 'public-web-read-only' ||
-          !canonicalGitHubSourceMatches(result.details.source_url, state.githubCanonicalUrl) ||
-          !result.content?.some(part => part?.type === 'text' && part.text?.includes('EXTERNAL_UNTRUSTED_CONTENT'))) return;
+      if (!state?.githubCanonicalUrl || !repositoryExtractionSucceeded(result, state.githubCanonicalUrl)) return;
       state.githubCanonicalSatisfied = true;
     },
     afterToolCall,

@@ -50,6 +50,12 @@
       "value": "python:3.12-slim@sha256:f77ac9e44ae96ef2c90b8053ea08c31f8be030f824196b0ae4db6d462c84e51f"
     },
     {
+      "id": "pixel-project.node",
+      "type": "image",
+      "path": "extensions/services/pixel-agent/host/Dockerfile.project-node",
+      "value": "node:22-bookworm-slim@sha256:7af03b14a13c8cdd38e45058fd957bf00a72bbe17feac43b1c15a689c029c732"
+    },
+    {
       "id": "brave-search.node",
       "type": "image",
       "path": "extensions/services/brave-search/Dockerfile",
@@ -65,6 +71,12 @@
       "id": "comfyui.nvidia-runtime",
       "type": "image",
       "path": "extensions/services/comfyui/Dockerfile",
+      "value": "nvidia/cuda:12.8.0-runtime-ubuntu22.04@sha256:b0e5afeabc356a9c41148c50f219d3117d46cb6ec23c590e3a0ebaa1db0ff946"
+    },
+    {
+      "id": "comfyui.standalone-nvidia-runtime",
+      "type": "image",
+      "path": "extensions/services/comfyui/Dockerfile.standalone",
       "value": "nvidia/cuda:12.8.0-runtime-ubuntu22.04@sha256:b0e5afeabc356a9c41148c50f219d3117d46cb6ec23c590e3a0ebaa1db0ff946"
     },
     {
@@ -348,6 +360,11 @@
     }
   ],
   "allow_local_images": [
+    {
+      "path": "extensions/services/comfyui/compose.standalone.nvidia.yaml",
+      "value": "ods-comfyui-standalone:0.16.4-cu128",
+      "reason": "Windows standalone ComfyUI is built locally from the adjacent pinned Dockerfile by its opt-in installer."
+    },
     {
       "path": "extensions/services/pixel-inference/compose.yaml.disabled",
       "value": "ods-pixel-inference:local",

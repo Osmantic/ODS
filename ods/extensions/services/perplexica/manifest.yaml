@@ -19,7 +19,9 @@ service:
   gpu_backends: [all]
   compose_file: compose.yaml
   category: optional
-  depends_on: [searxng, llama-server]
+  # Managed local inference adds llama-server in compose.local.yaml. External
+  # model routes omit that overlay and must not plan a local inference service.
+  depends_on: [searxng]
   env_vars:
     - key: PERPLEXICA_SEARXNG_API_URL
       required: false

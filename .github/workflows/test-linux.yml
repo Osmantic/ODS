@@ -80,6 +80,8 @@ jobs:
           python-version: ${{ matrix.python }}
       - name: Install isolated inference test dependencies
         run: python -m pip install -r extensions/services/pixel-inference/requirements.txt -r extensions/services/model-router/requirements.txt 'pytest>=8,<9'
+      - name: Installer image selection contracts
+        run: python -m pytest tests/test_image_pull_plan.py -q
       - name: mDNS publication recovery contracts
         run: python -m pytest tests/test_mdns_refresh_recovery.py tests/test_mdns_subdomains.py -q
       - name: Dashboard sign-in link command
@@ -379,6 +381,8 @@ jobs:
 
       - name: Windows Service Plan Tests
         run: bash tests/test-windows-service-plan.sh
+      - name: Standalone ComfyUI Compose isolation
+        run: bash tests/test-comfyui-standalone-compose.sh
 
       - name: Windows Installer Flag Tests
         run: bash tests/test-windows-installer-flags.sh
@@ -487,6 +491,7 @@ jobs:
           bash tests/test-linux-ollama-port-override.sh
           bash tests/test-external-services.sh
           bash tests/test-gateway-only-linux.sh
+          bash tests/test-portal-no-webui-selection.sh
           bash tests/test-linux-devtools-opt-in.sh
           bash tests/test-dashboard-data-permissions.sh
           bash tests/test-extensions-library-copy.sh

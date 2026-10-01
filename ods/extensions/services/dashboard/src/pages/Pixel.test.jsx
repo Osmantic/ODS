@@ -1737,6 +1737,43 @@ describe('Pixel', () => {
     expect(screen.getAllByText('Recovered final answer')).toHaveLength(1)
   })
 
+  it('recovers an exact pre-submission 503 receipt and sends the next turn with a new identity', async () => {
+    const rejection = 'Portal did not start this attempt. Restore its connection and send your message again.'
+    const attempts = []
+    globalThis.fetch.mockImplementation(async (url, options) => {
+      if (url === '/api/pixel/status') return response({available:true})
+      if (url === '/api/pixel/chat/stream') {
+        const attempt = JSON.parse(options.body)
+        attempts.push(attempt)
+        if (attempts.length === 1) return response({detail:'Could not confirm the assistant name. Please retry.'}, 503)
+        return sseResponse([JSON.stringify({choices:[{delta:{content:'Connected again'}}]}), '[DONE]'])
+      }
+      if (url === '/api/pixel/chat/result') {
+        expect(JSON.parse(options.body)).toEqual({chat_id:attempts[0].chat_id,request_id:attempts[0].request_id})
+        return response({state:'interrupted',events:[
+          'data: '+JSON.stringify({choices:[{delta:{content:rejection}}]}),
+          'data: '+JSON.stringify({error:{message:rejection,type:'pixel_dashboard_error'}}),
+          'data: [DONE]', '',
+        ].join('\n')})
+      }
+      if (url === '/api/pixel/chat/activity') return response({state:'unknown'})
+      throw new Error(`Unexpected request ${url}`)
+    })
+    render(<Pixel />)
+    await screen.findByText('Available')
+    fireEvent.change(screen.getByPlaceholderText('Message Portal...'), {target:{value:'Check my files'}})
+    fireEvent.click(screen.getByTitle('Send'))
+    expect(await screen.findByText(rejection)).toBeVisible()
+    expect(screen.queryByText('Activity unknown')).not.toBeInTheDocument()
+    expect(screen.queryByTitle('Stop')).not.toBeInTheDocument()
+    fireEvent.change(screen.getByPlaceholderText('Message Portal...'), {target:{value:'Try again'}})
+    fireEvent.click(screen.getByTitle('Send'))
+    expect(await screen.findByText('Connected again')).toBeVisible()
+    expect(attempts).toHaveLength(2)
+    expect(attempts[1].chat_id).toBe(attempts[0].chat_id)
+    expect(attempts[1].request_id).not.toBe(attempts[0].request_id)
+  })
+
   it('does not call a retained zero-submission receipt completed or resubmit it on reload', async () => {
     localStorage.setItem('ods.pixel.chat.v1', JSON.stringify({schema:1,chatId:'not-started-chat',requestId:'not-started-attempt',inFlight:true,
       messages:[{role:'user',content:'Do my task'},{role:'assistant',content:''}]}))

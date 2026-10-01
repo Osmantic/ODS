@@ -1,7 +1,7 @@
 import {createHash} from 'node:crypto'
 import {fireEvent, render, screen, waitFor} from '@testing-library/react'
 import PixelPreviewSource from './PixelPreviewSource'
-import {loadArtifactBytes} from '../lib/pixelArtifacts'
+import {loadArtifactBytes, isArtifactPath} from '../lib/pixelArtifacts'
 
 const source = '<h1>Verified over LAN</h1>\n'
 const bytes = new TextEncoder().encode(source)
@@ -13,6 +13,16 @@ beforeEach(() => {
   vi.stubGlobal('fetch', vi.fn(async () => ({ok:true, arrayBuffer:async () => bytes.buffer})))
 })
 afterEach(() => {vi.restoreAllMocks(); vi.unstubAllGlobals()})
+
+it('verifies framework assets while rejecting reserved and unsafe paths', async () => {
+  for (const path of ['_next/static/app.js', '__next._full.txt']) {
+    expect(await loadArtifactBytes(preview, {path, bytes:bytes.length, sha256:digest(bytes)})).toBe(bytes.buffer)
+    expect(fetch).toHaveBeenLastCalledWith(`/pixel-preview/${preview.siteId}/${path}`, expect.any(Object))
+  }
+  for (const path of ['__ods_view__.html', '__pycache__/cache.js', '_next/../secret', '_next/.hidden', '/_next/app.js']) {
+    expect(isArtifactPath(path)).toBe(false)
+  }
+})
 
 it('verifies source and downloads the original bytes without SubtleCrypto', async () => {
   vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:verified')

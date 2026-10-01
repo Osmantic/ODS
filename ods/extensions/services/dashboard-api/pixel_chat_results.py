@@ -134,6 +134,18 @@ class ChatResultStore:
             self.db.execute("UPDATE attempts SET size=?, state='complete' WHERE owner=? AND chat=? AND attempt=?",
                             (len(data), *key))
 
+    def reject_before_submission(self, key, data):
+        """Atomically retain a known failure before any agent turn is submitted."""
+        with self.db:
+            row = self.get(key)
+            if row is None or row["state"] != "active" or row["size"] != 0:
+                raise ResultConflict("Pre-submission rejection requires an empty active attempt")
+            if len(data) > MAX_RESULT_BYTES:
+                raise ResultCapacity("Chat response exceeded retained-result capacity")
+            self.db.execute("INSERT INTO chunks VALUES(?,?,?,?,?)", (*key, 0, data))
+            self.db.execute("UPDATE attempts SET size=?, state='interrupted' WHERE owner=? AND chat=? AND attempt=?",
+                            (len(data), *key))
+
     def finish(self, key, state):
         if state not in {"complete", "interrupted", "cancelled", "unresolved"}:
             raise ValueError("Invalid receipt state")
