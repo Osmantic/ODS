@@ -174,7 +174,7 @@ Options:
 
 This will remove:
     - ODS service containers
-    - ODS Docker volumes (unless --keep-data)
+    - Verified ODS Docker volumes (unless --keep-data)
     - Installation directory ($INSTALL_DIR)
     - ODS-managed Pixel host services and private configuration
     - Systemd user services (opencode-web, openclaw timers)
@@ -414,7 +414,7 @@ if command -v docker &>/dev/null; then
 
     [[ "$KEEP_DATA" == "true" ]] && log_info "Keeping Docker volumes (--keep-data)"
 
-    log_ok "Docker cleanup complete"
+    log_ok "Verified Docker cleanup complete"
     log_info "Docker images and shared build cache retained"
 else
     log_warn "Docker not found — skipping container cleanup"
