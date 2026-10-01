@@ -145,8 +145,10 @@ ods_ensure_python_module() {
 
     if declare -f pkg_install >/dev/null 2>&1 && declare -f pkg_resolve >/dev/null 2>&1; then
         ai "Installing $display for the installer Python runtime..."
-        # shellcheck disable=SC2046
-        pkg_install $(pkg_resolve "$canonical_pkg") 2>>"${LOG_FILE:-/dev/null}" || true
+        local resolved_str parsed_pkgs=()
+        resolved_str="$(pkg_resolve "$canonical_pkg")"
+        read -ra parsed_pkgs <<<"$resolved_str"
+        pkg_install "${parsed_pkgs[@]}" 2>>"${LOG_FILE:-/dev/null}" || true
     fi
 
     if ods_python_has_module "$module" "$pycmd"; then
