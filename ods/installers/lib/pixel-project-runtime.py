@@ -161,6 +161,10 @@ def install_linux(source, config):
         common.protected_parent(path.parent, create=True)
         if os.path.lexists(path):
             common.protected_file(path)
+    # Earlier installs inherited restrictive umasks for this root-owned code
+    # directory. Repair only our validated runtime root, after the full input
+    # and installed-file preflight; the owner service must be able to traverse it.
+    PROGRAM_ROOT.chmod(0o755)
     for path, body in files.items():
         fd, temporary = tempfile.mkstemp(prefix='.' + path.name, dir=path.parent)
         try:
