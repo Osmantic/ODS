@@ -187,15 +187,15 @@ source checkout with `.\ods\installers\windows\ods.ps1 uninstall --force`.
 
 | Component | Purpose | Port | Backend |
 |-----------|---------|------|---------|
-| **llama-server** | LLM inference engine | Linux Docker: 11434 host / 8080 container; native macOS/Windows: 8080 host | Core GPU backend |
+| **llama-server** | LLM inference engine | Linux Docker: 11434 host / 8080 container; native macOS/Windows: 8080 host | Local-model installs |
 | **Open WebUI** | Alternative chat interface; add from the Extensions Library on qualified Linux installs | 3000 when enabled | Optional on qualified Linux hosts |
 | **Dashboard** | System status, GPU metrics, service health | 3001 | Core |
 | **Dashboard API** | Backend API for dashboard | 3002 | Core |
-| **LiteLLM** | Multi-model API gateway | 4000 | Recommended |
+| **LiteLLM** | Multi-model API gateway | 4000 | Included when the selected chat route needs it |
 | **Token Spy** | Token usage monitor | 3005 | Recommended |
 | **SearXNG** | Self-hosted web search | 8888 | Recommended |
 | **Portal** | Core conversational assistant in Dashboard; default chat on fresh qualified Linux installs | Private Unix socket; no host TCP port | Core feature on qualified hosts |
-| **Hermes Agent** | Independent general-purpose agent | 9120 via auth proxy; 9119 internal | Default |
+| **Hermes Agent** | Independent general-purpose agent | 9120 via auth proxy; 9119 internal | Optional |
 | **OpenClaw** | Deprecated legacy autonomous agent, opt-in during migration | 7860 | Deprecated optional |
 | **APE** | Agent Policy Engine for policy/audit controls | 7890 | Optional |
 | **OpenCode** | Browser IDE / coding assistant | 3003 | Optional host service |
