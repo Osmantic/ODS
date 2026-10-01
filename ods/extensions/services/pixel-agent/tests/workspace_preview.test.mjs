@@ -34,6 +34,16 @@ function succeededResponse(overrides = {}) {
   };
 }
 
+test('published feedback accepts literal framework route assets but rejects reserved routes',async()=>{
+  for(const [path,accepted] of [['_next/static/app/[slug]/page.js',true],
+    ['__ods_manifest__.json',false],['app/../file.js',false],['app/.env',false]]) {
+    const tool=createWorkspacePreviewTool({request:async()=>succeededResponse({
+      files:2,publishedPaths:[path,"index.html"].sort(),publishedPathsOmitted:0,publishedEmptyPaths:[],publishedEmptyPathsOmitted:0})});
+    const result=await tool.execute('framework-path',{relativeDirectory:'demo-site'});
+    assert.equal(!result.isError,accepted,path);
+  }
+});
+
 test('captures only an explicitly requested ancestor source directory and requires its receipt', async()=>{
   const source={schemaVersion:1,sourceId:'source-'+ 'c'.repeat(24),sha256:'c'.repeat(64),relativeDirectory:'demo',files:2,bytes:80,omitted:{directories:1,files:0,sensitiveFiles:0}};
   for(const directory of ['../demo','elsewhere','demo/dist/inside','demoSibling'])

@@ -8,6 +8,7 @@ import { dockerWorkspacePreviewRequest } from "./workspace-preview-docker.mjs";
 
 const SOCKET_PATH = "/run/ods-pixel-preview/control.sock";
 const PATH_COMPONENT = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+const ASSET_COMPONENT = /^(?!__ods_)(?!__pycache__$)[A-Za-z0-9_\[][A-Za-z0-9._\[\]-]{0,127}$/;
 const SITE_ID = /^site-[a-f0-9]{24}$/;
 const SHA256 = /^[a-f0-9]{64}$/;
 const MAX_RESPONSE_BYTES = 8192;
@@ -155,7 +156,7 @@ function validResponse(value, request) {
 function validPathList(paths, omitted) {
   return Array.isArray(paths) && paths.length <= 32 &&
     paths.every((path) => typeof path === "string" &&
-      path.length >= 1 && path.split("/").every((part) => PATH_COMPONENT.test(part))) &&
+      path.length >= 1 && path.split("/").every((part) => ASSET_COMPONENT.test(part))) &&
     paths.reduce((size, path) => size + path.length, 0) <= 2048 &&
     paths.every((path, index) => index === 0 || paths[index - 1] < path) &&
     Number.isInteger(omitted) && omitted >= 0;

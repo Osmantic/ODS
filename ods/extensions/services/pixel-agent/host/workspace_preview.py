@@ -43,6 +43,7 @@ SOCKET_PATH = pathlib.Path("/run/ods-pixel-preview/control.sock")
 HTTP_SOCKET_PATH = pathlib.Path("/run/ods-pixel-preview/http.sock")
 PROFILE_ID: str | None = None
 PATH_COMPONENT = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
+ASSET_COMPONENT = re.compile(r"(?!__ods_)(?!__pycache__$)[A-Za-z0-9_\[][A-Za-z0-9._\[\]-]{0,127}\Z")
 SITE_ID = re.compile(r"site-[a-f0-9]{24}")
 ALLOWED_SUFFIXES = frozenset(
     {
@@ -272,7 +273,7 @@ def _source_files(
                 or stat.S_ISLNK(info.st_mode)
                 or info.st_uid != owner_uid
                 or info.st_mode & 0o022
-                or PATH_COMPONENT.fullmatch(directory) is None
+                or ASSET_COMPONENT.fullmatch(directory) is None
             ):
                 raise PreviewError("unsafe preview directory")
         directories[:] = pruned
@@ -291,7 +292,7 @@ def _source_files(
                 or info.st_uid != owner_uid
                 or info.st_mode & 0o022
                 or not (1 if relative == "index.html" else 0) <= info.st_size <= MAX_FILE_BYTES
-                or any(PATH_COMPONENT.fullmatch(part) is None for part in relative.split("/"))
+                or any(ASSET_COMPONENT.fullmatch(part) is None for part in relative.split("/"))
             ):
                 raise PreviewError("unsafe preview file")
             if pathlib.PurePosixPath(relative).suffix.lower() not in ALLOWED_SUFFIXES:
@@ -397,7 +398,7 @@ def _capture_review_source(workspace, relative_directory, owner_uid, output_dire
                     if capture:
                         omitted['files'] += 1
                     continue
-                if PATH_COMPONENT.fullmatch(name) is None:
+                if ASSET_COMPONENT.fullmatch(name) is None:
                     raise PreviewError('unsafe source review path')
                 info = os.stat(name, dir_fd=directory, follow_symlinks=False)
                 path = prefix + name
@@ -793,7 +794,7 @@ def snapshot_manifest(previews: pathlib.Path, site_id: str) -> bytes:
     """Describe only a rehashed published snapshot, never the live workspace.
 
     The reserved HTTP filename cannot be supplied by a generated site (its
-    leading underscore is excluded by PATH_COMPONENT). Old snapshots work
+    reserved __ods_ prefix is excluded by ASSET_COMPONENT). Old snapshots work
     without migration or adding metadata files to their content hash.
     """
     if SITE_ID.fullmatch(site_id) is None:
@@ -931,6 +932,15 @@ class PreviewHandler(http.server.BaseHTTPRequestHandler):
         except UnicodeDecodeError:
             return None
         parts = decoded.lstrip("/").split("/")
+        # Framework exports request /_next/... and /games/... from the origin
+        # root. Only a dedicated public snapshot host can bind those requests;
+        # the authenticated internal proxy still requires an explicit site ID.
+        if (parts and SITE_ID.fullmatch(parts[0]) is None and not self.server.internal_proxy):
+            host = self.headers.get('Host', '')
+            suffix = f'.localhost:{self.server.preview_port}'
+            host_site = host[:-len(suffix)] if host.endswith(suffix) else ''
+            if SITE_ID.fullmatch(host_site):
+                parts.insert(0, host_site)
         if len(parts) < 1 or SITE_ID.fullmatch(parts[0]) is None:
             return None
         site_id = parts[0]
@@ -975,7 +985,7 @@ class PreviewHandler(http.server.BaseHTTPRequestHandler):
         styled_view = parts[1:] == ["__ods_view__.html"]
         if styled_view:
             parts[-1] = "index.html"
-        if any(PATH_COMPONENT.fullmatch(part) is None for part in parts[1:]):
+        if any(ASSET_COMPONENT.fullmatch(part) is None for part in parts[1:]):
             return None
         target = self.server.preview_root.joinpath(*parts)  # type: ignore[attr-defined]
         try:
