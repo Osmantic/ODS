@@ -152,6 +152,18 @@ it('offers Add for qualified bundled services while keeping the Dashboard protec
   expect(screen.queryByRole('button',{name:'Disable Dashboard'})).toBeNull()
 })
 
+it('offers Whisper and Kokoro separately while WebUI keeps its own control', async () => {
+  installFetchMock({agent_available:true,extensions:[
+    {id:'whisper',name:'Whisper (STT)',source:'core',status:'disabled',library_manageable:true,library_selected:false,features:[baseFeature]},
+    {id:'tts',name:'Kokoro (TTS)',source:'core',status:'disabled',library_manageable:true,library_selected:false,features:[]},
+    {id:'open-webui',name:'Open WebUI',source:'core',status:'disabled',features:[]},
+  ],summary:baseSummary({total:3})})
+  render(<Extensions compact />)
+  expect(await screen.findByRole('button',{name:'Add Whisper (STT)'})).toBeVisible()
+  expect(screen.getByRole('button',{name:'Add Kokoro (TTS)'})).toBeVisible()
+  expect(screen.queryByRole('button',{name:'Add Open WebUI'})).toBeNull()
+})
+
 it('shows bundled Perplexica in Available and asks before adding SearXNG', async () => {
   const catalog = {agent_available:true,extensions:[
     {id:'perplexica',name:'Perplexica (Deep Research)',source:'core',status:'disabled',
