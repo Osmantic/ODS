@@ -19,7 +19,9 @@ export ODS_SUDO_AVAILABLE="${ODS_SUDO_AVAILABLE:-}"
 
 # ods_sudo_available: true when privileged commands can run without a prompt.
 ods_sudo_available() {
-    [[ ${EUID:-$(id -u)} -eq 0 ]] && return 0
+    local uid
+    uid="${EUID:-$(id -u 2>/dev/null || echo 1000)}"
+    [[ "$uid" -eq 0 ]] && return 0
     [[ "${ODS_SUDO_AVAILABLE:-true}" == "true" ]] && return 0
     return 1
 }
