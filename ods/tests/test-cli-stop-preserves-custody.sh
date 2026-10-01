@@ -25,4 +25,23 @@ cmd_stop perplexica
 [[ "${calls[*]}" == 'Stopping perplexica -f docker-compose.base.yml -f docker-compose.cpu.yml stop perplexica' ]] ||
     { printf '%s\n' 'Service stop changed unexpectedly'; exit 1; }
 
-printf '%s\n' 'PASS: whole-stack and service stop preserve Compose containers'
+# The native macOS CLI has its own whole-stack stop path.
+source <(sed -n '/^cmd_stop() {/,/^}/p' "$root/installers/macos/ods-macos.sh")
+test_install() { :; }
+ai() { :; }
+ai_ok() { :; }
+docker_calls=()
+docker() { docker_calls=("$@"); }
+native_stops=0
+stop_native_llama() { native_stops=$((native_stops + 1)); }
+LLAMA_SERVER_PID_FILE="$install/llama.pid"
+printf '%s\n' 'fixture' > "$LLAMA_SERVER_PID_FILE"
+
+cmd_stop
+[[ "${docker_calls[*]}" == 'compose -f docker-compose.base.yml -f docker-compose.cpu.yml stop' ]] ||
+    { printf '%s\n' 'macOS stop removed container ownership proof'; exit 1; }
+[[ "$native_stops" -eq 1 ]] ||
+    { printf '%s\n' 'macOS whole-stack stop skipped native llama shutdown'; exit 1; }
+
+rm -f -- "$LLAMA_SERVER_PID_FILE"
+printf '%s\n' 'PASS: Linux and macOS whole-stack stop preserve Compose containers'

@@ -413,16 +413,11 @@ docker compose logs n8n
 In the workflow editor, toggle must be ON (green).
 
 ### Docker volumes taking too much space
-Clean up unused volumes:
-```bash
-docker volume prune
-```
-
-Or remove everything (destructive):
-```bash
-cd ~/ods
-docker compose $(cat .compose-flags) down -v --remove-orphans
-```
+Use the ODS uninstaller with `--keep-data` if you want to remove the
+application while keeping its volumes. For a full ODS removal, run
+`./ods-uninstall.sh --force`; it checks volume ownership before deleting
+data. If it cannot prove ownership, it leaves the volumes for individual
+review. Avoid Docker-wide volume cleanup commands on a host with other apps.
 
 ---
 
