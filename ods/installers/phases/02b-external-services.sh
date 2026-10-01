@@ -25,10 +25,11 @@ if [[ "$_external_disable" != "true" && -n "${EXTERNAL_LLM_API_KEY_FILE:-}" ]] &
     return 1
 fi
 
-if [[ "$_external_disable" != "true" && -z "$_external_url" && -f "${INSTALL_DIR:-}/.env" ]]; then
-    _external_url="$(external_llm_env_value "$INSTALL_DIR/.env" EXTERNAL_LLM_URL || true)"
-    _external_provider="$(external_llm_env_value "$INSTALL_DIR/.env" EXTERNAL_LLM_PROVIDER || true)"
-    _external_model="$(external_llm_env_value "$INSTALL_DIR/.env" EXTERNAL_LLM_MODEL || true)"
+local_target_env="${INSTALL_DIR:-.}/.env"
+if [[ "$_external_disable" != "true" && -z "$_external_url" && -f "$local_target_env" ]]; then
+    _external_url="$(external_llm_env_value "$local_target_env" EXTERNAL_LLM_URL || true)"
+    _external_provider="$(external_llm_env_value "$local_target_env" EXTERNAL_LLM_PROVIDER || true)"
+    _external_model="$(external_llm_env_value "$local_target_env" EXTERNAL_LLM_MODEL || true)"
     if [[ -n "$_external_url" ]]; then
         log "Reusing the external LLM selection from the existing installation"
     fi
