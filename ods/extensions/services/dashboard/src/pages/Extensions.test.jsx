@@ -166,6 +166,9 @@ it('shows bundled Perplexica in Available and asks before adding SearXNG', async
     if (target === '/api/extensions/perplexica/enable' && options.method === 'POST') {
       return makeJsonResponse({detail:{missing_dependencies:['searxng']}}, {ok:false,status:400})
     }
+    if (target === '/api/extensions/perplexica/enable?auto_enable_deps=true' && options.method === 'POST') {
+      return makeJsonResponse({message:'Perplexica and SearXNG selected'})
+    }
     throw new Error(`Unmocked fetch: ${target}`)
   })
   vi.stubGlobal('fetch', fetchMock)
@@ -180,6 +183,13 @@ it('shows bundled Perplexica in Available and asks before adding SearXNG', async
   expect(fetchMock).toHaveBeenCalledWith('/api/extensions/perplexica/enable', expect.objectContaining({method:'POST'}))
   fireEvent.click(screen.getByRole('button',{name:'Cancel'}))
   expect(fetchMock).not.toHaveBeenCalledWith('/api/extensions/perplexica/enable?auto_enable_deps=true', expect.anything())
+  fireEvent.click(screen.getByRole('button',{name:'Add Perplexica (Deep Research)'}))
+  fireEvent.click(screen.getByRole('button',{name:'Enable'}))
+  fireEvent.click(await screen.findByRole('button',{name:'Enable All'}))
+  await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
+    '/api/extensions/perplexica/enable?auto_enable_deps=true',
+    expect.objectContaining({method:'POST'}),
+  ))
 })
 
 it('lets an errored bundled n8n be retried or disabled without a remove control', async () => {
