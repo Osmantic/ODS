@@ -252,6 +252,9 @@ if command -v docker >/dev/null 2>&1; then
             log_error "Saved extension recipes require review; installation untouched. Run 'ods disable <extension>' for each extension named above (it stops it safely and keeps its data), then retry uninstall."
             exit 1
         }
+    else
+        log_error "No Compose files resolved; installation untouched. Restore the installation's Compose files, then retry uninstall."
+        exit 1
     fi
 fi
 
@@ -374,44 +377,18 @@ if command -v docker &>/dev/null; then
     fi
     compose_down_args+=(--remove-orphans)
 
-    if [[ -n "$compose_flags" ]]; then
-        validate_uninstall_compose "${compose_args[@]}" || {
-            log_error "Saved extension recipes changed during uninstall; remaining installation retained."
-            exit 1
-        }
-        docker compose "${compose_args[@]}" "${compose_down_args[@]}" 2>/dev/null || \
-            log_warn "docker compose cleanup failed; falling back to container/volume discovery"
-    else
-        log_warn "No compose files resolved; falling back to container/volume discovery"
+    validate_uninstall_compose "${compose_args[@]}" || {
+        log_error "Saved extension recipes changed during uninstall; remaining installation retained."
+        exit 1
+    }
+    # Unrelated containers and volumes can share the ods prefix. Never widen
+    # cleanup to name-based discovery, including when Compose reports failure.
+    if ! docker compose "${compose_args[@]}" "${compose_down_args[@]}" 2>/dev/null; then
+        log_error "Docker Compose cleanup failed; remaining installation retained. Resolve the Compose error, then retry uninstall."
+        exit 1
     fi
 
-    # Remove any remaining ods-* containers.
-    # Docker's name filter matches anywhere in the name, so filter on the
-    # printed names instead: only this project's ods-<service> containers.
-    # Native Pixel retirement already stopped and receipt-bound these archived
-    # sandboxes. Keep their writable layers available for rollback.
-    ods_containers=$(docker ps -a --format "{{.Names}}" 2>/dev/null | grep -E '^ods-' |
-        grep -Ev '^ods-pixel-retired-[a-f0-9]{16}$' || true)
-    if [[ -n "$ods_containers" ]]; then
-        log_info "Removing ODS containers..."
-        echo "$ods_containers" | xargs docker rm -f 2>/dev/null || true
-    fi
-
-    # Remove ods-specific Docker volumes unless data preservation was requested.
-    if [[ "$KEEP_DATA" == "true" ]]; then
-        log_info "Keeping Docker volumes (--keep-data)"
-    else
-        # Compose names project volumes ods_<volume> (docker-compose.base.yml
-        # declares `name: ods`); older installs also produced ods-<volume>.
-        # An unanchored "ods" filter would additionally select unrelated
-        # volumes that merely contain it (pods, methods, ...) and this branch
-        # removes what it finds, so anchor on the project prefix.
-        ods_volumes=$(docker volume ls --format "{{.Name}}" 2>/dev/null | grep -E '^ods[_-]' || true)
-        if [[ -n "$ods_volumes" ]]; then
-            log_info "Removing Docker volumes..."
-            echo "$ods_volumes" | xargs docker volume rm 2>/dev/null || true
-        fi
-    fi
+    [[ "$KEEP_DATA" == "true" ]] && log_info "Keeping Docker volumes (--keep-data)"
 
     log_ok "Docker cleanup complete"
     log_info "Docker images and shared build cache retained"
