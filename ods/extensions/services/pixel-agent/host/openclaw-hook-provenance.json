@@ -1,0 +1,12 @@
+{
+  "version": "2026.6.33",
+  "sourceSha256": "ae66d512e0a0bd224a82eecf4e5829ccc46f0dab9779053a4c2b91c3613cf54b",
+  "patchedSha256": "978a8e1b5767a96e2e1304a6968bec97398da5d32f460d570433983131108e82",
+  "previousReplacements": {},
+  "replacements": [
+    [
+      "\tconst channelId = resolveAgentHookChannelId(params);\n\treturn {\n\t\tchannel,",
+      "\tconst channelId = resolveAgentHookChannelId(params);\n\t// ODS: retain trusted routed-turn provenance for owner-intent classification.\n\t// Project only bounded identifiers; never copy prompt text or arbitrary fields.\n\tconst source = params.inputProvenance;\n\tconst inputProvenance = source?.kind === \"inter_session\" &&\n\t\ttypeof source.sourceTool === \"string\" && source.sourceTool.length <= 128 &&\n\t\ttypeof source.sourceSessionKey === \"string\" && source.sourceSessionKey.length <= 512\n\t\t? Object.freeze({kind: source.kind, sourceTool: source.sourceTool, sourceSessionKey: source.sourceSessionKey}) : void 0;\n\treturn {\n\t\t...(inputProvenance ? {inputProvenance} : {}),\n\t\tchannel,"
+    ]
+  ]
+}

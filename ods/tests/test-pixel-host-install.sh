@@ -437,6 +437,13 @@ INSTALL_DIR="$repair_install" \
     _ods_pixel_mark_verified_installing "$owner" "$repair_home" "$repair_contract" "$repair_pixel"
 if (
     INSTALL_DIR="$repair_install"
+    systemctl() {
+        case "$*" in
+            *"-p ProtectHome --value") printf 'tmpfs\n' ;;
+            *"-p ProtectSystem --value") printf 'strict\n' ;;
+            *) return 1 ;;
+        esac
+    }
     ENABLE_PIXEL_RUNTIME=true
     PIXEL_SERVICE_USER="$owner"
     DOCKER_COMPOSE_CMD=true
@@ -793,6 +800,10 @@ _ods_pixel_installed_gateway_port() {
 if (
     restart_state="$restart_probe/state"
     systemctl() {
+        case "$*" in
+            *"-p ProtectHome --value") printf "tmpfs\n"; return 0 ;;
+            *"-p ProtectSystem --value") printf "strict\n"; return 0 ;;
+        esac
         if [[ "$1" == show ]]; then
             if [[ -e "$restart_state" ]]; then
                 printf '%s\n' 4242
@@ -829,6 +840,10 @@ if (
     retry_calls="$restart_probe/retry-calls"
     : > "$retry_calls"
     systemctl() {
+        case "$*" in
+            *"-p ProtectHome --value") printf "tmpfs\n"; return 0 ;;
+            *"-p ProtectSystem --value") printf "strict\n"; return 0 ;;
+        esac
         if [[ "$1" == show ]]; then
             if [[ -e "$retry_state" ]]; then
                 printf '%s\n' 4343
@@ -868,6 +883,10 @@ if (
     persistent_calls="$restart_probe/persistent-calls"
     : > "$persistent_calls"
     systemctl() {
+        case "$*" in
+            *"-p ProtectHome --value") printf "tmpfs\n"; return 0 ;;
+            *"-p ProtectSystem --value") printf "strict\n"; return 0 ;;
+        esac
         if [[ "$1" == show ]]; then
             if [[ -e "$persistent_state" ]]; then
                 printf '%s\n' 4444
@@ -907,6 +926,10 @@ fi
 
 if (
     systemctl() {
+        case "$*" in
+            *"-p ProtectHome --value") printf "tmpfs\n"; return 0 ;;
+            *"-p ProtectSystem --value") printf "strict\n"; return 0 ;;
+        esac
         [[ "$1" == show ]] && printf '%s\n' 0
     }
     ods_sudo_available() { return 1; }
@@ -938,6 +961,10 @@ chmod 0600 "$ingress_restart_answers" "$ingress_restart_status"
 if (
     ingress_restart_state="$restart_probe/ingress-restarted"
     systemctl() {
+        case "$*" in
+            *"-p ProtectHome --value") printf "tmpfs\n"; return 0 ;;
+            *"-p ProtectSystem --value") printf "strict\n"; return 0 ;;
+        esac
         if [[ "$1" == is-active ]]; then
             return 0
         fi
@@ -1016,12 +1043,28 @@ fi
 
 # A normal upgrade has no shell-level Pixel ref. Its persisted bundled ref is
 # the old release, so the new verified bundle must advance it before the
-# pre-copy transition retires the old marker from the present checkout.
+# pre-copy transition verifies the old checkout and acquires a source hold.
 printf 'PIXEL_SOURCE_URL=bundled\nPIXEL_SOURCE_REF=%s\n' \
     "$previous_source_ref" > "$transition_install/.env"
 phase06_pre_copy="$(sed -n '/^    _env_existing=""/,/^    unset _phase06_pixel_marker _phase06_pixel_source_transition/p' \
     "$ROOT/installers/phases/06-directories.sh")"
 _phase06_pre_copy_fixture() { eval "$phase06_pre_copy"; }
+_phase06_source_hold_fixture() {
+    # Disposable adapters: exercise the literal phase without sudo, services,
+    # source replacement or the protected coordinator on the test host.
+    ods_sudo() { return 1; }
+    _ods_pixel_openclaw_bin() { printf '%s\n' /fixture/openclaw; }
+    _ods_pixel_install_access_service() { printf '%s\n' guard >> "$INSTALL_DIR/upgrade-steps"; }
+    _ods_pixel_source_upgrade() {
+        printf '%s\n' "$1" >> "$INSTALL_DIR/upgrade-steps"
+        case "$1" in
+            status) printf '%s\n' '{"transaction":null,"phase":"staged"}' ;;
+            hold) printf '%064d\n' 1 ;;
+            stage|copy|downstream) ;;
+            *) return 1 ;;
+        esac
+    }
+}
 if (
     unset PIXEL_SOURCE_URL PIXEL_SOURCE_REF PIXEL_SOURCE_DIR
     HOME="$transition_home"
@@ -1034,11 +1077,14 @@ if (
     ods_pixel_install_owner() { printf '%s\n' "$owner"; }
     ods_pixel_owner_home() { printf '%s\n' "$transition_home"; }
     ods_pixel_uninstall_managed() { : > "$transition_install/retired"; }
+    _phase06_source_hold_fixture
     source "$ROOT/lib/safe-env.sh"
     _phase06_pre_copy_fixture
     [[ "$_phase06_requested_pixel_url" == bundled \
         && "$_phase06_requested_pixel_ref" == "$ODS_PIXEL_BUNDLED_REF" \
-        && -f "$transition_install/retired" ]]
+        && ! -e "$transition_install/retired" \
+        && "$(cat "$INSTALL_DIR/upgrade-steps")" == $'stage\nstatus\nguard\nhold\ncopy\ndownstream' \
+        && "$ODS_PIXEL_SOURCE_TRANSACTION" == "$(printf '%064d' 1)" ]]
 ); then
     pass "persisted old bundled Pixel ref advances and transitions before source copy"
 else
@@ -1107,16 +1153,18 @@ if (
         printf '%s\n' "$legacy_checkout"
     }
     ods_pixel_uninstall_managed() { : > "$legacy_install/retired"; }
+    _phase06_source_hold_fixture
     source "$ROOT/lib/safe-env.sh"
     _phase06_pre_copy_fixture
     [[ "$_phase06_requested_pixel_url" == bundled \
         && "$_phase06_requested_pixel_ref" == "$ODS_PIXEL_BUNDLED_REF" \
         && -f "$legacy_install/old-checkout-verified" \
-        && -f "$legacy_install/retired" ]]
+        && ! -e "$legacy_install/retired" \
+        && "$(cat "$INSTALL_DIR/upgrade-steps")" == $'stage\nstatus\nguard\nhold\ncopy\ndownstream' ]]
 ); then
-    pass "canonical legacy environment and marker retire from local checkout before source copy"
+    pass "canonical legacy environment verifies local checkout and holds source upgrade"
 else
-    fail "canonical legacy environment did not retire its old managed Pixel safely"
+    fail "canonical legacy environment did not safely hold its managed Pixel source upgrade"
 fi
 printf 'PIXEL_SOURCE_URL=https://example.invalid/custom-pixel.git\nPIXEL_SOURCE_REF=%s\n' \
     b33730436baf5d98bf58f7d57c090318fe19f433 > "$transition_install/.env"
@@ -2751,6 +2799,10 @@ _ods_pixel_installed_gateway_port() {
 }
 systemctl() {
     case "$*" in
+        *"-p ProtectHome --value") printf "tmpfs\n"; return 0 ;;
+        *"-p ProtectSystem --value") printf "strict\n"; return 0 ;;
+    esac
+    case "$*" in
         'show openclaw-gateway.service -p MainPID --value')
             local count
             read -r count < "$gateway_mock_root/mainpid-calls"
@@ -2792,11 +2844,24 @@ ods_pixel_run_as_owner() {
 check _ods_pixel_restart_gateway_and_verify "$owner" "$reconcile_home" /verified/pixel
 check test "$(cat "$gateway_mock_root/kills")" = '-TERM 111'
 check grep -F '/verified/pixel/pixel verify' "$gateway_mock_root/owner-runs"
+printf '0\n' > "$gateway_mock_root/mainpid-calls"
+verification_transaction=$(printf 'a%.0s' {1..64})
+check _ods_pixel_restart_gateway_and_verify "$owner" "$reconcile_home" /verified/pixel "$verification_transaction"
+check grep -F "/verified/pixel/pixel verify --ods-model-transaction $verification_transaction" "$gateway_mock_root/owner-runs"
+if _ods_pixel_restart_gateway_and_verify "$owner" "$reconcile_home" /verified/pixel invalid >/dev/null 2>&1; then
+    fail "invalid verification transaction rejected"
+else
+    pass "invalid verification transaction rejected"
+fi
 
 # A mismatched systemd User must fail before any signal is sent.
 printf '0\n' > "$gateway_mock_root/mainpid-calls"
 : > "$gateway_mock_root/kills"
 systemctl() {
+    case "$*" in
+        *"-p ProtectHome --value") printf "tmpfs\n"; return 0 ;;
+        *"-p ProtectSystem --value") printf "strict\n"; return 0 ;;
+    esac
     case "$*" in
         'show openclaw-gateway.service -p MainPID --value') printf '111\n' ;;
         'show openclaw-gateway.service -p User --value') printf 'someone-else\n' ;;
@@ -2879,7 +2944,8 @@ assert "api.on(\"before_prompt_build\"" in text
 assert "api.on(\"model_call_started\"" in text
 assert "api.on(\"before_agent_finalize\"" in text
 assert "api.on(\"tool_result_persist\"" in text
-assert "promptContractForAgent(context, AGENT_ID, event, {" in text
+assert "promptContractForAgent(context, AGENT_ID, ownerEvent, {" in text
+assert "ownerEvent = toolLoopGuard.ownerIntentEventForRun(context?.runId ?? event?.runId, event)" in text
 assert "verificationStatus: toolLoopGuard.verificationStatus(context?.runId)" in text
 ' "$plugin/index.js"
 # Dollar expressions below are literal source-code assertions.
@@ -2909,7 +2975,7 @@ assert text.count("pixel\" ops-broker --confirm") == 2
 assert "Pixel could not install and verify the isolated Operations Broker" in text
 assert text.count("_ods_pixel_verify_operations_policy_custody \"$owner\" \"$home\" \"$operations_policy\"") == 2
 assert "PATH=\"$home/.openclaw/.ods-exec-control:$PATH\"" in text
-assert "pixel\" apply --confirm </dev/null &&" in text
+assert text.count("pixel\" apply --confirm \"${release_arguments[@]}\" </dev/null &&") == 2
 assert "_ods_pixel_write_operations_policy" in text
 assert "Could not write the owner-private ODS Pixel Operations policy" in text
 assert "_ods_pixel_write_extension_catalog" in text
@@ -3028,7 +3094,7 @@ stop = resume.index("systemctl stop openclaw-gateway.service")
 retire = resume.index("_ods_pixel_recreate_agent_sandbox \"$owner\" \"$home\" \"$openclaw_bin\"")
 start = resume.index("systemctl start openclaw-gateway.service", retire)
 health = resume.index("_ods_pixel_wait_gateway", start)
-verify = resume.index("\"$pixel_root/pixel\" verify", health)
+verify = resume.index("_ods_pixel_verify_current_runtime", health)
 assert stop < retire < start < health < verify
 helper_start = text.index("_ods_pixel_recreate_agent_sandbox()")
 helper_end = text.index("_ods_pixel_apply_runtime_budget()", helper_start)
@@ -3042,7 +3108,7 @@ for diagnostic in (
     "failed verification",
 ):
     assert diagnostic in resume
-assert "pixel\" verify >>\"$pixel_log\"" in text
+assert "_ods_pixel_verify_current_runtime \"$owner\" \"$home\" \"$pixel_root\" >>\"$pixel_log\"" in text
 assert "if ! _ods_pixel_install_ingress" in text
 assert "systemctl restart pixel-ingress.service" in text
 assert "RestartForceExitStatus --value" in text
@@ -3072,7 +3138,8 @@ assert "--state-dir \"$home/.openclaw/ods-runtime-patches/sandbox-mkdir-$mkdir_m
 managed.extend(["sandbox-mkdir-bridge", "sandbox-mkdir-secure"])
 known = installer[foreign_restore:own_repair].split("--known", 1)[1].split(">>", 1)[0]
 assert sorted(known.replace("\\", " ").split()) == sorted(managed)
-assert len(set(managed)) == len(managed) == 13
+assert len(set(managed)) == len(managed) == 18
+assert {"context-usage", "yield-usage", "compaction-empty", "compaction-no-work", "hook-provenance"}.issubset(managed)
 assert "command-attempt-warning" in managed
 assert "--command-attempt-warning" in installer
 assert "host/openclaw-command-attempt-warning.json" in installer
@@ -3219,6 +3286,9 @@ run_reuse_auth_branch() {
         ai() { :; }
         ai_bad() { :; }
         journal() { printf '%s\n' "$*" >>"$reuse_log"; }
+        # This extracted branch exercises ordering; the transaction-aware
+        # verifier has separate tests. Never invoke its host probes here.
+        _ods_pixel_verify_current_runtime() { ods_pixel_run_as_owner "$1" "$2" "$3/pixel" verify; }
         ods_pixel_run_as_owner() {
             local source_owner="$1" target_home="$2"; shift 2
             if [[ "${2:-}" == ops-broker ]]; then
@@ -3302,6 +3372,7 @@ inject_reuse_action_failure() {
         ai() { :; }
         ai_bad() { last_bad="$1"; }
         journal() { printf '%s\n' "$*" >>"$reuse_log"; }
+        _ods_pixel_verify_current_runtime() { ods_pixel_run_as_owner "$1" "$2" "$3/pixel" verify; }
         ods_pixel_run_as_owner() {
             shift 2
             if [[ "${2:-}" == ops-broker ]]; then return 0; fi

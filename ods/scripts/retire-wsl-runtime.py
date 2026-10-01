@@ -82,10 +82,10 @@ def retire(install_dir: Path, *, validate_only: bool = False) -> dict:
     # All Windows ownership checks precede the first mutation. Disable and
     # settle sign-in startup before stopping Lemonade or retiring Pixel, so a
     # boot coordinator cannot restart services during their removal.
-    startup = wsl_lemonade.disable_startup(root, values, validate_only=True)
+    startup = wsl_lemonade.disable_startup(root, values, validate_only=True, retire_relay=True)
     if validate_only:
         return {'state': 'validated', 'startup': startup['state']}
-    startup = wsl_lemonade.disable_startup(root, values)
+    startup = wsl_lemonade.disable_startup(root, values, retire_relay=True)
     if managed and managed['managed']:
         wsl_lemonade.stop(root, values, managed['planDigest'])
     return {'state': 'retired', 'startup': startup['state']}

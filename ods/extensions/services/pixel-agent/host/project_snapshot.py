@@ -12,7 +12,11 @@ MAX_FILE = 8 * 1024 * 1024
 MAX_TOTAL = 64 * 1024 * 1024
 MAX_FILES = 2048
 SKIP = frozenset({".git", ".hg", ".svn", "node_modules", ".next", "dist", "out",
-                  ".npmrc", ".yarnrc", ".yarnrc.yml", ".ssh", ".aws", ".npm", "ods-builds"})
+                  ".npmrc", ".yarnrc", ".yarnrc.yml", ".ssh", ".aws", ".npm", "ods-builds",
+                  ".venv", "venv", "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache",
+                  ".tox", ".nox", ".hypothesis", ".cache", ".uv", ".pip", ".pypirc",
+                  "pip.conf", "pip.ini", "uv.toml"})
+RESERVED = frozenset({".ods-python-env", ".ods-python-wheels"})
 
 
 class UnsafeProjectSource(ValueError):
@@ -72,6 +76,8 @@ def snapshot_project(workspace: str, relative: str) -> dict:
                 if not _component(name):
                     raise UnsafeProjectSource("invalid project filename")
                 path = prefix + name
+                if name in RESERVED:
+                    raise UnsafeProjectSource("project source uses a reserved executor path")
                 if name in SKIP or name == ".env" or name.startswith(".env."):
                     omitted.append(path)
                     if len(omitted) > MAX_FILES:

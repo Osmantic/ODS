@@ -5738,6 +5738,39 @@ function localPreviewPolicyText(text) {
     .replace(/\b(?:n[aã]o|nunca)\s+(?:publique|publicar|publique novamente)\s+fora\s+do\s+ODS\b(?=\s*(?:[.!?;]|$))/gi, ' ');
 }
 
+// Owner phrasings that make delivery optional. The preparation verbs are a
+// closed list on purpose: "No need to explain, publish it" must stay a
+// publication request, so an arbitrary verb never joins the declined list.
+const OPTIONAL_DELIVERY_PATTERNS = (() => {
+  const negator = String.raw`(?:no\s+need\s+to|(?:do\s+not|don['’]t)\s+(?:need|have)\s+to|need\s+not|needn['’]t)`;
+  const preparation = String.raw`(?:(?:build|compile|run|test|install|bundle|package|lint)\s*(?:,\s*(?:(?:and|or)\s+)?|(?:and|or)\s+))*`;
+  const delivery = String.raw`(?:publish|republish|preview|display|serve|deploy)`;
+  const ptNegator = String.raw`nao\s+(?:precisa|precisamos|e\s+necessario|ha\s+necessidade\s+de)`;
+  const ptPreparation = String.raw`(?:(?:compilar|construir|executar|testar|instalar)\s*(?:,\s*(?:(?:e|ou)\s+)?|(?:e|ou)\s+))*`;
+  const ptDelivery = String.raw`(?:publicar|republicar|mostrar|abrir\s+(?:uma?\s+)?previa)`;
+  const gerund = String.raw`(?:publish(?:ing)?|republish(?:ing)?|preview(?:ing)?|display(?:ing)?|serving|deploy(?:ing|ment)?|publication)`;
+  return [
+    new RegExp(String.raw`\b${negator}\s+${preparation}${delivery}\b`, 'i'),
+    new RegExp(String.raw`\bno\s+need\s+for\s+(?:an?\s+)?(?:preview|publication|publishing|deployment)\b`, 'i'),
+    new RegExp(String.raw`\b${gerund}\s+(?:is\s+not|isn['’]t)\s+(?:necessary|required|needed)\b`, 'i'),
+    new RegExp(String.raw`\b${ptNegator}\s+${ptPreparation}${ptDelivery}\b`, 'i'),
+  ];
+})();
+
+function ownerDeclinesPreviewDelivery(text) {
+  // Optional build work must not become mandatory publication after a JSX/HTML
+  // write. Match only a coordinated delivery verb, not another clause's task.
+  const prose = workspacePreviewInstructionText(text).normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  let optional = false;
+  for (const clause of prose.split(/[!?;\n]+|\.(?=\s|$)|\b(?:but|however|instead|then|mas|porem)\b/i)) {
+    if (OPTIONAL_DELIVERY_PATTERNS.some(pattern => pattern.test(clause))) optional = true;
+    // A later independent, explicit publication command still has to be
+    // verified. This is not permission to override an actual "do not publish".
+    else if (hasExplicitWorkspacePreviewDirective(clause)) optional = false;
+  }
+  return optional;
+}
+
 function ownerForbidsWorkspacePreview(messages, prompt) {
   const text = localPreviewPolicyText(currentOwnerIntentText(messages, prompt))
     .replace(/(?:\x60{3}|~{3})[\s\S]*?(?:\x60{3}|~{3})/g, " ")
@@ -5752,7 +5785,7 @@ function ownerForbidsWorkspacePreview(messages, prompt) {
   const coordinatedProhibition = text
     .split(/[!?;\n]+|\.(?=\s|$)|\b(?:but|however|instead|then)\b/i)
     .some((clause) => /\b(?:do\s+not|don['’]t|never|must\s+not|should\s+not|avoid|skip|without)\b[^.!?;\n]{0,160}\b(?:and|or)\s+(?:show(?:ing)?|preview(?:ing)?|view(?:ing)?|open(?:ing)?|serv(?:e|ing)|publish(?:ing)?|republish(?:ing)?|display(?:ing)?)\b/i.test(clause));
-  if (coordinatedProhibition) return true;
+  if (coordinatedProhibition || ownerDeclinesPreviewDelivery(text)) return true;
   return portuguesePreviewForbidden(text) || /\b(?:only|just)\s+(?:the\s+)?(?:code|source(?:\s+code)?)\b/i.test(text) || /\b(?:do\s+not|don['’]t|never|must\s+not|should\s+not|avoid|skip|without)\s+(?:(?:try|attempt)\s+to\s+)?(?:(?:create|build|edit|write|run|execute)\s*(?:,\s*|and\s+|or\s+))*(?:show(?:ing)?|preview(?:ing)?|view(?:ing)?|open(?:ing)?|serv(?:e|ing)|publish(?:ing)?|republish(?:ing)?|display(?:ing)?)\b/i.test(text);
 }
 
@@ -6006,7 +6039,7 @@ function clauseRequestsVisualArtifact(clause, actionPattern, targetPattern) {
 export function userMessageRequestsWorkspacePreview(messages, prompt = undefined) {
   const text = workspacePreviewInstructionText(currentOwnerIntentText(messages, prompt));
   if (!text) return false;
-  if (portuguesePreviewForbidden(text)) return false;
+  if (portuguesePreviewForbidden(text) || ownerDeclinesPreviewDelivery(text)) return false;
   // Classify visual targets and actions from the same positive request text.
   // A no-website constraint on a Python task is not a website request. Keep
   // independent actions after "but", "instead", "then", or a sentence boundary.
@@ -7543,6 +7576,10 @@ export function createToolLoopGuard({
     // policy and deterministic routing active from runId alone; operations
     // that truly need a session still fail closed on the optional sessionId.
     const state = runId ? stateFor(runId) : undefined;
+    if (state?.subagentOwnerContextMissing) return {
+      block: true,
+      blockReason: "Pixel could not recover the owner's request for this subagent continuation. Start a fresh owner message; child results cannot authorize tools.",
+    };
     // Every tool stays blocked after the budget stops the response. Until the
     // model has seen the finalization instruction, the refusal carries it; a
     // tool call during the answer turn ends the run at this boundary (the
@@ -9497,6 +9534,26 @@ export function createToolLoopGuard({
 
   function observeRun(context, agentId = "pixel", event = undefined, capabilities = undefined) {
     if (context?.agentId !== agentId) return;
+    // The pinned runtime supplies this metadata directly from the routed turn.
+    // Never infer provenance from the child-controlled prompt or its markers.
+    const provenance = context.inputProvenance;
+    if (event && provenance?.kind === 'inter_session' && provenance.sourceTool === 'subagent_announce' &&
+        typeof provenance.sourceSessionKey === 'string' && provenance.sourceSessionKey.startsWith(`agent:${agentId}:subagent:`)) {
+      const historyOwner = Array.isArray(event.messages) ? [...event.messages].reverse().find(message =>
+        message?.role === 'user' && !message.provenance) : undefined;
+      // Reuse the existing bounded run registry, only when both session
+      // identities agree. No new persistent cache or child-derived authority.
+      const prior = activeSessionRun(context.sessionKey)?.state;
+      const scopedPrior = prior?.currentSessionId === context.sessionId &&
+        typeof context.sessionKey === 'string' && prior.currentSessionKey === context.sessionKey &&
+        !prior.clientCancelled ? prior : undefined;
+      const ownerPrompt = historyOwner ? currentOwnerIntentText([historyOwner]) : scopedPrior?.ownerRequestText;
+      if (typeof context.runId === 'string' && context.runId) {
+        stateFor(context.runId).subagentOwnerContextMissing = !ownerPrompt;
+        stateFor(context.runId).subagentOwnerIntent = ownerPrompt ?? '';
+      }
+      event = {...event, prompt: ownerPrompt ?? '', messages: []};
+    }
     const teamRole=managedTeamRole(event);
     const teamQuestionIntent=teamRole ? requestsChoiceQuestion(currentOwnerIntentText(event?.messages,event?.prompt)) : undefined;
     // Analysis workers must not inherit the owner's implementation obligations
@@ -12634,6 +12691,10 @@ export function createToolLoopGuard({
       if (artifacts.length >= 4) return false;
       artifacts.push(structuredClone(receipt));
       return true;
+    },
+    ownerIntentEventForRun(runId, event) {
+      const ownerIntent = runs.get(runId)?.subagentOwnerIntent;
+      return typeof ownerIntent === 'string' ? {...event, prompt: ownerIntent, messages: []} : event;
     },
     beforeToolCall,
     invalidateWorkspaceBundle(context) {

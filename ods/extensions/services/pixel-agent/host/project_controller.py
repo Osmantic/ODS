@@ -5,6 +5,7 @@ the adapter to real owner policy; neither tool arguments nor these job records
 provide authority. Existing jobs are observed, never automatically replayed.
 """
 from concurrent.futures import ThreadPoolExecutor
+import copy
 import json
 import subprocess
 import threading
@@ -12,21 +13,86 @@ import threading
 from project_artifacts import collect_artifacts, import_artifacts
 from project_jobs import ProjectJobs
 from project_runtime import recover_job, run_stage, seed_project, start_keeper, observe_stage
+from project_runtime_protocol import select_project_runtime
+from project_capabilities import probe_python_runtime, cleanup_pending_probe, ProbeCleanupPending
 from project_storage import ProjectStorage, verify_volume
-from project_runtime_protocol import validate_project_lock
 from project_snapshot import snapshot_project
 
 
 class ProjectController:
-    def __init__(self, workspace, state_root, image, *, authorize, storage_limits=None):
+    def __init__(self, workspace, state_root, image, *, authorize, python_image=None, storage_limits=None):
         if not callable(authorize):
             raise ValueError("an external authorization adapter is required")
         self.workspace, self.image, self.authorize = str(workspace), image, authorize
+        self.python_image = python_image
         self.jobs = ProjectJobs(state_root)
         self.storage = ProjectStorage(state_root, **(storage_limits or {}))
         self.pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="ods-project")
         self.lock = threading.Lock()
         self.futures, self.cancellations = {}, {}
+        self._capability_cache = (None, None)
+        self._pending_capability_cleanup = None
+        self._capability_stop, self._capability_thread = threading.Event(), None
+
+    def initialize_capabilities(self, *, cancel=None):
+        """One service-owned probe attempt; never invoked by model tool requests."""
+        image = self.python_image
+        if self._pending_capability_cleanup is not None:
+            pending = self._pending_capability_cleanup
+            try:
+                cleanup_pending_probe(pending.image, pending.name)
+            except (OSError, ValueError, subprocess.SubprocessError):
+                return
+            self._pending_capability_cleanup = None
+        if cancel is not None and cancel.is_set():
+            return
+        cached_image, cached_evidence = self._capability_cache
+        if not image or (cached_image == image and cached_evidence is not None):
+            return
+        self._capability_cache = (image, None)
+        try:
+            evidence = probe_python_runtime(image, cancel=cancel)
+        except ProbeCleanupPending as pending:
+            self._pending_capability_cleanup = pending
+            return
+        except (OSError, ValueError, TypeError, subprocess.SubprocessError):
+            # Identity discovery must not take the existing executor offline.
+            # No facts from an earlier image or inferred host data are returned.
+            return
+        if self.python_image == image and not (cancel is not None and cancel.is_set()):
+            self._capability_cache = (image, evidence)
+
+    def start_capability_probe(self):
+        """One service-owned worker; no tool request starts or retries probes."""
+        if not self.python_image or self._capability_thread is not None:
+            return
+        def collect():
+            failures = 0
+            while not self._capability_stop.is_set():
+                self.initialize_capabilities(cancel=self._capability_stop)
+                cached_image, cached_evidence = self._capability_cache
+                available = cached_image == self.python_image and cached_evidence is not None
+                delay = 60 if available else (1, 5, 15, 60)[min(failures, 3)]
+                failures = 0 if available else failures + 1
+                if self._capability_stop.wait(delay):
+                    return
+        self._capability_thread = threading.Thread(target=collect, name='ods-project-capabilities', daemon=True)
+        self._capability_thread.start()
+
+    def capabilities(self, runtime):
+        if runtime != 'python':
+            raise ValueError('unsupported capability runtime')
+        self._require(None, 'capabilities')
+        response = {'schemaVersion': 1, 'kind': 'ods-project-capabilities', 'runtime': runtime,
+                    'scope': 'installed-image-only', 'status': 'unavailable'}
+        image = self.python_image
+        cached_image, cached_evidence = self._capability_cache
+        if not image:
+            return {**response, 'reason': 'runtime-not-installed'}
+        if cached_image != image or cached_evidence is None:
+            return {**response, 'reason': 'runtime-probe-unavailable'}
+        return {**response, 'status': 'ready', 'image': image,
+                **copy.deepcopy(cached_evidence)}
 
     def _require(self, project, action, binding=None):
         if self.authorize(project, action, binding) is not True:
@@ -41,10 +107,14 @@ class ProjectController:
             if sum(not f.done() for f in self.futures.values()) >= 8:
                 raise RuntimeError("project queue is full")
             source = snapshot_project(self.workspace, project)
-            files = source["files"]
-            validate_project_lock(json.loads(files["package.json"]), json.loads(files["package-lock.json"]))
+            runtime = select_project_runtime(source["files"])
+            image = self.python_image if runtime == "python" else self.image
+            if not image:
+                raise ValueError("managed Python runtime is not installed")
             request = {"project": project, "sourceSha256": source["sha256"],
-                       "image": self.image, "outputDirectory": output_directory}
+                       "image": image, "outputDirectory": output_directory}
+            if runtime == "python":
+                request["runtime"] = runtime
             self._require(project, "execute", request)
             job, created = self.jobs.create(request_key, request)
             if created:
@@ -81,7 +151,7 @@ class ProjectController:
     def _retry_cleanup(self, job, request):
         # Retry only resource removal; do not rewrite a terminal job outcome.
         self._require(request['project'], 'cancel', request)
-        self.jobs.cleanup_warnings(job, self._cleanup(job, image=request['image']))
+        self.jobs.cleanup_warnings(job, self._cleanup(job, image=request['image'], runtime=request.get('runtime', 'npm')))
 
     def _recover_cancel(self, job, request):
         # Recheck policy after queueing; stored job metadata grants no authority.
@@ -95,28 +165,32 @@ class ProjectController:
         expected = stages[len(row["steps"])] if len(row["steps"]) < len(stages) else None
         if row['steps'] and row['steps'][-1]['status'] == 'unconfirmed':
             expected = row['steps'][-1]['stage']
-        evidence = recover_job(request["image"], job, cancel=True, required_stage=expected, timeout=10)
+        evidence = recover_job(request["image"], job, cancel=True, required_stage=expected, timeout=10, runtime=request.get("runtime", "npm"))
         self.jobs.recovery_result(job, evidence)
         if evidence.get('status') == 'cancelled':
             # Tmpfs contents are ephemeral; retain receipts, not reserved RAM.
-            self.jobs.cleanup_warnings(job, self._cleanup(job, image=request['image']))
+            self.jobs.cleanup_warnings(job, self._cleanup(job, image=request['image'], runtime=request.get('runtime', 'npm')))
 
     def _work(self, job, request, source, cancel):
         if not self.jobs.claim(job):
             return
         resources_started = False
+        image, runtime = request["image"], request.get("runtime", "npm")
         try:
+            configured = self.python_image if runtime == "python" else self.image
+            if runtime not in ("npm", "python") or image != configured:
+                raise ValueError("job runtime no longer matches installed configuration")
             self._require(request["project"], "execute", request)
-            self.storage.reserve(self.image, job)
+            self.storage.reserve(image, job)
             resources_started = True
             self.storage.create_volume(job)
-            start_keeper(self.image, job)
-            seed_project(self.image, job, source, manifests_only=True)
+            start_keeper(image, job, runtime=runtime)
+            seed_project(image, job, source, manifests_only=True, runtime=runtime)
             for stage in ("acquire", "test", "build"):
                 self._require(request["project"], "execute", request)
                 if stage == "test" and not cancel.is_set():
-                    seed_project(self.image, job, source, manifests_only=False)
-                result = run_stage(self.image, job, stage, cancel=cancel)
+                    seed_project(image, job, source, manifests_only=False, runtime=runtime)
+                result = run_stage(image, job, stage, cancel=cancel, runtime=runtime)
                 self.jobs.record_stage(job, stage, result)
                 if result["status"] != "succeeded":
                     return
@@ -124,7 +198,7 @@ class ProjectController:
             if cancel.is_set():
                 self.jobs.controller_failure(job, "cancelled before artifact import", state="cancelled")
                 return
-            artifacts = collect_artifacts(self.image, job, request["outputDirectory"])
+            artifacts = collect_artifacts(image, job, request["outputDirectory"])
             # Collection may take time: recheck owner authority and cancellation
             # immediately before writing anything back to the workspace.
             self._require(request["project"], "import", request)
@@ -139,14 +213,14 @@ class ProjectController:
         finally:
             if resources_started:
                 if self.jobs.observe(job)['state'] in ('succeeded', 'failed', 'cancelled'):
-                    self.jobs.cleanup_warnings(job, self._cleanup(job))
+                    self.jobs.cleanup_warnings(job, self._cleanup(job, image=image, runtime=runtime))
                 else:
                     # A timed-out Docker CLI can still create its container.
                     # Removing the volume now could make that late run create
                     # an ordinary unbounded volume with the same name.
                     self.jobs.cleanup_warnings(job, ['Unconfirmed execution: bounded storage remains reserved.'])
 
-    def _cleanup(self, job, *, image=None):
+    def _cleanup(self, job, *, image=None, runtime='npm'):
         image = self.image if image is None else image
         warnings = []
         for stage in ("seed-manifests", "seed-source", "acquire", "test", "build", "keeper"):
@@ -157,7 +231,7 @@ class ProjectController:
                     continue
                 container = json.loads(result.stdout)[0]
                 identity = container.get('Id')
-                evidence = observe_stage(image, job, stage, container_id=identity)
+                evidence = observe_stage(image, job, stage, container_id=identity, runtime=runtime)
                 if (not identity or evidence.get('evidence') != 'docker-state'):
                     warnings.append("container identity mismatch: " + stage)
                     continue
@@ -183,4 +257,11 @@ class ProjectController:
         return warnings
 
     def close(self):
-        self.pool.shutdown(wait=True)
+        self._capability_stop.set()
+        try:
+            if self._capability_thread is not None:
+                self._capability_thread.join(timeout=10)
+                if self._capability_thread.is_alive():
+                    raise RuntimeError('capability probe shutdown unconfirmed')
+        finally:
+            self.pool.shutdown(wait=True)

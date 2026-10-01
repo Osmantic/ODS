@@ -16,3 +16,9 @@ test('cancellation activity reports a request, not proof of a stopped job', () =
   assert.equal(result.label,'Requesting build cancellation');
   assert.equal(result.detail,null);
 });
+
+test('runtime metadata does not appear as a build or permission change', () => {
+  const result=displayForActivity({params:{action:'capabilities',runtime:'python'}},{toolName:'pixel_ods_project_build'});
+  assert.equal(result.label,'Checking project runtime compatibility');
+  assert.equal(result.detail,null);
+});
