@@ -507,7 +507,11 @@ if $DOCKER_CMD inspect ods-perplexica &>/dev/null; then
         PERPLEXICA_SETUP=$(curl -sf --max-time 5 "${PERPLEXICA_URL}/api/config" 2>/dev/null | \
             PERPLEXICA_MODEL="$PERPLEXICA_MODEL" "$PYTHON_CMD" -c '
 import os, sys, json
-values = json.load(sys.stdin).get("values", {})
+try:
+    raw = json.load(sys.stdin)
+    values = raw.get("values", {}) if isinstance(raw, dict) else {}
+except Exception:
+    values = {}
 model = os.environ["PERPLEXICA_MODEL"]
 providers = values.get("modelProviders", [])
 openai_prov = next((p for p in providers if p.get("type") == "openai"), {})
