@@ -8,6 +8,7 @@ import {pathToFileURL} from 'node:url';
 import {subagentCwd,withPixelSubagentWorkspace} from '../plugin/subagent-workspace.mjs';
 import {withPixelCronDeliveryDefault} from '../plugin/cron-delivery-default.mjs';
 import {createToolLoopGuard} from '../plugin/tool-loop-guard.mjs';
+import {createProjectRunControl} from '../plugin/project-run-control.mjs';
 
 const source = fs.readFileSync(process.env.PIXEL_PLUGIN_ENTRY ?? new URL('../plugin/index.js',import.meta.url),'utf8');
 const start=source.indexOf('    api.on("before_tool_call",');
@@ -29,6 +30,7 @@ function fixture(t) {
     api:{config,on:(name,callback)=>{callbacks[name]=callback;}},
     AGENT_ID:'pixel',toolLoopGuard:guard,accessRuntime:runtime,
     goalProgress:{before(){}},bundleAdmission:{before(){}},taskActivity:{before(){}},
+    projectRunControl:createProjectRunControl(),
     delegationDelivery:{blocked(){},before(){}},
     withPixelCronDeliveryDefault,withPixelSubagentWorkspace,
     getSessionEntry:scope=>{assert.equal(scope.sessionKey,ctx.sessionKey);return session;},
