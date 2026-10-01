@@ -245,6 +245,12 @@ def test_dashboard_csp_allows_ods_talk_tts_blob_audio() -> None:
 
 def test_dashboard_csp_allows_only_verified_pixel_preview_routes() -> None:
     nginx_conf = read(SERVICES / "dashboard" / "nginx.conf")
+    connect = re.search(r"connect-src ([^;]+);", nginx_conf)
+    assert_true(
+        connect is not None
+        and connect.group(1).split() == ["'self'", "http://*.localhost:__PIXEL_PREVIEW_PORT__"],
+        "preview identity probes may reach only the configured isolated preview port, not arbitrary hosts or ports",
+    )
     entrypoint = read(SERVICES / "dashboard" / "entrypoint.sh")
     dockerfile = read(SERVICES / "dashboard" / "Dockerfile")
     compose = read(ROOT / "docker-compose.base.yml")
@@ -300,7 +306,7 @@ def test_dashboard_csp_allows_huggingface_author_avatars_only_as_images() -> Non
         "the Models library renders Hugging Face author avatars",
     )
     assert_true(
-        "connect-src 'self';" in nginx_conf,
+        "connect-src 'self' http://*.localhost:__PIXEL_PREVIEW_PORT__;" in nginx_conf,
         "Hub API access must remain server-side instead of exposing HF_TOKEN to the browser",
     )
 

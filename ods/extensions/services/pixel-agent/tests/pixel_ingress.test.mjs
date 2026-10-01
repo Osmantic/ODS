@@ -1410,6 +1410,21 @@ test("workspace preview metadata fails closed for an unverified URL or extra fie
   }
 });
 
+test('source snapshot receipt survives authenticated delivery and rejects foreign project metadata', async()=>{
+  const sha256='a'.repeat(64),siteId='site-'+sha256.slice(0,24);
+  const source={schemaVersion:1,sourceId:'source-'+'c'.repeat(24),sha256:'c'.repeat(64),relativeDirectory:'demo',files:2,bytes:80,omitted:{directories:1,files:0,sensitiveFiles:0}};
+  const base={schemaVersion:1,kind:'ods-pixel-workspace-preview',relativeDirectory:'demo/dist',siteId,port:9437,url:`http://${siteId}.localhost:9437/${siteId}/`,files:2,bytes:100,sha256,entrySha256:'b'.repeat(64)};
+  for(const candidate of [source,{...source,relativeDirectory:'foreign'},{...source,sourceId:'source-'+'d'.repeat(24)},{...source,omitted:{files:0}}]) {
+    const gw=await fakeGateway({verification:{status:'passed',text:'Captured source and built preview.',preview:{...base,source:candidate}}});
+    const srv=await startIngress({gatewayPort:gw.port});
+    try {
+      const response=await request(srv,'POST','/v1/chat/completions',{body:JSON.stringify({stream:true,messages:[{role:'user',content:'Build project'}]}),headers:{'Content-Type':'application/json'}});
+      if(candidate===source){assert.equal(response.status,200);assert.match(response.body,/"sourceId":"source-cccc/);}
+      else {assert.match(response.body,/upstream stream failed/);assert.doesNotMatch(response.body,/"sourceId"/);}
+    }finally{await new Promise(resolve=>srv.close(resolve));await new Promise(resolve=>gw.server.close(resolve));}
+  }
+});
+
 test("preview delivery preserves useful answers and retains stale snapshots without false success", async () => {
   const sha256 = "a".repeat(64), siteId = `site-${sha256.slice(0, 24)}`;
   const preview = { schemaVersion: 1, kind: "ods-pixel-workspace-preview", relativeDirectory: "orbit-garden",

@@ -69,7 +69,7 @@ it('compacts single-child folder chains and honors external selection', () => {
   rerender(<PixelFileChanges changes={[nested,changes[2]]} selectedPath={nested.path}/>)
   expect(screen.getByRole('region',{name:`Changes to ${nested.path}`})).toBeVisible()
 })
-it('keeps narrow panels readable and closes the file drawer after selection', () => {
+it('keeps the file tree visible in narrow panels after selection and allows explicit collapse', () => {
   let resize
   vi.stubGlobal('ResizeObserver',class {
     constructor(callback) { resize = callback }
@@ -78,11 +78,12 @@ it('keeps narrow panels readable and closes the file drawer after selection', ()
   })
   render(<PixelFileChanges changes={changes}/>)
   act(() => resize([{contentRect:{width:400}}]))
-  expect(screen.queryByRole('navigation')).toBeNull()
-  expect(screen.getByRole('region',{name:'Changes to src/app.js'})).toBeVisible()
-  fireEvent.click(screen.getByRole('button',{name:'Toggle changed files'}))
   expect(screen.getByRole('navigation',{name:'Changed files'})).toBeVisible()
+  expect(screen.getByRole('region',{name:'Changes to src/app.js'})).toBeVisible()
   fireEvent.click(screen.getByRole('button',{name:'Open src/new.js'}))
+  expect(screen.getByRole('navigation',{name:'Changed files'})).toBeVisible()
+  expect(screen.getByRole('region',{name:'Changes to src/new.js'})).toBeVisible()
+  fireEvent.click(screen.getByRole('button',{name:'Toggle changed files'}))
   expect(screen.queryByRole('navigation')).toBeNull()
   expect(screen.getByRole('region',{name:'Changes to src/new.js'})).toBeVisible()
 })
