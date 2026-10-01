@@ -291,6 +291,10 @@ _phase11_prefetch_embeddings_model() {
     local python_cmd="${ODS_PYTHON_CMD:-${_python_cmd:-}}"
     local prefetch_pid
 
+    if [[ -z "$python_cmd" ]]; then
+        python_cmd="$(command -v python3 2>/dev/null || command -v python 2>/dev/null || true)"
+    fi
+
     if [[ -z "$model" ]] && declare -f _phase11_env_get >/dev/null 2>&1; then
         model="$(_phase11_env_get EMBEDDING_MODEL "BAAI/bge-base-en-v1.5")"
     fi
