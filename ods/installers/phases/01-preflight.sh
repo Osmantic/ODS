@@ -60,7 +60,9 @@ _phase01_check_required_network() {
         # few times before concluding that the target is unreachable.
         reached=false
         for attempt in 1 2 3; do
-            if status="$(curl -sS --connect-timeout 5 --max-time 10 -o /dev/null \
+            # Reachability needs the HTTP status, not a full homepage body.
+            # Slow body transfer can outlast max-time after a valid response.
+            if status="$(curl -sS --head --connect-timeout 5 --max-time 10 -o /dev/null \
                 -w '%{http_code}' "$url")"; then
                 reached=true
                 break

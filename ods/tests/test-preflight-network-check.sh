@@ -29,13 +29,23 @@ run_fixture() (
     # ShellCheck cannot resolve that dynamic call graph.
     # shellcheck disable=SC2317
     curl() {
-        local url="${*: -1}" attempts
+        local url="${*: -1}" attempts arg header_only=false
+        for arg in "$@"; do
+            [[ "$arg" == --head || "$arg" == -I ]] && header_only=true
+        done
         attempts=$(( $(wc -l < "$attempts_file") + 1 ))
         echo "$url" >> "$attempts_file"
         # "transient" fails only the first call, like a momentary DNS miss.
         if [[ "$transport_failure" == "transient" ]]; then
             [[ "$attempts" -gt 1 ]] || return 6
-        elif [[ "$transport_failure" != "false" ]]; then
+        elif [[ "$transport_failure" == "slow-body" && "$header_only" != true ]]; then
+            # A valid HTTP status arrived, but GET consumed the full homepage
+            # until max-time expired. HEAD must complete without that body.
+            printf '200'
+            return 28
+        elif [[ "$transport_failure" == "tls" ]]; then
+            return 60
+        elif [[ "$transport_failure" != "false" && "$transport_failure" != "slow-body" ]]; then
             return 7
         fi
         if [[ "$url" == "https://github.com" ]]; then
@@ -52,8 +62,20 @@ run_fixture() (
 )
 
 run_fixture 200 401
+if ! run_fixture 200 401 slow-body > /dev/null 2>&1; then
+    echo '[FAIL] a slow GitHub response body made header reachability fail' >&2
+    exit 1
+fi
+if run_fixture 503 401 > /dev/null 2>&1; then
+    echo '[FAIL] GitHub 503 was accepted as reachable' >&2
+    exit 1
+fi
 if run_fixture 200 503 > /dev/null 2>&1; then
     echo '[FAIL] Docker Hub 503 was accepted as reachable' >&2
+    exit 1
+fi
+if run_fixture 200 401 tls > /dev/null 2>&1; then
+    echo '[FAIL] TLS failure was accepted as reachable' >&2
     exit 1
 fi
 if run_fixture 200 401 true > /dev/null 2>&1; then
@@ -65,5 +87,12 @@ if ! run_fixture 200 401 transient > /dev/null 2>&1; then
     exit 1
 fi
 grep -q 'for attempt in 1 2 3' "$SOURCE"
+
+# Offline mode must not call curl at all.
+(
+    OFFLINE_MODE=true
+    curl() { echo '[FAIL] offline preflight called curl' >&2; exit 98; }
+    _phase01_check_required_network
+)
 
 echo '[PASS] Phase 01 network preflight is bounded and offline-aware'
