@@ -1,6 +1,8 @@
 """Behavioral checks for uninstalling volumes from disabled Compose fragments."""
 
+import contextlib
 import importlib.util
+import io
 import json
 from pathlib import Path
 import shutil
@@ -48,6 +50,7 @@ class FakeDocker:
             "Id": CONTAINER_ID,
             "Config": {"Labels": {
                 "com.docker.compose.project": "ods",
+                "com.docker.compose.service": "perplexica",
                 "com.docker.compose.project.working_dir": str(root),
                 "com.docker.compose.project.config_files": str(root / "docker-compose.base.yml")
                 + "," + str(root / "extensions/services/perplexica/compose.yaml"),
@@ -213,6 +216,12 @@ class UninstallVolumeTests(unittest.TestCase):
             MODULE.preflight(self.root, self.snapshot, [], trusted_root=trusted)
         self.assertFalse(self.fake.removed)
 
+    def test_other_ods_service_mount_cannot_authorize_disabled_volume(self):
+        self.fake.containers[0]["Config"]["Labels"]["com.docker.compose.service"] = "searxng"
+        with self.assertRaisesRegex(ValueError, "not linked"):
+            MODULE.preflight(self.root, self.snapshot, [])
+        self.assertFalse(self.fake.removed)
+
     def test_selected_volume_requires_matching_compose_volume_key(self):
         self.fake.config["volumes"] = {
             "perplexica-data": {"name": "ods_perplexica-data"}
@@ -279,6 +288,21 @@ class UninstallVolumeTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "lacks Compose ownership labels"):
             MODULE.preflight(self.root, self.snapshot, [])
         self.assertFalse(self.fake.removed)
+
+    def test_unknown_same_prefix_volume_is_retained_and_reported(self):
+        name = "ods_obsolete-unknown-probe"
+        self.fake.volumes[name] = {
+            "Name": name, "Driver": "local",
+            "CreatedAt": "2026-10-01T00:00:00Z", "Labels": None,
+        }
+        MODULE.preflight(self.root, self.snapshot, [])
+        self.fake.containers = []
+        diagnostic = io.StringIO()
+        with contextlib.redirect_stderr(diagnostic):
+            MODULE.complete(self.root, self.snapshot)
+        self.assertIn(name, self.fake.volumes)
+        self.assertNotIn(name, self.fake.removed)
+        self.assertIn(name, diagnostic.getvalue())
 
 
 if __name__ == "__main__":
