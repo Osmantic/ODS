@@ -295,8 +295,10 @@ def test_hermes_start_prepares_route_before_compose_up(monkeypatch):
     monkeypatch.setattr(agent, "_precreate_data_dirs", lambda service: None)
     monkeypatch.setattr(agent, "_repair_rootless_data_ownership", lambda service: None)
     monkeypatch.setattr(agent, "_find_ext_dir", lambda service: None)
+    monkeypatch.setattr(agent, "_run_selected_extension_up", lambda service, flags, **kwargs: (
+        order.append("compose") or subprocess.CompletedProcess([], 0, "", "")))
     monkeypatch.setattr(agent.subprocess, "run", lambda command, **kwargs: (
-        order.append("compose") or subprocess.CompletedProcess(command, 0, "", "")))
+        pytest.fail(f"Unexpected subprocess outside selected start: {command}")))
 
     assert agent.docker_compose_action("hermes", "start") == (True, "")
     assert order == ["route", "persona", "compose"]

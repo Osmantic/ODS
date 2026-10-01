@@ -101,7 +101,7 @@ test_import_case() {
 # Test 6: Verify export uses tar
 test_export_uses_tar() {
     info "Test 6: Checking if export uses tar for archiving"
-    if grep -A20 "export|e)" "$ODS_CLI" 2>/dev/null | grep -q "tar czf"; then
+    if sed -n '/^[[:space:]]*export|e)/,/^[[:space:]]*;;/p' "$ODS_CLI" | grep -F 'tar czf' >/dev/null; then
         pass "Export uses tar for archiving"
         return 0
     else
@@ -149,7 +149,7 @@ test_import_validation() {
 # Test 10: Verify export creates relative paths
 test_export_relative_paths() {
     info "Test 10: Checking if export avoids absolute paths"
-    if grep -A15 "export|e)" "$ODS_CLI" 2>/dev/null | grep -q "cd.*PRESETS_DIR"; then
+    if sed -n '/^[[:space:]]*export|e)/,/^[[:space:]]*;;/p' "$ODS_CLI" | grep -F 'cd "$PRESETS_DIR"' >/dev/null; then
         pass "Export creates relative paths"
         return 0
     else
