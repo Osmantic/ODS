@@ -20,7 +20,7 @@ import httpx
 
 from config import (
     SERVICES, INSTALL_DIR, DATA_DIR, LLM_BACKEND, EXTENSIONS_DIR, GPU_BACKEND,
-    load_extension_manifests, read_live_env_value,
+    LIBRARY_MANAGEABLE_BUILTINS, load_extension_manifests, read_live_env_value,
 )
 from env_values import parse_env_value
 from host_metrics import apple_host_metrics, linux_scope, windows_host_metrics
@@ -1104,15 +1104,16 @@ async def get_all_services() -> list[ServiceStatus]:
     try:
         current_optional, _, _ = await asyncio.to_thread(
             load_extension_manifests, EXTENSIONS_DIR, GPU_BACKEND,
-            only_service_ids=frozenset({"n8n"}),
+            only_service_ids=LIBRARY_MANAGEABLE_BUILTINS,
         )
     except OSError as exc:
-        logger.warning("Optional n8n manifest refresh failed: %s", exc)
+        logger.warning("Library built-in manifest refresh failed: %s", exc)
     else:
-        if "n8n" in current_optional:
-            service_configs.setdefault("n8n", current_optional["n8n"])
-        else:
-            service_configs.pop("n8n", None)
+        for service_id in LIBRARY_MANAGEABLE_BUILTINS:
+            if service_id in current_optional:
+                service_configs.setdefault(service_id, current_optional[service_id])
+            else:
+                service_configs.pop(service_id, None)
     tasks = [check_service_health(sid, cfg) for sid, cfg in service_configs.items()]
     results = await asyncio.gather(*tasks, return_exceptions=True)
 
