@@ -143,7 +143,7 @@ def test_shared_overlay_is_staged_idempotent_and_uses_selected_home(tmp_path, co
     assert value['tools']['toolSearch']['enabled'] is True
     assert value['tools']['toolSearch']['mode'] == 'tools'
     assert agent['contextLimits']['toolResultMaxChars'] == max(4000, min(16000, context // 4))
-    assert {'pixel_ops_run', 'pixel_ods_workspace_preview', 'pixel_ods_workspace_bundle', 'create_goal'}.issubset(value['tools']['alsoAllow'])
+    assert {'pixel_ops_run', 'pixel_ods_workspace_preview', 'pixel_ods_workspace_bundle','pixel_ods_workspace_artifact', 'create_goal'}.issubset(value['tools']['alsoAllow'])
     assert 'pixel_ods_extension_proposal' in value['tools']['alsoAllow']
     assert 'pixel_ods_image_read' in value['tools']['alsoAllow']
     assert 'pixel_ods_image_read' in value['tools']['sandbox']['tools']['allow']
@@ -182,3 +182,18 @@ def test_overlay_rejects_unsafe_input_without_modifying_config(tmp_path, fault):
     assert result.returncode != 0
     assert path.read_bytes() == before
     assert not list(tmp_path.glob('.ods-pixel-runtime-budget.*'))
+
+
+def test_document_delivery_overlay_preserves_an_explicit_owner_deny(tmp_path):
+    tmp_path.chmod(0o700)
+    value = configuration()
+    tool = 'pixel_ods_workspace_artifact'
+    value['agents']['list'][0]['tools'] = {'deny': [tool]}
+    path = tmp_path / 'openclaw.json'
+    path.write_text(json.dumps(value))
+    path.chmod(0o600)
+    result = invoke(path, tmp_path)
+    assert result.returncode == 0, result.stderr
+    updated = json.loads(Path(result.stdout.strip()).read_text())
+    assert tool in updated['tools']['alsoAllow']
+    assert tool in updated['agents']['list'][0]['tools']['deny']
