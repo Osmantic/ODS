@@ -137,6 +137,7 @@ PREVIEW_FAILURE_CODES = {
     "source review store quota exceeded": "source_store_full",
     "source review changed": "source_capture_changed",
     "source review has no eligible files": "no_eligible_source",
+    "writable preview file": "writable_file",
     "invalid preview JSON artifact": "invalid_json_artifact",
     "unsupported preview file type": "unsupported_file_type",
     "preview requires index.html": "missing_entry",
@@ -292,11 +293,12 @@ def _source_files(
                 or stat.S_ISLNK(info.st_mode)
                 or info.st_nlink != 1
                 or info.st_uid != owner_uid
-                or info.st_mode & 0o022
                 or not (1 if relative == "index.html" else 0) <= info.st_size <= MAX_FILE_BYTES
                 or any(ASSET_COMPONENT.fullmatch(part) is None for part in relative.split("/"))
             ):
                 raise PreviewError("unsafe preview file")
+            if info.st_mode & 0o022:
+                raise PreviewError("writable preview file")
             if pathlib.PurePosixPath(relative).suffix.lower() not in ALLOWED_SUFFIXES:
                 raise PreviewError("unsupported preview file type")
             files.append((relative, source, info))
