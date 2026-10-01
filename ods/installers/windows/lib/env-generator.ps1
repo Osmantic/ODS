@@ -969,6 +969,14 @@ function New-ODSEnv {
     $hermesLlmApiKey = $(if ($hermesUsesModelRouter) { "no-key" } elseif ($hermesUsesLiteLlm) { $litellmKey } else { "sk-ods-hermes-local" })
     $openWebuiLlmBaseUrl = Get-EnvOrNew "OPEN_WEBUI_LLM_BASE_URL" $(if ($switchboardMode -eq "enabled") { "http://litellm:4000" } else { "" })
     $openWebuiLlmApiKey = Get-EnvOrNew "OPEN_WEBUI_LLM_API_KEY" $(if ($switchboardMode -eq "enabled") { $litellmKey } else { "" })
+    # On a local switchboard -> observe/legacy transition, the previous
+    # generated gateway URL is stale. Compose must fall back to local inference
+    # when the service plan omits LiteLLM. Preserve custom external endpoints.
+    if ($ODSMode -ne "cloud" -and $switchboardMode -ne "enabled" -and
+        $openWebuiLlmBaseUrl -in @("http://litellm:4000", "http://litellm:4000/v1")) {
+        $openWebuiLlmBaseUrl = ""
+        $openWebuiLlmApiKey = ""
+    }
 
     # Timezone -- convert Windows timezone ID to IANA for Docker containers
     $tz = $(try {

@@ -36,17 +36,20 @@ try {
     Assert-Route ($corePlan['litellm'].Enabled -and -not $corePlan['token-spy'].Enabled -and
         -not $corePlan['searxng'].Enabled) 'Fresh Core service plan disagrees with its chat route'
 
-    # A retained observe install uses the direct local API and avoids LiteLLM.
+    # A retained switchboard -> observe transition must clear the old gateway
+    # route before the service plan omits LiteLLM.
     $observe = Join-Path $scratch 'observe'
     New-Item -ItemType Directory -Path $observe -Force | Out-Null
-    [IO.File]::WriteAllText((Join-Path $observe '.env'), "ODS_MODEL_SWITCHBOARD=observe`n")
+    [IO.File]::WriteAllText((Join-Path $observe '.env'),
+        "ODS_MODEL_SWITCHBOARD=observe`nOPEN_WEBUI_LLM_BASE_URL=http://litellm:4000`nOPEN_WEBUI_LLM_API_KEY=old-gateway-key`n")
     New-ODSEnv -InstallDir $observe -TierConfig $tier -Tier '1' -GpuBackend 'none' `
         -ODSMode 'local' -SystemRamGB 8 | Out-Null
     $observeEnv = Read-Route $observe
     $observePlan = New-ODSWindowsServicePlan -EnableRecommended $false `
         -SwitchboardMode (Get-ODSWindowsEffectiveSwitchboardMode -InstallDir $observe -RequestedMode 'enabled')
     Assert-Route (-not $observePlan['litellm'].Enabled -and
-        [string]::IsNullOrWhiteSpace($observeEnv['OPEN_WEBUI_LLM_BASE_URL'])) 'Observe install selected an unnecessary gateway'
+        [string]::IsNullOrWhiteSpace($observeEnv['OPEN_WEBUI_LLM_BASE_URL']) -and
+        [string]::IsNullOrWhiteSpace($observeEnv['OPEN_WEBUI_LLM_API_KEY'])) 'Observe install retained an orphaned gateway route'
 
     $cloudCore = Join-Path $scratch 'cloud-core'
     New-Item -ItemType Directory -Path $cloudCore -Force | Out-Null

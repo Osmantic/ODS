@@ -64,8 +64,12 @@ function Get-ODSWindowsInstalledFeatureSelection {
         $savedEnv = @(Get-Content -LiteralPath $envPath)
         $installedMode = $savedEnv | Where-Object { $_ -match '^ODS_MODE=' } | Select-Object -First 1
         $switchboardMode = $savedEnv | Where-Object { $_ -match '^ODS_MODEL_SWITCHBOARD=' } | Select-Object -First 1
+        $previousWebuiRoute = $savedEnv | Where-Object { $_ -match '^OPEN_WEBUI_LLM_BASE_URL=' } | Select-Object -First 1
+        $transitionFromGateway = ([string]$switchboardMode -match '^ODS_MODEL_SWITCHBOARD=(legacy|observe)\s*$' -and
+            [string]$previousWebuiRoute -match '^OPEN_WEBUI_LLM_BASE_URL=http://litellm:4000(/v1)?\s*$')
         if ([string]$installedMode -notmatch '^ODS_MODE=cloud\s*$' -and
-            [string]$switchboardMode -notmatch '^ODS_MODEL_SWITCHBOARD=enabled\s*$') {
+            [string]$switchboardMode -notmatch '^ODS_MODEL_SWITCHBOARD=enabled\s*$' -and
+            -not $transitionFromGateway) {
             return [PSCustomObject]@{
                 Kind = "unknown"; Features = $null
                 Reason = "installed LiteLLM selection has no matching cloud or switchboard mode"

@@ -128,6 +128,11 @@ try {
     if ((Invoke-Selection -Path $switchboardCore).Recommended) {
         throw 'Rerun expanded the native Core switchboard gateway into Recommended services'
     }
+    [IO.File]::WriteAllText((Join-Path $switchboardCore '.env'),
+        "ODS_MODE=local`nODS_MODEL_SWITCHBOARD=observe`nOPEN_WEBUI_LLM_BASE_URL=http://litellm:4000`n")
+    if ((Invoke-Selection -Path $switchboardCore).Recommended) {
+        throw 'Switchboard-to-observe rerun expanded the gateway into Recommended services'
+    }
     $partialLocalGateway = Join-Path $scratch 'partial-local-gateway'
     Set-InstalledFixture -Path $partialLocalGateway -Services @('litellm')
     if ((Get-ODSWindowsInstalledFeatureSelection -InstallDir $partialLocalGateway).Kind -ne 'unknown') {
