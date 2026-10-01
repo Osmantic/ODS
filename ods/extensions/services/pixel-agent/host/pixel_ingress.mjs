@@ -752,6 +752,21 @@ async function readBounded(stream, limit) {
   }
 }
 
+function validSourceReview(value, directory) {
+  return !!value && typeof value === 'object' && !Array.isArray(value)
+    && Object.keys(value).sort().join(',') === 'bytes,files,omitted,relativeDirectory,schemaVersion,sha256,sourceId'
+    && value.schemaVersion === 1 && typeof value.relativeDirectory === 'string'
+    && value.relativeDirectory.length <= 512 && value.relativeDirectory.split('/').length <= 12
+    && value.relativeDirectory.split('/').every(part => /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(part))
+    && (directory === value.relativeDirectory || directory?.startsWith(value.relativeDirectory + '/'))
+    && /^[a-f0-9]{64}$/.test(value.sha256) && value.sourceId === 'source-' + value.sha256.slice(0,24)
+    && Number.isInteger(value.files) && value.files >= 1 && value.files <= 128
+    && Number.isInteger(value.bytes) && value.bytes >= 0 && value.bytes <= 1024*1024
+    && value.omitted && typeof value.omitted === 'object' && !Array.isArray(value.omitted)
+    && Object.keys(value.omitted).sort().join(',') === 'directories,files,sensitiveFiles'
+    && Object.values(value.omitted).every(n => Number.isInteger(n) && n >= 0 && n <= 16384);
+}
+
 function parseVerificationResponse(value, runId) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new HttpError(502, "verification state unavailable");
@@ -799,6 +814,7 @@ function parseVerificationResponse(value, runId) {
     "schemaVersion",
     "sha256",
     "siteId",
+    ...(preview && Object.hasOwn(preview, 'source') ? ['source'] : []),
     "url",
   ];
   const previewValid =
@@ -828,7 +844,8 @@ function parseVerificationResponse(value, runId) {
       preview.bytes >= 1 &&
       preview.bytes <= 16 * 1024 * 1024 &&
       /^[a-f0-9]{64}$/.test(preview.sha256) &&
-      /^[a-f0-9]{64}$/.test(preview.entrySha256));
+      /^[a-f0-9]{64}$/.test(preview.entrySha256) &&
+      (!Object.hasOwn(preview, 'source') || validSourceReview(preview.source, preview.relativeDirectory)));
   if (
     Object.keys(value).sort().join("\n") !== expectedKeys.sort().join("\n") ||
     (hasRecoveryCode && hasPreview) ||

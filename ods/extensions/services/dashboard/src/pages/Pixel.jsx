@@ -1,6 +1,7 @@
 import PortalApprovalTerminal from '../components/PortalApprovalTerminal'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import PixelConversationRecovery from '../components/PixelConversationRecovery'
+import {validSourceReview} from '../lib/pixelSourceReview'
 import { readConversations, saveConversation, createConversationWriter, SELECT_EVENT, DELETE_EVENT, deleteConversation, isConversationDeleted } from '../lib/pixelConversations'
 import {usePixelAutoScroll} from '../lib/usePixelAutoScroll'
 import { Link } from 'react-router-dom'
@@ -199,6 +200,7 @@ export function parseVerifiedPreviewFrame(frame) {
       'schemaVersion',
       'sha256',
       'siteId',
+      ...(preview && Object.hasOwn(preview,'source')?['source']:[]),
       'url',
     ].join('\n')
     || preview.schemaVersion !== 1
@@ -220,6 +222,7 @@ export function parseVerifiedPreviewFrame(frame) {
     || preview.bytes > 16 * 1024 * 1024
     || !/^[a-f0-9]{64}$/.test(preview.sha256)
     || !/^[a-f0-9]{64}$/.test(preview.entrySha256)
+    || (Object.hasOwn(preview,'source') && !validSourceReview(preview.source,preview.relativeDirectory))
   ) return null
   return { ...preview }
 }

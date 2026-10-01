@@ -392,7 +392,7 @@ export default definePluginEntry({
       toolLoopGuard.observeRun(context, AGENT_ID, event, { privateBrowserAccess, workspaceRoot, executionHost });
       if (!accessRuntime.isProbe(context)) delegationDelivery.observe(event,context);
       const ownerEvent = toolLoopGuard.ownerIntentEventForRun(context?.runId ?? event?.runId, event);
-      if (!accessRuntime.isProbe(context)) { goalProgress.begin(ownerEvent, context); taskActivity.begin(ownerEvent, context); }
+      if (!accessRuntime.isProbe(context)) { goalProgress.begin(ownerEvent, context); taskActivity.begin(ownerEvent, {...context,workspaceRoot}); }
       const contract = promptContractForAgent(context, AGENT_ID, ownerEvent, {
         verificationStatus: toolLoopGuard.verificationStatus(context?.runId),
         configuredContextWindow,
