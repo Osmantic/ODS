@@ -4,6 +4,18 @@
 # host-gateway mappings make that name available on plain Linux Docker Engine
 # as well as Docker Desktop.
 services:
+  litellm:
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - type: bind
+        source: ./config/litellm/external-upstream.key
+        target: /run/secrets/ods-external-llm-api-key
+        read_only: true
+        bind:
+          create_host_path: false
+          selinux: z
+
   llama-server:
     profiles:
       - local-inference

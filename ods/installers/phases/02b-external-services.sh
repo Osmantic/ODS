@@ -7,6 +7,23 @@ _external_disable="${EXTERNAL_LLM_DISABLE:-false}"
 _external_url="${EXTERNAL_LLM_URL:-}"
 _external_provider="${EXTERNAL_LLM_PROVIDER:-}"
 _external_model="${EXTERNAL_LLM_MODEL:-}"
+_previous_external_url=""
+[[ -f "${INSTALL_DIR:-}/.env" ]] && _previous_external_url="$(external_llm_env_value "$INSTALL_DIR/.env" EXTERNAL_LLM_URL || true)"
+EXTERNAL_LLM_API_KEY_RESET=false
+[[ "${EXTERNAL_LLM_API_KEY_DISABLE:-false}" != "true" ]] || EXTERNAL_LLM_API_KEY_RESET=true
+if [[ -n "$_external_url" && "$(external_llm_strip_url "$_external_url")" != "$(external_llm_strip_url "$_previous_external_url")" ]]; then
+    # A new endpoint must never inherit a credential from the old endpoint.
+    EXTERNAL_LLM_API_KEY_RESET=true
+fi
+if [[ -z "${EXTERNAL_LLM_API_KEY_FILE:-}" && "$EXTERNAL_LLM_API_KEY_RESET" != "true" && -s "${INSTALL_DIR:-}/config/litellm/external-upstream.key" ]]; then
+    EXTERNAL_LLM_API_KEY_FILE="$INSTALL_DIR/config/litellm/external-upstream.key"
+fi
+unset _previous_external_url
+if [[ "$_external_disable" != "true" && -n "${EXTERNAL_LLM_API_KEY_FILE:-}" ]] &&
+   ! external_llm_read_api_key "$EXTERNAL_LLM_API_KEY_FILE" >/dev/null; then
+    ai_bad "External LLM key file failed private-file validation."
+    return 1
+fi
 
 if [[ "$_external_disable" != "true" && -z "$_external_url" && -f "${INSTALL_DIR:-}/.env" ]]; then
     _external_url="$(external_llm_env_value "$INSTALL_DIR/.env" EXTERNAL_LLM_URL || true)"
@@ -69,6 +86,10 @@ if [[ -z "$_external_url" && "${ODS_MODE:-local}" == "local" && "${LEMONADE_EXTE
 fi
 
 if [[ -z "$_external_url" ]]; then
+    if [[ -n "${EXTERNAL_LLM_API_KEY_FILE:-}" && "${_external_disable}" != "true" ]]; then
+        ai_bad "An external LLM key file requires an external model endpoint."
+        return 1
+    fi
     EXTERNAL_LLM_URL=""
     EXTERNAL_LLM_CONTAINER_URL=""
     EXTERNAL_LLM_PROVIDER=""

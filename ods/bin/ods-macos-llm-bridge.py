@@ -6,12 +6,13 @@ from __future__ import annotations
 import argparse
 import ipaddress
 import logging
+import select
 import signal
 import socket
 import socketserver
 import threading
 from collections.abc import Iterable
-from typing import Union
+from typing import Optional, Union
 
 logger = logging.getLogger("ods-macos-llm-bridge")
 AllowedNetwork = Union[ipaddress.IPv4Network, ipaddress.IPv6Network]
@@ -37,16 +38,32 @@ def peer_is_allowed(
     return peer.is_loopback or any(peer in network for network in allowed_networks)
 
 
-def _pump(source: socket.socket, destination: socket.socket) -> None:
+def _pump(
+    source: socket.socket,
+    destination: socket.socket,
+    stop_when: Optional[threading.Event] = None,
+    on_finish: Optional[threading.Event] = None,
+) -> None:
     try:
         while True:
+            if stop_when is not None:
+                # The upstream response may end while the VM client leaves
+                # its write half open. Observe that completion without
+                # coupling the two forwarding directions.
+                if stop_when.is_set():
+                    break
+                readable, _, _ = select.select([source], [], [], 0.5)
+                if stop_when.is_set():
+                    break
+                if not readable:
+                    continue
             data = source.recv(65536)
             if not data:
                 break
             destination.sendall(data)
     except OSError:
         # An I/O failure ends the tunnel, including the other pump's blocked
-        # recv/send. A normal EOF still permits a response after a half-close.
+        # recv/send. A normal request EOF still permits a delayed response.
         for connection in (source, destination):
             try:
                 connection.shutdown(socket.SHUT_RDWR)
@@ -57,6 +74,8 @@ def _pump(source: socket.socket, destination: socket.socket) -> None:
             destination.shutdown(socket.SHUT_WR)
         except OSError:
             pass
+        if on_finish is not None:
+            on_finish.set()
 
 
 def _enable_tcp_keepalive(connection: socket.socket) -> None:
@@ -93,14 +112,15 @@ class LlmBridgeHandler(socketserver.BaseRequestHandler):
             _enable_tcp_keepalive(upstream)
             self.request.settimeout(None)
             upstream.settimeout(None)
+            upstream_done = threading.Event()
             request_to_upstream = threading.Thread(
                 target=_pump,
-                args=(self.request, upstream),
+                args=(self.request, upstream, upstream_done),
                 daemon=True,
             )
             upstream_to_request = threading.Thread(
                 target=_pump,
-                args=(upstream, self.request),
+                args=(upstream, self.request, None, upstream_done),
                 daemon=True,
             )
             request_to_upstream.start()

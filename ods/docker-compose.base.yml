@@ -357,7 +357,9 @@ services:
       - ODS_FLEET_PROBE_KEY_PATH=/state/fleet-probe.key
     volumes:
       - ${ODS_DATA_DIR:-./data}:/state:ro
-      - ${ODS_CONFIG_DIR:-./config}/model-router/endpoints.json:/config/endpoints.json:ro
+      # The renderer atomically replaces endpoints.json; mount its parent so
+      # the router sees the new inode without a container recreate.
+      - ${ODS_CONFIG_DIR:-./config}/model-router:/config:ro
     deploy:
       resources:
         limits:
@@ -487,13 +489,14 @@ services:
     environment:
       - DASHBOARD_API_KEY=${DASHBOARD_API_KEY:-}
       - PIXEL_PREVIEW_PORT=${PIXEL_PREVIEW_PORT:-9437}
-      # Must match the host address port 3001 is published on below: only a
-      # loopback bind lets browsers on this machine skip dashboard sign-in.
-      - ODS_DASHBOARD_BIND=${BIND_ADDRESS:-127.0.0.1}
+      # Port 3001 is always host-loopback, even when other ODS services are
+      # network-bound. The separate port 3011 always requires sign-in.
+      - ODS_DASHBOARD_BIND=127.0.0.1
     volumes:
       - ./data:/data:ro,z
     ports:
-      - "${BIND_ADDRESS:-127.0.0.1}:${DASHBOARD_PORT:-3001}:3001"
+      - "127.0.0.1:${DASHBOARD_PORT:-3001}:3001"
+      - "${BIND_ADDRESS:-127.0.0.1}:${DASHBOARD_REMOTE_PORT:-3011}:3011"
     deploy:
       resources:
         limits:

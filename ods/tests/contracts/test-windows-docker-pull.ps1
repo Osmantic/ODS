@@ -194,8 +194,43 @@ try {
     Assert-True ($script:pullAttempts -eq 0) "Cached image unexpectedly invoked docker pull"
     Assert-True ((Get-Content -LiteralPath $logPath -Raw) -match "Compose image already cached") `
         "Cached-image receipt was not written"
+
+    foreach ($functionName in @("Invoke-ODSWindowsComposeBuildService", "Invoke-ODSWindowsPlainDockerBuildService")) {
+        $buildFunction = $ast.Find({
+            param($node)
+            $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+                $node.Name -eq $functionName
+        }, $true)
+        . ([scriptblock]::Create($buildFunction.Extent.Text))
+    }
+    $script:buildCalls = @()
+    $script:buildExitCode = 37
+    function docker {
+        $commandLine = $args -join " "
+        $script:buildCalls += $commandLine
+        if ($commandLine -match "config --format json") {
+            $global:LASTEXITCODE = 0
+            return '{"services":{"dashboard-api":{"image":"ods-dashboard-api:latest","build":{"context":"src","dockerfile":"Dockerfile"}}}}'
+        }
+        $global:LASTEXITCODE = $script:buildExitCode
+    }
+    $composeExit = Invoke-ODSWindowsComposeBuildService -Service "dashboard-api" `
+        -DockerClientArgs @() -ComposeFlags @("-f", "stack.yml") -BuildLog $logPath
+    Assert-True ($composeExit -eq 37) "Cached Compose build masked a nonzero exit"
+    Assert-True ($script:buildCalls -contains "compose -f stack.yml build dashboard-api") `
+        "Windows Compose build did not run for the selected service"
+
+    $script:buildCalls = @()
+    $script:buildExitCode = 38
+    $plainExit = Invoke-ODSWindowsPlainDockerBuildService -Service "dashboard-api" `
+        -DockerClientArgs @() -ComposeFlags @("-f", "stack.yml") -BuildLog $logPath
+    Assert-True ($plainExit -eq 38) "Cached plain Docker fallback masked a nonzero exit"
+    Assert-True (@($script:buildCalls | Where-Object { $_ -match '^build -t ods-dashboard-api:latest -f ' }).Count -eq 1) `
+        "Windows plain Docker fallback did not run for the selected service"
+    Assert-True (@($script:buildCalls | Where-Object { $_ -match '--no-cache' }).Count -eq 0) `
+        "Windows local builds discarded reusable Docker layers"
 } finally {
     Remove-Item -LiteralPath $tempDir -Recurse -Force -ErrorAction SilentlyContinue
 }
 
-Write-Host "[PASS] Windows Docker pull progress and result contract"
+Write-Host "[PASS] Windows Docker pull and cached-build result contract"

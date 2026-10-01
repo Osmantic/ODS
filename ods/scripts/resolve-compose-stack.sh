@@ -102,7 +102,16 @@ lemonade_external = (
         and os.environ.get("AMD_INFERENCE_MANAGED", "").lower() == "false"
     )
 )
-external_llm = bool(os.environ.get("EXTERNAL_LLM_URL", "").strip())
+# The host agent passes only a presence marker, keeping an upstream URL that
+# may contain credentials out of the resolver child process. Installer calls
+# without the marker retain their existing EXTERNAL_LLM_URL behavior.
+external_selection = os.environ.get("ODS_EXTERNAL_LLM_SELECTED")
+external_llm = (
+    external_selection.lower() == "true" if external_selection is not None
+    else bool(os.environ.get("EXTERNAL_LLM_URL", "").strip())
+)
+gateway_only = os.environ.get("ODS_GATEWAY_ONLY", "").lower() == "true"
+enable_open_webui = os.environ.get("ENABLE_OPEN_WEBUI", "true").lower() == "true"
 
 IS_DARWIN = platform.system() == "Darwin"
 APPLE_OVERLAY = "installers/macos/docker-compose.macos.yml" if IS_DARWIN else "docker-compose.apple.yml"
@@ -1464,6 +1473,12 @@ if external_llm:
         print("ERROR: EXTERNAL_LLM_URL is set but docker-compose.external-llm.yml is missing", file=sys.stderr)
         sys.exit(1)
     resolved.append("docker-compose.external-llm.yml")
+
+if not enable_open_webui:
+    if not (script_dir / "docker-compose.gateway-only.yml").exists():
+        print("ERROR: no-WebUI Compose overlay is missing", file=sys.stderr)
+        sys.exit(1)
+    resolved.append("docker-compose.gateway-only.yml")
 
 # Optional owner-registered model directories. Unlike untrusted extension
 # mounts, these explicitly authorized absolute roots must match the bounded

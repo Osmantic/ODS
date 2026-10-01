@@ -92,6 +92,7 @@ class RenderInputs:
     remote_llm_transport: str = ""
     remote_llm_base_url: str = ""
     remote_llm_model: str = ""
+    external_llm_authenticated: bool = False
     # Switchboard rollout mode: legacy | observe | enabled (plan section 8)
     switchboard_mode: str = "enabled"
 
@@ -209,7 +210,7 @@ def render_litellm_external(inputs: RenderInputs) -> RenderedFile:
     litellm_params:
       model: {yaml_scalar('openai/' + model)}
       api_base: {yaml_scalar(base)}
-      api_key: not-needed
+      api_key: {'os.environ/EXTERNAL_LLM_API_KEY' if inputs.external_llm_authenticated else 'not-needed'}
 """)
     content = "model_list:\n" + "\n".join(entries) + """
 general_settings:
@@ -736,6 +737,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--gpu-backend", choices=["amd", "apple", "cpu", "nvidia"], default="nvidia")
     parser.add_argument("--ods-mode", choices=["local", "cloud", "hybrid", "lemonade"], default="local")
     parser.add_argument("--llm-base-url", default="http://llama-server:8080/v1")
+    parser.add_argument("--external-llm-authenticated", action="store_true")
     parser.add_argument(
         "--litellm-key",
         default=os.environ.get("ODS_RENDER_LITELLM_KEY", DEFAULT_LITELLM_KEY),
@@ -873,6 +875,7 @@ def render(args: argparse.Namespace) -> dict[str, object]:
         remote_llm_transport=args.remote_llm_transport,
         remote_llm_base_url=args.remote_llm_base_url,
         remote_llm_model=args.remote_llm_model,
+        external_llm_authenticated=args.external_llm_authenticated,
     )
     validate_render_inputs(inputs)
     if args.surface == "litellm-switchboard" and inputs.ods_mode == "cloud":

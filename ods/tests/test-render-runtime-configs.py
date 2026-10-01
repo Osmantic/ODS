@@ -64,6 +64,7 @@ def test_external_model_uses_authenticated_gateway_without_vendor_impersonation(
     assert config.count('api_base: "http://10.0.2.2:18080/v1"') == 4
     assert "master_key: os.environ/LITELLM_MASTER_KEY" in config
     assert "enable_thinking" not in config  # Do not invent backend-specific capabilities.
+    assert config.count("api_key: not-needed") == 4
 
 
 def test_external_gateway_rejects_credentialed_or_malformed_bases() -> None:
@@ -76,6 +77,18 @@ def test_external_gateway_rejects_credentialed_or_malformed_bases() -> None:
                           "--llm-base-url", "http://[::1]:18080/v1")
     content = file_by_surface(result, "litellm-external")["content"]
     assert 'model: ' + json.dumps('openai/owner/"model') in content
+
+
+def test_external_gateway_uses_runtime_key_reference_when_authenticated() -> None:
+    result = run_renderer(
+        "--surface", "litellm-external", "--model", "test-model",
+        "--llm-base-url", "https://upstream.example/v1",
+        "--external-llm-authenticated",
+    )
+    config = file_by_surface(result, "litellm-external")["content"]
+    assert config.count("api_key: os.environ/EXTERNAL_LLM_API_KEY") == 4
+    assert "api_key: not-needed" not in config
+    assert "test-secret-123" not in config
 
 
 def test_all_surfaces_render() -> None:

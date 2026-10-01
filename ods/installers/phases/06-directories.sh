@@ -27,6 +27,9 @@
 #   or change directory layout here.
 # ============================================================================
 
+# shellcheck source=installers/lib/extensions-library-copy.sh
+source "$SCRIPT_DIR/installers/lib/extensions-library-copy.sh"
+
 ods_progress 38 "directories" "Preparing installation directory"
 chapter "SETTING UP INSTALLATION"
 
@@ -259,7 +262,10 @@ else
                     error "Could not verify the prior Pixel checkout for safe retirement. Restore its local backup before retrying; no private repository was contacted."
                     return 1
                 fi
-                if ! ods_pixel_uninstall_managed "$INSTALL_DIR" "$_phase06_pixel_home"; then
+                # Source transitions retain the old broker home in private
+                # custody. Older Pixel installers copied /etc/skel into that
+                # home, which the strict removal path correctly rejects.
+                if ! ods_pixel_uninstall_managed "$INSTALL_DIR" "$_phase06_pixel_home" source-transition; then
                     error "Could not safely retire the prior ODS-managed Pixel source."
                     return 1
                 fi
@@ -325,7 +331,7 @@ else
     mkdir -p "$INSTALL_DIR"/config/{n8n,litellm,openclaw,searxng}
 
     _phase06_repair_host_path() {
-        local target="$1" description="$2"
+        local target="$1" description="$2" target_parent
 
         if $_phase06_rootless; then
             local relative="${target#"$INSTALL_DIR"/}"
@@ -337,8 +343,30 @@ else
             return 0
         fi
         if ! ods_sudo_available; then
-            error "Cannot repair $description without privileged access: $target. Fix its ownership manually, then re-run ODS."
-            return 1
+            # A rootful Docker daemon can repair a container-owned ODS path
+            # through an exact bind mount without granting host sudo. Never
+            # follow a replaced top-level directory or an arbitrary path.
+            target_parent="${target%/}"
+            target_parent="${target_parent%/*}"
+            if [[ "$target_parent" != "$INSTALL_DIR/data" \
+               && "$target_parent" != "$INSTALL_DIR/config" ]] \
+               || [[ ! -d "$target" || -L "${target%/}" \
+                   || -L "$target_parent" || -L "$INSTALL_DIR" ]]; then
+                error "Refusing unsafe $description repair: $target"
+                return 1
+            fi
+            _ods_rootless_ensure_helper_image || return 1
+            if ! docker_run run --rm --network none --user 0:0 \
+                --mount "type=bind,src=${target%/},dst=/data" \
+                "$ODS_ROOTLESS_HELPER_IMAGE" chown -h -R "$(id -u):$(id -g)" /data; then
+                error "Could not repair $description with scoped Docker access: $target"
+                return 1
+            fi
+            [[ -w "$target" ]] || {
+                error "Repaired $description is still not writable: $target"
+                return 1
+            }
+            return 0
         fi
         if ! ods_sudo chown -R "$(id -u):$(id -g)" "$target" 2>/dev/null; then
             error "Failed to repair $description: $target"
@@ -355,18 +383,26 @@ else
         && [[ "${ENABLE_HERMES:-false}" == "true" && -d "$INSTALL_DIR/data/hermes" ]]; then
         _hermes_metadata=$(stat -c '%u:%g:%a' "$INSTALL_DIR/data/hermes" 2>/dev/null || true)
         if [[ "$_hermes_metadata" != "$_phase06_compose_uid:$_phase06_compose_gid:700" ]]; then
-            if ! ods_sudo_available; then
-                error "Hermes requires data/hermes ownership $_phase06_compose_uid:$_phase06_compose_gid and mode 700 with a rootful runtime. Grant privileged access or disable Hermes, then re-run ODS."
-                return 1
+            # A fresh no-sudo install creates this directory as the invoking
+            # user, often with mode 755/775. That user can make it private
+            # directly; privileged repair is only needed for foreign owners.
+            if [[ "${_hermes_metadata%:*}" == "$_phase06_compose_uid:$_phase06_compose_gid" ]] \
+                && chmod 700 "$INSTALL_DIR/data/hermes" 2>/dev/null; then
+                :
+            else
+                if ! ods_sudo_available; then
+                    error "Hermes requires data/hermes ownership $_phase06_compose_uid:$_phase06_compose_gid and mode 700 with a rootful runtime. Grant privileged access or disable Hermes, then re-run ODS."
+                    return 1
+                fi
+                ods_sudo chown -R "$_phase06_compose_uid:$_phase06_compose_gid" "$INSTALL_DIR/data/hermes" 2>/dev/null || {
+                    error "Failed to restore data/hermes ownership to $_phase06_compose_uid:$_phase06_compose_gid"
+                    return 1
+                }
+                ods_sudo chmod 700 "$INSTALL_DIR/data/hermes" 2>/dev/null || {
+                    error "Failed to preserve private mode 700 on data/hermes"
+                    return 1
+                }
             fi
-            ods_sudo chown -R "$_phase06_compose_uid:$_phase06_compose_gid" "$INSTALL_DIR/data/hermes" 2>/dev/null || {
-                error "Failed to restore data/hermes ownership to $_phase06_compose_uid:$_phase06_compose_gid"
-                return 1
-            }
-            ods_sudo chmod 700 "$INSTALL_DIR/data/hermes" 2>/dev/null || {
-                error "Failed to preserve private mode 700 on data/hermes"
-                return 1
-            }
         fi
         unset _hermes_metadata
     fi
@@ -378,6 +414,12 @@ else
             [[ "${ENABLE_HERMES:-false}" == "true" && "$_data_dir" == "$INSTALL_DIR/data/hermes/" ]] && continue
             # Private retained chat results belong to Dashboard UID 1000.
             [[ "$_data_dir" == "$INSTALL_DIR/data/pixel-chat-results/" ]] && continue
+            # Token Spy's persistent directory intentionally belongs to its
+            # container UID 1000; phase 06 verifies that identity below.
+            [[ "$_data_dir" == "$INSTALL_DIR/data/token-spy/" ]] && continue
+            # APE's private governance state/audit directory intentionally
+            # belongs to the APE container UID; phase 06 prepares it below.
+            [[ "$_data_dir" == "$INSTALL_DIR/data/ape/" ]] && continue
             if [[ -d "$_data_dir" ]] && ! [[ -w "$_data_dir" ]]; then
                 _phase06_repair_host_path "$_data_dir" "container-owned data directory" || return 1
             fi
@@ -399,6 +441,8 @@ else
             for _d in "$INSTALL_DIR/$_root"/*/; do
                 [[ "${ENABLE_HERMES:-false}" == "true" && "$_d" == "$INSTALL_DIR/data/hermes/" ]] && continue
                 [[ "$_d" == "$INSTALL_DIR/data/pixel-chat-results/" ]] && continue
+                [[ "$_d" == "$INSTALL_DIR/data/token-spy/" ]] && continue
+                [[ "$_d" == "$INSTALL_DIR/data/ape/" ]] && continue
                 [[ -d "$_d" ]] && ! [[ -w "$_d" ]] && _cant_write="$_cant_write ${_d#"$INSTALL_DIR"/}"
             done
         done
@@ -500,12 +544,7 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
         if [[ -d "$_candidate" ]]; then _ext_lib_src="$_candidate"; break; fi
     done
     if [[ -n "$_ext_lib_src" ]]; then
-        mkdir -p "$INSTALL_DIR/data/extensions-library"
-        cp -r "$_ext_lib_src/." "$INSTALL_DIR/data/extensions-library/"
-        [[ ! -L "$INSTALL_DIR/data/extensions-library" ]] \
-            || error "Installed extension library cannot be a symlink"
-        find -P "$INSTALL_DIR/data/extensions-library" \( -type d -o -type f \) \
-            -exec chmod go-w {} + \
+        ods_copy_extensions_library "$_ext_lib_src" "$INSTALL_DIR/data" \
             || error "Could not secure the installed extension library"
         ai_ok "Extensions library copied to data/extensions-library/ (from $_ext_lib_src)"
     else
@@ -599,12 +638,76 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
         _token_spy_chown=(chown -R 1000:1000 "$INSTALL_DIR/data/token-spy")
         if ods_sudo_available; then
             _token_spy_chown=(ods_sudo "${_token_spy_chown[@]}")
+        elif [[ "$(id -u)" != 1000 ]]; then
+            # Docker access can perform this scoped repair without host sudo.
+            [[ -d "$INSTALL_DIR/data/token-spy" && ! -L "$INSTALL_DIR/data/token-spy" ]] || {
+                error "Cannot safely prepare data/token-spy: expected a real directory."
+                return 1
+            }
+            _ods_rootless_ensure_helper_image || return 1
+            _token_spy_chown=(docker_run run --rm --network none --user 0:0
+                --mount "type=bind,src=$INSTALL_DIR/data/token-spy,dst=/data"
+                "$ODS_ROOTLESS_HELPER_IMAGE" chown -h -R 1000:1000 /data)
         fi
         if ! "${_token_spy_chown[@]}"; then
             error "Cannot prepare data/token-spy for container UID 1000. Grant privileged access or repair its ownership, then re-run the installer."
             return 1
         fi
         unset _token_spy_chown
+    fi
+
+    # APE (Agent Policy Engine) persists private governance state and the
+    # audit log to the data/ape bind mount. Its image runs as the system user
+    # created by `adduser --system --no-create-home ape`, which on the pinned
+    # python:3.12-slim base resolves to UID 100 / GID 65534 (nogroup),
+    # independently of the installer owner. A rootful install would otherwise
+    # leave data/ape owned by the invoking account under the invoking umask, so
+    # the container cannot create state.json/audit.jsonl and crash-loops with
+    # PermissionError. Prepare the private state directory for the APE
+    # container UID/GID without a broad chmod 777 and without following
+    # symlinks (chown -h so a link is never dereferenced; no -R across a
+    # symlinked ancestor because install, data, and ape must be physical directories).
+    # Scope: only data/ape. This block is a no-op on rootless installs, which
+    # ods_fix_rootless_ownership prepares separately.
+    if ! $_phase06_rootless \
+        && [[ -f "$INSTALL_DIR/extensions/services/ape/compose.yaml" ]] \
+        && grep -Eq '^[[:space:]]*-?[[:space:]]*(\./)?data/ape:/data/ape(:[^[:space:]]*)?[[:space:]]*$' \
+            "$INSTALL_DIR/extensions/services/ape/compose.yaml"; then
+        _ape_uid=100
+        _ape_gid=65534
+        # These IDs match the pinned image and the rootless repair contract.
+        # Refuse links in the bind source and its install-owned ancestry before
+        # privileged recursive ownership changes.
+        [[ -d "$INSTALL_DIR" && ! -L "$INSTALL_DIR" \
+            && -d "$INSTALL_DIR/data" && ! -L "$INSTALL_DIR/data" \
+            && -d "$INSTALL_DIR/data/ape" && ! -L "$INSTALL_DIR/data/ape" ]] || {
+            error "Cannot safely prepare data/ape: expected real install, data, and APE directories."
+            return 1
+        }
+        if ods_sudo_available; then
+            ods_sudo chown -h -R "$_ape_uid:$_ape_gid" "$INSTALL_DIR/data/ape" \
+                && ods_sudo chmod 700 "$INSTALL_DIR/data/ape" || {
+                error "Cannot prepare data/ape for APE container UID $_ape_uid. Grant privileged access or repair its ownership, then re-run the installer."
+                return 1
+            }
+        else
+            _ods_rootless_ensure_helper_image || return 1
+            if ! docker_run run --rm --network none --user 0:0 \
+                --mount "type=bind,src=$INSTALL_DIR/data/ape,dst=/data" \
+                "$ODS_ROOTLESS_HELPER_IMAGE" sh -ec '
+                    chown -h -R "$1:$2" /data
+                    chmod 700 /data
+                ' sh "$_ape_uid" "$_ape_gid"; then
+                error "Cannot prepare data/ape for APE container UID $_ape_uid. Grant privileged access or repair its ownership, then re-run the installer."
+                return 1
+            fi
+        fi
+        _ape_meta=$(stat -c '%u:%g:%a' "$INSTALL_DIR/data/ape" 2>/dev/null || true)
+        if [[ "$_ape_meta" != "$_ape_uid:$_ape_gid:700" ]]; then
+            error "data/ape ownership/mode verification failed: got ${_ape_meta:-unreadable}, expected $_ape_uid:$_ape_gid:700."
+            return 1
+        fi
+        unset _ape_meta _ape_uid _ape_gid
     fi
 
     # ── .env merge logic: preserve user-configured values on re-install ──
@@ -682,6 +785,15 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
         error "OLLAMA_PORT must be a port from 1 to 65535"
         return 1
     fi
+    # Keep the selected SearXNG origin consistent across Compose and Pixel on
+    # a rerun. An explicit port override wins over the retained installed port.
+    SEARXNG_PORT_VALUE="$(_env_get_explicit_first SEARXNG_PORT 8888)"
+    if [[ ! "$SEARXNG_PORT_VALUE" =~ ^[1-9][0-9]{0,4}$ ]] \
+        || (( 10#$SEARXNG_PORT_VALUE > 65535 )); then
+        error "SEARXNG_PORT must be a port from 1 to 65535"
+        return 1
+    fi
+    SEARXNG_PORT="$SEARXNG_PORT_VALUE"
 
     # Secrets: reuse existing values, generate only if missing
     WEBUI_SECRET=$(_phase06_env_hex_secret WEBUI_SECRET 32)
@@ -904,6 +1016,33 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
         fi
         EXTERNAL_LLM_ACTIVE=true
         LLM_MODEL="$EXTERNAL_SELECTED_MODEL"
+        _external_key_target="$INSTALL_DIR/config/litellm/external-upstream.key"
+        [[ ! -L "$_external_key_target" && ( ! -e "$_external_key_target" || -f "$_external_key_target" ) ]] || {
+            error "External LLM key destination must be a regular file."
+            return 1
+        }
+        if [[ -n "${EXTERNAL_LLM_API_KEY_FILE:-}" ]]; then
+            external_llm_read_api_key "$EXTERNAL_LLM_API_KEY_FILE" >/dev/null || return 1
+            if [[ "$EXTERNAL_LLM_API_KEY_FILE" != "$_external_key_target" ]]; then
+                _external_key_tmp="$(mktemp "${_external_key_target}.XXXXXX")" || return 1
+                chmod 600 "$_external_key_tmp"
+                if ! external_llm_read_api_key "$EXTERNAL_LLM_API_KEY_FILE" >"$_external_key_tmp"; then
+                    rm -f -- "$_external_key_tmp"
+                    error "Could not stage the external LLM key."
+                    return 1
+                fi
+                mv -f -- "$_external_key_tmp" "$_external_key_target"
+            fi
+        elif [[ "${EXTERNAL_LLM_API_KEY_RESET:-false}" == "true" ]]; then
+            (umask 077; : >"$_external_key_target")
+        elif [[ ! -e "$_external_key_target" ]]; then
+            (umask 077; : >"$_external_key_target")
+        fi
+        chmod 600 "$_external_key_target"
+        if [[ -s "$_external_key_target" ]]; then
+            EXTERNAL_LLM_API_KEY_FILE="$_external_key_target"
+        fi
+        unset _external_key_tmp _external_key_target
     fi
     LLAMA_SERVER_MEMORY_LIMIT_VALUE=""
     if [[ "$GPU_BACKEND" == "nvidia" && "$EXTERNAL_LLM_ACTIVE" != "true" && "${ODS_MODE:-local}" != "cloud" ]]; then
@@ -946,6 +1085,15 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
         OPEN_WEBUI_LLM_API_KEY_VALUE=""
     else
         LLM_API_URL_VALUE=$(_env_get LLM_API_URL "$_default_llm_api_url")
+        # A retained local route cannot serve an external Lemonade install.
+        # Preserve other existing values as operator-selected endpoints.
+        if [[ "$LEMONADE_EXTERNAL_VALUE" == "true" ]]; then
+            case "$LLM_API_URL_VALUE" in
+                http://llama-server:8080|http://llama-server:8080/v1)
+                    LLM_API_URL_VALUE="$_default_llm_api_url"
+                    ;;
+            esac
+        fi
     fi
     if [[ "$EXTERNAL_LLM_ACTIVE" != "true" && "${EXTERNAL_LLM_RESET:-false}" != "true" && "$ODS_MODEL_SWITCHBOARD_VALUE" == "enabled" ]]; then
         OPEN_WEBUI_LLM_BASE_URL_VALUE=$(_env_get OPEN_WEBUI_LLM_BASE_URL "http://litellm:4000")
@@ -1259,6 +1407,9 @@ REMOTE_PROVIDER_DATA_GID=$(id -g 2>/dev/null || echo 1000)
 
 #=== LLM Backend Mode ===
 ODS_MODE=${ODS_MODE_VALUE}
+ODS_GATEWAY_ONLY=${ODS_GATEWAY_ONLY:-false}
+ENABLE_OPEN_WEBUI=${ENABLE_OPEN_WEBUI:-true}
+ENABLE_DEVTOOLS=${ENABLE_DEVTOOLS:-false}
 ODS_MODEL_SWITCHBOARD=$(dotenv_value "${ODS_MODEL_SWITCHBOARD_VALUE}")
 LLM_API_URL=$(dotenv_value "${LLM_API_URL_VALUE}")
 OPEN_WEBUI_LLM_BASE_URL=$(dotenv_value "${OPEN_WEBUI_LLM_BASE_URL_VALUE}")
@@ -1434,7 +1585,7 @@ fi)
 OLLAMA_PORT=$(dotenv_value "${OLLAMA_PORT_VALUE}")
 WEBUI_PORT=3000
 DASHBOARD_API_PORT=$(dotenv_value "${DASHBOARD_API_PORT_VALUE}")
-SEARXNG_PORT=8888
+SEARXNG_PORT=$(dotenv_value "${SEARXNG_PORT_VALUE}")
 PERPLEXICA_PORT=3004
 WHISPER_PORT=$(dotenv_value "${WHISPER_PORT_VALUE}")
 TTS_PORT=8880
@@ -1613,13 +1764,17 @@ ENV_EOF
     if [[ "$EXTERNAL_LLM_ACTIVE" == "true" ]]; then
         # Fail installation if the external route cannot be materialized. Pixel
         # must never bind its authenticated gateway to a stale local template.
+        _external_render_auth=()
+        [[ -n "${EXTERNAL_LLM_API_KEY_FILE:-}" ]] && _external_render_auth+=(--external-llm-authenticated)
         if ! "${ODS_PYTHON_CMD:-python3}" "$SCRIPT_DIR/scripts/render-runtime-configs.py" \
             --surface litellm-external --model "$EXTERNAL_SELECTED_MODEL" \
             --llm-base-url "$EXTERNAL_LLM_CONTAINER_URL_VALUE" \
+            "${_external_render_auth[@]}" \
             --output-root "$INSTALL_DIR" --write >> "$LOG_FILE" 2>&1; then
             error "Runtime config renderer failed for the external model gateway"
             return 1
         fi
+        unset _external_render_auth
     elif [[ "$GPU_BACKEND" == "amd" || "$LEMONADE_EXTERNAL_VALUE" == "true" ]]; then
         _phase06_step "render-amd-litellm-config"
         mkdir -p "$INSTALL_DIR/config/litellm"

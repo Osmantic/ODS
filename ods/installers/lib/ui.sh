@@ -444,7 +444,16 @@ pull_with_progress() {
         continue
       fi
     else
+      local pull_status=$?
       cat "$attempt_log" >> "$LOG_FILE" 2>&1 || true
+
+      # Docker Desktop's credential helper can fail outside the interactive
+      # Windows logon session. Retrying the same helper cannot restore it.
+      if grep -qiE 'error getting credentials|logon session does not exist|credential helper.*(failed|error|unavailable)' "$attempt_log"; then
+        rm -f "$attempt_log"
+        ui_status_line error "[$count/$total] $label (Docker credential helper failed; check Docker config/session)"
+        return 1
+      fi
 
       # Check for non-retryable errors
       if grep -qiE 'unauthorized|denied|not[[:space:]-]?found|\b404\b|no space left on device|cannot connect to the docker daemon|is the docker daemon running' "$attempt_log"; then
@@ -454,14 +463,14 @@ pull_with_progress() {
       fi
 
       # Check for timeout
-      if grep -qiE 'timeout|timed out' "$attempt_log" || ! kill -0 "$pull_pid" 2>/dev/null; then
+      if (( pull_status == 124 )) || grep -qiE 'timeout|timed out' "$attempt_log"; then
         rm -f "$attempt_log"
         ui_status_line error "[$count/$total] $label (network timeout on attempt $attempt)"
         continue
       fi
 
       rm -f "$attempt_log"
-      ui_status_line error "[$count/$total] $label (attempt $attempt failed)"
+      ui_status_line error "[$count/$total] $label (attempt $attempt failed; see installer log)"
     fi
   done
 
@@ -634,22 +643,34 @@ show_tier_recommendation() {
 
 # Show installation menu
 show_install_menu() {
+    local default_choice=2
+    [[ "${ODS_EXISTING_INSTALL:-false}" == true ]] && default_choice=4
     echo ""
-    ai "Choose how deep you want to go. I can install everything, or keep it minimal."
+    ai "Choose the services you want to install."
     echo ""
-    echo -e "  ${BGRN}[1]${NC} Full Stack ${AMB}(recommended — just press Enter)${NC}"
+    echo -e "  ${BGRN}[1]${NC} Full Stack"
     echo "      Chat + Voice + Workflows + Document Q&A + AI Agents"
     echo "      ~16GB download, all features enabled"
     echo ""
-    echo -e "  ${BGRN}[2]${NC} Core Only"
+    echo -e "  ${BGRN}[2]${NC} Core Only ${AMB}(recommended for new installs)${NC}"
     echo "      Chat interface + API"
     echo "      ~12GB download, minimal footprint"
     echo ""
     echo -e "  ${BGRN}[3]${NC} Custom"
     echo "      Choose exactly what you want"
     echo ""
-    read -p "  Select an option [1]: " -r INSTALL_CHOICE < /dev/tty
-    INSTALL_CHOICE="${INSTALL_CHOICE:-1}"
+    if [[ "${ODS_EXISTING_INSTALL:-false}" == true ]]; then
+        echo -e "  ${BGRN}[4]${NC} Keep current selection"
+        echo "      Preserve optional services already installed"
+        echo ""
+    fi
+    read -p "  Select an option [$default_choice]: " -r INSTALL_CHOICE < /dev/tty
+    INSTALL_CHOICE="${INSTALL_CHOICE:-$default_choice}"
+    case "$INSTALL_CHOICE" in
+        1|2|3) ;;
+        4) [[ "${ODS_EXISTING_INSTALL:-false}" == true ]] || INSTALL_CHOICE="$default_choice" ;;
+        *) warn "Invalid choice '$INSTALL_CHOICE', using option $default_choice"; INSTALL_CHOICE="$default_choice" ;;
+    esac
     echo ""
     case "$INSTALL_CHOICE" in
         1)
@@ -664,6 +685,7 @@ show_install_menu() {
             [[ "${HERMES_EXPLICIT:-false}" == true ]] || ENABLE_HERMES=true
             [[ "${OPENCLAW_EXPLICIT:-false}" == true ]] || ENABLE_OPENCLAW=false
             ENABLE_OPENCODE=true
+            [[ "${DEVTOOLS_EXPLICIT:-false}" == true ]] || ENABLE_DEVTOOLS=true
             ENABLE_COMFYUI=true
             ENABLE_APE=true
             ENABLE_PERPLEXICA=true
@@ -691,6 +713,7 @@ show_install_menu() {
             [[ "${HERMES_EXPLICIT:-false}" == true ]] || ENABLE_HERMES=false
             [[ "${OPENCLAW_EXPLICIT:-false}" == true ]] || ENABLE_OPENCLAW=false
             ENABLE_OPENCODE=false
+            [[ "${DEVTOOLS_EXPLICIT:-false}" == true ]] || ENABLE_DEVTOOLS=false
             ENABLE_COMFYUI=false
             ENABLE_APE=false
             ENABLE_PERPLEXICA=false
@@ -701,33 +724,9 @@ show_install_menu() {
             signal "Acknowledged."
             log "Selected: Custom"
             ;;
-        *)
-            warn "Invalid choice '$INSTALL_CHOICE', defaulting to Full Stack"
-            ENABLE_VOICE=true
-            ENABLE_WORKFLOWS=true
-            ENABLE_RAG=true
-            ENABLE_RECOMMENDED=true
-            # --hermes/--no-hermes on the command line wins over the preset
-            # (the Windows Pixel path passes --no-hermes).
-            [[ "${HERMES_EXPLICIT:-false}" == true ]] || ENABLE_HERMES=true
-            [[ "${OPENCLAW_EXPLICIT:-false}" == true ]] || ENABLE_OPENCLAW=false
-            ENABLE_OPENCODE=true
-            ENABLE_COMFYUI=true
-            ENABLE_APE=true
-            ENABLE_PERPLEXICA=true
-            ENABLE_PRIVACY_SHIELD=true
-            ENABLE_LANGFUSE=true
-
-            # Disable image generation on low-tier systems (insufficient RAM/VRAM)
-            # ComfyUI requires shm_size 8GB + 24GB memory limit
-            case "${TIER:-}" in
-                0|1)
-                    ENABLE_COMFYUI=false
-                    log "ComfyUI auto-disabled for Tier $TIER (insufficient RAM/VRAM)"
-                    ai_warn "Image generation (ComfyUI) disabled — your hardware doesn't have enough RAM."
-                    ai "  You can enable it later with: ods enable comfyui"
-                    ;;
-            esac
+        4)
+            signal "Acknowledged."
+            log "Selected: Keep current selection"
             ;;
     esac
 }
@@ -753,7 +752,9 @@ show_success_card() {
     echo -e "${GRN}+--------------------------------------------------------------+${NC}"
     echo -e "${GRN}|${NC}                                                              ${GRN}|${NC}"
     printf "${GRN}|${NC}   Dashboard:   ${WHT}%-43s${NC} ${GRN}|${NC}\n" "${dashboard_url}"
-    printf "${GRN}|${NC}   Chat:        ${WHT}%-43s${NC} ${GRN}|${NC}\n" "${webui_url}"
+    if [[ -n "$webui_url" ]]; then
+        printf "${GRN}|${NC}   Chat:        ${WHT}%-43s${NC} ${GRN}|${NC}\n" "${webui_url}"
+    fi
     echo -e "${GRN}|${NC}                                                              ${GRN}|${NC}"
     if [[ -n "$ip_addr" ]]; then
         echo -e "${GRN}|${NC}   ${AMB}Access from other devices:${NC}                               ${GRN}|${NC}"

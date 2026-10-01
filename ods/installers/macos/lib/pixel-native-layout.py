@@ -44,6 +44,7 @@ def compose_plugin_directory(docker, owner_home):
         docker.parent.parent / 'cli-plugins',
         Path('/opt/homebrew/lib/docker/cli-plugins'),
         Path('/usr/local/lib/docker/cli-plugins'),
+        Path('/Applications/OrbStack.app/Contents/MacOS/xbin'),
         Path('/Applications/Docker.app/Contents/Resources/cli-plugins'),
         Path(owner_home) / 'Applications/Docker.app/Contents/Resources/cli-plugins',
         Path(owner_home) / '.docker/cli-plugins',

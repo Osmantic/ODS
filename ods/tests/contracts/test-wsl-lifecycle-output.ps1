@@ -29,6 +29,8 @@ if ($Scenario) {
         $script:fixtureRunning=$false
         Get-ODSWslLifetimeStatus $Identity
     }
+    function Update-ODSWslAgentAddress { param($Identity); [pscustomobject]@{mode='unmanaged';changed=$false} }
+    function Stop-ODSWslAgentRelay { param($Identity) }
     function Invoke-ODSWslCommand { param($Identity,[string[]]$Arguments,[switch]$AsRoot)
         if ($AsRoot -or $Arguments[0] -ne 'python3') { throw 'Unexpected external command' }
         if ($Arguments[2] -like 'plan-*') {

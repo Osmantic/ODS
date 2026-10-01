@@ -10,22 +10,27 @@ from unittest.mock import patch
 
 
 PHASE = Path(__file__).resolve().parents[1] / "installers/phases/12-health.sh"
-SOURCE = PHASE.read_text().split('exec "$dashboard_container" python -c \'', 1)[1]
+SOURCE = PHASE.read_text().split('exec -i "$dashboard_container" python -c \'', 1)[1]
 PROBE = compile(SOURCE.split('\' "$container_url" "$model"', 1)[0], str(PHASE), "exec")
 
 
 class CompletionProbeTests(unittest.TestCase):
-    def run_probe(self, body):
+    def run_probe(self, body, key=""):
         response = io.StringIO(json.dumps(body))
         with (
             patch.object(sys, "argv", ["probe", "http://provider:8080", "any-model"]),
             patch("urllib.request.urlopen", return_value=response) as request,
+            patch("sys.stdin", io.StringIO(key)),
             patch("sys.stdout", new_callable=io.StringIO) as output,
         ):
             exec(PROBE, {})
             payload = json.loads(request.call_args.args[0].data)
             self.assertEqual(payload["model"], "any-model")
             self.assertEqual(payload["max_tokens"], 1)
+            self.assertEqual(
+                request.call_args.args[0].get_header("Authorization"),
+                "Bearer " + key if key else None,
+            )
             return output.getvalue()
 
     @staticmethod
@@ -34,6 +39,12 @@ class CompletionProbeTests(unittest.TestCase):
 
     def test_assistant_output(self):
         self.assertIn("assistant token", self.run_probe(self.response({"content": "OK"}, "stop")))
+
+    def test_authenticated_assistant_output(self):
+        self.assertIn(
+            "assistant token",
+            self.run_probe(self.response({"content": "OK"}, "stop"), "test-secret-123"),
+        )
 
     def test_reasoning_budget_exhaustion_is_only_inference_evidence(self):
         for field in ("reasoning", "reasoning_content"):

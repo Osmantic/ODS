@@ -19,7 +19,11 @@ ods_progress 42 "devtools" "Installing developer tools"
 # shellcheck source=../lib/node-runtime.sh
 . "$SCRIPT_DIR/installers/lib/node-runtime.sh"
 if $DRY_RUN; then
-    log "[DRY RUN] Would install AI developer tools (Claude Code and Codex CLI)"
+    if [[ "${ENABLE_DEVTOOLS:-false}" == true ]]; then
+        log "[DRY RUN] Would install AI developer tools (Claude Code and Codex CLI)"
+    else
+        log "[DRY RUN] Developer CLIs disabled; existing binaries would be preserved"
+    fi
     if [[ "${ENABLE_OPENCODE:-false}" == "true" ]]; then
         log "[DRY RUN] Would install and configure the optional OpenCode browser IDE (user-level systemd service on port 3003)"
     else
@@ -28,7 +32,8 @@ if $DRY_RUN; then
     log "[DRY RUN] Would install ODS host agent systemd service (system-mode, port 7710)"
     log "[DRY RUN] Would install ODS mDNS announcer systemd service (if zeroconf available)"
 else
-    ai "Installing AI developer tools..."
+    if [[ "${ENABLE_DEVTOOLS:-false}" == true ]]; then
+        ai "Installing AI developer tools..."
 
     # Ensure Node.js/npm is available (needed for Claude Code and Codex)
     if ! ods_linux_node_tools_available; then
@@ -105,6 +110,9 @@ else
     else
         ai_warn "Linux Node.js 20+ and npm are not available — skipping Claude Code and Codex CLI install"
         ai "  Install Linux Node.js 22+ and re-run to add Claude Code / Codex."
+    fi
+    else
+        log "Developer CLI installation disabled; existing Claude Code and Codex binaries preserved"
     fi
 
     if [[ "${ENABLE_OPENCODE:-false}" == "true" ]]; then
@@ -224,6 +232,10 @@ else
   "\$schema": "https://opencode.ai/config.json",
   "model": "llama-server/${_opencode_model_id}",
   "small_model": "llama-server/${_opencode_model_id}",
+  "agent": {
+    "build": {"model": "llama-server/${_opencode_model_id}"},
+    "plan": {"model": "llama-server/${_opencode_model_id}"}
+  },
   "provider": {
     "llama-server": {
       "npm": "@ai-sdk/openai-compatible",
@@ -261,15 +273,28 @@ OPENCODE_EOF
                     --arg provider_name "$_opencode_provider_name" \
                     --argjson context "$_opencode_context" \
                     --argjson output "$_opencode_output_limit" \
-                    '.["$schema"] = "https://opencode.ai/config.json"
-                     | .model = ("llama-server/" + $model_id)
-                     | .small_model = ("llama-server/" + $model_id)
-                     | .provider = (.provider // {})
-                     | .provider["llama-server"] = (.provider["llama-server"] // {})
-                     | .provider["llama-server"].npm = "@ai-sdk/openai-compatible"
-                     | .provider["llama-server"].name = $provider_name
-                     | .provider["llama-server"].options = {"baseURL": $url, "apiKey": $key}
-                     | .provider["llama-server"].models = {
+                    '. as $previous
+                      | ($previous.model | if type == "string" then startswith("llama-server/") else false end) as $ods_previous
+                      | .["$schema"] = "https://opencode.ai/config.json"
+                      | .model = ("llama-server/" + $model_id)
+                      | .small_model = ("llama-server/" + $model_id)
+                      | .agent = (if .agent == null then {} else .agent end)
+                      | if (.agent | type) == "object" then
+                          .agent.build = (if .agent.build == null then {} else .agent.build end)
+                          | .agent.plan = (if .agent.plan == null then {} else .agent.plan end)
+                          | if (.agent.build | type) == "object" then
+                              .agent.build.model = (if .agent.build.model == null or ($ods_previous and .agent.build.model == $previous.model) then ("llama-server/" + $model_id) else .agent.build.model end)
+                            else . end
+                          | if (.agent.plan | type) == "object" then
+                              .agent.plan.model = (if .agent.plan.model == null or ($ods_previous and .agent.plan.model == $previous.model) then ("llama-server/" + $model_id) else .agent.plan.model end)
+                            else . end
+                        else . end
+                      | .provider = (.provider // {})
+                      | .provider["llama-server"] = (.provider["llama-server"] // {})
+                      | .provider["llama-server"].npm = "@ai-sdk/openai-compatible"
+                      | .provider["llama-server"].name = $provider_name
+                      | .provider["llama-server"].options = {"baseURL": $url, "apiKey": $key}
+                      | .provider["llama-server"].models = {
                          ($model_id): {
                            "name": $model_name,
                            "limit": {"context": $context, "output": $output}
@@ -364,7 +389,13 @@ _ods_start_session_host_agent() {
         fi
     fi
 
-    if ODS_AGENT_FORCE_SESSION=true "$INSTALL_DIR/ods-cli" agent start >> "$LOG_FILE" 2>&1; then
+    # The installer holds its model lifecycle flock across this phase. Close
+    # only the child's inherited descriptor before ods-cli daemonizes; the
+    # long-lived session agent must not keep the installer's lock forever.
+    if ( [[ -z "${ODS_MODEL_LIFECYCLE_LOCK_FD:-}" ]] \
+            || exec {ODS_MODEL_LIFECYCLE_LOCK_FD}>&-; \
+         ODS_AGENT_FORCE_SESSION=true "$INSTALL_DIR/ods-cli" agent start \
+            >> "$LOG_FILE" 2>&1 ); then
         ai_ok "ODS host agent started for this session (background mode)"
         ai "  Run 'ods agent start' after reboot or login to start it again."
         return 0

@@ -8,6 +8,7 @@ import sys
 import pytest
 from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
+from host_agent_client import AgentUnavailable
 
 os.environ.setdefault("DASHBOARD_API_KEY", "dashboard-test-key")
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -29,6 +30,7 @@ def store(tmp_path, monkeypatch):
     result = receipts.ChatResultStore(tmp_path / "receipts")
     monkeypatch.setattr(pixel, "_result_store", result)
     monkeypatch.setattr(pixel, "_result_tasks", {})
+    monkeypatch.setattr(pixel, "_result_preflights", set())
     monkeypatch.setattr(pixel, "_result_stops", set())
     monkeypatch.setattr(pixel, "_result_abort_ack", set())
     monkeypatch.setenv("PIXEL_OPENWEBUI_KEY", "e" * 64)
@@ -54,6 +56,62 @@ def test_receipt_survives_restart_without_reexecuting_and_scopes_owner(store, tm
         assert other.reserve(IDENTITY, "input-hash") is False
         with pytest.raises(receipts.ResultConflict): other.reserve(IDENTITY, "changed")
     finally: other.close()
+
+
+def test_pre_submission_rejection_is_terminal_and_frees_conversation(store, tmp_path):
+    data = b'data: {"choices":[{"delta":{"content":"No turn started"}}]}\n\ndata: [DONE]\n\n'
+    assert store.reserve(IDENTITY, "input-hash") is True
+    store.reject_before_submission(IDENTITY, data)
+    assert store.get(IDENTITY)["state"] == "interrupted"
+    assert store.chunks(IDENTITY)[0]["data"] == data
+    assert store.has_pending(IDENTITY[:2]) is False
+    with pytest.raises(receipts.ResultConflict):
+        store.reject_before_submission(IDENTITY, data)
+    assert store.reserve(IDENTITY, "input-hash") is False
+    assert store.reserve((*IDENTITY[:2], "new-attempt"), "input-hash") is True
+    other = receipts.ChatResultStore(tmp_path / "receipts")
+    try:
+        assert other.get(IDENTITY)["state"] == "interrupted"
+        assert other.chunks(IDENTITY)[0]["data"] == data
+    finally:
+        other.close()
+
+
+def test_stop_during_preflight_does_not_cancel_an_unrelated_native_run(store, monkeypatch):
+    async def run():
+        entered = asyncio.Event()
+        release = asyncio.Event()
+        async def identity(*_args, **_kwargs):
+            entered.set()
+            await release.wait()
+            raise AgentUnavailable("relay offline")
+        async def forbidden_cancel(*_args):
+            raise AssertionError("No native cancellation before submission")
+        async def forbidden_activity(*_args):
+            raise AssertionError("A live preflight is not an unresolved native run")
+        monkeypatch.setattr(pixel_chat_identity, "async_request_json", identity)
+        monkeypatch.setattr(pixel, "_cancel_edge_run", forbidden_cancel)
+        monkeypatch.setattr(pixel, "pixel_chat_activity", forbidden_activity)
+        attempt = asyncio.create_task(pixel.pixel_chat_stream(ConnectedRequest(), body(), OWNER))
+        await entered.wait()
+        assert IDENTITY in pixel._result_preflights
+        lookup = pixel.ChatResultRequest(chat_id="chat-test", request_id="attempt-one")
+        assert await pixel.pixel_chat_result(lookup, OWNER) == {"state": "active", "events": ""}
+        duplicate = await pixel.pixel_chat_stream(ConnectedRequest(), body(), OWNER)
+        assert await pixel.pixel_chat_result(lookup, OWNER) == {"state": "active", "events": ""}
+        assert await pixel.pixel_chat_cancel(
+            pixel.ChatCancelRequest(chat_id="chat-test", request_id="attempt-one"), OWNER
+        ) == {"aborted": False}
+        release.set()
+        with pytest.raises(HTTPException) as caught:
+            await attempt
+        assert caught.value.status_code == 503
+        assert store.get(IDENTITY)["state"] == "interrupted"
+        assert IDENTITY not in pixel._result_preflights
+        assert not pixel._result_tasks
+        assert b"Portal did not start this attempt." in await stream_body(duplicate)
+        assert (await pixel.pixel_chat_result(lookup, OWNER))["state"] == "interrupted"
+    asyncio.run(run())
 
 
 def test_restart_does_not_adopt_or_duplicate_unfinished_work(store, tmp_path):
