@@ -224,7 +224,7 @@ function waitForActivationPoll(delay, signal, wake = null) {
   })
 }
 
-export function useModels() {
+export function useModels({observe=true} = {}) {
   const [models, setModels] = useState(USE_MOCK_DATA ? getMockModels() : [])
   const [gpu, setGpu] = useState(USE_MOCK_DATA ? MOCK_GPU : null)
   const [currentModel, setCurrentModel] = useState(USE_MOCK_DATA ? MOCK_CURRENT_MODEL : null)
@@ -357,15 +357,18 @@ export function useModels() {
     }
   }, [reconcilePendingActions])
 
+  // A caller may hide the local catalog, but accepted mutations still need
+  // their own readback. Explicit activation confirmation also keeps fetching.
+  const observing = observe || pendingActions.length > 0 || Boolean(runtimeActionLoading)
   const pollModels = useCallback(async () => {
-    if (document.hidden || pollInFlightRef.current) return
+    if (!observing || document.hidden || pollInFlightRef.current) return
     pollInFlightRef.current = true
     try {
       await fetchModels()
     } finally {
       pollInFlightRef.current = false
     }
-  }, [fetchModels])
+  }, [fetchModels,observing])
 
   useEffect(() => {
     pollModels()
@@ -380,6 +383,7 @@ export function useModels() {
     : DEFAULT_POLL_MS
 
   useEffect(() => {
+    if (!observing) return
     // Poll promptly while a model mutation is pending, while keeping at most
     // one scheduled request in flight. Hidden tabs remain idle (#1490).
     const interval = setInterval(pollModels, pollInterval)
@@ -392,7 +396,7 @@ export function useModels() {
       clearInterval(interval)
       document.removeEventListener('visibilitychange', onVisibility)
     }
-  }, [pollInterval, pollModels])
+  }, [pollInterval, pollModels, observing])
 
   const downloadModel = async (modelId) => {
     const action = startAction(modelId, 'download')
