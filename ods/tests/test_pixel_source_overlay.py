@@ -4,6 +4,7 @@ import json
 import os
 import platform
 import pwd
+import shlex
 import socket
 from pathlib import Path
 import subprocess
@@ -463,12 +464,13 @@ def provisioned_overlay(monkeypatch, request):
             config = dict(imageId=image, ownerUid=os.getuid(),
                           workspace=str(Path(pwd.getpwuid(os.getuid()).pw_dir) / '.openclaw/workspace-pixel'))
         save(system / ('etc/' + stem + '.json'), config)
+        # Model the image shipped by this checkout. Capability generations can
+        # differ across preview branches; never give a v1 image a v2 receipt.
+        dockerfile = (ROOT / 'extensions/services/pixel-agent/host/Dockerfile.inspection').read_text().replace('\\\n', ' ')
+        labels = dict(field.split('=', 1) for line in dockerfile.splitlines()
+                      if line.startswith('LABEL ') for field in shlex.split(line)[1:])
         f.images = [dict(Id=image, Os='linux', Architecture={'x86_64': 'amd64', 'aarch64': 'arm64'}[platform.machine()],
-            Config=dict(User='65534:65534', Entrypoint=['python3', '/source/preview_inspection_capsule.py'], Labels={
-                'org.osmantic.ods.component': 'pixel-preview-inspection', 'org.osmantic.ods.inspection.protocol': '1',
-                'org.osmantic.ods.inspection.fill': 'native-text-number-fill-v2',
-                'org.osmantic.ods.inspection.select': 'native-single-select-v1',
-                'org.osmantic.ods.inspection.playwright': '1.62.0'}))]
+            Config=dict(User='65534:65534', Entrypoint=['python3', '/source/preview_inspection_capsule.py'], Labels=labels))]
         contract = upgrade._provision_contract(f.manager, f.manager.journal(), kind, config, [f.images])
         for name in contract['files']:
             save(system / ('usr/local/libexec/' + stem) / name, (host / name).read_bytes())
