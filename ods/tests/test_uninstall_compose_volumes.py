@@ -119,6 +119,19 @@ class UninstallVolumeTests(unittest.TestCase):
         self.assertEqual(set(self.fake.removed), set(captured["volumes"]))
         self.assertEqual(self.fake.foreign, {"ods-pixel-retired-research", "ods-unrelated"})
 
+    def test_candidate_recipe_proves_disabled_volume_after_installed_recipe_is_removed(self):
+        trusted = Path(self.temp.name) / "candidate"
+        recipe = trusted / "extensions/services/perplexica/compose.yaml"
+        recipe.parent.mkdir(parents=True)
+        shutil.copyfile(ROOT / "extensions/services/perplexica/compose.yaml", recipe)
+        (self.root / "extensions/services/perplexica/compose.yaml").unlink()
+        with self.assertRaisesRegex(ValueError, "not linked"):
+            MODULE.preflight(self.root, self.snapshot, [])
+        MODULE.preflight(self.root, self.snapshot, [], trusted_root=trusted)
+        self.fake.containers = []
+        MODULE.complete(self.root, self.snapshot, trusted_root=trusted)
+        self.assertEqual(self.fake.volumes, {})
+
     def test_other_installation_in_same_compose_project_blocks_preflight(self):
         self.fake.containers[0]["Config"]["Labels"][
             "com.docker.compose.project.working_dir"
@@ -200,7 +213,8 @@ class UninstallVolumeTests(unittest.TestCase):
         name = "b" * 64
         self.fake.volumes[name] = {
             "Name": name, "Driver": "local",
-            "CreatedAt": "2026-10-01T00:00:00Z", "Labels": None,
+            "CreatedAt": "2026-10-01T00:00:00Z",
+            "Labels": {"com.docker.volume.anonymous": ""},
         }
         self.fake.containers[0]["Mounts"].append({"Type": "volume", "Name": name})
         MODULE.preflight(self.root, self.snapshot, [])

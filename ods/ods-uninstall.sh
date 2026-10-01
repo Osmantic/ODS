@@ -268,7 +268,7 @@ if command -v docker >/dev/null 2>&1; then
     volume_preflight_args=()
     $KEEP_DATA && volume_preflight_args+=(--keep-data)
     if ! python3 "$SCRIPT_DIR/scripts/uninstall-compose-volumes.py" preflight \
-        "$INSTALL_DIR" "$volume_snapshot" "${volume_preflight_args[@]}" "${compose_args[@]}"; then
+        "$INSTALL_DIR" "$volume_snapshot" "$SCRIPT_DIR" "${volume_preflight_args[@]}" "${compose_args[@]}"; then
         log_error "Docker ownership could not be proven; installation untouched. Review the reported resource before retrying."
         exit 1
     fi
@@ -407,7 +407,7 @@ if command -v docker &>/dev/null; then
     rm -f -- "$compose_error_log"
     if [[ "$KEEP_DATA" != "true" ]] &&
         ! python3 "$SCRIPT_DIR/scripts/uninstall-compose-volumes.py" complete \
-            "$INSTALL_DIR" "$volume_snapshot"; then
+            "$INSTALL_DIR" "$volume_snapshot" "$SCRIPT_DIR"; then
         log_error "Docker volume cleanup is incomplete after Pixel or host-service retirement; installation files and data retained for recovery."
         exit 1
     fi
