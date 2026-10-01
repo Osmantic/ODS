@@ -51,11 +51,85 @@ jobs:
           case "$SERVICE" in
             pixel-inference|remote-provider-egress) context=ods ;;
           esac
+          # Reproduce source staged by a privacy-preserving umask. Docker COPY
+          # keeps these modes, while each image runs its Python code as non-root.
+          case "$SERVICE" in
+            pixel-inference)
+              chmod -R go-rwx ods/extensions/services/pixel-inference ods/bin/pixel_provider
+              test "$(stat -c %a ods/extensions/services/pixel-inference/app)" = 700 ;;
+            remote-provider-egress)
+              chmod -R go-rwx ods/extensions/services/remote-provider-egress ods/bin/remote_provider
+              test "$(stat -c %a ods/extensions/services/remote-provider-egress/app)" = 700 ;;
+            *)
+              chmod -R go-rwx "$context"
+              test "$(stat -c %a "$context/Dockerfile")" = 600
+              test "$(stat -c %a "$context")" = 700 ;;
+          esac
           docker build --pull --tag "ods-security-$SERVICE:ci" \
             --file "ods/extensions/services/$SERVICE/Dockerfile" "$context"
           docker run --rm --network none --read-only --cap-drop ALL \
             --security-opt no-new-privileges --entrypoint python \
             "ods-security-$SERVICE:ci" -m pip check
+          case "$SERVICE" in
+            ape) entry=/app/main.py; uid= ;;
+            dashboard-api) entry=/app/main.py; uid=1000 ;;
+            model-router) entry=/srv/model-router/app/main.py; uid=10777 ;;
+            pixel-edge) entry=/app/edge_entrypoint.py; uid=1000 ;;
+            pixel-inference) entry=/srv/pixel-inference/app/main.py; uid=1000 ;;
+            pixel-model-relay) entry=/app/relay.py; uid=1000 ;;
+            privacy-shield) entry=/app/proxy.py; uid=1000 ;;
+            remote-provider-egress) entry=/srv/remote-provider-egress/app/main.py; uid=10778 ;;
+            token-spy) entry=/app/main.py; uid=1000 ;;
+          esac
+          docker run --rm --network none --read-only --cap-drop ALL \
+            --security-opt no-new-privileges --entrypoint sh \
+            "ods-security-$SERVICE:ci" -c \
+            "test \"\$(id -u)\" -ne 0 && test -r '$entry' && test -x '${entry%/*}'"
+          if [ -n "$uid" ]; then
+            docker run --rm --network none --read-only --cap-drop ALL \
+              --security-opt no-new-privileges --entrypoint sh \
+              "ods-security-$SERVICE:ci" -c "test \"\$(id -u)\" -eq $uid"
+          fi
+
+  non-python-image-modes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [brave-search, dashboard, remote-provider-ssh-tunnel]
+    env:
+      SERVICE: ${{ matrix.service }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - name: Build production image from restrictive source modes
+        run: |
+          context="ods/extensions/services/$SERVICE"
+          if [ "$SERVICE" = remote-provider-ssh-tunnel ]; then
+            context=ods
+            chmod -R go-rwx ods/extensions/services/remote-provider-ssh-tunnel ods/bin/remote_provider
+            test "$(stat -c %a ods/extensions/services/remote-provider-ssh-tunnel/app)" = 700
+          else
+            chmod -R go-rwx "$context"
+            test "$(stat -c %a "$context")" = 700
+          fi
+          docker build --pull --tag "ods-security-$SERVICE:ci" \
+            --file "ods/extensions/services/$SERVICE/Dockerfile" "$context"
+          case "$SERVICE" in
+            brave-search) entry=/app/proxy.mjs; uid=1000 ;;
+            dashboard) entry=/entrypoint.sh; uid=1000 ;;
+            remote-provider-ssh-tunnel) entry=/srv/remote-provider-ssh-tunnel/app/main.py; uid=10778 ;;
+          esac
+          entry_dir="$(dirname "$entry")"
+          docker run --rm --network none --read-only --cap-drop ALL \
+            --security-opt no-new-privileges --entrypoint sh \
+            "ods-security-$SERVICE:ci" -c \
+            "test \"\$(id -u)\" -eq $uid && test -r '$entry' && test -x '$entry_dir'"
+          if [ "$SERVICE" = dashboard ]; then
+            docker run --rm --network none --read-only --cap-drop ALL \
+              --security-opt no-new-privileges --entrypoint sh \
+              "ods-security-$SERVICE:ci" -c 'test -x /entrypoint.sh && test -r /etc/nginx/conf.d/default.conf.template'
+          fi
 
   policy:
     runs-on: ubuntu-latest
