@@ -134,6 +134,58 @@ class UnixHTTPConnection(http.client.HTTPConnection):
         self.sock.connect(self.socket_path)
 
 
+def test_next_dynamic_assets_and_source_paths_publish_without_reserved_metadata(tmp_path):
+    workspace, previews = tmp_path / 'workspace', tmp_path / 'previews'
+    workspace.mkdir(mode=0o700)
+    previews.mkdir(mode=0o700)
+    project = workspace / 'demo'
+    source = project / 'app' / '[slug]' / 'page.js'
+    source.parent.mkdir(parents=True, mode=0o700)
+    source.write_text('export default function Page() { return null }')
+    output = project / 'out'
+    asset = '_next/static/chunks/app/[slug]/page.js'
+    target = output / asset
+    target.parent.mkdir(parents=True, mode=0o700)
+    target.write_bytes(b'console.log("verified")')
+    (output / 'index.html').write_text('<h1>Next</h1>')
+    receipt = MODULE.publish_snapshot(workspace, previews, 'demo/out', os.getuid(), source_directory='demo')
+    manifest = json.loads(MODULE.snapshot_manifest(previews, receipt['siteId']))
+    assert asset in [file['path'] for file in manifest['files']]
+    with MODULE.PreviewHTTPServer(('127.0.0.1', 0), previews) as server:
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            for prefix in (f"/{receipt['siteId']}/", '/'):
+                connection = http.client.HTTPConnection('127.0.0.1', server.server_port)
+                connection.request('GET', prefix + asset.replace('[', '%5B').replace(']', '%5D'),
+                                   headers={'Host': f"{receipt['siteId']}.localhost:{server.server_port}"})
+                response = connection.getresponse()
+                assert response.status == 200
+                assert response.read() == target.read_bytes()
+                connection.close()
+        finally:
+            server.shutdown()
+            thread.join(timeout=5)
+    for name in ('__ods_manifest__.json', '__ods_source__', '__pycache__', '.env', '..'):
+        assert MODULE.ASSET_COMPONENT.fullmatch(name) is None
+
+
+def test_review_source_excludes_previous_managed_build_generations(tmp_path):
+    workspace = tmp_path / 'workspace'
+    source = workspace / 'demo' / 'app' / 'page.js'
+    source.parent.mkdir(parents=True, mode=0o700)
+    source.write_text('export default function Page() { return null }')
+    for generation in ('previous', 'current'):
+        output = workspace / 'demo' / 'ods-builds' / generation / 'site'
+        output.mkdir(parents=True, mode=0o700)
+        (output / 'index.html').write_text('<h1>Built output</h1>')
+    captured = MODULE._capture_review_source(workspace, 'demo', os.getuid(),
+                                             'demo/ods-builds/current/site')
+    assert [entry['path'] for entry in captured['files']] == ['app/page.js']
+    assert captured['omitted']['directories'] == 1
+    assert (workspace / 'demo/ods-builds/previous/site/index.html').is_file()
+
+
 def test_manifest_rehashes_published_files_without_reading_live_workspace():
     with tempfile.TemporaryDirectory() as temporary:
         root = pathlib.Path(temporary)
