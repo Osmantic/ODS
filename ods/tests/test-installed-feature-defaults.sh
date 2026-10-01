@@ -11,6 +11,11 @@ defaults="$(sed -n '/^DRY_RUN=false$/,/^INTERACTIVE=true$/p' "$ROOT/install-core
 fixture="$(mktemp -d)"
 trap 'rm -rf -- "$fixture"' EXIT
 INSTALL_DIR="$fixture"
+# Keep ordinary selection fixtures independent of the host user manager.
+mkdir -p "$fixture/default-bin"
+printf '#!/usr/bin/env bash\nexit 1\n' > "$fixture/default-bin/systemctl"
+chmod +x "$fixture/default-bin/systemctl"
+export PATH="$fixture/default-bin:$PATH"
 : >"$INSTALL_DIR/.env"
 
 mark() {
@@ -52,6 +57,32 @@ printf 'ODS_GATEWAY_ONLY=true\nENABLE_OPEN_WEBUI=false\n' >"$INSTALL_DIR/.env"
 eval "$defaults"
 [[ "$ODS_GATEWAY_ONLY" == true && "$ENABLE_OPEN_WEBUI" == false ]] || {
     echo 'FAIL: API-only gateway selection was lost on rerun' >&2; exit 1;
+}
+
+# Counter-regression: an existing install (INSTALL_DIR/.env present) whose
+# optional services are enabled must recover that ENABLE state on rerun, even
+# though their helper fallback is false (ods-proxy/tailscale/langfuse). The fix
+# must gate on .env existence alone, never on fallback!=true.
+: >"$INSTALL_DIR/.env"
+for service in whisper n8n qdrant token-spy hermes comfyui ape perplexica \
+               privacy-shield langfuse ods-proxy tailscale brave-search; do
+    mark "$service" on
+done
+eval "$defaults"
+for flag in ENABLE_VOICE ENABLE_WORKFLOWS ENABLE_RAG ENABLE_RECOMMENDED \
+            ENABLE_HERMES ENABLE_COMFYUI ENABLE_APE ENABLE_PERPLEXICA \
+            ENABLE_PRIVACY_SHIELD ENABLE_LANGFUSE ENABLE_ODS_PROXY \
+            ENABLE_TAILSCALE ENABLE_BRAVE_SEARCH; do
+    [[ "${!flag}" == true ]] || {
+        echo "FAIL: enabled fallback=false service $flag was not recovered on rerun" >&2
+        exit 1
+    }
+done
+# The ambient host may expose a real user systemctl; this block asserts only
+# the optional Compose selections, not the separate OpenCode user-service probe.
+    [[ "$ODS_EXISTING_INSTALL" == true && "$ENABLE_OPEN_WEBUI" == true ]] || {
+    echo 'FAIL: existing-install WebUI selection was lost on rerun' >&2
+    exit 1
 }
 
 # Library setup enables a user service. An unattended installer rerun may lack

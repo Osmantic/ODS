@@ -83,7 +83,7 @@ export function usePortalContext({chatId,runtimeKey:legacyRuntimeKey,runtimeIden
   const refreshQueued=useRef(false)
   const generation=useRef(0),lastQuery=useRef(0),priorRuntime=useRef(runtimeKey)
   const priorChat=useRef(chatId),lastMeasurement=useRef(null),invalidatedMeasurement=useRef(null)
-  const lastManual=useRef(initialRequestId || null)
+  const lastManual=useRef(initialRequestId || null),observedCompaction=useRef(null)
   current.current={chatId,runtimeKey,runtimeIdentity:typed?runtime.current.identity:null,capacity,blocked,onPendingChange,historyUnknown:view.chatId===chatId && view.runtimeKey===runtimeKey && view.historyUnknown}
   const publish=useCallback(update=>setView(previous=>({...previous,...update,chatId:current.current.chatId,runtimeKey:current.current.runtimeKey})),[])
   const persist=useCallback(id=>{current.current.onPendingChange(id,current.current.chatId);pending.current=id},[])
@@ -94,10 +94,14 @@ export function usePortalContext({chatId,runtimeKey:legacyRuntimeKey,runtimeIden
     const missing=fromMutation && snapshot.status==='missing' && operation.status==='idle'
     const unavailable=Boolean(pending.current) && snapshot.status==='unavailable' && operation.status==='idle'
     const elsewhere=fromMutation && snapshot.status==='busy' && !own
-    const manual=own || Boolean(lastManual.current) && operation.requestId===lastManual.current
-    const restarted=manual && operation.status==='unknown' && operation.reason==='runtime-restarted'
-    const phase=restarted?'interrupted':missing?'skipped':unavailable?'unavailable':elsewhere?'busy':operation.status==='running'?'running':terminal && manual?operation.status
-      :pending.current?'unknown':'idle'
+    // Track host-started compactions too; a failed read does not prove they ended.
+    const observed=Boolean(observedCompaction.current) && operation.requestId===observedCompaction.current.requestId
+    const tracked=own || observed || Boolean(lastManual.current) && operation.requestId===lastManual.current
+    if(operation.status==='running' || observed)observedCompaction.current=operation
+    else if(operation.status==='idle')observedCompaction.current=null
+    const restarted=tracked && operation.status==='unknown' && operation.reason==='runtime-restarted'
+    const phase=restarted?'interrupted':missing?'skipped':unavailable?'unavailable':elsewhere?'busy':operation.status==='running'?'running':terminal && tracked?operation.status
+      :pending.current || observed && operation.status==='unknown'?'unknown':'idle'
     const expected=current.current.runtimeIdentity
     const modelMatches=!expected || (!expected.model || snapshot.model?.id===expected.model)
       && (!expected.provider || snapshot.model?.provider===expected.provider)
@@ -149,7 +153,8 @@ export function usePortalContext({chatId,runtimeKey:legacyRuntimeKey,runtimeIden
             // snapshot as the completed turn's current measurement.
             if(!refreshQueued.current)accept(snapshot)
           }catch {
-            if(at===generation.current && !refreshQueued.current)publish({observedModel:null,...(pending.current?{phase:'unknown',notice:'Waiting for compaction confirmation…'}:{})})
+            const automaticPending=observedCompaction.current?.status==='running' || observedCompaction.current?.status==='unknown' && observedCompaction.current.reason!=='runtime-restarted'
+            if(at===generation.current && !refreshQueued.current)publish({observedModel:null,...((pending.current || automaticPending)?{phase:'unknown',notice:'Waiting for compaction confirmation…'}:{})})
           }finally {clearTimeout(timer);requests.current.delete(controller)}
         }while(at===generation.current && refreshQueued.current && !mutation.current)
       }finally {if(at===generation.current)query.current=null}
@@ -161,6 +166,7 @@ export function usePortalContext({chatId,runtimeKey:legacyRuntimeKey,runtimeIden
   useEffect(()=>{
     generation.current+=1;requests.current.forEach(controller=>controller.abort());requests.current.clear();query.current=null;refreshQueued.current=false;mutation.current=false;lastQuery.current=0
     pending.current=initialRequestId || null
+    observedCompaction.current=null
     if(priorChat.current!==chatId){lastMeasurement.current=null;invalidatedMeasurement.current=null;lastManual.current=pending.current}
     else if(priorRuntime.current && priorRuntime.current!==runtimeKey)invalidatedMeasurement.current=lastMeasurement.current
     priorChat.current=chatId
@@ -172,7 +178,7 @@ export function usePortalContext({chatId,runtimeKey:legacyRuntimeKey,runtimeIden
   },[chatId,runtimeKey,publish,refresh])
 
   useEffect(()=>{
-    if(view.chatId!==chatId || view.runtimeKey!==runtimeKey || !(pending.current || ['running','busy'].includes(view.phase) || view.historyUnknown))return
+    if(view.chatId!==chatId || view.runtimeKey!==runtimeKey || !(pending.current || observedCompaction.current && view.phase==='unknown' || ['running','busy'].includes(view.phase) || view.historyUnknown))return
     const timer=setTimeout(()=>void refresh(true),['unknown','unavailable'].includes(view.phase)?5000:2000)
     return ()=>clearTimeout(timer)
   },[view,chatId,runtimeKey,refresh])
@@ -216,7 +222,7 @@ export function usePortalContext({chatId,runtimeKey:legacyRuntimeKey,runtimeIden
     const at=generation.current,identity=current.current.chatId,controller=new AbortController()
     mutation.current=true;requests.current.add(controller)
     publish({resolving:true,recoveryNotice:'Confirming the previous turn has stopped…'})
-    const timer=setTimeout(()=>controller.abort(),15000)
+    const timer=setTimeout(()=>controller.abort(),30000)
     try {
       // This explicit owner action resolves uncertain history. Merely loading
       // a conversation or reading its context must never cancel work.

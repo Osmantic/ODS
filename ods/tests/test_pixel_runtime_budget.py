@@ -97,6 +97,28 @@ def test_fresh_installer_explicitly_stages_inspection_transport(tmp_path):
     assert 'pixel_ods_workspace_preview_inspect' in updated['tools']['alsoAllow']
 
 
+@pytest.mark.parametrize('socket_path', [None, '/run/ods-project/control.sock', 'relative.sock'])
+def test_project_allowlists_follow_optional_controller_config(tmp_path, socket_path):
+    tmp_path.chmod(0o700)
+    value = configuration()
+    tool = 'pixel_ods_project_build'
+    value['tools']['alsoAllow'].append(tool)
+    value['tools']['sandbox']['tools']['allow'].append(tool)
+    value['agents']['list'][0]['tools'] = {'deny': [tool]}
+    plugin = {} if socket_path is None else {'projectBuildSocket': socket_path}
+    value['plugins'] = {'entries': {'pixel-ods': {'config': plugin}}}
+    path = tmp_path / 'openclaw.json'
+    path.write_text(json.dumps(value))
+    path.chmod(0o600)
+    result = invoke(path, tmp_path)
+    assert result.returncode == 0, result.stderr
+    updated = json.loads(Path(result.stdout.strip()).read_text())
+    enabled = socket_path is not None and socket_path.startswith('/')
+    assert (tool in updated['tools']['alsoAllow']) is enabled
+    assert (tool in updated['tools']['sandbox']['tools']['allow']) is enabled
+    assert (tool not in updated['agents']['list'][0]['tools']['deny']) is enabled
+
+
 @pytest.mark.parametrize('context', [8192, 16384, 32768, 65536])
 def test_shared_overlay_is_staged_idempotent_and_uses_selected_home(tmp_path, context):
     tmp_path.chmod(0o700)

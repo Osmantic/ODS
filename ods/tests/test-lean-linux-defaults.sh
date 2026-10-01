@@ -38,6 +38,41 @@ check_defaults() (
 
 check_defaults false false
 check_defaults true true
+
+# A fresh source layout carries optional compose files for every service but
+# has no INSTALL_DIR/.env yet. Those files must NOT enable optional features:
+# only an installed tree (.env present) can express a previous selection.
+check_fresh_source_layout() (
+    local dir
+    dir="$(mktemp -d)"
+    trap 'rm -rf -- "$dir"' EXIT
+    INSTALL_DIR="$dir"
+    for service in whisper tts n8n qdrant embeddings token-spy hermes hermes-proxy \
+                   comfyui ape perplexica privacy-shield langfuse ods-proxy tailscale brave-search; do
+        mkdir -p "$dir/extensions/services/$service"
+        : >"$dir/extensions/services/$service/compose.yaml"
+    done
+    eval "$defaults"
+    [[ "$ODS_EXISTING_INSTALL" == false ]] || {
+        echo 'FAIL: fresh source layout treated as existing install' >&2
+        exit 1
+    }
+    [[ "$ENABLE_OPEN_WEBUI" == true ]] || {
+        echo 'FAIL: fresh source layout lost initial WebUI fallback' >&2
+        exit 1
+    }
+    for flag in ENABLE_VOICE ENABLE_WORKFLOWS ENABLE_RAG ENABLE_RECOMMENDED \
+                ENABLE_HERMES ENABLE_COMFYUI ENABLE_APE ENABLE_PERPLEXICA \
+                ENABLE_PRIVACY_SHIELD ENABLE_LANGFUSE ENABLE_ODS_PROXY \
+                ENABLE_TAILSCALE ENABLE_BRAVE_SEARCH; do
+        [[ "${!flag}" == false ]] || {
+            echo "FAIL: fresh source $flag=${!flag}; expected false" >&2
+            exit 1
+        }
+    done
+    [[ "$ENABLE_OPENCODE" == false && "$ENABLE_OPENCLAW" == false ]]
+)
+check_fresh_source_layout
 check_gateway_default() (
     local dir
     dir="$(mktemp -d)"

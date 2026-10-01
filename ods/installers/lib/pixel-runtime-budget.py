@@ -396,6 +396,23 @@ for tools in (updated_tools['alsoAllow'], updated_sandbox_tools['allow']):
         tools.remove(inspection_tool)
 if inspection_enabled:
     updated_agent_tools['deny'] = [tool for tool in updated_agent_tools['deny'] if tool != inspection_tool]
+project_socket = sys.argv[6] if len(sys.argv) > 6 else ''
+if project_socket:
+    if not project_socket.startswith('/') or '\x00' in project_socket or not 2 <= len(project_socket) <= 100:
+        raise SystemExit('invalid project controller socket')
+    updated_pixel_config['projectBuildSocket'] = project_socket
+project_socket = updated_pixel_config.get('projectBuildSocket')
+project_enabled = (isinstance(project_socket, str) and project_socket.startswith('/')
+                   and '\x00' not in project_socket and 2 <= len(project_socket) <= 100)
+project_tool = 'pixel_ods_project_build'
+for tools in (updated_tools['alsoAllow'], updated_sandbox_tools['allow']):
+    if project_enabled and project_tool not in tools:
+        tools.append(project_tool)
+        tools.sort()
+    elif not project_enabled and project_tool in tools:
+        tools.remove(project_tool)
+if project_enabled:
+    updated_agent_tools['deny'] = [tool for tool in updated_agent_tools['deny'] if tool != project_tool]
 if updated == value:
     print("unchanged")
     raise SystemExit(0)

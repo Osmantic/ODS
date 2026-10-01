@@ -513,7 +513,11 @@ log "All services enabled (core install)"
 # No GPU (CPU-only) — nothing to assign. Say so plainly instead of falling
 # into the single-GPU branch below and logging "Single GPU detected".
 if [[ "${GPU_COUNT:-0}" -eq 0 ]]; then
-    log "No GPU detected — skipping GPU assignment (CPU-only mode)."
+    if [[ "${ODS_MODE:-local}" == "cloud" ]]; then
+        log "Cloud mode — GPU detection was skipped; no local model GPU assignment is required."
+    else
+        log "No GPU detected — skipping GPU assignment (CPU-only mode)."
+    fi
     return
 fi
 

@@ -221,7 +221,7 @@ _MAX_SSE_PENDING_LINES = 4096
 _UPSTREAM_REWRITE = "openclaw/default"
 _SAFE_CHAT_ID = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 _PREVIEW_SITE_ID = re.compile(r"^site-[a-f0-9]{24}$")
-_PREVIEW_PATH_COMPONENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+_PREVIEW_PATH_COMPONENT = re.compile(r"^(?!__ods_)(?!__pycache__$)[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$")
 _ARTIFACT_DRAFT_PREFIX = re.compile(
     r"^\s*(?:please\s+)?(?:build|write|draft|document|compose|create|edit|update|"
     r"refactor|implement|generate)\b",
@@ -1432,7 +1432,8 @@ async def handle_chat_cancel(request: web.Request):
         return web.json_response({"error": "invalid cancellation request"}, status=400)
 
     connector = UnixConnector(path=_SOCKET_PATH)
-    timeout = ClientTimeout(total=6, sock_connect=2, sock_read=5)
+    # Outlive the ingress's 16 s harness + managed-project cancellation budget.
+    timeout = ClientTimeout(total=20, sock_connect=2, sock_read=18)
     try:
         async with ClientSession(connector=connector, timeout=timeout) as session:
             async with session.post(
@@ -1654,8 +1655,8 @@ def _preview_upstream_path(site_id: str, tail: str) -> str | None:
         return None
     if not tail:
         return f"/{site_id}/"
-    # Exact host-generated metadata endpoint; no other underscore-prefixed
-    # paths, queries, or live workspace access are admitted.
+    # Exact host-generated metadata endpoints; other __ods_ names remain
+    # reserved. Framework underscore assets still select immutable files only.
     if tail in {"__ods_manifest__.json", "__ods_view__.html"}:
         return f"/{site_id}/{tail}"
     if re.fullmatch(r"__ods_changes__/(?:initial|site-[a-f0-9]{24})\.json", tail):

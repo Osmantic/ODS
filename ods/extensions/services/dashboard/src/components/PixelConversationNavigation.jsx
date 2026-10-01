@@ -9,7 +9,7 @@ import { exportConversation } from '../lib/pixelConversationExport'
 
 function LimitedList({items,children,label}) {
   const [expanded,setExpanded]=useState(false)
-  return <>{children(expanded?items:items.slice(0,5))}{items.length>5 && <button type="button" className="rail-show-more" aria-label={`${expanded?'Show fewer':'Show more'} ${label}`} aria-expanded={expanded} onClick={()=>setExpanded(value=>!value)}>{expanded?'Mostrar menos':`Mostrar mais (${items.length-5})`}</button>}</>
+  return <>{children(expanded?items:items.slice(0,5))}{items.length>5 && <button type="button" className="rail-show-more" aria-label={`${expanded?'Show fewer':'Show more'} ${label}`} aria-expanded={expanded} onClick={()=>setExpanded(value=>!value)}>{expanded?'Show fewer':`Show more (${items.length-5})`}</button>}</>
 }
 
 export default function PixelConversationNavigation({ collapsed }) {

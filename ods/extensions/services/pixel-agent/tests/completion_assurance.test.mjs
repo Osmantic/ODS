@@ -129,7 +129,8 @@ test('sources must come from structured tool evidence, not invented prose links'
   ]})}]}});
   for (let i=0;i<2;i++) assert.equal(guard.finalize('Resumo sem fontes.')?.action,'revise');
   assert.equal(guard.finalize('Resumo sem fontes.')?.action,'finalize');
-  assert.match(guard.terminal,/https:\/\/example.org\/news/);
+  assert.doesNotMatch(guard.terminal,/https?:/);
+  assert.equal(guard.terminalStatus,'failed');
   assert.doesNotMatch(guard.terminal,/javascript|localhost|password/);
   assert.equal(guard.finalize('Resumo: [fonte](https://example.org/news)'),undefined);
   assert.equal(guard.terminal,undefined);
@@ -334,6 +335,7 @@ test('citation fallback after an actual read cannot append other unread search l
   guard.observe('web_search',{result:{details:{results:[{url:'https://example.org/lead'}]}}});
   guard.observe('web_fetch',pageReceipt('https://example.org/read'));
   for (let i=0;i<3;i++) guard.finalize('Finding without a citation.');
-  assert.match(guard.terminal,/https:\/\/example.org\/read/);
+  assert.doesNotMatch(guard.terminal,/https?:/);
+  assert.match(guard.terminal,/Attribution remains incomplete/);
   assert.doesNotMatch(guard.terminal,/https:\/\/example.org\/lead/);
 });

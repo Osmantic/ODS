@@ -49,7 +49,8 @@ const CONNECT_TIMEOUT_MS = 5000;
 // and the gateway, rather than an intermediate proxy, owns terminal timeout.
 const TOTAL_TIMEOUT_MS = 1920000;
 const GATEWAY_PROBE_TIMEOUT_MS = 2000;
-const GATEWAY_ABORT_TIMEOUT_MS = 5000;
+// The harness may drain for 4 s, then managed project jobs for 10 s.
+const GATEWAY_ABORT_TIMEOUT_MS = 16000;
 const GATEWAY_ABORT_RETRY_MS = 100;
 const GATEWAY_ABORT_MAX_ATTEMPTS = 30;
 const DOCKER_TIMEOUT_MS = 10000;

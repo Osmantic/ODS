@@ -197,6 +197,22 @@ function workspace(files, relativeDirectory = DIRECTORY) {
   return root;
 }
 
+test('workspace snapshots include generated framework assets that start with an underscore', t => {
+  const literals = extractRequestedLiterals(FLEET_CREATE);
+  const files = {'index.html': eventPage(), '_next/static/app.js': 'export {}', '_astro/page.css': 'body{}'};
+  const preview = snapshot(files);
+  const root = workspace(files);
+  t.after(() => fs.rmSync(root, {recursive: true, force: true}));
+  assert.deepEqual([...requestedTextCheck(literals, preview, {receipt: preview, workspaceRoot: root}).missing], [{text: 'Dawn jazz'}]);
+  // The reserved ODS virtual route prefix and dot-directories stay refused.
+  for (const name of ['__ods_route/x.js', '.hidden/x.js']) {
+    const reserved = {'index.html': eventPage(), [name]: 'x'};
+    const reservedRoot = workspace(reserved);
+    t.after(() => fs.rmSync(reservedRoot, {recursive: true, force: true}));
+    assert.equal(requestedTextCheck(literals, snapshot(reserved), {receipt: snapshot(reserved), workspaceRoot: reservedRoot}), undefined, name);
+  }
+});
+
 test('checks bind only to bytes that reproduce the published snapshot digest', t => {
   const literals = extractRequestedLiterals(FLEET_CREATE);
   const files = {'index.html': eventPage(), 'script.js': SCRIPT, 'logo.png': '\x89PNG'};

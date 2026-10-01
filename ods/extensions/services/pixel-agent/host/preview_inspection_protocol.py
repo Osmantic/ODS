@@ -26,6 +26,12 @@ CSP = (
 )
 SANDBOX = "allow-scripts allow-forms allow-downloads"
 SCOPE = "Only the listed CSS layout visibility, normalized visible-text assertions and click dispatches were tested; not pixel paint, occlusion, clipping, a full accessibility audit, or overall functionality."
+SELECT_SCOPE = SCOPE + " Native single-select values were observed only for explicit select-option steps."
+SELECT_CAPABILITY = "native-single-select-v1"
+
+
+def inspection_scope(request):
+    return SELECT_SCOPE if any(s['action'] == 'select-option' for s in request['steps']) else SCOPE
 
 
 class Invalid(ValueError):
@@ -160,9 +166,13 @@ def validate_request(value):
         raise Invalid("invalid steps")
     for step in steps:
         text_step = isinstance(step, dict) and step.get("action") == "assert-text"
-        exact(step, ("action", "locator", "expectedText") if text_step else ("action", "locator"))
-        if step["action"] not in ("assert-visible", "assert-hidden", "assert-text", "click"):
+        select_step = isinstance(step, dict) and step.get("action") == "select-option"
+        extra = ("expectedText",) if text_step else ("value",) if select_step else ()
+        exact(step, ("action", "locator", *extra))
+        if step["action"] not in ("assert-visible", "assert-hidden", "assert-text", "click", "select-option"):
             raise Invalid("invalid step")
+        if select_step and step['value'] != '' and not printable(step['value'], 256, 1024):
+            raise Invalid('invalid option value')
         if text_step and (not printable(step['expectedText'], 256, 1024)
                           or ' '.join(step['expectedText'].split()) != step['expectedText']):
             raise Invalid('invalid expected text')
@@ -219,8 +229,8 @@ def validate_bundle(bundle):
             or len(name.split("/")) > 12
             or name <= previous
             or any(
-                not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", p)
-                or p in (".", "..")
+                not re.fullmatch(r"(?!__ods_)[A-Za-z0-9_][A-Za-z0-9._-]{0,127}", p)
+                or p in (".", "..", "__pycache__")
                 for p in name.split("/")
             )
         ):
@@ -265,5 +275,5 @@ def failure(code, request=None):
             if request
             else {}
         ),
-        "scope": SCOPE,
+        "scope": inspection_scope(request) if request else SCOPE,
     }
