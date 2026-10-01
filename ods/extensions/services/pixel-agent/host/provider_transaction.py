@@ -99,6 +99,8 @@ def _journal(value, path, mode):
 
 
 def _guards(sd):
+    if os.path.lexists(os.path.join(sd, "access-release-journal.json")):
+        raise StoreError("access-release-recovery-required")
     if os.path.lexists(os.path.join(sd, "model-journal.json")):
         raise StoreError("model-recovery-required")
     receipt = controller._load_receipt(sd)

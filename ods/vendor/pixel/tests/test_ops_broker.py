@@ -841,6 +841,34 @@ class OpsBrokerPolicyTests(unittest.TestCase):
             broker.serve(once=True)
             self.assertEqual(BROKER.read_regular_json(broker.path("results", request["jobId"]), BROKER.MAX_RESULT_BYTES)["status"], "succeeded")
 
+    def test_unapproved_plan_expires_without_dispatch_even_while_paused(self):
+        for paused in (False, True):
+            with self.subTest(paused=paused), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                policy_path = root / "policy.json"
+                policy_path.write_text(json.dumps(policy(str(root))), encoding="utf-8")
+                broker = BROKER.Broker(policy_path, root / "state")
+                request = self.request(kind="shell", target="control", command="printf never-executed")
+                path = broker.directories["requests"] / f"{request['jobId']}.json"
+                path.write_text(json.dumps(request), encoding="utf-8")
+                broker.ingest(path)
+                plan = BROKER.read_regular_json(broker.path("plans", request["jobId"]), BROKER.MAX_REQUEST_BYTES)
+                executor = mock.Mock()
+                # Still-valid requests continue to require actual owner approval.
+                broker.schedule(executor, plan)
+                executor.submit.assert_not_called()
+                deadline = datetime.fromisoformat(plan["expiresAt"].replace("Z", "+00:00"))
+                with mock.patch.object(BROKER, "utc_now", return_value=deadline), mock.patch.object(broker, "paused", return_value=paused):
+                    broker.schedule(executor, plan)
+                    result = BROKER.read_regular_json(broker.path("results", request["jobId"]), BROKER.MAX_RESULT_BYTES)
+                    self.assertEqual(result["status"], "failed")
+                    self.assertEqual(result["error"], "compiled plan expired before execution")
+                    self.assertEqual(result["planHash"], plan["planHash"])
+                    broker.schedule(executor, plan)
+                    self.assertEqual(BROKER.read_regular_json(broker.path("results", request["jobId"]), BROKER.MAX_RESULT_BYTES), result)
+                executor.submit.assert_not_called()
+                self.assertFalse(broker.path("approvals", request["jobId"]).exists())
+
     def test_policy_v1_migrates_to_explicit_v2_authority(self):
         migrated = BROKER.validate_policy(policy())
         self.assertEqual(migrated["schemaVersion"], 2)

@@ -282,3 +282,34 @@ test('a Perplexica result fits the tool-result cap as the real tool_call returns
     assert.ok(JSON.stringify(evidence.answer).length >= 900, `${cap}: answer ${evidence.answer.length}`);
   }
 });
+
+
+test('document delivery is discoverable and callable through actual pinned ToolSearch with exact policy-bound schema',async()=>{
+ const {ARTIFACT_TOOL,ARTIFACT_BOUNDARY,createWorkspaceArtifactTool,createWorkspaceArtifactAdmission}=await import('../plugin/workspace-artifact.mjs');
+ const {createToolLoopGuard}=await import('../plugin/tool-loop-guard.mjs');
+ const owner={trigger:'user',agentId:'pixel',runId:'artifact-run',sessionId:'artifact-session',sessionKey:'agent:pixel:openai-user:ods-'+ 'a'.repeat(64),toolCallId:'deliver'};
+ const guard=createToolLoopGuard();guard.observeRun(owner,'pixel',{prompt:'Deliver report.md'});
+ const admission=createWorkspaceArtifactAdmission();let requests=0;
+ const receipt={schemaVersion:1,kind:'ods-pixel-workspace-artifact',relativePath:'project/report.md',siteId:'site-'+ 'a'.repeat(24),sha256:'a'.repeat(64),file:{path:'report.md',bytes:4,sha256:'b'.repeat(64)}};
+ const artifact=createWorkspaceArtifactTool(owner,{admission,reserve:s=>guard.reserveWorkspaceArtifact(s),accept:(s,r)=>guard.acceptWorkspaceArtifact(s,r),request:async()=>{requests++;return {...receipt,status:'succeeded',httpStatus:200,readbackVerified:true,executable:false,overwritten:false,boundary:ARTIFACT_BOUNDARY}}});
+ const result=run(filterByPolicy([artifact],{allow:[ARTIFACT_TOOL]}));
+ assert.deepEqual(result.tools,controls,'document delivery stays a specialist, not another permanent prompt tool');
+ const ctx={agentId:'pixel',catalogRef:result.catalogRef,config:{tools:{toolSearch:{enabled:true,mode:'tools'}}},executeTool:async params=>params.tool.execute(`tool_search_code:deliver:${ARTIFACT_TOOL}:1`,params.input)};
+ const byName=Object.fromEntries(createControls(ctx).map(t=>[t.name,t]));
+ const found=await byName.tool_search.execute('find',{query:'pixel_ods_workspace_artifact',limit:5});assert.ok(found.details.some(x=>x.name===ARTIFACT_TOOL));
+ const described=await byName.tool_describe.execute('describe',{id:ARTIFACT_TOOL});assert.deepEqual(described.details.parameters,{type:'object',additionalProperties:false,required:['relativePath'],properties:{relativePath:{type:'string',minLength:1,maxLength:512}}});
+ const args={relativePath:'project/report.md'};
+ // Live cloud regression: the model searched the tool but guessed `path`.
+ // The actual dispatcher must return schema guidance before any broker work.
+ admission.before({toolName:'tool_call',params:{id:ARTIFACT_TOOL,args:{path:args.relativePath}}},owner);
+ const malformed=await byName.tool_call.execute('deliver',{id:ARTIFACT_TOOL,args:{path:args.relativePath}});
+ assert.match(JSON.stringify(malformed),/invalid-arguments/);assert.match(JSON.stringify(malformed),/relativePath, not path/);assert.equal(requests,0);
+ const toolContext={...owner,trigger:undefined,toolName:'tool_call'};
+ const admittedEvent={toolName:'tool_call',toolCallId:owner.toolCallId,params:{id:ARTIFACT_TOOL,args}};
+ const decision=guard.beforeToolCall(admittedEvent,toolContext);
+ admission.before(admittedEvent,toolContext,decision);
+ const delivered=await byName.tool_call.execute('deliver',{id:ARTIFACT_TOOL,args});assert.equal(delivered.isError,undefined);assert.equal(requests,1);assert.deepEqual(guard.deliveryVerificationForRun(owner.runId).artifacts,[receipt]);
+ admission.before({toolName:'tool_call',params:{id:ARTIFACT_TOOL,args:{relativePath:'../secret.pdf'}}},owner);
+ await byName.tool_call.execute('deliver',{id:ARTIFACT_TOOL,args:{relativePath:'../secret.pdf'}});assert.equal(requests,1);
+ const denied=run(filterByPolicy([artifact],{deny:[ARTIFACT_TOOL]}));assert.equal(resolveExact({...ctx,catalogRef:denied.catalogRef},ARTIFACT_TOOL),undefined);
+});
