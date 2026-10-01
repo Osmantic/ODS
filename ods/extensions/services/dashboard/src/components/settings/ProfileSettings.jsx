@@ -5,8 +5,11 @@ import {prepareProfilePhoto, saveProfile, useLocalProfile} from '../../lib/local
 import UserAvatar from '../UserAvatar'
 import MetalMetricIcon from '../MetalMetricIcon'
 import {usePortalIdentity} from '../../contexts/PortalIdentityContext'
+import {useI18n} from '../../i18n'
+import LanguageSelector from '../../i18n/LanguageSelector'
 
 export default function ProfileSettings() {
+  const {t} = useI18n()
   const {session, changePassword, signOut} = useDashboardSession()
   const {displayName} = usePortalIdentity()
   const saved = useLocalProfile()
@@ -42,26 +45,27 @@ export default function ProfileSettings() {
   function submit(event) {
     event.preventDefault()
     if (busy) return
-    try {setDraft(saveProfile(draft, saved));setError('');setNotice('Profile saved.')}
-    catch {setError('Your profile could not be saved. Browser storage may be full or disabled.');setNotice('')}
+    try {setDraft(saveProfile(draft, saved));setError('');setNotice(t('profile.saved'))}
+    catch {setError(t('profile.saveError'));setNotice('')}
   }
-  return <form className="profile-settings" aria-label="Your profile" onSubmit={submit}>
-    <h2>Your identity</h2><p>Your name and photo in the sidebar and {displayName} conversations.</p>
+  return <form className="profile-settings" aria-label={t('profile.aria')} onSubmit={submit}>
+    <h2>{t('profile.identity')}</h2><p>{t('profile.identityBody', {displayName})}</p>
+    <LanguageSelector />
     <div className="profile-photo-editor"><UserAvatar profile={draft}/><div>
-      <input ref={input} type="file" accept="image/jpeg,image/png,image/webp" aria-label="Profile photo" onChange={upload} hidden/>
-      <button type="button" onClick={() => input.current?.click()} disabled={busy}><MetalMetricIcon icon={Upload} size={14}/>{busy ? 'Preparing photo…' : 'Upload photo'}</button>
-      {draft.photo && <button type="button" onClick={() => {selection.current++;setBusy(false);setDraft(current=>({...current,photo:''}));setNotice('')}}><Trash2 size={13}/>Remove photo</button>}
-      <small>JPG, PNG or WebP · up to 5 MB<br/>Centered crop · circular avatar</small>
+      <input ref={input} type="file" accept="image/jpeg,image/png,image/webp" aria-label={t('profile.photo')} onChange={upload} hidden/>
+      <button type="button" onClick={() => input.current?.click()} disabled={busy}><MetalMetricIcon icon={Upload} size={14}/>{busy ? t('profile.preparePhoto') : t('profile.uploadPhoto')}</button>
+      {draft.photo && <button type="button" onClick={() => {selection.current++;setBusy(false);setDraft(current=>({...current,photo:''}));setNotice('')}}><Trash2 size={13}/>{t('profile.removePhoto')}</button>}
+      <small>{t('profile.photoHelp')}<br/>{t('profile.photoHelp2')}</small>
     </div></div>
-    <label className="profile-name-label">Display name<input name="displayName" autoComplete="nickname" maxLength={60} placeholder="Your name" value={draft.name} onChange={event => {setDraft(current=>({...current,name:event.target.value}));setNotice('')}}/></label>
-    <p className="profile-privacy">Saved only in this browser. Your photo is resized locally and is not sent to the AI model. This does not change your login or permissions.</p>
+    <label className="profile-name-label">{t('profile.displayName')}<input name="displayName" autoComplete="nickname" maxLength={60} placeholder={t('profile.displayNamePlaceholder')} value={draft.name} onChange={event => {setDraft(current=>({...current,name:event.target.value}));setNotice('')}}/></label>
+    <p className="profile-privacy">{t('profile.privacy')}</p>
     {error && <p role="alert">{error}</p>}{notice && <p role="status">{notice}</p>}
-    <div className="profile-settings-actions"><button type="submit" disabled={busy}>Save profile</button></div>
-    <section className="profile-dashboard-access" aria-label="Dashboard access">
-      <h3>Dashboard access</h3>
+    <div className="profile-settings-actions"><button type="submit" disabled={busy}>{t('profile.save')}</button></div>
+    <section className="profile-dashboard-access" aria-label={t('profile.dashboardAccess')}>
+      <h3>{t('profile.dashboardAccess')}</h3>
       <div className="profile-settings-actions">
-        <button type="button" onClick={changePassword}>Change dashboard password</button>
-        {session && <button type="button" onClick={signOut}>Sign out of this browser</button>}
+        <button type="button" onClick={changePassword}>{t('profile.changePassword')}</button>
+        {session && <button type="button" onClick={signOut}>{t('profile.signOut')}</button>}
       </div>
     </section>
   </form>
