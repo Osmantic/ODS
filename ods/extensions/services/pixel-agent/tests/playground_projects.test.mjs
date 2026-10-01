@@ -488,3 +488,11 @@ test('delivery folder and archive contents do not request a fresh project', t=>{
     'Gere um ZIP com os fontes e crie um script novo.',
     'Create a ZIP with sources and build a new website.']) assert.equal(requestsNewPlaygroundProject(value),true,value);
 });
+
+test('archive review keeps existing build commands distinct from new project creation', () => {
+  for (const intent of [
+    'Inspect ZIP with app sources and run npm build for the website.',
+    'Inspect the archive containing sources and run npm build for the dashboard.',
+  ]) assert.equal(requestsNewPlaygroundProject(intent), false, intent);
+  assert.equal(requestsNewPlaygroundProject('Inspect ZIP with HTML and run npm build; create a new game.'), true);
+});
