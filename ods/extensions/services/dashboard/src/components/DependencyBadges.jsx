@@ -99,7 +99,7 @@ export function DisableDependentWarning({ dependents }) {
     <div className="flex items-start gap-2 mt-3 p-2.5 rounded-lg bg-theme-text-secondary/10 border border-theme-border">
       <AlertTriangle size={14} className="text-theme-text-secondary mt-0.5 shrink-0" />
       <p className="text-xs text-theme-text-secondary">
-        Disabling this may break: {dependents.join(', ')}
+        If enabled, disable these dependent extensions first: {dependents.join(', ')}
       </p>
     </div>
   )

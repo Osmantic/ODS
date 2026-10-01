@@ -283,6 +283,40 @@ def test_confined_source_and_matching_context_projection_are_accepted(installed)
         POLICY.validate_flags(installed, original)
 
 
+def test_disable_recovery_can_deselect_rejected_source_with_projection(installed):
+    doc = source_recipe(installed)
+    projection = fragment(installed).with_name('.ods-build-context-compose.yaml.json')
+    projection.write_text(json.dumps({'services': {'example': {'build': {
+        'context': doc['services']['example']['build']['context']}}}}))
+    saved = flags() + ['-f', str(projection)]
+    change(installed, {'privileged': True})
+
+    with pytest.raises(ValueError, match='requires review'):
+        POLICY.validate_flags(installed, saved)
+    assert POLICY.validate_flags(
+        installed, saved, recovery_disable_service='example',
+    ) == saved
+
+    # Recovery still rejects another extension's unsafe recipe.
+    other = installed / 'data/user-extensions/other/compose.yaml'
+    other.parent.mkdir()
+    other.write_text(json.dumps({'services': {'other': {'image': 'example/app:1',
+                                                       'privileged': True}}}))
+    with pytest.raises(ValueError, match='Cached extension other requires review'):
+        POLICY.validate_flags(
+            installed, saved + ['-f', str(other)], recovery_disable_service='example',
+        )
+
+    other.write_text(json.dumps({'services': {'other': {'image': 'example/app:1'}}}))
+    other_projection = other.with_name('.ods-build-context-compose.yaml.json')
+    other_projection.write_text('{}')
+    with pytest.raises(ValueError, match='no validated source recipe'):
+        POLICY.validate_flags(
+            installed, saved + ['-f', str(other), '-f', str(other_projection)],
+            recovery_disable_service='example',
+        )
+
+
 def test_source_receipt_is_bound_to_recipe_bytes(installed):
     source_recipe(installed)
     change(installed, {'command': ['unexpected', 'command']})
@@ -331,6 +365,23 @@ def test_dynamic_resolution_also_rejects_source_overlay(installed):
     assert result.returncode != 0
     assert not result.stdout
     assert 'source service' in result.stderr and 'overridden' in result.stderr
+
+
+@pytest.mark.skipif(sys.platform == 'win32', reason='POSIX dynamic resolver integration')
+def test_dynamic_resolution_without_cache_keeps_base_after_rejected_recipe(installed):
+    (installed / 'docker-compose.base.yml').write_text('services: {}')
+    (installed / 'docker-compose.cpu.yml').write_text('services: {}')
+    change(installed, {'privileged': True})
+    env = dict(os.environ, PATH=str(Path(sys.executable).parent) + os.pathsep + os.environ['PATH'])
+    result = subprocess.run(
+        ['bash', str(installed / 'scripts/resolve-compose-stack.sh'),
+         '--script-dir', str(installed), '--gpu-backend', 'cpu'],
+        capture_output=True, text=True, env=env,
+    )
+    assert result.returncode == 0, result.stderr
+    assert 'docker-compose.base.yml' in result.stdout
+    assert 'data/user-extensions/example/compose.yaml' not in result.stdout
+    assert 'example' in result.stderr and 'privileged' in result.stderr
 
 
 def test_projection_without_original_recipe_is_rejected(installed):
