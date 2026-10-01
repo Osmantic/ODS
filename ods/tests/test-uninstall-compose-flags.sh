@@ -43,16 +43,23 @@ emit_filtered() {
 }
 
 if [[ "${1:-}" == "ps" ]]; then
+    [[ " $* " == *" label=com.docker.compose.project="* ]] && exit 0
     NAMES="ods-litellm ods-llama-server ods-download-test-sentinel ods-inspection-blocked-test-sentinel kube-pods-proxy methods-runner ods-pixel-retired-0123456789abcdef"
     emit_filtered "$@"
     exit 0
 fi
 if [[ "${1:-}" == "volume" && "${2:-}" == "ls" ]]; then
+    [[ " $* " == *" label=com.docker.compose.project="* ]] && exit 0
     NAMES="ods_perplexica-data ods-legacy-cache ods_download_test_data ods-download-test-volume k3s_pods methods_cache"
     emit_filtered "$@"
     exit 0
 fi
+if [[ "${1:-}" == "compose" && " $* " == *" config --format json "* ]]; then
+    printf '{"name":"ods","volumes":{}}\n'
+    exit 0
+fi
 if [[ "${1:-}" == "compose" && " $* " == *" down "* ]]; then
+    [[ "${DOCKER_DOWN_EXIT_CODE:-0}" == "0" ]] || printf 'fixture Compose diagnostic\n' >&2
     exit "${DOCKER_DOWN_EXIT_CODE:-0}"
 fi
 exit 0
@@ -116,6 +123,7 @@ make_install() {
     cp "$ROOT_DIR/lib/system-uninstall.sh" "$install_dir/lib/system-uninstall.sh"
     mkdir -p "$install_dir/scripts"
     cp "$ROOT_DIR/scripts/compose-cache-policy.py" "$install_dir/scripts/"
+    cp "$ROOT_DIR/scripts/uninstall-compose-volumes.py" "$install_dir/scripts/"
     cp "$ROOT_DIR/scripts/resolve-compose-stack.sh" "$install_dir/scripts/"
     mkdir -p "$install_dir/installers/macos/lib"
     cp "$ROOT_DIR/installers/macos/lib/pixel-native-uninstall.py" "$install_dir/installers/macos/lib/"
@@ -145,13 +153,15 @@ run_uninstall() {
 
 assert_no_name_cleanup() {
     local docker_log="$1"
-    if grep -Eq '^(ps|rm|container rm|volume (ls|rm))( |$)' "$docker_log"; then
+    if grep -Eq '^(rm|container rm)( |$)|^ps .*--filter name=|^volume ls .*--filter name=' "$docker_log"; then
         fail "uninstall must not discover or remove Docker resources by name"
     fi
 }
 
 main() {
     [[ -f "$TARGET" ]] || fail "missing $TARGET"
+    # The search text is intentionally literal shell source.
+    # shellcheck disable=SC2016
     if grep -qF 'source "$INSTALL_DIR/.env"' "$TARGET"; then
         fail "uninstall must load .env through lib/safe-env.sh, not source it"
     fi
@@ -241,8 +251,9 @@ EOF
             run_uninstall "$changed_install" "$changed_home" "$stub_dir" 2>"$TMP_DIR/changed-error"; then
             fail "recipe drift before Compose down must abort remaining cleanup"
         fi
-        [[ ! -s "$changed_docker" && -d "$changed_install" ]] \
-            || fail "changed recipes must not reach Compose or data removal"
+        if grep -q ' down ' "$changed_docker" || [[ ! -d "$changed_install" ]]; then
+            fail "changed recipes must not reach Compose down or data removal"
+        fi
         grep -qF 'changed during uninstall' "$TMP_DIR/changed-error" \
             || fail "mid-uninstall drift must explain the partial retirement state"
         pass "recipe drift during retirement is rechecked before Compose down"
@@ -300,6 +311,14 @@ EOF
         || fail "Compose failure must retain remaining installation, data, and CLI link"
     grep -qF 'Docker Compose cleanup failed; remaining installation retained' "$TMP_DIR/failed-error" \
         || fail "Compose failure must explain the incomplete uninstall"
+    local diagnostic
+    diagnostic="$(sed -n 's/.*Details: \(.*\)$/\1/p' "$TMP_DIR/failed-error" | tail -n 1)"
+    if [[ ! -f "$diagnostic" ]] || ! grep -qF 'fixture Compose diagnostic' "$diagnostic"; then
+        fail "Compose failure must retain its original diagnostic"
+    fi
+    grep -qF 'Pixel or host services may already be retired' "$TMP_DIR/failed-error" \
+        || fail "Compose failure must disclose the partial retirement state"
+    rm -f -- "$diagnostic"
     pass "Compose down failure retains remaining installation without a name-based fallback"
 
     mapfile -t sudo_calls < "$sudo_log"
@@ -358,8 +377,9 @@ PY
         || fail "non-interactive uninstall must fail promptly when sudo cannot authenticate (rc=$noninteractive_rc)"
     [[ -d "$install_noninteractive" ]] \
         || fail "failed non-interactive sudo preflight must not mutate the install tree"
-    [[ ! -s "$log_noninteractive" ]] \
-        || fail "failed non-interactive sudo preflight must happen before Docker cleanup"
+    if grep -Eq ' down |^volume rm ' "$log_noninteractive"; then
+        fail "failed non-interactive sudo preflight must happen before Docker cleanup"
+    fi
     grep -qx -- '-n true' "$sudo_noninteractive" \
         || fail "non-interactive uninstall must validate sudo without prompting"
     grep -qF 'Non-interactive uninstall requires cached or passwordless sudo' "$out_noninteractive" \
