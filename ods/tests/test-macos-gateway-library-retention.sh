@@ -7,7 +7,8 @@ trap 'rm -rf -- "$fixture"' EXIT
 
 installer="$root/installers/macos/install-macos.sh"
 for function_name in _macos_capture_gateway_library_selections \
-    _macos_gateway_library_selected _macos_set_builtin_compose_state \
+    _macos_gateway_library_selected _macos_effective_service_enabled \
+    _macos_set_builtin_compose_state \
     _macos_sync_builtin_compose_states; do
     eval "$(sed -n "/^${function_name}() {/,/^}/p" "$installer")"
 done
@@ -35,6 +36,11 @@ for service_id in litellm searxng whisper tts hermes; do
     printf 'shipped\n' > "$INSTALL_DIR/extensions/services/$service_id/compose.yaml"
 done
 _macos_capture_gateway_library_selections
+[[ -z "$MACOS_GATEWAY_RETAINED_COMPOSE_IDS" ]]
+if _macos_effective_service_enabled whisper "$ENABLE_VOICE"; then
+    echo 'Fresh gateway unexpectedly selected Whisper' >&2
+    exit 1
+fi
 _macos_sync_builtin_compose_states
 [[ -f "$INSTALL_DIR/extensions/services/litellm/compose.yaml" ]]
 for service_id in searxng whisper tts hermes; do
@@ -62,6 +68,13 @@ if _macos_gateway_library_selected tts; then
     echo 'Disabled TTS was captured as enabled' >&2
     exit 1
 fi
+_macos_effective_service_enabled whisper "$ENABLE_VOICE"
+_macos_effective_service_enabled searxng "$ENABLE_SEARXNG"
+_macos_effective_service_enabled hermes "$ENABLE_HERMES"
+if _macos_effective_service_enabled tts "$ENABLE_VOICE"; then
+    echo 'Disabled TTS inherited the Whisper feature group' >&2
+    exit 1
+fi
 printf 'shipped\n' > "$INSTALL_DIR/extensions/services/litellm/compose.yaml"
 printf 'shipped\n' > "$INSTALL_DIR/extensions/services/searxng/compose.yaml"
 printf 'shipped\n' > "$INSTALL_DIR/extensions/services/whisper/compose.yaml"
@@ -73,5 +86,14 @@ for service_id in litellm searxng whisper hermes; do
 done
 [[ ! -e "$INSTALL_DIR/extensions/services/tts/compose.yaml" ]]
 [[ -f "$INSTALL_DIR/extensions/services/tts/compose.yaml.disabled" ]]
+
+# A second rerun sees the same Library selection after the installer has
+# normalized the shipped files. No paired service is introduced.
+_macos_capture_gateway_library_selections
+_macos_gateway_library_selected whisper
+if _macos_gateway_library_selected tts; then
+    echo 'Second rerun unexpectedly selected TTS' >&2
+    exit 1
+fi
 
 echo 'PASS: Mac gateway fresh and retained Library selections stay independent'

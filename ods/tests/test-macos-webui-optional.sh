@@ -113,6 +113,7 @@ ENABLE_WORKFLOWS=false
 ENABLE_OPENCODE=false
 CLOUD_MODE=false
 GATEWAY_ONLY=false
+_macos_effective_service_enabled() { [[ "$2" == true ]]; }
 OPENCODE_BIN=/nonexistent/opencode
 OPENCODE_PORT=4096
 ODS_LOG_FILE=/nonexistent/ods-install.log
