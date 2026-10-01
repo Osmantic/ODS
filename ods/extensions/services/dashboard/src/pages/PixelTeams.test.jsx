@@ -6,6 +6,7 @@ import Pixel from './Pixel'
 import * as portalTeams from '../lib/portalTeams'
 import {saveConversation,readConversations,SELECT_EVENT} from '../lib/pixelConversations'
 import {conversationProject} from '../lib/conversationProjects'
+import {previewManifestResponse} from '../test/previewFixtures'
 
 beforeEach(()=>{localStorage.clear();sessionStorage.clear()})
 afterEach(()=>{vi.unstubAllGlobals();vi.restoreAllMocks()})
@@ -19,7 +20,7 @@ it('delivers a confirmed team preview, persists it and does not reopen it on eve
   saveConversation({schema:1,chatId:'team-preview',messages:[{role:'user',content:'Build game'},{role:'assistant',teamId:id,content:'Working'}]})
   let controller={teams:[team],busy:false,error:'',selected:null,select:vi.fn()}
   vi.spyOn(portalTeams,'usePortalTeams').mockImplementation(()=>controller)
-  vi.stubGlobal('fetch',vi.fn(async()=>({ok:true,json:async()=>({available:true})})))
+  vi.stubGlobal('fetch',vi.fn(async url=>url.includes('__ods_manifest__')?previewManifestResponse(publication):({ok:true,json:async()=>({available:true})})))
   const view=render(<Pixel/> )
   expect(await screen.findByTitle('Interactive Portal preview')).toHaveAttribute('src',`/pixel-preview/${siteId}/__ods_view__.html`)
   await waitFor(()=>expect(readConversations()[0].messages[1].publication).toEqual(publication))
