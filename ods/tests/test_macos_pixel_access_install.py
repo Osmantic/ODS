@@ -1100,7 +1100,8 @@ def test_state_rejects_writable_or_symlink_parent(monkeypatch, mode):
 
 
 def test_controller_bundle_contains_model_modules_and_all_sources_exist():
-    assert {"pixel_model_contract.py", "pixel_model_coordinator.py"} <= set(installer.HOST_FILES)
+    assert {"pixel_model_contract.py", "pixel_model_coordinator.py",
+            "access_release_transaction.py"} <= set(installer.HOST_FILES)
     host = ROOT / "extensions/services/pixel-agent/host"
     for name in installer.HOST_FILES:
         assert (host / name).is_file() or (ROOT / "bin" / name).is_file(), name

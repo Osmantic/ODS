@@ -103,6 +103,7 @@ jobs:
       - name: Test verified preview source and diff contracts
         run: |
           python -m pytest -q extensions/services/pixel-agent/tests/test_workspace_preview.py \
+            extensions/services/pixel-agent/tests/test_workspace_artifact.py \
             extensions/services/pixel-agent/tests/test_workspace_preview_charset.py \
             extensions/services/pixel-agent/tests/test_workspace_preview_git.py \
             extensions/services/pixel-agent/tests/test_preview_empty_assets.py
@@ -525,6 +526,9 @@ jobs:
           python3 scripts/verify-pixel-bundle.py
           bash vendor/pixel/scripts/check-no-secrets.sh vendor/pixel
           bash tests/test-pixel-bundled-source.sh
+
+      - name: Pixel source transaction and held feature selection
+        run: python3 -m pytest -q tests/test_pixel_source_upgrade.py tests/test_feature_source_hold.py tests/test_pixel_source_overlay.py
 
       - name: Pixel Default Agent Contract Tests
         run: |

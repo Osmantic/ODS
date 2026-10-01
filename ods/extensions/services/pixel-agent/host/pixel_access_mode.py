@@ -501,6 +501,8 @@ def _checked_replace(abs_path, new_bytes, expected_hash, staged, *, durable=Fals
 
 
 def _reject_pending_settings(sd):
+    if os.path.lexists(os.path.join(sd, "access-release-journal.json")):
+        raise AccessModeRejected("access-release-recovery-required", "release recovery must complete before changing access mode")
     if os.path.lexists(os.path.join(sd, "model-journal.json")):
         raise AccessModeRejected("model-recovery-required", "model recovery must complete before changing access mode")
     # Settings and access mode share apply.lock. A crashed settings writer

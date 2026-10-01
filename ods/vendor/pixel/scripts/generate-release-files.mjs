@@ -1,4 +1,5 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { assertJsonSchema } from "./lib/json-schema.mjs";
@@ -149,7 +150,10 @@ const rows = [...compatibility.combinations]
   .map((item) => {
     const plugins = Object.entries(item.plugins).map(([name, version]) => `${name}@${version}`).join("<br>");
     const attestation = item.evidence.attestationSha256 ? ` / attestation \`${item.evidence.attestationSha256.slice(0, 12)}\`` : "";
-    return `| ${item.pixel} | ${item.openclaw} | ${plugins} | ${item.status} | ${item.qualifiedAt} | [audit](${item.evidence.liveAudit}) / \`${item.evidence.sourceCommit.slice(0, 12)}\`${attestation} |`;
+    const audit = existsSync(join(root, item.evidence.liveAudit))
+      ? `[audit](${item.evidence.liveAudit})`
+      : `Historical audit not included in this source export (\`${item.evidence.liveAudit}\`)`;
+    return `| ${item.pixel} | ${item.openclaw} | ${plugins} | ${item.status} | ${item.qualifiedAt} | ${audit} / \`${item.evidence.sourceCommit.slice(0, 12)}\`${attestation} |`;
   });
 const table = `# Pixel / OpenClaw compatibility\n\nThis table is generated from \`OPENCLAW-COMPATIBILITY.json\`. Do not edit it directly. The evidence commit is the qualified functional source; a signed release envelope separately binds it to the exact later packaged commit through an evidence-only Git delta.\n\n| Pixel | OpenClaw | Official plugins | State | Qualified | Evidence |\n|---|---|---|---|---|---|\n${rows.join("\n")}\n`;
 

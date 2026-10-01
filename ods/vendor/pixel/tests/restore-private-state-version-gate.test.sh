@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Negative coverage for the restore-private-state VERSION identity gate. The gate must read
 # $ROOT/VERSION with a bounded dependency-free no-follow stable read (not `tr`), so a linked
-# or swapped VERSION cannot pass the exact hardcoded 4.3.27 gate. We exercise the shared
+# or swapped VERSION cannot pass the exact current-version gate. We exercise the shared
 # secure helper (scripts/lib/common.sh::pixel_read_release_version) that restore-private-state
 # uses, against symlink/hardlink/oversize VERSION files, and statically prove the script no
 # longer pipes VERSION through `tr`.

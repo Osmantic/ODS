@@ -26,6 +26,16 @@ KEYS.update({"model-status": BASE, "model-begin": BASE | {"transaction_id"},
 HOOKS.update({name: (() if name == "model-status" else ("busy",)) for name in KEYS if name.startswith("model-")})
 KEYS['access-relocate'] = BASE | {'relocation'}
 HOOKS['access-relocate'] = ('busy',)
+KEYS.update({
+    'release-baseline': BASE | {'transaction_id'},
+    'release-abort': BASE | {'transaction_id', 'receipt_sha256'},
+    'release-prepare': BASE | {'transaction_id', 'candidate_path', 'candidate_sha256', 'receipt_sha256'},
+    'release-recover': BASE | {'transaction_id', 'release_outcome'},
+    'release-finish': BASE | {'transaction_id', 'release_outcome'},
+})
+HOOKS.update({'release-prepare': ('busy',), 'release-recover': ('busy',),
+              'release-finish': ('busy', 'release-verify'), 'release-baseline': ('busy',),
+              'release-abort': ('busy', 'release-verify')})
 
 
 class ProtocolError(ValueError):
@@ -61,13 +71,23 @@ def read_frame(stream, maximum):
 
 
 def control_request(value):
-    """Fixed root socket operations; no paths or caller-supplied capabilities."""
+    """Fixed local socket operations; installer candidates are validated paths.
+
+    Candidate paths identify input only, never caller-supplied authority.
+    The root adapter separately binds them to the held installer transaction.
+    """
     if type(value) is not dict or type(value.get("operation")) is not str:
         raise ProtocolError("invalid-request")
     operation = value["operation"]
     keys = {"status": {"operation"}, "model-status": {"operation"},
             "change": {"operation", "request"},
             "model-begin": {"operation"}, "model-finish": {"operation", "request"},
+            "installer-model-verify": {"operation", "request"},
+            "installer-source-begin": {"operation", "request"},
+            "installer-release-prepare": {"operation", "request"},
+            "installer-release-publish": {"operation", "request"},
+            "installer-release-finish": {"operation", "request"},
+            "installer-release-abort": {"operation", "request"},
             # Browser model switching and installer promotion are distinct
             # transactions even though their public operation names overlap.
             "model-route-status": {"operation"},
@@ -84,6 +104,34 @@ def control_request(value):
         raise ProtocolError("invalid-request")
     if "request" in value and type(value["request"]) is not dict:
         raise ProtocolError("invalid-request")
+    if operation == 'installer-source-begin' and value['request'] != {}:
+        raise ProtocolError('invalid-request')
+    if operation.startswith('installer-release-'):
+        payload = value['request']
+        action = operation.removeprefix('installer-release-')
+        expected = {'transaction_id'} | ({'candidate_path', 'candidate_sha256'} if action == 'prepare'
+                   else {'outcome', 'config_sha256'} if action == 'finish'
+                   else set() if action == 'abort' else {'outcome'})
+        if (set(payload) != expected or type(payload.get('transaction_id')) is not str
+                or not HEX.fullmatch(payload['transaction_id'])):
+            raise ProtocolError('invalid-request')
+        if action == 'prepare':
+            try:
+                request(dict(operation='release-prepare', openclaw='/validated-later',
+                    confirmed=False, config_sha256='0' * 64, receipt_sha256='0' * 64, **payload))
+            except ProtocolError:
+                raise ProtocolError('invalid-request') from None
+        elif action != 'abort' and payload['outcome'] not in ('apply', 'rollback'):
+            raise ProtocolError('invalid-request')
+        if action == 'finish' and (type(payload['config_sha256']) is not str
+                                   or not HEX.fullmatch(payload['config_sha256'])):
+            raise ProtocolError('invalid-request')
+    if operation == "installer-model-verify":
+        request_value = value["request"]
+        if (set(request_value) != {"transaction_id"}
+                or type(request_value["transaction_id"]) is not str
+                or not HEX.fullmatch(request_value["transaction_id"])):
+            raise ProtocolError("invalid-request")
     if operation == "model-finish":
         request_value = value["request"]
         if (set(request_value) != {"transaction_id", "outcome"}
@@ -128,6 +176,23 @@ def request(value):
             raise ProtocolError("owner-protocol-failed")
     elif type(value["config_sha256"]) is not str or not HEX.fullmatch(value["config_sha256"]):
         raise ProtocolError("owner-protocol-failed")
+    if operation.startswith('release-'):
+        if (value['confirmed'] is not False or type(value['transaction_id']) is not str
+                or not HEX.fullmatch(value['transaction_id'])):
+            raise ProtocolError('owner-protocol-failed')
+        if operation in ('release-prepare', 'release-abort') and (
+                type(value['receipt_sha256']) is not str or not HEX.fullmatch(value['receipt_sha256'])):
+            raise ProtocolError('owner-protocol-failed')
+        if operation == 'release-prepare':
+            candidate = value['candidate_path']
+            if (type(candidate) is not str or not candidate.startswith('/')
+                    or any(c in candidate for c in '\x00\n\r\t')
+                    or any(p in ('', '.', '..') for p in candidate.split('/')[1:])
+                    or type(value['candidate_sha256']) is not str
+                    or not HEX.fullmatch(value['candidate_sha256'])):
+                raise ProtocolError('owner-protocol-failed')
+        elif operation in ('release-recover', 'release-finish') and value['release_outcome'] not in ('apply', 'rollback'):
+            raise ProtocolError('owner-protocol-failed')
     if operation == 'access-relocate':
         relocation = value['relocation']
         if (type(relocation) is not dict or set(relocation) != {'source_config', 'source_sha256'}
@@ -193,7 +258,7 @@ def provider_binding(value):
 def hook_reply(operation, name, value):
     if name not in HOOKS.get(operation, ()):
         raise ProtocolError("owner-protocol-failed")
-    if name in ("settings-activate", "provider-activate"):
+    if name in ("settings-activate", "provider-activate", "release-verify"):
         valid = type(value) is str and value in ("verified", "rejected", "unavailable")
     else:
         valid = type(value) is bool
@@ -205,6 +270,12 @@ def hook_reply(operation, name, value):
 def result(operation, value):
     if type(value) is not dict:
         raise ProtocolError("owner-protocol-failed")
+    if operation.startswith('release-'):
+        keys = ({'beforeSha', 'afterSha'} if operation == 'release-prepare'
+                else {'configSha256', 'receiptSha256'} if operation == 'release-baseline' else {'configSha256'})
+        if set(value) != keys or any(type(value[k]) is not str or not HEX.fullmatch(value[k]) for k in keys):
+            raise ProtocolError('owner-protocol-failed')
+        return value
     if operation == 'access-relocate':
         if set(value) != {'relocated'} or type(value['relocated']) is not bool:
             raise ProtocolError('owner-protocol-failed')

@@ -41,6 +41,10 @@ run_case() {
     fi
 
     (
+        # This fixture is an unmanaged install, regardless of the developer's
+        # real Pixel management marker.
+        export HOME="$test_root/home"
+        mkdir -p "$HOME"
         INTERACTIVE=false
         DRY_RUN=false
         INSTALL_CHOICE=1
@@ -89,6 +93,7 @@ run_case() {
         # shellcheck source=../installers/lib/external-services.sh
         source "$ROOT_DIR/installers/lib/external-services.sh"
         # shellcheck source=/dev/null
+        source "$(dirname "$FEATURES_PHASE")/../lib/installed-feature-state.sh"
         source "$FEATURES_PHASE" >/dev/null
         printf '%s\n' "$ENABLE_COMFYUI" >"$test_root/comfyui-selection"
         printf '%s\n' "$ENABLE_BRAVE_SEARCH" >"$test_root/brave-selection"

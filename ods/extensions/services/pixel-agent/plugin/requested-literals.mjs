@@ -29,9 +29,9 @@ const MAX_ELEMENT_TEXTS = 50000;
 const MAX_HEADINGS = 500;
 const MAX_REPORTED_HEADING_CHARS = 120;
 const PATH_COMPONENT = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
-// Published files may sit under generated framework directories (_next, _astro),
-// matching the host's ASSET_COMPONENT. The directory itself keeps PATH_COMPONENT.
-const ASSET_COMPONENT = /^(?!__ods_)[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$/;
+// Published assets use the host publisher's path grammar; source directories
+// keep the stricter PATH_COMPONENT boundary.
+const ASSET_COMPONENT = /^(?!__ods_)(?!__pycache__$)[A-Za-z0-9_\[][A-Za-z0-9._\[\]-]{0,127}$/;
 const HTML_FILE = /\.html?$/i;
 const TEXT_FILE = /\.(?:html?|m?js|json|css|svg|txt|csv|tsv|md|markdown|map)$/i;
 
