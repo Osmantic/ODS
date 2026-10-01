@@ -101,7 +101,7 @@ export default function PortalWorkspace({preview,before,access:providedAccess,ti
       </div>}
       {/* Retain the frame while reading/reviewing files so its local state survives tab switches. */}
       <div className={`portal-workbench-content${treeOpen && !treeLayout.narrow?' portal-tree-split':''}`} style={treeLayout.style} id={panelDomId('preview')} role="tabpanel" aria-labelledby={tabDomId('preview')} hidden={active!=='preview'}>
-        {files && !error && <PixelPreviewViewport key={`${preview.siteId}/${refresh}`} access={access} title={title} hidden={collapsed || active!=='preview'} onRetry={onRefresh} compact/>}
+        <PixelPreviewViewport key={`${preview.siteId}/${refresh}`} access={files && !error?access:{...access,frameUrl:null,checking:!error}} title={title} hidden={collapsed || active!=='preview'} onRetry={onRefresh} compact/>
         {treeOpen && <PortalFileTreeResize layout={treeLayout}/>}
         {treeOpen && <aside className="portal-workbench-file-tree">{files?<PortalFileTree files={files} rootPath={preview.relativeDirectory} selectedPath={null} onSelectFile={path=>openFile(path)} label="Published files" filterLabel="Filter task files"/>:error?<p role="alert">Files unavailable. <button onClick={()=>setRetry(value=>value+1)}>Retry</button></p>:<p role="status">Loading files…</p>}</aside>}
       </div>

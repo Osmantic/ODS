@@ -8,7 +8,7 @@ export default function useVerifiedPreview(preview,fallback,refresh=0) {
     if(!preview || !fallback)return
     let current=true
     const controller=new AbortController()
-    const timer=setTimeout(()=>controller.abort(),5000)
+    const timer=setTimeout(()=>controller.abort(new DOMException('Preview probe timed out','TimeoutError')),5000)
     resolveVerifiedPreview(preview,fallback,controller.signal)
       .then(access=>{if(current)setResult({key,access})})
       .catch(()=>{if(current)setResult({key,access:{...fallback,frameUrl:null,unavailable:true}})})

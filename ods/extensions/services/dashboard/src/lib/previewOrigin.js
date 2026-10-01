@@ -36,7 +36,9 @@ export async function resolveVerifiedPreview(preview, fallback, signal) {
     if(signal.aborted)throw new DOMException('Aborted','AbortError')
     return {...fallback,url:target.href,frameUrl:new URL('__ods_view__.html',target).href,route:'verified-site-origin'}
   } catch(error) {
-    if(signal.aborted)throw error
+    // A public-origin timeout may use the already verified relative-site relay.
+    // Cancellation still rejects so obsolete probes cannot become results.
+    if(signal.aborted && signal.reason?.name!=='TimeoutError')throw error
     if(rootRelative)return {...fallback,frameUrl:null,unavailable:true}
     return fallback
   }

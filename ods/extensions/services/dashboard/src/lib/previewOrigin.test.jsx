@@ -78,3 +78,27 @@ it('bounds a stalled probe and offers retry instead of a blank iframe',async()=>
   await act(async()=>{await vi.advanceTimersByTimeAsync(5001)})
   expect(result.current).toMatchObject({unavailable:true,frameUrl:null})
 })
+
+it('retains the authenticated relative-site relay when the public probe times out',async()=>{
+  vi.useFakeTimers()
+  const data=fixture('<link href="assets/app.css"><h1>Relative</h1>')
+  vi.stubGlobal('fetch',transport(data,async(_url,{signal})=>new Promise((_resolve,reject)=>signal.addEventListener('abort',()=>reject(signal.reason)))))
+  const {result}=renderHook(()=>useVerifiedPreview(data.preview,fallback))
+  const {act}=await import('@testing-library/react')
+  await act(async()=>{await vi.advanceTimersByTimeAsync(5001)})
+  expect(result.current).toEqual(fallback)
+})
+it('does not use the relay if authenticated snapshot verification times out',async()=>{
+  vi.useFakeTimers()
+  const data=fixture('<h1>Relative</h1>')
+  vi.stubGlobal('fetch',vi.fn(async(_url,{signal})=>new Promise((_resolve,reject)=>signal.addEventListener('abort',()=>reject(signal.reason)))))
+  const {result}=renderHook(()=>useVerifiedPreview(data.preview,fallback))
+  const {act}=await import('@testing-library/react')
+  await act(async()=>{await vi.advanceTimersByTimeAsync(5001)})
+  expect(result.current).toMatchObject({unavailable:true,frameUrl:null})
+})
+it('rejects an explicitly cancelled public probe even for a relative site',async()=>{
+  const data=fixture('<h1>Relative</h1>'),controller=new AbortController()
+  vi.stubGlobal('fetch',transport(data,async()=>{controller.abort();throw controller.signal.reason}))
+  await expect(resolveVerifiedPreview(data.preview,fallback,controller.signal)).rejects.toMatchObject({name:'AbortError'})
+})

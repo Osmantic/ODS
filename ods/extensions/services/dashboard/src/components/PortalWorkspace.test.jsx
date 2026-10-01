@@ -253,3 +253,20 @@ it('rejects comparison paths outside the current manifest and exposes no publica
  expect(screen.getByRole('link',{name:'Open preview in a new tab'})).toHaveAttribute('href',access.url)
  expect(screen.getByRole('button',{name:'Reload preview'})).toBeVisible()
 })
+
+it('keeps connection status and retry visible while the manifest gate blocks the iframe',async()=>{
+ const healthyFetch=fetch,onRefresh=vi.fn();let rejectManifest
+ vi.stubGlobal('fetch',vi.fn(()=>new Promise((_resolve,reject)=>{rejectManifest=reject})))
+ const view=render(<PortalWorkspace {...props} onRefresh={onRefresh}/>)
+ expect(screen.queryByTitle('Interactive Portal preview')).toBeNull()
+ expect(screen.getByRole('status')).toHaveTextContent('Connecting preview')
+ await act(async()=>{rejectManifest(new Error('offline'))})
+ expect(screen.queryByTitle('Interactive Portal preview')).toBeNull()
+ expect(screen.getByRole('status')).toHaveTextContent('Preview connection unavailable')
+ fireEvent.click(screen.getByRole('button',{name:'Retry',exact:true}))
+ expect(onRefresh).toHaveBeenCalledOnce()
+ vi.stubGlobal('fetch',healthyFetch)
+ view.rerender(<PortalWorkspace {...props} onRefresh={onRefresh} refresh={1}/>)
+ expect(await screen.findByTitle('Interactive Portal preview')).toBeVisible()
+ expect(screen.queryByText('Preview connection unavailable.')).toBeNull()
+})
