@@ -19,6 +19,10 @@ dest=args[-1] if args else ''
 root=os.environ['ODS_DIR']
 if tool=='docker':
     if mode=='docker_inspect_failure': sys.exit(23)
+    if mode in ('compose_named_project','compose_named_idle'):
+        # Real Compose reports the `name:` from docker-compose.base.yml.
+        if 'ls' in args: print('ods' if mode=='compose_named_project' else ''); sys.exit(0)
+        if 'down' in args: (pathlib.Path(root)/'.compose-down-called').write_text('1'); sys.exit(0)
     if 'ls' in args: print(pathlib.Path(root).name); sys.exit(0)
     sys.exit(23)
 if tool=='cp' and mode=='partial_copy' and source.endswith('/config'):
@@ -190,6 +194,24 @@ class RestoreTransaction(unittest.TestCase):
                 self.assertEqual(self.contents(), self.before, self.output)
                 self.assertNotIn('Restore complete!', self.output)
 
+
+    def test_stop_containers_matches_the_compose_project_not_the_directory(self):
+        # The install lives in 'installation', but Compose names the project
+        # from docker-compose.base.yml. A running `ods` project must be stopped
+        # before restoring, not reported as "No running containers found".
+        self.write(self.root, 'docker-compose.base.yml', 'name: ods\nservices: {}\n')
+        self.fixture()
+        self.assertEqual(self.restore('compose_named_project', '--stop-containers'), 0, self.output)
+        self.assertTrue((self.root/'.compose-down-called').exists(), self.output)
+        self.assertNotIn('No running containers found', self.output)
+        self.assertIn('Restore complete!', self.output)
+
+    def test_stop_containers_leaves_an_idle_project_alone(self):
+        self.write(self.root, 'docker-compose.base.yml', 'name: ods\nservices: {}\n')
+        self.fixture()
+        self.assertEqual(self.restore('compose_named_idle', '--stop-containers'), 0, self.output)
+        self.assertFalse((self.root/'.compose-down-called').exists(), self.output)
+        self.assertIn('No running containers found', self.output)
 
 if __name__ == '__main__':
     unittest.main()
