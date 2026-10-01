@@ -936,8 +936,10 @@ cmd_stop() {
         ai_ok "${service} stopped"
     else
         ai "Stopping all services..."
+        # Keep Compose containers and their install-path labels for a later
+        # uninstall ownership check. Native llama is stopped separately.
         # shellcheck disable=SC2086
-        docker compose $flags down
+        docker compose $flags stop
 
         # Stop native llama-server
         if [[ -f "$LLAMA_SERVER_PID_FILE" ]]; then
