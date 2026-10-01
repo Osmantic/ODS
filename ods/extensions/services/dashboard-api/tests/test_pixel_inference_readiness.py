@@ -5,6 +5,8 @@ from unittest.mock import patch
 import pytest
 from test_pixel import FakeClient, FakeResponse, pixel, pixel_env as pixel_env
 
+pytestmark = pytest.mark.usefixtures("mock_edge_read_transport")
+
 
 @pytest.fixture(autouse=True)
 def host_runtime(monkeypatch):
