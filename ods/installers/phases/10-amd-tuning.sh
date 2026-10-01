@@ -209,9 +209,19 @@ GTT_EOF
             # Single GPU APU: amd_iommu=off gives ~6% memory bandwidth improvement
             if [[ -n "$current_cmdline" ]] && ! echo "$current_cmdline" | grep -q 'amd_iommu=off'; then
                 # Replace iommu=pt if present, otherwise append amd_iommu=off
+                _update_grub() {
+                    if command -v update-grub &>/dev/null; then
+                        _phase10_privileged update-grub
+                    elif command -v grub2-mkconfig &>/dev/null; then
+                        _phase10_privileged grub2-mkconfig -o /boot/grub2/grub.cfg
+                    elif command -v grub-mkconfig &>/dev/null; then
+                        _phase10_privileged grub-mkconfig -o /boot/grub/grub.cfg
+                    fi
+                }
+
                 if echo "$current_cmdline" | grep -q 'iommu=pt'; then
                     if _phase10_privileged sed -i '/^GRUB_CMDLINE_LINUX_DEFAULT=/s/iommu=pt/amd_iommu=off/' /etc/default/grub 2>/dev/null; then
-                        _phase10_privileged update-grub >> "$LOG_FILE" 2>&1 || true
+                        _update_grub >> "$LOG_FILE" 2>&1 || true
                         ai_ok "GRUB: replaced iommu=pt with amd_iommu=off (~6% GPU bandwidth improvement)"
                         _amd_needs_reboot=true
                     else
