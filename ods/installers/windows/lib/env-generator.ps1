@@ -641,6 +641,34 @@ function Convert-ODSWindowsNativeFallbackHermesEnv {
     return $EnvText
 }
 
+function Set-ODSWindowsNativeFallbackEnvFile {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][ValidateRange(1, 65535)][int]$NativePort,
+        [bool]$EnableRecommended = $false
+    )
+
+    # Generated .env is UTF-8 without a BOM. PowerShell 5.1 otherwise reads
+    # it using the system code page and can corrupt non-ASCII owner values.
+    $envText = Get-Content -LiteralPath $Path -Raw -Encoding UTF8
+    $envText = $envText -replace '(?m)^ODS_MODE=.*$', 'ODS_MODE=local'
+    $envText = $envText -replace '(?m)^LLM_BACKEND=.*$', 'LLM_BACKEND=llama-server'
+    $envText = $envText -replace '(?m)^LLM_API_BASE_PATH=.*$', 'LLM_API_BASE_PATH=/v1'
+    $envText = $envText -replace '(?m)^AMD_INFERENCE_RUNTIME=.*$', 'AMD_INFERENCE_RUNTIME=llama-server'
+    $envText = $envText -replace '(?m)^AMD_INFERENCE_BACKEND=.*$', 'AMD_INFERENCE_BACKEND=vulkan'
+    $envText = $envText -replace '(?m)^AMD_INFERENCE_LOCATION=.*$', 'AMD_INFERENCE_LOCATION=host'
+    $envText = $envText -replace '(?m)^AMD_INFERENCE_PORT=.*$', "AMD_INFERENCE_PORT=$NativePort"
+    $envText = $envText -replace '(?m)^AMD_INFERENCE_SUPPORTED_BACKENDS=.*$', 'AMD_INFERENCE_SUPPORTED_BACKENDS=vulkan'
+    $envText = $envText -replace '(?m)^AMD_INFERENCE_RUNTIME_MODE=.*$', 'AMD_INFERENCE_RUNTIME_MODE=windows-llama-server-fallback'
+    $envText = $envText -replace '(?m)^AMD_INFERENCE_MANAGED=.*$', 'AMD_INFERENCE_MANAGED=true'
+    $envText = $envText -replace '(?m)^LEMONADE_MODEL=.*$', 'LEMONADE_MODEL='
+    if (-not $EnableRecommended) {
+        $envText = Convert-ODSWindowsNativeFallbackHermesEnv -EnvText $envText -NativePort $NativePort
+    }
+    Write-ODSPrivateEnvFile -Path $Path -Content $envText
+    return $envText
+}
+
 function New-ODSEnv {
     <#
     .SYNOPSIS

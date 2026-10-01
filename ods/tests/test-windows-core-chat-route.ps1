@@ -62,9 +62,10 @@ try {
         -UseLemonade $true -SwitchboardMode (Get-ODSWindowsEffectiveSwitchboardMode -InstallDir $amdObserve)
     Assert-Route ($amdEnv['HERMES_LLM_BASE_URL'] -eq 'http://litellm:4000/v1' -and
         $amdPlan['litellm'].Enabled) 'AMD observe agent route lost its gateway'
-    $fallbackText = Convert-ODSWindowsNativeFallbackHermesEnv `
-        -EnvText (Get-Content -LiteralPath (Join-Path $amdObserve '.env') -Raw) -NativePort 18080
-    [IO.File]::WriteAllText((Join-Path $amdObserve '.env'), $fallbackText)
+    $amdEnvPath = Join-Path $amdObserve '.env'
+    $ownerValue = "owner-$([char]0x2713)"
+    [IO.File]::AppendAllText($amdEnvPath, "OWNER_DATA=$ownerValue`n", [Text.UTF8Encoding]::new($false))
+    $fallbackText = Set-ODSWindowsNativeFallbackEnvFile -Path $amdEnvPath -NativePort 18080
     $fallbackEnv = Read-Route $amdObserve
     $fallbackPlan = New-ODSWindowsServicePlan -EnableRecommended $false -EnableHermes $true `
         -UseLemonade $false -SwitchboardMode 'observe'
@@ -72,6 +73,32 @@ try {
         $fallbackEnv['HERMES_LLM_API_KEY'] -eq 'sk-ods-hermes-local' -and
         -not $fallbackPlan['litellm'].Enabled) `
         'AMD Lemonade fallback left Hermes pointing at an omitted gateway'
+    Assert-Route ($fallbackEnv['AMD_INFERENCE_PORT'] -eq '18080' -and
+        $fallbackEnv['LLM_BACKEND'] -eq 'llama-server' -and
+        $fallbackText.Contains("OWNER_DATA=$ownerValue") -and
+        [IO.File]::ReadAllText($amdEnvPath).Contains("OWNER_DATA=$ownerValue")) `
+        'AMD fallback did not preserve UTF-8 owner data or the final native port'
+    if ([Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT) {
+        $acl = Get-Acl -LiteralPath $amdEnvPath
+        $rules = @($acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]))
+        $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User
+        Assert-Route ($acl.AreAccessRulesProtected -and $rules.Count -eq 1 -and
+            $rules[0].IdentityReference -eq $sid -and
+            $rules[0].FileSystemRights -eq [Security.AccessControl.FileSystemRights]::FullControl) `
+            'AMD fallback published .env without its private ACL'
+        $beforeFailedPublish = [IO.File]::ReadAllText($amdEnvPath)
+        $reader = [IO.File]::Open($amdEnvPath, 'Open', 'Read', [IO.FileShare]::ReadWrite)
+        try {
+            $failed = $false
+            try { Set-ODSWindowsNativeFallbackEnvFile -Path $amdEnvPath -NativePort 18081 | Out-Null }
+            catch { $failed = $true }
+            Assert-Route $failed 'AMD fallback published while credential replacement was blocked'
+        } finally { $reader.Dispose() }
+        Assert-Route ([IO.File]::ReadAllText($amdEnvPath) -ceq $beforeFailedPublish) `
+            'Failed AMD fallback publication altered saved credentials or owner data'
+        Assert-Route (@(Get-ChildItem -LiteralPath $amdObserve -Force -Filter '.ods-private-env-*').Count -eq 0) `
+            'Failed AMD fallback publication left a credential staging file'
+    }
     $customRoute = "ODS_MODEL_SWITCHBOARD=observe`nHERMES_LLM_BASE_URL=https://owner.example/v1`nHERMES_LLM_API_KEY=custom`n"
     Assert-Route ((Convert-ODSWindowsNativeFallbackHermesEnv -EnvText $customRoute -NativePort 18080) -eq $customRoute) `
         'Native fallback changed an owner-selected external Hermes route'

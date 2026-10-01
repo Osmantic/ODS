@@ -893,23 +893,9 @@ if ($dryRun) {
                 $envPath = Join-Path $installDir ".env"
                 $nativeModel = $tierConfig.GgufFile
                 if (Test-Path $envPath) {
-                    $envContent = Get-Content $envPath -Raw
-                    $envContent = $envContent -replace "(?m)^ODS_MODE=.*$", "ODS_MODE=local"
-                    $envContent = $envContent -replace "(?m)^LLM_BACKEND=.*$", "LLM_BACKEND=llama-server"
-                    $envContent = $envContent -replace "(?m)^LLM_API_BASE_PATH=.*$", "LLM_API_BASE_PATH=/v1"
-                    $envContent = $envContent -replace "(?m)^AMD_INFERENCE_RUNTIME=.*$", "AMD_INFERENCE_RUNTIME=llama-server"
-                    $envContent = $envContent -replace "(?m)^AMD_INFERENCE_BACKEND=.*$", "AMD_INFERENCE_BACKEND=vulkan"
-                    $envContent = $envContent -replace "(?m)^AMD_INFERENCE_LOCATION=.*$", "AMD_INFERENCE_LOCATION=host"
-                    $envContent = $envContent -replace "(?m)^AMD_INFERENCE_PORT=.*$", "AMD_INFERENCE_PORT=$($script:LEMONADE_PORT)"
-                    $envContent = $envContent -replace "(?m)^AMD_INFERENCE_SUPPORTED_BACKENDS=.*$", "AMD_INFERENCE_SUPPORTED_BACKENDS=vulkan"
-                    $envContent = $envContent -replace "(?m)^AMD_INFERENCE_RUNTIME_MODE=.*$", "AMD_INFERENCE_RUNTIME_MODE=windows-llama-server-fallback"
-                    $envContent = $envContent -replace "(?m)^AMD_INFERENCE_MANAGED=.*$", "AMD_INFERENCE_MANAGED=true"
-                    $envContent = $envContent -replace "(?m)^LEMONADE_MODEL=.*$", "LEMONADE_MODEL="
-                    if (-not $enableRecommended) {
-                        $envContent = Convert-ODSWindowsNativeFallbackHermesEnv `
-                            -EnvText $envContent -NativePort $script:LEMONADE_PORT
-                    }
-                    [System.IO.File]::WriteAllText($envPath, $envContent, (New-Object System.Text.UTF8Encoding($false)))
+                    $envContent = Set-ODSWindowsNativeFallbackEnvFile `
+                        -Path $envPath -NativePort $script:LEMONADE_PORT `
+                        -EnableRecommended $enableRecommended
                     Write-AISuccess "Patched .env for llama-server backend"
 
                     $nativeModel = ([regex]::Match($envContent, "(?m)^GGUF_FILE=([^\r\n]+)\r?$")).Groups[1].Value.Trim().Trim('"').Trim("'")
