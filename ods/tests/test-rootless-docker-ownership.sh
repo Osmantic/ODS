@@ -136,6 +136,24 @@ pass "only active compose services are repaired"
     uname() { printf 'Linux\n'; }
     _ods_rootless_ensure_helper_image() { return 0; }
     _ods_rootless_fix_directory() {
+        printf '%s|%s|%s\n' "$2" "$3" "$4" >> "$CALLS"
+    }
+    ODS_ROOTLESS_COMPOSE_FLAGS="-f extensions/services/ape/compose.yaml"
+    ods_fix_rootless_ownership "$INSTALL_DIR"
+)
+grep -q '^data/ape|100:65534|ods-ape$' "$CALLS" \
+    || fail "ape state directory was not repaired for its container UID/GID"
+[[ "$(wc -l < "$CALLS" | tr -d ' ')" == "1" ]] \
+    || fail "ape repair modified unrelated directories"
+pass "APE private state is repaired to the container UID 100:GID 65534"
+
+: > "$CALLS"
+(
+    source "$LIB"
+    ods_docker_rootless_state() { return 0; }
+    uname() { printf 'Linux\n'; }
+    _ods_rootless_ensure_helper_image() { return 0; }
+    _ods_rootless_fix_directory() {
         printf '%s|%s\n' "$2" "$3" >> "$CALLS"
     }
     ODS_ROOTLESS_COMPOSE_FLAGS="-f extensions/services/token-spy/compose.yaml"

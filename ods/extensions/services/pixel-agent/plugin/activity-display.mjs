@@ -1,6 +1,6 @@
 // Explicit public status and bounded, filtered tool metadata/excerpts only.
 // Never project private reasoning or arbitrary tool output bodies.
-export const ACTIVITY_CONTRACT = 'For multi-step work, use pixel_ods_activity to send brief public progress updates in the owner language: what you are doing or what you checked. This appears above the answer. Use {message:"..."}. Do not expose private reasoning, secrets or raw tool output. Updates do not execute the task: use the real tools, then deliver the answer. Send one concise update before the first meaningful action, then only at a meaningful phase change, a verified finding, or a blocker. Keep updates in the owner language and grounded in actual work. Do not narrate every tool call, repeat an earlier update, reveal internal deliberation, or claim success before checking. Skip progress updates for simple conversation.';
+export const ACTIVITY_CONTRACT = 'For multi-step work, discover pixel_ods_activity with tool_search/tool_describe, then invoke it through tool_call using the returned tool id and schema to send brief public progress updates in the owner language: what you are doing or what you checked. This appears above the answer. Use {message:"..."}. Do not expose private reasoning, secrets or raw tool output. Updates do not execute the task: use the real tools, then deliver the answer. Send one concise update before the first meaningful action, then only at a meaningful phase change, a verified finding, or a blocker. Keep updates in the owner language and grounded in actual work. Do not narrate every tool call, repeat an earlier update, reveal internal deliberation, or claim success before checking. If discovery does not offer this tool, continue the requested work without it; do not guess a direct tool name or retry a missing progress tool. Skip progress updates for simple conversation.';
 const text = (value, max) => typeof value === 'string' ? value.replace(/[\u0000-\u001f\u007f]/g,' ').trim().slice(0,max) : '';
 export function activityToolName(event, context) {
   const name=context?.toolName ?? event?.toolName;
@@ -32,11 +32,22 @@ export function displayForActivity(event, context, previous=null) {
   const display=previous ? structuredClone(previous) : {type:'tool',label:'Using a tool',detail:null,sources:[],steps:[],change:null};
   const labels={read:'Reading a file',ls:'Listing files',glob:'Finding files',grep:'Searching files',write:'Writing a file',edit:'Editing a file',apply_patch:'Applying changes',exec:'Running a command',shell:'Running a command',bash:'Running a command',process:'Checking a process',tool_search:'Finding available tools',tool_describe:'Checking tool parameters',session_status:'Checking the session',pixel_ods_status:'Checking ODS',pixel_ods_workspace_preview:'Publishing a preview',pixel_ods_ask_user:'Asking for your input',sessions_spawn:'Starting an agent',sessions_send:'Coordinating an agent'};
   if(labels[name])display.label=labels[name];
+  if(name==='pixel_ods_project_build') {
+    display.label=({submit:'Starting project tests and build',observe:'Checking project build',cancel:'Requesting build cancellation'})[args.action] || 'Managing project build';
+    // Describe the action, not an inferred successful result. Full command
+    // output and arbitrary job payloads do not belong in activity metadata.
+    display.detail=null;
+    if(typeof args.project==='string' && /^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$/.test(args.project))
+      display.detail=args.project;
+  }
   if(['read','write','edit','apply_patch','ls','glob','grep'].includes(name)) {
     const path=args.path ?? args.file_path ?? args.filePath;
     if(typeof path==='string')display.detail=text(path.split(/[\\/]/).filter(Boolean).at(-1),120)||null;
   }
-  if(['exec','shell','bash'].includes(name) && typeof args.command==='string')display.detail=text(excerpt(args.command).text,400)||null;
+  // The completion hook receives runtime-transformed arguments (including the
+  // cancellation wrapper). Keep the original, already filtered public command;
+  // replacing it could expose encoded sensitive text and hide useful progress.
+  if(['exec','shell','bash'].includes(name) && !previous && typeof args.command==='string')display.detail=text(excerpt(args.command).text,400)||null;
   // The UI exposes changes only after the associated tool reports completion.
   if(['write','edit','apply_patch'].includes(name)) {
     const patch=args.patch ?? args.input;

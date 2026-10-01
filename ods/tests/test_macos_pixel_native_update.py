@@ -139,7 +139,14 @@ def test_native_update_checks_owner_profile_after_activation(tmp_path, monkeypat
     workspace = tmp_path / 'owner-workspace'
     workspace.mkdir()
     document = {'agents': {'list': [{'id': 'pixel', 'workspace': str(workspace)}]}}
-    monkeypatch.setattr(module, 'helper', lambda _name: SimpleNamespace(private_json=lambda _path: document))
+    guidance_calls = []
+    guidance_result = {'AGENTS.md': 'migrated', 'MEMORY.md': 'migrated'}
+    def guidance(path):
+        guidance_calls.append(path)
+        assert calls  # The protected activation's identity stage already ran.
+        return guidance_result
+    monkeypatch.setattr(module, 'helper', lambda _name: SimpleNamespace(
+        private_json=lambda _path: document, migrate_workspace_guidance=guidance))
     calls = []
     def run(command, **kwargs):
         calls.append((command, kwargs))
@@ -147,9 +154,12 @@ def test_native_update_checks_owner_profile_after_activation(tmp_path, monkeypat
     monkeypatch.setattr(module.subprocess, 'run', run)
     result = module.migrate_public_identity(source=source, preparation=preparation, node=Path('/node'))
     assert result == {'status': 'checked', 'detail':
-        'Portal profile: SOUL.md current; IDENTITY.md current'}
+        'Portal profile: SOUL.md current; IDENTITY.md current', 'workspaceGuidance': guidance_result}
+    assert guidance_calls == [workspace]
     assert calls == [(['/node', str(script), str(workspace), str(generated)],
         {'capture_output': True, 'text': True, 'timeout': 30, 'check': False})]
+    guidance_result['AGENTS.md'] = 'manual-review-required'
+    assert module.migrate_public_identity(source=source, preparation=preparation, node=Path('/node'))['status'] == 'manual-review-required'
 
 
 def test_native_update_does_not_claim_profile_migration_without_candidate(tmp_path):

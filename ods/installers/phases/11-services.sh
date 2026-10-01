@@ -121,7 +121,9 @@ _phase11_build_local_images() {
                 echo "===== $svc build attempt $attempt/$max_attempts at $(date -u +%Y-%m-%dT%H:%M:%SZ) ====="
             } >> "$build_log"
 
-            $DOCKER_COMPOSE_CMD "${COMPOSE_FLAGS_ARR[@]}" build --no-cache "$svc" >> "$build_log" 2>&1 &
+            # Always build the selected source; Docker may reuse unchanged
+            # layers on a retained install, while changed inputs invalidate them.
+            $DOCKER_COMPOSE_CMD "${COMPOSE_FLAGS_ARR[@]}" build "$svc" >> "$build_log" 2>&1 &
             build_pid=$!
             build_failed=false
             label="[$build_count/$build_total] Building $svc"
