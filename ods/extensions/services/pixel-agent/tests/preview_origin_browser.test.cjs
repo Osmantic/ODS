@@ -8,6 +8,7 @@ const services=path.resolve(__dirname,'../..');
 const bundle=buildSync({entryPoints:[path.join(services,'dashboard/src/lib/previewOrigin.js')],bundle:true,write:false,format:'iife',globalName:'previewOrigin',platform:'browser',nodePaths:(process.env.NODE_PATH||'').split(path.delimiter)}).outputFiles[0].text;
 const source=fs.readFileSync(path.join(services,'pixel-agent/host/workspace_preview.py'),'utf8').replace(/\r\n/g,'\n');
 const csp=source.match(/^CSP = \(\n([\s\S]+?)\n\)/m)[1].split('\n').map(line=>JSON.parse(line.trim())).join('');
+const dashboardCsp=fs.readFileSync(path.join(services,'dashboard/nginx.conf'),'utf8').match(/add_header Content-Security-Policy "([^"]+)" always/)[1];
 const hash=text=>crypto.createHash('sha256').update(text).digest('hex');
 async function listen(handler){const server=http.createServer(handler);await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));return server;}
 test('verified origins render Next/Vite root assets, nested routes and lazy modules without Dashboard access',async t=>{
@@ -33,7 +34,7 @@ test('verified origins render Next/Vite root assets, nested routes and lazy modu
    if(req.url==='/probe.js'){res.writeHead(200,{'content-type':'text/javascript'});res.end(bundle);return;}
    if(req.url==='/favicon.ico'){res.writeHead(204);res.end();return;}
    if(req.url!=='/'){dashboardRootRequests++;res.writeHead(404);res.end();return;}
-   res.writeHead(200,{'content-type':'text/html'});res.end(`<p id="canary">unchanged</p><script src="/probe.js"></script>`);
+   res.writeHead(200,{'content-type':'text/html','content-security-policy':dashboardCsp.replaceAll('__PIXEL_PREVIEW_PORT__',String(dedicated.address().port))});res.end(`<p id="canary">unchanged</p><script src="/probe.js"></script>`);
   });t.after(()=>{for(const server of [dedicated,dashboard]){server.closeAllConnections();server.close();}});
   const page=await browser.newPage();t.after(()=>page.close());await page.goto(`http://127.0.0.1:${dashboard.address().port}/`);
   const access=await page.evaluate(async preview=>{
@@ -42,6 +43,7 @@ test('verified origins render Next/Vite root assets, nested routes and lazy modu
    const frame=document.createElement('iframe');frame.title='Arcade';frame.src=access.frameUrl;frame.setAttribute('sandbox',access.sandbox);document.body.append(frame);return access;
   },preview);
   assert.equal(access.route,'verified-site-origin');assert.ok(!access.sandbox.includes('allow-same-origin'));
+  assert.equal(await page.evaluate(async url=>{try{await fetch(url);return true;}catch{return false;}},`http://${siteId}.localhost:${dashboard.address().port}/`),false,'Dashboard CSP must still reject other localhost ports');
   const frame=page.frameLocator('iframe');await frame.locator('#isolation').filter({hasText:'isolated'}).waitFor();await frame.locator('#play').click();await frame.locator('#score').filter({hasText:'Playing'}).waitFor();
   assert.equal(await frame.locator('body').evaluate(node=>getComputedStyle(node).backgroundColor),'rgb(10, 10, 11)');
   await frame.getByRole('link',{name:'Snake'}).click();await frame.locator('#isolation').filter({hasText:'isolated'}).waitFor();await frame.locator('#play').click();await frame.locator('#score').filter({hasText:'Playing'}).waitFor();

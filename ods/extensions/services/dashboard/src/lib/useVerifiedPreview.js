@@ -8,14 +8,13 @@ export default function useVerifiedPreview(preview,fallback,refresh=0) {
     if(!preview || !fallback)return
     let current=true
     const controller=new AbortController()
-    const timer=setTimeout(()=>controller.abort(),5000)
+    const timer=setTimeout(()=>controller.abort(new DOMException('Preview probe timed out','TimeoutError')),5000)
     resolveVerifiedPreview(preview,fallback,controller.signal)
       .then(access=>{if(current)setResult({key,access})})
       .catch(()=>{if(current)setResult({key,access:{...fallback,frameUrl:null,unavailable:true}})})
       .finally(()=>clearTimeout(timer))
     return()=>{current=false;controller.abort();clearTimeout(timer)}
     // The receipt and refresh key, not an ephemeral access object, own the probe.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   },[key])
   return result?.key===key?result.access:{...fallback,frameUrl:null,checking:true}
 }

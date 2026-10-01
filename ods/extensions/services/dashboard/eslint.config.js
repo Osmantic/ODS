@@ -24,6 +24,7 @@ export default [
         sessionStorage: "readonly",
         AbortController: "readonly",
         AbortSignal: "readonly",
+        DOMException: "readonly",
         Event: "readonly",
         EventTarget: "readonly",
         MessageEvent: "readonly",
