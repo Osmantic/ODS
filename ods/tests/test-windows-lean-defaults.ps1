@@ -112,6 +112,32 @@ try {
     if ($overridden.Hermes -or $overridden.Comfyui -or $overridden.Recommended -or -not $overridden.DeepResearch) {
         throw 'Negative flags did not override -All and prior selection'
     }
+    $cloudCore = Join-Path $scratch 'cloud-core'
+    Set-InstalledFixture -Path $cloudCore -Services @('litellm')
+    [IO.File]::WriteAllText((Join-Path $cloudCore '.env'), 'ODS_MODE=cloud')
+    $cloudSelection = Get-ODSWindowsInstalledFeatureSelection -InstallDir $cloudCore
+    if ($cloudSelection.Kind -ne 'preserved' -or $cloudSelection.Features.Recommended) {
+        throw 'A required cloud gateway was mistaken for the optional Recommended bundle'
+    }
+    if ((Invoke-Selection -Path $cloudCore).Recommended) {
+        throw 'Rerun expanded the cloud gateway into Recommended services'
+    }
+    $switchboardCore = Join-Path $scratch 'switchboard-core'
+    Set-InstalledFixture -Path $switchboardCore -Services @('litellm')
+    [IO.File]::WriteAllText((Join-Path $switchboardCore '.env'), "ODS_MODE=local`nODS_MODEL_SWITCHBOARD=enabled`n")
+    if ((Invoke-Selection -Path $switchboardCore).Recommended) {
+        throw 'Rerun expanded the native Core switchboard gateway into Recommended services'
+    }
+    $partialLocalGateway = Join-Path $scratch 'partial-local-gateway'
+    Set-InstalledFixture -Path $partialLocalGateway -Services @('litellm')
+    if ((Get-ODSWindowsInstalledFeatureSelection -InstallDir $partialLocalGateway).Kind -ne 'unknown') {
+        throw 'A partial local Recommended selection was mistaken for cloud Core'
+    }
+    $partialRecommended = Join-Path $scratch 'partial-recommended'
+    Set-InstalledFixture -Path $partialRecommended -Services @('token-spy')
+    if ((Get-ODSWindowsInstalledFeatureSelection -InstallDir $partialRecommended).Kind -ne 'unknown') {
+        throw 'Token Spy without its gateway was accepted as a complete bundle'
+    }
 
     $unknown = Join-Path $scratch 'unknown'
     Set-InstalledFixture -Path $unknown -Services @('hermes')
@@ -145,8 +171,15 @@ try {
         -EnableWorkflows $false -EnableRag $false -EnableHermes $false `
         -EnableOpenClaw $false -EnableComfyui $false -EnableDeepResearch $false `
         -EnablePrivacyShield $false -EnableLangfuse $false
-    foreach ($id in @('litellm','searxng','hermes','comfyui','perplexica','langfuse')) {
+    foreach ($id in @('searxng','token-spy','hermes','comfyui','perplexica','langfuse')) {
         if ($plan[$id].Enabled) { throw "Core plan selected $id" }
+    }
+    if (-not $plan['litellm'].Enabled) { throw 'Native Core lost its switchboard gateway' }
+    $observePlan = New-ODSWindowsServicePlan -EnableRecommended $false -SwitchboardMode 'observe'
+    if ($observePlan['litellm'].Enabled) { throw 'Observe mode selected an unnecessary gateway' }
+    $cloudPlan = New-ODSWindowsServicePlan -EnableRecommended $false -CloudMode $true
+    if (-not $cloudPlan['litellm'].Enabled -or $cloudPlan['token-spy'].Enabled -or $cloudPlan['searxng'].Enabled) {
+        throw 'Cloud Core did not select only its required gateway'
     }
     $fullPlan = New-ODSWindowsServicePlan -EnableRecommended $full.Recommended -EnableVoice $full.Voice `
         -EnableWorkflows $full.Workflows -EnableRag $full.Rag -EnableHermes $full.Hermes `

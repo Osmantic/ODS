@@ -24,6 +24,23 @@ function New-ODSWindowsServicePlanEntry {
     }
 }
 
+function Get-ODSWindowsEffectiveSwitchboardMode {
+    param([string]$InstallDir, [string]$RequestedMode = "")
+
+    $mode = $RequestedMode.Trim().ToLowerInvariant()
+    if ($mode -notin @("legacy", "observe", "enabled")) { $mode = "enabled" }
+    $envPath = Join-Path $InstallDir ".env"
+    if (Test-Path -LiteralPath $envPath -PathType Leaf) {
+        $savedMode = Get-Content -LiteralPath $envPath | Where-Object {
+            $_ -match '^ODS_MODEL_SWITCHBOARD='
+        } | Select-Object -First 1
+        if ([string]$savedMode -match '^ODS_MODEL_SWITCHBOARD=(legacy|observe|enabled)\s*$') {
+            $mode = $Matches[1].ToLowerInvariant()
+        }
+    }
+    return $mode
+}
+
 function New-ODSWindowsServicePlan {
     param(
         [bool]$EnableRecommended,
@@ -38,7 +55,9 @@ function New-ODSWindowsServicePlan {
         [bool]$EnableLangfuse = $false,
         [bool]$EnableBraveSearch = $false,
         [bool]$EnableODSProxy = $false,
-        [bool]$EnableRemoteAccess = $false
+        [bool]$EnableRemoteAccess = $false,
+        [bool]$CloudMode = $false,
+        [string]$SwitchboardMode = "enabled"
     )
 
     $plan = @{}
@@ -48,7 +67,10 @@ function New-ODSWindowsServicePlan {
         -EnableDeepResearch $EnableDeepResearch `
         -EnableHermes $EnableHermes `
         -EnableOpenClaw $EnableOpenClaw
-    $plan["litellm"] = New-ODSWindowsServicePlanEntry "litellm" $EnableRecommended "recommended" "recommended services not enabled"
+    # Native OpenCode and the switchboard readiness check use LiteLLM's host
+    # port. Keep this gateway whenever the stable ods/current route is enabled.
+    $needsLiteLlm = ($EnableRecommended -or $CloudMode -or $SwitchboardMode -eq "enabled")
+    $plan["litellm"] = New-ODSWindowsServicePlanEntry "litellm" $needsLiteLlm "gateway" "LiteLLM gateway not required"
     $plan["searxng"] = New-ODSWindowsServicePlanEntry "searxng" $enableSearxng "search" "web search backend not required"
     $plan["token-spy"] = New-ODSWindowsServicePlanEntry "token-spy" $EnableRecommended "recommended" "recommended services not enabled"
 

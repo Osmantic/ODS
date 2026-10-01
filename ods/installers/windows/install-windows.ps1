@@ -998,6 +998,8 @@ litellm_settings:
         $currentBackend = $(if ($cloudMode) { "none" } else { $gpuInfo.Backend })
         $servicePlan = New-ODSWindowsServicePlan `
             -EnableRecommended $enableRecommended `
+            -CloudMode $cloudMode `
+            -SwitchboardMode (Get-ODSWindowsEffectiveSwitchboardMode -InstallDir $installDir -RequestedMode $env:ODS_MODEL_SWITCHBOARD) `
             -EnableVoice $enableVoice `
             -EnableWorkflows $enableWorkflows `
             -EnableRag $enableRag `
@@ -2110,6 +2112,8 @@ Write-Phase -Phase 9 -Total 13 -Name "VERIFICATION" -Estimate "~30 seconds"
 if ($dryRun) {
     $_dryRunServicePlan = New-ODSWindowsServicePlan `
         -EnableRecommended $enableRecommended `
+        -CloudMode $cloudMode `
+        -SwitchboardMode (Get-ODSWindowsEffectiveSwitchboardMode -InstallDir $installDir -RequestedMode $env:ODS_MODEL_SWITCHBOARD) `
         -EnableVoice $enableVoice `
         -EnableWorkflows $enableWorkflows `
         -EnableRag $enableRag `

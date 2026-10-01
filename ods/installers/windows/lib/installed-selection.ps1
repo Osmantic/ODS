@@ -44,11 +44,31 @@ function Get-ODSWindowsInstalledFeatureSelection {
         return [PSCustomObject]@{ Kind = "unknown"; Features = $null; Reason = "base Compose fragment is absent" }
     }
     foreach ($pair in @(@('whisper','tts'), @('qdrant','embeddings'),
-            @('hermes','hermes-proxy'), @('litellm','token-spy'))) {
+            @('hermes','hermes-proxy'))) {
         if ($selected.Contains($pair[0]) -ne $selected.Contains($pair[1])) {
             return [PSCustomObject]@{
                 Kind = "unknown"; Features = $null
                 Reason = "installed $($pair[0])/$($pair[1]) group has a partial selection"
+            }
+        }
+    }
+    # LiteLLM can be required by cloud Core or the native switchboard without
+    # enabling the optional Recommended bundle.
+    if ($selected.Contains("token-spy") -and -not $selected.Contains("litellm")) {
+        return [PSCustomObject]@{
+            Kind = "unknown"; Features = $null
+            Reason = "installed recommended group has a partial selection"
+        }
+    }
+    if ($selected.Contains("litellm") -and -not $selected.Contains("token-spy")) {
+        $savedEnv = @(Get-Content -LiteralPath $envPath)
+        $installedMode = $savedEnv | Where-Object { $_ -match '^ODS_MODE=' } | Select-Object -First 1
+        $switchboardMode = $savedEnv | Where-Object { $_ -match '^ODS_MODEL_SWITCHBOARD=' } | Select-Object -First 1
+        if ([string]$installedMode -notmatch '^ODS_MODE=cloud\s*$' -and
+            [string]$switchboardMode -notmatch '^ODS_MODEL_SWITCHBOARD=enabled\s*$') {
+            return [PSCustomObject]@{
+                Kind = "unknown"; Features = $null
+                Reason = "installed LiteLLM selection has no matching cloud or switchboard mode"
             }
         }
     }
@@ -57,7 +77,7 @@ function Get-ODSWindowsInstalledFeatureSelection {
         Voice = ($selected.Contains("whisper") -or $selected.Contains("tts"))
         Workflows = $selected.Contains("n8n")
         Rag = ($selected.Contains("qdrant") -or $selected.Contains("embeddings"))
-        Recommended = ($selected.Contains("litellm") -or $selected.Contains("token-spy"))
+        Recommended = $selected.Contains("token-spy")
         Hermes = ($selected.Contains("hermes") -or $selected.Contains("hermes-proxy"))
         OpenClaw = $selected.Contains("openclaw")
         Comfyui = $selected.Contains("comfyui")
