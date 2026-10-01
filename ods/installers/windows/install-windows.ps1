@@ -1373,7 +1373,7 @@ litellm_settings:
                     $env:DOCKER_BUILDKIT = "0"
                 }
 
-                & docker @DockerClientArgs compose @ComposeFlags build --no-cache $Service *>> $BuildLog
+                & docker @DockerClientArgs compose @ComposeFlags build $Service *>> $BuildLog
                 return $LASTEXITCODE
             } finally {
                 if ($UseLegacyBuilder) {
@@ -1453,7 +1453,7 @@ litellm_settings:
             try {
                 $env:DOCKER_BUILDKIT = "0"
                 Add-Content -LiteralPath $BuildLog -Value "plain docker fallback building $Service as $imageTag from $contextPath"
-                & docker @DockerClientArgs build --no-cache -t $imageTag -f $dockerfilePath @buildArgs $contextPath *>> $BuildLog
+                & docker @DockerClientArgs build -t $imageTag -f $dockerfilePath @buildArgs $contextPath *>> $BuildLog
                 return $LASTEXITCODE
             } finally {
                 if ($hadBuildKit) {
@@ -1828,7 +1828,7 @@ litellm_settings:
             }
             $_buildServices = $_selectedBuildServices
 
-            Write-AI "Rebuilding local-built images (no-cache)..."
+            Write-AI "Building local images (reusing unchanged layers)..."
             $_failedBuildServices = @()
             $_legacyBuilderServices = @()
             $_defaultDockerConfigServices = @()
@@ -1887,7 +1887,7 @@ litellm_settings:
                     Get-Content $_buildLog -Tail 60 | ForEach-Object { Write-Host "  $_" }
                 }
                 Write-ODSComposeDiagnostics -InstallDir $installDir -ComposeFlags $composeFlags `
-                    -ComposeArgs (@("build", "--no-cache") + $_failedBuildServices) `
+                    -ComposeArgs (@("build") + $_failedBuildServices) `
                     -ComposeLogPath $_buildLog `
                     -Phase "install-windows.ps1 local image build" `
                     -NextStep "Fix the local Dockerfile/build error shown above, then re-run .\install-windows.ps1." `

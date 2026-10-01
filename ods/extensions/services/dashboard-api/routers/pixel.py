@@ -33,6 +33,7 @@ from pixel_chat_identity import messages_with_identity
 from pixel_chat_context import HistorySnapshot, public_context
 from pixel_runtime_identity import project_runtime_identity, unknown_runtime_identity
 from pixel_readiness import project_readiness
+from pixel_edge_read_client import borrow_edge_read_client, get_edge_read_client
 
 
 logger = logging.getLogger(__name__)
@@ -44,7 +45,7 @@ _CHAT_STREAM_TIMEOUT_SECONDS = 2040.0
 _CLIENT_DISCONNECT_POLL_SECONDS = 0.25
 _STREAM_KEEPALIVE_SECONDS = 15.0
 _STREAM_KEEPALIVE = b": pixel working\n\n"
-_CLIENT_CANCEL_TIMEOUT_SECONDS = 7.0
+_CLIENT_CANCEL_TIMEOUT_SECONDS = 27.0
 _MAX_KEY_LENGTH = 4096
 _MAX_STATUS_BYTES = 64 * 1024
 _READINESS_PROBE_SECONDS = 4.0
@@ -181,6 +182,7 @@ router = APIRouter(prefix="/api/pixel", tags=["pixel"])
 
 _result_store: ChatResultStore | None = None
 _result_tasks: dict[tuple[str, str, str], asyncio.Task] = {}
+_result_preflights: set[tuple[str, str, str]] = set()
 _result_stops: set[tuple[str, str]] = set()
 _result_abort_ack: set[tuple[str, str, str]] = set()
 
@@ -195,7 +197,8 @@ def _chat_results() -> ChatResultStore:
 def _result_state(store, identity):
     row = store.get(identity)
     task = _result_tasks.get(identity)
-    if row is not None and row["state"] == "active" and (task is None or task.done()):
+    if (row is not None and row["state"] == "active" and identity not in _result_preflights
+            and (task is None or task.done())):
         # A producer may fail while committing its last bytes. The API process
         # being alive does not prove that this particular task is still running.
         row["state"] = "unresolved"
@@ -218,10 +221,14 @@ async def _chat_context_request(body: ChatCancelRequest, *, compact: bool = Fals
         # Starting a compaction returns a job receipt promptly. CPU/model time
         # belongs to the runtime job, not the browser's HTTP connection.
         timeout = httpx.Timeout(connect=3.0, read=20.0, write=5.0, pool=3.0)
-        async with httpx.AsyncClient(timeout=timeout, trust_env=False, follow_redirects=False) as client:
+        # Compaction mutates runtime state and retains its independent transport.
+        client_context = (httpx.AsyncClient(timeout=timeout, trust_env=False, follow_redirects=False)
+                          if compact else borrow_edge_read_client())
+        async with client_context as client:
             async with client.stream(
                 "POST", f"{edge_url}/v1/chat/{'compact' if compact else 'context'}",
                 json=payload, headers=_edge_headers(key, accept="application/json"),
+                timeout=timeout,
             ) as response:
                 if response.status_code in {409, 423, 429}:
                     raise HTTPException(response.status_code, "Portal is busy. Wait for the current task to finish.")
@@ -504,11 +511,12 @@ async def _current_access_readiness():
 async def _current_runtime_identity(edge_url, key):
     try:
         async with async_timeout(_READINESS_PROBE_SECONDS):
-            async with httpx.AsyncClient(timeout=httpx.Timeout(_READINESS_PROBE_SECONDS), trust_env=False, follow_redirects=False) as client:
-                async with client.stream("GET", f"{edge_url}/v1/runtime-identity",
-                                         headers=_edge_headers(key, accept="application/json")) as response:
-                    if response.status_code == 200 and response.headers.get("content-type", "").lower().startswith("application/json"):
-                        return project_runtime_identity(json.loads(await _bounded_response_bytes(response, 8192)))
+            client = get_edge_read_client()
+            async with client.stream("GET", f"{edge_url}/v1/runtime-identity",
+                                     headers=_edge_headers(key, accept="application/json"),
+                                     timeout=httpx.Timeout(_READINESS_PROBE_SECONDS)) as response:
+                if response.status_code == 200 and response.headers.get("content-type", "").lower().startswith("application/json"):
+                    return project_runtime_identity(json.loads(await _bounded_response_bytes(response, 8192)))
     except (httpx.HTTPError, asyncio.TimeoutError, ValueError, TypeError, RecursionError):
         pass
     return unknown_runtime_identity()
@@ -537,17 +545,18 @@ async def pixel_status(http_response: Response = None) -> dict[str, object]:
     edge_url, key = config
     try:
         timeout = httpx.Timeout(connect=5.0, read=5.0, write=5.0, pool=5.0)
-        async with httpx.AsyncClient(timeout=timeout, trust_env=False, follow_redirects=False) as client:
-            async with client.stream(
-                "GET",
-                f"{edge_url}/v1/models",
-                headers=_edge_headers(key, accept="application/json"),
-            ) as response:
-                if response.status_code != 200:
-                    return {"available": False, "model": None, "detail": "Portal service is unavailable"}
-                if not response.headers.get("content-type", "").lower().startswith("application/json"):
-                    return {"available": False, "model": None, "detail": "Portal service returned an invalid response"}
-                raw = await _bounded_response_bytes(response, _MAX_STATUS_BYTES)
+        client = get_edge_read_client()
+        async with client.stream(
+            "GET",
+            f"{edge_url}/v1/models",
+            headers=_edge_headers(key, accept="application/json"),
+            timeout=timeout,
+        ) as response:
+            if response.status_code != 200:
+                return {"available": False, "model": None, "detail": "Portal service is unavailable"}
+            if not response.headers.get("content-type", "").lower().startswith("application/json"):
+                return {"available": False, "model": None, "detail": "Portal service returned an invalid response"}
+            raw = await _bounded_response_bytes(response, _MAX_STATUS_BYTES)
         payload = json.loads(raw)
         models = payload.get("data") if isinstance(payload, dict) else None
         available = isinstance(models, list) and any(
@@ -648,7 +657,8 @@ def _error_event(message: str) -> bytes:
 
 async def _cancel_edge_run(edge_url: str, key: str, chat_id: str) -> bool:
     """Best-effort cancellation over the fixed authenticated internal edge."""
-    timeout = httpx.Timeout(connect=2.0, read=5.0, write=2.0, pool=2.0)
+    # Edge can wait 20 s for harness and managed-project cleanup.
+    timeout = httpx.Timeout(connect=2.0, read=22.0, write=2.0, pool=2.0)
     try:
         async with httpx.AsyncClient(
             timeout=timeout,
@@ -701,8 +711,16 @@ async def pixel_chat_cancel(body: ChatCancelRequest, owner: str = Depends(verify
         store = _chat_results()
         identity = (owner_namespace(owner), body.chat_id, body.request_id)
         row = _result_state(store, identity)
-        # A late Stop for a completed/unknown attempt must not stop a newer run.
-        if row is None or row["state"] not in {"active", "unresolved"}:
+        # Interrupted receipts still need native abort/idle confirmation. An
+        # old receipt must never cancel a successor in the same conversation.
+        if row is None or row["state"] not in {"active", "unresolved", "interrupted"}:
+            return {"aborted": False}
+        recovering_interrupted = row["state"] == "interrupted"
+        if recovering_interrupted and not store.is_latest(identity):
+            return {"aborted": False}
+        # A reserved attempt can still be checking local readiness and identity.
+        # There is no native run to cancel until its producer has been created.
+        if identity in _result_preflights:
             return {"aborted": False}
         if identity[:2] in _result_stops:
             return {"aborted": False}
@@ -721,6 +739,8 @@ async def pixel_chat_cancel(body: ChatCancelRequest, owner: str = Depends(verify
                 entry = store.get(identity)
                 if entry is None or entry["state"] == "complete":
                     return {"aborted": False}
+                if recovering_interrupted:
+                    return {"aborted": store.confirm_interrupted_cancel(identity)}
                 store.finish(identity, "cancelled")
             return {"aborted": aborted}
         finally:
@@ -767,15 +787,6 @@ async def _retained_chat_stream(request, body, owner):
     if body.history_snapshot is not None:
         fingerprint_input = {"messages": fingerprint_input, "history_snapshot": body.history_snapshot.model_dump()}
     fingerprint = hashlib.sha256(json.dumps(fingerprint_input, sort_keys=True, ensure_ascii=True).encode()).hexdigest()
-    existing = store.get(identity)
-    if existing is None:
-        config = _pixel_config()
-        if config is None:
-            raise HTTPException(status_code=503, detail="Portal is not enabled")
-        issue = await _model_readiness_issue()
-        if issue is not None:
-            raise HTTPException(status_code=409, detail=issue[1])
-        messages = await messages_with_identity(body.messages)
     try:
         if identity[:2] in _result_stops:
             raise ResultConflict("Stop is still being confirmed")
@@ -785,15 +796,35 @@ async def _retained_chat_stream(request, body, owner):
     except ResultCapacity as exc:
         raise HTTPException(status_code=507, detail=str(exc)) from None
     if created:
-        begin_pixel_stream()
-        task = asyncio.create_task(_produce_retained_result(store, identity, body, config, messages, owner=owner))
-        _result_tasks[identity] = task
-        def release(finished):
-            _result_tasks.pop(identity, None)
-            end_pixel_stream()
-            if not finished.cancelled() and finished.exception() is not None:
-                logger.error("Pixel result persistence failed (%s)", type(finished.exception()).__name__)
-        task.add_done_callback(release)
+        _result_preflights.add(identity)
+        try:
+            try:
+                config = _pixel_config()
+                if config is None:
+                    raise HTTPException(status_code=503, detail="Portal is not enabled")
+                issue = await _model_readiness_issue()
+                if issue is not None:
+                    raise HTTPException(status_code=409, detail=issue[1])
+                messages = await messages_with_identity(body.messages)
+            except Exception:
+                # The attempt ID was committed, but no producer or agent turn
+                # was started. Retain an exact terminal receipt for reloads.
+                text = "Portal did not start this attempt. Restore its connection and send your message again."
+                frame = {"choices": [{"delta": {"content": text}}]}
+                data = f"data: {json.dumps(frame)}\n\n".encode() + _error_event(text) + b"data: [DONE]\n\n"
+                store.reject_before_submission(identity, data)
+                raise
+            begin_pixel_stream()
+            task = asyncio.create_task(_produce_retained_result(store, identity, body, config, messages, owner=owner))
+            _result_tasks[identity] = task
+            def release(finished):
+                _result_tasks.pop(identity, None)
+                end_pixel_stream()
+                if not finished.cancelled() and finished.exception() is not None:
+                    logger.error("Pixel result persistence failed (%s)", type(finished.exception()).__name__)
+            task.add_done_callback(release)
+        finally:
+            _result_preflights.discard(identity)
 
     async def subscribe():
         after = -1

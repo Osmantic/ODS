@@ -453,6 +453,21 @@ class TestAuth(BaseEdgeTest):
 
 class TestPreviewRelay(BaseEdgeTest):
 
+    async def test_framework_assets_keep_authenticated_snapshot_routing(self):
+        from pixel_edge import _preview_upstream_path
+        site = "site-" + "a" * 24
+        for tail in ["_next/static/app.js", "__next._full.txt"]:
+            for method in ["GET", "HEAD"]:
+                async with self.client.request(method, f"http://localhost/preview/{site}/{tail}", headers=self.auth()) as response:
+                    self.assertEqual(response.status, 200)
+                    self.assertEqual(await response.read(), b"<button id=launch>Remote preview</button>" if method == "GET" else b"")
+            async with self.client.get(f"http://localhost/preview/{site}/{tail}") as response:
+                self.assertEqual(response.status, 401)
+        self.assertEqual(self.up_runner.app["preview_paths"],
+                         [f"/{site}/_next/static/app.js"] * 2 + [f"/{site}/__next._full.txt"] * 2)
+        for tail in ["__ods_unknown__.js", "_next/../secret", "_next/.hidden", "__pycache__/cache.js"]:
+            self.assertIsNone(_preview_upstream_path(site, tail), tail)
+
     async def test_nested_directory_links_resolve_to_published_index(self):
         site = "site-" + "a" * 24
         for method in ["GET", "HEAD"]:
@@ -487,7 +502,7 @@ class TestPreviewRelay(BaseEdgeTest):
             self.assertIsNone(_preview_upstream_path(site, tail))
         for tail in ["__ods_view__.html?path=secret", "../__ods_view__.html", "__ods_view__.html/extra"]:
             self.assertIsNone(_preview_upstream_path(site, tail))
-        for tail in ["__ods_manifest__.json/other", "__ods_manifest__.json?path=secret", "../__ods_manifest__.json", "__anything"]:
+        for tail in ["__ods_manifest__.json/other", "__ods_manifest__.json?path=secret", "../__ods_manifest__.json", "__ods_anything"]:
             self.assertIsNone(_preview_upstream_path(site, tail))
         self.assertIsNone(_preview_upstream_path("not-a-site", "__ods_manifest__.json"))
         async with self.client.get(f"http://localhost/preview/{site}/__ods_manifest__.json") as resp:

@@ -3,7 +3,7 @@ import PixelTextFileInput from './PixelTextFileInput'
 
 const upload = file => fireEvent.change(screen.getByLabelText('Choose text file'), {target:{files:[file]}})
 const props = {input:'Analyze this', limit:16384, disabled:false}
-it('stages exact Unicode/CRLF text without sending and inserts only on confirmation', async () => {
+it('stages Unicode text with consistent composer line endings without sending and inserts only on confirmation', async () => {
   const insert = vi.fn()
   render(<PixelTextFileInput {...props} onInsert={insert}/>)
   const text = 'Tên,Giá\r\nTrà,12\r\n```\n'
@@ -11,7 +11,7 @@ it('stages exact Unicode/CRLF text without sending and inserts only on confirmat
   await screen.findByRole('group', {name:'Review text file'})
   expect(insert).not.toHaveBeenCalled()
   fireEvent.click(screen.getByRole('button', {name:'Insert file text'}))
-  expect(insert).toHaveBeenCalledWith(`\n\nFile: "costs.csv"\n\`\`\`\`text\n${text}\n\`\`\`\`\n`)
+  expect(insert).toHaveBeenCalledWith(`\n\nFile: "costs.csv"\n\`\`\`\`text\n${text.replace(/\r\n?/g,'\n')}\n\`\`\`\`\n`)
   expect(screen.queryByRole('group')).toBeNull()
 })
 

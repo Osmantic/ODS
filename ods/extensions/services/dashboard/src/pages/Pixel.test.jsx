@@ -349,7 +349,7 @@ describe('Pixel', () => {
     const column = screen.getByPlaceholderText('Message Portal...').closest('.pixel-chat-column')
     expect(column.parentElement).toBe(panel.parentElement)
     expect(column).toContainElement(screen.getByRole('button',{name:'Workspace',exact:true}))
-    expect(column).toContainElement(screen.getByRole('button',{name:/Choose model:/}))
+    expect(column).toContainElement(screen.getByRole('button',{name:'Model unverified'}))
     expect(column).toContainElement(screen.getByRole('button',{name:'Search Portal'}))
     expect(panel).not.toContainElement(screen.getByRole('heading',{name:'Portal',exact:true}))
     fireEvent.click(screen.getByTitle('Collapse preview'))
@@ -726,6 +726,150 @@ describe('Pixel', () => {
     expect(screen.getAllByText(/Edge unreachable/).length).toBeGreaterThan(0)
   })
 
+  it.each(['request', 'body'])('recovers after a stalled status %s without accepting its late response', async phase => {
+    vi.useFakeTimers()
+    let finishStalled, stalledSignal
+    let calls = 0
+    globalThis.fetch.mockImplementation((url, options) => {
+      if (url !== '/api/pixel/status') return Promise.resolve(response({}))
+      calls += 1
+      if (calls === 1) return Promise.resolve(response({available:false}))
+      if (calls === 2) {
+        stalledSignal = options.signal
+        const pending = new Promise(resolve => { finishStalled = resolve })
+        return phase === 'request' ? pending : Promise.resolve({ok:true,json:()=>pending})
+      }
+      return Promise.resolve(response({available:true,runtime:{source:'remote-provider',model:'cloud-model',contextLength:32768,maxTokens:4096,reasoning:false}}))
+    })
+    render(<Pixel />)
+    await act(async () => { await vi.advanceTimersByTimeAsync(3000) })
+    expect(screen.getByText('Degraded')).toBeInTheDocument()
+    expect(calls).toBe(2)
+    await act(async () => { await vi.advanceTimersByTimeAsync(15000) })
+    expect(stalledSignal.aborted).toBe(true)
+    expect(screen.getByText('Degraded')).toBeInTheDocument()
+    await act(async () => { await vi.advanceTimersByTimeAsync(3000) })
+    expect(screen.getByText('Available')).toBeInTheDocument()
+    expect(screen.getByRole('button',{name:'Choose model: cloud model'})).toBeInTheDocument()
+    await act(async () => { finishStalled(phase === 'request' ? response({available:false}) : {available:false}) })
+    expect(screen.getByText('Available')).toBeInTheDocument()
+  })
+
+  it('recovers confirmed cloud after a stalled status body and first selector opening during the outage without local model requests', async () => {
+    vi.useFakeTimers()
+    let finishStalled, stalledSignal
+    let statusCalls = 0
+    const cloud = {available:true,runtime:{source:'remote-provider',model:'cloud-model',contextLength:32768,maxTokens:4096,reasoning:false}}
+    globalThis.fetch.mockImplementation((url, options) => {
+      if (url !== '/api/pixel/status') return Promise.resolve(response({},503))
+      statusCalls += 1
+      if (statusCalls === 2) {
+        stalledSignal = options.signal
+        return Promise.resolve({ok:true,json:()=>new Promise(resolve => { finishStalled = resolve })})
+      }
+      return Promise.resolve(response(cloud))
+    })
+    const localRequests = () => fetch.mock.calls.filter(([url])=>url.startsWith('/api/models'))
+    render(<Pixel />)
+    await act(async()=>{})
+    expect(screen.getByText('Available')).toBeInTheDocument()
+    expect(screen.getByRole('button',{name:'Choose model: cloud model'})).toHaveTextContent('cloud model')
+    fireEvent.change(screen.getByRole('textbox'),{target:{value:'Keep this cloud draft'}})
+    expect(localRequests()).toHaveLength(0)
+
+    await act(async()=>{await vi.advanceTimersByTimeAsync(3000)})
+    expect(statusCalls).toBe(2)
+    await act(async()=>{await vi.advanceTimersByTimeAsync(15000)})
+    expect(stalledSignal.aborted).toBe(true)
+    expect(screen.getByText('Degraded')).toBeInTheDocument()
+    expect(screen.getByRole('textbox')).toBeDisabled()
+    fireEvent.click(screen.getByRole('button',{name:'Last confirmed model: cloud model; Portal unavailable'}))
+    await act(async()=>{})
+    expect(screen.getByText('The conversation’s model source is not confirmed.')).toBeVisible()
+    expect(screen.queryByRole('button',{name:'Switch model',exact:true})).toBeNull()
+    expect(localRequests()).toHaveLength(0)
+
+    await act(async()=>{await vi.advanceTimersByTimeAsync(3000)})
+    expect(screen.getByText('Available')).toBeInTheDocument()
+    expect(screen.getByRole('button',{name:'Choose model: cloud model'})).toHaveTextContent('cloud model')
+    expect(screen.getByRole('link',{name:'Provider settings'})).toBeVisible()
+    expect(screen.getByRole('textbox')).toBeEnabled()
+    expect(screen.getByRole('textbox')).toHaveValue('Keep this cloud draft')
+    await act(async()=>{finishStalled({available:false})})
+    await act(async()=>{await vi.advanceTimersByTimeAsync(60000)})
+    fireEvent.click(screen.getByRole('button',{name:'Choose model: cloud model'}))
+    fireEvent.click(screen.getByRole('button',{name:'Choose model: cloud model'}))
+    await act(async()=>{})
+    expect(screen.getByText('Available')).toBeInTheDocument()
+    expect(screen.getByRole('textbox')).toBeEnabled()
+    expect(localRequests()).toHaveLength(0)
+  })
+
+  it('restores the cloud composer despite an unavailable local activation catalog', async () => {
+    vi.useFakeTimers()
+    let available = true, catalogFailed = false, remote = false
+    globalThis.fetch.mockImplementation(async url => {
+      if (url === '/api/pixel/status') return response({available,runtime:available ? remote ? {source:'remote-provider',model:'cloud-model',contextLength:32768,maxTokens:4096,reasoning:false} : {source:'local-switchboard',model:'local-model',contextLength:32768} : undefined})
+      if (url === '/api/models') return catalogFailed ? response({},503) : response({models:[],modelLifecycle:{active:true,operation:'model_activation',modelId:'local-model'}})
+      if (url === '/api/models/recovery') return response({pending:false,phase:'idle'})
+      return response({})
+    })
+    render(<Pixel />)
+    await act(async()=>{})
+    fireEvent.click(screen.getByRole('button',{name:'Choose model: local model'}))
+    await act(async()=>{})
+    available = false
+    catalogFailed = true
+    await act(async()=>{await vi.advanceTimersByTimeAsync(3000)})
+    expect(screen.getByRole('textbox')).toBeDisabled()
+    available = true
+    remote = true
+    await act(async()=>{await vi.advanceTimersByTimeAsync(3000)})
+    expect(screen.getByRole('alert')).toHaveTextContent('Failed to fetch models')
+    expect(screen.getByText('Available')).toBeInTheDocument()
+    expect(screen.getByRole('button',{name:'Choose model: cloud model'})).toBeInTheDocument()
+    expect(screen.getByRole('textbox')).toBeEnabled()
+  })
+
+  it('recovers cloud after opening the selector during an initial backend outage and stops local reads', async () => {
+    vi.useFakeTimers()
+    let recovered = false
+    globalThis.fetch.mockImplementation(async url => {
+      if (url === '/api/pixel/status') return recovered
+        ? response({available:true,runtime:{source:'remote-provider',model:'cloud-model',contextLength:32768,maxTokens:4096,reasoning:false}})
+        : response({},503)
+      if (url.startsWith('/api/models')) return response({},503)
+      return response({})
+    })
+    render(<Pixel />)
+    await act(async()=>{})
+    expect(screen.getByText('Degraded')).toBeInTheDocument()
+    expect(screen.getByRole('textbox')).toBeDisabled()
+    fireEvent.click(screen.getByRole('button',{name:'Model unavailable'}))
+    await act(async()=>{})
+    const localReads = () => fetch.mock.calls.filter(([url])=>url.startsWith('/api/models')).length
+    expect(localReads()).toBeGreaterThan(0)
+    expect(screen.getByText('The conversation’s model source is not confirmed.')).toBeVisible()
+    expect(screen.queryByRole('button',{name:'Switch model',exact:true})).toBeNull()
+
+    recovered = true
+    await act(async()=>{await vi.advanceTimersByTimeAsync(3000)})
+    expect(screen.getByText('Available')).toBeInTheDocument()
+    expect(screen.getByRole('textbox')).toBeEnabled()
+    expect(screen.getByRole('button',{name:'Choose model: cloud model'})).toBeInTheDocument()
+    expect(screen.getByRole('link',{name:'Provider settings'})).toBeVisible()
+    // A genuine catalog error can remain visible without blocking cloud chat.
+    expect(screen.getByRole('alert')).toHaveTextContent('Failed to fetch models')
+    const readsAtRecovery = localReads()
+    await act(async()=>{await vi.advanceTimersByTimeAsync(60000)})
+    fireEvent.click(screen.getByRole('button',{name:'Choose model: cloud model'}))
+    fireEvent.click(screen.getByRole('button',{name:'Choose model: cloud model'}))
+    await act(async()=>{})
+    expect(localReads()).toBe(readsAtRecovery)
+    expect(screen.getByRole('textbox')).toBeEnabled()
+    expect(fetch.mock.calls.filter(([url,options])=>url.startsWith('/api/models') && options?.method === 'POST')).toHaveLength(0)
+  })
+
   it('shows available state when status succeeds', async () => {
     globalThis.fetch.mockResolvedValue(response({ available: true, model: 'pixel/default', detail: 'local' }))
 
@@ -774,7 +918,7 @@ describe('Pixel', () => {
     expect(screen.getByRole('status', { name: 'Model capability' })).toHaveTextContent('not agent-qualified')
     expect(screen.getByRole('status', { name: 'Model capability' })).toHaveTextContent('Tool-driven tasks may be unreliable')
     expect(screen.queryByText(/ready and adapts/)).not.toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /Choose model:/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Model unverified' })).toBeInTheDocument()
     expect(screen.queryByRole('link', { name: 'Change model' })).not.toBeInTheDocument()
     expect(screen.getByPlaceholderText('Message Portal...')).toBeEnabled()
   })
@@ -838,7 +982,7 @@ describe('Pixel', () => {
       'The active model is recorded as not agent-qualified. Tool-driven tasks may be unreliable; chat and experiments remain available.'
     )
     expect(screen.getByRole('status', { name: 'Model capability' })).toBeVisible()
-    expect(screen.getByRole('button', { name: /Choose model:/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Model unverified' })).toBeInTheDocument()
     expect(screen.queryByRole('link', { name: 'Change model' })).not.toBeInTheDocument()
     expect(screen.getByPlaceholderText('Message Portal...')).toBeEnabled()
   })
@@ -1591,6 +1735,43 @@ describe('Pixel', () => {
     render(<Pixel />)
     expect(await screen.findByText('Recovered final answer')).toBeVisible()
     expect(screen.getAllByText('Recovered final answer')).toHaveLength(1)
+  })
+
+  it('recovers an exact pre-submission 503 receipt and sends the next turn with a new identity', async () => {
+    const rejection = 'Portal did not start this attempt. Restore its connection and send your message again.'
+    const attempts = []
+    globalThis.fetch.mockImplementation(async (url, options) => {
+      if (url === '/api/pixel/status') return response({available:true})
+      if (url === '/api/pixel/chat/stream') {
+        const attempt = JSON.parse(options.body)
+        attempts.push(attempt)
+        if (attempts.length === 1) return response({detail:'Could not confirm the assistant name. Please retry.'}, 503)
+        return sseResponse([JSON.stringify({choices:[{delta:{content:'Connected again'}}]}), '[DONE]'])
+      }
+      if (url === '/api/pixel/chat/result') {
+        expect(JSON.parse(options.body)).toEqual({chat_id:attempts[0].chat_id,request_id:attempts[0].request_id})
+        return response({state:'interrupted',events:[
+          'data: '+JSON.stringify({choices:[{delta:{content:rejection}}]}),
+          'data: '+JSON.stringify({error:{message:rejection,type:'pixel_dashboard_error'}}),
+          'data: [DONE]', '',
+        ].join('\n')})
+      }
+      if (url === '/api/pixel/chat/activity') return response({state:'unknown'})
+      throw new Error(`Unexpected request ${url}`)
+    })
+    render(<Pixel />)
+    await screen.findByText('Available')
+    fireEvent.change(screen.getByPlaceholderText('Message Portal...'), {target:{value:'Check my files'}})
+    fireEvent.click(screen.getByTitle('Send'))
+    expect(await screen.findByText(rejection)).toBeVisible()
+    expect(screen.queryByText('Activity unknown')).not.toBeInTheDocument()
+    expect(screen.queryByTitle('Stop')).not.toBeInTheDocument()
+    fireEvent.change(screen.getByPlaceholderText('Message Portal...'), {target:{value:'Try again'}})
+    fireEvent.click(screen.getByTitle('Send'))
+    expect(await screen.findByText('Connected again')).toBeVisible()
+    expect(attempts).toHaveLength(2)
+    expect(attempts[1].chat_id).toBe(attempts[0].chat_id)
+    expect(attempts[1].request_id).not.toBe(attempts[0].request_id)
   })
 
   it('does not call a retained zero-submission receipt completed or resubmit it on reload', async () => {

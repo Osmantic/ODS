@@ -131,6 +131,55 @@ class OnboardingUpgradeTests(unittest.TestCase):
             path.write_text(json.dumps(value))
             path.chmod(0o600)
 
+    def test_search_provider_change_skips_model_only_alias_shortcut(self):
+        self.prepare_snapshot()
+        live_path = self.home / ".openclaw/openclaw.json"
+        live = json.loads(live_path.read_text())
+        parallel_path = str(self.home / "data/pixel/native-search/parallel-2026.6.33")
+        parallel_contract = copy.deepcopy(self.original)
+        for extension in parallel_contract["gatewayExtensions"]:
+            if extension["id"] == "parallel":
+                extension["path"] = parallel_path
+        self.save(parallel_contract)
+        live["tools"] = {"web": {"search": {"provider": "parallel-free"}}}
+        live["plugins"] = {
+            "allow": ["pixel-ods", "parallel"],
+            "entries": {"parallel": {"enabled": True}},
+            "load": {"paths": ["/opt/ods/pixel-ods", parallel_path]},
+        }
+        live_path.write_text(json.dumps(live))
+        live_path.chmod(0o600)
+        self.invoke("_ods_pixel_search_provider_matches_contract", self.answers)
+
+        selected = copy.deepcopy(parallel_contract)
+        selected["webSearchProvider"] = "searxng"
+        selected["gatewayExtensions"] = [
+            item for item in selected["gatewayExtensions"] if item["id"] != "parallel"]
+        selected["searxngBaseUrl"] = "http://127.0.0.1:8888"
+        self.save(selected)
+        self.invoke("_ods_pixel_search_provider_matches_contract", self.answers,
+                    success=False)
+
+        live["tools"]["web"]["search"]["provider"] = "searxng"
+        live["plugins"]["allow"] = ["pixel-ods", "searxng"]
+        live["plugins"]["entries"] = {"searxng": {"enabled": True, "config": {
+            "webSearch": {"baseUrl": selected["searxngBaseUrl"]}}}}
+        live["plugins"]["load"]["paths"] = ["/opt/ods/pixel-ods"]
+        live_path.write_text(json.dumps(live))
+        live_path.chmod(0o600)
+        self.invoke("_ods_pixel_search_provider_matches_contract", self.answers)
+        selected["searxngBaseUrl"] = "http://127.0.0.1:8899"
+        self.save(selected)
+        self.invoke("_ods_pixel_search_provider_matches_contract", self.answers,
+                    success=False)
+        live["plugins"]["entries"]["searxng"]["config"]["webSearch"]["baseUrl"] = selected["searxngBaseUrl"]
+        live_path.write_text(json.dumps(live))
+        live_path.chmod(0o600)
+        self.invoke("_ods_pixel_search_provider_matches_contract", self.answers)
+        self.save(parallel_contract)
+        self.invoke("_ods_pixel_search_provider_matches_contract", self.answers,
+                    success=False)
+
     def test_snapshot_and_update_preserve_additional_digest_bound_extensions(self):
         self.prepare_snapshot()
         value = copy.deepcopy(self.original)

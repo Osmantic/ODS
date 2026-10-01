@@ -185,6 +185,26 @@ class HostAgentDiscoveryTests(unittest.TestCase):
             self.adapter.verify_host_agent_custody()
         read.assert_not_called()
 
+    def test_incomplete_install_is_distinct_from_owner_mismatch(self):
+        import pwd
+        self.adapter.gateway_owner = 'fixture'
+        self.adapter.installed_binary = None
+        owner = types.SimpleNamespace(pw_uid=1000, pw_dir=str(self.adapter.install))
+        for allow, wrong_install, expected in (
+                (False, False, 'managed-installation-incomplete'),
+                (False, True, 'managed-owner-mismatch'),
+                (True, False, 'installed-validator-unavailable')):
+            marker = {'schema_version': 2, 'manager': 'ods', 'state': 'installing',
+                      'install_dir': '/different' if wrong_install else str(self.adapter.install)}
+            with self.subTest(allow=allow, wrong_install=wrong_install), self.root_custody(), \
+                    patch.object(self.adapter, 'verify_host_agent_custody'), \
+                    patch.object(self.adapter, 'command', return_value='fixture'), \
+                    patch.object(pwd, 'getpwnam', return_value=owner), \
+                    patch.object(bridge, 'private_json', return_value=marker):
+                with self.assertRaisesRegex(bridge.AccessError, expected):
+                    self.adapter.discover(allow_installing=allow)
+
+
     def test_inactive_root_host_agent_is_classified_before_proc_zero(self):
         self.assert_unavailable_without_proc_read(
             "MainPID=0\nUser=\nLoadState=loaded\nActiveState=failed"

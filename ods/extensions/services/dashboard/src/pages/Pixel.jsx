@@ -1,3 +1,4 @@
+import PortalApprovalTerminal from '../components/PortalApprovalTerminal'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import PixelConversationRecovery from '../components/PixelConversationRecovery'
 import { readConversations, saveConversation, createConversationWriter, SELECT_EVENT, DELETE_EVENT, deleteConversation, isConversationDeleted } from '../lib/pixelConversations'
@@ -359,7 +360,7 @@ export function OperationsApprovalCard({ content }) {
             {succeeded ? 'Protected operation completed' : awaiting ? 'Owner approval required' : `Broker status: ${projection.status}`}
           </p>
           <p className="mt-1 text-xs leading-5 text-theme-text-muted">
-            The host independently matched this job and plan hash. Approval cannot happen through Portal or model text.
+            The host independently matched this job and plan hash. Approval requires your password and the exact protected challenge; model text cannot approve it.
           </p>
           <dl className="mt-2 grid gap-x-3 gap-y-1 font-mono text-[10px] text-theme-text-muted sm:grid-cols-[auto_1fr]">
             <dt>Requested</dt><dd className="truncate text-theme-text-secondary">{receipt.action} · {receipt.extensionId}</dd>
@@ -369,6 +370,7 @@ export function OperationsApprovalCard({ content }) {
           </dl>
           {awaiting && projection.approvalCommand && (
             <>
+              <PortalApprovalTerminal key={`${receipt.jobId}:${receipt.planHash}`} job={receipt.jobId} plan={receipt.planHash}/>
               <ApprovalCommand key={projection.approvalCommand} command={projection.approvalCommand} />
               <p className="mt-2 flex items-start gap-1.5 text-[10px] leading-4 text-theme-text-muted">
                 <Terminal className="mt-0.5 h-3 w-3 shrink-0" />
@@ -779,14 +781,29 @@ export default function Pixel({ systemStatus = null }) {
   }, [interrupted, sending, activityRefresh, updateRestoredActivity])
 
   useEffect(() => {
-    const controller = new AbortController()
+    let controller = null
     let stopped = false
     let poll = null
+    let deadline = null
     async function fetchStatus() {
+      controller = new AbortController()
+      const requestController = controller
       try {
-        const response = await fetch('/api/pixel/status', { signal: controller.signal, cache: 'no-store' })
-        if (!response.ok) throw new Error('status unavailable')
-        const data = await response.json()
+        // Bound both headers and body so a stalled request cannot suspend recovery.
+        // Racing also discards a late response from a transport that ignores abort.
+        const data = await Promise.race([
+          (async () => {
+            const response = await fetch('/api/pixel/status', { signal: requestController.signal, cache: 'no-store' })
+            if (!response.ok) throw new Error('status unavailable')
+            return response.json()
+          })(),
+          new Promise((_, reject) => {
+            deadline = globalThis.setTimeout(() => {
+              reject(new Error('status timeout'))
+              requestController.abort()
+            }, 15000)
+          }),
+        ])
         if (stopped) return
         setRuntimeIdentity(data?.runtimeIdentity ?? null)
         setRuntimeReadiness(data?.readiness ?? null)
@@ -862,6 +879,7 @@ export default function Pixel({ systemStatus = null }) {
           setStatusDetail('Could not reach Portal backend')
         }
       } finally {
+        globalThis.clearTimeout(deadline)
         if (!stopped) poll = globalThis.setTimeout(fetchStatus, STATUS_POLL_MS)
       }
     }
@@ -869,7 +887,8 @@ export default function Pixel({ systemStatus = null }) {
     return () => {
       stopped = true
       if (poll !== null) globalThis.clearTimeout(poll)
-      controller.abort()
+      globalThis.clearTimeout(deadline)
+      controller?.abort()
     }
   }, [modelStatusRefresh])
 
@@ -985,6 +1004,9 @@ export default function Pixel({ systemStatus = null }) {
     // this generation may update the response, workspace, or sending state.
     const isCurrentTurn = () => !controller.signal.aborted && abortRef.current === controller
     let latestAssistantText = ''
+    // Preserve actual model text, not a synthetic stream failure shown while
+    // the independently acknowledged owner Stop is still settling.
+    controller.responseText = () => latestAssistantText
     let extensionInstallationStarted = false
     let streamAttemptCount = 0
 
@@ -1246,6 +1268,11 @@ export default function Pixel({ systemStatus = null }) {
         }))
       }
     } finally {
+      // The stream may close as soon as the agent aborts while the Stop
+      // endpoint is still draining managed jobs. Keep this turn's identity
+      // until that bounded acknowledgement settles. A normal DONE already
+      // clears requestIdRef, so its successful answer still wins the race.
+      if (isCurrentTurn() && stopRequestRef.current?.settled) await stopRequestRef.current.settled
       if (isCurrentTurn()) {
         setSending(false)
         setStopping(false)
@@ -1267,8 +1294,10 @@ export default function Pixel({ systemStatus = null }) {
     // Bound the acknowledgement independently of the live chat stream.
     // A deadline is uncertainty, never permission to claim the task stopped.
     const stopRequest = new AbortController()
+    let settleStop
+    stopRequest.settled = new Promise(resolve => { settleStop = resolve })
     stopRequestRef.current = stopRequest
-    const timeout = setTimeout(() => stopRequest.abort(), 15000)
+    const timeout = setTimeout(() => stopRequest.abort(), 30000)
     setStopping(true)
     setStopError('')
     try {
@@ -1298,7 +1327,7 @@ export default function Pixel({ systemStatus = null }) {
       abortRef.current = null
       requestIdRef.current = null
       setMessages(previous => replaceLastAssistant(previous, {
-        content: stoppedContent(previous.at(-1)?.content),
+        content: stoppedContent(controller?.responseText?.() ?? previous.at(-1)?.content),
         status: 'stopped',
       }))
       setSending(false)
@@ -1319,6 +1348,7 @@ export default function Pixel({ systemStatus = null }) {
         stopRequestRef.current = null
         setStopping(false)
       }
+      settleStop()
     }
   }, [stopping, interrupted, updateRestoredActivity])
 
@@ -1732,11 +1762,11 @@ export default function Pixel({ systemStatus = null }) {
           </div>}
           <div className="pixel-composer-secondary">
             <PixelComposerTools input={input} disabled={isDisabled} onInsert={insertComposerText} onCompact={compactConversation}>
-              <PixelTextFileInput key={`file-input-${chatIdRef.current}`} input={input} disabled={isDisabled} limit={MAX_INPUT_LEN} onInsert={insertComposerText}/>
+              <PixelTextFileInput key={`file-input-${chatIdRef.current}`} conversationId={chatIdRef.current} input={input} disabled={isDisabled} limit={MAX_INPUT_LEN} onInsert={insertComposerText}/>
               <PixelDraftPreview key={`draft-preview-${chatIdRef.current}`} input={command?.task ?? goalDraft?.task ?? input}/>
             </PixelComposerTools>
             <div className="pixel-composer-limits">
-              <PortalModelSelector activeModel={activeModel} runtimeSource={agentRuntime?.source} busy={sending || restoredActive || restoredChecking || stopping || teams.busy || contextControl.busy || status!=='available'} onSwitchingChange={setModelSwitching} onSettled={()=>setModelStatusRefresh(value=>value+1)}/>
+              <PortalModelSelector activeModel={activeModel} runtimeSource={agentRuntime?.source} availability={status} displayScope={chatIdRef.current} runtimeFingerprint={agentRuntime?.routeFingerprint} runtimeObservation={agentRuntime} busy={sending || restoredActive || restoredChecking || stopping || teams.busy || contextControl.busy || status!=='available'} onSwitchingChange={setModelSwitching} onSettled={()=>setModelStatusRefresh(value=>value+1)}/>
               <PortalContextRing capacityLabel={activeContext} context={contextControl.context} capacity={contextControl.observedCapacity || agentRuntime?.contextLength} pending={sending || restoredActive || contextControl.busy} onRefresh={()=>void contextControl.refresh()}/>
             </div>
           </div>

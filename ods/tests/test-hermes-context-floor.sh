@@ -27,6 +27,7 @@ run_linux_phase_with_context() {
         ENABLE_PRIVACY_SHIELD=false
         ENABLE_LANGFUSE=false
         ODS_MODE=local
+        ENABLE_PIXEL=false
         MAX_CONTEXT="$input_context"
         MODEL_RECOMMENDATION_REASON="selector chose ${input_context} context"
         SCRIPT_DIR="/tmp/ods-context-floor-no-compose"
@@ -105,6 +106,7 @@ run_fit_case() {
         ENABLE_PRIVACY_SHIELD=false
         ENABLE_LANGFUSE=false
         ODS_MODE=local
+        ENABLE_PIXEL=false
         SCRIPT_DIR="$fixture_dir"
         LOG_FILE=/dev/null
         GPU_COUNT=0
