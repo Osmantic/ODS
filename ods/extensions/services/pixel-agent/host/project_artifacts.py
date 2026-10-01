@@ -16,9 +16,20 @@ MAX_ARCHIVE = 32 * 1024 * 1024
 MAX_TOTAL = 16 * 1024 * 1024
 MAX_FILE = 4 * 1024 * 1024
 COMPONENT = re.compile(r"(?!__ods_)(?!__pycache__$)[A-Za-z0-9_][A-Za-z0-9._-]{0,127}\Z")
+ARTIFACT_COMPONENT = re.compile(r"(?!__ods_)(?!__pycache__$)[A-Za-z0-9_\[][A-Za-z0-9._\[\]-]{0,127}\Z")
 
 
 class InvalidProjectArtifacts(ValueError):
+    pass
+
+
+class RejectedProjectArtifacts(InvalidProjectArtifacts):
+    """Collected bytes were deterministically rejected before workspace import."""
+    pass
+
+
+class MissingProjectOutput(InvalidProjectArtifacts):
+    """The stopped build exists but Docker confirms its requested path is absent."""
     pass
 
 
@@ -61,7 +72,7 @@ def import_artifacts(workspace: str, project: str, job: str, artifacts: dict) ->
         handles.append(output)
         for name, data in artifacts["files"].items():
             components = name.split("/")
-            if not all(COMPONENT.fullmatch(part) for part in components):
+            if not all(ARTIFACT_COMPONENT.fullmatch(part) for part in components):
                 raise InvalidProjectArtifacts("invalid imported artifact path")
             parent = os.dup(output)
             try:
@@ -90,13 +101,13 @@ def import_artifacts(workspace: str, project: str, job: str, artifacts: dict) ->
 
 def decode_artifacts(payload: bytes) -> dict:
     if not isinstance(payload, bytes) or len(payload) > MAX_ARCHIVE:
-        raise InvalidProjectArtifacts("artifact archive too large")
+        raise RejectedProjectArtifacts("artifact archive too large")
     files, seen, folded, spelling, total = {}, set(), set(), {}, 0
     try:
         with tarfile.open(fileobj=io.BytesIO(payload), mode="r:") as archive:
             for count, member in enumerate(archive, 1):
                 if count > 512:
-                    raise InvalidProjectArtifacts("too many archive entries")
+                    raise RejectedProjectArtifacts("too many archive entries")
                 name = member.name
                 if name in (".", "./") and member.isdir():
                     continue
@@ -105,37 +116,37 @@ def decode_artifacts(payload: bytes) -> dict:
                 if member.isdir():
                     name = name.rstrip("/")
                 parts = name.split("/")
-                if len(parts) > 16 or not all(COMPONENT.fullmatch(p) for p in parts):
-                    raise InvalidProjectArtifacts("invalid artifact path")
+                if len(parts) > 16 or not all(ARTIFACT_COMPONENT.fullmatch(p) for p in parts):
+                    raise RejectedProjectArtifacts("invalid artifact path")
                 for i in range(1, len(parts) + 1):
                     prefix = "/".join(parts[:i])
                     previous = spelling.setdefault(prefix.casefold(), prefix)
                     if previous != prefix:
-                        raise InvalidProjectArtifacts("case-ambiguous artifact path")
+                        raise RejectedProjectArtifacts("case-ambiguous artifact path")
                 if name.casefold() in folded:
-                    raise InvalidProjectArtifacts("duplicate artifact path")
+                    raise RejectedProjectArtifacts("duplicate artifact path")
                 seen.add(name)
                 folded.add(name.casefold())
                 if any("/".join(parts[:i]) in files for i in range(1, len(parts))):
-                    raise InvalidProjectArtifacts("artifact parent is a file")
+                    raise RejectedProjectArtifacts("artifact parent is a file")
                 if member.isdir():
                     continue
                 if (not member.isfile() or member.sparse is not None
                         or member.size < 0 or member.size > MAX_FILE or len(files) >= 128):
-                    raise InvalidProjectArtifacts("unsupported artifact type or size")
+                    raise RejectedProjectArtifacts("unsupported artifact type or size")
                 if any(p.startswith(name + "/") for p in seen):
-                    raise InvalidProjectArtifacts("artifact replaces a directory")
+                    raise RejectedProjectArtifacts("artifact replaces a directory")
                 total += member.size
                 if total > MAX_TOTAL:
-                    raise InvalidProjectArtifacts("artifact total too large")
+                    raise RejectedProjectArtifacts("artifact total too large")
                 data = archive.extractfile(member).read(MAX_FILE + 1)
                 if len(data) != member.size:
-                    raise InvalidProjectArtifacts("incomplete artifact")
+                    raise RejectedProjectArtifacts("incomplete artifact")
                 files[name] = data
     except (tarfile.TarError, EOFError) as error:
-        raise InvalidProjectArtifacts("invalid artifact archive") from error
+        raise RejectedProjectArtifacts("invalid artifact archive") from error
     if not files:
-        raise InvalidProjectArtifacts("empty artifact output")
+        raise RejectedProjectArtifacts("empty artifact output")
     manifest = [{"path": path, "bytes": len(body), "sha256": hashlib.sha256(body).hexdigest()}
                 for path, body in sorted(files.items())]
     digest = hashlib.sha256(json.dumps(manifest, separators=(",", ":")).encode()).hexdigest()
@@ -163,7 +174,15 @@ def collect_artifacts(image: str, job: str, output_directory: str) -> dict:
             payload = process.stdout.read(MAX_ARCHIVE + 1)
             if len(payload) > MAX_ARCHIVE:
                 raise InvalidProjectArtifacts("artifact stream too large")
-            if process.wait(timeout=5) != 0:
+            code = process.wait(timeout=5)
+            if code != 0:
+                errors.seek(0)
+                diagnostic = errors.read(4097)
+                expected = f"Error response from daemon: Could not find the file /home/node/{output_directory}/. in container {name}"
+                if code == 1 and not payload and diagnostic.strip() == expected.encode('utf-8'):
+                    raise MissingProjectOutput(
+                        f"Build completed, but outputDirectory '{output_directory}' was not created. "
+                        "Read the build configuration or main.py and submit a new job with its actual output directory; no files were imported.")
                 raise InvalidProjectArtifacts("artifact collection failed")
         finally:
             watchdog.cancel()

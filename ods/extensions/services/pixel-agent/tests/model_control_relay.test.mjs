@@ -59,6 +59,21 @@ test('real HTTP lifecycle uses owner authority, bounded exact frames, and one co
   })));
   assert.equal(calls[0].options.timeout,20000);
   assert.equal(calls[1].options.timeout,305000);
+  // Native image-enabled model status must survive the real HTTP relay.
+  // The old exact four/five-field projection turned this valid reply into 503.
+  for (const imageInput of ['unknown','supported','unsupported']) {
+    const ready={...state,status:'ready',pending:false,transactionId:null,
+      contract:{...target,routeFingerprint:revision,imageInput}};
+    result={status:200,body:ready};
+    const response=await send(operations[0]);
+    assert.equal(response.status,200);
+    assert.deepEqual(await response.json(),ready);
+  }
+  for (const imageInput of [null,true,false,1,[],{},'vision','unknown\n']) {
+    result={status:200,body:{...state,contract:{...target,imageInput}}};
+    assert.equal((await send(operations[0])).status,503);
+  }
+  const previousCalls=calls.length;
   result={status:409,body:{error:'private detail'}};
   let response=await send(operations[2]);
   assert.equal(response.status,409);
@@ -66,5 +81,5 @@ test('real HTTP lifecycle uses owner authority, bounded exact frames, and one co
   result=new Error('connection lost after mutation');
   response=await send(operations[3]);
   assert.equal(response.status,503);
-  assert.equal(calls.length,operations.length+2);
+  assert.equal(calls.length,previousCalls+2);
 });

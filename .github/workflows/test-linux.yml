@@ -295,6 +295,7 @@ jobs:
         run: |
           python3 tests/test_pixel_agent_teams_roles_count.py
           bash tests/test-service-registry.sh
+          bash tests/test-extension-setup-hooks.sh
 
       - name: Switchboard Bypass Inventory
         run: python3 tests/test-switchboard-bypass-inventory.py

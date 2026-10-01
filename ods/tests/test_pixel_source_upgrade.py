@@ -49,6 +49,53 @@ def held(manager, new, identity):
     return verify, events
 
 
+def test_unheld_remount_allocates_new_buffer_and_preserves_old_receipt(trees):
+    manager, old, new, identity = trees
+    manager.stage(new, os.getuid(), identity)
+    path = manager.state / 'source-scratch.json'
+    record = json.loads(path.read_text())
+    old_buffer = old / record['name']
+    record['parent'][0] += 100
+    record['identity'][0] += 100
+    raw = upgrade.encoded(record)
+    manager._write('source-scratch.json', raw)
+    manager.stage(new, os.getuid(), identity)
+    current = json.loads(path.read_text())
+    assert current['name'] != record['name']
+    assert current['parent'] == [old.stat().st_dev, old.stat().st_ino]
+    assert old_buffer.is_dir() and list(old_buffer.iterdir()) == []
+    assert (manager.state / upgrade.sha(raw)).read_bytes() == raw
+    manager.bind('d' * 64, lambda _: None)
+    manager.publish(lambda _: None)
+    assert (old / 'bin/a.py').read_text() == 'new'
+
+
+@pytest.mark.parametrize('condition', ['held', 'content', 'changed-source', 'transition', 'inode'])
+def test_remount_never_rebinds_uncertain_or_changed_scratch(trees, condition):
+    manager, old, new, identity = trees
+    if condition == 'held':
+        held(manager, new, identity)
+    else:
+        manager.stage(new, os.getuid(), identity)
+    record = json.loads((manager.state / 'source-scratch.json').read_text())
+    record['parent'][0] += 100
+    record['identity'][0] += 100
+    if condition == 'content':
+        (old / record['name'] / 'payload').write_text('do not adopt or remove')
+    if condition == 'changed-source':
+        (old / 'bin/a.py').write_text('owner edit')
+    if condition == 'transition':
+        (manager.state.parent / 'transition.json').write_text('{}')
+    if condition == 'inode':
+        record['identity'][1] += 1
+    raw = upgrade.encoded(record)
+    manager._write('source-scratch.json', raw)
+    with pytest.raises(upgrade.UpgradeError):
+        manager._renew_unheld_scratch_after_remount()
+        manager._prepare_scratch()
+    assert (manager.state / 'source-scratch.json').read_bytes() == raw
+
+
 def test_stage_is_no_mutation_and_publish_needs_authenticated_hold(trees):
     manager, old, new, identity = trees
     before = upgrade.inventory(old, os.getuid())

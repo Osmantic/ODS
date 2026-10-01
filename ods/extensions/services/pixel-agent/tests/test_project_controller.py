@@ -12,10 +12,47 @@ from unittest.mock import patch
 HOST = Path(__file__).resolve().parents[1] / "host"
 sys.path.insert(0, str(HOST))
 from project_controller import ProjectController
+from project_artifacts import MissingProjectOutput, RejectedProjectArtifacts, InvalidProjectArtifacts
 
 
 @unittest.skipUnless(os.name == "posix", "POSIX candidate coordinator")
 class ProjectControllerPolicyTests(unittest.TestCase):
+    def test_missing_output_finishes_failed_and_cleans_up_without_import(self):
+        self.check_collection_failure(MissingProjectOutput('missing dist'), 'failed')
+
+    def test_rejected_archive_finishes_failed_but_transport_uncertainty_stays_unconfirmed(self):
+        self.check_collection_failure(RejectedProjectArtifacts('invalid artifact path'), 'failed')
+        self.check_collection_failure(InvalidProjectArtifacts('artifact stream interrupted'), 'unconfirmed')
+
+    def check_collection_failure(self, error, expected):
+        with tempfile.TemporaryDirectory() as root:
+            controller = ProjectController(root, Path(root) / 'state', 'sha256:' + 'a' * 64,
+                                           authorize=lambda *args: True)
+            request = {'project': 'project', 'sourceSha256': 'b' * 64,
+                       'image': controller.image, 'outputDirectory': 'dist'}
+            job, _ = controller.jobs.create('a' * 64, request)
+            try:
+                with ExitStack() as mocks:
+                    mocks.enter_context(patch.object(controller.storage, 'reserve'))
+                    mocks.enter_context(patch.object(controller.storage, 'create_volume'))
+                    mocks.enter_context(patch('project_controller.start_keeper'))
+                    mocks.enter_context(patch('project_controller.subprocess.run', side_effect=[
+                        subprocess.CompletedProcess([], 1), subprocess.CompletedProcess([], 0)]))
+                    mocks.enter_context(patch('project_controller.seed_project'))
+                    mocks.enter_context(patch('project_controller.run_stage', return_value={'status':'succeeded','exitCode':0}))
+                    mocks.enter_context(patch('project_controller.collect_artifacts', side_effect=error))
+                    imported = mocks.enter_context(patch('project_controller.import_artifacts'))
+                    cleaned = mocks.enter_context(patch.object(controller, '_cleanup', return_value=[]))
+                    controller._work(job, request, {}, threading.Event())
+                    imported.assert_not_called()
+                    if expected == 'failed':
+                        cleaned.assert_called_once()
+                    else:
+                        cleaned.assert_not_called()
+                self.assertEqual(controller.jobs.observe(job)['state'], expected)
+            finally:
+                controller.close()
+
     def test_denied_request_does_not_read_source_or_execute(self):
         with tempfile.TemporaryDirectory() as root:
             controller = ProjectController(root, Path(root) / "state", "sha256:" + "a" * 64,

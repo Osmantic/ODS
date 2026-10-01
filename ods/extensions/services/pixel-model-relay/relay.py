@@ -29,7 +29,8 @@ def _upstream_route(ods_mode, external_llm_url):
 UPSTREAM, UPSTREAM_REQUIRES_KEY = _upstream_route(
     os.environ.get("ODS_MODE", "local"), os.environ.get("EXTERNAL_LLM_URL", ""))
 ALIASES = {"ods/current", "default"}
-MAX_BODY = 2 * 1024 * 1024
+# Match Portal's encoded image-turn envelope (8 MiB images plus history/tools).
+MAX_BODY = 16 * 1024 * 1024
 WRITE_TIMEOUT_SECONDS = 30.0  # Host-local OpenClaw must drain promptly.
 LOG = logging.getLogger("pixel-model-relay")
 
@@ -164,7 +165,7 @@ def create_app():
         or any(ord(c) < 32 or ord(c) == 127 for c in LITELLM_KEY)
     ):
         raise RuntimeError("invalid LiteLLM model relay key")
-    app = web.Application(client_max_size=MAX_BODY)
+    app = web.Application(client_max_size=MAX_BODY + 1)
     app.router.add_get("/health", _health)
     app.router.add_route("*", "/v1/models", _inference)
     app.router.add_route("*", "/v1/chat/completions", _inference)

@@ -42,9 +42,20 @@ function modelFor(config, entry, agentId) {
   const route = alias ? config?.plugins?.entries?.['pixel-ods']?.config?.modelRouteFingerprint : undefined;
   if (route !== undefined && (typeof route !== 'string' || route.length !== 64 || !HASH.test(route))) throw ERROR();
   const routeFingerprint = route ?? null;
+  const declaredImageInput = config?.plugins?.entries?.['pixel-ods']?.config?.modelImageInput;
+  let imageInput;
+  if (declaredImageInput !== undefined && selected === `${provider}/${runtimeId}`) {
+    if (!['supported','unsupported','unknown'].includes(declaredImageInput)
+        || JSON.stringify(configured?.input) !== JSON.stringify(declaredImageInput === 'unsupported' ? ['text'] : ['text','image'])) throw ERROR();
+    imageInput = declaredImageInput;
+  }
   const identity = [provider,runtimeId,id,window];
   if (routeFingerprint) identity.push(routeFingerprint);
-  return {provider,id,window,routeFingerprint,
+  if (imageInput) identity.push(imageInput);
+  const imageRouteFingerprint=imageInput ? hash(JSON.stringify([
+    provider,runtimeId,id,configured,config?.models?.providers?.[provider]?.baseUrl??null,imageInput,routeFingerprint,
+  ])) : undefined;
+  return {provider,id,window,routeFingerprint,imageInput,imageRouteFingerprint,
     revision:hash(JSON.stringify(identity))};
 }
 
@@ -182,6 +193,8 @@ export function createContextCompaction({agentId = 'pixel', readSession, readCon
       sessionExists:sessionRevision !== null, sessionRevision,
       context:used !== null && measuredAt ? {used,window:reportedWindow,measuredAt} : null,
       model:id && provider && window && provider !== 'ods-policy' ? {id,provider,contextWindow:proof?.window || window,
+        ...(model.imageInput ? {imageInput:model.imageInput} : {}),
+        ...(model.imageRouteFingerprint ? {imageRouteFingerprint:model.imageRouteFingerprint} : {}),
         ...(model.routeFingerprint ? {routeFingerprint:model.routeFingerprint} : {})} : null, compaction};
   }
   function unavailable(user) {

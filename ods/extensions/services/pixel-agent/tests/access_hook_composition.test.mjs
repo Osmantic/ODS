@@ -17,6 +17,8 @@ const end = source.indexOf('    api.registerHttpRoute(', start);
 assert.ok(start >= 0 && end > start, 'expected tool lifecycle registration block');
 function hooks(guardResult, managedRuntime = false, delivery = {}) {
   const callbacks = {}, calls = [], activity = [], bundleAdmission = createWorkspaceBundleAdmission(), artifactAdmission = createWorkspaceArtifactAdmission();
+  const lifecycleCalls = [], warnings = [];
+  const conversationImageLifecycle = {observe() {lifecycleCalls.push('image');}};
   const projectRunControl = createProjectRunControl();
   const runtime = {
     isProbe: context => context?.runId === 'private-proof',
@@ -26,7 +28,7 @@ function hooks(guardResult, managedRuntime = false, delivery = {}) {
     finish: () => { calls.push('run-finish'); },
   };
   vm.runInNewContext(source.slice(start, end), {
-    api: {on: (name, callback) => { callbacks[name] = callback; }},
+    api: {on: (name, callback) => { callbacks[name] = callback; }, logger: {warn: message => warnings.push(message)}},
     toolLoopGuard: {
       beforeToolCall: () => { calls.push('guard'); return guardResult; },
       afterToolCall: () => { calls.push('observe'); },
@@ -39,13 +41,15 @@ function hooks(guardResult, managedRuntime = false, delivery = {}) {
       finish: () => activity.push('finish'),
     },
     goalProgress: {before() {}, update() {}, finish() {}},
+    conversationImageLifecycle,
     bundleAdmission, artifactAdmission, projectRunControl, managedRuntime, accessRuntime: runtime, withPixelCronDeliveryDefault,
-    delegationDelivery:{end(){},blocked(){},before(){},after(){},admission(){},...delivery},
+    delegationDelivery:{end(){lifecycleCalls.push('delegation');},blocked(){},before(){},after(){},admission(){},...delivery},
     withPixelSubagentWorkspace, resolveUserPath: value=>value,
     resolveAgentWorkspaceDir:config=>config?.agents?.list?.find(agent=>agent.id==='pixel')?.workspace,
     AGENT_ID: 'pixel',
   });
-  return {callbacks, calls, runtime, activity, bundleAdmission, artifactAdmission, projectRunControl};
+  return {callbacks, calls, runtime, activity, bundleAdmission, artifactAdmission, projectRunControl,
+    lifecycleCalls, conversationImageLifecycle, warnings};
 }
 const context = {agentId: 'pixel', runId: 'cron-request', toolName: 'cron'};
 const event = {toolCallId: 'cron-1', toolName: 'cron', params: {
@@ -106,15 +110,25 @@ for (const managed of [false, true]) {
     assert.deepEqual(calls,[]);
   });
   test(`agent activity ends without duplicate managed admission/cleanup (managed=${managed})`, () => {
-    const {callbacks, calls, activity} = hooks(undefined, managed);
+    const {callbacks, calls, activity, lifecycleCalls} = hooks(undefined, managed);
     assert.equal(typeof callbacks.before_agent_run, 'function');
     callbacks.before_agent_run?.(event, context);
     callbacks.agent_end(event, context);
     assert.deepEqual(calls, managed ? [] : ['run-admit', 'run-finish']);
     assert.deepEqual(activity, ['finish']);
+    assert.deepEqual(lifecycleCalls, ['delegation', 'image'], 'both merged terminal observers must run');
     activity.length = 0;
     callbacks.agent_end(event, {...context, runId: 'private-proof'});
     assert.deepEqual(activity, [], 'private proofs must not create workbench activity');
+  });
+  test(`image custody failure preserves delegated terminal delivery and admission cleanup (managed=${managed})`, () => {
+    const {callbacks, calls, activity, lifecycleCalls, conversationImageLifecycle, warnings} = hooks(undefined, managed);
+    conversationImageLifecycle.observe = () => {throw new Error('private image custody path');};
+    callbacks.agent_end(event, context);
+    assert.deepEqual(lifecycleCalls, ['delegation']);
+    assert.deepEqual(calls, managed ? [] : ['run-finish']);
+    assert.deepEqual(activity, ['finish']);
+    assert.deepEqual(warnings, ['Portal conversation image custody could not be updated.']);
   });
 }
 

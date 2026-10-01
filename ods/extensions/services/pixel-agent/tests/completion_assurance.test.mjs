@@ -3,6 +3,42 @@ import assert from 'node:assert/strict';
 import {createCompletionAssurance, promisesExecution, researchRequested, executionContext} from '../plugin/completion-assurance.mjs';
 import {createToolLoopGuard} from '../plugin/tool-loop-guard.mjs';
 
+test('file readback and download delivery are not requests to read web sources', () => {
+  const final = 'Pronto. Criei exatamente os dois arquivos, li ambos de volta e publiquei para download com os nomes exatos.\n\n**despesas.csv** (lido de volta):\n```\ncategoria,valor\nHospedagem,120\nDomínio,40\n```\n\n**resumo.md** (lido de volta):\n```\n# Resumo de despesas\n\nTotal: R$ 160,00\n\n## Gastos\n\n- Hospedagem: R$ 120,00\n- Domínio: R$ 40,00\n```\n\nOs dois downloads verificados estão anexados acima. Nenhuma dependência foi instalada, nenhum site foi criado e nenhum preview foi publicado.';
+  for (const prompt of [
+    'Crie em Playground/ods-qa-delivery-final-20260930-1449 exatamente dois arquivos: despesas.csv com cabeçalho categoria,valor e linhas Hospedagem,120 e Domínio,40; e resumo.md com o total de R$ 160,00 e a lista dos dois gastos. Leia os dois arquivos de volta e entregue links para baixá-los com esses nomes exatos. Não instale dependências, não crie site e não publique preview.',
+    'Create two files, read the files back, and provide download links.',
+    'Leia os arquivos criados e entregue URLs para download.',
+    'Read the files back and return links to download them.',
+    'Ler os arquivos antes de fornecer links para download.',
+  ]) {
+    const guard = createCompletionAssurance(); guard.begin(prompt);
+    guard.observe('write', {result:{content:[{type:'text',text:'Files written'}]}});
+    guard.observe('read', {result:{content:[{type:'text',text:'categoria,valor\nHospedagem,120\nDomínio,40'}]}});
+    assert.equal(guard.finalize(final), undefined, prompt);
+    assert.equal(guard.terminal, undefined);
+  }
+});
+
+test('mixed file delivery and real source reads retain research and citation gates', () => {
+  for (const prompt of [
+    'Leia os arquivos e depois leia as fontes e entregue links para baixar os arquivos.',
+    'Read the files, then open the source pages and provide download links.',
+    'Read the files and sources before producing the downloads.',
+    'Leia os arquivos e as fontes antes de entregar links para download.',
+    'Open the links and save the files.',
+    'Leia as páginas e crie os arquivos.',
+  ]) {
+    const guard = createCompletionAssurance(); guard.begin(prompt);
+    guard.observe('read', {result:{content:[{type:'text',text:'Local file content'}]}});
+    assert.equal(guard.finalize('Done.')?.action, 'revise', prompt);
+    guard.observe('web_search', {result:{details:{results:[{url:'https://example.org/source'}]}}});
+    assert.equal(guard.finalize('Evidence: https://example.org/source')?.action, 'revise', prompt);
+    guard.observe('web_fetch', {result:{details:{status:200,url:'https://example.org/source',text:'Evidence'}}});
+    assert.equal(guard.finalize('Evidence: https://example.org/source'), undefined, prompt);
+  }
+});
+
 test('screenshot research request requires evidence, not an answer from memory', () => {
   const guard = createCompletionAssurance();
   guard.begin('queria saber notícias de hoje sobre o stf dia 15/09/2026');

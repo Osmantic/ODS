@@ -318,13 +318,13 @@ describe('Pixel', () => {
 
   it('deletes the selected idle chat and starts an empty one without resurrecting it', async () => {
     saveConversation({schema:1,chatId:'delete-current',messages:[{role:'user',content:'Disposable current chat'}]})
-    globalThis.fetch.mockResolvedValue(response({available:true,model:'pixel/default'}))
+    globalThis.fetch.mockImplementation(url=>Promise.resolve(response(url==='/api/pixel/images/delete-current'?{schemaVersion:1,deleted:true}:{available:true,model:'pixel/default'})))
     render(<Pixel/>)
     await waitFor(()=>expect(screen.getByText('Available')).toBeInTheDocument())
     expect(screen.getByText('Disposable current chat')).toBeVisible()
     const complete=vi.fn()
     act(()=>window.dispatchEvent(new CustomEvent(DELETE_EVENT,{detail:{chatId:'delete-current',complete}})))
-    expect(complete).toHaveBeenCalledWith('')
+    await waitFor(()=>expect(complete).toHaveBeenCalledWith(''))
     await waitFor(()=>expect(screen.queryByText('Disposable current chat')).not.toBeInTheDocument())
     expect(readConversations().some(chat=>chat.chatId==='delete-current')).toBe(false)
     expect(JSON.parse(localStorage.getItem('ods.pixel.chat.v1')).chatId).not.toBe('delete-current')
@@ -509,10 +509,10 @@ describe('Pixel', () => {
     expect(frame).toBeInTheDocument()
     fireEvent.click(screen.getByTitle('Collapse preview'))
     expect(frame).not.toBeVisible()
-    expect(screen.getByTitle('Interactive Portal preview')).toBe(frame)
+    expect(await screen.findByTitle('Interactive Portal preview')).toBe(frame)
     fireEvent.click(screen.getByTitle('Expand preview'))
     expect(frame).toBeVisible()
-    expect(screen.getByTitle('Interactive Portal preview')).toBe(frame)
+    expect(await screen.findByTitle('Interactive Portal preview')).toBe(frame)
     fireEvent.click(screen.getByTitle('Start a new chat'))
     await waitFor(() => {
       const stored = JSON.parse(globalThis.localStorage.getItem('ods.pixel.chat.v1'))
@@ -1188,6 +1188,34 @@ describe('Pixel', () => {
     expect(screen.getByRole('button',{name:'Choose model: remote owner model'})).toBeInTheDocument()
     expect(screen.getByRole('button',{name:/Token usage unavailable.*131,072 token capacity/})).toBeInTheDocument()
     expect(screen.queryByText('Qwen3.5-9B-Q4_K_M.gguf')).not.toBeInTheDocument()
+  })
+
+  it.each(['unknown', 'supported', 'unsupported'])('keeps the selected model label with %s image capability', async imageInput => {
+    globalThis.fetch.mockResolvedValue(response({
+      available: true, model: 'pixel/default',
+      runtime: {source: 'remote-provider', model: 'deepseek-v4.1-flash',
+        contextLength: 131072, maxTokens: 8192, reasoning: false,
+        routeFingerprint: 'a'.repeat(64), imageInput},
+    }))
+    render(<Pixel />)
+    await waitFor(() => expect(screen.getByRole('button', {name: /Choose model: deepseek/i})).toBeInTheDocument())
+    expect(screen.queryByText('Model unverified')).not.toBeInTheDocument()
+  })
+
+  it.each([
+    {imageInput: true}, {imageInput: 'vision'}, {imageInput: 'unknown\n'},
+    {imageInput: 'unknown', endpoint: 'https://foreign.example'},
+    {imageInput: 'unknown', routeFingerprint: 'a'.repeat(64) + '\n'},
+  ])('does not confirm malformed extended model metadata %j', async invalid => {
+    globalThis.fetch.mockResolvedValue(response({
+      available: true, model: 'pixel/default',
+      runtime: {source: 'remote-provider', model: 'untrusted-runtime-name',
+        contextLength: 131072, maxTokens: 8192, reasoning: false,
+        routeFingerprint: 'a'.repeat(64), ...invalid},
+    }))
+    render(<Pixel />)
+    await waitFor(() => expect(screen.getByText('Available')).toBeInTheDocument())
+    expect(screen.queryByRole('button', {name: /Choose model: untrusted/i})).not.toBeInTheDocument()
   })
 
   it('shows a callable 8K remote model without imposing a larger context floor', async () => {

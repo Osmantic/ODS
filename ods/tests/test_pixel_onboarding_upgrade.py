@@ -219,7 +219,8 @@ class OnboardingUpgradeTests(unittest.TestCase):
         live_path = self.home / ".openclaw/openclaw.json"
         live = json.loads(live_path.read_text())
         live["agents"]["defaults"] = {}
-        live["plugins"] = {"entries": {"pixel-ods": {"config": {"modelRouteFingerprint": first}}}}
+        live["plugins"] = {"entries": {"pixel-ods": {"config": {"modelRouteFingerprint": first, "modelImageInput": "unknown"}}}}
+        live["models"]["providers"]["ods-gateway"]["models"][0]["input"] = ["text", "image"]
         live_path.write_text(json.dumps(live))
         self.save(dict(self.original, modelRouteFingerprint=first))
         self.invoke("_ods_pixel_stable_alias_matches_promoted_model", self.answers,
@@ -255,6 +256,32 @@ class OnboardingUpgradeTests(unittest.TestCase):
         self.assertEqual(json.loads(self.answers.read_text())["modelRouteFingerprint"], "a" * 64)
         self.write(env=dict(self.env, EXTERNAL_LLM_MODEL="new-local-model"))
         self.assertNotIn("modelRouteFingerprint", json.loads(self.answers.read_text()))
+
+    def test_image_policy_candidate_fast_path_and_rollback_use_exact_live_policy(self):
+        self.prepare_snapshot()
+        live_path = self.home / ".openclaw/openclaw.json"
+        live = json.loads(live_path.read_text())
+        live["agents"]["defaults"] = {}
+        live["plugins"] = {"entries": {"pixel-ods": {"config": {"modelImageInput": "supported"}}}}
+        live["models"]["providers"]["ods-gateway"]["models"][0]["input"] = ["text", "image"]
+        live_path.write_text(json.dumps(live))
+        self.save(dict(self.original, modelImageInput="supported"))
+        self.invoke("_ods_pixel_stable_alias_matches_promoted_model", self.answers,
+                    "test-model", 65536, 16384, "false", "", "supported")
+        backup = Path(self.snapshot().stdout.strip())
+        self.assertEqual(json.loads((backup / "rollback-onboarding.json").read_text())["modelImageInput"], "supported")
+        self.invoke("_ods_pixel_update_onboarding_model", self.answers,
+                    "test-model", 65536, 16384, "false", "", "unsupported")
+        self.invoke("_ods_pixel_stable_alias_matches_promoted_model", self.answers,
+                    "test-model", 65536, 16384, "false", "", "unsupported", success=False)
+        staged = Path(self.invoke("_ods_pixel_stage_stable_alias_candidate", self.answers).stdout.strip())
+        candidate = json.loads(staged.read_text())
+        self.assertEqual(candidate["models"]["providers"]["ods-gateway"]["models"][0]["input"], ["text"])
+        self.assertEqual(candidate["plugins"]["entries"]["pixel-ods"]["config"]["modelImageInput"], "unsupported")
+        self.assertEqual(json.loads(live_path.read_text()), live)
+        live_path.write_bytes(staged.read_bytes())
+        self.invoke("_ods_pixel_stable_alias_matches_promoted_model", self.answers,
+                    "test-model", 65536, 16384, "false", "", "unsupported")
 
 
 if __name__ == "__main__":

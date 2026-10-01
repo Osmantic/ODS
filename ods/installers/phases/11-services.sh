@@ -1677,23 +1677,7 @@ MODELS_INI_EOF
     fi
 
     ods_progress 83 "services" "Running extension setup hooks"
-    # ── Run extension setup hooks ──
-    if [[ -f "$INSTALL_DIR/lib/service-registry.sh" ]]; then
-        _HOOK_DIR="$INSTALL_DIR"
-        . "$_HOOK_DIR/lib/service-registry.sh"
-        sr_load
-        _hook_count=0
-        for sid in "${SERVICE_IDS[@]}"; do
-            hook="${SERVICE_SETUP_HOOKS[$sid]:-}"
-            [[ -z "$hook" || ! -f "$hook" ]] && continue
-            [[ -x "$hook" ]] || chmod +x "$hook"
-            log "Running setup hook for $sid: $hook"
-            if bash "$hook" "$INSTALL_DIR" "$GPU_BACKEND" >> "$LOG_FILE" 2>&1; then
-                _hook_count=$((_hook_count + 1))
-            else
-                ai_warn "Setup hook for $sid exited with error (non-fatal)"
-            fi
-        done
-        [[ $_hook_count -gt 0 ]] && ai_ok "Ran $_hook_count extension setup hook(s)" || true
-    fi
+    . "$INSTALL_DIR/installers/lib/extension-setup-hooks.sh"
+    ods_run_selected_extension_setup_hooks \
+        "$INSTALL_DIR" "$GPU_BACKEND" "$LOG_FILE" "${COMPOSE_FLAGS_ARR[@]}"
 fi

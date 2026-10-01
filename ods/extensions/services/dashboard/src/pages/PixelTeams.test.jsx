@@ -172,3 +172,10 @@ it('runs /goal through the durable controller, answers inline and exposes stop',
   expect(fetcher.mock.calls.filter(([url])=>url.endsWith('/agents/start'))).toHaveLength(1)
   expect(fetcher.mock.calls.some(([url])=>url.includes('/chat/stream'))).toBe(false)
 })
+
+// These suites exercise conversation/publication selection, not manifest transport.
+// Workspace and artifact suites cover missing, corrupt and delayed manifests.
+vi.mock('../lib/pixelArtifacts',async importOriginal=>({
+  ...await importOriginal(),
+  loadSnapshotFiles:vi.fn(async preview=>[{path:'index.html',bytes:preview.bytes,sha256:preview.entrySha256}]),
+}))
