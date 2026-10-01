@@ -743,7 +743,15 @@ def wrapper_document(prefix):
     ).encode()
 
 
-def guard_requests(context, page, origin, prefix, blocked):
+def snapshot_file(path, prefix, files):
+    """Resolve only exact files from this immutable bundle, including root URLs."""
+    name = urllib.parse.unquote(path[len(prefix):] if path.startswith(prefix) else path[1:])
+    if not name or name.endswith("/"):
+        name += "index.html"
+    return name if name in files else None
+
+
+def guard_requests(context, page, origin, prefix, blocked, *, files=()):
     """Allow only GETs of the wrapper and this site's files from the loopback
     server, and at most the wrapper and site-entry navigations. Everything
     else, popups, downloads and websockets are recorded (bounded) and stopped."""
@@ -760,6 +768,7 @@ def guard_requests(context, page, origin, prefix, blocked):
             and (
                 parsed.path.startswith(prefix)
                 or parsed.path == "/__ods_inspection__.html"
+                or snapshot_file(parsed.path, prefix, files) is not None
             )
         )
         if req.is_navigation_request():
@@ -800,7 +809,7 @@ def guard_requests(context, page, origin, prefix, blocked):
     )
 
 
-def capture_palette(browser, origin, prefix):
+def capture_palette(browser, origin, prefix, files=()):
     """Rendered colors of a fresh load at the fixed desktop viewport, or None.
 
     Its own context: the step context and its page-error listener never see
@@ -815,7 +824,7 @@ def capture_palette(browser, origin, prefix):
     try:
         page = context.new_page()
         page.set_default_timeout(PALETTE_TIMEOUT_MS)
-        guard_requests(context, page, origin, prefix, blocked)
+        guard_requests(context, page, origin, prefix, blocked, files=files)
         page.goto(
             origin + "/__ods_inspection__.html",
             wait_until="load",
@@ -875,11 +884,7 @@ def run_browser(bundle, playwright_factory=None):
             if path == "/__ods_inspection__.html":
                 body = wrapper_document(prefix)
                 mime = "text/html"
-            elif path.startswith(prefix):
-                name = urllib.parse.unquote(path[len(prefix) :]) or "index.html"
-                if name not in files:
-                    self.send_error(404)
-                    return
+            elif (name := snapshot_file(path, prefix, files)) is not None:
                 body = files[name]
                 mime = mimetypes.guess_type(name)[0] or "application/octet-stream"
             else:
@@ -931,7 +936,7 @@ def run_browser(bundle, playwright_factory=None):
             )
             page = context.new_page()
             page.set_default_timeout(2000)
-            guard_requests(context, page, origin, prefix, blocked)
+            guard_requests(context, page, origin, prefix, blocked, files=files)
             # Registered before navigation so startup exceptions are included.
             # Page-scoped (not context-wide): blocked popups are never recorded.
             page.on("pageerror", page_errors.record)
@@ -1241,7 +1246,7 @@ def run_browser(bundle, playwright_factory=None):
             palette = None
             if time.monotonic() - started < PALETTE_START_BUDGET_S:
                 try:
-                    palette = capture_palette(browser, origin, prefix)
+                    palette = capture_palette(browser, origin, prefix, files)
                 except Exception:
                     pass
             if palette:

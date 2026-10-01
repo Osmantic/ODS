@@ -218,7 +218,7 @@ _MAX_SSE_PENDING_LINES = 4096
 _UPSTREAM_REWRITE = "openclaw/default"
 _SAFE_CHAT_ID = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 _PREVIEW_SITE_ID = re.compile(r"^site-[a-f0-9]{24}$")
-_PREVIEW_PATH_COMPONENT = re.compile(r"^(?!__ods_)(?!__pycache__$)[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$")
+_PREVIEW_PATH_COMPONENT = re.compile(r"^(?!__ods_)(?!__pycache__$)[A-Za-z0-9_\[][A-Za-z0-9._\[\]-]{0,127}$")
 _ARTIFACT_DRAFT_PREFIX = re.compile(
     r"^\s*(?:please\s+)?(?:build|write|draft|document|compose|create|edit|update|"
     r"refactor|implement|generate)\b",
@@ -1472,6 +1472,8 @@ def _preview_upstream_path(site_id: str, tail: str) -> str | None:
         return f"/{site_id}/{tail}"
     if re.fullmatch(r"__ods_changes__/(?:initial|site-[a-f0-9]{24})\.json", tail):
         return f"/{site_id}/{tail}"
+    if re.fullmatch(r'__ods_source__/source-[a-f0-9]{24}\.json', tail):
+        return f'/{site_id}/{tail}'
     # Match the host static server: a directory URL selects its index file.
     if tail.endswith("/"):
         tail += "index.html"
@@ -1551,6 +1553,11 @@ async def handle_preview(request: web.Request):
         "X-Content-Type-Options": "nosniff",
         "X-Preview-SHA256": digest,
     }
+    if '/__ods_source__/' in upstream_path:
+        headers.pop('Access-Control-Allow-Origin', None)
+        headers['Cross-Origin-Resource-Policy'] = 'same-origin'
+        headers['Content-Security-Policy'] = "sandbox; default-src 'none'; frame-ancestors 'none'"
+        headers['Content-Type'] = 'application/json; charset=utf-8'
     return web.Response(status=200, body=body, headers=headers)
 
 
