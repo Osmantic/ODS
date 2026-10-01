@@ -321,6 +321,7 @@ function Set-ODSWindowsHermesRuntimeModel {
 # ============================================================================
 Write-Phase -Phase 8 -Total 13 -Name "LAUNCH" -Estimate "2-30 minutes (model download)"
 
+$useLemonade = $false
 if ($dryRun) {
     if ($tierConfig.GgufUrl) {
         Write-AI "[DRY RUN] Would download: $($tierConfig.GgufFile)"
@@ -443,7 +444,6 @@ if ($dryRun) {
         }
 
         # ── AMD: native inference server (Lemonade preferred, llama-server fallback) ──
-        $useLemonade = $false
         if ($gpuInfo.Backend -eq "amd" -and -not $cloudMode) {
             Write-Chapter "AMD INFERENCE BACKEND"
 
@@ -905,6 +905,9 @@ if ($dryRun) {
                     $envContent = $envContent -replace "(?m)^AMD_INFERENCE_RUNTIME_MODE=.*$", "AMD_INFERENCE_RUNTIME_MODE=windows-llama-server-fallback"
                     $envContent = $envContent -replace "(?m)^AMD_INFERENCE_MANAGED=.*$", "AMD_INFERENCE_MANAGED=true"
                     $envContent = $envContent -replace "(?m)^LEMONADE_MODEL=.*$", "LEMONADE_MODEL="
+                    if (-not $enableRecommended) {
+                        $envContent = Convert-ODSWindowsNativeFallbackHermesEnv -EnvText $envContent
+                    }
                     [System.IO.File]::WriteAllText($envPath, $envContent, (New-Object System.Text.UTF8Encoding($false)))
                     Write-AISuccess "Patched .env for llama-server backend"
 
@@ -2111,10 +2114,14 @@ exec bash "$bashScript" "$bashInstallDir" "$($fullTierConfig.GgufFile)" "$($full
 Write-Phase -Phase 9 -Total 13 -Name "VERIFICATION" -Estimate "~30 seconds"
 
 if ($dryRun) {
+    # A dry run cannot know whether a future Lemonade download or health check
+    # will succeed. Show the preferred AMD plan; a real fallback re-plans with
+    # $useLemonade=false after the runtime attempt.
+    $dryRunUseLemonade = ($gpuInfo.Backend -eq "amd" -and -not $cloudMode)
     $_dryRunServicePlan = New-ODSWindowsServicePlan `
         -EnableRecommended $enableRecommended `
         -CloudMode $cloudMode `
-        -UseLemonade $useLemonade `
+        -UseLemonade $dryRunUseLemonade `
         -SwitchboardMode (Get-ODSWindowsEffectiveSwitchboardMode -InstallDir $installDir -RequestedMode $env:ODS_MODEL_SWITCHBOARD) `
         -EnableVoice $enableVoice `
         -EnableWorkflows $enableWorkflows `
@@ -2129,6 +2136,9 @@ if ($dryRun) {
         -EnableODSProxy $enableODSProxy `
         -EnableRemoteAccess $enableRemoteAccess
     Write-AI "[DRY RUN] Would health-check selected services"
+    if ($dryRunUseLemonade) {
+        Write-AI "[DRY RUN] If Lemonade fails, native llama-server fallback omits the observe/legacy LiteLLM gateway."
+    }
     if (Test-ODSWindowsServiceEnabled -ServiceId "perplexica" -Plan $_dryRunServicePlan) {
         Write-AI "[DRY RUN] Would auto-configure Perplexica for $($tierConfig.LlmModel)"
     }

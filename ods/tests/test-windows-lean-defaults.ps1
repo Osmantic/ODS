@@ -114,19 +114,47 @@ try {
     }
     $cloudCore = Join-Path $scratch 'cloud-core'
     Set-InstalledFixture -Path $cloudCore -Services @('litellm')
-    [IO.File]::WriteAllText((Join-Path $cloudCore '.env'), 'ODS_MODE=cloud')
+    [IO.File]::WriteAllText((Join-Path $cloudCore '.env'),
+        "ODS_MODE=cloud`nODS_WINDOWS_RECOMMENDED_SELECTED=false`n")
     $cloudSelection = Get-ODSWindowsInstalledFeatureSelection -InstallDir $cloudCore
     if ($cloudSelection.Kind -ne 'preserved' -or $cloudSelection.Features.Recommended) {
         throw 'A required cloud gateway was mistaken for the optional Recommended bundle'
     }
+    [IO.File]::WriteAllText((Join-Path $cloudCore '.env'), 'ODS_MODE=cloud')
+    if ((Get-ODSWindowsInstalledFeatureSelection -InstallDir $cloudCore).Kind -ne 'unknown') {
+        throw 'Ambiguous legacy cloud LiteLLM-only selection was accepted as Core'
+    }
+    [IO.File]::WriteAllText((Join-Path $cloudCore '.env'),
+        "ODS_MODE=cloud`nODS_WINDOWS_RECOMMENDED_SELECTED=false`n")
     if ((Invoke-Selection -Path $cloudCore).Recommended) {
         throw 'Rerun expanded the cloud gateway into Recommended services'
     }
     $switchboardCore = Join-Path $scratch 'switchboard-core'
     Set-InstalledFixture -Path $switchboardCore -Services @('litellm')
-    [IO.File]::WriteAllText((Join-Path $switchboardCore '.env'), "ODS_MODE=local`nODS_MODEL_SWITCHBOARD=enabled`n")
+    [IO.File]::WriteAllText((Join-Path $switchboardCore '.env'),
+        "ODS_MODE=local`nODS_MODEL_SWITCHBOARD=enabled`nODS_WINDOWS_RECOMMENDED_SELECTED=false`n")
     if ((Invoke-Selection -Path $switchboardCore).Recommended) {
         throw 'Rerun expanded the native Core switchboard gateway into Recommended services'
+    }
+    [IO.File]::WriteAllText((Join-Path $switchboardCore '.env'),
+        "ODS_MODE=local`nODS_MODEL_SWITCHBOARD=enabled`nODS_WINDOWS_RECOMMENDED_SELECTED=false`nODS_WINDOWS_RECOMMENDED_SELECTED=false`n")
+    if ((Get-ODSWindowsInstalledFeatureSelection -InstallDir $switchboardCore).Kind -ne 'unknown') {
+        throw 'Duplicate Recommended intent marker was accepted'
+    }
+    [IO.File]::WriteAllText((Join-Path $switchboardCore '.env'),
+        "ODS_MODE=local`nODS_MODEL_SWITCHBOARD=enabled`nODS_WINDOWS_RECOMMENDED_SELECTED=maybe`n")
+    if ((Get-ODSWindowsInstalledFeatureSelection -InstallDir $switchboardCore).Kind -ne 'unknown') {
+        throw 'Invalid Recommended intent marker was accepted'
+    }
+    [IO.File]::WriteAllText((Join-Path $switchboardCore '.env'),
+        "ODS_MODE=local`nODS_MODEL_SWITCHBOARD=enabled`nODS_WINDOWS_RECOMMENDED_SELECTED=true`n")
+    if ((Get-ODSWindowsInstalledFeatureSelection -InstallDir $switchboardCore).Kind -ne 'unknown') {
+        throw 'Incomplete native Recommended selection was accepted as Core'
+    }
+    [IO.File]::WriteAllText((Join-Path $switchboardCore '.env'),
+        "ODS_MODE=local`nODS_MODEL_SWITCHBOARD=enabled`n")
+    if ((Get-ODSWindowsInstalledFeatureSelection -InstallDir $switchboardCore).Kind -ne 'unknown') {
+        throw 'Ambiguous legacy LiteLLM-only selection was accepted as Core'
     }
     [IO.File]::WriteAllText((Join-Path $switchboardCore '.env'),
         "ODS_MODE=local`nODS_MODEL_SWITCHBOARD=observe`nOPEN_WEBUI_LLM_BASE_URL=http://litellm:4000`n")
@@ -145,6 +173,47 @@ try {
     Set-InstalledFixture -Path $partialRecommended -Services @('token-spy')
     if ((Get-ODSWindowsInstalledFeatureSelection -InstallDir $partialRecommended).Kind -ne 'unknown') {
         throw 'Token Spy without its gateway was accepted as a complete bundle'
+    }
+    $missingRecommended = Join-Path $scratch 'missing-recommended'
+    Set-InstalledFixture -Path $missingRecommended -Services @()
+    [IO.File]::WriteAllText((Join-Path $missingRecommended '.env'),
+        "ODS_MODE=local`nODS_WINDOWS_RECOMMENDED_SELECTED=true`n")
+    if ((Get-ODSWindowsInstalledFeatureSelection -InstallDir $missingRecommended).Kind -ne 'unknown') {
+        throw 'Recommended intent with both fragments missing was accepted as Core'
+    }
+
+    # The CLI/Library add-back path updates Compose flags after installation.
+    # Its Token Spy toggle must update the intent marker without touching
+    # unrelated .env values, or the next installer run would reject valid
+    # add-back and disable choices as partial writes.
+    $cliText = Get-Content -LiteralPath (Join-Path $root 'installers/windows/ods.ps1') -Raw
+    $cliStart = $cliText.IndexOf('function Update-ComposeFlags {')
+    $cliEnd = $cliText.IndexOf("`nfunction Get-ExtensionServiceDir", $cliStart)
+    if ($cliStart -lt 0 -or $cliEnd -lt 0) { throw 'Could not load the production CLI Compose flag updater' }
+    Invoke-Expression $cliText.Substring($cliStart, $cliEnd - $cliStart)
+    $libraryRecommended = Join-Path $scratch 'library-recommended'
+    Set-InstalledFixture -Path $libraryRecommended -Services @('litellm')
+    [IO.File]::WriteAllText((Join-Path $libraryRecommended '.env'),
+        "ODS_MODE=local`nODS_MODEL_SWITCHBOARD=enabled`nODS_WINDOWS_RECOMMENDED_SELECTED=false`nOWNER_DATA=preserve-this`n")
+    $InstallDir = $libraryRecommended
+    $tokenSpyDir = Join-Path $libraryRecommended 'extensions/services/token-spy'
+    New-Item -ItemType Directory -Path $tokenSpyDir -Force | Out-Null
+    [IO.File]::WriteAllText((Join-Path $tokenSpyDir 'compose.yaml'), 'services: {}')
+    Update-ComposeFlags -ServiceId 'token-spy' -Action 'enable'
+    $afterAdd = Get-ODSWindowsInstalledFeatureSelection -InstallDir $libraryRecommended
+    $addedEnv = Get-Content -LiteralPath (Join-Path $libraryRecommended '.env') -Raw
+    if ($afterAdd.Kind -ne 'preserved' -or -not $afterAdd.Features.Recommended -or
+        $addedEnv -notmatch '(?m)^ODS_WINDOWS_RECOMMENDED_SELECTED=true\s*$' -or
+        $addedEnv -notmatch '(?m)^OWNER_DATA=preserve-this\s*$') {
+        throw 'Library Token Spy add-back did not preserve the Recommended choice and owner data'
+    }
+    Update-ComposeFlags -ServiceId 'token-spy' -Action 'disable'
+    $afterDisable = Get-ODSWindowsInstalledFeatureSelection -InstallDir $libraryRecommended
+    $disabledEnv = Get-Content -LiteralPath (Join-Path $libraryRecommended '.env') -Raw
+    if ($afterDisable.Kind -ne 'preserved' -or $afterDisable.Features.Recommended -or
+        $disabledEnv -notmatch '(?m)^ODS_WINDOWS_RECOMMENDED_SELECTED=false\s*$' -or
+        $disabledEnv -notmatch '(?m)^OWNER_DATA=preserve-this\s*$') {
+        throw 'Library Token Spy disable did not preserve Core and owner data'
     }
 
     $unknown = Join-Path $scratch 'unknown'

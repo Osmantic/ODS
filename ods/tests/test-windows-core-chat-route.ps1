@@ -28,6 +28,7 @@ try {
         -ODSMode 'local' -SystemRamGB 8 -EnableRecommended $false | Out-Null
     $coreEnv = Read-Route $localCore
     Assert-Route ($coreEnv['ODS_MODEL_SWITCHBOARD'] -eq 'enabled') 'Fresh Core lost model switching'
+    Assert-Route ($coreEnv['ODS_WINDOWS_RECOMMENDED_SELECTED'] -eq 'false') 'Fresh Core lost its Recommended intent record'
     Assert-Route ($coreEnv['OPEN_WEBUI_LLM_BASE_URL'] -eq 'http://litellm:4000') 'Fresh Core chat lost the switchboard gateway'
     Assert-Route ($coreEnv['OPEN_WEBUI_LLM_API_KEY'] -eq $coreEnv['LITELLM_KEY']) 'Fresh Core chat has the wrong gateway key'
     Assert-Route ($coreEnv['LLM_API_URL'] -eq 'http://llama-server:8080') 'Fresh Core lost local inference'
@@ -61,6 +62,22 @@ try {
         -UseLemonade $true -SwitchboardMode (Get-ODSWindowsEffectiveSwitchboardMode -InstallDir $amdObserve)
     Assert-Route ($amdEnv['HERMES_LLM_BASE_URL'] -eq 'http://litellm:4000/v1' -and
         $amdPlan['litellm'].Enabled) 'AMD observe agent route lost its gateway'
+    $fallbackText = Convert-ODSWindowsNativeFallbackHermesEnv `
+        -EnvText (Get-Content -LiteralPath (Join-Path $amdObserve '.env') -Raw)
+    [IO.File]::WriteAllText((Join-Path $amdObserve '.env'), $fallbackText)
+    $fallbackEnv = Read-Route $amdObserve
+    $fallbackPlan = New-ODSWindowsServicePlan -EnableRecommended $false -EnableHermes $true `
+        -UseLemonade $false -SwitchboardMode 'observe'
+    Assert-Route ($fallbackEnv['HERMES_LLM_BASE_URL'] -eq 'http://llama-server:8080/v1' -and
+        $fallbackEnv['HERMES_LLM_API_KEY'] -eq 'sk-ods-hermes-local' -and
+        -not $fallbackPlan['litellm'].Enabled) `
+        'AMD Lemonade fallback left Hermes pointing at an omitted gateway'
+    $customRoute = "ODS_MODEL_SWITCHBOARD=observe`nHERMES_LLM_BASE_URL=https://owner.example/v1`nHERMES_LLM_API_KEY=custom`n"
+    Assert-Route ((Convert-ODSWindowsNativeFallbackHermesEnv -EnvText $customRoute) -eq $customRoute) `
+        'Native fallback changed an owner-selected external Hermes route'
+    $enabledRoute = "ODS_MODEL_SWITCHBOARD=enabled`nHERMES_LLM_BASE_URL=http://litellm:4000/v1`nHERMES_LLM_API_KEY=custom`n"
+    Assert-Route ((Convert-ODSWindowsNativeFallbackHermesEnv -EnvText $enabledRoute) -eq $enabledRoute) `
+        'Native fallback changed an enabled switchboard route'
 
     $cloudCore = Join-Path $scratch 'cloud-core'
     New-Item -ItemType Directory -Path $cloudCore -Force | Out-Null
@@ -72,6 +89,12 @@ try {
     $cloudPlan = New-ODSWindowsServicePlan -EnableRecommended $false -CloudMode $true `
         -SwitchboardMode (Get-ODSWindowsEffectiveSwitchboardMode -InstallDir $cloudCore)
     Assert-Route ($cloudPlan['litellm'].Enabled -and -not $cloudPlan['token-spy'].Enabled) 'Cloud Core plan disagrees with its chat route'
+    $recommendedRoot = Join-Path $scratch 'recommended-intent'
+    New-Item -ItemType Directory -Path $recommendedRoot -Force | Out-Null
+    New-ODSEnv -InstallDir $recommendedRoot -TierConfig $tier -Tier '1' -GpuBackend 'none' `
+        -ODSMode 'local' -SystemRamGB 8 -EnableRecommended $true | Out-Null
+    Assert-Route ((Read-Route $recommendedRoot)['ODS_WINDOWS_RECOMMENDED_SELECTED'] -eq 'true') `
+        'Recommended intent was not recorded before Compose selection'
 
     Write-Output 'PASS: Windows Core chat route and service selection agree across modes'
 } finally {

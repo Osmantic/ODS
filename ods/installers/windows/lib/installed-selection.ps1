@@ -52,8 +52,35 @@ function Get-ODSWindowsInstalledFeatureSelection {
             }
         }
     }
+    # An intended Recommended choice is recorded before Compose flags are
+    # written. Its marker lets a rerun detect a partial write that omitted
+    # Token Spy, even when cloud mode or the switchboard also needs LiteLLM.
+    $savedEnv = @(Get-Content -LiteralPath $envPath)
+    $recommendedLines = @($savedEnv | Where-Object {
+        $_ -match '^ODS_WINDOWS_RECOMMENDED_SELECTED='
+    })
+    if ($recommendedLines.Count -gt 1 -or
+        ($recommendedLines.Count -eq 1 -and
+         [string]$recommendedLines[0] -notmatch '^ODS_WINDOWS_RECOMMENDED_SELECTED=(true|false)\s*$')) {
+        return [PSCustomObject]@{
+            Kind = "unknown"; Features = $null
+            Reason = "installed Recommended selection marker is ambiguous"
+        }
+    }
+    $recommendedIntent = if ($recommendedLines.Count -eq 1 -and
+        [string]$recommendedLines[0] -match '^ODS_WINDOWS_RECOMMENDED_SELECTED=(true|false)\s*$') {
+        $Matches[1] -eq 'true'
+    } else { $null }
+    if ($null -ne $recommendedIntent -and
+        $recommendedIntent -ne $selected.Contains("token-spy")) {
+        return [PSCustomObject]@{
+            Kind = "unknown"; Features = $null
+            Reason = "installed Recommended selection has a partial Compose record"
+        }
+    }
     # LiteLLM can be required by cloud Core or the native switchboard without
-    # enabling the optional Recommended bundle.
+    # enabling Recommended. Old LiteLLM-only records without an intent marker
+    # are ambiguous; ask for an explicit selection instead of guessing.
     if ($selected.Contains("token-spy") -and -not $selected.Contains("litellm")) {
         return [PSCustomObject]@{
             Kind = "unknown"; Features = $null
@@ -61,14 +88,14 @@ function Get-ODSWindowsInstalledFeatureSelection {
         }
     }
     if ($selected.Contains("litellm") -and -not $selected.Contains("token-spy")) {
-        $savedEnv = @(Get-Content -LiteralPath $envPath)
         $installedMode = $savedEnv | Where-Object { $_ -match '^ODS_MODE=' } | Select-Object -First 1
         $switchboardMode = $savedEnv | Where-Object { $_ -match '^ODS_MODEL_SWITCHBOARD=' } | Select-Object -First 1
-        if ([string]$installedMode -notmatch '^ODS_MODE=cloud\s*$' -and
-            [string]$switchboardMode -notmatch '^ODS_MODEL_SWITCHBOARD=enabled\s*$') {
+        if ($null -eq $recommendedIntent -or
+            ([string]$installedMode -notmatch '^ODS_MODE=cloud\s*$' -and
+             [string]$switchboardMode -notmatch '^ODS_MODEL_SWITCHBOARD=enabled\s*$')) {
             return [PSCustomObject]@{
                 Kind = "unknown"; Features = $null
-                Reason = "installed LiteLLM selection has no matching cloud or switchboard mode"
+                Reason = "installed LiteLLM-only selection lacks a complete Core intent record"
             }
         }
     }

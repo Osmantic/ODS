@@ -343,6 +343,7 @@ $envResult = New-ODSEnv `
     -LemonadeServerImage $_lemonadeServerImage `
     -SystemRamGB    $systemRamGB `
     -WhisperCudaEnabled $whisperCudaSupported `
+    -EnableRecommended $enableRecommended `
     -EnableLangfuse $enableLangfuse `
     -SwitchboardMode $env:ODS_MODEL_SWITCHBOARD `
     -EnableLan      $lanFlag `

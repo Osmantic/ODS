@@ -620,6 +620,24 @@ function ConvertTo-ODSDotenvValue {
     return "'" + $text + "'"
 }
 
+function Convert-ODSWindowsNativeFallbackHermesEnv {
+    param([Parameter(Mandatory = $true)][string]$EnvText)
+
+    # Phase 06 may have generated a Lemonade LiteLLM route before the native
+    # server is launched. If Lemonade fails, an observe/legacy service plan
+    # omits LiteLLM. Retarget only the managed default; keep custom URLs and
+    # enabled-switchboard routes intact.
+    if ($EnvText -match '(?m)^ODS_MODEL_SWITCHBOARD=enabled\r?$' -or
+        $EnvText -notmatch '(?m)^HERMES_LLM_BASE_URL=http://litellm:4000/v1\r?$') {
+        return $EnvText
+    }
+    $EnvText = $EnvText -replace '(?m)^HERMES_LLM_BASE_URL=http://litellm:4000/v1\r?$',
+        'HERMES_LLM_BASE_URL=http://llama-server:8080/v1'
+    $EnvText = $EnvText -replace '(?m)^HERMES_LLM_API_KEY=[^\r\n]*\r?$',
+        'HERMES_LLM_API_KEY=sk-ods-hermes-local'
+    return $EnvText
+}
+
 function New-ODSEnv {
     <#
     .SYNOPSIS
@@ -654,6 +672,7 @@ function New-ODSEnv {
         [int]$SystemRamGB = 0,
         [bool]$WhisperCudaEnabled = $true,
         [string]$SwitchboardMode = "",
+        [bool]$EnableRecommended = $false,
         # Mirror the install-time ENABLE_LANGFUSE toggle from phase 03 into
         # .env's LANGFUSE_ENABLED default. Re-install preserves whatever the
         # user already had in .env (via Get-EnvOrNew), so manual
@@ -1092,6 +1111,7 @@ REMOTE_PROVIDER_DATA_GID=0
 #=== LLM Backend Mode ===
 ODS_MODE=$effectiveODSMode
 ODS_MODEL_SWITCHBOARD=$switchboardMode
+ODS_WINDOWS_RECOMMENDED_SELECTED=$(if ($EnableRecommended) { "true" } else { "false" })
 LLM_BACKEND=$llmBackend
 LLM_API_URL=$llmApiUrl
 OPEN_WEBUI_LLM_BASE_URL=$openWebuiLlmBaseUrl
