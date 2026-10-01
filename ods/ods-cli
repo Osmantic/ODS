@@ -1886,7 +1886,9 @@ cmd_stop() {
     read -ra flags <<< "$flags_str"
 
     if [[ -z "$service" ]]; then
-        _compose_run_with_summary "Stopping all services" "${flags[@]}" down
+        # Keep stopped containers and their Compose install-path labels. A
+        # later uninstall needs those labels to prove which volumes it owns.
+        _compose_run_with_summary "Stopping all services" "${flags[@]}" stop
     else
         service=$(resolve_service "$service")
         _compose_run_with_summary "Stopping $service" "${flags[@]}" stop "$service"
