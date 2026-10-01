@@ -70,7 +70,8 @@ if $INTERACTIVE && ! $DRY_RUN; then
         # which only *set* the flag to true when the answer wasn't N and
         # never set it to false; combined with all defaults being true from
         # install-core.sh, pressing 'n' was a no-op.
-        _phase03_prompt_bool ENABLE_VOICE "Enable voice (Whisper STT + Kokoro TTS)?"
+        [[ "${WHISPER_EXPLICIT:-false}" == true ]] || _phase03_prompt_bool ENABLE_WHISPER "Enable Whisper speech recognition?"
+        [[ "${TTS_EXPLICIT:-false}" == true ]] || _phase03_prompt_bool ENABLE_TTS "Enable Kokoro speech playback?"
         _phase03_prompt_bool ENABLE_WORKFLOWS "Enable n8n workflow automation?"
         _phase03_prompt_bool ENABLE_RAG "Enable Qdrant vector database (for RAG)?"
         # Explicit agent flags also take precedence over the Custom menu.
@@ -105,6 +106,13 @@ else
         ai "Using feature selections from flags and installer defaults."
     fi
 fi
+
+# This aggregate means the full two-service voice feature is selected. Later
+# installer phases use the concrete flags for images, ports, health, and STT.
+ENABLE_WHISPER="${ENABLE_WHISPER:-${ENABLE_VOICE:-false}}"
+ENABLE_TTS="${ENABLE_TTS:-${ENABLE_VOICE:-false}}"
+ENABLE_VOICE=false
+[[ "${ENABLE_WHISPER:-${ENABLE_VOICE:-false}}" == true && "${ENABLE_TTS:-${ENABLE_VOICE:-false}}" == true ]] && ENABLE_VOICE=true
 
 # Tier safety net: disable ComfyUI on Tier 0/1 in non-interactive mode.
 # Interactive mode has its own tier checks in the menu — this catches --non-interactive.
@@ -164,7 +172,7 @@ export PIXEL_AGENT_MODE ENABLE_PIXEL_RUNTIME ENABLE_PIXEL
 
 # Fresh ordinary installs use Portal as chat when Pixel is qualified. Delay
 # this choice until Pixel resolution so unsupported hosts keep WebUI, and
-# retain WebUI for features that still rely on its voice, RAG, or LAN proxy.
+# retain WebUI for RAG or the LAN proxy when selected.
 # Existing installs and explicit CLI selections remain authoritative.
 if ods_should_default_portal_chat \
       "${ODS_EXISTING_INSTALL:-false}" "${WEBUI_EXPLICIT:-false}" \
@@ -521,8 +529,8 @@ if ! $DRY_RUN; then
     _sync_extension_compose "${ENABLE_SEARXNG:-}"     searxng    "SearXNG"       "web search backend not required" || return 1
     _sync_extension_compose "${ENABLE_RECOMMENDED:-}" token-spy  "Token Spy"     "recommended services not enabled" || return 1
     unset _pixel_support_services
-    _sync_extension_compose "${ENABLE_VOICE:-}"      whisper    "Whisper (STT)" "voice not enabled" || return 1
-    _sync_extension_compose "${ENABLE_VOICE:-}"      tts        "Kokoro (TTS)"  "voice not enabled" || return 1
+    _sync_extension_compose "${ENABLE_WHISPER:-${ENABLE_VOICE:-false}}" whisper "Whisper (STT)" "Whisper not enabled" || return 1
+    _sync_extension_compose "${ENABLE_TTS:-${ENABLE_VOICE:-false}}"     tts     "Kokoro (TTS)"  "Kokoro not enabled" || return 1
     _sync_extension_compose "${ENABLE_WORKFLOWS:-}"  n8n        "n8n"           "workflows not enabled" || return 1
     # RAG = qdrant (vector store) + embeddings (TEI). Both default from
     # ENABLE_RAG, then host-specific guards above may disable the concrete

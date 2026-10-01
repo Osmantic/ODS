@@ -20,12 +20,15 @@ ods_installed_service_default() {
 }
 
 # Portal can replace WebUI as chat only for an ordinary fresh install with a
-# qualified Pixel runtime and no selected WebUI-dependent feature. Keep this
+# qualified Pixel runtime and no selected WebUI-dependent feature. Voice uses
+# ODS Talk through Portal and does not require Open WebUI. Keep this
 # decision after phase 03's host check, but before image pulls and persistence.
 ods_should_default_portal_chat() {
     local existing="$1" explicit="$2" gateway="$3" pixel_runtime="$4"
-    local voice="$5" rag="$6" proxy="$7"
+    # Keep argument 5 in the existing call contract; selected voice services
+    # use ODS Talk through Portal and no longer block Portal as the chat UI.
+    local rag="$6" proxy="$7"
     [[ "$existing" != true && "$explicit" != true && "$gateway" != true &&
-       "$pixel_runtime" == true && "$voice" != true && "$rag" != true &&
+       "$pixel_runtime" == true && "$rag" != true &&
        "$proxy" != true ]]
 }

@@ -676,7 +676,8 @@ show_install_menu() {
         1)
             signal "Acknowledged."
             log "Selected: Full Stack"
-            ENABLE_VOICE=true
+            [[ "${WHISPER_EXPLICIT:-false}" == true ]] || ENABLE_WHISPER=true
+            [[ "${TTS_EXPLICIT:-false}" == true ]] || ENABLE_TTS=true
             ENABLE_WORKFLOWS=true
             ENABLE_RAG=true
             ENABLE_RECOMMENDED=true
@@ -707,7 +708,8 @@ show_install_menu() {
         2)
             signal "Acknowledged."
             log "Selected: Core Only"
-            ENABLE_VOICE=false
+            [[ "${WHISPER_EXPLICIT:-false}" == true ]] || ENABLE_WHISPER=false
+            [[ "${TTS_EXPLICIT:-false}" == true ]] || ENABLE_TTS=false
             ENABLE_WORKFLOWS=false
             ENABLE_RAG=false
             ENABLE_RECOMMENDED=false
