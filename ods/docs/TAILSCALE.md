@@ -117,7 +117,7 @@ curl http://ods.tail-abcde.ts.net/api/status
 
 # To bypass the proxy and hit a specific service directly, use its port
 # (only works when BIND_ADDRESS=0.0.0.0):
-curl http://ods.tail-abcde.ts.net:3001  # dashboard direct
+curl http://ods.tail-abcde.ts.net:3011  # dashboard direct; sign-in required
 ```
 
 ## After the auth key has done its job
