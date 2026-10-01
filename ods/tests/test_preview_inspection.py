@@ -534,7 +534,7 @@ class SnapshotAssetGuardTests(unittest.TestCase):
         origin = 'http://127.0.0.1:4321'
         prefix = '/site-' + 'a' * 24 + '/'
         blocked = []
-        capsule.guard_requests(context, context, origin, prefix, blocked, files)
+        capsule.guard_requests(context, context, origin, prefix, blocked, files=files)
         for path, method, nav, expected in [
             ('/_next/app/%5Bslug%5D/page.js', 'GET', False, 'continued'),
             ('/_next/app/%5Bslug%5D/page.js', 'POST', False, 'aborted'),

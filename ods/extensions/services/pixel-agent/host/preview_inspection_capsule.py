@@ -740,7 +740,7 @@ def snapshot_file(path, prefix, files):
     return name if name in files else None
 
 
-def guard_requests(context, page, origin, prefix, blocked, files=()):
+def guard_requests(context, page, origin, prefix, blocked, *, files=()):
     """Allow only GETs of the wrapper and this site's files from the loopback
     server, and at most the wrapper and site-entry navigations. Everything
     else, popups, downloads and websockets are recorded (bounded) and stopped."""
@@ -813,7 +813,7 @@ def capture_palette(browser, origin, prefix, files=()):
     try:
         page = context.new_page()
         page.set_default_timeout(PALETTE_TIMEOUT_MS)
-        guard_requests(context, page, origin, prefix, blocked, files)
+        guard_requests(context, page, origin, prefix, blocked, files=files)
         page.goto(
             origin + "/__ods_inspection__.html",
             wait_until="load",
@@ -925,7 +925,7 @@ def run_browser(bundle, playwright_factory=None):
             )
             page = context.new_page()
             page.set_default_timeout(2000)
-            guard_requests(context, page, origin, prefix, blocked, files)
+            guard_requests(context, page, origin, prefix, blocked, files=files)
             # Registered before navigation so startup exceptions are included.
             # Page-scoped (not context-wide): blocked popups are never recorded.
             page.on("pageerror", page_errors.record)
