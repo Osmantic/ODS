@@ -70,7 +70,6 @@ export function useDownloadProgress(pollIntervalMs = 1000) {
           status: data.status,
           percent: indeterminate ? null : percent,
           indeterminate,
-          message: indeterminate ? data.error : null,
           bytesDownloaded: downloaded,
           bytesTotal: total,
           speedMbps: data.speedBytesPerSec ? data.speedBytesPerSec / (1024 * 1024) : 0,

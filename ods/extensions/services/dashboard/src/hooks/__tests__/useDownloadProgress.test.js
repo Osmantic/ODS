@@ -74,8 +74,9 @@ describe('useDownloadProgress', () => {
       percent: null,
       bytesDownloaded: 0,
       bytesTotal: 0,
-      message: 'Hugging Face Hub fallback active',
     })
+    expect(result.current.progress).not.toHaveProperty('message')
+    expect(result.current.progress).not.toHaveProperty('error')
   })
 
   test('clamps progress percentage at 100 when downloaded bytes exceed total', async () => {

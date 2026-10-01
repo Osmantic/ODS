@@ -1437,7 +1437,7 @@ function DownloadProgressBar({ progress, helpers, onRetry }) {
               {progress.status === 'verifying' ? 'Verifying' : 'Downloading'} {progress.model}
             </p>
             <p className="text-sm text-theme-text-muted">
-              {progress.indeterminate ? (progress.message || 'Transfer active; progress unavailable') : (
+              {progress.indeterminate ? 'Download active; progress is unavailable' : (
                 <>
                   {formatBytes(progress.bytesDownloaded)} / {formatBytes(progress.bytesTotal)}
                   {progress.speedMbps > 0 && ` - ${progress.speedMbps.toFixed(1)} MB/s`}
