@@ -128,9 +128,14 @@ if ($noHermesFlag) {
 # Preserve separate Library selections before Phase 06 copies source fragments
 # over the installed tree. CLI and an explicit menu choice keep their paired
 # meaning; Enter on an existing install retains its prior Hermes/proxy choice.
+$computedHermesProxy = $null
+if (Get-Variable -Name enableHermesProxy -Scope Local -ErrorAction SilentlyContinue) {
+    $computedHermesProxy = [Nullable[bool]]$enableHermesProxy
+}
 $hermesSelection = Resolve-ODSWindowsHermesSelection `
     -InstallDir $installDir `
     -ComputedHermes $enableHermes `
+    -ComputedProxy $computedHermesProxy `
     -CliEnable $hermesFlag `
     -CliDisable $noHermesFlag `
     -All $allFlag `

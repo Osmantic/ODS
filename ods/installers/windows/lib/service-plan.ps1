@@ -77,6 +77,7 @@ function Resolve-ODSWindowsHermesSelection {
     param(
         [Parameter(Mandatory = $true)][string]$InstallDir,
         [bool]$ComputedHermes,
+        [Nullable[bool]]$ComputedProxy = $null,
         [bool]$CliEnable,
         [bool]$CliDisable,
         [bool]$All,
@@ -84,7 +85,7 @@ function Resolve-ODSWindowsHermesSelection {
     )
 
     $hermes = $ComputedHermes
-    $proxy = $ComputedHermes
+    $proxy = if ($null -ne $ComputedProxy) { [bool]$ComputedProxy } else { $ComputedHermes }
     if ($CliDisable) {
         $hermes = $false
         $proxy = $false

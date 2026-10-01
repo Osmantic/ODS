@@ -25,6 +25,9 @@ try {
     Assert-Selection (-not $emptyRetained.Hermes -and -not $emptyRetained.Proxy) "Existing install without Hermes markers enabled Hermes"
     $explicitFull = Resolve-ODSWindowsHermesSelection -InstallDir $installDir -ComputedHermes $true -All $true
     Assert-Selection ($explicitFull.Hermes -and $explicitFull.Proxy) "Explicit All did not enable Hermes and proxy"
+    $customKeep = Resolve-ODSWindowsHermesSelection -InstallDir $installDir -ComputedHermes $true `
+        -ComputedProxy $false -MenuExplicit $true
+    Assert-Selection ($customKeep.Hermes -and -not $customKeep.Proxy) "Custom menu default lost Hermes-only Library choice"
     $legacyFlags = Join-Path $installDir ".compose-flags"
     Set-Content -LiteralPath $legacyFlags -Value "--env-file .env -f docker-compose.base.yml -f extensions/services/hermes/compose.yaml -f extensions/services/hermes-proxy/compose.yaml"
     $legacy = Resolve-ODSWindowsHermesSelection -InstallDir $installDir -ComputedHermes $false
