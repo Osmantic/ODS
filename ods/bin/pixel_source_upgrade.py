@@ -803,6 +803,47 @@ class SourceUpgrade:
             finally:
                 os.close(fd)
 
+    def _renew_unheld_scratch_after_remount(self):
+        """Allocate a fresh empty buffer after a device-number change, never adopt it.
+
+        Only an unchanged, unheld staged plan may do this. In-flight upgrades
+        retain their original fail-closed identity checks. Preserve the old
+        buffer and its exact receipt as an audit blob.
+        """
+        value = self.journal()
+        if (value is None or value['phase'] != 'staged' or value['hold'] is not None
+                or os.path.lexists(self.state.parent / 'transition.json')):
+            return
+        item, raw = read_file(self.state, 'source-scratch.json', self.state_uid)
+        if item is None:
+            return
+        record = json.loads(raw)
+        parent = self.install.stat()
+        if (type(record) is not dict or set(record) != {'version','name','parent','identity'}
+                or record['version'] != 1 or type(record['name']) is not str
+                or not re.fullmatch(r'\.ods-source-staging-[a-f0-9]{32}', record['name'])
+                or any(type(record[k]) is not list or len(record[k]) != 2
+                       or any(type(n) is not int or n < 0 for n in record[k])
+                       for k in ('parent', 'identity'))):
+            return
+        if (record['parent'][0] == parent.st_dev or record['parent'][1] != parent.st_ino
+                or record['identity'][0] != record['parent'][0]):
+            return
+        fd = os.open(self.install / record['name'], os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            info = os.fstat(fd)
+            if (info.st_dev != parent.st_dev or info.st_ino != record['identity'][1]
+                    or info.st_uid != self.state_uid or stat.S_IMODE(info.st_mode) != 0o700
+                    or os.listdir(fd) or inventory(self.install, self.uid) != value['before']):
+                raise UpgradeError('source-scratch-remount-refused')
+            # No bytes from the old buffer are reused and no old path is removed.
+            self._write(sha(raw), raw)
+            self._write('source-scratch.json', encoded(dict(version=1,
+                name='.ods-source-staging-' + os.urandom(16).hex(),
+                parent=[parent.st_dev, parent.st_ino], identity=None)))
+        finally:
+            os.close(fd)
+
     def _prepare_scratch(self):
         with self._scratch(prepare=True) as (scratch, validate):
             self._clear_scratch(scratch, validate)
@@ -986,6 +1027,7 @@ class SourceUpgrade:
                 raise UpgradeError("source-candidate-changed")
             else:
                 if existing['phase'] == 'staged' and existing['hold'] is None:
+                    self._renew_unheld_scratch_after_remount()
                     self._prepare_scratch()
                 return existing
         before = inventory(self.install, self.uid)
@@ -1010,6 +1052,7 @@ class SourceUpgrade:
             self._write(name, preserved_mirror)
         self._save(value)
         self.journal()  # validate the complete serialized contract before use
+        self._renew_unheld_scratch_after_remount()
         self._prepare_scratch()
         return value
 
@@ -1254,7 +1297,14 @@ def _manager(install, owner, *, create=False):
     if account.pw_uid == 0 or not install.is_absolute() or install.resolve() != install:
         raise UpgradeError("source-owner-invalid")
     state = Path("/var/lib/ods-pixel-access")
-    directory(state, 0, private=True)
+    try:
+        directory(state, 0, private=True)
+    except FileNotFoundError:
+        raise UpgradeError("source-controller-state-missing") from None
+    try:
+        Path("/etc/ods/pixel-access.json").lstat()
+    except FileNotFoundError:
+        raise UpgradeError("source-controller-config-missing") from None
     settings, _ = _protected_json("/etc/ods/pixel-access.json")
     if settings.get("install_dir") != str(install) or settings.get("owner") != owner:
         raise UpgradeError("source-controller-install-mismatch")
@@ -1410,10 +1460,27 @@ def main(argv):
         client("finish", transaction, value["outcome"])
 
 
+def _failure_message(error):
+    # Only fixed error codes select diagnostics; exception text can contain
+    # private paths/configuration. Absence is not proof of a never-ready install:
+    # an ordinary reinstall can also leave an installing marker.
+    reason = {
+        "source-controller-state-missing": "The protected Pixel access coordinator state is missing.",
+        "source-controller-config-missing": "The protected Pixel access coordinator configuration is missing.",
+        "source-ready-baseline-required": "The existing Pixel installation has no ready source-upgrade baseline.",
+    }.get(str(error)) if isinstance(error, UpgradeError) else None
+    if reason:
+        return (reason + " Automatic source upgrade is refused. Restore the complete matching prior "
+                "installation state, or use an owner-authorized clean install. "
+                "Do not recreate protected state or discard any existing admission hold.")
+    return ("Pixel source upgrade is incomplete. Preserve any existing admission hold and protected "
+            "source snapshots; recover the verified installation state before retrying.")
+
+
 if __name__ == "__main__":
     try:
         main(sys.argv[1:])
-    except (UpgradeError, OSError, ValueError, RuntimeError):
+    except (UpgradeError, OSError, ValueError, RuntimeError) as error:
         # Paths, config values and snapshot payloads are never diagnostic text.
-        print("Pixel source upgrade is incomplete; keep admission held and resume the same reviewed installer.", file=sys.stderr)
+        print(_failure_message(error), file=sys.stderr)
         raise SystemExit(1) from None

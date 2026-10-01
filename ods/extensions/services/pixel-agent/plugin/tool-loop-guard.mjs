@@ -5733,6 +5733,19 @@ function hasWorkspaceHtmlTarget(text) {
   return /\b[A-Za-z0-9_-][A-Za-z0-9._/-]{0,511}\.html?\b/i.test(paths);
 }
 
+function independentEnglishPreviewAfterConstraint(clause) {
+  const negative = /\b(?:do\s+not|don['’]t|never|must\s+not|should\s+not|avoid|skip|without)\s+([^.!?;\n]*)/i.exec(clause);
+  if (!negative) return '';
+  // "Do not create a site and publish" coordinates prohibited actions.
+  // "Do not use dependencies and publish" instead limits implementation.
+  // Negative alternatives (or/nor) never become positive delivery here.
+  if (/^(?:(?:try|attempt)\s+to\s+)?(?:create|build|edit|write|run|execute|make|develop|design|generate|implement|change|modify|show|preview|view|open|serve|publish|republish|display)\b/i.test(negative[1])
+    || /\b(?:or|nor)\s+(?:publish|republish|preview|display|serve|show|open|view)\b/i.test(negative[1])) return '';
+  if (!/^without\b/i.test(negative[0]) && !/^(?:use|require|depend|include)\b/i.test(negative[1])) return '';
+  const delivery = /\band\s+(?:publish|republish|preview|display|serve|show|open|view)\b/i.exec(negative[1]);
+  return delivery ? negative[1].slice(delivery.index) : '';
+}
+
 function localPreviewPolicyText(text) {
   // The snapshot is served inside ODS. An external-publication restriction
   // does not forbid that snapshot; retain every other prohibition verbatim.
@@ -5786,13 +5799,19 @@ function ownerForbidsWorkspacePreview(messages, prompt) {
   // files, but publish the existing site" remains a publication request.
   const coordinatedProhibition = text
     .split(/[!?;\n]+|\.(?=\s|$)|\b(?:but|however|instead|then)\b/i)
-    .some((clause) => /\b(?:do\s+not|don['’]t|never|must\s+not|should\s+not|avoid|skip|without)\b[^.!?;\n]{0,160}\b(?:and|or)\s+(?:show(?:ing)?|preview(?:ing)?|view(?:ing)?|open(?:ing)?|serv(?:e|ing)|publish(?:ing)?|republish(?:ing)?|display(?:ing)?)\b/i.test(clause));
+    .some((clause) => !independentEnglishPreviewAfterConstraint(clause) && /\b(?:do\s+not|don['’]t|never|must\s+not|should\s+not|avoid|skip|without)\b[^.!?;\n]{0,160}\b(?:and|or|nor)\s+(?:show(?:ing)?|preview(?:ing)?|view(?:ing)?|open(?:ing)?|serv(?:e|ing)|publish(?:ing)?|republish(?:ing)?|display(?:ing)?)\b/i.test(clause));
   if (coordinatedProhibition || ownerDeclinesPreviewDelivery(text)) return true;
   return portuguesePreviewForbidden(text) || /\b(?:only|just)\s+(?:the\s+)?(?:code|source(?:\s+code)?)\b/i.test(text) || /\b(?:do\s+not|don['’]t|never|must\s+not|should\s+not|avoid|skip|without)\s+(?:(?:try|attempt)\s+to\s+)?(?:(?:create|build|edit|write|run|execute)\s*(?:,\s*|and\s+|or\s+))*(?:show(?:ing)?|preview(?:ing)?|view(?:ing)?|open(?:ing)?|serv(?:e|ing)|publish(?:ing)?|republish(?:ing)?|display(?:ing)?)\b/i.test(text);
 }
 
 function portuguesePreviewForbidden(text) {
   const prose = localPreviewPolicyText(text).normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  // Negative alternatives include their own objects ("não crie site nem
+  // publique preview"). An additive "e publique" after a separate constraint
+  // such as "sem dependências" remains a positive delivery request.
+  const coordinated = prose.split(/[!?;\n]+|\.(?=\s|$)|\b(?:mas|porem|contudo|depois)\b/i)
+    .some(clause => /\b(?:nao|nunca|evite)\b[^.!?;\n]{0,160}\b(?:ou|nem)\s+(?:(?:re)?publ(?:ic|iq)\w*|mostr\w*|abrir|abra|pre-?visualiz\w*)\b/i.test(clause));
+  if (coordinated) return true;
   return /\b(?:nao|nunca|sem|evite)\s+(?:(?:criar|crie|fazer|faca|editar|edite)\s+(?:e|ou)\s+)?(?:(?:re)?publ(?:ic|iq)\w*|mostr\w*|abrir|abra|preview|pre-?visualiz\w*)\b/i.test(prose)
     || /\b(?:so|somente|apenas)\s+(?:o\s+)?codigo\b/i.test(prose);
 }
@@ -5832,10 +5851,12 @@ function hasPortugueseWorkspacePreviewDirective(text) {
     .normalize('NFD').replace(/[\u0300-\u036f]/g, '');
   if (!portuguesePreviewForbidden(portuguese)) {
     const directives = portuguese.matchAll(
-      /(?:^|[.!?;\n]|\be\s+)\s*(?:(?:depois|entao)\s+)?(?:por\s+favor[, ]+)?(?:(?:so|somente|apenas)\s+)?(?:publique|republique)\s+([^!?;\n]{1,512})/gi
+      /(?:^|[.!?;\n]|\be\s+)\s*(?:(?:depois|entao)\s+)?(?:por\s+favor[, ]+)?(?:(?:so|somente|apenas)\s+)?(?:publique|republique)\s+((?:(?!\.(?=\s|$))[^!?;\n]){1,512})/gi
     );
     for (const match of directives) {
-      const target = match[1];
+      // The publication's object ends at its sentence or a "sem" constraint.
+      // A later prohibition on creating a site is not this command's target.
+      const target = match[1].split(/\.(?=\s|$)|\bsem\b/i)[0];
       if (hasWorkspaceHtmlTarget(target) || /\b(?:site|website|pagina|preview)\b/i.test(target)) return true;
       // A conditional publication is still a requested delivery, not proof
       // that tests passed. Existing execution/readback gates remain in force.
@@ -6047,7 +6068,7 @@ export function userMessageRequestsWorkspacePreview(messages, prompt = undefined
   // independent actions after "but", "instead", "then", or a sentence boundary.
   const actionText = text.replace(
     /\b(?:do\s+not|don['’]t|never|must\s+not|should\s+not|not\s+a\s+request\s+to|avoid|skip|without|no)\b(?:(?!\b(?:but|instead|then)\b)[^.!?;\n])*/gi,
-    " "
+    clause => independentEnglishPreviewAfterConstraint(clause) || " "
   ).replace(
     /\b(?:preserve|keep)\s+(?:(?:all|my|the|these|those|other|existing|current|saved|working)\s+)*(?:apps?|applications?)\b(?:\s+unchanged)?/gi,
     " "
@@ -10537,7 +10558,12 @@ export function createToolLoopGuard({
     const previewEvent = toolName === WORKSPACE_PREVIEW_TOOL
       ? event
       : wrappedPreviewEvent;
-    if (previewEvent) {
+    // A rejected publication contrary to the owner's instructions creates no
+    // preview obligation. Keep other verification failures intact, and still
+    // reject an unexpected success receipt instead of accepting publication.
+    const declinedPreviewError = state.ownerIntentObserved &&
+      state.workspacePreviewForbidden && previewEvent?.result?.isError === true;
+    if (previewEvent && !declinedPreviewError) {
       state.workspacePreviewAttempted = true;
       const requestedDirectory = normalizeWorkspaceFilePath(
         previewEvent?.params?.relativeDirectory

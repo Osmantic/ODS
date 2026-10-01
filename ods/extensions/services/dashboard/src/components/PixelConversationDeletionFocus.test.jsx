@@ -1,4 +1,4 @@
-import {cleanup, fireEvent, screen, within} from '@testing-library/react'
+import {cleanup, fireEvent, screen, within, waitFor} from '@testing-library/react'
 import {render} from '../test/test-utils'
 import Pixel from '../pages/Pixel'
 import PixelConversationNavigation from './PixelConversationNavigation'
@@ -9,7 +9,11 @@ beforeEach(() => {
   localStorage.clear()
   HTMLDialogElement.prototype.showModal = function () {this.setAttribute('open','')}
   HTMLDialogElement.prototype.close = function () {this.removeAttribute('open')}
-  vi.stubGlobal('fetch',vi.fn(async () => ({ok:true,json:async () => ({available:true})})))
+  vi.stubGlobal('fetch',vi.fn(async (url, options) => ({ok:true,json:async () => (
+    url === '/api/pixel/images/remove' && options?.method === 'DELETE'
+      ? {schemaVersion:1,deleted:true}
+      : {available:true}
+  )})))
 })
 afterEach(() => {cleanup();delete HTMLDialogElement.prototype.showModal;delete HTMLDialogElement.prototype.close;vi.unstubAllGlobals()})
 
@@ -24,7 +28,8 @@ test.each(['last','current','inactive'])('successful deletion of the %s chat mov
   fireEvent.click(opener)
   const dialog = screen.getByRole('dialog',{name:'Delete this chat?'})
   fireEvent.click(within(dialog).getByRole('button',{name:'Delete chat',exact:true}))
-  expect(readConversations().map(item => item.chatId)).toEqual(selection === 'last' ? [] : ['keep'])
+  await waitFor(() => expect(readConversations().map(item => item.chatId)).toEqual(selection === 'last' ? [] : ['keep']))
+  expect(fetch).toHaveBeenCalledWith('/api/pixel/images/remove',expect.objectContaining({method:'DELETE'}))
   expect(opener.isConnected).toBe(false)
   expect(screen.queryByRole('dialog')).toBeNull()
   expect(screen.getByRole('button',{name:'New task',exact:true})).toHaveFocus()

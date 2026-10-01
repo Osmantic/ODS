@@ -4,8 +4,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
+import {createHash} from 'node:crypto';
 import {createIngressServer,computeSessionUser} from '../host/pixel_ingress.mjs';
 import {createChatHistoryLedger} from '../host/chat_history_ledger.mjs';
+import {createChatImageStore} from '../host/chat_image_store.mjs';
 const u=content=>({role:'user',content}),a=content=>({role:'assistant',content});
 const rawUser='history-canary', user=computeSessionUser({user:rawUser});
 const runId='chatcmpl_11111111-2222-4333-8444-555555555555';
@@ -21,19 +23,55 @@ async function fixture(t, verification={status:'none'}) {
     if(req.url==='/pixel-ods/context') return res.end(JSON.stringify(native));
     if(req.url==='/pixel-ods/abort') return res.end(JSON.stringify({aborted:true}));
     if(req.url==='/pixel-ods/history') return res.end(JSON.stringify({schemaVersion:1,hydrated:true}));
+    if(req.url==='/pixel-ods/images-bind') return res.end(JSON.stringify({schemaVersion:1,bound:true}));
     if(req.url==='/pixel-ods/compact') {native.status='ready';native.compaction={...native.compaction,status:'completed',requestId:body.request_id,count:native.compaction.count+1};return res.end(JSON.stringify(native));}
     if(req.url==='/pixel-ods/verification') return res.end(JSON.stringify(verification));
     if(req.url==='/pixel-ods/subagent-delivery') return res.end(JSON.stringify({schemaVersion:1,kind:'ods-subagent-delivery',runId:body.runId,status:'not-delegated'}));
     if(req.url==='/v1/chat/completions') {if(chatFailure){res.statusCode=500;return res.end('{}')}return res.end(JSON.stringify({id:runId,...(spoof?{pixel_artifacts:spoof}:{}),choices:[{finish_reason:'stop',message:{role:'assistant',content:answer}}]}));}
     res.statusCode=404;res.end('{}');
   });
-  const port=await listen(gateway),ingress=createIngressServer({token:'test-token',gatewayPort:port,historyLedger:ledger});
+  const imageStore=createChatImageStore(path.join(dir,'images'));
+  const port=await listen(gateway),ingress=createIngressServer({token:'test-token',gatewayPort:port,historyLedger:ledger,imageStore});
   const ingressPort=await listen(ingress);
   t.after(async()=>{await Promise.all([new Promise(r=>ingress.close(r)),new Promise(r=>gateway.close(r))]);fs.rmSync(dir,{recursive:true,force:true})});
-  async function post(route,body) {const response=await fetch(`http://127.0.0.1:${ingressPort}${route}`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});return {status:response.status,value:await response.json()}}
+  async function post(route,body) {const response=await fetch(`http://127.0.0.1:${ingressPort}${route}`,{method:'POST',headers:{'content-type':'application/json',...(body.messages?.at(-1)?.images?{'x-ods-image-turn':'1'}:{})},body:JSON.stringify(body)});return {status:response.status,value:await response.json()}}
   const chat=(request_id,messages)=>post('/v1/chat/completions',{user:rawUser,request_id,history_snapshot:{schemaVersion:1,messages},messages:[{role:'system',content:'Trusted identity'},...messages.slice(-3,-1),u(messages.at(-1).content+'\nDelivery contract')],stream:false});
-  return {ledger,calls,native,post,chat,setFailure:(value=true)=>{chatFailure=value},setAnswer:value=>{answer=value},setVerification:value=>{verification=value},setSpoof:value=>{spoof=value},async stream(request_id,messages){const response=await fetch(`http://127.0.0.1:${ingressPort}/v1/chat/completions`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({user:rawUser,request_id,history_snapshot:{schemaVersion:1,messages},messages,stream:true})});return {status:response.status,text:await response.text()}}};
+  return {ledger,imageStore,calls,native,post,chat,setFailure:(value=true)=>{chatFailure=value},setAnswer:value=>{answer=value},setVerification:value=>{verification=value},setSpoof:value=>{spoof=value},async stream(request_id,messages){const response=await fetch(`http://127.0.0.1:${ingressPort}/v1/chat/completions`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({user:rawUser,request_id,history_snapshot:{schemaVersion:1,messages},messages,stream:true})});return {status:response.status,text:await response.text()}}};
 }
+
+test('image turn reaches gateway as bytes, caches privately and replays without another call',async t=>{
+  const f=await fixture(t);
+  f.native.model={...f.native.model,imageInput:'supported',routeFingerprint:'f'.repeat(64)};
+  const data=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a6ioAAAAASUVORK5CYII=','base64');
+  const ref={id:'img-'+'a'.repeat(32),sha256:createHash('sha256').update(data).digest('hex')};
+  const archived={role:'user',content:'',images:[ref]};
+  const body={user:rawUser,request_id:'image-turn',stream:false,
+    image_route:{routeFingerprint:'f'.repeat(64),unknownConsent:false},
+    history_snapshot:{schemaVersion:2,messages:[archived]},
+    messages:[{...archived,content:[{type:'image_url',image_url:{url:'data:image/png;base64,'+data.toString('base64')}}]}]};
+  assert.equal((await f.post('/v1/chat/completions',body)).status,200);
+  const binding=f.calls.findIndex(call=>call.path==='/pixel-ods/images-bind');
+  assert.ok(binding>=0 && binding<f.calls.findIndex(call=>call.path==='/v1/chat/completions'));
+  assert.deepEqual(f.calls[binding].body,{user});
+  const delivered=f.calls.find(call=>call.path==='/v1/chat/completions').body.messages.at(-1);
+  assert.deepEqual(delivered.content[0],body.messages[0].content[0]);
+  assert.equal('images' in delivered,false);
+  assert.deepEqual(f.imageStore.read(user,ref,[ref]).data,data);
+  assert.deepEqual(f.ledger.read(user).messages,[archived]);
+  const read=await f.post('/v1/chat/image',{user,...ref});
+  assert.equal(read.status,200);
+  assert.deepEqual(Buffer.from(read.value.image.data,'base64'),data);
+  const policy=await f.post('/v1/chat/image-policy',{user});
+  assert.deepEqual(policy.value,{schemaVersion:1,policy:{imageInput:'supported',routeFingerprint:'f'.repeat(64),unknownConsent:false}});
+  assert.equal((await f.post('/v1/chat/image',{user:'ods-'+'b'.repeat(64),...ref})).status,409);
+  assert.equal((await f.post('/v1/chat/image',{user,...ref,path:'/tmp/private'})).status,400);
+  assert.equal((await f.post('/v1/chat/completions',body)).status,200);
+  assert.equal(f.calls.filter(call=>call.path==='/v1/chat/completions').length,1);
+  f.native.model.imageInput='unsupported';
+  assert.equal((await f.post('/v1/chat/image',{user,...ref})).status,409);
+  assert.equal((await f.post('/v1/chat/completions',{...body,request_id:'rejected'})).status,409);
+  assert.equal(f.calls.filter(call=>call.path==='/v1/chat/completions').length,1);
+});
 test('ingress delivers a delta with the edge contract, persists full snapshot and replays without rerunning',async t=>{
   const f=await fixture(t);
   assert.equal((await f.chat('first',[u('first')])).status,200);

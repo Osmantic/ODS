@@ -20,7 +20,7 @@ export default function PixelConversationRecovery({error,chatId,messages,draft})
     <div className="portal-recovery-copy">
       <strong>Keep a copy of your changes</strong>
       <p role="alert">{error}</p>
-      <details><summary>What is included?</summary><p>Current messages and your draft. Active work continues. Large copies may exceed import limits; the JSON file still preserves your text.</p></details>
+      <details><summary>What is included?</summary><p>Current message text and your text draft. Image bytes are not included; keep the original image files. Active work continues. Large copies may exceed import limits; the JSON file still preserves your text.</p></details>
       {downloadError && <p role="alert" className="portal-recovery-error">{downloadError}</p>}
     </div>
     <button type="button" onClick={download}><Download size={14} aria-hidden="true"/>Download recovery copy</button>

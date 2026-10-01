@@ -1,5 +1,6 @@
 """Closed public projection for context status; no session text crosses here."""
 import re
+from image_message import matches_archived_message
 
 
 def _text(value, maximum, pattern=r"^[^\x00-\x1f\x7f]+$"):
@@ -36,6 +37,14 @@ def project_context(value):
             if not _text(model["routeFingerprint"], 64, r"^[a-f0-9]{64}$"):
                 raise ValueError("invalid model route")
             result["model"]["routeFingerprint"] = model["routeFingerprint"]
+        if "imageInput" in model:
+            if model["imageInput"] not in ("supported", "unsupported", "unknown"):
+                raise ValueError("invalid image capability")
+            result["model"]["imageInput"] = model["imageInput"]
+        if "imageRouteFingerprint" in model:
+            if not _text(model["imageRouteFingerprint"], 64, r"^[a-f0-9]{64}$"):
+                raise ValueError("invalid image route")
+            result["model"]["imageRouteFingerprint"] = model["imageRouteFingerprint"]
     compact = value.get("compaction")
     if (not isinstance(compact, dict) or compact.get("status") not in {"idle", "running", "completed", "skipped", "failed", "unknown"}
             or not _number(compact.get("count"))):
@@ -69,15 +78,32 @@ def valid_history_snapshot(data):
         return True  # Existing OpenAI-compatible clients remain supported.
     if (not _text(data.get("request_id"), 128, r"^[A-Za-z0-9_-]+$")
             or not isinstance(snapshot, dict) or set(snapshot) != {"schemaVersion", "messages"}
-            or type(snapshot["schemaVersion"]) is not int or snapshot["schemaVersion"] != 1
+            or type(snapshot["schemaVersion"]) is not int or snapshot["schemaVersion"] not in (1, 2)
             or not isinstance(snapshot["messages"], list) or not 1 <= len(snapshot["messages"]) <= 2000):
         return False
     size = 0
+    identities = {}
     for message in snapshot["messages"]:
-        if (not isinstance(message, dict) or set(message) != {"role", "content"}
+        if (not isinstance(message, dict) or set(message) not in ({"role", "content"}, {"role", "content", "images"})
                 or message["role"] not in {"user", "assistant"} or not isinstance(message["content"], str)):
             return False
+        if "images" in message:
+            images = message["images"]
+            if (snapshot["schemaVersion"] != 2 or message["role"] != "user"
+                    or not isinstance(images, list) or not 1 <= len(images) <= 4):
+                return False
+            seen = set()
+            for image in images:
+                if (not isinstance(image, dict) or set(image) != {"id", "sha256"}
+                        or not _text(image["id"], 36, r"^img-[a-f0-9]{32}$")
+                        or not _text(image["sha256"], 64, r"^[a-f0-9]{64}$")
+                        or image["id"] in seen
+                        or image["id"] in identities and identities[image["id"]] != image["sha256"]):
+                    return False
+                seen.add(image["id"])
+                identities[image["id"]] = image["sha256"]
+                size += len(image["id"]) + len(image["sha256"])
         size += len(message["content"].encode("utf-8"))
         if size > 4 * 1024 * 1024:
             return False
-    return bool(data.get("messages")) and snapshot["messages"][-1] == data["messages"][-1] and snapshot["messages"][-1]["role"] == "user"
+    return bool(data.get("messages")) and matches_archived_message(data["messages"][-1], snapshot["messages"][-1]) and snapshot["messages"][-1]["role"] == "user"

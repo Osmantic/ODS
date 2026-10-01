@@ -397,3 +397,17 @@ test('production bootstrap and production command adapter compose through regist
   assert.equal(f.calls.filter(x => x === 'lease.release').length, 1);
   assert.equal(f.runs.size, 0); assert.doesNotThrow(owner.assertTransition); await owner.shutdown();
 });
+
+test('activity diagnostics distinguish pending selection without owner or provider data', async () => {
+  const pending=deferred(), f=fixture({select:()=>pending.promise}), owner=f.register(), ctx=context();
+  const work=owner.select({},ctx);
+  const snapshot=owner.status();
+  assert.deepEqual(snapshot.activity,{selected:1,selecting:1,commands:0,commandCleanupUnknown:false});
+  assert.equal(snapshot.active,2);assert.equal(snapshot.phase,'busy');
+  assert.equal(JSON.stringify(snapshot).includes(ctx.sessionKey),false);
+  assert.equal(JSON.stringify(snapshot).includes(ctx.runId),false);
+  pending.resolve({providerOverride:'ods-policy',modelOverride:'synthetic-route'});await work;
+  await owner.finish({},ctx);
+  assert.deepEqual(owner.status().activity,{selected:0,selecting:0,commands:0,commandCleanupUnknown:false});
+  await owner.shutdown();
+});

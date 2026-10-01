@@ -21,6 +21,30 @@ def config():
 
 NEW = dict(model="Qwen-27B", contextLength=16384, maxTokens=4096, reasoning=False)
 ID = "a" * 64
+
+@pytest.mark.parametrize("capability", ["supported", "unsupported", "unknown"])
+def test_image_policy_roundtrip_and_route_switch(capability):
+    proposed = {**NEW, "routeFingerprint": "b" * 64, "imageInput": capability}
+    original = config()
+    changed = plan(original, proposed)
+    assert projection(changed)["contract"] == proposed
+    row = changed["models"]["providers"]["ods-gateway"]["models"][0]
+    assert row["input"] == (["text"] if capability == "unsupported" else ["text", "image"])
+    assert "input" not in original["models"]["providers"]["ods-gateway"]["models"][0]
+    legacy_switch = plan(changed, NEW)
+    assert projection(legacy_switch)["contract"] == NEW
+    assert legacy_switch["models"]["providers"]["ods-gateway"]["models"][0]["input"] == ["text"]
+
+
+def test_image_policy_rejects_silent_native_drop_and_invalid_metadata():
+    changed = plan(config(), {**NEW, "imageInput": "supported"})
+    changed["models"]["providers"]["ods-gateway"]["models"][0]["input"] = ["text"]
+    with pytest.raises(ModelError, match="image-input-mismatch"):
+        projection(changed)
+    for invalid in (True, False, None, "", "vision", {"supported": True}):
+        with pytest.raises(ModelError):
+            plan(config(), {**NEW, "imageInput": invalid})
+
 def sha(path): return hashlib.sha256(path.read_bytes()).hexdigest()
 
 @pytest.fixture

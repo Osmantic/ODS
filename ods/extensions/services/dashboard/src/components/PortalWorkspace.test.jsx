@@ -20,6 +20,20 @@ beforeEach(()=>{
  vi.stubGlobal('fetch',vi.fn(async url=>({ok:true,headers:new Map(),arrayBuffer:async()=>new TextEncoder().encode(url.includes('__ods_manifest__')?JSON.stringify(manifest):url.includes('__ods_changes__')?JSON.stringify(comparison):sources[Object.keys(sources).find(path=>url.endsWith('/'+path))]).buffer})))
 })
 afterEach(()=>vi.unstubAllGlobals())
+it.each([404,503])('handles an unavailable publication (%s) instead of leaving a broken iframe and comparison, and can retry',async(status)=>{
+ const available=fetch
+ vi.stubGlobal('fetch',vi.fn(async()=>({ok:false,status})))
+ const {container}=render(<PortalWorkspace {...props}/>)
+ expect(await screen.findByText('Preview unavailable')).toBeVisible()
+ expect(container.querySelector('iframe')).toBeNull()
+ fireEvent.click(screen.getByRole('tab',{name:'Review'}))
+ if(status===404)expect(screen.queryByText('File comparison unavailable.')).toBeNull()
+ expect(screen.queryByText(/does not mean your workspace source files were deleted/)).toBeNull()
+ vi.stubGlobal('fetch',available)
+ fireEvent.click(screen.getByRole('button',{name:'Check publication again'}))
+ await waitFor(()=>expect(screen.queryByText('Preview unavailable')).toBeNull())
+ expect(await screen.findByLabelText('Diff for index.html')).toBeVisible()
+})
 it('opens Subagents without a publication and keeps it independent of preview files',async()=>{
  const {rerender}=render(<PortalWorkspace {...props} preview={null} access={null} agents={agents} request={{kind:'agents'}}/>)
  expect(screen.getByRole('tabpanel',{name:'Subagents'})).toBeVisible()
@@ -254,6 +268,16 @@ it('rejects comparison paths outside the current manifest and exposes no publica
  expect(screen.getByRole('button',{name:'Reload preview'})).toBeVisible()
 })
 
+it('does not navigate an iframe before the publication manifest is verified',async()=>{
+ let reject
+ vi.stubGlobal('fetch',vi.fn(()=>new Promise((resolve,fail)=>{reject=fail})))
+ const {container}=render(<PortalWorkspace {...props}/>)
+ expect(container.querySelector('iframe')).toBeNull()
+ await act(async()=>reject(new Error('offline')))
+ expect(screen.getByText('Preview unavailable')).toBeVisible()
+ expect(container.querySelector('iframe')).toBeNull()
+})
+
 it('keeps connection status and retry visible while the manifest gate blocks the iframe',async()=>{
  const healthyFetch=fetch,onRefresh=vi.fn();let rejectManifest
  vi.stubGlobal('fetch',vi.fn(()=>new Promise((_resolve,reject)=>{rejectManifest=reject})))
@@ -262,7 +286,7 @@ it('keeps connection status and retry visible while the manifest gate blocks the
  expect(screen.getByRole('status')).toHaveTextContent('Connecting preview')
  await act(async()=>{rejectManifest(new Error('offline'))})
  expect(screen.queryByTitle('Interactive Portal preview')).toBeNull()
- expect(screen.getByRole('status')).toHaveTextContent('Preview connection unavailable')
+ expect(screen.getByText('Preview connection unavailable.')).toBeVisible()
  fireEvent.click(screen.getByRole('button',{name:'Retry',exact:true}))
  expect(onRefresh).toHaveBeenCalledOnce()
  vi.stubGlobal('fetch',healthyFetch)

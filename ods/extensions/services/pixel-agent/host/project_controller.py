@@ -10,7 +10,7 @@ import json
 import subprocess
 import threading
 
-from project_artifacts import collect_artifacts, import_artifacts
+from project_artifacts import collect_artifacts, import_artifacts, MissingProjectOutput, RejectedProjectArtifacts
 from project_jobs import ProjectJobs
 from project_runtime import recover_job, run_stage, seed_project, start_keeper, observe_stage
 from project_runtime_protocol import select_project_runtime
@@ -300,7 +300,15 @@ class ProjectController:
             if cancel.is_set():
                 self.jobs.controller_failure(job, "cancelled before artifact import", state="cancelled")
                 return
-            artifacts = collect_artifacts(image, job, request["outputDirectory"])
+            try:
+                artifacts = collect_artifacts(image, job, request["outputDirectory"])
+            except (MissingProjectOutput, RejectedProjectArtifacts) as error:
+                # All execution stages completed. A confirmed missing path is
+                # an input error before import, not an uncertain execution.
+                # The same applies to a completely collected, rejected archive.
+                # Transport, identity and timeout failures remain unconfirmed.
+                self.jobs.controller_failure(job, error, state="failed")
+                return
             # Collection may take time: recheck owner authority and cancellation
             # immediately before writing anything back to the workspace.
             self._require(request["project"], "import", request)

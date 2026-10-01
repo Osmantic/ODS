@@ -38,7 +38,11 @@ export function requestsNewPlaygroundProject(intent) {
     // creation clauses (including later clauses) eligible for project routing.
     .replace(/\b(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?build\b/gi, ' ')
     .replace(/\b(?:(?:run|execute|rode|rodar)|cargo|gradle|gradlew|vite|webpack|rollup|astro|nuxt)\s+build\b/gi, ' ')
-    .replace(/\b(?:the|o)\s+build\b/gi, ' ');
+    .replace(/\b(?:the|o)\s+build\b/gi, ' ')
+    // Archive contents describe existing operands, not a request to create each
+    // listed program. Stop at an independent creation verb so a mixed request
+    // still reserves the genuinely new project.
+    .replace(/\b(?:zip|archive|arquivo\s+compactado)\s+(?:with|containing|com|contendo)\b(?:(?!\b(?:create|build|develop|design|implement|generate|write|crie|criar|cria|construa|construir|desenvolva|desenvolver|implemente|gere|escreva|make|faca|fazer|faz)\b)[^;.!?\n])*/gi, 'archive ');
   // Continuation quotes the old creation request, not a new reservation.
   // Core tool policy still controls every inspection and mutation.
   if (/^\s*(?:\/goal\s+)?Continue the goal from the preceding conversation using the existing work\./i.test(text)) return false;

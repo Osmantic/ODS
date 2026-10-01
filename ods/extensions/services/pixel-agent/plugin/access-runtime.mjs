@@ -377,6 +377,7 @@ export function createAccessRuntime({directory = path.join(os.homedir(), '.openc
   function status() {
     return {available: !failed && qualified, phase: failed ? 'unavailable' : state.phase,
       revision: failed ? null : state.revision, active: runs.size + tools.size + detached.size,
+      activity: {runs: runs.size, tools: tools.size, detached: detached.size},
       pid: process.pid, runtime_version: runtimeVersion, proof, probe_failure: probeFailure,
       initialization_failure: initializationFailure,
       qualification_failure: qualified ? null : runtimeVersion !== '2026.6.33' ? 'runtime-version' : 'conversation-hooks'};

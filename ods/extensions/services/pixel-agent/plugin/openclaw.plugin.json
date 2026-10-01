@@ -11,6 +11,7 @@
       "pixel_ods_goal",
       "pixel_ods_activity",
       "pixel_ods_history",
+      "pixel_ods_image_read",
       "pixel_ods_extension_proposal",
       "pixel_ods_source_proposal",
       "pixel_ods_python_library_proposal",
@@ -55,6 +56,9 @@
       "replaySafe": true
     },
     "pixel_ods_history": {
+      "replaySafe": true
+    },
+    "pixel_ods_image_read": {
       "replaySafe": true
     },
     "pixel_ods_ask_user": {
@@ -113,6 +117,10 @@
       "modelContextWindow": {
         "type": "integer",
         "minimum": 4096
+      },
+      "modelImageInput": {
+        "type": "string",
+        "enum": ["supported", "unsupported", "unknown"]
       },
       "modelRouteFingerprint": {
         "type": "string",
