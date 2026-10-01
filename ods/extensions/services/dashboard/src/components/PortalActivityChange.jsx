@@ -30,7 +30,7 @@ export function ActivityChangeCounts({change}) {
   if(!change || change.truncated || change.kind==='write' || lines(change.before).length>200 || lines(change.after).length>200)return null
   return <PixelChangeCounts additions={rows.filter(row=>row.type==='add').length} deletions={rows.filter(row=>row.type==='remove').length}/>
 }
-export default function PortalActivityChange({change}) {
+export default function PortalActivityChange({change,compact=false}) {
   const rows=useMemo(()=>activityChangeRows(change),[change]),[copied,setCopied]=useState('')
   const truncated=change.truncated || lines(change.before).length>200 || lines(change.after).length>200
   const patch=rows.map(row=>`${row.type==='add'?'+':row.type==='remove'?'-':' '}${row.text}`).join('\n')
@@ -41,7 +41,8 @@ export default function PortalActivityChange({change}) {
       }}>{copied==='Copied'?<Check size={13}/>:<Copy size={13}/>}</button>
     </header>
     <pre tabIndex={0} aria-label={`Changes to ${change.file}`}>{rows.length?<PixelCodeLines source={rows.map(row=>row.text).join('\n')} language={fileLanguage(change.file)} renderLine={(content,i)=><span key={i} className={`portal-agent-diff-line is-${rows[i].type}`}><span aria-hidden="true">{rows[i].type==='add'?'+':rows[i].type==='remove'?'−':' '}</span><span>{content || ' '}{i<rows.length-1?'\n':''}</span></span>}/>:<code>Empty content</code>}</pre>
-    <small>{truncated?'Excerpt · larger changes are truncated':change.kind==='write'?'Written content · previous content was not supplied':'Changes reported by this tool'}</small>
+    {!compact && <small>{truncated?'Excerpt · larger changes are truncated':change.kind==='write'?'Written content · previous content was not supplied':'Changes reported by this tool'}</small>}
+    {compact && truncated && <span className="sr-only">Partial diff</span>}
     {copied==='Copy failed' && <span role="status">Copy failed. Select the displayed text to copy it.</span>}
   </div>
 }

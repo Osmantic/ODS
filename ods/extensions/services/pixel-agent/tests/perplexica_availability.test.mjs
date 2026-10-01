@@ -112,7 +112,10 @@ test("research calls update availability: refused connection, missing defaults, 
 function registration(registrationMode, state) {
   const source = fs.readFileSync(new URL("../plugin/index.js", import.meta.url), "utf8");
   const start = source.indexOf("    // Offered only while the owner's Perplexica");
-  const end = source.indexOf("    registerTool(api, createAgentSkillTool()", start);
+  // Stop at this registration's exact terminator, not the next unrelated tool.
+  const terminator = '{ names: ["pixel_ods_research"] });';
+  const registrationEnd = source.indexOf(terminator, start);
+  const end = registrationEnd < 0 ? -1 : registrationEnd + terminator.length;
   assert.ok(start >= 0 && end > start, "expected the research registration block");
   const registered = [], probes = [];
   const availability = { state: () => state, refreshIfStale: () => { probes.push("refresh"); } };
