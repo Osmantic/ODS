@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Account for Compose-owned volumes before removing an ODS installation.
 
-Compose down -v only knows the currently selected files. Disabled extensions
-can leave volumes behind, so a purge must prove their ownership or stop.
+Compose only knows the currently selected files. This helper accounts for
+selected and disabled-extension volumes before removing any of them.
 """
 
 from __future__ import annotations
