@@ -51,18 +51,23 @@ if [[ -z "$_external_url" && "${ODS_MODE:-local}" == "local" && "${LEMONADE_EXTE
     _detected_provider=""
     _detected_url=""
     _detected_model=""
-    for _candidate in "ollama|http://127.0.0.1:11434" "lmstudio|http://127.0.0.1:1234"; do
-        _candidate_provider="${_candidate%%|*}"
-        _candidate_url="${_candidate#*|}"
-        _candidate_model="$(external_llm_resolve_model \
-            "$_candidate_provider" "$_candidate_url" "" "${GGUF_FILE:-${LLM_MODEL:-}}" || true)"
-        if [[ -n "$_candidate_model" ]]; then
-            _detected_provider="$_candidate_provider"
-            _detected_url="$_candidate_url"
-            _detected_model="$_candidate_model"
-            break
-        fi
-    done
+    _ods_detect_external_candidate() {
+        local _candidate _candidate_provider _candidate_url _candidate_model
+        for _candidate in "ollama|http://127.0.0.1:11434" "lmstudio|http://127.0.0.1:1234"; do
+            _candidate_provider="${_candidate%%|*}"
+            _candidate_url="${_candidate#*|}"
+            _candidate_model="$(external_llm_resolve_model \
+                "$_candidate_provider" "$_candidate_url" "" "${GGUF_FILE:-${LLM_MODEL:-}}" || true)"
+            if [[ -n "$_candidate_model" ]]; then
+                _detected_provider="$_candidate_provider"
+                _detected_url="$_candidate_url"
+                _detected_model="$_candidate_model"
+                break
+            fi
+        done
+    }
+    _ods_detect_external_candidate
+    unset -f _ods_detect_external_candidate
 
     if [[ -n "$_detected_model" ]]; then
         if [[ "${INTERACTIVE:-false}" == "true" && "${DRY_RUN:-false}" != "true" ]]; then
