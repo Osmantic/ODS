@@ -187,6 +187,16 @@ export function createProgressFinalization() {
       if (phase === 'idle') phase = eligible ? 'pending' : 'unavailable';
       return phase;
     },
+    // The budget re-opened for a refusal's remedy (correctFuse in
+    // run-progress-budget.mjs) before any tool boundary delivered the
+    // instruction: the model never saw the stop. Only 'pending' returns to
+    // 'idle'; once instructed, answering, or stopped, nothing is undone.
+    disarm() {
+      if (phase !== 'pending') return false;
+      phase = 'idle';
+      unawareCalls = 0;
+      return true;
+    },
     // A tool call after exhaustion, in observed model round `round` (0 when the
     // runtime reports no model calls). 'instruct' means its refusal carries the
     // instruction; 'stop' means the canned stop text (and the abort) applies.
