@@ -1,4 +1,4 @@
-/* global FileReader, DOMException */
+/* global FileReader */
 import {sha256} from './pixelArtifacts'
 
 export const MAX_IMAGE_BYTES = 8 * 1024 * 1024

@@ -1,4 +1,4 @@
-/* global atob, DOMException */
+/* global atob */
 import {act,fireEvent,screen,waitFor} from '@testing-library/react'
 import {render} from '../test/test-utils'
 import Pixel from './Pixel'
