@@ -160,3 +160,15 @@ def test_retained_image_turn_prepares_bytes_inside_reserved_preflight(turn, tmp_
         assert key not in pixel._result_preflights
     finally:
         store.close()
+
+
+def test_text_followup_preserves_images_only_in_history(turn):
+    value, _ = turn
+    original = value['messages'][0]
+    following = {'role': 'user', 'content': 'Continue with text'}
+    value['messages'] = [{'role': 'user', 'content': original['content']}, following]
+    value['history_snapshot']['messages'] = [original, following]
+    body = pixel.ChatStreamRequest.model_validate(value)
+    assert body.messages[0].images is None
+    assert body.history_snapshot.messages[0].images[0].id == original['images'][0]['id']
+    assert body.messages[-1].model_dump() == following

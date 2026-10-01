@@ -558,7 +558,9 @@ function boundedHistory(messages, nextUserContent) {
       ? original.slice(0, MAX_INPUT_LEN - omission.length) + omission : original
     const size = encoder.encode(content).byteLength
     if (bytes + size > budget) break
-    selected.unshift({ role, content, ...messageImageRefs(messages[index]) })
+    // Earlier image identities belong only in the persistent snapshot. The
+    // legacy message list accepts image refs on the current user turn only.
+    selected.unshift({ role, content })
     bytes += size
   }
   while (selected[0]?.role === 'assistant') selected.shift()
@@ -1075,6 +1077,10 @@ export default function Pixel({ systemStatus = null }) {
           }
           return { kind: 'adaptive', detail }
         }
+        if (response.status === 422) {
+          requestIdRef.current = null
+          throw new Error('chat-request-rejected')
+        }
         if (!response.ok) throw new Error('chat unavailable')
 
         reader = response.body?.getReader()
@@ -1273,10 +1279,11 @@ export default function Pixel({ systemStatus = null }) {
         const conversationChanged = error?.message === 'chat-recovery-conversation-changed'
         const storageFailed = conversationChanged || error?.message === 'chat-recovery-storage-unavailable'
         const historyTooLarge=error?.message==='history-request-too-large'
-        setInterrupted(!storageFailed && !historyTooLarge)
-        if (storageFailed || historyTooLarge || turnImages.length) setInput(trimmed)
+        const requestRejected=error?.message==='chat-request-rejected'
+        setInterrupted(!storageFailed && !historyTooLarge && !requestRejected)
+        if (storageFailed || historyTooLarge || requestRejected || turnImages.length) setInput(trimmed)
         setMessages(previous => replaceLastAssistant(previous, {
-          content: historyTooLarge?'The encoded conversation exceeds the 8 MB request limit. No task was started. Export this conversation before starting a new chat.':conversationChanged ? 'This conversation changed in another tab. No task was started. Download a recovery copy, then reload to read the saved version.' : storageFailed ? 'Could not save the request for recovery. No task was started. Check browser storage and try again.' : latestAssistantText || 'Request failed',
+          content: requestRejected?'Portal rejected the request format (HTTP 422). No task was started. Your draft is preserved. Refresh Portal before retrying.':historyTooLarge?'The encoded conversation exceeds the 8 MB request limit. No task was started. Export this conversation before starting a new chat.':conversationChanged ? 'This conversation changed in another tab. No task was started. Download a recovery copy, then reload to read the saved version.' : storageFailed ? 'Could not save the request for recovery. No task was started. Check browser storage and try again.' : latestAssistantText || 'Request failed',
           status: 'error',
         }))
       }
