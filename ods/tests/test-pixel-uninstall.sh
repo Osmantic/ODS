@@ -6,8 +6,6 @@ set -euo pipefail
 umask 077
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-# shellcheck source=../lib/pixel-uninstall.sh
-source "$ROOT_DIR/lib/pixel-uninstall.sh"
 
 PASS=0
 FAIL=0
@@ -43,8 +41,38 @@ OPS_PASSWD_STATE="$TEST_ROOT/ops-passwd"
 OPS_GROUP_STATE="$TEST_ROOT/ops-group"
 mkdir -p "$MOCK_BIN" "$SYSTEMD_DIR" "$ETC_DIR" "$LIBEXEC_DIR" "$HOME_DIR"
 
-# This host-service fixture must never inspect or remove the live inspection service.
+# Relocate the inspection service's fixed paths as well as the configurable
+# service paths below. Mocking cleanup alone still lets the presence checks
+# discover a live host unit and call systemctl before the cleanup callback.
+python3 - "$ROOT_DIR/lib/pixel-uninstall.sh" "$TEST_ROOT/pixel-uninstall.sh" "$TEST_ROOT" <<'PY'
+import pathlib, sys
+source = pathlib.Path(sys.argv[1]).read_text()
+for original, relative in {
+    '/etc/systemd/system/pixel-preview-inspection.service': 'systemd/pixel-preview-inspection.service',
+    '/etc/ods-pixel-inspection.json': 'etc/ods-pixel-inspection.json',
+    '/usr/local/libexec/ods-pixel-inspection': 'libexec/ods-pixel-inspection',
+}.items():
+    assert original in source, original
+    source = source.replace(original, str(pathlib.Path(sys.argv[3]) / relative))
+pathlib.Path(sys.argv[2]).write_text(source)
+PY
+# shellcheck source=/dev/null
+source "$TEST_ROOT/pixel-uninstall.sh"
+# Inspection's privileged helper has its own isolated contract tests below.
 _ods_pixel_inspection_cleanup() { return 0; }
+
+# The no-sudo fixture temporarily removes its sudo mock. Keep a refusing
+# fallback ahead of the host PATH so timeout/exec can never find real sudo.
+HOST_GUARD_BIN="$TEST_ROOT/host-guards"
+HOST_GUARD_LOG="$TEST_ROOT/host-guard.log"
+mkdir -p "$HOST_GUARD_BIN"
+cat >"$HOST_GUARD_BIN/sudo" <<'SH'
+#!/usr/bin/env bash
+printf 'refused host sudo: %s\n' "$*" >>"$HOST_GUARD_LOG"
+exit 127
+SH
+chmod +x "$HOST_GUARD_BIN/sudo"
+export HOST_GUARD_LOG
 
 cat >"$MOCK_BIN/sudo" <<'SH'
 #!/usr/bin/env bash
@@ -124,7 +152,7 @@ rm -f -- "$OPS_GROUP_STATE"
 SH
 chmod +x "$MOCK_BIN/sudo" "$MOCK_BIN/systemctl" "$MOCK_BIN/docker" \
     "$MOCK_BIN/getent" "$MOCK_BIN/userdel" "$MOCK_BIN/groupdel"
-export PATH="$MOCK_BIN:$PATH" SYSTEMCTL_LOG DOCKER_LOG DOCKER_STATE
+export PATH="$MOCK_BIN:$HOST_GUARD_BIN:$PATH" SYSTEMCTL_LOG DOCKER_LOG DOCKER_STATE
 export OPS_IDENTITY_LOG OPS_PASSWD_STATE OPS_GROUP_STATE
 export ODS_PIXEL_UNINSTALL_SYSTEMD_DIR="$SYSTEMD_DIR"
 export ODS_PIXEL_UNINSTALL_ETC_DIR="$ETC_DIR"
@@ -2345,5 +2373,10 @@ else
 fi
 
 
+if [[ -s "$HOST_GUARD_LOG" ]]; then
+    fail "fixture tried to invoke host sudo after its mock was removed"
+else
+    pass "all privileged commands remained inside the fixture"
+fi
 printf 'Results: %d passed, %d failed\n' "$PASS" "$FAIL"
 (( FAIL == 0 ))

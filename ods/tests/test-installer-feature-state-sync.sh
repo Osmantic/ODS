@@ -40,6 +40,10 @@ run_case() {
     fi
 
     (
+        # This fixture is an unmanaged install, regardless of the developer's
+        # real Pixel management marker.
+        export HOME="$test_root/home"
+        mkdir -p "$HOME"
         INTERACTIVE=false
         DRY_RUN=false
         INSTALL_CHOICE=1
