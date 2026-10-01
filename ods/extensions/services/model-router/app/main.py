@@ -67,6 +67,15 @@ MAX_BODY_BYTES = int(os.environ.get("ODS_ROUTER_MAX_BODY_BYTES", str(2 * 1024 * 
 MAX_QUEUE_DEPTH = int(os.environ.get("ODS_ROUTER_MAX_QUEUE_DEPTH", "64"))
 QUEUE_WAIT_SECONDS = int(os.environ.get("ODS_ROUTER_QUEUE_WAIT_SECONDS", "600"))
 UPSTREAM_TIMEOUT_SECONDS = float(os.environ.get("ODS_ROUTER_UPSTREAM_TIMEOUT", "600"))
+# A tool request that the client streams is sent to llama-server or Lemonade
+# without streaming (see completed_tool_stream). The backend then sends no
+# bytes until the whole decision exists, so the wait for its response covers
+# the full generation, not a gap between tokens. This limit bounds that wait
+# and the one protocol repair together. Keep it below the agent's own model
+# request timeout so the router, which knows the cause, answers first.
+TOOL_COMPLETION_TIMEOUT_SECONDS = float(
+    os.environ.get("ODS_ROUTER_TOOL_COMPLETION_TIMEOUT", "1500")
+)
 UPSTREAM_MAX_CONNECTIONS = max(
     1, int(os.environ.get(
         "ODS_ROUTER_UPSTREAM_MAX_CONNECTIONS", str(MAX_QUEUE_DEPTH)
@@ -1647,6 +1656,20 @@ async def _forward_admitted(request, path, payload, requested_alias, body):
             await _release_admission()
 
 
+def _upstream_timeout_response(message: str,
+                               ods_headers: dict[str, str]) -> JSONResponse:
+    """The backend used the router's whole budget for this exact request.
+
+    An automatic retry would generate the same response again from the start
+    and wait as long again, so OpenAI-compatible SDK clients are told not to
+    retry it.
+    """
+    return JSONResponse(
+        {"error": {"message": message, "type": "upstream_timeout", "code": "504"}},
+        status_code=504, headers={**ods_headers, "x-should-retry": "false"},
+    )
+
+
 async def _forward_inner(request: Request, path: str, payload: dict[str, Any],
                          requested_alias: str,
                          raw_body: bytes) -> tuple[Response, bool]:
@@ -1699,6 +1722,7 @@ async def _forward_inner(request: Request, path: str, payload: dict[str, Any],
         and isinstance(payload.get("tools"), list)
         and bool(payload["tools"])
     )
+    decision_budget = UPSTREAM_TIMEOUT_SECONDS
     if completed_tool_stream:
         # llama.cpp may withdraw an incrementally parsed tool call, aborting
         # its SSE stream. Ask this backend for its complete decision, then
@@ -1706,6 +1730,7 @@ async def _forward_inner(request: Request, path: str, payload: dict[str, Any],
         # This is a transport adapter: tools and model selection are unchanged.
         payload["stream"] = False
         payload.pop("stream_options", None)
+        decision_budget = TOOL_COMPLETION_TIMEOUT_SECONDS
 
     headers = _sanitize_headers(request)
     api_key = os.environ.get(route["apiKeyEnv"], "") if route["apiKeyEnv"] else ""
@@ -1830,7 +1855,7 @@ async def _forward_inner(request: Request, path: str, payload: dict[str, Any],
 
         upstream = await client.post(
             url, content=forwarded_body, headers=headers,
-            timeout=UPSTREAM_TIMEOUT_SECONDS,
+            timeout=httpx.Timeout(UPSTREAM_TIMEOUT_SECONDS, read=decision_budget),
         )
         _finish_probe_attempt(attempt_handle, "complete", upstream.status_code)
     except asyncio.CancelledError:
@@ -1838,11 +1863,8 @@ async def _forward_inner(request: Request, path: str, payload: dict[str, Any],
         raise
     except httpx.TimeoutException:
         _finish_probe_attempt(attempt_handle, "timeout")
-        return JSONResponse(
-            {"error": {"message": "Upstream model runtime timed out",
-                       "type": "upstream_timeout", "code": "504"}},
-            status_code=504, headers=ods_headers,
-        ), False
+        return _upstream_timeout_response(
+            "Upstream model runtime timed out", ods_headers), False
     except httpx.HTTPError as exc:
         _finish_probe_attempt(attempt_handle, "transport-error")
         return JSONResponse(
@@ -1873,12 +1895,11 @@ async def _forward_inner(request: Request, path: str, payload: dict[str, Any],
                     return JSONResponse({'error': {'message': 'Backend response identity changed',
                         'type': 'response_identity_mismatch', 'code': '502'}},
                         status_code=502, headers=ods_headers), False
-                remaining = UPSTREAM_TIMEOUT_SECONDS - (time.monotonic() - telemetry_started)
+                remaining = decision_budget - (time.monotonic() - telemetry_started)
                 if remaining <= 0:
-                    return JSONResponse({"error": {
-                        "message": "Upstream model runtime timed out during tool protocol repair",
-                        "type": "upstream_timeout", "code": "504",
-                    }}, status_code=504, headers=ods_headers), False
+                    return _upstream_timeout_response(
+                        "Upstream model runtime timed out during tool protocol repair",
+                        ods_headers), False
                 repair_payload = {**payload, "stream": False,
                     "messages": [*payload["messages"], {"role": "user",
                         "content": _native_tool_repair_feedback(native_names, payload)}]}
@@ -1897,10 +1918,9 @@ async def _forward_inner(request: Request, path: str, payload: dict[str, Any],
                     raise
                 except httpx.TimeoutException:
                     _finish_probe_attempt(repair_handle, "timeout")
-                    return JSONResponse({"error": {
-                        "message": "Upstream model runtime timed out during tool protocol repair",
-                        "type": "upstream_timeout", "code": "504",
-                    }}, status_code=504, headers=ods_headers), False
+                    return _upstream_timeout_response(
+                        "Upstream model runtime timed out during tool protocol repair",
+                        ods_headers), False
                 except httpx.HTTPError as exc:
                     _finish_probe_attempt(repair_handle, "transport-error")
                     return JSONResponse({"error": {

@@ -96,6 +96,41 @@ class RelayTests(unittest.IsolatedAsyncioTestCase):
             response.close()
             await asyncio.wait_for(self.disconnected.wait(), timeout=3)
 
+    async def test_route_retry_decision_reaches_the_agent(self):
+        """A route timeout says not to regenerate; nothing else is copied."""
+        replies = []
+
+        async def timed_out(_request):
+            value = replies.pop(0)
+            headers = {"X-ODS-Backend": "llama-server", "X-Internal-Detail": "private"}
+            if value is not None:
+                headers["x-should-retry"] = value
+            return web.json_response({"error": {"message": "Upstream model runtime timed out",
+                                                "type": "upstream_timeout", "code": "504"}},
+                                     status=504, headers=headers)
+
+        route = web.Application()
+        route.router.add_post("/v1/chat/completions", timed_out)
+        runner, upstream = await start(route)
+        prior = relay.UPSTREAM
+        relay.UPSTREAM = upstream
+        try:
+            async with ClientSession() as client:
+                for value, forwarded in [("false", "false"), ("true", "true"),
+                                         ("never", None), (None, None)]:
+                    replies.append(value)
+                    async with client.post(self.url + "/v1/chat/completions", headers={
+                        "Authorization": "Bearer test-only-pixel-relay-key"},
+                            json={"model": "ods/current", "stream": True, "messages": []}) as response:
+                        self.assertEqual(response.status, 504)
+                        self.assertEqual((await response.json())["error"]["type"], "upstream_timeout")
+                        self.assertEqual(response.headers.get("x-should-retry"), forwarded)
+                        self.assertNotIn("X-ODS-Backend", response.headers)
+                        self.assertNotIn("X-Internal-Detail", response.headers)
+        finally:
+            relay.UPSTREAM = prior
+            await runner.cleanup()
+
     async def test_stalled_local_reader_times_out(self):
         class StalledResponse:
             async def write(self, _chunk):
