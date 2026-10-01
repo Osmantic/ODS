@@ -411,3 +411,54 @@ it('prefers native session context over a changed advertised capacity for the sa
   await act(async()=>result.current.refresh(true))
   expect(result.current.context?.window).toBe(8192)
 })
+
+it('keeps polling an observed automatic compaction after a read failure and shows its terminal failure',async()=>{
+  const id=`history-${'b'.repeat(64)}`
+  const running={...context(),compaction:{status:'running',requestId:id,count:0}}
+  globalThis.fetch=vi.fn().mockResolvedValue(response(running))
+  const {result}=renderHook(()=>usePortalContext({chatId:'automatic',runtimeKey:'small',capacity:4096,onPendingChange:vi.fn()}))
+  await waitFor(()=>expect(result.current.phase).toBe('running'))
+  fetch.mockResolvedValue({ok:false,status:503,json:async()=>({error:'unavailable'})})
+  await act(async()=>result.current.refresh(true))
+  expect(result.current.phase).toBe('unknown')
+  expect(result.current.notice).toBe('Waiting for compaction confirmation…')
+  const failed={...context(),compaction:{status:'failed',requestId:id,reason:'runtime-failed',count:0}}
+  fetch.mockResolvedValue(response(failed))
+  await waitFor(()=>expect(result.current.phase).toBe('failed'),{timeout:7000})
+  expect(result.current.busy).toBe(false)
+  expect(result.current.notice).toContain('Context compaction failed')
+  expect(fetch.mock.calls.every(([url])=>url.endsWith('/context'))).toBe(true)
+},10000)
+
+it.each(['completed','failed','runtime-restarted'])('stops automatic compaction polling after %s and retains the confirmed result on read failure',async outcome=>{
+  vi.useFakeTimers()
+  try {
+    const id='history-auto'
+    globalThis.fetch=vi.fn().mockResolvedValue(response({...context(),compaction:{status:'running',requestId:id}}))
+    const {result}=renderHook(()=>usePortalContext({chatId:'automatic',runtimeKey:'small',capacity:4096,onPendingChange:vi.fn()}))
+    await act(async()=>{})
+    expect(result.current.phase).toBe('running')
+    fetch.mockResolvedValue(response({...context(),compaction:{requestId:id,status:outcome==='runtime-restarted'?'unknown':outcome,...(outcome==='runtime-restarted'?{reason:outcome}:{})}}))
+    await act(async()=>result.current.refresh(true))
+    const phase=outcome==='runtime-restarted'?'interrupted':outcome
+    expect(result.current.phase).toBe(phase)
+    const calls=fetch.mock.calls.length
+    await act(async()=>vi.advanceTimersByTimeAsync(10000))
+    expect(fetch).toHaveBeenCalledTimes(calls)
+    fetch.mockRejectedValue(new Error('offline'))
+    await act(async()=>result.current.refresh(true))
+    expect(result.current.phase).toBe(phase)
+    expect(result.current.busy).toBe(false)
+  }finally {vi.useRealTimers()}
+})
+
+it('does not carry automatic compaction tracking into another conversation',async()=>{
+  globalThis.fetch=vi.fn().mockResolvedValue(response({...context(),compaction:{status:'running',requestId:'history-first'}}))
+  const {result,rerender}=renderHook(({chatId})=>usePortalContext({chatId,runtimeKey:'small',capacity:4096,onPendingChange:vi.fn()}),{initialProps:{chatId:'first'}})
+  await waitFor(()=>expect(result.current.phase).toBe('running'))
+  fetch.mockRejectedValue(new Error('offline'))
+  rerender({chatId:'second'})
+  await act(async()=>{})
+  expect(result.current.phase).toBe('idle')
+  expect(result.current.busy).toBe(false)
+})

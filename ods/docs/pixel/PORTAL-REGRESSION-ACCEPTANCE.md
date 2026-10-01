@@ -88,6 +88,51 @@ survives, and every filter works. A new unrelated project does not pass.
 
 ## Lifecycle and model-schema gates
 
+### ZIP text attachment acceptance
+
+The paperclip accepts ZIPs as local text references, not as persistent binary
+uploads. The browser lists members, the owner selects text files, reviews the
+exact quoted message, then inserts it into the draft. Only Send transmits that
+message to the selected model. The model receives neither the ZIP bytes nor a
+file handle. Binary/PDF contents and unselected members are explicitly unread.
+CRLF and CR line endings are normalized to LF before the exact-text review, so
+the review, browser composer and sent text agree even after editing the draft.
+Member byte counts and SHA-256 hashes still identify the original archive bytes;
+the quoted text explicitly states this distinction. The ordinary text-file
+picker uses the same LF message convention and explains it before insertion;
+it leaves the original file untouched. Cover its real FileReader path with both
+direct Send and edit-then-Send as well.
+
+The compressed archive limit is 4 MiB, with at most 64 entries. A selected UTF-8
+member may expand to 256 KiB and the selection to 1 MiB; the resulting draft must
+still fit the existing 16,384 UTF-16-unit message limit. Nothing is truncated to
+fit. Parsing runs in a disposable worker with a five-second deadline and explicit
+cancellation. No files are extracted to the host. CRC, actual expanded size and
+UTF-8 are verified before any selected text is returned. Encryption, ZIP64,
+split archives, links, ambiguous paths and unsupported compression are rejected.
+
+Exercise a ZIP containing a short brief, a CSV, buggy source and an unread PNG:
+
+1. Choose the ZIP and confirm the draft and model conversation remain unchanged.
+   Inspect the listed member names and declared sizes; select only the text.
+2. Review the exact quoted content, archive/member hashes and omitted-member
+   list. Cancel and repeat; Escape returns focus to the paperclip. A conversation
+   switch while reading must cancel the operation without moving old content
+   into the new conversation.
+3. Insert into an existing draft and verify the preview matches the inserted
+   content, including Unicode and mixed CRLF/CR/LF source lines. Compare the sent
+   request both with and without a subsequent composer edit. Exceeding the draft limit blocks insertion without
+   shortening either the draft or file contents. Focus returns to the composer.
+4. Send a natural task that requires all selected files, such as calculating CSV
+   totals using the brief and diagnosing the source bug. Independently calculate
+   expected results and check references to the actual member paths. The reply
+   must not claim that it read the PNG or can reopen the original ZIP.
+5. Repeat with malformed/oversized archives; verify the error is specific, the
+   draft survives and a later valid attachment still works.
+
+Parser/component tests alone do not qualify the native file picker, worker in a
+deployed browser, or model-mediated result. Record those outcomes separately.
+
 Repeat coding, artifact creation and follow-up after an ordinary service restart
 and after an in-place candidate update. Re-measure identities each time. Test
 fresh install and a verified predecessor migration without deleting user data.

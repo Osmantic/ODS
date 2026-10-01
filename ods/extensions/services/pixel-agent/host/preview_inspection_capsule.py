@@ -20,22 +20,33 @@ from preview_inspection_protocol import (
     MAX_BUNDLE,
     MAX_RESULT,
     SANDBOX,
-    SCOPE,
     canonical,
     failure,
+    inspection_scope,
     plan_hash,
     strict_json,
     validate_bundle,
 )
 
 # Runs in a Chromium isolated world, not the site's mutable JS global realm.
-OBSERVE_ELEMENT = r"""function(includeText) {
+OBSERVE_ELEMENT = r"""function(includeText, selectValue) {
   const element = this, style = getComputedStyle(element);
   const rects = [...element.getClientRects()].filter(r => r.width > 0 && r.height > 0);
   return {count:1, visible:element.checkVisibility({checkOpacity:true,checkVisibilityCSS:true,contentVisibilityAuto:true}) && rects.length > 0,
     display:style.display, visibility:style.visibility, opacity:style.opacity,
     hidden:element.hasAttribute('hidden'), hiddenUntilFound:element.getAttribute('hidden') === 'until-found',
     rectCount:rects.length,
+    ...(selectValue !== null && selectValue !== undefined ? (() => {
+      const native = element instanceof HTMLSelectElement;
+      const value = native ? Array.from(element.value) : [];
+      const options = native && element.options.length <= 1000
+        ? [...element.options].filter(o => o.value === selectValue) : [];
+      return {selection: {native, multiple: native && element.multiple,
+        disabled: native && element.matches(':disabled'),
+        optionCount: native && element.options.length > 1000 ? 1001 : options.length,
+        optionDisabled: options.some(o => o.matches(':disabled')),
+        value: value.slice(0,256).join(''), truncated: value.length > 256}};
+    })() : {}),
     ...(includeText ? (() => { const text=Array.from((element.innerText || '').replace(/\s+/g,' ').trim());
       return {text:{actual:text.slice(0,256).join(''),truncated:text.length>256}}; })() : {})};
 }"""
@@ -1019,10 +1030,10 @@ def run_browser(bundle, playwright_factory=None):
                 )["result"]["objectId"]
                 return 1, node
 
-            def once(locator, include_hidden=False, include_text=False):
+            def once(locator, include_hidden=False, include_text=False, select_value=None):
                 owned = []
                 try:
-                    return measure(locator, include_hidden, owned, include_text)
+                    return measure(locator, include_hidden, owned, include_text, select_value)
                 finally:
                     for object_id in dict.fromkeys(owned):
                         try:
@@ -1030,7 +1041,7 @@ def run_browser(bundle, playwright_factory=None):
                         except Exception:
                             pass
 
-            def measure(locator, include_hidden, owned, include_text=False):
+            def measure(locator, include_hidden, owned, include_text=False, select_value=None):
                 if blocked:
                     raise Invalid("preview navigation or request blocked")
                 if "selector" in locator:
@@ -1081,7 +1092,7 @@ def run_browser(bundle, playwright_factory=None):
                     {
                         "objectId": node,
                         "functionDeclaration": OBSERVE_ELEMENT,
-                        "arguments": [{"value": include_text}],
+                        "arguments": [{"value": include_text}, {"value": select_value}],
                         "returnByValue": True,
                     },
                 )
@@ -1089,9 +1100,9 @@ def run_browser(bundle, playwright_factory=None):
                     raise Invalid("inspection failed")
                 return result["result"]["value"]
 
-            def observe(locator, include_hidden=False, expected=None, expected_text=None):
+            def observe(locator, include_hidden=False, expected=None, expected_text=None, select_value=None):
                 return observe_until_stable(
-                    lambda: once(locator, include_hidden, expected_text is not None), page.wait_for_timeout, expected, expected_text
+                    lambda: once(locator, include_hidden, expected_text is not None, select_value), page.wait_for_timeout, expected, expected_text
                 )
 
             page.wait_for_timeout(100)
@@ -1110,8 +1121,9 @@ def run_browser(bundle, playwright_factory=None):
                     # and they match Playwright's source-text names too.
                     before, stable = observe(
                         step["locator"], step["action"] == "assert-hidden",
-                        None if step["action"] == "click" else step["action"] != "assert-hidden",
+                        None if step["action"] in ("click", "select-option") else step["action"] != "assert-hidden",
                         step.get('expectedText'),
+                        step.get('value'),
                     )
                 except InvalidSelector:
                     # No DOM observation exists for invalid syntax. Preserve
@@ -1132,6 +1144,37 @@ def run_browser(bundle, playwright_factory=None):
                     item["errorCode"] = "selector_not_unique"
                 elif not stable:
                     item["errorCode"] = "unstable"
+                elif step['action'] == 'select-option':
+                    selection = before['selection']
+                    if not selection['native'] or selection['multiple']:
+                        item['errorCode'] = 'native_select_required'
+                    elif selection['optionCount'] != 1:
+                        item['errorCode'] = 'option_not_unique'
+                    elif selection['disabled'] or selection['optionDisabled']:
+                        item['errorCode'] = 'option_disabled'
+                    elif not before['visible'] or selection['truncated']:
+                        item['errorCode'] = 'select_failed'
+                    else:
+                        try:
+                            target = (frame.locator('css=' + step['locator']['selector'])
+                                      if 'selector' in step['locator'] else frame.get_by_role(
+                                          step['locator']['role'], name=step['locator']['name'], exact=True))
+                            # Playwright selects the native option and dispatches input/change;
+                            # receipt values come from our isolated world, not author JS.
+                            target.select_option(value=step['value'], timeout=2000)
+                            after, after_stable = observe(step['locator'], select_value=step['value'])
+                            selected = after.get('selection', {})
+                            matched = (after.get('count') == 1 and after.get('visible') is True
+                                       and selected.get('native') is True and selected.get('multiple') is False
+                                       and selected.get('disabled') is False and selected.get('optionDisabled') is False
+                                       and selected.get('optionCount') == 1 and selected.get('truncated') is False
+                                       and selected.get('value') == step['value'])
+                            item.update(after=after, stable=after_stable,
+                                        status='passed' if after_stable and matched else 'failed')
+                            if item['status'] != 'passed':
+                                item['errorCode'] = 'selection_mismatch'
+                        except Exception:
+                            item['errorCode'] = 'select_failed'
                 elif step["action"] == "click":
                     try:
                         (
@@ -1189,7 +1232,7 @@ def run_browser(bundle, playwright_factory=None):
                 "diagnostics": diagnostics,
                 "blockedRequests": blocked,
                 **page_errors.receipt(),
-                "scope": SCOPE,
+                "scope": inspection_scope(request),
             }
             context.close()
             # After the step context is closed, so its receipt is final. The

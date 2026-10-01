@@ -170,7 +170,11 @@ test('repair is selected by Linux/WSL installation, foreign restore and native m
   assert.match(helper, /DIAGNOSTIC_STREAM_MODULE = "attempt\.model-diagnostic-events-DqqiPQPY\.js"/);
   assert.match(helper, /"--diagnostic-stream-writes"/);
   // The buffered stream-progress patch composes on the last (selection) repair.
-  assert.match(mac, /\('openclaw-diagnostic-stream-writes\.json', 'attempt\.model-diagnostic-events-DqqiPQPY\.js'\),\r?\n\s+\('openclaw-compaction-budget\.json', 'selection-BEwSQKM-\.js'\),\r?\n\)/);
+  const repairs = mac.match(/SHARED_REPAIRS = \(([\s\S]*?)\r?\n\)/)?.[1];
+  assert.ok(repairs, 'native bundle declares its shared repair order');
+  assert.ok(repairs.includes("('openclaw-diagnostic-stream-writes.json', 'attempt.model-diagnostic-events-DqqiPQPY.js'),"));
+  assert.ok(repairs.trimEnd().endsWith("('openclaw-compaction-budget.json', 'selection-BEwSQKM-.js'),"),
+    'selection repair stays last, without requiring unrelated modules to be adjacent');
   assert.equal(manifest.version, '2026.6.33');
   assert.equal(manifest.sourceSha256, 'fe7f3e7b20d2ef191b28c88fc759781c90f33d93ff9bb834cba2055a70decdd2');
   assert.match(manifest.patchedSha256, /^[a-f0-9]{64}$/);

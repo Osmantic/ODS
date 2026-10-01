@@ -127,3 +127,27 @@ ods_gateway_assert_no_managed_inference() {
     fi
     return 0
 }
+
+# A caller can inherit COMPOSE_PROFILES=gateway-webui. Check the effective
+# service set before pulling or starting a Portal-only stack.
+ods_compose_assert_no_webui() {
+    local services compose_root="${INSTALL_DIR:-$PWD}"
+    services="$(cd "$compose_root" && $DOCKER_COMPOSE_CMD "$@" config --services)" || return 1
+    if grep -qx 'open-webui' <<< "$services"; then
+        printf 'No-WebUI Compose still enables Open WebUI. Clear COMPOSE_PROFILES and retry.\n' >&2
+        return 1
+    fi
+    return 0
+}
+
+# Phase 08 checks the selected service list before image pulls, while Pixel's
+# private ingress group is created in Phase 11. Compose interpolates every
+# selected service even for `config --services`, so supply a numeric GID only
+# within this read-only early check. Phase 11 validates the real installed GID
+# before starting containers and repeats the no-WebUI check.
+ods_compose_assert_no_webui_before_pixel_identity() (
+    if [[ -z "${PIXEL_INGRESS_GID:-}" ]]; then
+        export PIXEL_INGRESS_GID=1
+    fi
+    ods_compose_assert_no_webui "$@"
+)

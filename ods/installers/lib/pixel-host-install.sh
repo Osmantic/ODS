@@ -7,6 +7,27 @@
 # shellcheck source=installers/lib/pixel-integration.sh
 source "$(dirname "${BASH_SOURCE[0]}")/pixel-integration.sh"
 
+_ods_pixel_reconcile_workspace_guidance() {
+    local owner="$1" home="$2" workspace="$3"
+    local -a guidance_options=(--workspace "$workspace")
+    [[ "${4:-live}" != generated ]] || guidance_options+=(--generated)
+    ods_pixel_run_as_owner "$owner" "$home" /usr/bin/python3 -B \
+        "${INSTALL_DIR:?}/installers/lib/pixel-workspace-guidance.py" "${guidance_options[@]}"
+}
+
+_ods_pixel_migrate_live_workspace_guidance() {
+    local owner="$1" home="$2" pixel_log="$3" workspace_guidance_status
+    if ! workspace_guidance_status="$(_ods_pixel_reconcile_workspace_guidance "$owner" "$home" "$home/.openclaw/workspace-pixel" 2>>"$pixel_log")"; then
+        # Guidance repair is optional for an existing owner workspace. Preserve
+        # unsafe/custom files and keep the verified runtime upgrade available.
+        workspace_guidance_status='{"status":"manual-review-required"}'
+    fi
+    printf '%s\n' "$workspace_guidance_status" >>"$pixel_log"
+    if [[ "$workspace_guidance_status" == *'"manual-review-required"'* ]]; then
+        ai_warn "Portal preserved custom or unverified workspace guidance. Review AGENTS.md or MEMORY.md against your selected model route."
+    fi
+}
+
 _ods_pixel_default_output_tokens() {
     # Shared usability default, not an assertion of provider output capacity.
     # Unknown model families remain usable; no model-name or reasoning policy.
@@ -140,6 +161,37 @@ PY
         printf '%s\n' 'error: cannot enter the Pixel install owner identity' >&2
         return 1
     fi
+}
+
+# Resolve Pixel search before phase 03 chooses Compose services. Use the same
+# owner-private onboarding selector as phase 11, and the explicit > installed
+# .env precedence that phase 06 applies. Never source .env as shell code.
+ods_pixel_resolve_search_provider() {
+    local requested="${PIXEL_WEB_SEARCH_PROVIDER:-}" raw owner home answers helper resolved
+    [[ -n "${INSTALL_DIR:-}" && -n "${SCRIPT_DIR:-}" ]] || return 1
+    if [[ -z "$requested" && -f "$INSTALL_DIR/.env" ]]; then
+        if ! declare -F safe_env_decode_value >/dev/null 2>&1; then
+            # shellcheck source=../../lib/safe-env.sh
+            source "$SCRIPT_DIR/lib/safe-env.sh"
+        fi
+        raw="$(grep -m1 '^PIXEL_WEB_SEARCH_PROVIDER=' "$INSTALL_DIR/.env" 2>/dev/null | cut -d= -f2- || true)"
+        requested="$(safe_env_decode_value "$raw")"
+    fi
+    case "$requested" in
+        ""|searxng|parallel-free) ;;
+        *) printf '%s\n' 'error: invalid Pixel web search provider' >&2; return 1 ;;
+    esac
+    owner="${PIXEL_SERVICE_USER:-$(ods_pixel_install_owner)}" || return 1
+    home="$(ods_pixel_owner_home "$owner")" || return 1
+    answers="$INSTALL_DIR/data/pixel/onboarding.json"
+    helper="$SCRIPT_DIR/extensions/services/pixel-agent/host/native_search.py"
+    [[ -f "$helper" ]] || return 1
+    resolved="$(ods_pixel_run_as_owner "$owner" "$home" python3 "$helper" \
+        --answers-file "$answers" --provider "$requested")" || return 1
+    case "$resolved" in
+        searxng|parallel-free) printf '%s\n' "$resolved" ;;
+        *) printf '%s\n' 'error: Pixel search selector returned an invalid provider' >&2; return 1 ;;
+    esac
 }
 
 ods_pixel_run_as_owner_with_umask() {
@@ -828,6 +880,63 @@ if (model.get("id") != "ods/current" or model.get("name") != expected_name
 PY
 }
 
+_ods_pixel_search_provider_matches_contract() {
+    local owner="$1" home="$2" answers="$3" live
+    live="$home/.openclaw/openclaw.json"
+    ods_pixel_run_as_owner "$owner" "$home" python3 - "$live" "$answers" "${INSTALL_DIR:?}" <<'PY'
+import json, os, pathlib, re, stat, sys
+
+if len(sys.argv) != 4:
+    raise SystemExit(1)
+documents = []
+for raw in sys.argv[1:3]:
+    path = pathlib.Path(raw)
+    info = path.lstat()
+    if (not stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode)
+            or info.st_nlink != 1 or info.st_uid != os.getuid()
+            or info.st_mode & 0o077 or info.st_size > 2 * 1024 * 1024):
+        raise SystemExit(1)
+    value = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(value, dict):
+        raise SystemExit(1)
+    documents.append(value)
+live, contract = documents
+selected = contract.get("webSearchProvider", "searxng")
+search = live.get("tools", {}).get("web", {}).get("search")
+plugins = live.get("plugins")
+if (selected not in {"searxng", "parallel-free"}
+        or search != {"provider": selected} or not isinstance(plugins, dict)):
+    raise SystemExit(1)
+allow = plugins.get("allow")
+entries = plugins.get("entries")
+load = plugins.get("load")
+paths = load.get("paths") if isinstance(load, dict) else None
+if (not isinstance(allow, list) or not isinstance(entries, dict)
+        or not isinstance(paths, list) or "pixel-ods" not in allow):
+    raise SystemExit(1)
+parallel_path = str(pathlib.Path(sys.argv[3]) / "data/pixel/native-search/parallel-2026.6.33")
+if selected == "searxng":
+    origin = contract.get("searxngBaseUrl")
+    if (not isinstance(origin, str)
+            or not re.fullmatch(r"http://127\.0\.0\.1:[1-9][0-9]{0,4}", origin)
+            or int(origin.rsplit(":", 1)[1]) > 65535
+            or "searxng" not in allow or "parallel" in allow
+            or entries.get("searxng") != {"enabled": True, "config": {"webSearch": {"baseUrl": origin}}}
+            or "parallel" in entries or parallel_path in paths):
+        raise SystemExit(1)
+else:
+    extensions = contract.get("gatewayExtensions")
+    parallel = [item for item in extensions if isinstance(item, dict) and item.get("id") == "parallel"] if isinstance(extensions, list) else []
+    if (len(parallel) != 1 or parallel[0].get("path") != parallel_path
+            or not isinstance(parallel[0].get("sha256"), str)
+            or not re.fullmatch(r"[0-9a-f]{64}", parallel[0]["sha256"])
+            or "parallel" not in allow or "searxng" in allow
+            or entries.get("parallel") != {"enabled": True}
+            or "searxng" in entries or parallel_path not in paths):
+        raise SystemExit(1)
+PY
+}
+
 _ods_pixel_stage_stable_alias_candidate() {
     local owner="$1" home="$2" answers="$3" live
     live="$home/.openclaw/openclaw.json"
@@ -1232,11 +1341,11 @@ PY
 _ods_pixel_candidate_is_managed_runtime_update() {
     local owner="$1" home="$2" candidate="$3" answers="$4" live
     live="$home/.openclaw/openclaw.json"
-    ods_pixel_run_as_owner "$owner" "$home" python3 - "$live" "$candidate" "$answers" <<'PY'
+    ods_pixel_run_as_owner "$owner" "$home" python3 - "$live" "$candidate" "$answers" "${INSTALL_DIR:?}" <<'PY'
 import copy, json, os, pathlib, re, stat, sys
 
 values = []
-for raw in sys.argv[1:]:
+for raw in sys.argv[1:4]:
     path = pathlib.Path(raw)
     info = path.lstat()
     if (not stat.S_ISREG(info.st_mode) or stat.S_ISLNK(info.st_mode) or info.st_nlink != 1
@@ -1630,6 +1739,88 @@ else:
         normalized_agent_params.pop(key, None)
 if not normalized_agent_params:
     normalized_agent.pop("params", None)
+selected_search = contract.get("webSearchProvider")
+if selected_search is not None:
+    if selected_search not in {"searxng", "parallel-free"}:
+        raise SystemExit("invalid selected Pixel search provider")
+    live_search = live.get("tools", {}).get("web", {}).get("search")
+    candidate_search = candidate.get("tools", {}).get("web", {}).get("search")
+    if candidate_search != {"provider": selected_search}:
+        raise SystemExit("candidate search provider differs from onboarding")
+    if live_search != candidate_search or normalized_plugins != candidate.get("plugins"):
+        if live_search not in ({"provider": "searxng"}, {"provider": "parallel-free"}):
+            raise SystemExit("live search provider is outside the ODS contract")
+        extensions = contract.get("gatewayExtensions")
+        if not isinstance(extensions, list):
+            raise SystemExit("invalid search extension contract")
+        parallel = [item for item in extensions if isinstance(item, dict) and item.get("id") == "parallel"]
+        parallel_path = str(pathlib.Path(sys.argv[4]) / "data/pixel/native-search/parallel-2026.6.33")
+        if selected_search == "parallel-free":
+            if (len(parallel) != 1 or parallel[0].get("path") != parallel_path
+                    or not isinstance(parallel[0].get("sha256"), str)
+                    or not re.fullmatch(r"[0-9a-f]{64}", parallel[0]["sha256"])):
+                raise SystemExit("parallel search extension is not bound to its pinned path and digest")
+        elif parallel:
+            raise SystemExit("SearXNG selection unexpectedly includes the parallel extension")
+        elif (not isinstance(contract.get("searxngBaseUrl"), str)
+                or not re.fullmatch(r"http://127\.0\.0\.1:[1-9][0-9]{0,4}", contract["searxngBaseUrl"])
+                or int(contract["searxngBaseUrl"].rsplit(":", 1)[1]) > 65535):
+            raise SystemExit("SearXNG selection lacks a loopback search origin")
+
+        def without_search(values):
+            if (not isinstance(values, list)
+                    or any(not isinstance(item, str) for item in values)
+                    or len(values) != len(set(values))):
+                raise SystemExit("invalid search plugin list")
+            return [item for item in values if item not in {"parallel", "searxng"}]
+
+        before_allow = normalized_plugins.get("allow")
+        after_allow = candidate.get("plugins", {}).get("allow")
+        if without_search(before_allow) != without_search(after_allow):
+            raise SystemExit("candidate changes unrelated plugin allowlist")
+        expected_plugin = "parallel" if selected_search == "parallel-free" else "searxng"
+        if ([item for item in after_allow if item in {"parallel", "searxng"}]
+                != [expected_plugin]):
+            raise SystemExit("candidate search plugin allowlist is invalid")
+
+        candidate_entries = candidate.get("plugins", {}).get("entries")
+        if not isinstance(candidate_entries, dict):
+            raise SystemExit("invalid candidate plugin entries")
+        for plugin_id in ("parallel", "searxng"):
+            normalized_plugin_entries.pop(plugin_id, None)
+        unrelated_entries = {key: value for key, value in candidate_entries.items()
+                             if key not in {"parallel", "searxng"}}
+        if normalized_plugin_entries != unrelated_entries:
+            raise SystemExit("candidate changes unrelated plugin entries")
+        if selected_search == "parallel-free":
+            if candidate_entries.get("parallel") != {"enabled": True} or "searxng" in candidate_entries:
+                raise SystemExit("candidate parallel plugin registration is invalid")
+        else:
+            expected_entry = {"enabled": True, "config": {"webSearch": {
+                "baseUrl": contract.get("searxngBaseUrl")}}}
+            if (candidate_entries.get("searxng") != expected_entry
+                    or "parallel" in candidate_entries):
+                raise SystemExit("candidate SearXNG plugin registration is invalid")
+
+        before_load = normalized_plugins.get("load")
+        after_load = candidate.get("plugins", {}).get("load")
+        if not isinstance(before_load, dict) or not isinstance(after_load, dict):
+            raise SystemExit("invalid search plugin load policy")
+        before_paths, after_paths = before_load.get("paths"), after_load.get("paths")
+        if (not isinstance(before_paths, list) or not isinstance(after_paths, list)
+                or any(not isinstance(item, str) for item in before_paths + after_paths)
+                or len(before_paths) != len(set(before_paths))
+                or len(after_paths) != len(set(after_paths))
+                or [path for path in before_paths if path != parallel_path]
+                != [path for path in after_paths if path != parallel_path]):
+            raise SystemExit("candidate changes unrelated plugin load paths")
+        if (parallel_path in after_paths) != (selected_search == "parallel-free"):
+            raise SystemExit("candidate search plugin path selection is invalid")
+
+        normalized_web["search"] = copy.deepcopy(candidate_search)
+        normalized_plugins["allow"] = copy.deepcopy(after_allow)
+        normalized_plugin_entries[expected_plugin] = copy.deepcopy(candidate_entries[expected_plugin])
+        normalized_plugins["load"]["paths"] = copy.deepcopy(after_paths)
 if normalized != candidate:
     raise SystemExit("candidate changes more than the ODS managed model/runtime fields")
 PY
@@ -2020,6 +2211,7 @@ _ods_pixel_restore_model_reconciliation() {
     _ods_pixel_atomic_replace_managed_file "$owner" "$home" "$backup/rollback-onboarding.json" "$answers" || return 1
     _ods_pixel_atomic_replace_managed_file "$owner" "$home" "$backup/pixel-managed.json" "$home/.config/ods/pixel-managed.json" || return 1
     if ! ods_pixel_run_as_owner "$owner" "$home" "$pixel_root/pixel" configure --answers "$answers" --force \
+        || ! _ods_pixel_reconcile_workspace_guidance "$owner" "$home" "$pixel_root/.generated/workspace" generated \
         || ! _ods_pixel_install_onboarding_mirror "$owner" "$home" "$answers" \
         || ! ods_pixel_run_as_owner "$owner" "$home" "$pixel_root/pixel" plan \
         || ! _ods_pixel_recreate_agent_sandbox "$owner" "$home" "$openclaw_bin" \
@@ -2124,7 +2316,12 @@ ods_pixel_reconcile_promoted_model() {
                 fi
             fi
         fi
-        stable_alias=true
+        # The stable-alias shortcut copies the live config and only changes
+        # model fields. A new search choice needs the same-source renderer so
+        # its selected plugin registration can be validated and applied.
+        if _ods_pixel_search_provider_matches_contract "$owner" "$home" "$answers"; then
+            stable_alias=true
+        fi
     fi
 
     backup="$(_ods_pixel_model_reconciliation_snapshot "$owner" "$home" "$answers")" || return 1
@@ -2154,6 +2351,11 @@ ods_pixel_reconcile_promoted_model() {
             && ! ods_pixel_run_as_owner "$owner" "$home" "$pixel_root/pixel" configure --answers "$answers" --force; then
             failed=true
             failure_phase="pixel-configure"
+        fi
+        if [[ "$failed" == false ]] \
+            && ! _ods_pixel_reconcile_workspace_guidance "$owner" "$home" "$pixel_root/.generated/workspace" generated; then
+            failed=true
+            failure_phase="workspace-guidance"
         fi
         if [[ "$failed" == false ]] \
             && ! ods_pixel_run_as_owner "$owner" "$home" "$pixel_root/pixel" plan; then
@@ -2295,6 +2497,10 @@ for path in (target, *target.parents):
     info = path.lstat()
     if stat.S_ISLNK(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
         raise SystemExit("Pixel access program directory is not root protected")
+# These are public programs executed by the unprivileged gateway owner.
+# mkdir's requested mode is masked by sudo/the caller's umask, including 0077.
+# Normalize only this owned directory after validating its protected custody.
+os.chmod(target, 0o755, follow_symlinks=False)
 
 def write(path, content, mode, uid=0, gid=0):
     if path.exists() or path.is_symlink():
@@ -2327,6 +2533,7 @@ settings_package.mkdir(mode=0o755, exist_ok=True)
 info = settings_package.lstat()
 if not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
     raise SystemExit("Pixel settings program directory is not root protected")
+os.chmod(settings_package, 0o755, follow_symlinks=False)
 for name in ('__init__.py', 'contract.py', 'projection.py', 'runtime.py', 'coordinator.py'):
     write(settings_package / name, (source / 'bin/pixel_settings' / name).read_bytes(), 0o644)
 provider_package = target / 'pixel_provider'
@@ -2334,6 +2541,7 @@ provider_package.mkdir(mode=0o755, exist_ok=True)
 info = provider_package.lstat()
 if not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
     raise SystemExit("Pixel provider program directory is not root protected")
+os.chmod(provider_package, 0o755, follow_symlinks=False)
 for name in ('__init__.py', 'config.py', 'store.py', 'activation_config.py',
              'managed_deployment.py', 'service_environment.py', 'service_activation.py',
              'runtime_custody.py', 'coordinator.py'):
@@ -4548,10 +4756,7 @@ ods_pixel_install_default_agent() {
     # transition gate. Start the edge before the host ingress is installed;
     # its transition endpoint is independent of upstream chat readiness, and
     # the final access reproof below still runs only after ingress is healthy.
-    # Pixel's plan preflight probes SearXNG even when its agentic web-search
-    # provider is Parallel. ODS also shares SearXNG with OWUI/Perplexica, so
-    # a clean install must start it before Pixel plans its host deployment.
-    local -a pixel_prerequisites=(litellm dashboard-api pixel-edge pixel-model-relay searxng)
+    local -a pixel_prerequisites=(litellm dashboard-api pixel-edge pixel-model-relay)
     # Managed inference needs the router before the relay's real model probe.
     # Cloud/external installs instead bind the relay to authenticated LiteLLM;
     # their Compose overlays intentionally profile model-router out.
@@ -4627,6 +4832,7 @@ ods_pixel_install_default_agent() {
         && -f "$plugin_root/host/openclaw-sandbox-mkdir-secure.json" \
         && -f "$plugin_root/host/openclaw-tool-result-projection.json" \
         && -f "$plugin_root/host/openclaw-diagnostic-stream-writes.json" \
+        && -f "$plugin_root/host/openclaw-command-attempt-warning.json" \
         && -f "$plugin_root/host/openclaw-image-envelope.json" \
         && -f "$plugin_root/host/pixel-ops-broker-ods.conf" \
         && -f "$plugin_root/host/cancellable-exec.sh" \
@@ -4652,6 +4858,14 @@ ods_pixel_install_default_agent() {
         searxng|parallel-free) ;;
         *) ai_bad "Pixel returned an invalid native search provider."; return 1 ;;
     esac
+    if [[ -n "${PIXEL_RESOLVED_WEB_SEARCH_PROVIDER:-}" &&
+          "$web_search_provider" != "$PIXEL_RESOLVED_WEB_SEARCH_PROVIDER" ]]; then
+        ai_bad "Pixel's web search choice changed after Compose services were selected. Retry without altering the onboarding contract."
+        return 1
+    fi
+    if [[ "$web_search_provider" == searxng ]]; then
+        pixel_prerequisites+=(searxng)
+    fi
     if grep -Fxq 'PIXEL_RUNTIME_BIND_PROPAGATION=rshared' "${INSTALL_DIR:?}/.env"; then
         # Pixel Edge starts here, before the WSL runtime bridge is installed.
         # Create the fixed empty targets on WSL's shared tmpfs so its rshared
@@ -4674,9 +4888,11 @@ ods_pixel_install_default_agent() {
     fi
     _ods_pixel_wait_model_gateway "ODS Pixel model relay" "${PIXEL_MODEL_RELAY_PORT:-4006}" \
         "${PIXEL_MODEL_RELAY_KEY:-}" "$gateway_alias" 180
-    _ods_pixel_wait_http "ODS local search" \
-        "http://127.0.0.1:${SEARXNG_PORT:-8888}/search?q=pixel-preflight&format=json" \
-        90 '.results | type == "array"'
+    if [[ "$web_search_provider" == searxng ]]; then
+        _ods_pixel_wait_http "ODS local search" \
+            "http://127.0.0.1:${SEARXNG_PORT:-8888}/search?q=pixel-preflight&format=json" \
+            90 '.results | type == "array"'
+    fi
     _ods_pixel_wait_http "ODS control API" \
         "http://127.0.0.1:${DASHBOARD_API_PORT:-3002}/health" 90
 
@@ -4774,6 +4990,31 @@ ods_pixel_install_default_agent() {
             ai_bad "Pixel's root-custodied Operations policy does not match the ODS-managed policy."
             return 1
         fi
+        if [[ "${FORCE:-false}" == true ]]; then
+            # Forced reinstall retires an interrupted agent sandbox while
+            # the gateway is stopped, then runs the unchanged verifier.
+            if ! ods_sudo systemctl stop openclaw-gateway.service >>"$pixel_log" 2>&1; then
+                ai_bad "The ODS-managed Pixel gateway could not enter maintenance mode. See $pixel_log."
+                return 1
+            fi
+            if ! _ods_pixel_recreate_agent_sandbox "$owner" "$home" "$openclaw_bin" \
+                >>"$pixel_log" 2>&1; then
+                # Restore the previously configured service when cleanup
+                # fails; the installer still fails closed and does not claim
+                # the sandbox boundary was refreshed.
+                ods_sudo systemctl start openclaw-gateway.service >>"$pixel_log" 2>&1 || true
+                ai_bad "Pixel could not retire its stale agent sandbox during forced recovery. See $pixel_log."
+                return 1
+            fi
+            if ! ods_sudo systemctl start openclaw-gateway.service >>"$pixel_log" 2>&1; then
+                ai_bad "The ODS-managed Pixel gateway could not restart after forced sandbox recovery. See $pixel_log."
+                return 1
+            fi
+            if ! _ods_pixel_wait_gateway 60 "$pixel_gateway_port"; then
+                ai_bad "The ODS-managed Pixel gateway did not become healthy after forced sandbox recovery. See $pixel_log."
+                return 1
+            fi
+        fi
         if ! ods_pixel_run_as_owner "$owner" "$home" "$pixel_root/pixel" verify >>"$pixel_log" 2>&1; then
             ai_bad "The existing ODS-managed Pixel contract failed exact-source verification. See $pixel_log."
             return 1
@@ -4781,6 +5022,10 @@ ods_pixel_install_default_agent() {
     else
         if ! ods_pixel_run_as_owner "$owner" "$home" "$pixel_root/pixel" configure --answers "$answers" --force >>"$pixel_log" 2>&1; then
             ai_bad "Pixel configure failed. See $pixel_log for the exact Pixel error."
+            return 1
+        fi
+        if ! _ods_pixel_reconcile_workspace_guidance "$owner" "$home" "$pixel_root/.generated/workspace" generated >>"$pixel_log" 2>&1; then
+            ai_bad "Could not safely prepare Portal workspace guidance. See $pixel_log."
             return 1
         fi
         if ! ods_pixel_run_as_owner "$owner" "$home" "$pixel_root/pixel" plan >>"$pixel_log" 2>&1; then
@@ -4903,6 +5148,9 @@ ods_pixel_install_default_agent() {
             ods_pixel_run_as_owner "$owner" "$home" rm -f -- "$apply_attempt" || return 1
         fi
     fi
+    # Both a fresh apply and the already-active-contract path reach this owner
+    # migration. It leaves custom text intact and precedes the gateway restart.
+    _ods_pixel_migrate_live_workspace_guidance "$owner" "$home" "$pixel_log"
     # Record the verified Pixel release before applying the ODS-owned runtime
     # overlay. If power is lost between the atomic config update and gateway
     # verification, the next installer run can safely enter the exact-source
@@ -4943,7 +5191,7 @@ ods_pixel_install_default_agent() {
         --restore-foreign "$home/.openclaw/ods-runtime-patches" \
         --known tool-recovery completion-recovery image-envelope compaction-export \
             compaction-idle compaction-resume read-range tool-result-projection \
-            diagnostic-stream-writes compaction-budget sandbox-mkdir-bridge sandbox-mkdir-secure \
+            diagnostic-stream-writes command-attempt-warning compaction-budget sandbox-mkdir-bridge sandbox-mkdir-secure \
         >>"$pixel_log" 2>&1; then
         ai_bad "Pixel could not restore OpenClaw runtime patches left by another ODS build. See $pixel_log."
         return 1
@@ -5055,6 +5303,16 @@ ods_pixel_install_default_agent() {
         --state-dir "$home/.openclaw/ods-runtime-patches/diagnostic-stream-writes" \
         >>"$pixel_log" 2>&1; then
         ai_bad "Pixel's model stream wrapper repair could not verify its package bytes. See $pixel_log."
+        return 1
+    fi
+    # Preserve failed command evidence while distinguishing the attempt from
+    # the final answer; do not infer recovery from a different successful command.
+    if ! ods_pixel_run_as_owner "$owner" "$home" python3 \
+        "$plugin_root/host/openclaw_tool_recovery.py" \
+        --openclaw-bin "$openclaw_bin" --command-attempt-warning \
+        --state-dir "$home/.openclaw/ods-runtime-patches/command-attempt-warning" \
+        >>"$pixel_log" 2>&1; then
+        ai_bad "Pixel's command attempt warning repair could not verify its package bytes. See $pixel_log."
         return 1
     fi
     # Honor the configured compaction budget on slow local providers.

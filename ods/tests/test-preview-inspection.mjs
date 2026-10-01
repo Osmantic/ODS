@@ -187,7 +187,7 @@ test('tool description states role/name matching for hidden assertions',()=>{
 });
 test('capsule applies hidden-inclusive role matching to assert-hidden only',()=>{
  const source=fs.readFileSync(new URL('../extensions/services/pixel-agent/host/preview_inspection_capsule.py',import.meta.url),'utf8');
- assert.match(source,/observe\(\s*step\["locator"\], step\["action"\] == "assert-hidden",\s*None if step\["action"\] == "click" else step\["action"\] == "assert-visible",\s*\)/);
+ assert.match(source,/observe\(\s*step\["locator"\], step\["action"\] == "assert-hidden",\s*None if step\["action"\] in \("click", "select-option"\) else step\["action"\] != "assert-hidden",\s*step\.get\('expectedText'\),\s*step\.get\('value'\),\s*\)/);
  // Every other role/name step matches rendered-only (Playwright source-text
  // names united with Chromium's accessibility tree).
  assert.equal(source.match(/= including_hidden\(locator, nodes, owned, rendered_only=not include_hidden\)/g).length,1);

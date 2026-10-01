@@ -54,7 +54,7 @@ lan_ip=$(PATH="$tmpdir:$PATH" _ods_lan_ip)
 
 route_shim "1.1.1.1 dev tun0 src 10.8.0.6 uid 1000"
 default_output=$(PATH="$tmpdir:$PATH" print_dashboard_qr)
-grep -Fq "http://10.8.0.6:3001" <<< "$default_output" \
+grep -Fq "http://10.8.0.6:3011" <<< "$default_output" \
     || fail "print_dashboard_qr did not use the on-link route's source address"
 
 cat > "$tmpdir/ip" <<'SH'
@@ -79,7 +79,15 @@ lan_ip=$(PATH="$tmpdir:$PATH" _ods_lan_ip)
     || fail "_ods_lan_ip did not parse the macOS ifconfig fallback"
 
 default_output=$(PATH="$tmpdir:$PATH" print_dashboard_qr)
-grep -Fq "http://10.42.0.99:3001" <<< "$default_output" \
+grep -Fq "http://10.42.0.99:3011" <<< "$default_output" \
     || fail "print_dashboard_qr did not use the discovered LAN IP by default"
 
-echo "[PASS] qrcode helper honors explicit URLs and macOS LAN detection"
+custom_output=$(PATH="$tmpdir:$PATH" DASHBOARD_REMOTE_PORT=3111 print_dashboard_qr)
+grep -Fq "http://10.42.0.99:3111" <<< "$custom_output" \
+    || fail "print_dashboard_qr did not use the configured remote port"
+
+card_output=$(PATH="$tmpdir:$PATH" DASHBOARD_REMOTE_PORT=3111 print_success_card "test" "test")
+grep -Fq "http://10.42.0.99:3111" <<< "$card_output" \
+    || fail "print_success_card did not use the configured remote port"
+
+echo "[PASS] qrcode helper honors explicit URLs, custom remote ports, and macOS LAN detection"

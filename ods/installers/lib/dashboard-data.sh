@@ -14,16 +14,29 @@ _ods_dashboard_mutate() {
 }
 
 ods_prepare_dashboard_data() {
-    local install_dir="$1" rootless="$2" target metadata group mode
+    local install_dir="$1" rootless="$2" target metadata group mode use_docker_repair=false
     target="$install_dir/data"
     if [[ ! -d "$target" || -L "$target" ]]; then
         echo "[error] Dashboard data must be a real directory: $target" >&2
         return 1
     fi
     if [[ "$rootless" == true ]]; then
+        use_docker_repair=true
+    elif declare -f ods_sudo_available >/dev/null 2>&1 && ! ods_sudo_available; then
+        # A non-root installer outside group 1000 cannot chgrp its own data
+        # directory to the Dashboard runtime's GID. Docker group access is
+        # sufficient for this narrowly scoped bind-mount repair.
+        metadata=$(stat -c '%g' "$target") || return 1
+        [[ "$metadata" == 1000 ]] || use_docker_repair=true
+        if [[ -d "$target/pixel-chat-results" && ! -L "$target/pixel-chat-results" ]]; then
+            metadata=$(stat -c '%u:%g' "$target/pixel-chat-results") || return 1
+            [[ "$metadata" == 1000:1000 ]] || use_docker_repair=true
+        fi
+    fi
+    if "$use_docker_repair"; then
         # Host chgrp 1000 is not container GID 1000 in a rootless namespace.
-        # Reuse the pinned helper; unrelated service data and existing
-        # password/chat file modes remain unchanged.
+        # The same pinned, offline helper also repairs rootful Docker when
+        # the installer has Docker access but no passwordless sudo.
         _ods_rootless_ensure_helper_image || return 1
         docker_run run --rm --network none --user 0:0 \
             --mount "type=bind,src=$target,dst=/data" \
