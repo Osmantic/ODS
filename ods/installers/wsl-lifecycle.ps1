@@ -8,9 +8,11 @@ param(
     [string]$InstanceDirectory,
     [switch]$ValidateOnly,
     [string]$StateRoot,
-    [string]$DockerDesktopPath
+    [string]$DockerDesktopPath,
+    [switch]$RetireRelay
 )
 $ErrorActionPreference = 'Stop'
+if ($RetireRelay -and $Action -ne 'disable-startup') { throw 'RetireRelay is supported only for disable-startup' }
 $script:ODSWslLifecycleSource = $PSCommandPath
 $script:ODSWslStartupDeadline = $null
 $script:ODSWslStartupIdentity = $null
@@ -452,14 +454,18 @@ function Assert-ODSWslStartupStillWanted {
     if ((Get-ODSWslUtcNow) -ge $script:ODSWslStartupDeadline) { throw 'WSL startup deadline exceeded; inspect startup-status.json and retry start after Docker is ready' }
 }
 
-function Disable-ODSWslStartup($Identity,[switch]$ValidateOnly) {
+function Disable-ODSWslStartup($Identity,[switch]$ValidateOnly,[switch]$RetireRelay) {
     $task=Get-ScheduledTask -TaskName ($Identity.taskName + '-Startup') -ErrorAction SilentlyContinue
+    $relayTask=$null
+    if ($RetireRelay) { $relayTask=Get-ScheduledTask -TaskName ($Identity.taskName + '-Relay') -ErrorAction SilentlyContinue }
     if (-not (Test-Path -LiteralPath $Identity.directory)) {
-        if ($task) { throw 'Startup task exists without its owner manifest; refusing to modify it' }
-        return [pscustomobject]@{scope='wsl-startup';state='unmanaged';identity=$Identity}
+        if ($task -or $relayTask) { throw 'Windows task exists without its owner manifest; refusing to modify it' }
+        return [pscustomobject]@{scope='wsl-startup';state='unmanaged';identity=$Identity;relayRetirement='unmanaged'}
     }
     $null=Assert-ODSWslManifest $Identity
     if ($task) { $null=Assert-ODSWslStartupTask $Identity }
+    # Uninstall validates every task it will retire before changing startup intent.
+    if ($relayTask) { $null=Assert-ODSWslRelayTask $Identity }
     $null=Get-ODSWslStartupIntent $Identity
     $lock=$null
     try {
@@ -470,14 +476,17 @@ function Disable-ODSWslStartup($Identity,[switch]$ValidateOnly) {
                 $lock=[IO.File]::Open($path,'Open','ReadWrite','None')
             }
             Assert-ODSWslCommandSettled $Identity -ValidateOnly
-            return [pscustomobject]@{scope='wsl-startup';state='validated';identity=$Identity}
+            return [pscustomobject]@{scope='wsl-startup';state='validated';identity=$Identity;relayRetirement=$(if ($RetireRelay) { 'validated' } else { 'not-requested' })}
         }
         Set-ODSWslStartupIntent $Identity $false
         if ($task) { Disable-ScheduledTask -TaskName ($Identity.taskName + '-Startup') | Out-Null }
         # Uninstall must not remove Linux assets while an old start is draining.
         $lock=Open-ODSWslCommandLock $Identity
         Assert-ODSWslCommandSettled $Identity
-        [pscustomobject]@{scope='wsl-startup';state='disabled';identity=$Identity}
+        # Ordinary login opt-out leaves manually running services alone. Only
+        # explicit uninstall retirement stops the independently owned relay.
+        if ($RetireRelay) { Stop-ODSWslAgentRelay $Identity }
+        [pscustomobject]@{scope='wsl-startup';state='disabled';identity=$Identity;relayRetirement=$(if ($RetireRelay) { 'stopped' } else { 'not-requested' })}
     } finally { if ($lock) { $lock.Dispose() } }
 }
 
@@ -942,10 +951,11 @@ function Invoke-ODSWslStack($Identity,[string]$Action) {
     }
 }
 
-function Invoke-ODSWslLifecycle([string]$Action,[string]$Distro,[string]$InstallRoot,[switch]$ValidateOnly,[string]$DockerDesktopPath) {
+function Invoke-ODSWslLifecycle([string]$Action,[string]$Distro,[string]$InstallRoot,[switch]$ValidateOnly,[string]$DockerDesktopPath,[switch]$RetireRelay) {
     # Uninstall already supplies the installation's canonical distro. Never
     # enter or even query WSL while withdrawing Windows sign-in permission.
-    if ($Action -eq 'disable-startup') { return Disable-ODSWslStartup (Get-ODSWslIdentity $Distro $InstallRoot) -ValidateOnly:$ValidateOnly }
+    if ($RetireRelay -and $Action -ne 'disable-startup') { throw 'RetireRelay is supported only for disable-startup' }
+    if ($Action -eq 'disable-startup') { return Disable-ODSWslStartup (Get-ODSWslIdentity $Distro $InstallRoot) -ValidateOnly:$ValidateOnly -RetireRelay:$RetireRelay }
     # Repair an already-managed installation's Windows sign-in task without
     # rerunning the installer or entering WSL. Uses the canonical identity
     # directly; the distro need not be registered for this Windows-only repair.
@@ -1022,5 +1032,5 @@ if ($MyInvocation.InvocationName -ne '.') {
     if ($Action -eq 'hold') { Invoke-ODSWslHolder $InstanceDirectory }
     elseif ($Action -eq 'relay-hold') { Invoke-ODSWslRelayHolder $InstanceDirectory }
     elseif ($Action -eq 'autostart') { Invoke-ODSWslStartup $InstanceDirectory }
-    else { Invoke-ODSWslLifecycle $Action $Distro $InstallRoot -DockerDesktopPath $DockerDesktopPath -ValidateOnly:$ValidateOnly | ConvertTo-Json -Depth 8 }
+    else { Invoke-ODSWslLifecycle $Action $Distro $InstallRoot -DockerDesktopPath $DockerDesktopPath -ValidateOnly:$ValidateOnly -RetireRelay:$RetireRelay | ConvertTo-Json -Depth 8 }
 }

@@ -14,11 +14,12 @@ function Record([int]$Number) { [pscustomobject]@{pid=$Number;startTicks=('ticks
 function Key([string]$Name) { Join-Path $script:identity.directory $Name }
 function Reset {
     $script:files=@{}; $script:task=$null; $script:processes=@{}; $script:started=0; $script:spawned=0; $script:stopped=@(); $script:mode='running'; $script:ticks=0; $script:holder=$false
+    $script:directoryExists=$false; $script:intentWrites=0; $script:lockBusy=$false; $script:pending=$false
     $script:processes[101]=Record 101; $script:processes[102]=Record 102; $script:processes[$PID]=Record $PID
 }
 # Every execution boundary is mocked. No directory is created and no WSL,
 # Scheduler or real process operation is permitted by this fixture.
-function Get-ScheduledTask { param($TaskName,$ErrorAction); if ($TaskName -cne ($script:identity.taskName+'-Relay')) { throw 'Unexpected task' }; $script:task }
+function Get-ScheduledTask { param($TaskName,$ErrorAction); if ($TaskName -ceq ($script:identity.taskName+'-Startup')) { return $null }; if ($TaskName -cne ($script:identity.taskName+'-Relay')) { throw 'Unexpected task' }; $script:task }
 function New-ScheduledTaskAction { param($Execute,$Argument); [pscustomobject]@{Execute=$Execute;Arguments=$Argument} }
 function New-ScheduledTaskPrincipal { param($UserId,$LogonType,$RunLevel); [pscustomobject]@{UserId=$UserId;LogonType=$LogonType;RunLevel=$RunLevel} }
 function New-ScheduledTaskSettingsSet { param([switch]$Hidden,$ExecutionTimeLimit,$MultipleInstances,[switch]$AllowStartIfOnBatteries,[switch]$DontStopIfGoingOnBatteries); [pscustomobject]@{ExecutionTimeLimit='PT0S';RestartCount=0;MultipleInstances=$MultipleInstances} }
@@ -54,6 +55,7 @@ function Remove-Item { param($LiteralPath,[switch]$Force)
     $script:files.Remove($LiteralPath)
 }
 function Test-Path { param($LiteralPath,$PathType)
+    if ($LiteralPath -ceq $script:identity.directory) { return $script:directoryExists }
     if ($script:files.ContainsKey($LiteralPath)) { return $true }
     Microsoft.PowerShell.Management\Test-Path -LiteralPath $LiteralPath
 }
@@ -118,4 +120,41 @@ Invoke-ODSWslRelayHolder $script:identity.directory
 Check ($script:spawned -eq 1 -and $script:stopped -contains 102) 'scheduler holder owns and stops its child'
 Check ((Test-ODSProcessIdentity $script:files[(Key 'agent-relay-process.json')] (Record 102))) 'holder publishes compatible full process identity'
 Check ($script:files[(Key 'relay-runtime.json')].state -eq 'stopped') 'holder records completed requested stop'
+
+# Exercise the uninstall caller as well as the relay helper. No real scheduler,
+# interop, lock file, process or startup preference may escape these fakes.
+function Get-ODSWslStartupIntent { param($Identity); $null }
+function Set-ODSWslStartupIntent { param($Identity,$DesiredRunning); $script:intentWrites++ }
+function Open-ODSWslCommandLock { param($Identity); if ($script:lockBusy) { throw 'fixture command lock busy' }; [IO.MemoryStream]::new() }
+function Assert-ODSWslCommandSettled { param($Identity,[switch]$ValidateOnly); if ($script:pending) { throw 'fixture command pending' } }
+function Disable-ScheduledTask { param($TaskName); throw 'Fixture has no startup task to disable' }
+Reset; NewTask; $script:directoryExists=$true
+$result=Disable-ODSWslStartup $script:identity -RetireRelay -ValidateOnly
+Check ($result.relayRetirement -eq 'validated' -and $script:intentWrites -eq 0 -and $script:stopped.Count -eq 0 -and $script:files.Count -eq 0) 'uninstall relay precheck is read only'
+foreach ($readonly in @($true,$false)) {
+    Reset; NewTask; $script:directoryExists=$true; $script:task.Principal.UserId='S-1-5-18'
+    Reject { Disable-ODSWslStartup $script:identity -RetireRelay -ValidateOnly:$readonly } '*relay task identity changed*'
+    Check ($script:intentWrites -eq 0 -and $script:stopped.Count -eq 0) 'foreign uninstall relay fails before startup mutation'
+}
+Reset; NewTask; $script:directoryExists=$true
+Start-ODSWslAgentRelay $script:identity
+$result=Disable-ODSWslStartup $script:identity
+Check ($result.relayRetirement -eq 'not-requested' -and $script:task.State -eq 'Running' -and $script:stopped.Count -eq 0) 'ordinary login opt-out preserves manually running relay'
+$result=Disable-ODSWslStartup $script:identity -RetireRelay
+Check ($result.relayRetirement -eq 'stopped' -and $script:task.State -eq 'Ready' -and $script:stopped -contains 102 -and -not $script:files.ContainsKey((Key 'agent-relay-process.json'))) 'uninstall settles holder and removes exact owned relay'
+Reset; $script:directoryExists=$true; $script:files[(Key 'agent-relay-process.json')]=Record 102
+$null=Disable-ODSWslStartup $script:identity -RetireRelay
+Check ($script:stopped -contains 102) 'uninstall also retires legacy caller-owned relay without a task'
+foreach ($failure in @('lockBusy','pending')) {
+    Reset; NewTask; $script:directoryExists=$true; Start-ODSWslAgentRelay $script:identity
+    Set-Variable -Name $failure -Value $true -Scope Script
+    Reject { Disable-ODSWslStartup $script:identity -RetireRelay } '*fixture command*'
+    Check ($script:task.State -eq 'Running' -and $script:stopped.Count -eq 0) 'unsettled command prevents relay mutation'
+}
+Reset; NewTask
+Reject { Disable-ODSWslStartup $script:identity -RetireRelay -ValidateOnly } '*without its owner manifest*'
+Check ($script:intentWrites -eq 0 -and $script:stopped.Count -eq 0) 'missing manifest never authorizes orphan task mutation'
+Reset
+Check ((Disable-ODSWslStartup $script:identity -RetireRelay).relayRetirement -eq 'unmanaged') 'absent installation and relay remain unmanaged'
+Reject { Invoke-ODSWslLifecycle 'start' 'Fixture' '/home/fixture/ods' -RetireRelay } '*only for disable-startup*'
 Write-Host "Passed $script:checks relay checks; all execution and filesystem mutation boundaries mocked."

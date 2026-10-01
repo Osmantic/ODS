@@ -250,7 +250,7 @@ try {
     $parameterNames=@([Management.Automation.Language.Parser]::ParseFile(
         (Join-Path $PSScriptRoot '../../installers/wsl-lifecycle.ps1'),[ref]$null,[ref]$null
     ).ParamBlock.Parameters | ForEach-Object { $_.Name.VariablePath.UserPath })
-    Check (($parameterNames -join ',') -ceq 'Action,Distro,InstallRoot,InstanceDirectory,ValidateOnly,StateRoot,DockerDesktopPath') 'public script preserves all legacy positional parameters before the new optional Docker path'
+    Check (($parameterNames -join ',') -ceq 'Action,Distro,InstallRoot,InstanceDirectory,ValidateOnly,StateRoot,DockerDesktopPath,RetireRelay') 'public script preserves all existing positional parameters before the optional relay retirement flag'
     Write-Host "Passed $count startup contracts; no WSL Docker Scheduler or service action ran."
 } finally {
     if(Test-Path -LiteralPath $fixture){
