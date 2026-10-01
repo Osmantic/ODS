@@ -261,6 +261,7 @@ const WORKSPACE_PREVIEW_FAILURE_REASONS = Object.freeze({
   too_many_files: "the directory exceeds the preview file-count limit",
   snapshot_too_large: "the directory exceeds the preview size limit",
   unsafe_file: "a file failed the preview safety checks",
+  writable_file: "a generated file allows group/other writes; remove only those write bits on affected output files, never broaden permissions or change parent directories",
   unsafe_directory: "the directory failed the preview path or permission checks",
   cancelled: "waiting for the preview was cancelled; publication may still be pending",
   unavailable: "the preview was unavailable; the tool supplied no more specific verified cause",
@@ -590,7 +591,10 @@ export function createExecCancellationControl({
 
   return {
     resolveWorkdir(value, workspaceRoot) {
-      return executionHost === "gateway" && platform === "darwin"
+      // Full Access also runs natively on Linux/WSL. Sandbox aliases must
+      // resolve against that configured workspace before core exec can fall
+      // back to the gateway process cwd. Sandbox execution stays unchanged.
+      return executionHost === "gateway" && ["darwin", "linux"].includes(platform)
         ? nativeExecWorkdir(value, workspaceRoot) : undefined;
     },
     prepare(runId, command) {
@@ -4466,6 +4470,13 @@ function canonicalWebFetchSucceeded(event) {
   return statuses.some(
     (status) => Number.isInteger(status) && status >= 200 && status < 300
   );
+}
+
+function repositoryExtractionSucceeded(result, repository) {
+  return !result?.isError && result?.details?.boundary === 'public-web-read-only' &&
+    canonicalGitHubSourceMatches(result.details.source_url, repository) &&
+    result.content?.some(part => part?.type === 'text' &&
+      typeof part.text === 'string' && part.text.includes('EXTERNAL_UNTRUSTED_CONTENT'));
 }
 
 function runIdentity(event, context) {
@@ -8451,8 +8462,16 @@ export function createToolLoopGuard({
       const selected = toolName === "tool_call"
         ? wrappedToolParams?.args : normalizedParams ?? event?.params;
       const unrelatedWorkspaceObservation = state?.workspaceExtensionIsolated && !state.operationsRequired;
-      const params = unrelatedWorkspaceObservation ? undefined
-        : permittedHostObservationParams(selected, state?.hostObservationPolicy);
+      if (unrelatedWorkspaceObservation) return {
+        block: true,
+        blockReason: "This workspace-only request does not authorize host inspection. " +
+          "Changing the arguments does not grant host access; do not retry this observation " +
+          "or substitute a host command. Continue inspecting the project and sandbox with " +
+          "workspace tools. If host facts are necessary, ask the owner for that specific " +
+          "read-only inspection. Missing workspace dependencies remain a reported limitation, " +
+          "not permission to install an unrelated host service.",
+      };
+      const params = permittedHostObservationParams(selected, state?.hostObservationPolicy);
       if (!params) return {
         block: true,
         blockReason: "Pixel could not validate this host observation against the current request. " +
@@ -10718,6 +10737,13 @@ export function createToolLoopGuard({
       }
     }
     if (state.githubCanonicalUrl) {
+      const extraction = toolName === 'pixel_ods_web_extract' ? event
+        : toolName === 'tool_call'
+          ? toolSearchSelectedToolEvent(event, 'pixel_ods_web_extract', 'pixel-ods') : undefined;
+      if (extraction && !toolCallFailed(extraction) &&
+          repositoryExtractionSucceeded(extraction.result, state.githubCanonicalUrl)) {
+        state.githubCanonicalSatisfied = true;
+      }
       const submission = operationsSubmission(event, toolName);
       if (submission) state.operationsSubmittedJobs.set(submission.jobId, submission);
       if (toolName === "pixel_ops_job_get" || toolName === "pixel_ops_job_wait") {
@@ -12554,10 +12580,7 @@ export function createToolLoopGuard({
     },
     observeRepositorySource(runId, result) {
       const state = runs.get(runId);
-      if (!state?.githubCanonicalUrl || result?.isError ||
-          result?.details?.boundary !== 'public-web-read-only' ||
-          !canonicalGitHubSourceMatches(result.details.source_url, state.githubCanonicalUrl) ||
-          !result.content?.some(part => part?.type === 'text' && part.text?.includes('EXTERNAL_UNTRUSTED_CONTENT'))) return;
+      if (!state?.githubCanonicalUrl || !repositoryExtractionSucceeded(result, state.githubCanonicalUrl)) return;
       state.githubCanonicalSatisfied = true;
     },
     afterToolCall,

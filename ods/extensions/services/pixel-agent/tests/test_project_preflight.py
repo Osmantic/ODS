@@ -73,6 +73,37 @@ def test_real_reservation_query_failure_is_failed_without_resource_intent(contro
     assert controller.jobs.observe(retry)['state'] == 'succeeded'
 
 
+@pytest.mark.parametrize('refusal', ['engine-headroom-insufficient', 'storage-capacity-reserved',
+                                     'storage-recovery-required'])
+def test_readonly_storage_refusal_does_not_fence_project_after_capacity_recovers(controller, refusal):
+    req = request(controller)
+    job, _ = controller.jobs.create('a' * 64, req)
+    other = 'ods-project-' + 'd' * 24
+    reserved = {other: controller.storage.total_bytes} if refusal == 'storage-capacity-reserved' else {}
+    controller.storage._write(reserved)
+    inventory = {other} if refusal in ('storage-capacity-reserved', 'storage-recovery-required') else set()
+    with patch('project_storage.engine_storage_jobs', return_value=inventory), \
+            patch('project_storage.engine_headroom', return_value=(16 * 1024**3, 1024**3)), \
+            patch.object(controller.storage, 'create_volume') as create, \
+            patch.object(controller, '_cleanup') as cleanup:
+        controller._work(job, req, {}, threading.Event())
+    row = controller.jobs.observe(job)
+    assert row['state'] == 'failed'
+    assert row['steps'] == []
+    assert row['output']['code'] == refusal
+    assert row['output']['executionStarted'] is False
+    assert row['output']['retryEligible'] is True
+    assert row['output']['automaticRetry'] is False
+    assert controller.storage._read() == reserved
+    create.assert_not_called()
+    cleanup.assert_not_called()
+    # A new explicit attempt is allowed and must pass normal storage admission.
+    restarted = ProjectJobs(controller.storage.state)
+    retry, created = restarted.create('b' * 64, req)
+    assert created
+    assert restarted.claim(retry)
+
+
 def test_reservation_write_failure_stays_uncertain_across_restart(controller):
     req = request(controller)
     job, _ = controller.jobs.create('a' * 64, req)

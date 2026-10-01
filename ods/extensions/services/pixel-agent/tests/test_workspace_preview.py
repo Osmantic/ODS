@@ -24,6 +24,62 @@ assert SPEC.loader is not None
 SPEC.loader.exec_module(MODULE)
 
 
+def test_framework_export_underscore_assets_keep_reserved_routes_private(tmp_path):
+    site = tmp_path / "export"
+    site.mkdir(mode=0o700)
+    (site / "index.html").write_text('<script src="./_next/static/app.js"></script>')
+    (site / "_next" / "static").mkdir(parents=True, mode=0o700)
+    (site / "_next" / "static" / "app.js").write_text('document.title="Ready";')
+    (site / "__next._full.txt").write_text("framework data")
+    files = MODULE._source_files(tmp_path, "export", os.getuid())
+    assert {name for name, _, _ in files} == {
+        "index.html", "_next/static/app.js", "__next._full.txt"
+    }
+    reserved = site / "__ods_view__.html"
+    reserved.write_text("spoof")
+    with pytest.raises(MODULE.PreviewError, match="unsafe preview file"):
+        MODULE._source_files(tmp_path, "export", os.getuid())
+
+
+@pytest.mark.parametrize("mode", [0o664, 0o646, 0o666])
+def test_generated_asset_writable_permissions_are_actionable_without_relaxation(tmp_path, mode):
+    site = tmp_path / "site"
+    site.mkdir(mode=0o700)
+    entry = site / "index.html"
+    entry.write_text("<!doctype html><script src='app.js'></script>")
+    entry.chmod(0o600)
+    asset = site / "app.js"
+    asset.write_text("console.log('preview');")
+    asset.chmod(mode)
+    with pytest.raises(MODULE.PreviewError, match="writable preview file") as caught:
+        MODULE._source_files(tmp_path, "site", os.getuid())
+    code = MODULE.PREVIEW_FAILURE_CODES[str(caught.value)]
+    assert MODULE._error_result(code)["errorCode"] == "writable_file"
+    assert stat.S_IMODE(asset.stat().st_mode) == mode
+    asset.chmod(mode & ~0o022)
+    assert len(MODULE._source_files(tmp_path, "site", os.getuid())) == 2
+
+
+@pytest.mark.parametrize("kind", ["symlink", "hardlink", "unsafe-name"])
+def test_permission_coaching_never_masks_other_unsafe_file_properties(tmp_path, kind):
+    site = tmp_path / "site"
+    site.mkdir(mode=0o700)
+    (site / "index.html").write_text("<!doctype html><h1>Test</h1>")
+    asset = site / ("bad name.js" if kind == "unsafe-name" else "app.js")
+    original = tmp_path / "source.js"
+    original.write_text("console.log('test');")
+    original.chmod(0o666)
+    if kind == "symlink":
+        asset.symlink_to(original)
+    elif kind == "hardlink":
+        os.link(original, asset)
+    else:
+        asset.write_bytes(original.read_bytes())
+        asset.chmod(0o666)
+    with pytest.raises(MODULE.PreviewError, match="^unsafe preview file$"):
+        MODULE._source_files(tmp_path, "site", os.getuid())
+
+
 @pytest.mark.parametrize("fault", [None, "foreign-owner", "different-inode",
     "group-writable", "non-root-mount-owner"])
 def test_virtiofs_mount_root_requires_same_private_owner_inode(tmp_path, monkeypatch, fault):
@@ -484,8 +540,11 @@ def test_http_snapshot_ignores_asset_queries_without_changing_path_or_bytes():
         site = workspace / "site"
         site.mkdir(mode=0o700)
         page = b'<link rel="stylesheet" href="style.css?v=2"><script src="app.js?build=abc"></script>'
-        assets = {"index.html": page, "style.css": b"body{color:purple}", "app.js": b"document.title='Ready'"}
+        assets = {"index.html": page, "style.css": b"body{color:purple}", "app.js": b"document.title='Ready'",
+                  "_next/static/chunk.js": b"document.title='Next ready'",
+                  "__next._full.txt": b"framework data"}
         for name, data in assets.items():
+            (site / name).parent.mkdir(parents=True, exist_ok=True, mode=0o700)
             (site / name).write_bytes(data)
             (site / name).chmod(0o600)
         receipt = MODULE.publish_snapshot(workspace, previews, "site", os.getuid())
@@ -517,6 +576,8 @@ def test_http_snapshot_ignores_asset_queries_without_changing_path_or_bytes():
                     assert status == 200 and body == b""
                     assert int(head["Content-Length"]) == len(expected)
                 assert request(f"/{receipt['siteId']}/../secret?v=2")[0] == 404
+                assert request(f"/{receipt['siteId']}/_next/../../secret")[0] == 404
+                assert request(f"/{receipt['siteId']}/__ods_unknown__.js")[0] == 404
                 assert request(f"/{receipt['siteId']}/style.css?v=2", authority="wrong.localhost")[0] == 404
             finally:
                 server.shutdown()

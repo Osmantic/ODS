@@ -224,6 +224,22 @@ export function createManagedRuntimeRegistry({environment = process.env,
           try { return await accessRuntime.acquire(token, revision); }
           catch { throw transitionError('managed-transition-access-owner-refused'); }
         }
+        const maintenanceAuthority = {};
+        async function acquireMaintenance(token, revision) {
+          // Maintenance may not reuse an invalidated provider's management
+          // fallback. That path is reserved for real transitions and reproof.
+          assertTransition();
+          return accessRuntime.acquireMaintenance(token, revision, maintenanceAuthority);
+        }
+        function releaseMaintenance(token) {
+          try { assertTransition(); }
+          catch {
+            // Discard captured proof without opening the held admission gate.
+            accessRuntime.acquire(token, accessRuntime.status().revision);
+            throw error();
+          }
+          return accessRuntime.releaseMaintenance(token, maintenanceAuthority);
+        }
         async function qualifyTransition(token, revision) {
           // A managed config hot reload deliberately poisons the old provider
           // owner, but an already-held model transaction must still be able to
@@ -238,7 +254,7 @@ export function createManagedRuntimeRegistry({environment = process.env,
         }
         current = {accessRuntime, deploymentText: raw, binding: canonical(deployment.binding),
           routing, commands, valid, shutdown, admit, finish, select, assertTransition, status,
-          readControlStatus, acquireTransition, qualifyTransition,
+          readControlStatus, acquireTransition, acquireMaintenance, releaseMaintenance, qualifyTransition,
           classifyTransitionError: failure => transitionFailures.get(failure) ?? null,
           readRegistration() {
             assertTransition();

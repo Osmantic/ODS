@@ -144,6 +144,29 @@ def node_tools():
     return selected
 
 
+def native_docker_binary(binary):
+    resolved = Path(binary).resolve(strict=True)
+    if str(resolved) != '/Applications/OrbStack.app/Contents/MacOS/xbin/docker-tools':
+        return str(resolved)
+    # OrbStack's multicall executable depends on argv[0], whereas the native
+    # runtime deliberately binds canonical executable paths. Use a standalone
+    # CLI without linking it globally or replacing the selected Docker engine.
+    brew = shutil.which('brew')
+    if not brew:
+        raise ValueError('native-orbstack-standalone-docker-required')
+    prefix = Path(command([brew, '--prefix', 'docker']))
+    candidate = prefix / 'bin/docker'
+    if not candidate.is_file():
+        command([brew, 'install', '--formula', '--skip-link', 'docker'], timeout=1800)
+        prefix = Path(command([brew, '--prefix', 'docker']))
+        candidate = prefix / 'bin/docker'
+    selected = str(candidate.resolve(strict=True))
+    if (not re.fullmatch(r'/(?:opt/homebrew|usr/local)/Cellar/docker/[A-Za-z0-9._+-]+/bin/docker', selected)
+            or not re.match(r'Docker version \d+\.', command([selected, '--version']))):
+        raise ValueError('native-orbstack-standalone-docker-invalid')
+    return selected
+
+
 def install(*, install_dir, ods_source, compose_files, ref=DEFAULT_REF, prompt_for_sudo=False):
     install_dir = preflight(install_dir, prompt_for_sudo=prompt_for_sudo).resolve(strict=True)
     if not re.fullmatch('[a-f0-9]{40}', ref):
@@ -160,7 +183,7 @@ def install(*, install_dir, ods_source, compose_files, ref=DEFAULT_REF, prompt_f
     docker = shutil.which('docker')
     if not docker:
         raise ValueError('docker-required')
-    docker = str(Path(docker).resolve(strict=True))
+    docker = native_docker_binary(docker)
     endpoint = os.environ.get('DOCKER_HOST')
     if not endpoint:
         context = json.loads(command([docker, 'context', 'inspect']))

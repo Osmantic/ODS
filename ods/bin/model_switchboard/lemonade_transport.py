@@ -120,7 +120,7 @@ def _owned_router(install_dir: Path, project: str) -> str:
         raise OSError("ODS model-router mount ownership metadata is invalid")
     root = Path(install_dir).resolve()
     for target, relative in (("/state", "data"),
-                             ("/config/endpoints.json", "config/model-router/endpoints.json")):
+                             ("/config", "config/model-router")):
         mounts = [mount for mount in all_mounts if mount.get("Destination") == target]
         if (len(mounts) != 1 or mounts[0].get("Type") != "bind"
                 or mounts[0].get("RW") is not False

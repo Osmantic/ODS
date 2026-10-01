@@ -92,6 +92,27 @@ const renderSettings = (override = null) => {
 }
 
 describe('Settings', () => {
+  it('inspects permissions when its section opens, without polling a hidden mounted card', async () => {
+    const access = {available:true,surface:'wsl-systemd',configured_mode:'full-access',
+      effective_mode:'full-access',runtime_verified:true,revision:'a'.repeat(64),pending:false,busy:false}
+    const fetchMock = vi.fn(async url => response(url === '/api/pixel/access-mode' ? access : payloadByUrl(url)))
+    vi.stubGlobal('fetch', fetchMock)
+    const view = render(<Settings activeSection="general" />)
+    await act(async () => {})
+    const inspections = () => fetchMock.mock.calls.filter(([url]) => url === '/api/pixel/access-mode')
+    expect(inspections()).toHaveLength(0)
+    view.rerender(<Settings activeSection="access" />)
+    expect(await screen.findByText('WSL')).toBeVisible()
+    expect(inspections()).toHaveLength(1)
+    view.rerender(<Settings activeSection="general" />)
+    fireEvent.focus(window)
+    await act(async () => {})
+    expect(inspections()).toHaveLength(1)
+    view.rerender(<Settings activeSection="access" />)
+    await waitFor(() => expect(inspections()).toHaveLength(2))
+    expect(fetchMock.mock.calls.every(call => call[1]?.method !== 'POST')).toBe(true)
+  })
+
   it('shows a confirmed release with notes and performs only a read when checking', async () => {
     const { fetchMock } = renderSettings(url => String(url).startsWith('/api/version') ? response({ current:'2.6.0', latest:'2.7.0', update_available:true, check_status:'checked', checked_at:'2026-09-16T00:00:00Z' }) : null)
     expect(await screen.findByText('A new version of ODS is available')).toBeVisible()

@@ -187,12 +187,15 @@ class ProjectJobs:
             return db.execute("UPDATE jobs SET state='running',updated=? WHERE id=? AND state='queued' AND cancel_requested=0",
                               (time.time(), job)).rowcount == 1
 
-    def preflight_failed(self, job):
+    def preflight_failed(self, job, *, code='engine-info-unavailable'):
+        if code not in ('engine-info-unavailable', 'engine-headroom-insufficient',
+                        'storage-capacity-reserved', 'storage-recovery-required'):
+            raise ValueError('invalid storage preflight refusal')
         with self._connect() as db:
             db.execute("UPDATE jobs SET state='failed',output=?,updated=? WHERE id=? AND state='running' AND steps='[]'", (
-                self._json({'code': 'engine-info-unavailable', 'executionStarted': False,
+                self._json({'code': code, 'executionStarted': False,
                             'retryEligible': True, 'automaticRetry': False,
-                            'error': 'The read-only engine query failed before project execution.'}), time.time(), job))
+                            'error': 'Storage preflight refused this job before project execution.'}), time.time(), job))
 
     def record_stage(self, job, stage, result):
         if stage not in ("acquire", "test", "build", "diagnose") or not isinstance(result, dict):

@@ -15,7 +15,7 @@ from project_jobs import ProjectJobs
 from project_runtime import recover_job, run_stage, seed_project, start_keeper, observe_stage
 from project_runtime_protocol import select_project_runtime
 from project_capabilities import probe_python_runtime, cleanup_pending_probe, ProbeCleanupPending
-from project_storage import ProjectStorage, verify_volume, ReadOnlyPreflightError, StorageAdmissionError
+from project_storage import ProjectStorage, verify_volume, StorageAdmissionError
 from project_snapshot import snapshot_project
 from project_diagnostics import SCRATCH_BYTES, diagnostic_digest, diagnostic_output, validate_diagnostic, diagnostic_failure
 
@@ -318,11 +318,13 @@ class ProjectController:
             relative = import_artifacts(self.workspace, request["project"], job, artifacts)
             self.jobs.complete(job, {"sha256": artifacts["sha256"], "files": len(artifacts["files"]),
                                     "bytes": artifacts["bytes"], "relativeDirectory": relative})
-        except ReadOnlyPreflightError:
+        except StorageAdmissionError as error:
             if resources_started:
                 self.jobs.controller_failure(job, 'execution outcome requires recovery')
             else:
-                self.jobs.preflight_failed(job)
+                # These refusals precede reservation intent. Capacity can recover;
+                # no project execution occurred that would require reconciliation.
+                self.jobs.preflight_failed(job, code=error.code)
         except Exception as error:
             self.jobs.controller_failure(job, error)
         finally:

@@ -109,6 +109,22 @@ def has_retired_reference(value, *, allow_fleet=False):
         if not (allow_fleet and pattern is retired_fleet_pattern)
     )
 
+# The migration must recognize these two historical declarations verbatim to
+# remove a shipped default without rewriting owner-customized policy. This is
+# not permission to use the name in any other code, comment, prose, or path.
+guidance_migration_path = "ods/installers/lib/pixel-workspace-guidance.py"
+historical_fleet_label = retired_product_prefix.title() + " " + retired_fleet_name.title()
+historical_guidance_declarations = {
+    "LEGACY_HEADING = b'## " + historical_fleet_label + " Local-First Operating Contract (canonical)\\n'",
+    "MARKER = b'" + historical_fleet_label + " Local-First Operating Contract'",
+}
+
+
+def has_retired_content(relative_path, line, *, allow_fleet=False):
+    if relative_path == guidance_migration_path and line in historical_guidance_declarations:
+        return False
+    return has_retired_reference(line, allow_fleet=allow_fleet)
+
 positive_samples = [
     retired_product_prefix + retired_product_name,
     retired_product_prefix + "-" + retired_product_name,
@@ -132,6 +148,28 @@ if any(has_retired_reference(sample) for sample in negative_samples):
 if (has_retired_reference(retired_product_prefix + retired_fleet_name, allow_fleet=True)
         or not has_retired_reference(retired_product_prefix + retired_product_name, allow_fleet=True)):
     raise SystemExit("[FAIL] Vendored Pixel exception is broader than the Fleet name")
+
+for declaration in historical_guidance_declarations:
+    if (not has_retired_reference(declaration)
+            or has_retired_content(guidance_migration_path, declaration)):
+        raise SystemExit("[FAIL] Exact historical guidance declaration is not recognized")
+    rejected_guidance_samples = [
+        ("README.md", declaration),
+        (guidance_migration_path + ".backup", declaration),
+        ("other/" + guidance_migration_path, declaration),
+        (guidance_migration_path, "# " + declaration),
+        (guidance_migration_path, "    " + declaration),
+        (guidance_migration_path, declaration + " # unrelated comment"),
+        (guidance_migration_path, declaration + "; print('extra code')"),
+        (guidance_migration_path, declaration.lower()),
+        (guidance_migration_path, "Use " + historical_fleet_label + " for every task."),
+        (guidance_migration_path, "OTHER = " + repr(historical_fleet_label)),
+        (guidance_migration_path, retired_product_prefix + retired_product_name),
+    ]
+    if any(not has_retired_content(path, line) for path, line in rejected_guidance_samples):
+        raise SystemExit("[FAIL] Historical guidance exception permits other code or prose")
+if not has_retired_reference("ods/installers/" + historical_fleet_label + "/migration.py"):
+    raise SystemExit("[FAIL] Historical guidance exception permits a retired path")
 
 repo_path = pathlib.Path(repo_root)
 tracked_output = subprocess.check_output(
@@ -176,7 +214,7 @@ for relative_path in tracked_files:
             r"[0-9a-f]{40}:[^\s:]+:[a-z0-9-]+:[1-9][0-9]*", line
         ):
             continue
-        if has_retired_reference(line, allow_fleet=allow_fleet):
+        if has_retired_content(relative_path, line, allow_fleet=allow_fleet):
             matches.append(f"{relative_path}:{line_number}:{line}")
 
 if matches:

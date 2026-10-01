@@ -83,6 +83,7 @@ def test_candidate_uses_upstream_policy_without_activating_services(tmp_path, mo
             (root / '.env').write_text("PIXEL_LIMB_OPERATIONS_ENABLED='1'\n")
             generated = root / '.generated'
             (generated / 'workspace').mkdir(parents=True)
+            generated.chmod(0o700)  # configure.mjs creates this private parent.
             (generated / 'workspace/AGENTS.md').write_text('upstream instructions')
             (generated / 'ops-policy.json').write_text('{"originalPolicy":true}')
         elif args[0] == str(node) and args[1].endswith('render-config.mjs'):

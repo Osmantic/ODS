@@ -80,6 +80,8 @@ jobs:
           python-version: ${{ matrix.python }}
       - name: Install isolated inference test dependencies
         run: python -m pip install -r extensions/services/pixel-inference/requirements.txt -r extensions/services/model-router/requirements.txt 'pytest>=8,<9'
+      - name: Installer image selection contracts
+        run: python -m pytest tests/test_image_pull_plan.py -q
       - name: mDNS publication recovery contracts
         run: python -m pytest tests/test_mdns_refresh_recovery.py tests/test_mdns_subdomains.py -q
       - name: Dashboard sign-in link command
@@ -283,7 +285,7 @@ jobs:
         run: python3 -m unittest discover -s tests -p 'test_pixel_*.py' -v
 
       - name: Pixel Inspection Upgrade Cleanup Contracts
-        run: python3 -m pytest -q tests/test_pixel_inspection_upgrade_dispatch.py tests/test_preview_inspection_distribution.py
+        run: python3 -m pytest -q tests/test_pixel_inspection_upgrade_dispatch.py tests/test_preview_inspection_distribution.py tests/test_preview_select.py
 
       - name: Pixel Native Integration Contracts
         run: python3 -m pytest -q tests/test_pixel_macos_apps.py tests/test_pixel_native_compose_live.py tests/test_pixel_onboarding.py tests/test_pixel_open_app_handler.py tests/test_pixel_runtime_budget.py
@@ -379,6 +381,8 @@ jobs:
 
       - name: Windows Service Plan Tests
         run: bash tests/test-windows-service-plan.sh
+      - name: Standalone ComfyUI Compose isolation
+        run: bash tests/test-comfyui-standalone-compose.sh
 
       - name: Windows Installer Flag Tests
         run: bash tests/test-windows-installer-flags.sh
@@ -487,8 +491,10 @@ jobs:
           bash tests/test-linux-ollama-port-override.sh
           bash tests/test-external-services.sh
           bash tests/test-gateway-only-linux.sh
+          bash tests/test-portal-no-webui-selection.sh
           bash tests/test-linux-devtools-opt-in.sh
           bash tests/test-dashboard-data-permissions.sh
+          bash tests/test-extensions-library-copy.sh
           sudo -n python3 tests/test_dashboard_data_permissions.py
           bash tests/test-resolve-compose-resilient.sh
           bash tests/test-phase03-multigpu-tty.sh
@@ -540,6 +546,9 @@ jobs:
 
       - name: Linux install preflight tests
         run: |
+          python3 -m pytest -q tests/test_cloud_installer_messages.py
+          bash tests/test-phase03-no-gpu-assignment-message.sh
+          bash tests/test-preflight-external-gpu.sh
           bash tests/test-linux-install-preflight.sh
           bash tests/test-preflight-dashboard-port.sh
           bash tests/test-wsl-broken-docker-shim.sh

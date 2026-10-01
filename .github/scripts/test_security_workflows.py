@@ -32,6 +32,19 @@ class WorkflowSecurityTests(unittest.TestCase):
         ai = next(step for step in job['steps'] if 'claude-code-action@' in step.get('uses', ''))
         self.assertIn('--max-budget-usd 5', ai['with']['claude_args'])
 
+    def test_paid_review_queue_preserves_pending_prs_and_supersedes_stale_heads(self):
+        config = workflow('claude-review.yml')
+        self.assertEqual(config['concurrency']['cancel-in-progress'], 'true')
+        self.assertNotIn('queue', config['concurrency'])
+        budget_jobs = {name: job for name, job in config['jobs'].items()
+                       if job.get('concurrency', {}).get('group', '').endswith('-budget')}
+        self.assertIn('basic-review', budget_jobs)
+        for name, job in budget_jobs.items():
+            with self.subTest(job=name):
+                self.assertEqual(job['concurrency']['queue'], 'max')
+                self.assertEqual(job['concurrency']['cancel-in-progress'], 'false')
+                self.assertLessEqual(int(job['timeout-minutes']), 15)
+
     def test_reviewed_test_actions_are_immutable(self):
         for filename in ('test-cli-link-precedence.yml', 'test-egress-headers.yml',
                          'test-migration-ceiling.yml', 'test-pixel-tool-grammar.yml',
