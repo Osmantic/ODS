@@ -185,7 +185,11 @@ def cleanup_linux(source, owner_uid, *, remove=False):
     validate_config(config)
     if config['ownerUid'] != owner_uid:
         raise ValueError('project installation owner mismatch')
-    expected = {PROGRAM_ROOT / name: common.source_bytes(Path(source) / name, owner_uid) for name in FILES}
+    # An older or interrupted installation may never have published every
+    # current runtime file. Prove each artifact we will remove against that
+    # installation's source; never substitute a newer candidate's bytes.
+    expected = {path: common.source_bytes(Path(source) / path.name, owner_uid)
+                for path in present if path.parent == PROGRAM_ROOT}
     expected[UNIT] = unit_bytes(config)
     expected[CONFIG] = (json.dumps(config, sort_keys=True) + '\n').encode()
     if os.path.lexists(PROGRAM_ROOT):

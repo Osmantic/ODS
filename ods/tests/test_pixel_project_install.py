@@ -158,6 +158,74 @@ def test_cleanup_refuses_without_removing_any_file(tmp_path, monkeypatch, failur
     assert history.read_bytes() == b'preserved job history'
 
 
+
+def legacy_cleanup_fixture(tmp_path, monkeypatch, missing):
+    runtime, source = tmp_path / 'runtime', tmp_path / 'source'
+    runtime.mkdir()
+    source.mkdir()
+    unit, receipt = tmp_path / 'unit.service', tmp_path / 'config.json'
+    deployment = config()
+    for name in installer.FILES:
+        if name != 'project_capabilities.py' or missing == 'program':
+            (source / name).write_text('# installed release source\n')
+        if name != 'project_capabilities.py' or missing == 'source':
+            (runtime / name).write_text('# installed release source\n')
+    monkeypatch.setattr(installer, 'PROGRAM_ROOT', runtime)
+    monkeypatch.setattr(installer, 'UNIT', unit)
+    monkeypatch.setattr(installer, 'CONFIG', receipt)
+    unit.write_bytes(installer.unit_bytes(deployment))
+    receipt.write_text(json.dumps(deployment, sort_keys=True) + '\n')
+    monkeypatch.setattr(installer.os, 'geteuid', lambda: 0)
+    monkeypatch.setattr(installer.common, 'protected_parent', lambda *args, **kwargs: None)
+    monkeypatch.setattr(installer.common, 'protected_file', lambda path: path.read_bytes())
+    calls = []
+
+    def stopped(argv, **kwargs):
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, 3)
+
+    monkeypatch.setattr(installer.subprocess, 'run', stopped)
+    original = {path: path.read_bytes() for path in (receipt, unit, *runtime.iterdir())}
+    history = tmp_path / 'jobs.sqlite3'
+    history.write_bytes(b'owner project history')
+    return source, runtime, deployment['ownerUid'], original, history, calls
+
+
+@pytest.mark.parametrize('missing', ['both', 'program'])
+def test_cleanup_legacy_or_partial_runtime_validates_only_existing_artifacts(tmp_path, monkeypatch, missing):
+    # The previous release never shipped project_capabilities.py. A partially
+    # published current release may instead retain its source without a copy.
+    source, runtime, uid, original, history, calls = legacy_cleanup_fixture(tmp_path, monkeypatch, missing)
+    planned = installer.cleanup_linux(source, uid)
+    assert set(planned) == {str(path) for path in original}
+    assert all(path.read_bytes() == body for path, body in original.items())
+    assert calls == [], 'validation must not stop or remove services'
+    removed = installer.cleanup_linux(source, uid, remove=True)
+    assert set(removed) == set(planned)
+    assert all(not path.exists() for path in original)
+    assert not runtime.exists()
+    assert calls == [['systemctl', 'is-active', '--quiet', installer.UNIT.name]]
+    assert history.read_bytes() == b'owner project history'
+
+
+@pytest.mark.parametrize('failure', ['missing-source', 'unknown-file'])
+def test_legacy_cleanup_still_refuses_unproved_artifacts_before_mutation(tmp_path, monkeypatch, failure):
+    missing = 'source' if failure == 'missing-source' else 'both'
+    source, runtime, uid, original, history, calls = legacy_cleanup_fixture(tmp_path, monkeypatch, missing)
+    if failure == 'unknown-file':
+        extra = runtime / 'unrelated.py'
+        extra.write_bytes(b'foreign runtime artifact')
+        original[extra] = extra.read_bytes()
+        expected, match = ValueError, 'unexpected project runtime files'
+    else:
+        expected, match = FileNotFoundError, 'project_capabilities.py'
+    with pytest.raises(expected, match=match):
+        installer.cleanup_linux(source, uid, remove=True)
+    assert all(path.read_bytes() == body for path, body in original.items())
+    assert calls == [], 'custody failure must precede service or file mutation'
+    assert history.read_bytes() == b'owner project history'
+
+
 def permission_install_fixture(tmp_path, monkeypatch):
     """Exercise real mkdir/chmod/file publication in a simulated root prefix."""
     source = tmp_path / 'source'
