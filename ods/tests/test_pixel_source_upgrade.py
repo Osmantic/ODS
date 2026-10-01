@@ -1033,3 +1033,64 @@ def test_feature_projection_is_closed_to_actual_phase03_services():
     pair = 'extensions/services/whisper/compose.yaml'
     with pytest.raises(upgrade.UpgradeError, match='source-feature-selection-ambiguous'):
         upgrade.installed_projection({}, {pair: {}, pair+'.disabled': {}})
+
+
+@pytest.mark.parametrize("retained_provider", [False, True])
+def test_held_source_copy_keeps_drvfs_root_safe(trees, retained_provider):
+    """The copy must be safe before Phase 06's later normalization runs."""
+    manager, old, new, identity = trees
+    copy_helper = MODULE.parents[1] / "installers/lib/source-copy.sh"
+    provider = old / "config/litellm/cloud.yaml"
+    candidate_provider = new / "config/litellm/cloud.yaml"
+    candidate_provider.parent.mkdir(parents=True)
+    candidate_provider.write_text("bundled template")
+    if retained_provider:
+        provider.parent.mkdir(parents=True)
+        provider.write_text("owner provider")
+        provider.chmod(0o600)
+        before = provider.stat()
+    # Include the source root itself, which rsync -a also copies. Every
+    # candidate file appearing executable matches the WSL DrvFS failure.
+    for path in [new, *new.rglob("*")]:
+        path.chmod(0o777)
+    verify, _ = held(manager, new, identity)
+    manager.publish(verify)
+    expected = manager.journal()
+    protected_before = {
+        p.name: p.read_bytes() for p in manager.state.iterdir() if p.is_file()
+    }
+    # Open the provider as a long-lived consumer would; preserving its
+    # pathname alone would miss replacing the inode underneath that reader.
+    with provider.open() if retained_provider else open(os.devnull) as consumer:
+        subprocess.run(
+            ["bash", "-c", 'source "$1"; ods_copy_install_source "$2" "$3" "$4"',
+             "source-copy", str(copy_helper), str(new), str(old),
+             str(old.parent / "copy.log")],
+            env={**os.environ, "ODS_PIXEL_SOURCE_TRANSACTION": "d" * 64},
+            check=True, capture_output=True, text=True,
+        )
+        # Reconstruct the actual transaction reader immediately, without
+        # invoking Phase 06 normalization or changing any permissions here.
+        current = upgrade.SourceUpgrade(manager.state, old, os.getuid(), state_uid=os.getuid())
+        assert current.journal() == expected
+        assert upgrade.inventory(old, os.getuid()) == expected["after"]
+        assert old.stat().st_mode & 0o022 == 0
+        assert provider.parent.stat().st_mode & 0o022 == 0
+        assert (old / "config").stat().st_mode & 0o022 == 0
+        assert protected_before == {
+            p.name: p.read_bytes() for p in manager.state.iterdir() if p.is_file()
+        }
+        if retained_provider:
+            after = provider.stat()
+            assert (after.st_dev, after.st_ino, after.st_mode, after.st_uid, after.st_gid) == (
+                before.st_dev, before.st_ino, before.st_mode, before.st_uid, before.st_gid)
+            assert provider.read_text() == consumer.read() == "owner provider"
+        else:
+            assert provider.read_text() == "bundled template"
+
+
+def test_source_transaction_rejects_writable_install_root(trees):
+    manager, old, _, _ = trees
+    old.chmod(0o777)
+    with pytest.raises(upgrade.UpgradeError, match="source-directory-unsafe"):
+        upgrade.SourceUpgrade(manager.state, old, os.getuid(), state_uid=os.getuid())
