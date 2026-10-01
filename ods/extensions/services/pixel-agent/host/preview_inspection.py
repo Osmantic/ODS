@@ -21,10 +21,11 @@ from preview_inspection_protocol import (
     MAX_BUNDLE,
     MAX_REQUEST,
     MAX_RESULT,
-    SCOPE,
+    SELECT_CAPABILITY,
     canonical,
     exact,
     failure,
+    inspection_scope,
     plan_hash,
     read_only_wsl_docker,
     strict_json,
@@ -93,13 +94,13 @@ def load_config():
         if (
             str(binary) != config["docker"]
             or not re.fullmatch(
-                r"(?:/Applications/Docker\.app/Contents/Resources/bin/docker|/(?:opt/homebrew|usr/local)/Cellar/docker/(?!\.{1,2}/)[A-Za-z0-9._+-]+/bin/docker)",
+                r"(?:/Applications/Docker\.app/Contents/Resources/bin/docker|/Applications/OrbStack\.app/Contents/MacOS/xbin/docker|/(?:opt/homebrew|usr/local)/Cellar/docker/(?!\.{1,2}/)[A-Za-z0-9._+-]+/bin/docker)",
                 str(binary),
             )
             or not isinstance(endpoint, str)
             or not re.fullmatch(
                 re.escape(str(home))
-                + r"/(?:\.docker/run/docker\.sock|\.colima/[A-Za-z0-9_-]+/docker\.sock)",
+                + r"/(?:\.(?:docker|orbstack)/run/docker\.sock|\.colima/[A-Za-z0-9_-]+/docker\.sock)",
                 endpoint,
             )
             or not isinstance(config["dockerSha256"], str)
@@ -262,6 +263,13 @@ def inspect_request(request, config, cancelled=None):
     validate_request(request)
     if os.getuid() not in (0, config["ownerUid"]):
         raise Invalid("unauthorized")
+    if any(step['action'] == 'select-option' for step in request['steps']):
+        capability = bounded_process(
+            [*docker_prefix(config), 'image', 'inspect', '--format',
+             '{{index .Config.Labels "org.osmantic.ods.inspection.select"}}', config['imageId']],
+            b'', timeout=5, limit=128, cancelled=cancelled)
+        if capability.decode().strip() != SELECT_CAPABILITY:
+            return failure('unsupported_capability', request)
     if config["transport"] == "local":
         bundle = snapshot_bundle(config["snapshotRoot"], request, config["ownerUid"])
     else:
@@ -302,7 +310,7 @@ def inspect_request(request, config, cancelled=None):
             or result.get("sha256") != request["sha256"]
             or result.get("planSha256") != plan_hash(request)
             or result.get("status") not in ("passed", "failed")
-            or result.get("scope") != SCOPE
+            or result.get("scope") != inspection_scope(request)
         ):
             raise Invalid("invalid capsule receipt")
         return result

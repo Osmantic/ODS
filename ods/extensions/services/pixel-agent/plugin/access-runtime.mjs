@@ -209,14 +209,15 @@ export function executionHostForAgent(config, id = 'pixel') {
 
 export function createAccessRuntime({directory = path.join(os.homedir(), '.openclaw', '.ods-access-runtime'),
   config, settingsConfig, createTools, resolveSandbox, execControl, runtimeVersion = 'unknown', hooksAllowed = false,
-  readProcessSessions,
+  readProcessSessions, now = () => performance.now(),
   probeDirectory = path.join(process.platform === 'darwin' ? '/private/var/lib/ods-pixel-access-probes' :
     '/var/lib/ods-pixel-access-probes', String(process.getuid?.() ?? 'unsupported'))} = {}) {
   if (typeof process.getuid !== 'function') {
     const unavailable = () => { throw new Error('POSIX admission unavailable'); };
     return {status: () => ({available: false, phase: 'unavailable', revision: null, active: 0, proof: null}),
       admit: () => ({outcome: 'pass'}), finish() {}, beforeTool() {}, afterTool() {},
-      acquire: unavailable, release: unavailable, probe: unavailable, readSettings: unavailable, readModel: unavailable,
+      acquire: unavailable, acquireMaintenance: unavailable, release: unavailable, releaseMaintenance: unavailable,
+      probe: unavailable, readSettings: unavailable, readModel: unavailable,
       owns: () => false, isProbe: () => false};
   }
   // Admission coverage was inspected against these exact installed contracts.
@@ -232,6 +233,7 @@ export function createAccessRuntime({directory = path.join(os.homedir(), '.openc
   };
   const filename = path.join(directory, 'state.json');
   let state, failed = false, probeRun = null, proof = null, probeFailure = null;
+  let maintenanceProof = null;
   let initializationStage = 'state-directory', initializationFailure = null;
   let processTimer = null, processCheck = null;
   const isInternal = context => (probeRun !== null && context?.runId === probeRun) || internalRuns.has(context?.runId);
@@ -423,7 +425,9 @@ export function createAccessRuntime({directory = path.join(os.homedir(), '.openc
   }
   function acquire(token, expected) {
     if (failed || !qualified || !hex(token) || !hex(expected)) throw transitionError('native-transition-unavailable');
-    if (state.phase === 'held' && state.tokenHash === hash(token)) return status();
+    if (state.phase === 'held' && state.tokenHash === hash(token)) {
+      maintenanceProof = null; return status();
+    }
     if (expected !== state.revision) throw transitionError('native-transition-revision-changed');
     // Preserve a bounded, non-forgeable reason for a refused transition.  The
     // controller exposes only this trusted token, never run/tool identifiers or
@@ -435,7 +439,31 @@ export function createAccessRuntime({directory = path.join(os.homedir(), '.openc
     if (detached.size) throw transitionError('native-transition-busy-detached-process');
     if (state.phase === 'held') throw transitionError('native-transition-busy-held');
     if (!['idle','interrupted'].includes(state.phase)) throw transitionError('native-transition-busy-phase');
-    state.phase = 'held'; state.tokenHash = hash(token); proof = null; changed(); return status();
+    state.phase = 'held'; state.tokenHash = hash(token); proof = null; maintenanceProof = null; changed(); return status();
+  }
+  function maintenanceConfig() {
+    const cfg = config(), current = typeof settingsConfig === 'function' ? settingsConfig() : cfg;
+    const configHash = hash(JSON.stringify(cfg));
+    if (hash(JSON.stringify(current)) !== configHash) throw new Error('runtime configuration changed');
+    executionHostForAgent(current);
+    return configHash;
+  }
+  function acquireMaintenance(token, expected, authority = null) {
+    // Internal context maintenance only. Never exposed as an HTTP operation.
+    if (maintenanceProof && owns(token)) {
+      if (maintenanceProof.authority !== authority) throw new Error('runtime maintenance owner changed');
+      return status();
+    }
+    const previous = proof ? structuredClone(proof) : null;
+    let configHash = null;
+    try { configHash = maintenanceConfig(); } catch { /* No valid proof to preserve. */ }
+    const result = acquire(token, expected);
+    if (previous?.executed === true && previous.pid === process.pid && configHash &&
+        previous.config_sha256 === configHash) {
+      maintenanceProof = {proof:previous, configHash, authority, tokenHash:hash(token), revision:state.revision,
+        expiresAt:now() + 1920000};
+    }
+    return result;
   }
   function owns(token) { return !failed && hex(token) && state.phase === 'held' && state.tokenHash === hash(token); }
   function readSettings(token, expected) {
@@ -459,10 +487,31 @@ export function createAccessRuntime({directory = path.join(os.homedir(), '.openc
   }
   function release(token) {
     if (!owns(token) || busy() || probeRun) throw new Error('runtime lease mismatch');
+    maintenanceProof = null;
     state.phase = 'idle'; state.tokenHash = null; changed(); return status();
+  }
+  function releaseMaintenance(token, authority = null) {
+    if (!owns(token) || busy() || probeRun) throw new Error('runtime lease mismatch');
+    const saved = maintenanceProof;
+    if (saved && saved.authority !== authority) {
+      maintenanceProof = null;
+      throw new Error('runtime maintenance owner changed');
+    }
+    let restored = null;
+    try {
+      if (!failed && qualified && saved?.tokenHash === hash(token) && saved.revision === state.revision &&
+          saved.proof.pid === process.pid && now() < saved.expiresAt &&
+          maintenanceConfig() === saved.configHash) restored = saved.proof;
+    } catch { /* A changed/unavailable authority cannot restore the old proof. */ }
+    // Validate before reopening admission. A failed durable release never
+    // restores proof; the guard is process-local and cannot survive restart.
+    release(token);
+    proof = restored;
+    return status();
   }
   async function probe(token) {
     if (!owns(token) || busy() || probeRun) throw new Error('runtime lease mismatch');
+    maintenanceProof = null;
     probeFailure = null;
     const cfg = config();
     const agent = cfg.agents.list.find(entry => entry.id === 'pixel');
@@ -532,6 +581,7 @@ export function createAccessRuntime({directory = path.join(os.homedir(), '.openc
       if (fs.existsSync(sentinel)) fs.unlinkSync(sentinel);
     }
   }
-  return {status, admit, finish, beforeTool, afterTool, acquire, release, probe, owns, readSettings, readModel, reconcileDetached,
+  return {status, admit, finish, beforeTool, afterTool, acquire, acquireMaintenance, release, releaseMaintenance,
+    probe, owns, readSettings, readModel, reconcileDetached,
     classifyTransitionError: failure => transitionFailures.get(failure) ?? null, isProbe: isInternal};
 }

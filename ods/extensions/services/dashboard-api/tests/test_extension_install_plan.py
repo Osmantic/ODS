@@ -1,5 +1,6 @@
 import asyncio
 import json
+from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
@@ -68,6 +69,38 @@ def test_protected_missing_dependency_is_not_implicitly_authorized():
     result = build_install_plan('app', entries, graph.__getitem__, lambda key: False, {'core'})
     assert result['blocked'] is True
     assert result['steps'][0]['action'] == 'blocked'
+
+
+def test_perplexica_external_plan_omits_managed_llama_dependency():
+    ods_root = Path(__file__).resolve().parents[4]
+    service_dir = ods_root / 'extensions' / 'services' / 'perplexica'
+    manifest = yaml.safe_load((service_dir / 'manifest.yaml').read_text(encoding='utf-8'))
+    catalog = json.loads((ods_root / 'config' / 'extensions-catalog.json').read_text(encoding='utf-8'))
+    catalog_entry = next(entry for entry in catalog['extensions'] if entry['id'] == 'perplexica')
+    assert manifest['service']['depends_on'] == catalog_entry['depends_on'] == ['searxng']
+
+    graph = {
+        'perplexica': manifest['service'],
+        'searxng': service('searxng'),
+        'llama-server': service('llama-server'),
+    }
+    entries = [
+        {'id': 'perplexica', 'status': 'disabled', 'installable': True},
+        {'id': 'searxng', 'status': 'enabled', 'installable': True},
+        {'id': 'llama-server', 'status': 'not_installed', 'installable': False},
+    ]
+    result = build_install_plan(
+        'perplexica', entries, graph.__getitem__, lambda key: False, {'llama-server'},
+    )
+    assert result['blocked'] is False
+    assert [(step['extensionId'], step['action']) for step in result['steps']] == [
+        ('searxng', 'none'), ('perplexica', 'enable'),
+    ]
+
+    local_overlay = yaml.safe_load((service_dir / 'compose.local.yaml').read_text(encoding='utf-8'))
+    assert local_overlay['services']['perplexica']['depends_on']['llama-server'] == {
+        'condition': 'service_healthy',
+    }
 
 
 def test_plan_endpoint_uses_installed_manifest_and_only_configuration_presence(tmp_path, monkeypatch):

@@ -64,7 +64,9 @@ def validate_flags(install_dir, flags):
         import yaml
     except ImportError as error:
         raise ValueError('PyYAML is required to validate saved extensions; repair the ODS Python runtime') from error
-    resolver = root / 'scripts/resolve-compose-stack.sh'
+    # A candidate uninstaller can validate an older installation. Load policy
+    # from this helper's release, while resolving recipe data against root.
+    resolver = pathlib.Path(__file__).resolve().with_name('resolve-compose-stack.sh')
     try:
         source = resolver.read_text(encoding='utf-8')
         start = source.index('_LOOPBACK_VAR_DEFAULT_RE = re.compile(')

@@ -1,0 +1,34 @@
+# Core ComfyUI for a separate Windows GPU host. Optional ODS agents, models,
+# video nodes, and image generation checkpoints are not installed here.
+FROM nvidia/cuda:12.8.0-runtime-ubuntu22.04@sha256:b0e5afeabc356a9c41148c50f219d3117d46cb6ec23c590e3a0ebaa1db0ff946
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONUNBUFFERED=1 \
+    COMFYUI_DIR=/opt/comfyui
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        python3 python3-pip python3-venv git wget ffmpeg \
+        libgl1 libglib2.0-0 libsm6 libxext6 libxrender1 \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN pip3 install --no-cache-dir torch==2.11.0 torchvision==0.26.0 \
+        --index-url https://download.pytorch.org/whl/cu128
+
+RUN git clone --branch v0.16.4 --depth 1 \
+        https://github.com/comfyanonymous/ComfyUI.git "$COMFYUI_DIR" \
+    && test "$(git -C "$COMFYUI_DIR" rev-parse HEAD)" = a7a6335be538f55faa2abf7404c9b8e970847d1f \
+    && cd "$COMFYUI_DIR" \
+    && pip3 install --no-cache-dir -r requirements.txt \
+    && python3 -c "import torch, torchvision; assert torch.__version__ == '2.11.0+cu128'; assert torchvision.__version__ == '0.26.0+cu128'"
+
+RUN useradd -m -u 1000 -s /bin/bash comfyui \
+    && chown -R comfyui:comfyui "$COMFYUI_DIR"
+
+COPY --chown=comfyui:comfyui startup.sh /opt/startup.sh
+COPY --chown=comfyui:comfyui cuda-smoke.py /opt/cuda-smoke.py
+RUN sed -i 's/\r$//' /opt/startup.sh && chmod +x /opt/startup.sh
+
+USER comfyui
+WORKDIR $COMFYUI_DIR
+EXPOSE 8188
+ENTRYPOINT ["/opt/startup.sh"]

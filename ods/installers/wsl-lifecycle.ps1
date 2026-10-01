@@ -155,6 +155,50 @@ function Stop-ODSOwnedProcess($Expected) {
     if (-not $process.WaitForExit(10000)) { throw 'Owned WSL client did not exit' }
 }
 
+function Start-ODSWslAgentRelay($Identity) {
+    $source=Join-Path (Split-Path -Parent $script:ODSWslLifecycleSource) 'wsl-agent-relay.ps1'
+    if (-not (Test-Path -LiteralPath $source -PathType Leaf)) { throw 'ODS WSL agent relay source is missing' }
+    $destination=Join-Path $Identity.directory 'agent-relay.ps1'
+    $recordPath=Join-Path $Identity.directory 'agent-relay-process.json'
+    $record=Read-ODSWslJson $recordPath
+    if ($record -and (Test-ODSProcessIdentity $record (Get-ODSProcessIdentity $record.pid))) {
+        if (Test-Path -LiteralPath $destination -PathType Leaf) {
+            Assert-ODSPrivatePath $destination
+            if ((Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash -ceq (Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash) { return }
+        }
+        Stop-ODSOwnedProcess $record
+    }
+    if ($record) { Remove-Item -LiteralPath $recordPath -Force }
+    Write-ODSPrivateBytes $destination ([IO.File]::ReadAllBytes($source))
+    $powershell=Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\v1.0\powershell.exe'
+    $arguments='-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "{0}" -Distro "{1}"' -f $destination,$Identity.distro
+    $process=Start-Process -FilePath $powershell -ArgumentList $arguments -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $Identity.directory 'agent-relay.stdout') -RedirectStandardError (Join-Path $Identity.directory 'agent-relay.stderr')
+    Start-Sleep -Seconds 2
+    if ($process.HasExited) { throw 'ODS WSL agent relay exited before startup; inspect private agent-relay.stderr' }
+    $actual=Get-ODSProcessIdentity $process.Id
+    if (-not $actual -or $actual.commandLine -notlike '*agent-relay.ps1*') { throw 'Could not verify ODS WSL agent relay process identity' }
+    Write-ODSWslJson $recordPath $actual
+}
+
+function Stop-ODSWslAgentRelay($Identity) {
+    $recordPath=Join-Path $Identity.directory 'agent-relay-process.json'
+    $record=Read-ODSWslJson $recordPath
+    if (-not $record) { return }
+    Stop-ODSOwnedProcess $record
+    Remove-Item -LiteralPath $recordPath -Force
+}
+
+function Update-ODSWslAgentAddress($Identity) {
+    $program="$($Identity.installRoot)/lib/wsl-agent-address.py"
+    $raw=(Invoke-ODSWslBoundedCommand $Identity @('/usr/bin/python3',$program,$Identity.installRoot) 60 -Mutation | Out-String)
+    if ($raw.Length -gt 2048) { throw 'Oversized WSL agent address result' }
+    $result=$raw | ConvertFrom-Json
+    if ($result.mode -notin @('unmanaged','explicit','wsl-nat-bridge') -or $result.changed -isnot [bool]) {
+        throw 'Invalid WSL agent address result'
+    }
+    $result
+}
+
 function Assert-ODSWslManifest($Identity) {
     $manifest = Read-ODSWslJson (Join-Path $Identity.directory 'instance.json')
     foreach ($name in @('schemaVersion','ownerSid','distro','installRoot','id','taskName','directory')) {
@@ -237,6 +281,10 @@ function Enable-ODSWslStartup($Identity,[string]$DockerDesktopPath = '') {
     $null=Get-ODSWslStartupConfig $Identity
     # A second durable file leaves the currently running holder immutable.
     Write-ODSPrivateBytes (Join-Path $Identity.directory 'startup.ps1') ([IO.File]::ReadAllBytes($script:ODSWslLifecycleSource))
+    $relaySource=Join-Path (Split-Path -Parent $script:ODSWslLifecycleSource) 'wsl-agent-relay.ps1'
+    if (Test-Path -LiteralPath $relaySource -PathType Leaf) {
+        Write-ODSPrivateBytes (Join-Path $Identity.directory 'wsl-agent-relay.ps1') ([IO.File]::ReadAllBytes($relaySource))
+    }
     if (-not (Get-ODSWslStartupIntent $Identity)) { Set-ODSWslStartupIntent $Identity $true }
     if (-not $existing) {
         $action = New-ScheduledTaskAction -Execute (Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\v1.0\powershell.exe') -Argument (Get-ODSWslStartupArguments $Identity)
@@ -729,6 +777,12 @@ function Invoke-ODSWslStack($Identity,[string]$Action) {
     if ($raw.Length -gt 65536) { throw 'Could not obtain the ordinary-owner lifecycle plan; no services were changed' }
     $plan=$raw | ConvertFrom-Json
     Assert-ODSWslStackPlan $Identity $Action $plan
+    $agentAddress=$null
+    if ($Action -eq 'start') {
+        $agentAddress=Update-ODSWslAgentAddress $Identity
+        if ($agentAddress.mode -eq 'wsl-nat-bridge') { Start-ODSWslAgentRelay $Identity }
+        else { Stop-ODSWslAgentRelay $Identity }
+    }
     $units=@($plan.nativeUnits)
     if ($Action -eq 'stop') {
         foreach ($unit in $units) { Invoke-ODSWslNativeUnit $Identity 'stop' $unit }
@@ -736,7 +790,7 @@ function Invoke-ODSWslStack($Identity,[string]$Action) {
     # Compose always executes as the ordinary Linux owner, never as root.
     Invoke-ODSWslCommand $Identity @('python3',$program,"compose-$Action",$Identity.installRoot)
     if ($Action -eq 'start') {
-        if ($plan.hostAgentRestart) { Invoke-ODSWslNativeUnit $Identity 'restart' 'ods-host-agent.service' }
+        if ($plan.hostAgentRestart -or ($agentAddress -and $agentAddress.changed)) { Invoke-ODSWslNativeUnit $Identity 'restart' 'ods-host-agent.service' }
         [Array]::Reverse($units)
         foreach ($unit in $units) { Invoke-ODSWslNativeUnit $Identity 'start' $unit }
     }
@@ -794,6 +848,7 @@ function Invoke-ODSWslLifecycle([string]$Action,[string]$Distro,[string]$Install
             if ($status.distroRunning) {
                 Invoke-ODSWslStack $identity 'stop' | ForEach-Object { [Console]::Error.WriteLine([string]$_) }
             }
+            Stop-ODSWslAgentRelay $identity
             $status=Stop-ODSWslLifetime $identity
             if ($Action -eq 'stop') { return $status }
         }

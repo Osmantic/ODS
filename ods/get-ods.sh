@@ -519,9 +519,9 @@ if [[ -d "$INSTALL_DIR" ]]; then
         else
             warn "ODS already installed at $INSTALL_DIR"
             echo ""
-            echo "  To start:     cd $INSTALL_DIR && docker compose up -d"
+            echo "  To start:     cd \"$INSTALL_DIR\" && ./ods-cli start"
             echo "  To reinstall: re-run this script with --force"
-            echo "  To update:    cd $INSTALL_DIR && ./ods-cli update"
+            echo "  To update:    cd \"$INSTALL_DIR\" && ./ods-cli update"
             echo ""
             exit 0
         fi
