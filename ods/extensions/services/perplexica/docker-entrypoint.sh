@@ -134,6 +134,11 @@ NODE
 
 patch_scrape_url
 
+# Match the actual image layout and verify the complete research patch before startup.
+if search_root="$(find_server_bundle)"; then
+    node /app/ods-patch-research-quality.js "$search_root"
+fi
+
 sync_model_route() {
     attempts="${PERPLEXICA_MODEL_SYNC_ATTEMPTS:-30}"
     delay="${PERPLEXICA_MODEL_SYNC_DELAY_SECONDS:-2}"

@@ -34,6 +34,7 @@ services:
       - ./extensions/services/perplexica/docker-entrypoint.sh:/app/ods-entrypoint.sh:ro,z
       - ./extensions/services/perplexica/sync-model-config.js:/app/ods-sync-model-config.js:ro,z
       - ./extensions/services/perplexica/sync-search-config.js:/app/ods-sync-search-config.js:ro,z
+      - ./extensions/services/perplexica/patch-research-quality.js:/app/ods-patch-research-quality.js:ro,z
     ports:
       - "127.0.0.1:${PERPLEXICA_PORT:-3004}:3000"
     deploy:
