@@ -6,7 +6,7 @@
 #          non-interactive / headless installs.
 #
 # Reads:
-#   $voiceFlag, $workflowsFlag, $ragFlag, $recommendedFlag, $hermesFlag,
+#   $voiceFlag, $noVoiceFlag, $workflowsFlag, $ragFlag, $recommendedFlag, $hermesFlag,
 #   $openClawFlag, $allFlag
 #   $noRecommendedFlag, $comfyuiFlag, $noHermesFlag, $noComfyuiFlag
 #   $nonInteractive  -- suppress menus (use flag defaults)
@@ -16,7 +16,8 @@
 #   $cloudMode       -- true when external/cloud LLM mode is selected
 #
 # Writes:
-#   $enableVoice      -- bool: enable Whisper + Kokoro TTS
+#   $enableWhisper, $enableTts -- independent voice service selections
+#   $enableVoice      -- bool: either voice service is selected (summary only)
 #   $enableWorkflows  -- bool: enable n8n workflow automation
 #   $enableRag        -- bool: enable Qdrant + embeddings (RAG)
 #   $enableRecommended -- bool: enable recommended web/API support services
@@ -143,6 +144,20 @@ $hermesSelection = Resolve-ODSWindowsHermesSelection `
 $enableHermes = [bool]$hermesSelection.Hermes
 $enableHermesProxy = [bool]$hermesSelection.Proxy
 
+# A Library toggle changes each Compose marker independently. An ordinary
+# rerun preserves both choices unless the owner made an explicit paired CLI
+# or menu choice. Read markers before Phase 06 refreshes installed source.
+$voiceSelection = Resolve-ODSWindowsVoiceSelection `
+    -InstallDir $installDir `
+    -ComputedVoice $enableVoice `
+    -CliEnable $voiceFlag `
+    -CliDisable $noVoiceFlag `
+    -All $allFlag `
+    -MenuExplicit ($choice -in @("1", "2", "3"))
+$enableWhisper = [bool]$voiceSelection.Whisper
+$enableTts = [bool]$voiceSelection.Tts
+$enableVoice = ($enableWhisper -or $enableTts)
+
 if ($noRecommendedFlag) {
     $enableRecommended = $false
 }
@@ -218,7 +233,9 @@ if ($enableHermes -and -not $cloudMode) {
 # ── Feature summary ───────────────────────────────────────────────────────────
 Write-Host ""
 Write-AI "Feature configuration:"
-Write-InfoBox "  Voice (Whisper + Kokoro):" $(if ($enableVoice)     { "enabled" } else { "disabled" })
+Write-InfoBox "  Voice:" $(if ($enableWhisper -and $enableTts) { "enabled" } elseif ($enableVoice) { "partial" } else { "disabled" })
+Write-InfoBox "    Whisper STT:" $(if ($enableWhisper) { "enabled" } else { "disabled" })
+Write-InfoBox "    Kokoro TTS:" $(if ($enableTts) { "enabled" } else { "disabled" })
 Write-InfoBox "  Workflows (n8n):"          $(if ($enableWorkflows) { "enabled" } else { "disabled" })
 Write-InfoBox "  RAG (Qdrant + embeddings):" $(if ($enableRag)      { "enabled" } else { "disabled" })
 Write-InfoBox "  Recommended web/API:"       $(if ($enableRecommended) { "enabled" } else { "disabled" })
