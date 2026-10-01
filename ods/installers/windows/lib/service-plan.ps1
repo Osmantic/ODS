@@ -24,6 +24,67 @@ function New-ODSWindowsServicePlanEntry {
     }
 }
 
+function Get-ODSWindowsInstalledServiceSelection {
+    param(
+        [Parameter(Mandatory = $true)][string]$InstallDir,
+        [Parameter(Mandatory = $true)][string]$ServiceId
+    )
+
+    # Read before the installer copies fresh source over the installed tree.
+    if (-not (Test-Path -LiteralPath (Join-Path $InstallDir ".env") -PathType Leaf)) {
+        return $null
+    }
+    $extensions = Join-Path $InstallDir "extensions"
+    $services = Join-Path $extensions "services"
+    $serviceDir = Join-Path $services $ServiceId
+    $active = Join-Path $serviceDir "compose.yaml"
+    $disabled = "$active.disabled"
+    foreach ($path in @($extensions, $services, $serviceDir, $active, $disabled)) {
+        $item = Get-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
+        if ($item -and ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+            throw "Unsafe installed $ServiceId selection path: $path"
+        }
+    }
+    if (Test-Path -LiteralPath $active -PathType Leaf) { return $true }
+    if (Test-Path -LiteralPath $disabled -PathType Leaf) { return $false }
+    return $null
+}
+
+function Resolve-ODSWindowsHermesSelection {
+    param(
+        [Parameter(Mandatory = $true)][string]$InstallDir,
+        [bool]$ComputedHermes,
+        [bool]$CliEnable,
+        [bool]$CliDisable,
+        [bool]$All,
+        [bool]$MenuExplicit
+    )
+
+    $hermes = $ComputedHermes
+    $proxy = $ComputedHermes
+    if ($CliDisable) {
+        $hermes = $false
+        $proxy = $false
+    } elseif ($CliEnable) {
+        $hermes = $true
+        $proxy = $true
+    } elseif (-not $All -and -not $MenuExplicit) {
+        $installedHermes = Get-ODSWindowsInstalledServiceSelection -InstallDir $InstallDir -ServiceId "hermes"
+        $installedProxy = Get-ODSWindowsInstalledServiceSelection -InstallDir $InstallDir -ServiceId "hermes-proxy"
+        if ($null -ne $installedHermes) { $hermes = [bool]$installedHermes }
+        if ($null -ne $installedProxy) {
+            $proxy = [bool]$installedProxy
+        } elseif ($null -ne $installedHermes) {
+            # Older native installs selected the agent and proxy together.
+            $proxy = $hermes
+        }
+    }
+    if ($proxy -and -not $hermes) {
+        throw "Hermes proxy requires Hermes; disable its proxy or enable Hermes first."
+    }
+    return [PSCustomObject]@{ Hermes = $hermes; Proxy = $proxy }
+}
+
 function New-ODSWindowsServicePlan {
     param(
         [bool]$EnableRecommended,
@@ -31,6 +92,7 @@ function New-ODSWindowsServicePlan {
         [bool]$EnableWorkflows,
         [bool]$EnableRag,
         [bool]$EnableHermes,
+        [Nullable[bool]]$EnableHermesProxy = $null,
         [bool]$EnableOpenClaw,
         [bool]$EnableComfyui,
         [bool]$EnableDeepResearch,
@@ -41,6 +103,7 @@ function New-ODSWindowsServicePlan {
     )
 
     $plan = @{}
+    $proxyEnabled = if ($null -eq $EnableHermesProxy) { $EnableHermes } else { [bool]$EnableHermesProxy }
 
     $enableSearxng = Test-ODSWindowsSearxngNeeded `
         -EnableRecommended $EnableRecommended `
@@ -59,7 +122,7 @@ function New-ODSWindowsServicePlan {
     $plan["embeddings"] = New-ODSWindowsServicePlanEntry "embeddings" $EnableRag "rag" "RAG not enabled"
 
     $plan["hermes"] = New-ODSWindowsServicePlanEntry "hermes" $EnableHermes "agents" "Hermes agent not enabled"
-    $plan["hermes-proxy"] = New-ODSWindowsServicePlanEntry "hermes-proxy" $EnableHermes "agents" "Hermes agent not enabled"
+    $plan["hermes-proxy"] = New-ODSWindowsServicePlanEntry "hermes-proxy" $proxyEnabled "agents" "Hermes proxy not enabled"
     $plan["openclaw"] = New-ODSWindowsServicePlanEntry "openclaw" $EnableOpenClaw "legacy-agents" "OpenClaw is deprecated and was not explicitly enabled"
     $plan["ape"] = New-ODSWindowsServicePlanEntry "ape" ($EnableHermes -or $EnableOpenClaw) "agents" "agent governance not needed without an enabled agent"
     # Pixel's current trusted host runtime is installed by the Linux installer
