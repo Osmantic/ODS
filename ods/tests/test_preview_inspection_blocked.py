@@ -88,8 +88,13 @@ class RealBlockedRequests(unittest.TestCase):
         self.assertEqual(set(result), {"schemaVersion", "kind", "status", "errorCode", "siteId", "sha256", "planSha256", "scope"})
         self.assertNotIn("secret-canary", json.dumps(result))
 
-    def test_root_absolute_asset_is_blocked_not_runtime_unavailable(self):
-        self.assert_blocked(bundle('<h1>Ready</h1><script src="/assets/app.js?token=secret-canary"></script>', {"assets/app.js":b"window.loaded=true;"}))
+    def test_non_snapshot_root_asset_is_blocked_not_runtime_unavailable(self):
+        self.assert_blocked(bundle('<h1>Ready</h1><script src="/outside/app.js?token=secret-canary"></script>', {"assets/app.js":b"window.loaded=true;"}))
+
+    def test_root_asset_inside_snapshot_runs(self):
+        result = execute_real(bundle('<h1>Loading</h1><script src="/assets/app.js"></script>', {"assets/app.js": b"document.querySelector('h1').textContent='Ready';"}))
+        self.assertEqual(result["status"], "passed", result)
+        self.assertEqual(result["blockedRequests"], [])
 
     def test_navigation_stays_blocked(self):
         result = execute_real(bundle('<h1>Ready</h1><button id="leave" onclick="location.href=\'/outside?token=secret-canary\'">Leave</button>', steps=[{"action":"click", "locator":{"selector":"#leave"}}, {"action":"assert-text", "locator":{"selector":"h1"}, "expectedText":"Ready"}]))
