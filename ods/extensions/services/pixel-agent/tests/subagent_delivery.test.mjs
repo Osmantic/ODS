@@ -14,6 +14,24 @@ const owner={agentId:'pixel',runId:id,sessionId:'owner-session',sessionKey:'agen
 const continuation={...owner,runId:`announce:v1:${child}:${childRun}`,
   inputProvenance:{kind:'inter_session',sourceTool:'subagent_announce',sourceSessionKey:child}};
 
+for (const malformed of [{runId:'9c98b56b-cd0c-43b5-91***'}, {runId:undefined}, {childSessionKey:'agent:pixel:subagent:broken'}])
+test(`accepted malformed child receipt cannot silently omit one review: ${JSON.stringify(malformed)}`,async()=>{
+  const f=fixture(), second=child.replace('22222222','77777777');
+  const ctx={...owner,toolName:'sessions_spawn',toolCallId:'malformed-spawn'};
+  const runId='9c98b56b-cd0c-43b5-91fc-4591a1943618';
+  f.spawn();
+  f.registry.before({params:{runtime:'subagent',mode:'run'}},ctx);
+  f.registry.nativeSpawn({runId,childSessionKey:second},{runId,childSessionKey:second,requesterSessionKey:owner.sessionKey});
+  f.registry.after({result:{details:{status:'accepted',runId,childSessionKey:second,...malformed}}},ctx);
+  f.yieldTurn();
+  assert.equal(f.registry.admission(continuation).outcome,'block');
+  f.registry.observe({prompt:'Only the sibling result arrived.'},continuation);
+  f.final('Incomplete sibling-only answer');
+  assert.equal(f.registry.read(user,id).status,'interrupted');
+  await f.registry.cancel(user);
+  assert.ok(f.aborts.includes(second),'trusted native receipt retains cancellation custody');
+});
+
 test('ordinary owner context recovery ignores historical failure but retains later delegation custody',()=>{
   const f=fixture();
   f.registry.end({success:true,messages:[{role:'assistant',stopReason:'aborted',content:[]}]},owner);

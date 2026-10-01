@@ -1,0 +1,16 @@
+{
+  "version": "2026.6.33",
+  "sourceSha256": "3942eca8ac926827a35283d15345b8cc2b750b982b0a4af38057c3bdf290b244",
+  "patchedSha256": "0f9f1a306b78bc7aa3d72755d0a6ec209afd85c97dd6828c8b7962b3ee35b74e",
+  "previousReplacements": {},
+  "replacements": [
+    [
+      "function redactMatch(match, groups, pattern, context) {\n",
+      "function redactMatch(match, groups, pattern, context) {\n\t// A Firecrawl-shaped suffix inside a complete UUID is an opaque identity,\n\t// not a provider token. Other patterns and sensitive-field masking still run.\n\tif (pattern.source === \"(fc-[A-Za-z0-9]{10,})\" && /^fc-[0-9a-f]{12}$/i.test(match) && context?.offset >= 21) {\n\t\tconst start = context.offset - 21;\n\t\tconst end = context.offset + match.length;\n\t\tif (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(context.input.slice(start, end))\n\t\t\t&& !/[A-Za-z0-9_-]/.test(context.input[start - 1] ?? \"\")\n\t\t\t&& !/[A-Za-z0-9_-]/.test(context.input[end] ?? \"\")) return match;\n\t}\n"
+    ],
+    [
+      "\t\tnext = chunkUnsafePatterns.has(pattern) ? next.replace(pattern, replacer) : replacePatternBounded(next, pattern, replacer);",
+      "\t\t// UUID boundary checks need the complete input, including for custom RegExp values.\n\t\tconst needsFullContext = chunkUnsafePatterns.has(pattern) || pattern.source === \"(fc-[A-Za-z0-9]{10,})\";\n\t\tnext = needsFullContext ? next.replace(pattern, replacer) : replacePatternBounded(next, pattern, replacer);"
+    ]
+  ]
+}
