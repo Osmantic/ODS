@@ -240,6 +240,16 @@ if [[ "$FORCE" != "true" ]]; then
     echo ""
 fi
 
+# On Pixel hosts phase 06 enables pixel-edge, whose compose requires
+# PIXEL_INGRESS_GID, but phase 11 fills that value when it creates the group.
+# An install stopped in between (for example during the image downloads)
+# cannot render its stack, so ownership checks and `compose down` would refuse
+# forever. The GID only matters when a container starts; supply the same
+# placeholder installers/lib/compose-select.sh uses for its read-only checks.
+if [[ -z "${PIXEL_INGRESS_GID:-}" ]]; then
+    export PIXEL_INGRESS_GID=1
+fi
+
 # Compose down can execute extension lifecycle hooks. Refuse unsafe saved
 # recipes before retiring Pixel, privileged services, or any installation data.
 compose_flags=""

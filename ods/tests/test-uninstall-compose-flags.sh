@@ -54,6 +54,20 @@ if [[ "${1:-}" == "volume" && "${2:-}" == "ls" ]]; then
     emit_filtered "$@"
     exit 0
 fi
+# Like Compose, refuse to render a file that requires PIXEL_INGRESS_GID while
+# the value is empty. Record the value each Compose call saw.
+if [[ "${1:-}" == "compose" ]]; then
+    printf 'PIXEL_INGRESS_GID=%s\n' "${PIXEL_INGRESS_GID-<unset>}" >> "${DOCKER_LOG:?}.env"
+    previous=""
+    for arg in "$@"; do
+        if [[ "$previous" == "-f" ]] && grep -q 'PIXEL_INGRESS_GID:?' "$arg" 2>/dev/null \
+            && [[ -z "${PIXEL_INGRESS_GID:-}" ]]; then
+            printf 'required variable PIXEL_INGRESS_GID is missing a value\n' >&2
+            exit 1
+        fi
+        previous="$arg"
+    done
+fi
 if [[ "${1:-}" == "compose" && " $* " == *" config --format json "* ]]; then
     printf '{"name":"ods","volumes":{}}\n'
     exit 0
@@ -132,6 +146,14 @@ make_install() {
     touch "$install_dir/docker-compose.cpu.yml"
     printf '%s\n' '-f docker-compose.base.yml -f docker-compose.cpu.yml' > "$install_dir/.compose-flags"
     printf '%s\n' 'GPU_BACKEND=cpu' > "$install_dir/.env"
+}
+
+# pixel-edge's compose requires the Pixel ingress group ID.
+write_pixel_edge_compose() {
+    # The text is literal Compose interpolation syntax, not shell expansion.
+    # shellcheck disable=SC2016
+    printf '%s\n' 'services:' '  pixel-edge:' '    image: example/edge:1' '    group_add:' \
+        '      - "${PIXEL_INGRESS_GID:?Set PIXEL_INGRESS_GID in .env}"' > "$1"
 }
 
 run_uninstall() {
@@ -415,6 +437,36 @@ EOF
         fi
     done
     pass "same-prefix resources and native sandbox archives are excluded from name-based cleanup"
+
+    # Phase 06 enables pixel-edge on Pixel hosts and writes PIXEL_INGRESS_GID
+    # empty; phase 11 fills it. An install stopped in between must still
+    # uninstall instead of failing every Compose ownership check.
+    local gid_install="$TMP_DIR/gid-install" gid_home="$TMP_DIR/gid-home"
+    local gid_docker="$TMP_DIR/gid-docker.log"
+    mkdir -p "$gid_home"
+    make_install "$gid_install"
+    write_pixel_edge_compose "$gid_install/docker-compose.cpu.yml"
+    printf '%s\n' 'GPU_BACKEND=cpu' 'PIXEL_INGRESS_GID=' > "$gid_install/.env"
+    DOCKER_LOG="$gid_docker" SUDO_LOG="$sudo_log" run_uninstall "$gid_install" "$gid_home" "$stub_dir" \
+        || fail "an install stopped before phase 11 wrote PIXEL_INGRESS_GID must still uninstall"
+    grep -qF 'down --remove-orphans' "$gid_docker" || fail "interrupted Pixel install: compose down must run"
+    [[ ! -e "$gid_install" ]] || fail "interrupted Pixel install: installation must be removed"
+    pass "an install stopped before phase 11 still uninstalls"
+
+    local gid_real_install="$TMP_DIR/gid-real-install" gid_real_home="$TMP_DIR/gid-real-home"
+    local gid_real_docker="$TMP_DIR/gid-real-docker.log"
+    mkdir -p "$gid_real_home"
+    make_install "$gid_real_install"
+    write_pixel_edge_compose "$gid_real_install/docker-compose.cpu.yml"
+    printf '%s\n' 'GPU_BACKEND=cpu' 'PIXEL_INGRESS_GID=1234' > "$gid_real_install/.env"
+    DOCKER_LOG="$gid_real_docker" SUDO_LOG="$sudo_log" run_uninstall "$gid_real_install" "$gid_real_home" "$stub_dir" \
+        || fail "an install with its real Pixel group must uninstall"
+    grep -qx 'PIXEL_INGRESS_GID=1234' "$gid_real_docker.env" \
+        || fail "the installed Pixel group ID must reach Compose unchanged"
+    if grep -qx 'PIXEL_INGRESS_GID=1' "$gid_real_docker.env"; then
+        fail "the placeholder must not replace an installed Pixel group ID"
+    fi
+    pass "an installed Pixel group ID is used as-is"
 }
 
 main "$@"
