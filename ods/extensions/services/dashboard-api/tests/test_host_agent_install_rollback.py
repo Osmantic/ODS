@@ -39,17 +39,30 @@ GOTIFY_COMPOSE = (
 def host(tmp_path, monkeypatch):
     """A host agent with one enabled library extension and faked Docker."""
     install_root = tmp_path / "install"
-    data = tmp_path / "data"
+    data = install_root / "data"
     users = data / "user-extensions"
-    builtins = tmp_path / "extensions"
+    builtins = install_root / "extensions" / "services"
     for directory in (install_root, data, users, builtins):
         directory.mkdir(parents=True)
+    selector = install_root / "scripts" / "extension-selection.py"
+    selector.parent.mkdir()
+    selector.write_bytes((_agent_path.parent.parent / "scripts" / "extension-selection.py").read_bytes())
+    stop_helper = selector.parent / "stop-owned-containers.py"
+    stop_helper.write_bytes((_agent_path.parent.parent / "scripts" / "stop-owned-containers.py").read_bytes())
+    if sys.platform == "win32":
+        # Dashboard test setup can install a stub fcntl; the installed host
+        # helper must use its real Windows locking path in this fixture.
+        monkeypatch.delitem(sys.modules, "fcntl", raising=False)
     (install_root / ".env").write_text("SERVICE_API_KEY=persisted-credential\n", encoding="utf-8")
-    (install_root / ".compose-flags").write_text("--env-file .env -f docker-compose.base.yml", encoding="utf-8")
+    (install_root / "docker-compose.base.yml").write_text(
+        "services:\n  dashboard-api:\n    image: example/dashboard-api:1\n", encoding="utf-8",
+    )
+    (install_root / ".compose-flags").write_text("-f docker-compose.base.yml", encoding="utf-8")
     monkeypatch.setattr(_mod, "INSTALL_DIR", install_root)
     monkeypatch.setattr(_mod, "DATA_DIR", data)
     monkeypatch.setattr(_mod, "USER_EXTENSIONS_DIR", users)
     monkeypatch.setattr(_mod, "EXTENSIONS_DIR", builtins)
+    monkeypatch.setattr(_mod, "resolve_compose_flags", lambda **_kwargs: ["-f", "docker-compose.base.yml"])
     monkeypatch.setattr(_mod.platform, "system", lambda: "Linux")
     monkeypatch.setattr(_mod, "check_auth", lambda handler: True)
     monkeypatch.setattr(_mod, "validate_service_id", lambda handler, body: body["service_id"])
@@ -80,6 +93,8 @@ def host(tmp_path, monkeypatch):
     def docker(config_error="", build_error="", up_error=""):
         def run(command, **kwargs):
             calls.append(list(command))
+            if len(command) > 1 and str(command[1]).endswith("stop-owned-containers.py"):
+                return types.SimpleNamespace(returncode=0, stdout="", stderr="")
             if command[:2] == ["docker", "compose"] and command[-3:] == ["config", "--format", "json"]:
                 if config_error:
                     # Compose prints nothing on stdout when interpolation fails;
