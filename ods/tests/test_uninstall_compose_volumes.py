@@ -66,15 +66,19 @@ class FakeDocker:
         if args[0] == "compose" and args[-3:] == ("config", "--format", "json"):
             return json.dumps(self.config)
         if args[0] == "ps":
+            visible = [
+                row for row in self.containers
+                if "--all" in args or row.get("State", {}).get("Status") != "exited"
+            ]
             volume_filter = next((arg.split("=", 1)[1] for arg in args
                                   if arg.startswith("volume=")), None)
             if volume_filter is not None:
-                ids = [row["Id"] for row in self.containers if any(
+                ids = [row["Id"] for row in visible if any(
                     mount.get("Name") == volume_filter for mount in row["Mounts"]
                 )]
                 ids.extend(self.foreign_consumers.get(volume_filter, []))
                 return "\n".join(ids)
-            return "\n".join(row["Id"] for row in self.containers)
+            return "\n".join(row["Id"] for row in visible)
         if args[0] == "inspect":
             wanted = set(args[1:])
             return json.dumps([row for row in self.containers if row["Id"] in wanted])
@@ -171,6 +175,19 @@ class UninstallVolumeTests(unittest.TestCase):
         MODULE.preflight(self.root, self.snapshot, [], keep_data=True)
         self.assertEqual(json.loads(self.snapshot.read_text())["volumes"], {})
         self.assertFalse(self.fake.removed)
+
+    def test_stopped_container_retains_path_binding_for_purge(self):
+        self.fake.containers[0]["State"] = {"Status": "exited"}
+        MODULE.preflight(self.root, self.snapshot, [])
+        self.assertEqual(
+            set(json.loads(self.snapshot.read_text())["volumes"]),
+            set(self.fake.volumes),
+        )
+        self.fake.containers = []
+        MODULE.complete(self.root, self.snapshot)
+        self.assertEqual(set(self.fake.removed), {
+            "ods_perplexica-data", "ods_perplexica-uploads",
+        })
 
     def test_volume_replacement_after_preflight_is_not_deleted(self):
         MODULE.preflight(self.root, self.snapshot, [])

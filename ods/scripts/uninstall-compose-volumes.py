@@ -267,7 +267,11 @@ def preflight(root: Path, snapshot: Path, flags: list[str], keep_data: bool = Fa
         name = sorted(unlabelled_expected)[0]
         raise ValueError(f"Volume {name} matches an ODS recipe but lacks Compose ownership labels")
     if volumes and not container_ids:
-        raise ValueError("ODS project volumes remain but no container proves the installation path")
+        raise ValueError(
+            "ODS project volumes remain but no container proves the installation path; "
+            "an older 'ods stop' may have removed that proof. Use --keep-data or "
+            "review these volumes manually before removal"
+        )
     owned = {}
     anonymous = {}
     trusted_used = set()
