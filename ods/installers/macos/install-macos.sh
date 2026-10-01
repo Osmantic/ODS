@@ -307,6 +307,28 @@ services:
 CLOUD_AUTH_EOF
 }
 
+_macos_capture_gateway_library_selections() {
+    # Library Add/Disable is recorded by the active/disabled compose filename.
+    # Capture that state before rsync copies the shipped active files back into
+    # a retained gateway install. Keep each service independent (notably TTS
+    # and Whisper), even though gateway-only CLI flags start out false.
+    MACOS_GATEWAY_RETAINED_COMPOSE_IDS=""
+    $GATEWAY_ONLY && [[ "${_saved_gateway_only:-}" == true ]] || return 0
+
+    local service_id
+    for service_id in searxng token-spy whisper tts n8n qdrant embeddings \
+        hermes hermes-proxy openclaw ape perplexica privacy-shield ods-proxy \
+        tailscale langfuse brave-search; do
+        if [[ -f "${INSTALL_DIR}/extensions/services/${service_id}/compose.yaml" ]]; then
+            MACOS_GATEWAY_RETAINED_COMPOSE_IDS+=" ${service_id}"
+        fi
+    done
+}
+
+_macos_gateway_library_selected() {
+    $GATEWAY_ONLY && [[ " ${MACOS_GATEWAY_RETAINED_COMPOSE_IDS:-} " == *" $1 "* ]]
+}
+
 _macos_set_builtin_compose_state() {
     local service_id="$1" enabled="$2"
     local service_dir="${INSTALL_DIR}/extensions/services/${service_id}"
@@ -314,6 +336,9 @@ _macos_set_builtin_compose_state() {
     local disabled="${service_dir}/compose.yaml.disabled"
 
     [[ -d "$service_dir" ]] || return 0
+    if _macos_gateway_library_selected "$service_id"; then
+        enabled=true
+    fi
     if [[ "$enabled" == "true" ]]; then
         if [[ -f "$active" ]]; then
             rm -f "$disabled"
@@ -2072,6 +2097,7 @@ else
     ai_ok "Created directory structure"
 
     # Copy source tree (skip .git, data, logs, .env, models)
+    _macos_capture_gateway_library_selections
     if [[ "$SOURCE_ROOT" != "$INSTALL_DIR" ]]; then
         ai "Copying source files to ${INSTALL_DIR}..."
         _ods_prune_stale_dev_paths=false
@@ -2864,6 +2890,9 @@ else
                 langfuse)      $ENABLE_LANGFUSE || SKIP=true ;;
                 brave-search)  [[ "${ENABLE_BRAVE_SEARCH:-false}" == "true" ]] || SKIP=true ;;
             esac
+            if _macos_gateway_library_selected "$SVC_NAME"; then
+                SKIP=false
+            fi
             $SKIP && continue
 
             REL_PATH="${COMPOSE_PATH#"${INSTALL_DIR}/"}"
@@ -2923,13 +2952,23 @@ else
                 exit 1
             fi
         done
-        for _forbidden_gateway_service in llama-server model-router llama-server-ready open-webui hermes; do
+        for _forbidden_gateway_service in llama-server model-router llama-server-ready open-webui; do
             if grep -Fqx -- "$_forbidden_gateway_service" <<<"$_gateway_services"; then
                 ai_err "Gateway-only Compose selected ${_forbidden_gateway_service}; refusing to pull images"
                 exit 1
             fi
         done
-        unset _gateway_services _required_gateway_service _forbidden_gateway_service
+        # These agents are absent from a fresh gateway install, but Library
+        # Add may have activated them after that install. Keep their retained
+        # selection without treating it as an accidental default.
+        for _gateway_library_agent in hermes hermes-proxy; do
+            if grep -Fqx -- "$_gateway_library_agent" <<<"$_gateway_services" \
+                && ! _macos_gateway_library_selected "$_gateway_library_agent"; then
+                ai_err "Gateway-only Compose selected ${_gateway_library_agent} without a retained Library choice"
+                exit 1
+            fi
+        done
+        unset _gateway_services _required_gateway_service _forbidden_gateway_service _gateway_library_agent
     fi
 
     # ── Unload stale LaunchAgents before compose (crash-safe) ──
