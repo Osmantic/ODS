@@ -210,6 +210,7 @@ if [[ $GPU_COUNT -gt 0 && "$GPU_BACKEND" == "nvidia" ]]; then
     fi
     if [[ -n "$DRIVER_VERSION" && "$DRIVER_VERSION" =~ ^[0-9]+$ ]]; then
         log "NVIDIA driver: $DRIVER_VERSION"
+        MIN_DRIVER_VERSION="${MIN_DRIVER_VERSION:-570}"
         if [[ "$DRIVER_VERSION" -lt "$MIN_DRIVER_VERSION" ]]; then
             if ods_is_wsl_host; then
                 ods_wsl_nvidia_driver_too_old "$DRIVER_VERSION"
