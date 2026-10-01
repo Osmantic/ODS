@@ -346,6 +346,11 @@ jobs:
       - name: Uninstall Compose Flags Tests
         run: bash tests/test-uninstall-compose-flags.sh
 
+      - name: Uninstall volume custody and stopped-stack tests
+        run: |
+          python3 tests/test_uninstall_compose_volumes.py
+          bash tests/test-cli-stop-preserves-custody.sh
+
       - name: Same-filesystem model preservation
         run: python3 tests/test_bootstrap_keep_models.py
       - name: Forced reinstall preflight runs before removal
