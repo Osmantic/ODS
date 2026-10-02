@@ -359,6 +359,47 @@ describe('useModels', () => {
     }
   })
 
+  test.each([
+    ['unmanaged runtime', { code: 'external_runtime_unmanaged', error: 'Externally managed Lemonade cannot use local model activation' },
+      'Externally managed Lemonade cannot use local model activation'],
+    ['unverified ownership', { error: 'Windows runtime ownership could not be verified' },
+      'Windows runtime ownership could not be verified'],
+  ])('loadModel reports %s without inventing an active target', async (_label, detail, expected) => {
+    vi.useFakeTimers()
+    const target = 'next-model'
+    fetch.mockImplementation((_url, options) => {
+      if (options?.method === 'POST') {
+        return Promise.resolve({
+          ok: false,
+          status: 409,
+          json: () => Promise.resolve({
+            detail: { ...detail, requestedModelId: target },
+          }),
+        })
+      }
+      return Promise.resolve(modelsResponse([{ id: target, status: 'downloaded' }]))
+    })
+
+    try {
+      const { result } = renderHook(() => useModels())
+      await act(async () => {})
+
+      let loadPromise
+      act(() => {
+        loadPromise = result.current.loadModel(target)
+      })
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5000)
+        await loadPromise
+      })
+
+      expect(result.current.error).toBe(expected)
+      expect(result.current.error).not.toMatch(/active target|server did not identify/i)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   test('loadModel sends context and waits for the requested runtime context', async () => {
     vi.useFakeTimers()
     const target = 'qwen-long-context'

@@ -491,9 +491,18 @@ export function useModels({observe=true} = {}) {
             return
           }
           const activeModelId = conflictActiveModelId(body)
+          const detail = errorMessageFromPayload(body, 'Another model activation is in progress')
+          const code = body?.detail?.code
+          const activationConflict = (
+            (code === 'model_lifecycle_busy' && body?.detail?.activeOperation === 'model_activation') ||
+            (!code && (activeModelId || /activation already in progress/i.test(detail)))
+          )
+          if (!activationConflict) {
+            activationError = detail
+            return
+          }
           if (activeModelId === modelId && !requestedContextLength) return
 
-          const detail = errorMessageFromPayload(body, 'Another model activation is in progress')
           activationError = activeModelId
             ? `${detail} Active target: ${activeModelId}; requested target: ${modelId}.`
             : `${detail} The server did not identify the active target, so this request cannot safely join it.`

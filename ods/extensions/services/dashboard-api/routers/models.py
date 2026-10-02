@@ -2319,7 +2319,8 @@ def load_model(
             status_code=409,
             detail={**mode_denial, "requestedModelId": model_id},
         )
-    if _external_lemonade_runtime() and not _model_management().get("canActivate"):
+    external_management = _model_management() if _external_lemonade_runtime() else None
+    if external_management is not None and external_management.get("managed") is False:
         raise HTTPException(
             status_code=409,
             detail={
@@ -2359,6 +2360,17 @@ def load_model(
         requested_context is None
         or requested_context == served_context
     ):
+        # A no-op never reaches the host agent's fresh ownership check. Do not
+        # claim success from a stale model receipt when management is unknown.
+        if external_management is not None and not external_management.get("canActivate"):
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "error": "Windows runtime management could not be verified; retry shortly",
+                    "code": "runtime_management_unverified",
+                    "requestedModelId": model_id,
+                },
+            )
         response: dict[str, Any] = {
             "status": "already_active",
             "model_id": model_id,
@@ -2386,6 +2398,8 @@ def load_model(
             detail={**bootstrap_conflict, "requestedModelId": model_id},
         )
 
+    # The host agent re-proves Windows ownership before any mutation. A failed
+    # Dashboard management read must not veto an activation it can safely prove.
     # Activation includes downstream synchronization and a bounded rollback.
     activation_body: dict[str, Any] = {"model_id": model_id}
     activation_context = requested_context
