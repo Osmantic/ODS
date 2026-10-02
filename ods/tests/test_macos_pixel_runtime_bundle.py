@@ -477,6 +477,26 @@ def test_publish_verifies_and_reuses_exact_version(publisher):
     assert not list(parent.glob('.publishing-*'))
 
 
+@pytest.mark.skipif(sys.platform != 'darwin', reason='Darwin symlink modes are enforced')
+def test_publish_makes_internal_links_owner_readable_under_private_umask(artifacts, monkeypatch):
+    (artifacts['runtime'] / 'node_modules/alias.js').symlink_to('dependency.js')
+    digest = bundle.build(**artifacts)
+    # Exercise publication's copy with a private root-process umask. Custody
+    # is simulated because this fixture runs as the CI user, not as root.
+    monkeypatch.setattr(bundle.os, 'geteuid', lambda: 0)
+    monkeypatch.setattr(custody, '_verify_fd', lambda fd, **_: os.fstat(fd))
+    monkeypatch.setattr(custody, 'protected_tree_metadata', lambda _: None)
+    parent = artifacts['destination'].parent / 'protected'
+    previous = os.umask(0o077)
+    try:
+        target = bundle.publish(artifacts['destination'], expected_digest=digest, install_root=parent)
+    finally:
+        os.umask(previous)
+    link = target / 'runtime/node_modules/alias.js'
+    assert stat.S_IMODE(link.lstat().st_mode) == 0o755
+    assert bundle.verify(target, expected_digest=digest)[1] == digest
+
+
 def test_publish_never_repairs_existing_drift(publisher):
     source, digest, parent = publisher
     target = bundle.publish(source, expected_digest=digest, install_root=parent)
