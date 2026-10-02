@@ -1410,3 +1410,26 @@ test('filters models by search and category without changing catalog data', () =
   fireEvent.click(screen.getByRole('button', { name: /reset/i }))
   expect(screen.getByText('Qwen 3.5 9B')).toBeInTheDocument()
 })
+
+
+test('explains the model memory budget separately from detected shared GPU memory', () => {
+  useModelsMock.mockReturnValue(baseState({
+    gpu: { vramTotal: 32, vramUsed: 9, vramFree: 23, modelMemoryBudgetGb: 17.6 },
+    models: [model({ status: 'downloaded', fitsVram: false, estimatedRequired: 23.8,
+      contextOptions: [{ contextLength: 65536, estimatedRequired: 23.8, fitsVram: false }] })],
+  }))
+  renderModels()
+  const run = screen.getByRole('button', { name: /^run$/i })
+  expect(run).toBeDisabled()
+  expect(run).toHaveAttribute('title', 'Requires 23.8 GB; ODS has a 17.6 GB model memory budget (32 GB GPU memory detected).')
+})
+
+test('does not invent a fitting context above the supplied model memory budget', () => {
+  useModelsMock.mockReturnValue(baseState({
+    gpu: { vramTotal: 32, vramUsed: 9, vramFree: 23, modelMemoryBudgetGb: 17.6 },
+    models: [model({ status: 'downloaded', fitsVram: false, estimatedRequired: 23.8,
+      sizeGb: 20.6, contextLength: 65536, maxContextLength: 65536, contextOptions: [] })],
+  }))
+  renderModels()
+  expect(screen.getByRole('button', { name: /^run$/i })).toBeDisabled()
+})

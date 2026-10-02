@@ -2383,3 +2383,54 @@ def test_model_list_plans_every_context_with_the_install_policy(data_dir, tmp_pa
     small_27b = next(model for model in small["models"] if model["id"] == "qwen3.5-27b-q4")
     assert small_27b["contextLength"] < 65536
     assert small_27b["appCompatibility"]["hermesTalk"]["code"] == "context_below_hermes_minimum"
+
+
+def _memory_budget_payload(tmp_path, data_dir, monkeypatch, *, ram, backend="amd", total_mb=32768):
+    # The recorded host RAM must win over a smaller container memory limit.
+    monkeypatch.setattr("performance_oracle._system_ram_gb", lambda: 8)
+    install = tmp_path / "memory-budget-install"
+    install.mkdir()
+    (install / ".env").write_text(
+        f"SYSTEM_RAM_GB={ram}\nLLM_MODEL=qwen3.5-9b\nGGUF_FILE=Qwen3.5-9B-Q4_K_M.gguf\n"
+    )
+    catalog = _official_model_catalog()
+    target = next(m for m in catalog if m.get("gguf_file") == "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf")
+    gpu = GPUInfo(name="AMD Radeon(TM) 8060S Graphics" if backend == "amd" else backend,
+        memory_used_mb=9276, memory_total_mb=total_mb, memory_percent=28.3,
+        utilization_percent=0, temperature_c=0, gpu_backend=backend,
+        memory_type="discrete" if backend == "nvidia" else "unified")
+    payload = build_models_payload(gpu, "Qwen3.5-9B-Q4_K_M", 0, install, data_dir,
+        catalog=catalog, evidence=[], downloaded_files_override={})
+    entry = next(m for m in payload["models"] if m["id"] == target["id"])
+    plan = planned_model_context(normalize_catalog_entry(target), gpu, ram, preferred_context=131072)
+    return payload, entry, plan
+
+
+def test_memory_budget_strixy_return_switch_agrees_with_activation(tmp_path, data_dir, monkeypatch):
+    payload, entry, plan = _memory_budget_payload(tmp_path, data_dir, monkeypatch, ram=46)
+    assert plan["fits"] is True
+    assert entry["fitsVram"] is True
+    assert any(o["contextLength"] == plan["context_length"] and o["fitsVram"] for o in entry["contextOptions"])
+    validated = ModelLibraryResponse(**payload)
+    assert validated.gpu.modelMemoryBudgetGb == plan["capacity_gb"] == 25.3
+    assert validated.gpu.vramTotal == 32
+
+
+def test_memory_budget_small_shared_host_still_rejects_35b(tmp_path, data_dir, monkeypatch):
+    payload, entry, plan = _memory_budget_payload(tmp_path, data_dir, monkeypatch, ram=24)
+    assert plan["fits"] is False
+    assert entry["fitsVram"] is False
+    assert not any(o["fitsVram"] for o in entry["contextOptions"])
+    assert payload["gpu"]["modelMemoryBudgetGb"] == plan["capacity_gb"] == 13.2
+
+
+def test_memory_budget_apple_keeps_recorded_host_ram_not_container_limit(tmp_path, data_dir, monkeypatch):
+    payload, entry, plan = _memory_budget_payload(tmp_path, data_dir, monkeypatch, ram=64, backend="apple", total_mb=65536)
+    assert entry["fitsVram"] is True
+    assert payload["gpu"]["modelMemoryBudgetGb"] == plan["capacity_gb"] == 35.2
+
+
+def test_memory_budget_discrete_gpu_remains_bounded_by_vram(tmp_path, data_dir, monkeypatch):
+    payload, entry, plan = _memory_budget_payload(tmp_path, data_dir, monkeypatch, ram=128, backend="nvidia", total_mb=16384)
+    assert entry["fitsVram"] is False
+    assert payload["gpu"]["modelMemoryBudgetGb"] == plan["capacity_gb"] == 16
