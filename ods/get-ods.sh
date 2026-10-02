@@ -758,4 +758,7 @@ cd "$INSTALL_DIR"
 # Native artifact provenance compares installed bytes with this clean checkout's
 # immutable Git objects. The runtime copy deliberately contains no .git directory.
 export ODS_BOOTSTRAP_SOURCE_DIR="$TEMP_DIR/repo/ods"
-exec ./install.sh "$@"
+# Keep this shell alive until the installer exits. Its EXIT trap owns the
+# private clone; exec would skip that trap and leave a full checkout behind.
+# The foreground installer still has the clean Git source for provenance.
+./install.sh "$@"
