@@ -642,6 +642,7 @@ jobs:
           bash tests/test-ods-cli-bootstrap-env-refresh.sh
           bash tests/test-disk-space-preflight.sh
           bash tests/test-tmpfile-cleanup.sh
+          bash tests/test-custom-menu-agent-flags.sh
           python3 -m pytest -q tests/test_system_uninstall.py
 
       - name: Installer mode dotenv compatibility
