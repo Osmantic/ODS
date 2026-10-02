@@ -159,6 +159,16 @@ try {
     if (-not $hermesOnlyPlan['hermes'].Enabled -or $hermesOnlyPlan['hermes-proxy'].Enabled) {
         throw 'Hermes-only Library choice re-enabled its proxy'
     }
+    $proxyDisabled = Join-Path $hermesOnlyRoot 'extensions/services/hermes-proxy/compose.yaml.disabled'
+    $proxyMissingFixture = "$proxyDisabled.missing-fixture"
+    Move-Item -LiteralPath $proxyDisabled -Destination $proxyMissingFixture
+    try {
+        if ((Get-ODSWindowsInstalledFeatureSelection -InstallDir $hermesOnlyRoot).Kind -ne 'unknown') {
+            throw 'Managed Hermes selection accepted a missing proxy marker'
+        }
+    } finally {
+        Move-Item -LiteralPath $proxyMissingFixture -Destination $proxyDisabled
+    }
     $hermesOnlyCustom = Invoke-Selection -Path $hermesOnlyRoot -Interactive $true -MenuAnswer '3'
     if (-not $hermesOnlyCustom.Hermes -or $hermesOnlyCustom.HermesProxy) {
         throw 'Custom menu default lost Hermes-only Library choice'
