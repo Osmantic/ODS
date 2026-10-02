@@ -6,6 +6,7 @@ import hashlib
 import json
 import logging
 import os
+import platform
 import re
 import shutil
 import stat
@@ -504,7 +505,12 @@ def _compute_extension_status(ext: dict, services_by_id: dict) -> str:
     ext_id = ext["id"]
     if ext_id == "opencode" and ext_id in SERVICES:
         return _opencode_extension_status(services_by_id.get(ext_id))
+    if (ext_id == "qdrant" and ext.get("catalog_source") == "builtin"
+            and not (USER_EXTENSIONS_DIR / ext_id).is_dir()
+            and not _qdrant_runtime_compatible()):
+        return "incompatible"
     if (ext_id == "embeddings" and ext.get("catalog_source") == "builtin"
+            and not (USER_EXTENSIONS_DIR / ext_id).is_dir()
             and not _embeddings_runtime_compatible()):
         return "incompatible"
     one_shot = _is_one_shot_extension(ext)
@@ -551,7 +557,8 @@ def _compute_extension_status(ext: dict, services_by_id: dict) -> str:
             and not (USER_EXTENSIONS_DIR / ext_id).is_dir()
             and not _comfyui_overlay_available()):
         return "incompatible"
-    # A user extension with the same ID shadows the built-in directory.
+    # A user extension with the same ID shadows the built-in directory. Its
+    # live health must not be replaced by the built-in marker's state.
     selection = ({} if (USER_EXTENSIONS_DIR / ext_id).is_dir()
                  else _qualified_builtin_selection(ext_id))
     if selection:
@@ -1910,6 +1917,10 @@ async def extensions_catalog(
         }
         if ext_id == "opencode" and ext_id in SERVICES:
             enriched.update(_opencode_catalog_fields(status))
+        if ext_id == "token-spy" and source == "core":
+            # ODS Usage already authenticates to Token Spy. The standalone
+            # dashboard requires a separate API key.
+            enriched["app_path"] = "/usage"
         llm_contract = _llm_contract_for_extension(ext)
         if llm_contract is not None:
             enriched["llm"] = llm_contract
@@ -3344,6 +3355,7 @@ async def extension_detail(
         "source": source,
         "installable": installable,
         **(_qualified_builtin_selection(service_id) if source == "core" else {}),
+        **({"app_path": "/usage"} if service_id == "token-spy" and source == "core" else {}),
         "llm": llm_contract,
         "public_url": public_url,
         "integration": integration,
