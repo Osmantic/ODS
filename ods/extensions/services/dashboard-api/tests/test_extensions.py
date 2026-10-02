@@ -237,6 +237,44 @@ class TestExtensionsCatalog:
         assert llm["route"] == "direct"
         assert llm["swap_safe"] is False
 
+    @pytest.mark.parametrize("endpoint", ["/api/extensions/catalog", "/api/extensions/perplexica"])
+    @pytest.mark.parametrize("enabled", [False, True])
+    @pytest.mark.parametrize("route,pinning,swap_safe", [
+        ("gateway", "none", True), ("direct", "none", False),
+        ("direct", "dynamic", True),
+    ])
+    def test_catalog_contract_survives_disabled_boot_and_addback(
+            self, test_client, monkeypatch, tmp_path, endpoint, enabled,
+            route, pinning, swap_safe):
+        # Disabled services are absent from the boot-time SERVICES snapshot.
+        # Their catalog contract must still describe swaps before/after Add.
+        raw_contract = {"consumes": True, "route": route, "pinning": pinning,
+                        "min_context": 65536, "probe": {"kind": "custom"}}
+        catalog = [{**_make_catalog_ext("perplexica", "Search App"),
+                    "catalog_source": "builtin", "llm": raw_contract}]
+        _patch_extensions_config(monkeypatch, catalog, services={}, tmp_path=tmp_path)
+        builtin = tmp_path / "builtin" / "perplexica"
+        builtin.mkdir(parents=True)
+        filename = "compose.yaml" if enabled else "compose.yaml.disabled"
+        (builtin / filename).write_text("services: {perplexica: {image: test/perplexica}}\n")
+        monkeypatch.setattr("routers.extensions.EXTENSIONS_DIR", builtin.parent)
+        statuses = [_make_service_status("perplexica")] if enabled else []
+        with patch("helpers.get_all_services", new_callable=AsyncMock, return_value=statuses), \
+                patch("helpers.get_cached_services", return_value=statuses):
+            response = test_client.get(endpoint, headers=test_client.auth_headers)
+        assert response.status_code == 200
+        payload = response.json()
+        item = payload["extensions"][0] if endpoint.endswith("catalog") else payload
+        assert item["status"] == ("enabled" if enabled else "disabled")
+        llm = item["llm"]
+        assert llm["swap_safe"] is swap_safe
+        assert llm["swapSafe"] is swap_safe
+        assert llm["badge"] == ("swap-safe" if swap_safe else "not-swap-safe")
+        assert llm["swap_safe_reason"]
+        assert llm["min_context"] == 65536
+        assert llm["probe"] == {"kind": "custom"}
+        assert "swap_safe" not in raw_contract
+
     def test_catalog_category_filter(self, test_client, monkeypatch, tmp_path):
         """Category filter returns only matching extensions."""
         catalog = [

@@ -26,7 +26,7 @@ from config import (
     ALWAYS_ON_SERVICES, CORE_SERVICE_IDS, DATA_DIR,
     EXTENSION_CATALOG, EXTENSIONS_DIR,
     EXTENSIONS_LIBRARY_DIR, GPU_BACKEND, LIBRARY_MANAGEABLE_BUILTINS, SERVICES,
-    USER_EXTENSIONS_DIR,
+    USER_EXTENSIONS_DIR, normalize_llm_contract,
 )
 from host_agent_client import (
     AgentClientError,
@@ -558,7 +558,7 @@ def _llm_contract_for_extension(ext: dict) -> dict | None:
         return service_llm
     catalog_llm = ext.get("llm")
     if isinstance(catalog_llm, dict):
-        return catalog_llm
+        return normalize_llm_contract(catalog_llm)
     return None
 
 
