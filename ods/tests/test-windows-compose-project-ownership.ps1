@@ -100,6 +100,18 @@ $script:containers = @(
 )
 Check (@(Assert-ODSWindowsComposeContainerOwnership -InstallDir $script:root).Count -eq 1) `
     'multiple same-root Compose config files are allowed'
+if ($env:OS -eq 'Windows_NT') {
+    $commaRoot = Join-Path ([IO.Path]::GetTempPath()) 'ods, owner\install'
+    $script:containers = @(
+        (New-FixtureContainer -Id $script:ids[0] -Name 'ods-dashboard' `
+            -WorkingDir $commaRoot `
+            -ConfigFiles ((Join-Path $commaRoot 'docker-compose.base.yml') + ',' +
+                          (Join-Path $commaRoot 'docker-compose.windows.yml')))
+    )
+    Check (@(Assert-ODSWindowsComposeContainerOwnership -InstallDir $commaRoot).Count -eq 1) `
+        'a comma in the Windows install directory does not split a Compose path'
+}
+$script:containers = @((New-FixtureContainer -Id $script:ids[0] -Name 'ods-dashboard'))
 $null = @(Assert-ODSWindowsComposeContainerOwnership -InstallDir $script:root `
     -DockerClientArgs @('--config', 'C:\fixture-docker-config'))
 Check ($script:lastConfig -eq 'C:\fixture-docker-config') `

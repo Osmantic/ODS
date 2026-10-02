@@ -55,7 +55,10 @@ function Assert-ODSWindowsComposeContainerOwnership {
                     [StringComparison]::OrdinalIgnoreCase)) {
                 throw "ODS container '$name' belongs to '$workingDir', not '$InstallDir'."
             }
-            foreach ($file in $configFiles.Split(',')) {
+            # Compose separates absolute Windows paths with commas. A comma in
+            # a profile or directory name is not a separator unless the next
+            # segment begins another drive or UNC path.
+            foreach ($file in [regex]::Split($configFiles, '(?i),(?=[a-z]:[\\/]|\\\\|/)')) {
                 if (-not [IO.Path]::IsPathRooted($file)) {
                     throw "ODS container '$name' has an unqualified Compose config path."
                 }
