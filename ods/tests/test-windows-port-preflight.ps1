@@ -551,6 +551,7 @@ if ($script:voicePass -ne $script:voiceCase) { $global:LASTEXITCODE = 1; exit 1 
 # A retained install's own published container ports may be reused. The proof
 # must include the exact Compose working directory, service and host binding;
 # another Docker project or host listener on the same port remains a conflict.
+if ($IsWindows -or $env:OS -eq 'Windows_NT') {
 $ownedInstallDir = Join-Path ([IO.Path]::GetTempPath()) 'ods-owned-port-fixture'
 $script:dockerPortIds = @('owned-container')
 $script:dockerPortInspects = @{}
@@ -664,6 +665,9 @@ Assert-Equal @(Get-WindowsODSSelectedPortConflicts -PortsToCheck $ownedPorts -In
 $script:dockerPortStatus = 0
 Assert-Equal @(Get-WindowsODSSelectedPortConflicts -PortsToCheck $ownedPorts).Count `
     1 'missing retained root cannot excuse a listener'
+} else {
+    Write-Host '[SKIP] Docker Desktop broker identity contract requires Windows paths and processes'
+}
 
 Write-Host "[PASS] Windows service port preflight and env generation"
 $global:LASTEXITCODE = 0
