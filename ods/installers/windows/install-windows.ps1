@@ -90,6 +90,7 @@ $LibDir = Join-Path $ScriptDir "lib"
 . (Join-Path $LibDir "detection.ps1")
 . (Join-Path $LibDir "env-generator.ps1")
 . (Join-Path $LibDir "installed-footprint.ps1")
+. (Join-Path $LibDir "installed-selection.ps1")
 . (Join-Path $LibDir "llm-endpoint.ps1")
 . (Join-Path $LibDir "native-llama-args.ps1")
 . (Join-Path $LibDir "opencode-config.ps1")
@@ -212,7 +213,7 @@ Write-ODSBanner
 #
 #  Phase 01 → $preflight_docker (hashtable)
 #  Phase 02 → $gpuInfo, $systemRamGB, $selectedTier, $tierConfig, $llamaServerImage
-#  Phase 03 → $enableVoice, $enableWorkflows, $enableRag, $enableOpenClaw, $openClawConfig
+#  Phase 03 → $enableWhisper, $enableTts, $enableWorkflows, $enableRag, $enableOpenClaw, $openClawConfig
 #  Phase 04 → $requirementsMet
 #  Phase 05 → $dockerComposeCmd
 #  Phase 06 → $envResult (SearxngSecret, OpenclawToken)
@@ -314,6 +315,7 @@ function Set-ODSWindowsHermesRuntimeModel {
 # ============================================================================
 Write-Phase -Phase 8 -Total 13 -Name "LAUNCH" -Estimate "2-30 minutes (model download)"
 
+$useLemonade = $false
 if ($dryRun) {
     if ($tierConfig.GgufUrl) {
         Write-AI "[DRY RUN] Would download: $($tierConfig.GgufFile)"
@@ -436,7 +438,6 @@ if ($dryRun) {
         }
 
         # ── AMD: native inference server (Lemonade preferred, llama-server fallback) ──
-        $useLemonade = $false
         if ($gpuInfo.Backend -eq "amd" -and -not $cloudMode) {
             Write-Chapter "AMD INFERENCE BACKEND"
 
@@ -886,19 +887,9 @@ if ($dryRun) {
                 $envPath = Join-Path $installDir ".env"
                 $nativeModel = $tierConfig.GgufFile
                 if (Test-Path $envPath) {
-                    $envContent = Get-Content $envPath -Raw
-                    $envContent = $envContent -replace "(?m)^ODS_MODE=.*$", "ODS_MODE=local"
-                    $envContent = $envContent -replace "(?m)^LLM_BACKEND=.*$", "LLM_BACKEND=llama-server"
-                    $envContent = $envContent -replace "(?m)^LLM_API_BASE_PATH=.*$", "LLM_API_BASE_PATH=/v1"
-                    $envContent = $envContent -replace "(?m)^AMD_INFERENCE_RUNTIME=.*$", "AMD_INFERENCE_RUNTIME=llama-server"
-                    $envContent = $envContent -replace "(?m)^AMD_INFERENCE_BACKEND=.*$", "AMD_INFERENCE_BACKEND=vulkan"
-                    $envContent = $envContent -replace "(?m)^AMD_INFERENCE_LOCATION=.*$", "AMD_INFERENCE_LOCATION=host"
-                    $envContent = $envContent -replace "(?m)^AMD_INFERENCE_PORT=.*$", "AMD_INFERENCE_PORT=$($script:LEMONADE_PORT)"
-                    $envContent = $envContent -replace "(?m)^AMD_INFERENCE_SUPPORTED_BACKENDS=.*$", "AMD_INFERENCE_SUPPORTED_BACKENDS=vulkan"
-                    $envContent = $envContent -replace "(?m)^AMD_INFERENCE_RUNTIME_MODE=.*$", "AMD_INFERENCE_RUNTIME_MODE=windows-llama-server-fallback"
-                    $envContent = $envContent -replace "(?m)^AMD_INFERENCE_MANAGED=.*$", "AMD_INFERENCE_MANAGED=true"
-                    $envContent = $envContent -replace "(?m)^LEMONADE_MODEL=.*$", "LEMONADE_MODEL="
-                    [System.IO.File]::WriteAllText($envPath, $envContent, (New-Object System.Text.UTF8Encoding($false)))
+                    $envContent = Set-ODSWindowsNativeFallbackEnvFile `
+                        -Path $envPath -NativePort $script:LEMONADE_PORT `
+                        -EnableRecommended $enableRecommended
                     Write-AISuccess "Patched .env for llama-server backend"
 
                     $nativeModel = ([regex]::Match($envContent, "(?m)^GGUF_FILE=([^\r\n]+)\r?$")).Groups[1].Value.Trim().Trim('"').Trim("'")
@@ -991,14 +982,20 @@ litellm_settings:
         $currentBackend = $(if ($cloudMode) { "none" } else { $gpuInfo.Backend })
         $servicePlan = New-ODSWindowsServicePlan `
             -EnableRecommended $enableRecommended `
-            -EnableVoice $enableVoice `
+            -CloudMode $cloudMode `
+            -UseLemonade $useLemonade `
+            -SwitchboardMode (Get-ODSWindowsEffectiveSwitchboardMode -InstallDir $installDir -RequestedMode $env:ODS_MODEL_SWITCHBOARD) `
+            -EnableWhisper $enableWhisper `
+            -EnableTts $enableTts `
             -EnableWorkflows $enableWorkflows `
             -EnableRag $enableRag `
             -EnableHermes $enableHermes `
+            -EnableHermesProxy $enableHermesProxy `
             -EnableOpenClaw $enableOpenClaw `
             -EnableComfyui $enableComfyui `
             -EnableDeepResearch $enableDeepResearch `
             -EnablePrivacyShield $enablePrivacyShield `
+            -EnableLangfuse $enableLangfuse `
             -EnableBraveSearch $enableBraveSearch `
             -EnableODSProxy $enableODSProxy `
             -EnableRemoteAccess $enableRemoteAccess
@@ -2101,20 +2098,33 @@ exec bash "$bashScript" "$bashInstallDir" "$($fullTierConfig.GgufFile)" "$($full
 Write-Phase -Phase 9 -Total 13 -Name "VERIFICATION" -Estimate "~30 seconds"
 
 if ($dryRun) {
+    # A dry run cannot know whether a future Lemonade download or health check
+    # will succeed. Show the preferred AMD plan; a real fallback re-plans with
+    # $useLemonade=false after the runtime attempt.
+    $dryRunUseLemonade = ($gpuInfo.Backend -eq "amd" -and -not $cloudMode)
     $_dryRunServicePlan = New-ODSWindowsServicePlan `
         -EnableRecommended $enableRecommended `
-        -EnableVoice $enableVoice `
+        -CloudMode $cloudMode `
+        -UseLemonade $dryRunUseLemonade `
+        -SwitchboardMode (Get-ODSWindowsEffectiveSwitchboardMode -InstallDir $installDir -RequestedMode $env:ODS_MODEL_SWITCHBOARD) `
+        -EnableWhisper $enableWhisper `
+        -EnableTts $enableTts `
         -EnableWorkflows $enableWorkflows `
         -EnableRag $enableRag `
         -EnableHermes $enableHermes `
+        -EnableHermesProxy $enableHermesProxy `
         -EnableOpenClaw $enableOpenClaw `
         -EnableComfyui $enableComfyui `
         -EnableDeepResearch $enableDeepResearch `
         -EnablePrivacyShield $enablePrivacyShield `
+        -EnableLangfuse $enableLangfuse `
         -EnableBraveSearch $enableBraveSearch `
         -EnableODSProxy $enableODSProxy `
         -EnableRemoteAccess $enableRemoteAccess
     Write-AI "[DRY RUN] Would health-check selected services"
+    if ($dryRunUseLemonade) {
+        Write-AI "[DRY RUN] If Lemonade fails, native llama-server fallback omits the observe/legacy LiteLLM gateway."
+    }
     if (Test-ODSWindowsServiceEnabled -ServiceId "perplexica" -Plan $_dryRunServicePlan) {
         Write-AI "[DRY RUN] Would auto-configure Perplexica for $($tierConfig.LlmModel)"
     }
@@ -2170,7 +2180,7 @@ $healthChecks = @(
     @{ Name = $llmEndpoint.Name; Url = $llmEndpoint.HealthUrl }
     @{ Name = "Chat UI (Open WebUI)"; Url = "http://localhost:$webuiHealthPort" }
 )
-if ($enableVoice)     {
+if ($enableWhisper)   {
     $healthWhisperPort = if ($windowsEnvMap.ContainsKey("WHISPER_PORT") -and -not [string]::IsNullOrWhiteSpace($windowsEnvMap["WHISPER_PORT"])) { $windowsEnvMap["WHISPER_PORT"] } else { "9000" }
     $healthChecks += @{ Name = "Whisper (STT)"; Url = "http://localhost:$healthWhisperPort/health" }
 }
@@ -2313,11 +2323,11 @@ function Wait-WindowsSttModelCached {
     return (Test-WindowsSttModelCached -ModelUrl $ModelUrl)
 }
 
-$sttModelReady = (-not $enableVoice)
+$sttModelReady = (-not $enableWhisper)
 $sttModelNameForReadiness = ""
 $sttModelCacheUrl = ""
 $sttRecoveryCmd = ""
-if ($enableVoice) {
+if ($enableWhisper) {
     # Read AUDIO_STT_MODEL and WHISPER_PORT from .env (written by env-generator.ps1).
     # Use ReadAllText with explicit UTF8NoBom encoding so legacy BOM-prefixed
     # .env files (written by old Set-Content -Encoding UTF8) don't break the
@@ -2474,13 +2484,15 @@ if (Test-ODSWindowsServiceEnabled -ServiceId "token-spy" -Plan $servicePlan) {
     $tokenSpyPort = Get-ReadinessPort -Name "TOKEN_SPY_PORT" -Default "3005"
     $readinessChecks += @{ Name = "Token Spy"; Url = "http://localhost:$tokenSpyPort/health"; Container = "ods-token-spy"; OpenUrl = "http://localhost:$tokenSpyPort" }
 }
-if ($enableVoice) {
+if ($enableWhisper) {
     $whisperPort = Get-ReadinessPort -Name "WHISPER_PORT" -Default "9000"
-    $ttsPort = Get-ReadinessPort -Name "TTS_PORT" -Default "8880"
     $readinessChecks += @{ Name = "Whisper (STT)"; Url = "http://localhost:$whisperPort/health"; Container = "ods-whisper"; OpenUrl = "http://localhost:$whisperPort" }
     if ($sttModelCacheUrl) {
         $readinessChecks += @{ Name = "Whisper STT model cache"; Url = $sttModelCacheUrl; Container = "ods-whisper"; OpenUrl = $sttModelNameForReadiness; Hint = "Run: $sttRecoveryCmd" }
     }
+}
+if ($enableTts) {
+    $ttsPort = Get-ReadinessPort -Name "TTS_PORT" -Default "8880"
     $readinessChecks += @{ Name = "Kokoro (TTS)"; Url = "http://localhost:$ttsPort/health"; Container = "ods-tts"; OpenUrl = "http://localhost:$ttsPort" }
 }
 if ($enableWorkflows) {
@@ -2560,6 +2572,13 @@ try {
     Write-AIWarn "Could not create shortcuts: $_"
 }
 
+# The managed selection marker means a future rerun may recover optional
+# service choices from the active/disabled Compose filenames. Write it only
+# after this run has finished synchronizing the installed service files.
+if (-not $dryRun) {
+    Write-ODSWindowsManagedComposeSelectionMarker -InstallDir $installDir
+}
+
 # ── Success card ──────────────────────────────────────────────────────────────
 if ($allHealthy) {
     Write-SuccessCard
@@ -2604,6 +2623,8 @@ if ($SummaryJsonPath) {
         sttModelCached = $sttModelReady
         features   = @{
             voice        = $enableVoice
+            whisper      = $enableWhisper
+            tts          = $enableTts
             workflows    = $enableWorkflows
             rag          = $enableRag
             recommended  = $enableRecommended

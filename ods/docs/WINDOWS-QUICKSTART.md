@@ -186,6 +186,8 @@ Setup detects native runtimes at `ODS_HOME` or `%USERPROFILE%\ods` and stops to 
 
 Manage existing native installations using their own `ods.ps1`. The native implementation remains at `ods/installers/windows/install-windows.ps1` for maintenance, not the recommended new-install path. Native commands do not manage the WSL runtime.
 
+Its lean **Core Only** selection installs local-model chat without a Dashboard agent. Hermes is an explicit native option. Use the recommended root `install.ps1` path for Pixel in Portal; it creates a separate WSL installation and does not migrate native data automatically.
+
 ### Moving from v2.6.0
 
 First establish whether v2.6.0 is native Windows or already installed inside WSL.

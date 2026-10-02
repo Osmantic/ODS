@@ -51,6 +51,7 @@ $LibDir = Join-Path $ScriptDir "lib"
 . (Join-Path $LibDir "model-activation.ps1")
 . (Join-Path $LibDir "install-report.ps1")
 . (Join-Path $LibDir "tier-map.ps1")
+. (Join-Path $LibDir "env-generator.ps1")
 
 $_resolvedLemonadeExe = Resolve-ODSLemonadeExe
 if ($_resolvedLemonadeExe) { $script:LEMONADE_EXE = $_resolvedLemonadeExe }
@@ -3487,9 +3488,42 @@ function Update-ComposeFlags {
     $newContent = $tokens -join " "
     $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
     $tempFile = "$flagsFile.$PID.tmp"
+    $recommendedEnvFile = $null
+    $recommendedEnvOriginal = $null
+    $recommendedEnvUpdated = $null
+    if ($ServiceId -eq "token-spy") {
+        # The installer records Recommended intent so a later rerun can tell
+        # Core LiteLLM from a partially written Recommended bundle. Keep that
+        # record aligned when the owner changes Token Spy through the CLI or
+        # Extensions Library instead of rerunning the installer.
+        $recommendedEnvFile = Join-Path $InstallDir ".env"
+        if (-not (Test-Path -LiteralPath $recommendedEnvFile -PathType Leaf)) {
+            throw "Cannot update Recommended selection without the installed .env."
+        }
+        $recommendedEnvOriginal = Get-Content -LiteralPath $recommendedEnvFile -Encoding UTF8 -Raw
+        $markerPattern = '(?m)^ODS_WINDOWS_RECOMMENDED_SELECTED=[^\r\n]*\r?$'
+        $markerMatches = [regex]::Matches($recommendedEnvOriginal, $markerPattern)
+        if ($markerMatches.Count -gt 1 -or
+            ($markerMatches.Count -eq 1 -and $markerMatches[0].Value -notmatch '^ODS_WINDOWS_RECOMMENDED_SELECTED=(true|false)\r?$')) {
+            throw "Installed Recommended selection marker is ambiguous."
+        }
+        $markerValue = $(if ($tokens.Contains('extensions/services/token-spy/compose.yaml')) { 'true' } else { 'false' })
+        if ($markerMatches.Count -eq 1) {
+            $recommendedEnvUpdated = [regex]::Replace($recommendedEnvOriginal, $markerPattern,
+                "ODS_WINDOWS_RECOMMENDED_SELECTED=$markerValue")
+        } else {
+            $separator = $(if ($recommendedEnvOriginal.EndsWith("`n")) { '' } else { "`n" })
+            $recommendedEnvUpdated = "$recommendedEnvOriginal${separator}ODS_WINDOWS_RECOMMENDED_SELECTED=$markerValue`n"
+        }
+    }
     try {
         [System.IO.File]::WriteAllText($tempFile, $newContent, $utf8NoBom)
         Move-Item -LiteralPath $tempFile -Destination $flagsFile -Force
+        if ($recommendedEnvFile) {
+            # This file contains credentials. The private writer creates its
+            # staging file with a restricted ACL before writing any bytes.
+            Write-ODSPrivateEnvFile -Path $recommendedEnvFile -Content $recommendedEnvUpdated
+        }
     } catch {
         Remove-Item -LiteralPath $tempFile -Force -ErrorAction SilentlyContinue
         if ($flagsExisted) {
