@@ -160,7 +160,85 @@ class TestExtensionsCatalog:
             ext, {"comfyui": _make_service_status("comfyui")})
         assert status == "enabled"
 
-    @pytest.mark.parametrize("service_id", ["perplexica", "searxng"])
+    @pytest.mark.parametrize("architecture,page_size,compatible", [
+        ("x86_64", 65536, True),
+        ("aarch64", 4096, True),
+        ("arm64", 65536, False),
+    ])
+    def test_qdrant_runtime_uses_container_page_size(
+            self, architecture, page_size, compatible):
+        from routers import extensions as ext_module
+
+        with patch.object(ext_module.platform, "machine", return_value=architecture), \
+             patch.object(ext_module.os, "sysconf", return_value=page_size, create=True):
+            assert ext_module._qdrant_runtime_compatible() is compatible
+
+    def test_qdrant_arm64_runtime_fails_closed_without_page_size(self):
+        from routers import extensions as ext_module
+
+        with patch.object(ext_module.platform, "machine", return_value="aarch64"), \
+             patch.object(ext_module.os, "sysconf", side_effect=OSError, create=True):
+            assert ext_module._qdrant_runtime_compatible() is False
+
+    def test_qdrant_library_add_refuses_incompatible_arm64_host(
+            self, test_client, monkeypatch, tmp_path):
+        from routers import extensions as ext_module
+
+        catalog = [{**_make_catalog_ext("qdrant", gpu_backends=["all"]),
+                    "catalog_source": "builtin"}]
+        _patch_extensions_config(monkeypatch, catalog, tmp_path=tmp_path)
+        builtin = tmp_path / "builtin" / "qdrant"
+        builtin.mkdir(parents=True)
+        disabled = builtin / "compose.yaml.disabled"
+        disabled.write_text("services: {qdrant: {image: qdrant/qdrant}}\n")
+        monkeypatch.setattr(ext_module, "EXTENSIONS_DIR", builtin.parent)
+        monkeypatch.setattr(ext_module, "_qdrant_runtime_compatible", lambda: False)
+
+        with patch("helpers.get_cached_services", return_value=[]):
+            response = test_client.get("/api/extensions/catalog", headers=test_client.auth_headers)
+        assert response.status_code == 200
+        row = next(item for item in response.json()["extensions"] if item["id"] == "qdrant")
+        assert row["status"] == "incompatible"
+        assert "library_manageable" not in row
+
+        with pytest.raises(HTTPException) as error:
+            ext_module._activate_service("qdrant")
+        assert error.value.status_code == 409
+        assert disabled.is_file()
+
+    def test_qdrant_activation_accepted_on_compatible_host(
+            self, monkeypatch, tmp_path):
+        from routers import extensions as ext_module
+
+        builtin = tmp_path / "builtin" / "qdrant"
+        builtin.mkdir(parents=True)
+        disabled = builtin / "compose.yaml.disabled"
+        disabled.write_text("services: {qdrant: {image: qdrant/qdrant}}\n")
+        monkeypatch.setattr(ext_module, "EXTENSIONS_DIR", builtin.parent)
+        monkeypatch.setattr(ext_module, "USER_EXTENSIONS_DIR", tmp_path / "user")
+        monkeypatch.setattr(ext_module, "_qdrant_runtime_compatible", lambda: True)
+
+        with patch.object(ext_module, "_scan_installed_compose"):
+            result = ext_module._activate_service("qdrant")
+        assert result["action"] == "enabled"
+        assert disabled.is_file()  # the host agent owns the marker transaction
+
+    def test_user_qdrant_status_is_not_restricted_by_builtin_guard(
+            self, monkeypatch, tmp_path):
+        from routers import extensions as ext_module
+
+        user_dir = tmp_path / "user" / "qdrant"
+        user_dir.mkdir(parents=True)
+        (user_dir / "compose.yaml").write_text("services: {qdrant: {image: example/qdrant}}\n")
+        monkeypatch.setattr(ext_module, "USER_EXTENSIONS_DIR", user_dir.parent)
+        monkeypatch.setattr(ext_module, "EXTENSIONS_DIR", tmp_path / "builtin")
+        monkeypatch.setattr(ext_module, "_qdrant_runtime_compatible", lambda: False)
+        ext = {**_make_catalog_ext("qdrant", gpu_backends=["all"]),
+               "catalog_source": "user"}
+        assert ext_module._compute_extension_status(
+            ext, {"qdrant": _make_service_status("qdrant")}) == "enabled"
+
+    @pytest.mark.parametrize("service_id", ["perplexica", "qdrant", "searxng"])
     def test_builtin_library_addback_tracks_selection_and_health(
             self, test_client, monkeypatch, tmp_path, service_id):
         catalog = [{**_make_catalog_ext(service_id, service_id), "catalog_source": "builtin"}]

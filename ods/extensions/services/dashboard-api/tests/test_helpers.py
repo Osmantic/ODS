@@ -720,7 +720,7 @@ class TestGetAllServices:
                            "external_port": port, "health": "/healthz"}
 
         def current_manifests(*args, **kwargs):
-            assert kwargs["only_service_ids"] == frozenset({"comfyui", "n8n", "perplexica", "searxng"})
+            assert kwargs["only_service_ids"] == frozenset({"comfyui", "n8n", "perplexica", "qdrant", "searxng"})
             return ({service_id: optional_config} if selected else {}), [], []
 
         async def fake_health(sid, cfg):
