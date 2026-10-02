@@ -23,12 +23,12 @@ _RECIPES = {
     "remote-provider-egress": (
         "ods-remote-provider-egress:local",
         "extensions/services/remote-provider-egress/Dockerfile",
-        "c0269900afb70564a91821c9dcd8a42a40fd89cdf6054594fcadc74806731b2e",
+        "b4f905b874cffef757d7174ec04dd10602bad9d16e297abcd9249b638e7eb831",
     ),
     "remote-provider-ssh-tunnel": (
         "ods-remote-provider-ssh-tunnel:local",
         "extensions/services/remote-provider-ssh-tunnel/Dockerfile",
-        "66a6a239ae0cc4f562831942bb6ef967f8cd2408ef54a7e96e8fd0f813ec84b8",
+        "f2baa60dfd553d0196120a662067f8c6968fbc562aa3cc2d4ee998a5d5aa8ece",
     ),
 }
 
