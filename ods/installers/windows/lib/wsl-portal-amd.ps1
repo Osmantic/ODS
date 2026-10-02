@@ -774,7 +774,10 @@ function Restore-ODSPortalLemonadeUpgrade {
         [string]::IsNullOrWhiteSpace([string]$journal.TaskXml) -or
         [string]::IsNullOrWhiteSpace([string]$journal.TaskName) -or
         $journal.TaskName -cne (Get-ODSPortalLemonadeTaskName) -or
-        -not (Test-Path -LiteralPath ([string]$journal.OldExecutable) -PathType Leaf)) {
+        -not [IO.Path]::IsPathRooted([string]$journal.OldExecutable) -or
+        -not [IO.Path]::IsPathRooted([string]$journal.NewExecutable) -or
+        -not (Test-Path -LiteralPath ([string]$journal.OldExecutable) -PathType Leaf) -or
+        -not (Test-Path -LiteralPath ([string]$journal.NewExecutable) -PathType Leaf)) {
         throw 'The Portal Lemonade upgrade journal is incomplete; no task was changed.'
     }
     $task = Get-ODSPortalLemonadeTask
@@ -784,14 +787,39 @@ function Restore-ODSPortalLemonadeUpgrade {
     $currentXml = Export-ScheduledTask -TaskName $task.TaskName -TaskPath '\' -ErrorAction Stop
     $sameTask = (Get-ODSPortalTaskXmlWithoutEnabled $currentXml) -ceq
         (Get-ODSPortalTaskXmlWithoutEnabled ([string]$journal.TaskXml))
-    $oldIntent = @($journal.Files | Where-Object { $_.Name -eq 'intent.json' })[0]
-    $intentPath = Join-Path (Join-Path (Get-ODSPortalStateDir) 'portal-runtime') 'intent.json'
-    $currentIntentPresent = Test-Path -LiteralPath $intentPath -PathType Leaf
-    $intentUnchanged = ($currentIntentPresent -eq [bool]$oldIntent.Present)
-    if ($intentUnchanged -and $currentIntentPresent) {
-        $intentUnchanged = (Get-Content -LiteralPath $intentPath -Raw -Encoding UTF8) -ceq [string]$oldIntent.Content
+    $runtimeDir = Join-Path (Get-ODSPortalStateDir) 'portal-runtime'
+    $allowedFiles = @('runtime.json', 'launch.ps1', 'backend-contract.ps1', 'env-generator.ps1', 'intent.json')
+    $savedFiles = @($journal.Files)
+    if ($savedFiles.Count -ne $allowedFiles.Count -or
+        @($savedFiles | Select-Object -ExpandProperty Name -Unique).Count -ne $allowedFiles.Count -or
+        @($savedFiles | Where-Object { [string]$_.Name -cnotin $allowedFiles }).Count) {
+        throw 'The Portal Lemonade upgrade journal has an invalid file set; no task was changed.'
     }
-    if ($journal.Phase -ceq 'prepared' -and $sameTask -and $intentUnchanged -and
+    $savedPlan = @($savedFiles | Where-Object { $_.Name -ceq 'runtime.json' })[0]
+    if (-not $savedPlan.Present) { throw 'The prior Portal Lemonade plan is missing from its journal.' }
+    $currentPlanPath = Join-Path $runtimeDir 'runtime.json'
+    $currentPlan = Get-Content -LiteralPath $currentPlanPath -Raw -Encoding UTF8 -ErrorAction Stop |
+        ConvertFrom-Json -ErrorAction Stop
+    $currentExe = [string]$currentPlan.ExecutablePath
+    $oldExe = [string]$journal.OldExecutable
+    $newExe = [string]$journal.NewExecutable
+    if (-not [IO.Path]::IsPathRooted($currentExe) -or
+        ($currentExe -ine $oldExe -and $currentExe -ine $newExe) -or
+        (-not $sameTask -and $currentExe -ine $newExe)) {
+        throw 'The Portal Lemonade task or plan changed outside this upgrade; recovery needs review.'
+    }
+    $filesUnchanged = $true
+    foreach ($saved in $savedFiles) {
+        $file = Join-Path $runtimeDir ([string]$saved.Name)
+        $present = Test-Path -LiteralPath $file -PathType Leaf
+        if ($present -ne [bool]$saved.Present -or
+            ($present -and (Get-Content -LiteralPath $file -Raw -Encoding UTF8 -ErrorAction Stop) -cne
+                [string]$saved.Content)) {
+            $filesUnchanged = $false
+            break
+        }
+    }
+    if ($journal.Phase -ceq 'prepared' -and $sameTask -and $filesUnchanged -and
         ((Get-ODSPortalTaskEnabled $task $currentXml) -eq [bool]$journal.TaskEnabled)) {
         # Stop rejected before changing anything. A recovery attempt must not
         # disable or restart a task merely because staging wrote a journal.
@@ -804,20 +832,17 @@ function Restore-ODSPortalLemonadeUpgrade {
         $journal.Phase = 'recovering'
         Write-ODSPrivateEnvFile -Path $path -Content ($journal | ConvertTo-Json -Depth 6 -Compress)
     }
-    if (-not $sameTask) {
-        # A new task may be active. Stop only if the existing saved plan and
-        # process identities prove that this task belongs to our new binary.
-        Stop-ODSPortalLemonade ([string]$journal.NewExecutable)
+    if ($currentExe -ieq $newExe) {
+        # The durable task action can be byte-identical while its runtime.json
+        # now launches the new binary. Stop by exact plan/process ownership,
+        # never by comparing task XML alone.
+        Stop-ODSPortalLemonade $newExe
     } else {
         # A crash can occur after the original task was disabled but before
         # registration. Never stop it merely because a journal exists.
         Disable-ScheduledTask -TaskName $task.TaskName -TaskPath '\' -ErrorAction Stop | Out-Null
     }
-    $runtimeDir = Join-Path (Get-ODSPortalStateDir) 'portal-runtime'
-    foreach ($saved in @($journal.Files)) {
-        if ([string]$saved.Name -cnotin @('runtime.json', 'launch.ps1', 'backend-contract.ps1', 'env-generator.ps1', 'intent.json')) {
-            throw 'The Portal Lemonade upgrade journal contains an unexpected file.'
-        }
+    foreach ($saved in $savedFiles) {
         $file = Join-Path $runtimeDir ([string]$saved.Name)
         if ($saved.Present) {
             Write-ODSPrivateEnvFile -Path $file -Content ([string]$saved.Content)

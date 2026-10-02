@@ -73,6 +73,22 @@ try {
     Check ($script:stops.Count -eq 1 -and $script:stops[0] -eq $newExe -and
         $script:calls -join ',' -eq 'stop,register,enable,start,ready') 'failed new task is stopped by exact new executable before old task restoration'
 
+    foreach ($phase in @('prepared', 'stopped')) {
+        $script:stops.Clear()
+        $script:calls.Clear()
+        $null = Save-ODSPortalLemonadeUpgrade (Get-ODSPortalLemonadeTask) $oldExe $newExe
+        $script:currentXml = $script:oldXml
+        $pending = Get-Content (Get-ODSPortalLemonadeUpgradeJournalPath) -Raw | ConvertFrom-Json
+        $pending.Phase = $phase
+        Write-ODSPrivateEnvFile (Get-ODSPortalLemonadeUpgradeJournalPath) ($pending | ConvertTo-Json -Depth 6 -Compress)
+        Write-ODSPrivateEnvFile (Join-Path $runtimeDir 'runtime.json') (@{ ExecutablePath = $newExe } | ConvertTo-Json -Compress)
+        Restore-ODSPortalLemonadeUpgrade
+        Check ($script:stops.Count -eq 1 -and $script:stops[0] -eq $newExe -and
+            $script:calls -join ',' -eq 'stop,register,enable,start,ready' -and
+            (Get-Content (Join-Path $runtimeDir 'runtime.json') -Raw) -eq $oldPlan) `
+            "same durable launcher with new plan is stopped before old files return ($phase)"
+    }
+
     $script:calls.Clear()
     $null = Save-ODSPortalLemonadeUpgrade (Get-ODSPortalLemonadeTask) $oldExe $newExe
     $script:enabled = $false
@@ -100,6 +116,23 @@ try {
     $message = ''
     try { $null = Get-ODSPortalDurableTaskExecutable $wrongTask } catch { $message = $_.Exception.Message }
     Check ($message -match 'legacy or ambiguous' -and $script:calls.Count -eq 0) 'foreign task identity is refused before mutation'
+
+    $null = Save-ODSPortalLemonadeUpgrade (Get-ODSPortalLemonadeTask) $oldExe $newExe
+    $pending = Get-Content (Get-ODSPortalLemonadeUpgradeJournalPath) -Raw | ConvertFrom-Json
+    $pending.NewExecutable = 'relative.exe'
+    Write-ODSPrivateEnvFile (Get-ODSPortalLemonadeUpgradeJournalPath) ($pending | ConvertTo-Json -Depth 6 -Compress)
+    $message = ''
+    try { Restore-ODSPortalLemonadeUpgrade } catch { $message = $_.Exception.Message }
+    Check ($message -match 'journal is incomplete' -and $script:calls.Count -eq 0) 'corrupt new-executable journal is refused before mutation'
+    $pending.NewExecutable = $newExe
+    Write-ODSPrivateEnvFile (Get-ODSPortalLemonadeUpgradeJournalPath) ($pending | ConvertTo-Json -Depth 6 -Compress)
+    $foreignExe = Join-Path $fixture 'foreign.exe'
+    [IO.File]::WriteAllText($foreignExe, 'foreign')
+    Write-ODSPrivateEnvFile (Join-Path $runtimeDir 'runtime.json') (@{ ExecutablePath = $foreignExe } | ConvertTo-Json -Compress)
+    $message = ''
+    try { Restore-ODSPortalLemonadeUpgrade } catch { $message = $_.Exception.Message }
+    Check ($message -match 'changed outside this upgrade' -and $script:calls.Count -eq 0 -and
+        (Test-Path (Get-ODSPortalLemonadeUpgradeJournalPath))) 'foreign runtime plan is refused before stop or replacement'
 } finally {
     $env:LOCALAPPDATA = $oldLocal
     $actual = [IO.Path]::GetFullPath($fixture)
