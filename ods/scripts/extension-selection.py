@@ -58,13 +58,32 @@ def _read_bounded_file(path: Path) -> bytes:
         raise SelectionError(f"Cannot inspect selected file: {path}") from exc
 
 
-def _read_yaml(path: Path) -> object:
+def _read_yaml(path: Path, *, compose: bool = False) -> object:
     try:
         import yaml
     except ImportError as exc:
         raise SelectionError("PyYAML is required to inspect extension dependencies") from exc
     try:
-        return yaml.safe_load(_read_bounded_file(path).decode("utf-8"))
+        raw = _read_bounded_file(path).decode("utf-8")
+        if not compose:
+            return yaml.safe_load(raw)
+
+        class _ComposeSelectionLoader(yaml.SafeLoader):
+            pass
+
+        def construct_override(loader, node):
+            # Docker Compose's !override changes overlay merging, not the
+            # contents needed for this fragment's dependency/service scan.
+            if isinstance(node, yaml.SequenceNode):
+                return loader.construct_sequence(node, deep=True)
+            if isinstance(node, yaml.MappingNode):
+                return loader.construct_mapping(node, deep=True)
+            if isinstance(node, yaml.ScalarNode):
+                return loader.construct_scalar(node)
+            raise yaml.constructor.ConstructorError(None, None, "invalid !override node", node.start_mark)
+
+        _ComposeSelectionLoader.add_constructor("!override", construct_override)
+        return yaml.load(raw, Loader=_ComposeSelectionLoader)  # noqa: S506 - SafeLoader subclass
     except (UnicodeError, yaml.YAMLError) as exc:
         raise SelectionError(f"Cannot inspect selected file: {path}") from exc
 
@@ -159,7 +178,7 @@ def _manifest_dependencies(directory: Path) -> set[str]:
 
 
 def _compose_details(path: Path) -> tuple[set[str], set[str]]:
-    document = _read_yaml(path)
+    document = _read_yaml(path, compose=True)
     services = document.get("services") if isinstance(document, dict) else None
     if not isinstance(services, dict):
         raise SelectionError(f"Invalid selected Compose services: {path}")
@@ -701,7 +720,7 @@ def _dependency_order(graph: dict[str, set[str]]) -> list[str]:
 
 def _image_providers(path: Path) -> set[str]:
     """Find services whose selected fragment supplies the runnable image."""
-    document = _read_yaml(path)
+    document = _read_yaml(path, compose=True)
     definitions = document.get("services") if isinstance(document, dict) else None
     if not isinstance(definitions, dict):
         raise SelectionError(f"Invalid selected Compose services: {path}")
