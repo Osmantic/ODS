@@ -707,6 +707,7 @@ class TestGetAllServices:
     @pytest.mark.asyncio
     @pytest.mark.parametrize("service_id,port", [
         ("n8n", 5678), ("perplexica", 3000), ("searxng", 8080),
+        ("token-spy", 8080),
     ])
     async def test_newly_selected_builtin_appears_then_disappears_without_restart(
         self, monkeypatch, service_id, port,
@@ -720,7 +721,8 @@ class TestGetAllServices:
                            "external_port": port, "health": "/healthz"}
 
         def current_manifests(*args, **kwargs):
-            assert kwargs["only_service_ids"] == frozenset({"n8n", "perplexica", "searxng"})
+            assert kwargs["only_service_ids"] == frozenset({
+                "n8n", "perplexica", "searxng", "token-spy"})
             return ({service_id: optional_config} if selected else {}), [], []
 
         async def fake_health(sid, cfg):

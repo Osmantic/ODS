@@ -497,7 +497,10 @@ def _compute_extension_status(ext: dict, services_by_id: dict) -> str:
     # activated this optional fragment. Use the current selection plus the
     # polled health result so Add/Retry/Disable remain truthful without an API
     # restart. Error/install progress above still takes precedence.
-    selection = _qualified_builtin_selection(ext_id)
+    # A user extension with the same ID shadows the built-in directory. Its
+    # live health must not be replaced by the built-in marker's state.
+    selection = ({} if (USER_EXTENSIONS_DIR / ext_id).is_dir()
+                 else _qualified_builtin_selection(ext_id))
     if selection:
         if not selection["library_selected"]:
             return "disabled"
@@ -1849,11 +1852,15 @@ async def extensions_catalog(
             "depends_on": ext.get("depends_on", []),
             "dependents": [],
             "dependency_status": {},
-            **_qualified_builtin_selection(ext_id),
+            **(_qualified_builtin_selection(ext_id) if source == "core" else {}),
             **update_state,
         }
         if ext_id == "opencode" and ext_id in SERVICES:
             enriched.update(_opencode_catalog_fields(status))
+        if ext_id == "token-spy" and source == "core":
+            # ODS Usage already authenticates to Token Spy. The standalone
+            # dashboard requires a separate API key.
+            enriched["app_path"] = "/usage"
         llm_contract = _llm_contract_for_extension(ext)
         if llm_contract is not None:
             enriched["llm"] = llm_contract
@@ -3287,7 +3294,8 @@ async def extension_detail(
         "error_message": error_message,
         "source": source,
         "installable": installable,
-        **_qualified_builtin_selection(service_id),
+        **(_qualified_builtin_selection(service_id) if source == "core" else {}),
+        **({"app_path": "/usage"} if service_id == "token-spy" and source == "core" else {}),
         "llm": llm_contract,
         "public_url": public_url,
         "integration": integration,
