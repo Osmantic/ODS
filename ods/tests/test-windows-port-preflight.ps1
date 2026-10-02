@@ -34,6 +34,10 @@ foreach ($name in @(
     "Resolve-WindowsLlmPreflightPort",
     "Test-WindowsPortInUse",
     "Test-WindowsODSLemonadeOwnsPort",
+    "Get-WindowsODSExpectedComposeService",
+    "Get-WindowsODSComposePortBindings",
+    "Test-WindowsODSDockerBrokerListener",
+    "Test-WindowsODSComposeOwnsListeners",
     "Get-WindowsODSSelectedPortConflicts",
     "Assert-WindowsODSSelectedPortAvailability"
 )) {
@@ -144,6 +148,26 @@ try {
         $generatedEnv = Get-Content -LiteralPath (Join-Path $generatedDir ".env") -Raw
         if ($generatedEnv -notmatch "(?m)^WEBUI_PORT=9090\r?$") {
             throw "Windows env regeneration did not preserve WEBUI_PORT=9090"
+        }
+
+        # A retained custom ComfyUI endpoint must match phase 04's port check
+        # after phase 06 replaces .env, or a foreign default port is missed.
+        $generatedEnvPath = Join-Path $generatedDir ".env"
+        $customComfyuiEnv = [IO.File]::ReadAllText($generatedEnvPath)
+        if ($customComfyuiEnv -match "(?m)^COMFYUI_PORT=[0-9]+\r?$") {
+            $customComfyuiEnv = [regex]::Replace($customComfyuiEnv,
+                "(?m)^COMFYUI_PORT=[0-9]+\r?$", "COMFYUI_PORT=8190")
+            [IO.File]::WriteAllText($generatedEnvPath, $customComfyuiEnv)
+        } else {
+            [IO.File]::AppendAllText($generatedEnvPath, "`r`nCOMFYUI_PORT=8190`r`n")
+        }
+        Assert-Equal (Resolve-WindowsODSPort -Name "COMFYUI_PORT" -DefaultPort 8188 `
+            -InstallDir $generatedDir) 8190 "Retained ComfyUI preflight port"
+        New-ODSEnv -InstallDir $generatedDir -TierConfig $tierConfig `
+            -Tier "3" -GpuBackend "nvidia" | Out-Null
+        $generatedEnv = Get-Content -LiteralPath (Join-Path $generatedDir ".env") -Raw
+        if ($generatedEnv -notmatch "(?m)^COMFYUI_PORT=8190\r?$") {
+            throw "Windows env regeneration did not preserve the checked ComfyUI port"
         }
     } finally {
         Remove-Item -LiteralPath $generatedDir -Recurse -Force -ErrorAction SilentlyContinue
@@ -277,6 +301,7 @@ try {
             if ([int]$result.ProcessId -le 0) {
                 throw "Live listener detection did not return an owning PID"
             }
+            Assert-Equal @($result.Listeners).Count 1 "Live listener endpoint is available for ownership proof"
         } finally {
             $listener.Stop()
         }
@@ -286,11 +311,14 @@ try {
         [pscustomobject]@{ ProcessId = 4101; Name = "lemonade-server.exe" }
     )
     Assert-Equal (Test-WindowsODSLemonadeOwnsPort `
-        -PortResult @{ InUse = $true; ProcessId = 4101 } `
+        -PortResult @{ InUse = $true; ProcessId = 4101; Listeners = @(@{ ProcessId = 4101 }) } `
         -LemonadeProcesses $managedProcesses) $true "Managed Lemonade listener"
     Assert-Equal (Test-WindowsODSLemonadeOwnsPort `
-        -PortResult @{ InUse = $true; ProcessId = 4102 } `
+        -PortResult @{ InUse = $true; ProcessId = 4102; Listeners = @(@{ ProcessId = 4102 }) } `
         -LemonadeProcesses $managedProcesses) $false "Foreign listener"
+    Assert-Equal (Test-WindowsODSLemonadeOwnsPort `
+        -PortResult @{ InUse = $true; ProcessId = 4101; Listeners = @(@{ ProcessId = 4101 }, @{ ProcessId = 4102 }) } `
+        -LemonadeProcesses $managedProcesses) $false "Managed and foreign listeners share a port"
     Assert-Equal (Test-WindowsODSLemonadeOwnsPort `
         -PortResult @{ InUse = $false; ProcessId = 0 } `
         -LemonadeProcesses $managedProcesses) $false "Free port"
@@ -309,7 +337,13 @@ $script:mockListeners = @{
 }
 function Test-WindowsPortInUse {
     param([int]$Port)
-    if ($script:mockListeners.ContainsKey($Port)) { return $script:mockListeners[$Port] }
+    if ($script:mockListeners.ContainsKey($Port)) {
+        $result = $script:mockListeners[$Port]
+        $result.Listeners = @([pscustomobject]@{
+            LocalAddress = '127.0.0.1'; LocalPort = $Port; ProcessId = $result.ProcessId
+        })
+        return $result
+    }
     return @{ InUse = $false; ProcessId = 0; ProcessName = "" }
 }
 function Stop-Process { throw "Preflight must never stop a process" }
@@ -386,9 +420,9 @@ function Assert-VoiceEqual {
 $script:voiceIfAst = $ast.Find({
     param($node)
     $node -is [System.Management.Automation.Language.IfStatementAst] -and
-        $node.Clauses[0].Item1.Extent.Text -match 'enableVoice'
+        $node.Clauses[0].Item1.Extent.Text -match 'enableWhisper'
 }, $true)
-if (-not $script:voiceIfAst) { throw "Phase 04 enableVoice block not found" }
+if (-not $script:voiceIfAst) { throw "Phase 04 enableWhisper block not found" }
 $voiceBlock = [scriptblock]::Create(($script:voiceIfAst.Clauses[0].Item2.Statements.Extent.Text -join "`n"))
 
 function Get-PhaseVoicePort {
@@ -527,11 +561,161 @@ Assert-VoiceEqual $ports["Whisper (STT)"] 9100 "phase cached 9000 lemonade -> 91
 Assert-VoiceEqual (Get-GeneratorWhisperPort -Backend "nvidia" -SeedEnv "WHISPER_PORT=9000") "9100" `
     "generator cached 9000 lemonade -> 9100"
 
+# A TTS-only Library selection checks its own configured host port without
+# bringing Whisper's port into the selected-service preflight.
+$ttsIfAst = $ast.Find({
+    param($node)
+    $node -is [System.Management.Automation.Language.IfStatementAst] -and
+        $node.Clauses[0].Item1.Extent.Text -match 'enableTts'
+}, $true)
+if (-not $ttsIfAst) { throw "Phase 04 enableTts block not found" }
+$ttsBlock = [scriptblock]::Create(($ttsIfAst.Clauses[0].Item2.Statements.Extent.Text -join "`n"))
+$ttsSeedDir = New-VoiceSeedDir -Content 'TTS_PORT=8891'
+try {
+    $installDir = $ttsSeedDir
+    $_portsToCheck = [ordered]@{}
+    . $ttsBlock
+    Assert-VoiceEqual $_portsToCheck['Kokoro (TTS)'] 8891 'TTS-only preflight honors persisted port'
+    Assert-VoiceEqual $_portsToCheck.Contains('Whisper (STT)') $false 'TTS-only preflight omits Whisper'
+} finally {
+    Remove-VoiceSeedDir $ttsSeedDir
+}
+
 Write-Host ("[PASS] Voice port parity: {0}/{1} cases" -f $script:voicePass, $script:voiceCase)
 if ($script:voicePass -ne $script:voiceCase) { $global:LASTEXITCODE = 1; exit 1 }
 
 } finally {
     if ($null -eq $savedVoiceOverride) { Remove-Item Env:WHISPER_PORT -ErrorAction SilentlyContinue } else { $env:WHISPER_PORT = $savedVoiceOverride }
+}
+
+# A retained install's own published container ports may be reused. The proof
+# must include the exact Compose working directory, service and host binding;
+# another Docker project or host listener on the same port remains a conflict.
+if ($IsWindows -or $env:OS -eq 'Windows_NT') {
+$ownedInstallDir = Join-Path ([IO.Path]::GetTempPath()) 'ods-owned-port-fixture'
+$script:dockerPortIds = @('owned-container')
+$script:dockerPortInspects = @{}
+$script:dockerPortStatus = 0
+$script:ownedPortListeners = @([pscustomobject]@{ LocalAddress = '127.0.0.1';
+    LocalPort = 3000; ProcessId = 4141 })
+function docker {
+    if ($args[0] -eq 'ps') {
+        $global:LASTEXITCODE = $script:dockerPortStatus
+        return $script:dockerPortIds
+    }
+    if ($args[0] -eq 'container' -and $args[1] -eq 'inspect') {
+        $global:LASTEXITCODE = $script:dockerPortStatus
+        return $script:dockerPortInspects[[string]$args[2]]
+    }
+    $global:LASTEXITCODE = 1
+}
+$script:dockerBrokerPath = Join-Path `
+    ([Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFiles)) `
+    'Docker\Docker\resources\com.docker.backend.exe'
+function Get-Process {
+    param([int]$Id, [string]$ErrorAction)
+    if ($Id -eq 4141) {
+        return [pscustomobject]@{ ProcessName = 'com.docker.backend'; Path = $script:dockerBrokerPath }
+    }
+    if ($Id -eq 5151) {
+        return [pscustomobject]@{ ProcessName = 'node'; Path = (Join-Path `
+            ([Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFiles)) `
+            'NodeJS\node.exe') }
+    }
+    return $null
+}
+function New-ODSOwnedPortInspect {
+    param([string]$WorkingDir, [string]$Project = 'ods',
+        [string]$Service = 'open-webui', [string]$HostIp = '127.0.0.1',
+        [string]$ContainerId = 'owned-container-full-id', [string]$HostPort = '3000')
+    return (ConvertTo-Json -InputObject @([ordered]@{
+        Id = $ContainerId
+        State = @{ Running = $true }
+        Config = @{ Labels = @{
+            'com.docker.compose.project' = $Project
+            'com.docker.compose.project.working_dir' = $WorkingDir
+            'com.docker.compose.service' = $Service
+        } }
+        NetworkSettings = @{ Ports = @{ '8080/tcp' = @(@{
+            HostIp = $HostIp; HostPort = $HostPort
+        }) } }
+    }) -Depth 10 -Compress)
+}
+function Test-WindowsPortInUse {
+    param([int]$Port)
+    if ($Port -notin @(3000, 8188)) { return @{ InUse = $false; ProcessId = 0; ProcessName = '' } }
+    return @{ InUse = $true; ProcessId = 4141; ProcessName = 'com.docker.backend';
+        Listeners = $script:ownedPortListeners }
+}
+$ownedPorts = [ordered]@{ 'Open WebUI (chat)' = 3000 }
+$script:dockerPortInspects['owned-container'] = New-ODSOwnedPortInspect -WorkingDir $ownedInstallDir
+Assert-Equal @(Get-WindowsODSSelectedPortConflicts -PortsToCheck $ownedPorts -InstallDir $ownedInstallDir).Count `
+    0 'retained own Docker published port is reusable'
+$script:ownedPortListeners = @([pscustomobject]@{
+    LocalAddress = '127.0.0.1'; LocalPort = 8188; ProcessId = 4141
+})
+$script:dockerPortInspects['owned-container'] = New-ODSOwnedPortInspect `
+    -WorkingDir $ownedInstallDir -Service 'comfyui' -HostPort '8188'
+$comfyPorts = [ordered]@{ 'ComfyUI (image generation)' = 8188 }
+Assert-Equal @(Get-WindowsODSSelectedPortConflicts -PortsToCheck $comfyPorts -InstallDir $ownedInstallDir).Count `
+    0 'retained own selected ComfyUI port is reusable'
+$script:dockerPortInspects['owned-container'] = New-ODSOwnedPortInspect -WorkingDir $ownedInstallDir
+$script:ownedPortListeners = @([pscustomobject]@{
+    LocalAddress = '127.0.0.1'; LocalPort = 3000; ProcessId = 5151
+})
+Assert-Equal @(Get-WindowsODSSelectedPortConflicts -PortsToCheck $ownedPorts -InstallDir $ownedInstallDir).Count `
+    1 'a foreign native listener cannot borrow stale Docker publication metadata'
+$script:ownedPortListeners = @([pscustomobject]@{
+    LocalAddress = '127.0.0.1'; LocalPort = 3000; ProcessId = 4141
+})
+$script:dockerPortIds = @('owned-container', 'other-container')
+$script:dockerPortInspects['other-container'] = New-ODSOwnedPortInspect `
+    -WorkingDir ($ownedInstallDir + '-other') -ContainerId 'other-container-full-id'
+Assert-Equal @(Get-WindowsODSSelectedPortConflicts -PortsToCheck $ownedPorts -InstallDir $ownedInstallDir).Count `
+    1 'duplicate published endpoint from another ODS checkout is ambiguous'
+$script:dockerPortInspects['other-container'] = New-ODSOwnedPortInspect `
+    -WorkingDir ($ownedInstallDir + '-other') -ContainerId 'other-container-full-id' -HostPort '3002'
+Assert-Equal @(Get-WindowsODSSelectedPortConflicts -PortsToCheck $ownedPorts -InstallDir $ownedInstallDir).Count `
+    0 'another ODS checkout on an unrelated port does not hide this binding'
+$script:dockerPortInspects['other-container'] = New-ODSOwnedPortInspect `
+    -WorkingDir ($ownedInstallDir + '-other') -ContainerId 'other-container-full-id' `
+    -HostPort '3000' -Project 'foreign'
+Assert-Equal @(Get-WindowsODSSelectedPortConflicts -PortsToCheck $ownedPorts -InstallDir $ownedInstallDir).Count `
+    1 'foreign project with the same published endpoint remains a conflict'
+$script:dockerPortIds = @('owned-container')
+$script:dockerPortInspects['owned-container'] = New-ODSOwnedPortInspect -WorkingDir ($ownedInstallDir + '-other')
+Assert-Equal @(Get-WindowsODSSelectedPortConflicts -PortsToCheck $ownedPorts -InstallDir $ownedInstallDir).Count `
+    1 'another Compose working directory remains a conflict'
+$script:dockerPortInspects['owned-container'] = New-ODSOwnedPortInspect -WorkingDir $ownedInstallDir -Project 'foreign'
+Assert-Equal @(Get-WindowsODSSelectedPortConflicts -PortsToCheck $ownedPorts -InstallDir $ownedInstallDir).Count `
+    1 'foreign project label remains a conflict'
+$script:dockerPortInspects['owned-container'] = New-ODSOwnedPortInspect -WorkingDir $ownedInstallDir -Service 'dashboard'
+Assert-Equal @(Get-WindowsODSSelectedPortConflicts -PortsToCheck $ownedPorts -InstallDir $ownedInstallDir).Count `
+    1 'wrong Compose service remains a conflict'
+$script:dockerPortInspects['owned-container'] = New-ODSOwnedPortInspect -WorkingDir $ownedInstallDir -HostIp '0.0.0.0'
+Assert-Equal @(Get-WindowsODSSelectedPortConflicts -PortsToCheck $ownedPorts -InstallDir $ownedInstallDir).Count `
+    1 'a different host binding cannot excuse a loopback listener'
+$script:dockerPortInspects['owned-container'] = New-ODSOwnedPortInspect -WorkingDir $ownedInstallDir
+$script:ownedPortListeners += [pscustomobject]@{ LocalAddress = '0.0.0.0'; LocalPort = 3000; ProcessId = 5151 }
+Assert-Equal @(Get-WindowsODSSelectedPortConflicts -PortsToCheck $ownedPorts -InstallDir $ownedInstallDir).Count `
+    1 'an additional foreign listener remains a conflict'
+$script:ownedPortListeners = @($script:ownedPortListeners[0])
+$script:dockerPortInspects['owned-container'] = '{}'
+Assert-Equal @(Get-WindowsODSSelectedPortConflicts -PortsToCheck $ownedPorts -InstallDir $ownedInstallDir).Count `
+    1 'missing Compose labels remain a conflict'
+$script:dockerPortInspects['owned-container'] = New-ODSOwnedPortInspect -WorkingDir $ownedInstallDir
+$script:dockerPortIds = @()
+Assert-Equal @(Get-WindowsODSSelectedPortConflicts -PortsToCheck $ownedPorts -InstallDir $ownedInstallDir).Count `
+    1 'a fresh install cannot claim another listener'
+$script:dockerPortIds = @('owned-container')
+$script:dockerPortStatus = 1
+Assert-Equal @(Get-WindowsODSSelectedPortConflicts -PortsToCheck $ownedPorts -InstallDir $ownedInstallDir).Count `
+    1 'Docker metadata failure remains a conflict'
+$script:dockerPortStatus = 0
+Assert-Equal @(Get-WindowsODSSelectedPortConflicts -PortsToCheck $ownedPorts).Count `
+    1 'missing retained root cannot excuse a listener'
+} else {
+    Write-Host '[SKIP] Docker Desktop broker identity contract requires Windows paths and processes'
 }
 
 Write-Host "[PASS] Windows service port preflight and env generation"

@@ -37,7 +37,13 @@ curl() {
     [[ "$header" == 'Authorization: Bearer test-secret-123' ]] || return 1
     case "$url" in
         */v1/models) printf '{"data":[{"id":"test-model"}]}' ;;
-        */v1/chat/completions) : ;;
+        */v1/chat/completions)
+            if [[ "${MOCK_COMPLETION_RESPONSE+x}" == x ]]; then
+                printf '%s' "$MOCK_COMPLETION_RESPONSE"
+            else
+                printf '{"choices":[{"message":{"content":"OK"}}]}'
+            fi
+            ;;
         *) return 1 ;;
     esac
 }
@@ -45,4 +51,16 @@ curl() {
 EXTERNAL_LLM_API_KEY_FILE="$key_file"
 [[ "$(external_llm_models openai-compatible http://127.0.0.1:18080)" == test-model ]]
 external_llm_probe_completion http://127.0.0.1:18080 test-model
+MOCK_COMPLETION_RESPONSE=''
+if external_llm_probe_completion http://127.0.0.1:18080 test-model >/dev/null 2>&1; then
+    echo 'FAIL: blank HTTP 200 completion accepted' >&2; exit 1
+fi
+MOCK_COMPLETION_RESPONSE='{"choices":[{"message":{"content":""}}]}'
+if external_llm_probe_completion http://127.0.0.1:18080 test-model >/dev/null 2>&1; then
+    echo 'FAIL: empty completion accepted' >&2; exit 1
+fi
+MOCK_COMPLETION_RESPONSE='{"choices":[]}'
+if external_llm_probe_completion http://127.0.0.1:18080 test-model >/dev/null 2>&1; then
+    echo 'FAIL: malformed completion accepted' >&2; exit 1
+fi
 echo 'PASS: external model discovery and completion use private key stream'

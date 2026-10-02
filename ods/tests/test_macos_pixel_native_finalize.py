@@ -48,8 +48,9 @@ def test_update_retains_storage_and_supports_verified_replay(fault):
         assert previous['runtimeDigest'] == 'a' * 64
 
 
-@pytest.mark.parametrize('fault', [None, 'proof', 'replace', 'symlink-lock', 'directory-sync', 'clients'])
-def test_update_publication_is_atomic_and_replayable(tmp_path, monkeypatch, fault):
+@pytest.mark.parametrize('unattended', [False, True])
+@pytest.mark.parametrize('fault', [None, 'proof', 'replace', 'symlink-lock', 'directory-sync', 'clients', 'sudo-denied'])
+def test_update_publication_is_atomic_and_replayable(tmp_path, monkeypatch, fault, unattended):
     stack = module.helper('pixel-native-stack')
     installed = tmp_path / 'ods'
     directory = installed / 'data/pixel-native/preparation'
@@ -78,6 +79,12 @@ def test_update_publication_is_atomic_and_replayable(tmp_path, monkeypatch, faul
     def verify(args, **kwargs):
         calls.append(args)
         assert '--verify-protected' in args
+        if unattended:
+            assert args[:3] == ['/usr/bin/sudo', '-n', '/usr/bin/python3']
+        else:
+            assert args[:2] == ['/usr/bin/sudo', '/usr/bin/python3']
+        if fault == 'sudo-denied':
+            raise subprocess.CalledProcessError(1, args)
         return SimpleNamespace(stdout=json.dumps(proof))
     monkeypatch.setattr(module.subprocess, 'run', verify)
     refreshed = []
@@ -93,9 +100,9 @@ def test_update_publication_is_atomic_and_replayable(tmp_path, monkeypatch, faul
     if fault == 'symlink-lock':
         (directory / '.selection.lock').symlink_to(directory / 'preparation.json')
     if fault == 'clients':
-        with pytest.raises(OSError): module.finalize_update(candidate)
+        with pytest.raises(OSError): module.finalize_update(candidate, non_interactive=unattended)
         assert stack.read_selection(directory)[0]['runtimeDigest'] == 'c' * 64
-        assert module.finalize_update(candidate)['status'] == 'selection-ready'
+        assert module.finalize_update(candidate, non_interactive=unattended)['status'] == 'selection-ready'
         assert len(refreshed) == 2
     elif fault == 'directory-sync':
         fsync = module.os.fsync
@@ -106,19 +113,20 @@ def test_update_publication_is_atomic_and_replayable(tmp_path, monkeypatch, faul
                 raise OSError('fixture durability interruption')
             return fsync(fd)
         monkeypatch.setattr(module.os, 'fsync', interrupt_once)
-        with pytest.raises(OSError): module.finalize_update(candidate)
+        with pytest.raises(OSError): module.finalize_update(candidate, non_interactive=unattended)
         assert stack.read_selection(directory)[0]['runtimeDigest'] == 'c' * 64
-        assert module.finalize_update(candidate)['status'] == 'selection-ready'
+        assert module.finalize_update(candidate, non_interactive=unattended)['status'] == 'selection-ready'
         assert len(calls) == 2
     elif fault:
-        with pytest.raises((ValueError, OSError)):
-            module.finalize_update(candidate)
+        with pytest.raises((ValueError, OSError, subprocess.CalledProcessError)):
+            module.finalize_update(candidate, non_interactive=unattended)
         assert not (directory / stack.UPDATE_SELECTION).exists()
         assert stack.read_selection(directory)[0] == previous
+        assert not refreshed
     else:
-        result = module.finalize_update(candidate)
+        result = module.finalize_update(candidate, non_interactive=unattended)
         assert result['status'] == 'selection-ready'
-        assert module.finalize_update(candidate) == result
+        assert module.finalize_update(candidate, non_interactive=unattended) == result
         assert len(calls) == 2
         assert stack.read_selection(directory)[0]['runtimeDigest'] == 'c' * 64
         assert (directory / stack.UPDATE_SELECTION).stat().st_mode & 0o777 == 0o600

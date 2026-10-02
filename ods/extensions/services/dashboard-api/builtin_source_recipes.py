@@ -20,6 +20,16 @@ _RECIPES = {
         "Dockerfile.mc",
         "29431828f528d65b44857bb6754cf2493bf633e202556cdee6d3ac3f2d65d3e3",
     ),
+    "remote-provider-egress": (
+        "ods-remote-provider-egress:local",
+        "extensions/services/remote-provider-egress/Dockerfile",
+        "b4f905b874cffef757d7174ec04dd10602bad9d16e297abcd9249b638e7eb831",
+    ),
+    "remote-provider-ssh-tunnel": (
+        "ods-remote-provider-ssh-tunnel:local",
+        "extensions/services/remote-provider-ssh-tunnel/Dockerfile",
+        "f2baa60dfd553d0196120a662067f8c6968fbc562aa3cc2d4ee998a5d5aa8ece",
+    ),
 }
 
 
@@ -54,7 +64,7 @@ def verify_builtin_source_build(
     service_def: dict[str, Any],
     builtin_root: Path,
 ) -> bool:
-    """Accept only shipped Langfuse MinIO recipes with reviewed source bytes.
+    """Accept only shipped built-in recipes with reviewed source bytes.
 
     Resolve containment only after checking original lexical paths for links.
     CRLF checkouts are normalized to LF before checking the reviewed hash.
@@ -65,10 +75,12 @@ def verify_builtin_source_build(
         expected_image, dockerfile, expected_hash = _RECIPES[service_name]
         root = Path(os.path.abspath(builtin_root))
         compose = Path(os.path.abspath(compose_path))
-        package = root / "langfuse"
+        package_name = "langfuse" if service_name.startswith("langfuse-") else service_name
+        package = root / package_name
         if compose.parent != package or compose.name not in {"compose.yaml", "compose.yaml.disabled"}:
             return False
-        if any(path.is_symlink() for path in (root, package, compose, package / dockerfile)):
+        recipe = package / dockerfile if package_name == "langfuse" else package / "Dockerfile"
+        if any(path.is_symlink() for path in (root, package, compose, recipe)):
             return False
         if not root.is_dir() or not package.is_dir():
             return False
@@ -76,10 +88,13 @@ def verify_builtin_source_build(
             return False
         if not compose.is_file() or compose.stat().st_nlink != 1:
             return False
-        expected_build = {"context": "./extensions/services/langfuse", "dockerfile": dockerfile}
+        expected_context = "./extensions/services/langfuse" if package_name == "langfuse" else "."
+        expected_build = {"context": expected_context, "dockerfile": dockerfile}
         if service_def.get("build") != expected_build or service_def.get("image") != expected_image:
             return False
-        data = _read_recipe(package / dockerfile).replace(b"\r\n", b"\n")
+        if recipe.is_symlink() or not recipe.resolve(strict=True).is_relative_to(root.resolve(strict=True)):
+            return False
+        data = _read_recipe(recipe).replace(b"\r\n", b"\n")
         return hashlib.sha256(data).hexdigest() == expected_hash
     except (OSError, ValueError, TypeError, KeyError):
         return False

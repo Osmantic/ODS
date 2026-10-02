@@ -65,6 +65,7 @@ cat > "$fakebin/powershell.exe" <<'EOF_PS'
 #!/usr/bin/env bash
 set -euo pipefail
 if [[ " $* " == *" agent restart "* ]]; then
+  printf 'agent-home=%s\n' "${ODS_HOME:-}" >> "${ODS_FAKE_PS_TRACE:?}"
   printf 'agent-restart=%s\n' "$*" >> "${ODS_FAKE_PS_TRACE:?}"
   exit 0
 fi
@@ -240,6 +241,8 @@ grep -q 'restart ods-litellm' "$docker_trace" \
     || fail "bootstrap-upgrade should restart LiteLLM after refreshing the native Windows config"
 grep -Eq '^agent-restart=-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File .*/installers/windows/ods\.ps1 agent restart$' "$trace" \
     || fail "bootstrap-upgrade should refresh the native Windows host agent after .env changes"
+grep -Fxq "agent-home=$install_dir" "$trace" \
+    || fail "bootstrap-upgrade must restart the agent for the selected non-default install root"
 [[ ! -f "$install_dir/data/models/Bootstrap.gguf" ]] \
     || fail "bootstrap model should be removed after verified native Windows swap"
 grep -q '"status": "complete"' "$install_dir/data/bootstrap-status.json" \

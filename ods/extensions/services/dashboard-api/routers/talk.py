@@ -766,7 +766,9 @@ async def talk_status(request: Request) -> dict[str, Any]:
     )
     talk_block_reason = _hermes_talk_block_reason(model_compatibility)
     text_chat_ready = hermes.get("status") == "healthy" and not talk_block_reason
-    voice_ready = whisper.get("status") == "healthy" and tts.get("status") == "healthy"
+    # Audio messages transcribe through Whisper and then submit to Hermes.
+    # Kokoro is only needed to speak the reply, not to send the message.
+    audio_message_ready = text_chat_ready and whisper.get("status") == "healthy"
     return {
         "ok": True,
         "session": {"expires_at": expires_at},
@@ -779,7 +781,7 @@ async def talk_status(request: Request) -> dict[str, Any]:
         "capabilities": {
             "text_chat": text_chat_ready,
             "tts": tts.get("status") == "healthy",
-            "audio_message": voice_ready,
+            "audio_message": audio_message_ready,
             "live_mic_requires_secure_context": True,
         },
         # User-facing copy (never the catalog's internal fleet note).

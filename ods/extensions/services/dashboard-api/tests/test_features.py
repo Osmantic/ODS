@@ -30,7 +30,7 @@ class TestCalculateFeatureStatusDefaults:
         assert result["priority"] == 99
 
 
-def test_optional_voice_feature_requires_its_webui_but_runs_on_cpu():
+def test_optional_voice_feature_requires_talk_services_without_webui_on_cpu():
     from models import ServiceStatus
 
     ods_root = Path(__file__).resolve().parents[4]
@@ -39,6 +39,8 @@ def test_optional_voice_feature_requires_its_webui_but_runs_on_cpu():
     )
     voice = next(feature for feature in manifest["features"] if feature["id"] == "voice")
     assert voice["requirements"]["vram_gb"] == 0
+    assert "open-webui" not in voice["requirements"]["services"]
+    assert "open-webui" not in voice["enabled_services_all"]
 
     def healthy(service_id):
         return ServiceStatus(
@@ -47,14 +49,17 @@ def test_optional_voice_feature_requires_its_webui_but_runs_on_cpu():
         )
 
     with patch("routers.features.GPU_BACKEND", "cpu"):
-        without_webui = calculate_feature_status(voice, [healthy("whisper"), healthy("tts")], None)
-        with_webui = calculate_feature_status(
+        without_hermes = calculate_feature_status(
             voice, [healthy("whisper"), healthy("tts"), healthy("open-webui")], None
         )
-    assert without_webui["status"] == "services_needed"
-    assert without_webui["requirements"]["servicesMissing"] == ["open-webui"]
-    assert with_webui["status"] == "enabled"
-    assert with_webui["requirements"]["vramOk"] is True
+        with_talk_services = calculate_feature_status(
+            voice, [healthy("whisper"), healthy("tts"), healthy("hermes")], None
+        )
+    assert without_hermes["status"] == "services_needed"
+    assert without_hermes["requirements"]["servicesMissing"] == ["hermes"]
+    assert with_talk_services["status"] == "enabled"
+    assert with_talk_services["requirements"]["vramOk"] is True
+    assert with_talk_services["launch"] == {"type": "internal", "path": "/talk"}
 
 
 class TestCalculateFeatureStatusAppleFallback:
