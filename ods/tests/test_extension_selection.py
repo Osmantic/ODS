@@ -570,6 +570,56 @@ def test_preset_refuses_litellm_disable_with_selected_external_overlay(tmp_path,
     assert (unrelated / "compose.yaml").is_file()
 
 
+def test_preset_disables_library_service_with_selected_mac_native_overlay(tmp_path, monkeypatch):
+    """A valid Compose override must not strand an installed Library service."""
+    (tmp_path / "data" / "user-extensions").mkdir(parents=True)
+    (tmp_path / "docker-compose.base.yml").write_text("services: {}\n", encoding="utf-8")
+    native = tmp_path / "installers" / "macos" / "pixel-native.compose.yaml.disabled"
+    native.parent.mkdir(parents=True)
+    shipped = SCRIPT.parents[1] / "installers" / "macos" / native.name
+    native.write_text(shipped.read_text(encoding="utf-8"), encoding="utf-8")
+    target = extension(tmp_path, "cyberchef")
+    helper = tmp_path / "scripts" / "stop-owned-containers.py"
+    helper.parent.mkdir()
+    helper.write_text("", encoding="utf-8")
+    preset = tmp_path / "extensions.list"
+    preset.write_text("disabled:cyberchef\n", encoding="utf-8")
+    calls = []
+
+    def stopped(command, **_kwargs):
+        calls.append(command)
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(selection.subprocess, "run", stopped)
+    flags = f"-f docker-compose.base.yml -f {native.relative_to(tmp_path).as_posix()}"
+    assert selection.restore_preset(tmp_path, preset, compose_flags=flags, strict=True) == (0, 1, [])
+    assert calls == [[sys.executable, str(helper), "--install-dir", str(tmp_path),
+                      "--preserve-restart-policy", "--service", "cyberchef"]]
+    assert (target / "compose.yaml.disabled").is_file()
+    assert not (target / "compose.yaml").exists()
+
+
+def test_unknown_compose_tag_keeps_library_selection_enabled(tmp_path, monkeypatch):
+    (tmp_path / "data" / "user-extensions").mkdir(parents=True)
+    (tmp_path / "docker-compose.base.yml").write_text("services: {}\n", encoding="utf-8")
+    native = tmp_path / "installers" / "macos" / "pixel-native.compose.yaml.disabled"
+    native.parent.mkdir(parents=True)
+    native.write_text("services:\n  pixel-native-ingress:\n    volumes: !unknown [x]\n",
+                      encoding="utf-8")
+    target = extension(tmp_path, "cyberchef")
+    preset = tmp_path / "extensions.list"
+    preset.write_text("disabled:cyberchef\n", encoding="utf-8")
+    monkeypatch.setattr(selection.subprocess, "run", lambda *_a, **_k: pytest.fail(
+        "unknown tags must be refused before stopping a service"))
+    with pytest.raises(selection.SelectionError, match="Cannot inspect selected file"):
+        selection.restore_preset(
+            tmp_path, preset,
+            compose_flags=f"-f docker-compose.base.yml -f {native.relative_to(tmp_path).as_posix()}",
+            strict=True,
+        )
+    assert (target / "compose.yaml").is_file()
+
+
 def test_preset_stops_shared_service_only_after_last_overlay_is_disabled(tmp_path, monkeypatch):
     (tmp_path / "data" / "user-extensions").mkdir(parents=True)
     for service_id in ("first", "second"):
