@@ -605,6 +605,46 @@ async def test_matching_lemonade_model_keeps_pixel_available(monkeypatch, loaded
 
 
 @pytest.mark.asyncio
+async def test_cold_lemonade_identity_probe_can_finish_after_three_seconds(monkeypatch):
+    runtime = {"source": "local-switchboard", "model": "Qwen3.6-35B-A3B-GGUF",
+               "contextLength": 131072}
+
+    async def slow_but_verified_model():
+        await asyncio.sleep(3.1)
+        return "Qwen3.6-35B-A3B-GGUF.gguf"
+
+    monkeypatch.setattr(pixel, "read_live_env_value",
+                        lambda key: "lemonade" if key == "LLM_BACKEND" else "")
+    monkeypatch.setattr(pixel, "get_loaded_model", slow_but_verified_model)
+    assert await pixel._model_readiness_issue_for_status({"activeRuntime": runtime}) is None
+
+
+@pytest.mark.asyncio
+async def test_cold_lemonade_identity_probe_still_blocks_mismatch_and_timeout(monkeypatch):
+    runtime = {"source": "local-switchboard", "model": "Qwen3.6-35B-A3B-GGUF",
+               "contextLength": 131072}
+    monkeypatch.setattr(pixel, "read_live_env_value",
+                        lambda key: "lemonade" if key == "LLM_BACKEND" else "")
+
+    async def wrong_model():
+        await asyncio.sleep(0)
+        return "Other-7B.gguf"
+
+    monkeypatch.setattr(pixel, "get_loaded_model", wrong_model)
+    assert await pixel._model_readiness_issue_for_status({"activeRuntime": runtime}) == (
+        "model_unavailable", pixel._MODEL_IDENTITY_DETAIL)
+
+    async def never_finishes():
+        await asyncio.sleep(1)
+        return "Qwen3.6-35B-A3B-GGUF"
+
+    monkeypatch.setattr(pixel, "get_loaded_model", never_finishes)
+    monkeypatch.setattr(pixel, "_MODEL_IDENTITY_PROBE_SECONDS", 0.01)
+    assert await pixel._model_readiness_issue_for_status({"activeRuntime": runtime}) == (
+        "model_unavailable", pixel._MODEL_IDENTITY_DETAIL)
+
+
+@pytest.mark.asyncio
 async def test_lemonade_probe_failure_fails_closed_without_logging_endpoint(monkeypatch, caplog):
     runtime = {"source": "local-switchboard", "model": "Qwen3.6-35B-A3B-GGUF",
                "contextLength": 65536}
