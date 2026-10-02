@@ -53,6 +53,11 @@ def installed(tmp_path, monkeypatch):
     bundle = tmp_path / 'protected' / digest
     bundle.mkdir(parents=True)
     (bundle / 'ods-service-binding.json').write_text('{}')
+    def record(body):
+        return {'sha256': hashlib.sha256(body).hexdigest(), 'bytes': len(body)}
+    selected_manifest = {'files': {
+        'manager/extension_manager.py': record(b'current service payload\n'),
+        'helpers/extension-catalog.json': record(b'current catalog\n')}}
     owner = SimpleNamespace(pw_name='fixture-owner', pw_uid=os.getuid())
     checks = []
     access = SimpleNamespace(
@@ -60,7 +65,11 @@ def installed(tmp_path, monkeypatch):
                                  GATEWAY_TARGET='system/com.ods.pixel-native-gateway'),
         _bundle=SimpleNamespace(INSTALL_ROOT=bundle.parent,
             verify=lambda path, expected_digest: checks.append(('runtime', path, expected_digest)),
-            verify_service_binding=lambda path, expected: checks.append(('services', path, expected))),
+            verify_service_binding=lambda path, expected: checks.append(('services', path, expected)),
+            expected_release_selection=lambda path, expected_digest: {
+                'serviceBundleDigest': services, 'pixelSourceRevision': ref,
+                'serviceManifest': selected_manifest},
+            validate_service_manifest_provenance=lambda _manifest: None),
         RUNTIME_CONFIG_ROOT=tmp_path / 'config',
         _source_gateway=lambda *_args: (
             {'UserName': owner.pw_name}, {'OPENCLAW_CONFIG_PATH': str(tmp_path / 'config')},
@@ -70,10 +79,7 @@ def installed(tmp_path, monkeypatch):
     original_helper = retain.helper
     config = SimpleNamespace(SERVICE_SOURCES={'manager/extension_manager.py': service_relative},
         service_snapshot=lambda base, name, private=False: (Path(base) / name).read_bytes(),
-        service_catalog=lambda _source: b'current catalog\n',
-        verified_services=lambda *_args, **_kwargs: {
-            'manager/extension_manager.py': b'current service payload\n',
-            'helpers/extension-catalog.json': b'current catalog\n'})
+        service_catalog=lambda _source: b'current catalog\n')
     monkeypatch.setattr(retain, 'helper', lambda name:
         access if name == 'pixel-macos-access-install.py' else
         config if name == 'pixel-native-config.py' else original_helper(name))
@@ -146,9 +152,18 @@ def test_retained_preflight_refuses_changed_current_catalog(installed):
 
 def test_retained_preflight_refuses_unverified_selected_manifest(installed):
     root, preparation, digest, services, ref, checks, source = installed
-    (preparation / 'services/services.json').write_bytes(b'{}')
+    access = retain.helper('pixel-macos-access-install.py')
+    access._bundle.expected_release_selection = lambda *_args, **_kwargs: {
+        'serviceBundleDigest': '0' * 64, 'pixelSourceRevision': ref,
+        'serviceManifest': {'files': {}}}
     with pytest.raises(ValueError, match='native-service-manifest-changed'):
         retain.verify(root, expected_ref=ref, ods_source=source)
+
+
+def test_retained_update_uses_protected_manifest_not_old_owner_preparation(installed):
+    root, preparation, digest, services, ref, checks, source = installed
+    (preparation / 'services/services.json').write_bytes(b'old owner preparation\n')
+    assert retain.verify(root, expected_ref=ref, ods_source=source)['serviceDigest'] == services
 
 
 @pytest.mark.parametrize('name', retain.PENDING_JOURNALS)

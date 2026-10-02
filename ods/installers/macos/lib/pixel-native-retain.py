@@ -7,7 +7,6 @@ existing preparation directory.
 import argparse
 import hashlib
 import importlib.util
-import json
 import os
 from pathlib import Path
 import pwd
@@ -60,24 +59,31 @@ def require_protected_clear(*, prompt_for_sudo=False):
         raise ValueError('native-protected-state-not-clear')
 
 
-def verify_desired_services(ods_source, preparation, services, expected_ref):
+def verify_desired_services(ods_source, bundle_module, bundle, digest, services, expected_ref):
     """Bind the selected snapshot to the service bytes this rerun would copy."""
     source = Path(ods_source)
     if (not source.is_absolute() or source.is_symlink() or not source.is_dir()
             or source.resolve(strict=True) != source):
         raise ValueError('current-ods-source-required')
     config = helper('pixel-native-config.py')
-    selected_bundle = preparation / 'services'
-    manifest_body = config.service_snapshot(selected_bundle, 'services.json', private=True)
-    if hashlib.sha256(manifest_body).hexdigest() != services:
+    # The protected runtime embeds the approved service manifest. Owner-side
+    # preparation/services may belong to an older selection after an update.
+    selection = bundle_module.expected_release_selection(bundle, expected_digest=digest)
+    manifest = selection.get('serviceManifest')
+    if (selection.get('serviceBundleDigest') != services
+            or selection.get('pixelSourceRevision') != expected_ref
+            or type(manifest) is not dict):
         raise ValueError('native-service-manifest-changed')
-    manifest = json.loads(manifest_body)
-    snapshots = config.verified_services(selected_bundle, expected_digest=services,
-        expected_ref=expected_ref, expected_config_digest=manifest['candidateConfigSha256'])
+    bundle_module.validate_service_manifest_provenance(manifest)
+    records = manifest['files']
     for output, relative in config.SERVICE_SOURCES.items():
-        if config.service_snapshot(source, relative) != snapshots[output]:
+        body = config.service_snapshot(source, relative)
+        record = records[output]
+        if len(body) != record['bytes'] or hashlib.sha256(body).hexdigest() != record['sha256']:
             raise ValueError('native-service-source-changed')
-    if config.service_catalog(source) != snapshots['helpers/extension-catalog.json']:
+    catalog = config.service_catalog(source)
+    record = records['helpers/extension-catalog.json']
+    if len(catalog) != record['bytes'] or hashlib.sha256(catalog).hexdigest() != record['sha256']:
         raise ValueError('native-service-catalog-changed')
 
 
@@ -113,7 +119,6 @@ def verify(install_dir, *, expected_ref=None, ods_source=None, prompt_for_sudo=F
             or not isinstance(digest, str) or not re.fullmatch('[a-f0-9]{64}', digest)
             or not isinstance(services, str) or not re.fullmatch('[a-f0-9]{64}', services)):
         raise ValueError('native-selection-changed')
-    verify_desired_services(ods_source, preparation, services, expected_ref)
     access = helper('pixel-macos-access-install.py')
     owner = pwd.getpwuid(os.getuid())
     document, environment, _, _, node, entrypoint = access._source_gateway(
@@ -140,6 +145,7 @@ def verify(install_dir, *, expected_ref=None, ods_source=None, prompt_for_sudo=F
     if not os.path.lexists(bundle / 'ods-service-binding.json'):
         raise ValueError('native-service-binding-required')
     access._bundle.verify_service_binding(bundle, services)
+    verify_desired_services(ods_source, access._bundle, bundle, digest, services, expected_ref)
     return {'mode': 'retained', 'runtimeDigest': digest, 'serviceDigest': services}
 
 
