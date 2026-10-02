@@ -723,6 +723,8 @@ show_install_menu() {
             ENABLE_PERPLEXICA=false
             ENABLE_PRIVACY_SHIELD=false
             ENABLE_LANGFUSE=false
+            # Core does not publish the optional LAN magic-link proxy.
+            ENABLE_ODS_PROXY=false
             ;;
         3)
             signal "Acknowledged."
