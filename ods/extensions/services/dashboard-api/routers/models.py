@@ -2320,7 +2320,13 @@ def load_model(
             detail={**mode_denial, "requestedModelId": model_id},
         )
     external_management = _model_management() if _external_lemonade_runtime() else None
-    if external_management is not None and external_management.get("managed") is False:
+    # Preserve a confirmed host capability denial. Only an *unverified*
+    # preflight may proceed to the host agent's authoritative ownership check.
+    if external_management is not None and (
+        external_management.get("managed") is False
+        or (external_management.get("managed") is True
+            and external_management.get("canActivate") is False)
+    ):
         raise HTTPException(
             status_code=409,
             detail={
