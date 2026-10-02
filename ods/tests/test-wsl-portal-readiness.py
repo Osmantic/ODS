@@ -140,6 +140,23 @@ esac
                                     monotonic=lambda: 0, sleep=lambda _: self.fail('unexpected retry'))
         fetch.assert_called_once()
 
+    def test_late_available_response_does_not_pass_the_gate(self):
+        spec = importlib.util.spec_from_file_location('verify_portal_api', SCRIPT.parent / 'verify-portal-api.py')
+        verifier = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(verifier)
+        clock = [0.0]
+
+        def late_status(*_args, **_kwargs):
+            clock[0] = 6.0
+            return {'available': True}
+
+        with tempfile.TemporaryDirectory() as directory:
+            Path(directory, '.env').write_text('DASHBOARD_API_KEY=do-not-print\n')
+            with patch.object(verifier, 'fetch_status', side_effect=late_status) as fetch:
+                with self.assertRaisesRegex(verifier.PortalCheckFailed, 'after the readiness deadline'):
+                    verifier.verify(directory, settle_seconds=5, monotonic=lambda: clock[0])
+        fetch.assert_called_once()
+
     def test_authentication_failure_names_the_key_without_printing_it(self):
         result, _ = self.probe(api_code=401, expected_api_requests=1)
         self.assertNotEqual(result.returncode, 0)

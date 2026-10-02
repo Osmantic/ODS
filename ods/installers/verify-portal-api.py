@@ -98,6 +98,10 @@ def verify(root, *, settle_seconds=_MODEL_PROOF_SETTLE_SECONDS,
         # obtains a fresh status, including a fresh physical model identity.
         timeout = min(_STATUS_TIMEOUT_SECONDS, remaining)
         status = fetch_status(port, key, timeout_seconds=timeout)
+        # The socket timeout is an inactivity limit, not a total transfer
+        # deadline. Never accept a proof delivered after the settlement window.
+        if monotonic() > deadline:
+            raise PortalCheckFailed('Portal model proof arrived after the readiness deadline')
         if status.get('available') is True:
             return
         detail = _safe(status.get('detail'), 160) or 'agent or model is unavailable'
