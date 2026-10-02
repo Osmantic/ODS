@@ -216,6 +216,16 @@ def test_cli_requests_link_repair_only_for_legacy_mode_failure(installed, monkey
     assert retain.main() == 1
 
 
+def test_retained_preflight_resumes_leftover_root_link_repair_journal(installed, monkeypatch):
+    root, _, digest, _, ref, _, source = installed
+    journal = root.parent / 'protected' / ('.link-mode-repair-' + digest + '.json')
+    journal.write_text('{}')
+    monkeypatch.setattr('sys.argv', ['pixel-native-retain.py', '--install-dir', str(root),
+        '--ods-source', str(source), '--expected-ref', ref,
+        '--allow-update', '--allow-link-repair'])
+    assert retain.main() == 3
+
+
 def test_retained_update_uses_protected_manifest_not_old_owner_preparation(installed):
     root, preparation, digest, services, ref, checks, source = installed
     (preparation / 'services/services.json').write_bytes(b'old owner preparation\n')

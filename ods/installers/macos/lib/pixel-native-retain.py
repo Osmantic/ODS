@@ -148,6 +148,11 @@ def verify(install_dir, *, expected_ref=None, ods_source=None, prompt_for_sudo=F
     if (states != ['running'] or len(pids) != 1 or not pids[0].isdecimal()
             or int(pids[0]) <= 0):
         raise ValueError('native-gateway-not-running')
+    # A crash can leave the root repair journal after all links have become
+    # readable. Resume and clear it before accepting the retained selection.
+    journal = access._bundle.INSTALL_ROOT / ('.link-mode-repair-' + digest + '.json')
+    if os.path.lexists(journal):
+        raise LegacyBundleLinkRepairRequired('legacy-bundle-link-repair-incomplete')
     try:
         access._bundle.verify(bundle, expected_digest=digest)
     except access._bundle.BundleError as error:
