@@ -156,7 +156,7 @@ Windows recovery note: if the runtime folder is partial and `.\ods.ps1` is missi
 
 > **API-only Linux install:** `--gateway-only --external-llm-url <URL>` uses an external model instead of downloading or starting ODS-managed inference. It requires a reachable upstream and does not provide the normal Portal/Pixel chat setup by itself.
 
-> **No GPU?** ODS also runs in cloud mode, using selected ODS services with hosted model APIs instead of local inference:
+> **No GPU?** ODS can use hosted model APIs in cloud mode. Service selection remains separate from the inference choice:
 > ```bash
 > ./install.sh --cloud
 > ```
