@@ -273,3 +273,45 @@ def test_nonregular_recipe_is_rejected_without_blocking(tree):
     recipe.unlink()
     os.mkfifo(recipe)
     assert not verify_builtin_source_build(compose, "langfuse-minio", svc, tree)
+
+
+@pytest.mark.parametrize("service_id", ("remote-provider-egress", "remote-provider-ssh-tunnel"))
+def test_optional_remote_provider_builds_keep_exact_builtin_custody(tmp_path, monkeypatch, service_id):
+    root = tmp_path / "extensions" / "services"
+    root.mkdir(parents=True)
+    shutil.copytree(ODS / "extensions/services" / service_id, root / service_id)
+    monkeypatch.setattr(extensions, "EXTENSIONS_DIR", root)
+    compose = root / service_id / "compose.yaml.disabled"
+    definition = _svc_defs(compose)[service_id]
+    assert verify_builtin_source_build(compose, service_id, definition, root)
+    extensions._scan_compose_content(
+        compose, skip_name_collision=True, skip_gpu_passthrough_check=True,
+        skip_root_user_check=True, builtin=True,
+    )
+    assert not verify_builtin_source_build(compose, service_id, definition, root.parent)
+    dockerfile = root / service_id / "Dockerfile"
+    dockerfile.write_bytes(dockerfile.read_bytes() + b"\n# changed\n")
+    assert not verify_builtin_source_build(compose, service_id, definition, root)
+    with pytest.raises(HTTPException, match="verified source recipe"):
+        extensions._scan_compose_content(
+            compose, skip_name_collision=True, skip_gpu_passthrough_check=True,
+            skip_root_user_check=True, builtin=True,
+        )
+
+
+def test_remote_provider_library_selection_and_ssh_dependency(tmp_path, monkeypatch):
+    root = tmp_path / "services"
+    root.mkdir()
+    for service_id in ("remote-provider-egress", "remote-provider-ssh-tunnel"):
+        shutil.copytree(ODS / "extensions/services" / service_id, root / service_id)
+    user_root = tmp_path / "user"
+    user_root.mkdir()
+    monkeypatch.setattr(extensions, "EXTENSIONS_DIR", root)
+    monkeypatch.setattr(extensions, "USER_EXTENSIONS_DIR", user_root)
+    assert extensions._qualified_builtin_selection("remote-provider-egress") == {
+        "library_manageable": True, "library_selected": False,
+    }
+    assert extensions._get_missing_deps_transitive("remote-provider-ssh-tunnel") == [
+        "remote-provider-egress",
+    ]
+    assert extensions._activate_service("remote-provider-egress")["action"] == "enabled"

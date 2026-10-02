@@ -428,7 +428,7 @@ def _opencode_extension_status(svc) -> str:
 
 
 def _opencode_catalog_fields(status: str) -> dict:
-    """Library affordances for OpenCode: Linux setup and the app page."""
+    """Library affordances for OpenCode: host setup and the app page."""
     from helpers import get_opencode_lifecycle  # noqa: PLC0415 - avoid import cycle
 
     lifecycle = get_opencode_lifecycle() or {}
@@ -963,10 +963,15 @@ def _compose_policy_service_problems(name, service, *, own_services, accelerator
         if str(opt).strip().lower() not in _COMPOSE_POLICY_SECURITY_OPTS:
             problems.append(f"service '{name}' uses dangerous security_opt '{opt}'")
     groups = _compose_policy_list(name, "group_add", service.get("group_add"), problems) or []
-    if groups and accelerator != "amd":
+    remote_provider_group = (
+        builtin and name in {"remote-provider-egress", "remote-provider-ssh-tunnel"}
+        and groups == ["${REMOTE_PROVIDER_DATA_GID:-1000}"]
+    )
+    if groups and accelerator != "amd" and not remote_provider_group:
         problems.append(f"service '{name}' adds supplementary groups (group_add); only a curated "
                         f"recipe's compose.amd.yaml may add the GPU video/render groups")
-    elif any(not isinstance(group, str) or group not in _COMPOSE_POLICY_GPU_GROUPS for group in groups):
+    elif not remote_provider_group and any(
+            not isinstance(group, str) or group not in _COMPOSE_POLICY_GPU_GROUPS for group in groups):
         problems.append(f"service '{name}' adds groups other than the GPU video/render groups")
     if service.get("sysctls"):
         problems.append(f"service '{name}' declares sysctls")
@@ -1547,6 +1552,48 @@ def _call_agent_compose_rename(action: str, service_id: str) -> bool:
         return False
 
 
+_SELECTION_VISIBILITY_TIMEOUT_SECONDS = 10.0
+
+
+def _selection_markers_visible(action: str, service_ids: list[str]) -> bool:
+    """Observe the committed host selection through the API's shared mount."""
+    selected_name, other_name = (
+        ("compose.yaml", "compose.yaml.disabled") if action == "enable"
+        else ("compose.yaml.disabled", "compose.yaml")
+    )
+    for service_id in service_ids:
+        try:
+            directory = _resolve_extension_dir(service_id)
+            if not stat.S_ISREG((directory / selected_name).lstat().st_mode):
+                return False
+            try:
+                (directory / other_name).lstat()
+            except FileNotFoundError:
+                pass
+            else:
+                return False
+        except (OSError, RuntimeError, HTTPException):
+            return False
+    return True
+
+
+def _wait_for_selection_visibility(action: str, service_ids: list[str]) -> None:
+    # A host rename can remain visible under both names in a VM shared mount.
+    # Never acknowledge a settled selection from that stale container view.
+    deadline = time.monotonic() + _SELECTION_VISIBILITY_TIMEOUT_SECONDS
+    while not _selection_markers_visible(action, service_ids):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "Host extension selection was committed, but the Dashboard "
+                    "view has not caught up. Refresh status before retrying."
+                ),
+            )
+        time.sleep(min(0.25, remaining))
+
+
 def _select_extensions_on_host(
     action: str, service_ids: list[str],
     expected_sha256: dict[str, str] | None = None,
@@ -1576,6 +1623,7 @@ def _select_extensions_on_host(
     expected = {"enabled", "already_enabled"} if action == "enable" else {"disabled"}
     if result.get("action") not in expected or result.get("service_ids") != service_ids:
         raise HTTPException(status_code=502, detail="Host agent returned an invalid selection result")
+    _wait_for_selection_visibility(action, service_ids)
     return result
 
 

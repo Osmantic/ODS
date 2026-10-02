@@ -139,6 +139,19 @@ if lemonade_external and ods_mode == "lemonade":
     elif existing(["docker-compose.base.yml"]):
         resolved = ["docker-compose.base.yml"]
         primary = "docker-compose.base.yml"
+elif gateway_only and gpu_backend == "apple":
+    # An external gateway on macOS must not inherit the native Metal overlay:
+    # that overlay starts llama-server-ready even after managed inference is
+    # profiled out. The cloud overlay has no native listener or readiness
+    # sidecar; the external overlay below supplies the actual model route.
+    if ods_mode != "local" or not external_llm:
+        print("ERROR: Apple gateway-only requires a local external model route", file=sys.stderr)
+        sys.exit(1)
+    if not existing(["docker-compose.base.yml", "docker-compose.cloud.yml"]):
+        print("ERROR: Apple gateway-only requires the base and cloud Compose overlays", file=sys.stderr)
+        sys.exit(1)
+    resolved = ["docker-compose.base.yml", "docker-compose.cloud.yml"]
+    primary = "docker-compose.cloud.yml"
 elif profile_overlays and existing(profile_overlays):
     resolved = profile_overlays
     primary = profile_overlays[-1]
@@ -747,10 +760,15 @@ def _compose_policy_service_problems(name, service, *, own_services, accelerator
         if str(opt).strip().lower() not in _COMPOSE_POLICY_SECURITY_OPTS:
             problems.append(f"service '{name}' uses dangerous security_opt '{opt}'")
     groups = _compose_policy_list(name, "group_add", service.get("group_add"), problems) or []
-    if groups and accelerator != "amd":
+    remote_provider_group = (
+        builtin and name in {"remote-provider-egress", "remote-provider-ssh-tunnel"}
+        and groups == ["${REMOTE_PROVIDER_DATA_GID:-1000}"]
+    )
+    if groups and accelerator != "amd" and not remote_provider_group:
         problems.append(f"service '{name}' adds supplementary groups (group_add); only a curated "
                         f"recipe's compose.amd.yaml may add the GPU video/render groups")
-    elif any(not isinstance(group, str) or group not in _COMPOSE_POLICY_GPU_GROUPS for group in groups):
+    elif not remote_provider_group and any(
+            not isinstance(group, str) or group not in _COMPOSE_POLICY_GPU_GROUPS for group in groups):
         problems.append(f"service '{name}' adds groups other than the GPU video/render groups")
     if service.get("sysctls"):
         problems.append(f"service '{name}' declares sysctls")
