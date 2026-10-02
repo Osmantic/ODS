@@ -79,6 +79,10 @@ function Reset-Scenario {
     $script:amdArgs = @()
     $script:linuxHome = '/home/user'
     $script:amdBinding = @()
+    $script:installInvoked = $false
+    $script:postflightCalls = 0
+    $script:checkLockOnInstall = $false
+    $script:mutexWasHeld = $false
     $script:distroListFailure = $null
     $script:initProbes = @()
 }
@@ -107,7 +111,14 @@ function New-ODSPortalLinuxAccount([string]$Distro, $Account) {
 }
 function Get-ODSPortalWindowsNvidiaDriver { return $script:nvidiaDriver }
 function Get-ODSPortalAmdPlan([string]$SourceRoot) { $script:calls.Add('amd-plan'); return $script:amdPlan }
-function Get-ODSPortalRetainedLemonadeArguments([string]$Distro, [string]$InstallDir) { return $null }
+function Get-ODSPortalControlMutexName { return "ODS-Portal-Setup-Contract-Test-$PID" }
+function Get-ODSPortalRetainedLemonadeArguments([string]$Distro, [string]$InstallDir) {
+    if ($script:installInvoked -and $null -ne $script:amdPlan) {
+        $script:postflightCalls++
+        return @('--lemonade-model', 'fixture')
+    }
+    return $null
+}
 function Initialize-ODSPortalAmdLemonade($Plan, [string]$SourceRoot, [bool]$NonInteractive, [string]$WslDistro, [string]$WslInstallDir) {
     $script:calls.Add('amd-lemonade:' + $Plan.GpuName)
     $script:amdBinding = @($WslDistro, $WslInstallDir)
@@ -129,6 +140,21 @@ function Initialize-ODSPortalUbuntuUser([string]$Distro) {
 }
 function Invoke-ODSPortalLinuxInstaller([string]$InstallerRoot, [string]$Distro, [string[]]$LinuxArguments, [string]$InstallRoot, [bool]$OpenPortal, [string]$DockerDesktopPath = '', [string]$StateRoot = '') {
     $script:calls.Add('install:' + $Distro)
+    if ($script:checkLockOnInstall) {
+        $probe = Start-Job -ScriptBlock {
+            param($Name)
+            $mutex = [Threading.Mutex]::new($false, $Name)
+            $held = $false
+            try { $held = $mutex.WaitOne(0); return $held }
+            finally { if ($held) { $mutex.ReleaseMutex() }; $mutex.Dispose() }
+        } -ArgumentList (Get-ODSPortalControlMutexName)
+        try {
+            $null = Wait-Job -Job $probe -Timeout 10
+            if ($probe.State -ne 'Completed') { throw 'model lock probe did not complete' }
+            $script:mutexWasHeld = -not [bool](Receive-Job -Job $probe)
+        } finally { Remove-Job -Job $probe -Force }
+    }
+    $script:installInvoked = $true
     $script:openPortal = $OpenPortal
     $script:capturedArguments = $LinuxArguments
     $script:capturedRoot = $InstallRoot
@@ -313,10 +339,26 @@ try {
     Reset-Scenario
     $script:amdPlan = $fixturePlan
     $script:amdArgs = $fixtureLemonadeArgs
+    $script:checkLockOnInstall = $true
     Check ((Invoke-ODSPortalSetup @{} 'unused') -eq 0) 'AMD host installs through Windows Lemonade'
+    Check ($script:mutexWasHeld -and $script:postflightCalls -eq 1) 'AMD model lock spans Linux install and successful route recheck'
     Check (($script:capturedArguments -join ' ') -match '--pixel --no-hermes --no-openclaw --lemonade-url http://localhost:8080 --lemonade-model extra\.Qwen3\.5-9B-Q4_K_M\.gguf --lemonade-gpu-name AMD Radeon RX 9070 XT --lemonade-gpu-vram-mb 16304 --tier 2$') 'AMD host passes the Lemonade route and GPU tier to Linux'
     Check ($script:calls.IndexOf('amd-lemonade:AMD Radeon RX 9070 XT') -lt $script:calls.IndexOf('install:Ubuntu-24.04')) 'Lemonade is ready before the Linux installer starts'
     Check (($script:amdBinding -join '|') -ceq 'Ubuntu-24.04|/home/user/ods' -and $script:capturedRoot -ceq '/home/user/ods') 'default AMD binding and delegated install use the same explicit Linux path'
+    Reset-Scenario
+    $script:amdPlan = $fixturePlan; $script:amdArgs = $fixtureLemonadeArgs; $script:delegateCode = 17
+    Check ((Invoke-ODSPortalSetup @{} 'unused') -eq 17) 'failed Linux install preserves its exit code under model lock'
+    $releasedProbe = Start-Job -ScriptBlock {
+        param($Name)
+        $mutex = [Threading.Mutex]::new($false, $Name)
+        $held = $false
+        try { $held = $mutex.WaitOne(0); return $held }
+        finally { if ($held) { $mutex.ReleaseMutex() }; $mutex.Dispose() }
+    } -ArgumentList (Get-ODSPortalControlMutexName)
+    try {
+        $null = Wait-Job -Job $releasedProbe -Timeout 10
+        Check ($releasedProbe.State -eq 'Completed' -and [bool](Receive-Job -Job $releasedProbe)) 'failed Linux install releases the model lock'
+    } finally { Remove-Job -Job $releasedProbe -Force }
     Reset-Scenario
     $script:amdPlan = $fixturePlan; $script:amdArgs = $fixtureLemonadeArgs; $script:linuxHome = "/home/some user's home"
     $null = Invoke-ODSPortalSetup @{} 'unused'
@@ -343,6 +385,7 @@ try {
     $script:amdArgs = @()
     Check ((Invoke-ODSPortalSetup @{} 'unused') -eq 0) 'AMD host that declines Lemonade still installs'
     Check (-not (($script:capturedArguments -join ' ') -match 'lemonade|--tier')) 'declined Lemonade keeps the CPU route'
+    Check ($script:postflightCalls -eq 0) 'declined Lemonade does not require native model postflight'
     Reset-Scenario
     $script:nvidiaDriver = 576
     $script:amdPlan = $fixturePlan

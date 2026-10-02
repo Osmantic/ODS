@@ -24,6 +24,15 @@ function Check([bool]$Condition, [string]$Message) {
     $script:checks++
     Microsoft.PowerShell.Utility\Write-Host "PASS $Message"
 }
+function Invoke-ODSPortalWsl([string[]]$Arguments) {
+    $script:journalWslArguments = $Arguments
+    return [pscustomobject]@{ Code=0; Output='{"status":"missing"}' }
+}
+$missingJournal = Get-ODSPortalWslCommittedModel 'Ubuntu-24.04' '/home/owner/ods'
+Check ($missingJournal.status -eq 'missing' -and
+    ($script:journalWslArguments -join ' ') -notmatch '--user root' -and
+    ($script:journalWslArguments -join ' ') -match '--distribution Ubuntu-24.04' -and
+    $script:journalWslArguments[-1] -eq '/home/owner/ods') 'journal reader uses the bound WSL installation user'
 function Get-ODSPortalStateDir { return $root }
 function Get-ODSPortalLemonadeTask { if ($script:taskPresent) { return [pscustomobject]@{ TaskName='owned' } }; return $null }
 function Get-ODSPortalManagedConfiguration($Request) {
@@ -74,6 +83,15 @@ try {
     Check (-not $script:calls.Contains('native-reinitialize')) 'healthy bound runtime is never stopped or re-registered'
     Check (($argsOut -join ' ') -match '--lemonade-gpu-name Strix Halo' -and
         ($argsOut -join ' ') -match '--tier 4') 'retained route keeps hardware display and Linux tier'
+
+    $options['Tier'] = '3'
+    $script:calls.Clear()
+    $errorText = ''
+    try { $null = Add-ODSPortalAmdArguments @('--tier','3') $options 'C:\source' $true 'Ubuntu-24.04' }
+    catch { $errorText = $_.Exception.Message }
+    Check ($errorText -match 'cannot change that model during setup' -and
+        -not $script:calls.Contains('native-reinitialize')) 'explicit tier cannot silently override a retained Dashboard choice'
+    $options['Tier'] = ''
 
     $script:committedDigest = 'b' * 64
     $script:calls.Clear()

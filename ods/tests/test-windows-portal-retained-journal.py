@@ -84,6 +84,16 @@ class RetainedJournalProjection(unittest.TestCase):
         self.path.symlink_to(outside)
         self.assertNotEqual(self.run_reader().returncode, 0)
 
+    def test_installation_owner_and_directory_custody(self):
+        self.write(journal())
+        self.assertNotEqual(os.geteuid(), 0, "the fixture must exercise a normal WSL owner")
+        self.assertEqual(self.run_reader().returncode, 0)
+        data = self.install / "data"
+        data.chmod(0o777)
+        self.assertNotEqual(self.run_reader().returncode, 0)
+        data.chmod(0o755)
+        self.assertEqual(self.run_reader().returncode, 0)
+
 
 if __name__ == "__main__":
     unittest.main()

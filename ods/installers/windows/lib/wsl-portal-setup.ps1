@@ -304,11 +304,21 @@ function Initialize-ODSPortalDocker([string]$Distro, [System.Collections.IDictio
 
 function Get-ODSPortalWslCommittedModel([string]$Distro, [string]$InstallDir) {
     # Read only the last completed protected model choice. The journal belongs
-    # to the Linux host agent (root, 0600); never source .env or copy a secret
+    # to the Linux installation user (0600); never source .env or copy a secret
     # back into the Windows process. A missing journal is a normal first install.
     $reader = @'
 import json, os, re, stat, sys
-path = os.path.join(sys.argv[1], 'data', 'pixel-model-transaction.json')
+install = sys.argv[1]
+data = os.path.join(install, 'data')
+path = os.path.join(data, 'pixel-model-transaction.json')
+owner = os.geteuid()
+if owner == 0:
+    raise SystemExit('protected model journal requires the installation user')
+for directory, allowed_owners in ((install, (0, owner)), (data, (owner,))):
+    info = os.lstat(directory)
+    if (not stat.S_ISDIR(info.st_mode) or info.st_uid not in allowed_owners
+            or stat.S_IMODE(info.st_mode) & 0o022):
+        raise SystemExit('unsafe protected model directory')
 try:
     fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
 except FileNotFoundError:
@@ -316,7 +326,7 @@ except FileNotFoundError:
     raise SystemExit(0)
 with os.fdopen(fd, encoding='utf-8') as source:
     info = os.fstat(source.fileno())
-    if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid != os.geteuid()
+    if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid != owner
             or stat.S_IMODE(info.st_mode) & 0o077 or info.st_size > 65536):
         raise SystemExit('unsafe protected model journal')
     value = json.load(source)
@@ -339,7 +349,7 @@ if (not isinstance(model, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._:/-]
 print(json.dumps({'status': 'completed', 'modelId': model,
                   'contextLength': context, 'windowsPlanDigest': digest}))
 '@
-    $result = Invoke-ODSPortalWsl -Arguments @('--distribution', $Distro, '--user', 'root',
+    $result = Invoke-ODSPortalWsl -Arguments @('--distribution', $Distro,
         '--exec', 'python3', '-c', $reader, $InstallDir)
     if ($result.Code -ne 0) {
         throw 'The protected WSL model choice could not be verified; the Windows model was not changed.'
@@ -374,7 +384,7 @@ function Get-ODSPortalRetainedLemonadeArguments([string]$Distro, [string]$Instal
         ($committed.modelId -cne $observed.modelId -or
          $committed.contextLength -ne $observed.contextLength -or
          $committed.windowsPlanDigest -cne $managed.PlanDigest)) {
-        throw 'The Windows model differs from the last protected Pixel model choice; the model was not changed. Restore the selected model through Dashboard Models before retrying.'
+        throw 'The Windows model differs from the last protected Pixel model choice; the model was not changed. Resolve the protected model state through Dashboard Models or supported ODS recovery before retrying.'
     }
     if ((Get-ODSPortalPlanDigest $managed.PlanPath) -cne $managed.PlanDigest) {
         throw 'The Windows model plan changed during verification; the model was not changed.'
@@ -390,10 +400,10 @@ function Get-ODSPortalRetainedLemonadeArguments([string]$Distro, [string]$Instal
         '--lemonade-host-transport', 'model-router', '--lemonade-model', [string]$observed.modelId)
 }
 
-function Add-ODSPortalAmdArguments([string[]]$LinuxArgs, [System.Collections.IDictionary]$Options, [string]$SourceRoot, [bool]$NonInteractive, [string]$WslDistro = '') {
+function Add-ODSPortalAmdArguments([string[]]$LinuxArgs, [System.Collections.IDictionary]$Options, [string]$SourceRoot, [bool]$NonInteractive, [string]$WslDistro = '', $AmdPlan = $null) {
     # An AMD GPU runs the model through Lemonade Server on Windows; everything
     # else keeps the in-WSL route. An explicit -Tier stays the user's choice.
-    $plan = Get-ODSPortalAmdPlan $SourceRoot
+    $plan = if ($null -ne $AmdPlan) { $AmdPlan } else { Get-ODSPortalAmdPlan $SourceRoot }
     if ($null -eq $plan) { return $LinuxArgs }
     $wslInstallDir = [string]$Options['InstallDir']
     if ($WslDistro) {
@@ -411,6 +421,9 @@ function Add-ODSPortalAmdArguments([string[]]$LinuxArgs, [System.Collections.IDi
     $retainedArgs = @(Get-ODSPortalRetainedLemonadeArguments $WslDistro $wslInstallDir |
         Where-Object { $null -ne $_ })
     if ($retainedArgs.Count -gt 0) {
+        if ($Options['Tier']) {
+            throw 'A retained Windows model is already selected. -Tier cannot change that model during setup; choose the model in Dashboard Models, then rerun without -Tier.'
+        }
         Write-ODSPortalStage 3 'AMD GPU' "$($plan.GpuName): preserving the verified Windows model selected in Dashboard."
         $retainedArgs += @('--lemonade-gpu-name', $plan.GpuName,
             '--lemonade-gpu-vram-mb', [string]$plan.VramMB)
@@ -497,12 +510,38 @@ function Invoke-ODSPortalSetup([System.Collections.IDictionary]$Options, [string
     Write-ODSPortalStage 3 'CONTAINER CONNECTION' "Checking Docker Desktop and Compose inside $distro."
     $stop = Initialize-ODSPortalDocker $distro $Options $InstallerRoot $nonInteractive
     if ($null -ne $stop) { return $stop }
-    if (-not $Options['Cloud']) {
-        $nvidiaDriver = Get-ODSPortalWindowsNvidiaDriver
-        Assert-ODSPortalNvidiaReady $distro $nvidiaDriver
-        if ($null -eq $nvidiaDriver) { $linuxArgs = @(Add-ODSPortalAmdArguments $linuxArgs $Options (Split-Path -Parent $InstallerRoot) $nonInteractive $distro) }
+    $amdPlan = $null
+    $modelMutex = $null
+    $modelLockHeld = $false
+    try {
+        if (-not $Options['Cloud']) {
+            $nvidiaDriver = Get-ODSPortalWindowsNvidiaDriver
+            Assert-ODSPortalNvidiaReady $distro $nvidiaDriver
+            if ($null -eq $nvidiaDriver) {
+                $amdPlan = Get-ODSPortalAmdPlan (Split-Path -Parent $InstallerRoot)
+                if ($null -ne $amdPlan) {
+                    # Dashboard model switches use this same per-user mutex.
+                    # Keep it through the Linux install so a second choice
+                    # cannot replace the route between verification and Pixel.
+                    $modelMutex = [Threading.Mutex]::new($false, (Get-ODSPortalControlMutexName))
+                    try { $modelLockHeld = $modelMutex.WaitOne(0) }
+                    catch [Threading.AbandonedMutexException] { $modelLockHeld = $true }
+                    if (-not $modelLockHeld) { throw 'A Dashboard model change is running. Wait for it to finish, then rerun ODS setup.' }
+                    $linuxArgs = @(Add-ODSPortalAmdArguments $linuxArgs $Options (Split-Path -Parent $InstallerRoot) $nonInteractive $distro $amdPlan)
+                }
+            }
+        }
+        Write-ODSPortalStage 4 'INSTALL PIXEL / PORTAL' "Prerequisites passed for $distro. Starting the Linux installer."
+        Write-Host '         When Ubuntu asks for your [sudo] password, type your Ubuntu password and press Enter. Nothing appears while you type.'
+        $exitCode = Invoke-ODSPortalLinuxInstaller $InstallerRoot $distro $linuxArgs ([string]$Options['InstallDir']) (-not $nonInteractive) (Get-ODSPortalDockerDesktop).Exe ([string]$Options['StateRoot'])
+        if ($exitCode -eq 0 -and $null -ne $amdPlan -and $linuxArgs -contains '--lemonade-url') {
+            $after = @(Get-ODSPortalRetainedLemonadeArguments $distro ([string]$Options['InstallDir']) |
+                Where-Object { $null -ne $_ })
+            if ($after.Count -eq 0) { throw 'The Windows model could not be verified after Linux setup; setup cannot report success.' }
+        }
+        return $exitCode
+    } finally {
+        if ($modelLockHeld) { $modelMutex.ReleaseMutex() }
+        if ($null -ne $modelMutex) { $modelMutex.Dispose() }
     }
-    Write-ODSPortalStage 4 'INSTALL PIXEL / PORTAL' "Prerequisites passed for $distro. Starting the Linux installer."
-    Write-Host '         When Ubuntu asks for your [sudo] password, type your Ubuntu password and press Enter. Nothing appears while you type.'
-    return Invoke-ODSPortalLinuxInstaller $InstallerRoot $distro $linuxArgs ([string]$Options['InstallDir']) (-not $nonInteractive) (Get-ODSPortalDockerDesktop).Exe ([string]$Options['StateRoot'])
 }
