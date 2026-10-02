@@ -963,10 +963,15 @@ def _compose_policy_service_problems(name, service, *, own_services, accelerator
         if str(opt).strip().lower() not in _COMPOSE_POLICY_SECURITY_OPTS:
             problems.append(f"service '{name}' uses dangerous security_opt '{opt}'")
     groups = _compose_policy_list(name, "group_add", service.get("group_add"), problems) or []
-    if groups and accelerator != "amd":
+    remote_provider_group = (
+        builtin and name in {"remote-provider-egress", "remote-provider-ssh-tunnel"}
+        and groups == ["${REMOTE_PROVIDER_DATA_GID:-1000}"]
+    )
+    if groups and accelerator != "amd" and not remote_provider_group:
         problems.append(f"service '{name}' adds supplementary groups (group_add); only a curated "
                         f"recipe's compose.amd.yaml may add the GPU video/render groups")
-    elif any(not isinstance(group, str) or group not in _COMPOSE_POLICY_GPU_GROUPS for group in groups):
+    elif not remote_provider_group and any(
+            not isinstance(group, str) or group not in _COMPOSE_POLICY_GPU_GROUPS for group in groups):
         problems.append(f"service '{name}' adds groups other than the GPU video/render groups")
     if service.get("sysctls"):
         problems.append(f"service '{name}' declares sysctls")

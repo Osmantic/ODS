@@ -694,3 +694,15 @@ test('keeps the HTTP status when an error response is not JSON', async () => {
   expect(await screen.findByText('Request failed (502)')).toBeInTheDocument()
   expect(screen.getByLabelText('API key')).toHaveValue('unit-test-provider-token')
 })
+
+test('directs a lean Core install to Library before remote configuration', async () => {
+  globalThis.fetch.mockResolvedValueOnce(response({
+    ...statusPayload,
+    serviceSelection: { egressSelected: false, sshTunnelSelected: false },
+  }))
+  render(createElement(RemoteProvider))
+  expect(await screen.findByRole('link', { name: 'Extensions Library' })).toHaveAttribute('href', '/extensions')
+  await fillConfigureForm()
+  expect(screen.getByRole('button', { name: 'Configure', exact: true })).toBeDisabled()
+  expect(screen.getByRole('button', { name: 'Test route' })).toBeDisabled()
+})

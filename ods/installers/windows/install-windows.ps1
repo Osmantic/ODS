@@ -990,6 +990,14 @@ litellm_settings:
             -EnableBraveSearch $enableBraveSearch `
             -EnableODSProxy $enableODSProxy `
             -EnableRemoteAccess $enableRemoteAccess
+        try {
+            $remoteProviderPlan = Get-ODSWindowsRemoteProviderSelections -InstallDir $installDir
+            foreach ($serviceId in $remoteProviderPlan.Keys) {
+                $servicePlan[$serviceId] = $remoteProviderPlan[$serviceId]
+            }
+        } catch {
+            throw "Could not preserve remote-provider services: $($_.Exception.Message)"
+        }
         $enabledExtensionServices = @()
         $skippedExtensionServices = @()
 
@@ -1041,7 +1049,8 @@ litellm_settings:
                     -EnableRecommended $enableRecommended
                 $composeEnabled = Set-ODSWindowsExtensionComposeState `
                     -ComposePath $composePath `
-                    -Enabled $decision.Enabled
+                    -Enabled $decision.Enabled `
+                    -PreferDisabledRecipe ($svcName -in @("remote-provider-egress", "remote-provider-ssh-tunnel"))
                 if (-not $decision.Enabled) {
                     $skippedExtensionServices += "$svcName ($($decision.DisabledReason))"
                     continue

@@ -1945,6 +1945,12 @@ else
     mkdir -p "${INSTALL_DIR}/bin"
     ai_ok "Created directory structure"
 
+    _macos_remote_provider_selection="$(python3 \
+        "${SOURCE_ROOT}/scripts/remote-provider-compose-selection.py" inspect "$INSTALL_DIR")" || {
+        ai_err "Could not inspect the retained remote-provider selection."
+        exit 1
+    }
+
     # Copy source tree (skip .git, data, logs, .env, models)
     if [[ "$SOURCE_ROOT" != "$INSTALL_DIR" ]]; then
         ai "Copying source files to ${INSTALL_DIR}..."
@@ -2056,6 +2062,13 @@ else
     # so cache invalidation and later dashboard toggles cannot resurrect the
     # installer's unselected built-ins.
     _macos_sync_builtin_compose_states
+
+    python3 "${SOURCE_ROOT}/scripts/remote-provider-compose-selection.py" apply \
+        "$INSTALL_DIR" "$SOURCE_ROOT" "$_macos_remote_provider_selection" || {
+        ai_err "Could not reconcile the retained remote-provider selection."
+        exit 1
+    }
+    unset _macos_remote_provider_selection
 
     # A detached bootstrap worker can rewrite GGUF_FILE/LLM_MODEL after its
     # download finishes. Stop and disable it before cloud mode or a forced

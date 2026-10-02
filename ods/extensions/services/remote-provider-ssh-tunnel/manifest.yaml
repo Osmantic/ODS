@@ -16,8 +16,8 @@ service:
   external_link: false
   type: docker
   gpu_backends: [all]
-  category: core
-  depends_on: []
+  category: optional
+  depends_on: [remote-provider-egress]
   startup_check: true
   description: >
     Internal-only SSH transport supervisor scaffold for optional remote LLM

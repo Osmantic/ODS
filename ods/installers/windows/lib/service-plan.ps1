@@ -100,6 +100,78 @@ function Test-ODSWindowsSearxngNeeded {
     return [bool]($EnableRecommended -or $EnableDeepResearch -or $EnableHermes -or $EnableOpenClaw)
 }
 
+function Get-ODSWindowsRemoteProviderSelections {
+    <# Preserve Library choices and active routes when the two internal
+       remote-provider services move out of base Compose. #>
+    param([Parameter(Mandatory = $true)][string]$InstallDir)
+
+    $routePath = Join-Path $InstallDir "data\remote-provider\routing-state.json"
+    $transport = ""
+    foreach ($directory in @((Join-Path $InstallDir 'data'), (Join-Path $InstallDir 'data\remote-provider'))) {
+        if (Test-Path -LiteralPath $directory) {
+            $item = Get-Item -LiteralPath $directory -Force
+            if (-not $item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+                throw 'Unsafe remote-provider state directory'
+            }
+        }
+    }
+    if (Test-Path -LiteralPath $routePath) {
+        $routeItem = Get-Item -LiteralPath $routePath -Force
+        if ($routeItem.PSIsContainer -or $routeItem.Length -gt 1048576 -or
+            ($routeItem.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+            throw "Unsafe remote-provider route state"
+        }
+        try {
+            $route = Get-Content -LiteralPath $routePath -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+        } catch {
+            throw "Remote-provider route state is unreadable or invalid"
+        }
+        if ($route.schema -cne "ods.remote-routing-state.v1" -or $route.enabled -isnot [bool]) {
+            throw "Remote-provider route state has an invalid contract"
+        }
+        if ($route.enabled) {
+            $transport = [string]$route.provider.transport
+            if ($transport -cnotin @("direct", "ssh")) {
+                throw "Enabled remote-provider route has an unknown transport"
+            }
+        }
+    }
+
+    $selection = @{}
+    foreach ($serviceId in @("remote-provider-egress", "remote-provider-ssh-tunnel")) {
+        $serviceDir = Join-Path (Join-Path $InstallDir "extensions\services") $serviceId
+        if (Test-Path -LiteralPath $serviceDir) {
+            $directoryItem = Get-Item -LiteralPath $serviceDir -Force
+            if (-not $directoryItem.PSIsContainer -or
+                ($directoryItem.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+                throw "Unsafe remote-provider service directory: $serviceId"
+            }
+        }
+        $active = Join-Path $serviceDir "compose.yaml"
+        $disabled = "$active.disabled"
+        $hasActive = Test-Path -LiteralPath $active
+        $hasDisabled = Test-Path -LiteralPath $disabled
+        foreach ($marker in @($active, $disabled)) {
+            if (Test-Path -LiteralPath $marker) {
+                $item = Get-Item -LiteralPath $marker -Force
+                if ($item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+                    throw "Unsafe remote-provider Compose marker: $serviceId"
+                }
+            }
+        }
+        $required = $transport -ceq "ssh" -or ($transport -ceq "direct" -and $serviceId -ceq "remote-provider-egress")
+        # Both markers can appear when an upgrade copies the new disabled
+        # recipe beside a retained Library-enabled recipe. Active wins; the
+        # setter below replaces it with this release's disabled recipe.
+        $enabled = if ($hasActive) { $true } elseif ($hasDisabled) { $false } else { $required }
+        if ($required -and -not $enabled) {
+            throw "Active remote-provider route requires enabled $serviceId"
+        }
+        $selection[$serviceId] = New-ODSWindowsServicePlanEntry $serviceId $enabled "remote-provider" "remote-provider service not selected"
+    }
+    return $selection
+}
+
 function Get-ODSWindowsServicePlanDecision {
     param(
         [Parameter(Mandatory = $true)][string]$ServiceId,
@@ -140,7 +212,8 @@ function Test-ODSWindowsServiceEnabled {
 function Set-ODSWindowsExtensionComposeState {
     param(
         [Parameter(Mandatory = $true)][string]$ComposePath,
-        [Parameter(Mandatory = $true)][bool]$Enabled
+        [Parameter(Mandatory = $true)][bool]$Enabled,
+        [bool]$PreferDisabledRecipe = $false
     )
 
     $disabledPath = "$ComposePath.disabled"
@@ -148,7 +221,11 @@ function Set-ODSWindowsExtensionComposeState {
     if ($Enabled) {
         if (Test-Path -LiteralPath $disabledPath) {
             if (Test-Path -LiteralPath $ComposePath) {
-                Remove-Item -LiteralPath $disabledPath -Force
+                if ($PreferDisabledRecipe) {
+                    Move-Item -LiteralPath $disabledPath -Destination $ComposePath -Force
+                } else {
+                    Remove-Item -LiteralPath $disabledPath -Force
+                }
             } else {
                 Move-Item -LiteralPath $disabledPath -Destination $ComposePath -Force
             }

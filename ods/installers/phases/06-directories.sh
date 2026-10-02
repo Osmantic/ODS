@@ -143,6 +143,14 @@ else
     # shellcheck source=../../lib/safe-env.sh
     source "$SCRIPT_DIR/lib/safe-env.sh"
 
+    # Capture Library markers before either ordinary rsync or the held Pixel
+    # source transaction can add the new disabled fragments alongside them.
+    _phase06_remote_provider_selection="$(python3 \
+        "$SCRIPT_DIR/scripts/remote-provider-compose-selection.py" inspect "$INSTALL_DIR")" || {
+        error "Could not inspect the retained remote-provider selection."
+        return 1
+    }
+
     _env_existing=""
     [[ -f "$INSTALL_DIR/.env" ]] && _env_existing="$INSTALL_DIR/.env"
 
@@ -500,6 +508,14 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
     else
         log "Running in-place (source == install dir), skipping file copy"
     fi
+
+    _phase06_step "reconcile-remote-provider-compose"
+    python3 "$SCRIPT_DIR/scripts/remote-provider-compose-selection.py" apply \
+        "$INSTALL_DIR" "$SCRIPT_DIR" "$_phase06_remote_provider_selection" || {
+        error "Could not reconcile the retained remote-provider selection."
+        return 1
+    }
+    unset _phase06_remote_provider_selection
 
     if declare -F _ods_apply_deferred_feature_state >/dev/null; then
         _ods_apply_deferred_feature_state || {

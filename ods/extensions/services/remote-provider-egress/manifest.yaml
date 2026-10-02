@@ -16,7 +16,7 @@ service:
   external_link: false
   type: docker
   gpu_backends: [all]
-  category: core
+  category: optional
   depends_on: []
   startup_check: true
   description: >

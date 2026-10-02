@@ -247,3 +247,12 @@ jobs:
         if: runner.os == 'Windows'
         shell: powershell
         run: ./tests/contracts/test-windows-uninstall-leftovers.ps1
+
+      - name: Windows Remote Provider Selection (PowerShell 7)
+        shell: pwsh
+        run: ./tests/contracts/test-windows-remote-provider-selection.ps1
+
+      - name: Windows Remote Provider Selection (PowerShell 5.1)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./tests/contracts/test-windows-remote-provider-selection.ps1
