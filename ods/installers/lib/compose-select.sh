@@ -148,6 +148,16 @@ ods_external_lemonade_assert_no_managed_llama() {
     return 0
 }
 
+# Before image pulls, Pixel's ingress group has not been created yet. Supply
+# an ephemeral numeric GID only for Compose's read-only service selection.
+# Phase 11 still validates the installed identity and uses the strict helper.
+ods_external_lemonade_assert_no_managed_llama_before_pixel_identity() (
+    if [[ -z "${PIXEL_INGRESS_GID:-}" ]]; then
+        export PIXEL_INGRESS_GID=1
+    fi
+    ods_external_lemonade_assert_no_managed_llama "$@"
+)
+
 # A caller can inherit COMPOSE_PROFILES=gateway-webui. Check the effective
 # service set before pulling or starting a Portal-only stack.
 ods_compose_assert_no_webui() {

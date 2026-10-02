@@ -23,9 +23,9 @@ if [[ "${DRY_RUN:-false}" != true ]] && ods_external_lemonade_requested; then
         exit 1
     }
     read -ra _external_lemonade_compose_flags <<< "$COMPOSE_FLAGS"
-    if ! ods_external_lemonade_assert_no_managed_llama "${_external_lemonade_compose_flags[@]}" \
+    if ! ods_external_lemonade_assert_no_managed_llama_before_pixel_identity "${_external_lemonade_compose_flags[@]}" \
         2>>"$LOG_FILE"; then
-        ai_bad "External Lemonade Compose could pull ODS-managed llama-server; inspect $LOG_FILE and clear COMPOSE_PROFILES."
+        ai_bad "External Lemonade Compose validation failed before image pulls; inspect $LOG_FILE."
         exit 1
     fi
     unset _external_lemonade_compose_flags

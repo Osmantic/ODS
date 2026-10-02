@@ -96,6 +96,74 @@ AMD_INFERENCE_RUNTIME=lemonade
 AMD_INFERENCE_MANAGED=false
 ods_external_lemonade_requested
 
+# Exercise the actual Phase 08 guard path, stopping at its next phase banner
+# before any image pull. A fresh Pixel install has no ingress GID yet.
+phase08_guard_probe() (
+    local mode="$1" original_gid="${2:-unset}"
+    unset PIXEL_INGRESS_GID COMPOSE_PROFILES
+    if [[ "$original_gid" != unset ]]; then export PIXEL_INGRESS_GID="$original_gid"; fi
+    export DRY_RUN=false GPU_BACKEND=cpu ODS_MODE=lemonade LEMONADE_EXTERNAL=true
+    export ODS_GATEWAY_ONLY=false ENABLE_OPEN_WEBUI=true ENABLE_COMFYUI=false
+    COMPOSE_FLAGS='-f docker-compose.yml'
+    DOCKER_COMPOSE_CMD=early_compose_mock
+    early_compose_mock() {
+        [[ "$*" == '-f docker-compose.yml config --services' ]] || return 21
+        [[ "${PIXEL_INGRESS_GID:-}" == "${original_gid/unset/1}" ]] || return 22
+        [[ "$mode" != broken ]] || return 23
+        printf 'model-router\npixel-edge\n'
+        [[ "$mode" != unsafe ]] || printf 'llama-server\n'
+    }
+    if [[ "$mode" == real-* ]]; then
+        DOCKER_COMPOSE_CMD='docker compose'
+        INSTALL_DIR="$tmp_dir/early-compose"
+        [[ "$mode" != real-unsafe ]] || export COMPOSE_PROFILES=local-inference
+    fi
+    ods_progress() { :; }
+    ai_bad() { printf '%s\n' "$*" >&2; }
+    show_phase() {
+        [[ "${PIXEL_INGRESS_GID-unset}" == "$original_gid" ]] || exit 24
+        exit 0
+    }
+    source installers/phases/08-images.sh
+    echo '[FAIL] Phase 08 probe did not reach the image phase banner' >&2
+    exit 25
+)
+phase08_guard_probe safe
+phase08_guard_probe safe 4242
+for failure in unsafe broken; do
+    if phase08_guard_probe "$failure" >/dev/null 2>&1; then
+        echo "[FAIL] Phase 08 accepted $failure external Compose" >&2
+        exit 1
+    fi
+done
+
+# Use real Compose interpolation and profile selection without starting or
+# pulling any container; keep the later strict helper's missing-GID failure.
+if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
+    mkdir "$tmp_dir/early-compose"
+    cat > "$tmp_dir/early-compose/docker-compose.yml" <<'YAML'
+services:
+  pixel-edge:
+    image: busybox:latest
+    group_add: ["${PIXEL_INGRESS_GID:?Pixel ingress group is not prepared}"]
+  llama-server:
+    image: busybox:latest
+    profiles: [local-inference]
+YAML
+    phase08_guard_probe real-safe
+    if phase08_guard_probe real-unsafe >/dev/null 2>&1; then
+        echo '[FAIL] Phase 08 accepted the real local-inference profile' >&2
+        exit 1
+    fi
+    if (unset PIXEL_INGRESS_GID COMPOSE_PROFILES
+        INSTALL_DIR="$tmp_dir/early-compose" DOCKER_COMPOSE_CMD='docker compose'
+        ods_external_lemonade_assert_no_managed_llama -f docker-compose.yml
+    ) >/dev/null 2>&1; then
+        echo '[FAIL] strict Compose check accepted missing Pixel identity' >&2
+        exit 1
+    fi
+fi
+
 # The image planner must agree with the resolver's case-insensitive runtime
 # selector. Otherwise it can pull llama even when Compose disables the service.
 phase08_images="$(
