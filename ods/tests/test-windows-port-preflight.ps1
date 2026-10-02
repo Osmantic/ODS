@@ -149,6 +149,26 @@ try {
         if ($generatedEnv -notmatch "(?m)^WEBUI_PORT=9090\r?$") {
             throw "Windows env regeneration did not preserve WEBUI_PORT=9090"
         }
+
+        # A retained custom ComfyUI endpoint must match phase 04's port check
+        # after phase 06 replaces .env, or a foreign default port is missed.
+        $generatedEnvPath = Join-Path $generatedDir ".env"
+        $customComfyuiEnv = [IO.File]::ReadAllText($generatedEnvPath)
+        if ($customComfyuiEnv -match "(?m)^COMFYUI_PORT=[0-9]+\r?$") {
+            $customComfyuiEnv = [regex]::Replace($customComfyuiEnv,
+                "(?m)^COMFYUI_PORT=[0-9]+\r?$", "COMFYUI_PORT=8190")
+            [IO.File]::WriteAllText($generatedEnvPath, $customComfyuiEnv)
+        } else {
+            [IO.File]::AppendAllText($generatedEnvPath, "`r`nCOMFYUI_PORT=8190`r`n")
+        }
+        Assert-Equal (Resolve-WindowsODSPort -Name "COMFYUI_PORT" -DefaultPort 8188 `
+            -InstallDir $generatedDir) 8190 "Retained ComfyUI preflight port"
+        New-ODSEnv -InstallDir $generatedDir -TierConfig $tierConfig `
+            -Tier "3" -GpuBackend "nvidia" | Out-Null
+        $generatedEnv = Get-Content -LiteralPath (Join-Path $generatedDir ".env") -Raw
+        if ($generatedEnv -notmatch "(?m)^COMFYUI_PORT=8190\r?$") {
+            throw "Windows env regeneration did not preserve the checked ComfyUI port"
+        }
     } finally {
         Remove-Item -LiteralPath $generatedDir -Recurse -Force -ErrorAction SilentlyContinue
         Remove-Item Env:WEBUI_PORT -ErrorAction SilentlyContinue
