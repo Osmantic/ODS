@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-10-02T00:10:35Z",
+  "generated_at": "2026-10-02T00:34:26Z",
   "schema_version": "1.0.0",
   "extensions": [
     {
@@ -9287,7 +9287,7 @@
       "gpu_backends": [
         "all"
       ],
-      "compose_file": "",
+      "compose_file": "compose.yaml",
       "depends_on": [],
       "port": 8091,
       "external_port_default": 0,
@@ -9333,7 +9333,7 @@
       "gpu_backends": [
         "all"
       ],
-      "compose_file": "",
+      "compose_file": "compose.yaml",
       "depends_on": [
         "remote-provider-egress"
       ],
