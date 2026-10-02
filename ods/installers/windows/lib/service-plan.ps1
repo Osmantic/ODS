@@ -160,9 +160,11 @@ function Get-ODSWindowsRemoteProviderSelections {
             }
         }
         $required = $transport -ceq "ssh" -or ($transport -ceq "direct" -and $serviceId -ceq "remote-provider-egress")
-        # Both markers can appear when an upgrade copies the new disabled
-        # recipe beside a retained Library-enabled recipe. Active wins; the
-        # setter below replaces it with this release's disabled recipe.
+        if ($hasActive -and $hasDisabled) {
+            throw "Ambiguous remote-provider Compose markers: $serviceId"
+        }
+        # Source copy preserves both marker names. A genuine disabled choice
+        # must not be mistaken for a newly copied recipe during an upgrade.
         $enabled = if ($hasActive) { $true } elseif ($hasDisabled) { $false } else { $required }
         if ($required -and -not $enabled) {
             throw "Active remote-provider route requires enabled $serviceId"
@@ -212,8 +214,7 @@ function Test-ODSWindowsServiceEnabled {
 function Set-ODSWindowsExtensionComposeState {
     param(
         [Parameter(Mandatory = $true)][string]$ComposePath,
-        [Parameter(Mandatory = $true)][bool]$Enabled,
-        [bool]$PreferDisabledRecipe = $false
+        [Parameter(Mandatory = $true)][bool]$Enabled
     )
 
     $disabledPath = "$ComposePath.disabled"
@@ -221,11 +222,7 @@ function Set-ODSWindowsExtensionComposeState {
     if ($Enabled) {
         if (Test-Path -LiteralPath $disabledPath) {
             if (Test-Path -LiteralPath $ComposePath) {
-                if ($PreferDisabledRecipe) {
-                    Move-Item -LiteralPath $disabledPath -Destination $ComposePath -Force
-                } else {
-                    Remove-Item -LiteralPath $disabledPath -Force
-                }
+                Remove-Item -LiteralPath $disabledPath -Force
             } else {
                 Move-Item -LiteralPath $disabledPath -Destination $ComposePath -Force
             }

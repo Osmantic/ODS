@@ -35,12 +35,13 @@ try {
 
     Remove-Item -LiteralPath $routePath
     [IO.File]::WriteAllText($egress, 'old selected recipe')
-    [IO.File]::WriteAllText("$egress.disabled", 'new reviewed recipe')
     $plan = Get-ODSWindowsRemoteProviderSelections -InstallDir $testRoot
     Assert-Selection ($plan['remote-provider-egress'].Enabled -and -not $plan['remote-provider-ssh-tunnel'].Enabled) 'Library selection must survive source copy'
-    $result = Set-ODSWindowsExtensionComposeState -ComposePath $egress -Enabled $true -PreferDisabledRecipe $true
-    Assert-Selection ($result -and -not (Test-Path -LiteralPath "$egress.disabled")) 'Enabled marker must be unique'
-    Assert-Selection (([IO.File]::ReadAllText($egress)) -eq 'new reviewed recipe') 'Rerun must use the new recipe'
+    [IO.File]::WriteAllText("$egress.disabled", 'new reviewed recipe')
+    $failed = $false
+    try { $null = Get-ODSWindowsRemoteProviderSelections -InstallDir $testRoot } catch { $failed = $true }
+    Assert-Selection $failed 'Unexplained dual markers must fail closed'
+    Remove-Item -LiteralPath "$egress.disabled"
 
     [IO.File]::WriteAllText($routePath, '{broken')
     $failed = $false
