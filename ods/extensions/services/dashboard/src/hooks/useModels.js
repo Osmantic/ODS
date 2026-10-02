@@ -378,7 +378,10 @@ export function useModels({observe=true} = {}) {
     ? modelLifecycle.modelId
     : null
   const backendLifecycleBusy = Boolean(modelLifecycle?.active)
-  const pollInterval = pendingActions.some(action => action.kind === 'download' || action.kind === 'delete' || action.kind === 'load') || backendLifecycleBusy
+  // A transient host proof failure must keep controls disabled, but should
+  // receive a fresh readback promptly once the managed runtime recovers.
+  const managementProofUnknown = externalLemonade && modelManagement.managed === null
+  const pollInterval = pendingActions.some(action => action.kind === 'download' || action.kind === 'delete' || action.kind === 'load') || backendLifecycleBusy || managementProofUnknown
     ? PENDING_MODEL_ACTION_POLL_MS
     : DEFAULT_POLL_MS
 

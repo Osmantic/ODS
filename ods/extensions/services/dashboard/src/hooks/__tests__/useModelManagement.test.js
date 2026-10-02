@@ -53,6 +53,7 @@ test('preserves unknown ownership during a transient proof failure and enables c
   const { result } = renderHook(() => useModels())
   await waitFor(() => expect(result.current.canActivateModels).toBe(true))
 
+  vi.useFakeTimers()
   capability = { managed: null, canActivate: false, canUnload: false, running: false, reason: 'Runtime management could not be verified' }
   await act(async () => { await result.current.refresh() })
   expect(result.current.modelManagement.managed).toBeNull()
@@ -63,7 +64,7 @@ test('preserves unknown ownership during a transient proof failure and enables c
   expect(fetch.mock.calls.some(([, options]) => options?.method === 'POST')).toBe(false)
 
   capability = management
-  await act(async () => { await result.current.refresh() })
+  await act(async () => { await vi.advanceTimersByTimeAsync(2000) })
   expect(result.current.modelManagement.managed).toBe(true)
   expect(result.current.modelManagement.canUnload).toBe(true)
   expect(result.current.canActivateModels).toBe(true)
