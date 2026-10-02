@@ -91,7 +91,7 @@ def test_configuration_and_completed_lifecycle_invalidate_cache(management, monk
     assert len(calls) == 3
 
 
-def test_lifecycle_change_during_probe_does_not_publish_old_proof(management, monkeypatch):
+def test_lifecycle_change_during_probe_does_not_publish_old_proof(management, monkeypatch, caplog):
     def probe(_env):
         assert host._begin_model_lifecycle('model_runtime')[0]
         host._end_model_lifecycle('model_runtime')
@@ -100,6 +100,55 @@ def test_lifecycle_change_during_probe_does_not_publish_old_proof(management, mo
     monkeypatch.setattr(host, '_managed_wsl_lemonade', probe)
     assert host._model_management_snapshot()[0] == 503
     assert host._model_management_cache is None
+    assert 'reason=key_drift' in caplog.text
+    assert 'revision_before=0 revision_after=2' in caplog.text
+    assert 'route_key_changed=False' in caplog.text
+
+
+def test_route_and_active_lifecycle_drift_log_only_safe_metadata(management, monkeypatch, caplog):
+    def probe(_env):
+        assert host._begin_model_lifecycle('pixel_startup_reproof', 'private-model-target')[0]
+        management.write_text(management.read_text() + 'LEMONADE_BASE_URL=https://private-route.example\n')
+        return {'managed': True, 'running': True}
+
+    monkeypatch.setattr(host, '_managed_wsl_lemonade', probe)
+    try:
+        assert host._model_management_snapshot() == (
+            503, {'error': 'Windows runtime management could not be verified'})
+    finally:
+        host._end_model_lifecycle('pixel_startup_reproof')
+    assert host._model_management_cache is None
+    assert 'reason=key_drift' in caplog.text
+    assert 'revision_before=0 revision_after=1' in caplog.text
+    assert 'operation_before=none operation_after=pixel_startup_reproof' in caplog.text
+    assert 'route_key_changed=True' in caplog.text
+    assert 'private-model-target' not in caplog.text
+    assert 'private-route.example' not in caplog.text
+
+
+def test_management_verification_error_keeps_generic_response_and_safe_log(management, monkeypatch, caplog):
+    def probe(_env):
+        raise RuntimeError('private-token-and-path')
+
+    monkeypatch.setattr(host, '_managed_wsl_lemonade', probe)
+    assert host._model_management_snapshot() == (
+        503, {'error': 'Windows runtime management could not be verified'})
+    assert 'reason=verification_error error_type=RuntimeError' in caplog.text
+    assert 'private-token-and-path' not in caplog.text
+
+
+def test_unknown_lifecycle_operation_is_not_logged(management, monkeypatch, caplog):
+    def probe(_env):
+        assert host._begin_model_lifecycle('private-token-and-path')[0]
+        return {'managed': True, 'running': True}
+
+    monkeypatch.setattr(host, '_managed_wsl_lemonade', probe)
+    try:
+        assert host._model_management_snapshot()[0] == 503
+    finally:
+        host._end_model_lifecycle('private-token-and-path')
+    assert 'operation_after=unknown' in caplog.text
+    assert 'private-token-and-path' not in caplog.text
 
 
 def test_handler_authenticates_before_cache_and_preserves_no_store(management, monkeypatch):
@@ -127,11 +176,26 @@ def test_mutation_preflight_does_not_consume_management_cache(management, monkey
     assert len(calls) == 2
 
 
-def test_waiting_for_an_existing_probe_is_bounded(management, monkeypatch):
+def test_waiting_for_an_existing_probe_is_bounded(management, monkeypatch, caplog):
     class Busy:
         def acquire(self, timeout):
             assert timeout == 19
             return False
     monkeypatch.setattr(host, '_model_management_lock', Busy())
     monkeypatch.setattr(host, '_managed_wsl_lemonade', lambda env: pytest.fail('must not start another probe'))
-    assert host._model_management_snapshot()[0] == 503
+    assert host._model_management_snapshot() == (
+        503, {'error': 'Windows runtime management could not be verified'})
+    assert 'reason=lock_timeout' in caplog.text
+
+
+def test_management_handler_exception_keeps_generic_response_and_safe_log(management, monkeypatch, caplog):
+    def fail():
+        raise RuntimeError('private-token-and-path')
+
+    monkeypatch.setattr(host, '_model_management_snapshot', fail)
+    handler = fixtures._ResponseHandler(request_body={})
+    host.AgentHandler._handle_model_management(handler)
+    assert handler.response_code == 503
+    assert handler.parse_response() == {'error': 'Windows runtime management could not be verified'}
+    assert 'reason=verification_error error_type=RuntimeError' in caplog.text
+    assert 'private-token-and-path' not in caplog.text

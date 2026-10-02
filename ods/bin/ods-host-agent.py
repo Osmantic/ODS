@@ -2036,7 +2036,10 @@ def _model_management_snapshot() -> tuple[int, dict]:
     """Coalesce dashboard polling only; mutations always prove ownership fresh."""
     global _model_management_cache
     unavailable = (503, {'error': 'Windows runtime management could not be verified'})
+    started = time.monotonic()
     if not _model_management_lock.acquire(timeout=19):
+        logger.warning('Windows runtime management unavailable reason=lock_timeout elapsed_ms=%d',
+                       max(0, int((time.monotonic() - started) * 1000)))
         return unavailable
     try:
         env = load_env(INSTALL_DIR / '.env')
@@ -2053,10 +2056,31 @@ def _model_management_snapshot() -> tuple[int, dict]:
             if managed and isinstance(value.get('modelStoreId'), str):
                 result[1]['modelStoreId'] = value['modelStoreId']
         except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as exc:
-            logger.warning('Windows runtime management verification failed: %s', exc)
+            logger.warning('Windows runtime management unavailable reason=verification_error '
+                           'error_type=%s elapsed_ms=%d', type(exc).__name__,
+                           max(0, int((time.monotonic() - started) * 1000)))
             result = unavailable
-        if _model_management_key(load_env(INSTALL_DIR / '.env')) != key:
+        current_key = _model_management_key(load_env(INSTALL_DIR / '.env'))
+        if current_key != key:
             _model_management_cache = None
+            allowed_operations = {
+                'artifact_verification', 'model_activation', 'model_delete',
+                'model_download', 'model_recovery', 'model_runtime',
+                'opencode_setup', 'opencode_start', 'pixel_access_mode',
+                'pixel_open_app', 'pixel_providers', 'pixel_settings',
+                'pixel_startup_reproof', 'system_update',
+            }
+            before, after = key[1], current_key[1]
+            before_operation = (before[1] if before[1] in allowed_operations else
+                                'none' if before[1] is None else 'unknown')
+            after_operation = (after[1] if after[1] in allowed_operations else
+                               'none' if after[1] is None else 'unknown')
+            logger.warning('Windows runtime management unavailable reason=key_drift '
+                           'revision_before=%d revision_after=%d '
+                           'operation_before=%s operation_after=%s route_key_changed=%s '
+                           'elapsed_ms=%d', before[0], after[0], before_operation,
+                           after_operation, key[2] != current_key[2],
+                           max(0, int((time.monotonic() - started) * 1000)))
             return unavailable  # A completed lifecycle cannot reuse its earlier proof.
         # Cache failures as failures too, preventing a burst of polls from
         # launching another expensive controller for each waiting request.
@@ -12815,7 +12839,8 @@ class AgentHandler(BaseHTTPRequestHandler):
             code, value = _model_management_snapshot()
             json_response(self, code, value, no_store=True)
         except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as exc:
-            logger.warning('Windows runtime management verification failed: %s', exc)
+            logger.warning('Windows runtime management unavailable reason=verification_error '
+                           'error_type=%s', type(exc).__name__)
             json_response(self, 503, {'error': 'Windows runtime management could not be verified'}, no_store=True)
 
     def _handle_model_runtime(self, operation):
