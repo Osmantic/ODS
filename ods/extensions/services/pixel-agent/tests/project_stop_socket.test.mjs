@@ -26,7 +26,7 @@ test('registered discovered tool and owner Stop share a controller job through t
     try {
       const control=createProjectRunControl(); let factory;
       registerProjectBuild({pluginConfig:{projectBuildSocket:socketPath},on(){},registerTool(value){factory=value;}},x=>x,control);
-      const guard=createToolLoopGuard({abortRunAndDrain:async()=>({aborted:true}),cancelProjectRun:scope=>control.cancel(scope)});
+      const guard=createToolLoopGuard({abortRunAndDrain:async()=>({aborted:true,drained:true}),cancelProjectRun:scope=>control.cancel(scope)});
       guard.observeRun(context,'pixel',{prompt:'Build demo.'});
       const params={action:'submit',project:'demo',outputDirectory:'dist'};
       control.before({toolName:'tool_call',params:{id:'pixel_ods_project_build',args:params}}, {...context,toolCallId:'parent'});

@@ -12,7 +12,7 @@ test('owner Stop waits for exact-run managed project cancellation before acknowl
   const drained = new Promise(resolve => { finish = resolve; });
   const calls = [];
   const guard = createToolLoopGuard({
-    abortRunAndDrain: async () => ({aborted: true}),
+    abortRunAndDrain: async () => ({aborted: true, drained: true}),
     cancelProjectRun: async scope => { calls.push(scope); started(); return drained; },
   });
   guard.observeRun(context, 'pixel', {prompt: 'Build the existing project.'});
@@ -27,7 +27,7 @@ test('owner Stop waits for exact-run managed project cancellation before acknowl
 
 for (const outcome of ['unknown', 'throws']) {
   test(`owner Stop does not acknowledge ${outcome} project cancellation`, async () => {
-    const guard = createToolLoopGuard({abortRunAndDrain: async () => ({aborted: true}),
+    const guard = createToolLoopGuard({abortRunAndDrain: async () => ({aborted: true, drained: true}),
       cancelProjectRun: async () => { if (outcome === 'throws') throw Error('controller offline'); return false; }});
     guard.observeRun(context, 'pixel', {prompt: 'Build the existing project.'});
     assert.equal(await guard.abortUserRun(user), false);

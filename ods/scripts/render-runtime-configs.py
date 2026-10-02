@@ -34,18 +34,18 @@ REMOTE_PROVIDER_EGRESS_BASE_URL = "http://remote-provider-egress:8091/v1"
 REMOTE_MODEL_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/+-]{0,255}$")
 
 
-def atomic_write_text(target: Path, content: str) -> None:
+def atomic_write_text(target: Path, content: str, *, file_mode: int | None = None) -> None:
     """Replace a generated config without exposing a truncated live file."""
     target.parent.mkdir(parents=True, exist_ok=True)
-    # Generated YAML is bind-mounted into LiteLLM and must remain readable
-    # when the image runs as a non-root UID. Preserve an existing mode and use
-    # the checked-in template's 0644 mode only when recreating a missing file.
-    mode = 0o644
-    try:
-        if target.is_file():
-            mode = stat.S_IMODE(target.stat().st_mode)
-    except OSError:
-        pass
+    # Preserve the mode of existing configs, which may hold private values.
+    # The nonsecret router endpoint allowlist explicitly requests 0644.
+    mode = file_mode if file_mode is not None else 0o644
+    if file_mode is None:
+        try:
+            if target.is_file():
+                mode = stat.S_IMODE(target.stat().st_mode)
+        except OSError:
+            pass
 
     fd, tmp_name = tempfile.mkstemp(
         prefix=f".{target.name}.",
@@ -651,6 +651,11 @@ def render_model_router_endpoints(inputs: RenderInputs) -> RenderedFile:
         base = (url or fallback).rstrip("/")
         if base.endswith("/v1"):
             base = base[: -len("/v1")]
+        parsed = urlsplit(base)
+        if (parsed.scheme not in {"http", "https"} or not parsed.netloc
+                or parsed.username is not None or parsed.password is not None
+                or parsed.query or parsed.fragment):
+            raise ValueError("model router endpoint origin must be an HTTP URL without embedded credentials")
         return base
 
     endpoints = [
@@ -897,7 +902,17 @@ def render(args: argparse.Namespace) -> dict[str, object]:
         output_root = Path(args.output_root)
         for item in files:
             target = output_root / item.path
-            atomic_write_text(target, ensure_trailing_newline(item.content))
+            if item.surface == "model-router-endpoints":
+                # Docker mounts this directory at /config. Its non-root router
+                # needs traversal and read access even when the installer used
+                # umask 077. This file contains endpoint origins, never keys.
+                if target.parent.is_symlink() or target.parent.parent.is_symlink():
+                    raise ValueError("model router config directory must not be a symlink")
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.parent.chmod(0o711)
+                atomic_write_text(target, ensure_trailing_newline(item.content), file_mode=0o644)
+            else:
+                atomic_write_text(target, ensure_trailing_newline(item.content))
             written.append(str(target))
     return {
         "version": "1",
