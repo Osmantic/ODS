@@ -1994,11 +1994,14 @@ def _wsl_runtime_registration() -> dict | None:
     return value
 
 
-def _managed_wsl_lemonade(env: dict) -> dict:
+def _managed_wsl_lemonade(env: dict, *, deadline: float | None = None) -> dict:
     """Prove Windows ownership and the installer's exact model-store binding."""
     if not _wsl_lemonade.candidate(env):
         return {'managed': False, 'running': False}
-    value = _wsl_lemonade.status(INSTALL_DIR, env)
+    if deadline is None:
+        value = _wsl_lemonade.status(INSTALL_DIR, env)
+    else:
+        value = _wsl_lemonade.status(INSTALL_DIR, env, deadline=deadline)
     registration = _wsl_runtime_registration()
     if value.get('managed') is not True:
         if registration is not None:
@@ -2006,9 +2009,17 @@ def _managed_wsl_lemonade(env: dict) -> dict:
         return value
     if registration is None:
         raise RuntimeError('Re-run the Windows installer to register its managed model store')
-    store = _wsl_lemonade.model_store(INSTALL_DIR, env, value)
-    plan_path = _wsl_lemonade.plan_path(INSTALL_DIR, env, value)
+    if deadline is not None and time.monotonic() >= deadline:
+        raise TimeoutError('Windows runtime management proof exceeded its deadline')
+    if deadline is None:
+        store = _wsl_lemonade.model_store(INSTALL_DIR, env, value)
+        plan_path = _wsl_lemonade.plan_path(INSTALL_DIR, env, value)
+    else:
+        store = _wsl_lemonade.model_store(INSTALL_DIR, env, value, deadline=deadline)
+        plan_path = _wsl_lemonade.plan_path(INSTALL_DIR, env, value, deadline=deadline)
     stores = _model_stores.registered_stores(INSTALL_DIR / 'data')
+    if deadline is not None and time.monotonic() >= deadline:
+        raise TimeoutError('Windows runtime management proof exceeded its deadline')
     if (str(plan_path) != registration['planPath']
             or not any(item['id'] == registration['modelStoreId'] and item['path'] == store for item in stores)):
         raise RuntimeError('Windows runtime model-store ownership changed; re-run the installer')
@@ -2037,31 +2048,52 @@ def _model_management_snapshot() -> tuple[int, dict]:
     global _model_management_cache
     unavailable = (503, {'error': 'Windows runtime management could not be verified'})
     started = time.monotonic()
+    # Leave time for the host-agent response inside Dashboard's 20-second call.
+    retry_deadline = started + 18
     if not _model_management_lock.acquire(timeout=19):
         logger.warning('Windows runtime management unavailable reason=lock_timeout elapsed_ms=%d',
                        max(0, int((time.monotonic() - started) * 1000)))
         return unavailable
     try:
-        env = load_env(INSTALL_DIR / '.env')
-        key = _model_management_key(env)
-        cached = _model_management_cache
-        if cached is not None and cached[0] == key and time.monotonic() < cached[1]:
-            return cached[2], dict(cached[3])
-        try:
-            value = _managed_wsl_lemonade(env)
-            managed = value.get('managed') is True
-            running = managed and value.get('running') is True
-            result = (200, {'managed': managed, 'canActivate': running,
-                            'canUnload': managed, 'running': running})
-            if managed and isinstance(value.get('modelStoreId'), str):
-                result[1]['modelStoreId'] = value['modelStoreId']
-        except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as exc:
-            logger.warning('Windows runtime management unavailable reason=verification_error '
-                           'error_type=%s elapsed_ms=%d', type(exc).__name__,
-                           max(0, int((time.monotonic() - started) * 1000)))
-            result = unavailable
-        current_key = _model_management_key(load_env(INSTALL_DIR / '.env'))
-        if current_key != key:
+        for attempt in range(2):
+            if attempt and time.monotonic() >= retry_deadline:
+                return unavailable
+            env = load_env(INSTALL_DIR / '.env')
+            key = _model_management_key(env)
+            if attempt and key[1][1] is not None:
+                return unavailable
+            if attempt == 0:
+                cached = _model_management_cache
+                if (cached is not None and cached[0] == key and time.monotonic() < cached[1]
+                        and _model_management_key(load_env(INSTALL_DIR / '.env')) == key):
+                    return cached[2], dict(cached[3])
+            try:
+                # The first probe keeps its existing contract. Only a fresh
+                # proof after drift receives the remaining request deadline.
+                if attempt == 0:
+                    value = _managed_wsl_lemonade(env)
+                else:
+                    value = _managed_wsl_lemonade(env, deadline=retry_deadline)
+                managed = value.get('managed') is True
+                running = managed and value.get('running') is True
+                result = (200, {'managed': managed, 'canActivate': running,
+                                'canUnload': managed, 'running': running})
+                if managed and isinstance(value.get('modelStoreId'), str):
+                    result[1]['modelStoreId'] = value['modelStoreId']
+            except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as exc:
+                logger.warning('Windows runtime management unavailable reason=verification_error '
+                               'error_type=%s elapsed_ms=%d', type(exc).__name__,
+                               max(0, int((time.monotonic() - started) * 1000)))
+                result = unavailable
+            current_key = _model_management_key(load_env(INSTALL_DIR / '.env'))
+            if current_key == key:
+                if attempt and time.monotonic() >= retry_deadline:
+                    return unavailable
+                # Cache failures as failures too, so concurrent pollers do not
+                # each launch another expensive Windows controller.
+                _model_management_cache = (key, time.monotonic() + 1, *result)
+                return result[0], dict(result[1])
+
             _model_management_cache = None
             allowed_operations = {
                 'artifact_verification', 'model_activation', 'model_delete',
@@ -2081,11 +2113,13 @@ def _model_management_snapshot() -> tuple[int, dict]:
                            'elapsed_ms=%d', before[0], after[0], before_operation,
                            after_operation, key[2] != current_key[2],
                            max(0, int((time.monotonic() - started) * 1000)))
-            return unavailable  # A completed lifecycle cannot reuse its earlier proof.
-        # Cache failures as failures too, preventing a burst of polls from
-        # launching another expensive controller for each waiting request.
-        _model_management_cache = (key, time.monotonic() + 1, *result)
-        return result[0], dict(result[1])
+            # A completed lifecycle cannot reuse its earlier proof. A stable
+            # route with no active operation may take exactly one fresh proof.
+            if (attempt or result[0] != 200 or key[0] != current_key[0]
+                    or key[2] != current_key[2] or after[1] is not None
+                    or retry_deadline - time.monotonic() < 3):
+                return unavailable
+        return unavailable
     finally:
         _model_management_lock.release()
 

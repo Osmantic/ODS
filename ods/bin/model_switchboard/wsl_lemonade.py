@@ -107,6 +107,16 @@ def _run(command: list[str], *, data: bytes | None = None, timeout: float = 10,
     return subprocess.CompletedProcess(command, process.returncode, output["stdout"], output["stderr"])
 
 
+def _remaining_timeout(limit: float, deadline: float | None) -> float:
+    """Cap a read-only proof step by the caller's remaining deadline."""
+    if deadline is None:
+        return limit
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise BridgeError("Windows ownership verification exceeded its deadline")
+    return min(limit, remaining)
+
+
 def _socket_identity(value: str):
     """Only root-owned WSL sockets in root-protected directories are eligible."""
     if not isinstance(value, str) or not re.fullmatch(r"/run/WSL/[1-9][0-9]*_interop", value):
@@ -170,10 +180,11 @@ def _gguf(value) -> bool:
             and value == value.strip() and not value.startswith("."))
 
 
-def _path(path: str, direction: str) -> str:
+def _path(path: str, direction: str, *, deadline: float | None = None) -> str:
     if not _text(path):
         raise ValueError("Invalid path for WSL translation")
-    result = _run([_WSLPATH, direction, "-a", path], timeout=5)
+    result = _run([_WSLPATH, direction, "-a", path],
+                  timeout=_remaining_timeout(5, deadline))
     if result.returncode:
         raise BridgeError("WSL path translation failed")
     value = result.stdout.decode("utf-8-sig").strip()
@@ -182,7 +193,7 @@ def _path(path: str, direction: str) -> str:
     return value
 
 
-def _windows_tools(env: dict) -> _WindowsTools:
+def _windows_tools(env: dict, *, deadline: float | None = None) -> _WindowsTools:
     system = env.get('ODS_WINDOWS_SYSTEM_DIRECTORY', '')
     if not system:
         # Compatibility for an older interactive installation only. A Linux
@@ -190,7 +201,7 @@ def _windows_tools(env: dict) -> _WindowsTools:
         inherited = shutil.which('powershell.exe')
         if not inherited:
             raise BridgeError('Windows system directory is unknown; rerun the Windows installer')
-        windows_shell = _path(inherited, '-w')
+        windows_shell = _path(inherited, '-w', deadline=deadline)
         if (not _windows_path(windows_shell)
                 or tuple(part.casefold() for part in PureWindowsPath(windows_shell).parts[-3:])
                 != ('windowspowershell', 'v1.0', 'powershell.exe')):
@@ -199,10 +210,10 @@ def _windows_tools(env: dict) -> _WindowsTools:
     if not _windows_path(system) or PureWindowsPath(system).name.casefold() != 'system32':
         raise ValueError('ODS_WINDOWS_SYSTEM_DIRECTORY must name a local Windows System32 directory')
     windows = PureWindowsPath(system)
-    drive = Path(_path(windows.anchor, '-u'))
+    drive = Path(_path(windows.anchor, '-u', deadline=deadline))
     directory = drive.joinpath(*windows.parts[1:])
     if (not directory.is_absolute() or directory.resolve() != directory
-            or PureWindowsPath(_path(str(directory), '-w')) != windows):
+            or PureWindowsPath(_path(str(directory), '-w', deadline=deadline)) != windows):
         raise BridgeError('The Windows system directory did not survive canonical WSL translation')
     shell = directory / 'WindowsPowerShell/v1.0/powershell.exe'
     probe = directory / 'whoami.exe'
@@ -211,7 +222,7 @@ def _windows_tools(env: dict) -> _WindowsTools:
     return _WindowsTools(str(shell), str(probe), str(windows / 'WindowsPowerShell/v1.0/Modules'))
 
 
-def _context(install_dir: Path, env: dict) -> _Context:
+def _context(install_dir: Path, env: dict, *, deadline: float | None = None) -> _Context:
     root = Path(install_dir).resolve(strict=True)
     if not root.is_dir() or not root.as_posix().startswith("/"):
         raise ValueError("A canonical WSL installation directory is required")
@@ -221,12 +232,12 @@ def _context(install_dir: Path, env: dict) -> _Context:
     controller = _SOURCE / _CONTROLLER
     if controller.is_symlink() or not controller.is_file() or controller.resolve().parent != controller.parent:
         raise BridgeError("The installed Windows model controller is unavailable")
-    windows = _windows_tools(env)
-    windows_root = _path("/", "-w")
+    windows = _windows_tools(env, deadline=deadline)
+    windows_root = _path("/", "-w", deadline=deadline)
     match = re.fullmatch(r"\\\\(?:wsl\.localhost|wsl\$)\\([^\\/]+)\\?", windows_root, re.IGNORECASE)
     if not match or not _text(match[1], 128) or match[1] in {".", ".."}:
         raise BridgeError("Cannot identify this WSL distribution")
-    return _Context(match[1], root.as_posix(), _path(str(controller), "-w"), windows)
+    return _Context(match[1], root.as_posix(), _path(str(controller), "-w", deadline=deadline), windows)
 
 
 def _plan(plan, context: _Context) -> None:
@@ -361,11 +372,14 @@ def _endpoint_matches_plan(env: dict, value: dict) -> None:
         raise BridgeError("The configured Lemonade port does not match the owned Windows task", code="endpoint_mismatch")
 
 
-def _connected_status(install_dir: Path, env: dict):
+def _connected_status(install_dir: Path, env: dict, *, deadline: float | None = None):
     if not candidate(env):
         raise BridgeError("This installation does not use managed WSL Lemonade", code="unsupported_runtime")
-    context = _context(install_dir, env)
-    deadline = time.monotonic() + 18
+    if deadline is not None:
+        deadline = min(deadline, time.monotonic() + 18)
+    context = _context(install_dir, env, deadline=deadline)
+    if deadline is None:
+        deadline = time.monotonic() + 18
     excluded = ()
     for attempt in range(2):
         remaining = deadline - time.monotonic()
@@ -390,10 +404,10 @@ def _connected_status(install_dir: Path, env: dict):
         return context, socket, value
 
 
-def status(install_dir: Path, env: dict) -> dict:
+def status(install_dir: Path, env: dict, *, deadline: float | None = None) -> dict:
     if not candidate(env):
         return {"ok": True, "managed": False, "running": False}
-    return _connected_status(install_dir, env)[2]
+    return _connected_status(install_dir, env, deadline=deadline)[2]
 
 
 def _mutate(install_dir: Path, env: dict, action: str, expected_plan_digest: str, **values) -> dict:
@@ -500,11 +514,12 @@ def disable_startup(install_dir: Path, env: dict, *, validate_only: bool = False
     return value
 
 
-def _owned_path(install_dir: Path, env: dict, status_info: dict | None, field: str) -> Path:
+def _owned_path(install_dir: Path, env: dict, status_info: dict | None, field: str,
+                *, deadline: float | None = None) -> Path:
     if not candidate(env):
         raise BridgeError("This installation does not use managed WSL Lemonade", code="unsupported_runtime")
-    context = _context(install_dir, env)
-    proof = _response(status_info, context) if status_info is not None else status(install_dir, env)
+    context = _context(install_dir, env, deadline=deadline)
+    proof = _response(status_info, context) if status_info is not None else status(install_dir, env, deadline=deadline)
     if not proof["managed"]:
         raise BridgeError("The Windows model store is not owned by this installation")
     windows = proof[field]
@@ -513,22 +528,24 @@ def _owned_path(install_dir: Path, env: dict, status_info: dict | None, field: s
     # only the drive's mount and append validated components, so registration
     # remains stable across Compose recreations and custom DrvFS mount roots.
     windows_path = PureWindowsPath(windows)
-    drive = Path(_path(windows_path.anchor, "-u"))
+    drive = Path(_path(windows_path.anchor, "-u", deadline=deadline))
     root = drive.joinpath(*windows_path.parts[1:])
     exists = root.is_dir() if field == "modelStoreWindowsPath" else root.is_file()
     if not root.is_absolute() or root.is_symlink() or not exists or root.resolve() != root:
         raise BridgeError("The owned Windows path is not available as a canonical WSL path")
-    if PureWindowsPath(_path(str(root), "-w")) != PureWindowsPath(windows):
+    if PureWindowsPath(_path(str(root), "-w", deadline=deadline)) != PureWindowsPath(windows):
         raise BridgeError("The owned Windows path did not survive translation")
     return root
 
 
-def model_store(install_dir: Path, env: dict, status_info: dict | None = None) -> Path:
-    return _owned_path(install_dir, env, status_info, "modelStoreWindowsPath")
+def model_store(install_dir: Path, env: dict, status_info: dict | None = None,
+                *, deadline: float | None = None) -> Path:
+    return _owned_path(install_dir, env, status_info, "modelStoreWindowsPath", deadline=deadline)
 
 
-def plan_path(install_dir: Path, env: dict, status_info: dict | None = None) -> Path:
-    return _owned_path(install_dir, env, status_info, "planPathWindows")
+def plan_path(install_dir: Path, env: dict, status_info: dict | None = None,
+              *, deadline: float | None = None) -> Path:
+    return _owned_path(install_dir, env, status_info, "planPathWindows", deadline=deadline)
 
 
 # ---------------------------------------------------------------------------
