@@ -590,6 +590,69 @@ def test_write_mode_writes_under_output_root() -> None:
         assert not list(target.parent.glob(f".{target.name}.*.tmp"))
 
 
+def test_model_router_allowlist_mount_is_readable_after_private_source_staging() -> None:
+    if os.name == "nt":
+        return  # POSIX host modes are the contract Docker bind mounts preserve.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        endpoint_dir = root / "config" / "model-router"
+        endpoint_dir.mkdir(parents=True)
+        endpoint = endpoint_dir / "endpoints.json"
+        endpoint.write_text('{"endpoints": []}\n', encoding="utf-8")
+        endpoint_dir.chmod(0o700)
+        endpoint.chmod(0o600)
+        private_dir = root / "config" / "private"
+        private_dir.mkdir()
+        private_file = private_dir / "key.txt"
+        private_file.write_text("private\n", encoding="utf-8")
+        private_dir.chmod(0o700)
+        private_file.chmod(0o600)
+
+        for _ in range(2):  # Activation re-renders the same mounted path.
+            run_renderer("--surface", "model-router-endpoints", "--output-root",
+                         tmp, "--write", "--format", "json")
+            assert endpoint_dir.stat().st_mode & 0o777 == 0o711
+            assert endpoint.stat().st_mode & 0o777 == 0o644
+            assert json.loads(endpoint.read_text(encoding="utf-8"))["endpoints"][0]["id"] == "llama-server-default"
+            assert private_dir.stat().st_mode & 0o777 == 0o700
+            assert private_file.stat().st_mode & 0o777 == 0o600
+            endpoint_dir.chmod(0o700)
+            endpoint.chmod(0o600)
+
+
+def test_model_router_allowlist_rejects_embedded_credentials_before_public_write() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        proc = subprocess.run(
+            [sys.executable, str(SCRIPT), "--surface", "model-router-endpoints",
+             "--llm-base-url", "http://user:secret@localhost:8080/v1",
+             "--output-root", tmp, "--write"],
+            cwd=ROOT, text=True, capture_output=True,
+        )
+        assert proc.returncode != 0
+        assert "secret" not in proc.stderr
+        assert not (Path(tmp) / "config" / "model-router" / "endpoints.json").exists()
+
+
+def test_model_router_allowlist_does_not_widen_symlinked_directory() -> None:
+    if os.name == "nt":
+        return
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        private = root / "private"
+        private.mkdir(mode=0o700)
+        config = root / "config"
+        config.mkdir()
+        (config / "model-router").symlink_to(private, target_is_directory=True)
+        proc = subprocess.run(
+            [sys.executable, str(SCRIPT), "--surface", "model-router-endpoints",
+             "--output-root", tmp, "--write"], cwd=ROOT, text=True,
+            capture_output=True,
+        )
+        assert proc.returncode != 0
+        assert private.stat().st_mode & 0o777 == 0o700
+        assert not (private / "endpoints.json").exists()
+
+
 def test_write_cli_defaults_to_secret_free_paths() -> None:
     secret = "renderer-secret-must-not-reach-output"
     with tempfile.TemporaryDirectory() as tmp:

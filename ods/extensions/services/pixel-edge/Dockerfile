@@ -21,6 +21,7 @@ COPY runtime_identity.py ./
 COPY access_mode.py ./
 COPY transition_gate.py ./
 COPY edge_entrypoint.py ./
+RUN chmod -R a+rX /app
 
 # Non-root user
 RUN useradd -m -u 1000 pixel

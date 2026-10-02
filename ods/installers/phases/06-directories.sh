@@ -535,6 +535,16 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
     chmod go-w "$INSTALL_DIR" || error "Could not secure installed root"
     unset _installed_code_root
 
+    # Source staging under umask 077 makes the two public policy bind mounts
+    # unreadable to APE and remote-provider-egress, which run as non-root.
+    # Normalize them on fresh and retained installs before Compose starts.
+    _phase06_step "prepare-public-policy-mounts"
+    if ! bash "$INSTALL_DIR/scripts/prepare-public-policy-mounts.sh" "$INSTALL_DIR" \
+        >> "$LOG_FILE" 2>&1; then
+        error "Could not prepare public policy mounts for non-root services. See $LOG_FILE for details."
+        return 1
+    fi
+
     # Windows-mounted WSL checkouts commonly present every copied file as
     # mode 0777 even when Git records a narrower executable bit. Pixel refuses
     # group/other-writable execution controls by design, so normalize only the

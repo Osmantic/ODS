@@ -128,7 +128,14 @@ if $ODS_EXISTING_INSTALL &&
    [[ "$(external_llm_env_value "$INSTALL_DIR/.env" ENABLE_OPEN_WEBUI || true)" == false ]]; then
     ENABLE_OPEN_WEBUI=false
 fi
-ENABLE_VOICE="$(ods_installed_service_default "$INSTALL_DIR" whisper "$ODS_EXISTING_INSTALL")"
+ENABLE_WHISPER="$(ods_installed_service_default "$INSTALL_DIR" whisper "$ODS_EXISTING_INSTALL")"
+ENABLE_TTS="$(ods_installed_service_default "$INSTALL_DIR" tts "$ODS_EXISTING_INSTALL")"
+# The combined voice feature needs both services; the individual Library
+# selections remain authoritative on ordinary installer reruns.
+ENABLE_VOICE=false
+[[ "$ENABLE_WHISPER" == true && "$ENABLE_TTS" == true ]] && ENABLE_VOICE=true
+WHISPER_EXPLICIT=false
+TTS_EXPLICIT=false
 ENABLE_WORKFLOWS="$(ods_installed_service_default "$INSTALL_DIR" n8n "$ODS_EXISTING_INSTALL")"
 ENABLE_RAG="$(ods_installed_service_default "$INSTALL_DIR" qdrant "$ODS_EXISTING_INSTALL")"
 ENABLE_RECOMMENDED="$(ods_installed_service_default "$INSTALL_DIR" token-spy "$ODS_EXISTING_INSTALL")"
@@ -136,6 +143,7 @@ ENABLE_RECOMMENDED="$(ods_installed_service_default "$INSTALL_DIR" token-spy "$O
 # written license agreement is acknowledged. Existing ODS tools remain available.
 # OpenClaw is deprecated and remains explicit opt-in.
 ENABLE_HERMES="$(ods_installed_service_default "$INSTALL_DIR" hermes "$ODS_EXISTING_INSTALL")"
+ENABLE_HERMES_PROXY="$(ods_installed_service_default "$INSTALL_DIR" hermes-proxy "$ENABLE_HERMES")"
 ENABLE_PIXEL="${ENABLE_PIXEL:-auto}"
 PIXEL_EXPLICIT=false
 HERMES_EXPLICIT=false
@@ -245,6 +253,10 @@ Options:
     --reselect-model  Replace a valid active local model with the current installer recommendation
     --voice           Enable voice services (Whisper + Kokoro)
     --no-voice        Disable voice services
+    --whisper         Enable Whisper STT without changing Kokoro
+    --no-whisper      Disable Whisper STT without changing Kokoro
+    --tts             Enable Kokoro TTS without changing Whisper
+    --no-tts          Disable Kokoro TTS without changing Whisper
     --workflows       Enable n8n workflow automation
     --no-workflows    Disable n8n workflow automation
     --rag             Enable RAG with Qdrant vector database
@@ -333,16 +345,20 @@ while [[ $# -gt 0 ]]; do
         --reuse-external-llm) EXTERNAL_LLM_AUTO_REUSE=true; shift ;;
         --no-external-llm) EXTERNAL_LLM_DISABLE=true; shift ;;
         --reselect-model) ODS_RESELECT_MODEL=true; shift ;;
-        --voice) ENABLE_VOICE=true; shift ;;
-        --no-voice) ENABLE_VOICE=false; shift ;;
+        --voice) ENABLE_WHISPER=true; ENABLE_TTS=true; WHISPER_EXPLICIT=true; TTS_EXPLICIT=true; shift ;;
+        --no-voice) ENABLE_WHISPER=false; ENABLE_TTS=false; WHISPER_EXPLICIT=true; TTS_EXPLICIT=true; shift ;;
+        --whisper) ENABLE_WHISPER=true; WHISPER_EXPLICIT=true; shift ;;
+        --no-whisper) ENABLE_WHISPER=false; WHISPER_EXPLICIT=true; shift ;;
+        --tts) ENABLE_TTS=true; TTS_EXPLICIT=true; shift ;;
+        --no-tts) ENABLE_TTS=false; TTS_EXPLICIT=true; shift ;;
         --workflows) ENABLE_WORKFLOWS=true; shift ;;
         --no-workflows) ENABLE_WORKFLOWS=false; shift ;;
         --rag) ENABLE_RAG=true; shift ;;
         --no-rag) ENABLE_RAG=false; shift ;;
         --recommended) ENABLE_RECOMMENDED=true; shift ;;
         --no-recommended) ENABLE_RECOMMENDED=false; shift ;;
-        --hermes) ENABLE_HERMES=true; HERMES_EXPLICIT=true; shift ;;
-        --no-hermes) ENABLE_HERMES=false; HERMES_EXPLICIT=true; shift ;;
+        --hermes) ENABLE_HERMES=true; ENABLE_HERMES_PROXY=true; HERMES_EXPLICIT=true; shift ;;
+        --no-hermes) ENABLE_HERMES=false; ENABLE_HERMES_PROXY=false; HERMES_EXPLICIT=true; shift ;;
         --pixel) ENABLE_PIXEL=true; PIXEL_EXPLICIT=true; shift ;;
         --no-pixel) ENABLE_PIXEL=false; PIXEL_EXPLICIT=true; shift ;;
         --openclaw) ENABLE_OPENCLAW=true; OPENCLAW_EXPLICIT=true; shift ;;
@@ -368,7 +384,7 @@ while [[ $# -gt 0 ]]; do
         # nothing serves it, and a phone clicking the invite gets
         # "site can't be reached." Operators who don't want the LAN-facing
         # surface can set ENABLE_ODS_PROXY=false in .env after install.
-        --all) ENABLE_VOICE=true; ENABLE_WORKFLOWS=true; ENABLE_RAG=true; ENABLE_RECOMMENDED=true; ENABLE_HERMES=true; ENABLE_OPENCLAW=false; ENABLE_OPENCODE=true; ENABLE_DEVTOOLS=true; ENABLE_COMFYUI=true; ENABLE_APE=true; ENABLE_PERPLEXICA=true; ENABLE_PRIVACY_SHIELD=true; ENABLE_LANGFUSE=true; ENABLE_ODS_PROXY=true; ENABLE_OPEN_WEBUI=true; WEBUI_EXPLICIT=true; shift ;;
+        --all) ENABLE_WHISPER=true; ENABLE_TTS=true; WHISPER_EXPLICIT=true; TTS_EXPLICIT=true; ENABLE_WORKFLOWS=true; ENABLE_RAG=true; ENABLE_RECOMMENDED=true; ENABLE_HERMES=true; ENABLE_HERMES_PROXY=true; ENABLE_OPENCLAW=false; ENABLE_OPENCODE=true; ENABLE_DEVTOOLS=true; ENABLE_COMFYUI=true; ENABLE_APE=true; ENABLE_PERPLEXICA=true; ENABLE_PRIVACY_SHIELD=true; ENABLE_LANGFUSE=true; ENABLE_ODS_PROXY=true; ENABLE_OPEN_WEBUI=true; WEBUI_EXPLICIT=true; shift ;;
         --non-interactive) INTERACTIVE=false; shift ;;
         --offline) OFFLINE_MODE=true; shift ;;
         --lan) BIND_ADDRESS="0.0.0.0"; BIND_ADDRESS_EXPLICIT=true; shift ;;
@@ -379,15 +395,17 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+ENABLE_VOICE=false
+[[ "$ENABLE_WHISPER" == true && "$ENABLE_TTS" == true ]] && ENABLE_VOICE=true
+
 if ! $ODS_GATEWAY_ONLY && [[ "$ENABLE_OPEN_WEBUI" != true ]] &&
    ! $ODS_EXISTING_INSTALL && [[ "$ENABLE_PIXEL" != true ]]; then
     echo "--no-webui on a fresh ordinary install requires --pixel so Portal supplies chat" >&2
     exit 1
 fi
 if [[ "$ENABLE_OPEN_WEBUI" != true ]] &&
-   { [[ "$ENABLE_VOICE" == true ]] || [[ "$ENABLE_RAG" == true ]] ||
-     [[ "$ENABLE_ODS_PROXY" == true ]]; }; then
-    echo "Voice, RAG documents, and ODS proxy currently require Open WebUI; use --with-webui or leave those services off" >&2
+   { [[ "$ENABLE_RAG" == true ]] || [[ "$ENABLE_ODS_PROXY" == true ]]; }; then
+    echo "RAG documents and ODS proxy currently require Open WebUI; use --with-webui or leave those services off" >&2
     exit 1
 fi
 
