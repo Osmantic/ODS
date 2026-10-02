@@ -435,6 +435,19 @@ _macos_validate_hermes_selection() {
     fi
 }
 
+_macos_apply_custom_hermes_answer() {
+    local answer="$1" previous="$ENABLE_HERMES"
+    if [[ "$answer" =~ ^[nN] ]]; then
+        ENABLE_HERMES=false
+    else
+        ENABLE_HERMES=true
+    fi
+    # A separate Library choice for the proxy survives when Hermes stays on.
+    if [[ "$ENABLE_HERMES" != "$previous" ]]; then
+        ENABLE_HERMES_PROXY="$ENABLE_HERMES"
+    fi
+}
+
 _macos_patch_hermes_persisted_config() {
     local model_name="$1" base_url="$2" context_length="$3"
     local state hermes_image helper_image project_image selected_image persisted_config candidate
@@ -1782,9 +1795,10 @@ if ! $NON_INTERACTIVE && ! $ALL_FEATURES && ! $DRY_RUN; then
             [[ "$yn" =~ ^[yY] ]] && ENABLE_RAG=true
             read -r -p "  Enable extra support (SearXNG + Token Spy)? [Y/n] " yn < /dev/tty
             [[ "$yn" =~ ^[nN] ]] && ENABLE_RECOMMENDED=false || ENABLE_RECOMMENDED=true
-            read -r -p "  Enable Hermes Agent (default AI agent)? [Y/n] " yn < /dev/tty
-            [[ "$yn" =~ ^[nN] ]] && ENABLE_HERMES=false || ENABLE_HERMES=true
-            ENABLE_HERMES_PROXY="$ENABLE_HERMES"
+            if ! $HERMES_EXPLICIT; then
+                read -r -p "  Enable Hermes Agent (optional)? [Y/n] " yn < /dev/tty
+                _macos_apply_custom_hermes_answer "$yn"
+            fi
             read -r -p "  Enable OpenClaw (DEPRECATED — Hermes replaces it)? [y/N] " yn < /dev/tty
             [[ "$yn" =~ ^[yY] ]] && ENABLE_OPENCLAW=true
             if ! $OPENCODE_ENABLE_EXPLICIT && ! $OPENCODE_DISABLE_EXPLICIT; then
