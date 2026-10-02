@@ -2143,6 +2143,34 @@ describe('Pixel', () => {
     expect(screen.getByTitle('Send')).toBeDisabled()
   })
 
+  it('stops Chat only without claiming workspace changes were preserved', async () => {
+    globalThis.fetch.mockResolvedValueOnce(response({ available: true, model: 'pixel/default', detail: 'local' }))
+    globalThis.fetch.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      body: { getReader: () => ({ read: async () => new Promise(() => {}), releaseLock: () => {} }) },
+      headers: new Map([['content-type', 'text/event-stream']]),
+    })
+    globalThis.fetch.mockResolvedValueOnce(response({ aborted: true }))
+
+    render(<Pixel />)
+    await screen.findByText('Available')
+    fireEvent.click(screen.getByRole('button', { name: 'Chat only' }))
+    fireEvent.change(screen.getByPlaceholderText('Message Portal...'), { target: { value: 'Tell me a story' } })
+    fireEvent.click(screen.getByTitle('Send'))
+    await screen.findByTitle('Stop')
+    fireEvent.click(screen.getByTitle('Stop'))
+
+    expect(await screen.findByText('Response stopped')).toBeInTheDocument()
+    expect(screen.getByText('Stopped by you.')).toBeInTheDocument()
+    expect(screen.queryByText(/Workspace changes completed before cancellation/)).toBeNull()
+    await waitFor(() => {
+      const stored = JSON.parse(localStorage.getItem('ods.pixel.chat.v1'))
+      expect(stored.messages.at(-1).status).toBe('stopped')
+      expect(stored.messages.at(-1).content).toBe('Stopped by you.')
+    })
+  })
+
   it('keeps partial output but marks it durably when the owner stops a response', async () => {
     globalThis.fetch.mockResolvedValueOnce(
       response({ available: true, model: 'pixel/default', detail: 'local' })
