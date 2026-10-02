@@ -442,7 +442,21 @@ STT_MODEL_NAME=""
 STT_RECOVERY_HINT=""
 TTS_HTTP="unknown"
 TTS_PORT=""
-if [[ "${ENABLE_VOICE:-false}" == "true" ]] && command -v curl >/dev/null 2>&1; then
+_doctor_whisper=false
+_doctor_tts=false
+_ods_doctor_voice_selected() {
+    local service="$1" fallback="$2" active disabled
+    active="$ROOT_DIR/extensions/services/$service/compose.yaml"
+    disabled="${active}.disabled"
+    if [[ -f "$ROOT_DIR/.env" ]]; then
+        [[ -f "$active" ]] && return 0
+        [[ -f "$disabled" ]] && return 1
+    fi
+    [[ "$fallback" == true ]]
+}
+_ods_doctor_voice_selected whisper "${ENABLE_WHISPER:-${ENABLE_VOICE:-false}}" && _doctor_whisper=true
+_ods_doctor_voice_selected tts "${ENABLE_TTS:-${ENABLE_VOICE:-false}}" && _doctor_tts=true
+if $_doctor_whisper && command -v curl >/dev/null 2>&1; then
     STT_MODEL_NAME="${AUDIO_STT_MODEL:-Systran/faster-whisper-base}"
     _stt_whisper_port="${SERVICE_PORTS[whisper]:-9000}"
     _stt_model_encoded="${STT_MODEL_NAME//\//%2F}"
@@ -459,14 +473,17 @@ if [[ "${ENABLE_VOICE:-false}" == "true" ]] && command -v curl >/dev/null 2>&1; 
         fi
     fi
 
+elif ! $_doctor_whisper; then
+    STT_MODEL_CACHED="disabled"
+fi
+if $_doctor_tts && command -v curl >/dev/null 2>&1; then
     TTS_PORT="${SERVICE_PORTS[tts]:-8880}"
     if curl -sf --max-time 5 "http://127.0.0.1:${TTS_PORT}/health" >/dev/null 2>&1; then
         TTS_HTTP="true"
     else
         TTS_HTTP="false"
     fi
-elif [[ "${ENABLE_VOICE:-false}" != "true" ]]; then
-    STT_MODEL_CACHED="disabled"
+elif ! $_doctor_tts; then
     TTS_HTTP="disabled"
 fi
 

@@ -11,6 +11,7 @@ run_case() {
     local brave_requested="${6:-false}" brave_key_mode="${7:-none}"
     local hermes_selected="${8:-false}" proxy_selected="${9:-false}"
     local expect_invalid="${10:-false}"
+    local whisper_selected="${11:-false}" tts_selected="${12:-false}"
     local test_root source_root install_root
     test_root="$(mktemp -d)"
     source_root="$test_root/source"
@@ -26,7 +27,11 @@ run_case() {
         "$source_root/extensions/services/hermes" \
         "$install_root/extensions/services/hermes" \
         "$source_root/extensions/services/hermes-proxy" \
-        "$install_root/extensions/services/hermes-proxy"
+        "$install_root/extensions/services/hermes-proxy" \
+        "$source_root/extensions/services/whisper" \
+        "$install_root/extensions/services/whisper" \
+        "$source_root/extensions/services/tts" \
+        "$install_root/extensions/services/tts"
     printf 'services: {}\n' \
         >"$source_root/extensions/services/openclaw/compose.yaml${source_state}"
 
@@ -54,7 +59,18 @@ run_case() {
     else
         printf 'services: {}\n' >"$install_root/extensions/services/hermes-proxy/compose.yaml.disabled"
     fi
-    if [[ "$hermes_selected" == true || "$proxy_selected" == true ]]; then
+    for service in whisper tts; do
+        printf 'services: {}\n' >"$source_root/extensions/services/$service/compose.yaml"
+        local voice_selected="$whisper_selected"
+        [[ "$service" == tts ]] && voice_selected="$tts_selected"
+        if [[ "$voice_selected" == true ]]; then
+            printf 'services: {}\n' >"$install_root/extensions/services/$service/compose.yaml"
+        else
+            printf 'services: {}\n' >"$install_root/extensions/services/$service/compose.yaml.disabled"
+        fi
+    done
+    if [[ "$hermes_selected" == true || "$proxy_selected" == true \
+        || "$whisper_selected" == true || "$tts_selected" == true ]]; then
         printf 'ODS_MODE=local\n' >"$install_root/.env"
     fi
     if [[ "$brave_key_mode" == file || "$brave_key_mode" == empty-override ]]; then
@@ -98,6 +114,8 @@ run_case() {
         INSTALL_DIR="$install_root"
         ENABLE_HERMES="$(ods_installed_service_default "$INSTALL_DIR" hermes false)"
         ENABLE_HERMES_PROXY="$(ods_installed_service_default "$INSTALL_DIR" hermes-proxy "$ENABLE_HERMES")"
+        ENABLE_WHISPER="$(ods_installed_service_default "$INSTALL_DIR" whisper false)"
+        ENABLE_TTS="$(ods_installed_service_default "$INSTALL_DIR" tts false)"
         MAX_CONTEXT=4096
         LLM_MODEL_SIZE_MB=0
 
@@ -166,9 +184,11 @@ run_case() {
             test ! -e "$root/extensions/services/brave-search/compose.yaml"
             test -f "$root/extensions/services/brave-search/compose.yaml.disabled"
         fi
-        for service in hermes hermes-proxy; do
+        for service in hermes hermes-proxy whisper tts; do
             local hermes_expected="$hermes_selected"
             [[ "$service" == hermes-proxy ]] && hermes_expected="$proxy_selected"
+            [[ "$service" == whisper ]] && hermes_expected="$whisper_selected"
+            [[ "$service" == tts ]] && hermes_expected="$tts_selected"
             if [[ "$hermes_expected" == true ]]; then
                 test -f "$root/extensions/services/$service/compose.yaml"
                 test ! -e "$root/extensions/services/$service/compose.yaml.disabled"
@@ -197,5 +217,7 @@ run_case false "" false cpu false true empty-override
 run_case false "" false cpu false false none true false
 run_case false "" false cpu false false none true true
 run_case false "" false cpu false false none false true true
+run_case false "" false cpu false false none false false false true false
+run_case false "" false cpu false false none false false false false true
 
 echo "PASS: feature selection reconciles source and installed compose states"
