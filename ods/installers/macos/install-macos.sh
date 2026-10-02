@@ -1650,6 +1650,20 @@ fi
 # Both Pixel checks inspect the installation's own native Pixel state. During
 # --preflight-only that is the installation being replaced, which the
 # candidate uninstaller retires; the real install run checks the new tree.
+_macos_secure_pixel_catalog_sources() {
+    local source_root="$1" source
+    # get-ods.sh secures these paths after its source copy. A documented
+    # direct checkout skips that bootstrap step, and a group-writable source
+    # makes native Pixel's catalog proof fail before a retained update begins.
+    for source in \
+        "$source_root/config/extensions-catalog.json" \
+        "$source_root/extensions/library/services" \
+        "$source_root/extensions/services"; do
+        [[ -e "$source" && ! -L "$source" ]] || return 1
+        chmod -R go-w "$source" || return 1
+    done
+}
+
 if ! $PREFLIGHT_ONLY && ! $ENABLE_PIXEL && [[ -e "${INSTALL_DIR}/data/pixel-native" || -L "${INSTALL_DIR}/data/pixel-native" ]]; then
     ai_err "Existing native Pixel installation detected. The base installer cannot migrate it or disable it safely."
     ai "Your configuration is unchanged. Keep data/pixel-native; use the qualified native migration/update path when available."
@@ -1657,6 +1671,13 @@ if ! $PREFLIGHT_ONLY && ! $ENABLE_PIXEL && [[ -e "${INSTALL_DIR}/data/pixel-nati
 fi
 
 if $ENABLE_PIXEL && ! $PREFLIGHT_ONLY; then
+    # --dry-run validates without changing the user's source checkout.
+    if ! $DRY_RUN; then
+        if ! _macos_secure_pixel_catalog_sources "$SOURCE_ROOT"; then
+            ai_err "Could not secure native Pixel catalog inputs in this ODS source checkout."
+            exit 1
+        fi
+    fi
     _pixel_install_args=(--install-dir "$INSTALL_DIR")
     if ! $NON_INTERACTIVE && ! $DRY_RUN; then
         _pixel_install_args+=(--prompt-for-sudo)

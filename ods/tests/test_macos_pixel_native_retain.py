@@ -239,6 +239,7 @@ def test_shell_dispatches_fresh_or_retained_before_phase_one(tmp_path, retained)
         (tmp_path / 'data/pixel-native').mkdir(parents=True)
     shell = '''set -euo pipefail
 python_fixture() { printf '%s\n' "$1"; }
+_macos_secure_pixel_catalog_sources() { :; }
 ''' + body + '\n'
     result = subprocess.run(['bash'], input=shell, capture_output=True, text=True,
         env={**os.environ, 'ENABLE_PIXEL': 'true', 'PREFLIGHT_ONLY': 'false',
@@ -259,6 +260,7 @@ def test_shell_auto_updates_only_proved_source_drift(tmp_path, status, expected)
     body = script[start:stop].replace('/usr/bin/python3', 'python_fixture')
     shell = '''set -euo pipefail
 python_fixture() { printf '%s\\n' "$1"; return ''' + str(status) + '''; }
+_macos_secure_pixel_catalog_sources() { :; }
 ''' + body + '''
 printf 'update=%s\\n' "$_PIXEL_UPDATE_REQUIRED"
 '''
