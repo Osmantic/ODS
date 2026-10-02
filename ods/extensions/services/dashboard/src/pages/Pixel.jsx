@@ -628,7 +628,9 @@ export default function Pixel({ systemStatus = null }) {
   const images = usePortalImages(chatIdRef.current, initialChat?.draftImages)
   const imageDraftKey = JSON.stringify(images.receipts)
   const restoredViewRef = useRef(null)
-  if (initialChat && !restoredViewRef.current) {
+  if (initialChat?.persistenceSnapshot?.persistenceVersion === 2
+    && (initialChat.persistenceSnapshot.inFlight === true || initialChat.persistenceSnapshot.interrupted === true)
+    && !restoredViewRef.current) {
     restoredViewRef.current = {
       chatId: initialChat.chatId, messages, input, preview, workspaceOpen,
       sending, interrupted, chatMode, imageDraftKey,
