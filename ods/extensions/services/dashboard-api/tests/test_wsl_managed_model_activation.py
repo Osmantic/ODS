@@ -59,7 +59,7 @@ def managed(tmp_path, monkeypatch):
     def persist():
         plan_path.write_text(json.dumps(runtime["plan"], separators=(",", ":")), encoding="utf-8")
 
-    def status(*_args):
+    def status(*_args, **_kwargs):
         return {
             "ok": True, "managed": runtime["managed"], "running": runtime["running"],
             "plan": copy.deepcopy(runtime["plan"]), "planDigest": hashlib.sha256(plan_path.read_bytes()).hexdigest(),
@@ -139,8 +139,8 @@ def managed(tmp_path, monkeypatch):
     monkeypatch.setattr(host._wsl_lemonade, "candidate", lambda env: env.get("LEMONADE_HOST_TRANSPORT") == "model-router")
     for name, function in {"status": status, "activate": activate, "restore": restore, "stop": stop, "start": start}.items():
         monkeypatch.setattr(host._wsl_lemonade, name, function)
-    monkeypatch.setattr(host._wsl_lemonade, "model_store", lambda *_args: models)
-    monkeypatch.setattr(host._wsl_lemonade, "plan_path", lambda *_args: plan_path)
+    monkeypatch.setattr(host._wsl_lemonade, "model_store", lambda *_args, **_kwargs: models)
+    monkeypatch.setattr(host._wsl_lemonade, "plan_path", lambda *_args, **_kwargs: plan_path)
     monkeypatch.setattr(host, "_runtime_model_control", control)
     monkeypatch.setattr(host, "_wait_for_model_readiness", readiness)
     monkeypatch.setattr(host, "_prove_pixel_model_contract", lambda _env, contract:
