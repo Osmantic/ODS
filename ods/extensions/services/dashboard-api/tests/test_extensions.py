@@ -238,7 +238,113 @@ class TestExtensionsCatalog:
         assert ext_module._compute_extension_status(
             ext, {"qdrant": _make_service_status("qdrant")}) == "enabled"
 
-    @pytest.mark.parametrize("service_id", ["perplexica", "qdrant", "searxng"])
+    @pytest.mark.parametrize("architecture,compatible", [
+        ("x86_64", True), ("AMD64", True),
+        ("aarch64", False), ("arm64", False), ("unknown", False),
+    ])
+    def test_embeddings_runtime_matches_pinned_amd64_image(
+            self, architecture, compatible):
+        from routers import extensions as ext_module
+
+        with patch.object(ext_module.platform, "machine", return_value=architecture):
+            assert ext_module._embeddings_runtime_compatible() is compatible
+
+    def test_embeddings_library_add_refuses_arm64_runtime(
+            self, test_client, monkeypatch, tmp_path):
+        from routers import extensions as ext_module
+
+        catalog = [{**_make_catalog_ext("embeddings", gpu_backends=["all"]),
+                    "catalog_source": "builtin"}]
+        _patch_extensions_config(monkeypatch, catalog, tmp_path=tmp_path)
+        builtin = tmp_path / "builtin" / "embeddings"
+        builtin.mkdir(parents=True)
+        disabled = builtin / "compose.yaml.disabled"
+        disabled.write_text("services: {embeddings: {image: example/tei}}\n")
+        monkeypatch.setattr(ext_module, "EXTENSIONS_DIR", builtin.parent)
+
+        with patch.object(ext_module.platform, "machine", return_value="aarch64"):
+            with patch("helpers.get_cached_services", return_value=[]):
+                response = test_client.get(
+                    "/api/extensions/catalog", headers=test_client.auth_headers)
+            assert response.status_code == 200
+            row = next(item for item in response.json()["extensions"]
+                       if item["id"] == "embeddings")
+            assert row["status"] == "incompatible"
+            assert "library_manageable" not in row
+            with pytest.raises(HTTPException) as error:
+                ext_module._activate_service("embeddings")
+        assert error.value.status_code == 409
+        assert disabled.is_file()
+
+    def test_user_embeddings_status_does_not_use_builtin_arch_gate(
+            self, monkeypatch, tmp_path):
+        from routers import extensions as ext_module
+
+        user_dir = tmp_path / "user" / "embeddings"
+        user_dir.mkdir(parents=True)
+        (user_dir / "compose.yaml").write_text(
+            "services: {embeddings: {image: example/tei}}\n")
+        monkeypatch.setattr(ext_module, "USER_EXTENSIONS_DIR", user_dir.parent)
+        monkeypatch.setattr(ext_module, "EXTENSIONS_DIR", tmp_path / "builtin")
+        monkeypatch.setattr(ext_module, "_embeddings_runtime_compatible", lambda: False)
+        ext = {**_make_catalog_ext("embeddings", gpu_backends=["all"]),
+               "catalog_source": "user"}
+        assert ext_module._compute_extension_status(
+            ext, {"embeddings": _make_service_status("embeddings")}) == "enabled"
+
+    def test_user_embeddings_shadows_disabled_builtin_without_library_control(
+            self, test_client, monkeypatch, tmp_path):
+        from routers import extensions as ext_module
+
+        catalog = [{**_make_catalog_ext("embeddings", gpu_backends=["all"]),
+                    "catalog_source": "user"}]
+        _patch_extensions_config(monkeypatch, catalog, tmp_path=tmp_path)
+        user_dir = tmp_path / "user" / "embeddings"
+        user_dir.mkdir(parents=True)
+        (user_dir / "compose.yaml").write_text(
+            "services: {embeddings: {image: user/tei}}\n")
+        builtin = tmp_path / "builtin" / "embeddings"
+        builtin.mkdir(parents=True)
+        (builtin / "compose.yaml.disabled").write_text(
+            "services: {embeddings: {image: built-in/tei}}\n")
+        monkeypatch.setattr(ext_module, "EXTENSIONS_DIR", builtin.parent)
+
+        with patch("helpers.get_cached_services", return_value=[
+                _make_service_status("embeddings")]):
+            response = test_client.get(
+                "/api/extensions/catalog", headers=test_client.auth_headers)
+        assert response.status_code == 200
+        row = next(item for item in response.json()["extensions"]
+                   if item["id"] == "embeddings")
+        assert row["source"] == "user"
+        assert row["status"] == "enabled"
+        assert "library_manageable" not in row
+
+        with patch("helpers.get_cached_services", return_value=[
+                _make_service_status("embeddings")]):
+            detail = test_client.get(
+                "/api/extensions/embeddings", headers=test_client.auth_headers)
+        assert detail.status_code == 200
+        assert detail.json()["status"] == "enabled"
+        assert "library_manageable" not in detail.json()
+
+    def test_embeddings_activation_plans_on_amd64(self, monkeypatch, tmp_path):
+        from routers import extensions as ext_module
+
+        builtin = tmp_path / "builtin" / "embeddings"
+        builtin.mkdir(parents=True)
+        disabled = builtin / "compose.yaml.disabled"
+        disabled.write_text("services: {embeddings: {image: example/tei}}\n")
+        monkeypatch.setattr(ext_module, "EXTENSIONS_DIR", builtin.parent)
+        monkeypatch.setattr(ext_module, "USER_EXTENSIONS_DIR", tmp_path / "user")
+        monkeypatch.setattr(ext_module, "_embeddings_runtime_compatible", lambda: True)
+
+        with patch.object(ext_module, "_scan_installed_compose"):
+            result = ext_module._activate_service("embeddings")
+        assert result["action"] == "enabled"
+        assert disabled.is_file()
+
+    @pytest.mark.parametrize("service_id", ["embeddings", "perplexica", "qdrant", "searxng"])
     def test_builtin_library_addback_tracks_selection_and_health(
             self, test_client, monkeypatch, tmp_path, service_id):
         catalog = [{**_make_catalog_ext(service_id, service_id), "catalog_source": "builtin"}]

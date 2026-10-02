@@ -699,7 +699,7 @@ ALWAYS_ON_SERVICES: frozenset = frozenset({
 
 # Built-ins qualified for Dashboard Library Add/Disable. The live health poll
 # must refresh this same set after a fragment changes without an API restart.
-LIBRARY_MANAGEABLE_BUILTINS: frozenset = frozenset({"n8n", "perplexica", "qdrant", "searxng", "comfyui"})
+LIBRARY_MANAGEABLE_BUILTINS: frozenset = frozenset({"n8n", "perplexica", "qdrant", "searxng", "comfyui", "embeddings"})
 
 
 def load_extension_catalog() -> list[dict]:

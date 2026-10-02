@@ -405,6 +405,11 @@ def _qdrant_runtime_compatible() -> bool:
         return False
 
 
+def _embeddings_runtime_compatible() -> bool:
+    """The pinned TEI image is linux/amd64, regardless of GPU overlay."""
+    return platform.machine().lower() in {"amd64", "x86_64"}
+
+
 def _qualified_builtin_selection(service_id: str) -> dict:
     """Expose Add controls only for individually qualified built-in services."""
     if service_id not in LIBRARY_MANAGEABLE_BUILTINS or service_id in ALWAYS_ON_SERVICES:
@@ -412,6 +417,8 @@ def _qualified_builtin_selection(service_id: str) -> dict:
     if service_id == "comfyui" and not _comfyui_overlay_available():
         return {}
     if service_id == "qdrant" and not _qdrant_runtime_compatible():
+        return {}
+    if service_id == "embeddings" and not _embeddings_runtime_compatible():
         return {}
     directory = EXTENSIONS_DIR / service_id
     if directory.is_symlink() or not directory.is_dir():
@@ -497,6 +504,9 @@ def _compute_extension_status(ext: dict, services_by_id: dict) -> str:
     ext_id = ext["id"]
     if ext_id == "opencode" and ext_id in SERVICES:
         return _opencode_extension_status(services_by_id.get(ext_id))
+    if (ext_id == "embeddings" and ext.get("catalog_source") == "builtin"
+            and not _embeddings_runtime_compatible()):
+        return "incompatible"
     one_shot = _is_one_shot_extension(ext)
 
     # Check for in-flight install operations (progress files take priority)
@@ -537,7 +547,9 @@ def _compute_extension_status(ext: dict, services_by_id: dict) -> str:
             and not (USER_EXTENSIONS_DIR / ext_id).is_dir()
             and not _comfyui_overlay_available()):
         return "incompatible"
-    selection = _qualified_builtin_selection(ext_id)
+    # A user extension with the same ID shadows the built-in directory.
+    selection = ({} if (USER_EXTENSIONS_DIR / ext_id).is_dir()
+                 else _qualified_builtin_selection(ext_id))
     if selection:
         if not selection["library_selected"]:
             return "disabled"
@@ -1889,7 +1901,7 @@ async def extensions_catalog(
             "depends_on": ext.get("depends_on", []),
             "dependents": [],
             "dependency_status": {},
-            **_qualified_builtin_selection(ext_id),
+            **(_qualified_builtin_selection(ext_id) if source == "core" else {}),
             **update_state,
         }
         if ext_id == "opencode" and ext_id in SERVICES:
@@ -3327,7 +3339,7 @@ async def extension_detail(
         "error_message": error_message,
         "source": source,
         "installable": installable,
-        **_qualified_builtin_selection(service_id),
+        **(_qualified_builtin_selection(service_id) if source == "core" else {}),
         "llm": llm_contract,
         "public_url": public_url,
         "integration": integration,
@@ -4469,6 +4481,13 @@ def _activate_service(service_id: str) -> dict:
         raise HTTPException(
             status_code=409,
             detail="Qdrant's pinned arm64 image requires 4 KiB kernel pages",
+        )
+
+    if (service_id == "embeddings" and ext_dir.is_relative_to(EXTENSIONS_DIR.resolve())
+            and not _embeddings_runtime_compatible()):
+        raise HTTPException(
+            status_code=409,
+            detail="The bundled embeddings image requires an amd64 runtime",
         )
 
     disabled_compose = ext_dir / "compose.yaml.disabled"
