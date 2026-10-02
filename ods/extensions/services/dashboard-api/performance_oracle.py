@@ -1088,6 +1088,7 @@ def _context_options(
     model: dict[str, Any],
     runtime_profile: dict[str, Any] | None,
     gpu_info: Optional[GPUInfo],
+    system_ram_gb: int | None = None,
 ) -> list[dict[str, Any]]:
     context_limit_known = model.get("context_limit_known") is not False
     try:
@@ -1108,7 +1109,7 @@ def _context_options(
         if value <= maximum
     }
     values.update({recommended, maximum})
-    capacity = _usable_model_memory_gb(gpu_info) if gpu_info else 0.0
+    capacity = _usable_model_memory_gb(gpu_info, system_ram_gb) if gpu_info else 0.0
     return [
         {
             "contextLength": value,
@@ -1418,7 +1419,8 @@ def _host_amd_runtime_gpu_from_env(install_dir: str | Path, system_ram_gb: int) 
     )
 
 
-def _catalog_fit_reason(model: dict[str, Any], gpu_info: Optional[GPUInfo], configured: bool) -> str:
+def _catalog_fit_reason(model: dict[str, Any], gpu_info: Optional[GPUInfo], configured: bool,
+                        system_ram_gb: int | None = None) -> str:
     runtime_profile = model.get("_runtime_profile") if isinstance(model.get("_runtime_profile"), dict) else None
     context_k = int(_effective_context_length(model, runtime_profile) / 1024) if _effective_context_length(model, runtime_profile) else 0
     required = _effective_required_memory_gb(model, runtime_profile)
@@ -1432,7 +1434,7 @@ def _catalog_fit_reason(model: dict[str, Any], gpu_info: Optional[GPUInfo], conf
         )
     if gpu_info:
         detected = round(gpu_info.memory_total_mb / 1024, 1)
-        usable = round(_usable_model_memory_gb(gpu_info), 1)
+        usable = round(_usable_model_memory_gb(gpu_info, system_ram_gb), 1)
         if usable < detected:
             basis = f"{usable}GB usable {gpu_info.gpu_backend.upper()} memory ({detected}GB detected)"
         else:
@@ -1514,8 +1516,9 @@ def select_pre_download_model(catalog: list[dict[str, Any]], gpu_info: Optional[
     return ranked[0] if ranked else None
 
 
-def _recommendation_alternative(model: dict[str, Any], gpu_info: Optional[GPUInfo]) -> dict[str, Any]:
-    runtime_profile = model.get("_runtime_profile") if isinstance(model.get("_runtime_profile"), dict) else _matching_runtime_profile(model, gpu_info)
+def _recommendation_alternative(model: dict[str, Any], gpu_info: Optional[GPUInfo],
+                                system_ram_gb: int | None = None) -> dict[str, Any]:
+    runtime_profile = model.get("_runtime_profile") if isinstance(model.get("_runtime_profile"), dict) else _matching_runtime_profile(model, gpu_info, system_ram_gb)
     context = _effective_context_length(model, runtime_profile)
     vram_required = float(model.get("vram_required_gb") or 0)
     selector_required = _effective_required_memory_gb(model, runtime_profile)
@@ -1529,8 +1532,8 @@ def _recommendation_alternative(model: dict[str, Any], gpu_info: Optional[GPUInf
         "contextLength": context,
         "specialty": model.get("specialty"),
         "runtimeProfile": runtime_profile.get("id") if runtime_profile else None,
-        "fitsVram": _fits_declared_vram(selector_required, _usable_model_memory_gb(gpu_info) if gpu_info else 4.0),
-        "reason": _catalog_fit_reason({**model, "_runtime_profile": runtime_profile} if runtime_profile else model, gpu_info, configured=False),
+        "fitsVram": _fits_declared_vram(selector_required, _usable_model_memory_gb(gpu_info, system_ram_gb) if gpu_info else 4.0),
+        "reason": _catalog_fit_reason({**model, "_runtime_profile": runtime_profile} if runtime_profile else model, gpu_info, configured=False, system_ram_gb=system_ram_gb),
     }
 
 
@@ -1654,6 +1657,7 @@ def build_models_payload(gpu_info: Optional[GPUInfo], loaded_model: Optional[str
         free_gb = max(vram_total - vram_used, 0.0)
         gpu_data = {
             "vramTotal": vram_total,
+            "modelMemoryBudgetGb": round(_usable_model_memory_gb(gpu_info, install_ram_gb or None), 2),
             "vramUsed": vram_used,
             "vramFree": round(free_gb, 1),
             "name": gpu_info.name,
@@ -1737,7 +1741,7 @@ def build_models_payload(gpu_info: Optional[GPUInfo], loaded_model: Optional[str
             {**memory_model, "context_length": actual_context}, runtime_profile
         )
         if gpu_info:
-            capacity_gb = _usable_model_memory_gb(gpu_info)
+            capacity_gb = _usable_model_memory_gb(gpu_info, install_ram_gb or None)
             fits_total = bool((not profile_ram_ineligible and _fits_declared_vram(selector_required, capacity_gb)) or is_loaded)
             fits_current = bool((not profile_ram_ineligible and _fits_declared_vram(selector_required, free_gb)) or is_loaded)
         else:
@@ -1764,7 +1768,7 @@ def build_models_payload(gpu_info: Optional[GPUInfo], loaded_model: Optional[str
                 **recommendation,
                 "source": recommendation["source"] if is_configured else "catalog_fit_pre_download",
                 "confidence": recommendation["confidence"] if is_configured else "medium",
-                "reason": reason or _catalog_fit_reason({**model, "_runtime_profile": runtime_profile}, gpu_info, is_configured),
+                "reason": reason or _catalog_fit_reason({**model, "_runtime_profile": runtime_profile}, gpu_info, is_configured, install_ram_gb or None),
                 "model": model.get("llm_model_name") or model["id"],
                 "gguf": model.get("gguf"),
                 "contextLength": actual_context,
@@ -1783,7 +1787,7 @@ def build_models_payload(gpu_info: Optional[GPUInfo], loaded_model: Optional[str
             "estimatedRequired": selector_required,
             "contextLength": actual_context,
             "maxContextLength": max_context_length or None,
-            "contextOptions": _context_options(context_model, runtime_profile, gpu_info),
+            "contextOptions": _context_options(context_model, runtime_profile, gpu_info, install_ram_gb or None),
             "specialty": model["specialty"],
             "description": model["description"],
             "tokensPerSecEstimate": model.get("tokens_per_sec_estimate"),
@@ -1895,7 +1899,7 @@ def build_models_payload(gpu_info: Optional[GPUInfo], loaded_model: Optional[str
         "pixelMinimumContext": PIXEL_MIN_CONTEXT,
         "recommendationPolicy": recommendation.get("selectionPolicy") or _DEFAULT_RECOMMENDATION_POLICY,
         "recommendationAlternatives": [
-            _recommendation_alternative(model, gpu_info)
+            _recommendation_alternative(model, gpu_info, install_ram_gb or None)
             for model in ranked_recommendations
         ],
     }
