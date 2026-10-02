@@ -155,7 +155,7 @@ def test_shell_preflight_prompt_policy(noninteractive, dryrun, prompt):
     block = source[start:stop].replace('/usr/bin/python3', 'fixture_python')
     script = '''
 set -eu
-LIB_DIR=/fixture; INSTALL_DIR=/fixture/ods
+LIB_DIR=/fixture; INSTALL_DIR=/fixture/ods; SOURCE_ROOT=/fixture
 fixture_python() { printf '%s\n' "$@"; }
 ''' + f'NON_INTERACTIVE={noninteractive}; DRY_RUN={dryrun}\n' + block
     result = subprocess.run(['bash'], input=script, text=True, capture_output=True, check=True)
