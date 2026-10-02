@@ -80,7 +80,10 @@ function Reset-Scenario {
     $script:linuxHome = '/home/user'
     $script:amdBinding = @()
     $script:installInvoked = $false
+    $script:amdInitialized = $false
     $script:postflightCalls = 0
+    $script:postflightRouteChange = $false
+    $script:postflightDigestChange = $false
     $script:checkLockOnInstall = $false
     $script:mutexWasHeld = $false
     $script:distroListFailure = $null
@@ -112,15 +115,21 @@ function New-ODSPortalLinuxAccount([string]$Distro, $Account) {
 function Get-ODSPortalWindowsNvidiaDriver { return $script:nvidiaDriver }
 function Get-ODSPortalAmdPlan([string]$SourceRoot) { $script:calls.Add('amd-plan'); return $script:amdPlan }
 function Get-ODSPortalControlMutexName { return "ODS-Portal-Setup-Contract-Test-$PID" }
+function Get-ODSPortalManagedConfiguration($Request) {
+    $digest = if ($script:installInvoked -and $script:postflightDigestChange) { 'b' * 64 } else { 'a' * 64 }
+    return [pscustomobject]@{ PlanDigest=$digest }
+}
 function Get-ODSPortalRetainedLemonadeArguments([string]$Distro, [string]$InstallDir) {
-    if ($script:installInvoked -and $null -ne $script:amdPlan) {
-        $script:postflightCalls++
-        return @('--lemonade-model', 'fixture')
+    if ($script:amdInitialized -and $null -ne $script:amdPlan) {
+        if ($script:installInvoked) { $script:postflightCalls++ }
+        $model = if ($script:installInvoked -and $script:postflightRouteChange) { 'other' } else { 'fixture' }
+        return @('--lemonade-model', $model)
     }
     return $null
 }
 function Initialize-ODSPortalAmdLemonade($Plan, [string]$SourceRoot, [bool]$NonInteractive, [string]$WslDistro, [string]$WslInstallDir) {
     $script:calls.Add('amd-lemonade:' + $Plan.GpuName)
+    $script:amdInitialized = $true
     $script:amdBinding = @($WslDistro, $WslInstallDir)
     return $script:amdArgs
 }
@@ -342,6 +351,16 @@ try {
     $script:checkLockOnInstall = $true
     Check ((Invoke-ODSPortalSetup @{} 'unused') -eq 0) 'AMD host installs through Windows Lemonade'
     Check ($script:mutexWasHeld -and $script:postflightCalls -eq 1) 'AMD model lock spans Linux install and successful route recheck'
+    Reset-Scenario
+    $script:amdPlan = $fixturePlan; $script:amdArgs = $fixtureLemonadeArgs; $script:postflightRouteChange = $true
+    $message = ''
+    try { $null = Invoke-ODSPortalSetup @{} 'unused' } catch { $message = $_.Exception.Message }
+    Check ($message -match 'model route changed during Linux setup') 'postflight refuses a changed native model route'
+    Reset-Scenario
+    $script:amdPlan = $fixturePlan; $script:amdArgs = $fixtureLemonadeArgs; $script:postflightDigestChange = $true
+    $message = ''
+    try { $null = Invoke-ODSPortalSetup @{} 'unused' } catch { $message = $_.Exception.Message }
+    Check ($message -match 'model route changed during Linux setup') 'postflight refuses a changed private plan digest'
     Check (($script:capturedArguments -join ' ') -match '--pixel --no-hermes --no-openclaw --lemonade-url http://localhost:8080 --lemonade-model extra\.Qwen3\.5-9B-Q4_K_M\.gguf --lemonade-gpu-name AMD Radeon RX 9070 XT --lemonade-gpu-vram-mb 16304 --tier 2$') 'AMD host passes the Lemonade route and GPU tier to Linux'
     Check ($script:calls.IndexOf('amd-lemonade:AMD Radeon RX 9070 XT') -lt $script:calls.IndexOf('install:Ubuntu-24.04')) 'Lemonade is ready before the Linux installer starts'
     Check (($script:amdBinding -join '|') -ceq 'Ubuntu-24.04|/home/user/ods' -and $script:capturedRoot -ceq '/home/user/ods') 'default AMD binding and delegated install use the same explicit Linux path'

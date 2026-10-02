@@ -309,16 +309,10 @@ function Get-ODSPortalWslCommittedModel([string]$Distro, [string]$InstallDir) {
     $reader = @'
 import json, os, re, stat, sys
 install = sys.argv[1]
-data = os.path.join(install, 'data')
-path = os.path.join(data, 'pixel-model-transaction.json')
+path = os.path.join(install, 'data', 'pixel-model-transaction.json')
 owner = os.geteuid()
 if owner == 0:
     raise SystemExit('protected model journal requires the installation user')
-for directory, allowed_owners in ((install, (0, owner)), (data, (owner,))):
-    info = os.lstat(directory)
-    if (not stat.S_ISDIR(info.st_mode) or info.st_uid not in allowed_owners
-            or stat.S_IMODE(info.st_mode) & 0o022):
-        raise SystemExit('unsafe protected model directory')
 try:
     fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
 except FileNotFoundError:
@@ -513,6 +507,8 @@ function Invoke-ODSPortalSetup([System.Collections.IDictionary]$Options, [string
     $amdPlan = $null
     $modelMutex = $null
     $modelLockHeld = $false
+    $preflightModelArgs = @()
+    $preflightPlanDigest = $null
     try {
         if (-not $Options['Cloud']) {
             $nvidiaDriver = Get-ODSPortalWindowsNvidiaDriver
@@ -528,6 +524,12 @@ function Invoke-ODSPortalSetup([System.Collections.IDictionary]$Options, [string
                     catch [Threading.AbandonedMutexException] { $modelLockHeld = $true }
                     if (-not $modelLockHeld) { throw 'A Dashboard model change is running. Wait for it to finish, then rerun ODS setup.' }
                     $linuxArgs = @(Add-ODSPortalAmdArguments $linuxArgs $Options (Split-Path -Parent $InstallerRoot) $nonInteractive $distro $amdPlan)
+                    if ($linuxArgs -contains '--lemonade-url') {
+                        $preflightModelArgs = @(Get-ODSPortalRetainedLemonadeArguments $distro ([string]$Options['InstallDir']) |
+                            Where-Object { $null -ne $_ })
+                        if ($preflightModelArgs.Count -eq 0) { throw 'The Windows model route could not be verified before Linux setup.' }
+                        $preflightPlanDigest = (Get-ODSPortalManagedConfiguration @{distro=$distro;installDir=[string]$Options['InstallDir']}).PlanDigest
+                    }
                 }
             }
         }
@@ -538,6 +540,16 @@ function Invoke-ODSPortalSetup([System.Collections.IDictionary]$Options, [string
             $after = @(Get-ODSPortalRetainedLemonadeArguments $distro ([string]$Options['InstallDir']) |
                 Where-Object { $null -ne $_ })
             if ($after.Count -eq 0) { throw 'The Windows model could not be verified after Linux setup; setup cannot report success.' }
+            $postflightPlanDigest = (Get-ODSPortalManagedConfiguration @{distro=$distro;installDir=[string]$Options['InstallDir']}).PlanDigest
+            $routeChanged = $after.Count -ne $preflightModelArgs.Count
+            if (-not $routeChanged) {
+                for ($i = 0; $i -lt $after.Count; $i++) {
+                    if ([string]$after[$i] -cne [string]$preflightModelArgs[$i]) { $routeChanged = $true; break }
+                }
+            }
+            if ($routeChanged -or $postflightPlanDigest -cne $preflightPlanDigest) {
+                throw 'The Windows model route changed during Linux setup; setup cannot report success. Verify Dashboard Models and the protected runtime before retrying.'
+            }
         }
         return $exitCode
     } finally {

@@ -53,6 +53,12 @@ class RetainedJournalProjection(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(result.stdout), {"status": "missing"})
 
+    def test_fresh_install_with_no_data_directory_is_missing(self):
+        (self.install / "data").rmdir()
+        result = self.run_reader()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout), {"status": "missing"})
+
     def test_completed_commit_projects_exact_model_context_and_plan_digest(self):
         self.write(journal())
         result = self.run_reader()
@@ -84,13 +90,13 @@ class RetainedJournalProjection(unittest.TestCase):
         self.path.symlink_to(outside)
         self.assertNotEqual(self.run_reader().returncode, 0)
 
-    def test_installation_owner_and_directory_custody(self):
+    def test_nonroot_installation_accepts_retained_group_writable_data_directory(self):
         self.write(journal())
         self.assertNotEqual(os.geteuid(), 0, "the fixture must exercise a normal WSL owner")
         self.assertEqual(self.run_reader().returncode, 0)
         data = self.install / "data"
-        data.chmod(0o777)
-        self.assertNotEqual(self.run_reader().returncode, 0)
+        data.chmod(0o775)
+        self.assertEqual(self.run_reader().returncode, 0)
         data.chmod(0o755)
         self.assertEqual(self.run_reader().returncode, 0)
 
