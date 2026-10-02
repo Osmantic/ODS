@@ -74,7 +74,14 @@ if $INTERACTIVE && ! $DRY_RUN; then
         _phase03_prompt_bool ENABLE_WORKFLOWS "Enable n8n workflow automation?"
         _phase03_prompt_bool ENABLE_RAG "Enable Qdrant vector database (for RAG)?"
         # Explicit agent flags also take precedence over the Custom menu.
-        [[ "${HERMES_EXPLICIT:-false}" == true ]] || _phase03_prompt_bool ENABLE_HERMES "Enable Hermes Agent?"
+        if [[ "${HERMES_EXPLICIT:-false}" != true ]]; then
+            _phase03_hermes_before="$ENABLE_HERMES"
+            _phase03_prompt_bool ENABLE_HERMES "Enable Hermes Agent?"
+            if [[ "$ENABLE_HERMES" != "$_phase03_hermes_before" ]]; then
+                ENABLE_HERMES_PROXY="$ENABLE_HERMES"
+            fi
+            unset _phase03_hermes_before
+        fi
         [[ "${OPENCLAW_EXPLICIT:-false}" == true ]] || _phase03_prompt_bool ENABLE_OPENCLAW "Enable OpenClaw AI agent framework (DEPRECATED - Hermes replaces it)?"
         _phase03_prompt_bool ENABLE_OPENCODE "Enable the OpenCode browser IDE extension?"
         [[ "${DEVTOOLS_EXPLICIT:-false}" == true ]] || _phase03_prompt_bool ENABLE_DEVTOOLS "Install Claude Code and Codex CLI on this host?"
@@ -420,6 +427,11 @@ _ods_apply_deferred_feature_state() {
     fi
 }
 
+if [[ "${ENABLE_HERMES_PROXY:-false}" == true && "${ENABLE_HERMES:-false}" != true ]]; then
+    error "Hermes proxy requires Hermes; select Hermes or disable its proxy first."
+    return 1 2>/dev/null || exit 1
+fi
+
 if ! $DRY_RUN; then
     ENABLE_EMBEDDINGS="${ENABLE_EMBEDDINGS:-${ENABLE_RAG:-false}}"
     ENABLE_QDRANT="${ENABLE_QDRANT:-${ENABLE_RAG:-false}}"
@@ -517,12 +529,11 @@ if ! $DRY_RUN; then
     # service when an upstream image cannot run on this machine.
     _sync_extension_compose "${ENABLE_QDRANT:-${ENABLE_RAG:-false}}" qdrant "Qdrant" "RAG not enabled or unsupported on this host" || return 1
     _sync_extension_compose "${ENABLE_EMBEDDINGS:-${ENABLE_RAG:-false}}" embeddings "Embeddings (TEI)" "RAG not enabled or unsupported on this host" || return 1
-    # Hermes is the default agent as of 2026-05-12. hermes-proxy is the
-    # auth gate in front of it (magic-link cookie verification) and is
-    # not separately toggleable — without the proxy, Hermes's dashboard
-    # is exposed on the LAN with no auth. Same flag drives both.
+    # Hermes serves ODS Talk internally. Its optional proxy is a separate
+    # Library selection for the LAN-facing Hermes dashboard. Preserve that
+    # choice on installer reruns instead of collapsing it into Hermes state.
     _sync_extension_compose "${ENABLE_HERMES:-}"     hermes        "Hermes Agent"  "Hermes agent not enabled" || return 1
-    _sync_extension_compose "${ENABLE_HERMES:-}"     hermes-proxy  "Hermes proxy"  "Hermes agent not enabled" || return 1
+    _sync_extension_compose "${ENABLE_HERMES_PROXY:-${ENABLE_HERMES:-false}}" hermes-proxy "Hermes proxy" "Hermes proxy not enabled" || return 1
     _sync_extension_compose "${ENABLE_PIXEL_RUNTIME:-false}" pixel-edge "Pixel edge" "Pixel host not qualified" || return 1
     _sync_extension_compose "${ENABLE_PIXEL_RUNTIME:-false}" pixel-model-relay "Pixel model relay" "Pixel host not qualified" || return 1
     _sync_extension_compose "${ENABLE_OPENCLAW:-}"   openclaw   "OpenClaw"      "agent framework not enabled" || return 1

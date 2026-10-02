@@ -9,6 +9,8 @@ run_case() {
     local selected="$1" source_state="$2" comfyui_requested="${3:-false}"
     local gpu_backend="${4:-cpu}" comfyui_expected="${5:-false}"
     local brave_requested="${6:-false}" brave_key_mode="${7:-none}"
+    local hermes_selected="${8:-false}" proxy_selected="${9:-false}"
+    local expect_invalid="${10:-false}"
     local test_root source_root install_root
     test_root="$(mktemp -d)"
     source_root="$test_root/source"
@@ -20,7 +22,11 @@ run_case() {
         "$source_root/extensions/services/comfyui" \
         "$install_root/extensions/services/comfyui" \
         "$source_root/extensions/services/brave-search" \
-        "$install_root/extensions/services/brave-search"
+        "$install_root/extensions/services/brave-search" \
+        "$source_root/extensions/services/hermes" \
+        "$install_root/extensions/services/hermes" \
+        "$source_root/extensions/services/hermes-proxy" \
+        "$install_root/extensions/services/hermes-proxy"
     printf 'services: {}\n' \
         >"$source_root/extensions/services/openclaw/compose.yaml${source_state}"
 
@@ -36,6 +42,21 @@ run_case() {
     printf 'services: {}\n' >"$install_root/extensions/services/comfyui/compose.yaml"
     printf 'services: {}\n' >"$source_root/extensions/services/brave-search/compose.yaml"
     printf 'services: {}\n' >"$install_root/extensions/services/brave-search/compose.yaml"
+    printf 'services: {}\n' >"$source_root/extensions/services/hermes/compose.yaml"
+    printf 'services: {}\n' >"$source_root/extensions/services/hermes-proxy/compose.yaml"
+    if [[ "$hermes_selected" == true ]]; then
+        printf 'services: {}\n' >"$install_root/extensions/services/hermes/compose.yaml"
+    else
+        printf 'services: {}\n' >"$install_root/extensions/services/hermes/compose.yaml.disabled"
+    fi
+    if [[ "$proxy_selected" == true ]]; then
+        printf 'services: {}\n' >"$install_root/extensions/services/hermes-proxy/compose.yaml"
+    else
+        printf 'services: {}\n' >"$install_root/extensions/services/hermes-proxy/compose.yaml.disabled"
+    fi
+    if [[ "$hermes_selected" == true || "$proxy_selected" == true ]]; then
+        printf 'ODS_MODE=local\n' >"$install_root/.env"
+    fi
     if [[ "$brave_key_mode" == file || "$brave_key_mode" == empty-override ]]; then
         printf 'BRAVE_SEARCH_API_KEY="fixture-value"\n' >"$install_root/.env"
     fi
@@ -53,7 +74,6 @@ run_case() {
         ENABLE_VOICE=false
         ENABLE_WORKFLOWS=false
         ENABLE_RAG=false
-        ENABLE_HERMES=false
         ENABLE_OPENCLAW="$selected"
         ENABLE_OPENCODE=false
         ENABLE_COMFYUI="$comfyui_requested"
@@ -76,12 +96,15 @@ run_case() {
         HOST_PAGE_SIZE=4096
         SCRIPT_DIR="$source_root"
         INSTALL_DIR="$install_root"
+        ENABLE_HERMES="$(ods_installed_service_default "$INSTALL_DIR" hermes false)"
+        ENABLE_HERMES_PROXY="$(ods_installed_service_default "$INSTALL_DIR" hermes-proxy "$ENABLE_HERMES")"
         MAX_CONTEXT=4096
         LLM_MODEL_SIZE_MB=0
 
         ods_progress() { :; }
         ai_warn() { printf '%s\n' "$1" >"$test_root/warning"; }
         log() { :; }
+        error() { printf '%s\n' "$1" >"$test_root/error"; }
         warn() { :; }
         success() { :; }
         chapter() { :; }
@@ -94,10 +117,24 @@ run_case() {
         source "$ROOT_DIR/installers/lib/external-services.sh"
         # shellcheck source=/dev/null
         source "$(dirname "$FEATURES_PHASE")/../lib/installed-feature-state.sh"
+        if [[ "$expect_invalid" == true ]]; then
+            if source "$FEATURES_PHASE" >/dev/null; then
+                exit 31
+            fi
+            exit 0
+        fi
         source "$FEATURES_PHASE" >/dev/null
         printf '%s\n' "$ENABLE_COMFYUI" >"$test_root/comfyui-selection"
         printf '%s\n' "$ENABLE_BRAVE_SEARCH" >"$test_root/brave-selection"
     )
+
+    if [[ "$expect_invalid" == true ]]; then
+        grep -Fq 'Hermes proxy requires Hermes' "$test_root/error"
+        test -f "$source_root/extensions/services/hermes/compose.yaml"
+        test -f "$install_root/extensions/services/hermes/compose.yaml.disabled"
+        test -f "$install_root/extensions/services/hermes-proxy/compose.yaml"
+        return
+    fi
 
     local expected_suffix unexpected_suffix brave_expected=false
     if [[ "$selected" == "true" ]]; then
@@ -129,6 +166,17 @@ run_case() {
             test ! -e "$root/extensions/services/brave-search/compose.yaml"
             test -f "$root/extensions/services/brave-search/compose.yaml.disabled"
         fi
+        for service in hermes hermes-proxy; do
+            local hermes_expected="$hermes_selected"
+            [[ "$service" == hermes-proxy ]] && hermes_expected="$proxy_selected"
+            if [[ "$hermes_expected" == true ]]; then
+                test -f "$root/extensions/services/$service/compose.yaml"
+                test ! -e "$root/extensions/services/$service/compose.yaml.disabled"
+            else
+                test ! -e "$root/extensions/services/$service/compose.yaml"
+                test -f "$root/extensions/services/$service/compose.yaml.disabled"
+            fi
+        done
     done
     [[ "$(cat "$test_root/comfyui-selection")" == "$comfyui_expected" ]]
     [[ "$(cat "$test_root/brave-selection")" == "$brave_expected" ]]
@@ -146,5 +194,8 @@ run_case false "" false cpu false true none
 run_case false "" false cpu false true env
 run_case false "" false cpu false true file
 run_case false "" false cpu false true empty-override
+run_case false "" false cpu false false none true false
+run_case false "" false cpu false false none true true
+run_case false "" false cpu false false none false true true
 
 echo "PASS: feature selection reconciles source and installed compose states"

@@ -102,10 +102,14 @@ ENABLE_WORKFLOWS=false
 ENABLE_RAG=false
 ENABLE_RECOMMENDED=true
 RECOMMENDED_EXPLICIT=false
-# Hermes Agent is the new default agent as of 2026-05-12. OpenClaw is
+# Hermes is an optional agent alongside the default native Pixel. OpenClaw is
 # deprecated and gates behind --openclaw for the deprecation release.
-ENABLE_HERMES=true
+ENABLE_HERMES=false
+ENABLE_HERMES_PROXY=false
 HERMES_EXPLICIT=false
+HERMES_EXPLICIT_VALUE=""
+HERMES_RETAINED=""
+HERMES_PROXY_RETAINED=""
 ENABLE_OPENCLAW=false
 ENABLE_OPENCODE=false
 OPENCODE_ENABLE_EXPLICIT=false
@@ -150,8 +154,8 @@ while [[ $# -gt 0 ]]; do
         --rag)           ENABLE_RAG=true; shift ;;
         --recommended)   ENABLE_RECOMMENDED=true; RECOMMENDED_EXPLICIT=true; shift ;;
         --no-recommended) ENABLE_RECOMMENDED=false; RECOMMENDED_EXPLICIT=true; shift ;;
-        --hermes)        ENABLE_HERMES=true; HERMES_EXPLICIT=true; shift ;;
-        --no-hermes)     ENABLE_HERMES=false; HERMES_EXPLICIT=true; shift ;;
+        --hermes)        ENABLE_HERMES=true; ENABLE_HERMES_PROXY=true; HERMES_EXPLICIT=true; HERMES_EXPLICIT_VALUE=true; shift ;;
+        --no-hermes)     ENABLE_HERMES=false; ENABLE_HERMES_PROXY=false; HERMES_EXPLICIT=true; HERMES_EXPLICIT_VALUE=false; shift ;;
         --openclaw)      ENABLE_OPENCLAW=true; OPENCLAW_EXPLICIT=true; shift ;;
         --no-openclaw)   ENABLE_OPENCLAW=false; OPENCLAW_EXPLICIT=true; shift ;;
         --opencode)     ENABLE_OPENCODE=true; OPENCODE_ENABLE_EXPLICIT=true; shift ;;
@@ -187,6 +191,7 @@ if $ALL_FEATURES; then
     # --openclaw during the deprecation release; will be removed entirely
     # in the next release.
     ENABLE_HERMES=true
+    ENABLE_HERMES_PROXY=true
     $OPENCLAW_EXPLICIT || ENABLE_OPENCLAW=false
     $OPENCODE_DISABLE_EXPLICIT || ENABLE_OPENCODE=true
     ENABLE_APE=true
@@ -322,7 +327,7 @@ _macos_sync_builtin_compose_states() {
     _macos_set_builtin_compose_state qdrant "$ENABLE_RAG"
     _macos_set_builtin_compose_state embeddings "$ENABLE_RAG"
     _macos_set_builtin_compose_state hermes "$ENABLE_HERMES"
-    _macos_set_builtin_compose_state hermes-proxy "$ENABLE_HERMES"
+    _macos_set_builtin_compose_state hermes-proxy "${ENABLE_HERMES_PROXY:-$ENABLE_HERMES}"
     _macos_set_builtin_compose_state openclaw "$ENABLE_OPENCLAW"
     _macos_set_builtin_compose_state ape "$ENABLE_APE"
     _macos_set_builtin_compose_state perplexica "$ENABLE_PERPLEXICA"
@@ -384,6 +389,62 @@ _macos_resolve_webui_selection() {
     esac
     if ! $WEBUI_ENABLE_EXPLICIT && ! $WEBUI_DISABLE_EXPLICIT && ! $ALL_FEATURES; then
         ENABLE_OPEN_WEBUI="$WEBUI_RETAINED"
+    fi
+}
+
+_macos_retained_builtin_state() {
+    local service_id="$1" fallback="$2"
+    local services="${INSTALL_DIR}/extensions/services"
+    local service_dir="${services}/${service_id}"
+    local active="${service_dir}/compose.yaml"
+    local disabled="${active}.disabled"
+    if [[ -L "${INSTALL_DIR}/extensions" || -L "$services" || -L "$service_dir" \
+        || -L "$active" || -L "$disabled" ]]; then
+        ai_err "Unsafe retained ${service_id} selection path"
+        return 1
+    fi
+    if [[ -f "$active" ]]; then
+        printf '%s\n' true
+    elif [[ -f "$disabled" ]]; then
+        printf '%s\n' false
+    else
+        printf '%s\n' "$fallback"
+    fi
+}
+
+_macos_resolve_hermes_selection() {
+    if [[ ! -f "${INSTALL_DIR}/.env" ]]; then
+        if ! $HERMES_EXPLICIT && ! $ALL_FEATURES; then
+            ENABLE_HERMES=false
+            ENABLE_HERMES_PROXY=false
+        fi
+        return 0
+    fi
+    HERMES_RETAINED="$(_macos_retained_builtin_state hermes false)" || return 1
+    HERMES_PROXY_RETAINED="$(_macos_retained_builtin_state hermes-proxy "$HERMES_RETAINED")" || return 1
+    if ! $HERMES_EXPLICIT && ! $ALL_FEATURES; then
+        ENABLE_HERMES="$HERMES_RETAINED"
+        ENABLE_HERMES_PROXY="$HERMES_PROXY_RETAINED"
+    fi
+}
+
+_macos_validate_hermes_selection() {
+    if $ENABLE_HERMES_PROXY && ! $ENABLE_HERMES; then
+        ai_err "Hermes proxy requires Hermes; disable its proxy or enable Hermes first."
+        return 1
+    fi
+}
+
+_macos_apply_custom_hermes_answer() {
+    local answer="$1" previous="$ENABLE_HERMES"
+    if [[ "$answer" =~ ^[nN] ]]; then
+        ENABLE_HERMES=false
+    else
+        ENABLE_HERMES=true
+    fi
+    # A separate Library choice for the proxy survives when Hermes stays on.
+    if [[ "$ENABLE_HERMES" != "$previous" ]]; then
+        ENABLE_HERMES_PROXY="$ENABLE_HERMES"
     fi
 }
 
@@ -1262,6 +1323,8 @@ _ensure_macos_pyyaml() {
 INSTALL_DIR="${ODS_INSTALL_DIR}"
 _macos_apply_fresh_feature_defaults
 _macos_resolve_webui_selection || exit 1
+_macos_resolve_hermes_selection || exit 1
+_macos_validate_hermes_selection || exit 1
 if ! $OPENCODE_ENABLE_EXPLICIT && ! $OPENCODE_DISABLE_EXPLICIT && ! $ALL_FEATURES; then
     if ods_macos_opencode_retained "$OPENCODE_PLIST" "$OPENCODE_PLIST_LABEL" \
         "$OPENCODE_BUN_TMPDIR" "$(id -u)"; then
@@ -1304,7 +1367,6 @@ if $ENABLE_PIXEL && ! $PREFLIGHT_ONLY; then
     fi
     /usr/bin/python3 "${LIB_DIR}/pixel-native-install.py" "${_pixel_install_args[@]}" \
         --preflight-only || exit 1
-    ENABLE_HERMES=false
     ENABLE_OPENCLAW=false
     OPENCLAW_EXPLICIT=true
 fi
@@ -1699,7 +1761,7 @@ if ! $NON_INTERACTIVE && ! $ALL_FEATURES && ! $DRY_RUN; then
     case "${feature_choice:-$_macos_feature_default}" in
         1)
             ENABLE_VOICE=true; ENABLE_WORKFLOWS=true
-            ENABLE_RAG=true; ENABLE_HERMES=true
+            ENABLE_RAG=true; ENABLE_HERMES=true; ENABLE_HERMES_PROXY=true
             ENABLE_RECOMMENDED=true
             ENABLE_OPENCLAW=false  # deprecated; Hermes is the default
             if [[ -n "$feature_choice" ]] && ! $OPENCODE_DISABLE_EXPLICIT; then ENABLE_OPENCODE=true; fi
@@ -1712,7 +1774,7 @@ if ! $NON_INTERACTIVE && ! $ALL_FEATURES && ! $DRY_RUN; then
         2)
             ENABLE_VOICE=false; ENABLE_WORKFLOWS=false
             ENABLE_RAG=false; ENABLE_RECOMMENDED=false
-            ENABLE_HERMES=false
+            ENABLE_HERMES=false; ENABLE_HERMES_PROXY=false
             ENABLE_OPENCLAW=false
             if ! $OPENCODE_ENABLE_EXPLICIT; then
                 ENABLE_OPENCODE=false
@@ -1733,8 +1795,10 @@ if ! $NON_INTERACTIVE && ! $ALL_FEATURES && ! $DRY_RUN; then
             [[ "$yn" =~ ^[yY] ]] && ENABLE_RAG=true
             read -r -p "  Enable extra support (SearXNG + Token Spy)? [Y/n] " yn < /dev/tty
             [[ "$yn" =~ ^[nN] ]] && ENABLE_RECOMMENDED=false || ENABLE_RECOMMENDED=true
-            read -r -p "  Enable Hermes Agent (default AI agent)? [Y/n] " yn < /dev/tty
-            [[ "$yn" =~ ^[nN] ]] && ENABLE_HERMES=false || ENABLE_HERMES=true
+            if ! $HERMES_EXPLICIT; then
+                read -r -p "  Enable Hermes Agent (optional)? [Y/n] " yn < /dev/tty
+                _macos_apply_custom_hermes_answer "$yn"
+            fi
             read -r -p "  Enable OpenClaw (DEPRECATED — Hermes replaces it)? [y/N] " yn < /dev/tty
             [[ "$yn" =~ ^[yY] ]] && ENABLE_OPENCLAW=true
             if ! $OPENCODE_ENABLE_EXPLICIT && ! $OPENCODE_DISABLE_EXPLICIT; then
@@ -1757,7 +1821,7 @@ if ! $NON_INTERACTIVE && ! $ALL_FEATURES && ! $DRY_RUN; then
             ;;
         *)
             ENABLE_VOICE=true; ENABLE_WORKFLOWS=true
-            ENABLE_RAG=true; ENABLE_HERMES=true
+            ENABLE_RAG=true; ENABLE_HERMES=true; ENABLE_HERMES_PROXY=true
             ENABLE_RECOMMENDED=true
             ENABLE_OPENCLAW=false  # deprecated; Hermes is the default
             $OPENCODE_DISABLE_EXPLICIT || ENABLE_OPENCODE=true
@@ -1785,10 +1849,14 @@ fi
 $OPENCODE_DISABLE_EXPLICIT && ENABLE_OPENCODE=false
 $OPENCODE_ENABLE_EXPLICIT && ENABLE_OPENCODE=true
 
-if $ENABLE_PIXEL; then
-    ENABLE_HERMES=false
-    ENABLE_OPENCLAW=false
+if [[ -z "${feature_choice:-}" && -n "$HERMES_RETAINED" ]] \
+    && ! $HERMES_EXPLICIT && ! $ALL_FEATURES; then
+    ENABLE_HERMES="$HERMES_RETAINED"
+    ENABLE_HERMES_PROXY="$HERMES_PROXY_RETAINED"
 fi
+$HERMES_EXPLICIT && ENABLE_HERMES="$HERMES_EXPLICIT_VALUE" && ENABLE_HERMES_PROXY="$HERMES_EXPLICIT_VALUE"
+if $ENABLE_PIXEL; then ENABLE_OPENCLAW=false; fi
+_macos_validate_hermes_selection || exit 1
 if ! $ENABLE_HERMES && ! $ENABLE_OPENCLAW; then
     ENABLE_APE=false
 fi
@@ -2656,7 +2724,8 @@ else
                 whisper|tts)   $ENABLE_VOICE || SKIP=true ;;
                 n8n)           $ENABLE_WORKFLOWS || SKIP=true ;;
                 qdrant|embeddings) $ENABLE_RAG || SKIP=true ;;
-                hermes|hermes-proxy) $ENABLE_HERMES || SKIP=true ;;
+                hermes)        $ENABLE_HERMES || SKIP=true ;;
+                hermes-proxy)  $ENABLE_HERMES_PROXY || SKIP=true ;;
                 openclaw)      $ENABLE_OPENCLAW || SKIP=true ;;
                 ape)           $ENABLE_APE || SKIP=true ;;
                 perplexica)    $ENABLE_PERPLEXICA || SKIP=true ;;
