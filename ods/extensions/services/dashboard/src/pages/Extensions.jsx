@@ -93,7 +93,7 @@ const STATUS_DESCRIPTIONS = {
   stopped:       'Enabled but container is not running',
   unhealthy:     'Container is running but health check is failing \u2014 check logs',
   not_installed: 'Available to install from the extension library',
-  incompatible:  'Requires a GPU backend not available on this system',
+  incompatible:  'Current runtime cannot start this service',
   installing:    'Being downloaded and set up',
   setting_up:    'Running post-install configuration hooks',
   error:         'Installation or startup failed \u2014 click for details',
@@ -575,7 +575,12 @@ export default function Extensions({ compact = false }) {
   }
 
   const allExtensions = catalog?.extensions || []
-  const extensions = allExtensions.filter(ext => !['incompatible', 'unsupported'].includes(ext.status) && ext.compatible !== false)
+  const extensions = allExtensions.filter(ext => {
+    // A selected built-in remains visible so the owner can disable it even
+    // after the host runtime or GPU overlay becomes incompatible.
+    const selectedBuiltin = ext.source === 'core' && ext.library_manageable === true && ext.library_selected === true
+    return selectedBuiltin || (!['incompatible', 'unsupported'].includes(ext.status) && ext.compatible !== false)
+  })
   const webuiCanAdd = webuiSelection?.supported === true && webuiSelection.enabled === false
   const availableForAdd = ext => ext.status === 'not_installed'
     || (ext.id === 'open-webui' && webuiCanAdd)
@@ -846,7 +851,9 @@ export default function Extensions({ compact = false }) {
 function StatusBadge({ status, statusStyle, ext, gpuBackend, onConsole }) {
   let tooltip = STATUS_DESCRIPTIONS[status] || ''
   if (status === 'incompatible') {
-    tooltip += ` \u2014 requires ${ext.gpu_backends?.join(' or ') || 'specific GPU'}, your system: ${gpuBackend || 'unknown'}`
+    tooltip += ext.library_selected === true
+      ? ' \u2014 disable its saved selection or restore a compatible runtime'
+      : ` \u2014 your system: ${gpuBackend || 'unknown'}`
   }
 
   const badge = (status === 'installing' || status === 'setting_up') ? (
@@ -919,7 +926,8 @@ function ExtensionCard({ ext, gpuBackend, agentAvailable, onDetails, onConsole, 
   const isUnhealthy = status === 'unhealthy'
   const isCliInstalled = status === 'cli_installed'
   const isToggleable = (isUserExt || (isManagedBuiltin && ext.library_selected === true))
-    && (status === 'enabled' || status === 'cli_installed' || status === 'disabled' || status === 'error' || status === 'stopped' || status === 'unhealthy')
+    && (status === 'enabled' || status === 'cli_installed' || status === 'disabled' || status === 'error' || status === 'stopped' || status === 'unhealthy'
+      || (isManagedBuiltin && status === 'incompatible'))
   const showManagedAdd = isManagedBuiltin && ext.library_selected === false && status === 'disabled'
   const showManagedRetry = isManagedBuiltin && (isError
     || (ext.library_selected === true && (isStopped || isUnhealthy)))

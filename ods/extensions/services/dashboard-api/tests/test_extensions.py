@@ -106,6 +106,36 @@ class TestExtensionsCatalog:
         else:
             assert "library_selected" not in row
 
+    @pytest.mark.parametrize("service_id", ["comfyui", "qdrant", "embeddings"])
+    def test_selected_builtin_stays_manageable_when_runtime_becomes_incompatible(
+            self, test_client, monkeypatch, tmp_path, service_id):
+        from routers import extensions as ext_module
+
+        catalog = [{**_make_catalog_ext(service_id), "catalog_source": "builtin"}]
+        _patch_extensions_config(monkeypatch, catalog, tmp_path=tmp_path)
+        builtin = tmp_path / "builtin" / service_id
+        builtin.mkdir(parents=True)
+        (builtin / "compose.yaml").write_text("services: {}\n", encoding="utf-8")
+        monkeypatch.setattr(ext_module, "EXTENSIONS_DIR", builtin.parent)
+        monkeypatch.setattr(ext_module, "USER_EXTENSIONS_DIR", tmp_path / "user")
+        monkeypatch.setattr(ext_module, "_builtin_runtime_compatible", lambda _: False)
+
+        with patch("helpers.get_cached_services", return_value=[]):
+            catalog_response = test_client.get(
+                "/api/extensions/catalog", headers=test_client.auth_headers)
+            detail_response = test_client.get(
+                f"/api/extensions/{service_id}", headers=test_client.auth_headers)
+        assert catalog_response.status_code == 200
+        row = next(item for item in catalog_response.json()["extensions"]
+                   if item["id"] == service_id)
+        assert row["status"] == "incompatible"
+        assert row["library_manageable"] is True
+        assert row["library_selected"] is True
+        assert detail_response.status_code == 200
+        detail = detail_response.json()
+        assert detail["library_manageable"] is True
+        assert detail["library_selected"] is True
+
     @pytest.mark.parametrize("gpu_backend", ["cpu", "apple", "nvidia"])
     def test_comfyui_enable_refuses_missing_gpu_overlay(
             self, monkeypatch, tmp_path, gpu_backend):
@@ -1948,6 +1978,30 @@ class TestDisableExtension:
         select.assert_called_once_with("disable", ["my-ext"])
         assert (ext_dir / "compose.yaml.disabled").exists()
         assert not (ext_dir / "compose.yaml").exists()
+
+    def test_incompatible_selected_builtin_disables_and_retains_data(
+            self, test_client, monkeypatch, tmp_path):
+        builtin_root = tmp_path / "builtin"
+        ext_dir = builtin_root / "qdrant"
+        ext_dir.mkdir(parents=True)
+        (ext_dir / "compose.yaml").write_text(_SAFE_COMPOSE)
+        retained = tmp_path / "data" / "qdrant" / "collection.snapshot"
+        retained.parent.mkdir(parents=True)
+        retained.write_bytes(b"retained vectors")
+        _patch_mutation_config(monkeypatch, tmp_path)
+        monkeypatch.setattr("routers.extensions.EXTENSIONS_DIR", builtin_root)
+        monkeypatch.setattr("routers.extensions._qdrant_runtime_compatible", lambda: False)
+
+        resp = test_client.post(
+            "/api/extensions/qdrant/disable?include_data_info=false",
+            headers=test_client.auth_headers,
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["action"] == "disabled"
+        assert (ext_dir / "compose.yaml.disabled").is_file()
+        assert not (ext_dir / "compose.yaml").exists()
+        assert retained.read_bytes() == b"retained vectors"
 
     def test_disable_unlinks_progress_file(self, test_client, monkeypatch, tmp_path):
         """Disable removes the stale progress file so status reflects reality."""

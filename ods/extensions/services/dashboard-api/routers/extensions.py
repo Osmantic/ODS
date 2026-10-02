@@ -414,15 +414,19 @@ def _embeddings_runtime_compatible() -> bool:
     )
 
 
+def _builtin_runtime_compatible(service_id: str) -> bool:
+    if service_id == "comfyui":
+        return _comfyui_overlay_available()
+    if service_id == "qdrant":
+        return _qdrant_runtime_compatible()
+    if service_id == "embeddings":
+        return _embeddings_runtime_compatible()
+    return True
+
+
 def _qualified_builtin_selection(service_id: str) -> dict:
-    """Expose Add controls only for individually qualified built-in services."""
+    """Expose Add only when qualified; retain Disable for selected services."""
     if service_id not in LIBRARY_MANAGEABLE_BUILTINS or service_id in ALWAYS_ON_SERVICES:
-        return {}
-    if service_id == "comfyui" and not _comfyui_overlay_available():
-        return {}
-    if service_id == "qdrant" and not _qdrant_runtime_compatible():
-        return {}
-    if service_id == "embeddings" and not _embeddings_runtime_compatible():
         return {}
     directory = EXTENSIONS_DIR / service_id
     if directory.is_symlink() or not directory.is_dir():
@@ -439,6 +443,8 @@ def _qualified_builtin_selection(service_id: str) -> dict:
     except OSError:
         return {}
     if states.count(True) != 1:
+        return {}
+    if not states[0] and not _builtin_runtime_compatible(service_id):
         return {}
     return {"library_manageable": True, "library_selected": states[0]}
 
@@ -508,13 +514,12 @@ def _compute_extension_status(ext: dict, services_by_id: dict) -> str:
     ext_id = ext["id"]
     if ext_id == "opencode" and ext_id in SERVICES:
         return _opencode_extension_status(services_by_id.get(ext_id))
-    if (ext_id == "qdrant" and ext.get("catalog_source") == "builtin"
-            and not (USER_EXTENSIONS_DIR / ext_id).is_dir()
-            and not _qdrant_runtime_compatible()):
-        return "incompatible"
-    if (ext_id == "embeddings" and ext.get("catalog_source") == "builtin"
-            and not (USER_EXTENSIONS_DIR / ext_id).is_dir()
-            and not _embeddings_runtime_compatible()):
+    # A user directory shadows the built-in. Keep an active built-in marker
+    # visible even when the current runtime can no longer start its service;
+    # the owner still needs a safe Disable path that preserves its data.
+    builtin = ext.get("catalog_source") == "builtin" and not (USER_EXTENSIONS_DIR / ext_id).is_dir()
+    selection = _qualified_builtin_selection(ext_id) if builtin else {}
+    if builtin and not _builtin_runtime_compatible(ext_id):
         return "incompatible"
     one_shot = _is_one_shot_extension(ext)
 
@@ -556,14 +561,6 @@ def _compute_extension_status(ext: dict, services_by_id: dict) -> str:
     # activated this optional fragment. Use the current selection plus the
     # polled health result so Add/Retry/Disable remain truthful without an API
     # restart. Error/install progress above still takes precedence.
-    if (ext_id == "comfyui" and ext.get("catalog_source") == "builtin"
-            and not (USER_EXTENSIONS_DIR / ext_id).is_dir()
-            and not _comfyui_overlay_available()):
-        return "incompatible"
-    # A user extension with the same ID shadows the built-in directory. Its
-    # live health must not be replaced by the built-in marker's state.
-    selection = ({} if (USER_EXTENSIONS_DIR / ext_id).is_dir()
-                 else _qualified_builtin_selection(ext_id))
     if selection:
         if not selection["library_selected"]:
             return "disabled"
