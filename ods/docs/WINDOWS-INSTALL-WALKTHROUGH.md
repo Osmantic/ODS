@@ -163,7 +163,7 @@ background.
 # Keep the rest of an -All install, but leave both voice services off
 .\ods\installers\windows\install-windows.ps1 -All -NoVoice
 
-# Full stack with everything
+# Full stack with everything (re-enables Library-disabled voice services)
 .\ods\installers\windows\install-windows.ps1 -All
 
 # Simulate installer planning without making changes

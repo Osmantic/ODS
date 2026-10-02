@@ -19,7 +19,19 @@ try {
     Assert-Selection (-not $fresh.Whisper -and -not $fresh.Tts) "Fresh Core voice choice changed"
     $freshFull = Resolve-ODSWindowsVoiceSelection -InstallDir $installDir -ComputedVoice $true
     Assert-Selection ($freshFull.Whisper -and $freshFull.Tts) "Fresh Full voice choice changed"
+    $legacyOnPlan = New-ODSWindowsServicePlan -EnableVoice $true
+    $legacyOffPlan = New-ODSWindowsServicePlan -EnableVoice $false
+    Assert-Selection ($legacyOnPlan["whisper"].Enabled -and $legacyOnPlan["tts"].Enabled) `
+        "Legacy service-plan voice enable stopped selecting both services"
+    Assert-Selection (-not $legacyOffPlan["whisper"].Enabled -and -not $legacyOffPlan["tts"].Enabled) `
+        "Legacy service-plan voice disable unexpectedly selected a service"
     Set-Content -LiteralPath (Join-Path $installDir ".env") -Value "ODS_MODE=local"
+    $legacyFlags = Join-Path $installDir ".compose-flags"
+    Set-Content -LiteralPath $legacyFlags -Value "--env-file .env -f docker-compose.base.yml -f extensions/services/whisper/compose.yaml"
+    $legacyWhisperOnly = Resolve-ODSWindowsVoiceSelection -InstallDir $installDir -ComputedVoice $false
+    Assert-Selection ($legacyWhisperOnly.Whisper -and -not $legacyWhisperOnly.Tts) `
+        "Legacy installed Compose flags lost a Whisper-only selection"
+    Remove-Item -LiteralPath $legacyFlags -Force
     $dataDir = Join-Path $installDir "data\voice"
     New-Item -ItemType Directory -Path $dataDir -Force | Out-Null
     $sentinel = Join-Path $dataDir "keep.txt"
