@@ -519,11 +519,13 @@ def _compute_extension_status(ext: dict, services_by_id: dict) -> str:
     # the owner still needs a safe Disable path that preserves its data.
     builtin = ext.get("catalog_source") == "builtin" and not (USER_EXTENSIONS_DIR / ext_id).is_dir()
     selection = _qualified_builtin_selection(ext_id) if builtin else {}
+    # A runtime that cannot start the service must not offer Retry for an old
+    # progress error. A selected marker still remains visible for Disable.
     if builtin and not _builtin_runtime_compatible(ext_id):
         return "incompatible"
     one_shot = _is_one_shot_extension(ext)
 
-    # Check for in-flight install operations (progress files take priority)
+    # On a compatible runtime, show in-flight install progress before health.
     progress = _read_progress(ext_id)
     if progress:
         ps = progress.get("status", "")

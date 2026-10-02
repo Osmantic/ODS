@@ -119,6 +119,10 @@ class TestExtensionsCatalog:
         monkeypatch.setattr(ext_module, "EXTENSIONS_DIR", builtin.parent)
         monkeypatch.setattr(ext_module, "USER_EXTENSIONS_DIR", tmp_path / "user")
         monkeypatch.setattr(ext_module, "_builtin_runtime_compatible", lambda _: False)
+        if service_id == "comfyui":
+            monkeypatch.setattr(ext_module, "_read_progress", lambda _: {
+                "status": "error", "error": "old download failed",
+            })
 
         with patch("helpers.get_cached_services", return_value=[]):
             catalog_response = test_client.get(
