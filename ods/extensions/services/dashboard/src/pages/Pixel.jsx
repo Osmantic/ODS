@@ -625,14 +625,9 @@ export default function Pixel({ systemStatus = null }) {
   const chatIdRef = useRef(initialChat?.chatId || makeChatId())
   const images = usePortalImages(chatIdRef.current, initialChat?.draftImages)
   const imageDraftKey = JSON.stringify(images.receipts)
-  const restoredViewRef = useRef(null)
-  if (initialChat?.persistenceSnapshot?.persistenceVersion === 2
+  const restoredViewRef = useRef(initialChat?.persistenceSnapshot?.persistenceVersion === 2
     && (initialChat.persistenceSnapshot.inFlight === true || initialChat.persistenceSnapshot.interrupted === true)
-    && !restoredViewRef.current) {
-    restoredViewRef.current = {
-      chatId: initialChat.chatId, input, chatMode, imageDraftKey,
-    }
-  }
+    ? {chatId: initialChat.chatId, input, chatMode, imageDraftKey} : null)
   const hasImageHistory = messages.some(message=>message.role==='user' && message.images?.length)
   const { state: extensionInstallation, start: startExtensionInstallation, stop: stopExtensionInstallation, resume: resumeExtensionInstallation } = useExtensionInstallation(chatIdRef.current)
   const { state: githubExtensionInstallation, start: startGithubExtensionRequest,
@@ -1398,6 +1393,9 @@ export default function Pixel({ systemStatus = null }) {
       // rewrite that completed answer as owner-stopped.
       if (stopRequestRef.current !== stopRequest || chatIdRef.current !== chatId || requestIdRef.current !== requestId || abortRef.current !== controller
         || (restored && !['active', 'unknown'].includes(restoredActivityRef.current))) return
+      // A confirmed Stop is an owner action, so this tab must commit its
+      // terminal state through the normal conversation revision check.
+      if (restored) restoredViewRef.current = null
       controller?.abort()
       abortRef.current = null
       requestIdRef.current = null
