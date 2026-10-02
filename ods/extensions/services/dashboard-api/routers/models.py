@@ -71,9 +71,10 @@ _LIBRARY_PATH = Path(INSTALL_DIR) / "config" / "model-library.json"
 _MODELS_DIR = Path(DATA_DIR) / "models"
 
 
-def _installed_model_paths() -> dict[str, Path]:
+def _installed_model_paths(preferred_store_id: str | None = None) -> dict[str, Path]:
     from model_stores import scan_model_files
-    return scan_model_files(Path(DATA_DIR), container=Path("/.dockerenv").exists(), default_dir=_MODELS_DIR)
+    return scan_model_files(Path(DATA_DIR), container=Path("/.dockerenv").exists(), default_dir=_MODELS_DIR,
+                            preferred_store_id=preferred_store_id)
 
 
 def _installed_model_path(filename: str) -> Path | None:
@@ -1437,6 +1438,9 @@ def _model_management() -> dict:
         result = {key: value[key] for key in ("managed", "canActivate", "canUnload", "running")}
         if isinstance(value.get('reason'), str):
             result['reason'] = value['reason'][:500]
+        if (value['managed'] and isinstance(value.get('modelStoreId'), str)
+                and re.fullmatch(r'[a-z][a-z0-9-]{0,47}', value['modelStoreId'])):
+            result['modelStoreId'] = value['modelStoreId']
         return result
     except (AgentClientError, ValueError):
         # A failed proof is unknown, not evidence of an independently managed service.
@@ -1483,6 +1487,8 @@ async def list_models(api_key: str = Depends(verify_api_key)):
     )
     context_size = context_size or _verified_activation_context(loaded_model)
     live_tps = _newly_measured_tps(metrics, loaded_model)
+    management = await asyncio.to_thread(_model_management) if _external_lemonade_runtime() else None
+    preferred_store_id = management.get('modelStoreId') if isinstance(management, dict) else None
     payload = await asyncio.to_thread(
         build_models_payload,
         gpu_info,
@@ -1492,7 +1498,10 @@ async def list_models(api_key: str = Depends(verify_api_key)):
         DATA_DIR,
         context_size,
         catalog=_load_library(),
-        downloaded_files_override=_installed_model_paths(),
+        downloaded_files_override=(
+            _installed_model_paths(preferred_store_id=preferred_store_id)
+            if preferred_store_id is not None else _installed_model_paths()
+        ),
     )
     _annotate_model_lifecycle(
         payload,
@@ -1532,7 +1541,7 @@ async def list_models(api_key: str = Depends(verify_api_key)):
     payload["llmBackend"] = LLM_BACKEND or "unknown"
     payload["externalLemonade"] = _external_lemonade_runtime()
     if payload["externalLemonade"]:
-        payload["modelManagement"] = await asyncio.to_thread(_model_management)
+        payload["modelManagement"] = management if management is not None else await asyncio.to_thread(_model_management)
     payload["activationReadyModel"] = (
         payload.get("currentModel")
         if loaded_entry
