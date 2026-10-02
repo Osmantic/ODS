@@ -72,6 +72,94 @@ def _patch_extensions_config(monkeypatch, catalog, services=None,
 
 class TestExtensionsCatalog:
 
+    @pytest.mark.parametrize("gpu_backend,overlay,expected_status,addable", [
+        ("nvidia", True, "disabled", True),
+        ("amd", True, "disabled", True),
+        ("nvidia", False, "incompatible", False),
+        ("cpu", False, "incompatible", False),
+        ("apple", False, "incompatible", False),
+    ])
+    def test_comfyui_library_add_requires_usable_gpu_overlay(
+            self, test_client, monkeypatch, tmp_path,
+            gpu_backend, overlay, expected_status, addable):
+        catalog = [{**_make_catalog_ext(
+            "comfyui", "ComfyUI (Image Generation)",
+            gpu_backends=["amd", "nvidia"]), "catalog_source": "builtin"}]
+        _patch_extensions_config(
+            monkeypatch, catalog, gpu_backend=gpu_backend, tmp_path=tmp_path)
+        builtin = tmp_path / "builtin" / "comfyui"
+        builtin.mkdir(parents=True)
+        (builtin / "compose.yaml.disabled").write_text("services: {}\n", encoding="utf-8")
+        if overlay:
+            (builtin / f"compose.{gpu_backend}.yaml").write_text(
+                "services: {comfyui: {image: example/comfyui}}\n", encoding="utf-8")
+        monkeypatch.setattr("routers.extensions.EXTENSIONS_DIR", builtin.parent)
+
+        with patch("helpers.get_cached_services", return_value=[]):
+            response = test_client.get("/api/extensions/catalog", headers=test_client.auth_headers)
+        assert response.status_code == 200
+        row = next(item for item in response.json()["extensions"] if item["id"] == "comfyui")
+        assert row["status"] == expected_status
+        assert row.get("library_manageable", False) is addable
+        if addable:
+            assert row["library_selected"] is False
+        else:
+            assert "library_selected" not in row
+
+    @pytest.mark.parametrize("gpu_backend", ["cpu", "apple", "nvidia"])
+    def test_comfyui_enable_refuses_missing_gpu_overlay(
+            self, monkeypatch, tmp_path, gpu_backend):
+        from routers import extensions as ext_module
+
+        builtin = tmp_path / "builtin" / "comfyui"
+        builtin.mkdir(parents=True)
+        (builtin / "compose.yaml.disabled").write_text("services: {}\n", encoding="utf-8")
+        monkeypatch.setattr(ext_module, "EXTENSIONS_DIR", builtin.parent)
+        monkeypatch.setattr(ext_module, "USER_EXTENSIONS_DIR", tmp_path / "user")
+        monkeypatch.setattr(ext_module, "GPU_BACKEND", gpu_backend)
+
+        with pytest.raises(HTTPException) as error:
+            ext_module._activate_service("comfyui")
+        assert error.value.status_code == 409
+        assert (builtin / "compose.yaml.disabled").is_file()
+
+    @pytest.mark.parametrize("overlay_yaml", ["services: {}\n", "services: null\n"])
+    def test_comfyui_malformed_overlay_does_not_offer_add(
+            self, test_client, monkeypatch, tmp_path, overlay_yaml):
+        catalog = [{**_make_catalog_ext(
+            "comfyui", gpu_backends=["amd", "nvidia"]),
+            "catalog_source": "builtin"}]
+        _patch_extensions_config(monkeypatch, catalog, tmp_path=tmp_path)
+        builtin = tmp_path / "builtin" / "comfyui"
+        builtin.mkdir(parents=True)
+        (builtin / "compose.yaml.disabled").write_text("services: {}\n")
+        (builtin / "compose.nvidia.yaml").write_text(overlay_yaml)
+        monkeypatch.setattr("routers.extensions.EXTENSIONS_DIR", builtin.parent)
+
+        with patch("helpers.get_cached_services", return_value=[]):
+            response = test_client.get("/api/extensions/catalog", headers=test_client.auth_headers)
+        assert response.status_code == 200
+        row = next(item for item in response.json()["extensions"] if item["id"] == "comfyui")
+        assert row["status"] == "incompatible"
+        assert "library_manageable" not in row
+
+    def test_user_comfyui_status_does_not_use_builtin_gpu_gate(
+            self, monkeypatch, tmp_path):
+        from routers import extensions as ext_module
+
+        user_dir = tmp_path / "user" / "comfyui"
+        user_dir.mkdir(parents=True)
+        (user_dir / "compose.yaml").write_text("services: {comfyui: {image: example/comfyui}}\n")
+        monkeypatch.setattr(ext_module, "USER_EXTENSIONS_DIR", user_dir.parent)
+        monkeypatch.setattr(ext_module, "EXTENSIONS_DIR", tmp_path / "builtin")
+        monkeypatch.setattr(ext_module, "GPU_BACKEND", "cpu")
+
+        ext = {**_make_catalog_ext("comfyui", gpu_backends=["amd", "nvidia"]),
+               "catalog_source": "user"}
+        status = ext_module._compute_extension_status(
+            ext, {"comfyui": _make_service_status("comfyui")})
+        assert status == "enabled"
+
     @pytest.mark.parametrize("service_id", ["perplexica", "searxng"])
     def test_builtin_library_addback_tracks_selection_and_health(
             self, test_client, monkeypatch, tmp_path, service_id):
