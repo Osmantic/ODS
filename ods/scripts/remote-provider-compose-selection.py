@@ -41,6 +41,15 @@ def _service_dir(root: Path, service_id: str) -> Path:
     return path
 
 
+def _copied_disabled_marker(root: Path, source: Path | None, service_id: str) -> bool:
+    if source is None or source == root:
+        return False
+    canonical = _service_dir(source, service_id) / "compose.yaml.disabled"
+    copied = _service_dir(root, service_id) / "compose.yaml.disabled"
+    return (_regular_state(canonical) and _regular_state(copied)
+            and copied.read_bytes() == canonical.read_bytes())
+
+
 def _route_kind(root: Path, data_dir: Path | None = None) -> str:
     data_dir = data_dir if data_dir is not None else root / "data"
     if not data_dir.is_absolute():
@@ -91,11 +100,7 @@ def inspect(root: Path, data_dir: Path | None = None,
             # An interrupted source copy can add the new canonical disabled
             # recipe beside an already selected marker. Require an independent
             # candidate source to prove that is the only reason for the pair.
-            if source is None or source == root:
-                raise ValueError(f"Ambiguous remote-provider Compose markers: {service_id}")
-            canonical = _service_dir(source, service_id) / "compose.yaml.disabled"
-            if (not _regular_state(canonical)
-                    or (directory / "compose.yaml.disabled").read_bytes() != canonical.read_bytes()):
+            if not _copied_disabled_marker(root, source, service_id):
                 raise ValueError(f"Ambiguous remote-provider Compose markers: {service_id}")
         if active or disabled:
             choice[service_id] = "enabled" if active else "disabled"
@@ -107,7 +112,12 @@ def inspect(root: Path, data_dir: Path | None = None,
     required = (SERVICES if kind == "ssh" else SERVICES[:1] if kind == "direct" else ())
     for service_id in required:
         if choice[service_id] != "enabled":
-            raise ValueError(f"Active remote-provider route requires enabled {service_id}")
+            # A crash after copying the first optional fragment can leave a
+            # legacy active route with only the new disabled marker. Restore
+            # it only when the independent source proves that marker's bytes.
+            if not _copied_disabled_marker(root, source, service_id):
+                raise ValueError(f"Active remote-provider route requires enabled {service_id}")
+            choice[service_id] = "enabled"
     return {"schema": SCHEMA, "root": str(root), "selection": choice}
 
 

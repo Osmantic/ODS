@@ -189,6 +189,34 @@ def main() -> None:
             raise AssertionError("Noncanonical dual markers must fail closed")
     finally:
         temp.cleanup()
+    for transport, expected in (("direct", (True, False)), ("ssh", (True, True))):
+        source, install, secret, temp = fixture()
+        try:
+            route(install, transport)  # legacy base-Compose route, no Library marker
+            MODULE.inspect(install, source=source)
+            copy_source(source, install)  # crash before apply
+            try:
+                MODULE.inspect(install)
+            except ValueError:
+                pass
+            else:
+                raise AssertionError("Active route needs source proof after interrupted copy")
+            copied = install / "extensions/services" / SERVICES[0] / "compose.yaml.disabled"
+            canonical_bytes = copied.read_bytes()
+            copied.write_bytes(b"untrusted recipe\n")
+            try:
+                MODULE.inspect(install, source=source)
+            except ValueError:
+                pass
+            else:
+                raise AssertionError("Noncanonical active-route recovery must fail closed")
+            copied.write_bytes(canonical_bytes)
+            resumed = MODULE.inspect(install, source=source)
+            MODULE.apply(install, source, resumed)
+            assert states(install) == expected
+            assert secret.read_bytes() == b"fixture-secret-unchanged"
+        finally:
+            temp.cleanup()
     source, install, _, temp = fixture()
     try:
         route_path = install / "data/remote-provider/routing-state.json"
