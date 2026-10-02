@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
+# The retained provider fixture starts with safe private parents. Unsafe mode
+# cases below set their own explicit modes, independent of the caller's umask.
+umask 022
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=../installers/lib/source-copy.sh
 source "$ROOT/installers/lib/source-copy.sh"
@@ -58,3 +61,48 @@ copy
 cmp "$src/config/litellm/cloud.yaml" "$inst/config/litellm/cloud.yaml" || fail 'fresh fallback template absent'
 pass 'fresh fallback copies the template'
 unset -f command
+
+# Exercise the actual Phase 06 normalization after a copy from a checkout
+# whose source modes all appear writable, as on a Windows-mounted WSL path.
+phase="$ROOT/installers/phases/06-directories.sh"
+normalization="$(sed -n '/^    # A Windows-mounted WSL checkout can surface every source entry as 0777\./,/^    unset _installed_code_root$/p' "$phase")"
+[[ "$normalization" == *'unset _installed_code_root'* ]] || fail 'Phase 06 source mode normalization missing'
+normalize() { INSTALL_DIR="$1"; eval "$normalization"; }
+mode_src="$tmp/mode-src"
+mode_inst="$tmp/mode-inst"
+mkdir -p "$mode_src/config/litellm" "$mode_inst/data/private"
+for root in bin lib scripts installers config extensions vendor; do
+    mkdir -p "$mode_src/$root/subdir"
+    printf 'script\n' > "$mode_src/$root/subdir/executable.sh"
+    printf 'text\n' > "$mode_src/$root/subdir/plain.txt"
+    chmod 777 "$mode_src/$root" "$mode_src/$root/subdir" "$mode_src/$root/subdir/executable.sh"
+    chmod 666 "$mode_src/$root/subdir/plain.txt"
+done
+printf 'bundled-template\n' > "$mode_src/config/litellm/cloud.yaml"
+chmod 777 "$mode_src/config/litellm" "$mode_src/config/litellm/cloud.yaml"
+printf 'outside\n' > "$tmp/outside"
+chmod 666 "$tmp/outside"
+ln -s "$tmp/outside" "$mode_src/vendor/subdir/outside-link"
+printf 'owner-data\n' > "$mode_inst/data/private/retained"
+chmod 666 "$mode_inst/data/private/retained"
+ods_copy_install_source "$mode_src" "$mode_inst" "$tmp/log" || fail 'writable-mode source copy failed'
+normalize "$mode_inst" || fail 'Phase 06 mode normalization failed'
+for root in bin lib scripts installers config extensions vendor; do
+    [[ "$(stat -c %a "$mode_inst/$root")" == 755 ]] || fail "$root directory stayed writable"
+    [[ "$(stat -c %a "$mode_inst/$root/subdir")" == 755 ]] || fail "$root nested directory stayed writable"
+    [[ "$(stat -c %a "$mode_inst/$root/subdir/executable.sh")" == 755 ]] || fail "$root executable stayed writable"
+    [[ "$(stat -c %a "$mode_inst/$root/subdir/plain.txt")" == 644 ]] || fail "$root plain file mode changed unexpectedly"
+done
+[[ "$(stat -c %a "$tmp/outside")" == 666 ]] || fail 'normalization followed a source symlink'
+[[ "$(stat -c %a "$mode_inst/data/private/retained")" == 666 ]] || fail 'normalization changed retained data'
+pass 'fresh copy protects every Pixel source root without changing retained data or symlink targets'
+
+printf 'owner-provider\n' > "$mode_inst/config/litellm/cloud.yaml"
+chmod 600 "$mode_inst/config/litellm/cloud.yaml"
+cloud_before="$(stat -c '%d:%i:%u:%g:%a:%s' "$mode_inst/config/litellm/cloud.yaml")"
+ods_copy_install_source "$mode_src" "$mode_inst" "$tmp/log" || fail 'provider-preserving mode rerun failed'
+normalize "$mode_inst" || fail 'Phase 06 mode normalization on rerun failed'
+[[ "$cloud_before" == "$(stat -c '%d:%i:%u:%g:%a:%s' "$mode_inst/config/litellm/cloud.yaml")" ]] || fail 'provider identity changed on mode rerun'
+[[ "$(cat "$mode_inst/config/litellm/cloud.yaml")" == owner-provider ]] || fail 'provider bytes changed on mode rerun'
+[[ "$(stat -c %a "$mode_inst/installers")" == 755 && "$(stat -c %a "$mode_inst/vendor")" == 755 ]] || fail 'mode rerun left Pixel roots writable'
+pass 'rerun preserves private provider identity and protects installer and vendor roots'
