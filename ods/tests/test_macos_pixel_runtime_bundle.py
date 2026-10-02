@@ -440,6 +440,71 @@ def test_legacy_bundle_rollback_rejects_unreadable_links(artifacts):
         bundle.verify(root, expected_digest=legacy_digest)
 
 
+@pytest.mark.skipif(sys.platform != 'darwin', reason='Darwin symlink modes are enforced')
+def test_root_repairs_only_verified_legacy_link_modes_and_resumes(artifacts, monkeypatch):
+    (artifacts['runtime'] / 'node_modules/alias.js').symlink_to('dependency.js')
+    bundle.build(**artifacts)
+    source = artifacts['destination']
+    (source / bundle.LINK_MODE_POLICY).unlink()
+    manifest_path = source / bundle.MANIFEST
+    manifest = json.loads(manifest_path.read_bytes())
+    del manifest['entries'][bundle.LINK_MODE_POLICY]
+    body = bundle._encode(manifest)
+    manifest_path.write_bytes(body)
+    digest = hashlib.sha256(body).hexdigest()
+    parent = source.parent / 'protected'
+    monkeypatch.setattr(bundle, 'INSTALL_ROOT', parent)
+    monkeypatch.setattr(bundle.os, 'geteuid', lambda: 0)
+    monkeypatch.setattr(custody, '_verify_fd', lambda fd, **_: os.fstat(fd))
+    monkeypatch.setattr(custody, 'protected_tree_metadata', lambda _: None)
+    target = bundle.publish(source, expected_digest=digest, install_root=parent)
+    link = target / 'runtime/node_modules/alias.js'
+    os.lchmod(link, 0o700)
+    with pytest.raises(bundle.BundleError, match='bundle-link-unreadable'):
+        bundle.verify(target, expected_digest=digest)
+    original_lchmod = os.lchmod
+    def interrupted(path, mode):
+        original_lchmod(path, mode)
+        raise OSError('simulated interruption after mode change')
+    monkeypatch.setattr(bundle.os, 'lchmod', interrupted)
+    with pytest.raises(OSError, match='simulated interruption'):
+        bundle.repair_legacy_link_modes(digest)
+    assert (parent / ('.link-mode-repair-' + digest + '.json')).exists()
+    monkeypatch.setattr(bundle.os, 'lchmod', original_lchmod)
+    assert bundle.repair_legacy_link_modes(digest) == {'digest': digest, 'linksRepaired': 1}
+    assert stat.S_IMODE(link.lstat().st_mode) == 0o755
+    assert bundle.verify(target, expected_digest=digest)[1] == digest
+    assert not (parent / ('.link-mode-repair-' + digest + '.json')).exists()
+    assert bundle.repair_legacy_link_modes(digest)['linksRepaired'] == 0
+
+
+@pytest.mark.skipif(sys.platform != 'darwin', reason='Darwin symlink modes are enforced')
+def test_root_repair_refuses_legacy_bundle_content_drift(artifacts, monkeypatch):
+    (artifacts['runtime'] / 'node_modules/alias.js').symlink_to('dependency.js')
+    bundle.build(**artifacts)
+    root = artifacts['destination']
+    (root / bundle.LINK_MODE_POLICY).unlink()
+    manifest_path = root / bundle.MANIFEST
+    manifest = json.loads(manifest_path.read_bytes())
+    del manifest['entries'][bundle.LINK_MODE_POLICY]
+    body = bundle._encode(manifest)
+    manifest_path.write_bytes(body)
+    digest = hashlib.sha256(body).hexdigest()
+    parent = root.parent / 'protected'
+    monkeypatch.setattr(bundle, 'INSTALL_ROOT', parent)
+    monkeypatch.setattr(bundle.os, 'geteuid', lambda: 0)
+    monkeypatch.setattr(custody, '_verify_fd', lambda fd, **_: os.fstat(fd))
+    monkeypatch.setattr(custody, 'protected_tree_metadata', lambda _: None)
+    target = bundle.publish(root, expected_digest=digest, install_root=parent)
+    link = target / 'runtime/node_modules/alias.js'
+    os.lchmod(link, 0o700)
+    (target / 'node').write_bytes(b'tampered')
+    with pytest.raises(bundle.BundleError, match='bundle-content-changed'):
+        bundle.repair_legacy_link_modes(digest)
+    assert stat.S_IMODE(link.lstat().st_mode) == 0o700
+    assert not (parent / ('.link-mode-repair-' + digest + '.json')).exists()
+
+
 def test_manifest_must_match_previously_selected_digest(artifacts):
     bundle.build(**artifacts)
     with pytest.raises(bundle.BundleError, match='manifest-changed'):

@@ -25,6 +25,10 @@ class SourceUpdateRequired(ValueError):
     """The active selection is proved, but its ODS service source is older."""
 
 
+class LegacyBundleLinkRepairRequired(ValueError):
+    """A protected legacy bundle needs a root metadata repair and a full retry."""
+
+
 def helper(filename):
     path = HERE / filename
     spec = importlib.util.spec_from_file_location('native_retain_' + filename.replace('-', '_'), path)
@@ -144,7 +148,12 @@ def verify(install_dir, *, expected_ref=None, ods_source=None, prompt_for_sudo=F
     if (states != ['running'] or len(pids) != 1 or not pids[0].isdecimal()
             or int(pids[0]) <= 0):
         raise ValueError('native-gateway-not-running')
-    access._bundle.verify(bundle, expected_digest=digest)
+    try:
+        access._bundle.verify(bundle, expected_digest=digest)
+    except access._bundle.BundleError as error:
+        if str(error) == 'bundle-link-unreadable':
+            raise LegacyBundleLinkRepairRequired('legacy-bundle-link-unreadable') from None
+        raise
     # Current native installs bind the protected runtime to its service bundle.
     # Older unbound bundles need explicit migration and cannot enter this path.
     if not os.path.lexists(bundle / 'ods-service-binding.json'):
@@ -164,6 +173,8 @@ def main():
     parser.add_argument('--prompt-for-sudo', action='store_true')
     parser.add_argument('--allow-update', action='store_true',
                         help='return 2 only for a proved active selection with changed ODS service source')
+    parser.add_argument('--allow-link-repair', action='store_true',
+                        help='return 3 only when a protected legacy bundle needs root metadata repair')
     parser.add_argument('--check-protected', action='store_true')
     args = parser.parse_args()
     try:
@@ -178,6 +189,13 @@ def main():
         if args.allow_update:
             print('Native Pixel protected source update required before the base stack starts.', file=sys.stderr)
             return 2
+        print('Native Pixel retention could not be proved. Keep its state intact and use the '
+              'reviewed native update or recovery path.', file=sys.stderr)
+        return 1
+    except LegacyBundleLinkRepairRequired:
+        if args.allow_link_repair:
+            print('Native Pixel active bundle needs verified legacy link-mode repair.', file=sys.stderr)
+            return 3
         print('Native Pixel retention could not be proved. Keep its state intact and use the '
               'reviewed native update or recovery path.', file=sys.stderr)
         return 1
