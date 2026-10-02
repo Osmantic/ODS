@@ -84,22 +84,29 @@ try {
     Remove-Item -LiteralPath $fixture -Recurse -Force
 }
 
-# --- Lemonade install: found, declined ---------------------------------------
-function Resolve-ODSLemonadeExe([string]$ExecutableName) { return $script:foundExe }
+# --- ODS-managed Lemonade release: found, declined --------------------------
+$script:managedFixture = Join-Path ([IO.Path]::GetTempPath()) ('ods-managed-lemonade-' + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $script:managedFixture | Out-Null
+function Get-ODSManagedLemonadePath($Runtime) { return $script:managedFixture }
+function Assert-ODSManagedLemonadeRelease($Runtime, [string]$ReleaseDir) { return $script:foundExe }
+function Install-ODSManagedLemonade($Runtime) { $script:managedInstalls++; return $script:foundExe }
 function Get-ODSLemonadeExecutableVersion([string]$ExecutablePath) { return [version]$script:foundVersion }
 function Confirm-ODSPortalPreparation([string]$Message, [bool]$NonInteractive) { $script:confirmed++; return $script:accept }
 $script:confirmed = 0
-$script:foundVersion = '10.0.0'
-$script:foundExe = 'C:\Users\u\AppData\Local\lemonade_server\bin\lemonade-server.exe'
-Check ((Install-ODSPortalLemonade $sourceRoot $false) -eq $script:foundExe -and $script:confirmed -eq 0) 'installed Lemonade is reused without asking'
+$script:managedInstalls = 0
+$script:foundVersion = '2026.40.0'
+$script:foundExe = 'C:\Users\u\AppData\Local\ODS\lemonade\runtimes\v2026.40.0\lemond.exe'
+Check ((Install-ODSPortalLemonade $sourceRoot $false) -eq $script:foundExe -and $script:confirmed -eq 0) 'verified ODS-managed Lemonade is reused without asking'
 $script:foundVersion = '9.1.0'
 $message = ''
 try { $null = Install-ODSPortalLemonade $sourceRoot $false } catch { $message = $_.Exception.Message }
-Check ($message -match 'outside the supported Portal runtime contract' -and $script:confirmed -eq 0) 'an unsupported existing Lemonade stops before downloading, prompting or replacing it'
-$script:foundVersion = '10.0.0'
-$script:foundExe = $null
+Check ($message -match 'outside the supported Portal runtime contract' -and $script:confirmed -eq 0) 'an unsupported managed Lemonade stops before downloading or replacing it'
+$script:foundVersion = '2026.40.0'
+Remove-Item -LiteralPath $script:managedFixture -Force
 $script:accept = $false
 Check ($null -eq (Install-ODSPortalLemonade $sourceRoot $false) -and $script:confirmed -eq 1) 'declining the Lemonade install changes nothing'
+$script:accept = $true
+Check ((Install-ODSPortalLemonade $sourceRoot $false) -eq $script:foundExe -and $script:managedInstalls -eq 1) 'accepted install uses only the pinned ODS-managed archive'
 
 # --- Port: a busy 8080 moves to the next free port ----------------------------
 $script:busy = @{}
@@ -128,9 +135,11 @@ $script:installResult = 'C:\lemonade\bin\lemonade-server.exe'
 $script:modern = $false
 $script:healthy = $true
 function Install-ODSPortalLemonade([string]$SourceRoot, [bool]$NonInteractive) { return $script:installResult }
+function Restore-ODSPortalLemonadeUpgrade { }
+function Get-ODSPortalLemonadeTask { return $null }
 function Get-ODSPortalLemonadeModel($Plan) { $script:calls.Add('model'); return 'C:\models' }
 function Get-ODSLemonadeLaunchContract { param($ExecutablePath, $Port, $ModelsDir, $ContextSize) return [pscustomobject]@{ Modern=$script:modern; Version=[Version]'10.0.0'; Port=$Port; ContextSize=$ContextSize } }
-function Register-ODSPortalLemonadeTask($Contract, [string]$GgufFile) { $script:calls.Add('task:' + $Contract.Port) }
+function Register-ODSPortalLemonadeTask($Contract, [string]$GgufFile, [string]$WslDistro, [string]$WslInstallDir, [bool]$PriorStopped) { $script:calls.Add('task:' + $Contract.Port) }
 function Stop-ODSPortalLemonade([string]$ExecutablePath) { $script:calls.Add('stop') }
 function Set-ODSLemonadeModernRuntimeConfig { param($Port, $ModelsDir, $AdminApiKey, $ContextSize) $script:calls.Add("modern:${Port}:${ModelsDir}:${ContextSize}") }
 function Wait-ODSPortalLemonadeHealth([int]$Port, [int]$Seconds) { $script:calls.Add('health'); return $script:healthy }
@@ -144,7 +153,7 @@ function Wait-ODSPortalLemonadeReady($Registration) {
 $env:AMD_INFERENCE_PORT = ''
 $result = @(Initialize-ODSPortalAmdLemonade $plan $sourceRoot $false)
 Check (($result -join ' ') -eq "--lemonade-url http://localhost:8080 --lemonade-host-transport model-router --lemonade-model extra.$($plan.GgufFile) --lemonade-gpu-name AMD Radeon RX 9070 XT --lemonade-gpu-vram-mb 16304") 'ready Lemonade returns the Linux route and explicit host probe transport'
-Check (($script:calls -join ',') -eq 'model,stop,task:8080,await-ready') 'old Lemonade is released before choosing its port, then its durable task proves the loaded model before Linux runs'
+Check (($script:calls -join ',') -eq 'model,task:8080,await-ready') 'fresh durable task proves the loaded model before Linux runs'
 $script:calls.Clear()
 $script:busy = @{ 8080 = 'AgentService' }
 $result = @(Initialize-ODSPortalAmdLemonade $plan $sourceRoot $false)
@@ -156,7 +165,7 @@ $script:installResult = 'C:\lemonade\bin\lemonade-server.exe'
 $script:modern = $true
 $script:calls.Clear()
 $result = @(Initialize-ODSPortalAmdLemonade $plan $sourceRoot $false)
-Check ($result.Count -gt 0 -and ($script:calls -join ',') -eq 'model,stop,task:8080,await-ready') 'Lemonade 10.7+ waits for its durable task to restore configuration and load without racing duplicate API calls'
+Check ($result.Count -gt 0 -and ($script:calls -join ',') -eq 'model,task:8080,await-ready') 'Lemonade 10.7+ waits for its durable task to restore configuration and load without racing duplicate API calls'
 $script:modern = $false
 $script:healthy = $false
 $message = ''

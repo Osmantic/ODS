@@ -10,6 +10,7 @@
 . (Join-Path $PSScriptRoot 'detection.ps1')
 . (Join-Path $PSScriptRoot 'tier-map.ps1')
 . (Join-Path $PSScriptRoot 'backend-contract.ps1')
+. (Join-Path $PSScriptRoot 'managed-lemonade.ps1')
 . (Join-Path $PSScriptRoot 'env-generator.ps1')
 
 $script:ODSPortalLemonadeLegacyTaskName = 'ODSLemonadeRuntime'
@@ -71,36 +72,28 @@ function Get-ODSPortalAmdPlan([string]$SourceRoot) {
 function Install-ODSPortalLemonade([string]$SourceRoot, [bool]$NonInteractive) {
     # Returns the Lemonade executable path, or $null when the user declines.
     $runtime = Get-ODSAmdLemonadeRuntime -RootPath $SourceRoot
-    $exe = Resolve-ODSLemonadeExe -ExecutableName $runtime.windows_executable
-    if ($exe) {
+    $managed = $runtime.windows_managed
+    if (-not $managed) { throw 'AMD contract has no pinned managed Windows Lemonade release.' }
+    Assert-ODSManagedLemonadeRoot
+    $releaseDir = Get-ODSManagedLemonadePath $managed
+    if (Test-Path -LiteralPath $releaseDir) {
+        $exe = Assert-ODSManagedLemonadeRelease $managed $releaseDir
         Assert-ODSPortalLemonadeVersion (Get-ODSLemonadeExecutableVersion $exe)
-        Write-Host "         Lemonade Server found: $exe"
+        Write-Host "         ODS-managed Lemonade Server found: $exe"
         return $exe
     }
-    if (-not (Confirm-ODSPortalPreparation "Install Lemonade Server $($runtime.windows_version) to run the AI model on your AMD GPU? It installs for your Windows user and runs only on this computer (127.0.0.1)." $NonInteractive)) {
+    if (-not (Confirm-ODSPortalPreparation "Install ODS-managed Lemonade Server $($managed.windows_version) to run the AI model on your AMD GPU? It runs only on this computer (127.0.0.1)." $NonInteractive)) {
         return $null
     }
-    $msi = Join-Path $env:TEMP $runtime.windows_msi_file
-    $url = "https://github.com/lemonade-sdk/lemonade/releases/download/v$($runtime.windows_version)/$($runtime.windows_msi_file)"
-    Write-Host "         Downloading $url"
-    & curl.exe --fail --location --silent --show-error --output $msi $url
-    if ($LASTEXITCODE -ne 0) { throw "Could not download Lemonade Server (curl exit $LASTEXITCODE): $url" }
-    $installDir = Get-ODSLemonadeUserInstallDir
-    $log = Join-Path (Get-ODSPortalStateDir) 'lemonade-msi-install.log'
-    New-Item -ItemType Directory -Force -Path (Split-Path -Parent $log) | Out-Null
-    Write-Host '         Installing Lemonade Server...'
-    $msiArgs = "/i `"$msi`" /quiet /norestart INSTALLDIR=`"$installDir`" /L*V `"$log`""
-    $process = Start-Process -FilePath msiexec.exe -ArgumentList $msiArgs -Wait -PassThru
-    if ($process.ExitCode -notin @(0, 3010)) { throw "Lemonade Server setup failed (msiexec exit $($process.ExitCode)). Log: $log" }
-    $exe = Resolve-ODSLemonadeExe -ExecutableName $runtime.windows_executable
-    if (-not $exe) { throw "Lemonade Server setup finished but $($runtime.windows_executable) was not found under $installDir. Log: $log" }
+    $exe = Install-ODSManagedLemonade -Runtime $managed
     Assert-ODSPortalLemonadeVersion (Get-ODSLemonadeExecutableVersion $exe)
     return $exe
 }
 
 function Assert-ODSPortalLemonadeVersion([version]$Version) {
-    if ($Version -lt [version]'10.0.0' -or $Version -ge [version]'11.0.0') {
-        throw "Lemonade $Version is outside the supported Portal runtime contract (10.x, minimum 10.0.0). Install a supported Lemonade version, then rerun; the existing runtime was not changed."
+    if ((($Version -lt [version]'10.0.0') -or ($Version -ge [version]'11.0.0')) -and
+        $Version.ToString(3) -cne '2026.40.0') {
+        throw "Lemonade $Version is outside the supported Portal runtime contract (10.x or pinned 2026.40.0). The existing runtime was not changed."
     }
 }
 
@@ -706,15 +699,170 @@ function Wait-ODSPortalLemonadeReady($Registration, [int]$Seconds = 1020) {
     throw "Lemonade did not finish restoring its model. Check $(Join-Path (Split-Path -Parent $Registration.ReadyPath) 'lemonade-launch.log')."
 }
 
-function Register-ODSPortalLemonadeTask($Contract, [string]$GgufFile = '', [string]$WslDistro = '', [string]$WslInstallDir = '') {
+function Get-ODSPortalLemonadeUpgradeJournalPath {
+    return (Join-Path (Get-ODSPortalStateDir) 'portal-runtime-upgrade.json')
+}
+
+function Get-ODSPortalTaskXmlWithoutEnabled([string]$Xml) {
+    $document = [xml]$Xml
+    foreach ($node in @($document.SelectNodes('/*[local-name()="Task"]/*[local-name()="Settings"]/*[local-name()="Enabled"]'))) {
+        $null = $node.ParentNode.RemoveChild($node)
+    }
+    return $document.OuterXml
+}
+
+function Get-ODSPortalTaskEnabled($Task, [string]$Xml) {
+    if ($null -ne $Task.Settings -and $null -ne $Task.Settings.Enabled) {
+        return [bool]$Task.Settings.Enabled
+    }
+    $document = [xml]$Xml
+    $node = $document.SelectSingleNode('/*[local-name()="Task"]/*[local-name()="Settings"]/*[local-name()="Enabled"]')
+    if ($node) { return $node.InnerText -ieq 'true' }
+    return $true # Task Scheduler's omitted Enabled field defaults to true.
+}
+
+function Get-ODSPortalDurableTaskExecutable($Task) {
+    # Only the current user's known durable launcher can be migrated. The
+    # former direct and generated wrappers remain stoppable for uninstall, but
+    # cannot be upgraded without a recoverable saved plan.
+    if (-not $Task) { return $null }
+    $runtimeDir = Join-Path (Get-ODSPortalStateDir) 'portal-runtime'
+    $action = @($Task.Actions)
+    $expected = '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "' +
+        (Join-Path $runtimeDir 'launch.ps1') + '"'
+    if ($action.Count -ne 1 -or $action[0].Arguments -cne $expected -or
+        $action[0].WorkingDirectory -ine $runtimeDir -or
+        $Task.TaskName -cne (Get-ODSPortalLemonadeTaskName)) {
+        throw 'The existing Portal Lemonade task uses a legacy or ambiguous launcher; it was not changed.'
+    }
+    $planPath = Join-Path $runtimeDir 'runtime.json'
+    $plan = Get-Content -LiteralPath $planPath -Raw -Encoding UTF8 -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+    $exe = [string]$plan.ExecutablePath
+    if (-not [IO.Path]::IsPathRooted($exe) -or -not (Test-Path -LiteralPath $exe -PathType Leaf)) {
+        throw 'The existing Portal Lemonade plan has no available executable; it was not changed.'
+    }
+    return $exe
+}
+
+function Save-ODSPortalLemonadeUpgrade($Task, [string]$OldExecutable, [string]$NewExecutable) {
+    $path = Get-ODSPortalLemonadeUpgradeJournalPath
+    if (Test-Path -LiteralPath $path) { throw 'A Portal Lemonade upgrade already needs recovery.' }
+    $runtimeDir = Join-Path (Get-ODSPortalStateDir) 'portal-runtime'
+    $files = @()
+    foreach ($name in @('runtime.json', 'launch.ps1', 'backend-contract.ps1', 'env-generator.ps1', 'intent.json')) {
+        $file = Join-Path $runtimeDir $name
+        $present = Test-Path -LiteralPath $file -PathType Leaf
+        $files += @{ Name = $name; Present = $present
+            Content = if ($present) { [string](Get-Content -LiteralPath $file -Raw -Encoding UTF8 -ErrorAction Stop) } else { $null } }
+    }
+    $xml = Export-ScheduledTask -TaskName $Task.TaskName -TaskPath '\' -ErrorAction Stop
+    if ([string]::IsNullOrWhiteSpace([string]$xml)) { throw 'Could not snapshot the owned Lemonade task.' }
+    $wasRunning = Test-ODSPortalLemonadeWanted (Join-Path $runtimeDir 'intent.json')
+    $taskEnabled = Get-ODSPortalTaskEnabled $Task ([string]$xml)
+    $journal = @{ Version = 1; Phase = 'prepared'; TaskName = [string]$Task.TaskName
+        OldExecutable = $OldExecutable; NewExecutable = $NewExecutable
+        TaskXml = [string]$xml; Files = $files; WasRunning = $wasRunning; TaskEnabled = $taskEnabled }
+    Write-ODSPrivateEnvFile -Path $path -Content ($journal | ConvertTo-Json -Depth 6 -Compress)
+    return $journal
+}
+
+function Restore-ODSPortalLemonadeUpgrade {
+    $path = Get-ODSPortalLemonadeUpgradeJournalPath
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return }
+    $journal = Get-Content -LiteralPath $path -Raw -Encoding UTF8 -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+    if ($journal.Version -ne 1 -or $journal.Phase -cnotin @('prepared', 'stopped', 'recovering') -or
+        [string]::IsNullOrWhiteSpace([string]$journal.TaskXml) -or
+        [string]::IsNullOrWhiteSpace([string]$journal.TaskName) -or
+        $journal.TaskName -cne (Get-ODSPortalLemonadeTaskName) -or
+        -not (Test-Path -LiteralPath ([string]$journal.OldExecutable) -PathType Leaf)) {
+        throw 'The Portal Lemonade upgrade journal is incomplete; no task was changed.'
+    }
+    $task = Get-ODSPortalLemonadeTask
+    if (-not $task -or $task.TaskName -cne $journal.TaskName) {
+        throw 'The Portal Lemonade upgrade task identity changed; recovery needs review.'
+    }
+    $currentXml = Export-ScheduledTask -TaskName $task.TaskName -TaskPath '\' -ErrorAction Stop
+    $sameTask = (Get-ODSPortalTaskXmlWithoutEnabled $currentXml) -ceq
+        (Get-ODSPortalTaskXmlWithoutEnabled ([string]$journal.TaskXml))
+    $oldIntent = @($journal.Files | Where-Object { $_.Name -eq 'intent.json' })[0]
+    $intentPath = Join-Path (Join-Path (Get-ODSPortalStateDir) 'portal-runtime') 'intent.json'
+    $currentIntentPresent = Test-Path -LiteralPath $intentPath -PathType Leaf
+    $intentUnchanged = ($currentIntentPresent -eq [bool]$oldIntent.Present)
+    if ($intentUnchanged -and $currentIntentPresent) {
+        $intentUnchanged = (Get-Content -LiteralPath $intentPath -Raw -Encoding UTF8) -ceq [string]$oldIntent.Content
+    }
+    if ($journal.Phase -ceq 'prepared' -and $sameTask -and $intentUnchanged -and
+        ((Get-ODSPortalTaskEnabled $task $currentXml) -eq [bool]$journal.TaskEnabled)) {
+        # Stop rejected before changing anything. A recovery attempt must not
+        # disable or restart a task merely because staging wrote a journal.
+        Remove-Item -LiteralPath $path -Force
+        return
+    }
+    # A previous rollback may have restored the task and intent but failed to
+    # prove model readiness. Preserve that proof obligation across retries.
+    if ($journal.Phase -cne 'recovering') {
+        $journal.Phase = 'recovering'
+        Write-ODSPrivateEnvFile -Path $path -Content ($journal | ConvertTo-Json -Depth 6 -Compress)
+    }
+    if (-not $sameTask) {
+        # A new task may be active. Stop only if the existing saved plan and
+        # process identities prove that this task belongs to our new binary.
+        Stop-ODSPortalLemonade ([string]$journal.NewExecutable)
+    } else {
+        # A crash can occur after the original task was disabled but before
+        # registration. Never stop it merely because a journal exists.
+        Disable-ScheduledTask -TaskName $task.TaskName -TaskPath '\' -ErrorAction Stop | Out-Null
+    }
+    $runtimeDir = Join-Path (Get-ODSPortalStateDir) 'portal-runtime'
+    foreach ($saved in @($journal.Files)) {
+        if ([string]$saved.Name -cnotin @('runtime.json', 'launch.ps1', 'backend-contract.ps1', 'env-generator.ps1', 'intent.json')) {
+            throw 'The Portal Lemonade upgrade journal contains an unexpected file.'
+        }
+        $file = Join-Path $runtimeDir ([string]$saved.Name)
+        if ($saved.Present) {
+            Write-ODSPrivateEnvFile -Path $file -Content ([string]$saved.Content)
+        } elseif (Test-Path -LiteralPath $file -PathType Leaf) {
+            Remove-Item -LiteralPath $file -Force
+        }
+    }
+    foreach ($name in @('ready.json', 'process-ownership.json')) {
+        $file = Join-Path $runtimeDir $name
+        if (Test-Path -LiteralPath $file -PathType Leaf) { Remove-Item -LiteralPath $file -Force }
+    }
+    Register-ScheduledTask -TaskName $task.TaskName -TaskPath '\' -Xml ([string]$journal.TaskXml) -Force -ErrorAction Stop | Out-Null
+    if ($journal.TaskEnabled -and $journal.WasRunning) {
+        Enable-ScheduledTask -TaskName $task.TaskName -TaskPath '\' -ErrorAction Stop | Out-Null
+        Start-ScheduledTask -TaskName $task.TaskName -TaskPath '\' -ErrorAction Stop
+        # Keep the journal if recovery cannot prove the old model returned.
+        $oldPlan = Get-Content -LiteralPath (Join-Path $runtimeDir 'runtime.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+        $oldRegistration = [pscustomobject]@{ ReadyPath = (Join-Path $runtimeDir 'ready.json'); Plan = $oldPlan }
+        $null = Wait-ODSPortalLemonadeReady $oldRegistration
+    } else {
+        Disable-ScheduledTask -TaskName $task.TaskName -TaskPath '\' -ErrorAction Stop | Out-Null
+    }
+    Remove-Item -LiteralPath $path -Force
+}
+
+function Register-ODSPortalLemonadeTask($Contract, [string]$GgufFile = '', [string]$WslDistro = '', [string]$WslInstallDir = '', [bool]$PriorStopped = $false, [string]$ExpectedPreviousXml = '') {
     # One task for this Windows user: starts at sign-in (so the model survives a
     # restart) and now. It binds 127.0.0.1 only.
     $previous = Get-ODSPortalLemonadeTask
     $taskName = Get-ODSPortalLemonadeTaskName
+    if ($PriorStopped -and -not $previous) {
+        throw 'The owned Portal Lemonade task disappeared after stop; it was not replaced.'
+    }
     if ($previous) {
+        if ($PriorStopped) {
+            $currentXml = Export-ScheduledTask -TaskName $previous.TaskName -TaskPath '\' -ErrorAction Stop
+            if ([string]::IsNullOrWhiteSpace($ExpectedPreviousXml) -or
+                (Get-ODSPortalTaskXmlWithoutEnabled $currentXml) -cne
+                (Get-ODSPortalTaskXmlWithoutEnabled $ExpectedPreviousXml)) {
+                throw 'The Portal Lemonade task changed after the owned runtime stopped; it was not replaced.'
+            }
+        }
         # Stop validates the old action, plan and held process identities before
         # replacing any file or adopting the same user's legacy task.
-        Stop-ODSPortalLemonade $Contract.ExecutablePath
+        if (-not $PriorStopped) { Stop-ODSPortalLemonade $Contract.ExecutablePath }
         $previousName = if ($previous.TaskName) { $previous.TaskName } else { $taskName }
     }
     $registration = New-ODSPortalLemonadeRuntimeAction $Contract $GgufFile $WslDistro $WslInstallDir
@@ -735,19 +883,41 @@ function Register-ODSPortalLemonadeTask($Contract, [string]$GgufFile = '', [stri
 function Initialize-ODSPortalAmdLemonade($Plan, [string]$SourceRoot, [bool]$NonInteractive, [string]$WslDistro = '', [string]$WslInstallDir = '') {
     # Returns the Linux installer arguments for the Windows Lemonade route, or
     # an empty array when the user keeps the CPU route.
+    Restore-ODSPortalLemonadeUpgrade
     $exe = Install-ODSPortalLemonade $SourceRoot $NonInteractive
     if (-not $exe) {
         Write-Host '         Continuing without the GPU: the model will run on the CPU (slower).'
         return @()
     }
     $modelsDir = Get-ODSPortalLemonadeModel $Plan
-    Stop-ODSPortalLemonade $exe
-    $port = Select-ODSPortalLemonadePort
-    $contract = Get-ODSLemonadeLaunchContract -ExecutablePath $exe -Port $port -ModelsDir $modelsDir -ContextSize $Plan.ContextSize
-    Write-Host "         Starting Lemonade Server $($contract.Version) on 127.0.0.1:$port..."
-    $registration = Register-ODSPortalLemonadeTask $contract $Plan.GgufFile $WslDistro $WslInstallDir
-    Write-Host '         Restoring the configured GPU model (the first load also downloads the GPU runtime)...'
-    $modelId = Wait-ODSPortalLemonadeReady $registration
+    $previous = Get-ODSPortalLemonadeTask
+    $journal = $null
+    if ($previous) {
+        $oldExe = Get-ODSPortalDurableTaskExecutable $previous
+        $journal = Save-ODSPortalLemonadeUpgrade $previous $oldExe $exe
+    }
+    try {
+        if ($previous) {
+            Stop-ODSPortalLemonade $oldExe
+            $journal.Phase = 'stopped'
+            Write-ODSPrivateEnvFile -Path (Get-ODSPortalLemonadeUpgradeJournalPath) -Content ($journal | ConvertTo-Json -Depth 6 -Compress)
+        }
+        $port = Select-ODSPortalLemonadePort
+        $contract = Get-ODSLemonadeLaunchContract -ExecutablePath $exe -Port $port -ModelsDir $modelsDir -ContextSize $Plan.ContextSize
+        Write-Host "         Starting Lemonade Server $($contract.Version) on 127.0.0.1:$port..."
+        $expectedXml = if ($journal) { [string]$journal.TaskXml } else { '' }
+        $registration = Register-ODSPortalLemonadeTask $contract $Plan.GgufFile $WslDistro $WslInstallDir ([bool]$previous) $expectedXml
+        Write-Host '         Restoring the configured GPU model (the first load also downloads the GPU runtime)...'
+        $modelId = Wait-ODSPortalLemonadeReady $registration
+        if ($journal) { Remove-Item -LiteralPath (Get-ODSPortalLemonadeUpgradeJournalPath) -Force }
+    } catch {
+        $failure = $_.Exception.Message
+        if ($journal) {
+            try { Restore-ODSPortalLemonadeUpgrade }
+            catch { throw "Lemonade upgrade failed: $failure Recovery needs review: $($_.Exception.Message)" }
+        }
+        throw
+    }
     Write-Host "         GPU model ready: $modelId ($($Plan.ContextSize) tokens of context)."
     return @(
         '--lemonade-url', "http://localhost:$port",
