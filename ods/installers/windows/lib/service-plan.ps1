@@ -47,6 +47,29 @@ function Get-ODSWindowsInstalledServiceSelection {
     }
     if (Test-Path -LiteralPath $active -PathType Leaf) { return $true }
     if (Test-Path -LiteralPath $disabled -PathType Leaf) { return $false }
+
+    # Older native installs recorded their selected Compose stack in this
+    # flags file before Library actions began renaming per-service fragments.
+    $flagsPath = Join-Path $InstallDir ".compose-flags"
+    $flagsItem = Get-Item -LiteralPath $flagsPath -Force -ErrorAction SilentlyContinue
+    if ($flagsItem) {
+        if ($flagsItem.PSIsContainer -or ($flagsItem.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+            throw "Unsafe installed Compose flags path: $flagsPath"
+        }
+        $tokens = @((Get-Content -LiteralPath $flagsPath -Raw -ErrorAction Stop).Trim() -split '\s+' |
+            Where-Object { $_ })
+        $baseSelected = $false
+        $serviceSelected = $false
+        for ($i = 0; $i -lt $tokens.Count; $i++) {
+            if ($tokens[$i] -ne "-f") { continue }
+            if (++$i -ge $tokens.Count) { throw "Incomplete installed Compose flags: $flagsPath" }
+            $fragment = $tokens[$i] -replace '\\', '/'
+            if ($fragment -eq "docker-compose.base.yml") { $baseSelected = $true }
+            if ($fragment -eq "extensions/services/$ServiceId/compose.yaml") { $serviceSelected = $true }
+        }
+        if (-not $baseSelected) { throw "Installed Compose flags lack base stack: $flagsPath" }
+        return $serviceSelected
+    }
     return $null
 }
 
@@ -54,6 +77,7 @@ function Resolve-ODSWindowsHermesSelection {
     param(
         [Parameter(Mandatory = $true)][string]$InstallDir,
         [bool]$ComputedHermes,
+        [Nullable[bool]]$ComputedProxy = $null,
         [bool]$CliEnable,
         [bool]$CliDisable,
         [bool]$All,
@@ -61,7 +85,7 @@ function Resolve-ODSWindowsHermesSelection {
     )
 
     $hermes = $ComputedHermes
-    $proxy = $ComputedHermes
+    $proxy = if ($null -ne $ComputedProxy) { [bool]$ComputedProxy } else { $ComputedHermes }
     if ($CliDisable) {
         $hermes = $false
         $proxy = $false
@@ -71,12 +95,14 @@ function Resolve-ODSWindowsHermesSelection {
     } elseif (-not $All -and -not $MenuExplicit) {
         $installedHermes = Get-ODSWindowsInstalledServiceSelection -InstallDir $InstallDir -ServiceId "hermes"
         $installedProxy = Get-ODSWindowsInstalledServiceSelection -InstallDir $InstallDir -ServiceId "hermes-proxy"
-        if ($null -ne $installedHermes) { $hermes = [bool]$installedHermes }
-        if ($null -ne $installedProxy) {
-            $proxy = [bool]$installedProxy
-        } elseif ($null -ne $installedHermes) {
-            # Older native installs selected the agent and proxy together.
-            $proxy = $hermes
+        if (Test-Path -LiteralPath (Join-Path $InstallDir ".env") -PathType Leaf) {
+            # An existing install with no Hermes fragments has not selected it.
+            # Do not re-enable it from a computed default on a quiet rerun.
+            $hermes = if ($null -ne $installedHermes) { [bool]$installedHermes } else { $false }
+            $proxy = if ($null -ne $installedProxy) { [bool]$installedProxy } else {
+                # Older native installs selected the agent and proxy together.
+                $hermes
+            }
         }
     }
     if ($proxy -and -not $hermes) {

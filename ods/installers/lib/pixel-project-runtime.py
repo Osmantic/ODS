@@ -211,7 +211,13 @@ def cleanup_linux(source, owner_uid, *, remove=False):
         if set(PROGRAM_ROOT.iterdir()) - {PROGRAM_ROOT / name for name in FILES}:
             raise ValueError('unexpected project runtime files')
     for path in present:
-        if common.protected_file(path) != expected[path]:
+        installed = common.protected_file(path)
+        # Upgrades already recognize the exact former 64-task unit. Cleanup
+        # must accept that same template bound to the protected configuration,
+        # and pin its bytes for the immediate-before-unlink recheck below.
+        if path == UNIT and installed == _unit_bytes(config, previous_task_budget=True):
+            expected[UNIT] = installed
+        if installed != expected[path]:
             raise ValueError('project installed source mismatch')
     if remove:
         state = subprocess.run(['systemctl', 'is-active', '--quiet', UNIT.name],

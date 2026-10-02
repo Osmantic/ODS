@@ -529,7 +529,7 @@ export default function Extensions({ compact = false }) {
   const availableForAdd = ext => ext.status === 'not_installed'
     || (ext.id === 'open-webui' && webuiCanAdd)
     || (ext.source === 'core' && ext.library_manageable === true
-      && ext.library_selected === false && ext.status === 'disabled')
+      && ext.library_selected === false && ['disabled', 'error'].includes(ext.status))
   const unsupportedIds = new Set(allExtensions.filter(ext => !extensions.includes(ext)).map(ext => ext.id))
   const summary = {
     not_installed: extensions.filter(availableForAdd).length,
@@ -870,7 +870,8 @@ function ExtensionCard({ ext, gpuBackend, agentAvailable, onDetails, onConsole, 
   const isToggleable = (isUserExt || (isManagedBuiltin && ext.library_selected === true))
     && (status === 'enabled' || status === 'cli_installed' || status === 'disabled' || status === 'error' || status === 'stopped' || status === 'unhealthy')
   const showManagedAdd = isManagedBuiltin && ext.library_selected === false && status === 'disabled'
-  const showManagedRetry = isManagedBuiltin && ext.library_selected === true && (isError || isStopped || isUnhealthy)
+  const showManagedRetry = isManagedBuiltin && (isError
+    || (ext.library_selected === true && (isStopped || isUnhealthy)))
   const showRemove = isUserExt && (status === 'disabled' || isError)
   const showInstall = status === 'not_installed' && ext.installable
   const showUpdate = isUserExt && ext.installable && (

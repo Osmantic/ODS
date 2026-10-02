@@ -224,6 +224,27 @@ for later_module in ("pixel_gateway_service.py", "access_release_transaction.py"
         expected_sources.remove(later_module)
 
 source_mirror = {}
+source_idle = None
+source_lock_fd = None
+source_state = state_root / 'source-upgrade'
+
+
+def source_identity(info):
+    return info.st_dev, info.st_ino
+
+
+def verify_idle_source():
+    parent = directory(state_root, root_uid, root_gid, exact_mode=0o700)
+    folder = directory(source_state, root_uid, root_gid, exact_mode=0o700)
+    leaf = regular(source_state / 'lock', root_uid, root_gid, 0, private=True)
+    if (stat.S_IMODE(leaf.st_mode) != 0o600
+            or (source_identity(parent), source_identity(folder), source_identity(leaf)) != source_idle
+            or source_identity(os.fstat(source_lock_fd)) != source_identity(leaf)
+            or sorted(os.listdir(source_state)) != ['lock']
+            or present(state_root / 'transition.json')):
+        raise SystemExit('never-staged Pixel source state changed')
+
+
 if present(state_root / 'source-upgrade'):
     # The retained protected guard can legitimately be newer than a rolled-
     # back source. Its completed, exact-byte root inventory is the authority;
@@ -231,11 +252,30 @@ if present(state_root / 'source-upgrade'):
     directory(program, root_uid, root_gid)
     helper = program / 'pixel_source_upgrade.py'
     regular(helper, root_uid, root_gid, 2 * 1024 * 1024)
-    spec = importlib.util.spec_from_file_location('ods_source_uninstall', helper)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    manager = module.SourceUpgrade(state_root / 'source-upgrade', install, owner_uid)
-    source_mirror = manager.uninstall_inventory()
+    parent = directory(state_root, root_uid, root_gid, exact_mode=0o700)
+    folder = directory(source_state, root_uid, root_gid, exact_mode=0o700)
+    if sorted(os.listdir(source_state)) == ['lock']:
+        # Stage creates its lock before validating source. A refusal can leave
+        # no transaction at all. Old protected helpers require a completed
+        # journal, so recognize only this exact idle state in the candidate.
+        # Keep the descriptor locked until this short-lived Python process
+        # exits, including throughout final removal. Never create a new lock.
+        source_lock_fd = os.open(source_state / 'lock',
+                                 os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+        leaf = regular(source_state / 'lock', root_uid, root_gid, 0, private=True)
+        source_idle = (source_identity(parent), source_identity(folder), source_identity(leaf))
+        verify_idle_source()
+        try:
+            fcntl.flock(source_lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as error:
+            raise SystemExit('Pixel source transition lock is busy') from error
+        verify_idle_source()
+    else:
+        spec = importlib.util.spec_from_file_location('ods_source_uninstall', helper)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        manager = module.SourceUpgrade(state_root / 'source-upgrade', install, owner_uid)
+        source_mirror = manager.uninstall_inventory()
 
 relay_key = config.parent / "pixel-access-relay.key"
 artifacts = (unit, program, config, relay_key, state_root, probe_owner, dropin,
@@ -387,8 +427,8 @@ provider_managed = None
 if present(state_root):
     directory(state_root, root_uid, root_gid, exact_mode=0o700)
     for child in state_root.iterdir():
-        if child.name == 'source-upgrade' and source_mirror:
-            continue  # Completely validated by the protected helper above.
+        if child.name == 'source-upgrade' and (source_mirror or source_idle):
+            continue  # Completed transaction or exact locked idle state above.
         if abandoned_state_temp.fullmatch(child.name):
             info = regular(child, root_uid, root_gid, 8 * 1024 * 1024, private=True)
             if stat.S_IMODE(info.st_mode) != 0o600:
@@ -477,6 +517,9 @@ for line in mount_lines:
     mount = pathlib.Path(os.path.abspath(mount_text))
     if any(mount == root or root in mount.parents for root in mount_roots):
         raise SystemExit(f"mount inside Pixel access cleanup root: {mount}")
+
+if source_idle:
+    verify_idle_source()
 
 for path in (provider_dropin, provider_environment, dropin, relay_key, config, unit):
     if present(path):

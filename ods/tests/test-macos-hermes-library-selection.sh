@@ -13,7 +13,8 @@ ai_err() { printf '%s\n' "$*" >&2; }
 ai_ok() { :; }
 log() { :; }
 for function_name in _macos_retained_builtin_state _macos_resolve_hermes_selection \
-    _macos_validate_hermes_selection _macos_set_builtin_compose_state \
+    _macos_validate_hermes_selection _macos_apply_custom_hermes_answer \
+    _macos_set_builtin_compose_state \
     _macos_sync_builtin_compose_states; do
     eval "$(sed -n "/^${function_name}() {/,/^}/p" "$installer")"
 done
@@ -30,6 +31,15 @@ printf 'services: {}\n' >"$INSTALL_DIR/extensions/services/hermes-proxy/compose.
 _macos_resolve_hermes_selection
 [[ "$ENABLE_HERMES" == true && "$ENABLE_HERMES_PROXY" == false ]]
 _macos_validate_hermes_selection
+
+# Custom keeps an independently disabled proxy when Hermes remains selected.
+_macos_apply_custom_hermes_answer ""
+[[ "$ENABLE_HERMES" == true && "$ENABLE_HERMES_PROXY" == false ]]
+_macos_apply_custom_hermes_answer "n"
+[[ "$ENABLE_HERMES" == false && "$ENABLE_HERMES_PROXY" == false ]]
+_macos_apply_custom_hermes_answer "y"
+[[ "$ENABLE_HERMES" == true && "$ENABLE_HERMES_PROXY" == true ]]
+ENABLE_HERMES_PROXY=false
 
 # A source refresh can copy active fragments over installed disabled markers.
 # The retained per-service choices must still win when the installer syncs.
