@@ -3903,7 +3903,8 @@ elif is_windows_bash; then
         log "WARNING: Could not resolve the Windows ODS CLI path for host agent restart (non-fatal)"
     else
         log "Restarting ods-host-agent (Windows)..."
-        "$_windows_agent_ps" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass \
+        ODS_HOME="$(windows_path "$INSTALL_DIR")" \
+            "$_windows_agent_ps" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass \
             -File "$_windows_agent_cli_arg" agent restart 2>&1 || \
             log "WARNING: Could not restart host agent (non-fatal)"
     fi
