@@ -586,7 +586,7 @@ function Get-Process {
 function New-ODSOwnedPortInspect {
     param([string]$WorkingDir, [string]$Project = 'ods',
         [string]$Service = 'open-webui', [string]$HostIp = '127.0.0.1',
-        [string]$ContainerId = 'owned-container-full-id')
+        [string]$ContainerId = 'owned-container-full-id', [string]$HostPort = '3000')
     return (ConvertTo-Json -InputObject @([ordered]@{
         Id = $ContainerId
         State = @{ Running = $true }
@@ -596,7 +596,7 @@ function New-ODSOwnedPortInspect {
             'com.docker.compose.service' = $Service
         } }
         NetworkSettings = @{ Ports = @{ '8080/tcp' = @(@{
-            HostIp = $HostIp; HostPort = '3000'
+            HostIp = $HostIp; HostPort = $HostPort
         }) } }
     }) -Depth 10 -Compress)
 }
@@ -622,7 +622,16 @@ $script:dockerPortIds = @('owned-container', 'other-container')
 $script:dockerPortInspects['other-container'] = New-ODSOwnedPortInspect `
     -WorkingDir ($ownedInstallDir + '-other') -ContainerId 'other-container-full-id'
 Assert-Equal @(Get-WindowsODSSelectedPortConflicts -PortsToCheck $ownedPorts -InstallDir $ownedInstallDir).Count `
-    0 'another valid ODS checkout does not hide this installation binding'
+    1 'duplicate published endpoint from another ODS checkout is ambiguous'
+$script:dockerPortInspects['other-container'] = New-ODSOwnedPortInspect `
+    -WorkingDir ($ownedInstallDir + '-other') -ContainerId 'other-container-full-id' -HostPort '3002'
+Assert-Equal @(Get-WindowsODSSelectedPortConflicts -PortsToCheck $ownedPorts -InstallDir $ownedInstallDir).Count `
+    0 'another ODS checkout on an unrelated port does not hide this binding'
+$script:dockerPortInspects['other-container'] = New-ODSOwnedPortInspect `
+    -WorkingDir ($ownedInstallDir + '-other') -ContainerId 'other-container-full-id' `
+    -HostPort '3000' -Project 'foreign'
+Assert-Equal @(Get-WindowsODSSelectedPortConflicts -PortsToCheck $ownedPorts -InstallDir $ownedInstallDir).Count `
+    1 'foreign project with the same published endpoint remains a conflict'
 $script:dockerPortIds = @('owned-container')
 $script:dockerPortInspects['owned-container'] = New-ODSOwnedPortInspect -WorkingDir ($ownedInstallDir + '-other')
 Assert-Equal @(Get-WindowsODSSelectedPortConflicts -PortsToCheck $ownedPorts -InstallDir $ownedInstallDir).Count `

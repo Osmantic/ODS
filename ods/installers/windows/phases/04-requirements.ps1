@@ -201,7 +201,7 @@ function Get-WindowsODSExpectedComposeService {
 function Get-WindowsODSComposePortBindings {
     param([string]$InstallDir)
 
-    $unknown = @{ Verified = $false; Bindings = @() }
+    $unknown = @{ Verified = $false; Bindings = @(); ExpectedRoot = '' }
     if ([string]::IsNullOrWhiteSpace($InstallDir) -or
         -not [IO.Path]::IsPathRooted($InstallDir) -or
         -not (Get-Command docker -ErrorAction SilentlyContinue)) {
@@ -209,9 +209,9 @@ function Get-WindowsODSComposePortBindings {
     }
     try {
         $expected = [IO.Path]::GetFullPath($InstallDir).TrimEnd('\', '/')
-        # Project name alone cannot distinguish a retained native installation
-        # from another ODS checkout. Inspect each running candidate's directory.
-        $ids = @(& docker ps --filter 'label=com.docker.compose.project=ods' --format '{{.ID}}' 2>$null)
+        # Inspect every running container. A second project may temporarily
+        # advertise the same endpoint during a Docker Desktop port transfer.
+        $ids = @(& docker ps --format '{{.ID}}' 2>$null)
         if ($LASTEXITCODE -ne 0) { return $unknown }
         $bindings = @()
         foreach ($id in $ids) {
@@ -221,20 +221,17 @@ function Get-WindowsODSComposePortBindings {
             $items = @(($raw -join "`n") | ConvertFrom-Json -ErrorAction Stop)
             if ($items.Count -ne 1) { return $unknown }
             $container = $items[0]
-            $labels = $container.Config.Labels
-            $workingDir = [string]$labels.'com.docker.compose.project.working_dir'
-            $service = [string]$labels.'com.docker.compose.service'
-            if ($labels.'com.docker.compose.project' -ne 'ods' -or
-                -not $container.State.Running -or
-                [string]::IsNullOrWhiteSpace([string]$container.Id) -or
-                [string]::IsNullOrWhiteSpace($workingDir) -or
-                -not [IO.Path]::IsPathRooted($workingDir) -or
-                [string]::IsNullOrWhiteSpace($service)) {
+            if (-not $container.State.Running -or
+                [string]::IsNullOrWhiteSpace([string]$container.Id)) {
                 return $unknown
             }
-            $actual = [IO.Path]::GetFullPath($workingDir).TrimEnd('\', '/')
-            if (-not [string]::Equals($actual, $expected,
-                [StringComparison]::OrdinalIgnoreCase)) { continue }
+            $labels = $container.Config.Labels
+            $workingDir = [string]$labels.'com.docker.compose.project.working_dir'
+            $actual = ''
+            if (-not [string]::IsNullOrWhiteSpace($workingDir) -and
+                [IO.Path]::IsPathRooted($workingDir)) {
+                $actual = [IO.Path]::GetFullPath($workingDir).TrimEnd('\', '/')
+            }
             if (-not $container.NetworkSettings.Ports) { continue }
             foreach ($publishedPort in $container.NetworkSettings.Ports.PSObject.Properties) {
                 if ($publishedPort.Name -notmatch '/tcp$') { continue }
@@ -248,14 +245,16 @@ function Get-WindowsODSComposePortBindings {
                     }
                     $bindings += [pscustomobject]@{
                         ContainerId = [string]$container.Id
-                        Service = $service
+                        Project = [string]$labels.'com.docker.compose.project'
+                        WorkingDir = $actual
+                        Service = [string]$labels.'com.docker.compose.service'
                         HostIp = [string]$entry.HostIp
                         HostPort = $hostPort
                     }
                 }
             }
         }
-        return @{ Verified = $true; Bindings = @($bindings) }
+        return @{ Verified = $true; Bindings = @($bindings); ExpectedRoot = $expected }
     } catch {
         # Missing, changing, or malformed Docker metadata is never authority to
         # bypass the ordinary occupied-port gate.
@@ -303,10 +302,14 @@ function Test-WindowsODSComposeOwnsListeners {
             $seen.ContainsKey($address)) { return $false }
         $seen[$address] = $true
         $matches = @($Ownership.Bindings | Where-Object {
-            $_.HostPort -eq $Port -and $_.Service -eq $Service -and
-            $_.HostIp -eq $address
+            $_.HostPort -eq $Port -and $_.HostIp -eq $address
         })
         if ($matches.Count -ne 1) { return $false }
+        $binding = $matches[0]
+        if ($binding.Project -ne 'ods' -or $binding.Service -ne $Service -or
+            -not [string]::Equals([string]$binding.WorkingDir,
+                [string]$Ownership.ExpectedRoot,
+                [StringComparison]::OrdinalIgnoreCase)) { return $false }
     }
     return $true
 }
