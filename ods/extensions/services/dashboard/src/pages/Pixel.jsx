@@ -632,8 +632,7 @@ export default function Pixel({ systemStatus = null }) {
     && (initialChat.persistenceSnapshot.inFlight === true || initialChat.persistenceSnapshot.interrupted === true)
     && !restoredViewRef.current) {
     restoredViewRef.current = {
-      chatId: initialChat.chatId, messages, input, preview, workspaceOpen,
-      sending, interrupted, chatMode, imageDraftKey,
+      chatId: initialChat.chatId, input, chatMode, imageDraftKey,
     }
   }
   const hasImageHistory = messages.some(message=>message.role==='user' && message.images?.length)
@@ -957,12 +956,11 @@ export default function Pixel({ systemStatus = null }) {
   useEffect(() => {
     const restored = restoredViewRef.current
     if (restored && chatIdRef.current === restored.chatId
-      && messages === restored.messages && input === restored.input
-      && preview === restored.preview && workspaceOpen === restored.workspaceOpen
-      && sending === restored.sending && interrupted === restored.interrupted
-      && chatMode === restored.chatMode && imageDraftKey === restored.imageDraftKey) {
-      // Opening a passive tab must not rewrite an active conversation's
-      // recovery markers and take its original writer's revision.
+      && input === restored.input && chatMode === restored.chatMode
+      && imageDraftKey === restored.imageDraftKey) {
+      // A restored observer may receive the original tab's terminal result
+      // and open Library without editing its own draft. Neither action gives
+      // it ownership of the conversation's browser-storage revision.
       return
     }
     try {
@@ -1026,6 +1024,7 @@ export default function Pixel({ systemStatus = null }) {
       if(teamAttempt.current?.signature!==signature)teamAttempt.current={signature,id:makeChatId(),context:messages.filter(m=>!m.teamRequestId).slice(-4).map(m=>`${m.role}: ${m.content.slice(0,450)}`).join('\n').slice(-1800)}
       const requestId=teamAttempt.current.id
       const context=teamAttempt.current.context
+      restoredViewRef.current = null
       setMessages(previous=>previous.some(m=>m.teamRequestId===requestId) ? previous : [...previous,{role:'user',content:trimmed},{role:'assistant',content:requestedGoal?'Preparing your goal…':'Preparing the agent team…',teamRequestId:requestId,...(requestedGoal?{goalMode:true}:{}),status:'done'}])
       setStopError('')
       try {
@@ -1048,6 +1047,7 @@ export default function Pixel({ systemStatus = null }) {
       userMessage,
     ]
     const visibleConversation = [...messages, userMessage]
+    restoredViewRef.current = null
     setMessages([...visibleConversation, { role: 'assistant', content: '', status: 'streaming', revealResponse:makeChatId() }])
     if (typeof answerOverride !== 'string') setInput('')
     setSending(true)
@@ -1497,6 +1497,10 @@ export default function Pixel({ systemStatus = null }) {
       const chat = loadStoredChat(readConversations().find(item => item.chatId === event.detail))
       if (!chat || chat.chatId === chatIdRef.current) return
       conversationWriter.current = createConversationWriter(chat.persistenceSnapshot)
+      restoredViewRef.current = chat.persistenceSnapshot?.persistenceVersion === 2
+        && (chat.persistenceSnapshot.inFlight === true || chat.persistenceSnapshot.interrupted === true)
+        ? {chatId: chat.chatId, input: chat.draft, chatMode: chat.chatMode,
+          imageDraftKey: JSON.stringify(chat.draftImages)} : null
       chatIdRef.current = chat.chatId
       images.replace(chat.chatId,chat.draftImages)
       shownTeamPublications.current = shownPublicationKeys(chat)
@@ -1772,7 +1776,7 @@ export default function Pixel({ systemStatus = null }) {
               ) : (
                 <span className="break-words whitespace-pre-wrap">{message.content}</span>
               )}
-              {message.role === 'assistant' && message.questions && <PixelQuestions questions={message.questions} answers={message.questionDraft} answered={index<messages.length-1} disabled={message.goalMode ? message.goalState!=='waiting' : isDisabled || sending || restoredActive || restoredChecking} onChange={questionDraft=>setMessages(previous=>previous.map((item,i)=>i===index?{...item,questionDraft}:item))} onSubmit={answer=>message.goalMode ? teams.answer(message.teamId,'0',message.questionDraft) : sendMessage(message.task?.goal ? continueGoal(messages,index,answer) : answer)}/>}
+              {message.role === 'assistant' && message.questions && <PixelQuestions questions={message.questions} answers={message.questionDraft} answered={index<messages.length-1} disabled={message.goalMode ? message.goalState!=='waiting' : isDisabled || sending || restoredActive || restoredChecking} onChange={questionDraft=>{restoredViewRef.current=null;setMessages(previous=>previous.map((item,i)=>i===index?{...item,questionDraft}:item))}} onSubmit={answer=>{restoredViewRef.current=null;return message.goalMode ? teams.answer(message.teamId,'0',message.questionDraft) : sendMessage(message.task?.goal ? continueGoal(messages,index,answer) : answer)}}/>}
               {message.goalMode && message.goalNotice && <p role="status" className="mt-3 text-xs text-theme-text-secondary">{message.goalNotice}</p>}
               {message.teamId && !(message.goalMode && ACTIVE_TEAMS.has(message.goalState)) && <button type="button" onClick={()=>openAgents({teamId:message.teamId,agentId:'0'})} className={message.goalMode?"mt-3 border-0 bg-transparent px-0 py-2 text-xs hover:underline":"mt-3 rounded-lg border border-theme-border px-3 py-2 text-xs hover:bg-theme-border/30"}>{message.goalMode?'View goal history':'View agents and conversations'}</button>}
 
