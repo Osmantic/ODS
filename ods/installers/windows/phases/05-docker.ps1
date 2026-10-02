@@ -74,24 +74,15 @@ if ($dryRun) {
     }
     Write-AISuccess "Docker Compose available: $dockerComposeCmd"
 
+    . (Join-Path $sourceRoot 'installers\windows\lib\compose-project-ownership.ps1')
     # A reinstall can begin while Docker Desktop is still starting. If old ODS
     # containers come back after the install tree was removed, file bind mounts
     # may recreate missing host-side files as directories. Remove stale ODS
     # containers while Docker is definitely available, before Phase 06 rewrites
     # the bind-mounted install tree.
-    try {
-        $_odsContainerNames = @(& docker ps -a --format "{{.Names}}" 2>$null | Where-Object { $_ -like "ods-*" })
-        if ($_odsContainerNames.Count -gt 0) {
-            Write-AI "Stopping existing ODS containers before reinstall..."
-            $null = & docker rm -f @_odsContainerNames 2>&1
-            if ($LASTEXITCODE -eq 0) {
-                Write-AISuccess "Stopped existing ODS containers"
-            } else {
-                Write-AIWarn "Could not remove all existing ODS containers; continuing with file-path repair."
-            }
-        }
-    } catch {
-        Write-AIWarn "Could not inspect existing ODS containers: $($_.Exception.Message)"
+    $_removedStaleODSContainers = Clear-ODSWindowsOwnedStaleContainers -InstallDir $installDir
+    if ($_removedStaleODSContainers -gt 0) {
+        Write-AISuccess "Removed $_removedStaleODSContainers stale containers owned by this ODS installation"
     }
 
     # ── Compose file syntax validation ────────────────────────────────────────

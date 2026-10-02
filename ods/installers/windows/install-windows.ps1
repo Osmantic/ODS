@@ -1783,6 +1783,10 @@ litellm_settings:
         }
 
         Assert-ODSWindowsComposeCwd -InstallDir $installDir
+        # Recheck immediately before local image work and Compose launch. The
+        # installer may have switched Docker client config since phase 05.
+        $null = Assert-ODSWindowsComposeContainerOwnership -InstallDir $installDir `
+            -DockerClientArgs $script:ODSWindowsDockerClientArgs
         $composeUpArgs = @("up", "-d", "--remove-orphans", "--no-build", "--pull", "never")
         # PS 5.1 treats ANY stderr output from native commands as NativeCommandError.
         # Silence stderr-as-error so $LASTEXITCODE reflects the real compose exit code.
@@ -1940,12 +1944,16 @@ litellm_settings:
             }
 
             Write-AI "Starting services... this may take several minutes."
+            $null = Assert-ODSWindowsComposeContainerOwnership -InstallDir $installDir `
+                -DockerClientArgs $script:ODSWindowsDockerClientArgs
             & docker @script:ODSWindowsDockerClientArgs compose @composeFlags @composeUpArgs *> $_composeLog
             $composeExit = $LASTEXITCODE
             if ($composeExit -ne 0 -and $script:ODSWindowsDockerConfigMode -eq "install-scoped") {
                 Write-AIWarn "Compose service launch failed with the install-scoped Docker config; retrying with the user's Docker config."
                 Add-Content -LiteralPath $_composeLog -Value "`n--- retrying Compose service launch with user's Docker config after install-scoped config failure ---"
                 Use-ODSWindowsUserDockerConfig -Reason "Compose service launch"
+                $null = Assert-ODSWindowsComposeContainerOwnership -InstallDir $installDir `
+                    -DockerClientArgs $script:ODSWindowsDockerClientArgs
                 Write-ODSWindowsComposeLaunchRecord -InstallDir $installDir -ComposeFlags $composeFlags `
                     -ComposeArgs $composeUpArgs -DockerClientArgs $script:ODSWindowsDockerClientArgs
                 & docker @script:ODSWindowsDockerClientArgs compose @composeFlags @composeUpArgs *>> $_composeLog
