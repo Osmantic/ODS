@@ -42,10 +42,10 @@ class RetainedJournalProjection(unittest.TestCase):
         self.path.write_text(json.dumps(value), encoding="utf-8")
         self.path.chmod(mode)
 
-    def run_reader(self):
+    def run_reader(self, timeout=10):
         return subprocess.run(
             [sys.executable, "-c", READER, str(self.install)],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True, text=True, timeout=timeout,
         )
 
     def test_missing_journal_is_fresh_install(self):
@@ -89,6 +89,12 @@ class RetainedJournalProjection(unittest.TestCase):
         outside.chmod(0o600)
         self.path.symlink_to(outside)
         self.assertNotEqual(self.run_reader().returncode, 0)
+
+    def test_fifo_journal_refuses_without_blocking(self):
+        os.mkfifo(self.path, 0o600)
+        result = self.run_reader(timeout=2)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertTrue(self.path.is_fifo())
 
     def test_nonroot_installation_accepts_retained_group_writable_data_directory(self):
         self.write(journal())
