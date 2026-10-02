@@ -271,14 +271,17 @@ class TestExtensionsCatalog:
         write_started(16)
         assert ext_module._compute_extension_status(ext, unhealthy) == "unhealthy"
 
-    @pytest.mark.parametrize("architecture,compatible", [
-        ("x86_64", True), ("AMD64", True),
-        ("aarch64", False), ("arm64", False), ("unknown", False),
+    @pytest.mark.parametrize("architecture,backend,compatible", [
+        ("x86_64", "nvidia", True), ("AMD64", "amd", True),
+        ("aarch64", "apple", True), ("arm64", "apple", True),
+        ("aarch64", "nvidia", False), ("arm64", "amd", False),
+        ("unknown", "apple", False),
     ])
     def test_embeddings_runtime_matches_pinned_amd64_image(
-            self, architecture, compatible):
+            self, monkeypatch, architecture, backend, compatible):
         from routers import extensions as ext_module
 
+        monkeypatch.setattr(ext_module, "GPU_BACKEND", backend)
         with patch.object(ext_module.platform, "machine", return_value=architecture):
             assert ext_module._embeddings_runtime_compatible() is compatible
 
@@ -374,6 +377,35 @@ class TestExtensionsCatalog:
 
         with patch.object(ext_module, "_scan_installed_compose"):
             result = ext_module._activate_service("embeddings")
+        assert result["action"] == "enabled"
+        assert disabled.is_file()
+
+    def test_apple_silicon_embedded_tei_is_addable_from_library(
+            self, test_client, monkeypatch, tmp_path):
+        from routers import extensions as ext_module
+
+        catalog = [{**_make_catalog_ext("embeddings", gpu_backends=["all"]),
+                    "catalog_source": "builtin"}]
+        _patch_extensions_config(monkeypatch, catalog, tmp_path=tmp_path)
+        builtin = tmp_path / "builtin" / "embeddings"
+        builtin.mkdir(parents=True)
+        disabled = builtin / "compose.yaml.disabled"
+        disabled.write_text("services: {embeddings: {image: example/tei}}\n")
+        monkeypatch.setattr(ext_module, "EXTENSIONS_DIR", builtin.parent)
+        monkeypatch.setattr(ext_module, "USER_EXTENSIONS_DIR", tmp_path / "user")
+        monkeypatch.setattr(ext_module, "GPU_BACKEND", "apple")
+
+        with patch.object(ext_module.platform, "machine", return_value="arm64"):
+            with patch("helpers.get_cached_services", return_value=[]):
+                response = test_client.get(
+                    "/api/extensions/catalog", headers=test_client.auth_headers)
+            assert response.status_code == 200
+            row = next(item for item in response.json()["extensions"]
+                       if item["id"] == "embeddings")
+            assert row["status"] == "disabled"
+            assert row["library_manageable"] is True
+            with patch.object(ext_module, "_scan_installed_compose"):
+                result = ext_module._activate_service("embeddings")
         assert result["action"] == "enabled"
         assert disabled.is_file()
 

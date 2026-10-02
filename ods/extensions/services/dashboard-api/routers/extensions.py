@@ -407,8 +407,11 @@ def _qdrant_runtime_compatible() -> bool:
 
 
 def _embeddings_runtime_compatible() -> bool:
-    """The pinned TEI image is linux/amd64, regardless of GPU overlay."""
-    return platform.machine().lower() in {"amd64", "x86_64"}
+    """The pinned amd64 TEI image also runs on Apple Silicon via Rosetta."""
+    architecture = platform.machine().lower()
+    return architecture in {"amd64", "x86_64"} or (
+        GPU_BACKEND == "apple" and architecture in {"arm64", "aarch64"}
+    )
 
 
 def _qualified_builtin_selection(service_id: str) -> dict:
@@ -4503,7 +4506,7 @@ def _activate_service(service_id: str) -> dict:
             and not _embeddings_runtime_compatible()):
         raise HTTPException(
             status_code=409,
-            detail="The bundled embeddings image requires an amd64 runtime",
+            detail="The bundled embeddings image requires amd64 or Apple Silicon emulation",
         )
 
     disabled_compose = ext_dir / "compose.yaml.disabled"

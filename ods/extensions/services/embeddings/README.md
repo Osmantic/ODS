@@ -5,8 +5,9 @@ Text-to-vector embedding service for RAG and semantic search in ODS
 Fresh Core installs leave TEI off. On amd64 hosts, add it from the Dashboard
 Extensions Library when an application needs an embeddings endpoint. Its model
 downloads on first start, so health can take several minutes; disabling TEI
-preserves the `./data/embeddings` cache. The bundled image is amd64-only, so
-the Library does not offer it on arm64 hosts.
+preserves the `./data/embeddings` cache. The bundled image is amd64-only;
+Apple Silicon can run it through Docker's Rosetta emulation. The Library does
+not offer it on other arm64 hosts.
 
 TEI alone does not enable document RAG. That journey also needs a vector
 store such as Qdrant and an application configured to use both services.
