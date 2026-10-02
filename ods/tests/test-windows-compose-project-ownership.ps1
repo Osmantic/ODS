@@ -1,7 +1,7 @@
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot '..\installers\windows\lib\compose-project-ownership.ps1')
 
-$script:root = Join-Path $env:TEMP 'ods-compose-ownership-fixture'
+$script:root = Join-Path ([IO.Path]::GetTempPath()) 'ods-compose-ownership-fixture'
 $script:ids = @(('a' * 64), ('b' * 64), ('c' * 64))
 $script:containers = @()
 $script:inspectFails = $false
@@ -88,7 +88,7 @@ Check (@(Assert-ODSWindowsComposeContainerOwnership -InstallDir $script:root).Co
     'an empty Docker engine is allowed'
 $script:containers = @(
     (New-FixtureContainer -Id $script:ids[0] -Name 'ods-dashboard'),
-    (New-FixtureContainer -Id $script:ids[1] -Name 'ods-litellm' -WorkingDir ($script:root.ToUpperInvariant()))
+    (New-FixtureContainer -Id $script:ids[1] -Name 'ods-litellm' -WorkingDir $(if ($env:OS -eq 'Windows_NT') { $script:root.ToUpperInvariant() } else { $script:root }))
 )
 $owned = @(Assert-ODSWindowsComposeContainerOwnership -InstallDir $script:root)
 Check ($owned.Count -eq 2 -and $owned -contains $script:ids[0] -and
@@ -132,7 +132,7 @@ Expect-Blocked 'a custom-named container in the foreign ods project is blocked' 
 
 $script:containers = @(
     (New-FixtureContainer -Id $script:ids[0] -Name 'ods-dashboard' `
-        -ConfigFiles 'C:\outside\docker-compose.base.yml')
+        -ConfigFiles (Join-Path ([IO.Path]::GetTempPath()) 'foreign-ods-compose/docker-compose.base.yml'))
 )
 Expect-Blocked 'a same-root container with a foreign Compose config is blocked' 'outside'
 
