@@ -2,13 +2,27 @@
 # installer removes stale containers or launches Compose. Both are shared by
 # Windows and WSL installations on the same Docker Desktop engine.
 
+function Test-ODSComposeFullyQualifiedPath {
+    param([string]$Path)
+
+    if ([string]::IsNullOrWhiteSpace($Path) -or -not [IO.Path]::IsPathRooted($Path)) {
+        return $false
+    }
+    if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT) {
+        return $true
+    }
+    # Path.IsPathRooted accepts /ods on Windows, then GetFullPath turns it into
+    # C:\ods. A WSL Compose label must never acquire ownership that way.
+    return ($Path -match '^(?:[a-z]:[\\/]|\\\\[^\\/]+[\\/][^\\/]+(?:[\\/]|$))')
+}
+
 function Assert-ODSWindowsComposeContainerOwnership {
     param(
         [Parameter(Mandatory = $true)][string]$InstallDir,
         [string[]]$DockerClientArgs = @()
     )
 
-    if (-not [IO.Path]::IsPathRooted($InstallDir)) {
+    if (-not (Test-ODSComposeFullyQualifiedPath $InstallDir)) {
         throw 'ODS_INSTALL_ABORTED: Install directory must be absolute before inspecting Docker ownership.'
     }
     $expectedRoot = [IO.Path]::GetFullPath($InstallDir).TrimEnd('\', '/')
@@ -46,9 +60,11 @@ function Assert-ODSWindowsComposeContainerOwnership {
             $name = ([string]$container.Name).TrimStart('/')
             if ($project -ne 'ods' -and $name -notlike 'ods-*') { continue }
             if ($project -ne 'ods' -or [string]::IsNullOrWhiteSpace($workingDir) -or
-                -not [IO.Path]::IsPathRooted($workingDir) -or
                 [string]::IsNullOrWhiteSpace($configFiles)) {
                 throw "ODS container '$name' has missing or unexpected Compose ownership labels."
+            }
+            if (-not (Test-ODSComposeFullyQualifiedPath $workingDir)) {
+                throw "ODS container '$name' belongs to '$workingDir', not '$InstallDir'."
             }
             $actualRoot = [IO.Path]::GetFullPath($workingDir).TrimEnd('\', '/')
             if (-not [string]::Equals($actualRoot, $expectedRoot,
@@ -59,7 +75,7 @@ function Assert-ODSWindowsComposeContainerOwnership {
             # a profile or directory name is not a separator unless the next
             # segment begins another drive or UNC path.
             foreach ($file in [regex]::Split($configFiles, '(?i),(?=[a-z]:[\\/]|\\\\|/)')) {
-                if (-not [IO.Path]::IsPathRooted($file)) {
+                if (-not (Test-ODSComposeFullyQualifiedPath $file)) {
                     throw "ODS container '$name' has an unqualified Compose config path."
                 }
                 $actualFile = [IO.Path]::GetFullPath($file)

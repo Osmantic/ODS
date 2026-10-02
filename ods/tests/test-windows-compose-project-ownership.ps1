@@ -101,6 +101,27 @@ $script:containers = @(
 Check (@(Assert-ODSWindowsComposeContainerOwnership -InstallDir $script:root).Count -eq 1) `
     'multiple same-root Compose config files are allowed'
 if ($env:OS -eq 'Windows_NT') {
+    # Windows normalizes /ods to C:\ods. Such a WSL label is still foreign,
+    # even when the native installer happens to use that exact drive path.
+    $script:root = 'C:\ods'
+    $script:containers = @(
+        (New-FixtureContainer -Id $script:ids[0] -Name 'ods-dashboard' `
+            -WorkingDir '/ods' -ConfigFiles '/ods/docker-compose.base.yml')
+    )
+    Expect-Blocked 'a colliding WSL working_dir cannot acquire a Windows project' 'belongs to'
+    $script:removed = @()
+    $blockedCleanup = $false
+    try { $null = Clear-ODSWindowsOwnedStaleContainers -InstallDir $script:root }
+    catch { $blockedCleanup = ($_.Exception.Message -eq 'ODS_INSTALL_ABORTED') }
+    Check ($blockedCleanup -and $script:removed.Count -eq 0) `
+        'a colliding WSL project is never passed to docker rm'
+    $script:containers = @(
+        (New-FixtureContainer -Id $script:ids[0] -Name 'ods-dashboard' `
+            -WorkingDir $script:root -ConfigFiles '/ods/docker-compose.base.yml')
+    )
+    Expect-Blocked 'a colliding WSL config path cannot acquire a Windows project' 'unqualified'
+    $script:root = Join-Path ([IO.Path]::GetTempPath()) 'ods-compose-ownership-fixture'
+
     $commaRoot = Join-Path ([IO.Path]::GetTempPath()) 'ods, owner\install'
     $script:containers = @(
         (New-FixtureContainer -Id $script:ids[0] -Name 'ods-dashboard' `
