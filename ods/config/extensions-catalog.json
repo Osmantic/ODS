@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-30T11:32:07Z",
+  "generated_at": "2026-10-01T08:17:47Z",
   "schema_version": "1.0.0",
   "extensions": [
     {
@@ -11475,7 +11475,7 @@
     {
       "id": "whisper",
       "name": "Whisper (STT)",
-      "description": "Talk to your AI with your voice",
+      "description": "Speech-to-text service. ODS Talk also needs Hermes and Kokoro.",
       "category": "optional",
       "gpu_backends": [
         "all"
@@ -11490,28 +11490,28 @@
       "features": [
         {
           "id": "voice",
-          "name": "Voice Assistant",
-          "description": "Talk to your AI with your voice",
+          "name": "ODS Talk",
+          "description": "Hermes handles the conversation, Whisper accepts audio messages, and Kokoro speaks replies",
           "icon": "Mic",
           "category": "voice",
           "requirements": {
             "services": [
               "whisper",
               "tts",
-              "open-webui"
+              "hermes"
             ],
             "vram_gb": 0
           },
           "enabled_services_all": [
             "whisper",
             "tts",
-            "open-webui"
+            "hermes"
           ],
           "setup_time": "~5 minutes",
           "priority": 2,
           "launch": {
-            "type": "service",
-            "service": "open-webui"
+            "type": "internal",
+            "path": "/talk"
           },
           "gpu_backends": [
             "all"
