@@ -75,6 +75,8 @@ teardown() {
         export DRY_RUN=true
         export GPU_BACKEND="nvidia"
         export ENABLE_VOICE=false
+        export ENABLE_WHISPER=false
+        export ENABLE_TTS=false
         export ENABLE_WORKFLOWS=false
         export ENABLE_RAG=false
         export ENABLE_OPENCLAW=false
@@ -107,6 +109,8 @@ teardown() {
 @test "health phase: DRY_RUN lists all services that would be checked" {
     export DRY_RUN=true
     export ENABLE_VOICE=true
+    export ENABLE_WHISPER=true
+    export ENABLE_TTS=true
     export ENABLE_WORKFLOWS=true
     export ENABLE_RAG=true
     export ENABLE_OPENCLAW=true
@@ -116,6 +120,8 @@ teardown() {
         export DRY_RUN=true
         export GPU_BACKEND="nvidia"
         export ENABLE_VOICE=true
+        export ENABLE_WHISPER=true
+        export ENABLE_TTS=true
         export ENABLE_WORKFLOWS=true
         export ENABLE_RAG=true
         export ENABLE_OPENCLAW=true
