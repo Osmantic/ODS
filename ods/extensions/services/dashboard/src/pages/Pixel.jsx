@@ -76,6 +76,8 @@ import {
 } from 'lucide-react'
 
 const MODEL_CAPABILITY_DETAIL = 'The active model is recorded as not agent-qualified. Tool-driven tasks may be unreliable; chat and experiments remain available.'
+// Status includes host model identity, Edge availability, and bounded diagnostics.
+const PIXEL_STATUS_TIMEOUT_MS = 30000
 
 const MARKDOWN_COMPONENTS = {
   p: ({ children }) => <p className="break-words [&:not(:first-child)]:mt-3">{children}</p>,
@@ -820,7 +822,7 @@ export default function Pixel({ systemStatus = null }) {
             deadline = globalThis.setTimeout(() => {
               reject(new Error('status timeout'))
               requestController.abort()
-            }, 15000)
+            }, PIXEL_STATUS_TIMEOUT_MS)
           }),
         ])
         if (stopped) return

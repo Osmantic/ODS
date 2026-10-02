@@ -11,6 +11,7 @@ import urllib.request
 # The status route returns a fixed, nonsecret projection (available, state,
 # detail). Still never echo arbitrary bytes into the installer transcript.
 _UNSAFE_TEXT = re.compile(r"[^A-Za-z0-9 ._,:;()'/-]")
+_STATUS_TIMEOUT_SECONDS = 30
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -55,7 +56,7 @@ def fetch_status(port, key):
         headers={'Authorization': f'Bearer {key}', 'Accept': 'application/json'},
     )
     try:
-        with opener.open(request, timeout=15) as response:
+        with opener.open(request, timeout=_STATUS_TIMEOUT_SECONDS) as response:
             payload = response.read(65537)
     except urllib.error.HTTPError as error:
         if error.code in (401, 403):
@@ -64,7 +65,7 @@ def fetch_status(port, key):
     except urllib.error.URLError:
         raise PortalCheckFailed(f'dashboard-api is not reachable on 127.0.0.1:{port}') from None
     except TimeoutError:
-        raise PortalCheckFailed('dashboard-api did not answer within 15 seconds') from None
+        raise PortalCheckFailed(f'dashboard-api did not answer within {_STATUS_TIMEOUT_SECONDS} seconds') from None
     except (ConnectionError, http.client.HTTPException):
         # Accepted, then closed or cut short: dashboard-api is (re)starting.
         raise PortalCheckFailed('dashboard-api closed the connection before answering') from None
