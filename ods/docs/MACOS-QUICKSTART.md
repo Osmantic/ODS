@@ -31,6 +31,12 @@ beta. Back up existing configuration and data before updating. Existing native
 Pixel installations use the managed native update/migration path; the base
 installer intentionally stops instead of overwriting protected runtime state.
 
+On an existing ODS installation, add OpenCode from **Dashboard → Extensions
+Library → OpenCode → Install**. This installs its reviewed native release and
+LaunchAgent without rerunning the initial installer or replacing native Pixel
+state. The Library also offers Start when an installed OpenCode service is
+stopped.
+
 The installer will:
 
 1. **Detect your chip** — identifies Apple Silicon variant and unified memory
@@ -58,10 +64,39 @@ requires the managed update path for an already installed Portal.
 
 ---
 
+## API gateway without a local model
+
+For a Mac that should run the Dashboard and LiteLLM against an already running
+OpenAI-compatible model, use a separate install directory and select the model
+explicitly:
+
+```bash
+ODS_INSTALL_DIR="$HOME/ods-gateway" ./install.sh --gateway-only \
+  --external-llm-url https://model-host.example.com/v1 \
+  --external-llm-provider openai-compatible \
+  --external-llm-model my-model \
+  --external-llm-api-key-file "$HOME/.config/ods/upstream.key"
+```
+
+The key file is optional for an unauthenticated local upstream. When supplied,
+it must be owned by your user and have mode `0600` or `0400`; the installer
+copies it to the install's private LiteLLM config directory. Docker Desktop
+can use a model listening on the Mac's loopback address. With Colima, use an
+address containers can reach, such as a LAN or remote endpoint. The installer
+checks model discovery and a completion before changing the install, then
+checks a completion through the installed LiteLLM gateway.
+
+This mode omits the native GGUF download, Metal llama-server, Pixel and optional
+apps. The Dashboard and LiteLLM remain available. Use the Library to add
+optional services later. Rerunning the installer keeps the selected upstream
+and credential; use a separate install directory to switch upstream URLs.
+
+---
+
 ## Open the UI
 
-- **Chat UI:** http://localhost:3000
-- **Dashboard:** http://localhost:3001
+- **Dashboard and Portal:** http://localhost:3001
+- **Open WebUI (when selected with `--with-webui`):** http://localhost:3000
 - **OpenCode (IDE, when selected):** http://localhost:3003
 
 The normal loopback-only install opens the Chat UI directly without an account.

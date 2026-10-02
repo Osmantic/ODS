@@ -109,9 +109,13 @@ set -euo pipefail
 ENABLE_OPEN_WEBUI=false
 ENABLE_PERPLEXICA=false
 ENABLE_VOICE=false
+ENABLE_WHISPER=false
+ENABLE_TTS=false
 ENABLE_WORKFLOWS=false
 ENABLE_OPENCODE=false
 CLOUD_MODE=false
+GATEWAY_ONLY=false
+_macos_effective_service_enabled() { [[ "$2" == true ]]; }
 OPENCODE_BIN=/nonexistent/opencode
 OPENCODE_PORT=4096
 ODS_LOG_FILE=/nonexistent/ods-install.log
@@ -132,7 +136,7 @@ ROWS_FILE="$scratch/core-rows" SENTINEL_FILE="$scratch/core-success" \
     || { echo 'fresh Core never reached its success card' >&2; exit 1; }
 grep -q '^Dashboard|' "$scratch/core-rows" \
     || { echo 'Core summary omitted Dashboard' >&2; exit 1; }
-! grep -Eq 'Open WebUI|OpenCode|Perplexica|Whisper|n8n' "$scratch/core-rows" \
+! grep -Eq 'Open WebUI|OpenCode|Perplexica|Whisper|Kokoro|n8n' "$scratch/core-rows" \
     || { echo 'Core summary included an optional service' >&2; exit 1; }
 if PRODUCER_FILE="$scratch/readiness-producer.sh" \
     ROWS_FILE="$scratch/failing-rows" SENTINEL_FILE="$scratch/failing-success" \
