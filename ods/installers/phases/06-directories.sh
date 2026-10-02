@@ -179,7 +179,7 @@ else
     # route state may live in the configured external data directory.
     _phase06_remote_provider_data_dir="$(_env_get ODS_DATA_DIR "$INSTALL_DIR/data")"
     _phase06_remote_provider_selection="$(python3 \
-        "$SCRIPT_DIR/scripts/remote-provider-compose-selection.py" inspect "$INSTALL_DIR" \
+        "$SCRIPT_DIR/scripts/remote-provider-compose-selection.py" inspect "$INSTALL_DIR" "$SCRIPT_DIR" \
         --data-dir "$_phase06_remote_provider_data_dir")" || {
         error "Could not inspect the retained remote-provider selection."
         return 1

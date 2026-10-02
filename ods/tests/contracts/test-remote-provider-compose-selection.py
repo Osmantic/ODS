@@ -163,6 +163,32 @@ def main() -> None:
         assert secret.read_bytes() == b"fixture-secret-unchanged"
     finally:
         temp.cleanup()
+    source, install, secret, temp = fixture()
+    try:
+        directory = install / "extensions/services" / SERVICES[0]
+        (directory / "compose.yaml").write_text("old selected recipe\n", encoding="utf-8")
+        selection = MODULE.inspect(install, source=source)
+        copy_source(source, install)  # crash before apply leaves both markers
+        try:
+            MODULE.inspect(install)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("Dual markers need an independent source witness")
+        resumed = MODULE.inspect(install, source=source)
+        assert resumed["selection"][SERVICES[0]] == "enabled"
+        MODULE.apply(install, source, resumed)
+        assert states(install) == (True, False)
+        assert secret.read_bytes() == b"fixture-secret-unchanged"
+        (directory / "compose.yaml.disabled").write_text("untrusted recipe\n", encoding="utf-8")
+        try:
+            MODULE.inspect(install, source=source)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("Noncanonical dual markers must fail closed")
+    finally:
+        temp.cleanup()
     source, install, _, temp = fixture()
     try:
         route_path = install / "data/remote-provider/routing-state.json"

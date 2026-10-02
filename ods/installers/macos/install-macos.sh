@@ -1958,7 +1958,7 @@ else
 
     _macos_remote_provider_data_dir="$(_macos_remote_provider_retained_data_dir)"
     _macos_remote_provider_selection="$(python3 \
-        "${SOURCE_ROOT}/scripts/remote-provider-compose-selection.py" inspect "$INSTALL_DIR" \
+        "${SOURCE_ROOT}/scripts/remote-provider-compose-selection.py" inspect "$INSTALL_DIR" "$SOURCE_ROOT" \
         --data-dir "$_macos_remote_provider_data_dir")" || {
         ai_err "Could not inspect the retained remote-provider selection."
         exit 1

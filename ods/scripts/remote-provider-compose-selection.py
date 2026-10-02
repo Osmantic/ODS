@@ -72,10 +72,15 @@ def _route_kind(root: Path, data_dir: Path | None = None) -> str:
     return kind
 
 
-def inspect(root: Path, data_dir: Path | None = None) -> dict:
+def inspect(root: Path, data_dir: Path | None = None,
+            source: Path | None = None) -> dict:
     if root.is_symlink():
         raise ValueError("Unsafe install root")
     root = root.resolve(strict=False)
+    if source is not None:
+        if source.is_symlink():
+            raise ValueError("Unsafe source root")
+        source = source.resolve(strict=True)
     kind = _route_kind(root, data_dir)
     choice = {}
     for service_id in SERVICES:
@@ -83,7 +88,15 @@ def inspect(root: Path, data_dir: Path | None = None) -> dict:
         active = _regular_state(directory / "compose.yaml")
         disabled = _regular_state(directory / "compose.yaml.disabled")
         if active and disabled:
-            raise ValueError(f"Ambiguous remote-provider Compose markers: {service_id}")
+            # An interrupted source copy can add the new canonical disabled
+            # recipe beside an already selected marker. Require an independent
+            # candidate source to prove that is the only reason for the pair.
+            if source is None or source == root:
+                raise ValueError(f"Ambiguous remote-provider Compose markers: {service_id}")
+            canonical = _service_dir(source, service_id) / "compose.yaml.disabled"
+            if (not _regular_state(canonical)
+                    or (directory / "compose.yaml.disabled").read_bytes() != canonical.read_bytes()):
+                raise ValueError(f"Ambiguous remote-provider Compose markers: {service_id}")
         if active or disabled:
             choice[service_id] = "enabled" if active else "disabled"
         else:
@@ -190,7 +203,8 @@ def main() -> int:
     args = parser.parse_args()
     try:
         if args.operation == "inspect":
-            print(json.dumps(inspect(args.install_root, args.data_dir), separators=(",", ":")))
+            print(json.dumps(inspect(args.install_root, args.data_dir, args.source_root),
+                             separators=(",", ":")))
         else:
             if args.source_root is None or args.selection_json is None:
                 parser.error("apply needs source_root and selection_json")

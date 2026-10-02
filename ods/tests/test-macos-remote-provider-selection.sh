@@ -29,7 +29,7 @@ retained_data="$(_macos_remote_provider_retained_data_dir)"
     exit 1
 }
 selection="$(python3 "$root/scripts/remote-provider-compose-selection.py" inspect \
-    "$INSTALL_DIR" --data-dir "$retained_data")"
+    "$INSTALL_DIR" "$root" --data-dir "$retained_data")"
 [[ "$selection" == *'"remote-provider-egress":"enabled"'* \
     && "$selection" == *'"remote-provider-ssh-tunnel":"enabled"'* ]] || {
     echo '[FAIL] retained SSH route in quoted external data path was not selected' >&2
