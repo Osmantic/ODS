@@ -518,7 +518,11 @@ async def _model_readiness_issue_for_status(status: object) -> tuple[str, str] |
         # exception text; it may contain the private backend origin or key.
         logger.warning("Pixel Lemonade identity probe failed (%s)", type(exc).__name__)
         return "model_unavailable", _MODEL_IDENTITY_DETAIL
+    if loaded is None:
+        logger.warning("Pixel Lemonade identity probe returned no verified model")
+        return "model_unavailable", _MODEL_IDENTITY_DETAIL
     if not (_model_identity_tokens(runtime["model"]) & _model_identity_tokens(loaded)):
+        logger.warning("Pixel Lemonade identity probe did not match the recorded model")
         return "model_unavailable", _MODEL_IDENTITY_DETAIL
     return None
 
