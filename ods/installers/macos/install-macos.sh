@@ -307,6 +307,39 @@ services:
 CLOUD_AUTH_EOF
 }
 
+_macos_capture_gateway_library_selections() {
+    # Library Add/Disable is recorded by the active/disabled compose filename.
+    # Capture that state before rsync copies the shipped active files back into
+    # a retained gateway install. Keep each service independent (notably TTS
+    # and Whisper), even though gateway-only CLI flags start out false.
+    MACOS_GATEWAY_RETAINED_COMPOSE_IDS=""
+    $GATEWAY_ONLY && [[ "${_saved_gateway_only:-}" == true ]] || return 0
+
+    local service_id
+    for service_id in searxng token-spy whisper tts n8n qdrant embeddings \
+        hermes hermes-proxy openclaw ape perplexica privacy-shield ods-proxy \
+        tailscale langfuse brave-search; do
+        if [[ -f "${INSTALL_DIR}/extensions/services/${service_id}/compose.yaml" ]]; then
+            MACOS_GATEWAY_RETAINED_COMPOSE_IDS+=" ${service_id}"
+        fi
+    done
+}
+
+_macos_gateway_library_selected() {
+    $GATEWAY_ONLY && [[ " ${MACOS_GATEWAY_RETAINED_COMPOSE_IDS:-} " == *" $1 "* ]]
+}
+
+_macos_effective_service_enabled() {
+    # A retained gateway's Library choice is authoritative per service. The
+    # installer feature flags remain false so one addback cannot enable its
+    # partner (notably Whisper/TTS or Hermes/Hermes proxy).
+    if $GATEWAY_ONLY && [[ "${_saved_gateway_only:-}" == true ]]; then
+        _macos_gateway_library_selected "$1"
+    else
+        [[ "$2" == true ]]
+    fi
+}
+
 _macos_set_builtin_compose_state() {
     local service_id="$1" enabled="$2"
     local service_dir="${INSTALL_DIR}/extensions/services/${service_id}"
@@ -314,6 +347,9 @@ _macos_set_builtin_compose_state() {
     local disabled="${service_dir}/compose.yaml.disabled"
 
     [[ -d "$service_dir" ]] || return 0
+    if _macos_gateway_library_selected "$service_id"; then
+        enabled=true
+    fi
     if [[ "$enabled" == "true" ]]; then
         if [[ -f "$active" ]]; then
             rm -f "$disabled"
@@ -374,6 +410,9 @@ _macos_resolve_support_services() {
             parallel-free) ;;
             *) ai_err "Unsupported Pixel search provider: ${provider}"; return 1 ;;
         esac
+    fi
+    if _macos_gateway_library_selected searxng; then
+        ENABLE_SEARXNG=true
     fi
     ENABLE_WEB_SEARCH=$ENABLE_SEARXNG
 }
@@ -1279,6 +1318,7 @@ _saved_gateway_only="$(read_env_value "${INSTALL_DIR}/.env" ODS_GATEWAY_ONLY)"
 if [[ "$_saved_gateway_only" == true ]]; then
     GATEWAY_ONLY=true
 fi
+_macos_capture_gateway_library_selections
 if $GATEWAY_ONLY; then
     if $CLOUD_MODE || $ALL_FEATURES || $WEBUI_ENABLE_EXPLICIT; then
         ai_err "--gateway-only cannot be combined with --cloud, --all, or --with-webui."
@@ -1508,7 +1548,7 @@ _docker_cpu_override="${ODS_MIN_DOCKER_CPUS:-}"
 _docker_cpu_min="${_docker_cpu_override:-6}"
 _docker_cpu_max_pin=4
 _docker_cpu_workload="base compose stack"
-if $ENABLE_VOICE && [[ -z "$_docker_cpu_override" ]]; then
+if _macos_effective_service_enabled whisper "$ENABLE_VOICE" && [[ -z "$_docker_cpu_override" ]]; then
     _docker_cpu_min=10
     _docker_cpu_max_pin=8
     _docker_cpu_workload="voice-enabled compose stack"
@@ -1929,7 +1969,7 @@ _macos_resolve_support_services || exit 1
 # fits at 64K, otherwise re-select a model that does, otherwise keep the
 # largest context that fits and say ODS Talk is unavailable.
 HERMES_CONTEXT_BELOW_FLOOR=false
-if $ENABLE_HERMES && ! $CLOUD_MODE; then
+if $ENABLE_HERMES && ! $CLOUD_MODE && ! $GATEWAY_ONLY; then
     if [[ "${MAX_CONTEXT:-0}" =~ ^[0-9]+$ ]] && (( MAX_CONTEXT < HERMES_CONTEXT_SIZE )); then
         _hermes_floor_action="raise-unverified"
         if [[ -n "${_selector_python:-}" && -f "${_selector_script:-}" && -f "${_selector_catalog:-}" \
@@ -2000,19 +2040,27 @@ if $ENABLE_HERMES && ! $CLOUD_MODE; then
 fi
 
 ai "Features:"
-info_box "  Voice:" "$(if $ENABLE_VOICE; then echo enabled; else echo disabled; fi)"
-info_box "  Workflows:" "$(if $ENABLE_WORKFLOWS; then echo enabled; else echo disabled; fi)"
-info_box "  RAG:" "$(if $ENABLE_RAG; then echo enabled; else echo disabled; fi)"
+_rag_summary=disabled
+if _macos_effective_service_enabled qdrant "$ENABLE_RAG" \
+    && _macos_effective_service_enabled embeddings "$ENABLE_RAG"; then
+    _rag_summary=enabled
+elif _macos_effective_service_enabled qdrant "$ENABLE_RAG" \
+    || _macos_effective_service_enabled embeddings "$ENABLE_RAG"; then
+    _rag_summary=partial
+fi
+info_box "  Voice:" "$(if _macos_effective_service_enabled whisper "$ENABLE_VOICE" || _macos_effective_service_enabled tts "$ENABLE_VOICE"; then echo enabled; else echo disabled; fi)"
+info_box "  Workflows:" "$(if _macos_effective_service_enabled n8n "$ENABLE_WORKFLOWS"; then echo enabled; else echo disabled; fi)"
+info_box "  RAG:" "$_rag_summary"
 info_box "  SearXNG search:" "$(if $ENABLE_SEARXNG; then echo enabled; else echo disabled; fi)"
-info_box "  Token Spy:" "$(if $ENABLE_RECOMMENDED; then echo enabled; else echo disabled; fi)"
+info_box "  Token Spy:" "$(if _macos_effective_service_enabled token-spy "$ENABLE_RECOMMENDED"; then echo enabled; else echo disabled; fi)"
 info_box "  LiteLLM gateway:" "$(if $ENABLE_LITELLM; then echo enabled; else echo disabled; fi)"
-info_box "  Hermes:" "$(if $ENABLE_HERMES; then echo enabled; else echo disabled; fi)"
+info_box "  Hermes:" "$(if _macos_effective_service_enabled hermes "$ENABLE_HERMES"; then echo enabled; else echo disabled; fi)"
 info_box "  Portal (native):" "$(if $ENABLE_PIXEL; then echo enabled; else echo disabled; fi)"
-info_box "  OpenClaw:" "$(if $ENABLE_OPENCLAW; then echo "enabled (DEPRECATED)"; else echo disabled; fi)"
+info_box "  OpenClaw:" "$(if _macos_effective_service_enabled openclaw "$ENABLE_OPENCLAW"; then echo "enabled (DEPRECATED)"; else echo disabled; fi)"
 info_box "  OpenCode:" "$(if $ENABLE_OPENCODE; then echo enabled; else echo disabled; fi)"
-info_box "  Perplexica:" "$(if $ENABLE_PERPLEXICA; then echo enabled; else echo disabled; fi)"
-info_box "  Privacy Shield:" "$(if $ENABLE_PRIVACY_SHIELD; then echo enabled; else echo disabled; fi)"
-info_box "  Langfuse:" "$(if $ENABLE_LANGFUSE; then echo enabled; else echo disabled; fi)"
+info_box "  Perplexica:" "$(if _macos_effective_service_enabled perplexica "$ENABLE_PERPLEXICA"; then echo enabled; else echo disabled; fi)"
+info_box "  Privacy Shield:" "$(if _macos_effective_service_enabled privacy-shield "$ENABLE_PRIVACY_SHIELD"; then echo enabled; else echo disabled; fi)"
+info_box "  Langfuse:" "$(if _macos_effective_service_enabled langfuse "$ENABLE_LANGFUSE"; then echo enabled; else echo disabled; fi)"
 # The macOS installer doesn't currently ship a ComfyUI container — none of
 # the published ComfyUI images target Apple Silicon Metal, and the upstream
 # Python build under MPS is non-trivial to package as a Docker service.
@@ -2020,7 +2068,7 @@ info_box "  Langfuse:" "$(if $ENABLE_LANGFUSE; then echo enabled; else echo disa
 # why the dashboard shows no image-gen tile after install.
 info_box "  ComfyUI:" "not available on macOS (no MPS Docker image upstream)"
 
-if $ENABLE_VOICE && [[ -z "$_docker_cpu_override" ]] && [[ "${_docker_cpu_preflight_min:-0}" -lt 10 ]]; then
+if _macos_effective_service_enabled whisper "$ENABLE_VOICE" && [[ -z "$_docker_cpu_override" ]] && [[ "${_docker_cpu_preflight_min:-0}" -lt 10 ]]; then
     _require_docker_cpu_budget 10 8 "voice-enabled compose stack"
 fi
 
@@ -2440,7 +2488,7 @@ else
     else
         ai_ok "Generated .env with secure secrets"
     fi
-    if $ENABLE_HERMES && ! $CLOUD_MODE; then
+    if $ENABLE_HERMES && ! $CLOUD_MODE && ! $GATEWAY_ONLY; then
         upsert_env_value "${INSTALL_DIR}/.env" "MAX_CONTEXT" "$MAX_CONTEXT"
         upsert_env_value "${INSTALL_DIR}/.env" "CTX_SIZE" "$MAX_CONTEXT"
         ai_ok "Set macOS llama context to ${MAX_CONTEXT} for Hermes"
@@ -2457,13 +2505,13 @@ else
     fi
 
     # Generate OpenClaw configs (if enabled)
-    if $ENABLE_OPENCLAW; then
+    if _macos_effective_service_enabled openclaw "$ENABLE_OPENCLAW"; then
         openclaw_existed=false
         [[ -f "${INSTALL_DIR}/data/openclaw/home/openclaw.json" ]] && openclaw_existed=true
         _openclaw_model="$LLM_MODEL"
         _openclaw_api_key="none"
-        if $CLOUD_MODE; then
-            _openclaw_model="default"
+        if $CLOUD_MODE || $GATEWAY_ONLY; then
+            if $GATEWAY_ONLY; then _openclaw_model="ods/current"; else _openclaw_model="default"; fi
             _openclaw_api_key="$(read_env_value "$INSTALL_DIR/.env" "LITELLM_KEY")"
         fi
         if [[ -z "$_openclaw_api_key" ]] \
@@ -2642,7 +2690,7 @@ else
             # "not a directory: Are you trying to mount a directory onto a
             # file" — which then persists across reinstalls because `nuke
             # install dir` preserves data/.
-            if $ENABLE_HERMES; then
+            if _macos_effective_service_enabled hermes "$ENABLE_HERMES"; then
                 _soul_builder="${INSTALL_DIR}/scripts/build-installation-context.py"
                 if [[ -f "$_soul_builder" ]]; then
                     python3 "$_soul_builder" >>"$ODS_LOG_FILE" 2>&1 || \
@@ -2864,6 +2912,9 @@ else
                 langfuse)      $ENABLE_LANGFUSE || SKIP=true ;;
                 brave-search)  [[ "${ENABLE_BRAVE_SEARCH:-false}" == "true" ]] || SKIP=true ;;
             esac
+            if _macos_gateway_library_selected "$SVC_NAME"; then
+                SKIP=false
+            fi
             $SKIP && continue
 
             REL_PATH="${COMPOSE_PATH#"${INSTALL_DIR}/"}"
@@ -2923,13 +2974,23 @@ else
                 exit 1
             fi
         done
-        for _forbidden_gateway_service in llama-server model-router llama-server-ready open-webui hermes; do
+        for _forbidden_gateway_service in llama-server model-router llama-server-ready open-webui; do
             if grep -Fqx -- "$_forbidden_gateway_service" <<<"$_gateway_services"; then
                 ai_err "Gateway-only Compose selected ${_forbidden_gateway_service}; refusing to pull images"
                 exit 1
             fi
         done
-        unset _gateway_services _required_gateway_service _forbidden_gateway_service
+        # These agents are absent from a fresh gateway install, but Library
+        # Add may have activated them after that install. Keep their retained
+        # selection without treating it as an accidental default.
+        for _gateway_library_agent in hermes hermes-proxy; do
+            if grep -Fqx -- "$_gateway_library_agent" <<<"$_gateway_services" \
+                && ! _macos_gateway_library_selected "$_gateway_library_agent"; then
+                ai_err "Gateway-only Compose selected ${_gateway_library_agent} without a retained Library choice"
+                exit 1
+            fi
+        done
+        unset _gateway_services _required_gateway_service _forbidden_gateway_service _gateway_library_agent
     fi
 
     # ── Unload stale LaunchAgents before compose (crash-safe) ──
@@ -3261,7 +3322,7 @@ for service in (data.get("services") or {}).values():
     fi
     ai_ok "Docker services started"
 
-    if $ENABLE_HERMES; then
+    if _macos_effective_service_enabled hermes "$ENABLE_HERMES"; then
         _hermes_running=false
         for _hermes_wait_i in $(seq 1 90); do
             if [[ "$(docker inspect --format '{{.State.Status}}' ods-hermes 2>/dev/null || true)" == "running" ]]; then
@@ -3689,8 +3750,9 @@ else
 fi
 $ENABLE_OPEN_WEBUI && HEALTH_NAMES+=("Chat UI (Open WebUI)") \
     && HEALTH_URLS+=("http://127.0.0.1:3000") && HEALTH_CONTAINERS+=("ods-webui")
-$ENABLE_VOICE && HEALTH_NAMES+=("Whisper (STT)") && HEALTH_URLS+=("http://127.0.0.1:${WHISPER_PORT:-9000}/health") && HEALTH_CONTAINERS+=("ods-whisper")
-$ENABLE_WORKFLOWS && HEALTH_NAMES+=("n8n (Workflows)") && HEALTH_URLS+=("http://127.0.0.1:5678/healthz") && HEALTH_CONTAINERS+=("ods-n8n")
+_macos_effective_service_enabled whisper "$ENABLE_VOICE" && HEALTH_NAMES+=("Whisper (STT)") && HEALTH_URLS+=("http://127.0.0.1:${WHISPER_PORT:-9000}/health") && HEALTH_CONTAINERS+=("ods-whisper")
+_macos_effective_service_enabled tts "$ENABLE_VOICE" && HEALTH_NAMES+=("Kokoro (TTS)") && HEALTH_URLS+=("http://127.0.0.1:${TTS_PORT:-8880}/health") && HEALTH_CONTAINERS+=("ods-tts")
+_macos_effective_service_enabled n8n "$ENABLE_WORKFLOWS" && HEALTH_NAMES+=("n8n (Workflows)") && HEALTH_URLS+=("http://127.0.0.1:5678/healthz") && HEALTH_CONTAINERS+=("ods-n8n")
 $ENABLE_OPENCODE && [[ -x "$OPENCODE_BIN" ]] && HEALTH_NAMES+=("OpenCode (IDE)") && HEALTH_URLS+=("http://127.0.0.1:${OPENCODE_PORT}") && HEALTH_CONTAINERS+=("")
 
 for ((idx=0; idx<${#HEALTH_NAMES[@]}; idx++)); do
@@ -3735,7 +3797,8 @@ for ((idx=0; idx<${#HEALTH_NAMES[@]}; idx++)); do
     else
         ai_warn "${NAME}: not responding after ${MAX_ATTEMPTS} attempts"
         ALL_HEALTHY=false
-        if { $CLOUD_MODE || $GATEWAY_ONLY; } && (( idx < 2 )); then
+        if { $CLOUD_MODE || $GATEWAY_ONLY; } \
+            && [[ "$NAME" == "LiteLLM gateway" || "$NAME" == "Chat UI (Open WebUI)" ]]; then
             CLOUD_REQUIRED_HEALTHY=false
         fi
     fi
@@ -3806,7 +3869,7 @@ fi
 # Speaches does NOT auto-download on transcription requests — it returns 404.
 # We must trigger the download explicitly here, verify it completed, and
 # surface a clear recovery command if anything fails.
-if [[ "$ENABLE_VOICE" == "true" ]]; then
+if _macos_effective_service_enabled whisper "$ENABLE_VOICE"; then
     # Read AUDIO_STT_MODEL from .env (written by env-generator). On macOS the
     # default is base; user can override by editing .env before reinstalling.
     STT_MODEL=$(grep -m1 '^AUDIO_STT_MODEL=' "${INSTALL_DIR}/.env" 2>/dev/null \
@@ -3889,7 +3952,7 @@ if [[ "$ENABLE_VOICE" == "true" ]]; then
 fi
 
 # ── Auto-configure Perplexica ──
-if $ENABLE_PERPLEXICA; then
+if _macos_effective_service_enabled perplexica "$ENABLE_PERPLEXICA"; then
     ai "Configuring Perplexica..."
     PERPLEXICA_MODEL="${GGUF_FILE:-$LLM_MODEL}"
     PERPLEXICA_API_KEY="no-key"
@@ -3901,9 +3964,10 @@ if $ENABLE_PERPLEXICA; then
         PERPLEXICA_BASE_URL="http://litellm:4000"
     fi
     $CLOUD_MODE && PERPLEXICA_MODEL="default"
-    if $CLOUD_MODE; then
+    if $CLOUD_MODE || $GATEWAY_ONLY; then
         PERPLEXICA_API_KEY="$(read_env_value "$INSTALL_DIR/.env" "LITELLM_KEY")"
         PERPLEXICA_BASE_URL="http://litellm:4000"
+        if $GATEWAY_ONLY; then PERPLEXICA_MODEL="ods/current"; fi
     fi
     _perplexica_port="$(read_env_value "$INSTALL_DIR/.env" "PERPLEXICA_PORT")"
     [[ "$_perplexica_port" =~ ^[0-9]+$ ]] || _perplexica_port="3004"
@@ -3950,9 +4014,10 @@ fi
         printf 'llama-server|http://%s:%s/health||http://localhost:%s/v1\n' "$_health_llama_host" "$_health_llama_port" "$_health_llama_port"
     fi
     printf 'Dashboard API|http://127.0.0.1:3002/health|ods-dashboard-api|http://localhost:3002\n'
-    $ENABLE_PERPLEXICA && printf 'Perplexica|http://127.0.0.1:3004|ods-perplexica|http://localhost:3004\n'
-    $ENABLE_VOICE && printf 'Whisper (STT)|http://127.0.0.1:%s/health|ods-whisper|http://localhost:%s\n' "${WHISPER_PORT:-9000}" "${WHISPER_PORT:-9000}"
-    $ENABLE_WORKFLOWS && printf 'n8n|http://127.0.0.1:5678/healthz|ods-n8n|http://localhost:5678\n'
+    _macos_effective_service_enabled perplexica "$ENABLE_PERPLEXICA" && printf 'Perplexica|http://127.0.0.1:3004|ods-perplexica|http://localhost:3004\n'
+    _macos_effective_service_enabled whisper "$ENABLE_VOICE" && printf 'Whisper (STT)|http://127.0.0.1:%s/health|ods-whisper|http://localhost:%s\n' "${WHISPER_PORT:-9000}" "${WHISPER_PORT:-9000}"
+    _macos_effective_service_enabled tts "$ENABLE_VOICE" && printf 'Kokoro (TTS)|http://127.0.0.1:%s/health|ods-tts|http://localhost:%s\n' "${TTS_PORT:-8880}" "${TTS_PORT:-8880}"
+    _macos_effective_service_enabled n8n "$ENABLE_WORKFLOWS" && printf 'n8n|http://127.0.0.1:5678/healthz|ods-n8n|http://localhost:5678\n'
     if $ENABLE_OPENCODE && [[ -x "$OPENCODE_BIN" ]]; then
         printf 'OpenCode (IDE)|http://127.0.0.1:%s||http://localhost:%s\n' "$OPENCODE_PORT" "$OPENCODE_PORT"
     fi

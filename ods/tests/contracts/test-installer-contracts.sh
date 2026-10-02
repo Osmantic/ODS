@@ -320,6 +320,7 @@ bash tests/test-macos-webui-optional.sh
 
 echo "[contract] macOS external gateway resolver omits native inference"
 bash tests/test-macos-external-gateway-resolver.sh
+bash tests/test-macos-gateway-library-retention.sh
 
 echo "[contract] macOS .env upsert preserves secrets and recovers from write failure"
 bash tests/test-macos-env-upsert.sh
