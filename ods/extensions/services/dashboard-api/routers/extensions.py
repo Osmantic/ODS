@@ -495,10 +495,14 @@ def _compute_extension_status(ext: dict, services_by_id: dict) -> str:
             if one_shot:
                 return 'cli_installed' if progress.get('exit_verified') is True else 'stopped'
             # Container was started by the installer. If the progress is
-            # recent (<5 min), the healthcheck may still be running â€”
+            # recent, the healthcheck may still be running â€”
             # show "installing". If older, the user likely stopped the
             # container afterwards â€” fall through to normal status logic.
-            if not _is_stale(progress.get("updated_at", ""), max_age_seconds=300):
+            # TEI allows 600 seconds for its first model download plus health
+            # retries. Its grace period matches the 15-minute progress cleanup.
+            grace_seconds = (900 if ext_id == "embeddings"
+                             and ext.get("catalog_source") == "builtin" else 300)
+            if not _is_stale(progress.get("updated_at", ""), max_age_seconds=grace_seconds):
                 # Long-running services still need an observed healthy state.
                 svc = services_by_id.get(ext_id)
                 if not (svc and svc.status == "healthy"):

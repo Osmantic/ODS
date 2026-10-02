@@ -72,6 +72,39 @@ def _patch_extensions_config(monkeypatch, catalog, services=None,
 
 class TestExtensionsCatalog:
 
+    def test_embeddings_cold_start_keeps_installing_until_health_window_expires(
+            self, monkeypatch, tmp_path):
+        from datetime import datetime, timedelta, timezone
+        from routers import extensions as ext_module
+
+        catalog = [{**_make_catalog_ext("embeddings", gpu_backends=["all"]),
+                    "catalog_source": "builtin"}]
+        _patch_extensions_config(monkeypatch, catalog, tmp_path=tmp_path)
+        builtin = tmp_path / "builtin" / "embeddings"
+        builtin.mkdir(parents=True)
+        (builtin / "compose.yaml").write_text("services: {embeddings: {image: test/tei}}\n")
+        monkeypatch.setattr(ext_module, "EXTENSIONS_DIR", builtin.parent)
+        monkeypatch.setattr(ext_module, "_embeddings_runtime_compatible", lambda: True)
+        progress_dir = tmp_path / "extension-progress"
+        progress_dir.mkdir()
+        progress_file = progress_dir / "embeddings.json"
+        ext = catalog[0]
+
+        def write_started(minutes_ago):
+            updated = (datetime.now(timezone.utc) - timedelta(minutes=minutes_ago)).isoformat()
+            progress_file.write_text(json.dumps({
+                "service_id": "embeddings", "status": "started",
+                "started_at": updated, "updated_at": updated,
+            }), encoding="utf-8")
+
+        unhealthy = {"embeddings": _make_service_status("embeddings", "unhealthy")}
+        write_started(6)
+        assert ext_module._compute_extension_status(ext, unhealthy) == "installing"
+        assert ext_module._compute_extension_status(ext, {
+            "embeddings": _make_service_status("embeddings")}) == "enabled"
+        write_started(16)
+        assert ext_module._compute_extension_status(ext, unhealthy) == "unhealthy"
+
     @pytest.mark.parametrize("architecture,compatible", [
         ("x86_64", True), ("AMD64", True),
         ("aarch64", False), ("arm64", False), ("unknown", False),
