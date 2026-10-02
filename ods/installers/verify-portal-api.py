@@ -3,6 +3,7 @@ import http.client
 import json
 from pathlib import Path
 import re
+import signal
 import sys
 import time
 import urllib.error
@@ -83,6 +84,30 @@ def fetch_status(port, key, *, timeout_seconds=_STATUS_TIMEOUT_SECONDS):
     return status
 
 
+def _fetch_status_before_deadline(port, key, timeout_seconds):
+    # This verifier runs as a standalone WSL process. urllib's timeout is a
+    # socket inactivity limit: a slow response can keep read() alive forever.
+    # SIGALRM gives the whole authenticated request a real wall deadline.
+    if not hasattr(signal, 'setitimer') or not hasattr(signal, 'SIGALRM'):
+        raise PortalCheckFailed('Portal verifier cannot enforce its wall deadline')
+    if signal.getitimer(signal.ITIMER_REAL)[0] > 0:
+        raise PortalCheckFailed('Portal verifier cannot own its wall deadline')
+
+    def expired(_signum, _frame):
+        raise PortalCheckFailed('Portal status did not finish within the readiness deadline')
+
+    try:
+        previous = signal.signal(signal.SIGALRM, expired)
+    except ValueError:
+        raise PortalCheckFailed('Portal verifier cannot enforce its wall deadline') from None
+    try:
+        signal.setitimer(signal.ITIMER_REAL, timeout_seconds)
+        return fetch_status(port, key, timeout_seconds=timeout_seconds)
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous)
+
+
 def verify(root, *, settle_seconds=_MODEL_PROOF_SETTLE_SECONDS,
            monotonic=time.monotonic, sleep=time.sleep):
     port, key = read_settings(root)
@@ -97,7 +122,7 @@ def verify(root, *, settle_seconds=_MODEL_PROOF_SETTLE_SECONDS,
         # Bound every request by the remaining settlement window. Each poll
         # obtains a fresh status, including a fresh physical model identity.
         timeout = min(_STATUS_TIMEOUT_SECONDS, remaining)
-        status = fetch_status(port, key, timeout_seconds=timeout)
+        status = _fetch_status_before_deadline(port, key, timeout)
         # The socket timeout is an inactivity limit, not a total transfer
         # deadline. Never accept a proof delivered after the settlement window.
         if monotonic() > deadline:

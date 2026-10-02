@@ -6,6 +6,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 import threading
+import time
 import unittest
 from unittest.mock import patch
 
@@ -156,6 +157,43 @@ esac
                 with self.assertRaisesRegex(verifier.PortalCheckFailed, 'after the readiness deadline'):
                     verifier.verify(directory, settle_seconds=5, monotonic=lambda: clock[0])
         fetch.assert_called_once()
+
+    def test_slow_drip_status_cannot_extend_the_wall_deadline(self):
+        spec = importlib.util.spec_from_file_location('verify_portal_api', SCRIPT.parent / 'verify-portal-api.py')
+        verifier = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(verifier)
+        body = b'{"available":true}'
+
+        class DripHandler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(200)
+                self.send_header('Content-Length', str(len(body)))
+                self.end_headers()
+                for byte in body:
+                    try:
+                        self.wfile.write(bytes([byte]))
+                        self.wfile.flush()
+                    except (BrokenPipeError, ConnectionResetError):
+                        return
+                    time.sleep(0.1)  # below the per-socket inactivity timeout
+
+            def log_message(self, *args):
+                pass
+
+        server = ThreadingHTTPServer(('127.0.0.1', 0), DripHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            with tempfile.TemporaryDirectory() as directory:
+                Path(directory, '.env').write_text(
+                    f'DASHBOARD_API_PORT={server.server_port}\nDASHBOARD_API_KEY=do-not-print\n')
+                started = time.monotonic()
+                with self.assertRaisesRegex(verifier.PortalCheckFailed, 'within the readiness deadline'):
+                    verifier.verify(directory, settle_seconds=0.25)
+                self.assertLess(time.monotonic() - started, 1.5)
+        finally:
+            server.shutdown()
+            server.server_close()
 
     def test_authentication_failure_names_the_key_without_printing_it(self):
         result, _ = self.probe(api_code=401, expected_api_requests=1)
