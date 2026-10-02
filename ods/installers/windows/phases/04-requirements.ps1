@@ -301,11 +301,11 @@ function Test-WindowsODSComposeOwnsListeners {
             -not (Test-WindowsODSDockerBrokerListener -ProcessId ([int]$listener.ProcessId)) -or
             $seen.ContainsKey($address)) { return $false }
         $seen[$address] = $true
-        $matches = @($Ownership.Bindings | Where-Object {
+        $bindingMatches = @($Ownership.Bindings | Where-Object {
             $_.HostPort -eq $Port -and $_.HostIp -eq $address
         })
-        if ($matches.Count -ne 1) { return $false }
-        $binding = $matches[0]
+        if ($bindingMatches.Count -ne 1) { return $false }
+        $binding = $bindingMatches[0]
         if ($binding.Project -ne 'ods' -or $binding.Service -ne $Service -or
             -not [string]::Equals([string]$binding.WorkingDir,
                 [string]$Ownership.ExpectedRoot,
