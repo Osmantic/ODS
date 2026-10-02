@@ -386,9 +386,9 @@ function Assert-VoiceEqual {
 $script:voiceIfAst = $ast.Find({
     param($node)
     $node -is [System.Management.Automation.Language.IfStatementAst] -and
-        $node.Clauses[0].Item1.Extent.Text -match 'enableVoice'
+        $node.Clauses[0].Item1.Extent.Text -match 'enableWhisper'
 }, $true)
-if (-not $script:voiceIfAst) { throw "Phase 04 enableVoice block not found" }
+if (-not $script:voiceIfAst) { throw "Phase 04 enableWhisper block not found" }
 $voiceBlock = [scriptblock]::Create(($script:voiceIfAst.Clauses[0].Item2.Statements.Extent.Text -join "`n"))
 
 function Get-PhaseVoicePort {

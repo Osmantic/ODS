@@ -160,7 +160,10 @@ background.
 # Specific tier with voice
 .\ods\installers\windows\install-windows.ps1 -Tier 2 -Voice
 
-# Full stack with everything
+# Keep the rest of an -All install, but leave both voice services off
+.\ods\installers\windows\install-windows.ps1 -All -NoVoice
+
+# Full stack with everything (re-enables Library-disabled voice services)
 .\ods\installers\windows\install-windows.ps1 -All
 
 # Simulate installer planning without making changes
@@ -265,7 +268,9 @@ docker compose up -d
 | Start ODS | `cd $installDir; .\ods.ps1 start` |
 | View logs | `cd $installDir; .\ods.ps1 logs` |
 | Update | `cd $installDir; .\ods.ps1 update` |
-| Enable voice | Add `-Voice` flag or edit `.env` |
+| Add voice separately | In Dashboard Extensions Library, add Whisper STT or Kokoro TTS |
+| Enable both voice services | Rerun the installer with `-Voice` |
+| Disable both voice services | Rerun the installer with `-NoVoice` |
 | Enable workflows | Add `-Workflows` flag |
 | Support report | `cd $installDir; .\ods.ps1 report` |
 

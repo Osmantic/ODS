@@ -154,6 +154,15 @@ jobs:
         shell: powershell
         run: ./tests/contracts/test-windows-hermes-library-selection.ps1
 
+      - name: Windows Voice Library Selection Contract
+        shell: pwsh
+        run: ./tests/contracts/test-windows-voice-library-selection.ps1
+
+      - name: Windows Voice Library Selection Contract (Windows PowerShell)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./tests/contracts/test-windows-voice-library-selection.ps1
+
       - name: Windows Hermes Credential Relock Contract (PowerShell 7)
         if: runner.os == 'Windows'
         shell: pwsh

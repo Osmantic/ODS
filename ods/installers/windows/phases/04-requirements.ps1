@@ -9,7 +9,7 @@
 # Reads:
 #   $selectedTier, $tierConfig    -- from phase 02
 #   $gpuInfo, $systemRamGB        -- from phase 02
-#   $enableVoice, $enableWorkflows, $enableRag  -- from phase 03
+#   $enableWhisper, $enableTts, $enableWorkflows, $enableRag -- from phase 03
 #   $installDir                   -- from orchestrator context
 #   $force, $nonInteractive, $dryRun
 #
@@ -303,7 +303,7 @@ if ($enableRecommended) {
     $_portsToCheck["SearXNG (search)"] = 8888
     $_portsToCheck["Token Spy (usage monitor)"] = 3005
 }
-if ($enableVoice) {
+if ($enableWhisper) {
     # Preflight the exact host port phase 06 / New-ODSEnv will write: honor the
     # process-level and persisted WHISPER_PORT override, then apply the same
     # managed-AMD / Lemonade-conflict migration as Resolve-WindowsWhisperHostPort.
@@ -315,7 +315,10 @@ if ($enableVoice) {
         -AmdInferenceRuntime $(if ($_usesNativeLemonade) { "lemonade" } else { "" }) `
         -AmdInferenceLocation $(if ($_usesNativeLemonade) { "host" } else { "" }))
     $_portsToCheck["Whisper (STT)"] = $_whisperPortToCheck
-    $_portsToCheck["Kokoro (TTS)"]  = 8880
+}
+if ($enableTts) {
+    # New-ODSEnv writes TTS_PORT=8880 on Windows.
+    $_portsToCheck["Kokoro (TTS)"] = 8880
 }
 if ($enableWorkflows) {
     $_portsToCheck["n8n (workflows)"] = 5678

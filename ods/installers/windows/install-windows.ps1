@@ -33,6 +33,7 @@
 #   .\install-windows.ps1 --All            # Enable all optional services
 #   .\install-windows.ps1 --Hermes         # Enable Hermes Agent
 #   .\install-windows.ps1 -NoHermes        # Disable Hermes Agent
+#   .\install-windows.ps1 -NoVoice         # Disable both, including with -All
 #   .\install-windows.ps1 -NoBootstrap     # Wait for full model before launch
 #   .\install-windows.ps1 -InstallDir <path>
 #   .\install-windows.ps1 --NonInteractive # Headless install (defaults)
@@ -46,6 +47,7 @@ param(
     [switch]$NonInteractive,
     [string]$Tier = "",
     [switch]$Voice,
+    [switch]$NoVoice,
     [switch]$Workflows,
     [switch]$Rag,
     [switch]$Recommended,
@@ -115,6 +117,10 @@ $nonInteractive = $NonInteractive.IsPresent
 $cloudMode      = $Cloud.IsPresent
 $tierOverride   = $Tier
 $voiceFlag      = $Voice.IsPresent
+$noVoiceFlag    = $NoVoice.IsPresent
+if ($voiceFlag -and $noVoiceFlag) {
+    throw "-Voice and -NoVoice cannot be used together"
+}
 $workflowsFlag  = $Workflows.IsPresent
 $ragFlag        = $Rag.IsPresent
 $recommendedFlag = $Recommended.IsPresent
@@ -200,7 +206,7 @@ Write-ODSBanner
 #
 #  Phase 01 → $preflight_docker (hashtable)
 #  Phase 02 → $gpuInfo, $systemRamGB, $selectedTier, $tierConfig, $llamaServerImage
-#  Phase 03 → $enableVoice, $enableWorkflows, $enableRag, $enableOpenClaw, $openClawConfig
+#  Phase 03 → $enableWhisper, $enableTts, $enableWorkflows, $enableRag, $enableOpenClaw
 #  Phase 04 → $requirementsMet
 #  Phase 05 → $dockerComposeCmd
 #  Phase 06 → $envResult (SearxngSecret, OpenclawToken)
@@ -979,7 +985,8 @@ litellm_settings:
         $currentBackend = $(if ($cloudMode) { "none" } else { $gpuInfo.Backend })
         $servicePlan = New-ODSWindowsServicePlan `
             -EnableRecommended $enableRecommended `
-            -EnableVoice $enableVoice `
+            -EnableWhisper $enableWhisper `
+            -EnableTts $enableTts `
             -EnableWorkflows $enableWorkflows `
             -EnableRag $enableRag `
             -EnableHermes $enableHermes `
@@ -2091,7 +2098,8 @@ Write-Phase -Phase 9 -Total 13 -Name "VERIFICATION" -Estimate "~30 seconds"
 if ($dryRun) {
     $_dryRunServicePlan = New-ODSWindowsServicePlan `
         -EnableRecommended $enableRecommended `
-        -EnableVoice $enableVoice `
+        -EnableWhisper $enableWhisper `
+        -EnableTts $enableTts `
         -EnableWorkflows $enableWorkflows `
         -EnableRag $enableRag `
         -EnableHermes $enableHermes `
@@ -2157,9 +2165,13 @@ $healthChecks = @(
     @{ Name = $llmEndpoint.Name; Url = $llmEndpoint.HealthUrl }
     @{ Name = "Chat UI (Open WebUI)"; Url = "http://localhost:$webuiHealthPort" }
 )
-if ($enableVoice)     {
+if ($enableWhisper) {
     $healthWhisperPort = if ($windowsEnvMap.ContainsKey("WHISPER_PORT") -and -not [string]::IsNullOrWhiteSpace($windowsEnvMap["WHISPER_PORT"])) { $windowsEnvMap["WHISPER_PORT"] } else { "9000" }
     $healthChecks += @{ Name = "Whisper (STT)"; Url = "http://localhost:$healthWhisperPort/health" }
+}
+if ($enableTts) {
+    $healthTtsPort = if ($windowsEnvMap.ContainsKey("TTS_PORT") -and -not [string]::IsNullOrWhiteSpace($windowsEnvMap["TTS_PORT"])) { $windowsEnvMap["TTS_PORT"] } else { "8880" }
+    $healthChecks += @{ Name = "Kokoro (TTS)"; Url = "http://localhost:$healthTtsPort/health" }
 }
 if ($enableWorkflows) { $healthChecks += @{ Name = "n8n (Workflows)";   Url = "http://localhost:5678/healthz" } }
 
@@ -2300,11 +2312,11 @@ function Wait-WindowsSttModelCached {
     return (Test-WindowsSttModelCached -ModelUrl $ModelUrl)
 }
 
-$sttModelReady = (-not $enableVoice)
+$sttModelReady = (-not $enableWhisper)
 $sttModelNameForReadiness = ""
 $sttModelCacheUrl = ""
 $sttRecoveryCmd = ""
-if ($enableVoice) {
+if ($enableWhisper) {
     # Read AUDIO_STT_MODEL and WHISPER_PORT from .env (written by env-generator.ps1).
     # Use ReadAllText with explicit UTF8NoBom encoding so legacy BOM-prefixed
     # .env files (written by old Set-Content -Encoding UTF8) don't break the
@@ -2461,13 +2473,15 @@ if (Test-ODSWindowsServiceEnabled -ServiceId "token-spy" -Plan $servicePlan) {
     $tokenSpyPort = Get-ReadinessPort -Name "TOKEN_SPY_PORT" -Default "3005"
     $readinessChecks += @{ Name = "Token Spy"; Url = "http://localhost:$tokenSpyPort/health"; Container = "ods-token-spy"; OpenUrl = "http://localhost:$tokenSpyPort" }
 }
-if ($enableVoice) {
+if ($enableWhisper) {
     $whisperPort = Get-ReadinessPort -Name "WHISPER_PORT" -Default "9000"
-    $ttsPort = Get-ReadinessPort -Name "TTS_PORT" -Default "8880"
     $readinessChecks += @{ Name = "Whisper (STT)"; Url = "http://localhost:$whisperPort/health"; Container = "ods-whisper"; OpenUrl = "http://localhost:$whisperPort" }
     if ($sttModelCacheUrl) {
         $readinessChecks += @{ Name = "Whisper STT model cache"; Url = $sttModelCacheUrl; Container = "ods-whisper"; OpenUrl = $sttModelNameForReadiness; Hint = "Run: $sttRecoveryCmd" }
     }
+}
+if ($enableTts) {
+    $ttsPort = Get-ReadinessPort -Name "TTS_PORT" -Default "8880"
     $readinessChecks += @{ Name = "Kokoro (TTS)"; Url = "http://localhost:$ttsPort/health"; Container = "ods-tts"; OpenUrl = "http://localhost:$ttsPort" }
 }
 if ($enableWorkflows) {
@@ -2591,6 +2605,8 @@ if ($SummaryJsonPath) {
         sttModelCached = $sttModelReady
         features   = @{
             voice        = $enableVoice
+            whisper      = $enableWhisper
+            tts          = $enableTts
             workflows    = $enableWorkflows
             rag          = $enableRag
             recommended  = $enableRecommended
