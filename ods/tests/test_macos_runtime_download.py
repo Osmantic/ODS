@@ -263,7 +263,7 @@ command() {
         source = (ROOT / "installers/macos/install-macos.sh").read_text(encoding="utf-8")
         start = source.index('    # ── Download and start native llama-server')
         block = source[start:source.index('        # Start native llama-server with Metal', start)]
-        self.assertIn('if ! $CLOUD_MODE; then', block)
+        self.assertIn('if ! $CLOUD_MODE && ! $GATEWAY_ONLY; then', block)
         self.assertIn('macos_install_native_llama "$LLAMA_SERVER_BIN" "$LLAMA_CPP_RELEASE_TAG"', block)
         self.assertNotIn('LLAMA_ZIP=', block)
 

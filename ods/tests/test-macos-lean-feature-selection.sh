@@ -17,12 +17,15 @@ read_env_value() {
 ai_err() { printf '%s\n' "$*" >&2; }
 ai_ok() { :; }
 log() { :; }
+eval "$(sed -n '/^_macos_capture_gateway_library_selections() {/,/^}/p' "$installer")"
+eval "$(sed -n '/^_macos_gateway_library_selected() {/,/^}/p' "$installer")"
 eval "$(sed -n '/^_macos_resolve_support_services() {/,/^}/p' "$installer")"
 eval "$(sed -n '/^_macos_apply_fresh_feature_defaults() {/,/^}/p' "$installer")"
 eval "$(sed -n '/^_macos_set_builtin_compose_state() {/,/^}/p' "$installer")"
 eval "$(sed -n '/^_macos_sync_builtin_compose_states() {/,/^}/p' "$installer")"
 
 NON_INTERACTIVE=true DRY_RUN=false ALL_FEATURES=false
+GATEWAY_ONLY=false _saved_gateway_only=""
 RECOMMENDED_EXPLICIT=false HERMES_EXPLICIT=false
 ENABLE_RECOMMENDED=true ENABLE_HERMES=true
 _macos_apply_fresh_feature_defaults
@@ -135,5 +138,12 @@ _macos_sync_builtin_compose_states
 [[ -f "$INSTALL_DIR/extensions/services/token-spy/compose.yaml"
     && -f "$INSTALL_DIR/extensions/services/searxng/compose.yaml" ]] \
     || { echo 'FAIL: selected recommended services were not restored' >&2; exit 1; }
+
+reset_features
+ENABLE_PIXEL=false GATEWAY_ONLY=true _saved_gateway_only=true
+_macos_capture_gateway_library_selections
+_macos_resolve_support_services
+[[ "$ENABLE_SEARXNG" == true && "$ENABLE_WEB_SEARCH" == true ]] \
+    || { echo 'FAIL: retained gateway SearXNG addback was not registered' >&2; exit 1; }
 
 echo 'PASS: Mac gateway and optional search selection'

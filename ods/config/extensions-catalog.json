@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-30T11:32:07Z",
+  "generated_at": "2026-10-02T00:34:26Z",
   "schema_version": "1.0.0",
   "extensions": [
     {
@@ -9283,11 +9283,11 @@
       "id": "remote-provider-egress",
       "name": "Remote Provider Egress",
       "description": "Internal-only OpenAI-compatible egress boundary for optional remote LLM providers. It reads generated remote routing state and a private provider secret file, enforces the remote-provider egress policy, and exposes no host port.\n",
-      "category": "core",
+      "category": "optional",
       "gpu_backends": [
         "all"
       ],
-      "compose_file": "",
+      "compose_file": "compose.yaml",
       "depends_on": [],
       "port": 8091,
       "external_port_default": 0,
@@ -9329,12 +9329,14 @@
       "id": "remote-provider-ssh-tunnel",
       "name": "Remote Provider SSH Tunnel",
       "description": "Internal-only SSH transport supervisor scaffold for optional remote LLM providers. It reads generated remote routing state and private SSH custody files, reports a redacted fail-closed plan, and exposes no host port.\n",
-      "category": "core",
+      "category": "optional",
       "gpu_backends": [
         "all"
       ],
-      "compose_file": "",
-      "depends_on": [],
+      "compose_file": "compose.yaml",
+      "depends_on": [
+        "remote-provider-egress"
+      ],
       "port": 18090,
       "external_port_default": 0,
       "health_endpoint": "/health",

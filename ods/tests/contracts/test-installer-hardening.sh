@@ -911,7 +911,35 @@ assert_contains "installers/windows/install-windows.ps1" 'Docker Compose did not
 assert_contains "installers/windows/install-windows.ps1" 'dashboard", "dashboard-api", "open-webui' "Windows installer does not require core container services"
 assert_contains "bin/ods-host-agent.py" '0o640' "remote-provider lifecycle secrets must be group-readable only to hardened provider services"
 assert_contains "bin/ods-host-agent.py" '_repair_remote_provider_secret_permissions' "legacy remote-provider secrets are not repaired for provider access"
-assert_contains "docker-compose.base.yml" 'REMOTE_PROVIDER_DATA_GID' "remote-provider services must receive the installation data group"
+# Remote providers are in Core on older installations and independent Library
+# recipes on lean installs. Check each service's actual source recipe, not only
+# the base stack; both must retain access to owner-written group-readable data.
+for provider in remote-provider-egress remote-provider-ssh-tunnel; do
+  provider_recipe="docker-compose.base.yml"
+  for candidate in "extensions/services/$provider/compose.yaml" "extensions/services/$provider/compose.yaml.disabled"; do
+    if [[ -f "$candidate" ]]; then
+      provider_recipe="$candidate"
+      break
+    fi
+  done
+  if ! awk -v wanted="$provider" '
+    /^  [[:alnum:]_-]+:/ {
+      selected = ($0 == "  " wanted ":")
+      group = 0
+    }
+    selected && /^    group_add:/ {
+      group = 1
+      if ($0 ~ /REMOTE_PROVIDER_DATA_GID/) found = 1
+      next
+    }
+    selected && group && /^    [^[:space:]]/ { group = 0 }
+    selected && group && /REMOTE_PROVIDER_DATA_GID/ { found = 1 }
+    END { exit !found }
+  ' "$provider_recipe"; then
+    echo "[FAIL] $provider must receive the installation data group in $provider_recipe"
+    exit 1
+  fi
+done
 assert_contains "installers/phases/06-directories.sh" 'REMOTE_PROVIDER_DATA_GID=\$\(id -g' "Linux installer does not derive the current installation data group"
 assert_not_contains "installers/phases/06-directories.sh" 'REMOTE_PROVIDER_DATA_GID=\$\(_env_get' "Linux installer may preserve a stale remote-provider data group"
 assert_contains "installers/windows/lib/env-generator.ps1" 'REMOTE_PROVIDER_DATA_GID=0' "Windows installer does not derive the Docker Desktop provider group"

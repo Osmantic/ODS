@@ -247,3 +247,36 @@ jobs:
         if: runner.os == 'Windows'
         shell: powershell
         run: ./tests/contracts/test-windows-uninstall-leftovers.ps1
+
+      - name: Windows Remote Provider Selection (PowerShell 7)
+        shell: pwsh
+        run: ./tests/contracts/test-windows-remote-provider-selection.ps1
+
+      - name: Windows Remote Provider Selection (PowerShell 5.1)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./tests/contracts/test-windows-remote-provider-selection.ps1
+
+      - name: Windows Remote Provider CLI Guard (PowerShell 7)
+        shell: pwsh
+        run: ./tests/contracts/test-windows-remote-provider-cli-guard.ps1
+
+      - name: Windows Remote Provider CLI Guard (PowerShell 5.1)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./tests/contracts/test-windows-remote-provider-cli-guard.ps1
+
+      - name: Windows Remote Provider Source Copy (PowerShell 7)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./tests/contracts/test-windows-remote-provider-source-copy.ps1 -AllowMissingDocker
+
+      - name: Windows Remote Provider Linux Transaction
+        if: runner.os == 'Linux'
+        shell: bash
+        run: python3 tests/contracts/test_remote_provider_windows_transaction.py
+
+      - name: Windows Remote Provider Source Copy (PowerShell 5.1)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./tests/contracts/test-windows-remote-provider-source-copy.ps1 -AllowMissingDocker

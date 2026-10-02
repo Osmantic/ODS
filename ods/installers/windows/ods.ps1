@@ -3667,6 +3667,12 @@ function Invoke-Enable {
         [switch]$AsDependency
     )
 
+    # These were always-on base services before their Library migration. Do
+    # not expose the generic native marker writer for their route lifecycle.
+    if ($ServiceId -in @('remote-provider-egress', 'remote-provider-ssh-tunnel')) {
+        throw 'Manage remote-provider services through Dashboard Library.'
+    }
+
     if (-not $AsDependency) {
         # Validate install files only -- Docker is not needed to rename a compose fragment.
         Test-ODSInstallFiles
@@ -3778,6 +3784,12 @@ function Invoke-Disable {
         # merged compose project no longer defines.
         [switch]$Force
     )
+
+    # -Force does not authorize stranding an active remote route, and this
+    # native writer cannot share Dashboard's Linux transaction lock.
+    if ($ServiceId -in @('remote-provider-egress', 'remote-provider-ssh-tunnel')) {
+        throw 'Manage remote-provider services through Dashboard Library.'
+    }
 
     # Validate install files only -- Docker stop is best-effort below.
     Test-ODSInstallFiles

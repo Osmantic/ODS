@@ -15,6 +15,8 @@
 #   ./install-macos.sh --all            # Enable all optional services
 #   ./install-macos.sh --non-interactive # Headless install (defaults)
 #   ./install-macos.sh --no-bootstrap   # Wait for the full model before launch
+#   ./install-macos.sh --gateway-only --external-llm-url URL \
+#       --external-llm-model MODEL       # Dashboard and LiteLLM, no GGUF/llama
 #   ./install-macos.sh --preflight-only # Phase 1 environment checks only, no
 #                                       # changes (get-ods.sh --force runs this
 #                                       # before removing an existing install)
@@ -132,8 +134,15 @@ WEBUI_RETAINED=""
 ENABLE_LANGFUSE=false
 NO_LANGFUSE_EXPLICIT=false
 OPENCLAW_EXPLICIT=false
+PIXEL_ENABLE_EXPLICIT=false
 ALL_FEATURES=false
 CLOUD_MODE=false
+GATEWAY_ONLY=false
+EXTERNAL_LLM_URL="${EXTERNAL_LLM_URL:-}"
+EXTERNAL_LLM_PROVIDER="${EXTERNAL_LLM_PROVIDER:-auto}"
+EXTERNAL_LLM_MODEL="${EXTERNAL_LLM_MODEL:-}"
+EXTERNAL_LLM_API_KEY_FILE="${EXTERNAL_LLM_API_KEY_FILE:-}"
+EXTERNAL_LLM_CONTAINER_URL=""
 NO_BOOTSTRAP=false
 PREFLIGHT_ONLY=false
 HERMES_CONTEXT_SIZE=65536
@@ -158,12 +167,17 @@ while [[ $# -gt 0 ]]; do
         --no-opencode)  ENABLE_OPENCODE=false; OPENCODE_DISABLE_EXPLICIT=true; shift ;;
         --with-webui)   ENABLE_OPEN_WEBUI=true; WEBUI_ENABLE_EXPLICIT=true; shift ;;
         --no-webui)     ENABLE_OPEN_WEBUI=false; WEBUI_DISABLE_EXPLICIT=true; shift ;;
-        --pixel)        ENABLE_PIXEL=true; shift ;;
+        --pixel)        ENABLE_PIXEL=true; PIXEL_ENABLE_EXPLICIT=true; shift ;;
         --no-pixel)     ENABLE_PIXEL=false; shift ;;
         --langfuse)      ENABLE_LANGFUSE=true; shift ;;
         --no-langfuse)   ENABLE_LANGFUSE=false; NO_LANGFUSE_EXPLICIT=true; shift ;;
         --all)           ALL_FEATURES=true; shift ;;
         --cloud)         CLOUD_MODE=true; shift ;;
+        --gateway-only)  GATEWAY_ONLY=true; shift ;;
+        --external-llm-url) [[ $# -ge 2 ]] || { echo "--external-llm-url requires a URL" >&2; exit 1; }; EXTERNAL_LLM_URL="$2"; shift 2 ;;
+        --external-llm-provider) [[ $# -ge 2 ]] || { echo "--external-llm-provider requires a value" >&2; exit 1; }; EXTERNAL_LLM_PROVIDER="$2"; shift 2 ;;
+        --external-llm-model) [[ $# -ge 2 ]] || { echo "--external-llm-model requires a value" >&2; exit 1; }; EXTERNAL_LLM_MODEL="$2"; shift 2 ;;
+        --external-llm-api-key-file) [[ $# -ge 2 ]] || { echo "--external-llm-api-key-file requires a path" >&2; exit 1; }; EXTERNAL_LLM_API_KEY_FILE="$2"; shift 2 ;;
         --no-bootstrap)  NO_BOOTSTRAP=true; shift ;;
         *)               echo "Unknown option: $1"; exit 1 ;;
     esac
@@ -221,6 +235,7 @@ if [[ -f "${SOURCE_ROOT}/installers/lib/compose-failure-report.sh" ]]; then
     source "${SOURCE_ROOT}/installers/lib/compose-failure-report.sh"
 fi
 source "${SOURCE_ROOT}/lib/safe-env.sh"
+source "${SOURCE_ROOT}/installers/lib/external-services.sh"
 if [[ -f "${SOURCE_ROOT}/lib/python-cmd.sh" ]]; then
     source "${SOURCE_ROOT}/lib/python-cmd.sh"
 fi
@@ -228,6 +243,17 @@ source "${SOURCE_ROOT}/installers/lib/readiness-summary.sh"
 source "${SOURCE_ROOT}/installers/lib/secure-log.sh"
 
 # ── File-local helpers ──
+_macos_remote_provider_retained_data_dir() {
+    local raw decoded=""
+    raw="$(read_env_value "${INSTALL_DIR}/.env" "ODS_DATA_DIR")"
+    if [[ -n "$raw" ]]; then
+        # read_env_value returns raw dotenv text. Decode quotes and spaces
+        # exactly as the installer and Compose decode the retained setting.
+        decoded="$(safe_env_decode_value "$raw")"
+    fi
+    printf '%s' "${decoded:-${INSTALL_DIR}/data}"
+}
+
 _close_inherited_fds_for_daemon() {
     local fd fd_dir fd_name
 
@@ -292,6 +318,39 @@ services:
 CLOUD_AUTH_EOF
 }
 
+_macos_capture_gateway_library_selections() {
+    # Library Add/Disable is recorded by the active/disabled compose filename.
+    # Capture that state before rsync copies the shipped active files back into
+    # a retained gateway install. Keep each service independent (notably TTS
+    # and Whisper), even though gateway-only CLI flags start out false.
+    MACOS_GATEWAY_RETAINED_COMPOSE_IDS=""
+    $GATEWAY_ONLY && [[ "${_saved_gateway_only:-}" == true ]] || return 0
+
+    local service_id
+    for service_id in searxng token-spy whisper tts n8n qdrant embeddings \
+        hermes hermes-proxy openclaw ape perplexica privacy-shield ods-proxy \
+        tailscale langfuse brave-search; do
+        if [[ -f "${INSTALL_DIR}/extensions/services/${service_id}/compose.yaml" ]]; then
+            MACOS_GATEWAY_RETAINED_COMPOSE_IDS+=" ${service_id}"
+        fi
+    done
+}
+
+_macos_gateway_library_selected() {
+    $GATEWAY_ONLY && [[ " ${MACOS_GATEWAY_RETAINED_COMPOSE_IDS:-} " == *" $1 "* ]]
+}
+
+_macos_effective_service_enabled() {
+    # A retained gateway's Library choice is authoritative per service. The
+    # installer feature flags remain false so one addback cannot enable its
+    # partner (notably Whisper/TTS or Hermes/Hermes proxy).
+    if $GATEWAY_ONLY && [[ "${_saved_gateway_only:-}" == true ]]; then
+        _macos_gateway_library_selected "$1"
+    else
+        [[ "$2" == true ]]
+    fi
+}
+
 _macos_set_builtin_compose_state() {
     local service_id="$1" enabled="$2"
     local service_dir="${INSTALL_DIR}/extensions/services/${service_id}"
@@ -299,6 +358,9 @@ _macos_set_builtin_compose_state() {
     local disabled="${service_dir}/compose.yaml.disabled"
 
     [[ -d "$service_dir" ]] || return 0
+    if _macos_gateway_library_selected "$service_id"; then
+        enabled=true
+    fi
     if [[ "$enabled" == "true" ]]; then
         if [[ -f "$active" ]]; then
             rm -f "$disabled"
@@ -359,6 +421,9 @@ _macos_resolve_support_services() {
             parallel-free) ;;
             *) ai_err "Unsupported Pixel search provider: ${provider}"; return 1 ;;
         esac
+    fi
+    if _macos_gateway_library_selected searxng; then
+        ENABLE_SEARXNG=true
     fi
     ENABLE_WEB_SEARCH=$ENABLE_SEARXNG
 }
@@ -1260,9 +1325,98 @@ _ensure_macos_pyyaml() {
 
 # Resolve install directory
 INSTALL_DIR="${ODS_INSTALL_DIR}"
+_saved_gateway_only="$(read_env_value "${INSTALL_DIR}/.env" ODS_GATEWAY_ONLY)"
+if [[ "$_saved_gateway_only" == true ]]; then
+    GATEWAY_ONLY=true
+fi
+_macos_capture_gateway_library_selections
+if $GATEWAY_ONLY; then
+    if $CLOUD_MODE || $ALL_FEATURES || $WEBUI_ENABLE_EXPLICIT; then
+        ai_err "--gateway-only cannot be combined with --cloud, --all, or --with-webui."
+        exit 1
+    fi
+    if [[ -n "$TIER_OVERRIDE" ]] || $ENABLE_VOICE || $ENABLE_WORKFLOWS \
+        || $ENABLE_RAG \
+        || { $RECOMMENDED_EXPLICIT && $ENABLE_RECOMMENDED; } \
+        || { $HERMES_EXPLICIT && $ENABLE_HERMES; } \
+        || $ENABLE_OPENCLAW || $ENABLE_OPENCODE || $PIXEL_ENABLE_EXPLICIT \
+        || $ENABLE_LANGFUSE; then
+        ai_err "--gateway-only is an API-first install; add optional services later through the Library."
+        exit 1
+    fi
+    if [[ -f "${INSTALL_DIR}/.env" && "$_saved_gateway_only" != true ]]; then
+        ai_err "An existing native ODS installation cannot be converted by --gateway-only. Keep its data and use a separate install directory."
+        exit 1
+    fi
+    _saved_external_url="$(read_env_value "${INSTALL_DIR}/.env" EXTERNAL_LLM_URL)"
+    _saved_external_auth_required="$(read_env_value "${INSTALL_DIR}/.env" EXTERNAL_LLM_AUTH_REQUIRED)"
+    [[ -n "$EXTERNAL_LLM_URL" ]] || EXTERNAL_LLM_URL="$_saved_external_url"
+    [[ "$EXTERNAL_LLM_PROVIDER" != auto ]] || EXTERNAL_LLM_PROVIDER="$(read_env_value "${INSTALL_DIR}/.env" EXTERNAL_LLM_PROVIDER)"
+    [[ -n "$EXTERNAL_LLM_MODEL" ]] || EXTERNAL_LLM_MODEL="$(read_env_value "${INSTALL_DIR}/.env" EXTERNAL_LLM_MODEL)"
+    if [[ -z "$EXTERNAL_LLM_URL" || -z "$EXTERNAL_LLM_MODEL" ]]; then
+        ai_err "--gateway-only requires --external-llm-url and --external-llm-model (or a saved gateway selection)."
+        exit 1
+    fi
+    if ! external_llm_validate_url "$EXTERNAL_LLM_URL"; then
+        ai_err "External model URL must be an HTTP(S) base without credentials, query, or fragment."
+        exit 1
+    fi
+    EXTERNAL_LLM_URL="$(external_llm_strip_url "$EXTERNAL_LLM_URL")"
+    if [[ -n "$_saved_external_url" && "$EXTERNAL_LLM_URL" != "$(external_llm_strip_url "$_saved_external_url")" ]]; then
+        ai_err "Changing a retained gateway upstream requires a separate install directory; the saved credential remains untouched."
+        exit 1
+    fi
+    _installed_external_key="${INSTALL_DIR}/config/litellm/external-upstream.key"
+    if [[ -z "$EXTERNAL_LLM_API_KEY_FILE" && -s "$_installed_external_key" ]]; then
+        EXTERNAL_LLM_API_KEY_FILE="$_installed_external_key"
+    fi
+    if [[ "$_saved_external_auth_required" == true && -z "$EXTERNAL_LLM_API_KEY_FILE" ]]; then
+        ai_err "The saved gateway requires an upstream key; its private key file is missing. Supply --external-llm-api-key-file."
+        exit 1
+    fi
+    if [[ -n "$EXTERNAL_LLM_API_KEY_FILE" ]] && ! external_llm_read_api_key "$EXTERNAL_LLM_API_KEY_FILE" >/dev/null; then
+        ai_err "External model key file failed private-file validation."
+        exit 1
+    fi
+    if [[ -z "$EXTERNAL_LLM_PROVIDER" || "$EXTERNAL_LLM_PROVIDER" == auto ]]; then
+        EXTERNAL_LLM_PROVIDER="$(external_llm_detect_provider "$EXTERNAL_LLM_URL" || true)"
+    fi
+    case "$EXTERNAL_LLM_PROVIDER" in
+        ollama|lmstudio|openai-compatible) ;;
+        *) ai_err "External model provider could not be identified; use --external-llm-provider ollama|lmstudio|openai-compatible."; exit 1 ;;
+    esac
+    _resolved_gateway_model="$(external_llm_resolve_model "$EXTERNAL_LLM_PROVIDER" "$EXTERNAL_LLM_URL" "$EXTERNAL_LLM_MODEL" "$EXTERNAL_LLM_MODEL" || true)"
+    if [[ -z "$_resolved_gateway_model" ]] || ! external_llm_probe_completion "$EXTERNAL_LLM_URL" "$_resolved_gateway_model"; then
+        ai_err "The selected external model did not pass discovery and a completion probe."
+        exit 1
+    fi
+    EXTERNAL_LLM_MODEL="$_resolved_gateway_model"
+    EXTERNAL_LLM_CONTAINER_URL="$(external_llm_container_url "$EXTERNAL_LLM_URL")"
+    NON_INTERACTIVE=true
+    ENABLE_PIXEL=false
+    ENABLE_HERMES=false
+    ENABLE_OPENCLAW=false
+    ENABLE_OPENCODE=false
+    ENABLE_APE=false
+    ENABLE_RECOMMENDED=false
+    ENABLE_OPEN_WEBUI=false
+    ENABLE_VOICE=false
+    ENABLE_WORKFLOWS=false
+    ENABLE_RAG=false
+    ENABLE_PERPLEXICA=false
+    ENABLE_PRIVACY_SHIELD=false
+    ENABLE_LANGFUSE=false
+    ENABLE_ODS_PROXY=false
+    ENABLE_LITELLM=true
+    ai_ok "Using external ${EXTERNAL_LLM_PROVIDER} model ${EXTERNAL_LLM_MODEL} for the API gateway"
+elif [[ -n "$EXTERNAL_LLM_URL" || -n "$EXTERNAL_LLM_API_KEY_FILE" ]]; then
+    ai_err "An external model route requires --gateway-only."
+    exit 1
+fi
 _macos_apply_fresh_feature_defaults
 _macos_resolve_webui_selection || exit 1
-if ! $OPENCODE_ENABLE_EXPLICIT && ! $OPENCODE_DISABLE_EXPLICIT && ! $ALL_FEATURES; then
+if $GATEWAY_ONLY; then ENABLE_OPEN_WEBUI=false; fi
+if ! $GATEWAY_ONLY && ! $OPENCODE_ENABLE_EXPLICIT && ! $OPENCODE_DISABLE_EXPLICIT && ! $ALL_FEATURES; then
     if ods_macos_opencode_retained "$OPENCODE_PLIST" "$OPENCODE_PLIST_LABEL" \
         "$OPENCODE_BUN_TMPDIR" "$(id -u)"; then
         ENABLE_OPENCODE=true
@@ -1405,7 +1559,7 @@ _docker_cpu_override="${ODS_MIN_DOCKER_CPUS:-}"
 _docker_cpu_min="${_docker_cpu_override:-6}"
 _docker_cpu_max_pin=4
 _docker_cpu_workload="base compose stack"
-if $ENABLE_VOICE && [[ -z "$_docker_cpu_override" ]]; then
+if _macos_effective_service_enabled whisper "$ENABLE_VOICE" && [[ -z "$_docker_cpu_override" ]]; then
     _docker_cpu_min=10
     _docker_cpu_max_pin=8
     _docker_cpu_workload="voice-enabled compose stack"
@@ -1505,9 +1659,18 @@ if $PREFLIGHT_ONLY; then
     exit 0
 fi
 
-# Ollama conflict detection
-check_ollama_conflict
-if $OLLAMA_RUNNING; then
+# Colima's host-gateway alias points at its VM rather than a macOS loopback
+# listener. Require an address reachable from containers for that combination.
+if $GATEWAY_ONLY && [[ "${DOCKER_BACKEND:-unknown}" == colima \
+    && "$EXTERNAL_LLM_CONTAINER_URL" == *host.docker.internal* ]]; then
+    ai_err "Colima cannot use a macOS loopback-only external model. Bind it to a container-reachable host address and use that URL."
+    exit 1
+fi
+
+# Ollama can be the selected upstream for an API-only gateway. Never offer to
+# stop it or treat its listener as a native llama-server conflict in that mode.
+if ! $GATEWAY_ONLY; then check_ollama_conflict; fi
+if ! $GATEWAY_ONLY && $OLLAMA_RUNNING; then
     ai_warn "Ollama is running (PID ${OLLAMA_PID}) and may conflict with ODS."
     ai "  Both use port 11434/8080. Ollama will shadow llama-server."
     if ! $NON_INTERACTIVE; then
@@ -1529,7 +1692,10 @@ if $OLLAMA_RUNNING; then
 fi
 
 # Port conflict checks — dynamically read from extension manifests
-_conflict_ports=(8080 11434)  # llama-server (native) + Ollama default (host conflict, no manifest)
+_conflict_ports=()
+if ! $GATEWAY_ONLY; then
+    _conflict_ports=(8080 11434)  # native llama-server + Ollama
+fi
 for _manifest in "${SOURCE_ROOT}/extensions/services/"*/manifest.yaml; do
     [[ -f "$_manifest" ]] || continue
     _port=$(grep 'external_port_default:' "$_manifest" 2>/dev/null | awk '{print $2}' | tr -d '"') || true
@@ -1573,7 +1739,7 @@ info_box "Neural Engine:" "${APPLE_HAS_NEURAL_ENGINE}"
 info_box "Backend:" "apple (Metal)"
 
 # Auto-select tier (or use override)
-if $CLOUD_MODE; then
+if $CLOUD_MODE || $GATEWAY_ONLY; then
     SELECTED_TIER="CLOUD"
 elif [[ -n "$TIER_OVERRIDE" ]]; then
     SELECTED_TIER=$(echo "$TIER_OVERRIDE" | tr '[:lower:]' '[:upper:]')
@@ -1595,6 +1761,11 @@ if [[ -z "${MODEL_PROFILE:-}" ]]; then
 fi
 
 resolve_tier_config "$SELECTED_TIER"
+if $GATEWAY_ONLY; then
+    LLM_MODEL="$EXTERNAL_LLM_MODEL"
+    GGUF_FILE=""
+    GGUF_URL=""
+fi
 if [[ "${ODS_DISABLE_CATALOG_MODEL_SELECTOR:-false}" != "true" && "$SELECTED_TIER" != "CLOUD" ]]; then
     _selector_script="${SOURCE_ROOT}/scripts/select-model.py"
     _selector_catalog="${SOURCE_ROOT}/config/model-library.json"
@@ -1657,7 +1828,9 @@ info_box "Context:" "${MAX_CONTEXT}"
 # exact model size when available; it can choose entries that do not fit the
 # older tier-map filename heuristics.
 _model_size_mb="${LLM_MODEL_SIZE_MB:-0}"
-if [[ "$_model_size_mb" =~ ^[0-9]+$ && "$_model_size_mb" -gt 0 ]]; then
+if $GATEWAY_ONLY; then
+    NEEDED_GB=15
+elif [[ "$_model_size_mb" =~ ^[0-9]+$ && "$_model_size_mb" -gt 0 ]]; then
     _model_gb=$(( (_model_size_mb + 1023) / 1024 ))
     NEEDED_GB=$(( _model_gb + 15 ))
 elif [[ "$GGUF_FILE" =~ 80B|Coder-Next ]]; then
@@ -1675,7 +1848,11 @@ else
 fi
 test_disk_space "$INSTALL_DIR" "$NEEDED_GB"
 if ! $DISK_SUFFICIENT; then
-    ai_warn "Tier ${SELECTED_TIER} needs ~${NEEDED_GB} GB (model + Docker images). Only ${DISK_FREE_GB} GB free."
+    if $GATEWAY_ONLY; then
+        ai_warn "The gateway stack needs ~${NEEDED_GB} GB for Docker images and data. Only ${DISK_FREE_GB} GB free."
+    else
+        ai_warn "Tier ${SELECTED_TIER} needs ~${NEEDED_GB} GB (model + Docker images). Only ${DISK_FREE_GB} GB free."
+    fi
     if ! $FORCE; then exit 1; fi
 fi
 
@@ -1803,7 +1980,7 @@ _macos_resolve_support_services || exit 1
 # fits at 64K, otherwise re-select a model that does, otherwise keep the
 # largest context that fits and say ODS Talk is unavailable.
 HERMES_CONTEXT_BELOW_FLOOR=false
-if $ENABLE_HERMES && ! $CLOUD_MODE; then
+if $ENABLE_HERMES && ! $CLOUD_MODE && ! $GATEWAY_ONLY; then
     if [[ "${MAX_CONTEXT:-0}" =~ ^[0-9]+$ ]] && (( MAX_CONTEXT < HERMES_CONTEXT_SIZE )); then
         _hermes_floor_action="raise-unverified"
         if [[ -n "${_selector_python:-}" && -f "${_selector_script:-}" && -f "${_selector_catalog:-}" \
@@ -1874,19 +2051,27 @@ if $ENABLE_HERMES && ! $CLOUD_MODE; then
 fi
 
 ai "Features:"
-info_box "  Voice:" "$(if $ENABLE_VOICE; then echo enabled; else echo disabled; fi)"
-info_box "  Workflows:" "$(if $ENABLE_WORKFLOWS; then echo enabled; else echo disabled; fi)"
-info_box "  RAG:" "$(if $ENABLE_RAG; then echo enabled; else echo disabled; fi)"
+_rag_summary=disabled
+if _macos_effective_service_enabled qdrant "$ENABLE_RAG" \
+    && _macos_effective_service_enabled embeddings "$ENABLE_RAG"; then
+    _rag_summary=enabled
+elif _macos_effective_service_enabled qdrant "$ENABLE_RAG" \
+    || _macos_effective_service_enabled embeddings "$ENABLE_RAG"; then
+    _rag_summary=partial
+fi
+info_box "  Voice:" "$(if _macos_effective_service_enabled whisper "$ENABLE_VOICE" || _macos_effective_service_enabled tts "$ENABLE_VOICE"; then echo enabled; else echo disabled; fi)"
+info_box "  Workflows:" "$(if _macos_effective_service_enabled n8n "$ENABLE_WORKFLOWS"; then echo enabled; else echo disabled; fi)"
+info_box "  RAG:" "$_rag_summary"
 info_box "  SearXNG search:" "$(if $ENABLE_SEARXNG; then echo enabled; else echo disabled; fi)"
-info_box "  Token Spy:" "$(if $ENABLE_RECOMMENDED; then echo enabled; else echo disabled; fi)"
+info_box "  Token Spy:" "$(if _macos_effective_service_enabled token-spy "$ENABLE_RECOMMENDED"; then echo enabled; else echo disabled; fi)"
 info_box "  LiteLLM gateway:" "$(if $ENABLE_LITELLM; then echo enabled; else echo disabled; fi)"
-info_box "  Hermes:" "$(if $ENABLE_HERMES; then echo enabled; else echo disabled; fi)"
+info_box "  Hermes:" "$(if _macos_effective_service_enabled hermes "$ENABLE_HERMES"; then echo enabled; else echo disabled; fi)"
 info_box "  Portal (native):" "$(if $ENABLE_PIXEL; then echo enabled; else echo disabled; fi)"
-info_box "  OpenClaw:" "$(if $ENABLE_OPENCLAW; then echo "enabled (DEPRECATED)"; else echo disabled; fi)"
+info_box "  OpenClaw:" "$(if _macos_effective_service_enabled openclaw "$ENABLE_OPENCLAW"; then echo "enabled (DEPRECATED)"; else echo disabled; fi)"
 info_box "  OpenCode:" "$(if $ENABLE_OPENCODE; then echo enabled; else echo disabled; fi)"
-info_box "  Perplexica:" "$(if $ENABLE_PERPLEXICA; then echo enabled; else echo disabled; fi)"
-info_box "  Privacy Shield:" "$(if $ENABLE_PRIVACY_SHIELD; then echo enabled; else echo disabled; fi)"
-info_box "  Langfuse:" "$(if $ENABLE_LANGFUSE; then echo enabled; else echo disabled; fi)"
+info_box "  Perplexica:" "$(if _macos_effective_service_enabled perplexica "$ENABLE_PERPLEXICA"; then echo enabled; else echo disabled; fi)"
+info_box "  Privacy Shield:" "$(if _macos_effective_service_enabled privacy-shield "$ENABLE_PRIVACY_SHIELD"; then echo enabled; else echo disabled; fi)"
+info_box "  Langfuse:" "$(if _macos_effective_service_enabled langfuse "$ENABLE_LANGFUSE"; then echo enabled; else echo disabled; fi)"
 # The macOS installer doesn't currently ship a ComfyUI container — none of
 # the published ComfyUI images target Apple Silicon Metal, and the upstream
 # Python build under MPS is non-trivial to package as a Docker service.
@@ -1894,7 +2079,7 @@ info_box "  Langfuse:" "$(if $ENABLE_LANGFUSE; then echo enabled; else echo disa
 # why the dashboard shows no image-gen tile after install.
 info_box "  ComfyUI:" "not available on macOS (no MPS Docker image upstream)"
 
-if $ENABLE_VOICE && [[ -z "$_docker_cpu_override" ]] && [[ "${_docker_cpu_preflight_min:-0}" -lt 10 ]]; then
+if _macos_effective_service_enabled whisper "$ENABLE_VOICE" && [[ -z "$_docker_cpu_override" ]] && [[ "${_docker_cpu_preflight_min:-0}" -lt 10 ]]; then
     _require_docker_cpu_budget 10 8 "voice-enabled compose stack"
 fi
 
@@ -1944,6 +2129,14 @@ else
     mkdir -p "${INSTALL_DIR}/data/remote-provider/secrets"
     mkdir -p "${INSTALL_DIR}/bin"
     ai_ok "Created directory structure"
+
+    _macos_remote_provider_data_dir="$(_macos_remote_provider_retained_data_dir)"
+    _macos_remote_provider_selection="$(python3 \
+        "${SOURCE_ROOT}/scripts/remote-provider-compose-selection.py" inspect "$INSTALL_DIR" "$SOURCE_ROOT" \
+        --data-dir "$_macos_remote_provider_data_dir")" || {
+        ai_err "Could not inspect the retained remote-provider selection."
+        exit 1
+    }
 
     # Copy source tree (skip .git, data, logs, .env, models)
     if [[ "$SOURCE_ROOT" != "$INSTALL_DIR" ]]; then
@@ -2057,10 +2250,18 @@ else
     # installer's unselected built-ins.
     _macos_sync_builtin_compose_states
 
+    python3 "${SOURCE_ROOT}/scripts/remote-provider-compose-selection.py" apply \
+        "$INSTALL_DIR" "$SOURCE_ROOT" "$_macos_remote_provider_selection" \
+        --data-dir "$_macos_remote_provider_data_dir" || {
+        ai_err "Could not reconcile the retained remote-provider selection."
+        exit 1
+    }
+    unset _macos_remote_provider_selection
+
     # A detached bootstrap worker can rewrite GGUF_FILE/LLM_MODEL after its
     # download finishes. Stop and disable it before cloud mode or a forced
     # fresh install touches .env so the values below are authoritative.
-    if $CLOUD_MODE; then
+    if $CLOUD_MODE || $GATEWAY_ONLY; then
         if ! _macos_cancel_detached_bootstrap_upgrade "cloud_mode" "cloud transition"; then
             exit 1
         fi
@@ -2078,6 +2279,53 @@ else
     # generate_ods_env preserves existing .env without --force. Persist an
     # explicit addback or opt-out there too, so cache rebuilds keep the choice.
     upsert_env_value "${INSTALL_DIR}/.env" "ENABLE_OPEN_WEBUI" "$ENABLE_OPEN_WEBUI"
+    if $GATEWAY_ONLY; then
+        _gateway_key_target="${INSTALL_DIR}/config/litellm/external-upstream.key"
+        if [[ -L "$_gateway_key_target" || ( -e "$_gateway_key_target" && ! -f "$_gateway_key_target" ) ]]; then
+            ai_err "External model key destination must be a regular file."
+            exit 1
+        fi
+        if [[ -n "$EXTERNAL_LLM_API_KEY_FILE" && "$EXTERNAL_LLM_API_KEY_FILE" != "$_gateway_key_target" ]]; then
+            _gateway_key_tmp="$(mktemp "${_gateway_key_target}.XXXXXX")" || exit 1
+            chmod 600 "$_gateway_key_tmp"
+            if ! external_llm_read_api_key "$EXTERNAL_LLM_API_KEY_FILE" >"$_gateway_key_tmp"; then
+                rm -f -- "$_gateway_key_tmp"
+                ai_err "Could not stage the external model key."
+                exit 1
+            fi
+            mv -f -- "$_gateway_key_tmp" "$_gateway_key_target"
+        elif [[ -z "$EXTERNAL_LLM_API_KEY_FILE" && ! -e "$_gateway_key_target" ]]; then
+            (umask 077; : >"$_gateway_key_target")
+        fi
+        chmod 600 "$_gateway_key_target"
+        [[ ! -s "$_gateway_key_target" ]] || EXTERNAL_LLM_API_KEY_FILE="$_gateway_key_target"
+        if [[ -n "$EXTERNAL_LLM_API_KEY_FILE" ]]; then
+            upsert_env_value "${INSTALL_DIR}/.env" EXTERNAL_LLM_AUTH_REQUIRED true
+        else
+            upsert_env_value "${INSTALL_DIR}/.env" EXTERNAL_LLM_AUTH_REQUIRED false
+        fi
+        upsert_env_value "${INSTALL_DIR}/.env" ODS_GATEWAY_ONLY true
+        upsert_env_value "${INSTALL_DIR}/.env" ODS_MODE local
+        upsert_env_value "${INSTALL_DIR}/.env" LLM_BACKEND external
+        upsert_env_value "${INSTALL_DIR}/.env" LLM_API_URL "http://litellm:4000"
+        upsert_env_value "${INSTALL_DIR}/.env" EXTERNAL_LLM_URL "$EXTERNAL_LLM_URL"
+        upsert_env_value "${INSTALL_DIR}/.env" EXTERNAL_LLM_CONTAINER_URL "$EXTERNAL_LLM_CONTAINER_URL"
+        upsert_env_value "${INSTALL_DIR}/.env" EXTERNAL_LLM_PROVIDER "$EXTERNAL_LLM_PROVIDER"
+        upsert_env_value "${INSTALL_DIR}/.env" EXTERNAL_LLM_MODEL "$EXTERNAL_LLM_MODEL"
+        upsert_env_value "${INSTALL_DIR}/.env" LLM_MODEL "$EXTERNAL_LLM_MODEL"
+        upsert_env_value "${INSTALL_DIR}/.env" GGUF_FILE ""
+        upsert_env_value "${INSTALL_DIR}/.env" ODS_ACTIVE_MODEL_STORE default
+        upsert_env_value "${INSTALL_DIR}/.env" ODS_MODEL_SWITCHBOARD observe
+        upsert_env_value "${INSTALL_DIR}/.env" ODS_MACOS_LLM_BRIDGE_ENABLED false
+        _gateway_litellm_key="$(read_env_value "${INSTALL_DIR}/.env" LITELLM_KEY)"
+        [[ -n "$_gateway_litellm_key" ]] || { ai_err "Gateway-only requires the generated LiteLLM master key."; exit 1; }
+        upsert_env_value "${INSTALL_DIR}/.env" HERMES_LLM_BASE_URL "http://litellm:4000/v1"
+        upsert_env_value "${INSTALL_DIR}/.env" HERMES_LLM_API_KEY "$_gateway_litellm_key"
+        upsert_env_value "${INSTALL_DIR}/.env" OPEN_WEBUI_LLM_BASE_URL "http://litellm:4000"
+        upsert_env_value "${INSTALL_DIR}/.env" OPEN_WEBUI_LLM_API_KEY "$_gateway_litellm_key"
+        chmod 600 "${INSTALL_DIR}/.env"
+        unset _gateway_key_target _gateway_key_tmp _gateway_litellm_key
+    fi
     # Reinstalls preserve .env, including an earlier AirPlay port remap.
     # Use that same port for Compose, model downloads and readiness checks.
     WHISPER_PORT="$(read_env_value "$INSTALL_DIR/.env" "WHISPER_PORT")"
@@ -2088,7 +2336,7 @@ else
     _macos_active_store="$(read_env_value "${INSTALL_DIR}/.env" "ODS_ACTIVE_MODEL_STORE")"
     _macos_active_store="${_macos_active_store//\"/}"
     _macos_active_store="${_macos_active_store//\'/}"
-    if ! $CLOUD_MODE && [[ "$_previous_ods_mode" != cloud && -n "$_macos_active_store" && "$_macos_active_store" != default ]]; then
+    if ! $CLOUD_MODE && ! $GATEWAY_ONLY && [[ "$_previous_ods_mode" != cloud && -n "$_macos_active_store" && "$_macos_active_store" != default ]]; then
         # A retained SSD selection owns the runtime contract, not this tier's
         # recommendation. Verify it before any native listener is replaced.
         macos_resolve_native_model "$INSTALL_DIR" "$LLAMA_SERVER_BIN" \
@@ -2105,6 +2353,7 @@ else
         legacy|observe|enabled) ;;
         *) _macos_switchboard_mode="enabled" ;;
     esac
+    if $GATEWAY_ONLY; then _macos_switchboard_mode=observe; fi
     upsert_env_value "${INSTALL_DIR}/.env" "ODS_MODEL_SWITCHBOARD" "$_macos_switchboard_mode"
     _macos_agent_bind_raw="$(read_env_value "${INSTALL_DIR}/.env" "ODS_AGENT_BIND")"
     _macos_agent_bind="$(macos_normalize_agent_bind "${_macos_agent_bind_raw:-127.0.0.1}")"
@@ -2128,7 +2377,7 @@ else
     if [[ "${DOCKER_BACKEND:-unknown}" == "colima" ]]; then
         _macos_llm_bind="127.0.0.1"
         [[ -n "$_macos_llm_bind" ]] || _macos_llm_bind="127.0.0.1"
-        _macos_llm_bridge_enabled="true"
+        if ! $GATEWAY_ONLY; then _macos_llm_bridge_enabled="true"; fi
         _macos_agent_bridge_enabled="true"
         macos_bind_uses_direct_gateway "$_macos_llm_bind" "$COLIMA_HOST_IP" && _macos_llm_bridge_enabled="false"
         macos_bind_uses_direct_gateway "$_macos_agent_bind" "$COLIMA_HOST_IP" && _macos_agent_bridge_enabled="false"
@@ -2147,7 +2396,10 @@ else
         upsert_env_value "${INSTALL_DIR}/.env" "ODS_MACOS_VM_IP" ""
         upsert_env_value "${INSTALL_DIR}/.env" "ODS_NATIVE_LLAMA_PORT" "${ODS_NATIVE_LLAMA_PORT:-8080}"
     fi
-    if $CLOUD_MODE; then
+    if $GATEWAY_ONLY; then
+        upsert_env_value "${INSTALL_DIR}/.env" "ODS_MACOS_LLM_BRIDGE_ENABLED" "false"
+        _macos_llm_bridge_enabled="false"
+    elif $CLOUD_MODE; then
         _macos_litellm_key="$(read_env_value "${INSTALL_DIR}/.env" "LITELLM_KEY")"
         if [[ -z "$_macos_litellm_key" ]]; then
             ai_err "Cloud mode requires the generated LiteLLM master key, but LITELLM_KEY is empty."
@@ -2166,7 +2418,7 @@ else
         upsert_env_value "${INSTALL_DIR}/.env" "ODS_ACTIVE_MODEL_STORE" "default"
         upsert_env_value "${INSTALL_DIR}/.env" "MAX_CONTEXT" "$MAX_CONTEXT"
         upsert_env_value "${INSTALL_DIR}/.env" "CTX_SIZE" "$MAX_CONTEXT"
-    else
+    elif ! $GATEWAY_ONLY; then
         upsert_env_value "${INSTALL_DIR}/.env" "ODS_MODE" "local"
         upsert_env_value "${INSTALL_DIR}/.env" "LLM_BACKEND" "llama-server"
         upsert_env_value "${INSTALL_DIR}/.env" "HERMES_LLM_API_KEY" "sk-ods-hermes-local"
@@ -2196,13 +2448,13 @@ else
             upsert_env_value "${INSTALL_DIR}/.env" "OPEN_WEBUI_LLM_API_KEY" "$_macos_litellm_key"
         fi
     fi
-    if [[ "${DOCKER_BACKEND:-unknown}" == "colima" ]] \
+    if ! $GATEWAY_ONLY && [[ "${DOCKER_BACKEND:-unknown}" == "colima" ]] \
        && [[ "$_macos_llm_bridge_enabled" == "true" ]] \
        && macos_bind_uses_direct_gateway "${_previous_llm_bind:-127.0.0.1}" "$_previous_macos_gateway"; then
         _macos_stop_install_owned_native_llama \
             "Stopping the old direct native listener before recreating the loopback Colima bridge..."
     fi
-    if ! _configure_macos_llm_bridge; then
+    if ! $GATEWAY_ONLY && ! _configure_macos_llm_bridge; then
         exit 1
     fi
     unset _macos_agent_bind _macos_agent_bind_raw _previous_ods_mode \
@@ -2228,15 +2480,28 @@ else
         --output-root "$INSTALL_DIR"
         --write
     )
-    for _macos_router_surface in model-router-endpoints; do
-        if ! ODS_RENDER_LITELLM_KEY="$_macos_renderer_key" \
-            "$_macos_runtime_renderer" "${INSTALL_DIR}/scripts/render-runtime-configs.py" \
-            --surface "$_macos_router_surface" "${_macos_router_args[@]}" >> "$ODS_LOG_FILE" 2>&1; then
-            ai_err "Failed to render required ${_macos_router_surface} config"
+    if $GATEWAY_ONLY; then
+        _macos_external_auth=()
+        [[ -s "${INSTALL_DIR}/config/litellm/external-upstream.key" ]] && \
+            _macos_external_auth+=(--external-llm-authenticated)
+        if ! "$_macos_runtime_renderer" "${INSTALL_DIR}/scripts/render-runtime-configs.py" \
+            --surface litellm-external --model "$EXTERNAL_LLM_MODEL" \
+            --llm-base-url "$EXTERNAL_LLM_CONTAINER_URL" \
+            "${_macos_external_auth[@]}" --output-root "$INSTALL_DIR" --write \
+            >> "$ODS_LOG_FILE" 2>&1; then
+            ai_err "Failed to render the external model gateway config"
             exit 1
         fi
-    done
-    if [[ "$_macos_switchboard_mode" == "enabled" ]] \
+        unset _macos_external_auth
+    else
+        if ! ODS_RENDER_LITELLM_KEY="$_macos_renderer_key" \
+            "$_macos_runtime_renderer" "${INSTALL_DIR}/scripts/render-runtime-configs.py" \
+            --surface model-router-endpoints "${_macos_router_args[@]}" >> "$ODS_LOG_FILE" 2>&1; then
+            ai_err "Failed to render required model-router-endpoints config"
+            exit 1
+        fi
+    fi
+    if ! $GATEWAY_ONLY && [[ "$_macos_switchboard_mode" == "enabled" ]] \
        && [[ "$(read_env_value "${INSTALL_DIR}/.env" "ODS_MODE")" != "cloud" ]] \
        && ! ODS_RENDER_LITELLM_KEY="$_macos_renderer_key" \
             "$_macos_runtime_renderer" "${INSTALL_DIR}/scripts/render-runtime-configs.py" \
@@ -2250,7 +2515,7 @@ else
     else
         ai_ok "Generated .env with secure secrets"
     fi
-    if $ENABLE_HERMES && ! $CLOUD_MODE; then
+    if $ENABLE_HERMES && ! $CLOUD_MODE && ! $GATEWAY_ONLY; then
         upsert_env_value "${INSTALL_DIR}/.env" "MAX_CONTEXT" "$MAX_CONTEXT"
         upsert_env_value "${INSTALL_DIR}/.env" "CTX_SIZE" "$MAX_CONTEXT"
         ai_ok "Set macOS llama context to ${MAX_CONTEXT} for Hermes"
@@ -2267,13 +2532,13 @@ else
     fi
 
     # Generate OpenClaw configs (if enabled)
-    if $ENABLE_OPENCLAW; then
+    if _macos_effective_service_enabled openclaw "$ENABLE_OPENCLAW"; then
         openclaw_existed=false
         [[ -f "${INSTALL_DIR}/data/openclaw/home/openclaw.json" ]] && openclaw_existed=true
         _openclaw_model="$LLM_MODEL"
         _openclaw_api_key="none"
-        if $CLOUD_MODE; then
-            _openclaw_model="default"
+        if $CLOUD_MODE || $GATEWAY_ONLY; then
+            if $GATEWAY_ONLY; then _openclaw_model="ods/current"; else _openclaw_model="default"; fi
             _openclaw_api_key="$(read_env_value "$INSTALL_DIR/.env" "LITELLM_KEY")"
         fi
         if [[ -z "$_openclaw_api_key" ]] \
@@ -2304,8 +2569,12 @@ show_phase 5 6 "LAUNCH" "2-30 minutes (model download)"
 
 if $DRY_RUN; then
     [[ -n "$GGUF_URL" ]] && ai "[DRY RUN] Would download: ${GGUF_FILE}"
-    ai "[DRY RUN] Would download llama-server (Metal build)"
-    ai "[DRY RUN] Would start native llama-server on port 8080"
+    if $GATEWAY_ONLY; then
+        ai "[DRY RUN] Would start Dashboard and LiteLLM for ${EXTERNAL_LLM_MODEL}"
+    else
+        ai "[DRY RUN] Would download llama-server (Metal build)"
+        ai "[DRY RUN] Would start native llama-server on port 8080"
+    fi
     ai "[DRY RUN] Would run: docker compose up -d --remove-orphans --no-build --pull never"
     if $ENABLE_OPEN_WEBUI; then
         ai "[DRY RUN] Would include Open WebUI alongside Dashboard/Portal"
@@ -2319,7 +2588,7 @@ else
 
     # ── Bootstrap fast-start ──────────────────────────────────────────────
     _BOOTSTRAP_ACTIVE=false
-    if [[ "${_MACOS_EXTERNAL_MODEL_READY:-false}" != true ]] && bootstrap_needed "$SELECTED_TIER" "$INSTALL_DIR" "$GGUF_FILE"; then
+    if ! $GATEWAY_ONLY && [[ "${_MACOS_EXTERNAL_MODEL_READY:-false}" != true ]] && bootstrap_needed "$SELECTED_TIER" "$INSTALL_DIR" "$GGUF_FILE"; then
         _BOOTSTRAP_ACTIVE=true
         FULL_GGUF_FILE="$GGUF_FILE"
         FULL_GGUF_URL="$GGUF_URL"
@@ -2337,7 +2606,7 @@ else
     fi
 
     # ── Download GGUF model (if not cloud-only) ──
-    if [[ -n "$GGUF_URL" ]] && ! $CLOUD_MODE; then
+    if [[ -n "$GGUF_URL" ]] && ! $CLOUD_MODE && ! $GATEWAY_ONLY; then
         MODEL_PATH="${INSTALL_DIR}/data/models/${GGUF_FILE}"
 
         if [[ -f "$MODEL_PATH" ]]; then
@@ -2402,6 +2671,7 @@ else
             [[ -n "$_hermes_base_url" ]] || _hermes_base_url="${CONTAINER_LLM_URL%/}/v1"
             _hermes_model="$GGUF_FILE"
             $CLOUD_MODE && _hermes_model="default"
+            if $GATEWAY_ONLY; then _hermes_model="ods/current"; fi
             _hermes_patcher="${INSTALL_DIR}/scripts/patch-hermes-config.py"
             if [[ -f "$_hermes_patcher" ]]; then
                 if ! python3 "$_hermes_patcher" "$_hermes_tpl" \
@@ -2447,7 +2717,7 @@ else
             # "not a directory: Are you trying to mount a directory onto a
             # file" — which then persists across reinstalls because `nuke
             # install dir` preserves data/.
-            if $ENABLE_HERMES; then
+            if _macos_effective_service_enabled hermes "$ENABLE_HERMES"; then
                 _soul_builder="${INSTALL_DIR}/scripts/build-installation-context.py"
                 if [[ -f "$_soul_builder" ]]; then
                     python3 "$_soul_builder" >>"$ODS_LOG_FILE" 2>&1 || \
@@ -2465,7 +2735,7 @@ else
     fi
 
     # ── Download and start native llama-server (Metal) ──
-    if ! $CLOUD_MODE; then
+    if ! $CLOUD_MODE && ! $GATEWAY_ONLY; then
         chapter "NATIVE LLAMA-SERVER (METAL)"
 
         if [[ "${_MACOS_EXTERNAL_MODEL_READY:-false}" != true ]]; then
@@ -2594,7 +2864,10 @@ else
     COMPOSE_FLAGS=("-f" "docker-compose.base.yml")
 
     MACOS_CLOUD_AUTH_OVERLAY=""
-    if $CLOUD_MODE; then
+    if $GATEWAY_ONLY; then
+        COMPOSE_FLAGS+=("-f" "docker-compose.cloud.yml")
+        COMPOSE_FLAGS+=("-f" "docker-compose.external-llm.yml")
+    elif $CLOUD_MODE; then
         # Cloud mode has no native llama process or macOS readiness sidecar.
         COMPOSE_FLAGS+=("-f" "docker-compose.cloud.yml")
         MACOS_CLOUD_AUTH_OVERLAY="data/generated/docker-compose.macos-cloud-auth.yml"
@@ -2610,7 +2883,7 @@ else
     # Discover enabled extension compose fragments via manifests
     EXT_DIR="${INSTALL_DIR}/extensions/services"
     CURRENT_BACKEND="apple"
-    $CLOUD_MODE && CURRENT_BACKEND="none"
+    if $CLOUD_MODE || $GATEWAY_ONLY; then CURRENT_BACKEND="none"; fi
     if [[ -d "$EXT_DIR" ]]; then
         for SVC_DIR in "$EXT_DIR"/*/; do
             [[ ! -d "$SVC_DIR" ]] && continue
@@ -2666,6 +2939,9 @@ else
                 langfuse)      $ENABLE_LANGFUSE || SKIP=true ;;
                 brave-search)  [[ "${ENABLE_BRAVE_SEARCH:-false}" == "true" ]] || SKIP=true ;;
             esac
+            if _macos_gateway_library_selected "$SVC_NAME"; then
+                SKIP=false
+            fi
             $SKIP && continue
 
             REL_PATH="${COMPOSE_PATH#"${INSTALL_DIR}/"}"
@@ -2713,6 +2989,36 @@ else
             fi
         fi
     done
+
+    if $GATEWAY_ONLY; then
+        _gateway_services="$(docker compose "${COMPOSE_FLAGS[@]}" config --services 2>>"$ODS_LOG_FILE")" || {
+            ai_err "Could not resolve the gateway-only Compose service set"
+            exit 1
+        }
+        for _required_gateway_service in dashboard dashboard-api litellm; do
+            if ! grep -Fqx -- "$_required_gateway_service" <<<"$_gateway_services"; then
+                ai_err "Gateway-only Compose is missing ${_required_gateway_service}"
+                exit 1
+            fi
+        done
+        for _forbidden_gateway_service in llama-server model-router llama-server-ready open-webui; do
+            if grep -Fqx -- "$_forbidden_gateway_service" <<<"$_gateway_services"; then
+                ai_err "Gateway-only Compose selected ${_forbidden_gateway_service}; refusing to pull images"
+                exit 1
+            fi
+        done
+        # These agents are absent from a fresh gateway install, but Library
+        # Add may have activated them after that install. Keep their retained
+        # selection without treating it as an accidental default.
+        for _gateway_library_agent in hermes hermes-proxy; do
+            if grep -Fqx -- "$_gateway_library_agent" <<<"$_gateway_services" \
+                && ! _macos_gateway_library_selected "$_gateway_library_agent"; then
+                ai_err "Gateway-only Compose selected ${_gateway_library_agent} without a retained Library choice"
+                exit 1
+            fi
+        done
+        unset _gateway_services _required_gateway_service _forbidden_gateway_service _gateway_library_agent
+    fi
 
     # ── Unload stale LaunchAgents before compose (crash-safe) ──
     # If a previous install registered these agents and this run fails at
@@ -3043,7 +3349,7 @@ for service in (data.get("services") or {}).values():
     fi
     ai_ok "Docker services started"
 
-    if $ENABLE_HERMES; then
+    if _macos_effective_service_enabled hermes "$ENABLE_HERMES"; then
         _hermes_running=false
         for _hermes_wait_i in $(seq 1 90); do
             if [[ "$(docker inspect --format '{{.State.Status}}' ods-hermes 2>/dev/null || true)" == "running" ]]; then
@@ -3456,7 +3762,7 @@ CLOUD_REQUIRED_HEALTHY=true
 # runs natively on macOS via Metal; OpenCode is a LaunchAgent). Docker
 # services wait on `docker inspect ... .State.Health.Status == healthy`;
 # host-native services fall back to an HTTP probe on 127.0.0.1.
-if $CLOUD_MODE; then
+if $CLOUD_MODE || $GATEWAY_ONLY; then
     HEALTH_NAMES=("LiteLLM gateway")
     HEALTH_URLS=("http://127.0.0.1:4000/health/readiness")
     HEALTH_CONTAINERS=("ods-litellm")
@@ -3471,8 +3777,9 @@ else
 fi
 $ENABLE_OPEN_WEBUI && HEALTH_NAMES+=("Chat UI (Open WebUI)") \
     && HEALTH_URLS+=("http://127.0.0.1:3000") && HEALTH_CONTAINERS+=("ods-webui")
-$ENABLE_VOICE && HEALTH_NAMES+=("Whisper (STT)") && HEALTH_URLS+=("http://127.0.0.1:${WHISPER_PORT:-9000}/health") && HEALTH_CONTAINERS+=("ods-whisper")
-$ENABLE_WORKFLOWS && HEALTH_NAMES+=("n8n (Workflows)") && HEALTH_URLS+=("http://127.0.0.1:5678/healthz") && HEALTH_CONTAINERS+=("ods-n8n")
+_macos_effective_service_enabled whisper "$ENABLE_VOICE" && HEALTH_NAMES+=("Whisper (STT)") && HEALTH_URLS+=("http://127.0.0.1:${WHISPER_PORT:-9000}/health") && HEALTH_CONTAINERS+=("ods-whisper")
+_macos_effective_service_enabled tts "$ENABLE_VOICE" && HEALTH_NAMES+=("Kokoro (TTS)") && HEALTH_URLS+=("http://127.0.0.1:${TTS_PORT:-8880}/health") && HEALTH_CONTAINERS+=("ods-tts")
+_macos_effective_service_enabled n8n "$ENABLE_WORKFLOWS" && HEALTH_NAMES+=("n8n (Workflows)") && HEALTH_URLS+=("http://127.0.0.1:5678/healthz") && HEALTH_CONTAINERS+=("ods-n8n")
 $ENABLE_OPENCODE && [[ -x "$OPENCODE_BIN" ]] && HEALTH_NAMES+=("OpenCode (IDE)") && HEALTH_URLS+=("http://127.0.0.1:${OPENCODE_PORT}") && HEALTH_CONTAINERS+=("")
 
 for ((idx=0; idx<${#HEALTH_NAMES[@]}; idx++)); do
@@ -3517,13 +3824,14 @@ for ((idx=0; idx<${#HEALTH_NAMES[@]}; idx++)); do
     else
         ai_warn "${NAME}: not responding after ${MAX_ATTEMPTS} attempts"
         ALL_HEALTHY=false
-        if $CLOUD_MODE && (( idx < 2 )); then
+        if { $CLOUD_MODE || $GATEWAY_ONLY; } \
+            && [[ "$NAME" == "LiteLLM gateway" || "$NAME" == "Chat UI (Open WebUI)" ]]; then
             CLOUD_REQUIRED_HEALTHY=false
         fi
     fi
 done
 
-if $CLOUD_MODE; then
+if $CLOUD_MODE || $GATEWAY_ONLY; then
     _cloud_health_key="$(read_env_value "$INSTALL_DIR/.env" "LITELLM_KEY")"
     _cloud_health_bind="127.0.0.1"
     _cloud_health_host="$(macos_bind_probe_host "${_cloud_health_bind:-127.0.0.1}")"
@@ -3543,17 +3851,43 @@ if $CLOUD_MODE; then
         done
     fi
     if [[ "$_cloud_auth_ok" != "true" ]]; then
-        ai_err "Authenticated LiteLLM readiness failed; cloud inference is not usable."
+        ai_err "Authenticated LiteLLM readiness failed; inference is not usable."
         CLOUD_REQUIRED_HEALTHY=false
         ALL_HEALTHY=false
     else
         ai_ok "LiteLLM authenticated model route: healthy"
     fi
+    if $GATEWAY_ONLY && [[ "$_cloud_auth_ok" == true ]]; then
+        _gateway_smoke_body="$(python3 - <<'PY'
+import json
+print(json.dumps({"model": "ods/current", "messages": [{"role": "user", "content": "Reply with OK."}], "max_tokens": 256, "stream": False}))
+PY
+)"
+        _gateway_smoke_response="$(curl -fsS --connect-timeout 5 --max-time 120 \
+            -H @<(printf 'Authorization: Bearer %s\n' "$_cloud_health_key") \
+            -H 'Content-Type: application/json' -d "$_gateway_smoke_body" \
+            "http://${_cloud_health_host}:${_cloud_health_port}/v1/chat/completions" 2>>"$ODS_LOG_FILE")" || true
+        if ! printf '%s' "$_gateway_smoke_response" | python3 -c '
+import json, sys
+try:
+    choices = json.load(sys.stdin)["choices"]
+    assert choices and choices[0]["message"]["content"]
+except (ValueError, KeyError, IndexError, TypeError, AssertionError):
+    sys.exit(1)
+'; then
+            ai_err "The installed LiteLLM gateway did not return a usable external-model completion."
+            CLOUD_REQUIRED_HEALTHY=false
+            ALL_HEALTHY=false
+        else
+            ai_ok "LiteLLM external-model completion: healthy"
+        fi
+        unset _gateway_smoke_body _gateway_smoke_response
+    fi
     unset _cloud_health_key _cloud_health_bind _cloud_health_host \
         _cloud_health_port _cloud_health_i _cloud_auth_ok
 
     if [[ "$CLOUD_REQUIRED_HEALTHY" != "true" ]]; then
-        ai_err "Required cloud inference services failed readiness; refusing to report a successful install."
+        ai_err "Required inference services failed readiness; refusing to report a successful install."
         exit 1
     fi
 fi
@@ -3562,7 +3896,7 @@ fi
 # Speaches does NOT auto-download on transcription requests — it returns 404.
 # We must trigger the download explicitly here, verify it completed, and
 # surface a clear recovery command if anything fails.
-if [[ "$ENABLE_VOICE" == "true" ]]; then
+if _macos_effective_service_enabled whisper "$ENABLE_VOICE"; then
     # Read AUDIO_STT_MODEL from .env (written by env-generator). On macOS the
     # default is base; user can override by editing .env before reinstalling.
     STT_MODEL=$(grep -m1 '^AUDIO_STT_MODEL=' "${INSTALL_DIR}/.env" 2>/dev/null \
@@ -3645,7 +3979,7 @@ if [[ "$ENABLE_VOICE" == "true" ]]; then
 fi
 
 # ── Auto-configure Perplexica ──
-if $ENABLE_PERPLEXICA; then
+if _macos_effective_service_enabled perplexica "$ENABLE_PERPLEXICA"; then
     ai "Configuring Perplexica..."
     PERPLEXICA_MODEL="${GGUF_FILE:-$LLM_MODEL}"
     PERPLEXICA_API_KEY="no-key"
@@ -3657,9 +3991,10 @@ if $ENABLE_PERPLEXICA; then
         PERPLEXICA_BASE_URL="http://litellm:4000"
     fi
     $CLOUD_MODE && PERPLEXICA_MODEL="default"
-    if $CLOUD_MODE; then
+    if $CLOUD_MODE || $GATEWAY_ONLY; then
         PERPLEXICA_API_KEY="$(read_env_value "$INSTALL_DIR/.env" "LITELLM_KEY")"
         PERPLEXICA_BASE_URL="http://litellm:4000"
+        if $GATEWAY_ONLY; then PERPLEXICA_MODEL="ods/current"; fi
     fi
     _perplexica_port="$(read_env_value "$INSTALL_DIR/.env" "PERPLEXICA_PORT")"
     [[ "$_perplexica_port" =~ ^[0-9]+$ ]] || _perplexica_port="3004"
@@ -3700,15 +4035,16 @@ fi
 {
     printf 'Dashboard|http://127.0.0.1:3001|ods-dashboard|http://localhost:3001\n'
     $ENABLE_OPEN_WEBUI && printf 'Chat UI (Open WebUI)|http://127.0.0.1:3000|ods-webui|http://localhost:3000\n'
-    if $CLOUD_MODE; then
+    if $CLOUD_MODE || $GATEWAY_ONLY; then
         printf 'LiteLLM|http://127.0.0.1:4000/health/readiness|ods-litellm|http://localhost:4000\n'
     else
         printf 'llama-server|http://%s:%s/health||http://localhost:%s/v1\n' "$_health_llama_host" "$_health_llama_port" "$_health_llama_port"
     fi
     printf 'Dashboard API|http://127.0.0.1:3002/health|ods-dashboard-api|http://localhost:3002\n'
-    $ENABLE_PERPLEXICA && printf 'Perplexica|http://127.0.0.1:3004|ods-perplexica|http://localhost:3004\n'
-    $ENABLE_VOICE && printf 'Whisper (STT)|http://127.0.0.1:%s/health|ods-whisper|http://localhost:%s\n' "${WHISPER_PORT:-9000}" "${WHISPER_PORT:-9000}"
-    $ENABLE_WORKFLOWS && printf 'n8n|http://127.0.0.1:5678/healthz|ods-n8n|http://localhost:5678\n'
+    _macos_effective_service_enabled perplexica "$ENABLE_PERPLEXICA" && printf 'Perplexica|http://127.0.0.1:3004|ods-perplexica|http://localhost:3004\n'
+    _macos_effective_service_enabled whisper "$ENABLE_VOICE" && printf 'Whisper (STT)|http://127.0.0.1:%s/health|ods-whisper|http://localhost:%s\n' "${WHISPER_PORT:-9000}" "${WHISPER_PORT:-9000}"
+    _macos_effective_service_enabled tts "$ENABLE_VOICE" && printf 'Kokoro (TTS)|http://127.0.0.1:%s/health|ods-tts|http://localhost:%s\n' "${TTS_PORT:-8880}" "${TTS_PORT:-8880}"
+    _macos_effective_service_enabled n8n "$ENABLE_WORKFLOWS" && printf 'n8n|http://127.0.0.1:5678/healthz|ods-n8n|http://localhost:5678\n'
     if $ENABLE_OPENCODE && [[ -x "$OPENCODE_BIN" ]]; then
         printf 'OpenCode (IDE)|http://127.0.0.1:%s||http://localhost:%s\n' "$OPENCODE_PORT" "$OPENCODE_PORT"
     fi
