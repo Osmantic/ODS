@@ -10815,6 +10815,44 @@ test("tracks and drains only the active hashed ODS OpenAI user", async () => {
   assert.equal(guard.trackedUserCount(), 0);
 });
 
+test("an accepted abort cannot acknowledge Stop until the exact run drains", async () => {
+  const outcomes = [
+    {aborted: true, drained: false, forceCleared: false},
+    {aborted: true, drained: true, forceCleared: false},
+  ];
+  const guard = createToolLoopGuard({abortRunAndDrain: async () => outcomes.shift()});
+  const user = `ods-${"a".repeat(64)}`;
+  guard.observeRun({agentId: "pixel", sessionId: "session-live",
+    sessionKey: `agent:pixel:openai-user:${user}`, runId: "run-live"});
+
+  assert.equal(await guard.abortUserRun(user), false);
+  assert.equal(guard.trackedUserCount(), 1, "a pending Stop remains retryable");
+  assert.equal(await guard.abortUserRun(user), true);
+  assert.equal(guard.trackedUserCount(), 0);
+});
+
+test("malformed abort-and-drain results cannot acknowledge Stop", async () => {
+  const outcomes = [true, {aborted: true}, {aborted: true, drained: true}];
+  const guard = createToolLoopGuard({abortRunAndDrain: async () => outcomes.shift()});
+  const user = `ods-${"b".repeat(64)}`;
+  guard.observeRun({agentId: "pixel", sessionId: "session-live",
+    sessionKey: `agent:pixel:openai-user:${user}`, runId: "run-live"});
+
+  assert.equal(await guard.abortUserRun(user), false);
+  assert.equal(await guard.abortUserRun(user), false);
+  assert.equal(guard.trackedUserCount(), 1);
+  assert.equal(await guard.abortUserRun(user), true);
+});
+
+test("a synchronous abort signal alone cannot acknowledge owner Stop", async () => {
+  const guard = createToolLoopGuard({abortRun: () => true});
+  const user = `ods-${"c".repeat(64)}`;
+  guard.observeRun({agentId: "pixel", sessionId: "session-live",
+    sessionKey: `agent:pixel:openai-user:${user}`, runId: "run-live"});
+  assert.equal(await guard.abortUserRun(user), false);
+  assert.equal(guard.trackedUserCount(), 1);
+});
+
 test("client cancellation signals the exact run and blocks any later tool", {timeout:5000}, async () => {
   const signals = [];
   const clears = [];
@@ -10943,7 +10981,7 @@ test("shares one cancellation guard across gateway and agent registration passes
 });
 
 test("rejects malformed cancellation users and bounds retained mappings", async () => {
-  const guard = createToolLoopGuard({ abortRun: () => true });
+  const guard = createToolLoopGuard({ abortRunAndDrain: async () => ({aborted: true, drained: true}) });
   assert.equal(await guard.abortUserRun("not-an-ods-user"), false);
   for (let index = 0; index < 300; index += 1) {
     const user = `ods-${index.toString(16).padStart(64, "0")}`;
