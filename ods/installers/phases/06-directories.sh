@@ -174,7 +174,7 @@ else
         _env_get "$key" "$default"
     }
 
-    # Capture Library markers before either ordinary rsync or the held Pixel
+    # Capture Library markers before source copy or the held Pixel
     # source transaction can add new disabled fragments alongside them. The
     # route state may live in the configured external data directory.
     _phase06_remote_provider_data_dir="$(_env_get ODS_DATA_DIR "$INSTALL_DIR/data")"
