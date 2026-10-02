@@ -25,7 +25,7 @@ from pydantic import BaseModel
 from config import (
     ALWAYS_ON_SERVICES, CORE_SERVICE_IDS, DATA_DIR,
     EXTENSION_CATALOG, EXTENSIONS_DIR,
-    EXTENSIONS_LIBRARY_DIR, GPU_BACKEND, SERVICES,
+    EXTENSIONS_LIBRARY_DIR, GPU_BACKEND, LIBRARY_MANAGEABLE_BUILTINS, SERVICES,
     USER_EXTENSIONS_DIR,
 )
 from host_agent_client import (
@@ -373,12 +373,9 @@ def _is_one_shot_extension(ext: dict) -> bool:
     return ext.get("port") == 0 and ext.get("startup_check", False) is False
 
 
-_LIBRARY_QUALIFIED_BUILTINS = frozenset({"n8n"})
-
-
 def _qualified_builtin_selection(service_id: str) -> dict:
     """Expose Add controls only for individually qualified built-in services."""
-    if service_id not in _LIBRARY_QUALIFIED_BUILTINS or service_id in ALWAYS_ON_SERVICES:
+    if service_id not in LIBRARY_MANAGEABLE_BUILTINS or service_id in ALWAYS_ON_SERVICES:
         return {}
     directory = EXTENSIONS_DIR / service_id
     if directory.is_symlink() or not directory.is_dir():
@@ -1550,6 +1547,38 @@ def _call_agent_compose_rename(action: str, service_id: str) -> bool:
         return False
 
 
+def _select_extensions_on_host(
+    action: str, service_ids: list[str],
+    expected_sha256: dict[str, str] | None = None,
+) -> dict:
+    """Ask the host to validate and commit one dependency-safe selection plan."""
+    payload = {"action": action, "service_ids": service_ids}
+    if expected_sha256 is not None:
+        payload["expected_sha256"] = expected_sha256
+    try:
+        result = request_agent_json(
+            "POST", "/v1/extension/select",
+            payload=payload,
+            timeout=_AGENT_TIMEOUT,
+        )
+    except AgentHTTPError as exc:
+        if exc.status_code in (400, 409):
+            raise HTTPException(status_code=409, detail=exc.detail) from exc
+        raise HTTPException(
+            status_code=502,
+            detail=f"Host agent could not {action} extension selection: {exc.detail}",
+        ) from exc
+    except AgentClientError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Host agent could not {action} extension selection; check extension status before retrying",
+        ) from exc
+    expected = {"enabled", "already_enabled"} if action == "enable" else {"disabled"}
+    if result.get("action") not in expected or result.get("service_ids") != service_ids:
+        raise HTTPException(status_code=502, detail="Host agent returned an invalid selection result")
+    return result
+
+
 _agent_cache_lock = threading.Lock()
 _agent_cache = {"available": False, "checked_at": 0.0}
 
@@ -1599,7 +1628,7 @@ def _exclusive_file_lock(lock_path: Path):
 
 @contextlib.contextmanager
 def _extensions_lock():
-    """Acquire the global lock for short extension filesystem mutations."""
+    """Serialize extension selection and its dependent lifecycle transitions."""
     with _exclusive_file_lock(_extensions_lock_path()):
         yield
 
@@ -1631,36 +1660,23 @@ def _serialize_extension_operation(func):
     return wrapped
 
 
-def _extensions_lock_candidates() -> list[Path]:
-    data_path = Path(DATA_DIR)
-    return [
-        data_path / ".extensions-lock",
-        data_path / "config" / ".extensions-lock",
-    ]
-
-
 def _extensions_lock_path() -> Path:
-    last_error: OSError | None = None
-    for lock_path in _extensions_lock_candidates():
-        try:
-            lock_path.parent.mkdir(parents=True, exist_ok=True)
-            operation_lock_dir = lock_path.parent / ".extension-operation-locks"
-            if operation_lock_dir.is_symlink():
-                raise OSError("Extension operation lock directory is a symlink")
-            operation_lock_dir.mkdir(parents=True, exist_ok=True)
-            with tempfile.NamedTemporaryFile(
-                dir=operation_lock_dir,
-                prefix=".write-probe-",
-            ):
-                pass
-            lock_path.touch(exist_ok=True)
-            if lock_path != Path(DATA_DIR) / ".extensions-lock":
-                logger.warning("extensions lock falling back to %s", lock_path)
-            return lock_path
-        except OSError as exc:
-            last_error = exc
-    assert last_error is not None
-    raise last_error
+    """Use the same canonical lock file as the host selection helper.
+
+    A fallback lock has a different inode, so it cannot serialize Dashboard
+    install/update/uninstall with host CLI selection. If /data is unwritable,
+    reject the mutation instead of proceeding under an unrelated lock.
+    """
+    lock_path = Path(DATA_DIR) / ".extensions-lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    operation_lock_dir = lock_path.parent / ".extension-operation-locks"
+    if operation_lock_dir.is_symlink():
+        raise OSError("Extension operation lock directory is a symlink")
+    operation_lock_dir.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(dir=operation_lock_dir, prefix=".write-probe-"):
+        pass
+    lock_path.touch(exist_ok=True)
+    return lock_path
 
 
 async def _inspect_non_http_user_services(configs: dict, statuses: dict) -> None:
@@ -4233,8 +4249,23 @@ def _parse_manifest_deps(manifest_path: Path) -> list[str]:
     """Reject unreadable dependency declarations rather than silently dropping them."""
     error = f"Invalid dependency manifest for extension: {manifest_path.parent.name}"
     try:
-        manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
-    except (yaml.YAMLError, OSError, UnicodeError) as exc:
+        if not stat.S_ISREG(manifest_path.lstat().st_mode):
+            raise ValueError("invalid dependency manifest file")
+        descriptor = os.open(
+            manifest_path,
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0),
+        )
+        with os.fdopen(descriptor, "rb") as stream:
+            selected = os.fstat(stream.fileno())
+            if not stat.S_ISREG(selected.st_mode) or selected.st_size > 1024 * 1024:
+                raise ValueError("invalid dependency manifest file")
+            raw = stream.read(1024 * 1024 + 1)
+        if len(raw) > 1024 * 1024:
+            raise ValueError("oversize dependency manifest")
+        content = raw.decode("utf-8")
+        manifest = (json.loads(content) if manifest_path.suffix == ".json"
+                    else yaml.safe_load(content))
+    except (json.JSONDecodeError, yaml.YAMLError, OSError, UnicodeError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=error) from exc
     if not isinstance(manifest, dict):
         raise HTTPException(status_code=400, detail=error)
@@ -4262,10 +4293,18 @@ def _read_direct_deps(service_id: str) -> list[str]:
         ext_dir = base / service_id
         if not ext_dir.is_dir():
             continue
-        for name in ("manifest.yaml", "manifest.yml"):
+        for name in ("manifest.yaml", "manifest.yml", "manifest.json"):
             candidate = ext_dir / name
-            if candidate.exists():
-                return _parse_manifest_deps(candidate)
+            try:
+                candidate.lstat()
+            except FileNotFoundError:
+                continue
+            except OSError as exc:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid dependency manifest for extension: {service_id}",
+                ) from exc
+            return _parse_manifest_deps(candidate)
         return []
     return []
 
@@ -4311,9 +4350,9 @@ def _get_missing_deps_transitive(
     for dep in _read_direct_deps(service_id):
         if dep in _order:
             continue  # already queued from another branch
-        # An enabled service can still have a disabled dependency: disable
-        # warns about dependents but permits the operation. Walk its subtree
-        # before deciding whether this service itself needs activation.
+        # An enabled service can still have a disabled dependency after an
+        # older install or an out-of-band change. Walk its subtree before
+        # deciding whether this service itself needs activation.
         _get_missing_deps_transitive(
             dep, _visiting=_visiting, _order=_order, _visited=_visited,
         )
@@ -4339,8 +4378,35 @@ def _imported_extension_namespace(service_id: str, ext_dir: Path, is_builtin: bo
     return service_id
 
 
+_SELECTION_COMPOSE_MAX_BYTES = 1024 * 1024
+
+
+def _selection_compose_sha256(path: Path) -> str:
+    """Hash bounded regular Compose bytes without following a final symlink."""
+    try:
+        before = path.lstat()
+        if stat.S_ISLNK(before.st_mode):
+            raise HTTPException(status_code=400, detail="Compose file is a symlink")
+        if not stat.S_ISREG(before.st_mode) or before.st_size > _SELECTION_COMPOSE_MAX_BYTES:
+            raise HTTPException(status_code=400, detail="Invalid selected Compose file")
+        descriptor = os.open(
+            path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0),
+        )
+        with os.fdopen(descriptor, "rb") as stream:
+            opened = os.fstat(stream.fileno())
+            if (not stat.S_ISREG(opened.st_mode)
+                    or (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino)):
+                raise ValueError("Compose file changed while opening")
+            raw = stream.read(_SELECTION_COMPOSE_MAX_BYTES + 1)
+        if len(raw) > _SELECTION_COMPOSE_MAX_BYTES:
+            raise ValueError("Compose file exceeds selection size limit")
+    except (OSError, ValueError) as exc:
+        raise HTTPException(status_code=409, detail=f"Compose selection changed; retry: {exc}") from exc
+    return hashlib.sha256(raw).hexdigest()
+
+
 def _activate_service(service_id: str) -> dict:
-    """Core enable logic â€” NO lock acquisition. Called inside _extensions_lock.
+    """Validate and plan one activation without moving its Compose marker.
 
     Checks both USER_EXTENSIONS_DIR (user-installed) and EXTENSIONS_DIR
     (built-in) so templates can enable built-in extensions like n8n, tts, etc.
@@ -4354,36 +4420,29 @@ def _activate_service(service_id: str) -> dict:
     enabled_compose = ext_dir / "compose.yaml"
 
     # Already enabled â€” skip silently (idempotent for dep chains)
-    if enabled_compose.exists():
-        return {"id": service_id, "action": "already_enabled"}
-
-    if not disabled_compose.exists():
+    already_enabled = enabled_compose.exists() or enabled_compose.is_symlink()
+    compose_path = enabled_compose if already_enabled else disabled_compose
+    if not compose_path.exists() and not compose_path.is_symlink():
         raise HTTPException(
             status_code=404, detail=f"Extension has no compose file: {service_id}",
         )
 
-    # Re-scan compose content (TOCTOU prevention).
+    # Bind the policy scan to the same bytes that the host will check under
+    # its selection lock. This also covers an already-enabled dependency.
+    before_sha256 = _selection_compose_sha256(compose_path)
     is_builtin = ext_dir.is_relative_to(EXTENSIONS_DIR.resolve())
-    _scan_installed_compose(service_id, ext_dir, disabled_compose, is_builtin=is_builtin)
+    _scan_installed_compose(service_id, ext_dir, compose_path, is_builtin=is_builtin)
+    after_sha256 = _selection_compose_sha256(compose_path)
+    if before_sha256 != after_sha256:
+        raise HTTPException(status_code=409, detail="Compose file changed during validation; retry")
 
-    # Reject symlinks
-    st = os.lstat(disabled_compose)
-    if stat.S_ISLNK(st.st_mode):
-        raise HTTPException(
-            status_code=400, detail="Compose file is a symlink",
-        )
-
-    # Built-in extensions live on a :ro mount â€” delegate rename to host agent
-    if is_builtin:
-        if not _call_agent_compose_rename("activate", service_id):
-            raise HTTPException(
-                status_code=502,
-                detail=f"Host agent failed to activate extension: {service_id}",
-            )
-    else:
-        os.rename(str(disabled_compose), str(enabled_compose))
-    logger.info("Enabled extension (activate): %s", service_id)
-    return {"id": service_id, "action": "enabled"}
+    # The caller sends the complete dependency chain to the host in one
+    # selection transaction. A direct rename here could race the host CLI.
+    return {
+        "id": service_id,
+        "action": "already_enabled" if already_enabled else "enabled",
+        "sha256": after_sha256,
+    }
 
 
 def _failed_dependency_starts(service_id: str, failed: set[str], seen=None) -> list[str]:
@@ -4468,24 +4527,40 @@ def enable_extension(
                     outcome="started")
 
     enabled_services: list[str] = []
+    expected_sha256: dict[str, str] = {}
 
     with _extensions_lock():
+        # Dependency selection can change while this request waits for the
+        # Dashboard lock. Reject a stale local plan; the host rechecks the
+        # desired graph under the CLI lock before moving any marker.
+        if _get_missing_deps_transitive(service_id) != missing_deps:
+            raise HTTPException(
+                status_code=409,
+                detail="Dependency selection changed; retry enabling this extension.",
+            )
+
         # Auto-enable missing deps first (already in dependency order â€” leaves first)
         if missing_deps and auto_enable_deps:
             for dep in missing_deps:
                 _validate_service_id(dep)
                 result = _activate_service(dep)
-                if result.get("action") == "enabled":
+                if result.get("action") in ("enabled", "already_enabled"):
                     enabled_services.append(dep)
+                    expected_sha256[dep] = result["sha256"]
 
         # Enable the target service
         result = _activate_service(service_id)
         if result.get("action") in ("enabled", "already_enabled"):
             enabled_services.append(service_id)
+            expected_sha256[service_id] = result["sha256"]
 
-        # Invalidate .compose-flags cache so ods-cli picks up the new enabled set
-        if enabled_services:
-            _call_agent_invalidate_compose_cache()
+    # The host validates the complete desired graph and commits all marker
+    # moves under the CLI's shared lock before any service is started.
+    # Avoid holding the Dashboard's container lock across this host RPC.
+    if enabled_services:
+        _select_extensions_on_host(
+            "enable", enabled_services, expected_sha256=expected_sha256,
+        )
 
     # Start all enabled services via agent (outside lock)
     agent_ok = True
@@ -4549,29 +4624,142 @@ def enable_extension(
     }
 
 
+_DEPENDENCY_COMPOSE_MAX_BYTES = 1024 * 1024
+
+
+def _selected_compose_dependencies(compose_path: Path) -> set[str]:
+    """Read active Compose dependencies without trusting manifest completeness."""
+    try:
+        if compose_path.is_symlink():
+            raise ValueError("symlink")
+        descriptor = os.open(
+            compose_path,
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0),
+        )
+        with os.fdopen(descriptor, "rb") as stream:
+            selected = os.fstat(stream.fileno())
+            if not stat.S_ISREG(selected.st_mode) or selected.st_size > _DEPENDENCY_COMPOSE_MAX_BYTES:
+                raise ValueError("invalid active Compose file")
+            raw = stream.read(_DEPENDENCY_COMPOSE_MAX_BYTES + 1)
+        if len(raw) > _DEPENDENCY_COMPOSE_MAX_BYTES:
+            raise ValueError("oversize active Compose file")
+        document = _compose_policy_load(raw.decode("utf-8"))
+        services = document.get("services") if isinstance(document, dict) else None
+        if not isinstance(services, dict):
+            raise ValueError("missing Compose services")
+        dependencies: set[str] = set()
+        for definition in services.values():
+            if not isinstance(definition, dict):
+                raise ValueError("invalid Compose service")
+            declared = definition.get("depends_on", [])
+            if isinstance(declared, list):
+                names = declared
+            elif isinstance(declared, dict):
+                if any(not isinstance(value, dict) for value in declared.values()):
+                    raise ValueError("invalid Compose dependency mapping")
+                names = declared.keys()
+            else:
+                raise ValueError("invalid Compose dependencies")
+            for name in names:
+                if not isinstance(name, str) or not name or "$" in name:
+                    raise ValueError("invalid Compose dependency name")
+                dependencies.add(name)
+        return dependencies
+    except (OSError, UnicodeError, ValueError) as exc:
+        logger.warning("Cannot inspect selected Compose dependencies for %s: %s",
+                       compose_path.parent.name, type(exc).__name__)
+        raise HTTPException(
+            status_code=503,
+            detail=(f"Cannot inspect enabled dependencies for {compose_path.parent.name}; "
+                    "no service was disabled"),
+        ) from exc
+
+
 def _enabled_dependents(service_id: str) -> list[str]:
     """Return currently-enabled extensions that declare a dependency on service_id.
 
-    Scans user and built-in extensions; user dirs shadow built-ins of the same
-    id, mirroring _resolve_extension_dir. Only enabled peers (compose.yaml
-    present) count: a disabled dependent is unaffected, while an enabled one is
-    left pointing at a service the merged compose project no longer defines.
+    Scan every enabled user and built-in fragment: the Compose resolver can
+    select a bundled fragment even when an incomplete or disabled same-name
+    user directory exists. Only enabled peers (compose.yaml present) count.
     """
     dependents: list[str] = []
-    seen_peers: set[str] = set()
     for base in (USER_EXTENSIONS_DIR, EXTENSIONS_DIR):
         try:
-            peer_dirs = list(base.iterdir()) if base.is_dir() else []
-        except OSError:
+            if not stat.S_ISDIR(base.lstat().st_mode):
+                raise ValueError("extension root is not a directory")
+            peer_dirs = list(base.iterdir())
+        except FileNotFoundError:
             continue
+        except (OSError, ValueError) as exc:
+            logger.warning("Cannot inspect enabled extension dependencies under %s: %s", base, type(exc).__name__)
+            raise HTTPException(
+                status_code=503,
+                detail="Cannot inspect enabled extension dependencies; no service was disabled",
+            ) from exc
         for peer_dir in peer_dirs:
-            if (not peer_dir.is_dir() or peer_dir.name == service_id
-                    or peer_dir.name in seen_peers):
+            if peer_dir.name == service_id:
                 continue
-            seen_peers.add(peer_dir.name)
-            if not (peer_dir / "compose.yaml").exists():
+            try:
+                peer_stat = peer_dir.lstat()
+            except FileNotFoundError:
                 continue
-            if service_id in _read_direct_deps(peer_dir.name):
+            except OSError as exc:
+                logger.warning("Cannot inspect extension peer %s: %s", peer_dir.name, type(exc).__name__)
+                raise HTTPException(
+                    status_code=503,
+                    detail=f"Cannot inspect enabled dependencies for {peer_dir.name}; no service was disabled",
+                ) from exc
+            if stat.S_ISLNK(peer_stat.st_mode):
+                raise HTTPException(
+                    status_code=503,
+                    detail=f"Cannot inspect enabled dependencies for {peer_dir.name}; no service was disabled",
+                )
+            if not stat.S_ISDIR(peer_stat.st_mode):
+                continue
+            compose_path = peer_dir / "compose.yaml"
+            try:
+                selected = compose_path.lstat()
+            except FileNotFoundError:
+                continue
+            except OSError as exc:
+                logger.warning("Cannot inspect selected Compose file for %s: %s",
+                               peer_dir.name, type(exc).__name__)
+                raise HTTPException(
+                    status_code=503,
+                    detail=f"Cannot inspect enabled dependencies for {peer_dir.name}; no service was disabled",
+                ) from exc
+            if not stat.S_ISREG(selected.st_mode):
+                raise HTTPException(
+                    status_code=503,
+                    detail=f"Cannot inspect enabled dependencies for {peer_dir.name}; no service was disabled",
+                )
+            declared: set[str] = set()
+            for name in ("manifest.yaml", "manifest.yml", "manifest.json"):
+                manifest_path = peer_dir / name
+                try:
+                    manifest_stat = manifest_path.lstat()
+                except FileNotFoundError:
+                    continue
+                except OSError as exc:
+                    raise HTTPException(
+                        status_code=503,
+                        detail=f"Cannot inspect enabled dependencies for {peer_dir.name}; no service was disabled",
+                    ) from exc
+                if not stat.S_ISREG(manifest_stat.st_mode):
+                    raise HTTPException(
+                        status_code=503,
+                        detail=f"Cannot inspect enabled dependencies for {peer_dir.name}; no service was disabled",
+                    )
+                try:
+                    declared.update(_parse_manifest_deps(manifest_path))
+                except HTTPException as exc:
+                    raise HTTPException(
+                        status_code=503,
+                        detail=f"Cannot inspect enabled dependencies for {peer_dir.name}; no service was disabled",
+                    ) from exc
+                break
+            declared.update(_selected_compose_dependencies(compose_path))
+            if service_id in declared and peer_dir.name not in dependents:
                 dependents.append(peer_dir.name)
     return dependents
 
@@ -4586,75 +4774,47 @@ def disable_extension(service_id: str, include_data_info: bool = Query(True), ap
     ext_dir = _resolve_extension_dir(service_id)
 
     enabled_compose = ext_dir / "compose.yaml"
-    disabled_compose = ext_dir / "compose.yaml.disabled"
 
     if not enabled_compose.exists():
         raise HTTPException(
             status_code=409, detail=f"Extension already disabled: {service_id}",
         )
 
-    # Check reverse dependents (warn, don't block). Scan user and built-in
-    # extensions â€” user dirs shadow built-ins of the same id, mirroring
-    # _resolve_extension_dir. Only currently-enabled peers (compose.yaml
-    # present) are reported: a disabled dependent is unaffected, while an
-    # enabled one is left pointing at a service the merged compose project
-    # no longer defines, which fails compose config for the whole stack.
-    dependents_warning = _enabled_dependents(service_id)
-
-    # Call agent to stop BEFORE renaming (prevents zombie containers)
-    agent_ok = _call_agent("stop", service_id)
-    if not agent_ok:
-        # Do not rename an extension after a failed stop: uninstall only
-        # accepts disabled definitions, so continuing would make it possible
-        # to delete the definition while its container still serves traffic.
-        logger.error("Could not stop %s via agent; refusing to disable", service_id)
+    # Reject reverse dependents in every enabled Compose fragment. A
+    # same-name user directory does not remove the bundled fragment from the
+    # resolver's selected project.
+    # The host CLI owns the graph-wide lock. Keep this preflight for a useful
+    # error, then let the host recheck it under that lock through stop and
+    # marker change. No container lock is held across the host request.
+    dependents = _enabled_dependents(service_id)
+    if dependents:
         raise HTTPException(
-            status_code=502,
-            detail=f"Host agent failed to stop extension: {service_id}; extension was not disabled",
+            status_code=409,
+            detail=(f"Cannot disable {service_id}: enabled extensions "
+                    f"{', '.join(dependents)} depend on it. Disable them first."),
         )
-
-    with _extensions_lock():
-        # lstat check inside lock (TOCTOU prevention)
+    try:
         st = os.lstat(enabled_compose)
-        if stat.S_ISLNK(st.st_mode):
-            raise HTTPException(
-                status_code=400, detail="Compose file is a symlink",
-            )
+    except FileNotFoundError as exc:
+        raise HTTPException(
+            status_code=409, detail=f"Extension selection changed: {service_id}; retry",
+        ) from exc
+    if stat.S_ISLNK(st.st_mode):
+        raise HTTPException(status_code=400, detail="Compose file is a symlink")
 
-        # Built-in extensions live on a :ro mount â€” delegate rename to host agent
-        is_builtin = ext_dir.is_relative_to(EXTENSIONS_DIR.resolve())
-        if is_builtin:
-            if not _call_agent_compose_rename("deactivate", service_id):
-                raise HTTPException(
-                    status_code=502,
-                    detail=f"Host agent failed to deactivate extension: {service_id}",
-                )
-        else:
-            os.rename(str(enabled_compose), str(disabled_compose))
-        _call_agent_invalidate_compose_cache()
-
-        progress_file = Path(DATA_DIR) / "extension-progress" / f"{service_id}.json"
-        progress_file.unlink(missing_ok=True)
+    _select_extensions_on_host("disable", [service_id])
+    progress_file = Path(DATA_DIR) / "extension-progress" / f"{service_id}.json"
+    progress_file.unlink(missing_ok=True)
 
     logger.info("Disabled extension: %s", service_id)
-
-    message = (
-        "Extension disabled and stopped." if agent_ok
-        else "Extension disabled. Run 'ods restart' to apply changes."
-    )
-    if dependents_warning:
-        message = (
-            f"Warning: {', '.join(dependents_warning)} depend on {service_id}. "
-            + message
-        )
 
     return {
         "id": service_id,
         "action": "disabled",
-        "restart_required": not agent_ok,
-        "dependents_warning": dependents_warning,
+        "restart_required": False,
+        "dependents_warning": [],
         "data_info": _get_service_data_info(service_id) if include_data_info else None,
-        "message": message,
+        "message": "Extension disabled and stopped.",
     }
 
 
@@ -4711,13 +4871,18 @@ def uninstall_extension(service_id: str, include_data_info: bool = Query(True), 
                     f"({', '.join(dependents)}). Disable them first, then remove {service_id}."
                 ),
             )
-        # Stop BEFORE touching the definition (prevents zombie containers).
-        if not _call_agent("stop", service_id):
-            logger.error("Could not stop failed extension %s via agent; refusing to uninstall", service_id)
-            raise HTTPException(
-                status_code=502,
-                detail=f"Host agent failed to stop extension: {service_id}; extension was not removed",
-            )
+        # The host checks dependents, stops owned containers, and disables the
+        # marker under its graph lock. An independent stop followed by a
+        # Dashboard-side rename could race a CLI selection.
+        try:
+            _select_extensions_on_host("disable", [service_id])
+        except HTTPException as exc:
+            if exc.status_code == 502:
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"{exc.detail}; extension was not removed",
+                ) from exc
+            raise
         stopped_before_removal = True
 
     with _extensions_lock():
@@ -4728,19 +4893,13 @@ def uninstall_extension(service_id: str, include_data_info: bool = Query(True), 
                 status_code=400, detail="Extension directory is a symlink",
             )
 
-        if stopped_before_removal:
-            # Complete the disable step first, so a removal that fails part-way
-            # leaves a disabled definition that the ordinary path can remove.
-            try:
-                os.replace(enabled_compose, ext_dir / "compose.yaml.disabled")
-            except FileNotFoundError:
-                pass
-            except OSError as e:
-                logger.error("Failed to disable extension %s before removal: %s", service_id, e)
-                raise HTTPException(
-                    status_code=500,
-                    detail=f"Extension stopped, but its definition could not be disabled: {e}",
-                )
+        # Selection can change after the host RPC and before this lock. The
+        # host CLI uses the same lock, so this check protects the whole delete.
+        if enabled_compose.exists() or enabled_compose.is_symlink():
+            raise HTTPException(
+                status_code=409,
+                detail=f"Extension selection changed: {service_id}; disable it and retry removal",
+            )
 
         try:
             shutil.rmtree(ext_dir)

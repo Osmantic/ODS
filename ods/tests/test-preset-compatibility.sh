@@ -77,7 +77,7 @@ test_checks_env_file() {
 # Test 5: Verify cmd_preset calls validate_preset_compatibility
 test_cmd_preset_calls_validation() {
     info "Test 5: Checking if cmd_preset calls validate_preset_compatibility"
-    if grep -A100 "^cmd_preset()" "$ODS_CLI" 2>/dev/null | grep -q "validate_preset_compatibility"; then
+    if grep -A100 "^cmd_preset()" "$ODS_CLI" 2>/dev/null | grep -F "validate_preset_compatibility" >/dev/null; then
         pass "cmd_preset calls validate_preset_compatibility"
     else
         fail "cmd_preset does not call validate_preset_compatibility"

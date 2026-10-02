@@ -16,11 +16,15 @@ const clickAdopt = async () => {
 afterEach(() => vi.unstubAllGlobals())
 
 test('keeps nonexternal Lemonade installations free of an adoption control', async () => {
-  const fetch = vi.fn().mockResolvedValue(response({}, 409))
+  let settleObservation
+  const observation = new Promise(resolve => { settleObservation = resolve })
+  const fetch = vi.fn().mockReturnValue(observation)
   vi.stubGlobal('fetch', fetch)
   view()
-  await waitFor(() => expect(fetch).toHaveBeenCalledTimes(1))
-  expect(screen.queryByRole('region', { name: 'External Lemonade model' })).toBeNull()
+  expect(await screen.findByRole('region', { name: 'External Lemonade model' })).toBeVisible()
+  settleObservation(response({}, 409))
+  await waitFor(() => expect(screen.queryByRole('region', { name: 'External Lemonade model' })).toBeNull())
+  expect(fetch).toHaveBeenCalledTimes(1)
 })
 
 test('rechecks the exact physical model before one adoption and refreshes ODS', async () => {

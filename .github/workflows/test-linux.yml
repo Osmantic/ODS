@@ -406,7 +406,7 @@ jobs:
       - name: Installer Rerun .env Quoting Tests
         run: bash tests/test-phase06-env-rerun-quoting.sh
 
-      - name: Installer Cloud Provider Preservation Tests
+      - name: Installer Cloud Provider and Source Mode Preservation Tests
         run: bash tests/test-phase06-cloud-config-preservation.sh
 
       - name: Installer Created Container Ownership Tests
@@ -557,6 +557,7 @@ jobs:
       - name: Linux install preflight tests
         run: |
           python3 -m pytest -q tests/test_cloud_installer_messages.py
+          bash tests/test-preflight-network-check.sh
           bash tests/test-phase03-no-gpu-assignment-message.sh
           bash tests/test-preflight-external-gpu.sh
           bash tests/test-linux-install-preflight.sh
