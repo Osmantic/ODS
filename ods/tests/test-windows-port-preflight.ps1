@@ -34,6 +34,9 @@ foreach ($name in @(
     "Resolve-WindowsLlmPreflightPort",
     "Test-WindowsPortInUse",
     "Test-WindowsODSLemonadeOwnsPort",
+    "Get-WindowsODSExpectedComposeService",
+    "Get-WindowsODSComposePortBindings",
+    "Test-WindowsODSComposeOwnsListeners",
     "Get-WindowsODSSelectedPortConflicts",
     "Assert-WindowsODSSelectedPortAvailability"
 )) {
@@ -277,6 +280,7 @@ try {
             if ([int]$result.ProcessId -le 0) {
                 throw "Live listener detection did not return an owning PID"
             }
+            Assert-Equal @($result.Listeners).Count 1 "Live listener endpoint is available for ownership proof"
         } finally {
             $listener.Stop()
         }
@@ -286,11 +290,14 @@ try {
         [pscustomobject]@{ ProcessId = 4101; Name = "lemonade-server.exe" }
     )
     Assert-Equal (Test-WindowsODSLemonadeOwnsPort `
-        -PortResult @{ InUse = $true; ProcessId = 4101 } `
+        -PortResult @{ InUse = $true; ProcessId = 4101; Listeners = @(@{ ProcessId = 4101 }) } `
         -LemonadeProcesses $managedProcesses) $true "Managed Lemonade listener"
     Assert-Equal (Test-WindowsODSLemonadeOwnsPort `
-        -PortResult @{ InUse = $true; ProcessId = 4102 } `
+        -PortResult @{ InUse = $true; ProcessId = 4102; Listeners = @(@{ ProcessId = 4102 }) } `
         -LemonadeProcesses $managedProcesses) $false "Foreign listener"
+    Assert-Equal (Test-WindowsODSLemonadeOwnsPort `
+        -PortResult @{ InUse = $true; ProcessId = 4101; Listeners = @(@{ ProcessId = 4101 }, @{ ProcessId = 4102 }) } `
+        -LemonadeProcesses $managedProcesses) $false "Managed and foreign listeners share a port"
     Assert-Equal (Test-WindowsODSLemonadeOwnsPort `
         -PortResult @{ InUse = $false; ProcessId = 0 } `
         -LemonadeProcesses $managedProcesses) $false "Free port"
@@ -309,7 +316,13 @@ $script:mockListeners = @{
 }
 function Test-WindowsPortInUse {
     param([int]$Port)
-    if ($script:mockListeners.ContainsKey($Port)) { return $script:mockListeners[$Port] }
+    if ($script:mockListeners.ContainsKey($Port)) {
+        $result = $script:mockListeners[$Port]
+        $result.Listeners = @([pscustomobject]@{
+            LocalAddress = '127.0.0.1'; LocalPort = $Port; ProcessId = $result.ProcessId
+        })
+        return $result
+    }
     return @{ InUse = $false; ProcessId = 0; ProcessName = "" }
 }
 function Stop-Process { throw "Preflight must never stop a process" }
@@ -533,6 +546,91 @@ if ($script:voicePass -ne $script:voiceCase) { $global:LASTEXITCODE = 1; exit 1 
 } finally {
     if ($null -eq $savedVoiceOverride) { Remove-Item Env:WHISPER_PORT -ErrorAction SilentlyContinue } else { $env:WHISPER_PORT = $savedVoiceOverride }
 }
+
+# A retained install's own published container ports may be reused. The proof
+# must include the exact Compose working directory, service and host binding;
+# another Docker project or host listener on the same port remains a conflict.
+$ownedInstallDir = Join-Path ([IO.Path]::GetTempPath()) 'ods-owned-port-fixture'
+$script:dockerPortIds = @('owned-container')
+$script:dockerPortInspects = @{}
+$script:dockerPortStatus = 0
+$script:ownedPortListeners = @([pscustomobject]@{ LocalAddress = '127.0.0.1';
+    LocalPort = 3000; ProcessId = 4141 })
+function docker {
+    if ($args[0] -eq 'ps') {
+        $global:LASTEXITCODE = $script:dockerPortStatus
+        return $script:dockerPortIds
+    }
+    if ($args[0] -eq 'container' -and $args[1] -eq 'inspect') {
+        $global:LASTEXITCODE = $script:dockerPortStatus
+        return $script:dockerPortInspects[[string]$args[2]]
+    }
+    $global:LASTEXITCODE = 1
+}
+function New-ODSOwnedPortInspect {
+    param([string]$WorkingDir, [string]$Project = 'ods',
+        [string]$Service = 'open-webui', [string]$HostIp = '127.0.0.1',
+        [string]$ContainerId = 'owned-container-full-id')
+    return (ConvertTo-Json -InputObject @([ordered]@{
+        Id = $ContainerId
+        State = @{ Running = $true }
+        Config = @{ Labels = @{
+            'com.docker.compose.project' = $Project
+            'com.docker.compose.project.working_dir' = $WorkingDir
+            'com.docker.compose.service' = $Service
+        } }
+        NetworkSettings = @{ Ports = @{ '8080/tcp' = @(@{
+            HostIp = $HostIp; HostPort = '3000'
+        }) } }
+    }) -Depth 10 -Compress)
+}
+function Test-WindowsPortInUse {
+    param([int]$Port)
+    if ($Port -ne 3000) { return @{ InUse = $false; ProcessId = 0; ProcessName = '' } }
+    return @{ InUse = $true; ProcessId = 4141; ProcessName = 'com.docker.backend';
+        Listeners = $script:ownedPortListeners }
+}
+$ownedPorts = [ordered]@{ 'Open WebUI (chat)' = 3000 }
+$script:dockerPortInspects['owned-container'] = New-ODSOwnedPortInspect -WorkingDir $ownedInstallDir
+Assert-Equal @(Get-WindowsODSSelectedPortConflicts -PortsToCheck $ownedPorts -InstallDir $ownedInstallDir).Count `
+    0 'retained own Docker published port is reusable'
+$script:dockerPortIds = @('owned-container', 'other-container')
+$script:dockerPortInspects['other-container'] = New-ODSOwnedPortInspect `
+    -WorkingDir ($ownedInstallDir + '-other') -ContainerId 'other-container-full-id'
+Assert-Equal @(Get-WindowsODSSelectedPortConflicts -PortsToCheck $ownedPorts -InstallDir $ownedInstallDir).Count `
+    0 'another valid ODS checkout does not hide this installation binding'
+$script:dockerPortIds = @('owned-container')
+$script:dockerPortInspects['owned-container'] = New-ODSOwnedPortInspect -WorkingDir ($ownedInstallDir + '-other')
+Assert-Equal @(Get-WindowsODSSelectedPortConflicts -PortsToCheck $ownedPorts -InstallDir $ownedInstallDir).Count `
+    1 'another Compose working directory remains a conflict'
+$script:dockerPortInspects['owned-container'] = New-ODSOwnedPortInspect -WorkingDir $ownedInstallDir -Project 'foreign'
+Assert-Equal @(Get-WindowsODSSelectedPortConflicts -PortsToCheck $ownedPorts -InstallDir $ownedInstallDir).Count `
+    1 'foreign project label remains a conflict'
+$script:dockerPortInspects['owned-container'] = New-ODSOwnedPortInspect -WorkingDir $ownedInstallDir -Service 'dashboard'
+Assert-Equal @(Get-WindowsODSSelectedPortConflicts -PortsToCheck $ownedPorts -InstallDir $ownedInstallDir).Count `
+    1 'wrong Compose service remains a conflict'
+$script:dockerPortInspects['owned-container'] = New-ODSOwnedPortInspect -WorkingDir $ownedInstallDir -HostIp '0.0.0.0'
+Assert-Equal @(Get-WindowsODSSelectedPortConflicts -PortsToCheck $ownedPorts -InstallDir $ownedInstallDir).Count `
+    1 'a different host binding cannot excuse a loopback listener'
+$script:dockerPortInspects['owned-container'] = New-ODSOwnedPortInspect -WorkingDir $ownedInstallDir
+$script:ownedPortListeners += [pscustomobject]@{ LocalAddress = '0.0.0.0'; LocalPort = 3000; ProcessId = 5151 }
+Assert-Equal @(Get-WindowsODSSelectedPortConflicts -PortsToCheck $ownedPorts -InstallDir $ownedInstallDir).Count `
+    1 'an additional foreign listener remains a conflict'
+$script:ownedPortListeners = @($script:ownedPortListeners[0])
+$script:dockerPortInspects['owned-container'] = '{}'
+Assert-Equal @(Get-WindowsODSSelectedPortConflicts -PortsToCheck $ownedPorts -InstallDir $ownedInstallDir).Count `
+    1 'missing Compose labels remain a conflict'
+$script:dockerPortInspects['owned-container'] = New-ODSOwnedPortInspect -WorkingDir $ownedInstallDir
+$script:dockerPortIds = @()
+Assert-Equal @(Get-WindowsODSSelectedPortConflicts -PortsToCheck $ownedPorts -InstallDir $ownedInstallDir).Count `
+    1 'a fresh install cannot claim another listener'
+$script:dockerPortIds = @('owned-container')
+$script:dockerPortStatus = 1
+Assert-Equal @(Get-WindowsODSSelectedPortConflicts -PortsToCheck $ownedPorts -InstallDir $ownedInstallDir).Count `
+    1 'Docker metadata failure remains a conflict'
+$script:dockerPortStatus = 0
+Assert-Equal @(Get-WindowsODSSelectedPortConflicts -PortsToCheck $ownedPorts).Count `
+    1 'missing retained root cannot excuse a listener'
 
 Write-Host "[PASS] Windows service port preflight and env generation"
 $global:LASTEXITCODE = 0
