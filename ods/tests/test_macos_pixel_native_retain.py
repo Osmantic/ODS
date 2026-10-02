@@ -26,8 +26,8 @@ def installed(tmp_path, monkeypatch):
     preparation.mkdir(parents=True)
     source = tmp_path / 'source'
     source.mkdir()
-    relative = 'extensions/services/pixel-agent/host/extension_manager.py'
-    source_file = source / relative
+    service_relative = 'extensions/services/pixel-agent/host/extension_manager.py'
+    source_file = source / service_relative
     source_file.parent.mkdir(parents=True)
     source_file.write_bytes(b'current service payload\n')
     manifest_body = json.dumps({'candidateConfigSha256': 'c' * 64}).encode()
@@ -68,7 +68,7 @@ def installed(tmp_path, monkeypatch):
         _command=lambda _args: 'system/com.ods.pixel-native-gateway = {\n\tstate = running\n\tpid = 61766\n}',
         _source_runtime_config=lambda *_args: True)
     original_helper = retain.helper
-    config = SimpleNamespace(SERVICE_SOURCES={'manager/extension_manager.py': relative},
+    config = SimpleNamespace(SERVICE_SOURCES={'manager/extension_manager.py': service_relative},
         service_snapshot=lambda base, name, private=False: (Path(base) / name).read_bytes(),
         service_catalog=lambda _source: b'current catalog\n',
         verified_services=lambda *_args, **_kwargs: {
