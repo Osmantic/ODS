@@ -128,6 +128,26 @@ ods_gateway_assert_no_managed_inference() {
     return 0
 }
 
+# Check both installer selectors, including the accepted truthy marker values.
+ods_external_lemonade_requested() {
+    local external="${LEMONADE_EXTERNAL:-false}" runtime="${AMD_INFERENCE_RUNTIME:-}" managed="${AMD_INFERENCE_MANAGED:-}"
+    case "${external,,}" in true|1|yes|on) return 0 ;; esac
+    [[ "${runtime,,}" == lemonade && "${managed,,}" == false ]]
+}
+
+# An external Lemonade install may still run the ODS model-router for Pixel,
+# but it must never pull or launch the ODS-owned llama-server. Check the
+# effective service set because inherited profiles can override an overlay.
+ods_external_lemonade_assert_no_managed_llama() {
+    local services compose_root="${INSTALL_DIR:-$PWD}"
+    services="$(cd "$compose_root" && $DOCKER_COMPOSE_CMD "$@" config --services)" || return 1
+    if grep -qx 'llama-server' <<< "$services"; then
+        printf 'External Lemonade Compose includes ODS-managed llama-server. Check ODS_MODE and clear COMPOSE_PROFILES.\n' >&2
+        return 1
+    fi
+    return 0
+}
+
 # A caller can inherit COMPOSE_PROFILES=gateway-webui. Check the effective
 # service set before pulling or starting a Portal-only stack.
 ods_compose_assert_no_webui() {

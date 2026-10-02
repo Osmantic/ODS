@@ -58,6 +58,7 @@ bash tests/test-windows-restart-recreate-env.sh
 
 echo "[contract] external Lemonade compose overlay readiness"
 bash tests/contracts/test-external-lemonade-contracts.sh
+bash tests/contracts/test-external-lemonade-cpu-fallback.sh
 
 echo "[contract] bootstrap hot-swap force-recreate"
 bash tests/test-bootstrap-upgrade-hotswap-contract.sh
