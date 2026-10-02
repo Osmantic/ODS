@@ -293,8 +293,8 @@ ENABLE_PIXEL=true
 def test_protected_update_runs_before_base_launch_and_requires_reproof(
         update_status, retain_status, expected):
     script = SCRIPT.read_text()
-    start = script.index('    # The owner has a proved active native selection')
-    stop = script.index('    # ── Bootstrap fast-start', start)
+    start = script.index('    # Update the proved active native selection')
+    stop = script.index('    # Create directory structure', start)
     body = script[start:stop].replace('/usr/bin/python3', 'python_fixture')
     shell = '''set -euo pipefail
 ai() { :; }
@@ -318,5 +318,27 @@ _pixel_retain_args=(--install-dir /owner/ods)
     result = subprocess.run(['bash'], input=shell, capture_output=True, text=True)
     assert result.stdout.splitlines() == expected
     assert result.returncode == (0 if update_status == retain_status == 0 else 1)
-    assert script.index('pixel-native-update.py') < script.index('    # ── Bootstrap fast-start',
-        script.index('# PHASE 5'))
+    assert script.index('pixel-native-update.py') < script.index('    # Create directory structure',
+        script.index('# PHASE 4'))
+
+
+def test_copied_native_source_is_reproved_before_base_launch():
+    script = SCRIPT.read_text()
+    start = script.index('    # The base source copy must match')
+    stop = script.index('    # ── Bootstrap fast-start', start)
+    body = script[start:stop].replace('/usr/bin/python3', 'python_fixture')
+    shell = '''set -euo pipefail
+python_fixture() { printf '%s\\n' "$@"; }
+ai_err() { :; }
+ENABLE_PIXEL=true
+_PIXEL_RETAINED=true
+NON_INTERACTIVE=true
+PIXEL_SOURCE_REF=''' + 'a' * 40 + '''
+INSTALL_DIR=/owner/ods
+LIB_DIR=/source/lib
+''' + body
+    result = subprocess.run(['bash'], input=shell, capture_output=True, text=True)
+    assert result.returncode == 0
+    assert result.stdout.splitlines() == ['/source/lib/pixel-native-retain.py',
+        '--install-dir', '/owner/ods', '--ods-source', '/owner/ods',
+        '--expected-ref', 'a' * 40]
