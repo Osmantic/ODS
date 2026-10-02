@@ -11,6 +11,8 @@ This helper never opens or changes provider secrets or route state.
 from __future__ import annotations
 
 import argparse
+import contextlib
+import importlib.util
 import json
 import os
 import stat
@@ -96,7 +98,25 @@ def inspect(root: Path, data_dir: Path | None = None) -> dict:
     return {"schema": SCHEMA, "root": str(root), "selection": choice}
 
 
-def apply(root: Path, source: Path, selection: dict) -> None:
+@contextlib.contextmanager
+def _selection_lock(root: Path):
+    """Share the graph lock with Dashboard route publication and CLI selection."""
+    helper = Path(__file__).with_name("extension-selection.py")
+    if not helper.is_file() or helper.is_symlink():
+        raise ValueError("Extension selection helper is unavailable")
+    spec = importlib.util.spec_from_file_location("_ods_extension_selection", helper)
+    if spec is None or spec.loader is None:
+        raise ValueError("Cannot load extension selection helper")
+    selector = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(selector)
+    try:
+        with selector._selection_lock(root, 15.0):
+            yield
+    except selector.SelectionError as exc:
+        raise ValueError(str(exc)) from exc
+
+
+def apply(root: Path, source: Path, selection: dict, data_dir: Path | None = None) -> None:
     if root.is_symlink() or source.is_symlink():
         raise ValueError("Unsafe source or install root")
     root = root.resolve(strict=True)
@@ -107,6 +127,20 @@ def apply(root: Path, source: Path, selection: dict) -> None:
     if not isinstance(choice, dict) or set(choice) != set(SERVICES) or set(choice.values()) - {"enabled", "disabled"}:
         raise ValueError("Invalid remote-provider selection")
 
+    with _selection_lock(root):
+        # A route can be enabled after inspect and before this source copy
+        # finishes. Preserve the currently required services while holding
+        # the same lock that protects Dashboard route publication.
+        current_kind = _route_kind(root, data_dir)
+        choice = dict(choice)
+        if current_kind in {"direct", "ssh"}:
+            choice[SERVICES[0]] = "enabled"
+        if current_kind == "ssh":
+            choice[SERVICES[1]] = "enabled"
+        _apply_locked(root, source, choice)
+
+
+def _apply_locked(root: Path, source: Path, choice: dict[str, str]) -> None:
     # Validate the complete two-service plan before touching either marker.
     for service_id in SERVICES:
         target_dir = _service_dir(root, service_id)
@@ -151,7 +185,7 @@ def main() -> int:
         else:
             if args.source_root is None or args.selection_json is None:
                 parser.error("apply needs source_root and selection_json")
-            apply(args.install_root, args.source_root, json.loads(args.selection_json))
+            apply(args.install_root, args.source_root, json.loads(args.selection_json), args.data_dir)
     except (OSError, ValueError) as exc:
         print(f"Remote-provider Compose selection failed: {exc}", file=sys.stderr)
         return 1

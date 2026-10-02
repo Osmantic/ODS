@@ -2077,7 +2077,8 @@ else
     _macos_sync_builtin_compose_states
 
     python3 "${SOURCE_ROOT}/scripts/remote-provider-compose-selection.py" apply \
-        "$INSTALL_DIR" "$SOURCE_ROOT" "$_macos_remote_provider_selection" || {
+        "$INSTALL_DIR" "$SOURCE_ROOT" "$_macos_remote_provider_selection" \
+        --data-dir "$_macos_remote_provider_data_dir" || {
         ai_err "Could not reconcile the retained remote-provider selection."
         exit 1
     }

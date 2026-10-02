@@ -514,7 +514,8 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
 
     _phase06_step "reconcile-remote-provider-compose"
     python3 "$SCRIPT_DIR/scripts/remote-provider-compose-selection.py" apply \
-        "$INSTALL_DIR" "$SCRIPT_DIR" "$_phase06_remote_provider_selection" || {
+        "$INSTALL_DIR" "$SCRIPT_DIR" "$_phase06_remote_provider_selection" \
+        --data-dir "$_phase06_remote_provider_data_dir" || {
         error "Could not reconcile the retained remote-provider selection."
         return 1
     }

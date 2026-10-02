@@ -93,13 +93,24 @@ def main() -> None:
     exercise((False, False), "ssh", (True, True))  # legacy active SSH route
     exercise((True, False), None, (True, False))  # retained Library choice
     exercise((True, True), None, (True, True))
+    for transport, expected in (("direct", (True, False)), ("ssh", (True, True))):
+        source, install, secret, temp = fixture()
+        try:
+            selection = MODULE.inspect(install)  # route is enabled after the snapshot
+            copy_source(source, install)
+            route(install, transport)
+            MODULE.apply(install, source, selection)
+            assert states(install) == expected
+            assert secret.read_bytes() == b"fixture-secret-unchanged"
+        finally:
+            temp.cleanup()
     source, install, secret, temp = fixture()
     try:
         external = Path(temp.name) / "external"
         route(external, "ssh")
         selection = MODULE.inspect(install, data_dir=external / "data")
         copy_source(source, install)
-        MODULE.apply(install, source, selection)
+        MODULE.apply(install, source, selection, data_dir=external / "data")
         assert states(install) == (True, True)
         assert secret.read_bytes() == b"fixture-secret-unchanged"
         try:
@@ -108,6 +119,17 @@ def main() -> None:
             pass
         else:
             raise AssertionError("Relative external data directory must fail closed")
+    finally:
+        temp.cleanup()
+    source, install, secret, temp = fixture()
+    try:
+        external = Path(temp.name) / "external"
+        selection = MODULE.inspect(install, data_dir=external / "data")
+        copy_source(source, install)
+        route(external, "ssh")  # late route change in the configured external root
+        MODULE.apply(install, source, selection, data_dir=external / "data")
+        assert states(install) == (True, True)
+        assert secret.read_bytes() == b"fixture-secret-unchanged"
     finally:
         temp.cleanup()
     source, install, _, temp = fixture()
