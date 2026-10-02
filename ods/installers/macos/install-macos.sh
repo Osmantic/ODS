@@ -1661,8 +1661,16 @@ if $ENABLE_PIXEL && ! $PREFLIGHT_ONLY; then
     if ! $NON_INTERACTIVE && ! $DRY_RUN; then
         _pixel_install_args+=(--prompt-for-sudo)
     fi
-    /usr/bin/python3 "${LIB_DIR}/pixel-native-install.py" "${_pixel_install_args[@]}" \
-        --preflight-only || exit 1
+    _pixel_retain_args=(--install-dir "$INSTALL_DIR")
+    [[ -z "${PIXEL_SOURCE_REF:-}" ]] || _pixel_retain_args+=(--expected-ref "$PIXEL_SOURCE_REF")
+    _PIXEL_RETAINED=false
+    if [[ -e "${INSTALL_DIR}/data/pixel-native" || -L "${INSTALL_DIR}/data/pixel-native" ]]; then
+        /usr/bin/python3 "${LIB_DIR}/pixel-native-retain.py" "${_pixel_retain_args[@]}" || exit 1
+        _PIXEL_RETAINED=true
+    else
+        /usr/bin/python3 "${LIB_DIR}/pixel-native-install.py" "${_pixel_install_args[@]}" \
+            --preflight-only || exit 1
+    fi
     ENABLE_OPENCLAW=false
     OPENCLAW_EXPLICIT=true
 fi
@@ -3669,23 +3677,31 @@ for service in (data.get("services") or {}).values():
     fi
 
     if $ENABLE_PIXEL; then
-        ai "Preparing native Pixel and its Docker services..."
-        _pixel_install_args+=(--ods-source "$INSTALL_DIR")
-        [[ -z "${PIXEL_SOURCE_REF:-}" ]] || _pixel_install_args+=(--ref "$PIXEL_SOURCE_REF")
-        for ((_pixel_i=0; _pixel_i<${#COMPOSE_FLAGS[@]}; _pixel_i+=2)); do
-            [[ "${COMPOSE_FLAGS[_pixel_i]}" == -f ]] || { ai_err "Unexpected Compose selection"; exit 1; }
-            _pixel_install_args+=(--compose-file "$INSTALL_DIR/${COMPOSE_FLAGS[_pixel_i+1]}")
-        done
-        if ! /usr/bin/python3 "$LIB_DIR/pixel-native-install.py" "${_pixel_install_args[@]}"; then
-            ai_err "Native Pixel setup stopped. Keep data/pixel-native and its private receipts for diagnosis."
-            exit 1
+        if $_PIXEL_RETAINED; then
+            if ! /usr/bin/python3 "$LIB_DIR/pixel-native-retain.py" "${_pixel_retain_args[@]}"; then
+                ai_err "Retained native Pixel changed during the base install. Keep its state for review."
+                exit 1
+            fi
+            ai_ok "Retained native Pixel for Dashboard/Portal"
+        else
+            ai "Preparing native Pixel and its Docker services..."
+            _pixel_install_args+=(--ods-source "$INSTALL_DIR")
+            [[ -z "${PIXEL_SOURCE_REF:-}" ]] || _pixel_install_args+=(--ref "$PIXEL_SOURCE_REF")
+            for ((_pixel_i=0; _pixel_i<${#COMPOSE_FLAGS[@]}; _pixel_i+=2)); do
+                [[ "${COMPOSE_FLAGS[_pixel_i]}" == -f ]] || { ai_err "Unexpected Compose selection"; exit 1; }
+                _pixel_install_args+=(--compose-file "$INSTALL_DIR/${COMPOSE_FLAGS[_pixel_i+1]}")
+            done
+            if ! /usr/bin/python3 "$LIB_DIR/pixel-native-install.py" "${_pixel_install_args[@]}"; then
+                ai_err "Native Pixel setup stopped. Keep data/pixel-native and its private receipts for diagnosis."
+                exit 1
+            fi
+            ai_ok "Native Pixel activated for Dashboard/Portal"
         fi
         COMPOSE_FLAGS+=(
             -f extensions/services/pixel-model-relay/compose.yaml.disabled
             -f extensions/services/pixel-edge/compose.yaml.disabled
             -f installers/macos/pixel-native.compose.yaml.disabled
         )
-        ai_ok "Native Pixel activated for Dashboard/Portal"
     fi
 
     # Save compose flags for ods-macos.sh
