@@ -114,6 +114,8 @@ def run_helper(env: Path, catalog: Path, imports: Path, models_dir: Path, **over
     ]
     if overrides.get("state") is not None:
         command.extend(["--state", str(overrides["state"])])
+    if overrides.get("external_lemonade"):
+        command.append("--external-lemonade")
     result = subprocess.run(command, check=True, capture_output=True, text=True)
     values: dict[str, str] = {}
     for line in result.stdout.splitlines():
@@ -397,6 +399,222 @@ def test_comments_do_not_hide_external_runtime_selection() -> None:
             env, catalog, imports, models_dir = write_model_fixture(Path(tmp))
             replace_env(env, f"{key}={old}", f"{key}={selected} # chosen by the operator")
             assert run_helper(env, catalog, imports, models_dir) == {}, key
+
+
+def test_dashboard_selected_external_lemonade_model_survives_retained_rerun() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        env, catalog, imports, models_dir = write_model_fixture(Path(tmp))
+        replace_env(env, "ODS_MODE=local", "ODS_MODE=lemonade")
+        replace_env(env, "LLM_BACKEND=llama-server", "LLM_BACKEND=lemonade")
+        replace_env(env, "LEMONADE_EXTERNAL=false", "LEMONADE_EXTERNAL=true")
+        with env.open("a", encoding="utf-8") as handle:
+            handle.write("MODEL_SELECTION_SOURCE=dashboard\nLEMONADE_MODEL=Agent-Test-Q4_K_M\n")
+        # The Windows-hosted model has no GGUF in the Linux model directory.
+        (models_dir / "Agent-Test-Q4_K_M.gguf").unlink()
+        values = run_helper(env, catalog, imports, models_dir, external_lemonade=True)
+        assert values["LLM_MODEL"] == "agent-test"
+        assert values["GGUF_FILE"] == "Agent-Test-Q4_K_M.gguf"
+        assert values["MAX_CONTEXT"] == "65536"
+        assert values["MODEL_SELECTION_SOURCE"] == "dashboard"
+        assert values["LLAMA_ARG_CACHE_TYPE_K"] == "q4_0"
+        assert values["MODEL_RUNTIME_PROFILE"] == "nvidia-8gb-64k"
+        assert run_helper(env, catalog, imports, models_dir) == {}
+
+
+def test_external_lemonade_preservation_rejects_missing_provenance() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        env, catalog, imports, models_dir = write_model_fixture(Path(tmp))
+        replace_env(env, "ODS_MODE=local", "ODS_MODE=lemonade")
+        replace_env(env, "LLM_BACKEND=llama-server", "LLM_BACKEND=lemonade")
+        replace_env(env, "LEMONADE_EXTERNAL=false", "LEMONADE_EXTERNAL=true")
+        try:
+            run_helper(env, catalog, imports, models_dir, external_lemonade=True)
+            assert False, "ambiguous retained external route must stop before .env rewrite"
+        except subprocess.CalledProcessError as exc:
+            assert exc.returncode == 2
+
+
+def test_external_lemonade_preserves_catalog_35b_without_linux_artifact() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        record = next(
+            model for model in json.loads((ROOT / "config/model-library.json").read_text(encoding="utf-8"))["models"]
+            if model.get("gguf_file") == "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf"
+        )
+        env = root / ".env"
+        env.write_text("\n".join((
+            "ODS_MODE=lemonade", "LLM_BACKEND=lemonade", "LEMONADE_EXTERNAL=true",
+            "LEMONADE_MODEL=Qwen3.6-35B-A3B-UD-Q4_K_M",
+            "MODEL_SELECTION_SOURCE=dashboard", "EXTERNAL_LLM_URL=",
+            f"LLM_MODEL={record['llm_model_name']}", f"GGUF_FILE={record['gguf_file']}",
+            f"GGUF_URL={record['gguf_url']}", f"GGUF_SHA256={record['gguf_sha256']}",
+            "LLM_MODEL_SIZE_MB=21110", "MAX_CONTEXT=131072", "CTX_SIZE=131072",
+            "MODEL_RUNTIME_PROFILE=", "MODEL_RUNTIME_PROFILE_LABEL=",
+            "LLAMA_ARG_CACHE_TYPE_K=f16", "LLAMA_ARG_CACHE_TYPE_V=f16",
+            "LLAMA_ARG_FLASH_ATTN=auto", "ODS_ACTIVE_MODEL_STORE=default",
+        )) + "\n", encoding="utf-8")
+        values = run_helper(env, ROOT / "config/model-library.json", root / "no-imports.json",
+                            root / "no-model-artifacts", external_lemonade=True)
+        assert values["LLM_MODEL"] == "qwen3.6-35b-a3b"
+        assert values["MAX_CONTEXT"] == "131072"
+        assert values["MODEL_SELECTION_SOURCE"] == "dashboard"
+        assert values["LLAMA_ARG_CACHE_TYPE_K"] == "f16"
+        assert values["MODEL_RUNTIME_PROFILE"] == ""
+        assert "ODS_ACTIVE_MODEL_STORE" not in values  # phase 06 defaults to this
+
+
+def test_invalid_external_dashboard_contract_fails_closed() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        env, catalog, imports, models_dir = write_model_fixture(Path(tmp))
+        replace_env(env, "ODS_MODE=local", "ODS_MODE=lemonade")
+        replace_env(env, "LLM_BACKEND=llama-server", "LLM_BACKEND=lemonade")
+        replace_env(env, "LEMONADE_EXTERNAL=false", "LEMONADE_EXTERNAL=true")
+        replace_env(env, "MAX_CONTEXT=65536", "MAX_CONTEXT=garbled")
+        with env.open("a", encoding="utf-8") as handle:
+            handle.write("MODEL_SELECTION_SOURCE=dashboard\nLEMONADE_MODEL=host-model\n")
+        command = [sys.executable, str(HELPER), "--external-lemonade", "--env", str(env),
+                   "--catalog", str(catalog), "--models-dir", str(models_dir)]
+        result = subprocess.run(command, capture_output=True, text=True)
+        assert result.returncode == 2
+        assert result.stdout == ""
+        assert "Invalid retained external Lemonade model contract" in result.stderr
+
+
+def test_conflicting_external_provider_does_not_silently_reselect() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        env, catalog, imports, models_dir = write_model_fixture(Path(tmp))
+        replace_env(env, "ODS_MODE=local", "ODS_MODE=lemonade")
+        replace_env(env, "LLM_BACKEND=llama-server", "LLM_BACKEND=lemonade")
+        replace_env(env, "LEMONADE_EXTERNAL=false", "LEMONADE_EXTERNAL=true")
+        replace_env(env, "EXTERNAL_LLM_URL=", "EXTERNAL_LLM_URL=https://other.invalid/v1")
+        with env.open("a", encoding="utf-8") as handle:
+            handle.write("MODEL_SELECTION_SOURCE=dashboard\nLEMONADE_MODEL=host-model\n")
+        command = [sys.executable, str(HELPER), "--external-lemonade", "--env", str(env),
+                   "--catalog", str(catalog), "--models-dir", str(models_dir)]
+        result = subprocess.run(command, capture_output=True, text=True)
+        assert result.returncode == 2
+        assert result.stdout == ""
+
+
+def test_external_lemonade_alias_must_match_saved_catalog_artifact() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        env, catalog, imports, models_dir = write_model_fixture(Path(tmp))
+        replace_env(env, "ODS_MODE=local", "ODS_MODE=lemonade")
+        replace_env(env, "LLM_BACKEND=llama-server", "LLM_BACKEND=lemonade")
+        replace_env(env, "LEMONADE_EXTERNAL=false", "LEMONADE_EXTERNAL=true")
+        with env.open("a", encoding="utf-8") as handle:
+            handle.write("MODEL_SELECTION_SOURCE=dashboard\nLEMONADE_MODEL=Different-Model\n")
+        command = [sys.executable, str(HELPER), "--external-lemonade", "--env", str(env),
+                   "--catalog", str(catalog), "--models-dir", str(models_dir)]
+        result = subprocess.run(command, capture_output=True, text=True)
+        assert result.returncode == 2
+        assert result.stdout == ""
+
+
+def test_linux_phase02_keeps_external_selection_and_stops_invalid_rerun() -> None:
+    if sys.platform == "win32":
+        return  # Bash's Linux path/ownership semantics are exercised in CI.
+    detection = (ROOT / "installers/phases/02-detection.sh").read_text(encoding="utf-8")
+    start = detection.index('INSTALLER_RECOMMENDED_MODEL="${LLM_MODEL:-}"')
+    end = detection.index("# Display hardware summary", start)
+    phase = detection[start:end]
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        env, catalog, _, models_dir = write_model_fixture(root)
+        replace_env(env, "ODS_MODE=local", "ODS_MODE=lemonade")
+        replace_env(env, "LLM_BACKEND=llama-server", "LLM_BACKEND=lemonade")
+        replace_env(env, "LEMONADE_EXTERNAL=false", "LEMONADE_EXTERNAL=true")
+        with env.open("a", encoding="utf-8") as handle:
+            handle.write("MODEL_SELECTION_SOURCE=dashboard\nLEMONADE_MODEL=Agent-Test-Q4_K_M\n")
+        (models_dir / "Agent-Test-Q4_K_M.gguf").unlink()
+        # Phase 02 uses the installed catalog path, as a real rerun does.
+        (root / "config").mkdir()
+        (root / "config/model-library.json").write_bytes(catalog.read_bytes())
+        script_root = root / "source"
+        script_root.mkdir()
+        (script_root / "scripts").symlink_to(ROOT / "scripts", target_is_directory=True)
+        (script_root / "lib").symlink_to(ROOT / "lib", target_is_directory=True)
+        (script_root / "installers").mkdir()
+        (script_root / "installers/lib").symlink_to(ROOT / "installers/lib", target_is_directory=True)
+        (script_root / "config").symlink_to(root / "config", target_is_directory=True)
+        prefix = r'''
+set -euo pipefail
+SCRIPT_DIR="$1"
+INSTALL_DIR="$2"
+LOG_FILE="$2/phase.log"
+source "$SCRIPT_DIR/installers/lib/external-services.sh"
+LLM_MODEL=selector-other
+GGUF_FILE=selector-other.gguf
+MAX_CONTEXT=32768
+GPU_BACKEND=cpu
+GPU_MEMORY_TYPE=unified
+GPU_VRAM=0
+RAM_GB=32
+HOST_ARCH=amd64
+TIER=2
+LEMONADE_EXTERNAL=true
+ODS_MODE_EXPLICIT=false
+ODS_RESELECT_MODEL=false
+_selector_python=python3
+log() { :; }
+error() { printf '%s\n' "$*" >&2; }
+'''
+        # Keep all inputs synthetic; only the source tree is read.
+        result = subprocess.run(
+            ["bash", "-c", prefix + phase + '\nprintf "%s|%s|%s|%s|%s" "$LLM_MODEL" "$GGUF_FILE" "$MAX_CONTEXT" "$MODEL_SELECTION_SOURCE" "$INSTALLER_RECOMMENDED_MODEL"\n',
+             "phase02-model-retention", str(script_root), str(root)],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 0, result.stderr
+        assert result.stdout == "agent-test|Agent-Test-Q4_K_M.gguf|65536|dashboard|selector-other"
+        changed_during_install = subprocess.run(
+            ["bash", "-c", prefix + phase
+             + '\nprintf "# concurrent model activation\\n" >> "$INSTALL_DIR/.env"\n'
+             + 'ods_verify_retained_external_model_snapshot\n',
+             "phase02-model-retention", str(script_root), str(root)],
+            capture_output=True, text=True,
+        )
+        assert changed_during_install.returncode != 0
+        assert "settings changed during installation" in changed_during_install.stderr
+        env.write_text(env.read_text(encoding="utf-8").replace(
+            "# concurrent model activation\n", ""), encoding="utf-8")
+        conflicting_model = subprocess.run(
+            ["bash", "-c", prefix.replace("LEMONADE_EXTERNAL=true", "LEMONADE_EXTERNAL=true\nLEMONADE_MODEL=other-model")
+             + phase, "phase02-model-retention", str(script_root), str(root)],
+            capture_output=True, text=True,
+        )
+        assert conflicting_model.returncode != 0
+        assert "Use --reselect-model to change models" in conflicting_model.stderr
+        omitted_route = subprocess.run(
+            ["bash", "-c", prefix.replace("LEMONADE_EXTERNAL=true", "LEMONADE_EXTERNAL=false")
+             + phase, "phase02-model-retention", str(script_root), str(root)],
+            capture_output=True, text=True,
+        )
+        assert omitted_route.returncode != 0
+        assert "Select it explicitly for this rerun" in omitted_route.stderr
+        replace_env(env, "MAX_CONTEXT=65536", "MAX_CONTEXT=invalid")
+        rejected = subprocess.run(
+            ["bash", "-c", prefix + phase, "phase02-model-retention", str(script_root), str(root)],
+            capture_output=True, text=True,
+        )
+        assert rejected.returncode != 0
+        assert "Could not validate the retained external model selection" in rejected.stderr
+        reselect = subprocess.run(
+            ["bash", "-c", prefix.replace("ODS_RESELECT_MODEL=false", "ODS_RESELECT_MODEL=true")
+             + phase + '\nprintf "%s|%s" "$LLM_MODEL" "$MODEL_SELECTION_SOURCE"\n',
+             "phase02-model-retention", str(script_root), str(root)],
+            capture_output=True, text=True,
+        )
+        assert reselect.returncode == 0, reselect.stderr
+        assert reselect.stdout == "selector-other|installer"
+        env.unlink()
+        fresh = subprocess.run(
+            ["bash", "-c", prefix + phase + '\nprintf "%s|%s" "$LLM_MODEL" "$MODEL_SELECTION_SOURCE"\n',
+             "phase02-model-retention", str(script_root), str(root)],
+            capture_output=True, text=True,
+        )
+        assert fresh.returncode == 0, fresh.stderr
+        assert fresh.stdout == "selector-other|installer"
 
 
 def test_literal_hashes_and_invalid_values_are_not_comments() -> None:

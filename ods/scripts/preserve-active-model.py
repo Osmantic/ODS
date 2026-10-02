@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
-"""Safely recover a valid locally active model contract during ODS upgrades.
+"""Safely recover a retained active model contract during ODS upgrades.
 
 The installer owns recommendations, while the Dashboard owns the model the
 operator has activated.  A rerun must not silently replace that active model.
-This helper accepts only an installed, catalog-pinned local GGUF and emits a
-small allowlisted dotenv fragment for the installer to load without ``eval``.
+The default mode accepts only an installed, catalog-pinned local GGUF. The
+explicit external-Lemonade mode preserves a retained, catalog-pinned
+projection without pretending the Linux host owns the Windows model artifact.
+Both modes emit a small allowlisted dotenv fragment without ``eval``.
 """
 
 from __future__ import annotations
@@ -363,9 +365,26 @@ def valid_runtime_value(key: str, value: str) -> bool:
     return False
 
 
+def is_retained_external_lemonade(env: dict[str, str]) -> bool:
+    return (
+        env.get("ODS_MODE", "").lower() == "lemonade"
+        and env.get("LLM_BACKEND", "").lower() == "lemonade"
+        and env.get("LEMONADE_EXTERNAL", "").lower() == "true"
+    )
+
+
 def preserved_contract(args: argparse.Namespace) -> dict[str, str] | None:
     env = parse_dotenv(args.env)
-    if (
+    external_lemonade = getattr(args, "external_lemonade", False)
+    if external_lemonade:
+        if not (
+            is_retained_external_lemonade(env)
+            and env.get("MODEL_SELECTION_SOURCE") in {"dashboard", "operator", "installer", "preserved-external"}
+            and env.get("LEMONADE_MODEL")
+            and not env.get("EXTERNAL_LLM_URL")
+        ):
+            return None
+    elif (
         env.get("ODS_MODE", "local").lower() != "local"
         or env.get("LLM_BACKEND", "llama-server").lower() != "llama-server"
         or env.get("EXTERNAL_LLM_URL", "")
@@ -374,7 +393,11 @@ def preserved_contract(args: argparse.Namespace) -> dict[str, str] | None:
         return None
 
     records = load_records(args.catalog, args.imports)
-    verified_state = load_verified_active_state(args.state)
+    # Local state proof deliberately rejects native Lemonade routes. Its
+    # catalogId/runtimeModelId are Windows runtime aliases, not necessarily
+    # Linux catalog IDs. Preserve a separately validated .env projection here;
+    # later installer health checks still prove the selected external route.
+    verified_state = None if external_lemonade else load_verified_active_state(args.state)
     state_authoritative = verified_state is not None
     if state_authoritative:
         active_file = str(verified_state["runtimeModelId"])
@@ -387,6 +410,12 @@ def preserved_contract(args: argparse.Namespace) -> dict[str, str] | None:
     else:
         active_file = env.get("GGUF_FILE", "").strip()
         if not active_file or Path(active_file).name != active_file:
+            return None
+        if external_lemonade and env["LEMONADE_MODEL"] not in {
+            Path(active_file).stem, f"extra.{active_file}",
+        }:
+            # Lemonade's explicit model id must identify the saved catalog
+            # artifact, not an unrelated native model left in the same .env.
             return None
         matches = [
             item for item in records if str(item.get("gguf_file") or "").lower() == active_file.lower()
@@ -401,7 +430,9 @@ def preserved_contract(args: argparse.Namespace) -> dict[str, str] | None:
     actual_bytes = 0
     models_dir = args.models_dir
     active_store_id = env.get("ODS_ACTIVE_MODEL_STORE", "default")
-    if active_store_id != "default":
+    if external_lemonade and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", active_store_id):
+        return None
+    if active_store_id != "default" and not external_lemonade:
         sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "extensions/services/dashboard-api"))
         try:
             from model_stores import active_store
@@ -412,7 +443,7 @@ def preserved_contract(args: argparse.Namespace) -> dict[str, str] | None:
         models_root = models_dir.resolve()
     except (OSError, RuntimeError):
         return None
-    for artifact in manifest:
+    for artifact in (() if external_lemonade else manifest):
         artifact_path = models_dir / artifact["file"]
         try:
             resolved_artifact = artifact_path.resolve()
@@ -489,7 +520,7 @@ def preserved_contract(args: argparse.Namespace) -> dict[str, str] | None:
         ]
         if len(profile_matches) != 1:
             return None
-        if profile_is_eligible(profile_matches[0], args):
+        if external_lemonade or profile_is_eligible(profile_matches[0], args):
             runtime_profile = profile_matches[0]
             runtime_defaults_profile = runtime_profile
         elif state_authoritative:
@@ -563,7 +594,7 @@ def preserved_contract(args: argparse.Namespace) -> dict[str, str] | None:
 
     old_source = "dashboard" if state_authoritative else env.get("MODEL_SELECTION_SOURCE", "")
     recommended_file = env.get("MODEL_RECOMMENDED_GGUF", "")
-    if old_source in {"installer", "dashboard", "operator", "preserved-local"}:
+    if external_lemonade or old_source in {"installer", "dashboard", "operator", "preserved-local"}:
         source = old_source
     elif recommended_file and recommended_file != active_file:
         source = "dashboard"
@@ -601,10 +632,15 @@ def main() -> int:
     parser.add_argument("--vram-mb", type=float, default=0)
     parser.add_argument("--ram-gb", type=float, default=0)
     parser.add_argument("--host-arch", default=platform.machine())
+    parser.add_argument("--local-model", action="store_true")
+    parser.add_argument("--external-lemonade", action="store_true")
     args = parser.parse_args()
 
     contract = preserved_contract(args)
     if contract is None:
+        if args.external_lemonade and is_retained_external_lemonade(parse_dotenv(args.env)):
+            print("Invalid retained external Lemonade model contract; refusing to replace it.", file=sys.stderr)
+            return 2
         return 0
     for key, value in contract.items():
         # Compose's list-form environment entries inherit exported host values.

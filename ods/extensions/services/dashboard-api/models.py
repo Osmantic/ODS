@@ -214,6 +214,7 @@ class ModelLibraryEntry(BaseModel):
 
 class ModelLibraryGpu(BaseModel):
     vramTotal: float
+    modelMemoryBudgetGb: Optional[float] = None
     vramUsed: float
     vramFree: float
 
