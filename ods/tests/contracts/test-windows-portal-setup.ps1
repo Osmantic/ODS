@@ -107,6 +107,7 @@ function New-ODSPortalLinuxAccount([string]$Distro, $Account) {
 }
 function Get-ODSPortalWindowsNvidiaDriver { return $script:nvidiaDriver }
 function Get-ODSPortalAmdPlan([string]$SourceRoot) { $script:calls.Add('amd-plan'); return $script:amdPlan }
+function Get-ODSPortalRetainedLemonadeArguments([string]$Distro, [string]$InstallDir) { return $null }
 function Initialize-ODSPortalAmdLemonade($Plan, [string]$SourceRoot, [bool]$NonInteractive, [string]$WslDistro, [string]$WslInstallDir) {
     $script:calls.Add('amd-lemonade:' + $Plan.GpuName)
     $script:amdBinding = @($WslDistro, $WslInstallDir)
