@@ -197,10 +197,14 @@ def safe_artifact(root: Path, filename: str, *, allow_empty: bool = False) -> Pa
         return None
 
 
-def scan_model_files(data_dir: Path, *, container: bool = False, default_dir: Path | None = None) -> dict[str, Path]:
+def scan_model_files(data_dir: Path, *, container: bool = False, default_dir: Path | None = None,
+                     preferred_store_id: str | None = None) -> dict[str, Path]:
     stores = registered_stores(data_dir, container=container)
     if default_dir is not None:
         stores[0]["path"] = default_dir
+    preferred = None
+    if preferred_store_id is not None:
+        preferred = next((store for store in stores if store["id"] == preferred_store_id), None)
     matches: dict[str, list[Path]] = {}
     for store in stores:
         try:
@@ -214,7 +218,18 @@ def scan_model_files(data_dir: Path, *, container: bool = False, default_dir: Pa
                         group.append(target)
         except OSError:
             continue
-    return {paths[0].name: paths[0] for paths in matches.values() if len(paths) == 1}
+    result: dict[str, Path] = {}
+    for paths in matches.values():
+        if len(paths) == 1:
+            result[paths[0].name] = paths[0]
+            continue
+        if preferred is None:
+            continue
+        candidates = [path for path in paths if path.parent == preferred["path"]]
+        if len(candidates) == 1:
+            chosen = candidates[0]
+            result[chosen.name] = chosen
+    return result
 
 
 def resolve_model_file(data_dir: Path, filename: str, *, container: bool = False, default_dir: Path | None = None) -> Path | None:

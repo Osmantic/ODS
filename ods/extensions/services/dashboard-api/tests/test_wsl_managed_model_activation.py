@@ -111,7 +111,7 @@ def managed(tmp_path, monkeypatch):
     def control(operation, request=None, *, config):
         events.append(operation)
         if operation == "model-begin":
-            pixel.update(status="held", pending=True, transactionId=request["transactionId"])
+            pixel.update(status="held", pending=True, transactionId=request["transactionId"], outcome=None)
         elif operation == "model-apply":
             assert runtime["running"] is True
             pixel.update(status="applied", contract=copy.deepcopy(request["target"]))
@@ -302,11 +302,118 @@ def test_start_without_pixel_still_requires_inference_route_proof(managed, monke
     assert "model-begin" not in managed["events"]
 
 
-def test_activation_rejects_model_outside_bound_windows_store(managed):
-    (managed["models"] / "new-model.gguf").rename(managed["install"] / "data/models/new-model.gguf")
+def test_activation_stages_catalog_model_from_source_cache_into_bound_windows_store(managed):
+    source = managed["install"] / "data/models/new-model.gguf"
+    (managed["models"] / "new-model.gguf").rename(source)
+    source_bytes = source.read_bytes()
+    source_stat = source.stat()
+    target = managed["models"] / "new-model.gguf"
+    assert not target.exists()
+    # Stale env claims default; the actual controller binding must win.
+    managed["env"].write_text(
+        managed["env"].read_text().replace(
+            "ODS_ACTIVE_MODEL_STORE=windows-lemonade",
+            "ODS_ACTIVE_MODEL_STORE=default",
+        ),
+        encoding="utf-8",
+    )
     handler = fixtures._ResponseHandler()
     host.AgentHandler._do_model_activate(handler, "target-model", requested_context_length=65536)
-    assert handler.response_code == 409, handler.parse_response()
+    assert handler.response_code == 200, handler.parse_response()
+    # Full catalog SHA bytes copied into the managed store.
+    assert target.read_bytes() == source_bytes
+    assert hashlib.sha256(target.read_bytes()).hexdigest() == hashlib.sha256(source_bytes).hexdigest()
+    # Source cache untouched: same inode and bytes.
+    assert source.read_bytes() == source_bytes
+    assert source.stat().st_ino == source_stat.st_ino
+    assert source.stat().st_size == source_stat.st_size
+    # Persisted store is the actual controller binding, not the stale env value.
+    persisted = host.load_env(managed["env"])
+    assert persisted["ODS_ACTIVE_MODEL_STORE"] == "windows-lemonade"
+    assert persisted["LEMONADE_MODEL"] == "new-model"
+    # Pixel hold precedes Windows runtime activation.
+    events = managed["events"]
+    assert events.index("model-begin") < events.index("windows-activate") < events.index("model-apply")
+    assert managed["runtime"]["plan"]["GgufFile"] == "new-model.gguf"
+    assert managed["pixel"]["outcome"] == "commit"
+
+
+def test_repeated_activation_with_duplicated_copies_stages_and_commits(managed):
+    source = managed["install"] / "data/models/new-model.gguf"
+    (managed["models"] / "new-model.gguf").rename(source)
+    source_bytes = source.read_bytes()
+    target = managed["models"] / "new-model.gguf"
+    first = fixtures._ResponseHandler()
+    host.AgentHandler._do_model_activate(first, "target-model", requested_context_length=65536)
+    assert first.response_code == 200, first.parse_response()
+    assert target.read_bytes() == source_bytes
+    # Duplicate copy appears in the default store after first activation.
+    duplicate = managed["install"] / "data/models/new-model.gguf"
+    assert duplicate.read_bytes() == source_bytes
+    second = fixtures._ResponseHandler()
+    host.AgentHandler._do_model_activate(second, "target-model", requested_context_length=65536)
+    assert second.response_code == 200, second.parse_response()
+    assert target.read_bytes() == source_bytes
+    assert managed["runtime"]["plan"]["GgufFile"] == "new-model.gguf"
+    assert managed["pixel"]["outcome"] == "commit"
+    assert managed["events"].count("windows-activate") == 2
+
+
+def test_activation_old_new_old_new_cycle_uses_catalog_entries(managed):
+    source = managed["install"] / "data/models/new-model.gguf"
+    (managed["models"] / "new-model.gguf").rename(source)
+    source_bytes = source.read_bytes()
+    target = managed["models"] / "new-model.gguf"
+    catalog_path = managed["install"] / "config/model-library.json"
+    catalog = json.loads(catalog_path.read_text())
+    catalog["models"].append({
+        "id": "previous-model", "gguf_file": "old-model.gguf",
+        "gguf_url": "https://example.test/old-model.gguf",
+        "gguf_sha256": hashlib.sha256((managed["models"] / "old-model.gguf").read_bytes()).hexdigest(),
+        "llm_model_name": "old-model", "context_length": 65536,
+    })
+    catalog_path.write_text(json.dumps(catalog))
+    for expected in ("new-model.gguf", "old-model.gguf", "new-model.gguf"):
+        handler = fixtures._ResponseHandler()
+        if expected == "new-model.gguf":
+            host.AgentHandler._do_model_activate(handler, "target-model", requested_context_length=65536)
+        else:
+            host.AgentHandler._do_model_activate(handler, "previous-model", requested_context_length=65536)
+        assert handler.response_code == 200, handler.parse_response()
+        assert managed["runtime"]["plan"]["GgufFile"] == expected
+        assert managed["pixel"]["outcome"] == "commit"
+    assert target.read_bytes() == source_bytes
+
+
+def test_activation_refuses_bad_source_before_windows_or_config_changes(managed):
+    source = managed["install"] / "data/models/new-model.gguf"
+    source.write_bytes(b"corrupted")
+    target = managed["models"] / "new-model.gguf"
+    target.unlink()
+    handler = fixtures._ResponseHandler()
+    host.AgentHandler._do_model_activate(handler, "target-model", requested_context_length=65536)
+    assert handler.response_code in (400, 409), handler.parse_response()
+    assert managed["events"] == []
+    assert managed["env"].read_bytes() == managed["original"]
+    assert not target.exists()
+
+
+def test_activation_refuses_corrupt_preexisting_target_before_windows_or_config_changes(managed):
+    target = managed["models"] / "new-model.gguf"
+    target.write_bytes(b"corrupted")
+    handler = fixtures._ResponseHandler()
+    host.AgentHandler._do_model_activate(handler, "target-model", requested_context_length=65536)
+    assert handler.response_code in (400, 409), handler.parse_response()
+    assert managed["events"] == []
+    assert managed["env"].read_bytes() == managed["original"]
+
+
+def test_activation_refuses_noncatalog_model_outside_managed_store(managed):
+    outside = managed["install"] / "data/models/outside-model.gguf"
+    outside.write_bytes(b"outside")
+    handler = fixtures._ResponseHandler()
+    host.AgentHandler._do_model_activate(handler, "outside-model", requested_context_length=65536)
+    assert handler.response_code in (400, 409), handler.parse_response()
     assert managed["events"] == []
     assert managed["env"].read_bytes() == managed["original"]
 
@@ -365,3 +472,37 @@ def test_missing_runtime_registration_never_implicitly_adopts_model_store(manage
     with pytest.raises(RuntimeError, match="register its managed model store"):
         host._model_download_directory()
     assert managed["events"] == []
+
+
+@pytest.mark.parametrize("corrupt_companion", [False, True])
+def test_activation_resumes_missing_catalog_part_without_rewriting_main(managed, corrupt_companion):
+    source = managed["install"] / "data/models"
+    main = managed["models"] / "new-model.gguf"
+    before_inode = main.stat().st_ino
+    (source / "new-model.gguf").write_bytes(main.read_bytes())
+    part_name = "new-model-part-2.gguf"
+    (source / part_name).write_bytes(b"second part")
+    catalog_path = managed["install"] / "config/model-library.json"
+    catalog = json.loads(catalog_path.read_text())
+    catalog["models"][0]["gguf_parts"] = [{
+        "file": name, "url": "https://example.test/" + name,
+        "sha256": hashlib.sha256((source / name).read_bytes()).hexdigest(),
+        "size_bytes": (source / name).stat().st_size,
+    } for name in ("new-model.gguf", part_name)]
+    catalog_path.write_text(json.dumps(catalog))
+    if corrupt_companion:
+        (managed["models"] / part_name).write_bytes(b"bad existing part")
+    handler = fixtures._ResponseHandler()
+    host.AgentHandler._do_model_activate(handler, "target-model", requested_context_length=65536)
+    if corrupt_companion:
+        assert handler.response_code == 400, handler.parse_response()
+        assert managed["events"] == []
+        assert managed["env"].read_bytes() == managed["original"]
+        assert (managed["models"] / part_name).read_bytes() == b"bad existing part"
+    else:
+        assert handler.response_code == 200, handler.parse_response()
+        assert (managed["models"] / part_name).read_bytes() == b"second part"
+        assert managed["pixel"]["outcome"] == "commit"
+    assert main.stat().st_ino == before_inode
+    assert (source / "new-model.gguf").read_bytes() == b"model"
+    assert (source / part_name).read_bytes() == b"second part"

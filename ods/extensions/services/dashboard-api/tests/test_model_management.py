@@ -40,6 +40,7 @@ def model_runtime(monkeypatch, tmp_path):
     monkeypatch.setattr(router, "get_llama_context_size", AsyncMock(return_value=None))
     monkeypatch.setattr(router, "_verified_activation_context", lambda _model: None)
     monkeypatch.setattr(router, "_get_agent_model_status", lambda: {"status": "idle"})
+    monkeypatch.setattr(router, "_fixture_real_model_paths", router._installed_model_paths, raising=False)
     monkeypatch.setattr(router, "_installed_model_paths", lambda: {})
     monkeypatch.setattr(router, "_load_library", lambda: [])
     monkeypatch.setattr(router, "pixel_stream_active", lambda: False)
@@ -259,3 +260,47 @@ def test_runtime_control_preserves_failure_and_invalidates_status(
     assert response.status_code == status
     assert response.json()["detail"] == detail
     assert invalidated == [True]
+
+
+def test_catalog_keeps_duplicate_copy_available_only_from_verified_managed_store(
+    test_client, model_runtime, monkeypatch, tmp_path,
+):
+    from pathlib import Path
+    from model_stores import resolve_model_file
+    router = model_runtime
+    data = Path(router.DATA_DIR)
+    (data / "models").mkdir()
+    windows = tmp_path / "windows-models"
+    windows.mkdir()
+    (data / "models/model.gguf").write_bytes(b"source-cache")
+    (windows / "model.gguf").write_bytes(b"managed-copy")
+    # The Dashboard container sees containerPath; the registry remains the
+    # authority for its mount mapping, not a path supplied in a request.
+    (data / "model-stores.json").write_text(json.dumps({"schemaVersion": 1, "stores": [{
+        "id": "windows-lemonade", "hostPath": str(windows),
+        "containerPath": "/model-stores/windows-lemonade",
+    }]}))
+    import model_stores
+    original_registry = model_stores.registered_stores
+    monkeypatch.setattr(model_stores, "registered_stores",
+                        lambda directory, **kwargs: original_registry(directory, container=False))
+    monkeypatch.setattr(router, "_installed_model_paths", router._fixture_real_model_paths)
+    observed = []
+    original_builder = router.build_models_payload
+    def build(*args, **kwargs):
+        observed.append(kwargs["downloaded_files_override"])
+        return original_builder(*args, **kwargs)
+    monkeypatch.setattr(router, "build_models_payload", build)
+    monkeypatch.setattr(router, "request_agent_json", lambda *args, **kwargs:
+                        {**MANAGED, "modelStoreId": "windows-lemonade"})
+    response = test_client.get("/api/models", headers=test_client.auth_headers)
+    assert response.status_code == 200
+    assert observed[-1]["model.gguf"] == windows / "model.gguf"
+    assert resolve_model_file(data, "model.gguf") is None
+    monkeypatch.setattr(router, "request_agent_json", lambda *args, **kwargs:
+                        {**UNMANAGED, "modelStoreId": "windows-lemonade"})
+    response = test_client.get("/api/models", headers=test_client.auth_headers)
+    assert response.status_code == 200
+    assert "model.gguf" not in observed[-1]
+    assert (data / "models/model.gguf").read_bytes() == b"source-cache"
+    assert (windows / "model.gguf").read_bytes() == b"managed-copy"
