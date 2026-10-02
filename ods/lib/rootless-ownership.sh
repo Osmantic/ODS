@@ -83,7 +83,7 @@ _ods_rootless_service_enabled() {
     case "$service" in
         ape|privacy-shield|token-spy) return 0 ;;
         n8n)      [[ "${ENABLE_WORKFLOWS:-false}" == "true" ]] ;;
-        whisper)  [[ "${ENABLE_VOICE:-false}" == "true" ]] ;;
+        whisper)  [[ "${ENABLE_WHISPER:-${ENABLE_VOICE:-false}}" == "true" ]] ;;
         hermes)   [[ "${ENABLE_HERMES:-false}" == "true" ]] ;;
         comfyui)  [[ "${ENABLE_COMFYUI:-false}" == "true" ]] ;;
         langfuse) [[ "${ENABLE_LANGFUSE:-${LANGFUSE_ENABLED:-false}}" == "true" ]] ;;

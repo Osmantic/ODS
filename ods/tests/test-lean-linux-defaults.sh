@@ -25,7 +25,7 @@ check_defaults() (
         echo "FAIL: unexpected LAN proxy default would require WebUI" >&2
         exit 1
     }
-    for flag in ENABLE_VOICE ENABLE_WORKFLOWS ENABLE_RAG ENABLE_RECOMMENDED \
+    for flag in ENABLE_VOICE ENABLE_WHISPER ENABLE_TTS ENABLE_WORKFLOWS ENABLE_RAG ENABLE_RECOMMENDED \
                 ENABLE_HERMES ENABLE_COMFYUI ENABLE_APE ENABLE_PERPLEXICA \
                 ENABLE_PRIVACY_SHIELD; do
         [[ "${!flag}" == "$expected" ]] || {
@@ -61,7 +61,7 @@ check_fresh_source_layout() (
         echo 'FAIL: fresh source layout lost initial WebUI fallback' >&2
         exit 1
     }
-    for flag in ENABLE_VOICE ENABLE_WORKFLOWS ENABLE_RAG ENABLE_RECOMMENDED \
+    for flag in ENABLE_VOICE ENABLE_WHISPER ENABLE_TTS ENABLE_WORKFLOWS ENABLE_RAG ENABLE_RECOMMENDED \
                 ENABLE_HERMES ENABLE_COMFYUI ENABLE_APE ENABLE_PERPLEXICA \
                 ENABLE_PRIVACY_SHIELD ENABLE_LANGFUSE ENABLE_ODS_PROXY \
                 ENABLE_TAILSCALE ENABLE_BRAVE_SEARCH; do
@@ -113,12 +113,12 @@ check_portal_chat_choice 'unqualified Pixel fallback' false false false false fa
 check_portal_chat_choice 'explicit WebUI' false false true false true false false false
 check_portal_chat_choice 'legacy upgrade' false true false false true false false false
 check_portal_chat_choice 'gateway-only' false false false true true false false false
-check_portal_chat_choice 'voice needs WebUI' false false false false true true false false
+check_portal_chat_choice 'voice uses Portal' true false false false true true false false
 check_portal_chat_choice 'RAG needs WebUI' false false false false true false true false
 check_portal_chat_choice 'LAN proxy needs WebUI' false false false false true false false true
 
 check_all_then_core_menu() (
-    local dir all_clause core_clause portal_selected=false
+    local dir all_clause core_clause portal_selected=false voice_selected=false
     dir="$(mktemp -d)"
     trap 'rmdir -- "$dir"' EXIT
     INSTALL_DIR="$dir"
@@ -130,7 +130,8 @@ check_all_then_core_menu() (
     }' "$ROOT/install-core.sh")"
     [[ -n "$all_clause" ]] || { echo 'FAIL: --all case missing' >&2; exit 1; }
     eval "$all_clause"
-    [[ "$ENABLE_VOICE" == true && "$ENABLE_ODS_PROXY" == true &&
+    [[ "$ENABLE_WHISPER" == true && "$ENABLE_TTS" == true &&
+       "$ENABLE_ODS_PROXY" == true &&
        "$ENABLE_OPEN_WEBUI" == true ]] || {
         echo 'FAIL: --all stopped selecting full stack' >&2; exit 1;
     }
@@ -142,12 +143,14 @@ check_all_then_core_menu() (
     signal() { :; }
     log() { :; }
     eval "$core_clause"
-    [[ "$ENABLE_VOICE" == false && "$ENABLE_ODS_PROXY" == false &&
+    [[ "$ENABLE_WHISPER" == false && "$ENABLE_TTS" == false &&
+       "$ENABLE_ODS_PROXY" == false &&
        "$WEBUI_EXPLICIT" == false ]] || {
         echo 'FAIL: interactive Core choice retained --all voice, proxy, or WebUI pin' >&2; exit 1;
     }
+    [[ "$ENABLE_WHISPER" == true || "$ENABLE_TTS" == true ]] && voice_selected=true
     ods_should_default_portal_chat false "$WEBUI_EXPLICIT" false true \
-        "$ENABLE_VOICE" "$ENABLE_RAG" "$ENABLE_ODS_PROXY" && portal_selected=true
+        "$voice_selected" "$ENABLE_RAG" "$ENABLE_ODS_PROXY" && portal_selected=true
     [[ "$portal_selected" == true ]] || {
         echo 'FAIL: --all then Core did not select Portal chat' >&2; exit 1;
     }

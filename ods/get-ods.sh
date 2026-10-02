@@ -392,7 +392,7 @@ case "$OS" in
         success "Linux/WSL detected — full support"
         ;;
     macos)
-        warn "macOS detected — limited GPU support (Apple Silicon MLX coming soon)"
+        log "macOS detected — the native installer will check hardware compatibility"
         ;;
     unknown)
         error "Unsupported OS. ODS requires Linux, WSL, or macOS."
@@ -439,7 +439,7 @@ for _v in /sys/class/drm/card*/device/vendor; do
     esac
     $_gpu_found && break
 done
-if ! $_gpu_found; then
+if [[ "$OS" != "macos" ]] && ! $_gpu_found; then
     warn "No GPU detected — CPU-only mode will be used (slow but functional)"
 fi
 

@@ -33,7 +33,7 @@ for service in whisper tts n8n qdrant embeddings token-spy hermes hermes-proxy \
 done
 
 eval "$defaults"
-for flag in ENABLE_VOICE ENABLE_WORKFLOWS ENABLE_RAG ENABLE_RECOMMENDED \
+for flag in ENABLE_VOICE ENABLE_WHISPER ENABLE_TTS ENABLE_WORKFLOWS ENABLE_RAG ENABLE_RECOMMENDED \
             ENABLE_HERMES ENABLE_COMFYUI ENABLE_APE ENABLE_PERPLEXICA \
             ENABLE_PRIVACY_SHIELD ENABLE_LANGFUSE ENABLE_ODS_PROXY \
             ENABLE_TAILSCALE ENABLE_BRAVE_SEARCH; do
@@ -64,12 +64,12 @@ eval "$defaults"
 # though their helper fallback is false (ods-proxy/tailscale/langfuse). The fix
 # must gate on .env existence alone, never on fallback!=true.
 : >"$INSTALL_DIR/.env"
-for service in whisper n8n qdrant token-spy hermes comfyui ape perplexica \
+for service in whisper tts n8n qdrant token-spy hermes comfyui ape perplexica \
                privacy-shield langfuse ods-proxy tailscale brave-search; do
     mark "$service" on
 done
 eval "$defaults"
-for flag in ENABLE_VOICE ENABLE_WORKFLOWS ENABLE_RAG ENABLE_RECOMMENDED \
+for flag in ENABLE_VOICE ENABLE_WHISPER ENABLE_TTS ENABLE_WORKFLOWS ENABLE_RAG ENABLE_RECOMMENDED \
             ENABLE_HERMES ENABLE_COMFYUI ENABLE_APE ENABLE_PERPLEXICA \
             ENABLE_PRIVACY_SHIELD ENABLE_LANGFUSE ENABLE_ODS_PROXY \
             ENABLE_TAILSCALE ENABLE_BRAVE_SEARCH; do
@@ -80,6 +80,30 @@ for flag in ENABLE_VOICE ENABLE_WORKFLOWS ENABLE_RAG ENABLE_RECOMMENDED \
 done
 # The ambient host may expose a real user systemctl; this block asserts only
 # the optional Compose selections, not the separate OpenCode user-service probe.
+
+# Library can leave the two voice services in any combination. Ordinary
+# installer reruns must read each installed Compose marker independently.
+check_voice_selection() {
+    local whisper_state="$1" tts_state="$2" expected_whisper="$3" expected_tts="$4" expected_voice="$5"
+    rm -f -- "$INSTALL_DIR/extensions/services/whisper/compose.yaml" \
+        "$INSTALL_DIR/extensions/services/whisper/compose.yaml.disabled" \
+        "$INSTALL_DIR/extensions/services/tts/compose.yaml" \
+        "$INSTALL_DIR/extensions/services/tts/compose.yaml.disabled"
+    mark whisper "$whisper_state"
+    mark tts "$tts_state"
+    eval "$defaults"
+    [[ "$ENABLE_WHISPER" == "$expected_whisper" && "$ENABLE_TTS" == "$expected_tts" \
+        && "$ENABLE_VOICE" == "$expected_voice" ]] || {
+        echo "FAIL: retained voice selection $whisper_state/$tts_state became $ENABLE_WHISPER/$ENABLE_TTS/$ENABLE_VOICE" >&2
+        exit 1
+    }
+}
+check_voice_selection on off true false false
+check_voice_selection off on false true false
+check_voice_selection on on true true true
+check_voice_selection off off false false false
+check_voice_selection on on true true true
+
     [[ "$ODS_EXISTING_INSTALL" == true && "$ENABLE_OPEN_WEBUI" == true ]] || {
     echo 'FAIL: existing-install WebUI selection was lost on rerun' >&2
     exit 1
@@ -117,4 +141,50 @@ MOCK_SYSTEMCTL
 defaults_line="$(awk '/^INTERACTIVE=true$/ { print NR; exit }' "$ROOT/install-core.sh")"
 all_line="$(awk '/^[[:space:]]*--all\)/ { print NR; exit }' "$ROOT/install-core.sh")"
 [[ "$all_line" -gt "$defaults_line" ]] || { echo 'FAIL: --all precedes defaults' >&2; exit 1; }
+
+# --all seeds the full stack, but an interactive Core choice must still clear
+# its voice preset. Individual --voice/--no-voice flags remain authoritative.
+(
+    INSTALL_DIR="$fixture/fresh-all-core"
+    eval "$defaults"
+    all_clause="$(awk '/^[[:space:]]*--all\)/ {
+        sub(/^[[:space:]]*--all\)[[:space:]]*/, "")
+        sub(/[[:space:]]*shift[[:space:]]*;;[[:space:]]*$/, "")
+        print; exit
+    }' "$ROOT/install-core.sh")"
+    core_clause="$(awk '/^        2\)$/ { in_core=1; next }
+        in_core && /^            ;;$/ { exit }
+        in_core { print }' "$ROOT/installers/lib/ui.sh")"
+    [[ -n "$all_clause" && -n "$core_clause" ]] || {
+        echo 'FAIL: --all or Core menu case missing' >&2; exit 1;
+    }
+    signal() { :; }
+    log() { :; }
+    eval "$all_clause"
+    [[ "$ENABLE_WHISPER" == true && "$ENABLE_TTS" == true ]] || {
+        echo 'FAIL: --all stopped enabling both voice services' >&2; exit 1;
+    }
+    eval "$core_clause"
+    [[ "$ENABLE_WHISPER" == false && "$ENABLE_TTS" == false ]] || {
+        echo 'FAIL: interactive Core choice retained --all voice' >&2; exit 1;
+    }
+
+    eval "$defaults"
+    eval "$all_clause"
+    WHISPER_EXPLICIT=true TTS_EXPLICIT=true
+    ENABLE_WHISPER=true ENABLE_TTS=true
+    eval "$core_clause"
+    [[ "$ENABLE_WHISPER" == true && "$ENABLE_TTS" == true ]] || {
+        echo 'FAIL: Core overrode an explicit voice switch' >&2; exit 1;
+    }
+
+    eval "$defaults"
+    eval "$all_clause"
+    WHISPER_EXPLICIT=true TTS_EXPLICIT=true
+    ENABLE_WHISPER=false ENABLE_TTS=false
+    eval "$core_clause"
+    [[ "$ENABLE_WHISPER" == false && "$ENABLE_TTS" == false ]] || {
+        echo 'FAIL: Core overrode an explicit no-voice switch' >&2; exit 1;
+    }
+)
 echo 'PASS: installed optional Compose selections survive installer reruns'
