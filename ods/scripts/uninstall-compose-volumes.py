@@ -251,7 +251,10 @@ def preflight(root: Path, snapshot: Path, flags: list[str], keep_data: bool = Fa
     if keep_data:
         snapshot.write_text(json.dumps({
             "schemaVersion": 1, "installDir": str(root), "project": project,
+            "trustedSource": str(trusted_root),
             "volumes": {}, "external": {},
+            "ownedContainers": sorted(container_ids),
+            "flags": flags,
         }), encoding="utf-8")
         return
     volumes = project_volumes(root, project)
@@ -317,6 +320,7 @@ def preflight(root: Path, snapshot: Path, flags: list[str], keep_data: bool = Fa
         "trustedUsed": sorted(trusted_used),
         "expectedNames": sorted(expected_names),
         "flags": flags,
+        "ownedContainers": sorted(container_ids),
     }
     snapshot.write_text(json.dumps(record, sort_keys=True), encoding="utf-8")
 
@@ -403,9 +407,56 @@ def complete(root: Path, snapshot: Path, trusted_root: Path | None = None) -> No
               file=sys.stderr)
 
 
+def containers_complete(root: Path, snapshot: Path,
+                        trusted_root: Path | None = None) -> None:
+    """Require removal of owned containers; reject foreign same-project state."""
+    trusted_root = trusted_root or root
+    record = json.loads(snapshot.read_text(encoding="utf-8"))
+    if (not isinstance(record, dict) or record.get("schemaVersion") != 1 or
+            record.get("installDir") != str(root) or
+            record.get("trustedSource") != str(trusted_root) or
+            not isinstance(record.get("project"), str)):
+        raise ValueError("Uninstall container snapshot is invalid")
+    project = record["project"]
+    recorded = record.get("ownedContainers")
+    if (not isinstance(recorded, list) or
+            any(not isinstance(value, str) or not CONTAINER_RE.fullmatch(value)
+                for value in recorded)):
+        raise ValueError("Uninstall container snapshot is invalid")
+    flags = record.get("flags")
+    if not isinstance(flags, list) or any(not isinstance(flag, str) for flag in flags):
+        raise ValueError("Uninstall container snapshot is invalid")
+    # Re-derive the current project identity from the recorded flags so a
+    # project rename between preflight and completion fails closed instead of
+    # silently passing because the old project label no longer matches.
+    current_project, _selected, _external = project_config(root, flags)
+    if current_project != project:
+        raise ValueError("Compose project identity changed during uninstall")
+    # Re-derive the current owned set from Docker. This catches both a
+    # surviving container from the preflight snapshot and a container that
+    # appeared during uninstall (which would indicate a foreign actor).
+    current_ids, _mounted, _provenance = project_containers(root, project)
+    survivors = current_ids & set(recorded)
+    if survivors:
+        raise ValueError(
+            "Owned ODS containers remain after Compose down: "
+            + ", ".join(sorted(survivors)[:5])
+            + (" (additional IDs omitted)" if len(survivors) > 5 else "")
+        )
+    # New owned containers indicate concurrent activity; report without removing them.
+    unexpected = current_ids - set(recorded)
+    if unexpected:
+        raise ValueError(
+            "Unexpected ODS-project containers appeared during uninstall: "
+            + ", ".join(sorted(unexpected)[:5])
+            + (" (additional IDs omitted)" if len(unexpected) > 5 else "")
+        )
+
+
 def main() -> int:
-    if len(sys.argv) < 5 or sys.argv[1] not in ("preflight", "complete"):
-        print("Usage: uninstall-compose-volumes.py preflight|complete INSTALL_DIR SNAPSHOT TRUSTED_SOURCE [COMPOSE_FLAGS...]", file=sys.stderr)
+    if len(sys.argv) < 5 or sys.argv[1] not in (
+            "preflight", "complete", "containers-complete"):
+        print("Usage: uninstall-compose-volumes.py preflight|complete|containers-complete INSTALL_DIR SNAPSHOT TRUSTED_SOURCE [COMPOSE_FLAGS...]", file=sys.stderr)
         return 2
     mode, root_arg, snapshot_arg, trusted_arg, *flags = sys.argv[1:]
     try:
@@ -419,6 +470,10 @@ def main() -> int:
             keep_data = bool(flags and flags[0] == "--keep-data")
             preflight(root, snapshot, flags[1:] if keep_data else flags,
                       keep_data, trusted_root)
+        elif mode == "containers-complete":
+            if flags:
+                raise ValueError("Unexpected Compose arguments for container completion")
+            containers_complete(root, snapshot, trusted_root)
         elif flags:
             raise ValueError("Unexpected Compose arguments for completion")
         else:
