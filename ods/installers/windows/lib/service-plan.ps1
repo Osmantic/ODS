@@ -137,6 +137,9 @@ function Resolve-ODSWindowsHermesSelection {
         [bool]$MenuExplicit
     )
 
+    # Validate retained markers before any explicit choice can replace them.
+    $installedHermes = Get-ODSWindowsInstalledServiceSelection -InstallDir $InstallDir -ServiceId "hermes"
+    $installedProxy = Get-ODSWindowsInstalledServiceSelection -InstallDir $InstallDir -ServiceId "hermes-proxy"
     $hermes = $ComputedHermes
     $proxy = if ($null -ne $ComputedProxy) { [bool]$ComputedProxy } else { $ComputedHermes }
     if ($CliDisable) {
@@ -146,8 +149,6 @@ function Resolve-ODSWindowsHermesSelection {
         $hermes = $true
         $proxy = $true
     } elseif (-not $All -and -not $MenuExplicit) {
-        $installedHermes = Get-ODSWindowsInstalledServiceSelection -InstallDir $InstallDir -ServiceId "hermes"
-        $installedProxy = Get-ODSWindowsInstalledServiceSelection -InstallDir $InstallDir -ServiceId "hermes-proxy"
         if (Test-Path -LiteralPath (Join-Path $InstallDir ".env") -PathType Leaf) {
             # An existing install with no Hermes fragments has not selected it.
             # Do not re-enable it from a computed default on a quiet rerun.

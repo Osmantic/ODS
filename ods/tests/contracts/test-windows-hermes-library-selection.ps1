@@ -74,6 +74,27 @@ try {
     Assert-Selection ((@($before) -join '|') -eq (@($after) -join '|')) "Rejected selection mutated markers"
     Assert-Selection ((Get-Content -LiteralPath $sentinel -Raw).Trim() -eq "keep") "Rejected selection touched data"
 
+    # Explicit choices must also reject a retained active+disabled pair before
+    # source copy can normalize the markers and erase evidence of the conflict.
+    Set-Content -LiteralPath $hermesActive -Value "services: {}"
+    $ambiguousBefore = @(Get-ChildItem -LiteralPath $hermesDir, $proxyDir -File |
+        Select-Object -ExpandProperty FullName | Sort-Object)
+    foreach ($choice in @(
+        @{ CliEnable = $true },
+        @{ CliDisable = $true },
+        @{ All = $true },
+        @{ MenuExplicit = $true }
+    )) {
+        $ambiguousRejected = $false
+        try { $null = Resolve-ODSWindowsHermesSelection -InstallDir $installDir -ComputedHermes $false @choice }
+        catch { $ambiguousRejected = $_.Exception.Message -like "Ambiguous installed hermes selection*" }
+        Assert-Selection $ambiguousRejected "Explicit Hermes choice accepted ambiguous installed markers"
+    }
+    $ambiguousAfter = @(Get-ChildItem -LiteralPath $hermesDir, $proxyDir -File |
+        Select-Object -ExpandProperty FullName | Sort-Object)
+    Assert-Selection ((@($ambiguousBefore) -join '|') -eq (@($ambiguousAfter) -join '|')) "Ambiguous selection mutated markers"
+    Assert-Selection ((Get-Content -LiteralPath $sentinel -Raw).Trim() -eq "keep") "Ambiguous selection touched data"
+
     Write-Output "PASS: native Windows Hermes Library selection and rerun reconciliation"
 } finally {
     Remove-Item -LiteralPath $scratch -Recurse -Force -ErrorAction SilentlyContinue
