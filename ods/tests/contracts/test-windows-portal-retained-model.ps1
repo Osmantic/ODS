@@ -19,6 +19,9 @@ $script:observedModel = 'Qwen3.5-9B-Q4_K_M'
 $script:committedModel = 'Qwen3.5-9B-Q4_K_M'
 $script:committedDigest = 'a' * 64
 $script:currentDigest = 'a' * 64
+$script:configurationDigest = 'a' * 64
+$script:driftAfterStart = $false
+$script:invalidVersion = $false
 $script:observationFails = $false
 $script:observationChangesOnSecondRead = $false
 $script:observationReads = 0
@@ -47,7 +50,7 @@ function Get-ODSPortalManagedConfiguration($Request) {
         TaskName = 'owned'
         Plan = [pscustomobject]@{ Port=13305; GgufFile='Qwen3.5-9B-Q4_K_M.gguf';
             ContextSize=65536; ExecutablePath='C:\owned\lemonade.exe' }
-        PlanPath = $planPath; PlanDigest = 'a' * 64
+        PlanPath = $planPath; PlanDigest = $script:configurationDigest
         ReadyPath = Join-Path $runtime 'ready.json'
     }
 }
@@ -84,11 +87,18 @@ function Invoke-ODSPortalModelControl($Request) {
     }
     $script:taskState = 'Ready'
     $script:observationFailsUntilResume = $false
+    if ($script:driftAfterStart) { $script:configurationDigest = 'b' * 64 }
     [IO.File]::WriteAllText((Join-Path $runtime 'intent.json'), '{"State":"running"}')
     return [pscustomobject]@{ running=$true; planDigest=$script:currentDigest }
 }
-function Get-ODSLemonadeExecutableVersion([string]$Path) { return [version]'10.7.0' }
-function Assert-ODSPortalLemonadeVersion([version]$Version) { $script:calls.Add('version') }
+function Get-ODSLemonadeExecutableVersion([string]$Path) {
+    if ($script:invalidVersion) { return [version]'1.0.0' }
+    return [version]'10.7.0'
+}
+function Assert-ODSPortalLemonadeVersion([version]$Version) {
+    $script:calls.Add('version')
+    if ($Version -lt [version]'10.7.0') { throw 'unsupported Lemonade version' }
+}
 function Get-ODSPortalAmdPlan([string]$SourceRoot) {
     return [pscustomobject]@{ GpuName='Strix Halo'; VramMB=98304; LinuxTier='4';
         Model='hardware-recommended-35B'; GgufFile='Qwen3.6-35B-A3B-UD-Q4_K_M.gguf' }
@@ -178,6 +188,46 @@ try {
     Check (($argsOut -join ' ') -match '--lemonade-model Qwen3.5-9B-Q4_K_M' -and
         $script:calls.Contains('resume') -and -not $script:calls.Contains('native-reinitialize')) 'officially stopped runtime resumes its selected model and saved plan'
     Check ($script:calls.IndexOf('resume') -lt $script:calls.IndexOf('observation')) 'stopped runtime is resumed before live readiness is required'
+
+    $script:taskState = 'Disabled'
+    $script:observationFailsUntilResume = $true
+    [IO.File]::WriteAllText((Join-Path $runtime 'intent.json'), '{"State":"stopped"}')
+    $options['Tier'] = '3'
+    $script:calls.Clear()
+    $errorText = ''
+    try { $null = Add-ODSPortalAmdArguments @() $options 'C:\source' $true 'Ubuntu-24.04' }
+    catch { $errorText = $_.Exception.Message }
+    Check ($errorText -match 'cannot change that model during setup' -and
+        -not $script:calls.Contains('resume')) 'explicit tier is refused before a stopped model task can restart'
+    $options['Tier'] = ''
+
+    $script:invalidVersion = $true
+    $script:calls.Clear()
+    $errorText = ''
+    try { $null = Add-ODSPortalAmdArguments @() $options 'C:\source' $true 'Ubuntu-24.04' }
+    catch { $errorText = $_.Exception.Message }
+    Check ($errorText -match 'unsupported Lemonade version' -and
+        -not $script:calls.Contains('resume')) 'unsupported native executable refuses before stopped-task restart'
+    $script:invalidVersion = $false
+
+    $script:currentDigest = 'b' * 64
+    $script:calls.Clear()
+    $errorText = ''
+    try { $null = Add-ODSPortalAmdArguments @() $options 'C:\source' $true 'Ubuntu-24.04' }
+    catch { $errorText = $_.Exception.Message }
+    Check ($errorText -match 'plan changed before restart' -and
+        -not $script:calls.Contains('resume')) 'racing private plan refuses before stopped-task restart'
+    $script:currentDigest = 'a' * 64
+
+    $script:driftAfterStart = $true
+    $script:calls.Clear()
+    $errorText = ''
+    try { $null = Add-ODSPortalAmdArguments @() $options 'C:\source' $true 'Ubuntu-24.04' }
+    catch { $errorText = $_.Exception.Message }
+    Check ($errorText -match 'plan changed after restart' -and
+        $script:calls.Contains('resume')) 'post-start plan reread must match the original digest'
+    $script:driftAfterStart = $false
+    $script:configurationDigest = 'a' * 64
 
     $script:taskState = 'Disabled'
     $script:listenerOccupied = $true

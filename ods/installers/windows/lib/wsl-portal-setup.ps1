@@ -388,7 +388,7 @@ print(json.dumps({'status': 'present'}))
     throw 'The WSL installation root is ambiguous; the Windows model was not changed.'
 }
 
-function Get-ODSPortalRetainedLemonadeArguments([string]$Distro, [string]$InstallDir) {
+function Get-ODSPortalRetainedLemonadeArguments([string]$Distro, [string]$InstallDir, [bool]$TierRequested = $false) {
     $runtimeDir = Join-Path (Get-ODSPortalStateDir) 'portal-runtime'
     $planPath = Join-Path $runtimeDir 'runtime.json'
     $hasPlan = Test-Path -LiteralPath $planPath
@@ -400,6 +400,9 @@ function Get-ODSPortalRetainedLemonadeArguments([string]$Distro, [string]$Instal
     $request = @{ distro = $Distro; installDir = $InstallDir }
     $managed = Get-ODSPortalManagedConfiguration $request
     Assert-ODSPortalControlModel $managed.Plan
+    if ($TierRequested) {
+        throw 'A retained Windows model is already selected. -Tier cannot change that model during setup; choose the model in Dashboard Models, then rerun without -Tier.'
+    }
     $intentPath = Join-Path $runtimeDir 'intent.json'
     if ((Test-Path -LiteralPath $intentPath -PathType Leaf) -and
         -not (Test-ODSPortalLemonadeWanted $intentPath)) {
@@ -427,6 +430,9 @@ function Get-ODSPortalRetainedLemonadeArguments([string]$Distro, [string]$Instal
         if ((Get-ODSPortalPlanDigest $managed.PlanPath) -cne $managed.PlanDigest) {
             throw 'The Windows model plan changed before restart; the model was not changed.'
         }
+        Assert-ODSPortalLemonadeVersion (Get-ODSLemonadeExecutableVersion $managed.Plan.ExecutablePath)
+        $script:ODSPortalResumeAttempted = $true
+        $script:ODSPortalResumedPlanDigest = $managed.PlanDigest
         $started = Invoke-ODSPortalModelControl @{
             action = 'start'; distro = $Distro; installDir = $InstallDir
             expectedPlanDigest = $managed.PlanDigest
@@ -435,6 +441,9 @@ function Get-ODSPortalRetainedLemonadeArguments([string]$Distro, [string]$Instal
             throw 'The stopped Windows model did not resume with its saved plan; setup cannot continue.'
         }
         $managed = Get-ODSPortalManagedConfiguration $request
+        if ($managed.PlanDigest -cne $started.planDigest) {
+            throw 'The Windows model plan changed after restart; setup cannot continue.'
+        }
     }
     $observed = Get-ODSPortalManagedObservation $managed
     $runtimeModel = Resolve-ODSLemonadeModelId -Port $managed.Plan.Port -GgufFile $managed.Plan.GgufFile
@@ -480,7 +489,7 @@ function Add-ODSPortalAmdArguments([string[]]$LinuxArgs, [System.Collections.IDi
         # Pin the same directory into windows.ps1 and the Linux installer.
         $Options['InstallDir'] = $wslInstallDir
     }
-    $retainedArgs = @(Get-ODSPortalRetainedLemonadeArguments $WslDistro $wslInstallDir |
+    $retainedArgs = @(Get-ODSPortalRetainedLemonadeArguments -Distro $WslDistro -InstallDir $wslInstallDir -TierRequested ([bool]$Options['Tier']) |
         Where-Object { $null -ne $_ })
     if ($retainedArgs.Count -gt 0) {
         if ($Options['Tier']) {
@@ -577,6 +586,10 @@ function Invoke-ODSPortalSetup([System.Collections.IDictionary]$Options, [string
     $modelLockHeld = $false
     $preflightModelArgs = @()
     $preflightPlanDigest = $null
+    $setupSucceeded = $false
+    $setupFailureMessage = ''
+    $script:ODSPortalResumeAttempted = $false
+    $script:ODSPortalResumedPlanDigest = $null
     try {
         if (-not $Options['Cloud']) {
             $nvidiaDriver = Get-ODSPortalWindowsNvidiaDriver
@@ -604,6 +617,7 @@ function Invoke-ODSPortalSetup([System.Collections.IDictionary]$Options, [string
         Write-ODSPortalStage 4 'INSTALL PIXEL / PORTAL' "Prerequisites passed for $distro. Starting the Linux installer."
         Write-Host '         When Ubuntu asks for your [sudo] password, type your Ubuntu password and press Enter. Nothing appears while you type.'
         $exitCode = Invoke-ODSPortalLinuxInstaller $InstallerRoot $distro $linuxArgs ([string]$Options['InstallDir']) (-not $nonInteractive) (Get-ODSPortalDockerDesktop).Exe ([string]$Options['StateRoot'])
+        if ($exitCode -ne 0) { $setupFailureMessage = "Linux installer exited $exitCode" }
         if ($exitCode -eq 0 -and $null -ne $amdPlan -and $linuxArgs -contains '--lemonade-url') {
             $after = @(Get-ODSPortalRetainedLemonadeArguments $distro ([string]$Options['InstallDir']) |
                 Where-Object { $null -ne $_ })
@@ -619,9 +633,39 @@ function Invoke-ODSPortalSetup([System.Collections.IDictionary]$Options, [string
                 throw 'The Windows model route changed during Linux setup; setup cannot report success. Verify Dashboard Models and the protected runtime before retrying.'
             }
         }
+        if ($exitCode -eq 0) { $setupSucceeded = $true }
         return $exitCode
+    } catch {
+        $setupFailureMessage = $_.Exception.Message
+        throw
     } finally {
-        if ($modelLockHeld) { $modelMutex.ReleaseMutex() }
-        if ($null -ne $modelMutex) { $modelMutex.Dispose() }
+        try {
+            if ($script:ODSPortalResumeAttempted -and -not $setupSucceeded) {
+                try {
+                    $rollback = Invoke-ODSPortalModelControl @{
+                        action = 'stop'; distro = $distro; installDir = [string]$Options['InstallDir']
+                        expectedPlanDigest = $script:ODSPortalResumedPlanDigest
+                    }
+                    $restored = Get-ODSPortalManagedConfiguration @{
+                        distro = $distro; installDir = [string]$Options['InstallDir']
+                    }
+                    $intentPath = Join-Path (Join-Path (Get-ODSPortalStateDir) 'portal-runtime') 'intent.json'
+                    if ($rollback.running -or $rollback.planDigest -cne $script:ODSPortalResumedPlanDigest -or
+                        $restored.PlanDigest -cne $script:ODSPortalResumedPlanDigest -or
+                        $restored.Task.State -ne 'Disabled' -or (Test-ODSPortalLemonadeWanted $intentPath) -or
+                        (Get-ODSPortalTaskEngineId $restored.TaskName) -gt 0 -or
+                        @(Get-NetTCPConnection -LocalPort $restored.Plan.Port -State Listen -ErrorAction SilentlyContinue).Count -gt 0) {
+                        throw 'The stopped Windows model was not fully restored.'
+                    }
+                } catch {
+                    throw "ODS setup failed ($setupFailureMessage), and the stopped Windows model could not be restored: $($_.Exception.Message)"
+                }
+            }
+        } finally {
+            $script:ODSPortalResumeAttempted = $false
+            $script:ODSPortalResumedPlanDigest = $null
+            if ($modelLockHeld) { $modelMutex.ReleaseMutex() }
+            if ($null -ne $modelMutex) { $modelMutex.Dispose() }
+        }
     }
 }

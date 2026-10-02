@@ -14,6 +14,12 @@ SOURCE = Path(__file__).resolve().parents[1] / "installers/windows/lib/wsl-porta
 MATCH = re.search(r"\$reader = @'\r?\n(.*?)\r?\n'@", SOURCE.read_text(encoding="utf-8"), re.S)
 assert MATCH, "retained WSL journal reader must remain available for contract tests"
 READER = MATCH.group(1).replace("\r\n", "\n")
+ROOT_MATCH = re.search(
+    r"function Test-ODSPortalWslInstallRootAbsent\b.*?\$reader = @'\r?\n(.*?)\r?\n'@",
+    SOURCE.read_text(encoding="utf-8"), re.S,
+)
+assert ROOT_MATCH, "stopped-runtime WSL root probe must remain available for contract tests"
+ROOT_READER = ROOT_MATCH.group(1).replace("\r\n", "\n")
 
 
 def journal(*, phase="completed", outcome="commit", digest="a" * 64):
@@ -105,6 +111,45 @@ class RetainedJournalProjection(unittest.TestCase):
         self.assertEqual(self.run_reader().returncode, 0)
         data.chmod(0o755)
         self.assertEqual(self.run_reader().returncode, 0)
+
+
+@unittest.skipUnless(hasattr(os, "geteuid"), "WSL root probe requires POSIX ownership")
+class FreshInstallRootProbe(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.parent = Path(self.temp.name)
+        self.install = self.parent / "ods"
+
+    def probe(self, path=None):
+        return subprocess.run(
+            [sys.executable, "-c", ROOT_READER, str(path or self.install)],
+            capture_output=True, text=True, timeout=10,
+        )
+
+    def test_only_absent_leaf_under_real_parent_is_fresh(self):
+        result = self.probe()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout), {"status": "absent"})
+        self.install.mkdir()
+        result = self.probe()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout), {"status": "present"})
+
+    def test_partial_and_symlinked_paths_are_ambiguous(self):
+        paths = [self.parent / "missing" / "ods"]
+        other = self.parent / "other"
+        other.mkdir()
+        self.install.symlink_to(other, target_is_directory=True)
+        paths.append(self.install)
+        linked_parent = self.parent / "linked"
+        linked_parent.symlink_to(other, target_is_directory=True)
+        paths.append(linked_parent / "ods")
+        for path in paths:
+            with self.subTest(path=path):
+                result = self.probe(path)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(json.loads(result.stdout), {"status": "ambiguous"})
 
 
 if __name__ == "__main__":
