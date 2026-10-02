@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 
+import pytest
+
 
 from model_stores import scan_model_files, resolve_model_file, active_store
 from test_wsl_managed_model_activation import managed  # noqa: F401
@@ -56,6 +58,8 @@ def test_preferred_store_id_does_not_resolve_multiple_same_casefold_files(tmp_pa
     external.mkdir()
     (external / "dup.gguf").write_bytes(b"lower")
     (external / "DUP.GGUF").write_bytes(b"upper")
+    if (external / "dup.gguf").samefile(external / "DUP.GGUF"):
+        pytest.skip("filesystem does not support distinct casefold-colliding names")
     _write_registry(data, [
         {"id": "ssd", "hostPath": str(external), "containerPath": "/model-stores/ssd"},
     ])
@@ -90,4 +94,3 @@ def test_management_response_preserves_verified_storeid(managed, monkeypatch):  
     code, value = mod.host._model_management_snapshot()
     assert code == 200
     assert value.get("modelStoreId") == "windows-lemonade"
-
