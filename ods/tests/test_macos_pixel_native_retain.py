@@ -185,6 +185,17 @@ def test_cli_update_signal_refuses_pending_protected_journal(installed, monkeypa
     assert retain.main() == 1
 
 
+def test_cli_update_signal_for_proved_pixel_ref_change(installed, monkeypatch):
+    root, _, _, _, ref, _, source = installed
+    candidate_ref = 'c' * 40
+    monkeypatch.setattr('sys.argv', ['pixel-native-retain.py', '--install-dir', str(root),
+        '--ods-source', str(source), '--expected-ref', candidate_ref, '--allow-update'])
+    assert retain.main() == 2
+    monkeypatch.setattr('sys.argv', ['pixel-native-retain.py', '--install-dir', str(root),
+        '--ods-source', str(source), '--expected-ref', ref, '--allow-update'])
+    assert retain.main() == 0
+
+
 def test_retained_update_uses_protected_manifest_not_old_owner_preparation(installed):
     root, preparation, digest, services, ref, checks, source = installed
     (preparation / 'services/services.json').write_bytes(b'old owner preparation\n')

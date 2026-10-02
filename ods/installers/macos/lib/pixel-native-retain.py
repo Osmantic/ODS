@@ -117,7 +117,8 @@ def verify(install_dir, *, expected_ref=None, ods_source=None, prompt_for_sudo=F
     selected, active = stack.read_selection(preparation)
     digest = selected.get('runtimeDigest')
     services = selected.get('serviceDigest')
-    if (selected.get('pixelSourceRef') != expected_ref
+    selected_ref = selected.get('pixelSourceRef')
+    if (not isinstance(selected_ref, str) or not re.fullmatch('[a-f0-9]{40}', selected_ref)
             or active.get('runtimeDigest') != digest
             or active.get('serviceDigest') != services
             or not isinstance(digest, str) or not re.fullmatch('[a-f0-9]{64}', digest)
@@ -149,7 +150,9 @@ def verify(install_dir, *, expected_ref=None, ods_source=None, prompt_for_sudo=F
     if not os.path.lexists(bundle / 'ods-service-binding.json'):
         raise ValueError('native-service-binding-required')
     access._bundle.verify_service_binding(bundle, services)
-    verify_desired_services(ods_source, access._bundle, bundle, digest, services, expected_ref)
+    verify_desired_services(ods_source, access._bundle, bundle, digest, services, selected_ref)
+    if selected_ref != expected_ref:
+        raise SourceUpdateRequired('native-pixel-source-ref-changed')
     return {'mode': 'retained', 'runtimeDigest': digest, 'serviceDigest': services}
 
 
