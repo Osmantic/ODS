@@ -386,19 +386,30 @@ function Assert-VoiceEqual {
 $script:voiceIfAst = $ast.Find({
     param($node)
     $node -is [System.Management.Automation.Language.IfStatementAst] -and
-        $node.Clauses[0].Item1.Extent.Text -match 'enableVoice'
+        $node.Clauses[0].Item1.Extent.Text -match 'enableWhisper'
 }, $true)
-if (-not $script:voiceIfAst) { throw "Phase 04 enableVoice block not found" }
-$voiceBlock = [scriptblock]::Create(($script:voiceIfAst.Clauses[0].Item2.Statements.Extent.Text -join "`n"))
+if (-not $script:voiceIfAst) { throw "Phase 04 enableWhisper block not found" }
+$script:ttsIfAst = $ast.Find({
+    param($node)
+    $node -is [System.Management.Automation.Language.IfStatementAst] -and
+        $node.Clauses[0].Item1.Extent.Text -match 'enableTts'
+}, $true)
+if (-not $script:ttsIfAst) { throw "Phase 04 enableTts block not found" }
+$voiceBlock = [scriptblock]::Create($script:voiceIfAst.Extent.Text)
+$ttsBlock = [scriptblock]::Create($script:ttsIfAst.Extent.Text)
 
 function Get-PhaseVoicePort {
-    param([string]$Backend, [bool]$Cloud = $false, [string]$InstallDir = "")
+    param([string]$Backend, [bool]$Cloud = $false, [string]$InstallDir = "",
+        [bool]$EnableWhisper = $true, [bool]$EnableTts = $false)
     $gpuInfo = @{ Backend = $Backend }
     $cloudMode = $Cloud
     $installDir = $InstallDir
+    $enableWhisper = $EnableWhisper
+    $enableTts = $EnableTts
     $_usesNativeLemonade = ($Backend -eq "amd" -and -not $Cloud)
     $_portsToCheck = [ordered]@{}
     . $voiceBlock
+    . $ttsBlock
     return ,$_portsToCheck
 }
 
@@ -526,6 +537,27 @@ $ports = Get-PhaseVoicePort -Backend "nvidia"
 Assert-VoiceEqual $ports["Whisper (STT)"] 9100 "phase cached 9000 lemonade -> 9100"
 Assert-VoiceEqual (Get-GeneratorWhisperPort -Backend "nvidia" -SeedEnv "WHISPER_PORT=9000") "9100" `
     "generator cached 9000 lemonade -> 9100"
+
+# Independent Library selection checks only the selected voice port. A
+# retained custom TTS_PORT must be checked instead of the default 8880.
+$script:mockListeners[8880] = @{ InUse = $true; ProcessId = 4444; ProcessName = "OtherServer" }
+$ttsSeedDir = New-VoiceSeedDir -Content "TTS_PORT=8999"
+try {
+    $ttsOnly = Get-PhaseVoicePort -Backend "nvidia" -InstallDir $ttsSeedDir `
+        -EnableWhisper $false -EnableTts $true
+    Assert-VoiceEqual $ttsOnly.Contains("Whisper (STT)") $false "TTS-only skips Whisper port"
+    Assert-VoiceEqual $ttsOnly["Kokoro (TTS)"] 8999 "TTS-only checks retained custom port"
+    Assert-VoiceEqual @(Get-WindowsODSSelectedPortConflicts -PortsToCheck $ttsOnly).Count 0 `
+        "TTS-only ignores occupied default port"
+    $script:mockListeners[8999] = @{ InUse = $true; ProcessId = 4545; ProcessName = "OtherServer" }
+    Assert-VoiceAborts -PortsToCheck $ttsOnly -Label "TTS-only occupied custom port aborts"
+    $whisperOnly = Get-PhaseVoicePort -Backend "nvidia" -EnableWhisper $true -EnableTts $false
+    Assert-VoiceEqual $whisperOnly.Contains("Kokoro (TTS)") $false "Whisper-only skips Kokoro port"
+} finally {
+    Remove-VoiceSeedDir $ttsSeedDir
+    $script:mockListeners.Remove(8880)
+    $script:mockListeners.Remove(8999)
+}
 
 Write-Host ("[PASS] Voice port parity: {0}/{1} cases" -f $script:voicePass, $script:voiceCase)
 if ($script:voicePass -ne $script:voiceCase) { $global:LASTEXITCODE = 1; exit 1 }

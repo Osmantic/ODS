@@ -55,6 +55,7 @@ $enableRemoteAccess  = $false
 $enableLangfuse   = ($langfuseFlag -or $allFlag) -and (-not $noLangfuseFlag)
 
 # ── Interactive menu (skipped in non-interactive / dry-run / --All mode) ──────
+$choice = ""
 if (-not $nonInteractive -and -not $allFlag -and -not $dryRun) {
     Write-Host ""
     Write-Host "  Choose your ODS configuration:" -ForegroundColor White
@@ -84,7 +85,7 @@ if (-not $nonInteractive -and -not $allFlag -and -not $dryRun) {
             $enableWorkflows = (Read-Host "  Enable Workflows (n8n, 400+ integrations)? [y/N]") -match "^[yY]"
             $enableRag       = (Read-Host "  Enable RAG (Qdrant vector DB + embeddings)? [y/N]") -match "^[yY]"
             $enableRecommended = (Read-Host "  Enable recommended web/API support (LiteLLM + SearXNG + Token Spy)? [Y/n]") -notmatch "^[nN]"
-            $enableHermes    = (Read-Host "  Enable Hermes Agent (default AI agent)? [Y/n]") -notmatch "^[nN]"
+            $enableHermes    = (Read-Host "  Enable Hermes Agent (optional)? [Y/n]") -notmatch "^[nN]"
             $enableOpenClaw  = (Read-Host "  Enable OpenClaw (DEPRECATED; Hermes replaces it)? [y/N]") -match "^[yY]"
             $enableComfyui   = (Read-Host "  Enable image generation (ComfyUI + SDXL Lightning, ~6.5GB)? [y/N]") -match "^[yY]"
             $enableDeepResearch = (Read-Host "  Enable Perplexica deep research? [Y/n]") -notmatch "^[nN]"
@@ -123,6 +124,33 @@ if (-not $nonInteractive -and -not $allFlag -and -not $dryRun) {
 if ($noHermesFlag) {
     $enableHermes = $false
 }
+
+# Preserve separate Library selections before Phase 06 copies source fragments
+# over the installed tree. CLI and an explicit menu choice keep their paired
+# meaning; Enter on an existing install retains its prior Hermes/proxy choice.
+$computedHermesProxy = $null
+if (Get-Variable -Name enableHermesProxy -Scope Local -ErrorAction SilentlyContinue) {
+    $computedHermesProxy = [Nullable[bool]]$enableHermesProxy
+}
+$hermesSelection = Resolve-ODSWindowsHermesSelection `
+    -InstallDir $installDir `
+    -ComputedHermes $enableHermes `
+    -ComputedProxy $computedHermesProxy `
+    -CliEnable $hermesFlag `
+    -CliDisable $noHermesFlag `
+    -All $allFlag `
+    -MenuExplicit ($choice -in @("1", "2", "3"))
+$enableHermes = [bool]$hermesSelection.Hermes
+$enableHermesProxy = [bool]$hermesSelection.Proxy
+$voiceSelection = Resolve-ODSWindowsVoiceSelection `
+    -InstallDir $installDir `
+    -ComputedVoice $enableVoice `
+    -CliEnable $voiceFlag `
+    -All $allFlag `
+    -MenuExplicit ($choice -in @("1", "2", "3"))
+$enableWhisper = [bool]$voiceSelection.Whisper
+$enableTts = [bool]$voiceSelection.Tts
+$enableVoice = $enableWhisper -or $enableTts
 
 if ($noRecommendedFlag) {
     $enableRecommended = $false
@@ -199,7 +227,8 @@ if ($enableHermes -and -not $cloudMode) {
 # ── Feature summary ───────────────────────────────────────────────────────────
 Write-Host ""
 Write-AI "Feature configuration:"
-Write-InfoBox "  Voice (Whisper + Kokoro):" $(if ($enableVoice)     { "enabled" } else { "disabled" })
+Write-InfoBox "  Whisper STT:"             $(if ($enableWhisper)   { "enabled" } else { "disabled" })
+Write-InfoBox "  Kokoro TTS:"              $(if ($enableTts)       { "enabled" } else { "disabled" })
 Write-InfoBox "  Workflows (n8n):"          $(if ($enableWorkflows) { "enabled" } else { "disabled" })
 Write-InfoBox "  RAG (Qdrant + embeddings):" $(if ($enableRag)      { "enabled" } else { "disabled" })
 Write-InfoBox "  Recommended web/API:"       $(if ($enableRecommended) { "enabled" } else { "disabled" })

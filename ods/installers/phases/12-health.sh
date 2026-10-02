@@ -59,7 +59,8 @@ if $DRY_RUN; then
     [[ "$ENABLE_HERMES" == "true" ]] && log "[DRY RUN]   - Hermes Agent + hermes-proxy"
     [[ "${ENABLE_PIXEL_RUNTIME:-false}" == "true" ]] && log "[DRY RUN]   - Pixel gateway + private ingress + edge"
     [[ "$ENABLE_OPENCLAW" == "true" ]] && log "[DRY RUN]   - OpenClaw"
-    [[ "$ENABLE_VOICE" == "true" ]] && log "[DRY RUN]   - Whisper (STT), Kokoro (TTS), pre-download STT model"
+    [[ "${ENABLE_WHISPER:-false}" == "true" ]] && log "[DRY RUN]   - Whisper (STT), pre-download STT model"
+    [[ "${ENABLE_TTS:-false}" == "true" ]] && log "[DRY RUN]   - Kokoro (TTS)"
     [[ "$ENABLE_WORKFLOWS" == "true" ]] && log "[DRY RUN]   - n8n"
     [[ "${ENABLE_QDRANT:-${ENABLE_RAG:-false}}" == "true" ]] && log "[DRY RUN]   - Qdrant"
     [[ "${ENABLE_EMBEDDINGS:-${ENABLE_RAG:-false}}" == "true" ]] && log "[DRY RUN]   - Embeddings (TEI)"
@@ -621,14 +622,14 @@ if [[ "${ENABLE_OPENCODE:-false}" == "true" ]]; then
 fi
 # Whisper: 150 attempts * adaptive backoff = up to ~20 minutes (model download on first start)
 ods_progress 95 "health" "Checking voice services"
-[[ "$ENABLE_VOICE" == "true" ]] && _check_health "Whisper (STT)" "http://127.0.0.1:${SERVICE_PORTS[whisper]:-9000}${SERVICE_HEALTH[whisper]:-/health}" 150 10 "$(sr_container whisper)"
-[[ "$ENABLE_VOICE" == "true" ]] && _check_health "Kokoro (TTS)" "http://127.0.0.1:${SERVICE_PORTS[tts]:-8880}${SERVICE_HEALTH[tts]:-/health}" 150 10 "$(sr_container tts)"
+[[ "${ENABLE_WHISPER:-false}" == "true" ]] && _check_health "Whisper (STT)" "http://127.0.0.1:${SERVICE_PORTS[whisper]:-9000}${SERVICE_HEALTH[whisper]:-/health}" 150 10 "$(sr_container whisper)"
+[[ "${ENABLE_TTS:-false}" == "true" ]] && _check_health "Kokoro (TTS)" "http://127.0.0.1:${SERVICE_PORTS[tts]:-8880}${SERVICE_HEALTH[tts]:-/health}" 150 10 "$(sr_container tts)"
 
 # Pre-download the Whisper STT model so first transcription is instant.
 # Speaches does NOT auto-download on transcription requests — it returns 404.
 # We must trigger the download explicitly here, verify it completed, and
 # surface a clear recovery command if anything fails.
-if [[ "$ENABLE_VOICE" == "true" ]]; then
+if [[ "${ENABLE_WHISPER:-false}" == "true" ]]; then
     # Prefer AUDIO_STT_MODEL from .env (written by Phase 06). Fall back to the
     # GPU_BACKEND switch for backward compat with older .env files missing it.
     if [[ -n "${AUDIO_STT_MODEL:-}" ]]; then

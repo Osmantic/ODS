@@ -56,8 +56,11 @@ printf 'ODS_MODE=local\n' > "$INSTALL_DIR/.env"
 if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
     compose_base=(docker compose -f "$root/docker-compose.base.yml" \
         -f "$root/installers/macos/docker-compose.macos.yml")
-    WEBUI_SECRET=test-placeholder "${compose_base[@]}" config --services \
-        | grep -qx 'open-webui' \
+    # Capture the complete output before grepping. With pipefail, grep -q can
+    # close the pipe after finding WebUI and make Compose fail with SIGPIPE.
+    base_services="$(WEBUI_SECRET=test-placeholder "${compose_base[@]}" config --services)" \
+        || { echo 'Base macOS Compose config failed' >&2; exit 1; }
+    grep -qx 'open-webui' <<< "$base_services" \
         || { echo 'WebUI option omitted its service' >&2; exit 1; }
     lean_services="$(WEBUI_SECRET=test-placeholder "${compose_base[@]}" \
         -f "$root/docker-compose.gateway-only.yml" config --services)"
@@ -106,6 +109,8 @@ set -euo pipefail
 ENABLE_OPEN_WEBUI=false
 ENABLE_PERPLEXICA=false
 ENABLE_VOICE=false
+ENABLE_WHISPER=false
+ENABLE_TTS=false
 ENABLE_WORKFLOWS=false
 ENABLE_OPENCODE=false
 CLOUD_MODE=false
@@ -129,7 +134,7 @@ ROWS_FILE="$scratch/core-rows" SENTINEL_FILE="$scratch/core-success" \
     || { echo 'fresh Core never reached its success card' >&2; exit 1; }
 grep -q '^Dashboard|' "$scratch/core-rows" \
     || { echo 'Core summary omitted Dashboard' >&2; exit 1; }
-! grep -Eq 'Open WebUI|OpenCode|Perplexica|Whisper|n8n' "$scratch/core-rows" \
+! grep -Eq 'Open WebUI|OpenCode|Perplexica|Whisper|Kokoro|n8n' "$scratch/core-rows" \
     || { echo 'Core summary included an optional service' >&2; exit 1; }
 if PRODUCER_FILE="$scratch/readiness-producer.sh" \
     ROWS_FILE="$scratch/failing-rows" SENTINEL_FILE="$scratch/failing-success" \
