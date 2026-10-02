@@ -2049,14 +2049,15 @@ def _model_management_snapshot() -> tuple[int, dict]:
     unavailable = (503, {'error': 'Windows runtime management could not be verified'})
     started = time.monotonic()
     # Leave time for the host-agent response inside Dashboard's 20-second call.
-    retry_deadline = started + 18
-    if not _model_management_lock.acquire(timeout=19):
+    request_deadline = started + 18
+    if not _model_management_lock.acquire(
+            timeout=max(0.0, request_deadline - time.monotonic())):
         logger.warning('Windows runtime management unavailable reason=lock_timeout elapsed_ms=%d',
                        max(0, int((time.monotonic() - started) * 1000)))
         return unavailable
     try:
         for attempt in range(2):
-            if attempt and time.monotonic() >= retry_deadline:
+            if time.monotonic() >= request_deadline:
                 return unavailable
             env = load_env(INSTALL_DIR / '.env')
             key = _model_management_key(env)
@@ -2068,12 +2069,8 @@ def _model_management_snapshot() -> tuple[int, dict]:
                         and _model_management_key(load_env(INSTALL_DIR / '.env')) == key):
                     return cached[2], dict(cached[3])
             try:
-                # The first probe keeps its existing contract. Only a fresh
-                # proof after drift receives the remaining request deadline.
-                if attempt == 0:
-                    value = _managed_wsl_lemonade(env)
-                else:
-                    value = _managed_wsl_lemonade(env, deadline=retry_deadline)
+                # Lock wait and both read-only proofs share Dashboard's budget.
+                value = _managed_wsl_lemonade(env, deadline=request_deadline)
                 managed = value.get('managed') is True
                 running = managed and value.get('running') is True
                 result = (200, {'managed': managed, 'canActivate': running,
@@ -2087,8 +2084,8 @@ def _model_management_snapshot() -> tuple[int, dict]:
                 result = unavailable
             current_key = _model_management_key(load_env(INSTALL_DIR / '.env'))
             if current_key == key:
-                if attempt and time.monotonic() >= retry_deadline:
-                    return unavailable
+                if time.monotonic() >= request_deadline:
+                    result = unavailable
                 # Cache failures as failures too, so concurrent pollers do not
                 # each launch another expensive Windows controller.
                 _model_management_cache = (key, time.monotonic() + 1, *result)
@@ -2117,7 +2114,7 @@ def _model_management_snapshot() -> tuple[int, dict]:
             # route with no active operation may take exactly one fresh proof.
             if (attempt or result[0] != 200 or key[0] != current_key[0]
                     or key[2] != current_key[2] or after[1] is not None
-                    or retry_deadline - time.monotonic() < 3):
+                    or request_deadline - time.monotonic() < 3):
                 return unavailable
         return unavailable
     finally:
