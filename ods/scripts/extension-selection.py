@@ -76,6 +76,51 @@ def _read_json(path: Path) -> object:
         raise SelectionError(f"Cannot inspect selected file: {path}") from exc
 
 
+def _assert_remote_route_allows_disable(install_dir: Path, service_id: str) -> None:
+    """Keep an active remote route's required services selected.
+
+    This check runs under the shared extensions lock for both Dashboard and CLI
+    operations. A configured route is disabled through remote-provider setup,
+    not by stopping its transport underneath LiteLLM.
+    """
+    if service_id not in {"remote-provider-egress", "remote-provider-ssh-tunnel"}:
+        return
+    route_dir = install_dir / "data" / "remote-provider"
+    try:
+        directory = route_dir.lstat()
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        raise SelectionError("Cannot inspect remote-provider route directory") from exc
+    if not stat.S_ISDIR(directory.st_mode):
+        raise SelectionError("Invalid remote-provider route directory")
+    route_path = route_dir / "routing-state.json"
+    try:
+        selected = route_path.lstat()
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        raise SelectionError("Cannot inspect remote-provider route state") from exc
+    if not stat.S_ISREG(selected.st_mode) or selected.st_nlink != 1:
+        raise SelectionError("Invalid remote-provider route state")
+    route = _read_json(route_path)
+    if (not isinstance(route, dict)
+            or route.get("schema") != "ods.remote-routing-state.v1"
+            or type(route.get("enabled")) is not bool):
+        raise SelectionError("Invalid remote-provider route state")
+    if not route["enabled"]:
+        return
+    provider = route.get("provider")
+    transport = provider.get("transport") if isinstance(provider, dict) else None
+    if transport not in {"direct", "ssh"}:
+        raise SelectionError("Invalid remote-provider route transport")
+    if service_id == "remote-provider-egress" or transport == "ssh":
+        raise SelectionError(
+            f"Active {transport} remote-provider route requires {service_id}; "
+            "disable the route first"
+        )
+
+
 def _manifest_dependencies(directory: Path) -> set[str]:
     for name in ("manifest.yaml", "manifest.yml", "manifest.json"):
         manifest = directory / name
@@ -434,6 +479,7 @@ def run(
         directory = _target_dir(install_dir, service_id)
         if action != "enable":
             _assert_no_dependents(install_dir, service_id)
+            _assert_remote_route_allows_disable(install_dir, service_id)
         enabled = directory / "compose.yaml"
         disabled = directory / "compose.yaml.disabled"
         try:
@@ -782,6 +828,7 @@ def restore_preset(
             if desired[service_id]
         ))
         for service_id in disable_order:
+            _assert_remote_route_allows_disable(install_dir, service_id)
             missing = (selected_providers[service_id] & base_needs_provider) - retained_providers
             if missing:
                 raise SelectionError(
