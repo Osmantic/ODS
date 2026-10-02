@@ -185,14 +185,25 @@ def publish_flags(root: Path, source: Path, flags: object) -> dict:
         or not all(isinstance(item, str) for item in flags)
     ):
         raise ValueError("Invalid Compose flags")
+    env_flags = []
+    file_flags = flags
+    if flags[0] == "--env-file":
+        # The native installer always places its own .env before Compose files.
+        # Keep that pair in the published cache without admitting other options.
+        if flags[1] != ".env":
+            raise ValueError("Invalid Compose env file")
+        env_flags = ["--env-file", ".env"]
+        file_flags = flags[2:]
+        if not file_flags:
+            raise ValueError("Compose files are required")
     remote = {
         f"extensions/services/{service}/compose.yaml": service for service in SERVICES
     }
     retained = []
-    for index in range(0, len(flags), 2):
-        if flags[index] != "-f":
+    for index in range(0, len(file_flags), 2):
+        if file_flags[index] != "-f":
             raise ValueError("Invalid Compose file option")
-        normalized = relative_file(flags[index + 1])
+        normalized = relative_file(file_flags[index + 1])
         if normalized not in remote:
             retained.append(normalized)
     selection = choices(root, source)
@@ -212,7 +223,7 @@ def publish_flags(root: Path, source: Path, flags: object) -> dict:
     retained[insert:insert] = fresh
     for path in retained:
         read_file(root / path)
-    output = [token for path in retained for token in ("-f", path)]
+    output = env_flags + [token for path in retained for token in ("-f", path)]
     data = " ".join(output).encode("utf-8")
     publish(root, root / ".compose-flags", data, 0o644)
     return {"flags": output, "selection": selection}

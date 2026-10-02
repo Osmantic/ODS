@@ -163,6 +163,45 @@ class Transactions(unittest.TestCase):
             flags,
         )
 
+    def test_flags_accept_native_windows_env_file_before_compose(self):
+        self.sync()
+        (self.root / ".env").write_text("ODS_TEST=1\n")
+        (self.root / "docker-compose.nvidia.yml").write_text("services: {}\n")
+        litellm = self.root / "extensions/services/litellm/compose.yaml"
+        litellm.parent.mkdir(parents=True)
+        litellm.write_text("services: {}\n")
+        flags = [
+            "--env-file", ".env",
+            "-f", "docker-compose.base.yml",
+            "-f", "docker-compose.nvidia.yml",
+            "-f", "extensions/services/litellm/compose.yaml",
+        ]
+        result = tx.transact(
+            self.root, self.source, {"operation": "flags", "flags": flags}
+        )
+        self.assertEqual(result["flags"], flags)
+        self.assertEqual((self.root / ".compose-flags").read_text(), " ".join(flags))
+
+    def test_flags_reject_invalid_env_file_pair_without_publication(self):
+        self.sync()
+        cache = self.root / ".compose-flags"
+        cache.write_bytes(b"old-cache")
+        base = ["-f", "docker-compose.base.yml"]
+        for flags in (
+            ["--env-file", "../outside", *base],
+            ["--env-file", "other.env", *base],
+            ["--env-file", ".env", "--env-file", ".env", *base],
+            [*base, "--env-file", ".env"],
+            ["--env-file", ".env", "-f", "docker-compose.nvidia.yml"],
+        ):
+            with self.subTest(flags=flags):
+                with self.assertRaises(ValueError):
+                    tx.transact(
+                        self.root, self.source,
+                        {"operation": "flags", "flags": flags},
+                    )
+                self.assertEqual(cache.read_bytes(), b"old-cache")
+
     def test_bad_flags_leave_cache(self):
         self.sync()
         (self.root / ".compose-flags").write_bytes(b"old-cache")
