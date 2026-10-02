@@ -72,8 +72,10 @@ case "${LEMONADE_EXTERNAL:-false}" in
     true|TRUE|1|yes|YES|on|ON) _lemonade_external=true ;;
     *) _lemonade_external=false ;;
 esac
-if [[ "${AMD_INFERENCE_RUNTIME:-}" == lemonade \
-   && "${AMD_INFERENCE_MANAGED:-}" == false ]]; then
+_lemonade_runtime="${AMD_INFERENCE_RUNTIME:-}"
+_lemonade_managed="${AMD_INFERENCE_MANAGED:-}"
+if [[ "${_lemonade_runtime,,}" == lemonade \
+   && "${_lemonade_managed,,}" == false ]]; then
     _lemonade_external=true
 fi
 if [[ "${ODS_MODE:-local}" != "cloud" && "$_lemonade_external" != "true" && -z "${EXTERNAL_LLM_URL:-}" ]]; then

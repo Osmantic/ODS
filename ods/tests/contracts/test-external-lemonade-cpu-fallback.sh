@@ -96,6 +96,27 @@ AMD_INFERENCE_RUNTIME=lemonade
 AMD_INFERENCE_MANAGED=false
 ods_external_lemonade_requested
 
+# The image planner must agree with the resolver's case-insensitive runtime
+# selector. Otherwise it can pull llama even when Compose disables the service.
+phase08_images="$(
+    export DRY_RUN=true GPU_BACKEND=cpu ODS_MODE=lemonade
+    export LEMONADE_EXTERNAL=false AMD_INFERENCE_RUNTIME=LEMONADE AMD_INFERENCE_MANAGED=FALSE
+    export ENABLE_COMFYUI=false ENABLE_VOICE=false ENABLE_WORKFLOWS=false
+    export ENABLE_RAG=false ENABLE_QDRANT=false ENABLE_EMBEDDINGS=false
+    export ENABLE_HERMES=false ENABLE_OPENCLAW=false ENABLE_OPEN_WEBUI=false
+    COMPOSE_FLAGS=''
+    ods_progress() { :; }
+    show_phase() { :; }
+    bootline() { :; }
+    signal() { :; }
+    source installers/phases/08-images.sh
+    printf '%s\n' "${PULL_LIST[@]}"
+)"
+if grep -q 'LLAMA-SERVER' <<< "$phase08_images"; then
+    echo '[FAIL] external Lemonade runtime selector planned a managed llama image' >&2
+    exit 1
+fi
+
 ODS_MODE=lemonade
 GPU_BACKEND=amd
 LEMONADE_EXTERNAL=false
