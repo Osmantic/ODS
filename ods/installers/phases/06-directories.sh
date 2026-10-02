@@ -143,14 +143,6 @@ else
     # shellcheck source=../../lib/safe-env.sh
     source "$SCRIPT_DIR/lib/safe-env.sh"
 
-    # Capture Library markers before either ordinary rsync or the held Pixel
-    # source transaction can add the new disabled fragments alongside them.
-    _phase06_remote_provider_selection="$(python3 \
-        "$SCRIPT_DIR/scripts/remote-provider-compose-selection.py" inspect "$INSTALL_DIR")" || {
-        error "Could not inspect the retained remote-provider selection."
-        return 1
-    }
-
     _env_existing=""
     [[ -f "$INSTALL_DIR/.env" ]] && _env_existing="$INSTALL_DIR/.env"
 
@@ -180,6 +172,17 @@ else
             return
         fi
         _env_get "$key" "$default"
+    }
+
+    # Capture Library markers before either ordinary rsync or the held Pixel
+    # source transaction can add new disabled fragments alongside them. The
+    # route state may live in the configured external data directory.
+    _phase06_remote_provider_data_dir="$(_env_get ODS_DATA_DIR "$INSTALL_DIR/data")"
+    _phase06_remote_provider_selection="$(python3 \
+        "$SCRIPT_DIR/scripts/remote-provider-compose-selection.py" inspect "$INSTALL_DIR" \
+        --data-dir "$_phase06_remote_provider_data_dir")" || {
+        error "Could not inspect the retained remote-provider selection."
+        return 1
     }
 
     _phase06_requested_pixel_url=""

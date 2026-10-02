@@ -35,7 +35,9 @@ def fixture() -> tuple[Path, Path, Path, tempfile.TemporaryDirectory]:
 
 
 def route(install: Path, transport: str, *, enabled: bool = True) -> None:
-    (install / "data/remote-provider/routing-state.json").write_text(json.dumps({
+    route_path = install / "data/remote-provider/routing-state.json"
+    route_path.parent.mkdir(parents=True, exist_ok=True)
+    route_path.write_text(json.dumps({
         "schema": "ods.remote-routing-state.v1", "enabled": enabled,
         "provider": {"transport": transport} if enabled else None,
     }), encoding="utf-8")
@@ -91,6 +93,23 @@ def main() -> None:
     exercise((False, False), "ssh", (True, True))  # legacy active SSH route
     exercise((True, False), None, (True, False))  # retained Library choice
     exercise((True, True), None, (True, True))
+    source, install, secret, temp = fixture()
+    try:
+        external = Path(temp.name) / "external"
+        route(external, "ssh")
+        selection = MODULE.inspect(install, data_dir=external / "data")
+        copy_source(source, install)
+        MODULE.apply(install, source, selection)
+        assert states(install) == (True, True)
+        assert secret.read_bytes() == b"fixture-secret-unchanged"
+        try:
+            MODULE.inspect(install, data_dir=Path("relative-data"))
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("Relative external data directory must fail closed")
+    finally:
+        temp.cleanup()
     source, install, _, temp = fixture()
     try:
         route_path = install / "data/remote-provider/routing-state.json"

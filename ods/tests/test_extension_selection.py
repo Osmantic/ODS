@@ -2,6 +2,7 @@
 
 import importlib.util
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -12,7 +13,19 @@ import pytest
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "extension-selection.py"
 SPEC = importlib.util.spec_from_file_location("extension_selection", SCRIPT)
 selection = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(selection)
+# Dashboard's Windows test conftest may preinstall a partial POSIX fcntl stub.
+# The standalone host selector must import msvcrt on Windows instead.
+_fcntl_stub = sys.modules.pop("fcntl", None) if os.name == "nt" else None
+try:
+    SPEC.loader.exec_module(selection)
+finally:
+    if _fcntl_stub is not None:
+        sys.modules["fcntl"] = _fcntl_stub
+
+
+@pytest.fixture(autouse=True)
+def _use_install_data_default(monkeypatch):
+    monkeypatch.delenv("ODS_DATA_DIR", raising=False)
 
 
 def extension(root, service_id, *, depends=(), compose_depends=(), enabled=True):
@@ -89,6 +102,31 @@ def test_remote_route_change_after_preflight_and_invalid_state_fail_closed(tmp_p
     assert (egress / "compose.yaml").is_file()
     remote_route(tmp_path, enabled=False)
     assert selection.run("disable", tmp_path, "remote-provider-egress") == "disabled"
+
+
+def test_external_data_root_blocks_cli_and_host_disable(tmp_path, monkeypatch):
+    (tmp_path / "data" / "user-extensions").mkdir(parents=True)
+    egress = extension(tmp_path, "remote-provider-egress")
+    external = tmp_path / "external-data"
+    remote_route(external)
+    monkeypatch.setenv("ODS_DATA_DIR", str(external / "data"))
+    with pytest.raises(selection.SelectionError, match="Active direct"):
+        selection.run("disable", tmp_path, "remote-provider-egress")
+    monkeypatch.delenv("ODS_DATA_DIR")
+    with pytest.raises(selection.SelectionError, match="Active direct"):
+        selection.run("disable", tmp_path, "remote-provider-egress",
+                      data_dir=external / "data")
+    assert (egress / "compose.yaml").is_file()
+
+
+def test_stale_data_environment_cannot_hide_default_active_route(tmp_path, monkeypatch):
+    (tmp_path / "data" / "user-extensions").mkdir(parents=True)
+    egress = extension(tmp_path, "remote-provider-egress")
+    remote_route(tmp_path)
+    monkeypatch.setenv("ODS_DATA_DIR", str(tmp_path / "empty-external"))
+    with pytest.raises(selection.SelectionError, match="Active direct"):
+        selection.run("disable", tmp_path, "remote-provider-egress")
+    assert (egress / "compose.yaml").is_file()
 
 
 def test_remote_route_blocks_preset_before_any_marker_changes(tmp_path):

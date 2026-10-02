@@ -1945,8 +1945,11 @@ else
     mkdir -p "${INSTALL_DIR}/bin"
     ai_ok "Created directory structure"
 
+    _macos_remote_provider_data_dir="$(read_env_value "${INSTALL_DIR}/.env" "ODS_DATA_DIR")"
+    [[ -n "$_macos_remote_provider_data_dir" ]] || _macos_remote_provider_data_dir="${INSTALL_DIR}/data"
     _macos_remote_provider_selection="$(python3 \
-        "${SOURCE_ROOT}/scripts/remote-provider-compose-selection.py" inspect "$INSTALL_DIR")" || {
+        "${SOURCE_ROOT}/scripts/remote-provider-compose-selection.py" inspect "$INSTALL_DIR" \
+        --data-dir "$_macos_remote_provider_data_dir")" || {
         ai_err "Could not inspect the retained remote-provider selection."
         exit 1
     }

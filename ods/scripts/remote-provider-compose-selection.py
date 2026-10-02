@@ -39,8 +39,11 @@ def _service_dir(root: Path, service_id: str) -> Path:
     return path
 
 
-def _route_kind(root: Path) -> str:
-    path = root / "data" / "remote-provider" / "routing-state.json"
+def _route_kind(root: Path, data_dir: Path | None = None) -> str:
+    data_dir = data_dir if data_dir is not None else root / "data"
+    if not data_dir.is_absolute():
+        raise ValueError("Remote-provider data directory must be absolute")
+    path = data_dir / "remote-provider" / "routing-state.json"
     if not _regular_state(path):
         return "none"
     try:
@@ -67,11 +70,11 @@ def _route_kind(root: Path) -> str:
     return kind
 
 
-def inspect(root: Path) -> dict:
+def inspect(root: Path, data_dir: Path | None = None) -> dict:
     if root.is_symlink():
         raise ValueError("Unsafe install root")
     root = root.resolve(strict=False)
-    kind = _route_kind(root)
+    kind = _route_kind(root, data_dir)
     choice = {}
     for service_id in SERVICES:
         directory = _service_dir(root, service_id)
@@ -140,10 +143,11 @@ def main() -> int:
     parser.add_argument("install_root", type=Path)
     parser.add_argument("source_root", type=Path, nargs="?")
     parser.add_argument("selection_json", nargs="?")
+    parser.add_argument("--data-dir", type=Path)
     args = parser.parse_args()
     try:
         if args.operation == "inspect":
-            print(json.dumps(inspect(args.install_root), separators=(",", ":")))
+            print(json.dumps(inspect(args.install_root, args.data_dir), separators=(",", ":")))
         else:
             if args.source_root is None or args.selection_json is None:
                 parser.error("apply needs source_root and selection_json")
