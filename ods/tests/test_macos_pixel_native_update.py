@@ -121,6 +121,46 @@ def test_update_orders_existing_helpers_and_restores_docker_environment(tmp_path
         assert dict(os.environ) == before
 
 
+def test_update_requires_exact_source_ref_before_preparation(tmp_path, monkeypatch, docker_endpoint):
+    installed, source = tmp_path / 'ods', tmp_path / 'source'
+    (installed / 'data/pixel-native').mkdir(parents=True)
+    source.mkdir()
+    old = 'a' * 64
+    endpoint = docker_endpoint
+    modules = {
+        'pixel-native-stack': SimpleNamespace(resolve_files=lambda *args: [],
+            read_selection=lambda *args: ({'runtimeDigest': old}, {})),
+        'pixel-macos-access-install': SimpleNamespace(_launchd=SimpleNamespace(GATEWAY_PLIST='/fixture/plist'),
+            _source_gateway=lambda *args: ({}, {'DOCKER_HOST': 'unix://' + str(endpoint),
+                'PIXEL_HISTORY_DOCKER': '/fixture/docker', 'PIXEL_HISTORY_PROJECT': 'ods',
+                'PIXEL_HISTORY_IMAGE': 'sha256:' + 'e' * 64, 'PIXEL_HISTORY_USER': '501:20'},
+                None, None, Path('/runtime') / old / 'node', None),
+            _native_transport_environment=lambda *args: {}),
+        'pixel-native-install': SimpleNamespace(DEFAULT_REF='d' * 40),
+    }
+    monkeypatch.setattr(module, 'helper', modules.__getitem__)
+    monkeypatch.setattr(module.sys, 'platform', 'darwin')
+    monkeypatch.setattr(module.os, 'geteuid', lambda: 501)
+    monkeypatch.setattr(module.shutil, 'which', lambda value: value)
+    with pytest.raises(ValueError, match='exact-pixel-source-ref-required'):
+        module.update(install_dir=installed, ods_source=source, ref='branch-name')
+    assert list((installed / 'data/pixel-native').iterdir()) == []
+
+
+def test_unattended_activation_refuses_sudo_prompt():
+    prepared = {'status': 'prepared', 'installDir': '/owner/ods',
+        'currentDigest': 'a' * 64, 'runtimeDigest': 'b' * 64,
+        'serviceDigest': 'c' * 64, 'pixelSourceRef': 'd' * 40,
+        'gatewayPort': 18789, 'accessPort': 18790}
+    transport = {'docker': '/usr/local/bin/docker', 'project': 'ods',
+        'image': 'sha256:' + 'e' * 64, 'user': '501:20'}
+    command = module.activation_command(Path('/owner/preparation'), prepared,
+        install_dir=Path('/owner/ods'), ods_source=Path('/candidate/ods'),
+        owner='fixture-owner', transport=transport, non_interactive=True)
+    assert command[:3] == ['/usr/bin/sudo', '-n', '/usr/bin/python3']
+    assert '--activate' in command
+
+
 def test_update_reaches_installation_validation_without_license_flag(monkeypatch):
     monkeypatch.setattr(module.sys, 'platform', 'darwin')
     monkeypatch.setattr(module.os, 'geteuid', lambda: 501)

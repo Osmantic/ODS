@@ -1661,11 +1661,24 @@ if $ENABLE_PIXEL && ! $PREFLIGHT_ONLY; then
     if ! $NON_INTERACTIVE && ! $DRY_RUN; then
         _pixel_install_args+=(--prompt-for-sudo)
     fi
-    _pixel_retain_args=(--install-dir "$INSTALL_DIR")
+    _pixel_retain_args=(--install-dir "$INSTALL_DIR" --ods-source "$SOURCE_ROOT")
     [[ -z "${PIXEL_SOURCE_REF:-}" ]] || _pixel_retain_args+=(--expected-ref "$PIXEL_SOURCE_REF")
+    if ! $NON_INTERACTIVE && ! $DRY_RUN; then
+        _pixel_retain_args+=(--prompt-for-sudo)
+    fi
     _PIXEL_RETAINED=false
+    _PIXEL_UPDATE_REQUIRED=false
     if [[ -e "${INSTALL_DIR}/data/pixel-native" || -L "${INSTALL_DIR}/data/pixel-native" ]]; then
-        /usr/bin/python3 "${LIB_DIR}/pixel-native-retain.py" "${_pixel_retain_args[@]}" || exit 1
+        if /usr/bin/python3 "${LIB_DIR}/pixel-native-retain.py" "${_pixel_retain_args[@]}" --allow-update; then
+            :
+        else
+            _pixel_retain_status=$?
+            if [[ $_pixel_retain_status -eq 2 ]]; then
+                _PIXEL_UPDATE_REQUIRED=true
+            else
+                exit 1
+            fi
+        fi
         _PIXEL_RETAINED=true
     else
         /usr/bin/python3 "${LIB_DIR}/pixel-native-install.py" "${_pixel_install_args[@]}" \
@@ -2352,7 +2365,32 @@ if $DRY_RUN; then
             ai "[DRY RUN] Would disable future ODS OpenCode login starts when owned"
         fi
     fi
+    if $ENABLE_PIXEL && $_PIXEL_UPDATE_REQUIRED; then
+        ai "[DRY RUN] Would run the protected native Pixel source update before copying ODS source"
+    fi
 else
+    # Update the proved active native selection while the installed source is
+    # still intact. The protected coordinator stages the desired ODS service
+    # payload and publishes it jointly with the new runtime. Only then may
+    # Phase 4 replace source files used by the running installation.
+    if $ENABLE_PIXEL && $_PIXEL_UPDATE_REQUIRED; then
+        ai "Updating retained native Pixel service selection..."
+        _pixel_update_args=(--install-dir "$INSTALL_DIR" --ods-source "$SOURCE_ROOT")
+        [[ -z "${PIXEL_SOURCE_REF:-}" ]] || _pixel_update_args+=(--ref "$PIXEL_SOURCE_REF")
+        if $NON_INTERACTIVE; then
+            _pixel_update_args+=(--non-interactive)
+        fi
+        if ! /usr/bin/python3 "$LIB_DIR/pixel-native-update.py" "${_pixel_update_args[@]}"; then
+            ai_err "Protected native Pixel update stopped. Keep its preparation and recovery journal for review."
+            exit 1
+        fi
+        if ! /usr/bin/python3 "$LIB_DIR/pixel-native-retain.py" "${_pixel_retain_args[@]}"; then
+            ai_err "Updated native Pixel selection did not match this ODS source. Keep its state for review."
+            exit 1
+        fi
+        ai_ok "Updated native Pixel service selection for Dashboard/Portal"
+    fi
+
     # Create directory structure
     mkdir -p "${INSTALL_DIR}/config/searxng"
     mkdir -p "${INSTALL_DIR}/config/n8n"
@@ -2834,6 +2872,20 @@ if $DRY_RUN; then
 else
     # Change to install directory for docker compose
     cd "$INSTALL_DIR"
+
+    # The base source copy must match the protected selection before any
+    # Compose launch, even if it drifted after the earlier source proof.
+    if $ENABLE_PIXEL && $_PIXEL_RETAINED; then
+        _pixel_copied_retain_args=(--install-dir "$INSTALL_DIR" --ods-source "$INSTALL_DIR")
+        [[ -z "${PIXEL_SOURCE_REF:-}" ]] || _pixel_copied_retain_args+=(--expected-ref "$PIXEL_SOURCE_REF")
+        if ! $NON_INTERACTIVE; then
+            _pixel_copied_retain_args+=(--prompt-for-sudo)
+        fi
+        if ! /usr/bin/python3 "$LIB_DIR/pixel-native-retain.py" "${_pixel_copied_retain_args[@]}"; then
+            ai_err "Installed native Pixel service source changed during setup. Keep its state for review."
+            exit 1
+        fi
+    fi
 
     # ── Bootstrap fast-start ──────────────────────────────────────────────
     _BOOTSTRAP_ACTIVE=false

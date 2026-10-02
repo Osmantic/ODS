@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import pwd
+import re
 import shutil
 import subprocess
 import sys
@@ -20,18 +21,22 @@ def helper(name):
     return module
 
 
-def activation_command(preparation, prepared, *, install_dir, ods_source, owner, transport):
+def activation_command(preparation, prepared, *, install_dir, ods_source, owner, transport,
+                       non_interactive=False):
     if prepared.get('status') != 'prepared' or prepared.get('installDir') != str(install_dir):
         raise ValueError('prepared-native-update-required')
     if prepared.get('runtimeDigest') == prepared.get('currentDigest'):
         raise ValueError('native-update-has-identical-runtime')
-    command = ['/usr/bin/sudo', '/usr/bin/python3', str(HERE / 'pixel-macos-access-install.py'), 'migrate-native',
+    command = ['/usr/bin/sudo']
+    if non_interactive:
+        command.append('-n')
+    command.extend(['/usr/bin/python3', str(HERE / 'pixel-macos-access-install.py'), 'migrate-native',
         '--source', str(ods_source), '--install-dir', str(install_dir), '--owner', owner,
         '--candidate', str(preparation / 'candidate'), '--runtime-bundle', str(preparation / 'runtime'),
         '--bundle-digest', prepared['runtimeDigest'], '--current-bundle-digest', prepared['currentDigest'],
         '--services-bundle', str(preparation / 'services'), '--services-digest', prepared['serviceDigest'],
         '--pixel-source-ref', prepared['pixelSourceRef'], '--gateway-port', str(prepared['gatewayPort']),
-        '--access-port', str(prepared['accessPort']), '--activate']
+        '--access-port', str(prepared['accessPort']), '--activate'])
     for flag, key in (('docker', 'docker'), ('compose-project', 'project'),
                       ('ingress-image', 'image'), ('ingress-user', 'user')):
         command.extend(['--' + flag, transport[key]])
@@ -69,7 +74,7 @@ def migrate_public_identity(*, source, preparation, node):
         return {'status': 'manual-review-required'}
 
 
-def update(*, install_dir, ods_source, prepare_only=False):
+def update(*, install_dir, ods_source, prepare_only=False, ref=None, non_interactive=False):
     if sys.platform != 'darwin' or os.geteuid() == 0:
         raise ValueError('native-macos-owner-required')
     install_dir, ods_source = Path(install_dir).resolve(strict=True), Path(ods_source).resolve(strict=True)
@@ -97,23 +102,27 @@ def update(*, install_dir, ods_source, prepare_only=False):
     os.environ['DOCKER_HOST'] = endpoint
     try:
         initial = helper('pixel-native-install')
+        ref = ref or initial.DEFAULT_REF
+        if not re.fullmatch('[a-f0-9]{40}', ref):
+            raise ValueError('exact-pixel-source-ref-required')
         node, npm = initial.node_tools()
         root = install_dir / 'data/pixel-native'
         work = Path(tempfile.mkdtemp(prefix='update-', dir=root))
         print('Native update preparation: ' + str(work), flush=True)
         config = helper('pixel-native-config')
-        source = config.bootstrap.acquire_source(ref=initial.DEFAULT_REF,
+        source = config.bootstrap.acquire_source(ref=ref,
             destination=work / 'source',
             source_url=str(ods_source / 'vendor/pixel.bundle'))
         runtime = work / 'acquired-runtime'
-        config.bootstrap.stage(source=source, ref=initial.DEFAULT_REF, destination=runtime, node=node, npm=npm)
+        config.bootstrap.stage(source=source, ref=ref, destination=runtime, node=node, npm=npm)
         preparation = work / 'preparation'
-        helper('pixel-native-prepare').prepare_migration(source=source, ref=initial.DEFAULT_REF,
+        helper('pixel-native-prepare').prepare_migration(source=source, ref=ref,
             node=node, runtime=runtime, docker=transport['docker'], ods_source=ods_source,
             install_dir=install_dir, destination=preparation)
         prepared = config.private_json(preparation / 'preparation.json')
         command = activation_command(preparation, prepared, install_dir=install_dir,
-            ods_source=ods_source, owner=owner, transport=transport)
+            ods_source=ods_source, owner=owner, transport=transport,
+            non_interactive=non_interactive)
         if prepare_only:
             return {'status': 'prepared', 'preparation': str(preparation)}
         subprocess.run(command, check=True, timeout=1800)
@@ -134,6 +143,8 @@ def main():
     parser.add_argument('--install-dir', required=True)
     parser.add_argument('--ods-source', required=True)
     parser.add_argument('--prepare-only', action='store_true')
+    parser.add_argument('--ref')
+    parser.add_argument('--non-interactive', action='store_true')
     args = parser.parse_args()
     try:
         print(json.dumps(update(**vars(args))))

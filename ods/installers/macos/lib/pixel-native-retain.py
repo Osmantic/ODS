@@ -5,15 +5,24 @@ protected update coordinator; the initial-install helper must never resume an
 existing preparation directory.
 """
 import argparse
+import hashlib
 import importlib.util
 import os
 from pathlib import Path
 import pwd
 import re
+import stat
+import subprocess
 import sys
 
 
 HERE = Path(__file__).resolve().parent
+PROTECTED_STATE = Path('/private/var/lib/ods-pixel-access')
+PENDING_JOURNALS = ('runtime-upgrade.json', 'transition.json', 'policy-activation.json')
+
+
+class SourceUpdateRequired(ValueError):
+    """The active selection is proved, but its ODS service source is older."""
 
 
 def helper(filename):
@@ -32,7 +41,57 @@ def custody_module():
     return module
 
 
-def verify(install_dir, *, expected_ref=None):
+def protected_clear():
+    """Root-only existence check; the protected state directory is mode 0700."""
+    if sys.platform != 'darwin' or os.geteuid() != 0:
+        raise ValueError('protected-native-state-check-required')
+    info = PROTECTED_STATE.lstat()
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
+        raise ValueError('unsafe-protected-native-state')
+    if any(os.path.lexists(PROTECTED_STATE / name) for name in PENDING_JOURNALS):
+        raise ValueError('native-protected-transition-pending')
+
+
+def require_protected_clear(*, prompt_for_sudo=False):
+    command = ['/usr/bin/sudo']
+    if not prompt_for_sudo:
+        command.append('-n')
+    command.extend(['/usr/bin/python3', str(Path(__file__).resolve()), '--check-protected'])
+    result = subprocess.run(command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                            stderr=None if prompt_for_sudo else subprocess.DEVNULL, timeout=120)
+    if result.returncode:
+        raise ValueError('native-protected-state-not-clear')
+
+
+def verify_desired_services(ods_source, bundle_module, bundle, digest, services, expected_ref):
+    """Bind the selected snapshot to the service bytes this rerun would copy."""
+    source = Path(ods_source)
+    if (not source.is_absolute() or source.is_symlink() or not source.is_dir()
+            or source.resolve(strict=True) != source):
+        raise ValueError('current-ods-source-required')
+    config = helper('pixel-native-config.py')
+    # The protected runtime embeds the approved service manifest. Owner-side
+    # preparation/services may belong to an older selection after an update.
+    selection = bundle_module.expected_release_selection(bundle, expected_digest=digest)
+    manifest = selection.get('serviceManifest')
+    if (selection.get('serviceBundleDigest') != services
+            or selection.get('pixelSourceRevision') != expected_ref
+            or type(manifest) is not dict):
+        raise ValueError('native-service-manifest-changed')
+    bundle_module.validate_service_manifest_provenance(manifest)
+    records = manifest['files']
+    for output, relative in config.SERVICE_SOURCES.items():
+        body = config.service_snapshot(source, relative)
+        record = records[output]
+        if len(body) != record['bytes'] or hashlib.sha256(body).hexdigest() != record['sha256']:
+            raise SourceUpdateRequired('native-service-source-changed')
+    catalog = config.service_catalog(source)
+    record = records['helpers/extension-catalog.json']
+    if len(catalog) != record['bytes'] or hashlib.sha256(catalog).hexdigest() != record['sha256']:
+        raise SourceUpdateRequired('native-service-catalog-changed')
+
+
+def verify(install_dir, *, expected_ref=None, ods_source=None, prompt_for_sudo=False):
     if sys.platform != 'darwin' or os.geteuid() == 0:
         raise ValueError('native-macos-owner-required')
     root = Path(install_dir)
@@ -46,6 +105,7 @@ def verify(install_dir, *, expected_ref=None):
     expected_ref = expected_ref or initial.DEFAULT_REF
     if not re.fullmatch('[a-f0-9]{40}', expected_ref):
         raise ValueError('exact-pixel-source-ref-required')
+    require_protected_clear(prompt_for_sudo=prompt_for_sudo)
     preparation = native / 'preparation'
     if preparation.is_symlink() or not preparation.is_dir():
         raise ValueError('native-installation-needs-recovery')
@@ -57,7 +117,8 @@ def verify(install_dir, *, expected_ref=None):
     selected, active = stack.read_selection(preparation)
     digest = selected.get('runtimeDigest')
     services = selected.get('serviceDigest')
-    if (selected.get('pixelSourceRef') != expected_ref
+    selected_ref = selected.get('pixelSourceRef')
+    if (not isinstance(selected_ref, str) or not re.fullmatch('[a-f0-9]{40}', selected_ref)
             or active.get('runtimeDigest') != digest
             or active.get('serviceDigest') != services
             or not isinstance(digest, str) or not re.fullmatch('[a-f0-9]{64}', digest)
@@ -89,16 +150,37 @@ def verify(install_dir, *, expected_ref=None):
     if not os.path.lexists(bundle / 'ods-service-binding.json'):
         raise ValueError('native-service-binding-required')
     access._bundle.verify_service_binding(bundle, services)
+    verify_desired_services(ods_source, access._bundle, bundle, digest, services, selected_ref)
+    if selected_ref != expected_ref:
+        raise SourceUpdateRequired('native-pixel-source-ref-changed')
     return {'mode': 'retained', 'runtimeDigest': digest, 'serviceDigest': services}
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--install-dir', required=True)
+    parser.add_argument('--install-dir')
     parser.add_argument('--expected-ref')
+    parser.add_argument('--ods-source')
+    parser.add_argument('--prompt-for-sudo', action='store_true')
+    parser.add_argument('--allow-update', action='store_true',
+                        help='return 2 only for a proved active selection with changed ODS service source')
+    parser.add_argument('--check-protected', action='store_true')
     args = parser.parse_args()
     try:
-        verify(args.install_dir, expected_ref=args.expected_ref)
+        if args.check_protected:
+            protected_clear()
+        else:
+            if not args.install_dir or not args.ods_source:
+                raise ValueError('native-retention-input-required')
+            verify(args.install_dir, expected_ref=args.expected_ref, ods_source=args.ods_source,
+                   prompt_for_sudo=args.prompt_for_sudo)
+    except SourceUpdateRequired:
+        if args.allow_update:
+            print('Native Pixel protected source update required before the base stack starts.', file=sys.stderr)
+            return 2
+        print('Native Pixel retention could not be proved. Keep its state intact and use the '
+              'reviewed native update or recovery path.', file=sys.stderr)
+        return 1
     except Exception:
         print('Native Pixel retention could not be proved. Keep its state intact and use the '
               'reviewed native update or recovery path.', file=sys.stderr)
