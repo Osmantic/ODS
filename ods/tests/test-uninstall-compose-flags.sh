@@ -54,6 +54,17 @@ if [[ "${1:-}" == "volume" && "${2:-}" == "ls" ]]; then
     emit_filtered "$@"
     exit 0
 fi
+if [[ "${1:-}" == "compose" && -n "${DOCKER_GID_EXPECTED:-}" ]]; then
+    [[ "${PIXEL_INGRESS_GID:-}" == "$DOCKER_GID_EXPECTED" ]] || {
+        printf 'Compose interpolation GID mismatch\n' >&2
+        exit 1
+    }
+    cmp -s "$INSTALL_DIR/.env" "$DOCKER_GID_ENV_COPY" || {
+        printf 'Cleanup interpolation changed installed environment\n' >&2
+        exit 1
+    }
+    printf 'gid=%s %s\n' "$PIXEL_INGRESS_GID" "$*" >> "$DOCKER_LOG"
+fi
 if [[ "${1:-}" == "compose" && " $* " == *" config --format json "* ]]; then
     printf '{"name":"ods","volumes":{}}\n'
     exit 0
@@ -92,7 +103,8 @@ EOF
     cat > "$stub_dir/id" <<'EOF'
 #!/usr/bin/env bash
 case "${1:-}" in
-    -u|-g) printf '1000\n' ;;
+    -u) printf '1000\n' ;;
+    -g) printf '%s\n' "${ID_PRIMARY_GROUP-1000}"; exit "${ID_PRIMARY_EXIT-0}" ;;
     -un) printf 'fixture-owner\n' ;;
     *) exit 1 ;;
 esac
@@ -151,6 +163,11 @@ run_uninstall() {
     SUDO_LOG="${SUDO_LOG:?}" \
     SUDO_VALIDATE_EXIT_CODE="${SUDO_VALIDATE_EXIT_CODE:-0}" \
     DOCKER_DOWN_EXIT_CODE="${DOCKER_DOWN_EXIT_CODE:-0}" \
+    DOCKER_GID_EXPECTED="${DOCKER_GID_EXPECTED:-}" \
+    DOCKER_GID_ENV_COPY="${DOCKER_GID_ENV_COPY:-}" \
+    PIXEL_INGRESS_GID="${PIXEL_INGRESS_GID-}" \
+    ID_PRIMARY_GROUP="${ID_PRIMARY_GROUP-1000}" \
+    ID_PRIMARY_EXIT="${ID_PRIMARY_EXIT-0}" \
     ODS_UNINSTALL_SYSTEMD_DIR="$install_dir/systemd" \
         bash "$install_dir/ods-uninstall.sh" --force "$@" >/dev/null
 }
@@ -532,6 +549,66 @@ EOF
         fail "uninstall must not execute command substitutions from .env"
     fi
     pass "uninstall loads .env without executing shell substitutions"
+
+    # Exercise real env loading and both Compose config/down, with no real
+    # Docker or privileged commands. Partial installs may not have saved flags.
+    local gid_case gid_install gid_home gid_log gid_env_copy expected_gid
+    for gid_case in missing blank configured; do
+        gid_install="$TMP_DIR/gid-$gid_case"
+        gid_home="$TMP_DIR/gid-home-$gid_case"
+        gid_log="$TMP_DIR/gid-$gid_case.log"
+        gid_env_copy="$TMP_DIR/gid-$gid_case.env"
+        mkdir -p "$gid_home"
+        make_install "$gid_install"
+        rm "$gid_install/.compose-flags"
+        expected_gid=1000
+        case "$gid_case" in
+            blank) printf 'PIXEL_INGRESS_GID=\n' >> "$gid_install/.env" ;;
+            configured)
+                printf 'PIXEL_INGRESS_GID=4242\n' >> "$gid_install/.env"
+                expected_gid=4242 ;;
+        esac
+        cp "$gid_install/.env" "$gid_env_copy"
+        DOCKER_LOG="$gid_log" SUDO_LOG="$sudo_log" \
+            DOCKER_GID_EXPECTED="$expected_gid" DOCKER_GID_ENV_COPY="$gid_env_copy" \
+            PIXEL_INGRESS_GID="$(if [[ "$gid_case" == missing ]]; then printf ''; else printf '989'; fi)" \
+            run_uninstall "$gid_install" "$gid_home" "$stub_dir" --keep-data
+        grep -q "^gid=$expected_gid .* config --format json" "$gid_log" \
+            || fail "$gid_case GID must resolve through actual Compose ownership inspection"
+        grep -q "^gid=$expected_gid .* down --remove-orphans" "$gid_log" \
+            || fail "$gid_case GID must resolve through actual Compose down"
+        pass "$gid_case Pixel GID permits cleanup without changing installed env"
+    done
+
+    # A failed identity lookup must not pass even if it prints a numeric value.
+    local primary_exit primary_value gid_sudo
+    for gid_case in invalid failed; do
+        gid_install="$TMP_DIR/gid-$gid_case"
+        gid_home="$TMP_DIR/gid-home-$gid_case"
+        gid_log="$TMP_DIR/gid-$gid_case.log"
+        gid_sudo="$TMP_DIR/gid-$gid_case-sudo.log"
+        mkdir -p "$gid_home"
+        make_install "$gid_install"
+        printf 'PIXEL_INGRESS_GID=\n' >> "$gid_install/.env"
+        printf 'retained owner data\n' > "$gid_install/data/owner.txt"
+        cat > "$gid_install/lib/pixel-uninstall.sh" <<'EOF'
+ods_pixel_uninstall_managed() { touch "$INSTALL_DIR/pixel-retired"; }
+EOF
+        primary_value=invalid; primary_exit=0
+        if [[ "$gid_case" == failed ]]; then primary_value=1000; primary_exit=1; fi
+        if DOCKER_LOG="$gid_log" SUDO_LOG="$gid_sudo" PIXEL_INGRESS_GID=989 \
+            ID_PRIMARY_GROUP="$primary_value" ID_PRIMARY_EXIT="$primary_exit" \
+            run_uninstall "$gid_install" "$gid_home" "$stub_dir" --keep-data \
+            2>"$TMP_DIR/gid-$gid_case-error"; then
+            fail "$gid_case primary group lookup must refuse cleanup"
+        fi
+        [[ ! -s "$gid_log" && ! -s "$gid_sudo" && ! -e "$gid_install/pixel-retired" \
+            && -f "$gid_install/ods-uninstall.sh" && -f "$gid_install/data/owner.txt" ]] \
+            || fail "$gid_case primary group lookup must stop before mutations"
+        grep -qF 'Cannot determine a numeric group for Compose cleanup' "$TMP_DIR/gid-$gid_case-error" \
+            || fail "$gid_case primary group lookup must explain the refusal"
+        pass "$gid_case primary group lookup preserves the partial installation"
+    done
 
     # These stubs exercise the removed name fallback, not Docker Compose's
     # own project selection or the independent native Pixel retirement helper.

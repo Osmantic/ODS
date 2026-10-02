@@ -230,6 +230,19 @@ if [[ -f "$INSTALL_DIR/.env" ]]; then
     fi
 fi
 
+# Partial installs can stop before Pixel's ingress group is recorded in .env.
+# Compose still interpolates group_add for config/down. Use the existing caller
+# group only for this cleanup process; never persist or create a Pixel identity.
+# This must follow env loading, which can replace an inherited GID with blank.
+if [[ -z "${PIXEL_INGRESS_GID:-}" ]]; then
+    if ! _ods_cleanup_gid="$(id -g)" || [[ ! "$_ods_cleanup_gid" =~ ^[0-9]+$ ]]; then
+        log_error "Cannot determine a numeric group for Compose cleanup; installation untouched."
+        exit 1
+    fi
+    export PIXEL_INGRESS_GID="$_ods_cleanup_gid"
+    unset _ods_cleanup_gid
+fi
+
 if [[ "$FORCE" != "true" ]]; then
     echo -e "${YELLOW}This will permanently remove ODS and its components.${NC}"
     read -rp "Are you sure? Type 'yes' to confirm: " confirm || confirm=""
