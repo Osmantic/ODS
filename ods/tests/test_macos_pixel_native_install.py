@@ -296,7 +296,7 @@ def test_core_feature_selection_keeps_pixel_dependencies_without_heavy_services(
     validator_stop = script.index('\n}', validator_start) + 2
     shell = '''set -eu
 NON_INTERACTIVE=true; ALL_FEATURES=false; DRY_RUN=false
-CLOUD_MODE=false; ENABLE_RECOMMENDED=false
+CLOUD_MODE=false; GATEWAY_ONLY=false; ENABLE_RECOMMENDED=false
 ENABLE_HERMES=false; ENABLE_HERMES_PROXY=false; ENABLE_OPENCLAW=false; ENABLE_APE=false
 HERMES_EXPLICIT=false; HERMES_EXPLICIT_VALUE=""; HERMES_RETAINED=""; HERMES_PROXY_RETAINED=""
 ENABLE_PERPLEXICA=false; ENABLE_VOICE=false; ENABLE_RAG=false; ENABLE_WORKFLOWS=false
