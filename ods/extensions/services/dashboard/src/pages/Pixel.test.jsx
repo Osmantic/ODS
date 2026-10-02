@@ -5,7 +5,7 @@ import { fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { render } from '../test/test-utils'
 import { act } from '@testing-library/react'
 import {saveProfile} from '../lib/localProfile'
-import {saveConversation,readConversations,DELETE_EVENT} from '../lib/pixelConversations'
+import {saveConversation,readConversations,createConversationWriter,DELETE_EVENT} from '../lib/pixelConversations'
 import { StrictMode } from 'react'
 import {previewManifestResponse} from '../test/previewFixtures'
 
@@ -1717,6 +1717,28 @@ describe('Pixel', () => {
     await waitFor(() => {
       expect(screen.getByText((_,node)=>node.tagName==='P' && node.textContent==='Split test')).toBeInTheDocument()
     })
+  })
+
+  it('does not let a passive second tab take ownership of an in-flight conversation', async () => {
+    saveConversation({
+      schema: 1, chatId: 'shared-active', requestId: 'shared-attempt', inFlight: true, interrupted: false,
+      messages: [{ role: 'user', content: 'Write a file' }, { role: 'assistant', content: 'Working on it' }],
+    })
+    const before = localStorage.getItem('ods.pixel.chat.v1')
+    const owner = createConversationWriter(JSON.parse(before))
+    globalThis.fetch.mockImplementation(async url => {
+      if (url === '/api/pixel/status') return response({ available: true })
+      if (url === '/api/pixel/chat/result') return response({ state: 'active', events: '' })
+      throw new Error(`Unexpected request ${url}`)
+    })
+
+    render(<StrictMode><Pixel /></StrictMode>)
+    await waitFor(() => expect(globalThis.fetch.mock.calls.some(([url]) => url === '/api/pixel/chat/result')).toBe(true))
+    expect(localStorage.getItem('ods.pixel.chat.v1')).toBe(before)
+    expect(() => owner({
+      ...JSON.parse(before), inFlight: false,
+      messages: [{ role: 'user', content: 'Write a file' }, { role: 'assistant', content: 'Finished the file' }],
+    })).not.toThrow()
   })
 
   it('preserves an in-flight request and partial answer across repeated reloads without replay', async () => {

@@ -627,6 +627,13 @@ export default function Pixel({ systemStatus = null }) {
   const chatIdRef = useRef(initialChat?.chatId || makeChatId())
   const images = usePortalImages(chatIdRef.current, initialChat?.draftImages)
   const imageDraftKey = JSON.stringify(images.receipts)
+  const restoredViewRef = useRef(null)
+  if (initialChat && !restoredViewRef.current) {
+    restoredViewRef.current = {
+      chatId: initialChat.chatId, messages, input, preview, workspaceOpen,
+      sending, interrupted, chatMode, imageDraftKey,
+    }
+  }
   const hasImageHistory = messages.some(message=>message.role==='user' && message.images?.length)
   const { state: extensionInstallation, start: startExtensionInstallation, stop: stopExtensionInstallation, resume: resumeExtensionInstallation } = useExtensionInstallation(chatIdRef.current)
   const { state: githubExtensionInstallation, start: startGithubExtensionRequest,
@@ -946,6 +953,16 @@ export default function Pixel({ systemStatus = null }) {
   }, [input])
 
   useEffect(() => {
+    const restored = restoredViewRef.current
+    if (restored && chatIdRef.current === restored.chatId
+      && messages === restored.messages && input === restored.input
+      && preview === restored.preview && workspaceOpen === restored.workspaceOpen
+      && sending === restored.sending && interrupted === restored.interrupted
+      && chatMode === restored.chatMode && imageDraftKey === restored.imageDraftKey) {
+      // Opening a passive tab must not rewrite an active conversation's
+      // recovery markers and take its original writer's revision.
+      return
+    }
     try {
       const storedMessages = messages.map(message => {
         const task = message.role === 'assistant' && parseTaskActivity(message.task, message.task?.runId)
