@@ -603,7 +603,7 @@ function New-ODSOwnedPortInspect {
 }
 function Test-WindowsPortInUse {
     param([int]$Port)
-    if ($Port -ne 3000) { return @{ InUse = $false; ProcessId = 0; ProcessName = '' } }
+    if ($Port -notin @(3000, 8188)) { return @{ InUse = $false; ProcessId = 0; ProcessName = '' } }
     return @{ InUse = $true; ProcessId = 4141; ProcessName = 'com.docker.backend';
         Listeners = $script:ownedPortListeners }
 }
@@ -611,6 +611,15 @@ $ownedPorts = [ordered]@{ 'Open WebUI (chat)' = 3000 }
 $script:dockerPortInspects['owned-container'] = New-ODSOwnedPortInspect -WorkingDir $ownedInstallDir
 Assert-Equal @(Get-WindowsODSSelectedPortConflicts -PortsToCheck $ownedPorts -InstallDir $ownedInstallDir).Count `
     0 'retained own Docker published port is reusable'
+$script:ownedPortListeners = @([pscustomobject]@{
+    LocalAddress = '127.0.0.1'; LocalPort = 8188; ProcessId = 4141
+})
+$script:dockerPortInspects['owned-container'] = New-ODSOwnedPortInspect `
+    -WorkingDir $ownedInstallDir -Service 'comfyui' -HostPort '8188'
+$comfyPorts = [ordered]@{ 'ComfyUI (image generation)' = 8188 }
+Assert-Equal @(Get-WindowsODSSelectedPortConflicts -PortsToCheck $comfyPorts -InstallDir $ownedInstallDir).Count `
+    0 'retained own selected ComfyUI port is reusable'
+$script:dockerPortInspects['owned-container'] = New-ODSOwnedPortInspect -WorkingDir $ownedInstallDir
 $script:ownedPortListeners = @([pscustomobject]@{
     LocalAddress = '127.0.0.1'; LocalPort = 3000; ProcessId = 5151
 })

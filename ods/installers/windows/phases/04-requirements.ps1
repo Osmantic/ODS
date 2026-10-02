@@ -191,6 +191,7 @@ function Get-WindowsODSExpectedComposeService {
         'TEI (embeddings)' = 'embeddings'
         'Hermes auth proxy' = 'hermes-proxy'
         'OpenClaw (agents)' = 'openclaw'
+        'ComfyUI (image generation)' = 'comfyui'
         'APE (agent policy engine)' = 'ape'
         'Perplexica (deep research)' = 'perplexica'
         'Privacy Shield' = 'privacy-shield'
@@ -503,7 +504,8 @@ if ($enableHermes -or $enableOpenClaw) {
     $_portsToCheck["APE (agent policy engine)"] = 7890
 }
 if ($enableComfyui) {
-    $_portsToCheck["ComfyUI (image generation)"] = 8188
+    $_portsToCheck["ComfyUI (image generation)"] = Resolve-WindowsODSPort `
+        -Name "COMFYUI_PORT" -DefaultPort 8188 -InstallDir $installDir
 }
 if ($enableDeepResearch) {
     $_portsToCheck["Perplexica (deep research)"] = 3004
