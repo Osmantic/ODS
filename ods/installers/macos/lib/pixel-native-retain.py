@@ -5,15 +5,21 @@ protected update coordinator; the initial-install helper must never resume an
 existing preparation directory.
 """
 import argparse
+import hashlib
 import importlib.util
+import json
 import os
 from pathlib import Path
 import pwd
 import re
+import stat
+import subprocess
 import sys
 
 
 HERE = Path(__file__).resolve().parent
+PROTECTED_STATE = Path('/private/var/lib/ods-pixel-access')
+PENDING_JOURNALS = ('runtime-upgrade.json', 'transition.json', 'policy-activation.json')
 
 
 def helper(filename):
@@ -32,7 +38,50 @@ def custody_module():
     return module
 
 
-def verify(install_dir, *, expected_ref=None):
+def protected_clear():
+    """Root-only existence check; the protected state directory is mode 0700."""
+    if sys.platform != 'darwin' or os.geteuid() != 0:
+        raise ValueError('protected-native-state-check-required')
+    info = PROTECTED_STATE.lstat()
+    if not stat.S_ISDIR(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
+        raise ValueError('unsafe-protected-native-state')
+    if any(os.path.lexists(PROTECTED_STATE / name) for name in PENDING_JOURNALS):
+        raise ValueError('native-protected-transition-pending')
+
+
+def require_protected_clear(*, prompt_for_sudo=False):
+    command = ['/usr/bin/sudo']
+    if not prompt_for_sudo:
+        command.append('-n')
+    command.extend(['/usr/bin/python3', str(Path(__file__).resolve()), '--check-protected'])
+    result = subprocess.run(command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                            stderr=None if prompt_for_sudo else subprocess.DEVNULL, timeout=120)
+    if result.returncode:
+        raise ValueError('native-protected-state-not-clear')
+
+
+def verify_desired_services(ods_source, preparation, services, expected_ref):
+    """Bind the selected snapshot to the service bytes this rerun would copy."""
+    source = Path(ods_source)
+    if (not source.is_absolute() or source.is_symlink() or not source.is_dir()
+            or source.resolve(strict=True) != source):
+        raise ValueError('current-ods-source-required')
+    config = helper('pixel-native-config.py')
+    selected_bundle = preparation / 'services'
+    manifest_body = config.service_snapshot(selected_bundle, 'services.json', private=True)
+    if hashlib.sha256(manifest_body).hexdigest() != services:
+        raise ValueError('native-service-manifest-changed')
+    manifest = json.loads(manifest_body)
+    snapshots = config.verified_services(selected_bundle, expected_digest=services,
+        expected_ref=expected_ref, expected_config_digest=manifest['candidateConfigSha256'])
+    for output, relative in config.SERVICE_SOURCES.items():
+        if config.service_snapshot(source, relative) != snapshots[output]:
+            raise ValueError('native-service-source-changed')
+    if config.service_catalog(source) != snapshots['helpers/extension-catalog.json']:
+        raise ValueError('native-service-catalog-changed')
+
+
+def verify(install_dir, *, expected_ref=None, ods_source=None, prompt_for_sudo=False):
     if sys.platform != 'darwin' or os.geteuid() == 0:
         raise ValueError('native-macos-owner-required')
     root = Path(install_dir)
@@ -46,6 +95,7 @@ def verify(install_dir, *, expected_ref=None):
     expected_ref = expected_ref or initial.DEFAULT_REF
     if not re.fullmatch('[a-f0-9]{40}', expected_ref):
         raise ValueError('exact-pixel-source-ref-required')
+    require_protected_clear(prompt_for_sudo=prompt_for_sudo)
     preparation = native / 'preparation'
     if preparation.is_symlink() or not preparation.is_dir():
         raise ValueError('native-installation-needs-recovery')
@@ -63,6 +113,7 @@ def verify(install_dir, *, expected_ref=None):
             or not isinstance(digest, str) or not re.fullmatch('[a-f0-9]{64}', digest)
             or not isinstance(services, str) or not re.fullmatch('[a-f0-9]{64}', services)):
         raise ValueError('native-selection-changed')
+    verify_desired_services(ods_source, preparation, services, expected_ref)
     access = helper('pixel-macos-access-install.py')
     owner = pwd.getpwuid(os.getuid())
     document, environment, _, _, node, entrypoint = access._source_gateway(
@@ -94,11 +145,20 @@ def verify(install_dir, *, expected_ref=None):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--install-dir', required=True)
+    parser.add_argument('--install-dir')
     parser.add_argument('--expected-ref')
+    parser.add_argument('--ods-source')
+    parser.add_argument('--prompt-for-sudo', action='store_true')
+    parser.add_argument('--check-protected', action='store_true')
     args = parser.parse_args()
     try:
-        verify(args.install_dir, expected_ref=args.expected_ref)
+        if args.check_protected:
+            protected_clear()
+        else:
+            if not args.install_dir or not args.ods_source:
+                raise ValueError('native-retention-input-required')
+            verify(args.install_dir, expected_ref=args.expected_ref, ods_source=args.ods_source,
+                   prompt_for_sudo=args.prompt_for_sudo)
     except Exception:
         print('Native Pixel retention could not be proved. Keep its state intact and use the '
               'reviewed native update or recovery path.', file=sys.stderr)

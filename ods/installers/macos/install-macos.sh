@@ -1661,8 +1661,11 @@ if $ENABLE_PIXEL && ! $PREFLIGHT_ONLY; then
     if ! $NON_INTERACTIVE && ! $DRY_RUN; then
         _pixel_install_args+=(--prompt-for-sudo)
     fi
-    _pixel_retain_args=(--install-dir "$INSTALL_DIR")
+    _pixel_retain_args=(--install-dir "$INSTALL_DIR" --ods-source "$SOURCE_ROOT")
     [[ -z "${PIXEL_SOURCE_REF:-}" ]] || _pixel_retain_args+=(--expected-ref "$PIXEL_SOURCE_REF")
+    if ! $NON_INTERACTIVE && ! $DRY_RUN; then
+        _pixel_retain_args+=(--prompt-for-sudo)
+    fi
     _PIXEL_RETAINED=false
     if [[ -e "${INSTALL_DIR}/data/pixel-native" || -L "${INSTALL_DIR}/data/pixel-native" ]]; then
         /usr/bin/python3 "${LIB_DIR}/pixel-native-retain.py" "${_pixel_retain_args[@]}" || exit 1
