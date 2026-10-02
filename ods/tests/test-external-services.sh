@@ -580,6 +580,7 @@ probe_retries_after_one_transport_failure() (
         calls=$((calls + 1))
         [[ "${*: -1}" == "http://127.0.0.1:18080/v1/chat/completions" ]] || return 99
         [[ "$calls" -eq 2 ]] || return "$curl_failure"
+        printf '{"choices":[{"message":{"content":"OK"}}]}'
     }
     sleep() { [[ "$1" == 2 ]]; }
     external_llm_probe_completion 'http://127.0.0.1:18080' 'test-model' >/dev/null 2>&1 &&
