@@ -128,20 +128,14 @@ def apply(root: Path, source: Path, selection: dict, data_dir: Path | None = Non
         raise ValueError("Invalid remote-provider selection")
 
     with _selection_lock(root):
-        # A route can be enabled after inspect and before this source copy
-        # finishes. Preserve the currently required services while holding
-        # the same lock that protects Dashboard route publication.
-        current_kind = _route_kind(root, data_dir)
-        choice = dict(choice)
-        if current_kind in {"direct", "ssh"}:
-            choice[SERVICES[0]] = "enabled"
-        if current_kind == "ssh":
-            choice[SERVICES[1]] = "enabled"
-        _apply_locked(root, source, choice)
+        _apply_locked(root, source, data_dir)
 
 
-def _apply_locked(root: Path, source: Path, choice: dict[str, str]) -> None:
-    # Validate the complete two-service plan before touching either marker.
+def _apply_locked(root: Path, source: Path, data_dir: Path | None) -> None:
+    # The post-copy markers are authoritative: a Library Add or Disable may
+    # have happened after inspect. Source copy only adds the canonical disabled
+    # recipe; it does not remove a selected marker.
+    choice = {}
     for service_id in SERVICES:
         target_dir = _service_dir(root, service_id)
         source_dir = _service_dir(source, service_id)
@@ -152,10 +146,25 @@ def _apply_locked(root: Path, source: Path, choice: dict[str, str]) -> None:
         has_active, has_disabled = _regular_state(active), _regular_state(disabled)
         canonical = source_dir / "compose.yaml.disabled"
         if source != root:
-            if not _regular_state(canonical) or not has_disabled or disabled.read_bytes() != canonical.read_bytes():
+            if not _regular_state(canonical):
+                raise ValueError(f"Remote-provider source copy is incomplete: {service_id}")
+            canonical_bytes = canonical.read_bytes()
+            copied = (has_disabled and disabled.read_bytes() == canonical_bytes) or (
+                has_active and not has_disabled and active.read_bytes() == canonical_bytes
+            )
+            if not copied:
                 raise ValueError(f"Remote-provider source copy is incomplete: {service_id}")
         elif not (has_active or has_disabled):
             raise ValueError(f"Missing in-place remote-provider marker: {service_id}")
+        choice[service_id] = "enabled" if has_active else "disabled"
+
+    # A route may also have been enabled after inspect. Protect its required
+    # services under the same lock that Dashboard uses to publish route state.
+    current_kind = _route_kind(root, data_dir)
+    if current_kind in {"direct", "ssh"}:
+        choice[SERVICES[0]] = "enabled"
+    if current_kind == "ssh":
+        choice[SERVICES[1]] = "enabled"
 
     for service_id in SERVICES:
         target_dir = _service_dir(root, service_id)

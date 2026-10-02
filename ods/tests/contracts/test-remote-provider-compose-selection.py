@@ -93,6 +93,37 @@ def main() -> None:
     exercise((False, False), "ssh", (True, True))  # legacy active SSH route
     exercise((True, False), None, (True, False))  # retained Library choice
     exercise((True, True), None, (True, True))
+    for change_after_copy in (False, True):
+        source, install, _, temp = fixture()
+        try:
+            directory = install / "extensions/services" / SERVICES[0]
+            disabled = directory / "compose.yaml.disabled"
+            active = directory / "compose.yaml"
+            shutil.copyfile(source / "extensions/services" / SERVICES[0]
+                            / "compose.yaml.disabled", disabled)
+            selection = MODULE.inspect(install)
+            if not change_after_copy:
+                disabled.rename(active)  # Library Add after inspect
+            copy_source(source, install)
+            if change_after_copy:
+                disabled.rename(active)  # Library Add after source copy
+            MODULE.apply(install, source, selection)
+            assert states(install) == (True, False)
+        finally:
+            temp.cleanup()
+    source, install, _, temp = fixture()
+    try:
+        directory = install / "extensions/services" / SERVICES[0]
+        active = directory / "compose.yaml"
+        disabled = directory / "compose.yaml.disabled"
+        active.write_text("old selected recipe\n", encoding="utf-8")
+        selection = MODULE.inspect(install)
+        active.rename(disabled)  # Library Disable after inspect
+        copy_source(source, install)
+        MODULE.apply(install, source, selection)
+        assert states(install) == (False, False)
+    finally:
+        temp.cleanup()
     for transport, expected in (("direct", (True, False)), ("ssh", (True, True))):
         source, install, secret, temp = fixture()
         try:
