@@ -311,6 +311,33 @@ def main() -> int:
             output(result),
         )
 
+    with temp_root() as root:
+        build_ready_root(root)
+        shutil.rmtree(root / "data" / "whisper")
+        with (root / ".env").open("a", encoding="utf-8") as env_file:
+            env_file.write("ENABLE_VOICE=true\nENABLE_WHISPER=false\nENABLE_TTS=true\n")
+        result = run_validator(root)
+        check("Kokoro-only skips missing Whisper cache", result.returncode == 0, output(result))
+        check(
+            "Kokoro-only reports Whisper disabled despite legacy voice flag",
+            "Whisper STT model" in output(result)
+            and "Skipped: service is not active" in output(result),
+            output(result),
+        )
+
+    with temp_root() as root:
+        build_ready_root(root)
+        with (root / ".env").open("a", encoding="utf-8") as env_file:
+            env_file.write("ENABLE_VOICE=true\nENABLE_WHISPER=true\nENABLE_TTS=false\n")
+        result = run_validator(root)
+        check("Whisper-only validates its STT cache", result.returncode == 0, output(result))
+        check(
+            "Whisper-only reports Kokoro disabled despite legacy voice flag",
+            "Kokoro TTS voice" in output(result)
+            and "Skipped: service is not active" in output(result),
+            output(result),
+        )
+
     for mode, backend in (("cloud", "litellm"), ("lemonade", "lemonade")):
         with temp_root() as root:
             (root / ".env").write_text(

@@ -150,6 +150,24 @@ $env:ODS_HOME = "C:\path\to\ODS\ods"
 .\ods\installers\windows\install-windows.ps1
 ```
 
+An in-place source update cannot infer prior remote-provider Library choices
+from newly checked-out disabled recipes. If an active route conflicts with
+those markers, the installer stops with a recovery instruction before changing
+the service choices. Restore the prior selection from a trusted backup, or
+install from an independent source checkout into a fresh runtime directory.
+Ordinary installs that copy from a separate checkout preserve existing choices
+and migrate legacy active routes under the Library's Linux transaction lock.
+The installer uses the pinned Python base image already required by Dashboard
+API; a fresh native install may pull it earlier, before building Dashboard API.
+Docker must be available even for this source-copy stage. Interrupted writers
+are reconciled by their exact container identity before another transaction.
+
+Manage Remote Provider Egress and Remote Provider SSH Tunnel through Dashboard
+Library. Native `ods.ps1 enable/disable` refuses these two services, including
+`-Force`, before stopping anything or changing selections. On older releases
+they were core services; making them optional does not expose the generic
+native CLI writer to their route lifecycle.
+
 **First run takes 10-30 minutes** depending on download speed. Bootstrap mode
 starts a small model first, then downloads and hot-swaps the full model in the
 background.

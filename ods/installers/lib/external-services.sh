@@ -189,7 +189,7 @@ external_llm_resolve_model() {
 }
 
 external_llm_probe_completion() {
-    local url="${1:-}" model="${2:-}" body attempt curl_status
+    local url="${1:-}" model="${2:-}" body attempt curl_status response_file
     url="$(external_llm_host_url "$url")"
     body="$(
         EXTERNAL_LLM_MODEL_VALUE="$model" python3 - <<'PY'
@@ -199,12 +199,13 @@ import os
 print(json.dumps({
     "model": os.environ["EXTERNAL_LLM_MODEL_VALUE"],
     "messages": [{"role": "user", "content": "Reply with OK."}],
-    "max_tokens": 1,
+    "max_tokens": 256,
     "temperature": 0,
     "stream": False,
 }))
 PY
     )"
+    response_file="$(mktemp "${TMPDIR:-/tmp}/ods-external-probe.XXXXXX")" || return 1
     # A discovered external model can be serving another long prompt when the
     # installer makes its first real completion. Retry once after a transport
     # failure, but never accept discovery alone as proof of working inference.
@@ -212,8 +213,26 @@ PY
         if external_llm_curl -fsS --max-time "${EXTERNAL_LLM_PROBE_TIMEOUT:-60}" \
             -H "Content-Type: application/json" \
             -d "$body" \
-            "${url}/v1/chat/completions" >/dev/null; then
-            return 0
+            "${url}/v1/chat/completions" >"$response_file"; then
+            if python3 -c '
+import json
+import sys
+
+try:
+    with open(sys.argv[1], encoding="utf-8") as handle:
+        choice = json.load(handle)["choices"][0]
+    content = choice["message"]["content"]
+    if not isinstance(content, str) or not content.strip():
+        raise ValueError()
+except (ValueError, KeyError, IndexError, TypeError):
+    sys.exit(1)
+' "$response_file"; then
+                rm -f -- "$response_file"
+                return 0
+            fi
+            rm -f -- "$response_file"
+            printf 'External LLM completion probe returned an empty or invalid completion.\n' >&2
+            return 1
         else
             curl_status=$?
         fi
@@ -223,12 +242,13 @@ PY
         # second inference attempt. Only transient transport failures retry.
         case "$curl_status" in
             7|28|52|55|56) ;;
-            *) return "$curl_status" ;;
+            *) rm -f -- "$response_file"; return "$curl_status" ;;
         esac
         if [[ "$attempt" -eq 1 ]]; then
             sleep 2
         fi
     done
+    rm -f -- "$response_file"
     return "$curl_status"
 }
 

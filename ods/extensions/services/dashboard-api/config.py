@@ -693,13 +693,15 @@ CORE_SERVICE_IDS = _load_core_service_ids()
 # Always-on services defined in docker-compose.base.yml — never manageable via API.
 # Distinct from CORE_SERVICE_IDS (the full built-in service allowlist).
 ALWAYS_ON_SERVICES: frozenset = frozenset({
-    "llama-server", "model-router", "remote-provider-egress",
-    "remote-provider-ssh-tunnel", "open-webui", "dashboard", "dashboard-api",
+    "llama-server", "model-router", "open-webui", "dashboard", "dashboard-api",
 })
 
 # Built-ins qualified for Dashboard Library Add/Disable. The live health poll
 # must refresh this same set after a fragment changes without an API restart.
-LIBRARY_MANAGEABLE_BUILTINS: frozenset = frozenset({"n8n", "perplexica", "searxng"})
+LIBRARY_MANAGEABLE_BUILTINS: frozenset = frozenset({
+    "n8n", "perplexica", "searxng", "remote-provider-egress", "remote-provider-ssh-tunnel",
+    "hermes", "hermes-proxy", "whisper", "tts",
+})
 
 
 def load_extension_catalog() -> list[dict]:
