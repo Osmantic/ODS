@@ -1,11 +1,13 @@
 """Read-only completion gate tests; fake commands never contact the live stack."""
 import os
+import importlib.util
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 import subprocess
 import tempfile
 import threading
 import unittest
+from unittest.mock import patch
 
 
 SCRIPT = Path(__file__).resolve().parents[1] / 'installers/verify-wsl-portal.sh'
@@ -14,7 +16,7 @@ SCRIPT = Path(__file__).resolve().parents[1] / 'installers/verify-wsl-portal.sh'
 @unittest.skipUnless(os.name == 'posix', 'requires Bash')
 class PortalReadiness(unittest.TestCase):
     def probe(self, *, service=0, health='{"status":"ok"}', http=0, port='3001', available=True,
-              api_code=200, api_body=None, not_ready_first=0):
+              api_code=200, api_body=None, not_ready_first=0, expected_api_requests=None):
         served = {'count': 0}
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -65,6 +67,8 @@ esac
             result = subprocess.run(['bash', str(SCRIPT), str(root)], env=env,
                                     capture_output=True, text=True, timeout=15)
             self.assertNotIn('do-not-print', result.stdout + result.stderr)
+            if expected_api_requests is not None:
+                self.assertEqual(served['count'], expected_api_requests)
             calls = (root / 'calls').read_text() if (root / 'calls').exists() else ''
             return result, calls
 
@@ -97,14 +101,47 @@ esac
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('Portal API verification failed', result.stderr)
 
-    def test_unavailable_reports_nonsecret_detail(self):
-        result, _ = self.probe(not_ready_first=1)
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn('Model is loading', result.stderr)
-        self.assertIn('model_unavailable', result.stderr)
+    def test_cold_model_proof_retries_with_fresh_status_and_succeeds(self):
+        result, _ = self.probe(not_ready_first=1, expected_api_requests=2)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('Portal API confirms the owner agent is available', result.stdout)
+
+    def test_persistent_model_unavailable_exhausts_budget_without_success(self):
+        spec = importlib.util.spec_from_file_location('verify_portal_api', SCRIPT.parent / 'verify-portal-api.py')
+        verifier = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(verifier)
+        clock = [0.0]
+
+        def sleep(seconds):
+            clock[0] += seconds
+
+        with tempfile.TemporaryDirectory() as directory:
+            Path(directory, '.env').write_text('DASHBOARD_API_KEY=do-not-print\n')
+            response = {"available": False, "state": "model_unavailable", "detail": "Model is loading"}
+            with patch.object(verifier, 'fetch_status', return_value=response) as fetch:
+                with self.assertRaises(verifier.PortalCheckFailed) as failure:
+                    verifier.verify(directory, settle_seconds=5,
+                                    monotonic=lambda: clock[0], sleep=sleep)
+        self.assertEqual(fetch.call_count, 3)
+        self.assertEqual(clock[0], 5)
+        self.assertIn('Model is loading [model_unavailable]', str(failure.exception))
+        self.assertNotIn('do-not-print', str(failure.exception))
+
+    def test_model_unavailable_without_boolean_availability_does_not_retry(self):
+        spec = importlib.util.spec_from_file_location('verify_portal_api', SCRIPT.parent / 'verify-portal-api.py')
+        verifier = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(verifier)
+        with tempfile.TemporaryDirectory() as directory:
+            Path(directory, '.env').write_text('DASHBOARD_API_KEY=do-not-print\n')
+            with patch.object(verifier, 'fetch_status', return_value={
+                    'state': 'model_unavailable', 'detail': 'incomplete status'}) as fetch:
+                with self.assertRaises(verifier.PortalCheckFailed):
+                    verifier.verify(directory, settle_seconds=5,
+                                    monotonic=lambda: 0, sleep=lambda _: self.fail('unexpected retry'))
+        fetch.assert_called_once()
 
     def test_authentication_failure_names_the_key_without_printing_it(self):
-        result, _ = self.probe(api_code=401)
+        result, _ = self.probe(api_code=401, expected_api_requests=1)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('rejected the installed DASHBOARD_API_KEY', result.stderr)
 

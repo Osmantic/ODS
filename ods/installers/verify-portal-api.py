@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import re
 import sys
+import time
 import urllib.error
 import urllib.request
 
@@ -12,6 +13,8 @@ import urllib.request
 # detail). Still never echo arbitrary bytes into the installer transcript.
 _UNSAFE_TEXT = re.compile(r"[^A-Za-z0-9 ._,:;()'/-]")
 _STATUS_TIMEOUT_SECONDS = 30
+_MODEL_PROOF_SETTLE_SECONDS = 60
+_MODEL_PROOF_RETRY_SECONDS = 2
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -48,7 +51,7 @@ def read_settings(root):
     return port, key
 
 
-def fetch_status(port, key):
+def fetch_status(port, key, *, timeout_seconds=_STATUS_TIMEOUT_SECONDS):
     # Do not send local credentials through environment proxies or redirects.
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
     request = urllib.request.Request(
@@ -56,7 +59,7 @@ def fetch_status(port, key):
         headers={'Authorization': f'Bearer {key}', 'Accept': 'application/json'},
     )
     try:
-        with opener.open(request, timeout=_STATUS_TIMEOUT_SECONDS) as response:
+        with opener.open(request, timeout=timeout_seconds) as response:
             payload = response.read(65537)
     except urllib.error.HTTPError as error:
         if error.code in (401, 403):
@@ -65,7 +68,7 @@ def fetch_status(port, key):
     except urllib.error.URLError:
         raise PortalCheckFailed(f'dashboard-api is not reachable on 127.0.0.1:{port}') from None
     except TimeoutError:
-        raise PortalCheckFailed(f'dashboard-api did not answer within {_STATUS_TIMEOUT_SECONDS} seconds') from None
+        raise PortalCheckFailed('dashboard-api did not answer within the readiness deadline') from None
     except (ConnectionError, http.client.HTTPException):
         # Accepted, then closed or cut short: dashboard-api is (re)starting.
         raise PortalCheckFailed('dashboard-api closed the connection before answering') from None
@@ -80,13 +83,36 @@ def fetch_status(port, key):
     return status
 
 
-def verify(root):
-    status = fetch_status(*read_settings(root))
-    if status.get('available') is True:
-        return
-    detail = _safe(status.get('detail'), 160) or 'agent or model is unavailable'
-    state = _safe(status.get('state'), 40)
-    raise PortalCheckFailed(f'Portal reports: {detail}' + (f' [{state}]' if state else ''))
+def verify(root, *, settle_seconds=_MODEL_PROOF_SETTLE_SECONDS,
+           monotonic=time.monotonic, sleep=time.sleep):
+    port, key = read_settings(root)
+    deadline = monotonic() + settle_seconds
+    last_failure = None
+    while True:
+        remaining = deadline - monotonic()
+        if remaining <= 0:
+            if last_failure is not None:
+                raise last_failure
+            raise PortalCheckFailed('Portal readiness deadline expired before the first observation')
+        # Bound every request by the remaining settlement window. Each poll
+        # obtains a fresh status, including a fresh physical model identity.
+        timeout = min(_STATUS_TIMEOUT_SECONDS, remaining)
+        status = fetch_status(port, key, timeout_seconds=timeout)
+        if status.get('available') is True:
+            return
+        detail = _safe(status.get('detail'), 160) or 'agent or model is unavailable'
+        state = _safe(status.get('state'), 40)
+        last_failure = PortalCheckFailed(
+            f'Portal reports: {detail}' + (f' [{state}]' if state else ''))
+        # Only the model observation may need to settle after a cold start.
+        # Other unavailable states, malformed responses, and transport/auth
+        # failures remain immediate failures.
+        if status.get('available') is not False or state != 'model_unavailable':
+            raise last_failure
+        remaining = deadline - monotonic()
+        if remaining <= 0:
+            raise last_failure
+        sleep(min(_MODEL_PROOF_RETRY_SECONDS, remaining))
 
 
 if __name__ == '__main__':
