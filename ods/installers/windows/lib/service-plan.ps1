@@ -73,6 +73,30 @@ function Get-ODSWindowsInstalledServiceSelection {
     return $null
 }
 
+function Resolve-ODSWindowsVoiceSelection {
+    param(
+        [Parameter(Mandatory = $true)][string]$InstallDir,
+        [bool]$ComputedVoice,
+        [bool]$CliEnable,
+        [bool]$All,
+        [bool]$MenuExplicit
+    )
+
+    $whisper = $ComputedVoice
+    $tts = $ComputedVoice
+    if ($CliEnable -or $All) {
+        $whisper = $true
+        $tts = $true
+    } elseif (-not $MenuExplicit -and
+            (Test-Path -LiteralPath (Join-Path $InstallDir ".env") -PathType Leaf)) {
+        $installedWhisper = Get-ODSWindowsInstalledServiceSelection -InstallDir $InstallDir -ServiceId "whisper"
+        $installedTts = Get-ODSWindowsInstalledServiceSelection -InstallDir $InstallDir -ServiceId "tts"
+        $whisper = if ($null -ne $installedWhisper) { [bool]$installedWhisper } else { $false }
+        $tts = if ($null -ne $installedTts) { [bool]$installedTts } else { $false }
+    }
+    return [PSCustomObject]@{ Whisper = $whisper; Tts = $tts }
+}
+
 function Resolve-ODSWindowsHermesSelection {
     param(
         [Parameter(Mandatory = $true)][string]$InstallDir,
@@ -115,6 +139,8 @@ function New-ODSWindowsServicePlan {
     param(
         [bool]$EnableRecommended,
         [bool]$EnableVoice,
+        [Nullable[bool]]$EnableWhisper = $null,
+        [Nullable[bool]]$EnableTts = $null,
         [bool]$EnableWorkflows,
         [bool]$EnableRag,
         [bool]$EnableHermes,
@@ -130,6 +156,8 @@ function New-ODSWindowsServicePlan {
 
     $plan = @{}
     $proxyEnabled = if ($null -eq $EnableHermesProxy) { $EnableHermes } else { [bool]$EnableHermesProxy }
+    $whisperEnabled = if ($null -eq $EnableWhisper) { $EnableVoice } else { [bool]$EnableWhisper }
+    $ttsEnabled = if ($null -eq $EnableTts) { $EnableVoice } else { [bool]$EnableTts }
 
     $enableSearxng = Test-ODSWindowsSearxngNeeded `
         -EnableRecommended $EnableRecommended `
@@ -140,8 +168,8 @@ function New-ODSWindowsServicePlan {
     $plan["searxng"] = New-ODSWindowsServicePlanEntry "searxng" $enableSearxng "search" "web search backend not required"
     $plan["token-spy"] = New-ODSWindowsServicePlanEntry "token-spy" $EnableRecommended "recommended" "recommended services not enabled"
 
-    $plan["whisper"] = New-ODSWindowsServicePlanEntry "whisper" $EnableVoice "voice" "voice not enabled"
-    $plan["tts"] = New-ODSWindowsServicePlanEntry "tts" $EnableVoice "voice" "voice not enabled"
+    $plan["whisper"] = New-ODSWindowsServicePlanEntry "whisper" $whisperEnabled "voice" "Whisper not enabled"
+    $plan["tts"] = New-ODSWindowsServicePlanEntry "tts" $ttsEnabled "voice" "Kokoro not enabled"
 
     $plan["n8n"] = New-ODSWindowsServicePlanEntry "n8n" $EnableWorkflows "workflows" "workflows not enabled"
     $plan["qdrant"] = New-ODSWindowsServicePlanEntry "qdrant" $EnableRag "rag" "RAG not enabled"

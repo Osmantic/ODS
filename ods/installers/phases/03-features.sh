@@ -48,6 +48,13 @@ fi
 if $INTERACTIVE && ! $DRY_RUN; then
     show_install_menu
 
+    # Full/Core are paired voice choices. The existing-install "keep" choice
+    # leaves independent Library selections intact.
+    if [[ "${INSTALL_CHOICE:-}" == 1 || "${INSTALL_CHOICE:-}" == 2 ]]; then
+        ENABLE_WHISPER="$ENABLE_VOICE"
+        ENABLE_TTS="$ENABLE_VOICE"
+    fi
+
     # Only show individual feature prompts for Custom installs
     if [[ "${INSTALL_CHOICE:-1}" == "3" ]]; then
         _phase03_prompt_bool() {
@@ -71,6 +78,8 @@ if $INTERACTIVE && ! $DRY_RUN; then
         # never set it to false; combined with all defaults being true from
         # install-core.sh, pressing 'n' was a no-op.
         _phase03_prompt_bool ENABLE_VOICE "Enable voice (Whisper STT + Kokoro TTS)?"
+        ENABLE_WHISPER="$ENABLE_VOICE"
+        ENABLE_TTS="$ENABLE_VOICE"
         _phase03_prompt_bool ENABLE_WORKFLOWS "Enable n8n workflow automation?"
         _phase03_prompt_bool ENABLE_RAG "Enable Qdrant vector database (for RAG)?"
         # Explicit agent flags also take precedence over the Custom menu.
@@ -105,6 +114,11 @@ else
         ai "Using feature selections from flags and installer defaults."
     fi
 fi
+
+# The installer menu exposes a paired voice shortcut; Library may select
+# either service independently on retained installs.
+ENABLE_VOICE=false
+[[ "${ENABLE_WHISPER:-false}" == true || "${ENABLE_TTS:-false}" == true ]] && ENABLE_VOICE=true
 
 # Tier safety net: disable ComfyUI on Tier 0/1 in non-interactive mode.
 # Interactive mode has its own tier checks in the menu — this catches --non-interactive.
@@ -521,8 +535,8 @@ if ! $DRY_RUN; then
     _sync_extension_compose "${ENABLE_SEARXNG:-}"     searxng    "SearXNG"       "web search backend not required" || return 1
     _sync_extension_compose "${ENABLE_RECOMMENDED:-}" token-spy  "Token Spy"     "recommended services not enabled" || return 1
     unset _pixel_support_services
-    _sync_extension_compose "${ENABLE_VOICE:-}"      whisper    "Whisper (STT)" "voice not enabled" || return 1
-    _sync_extension_compose "${ENABLE_VOICE:-}"      tts        "Kokoro (TTS)"  "voice not enabled" || return 1
+    _sync_extension_compose "${ENABLE_WHISPER:-false}" whisper "Whisper (STT)" "Whisper not enabled" || return 1
+    _sync_extension_compose "${ENABLE_TTS:-false}"     tts     "Kokoro (TTS)"  "Kokoro not enabled" || return 1
     _sync_extension_compose "${ENABLE_WORKFLOWS:-}"  n8n        "n8n"           "workflows not enabled" || return 1
     # RAG = qdrant (vector store) + embeddings (TEI). Both default from
     # ENABLE_RAG, then host-specific guards above may disable the concrete

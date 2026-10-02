@@ -142,6 +142,15 @@ $hermesSelection = Resolve-ODSWindowsHermesSelection `
     -MenuExplicit ($choice -in @("1", "2", "3"))
 $enableHermes = [bool]$hermesSelection.Hermes
 $enableHermesProxy = [bool]$hermesSelection.Proxy
+$voiceSelection = Resolve-ODSWindowsVoiceSelection `
+    -InstallDir $installDir `
+    -ComputedVoice $enableVoice `
+    -CliEnable $voiceFlag `
+    -All $allFlag `
+    -MenuExplicit ($choice -in @("1", "2", "3"))
+$enableWhisper = [bool]$voiceSelection.Whisper
+$enableTts = [bool]$voiceSelection.Tts
+$enableVoice = $enableWhisper -or $enableTts
 
 if ($noRecommendedFlag) {
     $enableRecommended = $false
@@ -218,7 +227,8 @@ if ($enableHermes -and -not $cloudMode) {
 # ── Feature summary ───────────────────────────────────────────────────────────
 Write-Host ""
 Write-AI "Feature configuration:"
-Write-InfoBox "  Voice (Whisper + Kokoro):" $(if ($enableVoice)     { "enabled" } else { "disabled" })
+Write-InfoBox "  Whisper STT:"             $(if ($enableWhisper)   { "enabled" } else { "disabled" })
+Write-InfoBox "  Kokoro TTS:"              $(if ($enableTts)       { "enabled" } else { "disabled" })
 Write-InfoBox "  Workflows (n8n):"          $(if ($enableWorkflows) { "enabled" } else { "disabled" })
 Write-InfoBox "  RAG (Qdrant + embeddings):" $(if ($enableRag)      { "enabled" } else { "disabled" })
 Write-InfoBox "  Recommended web/API:"       $(if ($enableRecommended) { "enabled" } else { "disabled" })

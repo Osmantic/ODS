@@ -95,6 +95,9 @@ load_env_safe() {
     done < "$env_file"
 }
 load_env_safe "$ROOT_DIR/.env"
+source "$ROOT_DIR/installers/lib/installed-feature-state.sh"
+ENABLE_WHISPER="$(ods_installed_service_default "$ROOT_DIR" whisper "${ENABLE_VOICE:-false}")"
+ENABLE_TTS="$(ods_installed_service_default "$ROOT_DIR" tts "${ENABLE_VOICE:-false}")"
 sr_resolve_ports
 _DASHBOARD_PORT="${SERVICE_PORTS[dashboard]:-3001}"
 _WEBUI_PORT="${SERVICE_PORTS[open-webui]:-3000}"
@@ -442,7 +445,7 @@ STT_MODEL_NAME=""
 STT_RECOVERY_HINT=""
 TTS_HTTP="unknown"
 TTS_PORT=""
-if [[ "${ENABLE_VOICE:-false}" == "true" ]] && command -v curl >/dev/null 2>&1; then
+if [[ "$ENABLE_WHISPER" == "true" ]] && command -v curl >/dev/null 2>&1; then
     STT_MODEL_NAME="${AUDIO_STT_MODEL:-Systran/faster-whisper-base}"
     _stt_whisper_port="${SERVICE_PORTS[whisper]:-9000}"
     _stt_model_encoded="${STT_MODEL_NAME//\//%2F}"
@@ -459,14 +462,18 @@ if [[ "${ENABLE_VOICE:-false}" == "true" ]] && command -v curl >/dev/null 2>&1; 
         fi
     fi
 
+elif [[ "$ENABLE_WHISPER" != "true" ]]; then
+    STT_MODEL_CACHED="disabled"
+fi
+
+if [[ "$ENABLE_TTS" == "true" ]] && command -v curl >/dev/null 2>&1; then
     TTS_PORT="${SERVICE_PORTS[tts]:-8880}"
     if curl -sf --max-time 5 "http://127.0.0.1:${TTS_PORT}/health" >/dev/null 2>&1; then
         TTS_HTTP="true"
     else
         TTS_HTTP="false"
     fi
-elif [[ "${ENABLE_VOICE:-false}" != "true" ]]; then
-    STT_MODEL_CACHED="disabled"
+elif [[ "$ENABLE_TTS" != "true" ]]; then
     TTS_HTTP="disabled"
 fi
 

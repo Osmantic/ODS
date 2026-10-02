@@ -11,6 +11,7 @@ run_case() {
     local brave_requested="${6:-false}" brave_key_mode="${7:-none}"
     local hermes_selected="${8:-false}" proxy_selected="${9:-false}"
     local expect_invalid="${10:-false}"
+    local whisper_selected="${11:-false}" tts_selected="${12:-false}"
     local test_root source_root install_root
     test_root="$(mktemp -d)"
     source_root="$test_root/source"
@@ -19,6 +20,10 @@ run_case() {
 
     mkdir -p "$source_root/extensions/services/openclaw" \
         "$install_root/extensions/services/openclaw" \
+        "$source_root/extensions/services/whisper" \
+        "$install_root/extensions/services/whisper" \
+        "$source_root/extensions/services/tts" \
+        "$install_root/extensions/services/tts" \
         "$source_root/extensions/services/comfyui" \
         "$install_root/extensions/services/comfyui" \
         "$source_root/extensions/services/brave-search" \
@@ -44,6 +49,16 @@ run_case() {
     printf 'services: {}\n' >"$install_root/extensions/services/brave-search/compose.yaml"
     printf 'services: {}\n' >"$source_root/extensions/services/hermes/compose.yaml"
     printf 'services: {}\n' >"$source_root/extensions/services/hermes-proxy/compose.yaml"
+    for service in whisper tts; do
+        printf 'services: {}\n' >"$source_root/extensions/services/$service/compose.yaml"
+        local selected_voice="$whisper_selected"
+        [[ "$service" == tts ]] && selected_voice="$tts_selected"
+        if [[ "$selected_voice" == true ]]; then
+            printf 'services: {}\n' >"$install_root/extensions/services/$service/compose.yaml"
+        else
+            printf 'services: {}\n' >"$install_root/extensions/services/$service/compose.yaml.disabled"
+        fi
+    done
     if [[ "$hermes_selected" == true ]]; then
         printf 'services: {}\n' >"$install_root/extensions/services/hermes/compose.yaml"
     else
@@ -54,7 +69,8 @@ run_case() {
     else
         printf 'services: {}\n' >"$install_root/extensions/services/hermes-proxy/compose.yaml.disabled"
     fi
-    if [[ "$hermes_selected" == true || "$proxy_selected" == true ]]; then
+    if [[ "$hermes_selected" == true || "$proxy_selected" == true ||
+          "$whisper_selected" == true || "$tts_selected" == true ]]; then
         printf 'ODS_MODE=local\n' >"$install_root/.env"
     fi
     if [[ "$brave_key_mode" == file || "$brave_key_mode" == empty-override ]]; then
@@ -96,6 +112,9 @@ run_case() {
         HOST_PAGE_SIZE=4096
         SCRIPT_DIR="$source_root"
         INSTALL_DIR="$install_root"
+        ENABLE_WHISPER="$(ods_installed_service_default "$INSTALL_DIR" whisper false)"
+        ENABLE_TTS="$(ods_installed_service_default "$INSTALL_DIR" tts false)"
+        [[ "$ENABLE_WHISPER" == true || "$ENABLE_TTS" == true ]] && ENABLE_VOICE=true
         ENABLE_HERMES="$(ods_installed_service_default "$INSTALL_DIR" hermes false)"
         ENABLE_HERMES_PROXY="$(ods_installed_service_default "$INSTALL_DIR" hermes-proxy "$ENABLE_HERMES")"
         MAX_CONTEXT=4096
@@ -177,6 +196,17 @@ run_case() {
                 test -f "$root/extensions/services/$service/compose.yaml.disabled"
             fi
         done
+        for service in whisper tts; do
+            local voice_expected="$whisper_selected"
+            [[ "$service" == tts ]] && voice_expected="$tts_selected"
+            if [[ "$voice_expected" == true ]]; then
+                test -f "$root/extensions/services/$service/compose.yaml"
+                test ! -e "$root/extensions/services/$service/compose.yaml.disabled"
+            else
+                test ! -e "$root/extensions/services/$service/compose.yaml"
+                test -f "$root/extensions/services/$service/compose.yaml.disabled"
+            fi
+        done
     done
     [[ "$(cat "$test_root/comfyui-selection")" == "$comfyui_expected" ]]
     [[ "$(cat "$test_root/brave-selection")" == "$brave_expected" ]]
@@ -197,5 +227,7 @@ run_case false "" false cpu false true empty-override
 run_case false "" false cpu false false none true false
 run_case false "" false cpu false false none true true
 run_case false "" false cpu false false none false true true
+run_case false "" false cpu false false none false false false true false
+run_case false "" false cpu false false none false false false false true
 
 echo "PASS: feature selection reconciles source and installed compose states"

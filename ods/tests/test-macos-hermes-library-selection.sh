@@ -45,7 +45,7 @@ ENABLE_HERMES_PROXY=false
 # The retained per-service choices must still win when the installer syncs.
 printf 'services: {}\n' >"$INSTALL_DIR/extensions/services/hermes-proxy/compose.yaml"
 ENABLE_LITELLM=false ENABLE_SEARXNG=false ENABLE_RECOMMENDED=false
-ENABLE_VOICE=false ENABLE_WORKFLOWS=false ENABLE_RAG=false
+ENABLE_VOICE=false ENABLE_WHISPER=false ENABLE_TTS=false ENABLE_WORKFLOWS=false ENABLE_RAG=false
 ENABLE_OPENCLAW=false ENABLE_APE=false ENABLE_PERPLEXICA=false
 ENABLE_PRIVACY_SHIELD=false ENABLE_ODS_PROXY=false ENABLE_TAILSCALE=false
 ENABLE_LANGFUSE=false ENABLE_BRAVE_SEARCH=false
