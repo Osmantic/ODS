@@ -365,8 +365,13 @@ done
 if [[ "$REQUIREMENTS_MET" != "true" ]]; then
     warn "Some requirements not met. Installation may have limited functionality."
     if $INTERACTIVE && ! $DRY_RUN; then
-        read -p "  Continue anyway? [y/N] " -r < /dev/tty
-        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+        _req_reply=""
+        if [[ -r /dev/tty ]]; then
+            read -p "  Continue anyway? [y/N] " -r _req_reply < /dev/tty
+        else
+            read -p "  Continue anyway? [y/N] " -r _req_reply || true
+        fi
+        if [[ ! "$_req_reply" =~ ^[Yy]$ ]]; then
             exit 1
         fi
         warn "Continuing despite unmet requirements at user request."
