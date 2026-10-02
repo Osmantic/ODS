@@ -5,7 +5,7 @@ import { fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { render } from '../test/test-utils'
 import { act } from '@testing-library/react'
 import {saveProfile} from '../lib/localProfile'
-import {saveConversation,readConversations,DELETE_EVENT} from '../lib/pixelConversations'
+import {saveConversation,readConversations,createConversationWriter,DELETE_EVENT,SELECT_EVENT} from '../lib/pixelConversations'
 import { StrictMode } from 'react'
 import {previewManifestResponse} from '../test/previewFixtures'
 
@@ -1719,6 +1719,110 @@ describe('Pixel', () => {
     })
   })
 
+  it('does not let a passive second tab take ownership of an in-flight conversation', async () => {
+    saveConversation({
+      schema: 1, chatId: 'shared-active', requestId: 'shared-attempt', inFlight: true, interrupted: false,
+      messages: [{ role: 'user', content: 'Write a file' }, { role: 'assistant', content: 'Working on it' }],
+    })
+    const before = localStorage.getItem('ods.pixel.chat.v1')
+    const owner = createConversationWriter(JSON.parse(before))
+    globalThis.fetch.mockImplementation(async url => {
+      if (url === '/api/pixel/status') return response({ available: true })
+      if (url === '/api/pixel/chat/result') return response({ state: 'active', events: '' })
+      throw new Error(`Unexpected request ${url}`)
+    })
+
+    render(<StrictMode><Pixel /></StrictMode>)
+    await waitFor(() => expect(globalThis.fetch.mock.calls.some(([url]) => url === '/api/pixel/chat/result')).toBe(true))
+    expect(localStorage.getItem('ods.pixel.chat.v1')).toBe(before)
+    expect(() => owner({
+      ...JSON.parse(before), inFlight: false,
+      messages: [{ role: 'user', content: 'Write a file' }, { role: 'assistant', content: 'Finished the file' }],
+    })).not.toThrow()
+  })
+
+  it('keeps an untouched observer read-only after the original tab completes', async () => {
+    const original = {
+      schema: 1, chatId: 'shared-completion', requestId: 'shared-attempt', inFlight: true, interrupted: false,
+      messages: [{ role: 'user', content: 'Write a file' }, { role: 'assistant', content: 'Working on it' }],
+    }
+    saveConversation(original)
+    const before = JSON.parse(localStorage.getItem('ods.pixel.chat.v1'))
+    const owner = createConversationWriter(before)
+    let completed = false
+    globalThis.fetch.mockImplementation(async url => {
+      if (url === '/api/pixel/status') return response({ available: true })
+      if (url === '/api/pixel/chat/result') {
+        if (!completed) {
+          completed = true
+          owner({ ...before, inFlight: false, interrupted: false,
+            messages: [{ role: 'user', content: 'Write a file' }, { role: 'assistant', content: 'Finished the file' }] })
+        }
+        return response({ state: 'complete', events: 'data: {"choices":[{"delta":{"content":"Finished the file"}}]}\n\ndata: {"choices":[{"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n' })
+      }
+      throw new Error(`Unexpected request ${url}`)
+    })
+
+    render(<StrictMode><Pixel /></StrictMode>)
+    await screen.findByText('Finished the file')
+    expect(screen.queryByText('Keep a copy of your changes')).not.toBeInTheDocument()
+    expect(JSON.parse(localStorage.getItem('ods.pixel.chat.v1')).messages.at(-1).content).toBe('Finished the file')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Workspace' }))
+    expect(screen.queryByText('Keep a copy of your changes')).not.toBeInTheDocument()
+
+    fireEvent.change(screen.getByPlaceholderText('Message Portal...'), { target: { value: 'My unsaved note' } })
+    expect(await screen.findByText('Keep a copy of your changes')).toBeInTheDocument()
+    expect(JSON.parse(localStorage.getItem('ods.pixel.chat.v1')).messages.at(-1).content).toBe('Finished the file')
+  })
+
+  it('does not claim an active conversation selected from another chat', async () => {
+    saveConversation({schema:1,chatId:'working-elsewhere',requestId:'elsewhere-attempt',inFlight:true,
+      messages:[{role:'user',content:'Continue the task'},{role:'assistant',content:'Still working'}]})
+    const active = readConversations().find(chat => chat.chatId === 'working-elsewhere')
+    const owner = createConversationWriter(active)
+    saveConversation({schema:1,chatId:'current-chat',inFlight:false,
+      messages:[{role:'user',content:'Earlier request'},{role:'assistant',content:'Earlier answer'}]})
+    globalThis.fetch.mockImplementation(async url => {
+      if (url === '/api/pixel/status') return response({available:true})
+      if (url === '/api/pixel/chat/result') return response({state:'active',events:''})
+      throw new Error(`Unexpected request ${url}`)
+    })
+
+    render(<StrictMode><Pixel /></StrictMode>)
+    await screen.findByText('Earlier answer')
+    act(() => window.dispatchEvent(new CustomEvent(SELECT_EVENT, {detail:'working-elsewhere'})))
+    await screen.findByText('Still working')
+    expect(screen.queryByText('Keep a copy of your changes')).not.toBeInTheDocument()
+    expect(() => owner({...active,inFlight:false,
+      messages:[{role:'user',content:'Continue the task'},{role:'assistant',content:'Finished elsewhere'}]})).not.toThrow()
+  })
+
+  it('persists an exact acknowledged Stop from a restored active observer', async () => {
+    saveConversation({schema:1,chatId:'restored-stop',requestId:'restored-attempt',inFlight:true,
+      messages:[{role:'user',content:'Long task'},{role:'assistant',content:'Verified partial work'}]})
+    globalThis.fetch.mockImplementation(async (url, options) => {
+      if (url === '/api/pixel/status') return response({available:true})
+      if (url === '/api/pixel/chat/result') return response({state:'active',events:''})
+      if (url === '/api/pixel/chat/cancel') {
+        expect(JSON.parse(options.body)).toEqual({chat_id:'restored-stop',request_id:'restored-attempt'})
+        return response({aborted:true})
+      }
+      throw new Error(`Unexpected request ${url}`)
+    })
+
+    render(<StrictMode><Pixel /></StrictMode>)
+    await screen.findByTitle('Stop')
+    fireEvent.click(screen.getByTitle('Stop'))
+    await screen.findByText('Response stopped')
+    await waitFor(() => {
+      const stored = JSON.parse(localStorage.getItem('ods.pixel.chat.v1'))
+      expect(stored.inFlight).toBe(false)
+      expect(stored.interrupted).toBe(false)
+      expect(stored.messages.at(-1).content).toContain('Stopped by you.')
+    })
+  })
+
   it('preserves an in-flight request and partial answer across repeated reloads without replay', async () => {
     let releasePendingRead
     let reads = 0
@@ -1994,6 +2098,12 @@ describe('Pixel', () => {
     fireEvent.click(screen.getByTitle('Stop'))
     await screen.findByText('Response stopped')
     expect(screen.getByText('Saved partial result')).toBeInTheDocument()
+    await waitFor(() => {
+      const stored = JSON.parse(localStorage.getItem('ods.pixel.chat.v1'))
+      expect(stored.inFlight).toBe(false)
+      expect(stored.interrupted).toBe(false)
+      expect(stored.messages.at(-1).content).toContain('Stopped by you.')
+    })
     expect(globalThis.fetch.mock.calls.some(([url]) => url === '/api/pixel/chat/stream')).toBe(false)
   })
 

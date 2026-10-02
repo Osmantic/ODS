@@ -625,6 +625,9 @@ export default function Pixel({ systemStatus = null }) {
   const chatIdRef = useRef(initialChat?.chatId || makeChatId())
   const images = usePortalImages(chatIdRef.current, initialChat?.draftImages)
   const imageDraftKey = JSON.stringify(images.receipts)
+  const restoredViewRef = useRef(initialChat?.persistenceSnapshot?.persistenceVersion === 2
+    && (initialChat.persistenceSnapshot.inFlight === true || initialChat.persistenceSnapshot.interrupted === true)
+    ? {chatId: initialChat.chatId, input, chatMode, imageDraftKey} : null)
   const hasImageHistory = messages.some(message=>message.role==='user' && message.images?.length)
   const { state: extensionInstallation, start: startExtensionInstallation, stop: stopExtensionInstallation, resume: resumeExtensionInstallation } = useExtensionInstallation(chatIdRef.current)
   const { state: githubExtensionInstallation, start: startGithubExtensionRequest,
@@ -944,6 +947,15 @@ export default function Pixel({ systemStatus = null }) {
   }, [input])
 
   useEffect(() => {
+    const restored = restoredViewRef.current
+    if (restored && chatIdRef.current === restored.chatId
+      && input === restored.input && chatMode === restored.chatMode
+      && imageDraftKey === restored.imageDraftKey) {
+      // A restored observer may receive the original tab's terminal result
+      // and open Library without editing its own draft. Neither action gives
+      // it ownership of the conversation's browser-storage revision.
+      return
+    }
     try {
       const storedMessages = messages.map(message => {
         const task = message.role === 'assistant' && parseTaskActivity(message.task, message.task?.runId)
@@ -1005,6 +1017,7 @@ export default function Pixel({ systemStatus = null }) {
       if(teamAttempt.current?.signature!==signature)teamAttempt.current={signature,id:makeChatId(),context:messages.filter(m=>!m.teamRequestId).slice(-4).map(m=>`${m.role}: ${m.content.slice(0,450)}`).join('\n').slice(-1800)}
       const requestId=teamAttempt.current.id
       const context=teamAttempt.current.context
+      restoredViewRef.current = null
       setMessages(previous=>previous.some(m=>m.teamRequestId===requestId) ? previous : [...previous,{role:'user',content:trimmed},{role:'assistant',content:requestedGoal?'Preparing your goal…':'Preparing the agent team…',teamRequestId:requestId,...(requestedGoal?{goalMode:true}:{}),status:'done'}])
       setStopError('')
       try {
@@ -1027,6 +1040,7 @@ export default function Pixel({ systemStatus = null }) {
       userMessage,
     ]
     const visibleConversation = [...messages, userMessage]
+    restoredViewRef.current = null
     setMessages([...visibleConversation, { role: 'assistant', content: '', status: 'streaming', revealResponse:makeChatId() }])
     if (typeof answerOverride !== 'string') setInput('')
     setSending(true)
@@ -1379,6 +1393,9 @@ export default function Pixel({ systemStatus = null }) {
       // rewrite that completed answer as owner-stopped.
       if (stopRequestRef.current !== stopRequest || chatIdRef.current !== chatId || requestIdRef.current !== requestId || abortRef.current !== controller
         || (restored && !['active', 'unknown'].includes(restoredActivityRef.current))) return
+      // A confirmed Stop is an owner action, so this tab must commit its
+      // terminal state through the normal conversation revision check.
+      if (restored) restoredViewRef.current = null
       controller?.abort()
       abortRef.current = null
       requestIdRef.current = null
@@ -1476,6 +1493,10 @@ export default function Pixel({ systemStatus = null }) {
       const chat = loadStoredChat(readConversations().find(item => item.chatId === event.detail))
       if (!chat || chat.chatId === chatIdRef.current) return
       conversationWriter.current = createConversationWriter(chat.persistenceSnapshot)
+      restoredViewRef.current = chat.persistenceSnapshot?.persistenceVersion === 2
+        && (chat.persistenceSnapshot.inFlight === true || chat.persistenceSnapshot.interrupted === true)
+        ? {chatId: chat.chatId, input: chat.draft, chatMode: chat.chatMode,
+          imageDraftKey: JSON.stringify(chat.draftImages)} : null
       chatIdRef.current = chat.chatId
       images.replace(chat.chatId,chat.draftImages)
       shownTeamPublications.current = shownPublicationKeys(chat)
@@ -1751,7 +1772,7 @@ export default function Pixel({ systemStatus = null }) {
               ) : (
                 <span className="break-words whitespace-pre-wrap">{message.content}</span>
               )}
-              {message.role === 'assistant' && message.questions && <PixelQuestions questions={message.questions} answers={message.questionDraft} answered={index<messages.length-1} disabled={message.goalMode ? message.goalState!=='waiting' : isDisabled || sending || restoredActive || restoredChecking} onChange={questionDraft=>setMessages(previous=>previous.map((item,i)=>i===index?{...item,questionDraft}:item))} onSubmit={answer=>message.goalMode ? teams.answer(message.teamId,'0',message.questionDraft) : sendMessage(message.task?.goal ? continueGoal(messages,index,answer) : answer)}/>}
+              {message.role === 'assistant' && message.questions && <PixelQuestions questions={message.questions} answers={message.questionDraft} answered={index<messages.length-1} disabled={message.goalMode ? message.goalState!=='waiting' : isDisabled || sending || restoredActive || restoredChecking} onChange={questionDraft=>{restoredViewRef.current=null;setMessages(previous=>previous.map((item,i)=>i===index?{...item,questionDraft}:item))}} onSubmit={answer=>{restoredViewRef.current=null;return message.goalMode ? teams.answer(message.teamId,'0',message.questionDraft) : sendMessage(message.task?.goal ? continueGoal(messages,index,answer) : answer)}}/>}
               {message.goalMode && message.goalNotice && <p role="status" className="mt-3 text-xs text-theme-text-secondary">{message.goalNotice}</p>}
               {message.teamId && !(message.goalMode && ACTIVE_TEAMS.has(message.goalState)) && <button type="button" onClick={()=>openAgents({teamId:message.teamId,agentId:'0'})} className={message.goalMode?"mt-3 border-0 bg-transparent px-0 py-2 text-xs hover:underline":"mt-3 rounded-lg border border-theme-border px-3 py-2 text-xs hover:bg-theme-border/30"}>{message.goalMode?'View goal history':'View agents and conversations'}</button>}
 
