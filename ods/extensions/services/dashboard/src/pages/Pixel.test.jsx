@@ -1798,6 +1798,31 @@ describe('Pixel', () => {
       messages:[{role:'user',content:'Continue the task'},{role:'assistant',content:'Finished elsewhere'}]})).not.toThrow()
   })
 
+  it('persists an exact acknowledged Stop from a restored active observer', async () => {
+    saveConversation({schema:1,chatId:'restored-stop',requestId:'restored-attempt',inFlight:true,
+      messages:[{role:'user',content:'Long task'},{role:'assistant',content:'Verified partial work'}]})
+    globalThis.fetch.mockImplementation(async (url, options) => {
+      if (url === '/api/pixel/status') return response({available:true})
+      if (url === '/api/pixel/chat/result') return response({state:'active',events:''})
+      if (url === '/api/pixel/chat/cancel') {
+        expect(JSON.parse(options.body)).toEqual({chat_id:'restored-stop',request_id:'restored-attempt'})
+        return response({aborted:true})
+      }
+      throw new Error(`Unexpected request ${url}`)
+    })
+
+    render(<StrictMode><Pixel /></StrictMode>)
+    await screen.findByTitle('Stop')
+    fireEvent.click(screen.getByTitle('Stop'))
+    await screen.findByText('Response stopped')
+    await waitFor(() => {
+      const stored = JSON.parse(localStorage.getItem('ods.pixel.chat.v1'))
+      expect(stored.inFlight).toBe(false)
+      expect(stored.interrupted).toBe(false)
+      expect(stored.messages.at(-1).content).toContain('Stopped by you.')
+    })
+  })
+
   it('preserves an in-flight request and partial answer across repeated reloads without replay', async () => {
     let releasePendingRead
     let reads = 0
@@ -2073,6 +2098,12 @@ describe('Pixel', () => {
     fireEvent.click(screen.getByTitle('Stop'))
     await screen.findByText('Response stopped')
     expect(screen.getByText('Saved partial result')).toBeInTheDocument()
+    await waitFor(() => {
+      const stored = JSON.parse(localStorage.getItem('ods.pixel.chat.v1'))
+      expect(stored.inFlight).toBe(false)
+      expect(stored.interrupted).toBe(false)
+      expect(stored.messages.at(-1).content).toContain('Stopped by you.')
+    })
     expect(globalThis.fetch.mock.calls.some(([url]) => url === '/api/pixel/chat/stream')).toBe(false)
   })
 
