@@ -5,6 +5,13 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+# This script also runs from the background model-upgrade task. Respect the
+# installer's explicit opt-out even when OpenCode already exists in the user
+# profile; -SkipIfUnavailable alone does not protect that existing config.
+if ($env:ODS_WINDOWS_DEVTOOLS_SELECTED -in @('false', '0')) {
+    return
+}
+
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $RepoRoot = Split-Path $ScriptDir -Parent
 $WindowsInstallerDir = Join-Path (Join-Path $RepoRoot "installers") "windows"

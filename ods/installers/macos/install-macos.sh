@@ -228,6 +228,17 @@ source "${SOURCE_ROOT}/installers/lib/readiness-summary.sh"
 source "${SOURCE_ROOT}/installers/lib/secure-log.sh"
 
 # ── File-local helpers ──
+_macos_remote_provider_retained_data_dir() {
+    local raw decoded=""
+    raw="$(read_env_value "${INSTALL_DIR}/.env" "ODS_DATA_DIR")"
+    if [[ -n "$raw" ]]; then
+        # read_env_value returns raw dotenv text. Decode quotes and spaces
+        # exactly as the installer and Compose decode the retained setting.
+        decoded="$(safe_env_decode_value "$raw")"
+    fi
+    printf '%s' "${decoded:-${INSTALL_DIR}/data}"
+}
+
 _close_inherited_fds_for_daemon() {
     local fd fd_dir fd_name
 
@@ -1945,6 +1956,14 @@ else
     mkdir -p "${INSTALL_DIR}/bin"
     ai_ok "Created directory structure"
 
+    _macos_remote_provider_data_dir="$(_macos_remote_provider_retained_data_dir)"
+    _macos_remote_provider_selection="$(python3 \
+        "${SOURCE_ROOT}/scripts/remote-provider-compose-selection.py" inspect "$INSTALL_DIR" "$SOURCE_ROOT" \
+        --data-dir "$_macos_remote_provider_data_dir")" || {
+        ai_err "Could not inspect the retained remote-provider selection."
+        exit 1
+    }
+
     # Copy source tree (skip .git, data, logs, .env, models)
     if [[ "$SOURCE_ROOT" != "$INSTALL_DIR" ]]; then
         ai "Copying source files to ${INSTALL_DIR}..."
@@ -2056,6 +2075,14 @@ else
     # so cache invalidation and later dashboard toggles cannot resurrect the
     # installer's unselected built-ins.
     _macos_sync_builtin_compose_states
+
+    python3 "${SOURCE_ROOT}/scripts/remote-provider-compose-selection.py" apply \
+        "$INSTALL_DIR" "$SOURCE_ROOT" "$_macos_remote_provider_selection" \
+        --data-dir "$_macos_remote_provider_data_dir" || {
+        ai_err "Could not reconcile the retained remote-provider selection."
+        exit 1
+    }
+    unset _macos_remote_provider_selection
 
     # A detached bootstrap worker can rewrite GGUF_FILE/LLM_MODEL after its
     # download finishes. Stop and disable it before cloud mode or a forced

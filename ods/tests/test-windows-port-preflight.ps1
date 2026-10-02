@@ -386,9 +386,9 @@ function Assert-VoiceEqual {
 $script:voiceIfAst = $ast.Find({
     param($node)
     $node -is [System.Management.Automation.Language.IfStatementAst] -and
-        $node.Clauses[0].Item1.Extent.Text -match 'enableVoice'
+        $node.Clauses[0].Item1.Extent.Text -match 'enableWhisper'
 }, $true)
-if (-not $script:voiceIfAst) { throw "Phase 04 enableVoice block not found" }
+if (-not $script:voiceIfAst) { throw "Phase 04 enableWhisper block not found" }
 $voiceBlock = [scriptblock]::Create(($script:voiceIfAst.Clauses[0].Item2.Statements.Extent.Text -join "`n"))
 
 function Get-PhaseVoicePort {
@@ -526,6 +526,26 @@ $ports = Get-PhaseVoicePort -Backend "nvidia"
 Assert-VoiceEqual $ports["Whisper (STT)"] 9100 "phase cached 9000 lemonade -> 9100"
 Assert-VoiceEqual (Get-GeneratorWhisperPort -Backend "nvidia" -SeedEnv "WHISPER_PORT=9000") "9100" `
     "generator cached 9000 lemonade -> 9100"
+
+# A TTS-only Library selection checks its own configured host port without
+# bringing Whisper's port into the selected-service preflight.
+$ttsIfAst = $ast.Find({
+    param($node)
+    $node -is [System.Management.Automation.Language.IfStatementAst] -and
+        $node.Clauses[0].Item1.Extent.Text -match 'enableTts'
+}, $true)
+if (-not $ttsIfAst) { throw "Phase 04 enableTts block not found" }
+$ttsBlock = [scriptblock]::Create(($ttsIfAst.Clauses[0].Item2.Statements.Extent.Text -join "`n"))
+$ttsSeedDir = New-VoiceSeedDir -Content 'TTS_PORT=8891'
+try {
+    $installDir = $ttsSeedDir
+    $_portsToCheck = [ordered]@{}
+    . $ttsBlock
+    Assert-VoiceEqual $_portsToCheck['Kokoro (TTS)'] 8891 'TTS-only preflight honors persisted port'
+    Assert-VoiceEqual $_portsToCheck.Contains('Whisper (STT)') $false 'TTS-only preflight omits Whisper'
+} finally {
+    Remove-VoiceSeedDir $ttsSeedDir
+}
 
 Write-Host ("[PASS] Voice port parity: {0}/{1} cases" -f $script:voicePass, $script:voiceCase)
 if ($script:voicePass -ne $script:voiceCase) { $global:LASTEXITCODE = 1; exit 1 }

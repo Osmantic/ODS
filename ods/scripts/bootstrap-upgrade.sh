@@ -834,6 +834,12 @@ sync_windows_opencode_config() {
         *) return 0 ;;
     esac
 
+    # The model upgrade can outlive the installer. Carry its explicit DevTools
+    # choice so a Core-only install never rewrites an existing user profile.
+    case "${ODS_WINDOWS_DEVTOOLS_SELECTED:-}" in
+        false|0) return 0 ;;
+    esac
+
     local sync_script="$INSTALL_DIR/scripts/update-windows-opencode-config.ps1"
     [[ -f "$sync_script" ]] || return 0
 

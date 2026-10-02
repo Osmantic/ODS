@@ -250,8 +250,7 @@ WINDOWS_WHISPER_CUDA_MIN_DRIVER_MAJOR = 575
 # Always-on services defined in docker-compose.base.yml — never stoppable via API.
 # Distinct from CORE_SERVICE_IDS (which is the allowlist of known service IDs).
 ALWAYS_ON_SERVICES: frozenset = frozenset({
-    "llama-server", "model-router", "remote-provider-egress", "remote-provider-ssh-tunnel",
-    "open-webui", "dashboard", "dashboard-api",
+    "llama-server", "model-router", "open-webui", "dashboard", "dashboard-api",
 })
 USER_EXTENSIONS_DIR: Path = Path()
 EXTENSIONS_DIR: Path = Path()
@@ -4965,6 +4964,51 @@ def _write_remote_provider_route_state(
     )
 
 
+def _write_selected_remote_provider_route_state(
+    plan: dict,
+    *,
+    probe_receipt: dict | None = None,
+    resume: dict | None = None,
+) -> None:
+    """Publish an enabled route with its required Library markers selected.
+
+    The selector holds this same cross-process lock through stop and marker
+    rename. Checking markers and publishing route state inside it makes either
+    operation win cleanly; later activation can proceed without the lock.
+    """
+    route = plan.get("route") if isinstance(plan.get("route"), dict) else {}
+    transport = route.get("transport")
+    if route.get("enabled") is not True or transport not in {"direct", "ssh"}:
+        raise RuntimeError("Invalid enabled remote-provider route")
+    required = ["remote-provider-egress"]
+    if transport == "ssh":
+        required.append("remote-provider-ssh-tunnel")
+    selector = _load_extension_selector()
+    try:
+        with selector._selection_lock(INSTALL_DIR, 15.0):
+            for service_id in required:
+                directory = INSTALL_DIR / "extensions" / "services" / service_id
+                try:
+                    directory_stat = directory.lstat()
+                except OSError as exc:
+                    raise RuntimeError(
+                        f"Enable {service_id} in Extensions Library before configuring this remote route"
+                    ) from exc
+                if not stat_mod.S_ISDIR(directory_stat.st_mode):
+                    raise RuntimeError(f"Invalid remote-provider service directory: {service_id}")
+                if not selector._selection_enabled(directory):
+                    raise RuntimeError(
+                        f"Enable {service_id} in Extensions Library before configuring this remote route"
+                    )
+                if (directory / "compose.yaml").lstat().st_nlink != 1:
+                    raise RuntimeError(f"Invalid remote-provider Compose marker: {service_id}")
+            _write_remote_provider_route_state(
+                plan, probe_receipt=probe_receipt, resume=resume,
+            )
+    except selector.SelectionError as exc:
+        raise RuntimeError(str(exc)) from exc
+
+
 def _write_remote_provider_secret(ref: str, value: str) -> None:
     uid, gid = _remote_provider_secret_owner()
     mode = 0o640 if ref in _REMOTE_PROVIDER_CONTAINER_SECRET_REFS else 0o600
@@ -5217,7 +5261,7 @@ def _apply_remote_provider_lifecycle_operation(payload: dict, plan: dict) -> dic
                 mutation_started = True
             _write_remote_provider_profile(route)
             mutation_started = True
-            _write_remote_provider_route_state(plan, probe_receipt=probe_receipt)
+            _write_selected_remote_provider_route_state(plan, probe_receipt=probe_receipt)
             mutation_started = True
             if ssh_configure:
                 result["staged"] = True
@@ -5231,7 +5275,7 @@ def _apply_remote_provider_lifecycle_operation(payload: dict, plan: dict) -> dic
                     result["activation"] = _activate_remote_provider_route(route)
                 result["applied"] = True
         elif action == "enable":
-            _write_remote_provider_route_state(
+            _write_selected_remote_provider_route_state(
                 plan,
                 probe_receipt=probe_receipt,
                 resume=resume,
@@ -6134,6 +6178,7 @@ def _apply_extension_selection(
                 INSTALL_DIR, preset_path, core_services=set(ALWAYS_ON_SERVICES),
                 compose_flags=shlex.join(flags), strict=True,
                 expected_sha256=expected_sha256,
+                data_dir=DATA_DIR,
             )
         except selector.SelectionError as exc:
             message = str(exc)

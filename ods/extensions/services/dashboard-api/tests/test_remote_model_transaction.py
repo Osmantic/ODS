@@ -1,6 +1,10 @@
 """Remote-route transactions with real temporary receipts and inert runtimes."""
 from copy import deepcopy
 import json
+import os
+from pathlib import Path
+import shutil
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -12,15 +16,31 @@ from test_host_agent import _mod, TestRemoteProviderLifecycle as _LifecycleFixtu
 def runtime(tmp_path, monkeypatch):
     root=tmp_path/'ods'
     root.mkdir()
+    monkeypatch.setattr(_mod,'INSTALL_DIR',root)
     data=root/'data'
     data.mkdir()
+    (data/'.extensions-lock').write_bytes(b'\0')
+    scripts=root/'scripts'
+    scripts.mkdir()
+    shutil.copyfile(Path(__file__).resolve().parents[4]/'scripts/extension-selection.py',
+                    scripts/'extension-selection.py')
+    for service_id in ('remote-provider-egress', 'remote-provider-ssh-tunnel'):
+        service=root/'extensions/services'/service_id
+        service.mkdir(parents=True)
+        (service/'compose.yaml').write_text(
+            f'services:\n  {service_id}:\n    image: example:latest\n')
+    if os.name == 'nt':
+        # Dashboard conftest's partial POSIX stub cannot replace msvcrt locks.
+        monkeypatch.delitem(sys.modules, 'fcntl', raising=False)
+    # Dynamic import may create bytecode in the installed script directory;
+    # include that stable artifact in the rollback snapshot.
+    _mod._load_extension_selector()
     cloud=root/'config/litellm/cloud.yaml'
     cloud.parent.mkdir(parents=True)
     cloud.write_text('previous cloud\n')
     env=root/'.env'
     env.write_text('ODS_MODE=local\nLLM_API_URL=http://llama-server:8080\nPIXEL_OPENWEBUI_KEY=fixture-chat-key\nGGUF_FILE=local.gguf\n')
     env.chmod(0o600)
-    monkeypatch.setattr(_mod,'INSTALL_DIR',root)
     monkeypatch.setattr(_mod,'DATA_DIR',data)
     helpers=_LifecycleFixtures()
     helpers._patch_successful_probe(monkeypatch)

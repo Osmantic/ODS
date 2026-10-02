@@ -17,7 +17,7 @@ from urllib.parse import quote, urlsplit, urlunsplit
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
 
-from config import DATA_DIR
+from config import DATA_DIR, EXTENSIONS_DIR
 from host_agent_client import (
     AgentHTTPError,
     AgentProtocolError,
@@ -57,6 +57,31 @@ _LOCAL_HOSTNAMES = {
     "localhost",
     "localhost.localdomain",
 }
+
+
+def _remote_provider_service_selection() -> dict[str, bool]:
+    """Report only the Library marker state, never provider configuration."""
+    result: dict[str, bool] = {}
+    for service_id, key in (
+        ("remote-provider-egress", "egressSelected"),
+        ("remote-provider-ssh-tunnel", "sshTunnelSelected"),
+    ):
+        directory = EXTENSIONS_DIR / service_id
+        active, disabled = directory / "compose.yaml", directory / "compose.yaml.disabled"
+        try:
+            active_stat = active.lstat()
+        except FileNotFoundError:
+            active_stat = None
+        try:
+            disabled_stat = disabled.lstat()
+        except FileNotFoundError:
+            disabled_stat = None
+        # Ambiguous or unsafe markers cannot advertise a usable service.
+        result[key] = bool(
+            active_stat and stat.S_ISREG(active_stat.st_mode) and active_stat.st_nlink == 1
+            and disabled_stat is None
+        )
+    return result
 _EGRESS_ERROR_MESSAGES = {
     "invalid_route": "Remote provider route is invalid",
     "invalid_route_state": "Remote provider route state is invalid",
@@ -1114,6 +1139,7 @@ async def remote_provider_status() -> dict[str, Any]:
     )
     peer = _peer_status(route_state, ssh_supervisor)
     overall = _overall_status(route_state, egress, activation)
+    service_selection = _remote_provider_service_selection()
     return {
         "status": overall,
         "routeState": route_state,
@@ -1121,6 +1147,7 @@ async def remote_provider_status() -> dict[str, Any]:
         "sshSupervisor": ssh_supervisor,
         "peer": peer,
         "egress": egress,
+        "serviceSelection": service_selection,
         "capabilities": {
             "inference": overall == "ready",
             "odsPeerLifecycle": bool(peer.get("ready")),

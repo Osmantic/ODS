@@ -334,6 +334,9 @@ bash tests/test-macos-cli-mode-routing.sh
 echo "[contract] macOS cloud resolver preserves selected extension state"
 bash tests/test-macos-cloud-resolver.sh
 
+echo "[contract] macOS remote-provider upgrade decodes external data root"
+bash tests/test-macos-remote-provider-selection.sh
+
 echo "[contract] macOS installer preserves authenticated local/cloud transitions"
 bash tests/test-macos-installer-transitions.sh
 
