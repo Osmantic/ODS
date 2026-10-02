@@ -279,6 +279,7 @@ show_amd_gpu_device_guidance() {
 
 apply_cpu_gpu_fallback() {
     local reason="${1:-AMD GPU runtime devices are unavailable.}"
+    local external="${LEMONADE_EXTERNAL:-false}" managed="${AMD_INFERENCE_MANAGED:-}"
     ai_warn "$reason"
     ai "Using CPU mode so installation can complete without GPU passthrough."
 
@@ -289,7 +290,20 @@ apply_cpu_gpu_fallback() {
     GPU_MEMORY_TYPE="none"
     GPU_DEVICE_ID=""
     HAS_NPU=false
-    [[ "${ODS_MODE:-local}" == "lemonade" ]] && ODS_MODE="local"
+    # A missing GPU device in WSL changes the container backend, not the
+    # Windows-owned Lemonade inference route. Only managed Lemonade needs the
+    # local llama-server CPU fallback.
+    if [[ "${ODS_MODE:-local}" == "lemonade" ]]; then
+        case "${external,,}" in
+            true|1|yes|on) ;;
+            *)
+                if [[ "${AMD_INFERENCE_RUNTIME:-}" != "lemonade" \
+                   || "${managed,,}" != "false" ]]; then
+                    ODS_MODE="local"
+                fi
+                ;;
+        esac
+    fi
     BACKEND_ID="cpu"
     CAP_LLM_BACKEND="cpu"
     CAP_GPU_VENDOR="cpu"

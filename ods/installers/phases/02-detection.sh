@@ -609,7 +609,43 @@ INSTALLER_RECOMMENDED_MODEL="${LLM_MODEL:-}"
 INSTALLER_RECOMMENDED_GGUF="${GGUF_FILE:-}"
 INSTALLER_RECOMMENDED_CONTEXT="${MAX_CONTEXT:-}"
 MODEL_SELECTION_SOURCE="installer"
+ods_verify_retained_external_model_snapshot() {
+    [[ -n "${_retained_external_env_sha:-}" ]] || return 0
+    local current_hash
+    current_hash="$(sha256sum "$INSTALL_DIR/.env" 2>>"$LOG_FILE")" || {
+        error "Could not verify retained external model settings before installation."
+        return 1
+    }
+    current_hash="${current_hash%% *}"
+    if [[ "$current_hash" != "$_retained_external_env_sha" ]]; then
+        error "Retained external model settings changed during installation; rerun to use the current selection."
+        return 1
+    fi
+}
 if [[ -f "$INSTALL_DIR/.env" && "${ODS_RESELECT_MODEL:-false}" != "true" && "${TIER:-}" != "CLOUD" ]]; then
+    _selected_external="${LEMONADE_EXTERNAL:-false}"
+    _retained_external="$(external_llm_env_value "$INSTALL_DIR/.env" LEMONADE_EXTERNAL || true)"
+    if [[ "${_selected_external,,}" != "true" && "${ODS_MODE_EXPLICIT:-false}" != "true" \
+          && "${_retained_external,,}" == "true" ]]; then
+        error "This retained installation uses external Lemonade. Select it explicitly for this rerun or use --reselect-model."
+        exit 1
+    fi
+    _must_preserve_external=false
+    if [[ "${_selected_external,,}" == "true" && "${_retained_external,,}" == "true" ]]; then
+        _must_preserve_external=true
+        _retained_lemonade_model="$(external_llm_env_value "$INSTALL_DIR/.env" LEMONADE_MODEL || true)"
+        if [[ -n "${LEMONADE_MODEL:-}" && "$LEMONADE_MODEL" != "$_retained_lemonade_model" ]]; then
+            error "The requested Lemonade model differs from the retained selection. Use --reselect-model to change models."
+            exit 1
+        fi
+        unset _retained_lemonade_model
+        _retained_external_env_sha="$(sha256sum "$INSTALL_DIR/.env" 2>>"$LOG_FILE")" || {
+            error "Could not snapshot retained external model settings."
+            exit 1
+        }
+        _retained_external_env_sha="${_retained_external_env_sha%% *}"
+    fi
+    unset _retained_external
     _preserve_script="$SCRIPT_DIR/scripts/preserve-active-model.py"
     if [[ -f "$_preserve_script" ]]; then
         if [[ -z "${_selector_python:-}" ]]; then
@@ -622,6 +658,9 @@ if [[ -f "$INSTALL_DIR/.env" && "${ODS_RESELECT_MODEL:-false}" != "true" && "${T
             fi
         fi
         if [[ -n "${_selector_python:-}" ]]; then
+            _preserve_mode=--local-model
+            [[ "${_selected_external,,}" != "true" ]] || _preserve_mode=--external-lemonade
+            _preserve_status=0
             _preserved_model_env="$("$_selector_python" "$_preserve_script" \
                 --env "$INSTALL_DIR/.env" \
                 --catalog "$SCRIPT_DIR/config/model-library.json" \
@@ -633,7 +672,16 @@ if [[ -f "$INSTALL_DIR/.env" && "${ODS_RESELECT_MODEL:-false}" != "true" && "${T
                 --vram-mb "${GPU_VRAM:-0}" \
                 --ram-gb "${RAM_GB:-0}" \
                 --host-arch "${HOST_ARCH:-unknown}" \
-                2>>"$LOG_FILE" || true)"
+                "$_preserve_mode" \
+                2>>"$LOG_FILE")" || _preserve_status=$?
+            if [[ "$_preserve_status" -ne 0 && "$_preserve_mode" == "--external-lemonade" ]]; then
+                error "Could not validate the retained external model selection. Repair the saved settings or explicitly use --reselect-model."
+                exit 1
+            fi
+            if [[ "$_must_preserve_external" == true && -z "$_preserved_model_env" ]]; then
+                error "Retained external model selection could not be recovered; refusing to replace it."
+                exit 1
+            fi
             if [[ -n "$_preserved_model_env" ]] && command -v load_model_selector_env_from_output >/dev/null 2>&1; then
                 # Remove every model-selector runtime value before loading the
                 # preserved active contract. The helper omits inactive optional
@@ -648,10 +696,19 @@ if [[ -f "$INSTALL_DIR/.env" && "${ODS_RESELECT_MODEL:-false}" != "true" && "${T
                 unset LLAMA_ARG_CTX_CHECKPOINTS LLAMA_ARG_CACHE_RAM
                 unset LLAMA_ARG_SPEC_DRAFT_N_MAX LLAMA_ARG_SPLIT_MODE LLAMA_ARG_TENSOR_SPLIT
                 load_model_selector_env_from_output <<< "$_preserved_model_env"
-                log "Preserved active local model across installer rerun: ${LLM_MODEL} (${GGUF_FILE})"
+                log "Preserved active model across installer rerun: ${LLM_MODEL} (${GGUF_FILE})"
             fi
+            unset _preserve_mode _preserve_status
+            ods_verify_retained_external_model_snapshot || exit 1
+        elif [[ "$_must_preserve_external" == true ]]; then
+            error "Python is required to preserve the retained external model selection."
+            exit 1
         fi
+    elif [[ "$_must_preserve_external" == true ]]; then
+        error "The retained external model preservation helper is missing."
+        exit 1
     fi
+    unset _selected_external _must_preserve_external
 elif [[ "${ODS_RESELECT_MODEL:-false}" == "true" ]]; then
     log "Active-model preservation disabled by --reselect-model"
 fi
