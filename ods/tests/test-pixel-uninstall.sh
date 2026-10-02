@@ -96,6 +96,9 @@ if [[ "${SUDO_FAIL_OPS_ARTIFACT_REMOVAL:-false}" == true \
     && "$*" == *"${ODS_PIXEL_UNINSTALL_OPS_ENV:-/etc/pixel-ops-broker.env}"* ]]; then
     exit 1
 fi
+if [[ -n "${SOURCE_IDLE_TEST_DRIVER:-}" && "${1:-} ${2:-} ${3:-}" == 'python3 - remove' ]]; then
+    exec python3 "$SOURCE_IDLE_TEST_DRIVER" "$@"
+fi
 exec "$@"
 SH
 cat >"$MOCK_BIN/systemctl" <<'SH'
@@ -2434,6 +2437,122 @@ else
         || fail "unsafe access snapshot caused partial cleanup"
 fi
 
+
+cat > "$TEST_ROOT/source-idle-remove-probe.py" <<'PY'
+import os
+import sys
+
+source = sys.stdin.read()
+assert sys.argv[1:4] == ['python3', '-', 'remove']
+marker = 'if source_idle:\n    verify_idle_source()\n\nfor path in (provider_dropin'
+assert source.count(marker) == 1
+hook = '''if source_idle:
+    import subprocess
+    _probe = pathlib.Path(os.environ['SOURCE_IDLE_PROBE_RECEIPT'])
+    _mode = os.environ['SOURCE_IDLE_TEST_MODE']
+    if _mode == 'held':
+        _child = "import fcntl,sys; f=open(sys.argv[1], 'rb');\\ntry: fcntl.flock(f, fcntl.LOCK_EX|fcntl.LOCK_NB)\\nexcept BlockingIOError: sys.exit(73)\\nsys.exit(74)"
+        _check = subprocess.run([sys.executable, '-c', _child, str(source_state / 'lock')], timeout=5)
+        assert _check.returncode == 73, 'source lock released before removal'
+        _probe.write_text('held')
+    elif _mode == 'replace-lock':
+        (source_state / 'lock').rename(_probe)
+        (source_state / 'lock').write_bytes(b'')
+        (source_state / 'lock').chmod(0o600)
+    elif _mode == 'replace-directory':
+        source_state.rename(_probe)
+        source_state.mkdir(mode=0o700)
+        (source_state / 'lock').write_bytes(b'')
+        (source_state / 'lock').chmod(0o600)
+    elif _mode == 'late-journal':
+        (source_state / 'source-upgrade.json').write_text('{}')
+    else:
+        raise AssertionError('unknown fixture fault')
+
+'''
+sys.argv = sys.argv[2:]
+exec(compile(source.replace(marker, hook + marker), '<candidate-source-remove>', 'exec'), {'__name__': '__main__'})
+PY
+
+write_never_staged_source_fixture() {
+    write_access_fixture
+    mkdir -m 0700 "$ACCESS_STATE/source-upgrade"
+    : > "$ACCESS_STATE/source-upgrade/lock"
+    chmod 0600 "$ACCESS_STATE/source-upgrade/lock"
+    # Old protected helpers cannot describe a never-staged transaction. This
+    # exact source/mirror pair must remain byte-validated without importing it.
+    printf '%s\n' 'raise RuntimeError("completed source journal required")' \
+        > "$INSTALL_DIR/bin/pixel_source_upgrade.py"
+    cp "$INSTALL_DIR/bin/pixel_source_upgrade.py" "$LIBEXEC_DIR/ods-pixel-access/pixel_source_upgrade.py"
+    chmod 0644 "$INSTALL_DIR/bin/pixel_source_upgrade.py" "$LIBEXEC_DIR/ods-pixel-access/pixel_source_upgrade.py"
+}
+
+write_never_staged_source_fixture
+export SOURCE_IDLE_TEST_DRIVER="$TEST_ROOT/source-idle-remove-probe.py"
+export SOURCE_IDLE_TEST_MODE=held SOURCE_IDLE_PROBE_RECEIPT="$TEST_ROOT/source-idle-held-receipt"
+if ods_pixel_uninstall_managed "$INSTALL_DIR" "$HOME_DIR" \
+    && [[ ! -e "$ACCESS_STATE" && ! -e "$LIBEXEC_DIR/ods-pixel-access" \
+        && ! -e "$ETC_DIR/pixel-access.json" && -f "$INSTALL_DIR/bin/pixel_source_upgrade.py" \
+        && "$(cat "$SOURCE_IDLE_PROBE_RECEIPT")" == held ]]; then
+    pass "never-staged source cleanup holds its lock through removal without importing the old helper"
+else
+    fail "never-staged source lock stranded managed Pixel artifacts"
+fi
+unset SOURCE_IDLE_TEST_DRIVER SOURCE_IDLE_TEST_MODE SOURCE_IDLE_PROBE_RECEIPT
+
+for source_case in empty nonzero public writable-parent symlink hardlink fifo extra journal transition busy directory-link; do
+    write_never_staged_source_fixture
+    source_dir="$ACCESS_STATE/source-upgrade"
+    outside="$TEST_ROOT/source-idle-$source_case-outside"
+    case "$source_case" in
+        empty) rm "$source_dir/lock" ;;
+        nonzero) printf x > "$source_dir/lock" ;;
+        public) chmod 0644 "$source_dir/lock" ;;
+        writable-parent) chmod 0777 "$source_dir" ;;
+        symlink) printf keep > "$outside"; rm "$source_dir/lock"; ln -s "$outside" "$source_dir/lock" ;;
+        hardlink) ln "$source_dir/lock" "$outside" ;;
+        fifo) rm "$source_dir/lock"; mkfifo -m 0600 "$source_dir/lock" ;;
+        extra) printf '{}' > "$source_dir/unknown.json" ;;
+        journal) printf '{"phase":"held"}' > "$source_dir/source-upgrade.json" ;;
+        transition) printf '{}' > "$ACCESS_STATE/transition.json" ;;
+        busy) exec 97<>"$source_dir/lock"; flock -n 97 ;;
+        directory-link) mv "$source_dir" "$outside"; ln -s "$outside" "$source_dir" ;;
+    esac
+    if ods_pixel_uninstall_managed "$INSTALL_DIR" "$HOME_DIR"; then
+        fail "unsafe source lock state accepted: $source_case"
+    elif [[ -f "$ETC_DIR/pixel-access.json" && -d "$ACCESS_STATE" \
+        && -f "$LIBEXEC_DIR/ods-pixel-access/pixel_source_upgrade.py" \
+        && -f "$HOME_DIR/.config/ods/pixel-managed.json" && ! -s "$SYSTEMCTL_LOG" ]]; then
+        pass "unsafe source lock state retained before service mutation: $source_case"
+    else
+        fail "source lock refusal changed managed artifacts: $source_case"
+    fi
+    if [[ "$source_case" == busy ]]; then exec 97>&-; fi
+    if [[ "$source_case" == symlink ]]; then
+        [[ "$(cat "$outside")" == keep ]] || fail 'source lock symlink target changed'
+    fi
+    if [[ "$source_case" == hardlink ]]; then
+        [[ -f "$outside" && ! -s "$outside" ]] || fail 'source lock hardlink target changed'
+    fi
+    if [[ "$source_case" == directory-link ]]; then
+        [[ -f "$outside/lock" && ! -s "$outside/lock" ]] || fail 'source directory symlink target changed'
+    fi
+done
+
+for source_case in replace-lock replace-directory late-journal; do
+    write_never_staged_source_fixture
+    export SOURCE_IDLE_TEST_DRIVER="$TEST_ROOT/source-idle-remove-probe.py"
+    export SOURCE_IDLE_TEST_MODE="$source_case" SOURCE_IDLE_PROBE_RECEIPT="$TEST_ROOT/source-idle-$source_case-retired"
+    if ods_pixel_uninstall_managed "$INSTALL_DIR" "$HOME_DIR"; then
+        fail "late source state change accepted: $source_case"
+    elif [[ -f "$ETC_DIR/pixel-access.json" && -d "$ACCESS_STATE" \
+        && -f "$LIBEXEC_DIR/ods-pixel-access/pixel_source_upgrade.py" ]]; then
+        pass "late source state change refuses artifact removal: $source_case"
+    else
+        fail "late source state change removed recovery artifacts: $source_case"
+    fi
+    unset SOURCE_IDLE_TEST_DRIVER SOURCE_IDLE_TEST_MODE SOURCE_IDLE_PROBE_RECEIPT
+done
 
 if [[ -s "$HOST_GUARD_LOG" ]]; then
     fail "fixture tried to invoke host sudo after its mock was removed"

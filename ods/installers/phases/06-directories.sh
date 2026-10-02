@@ -516,8 +516,10 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
         "$INSTALL_DIR/bin" \
         "$INSTALL_DIR/lib" \
         "$INSTALL_DIR/scripts" \
+        "$INSTALL_DIR/installers" \
         "$INSTALL_DIR/config" \
-        "$INSTALL_DIR/extensions"
+        "$INSTALL_DIR/extensions" \
+        "$INSTALL_DIR/vendor"
     do
         [[ -d "$_installed_code_root" && ! -L "$_installed_code_root" ]] \
             || error "Missing or unsafe installed code tree: $_installed_code_root"

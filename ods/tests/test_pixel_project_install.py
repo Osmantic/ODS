@@ -462,3 +462,58 @@ def test_real_root_publication_is_readable_by_service_owner(monkeypatch):
             with pytest.raises(ValueError):
                 installer.install_linux(source, deployment)
             assert stat.S_IMODE(runtime.stat().st_mode) == 0o700
+
+
+@pytest.mark.parametrize('runtime_present', [False, True])
+def test_cleanup_recognizes_exact_legacy_task_unit(tmp_path, monkeypatch, runtime_present):
+    source, runtime, uid, _, history, calls = legacy_cleanup_fixture(tmp_path, monkeypatch, 'both')
+    if not runtime_present:
+        for path in runtime.iterdir():
+            path.unlink()
+    installer.UNIT.write_bytes(installer._unit_bytes(config(), previous_task_budget=True))
+    original = {p: p.read_bytes() for p in (installer.CONFIG, installer.UNIT, *runtime.iterdir())}
+    planned = installer.cleanup_linux(source, uid)
+    assert set(planned) == {str(p) for p in original}
+    assert all(p.read_bytes() == value for p, value in original.items())
+    assert calls == []
+    removed = installer.cleanup_linux(source, uid, remove=True)
+    assert set(removed) == set(planned)
+    assert all(not p.exists() for p in original)
+    assert history.read_bytes() == b'owner project history'
+
+
+@pytest.mark.parametrize('change', [
+    (b'TasksMax=64', b'TasksMax=65'),
+    (b'NoNewPrivileges=true', b'NoNewPrivileges=false'),
+    (b'RestrictAddressFamilies=AF_UNIX', b'RestrictAddressFamilies=AF_UNIX AF_INET'),
+])
+def test_cleanup_rejects_modified_legacy_task_unit_before_removal(tmp_path, monkeypatch, change):
+    source, runtime, uid, _, history, calls = legacy_cleanup_fixture(tmp_path, monkeypatch, 'both')
+    unit = installer._unit_bytes(config(), previous_task_budget=True)
+    assert change[0] in unit
+    installer.UNIT.write_bytes(unit.replace(*change))
+    original = {p: p.read_bytes() for p in (installer.CONFIG, installer.UNIT, *runtime.iterdir())}
+    with pytest.raises(ValueError, match='project installed source mismatch'):
+        installer.cleanup_linux(source, uid, remove=True)
+    assert all(p.read_bytes() == value for p, value in original.items())
+    assert calls == []
+    assert history.read_bytes() == b'owner project history'
+
+
+def test_cleanup_rechecks_exact_accepted_legacy_unit(tmp_path, monkeypatch):
+    source, runtime, uid, _, history, _ = legacy_cleanup_fixture(tmp_path, monkeypatch, 'both')
+    legacy = installer._unit_bytes(config(), previous_task_budget=True)
+    installer.UNIT.write_bytes(legacy)
+
+    def change_after_preflight(argv, **kwargs):
+        # Even a switch to the valid current template must not change the
+        # identity accepted by this cleanup transaction.
+        installer.UNIT.write_bytes(installer.unit_bytes(config()))
+        return subprocess.CompletedProcess(argv, 3)
+
+    monkeypatch.setattr(installer.subprocess, 'run', change_after_preflight)
+    with pytest.raises(ValueError, match='project installed source changed during removal'):
+        installer.cleanup_linux(source, uid, remove=True)
+    assert installer.UNIT.is_file()
+    assert list(runtime.iterdir())
+    assert history.read_bytes() == b'owner project history'

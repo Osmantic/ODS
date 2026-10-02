@@ -288,6 +288,20 @@ it('lets an errored bundled n8n be retried or disabled without a remove control'
   expect(screen.queryByRole('button',{name:'Remove n8n (Workflows)'})).toBeNull()
 })
 
+it('keeps an unselected bundled service with error progress available for retry', async () => {
+  installFetchMock({agent_available:true,extensions:[
+    {id:'perplexica',name:'Perplexica (Deep Research)',source:'core',status:'error',
+      library_manageable:true,library_selected:false,error_message:'Host agent could not enable the service.',
+      features:[baseFeature]},
+  ],summary:baseSummary({total:1,error:1})})
+  render(<Extensions compact />)
+  fireEvent.click(await screen.findByRole('button',{name:'Available 1'}))
+  expect(screen.getByRole('button',{name:'Installed 0'})).toBeVisible()
+  fireEvent.click(screen.getByRole('button',{name:'Retry Perplexica (Deep Research)'}))
+  expect(screen.getByRole('dialog',{name:'Confirm action'})).toHaveTextContent('Enable Perplexica (Deep Research)?')
+  expect(screen.queryByRole('button',{name:'Disable Perplexica (Deep Research)'})).toBeNull()
+})
+
 it('makes an OpenCode setup retry an explicit install action', async () => {
   installFetchMock({agent_available:true,extensions:[
     {id:'opencode',name:'OpenCode',source:'core',status:'error',installable:true,

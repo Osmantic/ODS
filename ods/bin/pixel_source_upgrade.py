@@ -579,7 +579,11 @@ def read_file(root, name, uid, *, candidate=False):
             if len(raw) > MAX_FILE or identity(before) != identity(after) or identity(after) != identity(found):
                 raise UpgradeError("source-file-changed")
     mode = (0o755 if before.st_mode & 0o111 else 0o644) if candidate else stat.S_IMODE(before.st_mode)
-    if candidate and name in EXECUTION_CONTROLS:
+    if candidate and name.startswith('extensions/services/pixel-agent/plugin/'):
+        # Match the fixed plugin tree's later installer normalization. Keep
+        # installed snapshots exact so rollback preserves the original modes.
+        mode = 0o644
+    elif candidate and name in EXECUTION_CONTROLS:
         mode = 0o755  # Exact existing Phase06 execution-control normalization.
     return dict(sha256=sha(raw), mode=mode), raw
 
