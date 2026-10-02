@@ -41,6 +41,11 @@ printf 'ODS_DATA_DIR=%s\n' "$external_data" > "$INSTALL_DIR/.env"
     echo '[FAIL] unquoted external ODS_DATA_DIR was not retained' >&2
     exit 1
 }
+printf 'ODS_DATA_DIR=""\n' > "$INSTALL_DIR/.env"
+[[ "$(_macos_remote_provider_retained_data_dir)" == "$INSTALL_DIR/data" ]] || {
+    echo '[FAIL] quoted empty ODS_DATA_DIR did not select the default' >&2
+    exit 1
+}
 rm "$INSTALL_DIR/.env"
 [[ "$(_macos_remote_provider_retained_data_dir)" == "$INSTALL_DIR/data" ]] || {
     echo '[FAIL] fresh install data-root default changed' >&2

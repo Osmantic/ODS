@@ -229,15 +229,14 @@ source "${SOURCE_ROOT}/installers/lib/secure-log.sh"
 
 # ── File-local helpers ──
 _macos_remote_provider_retained_data_dir() {
-    local raw
+    local raw decoded=""
     raw="$(read_env_value "${INSTALL_DIR}/.env" "ODS_DATA_DIR")"
     if [[ -n "$raw" ]]; then
         # read_env_value returns raw dotenv text. Decode quotes and spaces
         # exactly as the installer and Compose decode the retained setting.
-        safe_env_decode_value "$raw"
-    else
-        printf '%s' "${INSTALL_DIR}/data"
+        decoded="$(safe_env_decode_value "$raw")"
     fi
+    printf '%s' "${decoded:-${INSTALL_DIR}/data}"
 }
 
 _close_inherited_fds_for_daemon() {
