@@ -314,7 +314,7 @@ owner = os.geteuid()
 if owner == 0:
     raise SystemExit('protected model journal requires the installation user')
 try:
-    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
 except FileNotFoundError:
     print(json.dumps({'status': 'missing'}))
     raise SystemExit(0)
