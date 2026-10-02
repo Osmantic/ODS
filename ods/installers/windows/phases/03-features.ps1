@@ -6,7 +6,7 @@
 #          non-interactive / headless installs.
 #
 # Reads:
-#   $voiceFlag, $workflowsFlag, $ragFlag, $recommendedFlag, $hermesFlag,
+#   $voiceFlag, $noVoiceFlag, $workflowsFlag, $ragFlag, $recommendedFlag, $hermesFlag,
 #   $openClawFlag, $allFlag
 #   $noRecommendedFlag, $comfyuiFlag, $noHermesFlag, $noComfyuiFlag
 #   $nonInteractive  -- suppress menus (use flag defaults)
@@ -82,6 +82,7 @@ function Read-ODSWindowsFeatureChoice {
 }
 
 # ── Interactive menu (skipped in non-interactive / dry-run / --All mode) ──────
+$choice = ""
 if (-not $nonInteractive -and -not $allFlag -and -not $dryRun) {
     Write-Host ""
     Write-Host "  Choose your ODS configuration:" -ForegroundColor White
@@ -187,6 +188,39 @@ if ($noHermesFlag) {
 if ($enableHermesProxy -and -not $enableHermes) {
     throw 'Hermes proxy requires Hermes.'
 }
+
+# Preserve separate Library selections before Phase 06 copies source fragments
+# over the installed tree. CLI and an explicit menu choice keep their paired
+# meaning; Enter on an existing install retains its prior Hermes/proxy choice.
+$computedHermesProxy = $null
+if (Get-Variable -Name enableHermesProxy -Scope Local -ErrorAction SilentlyContinue) {
+    $computedHermesProxy = [Nullable[bool]]$enableHermesProxy
+}
+$hermesSelection = Resolve-ODSWindowsHermesSelection `
+    -InstallDir $installDir `
+    -ComputedHermes $enableHermes `
+    -ComputedProxy $computedHermesProxy `
+    -CliEnable $hermesFlag `
+    -CliDisable $noHermesFlag `
+    -All $allFlag `
+    -MenuExplicit ($choice -in @("1", "2", "3"))
+$enableHermes = [bool]$hermesSelection.Hermes
+$enableHermesProxy = [bool]$hermesSelection.Proxy
+
+# A Library toggle changes each Compose marker independently. An ordinary
+# rerun preserves both choices unless the owner made an explicit paired CLI
+# or menu choice. Read markers before Phase 06 refreshes installed source.
+$voiceSelection = Resolve-ODSWindowsVoiceSelection `
+    -InstallDir $installDir `
+    -ComputedWhisper $enableWhisper `
+    -ComputedTts $enableTts `
+    -CliEnable $voiceFlag `
+    -CliDisable $noVoiceFlag `
+    -All $allFlag `
+    -MenuExplicit ($choice -in @("1", "2", "3"))
+$enableWhisper = [bool]$voiceSelection.Whisper
+$enableTts = [bool]$voiceSelection.Tts
+$enableVoice = ($enableWhisper -or $enableTts)
 
 if ($noRecommendedFlag) {
     $enableRecommended = $false

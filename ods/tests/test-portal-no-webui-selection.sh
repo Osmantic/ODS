@@ -19,7 +19,9 @@ grep -q 'requires --pixel' "$fixture/output" || {
 [[ ! -e "$fixture/install" && ! -e "$fixture/log" ]] || {
     echo 'FAIL: missing Portal path changed installation state' >&2; exit 1;
 }
-for optional in --voice --rag; do
+# Voice now launches through ODS Talk in Portal. RAG's document controls
+# still require Open WebUI until their Portal replacement is qualified.
+for optional in --rag; do
     if env -u ODS_GATEWAY_ONLY -u ENABLE_OPEN_WEBUI \
         INSTALL_DIR="$fixture/install" LOG_FILE="$fixture/log" \
         "$ROOT/install-core.sh" --no-webui --pixel "$optional" \

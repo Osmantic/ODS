@@ -35,6 +35,7 @@
 #   .\install-windows.ps1 -NoDevTools     # Disable their login task on a rerun
 #   .\install-windows.ps1 --Hermes         # Enable Hermes Agent
 #   .\install-windows.ps1 -NoHermes        # Disable Hermes Agent
+#   .\install-windows.ps1 -NoVoice         # Disable both, including with -All
 #   .\install-windows.ps1 -NoBootstrap     # Wait for full model before launch
 #   .\install-windows.ps1 -InstallDir <path>
 #   .\install-windows.ps1 --NonInteractive # Headless install (defaults)
@@ -48,6 +49,7 @@ param(
     [switch]$NonInteractive,
     [string]$Tier = "",
     [switch]$Voice,
+    [switch]$NoVoice,
     [switch]$Workflows,
     [switch]$Rag,
     [switch]$Recommended,
@@ -121,6 +123,10 @@ $nonInteractive = $NonInteractive.IsPresent
 $cloudMode      = $Cloud.IsPresent
 $tierOverride   = $Tier
 $voiceFlag      = $Voice.IsPresent
+$noVoiceFlag    = $NoVoice.IsPresent
+if ($voiceFlag -and $noVoiceFlag) {
+    throw "-Voice and -NoVoice cannot be used together"
+}
 $workflowsFlag  = $Workflows.IsPresent
 $ragFlag        = $Rag.IsPresent
 $recommendedFlag = $Recommended.IsPresent
@@ -2105,9 +2111,9 @@ if ($dryRun) {
     $dryRunUseLemonade = ($gpuInfo.Backend -eq "amd" -and -not $cloudMode)
     $_dryRunServicePlan = New-ODSWindowsServicePlan `
         -EnableRecommended $enableRecommended `
-        -CloudMode $cloudMode `
-        -UseLemonade $dryRunUseLemonade `
-        -SwitchboardMode (Get-ODSWindowsEffectiveSwitchboardMode -InstallDir $installDir -RequestedMode $env:ODS_MODEL_SWITCHBOARD) `
+            -CloudMode $cloudMode `
+            -UseLemonade $dryRunUseLemonade `
+            -SwitchboardMode (Get-ODSWindowsEffectiveSwitchboardMode -InstallDir $installDir -RequestedMode $env:ODS_MODEL_SWITCHBOARD) `
         -EnableWhisper $enableWhisper `
         -EnableTts $enableTts `
         -EnableWorkflows $enableWorkflows `
@@ -2184,6 +2190,10 @@ $healthChecks = @(
 if ($enableWhisper)   {
     $healthWhisperPort = if ($windowsEnvMap.ContainsKey("WHISPER_PORT") -and -not [string]::IsNullOrWhiteSpace($windowsEnvMap["WHISPER_PORT"])) { $windowsEnvMap["WHISPER_PORT"] } else { "9000" }
     $healthChecks += @{ Name = "Whisper (STT)"; Url = "http://localhost:$healthWhisperPort/health" }
+}
+if ($enableTts) {
+    $healthTtsPort = if ($windowsEnvMap.ContainsKey("TTS_PORT") -and -not [string]::IsNullOrWhiteSpace($windowsEnvMap["TTS_PORT"])) { $windowsEnvMap["TTS_PORT"] } else { "8880" }
+    $healthChecks += @{ Name = "Kokoro (TTS)"; Url = "http://localhost:$healthTtsPort/health" }
 }
 if ($enableWorkflows) { $healthChecks += @{ Name = "n8n (Workflows)";   Url = "http://localhost:5678/healthz" } }
 

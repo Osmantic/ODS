@@ -318,6 +318,9 @@ bash tests/test-macos-cli-compose-failure.sh
 echo "[contract] macOS Core omits optional Open WebUI"
 bash tests/test-macos-webui-optional.sh
 
+echo "[contract] macOS Hermes Library selection survives installer rerun"
+bash tests/test-macos-hermes-library-selection.sh
+
 echo "[contract] macOS .env upsert preserves secrets and recovers from write failure"
 bash tests/test-macos-env-upsert.sh
 
@@ -510,6 +513,9 @@ run_phase03_rag_guard() {
     show_phase() { :; }
     show_install_menu() { :; }
 
+    # The installer sources this helper before phase 03. Match that contract
+    # when sourcing the phase on its own in the RAG guard fixture.
+    source installers/lib/installed-feature-state.sh
     # shellcheck source=/dev/null
     source "$features_phase" >/dev/null
 
@@ -610,7 +616,7 @@ for spec in \
   'ENABLE_SEARXNG:searxng' \
   'ENABLE_RECOMMENDED:token-spy' \
   'ENABLE_HERMES:hermes' \
-  'ENABLE_HERMES:hermes-proxy' \
+  'ENABLE_HERMES_PROXY:hermes-proxy' \
   'ENABLE_OPENCLAW:openclaw' \
   'ENABLE_APE:ape' \
   'ENABLE_PERPLEXICA:perplexica' \
@@ -621,7 +627,7 @@ for spec in \
 do
   flag="${spec%%:*}"
   svc="${spec##*:}"
-  grep -qE "_sync_extension_compose +\"\\\$\\{${flag}:-[^}]*\\}\" +$svc\\b|_sync_extension_compose +\"\\\$\\{${flag}:-\\}\" +$svc\\b" "$features_phase" \
+  grep -qE "_sync_extension_compose +\"\\\$\\{${flag}:-[^[:space:]]*\\}\" +$svc\\b|_sync_extension_compose +\"\\\$\\{${flag}:-\\}\" +$svc\\b" "$features_phase" \
     || { echo "[FAIL] $svc compose is not gated by $flag in $features_phase"; exit 1; }
 done
 

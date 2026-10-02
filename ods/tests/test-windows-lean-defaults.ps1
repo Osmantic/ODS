@@ -53,7 +53,7 @@ function Invoke-Selection {
     $selectedTier = '3'
     $tierConfig = @{ MaxContext = 65536; LlmModel = 'fixture'; TierName = 'fixture' }
     $gpuInfo = [PSCustomObject]@{ Backend = 'nvidia' }
-    $voiceFlag = $false; $workflowsFlag = $false; $ragFlag = $false
+    $voiceFlag = $false; $noVoiceFlag = $false; $workflowsFlag = $false; $ragFlag = $false
     $recommendedFlag = $Recommended; $noRecommendedFlag = $NoRecommended
     $hermesFlag = $Hermes; $noHermesFlag = $NoHermes
     $openClawFlag = $false; $allFlag = $All
