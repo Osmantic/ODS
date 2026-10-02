@@ -44,8 +44,9 @@ python_fixture() { printf '%s\\n' "$@"; }
     assert 'update-pixel) cmd_update_pixel "$@" ;;' in script
 
 
+@pytest.mark.parametrize('unattended', [False, True])
 @pytest.mark.parametrize('failure', [None, 'prepare-only', 'acquire', 'prepare', 'activate', 'finalize'])
-def test_update_orders_existing_helpers_and_restores_docker_environment(tmp_path, monkeypatch, failure, docker_endpoint):
+def test_update_orders_existing_helpers_and_restores_docker_environment(tmp_path, monkeypatch, failure, docker_endpoint, unattended):
     installed, source = tmp_path / 'ods', tmp_path / 'source'
     (installed / 'data/pixel-native').mkdir(parents=True)
     source.mkdir()
@@ -70,13 +71,19 @@ def test_update_orders_existing_helpers_and_restores_docker_environment(tmp_path
             serviceDigest='c' * 64, pixelSourceRef='d' * 40, gatewayPort=18789, accessPort=18790)))
     def activate(command, **kwargs):
         step('activate')
-        assert command[:2] == ['/usr/bin/sudo', '/usr/bin/python3']
-        assert command[3] == 'migrate-native'
+        if unattended:
+            assert command[:3] == ['/usr/bin/sudo', '-n', '/usr/bin/python3']
+            offset = 1
+        else:
+            assert command[:2] == ['/usr/bin/sudo', '/usr/bin/python3']
+            offset = 0
+        assert command[3 + offset] == 'migrate-native'
         assert command[command.index('--current-bundle-digest') + 1] == old
         assert '--activate' in command
         assert command[command.index('--ingress-image') + 1] == 'sha256:' + 'e' * 64
-    def finalize(preparation):
+    def finalize(preparation, *, non_interactive=False):
         step('finalize')
+        assert non_interactive is unattended
         assert (preparation / 'preparation.json').is_file()
         return {'status': 'selection-ready'}
     env = dict(DOCKER_HOST='unix://' + str(endpoint), PIXEL_HISTORY_DOCKER='/fixture/docker',
@@ -103,7 +110,7 @@ def test_update_orders_existing_helpers_and_restores_docker_environment(tmp_path
     before = dict(os.environ)
     try:
         arguments = dict(install_dir=installed, ods_source=source,
-            prepare_only=failure == 'prepare-only')
+            prepare_only=failure == 'prepare-only', non_interactive=unattended)
         if failure not in (None, 'prepare-only'):
             with pytest.raises(ValueError): module.update(**arguments)
             assert stages[-1] == failure

@@ -126,7 +126,8 @@ def update(*, install_dir, ods_source, prepare_only=False, ref=None, non_interac
         if prepare_only:
             return {'status': 'prepared', 'preparation': str(preparation)}
         subprocess.run(command, check=True, timeout=1800)
-        outcome = helper('pixel-native-finalize').finalize_update(preparation)
+        outcome = helper('pixel-native-finalize').finalize_update(
+            preparation, non_interactive=non_interactive)
         outcome['portalIdentityMigration'] = migrate_public_identity(
             source=source, preparation=preparation, node=node)
         return outcome
