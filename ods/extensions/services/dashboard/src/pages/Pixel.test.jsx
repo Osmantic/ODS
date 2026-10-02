@@ -114,6 +114,34 @@ describe('Pixel', () => {
     expect(calls[0][1]).toEqual(expect.objectContaining({cache:'no-store', signal:expect.anything()}))
   })
 
+  it('keeps explicitly selected Chat only on the model route without launching agent commands', async () => {
+    globalThis.fetch.mockResolvedValueOnce(response({available:true,model:'pixel/default'}))
+    globalThis.fetch.mockResolvedValueOnce(sseResponse([
+      JSON.stringify({choices:[{delta:{content:'1827'}}]}), '[DONE]',
+    ]))
+    const mounted = render(<Pixel />)
+    await screen.findByText('Available')
+    fireEvent.click(screen.getByRole('button',{name:'Chat only'}))
+    expect(screen.getByRole('button',{name:'Chat only'})).toHaveAttribute('aria-pressed','true')
+    expect(screen.queryByText('Permissions')).toBeNull()
+    expect(screen.getByText(/no agent tools/i)).toBeVisible()
+    fireEvent.change(screen.getByPlaceholderText('Message Portal...'),{target:{value:'/goal Calculate 63 × 29'}})
+    fireEvent.click(screen.getByTitle('Send'))
+    await screen.findByText('1827')
+    const posts=globalThis.fetch.mock.calls.filter(([url])=>url==='/api/pixel/chat/stream')
+    expect(posts).toHaveLength(1)
+    const sent=JSON.parse(posts[0][1].body)
+    expect(sent.mode).toBe('chat')
+    expect(sent.history_snapshot).toBeUndefined()
+    expect(sent.messages.at(-1)).toEqual({role:'user',content:'/goal Calculate 63 × 29'})
+    expect(globalThis.fetch.mock.calls.some(([url])=>String(url).includes('/api/pixel/teams/'))).toBe(false)
+    await waitFor(()=>expect(JSON.parse(localStorage.getItem('ods.pixel.chat.v1')).chatMode).toBe('chat'))
+    mounted.unmount()
+    globalThis.fetch.mockResolvedValue(response({available:true,model:'pixel/default'}))
+    render(<Pixel />)
+    expect(screen.getByRole('button',{name:'Chat only'})).toHaveAttribute('aria-pressed','true')
+  })
+
   it('keeps prompts clean without copy/reuse controls or inline tool-call summaries',async()=>{
     localStorage.setItem('ods.pixel.chat.v1',JSON.stringify({schema:1,chatId:'clean-chat',messages:[
       {role:'user',content:'A clean prompt'},
