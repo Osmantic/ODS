@@ -36,6 +36,7 @@ foreach ($name in @(
     "Test-WindowsODSLemonadeOwnsPort",
     "Get-WindowsODSExpectedComposeService",
     "Get-WindowsODSComposePortBindings",
+    "Test-WindowsODSDockerBrokerListener",
     "Test-WindowsODSComposeOwnsListeners",
     "Get-WindowsODSSelectedPortConflicts",
     "Assert-WindowsODSSelectedPortAvailability"
@@ -567,6 +568,21 @@ function docker {
     }
     $global:LASTEXITCODE = 1
 }
+$script:dockerBrokerPath = Join-Path `
+    ([Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFiles)) `
+    'Docker\Docker\resources\com.docker.backend.exe'
+function Get-Process {
+    param([int]$Id, [string]$ErrorAction)
+    if ($Id -eq 4141) {
+        return [pscustomobject]@{ ProcessName = 'com.docker.backend'; Path = $script:dockerBrokerPath }
+    }
+    if ($Id -eq 5151) {
+        return [pscustomobject]@{ ProcessName = 'node'; Path = (Join-Path `
+            ([Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFiles)) `
+            'NodeJS\node.exe') }
+    }
+    return $null
+}
 function New-ODSOwnedPortInspect {
     param([string]$WorkingDir, [string]$Project = 'ods',
         [string]$Service = 'open-webui', [string]$HostIp = '127.0.0.1',
@@ -594,6 +610,14 @@ $ownedPorts = [ordered]@{ 'Open WebUI (chat)' = 3000 }
 $script:dockerPortInspects['owned-container'] = New-ODSOwnedPortInspect -WorkingDir $ownedInstallDir
 Assert-Equal @(Get-WindowsODSSelectedPortConflicts -PortsToCheck $ownedPorts -InstallDir $ownedInstallDir).Count `
     0 'retained own Docker published port is reusable'
+$script:ownedPortListeners = @([pscustomobject]@{
+    LocalAddress = '127.0.0.1'; LocalPort = 3000; ProcessId = 5151
+})
+Assert-Equal @(Get-WindowsODSSelectedPortConflicts -PortsToCheck $ownedPorts -InstallDir $ownedInstallDir).Count `
+    1 'a foreign native listener cannot borrow stale Docker publication metadata'
+$script:ownedPortListeners = @([pscustomobject]@{
+    LocalAddress = '127.0.0.1'; LocalPort = 3000; ProcessId = 4141
+})
 $script:dockerPortIds = @('owned-container', 'other-container')
 $script:dockerPortInspects['other-container'] = New-ODSOwnedPortInspect `
     -WorkingDir ($ownedInstallDir + '-other') -ContainerId 'other-container-full-id'

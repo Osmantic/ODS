@@ -263,6 +263,26 @@ function Get-WindowsODSComposePortBindings {
     }
 }
 
+function Test-WindowsODSDockerBrokerListener {
+    param([int]$ProcessId)
+    if ($ProcessId -le 0) { return $false }
+    try {
+        $process = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
+        $programFiles = [Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFiles)
+        if (-not $process -or [string]::IsNullOrWhiteSpace($programFiles) -or
+            -not [string]::Equals([string]$process.ProcessName,
+                'com.docker.backend', [StringComparison]::OrdinalIgnoreCase) -or
+            -not [IO.Path]::IsPathRooted([string]$process.Path)) { return $false }
+        $expected = [IO.Path]::GetFullPath((Join-Path $programFiles `
+            'Docker\Docker\resources\com.docker.backend.exe'))
+        $actual = [IO.Path]::GetFullPath([string]$process.Path)
+        return [string]::Equals($actual, $expected,
+            [StringComparison]::OrdinalIgnoreCase)
+    } catch {
+        return $false
+    }
+}
+
 function Test-WindowsODSComposeOwnsListeners {
     param(
         [hashtable]$PortResult,
@@ -279,6 +299,7 @@ function Test-WindowsODSComposeOwnsListeners {
         $address = [string]$listener.LocalAddress
         if ([string]::IsNullOrWhiteSpace($address) -or
             [int]$listener.LocalPort -ne $Port -or
+            -not (Test-WindowsODSDockerBrokerListener -ProcessId ([int]$listener.ProcessId)) -or
             $seen.ContainsKey($address)) { return $false }
         $seen[$address] = $true
         $matches = @($Ownership.Bindings | Where-Object {
