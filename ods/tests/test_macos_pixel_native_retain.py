@@ -309,6 +309,7 @@ python_fixture() {
 }
 ENABLE_PIXEL=true
 _PIXEL_UPDATE_REQUIRED=true
+NON_INTERACTIVE=true
 PIXEL_SOURCE_REF=''' + 'a' * 40 + '''
 INSTALL_DIR=/owner/ods
 SOURCE_ROOT=/candidate/ods
