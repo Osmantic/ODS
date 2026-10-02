@@ -356,6 +356,38 @@ print(json.dumps({'status': 'completed', 'modelId': model,
     return $value
 }
 
+function Test-ODSPortalWslInstallRootAbsent([string]$Distro, [string]$InstallDir) {
+    # A stopped Windows task may be revived automatically only for a genuinely
+    # new WSL installation. Never follow a symlinked or partially present root.
+    $reader = @'
+import json, os, stat, sys
+path = sys.argv[1]
+if os.geteuid() == 0 or not path.startswith('/') or path == '/':
+    raise SystemExit('invalid installation owner or root')
+parts = [part for part in path.split('/') if part]
+cursor = '/'
+for index, part in enumerate(parts):
+    cursor = os.path.join(cursor, part)
+    try:
+        info = os.lstat(cursor)
+    except FileNotFoundError:
+        print(json.dumps({'status': 'absent' if index == len(parts) - 1 else 'ambiguous'}))
+        raise SystemExit(0)
+    if not stat.S_ISDIR(info.st_mode):
+        print(json.dumps({'status': 'ambiguous'}))
+        raise SystemExit(0)
+print(json.dumps({'status': 'present'}))
+'@
+    $result = Invoke-ODSPortalWsl -Arguments @('--distribution', $Distro,
+        '--exec', 'python3', '-c', $reader, $InstallDir)
+    if ($result.Code -ne 0) { throw 'The WSL installation root could not be verified; the Windows model was not changed.' }
+    try { $value = $result.Output | ConvertFrom-Json -ErrorAction Stop }
+    catch { throw 'The WSL installation root returned an invalid result; the Windows model was not changed.' }
+    if ($value.status -eq 'absent') { return $true }
+    if ($value.status -eq 'present') { return $false }
+    throw 'The WSL installation root is ambiguous; the Windows model was not changed.'
+}
+
 function Get-ODSPortalRetainedLemonadeArguments([string]$Distro, [string]$InstallDir) {
     $runtimeDir = Join-Path (Get-ODSPortalStateDir) 'portal-runtime'
     $planPath = Join-Path $runtimeDir 'runtime.json'
@@ -368,6 +400,42 @@ function Get-ODSPortalRetainedLemonadeArguments([string]$Distro, [string]$Instal
     $request = @{ distro = $Distro; installDir = $InstallDir }
     $managed = Get-ODSPortalManagedConfiguration $request
     Assert-ODSPortalControlModel $managed.Plan
+    $intentPath = Join-Path $runtimeDir 'intent.json'
+    if ((Test-Path -LiteralPath $intentPath -PathType Leaf) -and
+        -not (Test-ODSPortalLemonadeWanted $intentPath)) {
+        # Official uninstall stops the owned task and removes readiness while
+        # retaining its private plan and selected GGUF. Resume only that exact
+        # stopped state through the same guarded model controller used by the
+        # Dashboard. An inconsistent or occupied endpoint is never a fresh
+        # install and must not fall through to catalog model selection.
+        if (-not (Test-ODSPortalWslInstallRootAbsent $Distro $InstallDir)) {
+            throw 'The Windows model was deliberately stopped for this installed WSL stack. Start it through Dashboard Models before rerunning setup.'
+        }
+        $ownershipPath = Join-Path $runtimeDir 'process-ownership.json'
+        if ($managed.Task.State -ne 'Disabled' -or
+            (Test-Path -LiteralPath $managed.ReadyPath) -or
+            (Test-Path -LiteralPath $ownershipPath) -or
+            (Get-ODSPortalTaskEngineId $managed.TaskName) -gt 0 -or
+            @(Get-NetTCPConnection -LocalPort $managed.Plan.Port -State Listen -ErrorAction SilentlyContinue).Count -gt 0 -or
+            -not (Test-ODSPortalPortBindable $managed.Plan.Port)) {
+            throw 'The stopped Windows model has an active or ambiguous runtime; no model was changed.'
+        }
+        $committedBeforeStart = Get-ODSPortalWslCommittedModel $Distro $InstallDir
+        if ($committedBeforeStart.status -ne 'missing') {
+            throw 'The protected WSL model journal still exists for a stopped Windows runtime; the model was not changed.'
+        }
+        if ((Get-ODSPortalPlanDigest $managed.PlanPath) -cne $managed.PlanDigest) {
+            throw 'The Windows model plan changed before restart; the model was not changed.'
+        }
+        $started = Invoke-ODSPortalModelControl @{
+            action = 'start'; distro = $Distro; installDir = $InstallDir
+            expectedPlanDigest = $managed.PlanDigest
+        }
+        if (-not $started.running -or $started.planDigest -cne $managed.PlanDigest) {
+            throw 'The stopped Windows model did not resume with its saved plan; setup cannot continue.'
+        }
+        $managed = Get-ODSPortalManagedConfiguration $request
+    }
     $observed = Get-ODSPortalManagedObservation $managed
     $runtimeModel = Resolve-ODSLemonadeModelId -Port $managed.Plan.Port -GgufFile $managed.Plan.GgufFile
     if ($runtimeModel -cne $observed.modelId -or $observed.contextLength -ne $managed.Plan.ContextSize) {
