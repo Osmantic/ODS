@@ -401,8 +401,8 @@ _macos_sync_builtin_compose_states() {
     _macos_set_builtin_compose_state whisper "$ENABLE_WHISPER"
     _macos_set_builtin_compose_state tts "$ENABLE_TTS"
     _macos_set_builtin_compose_state n8n "$ENABLE_WORKFLOWS"
-    _macos_set_builtin_compose_state qdrant "$ENABLE_RAG"
-    _macos_set_builtin_compose_state embeddings "$ENABLE_RAG"
+    _macos_set_builtin_compose_state qdrant "${_MACOS_RETAINED_QDRANT:-$ENABLE_RAG}"
+    _macos_set_builtin_compose_state embeddings "${_MACOS_RETAINED_EMBEDDINGS:-$ENABLE_RAG}"
     _macos_set_builtin_compose_state hermes "$ENABLE_HERMES"
     _macos_set_builtin_compose_state hermes-proxy "${ENABLE_HERMES_PROXY:-$ENABLE_HERMES}"
     _macos_set_builtin_compose_state openclaw "$ENABLE_OPENCLAW"
@@ -415,13 +415,109 @@ _macos_sync_builtin_compose_states() {
     _macos_set_builtin_compose_state brave-search "${ENABLE_BRAVE_SEARCH:-false}"
 }
 
+_macos_retained_optional_state() {
+    local service_id="$1"
+    local services="${INSTALL_DIR}/extensions/services"
+    local service_dir="${services}/${service_id}"
+    local active="${service_dir}/compose.yaml"
+    local disabled="${active}.disabled"
+    local saved_flags="${INSTALL_DIR}/.compose-flags"
+    if [[ -L "${INSTALL_DIR}/extensions" || -L "$services" || -L "$service_dir" \
+        || -L "$active" || -L "$disabled" || -L "$saved_flags" ]]; then
+        ai_err "Unsafe retained ${service_id} selection path"
+        return 1
+    fi
+    if [[ -f "$active" && -f "$disabled" ]]; then
+        ai_err "Ambiguous retained ${service_id} selection: both Compose markers exist"
+        return 1
+    fi
+    if [[ -f "$disabled" ]]; then
+        printf '%s\n' false
+    elif [[ -f "$saved_flags" ]]; then
+        # Older installs may still have every shipped recipe named
+        # compose.yaml, including unselected ones. Their saved Compose plan
+        # records what actually ran. Library selection invalidates this cache,
+        # leaving the per-service marker authoritative for later addbacks.
+        # Match only this exact recipe token; never evaluate the file.
+        local flags
+        IFS= read -r flags < "$saved_flags" || :
+        if [[ " $flags " == *" -f extensions/services/${service_id}/compose.yaml "* ]]; then
+            printf '%s\n' true
+        else
+            printf '%s\n' false
+        fi
+    elif [[ -f "$active" ]]; then
+        printf '%s\n' true
+    else
+        printf '%s\n' false
+    fi
+}
+
+_macos_restore_retained_optional_features() {
+    # Enter on a retained menu (or a non-interactive rerun) keeps the actual
+    # installed choices. The initial shell defaults and .env existence alone
+    # cannot represent a Core or mixed Library selection.
+    [[ -f "${INSTALL_DIR}/.env" ]] || return 0
+    $ALL_FEATURES && return 0
+    $GATEWAY_ONLY && return 0  # its Library choices have a separate resolver
+    [[ -z "${feature_choice:-}" ]] || return 0
+
+    local workflows rag_qdrant rag_embeddings recommended ape perplexica
+    local privacy_shield langfuse openclaw ods_proxy tailscale brave_search searxng
+    workflows="$(_macos_retained_optional_state n8n)" || return 1
+    rag_qdrant="$(_macos_retained_optional_state qdrant)" || return 1
+    rag_embeddings="$(_macos_retained_optional_state embeddings)" || return 1
+    recommended="$(_macos_retained_optional_state token-spy)" || return 1
+    ape="$(_macos_retained_optional_state ape)" || return 1
+    perplexica="$(_macos_retained_optional_state perplexica)" || return 1
+    privacy_shield="$(_macos_retained_optional_state privacy-shield)" || return 1
+    langfuse="$(_macos_retained_optional_state langfuse)" || return 1
+    openclaw="$(_macos_retained_optional_state openclaw)" || return 1
+    ods_proxy="$(_macos_retained_optional_state ods-proxy)" || return 1
+    tailscale="$(_macos_retained_optional_state tailscale)" || return 1
+    brave_search="$(_macos_retained_optional_state brave-search)" || return 1
+    searxng="$(_macos_retained_optional_state searxng)" || return 1
+
+    $ENABLE_WORKFLOWS || ENABLE_WORKFLOWS="$workflows"  # --workflows wins
+    if ! $ENABLE_RAG; then
+        # The Library can select these services independently. Keep each
+        # recipe while treating the complete RAG feature as available only
+        # when both are present.
+        _MACOS_RETAINED_QDRANT="$rag_qdrant"
+        _MACOS_RETAINED_EMBEDDINGS="$rag_embeddings"
+        if [[ "$rag_qdrant" == true && "$rag_embeddings" == true ]]; then
+            ENABLE_RAG=true
+        fi
+    fi
+    $RECOMMENDED_EXPLICIT || ENABLE_RECOMMENDED="$recommended"
+    ENABLE_APE="$ape"
+    ENABLE_PERPLEXICA="$perplexica"
+    ENABLE_PRIVACY_SHIELD="$privacy_shield"
+    if ! $NO_LANGFUSE_EXPLICIT && ! $ENABLE_LANGFUSE; then
+        ENABLE_LANGFUSE="$langfuse"
+    fi
+    $OPENCLAW_EXPLICIT || ENABLE_OPENCLAW="$openclaw"
+    ENABLE_ODS_PROXY="$ods_proxy"
+    ENABLE_TAILSCALE="$tailscale"
+    ENABLE_BRAVE_SEARCH="$brave_search"
+    _MACOS_RETAINED_SEARXNG="$searxng"
+}
+
 _macos_resolve_support_services() {
     # The gateway serves the base chat UI, Portal and cloud mode. Selecting it
     # must not pull the optional recommended support bundle.
     ENABLE_LITELLM=true
 
     ENABLE_SEARXNG=false
-    if $ENABLE_RECOMMENDED || $ENABLE_PERPLEXICA || $ENABLE_HERMES || $ENABLE_OPENCLAW; then
+    if $ENABLE_PERPLEXICA || $ENABLE_HERMES || $ENABLE_OPENCLAW \
+        || { $RECOMMENDED_EXPLICIT && $ENABLE_RECOMMENDED; }; then
+        ENABLE_SEARXNG=true
+    elif [[ -n "${_MACOS_RETAINED_SEARXNG:-}" ]]; then
+        # Library can select Token Spy without SearXNG. A retained marker is
+        # authoritative for that independent pair; other consumers above and
+        # Pixel's selected search provider below can still require SearXNG.
+        ENABLE_SEARXNG="$_MACOS_RETAINED_SEARXNG"
+    elif $ENABLE_RECOMMENDED; then
         ENABLE_SEARXNG=true
     fi
     if $ENABLE_PIXEL; then
@@ -1979,12 +2075,17 @@ if ! $NON_INTERACTIVE && ! $ALL_FEATURES && ! $DRY_RUN; then
     echo -e "  ${BGRN}[1]${NC} Full Stack   -- Everything enabled (voice, workflows, RAG, agents)"
     echo -e "  ${WHT}[2]${NC} Core Only    -- Chat + LLM inference (lean and fast)"
     echo -e "  ${WHT}[3]${NC} Custom       -- Choose individually"
+    [[ -f "${INSTALL_DIR}/.env" ]] && echo -e "  ${WHT}[4]${NC} Keep current -- Preserve installed optional services"
     echo ""
 
     _macos_feature_default=2
-    [[ -f "${INSTALL_DIR}/.env" ]] && _macos_feature_default=1
-    read -r -p "  Selection (1/2/3) [${_macos_feature_default}]: " feature_choice < /dev/tty
+    [[ -f "${INSTALL_DIR}/.env" ]] && _macos_feature_default=4
+    read -r -p "  Selection (1/2/3/4) [${_macos_feature_default}]: " feature_choice < /dev/tty
     case "${feature_choice:-$_macos_feature_default}" in
+        4)
+            [[ -f "${INSTALL_DIR}/.env" ]] || { ai_err "Keep current requires an existing installation."; exit 1; }
+            feature_choice=''
+            ;;
         1)
             ENABLE_VOICE=true; ENABLE_WHISPER=true; ENABLE_TTS=true; ENABLE_WORKFLOWS=true
             ENABLE_RAG=true; ENABLE_HERMES=true; ENABLE_HERMES_PROXY=true
@@ -2050,20 +2151,13 @@ if ! $NON_INTERACTIVE && ! $ALL_FEATURES && ! $DRY_RUN; then
             [[ "$yn" =~ ^[yY] ]] && ENABLE_LANGFUSE=true
             ;;
         *)
-            ENABLE_VOICE=true; ENABLE_WHISPER=true; ENABLE_TTS=true; ENABLE_WORKFLOWS=true
-            ENABLE_RAG=true; ENABLE_HERMES=true; ENABLE_HERMES_PROXY=true
-            ENABLE_RECOMMENDED=true
-            ENABLE_OPENCLAW=false  # deprecated; Hermes is the default
-            $OPENCODE_DISABLE_EXPLICIT || ENABLE_OPENCODE=true
-            ENABLE_APE=true
-            ENABLE_PERPLEXICA=true
-            ENABLE_PRIVACY_SHIELD=true
-            ENABLE_LANGFUSE=true
-            ENABLE_OPEN_WEBUI=true
-            ;;
+            ai_err "Choose 1, 2, 3, or 4."
+            exit 1
     esac
     unset _macos_feature_default
 fi
+
+_macos_restore_retained_optional_features || exit 1
 
 if [[ -z "${feature_choice:-}" && -n "$WEBUI_RETAINED" ]] \
     && ! $WEBUI_ENABLE_EXPLICIT && ! $WEBUI_DISABLE_EXPLICIT && ! $ALL_FEATURES; then
@@ -2186,11 +2280,11 @@ fi
 
 ai "Features:"
 _rag_summary=disabled
-if _macos_effective_service_enabled qdrant "$ENABLE_RAG" \
-    && _macos_effective_service_enabled embeddings "$ENABLE_RAG"; then
+if _macos_effective_service_enabled qdrant "${_MACOS_RETAINED_QDRANT:-$ENABLE_RAG}" \
+    && _macos_effective_service_enabled embeddings "${_MACOS_RETAINED_EMBEDDINGS:-$ENABLE_RAG}"; then
     _rag_summary=enabled
-elif _macos_effective_service_enabled qdrant "$ENABLE_RAG" \
-    || _macos_effective_service_enabled embeddings "$ENABLE_RAG"; then
+elif _macos_effective_service_enabled qdrant "${_MACOS_RETAINED_QDRANT:-$ENABLE_RAG}" \
+    || _macos_effective_service_enabled embeddings "${_MACOS_RETAINED_EMBEDDINGS:-$ENABLE_RAG}"; then
     _rag_summary=partial
 fi
 _whisper_effective=false
@@ -3076,7 +3170,8 @@ else
                 whisper)       $ENABLE_WHISPER || SKIP=true ;;
                 tts)           $ENABLE_TTS || SKIP=true ;;
                 n8n)           $ENABLE_WORKFLOWS || SKIP=true ;;
-                qdrant|embeddings) $ENABLE_RAG || SKIP=true ;;
+                qdrant)       [[ "${_MACOS_RETAINED_QDRANT:-$ENABLE_RAG}" == true ]] || SKIP=true ;;
+                embeddings)   [[ "${_MACOS_RETAINED_EMBEDDINGS:-$ENABLE_RAG}" == true ]] || SKIP=true ;;
                 hermes)        $ENABLE_HERMES || SKIP=true ;;
                 hermes-proxy)  $ENABLE_HERMES_PROXY || SKIP=true ;;
                 openclaw)      $ENABLE_OPENCLAW || SKIP=true ;;
