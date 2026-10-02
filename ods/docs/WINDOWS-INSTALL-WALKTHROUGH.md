@@ -101,7 +101,16 @@ The installer will:
 - Check prerequisites (WSL2, Docker, NVIDIA/AMD runtime path)
 - Create the runtime directory at `$env:USERPROFILE\ods` by default,
   or at the path passed to `-InstallDir`
-- Download and start all services
+- Download and start the selected services
+
+A fresh native install selects **Core Only** when you press Enter. Optional
+voice, workflows, RAG, Hermes, ComfyUI, Perplexica, Privacy Shield, and Langfuse
+stay off until selected. Choose **Full Stack** or pass `-All` to opt in. A normal
+rerun reads the installed `.compose-flags` selection before copying source
+files, so Enter keeps the existing enabled services. If that record is missing
+or incomplete on an existing installation, choose a feature set explicitly;
+the installer will not silently treat it as a fresh Core install. Selection
+changes do not delete the optional services' data directories.
 
 ### Important: repo checkout vs runtime directory
 
@@ -150,6 +159,24 @@ $env:ODS_HOME = "C:\path\to\ODS\ods"
 .\ods\installers\windows\install-windows.ps1
 ```
 
+An in-place source update cannot infer prior remote-provider Library choices
+from newly checked-out disabled recipes. If an active route conflicts with
+those markers, the installer stops with a recovery instruction before changing
+the service choices. Restore the prior selection from a trusted backup, or
+install from an independent source checkout into a fresh runtime directory.
+Ordinary installs that copy from a separate checkout preserve existing choices
+and migrate legacy active routes under the Library's Linux transaction lock.
+The installer uses the pinned Python base image already required by Dashboard
+API; a fresh native install may pull it earlier, before building Dashboard API.
+Docker must be available even for this source-copy stage. Interrupted writers
+are reconciled by their exact container identity before another transaction.
+
+Manage Remote Provider Egress and Remote Provider SSH Tunnel through Dashboard
+Library. Native `ods.ps1 enable/disable` refuses these two services, including
+`-Force`, before stopping anything or changing selections. On older releases
+they were core services; making them optional does not expose the generic
+native CLI writer to their route lifecycle.
+
 **First run takes 10-30 minutes** depending on download speed. Bootstrap mode
 starts a small model first, then downloads and hot-swaps the full model in the
 background.
@@ -160,8 +187,17 @@ background.
 # Specific tier with voice
 .\ods\installers\windows\install-windows.ps1 -Tier 2 -Voice
 
-# Full stack with everything
+# Keep the rest of an -All install, but leave both voice services off
+.\ods\installers\windows\install-windows.ps1 -All -NoVoice
+
+# Full stack with everything (re-enables Library-disabled voice services)
 .\ods\installers\windows\install-windows.ps1 -All
+
+# Add OpenCode, Claude Code, and Codex CLI to an otherwise normal install
+.\ods\installers\windows\install-windows.ps1 -DevTools
+
+# Disable their login task on a rerun, without removing binaries or stopping a session
+.\ods\installers\windows\install-windows.ps1 -NoDevTools
 
 # Simulate installer planning without making changes
 .\ods\installers\windows\install-windows.ps1 -DryRun
@@ -173,6 +209,12 @@ background.
 $installDir = "D:\Apps\ods"
 .\ods\installers\windows\install-windows.ps1 -InstallDir $installDir
 ```
+
+Fresh native Windows installs skip the developer tools. A rerun keeps them
+selected only when the ODS OpenCode login task is enabled; a disabled task stays
+disabled. `-NoDevTools` disables that ODS-owned login task without deleting
+binaries or stopping a current session. The ODS host agent remains part of the
+install in either case.
 
 ---
 
@@ -265,7 +307,9 @@ docker compose up -d
 | Start ODS | `cd $installDir; .\ods.ps1 start` |
 | View logs | `cd $installDir; .\ods.ps1 logs` |
 | Update | `cd $installDir; .\ods.ps1 update` |
-| Enable voice | Add `-Voice` flag or edit `.env` |
+| Add voice separately | In Dashboard Extensions Library, add Whisper STT or Kokoro TTS |
+| Enable both voice services | Rerun the installer with `-Voice` |
+| Disable both voice services | Rerun the installer with `-NoVoice` |
 | Enable workflows | Add `-Workflows` flag |
 | Support report | `cd $installDir; .\ods.ps1 report` |
 

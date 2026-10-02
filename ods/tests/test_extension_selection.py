@@ -2,6 +2,7 @@
 
 import importlib.util
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -12,7 +13,19 @@ import pytest
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "extension-selection.py"
 SPEC = importlib.util.spec_from_file_location("extension_selection", SCRIPT)
 selection = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(selection)
+# Dashboard's Windows test conftest may preinstall a partial POSIX fcntl stub.
+# The standalone host selector must import msvcrt on Windows instead.
+_fcntl_stub = sys.modules.pop("fcntl", None) if os.name == "nt" else None
+try:
+    SPEC.loader.exec_module(selection)
+finally:
+    if _fcntl_stub is not None:
+        sys.modules["fcntl"] = _fcntl_stub
+
+
+@pytest.fixture(autouse=True)
+def _use_install_data_default(monkeypatch):
+    monkeypatch.delenv("ODS_DATA_DIR", raising=False)
 
 
 def extension(root, service_id, *, depends=(), compose_depends=(), enabled=True):
@@ -36,6 +49,97 @@ def restore(root, preset, *, compose_flags="-f docker-compose.base.yml"):
     if not base.exists():
         base.write_text("services: {}\n", encoding="utf-8")
     return selection.restore_preset(root, preset, compose_flags=compose_flags)
+
+
+def remote_route(root, *, enabled=True, transport="direct"):
+    route_dir = root / "data" / "remote-provider"
+    route_dir.mkdir(parents=True, exist_ok=True)
+    path = route_dir / "routing-state.json"
+    path.write_text(json.dumps({
+        "schema": "ods.remote-routing-state.v1",
+        "enabled": enabled,
+        "provider": {"transport": transport} if enabled else None,
+    }), encoding="utf-8")
+    return path
+
+
+def test_active_direct_remote_route_blocks_egress_disable_under_lock(tmp_path):
+    (tmp_path / "data" / "user-extensions").mkdir(parents=True)
+    egress = extension(tmp_path, "remote-provider-egress")
+    tunnel = extension(tmp_path, "remote-provider-ssh-tunnel")
+    remote_route(tmp_path)
+    with pytest.raises(selection.SelectionError, match="Active direct.*requires remote-provider-egress"):
+        selection.run("check-disable", tmp_path, "remote-provider-egress")
+    with pytest.raises(selection.SelectionError, match="Active direct.*requires remote-provider-egress"):
+        selection.run("disable", tmp_path, "remote-provider-egress")
+    assert (egress / "compose.yaml").is_file()
+    assert selection.run("disable", tmp_path, "remote-provider-ssh-tunnel") == "disabled"
+    assert (tunnel / "compose.yaml.disabled").is_file()
+
+
+def test_active_ssh_remote_route_blocks_both_service_disables(tmp_path):
+    (tmp_path / "data" / "user-extensions").mkdir(parents=True)
+    egress = extension(tmp_path, "remote-provider-egress")
+    tunnel = extension(tmp_path, "remote-provider-ssh-tunnel")
+    remote_route(tmp_path, transport="ssh")
+    for service_id in ("remote-provider-egress", "remote-provider-ssh-tunnel"):
+        with pytest.raises(selection.SelectionError, match=f"Active ssh.*requires {service_id}"):
+            selection.run("disable", tmp_path, service_id)
+    assert (egress / "compose.yaml").is_file()
+    assert (tunnel / "compose.yaml").is_file()
+
+
+def test_remote_route_change_after_preflight_and_invalid_state_fail_closed(tmp_path):
+    (tmp_path / "data" / "user-extensions").mkdir(parents=True)
+    egress = extension(tmp_path, "remote-provider-egress")
+    assert selection.run("check-disable", tmp_path, "remote-provider-egress") == "ready"
+    route = remote_route(tmp_path)
+    with pytest.raises(selection.SelectionError, match="Active direct"):
+        selection.run("disable", tmp_path, "remote-provider-egress")
+    route.write_text('{"enabled": true}', encoding="utf-8")
+    with pytest.raises(selection.SelectionError, match="Invalid remote-provider route state"):
+        selection.run("disable", tmp_path, "remote-provider-egress")
+    assert (egress / "compose.yaml").is_file()
+    remote_route(tmp_path, enabled=False)
+    assert selection.run("disable", tmp_path, "remote-provider-egress") == "disabled"
+
+
+def test_external_data_root_blocks_cli_and_host_disable(tmp_path, monkeypatch):
+    (tmp_path / "data" / "user-extensions").mkdir(parents=True)
+    egress = extension(tmp_path, "remote-provider-egress")
+    external = tmp_path / "external-data"
+    remote_route(external)
+    monkeypatch.setenv("ODS_DATA_DIR", str(external / "data"))
+    with pytest.raises(selection.SelectionError, match="Active direct"):
+        selection.run("disable", tmp_path, "remote-provider-egress")
+    monkeypatch.delenv("ODS_DATA_DIR")
+    with pytest.raises(selection.SelectionError, match="Active direct"):
+        selection.run("disable", tmp_path, "remote-provider-egress",
+                      data_dir=external / "data")
+    assert (egress / "compose.yaml").is_file()
+
+
+def test_stale_data_environment_cannot_hide_default_active_route(tmp_path, monkeypatch):
+    (tmp_path / "data" / "user-extensions").mkdir(parents=True)
+    egress = extension(tmp_path, "remote-provider-egress")
+    remote_route(tmp_path)
+    monkeypatch.setenv("ODS_DATA_DIR", str(tmp_path / "empty-external"))
+    with pytest.raises(selection.SelectionError, match="Active direct"):
+        selection.run("disable", tmp_path, "remote-provider-egress")
+    assert (egress / "compose.yaml").is_file()
+
+
+def test_remote_route_blocks_preset_before_any_marker_changes(tmp_path):
+    (tmp_path / "data" / "user-extensions").mkdir(parents=True)
+    egress = extension(tmp_path, "remote-provider-egress")
+    other = extension(tmp_path, "other-service")
+    remote_route(tmp_path)
+    preset = tmp_path / "extensions.list"
+    preset.write_text("disabled:other-service\ndisabled:remote-provider-egress\n", encoding="utf-8")
+    with pytest.raises(selection.SelectionError, match="Active direct.*requires remote-provider-egress"):
+        restore(tmp_path, preset)
+    assert (egress / "compose.yaml").is_file()
+    assert (other / "compose.yaml").is_file()
 
 
 def test_selected_compose_and_user_shadowing(tmp_path):

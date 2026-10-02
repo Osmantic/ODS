@@ -119,7 +119,7 @@ assert_contains "$OUTPUT" "Compose logs: cd '$TMP_DIR' && docker compose logs --
 # The default non-interactive Mac install leaves Perplexica disabled. Its
 # absent container must not turn an otherwise successful install into 5/6.
 MAC_INSTALLER="$ROOT_DIR/installers/macos/install-macos.sh"
-if grep -Fq '$ENABLE_PERPLEXICA && printf '\''Perplexica|' "$MAC_INSTALLER"; then
+if grep -Fq '_macos_effective_service_enabled perplexica "$ENABLE_PERPLEXICA" && printf '\''Perplexica|' "$MAC_INSTALLER"; then
     pass "Mac summary includes Perplexica only when selected"
 else
     fail "Mac summary must omit disabled Perplexica"

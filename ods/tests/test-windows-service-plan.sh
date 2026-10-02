@@ -110,7 +110,7 @@ if command -v pwsh >/dev/null 2>&1; then
 
         Assert-Plan (-not (Test-ODSWindowsServiceEnabled -ServiceId "hermes" -Plan $core)) "Core disables Hermes"
         Assert-Plan (-not (Test-ODSWindowsServiceEnabled -ServiceId "searxng" -Plan $core)) "Core disables SearXNG"
-        Assert-Plan (-not (Test-ODSWindowsServiceEnabled -ServiceId "litellm" -Plan $core)) "Core disables LiteLLM"
+        Assert-Plan (Test-ODSWindowsServiceEnabled -ServiceId "litellm" -Plan $core) "Core keeps required switchboard gateway"
         Assert-Plan (-not (Test-ODSWindowsServiceEnabled -ServiceId "openclaw" -Plan $core)) "Core disables OpenClaw"
         Assert-Plan (-not (Test-ODSWindowsServiceEnabled -ServiceId "pixel-edge" -Plan $core)) "Core does not launch a Pixel edge without a host runtime"
         Assert-Plan (-not (Get-ODSWindowsServicePlanDecision -ServiceId "pixel-model-relay" -Category "core" -Plan $core).Enabled) "Core does not launch a Pixel relay without a host runtime or bearer key"
@@ -136,7 +136,7 @@ if command -v pwsh >/dev/null 2>&1; then
             -EnableDeepResearch $true `
             -EnablePrivacyShield $false
         Assert-Plan (Test-ODSWindowsServiceEnabled -ServiceId "searxng" -Plan $deepResearchOnly) "Deep research without recommended still enables SearXNG"
-        Assert-Plan (-not (Test-ODSWindowsServiceEnabled -ServiceId "litellm" -Plan $deepResearchOnly)) "Deep research without recommended leaves LiteLLM off"
+        Assert-Plan (Test-ODSWindowsServiceEnabled -ServiceId "litellm" -Plan $deepResearchOnly) "Deep research keeps switchboard gateway"
 
         $hermesOnly = New-ODSWindowsServicePlan `
             -EnableRecommended $false `
