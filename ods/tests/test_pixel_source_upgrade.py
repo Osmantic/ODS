@@ -1094,3 +1094,73 @@ def test_source_transaction_rejects_writable_install_root(trees):
     old.chmod(0o777)
     with pytest.raises(upgrade.UpgradeError, match="source-directory-unsafe"):
         upgrade.SourceUpgrade(manager.state, old, os.getuid(), state_uid=os.getuid())
+
+
+@pytest.mark.parametrize('before_mode', [0o600, 0o755])
+def test_drvfs_plugin_projection_survives_real_normalizer_and_rollback(trees, before_mode):
+    manager, old, new, identity = trees
+    plugin = 'extensions/services/pixel-agent/plugin'
+    paths = [plugin + '/index.mjs', plugin + '/nested/helper.py']
+    for rel in paths:
+        for root, mode, content in ((old, before_mode, 'before'), (new, 0o777, 'candidate')):
+            path = root / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content)
+            path.chmod(mode)
+    siblings = ['extensions/services/pixel-agent/plugin-other/run.sh',
+                'extensions/services/pixel-agent/host/run.sh']
+    for rel in siblings:
+        path = new / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('executable')
+        path.chmod(0o777)
+    verify, _ = held(manager, new, identity)
+    plan = manager.journal()
+    assert all(plan['before'][rel]['mode'] == before_mode for rel in paths)
+    assert all(plan['candidate'][rel]['mode'] == 0o644 for rel in paths)
+    assert all(plan['candidate'][rel]['mode'] == 0o755 for rel in siblings)
+    manager.publish(verify)
+    # Exercise the production normalizer, which previously invalidated the
+    # protected plan between source publication and coordinator handoff.
+    helper = MODULE.parent.parent / 'installers/lib/pixel-host-install.sh'
+    result = subprocess.run(['bash', '-c',
+        'source "$1"; INSTALL_DIR="$2"; '
+        '_ods_pixel_secure_plugin_tree "$(id -un)" "$HOME" "$2/extensions/services/pixel-agent/plugin"',
+        'normalize-fixture', str(helper), str(old)], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert upgrade.inventory(old, os.getuid()) == plan['after']
+    assert all((old / rel).stat().st_mode & 0o777 == 0o755 for rel in siblings)
+    manager.publish(verify, rollback=True)
+    assert upgrade.inventory(old, os.getuid()) == plan['before']
+    assert all((old / rel).read_text() == 'before' for rel in paths)
+
+
+@pytest.mark.parametrize('mutation', ['bytes', 'mode'])
+def test_plugin_projection_keeps_installed_drift_detection(trees, mutation):
+    manager, old, new, identity = trees
+    rel = 'extensions/services/pixel-agent/plugin/index.mjs'
+    for root in (old, new):
+        path = root / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('original')
+        path.chmod(0o755)
+    verify, _ = held(manager, new, identity)
+    manager.publish(verify)
+    if mutation == 'bytes':
+        (old / rel).write_text('changed')
+    else:
+        (old / rel).chmod(0o600)
+    with pytest.raises(upgrade.UpgradeError, match='source-live-drift'):
+        manager.publish(verify, rollback=True)
+
+
+def test_plugin_candidate_bytes_remain_bound_to_held_plan(trees):
+    manager, old, new, identity = trees
+    path = new / 'extensions/services/pixel-agent/plugin/index.mjs'
+    path.parent.mkdir(parents=True)
+    path.write_text('original')
+    path.chmod(0o777)
+    held(manager, new, identity)
+    path.write_text('changed')
+    with pytest.raises(upgrade.UpgradeError, match='source-candidate-changed'):
+        manager.stage(new, os.getuid(), identity)
