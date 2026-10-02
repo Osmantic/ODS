@@ -25,7 +25,7 @@ check_defaults() (
         echo "FAIL: unexpected LAN proxy default would require WebUI" >&2
         exit 1
     }
-    for flag in ENABLE_VOICE ENABLE_WORKFLOWS ENABLE_RAG ENABLE_RECOMMENDED \
+    for flag in ENABLE_VOICE ENABLE_WHISPER ENABLE_TTS ENABLE_WORKFLOWS ENABLE_RAG ENABLE_RECOMMENDED \
                 ENABLE_HERMES ENABLE_COMFYUI ENABLE_APE ENABLE_PERPLEXICA \
                 ENABLE_PRIVACY_SHIELD; do
         [[ "${!flag}" == "$expected" ]] || {
@@ -61,7 +61,7 @@ check_fresh_source_layout() (
         echo 'FAIL: fresh source layout lost initial WebUI fallback' >&2
         exit 1
     }
-    for flag in ENABLE_VOICE ENABLE_WORKFLOWS ENABLE_RAG ENABLE_RECOMMENDED \
+    for flag in ENABLE_VOICE ENABLE_WHISPER ENABLE_TTS ENABLE_WORKFLOWS ENABLE_RAG ENABLE_RECOMMENDED \
                 ENABLE_HERMES ENABLE_COMFYUI ENABLE_APE ENABLE_PERPLEXICA \
                 ENABLE_PRIVACY_SHIELD ENABLE_LANGFUSE ENABLE_ODS_PROXY \
                 ENABLE_TAILSCALE ENABLE_BRAVE_SEARCH; do
@@ -113,7 +113,7 @@ check_portal_chat_choice 'unqualified Pixel fallback' false false false false fa
 check_portal_chat_choice 'explicit WebUI' false false true false true false false false
 check_portal_chat_choice 'legacy upgrade' false true false false true false false false
 check_portal_chat_choice 'gateway-only' false false false true true false false false
-check_portal_chat_choice 'voice needs WebUI' false false false false true true false false
+check_portal_chat_choice 'voice uses Portal' true false false false true true false false
 check_portal_chat_choice 'RAG needs WebUI' false false false false true false true false
 check_portal_chat_choice 'LAN proxy needs WebUI' false false false false true false false true
 

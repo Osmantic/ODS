@@ -33,7 +33,7 @@ for service in whisper tts n8n qdrant embeddings token-spy hermes hermes-proxy \
 done
 
 eval "$defaults"
-for flag in ENABLE_VOICE ENABLE_WORKFLOWS ENABLE_RAG ENABLE_RECOMMENDED \
+for flag in ENABLE_VOICE ENABLE_WHISPER ENABLE_TTS ENABLE_WORKFLOWS ENABLE_RAG ENABLE_RECOMMENDED \
             ENABLE_HERMES ENABLE_COMFYUI ENABLE_APE ENABLE_PERPLEXICA \
             ENABLE_PRIVACY_SHIELD ENABLE_LANGFUSE ENABLE_ODS_PROXY \
             ENABLE_TAILSCALE ENABLE_BRAVE_SEARCH; do
@@ -64,12 +64,12 @@ eval "$defaults"
 # though their helper fallback is false (ods-proxy/tailscale/langfuse). The fix
 # must gate on .env existence alone, never on fallback!=true.
 : >"$INSTALL_DIR/.env"
-for service in whisper n8n qdrant token-spy hermes comfyui ape perplexica \
+for service in whisper tts n8n qdrant token-spy hermes comfyui ape perplexica \
                privacy-shield langfuse ods-proxy tailscale brave-search; do
     mark "$service" on
 done
 eval "$defaults"
-for flag in ENABLE_VOICE ENABLE_WORKFLOWS ENABLE_RAG ENABLE_RECOMMENDED \
+for flag in ENABLE_VOICE ENABLE_WHISPER ENABLE_TTS ENABLE_WORKFLOWS ENABLE_RAG ENABLE_RECOMMENDED \
             ENABLE_HERMES ENABLE_COMFYUI ENABLE_APE ENABLE_PERPLEXICA \
             ENABLE_PRIVACY_SHIELD ENABLE_LANGFUSE ENABLE_ODS_PROXY \
             ENABLE_TAILSCALE ENABLE_BRAVE_SEARCH; do
@@ -80,6 +80,30 @@ for flag in ENABLE_VOICE ENABLE_WORKFLOWS ENABLE_RAG ENABLE_RECOMMENDED \
 done
 # The ambient host may expose a real user systemctl; this block asserts only
 # the optional Compose selections, not the separate OpenCode user-service probe.
+
+# Library can leave the two voice services in any combination. Ordinary
+# installer reruns must read each installed Compose marker independently.
+check_voice_selection() {
+    local whisper_state="$1" tts_state="$2" expected_whisper="$3" expected_tts="$4" expected_voice="$5"
+    rm -f -- "$INSTALL_DIR/extensions/services/whisper/compose.yaml" \
+        "$INSTALL_DIR/extensions/services/whisper/compose.yaml.disabled" \
+        "$INSTALL_DIR/extensions/services/tts/compose.yaml" \
+        "$INSTALL_DIR/extensions/services/tts/compose.yaml.disabled"
+    mark whisper "$whisper_state"
+    mark tts "$tts_state"
+    eval "$defaults"
+    [[ "$ENABLE_WHISPER" == "$expected_whisper" && "$ENABLE_TTS" == "$expected_tts" \
+        && "$ENABLE_VOICE" == "$expected_voice" ]] || {
+        echo "FAIL: retained voice selection $whisper_state/$tts_state became $ENABLE_WHISPER/$ENABLE_TTS/$ENABLE_VOICE" >&2
+        exit 1
+    }
+}
+check_voice_selection on off true false false
+check_voice_selection off on false true false
+check_voice_selection on on true true true
+check_voice_selection off off false false false
+check_voice_selection on on true true true
+
     [[ "$ODS_EXISTING_INSTALL" == true && "$ENABLE_OPEN_WEBUI" == true ]] || {
     echo 'FAIL: existing-install WebUI selection was lost on rerun' >&2
     exit 1
