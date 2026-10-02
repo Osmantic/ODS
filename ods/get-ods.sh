@@ -761,4 +761,18 @@ export ODS_BOOTSTRAP_SOURCE_DIR="$TEMP_DIR/repo/ods"
 # Keep this shell alive until the installer exits. Its EXIT trap owns the
 # private clone; exec would skip that trap and leave a full checkout behind.
 # The foreground installer still has the clean Git source for provenance.
+bootstrap_signal=''
+# If only the wrapper PID receives a signal, Bash otherwise runs EXIT cleanup
+# while the foreground installer is still reading the clean checkout. A trap
+# defers termination until that child exits, then reports the signal status.
+trap 'bootstrap_signal=TERM' TERM
+trap 'bootstrap_signal=INT' INT
+set +e
 ./install.sh "$@"
+installer_rc=$?
+set -e
+case "$bootstrap_signal" in
+  TERM) exit 143 ;;
+  INT) exit 130 ;;
+esac
+exit "$installer_rc"
