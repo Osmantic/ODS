@@ -500,11 +500,14 @@ export default function RemoteProvider({ compact = false }) {
   const provider = routeState.provider || {}
   const routeStatus = routeState.status || {}
   const egress = statusData?.egress || {}
+  const egressSelected = statusData?.serviceSelection?.egressSelected !== false
+  const sshTunnelSelected = statusData?.serviceSelection?.sshTunnelSelected !== false
   const activation = statusData?.activation || {}
   const sshSupervisor = statusData?.sshSupervisor || {}
   const peer = statusData?.peer || {}
-  const testEnabled = Boolean(statusData?.availableActions?.test)
-  const enableAvailable = Boolean(statusData?.availableActions?.enable)
+  const routeServicesSelected = egressSelected && (provider.transport !== 'ssh' || sshTunnelSelected)
+  const testEnabled = routeServicesSelected && Boolean(statusData?.availableActions?.test)
+  const enableAvailable = routeServicesSelected && Boolean(statusData?.availableActions?.enable)
   const statusMeta = STATUS_META[statusData?.status] || STATUS_META.unknown
   const lifecycleBusy = planning || Boolean(applyingAction)
   const contextLength = Number(form.contextLength)
@@ -518,7 +521,7 @@ export default function RemoteProvider({ compact = false }) {
     && Number.isInteger(maxTokens)
     && maxTokens >= 1
     && maxTokens <= contextLength,
-  ) && !lifecycleBusy
+  ) && !lifecycleBusy && egressSelected
   const proofReceipt = testResult?.probe || routeStatus.lastProbe
   const proofRecorded = testResult?.routeProof?.recorded
   const consumerDrift = activation.reason === 'consumer_drift'
@@ -576,6 +579,13 @@ export default function RemoteProvider({ compact = false }) {
       {compact && <nav className="settings-view-tabs" aria-label="Remote GPU views">
         {[['connection', 'Connection'], ['models', 'Peer models'], ['diagnostics', 'Diagnostics']].map(([id, label]) => <button key={id} type="button" aria-pressed={view === id} onClick={() => setView(id)}>{label}</button>)}
       </nav>}
+
+      {!routeServicesSelected && (
+        <div className="mb-4 rounded-lg border border-theme-border bg-theme-card px-4 py-3 text-sm text-theme-text-secondary" role="status">
+          Add Remote Provider Egress from the <a className="underline" href="/extensions">Extensions Library</a> before configuring or testing a remote model.
+          {provider.transport === 'ssh' && !sshTunnelSelected && ' SSH routes also need Remote Provider SSH Tunnel; its Library action adds Egress as a dependency.'}
+        </div>
+      )}
 
       {error && (
         <div className="mb-4 flex items-center gap-2 rounded-lg border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-red-200">

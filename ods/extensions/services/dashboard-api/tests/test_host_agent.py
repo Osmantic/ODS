@@ -3522,8 +3522,26 @@ class TestRemoteProviderLifecycle:
     """Direct host-agent tests for remote-provider lifecycle planning/apply."""
 
     @pytest.fixture(autouse=True)
-    def _auth(self, monkeypatch):
+    def _auth(self, monkeypatch, tmp_path):
         monkeypatch.setattr(_mod, "AGENT_API_KEY", "test-key")
+        # Dashboard's test conftest installs a partial fcntl stub on Windows.
+        # The installed selector must use msvcrt there, as it does in product.
+        if os.name == "nt":
+            monkeypatch.delitem(sys.modules, "fcntl", raising=False)
+        install_dir = tmp_path / "ods-install"
+        (install_dir / "data").mkdir(parents=True)
+        scripts = install_dir / "scripts"
+        scripts.mkdir()
+        shutil.copyfile(_agent_path.parents[1] / "scripts" / "extension-selection.py",
+                        scripts / "extension-selection.py")
+        for service_id in ("remote-provider-egress", "remote-provider-ssh-tunnel"):
+            directory = install_dir / "extensions" / "services" / service_id
+            directory.mkdir(parents=True)
+            (directory / "compose.yaml").write_text(
+                f"services:\n  {service_id}:\n    image: example:latest\n",
+                encoding="utf-8",
+            )
+        monkeypatch.setattr(_mod, "INSTALL_DIR", install_dir)
 
     @pytest.mark.skipif(os.name == "nt", reason="POSIX secret modes")
     def test_repairs_legacy_provider_secret_modes_without_widening_peer_token(
@@ -3622,6 +3640,85 @@ class TestRemoteProviderLifecycle:
                 "sshKnownHosts": "gpu.example.test ssh-ed25519 AAAATEST",
             },
         }
+
+    @pytest.mark.parametrize("transport,disabled_service", [
+        ("direct", "remote-provider-egress"),
+        ("ssh", "remote-provider-egress"),
+        ("ssh", "remote-provider-ssh-tunnel"),
+    ])
+    def test_enabled_route_requires_selected_library_transports(
+        self, monkeypatch, transport, disabled_service,
+    ):
+        install_dir = _mod.INSTALL_DIR
+        monkeypatch.setattr(_mod, "DATA_DIR", install_dir / "data")
+        service_dir = install_dir / "extensions" / "services" / disabled_service
+        (service_dir / "compose.yaml").rename(service_dir / "compose.yaml.disabled")
+        payload = (self._ssh_configure_payload() if transport == "ssh"
+                   else self._configure_payload())
+        plan = _mod._plan_remote_provider_lifecycle_operation(payload)
+        with pytest.raises(RuntimeError, match=f"Enable {disabled_service} in Extensions Library"):
+            _mod._write_selected_remote_provider_route_state(plan)
+        assert not (_mod.DATA_DIR / "remote-provider" / "routing-state.json").exists()
+
+    @pytest.mark.parametrize("transport", ["direct", "ssh"])
+    def test_selected_library_transports_allow_route_publication(
+        self, monkeypatch, transport,
+    ):
+        install_dir = _mod.INSTALL_DIR
+        monkeypatch.setattr(_mod, "DATA_DIR", install_dir / "data")
+        payload = (self._ssh_configure_payload() if transport == "ssh"
+                   else self._configure_payload())
+        plan = _mod._plan_remote_provider_lifecycle_operation(payload)
+        _mod._write_selected_remote_provider_route_state(plan)
+        route = json.loads(
+            (_mod.DATA_DIR / "remote-provider" / "routing-state.json").read_text(
+                encoding="utf-8",
+            )
+        )
+        assert route["enabled"] is True
+        assert route["provider"]["transport"] == transport
+
+    def test_route_publication_holds_graph_lock_through_state_write(
+        self, monkeypatch,
+    ):
+        install_dir = _mod.INSTALL_DIR
+        monkeypatch.setattr(_mod, "DATA_DIR", install_dir / "data")
+        plan = _mod._plan_remote_provider_lifecycle_operation(self._configure_payload())
+        selector = _mod._load_extension_selector()
+        entered_write = threading.Event()
+        release_write = threading.Event()
+        failures = []
+        original_write = _mod._write_remote_provider_route_state
+
+        def held_write(*args, **kwargs):
+            entered_write.set()
+            assert release_write.wait(3), "route writer was not released"
+            return original_write(*args, **kwargs)
+
+        def publish():
+            try:
+                _mod._write_selected_remote_provider_route_state(plan)
+            except Exception as exc:
+                failures.append(exc)
+
+        monkeypatch.setattr(_mod, "_write_remote_provider_route_state", held_write)
+        writer = threading.Thread(target=publish, daemon=True)
+        writer.start()
+        try:
+            assert entered_write.wait(3), "route writer did not acquire graph lock"
+            with pytest.raises(selector.SelectionError, match="Timed out waiting for extensions lock"):
+                selector.run("disable", install_dir, "remote-provider-egress", timeout=0.1,
+                             data_dir=_mod.DATA_DIR)
+        finally:
+            release_write.set()
+            writer.join(timeout=3)
+        assert not writer.is_alive()
+        assert failures == []
+        with pytest.raises(selector.SelectionError, match="Active direct remote-provider route"):
+            selector.run("disable", install_dir, "remote-provider-egress",
+                         data_dir=_mod.DATA_DIR)
+        assert (install_dir / "extensions" / "services" / "remote-provider-egress"
+                / "compose.yaml").is_file()
 
     def _patch_successful_probe(self, monkeypatch):
         probes = []

@@ -6,6 +6,26 @@ import asyncio
 import json
 
 
+def test_remote_provider_service_selection_tracks_library_markers(tmp_path, monkeypatch):
+    from routers import remote_provider_status as rps
+
+    root = tmp_path / "services"
+    for service_id in ("remote-provider-egress", "remote-provider-ssh-tunnel"):
+        (root / service_id).mkdir(parents=True)
+    monkeypatch.setattr(rps, "EXTENSIONS_DIR", root)
+    egress = root / "remote-provider-egress"
+    tunnel = root / "remote-provider-ssh-tunnel"
+    (egress / "compose.yaml.disabled").write_text("services: {}", encoding="utf-8")
+    (tunnel / "compose.yaml.disabled").write_text("services: {}", encoding="utf-8")
+    assert rps._remote_provider_service_selection() == {
+        "egressSelected": False, "sshTunnelSelected": False,
+    }
+    (egress / "compose.yaml.disabled").rename(egress / "compose.yaml")
+    assert rps._remote_provider_service_selection()["egressSelected"] is True
+    (egress / "compose.yaml.disabled").write_text("ambiguous", encoding="utf-8")
+    assert rps._remote_provider_service_selection()["egressSelected"] is False
+
+
 def _route_state(
     model: str = "qwen/remote:latest",
     *,
