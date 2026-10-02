@@ -2465,6 +2465,7 @@ function Get-ReadinessPort {
 
 $dashboardPort = Get-ReadinessPort -Name "DASHBOARD_PORT" -Default "3001"
 $webuiPort = Get-ReadinessPort -Name "WEBUI_PORT" -Default "3000"
+$chatUrl = "http://localhost:$webuiPort"
 $dashboardApiPort = Get-ReadinessPort -Name "DASHBOARD_API_PORT" -Default "3002"
 $llmContainer = if ($useLemonade -or $cloudMode -or $gpuInfo.Backend -eq "amd") { "" } else { "ods-llama-server" }
 $readinessChecks = @(
@@ -2527,7 +2528,7 @@ if (Test-ODSWindowsServiceEnabled -ServiceId "privacy-shield" -Plan $servicePlan
 $installReadiness = Write-ODSInstallReadinessSummary -Checks $readinessChecks `
     -StatusCommand ".\ods.ps1 status" `
     -LogPath (Join-Path $installDir "logs\install.log") `
-    -DashboardUrl "http://localhost:$dashboardPort" `
+    -ChatUrl $chatUrl `
     -PassThru
 
 # The first post-compose persona render happens as soon as the required core
@@ -2545,30 +2546,24 @@ if ($installReadiness -and $installReadiness.AllReady -and $llmModelReady -and $
 
 # ── Desktop & Start Menu shortcuts ───────────────────────────────────────────
 try {
-    $dashboardUrl  = "http://localhost:3001"
-    $shortcutName  = "ODS"
     $iconPath      = Join-Path $installDir "extensions\services\dashboard\public\osmantic-os.ico"
-    $iconContent   = if (Test-Path -LiteralPath $iconPath) { "IconFile=$iconPath`nIconIndex=0" } else { "IconIndex=0" }
-    $urlContent    = "[InternetShortcut]`nURL=$dashboardUrl`n$iconContent`n"
-
     $desktopDir    = [Environment]::GetFolderPath("Desktop")
-    Write-Utf8NoBom -Path (Join-Path $desktopDir   "$shortcutName.url") -Content $urlContent
-
     $startMenuDir  = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs"
-    Write-Utf8NoBom -Path (Join-Path $startMenuDir "$shortcutName.url") -Content $urlContent
+    Write-ODSWindowsShortcuts -ChatUrl $chatUrl -IconPath $iconPath `
+        -DesktopDir $desktopDir -StartMenuDir $startMenuDir
 
     # Attempt taskbar pin via Shell COM verb (silent no-op on builds that block it)
     try {
         $shell = New-Object -ComObject Shell.Application
         $folder = $shell.Namespace($desktopDir)
-        $item = $folder.ParseName("$shortcutName.url")
+        $item = $folder.ParseName("ODS.url")
         if ($item) {
             $item.Verbs() | Where-Object { $_.Name -match "pin.*taskbar|Taskbar" } |
                 ForEach-Object { $_.DoIt() }
         }
     } catch { }
 
-    Write-AISuccess "Added ODS shortcut to Desktop and Start Menu"
+    Write-AISuccess "Added ODS model chat shortcut to Desktop and Start Menu"
 } catch {
     Write-AIWarn "Could not create shortcuts: $_"
 }
@@ -2582,7 +2577,7 @@ if (-not $dryRun) {
 
 # ── Success card ──────────────────────────────────────────────────────────────
 if ($allHealthy) {
-    Write-SuccessCard
+    Write-SuccessCard -WebUIPort $webuiPort -DashboardPort $dashboardPort
 } else {
     Write-Host ""
     Write-AIWarn "Install finished, but one or more services are not ready yet. Check status with:"
