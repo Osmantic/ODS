@@ -1667,8 +1667,18 @@ if $ENABLE_PIXEL && ! $PREFLIGHT_ONLY; then
         _pixel_retain_args+=(--prompt-for-sudo)
     fi
     _PIXEL_RETAINED=false
+    _PIXEL_UPDATE_REQUIRED=false
     if [[ -e "${INSTALL_DIR}/data/pixel-native" || -L "${INSTALL_DIR}/data/pixel-native" ]]; then
-        /usr/bin/python3 "${LIB_DIR}/pixel-native-retain.py" "${_pixel_retain_args[@]}" || exit 1
+        if /usr/bin/python3 "${LIB_DIR}/pixel-native-retain.py" "${_pixel_retain_args[@]}" --allow-update; then
+            :
+        else
+            _pixel_retain_status=$?
+            if [[ $_pixel_retain_status -eq 2 ]]; then
+                _PIXEL_UPDATE_REQUIRED=true
+            else
+                exit 1
+            fi
+        fi
         _PIXEL_RETAINED=true
     else
         /usr/bin/python3 "${LIB_DIR}/pixel-native-install.py" "${_pixel_install_args[@]}" \
@@ -2834,9 +2844,30 @@ if $DRY_RUN; then
         ai "[DRY RUN] Would skip Open WebUI image and container; retain its data"
     fi
     $ENABLE_PIXEL && ai "[DRY RUN] Would prepare and activate native Pixel after the base stack"
+    if $ENABLE_PIXEL && $_PIXEL_UPDATE_REQUIRED; then
+        ai "[DRY RUN] Would run the protected native Pixel source update before starting the base stack"
+    fi
 else
     # Change to install directory for docker compose
     cd "$INSTALL_DIR"
+
+    # The owner has a proved active native selection, but this ODS checkout
+    # carries newer service bytes. Use the existing protected joint updater
+    # before the base stack is started; never rerun initial native setup.
+    if $ENABLE_PIXEL && $_PIXEL_UPDATE_REQUIRED; then
+        ai "Updating retained native Pixel service selection..."
+        _pixel_update_args=(--install-dir "$INSTALL_DIR" --ods-source "$SOURCE_ROOT")
+        [[ -z "${PIXEL_SOURCE_REF:-}" ]] || _pixel_update_args+=(--ref "$PIXEL_SOURCE_REF")
+        if ! /usr/bin/python3 "$LIB_DIR/pixel-native-update.py" "${_pixel_update_args[@]}"; then
+            ai_err "Protected native Pixel update stopped. Keep its preparation and recovery journal for review."
+            exit 1
+        fi
+        if ! /usr/bin/python3 "$LIB_DIR/pixel-native-retain.py" "${_pixel_retain_args[@]}"; then
+            ai_err "Updated native Pixel selection did not match this ODS source. Keep its state for review."
+            exit 1
+        fi
+        ai_ok "Updated native Pixel service selection for Dashboard/Portal"
+    fi
 
     # ── Bootstrap fast-start ──────────────────────────────────────────────
     _BOOTSTRAP_ACTIVE=false

@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import pwd
+import re
 import shutil
 import subprocess
 import sys
@@ -69,7 +70,7 @@ def migrate_public_identity(*, source, preparation, node):
         return {'status': 'manual-review-required'}
 
 
-def update(*, install_dir, ods_source, prepare_only=False):
+def update(*, install_dir, ods_source, prepare_only=False, ref=None):
     if sys.platform != 'darwin' or os.geteuid() == 0:
         raise ValueError('native-macos-owner-required')
     install_dir, ods_source = Path(install_dir).resolve(strict=True), Path(ods_source).resolve(strict=True)
@@ -97,18 +98,21 @@ def update(*, install_dir, ods_source, prepare_only=False):
     os.environ['DOCKER_HOST'] = endpoint
     try:
         initial = helper('pixel-native-install')
+        ref = ref or initial.DEFAULT_REF
+        if not re.fullmatch('[a-f0-9]{40}', ref):
+            raise ValueError('exact-pixel-source-ref-required')
         node, npm = initial.node_tools()
         root = install_dir / 'data/pixel-native'
         work = Path(tempfile.mkdtemp(prefix='update-', dir=root))
         print('Native update preparation: ' + str(work), flush=True)
         config = helper('pixel-native-config')
-        source = config.bootstrap.acquire_source(ref=initial.DEFAULT_REF,
+        source = config.bootstrap.acquire_source(ref=ref,
             destination=work / 'source',
             source_url=str(ods_source / 'vendor/pixel.bundle'))
         runtime = work / 'acquired-runtime'
-        config.bootstrap.stage(source=source, ref=initial.DEFAULT_REF, destination=runtime, node=node, npm=npm)
+        config.bootstrap.stage(source=source, ref=ref, destination=runtime, node=node, npm=npm)
         preparation = work / 'preparation'
-        helper('pixel-native-prepare').prepare_migration(source=source, ref=initial.DEFAULT_REF,
+        helper('pixel-native-prepare').prepare_migration(source=source, ref=ref,
             node=node, runtime=runtime, docker=transport['docker'], ods_source=ods_source,
             install_dir=install_dir, destination=preparation)
         prepared = config.private_json(preparation / 'preparation.json')
@@ -134,6 +138,7 @@ def main():
     parser.add_argument('--install-dir', required=True)
     parser.add_argument('--ods-source', required=True)
     parser.add_argument('--prepare-only', action='store_true')
+    parser.add_argument('--ref')
     args = parser.parse_args()
     try:
         print(json.dumps(update(**vars(args))))

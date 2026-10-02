@@ -139,14 +139,14 @@ def test_retained_preflight_refuses_symlinked_native_root(installed):
 def test_retained_preflight_refuses_changed_current_service_source(installed):
     root, preparation, digest, services, ref, checks, source = installed
     (source / 'extensions/services/pixel-agent/host/extension_manager.py').write_bytes(b'new payload\n')
-    with pytest.raises(ValueError, match='native-service-source-changed'):
+    with pytest.raises(retain.SourceUpdateRequired, match='native-service-source-changed'):
         retain.verify(root, expected_ref=ref, ods_source=source)
 
 
 def test_retained_preflight_refuses_changed_current_catalog(installed):
     root, preparation, digest, services, ref, checks, source = installed
     retain.helper('pixel-native-config.py').service_catalog = lambda _source: b'new catalog\n'
-    with pytest.raises(ValueError, match='native-service-catalog-changed'):
+    with pytest.raises(retain.SourceUpdateRequired, match='native-service-catalog-changed'):
         retain.verify(root, expected_ref=ref, ods_source=source)
 
 
@@ -158,6 +158,31 @@ def test_retained_preflight_refuses_unverified_selected_manifest(installed):
         'serviceManifest': {'files': {}}}
     with pytest.raises(ValueError, match='native-service-manifest-changed'):
         retain.verify(root, expected_ref=ref, ods_source=source)
+
+
+@pytest.mark.parametrize('changed', ['service', 'catalog'])
+def test_cli_update_signal_only_for_proved_source_drift(installed, monkeypatch, changed):
+    root, _, _, _, ref, _, source = installed
+    if changed == 'service':
+        (source / 'extensions/services/pixel-agent/host/extension_manager.py').write_bytes(b'new payload\n')
+    else:
+        retain.helper('pixel-native-config.py').service_catalog = lambda _source: b'new catalog\n'
+    monkeypatch.setattr('sys.argv', ['pixel-native-retain.py', '--install-dir', str(root),
+        '--ods-source', str(source), '--expected-ref', ref, '--allow-update'])
+    assert retain.main() == 2
+    monkeypatch.setattr('sys.argv', ['pixel-native-retain.py', '--install-dir', str(root),
+        '--ods-source', str(source), '--expected-ref', ref])
+    assert retain.main() == 1
+
+
+def test_cli_update_signal_refuses_pending_protected_journal(installed, monkeypatch):
+    root, _, _, _, ref, _, source = installed
+    (source / 'extensions/services/pixel-agent/host/extension_manager.py').write_bytes(b'new payload\n')
+    monkeypatch.setattr(retain, 'require_protected_clear',
+        lambda **_kwargs: (_ for _ in ()).throw(ValueError('native-protected-transition-pending')))
+    monkeypatch.setattr('sys.argv', ['pixel-native-retain.py', '--install-dir', str(root),
+        '--ods-source', str(source), '--expected-ref', ref, '--allow-update'])
+    assert retain.main() == 1
 
 
 def test_retained_update_uses_protected_manifest_not_old_owner_preparation(installed):
@@ -214,6 +239,32 @@ python_fixture() { printf '%s\n' "$1"; }
         '/source/lib/pixel-native-retain.py' if retained else '/source/lib/pixel-native-install.py']
 
 
+@pytest.mark.parametrize('status, expected', [(0, 'false'), (2, 'true'), (1, 'failed')])
+def test_shell_auto_updates_only_proved_source_drift(tmp_path, status, expected):
+    script = SCRIPT.read_text()
+    start = script.index('if $ENABLE_PIXEL && ! $PREFLIGHT_ONLY; then')
+    stop = script.index('\nif ! $OPENCLAW_EXPLICIT; then', start)
+    (tmp_path / 'data/pixel-native').mkdir(parents=True)
+    body = script[start:stop].replace('/usr/bin/python3', 'python_fixture')
+    shell = '''set -euo pipefail
+python_fixture() { printf '%s\\n' "$1"; return ''' + str(status) + '''; }
+''' + body + '''
+printf 'update=%s\\n' "$_PIXEL_UPDATE_REQUIRED"
+'''
+    result = subprocess.run(['bash'], input=shell, capture_output=True, text=True,
+        env={**os.environ, 'ENABLE_PIXEL': 'true', 'PREFLIGHT_ONLY': 'false',
+             'NON_INTERACTIVE': 'true', 'DRY_RUN': 'false', 'OPENCLAW_EXPLICIT': 'true',
+             'PIXEL_SOURCE_REF': '', 'INSTALL_DIR': str(tmp_path), 'LIB_DIR': '/source/lib',
+             'SOURCE_ROOT': '/source'})
+    if expected == 'failed':
+        assert result.returncode == 1
+        assert 'update=' not in result.stdout
+    else:
+        assert result.returncode == 0
+        assert result.stdout.splitlines() == ['/source/lib/pixel-native-retain.py',
+                                              'update=' + expected]
+
+
 def test_retained_path_does_not_call_initial_setup_after_base_launch():
     script = SCRIPT.read_text()
     start = script.index('    if $ENABLE_PIXEL; then\n        if $_PIXEL_RETAINED; then')
@@ -232,3 +283,40 @@ ENABLE_PIXEL=true
         env={**os.environ, 'LIB_DIR': '/source/lib'}, check=True)
     assert result.stdout.splitlines() == ['/source/lib/pixel-native-retain.py']
     assert result.stderr == ''
+
+
+@pytest.mark.parametrize('update_status, retain_status, expected', [
+    (0, 0, ['/source/lib/pixel-native-update.py', '/source/lib/pixel-native-retain.py']),
+    (1, 0, ['/source/lib/pixel-native-update.py']),
+    (0, 1, ['/source/lib/pixel-native-update.py', '/source/lib/pixel-native-retain.py']),
+])
+def test_protected_update_runs_before_base_launch_and_requires_reproof(
+        update_status, retain_status, expected):
+    script = SCRIPT.read_text()
+    start = script.index('    # The owner has a proved active native selection')
+    stop = script.index('    # ── Bootstrap fast-start', start)
+    body = script[start:stop].replace('/usr/bin/python3', 'python_fixture')
+    shell = '''set -euo pipefail
+ai() { :; }
+ai_ok() { :; }
+ai_err() { :; }
+python_fixture() {
+    printf '%s\\n' "$1"
+    case "$1" in
+        */pixel-native-update.py) return ''' + str(update_status) + ''' ;;
+        */pixel-native-retain.py) return ''' + str(retain_status) + ''' ;;
+    esac
+}
+ENABLE_PIXEL=true
+_PIXEL_UPDATE_REQUIRED=true
+PIXEL_SOURCE_REF=''' + 'a' * 40 + '''
+INSTALL_DIR=/owner/ods
+SOURCE_ROOT=/candidate/ods
+LIB_DIR=/source/lib
+_pixel_retain_args=(--install-dir /owner/ods)
+''' + body
+    result = subprocess.run(['bash'], input=shell, capture_output=True, text=True)
+    assert result.stdout.splitlines() == expected
+    assert result.returncode == (0 if update_status == retain_status == 0 else 1)
+    assert script.index('pixel-native-update.py') < script.index('    # ── Bootstrap fast-start',
+        script.index('# PHASE 5'))

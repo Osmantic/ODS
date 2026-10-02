@@ -21,6 +21,10 @@ PROTECTED_STATE = Path('/private/var/lib/ods-pixel-access')
 PENDING_JOURNALS = ('runtime-upgrade.json', 'transition.json', 'policy-activation.json')
 
 
+class SourceUpdateRequired(ValueError):
+    """The active selection is proved, but its ODS service source is older."""
+
+
 def helper(filename):
     path = HERE / filename
     spec = importlib.util.spec_from_file_location('native_retain_' + filename.replace('-', '_'), path)
@@ -80,11 +84,11 @@ def verify_desired_services(ods_source, bundle_module, bundle, digest, services,
         body = config.service_snapshot(source, relative)
         record = records[output]
         if len(body) != record['bytes'] or hashlib.sha256(body).hexdigest() != record['sha256']:
-            raise ValueError('native-service-source-changed')
+            raise SourceUpdateRequired('native-service-source-changed')
     catalog = config.service_catalog(source)
     record = records['helpers/extension-catalog.json']
     if len(catalog) != record['bytes'] or hashlib.sha256(catalog).hexdigest() != record['sha256']:
-        raise ValueError('native-service-catalog-changed')
+        raise SourceUpdateRequired('native-service-catalog-changed')
 
 
 def verify(install_dir, *, expected_ref=None, ods_source=None, prompt_for_sudo=False):
@@ -155,6 +159,8 @@ def main():
     parser.add_argument('--expected-ref')
     parser.add_argument('--ods-source')
     parser.add_argument('--prompt-for-sudo', action='store_true')
+    parser.add_argument('--allow-update', action='store_true',
+                        help='return 2 only for a proved active selection with changed ODS service source')
     parser.add_argument('--check-protected', action='store_true')
     args = parser.parse_args()
     try:
@@ -165,6 +171,13 @@ def main():
                 raise ValueError('native-retention-input-required')
             verify(args.install_dir, expected_ref=args.expected_ref, ods_source=args.ods_source,
                    prompt_for_sudo=args.prompt_for_sudo)
+    except SourceUpdateRequired:
+        if args.allow_update:
+            print('Native Pixel protected source update required before the base stack starts.', file=sys.stderr)
+            return 2
+        print('Native Pixel retention could not be proved. Keep its state intact and use the '
+              'reviewed native update or recovery path.', file=sys.stderr)
+        return 1
     except Exception:
         print('Native Pixel retention could not be proved. Keep its state intact and use the '
               'reviewed native update or recovery path.', file=sys.stderr)
