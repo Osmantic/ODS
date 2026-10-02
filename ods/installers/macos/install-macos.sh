@@ -2377,6 +2377,9 @@ else
         ai "Updating retained native Pixel service selection..."
         _pixel_update_args=(--install-dir "$INSTALL_DIR" --ods-source "$SOURCE_ROOT")
         [[ -z "${PIXEL_SOURCE_REF:-}" ]] || _pixel_update_args+=(--ref "$PIXEL_SOURCE_REF")
+        if $NON_INTERACTIVE; then
+            _pixel_update_args+=(--non-interactive)
+        fi
         if ! /usr/bin/python3 "$LIB_DIR/pixel-native-update.py" "${_pixel_update_args[@]}"; then
             ai_err "Protected native Pixel update stopped. Keep its preparation and recovery journal for review."
             exit 1

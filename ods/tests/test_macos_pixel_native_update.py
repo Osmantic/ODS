@@ -147,6 +147,20 @@ def test_update_requires_exact_source_ref_before_preparation(tmp_path, monkeypat
     assert list((installed / 'data/pixel-native').iterdir()) == []
 
 
+def test_unattended_activation_refuses_sudo_prompt():
+    prepared = {'status': 'prepared', 'installDir': '/owner/ods',
+        'currentDigest': 'a' * 64, 'runtimeDigest': 'b' * 64,
+        'serviceDigest': 'c' * 64, 'pixelSourceRef': 'd' * 40,
+        'gatewayPort': 18789, 'accessPort': 18790}
+    transport = {'docker': '/usr/local/bin/docker', 'project': 'ods',
+        'image': 'sha256:' + 'e' * 64, 'user': '501:20'}
+    command = module.activation_command(Path('/owner/preparation'), prepared,
+        install_dir=Path('/owner/ods'), ods_source=Path('/candidate/ods'),
+        owner='fixture-owner', transport=transport, non_interactive=True)
+    assert command[:3] == ['/usr/bin/sudo', '-n', '/usr/bin/python3']
+    assert '--activate' in command
+
+
 def test_update_reaches_installation_validation_without_license_flag(monkeypatch):
     monkeypatch.setattr(module.sys, 'platform', 'darwin')
     monkeypatch.setattr(module.os, 'geteuid', lambda: 501)
