@@ -49,7 +49,8 @@ reset_features() {
     VOICE_ENABLE_EXPLICIT=false VOICE_DISABLE_EXPLICIT=false
     WHISPER_RETAINED='' TTS_RETAINED=''
     WEBUI_RETAINED='' WEBUI_ENABLE_EXPLICIT=false WEBUI_DISABLE_EXPLICIT=false
-    unset _MACOS_RETAINED_SEARXNG || true
+    unset _MACOS_RETAINED_SEARXNG _MACOS_RETAINED_QDRANT \
+        _MACOS_RETAINED_EMBEDDINGS || true
     unset feature_choice || true
 }
 
@@ -129,6 +130,53 @@ for service in qdrant embeddings token-spy perplexica privacy-shield; do
     assert_marker "$service" false
 done
 NON_INTERACTIVE=false
+
+# Token Spy and SearXNG are independent Library choices. Token Spy alone
+# must not pull a search container into a retained lean install.
+INSTALL_DIR="$scratch/token-spy-only"
+mkdir -p "$INSTALL_DIR"
+printf 'ODS_MODE=local\n' > "$INSTALL_DIR/.env"
+for service in "${services[@]}"; do set_marker "$service" false; done
+set_marker token-spy true
+reset_features
+run_choice ''
+assert_marker token-spy true
+assert_marker searxng false
+reset_features
+NON_INTERACTIVE=true
+run_choice ''
+assert_marker token-spy true
+assert_marker searxng false
+NON_INTERACTIVE=false
+
+# Qdrant and embeddings are separate Library choices. Keeping a partial
+# selection must retain the chosen recipe without claiming complete RAG.
+INSTALL_DIR="$scratch/partial-rag"
+mkdir -p "$INSTALL_DIR"
+printf 'ODS_MODE=local\n' > "$INSTALL_DIR/.env"
+for service in "${services[@]}"; do set_marker "$service" false; done
+set_marker qdrant true
+reset_features
+run_choice ''
+assert_marker qdrant true
+assert_marker embeddings false
+[[ "$ENABLE_RAG" == false ]] \
+    || { echo 'FAIL: partial RAG claimed complete RAG support' >&2; exit 1; }
+reset_features
+NON_INTERACTIVE=true
+run_choice ''
+assert_marker qdrant true
+assert_marker embeddings false
+NON_INTERACTIVE=false
+
+set_marker qdrant false
+set_marker embeddings true
+reset_features
+run_choice ''
+assert_marker qdrant false
+assert_marker embeddings true
+[[ "$ENABLE_RAG" == false ]] \
+    || { echo 'FAIL: embeddings-only selection claimed complete RAG' >&2; exit 1; }
 
 # Enter on a fresh install still means Core; selecting 1 explicitly still
 # enables the Full Stack bundle on a retained installation.
