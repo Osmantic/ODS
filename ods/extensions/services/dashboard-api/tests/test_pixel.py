@@ -609,14 +609,23 @@ async def test_cold_lemonade_identity_probe_can_finish_after_three_seconds(monke
     runtime = {"source": "local-switchboard", "model": "Qwen3.6-35B-A3B-GGUF",
                "contextLength": 131072}
 
+    async def recorded_status(*_args, **_kwargs):
+        return {"status": "idle", "activeRuntime": runtime}
+
     async def slow_but_verified_model():
         await asyncio.sleep(3.1)
         return "Qwen3.6-35B-A3B-GGUF.gguf"
 
+    monkeypatch.setattr(pixel, "request_agent_json", recorded_status)
     monkeypatch.setattr(pixel, "read_live_env_value",
                         lambda key: "lemonade" if key == "LLM_BACKEND" else "")
     monkeypatch.setattr(pixel, "get_loaded_model", slow_but_verified_model)
-    assert await pixel._model_readiness_issue_for_status({"activeRuntime": runtime}) is None
+    body = json.dumps({"data": [{"id": "portal/default"}]}).encode()
+    with patch.object(pixel.httpx, "AsyncClient",
+                      return_value=FakeClient(FakeResponse(chunks=[body]))):
+        status = await pixel.pixel_status()
+    assert status["available"] is True
+    assert status["runtime"] == runtime
 
 
 @pytest.mark.asyncio
