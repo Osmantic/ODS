@@ -983,6 +983,7 @@ litellm_settings:
             -EnableWorkflows $enableWorkflows `
             -EnableRag $enableRag `
             -EnableHermes $enableHermes `
+            -EnableHermesProxy $enableHermesProxy `
             -EnableOpenClaw $enableOpenClaw `
             -EnableComfyui $enableComfyui `
             -EnableDeepResearch $enableDeepResearch `
@@ -2095,6 +2096,7 @@ if ($dryRun) {
         -EnableWorkflows $enableWorkflows `
         -EnableRag $enableRag `
         -EnableHermes $enableHermes `
+        -EnableHermesProxy $enableHermesProxy `
         -EnableOpenClaw $enableOpenClaw `
         -EnableComfyui $enableComfyui `
         -EnableDeepResearch $enableDeepResearch `

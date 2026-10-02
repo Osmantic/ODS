@@ -151,7 +151,7 @@ def test_identity_verifier_unavailable_fails_closed(monkeypatch, error):
 def test_shell_preflight_prompt_policy(noninteractive, dryrun, prompt):
     source = (ROOT / 'installers/macos/install-macos.sh').read_text()
     start = source.index('    _pixel_install_args=(--install-dir')
-    stop = source.index('    ENABLE_HERMES=false', start)
+    stop = source.index('    ENABLE_OPENCLAW=false', start)
     block = source[start:stop].replace('/usr/bin/python3', 'fixture_python')
     script = '''
 set -eu
@@ -292,18 +292,23 @@ def test_core_feature_selection_keeps_pixel_dependencies_without_heavy_services(
     stop = script.index('ai "Features:"', start)
     resolver_start = script.index('_macos_resolve_support_services() {')
     resolver_stop = script.index('\n}', resolver_start) + 2
+    validator_start = script.index('_macos_validate_hermes_selection() {')
+    validator_stop = script.index('\n}', validator_start) + 2
     shell = '''set -eu
 NON_INTERACTIVE=true; ALL_FEATURES=false; DRY_RUN=false
 CLOUD_MODE=false; ENABLE_RECOMMENDED=false
-ENABLE_HERMES=false; ENABLE_OPENCLAW=false; ENABLE_APE=false
+ENABLE_HERMES=false; ENABLE_HERMES_PROXY=false; ENABLE_OPENCLAW=false; ENABLE_APE=false
+HERMES_EXPLICIT=false; HERMES_EXPLICIT_VALUE=""; HERMES_RETAINED=""; HERMES_PROXY_RETAINED=""
 ENABLE_PERPLEXICA=false; ENABLE_VOICE=false; ENABLE_RAG=false; ENABLE_WORKFLOWS=false
+ENABLE_WHISPER=false; ENABLE_TTS=false; VOICE_ENABLE_EXPLICIT=false; VOICE_DISABLE_EXPLICIT=false
+WHISPER_RETAINED=""; TTS_RETAINED=""
 ENABLE_OPENCODE=false; OPENCODE_ENABLE_EXPLICIT=false; OPENCODE_DISABLE_EXPLICIT=false
 OPENCODE_DISABLE_SELECTED=false
 ENABLE_OPEN_WEBUI=false; WEBUI_RETAINED=""; WEBUI_ENABLE_EXPLICIT=false; WEBUI_DISABLE_EXPLICIT=false
 ENABLE_ODS_PROXY=false
 read_env_value() { printf '\\n'; }
 ai_err() { printf '%s\\n' "$*" >&2; }
-''' + script[resolver_start:resolver_stop] + '\nENABLE_PIXEL=' + pixel + '\n' + script[start:stop] + '''
+''' + script[resolver_start:resolver_stop] + '\n' + script[validator_start:validator_stop] + '\nENABLE_PIXEL=' + pixel + '\n' + script[start:stop] + '''
 printf '%s %s %s %s %s %s %s %s' "$ENABLE_RECOMMENDED" "$ENABLE_LITELLM" "$ENABLE_SEARXNG" "$ENABLE_HERMES" "$ENABLE_OPENCLAW" "$ENABLE_VOICE" "$ENABLE_RAG" "$ENABLE_WORKFLOWS"
 '''
     result = subprocess.run(['bash'], input=shell, capture_output=True, text=True, check=True,

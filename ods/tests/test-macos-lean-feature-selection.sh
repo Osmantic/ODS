@@ -58,7 +58,8 @@ reset_features() {
     ENABLE_RECOMMENDED=false ENABLE_PIXEL=true CLOUD_MODE=false
     ENABLE_PERPLEXICA=false ENABLE_HERMES=false ENABLE_OPENCLAW=false
     ENABLE_LITELLM=false ENABLE_SEARXNG=false ENABLE_WEB_SEARCH=false
-    ENABLE_VOICE=false ENABLE_WORKFLOWS=false ENABLE_RAG=false
+    ENABLE_VOICE=false ENABLE_WHISPER=false ENABLE_TTS=false
+    ENABLE_WORKFLOWS=false ENABLE_RAG=false
     ENABLE_APE=false ENABLE_PRIVACY_SHIELD=false ENABLE_ODS_PROXY=false
     ENABLE_TAILSCALE=false ENABLE_LANGFUSE=false ENABLE_BRAVE_SEARCH=false
     rm -f "$INSTALL_DIR/.env" "$INSTALL_DIR/data/pixel-native/preparation/onboarding.json"

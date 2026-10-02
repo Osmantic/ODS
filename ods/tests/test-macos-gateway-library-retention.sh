@@ -15,8 +15,9 @@ done
 ai_ok() { :; }
 log() { :; }
 
-for setting in ENABLE_RECOMMENDED ENABLE_VOICE ENABLE_WORKFLOWS ENABLE_RAG \
-    ENABLE_HERMES ENABLE_OPENCLAW ENABLE_APE ENABLE_PERPLEXICA \
+for setting in ENABLE_RECOMMENDED ENABLE_VOICE ENABLE_WHISPER ENABLE_TTS \
+    ENABLE_WORKFLOWS ENABLE_RAG ENABLE_HERMES ENABLE_HERMES_PROXY \
+    ENABLE_OPENCLAW ENABLE_APE ENABLE_PERPLEXICA \
     ENABLE_PRIVACY_SHIELD ENABLE_ODS_PROXY ENABLE_TAILSCALE ENABLE_LANGFUSE \
     ENABLE_BRAVE_SEARCH ENABLE_SEARXNG; do
     printf -v "$setting" '%s' false
@@ -37,7 +38,7 @@ for service_id in litellm searxng whisper tts hermes; do
 done
 _macos_capture_gateway_library_selections
 [[ -z "$MACOS_GATEWAY_RETAINED_COMPOSE_IDS" ]]
-if _macos_effective_service_enabled whisper "$ENABLE_VOICE"; then
+if _macos_effective_service_enabled whisper "$ENABLE_WHISPER"; then
     echo 'Fresh gateway unexpectedly selected Whisper' >&2
     exit 1
 fi
@@ -68,10 +69,10 @@ if _macos_gateway_library_selected tts; then
     echo 'Disabled TTS was captured as enabled' >&2
     exit 1
 fi
-_macos_effective_service_enabled whisper "$ENABLE_VOICE"
+_macos_effective_service_enabled whisper "$ENABLE_WHISPER"
 _macos_effective_service_enabled searxng "$ENABLE_SEARXNG"
 _macos_effective_service_enabled hermes "$ENABLE_HERMES"
-if _macos_effective_service_enabled tts "$ENABLE_VOICE"; then
+if _macos_effective_service_enabled tts "$ENABLE_TTS"; then
     echo 'Disabled TTS inherited the Whisper feature group' >&2
     exit 1
 fi

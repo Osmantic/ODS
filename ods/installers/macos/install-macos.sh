@@ -99,15 +99,27 @@ DRY_RUN=false
 FORCE=false
 NON_INTERACTIVE=false
 TIER_OVERRIDE=""
+# Summary flag only: true when either independent voice service is selected.
+# Compose, pulls, health, and model setup must use the per-service flags.
 ENABLE_VOICE=false
+ENABLE_WHISPER=false
+ENABLE_TTS=false
+VOICE_ENABLE_EXPLICIT=false
+VOICE_DISABLE_EXPLICIT=false
+WHISPER_RETAINED=""
+TTS_RETAINED=""
 ENABLE_WORKFLOWS=false
 ENABLE_RAG=false
 ENABLE_RECOMMENDED=true
 RECOMMENDED_EXPLICIT=false
-# Hermes Agent is the new default agent as of 2026-05-12. OpenClaw is
+# Hermes is an optional agent alongside the default native Pixel. OpenClaw is
 # deprecated and gates behind --openclaw for the deprecation release.
-ENABLE_HERMES=true
+ENABLE_HERMES=false
+ENABLE_HERMES_PROXY=false
 HERMES_EXPLICIT=false
+HERMES_EXPLICIT_VALUE=""
+HERMES_RETAINED=""
+HERMES_PROXY_RETAINED=""
 ENABLE_OPENCLAW=false
 ENABLE_OPENCODE=false
 OPENCODE_ENABLE_EXPLICIT=false
@@ -154,13 +166,14 @@ while [[ $# -gt 0 ]]; do
         --force)         FORCE=true; shift ;;
         --non-interactive) NON_INTERACTIVE=true; shift ;;
         --tier)          TIER_OVERRIDE="${2:-}"; shift 2 ;;
-        --voice)         ENABLE_VOICE=true; shift ;;
+        --voice)         ENABLE_VOICE=true; ENABLE_WHISPER=true; ENABLE_TTS=true; VOICE_ENABLE_EXPLICIT=true; shift ;;
+        --no-voice)      ENABLE_VOICE=false; ENABLE_WHISPER=false; ENABLE_TTS=false; VOICE_DISABLE_EXPLICIT=true; shift ;;
         --workflows)     ENABLE_WORKFLOWS=true; shift ;;
         --rag)           ENABLE_RAG=true; shift ;;
         --recommended)   ENABLE_RECOMMENDED=true; RECOMMENDED_EXPLICIT=true; shift ;;
         --no-recommended) ENABLE_RECOMMENDED=false; RECOMMENDED_EXPLICIT=true; shift ;;
-        --hermes)        ENABLE_HERMES=true; HERMES_EXPLICIT=true; shift ;;
-        --no-hermes)     ENABLE_HERMES=false; HERMES_EXPLICIT=true; shift ;;
+        --hermes)        ENABLE_HERMES=true; ENABLE_HERMES_PROXY=true; HERMES_EXPLICIT=true; HERMES_EXPLICIT_VALUE=true; shift ;;
+        --no-hermes)     ENABLE_HERMES=false; ENABLE_HERMES_PROXY=false; HERMES_EXPLICIT=true; HERMES_EXPLICIT_VALUE=false; shift ;;
         --openclaw)      ENABLE_OPENCLAW=true; OPENCLAW_EXPLICIT=true; shift ;;
         --no-openclaw)   ENABLE_OPENCLAW=false; OPENCLAW_EXPLICIT=true; shift ;;
         --opencode)     ENABLE_OPENCODE=true; OPENCODE_ENABLE_EXPLICIT=true; shift ;;
@@ -191,9 +204,15 @@ if $WEBUI_ENABLE_EXPLICIT && $WEBUI_DISABLE_EXPLICIT; then
     echo "--with-webui and --no-webui cannot be used together" >&2
     exit 1
 fi
+if $VOICE_ENABLE_EXPLICIT && $VOICE_DISABLE_EXPLICIT; then
+    echo "--voice and --no-voice cannot be used together" >&2
+    exit 1
+fi
 
 if $ALL_FEATURES; then
     ENABLE_VOICE=true
+    ENABLE_WHISPER=true
+    ENABLE_TTS=true
     ENABLE_WORKFLOWS=true
     ENABLE_RAG=true
     ENABLE_RECOMMENDED=true
@@ -201,6 +220,7 @@ if $ALL_FEATURES; then
     # --openclaw during the deprecation release; will be removed entirely
     # in the next release.
     ENABLE_HERMES=true
+    ENABLE_HERMES_PROXY=true
     $OPENCLAW_EXPLICIT || ENABLE_OPENCLAW=false
     $OPENCODE_DISABLE_EXPLICIT || ENABLE_OPENCODE=true
     ENABLE_APE=true
@@ -342,8 +362,8 @@ _macos_gateway_library_selected() {
 
 _macos_effective_service_enabled() {
     # A retained gateway's Library choice is authoritative per service. The
-    # installer feature flags remain false so one addback cannot enable its
-    # partner (notably Whisper/TTS or Hermes/Hermes proxy).
+    # installer may derive per-service flags on rerun, but one Library addback
+    # cannot enable its partner (notably Whisper/TTS or Hermes/Hermes proxy).
     if $GATEWAY_ONLY && [[ "${_saved_gateway_only:-}" == true ]]; then
         _macos_gateway_library_selected "$1"
     else
@@ -378,13 +398,13 @@ _macos_sync_builtin_compose_states() {
     _macos_set_builtin_compose_state litellm "$ENABLE_LITELLM"
     _macos_set_builtin_compose_state searxng "$ENABLE_SEARXNG"
     _macos_set_builtin_compose_state token-spy "$ENABLE_RECOMMENDED"
-    _macos_set_builtin_compose_state whisper "$ENABLE_VOICE"
-    _macos_set_builtin_compose_state tts "$ENABLE_VOICE"
+    _macos_set_builtin_compose_state whisper "$ENABLE_WHISPER"
+    _macos_set_builtin_compose_state tts "$ENABLE_TTS"
     _macos_set_builtin_compose_state n8n "$ENABLE_WORKFLOWS"
     _macos_set_builtin_compose_state qdrant "$ENABLE_RAG"
     _macos_set_builtin_compose_state embeddings "$ENABLE_RAG"
     _macos_set_builtin_compose_state hermes "$ENABLE_HERMES"
-    _macos_set_builtin_compose_state hermes-proxy "$ENABLE_HERMES"
+    _macos_set_builtin_compose_state hermes-proxy "${ENABLE_HERMES_PROXY:-$ENABLE_HERMES}"
     _macos_set_builtin_compose_state openclaw "$ENABLE_OPENCLAW"
     _macos_set_builtin_compose_state ape "$ENABLE_APE"
     _macos_set_builtin_compose_state perplexica "$ENABLE_PERPLEXICA"
@@ -449,6 +469,92 @@ _macos_resolve_webui_selection() {
     esac
     if ! $WEBUI_ENABLE_EXPLICIT && ! $WEBUI_DISABLE_EXPLICIT && ! $ALL_FEATURES; then
         ENABLE_OPEN_WEBUI="$WEBUI_RETAINED"
+    fi
+}
+
+_macos_retained_builtin_state() {
+    local service_id="$1" fallback="$2"
+    local services="${INSTALL_DIR}/extensions/services"
+    local service_dir="${services}/${service_id}"
+    local active="${service_dir}/compose.yaml"
+    local disabled="${active}.disabled"
+    if [[ -L "${INSTALL_DIR}/extensions" || -L "$services" || -L "$service_dir" \
+        || -L "$active" || -L "$disabled" ]]; then
+        ai_err "Unsafe retained ${service_id} selection path"
+        return 1
+    fi
+    if [[ -f "$active" && -f "$disabled" ]]; then
+        ai_err "Ambiguous retained ${service_id} selection: both Compose markers exist"
+        return 1
+    fi
+    if [[ -f "$active" ]]; then
+        printf '%s\n' true
+    elif [[ -f "$disabled" ]]; then
+        printf '%s\n' false
+    else
+        printf '%s\n' "$fallback"
+    fi
+}
+
+_macos_resolve_voice_selection() {
+    # Validate retained markers even when a CLI flag overrides their state.
+    # The source refresh and compose sync must never operate through an
+    # ambiguous or symlinked installed marker.
+    if [[ -f "${INSTALL_DIR}/.env" ]]; then
+        WHISPER_RETAINED="$(_macos_retained_builtin_state whisper false)" || return 1
+        TTS_RETAINED="$(_macos_retained_builtin_state tts false)" || return 1
+    fi
+    if $VOICE_DISABLE_EXPLICIT; then
+        ENABLE_WHISPER=false ENABLE_TTS=false ENABLE_VOICE=false
+        return 0
+    fi
+    if $VOICE_ENABLE_EXPLICIT || $ALL_FEATURES; then
+        ENABLE_WHISPER=true ENABLE_TTS=true ENABLE_VOICE=true
+        return 0
+    fi
+    if [[ ! -f "${INSTALL_DIR}/.env" ]]; then
+        ENABLE_WHISPER=false ENABLE_TTS=false ENABLE_VOICE=false
+        return 0
+    fi
+    ENABLE_WHISPER="$WHISPER_RETAINED"
+    ENABLE_TTS="$TTS_RETAINED"
+    ENABLE_VOICE=false
+    if $ENABLE_WHISPER || $ENABLE_TTS; then ENABLE_VOICE=true; fi
+}
+
+_macos_resolve_hermes_selection() {
+    if [[ ! -f "${INSTALL_DIR}/.env" ]]; then
+        if ! $HERMES_EXPLICIT && ! $ALL_FEATURES; then
+            ENABLE_HERMES=false
+            ENABLE_HERMES_PROXY=false
+        fi
+        return 0
+    fi
+    HERMES_RETAINED="$(_macos_retained_builtin_state hermes false)" || return 1
+    HERMES_PROXY_RETAINED="$(_macos_retained_builtin_state hermes-proxy "$HERMES_RETAINED")" || return 1
+    if ! $HERMES_EXPLICIT && ! $ALL_FEATURES; then
+        ENABLE_HERMES="$HERMES_RETAINED"
+        ENABLE_HERMES_PROXY="$HERMES_PROXY_RETAINED"
+    fi
+}
+
+_macos_validate_hermes_selection() {
+    if $ENABLE_HERMES_PROXY && ! $ENABLE_HERMES; then
+        ai_err "Hermes proxy requires Hermes; disable its proxy or enable Hermes first."
+        return 1
+    fi
+}
+
+_macos_apply_custom_hermes_answer() {
+    local answer="$1" previous="$ENABLE_HERMES"
+    if [[ "$answer" =~ ^[nN] ]]; then
+        ENABLE_HERMES=false
+    else
+        ENABLE_HERMES=true
+    fi
+    # A separate Library choice for the proxy survives when Hermes stays on.
+    if [[ "$ENABLE_HERMES" != "$previous" ]]; then
+        ENABLE_HERMES_PROXY="$ENABLE_HERMES"
     fi
 }
 
@@ -1415,6 +1521,9 @@ elif [[ -n "$EXTERNAL_LLM_URL" || -n "$EXTERNAL_LLM_API_KEY_FILE" ]]; then
 fi
 _macos_apply_fresh_feature_defaults
 _macos_resolve_webui_selection || exit 1
+_macos_resolve_hermes_selection || exit 1
+_macos_resolve_voice_selection || exit 1
+_macos_validate_hermes_selection || exit 1
 if $GATEWAY_ONLY; then ENABLE_OPEN_WEBUI=false; fi
 if ! $GATEWAY_ONLY && ! $OPENCODE_ENABLE_EXPLICIT && ! $OPENCODE_DISABLE_EXPLICIT && ! $ALL_FEATURES; then
     if ods_macos_opencode_retained "$OPENCODE_PLIST" "$OPENCODE_PLIST_LABEL" \
@@ -1458,7 +1567,6 @@ if $ENABLE_PIXEL && ! $PREFLIGHT_ONLY; then
     fi
     /usr/bin/python3 "${LIB_DIR}/pixel-native-install.py" "${_pixel_install_args[@]}" \
         --preflight-only || exit 1
-    ENABLE_HERMES=false
     ENABLE_OPENCLAW=false
     OPENCLAW_EXPLICIT=true
 fi
@@ -1552,14 +1660,17 @@ fi
 
 # Pre-flight the docker daemon's CPU allocation. Trip early with a clear
 # message rather than letting compose fail after pulls/builds. If the user
-# already requested voice from CLI flags (for example --all), account for
-# Kokoro's 8-CPU pin now; interactive feature selection is checked again
-# after the user picks features.
+# already requested Kokoro from CLI flags or an unattended rerun, account for
+# its 8-CPU default limit now; Whisper's 4-CPU limit fits the base budget.
+# Interactive users can still choose Core, so their Kokoro choice is checked
+# after the feature menu rather than blocking them before it.
 _docker_cpu_override="${ODS_MIN_DOCKER_CPUS:-}"
 _docker_cpu_min="${_docker_cpu_override:-6}"
 _docker_cpu_max_pin=4
 _docker_cpu_workload="base compose stack"
-if _macos_effective_service_enabled whisper "$ENABLE_VOICE" && [[ -z "$_docker_cpu_override" ]]; then
+if _macos_effective_service_enabled tts "$ENABLE_TTS" \
+    && { $NON_INTERACTIVE || $ALL_FEATURES || $DRY_RUN || $VOICE_ENABLE_EXPLICIT; } \
+    && [[ -z "$_docker_cpu_override" ]]; then
     _docker_cpu_min=10
     _docker_cpu_max_pin=8
     _docker_cpu_workload="voice-enabled compose stack"
@@ -1875,8 +1986,8 @@ if ! $NON_INTERACTIVE && ! $ALL_FEATURES && ! $DRY_RUN; then
     read -r -p "  Selection (1/2/3) [${_macos_feature_default}]: " feature_choice < /dev/tty
     case "${feature_choice:-$_macos_feature_default}" in
         1)
-            ENABLE_VOICE=true; ENABLE_WORKFLOWS=true
-            ENABLE_RAG=true; ENABLE_HERMES=true
+            ENABLE_VOICE=true; ENABLE_WHISPER=true; ENABLE_TTS=true; ENABLE_WORKFLOWS=true
+            ENABLE_RAG=true; ENABLE_HERMES=true; ENABLE_HERMES_PROXY=true
             ENABLE_RECOMMENDED=true
             ENABLE_OPENCLAW=false  # deprecated; Hermes is the default
             if [[ -n "$feature_choice" ]] && ! $OPENCODE_DISABLE_EXPLICIT; then ENABLE_OPENCODE=true; fi
@@ -1887,9 +1998,9 @@ if ! $NON_INTERACTIVE && ! $ALL_FEATURES && ! $DRY_RUN; then
             ENABLE_OPEN_WEBUI=true
             ;;
         2)
-            ENABLE_VOICE=false; ENABLE_WORKFLOWS=false
+            ENABLE_VOICE=false; ENABLE_WHISPER=false; ENABLE_TTS=false; ENABLE_WORKFLOWS=false
             ENABLE_RAG=false; ENABLE_RECOMMENDED=false
-            ENABLE_HERMES=false
+            ENABLE_HERMES=false; ENABLE_HERMES_PROXY=false
             ENABLE_OPENCLAW=false
             if ! $OPENCODE_ENABLE_EXPLICIT; then
                 ENABLE_OPENCODE=false
@@ -1903,15 +2014,21 @@ if ! $NON_INTERACTIVE && ! $ALL_FEATURES && ! $DRY_RUN; then
             ;;
         3)
             read -r -p "  Enable Voice (Whisper + Kokoro)? [y/N] " yn < /dev/tty
-            [[ "$yn" =~ ^[yY] ]] && ENABLE_VOICE=true
+            if [[ "$yn" =~ ^[yY] ]]; then
+                ENABLE_VOICE=true; ENABLE_WHISPER=true; ENABLE_TTS=true
+            else
+                ENABLE_VOICE=false; ENABLE_WHISPER=false; ENABLE_TTS=false
+            fi
             read -r -p "  Enable Workflows (n8n)?           [y/N] " yn < /dev/tty
             [[ "$yn" =~ ^[yY] ]] && ENABLE_WORKFLOWS=true
             read -r -p "  Enable RAG (Qdrant + embeddings)? [y/N] " yn < /dev/tty
             [[ "$yn" =~ ^[yY] ]] && ENABLE_RAG=true
             read -r -p "  Enable extra support (SearXNG + Token Spy)? [Y/n] " yn < /dev/tty
             [[ "$yn" =~ ^[nN] ]] && ENABLE_RECOMMENDED=false || ENABLE_RECOMMENDED=true
-            read -r -p "  Enable Hermes Agent (default AI agent)? [Y/n] " yn < /dev/tty
-            [[ "$yn" =~ ^[nN] ]] && ENABLE_HERMES=false || ENABLE_HERMES=true
+            if ! $HERMES_EXPLICIT; then
+                read -r -p "  Enable Hermes Agent (optional)? [Y/n] " yn < /dev/tty
+                _macos_apply_custom_hermes_answer "$yn"
+            fi
             read -r -p "  Enable OpenClaw (DEPRECATED — Hermes replaces it)? [y/N] " yn < /dev/tty
             [[ "$yn" =~ ^[yY] ]] && ENABLE_OPENCLAW=true
             if ! $OPENCODE_ENABLE_EXPLICIT && ! $OPENCODE_DISABLE_EXPLICIT; then
@@ -1933,8 +2050,8 @@ if ! $NON_INTERACTIVE && ! $ALL_FEATURES && ! $DRY_RUN; then
             [[ "$yn" =~ ^[yY] ]] && ENABLE_LANGFUSE=true
             ;;
         *)
-            ENABLE_VOICE=true; ENABLE_WORKFLOWS=true
-            ENABLE_RAG=true; ENABLE_HERMES=true
+            ENABLE_VOICE=true; ENABLE_WHISPER=true; ENABLE_TTS=true; ENABLE_WORKFLOWS=true
+            ENABLE_RAG=true; ENABLE_HERMES=true; ENABLE_HERMES_PROXY=true
             ENABLE_RECOMMENDED=true
             ENABLE_OPENCLAW=false  # deprecated; Hermes is the default
             $OPENCODE_DISABLE_EXPLICIT || ENABLE_OPENCODE=true
@@ -1954,6 +2071,7 @@ if [[ -z "${feature_choice:-}" && -n "$WEBUI_RETAINED" ]] \
 fi
 $WEBUI_DISABLE_EXPLICIT && ENABLE_OPEN_WEBUI=false
 $WEBUI_ENABLE_EXPLICIT && ENABLE_OPEN_WEBUI=true
+if $GATEWAY_ONLY; then ENABLE_OPEN_WEBUI=false; fi
 if $ENABLE_ODS_PROXY && ! $ENABLE_OPEN_WEBUI; then
     ai_err "ODS proxy requires Open WebUI; choose --with-webui or omit --no-webui."
     exit 1
@@ -1962,10 +2080,26 @@ fi
 $OPENCODE_DISABLE_EXPLICIT && ENABLE_OPENCODE=false
 $OPENCODE_ENABLE_EXPLICIT && ENABLE_OPENCODE=true
 
-if $ENABLE_PIXEL; then
-    ENABLE_HERMES=false
-    ENABLE_OPENCLAW=false
+if [[ -z "${feature_choice:-}" && -n "$HERMES_RETAINED" ]] \
+    && ! $HERMES_EXPLICIT && ! $ALL_FEATURES; then
+    ENABLE_HERMES="$HERMES_RETAINED"
+    ENABLE_HERMES_PROXY="$HERMES_PROXY_RETAINED"
 fi
+$HERMES_EXPLICIT && ENABLE_HERMES="$HERMES_EXPLICIT_VALUE" && ENABLE_HERMES_PROXY="$HERMES_EXPLICIT_VALUE"
+if [[ -z "${feature_choice:-}" && -n "$WHISPER_RETAINED" ]] \
+    && ! $VOICE_ENABLE_EXPLICIT && ! $VOICE_DISABLE_EXPLICIT && ! $ALL_FEATURES; then
+    ENABLE_WHISPER="$WHISPER_RETAINED"
+    ENABLE_TTS="$TTS_RETAINED"
+fi
+if $VOICE_DISABLE_EXPLICIT; then
+    ENABLE_WHISPER=false; ENABLE_TTS=false
+elif $VOICE_ENABLE_EXPLICIT; then
+    ENABLE_WHISPER=true; ENABLE_TTS=true
+fi
+ENABLE_VOICE=false
+if $ENABLE_WHISPER || $ENABLE_TTS; then ENABLE_VOICE=true; fi
+if $ENABLE_PIXEL; then ENABLE_OPENCLAW=false; fi
+_macos_validate_hermes_selection || exit 1
 if ! $ENABLE_HERMES && ! $ENABLE_OPENCLAW; then
     ENABLE_APE=false
 fi
@@ -2059,7 +2193,19 @@ elif _macos_effective_service_enabled qdrant "$ENABLE_RAG" \
     || _macos_effective_service_enabled embeddings "$ENABLE_RAG"; then
     _rag_summary=partial
 fi
-info_box "  Voice:" "$(if _macos_effective_service_enabled whisper "$ENABLE_VOICE" || _macos_effective_service_enabled tts "$ENABLE_VOICE"; then echo enabled; else echo disabled; fi)"
+_whisper_effective=false
+_tts_effective=false
+_macos_effective_service_enabled whisper "$ENABLE_WHISPER" && _whisper_effective=true
+_macos_effective_service_enabled tts "$ENABLE_TTS" && _tts_effective=true
+_voice_summary=disabled
+if $_whisper_effective && $_tts_effective; then
+    _voice_summary=enabled
+elif $_whisper_effective || $_tts_effective; then
+    _voice_summary=partial
+fi
+info_box "  Voice:" "$_voice_summary"
+info_box "  Whisper STT:" "$(if $_whisper_effective; then echo enabled; else echo disabled; fi)"
+info_box "  Kokoro TTS:" "$(if $_tts_effective; then echo enabled; else echo disabled; fi)"
 info_box "  Workflows:" "$(if _macos_effective_service_enabled n8n "$ENABLE_WORKFLOWS"; then echo enabled; else echo disabled; fi)"
 info_box "  RAG:" "$_rag_summary"
 info_box "  SearXNG search:" "$(if $ENABLE_SEARXNG; then echo enabled; else echo disabled; fi)"
@@ -2079,7 +2225,8 @@ info_box "  Langfuse:" "$(if _macos_effective_service_enabled langfuse "$ENABLE_
 # why the dashboard shows no image-gen tile after install.
 info_box "  ComfyUI:" "not available on macOS (no MPS Docker image upstream)"
 
-if _macos_effective_service_enabled whisper "$ENABLE_VOICE" && [[ -z "$_docker_cpu_override" ]] && [[ "${_docker_cpu_preflight_min:-0}" -lt 10 ]]; then
+if _macos_effective_service_enabled tts "$ENABLE_TTS" \
+    && [[ -z "$_docker_cpu_override" ]] && [[ "${_docker_cpu_preflight_min:-0}" -lt 10 ]]; then
     _require_docker_cpu_budget 10 8 "voice-enabled compose stack"
 fi
 
@@ -2926,10 +3073,12 @@ else
                 litellm)       $ENABLE_LITELLM || SKIP=true ;;
                 token-spy)     $ENABLE_RECOMMENDED || SKIP=true ;;
                 searxng)       $ENABLE_SEARXNG || SKIP=true ;;
-                whisper|tts)   $ENABLE_VOICE || SKIP=true ;;
+                whisper)       $ENABLE_WHISPER || SKIP=true ;;
+                tts)           $ENABLE_TTS || SKIP=true ;;
                 n8n)           $ENABLE_WORKFLOWS || SKIP=true ;;
                 qdrant|embeddings) $ENABLE_RAG || SKIP=true ;;
-                hermes|hermes-proxy) $ENABLE_HERMES || SKIP=true ;;
+                hermes)        $ENABLE_HERMES || SKIP=true ;;
+                hermes-proxy)  $ENABLE_HERMES_PROXY || SKIP=true ;;
                 openclaw)      $ENABLE_OPENCLAW || SKIP=true ;;
                 ape)           $ENABLE_APE || SKIP=true ;;
                 perplexica)    $ENABLE_PERPLEXICA || SKIP=true ;;
@@ -3777,8 +3926,8 @@ else
 fi
 $ENABLE_OPEN_WEBUI && HEALTH_NAMES+=("Chat UI (Open WebUI)") \
     && HEALTH_URLS+=("http://127.0.0.1:3000") && HEALTH_CONTAINERS+=("ods-webui")
-_macos_effective_service_enabled whisper "$ENABLE_VOICE" && HEALTH_NAMES+=("Whisper (STT)") && HEALTH_URLS+=("http://127.0.0.1:${WHISPER_PORT:-9000}/health") && HEALTH_CONTAINERS+=("ods-whisper")
-_macos_effective_service_enabled tts "$ENABLE_VOICE" && HEALTH_NAMES+=("Kokoro (TTS)") && HEALTH_URLS+=("http://127.0.0.1:${TTS_PORT:-8880}/health") && HEALTH_CONTAINERS+=("ods-tts")
+_macos_effective_service_enabled whisper "$ENABLE_WHISPER" && HEALTH_NAMES+=("Whisper (STT)") && HEALTH_URLS+=("http://127.0.0.1:${WHISPER_PORT:-9000}/health") && HEALTH_CONTAINERS+=("ods-whisper")
+_macos_effective_service_enabled tts "$ENABLE_TTS" && HEALTH_NAMES+=("Kokoro (TTS)") && HEALTH_URLS+=("http://127.0.0.1:${TTS_PORT:-8880}/health") && HEALTH_CONTAINERS+=("ods-tts")
 _macos_effective_service_enabled n8n "$ENABLE_WORKFLOWS" && HEALTH_NAMES+=("n8n (Workflows)") && HEALTH_URLS+=("http://127.0.0.1:5678/healthz") && HEALTH_CONTAINERS+=("ods-n8n")
 $ENABLE_OPENCODE && [[ -x "$OPENCODE_BIN" ]] && HEALTH_NAMES+=("OpenCode (IDE)") && HEALTH_URLS+=("http://127.0.0.1:${OPENCODE_PORT}") && HEALTH_CONTAINERS+=("")
 
@@ -3896,7 +4045,7 @@ fi
 # Speaches does NOT auto-download on transcription requests — it returns 404.
 # We must trigger the download explicitly here, verify it completed, and
 # surface a clear recovery command if anything fails.
-if _macos_effective_service_enabled whisper "$ENABLE_VOICE"; then
+if _macos_effective_service_enabled whisper "$ENABLE_WHISPER"; then
     # Read AUDIO_STT_MODEL from .env (written by env-generator). On macOS the
     # default is base; user can override by editing .env before reinstalling.
     STT_MODEL=$(grep -m1 '^AUDIO_STT_MODEL=' "${INSTALL_DIR}/.env" 2>/dev/null \
@@ -4042,8 +4191,8 @@ fi
     fi
     printf 'Dashboard API|http://127.0.0.1:3002/health|ods-dashboard-api|http://localhost:3002\n'
     _macos_effective_service_enabled perplexica "$ENABLE_PERPLEXICA" && printf 'Perplexica|http://127.0.0.1:3004|ods-perplexica|http://localhost:3004\n'
-    _macos_effective_service_enabled whisper "$ENABLE_VOICE" && printf 'Whisper (STT)|http://127.0.0.1:%s/health|ods-whisper|http://localhost:%s\n' "${WHISPER_PORT:-9000}" "${WHISPER_PORT:-9000}"
-    _macos_effective_service_enabled tts "$ENABLE_VOICE" && printf 'Kokoro (TTS)|http://127.0.0.1:%s/health|ods-tts|http://localhost:%s\n' "${TTS_PORT:-8880}" "${TTS_PORT:-8880}"
+    _macos_effective_service_enabled whisper "$ENABLE_WHISPER" && printf 'Whisper (STT)|http://127.0.0.1:%s/health|ods-whisper|http://localhost:%s\n' "${WHISPER_PORT:-9000}" "${WHISPER_PORT:-9000}"
+    _macos_effective_service_enabled tts "$ENABLE_TTS" && printf 'Kokoro (TTS)|http://127.0.0.1:%s/health|ods-tts|http://localhost:%s\n' "${TTS_PORT:-8880}" "${TTS_PORT:-8880}"
     _macos_effective_service_enabled n8n "$ENABLE_WORKFLOWS" && printf 'n8n|http://127.0.0.1:5678/healthz|ods-n8n|http://localhost:5678\n'
     if $ENABLE_OPENCODE && [[ -x "$OPENCODE_BIN" ]]; then
         printf 'OpenCode (IDE)|http://127.0.0.1:%s||http://localhost:%s\n' "$OPENCODE_PORT" "$OPENCODE_PORT"

@@ -700,6 +700,7 @@ ALWAYS_ON_SERVICES: frozenset = frozenset({
 # must refresh this same set after a fragment changes without an API restart.
 LIBRARY_MANAGEABLE_BUILTINS: frozenset = frozenset({
     "n8n", "perplexica", "searxng", "remote-provider-egress", "remote-provider-ssh-tunnel",
+    "hermes", "hermes-proxy", "whisper", "tts",
 })
 
 
