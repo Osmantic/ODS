@@ -9994,6 +9994,7 @@ export function createToolLoopGuard({
     const active = activeUsers.get(user);
     if (!active) return false;
     let aborted = false;
+    let drained = false;
     let executionSignalled = execControl ? false : true;
     const cancelledState = stateFor(active.runId);
     cancelledState.clientCancelled = true;
@@ -10020,9 +10021,13 @@ export function createToolLoopGuard({
     try {
       if (typeof abortRunAndDrain === "function") {
         const result = await abortRunAndDrain(active.sessionId, active.sessionKey);
-        aborted = Boolean(result?.aborted ?? result);
+        // The runtime reports signal acceptance and run drainage separately.
+        // A signal alone must not make Portal claim that Stop has completed.
+        aborted = result?.aborted === true;
+        drained = aborted && result?.drained === true;
       } else {
         aborted = typeof abortRun === "function" && Boolean(abortRun(active.sessionId));
+        // A synchronous abort signal cannot prove that the run has drained.
       }
     } catch (error) {
       warn(`Pixel client-cancel abort failed: ${String(error)}`);
@@ -10043,7 +10048,7 @@ export function createToolLoopGuard({
         warn(`Pixel client-cancel project cleanup failed: ${String(error)}`);
       }
     }
-    const cancelled = aborted && executionSignalled && projectsStopped;
+    const cancelled = aborted && drained && executionSignalled && projectsStopped;
     if (executionSignalled && typeof execControl?.clear === "function") {
       const cleanup = setTimeout(() => {
         try {

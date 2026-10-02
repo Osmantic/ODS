@@ -49,7 +49,8 @@ function snapshot(html) {
 function fixture(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pixel-literal-revise-'));
   t.after(() => fs.rmSync(root, {recursive: true, force: true}));
-  const guard = createToolLoopGuard({workspacePreviewInspectionAvailable: true, abortRun: () => true});
+  const guard = createToolLoopGuard({workspacePreviewInspectionAvailable: true, abortRun: () => true,
+    abortRunAndDrain: async () => ({aborted: true, drained: true})});
   guard.observeRun(context, 'pixel', {prompt: TOWER1.prompt}, {workspaceRoot: root});
   const results = [];
   // Hook order as in the gateway: before_tool_call, after_tool_call, then

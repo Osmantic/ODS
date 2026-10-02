@@ -98,7 +98,9 @@ function harness(name, {prompt = PROMPT, stub = {}, limits} = {}) {
       return {text: stub.text ?? ANSWER, agentId: stub.agentId ?? 'pixel', provider: 'ods-gateway', model: 'ods/current'};
     },
   };
-  const guard = createToolLoopGuard({abortRun: (id, key) => { aborts.push([id, key]); return true; }, stopSynthesis: synthesis});
+  const guard = createToolLoopGuard({abortRun: (id, key) => { aborts.push([id, key]); return true; },
+    abortRunAndDrain: async (id, key) => { aborts.push([id, key]); return {aborted: true, drained: true}; },
+    stopSynthesis: synthesis});
   guard.observeRun(context, 'pixel', {prompt});
   const sdk = {runId: context.runId, sessionId: context.sessionId, sessionKey: context.sessionKey};
   let rounds = 0, ids = 0;
