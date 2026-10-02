@@ -88,7 +88,9 @@ def _fetch_status_before_deadline(port, key, timeout_seconds):
     # This verifier runs as a standalone WSL process. urllib's timeout is a
     # socket inactivity limit: a slow response can keep read() alive forever.
     # SIGALRM gives the whole authenticated request a real wall deadline.
-    if not hasattr(signal, 'setitimer') or not hasattr(signal, 'SIGALRM'):
+    if timeout_seconds <= 0:
+        raise PortalCheckFailed('Portal status did not finish within the readiness deadline')
+    if not all(hasattr(signal, name) for name in ('setitimer', 'getitimer', 'SIGALRM', 'ITIMER_REAL')):
         raise PortalCheckFailed('Portal verifier cannot enforce its wall deadline')
     if signal.getitimer(signal.ITIMER_REAL)[0] > 0:
         raise PortalCheckFailed('Portal verifier cannot own its wall deadline')

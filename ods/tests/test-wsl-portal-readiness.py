@@ -1,6 +1,7 @@
 """Read-only completion gate tests; fake commands never contact the live stack."""
 import os
 import importlib.util
+import signal
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 import subprocess
@@ -183,6 +184,7 @@ esac
         server = ThreadingHTTPServer(('127.0.0.1', 0), DripHandler)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
+        previous_handler = signal.getsignal(signal.SIGALRM)
         try:
             with tempfile.TemporaryDirectory() as directory:
                 Path(directory, '.env').write_text(
@@ -191,9 +193,20 @@ esac
                 with self.assertRaisesRegex(verifier.PortalCheckFailed, 'within the readiness deadline'):
                     verifier.verify(directory, settle_seconds=0.25)
                 self.assertLess(time.monotonic() - started, 1.5)
+                self.assertEqual(signal.getitimer(signal.ITIMER_REAL)[0], 0)
+                self.assertIs(signal.getsignal(signal.SIGALRM), previous_handler)
         finally:
             server.shutdown()
             server.server_close()
+
+    def test_nonpositive_wall_budget_never_starts_network_request(self):
+        spec = importlib.util.spec_from_file_location('verify_portal_api', SCRIPT.parent / 'verify-portal-api.py')
+        verifier = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(verifier)
+        with patch.object(verifier, 'fetch_status') as fetch:
+            with self.assertRaises(verifier.PortalCheckFailed):
+                verifier._fetch_status_before_deadline('3002', 'do-not-print', 0)
+        fetch.assert_not_called()
 
     def test_authentication_failure_names_the_key_without_printing_it(self):
         result, _ = self.probe(api_code=401, expected_api_requests=1)
