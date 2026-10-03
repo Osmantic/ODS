@@ -68,6 +68,11 @@ prepare() {
     if [[ -d "$target" ]]; then
         [[ "$(stat -Lc '%d' -- "$target")" == "$wsl_device" ]] \
             || fail "$target still has the old bind mount; stop Pixel Edge and retire that mount before retrying"
+        # This directory is writable by the service owner. Reuse it only when
+        # its existing custody matches our contract; install -d would silently
+        # chown/chmod an unrelated directory otherwise.
+        [[ "$(stat -Lc '%u:%G:%a' -- "$target")" == "$owner_uid:ods-pixel:$mode" ]] \
+            || fail "$target has unexpected ownership or mode"
     fi
     # Docker Desktop may leave a self-bind of this exact directory. Refuse an
     # unrelated same-device bind or a pathological stack before changing modes.
@@ -83,6 +88,8 @@ prepare() {
         for entry in "$target"/*; do
             [[ "${entry##*/}" == "$allowed_name" && -S "$entry" && ! -L "$entry" ]] \
                 || fail "$target contains an unexpected entry"
+            [[ "$(stat -c '%u' -- "$entry")" == "$owner_uid" ]] \
+                || fail "$target contains a socket owned by another user"
         done
         shopt -u nullglob dotglob
     fi
