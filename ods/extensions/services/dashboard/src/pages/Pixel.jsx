@@ -1586,7 +1586,7 @@ export default function Pixel({ systemStatus = null }) {
         <h1 className="text-2xl font-semibold">Local chat</h1>
         <p className="mt-3 text-theme-text-muted">Chat with your local model in Open WebUI. Portal's owner agent is not enabled in this installation.</p>
         {chatHref
-          ? <a className="mt-6 inline-flex rounded-xl bg-theme-accent px-5 py-3 font-medium text-white" href={chatHref}>Open local chat</a>
+          ? <a className="mt-6 inline-flex rounded-xl bg-theme-accent px-5 py-3 font-medium text-zinc-950" href={chatHref}>Open local chat</a>
           : <p className="mt-6 text-sm text-theme-text-muted" role="status">Local chat is not ready yet. Check service status in the Dashboard.</p>}
         <p className="mt-5"><Link className="text-sm text-theme-accent-light underline" to="/dashboard">View Dashboard</Link></p>
       </div>
