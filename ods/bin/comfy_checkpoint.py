@@ -433,6 +433,8 @@ class CheckpointManager:
                     if time.monotonic() >= deadline:
                         raise CheckpointError("checkpoint_transfer_timeout", 504)
                     chunk = response.read(_CHUNK)
+                    if self._cancel.is_set():
+                        raise _Cancelled()
                     if not chunk:
                         break
                     done += len(chunk)
