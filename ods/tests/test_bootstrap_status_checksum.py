@@ -293,8 +293,8 @@ class BootstrapStatusChecksumTests(unittest.TestCase):
         arg_receipt = self.tmp / "args.txt"
         r = run_bash(self.harness, 'model_sha256 "$TARGET"', env={
             "PATH": f"{tools}:{os.environ['PATH']}",
-            "TARGET": str(target), "PATH_RECEIPT": str(path_receipt),
-            "ARG_RECEIPT": str(arg_receipt),
+            "TARGET": str(target), "PATH_RECEIPT": path_receipt.as_posix(),
+            "ARG_RECEIPT": arg_receipt.as_posix(),
         })
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(r.stdout.strip(), expected)
