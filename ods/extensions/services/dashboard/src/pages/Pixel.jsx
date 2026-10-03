@@ -1436,7 +1436,6 @@ export default function Pixel({ systemStatus = null }) {
     contextStartRef.current = 0
     compactionRequestRef.current = null
     setMessages([])
-    setChatMode('agent')
     setPreview(null)
     setWorkspaceOpen(false)
     setPreviewRefresh(0)
