@@ -1095,8 +1095,8 @@ function ExtensionCard({ ext, gpuBackend, agentAvailable, onDetails, onConsole, 
         <div className="flex items-center gap-2">
           <DependencyBadges dependsOn={ext.depends_on} dependencyStatus={ext.dependency_status} />
           {ext.app_path ? (
-            // Host applications (OpenCode) have their own page: open, start,
-            // set up, and how to use it, including from another device.
+            // Some bundled services have a Dashboard page that handles their
+            // access and setup, including OpenCode and Token Spy usage.
             <Link
               to={ext.app_path}
               className="flex items-center gap-1 px-2 py-1.5 text-[10px] font-mono text-theme-text-secondary hover:text-theme-text hover:bg-theme-surface-hover/40 rounded-lg transition-colors"
