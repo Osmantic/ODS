@@ -626,6 +626,15 @@ class TestContentType(BaseEdgeTest):
         ) as resp:
             self.assertEqual(resp.status, 415)
 
+    async def test_chat_completions_rejects_query_parameters(self):
+        async with self.client.post(
+            "http://localhost/v1/chat/completions?unexpected=1",
+            headers=self.auth(),
+            json={"model": "pixel/default", "messages": [{"role": "user", "content": "hi"}]},
+        ) as resp:
+            self.assertEqual(resp.status, 400)
+            self.assertEqual(await resp.json(), {"error": "query parameters not allowed"})
+
 
 class TestCancellation(BaseEdgeTest):
     async def test_activity_counts_an_openwebui_stream_without_a_cancellable_chat_id(self):
