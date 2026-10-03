@@ -19610,10 +19610,12 @@ def _update_perplexica_model(
     preferences = values.get("preferences")
     if not isinstance(providers, list) or not isinstance(preferences, dict):
         raise RuntimeError("Perplexica snapshot is missing routing state")
-    provider = next(
-        (entry for entry in providers if isinstance(entry, dict) and entry.get("type") == "openai"),
+    provider_index = next(
+        (index for index, entry in enumerate(providers)
+         if isinstance(entry, dict) and entry.get("type") == "openai"),
         None,
     )
+    provider = providers[provider_index] if provider_index is not None else None
     if provider is None or not provider.get("id"):
         raise RuntimeError("Perplexica has no configured OpenAI provider")
 
@@ -19632,7 +19634,10 @@ def _update_perplexica_model(
     preferences["defaultChatModel"] = model
     preferences["defaultChatProvider"] = provider["id"]
 
-    _post_perplexica_config(url, "modelProviders", providers)
+    # GET hydrates built-in models. Persist only the selected provider fields;
+    # reposting the whole array repeatedly grows the stored embedding catalog.
+    _post_perplexica_config(url, f"modelProviders.{provider_index}.chatModels", provider["chatModels"])
+    _post_perplexica_config(url, f"modelProviders.{provider_index}.config", provider_config)
     _post_perplexica_config(url, "preferences", preferences)
     verified = _perplexica_http_json(url).get("values")
     if not isinstance(verified, dict) or not _perplexica_config_matches(
@@ -19716,10 +19721,35 @@ def _restore_perplexica_config(snapshot: dict) -> None:
     values = snapshot.get("values")
     if not isinstance(values, dict):
         raise RuntimeError("Perplexica rollback snapshot is invalid")
-    for key in ("modelProviders", "preferences"):
-        if key not in values:
-            raise RuntimeError(f"Perplexica rollback snapshot is missing {key}")
-        _post_perplexica_config(url, key, values[key])
+    providers = values.get("modelProviders")
+    preferences = values.get("preferences")
+    if not isinstance(providers, list) or not isinstance(preferences, dict):
+        raise RuntimeError("Perplexica rollback snapshot is missing routing state")
+    expected_id = preferences.get("defaultChatProvider")
+    old_provider = next(
+        (entry for entry in providers if isinstance(entry, dict) and entry.get("id") == expected_id),
+        None,
+    )
+    if not isinstance(old_provider, dict):
+        raise RuntimeError("Perplexica rollback snapshot is missing its chat provider")
+    current = _perplexica_http_json(url).get("values")
+    current_providers = current.get("modelProviders") if isinstance(current, dict) else None
+    if not isinstance(current_providers, list):
+        raise RuntimeError("Perplexica rollback cannot locate its chat provider")
+    provider_index = next(
+        (index for index, entry in enumerate(current_providers)
+         if isinstance(entry, dict) and entry.get("id") == expected_id),
+        None,
+    )
+    if provider_index is None:
+        raise RuntimeError("Perplexica rollback cannot locate its chat provider")
+    _post_perplexica_config(
+        url, f"modelProviders.{provider_index}.chatModels", old_provider.get("chatModels", []),
+    )
+    _post_perplexica_config(
+        url, f"modelProviders.{provider_index}.config", old_provider.get("config", {}),
+    )
+    _post_perplexica_config(url, "preferences", preferences)
     verified = _perplexica_http_json(url).get("values")
     if not isinstance(verified, dict) or not _perplexica_restored_snapshot_matches(verified, values):
         raise RuntimeError("Perplexica rollback could not be verified")

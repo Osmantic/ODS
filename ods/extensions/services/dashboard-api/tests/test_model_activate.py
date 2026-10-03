@@ -2160,6 +2160,14 @@ class TestOpenCodeModelRoute:
 
 
 class TestPerplexicaModelRoute:
+    @staticmethod
+    def _apply_config_post(current, payload):
+        target = current
+        parts = payload["key"].split(".")
+        for part in parts[:-1]:
+            target = target[int(part)] if isinstance(target, list) else target[part]
+        target[parts[-1]] = json.loads(json.dumps(payload["value"]))
+
 
     @staticmethod
     def _snapshot():
@@ -2171,6 +2179,9 @@ class TestPerplexicaModelRoute:
                     "type": "openai",
                     "chatModels": [{"key": "old-model", "name": "old-model"}],
                     "config": {"baseURL": "http://old/v1", "apiKey": "old-key"},
+                }, {
+                    "id": "transformers-provider", "type": "transformers",
+                    "embeddingModels": [{"key": "built-in"}] * 27,
                 }],
                 "preferences": {
                     "defaultChatModel": "old-model",
@@ -2222,7 +2233,7 @@ class TestPerplexicaModelRoute:
             if payload is None:
                 return {"values": json.loads(json.dumps(current))}
             posts.append(payload)
-            current[payload["key"]] = json.loads(json.dumps(payload["value"]))
+            self._apply_config_post(current, payload)
             return {}
 
         monkeypatch.setattr(_mod, "_perplexica_http_json", fake_http)
@@ -2236,23 +2247,25 @@ class TestPerplexicaModelRoute:
             gguf_file="new-model.gguf",
         )
 
-        assert [post["key"] for post in posts] == ["modelProviders", "preferences"]
+        assert [post["key"] for post in posts] == [
+            "modelProviders.0.chatModels", "modelProviders.0.config", "preferences",
+        ]
         assert current["preferences"]["defaultChatModel"] == "new-model.gguf"
         provider = current["modelProviders"][0]
         assert provider["chatModels"] == [{"key": "new-model.gguf", "name": "new-model.gguf"}]
         assert provider["config"]["baseURL"] == "http://llama-server:8080/v1"
+        assert current["modelProviders"][1] == snapshot["values"]["modelProviders"][1]
 
     def test_restore_reinstates_and_verifies_snapshot(self, monkeypatch):
         snapshot = self._snapshot()
-        current = {
-            "modelProviders": [],
-            "preferences": {"defaultChatModel": "wrong"},
-        }
+        current = json.loads(json.dumps(snapshot["values"]))
+        current["modelProviders"][0]["chatModels"] = [{"key": "wrong", "name": "wrong"}]
+        current["preferences"]["defaultChatModel"] = "wrong"
 
         def fake_http(_url, payload=None):
             if payload is None:
                 return {"values": json.loads(json.dumps(current))}
-            current[payload["key"]] = json.loads(json.dumps(payload["value"]))
+            self._apply_config_post(current, payload)
             return {}
 
         monkeypatch.setattr(_mod, "_perplexica_http_json", fake_http)
@@ -2263,10 +2276,9 @@ class TestPerplexicaModelRoute:
 
     def test_restore_accepts_perplexica_normalized_snapshot(self, monkeypatch):
         snapshot = self._snapshot()
-        current = {
-            "modelProviders": [],
-            "preferences": {"defaultChatModel": "wrong"},
-        }
+        current = json.loads(json.dumps(snapshot["values"]))
+        current["modelProviders"][0]["chatModels"] = [{"key": "wrong", "name": "wrong"}]
+        current["preferences"]["defaultChatModel"] = "wrong"
 
         def fake_http(_url, payload=None):
             if payload is None:
@@ -2278,7 +2290,7 @@ class TestPerplexicaModelRoute:
                     "name": "extra-model",
                 })
                 return {"values": restored}
-            current[payload["key"]] = json.loads(json.dumps(payload["value"]))
+            self._apply_config_post(current, payload)
             return {}
 
         monkeypatch.setattr(_mod, "_perplexica_http_json", fake_http)
