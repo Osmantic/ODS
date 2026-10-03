@@ -117,3 +117,78 @@ def test_benchmark_invalid_route_makes_no_request_or_saved_sample(benchmark_tran
     assert result.json()["detail"] == "The configured benchmark inference route is invalid"
     assert calls == []
     saved.assert_not_called()
+
+
+@pytest.mark.parametrize("health_available", [True, False])
+def test_benchmark_unloaded_runtime_never_loads_persisted_model(
+    benchmark_transport, monkeypatch, tmp_path, health_available,
+):
+    configure, call, _ = benchmark_transport
+    import routers.models as router
+    from performance_oracle import build_models_payload
+
+    completions = []
+    runtime = {"loaded": None, "available": health_available}
+
+    class UnloadedRuntime(BaseHTTPRequestHandler):
+        def do_GET(self):
+            body = json.dumps({"status": "ok", "model_loaded": runtime["loaded"]}).encode()
+            self.send_response(200 if runtime["available"] else 503)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_POST(self):
+            completions.append(json.loads(self.rfile.read(int(self.headers["Content-Length"]))))
+            # A direct Lemonade completion can auto-load the requested model.
+            body = json.dumps({"usage": {"completion_tokens": 64}}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), UnloadedRuntime)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    saved = Mock()
+    monkeypatch.setattr(router, "record_model_performance", saved)
+    monkeypatch.setattr(router, "get_loaded_model", AsyncMock(return_value=None))
+    monkeypatch.setattr(router, "LLM_BACKEND", "lemonade")
+    monkeypatch.setattr(router, "SERVICES", {"llama-server": {"host": "127.0.0.1", "port": server.server_port}})
+    monkeypatch.setattr(router, "INSTALL_DIR", str(tmp_path))
+    monkeypatch.setattr(router, "DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setattr(router, "_ENV_PATH", tmp_path / ".env")
+    artifact = tmp_path / "data" / "models" / "fixture.gguf"
+    artifact.parent.mkdir(parents=True)
+    artifact.write_bytes(b"downloaded model")
+    monkeypatch.setattr(router, "_installed_model_paths", lambda: {artifact.name: artifact})
+    monkeypatch.setattr(router, "_load_library", lambda: [{
+        "id": "fixture", "name": "Fixture", "gguf_file": artifact.name,
+        "llm_model_name": "fixture", "size_mb": 1, "context_length": 32768,
+    }])
+    monkeypatch.setattr(router, "build_models_payload", build_models_payload)
+    try:
+        configure({
+            "LLM_API_URL": f"http://127.0.0.1:{server.server_port}/api/v1",
+            "LLM_BACKEND": "lemonade", "LLM_MODEL": "fixture", "GGUF_FILE": artifact.name,
+        })
+        result = call()
+        assert result.status_code == 503, result.text
+        assert completions == []
+        saved.assert_not_called()
+        assert artifact.read_bytes() == b"downloaded model"
+
+        # Once the owner loads a model, a fresh observation permits a benchmark.
+        runtime.update(loaded="fixture", available=True)
+        result = call()
+        assert result.status_code == 200, result.text
+        assert [item["model"] for item in completions] == ["fixture"]
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)

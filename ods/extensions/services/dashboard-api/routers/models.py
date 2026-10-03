@@ -2014,8 +2014,6 @@ async def _run_current_model_benchmark(model_id: str, max_tokens: int) -> dict:
     if not loaded_model:
         loaded_model = await _fetch_llama_loaded_model(host, port, api_prefix)
     if not loaded_model:
-        loaded_model = _read_active_model() or read_env_value("LLM_MODEL", INSTALL_DIR)
-    if not loaded_model:
         raise HTTPException(status_code=503, detail="llama-server is not reporting a loaded model")
 
     gpu_info = await asyncio.to_thread(get_gpu_info)
