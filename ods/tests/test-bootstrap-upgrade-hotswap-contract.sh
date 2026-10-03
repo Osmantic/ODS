@@ -51,7 +51,7 @@ grep -qF 'consecutive_idle >= 2' <<<"$gate_acquire_block" \
     || fail "model swap admission must prove a stable drained boundary"
 grep -qF 'model_router_swap_gate_call end "$token" 30' <<<"$gate_release_block" \
     || fail "model swap admission must explicitly reopen after the transaction"
-grep -qF "trap 'cleanup_bootstrap_pixel_model_transaction; release_model_router_swap_gate; release_model_lifecycle_lock; release_upgrade_lock' EXIT" <<<"$active_code" \
+grep -qF "trap 'stop_download_monitor; cleanup_bootstrap_pixel_model_transaction; release_model_router_swap_gate; release_model_lifecycle_lock; release_upgrade_lock' EXIT" <<<"$active_code" \
     || fail "model swap admission must reopen on every normal or failed exit"
 top_level_swap="$(awk '
     /acquire_model_lifecycle_lock \|\| fail "Could not serialize background full-model activation/ { in_block=1 }
