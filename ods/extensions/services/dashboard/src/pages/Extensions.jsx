@@ -865,6 +865,11 @@ function ExtensionCard({ ext, gpuBackend, agentAvailable, onDetails, onConsole, 
   const isUserExt = ext.source === 'user'
   const isManagedBuiltin = isCore && ext.library_manageable === true
   const isError = status === 'error'
+  // A saved progress record can describe a terminal failure or completion.
+  // Only active phases should keep the installation spinner on screen.
+  const showProgress = !isError && (progressData?.status
+    ? ['pulling', 'starting', 'setup_hook'].includes(progressData.status)
+    : status === 'installing' || status === 'setting_up')
   const isStopped = status === 'stopped'
   const isUnhealthy = status === 'unhealthy'
   const isCliInstalled = status === 'cli_installed'
@@ -938,10 +943,10 @@ function ExtensionCard({ ext, gpuBackend, agentAvailable, onDetails, onConsole, 
       </div>
 
       {/* Progress indicator — shows during active install/setup, survives page refresh */}
-      {(progressData || ext.status === 'installing' || ext.status === 'setting_up') && (
+      {showProgress && (
         <div className="px-4 py-2 border-t border-theme-border/40 text-[10px] text-blue-400/80 flex items-center gap-2">
           <Loader2 size={12} className="animate-spin" />
-          <span>{progressData?.phase_label || (ext.status === 'setting_up' ? 'Running setup...' : 'Installing...')}</span>
+          <span>{progressData?.phase_label || (progressData?.status === 'setup_hook' || status === 'setting_up' ? 'Running setup...' : 'Installing...')}</span>
         </div>
       )}
       {/* Error message — expandable when long or multiline so docker-compose
@@ -1046,7 +1051,7 @@ function ExtensionCard({ ext, gpuBackend, agentAvailable, onDetails, onConsole, 
               <Terminal size={12} /> Check Logs
             </button>
           )}
-          {isError && (
+          {isError && !showManagedRetry && (
             <button
               disabled={actionDisabled}
               title={disabledTitle}
