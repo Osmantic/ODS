@@ -9,6 +9,7 @@ import { DependencyBadges, DependencyConfirmDialog, DisableDependentWarning } fr
 import { TemplatePicker } from '../components/TemplatePicker'
 import { getTemplateStatus } from '../lib/templates'
 import { serviceUrl } from '../lib/serviceUrls'
+import { notifyExtensionCatalogChanged } from '../lib/extensionCatalogEvents'
 import { createRecoveryTracker } from '../utils/recoveryTracker'
 import MetalMetricIcon from '../components/MetalMetricIcon'
 import FittedLibraryPage from '../components/FittedLibraryPage'
@@ -125,6 +126,7 @@ export default function Extensions({ compact = false }) {
   const [settingsBusy, setSettingsBusy] = useState(false)
   const dialogSeq = useRef(0)
   const webuiSelectionInFlight = useRef(false)
+  const sidebarCatalogSignature = useRef(null)
   const settingsSave = useRef(null)
   const [templates, setTemplates] = useState([])
   const [pollingLost, setPollingLost] = useState(false)
@@ -338,7 +340,13 @@ export default function Extensions({ compact = false }) {
       const data = await res.json()
       if (!isCurrent()) return
       catalogAcceptedSeq.current = request
+      const signature = JSON.stringify((data.extensions || []).map(ext => [
+        ext.id, ext.status, ext.library_selected, ext.healthy,
+      ]).sort((a, b) => String(a[0]).localeCompare(String(b[0]))))
+      const previous = sidebarCatalogSignature.current
+      sidebarCatalogSignature.current = signature
       setCatalog(data)
+      if (previous !== null && previous !== signature) notifyExtensionCatalogChanged()
     } catch (err) {
       // A later failed or pending poll does not erase a real manual failure.
       // Only a newer accepted catalog or completed mutation makes it stale.
@@ -435,6 +443,8 @@ export default function Extensions({ compact = false }) {
         throw new Error((typeof detail === 'string' ? detail : detail?.message) || `Failed to ${action}`)
       }
       const data = await res.json()
+      // Manifest links and ports can change even when service status does not.
+      notifyExtensionCatalogChanged()
 
       if (action === 'enable' && Array.isArray(data.failed_services)
         && data.failed_services.includes(serviceId)) {
@@ -494,6 +504,7 @@ export default function Extensions({ compact = false }) {
         throw new Error(typeof error.detail === 'string' ? error.detail : `Could not ${enabled ? 'add' : 'disable'} Open WebUI`)
       }
       await Promise.all([fetchCatalog(), fetchWebuiSelection()])
+      notifyExtensionCatalogChanged()
       setToast({ type: 'success', text: enabled
         ? 'Open WebUI added. Existing chat data was preserved.'
         : 'Open WebUI disabled. Chats and settings were kept.' })
