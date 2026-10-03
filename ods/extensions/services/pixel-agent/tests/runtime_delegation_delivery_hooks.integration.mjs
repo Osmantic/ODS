@@ -376,6 +376,21 @@ test(`real gateway deferred delegation waits for two children and a verified rev
     if(process.env.ODS_HOOK_EVIDENCE_PATH)writeFileSync(process.env.ODS_HOOK_EVIDENCE_PATH+'.'+interim,JSON.stringify({requests,body,events,providerTrace,consolidatedRequests},null,2));
   } finally {
     if(process.env.ODS_HOOK_EVIDENCE_PATH)writeFileSync(process.env.ODS_HOOK_EVIDENCE_PATH+'.'+interim+'.debug',JSON.stringify({log:log.slice(-131072),events:existsSync(eventsFile)?readFileSync(eventsFile,'utf8').slice(-524288):'',providerTrace,consolidatedRequests},null,2));
+    if(interim==='cancel'&&process.env.ODS_HOOK_EVIDENCE_PATH&&existsSync(eventsFile)){
+      try {
+        const hookEvents=readFileSync(eventsFile,'utf8').trim().split('\n').filter(Boolean).map(JSON.parse);
+        const owner=hookEvents.find(e=>e.hook==='prompt'&&e.sessionId&&!e.sessionKey?.includes(':subagent:'));
+        const file=owner&&join(root,'state','agents','pixel','sessions',owner.sessionId+'.jsonl');
+        if(file&&existsSync(file)){
+          const transcript=readFileSync(file,'utf8').trim().split('\n').filter(Boolean).map(JSON.parse);
+          const timeline=transcript.map(e=>({type:e.type,id:e.id,parentId:e.parentId,timestamp:e.timestamp,
+            role:e.message?.role,idempotencyKey:e.message?.idempotencyKey,
+            announcement:JSON.stringify(e.message??{}).includes('Internal task completion event'),
+            recovery:JSON.stringify(e.message??{}).includes('RECOVER_AFTER_STOP')}));
+          writeFileSync(process.env.ODS_HOOK_EVIDENCE_PATH+'.cancel-transcript.debug',JSON.stringify(timeline,null,2));
+        }
+      } catch {} // A diagnostic failure must not hide the original assertion.
+    }
     if(child&&child.exitCode===null){const done=once(child,'close');process.kill(-child.pid,'SIGTERM');await Promise.race([done,delay(3000)]);if(child.exitCode===null)process.kill(-child.pid,'SIGKILL');}
     if(ingress){ingress.closeAllConnections();await new Promise(resolve=>ingress.close(resolve));}
     upstream.closeAllConnections();await new Promise(resolve=>upstream.close(resolve));
