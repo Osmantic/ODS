@@ -48,6 +48,37 @@ const installFetchMock = (catalogFixture, templates = [], webuiSelection = { ena
   return fetchMock
 }
 
+it.each(['healthy', 'unhealthy', 'unknown', undefined])('keeps failed actions visible alongside runtime health %s', async runtimeHealth => {
+  const ext = {id:'perplexica',name:'Perplexica (Deep Research)',source:'core',status:'error',
+    runtime_health:runtimeHealth,library_manageable:true,library_selected:true,
+    error_message:'Previous start failed.',features:[baseFeature]}
+  vi.stubGlobal('fetch',vi.fn(async url => {
+    const u=String(url)
+    if(u==='/api/extensions/catalog') return makeJsonResponse({agent_available:true,extensions:[ext],summary:baseSummary({total:1,error:1})})
+    if(u==='/api/extensions/perplexica') return makeJsonResponse(ext)
+    if(u==='/api/extensions/perplexica/progress') return makeJsonResponse({status:'error',error:'Previous start failed.'})
+    if(u==='/api/templates') return makeJsonResponse({templates:[]})
+    if(u==='/api/webui/selection') return makeJsonResponse({enabled:true,supported:false})
+    throw new Error(`Unmocked fetch: ${u}`)
+  }))
+  render(<Extensions compact />)
+  expect(await screen.findByRole('button',{name:'Retry Perplexica (Deep Research)'})).toBeVisible()
+  expect(screen.getByRole('button',{name:'Disable Perplexica (Deep Research)'})).toBeVisible()
+  expect(await screen.findByText('Previous start failed.')).toBeVisible()
+  if(runtimeHealth==='healthy') {
+    expect(screen.getByText('running · action failed')).toBeVisible()
+    expect(screen.getAllByText('Service is responding; the last action failed.').some(node => node.tagName==='P')).toBe(true)
+  } else {
+    expect(screen.queryByText('running · action failed')).toBeNull()
+  }
+  fireEvent.change(screen.getByRole('combobox',{name:'Status'}),{target:{value:'error'}})
+  expect(screen.getByRole('button',{name:'Retry Perplexica (Deep Research)'})).toBeVisible()
+  fireEvent.click(screen.getByRole('button',{name:'Details for Perplexica (Deep Research)'}))
+  const dialog=await screen.findByRole('dialog',{name:'Perplexica (Deep Research)'})
+  if(runtimeHealth==='healthy') expect(dialog).toHaveTextContent('running · action failed')
+  else expect(dialog).not.toHaveTextContent('Service is responding; the last action failed.')
+})
+
 it('hides unsupported extensions from results, categories and counts without hiding unhealthy services',async()=>{
   installFetchMock({agent_available:true,extensions:[
     {id:'supported',name:'Supported',status:'unhealthy',source:'user',features:[baseFeature]},
