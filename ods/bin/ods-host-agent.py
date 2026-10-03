@@ -49,6 +49,11 @@ from urllib.parse import parse_qs, quote, unquote, urlparse
 _SWITCHBOARD_BIN_DIR = str(Path(__file__).resolve().parent)
 if _SWITCHBOARD_BIN_DIR not in sys.path:
     sys.path.insert(0, _SWITCHBOARD_BIN_DIR)
+from comfy_checkpoint import (
+    CheckpointError as _ComfyCheckpointError,
+    CheckpointManager as _ComfyCheckpointManager,
+    catalog as _comfy_checkpoint_catalog,
+)
 from model_switchboard.lemonade_transport import request as _container_lemonade_request
 from model_switchboard import wsl_lemonade as _wsl_lemonade
 
@@ -8011,6 +8016,27 @@ def _find_ext_dir(service_id: str) -> Path | None:
     return None
 
 
+_comfy_checkpoint_manager: _ComfyCheckpointManager | None = None
+_comfy_checkpoint_manager_lock = threading.Lock()
+
+
+def _comfy_checkpoint_selected() -> bool:
+    ext_dir = _find_ext_dir("comfyui")
+    if ext_dir is None:
+        return False
+    enabled = ext_dir / "compose.yaml"
+    disabled = ext_dir / "compose.yaml.disabled"
+    return enabled.is_file() and not enabled.is_symlink() and not disabled.exists()
+
+
+def _get_comfy_checkpoint_manager() -> _ComfyCheckpointManager:
+    global _comfy_checkpoint_manager
+    with _comfy_checkpoint_manager_lock:
+        if _comfy_checkpoint_manager is None:
+            _comfy_checkpoint_manager = _ComfyCheckpointManager(INSTALL_DIR, GPU_BACKEND)
+        return _comfy_checkpoint_manager
+
+
 def _service_has_docker_container(service_id: str) -> tuple[bool, str]:
     """Return whether service_id maps to a Docker container restart target."""
     ext_dir = _find_ext_dir(service_id)
@@ -9097,6 +9123,8 @@ class AgentHandler(BaseHTTPRequestHandler):
             self._handle_model_list()
         elif path == "/v1/model/status":
             self._handle_model_status()
+        elif path == "/v1/comfy/checkpoint/status":
+            self._handle_comfy_checkpoint_status()
         elif path == "/v1/model/management":
             self._handle_model_management()
         elif path == "/v1/model/external-observation":
@@ -9761,6 +9789,10 @@ class AgentHandler(BaseHTTPRequestHandler):
             self._handle_model_download()
         elif self.path == "/v1/model/download/cancel":
             self._handle_model_download_cancel()
+        elif self.path == "/v1/comfy/checkpoint/download":
+            self._handle_comfy_checkpoint_download()
+        elif self.path == "/v1/comfy/checkpoint/cancel":
+            self._handle_comfy_checkpoint_cancel()
         elif self.path == "/v1/model/activate":
             self._handle_model_activate()
         elif self.path in {"/v1/model/runtime/stop", "/v1/model/runtime/start"}:
@@ -12186,6 +12218,50 @@ class AgentHandler(BaseHTTPRequestHandler):
             })
         except Exception as exc:
             json_response(self, 500, {"error": f"Failed to list models: {exc}"})
+
+    def _handle_comfy_checkpoint_status(self):
+        if not check_auth(self):
+            return
+        try:
+            status = _get_comfy_checkpoint_manager().status()
+        except _ComfyCheckpointError as exc:
+            json_response(self, exc.status, {"error": exc.code})
+            return
+        json_response(self, 200, {
+            "selected": _comfy_checkpoint_selected(),
+            "catalog": _comfy_checkpoint_catalog(),
+            "download": status,
+        })
+
+    def _handle_comfy_checkpoint_download(self):
+        if not check_auth(self):
+            return
+        body = read_json_body(self)
+        if body is None:
+            return
+        if set(body) != {"model_id", "acknowledge_size_bytes"}:
+            json_response(self, 400, {"error": "checkpoint_confirmation_required"})
+            return
+        if not _comfy_checkpoint_selected():
+            json_response(self, 409, {"error": "comfyui_not_selected"})
+            return
+        try:
+            status = _get_comfy_checkpoint_manager().start(
+                body["model_id"], body["acknowledge_size_bytes"])
+        except _ComfyCheckpointError as exc:
+            json_response(self, exc.status, {"error": exc.code})
+            return
+        json_response(self, 202, status)
+
+    def _handle_comfy_checkpoint_cancel(self):
+        if not check_auth(self):
+            return
+        try:
+            status = _get_comfy_checkpoint_manager().cancel()
+        except _ComfyCheckpointError as exc:
+            json_response(self, exc.status, {"error": exc.code})
+            return
+        json_response(self, 202, status)
 
     def _handle_model_status(self):
         """Return current model download progress."""
