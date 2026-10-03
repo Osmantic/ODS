@@ -5,10 +5,11 @@
 function renderCitations(message, sources) {
   if (typeof message !== "string") return message;
   const refs = Array.isArray(sources) ? sources : [];
+  // Raw HTML needs its own parser. Preserve the existing citation behavior
+  // for such answers instead of risking markup changes for a cosmetic fix.
+  const allowInlineCodeHtml = !/<[A-Za-z/!?]/.test(message);
   let fence = null;
   let inline = null;
-  let rawTag = null;
-  let rawElement = null;
 
   function cite(token, inner) {
     if (!/^\s*\d+(?:\s*,\s*\d+)*\s*$/.test(inner)) return token;
@@ -73,43 +74,19 @@ function renderCitations(message, sources) {
   function inlineCode(value) {
     const escaped = value.replace(/&/g, "&amp;").replace(/</g, "&lt;")
       .replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
-    // Vane v1.12.2 renders Markdown codeInline nodes as literal backticks.
-    // Raw HTML avoids that override. not-prose suppresses Typography's own
-    // code::before/after backticks while retaining semantic code markup.
+    // Vane v1.12.2 returns literal backticks for Markdown codeInline nodes.
+    // not-prose prevents Typography from adding its own backtick pseudo-text.
     return `<span class="not-prose"><code style="font-family:monospace;padding:0 .2em;border-radius:.2em;background-color:rgba(127,127,127,.14)">${escaped}</code></span>`;
-  }
-
-  function insideHtmlTag(line, index) {
-    let open = line.indexOf("<");
-    while (open !== -1 && open <= index) {
-      if (/^<\/?[A-Za-z]/.test(line.slice(open))) {
-        const end = htmlTagEnd(line, open, null).end;
-        if (end === -1 || end >= index) return true;
-        open = line.indexOf("<", end + 1);
-      } else open = line.indexOf("<", open + 1);
-    }
-    return false;
-  }
-
-  function htmlTagEnd(line, from, initialQuote) {
-    let quote = initialQuote;
-    for (let i = from; i < line.length; i += 1) {
-      if (quote) {
-        if (line[i] === quote) quote = null;
-      } else if (line[i] === '"' || line[i] === "'") {
-        quote = line[i];
-      } else if (line[i] === ">") {
-        return { end: i, quote: null };
-      }
-    }
-    return { end: -1, quote };
   }
 
   function prose(line, base) {
     let output = "";
     for (let i = 0; i < line.length;) {
       if (inline) {
-        const close = closingTicks(line, i, inline);
+        let close = line.indexOf(inline, i);
+        while (close !== -1 && (line[close - 1] === "`" || line[close + inline.length] === "`")) {
+          close = line.indexOf(inline, close + inline.length);
+        }
         if (close === -1) return output + line.slice(i);
         output += line.slice(i, close + inline.length);
         i = close + inline.length;
@@ -123,14 +100,14 @@ function renderCitations(message, sources) {
         let escapes = 0;
         for (let k = i - 1; k >= 0 && line[k] === "\\"; k -= 1) escapes += 1;
         // Escaped or unmatched backticks are prose, so later [N] can cite.
-        if (escapes % 2 === 0 && !insideHtmlTag(line, i)) {
-          // Convert only complete same-line spans. Preserve multiline spans
-          // verbatim so their Markdown line structure and citation guard stay.
-          const close = closingTicks(line, end, marker);
-          if (close !== -1) {
-            output += inlineCode(line.slice(end, close));
-            i = close + marker.length;
-            continue;
+        if (escapes % 2 === 0) {
+          if (allowInlineCodeHtml) {
+            const close = closingTicks(line, end, marker);
+            if (close !== -1) {
+              output += inlineCode(line.slice(end, close));
+              i = close + marker.length;
+              continue;
+            }
           }
           if (hasClosingTicks(base + end, marker)) inline = marker;
         }
@@ -162,68 +139,18 @@ function renderCitations(message, sources) {
     return output;
   }
 
-  function resumeProse(line, after, base) {
-    return line.slice(0, after) + prose(line.slice(after), base + after);
-  }
-
   let base = 0;
   return message.split("\n").map((line) => {
     const lineBase = base;
     base += line.length + 1;
     if (inline) return prose(line, lineBase);
+    const marker = /^(?: {0,3}> ?)*( {0,3}(?:[-+*]|\d{1,9}[.)]) +)? {0,3}(`{3,}|~{3,})/.exec(line);
     if (fence) {
       const close = /^(?: {0,3}> ?)*([ \t]*)(`+|~+)[ \t]*\r?$/.exec(line);
       if (close && close[1].length <= fence.maxIndent && close[2][0] === fence.marker[0]
         && close[2].length >= fence.marker.length) fence = null;
       return line;
     }
-    if (rawTag) {
-      const tagEnd = htmlTagEnd(line, 0, rawTag.quote);
-      if (tagEnd.end === -1) rawTag.quote = tagEnd.quote;
-      else {
-        const { name, literal } = rawTag;
-        const selfClosing = /\/\s*$/.test(line.slice(0, tagEnd.end));
-        rawTag = null;
-        const afterOpen = tagEnd.end + 1;
-        if (literal && !selfClosing) {
-          const close = new RegExp(`</${name}\\s*>`, "i").exec(line.slice(afterOpen));
-          if (!close) { rawElement = name; return line; }
-          return resumeProse(line, afterOpen + close.index + close[0].length, lineBase);
-        }
-        return resumeProse(line, afterOpen, lineBase);
-      }
-      return line;
-    }
-    // Preserve literal HTML code blocks as opaque elements. A '>' inside a
-    // quoted attribute does not complete its opening tag.
-    if (rawElement) {
-      const close = new RegExp(`</${rawElement}\\s*>`, "i").exec(line);
-      if (close) {
-        rawElement = null;
-        return resumeProse(line, close.index + close[0].length, lineBase);
-      }
-      return line;
-    }
-    const rawOpen = /^(?: {0,3}> ?)* {0,3}<([A-Za-z][\w:-]*)(?:\s|\/?>|$)/i.exec(line);
-    if (rawOpen) {
-      const name = rawOpen[1].toLowerCase();
-      const literal = /^(?:pre|code|script|style|textarea)$/.test(name);
-      const voidTag = /^(?:area|base|br|col|embed|hr|img|input|link|meta|param|source|track|wbr)$/.test(name);
-      const tagEnd = htmlTagEnd(line, line.indexOf("<"), null);
-      if (tagEnd.end === -1) {
-        rawTag = { name, quote: tagEnd.quote, literal };
-        return line;
-      }
-      const selfClosing = /\/\s*$/.test(line.slice(0, tagEnd.end));
-      const afterOpen = tagEnd.end + 1;
-      if (literal && !selfClosing) {
-        const close = new RegExp(`</${name}\\s*>`, "i").exec(line.slice(afterOpen));
-        if (!close) { rawElement = name; return line; }
-        return resumeProse(line, afterOpen + close.index + close[0].length, lineBase);
-      }
-      if (literal || voidTag || selfClosing) return resumeProse(line, afterOpen, lineBase);
-    }
-    const marker = /^(?: {0,3}> ?)*( {0,3}(?:[-+*]|\d{1,9}[.)]) +)? {0,3}(`{3,}|~{3,})/.exec(line);
     if (marker) {
       fence = { marker: marker[2], maxIndent: marker[1] ? marker[1].length + 3 : 3 };
       return line;
