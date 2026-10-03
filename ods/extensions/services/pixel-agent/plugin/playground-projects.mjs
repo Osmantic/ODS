@@ -34,6 +34,10 @@ export function requestsNewPlaygroundProject(intent) {
   // Filenames and path components are operands, not project-category words.
   // For example, creating macos-tool-check/probe.txt is not creating a tool.
   const text = plainIntent(intent).replace(/\b[A-Za-z0-9_]+(?:[-./\\][A-Za-z0-9_]+)+\b/g, ' ')
+    // "Read it with a file tool" names the means of a standalone-file
+    // request, not a tool the owner asked us to create. Keep "create a file
+    // tool" itself eligible as a genuine new project.
+    .replace(/\b(?:with|using|via|use)\s+(?:(?:a|an|the)\s+)?file\s+tools?\b/gi, ' ')
     // A build command or noun is not the creation verb "build". Keep real
     // creation clauses (including later clauses) eligible for project routing.
     .replace(/\b(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?build\b/gi, ' ')
