@@ -24,6 +24,12 @@ FAKE_ODS="$TMP/ods"
 mkdir -p "$FAKE_ODS/.backups"
 # minimal marker so 'is this a ODS dir' check passes
 mkdir -p "$FAKE_ODS/data"
+# ods-restore.sh sources lib/rsync.sh relative to ODS_DIR before it reaches
+# any of the confirmation logic below, so the fixture has to provide it —
+# same as test-backup-restore-roundtrip.sh. Without it the script exits 1 at
+# the source line and both assertions below pass over untested code.
+mkdir -p "$FAKE_ODS/lib"
+cp "$SCRIPT_DIR/../lib/rsync.sh" "$FAKE_ODS/lib/"
 
 # Create a minimal backup (manifest only, no data dirs)
 BID="20260101-000000"
