@@ -1990,7 +1990,7 @@ async function handleChat(req, res, token, gatewayPort, deps, historyLedger, his
     // does not turn an anonymous history snapshot into a stable owner session.
     const outgoing = buildOutgoing(parsed, user ?? (!parsed.history_snapshot ? `ods-${randomBytes(32).toString('hex')}` : undefined));
     if(historyLedger && user) release=historyLedger.lock(user);
-    if(historyLedger?.read(user)?.status==='deleted')throw new HistoryError('conversation-deleted',410);
+    if(historyLedger && user && historyLedger.read(user)?.status==='deleted')throw new HistoryError('conversation-deleted',410);
     if(!parsed.history_snapshot) {await forwardChat(res,outgoing,token,gatewayPort,deps,{},activeGatewayTransports);return;}
     if(!historyLedger || !user) throw new HistoryError('history-storage-unavailable',503);
     const native=await nativeContextRequest('context',{user},token,gatewayPort,deps);
