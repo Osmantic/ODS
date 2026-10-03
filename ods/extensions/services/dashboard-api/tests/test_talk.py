@@ -1,5 +1,7 @@
 """Tests for the ODS Talk mobile portal API."""
 
+from types import SimpleNamespace
+
 import pytest
 
 
@@ -25,6 +27,53 @@ def talk_client(test_client, signed_talk_cookie, monkeypatch):
     monkeypatch.setattr("routers.talk.get_llama_context_size", no_live_context)
     test_client.cookies.set("ods-session", signed_talk_cookie)
     return test_client
+
+
+def test_talk_tts_status_follows_library_marker_without_api_restart(
+    talk_client, monkeypatch, tmp_path,
+):
+    import config
+
+    tts_dir = tmp_path / "tts"
+    tts_dir.mkdir()
+    (tts_dir / "manifest.yaml").write_text(
+        "schema_version: ods.services.v1\n"
+        "service:\n"
+        "  id: tts\n"
+        "  name: Test Kokoro\n"
+        "  type: docker\n"
+        "  gpu_backends: [all]\n"
+        "  default_host: tts\n"
+        "  port: 8880\n"
+        "  health: /health\n"
+        "  compose_file: compose.yaml\n",
+        encoding="utf-8",
+    )
+    selected = tts_dir / "compose.yaml"
+    disabled = tts_dir / "compose.yaml.disabled"
+    disabled.write_text("services: {tts: {image: test/kokoro}}\n", encoding="utf-8")
+    monkeypatch.setattr(config, "EXTENSIONS_DIR", tmp_path)
+
+    async def healthy_tts(service_id, cfg):
+        assert service_id == "tts"
+        assert cfg["port"] == 8880
+        return SimpleNamespace(status="healthy")
+
+    monkeypatch.setattr("routers.talk.check_service_health", healthy_tts)
+
+    before = talk_client.get("/api/talk/status").json()
+    assert before["services"]["tts"] == {"configured": False, "status": "not_configured"}
+    assert before["capabilities"]["tts"] is False
+
+    disabled.rename(selected)
+    enabled = talk_client.get("/api/talk/status").json()
+    assert enabled["services"]["tts"] == {"configured": True, "status": "healthy"}
+    assert enabled["capabilities"]["tts"] is True
+
+    selected.rename(disabled)
+    after = talk_client.get("/api/talk/status").json()
+    assert after["services"]["tts"] == before["services"]["tts"]
+    assert after["capabilities"]["tts"] is False
 
 
 TALK_NOT_SUPPORTED_COPY = (

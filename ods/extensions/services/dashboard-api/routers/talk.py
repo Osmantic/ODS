@@ -23,7 +23,7 @@ from starlette.requests import ClientDisconnect
 
 import hermes_bridge
 import session_signer
-from config import INSTALL_DIR, SERVICES
+from config import INSTALL_DIR, load_enabled_service_config
 from helpers import check_service_health, get_llama_context_size, get_loaded_model
 from performance_oracle import (
     find_catalog_model,
@@ -367,7 +367,7 @@ def _require_session(request: Request) -> tuple[str, int]:
 
 
 async def _service_state(service_id: str) -> dict[str, Any]:
-    cfg = SERVICES.get(service_id)
+    cfg = load_enabled_service_config(service_id)
     if not cfg:
         return {"configured": False, "status": "not_configured"}
     try:
