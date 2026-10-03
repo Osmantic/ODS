@@ -2315,7 +2315,7 @@ if $DRY_RUN; then
     $ENABLE_PIXEL && ai "[DRY RUN] Would prepare and activate native Pixel after the base stack"
 else
     # Change to install directory for docker compose
-    cd "$INSTALL_DIR"
+    cd "$INSTALL_DIR" || exit 1
 
     # ── Bootstrap fast-start ──────────────────────────────────────────────
     _BOOTSTRAP_ACTIVE=false
