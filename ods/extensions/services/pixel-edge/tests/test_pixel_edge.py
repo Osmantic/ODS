@@ -1025,6 +1025,29 @@ class TestModelAllowlist(BaseEdgeTest):
         self.assertIn("or copies of existing files", content)
         self.assertIn("cp or python3 with json.dump, never by re-typing them", content)
 
+    async def test_read_only_file_request_with_write_reply_has_no_mutation_route(self):
+        async with self.client.post(
+            "http://localhost/v1/chat/completions", headers=self.auth(),
+            json={"model": "pixel/default", "messages": [{"role": "user", "content": (
+                "Use a file-reading tool to read sample.txt, without changing it. "
+                "Quote both lines and then write CHECK-READ-ONLY."
+            )}]},
+        ) as resp:
+            self.assertEqual(resp.status, 200)
+        content = self.up_runner.app["chat_requests"][-1]["messages"][-1]["content"]
+        self.assertNotIn("[ODS Portal workspace task route:", content)
+
+    async def test_file_read_followed_by_explicit_file_write_has_mutation_route(self):
+        async with self.client.post(
+            "http://localhost/v1/chat/completions", headers=self.auth(),
+            json={"model": "pixel/default", "messages": [{"role": "user", "content": (
+                "Read the file notes.txt, then write the result to file answer.txt."
+            )}]},
+        ) as resp:
+            self.assertEqual(resp.status, 200)
+        content = self.up_runner.app["chat_requests"][-1]["messages"][-1]["content"]
+        self.assertIn("[ODS Portal workspace task route:", content)
+
     async def test_run_and_wait_gets_one_exec_then_exact_process_poll_route(self):
         async with self.client.post(
             "http://localhost/v1/chat/completions",
