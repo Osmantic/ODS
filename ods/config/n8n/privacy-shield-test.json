@@ -2,32 +2,121 @@
   "name": "Privacy-Shield Proxy Test",
   "nodes": [
     {
+      "parameters": {
+        "content": "## Privacy-Shield Proxy Test\n\nProves your shield is actually redacting before anything reaches the\nmodel — and shows you exactly how many values it caught.\n\n**One-time setup**\n1. Read `SHIELD_API_KEY` from your ODS `.env`.\n2. In n8n: Credentials -> New -> **Header Auth**\n   - Name: `Authorization`\n   - Value: `Bearer <SHIELD_API_KEY>`\n3. Open the *Through Privacy Shield* node and select that credential.\n\n**Run it** with the Test workflow button.\n\nThe sample prompt carries an email, a phone number, an SSN and an IP.\nThe shield replaces each with a `<PII_...>` token on the way out and\nrestores them on the way back, so the reply reads naturally while the\nupstream model only ever saw tokens.\n\nThe report node reads the `X-PII-Scrubbed` response header — the count\nthe shield reports for this request. If it comes back `0`, the shield is\nnot redacting and you should check `PRIVACY_SHIELD` in `.env`.\n\n**Note:** what counts as PII is regex-based. See\n`extensions/services/privacy-shield/PII_COVERAGE.md` for what is and is\nnot detected.",
+        "height": 640,
+        "width": 520
+      },
+      "id": "note-overview",
+      "name": "How to use this",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [-100, 20]
+    },
+    {
       "parameters": {},
-      "id": "start",
-      "name": "Start",
+      "id": "manual-trigger",
+      "name": "Run Test",
       "type": "n8n-nodes-base.manualTrigger",
       "typeVersion": 1,
-      "position": [240, 300]
+      "position": [460, 320]
     },
     {
       "parameters": {
-        "content": "## Privacy-Shield Proxy Test\n\nThis is a template workflow for sending a test payload through Privacy Shield, verifying PII is redacted, and logging a compliance report.\n\nCustomize the nodes below to match your setup.",
-        "height": 200,
-        "width": 400
+        "assignments": {
+          "assignments": [
+            {
+              "id": "a1",
+              "name": "sample",
+              "value": "Please draft a short reply to Dana Reyes. Her email is dana.reyes@example.com, her phone is 555-123-4567, her SSN is 123-45-6789, and the server she reported the outage from was 192.168.1.100.",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
       },
-      "id": "note",
-      "name": "Setup Instructions",
-      "type": "n8n-nodes-base.stickyNote",
-      "typeVersion": 1,
-      "position": [440, 140]
+      "id": "set-sample",
+      "name": "Sample With PII",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [680, 320]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://privacy-shield:8085/v1/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: 'local-model', messages: [ { role: 'user', content: $json.sample } ], max_tokens: 256, stream: false }) }}",
+        "options": {
+          "timeout": 180000,
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true
+            }
+          }
+        }
+      },
+      "id": "http-shield",
+      "name": "Through Privacy Shield",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [920, 320]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "r1",
+              "name": "shield_active",
+              "value": "={{ $json.headers['x-privacy-shield'] === 'active' }}",
+              "type": "boolean"
+            },
+            {
+              "id": "r2",
+              "name": "pii_values_scrubbed",
+              "value": "={{ Number($json.headers['x-pii-scrubbed'] ?? 0) }}",
+              "type": "number"
+            },
+            {
+              "id": "r3",
+              "name": "status_code",
+              "value": "={{ $json.statusCode }}",
+              "type": "number"
+            },
+            {
+              "id": "r4",
+              "name": "verdict",
+              "value": "={{ $json.statusCode >= 400 ? 'ERROR — check the SHIELD_API_KEY credential and that privacy-shield is running' : (Number($json.headers['x-pii-scrubbed'] ?? 0) > 0 ? 'PASS — the shield redacted before the model saw the prompt' : 'FAIL — nothing was redacted; check PRIVACY_SHIELD in .env') }}",
+              "type": "string"
+            },
+            {
+              "id": "r5",
+              "name": "restored_reply",
+              "value": "={{ $json.body?.choices?.[0]?.message?.content ?? '' }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "set-report",
+      "name": "Compliance Report",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [1180, 320]
     }
   ],
-  "connections": {},
-  "settings": {
-    "executionOrder": "v1"
+  "connections": {
+    "Run Test": { "main": [[{ "node": "Sample With PII", "type": "main", "index": 0 }]] },
+    "Sample With PII": { "main": [[{ "node": "Through Privacy Shield", "type": "main", "index": 0 }]] },
+    "Through Privacy Shield": { "main": [[{ "node": "Compliance Report", "type": "main", "index": 0 }]] }
   },
-  "meta": {
-    "templateId": "privacy-shield-test"
-  },
+  "settings": { "executionOrder": "v1" },
+  "meta": { "templateId": "privacy-shield-test" },
   "tags": []
 }
