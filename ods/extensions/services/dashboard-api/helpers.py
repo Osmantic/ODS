@@ -888,6 +888,7 @@ async def get_llama_vision_support() -> Optional[bool]:
 # lookups (Docker Desktop) never block API responses.
 
 _services_cache: Optional[list] = None  # list[ServiceStatus], set by poll loop
+_services_cache_revision = 0
 
 
 def _host_service_affirmed_stopped(service_id: str) -> bool:
@@ -921,10 +922,19 @@ def _normalize_cached_service_status(status: ServiceStatus) -> ServiceStatus:
     return status
 
 
-def set_services_cache(statuses: list) -> None:
-    """Store latest health check results (called by background poll)."""
-    global _services_cache
+def get_services_cache_revision() -> int:
+    """Revision captured before a background health poll starts."""
+    return _services_cache_revision
+
+
+def set_services_cache(statuses: list, *, expected_revision: Optional[int] = None) -> bool:
+    """Store a poll result only if no owner refresh superseded its snapshot."""
+    global _services_cache, _services_cache_revision
+    if expected_revision is not None and expected_revision != _services_cache_revision:
+        return False
     _services_cache = [_normalize_cached_service_status(status) for status in statuses]
+    _services_cache_revision += 1
+    return True
 
 
 def get_cached_services() -> Optional[list]:
@@ -934,12 +944,13 @@ def get_cached_services() -> Optional[list]:
 
 async def refresh_cached_service_status(service_id: str) -> None:
     """Re-check one service and replace its cached row after an owner action."""
-    global _services_cache
+    global _services_cache, _services_cache_revision
     config = SERVICES.get(service_id)
     if config is None or _services_cache is None:
         return
     status = _normalize_cached_service_status(await check_service_health(service_id, config))
     _services_cache = [status if item.id == service_id else item for item in _services_cache]
+    _services_cache_revision += 1
 
 
 # --- Service Health ---
