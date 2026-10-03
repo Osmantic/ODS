@@ -579,6 +579,20 @@ matching final receipt. If staging or promotion is unavailable, the request
 fails closed without creating a substitute artifact; ordinary page research
 remains available.
 
+The shared page reader behind `pixel_ods_web_extract` and host citation
+verification also reads the schema.org data a page publishes in its HTML
+(JSON-LD scripts and microdata attributes), so an event page or shop page whose
+visible text is built by JavaScript can still show its facts. Nothing is run:
+JSON-LD is parsed as JSON, microdata is read from tag attributes and text. Only
+whitelisted fields are kept: an event's name, start and end, status, location
+and organizer; a product's name, SKU, GTIN and offers (price, currency,
+availability, condition, seller, price validity); an organization's name and
+postal address. At most eight events, products or offers and two
+organizations (about 2,400 characters) go before the page's visible text,
+inside the same untrusted-content boundary, labelled as markup data rather than
+visible text. The block is added after bot-challenge
+detection and never counts as page text there.
+
 Adding an ODS action is a security-boundary change. It requires a new explicit
 tool contract, policy and authorization design, adversarial tests, and fresh
 install/rollback qualification; do not broaden the projection reader into a
