@@ -6,6 +6,7 @@ import io
 import json
 import logging
 import os
+import shutil
 import stat
 import subprocess
 import sys
@@ -13,7 +14,9 @@ import threading
 import time
 import types
 from contextlib import nullcontext
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path, PurePosixPath
+from urllib.parse import unquote
 
 import pytest
 
@@ -24,6 +27,357 @@ _spec = importlib.util.spec_from_file_location("ods_host_agent", _agent_path)
 _mod = importlib.util.module_from_spec(_spec)
 sys.modules["ods_host_agent"] = _mod
 _spec.loader.exec_module(_mod)
+
+
+def test_host_selection_serializes_dependency_decisions_with_cli_helper(tmp_path, monkeypatch):
+    """The agent uses the installed host selector, including ordered stops."""
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    shutil.copyfile(_agent_path.parents[1] / "scripts" / "extension-selection.py",
+                    scripts / "extension-selection.py")
+    (scripts / "stop-owned-containers.py").write_text("raise SystemExit(0)\n", encoding="utf-8")
+    (tmp_path / "docker-compose.base.yml").write_text("services: {}\n", encoding="utf-8")
+    (tmp_path / "data" / "user-extensions").mkdir(parents=True)
+    for name, dependencies in (("search", ""), ("consumer", "search")):
+        directory = tmp_path / "extensions" / "services" / name
+        directory.mkdir(parents=True)
+        (directory / "manifest.yaml").write_text(
+            f"service:\n  id: {name}\n  depends_on: [{dependencies}]\n", encoding="utf-8",
+        )
+        (directory / "compose.yaml").write_text(
+            f"services:\n  {name}:\n    image: example:latest\n", encoding="utf-8",
+        )
+    monkeypatch.setattr(_mod, "INSTALL_DIR", tmp_path)
+    monkeypatch.setattr(_mod, "resolve_compose_flags",
+                        lambda **_kwargs: ["-f", "docker-compose.base.yml"])
+    if sys.platform == "win32":
+        # Dashboard's test conftest stubs fcntl for its own imports; the host
+        # selector must take the real Windows msvcrt branch instead.
+        monkeypatch.delitem(sys.modules, "fcntl", raising=False)
+    with pytest.raises(ValueError, match="consumer"):
+        _mod._apply_extension_selection(["search"], activate=False)
+    assert (tmp_path / "extensions/services/search/compose.yaml").is_file()
+    assert _mod._apply_extension_selection(["consumer"], activate=False) == "disabled"
+    assert _mod._apply_extension_selection(["search"], activate=False) == "disabled"
+    with pytest.raises(ValueError, match="missing"):
+        _mod._apply_extension_selection(["search", "missing"], activate=True)
+    assert (tmp_path / "extensions/services/search/compose.yaml.disabled").is_file()
+    digests = {
+        name: hashlib.sha256((tmp_path / "extensions/services" / name
+                              / "compose.yaml.disabled").read_bytes()).hexdigest()
+        for name in ("search", "consumer")
+    }
+    with pytest.raises(ValueError, match="content changed"):
+        _mod._apply_extension_selection(
+            ["search", "consumer"], activate=True,
+            expected_sha256={**digests, "search": "0" * 64},
+        )
+    assert (tmp_path / "extensions/services/search/compose.yaml.disabled").is_file()
+    assert _mod._apply_extension_selection(
+        ["search", "consumer"], activate=True, expected_sha256=digests,
+    ) == "enabled"
+    with pytest.raises(ValueError, match="content changed"):
+        _mod._apply_extension_selection(
+            ["search", "consumer"], activate=True,
+            expected_sha256={**digests, "consumer": "0" * 64},
+        )
+    assert not list((tmp_path / "data").glob(".extension-selection-*"))
+
+
+@pytest.mark.parametrize(("has_dependent", "stop_fails"), [
+    (False, False), (True, False), (False, True),
+])
+def test_failed_install_cleanup_stops_prior_retry_before_disabling(
+    tmp_path, monkeypatch, has_dependent, stop_fails,
+):
+    """A prior retry's container is stopped under the marker's graph lock."""
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    shutil.copyfile(_agent_path.parents[1] / "scripts" / "extension-selection.py",
+                    scripts / "extension-selection.py")
+    user_root = tmp_path / "data" / "user-extensions"
+    target = user_root / "my-ext"
+    target.mkdir(parents=True)
+    (target / "compose.yaml").write_text(
+        "services:\n  my-ext:\n    image: example:latest\n"
+        "    environment:\n      REQUIRED: ${MISSING_REQUIRED_SETTING:?}\n",
+        encoding="utf-8",
+    )
+    (target / "manifest.yaml").write_text(
+        "service:\n  id: my-ext\n", encoding="utf-8",
+    )
+    (target / "owner-data.db").write_text("keep", encoding="utf-8")
+    cache = tmp_path / ".compose-flags"
+    cache.write_text("stale", encoding="utf-8")
+    (tmp_path / "docker-compose.base.yml").write_text(
+        "services:\n  dashboard-api:\n    image: example:latest\n", encoding="utf-8",
+    )
+    if has_dependent:
+        consumer = user_root / "consumer"
+        consumer.mkdir()
+        (consumer / "manifest.yaml").write_text(
+            "service:\n  id: consumer\n  depends_on: [my-ext]\n", encoding="utf-8",
+        )
+        (consumer / "compose.yaml").write_text(
+            "services:\n  consumer:\n    image: example:latest\n", encoding="utf-8",
+        )
+    monkeypatch.setattr(_mod, "INSTALL_DIR", tmp_path)
+    monkeypatch.setattr(_mod, "USER_EXTENSIONS_DIR", user_root)
+    monkeypatch.setattr(
+        _mod, "resolve_compose_flags",
+        lambda **_kwargs: ["-f", "docker-compose.base.yml"],
+    )
+    if sys.platform == "win32":
+        monkeypatch.delitem(sys.modules, "fcntl", raising=False)
+    selector = _mod._load_extension_selector()
+    stops = []
+
+    def stop_owned(_install_dir, service_id, mode, _flags, service_names,
+                   preserve_restart_policy=False):
+        assert (target / "compose.yaml").is_file()
+        assert cache.is_file()
+        assert mode == "owned"
+        assert preserve_restart_policy
+        stops.append((service_id, service_names))
+        if stop_fails:
+            raise selector.SelectionError("Could not confirm stop; selection unchanged")
+
+    monkeypatch.setattr(selector, "_stop_for_disable", stop_owned)
+    monkeypatch.setattr(_mod, "_load_extension_selector", lambda: selector)
+
+    note = _mod._disable_unprepared_install("my-ext")
+
+    assert (target / "owner-data.db").read_text(encoding="utf-8") == "keep"
+    if has_dependent or stop_fails:
+        assert "could not turn this extension off" in note
+        assert (target / "compose.yaml").is_file()
+        assert cache.is_file()
+        assert stops == ([] if has_dependent else [("my-ext", {"my-ext"})])
+    else:
+        assert "turned this extension off" in note
+        assert (target / "compose.yaml.disabled").is_file()
+        assert not (target / "compose.yaml").exists()
+        assert not cache.exists()
+        assert stops == [("my-ext", {"my-ext"})]
+
+
+def test_extension_start_and_disable_share_host_graph_lock(tmp_path, monkeypatch):
+    """The CLI cannot rename a marker during a selected Compose up."""
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    shutil.copyfile(_agent_path.parents[1] / "scripts" / "extension-selection.py",
+                    scripts / "extension-selection.py")
+    target = tmp_path / "data" / "user-extensions" / "my-ext"
+    target.mkdir(parents=True)
+    (target / "compose.yaml").write_text(
+        "services:\n  my-ext:\n    image: example:latest\n", encoding="utf-8",
+    )
+    monkeypatch.setattr(_mod, "INSTALL_DIR", tmp_path)
+    monkeypatch.setattr(_mod, "USER_EXTENSIONS_DIR", target.parent)
+    monkeypatch.setattr(_mod, "EXTENSIONS_DIR", tmp_path / "extensions" / "services")
+    if sys.platform == "win32":
+        monkeypatch.delitem(sys.modules, "fcntl", raising=False)
+
+    entered = threading.Event()
+    release = threading.Event()
+    results = []
+
+    def delayed_up(command, **_kwargs):
+        assert (target / "compose.yaml").is_file()
+        entered.set()
+        assert release.wait(timeout=5)
+        results.append(command)
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(_mod.subprocess, "run", delayed_up)
+    worker = threading.Thread(
+        target=lambda: _mod._run_selected_extension_up("my-ext", ["-f", "base.yml"]),
+    )
+    worker.start()
+    try:
+        assert entered.wait(timeout=5)
+        selector = _mod._load_extension_selector()
+        with pytest.raises(selector.SelectionError, match="Timed out waiting"):
+            selector.run("disable", tmp_path, "my-ext", timeout=0.2)
+        assert (target / "compose.yaml").is_file()
+    finally:
+        release.set()
+        worker.join(timeout=5)
+    assert not worker.is_alive()
+    assert results == [["docker", "compose", "-f", "base.yml", "up", "-d", "my-ext"]]
+    assert selector.run("disable", tmp_path, "my-ext") == "disabled"
+    with pytest.raises(RuntimeError, match="selection changed before start"):
+        _mod._run_selected_extension_up("my-ext", ["-f", "base.yml"])
+    assert len(results) == 1
+
+
+def test_host_selection_endpoint_requires_auth_and_preserves_batch(
+    monkeypatch, host_agent_wire_client,
+):
+    import threading
+    import urllib.error
+    import urllib.request
+    from http.server import HTTPServer
+
+    from routers import extensions as ext_router
+
+    calls = []
+    monkeypatch.setattr(_mod, "AGENT_API_KEY", "selection-wire-secret")
+    monkeypatch.setattr(
+        _mod, "_apply_extension_selection",
+        lambda service_ids, activate, expected_sha256=None: calls.append(
+            (service_ids, activate, expected_sha256)
+        ) or ("enabled" if activate else "disabled"),
+    )
+    server = HTTPServer(("127.0.0.1", 0), _mod.AgentHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        url = f"http://127.0.0.1:{server.server_address[1]}/v1/extension/select"
+
+        def post(body, token=None):
+            headers = {"Content-Type": "application/json"}
+            if token is not None:
+                headers["Authorization"] = f"Bearer {token}"
+            request = urllib.request.Request(
+                url, data=json.dumps(body).encode("utf-8"), headers=headers, method="POST",
+            )
+            return urllib.request.urlopen(request, timeout=2)
+
+        digests = {"search": "a" * 64, "consumer": "b" * 64}
+        body = {"action": "enable", "service_ids": ["search", "consumer"],
+                "expected_sha256": digests}
+        with pytest.raises(urllib.error.HTTPError) as rejected:
+            post(body)
+        assert rejected.value.code == 401
+        assert calls == []
+
+        host_agent_wire_client(server.server_address[1], key="selection-wire-secret")
+        result = ext_router._select_extensions_on_host(
+            "enable", ["search", "consumer"], expected_sha256=digests,
+        )
+        assert result["action"] == "enabled"
+        assert result["service_ids"] == ["search", "consumer"]
+        assert calls == [(["search", "consumer"], True, digests)]
+
+        with pytest.raises(urllib.error.HTTPError) as rejected:
+            post({"action": "enable", "service_ids": ["search", "consumer"]},
+                 "selection-wire-secret")
+        assert rejected.value.code == 400
+
+        with pytest.raises(urllib.error.HTTPError) as rejected:
+            post({"action": "disable", "service_ids": ["search", "consumer"]},
+                 "selection-wire-secret")
+        assert rejected.value.code == 400
+        assert calls == [(["search", "consumer"], True, digests)]
+
+        from fastapi import HTTPException
+
+        def blocked_by_late_dependent(service_ids, activate, expected_sha256=None):
+            raise ValueError("enabled consumer depends on search")
+
+        monkeypatch.setattr(_mod, "_apply_extension_selection", blocked_by_late_dependent)
+        with pytest.raises(HTTPException) as blocked:
+            ext_router._select_extensions_on_host("disable", ["search"])
+        assert blocked.value.status_code == 409
+        assert "consumer" in blocked.value.detail
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+@pytest.mark.parametrize("model,settings,override", [
+    ("Systran/faster-whisper-base", "AUDIO_STT_MODEL=Systran/faster-whisper-base\n", False),
+    ("deepdml/faster-whisper-large-v3-turbo-ct2", "GPU_BACKEND=nvidia\n", False),
+    ("Systran/faster-whisper-base", "AUDIO_STT_MODEL=stale/model\nWHISPER_PORT=1\n", True),
+])
+def test_library_whisper_start_downloads_missing_model_and_reuses_cache(
+    tmp_path, monkeypatch, model, settings, override,
+):
+    calls = []
+    cached = set()
+
+    class ModelsHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            calls.append(("GET", self.path))
+            if self.path == "/v1/models":
+                self.send_response(200)
+            elif self.path.startswith("/v1/models/") and unquote(self.path[11:]) in cached:
+                self.send_response(200)
+            else:
+                self.send_response(404)
+            self.end_headers()
+
+        def do_POST(self):
+            calls.append(("POST", self.path))
+            if self.path.startswith("/v1/models/"):
+                cached.add(unquote(self.path[11:]))
+                self.send_response(200)
+            else:
+                self.send_response(404)
+            self.end_headers()
+
+        def log_message(self, *_args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), ModelsHandler)
+    worker = threading.Thread(target=server.serve_forever, daemon=True)
+    worker.start()
+    try:
+        (tmp_path / ".env").write_text(
+            settings + ("" if override else f"WHISPER_PORT={server.server_port}\n"),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(_mod, "INSTALL_DIR", tmp_path)
+        expected_path = "/v1/models/" + model.replace("/", "%2F")
+        compose_env = ({"AUDIO_STT_MODEL": model, "WHISPER_PORT": str(server.server_port)}
+                       if override else None)
+        assert _mod._whisper_model_ready_after_start(5, compose_env) == (True, "")
+        assert calls.count(("POST", expected_path)) == 1
+        assert _mod._whisper_model_ready_after_start(5, compose_env) == (True, "")
+        assert calls.count(("POST", expected_path)) == 1
+    finally:
+        server.shutdown()
+        server.server_close()
+        worker.join(timeout=5)
+
+
+def test_library_whisper_start_rejects_oversized_port_without_network(tmp_path, monkeypatch):
+    (tmp_path / ".env").write_text("WHISPER_PORT=" + "9" * 5000 + "\n", encoding="utf-8")
+    monkeypatch.setattr(_mod, "INSTALL_DIR", tmp_path)
+    assert _mod._whisper_model_ready_after_start(0)[0] is False
+
+
+def test_library_whisper_start_reports_permanent_model_rejection(tmp_path, monkeypatch):
+    class RejectingModelsHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200 if self.path == "/v1/models" else 404)
+            self.end_headers()
+
+        def do_POST(self):
+            self.send_response(404)
+            self.end_headers()
+
+        def log_message(self, *_args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), RejectingModelsHandler)
+    worker = threading.Thread(target=server.serve_forever, daemon=True)
+    worker.start()
+    try:
+        (tmp_path / ".env").write_text(
+            f"WHISPER_PORT={server.server_port}\n", encoding="utf-8",
+        )
+        monkeypatch.setattr(_mod, "INSTALL_DIR", tmp_path)
+        started = time.monotonic()
+        ok, error = _mod._whisper_model_ready_after_start(5)
+        assert not ok and "HTTP 404" in error
+        assert time.monotonic() - started < 2
+    finally:
+        server.shutdown()
+        server.server_close()
+        worker.join(timeout=5)
 
 
 def test_core_recreation_excludes_unrelated_secrets_but_keeps_overlays_and_dependencies(tmp_path, monkeypatch):
@@ -942,6 +1296,78 @@ class TestMacosDirectBindBridgeCollision:
 
 class TestResolveComposeFlags:
 
+    def test_reresolve_uses_persisted_gateway_route_without_upstream_url(
+        self, tmp_path, monkeypatch,
+    ):
+        install_dir = tmp_path / "ods"
+        scripts_dir = install_dir / "scripts"
+        scripts_dir.mkdir(parents=True)
+        (scripts_dir / "resolve-compose-stack.sh").write_text("#!/usr/bin/env bash\n")
+        upstream = "https://private.example.test/token-in-url"
+        (install_dir / ".env").write_text(
+            "ODS_MODE=local\nODS_GATEWAY_ONLY=true\nENABLE_OPEN_WEBUI=false\n"
+            f"EXTERNAL_LLM_URL={upstream}\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(_mod, "INSTALL_DIR", install_dir)
+        monkeypatch.setattr(_mod, "TIER", "1")
+        monkeypatch.setattr(_mod, "GPU_BACKEND", "nvidia")
+        monkeypatch.setattr(_mod, "GPU_COUNT", "1")
+        monkeypatch.setattr(_mod.platform, "system", lambda: "Linux")
+        monkeypatch.setattr(_mod, "_find_usable_bash", lambda: "/bin/bash")
+        monkeypatch.setenv("ODS_GATEWAY_ONLY", "false")
+        monkeypatch.setenv("ENABLE_OPEN_WEBUI", "true")
+        monkeypatch.setenv("EXTERNAL_LLM_URL", "http://stale.example.test")
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append((cmd, kwargs))
+            return subprocess.CompletedProcess(
+                args=cmd, returncode=0,
+                stdout="-f docker-compose.base.yml -f docker-compose.external-llm.yml\n",
+                stderr="",
+            )
+
+        monkeypatch.setattr(_mod.subprocess, "run", fake_run)
+        assert resolve_compose_flags()[-2:] == ["-f", "docker-compose.external-llm.yml"]
+        env = calls[0][1]["env"]
+        assert env["ODS_EXTERNAL_LLM_SELECTED"] == "true"
+        assert env["ODS_GATEWAY_ONLY"] == "true"
+        assert env["ENABLE_OPEN_WEBUI"] == "false"
+        assert "EXTERNAL_LLM_URL" not in env
+        assert upstream not in str(calls)
+
+    def test_reresolve_keeps_local_route_when_agent_environment_is_stale(
+        self, tmp_path, monkeypatch,
+    ):
+        install_dir = tmp_path / "ods"
+        scripts_dir = install_dir / "scripts"
+        scripts_dir.mkdir(parents=True)
+        (scripts_dir / "resolve-compose-stack.sh").write_text("#!/usr/bin/env bash\n")
+        (install_dir / ".env").write_text("ODS_MODE=local\n", encoding="utf-8")
+        monkeypatch.setattr(_mod, "INSTALL_DIR", install_dir)
+        monkeypatch.setattr(_mod, "TIER", "1")
+        monkeypatch.setattr(_mod, "GPU_BACKEND", "nvidia")
+        monkeypatch.setattr(_mod, "GPU_COUNT", "1")
+        monkeypatch.setattr(_mod.platform, "system", lambda: "Linux")
+        monkeypatch.setattr(_mod, "_find_usable_bash", lambda: "/bin/bash")
+        monkeypatch.setenv("EXTERNAL_LLM_URL", "http://stale.example.test")
+        monkeypatch.setenv("ODS_GATEWAY_ONLY", "true")
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append((cmd, kwargs))
+            return subprocess.CompletedProcess(
+                args=cmd, returncode=0, stdout="-f docker-compose.base.yml\n", stderr="",
+            )
+
+        monkeypatch.setattr(_mod.subprocess, "run", fake_run)
+        assert resolve_compose_flags() == ["-f", "docker-compose.base.yml"]
+        env = calls[0][1]["env"]
+        assert env["ODS_EXTERNAL_LLM_SELECTED"] == "false"
+        assert "EXTERNAL_LLM_URL" not in env
+        assert "ODS_GATEWAY_ONLY" not in env
+
     def test_windows_passes_host_python_to_bash_resolver(self, tmp_path, monkeypatch):
         install_dir = tmp_path / "ods"
         scripts_dir = install_dir / "scripts"
@@ -1543,6 +1969,110 @@ class TestResolveComposeFlagsCache:
             resolve_compose_flags()
         assert (tmp_path / '.compose-flags').read_text(encoding='utf-8') == saved
 
+    def test_dashboard_disable_recovers_policy_rejected_target_without_starting_it(
+        self, tmp_path, monkeypatch,
+    ):
+        scripts = tmp_path / 'scripts'
+        scripts.mkdir()
+        shutil.copyfile(_agent_path.parents[1] / 'scripts/extension-selection.py',
+                        scripts / 'extension-selection.py')
+        (scripts / 'stop-owned-containers.py').write_text(
+            'raise SystemExit(0)\n', encoding='utf-8',
+        )
+        (tmp_path / 'docker-compose.base.yml').write_text(
+            'services: {}\n', encoding='utf-8',
+        )
+        extension = tmp_path / 'data/user-extensions/example'
+        extension.mkdir(parents=True)
+        (extension / 'manifest.yaml').write_text(
+            'service:\n  id: example\n', encoding='utf-8',
+        )
+        (extension / 'compose.yaml').write_text(
+            'services:\n  example:\n    image: example/app:1\n    privileged: true\n',
+            encoding='utf-8',
+        )
+        (extension / 'owner-data.db').write_text('keep', encoding='utf-8')
+        (tmp_path / '.compose-flags').write_text(
+            '-f docker-compose.base.yml -f data/user-extensions/example/compose.yaml',
+            encoding='utf-8',
+        )
+        monkeypatch.setattr(_mod, 'INSTALL_DIR', tmp_path)
+        monkeypatch.setattr(_mod._model_stores, 'active_compose_overlay',
+                            lambda *_args: None)
+        if sys.platform == 'win32':
+            monkeypatch.delitem(sys.modules, 'fcntl', raising=False)
+
+        with pytest.raises(ValueError, match='requires review'):
+            _mod._apply_extension_selection(['example'], activate=True)
+        assert (extension / 'compose.yaml').is_file()
+
+        assert _mod._apply_extension_selection(['example'], activate=False) == 'disabled'
+        assert (extension / 'compose.yaml.disabled').is_file()
+        assert (extension / 'owner-data.db').read_text(encoding='utf-8') == 'keep'
+        assert not (tmp_path / '.compose-flags').exists()
+
+    @pytest.mark.parametrize('order', [('other', 'example'), ('example', 'other')])
+    def test_dashboard_disable_does_not_bypass_another_rejected_recipe(
+        self, tmp_path, monkeypatch, order,
+    ):
+        user_root = tmp_path / 'data/user-extensions'
+        for service_id in ('other', 'example'):
+            extension = user_root / service_id
+            extension.mkdir(parents=True)
+            (extension / 'manifest.yaml').write_text(
+                f'service:\n  id: {service_id}\n', encoding='utf-8',
+            )
+            (extension / 'compose.yaml').write_text(
+                f'services:\n  {service_id}:\n    image: example/app:1\n'
+                '    privileged: true\n',
+                encoding='utf-8',
+            )
+        (tmp_path / '.compose-flags').write_text(
+            ' '.join(f'-f data/user-extensions/{service_id}/compose.yaml'
+                     for service_id in order), encoding='utf-8',
+        )
+        monkeypatch.setattr(_mod, 'INSTALL_DIR', tmp_path)
+        with pytest.raises(ValueError, match='Cached extension other requires review'):
+            _mod.resolve_compose_flags(recovery_disable_service='example')
+        assert (user_root / 'example/compose.yaml').is_file()
+
+    def test_dashboard_recovery_keeps_base_overlay_provider_selected(
+        self, tmp_path, monkeypatch,
+    ):
+        scripts = tmp_path / 'scripts'
+        scripts.mkdir()
+        shutil.copyfile(_agent_path.parents[1] / 'scripts/extension-selection.py',
+                        scripts / 'extension-selection.py')
+        (scripts / 'stop-owned-containers.py').write_text(
+            'raise AssertionError("base provider must not be stopped")\n',
+            encoding='utf-8',
+        )
+        (tmp_path / 'docker-compose.external-llm.yml').write_text(
+            'services:\n  litellm: {}\n', encoding='utf-8',
+        )
+        extension = tmp_path / 'data/user-extensions/litellm'
+        extension.mkdir(parents=True)
+        (extension / 'manifest.yaml').write_text(
+            'service:\n  id: litellm\n', encoding='utf-8',
+        )
+        (extension / 'compose.yaml').write_text(
+            'services:\n  litellm:\n    image: example/litellm:1\n'
+            '    privileged: true\n', encoding='utf-8',
+        )
+        (tmp_path / '.compose-flags').write_text(
+            '-f docker-compose.external-llm.yml '
+            '-f data/user-extensions/litellm/compose.yaml', encoding='utf-8',
+        )
+        monkeypatch.setattr(_mod, 'INSTALL_DIR', tmp_path)
+        monkeypatch.setattr(_mod._model_stores, 'active_compose_overlay',
+                            lambda *_args: None)
+        if sys.platform == 'win32':
+            monkeypatch.delitem(sys.modules, 'fcntl', raising=False)
+
+        with pytest.raises(ValueError, match='requires litellm'):
+            _mod._apply_extension_selection(['litellm'], activate=False)
+        assert (extension / 'compose.yaml').is_file()
+
     def test_prefers_saved_compose_flags_file(self, tmp_path, monkeypatch):
         install_dir = tmp_path / "ods"
         install_dir.mkdir()
@@ -2038,12 +2568,14 @@ class TestUpdateWire:
 
 
 class TestComposeToggleWire:
-    """End-to-end HTTP test for built-in compose toggles via the host agent."""
+    """An old Dashboard must not bypass host selection while updating."""
 
-    def test_client_posts_to_host_agent_and_renames_builtin_compose(
+    def test_legacy_toggle_fails_closed_without_changing_compose(
         self, tmp_path, monkeypatch, host_agent_wire_client,
     ):
         import threading
+        import urllib.error
+        import urllib.request
         from http.server import HTTPServer
 
         from routers import extensions as ext_router
@@ -2069,14 +2601,24 @@ class TestComposeToggleWire:
         thread.start()
         try:
             host_agent_wire_client(port)
-
-            assert ext_router._call_agent_compose_rename("activate", "fakesvc") is True
-            assert (ext_dir / "compose.yaml").exists()
-            assert not (ext_dir / "compose.yaml.disabled").exists()
-
-            assert ext_router._call_agent_compose_rename("deactivate", "fakesvc") is True
+            assert ext_router._call_agent_compose_rename("activate", "fakesvc") is False
             assert (ext_dir / "compose.yaml.disabled").exists()
             assert not (ext_dir / "compose.yaml").exists()
+
+            for action in ("activate", "deactivate"):
+                request = urllib.request.Request(
+                    f"http://127.0.0.1:{port}/v1/extension/{action}",
+                    data=json.dumps({"service_id": "fakesvc"}).encode("utf-8"),
+                    headers={"Content-Type": "application/json",
+                             "Authorization": "Bearer wire-test-secret"},
+                    method="POST",
+                )
+                with pytest.raises(urllib.error.HTTPError) as rejected:
+                    urllib.request.urlopen(request, timeout=2)
+                assert rejected.value.code == 410
+                assert "Finish updating ODS" in rejected.value.read().decode("utf-8")
+                assert (ext_dir / "compose.yaml.disabled").exists()
+                assert not (ext_dir / "compose.yaml").exists()
 
             host_agent_wire_client(port, key="wrong-secret")
             assert ext_router._call_agent_compose_rename("activate", "fakesvc") is False
@@ -4056,10 +4598,10 @@ class TestRemoteProviderLifecycle:
         monkeypatch.setattr(_mod.subprocess, "run", fake_run)
         runtime = {"model": "same-model", "contextLength": 32768, "maxTokens": 4096, "reasoning": False}
         assert _mod._reconcile_managed_pixel_contract({**runtime, "routeFingerprint": "a" * 64}) == "reconciled"
-        assert calls[-1][-1] == "a" * 64
+        assert calls[-1][-2:] == ["a" * 64, "unknown"]
         assert 'target_route_fingerprint="$8"' in calls[-1][2]
         assert _mod._reconcile_managed_pixel_contract(runtime) == "reconciled"
-        assert calls[-1][-1] == ""
+        assert calls[-1][-2:] == ["", "unknown"]
         with pytest.raises(RuntimeError, match="route identity"):
             _mod._reconcile_managed_pixel_contract({**runtime, "routeFingerprint": "a" * 64 + "\n"})
         assert len(calls) == 2
@@ -4114,6 +4656,12 @@ class TestRemoteProviderLifecycle:
         monkeypatch.setattr(_mod, "_managed_pixel_runtime_contract", lambda: runtime)
 
         assert _mod._active_remote_provider_pixel_runtime() == runtime
+
+        monkeypatch.setattr(_mod, "_managed_pixel_runtime_contract", lambda: {**runtime, "imageInput": "unknown"})
+        assert _mod._active_remote_provider_pixel_runtime() == runtime
+        monkeypatch.setattr(_mod, "_managed_pixel_runtime_contract", lambda: {**runtime, "imageInput": "supported"})
+        assert _mod._active_remote_provider_pixel_runtime() is None
+        monkeypatch.setattr(_mod, "_managed_pixel_runtime_contract", lambda: runtime)
 
         runtime["routeFingerprint"] = _mod._remote_provider_route_fingerprint(route)
         assert _mod._active_remote_provider_pixel_runtime() == runtime
@@ -4184,6 +4732,7 @@ class TestRemoteProviderLifecycle:
             "contextLength": 32768,
             "maxTokens": 4096,
             "reasoning": False,
+            "imageInput": "unknown",
         }
         current_pixel = {"value": local_pixel}
         reconciled = []
@@ -6288,6 +6837,27 @@ class TestPrecreateDataDirs:
 
 
 class TestRootlessDataOwnershipRepair:
+    def test_whisper_uses_rootful_or_rootless_cache_preparation(self, tmp_path, monkeypatch):
+        helper = tmp_path / "lib" / "rootless-ownership.sh"
+        helper.parent.mkdir()
+        helper.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+        calls = []
+        monkeypatch.setattr(_mod, "INSTALL_DIR", tmp_path)
+        monkeypatch.setattr(_mod.platform, "system", lambda: "Linux")
+        monkeypatch.setattr(_mod, "_find_usable_bash", lambda: "/bin/bash")
+        monkeypatch.setattr(
+            _mod.subprocess, "run",
+            lambda cmd, **kwargs: calls.append(cmd) or subprocess.CompletedProcess(cmd, 0, "", ""),
+        )
+
+        _mod._repair_rootless_data_ownership("whisper")
+
+        assert calls == [[
+            "/bin/bash", "-c",
+            'source "$1"; ods_prepare_whisper_cache_ownership "$2"',
+            "ods-whisper-cache", str(helper), str(tmp_path),
+        ]]
+
     def test_runs_targeted_helper_for_builtin_linux_service(
         self, tmp_path, monkeypatch,
     ):
@@ -6340,6 +6910,8 @@ class TestRootlessDataOwnershipRepair:
     def test_failure_prevents_compose_start(self, monkeypatch):
         compose_calls = []
         monkeypatch.setattr(_mod, "resolve_compose_flags", lambda: ["-f", "base.yml"])
+        monkeypatch.setattr(_mod, "_prepare_hermes_route_for_start", lambda: (True, ""))
+        monkeypatch.setattr(_mod, "_prepare_hermes_persona_for_start", lambda: (True, ""))
         monkeypatch.setattr(_mod, "_precreate_data_dirs", lambda _sid: None)
         monkeypatch.setattr(
             _mod,
@@ -6363,6 +6935,17 @@ class TestProxyAuthStart:
     def test_auth_is_persisted_and_applied_before_proxy_start(
         self, tmp_path, monkeypatch,
     ):
+        scripts = tmp_path / "scripts"
+        scripts.mkdir()
+        shutil.copyfile(_agent_path.parents[1] / "scripts" / "extension-selection.py",
+                        scripts / "extension-selection.py")
+        (tmp_path / "data").mkdir()
+        extension_root = tmp_path / "extensions" / "services"
+        proxy_dir = extension_root / "ods-proxy"
+        proxy_dir.mkdir(parents=True)
+        (proxy_dir / "compose.yaml").write_text(
+            "services:\n  ods-proxy:\n    image: example:latest\n", encoding="utf-8",
+        )
         env_path = tmp_path / ".env"
         env_path.write_text(
             "BIND_ADDRESS=127.0.0.1\nWEBUI_AUTH=false\nWEBUI_AUTH=false\n",
@@ -6371,6 +6954,10 @@ class TestProxyAuthStart:
         calls = []
 
         monkeypatch.setattr(_mod, "INSTALL_DIR", tmp_path)
+        monkeypatch.setattr(_mod, "EXTENSIONS_DIR", extension_root)
+        monkeypatch.setattr(_mod, "USER_EXTENSIONS_DIR", tmp_path / "data" / "user-extensions")
+        if sys.platform == "win32":
+            monkeypatch.delitem(sys.modules, "fcntl", raising=False)
         monkeypatch.setattr(
             _mod, "resolve_compose_flags", lambda: ["-f", "base.yml"],
         )
@@ -6932,6 +7519,13 @@ class TestInstallStatePollBehavior:
         user_root = tmp_path / "user-extensions"
         builtin_root = tmp_path / "builtin-empty"
         install_dir.mkdir()
+        scripts = install_dir / "scripts"
+        scripts.mkdir()
+        shutil.copyfile(_agent_path.parents[1] / "scripts" / "extension-selection.py",
+                        scripts / "extension-selection.py")
+        (install_dir / "data").mkdir()
+        if sys.platform == "win32":
+            monkeypatch.delitem(sys.modules, "fcntl", raising=False)
         data_dir.mkdir()
         user_root.mkdir()
         builtin_root.mkdir()
@@ -6947,6 +7541,12 @@ class TestInstallStatePollBehavior:
             startup_timeout=startup_timeout,
             container_name=container_name,
         )
+        # The start path now requires a selected regular marker while the
+        # host graph lock is held. Keep this suite focused on state polling.
+        (ext_dir / "compose.yaml").write_text(
+            f"services:\n  {sid}:\n    image: example:latest\n", encoding="utf-8",
+        )
+        monkeypatch.setattr(_mod, "_precreate_data_dirs", lambda _sid: None)
 
         monkeypatch.setattr(_mod, "INSTALL_DIR", install_dir)
         monkeypatch.setattr(_mod, "DATA_DIR", data_dir)

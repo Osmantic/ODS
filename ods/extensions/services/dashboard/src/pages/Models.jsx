@@ -1544,6 +1544,10 @@ function getRunDisabledReason({
     if (!shorterContextFits) {
       const required = Number(model.estimatedRequired || model.vramRequired || 0)
       const total = Number(gpu?.vramTotal || 0)
+      const budget = Number(gpu?.modelMemoryBudgetGb ?? total)
+      if (required > 0 && budget > 0 && Math.abs(budget - total) > 0.1) {
+        return `Requires ${formatNumber(required)} GB; ODS has a ${formatNumber(budget)} GB model memory budget (${formatNumber(total)} GB GPU memory detected).`
+      }
       if (required > 0 && total > 0) {
         return `Requires ${formatNumber(required)} GB VRAM; the detected GPU has ${formatNumber(total)} GB total.`
       }
@@ -2064,7 +2068,7 @@ function getContextOptions(model, gpu) {
   values.add(recommended)
   values.add(maximum)
   const baseEstimate = Number(model?.estimatedRequired || model?.vramRequired || 0)
-  const capacity = Number(gpu?.vramTotal || 0)
+  const capacity = Number(gpu?.modelMemoryBudgetGb ?? gpu?.vramTotal ?? 0)
 
   return [...values]
     .sort((left, right) => left - right)

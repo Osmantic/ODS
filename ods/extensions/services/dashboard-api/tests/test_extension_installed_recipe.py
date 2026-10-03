@@ -37,6 +37,22 @@ def installed_recipe(tmp_path, monkeypatch):
     monkeypatch.setattr(extensions, 'EXTENSIONS_DIR', ODS / 'extensions/services')
     monkeypatch.setattr(extensions, 'DATA_DIR', str(tmp_path / 'data'))
     monkeypatch.setattr(extensions, '_extensions_lock_path', lambda: tmp_path / '.lock')
+    def select_locally(action, service_ids, expected_sha256=None):
+        if action == 'enable':
+            assert set(expected_sha256) == set(service_ids)
+        for service_id in service_ids:
+            directory = user / service_id
+            if action == 'disable':
+                assert extensions._call_agent('stop', service_id)
+            source = directory / ('compose.yaml.disabled' if action == 'enable' else 'compose.yaml')
+            target = directory / ('compose.yaml' if action == 'enable' else 'compose.yaml.disabled')
+            if source.exists():
+                source.rename(target)
+            else:
+                assert action == 'enable' and target.exists()
+        return {'action': 'enabled' if action == 'enable' else 'disabled',
+                'service_ids': service_ids}
+    monkeypatch.setattr(extensions, '_select_extensions_on_host', select_locally)
     receipts = asyncio.run(inspect_source_builds(candidate, Mock(side_effect=AssertionError('no fetch'))))
     publish_package(library, candidate, evidence(candidate), {**upstream(candidate), 'sourceFiles': receipts})
     with extensions._extensions_lock():

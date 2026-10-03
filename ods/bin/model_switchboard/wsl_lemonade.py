@@ -441,8 +441,9 @@ def start(install_dir: Path, env: dict, expected_plan_digest: str) -> dict:
     return _mutate(install_dir, env, "start", expected_plan_digest)
 
 
-def disable_startup(install_dir: Path, env: dict, *, validate_only: bool = False) -> dict:
-    """Retire only this installation's Windows login task, never its distro."""
+def disable_startup(install_dir: Path, env: dict, *, validate_only: bool = False,
+                    retire_relay: bool = False) -> dict:
+    """Retire bound Windows login startup and, for uninstall, its owned relay."""
     state_root = env.get('ODS_WSL_STATE_ROOT')
     if 'ODS_WSL_STATE_ROOT' in env:
         if not _text(state_root) or any(character in state_root for character in '\"*?<>|'):
@@ -470,8 +471,12 @@ def disable_startup(install_dir: Path, env: dict, *, validate_only: bool = False
         command.extend(['-StateRoot', state_root])
     if validate_only:
         command.append('-ValidateOnly')
+    if retire_relay:
+        command.append('-RetireRelay')
     # Mutations are issued once, including an uncertain/expired interop call.
-    result = _run(command, timeout=45, environ=_environment(socket, context.windows))
+    # Relay retirement adds bounded scheduler/child shutdown after command.lock.
+    result = _run(command, timeout=90 if retire_relay and not validate_only else 45,
+                  environ=_environment(socket, context.windows))
     if _socket_identity(socket) != identity:
         raise BridgeError('The WSL session changed during startup retirement; inspect before retrying')
     if result.returncode:
@@ -488,6 +493,10 @@ def disable_startup(install_dir: Path, env: dict, *, validate_only: bool = False
             or owner['distro'].casefold() != context.distro.casefold()
             or owner.get('installRoot') != context.install_dir):
         raise BridgeError('Windows startup controller did not prove this installation was retired')
+    if retire_relay:
+        expected_relay = {'unmanaged': 'unmanaged', 'validated': 'validated', 'disabled': 'stopped'}[value['state']]
+        if value.get('relayRetirement') != expected_relay:
+            raise BridgeError('Windows startup controller did not prove owned relay retirement')
     return value
 
 

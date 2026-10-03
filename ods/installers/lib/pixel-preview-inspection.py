@@ -126,6 +126,8 @@ def validate_image(image, image_id):
         != ["python3", "/source/preview_inspection_capsule.py"]
         or labels.get("org.osmantic.ods.component") != "pixel-preview-inspection"
         or labels.get("org.osmantic.ods.inspection.protocol") != "1"
+        or labels.get("org.osmantic.ods.inspection.fill") != "native-text-number-fill-v2"
+        or labels.get("org.osmantic.ods.inspection.select") != "native-single-select-v1"
         or labels.get("org.osmantic.ods.inspection.playwright") != "1.62.0"
     ):
         raise ValueError("inspection-image-contract-mismatch")
@@ -326,11 +328,17 @@ def build_config(*, source, owner_uid, transport, docker_binary=None, docker_hos
 def protected_parent(path, *, create=False):
     path = Path(path)
     for parent in [*reversed(path.parents), path]:
+        created = False
         if not parent.exists() and create:
             parent.mkdir(mode=0o755)
+            created = True
         info = parent.lstat()
         if not stat.S_ISDIR(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
             raise ValueError("unsafe-inspection-install-directory")
+        if created:
+            # mkdir's mode is filtered by the caller's umask. These protected
+            # install directories carry public code, not private runtime state.
+            parent.chmod(0o755)
 
 
 def protected_file(path):

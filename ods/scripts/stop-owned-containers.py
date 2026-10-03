@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Stop existing ODS containers without evaluating an untrusted Compose recipe.
 
-Used only for recovery after normal Compose validation fails. Ownership comes
+Ownership comes
 from Docker's existing Compose labels, not names supplied by a changed recipe.
 No container is created, no lifecycle hook is run, and no data is deleted.
 """
@@ -28,7 +28,7 @@ def _docker(arguments, timeout=30):
     return result.stdout
 
 
-def stop_owned_containers(install_dir, services=None):
+def stop_owned_containers(install_dir, services=None, preserve_restart_policy=False):
     root = Path(install_dir).resolve(strict=True)
     services = list(services or [])
     if not root.is_dir() or any(not re.fullmatch(r'[a-z0-9][a-z0-9_-]*', name) for name in services):
@@ -68,11 +68,21 @@ def stop_owned_containers(install_dir, services=None):
                 continue
             if not re.fullmatch(r'[a-z0-9][a-z0-9_-]*', service) or (services and service not in services):
                 continue
+            if preserve_restart_policy:
+                host_config = row.get('HostConfig')
+                restart = host_config.get('RestartPolicy') if isinstance(host_config, dict) else None
+                policy = restart.get('Name') if isinstance(restart, dict) else None
+                # Docker keeps a manually stopped unless-stopped container
+                # down across daemon restarts. An always policy can resurrect
+                # a deselected extension, so refuse it before stopping any.
+                if policy not in ('no', 'unless-stopped', 'on-failure'):
+                    raise ValueError(f'Unsupported restart policy for preset stop: {service}')
             owned.append(row['Id'])
     if owned:
-        # A legacy restart: always must not resurrect the rejected runtime when
-        # Docker restarts. A reviewed Compose recreate restores its policy.
-        _docker(['update', '--restart=no', *owned])
+        if not preserve_restart_policy:
+            # Recovery for a rejected recipe must not resurrect after reboot.
+            # A reviewed Compose recreate restores the intended policy.
+            _docker(['update', '--restart=no', *owned])
         # No --time: each container keeps its own stop_grace_period, so a
         # database with a 60 s grace is not killed after 10 s. Docker stops the
         # containers in parallel, so the bound covers the longest grace.
@@ -84,10 +94,15 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--install-dir', required=True)
     parser.add_argument('--service', action='append', default=[])
+    parser.add_argument('--preserve-restart-policy', action='store_true')
     args = parser.parse_args()
     try:
-        stopped = stop_owned_containers(args.install_dir, args.service)
-        print(f'Stopped {len(stopped)} verified ODS containers and disabled their automatic restart. Data and containers are preserved; repair and recreate the recipe before starting again.')
+        stopped = stop_owned_containers(args.install_dir, args.service,
+                                        args.preserve_restart_policy)
+        if args.preserve_restart_policy:
+            print(f'Stopped {len(stopped)} verified ODS containers. Restart policies, data and containers are preserved.')
+        else:
+            print(f'Stopped {len(stopped)} verified ODS containers and disabled their automatic restart. Data and containers are preserved; repair and recreate the recipe before starting again.')
     except (OSError, ValueError, subprocess.SubprocessError) as error:
         print(f'ODS container recovery failed: {error}', file=sys.stderr)
         return 1

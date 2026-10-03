@@ -9,7 +9,8 @@ socket or browser authority.
 
 The plugin sends one JSON object with `schemaVersion: 1`, `action: "inspect"`,
 `siteId`, the full snapshot `sha256`, `viewport: {width, height}`, and `steps`.
-Each step has `action` (`assert-visible`, `assert-hidden`, or `click`) and
+Each step has `action` (`assert-visible`, `assert-hidden`, `assert-text`,
+`select-option`, or `click`) and
 `locator`. A locator is either `{selector: "CSS"}` or
 `{role: "button", name: "Show items", exact: true}`. Semantic roles are
 allowlisted. There are no URLs, executable expressions, shell commands, image
@@ -272,6 +273,38 @@ There is no host-browser fallback.
 
 ## Tests
 
+Native `select-option` adds exactly one `value` string to the step: the exact
+option value, at most 256 Unicode characters / 1024 UTF-8 bytes, with no control
+characters. Empty values are allowed. The locator must uniquely identify a
+visible enabled native single-select containing one enabled matching option.
+Multiple selects, custom comboboxes and controls with over 1000 options are
+unsupported. Disabled fieldsets and option groups remain disabled. Chromium's
+normal selection operation dispatches input/change; isolated-world observations
+bind the native selected value and option state before and after. A successful
+selection alone does not prove dependent application behavior: assert the
+resulting visible text in a subsequent step. Do not redesign the page merely
+to accommodate the inspector.
+
+Selection plans use the scope suffix `Native single-select values were observed
+only for explicit select-option steps.` Existing plans and scope remain
+unchanged. The installer requires the capsule label
+`org.osmantic.ods.inspection.select=native-single-select-v1`; before any selection
+plan the broker checks the configured immutable image for that capability.
+An older capsule returns a bound `unsupported_capability` failure without
+executing the plan. Update the plugin, broker/export helper and capsule together;
+mixed older installations remain unverified, with no host-browser fallback.
+
+Downloads remain canceled. `blockedRequests: ["download"]` is explicitly an
+inspector policy limitation, not proof of a website defect or of handler
+completion. Keep the publication unchanged and report the download unverified;
+do not retry the same blocked operation. No download bytes or destinations are
+accepted by this protocol.
+
+`test_preview_select.py` and `inspection_select.test.mjs` cover exact bounded
+values, selection receipts, unsupported old images, disabled/ambiguous controls,
+normal input/change events, hostile author prototypes and unchanged download
+blocking. The Python suite uses the same opt-in Chromium/Docker settings below.
+
 `node --test tests/test-preview-inspection.mjs` checks plugin contracts,
 Unicode hash compatibility, forged/incomplete receipts, unavailable results,
 page-error bounds and presentation, rendered-color bounds and the fixed
@@ -300,3 +333,46 @@ counts the matchers' style and label reads to keep their work linear. Set
 `ODS_INSPECTION_TEST_IMAGE=sha256:<candidate>` for real isolated-container
 smoke, observed hidden-flex regression, hung-script, and cancellation cleanup.
 These test-only variables never select a production image or grant authority.
+
+## Native text and number input
+
+`fill` takes exactly `action`, `locator`, and `value`: 0–256 printable Unicode
+characters, up to 1024 UTF-8 bytes, within the existing 8192-byte request cap.
+Use only synthetic test data. One visible, enabled, editable native
+`input[type=text]`, `input[type=search]`, `input[type=number]`, or `textarea` is supported. Password,
+file and other input types, contenteditable, disabled/readonly fields and
+credential/payment autocomplete metadata are refused. Known sensitive field
+names are also refused; this is not a claim of universal semantic PII detection.
+The isolated page has no user autofill profile, host files or external network.
+
+The native setter runs in Chromium's isolated world and emits `input` and
+`change`. This does not simulate keyboard events, trusted typing, focus/blur or
+form submission. Follow it with the real page control click and explicit
+postcondition assertions. Do not rewrite an interface to accommodate a test.
+Existing value content is never included in observations; receipts bind the
+requested value and booleans for eligibility/editability/exact value match.
+A fill pass proves only the bounded fill operation, not the whole form.
+
+Numbers use a finite decimal or exponent string with a dot separator, such as
+`100`, `0`, `.5`, or `-1.25e2`. An empty string clears the field and permits
+required-field tests. NaN, infinity (including overflow), commas, whitespace,
+hex and incomplete numeric syntax are refused **before** the setter runs with
+`numeric_value_required`. No coercion or locale conversion silently changes the
+requested value. Exact readback still determines whether the fill passed.
+
+Synthetic values that violate `min`, `max`, `step` or `required` are intentionally
+allowed: they are necessary to test the actual page's validation. Numeric
+observations add an exact `numeric` object with boolean `syntaxValid`,
+`valueMissing`, `rangeUnderflow`, `rangeOverflow`, `stepMismatch` and `badInput`.
+These flags neither expose the old value nor claim the form is valid. Use the
+page's actual button and assert its visible calculated result or error. CSS
+locators work for number fields; no additional accessible roles are introduced.
+
+The immutable capsule must advertise
+`org.osmantic.ods.inspection.fill=native-text-number-fill-v2`. The broker checks this
+before snapshot reads or execution; mixed old images fail closed with
+`unsupported_capability`. Deploy protocol, broker, plugin and rebuilt capsule
+together. No network, navigation, file or download permissions are added.
+`test_preview_inspection_fill.py` exercises real Chromium form handlers,
+selection after filling, typed refusals, old-image rejection and blocked
+network effects; `inspection_fill.test.mjs` rejects forged fill receipts.

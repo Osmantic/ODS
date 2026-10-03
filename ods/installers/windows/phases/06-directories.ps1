@@ -106,6 +106,8 @@ $_expectedRegularFiles = @(
     "extensions\services\ods-proxy\Caddyfile",
     "extensions\services\whisper\docker-entrypoint.sh",
     "extensions\services\perplexica\docker-entrypoint.sh",
+    "extensions\services\perplexica\patch-client-citations.js",
+    "extensions\services\perplexica\citation-renderer.js",
     "data\persona\SOUL.md"
 )
 foreach ($_expectedFileName in $_expectedRegularFiles) {

@@ -180,11 +180,13 @@ export function createManagedRuntimeRegistry({environment = process.env,
         }
         function status() {
           const base = accessRuntime.status(), command = commands.status();
-          if (!valid() || command.unknown || command.closed) return {...base, available: false, phase: 'unavailable', revision: null};
+          const activity = {...base.activity, selected: selected.size, selecting: selecting.size,
+            commands: command.active, commandCleanupUnknown: command.unknown};
+          if (!valid() || command.unknown || command.closed) return {...base, activity, available: false, phase: 'unavailable', revision: null};
           // Preserve the public access status shape. Count extra reservations
           // conservatively; never expose the deployment, route or credentials.
           const active = Math.max(base.active, command.active, selected.size + selecting.size);
-          return {...base, active, phase: active && base.phase === 'idle' ? 'busy' : base.phase};
+          return {...base, activity, active, phase: active && base.phase === 'idle' ? 'busy' : base.phase};
         }
         function heldControlSnapshot() {
           const base = accessRuntime.status(), command = commands.status();
@@ -224,6 +226,22 @@ export function createManagedRuntimeRegistry({environment = process.env,
           try { return await accessRuntime.acquire(token, revision); }
           catch { throw transitionError('managed-transition-access-owner-refused'); }
         }
+        const maintenanceAuthority = {};
+        async function acquireMaintenance(token, revision) {
+          // Maintenance may not reuse an invalidated provider's management
+          // fallback. That path is reserved for real transitions and reproof.
+          assertTransition();
+          return accessRuntime.acquireMaintenance(token, revision, maintenanceAuthority);
+        }
+        function releaseMaintenance(token) {
+          try { assertTransition(); }
+          catch {
+            // Discard captured proof without opening the held admission gate.
+            accessRuntime.acquire(token, accessRuntime.status().revision);
+            throw error();
+          }
+          return accessRuntime.releaseMaintenance(token, maintenanceAuthority);
+        }
         async function qualifyTransition(token, revision) {
           // A managed config hot reload deliberately poisons the old provider
           // owner, but an already-held model transaction must still be able to
@@ -238,7 +256,7 @@ export function createManagedRuntimeRegistry({environment = process.env,
         }
         current = {accessRuntime, deploymentText: raw, binding: canonical(deployment.binding),
           routing, commands, valid, shutdown, admit, finish, select, assertTransition, status,
-          readControlStatus, acquireTransition, qualifyTransition,
+          readControlStatus, acquireTransition, acquireMaintenance, releaseMaintenance, qualifyTransition,
           classifyTransitionError: failure => transitionFailures.get(failure) ?? null,
           readRegistration() {
             assertTransition();

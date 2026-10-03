@@ -1,7 +1,10 @@
 """Tests for features.py — calculate_feature_status with Apple Silicon fallback."""
 
 import os
+from pathlib import Path
 from unittest.mock import patch, AsyncMock
+
+import yaml
 
 from routers.features import calculate_feature_status
 
@@ -25,6 +28,33 @@ class TestCalculateFeatureStatusDefaults:
         assert result["category"] == "other"
         assert result["setupTime"] == "Unknown"
         assert result["priority"] == 99
+
+
+def test_optional_voice_feature_requires_its_webui_but_runs_on_cpu():
+    from models import ServiceStatus
+
+    ods_root = Path(__file__).resolve().parents[4]
+    manifest = yaml.safe_load(
+        (ods_root / "extensions/services/whisper/manifest.yaml").read_text(encoding="utf-8")
+    )
+    voice = next(feature for feature in manifest["features"] if feature["id"] == "voice")
+    assert voice["requirements"]["vram_gb"] == 0
+
+    def healthy(service_id):
+        return ServiceStatus(
+            id=service_id, name=service_id, port=8080, external_port=8080,
+            status="healthy",
+        )
+
+    with patch("routers.features.GPU_BACKEND", "cpu"):
+        without_webui = calculate_feature_status(voice, [healthy("whisper"), healthy("tts")], None)
+        with_webui = calculate_feature_status(
+            voice, [healthy("whisper"), healthy("tts"), healthy("open-webui")], None
+        )
+    assert without_webui["status"] == "services_needed"
+    assert without_webui["requirements"]["servicesMissing"] == ["open-webui"]
+    assert with_webui["status"] == "enabled"
+    assert with_webui["requirements"]["vramOk"] is True
 
 
 class TestCalculateFeatureStatusAppleFallback:

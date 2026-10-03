@@ -21,10 +21,13 @@ from preview_inspection_protocol import (
     MAX_BUNDLE,
     MAX_REQUEST,
     MAX_RESULT,
-    SCOPE,
+    SELECT_CAPABILITY,
+    FILL_CAPABILITY,
+    DOWNLOAD_CAPABILITY,
     canonical,
     exact,
     failure,
+    inspection_scope,
     plan_hash,
     read_only_wsl_docker,
     strict_json,
@@ -251,6 +254,8 @@ def capsule_argv(config, name):
         "--shm-size=128m",
         "--tmpfs",
         "/tmp:rw,nosuid,nodev,size=256m,mode=1777",
+        "--tmpfs",
+        "/downloads:rw,noexec,nosuid,nodev,size=4m,mode=0700,uid=65534,gid=65534",
         "--entrypoint",
         "python3",
         config["imageId"],
@@ -262,6 +267,27 @@ def inspect_request(request, config, cancelled=None):
     validate_request(request)
     if os.getuid() not in (0, config["ownerUid"]):
         raise Invalid("unauthorized")
+    if request['steps'][-1]['action'] == 'download':
+        capability = bounded_process(
+            [*docker_prefix(config), 'image', 'inspect', '--format',
+             '{{index .Config.Labels "org.osmantic.ods.inspection.download"}}', config['imageId']],
+            b'', timeout=5, limit=128, cancelled=cancelled)
+        if capability.decode().strip() != DOWNLOAD_CAPABILITY:
+            return failure('unsupported_capability', request)
+    if any(step['action'] == 'fill' for step in request['steps']):
+        capability = bounded_process(
+            [*docker_prefix(config), 'image', 'inspect', '--format',
+             '{{index .Config.Labels "org.osmantic.ods.inspection.fill"}}', config['imageId']],
+            b'', timeout=5, limit=128, cancelled=cancelled)
+        if capability.decode().strip() != FILL_CAPABILITY:
+            return failure('unsupported_capability', request)
+    if any(step['action'] == 'select-option' for step in request['steps']):
+        capability = bounded_process(
+            [*docker_prefix(config), 'image', 'inspect', '--format',
+             '{{index .Config.Labels "org.osmantic.ods.inspection.select"}}', config['imageId']],
+            b'', timeout=5, limit=128, cancelled=cancelled)
+        if capability.decode().strip() != SELECT_CAPABILITY:
+            return failure('unsupported_capability', request)
     if config["transport"] == "local":
         bundle = snapshot_bundle(config["snapshotRoot"], request, config["ownerUid"])
     else:
@@ -302,7 +328,7 @@ def inspect_request(request, config, cancelled=None):
             or result.get("sha256") != request["sha256"]
             or result.get("planSha256") != plan_hash(request)
             or result.get("status") not in ("passed", "failed")
-            or result.get("scope") != SCOPE
+            or result.get("scope") != inspection_scope(request)
         ):
             raise Invalid("invalid capsule receipt")
         return result

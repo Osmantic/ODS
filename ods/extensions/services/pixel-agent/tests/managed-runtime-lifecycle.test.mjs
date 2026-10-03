@@ -147,6 +147,23 @@ function changeBinding(f) {
   f.replaceConfig(changed);
 }
 
+test('maintenance uses a distinct access API and cannot restore after owner invalidation',async()=>{
+  const f=fixture(), calls=[];
+  f.access.acquireMaintenance=()=>{calls.push('maintenance.acquire');f.hold();return f.access.status();};
+  f.access.releaseMaintenance=()=>{calls.push('maintenance.release');return f.access.status();};
+  const original=f.access.acquire;
+  f.access.acquire=(...args)=>{calls.push('transition.invalidate');return original(...args);};
+  const owner=f.register();
+  await owner.acquireMaintenance('a'.repeat(64),'synthetic-revision');
+  owner.releaseMaintenance('a'.repeat(64));
+  assert.deepEqual(calls,['maintenance.acquire','maintenance.release']);
+  changeBinding(f);
+  assert.throws(()=>owner.releaseMaintenance('a'.repeat(64)));
+  assert.equal(calls.at(-1),'transition.invalidate');
+  await assert.rejects(owner.acquireMaintenance('a'.repeat(64),'synthetic-revision'));
+  assert.equal(f.access.status().phase,'held');
+});
+
 test('existing held management channel survives drained config invalidation, not provider admission', async () => {
   const f = fixture(), owner = f.register(); f.hold(); changeBinding(f);
   assert.equal(owner.status().available, false);
@@ -379,4 +396,18 @@ test('production bootstrap and production command adapter compose through regist
   assert.equal(f.calls.filter(x => x === 'lease.acquire').length, 1);
   assert.equal(f.calls.filter(x => x === 'lease.release').length, 1);
   assert.equal(f.runs.size, 0); assert.doesNotThrow(owner.assertTransition); await owner.shutdown();
+});
+
+test('activity diagnostics distinguish pending selection without owner or provider data', async () => {
+  const pending=deferred(), f=fixture({select:()=>pending.promise}), owner=f.register(), ctx=context();
+  const work=owner.select({},ctx);
+  const snapshot=owner.status();
+  assert.deepEqual(snapshot.activity,{selected:1,selecting:1,commands:0,commandCleanupUnknown:false});
+  assert.equal(snapshot.active,2);assert.equal(snapshot.phase,'busy');
+  assert.equal(JSON.stringify(snapshot).includes(ctx.sessionKey),false);
+  assert.equal(JSON.stringify(snapshot).includes(ctx.runId),false);
+  pending.resolve({providerOverride:'ods-policy',modelOverride:'synthetic-route'});await work;
+  await owner.finish({},ctx);
+  assert.deepEqual(owner.status().activity,{selected:0,selecting:0,commands:0,commandCleanupUnknown:false});
+  await owner.shutdown();
 });

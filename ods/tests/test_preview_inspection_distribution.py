@@ -200,6 +200,8 @@ def image():
                 "Labels": {
                     "org.osmantic.ods.component": "pixel-preview-inspection",
                     "org.osmantic.ods.inspection.protocol": "1",
+                    "org.osmantic.ods.inspection.fill": "native-text-number-fill-v2",
+                    "org.osmantic.ods.inspection.select": "native-single-select-v1",
                     "org.osmantic.ods.inspection.playwright": "1.62.0",
                 },
             },
@@ -228,7 +230,7 @@ def test_config_rejects_ambient_authority(field, value):
 
 
 @pytest.mark.parametrize(
-    "fault", ["id", "os", "architecture", "user", "entrypoint", "label"]
+    "fault", ["id", "os", "architecture", "user", "entrypoint", "label", "select", "fill"]
 )
 def test_image_contract_is_exact(monkeypatch, fault):
     monkeypatch.setattr(module.platform, "machine", lambda: "x86_64")
@@ -241,6 +243,10 @@ def test_image_contract_is_exact(monkeypatch, fault):
         value[0]["Config"]["User"] = "root"
     elif fault == "entrypoint":
         value[0]["Config"]["Entrypoint"] = ["/bin/sh"]
+    elif fault == "fill":
+        del value[0]["Config"]["Labels"]["org.osmantic.ods.inspection.fill"]
+    elif fault == "select":
+        del value[0]['Config']['Labels']['org.osmantic.ods.inspection.select']
     else:
         value[0]["Config"]["Labels"]["org.osmantic.ods.inspection.protocol"] = "2"
     with pytest.raises(ValueError):

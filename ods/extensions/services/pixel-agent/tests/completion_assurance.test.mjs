@@ -3,6 +3,42 @@ import assert from 'node:assert/strict';
 import {createCompletionAssurance, promisesExecution, researchRequested, executionContext} from '../plugin/completion-assurance.mjs';
 import {createToolLoopGuard} from '../plugin/tool-loop-guard.mjs';
 
+test('file readback and download delivery are not requests to read web sources', () => {
+  const final = 'Pronto. Criei exatamente os dois arquivos, li ambos de volta e publiquei para download com os nomes exatos.\n\n**despesas.csv** (lido de volta):\n```\ncategoria,valor\nHospedagem,120\nDomínio,40\n```\n\n**resumo.md** (lido de volta):\n```\n# Resumo de despesas\n\nTotal: R$ 160,00\n\n## Gastos\n\n- Hospedagem: R$ 120,00\n- Domínio: R$ 40,00\n```\n\nOs dois downloads verificados estão anexados acima. Nenhuma dependência foi instalada, nenhum site foi criado e nenhum preview foi publicado.';
+  for (const prompt of [
+    'Crie em Playground/ods-qa-delivery-final-20260930-1449 exatamente dois arquivos: despesas.csv com cabeçalho categoria,valor e linhas Hospedagem,120 e Domínio,40; e resumo.md com o total de R$ 160,00 e a lista dos dois gastos. Leia os dois arquivos de volta e entregue links para baixá-los com esses nomes exatos. Não instale dependências, não crie site e não publique preview.',
+    'Create two files, read the files back, and provide download links.',
+    'Leia os arquivos criados e entregue URLs para download.',
+    'Read the files back and return links to download them.',
+    'Ler os arquivos antes de fornecer links para download.',
+  ]) {
+    const guard = createCompletionAssurance(); guard.begin(prompt);
+    guard.observe('write', {result:{content:[{type:'text',text:'Files written'}]}});
+    guard.observe('read', {result:{content:[{type:'text',text:'categoria,valor\nHospedagem,120\nDomínio,40'}]}});
+    assert.equal(guard.finalize(final), undefined, prompt);
+    assert.equal(guard.terminal, undefined);
+  }
+});
+
+test('mixed file delivery and real source reads retain research and citation gates', () => {
+  for (const prompt of [
+    'Leia os arquivos e depois leia as fontes e entregue links para baixar os arquivos.',
+    'Read the files, then open the source pages and provide download links.',
+    'Read the files and sources before producing the downloads.',
+    'Leia os arquivos e as fontes antes de entregar links para download.',
+    'Open the links and save the files.',
+    'Leia as páginas e crie os arquivos.',
+  ]) {
+    const guard = createCompletionAssurance(); guard.begin(prompt);
+    guard.observe('read', {result:{content:[{type:'text',text:'Local file content'}]}});
+    assert.equal(guard.finalize('Done.')?.action, 'revise', prompt);
+    guard.observe('web_search', {result:{details:{results:[{url:'https://example.org/source'}]}}});
+    assert.equal(guard.finalize('Evidence: https://example.org/source')?.action, 'revise', prompt);
+    guard.observe('web_fetch', {result:{details:{status:200,url:'https://example.org/source',text:'Evidence'}}});
+    assert.equal(guard.finalize('Evidence: https://example.org/source'), undefined, prompt);
+  }
+});
+
 test('screenshot research request requires evidence, not an answer from memory', () => {
   const guard = createCompletionAssurance();
   guard.begin('queria saber notícias de hoje sobre o stf dia 15/09/2026');
@@ -129,7 +165,8 @@ test('sources must come from structured tool evidence, not invented prose links'
   ]})}]}});
   for (let i=0;i<2;i++) assert.equal(guard.finalize('Resumo sem fontes.')?.action,'revise');
   assert.equal(guard.finalize('Resumo sem fontes.')?.action,'finalize');
-  assert.match(guard.terminal,/https:\/\/example.org\/news/);
+  assert.doesNotMatch(guard.terminal,/https?:/);
+  assert.equal(guard.terminalStatus,'failed');
   assert.doesNotMatch(guard.terminal,/javascript|localhost|password/);
   assert.equal(guard.finalize('Resumo: [fonte](https://example.org/news)'),undefined);
   assert.equal(guard.terminal,undefined);
@@ -334,6 +371,80 @@ test('citation fallback after an actual read cannot append other unread search l
   guard.observe('web_search',{result:{details:{results:[{url:'https://example.org/lead'}]}}});
   guard.observe('web_fetch',pageReceipt('https://example.org/read'));
   for (let i=0;i<3;i++) guard.finalize('Finding without a citation.');
-  assert.match(guard.terminal,/https:\/\/example.org\/read/);
+  assert.doesNotMatch(guard.terminal,/https?:/);
+  assert.match(guard.terminal,/Attribution remains incomplete/);
   assert.doesNotMatch(guard.terminal,/https:\/\/example.org\/lead/);
+});
+
+// A live fleet reply fetched this exact page, then bolded its URL. The closing
+// Markdown stars became part of the citation key and caused a false rejection.
+test('successful page receipts survive directly emphasized citation URLs', () => {
+  const url = 'https://docs.python.org/3/library/pathlib.html';
+  for (const wrapper of ['**', '*', '__', '_', '***', '___', '~~']) {
+    for (const suffix of ['', '.', ')']) {
+      const guard = createCompletionAssurance();
+      guard.begin('Search official sources and read them before citing the documentation.');
+      guard.observe('web_fetch', {result:{details:{status:200, url, finalUrl:url,
+        text:'Pathlib provides classes representing filesystem paths.'}}});
+      const answer = `The official documentation is ${wrapper}${url}${wrapper}${suffix} and provides filesystem path classes.`;
+      assert.deepEqual(guard.unverifiedCitations(answer), [], answer);
+      assert.equal(guard.finalize(answer), undefined, answer);
+      assert.equal(guard.terminal, undefined, answer);
+    }
+  }
+});
+
+test('citation formatting cannot grant custody of literal or unread URLs', () => {
+  const url = 'https://docs.python.org/3/library/pathlib.html';
+  const answers = [
+    `${url}*`, `${url}**`, `${url}_`, `${url}__`, `${url}~~`,
+    `\\**${url}**`, `\\_${url}_`,
+    '`**' + url + '**`', '``**' + url + '**``',
+    '```\n**' + url + '**\n```',
+    '````\n```\n**' + url + '**\n````',
+    '~~~text\n**' + url + '**\n~~~',
+    '- ~~~\n  **' + url + '**\n  ~~~',
+    '1. ~~~\n   **' + url + '**\n   ~~~',
+    '> - ~~~\n>   **' + url + '**\n>   ~~~',
+    '- > ~~~\n  > **' + url + '**\n  > ~~~',
+    '~~~text\n- ~~~\n**' + url + '**\n~~~',
+    '~~~text\n1. ~~~\n**' + url + '**\n~~~',
+    '~~~text\n> ~~~\n**' + url + '**\n~~~',
+    '> ```\n> **' + url + '**\n> ```',
+    '    **' + url + '**',
+    '-     **' + url + '**', '1.     **' + url + '**',
+    `**${url}**/unread`, `**${url}?variant=unread**`,
+    `**https://example.com/unread**`,
+  ];
+  for (const answer of answers) {
+    const guard = createCompletionAssurance();
+    guard.begin('Read the official sources before citing them.');
+    guard.observe('web_fetch', {result:{details:{status:200, url, text:'Actual page evidence.'}}});
+    assert.ok(guard.unverifiedCitations(answer).length, answer);
+    assert.equal(guard.finalize(answer)?.action, 'revise', answer);
+  }
+});
+
+test('formatting preserves literal URL punctuation and exact query identity', () => {
+  for (const url of ['https://example.org/a*b', 'https://example.org/a_b',
+    'https://example.org/a*', 'https://example.org/a_',
+    'https://example.org/Foo_(bar)', 'https://example.org/page?x=1&y=2']) {
+    const guard = createCompletionAssurance();
+    guard.begin('Read the official sources before citing them.');
+    guard.observe('web_fetch', {result:{details:{status:200, url, text:'Actual page evidence.'}}});
+    for (const answer of [`Source: ${url}`, `[Source](${url})`, '`' + url + '`']) {
+      assert.deepEqual(guard.unverifiedCitations(answer), [], answer);
+    }
+  }
+});
+
+test('closed code spans and fences do not hide a later emphasized citation', () => {
+  const url = 'https://example.org/read';
+  const guard = createCompletionAssurance();
+  guard.begin('Read sources before citing them.');
+  guard.observe('web_fetch', {result:{details:{status:200, url, text:'Actual page evidence.'}}});
+  for (const prefix of ['`code` ', '``a ` b`` ', '```\ncode\n```\n', '~~~\ncode\n~~~\n',
+    '- ~~~\n  code\n  ~~~\n', '1. ~~~\n   code\n   ~~~\n', '> ~~~\n> code\n> ~~~\n']) {
+    assert.deepEqual(guard.unverifiedCitations(prefix + `**${url}**`), [], prefix);
+  }
 });

@@ -39,7 +39,10 @@ fi
 
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf "$tmp_dir"' EXIT
-mkdir -p "$tmp_dir/scripts"
+# A live owner marker would defer topology writes until Phase06, which this
+# fresh-install Phase03 fixture does not execute.
+export HOME="$tmp_dir/home"
+mkdir -p "$tmp_dir/scripts" "$HOME"
 cp "$ASSIGN_GPUS_SCRIPT" "$tmp_dir/scripts/assign_gpus.py"
 
 cat >"$tmp_dir/harness.sh" <<'HARNESS'
@@ -56,6 +59,7 @@ ENABLE_WORKFLOWS=false
 ENABLE_RAG=false
 ENABLE_RECOMMENDED=false
 ENABLE_HERMES=false
+ENABLE_PIXEL=false
 ENABLE_OPENCLAW=false
 ENABLE_COMFYUI=false
 ENABLE_APE=false
@@ -112,6 +116,7 @@ error() {
 }
 
 # shellcheck source=/dev/null
+source "$(dirname "$FEATURES_PHASE")/../lib/installed-feature-state.sh"
 source "$FEATURES_PHASE"
 
 jq -e '.gpu_assignment.services.llama_server.gpus | length > 0' \

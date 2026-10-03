@@ -34,6 +34,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 # --- Local modules ---
+from pixel_edge_read_client import edge_read_client_lifespan
 from env_values import parse_env_value, quote_env_value
 from config import (
     SERVICES, DATA_DIR, INSTALL_DIR, SIDEBAR_ICONS, MANIFEST_ERRORS, ALWAYS_ON_SERVICES,
@@ -90,6 +91,7 @@ from routers import (
     pixel_scopes,
     pixel_advice_runtime,
     pixel_sharing,
+    opencode_app,
 )
 from settings import (
     _ENV_ASSIGNMENT_RE, _ENV_COMMENTED_ASSIGNMENT_RE, _SETTINGS_APPLY_ALLOWED_SERVICES, _parse_env_text, _read_env_map_from_path,
@@ -1067,38 +1069,39 @@ def _prepare_env_save(payload: dict[str, Any]) -> tuple[str, list[dict[str, Any]
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
-    # Reuse the internal connection across status polls instead of starting a
-    # fresh DNS/TCP lookup on every sample while the host is busy.
-    app.state.cloud_telemetry_client = httpx.AsyncClient(
-        timeout=3, follow_redirects=False, trust_env=False,
-        limits=httpx.Limits(max_connections=2, max_keepalive_connections=1),
-    )
-    background_tasks = [
-        asyncio.create_task(collect_metrics()),
-        asyncio.create_task(_poll_service_health()),
-        asyncio.create_task(gpu_router.poll_gpu_history()),
-    ]
-    try:
-        yield
-    finally:
-        await app.state.cloud_telemetry_client.aclose()
-        for task in background_tasks:
-            task.cancel()
-        await asyncio.gather(*background_tasks, return_exceptions=True)
-        # Close any open Hermes WebSockets in the ODS Talk connection pool
-        # so a graceful uvicorn shutdown doesn't leak FDs into stale state.
+    async with edge_read_client_lifespan():
+        # Reuse the internal connection across status polls instead of starting a
+        # fresh DNS/TCP lookup on every sample while the host is busy.
+        app.state.cloud_telemetry_client = httpx.AsyncClient(
+            timeout=3, follow_redirects=False, trust_env=False,
+            limits=httpx.Limits(max_connections=2, max_keepalive_connections=1),
+        )
+        background_tasks = [
+            asyncio.create_task(collect_metrics()),
+            asyncio.create_task(_poll_service_health()),
+            asyncio.create_task(gpu_router.poll_gpu_history()),
+        ]
         try:
-            import hermes_bridge
-            await hermes_bridge.shutdown_pool()
-        except Exception:
-            logger.debug("hermes_bridge.shutdown_pool raised at app shutdown", exc_info=True)
-        try:
-            await shutdown_agent_clients()
+            yield
         finally:
+            await app.state.cloud_telemetry_client.aclose()
+            for task in background_tasks:
+                task.cancel()
+            await asyncio.gather(*background_tasks, return_exceptions=True)
+            # Close any open Hermes WebSockets in the ODS Talk connection pool
+            # so a graceful uvicorn shutdown doesn't leak FDs into stale state.
             try:
-                await shutdown_service_health_client()
+                import hermes_bridge
+                await hermes_bridge.shutdown_pool()
+            except Exception:
+                logger.debug("hermes_bridge.shutdown_pool raised at app shutdown", exc_info=True)
+            try:
+                await shutdown_agent_clients()
             finally:
-                await shutdown_llm_client()
+                try:
+                    await shutdown_service_health_client()
+                finally:
+                    await shutdown_llm_client()
 
 
 app = FastAPI(
@@ -1227,6 +1230,8 @@ app.include_router(talk.router)
 app.include_router(tailscale.router)
 app.include_router(usage.router)
 app.include_router(node.router)
+from routers import pixel_approval_terminal
+app.include_router(pixel_approval_terminal.router)
 app.include_router(pixel.router)
 app.include_router(pixel_teams.router)
 app.include_router(pixel_providers.router)
@@ -1237,6 +1242,7 @@ app.include_router(pixel_handoff.router)
 app.include_router(pixel_scopes.router)
 app.include_router(pixel_advice_runtime.router)
 app.include_router(pixel_sharing.router)
+app.include_router(opencode_app.router)
 
 
 # ================================================================

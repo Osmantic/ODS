@@ -1,5 +1,6 @@
 /* eslint-disable no-control-regex -- Reject control bytes in untrusted public input. */
 import {useCallback,useEffect,useRef,useState} from 'react'
+import {messageImageRefs} from './pixelImages'
 
 export const CONTEXT_REQUEST_ID=/^[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i
 export const compactCommand=text=>typeof text==='string' && /^\/(?:compact|compactar)\s*$/i.test(text.trim())
@@ -12,14 +13,18 @@ export function historySnapshot(messages) {
     if(!message || !['user','assistant'].includes(message.role) || typeof message.content!=='string')throw new Error('Conversation history could not be prepared. No request was sent.')
     bytes+=encoder.encode(message.content).byteLength
     if(bytes>4*1024*1024)throw new Error('This conversation exceeds the 4 MB history limit. Export it before starting a new chat.')
-    return {role:message.role,content:message.content}
+    const images=messageImageRefs(message)
+    if(images.images)bytes+=encoder.encode(JSON.stringify(images.images)).byteLength
+    if(bytes>4*1024*1024)throw new Error('This conversation exceeds the 4 MB history limit. Export it before starting a new chat.')
+    return {role:message.role,content:message.content,...images}
   })
-  return {schemaVersion:1,messages:history}
+  return {schemaVersion:history.some(message=>message.images)?2:1,messages:history}
 }
 
 const token=(value,maximum=100_000_000)=>Number.isSafeInteger(value) && value>=0 && value<=maximum
 const text=(value,max)=>typeof value==='string' && value.length>0 && value.length<=max && !/[\u0000-\u001f\u007f]/.test(value)
 const routeFingerprint=value=>typeof value==='string' && value.length===64 && /^[a-f0-9]{64}$/.test(value)
+const contextRetryDelays=[2000,5000,10000]
 export function parseConversationContext(value) {
   if(!value || value.schemaVersion!==1 || !['ready','missing','busy','unavailable'].includes(value.status))return null
   const {context,compaction,history,model}=value
@@ -35,6 +40,8 @@ export function parseConversationContext(value) {
     || context.measuredAt!==undefined && (!text(context.measuredAt,40) || !Number.isFinite(Date.parse(context.measuredAt)))))return null
   if(model!==undefined && model!==null && (!text(model.id,512) || !text(model.provider,128) || !token(model.contextWindow,10_000_000) || model.contextWindow<1))return null
   if(model?.routeFingerprint!==undefined && !routeFingerprint(model.routeFingerprint))return null
+  if(model?.imageRouteFingerprint!==undefined && !routeFingerprint(model.imageRouteFingerprint))return null
+  if(model?.imageInput!==undefined && !['supported','unsupported','unknown'].includes(model.imageInput))return null
   return value
 }
 
@@ -72,13 +79,15 @@ export function usePortalContext({chatId,runtimeKey:legacyRuntimeKey,runtimeIden
     if(!sameChat)acceptedModel.current=null
   }
   const runtimeKey=typed?`identity-${runtime.current.epoch}`:legacyRuntimeKey
-  const [view,setView]=useState({chatId,runtimeKey,context:null,observedCapacity:null,phase:initialRequestId?'checking':'idle',notice:'',historyUnknown:false,resolving:false,recoveryNotice:''})
+  const [view,setView]=useState({chatId,runtimeKey,context:null,observedCapacity:null,phase:initialRequestId?'checking':'idle',notice:'',historyUnknown:false,resolving:false,recoveryNotice:'',readUnavailable:false})
   const current=useRef({}),pending=useRef(initialRequestId || null),requests=useRef(new Set()),query=useRef(null),mutation=useRef(false)
   const refreshQueued=useRef(false)
   const generation=useRef(0),lastQuery=useRef(0),priorRuntime=useRef(runtimeKey)
   const priorChat=useRef(chatId),lastMeasurement=useRef(null),invalidatedMeasurement=useRef(null)
-  const lastManual=useRef(initialRequestId || null)
-  current.current={chatId,runtimeKey,runtimeIdentity:typed?runtime.current.identity:null,capacity,blocked,onPendingChange,historyUnknown:view.chatId===chatId && view.runtimeKey===runtimeKey && view.historyUnknown}
+  const lastManual=useRef(initialRequestId || null),observedCompaction=useRef(null)
+  const contextRetries=useRef(0),priorAvailability=useRef({chatId,runtimeKey,blocked})
+  current.current={chatId,runtimeKey,runtimeIdentity:typed?runtime.current.identity:null,capacity,blocked,onPendingChange,historyUnknown:view.chatId===chatId && view.runtimeKey===runtimeKey && view.historyUnknown,
+    readUnavailable:view.chatId===chatId && view.runtimeKey===runtimeKey && view.readUnavailable}
   const publish=useCallback(update=>setView(previous=>({...previous,...update,chatId:current.current.chatId,runtimeKey:current.current.runtimeKey})),[])
   const persist=useCallback(id=>{current.current.onPendingChange(id,current.current.chatId);pending.current=id},[])
 
@@ -88,10 +97,14 @@ export function usePortalContext({chatId,runtimeKey:legacyRuntimeKey,runtimeIden
     const missing=fromMutation && snapshot.status==='missing' && operation.status==='idle'
     const unavailable=Boolean(pending.current) && snapshot.status==='unavailable' && operation.status==='idle'
     const elsewhere=fromMutation && snapshot.status==='busy' && !own
-    const manual=own || Boolean(lastManual.current) && operation.requestId===lastManual.current
-    const restarted=manual && operation.status==='unknown' && operation.reason==='runtime-restarted'
-    const phase=restarted?'interrupted':missing?'skipped':unavailable?'unavailable':elsewhere?'busy':operation.status==='running'?'running':terminal && manual?operation.status
-      :pending.current?'unknown':'idle'
+    // Track host-started compactions too; a failed read does not prove they ended.
+    const observed=Boolean(observedCompaction.current) && operation.requestId===observedCompaction.current.requestId
+    const tracked=own || observed || Boolean(lastManual.current) && operation.requestId===lastManual.current
+    if(operation.status==='running' || observed)observedCompaction.current=operation
+    else if(operation.status==='idle')observedCompaction.current=null
+    const restarted=tracked && operation.status==='unknown' && operation.reason==='runtime-restarted'
+    const phase=restarted?'interrupted':missing?'skipped':unavailable?'unavailable':elsewhere?'busy':operation.status==='running'?'running':terminal && tracked?operation.status
+      :pending.current || observed && operation.status==='unknown'?'unknown':'idle'
     const expected=current.current.runtimeIdentity
     const modelMatches=!expected || (!expected.model || snapshot.model?.id===expected.model)
       && (!expected.provider || snapshot.model?.provider===expected.provider)
@@ -117,7 +130,9 @@ export function usePortalContext({chatId,runtimeKey:legacyRuntimeKey,runtimeIden
       try {persist(null)}catch {notice+=' The result could not be saved in this browser; reload to check it again.'}
     }
     const historyUnknown=snapshot.history.status==='unknown'
-    publish({context,phase,notice,historyUnknown,...(snapshot.model?{observedCapacity:modelMatches?snapshot.model.contextWindow:null}:{}),...(!historyUnknown?{recoveryNotice:''}:{})})
+    const readUnavailable=snapshot.status==='unavailable'
+    if(!readUnavailable)contextRetries.current=0
+    publish({context,phase,notice,historyUnknown,readUnavailable,observedModel:modelMatches && ['ready','missing','busy'].includes(snapshot.status)?snapshot.model || null:null,...(snapshot.model?{observedCapacity:modelMatches?snapshot.model.contextWindow:null}:{}),...(!historyUnknown?{recoveryNotice:''}:{})})
   },[persist,publish])
 
   const refresh=useCallback(async(force=false)=>{
@@ -143,7 +158,8 @@ export function usePortalContext({chatId,runtimeKey:legacyRuntimeKey,runtimeIden
             // snapshot as the completed turn's current measurement.
             if(!refreshQueued.current)accept(snapshot)
           }catch {
-            if(at===generation.current && !refreshQueued.current)publish({...(pending.current?{phase:'unknown',notice:'Waiting for compaction confirmation…'}:{})})
+            const automaticPending=observedCompaction.current?.status==='running' || observedCompaction.current?.status==='unknown' && observedCompaction.current.reason!=='runtime-restarted'
+            if(at===generation.current && !refreshQueued.current)publish({observedModel:null,readUnavailable:true,...((pending.current || automaticPending)?{phase:'unknown',notice:'Waiting for compaction confirmation…'}:{})})
           }finally {clearTimeout(timer);requests.current.delete(controller)}
         }while(at===generation.current && refreshQueued.current && !mutation.current)
       }finally {if(at===generation.current)query.current=null}
@@ -155,10 +171,12 @@ export function usePortalContext({chatId,runtimeKey:legacyRuntimeKey,runtimeIden
   useEffect(()=>{
     generation.current+=1;requests.current.forEach(controller=>controller.abort());requests.current.clear();query.current=null;refreshQueued.current=false;mutation.current=false;lastQuery.current=0
     pending.current=initialRequestId || null
+    observedCompaction.current=null
     if(priorChat.current!==chatId){lastMeasurement.current=null;invalidatedMeasurement.current=null;lastManual.current=pending.current}
     else if(priorRuntime.current && priorRuntime.current!==runtimeKey)invalidatedMeasurement.current=lastMeasurement.current
     priorChat.current=chatId
-    publish({context:null,observedCapacity:null,phase:pending.current?'checking':'idle',notice:pending.current?'Checking compaction status…':'',historyUnknown:false,resolving:false,recoveryNotice:''})
+    contextRetries.current=0
+    publish({context:null,observedCapacity:null,observedModel:null,phase:pending.current?'checking':'idle',notice:pending.current?'Checking compaction status…':'',historyUnknown:false,resolving:false,recoveryNotice:'',readUnavailable:false})
     priorRuntime.current=runtimeKey
     void refresh(true)
     return ()=>{generation.current+=1;requests.current.forEach(controller=>controller.abort());requests.current.clear();query.current=null;refreshQueued.current=false}
@@ -166,10 +184,25 @@ export function usePortalContext({chatId,runtimeKey:legacyRuntimeKey,runtimeIden
   },[chatId,runtimeKey,publish,refresh])
 
   useEffect(()=>{
-    if(view.chatId!==chatId || view.runtimeKey!==runtimeKey || !(pending.current || ['running','busy'].includes(view.phase) || view.historyUnknown))return
-    const timer=setTimeout(()=>void refresh(true),['unknown','unavailable'].includes(view.phase)?5000:2000)
+    if(view.chatId!==chatId || view.runtimeKey!==runtimeKey)return
+    const observingOperation=pending.current || observedCompaction.current && view.phase==='unknown' || ['running','busy'].includes(view.phase) || view.historyUnknown
+    const retryRead=!observingOperation && view.readUnavailable && contextRetries.current<contextRetryDelays.length
+    if(!observingOperation && !retryRead)return
+    const delay=retryRead?contextRetryDelays[contextRetries.current]:['unknown','unavailable'].includes(view.phase)?5000:2000
+    const timer=setTimeout(()=>{if(retryRead)contextRetries.current+=1;void refresh(true)},delay)
     return ()=>clearTimeout(timer)
   },[view,chatId,runtimeKey,refresh])
+
+  useEffect(()=>{
+    const previous=priorAvailability.current
+    priorAvailability.current={chatId,runtimeKey,blocked}
+    // A backend outage can outlast the bounded idle retries. Its recovery is
+    // another reason to inspect this same conversation without replaying work.
+    if(previous.chatId===chatId && previous.runtimeKey===runtimeKey && previous.blocked && !blocked && current.current.readUnavailable) {
+      contextRetries.current=0
+      void refresh(true)
+    }
+  },[blocked,chatId,runtimeKey,refresh])
 
   const compact=useCallback(async()=>{
     if(current.current.blocked || current.current.historyUnknown || mutation.current)return false
@@ -210,7 +243,7 @@ export function usePortalContext({chatId,runtimeKey:legacyRuntimeKey,runtimeIden
     const at=generation.current,identity=current.current.chatId,controller=new AbortController()
     mutation.current=true;requests.current.add(controller)
     publish({resolving:true,recoveryNotice:'Confirming the previous turn has stopped…'})
-    const timer=setTimeout(()=>controller.abort(),15000)
+    const timer=setTimeout(()=>controller.abort(),30000)
     try {
       // This explicit owner action resolves uncertain history. Merely loading
       // a conversation or reading its context must never cancel work.

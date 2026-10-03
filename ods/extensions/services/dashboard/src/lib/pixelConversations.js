@@ -1,5 +1,6 @@
 import { conversationLabels, deleteConversationLabels } from './pixelConversationLabels'
 import {parseProjectTasks} from './pixelTaskActivity'
+import {draftImageReceipts, messageImageRefs} from './pixelImages'
 
 export const CHAT_KEY = 'ods.pixel.chat.v1'
 const LIBRARY_KEY = 'ods.pixel.conversations.v1'
@@ -36,7 +37,7 @@ function loadConversations(preserveInvalid = false) {
     // The active record is committed first. Reconcile a library write that
     // failed afterward, including deletion of an emptied unsent draft.
     entries = entries.filter(item => !valid(item) || item.chatId !== current.chatId)
-    if (current.messages.length || current.draft?.trim()) entries.push(current)
+    if (current.messages.length || current.draft?.trim() || current.draftImages?.length) entries.push(current)
   }
   const deleted = deletedIds()
   return entries.filter(item => !valid(item) || !deleted.includes(item.chatId))
@@ -59,11 +60,11 @@ function conversationSnapshot(chat) {
 }
 
 const EMPTY_DRAFT_KEYS = new Set(['schema', 'chatId', 'messages', 'draft', 'requestId', 'inFlight',
-  'interrupted', 'contextStart', 'compactionRequestId', 'preview', 'workspaceOpen', 'updatedAt', 'persistenceVersion'])
+  'interrupted', 'contextStart', 'compactionRequestId', 'preview', 'workspaceOpen', 'updatedAt', 'persistenceVersion', 'draftImages'])
 function omittedEmptyBaseline(chat) {
   // The library omits an empty draft. Moving the shared active pointer does
   // not edit that draft, but pending operations and unknown metadata stay strict.
-  return Array.isArray(chat?.messages) && chat.messages.length === 0 && !chat.draft?.trim()
+  return Array.isArray(chat?.messages) && chat.messages.length === 0 && !chat.draft?.trim() && !chat.draftImages?.length
     && !chat.requestId && !chat.inFlight && !chat.interrupted && !chat.compactionRequestId && !chat.preview
     && (chat.contextStart == null || chat.contextStart === 0)
     && Object.keys(chat).every(key => EMPTY_DRAFT_KEYS.has(key))
@@ -85,6 +86,8 @@ export function createConversationWriter(initial = null) {
 
 export function saveConversation(chat, checkpoint) {
   if (!valid(chat)) throw new Error('Invalid conversation')
+  draftImageReceipts(chat.draftImages)
+  chat.messages.forEach(messageImageRefs)
   if (chat.messages.some(message=>message.projectTasks!==undefined
     && (message.role!=='assistant' || !parseProjectTasks(message.projectTasks)))) throw new Error('Invalid project metadata')
   if (deletedIds().includes(chat.chatId)) throw new Error('This conversation was deleted in another tab. Start a new chat.')
@@ -101,7 +104,7 @@ export function saveConversation(chat, checkpoint) {
   }
   const value = { ...previous, ...chat, updatedAt: Date.now(), persistenceVersion: 2 }
   const remaining = entries.filter(item => !valid(item) || item.chatId !== value.chatId)
-  const next = value.messages.length || value.draft?.trim() ? [value, ...remaining] : remaining
+  const next = value.messages.length || value.draft?.trim() || value.draftImages?.length ? [value, ...remaining] : remaining
   if (valid(current) && current.chatId !== value.chatId) {
     // Do not replace the only durable copy of a previous partial save when
     // switching tasks. Flush its reconciled library before moving the pointer.
@@ -123,6 +126,22 @@ export function saveConversation(chat, checkpoint) {
 
 export function conversationTitle(chat) {
   return conversationLabels(chat.chatId).title || chat.messages.find(message => message.role === 'user' && typeof message.content === 'string')?.content.trim().slice(0, 80) || chat.draft?.trim().slice(0, 80) || 'Untitled conversation'
+}
+
+export async function purgeConversationImages(chatId) {
+  if(typeof chatId!=='string' || !/^[A-Za-z0-9_-]{1,128}$/.test(chatId) || chatId.length>128)throw new Error('Invalid conversation.')
+  const chat=readConversations().find(item=>item.chatId===chatId)
+  if(chat?.inFlight || chat?.interrupted || chat?.compactionRequestId)throw new Error('Finish, stop or recover this conversation before deleting it.')
+  const controller=new AbortController(), timer=setTimeout(()=>controller.abort(),30000)
+  try {
+    const response=await fetch(`/api/pixel/images/${encodeURIComponent(chatId)}`,{method:'DELETE',signal:controller.signal})
+    let receipt;try {receipt=await response.json()}catch {throw new Error('Deletion is not confirmed. Your local history is preserved; retry deletion.')}
+    if(!response.ok)throw new Error(typeof receipt?.detail==='string' && receipt.detail.length<300?receipt.detail:'Deletion is not confirmed. Your local history is preserved; retry deletion.')
+    if(Object.keys(receipt||{}).sort().join()!=='deleted,schemaVersion' || receipt.schemaVersion!==1 || receipt.deleted!==true)throw new Error('Deletion is not confirmed. Your local history is preserved; retry deletion.')
+  } catch(error) {
+    if(error?.name==='AbortError')throw new Error('Deletion timed out. Your local history is preserved; retry deletion to confirm cleanup.')
+    throw error
+  } finally {clearTimeout(timer)}
 }
 
 export function deleteConversation(chatId) {

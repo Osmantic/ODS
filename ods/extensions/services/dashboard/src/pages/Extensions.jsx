@@ -4,6 +4,7 @@ import {
   Box, Loader2, RefreshCw, RotateCcw, ChevronDown, ChevronUp, Package, Info, X, Download, Trash2, ExternalLink, Terminal, Copy, Check,
 } from 'lucide-react'
 import { useState, useEffect, useRef } from 'react'
+import { Link } from 'react-router-dom'
 import { DependencyBadges, DependencyConfirmDialog, DisableDependentWarning } from '../components/DependencyBadges'
 import { TemplatePicker } from '../components/TemplatePicker'
 import { getTemplateStatus } from '../lib/templates'
@@ -100,6 +101,7 @@ const STATUS_DESCRIPTIONS = {
 
 export default function Extensions({ compact = false }) {
   const [catalog, setCatalog] = useState(null)
+  const [webuiSelection, setWebuiSelection] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [search, setSearch] = useState('')
@@ -119,6 +121,7 @@ export default function Extensions({ compact = false }) {
   const [settingValues, setSettingValues] = useState({})
   const [settingsBusy, setSettingsBusy] = useState(false)
   const dialogSeq = useRef(0)
+  const webuiAddInFlight = useRef(false)
   const settingsSave = useRef(null)
   const [templates, setTemplates] = useState([])
   const [pollingLost, setPollingLost] = useState(false)
@@ -149,8 +152,16 @@ export default function Extensions({ compact = false }) {
         recoveryTrackers.current[serviceId]?.recordSuccess()
         if (!res.ok) return
         const data = await res.json()
-        if (data.status === 'idle') return
-        setProgressMap(prev => ({ ...prev, [serviceId]: data }))
+        if (data.status === 'idle') {
+          setProgressMap(prev => {
+            if (!(serviceId in prev)) return prev
+            const next = { ...prev }
+            delete next[serviceId]
+            return next
+          })
+        } else {
+          setProgressMap(prev => ({ ...prev, [serviceId]: data }))
+        }
         if (data.status === 'error') {
           clearInterval(activePollers.current[serviceId])
           delete activePollers.current[serviceId]
@@ -158,8 +169,9 @@ export default function Extensions({ compact = false }) {
           setToast({ type: 'error', text: data.error || 'Installation failed' })
           setProgressMap(prev => { const next = { ...prev }; delete next[serviceId]; return next })
           fetchCatalog()
-        } else if (data.status === 'started') {
-          // Container is up but healthcheck may not have passed yet.
+        } else if (data.status === 'started' || data.status === 'idle') {
+          // Enable can finish without an install-progress record. Keep checking
+          // live health even when progress is idle after the selection changed.
           // Refresh catalog — if it shows "enabled" (long-running service)
           // or "cli_installed" (one-shot CLI tool whose container exits
           // after init), we're done.
@@ -193,6 +205,7 @@ export default function Extensions({ compact = false }) {
 
   useEffect(() => {
     fetchCatalog()
+    fetchWebuiSelection()
     fetch('/api/templates')
       .then(r => r.ok ? r.json() : { templates: [] })
       .then(d => setTemplates(d.templates || []))
@@ -288,6 +301,17 @@ export default function Extensions({ compact = false }) {
     }
   }
 
+  const fetchWebuiSelection = async () => {
+    try {
+      const res = await fetch('/api/webui/selection', { cache: 'no-store' })
+      if (!res.ok) throw new Error('Open WebUI selection unavailable')
+      const data = await res.json()
+      setWebuiSelection(typeof data.enabled === 'boolean' && typeof data.supported === 'boolean' ? data : null)
+    } catch {
+      setWebuiSelection(null)
+    }
+  }
+
   const handleMutation = async (serviceId, action, { autoEnableDeps = false, force = false } = {}) => {
     setMutating(serviceId)
     setConfirm(null)
@@ -306,7 +330,10 @@ export default function Extensions({ compact = false }) {
       }
       const opts = {
         method: action === 'uninstall' || action === 'purge' ? 'DELETE' : 'POST',
-        signal: AbortSignal.timeout(action === 'update' || action === 'rollback' ? 30 * 60 * 1000 : 300000),
+        signal: AbortSignal.timeout(
+          action === 'update' || action === 'rollback' ? 30 * 60 * 1000
+            : action === 'enable' ? 13 * 60 * 1000 : 300000,
+        ),
       }
       if (action === 'purge') {
         opts.headers = { 'Content-Type': 'application/json' }
@@ -391,8 +418,36 @@ export default function Extensions({ compact = false }) {
     }
   }
 
+  const handleWebuiAdd = async () => {
+    if (webuiAddInFlight.current) return
+    webuiAddInFlight.current = true
+    setMutating('open-webui')
+    setConfirm(null)
+    try {
+      const response = await fetch('/api/webui/selection', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: true }),
+        signal: AbortSignal.timeout(900000),
+      })
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({}))
+        throw new Error(typeof error.detail === 'string' ? error.detail : 'Could not add Open WebUI')
+      }
+      await Promise.all([fetchCatalog(), fetchWebuiSelection()])
+      setToast({ type: 'success', text: 'Open WebUI added. Existing chat data was preserved.' })
+    } catch (error) {
+      await fetchWebuiSelection()
+      setToast({ type: 'error', text: friendlyError(error.message) || 'Could not add Open WebUI. Check its selection before retrying.' })
+    } finally {
+      webuiAddInFlight.current = false
+      setMutating(null)
+    }
+  }
+
   const requestAction = (ext, action) => {
     const messages = {
+      'add-webui': 'Add Open WebUI? ODS will download and start its chat service. Any existing Open WebUI chats and settings will be reused.',
       install: `Install ${ext.name}? This will download and start the service.`,
       enable: `Enable ${ext.name}? The service will be started.`,
       disable: `Disable ${ext.name}? The service will be stopped.`,
@@ -423,7 +478,7 @@ export default function Extensions({ compact = false }) {
   const confirmAction = async () => {
     const current = confirm
     if (!current || settingsBusy || current.settings?.loading) return
-    const run = () => handleMutation(current.ext.id, current.action, {
+    const run = () => current.action === 'add-webui' ? handleWebuiAdd() : handleMutation(current.ext.id, current.action, {
       autoEnableDeps: current.autoEnableDeps === true,
       force: current.action === 'update' && (
         current.ext.locally_modified || ['untracked', 'unknown'].includes(current.ext.update_status)
@@ -470,9 +525,14 @@ export default function Extensions({ compact = false }) {
 
   const allExtensions = catalog?.extensions || []
   const extensions = allExtensions.filter(ext => !['incompatible', 'unsupported'].includes(ext.status) && ext.compatible !== false)
+  const webuiCanAdd = webuiSelection?.supported === true && webuiSelection.enabled === false
+  const availableForAdd = ext => ext.status === 'not_installed'
+    || (ext.id === 'open-webui' && webuiCanAdd)
+    || (ext.source === 'core' && ext.library_manageable === true
+      && ext.library_selected === false && ['disabled', 'error'].includes(ext.status))
   const unsupportedIds = new Set(allExtensions.filter(ext => !extensions.includes(ext)).map(ext => ext.id))
   const summary = {
-    not_installed: extensions.filter(ext => ext.status === 'not_installed').length,
+    not_installed: extensions.filter(availableForAdd).length,
     updates_available: extensions.filter(ext => ext.update_available).length,
   }
 
@@ -489,8 +549,8 @@ export default function Extensions({ compact = false }) {
   // Filter extensions
   const query = search.toLowerCase()
   const filtered = extensions.filter(ext => {
-    if (libraryView === 'installed' && ['not_installed','incompatible'].includes(ext.status)) return false
-    if (libraryView === 'available' && ext.status !== 'not_installed') return false
+    if (libraryView === 'installed' && availableForAdd(ext)) return false
+    if (libraryView === 'available' && !availableForAdd(ext)) return false
     if (libraryView === 'updates' && !ext.update_available) return false
     if (statusFilter !== 'all' && ext.status !== statusFilter) return false
     if (category !== 'all' && !ext.features?.some(f => f.category === category)) return false
@@ -539,7 +599,7 @@ export default function Extensions({ compact = false }) {
       )}
 
       <nav className="extensions-library-tabs" aria-label="Library views">
-        {[['all','All',extensions.length],['installed','Installed',extensions.filter(ext => !['not_installed','incompatible'].includes(ext.status)).length],['available','Available',summary.not_installed ?? 0],['updates','Updates',summary.updates_available ?? 0]].map(([id,label,count]) => <button key={id} aria-label={`${label} ${count}`} aria-pressed={libraryView === id} onClick={() => {setLibraryView(id);setStatusFilter('all')}}>{label}<span>{count}</span></button>)}
+        {[['all','All',extensions.length],['installed','Installed',extensions.filter(ext => !availableForAdd(ext)).length],['available','Available',summary.not_installed ?? 0],['updates','Updates',summary.updates_available ?? 0]].map(([id,label,count]) => <button key={id} aria-label={`${label} ${count}`} aria-pressed={libraryView === id} onClick={() => {setLibraryView(id);setStatusFilter('all')}}>{label}<span>{count}</span></button>)}
         {collections.length > 0 && <button aria-label={`Starter collections ${collections.length}`} aria-pressed={showingCollections} onClick={() => {setLibraryView('collections');setStatusFilter('all');setCategory('all')}}>Collections<span>{collections.length}</span></button>}
       </nav>
 
@@ -630,6 +690,7 @@ export default function Extensions({ compact = false }) {
               onDetails={() => setExpanded(ext.id)}
               onConsole={() => setConsoleExt(ext)}
               onAction={requestAction}
+              webuiSelection={webuiSelection}
               mutating={mutating}
               progressData={progressMap[ext.id]}
             />
@@ -654,7 +715,7 @@ export default function Extensions({ compact = false }) {
         <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={() => setConfirm(null)}>
           <div className="bg-theme-card border border-theme-border rounded-xl p-6 max-w-md mx-4 shadow-2xl" onClick={e => e.stopPropagation()} role="dialog" aria-modal="true" aria-label="Confirm action">
             <h3 className="text-base font-semibold text-theme-text mb-2">
-              {confirm.action === 'uninstall' ? 'Remove' : confirm.action === 'purge' ? 'Purge Data' : confirm.action.charAt(0).toUpperCase() + confirm.action.slice(1)} Extension
+              {confirm.action === 'add-webui' ? 'Add Open WebUI' : `${confirm.action === 'uninstall' ? 'Remove' : confirm.action === 'purge' ? 'Purge Data' : confirm.action.charAt(0).toUpperCase() + confirm.action.slice(1)} Extension`}
             </h3>
             <p className="text-[11px] text-theme-text-muted/70 mb-5 leading-relaxed">{confirm.message}</p>
             {confirm.action === 'disable' && confirm.ext.dependents?.length > 0 && (
@@ -693,7 +754,7 @@ export default function Extensions({ compact = false }) {
                 }`}
               >
                 {(() => {
-                  const label = confirm.action === 'uninstall' ? 'Remove' : confirm.action === 'purge' ? 'Purge'
+                  const label = confirm.action === 'add-webui' ? 'Add' : confirm.action === 'uninstall' ? 'Remove' : confirm.action === 'purge' ? 'Purge'
                     : confirm.action.charAt(0).toUpperCase() + confirm.action.slice(1)
                   if (settingsBusy) return 'Saving…'
                   return confirm.settings?.fields?.length ? `Save and ${label.toLowerCase()}` : label
@@ -789,7 +850,7 @@ function LlmSwapBadge({ llm }) {
   )
 }
 
-function ExtensionCard({ ext, gpuBackend, agentAvailable, onDetails, onConsole, onAction, mutating, progressData }) {
+function ExtensionCard({ ext, gpuBackend, agentAvailable, onDetails, onConsole, onAction, webuiSelection, mutating, progressData }) {
   const Icon = extensionIcon(ext)
   const status = ext.status || 'not_installed'
   const statusStyle = STATUS_STYLES[status] || STATUS_STYLES.not_installed
@@ -803,13 +864,19 @@ function ExtensionCard({ ext, gpuBackend, agentAvailable, onDetails, onConsole, 
   const isUserExt = ext.source === 'user'
   const isManagedBuiltin = isCore && ext.library_manageable === true
   const isError = status === 'error'
+  // A saved progress record can describe a terminal failure or completion.
+  // Only active phases should keep the installation spinner on screen.
+  const showProgress = !isError && (progressData?.status
+    ? ['pulling', 'starting', 'setup_hook'].includes(progressData.status)
+    : status === 'installing' || status === 'setting_up')
   const isStopped = status === 'stopped'
   const isUnhealthy = status === 'unhealthy'
   const isCliInstalled = status === 'cli_installed'
   const isToggleable = (isUserExt || (isManagedBuiltin && ext.library_selected === true))
     && (status === 'enabled' || status === 'cli_installed' || status === 'disabled' || status === 'error' || status === 'stopped' || status === 'unhealthy')
   const showManagedAdd = isManagedBuiltin && ext.library_selected === false && status === 'disabled'
-  const showManagedRetry = isManagedBuiltin && ext.library_selected === true && (isError || isStopped || isUnhealthy)
+  const showManagedRetry = isManagedBuiltin && (isError
+    || (ext.library_selected === true && (isStopped || isUnhealthy)))
   const showRemove = isUserExt && (status === 'disabled' || isError)
   const showInstall = status === 'not_installed' && ext.installable
   const showUpdate = isUserExt && ext.installable && (
@@ -840,9 +907,9 @@ function ExtensionCard({ ext, gpuBackend, agentAvailable, onDetails, onConsole, 
             {isCore && !isManagedBuiltin ? (
               <span
                 className="text-[10px] px-2 py-0.5 rounded-full bg-blue-500/10 text-blue-400 border border-blue-500/15 uppercase tracking-wider cursor-help"
-                title="Built-in service — managed by ODS"
+                title={ext.id === 'open-webui' && webuiSelection?.supported && webuiSelection.enabled === false ? 'Optional chat service available to add' : 'Built-in service — managed by ODS'}
               >
-                core
+                {ext.id === 'open-webui' && webuiSelection?.supported && webuiSelection.enabled === false ? 'optional' : 'core'}
               </span>
             ) : (
               <StatusBadge status={status} statusStyle={statusStyle} ext={ext} gpuBackend={gpuBackend} onConsole={onConsole} />
@@ -875,10 +942,10 @@ function ExtensionCard({ ext, gpuBackend, agentAvailable, onDetails, onConsole, 
       </div>
 
       {/* Progress indicator — shows during active install/setup, survives page refresh */}
-      {(progressData || ext.status === 'installing' || ext.status === 'setting_up') && (
+      {showProgress && (
         <div className="px-4 py-2 border-t border-theme-border/40 text-[10px] text-blue-400/80 flex items-center gap-2">
           <Loader2 size={12} className="animate-spin" />
-          <span>{progressData?.phase_label || (ext.status === 'setting_up' ? 'Running setup...' : 'Installing...')}</span>
+          <span>{progressData?.phase_label || (progressData?.status === 'setup_hook' || status === 'setting_up' ? 'Running setup...' : 'Installing...')}</span>
         </div>
       )}
       {/* Error message — expandable when long or multiline so docker-compose
@@ -923,6 +990,16 @@ function ExtensionCard({ ext, gpuBackend, agentAvailable, onDetails, onConsole, 
               {isMutating ? <Loader2 size={12} className="animate-spin" /> : <><Download size={12} /> {showManagedAdd ? `Add ${ext.name}` : `Retry ${ext.name}`}</>}
             </button>
           )}
+          {ext.id === 'open-webui' && webuiSelection?.supported && webuiSelection.enabled === false && (
+            <button
+              disabled={actionDisabled}
+              title={disabledTitle || 'Existing Open WebUI chats and settings will be reused'}
+              onClick={() => onAction(ext, 'add-webui')}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.08em] rounded-lg bg-theme-accent text-white hover:bg-theme-accent-hover transition-colors disabled:opacity-50 shadow-sm shadow-theme-accent/20"
+            >
+              {isMutating ? <Loader2 size={12} className="animate-spin" /> : <><Download size={12} /> Add Open WebUI</>}
+            </button>
+          )}
           {showInstall && (
             <button
               disabled={actionDisabled}
@@ -953,7 +1030,7 @@ function ExtensionCard({ ext, gpuBackend, agentAvailable, onDetails, onConsole, 
               {isMutating ? <Loader2 size={12} className="animate-spin" /> : <><RotateCcw size={12} /> Rollback</>}
             </button>
           )}
-          {isUserExt && isStopped && (
+          {(isUserExt || ext.app_path) && isStopped && (
             <button
               disabled={actionDisabled}
               title={disabledTitle}
@@ -973,11 +1050,11 @@ function ExtensionCard({ ext, gpuBackend, agentAvailable, onDetails, onConsole, 
               <Terminal size={12} /> Check Logs
             </button>
           )}
-          {isError && (
+          {isError && !showManagedRetry && (
             <button
               disabled={actionDisabled}
               title={disabledTitle}
-              onClick={() => onAction(ext, 'enable')}
+              onClick={() => onAction(ext, ext.id === 'opencode' ? 'install' : 'enable')}
               className="flex items-center gap-1.5 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.08em] rounded-lg bg-blue-500/15 text-blue-400 hover:bg-blue-500/25 transition-colors disabled:opacity-50"
             >
               {isMutating ? <Loader2 size={12} className="animate-spin" /> : <><RefreshCw size={12} /> Retry</>}
@@ -1017,7 +1094,18 @@ function ExtensionCard({ ext, gpuBackend, agentAvailable, onDetails, onConsole, 
         </div>
         <div className="flex items-center gap-2">
           <DependencyBadges dependsOn={ext.depends_on} dependencyStatus={ext.dependency_status} />
-          {status === 'enabled' && launchUrl ? (
+          {ext.app_path ? (
+            // Host applications (OpenCode) have their own page: open, start,
+            // set up, and how to use it, including from another device.
+            <Link
+              to={ext.app_path}
+              className="flex items-center gap-1 px-2 py-1.5 text-[10px] font-mono text-theme-text-secondary hover:text-theme-text hover:bg-theme-surface-hover/40 rounded-lg transition-colors"
+              title={`${ext.name}: status, how to use it, and troubleshooting`}
+            >
+              <ExternalLink size={11} />
+              {status === 'enabled' ? 'Open' : 'Manage'}
+            </Link>
+          ) : status === 'enabled' && launchUrl ? (
             HEADLESS_EXTENSIONS.has(ext.id) ? (
               <span className="px-2 py-1 text-[9px] font-mono uppercase tracking-[0.12em] text-theme-text-muted/45">
                 API service

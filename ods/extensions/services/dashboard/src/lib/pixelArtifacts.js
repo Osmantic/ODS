@@ -3,7 +3,7 @@ import { sha256 as hashSha256 } from '@noble/hashes/sha2.js'
 const DIGEST = /^[a-f0-9]{64}$/
 export const isSnapshotId = value => typeof value === 'string' && /^site-[a-f0-9]{24}$/.test(value)
 export const isArtifactPath = value => typeof value === 'string' && value.length <= 1664
-  && value.split('/').every(part => /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(part))
+  && value.split('/').every(part => /^(?!__ods_)(?!__pycache__$)[A-Za-z0-9_[][A-Za-z0-9._[\]-]{0,127}$/.test(part))
 
 export async function readBoundedBytes(response, maximum) {
   if (!response.ok || Number(response.headers?.get('Content-Length')) > maximum) {
@@ -42,6 +42,12 @@ export async function sha256(bytes) {
 export async function loadSnapshotFiles(preview, signal) {
   if (!isSnapshotId(preview.siteId) || !DIGEST.test(preview.sha256)) throw new Error('Invalid snapshot')
   const response = await fetch(`/pixel-preview/${preview.siteId}/__ods_manifest__.json`, {signal, cache:'no-store'})
+  if (response.status === 404) {
+    await response.body?.cancel()
+    const error = new Error('Published snapshot unavailable')
+    error.code = 'snapshot-unavailable'
+    throw error
+  }
   const bytes = await readBoundedBytes(response, 256 * 1024)
   const manifest = JSON.parse(new TextDecoder('utf-8', {fatal:true}).decode(bytes))
   if (manifest.schemaVersion !== 1 || manifest.siteId !== preview.siteId

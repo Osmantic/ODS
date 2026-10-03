@@ -1647,7 +1647,10 @@ function Set-PerplexicaConfig {
         }
         if (-not $hasModel) { return $false }
         if (-not $Config.preferences) { return $false }
-        return ($Config.preferences.defaultChatModel -eq $LlmModel)
+        return ($Config.preferences.defaultChatModel -eq $LlmModel -and
+            $Config.preferences.defaultChatProvider -eq $openaiProv.id -and
+            $openaiProv.config.baseURL -eq $LlmBaseUrl -and
+            $openaiProv.config.apiKey -eq $ApiKey)
     }
 
     try {
@@ -1677,16 +1680,32 @@ function Set-PerplexicaConfig {
         }
         Set-PerplexicaObjectProperty -Target $openaiProv.config -Name "apiKey" -Value $ApiKey
         Set-PerplexicaObjectProperty -Target $openaiProv.config -Name "baseURL" -Value $LlmBaseUrl
-        Post-ConfigValue -Key "modelProviders" -Value $providers
-
-        # Set default providers and models
-        $embeddingId = $(if ($transformersProv) { $transformersProv.id } else { $openaiProv.id })
-        Post-ConfigValue -Key "preferences" -Value @{
-            defaultChatProvider      = $openaiProv.id
-            defaultChatModel         = $LlmModel
-            defaultEmbeddingProvider = $embeddingId
-            defaultEmbeddingModel    = "Xenova/all-MiniLM-L6-v2"
+        # GET /api/config includes Vane's built-in catalog. Persist only the
+        # OpenAI route fields so each install cannot duplicate embedding models.
+        $openaiIndex = -1
+        for ($i = 0; $i -lt $providers.Count; $i++) {
+            if ($providers[$i].id -eq $openaiProv.id) { $openaiIndex = $i; break }
         }
+        if ($openaiIndex -lt 0) { return $false }
+        Post-ConfigValue -Key "modelProviders.$openaiIndex.chatModels" -Value @(@{ key = $LlmModel; name = $LlmModel })
+        Post-ConfigValue -Key "modelProviders.$openaiIndex.config.baseURL" -Value $LlmBaseUrl
+        Post-ConfigValue -Key "modelProviders.$openaiIndex.config.apiKey" -Value $ApiKey
+
+        # Keep owner-selected embedding and other preferences on retained installs.
+        $preferences = $config.preferences
+        if ($null -eq $preferences) { $preferences = [pscustomobject]@{} }
+        Set-PerplexicaObjectProperty -Target $preferences -Name "defaultChatProvider" -Value $openaiProv.id
+        Set-PerplexicaObjectProperty -Target $preferences -Name "defaultChatModel" -Value $LlmModel
+        if ([string]::IsNullOrWhiteSpace([string]$preferences.defaultEmbeddingProvider) -and
+            [string]::IsNullOrWhiteSpace([string]$preferences.defaultEmbeddingModel) -and $transformersProv) {
+            $localEmbedding = @($transformersProv.embeddingModels) |
+                Where-Object { $_.key -eq "Xenova/all-MiniLM-L6-v2" } | Select-Object -First 1
+            if ($localEmbedding) {
+                Set-PerplexicaObjectProperty -Target $preferences -Name "defaultEmbeddingProvider" -Value $transformersProv.id
+                Set-PerplexicaObjectProperty -Target $preferences -Name "defaultEmbeddingModel" -Value "Xenova/all-MiniLM-L6-v2"
+            }
+        }
+        Post-ConfigValue -Key "preferences" -Value $preferences
 
         # Mark setup complete to bypass wizard
         Mark-SetupComplete

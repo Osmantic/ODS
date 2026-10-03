@@ -110,18 +110,23 @@ PREFLIGHT_ONLY=false
 SKIP_DOCKER=false
 FORCE=false
 TIER=""
-# Fresh installs start with chat and the model route. On a rerun, the installed
-# Compose selection is the default so previously disabled services stay off.
-# Older installations without a state marker retain their legacy default.
+# Phase 03 selects Portal chat on fresh, qualified Pixel hosts. Keep WebUI as
+# the provisional choice until that host check completes. Reruns retain their
+# installed selection, and older installs without the key keep WebUI.
 ODS_EXISTING_INSTALL=false
 [[ -f "$INSTALL_DIR/.env" ]] && ODS_EXISTING_INSTALL=true
 ODS_GATEWAY_ONLY=false
 ENABLE_OPEN_WEBUI=true
+WEBUI_EXPLICIT=false
 if $ODS_EXISTING_INSTALL &&
    [[ "$(external_llm_env_value "$INSTALL_DIR/.env" ODS_GATEWAY_ONLY || true)" == true ]]; then
     ODS_GATEWAY_ONLY=true
     ENABLE_OPEN_WEBUI="$(external_llm_env_value "$INSTALL_DIR/.env" ENABLE_OPEN_WEBUI || true)"
     [[ "$ENABLE_OPEN_WEBUI" == true ]] || ENABLE_OPEN_WEBUI=false
+fi
+if $ODS_EXISTING_INSTALL &&
+   [[ "$(external_llm_env_value "$INSTALL_DIR/.env" ENABLE_OPEN_WEBUI || true)" == false ]]; then
+    ENABLE_OPEN_WEBUI=false
 fi
 ENABLE_VOICE="$(ods_installed_service_default "$INSTALL_DIR" whisper "$ODS_EXISTING_INSTALL")"
 ENABLE_WORKFLOWS="$(ods_installed_service_default "$INSTALL_DIR" n8n "$ODS_EXISTING_INSTALL")"
@@ -138,7 +143,7 @@ ENABLE_OPENCLAW=false
 OPENCLAW_EXPLICIT=false
 ENABLE_OPENCODE=false
 if $ODS_EXISTING_INSTALL && command -v systemctl >/dev/null 2>&1 \
-    && systemctl --user is-enabled --quiet opencode-web.service 2>/dev/null; then
+    && ods_systemctl_user is-enabled --quiet opencode-web.service 2>/dev/null; then
     ENABLE_OPENCODE=true
 fi
 ENABLE_DEVTOOLS=false
@@ -226,7 +231,8 @@ Options:
                       Exact model id exposed by the external provider
     --gateway-only    API-first install using a verified external model; skip Open WebUI
                       and ODS-managed llama-server (requires --external-llm-url)
-    --with-webui      Keep Open WebUI in a gateway-only install
+    --with-webui      Keep or restore Open WebUI
+    --no-webui        Use Portal as the only chat UI (requires --pixel on a fresh ordinary install)
     --no-gateway-only Return a gateway install to the ordinary UI selection
     --external-llm-key-file PATH
                       Owner-only API key file for an authenticated external model
@@ -318,9 +324,10 @@ while [[ $# -gt 0 ]]; do
         --external-llm-url) EXTERNAL_LLM_URL="$2"; shift 2 ;;
         --external-llm-provider) EXTERNAL_LLM_PROVIDER="$2"; shift 2 ;;
         --external-llm-model) EXTERNAL_LLM_MODEL="$2"; shift 2 ;;
-        --gateway-only) ODS_GATEWAY_ONLY=true; ENABLE_OPEN_WEBUI=false; ODS_MODE=local; ODS_MODE_EXPLICIT=true; shift ;;
-        --with-webui) ENABLE_OPEN_WEBUI=true; shift ;;
-        --no-gateway-only) ODS_GATEWAY_ONLY=false; ENABLE_OPEN_WEBUI=true; shift ;;
+        --gateway-only) ODS_GATEWAY_ONLY=true; ENABLE_OPEN_WEBUI=false; WEBUI_EXPLICIT=true; ODS_MODE=local; ODS_MODE_EXPLICIT=true; shift ;;
+        --with-webui) ENABLE_OPEN_WEBUI=true; WEBUI_EXPLICIT=true; shift ;;
+        --no-webui) ENABLE_OPEN_WEBUI=false; WEBUI_EXPLICIT=true; shift ;;
+        --no-gateway-only) ODS_GATEWAY_ONLY=false; ENABLE_OPEN_WEBUI=true; WEBUI_EXPLICIT=true; shift ;;
         --external-llm-key-file) EXTERNAL_LLM_API_KEY_FILE="$2"; EXTERNAL_LLM_API_KEY_DISABLE=false; shift 2 ;;
         --no-external-llm-key) EXTERNAL_LLM_API_KEY_FILE=""; EXTERNAL_LLM_API_KEY_DISABLE=true; shift ;;
         --reuse-external-llm) EXTERNAL_LLM_AUTO_REUSE=true; shift ;;
@@ -361,7 +368,7 @@ while [[ $# -gt 0 ]]; do
         # nothing serves it, and a phone clicking the invite gets
         # "site can't be reached." Operators who don't want the LAN-facing
         # surface can set ENABLE_ODS_PROXY=false in .env after install.
-        --all) ENABLE_VOICE=true; ENABLE_WORKFLOWS=true; ENABLE_RAG=true; ENABLE_RECOMMENDED=true; ENABLE_HERMES=true; ENABLE_OPENCLAW=false; ENABLE_OPENCODE=true; ENABLE_DEVTOOLS=true; ENABLE_COMFYUI=true; ENABLE_APE=true; ENABLE_PERPLEXICA=true; ENABLE_PRIVACY_SHIELD=true; ENABLE_LANGFUSE=true; ENABLE_ODS_PROXY=true; shift ;;
+        --all) ENABLE_VOICE=true; ENABLE_WORKFLOWS=true; ENABLE_RAG=true; ENABLE_RECOMMENDED=true; ENABLE_HERMES=true; ENABLE_OPENCLAW=false; ENABLE_OPENCODE=true; ENABLE_DEVTOOLS=true; ENABLE_COMFYUI=true; ENABLE_APE=true; ENABLE_PERPLEXICA=true; ENABLE_PRIVACY_SHIELD=true; ENABLE_LANGFUSE=true; ENABLE_ODS_PROXY=true; ENABLE_OPEN_WEBUI=true; WEBUI_EXPLICIT=true; shift ;;
         --non-interactive) INTERACTIVE=false; shift ;;
         --offline) OFFLINE_MODE=true; shift ;;
         --lan) BIND_ADDRESS="0.0.0.0"; BIND_ADDRESS_EXPLICIT=true; shift ;;
@@ -371,6 +378,18 @@ while [[ $# -gt 0 ]]; do
         *) printf '[ERROR] Unknown option: %s\n' "$1" >&2; exit 1 ;;
     esac
 done
+
+if ! $ODS_GATEWAY_ONLY && [[ "$ENABLE_OPEN_WEBUI" != true ]] &&
+   ! $ODS_EXISTING_INSTALL && [[ "$ENABLE_PIXEL" != true ]]; then
+    echo "--no-webui on a fresh ordinary install requires --pixel so Portal supplies chat" >&2
+    exit 1
+fi
+if [[ "$ENABLE_OPEN_WEBUI" != true ]] &&
+   { [[ "$ENABLE_VOICE" == true ]] || [[ "$ENABLE_RAG" == true ]] ||
+     [[ "$ENABLE_ODS_PROXY" == true ]]; }; then
+    echo "Voice, RAG documents, and ODS proxy currently require Open WebUI; use --with-webui or leave those services off" >&2
+    exit 1
+fi
 
 if $ODS_GATEWAY_ONLY; then
     if [[ "$ODS_MODE" != local || "$EXTERNAL_LLM_DISABLE" == true ]]; then
@@ -522,6 +541,7 @@ INSTALL_PHASE="05-docker";       source "$SCRIPT_DIR/installers/phases/05-docker
 if ! $DRY_RUN; then
     INSTALL_PHASE="model-lifecycle-lock"
     ods_model_lifecycle_lock_acquire "$INSTALL_DIR" "Linux installer model configuration"
+    ods_verify_retained_external_model_snapshot || exit 1
 fi
 INSTALL_PHASE="06-directories";  source "$SCRIPT_DIR/installers/phases/06-directories.sh"
 INSTALL_PHASE="07-devtools";     source "$SCRIPT_DIR/installers/phases/07-devtools.sh"

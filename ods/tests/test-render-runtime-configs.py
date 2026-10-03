@@ -590,6 +590,69 @@ def test_write_mode_writes_under_output_root() -> None:
         assert not list(target.parent.glob(f".{target.name}.*.tmp"))
 
 
+def test_model_router_allowlist_mount_is_readable_after_private_source_staging() -> None:
+    if os.name == "nt":
+        return  # POSIX host modes are the contract Docker bind mounts preserve.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        endpoint_dir = root / "config" / "model-router"
+        endpoint_dir.mkdir(parents=True)
+        endpoint = endpoint_dir / "endpoints.json"
+        endpoint.write_text('{"endpoints": []}\n', encoding="utf-8")
+        endpoint_dir.chmod(0o700)
+        endpoint.chmod(0o600)
+        private_dir = root / "config" / "private"
+        private_dir.mkdir()
+        private_file = private_dir / "key.txt"
+        private_file.write_text("private\n", encoding="utf-8")
+        private_dir.chmod(0o700)
+        private_file.chmod(0o600)
+
+        for _ in range(2):  # Activation re-renders the same mounted path.
+            run_renderer("--surface", "model-router-endpoints", "--output-root",
+                         tmp, "--write", "--format", "json")
+            assert endpoint_dir.stat().st_mode & 0o777 == 0o711
+            assert endpoint.stat().st_mode & 0o777 == 0o644
+            assert json.loads(endpoint.read_text(encoding="utf-8"))["endpoints"][0]["id"] == "llama-server-default"
+            assert private_dir.stat().st_mode & 0o777 == 0o700
+            assert private_file.stat().st_mode & 0o777 == 0o600
+            endpoint_dir.chmod(0o700)
+            endpoint.chmod(0o600)
+
+
+def test_model_router_allowlist_rejects_embedded_credentials_before_public_write() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        proc = subprocess.run(
+            [sys.executable, str(SCRIPT), "--surface", "model-router-endpoints",
+             "--llm-base-url", "http://user:secret@localhost:8080/v1",
+             "--output-root", tmp, "--write"],
+            cwd=ROOT, text=True, capture_output=True,
+        )
+        assert proc.returncode != 0
+        assert "secret" not in proc.stderr
+        assert not (Path(tmp) / "config" / "model-router" / "endpoints.json").exists()
+
+
+def test_model_router_allowlist_does_not_widen_symlinked_directory() -> None:
+    if os.name == "nt":
+        return
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        private = root / "private"
+        private.mkdir(mode=0o700)
+        config = root / "config"
+        config.mkdir()
+        (config / "model-router").symlink_to(private, target_is_directory=True)
+        proc = subprocess.run(
+            [sys.executable, str(SCRIPT), "--surface", "model-router-endpoints",
+             "--output-root", tmp, "--write"], cwd=ROOT, text=True,
+            capture_output=True,
+        )
+        assert proc.returncode != 0
+        assert private.stat().st_mode & 0o777 == 0o700
+        assert not (private / "endpoints.json").exists()
+
+
 def test_write_cli_defaults_to_secret_free_paths() -> None:
     secret = "renderer-secret-must-not-reach-output"
     with tempfile.TemporaryDirectory() as tmp:
@@ -651,6 +714,58 @@ def test_atomic_write_failure_preserves_known_good_config() -> None:
 
         assert target.read_text(encoding="utf-8") == "known-good\n"
         assert not list(target.parent.glob(f".{target.name}.*.tmp"))
+
+
+def test_identical_switchboard_roundtrip_preserves_bound_inode() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "config/litellm/switchboard.yaml"
+        def render(model):
+            subprocess.run([sys.executable, str(SCRIPT), "--surface", "litellm-switchboard",
+                            "--model", model, "--output-root", tmp, "--write"],
+                           check=True, stdout=subprocess.DEVNULL)
+        render("qwen3.5-9b")
+        before = target.stat()
+        with target.open("rb") as bound:
+            content = bound.read()
+            render("qwen3.5-2b")
+            render("qwen3.5-9b")
+            after = target.stat()
+            assert (before.st_dev, before.st_ino, before.st_mtime_ns) == (after.st_dev, after.st_ino, after.st_mtime_ns)
+            assert target.read_bytes() == content
+            assert os.fstat(bound.fileno()).st_nlink == 1
+
+
+def test_changed_bytes_and_modes_still_replace_atomically() -> None:
+    renderer = load_renderer_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "config"
+        renderer.atomic_write_text(target, "old\n")
+        with target.open("rb") as bound:
+            renderer.atomic_write_text(target, "new\n")
+            assert bound.read() == b"old\n"
+            assert target.read_bytes() == b"new\n"
+        if os.name != "nt":
+            target.chmod(0o600)
+            renderer.atomic_write_text(target, "new\n", file_mode=0o644)
+            assert target.stat().st_mode & 0o777 == 0o644
+
+
+def test_identical_symlink_and_hardlink_do_not_skip_replacement() -> None:
+    if os.name == "nt":
+        return
+    renderer = load_renderer_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        original = Path(tmp) / "original"
+        original.write_text("same\n")
+        target = Path(tmp) / "target"
+        target.symlink_to(original)
+        renderer.atomic_write_text(target, "same\n")
+        assert not target.is_symlink()
+        target.unlink()
+        os.link(original, target)
+        renderer.atomic_write_text(target, "same\n")
+        assert original.stat().st_ino != target.stat().st_ino
+        assert original.read_text() == "same\n"
 
 
 def test_validation_rejects_negative_context_or_invalid_port() -> None:
@@ -716,6 +831,9 @@ def main() -> int:
         test_write_mode_writes_under_output_root,
         test_write_cli_defaults_to_secret_free_paths,
         test_atomic_write_failure_preserves_known_good_config,
+        test_identical_switchboard_roundtrip_preserves_bound_inode,
+        test_changed_bytes_and_modes_still_replace_atomically,
+        test_identical_symlink_and_hardlink_do_not_skip_replacement,
         test_validation_rejects_negative_context_or_invalid_port,
         test_validation_rejects_control_characters_in_model_and_key,
     ]

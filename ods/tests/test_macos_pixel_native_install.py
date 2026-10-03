@@ -201,7 +201,7 @@ def test_ordinary_docker_binary_does_not_provision_another_cli(tmp_path, monkeyp
     assert module.native_docker_binary(binary) == str(binary.resolve())
 
 
-@pytest.mark.parametrize('fault', [None, 'ref', 'compose', 'remote', 'project', 'services', 'image', 'probe', 'prepare', 'activate'])
+@pytest.mark.parametrize('fault', [None, 'no-webui', 'ref', 'compose', 'remote', 'project', 'services', 'image', 'probe', 'prepare', 'activate'])
 def test_initial_installer_connects_resolved_stack_and_native_activation(tmp_path, monkeypatch, fault):
     install_dir = tmp_path / 'ODS with spaces'
     (install_dir / 'data').mkdir(parents=True)
@@ -231,8 +231,10 @@ def test_initial_installer_connects_resolved_stack_and_native_activation(tmp_pat
         if 'compose' in argv:
             events.append('compose')
             assert argv[argv.index('--project-directory') + 1] == str(install_dir)
+            services = ('dashboard-api', 'model-router') if fault == 'no-webui' else (
+                'dashboard-api', 'model-router', 'open-webui')
             return json.dumps({'name': 'INVALID!' if fault == 'project' else 'ods-fixture',
-                'services': {} if fault == 'services' else dict.fromkeys(('dashboard-api', 'model-router', 'open-webui'), {})})
+                'services': {} if fault == 'services' else dict.fromkeys(services, {})})
         if 'pull' in argv:
             events.append('pull')
             return ''
@@ -261,7 +263,7 @@ def test_initial_installer_connects_resolved_stack_and_native_activation(tmp_pat
         return module.install(install_dir=install_dir, ods_source=install_dir,
             compose_files=[] if fault == 'compose' else files[:1],
             ref='invalid' if fault == 'ref' else module.DEFAULT_REF)
-    if fault:
+    if fault and fault != 'no-webui':
         with pytest.raises(ValueError): run()
         if fault not in ('prepare', 'activate'):
             assert not (install_dir / 'data/pixel-native').exists()
@@ -284,20 +286,29 @@ def test_main_shell_routes_pixel_only_after_base_launch_and_before_flag_persiste
 
 
 @pytest.mark.parametrize('pixel', ['true', 'false'])
-def test_core_feature_selection_keeps_pixel_dependencies_without_heavy_services(pixel):
+def test_core_feature_selection_keeps_pixel_dependencies_without_heavy_services(pixel, tmp_path):
     script = (ROOT / 'installers/macos/install-macos.sh').read_text()
     start = script.index('if ! $NON_INTERACTIVE && ! $ALL_FEATURES && ! $DRY_RUN; then')
     stop = script.index('ai "Features:"', start)
+    resolver_start = script.index('_macos_resolve_support_services() {')
+    resolver_stop = script.index('\n}', resolver_start) + 2
     shell = '''set -eu
 NON_INTERACTIVE=true; ALL_FEATURES=false; DRY_RUN=false
 CLOUD_MODE=false; ENABLE_RECOMMENDED=false
 ENABLE_HERMES=false; ENABLE_OPENCLAW=false; ENABLE_APE=false
 ENABLE_PERPLEXICA=false; ENABLE_VOICE=false; ENABLE_RAG=false; ENABLE_WORKFLOWS=false
-''' + 'ENABLE_PIXEL=' + pixel + '\n' + script[start:stop] + '''
-printf '%s %s %s %s %s %s %s' "$ENABLE_RECOMMENDED" "$ENABLE_SEARXNG" "$ENABLE_HERMES" "$ENABLE_OPENCLAW" "$ENABLE_VOICE" "$ENABLE_RAG" "$ENABLE_WORKFLOWS"
+ENABLE_OPENCODE=false; OPENCODE_ENABLE_EXPLICIT=false; OPENCODE_DISABLE_EXPLICIT=false
+OPENCODE_DISABLE_SELECTED=false
+ENABLE_OPEN_WEBUI=false; WEBUI_RETAINED=""; WEBUI_ENABLE_EXPLICIT=false; WEBUI_DISABLE_EXPLICIT=false
+ENABLE_ODS_PROXY=false
+read_env_value() { printf '\\n'; }
+ai_err() { printf '%s\\n' "$*" >&2; }
+''' + script[resolver_start:resolver_stop] + '\nENABLE_PIXEL=' + pixel + '\n' + script[start:stop] + '''
+printf '%s %s %s %s %s %s %s %s' "$ENABLE_RECOMMENDED" "$ENABLE_LITELLM" "$ENABLE_SEARXNG" "$ENABLE_HERMES" "$ENABLE_OPENCLAW" "$ENABLE_VOICE" "$ENABLE_RAG" "$ENABLE_WORKFLOWS"
 '''
-    result = subprocess.run(['bash'], input=shell, capture_output=True, text=True, check=True)
-    assert result.stdout == ' '.join([pixel, pixel, 'false', 'false', 'false', 'false', 'false'])
+    result = subprocess.run(['bash'], input=shell, capture_output=True, text=True, check=True,
+        env={**os.environ, 'SOURCE_ROOT': str(ROOT), 'INSTALL_DIR': str(tmp_path)})
+    assert result.stdout == 'false true false false false false false false'
 
 
 @pytest.mark.parametrize('mode', ['direct', 'volta', 'brew', 'missing-brew', 'bad-brew'])

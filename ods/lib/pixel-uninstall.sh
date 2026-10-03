@@ -15,6 +15,26 @@ if ! declare -F log_error >/dev/null 2>&1; then
     log_error() { printf '[ERROR] %s\n' "$*" >&2; }
 fi
 
+_ods_pixel_project_present() {
+    [[ -e /etc/ods-pixel-project.json || -L /etc/ods-pixel-project.json \
+        || -e /etc/systemd/system/ods-pixel-project.service || -L /etc/systemd/system/ods-pixel-project.service \
+        || -e /usr/local/libexec/ods-pixel-project || -L /usr/local/libexec/ods-pixel-project ]]
+}
+
+_ods_pixel_project_cleanup() {
+    local install_dir="$1" owner_uid="$2" action="$3" helper_dir
+    [[ "$action" == check-cleanup || "$action" == cleanup-linux ]] || return 1
+    helper_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../installers/lib" && pwd)" || return 1
+    sudo /usr/bin/python3 -B "$helper_dir/pixel-project-runtime.py" "$action" \
+        --source "$install_dir/extensions/services/pixel-agent/host" --owner-uid "$owner_uid"
+}
+
+_ods_pixel_inspection_present() {
+    [[ -e /etc/systemd/system/pixel-preview-inspection.service || -L /etc/systemd/system/pixel-preview-inspection.service \
+        || -e /etc/ods-pixel-inspection.json || -L /etc/ods-pixel-inspection.json \
+        || -e /usr/local/libexec/ods-pixel-inspection || -L /usr/local/libexec/ods-pixel-inspection ]]
+}
+
 _ods_pixel_inspection_cleanup() {
     local install_dir="$1" owner_uid="$2" action="$3" helper_dir helper
     [[ "$action" == validate-linux || "$action" == remove-linux ]] || return 1
@@ -85,6 +105,7 @@ _ods_pixel_access_validate_or_remove() {
 import errno
 import fcntl
 import hashlib
+import importlib.util
 import json
 import os
 import pathlib
@@ -170,7 +191,9 @@ sources = {
     "settings_transaction.py": install / "extensions/services/pixel-agent/host/settings_transaction.py",
     "provider_transaction.py": install / "extensions/services/pixel-agent/host/provider_transaction.py",
     "model_transaction.py": install / "extensions/services/pixel-agent/host/model_transaction.py",
+    "access_release_transaction.py": install / "extensions/services/pixel-agent/host/access_release_transaction.py",
     "pixel_access_bridge.py": install / "bin/pixel_access_bridge.py",
+    "pixel_source_upgrade.py": install / "bin/pixel_source_upgrade.py",
     "pixel_gateway_service.py": install / "bin/pixel_gateway_service.py",
     "pixel_access_client.py": install / "bin/pixel_access_client.py",
     "pixel_access_reconcile.py": install / "bin/pixel_access_reconcile.py",
@@ -195,10 +218,64 @@ for name in (
 # absence.  If either side exists, normal byte and completeness validation
 # remains mandatory, so a partial current bundle still fails closed.
 expected_sources = set(sources)
-legacy_gateway = "pixel_gateway_service.py"
-if (not present(sources[legacy_gateway])
-        and not present(program / legacy_gateway)):
-    expected_sources.remove(legacy_gateway)
+for later_module in ("pixel_gateway_service.py", "access_release_transaction.py", "pixel_source_upgrade.py"):
+    if (not present(sources[later_module])
+            and not present(program / later_module)):
+        expected_sources.remove(later_module)
+
+source_mirror = {}
+source_idle = None
+source_lock_fd = None
+source_state = state_root / 'source-upgrade'
+
+
+def source_identity(info):
+    return info.st_dev, info.st_ino
+
+
+def verify_idle_source():
+    parent = directory(state_root, root_uid, root_gid, exact_mode=0o700)
+    folder = directory(source_state, root_uid, root_gid, exact_mode=0o700)
+    leaf = regular(source_state / 'lock', root_uid, root_gid, 0, private=True)
+    if (stat.S_IMODE(leaf.st_mode) != 0o600
+            or (source_identity(parent), source_identity(folder), source_identity(leaf)) != source_idle
+            or source_identity(os.fstat(source_lock_fd)) != source_identity(leaf)
+            or sorted(os.listdir(source_state)) != ['lock']
+            or present(state_root / 'transition.json')):
+        raise SystemExit('never-staged Pixel source state changed')
+
+
+if present(state_root / 'source-upgrade'):
+    # The retained protected guard can legitimately be newer than a rolled-
+    # back source. Its completed, exact-byte root inventory is the authority;
+    # incomplete transactions and arbitrary extra state still refuse removal.
+    directory(program, root_uid, root_gid)
+    helper = program / 'pixel_source_upgrade.py'
+    regular(helper, root_uid, root_gid, 2 * 1024 * 1024)
+    parent = directory(state_root, root_uid, root_gid, exact_mode=0o700)
+    folder = directory(source_state, root_uid, root_gid, exact_mode=0o700)
+    if sorted(os.listdir(source_state)) == ['lock']:
+        # Stage creates its lock before validating source. A refusal can leave
+        # no transaction at all. Old protected helpers require a completed
+        # journal, so recognize only this exact idle state in the candidate.
+        # Keep the descriptor locked until this short-lived Python process
+        # exits, including throughout final removal. Never create a new lock.
+        source_lock_fd = os.open(source_state / 'lock',
+                                 os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+        leaf = regular(source_state / 'lock', root_uid, root_gid, 0, private=True)
+        source_idle = (source_identity(parent), source_identity(folder), source_identity(leaf))
+        verify_idle_source()
+        try:
+            fcntl.flock(source_lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as error:
+            raise SystemExit('Pixel source transition lock is busy') from error
+        verify_idle_source()
+    else:
+        spec = importlib.util.spec_from_file_location('ods_source_uninstall', helper)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        manager = module.SourceUpgrade(state_root / 'source-upgrade', install, owner_uid)
+        source_mirror = manager.uninstall_inventory()
 
 relay_key = config.parent / "pixel-access-relay.key"
 artifacts = (unit, program, config, relay_key, state_root, probe_owner, dropin,
@@ -209,8 +286,9 @@ if not any(present(path) for path in artifacts):
 
 if present(unit):
     regular(unit, root_uid, root_gid, 256 * 1024)
-    source_file(unit_source, 256 * 1024)
-    if unit.read_bytes() != unit_source.read_bytes():
+    if str(unit) not in source_mirror:
+        source_file(unit_source, 256 * 1024)
+    if str(unit) not in source_mirror and unit.read_bytes() != unit_source.read_bytes():
         raise SystemExit("installed Pixel access unit drifted from this ODS install")
 
 if present(program):
@@ -237,9 +315,10 @@ if present(program):
             relative = child.relative_to(program).as_posix()
             if relative in sources:
                 source = sources[relative]
-                source_file(source, 2 * 1024 * 1024)
                 regular(child, root_uid, root_gid, 2 * 1024 * 1024)
-                if child.read_bytes() != source.read_bytes():
+                if str(child) not in source_mirror:
+                    source_file(source, 2 * 1024 * 1024)
+                if str(child) not in source_mirror and child.read_bytes() != source.read_bytes():
                     raise SystemExit(f"installed Pixel access program drifted: {relative}")
                 seen.add(relative)
                 continue
@@ -325,6 +404,11 @@ state_limits = {
     "verified.json": 256 * 1024,
     "service-baseline.json": 64 * 1024,
     "model-before.json": 8 * 1024 * 1024,
+    "access-before.json": 8 * 1024 * 1024,
+    "release-intent.json": 8192,
+    "release-baseline.json": 8192,
+    "release-prepared.json": 8192,
+    "release-completed.json": 8192,
     "model-completed.json": 256 * 1024,
     "model-promotion-completed.json": 256 * 1024,
     "model-route-completed.json": 256 * 1024,
@@ -343,6 +427,8 @@ provider_managed = None
 if present(state_root):
     directory(state_root, root_uid, root_gid, exact_mode=0o700)
     for child in state_root.iterdir():
+        if child.name == 'source-upgrade' and (source_mirror or source_idle):
+            continue  # Completed transaction or exact locked idle state above.
         if abandoned_state_temp.fullmatch(child.name):
             info = regular(child, root_uid, root_gid, 8 * 1024 * 1024, private=True)
             if stat.S_IMODE(info.st_mode) != 0o600:
@@ -432,6 +518,9 @@ for line in mount_lines:
     if any(mount == root or root in mount.parents for root in mount_roots):
         raise SystemExit(f"mount inside Pixel access cleanup root: {mount}")
 
+if source_idle:
+    verify_idle_source()
+
 for path in (provider_dropin, provider_environment, dropin, relay_key, config, unit):
     if present(path):
         path.unlink()
@@ -450,7 +539,7 @@ PY
 }
 
 ods_pixel_uninstall_managed() {
-    local install_dir="$1" owner_home="$2"
+    local install_dir="$1" owner_home="$2" ops_state_cleanup_mode="${3:-strict}"
     local marker="$owner_home/.config/ods/pixel-managed.json"
     local systemd_dir="${ODS_PIXEL_UNINSTALL_SYSTEMD_DIR:-/etc/systemd/system}"
     local etc_dir="${ODS_PIXEL_UNINSTALL_ETC_DIR:-/etc/ods}"
@@ -532,10 +621,15 @@ ods_pixel_uninstall_managed() {
     local runtime_attestation_state
     local retire_openclaw_config openclaw_config_sha256
     local release_identity_sha256 install_manifest_sha256 retired_release_path
-    local ops_plan="absent||||" ops_state_status ops_uid ops_gid ops_user_present ops_group_present
+    local ops_plan="absent|||||" ops_state_status ops_uid ops_gid ops_user_present ops_group_present ops_state_action ops_custody_path
     local ops_passwd_entry="" ops_group_entry="" ops_user_group_ids="" ops_user_group_names="" ops_artifacts_present=false
     local pixel_lock_fd="" owner_uid
     local root_artifacts_present=false owner_gid owner_name access_artifacts_present=false access_plan="absent"
+
+    [[ "$ops_state_cleanup_mode" == strict || "$ops_state_cleanup_mode" == source-transition ]] || {
+        log_error "Refusing unknown Pixel Operations state cleanup mode"
+        return 1
+    }
 
     [[ "$install_dir" == /* && "$install_dir" != / && -d "$install_dir" && ! -L "$install_dir" ]] || {
         log_error "Refusing Pixel cleanup for an invalid ODS install directory"
@@ -1589,7 +1683,8 @@ PY
             "$install_dir/data/pixel/source-$pixel_source_ref/.generated/ops-broker.env" \
             "$install_dir/data/pixel/source-$pixel_source_ref/deploy/ops-broker/broker.py" \
             "$release_path/install-manifest.sha256" \
-            "$release_path/deployment-inputs.sha256" "$install_manifest_sha256" <<'PY'
+            "$release_path/deployment-inputs.sha256" "$install_manifest_sha256" \
+            "$ops_state_cleanup_mode" <<'PY'
 import hashlib
 import os
 import pathlib
@@ -1633,6 +1728,7 @@ import sys
     release_manifest_raw,
     deployment_inputs_raw,
     expected_release_manifest_sha256,
+    state_cleanup_mode,
 ) = sys.argv[1:]
 
 root_uid = int(root_uid_raw)
@@ -1932,6 +2028,7 @@ if exists(policy_parent):
             or contents != expected_contents):
         raise SystemExit("unsafe Pixel Operations Broker policy directory")
 
+state_cleanup_action = "remove"
 if exists(state_dir):
     root = state_dir.lstat()
     if (not stat.S_ISDIR(root.st_mode) or stat.S_ISLNK(root.st_mode)
@@ -1953,53 +2050,83 @@ if exists(state_dir):
         mount_path = pathlib.Path(os.path.abspath(mount_text))
         if mount_path == state_absolute or state_absolute in mount_path.parents:
             raise SystemExit(f"mount inside Pixel Operations Broker state: {mount_path}")
+    if state_cleanup_mode == "source-transition":
+        # If an entry fails the normal deletion guard, the entire old home
+        # must be retained on this source transition. Validate its parent
+        # before allowing that possible custody operation.
+        parent = state_dir.parent
+        parent_info = parent.lstat()
+        if (not stat.S_ISDIR(parent_info.st_mode) or stat.S_ISLNK(parent_info.st_mode)
+                or parent_info.st_uid != root_uid or parent_info.st_gid != root_gid
+                or parent_info.st_mode & 0o022
+                or parent.resolve(strict=True) != parent):
+            raise SystemExit("unsafe Pixel Operations Broker custody parent")
     root_device = root.st_dev
     bounded_service_profiles = {
         state_dir / ".bash_logout",
         state_dir / ".bashrc",
         state_dir / ".profile",
     }
-    for current, directories, files in os.walk(state_dir, topdown=True, followlinks=False):
+    state_error = None
+    def fail_walk(error):
+        raise error
+    for current, directories, files in os.walk(
+            state_dir, topdown=True, followlinks=False, onerror=fail_walk):
         for name in (*directories, *files):
             path = pathlib.Path(current) / name
             info = path.lstat()
             if (stat.S_ISLNK(info.st_mode) or info.st_dev != root_device
                     or info.st_uid not in {broker_uid, owner_uid}
                     or info.st_gid != broker_gid):
-                raise SystemExit(f"unsafe Pixel Operations Broker state entry: {path}")
+                state_error = f"unsafe Pixel Operations Broker state entry: {path}"
+                break
             if path in bounded_service_profiles:
                 if (not stat.S_ISREG(info.st_mode) or info.st_uid != broker_uid
                         or info.st_nlink != 1
                         or stat.S_IMODE(info.st_mode) not in {0o600, 0o640, 0o644}
                         or info.st_size > 64 * 1024):
-                    raise SystemExit(f"unsafe Pixel Operations service profile: {path}")
+                    state_error = f"unsafe Pixel Operations service profile: {path}"
+                    break
                 continue
             if info.st_mode & 0o007:
-                raise SystemExit(f"unsafe Pixel Operations Broker state entry: {path}")
+                state_error = f"unsafe Pixel Operations Broker state entry: {path}"
+                break
             if stat.S_ISDIR(info.st_mode):
                 if info.st_mode & (stat.S_ISUID | stat.S_ISVTX):
-                    raise SystemExit(f"unsafe Pixel Operations Broker state directory: {path}")
+                    state_error = f"unsafe Pixel Operations Broker state directory: {path}"
+                    break
             elif stat.S_ISREG(info.st_mode):
                 if info.st_nlink != 1 or info.st_mode & (stat.S_ISUID | stat.S_ISGID | stat.S_ISVTX):
-                    raise SystemExit(f"unsafe Pixel Operations Broker state file: {path}")
+                    state_error = f"unsafe Pixel Operations Broker state file: {path}"
+                    break
             else:
-                raise SystemExit(f"special file in Pixel Operations Broker state: {path}")
+                state_error = f"special file in Pixel Operations Broker state: {path}"
+                break
+        if state_error:
+            break
+    if state_error:
+        if state_cleanup_mode == "source-transition":
+            state_cleanup_action = "preserve"
+        else:
+            raise SystemExit(state_error)
 
-print("present|{}|{}|{}|{}".format(
+print("present|{}|{}|{}|{}|{}".format(
     broker_uid,
     broker_gid,
     "true" if passwd else "false",
     "true" if group else "false",
+    state_cleanup_action,
 ))
 PY
         )"; then
             log_error "ODS-managed Pixel Operations validation failed; leaving every Pixel artifact untouched"
             return 1
         fi
-        IFS='|' read -r ops_state_status ops_uid ops_gid ops_user_present ops_group_present <<<"$ops_plan"
+        IFS='|' read -r ops_state_status ops_uid ops_gid ops_user_present ops_group_present ops_state_action <<<"$ops_plan"
         [[ "$ops_state_status" == present && "$ops_uid" =~ ^[0-9]+$ && "$ops_gid" =~ ^[0-9]+$ \
             && ( "$ops_user_present" == true || "$ops_user_present" == false ) \
-            && ( "$ops_group_present" == true || "$ops_group_present" == false ) ]] || {
+            && ( "$ops_group_present" == true || "$ops_group_present" == false ) \
+            && ( "$ops_state_action" == remove || "$ops_state_action" == preserve ) ]] || {
             log_error "ODS-managed Pixel Operations cleanup plan is invalid"
             return 1
         }
@@ -2171,12 +2298,17 @@ PY
     log_info "Removing the ODS-managed Pixel host deployment..."
     # Inspection has a separate root-only Docker broker. Validate its fixed
     # artifacts before stopping anything, and retire it before its publisher.
-    local inspection_present=false
-    if [[ -e /etc/systemd/system/pixel-preview-inspection.service || -L /etc/systemd/system/pixel-preview-inspection.service \
-        || -e /etc/ods-pixel-inspection.json || -L /etc/ods-pixel-inspection.json \
-        || -e /usr/local/libexec/ods-pixel-inspection || -L /usr/local/libexec/ods-pixel-inspection ]]; then
+    local inspection_present=false project_present=false
+    if _ods_pixel_project_present; then
+        project_present=true
+        _ods_pixel_project_cleanup "$install_dir" "$owner_uid" check-cleanup || return 1
+    fi
+    if _ods_pixel_inspection_present; then
         inspection_present=true
         _ods_pixel_inspection_cleanup "$install_dir" "$owner_uid" validate-linux || return 1
+    fi
+    if "$project_present"; then
+        timeout 350s sudo systemctl disable --now ods-pixel-project.service || return 1
     fi
     if [[ -e "$gateway_unit" || -L "$gateway_unit" \
         || -e "$ingress_unit" || -L "$ingress_unit" \
@@ -2484,6 +2616,78 @@ PY
     fi
 
     if [[ "$ops_artifacts_present" == true ]]; then
+        if [[ "$ops_state_cleanup_mode" == source-transition && "$ops_state_action" == preserve ]]; then
+            # Preserve the whole former broker home after the service stops.
+            # Older installers copied /etc/skel into it, including links and
+            # large trees. Renaming into root-only custody does not traverse
+            # or remove any of those entries.
+            if ! ops_custody_path="$(sudo python3 - "$ops_state" "$ops_uid" "$ops_gid" "$root_uid" "$root_gid" <<'PY'
+import os
+import pathlib
+import stat
+import sys
+import tempfile
+
+root = pathlib.Path(sys.argv[1])
+broker_uid = int(sys.argv[2])
+broker_gid = int(sys.argv[3])
+root_uid = int(sys.argv[4])
+root_gid = int(sys.argv[5])
+if not root.is_absolute() or root == pathlib.Path("/") or root.name != "pixel-ops-broker":
+    raise SystemExit("unsafe Pixel Operations Broker custody root")
+if not root.exists() and not root.is_symlink():
+    print("absent")
+    raise SystemExit(0)
+parent = root.parent
+parent_info = parent.lstat()
+state_info = root.lstat()
+if (not stat.S_ISDIR(parent_info.st_mode) or stat.S_ISLNK(parent_info.st_mode)
+        or parent_info.st_uid != root_uid or parent_info.st_gid != root_gid
+        or parent_info.st_mode & 0o022 or parent.resolve(strict=True) != parent
+        or not stat.S_ISDIR(state_info.st_mode) or stat.S_ISLNK(state_info.st_mode)
+        or state_info.st_uid != broker_uid or state_info.st_gid != broker_gid
+        or stat.S_IMODE(state_info.st_mode) != 0o750
+        or state_info.st_dev != parent_info.st_dev):
+    raise SystemExit("unsafe Pixel Operations Broker custody path")
+root_absolute = pathlib.Path(os.path.abspath(root))
+try:
+    mount_lines = pathlib.Path("/proc/self/mountinfo").read_text(encoding="utf-8").splitlines()
+except OSError as error:
+    raise SystemExit("cannot inspect mounts before Pixel Operations custody") from error
+for line in mount_lines:
+    fields = line.split()
+    if len(fields) < 5:
+        raise SystemExit("invalid mount table while preserving Pixel Operations state")
+    mount_text = fields[4]
+    for encoded, decoded in ((r"\040", " "), (r"\011", "\t"), (r"\012", "\n"), (r"\134", "\\")):
+        mount_text = mount_text.replace(encoded, decoded)
+    mount_path = pathlib.Path(os.path.abspath(mount_text))
+    if mount_path == root_absolute or root_absolute in mount_path.parents:
+        raise SystemExit(f"mount inside Pixel Operations Broker custody state: {mount_path}")
+holder = pathlib.Path(tempfile.mkdtemp(prefix=".pixel-ops-broker-custody-", dir=parent))
+try:
+    os.chown(holder, root_uid, root_gid)
+    os.rename(root, holder / "state")
+    for directory in (holder, parent):
+        fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+except BaseException:
+    if not (holder / "state").exists():
+        holder.rmdir()
+    raise
+print(holder / "state")
+PY
+            )"; then
+                log_error "Could not preserve Pixel Operations Broker state for the source transition"
+                return 1
+            fi
+            if [[ "$ops_custody_path" != absent ]]; then
+                log_info "Retained the prior Pixel Operations Broker state at $ops_custody_path for review; it is not removed automatically."
+            fi
+        else
         # Remove the broker's bounded state only after the service is inactive.
         # The privileged helper rechecks every entry immediately before the
         # recursive operation and rejects links, devices, mounts, hardlinks,
@@ -2529,7 +2733,10 @@ bounded_service_profiles = {
     root / ".bashrc",
     root / ".profile",
 }
-for current, directories, files in os.walk(root, topdown=True, followlinks=False):
+def fail_walk(error):
+    raise error
+for current, directories, files in os.walk(
+        root, topdown=True, followlinks=False, onerror=fail_walk):
     for name in (*directories, *files):
         path = pathlib.Path(current) / name
         info = path.lstat()
@@ -2559,6 +2766,7 @@ PY
         then
             log_error "Could not remove the verified Pixel Operations Broker state"
             return 1
+        fi
         fi
         if ! sudo rm -f -- "$ops_unit" "$ops_dropin" "$ops_env" "$ops_policy" "$ops_program" \
             "$ops_extension_program" "$ops_extension_catalog" "$ops_extension_manager" "$ops_unix_peer" \
@@ -2600,6 +2808,9 @@ PY
         fi
     fi
 
+    if "$project_present"; then
+        _ods_pixel_project_cleanup "$install_dir" "$owner_uid" cleanup-linux || return 1
+    fi
     if [[ "$root_artifacts_present" == "true" ]]; then
         if "$inspection_present"; then
             _ods_pixel_inspection_cleanup "$install_dir" "$owner_uid" remove-linux || return 1

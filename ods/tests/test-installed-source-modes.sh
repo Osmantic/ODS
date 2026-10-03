@@ -8,8 +8,8 @@ fixture=$(mktemp -d /tmp/ods-source-modes.XXXXXXXX)
 trap 'sudo -n rm -rf -- "$fixture"' EXIT
 chmod 755 "$fixture"
 root="$fixture/install"
-mkdir -p "$root"/{bin,lib,scripts,config,extensions}
-chmod 777 "$root" "$root/lib"
+mkdir -p "$root"/{bin,lib,scripts,installers,config,extensions,vendor}
+chmod 777 "$root" "$root/lib" "$root/installers" "$root/vendor"
 printf 'error() { echo "$*" >&2; exit 23; }\n' > "$fixture/probe.sh"
 awk '/^    for _installed_code_root in /{active=1} active{print} /^    unset _installed_code_root$/{exit}' \
   "$source_dir/installers/phases/06-directories.sh" >> "$fixture/probe.sh"
@@ -31,6 +31,7 @@ ln -s "$fixture/unrelated" "$root/bin/unrelated-link"
 run_probe
 [[ $(stat -c %a "$root/bin/owned") == 755 && $(stat -c %a "$root/ods-cli") == 755 ]]
 [[ $(stat -c %a "$root") == 755 && $(stat -c %a "$root/lib") == 755 ]]
+[[ $(stat -c %a "$root/installers") == 755 && $(stat -c %a "$root/vendor") == 755 ]]
 [[ $(stat -c %a "$root/bin/safe.pyc") == 644 && $(stat -c %u "$root/bin/safe.pyc") == 0 ]]
 [[ $(stat -c %a "$fixture/unrelated") == 666 ]]
 echo 'PASS ordinary owner secures copied code and preserves safe root caches and unrelated link targets'

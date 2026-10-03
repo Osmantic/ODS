@@ -437,6 +437,13 @@ INSTALL_DIR="$repair_install" \
     _ods_pixel_mark_verified_installing "$owner" "$repair_home" "$repair_contract" "$repair_pixel"
 if (
     INSTALL_DIR="$repair_install"
+    systemctl() {
+        case "$*" in
+            *"-p ProtectHome --value") printf 'tmpfs\n' ;;
+            *"-p ProtectSystem --value") printf 'strict\n' ;;
+            *) return 1 ;;
+        esac
+    }
     ENABLE_PIXEL_RUNTIME=true
     PIXEL_SERVICE_USER="$owner"
     DOCKER_COMPOSE_CMD=true
@@ -715,13 +722,13 @@ fi
 plugin_list_bin="$TEST_ROOT/openclaw-plugin-list"
 cat > "$plugin_list_bin" <<SH
 #!/usr/bin/env bash
-printf '%s\n' '{"plugins":[{"id":"pixel-ods","status":"loaded","rootDir":"$plugin_tree","contracts":{"tools":["pixel_ods_status","pixel_ods_apps_list","pixel_ods_extensions", "pixel_ods_host_observe","pixel_ods_host_command_propose","pixel_ods_evidence_report","pixel_ods_evidence_readback","pixel_ods_research","pixel_ods_web_extract","pixel_ods_download_promote","pixel_ods_workspace_preview","pixel_ods_workspace_bundle","pixel_ods_workspace_preview_inspect","pixel_ods_ask_user","pixel_ods_goal", "pixel_ods_activity", "pixel_ods_history", "pixel_ods_skill", "pixel_ods_extension_proposal", "pixel_ods_source_proposal", "pixel_ods_python_library_proposal", "pixel_ods_extension_request_status", "pixel_ods_extension_request_prepare", "pixel_ods_extension_request_advance", "pixel_ods_extension_request_retry"]}}]}'
+printf '%s\n' '{"plugins":[{"id":"pixel-ods","status":"loaded","rootDir":"$plugin_tree","contracts":{"tools":["pixel_ods_status","pixel_ods_apps_list","pixel_ods_extensions", "pixel_ods_host_observe","pixel_ods_host_command_propose","pixel_ods_evidence_report","pixel_ods_evidence_readback","pixel_ods_research","pixel_ods_web_extract","pixel_ods_download_promote","pixel_ods_workspace_preview","pixel_ods_project_build","pixel_ods_workspace_artifact", "pixel_ods_workspace_bundle","pixel_ods_workspace_preview_inspect","pixel_ods_ask_user","pixel_ods_goal", "pixel_ods_activity", "pixel_ods_history", "pixel_ods_image_read", "pixel_ods_skill", "pixel_ods_extension_proposal", "pixel_ods_source_proposal", "pixel_ods_python_library_proposal", "pixel_ods_extension_request_status", "pixel_ods_extension_request_prepare", "pixel_ods_extension_request_advance", "pixel_ods_extension_request_retry"]}}]}'
 SH
 chmod 0755 "$plugin_list_bin"
 check _ods_pixel_verify_plugin_loaded "$owner" "$home" "$plugin_list_bin" "$plugin_tree"
 cat > "$plugin_list_bin" <<SH
 #!/usr/bin/env bash
-printf '%s\n' '{"plugins":[{"id":"pixel-ods","status":"blocked","rootDir":"$plugin_tree","contracts":{"tools":["pixel_ods_status","pixel_ods_apps_list","pixel_ods_extensions", "pixel_ods_host_observe","pixel_ods_host_command_propose","pixel_ods_evidence_report","pixel_ods_evidence_readback","pixel_ods_research","pixel_ods_web_extract","pixel_ods_download_promote","pixel_ods_workspace_preview","pixel_ods_workspace_bundle","pixel_ods_workspace_preview_inspect","pixel_ods_ask_user","pixel_ods_goal", "pixel_ods_activity", "pixel_ods_history", "pixel_ods_skill", "pixel_ods_extension_proposal", "pixel_ods_source_proposal", "pixel_ods_python_library_proposal", "pixel_ods_extension_request_status", "pixel_ods_extension_request_prepare", "pixel_ods_extension_request_advance", "pixel_ods_extension_request_retry"]}}]}'
+printf '%s\n' '{"plugins":[{"id":"pixel-ods","status":"blocked","rootDir":"$plugin_tree","contracts":{"tools":["pixel_ods_status","pixel_ods_apps_list","pixel_ods_extensions", "pixel_ods_host_observe","pixel_ods_host_command_propose","pixel_ods_evidence_report","pixel_ods_evidence_readback","pixel_ods_research","pixel_ods_web_extract","pixel_ods_download_promote","pixel_ods_workspace_preview","pixel_ods_project_build","pixel_ods_workspace_artifact", "pixel_ods_workspace_bundle","pixel_ods_workspace_preview_inspect","pixel_ods_ask_user","pixel_ods_goal", "pixel_ods_activity", "pixel_ods_history", "pixel_ods_image_read", "pixel_ods_skill", "pixel_ods_extension_proposal", "pixel_ods_source_proposal", "pixel_ods_python_library_proposal", "pixel_ods_extension_request_status", "pixel_ods_extension_request_prepare", "pixel_ods_extension_request_advance", "pixel_ods_extension_request_retry"]}}]}'
 SH
 if _ods_pixel_verify_plugin_loaded "$owner" "$home" "$plugin_list_bin" "$plugin_tree" >/dev/null 2>&1; then
     fail "blocked ODS Pixel plugin rejected"
@@ -769,7 +776,7 @@ fi
 plugin_registry_bin="$TEST_ROOT/openclaw-plugin-registry"
 cat > "$plugin_registry_bin" <<SH
 #!/usr/bin/env bash
-printf '%s\n' '{"refreshed":true,"registry":{"version":1,"refreshReason":"manual","plugins":[{"pluginId":"pixel-ods","enabled":true,"rootDir":"$plugin_tree","contributions":{"contracts":{"tools":["pixel_ods_apps_list","pixel_ods_extensions", "pixel_ods_host_observe","pixel_ods_host_command_propose","pixel_ods_evidence_report","pixel_ods_evidence_readback","pixel_ods_status","pixel_ods_research","pixel_ods_web_extract","pixel_ods_download_promote","pixel_ods_workspace_preview","pixel_ods_workspace_bundle","pixel_ods_workspace_preview_inspect","pixel_ods_ask_user","pixel_ods_goal", "pixel_ods_activity", "pixel_ods_history", "pixel_ods_skill", "pixel_ods_extension_proposal", "pixel_ods_source_proposal", "pixel_ods_python_library_proposal", "pixel_ods_extension_request_status", "pixel_ods_extension_request_prepare", "pixel_ods_extension_request_advance", "pixel_ods_extension_request_retry"]}}}]}}'
+printf '%s\n' '{"refreshed":true,"registry":{"version":1,"refreshReason":"manual","plugins":[{"pluginId":"pixel-ods","enabled":true,"rootDir":"$plugin_tree","contributions":{"contracts":{"tools":["pixel_ods_apps_list","pixel_ods_extensions", "pixel_ods_host_observe","pixel_ods_host_command_propose","pixel_ods_evidence_report","pixel_ods_evidence_readback","pixel_ods_status","pixel_ods_research","pixel_ods_web_extract","pixel_ods_download_promote","pixel_ods_workspace_preview","pixel_ods_project_build","pixel_ods_workspace_artifact", "pixel_ods_workspace_bundle","pixel_ods_workspace_preview_inspect","pixel_ods_ask_user","pixel_ods_goal", "pixel_ods_activity", "pixel_ods_history", "pixel_ods_image_read", "pixel_ods_skill", "pixel_ods_extension_proposal", "pixel_ods_source_proposal", "pixel_ods_python_library_proposal", "pixel_ods_extension_request_status", "pixel_ods_extension_request_prepare", "pixel_ods_extension_request_advance", "pixel_ods_extension_request_retry"]}}}]}}'
 SH
 chmod 0755 "$plugin_registry_bin"
 check _ods_pixel_refresh_plugin_registry "$owner" "$home" "$plugin_registry_bin" "$plugin_tree"
@@ -793,6 +800,10 @@ _ods_pixel_installed_gateway_port() {
 if (
     restart_state="$restart_probe/state"
     systemctl() {
+        case "$*" in
+            *"-p ProtectHome --value") printf "tmpfs\n"; return 0 ;;
+            *"-p ProtectSystem --value") printf "strict\n"; return 0 ;;
+        esac
         if [[ "$1" == show ]]; then
             if [[ -e "$restart_state" ]]; then
                 printf '%s\n' 4242
@@ -829,6 +840,10 @@ if (
     retry_calls="$restart_probe/retry-calls"
     : > "$retry_calls"
     systemctl() {
+        case "$*" in
+            *"-p ProtectHome --value") printf "tmpfs\n"; return 0 ;;
+            *"-p ProtectSystem --value") printf "strict\n"; return 0 ;;
+        esac
         if [[ "$1" == show ]]; then
             if [[ -e "$retry_state" ]]; then
                 printf '%s\n' 4343
@@ -868,6 +883,10 @@ if (
     persistent_calls="$restart_probe/persistent-calls"
     : > "$persistent_calls"
     systemctl() {
+        case "$*" in
+            *"-p ProtectHome --value") printf "tmpfs\n"; return 0 ;;
+            *"-p ProtectSystem --value") printf "strict\n"; return 0 ;;
+        esac
         if [[ "$1" == show ]]; then
             if [[ -e "$persistent_state" ]]; then
                 printf '%s\n' 4444
@@ -907,6 +926,10 @@ fi
 
 if (
     systemctl() {
+        case "$*" in
+            *"-p ProtectHome --value") printf "tmpfs\n"; return 0 ;;
+            *"-p ProtectSystem --value") printf "strict\n"; return 0 ;;
+        esac
         [[ "$1" == show ]] && printf '%s\n' 0
     }
     ods_sudo_available() { return 1; }
@@ -938,6 +961,10 @@ chmod 0600 "$ingress_restart_answers" "$ingress_restart_status"
 if (
     ingress_restart_state="$restart_probe/ingress-restarted"
     systemctl() {
+        case "$*" in
+            *"-p ProtectHome --value") printf "tmpfs\n"; return 0 ;;
+            *"-p ProtectSystem --value") printf "strict\n"; return 0 ;;
+        esac
         if [[ "$1" == is-active ]]; then
             return 0
         fi
@@ -1016,12 +1043,28 @@ fi
 
 # A normal upgrade has no shell-level Pixel ref. Its persisted bundled ref is
 # the old release, so the new verified bundle must advance it before the
-# pre-copy transition retires the old marker from the present checkout.
+# pre-copy transition verifies the old checkout and acquires a source hold.
 printf 'PIXEL_SOURCE_URL=bundled\nPIXEL_SOURCE_REF=%s\n' \
     "$previous_source_ref" > "$transition_install/.env"
 phase06_pre_copy="$(sed -n '/^    _env_existing=""/,/^    unset _phase06_pixel_marker _phase06_pixel_source_transition/p' \
     "$ROOT/installers/phases/06-directories.sh")"
 _phase06_pre_copy_fixture() { eval "$phase06_pre_copy"; }
+_phase06_source_hold_fixture() {
+    # Disposable adapters: exercise the literal phase without sudo, services,
+    # source replacement or the protected coordinator on the test host.
+    ods_sudo() { return 1; }
+    _ods_pixel_openclaw_bin() { printf '%s\n' /fixture/openclaw; }
+    _ods_pixel_install_access_service() { printf '%s\n' guard >> "$INSTALL_DIR/upgrade-steps"; }
+    _ods_pixel_source_upgrade() {
+        printf '%s\n' "$1" >> "$INSTALL_DIR/upgrade-steps"
+        case "$1" in
+            status) printf '%s\n' '{"transaction":null,"phase":"staged"}' ;;
+            hold) printf '%064d\n' 1 ;;
+            stage|copy|downstream) ;;
+            *) return 1 ;;
+        esac
+    }
+}
 if (
     unset PIXEL_SOURCE_URL PIXEL_SOURCE_REF PIXEL_SOURCE_DIR
     HOME="$transition_home"
@@ -1034,11 +1077,14 @@ if (
     ods_pixel_install_owner() { printf '%s\n' "$owner"; }
     ods_pixel_owner_home() { printf '%s\n' "$transition_home"; }
     ods_pixel_uninstall_managed() { : > "$transition_install/retired"; }
+    _phase06_source_hold_fixture
     source "$ROOT/lib/safe-env.sh"
     _phase06_pre_copy_fixture
     [[ "$_phase06_requested_pixel_url" == bundled \
         && "$_phase06_requested_pixel_ref" == "$ODS_PIXEL_BUNDLED_REF" \
-        && -f "$transition_install/retired" ]]
+        && ! -e "$transition_install/retired" \
+        && "$(cat "$INSTALL_DIR/upgrade-steps")" == $'stage\nstatus\nguard\nhold\ncopy\ndownstream' \
+        && "$ODS_PIXEL_SOURCE_TRANSACTION" == "$(printf '%064d' 1)" ]]
 ); then
     pass "persisted old bundled Pixel ref advances and transitions before source copy"
 else
@@ -1107,16 +1153,18 @@ if (
         printf '%s\n' "$legacy_checkout"
     }
     ods_pixel_uninstall_managed() { : > "$legacy_install/retired"; }
+    _phase06_source_hold_fixture
     source "$ROOT/lib/safe-env.sh"
     _phase06_pre_copy_fixture
     [[ "$_phase06_requested_pixel_url" == bundled \
         && "$_phase06_requested_pixel_ref" == "$ODS_PIXEL_BUNDLED_REF" \
         && -f "$legacy_install/old-checkout-verified" \
-        && -f "$legacy_install/retired" ]]
+        && ! -e "$legacy_install/retired" \
+        && "$(cat "$INSTALL_DIR/upgrade-steps")" == $'stage\nstatus\nguard\nhold\ncopy\ndownstream' ]]
 ); then
-    pass "canonical legacy environment and marker retire from local checkout before source copy"
+    pass "canonical legacy environment verifies local checkout and holds source upgrade"
 else
-    fail "canonical legacy environment did not retire its old managed Pixel safely"
+    fail "canonical legacy environment did not safely hold its managed Pixel source upgrade"
 fi
 printf 'PIXEL_SOURCE_URL=https://example.invalid/custom-pixel.git\nPIXEL_SOURCE_REF=%s\n' \
     b33730436baf5d98bf58f7d57c090318fe19f433 > "$transition_install/.env"
@@ -1703,7 +1751,7 @@ assert v["modelMaxTokens"] == 8192
 assert v["modelReasoning"] is False
 assert v["frontierBudgetProfile"] == "starter"
 assert v["operationsPolicyFile"] == sys.argv[2]
-assert v["gatewayExtensions"] == [{"id":"pixel-ods","path":"/opt/ods/pixel-plugin","sha256":"a"*64,"tools":["pixel_ods_status","pixel_ods_apps_list","pixel_ods_extensions", "pixel_ods_host_observe","pixel_ods_host_command_propose","pixel_ods_evidence_report","pixel_ods_evidence_readback","pixel_ods_research","pixel_ods_web_extract","pixel_ods_download_promote","pixel_ods_workspace_preview","pixel_ods_workspace_bundle","pixel_ods_workspace_preview_inspect","pixel_ods_ask_user","pixel_ods_goal", "pixel_ods_activity", "pixel_ods_history", "pixel_ods_skill", "pixel_ods_extension_proposal", "pixel_ods_source_proposal", "pixel_ods_python_library_proposal", "pixel_ods_extension_request_status", "pixel_ods_extension_request_prepare", "pixel_ods_extension_request_advance", "pixel_ods_extension_request_retry"]}]
+assert v["gatewayExtensions"] == [{"id":"pixel-ods","path":"/opt/ods/pixel-plugin","sha256":"a"*64,"tools":["pixel_ods_status","pixel_ods_apps_list","pixel_ods_extensions", "pixel_ods_host_observe","pixel_ods_host_command_propose","pixel_ods_evidence_report","pixel_ods_evidence_readback","pixel_ods_research","pixel_ods_web_extract","pixel_ods_download_promote","pixel_ods_workspace_preview","pixel_ods_project_build","pixel_ods_workspace_artifact", "pixel_ods_workspace_bundle","pixel_ods_workspace_preview_inspect","pixel_ods_ask_user","pixel_ods_goal", "pixel_ods_activity", "pixel_ods_history", "pixel_ods_image_read", "pixel_ods_skill", "pixel_ods_extension_proposal", "pixel_ods_source_proposal", "pixel_ods_python_library_proposal", "pixel_ods_extension_request_status", "pixel_ods_extension_request_prepare", "pixel_ods_extension_request_advance", "pixel_ods_extension_request_retry"]}]
 assert v["operationsLimbEnabled"] is True
 assert all(v[name] is False for name in ("emailLimbEnabled","calendarLimbEnabled","socialLimbEnabled","webLimbEnabled","frontierLimbEnabled"))
 ' "$answers" "$operations_policy"
@@ -1895,14 +1943,24 @@ assert value["tools"]["toolSearch"] == {"enabled": True, "mode": "tools", "searc
 assert "cron" in value["tools"]["alsoAllow"]
 assert "cron" in value["tools"]["sandbox"]["tools"]["allow"]
 assert agent["tools"]["deny"] == []
-assert {"pixel_ods_status", "pixel_ods_apps_list", "pixel_ods_extensions", "pixel_ods_host_observe", "pixel_ods_host_command_propose", "pixel_ods_evidence_report", "pixel_ods_evidence_readback", "pixel_ods_research","pixel_ods_web_extract", "pixel_ods_download_promote", "pixel_ods_workspace_preview","pixel_ods_workspace_bundle","pixel_ods_ask_user","pixel_ods_goal", "pixel_ods_activity", "pixel_ods_history", "pixel_ods_skill", "pixel_ods_extension_proposal"}.issubset(value["tools"]["alsoAllow"])
-assert {"web_search", "web_fetch", "pixel_ods_status", "pixel_ods_apps_list", "pixel_ods_extensions", "pixel_ods_host_observe", "pixel_ods_host_command_propose", "pixel_ods_evidence_report", "pixel_ods_evidence_readback", "pixel_ods_research","pixel_ods_web_extract", "pixel_ods_download_promote", "pixel_ods_workspace_preview","pixel_ods_workspace_bundle","pixel_ods_ask_user","pixel_ods_goal", "pixel_ods_activity", "pixel_ods_history", "pixel_ods_skill", "pixel_ods_extension_proposal"}.issubset(value["tools"]["sandbox"]["tools"]["allow"])
+assert {"pixel_ods_status", "pixel_ods_apps_list", "pixel_ods_extensions", "pixel_ods_host_observe", "pixel_ods_host_command_propose", "pixel_ods_evidence_report", "pixel_ods_evidence_readback", "pixel_ods_research","pixel_ods_web_extract", "pixel_ods_download_promote", "pixel_ods_workspace_preview","pixel_ods_workspace_bundle","pixel_ods_workspace_artifact","pixel_ods_ask_user","pixel_ods_goal", "pixel_ods_activity", "pixel_ods_history", "pixel_ods_image_read", "pixel_ods_skill", "pixel_ods_extension_proposal"}.issubset(value["tools"]["alsoAllow"])
+assert {"web_search", "web_fetch", "pixel_ods_status", "pixel_ods_apps_list", "pixel_ods_extensions", "pixel_ods_host_observe", "pixel_ods_host_command_propose", "pixel_ods_evidence_report", "pixel_ods_evidence_readback", "pixel_ods_research","pixel_ods_web_extract", "pixel_ods_download_promote", "pixel_ods_workspace_preview","pixel_ods_workspace_bundle","pixel_ods_workspace_artifact","pixel_ods_ask_user","pixel_ods_goal", "pixel_ods_activity", "pixel_ods_history", "pixel_ods_image_read", "pixel_ods_skill", "pixel_ods_extension_proposal"}.issubset(value["tools"]["sandbox"]["tools"]["allow"])
 assert value["plugins"]["entries"]["pixel-ods"]["hooks"]["allowConversationAccess"] is True
-assert value["plugins"]["entries"]["pixel-ods"]["config"] == {
+pixel_config = value["plugins"]["entries"]["pixel-ods"]["config"]
+expected_pixel_config = {
     "modelContextWindow": model["contextWindow"],
     "leanPrompt": lean_prompt,
     "perplexicaPort": value["plugins"]["entries"]["pixel-ods"]["config"]["perplexicaPort"],
 }
+if "modelImageInput" in pixel_config:
+    image_input = pixel_config["modelImageInput"]
+    assert image_input in ("supported", "unsupported", "unknown")
+    expected_pixel_config["modelImageInput"] = image_input
+    assert model["input"] == (["text"] if image_input == "unsupported" else ["text", "image"])
+if "modelRouteFingerprint" in pixel_config:
+    assert re.fullmatch(r"[a-f0-9]{64}", pixel_config["modelRouteFingerprint"])
+    expected_pixel_config["modelRouteFingerprint"] = pixel_config["modelRouteFingerprint"]
+assert pixel_config == expected_pixel_config
 assert 1 <= value["plugins"]["entries"]["pixel-ods"]["config"]["perplexicaPort"] <= 65535
 assert "pixel_web_extract" not in value["tools"]["alsoAllow"]
 assert "pixel_web_extract" not in value["tools"]["sandbox"]["tools"]["allow"]
@@ -1977,7 +2035,7 @@ cp "$runtime_config" "$runtime_recovery_candidate"
 chmod 0600 "$runtime_recovery_candidate"
 check test "$(_ods_pixel_apply_runtime_budget "$owner" "$runtime_home" "$runtime_config" "$runtime_validator")" = changed
 runtime_sha256="$(sha256sum "$runtime_config" | awk '{print $1}')"
-check python3 -c 'import json,sys; v=json.load(open(sys.argv[1])); d=v["agents"]["defaults"]; assert d["timeoutSeconds"] == 1800 and d["bootstrapMaxChars"] == 32000 and d["bootstrapTotalMaxChars"] == 96000 and d["contextInjection"] == "continuation-skip"; assert d["compaction"] == {"reserveTokens":9831,"reserveTokensFloor":0,"timeoutSeconds":1800,"keepRecentTokens":2048}; assert d["sandbox"]["docker"]["binds"] == [sys.argv[2] + "/.openclaw/.ods-exec-control:/run/pixel-ods-control:ro"] and d["sandbox"]["docker"]["dangerouslyAllowExternalBindSources"] is True; assert d["sandbox"]["docker"]["pidsLimit"] == 1024 and "ulimits" not in d["sandbox"]["docker"]; a=v["agents"]["list"][0]; assert "thinkingDefault" not in a and a["tools"]["deny"] == [] and a["experimental"] == {"localModelLean":False} and a["bootstrapMaxChars"] == 14000 and a["bootstrapTotalMaxChars"] == 36000 and a["contextInjection"] == "continuation-skip" and a["contextLimits"] == {"toolResultMaxChars":8192} and a["params"]["chat_template_kwargs"]["enable_thinking"] is False; assert v["models"]["providers"]["ods-local"]["timeoutSeconds"] == 1800; m=v["models"]["providers"]["ods-local"]["models"][0]; assert m["reasoning"] is False and "compat" not in m; assert v["diagnostics"]["stuckSessionAbortMs"] == 1860000; assert v["session"]["writeLock"] == {"maxHoldMs":1920000,"staleMs":3600000}; assert {"pixel_ods_status","pixel_ods_apps_list","pixel_ods_extensions", "pixel_ods_host_observe","pixel_ods_host_command_propose","pixel_ods_evidence_report","pixel_ods_evidence_readback","pixel_ods_research","pixel_ods_web_extract","pixel_ods_download_promote","pixel_ods_workspace_preview","pixel_ods_workspace_bundle","pixel_ods_ask_user","pixel_ods_goal", "pixel_ods_activity", "pixel_ods_history", "pixel_ods_skill", "pixel_ods_extension_proposal"}.issubset(v["tools"]["alsoAllow"]); assert v["tools"]["toolSearch"] == {"enabled":True,"mode":"tools","searchDefaultLimit":5,"maxSearchLimit":10}; assert {"web_search","web_fetch","pixel_ods_status","pixel_ods_apps_list","pixel_ods_extensions", "pixel_ods_host_observe","pixel_ods_host_command_propose","pixel_ods_evidence_report","pixel_ods_evidence_readback","pixel_ods_research","pixel_ods_web_extract","pixel_ods_download_promote","pixel_ods_workspace_preview","pixel_ods_workspace_bundle","pixel_ods_ask_user","pixel_ods_goal", "pixel_ods_activity", "pixel_ods_history", "pixel_ods_skill", "pixel_ods_extension_proposal"}.issubset(v["tools"]["sandbox"]["tools"]["allow"]) and v["tools"]["loopDetection"]["globalCircuitBreakerThreshold"] == 6; assert v["plugins"]["entries"]["pixel-ods"]["hooks"]["allowConversationAccess"] is True and v["plugins"]["entries"]["pixel-ods"]["config"] == {"modelContextWindow":32768,"leanPrompt":False,"perplexicaPort":3004}; assert v["tools"]["web"]["fetch"]["enabled"] is True and v["tools"]["web"]["fetch"]["maxChars"] == 12000 and v["tools"]["web"]["fetch"]["timeoutSeconds"] == 20 and v["tools"]["web"]["fetch"]["ssrfPolicy"] == {"allowRfc2544BenchmarkRange":False,"allowIpv6UniqueLocalRange":False}' "$runtime_config" "$runtime_home"
+check python3 -c 'import json,sys; v=json.load(open(sys.argv[1])); d=v["agents"]["defaults"]; assert d["timeoutSeconds"] == 1800 and d["bootstrapMaxChars"] == 32000 and d["bootstrapTotalMaxChars"] == 96000 and d["contextInjection"] == "continuation-skip"; assert d["compaction"] == {"reserveTokens":9831,"reserveTokensFloor":0,"timeoutSeconds":1800,"keepRecentTokens":2048}; assert d["sandbox"]["docker"]["binds"] == [sys.argv[2] + "/.openclaw/.ods-exec-control:/run/pixel-ods-control:ro"] and d["sandbox"]["docker"]["dangerouslyAllowExternalBindSources"] is True; assert d["sandbox"]["docker"]["pidsLimit"] == 1024 and "ulimits" not in d["sandbox"]["docker"]; a=v["agents"]["list"][0]; assert "thinkingDefault" not in a and a["tools"]["deny"] == [] and a["experimental"] == {"localModelLean":False} and a["bootstrapMaxChars"] == 14000 and a["bootstrapTotalMaxChars"] == 36000 and a["contextInjection"] == "continuation-skip" and a["contextLimits"] == {"toolResultMaxChars":8192} and a["params"]["chat_template_kwargs"]["enable_thinking"] is False; assert v["models"]["providers"]["ods-local"]["timeoutSeconds"] == 1800; m=v["models"]["providers"]["ods-local"]["models"][0]; assert m["reasoning"] is False and "compat" not in m; assert v["diagnostics"]["stuckSessionAbortMs"] == 1860000; assert v["session"]["writeLock"] == {"maxHoldMs":1920000,"staleMs":3600000}; assert {"pixel_ods_status","pixel_ods_apps_list","pixel_ods_extensions", "pixel_ods_host_observe","pixel_ods_host_command_propose","pixel_ods_evidence_report","pixel_ods_evidence_readback","pixel_ods_research","pixel_ods_web_extract","pixel_ods_download_promote","pixel_ods_workspace_preview","pixel_ods_workspace_bundle","pixel_ods_workspace_artifact","pixel_ods_ask_user","pixel_ods_goal", "pixel_ods_activity", "pixel_ods_history", "pixel_ods_image_read", "pixel_ods_skill", "pixel_ods_extension_proposal"}.issubset(v["tools"]["alsoAllow"]); assert v["tools"]["toolSearch"] == {"enabled":True,"mode":"tools","searchDefaultLimit":5,"maxSearchLimit":10}; assert {"web_search","web_fetch","pixel_ods_status","pixel_ods_apps_list","pixel_ods_extensions", "pixel_ods_host_observe","pixel_ods_host_command_propose","pixel_ods_evidence_report","pixel_ods_evidence_readback","pixel_ods_research","pixel_ods_web_extract","pixel_ods_download_promote","pixel_ods_workspace_preview","pixel_ods_workspace_bundle","pixel_ods_workspace_artifact","pixel_ods_ask_user","pixel_ods_goal", "pixel_ods_activity", "pixel_ods_history", "pixel_ods_image_read", "pixel_ods_skill", "pixel_ods_extension_proposal"}.issubset(v["tools"]["sandbox"]["tools"]["allow"]) and v["tools"]["loopDetection"]["globalCircuitBreakerThreshold"] == 6; assert v["plugins"]["entries"]["pixel-ods"]["hooks"]["allowConversationAccess"] is True and v["plugins"]["entries"]["pixel-ods"]["config"] == {"modelContextWindow":32768,"leanPrompt":False,"perplexicaPort":3004}; assert v["tools"]["web"]["fetch"]["enabled"] is True and v["tools"]["web"]["fetch"]["maxChars"] == 12000 and v["tools"]["web"]["fetch"]["timeoutSeconds"] == 20 and v["tools"]["web"]["fetch"]["ssrfPolicy"] == {"allowRfc2544BenchmarkRange":False,"allowIpv6UniqueLocalRange":False}' "$runtime_config" "$runtime_home"
 check test "$(_ods_pixel_apply_runtime_budget "$owner" "$runtime_home" "$runtime_config" "$runtime_validator")" = unchanged
 check test "$(sha256sum "$runtime_config" | awk '{print $1}')" = "$runtime_sha256"
 runtime_nproc_config="$runtime_home/.openclaw/nproc-config.json"
@@ -2114,6 +2172,9 @@ value.update({
 target.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
 PY
 chmod 0600 "$runtime_transition_answers"
+# Render the native image-input metadata from this exact route contract.
+check test "$(_ods_pixel_apply_runtime_budget "$owner" "$runtime_home" \
+    "$runtime_full_candidate" "$runtime_validator" "$runtime_transition_answers")" = changed
 check _ods_pixel_candidate_is_managed_runtime_update "$owner" "$runtime_home" \
     "$runtime_full_candidate" "$runtime_transition_answers"
 cp "$runtime_full_candidate" "$runtime_config"
@@ -2341,7 +2402,7 @@ if _ods_pixel_update_onboarding_model "$owner" "$reconcile_home" "$reconcile_ans
 else
     pass "undersized Pixel model context rejected"
 fi
-check test "$(_ods_pixel_apply_runtime_budget "$owner" "$reconcile_home" "$reconcile_candidate" "$runtime_validator")" = changed
+check test "$(_ods_pixel_apply_runtime_budget "$owner" "$reconcile_home" "$reconcile_candidate" "$runtime_validator" "$reconcile_answers")" = changed
 check python3 -c 'import json,sys; v=json.load(open(sys.argv[1])); a=v["agents"]["list"][0]; m=v["models"]["providers"]["ods-local"]["models"][0]; assert m["reasoning"] is True and m["compat"] == {"thinkingFormat":"qwen-chat-template"} and a["thinkingDefault"] == "low" and a["params"]["chat_template_kwargs"]["enable_thinking"] is True' "$reconcile_candidate"
 check _ods_pixel_candidate_is_managed_runtime_update "$owner" "$reconcile_home" "$reconcile_candidate" "$reconcile_answers"
 cp "$reconcile_config" "$TEST_ROOT/reconcile-config-with-control-bind.json"
@@ -2415,7 +2476,7 @@ model.pop("compat", None)
 path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
 PY
 chmod 0600 "$non_qwen_answers" "$non_qwen_candidate"
-check test "$(_ods_pixel_apply_runtime_budget "$owner" "$reconcile_home" "$non_qwen_candidate" "$runtime_validator")" = changed
+check test "$(_ods_pixel_apply_runtime_budget "$owner" "$reconcile_home" "$non_qwen_candidate" "$runtime_validator" "$non_qwen_answers")" = changed
 check _ods_pixel_candidate_is_managed_runtime_update "$owner" "$reconcile_home" \
     "$non_qwen_candidate" "$non_qwen_answers"
 check _ods_pixel_atomic_replace_managed_file "$owner" "$reconcile_home" \
@@ -2465,11 +2526,110 @@ target.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
 PY
 chmod 0600 "$gateway_answers" "$gateway_candidate"
 gateway_budget_status="$(_ods_pixel_apply_runtime_budget "$owner" "$reconcile_home" \
-    "$gateway_candidate" "$runtime_validator")"
+    "$gateway_candidate" "$runtime_validator" "$gateway_answers")"
 check test "$gateway_budget_status" = changed
 check _ods_pixel_candidate_is_managed_runtime_update "$owner" "$reconcile_home" \
     "$gateway_candidate" "$gateway_answers"
 cp "$reconcile_config" "$TEST_ROOT/pre-gateway-alias-config.json"
+cp "$gateway_candidate" "$reconcile_config"
+chmod 0600 "$reconcile_config"
+search_parallel_live="$TEST_ROOT/search-parallel-live.json"
+search_searx_candidate="$TEST_ROOT/search-searx-candidate.json"
+search_parallel_answers="$TEST_ROOT/search-parallel-answers.json"
+search_searx_answers="$TEST_ROOT/search-searx-answers.json"
+python3 - "$gateway_candidate" "$gateway_answers" "$INSTALL_DIR" \
+    "$search_parallel_live" "$search_searx_candidate" \
+    "$search_parallel_answers" "$search_searx_answers" <<'PY'
+import copy, json, pathlib, sys
+
+source, contract_source, install_root, parallel_file, searx_file, parallel_answers, searx_answers = map(pathlib.Path, sys.argv[1:])
+parallel_path = str(install_root / "data/pixel/native-search/parallel-2026.6.33")
+base = json.loads(source.read_text(encoding="utf-8"))
+contract = json.loads(contract_source.read_text(encoding="utf-8"))
+parallel = copy.deepcopy(base)
+parallel.setdefault("tools", {}).setdefault("web", {})["search"] = {"provider": "parallel-free"}
+plugins = parallel.setdefault("plugins", {})
+plugins["allow"] = ["pixel-ods", "parallel", "llama-cpp"]
+plugins.setdefault("entries", {}).pop("searxng", None)
+plugins["entries"]["parallel"] = {"enabled": True}
+plugins["load"] = {"paths": ["/opt/ods/pixel-ods", parallel_path]}
+searx = copy.deepcopy(parallel)
+searx["tools"]["web"]["search"] = {"provider": "searxng"}
+searx["plugins"]["allow"] = ["pixel-ods", "searxng", "llama-cpp"]
+searx["plugins"]["entries"].pop("parallel")
+searx["plugins"]["entries"]["searxng"] = {
+    "enabled": True, "config": {"webSearch": {"baseUrl": "http://127.0.0.1:8888"}}}
+searx["plugins"]["load"]["paths"] = ["/opt/ods/pixel-ods"]
+bound = [item for item in contract["gatewayExtensions"] if item["id"] != "parallel"]
+parallel_contract = dict(contract, webSearchProvider="parallel-free",
+                         gatewayExtensions=bound + [{"id": "parallel", "path": parallel_path,
+                                                     "sha256": "b" * 64}])
+searx_contract = dict(contract, webSearchProvider="searxng",
+                      searxngBaseUrl="http://127.0.0.1:8888", gatewayExtensions=bound)
+for path, value in ((parallel_file, parallel), (searx_file, searx),
+                    (parallel_answers, parallel_contract), (searx_answers, searx_contract)):
+    path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    path.chmod(0o600)
+PY
+cp "$search_parallel_live" "$reconcile_config"
+chmod 0600 "$reconcile_config"
+check _ods_pixel_search_provider_matches_contract "$owner" "$reconcile_home" "$search_parallel_answers"
+if _ods_pixel_search_provider_matches_contract "$owner" "$reconcile_home" "$search_searx_answers" >/dev/null 2>&1; then
+    fail "changed Pixel search provider skipped the model-only shortcut"
+else
+    pass "changed Pixel search provider requires rendered reconciliation"
+fi
+check _ods_pixel_candidate_is_managed_runtime_update "$owner" "$reconcile_home" \
+    "$search_searx_candidate" "$search_searx_answers"
+cp "$search_searx_candidate" "$TEST_ROOT/search-searx-clean.json"
+python3 - "$search_searx_candidate" <<'PY'
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+value = json.loads(path.read_text(encoding="utf-8"))
+value["gateway"]["bind"] = "lan"
+path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+PY
+if _ods_pixel_candidate_is_managed_runtime_update "$owner" "$reconcile_home" \
+    "$search_searx_candidate" "$search_searx_answers" >/dev/null 2>&1; then
+    fail "search change allowed an unrelated gateway bind change"
+else
+    pass "search change rejects unrelated Pixel configuration drift"
+fi
+cp "$TEST_ROOT/search-searx-clean.json" "$search_searx_candidate"
+cp "$search_searx_candidate" "$reconcile_config"
+chmod 0600 "$reconcile_config"
+check _ods_pixel_search_provider_matches_contract "$owner" "$reconcile_home" "$search_searx_answers"
+search_searx_port_answers="$TEST_ROOT/search-searx-port-onboarding.json"
+search_searx_port_candidate="$TEST_ROOT/search-searx-port-candidate.json"
+cp "$search_searx_answers" "$search_searx_port_answers"
+cp "$search_searx_candidate" "$search_searx_port_candidate"
+python3 - "$search_searx_port_answers" "$search_searx_port_candidate" <<'PY'
+import json, pathlib, sys
+answers_path, candidate_path = map(pathlib.Path, sys.argv[1:])
+origin = "http://127.0.0.1:8899"
+for path in (answers_path, candidate_path):
+    value = json.loads(path.read_text(encoding="utf-8"))
+    if path == answers_path:
+        value["searxngBaseUrl"] = origin
+    else:
+        value["plugins"]["entries"]["searxng"]["config"]["webSearch"]["baseUrl"] = origin
+    path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+PY
+chmod 0600 "$search_searx_port_answers" "$search_searx_port_candidate"
+if _ods_pixel_search_provider_matches_contract "$owner" "$reconcile_home" \
+    "$search_searx_port_answers" >/dev/null 2>&1; then
+    fail "changed SearXNG origin skipped rendered reconciliation"
+else
+    pass "changed SearXNG origin requires rendered reconciliation"
+fi
+check _ods_pixel_candidate_is_managed_runtime_update "$owner" "$reconcile_home" \
+    "$search_searx_port_candidate" "$search_searx_port_answers"
+cp "$search_searx_port_candidate" "$reconcile_config"
+chmod 0600 "$reconcile_config"
+check _ods_pixel_search_provider_matches_contract "$owner" "$reconcile_home" \
+    "$search_searx_port_answers"
+check _ods_pixel_candidate_is_managed_runtime_update "$owner" "$reconcile_home" \
+    "$search_parallel_live" "$search_parallel_answers"
 cp "$gateway_candidate" "$reconcile_config"
 chmod 0600 "$reconcile_config"
 check _ods_pixel_uses_stable_model_alias "$owner" "$reconcile_home" "$gateway_answers"
@@ -2652,6 +2812,10 @@ _ods_pixel_installed_gateway_port() {
 }
 systemctl() {
     case "$*" in
+        *"-p ProtectHome --value") printf "tmpfs\n"; return 0 ;;
+        *"-p ProtectSystem --value") printf "strict\n"; return 0 ;;
+    esac
+    case "$*" in
         'show openclaw-gateway.service -p MainPID --value')
             local count
             read -r count < "$gateway_mock_root/mainpid-calls"
@@ -2693,11 +2857,24 @@ ods_pixel_run_as_owner() {
 check _ods_pixel_restart_gateway_and_verify "$owner" "$reconcile_home" /verified/pixel
 check test "$(cat "$gateway_mock_root/kills")" = '-TERM 111'
 check grep -F '/verified/pixel/pixel verify' "$gateway_mock_root/owner-runs"
+printf '0\n' > "$gateway_mock_root/mainpid-calls"
+verification_transaction=$(printf 'a%.0s' {1..64})
+check _ods_pixel_restart_gateway_and_verify "$owner" "$reconcile_home" /verified/pixel "$verification_transaction"
+check grep -F "/verified/pixel/pixel verify --ods-model-transaction $verification_transaction" "$gateway_mock_root/owner-runs"
+if _ods_pixel_restart_gateway_and_verify "$owner" "$reconcile_home" /verified/pixel invalid >/dev/null 2>&1; then
+    fail "invalid verification transaction rejected"
+else
+    pass "invalid verification transaction rejected"
+fi
 
 # A mismatched systemd User must fail before any signal is sent.
 printf '0\n' > "$gateway_mock_root/mainpid-calls"
 : > "$gateway_mock_root/kills"
 systemctl() {
+    case "$*" in
+        *"-p ProtectHome --value") printf "tmpfs\n"; return 0 ;;
+        *"-p ProtectSystem --value") printf "strict\n"; return 0 ;;
+    esac
     case "$*" in
         'show openclaw-gateway.service -p MainPID --value') printf '111\n' ;;
         'show openclaw-gateway.service -p User --value') printf 'someone-else\n' ;;
@@ -2753,17 +2930,20 @@ import json,sys
 p=json.load(open(sys.argv[1])); m=json.load(open(sys.argv[2]))
 assert p["type"] == "module" and p["openclaw"]["extensions"] == ["./index.js"]
 assert "dependencies" not in p
-assert sorted(m["contracts"]["tools"]) == sorted(["pixel_ods_apps_list","pixel_ods_download_promote","pixel_ods_evidence_readback","pixel_ods_evidence_report","pixel_ods_extensions", "pixel_ods_host_command_propose","pixel_ods_host_observe","pixel_ods_research","pixel_ods_status","pixel_ods_web_extract","pixel_ods_workspace_preview","pixel_ods_workspace_bundle","pixel_ods_workspace_preview_inspect","pixel_ods_ask_user","pixel_ods_goal", "pixel_ods_activity", "pixel_ods_history", "pixel_ods_skill", "pixel_ods_extension_proposal", "pixel_ods_source_proposal", "pixel_ods_python_library_proposal", "pixel_ods_extension_request_status", "pixel_ods_extension_request_prepare", "pixel_ods_extension_request_advance", "pixel_ods_extension_request_retry"])
+assert sorted(m["contracts"]["tools"]) == sorted(["pixel_ods_apps_list","pixel_ods_download_promote","pixel_ods_evidence_readback","pixel_ods_evidence_report","pixel_ods_extensions", "pixel_ods_host_command_propose","pixel_ods_host_observe","pixel_ods_research","pixel_ods_status","pixel_ods_web_extract","pixel_ods_workspace_preview","pixel_ods_project_build","pixel_ods_workspace_artifact", "pixel_ods_workspace_bundle","pixel_ods_workspace_preview_inspect","pixel_ods_ask_user","pixel_ods_goal", "pixel_ods_activity", "pixel_ods_history", "pixel_ods_image_read", "pixel_ods_skill", "pixel_ods_extension_proposal", "pixel_ods_source_proposal", "pixel_ods_python_library_proposal", "pixel_ods_extension_request_status", "pixel_ods_extension_request_prepare", "pixel_ods_extension_request_advance", "pixel_ods_extension_request_retry"])
 import re
 reserved = re.compile(r"^pixel_(?:gmail|calendar|social|web|ops|frontier)_")
 assert all(name != "pixel_limb_status" and not reserved.match(name) for name in m["contracts"]["tools"])
 assert m["toolMetadata"] == {
+    "pixel_ods_project_build": {"replaySafe": False},
     "pixel_ods_workspace_bundle": {"replaySafe": False},
+    "pixel_ods_workspace_artifact": {"replaySafe": False},
     "pixel_ods_workspace_preview_inspect": {"replaySafe": True},
     "pixel_ods_ask_user": {"replaySafe": True},
     "pixel_ods_goal": {"replaySafe": True},
     "pixel_ods_activity": {"replaySafe": True},
     "pixel_ods_history": {"replaySafe": True},
+    "pixel_ods_image_read": {"replaySafe": True},
     "pixel_ods_skill": {"replaySafe": True},
     "pixel_ods_status": {"replaySafe": True},
     "pixel_ods_apps_list": {"replaySafe": True},
@@ -2778,7 +2958,8 @@ assert "api.on(\"before_prompt_build\"" in text
 assert "api.on(\"model_call_started\"" in text
 assert "api.on(\"before_agent_finalize\"" in text
 assert "api.on(\"tool_result_persist\"" in text
-assert "promptContractForAgent(context, AGENT_ID, event, {" in text
+assert "promptContractForAgent(context, AGENT_ID, ownerEvent, {" in text
+assert "ownerEvent = toolLoopGuard.ownerIntentEventForRun(context?.runId ?? event?.runId, event)" in text
 assert "verificationStatus: toolLoopGuard.verificationStatus(context?.runId)" in text
 ' "$plugin/index.js"
 # Dollar expressions below are literal source-code assertions.
@@ -2788,8 +2969,9 @@ import pathlib,sys
 text=pathlib.Path(sys.argv[1]).read_text()
 access_bridge=pathlib.Path(sys.argv[2]).read_text()
 installer=text[text.index("ods_pixel_install_default_agent() {"):]
-assert "local -a pixel_prerequisites=(litellm dashboard-api pixel-edge pixel-model-relay searxng)" in installer
-assert "pixel_prerequisites+=(searxng)" not in installer
+assert "local -a pixel_prerequisites=(litellm dashboard-api pixel-edge pixel-model-relay)" in installer
+assert "if [[ \"$web_search_provider\" == searxng ]]; then\n        pixel_prerequisites+=(searxng)" in installer
+assert "if [[ \"$web_search_provider\" == searxng ]]; then\n        _ods_pixel_wait_http \"ODS local search\"" in installer
 assert installer.index("\"ODS local search\"") < installer.index("\"$pixel_root/pixel\" plan")
 assert "ods_pixel_run_as_owner \"$owner\" \"$home\" curl" in text
 assert "_ods_pixel_wait_ingress \"$owner\" \"$home\"" in installer
@@ -2807,7 +2989,7 @@ assert text.count("pixel\" ops-broker --confirm") == 2
 assert "Pixel could not install and verify the isolated Operations Broker" in text
 assert text.count("_ods_pixel_verify_operations_policy_custody \"$owner\" \"$home\" \"$operations_policy\"") == 2
 assert "PATH=\"$home/.openclaw/.ods-exec-control:$PATH\"" in text
-assert "pixel\" apply --confirm </dev/null &&" in text
+assert text.count("pixel\" apply --confirm \"${release_arguments[@]}\" </dev/null &&") == 2
 assert "_ods_pixel_write_operations_policy" in text
 assert "Could not write the owner-private ODS Pixel Operations policy" in text
 assert "_ods_pixel_write_extension_catalog" in text
@@ -2926,7 +3108,7 @@ stop = resume.index("systemctl stop openclaw-gateway.service")
 retire = resume.index("_ods_pixel_recreate_agent_sandbox \"$owner\" \"$home\" \"$openclaw_bin\"")
 start = resume.index("systemctl start openclaw-gateway.service", retire)
 health = resume.index("_ods_pixel_wait_gateway", start)
-verify = resume.index("\"$pixel_root/pixel\" verify", health)
+verify = resume.index("_ods_pixel_verify_current_runtime", health)
 assert stop < retire < start < health < verify
 helper_start = text.index("_ods_pixel_recreate_agent_sandbox()")
 helper_end = text.index("_ods_pixel_apply_runtime_budget()", helper_start)
@@ -2940,7 +3122,7 @@ for diagnostic in (
     "failed verification",
 ):
     assert diagnostic in resume
-assert "pixel\" verify >>\"$pixel_log\"" in text
+assert "_ods_pixel_verify_current_runtime \"$owner\" \"$home\" \"$pixel_root\" >>\"$pixel_log\"" in text
 assert "if ! _ods_pixel_install_ingress" in text
 assert "systemctl restart pixel-ingress.service" in text
 assert "RestartForceExitStatus --value" in text
@@ -2970,7 +3152,11 @@ assert "--state-dir \"$home/.openclaw/ods-runtime-patches/sandbox-mkdir-$mkdir_m
 managed.extend(["sandbox-mkdir-bridge", "sandbox-mkdir-secure"])
 known = installer[foreign_restore:own_repair].split("--known", 1)[1].split(">>", 1)[0]
 assert sorted(known.replace("\\", " ").split()) == sorted(managed)
-assert len(set(managed)) == len(managed) == 12
+assert len(set(managed)) == len(managed) == 19
+assert {"context-usage", "yield-usage", "compaction-empty", "compaction-no-work", "hook-provenance", "run-id-redaction"}.issubset(managed)
+assert "command-attempt-warning" in managed
+assert "--command-attempt-warning" in installer
+assert "host/openclaw-command-attempt-warning.json" in installer
 assert installer.index("_ods_pixel_refresh_plugin_registry") < installer.index("_ods_pixel_mark_ready")
 assert "ods_linux_node_tools_available" in text
 assert "runtime_token_file=\"/run/ods-pixel/openclaw.json\"" in text
@@ -3075,6 +3261,231 @@ discard=text.index("discard_active_model_config_snapshot", reconcile)
 cleanup=text.index("# ── Phase 5b: Remove bootstrap model", reconcile)
 assert reconcile < discard < cleanup
 ' "$ROOT/scripts/bootstrap-upgrade.sh"
+
+# Behavior regression: the reuse_active branch must stay unchanged without
+# FORCE and must run the ordered sandbox recovery only when FORCE=true. The
+# production branch is extracted into a fixture (not the two branches copied)
+# so these tests exercise the real installer code paths and diagnostics.
+installer_source="$ROOT/installers/lib/pixel-host-install.sh"
+reuse_fixture="$TEST_ROOT/reuse-active-fixture.sh"
+python3 - "$installer_source" "$reuse_fixture" <<'PY'
+import pathlib, sys
+source = pathlib.Path(sys.argv[1]).read_text()
+start = source.index('if [[ "$reuse_active" == true ]]; then')
+stop = source.index('\n    else\n', source.index('ai "The exact ODS-managed Pixel contract is already active'))
+pathlib.Path(sys.argv[2]).write_text(
+    '#!/usr/bin/env bash\nset -euo pipefail\n\n# Extracted verbatim from pixel-host-install.sh.\n'
+    + source[start:stop]
+    + '\nfi\n'
+)
+PY
+
+reuse_log="$TEST_ROOT/reuse-actions.log"
+reuse_verify_log="$TEST_ROOT/reuse-verify.log"
+run_reuse_auth_branch() {
+    local force_value="$1"
+    ( set -euo pipefail
+        owner=test-owner
+        home="/home/$owner"
+        pixel_root="$TEST_ROOT/pixel-root"
+        pixel_log="$TEST_ROOT/pixel.log"
+        operations_policy="$TEST_ROOT/ops-policy"
+        answers="$TEST_ROOT/answers.json"
+        pixel_gateway_port=18789
+        openclaw_bin="$TEST_ROOT/openclaw"
+        FORCE="$force_value"
+        reuse_active=true
+        : >"$reuse_log"
+        : >"$reuse_verify_log"
+        ai() { :; }
+        ai_bad() { :; }
+        journal() { printf '%s\n' "$*" >>"$reuse_log"; }
+        # This extracted branch exercises ordering; the transaction-aware
+        # verifier has separate tests. Never invoke its host probes here.
+        _ods_pixel_verify_current_runtime() { ods_pixel_run_as_owner "$1" "$2" "$3/pixel" verify; }
+        ods_pixel_run_as_owner() {
+            local source_owner="$1" target_home="$2"; shift 2
+            if [[ "${2:-}" == ops-broker ]]; then
+                journal run-as-owner "$source_owner" ops-broker
+                return 0
+            fi
+            if [[ "${2:-}" == verify ]]; then
+                journal run-as-owner "$source_owner" verify
+                return 0
+            fi
+            journal run-as-owner "$source_owner" "${2:-}"
+            return 0
+        }
+        _ods_pixel_harden_operations_state_profiles() { journal harden operations; return 0; }
+        _ods_pixel_verify_operations_policy_custody() { journal verify-custody "$1" "$2"; return 0; }
+        _ods_pixel_recreate_agent_sandbox() {
+            journal recreate-sandbox "$1" "$2"
+            return 0
+        }
+        _ods_pixel_wait_gateway() { journal wait-gateway "$1" "$2"; return 0; }
+        ods_pixel_reconcile_promoted_model() { journal reconcile-model "$1" "$2"; return 0; }
+        ods_sudo() {
+            journal ods-sudo "$*"
+            return 0
+        }
+        source "$reuse_fixture"
+    ) >>"$reuse_verify_log" 2>&1
+}
+
+if run_reuse_auth_branch false; then
+    if ! grep -qE 'systemctl|recreate-sandbox|wait-gateway' "$reuse_log" \
+        && grep -q 'run-as-owner .* verify' "$reuse_log"; then
+        pass "reuse_active without FORCE verifies without sandbox recovery"
+    else
+        fail "reuse_active without FORCE ran recovery or skipped verify"
+    fi
+else
+    fail "reuse_active without FORCE rejected a valid exact contract"
+fi
+
+if run_reuse_auth_branch true; then
+    if grep -qx 'ods-sudo systemctl stop openclaw-gateway.service' "$reuse_log" \
+        && grep -qx 'recreate-sandbox test-owner /home/test-owner' "$reuse_log" \
+        && grep -qx 'ods-sudo systemctl start openclaw-gateway.service' "$reuse_log" \
+        && grep -qx 'wait-gateway 60 18789' "$reuse_log" \
+        && grep -qx 'run-as-owner test-owner verify' "$reuse_log"; then
+        stop_line="$(grep -n 'ods-sudo systemctl stop openclaw-gateway.service' "$reuse_log" | head -1 | cut -d: -f1)"
+        retire_line="$(grep -n 'recreate-sandbox' "$reuse_log" | head -1 | cut -d: -f1)"
+        start_line="$(grep -n 'ods-sudo systemctl start openclaw-gateway.service' "$reuse_log" | head -1 | cut -d: -f1)"
+        health_line="$(grep -n 'wait-gateway' "$reuse_log" | head -1 | cut -d: -f1)"
+        verify_line="$(grep -n 'run-as-owner test-owner verify' "$reuse_log" | head -1 | cut -d: -f1)"
+        if (( stop_line < retire_line && retire_line < start_line \
+            && start_line < health_line && health_line < verify_line )); then
+            pass "reuse_active with FORCE runs ordered stop/retire/start/wait/verify"
+        else
+            fail "reuse_active FORCE recovery steps ran out of order"
+        fi
+    else
+        fail "reuse_active with FORCE did not run the full recovery sequence"
+    fi
+else
+    fail "reuse_active with FORCE failed an otherwise healthy recovery"
+fi
+
+inject_reuse_action_failure() {
+    local action="$1" force_value="${2:-true}"
+    ( set -euo pipefail
+        owner=test-owner
+        home="/home/$owner"
+        pixel_root="$TEST_ROOT/pixel-root"
+        pixel_log="$TEST_ROOT/pixel.log"
+        operations_policy="$TEST_ROOT/ops-policy"
+        answers="$TEST_ROOT/answers.json"
+        pixel_gateway_port=18789
+        openclaw_bin="$TEST_ROOT/openclaw"
+        FORCE="$force_value"
+        reuse_active=true
+        last_bad=""
+        : >"$reuse_log"
+        : >"$reuse_verify_log"
+        ai() { :; }
+        ai_bad() { last_bad="$1"; }
+        journal() { printf '%s\n' "$*" >>"$reuse_log"; }
+        _ods_pixel_verify_current_runtime() { ods_pixel_run_as_owner "$1" "$2" "$3/pixel" verify; }
+        ods_pixel_run_as_owner() {
+            shift 2
+            if [[ "${2:-}" == ops-broker ]]; then return 0; fi
+            if [[ "${2:-}" == verify ]]; then
+                journal run-as-owner verify
+                [[ "$action" == verify ]] && return 1
+                return 0
+            fi
+            return 0
+        }
+        _ods_pixel_harden_operations_state_profiles() { return 0; }
+        _ods_pixel_verify_operations_policy_custody() { return 0; }
+        _ods_pixel_recreate_agent_sandbox() {
+            journal recreate-sandbox "$1" "$2"
+            [[ "$action" == retire ]] && return 1
+            return 0
+        }
+        _ods_pixel_wait_gateway() { journal wait-gateway; [[ "$action" == wait ]] && return 1; return 0; }
+        ods_sudo() {
+            journal ods-sudo "$*"
+            if [[ "$action" == stop && "$*" == "systemctl stop"* ]]; then return 1; fi
+            if [[ "$action" == start && "$*" == "systemctl start"* ]]; then return 1; fi
+            return 0
+        }
+        local branch_status=0
+        source "$reuse_fixture" || branch_status=$?
+        printf 'RESULT bad=%s\n' "$last_bad"
+        return "$branch_status"
+    ) >>"$reuse_verify_log" 2>&1
+}
+
+if ! inject_reuse_action_failure stop; then
+    if grep -q 'could not enter maintenance mode' "$reuse_verify_log" \
+        && ! grep -q 'recreate-sandbox' "$reuse_log"; then
+        pass "reuse_active FORCE fails closed when the gateway cannot stop"
+    else
+        fail "reuse_active FORCE stop failure did not fail closed before retire"
+    fi
+else
+    fail "reuse_active FORCE stop failure was not propagated"
+fi
+
+if ! inject_reuse_action_failure retire; then
+    if grep -q 'could not retire its stale agent sandbox' "$reuse_verify_log" \
+        && grep -q 'ods-sudo systemctl start' "$reuse_log" \
+        && ! grep -q 'wait-gateway' "$reuse_log"; then
+        pass "reuse_active FORCE restores the gateway on sandbox cleanup failure"
+    else
+        fail "reuse_active FORCE did not restore the gateway after cleanup failure"
+    fi
+else
+    fail "reuse_active FORCE sandbox cleanup failure was not propagated"
+fi
+
+if ! inject_reuse_action_failure start; then
+    if grep -q 'could not restart after forced sandbox recovery' "$reuse_verify_log" \
+        && ! grep -q 'wait-gateway' "$reuse_log"; then
+        pass "reuse_active FORCE fails closed when the gateway cannot restart"
+    else
+        fail "reuse_active FORCE restart failure did not fail closed before wait"
+    fi
+else
+    fail "reuse_active FORCE restart failure was not propagated"
+fi
+
+if ! inject_reuse_action_failure wait; then
+    if grep -q 'did not become healthy after forced sandbox recovery' "$reuse_verify_log" \
+        && ! grep -q 'run-as-owner verify' "$reuse_log"; then
+        pass "reuse_active FORCE fails closed when the gateway does not become healthy"
+    else
+        fail "reuse_active FORCE health failure did not fail closed before verify"
+    fi
+else
+    fail "reuse_active FORCE health failure was not propagated"
+fi
+
+if ! inject_reuse_action_failure verify; then
+    if grep -q 'failed exact-source verification' "$reuse_verify_log" \
+        && grep -q 'run-as-owner verify' "$reuse_log"; then
+        pass "reuse_active FORCE still fails closed on verifier failure"
+    else
+        fail "reuse_active FORCE verifier failure did not fail closed"
+    fi
+else
+    fail "reuse_active FORCE verifier failure was not propagated"
+fi
+
+if ! inject_reuse_action_failure verify false; then
+    if grep -q 'failed exact-source verification' "$reuse_verify_log" \
+        && ! grep -qE 'systemctl|recreate-sandbox|wait-gateway' "$reuse_log"; then
+        pass "non-force exact reuse still rejects verifier failure without recovery"
+    else
+        fail "non-force reuse bypassed verification or ran recovery"
+    fi
+else
+    fail "non-force reuse swallowed verifier failure"
+fi
+
+check python3 "$ROOT/tests/test_pixel_access_program_modes.py"
 
 printf '\nResults: %d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

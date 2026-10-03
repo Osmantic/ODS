@@ -9,7 +9,7 @@ import { exportConversation } from '../lib/pixelConversationExport'
 
 function LimitedList({items,children,label}) {
   const [expanded,setExpanded]=useState(false)
-  return <>{children(expanded?items:items.slice(0,5))}{items.length>5 && <button type="button" className="rail-show-more" aria-label={`${expanded?'Show fewer':'Show more'} ${label}`} aria-expanded={expanded} onClick={()=>setExpanded(value=>!value)}>{expanded?'Mostrar menos':`Mostrar mais (${items.length-5})`}</button>}</>
+  return <>{children(expanded?items:items.slice(0,5))}{items.length>5 && <button type="button" className="rail-show-more" aria-label={`${expanded?'Show fewer':'Show more'} ${label}`} aria-expanded={expanded} onClick={()=>setExpanded(value=>!value)}>{expanded?'Show fewer':`Show more (${items.length-5})`}</button>}</>
 }
 
 export default function PixelConversationNavigation({ collapsed }) {
@@ -17,6 +17,7 @@ export default function PixelConversationNavigation({ collapsed }) {
   const [active, setActive] = useState('')
   const [pending, setPending] = useState(null)
   const [deleteError, setDeleteError] = useState('')
+  const [deleting,setDeleting]=useState(false)
   const [exportError, setExportError] = useState('')
   const [showArchived, setShowArchived] = useState(false)
   const archiveToggle = useRef(null)
@@ -24,6 +25,8 @@ export default function PixelConversationNavigation({ collapsed }) {
   const dialog = useRef(null)
   const trigger = useRef(null)
   const newTask = useRef(null)
+  const deletionAttempt=useRef(null)
+  useEffect(()=>()=>{if(deletionAttempt.current)clearTimeout(deletionAttempt.current.timer);deletionAttempt.current=null},[])
   useEffect(() => {
     if (pending) dialog.current?.showModal()
     else if (trigger.current) {
@@ -34,11 +37,22 @@ export default function PixelConversationNavigation({ collapsed }) {
       target?.focus()
     }
   }, [pending])
-  function closeDelete() { dialog.current?.close(); setPending(null); setDeleteError('') }
+  function closeDelete() { if(deleting)return;dialog.current?.close(); setPending(null); setDeleteError('') }
   function confirmDelete() {
+    if(deletionAttempt.current)return
+    setDeleting(true)
+    const attempt={chatId:pending.chatId,timer:null};deletionAttempt.current=attempt
+    attempt.timer=setTimeout(()=>{
+      if(deletionAttempt.current!==attempt)return
+      deletionAttempt.current=null;setDeleting(false)
+      setDeleteError('Deletion was not confirmed. Your history has not been hidden. Open this conversation and retry deletion.')
+    },35000)
     window.dispatchEvent(new CustomEvent(DELETE_EVENT, {detail:{chatId:pending.chatId, complete:error => {
+      if(deletionAttempt.current!==attempt)return
+      clearTimeout(attempt.timer);deletionAttempt.current=null
+      setDeleting(false)
       if (error) setDeleteError(error)
-      else closeDelete()
+      else {dialog.current?.close();setPending(null);setDeleteError('')}
     }}}))
   }
   useEffect(() => {
@@ -78,9 +92,9 @@ export default function PixelConversationNavigation({ collapsed }) {
     <dialog ref={dialog} className="chat-delete-dialog" aria-labelledby="delete-chat-title" onCancel={event => { event.preventDefault(); closeDelete() }}>
       <h3 id="delete-chat-title">Delete this chat?</h3>
       <p>{pending && conversationTitle(pending)}</p>
-      <p>This removes the conversation from this browser. Workspace files and published previews are kept. This cannot be undone.</p>
+      <p>This removes this browser's conversation and its private Portal image copies, including registered native transcripts. Workspace files, published previews and external backups are kept. This cannot be undone.</p>
       {deleteError && <p role="alert">{deleteError}</p>}
-      <footer><button autoFocus onClick={closeDelete}>Cancel</button><button onClick={confirmDelete}>Delete chat</button></footer>
+      <footer><button autoFocus disabled={deleting} onClick={closeDelete}>Cancel</button><button disabled={deleting} onClick={confirmDelete}>{deleting?'Deleting…':'Delete chat'}</button></footer>
     </dialog>
     <button ref={newTask} className="pixel-nav-item" onClick={() => window.dispatchEvent(new Event('ods:pixel-new-task'))}><Plus size={16}/><span>New task</span></button>
     <div className="pixel-original-sections">

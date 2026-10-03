@@ -457,5 +457,62 @@ class TestMigration(unittest.TestCase):
                     self.assertEqual(restored, original)
 
 
+class TestReleaseRebase(unittest.TestCase):
+    def test_new_release_restores_its_own_baseline_and_keeps_unrelated_settings(self):
+        previous = load_sample()
+        active, previous_baseline = enable(previous)
+        candidate = load_sample()
+        agent = pixel_of(candidate)
+        agent['model'] = 'new-provider/new-model'
+        agent['sandbox'] = {'mode': 'non-main'}
+        agent['tools']['exec'] = {'host': 'sandbox', 'security': 'allowlist', 'ask': 'always'}
+        candidate['releaseFixture'] = {'newSetting': True}
+        inputs = copy.deepcopy((active, candidate, previous_baseline))
+        migrated, next_baseline = access_mode_config.rebase_enabled(active, candidate, previous_baseline)
+        self.assertEqual((active, candidate, previous_baseline), inputs)
+        self.assertEqual(pixel_of(migrated)['model'], 'new-provider/new-model')
+        self.assertEqual(pixel_of(migrated)['sandbox']['mode'], 'off')
+        self.assertEqual(restore(migrated, next_baseline)[0], candidate)
+        self.assertEqual(restore(active, previous_baseline)[0], previous)
+
+    def test_renderer_style_absent_fields_are_restored_as_absent(self):
+        active, baseline = enable(load_sample())
+        candidate = {'agents': {'defaults': {'sandbox': {'mode': 'all'}},
+                                'list': [{'id': 'pixel', 'tools': {'deny': ['message']}}]}}
+        migrated, next_baseline = access_mode_config.rebase_enabled(active, candidate, baseline)
+        self.assertEqual(restore(migrated, next_baseline)[0], candidate)
+        self.assertEqual(pixel_of(migrated)['tools']['deny'], ['message'])
+
+    def test_partial_previous_profile_cannot_be_promoted(self):
+        active, baseline = enable(load_sample())
+        for path in access_mode_config.PATHS:
+            with self.subTest(path=path):
+                partial = copy.deepcopy(active)
+                node = pixel_of(partial)
+                for key in path[:-1]:
+                    node = node[key]
+                del node[path[-1]]
+                before = copy.deepcopy(partial)
+                with self.assertRaisesRegex(MigrationError, 'not fully enabled'):
+                    access_mode_config.rebase_enabled(partial, load_sample(), baseline)
+                self.assertEqual(partial, before)
+
+    def test_enabled_candidate_cannot_be_used_as_restore_baseline(self):
+        active, baseline = enable(load_sample())
+        with self.assertRaisesRegex(MigrationError, 'already has Full Access'):
+            access_mode_config.rebase_enabled(active, active, baseline)
+
+    def test_numeric_false_cannot_impersonate_explicit_boolean_permission(self):
+        active, baseline = enable(load_sample())
+        pixel_of(active)['tools']['fs']['workspaceOnly'] = 0
+        with self.assertRaisesRegex(MigrationError, 'not fully enabled'):
+            access_mode_config.rebase_enabled(active, load_sample(), baseline)
+
+    def test_invalid_prior_baseline_rejected(self):
+        active, _ = enable(load_sample())
+        with self.assertRaises(MigrationError):
+            access_mode_config.rebase_enabled(active, load_sample(), {})
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

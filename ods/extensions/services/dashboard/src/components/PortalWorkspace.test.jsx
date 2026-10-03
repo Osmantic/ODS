@@ -1,3 +1,6 @@
+// Conversation/review state tests isolate the asynchronous origin handshake.
+// Its real transport, timeout and stale-receipt behavior is covered in previewOrigin.test.jsx.
+vi.mock('../lib/useVerifiedPreview',()=>({default:(_preview,access)=>access}))
 import {act,fireEvent,render,screen,waitFor,within} from '@testing-library/react'
 import {createHash,webcrypto} from 'node:crypto'
 import PortalWorkspace from './PortalWorkspace'
@@ -17,6 +20,20 @@ beforeEach(()=>{
  vi.stubGlobal('fetch',vi.fn(async url=>({ok:true,headers:new Map(),arrayBuffer:async()=>new TextEncoder().encode(url.includes('__ods_manifest__')?JSON.stringify(manifest):url.includes('__ods_changes__')?JSON.stringify(comparison):sources[Object.keys(sources).find(path=>url.endsWith('/'+path))]).buffer})))
 })
 afterEach(()=>vi.unstubAllGlobals())
+it.each([404,503])('handles an unavailable publication (%s) instead of leaving a broken iframe and comparison, and can retry',async(status)=>{
+ const available=fetch
+ vi.stubGlobal('fetch',vi.fn(async()=>({ok:false,status})))
+ const {container}=render(<PortalWorkspace {...props}/>)
+ expect(await screen.findByText('Preview unavailable')).toBeVisible()
+ expect(container.querySelector('iframe')).toBeNull()
+ fireEvent.click(screen.getByRole('tab',{name:'Review'}))
+ if(status===404)expect(screen.queryByText('File comparison unavailable.')).toBeNull()
+ expect(screen.queryByText(/does not mean your workspace source files were deleted/)).toBeNull()
+ vi.stubGlobal('fetch',available)
+ fireEvent.click(screen.getByRole('button',{name:'Check publication again'}))
+ await waitFor(()=>expect(screen.queryByText('Preview unavailable')).toBeNull())
+ expect(await screen.findByLabelText('Diff for index.html')).toBeVisible()
+})
 it('opens Subagents without a publication and keeps it independent of preview files',async()=>{
  const {rerender}=render(<PortalWorkspace {...props} preview={null} access={null} agents={agents} request={{kind:'agents'}}/>)
  expect(screen.getByRole('tabpanel',{name:'Subagents'})).toBeVisible()
@@ -26,7 +43,7 @@ it('opens Subagents without a publication and keeps it independent of preview fi
  rerender(<PortalWorkspace {...props} agents={agents} request={{kind:'agents'}}/>)
  expect(screen.getByRole('tab',{name:'Subagents'})).toHaveAttribute('aria-selected','true')
  fireEvent.click(screen.getByRole('tab',{name:'Preview'}))
- expect(screen.getByTitle('Interactive Portal preview')).toBeVisible()
+ expect(await screen.findByTitle('Interactive Portal preview')).toBeVisible()
  fireEvent.click(screen.getByRole('tab',{name:'Subagents'}))
  expect(screen.getByRole('tabpanel',{name:'Subagents'})).toBeVisible()
  fireEvent.click(screen.getByRole('button',{name:'Close Subagents'}))
@@ -38,7 +55,7 @@ it('opens Subagents without a publication and keeps it independent of preview fi
 it('retains the web frame and agent detail when moving between workspace tabs',async()=>{
  const controller={...agents,selected:{teamId:agents.teams[0].id,agentId:'0'}}
  const {container,rerender}=render(<PortalWorkspace {...props} agents={controller}/>)
- const frame=container.querySelector('iframe')
+ const frame=await screen.findByTitle('Interactive Portal preview')
  rerender(<PortalWorkspace {...props} agents={controller} request={{kind:'agents'}}/>)
  expect(screen.getByRole('tabpanel',{name:'Subagents'})).toHaveTextContent('Built the page.')
  expect(frame).not.toBeVisible()
@@ -75,7 +92,7 @@ it('opens the clicked review file, then its source in one closable tab, without 
  const {container,rerender}=render(<PortalWorkspace {...props} request={{siteId:preview.siteId,kind:'review',path:'src/app.js'}}/>)
  expect(await screen.findByLabelText('Diff for src/app.js')).toBeVisible()
  expect(screen.getByRole('button',{name:'Folder demo'})).toBeVisible()
- const frame=container.querySelector('iframe')
+ const frame=await screen.findByTitle('Interactive Portal preview')
  fireEvent.click(screen.getByRole('button',{name:'Open file src/app.js'}))
  expect(await screen.findByLabelText('Code for src/app.js')).toHaveTextContent('const answer = 42;')
  expect(screen.getByRole('navigation',{name:'File path'})).toHaveAttribute('title','demo/src/app.js')
@@ -174,7 +191,7 @@ it('shares the resizable file tree between preview and source and uses a drawer 
   fireEvent.click(screen.getByRole('button',{name:'Browse files'}))
   const readme=await screen.findByRole('button',{name:'Open README.md'})
   fireEvent.keyDown(screen.getByRole('separator',{name:'Resize file list'}),{key:'ArrowLeft',shiftKey:true})
-  const frame=container.querySelector('iframe')
+  const frame=await screen.findByTitle('Interactive Portal preview')
   fireEvent.click(readme)
   expect(await screen.findByRole('heading',{name:'Project'})).toBeVisible()
   expect(screen.getByRole('separator',{name:'Resize file list'})).toHaveAttribute('aria-valuenow','264')
@@ -249,4 +266,31 @@ it('rejects comparison paths outside the current manifest and exposes no publica
  expect(screen.queryByRole('combobox',{name:'Published version'})).toBeNull()
  expect(screen.getByRole('link',{name:'Open preview in a new tab'})).toHaveAttribute('href',access.url)
  expect(screen.getByRole('button',{name:'Reload preview'})).toBeVisible()
+})
+
+it('does not navigate an iframe before the publication manifest is verified',async()=>{
+ let reject
+ vi.stubGlobal('fetch',vi.fn(()=>new Promise((resolve,fail)=>{reject=fail})))
+ const {container}=render(<PortalWorkspace {...props}/>)
+ expect(container.querySelector('iframe')).toBeNull()
+ await act(async()=>reject(new Error('offline')))
+ expect(screen.getByText('Preview unavailable')).toBeVisible()
+ expect(container.querySelector('iframe')).toBeNull()
+})
+
+it('keeps connection status and retry visible while the manifest gate blocks the iframe',async()=>{
+ const healthyFetch=fetch,onRefresh=vi.fn();let rejectManifest
+ vi.stubGlobal('fetch',vi.fn(()=>new Promise((_resolve,reject)=>{rejectManifest=reject})))
+ const view=render(<PortalWorkspace {...props} onRefresh={onRefresh}/>)
+ expect(screen.queryByTitle('Interactive Portal preview')).toBeNull()
+ expect(screen.getByRole('status')).toHaveTextContent('Connecting preview')
+ await act(async()=>{rejectManifest(new Error('offline'))})
+ expect(screen.queryByTitle('Interactive Portal preview')).toBeNull()
+ expect(screen.getByText('Preview connection unavailable.')).toBeVisible()
+ fireEvent.click(screen.getByRole('button',{name:'Retry',exact:true}))
+ expect(onRefresh).toHaveBeenCalledOnce()
+ vi.stubGlobal('fetch',healthyFetch)
+ view.rerender(<PortalWorkspace {...props} onRefresh={onRefresh} refresh={1}/>)
+ expect(await screen.findByTitle('Interactive Portal preview')).toBeVisible()
+ expect(screen.queryByText('Preview connection unavailable.')).toBeNull()
 })

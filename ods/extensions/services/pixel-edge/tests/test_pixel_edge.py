@@ -453,6 +453,23 @@ class TestAuth(BaseEdgeTest):
 
 class TestPreviewRelay(BaseEdgeTest):
 
+    async def test_framework_assets_keep_authenticated_snapshot_routing(self):
+        from pixel_edge import _preview_upstream_path
+        site = "site-" + "a" * 24
+        self.assertEqual(_preview_upstream_path(site, '_next/static/app/[slug]/page.js'),
+                         f'/{site}/_next/static/app/%5Bslug%5D/page.js')
+        for tail in ["_next/static/app.js", "__next._full.txt"]:
+            for method in ["GET", "HEAD"]:
+                async with self.client.request(method, f"http://localhost/preview/{site}/{tail}", headers=self.auth()) as response:
+                    self.assertEqual(response.status, 200)
+                    self.assertEqual(await response.read(), b"<button id=launch>Remote preview</button>" if method == "GET" else b"")
+            async with self.client.get(f"http://localhost/preview/{site}/{tail}") as response:
+                self.assertEqual(response.status, 401)
+        self.assertEqual(self.up_runner.app["preview_paths"],
+                         [f"/{site}/_next/static/app.js"] * 2 + [f"/{site}/__next._full.txt"] * 2)
+        for tail in ["__ods_unknown__.js", "_next/../secret", "_next/.hidden", "__pycache__/cache.js"]:
+            self.assertIsNone(_preview_upstream_path(site, tail), tail)
+
     async def test_nested_directory_links_resolve_to_published_index(self):
         site = "site-" + "a" * 24
         for method in ["GET", "HEAD"]:
@@ -487,7 +504,7 @@ class TestPreviewRelay(BaseEdgeTest):
             self.assertIsNone(_preview_upstream_path(site, tail))
         for tail in ["__ods_view__.html?path=secret", "../__ods_view__.html", "__ods_view__.html/extra"]:
             self.assertIsNone(_preview_upstream_path(site, tail))
-        for tail in ["__ods_manifest__.json/other", "__ods_manifest__.json?path=secret", "../__ods_manifest__.json", "__anything"]:
+        for tail in ["__ods_manifest__.json/other", "__ods_manifest__.json?path=secret", "../__ods_manifest__.json", "__ods_anything"]:
             self.assertIsNone(_preview_upstream_path(site, tail))
         self.assertIsNone(_preview_upstream_path("not-a-site", "__ods_manifest__.json"))
         async with self.client.get(f"http://localhost/preview/{site}/__ods_manifest__.json") as resp:
@@ -531,6 +548,22 @@ class TestPreviewRelay(BaseEdgeTest):
         async with self.client.get(f"http://localhost/preview/{site_id}/") as resp:
             self.assertEqual(resp.status, 401)
             self.assertNotIn("Access-Control-Allow-Origin", resp.headers)
+
+    async def test_source_review_uses_authenticated_relay_without_preview_cors(self):
+        route='/preview/site-'+'a'*24+'/__ods_source__/source-'+'b'*24+'.json'
+        async with self.client.get('http://localhost'+route) as response:
+            self.assertEqual(response.status,401)
+        async with self.client.get('http://localhost'+route,headers={'Authorization':'Bearer incorrect-key','Origin':'null'}) as response:
+            self.assertEqual(response.status,401)
+        async with self.client.get('http://localhost'+route,headers={'Origin':'null'}) as response:
+            self.assertEqual(response.status,401)
+        async with self.client.get('http://localhost'+route,headers={**self.auth(),'Origin':'null'}) as response:
+            self.assertEqual(response.status,200)
+            self.assertNotIn('Access-Control-Allow-Origin',response.headers)
+            self.assertEqual(response.headers['Cross-Origin-Resource-Policy'],'same-origin')
+            self.assertEqual(response.headers['Content-Type'],'application/json; charset=utf-8')
+            self.assertIn("default-src 'none'",response.headers['Content-Security-Policy'])
+        self.assertEqual(self.pe._preview_upstream_path('site-'+'a'*24,'__ods_source__/../../secret.json'),None)
 
     async def test_preview_relays_exact_bytes_with_an_opaque_browser_sandbox(self):
         site_id = "site-" + "a" * 24
@@ -991,6 +1024,29 @@ class TestModelAllowlist(BaseEdgeTest):
         # from write: the route must not restrict exec to readback and tests.
         self.assertIn("or copies of existing files", content)
         self.assertIn("cp or python3 with json.dump, never by re-typing them", content)
+
+    async def test_read_only_file_request_with_write_reply_has_no_mutation_route(self):
+        async with self.client.post(
+            "http://localhost/v1/chat/completions", headers=self.auth(),
+            json={"model": "pixel/default", "messages": [{"role": "user", "content": (
+                "Use a file-reading tool to read sample.txt, without changing it. "
+                "Quote both lines and then write CHECK-READ-ONLY."
+            )}]},
+        ) as resp:
+            self.assertEqual(resp.status, 200)
+        content = self.up_runner.app["chat_requests"][-1]["messages"][-1]["content"]
+        self.assertNotIn("[ODS Portal workspace task route:", content)
+
+    async def test_file_read_followed_by_explicit_file_write_has_mutation_route(self):
+        async with self.client.post(
+            "http://localhost/v1/chat/completions", headers=self.auth(),
+            json={"model": "pixel/default", "messages": [{"role": "user", "content": (
+                "Read the file notes.txt, then write the result to file answer.txt."
+            )}]},
+        ) as resp:
+            self.assertEqual(resp.status, 200)
+        content = self.up_runner.app["chat_requests"][-1]["messages"][-1]["content"]
+        self.assertIn("[ODS Portal workspace task route:", content)
 
     async def test_run_and_wait_gets_one_exec_then_exact_process_poll_route(self):
         async with self.client.post(

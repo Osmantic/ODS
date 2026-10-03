@@ -768,3 +768,19 @@ test('settings readback on an inherited hold refuses unqualified runtime version
   assert.equal(runtime.status().available, false);
   assert.throws(() => runtime.readSettings(token, runtime.status().revision), /runtime lease mismatch/);
 });
+
+test('activity diagnostics distinguish owner classes without releasing or exposing identities', t => {
+  const options = fixture();
+  t.after(() => fs.rmSync(path.dirname(options.directory), {recursive: true, force: true}));
+  const runtime = createAccessRuntime(options);
+  const ctx = {runId:'private-run',agentId:'pixel',sessionKey:'private-session'};
+  runtime.admit({},ctx);
+  runtime.beforeTool({toolCallId:'private-call',toolName:'exec'},ctx);
+  assert.deepEqual(runtime.status().activity,{runs:1,tools:1,detached:0});
+  runtime.afterTool({toolCallId:'private-call',toolName:'exec',result:{details:{status:'running',sessionId:'private-process',startedAt:1}}},ctx);
+  runtime.finish({},ctx);
+  const snapshot=runtime.status();
+  assert.deepEqual(snapshot.activity,{runs:0,tools:0,detached:1});
+  assert.equal(snapshot.active,1);assert.equal(snapshot.phase,'busy');
+  assert.equal(JSON.stringify(snapshot).includes('private-'),false);
+});

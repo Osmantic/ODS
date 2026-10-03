@@ -55,6 +55,8 @@ jobs:
     timeout-minutes: 15
     concurrency:
       group: claude-review-budget
+      # Retain concurrent PR reviews instead of replacing the sole pending job.
+      queue: max
       cancel-in-progress: false
 
     steps:

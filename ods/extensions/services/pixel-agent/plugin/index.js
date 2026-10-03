@@ -1,8 +1,13 @@
+import {createWorkspaceArtifactAdmission,createWorkspaceArtifactTool} from './workspace-artifact.mjs';
 import {createAgentSkillTool} from './agent-skills.mjs';
+import {registerProjectBuild} from './project-registration.mjs';
+import {createProjectRunControl} from './project-run-control.mjs';
 import {registerBootstrapCapabilities} from './bootstrap-capabilities.mjs';
 import {registerStableRuntimeLine} from './runtime-line.mjs';
+import {executionLocationContext} from './execution-location.mjs';
 import {createRuntimeIdentity} from './runtime-identity.mjs';
 import {fileURLToPath} from 'node:url';
+import {subagentDeliveryFor,delegationAccessIdentity} from './subagent-delivery.mjs';
 import {createActivityTool, ACTIVITY_CONTRACT} from './activity-display.mjs';
 import {previewRecoveryAllowed} from './preview-delivery-recovery.mjs';
 import {compactToolResultEnvelope} from './tool-result-envelope.mjs';
@@ -21,13 +26,16 @@ import {
   abortAndDrainAgentHarnessRun,
   callGatewayTool,
   resolveActiveEmbeddedRunSessionId,
+  resolveUserPath,
 } from "openclaw/plugin-sdk/agent-harness-runtime";
 import {getSessionEntry, patchSessionEntry, resolveStorePath} from "openclaw/plugin-sdk/session-store-runtime";
 import {withSessionTranscriptWriteLock,appendAssistantMirrorMessageByIdentity} from 'openclaw/plugin-sdk/session-transcript-runtime';
 import {
   extractBasicHtmlContent,
+  extractAssistantVisibleText,
   fetchWithWebToolsNetworkGuard,
   readResponseText,
+  resolveAgentWorkspaceDir,
 } from "openclaw/plugin-sdk/agent-runtime";
 import {
   appsPayload,
@@ -50,6 +58,7 @@ import {
   privateBrowserAccessForAgent,
 } from "./tool-loop-guard.mjs";
 import { withPixelCronDeliveryDefault } from "./cron-delivery-default.mjs";
+import { withPixelSubagentWorkspace } from "./subagent-workspace.mjs";
 import { createPublicPageReader, createPublicWebExtractTool } from "./web-extract.mjs";
 import { citationPageReadsAllowed, createHostCitationVerifier } from "./citation-verification.mjs";
 import { createStopSynthesisClient } from "./stop-synthesis.mjs";
@@ -79,6 +88,9 @@ import { createAccessRuntime, executionHostForAgent } from "./access-runtime.mjs
 import { createManagedRuntimeRegistry } from "./managed-runtime-lifecycle.mjs";
 import {createContextCompaction, readContextRequest, prepareStableContextModel} from './context-compaction.mjs';
 import {registerHistoryIntegration} from './history-context.mjs';
+import {createConversationImageLifecycle} from './conversation-image-lifecycle.mjs';
+import {createChatImageReadTool,CHAT_IMAGE_READ_TOOL} from './chat-image-read.mjs';
+import {readConversationImage,readConversationImagePolicy} from './chat-image-transport.mjs';
 import {createExtensionProposalTool, createSourceProposalTool, createPythonLibraryProposalTool, createExtensionRequestStatusTool, createExtensionRequestPrepareTool, createExtensionRequestAdvanceTool, createExtensionRequestRetryTool, submitExtensionProposal} from './extension-proposal.mjs';
 import { createOpenClawCodingTools, resolveSandboxContext, OPENCLAW_VERSION } from "openclaw/plugin-sdk/agent-harness";
 
@@ -87,17 +99,20 @@ let runtimeIdentity;
 const ABORT_BODY_LIMIT = 256;
 const OPENAI_RUN_ID = /^chatcmpl_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const toolLoopGuardRegistry = createToolLoopGuardRegistry();
+const projectRunControl = createProjectRunControl();
 const goalProgress = createGoalProgress({agentId:AGENT_ID});
 const workspaceProjects = createWorkspaceProjects();
 const taskActivity = createTaskActivity({agentId:AGENT_ID, goalForRun:id=>goalProgress.projection(id),projectsForSession:key=>workspaceProjects.forSession(key)});
 let execCancellationControl;
 let accessRuntime;
 let contextCompaction;
+let conversationImageLifecycle;
 let currentManagedRuntime;
 const managedRuntimeRegistry = createManagedRuntimeRegistry();
 const evidenceArtifactWriter = createEvidenceArtifactWriter();
 let perplexicaAvailability;
 const bundleAdmission = createWorkspaceBundleAdmission();
+const artifactAdmission = createWorkspaceArtifactAdmission();
 
 // Restrict tool registration to the Pixel agent. Tools are only offered to the
 // agent id declared by this plugin (see openclaw.plugin.json); this guards the
@@ -285,11 +300,30 @@ export default definePluginEntry({
       },
       activeSession:key => Boolean(resolveActiveEmbeddedRunSessionId(key)),
       admission:{status:() => currentManagedRuntime?.status() ?? accessRuntime.status(),
-        acquire:(token, revision) => currentManagedRuntime ? currentManagedRuntime.acquireTransition(token, revision)
-          : accessRuntime.acquire(token, revision),
-        release:token => accessRuntime.release(token), owns:token => accessRuntime.owns(token)},
+        acquire:(token, revision) => currentManagedRuntime ? currentManagedRuntime.acquireMaintenance(token, revision)
+          : accessRuntime.acquireMaintenance(token, revision),
+        release:token => currentManagedRuntime ? currentManagedRuntime.releaseMaintenance(token)
+          : accessRuntime.releaseMaintenance(token), owns:token => accessRuntime.owns(token)},
     });
     registerHistoryIntegration(api,{compactor:contextCompaction,getSessionEntry,patchSessionEntry,resolveStorePath,withSessionTranscriptWriteLock,appendAssistantMirrorMessageByIdentity});
+    conversationImageLifecycle ??= createConversationImageLifecycle({
+      readConfig:()=>api.runtime?.config?.current?.()??api.config,
+      getSessionEntry,patchSessionEntry,resolveStorePath,callGateway:callGatewayTool,compactor:contextCompaction,
+    });
+    conversationImageLifecycle.register(api);
+    api.on('before_agent_run',(_event,context)=>{
+      try {conversationImageLifecycle.observe(context);}
+      catch {return {outcome:'block',reason:'conversation-image-custody-unavailable',message:'This conversation is deleted or its private image custody could not be confirmed. Start a new conversation or retry after checking storage.'};}
+    });
+    api.registerTool(onlyPixel(context=>createChatImageReadTool(context,{
+      getSessionEntry,resolveStorePath,
+      readConfig:()=>api.runtime?.config?.current?.()??api.config,
+      readImage:readConversationImage,
+      imagePolicyForContext:async trustedContext=>{
+        const user=trustedContext.sessionKey.slice('agent:pixel:openai-user:'.length);
+        return (await readConversationImagePolicy(user)).policy;
+      },
+    })),{names:[CHAT_IMAGE_READ_TOOL]});
     // One system prompt for every Pixel chat: no per-chat session key or id.
     registerStableRuntimeLine(api);
     const statusFile = statusFileFromEnv();
@@ -310,6 +344,7 @@ export default definePluginEntry({
           reason: "ods_client_disconnect",
         }),
       execControl: execCancellationControl,
+      cancelProjectRun: scope => projectRunControl.cancel(scope),
       evidenceArtifactWriter,
       onWorkspaceMutation:mutation=>workspaceProjects.record(mutation),
       verifyWorkspacePreview:createWorkspacePreviewVerifier({transport:api.pluginConfig?.workspacePreviewTransport}),
@@ -337,6 +372,27 @@ export default definePluginEntry({
       createTools: createOpenClawCodingTools, resolveSandbox: resolveSandboxContext,
       execControl: () => execCancellationControl,
     });
+    const delegationDelivery = subagentDeliveryFor(toolLoopGuard, {
+      agentId:AGENT_ID,
+      finalText:extractAssistantVisibleText,
+      accessIdentity:() => {
+        const state=accessRuntime.status();
+        return delegationAccessIdentity(api.runtime?.config?.current?.() ?? api.config,state);
+      },
+      resolveOwnerSession:sessionKey => {
+        const config=api.runtime?.config?.current?.() ?? api.config;
+        return getSessionEntry({sessionKey,storePath:resolveStorePath(config?.session?.store,{agentId:AGENT_ID})});
+      },
+      verificationForRun:runId => toolLoopGuard.deliveryVerificationForRun(runId),
+      abortSession:async sessionKey => {
+        const sessionId=resolveActiveEmbeddedRunSessionId(sessionKey);
+        if (!sessionId) return true; // Native active-run registry reports no running harness.
+        await abortAndDrainAgentHarnessRun({sessionId,sessionKey,settleMs:4000,forceClear:false,reason:'ods_client_disconnect'});
+        return !resolveActiveEmbeddedRunSessionId(sessionKey);
+      },
+    });
+    api.on('subagent_spawned',(event,context)=>delegationDelivery.nativeSpawn(event,context));
+    api.on('gateway_stop',()=>delegationDelivery.invalidate());
     const executeBundle = createWorkspaceBundleService({runHelper: bundleExecution.runHelper,
       invalidatePreview: scope => toolLoopGuard.invalidateWorkspaceBundle(scope)});
     api.registerTool(onlyPixel(context => createWorkspaceBundleTool(context, {
@@ -347,24 +403,32 @@ export default definePluginEntry({
     // continuation. Give the Pixel agent an explicit, trusted prompt contract
     // so every ODS lookup is followed by a user-visible answer.
     api.on("before_prompt_build", async (event, context) => {
+      // A canceled child's queued announcement must not replace the guard's
+      // active owner mapping. The enforced before_agent_run gate below also
+      // rejects it before inference; this prompt hook cannot veto execution.
+      if (!accessRuntime.isProbe(context) && delegationDelivery.admission(context)) return;
       const privateBrowserAccess = privateBrowserAccessForAgent(api.config, AGENT_ID);
       const workspaceRoot = api.config?.agents?.list?.find(agent => agent.id === AGENT_ID)?.workspace
         ?? api.config?.agents?.defaults?.workspace;
       const executionHost = executionHostForAgent(api.config, AGENT_ID);
       toolLoopGuard.observeRun(context, AGENT_ID, event, { privateBrowserAccess, workspaceRoot, executionHost });
-      if (!accessRuntime.isProbe(context)) { goalProgress.begin(event, context); taskActivity.begin(event, context); }
-      const contract = promptContractForAgent(context, AGENT_ID, event, {
+      if (!accessRuntime.isProbe(context)) delegationDelivery.observe(event,context);
+      const ownerEvent = toolLoopGuard.ownerIntentEventForRun(context?.runId ?? event?.runId, event);
+      if (!accessRuntime.isProbe(context)) { goalProgress.begin(ownerEvent, context); taskActivity.begin(ownerEvent, {...context,workspaceRoot}); }
+      const contract = promptContractForAgent(context, AGENT_ID, ownerEvent, {
         verificationStatus: toolLoopGuard.verificationStatus(context?.runId),
         configuredContextWindow,
         configuredLeanPrompt,
         privateBrowserAccess,
         executionHost,
       });
-      const repositoryEvidence = contract ? await extensionRepositoryContext(event,
+      const repositoryEvidence = contract ? await extensionRepositoryContext(ownerEvent,
         result => toolLoopGuard.observeRepositorySource(context?.runId ?? event?.runId, result)) : '';
       // Per-attempt, model-only context: not part of the cached system prompt.
       const cancelContext = toolLoopGuard.promptContextForRun(context?.runId ?? event?.runId);
-      return contract ? { ...contract, ...(cancelContext ? {prependContext:cancelContext} : {}), ...(goalProgress.active(context?.runId ?? event?.runId) ? {appendContext:GOAL_CONTRACT} : {}), appendSystemContext: `${ACTIVITY_CONTRACT} ${goalProgress.active(context?.runId ?? event?.runId) ? GOAL_CONTRACT : ""} ${contract.appendSystemContext} ${executionContext()} ${repositoryEvidence}` } : undefined;
+      const deliveryContext = delegationDelivery.promptContext(context);
+      const prependContext = [contract?.prependContext,cancelContext,deliveryContext].filter(Boolean).join('\n\n');
+      return contract ? { ...contract, ...(prependContext ? {prependContext} : {}), ...(goalProgress.active(context?.runId ?? event?.runId) ? {appendContext:GOAL_CONTRACT} : {}), appendSystemContext: `${ACTIVITY_CONTRACT} ${executionLocationContext(context, AGENT_ID)} ${goalProgress.active(context?.runId ?? event?.runId) ? GOAL_CONTRACT : ""} ${contract.appendSystemContext} ${executionContext()} ${repositoryEvidence}` } : prependContext ? {prependContext} : undefined;
     });
     api.on("model_call_started", (event, context) =>
       toolLoopGuard.observeModelCall(event, context, AGENT_ID)
@@ -390,9 +454,15 @@ export default definePluginEntry({
       }
     });
     if (!managedRuntime) {
-      api.on("before_agent_run", (event, context) => accessRuntime.admit(undefined, context));
+      api.on("before_agent_run", (event, context) =>
+        (!accessRuntime.isProbe(context) && delegationDelivery.admission(context)) || accessRuntime.admit(undefined, context));
+    } else {
+      api.on("before_agent_run", (_event, context) =>
+        accessRuntime.isProbe(context) ? undefined : delegationDelivery.admission(context));
     }
     api.on("agent_end", (event, context) => {
+      delegationDelivery.end(event,context);
+      try {conversationImageLifecycle.observe(context);}catch {api.logger.warn('Portal conversation image custody could not be updated.');}
       toolLoopGuard.endPreviewRevalidation(event, context);
       toolLoopGuard.observeAgentEnd(event, context);
       if (!accessRuntime.isProbe(context)) { goalProgress.finish(event, context); taskActivity.finish(event, context); }
@@ -400,17 +470,29 @@ export default definePluginEntry({
     });
     api.on("before_tool_call", async (event, context) => {
       if (accessRuntime.isProbe(context)) return;
-      const guard = withPixelCronDeliveryDefault(
+      const interrupted=delegationDelivery.blocked(context,event);
+      if (interrupted) return interrupted;
+      let guard = withPixelCronDeliveryDefault(
         await toolLoopGuard.beforeToolCall(event, context, AGENT_ID),
         event, context, AGENT_ID,
       );
-      const decision = guard?.block ? guard : goalProgress.before(event, context) ?? accessRuntime.beforeTool(event, context) ?? guard;
+      const runtimeConfig = api.runtime?.config?.current?.() ?? api.config;
+      guard = withPixelSubagentWorkspace(guard, event, context, AGENT_ID, runtimeConfig,
+        scope => getSessionEntry({...scope,
+          storePath: resolveStorePath(runtimeConfig?.session?.store, {agentId: AGENT_ID})}), {resolveUserPath, resolveAgentWorkspaceDir});
+      const decision = guard?.block ? guard : delegationDelivery.blocked(context,event) ?? goalProgress.before(event, context) ?? accessRuntime.beforeTool(event, context) ?? guard;
+      delegationDelivery.before(event,context,decision);
       bundleAdmission.before(event, context, decision);
+      artifactAdmission.before(event, context, decision);
+      projectRunControl.before(event, context, decision);
       taskActivity.before(event, context, decision?.block === true);
       return decision;
     });
     api.on("after_tool_call", (event, context) => {
+      delegationDelivery.after(event,context);
       bundleAdmission.after(event, context);
+      artifactAdmission.after(event, context);
+      projectRunControl.after(event, context);
       accessRuntime.afterTool(event, context);
       if (!accessRuntime.isProbe(context)) {
         goalProgress.update(event, context);
@@ -445,6 +527,7 @@ export default definePluginEntry({
           if (value.operation === "acquire") {
             result = managedRuntime ? await managedRuntime.acquireTransition(value.token, value.revision)
               : accessRuntime.acquire(value.token, value.revision);
+            delegationDelivery.invalidate();
           }
           else if (value.operation === "release") result = accessRuntime.release(value.token);
           else if (value.operation === "probe") {
@@ -500,9 +583,11 @@ export default definePluginEntry({
       await toolLoopGuard.verifyCitedPages(event, context, AGENT_ID);
       const guardDecision = toolLoopGuard.beforeAgentFinalize(event, context, AGENT_ID);
       const verification = toolLoopGuard.deliveryVerificationForRun(context?.runId ?? event?.runId);
-      return goalProgress.finalize(event, context, {guardDecision,
+      const decision = goalProgress.finalize(event, context, {guardDecision,
         allowed:toolLoopGuard.continuationAllowed(context?.runId ?? event?.runId),
         waiting:verification?.status === 'pending'});
+      delegationDelivery.finalize(event,context,decision);
+      return decision;
     });
     // Delivery rewriting is limited to host-authoritative failed or pending
     // verification state. It neither requests nor receives conversation data.
@@ -519,7 +604,12 @@ export default definePluginEntry({
           sendJson(res, parsed.status, { error: "invalid cancellation request" });
           return true;
         }
-        sendJson(res, 200, { aborted: await toolLoopGuard.abortUserRun(parsed.user) });
+        // Both synchronous fences are installed before either native abort
+        // awaits drainage; queued announcements cannot steal owner custody.
+        const delegatedPending=delegationDelivery.cancel(parsed.user);
+        const parentPending=toolLoopGuard.abortUserRun(parsed.user);
+        const [delegated,parentAborted]=await Promise.all([delegatedPending,parentPending]);
+        sendJson(res, 200, { aborted: delegated.tracked ? delegated.aborted : parentAborted });
         return true;
       },
     });
@@ -532,6 +622,22 @@ export default definePluginEntry({
         return true;
       },
     });
+    api.registerHttpRoute({path:'/pixel-ods/subagent-delivery',auth:'gateway',match:'exact',
+      handler:async (req,res) => {
+        if (req.method !== 'POST') {sendJson(res,405,{error:'invalid delivery request'});return true;}
+        try {
+          if (String(req.headers['content-type'] ?? '').split(';',1)[0].trim() !== 'application/json') throw Error();
+          const chunks=[];let bytes=0;
+          for await (const chunk of req) {bytes+=chunk.length;if(bytes>ABORT_BODY_LIMIT)throw Error();chunks.push(chunk);}
+          const value=JSON.parse(Buffer.concat(chunks).toString('utf8'));
+          if (!value || Object.keys(value).sort().join()!=='runId,user' || !OPENAI_RUN_ID.test(value.runId ?? '') || !/^ods-[a-f0-9]{64}$/.test(value.user ?? '')) throw Error();
+          const finalRun=delegationDelivery.finalRun(value.user,value.runId);
+          if (finalRun) await toolLoopGuard.settleDelivery(finalRun);
+          // Recheck cancellation/access/owner custody after asynchronous receipt settlement.
+          sendJson(res,200,delegationDelivery.read(value.user,value.runId));
+        } catch {sendJson(res,409,{error:'delegated delivery unavailable'});}
+        return true;
+      }});
     for (const operation of ['context','compact']) {
       api.registerHttpRoute({path:`/pixel-ods/${operation}`,auth:'gateway',match:'exact',
         handler:async (req,res) => {
@@ -733,10 +839,17 @@ export default definePluginEntry({
       outputChars: () => researchOutputChars(api.runtime?.config?.current?.() ?? api.config, AGENT_ID) });
     api.registerTool(onlyPixel(discovery ? () => researchTool
       : researchToolWhenAvailable(perplexicaAvailability, researchTool)), { names: ["pixel_ods_research"] });
+    api.registerTool(onlyPixel(context => createWorkspaceArtifactTool(context, {
+      admission:artifactAdmission, reserve:scope=>toolLoopGuard.reserveWorkspaceArtifact(scope),
+      unavailableReason:scope=>toolLoopGuard.workspaceArtifactUnavailableReason(scope),
+      accept:(scope,receipt)=>toolLoopGuard.acceptWorkspaceArtifact(scope,receipt),
+      transport:api.pluginConfig?.workspacePreviewTransport,
+    })), {names:['pixel_ods_workspace_artifact']});
     registerTool(api, createAgentSkillTool(), {names:['pixel_ods_skill']});
     registerTool(api, createAskUserTool(), {names:['pixel_ods_ask_user']});
     registerTool(api, createGoalProgressTool(), {names:['pixel_ods_goal']});
     registerTool(api, createActivityTool(), {names:['pixel_ods_activity']});
+    registerProjectBuild(api, onlyPixel, projectRunControl);
     api.registerTool(onlyPixel(context => createExtensionProposalTool(context)), {names:['pixel_ods_extension_proposal']});
     api.registerTool(onlyPixel(context => createSourceProposalTool(context)), {names:['pixel_ods_source_proposal']});
     api.registerTool(onlyPixel(context => createPythonLibraryProposalTool(context)), {names:['pixel_ods_python_library_proposal']});

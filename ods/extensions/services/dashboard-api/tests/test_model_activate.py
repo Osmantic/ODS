@@ -2160,6 +2160,14 @@ class TestOpenCodeModelRoute:
 
 
 class TestPerplexicaModelRoute:
+    @staticmethod
+    def _apply_config_post(current, payload):
+        target = current
+        parts = payload["key"].split(".")
+        for part in parts[:-1]:
+            target = target[int(part)] if isinstance(target, list) else target[part]
+        target[parts[-1]] = json.loads(json.dumps(payload["value"]))
+
 
     @staticmethod
     def _snapshot():
@@ -2171,6 +2179,9 @@ class TestPerplexicaModelRoute:
                     "type": "openai",
                     "chatModels": [{"key": "old-model", "name": "old-model"}],
                     "config": {"baseURL": "http://old/v1", "apiKey": "old-key"},
+                }, {
+                    "id": "transformers-provider", "type": "transformers",
+                    "embeddingModels": [{"key": "built-in"}] * 27,
                 }],
                 "preferences": {
                     "defaultChatModel": "old-model",
@@ -2222,7 +2233,7 @@ class TestPerplexicaModelRoute:
             if payload is None:
                 return {"values": json.loads(json.dumps(current))}
             posts.append(payload)
-            current[payload["key"]] = json.loads(json.dumps(payload["value"]))
+            self._apply_config_post(current, payload)
             return {}
 
         monkeypatch.setattr(_mod, "_perplexica_http_json", fake_http)
@@ -2236,23 +2247,25 @@ class TestPerplexicaModelRoute:
             gguf_file="new-model.gguf",
         )
 
-        assert [post["key"] for post in posts] == ["modelProviders", "preferences"]
+        assert [post["key"] for post in posts] == [
+            "modelProviders.0.chatModels", "modelProviders.0.config", "preferences",
+        ]
         assert current["preferences"]["defaultChatModel"] == "new-model.gguf"
         provider = current["modelProviders"][0]
         assert provider["chatModels"] == [{"key": "new-model.gguf", "name": "new-model.gguf"}]
         assert provider["config"]["baseURL"] == "http://llama-server:8080/v1"
+        assert current["modelProviders"][1] == snapshot["values"]["modelProviders"][1]
 
     def test_restore_reinstates_and_verifies_snapshot(self, monkeypatch):
         snapshot = self._snapshot()
-        current = {
-            "modelProviders": [],
-            "preferences": {"defaultChatModel": "wrong"},
-        }
+        current = json.loads(json.dumps(snapshot["values"]))
+        current["modelProviders"][0]["chatModels"] = [{"key": "wrong", "name": "wrong"}]
+        current["preferences"]["defaultChatModel"] = "wrong"
 
         def fake_http(_url, payload=None):
             if payload is None:
                 return {"values": json.loads(json.dumps(current))}
-            current[payload["key"]] = json.loads(json.dumps(payload["value"]))
+            self._apply_config_post(current, payload)
             return {}
 
         monkeypatch.setattr(_mod, "_perplexica_http_json", fake_http)
@@ -2263,10 +2276,9 @@ class TestPerplexicaModelRoute:
 
     def test_restore_accepts_perplexica_normalized_snapshot(self, monkeypatch):
         snapshot = self._snapshot()
-        current = {
-            "modelProviders": [],
-            "preferences": {"defaultChatModel": "wrong"},
-        }
+        current = json.loads(json.dumps(snapshot["values"]))
+        current["modelProviders"][0]["chatModels"] = [{"key": "wrong", "name": "wrong"}]
+        current["preferences"]["defaultChatModel"] = "wrong"
 
         def fake_http(_url, payload=None):
             if payload is None:
@@ -2278,7 +2290,7 @@ class TestPerplexicaModelRoute:
                     "name": "extra-model",
                 })
                 return {"values": restored}
-            current[payload["key"]] = json.loads(json.dumps(payload["value"]))
+            self._apply_config_post(current, payload)
             return {}
 
         monkeypatch.setattr(_mod, "_perplexica_http_json", fake_http)
@@ -2286,6 +2298,60 @@ class TestPerplexicaModelRoute:
         _mod._restore_perplexica_config(snapshot)
 
         assert current == snapshot["values"]
+
+    def test_restore_changes_openai_when_owner_default_was_custom(self, monkeypatch):
+        snapshot = self._snapshot()
+        snapshot["values"]["modelProviders"].append({
+            "id": "owner-chat", "type": "custom", "chatModels": [{"key": "owner-model"}],
+            "config": {"owner": True},
+        })
+        snapshot["values"]["preferences"].update({
+            "defaultChatProvider": "owner-chat", "defaultChatModel": "owner-model",
+        })
+        current = json.loads(json.dumps(snapshot["values"]))
+        current["modelProviders"][0]["chatModels"] = [{"key": "new-model", "name": "new-model"}]
+        current["modelProviders"][0]["config"] = {
+            "baseURL": "http://new/v1", "apiKey": "new-key",
+        }
+
+        current["preferences"].update({
+            "defaultChatProvider": "openai-provider", "defaultChatModel": "new-model",
+        })
+        posts = []
+
+        def fake_http(_url, payload=None):
+            if payload is None:
+                return {"values": json.loads(json.dumps(current))}
+            posts.append(payload)
+            self._apply_config_post(current, payload)
+            return {}
+
+        monkeypatch.setattr(_mod, "_perplexica_http_json", fake_http)
+
+        _mod._restore_perplexica_config(snapshot)
+
+        assert current == snapshot["values"]
+        assert [post["key"] for post in posts] == [
+            "modelProviders.0.chatModels", "modelProviders.0.config", "preferences",
+        ]
+
+    def test_official_openai_catalog_is_not_taken_as_restorable_route(self, monkeypatch):
+        snapshot = self._snapshot()
+        snapshot["values"]["modelProviders"][0]["config"]["baseURL"] = "https://api.openai.com/v1"
+        posts = []
+
+        def fake_http(_url, payload=None):
+            if payload is not None:
+                posts.append(payload)
+            return {"values": json.loads(json.dumps(snapshot["values"]))}
+
+        monkeypatch.setattr(_mod, "_perplexica_http_json", fake_http)
+        assert _mod._capture_perplexica_config(
+            {}, {"exists": True, "running": True},
+        ) is None
+        with pytest.raises(RuntimeError, match="hydrated OpenAI catalog"):
+            _mod._restore_perplexica_config(snapshot)
+        assert posts == []
 
 
 class TestDownstreamRouteVerification:
@@ -4854,7 +4920,7 @@ def test_managed_pixel_reconcile_uses_positional_args_and_minimal_environment(
     home.mkdir()
     (install_dir / ".env").write_text(
         "PIXEL_SOURCE_URL=bundled\n"
-        "PIXEL_SOURCE_REF=6e82d4c974be8c7b5aebe3a4ffd5374e20ad0ac5\n"
+        "PIXEL_SOURCE_REF=9f3b6ecd25db3ab51bef4091473d88ee5824bc3b\n"
         f"{gateway_setting}",
         encoding="utf-8",
     )
@@ -4880,7 +4946,7 @@ def test_managed_pixel_reconcile_uses_positional_args_and_minimal_environment(
         max_tokens=4096,
         reasoning=True,
     ) == "reconciled"
-    assert captured["argv"][-8:] == [
+    assert captured["argv"][-9:] == [
         str(install_dir),
         "pixel-owner",
         str(home),
@@ -4889,6 +4955,7 @@ def test_managed_pixel_reconcile_uses_positional_args_and_minimal_environment(
         "4096",
         "true",
         "",
+        "unknown",
     ]
     assert captured["kwargs"]["timeout"] == 900
     assert captured["kwargs"]["check"] is False
@@ -4905,7 +4972,7 @@ def test_managed_pixel_reconcile_accepts_bundled_source(
     home = tmp_path / "owner-home"
     install_dir.mkdir()
     home.mkdir()
-    source_ref = "6e82d4c974be8c7b5aebe3a4ffd5374e20ad0ac5"
+    source_ref = "9f3b6ecd25db3ab51bef4091473d88ee5824bc3b"
     source_setting = "PIXEL_SOURCE_URL=bundled\n" if explicit_source else ""
     (install_dir / ".env").write_text(
         f"{source_setting}PIXEL_SOURCE_REF={source_ref}\n",
@@ -5241,7 +5308,7 @@ class TestModelActivateRollback:
         assert reconciliations == [(
             "new-model.gguf",
             65536,
-            {"max_tokens": 8192, "reasoning": False},
+            {"max_tokens": 8192, "reasoning": False, "image_input": "unknown"},
         )]
         response = handler.parse_response()
         assert response["consumers"]["pixel"] == "reconciled"
@@ -5320,8 +5387,8 @@ class TestModelActivateRollback:
         assert "simulated Pixel reconciliation failure" in response["error"]
         assert runtime_restarts == ["new-model", "old-model"]
         assert reconciliations == [
-            ("new-model.gguf", 4096, {"max_tokens": 1024, "reasoning": False}),
-            ("old-model.gguf", 4096, {"max_tokens": 1024, "reasoning": False}),
+            ("new-model.gguf", 4096, {"max_tokens": 1024, "reasoning": False, "image_input": "unknown"}),
+            ("old-model.gguf", 4096, {"max_tokens": 1024, "reasoning": False, "image_input": "unknown"}),
         ]
         assert _mod.load_env(env_path)["LLM_MODEL"] == "old-model"
 
@@ -8182,6 +8249,10 @@ class TestModelActivateRollback:
                 "model": "llama-server/old-model",
                 "small_model": "llama-server/old-model",
                 "theme": "system",
+                "agent": {
+                    "build": {"model": "custom-cloud/owner-model", "temperature": 0.2},
+                    "reviewer": {"model": "custom-cloud/review-model"},
+                },
                 "provider": {
                     "custom-cloud": {"npm": "@ai-sdk/openai"},
                     "llama-server": {
@@ -8220,6 +8291,11 @@ class TestModelActivateRollback:
             config = json.loads(path.read_text(encoding="utf-8"))
             assert config["model"] == f"llama-server/{expected_model_id}"
             assert config["small_model"] == f"llama-server/{expected_model_id}"
+            assert config["agent"]["build"]["model"] == (
+                "custom-cloud/owner-model" if path == primary
+                else f"llama-server/{expected_model_id}"
+            )
+            assert config["agent"]["plan"]["model"] == f"llama-server/{expected_model_id}"
             provider = config["provider"]["llama-server"]
             assert provider["options"]["baseURL"] == "http://127.0.0.1:8080/v1"
             assert provider["options"]["apiKey"] == "no-key"
@@ -8234,6 +8310,10 @@ class TestModelActivateRollback:
             "npm": "@ai-sdk/openai"
         }
         assert primary_config["provider"]["llama-server"]["options"]["timeout"] == 900
+        assert primary_config["agent"]["build"]["temperature"] == 0.2
+        assert primary_config["agent"]["reviewer"] == {
+            "model": "custom-cloud/review-model"
+        }
         assert compat_config["compat_only"] is True
 
     def test_switchboard_activation_routes_opencode_through_stable_alias(
@@ -8288,6 +8368,8 @@ class TestModelActivateRollback:
             assert config["theme"] == "system"
             assert config["model"] == "llama-server/ods/current"
             assert config["small_model"] == "llama-server/ods/current"
+            assert config["agent"]["build"]["model"] == "llama-server/ods/current"
+            assert config["agent"]["plan"]["model"] == "llama-server/ods/current"
             provider = config["provider"]["llama-server"]
             assert provider["name"] == "ODS switchboard"
             assert provider["options"] == {

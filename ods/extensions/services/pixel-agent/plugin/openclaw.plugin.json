@@ -11,6 +11,7 @@
       "pixel_ods_goal",
       "pixel_ods_activity",
       "pixel_ods_history",
+      "pixel_ods_image_read",
       "pixel_ods_extension_proposal",
       "pixel_ods_source_proposal",
       "pixel_ods_python_library_proposal",
@@ -27,7 +28,9 @@
       "pixel_ods_web_extract",
       "pixel_ods_download_promote",
       "pixel_ods_workspace_preview",
+      "pixel_ods_project_build",
       "pixel_ods_workspace_bundle",
+      "pixel_ods_workspace_artifact",
       "pixel_ods_workspace_preview_inspect",
       "pixel_ods_research",
       "pixel_ods_extension_request_advance",
@@ -36,6 +39,10 @@
     ]
   },
   "toolMetadata": {
+    "pixel_ods_workspace_artifact": {"replaySafe": false},
+    "pixel_ods_project_build": {
+      "replaySafe": false
+    },
     "pixel_ods_workspace_bundle": {
       "replaySafe": false
     },
@@ -49,6 +56,9 @@
       "replaySafe": true
     },
     "pixel_ods_history": {
+      "replaySafe": true
+    },
+    "pixel_ods_image_read": {
       "replaySafe": true
     },
     "pixel_ods_ask_user": {
@@ -108,6 +118,10 @@
         "type": "integer",
         "minimum": 4096
       },
+      "modelImageInput": {
+        "type": "string",
+        "enum": ["supported", "unsupported", "unknown"]
+      },
       "modelRouteFingerprint": {
         "type": "string",
         "minLength": 64,
@@ -125,6 +139,13 @@
       "workspacePreviewInspectionTransport": {
         "type": "string",
         "enum": ["unix", "native"]
+      },
+      "projectBuildSocket": {
+        "type": "string",
+        "minLength": 2,
+        "maxLength": 100,
+        "pattern": "^/[^\\u0000]+$",
+        "description": "Installed owner project controller UNIX socket; omit when the service is not installed."
       },
       "leanPrompt": {
         "type": "boolean"

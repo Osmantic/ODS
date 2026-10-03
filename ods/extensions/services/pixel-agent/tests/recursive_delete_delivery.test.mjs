@@ -88,7 +88,7 @@ test('verified publication then denied deletion keeps failed status and immutabl
   assert.equal(delivery.preview?.entrySha256, details.entrySha256);
   assert.equal(delivery.preview?.url, details.url);
   assert.match(delivery.text, /blocked/i);
-  assert.match(delivery.text, /incomplete/i);
+  assert.match(delivery.text, /does not establish completion/i);
   assert.doesNotMatch(delivery.text, /Do not retry/);
   assert.doesNotMatch(delivery.text, /\bPixel\b/);
   assert.doesNotMatch(delivery.text, /Explain what was attempted/);
@@ -130,7 +130,7 @@ test('no preview reports saved workspace files only when tracked, no URL', () =>
   assert.equal(delivery.status, 'failed');
   assert.equal(delivery.preview, undefined);
   assert.match(delivery.text, /blocked/i);
-  assert.match(delivery.text, /incomplete/i);
+  assert.match(delivery.text, /command did not run/i);
   assert.doesNotMatch(delivery.text, /http:\/\/localhost/);
   assert.doesNotMatch(delivery.text, /site was created/i);
   assert.doesNotMatch(delivery.text, /Do not retry/);
@@ -194,5 +194,6 @@ test('beforeAgentFinalize does not request continuation after denial', () => {
   guard.observeRun(context, 'pixel', {prompt: 'Build a website.'});
   denyRecursiveDelete(guard, context);
   const decision = guard.beforeAgentFinalize({lastAssistantMessage: 'done'}, context, 'pixel');
-  assert.equal(decision, undefined);
+  assert.equal(decision?.action, 'finalize');
+  assert.equal(decision?.retry, undefined);
 });

@@ -139,7 +139,7 @@ test('targeted public extraction is directly offered with its exact bounded sche
   const extractor = createPublicWebExtractTool({
     guardedFetch: async ({url}) => {
       calls++;
-      return {response: new Response('Navigation\n'.repeat(1000) + '\nBoard power 250 W\n',
+      return {response: new Response('Board power: contents\n' + 'Navigation\n'.repeat(1000) + '\nBoard power 250 W\n',
         {headers: {'Content-Type':'text/plain'}}), finalUrl:url, release() {}};
     },
     readResponseText: async response => ({text:await response.text(), truncated:false}),
@@ -149,15 +149,33 @@ test('targeted public extraction is directly offered with its exact bounded sche
   assert.equal(direct, extractor, 'retain the policy-filtered implementation object');
   assert.deepEqual(direct.parameters, {type:'object', additionalProperties:false, required:['url'], properties:{
     url:{type:'string', minLength:10, maxLength:1024}, query:{type:'string', minLength:2, maxLength:200},
+    occurrence:{type:'integer', minimum:1, maximum:1000000},
   }});
-  const result = await direct.execute('extract', {url:'https://docs.example.org/specs', query:'Board power'});
+  const result = await direct.execute('extract', {url:'https://docs.example.org/specs', query:'Board power', occurrence:2});
   assert.equal(calls, 1);
   assert.equal(result.details.matched, true);
   assert.equal(result.details.evidence_truncated_before, true);
+  assert.equal(result.details.occurrence, 2);
+  assert.equal(result.details.match_count, 2);
   assert.match(result.content[0].text, /Board power 250 W/);
   assert.match(result.content[0].text, /EXTERNAL_UNTRUSTED_CONTENT/);
   assert.equal((await direct.execute('private', {url:'http://127.0.0.1/specs'})).isError, true);
   assert.equal(calls, 1, 'native exposure cannot bypass public URL validation');
+  for (const occurrence of [0, -1, 1.5, '2', null, 1000001]) {
+    assert.equal((await direct.execute('invalid-occurrence', {
+      url:'https://docs.example.org/specs', query:'Board power', occurrence,
+    })).isError, true);
+  }
+  assert.equal(calls, 1, 'native exposure cannot bypass occurrence validation');
+  const first = await direct.execute('first', {url:'https://docs.example.org/specs', query:'Board power', occurrence:1});
+  assert.equal(first.details.occurrence, 1);
+  assert.equal(first.details.next_occurrence, 2);
+  assert.equal(calls, 2);
+  const bounded = await direct.execute('upper-bound', {url:'https://docs.example.org/specs', query:'Board power', occurrence:1000000});
+  assert.equal(calls, 3, 'the inclusive upper bound passes input validation');
+  assert.equal(bounded.details.requested_occurrence, 1000000);
+  assert.equal(bounded.details.match_count, 2);
+  assert.equal(bounded.isError, true, 'out-of-range document selection is still an explicit error');
 });
 
 test('native extraction preserves actual runtime policy denials and ambiguity deferral', () => {
@@ -263,4 +281,35 @@ test('a Perplexica result fits the tool-result cap as the real tool_call returns
     const evidence = JSON.parse(inner.slice(inner.indexOf('>\n') + 2, inner.lastIndexOf('\n</perplexica_evidence_')));
     assert.ok(JSON.stringify(evidence.answer).length >= 900, `${cap}: answer ${evidence.answer.length}`);
   }
+});
+
+
+test('document delivery is discoverable and callable through actual pinned ToolSearch with exact policy-bound schema',async()=>{
+ const {ARTIFACT_TOOL,ARTIFACT_BOUNDARY,createWorkspaceArtifactTool,createWorkspaceArtifactAdmission}=await import('../plugin/workspace-artifact.mjs');
+ const {createToolLoopGuard}=await import('../plugin/tool-loop-guard.mjs');
+ const owner={trigger:'user',agentId:'pixel',runId:'artifact-run',sessionId:'artifact-session',sessionKey:'agent:pixel:openai-user:ods-'+ 'a'.repeat(64),toolCallId:'deliver'};
+ const guard=createToolLoopGuard();guard.observeRun(owner,'pixel',{prompt:'Deliver report.md'});
+ const admission=createWorkspaceArtifactAdmission();let requests=0;
+ const receipt={schemaVersion:1,kind:'ods-pixel-workspace-artifact',relativePath:'project/report.md',siteId:'site-'+ 'a'.repeat(24),sha256:'a'.repeat(64),file:{path:'report.md',bytes:4,sha256:'b'.repeat(64)}};
+ const artifact=createWorkspaceArtifactTool(owner,{admission,reserve:s=>guard.reserveWorkspaceArtifact(s),accept:(s,r)=>guard.acceptWorkspaceArtifact(s,r),request:async()=>{requests++;return {...receipt,status:'succeeded',httpStatus:200,readbackVerified:true,executable:false,overwritten:false,boundary:ARTIFACT_BOUNDARY}}});
+ const result=run(filterByPolicy([artifact],{allow:[ARTIFACT_TOOL]}));
+ assert.deepEqual(result.tools,controls,'document delivery stays a specialist, not another permanent prompt tool');
+ const ctx={agentId:'pixel',catalogRef:result.catalogRef,config:{tools:{toolSearch:{enabled:true,mode:'tools'}}},executeTool:async params=>params.tool.execute(`tool_search_code:deliver:${ARTIFACT_TOOL}:1`,params.input)};
+ const byName=Object.fromEntries(createControls(ctx).map(t=>[t.name,t]));
+ const found=await byName.tool_search.execute('find',{query:'pixel_ods_workspace_artifact',limit:5});assert.ok(found.details.some(x=>x.name===ARTIFACT_TOOL));
+ const described=await byName.tool_describe.execute('describe',{id:ARTIFACT_TOOL});assert.deepEqual(described.details.parameters,{type:'object',additionalProperties:false,required:['relativePath'],properties:{relativePath:{type:'string',minLength:1,maxLength:512}}});
+ const args={relativePath:'project/report.md'};
+ // Live cloud regression: the model searched the tool but guessed `path`.
+ // The actual dispatcher must return schema guidance before any broker work.
+ admission.before({toolName:'tool_call',params:{id:ARTIFACT_TOOL,args:{path:args.relativePath}}},owner);
+ const malformed=await byName.tool_call.execute('deliver',{id:ARTIFACT_TOOL,args:{path:args.relativePath}});
+ assert.match(JSON.stringify(malformed),/invalid-arguments/);assert.match(JSON.stringify(malformed),/relativePath, not path/);assert.equal(requests,0);
+ const toolContext={...owner,trigger:undefined,toolName:'tool_call'};
+ const admittedEvent={toolName:'tool_call',toolCallId:owner.toolCallId,params:{id:ARTIFACT_TOOL,args}};
+ const decision=guard.beforeToolCall(admittedEvent,toolContext);
+ admission.before(admittedEvent,toolContext,decision);
+ const delivered=await byName.tool_call.execute('deliver',{id:ARTIFACT_TOOL,args});assert.equal(delivered.isError,undefined);assert.equal(requests,1);assert.deepEqual(guard.deliveryVerificationForRun(owner.runId).artifacts,[receipt]);
+ admission.before({toolName:'tool_call',params:{id:ARTIFACT_TOOL,args:{relativePath:'../secret.pdf'}}},owner);
+ await byName.tool_call.execute('deliver',{id:ARTIFACT_TOOL,args:{relativePath:'../secret.pdf'}});assert.equal(requests,1);
+ const denied=run(filterByPolicy([artifact],{deny:[ARTIFACT_TOOL]}));assert.equal(resolveExact({...ctx,catalogRef:denied.catalogRef},ARTIFACT_TOOL),undefined);
 });

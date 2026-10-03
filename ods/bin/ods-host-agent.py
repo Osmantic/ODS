@@ -41,7 +41,7 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path, PureWindowsPath
 from socketserver import ThreadingMixIn
 from urllib import error as urllib_error, request as urllib_request
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlparse
 
 # Model Switchboard (PR 1, observe mode): stdlib-only sibling package. The
 # import is fail-open — a missing/broken package disables state recording but
@@ -151,6 +151,8 @@ ODS_VERSION = "3.0.0"
 SERVICE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 PIXEL_OPS_JOB_ID_RE = re.compile(r"^ops-[0-9]{13}-[a-f0-9]{12}$")
 PIXEL_OPS_PLAN_HASH_RE = re.compile(r"^[a-f0-9]{64}$")
+_approval_terminals = None
+_approval_terminals_lock = threading.Lock()
 PIXEL_OPS_STATUS_HELPER = Path("/usr/local/libexec/ods-pixel-extension-manager.py")
 PIXEL_OPS_STATUS_SOCKET = "/run/ods-pixel-manager/extension-manager.sock"
 PIXEL_OPS_STATUS_KIND = "ods-pixel-operations-status"
@@ -3183,6 +3185,29 @@ def _pixel_max_tokens_for_context(context_length: int) -> int:
     return min(8192, max(1, context_length // 4))
 
 
+def _pixel_model_image_input(model_id: str) -> str:
+    """Read an explicit capability only from the exact public curated record.
+
+    Imported records and runtime advisory booleans can contain synthesized
+    defaults. Their false value is not evidence that image input is unsupported.
+    """
+    try:
+        path = INSTALL_DIR / "config" / "model-library.json"
+        if path.stat().st_size > 8 * 1024 * 1024:
+            return "unknown"
+        document = json.loads(path.read_text(encoding="utf-8"))
+        records = document.get("models") if isinstance(document, dict) else None
+        if not isinstance(records, list):
+            return "unknown"
+        matches = [record for record in records if isinstance(record, dict)
+                   and model_id in [record.get(key) for key in ("id", "llm_model_name", "gguf_file")]]
+        if len(matches) != 1 or type(matches[0].get("vision")) is not bool:
+            return "unknown"
+        return "supported" if matches[0]["vision"] else "unsupported"
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return "unknown"
+
+
 def _reconcile_ods_managed_pixel_model(
     model: str,
     context_length: int,
@@ -3190,6 +3215,7 @@ def _reconcile_ods_managed_pixel_model(
     max_tokens: int = 4096,
     reasoning: bool = False,
     route_fingerprint: str | None = None,
+    image_input: str | None = None,
 ) -> str:
     """Transactionally bind the managed Pixel gateway to an activated model."""
     identity = _ods_managed_pixel_identity()
@@ -3197,6 +3223,8 @@ def _reconcile_ods_managed_pixel_model(
         return "not_installed"
     if not _valid_pixel_model_name(model):
         raise RuntimeError("The promoted Pixel model identity is invalid")
+    if image_input is not None and image_input not in ("supported", "unsupported", "unknown"):
+        raise RuntimeError("The promoted Pixel image-input policy is invalid")
     if not isinstance(context_length, int) or isinstance(context_length, bool) \
             or not 4096 <= context_length <= 10_000_000:
         raise RuntimeError("Pixel requires a model context between 4096 and 10000000 tokens")
@@ -3212,7 +3240,7 @@ def _reconcile_ods_managed_pixel_model(
     owner, home = identity
     env_values = load_env(INSTALL_DIR / ".env")
     configured_ref = str(env_values.get("PIXEL_SOURCE_REF") or "")
-    bundled_ref = "6e82d4c974be8c7b5aebe3a4ffd5374e20ad0ac5"
+    bundled_ref = "9f3b6ecd25db3ab51bef4091473d88ee5824bc3b"
     source_url = str(env_values.get("PIXEL_SOURCE_URL") or "bundled")
     if any(character in source_url for character in "\r\n\x00"):
         raise RuntimeError("The configured Pixel source URL is invalid")
@@ -3245,6 +3273,7 @@ target_context="$5"
 target_max_tokens="$6"
 target_reasoning="$7"
 target_route_fingerprint="$8"
+target_image_input="$9"
 INTERACTIVE=false
 DRY_RUN=false
 log() { printf '%s\n' "$*" >&2; }
@@ -3263,7 +3292,7 @@ export INSTALL_DIR INTERACTIVE DRY_RUN ODS_SUDO_AVAILABLE
 . "$INSTALL_DIR/installers/lib/sudo.sh"
 . "$INSTALL_DIR/installers/lib/pixel-host-install.sh"
 ods_pixel_reconcile_promoted_model "$owner" "$home" "$target_model" ready \
-    "$target_context" "$target_max_tokens" "$target_reasoning" "$target_route_fingerprint"
+    "$target_context" "$target_max_tokens" "$target_reasoning" "$target_route_fingerprint" "" "$target_image_input"
 '''
     child_env = {
         "HOME": str(home),
@@ -3283,6 +3312,7 @@ ods_pixel_reconcile_promoted_model "$owner" "$home" "$target_model" ready \
                 str(context_length), str(max_tokens),
                 "true" if reasoning else "false",
                 route_fingerprint or "",
+                image_input or "unknown",
             ],
             env=child_env,
             capture_output=True,
@@ -3810,6 +3840,8 @@ def _remote_provider_runtime_contract(route: dict) -> dict[str, object]:
         "maxTokens": max_tokens,
         "reasoning": reasoning,
         "routeFingerprint": _remote_provider_route_fingerprint(route),
+        # This remote-route schema does not carry a verified vision capability.
+        "imageInput": "unknown",
     }
 
 
@@ -3869,6 +3901,7 @@ def _valid_managed_pixel_runtime_contract(value: object) -> bool:
         and type(max_tokens) is int
         and 1 <= max_tokens <= context_length
         and type(reasoning) is bool
+        and ("imageInput" not in value or value["imageInput"] in ("supported", "unsupported", "unknown"))
         and ("routeFingerprint" not in value or (
             isinstance(value["routeFingerprint"], str)
             and re.fullmatch(r"[a-f0-9]{64}", value["routeFingerprint"]) is not None
@@ -4182,7 +4215,13 @@ def _pixel_local_identity_matches(config: dict, identity: str, expected: str) ->
 def _prove_pixel_model_contract(config: dict, contract: dict) -> bool:
     if 'routeFingerprint' in contract:
         route = _read_remote_provider_route_state_for_update()
-        if _remote_provider_runtime_contract(route) != contract:
+        expected = _remote_provider_runtime_contract(route)
+        observed = dict(contract)
+        # This endpoint proves route identity, not image understanding. The
+        # native model transaction separately verifies the transport policy.
+        expected.pop('imageInput', None)
+        observed.pop('imageInput', None)
+        if not _valid_managed_pixel_runtime_contract(contract) or expected != observed:
             return False
         _verify_litellm_route(config, model='ods/current')
         return True
@@ -4417,6 +4456,11 @@ def _active_remote_provider_pixel_runtime() -> dict[str, object] | None:
             and "routeFingerprint" not in activation["remote"]
         if legacy:
             runtime.pop("routeFingerprint")
+        if (isinstance(activation, dict) and isinstance(activation.get("remote"), dict)
+                and "imageInput" not in activation["remote"]):
+            # Preserve legacy read-only status, without qualifying a new
+            # activation's exact-contract fast path or claiming image support.
+            runtime.pop("imageInput")
         if (
             not isinstance(activation, dict)
             or activation.get("phase") != "active"
@@ -4433,6 +4477,12 @@ def _active_remote_provider_pixel_runtime() -> dict[str, object] | None:
         ):
             return None
         observed = _cached_managed_pixel_runtime_contract() if env.get('PIXEL_OPENWEBUI_KEY') else _managed_pixel_runtime_contract()
+        if (isinstance(observed, dict) and "imageInput" not in runtime
+                and observed.get("imageInput") == "unknown"):
+            # An installer can explicitly migrate the previous implicit unknown
+            # without rewriting a remote activation receipt. Read-only status
+            # stays valid; the returned legacy contract still misses the field.
+            observed = {key: value for key, value in observed.items() if key != "imageInput"}
         if observed != runtime:
             return None
         return runtime
@@ -4474,31 +4524,62 @@ _pixel_model_read_cache = {}
 _pixel_model_read_lock = threading.Lock()
 
 
+def _managed_pixel_readback_key():
+    files=[]
+    for path in (INSTALL_DIR/'.env',_pixel_model_journal_path(),_remote_provider_route_state_path()):
+        try:
+            info=path.stat()
+            files.append((info.st_mtime_ns,info.st_size))
+        except FileNotFoundError:files.append(None)
+    return (str(INSTALL_DIR),tuple(files))
+
+
 def _cached_managed_pixel_runtime_contract() -> dict | None:
-    """A poll never waits for Docker; expired/unconfirmed identity is unknown."""
+    """Refresh before expiry without extending a proof's 15-second lifetime."""
     try:
-        files=[]
-        for path in (INSTALL_DIR/'.env',_pixel_model_journal_path(),_remote_provider_route_state_path()):
-            try:
-                info=path.stat()
-                files.append((info.st_mtime_ns,info.st_size))
-            except FileNotFoundError:files.append(None)
-        key=(str(INSTALL_DIR),tuple(files))
+        key=_managed_pixel_readback_key()
     except OSError:return None
     with _pixel_model_read_lock:
-        if _pixel_model_read_cache.get('key')==key and time.monotonic()-_pixel_model_read_cache.get('at',0)<15:
-            value=_pixel_model_read_cache.get('value')
-            return dict(value) if isinstance(value,dict) else None
-        if _pixel_model_read_cache.get('fetching'):
-            return None
-        _pixel_model_read_cache.update(key=key,fetching=True,at=0,value=None)
+        if _pixel_model_read_cache.get('key')!=key:
+            # Preserve the single in-flight worker, but revoke its generation.
+            _pixel_model_read_cache.update(key=key,generation=object(),at=None,value=None)
+        at=_pixel_model_read_cache.get('at')
+        age=time.monotonic()-at if at is not None else float('inf')
+        value=_pixel_model_read_cache.get('value')
+        current=dict(value) if age<15 and isinstance(value,dict) else None
+        # Leave up to ten seconds for native readback before the hard expiry.
+        if age<5 or _pixel_model_read_cache.get('fetching'):
+            return current
+        generation=_pixel_model_read_cache['generation']
+        _pixel_model_read_cache['fetching']=True
     def refresh():
         try:value=_managed_pixel_runtime_contract()
         except Exception:value=None
+        # Inputs may change without another poll while the native proof runs.
+        try:observed_key=_managed_pixel_readback_key()
+        except OSError:observed_key=None
         with _pixel_model_read_lock:
-            if _pixel_model_read_cache.get('key')==key:
-                _pixel_model_read_cache.update(value=value,at=time.monotonic(),fetching=False)
-    threading.Thread(target=refresh,name='ods-managed-model-readback',daemon=True).start()
+            if _pixel_model_read_cache.get('generation') is generation:
+                if observed_key==key:
+                    # A failed verification revokes even a still-fresh value.
+                    _pixel_model_read_cache.update(value=value,at=time.monotonic())
+                else:
+                    _pixel_model_read_cache.update(value=None,at=None)
+            _pixel_model_read_cache['fetching']=False
+    try:
+        threading.Thread(target=refresh,name='ods-managed-model-readback',daemon=True).start()
+    except RuntimeError:
+        # A worker that could not start must not suppress every later refresh.
+        with _pixel_model_read_lock:
+            _pixel_model_read_cache['fetching']=False
+        return None
+    with _pixel_model_read_lock:
+        # The worker can finish before start() returns; honor fresh failure.
+        at=_pixel_model_read_cache.get('at')
+        value=_pixel_model_read_cache.get('value')
+        if (_pixel_model_read_cache.get('generation') is generation and at is not None
+                and time.monotonic()-at<15 and isinstance(value,dict)):
+            return dict(value)
     return None
 
 
@@ -4545,6 +4626,8 @@ def _managed_pixel_runtime_contract() -> dict[str, object] | None:
     }
     if provider == "ods-gateway" and "modelRouteFingerprint" in value:
         contract["routeFingerprint"] = value["modelRouteFingerprint"]
+    if "modelImageInput" in value:
+        contract["imageInput"] = value["modelImageInput"]
     if not _valid_managed_pixel_runtime_contract(contract):
         raise RuntimeError("ODS-managed Pixel onboarding runtime contract is invalid")
     return contract
@@ -4559,6 +4642,7 @@ def _reconcile_managed_pixel_contract(contract: dict[str, object] | None) -> str
         max_tokens=int(contract["maxTokens"]),
         reasoning=bool(contract["reasoning"]),
         route_fingerprint=contract.get("routeFingerprint"),
+        image_input=contract.get("imageInput"),
     )
 
 
@@ -5632,7 +5716,40 @@ def invalidate_compose_cache() -> None:
     (INSTALL_DIR / ".compose-flags").unlink(missing_ok=True)
 
 
-def resolve_compose_flags() -> list:
+def _macos_native_pixel_compose_flags(flags: list[str]) -> list[str]:
+    """Keep host-agent Compose selection aligned with the installed Mac CLI."""
+    if platform.system() != "Darwin":
+        return flags
+    preparation = INSTALL_DIR / "data/pixel-native/preparation"
+    if not any(os.path.lexists(preparation / name) for name in
+               ("activation.json", "selection-update.json")):
+        return flags
+    helper = INSTALL_DIR / "installers/macos/lib/pixel-native-stack.py"
+    if not helper.is_file() or helper.is_symlink():
+        raise RuntimeError("Mac native Pixel Compose selector is unavailable")
+    try:
+        result = subprocess.run(
+            [sys.executable, str(helper), "--install-dir", str(INSTALL_DIR),
+             "--flags", " ".join(flags)],
+            cwd=str(INSTALL_DIR), capture_output=True, text=True, timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise RuntimeError("Mac native Pixel Compose selection needs recovery") from exc
+    if result.returncode != 0:
+        raise RuntimeError("Mac native Pixel Compose selection needs recovery")
+    selected = result.stdout.strip().split()
+    if not selected or len(selected) % 2 or any(value != "-f" for value in selected[::2]):
+        raise RuntimeError("Mac native Pixel Compose selector returned invalid flags")
+    return selected
+
+
+def resolve_compose_flags(*, recovery_disable_service: str | None = None) -> list:
+    """Resolve Compose flags; a target's rejected recipe may be used for safe disable.
+
+    Only the Dashboard disable path passes ``recovery_disable_service``. Its
+    selector reads the saved file list to identify shared base services, but
+    never runs Compose with these flags. Starts still require full policy.
+    """
     flags_file = INSTALL_DIR / ".compose-flags"
     if flags_file.exists():
         raw = flags_file.read_text(encoding="utf-8").strip()
@@ -5644,7 +5761,13 @@ def resolve_compose_flags() -> list:
             policy_spec = importlib.util.spec_from_file_location("_ods_compose_cache_policy", policy_path)
             policy = importlib.util.module_from_spec(policy_spec)
             policy_spec.loader.exec_module(policy)
-            policy.validate_flags(INSTALL_DIR, flags)
+            if recovery_disable_service is None:
+                policy.validate_flags(INSTALL_DIR, flags)
+            else:
+                policy.validate_flags(
+                    INSTALL_DIR, flags,
+                    recovery_disable_service=recovery_disable_service,
+                )
             active_name = ".active-model-store.compose.json"
             flags = [value for index, value in enumerate(flags)
                      if not (Path(value).name == active_name or (value == "-f" and index+1 < len(flags) and Path(flags[index+1]).name == active_name))]
@@ -5656,7 +5779,7 @@ def resolve_compose_flags() -> list:
             active_mount = _model_stores.active_compose_overlay(INSTALL_DIR, load_env(INSTALL_DIR / ".env").get("ODS_ACTIVE_MODEL_STORE", "default"))
             if active_mount:
                 flags.extend(["-f", str(active_mount)])
-            return flags
+            return _macos_native_pixel_compose_flags(flags)
 
     script = INSTALL_DIR / "scripts" / "resolve-compose-stack.sh"
     # Contract note: every resolver launch below must include --gpu-count and
@@ -5678,6 +5801,23 @@ def resolve_compose_flags() -> list:
         env["ODS_PYTHON_CMD"] = _to_bash_path(Path(sys.executable))
     install_env = load_env(INSTALL_DIR / ".env")
     ods_mode = install_env.get("ODS_MODE", "").strip() or "local"
+    # The host agent can outlive an installer rerun or an owner WebUI toggle.
+    # These selectors must come from the installed state rather than its
+    # startup environment when the Compose cache is refreshed. The resolver
+    # needs only external-route presence, never the credential-bearing URL.
+    for selector in (
+        "ENABLE_OPEN_WEBUI", "ODS_GATEWAY_ONLY", "EXTERNAL_LLM_URL",
+        "ODS_EXTERNAL_LLM_SELECTED",
+        "LEMONADE_EXTERNAL", "AMD_INFERENCE_RUNTIME",
+        "AMD_INFERENCE_MANAGED", "WHISPER_ACCELERATION",
+        "ODS_SKIP_GPU_OVERLAYS",
+    ):
+        env.pop(selector, None)
+        if selector not in ("EXTERNAL_LLM_URL", "ODS_EXTERNAL_LLM_SELECTED") and selector in install_env:
+            env[selector] = install_env[selector]
+    env["ODS_EXTERNAL_LLM_SELECTED"] = (
+        "true" if install_env.get("EXTERNAL_LLM_URL", "").strip() else "false"
+    )
     cmd = [
         bash, _to_bash_path(script),
         "--script-dir", _to_bash_path(INSTALL_DIR),
@@ -5699,7 +5839,7 @@ def resolve_compose_flags() -> list:
         raise RuntimeError(
             f"compose resolver failed: {detail[:1000]}",
         ) from exc
-    return result.stdout.strip().split()
+    return _macos_native_pixel_compose_flags(result.stdout.strip().split())
 
 
 # Filesystem types that silently ignore POSIX ownership/permissions.
@@ -5868,7 +6008,7 @@ _ROOTLESS_BIND_OWNERSHIP_SERVICES = {
 
 
 def _repair_rootless_data_ownership(service_id: str) -> None:
-    """Apply the built-in rootless bind-mount ownership contract before start."""
+    """Prepare built-in bind mounts before a container starts."""
     if platform.system() != "Linux" or service_id not in _ROOTLESS_BIND_OWNERSHIP_SERVICES:
         return
 
@@ -5879,9 +6019,17 @@ def _repair_rootless_data_ownership(service_id: str) -> None:
     if not bash:
         raise RuntimeError("Bash is required for Docker rootless ownership repair")
 
+    command = [bash, str(helper), str(INSTALL_DIR), service_id]
+    if service_id == "whisper":
+        # A lean install skips Phase 11's UID 1000 cache preparation. The
+        # Library add-back must prepare it for rootful as well as rootless Docker.
+        command = [
+            bash, "-c", 'source "$1"; ods_prepare_whisper_cache_ownership "$2"',
+            "ods-whisper-cache", str(helper), str(INSTALL_DIR),
+        ]
     try:
         result = subprocess.run(
-            [bash, str(helper), str(INSTALL_DIR), service_id],
+            command,
             cwd=str(INSTALL_DIR),
             env=os.environ.copy(),
             capture_output=True,
@@ -5934,9 +6082,193 @@ def _extension_stop_targets(service_id: str) -> list[str]:
     return targets
 
 
+def _load_extension_selector():
+    """Load the installed CLI selector, the owner of the shared graph lock."""
+    helper_path = INSTALL_DIR / "scripts" / "extension-selection.py"
+    if not helper_path.is_file() or helper_path.is_symlink():
+        raise RuntimeError("Extension selection helper is unavailable")
+    spec = importlib.util.spec_from_file_location("_ods_extension_selection", helper_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("Cannot load extension selection helper")
+    selector = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(selector)
+    return selector
+
+
+def _apply_extension_selection(
+    service_ids: list[str], activate: bool,
+    expected_sha256: dict[str, str] | None = None,
+) -> str:
+    """Apply one selection plan on the host under the CLI's graph-wide lock.
+
+    Dashboard container locks are not an authority for a concurrent host CLI.
+    The installed selection helper checks the whole dependency graph, stops
+    exclusive owned containers on disable, then moves the marker under the
+    host-side data/.extensions-lock.
+    """
+    if (not isinstance(service_ids, list) or not service_ids or len(service_ids) > 64
+            or any(not isinstance(sid, str) or not SERVICE_ID_RE.fullmatch(sid)
+                   or sid in ALWAYS_ON_SERVICES
+                   for sid in service_ids)
+            or len(set(service_ids)) != len(service_ids)
+            or (not activate and len(service_ids) != 1)):
+        raise ValueError("Invalid optional extension selection")
+    selector = _load_extension_selector()
+    flags = (resolve_compose_flags() if activate else
+             resolve_compose_flags(recovery_disable_service=service_ids[0]))
+    # NamedTemporaryFile closes before the helper reads it, including on
+    # Windows. Its contents are only service IDs and their selection state.
+    preset_dir = INSTALL_DIR / "data"
+    if not preset_dir.is_dir() or preset_dir.is_symlink():
+        raise RuntimeError("Extension selection data directory is unavailable")
+    with tempfile.NamedTemporaryFile(
+        mode="w", encoding="utf-8", newline="\n", dir=preset_dir,
+        prefix=".extension-selection-", delete=False,
+    ) as stream:
+        for service_id in service_ids:
+            stream.write(f"{'enabled' if activate else 'disabled'}:{service_id}\n")
+        preset_path = Path(stream.name)
+    try:
+        try:
+            enabled, disabled, skipped = selector.restore_preset(
+                INSTALL_DIR, preset_path, core_services=set(ALWAYS_ON_SERVICES),
+                compose_flags=shlex.join(flags), strict=True,
+                expected_sha256=expected_sha256,
+            )
+        except selector.SelectionError as exc:
+            message = str(exc)
+            if ("Could not confirm stop" in message or "Timed out waiting" in message
+                    or message.startswith("Preset restore stopped")):
+                raise RuntimeError(message) from exc
+            raise ValueError(message) from exc
+    finally:
+        try:
+            preset_path.unlink(missing_ok=True)
+        except OSError:
+            logger.warning("Could not remove temporary extension selection file")
+    if skipped:
+        raise RuntimeError("Strict extension selection unexpectedly skipped a service")
+    if enabled + disabled == 0:
+        return "already_enabled" if activate else "already_disabled"
+    return "enabled" if activate else "disabled"
+
+
+def _whisper_model_ready_after_start(
+    max_wait_seconds: float = 480, compose_env: dict[str, str] | None = None,
+) -> tuple[bool, str]:
+    """Make a Library-started Whisper usable, as installer Phase 12 does."""
+    try:
+        env = load_env(INSTALL_DIR / ".env")
+    except (OSError, UnicodeError, ValueError):
+        return False, "Whisper started, but its selected model could not be read; run ods repair voice"
+    # Compose process environment overrides .env interpolation. Probe the same
+    # model and published port that the just-started container received.
+    if compose_env is not None:
+        for key in ("AUDIO_STT_MODEL", "WHISPER_PORT", "GPU_BACKEND", "WHISPER_ACCELERATION"):
+            if key in compose_env:
+                env[key] = compose_env[key]
+    fallback_model = (
+        "deepdml/faster-whisper-large-v3-turbo-ct2"
+        if env.get("GPU_BACKEND") == "nvidia" and env.get("WHISPER_ACCELERATION", "cuda") == "cuda"
+        else "Systran/faster-whisper-base"
+    )
+    model = str(env.get("AUDIO_STT_MODEL") or fallback_model).strip()
+    raw_port = str(env.get("WHISPER_PORT") or "9000").strip()
+    if (not model or len(model) > 256 or any(ord(char) < 32 or ord(char) == 127 for char in model)
+            or not raw_port.isascii() or not raw_port.isdecimal() or len(raw_port) > 5
+            or not 1 <= int(raw_port) <= 65535):
+        return False, "Whisper started, but its selected model or port is invalid; run ods repair voice"
+
+    base_url = f"http://127.0.0.1:{int(raw_port)}/v1/models"
+    model_url = f"{base_url}/{quote(model, safe='')}"
+    deadline = time.monotonic() + max(0.0, max_wait_seconds)
+
+    def probe(url: str) -> bool:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        try:
+            with urllib_request.urlopen(url, timeout=min(5, remaining)) as response:
+                return response.status == 200
+        except (urllib_error.URLError, TimeoutError, OSError):
+            return False
+
+    ready_deadline = min(deadline, time.monotonic() + 30)
+    while time.monotonic() < ready_deadline:
+        if probe(base_url):
+            break
+        time.sleep(min(1, max(0, ready_deadline - time.monotonic())))
+    else:
+        return False, "Whisper started, but its models API is not ready; run ods repair voice"
+
+    if probe(model_url):
+        return True, ""
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        return False, "Whisper started, but its model is not cached; run ods repair voice"
+    try:
+        request = urllib_request.Request(model_url, data=b"", method="POST")
+        with urllib_request.urlopen(request, timeout=min(30, remaining)) as response:
+            if not 200 <= response.status < 300:
+                return False, "Whisper started, but its model download was rejected; run ods repair voice"
+    except urllib_error.HTTPError as exc:
+        if 400 <= exc.code < 500 and exc.code not in (408, 409, 429):
+            return False, (
+                f"Whisper model download was rejected (HTTP {exc.code}); "
+                "check AUDIO_STT_MODEL or run ods repair voice"
+            )
+        # A concurrent download or transient failure can still populate the cache.
+    except (urllib_error.URLError, TimeoutError, OSError):
+        # Speaches can continue downloading after the trigger times out.
+        pass
+
+    while time.monotonic() < deadline:
+        if probe(model_url):
+            return True, ""
+        time.sleep(min(5, max(0, deadline - time.monotonic())))
+    return False, "Whisper started, but its model is not cached; run ods repair voice"
+
+
+def _run_selected_extension_up(
+    service_id: str, flags: list[str], *, env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess:
+    """Keep the final selected-marker check and Compose up under one graph lock.
+
+    Image preparation and readiness polling remain outside this critical
+    section. The CLI selector cannot disable and stop the service between
+    the marker check and the completion of ``docker compose up -d``.
+    """
+    selector = _load_extension_selector()
+    try:
+        with selector._selection_lock(INSTALL_DIR, 15.0):
+            ext_dir = _find_ext_dir(service_id)
+            if ext_dir is None or ext_dir.is_symlink():
+                raise RuntimeError(f"Extension is unavailable: {service_id}")
+            selected = ext_dir / "compose.yaml"
+            try:
+                selected_stat = selected.lstat()
+            except FileNotFoundError as exc:
+                raise RuntimeError(
+                    f"Extension selection changed before start: {service_id}"
+                ) from exc
+            if not stat_mod.S_ISREG(selected_stat.st_mode):
+                raise RuntimeError(f"Invalid selected Compose file: {service_id}")
+            return subprocess.run(
+                ["docker", "compose", *flags, "up", "-d", service_id],
+                cwd=str(INSTALL_DIR), capture_output=True, text=True,
+                timeout=SUBPROCESS_TIMEOUT_START, env=env,
+            )
+    except selector.SelectionError as exc:
+        raise RuntimeError(str(exc)) from exc
+
+
 def docker_compose_action(service_id: str, action: str) -> tuple:
     try:
         flags = resolve_compose_flags()
+        if service_id == "hermes" and action == "start":
+            plan_error = _hermes_compose_plan_error(flags)
+            if plan_error:
+                return False, plan_error
     except (OSError, ValueError, RuntimeError) as exc:
         if action != "stop":
             return False, str(exc)
@@ -5952,6 +6284,7 @@ def docker_compose_action(service_id: str, action: str) -> tuple:
             return True, ""
         except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as recovery_error:
             return False, f"Could not stop verified ODS containers: {recovery_error}"
+    action_deadline = time.monotonic() + 630
     compose_env = os.environ.copy()
     if action == "start":
         if service_id == "ods-proxy":
@@ -5963,6 +6296,13 @@ def docker_compose_action(service_id: str, action: str) -> tuple:
             if not ok:
                 return False, error
             compose_env["WEBUI_AUTH"] = "true"
+        elif service_id == "hermes":
+            ok, error = _prepare_hermes_route_for_start()
+            if not ok:
+                return False, error
+            ok, error = _prepare_hermes_persona_for_start()
+            if not ok:
+                return False, error
         _precreate_data_dirs(service_id)
         try:
             _repair_rootless_data_ownership(service_id)
@@ -5979,10 +6319,13 @@ def docker_compose_action(service_id: str, action: str) -> tuple:
         return False, f"Unknown action: {action}"
     timeout = SUBPROCESS_TIMEOUT_START if action == "start" else SUBPROCESS_TIMEOUT_STOP
     try:
-        result = subprocess.run(
-            cmd, cwd=str(INSTALL_DIR),
-            capture_output=True, text=True, timeout=timeout, env=compose_env,
-        )
+        if action == "start" and service_id not in ALWAYS_ON_SERVICES:
+            result = _run_selected_extension_up(service_id, flags, env=compose_env)
+        else:
+            result = subprocess.run(
+                cmd, cwd=str(INSTALL_DIR),
+                capture_output=True, text=True, timeout=timeout, env=compose_env,
+            )
         if result.returncode == 0 and action == 'start':
             ext_dir = _find_ext_dir(service_id)
             manifest = _read_manifest(ext_dir) if ext_dir else {}
@@ -5992,9 +6335,137 @@ def docker_compose_action(service_id: str, action: str) -> tuple:
                 _write_progress(service_id, 'started' if ok else 'error', 'CLI verification complete' if ok else 'CLI verification failed',
                                 error=error or None, exit_verified=ok)
                 return ok, error
+        if result.returncode == 0 and action == "start" and service_id == "whisper":
+            return _whisper_model_ready_after_start(
+                max_wait_seconds=min(480, max(0, action_deadline - time.monotonic())),
+                compose_env=compose_env,
+            )
         return (True, "") if result.returncode == 0 else (False, result.stderr[:500])
     except subprocess.TimeoutExpired:
         return False, f"Docker compose operation timed out ({timeout}s)"
+
+
+def _webui_selection_state() -> dict:
+    """Report the installed choice without exposing the owner's environment."""
+    env_path = INSTALL_DIR / ".env"
+    if not env_path.is_file() or env_path.is_symlink():
+        raise RuntimeError("The installed environment is unavailable")
+    selected = load_env(env_path).get("ENABLE_OPEN_WEBUI", "true").strip().lower() == "true"
+    return {
+        "enabled": selected,
+        "supported": platform.system() in {"Linux", "Darwin"},
+    }
+
+
+def _enable_webui_selection() -> tuple[int, dict]:
+    """Add the base WebUI service without touching its retained data.
+
+    The existing .env choice and Compose resolver remain authoritative. Keep
+    the bind-mounted .env inode, and restore its exact bytes if startup fails.
+    """
+    if platform.system() not in {"Linux", "Darwin"}:
+        return 501, {"code": "unsupported_platform", "error": "WebUI add-back is unavailable on this platform"}
+    service_lock = _service_locks["open-webui"]
+    if not service_lock.acquire(blocking=False):
+        return 409, {"code": "operation_in_progress", "error": "Open WebUI is being changed"}
+    if not _model_activate_lock.acquire(blocking=False):
+        service_lock.release()
+        return 409, {"code": "configuration_in_use", "error": "ODS configuration is being changed"}
+
+    env_path = INSTALL_DIR / ".env"
+    original = None
+    changed = False
+    attempted_start = False
+    flags = None
+    compose_env = None
+    try:
+        if not env_path.is_file() or env_path.is_symlink():
+            return 409, {"code": "missing_install", "error": "The installed environment is unavailable"}
+        original = env_path.read_bytes()
+        env_text = original.decode("utf-8")
+        installed = load_env(env_path)
+        if installed.get("ENABLE_OPEN_WEBUI", "true").strip().lower() == "true":
+            if not _capture_container_state("ods-webui").get("running"):
+                return 503, {"code": "selected_but_stopped", "error": "Open WebUI is selected but not running; inspect its service state"}
+            return 200, {"enabled": True, "action": "already_selected"}
+
+        # A lean Mac install may have saved WEBUI_AUTH=false for loopback use.
+        # If the owner later exposes the bind or selects the proxy, enforce
+        # sign-in in the same bound-file write that selects WebUI. Compose must
+        # also use these installed values, not stale host-agent process env.
+        bind = installed.get("BIND_ADDRESS", "127.0.0.1").strip().lower() or "127.0.0.1"
+        auth_required = (
+            bind not in {"127.0.0.1", "::1", "localhost"}
+            or installed.get("ENABLE_ODS_PROXY", "false").strip().lower() == "true"
+            or _proxy_compose_enabled()
+        )
+        next_env_text = _upsert_env_text(env_text, "ENABLE_OPEN_WEBUI", "true")
+        if auth_required:
+            next_env_text = _upsert_env_text(next_env_text, "WEBUI_AUTH", "true")
+        changed = True  # A failed in-place write may have written a prefix.
+        _write_bound_env_text(env_path, next_env_text)
+        invalidate_compose_cache()
+        flags = resolve_compose_flags()
+        compose_env = os.environ.copy()
+        compose_env.pop("COMPOSE_PROFILES", None)
+        for selector in (
+            "ENABLE_OPEN_WEBUI", "ODS_GATEWAY_ONLY", "EXTERNAL_LLM_URL",
+            "LEMONADE_EXTERNAL", "AMD_INFERENCE_RUNTIME",
+            "AMD_INFERENCE_MANAGED", "WHISPER_ACCELERATION",
+            "ODS_SKIP_GPU_OVERLAYS", "BIND_ADDRESS", "WEBUI_AUTH", "ENABLE_ODS_PROXY",
+        ):
+            compose_env.pop(selector, None)
+            if selector in installed:
+                compose_env[selector] = installed[selector]
+        compose_env["ENABLE_OPEN_WEBUI"] = "true"
+        if auth_required:
+            compose_env["WEBUI_AUTH"] = "true"
+
+        def compose(*arguments: str):
+            return subprocess.run(
+                ["docker", "compose", *flags, *arguments], cwd=str(INSTALL_DIR),
+                env=compose_env, capture_output=True, text=True,
+                timeout=SUBPROCESS_TIMEOUT_START,
+            )
+
+        configured = compose("config", "--services")
+        if configured.returncode != 0 or "open-webui" not in configured.stdout.splitlines():
+            raise RuntimeError("The selected Compose stack does not expose Open WebUI")
+        attempted_start = True
+        # Compose pulls this one image when missing. --no-deps must not wake a
+        # managed model on an external LiteLLM route.
+        if compose("up", "-d", "--no-deps", "open-webui").returncode != 0:
+            raise RuntimeError("Could not start Open WebUI")
+        _wait_for_container_health("ods-webui", attempts=75)
+        return 200, {"enabled": True, "action": "enabled"}
+    except (OSError, UnicodeError, ValueError, RuntimeError, subprocess.SubprocessError) as exc:
+        logger.warning("Open WebUI add-back failed: %s", type(exc).__name__)
+        stopped = not attempted_start
+        if attempted_start and flags is not None and compose_env is not None:
+            try:
+                if not _capture_container_state("ods-webui").get("running"):
+                    stopped = True
+                else:
+                    stop = subprocess.run(
+                        ["docker", "compose", *flags, "stop", "open-webui"],
+                        cwd=str(INSTALL_DIR), capture_output=True, text=True,
+                        timeout=SUBPROCESS_TIMEOUT_STOP, env=compose_env,
+                    )
+                    stopped = stop.returncode == 0 and not _capture_container_state("ods-webui").get("running")
+            except (OSError, RuntimeError, subprocess.SubprocessError):
+                stopped = False
+        if not stopped:
+            return 503, {"code": "reconciliation_required", "error": "Open WebUI startup failed; verify the running service before retrying", "enabled": True}
+        if changed and original is not None:
+            try:
+                _write_bound_env_bytes(env_path, original)
+                invalidate_compose_cache()
+            except (OSError, RuntimeError):
+                return 503, {"code": "reconciliation_required", "error": "Open WebUI startup failed and its prior selection could not be restored"}
+        return 502, {"code": "enable_failed", "error": "Open WebUI could not be added; the prior selection was restored", "enabled": False}
+    finally:
+        _model_activate_lock.release()
+        service_lock.release()
 
 
 def _proxy_compose_enabled() -> bool:
@@ -8047,7 +8518,7 @@ def _resolve_install_compose(flags: list[str]) -> tuple[str | None, str]:
 
 
 def _disable_unprepared_install(service_id: str) -> str:
-    """Take a library extension that failed before start out of the Compose project.
+    """Take a library extension that failed before this start out of Compose.
 
     Every enabled extension is merged into one Compose project, so a
     definition that cannot be resolved (a missing ``${NAME:?}`` setting) or
@@ -8060,19 +8531,20 @@ def _disable_unprepared_install(service_id: str) -> str:
     """
     ext_dir = USER_EXTENSIONS_DIR / service_id
     active = ext_dir / "compose.yaml"
-    inactive = ext_dir / "compose.yaml.disabled"
     unable = ("\nODS could not turn this extension off automatically. Disable or remove it; "
               "until then other ODS stack operations can fail with the same error.")
     try:
-        if ext_dir.is_symlink() or not ext_dir.is_dir() or active.is_symlink() or not active.exists():
+        if (service_id in ALWAYS_ON_SERVICES or ext_dir.is_symlink()
+                or not ext_dir.is_dir() or active.is_symlink() or not active.exists()):
             return ""
-        if not active.is_file() or inactive.exists() or inactive.is_symlink():
-            return unable
-        os.replace(active, inactive)
-    except OSError:
+        # This attempt has not started a container, but an earlier failed
+        # retry may have left one running. The host selector checks dependents,
+        # stops exclusive owned containers, then moves the marker under one
+        # graph lock. Its recovery flag accepts a rejected target recipe.
+        _apply_extension_selection([service_id], activate=False)
+    except Exception:
         logger.exception("Could not disable failed installation of %s", service_id)
         return unable
-    invalidate_compose_cache()
     logger.warning("Disabled %s after it failed before start; files and data were kept", service_id)
     return ("\nODS turned this extension off so the rest of the stack keeps working; its files, "
             "settings and data were kept. Resolve the error above, then retry or remove it.")
@@ -8615,6 +9087,8 @@ class AgentHandler(BaseHTTPRequestHandler):
             self._handle_gpu_metrics()
         elif path == "/v1/llm/status":
             self._handle_llm_status()
+        elif path == "/v1/webui/selection":
+            self._handle_webui_selection(change=False)
         elif path == "/v1/service/health":
             self._handle_service_health()
         elif path == "/v1/service/stats":
@@ -8663,6 +9137,8 @@ class AgentHandler(BaseHTTPRequestHandler):
             self._handle_pixel_access_mode(False)
         elif path == "/v1/host/port":
             self._handle_host_port_status(parse_qs(parsed.query))
+        elif path == "/v1/opencode/status" and not parsed.query:
+            self._handle_opencode_status()
         elif path == "/v1/setup/state":
             self._handle_setup_state()
         else:
@@ -8848,6 +9324,32 @@ class AgentHandler(BaseHTTPRequestHandler):
         except (OSError, RuntimeError) as exc:
             logger.exception("Could not read setup state")
             json_response(self, 500, {"error": f"Could not read setup state: {exc}"})
+
+    def _handle_opencode_status(self):
+        """Report the ODS-managed OpenCode lifecycle for the dashboard."""
+        if not check_auth(self):
+            return
+        try:
+            json_response(self, 200, _opencode_app_status(), no_store=True)
+        except (RuntimeError, OSError, ValueError) as exc:
+            logger.warning("OpenCode status failed: %s", exc)
+            json_response(self, 500, {"error": "OpenCode status is unavailable"})
+
+    def _handle_opencode_action(self, action: str):
+        """Start the installed OpenCode service or set it up (Linux)."""
+        if not check_auth(self):
+            return
+        discard_request_body(self)
+        env = load_env(INSTALL_DIR / ".env")
+        try:
+            if action == "start":
+                code, body = _begin_opencode_start(env)
+            else:
+                code, body = _begin_opencode_setup(env)
+        except (RuntimeError, OSError, ValueError) as exc:
+            logger.warning("OpenCode %s failed: %s", action, exc)
+            code, body = 500, {"error": f"OpenCode {action} failed", "code": f"opencode_{action}_failed"}
+        json_response(self, code, body, no_store=True)
 
     def _handle_host_port_status(self, query: dict[str, list[str]]):
         """Return whether a host-local TCP port is reachable.
@@ -9175,6 +9677,46 @@ class AgentHandler(BaseHTTPRequestHandler):
             return
         json_response(self, 200, metrics)
 
+    def _handle_pixel_approval_terminal(self):
+        if not check_auth(self):
+            return
+        if platform.system() != "Linux":
+            json_response(self, 503, {"error": "approval-terminal-unsupported"})
+            return
+        try:
+            self.connection.settimeout(3)
+            length = int(self.headers.get("Content-Length", "0"))
+            if not 0 < length <= 4096:
+                raise ValueError()
+            body = json.loads(self.rfile.read(length))
+            global _approval_terminals
+            with _approval_terminals_lock:
+                if _approval_terminals is None:
+                    import importlib.util
+                    source = INSTALL_DIR / "extensions/services/pixel-agent/host/approval_terminal.py"
+                    spec = importlib.util.spec_from_file_location("ods_approval_terminal", source)
+                    module = importlib.util.module_from_spec(spec)
+                    spec.loader.exec_module(module)
+                    def awaiting(job, plan):
+                        info = PIXEL_OPS_STATUS_HELPER.lstat()
+                        if (not stat_mod.S_ISREG(info.st_mode) or info.st_nlink != 1
+                                or info.st_uid != 0 or info.st_mode & 0o022):
+                            return False
+                        result = subprocess.run(["/usr/bin/python3", str(PIXEL_OPS_STATUS_HELPER), "status",
+                            PIXEL_OPS_STATUS_SOCKET, job, plan], cwd="/", env={"PATH":"/usr/bin:/bin"},
+                            capture_output=True, timeout=5, check=False)
+                        if result.returncode or len(result.stdout)>65536:
+                            return False
+                        value = json.loads(result.stdout)
+                        return (value.get("jobId")==job and value.get("planHash")==plan
+                            and value.get("status")=="awaiting-approval" and value.get("approvalRequired") is True)
+                    _approval_terminals = module.ApprovalTerminals(INSTALL_DIR, awaiting)
+            result = _approval_terminals.request(body)
+            json_response(self, 200, result)
+        except Exception:
+            # Never log request bodies, private terminal text or exception details.
+            json_response(self, 409, {"error": "approval-terminal-unavailable"})
+
     def do_POST(self):
         # Several legacy endpoints intentionally ignore an optional body, and
         # rejected requests may return before consuming one. Close POST
@@ -9182,10 +9724,14 @@ class AgentHandler(BaseHTTPRequestHandler):
         # parsed as the next request on an HTTP/1.1 keep-alive connection. GET
         # polling remains reusable, which is where connection churn matters.
         self.close_connection = True
-        if self.path == "/v1/pixel/access-mode":
+        if self.path == "/v1/pixel/approval-terminal":
+            self._handle_pixel_approval_terminal()
+        elif self.path == "/v1/pixel/access-mode":
             self._handle_pixel_access_mode(True)
         elif self.path == "/v1/pixel/apps/open":
             self._handle_pixel_open_app()
+        elif self.path in ("/v1/opencode/start", "/v1/opencode/setup"):
+            self._handle_opencode_action(self.path.rsplit("/", 1)[-1])
         elif self.path in ("/v1/extension/start", "/v1/extension/stop"):
             action = "start" if self.path.endswith("/start") else "stop"
             self._handle_extension(action)
@@ -9203,6 +9749,8 @@ class AgentHandler(BaseHTTPRequestHandler):
             self._handle_extension_compose_toggle(activate=True)
         elif self.path == "/v1/extension/deactivate":
             self._handle_extension_compose_toggle(activate=False)
+        elif self.path == "/v1/extension/select":
+            self._handle_extension_selection()
         elif self.path == "/v1/extension/sync_config":
             self._handle_extension_sync_config()
         elif self.path == "/v1/service/logs":
@@ -9259,6 +9807,8 @@ class AgentHandler(BaseHTTPRequestHandler):
             self._handle_extension_configure()
         elif self.path == "/v1/env/update":
             self._handle_env_update()
+        elif self.path == "/v1/webui/selection":
+            self._handle_webui_selection(change=True)
         elif self.path == "/v1/setup/persona":
             self._handle_setup_persona()
         elif self.path == "/v1/setup/complete":
@@ -10499,6 +11049,26 @@ class AgentHandler(BaseHTTPRequestHandler):
         finally:
             _model_activate_lock.release()
 
+    def _handle_webui_selection(self, *, change: bool):
+        if not check_auth(self):
+            return
+        if change:
+            body = read_json_body(self)
+            if body is None:
+                return
+            if not isinstance(body, dict) or set(body) != {"enabled"} or body["enabled"] is not True:
+                json_response(self, 400, {"code": "invalid_request", "error": "Only enabling Open WebUI is supported"}, no_store=True)
+                return
+            status, result = _enable_webui_selection()
+            json_response(self, status, result, no_store=True)
+            return
+        try:
+            result = _webui_selection_state()
+        except (OSError, RuntimeError, UnicodeError):
+            json_response(self, 503, {"code": "selection_unavailable", "error": "Open WebUI selection is unavailable"}, no_store=True)
+            return
+        json_response(self, 200, result, no_store=True)
+
     def _handle_env_update(self):
         """Write a validated .env file. Dashboard-api delegates here because the
         container mount is :ro — only the host agent may write secrets to disk.
@@ -10706,61 +11276,64 @@ class AgentHandler(BaseHTTPRequestHandler):
             json_response(self, 503 if "timed out" in err else 500, {"error": err})
 
     def _handle_extension_compose_toggle(self, activate: bool):
-        """Rename compose.yaml.disabled <-> compose.yaml for an extension.
+        """Fail closed for legacy Dashboard marker toggles.
 
-        Used by dashboard-api when the extensions mount is read-only (:ro).
-        The host agent runs on the host filesystem where the files are writable.
+        An older Dashboard holds data/.extensions-lock while making this
+        request. Routing it through the host selector would wait on its
+        caller's lock; retaining the direct rename could bypass dependency
+        checks and race the host CLI. The current Dashboard uses /select.
         """
+        if not check_auth(self):
+            return
+        json_response(self, 410, {
+            "error": "This Dashboard version cannot safely change extension selection. "
+                     "Finish updating ODS, then retry from the Extensions Library."
+        })
+
+    def _handle_extension_selection(self):
+        """Host-authoritative dependency-aware extension selection."""
         if not check_auth(self):
             return
         body = read_json_body(self)
         if body is None:
             return
-
-        # Validate service_id format and existence
-        sid = body.get("service_id", "")
-        if not isinstance(sid, str) or not SERVICE_ID_RE.match(sid):
-            json_response(self, 400, {"error": "Invalid service_id"})
+        service_ids = body.get("service_ids")
+        action = body.get("action")
+        expected_sha256 = body.get("expected_sha256")
+        if (action not in ("enable", "disable")
+                or not isinstance(service_ids, list)
+                or not service_ids or len(service_ids) > 64
+                or any(not isinstance(sid, str) or not SERVICE_ID_RE.fullmatch(sid)
+                       or sid in ALWAYS_ON_SERVICES for sid in service_ids)
+                or len(set(service_ids)) != len(service_ids)
+                or (action == "disable" and len(service_ids) != 1)):
+            json_response(self, 400, {"error": "Invalid optional extension selection"})
             return
-        ext_dir = _find_ext_dir(sid)
-        if ext_dir is None:
-            json_response(self, 404, {"error": f"Extension not found: {sid}"})
-            return
-
-        if sid in ALWAYS_ON_SERVICES:
-            json_response(self, 403, {"error": f"Cannot modify always-on service: {sid}"})
-            return
-
-        action = "activate" if activate else "deactivate"
-        if activate:
-            src = ext_dir / "compose.yaml.disabled"
-            dst = ext_dir / "compose.yaml"
-        else:
-            src = ext_dir / "compose.yaml"
-            dst = ext_dir / "compose.yaml.disabled"
-
-        lock = _service_locks[sid]
-        if not lock.acquire(blocking=False):
-            json_response(self, 409, {"error": f"Operation already in progress for {sid}"})
+        if (action == "enable" and (
+                not isinstance(expected_sha256, dict)
+                or set(expected_sha256) != set(service_ids)
+                or any(not isinstance(value, str)
+                       or re.fullmatch(r"[a-f0-9]{64}", value) is None
+                       for value in expected_sha256.values())
+        )) or (action == "disable" and expected_sha256 is not None):
+            json_response(self, 400, {"error": "Invalid expected Compose digests"})
             return
         try:
-            # Check existence inside the lock to prevent TOCTOU races
-            if not src.exists():
-                state = "enabled" if activate else "disabled"
-                json_response(self, 409, {"error": f"Extension already {state}: {sid}"})
-                return
-            # os.replace (not os.rename) — Windows os.rename raises
-            # FileExistsError when destination exists; os.replace always
-            # overwrites atomically.
-            os.replace(str(src), str(dst))
-        except OSError as exc:
-            json_response(self, 500, {"error": f"Failed to {action} extension: {exc}"})
+            outcome = _apply_extension_selection(
+                service_ids, activate=action == "enable",
+                expected_sha256=expected_sha256,
+            )
+        except ValueError as exc:
+            json_response(self, 409, {"error": str(exc)})
             return
-        finally:
-            lock.release()
-
-        logger.info("%sd extension compose: %s", action, sid)
-        json_response(self, 200, {"status": "ok", "service_id": sid, "action": action})
+        except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
+            logger.warning("Extension selection failed for %s: %s", service_ids, exc)
+            json_response(self, 502, {"error": f"Could not apply extension selection: {exc}"})
+            return
+        if outcome == "already_disabled":
+            json_response(self, 409, {"error": f"Extension already disabled: {service_ids[0]}"})
+            return
+        json_response(self, 200, {"status": "ok", "service_ids": service_ids, "action": outcome})
 
     def _handle_extension_sync_config(self):
         """Copy <ext_dir>/config/* into INSTALL_DIR/config/.
@@ -11370,6 +11943,11 @@ class AgentHandler(BaseHTTPRequestHandler):
             _install_operation_context.value = operation
             try:
                 flags = resolve_compose_flags()
+                if service_id == "hermes":
+                    plan_error = _hermes_compose_plan_error(flags)
+                    if plan_error:
+                        _write_progress(service_id, "error", "Installation failed", error=plan_error)
+                        return
 
                 ext_dir = _find_ext_dir(service_id)
                 if ext_dir is None:
@@ -11434,6 +12012,15 @@ class AgentHandler(BaseHTTPRequestHandler):
                 flags = pull_flags
                 # Step 3: Start
                 _write_progress(service_id, "starting", "Starting container...")
+                if service_id == "hermes":
+                    route_ready, route_error = _prepare_hermes_route_for_start()
+                    if not route_ready:
+                        _write_progress(service_id, "error", "Installation failed", error=route_error)
+                        return
+                    persona_ready, persona_error = _prepare_hermes_persona_for_start()
+                    if not persona_ready:
+                        _write_progress(service_id, "error", "Installation failed", error=persona_error)
+                        return
                 _precreate_data_dirs(service_id)
                 try:
                     _repair_rootless_data_ownership(service_id)
@@ -11445,11 +12032,7 @@ class AgentHandler(BaseHTTPRequestHandler):
                         error=str(exc),
                     )
                     return
-                start_result = subprocess.run(
-                    ["docker", "compose"] + flags + ["up", "-d", service_id],
-                    cwd=str(INSTALL_DIR), capture_output=True, text=True,
-                    timeout=SUBPROCESS_TIMEOUT_START,
-                )
+                start_result = _run_selected_extension_up(service_id, flags)
                 if start_result.returncode != 0:
                     _write_progress(service_id, "error", "Installation failed",
                                     error=start_result.stderr[-500:])
@@ -12921,6 +13504,7 @@ class AgentHandler(BaseHTTPRequestHandler):
         final_runtime_proof: dict[str, object] | None = None
         gpu_assignment_plan: dict | None = None
         previous_pixel_context: int | None = None
+        previous_pixel_image_input = "unknown"
         router_target_published = False
         previous_router_active = {}
         wsl_changed_digest = None
@@ -13187,6 +13771,7 @@ class AgentHandler(BaseHTTPRequestHandler):
                         previous_pixel_context,
                         max_tokens=_pixel_max_tokens_for_context(previous_pixel_context),
                         reasoning=previous_reasoning,
+                        image_input=previous_pixel_image_input,
                     )
                     if restored_pixel != "reconciled":
                         raise RuntimeError(
@@ -13947,6 +14532,9 @@ class AgentHandler(BaseHTTPRequestHandler):
                         "Final runtime proof returned an invalid Pixel model identity; "
                         "rolling back to the previous model"
                     )
+                if pixel_transaction is None:
+                    previous_pixel_contract = _managed_pixel_runtime_contract()
+                    previous_pixel_image_input = (previous_pixel_contract or {}).get("imageInput", "unknown")
                 pixel_reconcile_attempted = True
                 if pixel_transaction is not None and (
                     final_runtime_proof.get('contextVerified') is not True
@@ -13958,11 +14546,13 @@ class AgentHandler(BaseHTTPRequestHandler):
                     'contextLength': int(context_length),
                     'maxTokens': _pixel_max_tokens_for_context(int(context_length)),
                     'reasoning': _pixel_model_reasoning_capable(str(llm_model_name), env),
+                    'imageInput': _pixel_model_image_input(model_id),
                 }
                 pixel_status = (pixel_transaction.apply(pixel_target) if pixel_transaction is not None
                     else _reconcile_ods_managed_pixel_model(
                         pixel_runtime_identity, int(context_length),
-                        max_tokens=pixel_target['maxTokens'], reasoning=pixel_target['reasoning']))
+                        max_tokens=pixel_target['maxTokens'], reasoning=pixel_target['reasoning'],
+                        image_input=pixel_target['imageInput']))
                 if pixel_status == "not_installed":
                     pixel_reconcile_attempted = False
                 consumers = {
@@ -14939,6 +15529,7 @@ def _adopt_external_lemonade_model(expected_model_id: str) -> dict:
         "contextLength": context_length,
         "maxTokens": _pixel_max_tokens_for_context(context_length),
         "reasoning": _pixel_model_reasoning_capable(expected_model_id, env),
+        "imageInput": _pixel_model_image_input(expected_model_id),
     }
     original_env = _snapshot_text_file(env_path)
     hermes_path = INSTALL_DIR / "data" / "hermes" / "config.yaml"
@@ -16656,23 +17247,61 @@ def _patch_hermes_config_text(
     base_url: str | None = None,
     context_length: int | None = None,
     max_tokens: int = 1024,
+    api_key: str | None = None,
 ) -> tuple[str, bool]:
     """Return Hermes YAML with its routing fields updated line-for-line."""
     lines = text.splitlines()
+    model_section_pattern = r"^(?:model|\"model\"|'model')\s*:\s*(?:#.*)?$"
+
+    def direct_model_field(line: str, field: str) -> bool:
+        if not model_field_indent:
+            return False
+        indent = re.escape(model_field_indent)
+        return bool(re.match(rf"^{indent}(?:{field}|\"{field}\"|'{field}')\s*:", line))
+
+    if api_key:
+        # A retained owner file may use a quoted key or spaces before ':'.
+        # Count only direct model fields, not a nested owner's api_key.
+        # Refuse ambiguous duplicates rather than leave Hermes using a stale key.
+        model_section = False
+        field_indent = None
+        key_count = 0
+        for line in lines:
+            if re.match(model_section_pattern, line):
+                model_section = True
+                field_indent = None
+                key_count = 0
+            elif model_section and line and not line.startswith((" ", "\t", "#")):
+                model_section = False
+            elif model_section and line.strip() and not line.lstrip().startswith("#"):
+                indent = line[:len(line) - len(line.lstrip())]
+                if field_indent is None:
+                    field_indent = indent
+                if indent == field_indent and re.match(
+                    r"^\s+(?:api_key|['\"]api_key['\"])\s*:", line
+                ):
+                    key_count += 1
+                    if key_count > 1:
+                        raise ValueError("Hermes model config contains duplicate api_key fields")
     in_model_block = False
     model_block_found = False
     model_indent = "  "
+    model_field_indent = None
     model_fields = set()
     changed = False
     new_lines = []
+    yaml_key_path = []
 
     def add_missing_model_fields() -> None:
         nonlocal changed
         if "default" not in model_fields:
-            new_lines.append(f'{model_indent}default: "{model_name}"')
+            new_lines.append(f"{model_indent}default: {json.dumps(model_name)}")
             changed = True
         if base_url and "base_url" not in model_fields:
-            new_lines.append(f'{model_indent}base_url: "{base_url}"')
+            new_lines.append(f"{model_indent}base_url: {json.dumps(base_url)}")
+            changed = True
+        if api_key and "api_key" not in model_fields:
+            new_lines.append(f"{model_field_indent or model_indent}api_key: {json.dumps(api_key)}")
             changed = True
         if context_length and "context_length" not in model_fields:
             new_lines.append(f"{model_indent}context_length: {int(context_length)}")
@@ -16682,47 +17311,66 @@ def _patch_hermes_config_text(
             changed = True
 
     for line in lines:
-        if re.match(r"^model:\s*(?:#.*)?$", line):
+        # Track simple mapping paths so the separate auxiliary compression
+        # context follows the selected model without changing owner submaps.
+        key_match = re.match(r"^([ ]*)(['\"]?)([A-Za-z_][A-Za-z0-9_-]*)\2\s*:", line)
+        if key_match:
+            key_indent = len(key_match.group(1))
+            while yaml_key_path and yaml_key_path[-1][0] >= key_indent:
+                yaml_key_path.pop()
+            yaml_key_path.append((key_indent, key_match.group(3)))
+        current_key_path = tuple(key for _, key in yaml_key_path)
+        if re.match(model_section_pattern, line):
             in_model_block = True
             model_block_found = True
+            model_indent = "  "
+            model_field_indent = None
             model_fields = set()
             new_lines.append(line)
             continue
         if in_model_block and line and not line.startswith((" ", "\t", "#")):
             add_missing_model_fields()
             in_model_block = False
-        if in_model_block and re.match(r"^\s+default:\s*", line):
+        if in_model_block and line.strip() and not line.lstrip().startswith("#"):
+            indent = line[:len(line) - len(line.lstrip())]
+            if model_field_indent is None:
+                model_field_indent = indent
+                model_indent = indent
+        if in_model_block and direct_model_field(line, "default"):
             model_fields.add("default")
-            model_indent = line[:len(line) - len(line.lstrip())]
             indent = line[:len(line) - len(line.lstrip())]
-            new_line = f'{indent}default: "{model_name}"'
+            new_line = f"{indent}default: {json.dumps(model_name)}"
             new_lines.append(new_line)
             changed = changed or new_line != line
             continue
-        if base_url and in_model_block and re.match(r"^\s+base_url:\s*", line):
+        if base_url and in_model_block and direct_model_field(line, "base_url"):
             model_fields.add("base_url")
-            model_indent = line[:len(line) - len(line.lstrip())]
             indent = line[:len(line) - len(line.lstrip())]
-            new_line = f'{indent}base_url: "{base_url}"'
+            new_line = f"{indent}base_url: {json.dumps(base_url)}"
             new_lines.append(new_line)
             changed = changed or new_line != line
             continue
-        if context_length and in_model_block and re.match(r"^\s+context_length:\s*", line):
+        if api_key and in_model_block and direct_model_field(line, "api_key"):
+            model_fields.add("api_key")
+            indent = model_field_indent
+            new_line = f"{indent}api_key: {json.dumps(api_key)}"
+            new_lines.append(new_line)
+            changed = changed or new_line != line
+            continue
+        if context_length and in_model_block and direct_model_field(line, "context_length"):
             model_fields.add("context_length")
-            model_indent = line[:len(line) - len(line.lstrip())]
             indent = line[:len(line) - len(line.lstrip())]
             new_line = f"{indent}context_length: {int(context_length)}"
             new_lines.append(new_line)
             changed = changed or new_line != line
             continue
-        if in_model_block and re.match(r"^\s+max_tokens:\s*", line):
+        if in_model_block and direct_model_field(line, "max_tokens"):
             # Preserve an operator's explicit output cap. ODS only supplies
             # its bounded default when the field is absent.
             model_fields.add("max_tokens")
-            model_indent = line[:len(line) - len(line.lstrip())]
             new_lines.append(line)
             continue
-        if context_length and re.match(r"^\s+context_length:\s*", line):
+        if context_length and current_key_path == ("auxiliary", "compression", "context_length"):
             indent = line[:len(line) - len(line.lstrip())]
             new_line = f"{indent}context_length: {int(context_length)}"
             new_lines.append(new_line)
@@ -16737,10 +17385,12 @@ def _patch_hermes_config_text(
             new_lines.append("")
         new_lines.extend([
             "model:",
-            f'{model_indent}default: "{model_name}"',
+            f"{model_indent}default: {json.dumps(model_name)}",
         ])
         if base_url:
-            new_lines.append(f'{model_indent}base_url: "{base_url}"')
+            new_lines.append(f"{model_indent}base_url: {json.dumps(base_url)}")
+        if api_key:
+            new_lines.append(f"{model_indent}api_key: {json.dumps(api_key)}")
         if context_length:
             new_lines.append(f"{model_indent}context_length: {int(context_length)}")
         if max_tokens:
@@ -16748,6 +17398,137 @@ def _patch_hermes_config_text(
         changed = True
 
     return "\n".join(new_lines) + "\n", changed
+
+
+def _hermes_selected_model(env: dict) -> str:
+    """Use the model identity selected by the installer, not the template stub."""
+    if str(env.get("LLM_BACKEND") or "").lower() == "external":
+        return str(env.get("EXTERNAL_LLM_MODEL") or env.get("LLM_MODEL") or "").strip()
+    if str(env.get("ODS_MODEL_SWITCHBOARD") or "enabled").lower() == "enabled":
+        return "ods/current"
+    if str(env.get("ODS_MODE") or "").lower() == "cloud":
+        return str(env.get("LLM_MODEL") or "default").strip()
+    if str(env.get("GPU_BACKEND") or "").lower() == "amd" or str(env.get("LLM_BACKEND") or "").lower() == "lemonade":
+        selected = str(env.get("LEMONADE_MODEL") or "").strip()
+        if selected:
+            return selected
+        gguf = str(env.get("GGUF_FILE") or "").strip()
+        return f"extra.{gguf}" if gguf else ""
+    return str(env.get("GGUF_FILE") or env.get("LLM_MODEL") or "").strip()
+
+
+def _hermes_compose_plan_error(flags: list[str]) -> str:
+    """Fail closed if stale Compose flags could start managed llama externally."""
+    try:
+        env = load_env(INSTALL_DIR / ".env")
+    except (OSError, UnicodeError):
+        return "Could not read the selected Hermes model route"
+    if str(env.get("LLM_BACKEND") or "").lower() != "external":
+        return ""
+    if any(str(flag).replace("\\", "/").endswith("/hermes/compose.local.yaml") for flag in flags):
+        return "External Hermes route includes a managed llama dependency; refresh the Compose plan"
+    return ""
+
+
+def _prepare_hermes_route_for_start() -> tuple[bool, str]:
+    """Prepare private Hermes config before first start or external add-back.
+
+    Hermes copies its mounted template only if data/hermes/config.yaml does not
+    exist. Its YAML base_url overrides OPENAI_BASE_URL, so Compose environment
+    alone cannot make a later Library add-back use the selected gateway.
+    """
+    try:
+        env = load_env(INSTALL_DIR / ".env")
+        model_name = _hermes_selected_model(env)
+        base_url = str(env.get("HERMES_LLM_BASE_URL") or "").strip()
+        api_key = str(env.get("HERMES_LLM_API_KEY") or "")
+        raw_context = str(env.get("MAX_CONTEXT") or env.get("CTX_SIZE") or "65536").strip()
+        try:
+            context_length = int(raw_context)
+        except ValueError:
+            return False, "Hermes MAX_CONTEXT/CTX_SIZE must be an integer"
+        if not model_name or not base_url or context_length <= 0:
+            return False, "Hermes selected model route is incomplete"
+        if str(env.get("LLM_BACKEND") or "").lower() == "external" and not api_key.strip():
+            return False, "Hermes external gateway key is missing"
+
+        template = INSTALL_DIR / "extensions" / "services" / "hermes" / "cli-config.yaml.template"
+        live = INSTALL_DIR / "data" / "hermes" / "config.yaml"
+        if not template.is_file():
+            return False, "Hermes configuration template is missing"
+        if template.is_symlink() or not stat_mod.S_ISREG(template.lstat().st_mode):
+            return False, "Hermes route config path is not a regular file"
+        if live.is_symlink() or (live.exists() and not stat_mod.S_ISREG(live.lstat().st_mode)):
+            return False, "Hermes route config path is not a regular file"
+
+        def patch(path: Path, *, private_key: str | None = None) -> str:
+            original = path.read_text(encoding="utf-8")
+            updated, changed = _patch_hermes_config_text(
+                original, model_name, base_url=base_url,
+                context_length=context_length, api_key=private_key,
+            )
+            private_mode = private_key is not None and os.name != "nt"
+            mode_needs_repair = private_mode and stat_mod.S_IMODE(path.stat().st_mode) != 0o600
+            if changed or mode_needs_repair:
+                _atomic_write_text(path, updated, mode=0o600 if private_mode else None)
+            return updated
+
+        template_text = patch(template)  # Never put the private key in product source.
+        if not live.exists():
+            live.parent.mkdir(parents=True, exist_ok=True)
+            live_text, _ = _patch_hermes_config_text(
+                template_text, model_name, base_url=base_url,
+                context_length=context_length, api_key=api_key or None,
+            )
+            _atomic_write_text(live, live_text, mode=0o600)
+        elif str(env.get("LLM_BACKEND") or "").lower() == "external":
+            # External selection must replace a stale local route. Preserve
+            # unrelated owner settings, sessions, skills, and other data.
+            patch(live, private_key=api_key)
+        return True, ""
+    except ValueError as exc:
+        logger.warning("Hermes route configuration is ambiguous: %s", type(exc).__name__)
+        return False, "Hermes route configuration is invalid or has duplicate keys"
+    except (OSError, UnicodeError, RuntimeError) as exc:
+        logger.warning("Could not prepare Hermes selected model route: %s", type(exc).__name__)
+        return False, "Could not read or write Hermes route files; check installation permissions"
+
+
+def _prepare_hermes_persona_for_start() -> tuple[bool, str]:
+    """Make the Hermes file bind source regular before Compose can create a dir."""
+    output = INSTALL_DIR / "data" / "persona" / "SOUL.md"
+    builder = INSTALL_DIR / "scripts" / "build-installation-context.py"
+    template = INSTALL_DIR / "extensions" / "services" / "hermes" / "SOUL.md.template"
+    try:
+        if output.is_symlink():
+            return False, "Hermes persona path is a symlink; repair it before starting"
+        output.parent.resolve().relative_to(INSTALL_DIR.resolve())
+        if output.is_file():
+            return True, ""
+        if output.exists():
+            # An earlier Compose attempt may have made the absent file mount
+            # into an empty directory. Never remove owner data from it.
+            output.rmdir()
+        if not builder.is_file() or not template.is_file():
+            return False, "Hermes persona builder or template is missing"
+        env = load_env(INSTALL_DIR / ".env")
+        cmd = [sys.executable, str(builder), "--template", str(template),
+               "--env", str(INSTALL_DIR / ".env"), "--output", str(output)]
+        if (str(env.get("LLM_BACKEND") or "").lower() == "lemonade"
+                and str(env.get("AMD_INFERENCE_RUNTIME") or "").lower() == "lemonade"):
+            cmd.extend(["--profile", "local-lemonade"])
+        result = subprocess.run(
+            cmd, cwd=str(INSTALL_DIR), capture_output=True, text=True,
+            timeout=60,
+        )
+        if result.returncode != 0 or output.is_symlink() or not output.is_file():
+            return False, "Could not generate Hermes installation persona"
+        if os.name != "nt":
+            output.chmod(0o644)
+        return True, ""
+    except (OSError, ValueError, UnicodeError, subprocess.TimeoutExpired) as exc:
+        logger.warning("Could not prepare Hermes persona: %s", type(exc).__name__)
+        return False, "Could not prepare Hermes persona; check installation data permissions"
 
 
 def _patch_hermes_model_config(
@@ -17192,8 +17973,12 @@ def _opencode_installed() -> bool:
     )
 
 
-def _capture_opencode_config() -> dict | None:
-    """Snapshot OpenCode config, using either compatibility file as a source."""
+def _capture_opencode_config(assume_installed: bool = False) -> dict | None:
+    """Snapshot OpenCode config, using either compatibility file as a source.
+
+    ``assume_installed`` is for dashboard setup, which has just resolved the
+    executable itself (possibly an existing one outside ``~/.opencode``).
+    """
     paths = _opencode_config_paths()
     files: dict[Path, dict] = {}
     parsed_sources: list[tuple[Path, dict]] = []
@@ -17227,7 +18012,11 @@ def _capture_opencode_config() -> dict | None:
             "OpenCode config is malformed and cannot be updated safely: "
             + "; ".join(parse_errors)
         )
-    if not any(item["exists"] for item in files.values()) and not _opencode_installed():
+    if (
+        not any(item["exists"] for item in files.values())
+        and not assume_installed
+        and not _opencode_installed()
+    ):
         return None
     source: dict = {}
     for _path, parsed in sorted(
@@ -17243,6 +18032,13 @@ def _atomic_write_json(path: Path, value: dict, mode: int = 0o600) -> None:
     _atomic_write_text(path, json.dumps(value, indent=2) + "\n", mode)
 
 
+def _opencode_external_model(env: dict) -> str:
+    """Return the configured external model only when its upstream is selected."""
+    if str(env.get("EXTERNAL_LLM_URL") or "").strip():
+        return str(env.get("EXTERNAL_LLM_MODEL") or "").strip()
+    return ""
+
+
 def _opencode_route(env: dict) -> tuple[str, str]:
     """Return the host-visible OpenAI-compatible endpoint and API key."""
     if _normal_switchboard_mode(env) == "enabled":
@@ -17250,6 +18046,13 @@ def _opencode_route(env: dict) -> tuple[str, str]:
         api_key = str(env.get("LITELLM_KEY") or "")
         if not api_key:
             raise RuntimeError("LITELLM_KEY is required to update the OpenCode switchboard route")
+        return f"http://127.0.0.1:{port}/v1", api_key
+
+    if _opencode_external_model(env):
+        port = str(env.get("LITELLM_PORT") or "4000")
+        api_key = str(env.get("LITELLM_KEY") or "")
+        if not api_key:
+            raise RuntimeError("LITELLM_KEY is required to update the OpenCode external model route")
         return f"http://127.0.0.1:{port}/v1", api_key
 
     gpu_backend = str(env.get("GPU_BACKEND") or "nvidia").lower()
@@ -17280,12 +18083,46 @@ def _opencode_model_route(env: dict, model_id: str) -> tuple[str, str, str]:
     provider_id = "llama-server"
     if _normal_switchboard_mode(env) == "enabled":
         return provider_id, "ods/current", "ods/current"
+    external_model = _opencode_external_model(env)
+    if external_model:
+        return provider_id, external_model, external_model
     return provider_id, model_id, model_id
 
 
 def _opencode_output_limit(context_length: int) -> int:
     """Leave prompt room after a model switch, as the fresh installers do."""
     return min(32768, max(1, context_length // 4))
+
+
+def _opencode_set_default_agent_models(config: dict, previous_model_ref: object, model_ref: str) -> None:
+    """Give new sessions an ODS model without replacing an independent agent choice.
+
+    OpenCode's web composer resolves the selected agent before its root model.
+    The v1.18.32 web fallback can ignore a configured root model with a nested
+    model ID such as ``ods/current``. Keep the built-in agents on the managed
+    route while leaving an owner's different explicit agent model alone.
+    """
+    agents = config.get("agent")
+    if agents is None:
+        agents = {}
+        config["agent"] = agents
+    if not isinstance(agents, dict):
+        return
+    for name in ("build", "plan"):
+        agent = agents.get(name)
+        if agent is None:
+            agent = {}
+            agents[name] = agent
+        if not isinstance(agent, dict):
+            continue
+        selected = agent.get("model")
+        follows_previous_ods_route = (
+            isinstance(previous_model_ref, str)
+            and previous_model_ref.startswith("llama-server/")
+            and selected == previous_model_ref
+        )
+        if selected is None or follows_previous_ods_route:
+            agent["model"] = model_ref
 
 
 def _opencode_config_matches(
@@ -17339,6 +18176,7 @@ def _update_opencode_config(
         config["model"] = model_ref
         config["small_model"] = model_ref
         config.setdefault("$schema", "https://opencode.ai/config.json")
+        _opencode_set_default_agent_models(config, previous_model_ref, model_ref)
 
         providers = config.setdefault("provider", {})
         if not isinstance(providers, dict):
@@ -17350,7 +18188,9 @@ def _update_opencode_config(
             providers[provider_id] = provider
         provider["npm"] = "@ai-sdk/openai-compatible"
         provider["name"] = (
-            "ODS switchboard" if route_model_id == "ods/current" else "llama-server (local)"
+            "ODS switchboard" if _normal_switchboard_mode(env) == "enabled"
+            else "External LLM via ODS gateway" if _opencode_external_model(env)
+            else "llama-server (local)"
         )
         options = provider.setdefault("options", {})
         if not isinstance(options, dict):
@@ -17449,6 +18289,19 @@ if ($action -eq 'inspect') {
     if ($owned.Count -gt 0) { 'true' } else { 'false' }
     exit 0
 }
+if ($action -eq 'start') {
+    if ($owned.Count -gt 0) { 'true'; exit 0 }
+    # Prefer the installer's task: its launcher confines Bun's temp copies.
+    try {
+        Start-ScheduledTask -TaskName 'ODSOpenCodeWeb' -ErrorAction Stop
+    } catch {
+        Start-Process -FilePath $exe `
+            -ArgumentList @('web', '--port', [string]$port, '--hostname', '127.0.0.1') `
+            -WindowStyle Hidden | Out-Null
+    }
+    'true'
+    exit 0
+}
 if ($action -ne 'restart') { throw "Unsupported OpenCode action: $action" }
 if ($owned.Count -eq 0) { 'false'; exit 0 }
 foreach ($process in $owned) {
@@ -17523,18 +18376,13 @@ def _capture_managed_opencode_state() -> dict:
 
 
 def _wait_for_opencode_health(attempts: int = 30) -> None:
-    url = f"http://127.0.0.1:{_opencode_port()}/"
+    port = _opencode_port()
     for attempt in range(attempts):
-        try:
-            request = urllib_request.Request(url, method="GET")
-            with urllib_request.urlopen(request, timeout=3) as response:
-                if 200 <= response.status < 500:
-                    return
-        except (OSError, urllib_error.URLError):
-            pass
+        if _probe_opencode_web(port, timeout=3)["healthy"]:
+            return
         if attempt + 1 < attempts:
             time.sleep(1)
-    raise RuntimeError(f"Managed OpenCode did not become healthy at {url}")
+    raise RuntimeError(f"Managed OpenCode did not become healthy at http://127.0.0.1:{port}/global/health")
 
 
 def _restart_managed_opencode(state: dict | None = None) -> bool:
@@ -17571,6 +18419,537 @@ def _restart_managed_opencode(state: dict | None = None) -> bool:
         raise RuntimeError(f"Could not restart managed OpenCode: {detail[:300]}")
     _wait_for_opencode_health()
     return True
+
+
+# ---------------------------------------------------------------------------
+# OpenCode as a dashboard application
+#
+# OpenCode is a host process (systemd user unit, LaunchAgent, or scheduled
+# task), not a container. A TCP probe alone cannot tell "the owner never
+# selected OpenCode" from "the installed service stopped", so the dashboard
+# used to show a permanent "Offline" entry on installs that never had it.
+# These helpers report the managed lifecycle explicitly and let the dashboard
+# start an installed service or, on Linux, set up the reviewed release.
+# ---------------------------------------------------------------------------
+
+_OPENCODE_LINUX_UNIT = "opencode-web.service"
+_OPENCODE_MACOS_LABEL = "com.ods.opencode-web"
+_OPENCODE_PROGRESS_ID = "opencode"
+_OPENCODE_VERSION_RE = re.compile(r"^[0-9A-Za-z][0-9A-Za-z.+-]{0,63}$")
+_opencode_setup_lock = threading.Lock()
+_opencode_setup_thread: threading.Thread | None = None
+
+
+def _opencode_linux_unit_path() -> Path:
+    return Path.home() / ".config" / "systemd" / "user" / _OPENCODE_LINUX_UNIT
+
+
+def _opencode_macos_plist_path() -> Path:
+    return Path.home() / "Library" / "LaunchAgents" / f"{_OPENCODE_MACOS_LABEL}.plist"
+
+
+def _opencode_service_registered(system: str | None = None) -> bool:
+    """Return whether ODS registered its managed OpenCode web service."""
+    system = system or platform.system()
+    if system == "Linux":
+        return _opencode_linux_unit_path().is_file()
+    if system == "Darwin":
+        return _opencode_macos_plist_path().is_file()
+    if system == "Windows":
+        # The Windows installer always registers ODSOpenCodeWeb together with
+        # the managed binary; start falls back to the binary when the task is
+        # missing.
+        return (Path.home() / ".opencode" / "bin" / "opencode.exe").is_file()
+    return False
+
+
+def _probe_opencode_web(port: int, timeout: float = 2.0) -> dict:
+    """Probe OpenCode's own health route on host loopback.
+
+    ``GET /global/health`` returns ``{"healthy": true, "version": ...}``.
+    Anything else answering on the port is reported as reachable but not
+    healthy, so an unrelated process is never presented as OpenCode.
+    """
+    opener = urllib_request.build_opener(urllib_request.ProxyHandler({}))
+    started = time.monotonic()
+    result = {"reachable": False, "healthy": False, "version": None}
+    try:
+        request = urllib_request.Request(f"http://127.0.0.1:{int(port)}/global/health")
+        with opener.open(request, timeout=timeout) as response:
+            result["reachable"] = True
+            payload = json.loads(response.read(4096).decode("utf-8"))
+        if isinstance(payload, dict) and payload.get("healthy") is True:
+            result["healthy"] = True
+            version = payload.get("version")
+            if isinstance(version, str) and _OPENCODE_VERSION_RE.fullmatch(version):
+                result["version"] = version
+    except urllib_error.HTTPError as exc:
+        result["reachable"] = True
+        exc.close()
+    except (OSError, ValueError):
+        pass
+    result["response_time_ms"] = round((time.monotonic() - started) * 1000, 1)
+    return result
+
+
+def _opencode_service_active() -> bool | None:
+    """Return the service manager's view, or None when it cannot be read."""
+    try:
+        if platform.system() == "Darwin":
+            # A loaded LaunchAgent is not necessarily running; only a live
+            # process means OpenCode is still starting rather than stopped.
+            result = subprocess.run(
+                ["launchctl", "print", f"gui/{os.getuid()}/{_OPENCODE_MACOS_LABEL}"],
+                capture_output=True, text=True, timeout=15,
+            )
+            return result.returncode == 0 and re.search(
+                r"^\s*state = running\s*$", result.stdout or "", re.MULTILINE,
+            ) is not None
+        return bool(_capture_managed_opencode_state().get("active"))
+    except (RuntimeError, OSError, subprocess.SubprocessError, ValueError):
+        return None
+
+
+def _opencode_setup_in_progress() -> bool:
+    thread = _opencode_setup_thread
+    return bool(thread is not None and thread.is_alive())
+
+
+def _opencode_setup_issue(env: dict, system: str | None = None) -> str | None:
+    """Explain why dashboard setup is unavailable, or return None."""
+    system = system or platform.system()
+    if system != "Linux":
+        return (
+            "OpenCode is set up by the ODS installer on this platform. "
+            "Re-run the installer to repair it."
+        )
+    if shutil.which("systemctl") is None:
+        return "Dashboard setup needs systemd user services (systemctl was not found)."
+    getuid = getattr(os, "getuid", None)
+    runtime_dir = os.environ.get("XDG_RUNTIME_DIR") or (
+        f"/run/user/{getuid()}" if callable(getuid) else ""
+    )
+    if not runtime_dir or not Path(runtime_dir, "bus").exists():
+        return (
+            "Dashboard setup needs a running systemd user session for this account. "
+            "Run 'loginctl enable-linger' for the ODS user, then try again."
+        )
+    for required in (
+        INSTALL_DIR / "installers" / "lib" / "opencode-runtime.sh",
+        INSTALL_DIR / "installers" / "lib" / "opencode-release.tsv",
+        INSTALL_DIR / "opencode" / "opencode-web.service",
+    ):
+        if not required.is_file():
+            return f"This ODS installation is missing {required.name}; update ODS first."
+    if _normal_switchboard_mode(env) != "enabled":
+        if _opencode_external_model(env) and not str(env.get("LITELLM_KEY") or "").strip():
+            return "The external model gateway key is missing. Repair LiteLLM before setting OpenCode up."
+        if not _opencode_external_model(env) and not str(env.get("LLM_MODEL") or "").strip():
+            return "No active model is configured yet. Activate a model, then set OpenCode up."
+    return None
+
+
+def _opencode_app_status(env: dict | None = None) -> dict:
+    """Return the dashboard-facing OpenCode lifecycle state.
+
+    States: ``running`` (health route answered), ``installing`` (dashboard
+    setup in progress), ``not_installed`` (no ODS-managed service), ``starting``
+    (service manager active, health pending) and ``stopped``.
+    """
+    env = env if env is not None else load_env(INSTALL_DIR / ".env")
+    system = platform.system()
+    port = _opencode_port()
+    probe = _probe_opencode_web(port)
+    registered = _opencode_service_registered(system)
+    active = _opencode_service_active() if registered else None
+    managed_healthy = bool(registered and active is True and probe["healthy"])
+    port_in_use = bool(probe["reachable"] and not managed_healthy)
+    if _opencode_setup_in_progress():
+        state = "installing"
+    elif managed_healthy:
+        state = "running"
+    elif not registered:
+        state = "not_installed"
+    else:
+        state = "starting" if active else "stopped"
+    setup_issue = None if state == "running" else _opencode_setup_issue(env, system)
+    if port_in_use and setup_issue is None:
+        setup_issue = f"Port {port} is answering, but ODS cannot verify it as the managed OpenCode service. Stop it before setup."
+    return {
+        "state": state,
+        "platform": system.lower(),
+        "port": port,
+        "installed": registered,
+        "registered": registered,
+        "serviceActive": active,
+        "healthy": managed_healthy,
+        "reachable": probe["reachable"],
+        "portInUse": port_in_use,
+        "version": probe["version"] if managed_healthy else None,
+        "responseTimeMs": probe["response_time_ms"],
+        "startSupported": bool(registered),
+        "setupSupported": setup_issue is None and state != "running",
+        "setupIssue": setup_issue,
+    }
+
+
+def _start_managed_opencode() -> None:
+    """Start the registered ODS OpenCode service and prove its health route."""
+    system = platform.system()
+    if system == "Linux":
+        user_env = _opencode_user_service_env()
+        # A crash loop can leave the unit in start-limit-hit; clear that one
+        # unit so an explicit owner start is honoured.
+        subprocess.run(
+            ["systemctl", "--user", "reset-failed", _OPENCODE_LINUX_UNIT],
+            capture_output=True, text=True, timeout=15, env=user_env,
+        )
+        result = subprocess.run(
+            ["systemctl", "--user", "start", _OPENCODE_LINUX_UNIT],
+            capture_output=True, text=True, timeout=60, env=user_env,
+        )
+    elif system == "Darwin":
+        target = f"gui/{os.getuid()}/{_OPENCODE_MACOS_LABEL}"
+        loaded = subprocess.run(
+            ["launchctl", "print", target], capture_output=True, text=True, timeout=15,
+        ).returncode == 0
+        command = (
+            ["launchctl", "kickstart", target]
+            if loaded
+            else ["launchctl", "bootstrap", f"gui/{os.getuid()}", str(_opencode_macos_plist_path())]
+        )
+        result = subprocess.run(command, capture_output=True, text=True, timeout=30)
+    elif system == "Windows":
+        if not _run_windows_opencode_control("start"):
+            raise RuntimeError("The ODS OpenCode task could not be started")
+        _wait_for_opencode_health()
+        return
+    else:
+        raise RuntimeError(f"OpenCode start is not supported on {system}")
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip()
+        raise RuntimeError(f"Could not start OpenCode: {detail[:300]}")
+    _wait_for_opencode_health()
+
+
+def _snapshot_managed_opencode_binary() -> dict:
+    """Keep the prior managed executable inode until setup has proved healthy."""
+    path = Path.home() / ".opencode" / "bin" / "opencode"
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError:
+        return {"path": path, "exists": False}
+    if not stat_mod.S_ISREG(metadata.st_mode) or metadata.st_uid != os.getuid():
+        raise RuntimeError(f"Refusing to replace an unsafe OpenCode executable: {path}")
+    backup_dir = Path(tempfile.mkdtemp(prefix=".ods-opencode-backup-", dir=path.parent))
+    backup = backup_dir / "opencode"
+    try:
+        # The reviewed installer replaces the executable by rename. A hard
+        # link preserves its old inode without copying the large binary.
+        os.link(path, backup)
+    except OSError:
+        backup_dir.rmdir()
+        raise
+    return {"path": path, "exists": True, "backup": backup, "backup_dir": backup_dir}
+
+
+def _finish_managed_opencode_binary_snapshot(snapshot: dict, *, restore: bool) -> None:
+    path = snapshot["path"]
+    if restore:
+        if path.is_symlink():
+            raise RuntimeError(f"Refusing to replace an unexpected OpenCode symlink: {path}")
+        if snapshot["exists"]:
+            os.replace(snapshot["backup"], path)
+        elif path.exists():
+            if not path.is_file():
+                raise RuntimeError(f"Refusing to remove an unexpected OpenCode path: {path}")
+            path.unlink()
+    if snapshot["exists"]:
+        snapshot["backup"].unlink(missing_ok=True)
+        snapshot["backup_dir"].rmdir()
+
+
+def _render_opencode_unit(template: str, binary: Path) -> str:
+    home = str(Path.home())
+    for value in (home, str(binary)):
+        # The unit uses these paths unquoted in ExecStart/WorkingDirectory and
+        # inside quoted Environment= values; systemd also expands '%'.
+        if not os.path.isabs(value) or any(
+            character.isspace() or character in '%"\\' for character in value
+        ):
+            raise RuntimeError(f"Unsupported path for the OpenCode service: {value!r}")
+    return (
+        template.replace("__HOME__", home)
+        .replace("__OPENCODE_BIN_DIR__", str(binary.parent))
+        .replace("__OPENCODE_BIN__", str(binary))
+    )
+
+
+def _opencode_prior_systemd_state(user_env: dict[str, str]) -> tuple[bool, bool]:
+    """Capture a known user-unit state before setup changes its files or service."""
+    result = subprocess.run(
+        ["systemctl", "--user", "show", _OPENCODE_LINUX_UNIT,
+         "--property=LoadState,UnitFileState,ActiveState"],
+        capture_output=True, text=True, timeout=15, env=user_env,
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip()
+        raise RuntimeError(f"Could not inspect OpenCode before setup: {detail[:300]}")
+    values = dict(
+        line.split("=", 1) for line in result.stdout.splitlines() if "=" in line
+    )
+    load = values.get("LoadState")
+    unit_file = values.get("UnitFileState")
+    active = values.get("ActiveState")
+    if load == "not-found" and unit_file == "" and active == "inactive":
+        return False, False
+    if load != "loaded" or unit_file not in {"enabled", "disabled"} or active not in {"active", "inactive"}:
+        raise RuntimeError(
+            "OpenCode has an unsupported systemd state; use the installer to repair it "
+            f"({load or 'unknown'}, {unit_file or 'unknown'}, {active or 'unknown'})"
+        )
+    return unit_file == "enabled", active == "active"
+
+
+def _rollback_opencode_setup(
+    config_snapshot: dict,
+    unit_path: Path,
+    unit_snapshot: dict,
+    user_env: dict[str, str],
+    prior_enabled: bool,
+    prior_active: bool,
+    *,
+    unit_changed: bool,
+    enable_attempted: bool,
+    restart_attempted: bool,
+) -> list[str]:
+    """Restore setup-owned files and only the service state setup changed."""
+    errors = []
+
+    def run_action(action: str) -> None:
+        try:
+            step = subprocess.run(
+                ["systemctl", "--user", action, _OPENCODE_LINUX_UNIT],
+                capture_output=True, text=True, timeout=60, env=user_env,
+            )
+            if step.returncode != 0:
+                errors.append(f"{action}: {(step.stderr or step.stdout or '').strip()[:300]}")
+        except (OSError, subprocess.SubprocessError) as exc:
+            errors.append(f"{action}: {exc}")
+
+    # Stop or disable only changes this setup may have made. Do it while the
+    # new unit still exists, so systemd can find it even on a fresh install.
+    if restart_attempted and not prior_active:
+        run_action("stop")
+    if enable_attempted and not prior_enabled:
+        run_action("disable")
+    try:
+        _restore_opencode_config(config_snapshot)
+    except (OSError, RuntimeError) as exc:
+        errors.append(f"config: {exc}")
+    if unit_changed:
+        try:
+            _restore_text_file(unit_path, unit_snapshot)
+        except (OSError, RuntimeError) as exc:
+            errors.append(f"unit: {exc}")
+        try:
+            step = subprocess.run(
+                ["systemctl", "--user", "daemon-reload"],
+                capture_output=True, text=True, timeout=60, env=user_env,
+            )
+            if step.returncode != 0:
+                errors.append(f"daemon-reload: {(step.stderr or step.stdout or '').strip()[:300]}")
+        except (OSError, subprocess.SubprocessError) as exc:
+            errors.append(f"daemon-reload: {exc}")
+    if restart_attempted and prior_active:
+        # A previously running service must use its restored unit and config.
+        run_action("restart")
+    return errors
+
+
+def _setup_managed_opencode(env: dict) -> None:
+    """Install the reviewed OpenCode release and its managed Linux service.
+
+    The binary step reuses ``installers/lib/opencode-runtime.sh`` (pinned
+    release, SHA256 verification, staged version check). The model route uses
+    the same writer as model activation, and the unit is rendered from the
+    shipped ``opencode/opencode-web.service`` template, as phase 07 does.
+    """
+    runtime = INSTALL_DIR / "installers" / "lib" / "opencode-runtime.sh"
+    try:
+        context_length = int(str(env.get("MAX_CONTEXT") or env.get("CTX_SIZE") or "65536").strip())
+    except ValueError as exc:
+        raise RuntimeError("MAX_CONTEXT must be a number to configure OpenCode") from exc
+    if context_length < 1024:
+        raise RuntimeError("OpenCode requires a context of at least 1024 tokens")
+    model_id = str(env.get("LLM_MODEL") or "").strip() or "ods/current"
+    _opencode_route(env)  # Fail before download if the model gateway has no usable key.
+    config_snapshot = _capture_opencode_config(assume_installed=True)
+    if config_snapshot is None:
+        raise RuntimeError("OpenCode configuration could not be prepared")
+    template = (INSTALL_DIR / "opencode" / "opencode-web.service").read_text(encoding="utf-8")
+    managed_binary = Path.home() / ".opencode" / "bin" / "opencode"
+    rendered_unit = _render_opencode_unit(template, managed_binary)
+    unit_path = _opencode_linux_unit_path()
+    unit_snapshot = _snapshot_text_file(unit_path)
+    user_env = _opencode_user_service_env()
+    prior_enabled, prior_active = _opencode_prior_systemd_state(user_env)
+    binary_snapshot = _snapshot_managed_opencode_binary()
+    unit_changed = False
+    enable_attempted = False
+    restart_attempted = False
+    try:
+        _write_progress(_OPENCODE_PROGRESS_ID, "pulling", "Downloading the reviewed OpenCode release")
+        candidate = str(managed_binary) if binary_snapshot["exists"] and os.access(managed_binary, os.X_OK) else ""
+        result = subprocess.run(
+            ["bash", "-c", '. "$1" && ods_install_opencode "$2"', "ods-opencode-setup",
+             str(runtime), candidate],
+            capture_output=True, text=True, timeout=900, env=os.environ.copy(),
+        )
+        lines = [line.strip() for line in (result.stdout or "").splitlines() if line.strip()]
+        if result.returncode != 0 or not lines:
+            detail = (result.stderr or "").strip().splitlines()[-1:] or ["no output"]
+            raise RuntimeError(f"OpenCode download or verification failed: {detail[0][:300]}")
+        binary = Path(lines[-1])
+        if binary != managed_binary or not binary.is_file() or not os.access(binary, os.X_OK):
+            raise RuntimeError("OpenCode installer did not return the managed executable")
+        _write_progress(_OPENCODE_PROGRESS_ID, "starting", "Connecting OpenCode to the active ODS model")
+        _update_opencode_config(env, config_snapshot, model_id, context_length, display_name=model_id)
+        unit_changed = True  # atomic write can fail after replacing the destination
+        _atomic_write_text(unit_path, rendered_unit, 0o644)
+        _write_progress(_OPENCODE_PROGRESS_ID, "starting", "Starting OpenCode")
+        for command in (
+            ["systemctl", "--user", "daemon-reload"],
+            ["systemctl", "--user", "enable", _OPENCODE_LINUX_UNIT],
+            ["systemctl", "--user", "restart", _OPENCODE_LINUX_UNIT],
+        ):
+            if command[2] == "enable":
+                enable_attempted = True
+            elif command[2] == "restart":
+                restart_attempted = True
+            step = subprocess.run(command, capture_output=True, text=True, timeout=60, env=user_env)
+            if step.returncode != 0:
+                detail = (step.stderr or step.stdout or "").strip()
+                raise RuntimeError(f"{' '.join(command[1:])} failed: {detail[:300]}")
+        _wait_for_opencode_health()
+    except Exception as exc:
+        rollback_errors = []
+        try:
+            _finish_managed_opencode_binary_snapshot(binary_snapshot, restore=True)
+        except (OSError, RuntimeError) as rollback_exc:
+            rollback_errors.append(f"binary: {rollback_exc}")
+        rollback_errors.extend(_rollback_opencode_setup(
+            config_snapshot, unit_path, unit_snapshot, user_env,
+            prior_enabled, prior_active,
+            unit_changed=unit_changed,
+            enable_attempted=enable_attempted,
+            restart_attempted=restart_attempted,
+        ))
+        if rollback_errors:
+            raise RuntimeError(f"{exc}; OpenCode rollback failed: {'; '.join(rollback_errors)}") from exc
+        raise
+    try:
+        _finish_managed_opencode_binary_snapshot(binary_snapshot, restore=False)
+    except OSError as exc:
+        logger.warning("OpenCode started, but its old binary backup could not be removed: %s", exc)
+    # Keep the user service running after logout, as the installer does. This
+    # is best effort because some hosts require an administrator to allow it.
+    user = os.environ.get("USER") or os.environ.get("LOGNAME") or ""
+    if user and shutil.which("loginctl"):
+        try:
+            linger = subprocess.run(
+                ["loginctl", "enable-linger", user], capture_output=True, text=True, timeout=15,
+            )
+            if linger.returncode != 0:
+                logger.warning("Could not enable linger for OpenCode; it may stop after logout")
+        except (OSError, subprocess.SubprocessError) as exc:
+            logger.warning("Could not enable linger for OpenCode: %s", exc)
+    _write_progress(_OPENCODE_PROGRESS_ID, "started", "OpenCode is ready")
+
+
+def _run_opencode_setup(env: dict) -> None:
+    try:
+        _setup_managed_opencode(env)
+    except Exception as exc:  # noqa: BLE001 - reported to the owner via progress
+        logger.warning("OpenCode setup failed: %s", exc)
+        try:
+            _write_progress(_OPENCODE_PROGRESS_ID, "error", "OpenCode setup failed", error=str(exc)[:500])
+        except OSError:
+            logger.exception("Could not record OpenCode setup failure")
+    finally:
+        _end_model_lifecycle("opencode_setup")
+
+
+def _begin_opencode_setup(env: dict) -> tuple[int, dict]:
+    """Start dashboard setup in the background; returns (HTTP code, body)."""
+    global _opencode_setup_thread
+    issue = _opencode_setup_issue(env)
+    if issue:
+        return 409, {"error": issue, "code": "opencode_setup_unsupported"}
+    with _opencode_setup_lock:
+        if _opencode_setup_in_progress():
+            return 202, {"accepted": True, "status": _opencode_app_status(env)}
+        status = _opencode_app_status(env)
+        if status["state"] == "running":
+            return 200, {"accepted": False, "status": status}
+        if status["state"] == "starting":
+            return 409, {
+                "error": "OpenCode is already starting; wait for it to become ready or use the installer to repair it",
+                "code": "opencode_starting",
+                "status": status,
+            }
+        if status["portInUse"]:
+            return 409, {
+                "error": f"Port {status['port']} is answering, but ODS cannot verify the managed OpenCode service",
+                "code": "opencode_port_in_use",
+                "status": status,
+            }
+        acquired, active = _begin_model_lifecycle("opencode_setup")
+        if not acquired:
+            return 409, _model_lifecycle_conflict("OpenCode setup", active)
+        try:
+            _write_progress(_OPENCODE_PROGRESS_ID, "pulling", "Preparing OpenCode setup")
+            thread = threading.Thread(
+                target=_run_opencode_setup, args=(env,), name="opencode-setup", daemon=True,
+            )
+            _opencode_setup_thread = thread
+            thread.start()
+        except Exception:
+            _opencode_setup_thread = None
+            _end_model_lifecycle("opencode_setup")
+            raise
+    return 202, {"accepted": True, "status": {**status, "state": "installing"}}
+
+
+def _begin_opencode_start(env: dict) -> tuple[int, dict]:
+    """Start the registered service synchronously; returns (HTTP code, body)."""
+    status = _opencode_app_status(env)
+    if status["state"] == "running":
+        return 200, {"started": False, "status": status}
+    if status["state"] == "installing":
+        return 409, {"error": "OpenCode setup is still running", "code": "opencode_installing", "status": status}
+    if not status["registered"]:
+        return 409, {
+            "error": "OpenCode is not set up on this ODS installation",
+            "code": "opencode_not_installed",
+            "status": status,
+        }
+    if status["portInUse"]:
+        return 409, {
+            "error": f"Port {status['port']} is answering, but ODS cannot verify the managed OpenCode service",
+            "code": "opencode_port_in_use",
+            "status": status,
+        }
+    acquired, active = _begin_model_lifecycle("opencode_start")
+    if not acquired:
+        return 409, _model_lifecycle_conflict("starting OpenCode", active)
+    try:
+        _start_managed_opencode()
+    except (RuntimeError, OSError, subprocess.SubprocessError) as exc:
+        return 502, {"error": str(exc)[:500], "code": "opencode_start_failed", "status": _opencode_app_status(env)}
+    finally:
+        _end_model_lifecycle("opencode_start")
+    return 200, {"started": True, "status": _opencode_app_status(env)}
 
 
 def _perplexica_config_url(env: dict) -> str:
@@ -17624,6 +19003,19 @@ def _capture_perplexica_config(
     required = ("modelProviders", "preferences")
     if any(key not in values for key in required):
         raise RuntimeError("Perplexica config is missing model provider preferences")
+    # Vane hydrates the official OpenAI catalog into GET responses. That is
+    # not a restorable copy of the persisted chatModels array. An owner route
+    # using this provider is independent of the local ODS model activation.
+    providers = values.get("modelProviders")
+    if isinstance(providers, list):
+        openai_provider = next(
+            (entry for entry in providers if isinstance(entry, dict) and entry.get("type") == "openai"),
+            None,
+        )
+        config = openai_provider.get("config") if isinstance(openai_provider, dict) else None
+        if isinstance(config, dict) and config.get("baseURL") == "https://api.openai.com/v1":
+            logger.info("Preserving owner Perplexica OpenAI route during local model activation")
+            return None
     return {
         "url": url,
         "values": {key: values[key] for key in required},
@@ -17718,10 +19110,12 @@ def _update_perplexica_model(
     preferences = values.get("preferences")
     if not isinstance(providers, list) or not isinstance(preferences, dict):
         raise RuntimeError("Perplexica snapshot is missing routing state")
-    provider = next(
-        (entry for entry in providers if isinstance(entry, dict) and entry.get("type") == "openai"),
+    provider_index = next(
+        (index for index, entry in enumerate(providers)
+         if isinstance(entry, dict) and entry.get("type") == "openai"),
         None,
     )
+    provider = providers[provider_index] if provider_index is not None else None
     if provider is None or not provider.get("id"):
         raise RuntimeError("Perplexica has no configured OpenAI provider")
 
@@ -17740,7 +19134,10 @@ def _update_perplexica_model(
     preferences["defaultChatModel"] = model
     preferences["defaultChatProvider"] = provider["id"]
 
-    _post_perplexica_config(url, "modelProviders", providers)
+    # GET hydrates built-in models. Persist only the selected provider fields;
+    # reposting the whole array repeatedly grows the stored embedding catalog.
+    _post_perplexica_config(url, f"modelProviders.{provider_index}.chatModels", provider["chatModels"])
+    _post_perplexica_config(url, f"modelProviders.{provider_index}.config", provider_config)
     _post_perplexica_config(url, "preferences", preferences)
     verified = _perplexica_http_json(url).get("values")
     if not isinstance(verified, dict) or not _perplexica_config_matches(
@@ -17769,33 +19166,23 @@ def _perplexica_restored_snapshot_matches(verified: dict, expected: dict) -> boo
     ):
         return False
 
-    expected_model = preferences.get("defaultChatModel")
-    expected_provider_id = preferences.get("defaultChatProvider")
-    if not expected_model or not expected_provider_id:
-        return False
-    if (
-        verified_preferences.get("defaultChatModel") != expected_model
-        or verified_preferences.get("defaultChatProvider") != expected_provider_id
-    ):
-        return False
+    for key in ("defaultChatModel", "defaultChatProvider",
+                "defaultEmbeddingModel", "defaultEmbeddingProvider"):
+        if verified_preferences.get(key) != preferences.get(key):
+            return False
 
+    # Activation changes the first OpenAI provider, even when the owner's
+    # former default chat provider is a different/custom provider.
     expected_provider = next(
-        (
-            entry
-            for entry in providers
-            if isinstance(entry, dict)
-            and (
-                entry.get("id") == expected_provider_id
-                or (entry.get("type") == "openai" and entry.get("id") == expected_provider_id)
-            )
-        ),
+        (entry for entry in providers if isinstance(entry, dict) and entry.get("type") == "openai"),
         None,
     )
     verified_provider = next(
         (
             entry
             for entry in verified_providers
-            if isinstance(entry, dict) and entry.get("id") == expected_provider_id
+            if isinstance(entry, dict) and isinstance(expected_provider, dict)
+            and entry.get("id") == expected_provider.get("id")
         ),
         None,
     )
@@ -17811,10 +19198,17 @@ def _perplexica_restored_snapshot_matches(verified: dict, expected: dict) -> boo
     verified_chat_models = verified_provider.get("chatModels")
     if not isinstance(verified_chat_models, list):
         return False
-    return any(
-        isinstance(entry, dict)
-        and (entry.get("key") == expected_model or entry.get("name") == expected_model)
-        for entry in verified_chat_models
+    expected_chat_models = expected_provider.get("chatModels")
+    if not isinstance(expected_chat_models, list):
+        return False
+    return all(
+        isinstance(expected_model, dict) and any(
+            isinstance(entry, dict)
+            and (entry.get("key") == expected_model.get("key")
+                 or entry.get("name") == expected_model.get("name"))
+            for entry in verified_chat_models
+        )
+        for expected_model in expected_chat_models
     )
 
 
@@ -17824,10 +19218,37 @@ def _restore_perplexica_config(snapshot: dict) -> None:
     values = snapshot.get("values")
     if not isinstance(values, dict):
         raise RuntimeError("Perplexica rollback snapshot is invalid")
-    for key in ("modelProviders", "preferences"):
-        if key not in values:
-            raise RuntimeError(f"Perplexica rollback snapshot is missing {key}")
-        _post_perplexica_config(url, key, values[key])
+    providers = values.get("modelProviders")
+    preferences = values.get("preferences")
+    if not isinstance(providers, list) or not isinstance(preferences, dict):
+        raise RuntimeError("Perplexica rollback snapshot is missing routing state")
+    old_provider = next(
+        (entry for entry in providers if isinstance(entry, dict) and entry.get("type") == "openai"),
+        None,
+    )
+    if not isinstance(old_provider, dict) or not old_provider.get("id"):
+        raise RuntimeError("Perplexica rollback snapshot is missing its OpenAI provider")
+    old_config = old_provider.get("config")
+    if isinstance(old_config, dict) and old_config.get("baseURL") == "https://api.openai.com/v1":
+        raise RuntimeError("Perplexica rollback snapshot contains a hydrated OpenAI catalog")
+    current = _perplexica_http_json(url).get("values")
+    current_providers = current.get("modelProviders") if isinstance(current, dict) else None
+    if not isinstance(current_providers, list):
+        raise RuntimeError("Perplexica rollback cannot locate its chat provider")
+    provider_index = next(
+        (index for index, entry in enumerate(current_providers)
+         if isinstance(entry, dict) and entry.get("id") == old_provider["id"]),
+        None,
+    )
+    if provider_index is None:
+        raise RuntimeError("Perplexica rollback cannot locate its OpenAI provider")
+    _post_perplexica_config(
+        url, f"modelProviders.{provider_index}.chatModels", old_provider.get("chatModels", []),
+    )
+    _post_perplexica_config(
+        url, f"modelProviders.{provider_index}.config", old_provider.get("config", {}),
+    )
+    _post_perplexica_config(url, "preferences", preferences)
     verified = _perplexica_http_json(url).get("values")
     if not isinstance(verified, dict) or not _perplexica_restored_snapshot_matches(verified, values):
         raise RuntimeError("Perplexica rollback could not be verified")

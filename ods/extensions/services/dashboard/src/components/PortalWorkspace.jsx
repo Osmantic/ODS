@@ -1,35 +1,43 @@
 import {useEffect,useId,useRef,useState} from 'react'
 import {Globe2,FileCode2,FileText,Files,Users,PanelRightClose,PanelRightOpen,RefreshCw,ExternalLink,X,MoreHorizontal,Maximize2,Minimize2} from 'lucide-react'
 import {loadSnapshotFiles} from '../lib/pixelArtifacts'
+import useVerifiedPreview from '../lib/useVerifiedPreview'
 import PixelPreviewSource from './PixelPreviewSource'
 import PixelPreviewViewport from './PixelPreviewViewport'
 import PixelSnapshotChanges from './PixelSnapshotChanges'
 import PortalFileTree from './PortalFileTree'
 import PortalFileTreeResize,{useFileTreeResize} from './PortalFileTreeResize'
 import PortalSubagents from './PortalSubagents'
-import PortalLiveReview from './PortalLiveReview'
+import PortalLiveReview,{completedReviewChanges} from './PortalLiveReview'
+import PortalSourceReview from './PortalSourceReview'
 import './portal-workspace.css'
 
-export default function PortalWorkspace({preview,before,access,title,request,onRequestHandled,refresh=0,onRefresh,onClose,collapsed,onCollapse,onPublish,expanded,onExpand,agents,renderApproval,task,working=false}) {
+export default function PortalWorkspace({preview,before,access:providedAccess,title,request,onRequestHandled,refresh=0,onRefresh,onClose,collapsed,onCollapse,onPublish,expanded,onExpand,agents,renderApproval,task,working=false}) {
+  const access=useVerifiedPreview(preview,providedAccess,refresh)
   const [active,setActive]=useState(request?.kind==='agents'?'agents':!preview?'review':'preview'),[tabs,setTabs]=useState([]),[manifest,setManifest]=useState(null)
   const [agentsTabOpen,setAgentsTabOpen]=useState(request?.kind==='agents')
   const [pendingPath,setPendingPath]=useState(null),[missingPath,setMissingPath]=useState(null)
   const manifestKey=`${preview?.siteId}/${preview?.sha256}`
   const files=manifest?.key===manifestKey?manifest.files:null,error=manifest?.key===manifestKey && manifest.error
+  const unavailable=error==='snapshot-unavailable'
   const workspaceId=useId()
   const tabDomId=key=>`${workspaceId}-tab-${encodeURIComponent(key)}`
   const panelDomId=key=>`${workspaceId}-panel-${key.startsWith('file:')?'file':key}`
   const [treeOpen,setTreeOpen]=useState(false),[reviewPath,setReviewPath]=useState(null),[options,setOptions]=useState(false),[retry,setRetry]=useState(0)
+  const [reviewMode,setReviewMode]=useState(preview?.source?'source':'output')
+  const hasEdits=completedReviewChanges(task).length>0
+  const visibleReviewMode=reviewMode==='edits' && !hasEdits?(preview?.source?'source':'output'):reviewMode
   const consumed=useRef(null),root=useRef(null)
   const treeLayout=useFileTreeResize(root,{narrowBelow:561})
   useEffect(()=>{
     setTabs([]);setActive(current=>current==='agents'?'agents':request?.siteId===preview?.siteId && request?.kind==='review'?'review':!preview?'review':'preview');setReviewPath(null);setOptions(false);setPendingPath(null);setMissingPath(null)
   },[preview?.siteId])
+  useEffect(()=>setReviewMode(preview?.source?'source':'output'),[preview?.siteId,preview?.source?.sourceId])
   useEffect(()=>{
     setManifest(null)
     if(!preview)return
     let current=true;const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),12000)
-    loadSnapshotFiles(preview,controller.signal).then(value=>{if(current)setManifest({key:manifestKey,files:value,error:false})}).catch(()=>{if(current)setManifest({key:manifestKey,files:null,error:true})}).finally(()=>clearTimeout(timer))
+    loadSnapshotFiles(preview,controller.signal).then(value=>{if(current)setManifest({key:manifestKey,files:value,error:false})}).catch(reason=>{if(current)setManifest({key:manifestKey,files:null,error:reason?.code==='snapshot-unavailable'?'snapshot-unavailable':true})}).finally(()=>clearTimeout(timer))
     return ()=>{current=false;controller.abort();clearTimeout(timer)}
   },[preview?.siteId,preview?.sha256,preview?.entrySha256,preview?.files,preview?.bytes,refresh,retry])
   function openFile(path) {
@@ -47,7 +55,7 @@ export default function PortalWorkspace({preview,before,access,title,request,onR
     if(request.siteId!==preview?.siteId)return
     consumed.current=request
     if(request.kind==='file'){setActive('review');openFile(request.path)}
-    else {setPendingPath(null);setMissingPath(null);setActive(request.kind==='review'?'review':!preview?'review':'preview');setReviewPath(request.path || null)}
+    else {setPendingPath(null);setMissingPath(null);setActive(request.kind==='review'?'review':!preview?'review':'preview');setReviewPath(request.path || null);if(request.kind==='review' && request.path)setReviewMode('output')}
     onRequestHandled?.(request)
   },[request,preview?.siteId,files,onRequestHandled])
   const selected=files?.find(file=>`file:${file.path}`===active)
@@ -86,21 +94,31 @@ export default function PortalWorkspace({preview,before,access,title,request,onR
     <div className="portal-workbench-live" hidden={!!preview || collapsed || active!=='review'}><PortalLiveReview task={task} active={working}/></div>
     {agentsTabOpen && agents && <div className="portal-workbench-body" hidden={collapsed || active!=='agents'} id={panelDomId('agents')} role="tabpanel" aria-labelledby={tabDomId('agents')}><PortalSubagents controller={agents} renderApproval={renderApproval}/></div>}
     {preview && <div className="portal-workbench-body" hidden={collapsed || active==='agents'}>
+      {error && <section className="portal-workbench-empty" role="status"><h2>Preview unavailable</h2><button type="button" onClick={()=>setRetry(value=>value+1)}>Check publication again</button>{onPublish && <button type="button" onClick={onPublish}>Ask Portal to publish again</button>}</section>}
       {missingPath && <p role="status" className="portal-source-notice">This file is not available in this publication. <button type="button" onClick={()=>setMissingPath(null)}>Dismiss</button></p>}
       {pendingPath && <p role="status" className="portal-source-notice">{error?'Files unavailable.':'Opening file…'}{error && <button type="button" onClick={()=>setRetry(value=>value+1)}>Retry</button>}</p>}
       {options && <div className="portal-workbench-options" role="group" aria-label="Workspace actions">
-        <a href={access.url} target="_blank" rel="noopener noreferrer"><ExternalLink size={14}/>Open preview in a new tab</a>
+        {access.frameUrl && <a href={access.url} target="_blank" rel="noopener noreferrer"><ExternalLink size={14}/>Open preview in a new tab</a>}
         {active!=='preview' && <button type="button" onClick={()=>switchTab('preview')}><Globe2 size={14}/>Show preview</button>}
       </div>}
       {/* Retain the frame while reading/reviewing files so its local state survives tab switches. */}
       <div className={`portal-workbench-content${treeOpen && !treeLayout.narrow?' portal-tree-split':''}`} style={treeLayout.style} id={panelDomId('preview')} role="tabpanel" aria-labelledby={tabDomId('preview')} hidden={active!=='preview'}>
-        <PixelPreviewViewport key={`${preview.siteId}/${refresh}`} access={access} title={title} hidden={collapsed || active!=='preview'} compact/>
+        <PixelPreviewViewport key={`${preview.siteId}/${refresh}`} access={files && !error?access:{...access,frameUrl:null,checking:!error}} title={title} hidden={collapsed || active!=='preview'} onRetry={onRefresh} compact/>
         {treeOpen && <PortalFileTreeResize layout={treeLayout}/>}
         {treeOpen && <aside className="portal-workbench-file-tree">{files?<PortalFileTree files={files} rootPath={preview.relativeDirectory} selectedPath={null} onSelectFile={path=>openFile(path)} label="Published files" filterLabel="Filter task files"/>:error?<p role="alert">Files unavailable. <button onClick={()=>setRetry(value=>value+1)}>Retry</button></p>:<p role="status">Loading files…</p>}</aside>}
       </div>
       {active==='review' && <div className="portal-workbench-review" id={panelDomId('review')} role="tabpanel" aria-labelledby={tabDomId('review')}>
-        {error && <p className="portal-source-notice" role="status">Project files unavailable. <button type="button" onClick={()=>setRetry(value=>value+1)}>Retry files</button></p>}
-        <PixelSnapshotChanges key={`${preview.siteId}/${refresh}`} preview={preview} rootPath={preview.relativeDirectory} before={before} projectFiles={files} selectedPath={reviewPath} onSelectFile={path=>setReviewPath(path)} onOpenFile={file=>openFile(file.path)}/>
+        <div className="portal-review-scope" role="group" aria-label="Review scope">
+          {preview.source && <button type="button" aria-pressed={visibleReviewMode==='source'} onClick={()=>setReviewMode('source')}>Source files</button>}
+          <button type="button" aria-pressed={visibleReviewMode==='output'} onClick={()=>setReviewMode('output')}>Published output</button>
+          {hasEdits && <button type="button" aria-pressed={visibleReviewMode==='edits'} onClick={()=>setReviewMode('edits')}>File edits</button>}
+        </div>
+        {visibleReviewMode==='source' && preview.source && <PortalSourceReview key={`${preview.siteId}/${preview.source.sourceId}`} preview={preview} refresh={refresh}/>}
+        {visibleReviewMode==='edits' && <PortalLiveReview task={task} hasPublication/>}
+        <div hidden={visibleReviewMode!=='output'} className="portal-review-output">
+        {error && !unavailable && <p className="portal-source-notice" role="status">Project files unavailable. <button type="button" onClick={()=>setRetry(value=>value+1)}>Retry files</button></p>}
+        {!unavailable && <PixelSnapshotChanges key={`${preview.siteId}/${refresh}/${retry}`} preview={preview} rootPath={preview.relativeDirectory} before={before} projectFiles={files} selectedPath={reviewPath} onSelectFile={path=>setReviewPath(path)} onOpenFile={file=>openFile(file.path)}/> }
+        </div>
       </div>}
       {fileView && <div className={`portal-workbench-content${treeOpen && !treeLayout.narrow?' portal-tree-split':''}`} style={treeLayout.style} id={panelDomId(active)} role="tabpanel" aria-labelledby={tabDomId(active)}>
         <div className="portal-workbench-document">{selected?<PixelPreviewSource key={`${preview.siteId}/${active}/${refresh}`} preview={preview} file={selected} workbench onOpenFile={openFile}/>:<p role="status">{error?'File unavailable.':'Loading file…'}{error && <button type="button" onClick={()=>setRetry(value=>value+1)}>Retry</button>}</p>}</div>

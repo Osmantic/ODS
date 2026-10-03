@@ -784,7 +784,7 @@ def test_asset_ownership_mode_hardlink_size_checks_preserved():
         try:
             MODULE.publish_snapshot(workspace, previews, "grp-write-file", os.getuid())
         except MODULE.PreviewError as exc:
-            assert "unsafe" in str(exc).lower()
+            assert str(exc) == "writable preview file"
         else:
             raise AssertionError("group-writable file was accepted")
 

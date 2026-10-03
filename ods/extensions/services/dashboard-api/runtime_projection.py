@@ -36,7 +36,7 @@ def active_runtime_projection(status: object) -> dict[str, object] | None:
     expected = {"source", "model", "contextLength", "maxTokens", "reasoning"}
     if (
         not isinstance(runtime, dict)
-        or not expected <= set(runtime) <= expected | {"routeFingerprint"}
+        or not expected <= set(runtime) <= expected | {"routeFingerprint", "imageInput"}
         or runtime.get("source") != "remote-provider"
         or not isinstance(runtime.get("model"), str)
         or not 1 <= len(runtime["model"]) <= 256
@@ -45,10 +45,11 @@ def active_runtime_projection(status: object) -> dict[str, object] | None:
         or type(runtime.get("maxTokens")) is not int
         or not 1 <= runtime["maxTokens"] <= runtime["contextLength"]
         or type(runtime.get("reasoning")) is not bool
+        or "imageInput" in runtime and runtime["imageInput"] not in ("supported", "unsupported", "unknown")
         or "routeFingerprint" in runtime and (
             not isinstance(runtime["routeFingerprint"], str)
             or re.fullmatch(r"[a-f0-9]{64}", runtime["routeFingerprint"]) is None
         )
     ):
         return None
-    return {key: runtime[key] for key in expected | {"routeFingerprint"} if key in runtime}
+    return {key: runtime[key] for key in expected | {"routeFingerprint", "imageInput"} if key in runtime}

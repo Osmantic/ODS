@@ -80,6 +80,7 @@ function Reset-Scenario {
     $script:linuxHome = '/home/user'
     $script:amdBinding = @()
     $script:distroListFailure = $null
+    $script:initProbes = @()
 }
 function Test-ODSPortalVirtualization { $script:calls.Add('virt-check'); return $script:virtualization }
 function Get-ODSPortalFreeSystemGB { return $script:freeGB }
@@ -160,7 +161,16 @@ function Invoke-ODSPortalWsl([string[]]$Arguments) {
         '^--distribution Ubuntu --exec cat /proc/1/comm$' { $output='systemd'; break }
         '^--distribution Ubuntu --exec docker (info|compose version)$' { break }
         '^--distribution Ubuntu-24.04 --exec id -u$' { $output='1000'; if ($script:scenario -in @('root','resume-user')) { $output='0' }; break }
-        '^--distribution Ubuntu-24.04 --exec cat /proc/1/comm$' { $output='systemd'; if ($script:scenario -in @('init','init-stuck')) { $output='init' }; break }
+        '^--distribution Ubuntu-24.04 --exec cat /proc/1/comm$' {
+            if ($script:initProbes.Count -gt 0) {
+                $probe = $script:initProbes[0]
+                $script:initProbes = @($script:initProbes | Select-Object -Skip 1)
+                $code=$probe.Code; $output=$probe.Output; $stderr=$probe.Error
+            } else {
+                $output='systemd'; if ($script:scenario -in @('init','init-stuck')) { $output='init' }
+            }
+            break
+        }
         '^--distribution Ubuntu-24.04 --exec docker info$' { if ($script:scenario -eq 'docker' -or -not $script:integrated) { $code=1 }; break }
         '^--distribution Ubuntu-24.04 --exec docker compose version$' { if ($script:scenario -eq 'compose') { $code=1 }; break }
         '^--distribution Ubuntu-24.04 --exec /usr/lib/wsl/lib/nvidia-smi -L$' { $output='GPU 0: NVIDIA GeForce RTX 4060 (UUID: GPU-00000000)'; if ($script:scenario -eq 'gpu-hidden') { $code=1; $output='command not found' }; break }
@@ -229,6 +239,41 @@ try {
         Check $rejected "$failure blocks installation"
         Check (-not $script:calls.Contains('install:Ubuntu-24.04')) "$failure never falls back or delegates"
     }
+    foreach ($nonInteractive in @($false, $true)) {
+        foreach ($probe in @(
+            @{Code=-1; Output='Wsl/Service/0x8007274c'; Error='connection timed out'},
+            @{Code=1; Output=''; Error='Wsl/Service/0x8007274c'},
+            @{Code=1; Output='systemd'; Error='Wsl/Service/0x8007274c'},
+            @{Code=0; Output=''; Error=''},
+            @{Code=0; Output="init`nUnexpected second line"; Error=''}
+        )) {
+            Reset-Scenario
+            $script:initProbes = @($probe)
+            $message = ''
+            try { $null = Invoke-ODSPortalSetup @{NonInteractive=$nonInteractive} 'unused' } catch { $message=$_.Exception.Message }
+            Check ($message -match 'systemd state is unknown' -and $message -notmatch 'Enable systemd=true|wsl --terminate') 'unreadable PID 1 reports unknown systemd state without configuration advice'
+            if ($probe.Code -ne 0) {
+                Check ($message -match '0x8007274c' -and $message.Contains("wsl exit $($probe.Code)")) 'failed PID 1 preserves the WSL exit code and diagnostic'
+            }
+            Check (-not $script:calls.Contains('confirm') -and -not $script:calls.Contains('systemd:Ubuntu-24.04')) 'unknown systemd state never offers or enables systemd'
+            Check (-not ($script:calls -match '^(install:|docker-wait:|amd-lemonade:)')) 'unknown systemd state stops before Docker preparation or installation'
+        }
+    }
+    Reset-Scenario
+    $script:initProbes = @(
+        @{Code=0; Output='init'; Error=''},
+        @{Code=1; Output=''; Error='Wsl/Service/0x8007274c'}
+    )
+    $message = ''
+    try { $null = Invoke-ODSPortalSetup @{} 'unused' } catch { $message=$_.Exception.Message }
+    Check ($message -match 'systemd state is unknown' -and $message -match '0x8007274c' -and $message -notmatch 'Enable systemd=true|wsl --terminate') 'failed post-enable PID 1 recheck preserves the transport failure'
+    Check (@($script:calls | Where-Object { $_ -eq 'systemd:Ubuntu-24.04' }).Count -eq 1 -and @($script:calls | Where-Object { $_ -eq 'confirm' }).Count -eq 1) 'post-enable failure does not retry systemd changes or ask again'
+    Check (-not $script:calls.Contains('install:Ubuntu-24.04')) 'failed post-enable recheck never delegates installation'
+    Reset-Scenario
+    $script:scenario = 'init'
+    $message = ''
+    try { $null = Invoke-ODSPortalSetup @{NonInteractive=$true} 'unused' } catch { $message=$_.Exception.Message }
+    Check ($message -match 'Enable systemd=true' -and -not $script:calls.Contains('systemd:Ubuntu-24.04')) 'confirmed non-systemd retains manual guidance in non-interactive mode'
     Reset-Scenario
     $script:scenario = 'init'
     Check ((Invoke-ODSPortalSetup @{} 'unused') -eq 0) 'existing Ubuntu without systemd is fixed after consent'

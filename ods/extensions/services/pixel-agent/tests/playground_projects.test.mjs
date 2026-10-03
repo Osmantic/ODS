@@ -83,6 +83,32 @@ test('new PT/EN projects include native tools and retain ordinary constraints',(
   for(const prompt of ['Não crie um site.','Do not create a game.','Explain how to create a project.','Create a button for this app.','Crie um botão para esse site.','Edite o projeto existente.','Make the game harder.','Faça o jogo ficar mais difícil.']) assert.equal(requestsNewPlaygroundProject(prompt),false,prompt);
 });
 
+test('running an existing build does not reserve a new Playground project',t=>{
+  for (const prompt of [
+    'Execute o script test existente e o build.',
+    'Run the test script and the build.',
+    'Run npm run build for the project.',
+    'Use pnpm build to validate the app.',
+    'Execute build and check the app.',
+    'Use gradle build to validate the app.',
+    'Run cargo build and check the project.',
+  ]) {
+    assert.equal(requestsNewPlaygroundProject(prompt),false,prompt);
+    const {root}=fixture(t);
+    const guard=createToolLoopGuard();
+    const context={agentId:'pixel',runId:'existing-build',sessionId:'owner-session'};
+    guard.observeRun(context,'pixel',{prompt},{workspaceRoot:root,executionHost:'sandbox'});
+    const result=guard.beforeToolCall({toolName:'exec',params:{command:'node --version'}},context);
+    assert.notEqual(result?.block,true,result?.blockReason);
+  }
+  assert.equal(requestsNewPlaygroundProject('Run the tests, then build a new weather app.'),true);
+  // Only unambiguous build commands are stripped: "go build" / "next build"
+  // can still be the creation verb, and a later creation clause stays eligible.
+  assert.equal(requestsNewPlaygroundProject('Go build a new weather app.'),true);
+  assert.equal(requestsNewPlaygroundProject('Next build a new website.'),true);
+  assert.equal(requestsNewPlaygroundProject('Create a new site and run vite build.'),true);
+});
+
 test('creates a real descriptive project, routes files of every type and stores no prompt or identity',t=>{
   const {root,state,call}=fixture(t);
   assert.equal(call('write',{path:'weather-tool/main.py',content:'print(1)'}).params.path,'Playground/weather-tool/main.py');
@@ -446,4 +472,27 @@ test('explicit workspace intent cannot authorize traversal at the full publicati
     assert.match(preview.blockReason,/Invalid preview relativeDirectory/);
     assert.equal(fs.existsSync(path.join(root,'Playground')),false);
   }
+});
+
+test('delivery folder and archive contents do not request a fresh project', t=>{
+  const prompt='Conclua a entrega já solicitada, sem remover nada. Crie uma pasta de entrega nova, copie o PDF verificado do build e gere o ZIP com os fontes, lock, testes e script de hashes. Confira os arquivos e publique os dois downloads. Não precisa limpar diretórios nem pedir outra confirmação para essas etapas.';
+  assert.equal(requestsNewPlaygroundProject(prompt),false);
+  const {root}=fixture(t), guard=createToolLoopGuard();
+  const context={agentId:'pixel',runId:'delivery-existing',sessionId:'delivery-existing'};
+  guard.observeRun(context,'pixel',{prompt},{workspaceRoot:root});
+  const decision=guard.beforeToolCall({toolName:'exec',toolCallId:'inspect-delivery',params:{command:'pwd'}},context);
+  assert.notEqual(decision?.block,true,decision?.blockReason);
+  for(const value of ['Create a delivery folder and generate a ZIP with sources, tests and the script.',
+    'Gere um ZIP contendo código, testes e script.']) assert.equal(requestsNewPlaygroundProject(value),false,value);
+  for(const value of ['Create a Python script and generate a ZIP with tests.',
+    'Gere um ZIP com os fontes e crie um script novo.',
+    'Create a ZIP with sources and build a new website.']) assert.equal(requestsNewPlaygroundProject(value),true,value);
+});
+
+test('archive review keeps existing build commands distinct from new project creation', () => {
+  for (const intent of [
+    'Inspect ZIP with app sources and run npm build for the website.',
+    'Inspect the archive containing sources and run npm build for the dashboard.',
+  ]) assert.equal(requestsNewPlaygroundProject(intent), false, intent);
+  assert.equal(requestsNewPlaygroundProject('Inspect ZIP with HTML and run npm build; create a new game.'), true);
 });

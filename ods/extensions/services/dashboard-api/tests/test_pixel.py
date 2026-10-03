@@ -31,6 +31,8 @@ import pixel_runtime_state  # noqa: E402
 import pixel_chat_identity  # noqa: E402
 from pixel_runtime_state import pixel_stream_active  # noqa: E402
 
+pytestmark = pytest.mark.usefixtures("mock_edge_read_transport")
+
 
 EDGE_KEY = "e" * 64
 UNVERIFIED_READINESS = {
@@ -276,10 +278,13 @@ async def test_explicit_cancel_forwards_only_validated_chat_id_and_edge_key():
         pixel.httpx,
         "AsyncClient",
         return_value=CancelAwareClient(FakeResponse(), calls),
-    ):
+    ) as client_factory:
         result = await pixel.pixel_chat_cancel(body)
 
     assert result == {"aborted": True}
+    # Edge owns a bounded 20 s cancellation; do not sever its acknowledgement.
+    assert client_factory.call_args.kwargs["timeout"].read > 20
+    assert pixel._CLIENT_CANCEL_TIMEOUT_SECONDS > client_factory.call_args.kwargs["timeout"].read
     assert len(calls) == 1
     assert calls[0]["method"] == "POST"
     assert calls[0]["url"] == "http://pixel-edge:9595/v1/chat/cancel"
@@ -651,6 +656,18 @@ def test_active_runtime_projection_accepts_a_constrained_adaptive_context():
         "reasoning": False,
     }
     assert pixel._active_runtime_projection({"activeRuntime": runtime}) == runtime
+
+
+@pytest.mark.parametrize('image_input', ['supported', 'unsupported', 'unknown'])
+def test_active_runtime_image_capability_is_projected_without_inventing_support(image_input):
+    runtime = {'source': 'remote-provider', 'model': 'deepseek-v4.1-flash',
+               'contextLength': 131072, 'maxTokens': 8192, 'reasoning': False,
+               'routeFingerprint': 'a' * 64, 'imageInput': image_input}
+    assert pixel._active_runtime_projection({'activeRuntime': runtime}) == runtime
+    for invalid in (None, True, False, [], {}, 'vision', 'unknown\n'):
+        assert pixel._active_runtime_projection({'activeRuntime': {**runtime, 'imageInput': invalid}}) is None
+    for extra in ({'endpoint': 'https://private.example'}, {'routeFingerprint': 'a' * 64 + '\n'}):
+        assert pixel._active_runtime_projection({'activeRuntime': {**runtime, **extra}}) is None
 
 
 def test_active_remote_runtime_projects_only_a_valid_route_fingerprint():

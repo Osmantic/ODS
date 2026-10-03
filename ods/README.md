@@ -188,13 +188,13 @@ source checkout with `.\ods\installers\windows\ods.ps1 uninstall --force`.
 | Component | Purpose | Port | Backend |
 |-----------|---------|------|---------|
 | **llama-server** | LLM inference engine | Linux Docker: 11434 host / 8080 container; native macOS/Windows: 8080 host | Core GPU backend |
-| **Open WebUI** | Beautiful chat interface | 3000 | Core |
+| **Open WebUI** | Alternative chat interface; add from the Extensions Library on qualified Linux installs | 3000 when enabled | Optional on qualified Linux hosts |
 | **Dashboard** | System status, GPU metrics, service health | 3001 | Core |
 | **Dashboard API** | Backend API for dashboard | 3002 | Core |
 | **LiteLLM** | Multi-model API gateway | 4000 | Recommended |
 | **Token Spy** | Token usage monitor | 3005 | Recommended |
 | **SearXNG** | Self-hosted web search | 8888 | Recommended |
-| **Portal** | Core conversational assistant in Dashboard; default Open WebUI agent route on qualified Linux hosts | Private Unix socket; no host TCP port | Core feature on qualified hosts |
+| **Portal** | Core conversational assistant in Dashboard; default chat on fresh qualified Linux installs | Private Unix socket; no host TCP port | Core feature on qualified hosts |
 | **Hermes Agent** | Independent general-purpose agent | 9120 via auth proxy; 9119 internal | Default |
 | **OpenClaw** | Deprecated legacy autonomous agent, opt-in during migration | 7860 | Deprecated optional |
 | **APE** | Agent Policy Engine for policy/audit controls | 7890 | Optional |
@@ -210,6 +210,8 @@ source checkout with `.\ods\installers\windows\ods.ps1 uninstall --force`.
 | **Langfuse** | LLM observability and tracing | 3006 | Optional |
 | **ComfyUI** | Image generation | 8188 | Optional GPU service |
 | **Memory Shepherd** | Agent memory lifecycle management | — | Host/systemd helper |
+
+On a fresh Linux host qualified for Pixel, the standard installer with default feature choices selects Portal chat and skips the Open WebUI image. Existing installations keep their saved WebUI choice. Use `--with-webui` during installation or add Open WebUI later from the Extensions Library. Hosts without a qualified Pixel runtime, and installs that select voice, RAG, or the LAN proxy, keep WebUI so those journeys remain available.
 
 ## Hardware Tiers
 

@@ -1,0 +1,57 @@
+# Independent Windows ComfyUI project. The installer supplies an absolute data
+# path and uses a fixed Compose project that cannot select the full ODS stack.
+name: ods-comfyui-standalone
+services:
+  comfyui:
+    build:
+      context: .
+      dockerfile: Dockerfile.standalone
+    image: ods-comfyui-standalone:0.16.4-cu128
+    container_name: ods-comfyui-standalone
+    labels:
+      org.osmantic.ods.comfyui.data-root: ${ODS_COMFYUI_DATA_ROOT:?set ODS_COMFYUI_DATA_ROOT}
+      org.osmantic.ods.comfyui.port: ${ODS_COMFYUI_PORT:?set ODS_COMFYUI_PORT}
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    ports:
+      - "127.0.0.1:${ODS_COMFYUI_PORT}:8188"
+    volumes:
+      - type: bind
+        source: ${ODS_COMFYUI_DATA_ROOT}/models
+        target: /models
+      - type: bind
+        source: ${ODS_COMFYUI_DATA_ROOT}/output
+        target: /output
+      - type: bind
+        source: ${ODS_COMFYUI_DATA_ROOT}/input
+        target: /input
+      - type: bind
+        source: ${ODS_COMFYUI_DATA_ROOT}/workflows
+        target: /workflows
+        read_only: true
+      - type: bind
+        source: ${ODS_COMFYUI_DATA_ROOT}/user
+        target: /user
+      - type: bind
+        source: ${ODS_COMFYUI_DATA_ROOT}/custom_nodes
+        target: /opt/comfyui/custom_nodes
+    shm_size: 2g
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "--quiet", "http://127.0.0.1:8188/"]
+      interval: 30s
+      timeout: 10s
+      start_period: 120s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"

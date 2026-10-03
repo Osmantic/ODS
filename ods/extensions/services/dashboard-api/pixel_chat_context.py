@@ -7,7 +7,8 @@ not manufacture a second summary or claim delivery from a browser-side counter.
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_serializer, model_validator
+from pixel_image_transport import ImageReference, MAX_TURN_IMAGES
 
 
 MAX_HISTORY_BYTES = 4 * 1024 * 1024
@@ -19,20 +20,48 @@ class HistoryMessage(BaseModel):
 
     role: Literal["user", "assistant"]
     content: str = Field(max_length=MAX_HISTORY_BYTES)
+    images: list[ImageReference] | None = Field(default=None, min_length=1, max_length=MAX_TURN_IMAGES)
+
+    @model_validator(mode="after")
+    def owner_images_only(self):
+        if self.images is not None:
+            if self.role != "user" or len({image.id for image in self.images}) != len(self.images):
+                raise ValueError("Only user messages may contain distinct image references")
+        return self
+
+    @model_serializer(mode="wrap")
+    def preserve_legacy_shape(self, handler):
+        value = handler(self)
+        if self.images is None:
+            value.pop("images", None)
+        return value
 
 
 class HistorySnapshot(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
-    schemaVersion: Literal[1]
+    schemaVersion: Literal[1, 2]
     messages: list[HistoryMessage] = Field(min_length=1, max_length=MAX_HISTORY_MESSAGES)
 
     @field_validator("messages")
     @classmethod
     def bounded_content(cls, messages):
-        if sum(len(item.content.encode("utf-8")) for item in messages) > MAX_HISTORY_BYTES:
+        if sum(len(item.content.encode("utf-8")) + sum(len(image.id) + len(image.sha256)
+                   for image in (item.images or [])) for item in messages) > MAX_HISTORY_BYTES:
             raise ValueError("Conversation history exceeds its storage limit")
         return messages
+
+    @model_validator(mode="after")
+    def versioned_images(self):
+        if self.schemaVersion == 1 and any(message.images is not None for message in self.messages):
+            raise ValueError("Image history requires schema version 2")
+        images = {}
+        for message in self.messages:
+            for image in message.images or []:
+                if image.id in images and images[image.id] != image.sha256:
+                    raise ValueError("A history image cannot change identity")
+                images[image.id] = image.sha256
+        return self
 
 
 class _Projection(BaseModel):
@@ -52,6 +81,8 @@ class ContextModel(_Projection):
     provider: str = Field(min_length=1, max_length=128, pattern=r"^[^\x00-\x1f\x7f]+$")
     contextWindow: int = Field(ge=1, le=10_000_000)
     routeFingerprint: str | None = Field(default=None, min_length=64, max_length=64, pattern=r"^[a-f0-9]{64}$")
+    imageInput: Literal["supported", "unsupported", "unknown"] | None = None
+    imageRouteFingerprint: str | None = Field(default=None, min_length=64, max_length=64, pattern=r"^[a-f0-9]{64}$")
 
 
 class CompactionState(_Projection):

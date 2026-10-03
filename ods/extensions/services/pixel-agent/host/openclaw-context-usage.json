@@ -1,0 +1,16 @@
+{
+  "version": "2026.6.33",
+  "sourceSha256": "06b4bf876c1563df9e4e88c426ec0364257064547fcafa9bc936d923d730f028",
+  "patchedSha256": "7676b64bf5c63b1d3b025002d1c5aecebb487b9752c3d485e43922361c863b32",
+  "replacements": [
+    [
+      "\t\t\tusage: params.result.meta.agentMeta?.usage",
+      "\t\t\t// A transcript mirror represents the last model context, not run-wide billing.\n\t\t\tusage: gapFill ? params.result.meta.agentMeta?.lastCallUsage : params.result.meta.agentMeta?.usage"
+    ],
+    [
+      "\t\t\tusage: resolveTranscriptUsage(params.assistant.usage),",
+      "\t\t\t// Without measured context, keep earlier real usage/size estimation available.\n\t\t\t...params.embeddedAssistantGapFill && !params.assistant.usage ? {} : {usage: resolveTranscriptUsage(params.assistant.usage)},"
+    ]
+  ],
+  "previousReplacements": {}
+}

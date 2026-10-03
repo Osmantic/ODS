@@ -32,6 +32,35 @@ def invoke(path, home, explicit_home=None):
                           capture_output=True, text=True, timeout=10)
 
 
+@pytest.mark.parametrize('policy,expected', [('supported', ['text', 'image']),
+    ('unknown', ['text', 'image']), ('unsupported', ['text'])])
+def test_image_policy_overlay_binds_selected_route_and_replaces_previous_policy(tmp_path, policy, expected):
+    tmp_path.chmod(0o700)
+    value = configuration()
+    value['plugins'] = {'entries': {'pixel-ods': {'config': {'modelImageInput': 'supported'}}}}
+    value['models']['providers']['ods-local']['models'][0]['input'] = ['text', 'image']
+    path = tmp_path / 'openclaw.json'
+    path.write_text(json.dumps(value))
+    path.chmod(0o600)
+    answers = tmp_path / 'onboarding.json'
+    answers.write_text(json.dumps({'modelProvider': 'ods-local', 'modelId': 'Qwen3.5-9B',
+        'modelName': 'ODS Local Qwen3.5-9B', 'modelImageInput': policy}))
+    answers.chmod(0o600)
+    args = [sys.executable, str(WRITER), str(path), '3099', str(answers), str(tmp_path / '.openclaw')]
+    result = subprocess.run(args, capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stderr
+    updated = json.loads(Path(result.stdout.strip()).read_text())
+    assert updated['models']['providers']['ods-local']['models'][0]['input'] == expected
+    assert updated['plugins']['entries']['pixel-ods']['config']['modelImageInput'] == policy
+    # A stale policy for another concrete model must not be applied at all.
+    answers.write_text(json.dumps({'modelProvider': 'ods-local', 'modelId': 'different',
+        'modelName': 'ODS Local different', 'modelImageInput': policy}))
+    before = path.read_bytes()
+    result = subprocess.run(args, capture_output=True, text=True, timeout=10)
+    assert result.returncode != 0 and 'route does not match' in result.stderr
+    assert path.read_bytes() == before
+
+
 @pytest.mark.parametrize('transport', [None, 'unix', 'native', 'unknown'])
 def test_inspection_allowlists_require_explicit_provisioned_transport(tmp_path, transport):
     tmp_path.chmod(0o700)
@@ -68,6 +97,28 @@ def test_fresh_installer_explicitly_stages_inspection_transport(tmp_path):
     assert 'pixel_ods_workspace_preview_inspect' in updated['tools']['alsoAllow']
 
 
+@pytest.mark.parametrize('socket_path', [None, '/run/ods-project/control.sock', 'relative.sock'])
+def test_project_allowlists_follow_optional_controller_config(tmp_path, socket_path):
+    tmp_path.chmod(0o700)
+    value = configuration()
+    tool = 'pixel_ods_project_build'
+    value['tools']['alsoAllow'].append(tool)
+    value['tools']['sandbox']['tools']['allow'].append(tool)
+    value['agents']['list'][0]['tools'] = {'deny': [tool]}
+    plugin = {} if socket_path is None else {'projectBuildSocket': socket_path}
+    value['plugins'] = {'entries': {'pixel-ods': {'config': plugin}}}
+    path = tmp_path / 'openclaw.json'
+    path.write_text(json.dumps(value))
+    path.chmod(0o600)
+    result = invoke(path, tmp_path)
+    assert result.returncode == 0, result.stderr
+    updated = json.loads(Path(result.stdout.strip()).read_text())
+    enabled = socket_path is not None and socket_path.startswith('/')
+    assert (tool in updated['tools']['alsoAllow']) is enabled
+    assert (tool in updated['tools']['sandbox']['tools']['allow']) is enabled
+    assert (tool not in updated['agents']['list'][0]['tools']['deny']) is enabled
+
+
 @pytest.mark.parametrize('context', [8192, 16384, 32768, 65536])
 def test_shared_overlay_is_staged_idempotent_and_uses_selected_home(tmp_path, context):
     tmp_path.chmod(0o700)
@@ -92,8 +143,10 @@ def test_shared_overlay_is_staged_idempotent_and_uses_selected_home(tmp_path, co
     assert value['tools']['toolSearch']['enabled'] is True
     assert value['tools']['toolSearch']['mode'] == 'tools'
     assert agent['contextLimits']['toolResultMaxChars'] == max(4000, min(16000, context // 4))
-    assert {'pixel_ops_run', 'pixel_ods_workspace_preview', 'pixel_ods_workspace_bundle', 'create_goal'}.issubset(value['tools']['alsoAllow'])
+    assert {'pixel_ops_run', 'pixel_ods_workspace_preview', 'pixel_ods_workspace_bundle','pixel_ods_workspace_artifact', 'create_goal'}.issubset(value['tools']['alsoAllow'])
     assert 'pixel_ods_extension_proposal' in value['tools']['alsoAllow']
+    assert 'pixel_ods_image_read' in value['tools']['alsoAllow']
+    assert 'pixel_ods_image_read' in value['tools']['sandbox']['tools']['allow']
     assert 'pixel_ods_extension_proposal' in value['tools']['sandbox']['tools']['allow']
     assert 'pixel_ods_extension_proposal' not in agent['tools']['deny']
     for tool in ('pixel_ods_skill', 'pixel_ods_python_library_proposal', 'pixel_ods_extension_request_status', 'pixel_ods_extension_request_prepare', 'pixel_ods_extension_request_advance'):
@@ -129,3 +182,18 @@ def test_overlay_rejects_unsafe_input_without_modifying_config(tmp_path, fault):
     assert result.returncode != 0
     assert path.read_bytes() == before
     assert not list(tmp_path.glob('.ods-pixel-runtime-budget.*'))
+
+
+def test_document_delivery_overlay_preserves_an_explicit_owner_deny(tmp_path):
+    tmp_path.chmod(0o700)
+    value = configuration()
+    tool = 'pixel_ods_workspace_artifact'
+    value['agents']['list'][0]['tools'] = {'deny': [tool]}
+    path = tmp_path / 'openclaw.json'
+    path.write_text(json.dumps(value))
+    path.chmod(0o600)
+    result = invoke(path, tmp_path)
+    assert result.returncode == 0, result.stderr
+    updated = json.loads(Path(result.stdout.strip()).read_text())
+    assert tool in updated['tools']['alsoAllow']
+    assert tool in updated['agents']['list'][0]['tools']['deny']

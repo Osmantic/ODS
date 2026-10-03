@@ -373,7 +373,14 @@ get_remote_size() {
 write_status() {
     local status="$1" percent="${2:-}" downloaded="${3:-0}" total="${4:-0}" speed="${5:-0}" eta="${6:-}"
     local _safe_model="${FULL_GGUF_FILE//\"/\\\"}"
-    cat > "$STATUS_FILE.tmp" << STATUSEOF
+    local _status_dir _tmp
+    _status_dir="$(dirname "$STATUS_FILE")"
+    mkdir -p "$_status_dir" 2>/dev/null || true
+    _tmp="$(umask 077; mktemp "${STATUS_FILE}.tmp.XXXXXX" 2>/dev/null)" || {
+        log "WARNING: could not create private status temp file next to $STATUS_FILE"
+        return 1
+    }
+    if ! cat > "$_tmp" << STATUSEOF
 {
   "status": "$status",
   "model": "$_safe_model",
@@ -385,7 +392,15 @@ write_status() {
   "updatedAt": "$(date -u '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || date '+%Y-%m-%dT%H:%M:%SZ')"
 }
 STATUSEOF
-    mv "$STATUS_FILE.tmp" "$STATUS_FILE"
+    then
+        rm -f "$_tmp" 2>/dev/null || true
+        return 1
+    fi
+    if ! mv "$_tmp" "$STATUS_FILE"; then
+        rm -f "$_tmp" 2>/dev/null || true
+        return 1
+    fi
+    return 0
 }
 
 status_percent() {
@@ -547,15 +562,69 @@ acquire_upgrade_lock() {
 
     UPGRADE_LOCK_DIR="$lock_dir"
     printf '%s\n' "$$" > "$pid_file"
-    trap 'cleanup_bootstrap_pixel_model_transaction; release_model_router_swap_gate; release_model_lifecycle_lock; release_upgrade_lock' EXIT
+    trap 'stop_download_monitor; cleanup_bootstrap_pixel_model_transaction; release_model_router_swap_gate; release_model_lifecycle_lock; release_upgrade_lock' EXIT
 }
 
 model_sha256() {
     local path="$1"
+    case "$(uname -s 2>/dev/null || true)" in
+        MINGW*|MSYS*|CYGWIN*)
+            local ps_cmd=""
+            if command -v powershell.exe >/dev/null 2>&1; then
+                ps_cmd="powershell.exe"
+            elif command -v pwsh.exe >/dev/null 2>&1; then
+                ps_cmd="pwsh.exe"
+            fi
+            if [[ -n "$ps_cmd" ]] && command -v cygpath >/dev/null 2>&1; then
+                local win_path output rc
+                win_path="$(cygpath -w "$path")" || return 1
+                output="$(ODS_SHA_PATH="$win_path" "$ps_cmd" -NoLogo -NoProfile -NonInteractive -Command '
+$ErrorActionPreference = [System.Management.Automation.ActionPreference]::Stop
+$stream = $null
+$hasher = $null
+try {
+    $stream = [System.IO.File]::OpenRead($env:ODS_SHA_PATH)
+    $hasher = [System.Security.Cryptography.SHA256]::Create()
+    [Console]::WriteLine([BitConverter]::ToString($hasher.ComputeHash($stream)).Replace("-", ""))
+} catch {
+    [Console]::Error.WriteLine($_.Exception.Message)
+    exit 1
+} finally {
+    if ($stream) { $stream.Dispose() }
+    if ($hasher) { $hasher.Dispose() }
+}
+' 2>/dev/null)"
+                rc=$?
+                if (( rc != 0 )); then
+                    return 1
+                fi
+                output="$(printf '%s' "$output" | tr -d '\r' | tr 'A-F' 'a-f')"
+                if [[ ! "$output" =~ ^[0-9a-f]{64}$ ]]; then
+                    return 1
+                fi
+                printf '%s\n' "$output"
+                return 0
+            fi
+            ;;
+    esac
     if command -v sha256sum &>/dev/null; then
-        sha256sum "$path" 2>/dev/null | awk '{print $1}'
+        local out rc
+        out="$(sha256sum "$path" 2>/dev/null)"
+        rc=$?
+        (( rc == 0 )) || return 1
+        out="${out%% *}"
+        [[ -n "$out" ]] || return 1
+        printf '%s\n' "$out"
+        return 0
     elif command -v shasum &>/dev/null; then
-        shasum -a 256 "$path" 2>/dev/null | awk '{print $1}'
+        local out rc
+        out="$(shasum -a 256 "$path" 2>/dev/null)"
+        rc=$?
+        (( rc == 0 )) || return 1
+        out="${out%% *}"
+        [[ -n "$out" ]] || return 1
+        printf '%s\n' "$out"
+        return 0
     else
         return 2
     fi
@@ -569,8 +638,8 @@ verify_model_integrity() {
     case "$?" in
         0) ;;
         2)
-            log "WARNING: No checksum tool available — skipping SHA256 verification"
-            return 0
+            log "ERROR: No SHA256 hasher available (sha256sum/shasum/PowerShell); refusing to verify $path"
+            return 1
             ;;
         *)
             log "Could not compute SHA256 for $path"
@@ -2580,6 +2649,26 @@ monitor_download() {
     done
 }
 
+# Monitor lifecycle helpers. The monitor runs in a background subshell, so
+# shell variables mutated there are invisible to the parent. All coordination
+# must go through the process table (kill/wait) and the on-disk status file.
+MONITOR_PID=""
+
+start_download_monitor() {
+    local part_file="$1" total_bytes="$2"
+    stop_download_monitor
+    monitor_download "$part_file" "$total_bytes" &
+    MONITOR_PID=$!
+}
+
+stop_download_monitor() {
+    local pid="${MONITOR_PID:-}"
+    MONITOR_PID=""
+    [[ -n "$pid" ]] || return 0
+    kill "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+}
+
 # ── Docker permission detection ──
 # This script runs detached via nohup, so DOCKER_CMD from the parent installer
 # is not inherited. For Linux installs we MUST be able to talk to the docker
@@ -2709,13 +2798,11 @@ if [[ -f "$_part_path" && "$TOTAL_BYTES" -gt 0 ]]; then
 fi
 
 if [[ "$_dl_success" != "true" ]]; then
-    monitor_download "$_part_path" "$TOTAL_BYTES" &
-    _monitor_pid=$!
     # Exit 75 distinguishes a supervisor-retryable session/bridge interruption
     # from a genuine bounded download failure (exit 1). A deliberate
     # `systemctl stop` still suppresses Restart=, while the portable nohup path
     # remains honestly failed until `ods start` or `ods restart` resumes it.
-    trap 'kill $_monitor_pid 2>/dev/null || true; write_failed_download_status "$_part_path" "$TOTAL_BYTES" "Download interrupted; partial file preserved for resume."; release_model_lifecycle_lock; release_upgrade_lock; exit 75' HUP TERM INT
+    trap 'stop_download_monitor; write_failed_download_status "$_part_path" "$TOTAL_BYTES" "Download interrupted; partial file preserved for resume."; release_model_lifecycle_lock; release_upgrade_lock; exit 75' HUP TERM INT
 
     # Download with resume support. curl success is not enough: finalizing the
     # .part file can fail, and checksum verification can expose a corrupt
@@ -2752,10 +2839,12 @@ if [[ "$_dl_success" != "true" ]]; then
                 # Let this script own retry/resume. curl's internal retry path can
                 # restart the transfer from byte zero after a long connection reset,
                 # truncating an otherwise good multi-GB .part file.
+                start_download_monitor "$_part_path" "$TOTAL_BYTES"
                 if curl -fSL -C - --connect-timeout "$_download_connect_timeout" \
                         --speed-time "$_download_speed_time" --speed-limit "$_download_speed_limit" \
                         "${_download_curl_http_flags[@]}" \
                         -o "$_part_path" "$FULL_GGUF_URL" 2>&1; then
+                    stop_download_monitor
                     if [[ ! -s "$_part_path" ]]; then
                         log "Download attempt $_attempt reported success but produced no partial file: $_part_path"
                     else
@@ -2766,6 +2855,7 @@ if [[ "$_dl_success" != "true" ]]; then
                         fi
                     fi
                 else
+                    stop_download_monitor
                     log "Download attempt $_attempt failed"
                 fi
             fi
@@ -2820,8 +2910,8 @@ if [[ "$_dl_success" != "true" ]]; then
         _download_round=$(( _download_round + 1 ))
     done
 
-    kill $_monitor_pid 2>/dev/null || true
-    trap - TERM INT
+    stop_download_monitor
+    trap - HUP TERM INT
 
     if [[ "$_dl_success" != "true" ]]; then
         write_failed_download_status "$_part_path" "$TOTAL_BYTES" "Download failed after bounded retry budget; partial file preserved for resume."
@@ -3835,7 +3925,8 @@ if curl -sf --max-time 3 "${_perplexica_url}/api/config" >/dev/null 2>&1; then
 import os, sys, json, urllib.request
 config = json.load(sys.stdin)["values"]
 providers = config.get("modelProviders", [])
-openai_prov = next((p for p in providers if p["type"] == "openai"), None)
+openai_index = next((i for i, p in enumerate(providers) if p["type"] == "openai"), None)
+openai_prov = providers[openai_index] if openai_index is not None else None
 if not openai_prov:
     sys.exit(0)  # Perplexica has no OpenAI provider configured; skip (non-fatal)
 url = os.environ["PERPLEXICA_URL"] + "/api/config"
@@ -3859,7 +3950,9 @@ prov_config = openai_prov.get("config") or {}
 prov_config["apiKey"] = key
 prov_config["baseURL"] = base_url
 openai_prov["config"] = prov_config
-post("modelProviders", providers)
+# GET includes Vane-built-in models. Write only route fields for this provider.
+post(f"modelProviders.{openai_index}.chatModels", openai_prov["chatModels"])
+post(f"modelProviders.{openai_index}.config", openai_prov["config"])
 prefs = config.get("preferences", {})
 prefs["defaultChatModel"] = model
 prefs["defaultChatProvider"] = openai_prov["id"]

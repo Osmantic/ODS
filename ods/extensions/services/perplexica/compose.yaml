@@ -32,6 +32,8 @@ services:
       - perplexica-data:/home/vane/data
       - perplexica-uploads:/home/vane/uploads
       - ./extensions/services/perplexica/docker-entrypoint.sh:/app/ods-entrypoint.sh:ro,z
+      - ./extensions/services/perplexica/patch-client-citations.js:/app/ods-patch-client-citations.js:ro,z
+      - ./extensions/services/perplexica/citation-renderer.js:/app/citation-renderer.js:ro,z
       - ./extensions/services/perplexica/sync-model-config.js:/app/ods-sync-model-config.js:ro,z
       - ./extensions/services/perplexica/sync-search-config.js:/app/ods-sync-search-config.js:ro,z
     ports:

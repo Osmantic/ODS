@@ -24,6 +24,62 @@ assert SPEC.loader is not None
 SPEC.loader.exec_module(MODULE)
 
 
+def test_framework_export_underscore_assets_keep_reserved_routes_private(tmp_path):
+    site = tmp_path / "export"
+    site.mkdir(mode=0o700)
+    (site / "index.html").write_text('<script src="./_next/static/app.js"></script>')
+    (site / "_next" / "static").mkdir(parents=True, mode=0o700)
+    (site / "_next" / "static" / "app.js").write_text('document.title="Ready";')
+    (site / "__next._full.txt").write_text("framework data")
+    files = MODULE._source_files(tmp_path, "export", os.getuid())
+    assert {name for name, _, _ in files} == {
+        "index.html", "_next/static/app.js", "__next._full.txt"
+    }
+    reserved = site / "__ods_view__.html"
+    reserved.write_text("spoof")
+    with pytest.raises(MODULE.PreviewError, match="unsafe preview file"):
+        MODULE._source_files(tmp_path, "export", os.getuid())
+
+
+@pytest.mark.parametrize("mode", [0o664, 0o646, 0o666])
+def test_generated_asset_writable_permissions_are_actionable_without_relaxation(tmp_path, mode):
+    site = tmp_path / "site"
+    site.mkdir(mode=0o700)
+    entry = site / "index.html"
+    entry.write_text("<!doctype html><script src='app.js'></script>")
+    entry.chmod(0o600)
+    asset = site / "app.js"
+    asset.write_text("console.log('preview');")
+    asset.chmod(mode)
+    with pytest.raises(MODULE.PreviewError, match="writable preview file") as caught:
+        MODULE._source_files(tmp_path, "site", os.getuid())
+    code = MODULE.PREVIEW_FAILURE_CODES[str(caught.value)]
+    assert MODULE._error_result(code)["errorCode"] == "writable_file"
+    assert stat.S_IMODE(asset.stat().st_mode) == mode
+    asset.chmod(mode & ~0o022)
+    assert len(MODULE._source_files(tmp_path, "site", os.getuid())) == 2
+
+
+@pytest.mark.parametrize("kind", ["symlink", "hardlink", "unsafe-name"])
+def test_permission_coaching_never_masks_other_unsafe_file_properties(tmp_path, kind):
+    site = tmp_path / "site"
+    site.mkdir(mode=0o700)
+    (site / "index.html").write_text("<!doctype html><h1>Test</h1>")
+    asset = site / ("bad name.js" if kind == "unsafe-name" else "app.js")
+    original = tmp_path / "source.js"
+    original.write_text("console.log('test');")
+    original.chmod(0o666)
+    if kind == "symlink":
+        asset.symlink_to(original)
+    elif kind == "hardlink":
+        os.link(original, asset)
+    else:
+        asset.write_bytes(original.read_bytes())
+        asset.chmod(0o666)
+    with pytest.raises(MODULE.PreviewError, match="^unsafe preview file$"):
+        MODULE._source_files(tmp_path, "site", os.getuid())
+
+
 @pytest.mark.parametrize("fault", [None, "foreign-owner", "different-inode",
     "group-writable", "non-root-mount-owner"])
 def test_virtiofs_mount_root_requires_same_private_owner_inode(tmp_path, monkeypatch, fault):
@@ -76,6 +132,58 @@ class UnixHTTPConnection(http.client.HTTPConnection):
         self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         self.sock.settimeout(self.timeout)
         self.sock.connect(self.socket_path)
+
+
+def test_next_dynamic_assets_and_source_paths_publish_without_reserved_metadata(tmp_path):
+    workspace, previews = tmp_path / 'workspace', tmp_path / 'previews'
+    workspace.mkdir(mode=0o700)
+    previews.mkdir(mode=0o700)
+    project = workspace / 'demo'
+    source = project / 'app' / '[slug]' / 'page.js'
+    source.parent.mkdir(parents=True, mode=0o700)
+    source.write_text('export default function Page() { return null }')
+    output = project / 'out'
+    asset = '_next/static/chunks/app/[slug]/page.js'
+    target = output / asset
+    target.parent.mkdir(parents=True, mode=0o700)
+    target.write_bytes(b'console.log("verified")')
+    (output / 'index.html').write_text('<h1>Next</h1>')
+    receipt = MODULE.publish_snapshot(workspace, previews, 'demo/out', os.getuid(), source_directory='demo')
+    manifest = json.loads(MODULE.snapshot_manifest(previews, receipt['siteId']))
+    assert asset in [file['path'] for file in manifest['files']]
+    with MODULE.PreviewHTTPServer(('127.0.0.1', 0), previews) as server:
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            for prefix in (f"/{receipt['siteId']}/", '/'):
+                connection = http.client.HTTPConnection('127.0.0.1', server.server_port)
+                connection.request('GET', prefix + asset.replace('[', '%5B').replace(']', '%5D'),
+                                   headers={'Host': f"{receipt['siteId']}.localhost:{server.server_port}"})
+                response = connection.getresponse()
+                assert response.status == 200
+                assert response.read() == target.read_bytes()
+                connection.close()
+        finally:
+            server.shutdown()
+            thread.join(timeout=5)
+    for name in ('__ods_manifest__.json', '__ods_source__', '__pycache__', '.env', '..'):
+        assert MODULE.ASSET_COMPONENT.fullmatch(name) is None
+
+
+def test_review_source_excludes_previous_managed_build_generations(tmp_path):
+    workspace = tmp_path / 'workspace'
+    source = workspace / 'demo' / 'app' / 'page.js'
+    source.parent.mkdir(parents=True, mode=0o700)
+    source.write_text('export default function Page() { return null }')
+    for generation in ('previous', 'current'):
+        output = workspace / 'demo' / 'ods-builds' / generation / 'site'
+        output.mkdir(parents=True, mode=0o700)
+        (output / 'index.html').write_text('<h1>Built output</h1>')
+    captured = MODULE._capture_review_source(workspace, 'demo', os.getuid(),
+                                             'demo/ods-builds/current/site')
+    assert [entry['path'] for entry in captured['files']] == ['app/page.js']
+    assert captured['omitted']['directories'] == 1
+    assert (workspace / 'demo/ods-builds/previous/site/index.html').is_file()
 
 
 def test_manifest_rehashes_published_files_without_reading_live_workspace():
@@ -484,8 +592,11 @@ def test_http_snapshot_ignores_asset_queries_without_changing_path_or_bytes():
         site = workspace / "site"
         site.mkdir(mode=0o700)
         page = b'<link rel="stylesheet" href="style.css?v=2"><script src="app.js?build=abc"></script>'
-        assets = {"index.html": page, "style.css": b"body{color:purple}", "app.js": b"document.title='Ready'"}
+        assets = {"index.html": page, "style.css": b"body{color:purple}", "app.js": b"document.title='Ready'",
+                  "_next/static/chunk.js": b"document.title='Next ready'",
+                  "__next._full.txt": b"framework data"}
         for name, data in assets.items():
+            (site / name).parent.mkdir(parents=True, exist_ok=True, mode=0o700)
             (site / name).write_bytes(data)
             (site / name).chmod(0o600)
         receipt = MODULE.publish_snapshot(workspace, previews, "site", os.getuid())
@@ -517,6 +628,8 @@ def test_http_snapshot_ignores_asset_queries_without_changing_path_or_bytes():
                     assert status == 200 and body == b""
                     assert int(head["Content-Length"]) == len(expected)
                 assert request(f"/{receipt['siteId']}/../secret?v=2")[0] == 404
+                assert request(f"/{receipt['siteId']}/_next/../../secret")[0] == 404
+                assert request(f"/{receipt['siteId']}/__ods_unknown__.js")[0] == 404
                 assert request(f"/{receipt['siteId']}/style.css?v=2", authority="wrong.localhost")[0] == 404
             finally:
                 server.shutdown()

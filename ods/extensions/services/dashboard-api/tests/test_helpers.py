@@ -705,18 +705,23 @@ class TestGetAllServices:
         assert result == []
 
     @pytest.mark.asyncio
-    async def test_newly_selected_builtin_appears_then_disappears_without_restart(self, monkeypatch):
+    @pytest.mark.parametrize("service_id,port", [
+        ("n8n", 5678), ("perplexica", 3000), ("searxng", 8080),
+    ])
+    async def test_newly_selected_builtin_appears_then_disappears_without_restart(
+        self, monkeypatch, service_id, port,
+    ):
         monkeypatch.setattr("helpers.SERVICES", {"dashboard": {
             "name": "Dashboard", "host": "dashboard", "port": 3001,
             "external_port": 3001, "health": "/",
         }})
         selected = False
-        n8n_config = {"name": "n8n", "host": "n8n", "port": 5678,
-                      "external_port": 5678, "health": "/healthz"}
+        optional_config = {"name": service_id, "host": service_id, "port": port,
+                           "external_port": port, "health": "/healthz"}
 
         def current_manifests(*args, **kwargs):
-            assert kwargs["only_service_ids"] == frozenset({"n8n"})
-            return ({"n8n": n8n_config} if selected else {}), [], []
+            assert kwargs["only_service_ids"] == frozenset({"n8n", "perplexica", "searxng"})
+            return ({service_id: optional_config} if selected else {}), [], []
 
         async def fake_health(sid, cfg):
             return ServiceStatus(id=sid, name=cfg["name"], port=cfg["port"],
@@ -726,7 +731,7 @@ class TestGetAllServices:
         monkeypatch.setattr("helpers.check_service_health", fake_health)
         assert {item.id for item in await get_all_services()} == {"dashboard"}
         selected = True
-        assert {item.id for item in await get_all_services()} == {"dashboard", "n8n"}
+        assert {item.id for item in await get_all_services()} == {"dashboard", service_id}
         selected = False
         assert {item.id for item in await get_all_services()} == {"dashboard"}
 
@@ -1299,11 +1304,13 @@ class TestCheckServiceHealthSystemd:
 
         monkeypatch.setattr("helpers.request_agent_json", fake_request)
 
+        # OpenCode reports its full lifecycle (tests/test_opencode_app.py);
+        # other host-managed services keep the loopback port proof.
         config = {
-            "name": "opencode", "port": 3003, "external_port": 3003,
+            "name": "host-tool", "port": 3003, "external_port": 3003,
             "health": "/health", "host": "localhost", "type": "host-systemd",
         }
-        result = await check_service_health("opencode", config)
+        result = await check_service_health("host-tool", config)
         assert result.status == "healthy"
         assert result.response_time_ms == 12.3
 
@@ -1315,10 +1322,10 @@ class TestCheckServiceHealthSystemd:
         )
 
         config = {
-            "name": "opencode", "port": 3003, "external_port": 3003,
+            "name": "host-tool", "port": 3003, "external_port": 3003,
             "health": "/health", "host": "localhost", "type": "host-systemd",
         }
-        result = await check_service_health("opencode", config)
+        result = await check_service_health("host-tool", config)
         assert result.status == "not_deployed"
         assert result.response_time_ms == 2.0
 

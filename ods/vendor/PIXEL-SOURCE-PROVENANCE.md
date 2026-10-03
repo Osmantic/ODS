@@ -12,8 +12,8 @@ The visible source is duplicated into `vendor/pixel.bundle` solely so existing
 Pixel installation code can use exact-commit Git verification without network
 or private credentials. The bundle contains one new synthetic root commit with
 public Osmantic release identity and no ancestors. Its commit is
-`6e82d4c974be8c7b5aebe3a4ffd5374e20ad0ac5`, and its SHA-256 is
-`115da4c894a40991c40fc3f5ff94cb2763b4b9395d875e1b781f234d563fc79b`.
+`9f3b6ecd25db3ab51bef4091473d88ee5824bc3b`, and its SHA-256 is
+`b499ac4fe2f183caaafc8c3ccefd4824bb6e491a589e07ba0e2495b8b37e7d68`.
 Run `python3 scripts/verify-pixel-bundle.py` to check the bundle against the
 visible source, tracked executable modes, and those pins. The `pixel` launcher
 and the install/bootstrap scripts must retain executable Git modes.
@@ -59,3 +59,49 @@ the lane; the router rejects a qualification for another model. Pixel's OpenRout
 profile has a placeholder `anthropic/claude-sonnet-4-5` default, which is never
 sent because that lane is owner-pinned. `tests/test-cloud-model-ids.py` tracks
 both IDs and fails once a re-vendor drops them.
+
+## ODS access-release coordination adaptation
+
+This change adds the public installer-only access proof and release-transaction
+helpers and forwards the exact held transaction through apply/verify. It does not
+change the original upstream export identity described above.
+
+The replacement bundle was generated locally from the visible public ODS vendor
+source and its tracked executable modes, using the same synthetic single-root
+packaging procedure and metadata required by `scripts/verify-pixel-bundle.py`.
+The retained Osmantic packaging author/message and synthetic timestamp are
+reproducibility metadata, not an upstream signature or approval of these edits.
+No private repository, private history or signing credential was used. Two
+independent regenerations produced identical bytes; every source blob and mode
+was verified. Existing source-digest and installer custody checks remain active.
+
+## ODS-maintained 4.3.28 source-upgrade candidate
+
+The current bundle advances the public ODS-maintained source to 4.3.28 so the
+existing increasing-version checks can reconcile the access/release helpers
+without changing an installed same-version release in place. It does not claim
+an upstream/private Pixel release. The functional source checkpoint is
+`62ac4f546d356c3897c2587381e2686a1393f6e9`;
+`pixel/ODS-QUALIFICATION-4.3.28.md` records the tests and remaining physical
+qualification limits. The previous compatibility records remain historical.
+
+Two independent builds produced byte-identical bundles and verified every blob
+and Git executable mode against the public source. The source contains 1,307
+files, including 96 executable entrypoints; only the single synthetic root
+commit is advertised. Runtime versions, dependency versions, image digests and
+trust anchors are unchanged. No release signature was generated and no private
+repository was accessed. Existing clients prepared with the previous public
+4.3.27 bundle remain readable through their exact retained receipt identity.
+
+The 4.3.28 candidate was rebuilt before publication to preserve the Portal QA
+waiting-plan expiry correction. Both paused and approval-pending expired plans
+settle without execution; all 55 broker tests passed. Two independent builds
+verified identical bundle bytes and every source blob/mode. This replaces an
+unpublished candidate and does not claim a protected live broker upgrade.
+
+The draft PR's 4.3.28 candidate was rebuilt to correct public compatibility
+documentation. Absent historical audits are explicitly marked unavailable;
+existing evidence links and historical JSON metadata remain intact. The two
+targeted generation tests and documentation link check passed. Two independent
+builds verified identical bundle bytes and every source blob/mode. This replaces
+the earlier draft candidate; it does not claim a protected live broker upgrade.

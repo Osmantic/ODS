@@ -746,6 +746,21 @@ test("an edit prohibition does not block an independently requested existing pre
   assert.notEqual(call(guard, "pixel_ods_workspace_preview", { event: { params } })?.block, true);
 });
 
+test('external publication restrictions preserve explicitly requested ODS previews', () => {
+  for (const restriction of ['Não publique fora do ODS.', 'Do not publish outside ODS.']) {
+    for (const localBan of ['', ' Do not show a preview.', ' Não mostre a prévia.']) {
+      const {write, params} = seedNamedPreview(createToolLoopGuard());
+      const guard = createToolLoopGuard();
+      guard.observeRun({agentId:'pixel',runId:'run-1',sessionId:'session-1'}, 'pixel', {
+        prompt:`Update the preview of ${write.path}. ${restriction}${localBan}`,
+      });
+      afterCall(guard,'read',{event:{params:{path:write.path},result:{content:[{type:'text',text:write.content}]}}});
+      const result=call(guard,'pixel_ods_workspace_preview',{event:{params}});
+      assert.equal(result?.block === true, Boolean(localBan), restriction + localBan);
+    }
+  }
+});
+
 test("optional workspace evidence does not require publishing a preview", () => {
   const guard = createToolLoopGuard();
   guard.observeRun({ agentId: "pixel", runId: "run-1", sessionId: "session-1" }, "pixel", { prompt: "Explain the saved implementation." });
@@ -1619,7 +1634,7 @@ test("parallel siblings do not spend multiple unrequested Operations correction 
   assert.equal(call(guard, "pixel_ops_run", {
     event: { params: { target: "ods-host", action: "host.identity" } },
   }).blockReason, OPERATIONS_NOT_REQUESTED_REASON);
-  assert.match(call(guard, "tool_call", { event: { params: { id: "pixel_ods_host_observe", args: {} } } }).blockReason, /could not validate this host observation/);
+  assert.match(call(guard, "tool_call", { event: { params: { id: "pixel_ods_host_observe", args: {} } } }).blockReason, /workspace-only request does not authorize host inspection/);
   assert.deepEqual(aborts, []);
   guard.observeModelCall({ runId: "run-1" }, context, "pixel");
   assert.equal(call(guard, "pixel_ops_run", {
@@ -10800,6 +10815,44 @@ test("tracks and drains only the active hashed ODS OpenAI user", async () => {
   assert.equal(guard.trackedUserCount(), 0);
 });
 
+test("an accepted abort cannot acknowledge Stop until the exact run drains", async () => {
+  const outcomes = [
+    {aborted: true, drained: false, forceCleared: false},
+    {aborted: true, drained: true, forceCleared: false},
+  ];
+  const guard = createToolLoopGuard({abortRunAndDrain: async () => outcomes.shift()});
+  const user = `ods-${"a".repeat(64)}`;
+  guard.observeRun({agentId: "pixel", sessionId: "session-live",
+    sessionKey: `agent:pixel:openai-user:${user}`, runId: "run-live"});
+
+  assert.equal(await guard.abortUserRun(user), false);
+  assert.equal(guard.trackedUserCount(), 1, "a pending Stop remains retryable");
+  assert.equal(await guard.abortUserRun(user), true);
+  assert.equal(guard.trackedUserCount(), 0);
+});
+
+test("malformed abort-and-drain results cannot acknowledge Stop", async () => {
+  const outcomes = [true, {aborted: true}, {aborted: true, drained: true}];
+  const guard = createToolLoopGuard({abortRunAndDrain: async () => outcomes.shift()});
+  const user = `ods-${"b".repeat(64)}`;
+  guard.observeRun({agentId: "pixel", sessionId: "session-live",
+    sessionKey: `agent:pixel:openai-user:${user}`, runId: "run-live"});
+
+  assert.equal(await guard.abortUserRun(user), false);
+  assert.equal(await guard.abortUserRun(user), false);
+  assert.equal(guard.trackedUserCount(), 1);
+  assert.equal(await guard.abortUserRun(user), true);
+});
+
+test("a synchronous abort signal alone cannot acknowledge owner Stop", async () => {
+  const guard = createToolLoopGuard({abortRun: () => true});
+  const user = `ods-${"c".repeat(64)}`;
+  guard.observeRun({agentId: "pixel", sessionId: "session-live",
+    sessionKey: `agent:pixel:openai-user:${user}`, runId: "run-live"});
+  assert.equal(await guard.abortUserRun(user), false);
+  assert.equal(guard.trackedUserCount(), 1);
+});
+
 test("client cancellation signals the exact run and blocks any later tool", {timeout:5000}, async () => {
   const signals = [];
   const clears = [];
@@ -10928,7 +10981,7 @@ test("shares one cancellation guard across gateway and agent registration passes
 });
 
 test("rejects malformed cancellation users and bounds retained mappings", async () => {
-  const guard = createToolLoopGuard({ abortRun: () => true });
+  const guard = createToolLoopGuard({ abortRunAndDrain: async () => ({aborted: true, drained: true}) });
   assert.equal(await guard.abortUserRun("not-an-ods-user"), false);
   for (let index = 0; index < 300; index += 1) {
     const user = `ods-${index.toString(16).padStart(64, "0")}`;
@@ -16240,12 +16293,13 @@ test('actual registered finalize hook awaits trusted revalidation before goal an
   vm.runInNewContext(source.slice(start,end),{
     api:{on:(_name,callback)=>{finalize=callback;}},toolLoopGuard:guard,AGENT_ID:'pixel',
     goalProgress:{finalize(_event,_context,decision){order.push('goal');return decision;}},
+    delegationDelivery:{finalize(){order.push('delegation');}},
   });
   const pending=finalize({},context);
   await Promise.resolve();assert.deepEqual(order,['verify']);
   assert.equal(guard.verificationForRun('run-1').status,'failed');
   resolve(true);await pending;
-  assert.deepEqual(order,['verify','goal']);
+  assert.deepEqual(order,['verify','goal','delegation']);
   assert.equal(guard.verificationForRun('run-1').status,'passed');
 });
 
@@ -16283,6 +16337,7 @@ test('saved project gets one verified publication at finalization without replay
   vm.runInNewContext(source.slice(start,end),{
     api:{on:(_name,callback)=>{finalize=callback;}},toolLoopGuard:guard,AGENT_ID:'pixel',
     goalProgress:{finalize(_event,_context,decision){return decision;}},
+    delegationDelivery:{finalize(){}},
   });
   assert.equal((await finalize({},context)).guardDecision,undefined);
   assert.equal(await guard.recoverWorkspacePreview({},context),false);

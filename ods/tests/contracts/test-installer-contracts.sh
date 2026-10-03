@@ -58,6 +58,7 @@ bash tests/test-windows-restart-recreate-env.sh
 
 echo "[contract] external Lemonade compose overlay readiness"
 bash tests/contracts/test-external-lemonade-contracts.sh
+bash tests/contracts/test-external-lemonade-cpu-fallback.sh
 
 echo "[contract] bootstrap hot-swap force-recreate"
 bash tests/test-bootstrap-upgrade-hotswap-contract.sh
@@ -315,6 +316,13 @@ bash tests/test-macos-host-agent-verification.sh
 echo "[contract] macOS CLI reports Compose start failures"
 bash tests/test-macos-cli-compose-failure.sh
 
+echo "[contract] macOS Core omits optional Open WebUI"
+bash tests/test-macos-webui-optional.sh
+python3 tests/test_macos_webui_optional_contract.py
+
+echo "[contract] macOS .env upsert preserves secrets and recovers from write failure"
+bash tests/test-macos-env-upsert.sh
+
 echo "[contract] macOS direct binds replace conflicting Colima bridges"
 bash tests/test-macos-direct-bind-bridge.sh
 python3 tests/test_macos_native_service.py
@@ -474,6 +482,7 @@ run_phase03_rag_guard() {
     INSTALL_CHOICE=1
     TIER=1
     ODS_MODE=local
+    ENABLE_PIXEL=false
     ENABLE_RAG=true
     ENABLE_HERMES=false
     ENABLE_OPENCLAW=false
@@ -629,11 +638,12 @@ done
 
 echo "[contract] SearXNG follows web search consumers, not only --recommended"
 bash tests/test-pixel-support-services.sh
+bash tests/test-pixel-search-provider-resolution.sh
 bash tests/test-pixel-model-relay-compose.sh
 grep -qE 'ENABLE_RECOMMENDED:-false' "$features_phase" \
   || { echo "[FAIL] ENABLE_SEARXNG derivation must consult ENABLE_RECOMMENDED"; exit 1; }
-grep -qE 'ENABLE_PIXEL_RUNTIME:-false' "$features_phase" \
-  || { echo "[FAIL] ENABLE_SEARXNG derivation must consult ENABLE_PIXEL_RUNTIME"; exit 1; }
+grep -Fq '"$PIXEL_RESOLVED_WEB_SEARCH_PROVIDER" == "searxng"' "$features_phase" \
+  || { echo "[FAIL] ENABLE_SEARXNG derivation must consult Pixel's selected provider"; exit 1; }
 grep -qE 'ENABLE_PERPLEXICA:-false' "$features_phase" \
   || { echo "[FAIL] ENABLE_SEARXNG derivation must consult ENABLE_PERPLEXICA"; exit 1; }
 grep -qE 'ENABLE_HERMES:-false' "$features_phase" \

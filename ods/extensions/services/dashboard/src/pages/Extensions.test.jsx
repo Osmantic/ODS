@@ -36,10 +36,11 @@ const baseSummary = (overrides = {}) => ({
 
 const baseFeature = { category: 'tools', icon: 'Box' }
 
-const installFetchMock = (catalogFixture, templates = []) => {
+const installFetchMock = (catalogFixture, templates = [], webuiSelection = { enabled: true, supported: false }) => {
   const fetchMock = vi.fn(async (url) => {
     const u = String(url)
     if (u.includes('/api/extensions/catalog')) return makeJsonResponse(catalogFixture)
+    if (u === '/api/webui/selection') return makeJsonResponse(webuiSelection)
     if (u.includes('/api/templates')) return makeJsonResponse({ templates })
     throw new Error(`Unmocked fetch: ${u}`)
   })
@@ -59,6 +60,50 @@ it('hides unsupported extensions from results, categories and counts without hid
   expect(screen.queryByText('Unsupported flag')).toBeNull()
   expect(screen.queryByRole('option',{name:'hidden-category'})).toBeNull()
   expect(screen.getByRole('button',{name:'All 1'})).toBeVisible()
+})
+
+it('adds Open WebUI from the available library without offering generic core controls', async () => {
+  const catalog = {
+    agent_available: true,
+    extensions: [{ id: 'open-webui', name: 'Open WebUI', source: 'core', status: 'disabled', features: [baseFeature], description: 'Chat service' }],
+    summary: baseSummary({ total: 1, installed: 1 }),
+  }
+  let enabled = false
+  const fetchMock = vi.fn(async (url, options = {}) => {
+    const target = String(url)
+    if (target === '/api/extensions/catalog') return makeJsonResponse(catalog)
+    if (target === '/api/webui/selection' && options.method === 'POST') {
+      expect(JSON.parse(options.body)).toEqual({ enabled: true })
+      enabled = true
+      return makeJsonResponse({ enabled: true, action: 'enabled' })
+    }
+    if (target === '/api/webui/selection') return makeJsonResponse({ enabled, supported: true })
+    if (target === '/api/templates') return makeJsonResponse({ templates: [] })
+    throw new Error(`Unmocked fetch: ${target}`)
+  })
+  vi.stubGlobal('fetch', fetchMock)
+  render(<Extensions compact />)
+  expect(await screen.findByRole('button', { name: 'Available 1' })).toBeVisible()
+  fireEvent.click(screen.getByRole('button', { name: 'Available 1' }))
+  expect(screen.getByRole('button', { name: 'Add Open WebUI' })).toBeVisible()
+  expect(screen.queryByRole('button', { name: 'Enable Open WebUI' })).toBeNull()
+  fireEvent.click(screen.getByRole('button', { name: 'Add Open WebUI' }))
+  const dialog = screen.getByRole('dialog', { name: 'Confirm action' })
+  expect(dialog).toHaveTextContent('Add Open WebUI')
+  fireEvent.click(screen.getByRole('button', { name: 'Add' }))
+  await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/webui/selection', expect.objectContaining({ method: 'POST' })))
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Available 0' })).toBeVisible())
+})
+
+it('does not offer WebUI add-back when the host does not support it', async () => {
+  installFetchMock({
+    agent_available: true,
+    extensions: [{ id: 'open-webui', name: 'Open WebUI', source: 'core', status: 'disabled', features: [baseFeature] }],
+    summary: baseSummary({ total: 1, installed: 1 }),
+  })
+  render(<Extensions compact />)
+  expect(await screen.findByText('Open WebUI')).toBeVisible()
+  expect(screen.queryByRole('button', { name: 'Add Open WebUI' })).toBeNull()
 })
 
 it('hides collections that require unsupported services while retaining usable collections', async () => {
@@ -106,6 +151,90 @@ it('offers Add for qualified bundled n8n while keeping other built-ins managed b
   expect(screen.queryByRole('button',{name:'Disable Dashboard'})).toBeNull()
 })
 
+it('shows bundled Perplexica in Available and asks before adding SearXNG', async () => {
+  const catalog = {agent_available:true,extensions:[
+    {id:'perplexica',name:'Perplexica (Deep Research)',source:'core',status:'disabled',
+      library_manageable:true,library_selected:false,features:[baseFeature]},
+    {id:'n8n',name:'n8n (Workflows)',source:'core',status:'disabled',
+      library_manageable:true,library_selected:false,features:[baseFeature]},
+  ],summary:baseSummary({total:2})}
+  const fetchMock = vi.fn(async (url, options = {}) => {
+    const target = String(url)
+    if (target === '/api/extensions/catalog') return makeJsonResponse(catalog)
+    if (target === '/api/webui/selection') return makeJsonResponse({enabled:true,supported:false})
+    if (target === '/api/templates') return makeJsonResponse({templates:[]})
+    if (target === '/api/extensions/perplexica/enable' && options.method === 'POST') {
+      return makeJsonResponse({detail:{missing_dependencies:['searxng']}}, {ok:false,status:400})
+    }
+    if (target === '/api/extensions/perplexica/enable?auto_enable_deps=true' && options.method === 'POST') {
+      return makeJsonResponse({message:'Perplexica and SearXNG selected'})
+    }
+    throw new Error(`Unmocked fetch: ${target}`)
+  })
+  vi.stubGlobal('fetch', fetchMock)
+  render(<Extensions compact />)
+  fireEvent.click(await screen.findByRole('button',{name:'Available 2'}))
+  expect(screen.getByRole('button',{name:'Add Perplexica (Deep Research)'})).toBeVisible()
+  expect(screen.getByRole('button',{name:'Add n8n (Workflows)'})).toBeVisible()
+  expect(screen.getByRole('button',{name:'Installed 0'})).toBeVisible()
+  fireEvent.click(screen.getByRole('button',{name:'Add Perplexica (Deep Research)'}))
+  fireEvent.click(screen.getByRole('button',{name:'Enable'}))
+  expect(await screen.findByRole('dialog',{name:'Enable dependencies'})).toHaveTextContent('searxng')
+  expect(fetchMock).toHaveBeenCalledWith('/api/extensions/perplexica/enable', expect.objectContaining({method:'POST'}))
+  fireEvent.click(screen.getByRole('button',{name:'Cancel'}))
+  expect(fetchMock).not.toHaveBeenCalledWith('/api/extensions/perplexica/enable?auto_enable_deps=true', expect.anything())
+  fireEvent.click(screen.getByRole('button',{name:'Add Perplexica (Deep Research)'}))
+  fireEvent.click(screen.getByRole('button',{name:'Enable'}))
+  fireEvent.click(await screen.findByRole('button',{name:'Enable All'}))
+  await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
+    '/api/extensions/perplexica/enable?auto_enable_deps=true',
+    expect.objectContaining({method:'POST'}),
+  ))
+})
+
+it('refreshes healthy dependency cards after Enable All when progress is idle', async () => {
+  let selected = false
+  let progressCalls = 0
+  const fetchMock = vi.fn(async (url, options = {}) => {
+    const target = String(url)
+    if (target === '/api/extensions/catalog') {
+      const status = !selected ? 'disabled' : progressCalls ? 'enabled' : 'stopped'
+      return makeJsonResponse({ agent_available: true, extensions: ['perplexica', 'searxng'].map(id => ({
+        id, name: id === 'perplexica' ? 'Perplexica (Deep Research)' : 'SearXNG',
+        source: 'core', status, library_manageable: true, library_selected: selected,
+        features: [baseFeature],
+      })), summary: baseSummary({ total: 2 }) })
+    }
+    if (target === '/api/webui/selection') return makeJsonResponse({ enabled: false, supported: false })
+    if (target === '/api/templates') return makeJsonResponse({ templates: [] })
+    if (target === '/api/extensions/perplexica/enable' && options.method === 'POST') {
+      return makeJsonResponse({ detail: { missing_dependencies: ['searxng'] } }, { ok: false, status: 400 })
+    }
+    if (target === '/api/extensions/perplexica/enable?auto_enable_deps=true' && options.method === 'POST') {
+      selected = true
+      return makeJsonResponse({ enabled_services: ['searxng', 'perplexica'], failed_services: [] })
+    }
+    if (target === '/api/extensions/perplexica/progress') {
+      progressCalls += 1
+      return makeJsonResponse({ status: 'idle' })
+    }
+    throw new Error(`Unmocked fetch: ${target}`)
+  })
+  vi.stubGlobal('fetch', fetchMock)
+  render(<Extensions compact />)
+  fireEvent.click(await screen.findByRole('button', { name: 'Add Perplexica (Deep Research)' }))
+  fireEvent.click(screen.getByRole('button', { name: 'Enable' }))
+  fireEvent.click(await screen.findByRole('button', { name: 'Enable All' }))
+  expect(await screen.findByRole('button', { name: 'Retry Perplexica (Deep Research)' })).toBeVisible()
+
+  await waitFor(() => {
+    expect(screen.queryByRole('button', { name: 'Retry Perplexica (Deep Research)' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Retry SearXNG' })).toBeNull()
+    expect(screen.getAllByText('enabled')).toHaveLength(2)
+  }, { timeout: 8000 })
+  expect(progressCalls).toBeGreaterThan(0)
+})
+
 it('lets an errored bundled n8n be retried or disabled without a remove control', async () => {
   installFetchMock({agent_available:true,extensions:[
     {id:'n8n',name:'n8n (Workflows)',source:'core',status:'error',library_manageable:true,library_selected:true,features:[baseFeature]},
@@ -116,7 +245,32 @@ it('lets an errored bundled n8n be retried or disabled without a remove control'
   expect(screen.queryByRole('button',{name:'Remove n8n (Workflows)'})).toBeNull()
 })
 
+it('keeps an unselected bundled service with error progress available for retry', async () => {
+  installFetchMock({agent_available:true,extensions:[
+    {id:'perplexica',name:'Perplexica (Deep Research)',source:'core',status:'error',
+      library_manageable:true,library_selected:false,error_message:'Host agent could not enable the service.',
+      features:[baseFeature]},
+  ],summary:baseSummary({total:1,error:1})})
+  render(<Extensions compact />)
+  fireEvent.click(await screen.findByRole('button',{name:'Available 1'}))
+  expect(screen.getByRole('button',{name:'Installed 0'})).toBeVisible()
+  fireEvent.click(screen.getByRole('button',{name:'Retry Perplexica (Deep Research)'}))
+  expect(screen.getByRole('dialog',{name:'Confirm action'})).toHaveTextContent('Enable Perplexica (Deep Research)?')
+  expect(screen.queryByRole('button',{name:'Disable Perplexica (Deep Research)'})).toBeNull()
+})
+
+it('makes an OpenCode setup retry an explicit install action', async () => {
+  installFetchMock({agent_available:true,extensions:[
+    {id:'opencode',name:'OpenCode',source:'core',status:'error',installable:true,
+      app_path:'/apps/opencode',features:[baseFeature]},
+  ],summary:baseSummary({total:1,error:1})})
+  render(<Extensions compact />)
+  fireEvent.click(await screen.findByRole('button',{name:'Retry'}))
+  expect(screen.getByRole('dialog',{name:'Confirm action'})).toHaveTextContent('Install OpenCode? This will download and start the service.')
+})
+
 it('reports a failed bundled n8n start and refreshes to a retryable card', async () => {
+  const timeoutSpy = vi.spyOn(globalThis.AbortSignal, 'timeout').mockReturnValue(new AbortController().signal)
   const ext = {id:'n8n',name:'n8n (Workflows)',source:'core',status:'disabled',
     library_manageable:true,library_selected:false,features:[baseFeature]}
   const fetchMock = vi.fn(async (url) => {
@@ -141,6 +295,7 @@ it('reports a failed bundled n8n start and refreshes to a retryable card', async
   expect(screen.getByRole('button',{name:'Disable n8n (Workflows)'})).toBeVisible()
   expect(fetchMock.mock.calls.filter(([url]) => String(url).includes('/api/extensions/catalog')).length)
     .toBeGreaterThanOrEqual(2)
+  expect(timeoutSpy).toHaveBeenCalledWith(13 * 60 * 1000)
 })
 
 describe('Extensions page — unhealthy + install derivations', () => {

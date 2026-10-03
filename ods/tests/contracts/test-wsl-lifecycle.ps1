@@ -251,6 +251,8 @@ try {
         if($Arguments[0] -eq '/usr/bin/systemctl' -and $Arguments[1] -eq 'show' -and $Arguments[2] -ceq 'ods-host-agent.service'){return $script:agentState}
         if($Arguments[0] -eq '/usr/bin/systemctl' -and $Arguments[1] -eq 'show'){return $script:unitState}
     }
+    function Update-ODSWslAgentAddress { param($Identity); [pscustomobject]@{mode='unmanaged';changed=$false} }
+    function Stop-ODSWslAgentRelay { param($Identity) }
     $null=Invoke-ODSWslStack $a stop
     $rootCalls=@($script:transport|Where-Object asRoot)
     Check (($rootCalls.arguments|Where-Object {$_ -eq 'sudo'}).Count -eq 0 -and $rootCalls.Count -eq 5) 'native lifecycle uses five fixed root commands without sudo'
@@ -290,6 +292,13 @@ try {
     $script:plan.hostAgentRestart=$false;$script:transport=@()
     $null=Invoke-ODSWslStack $a start
     Check (@($script:transport|Where-Object {$_.arguments[2] -ceq 'ods-host-agent.service'}).Count -eq 0) 'false host agent flag preserves the existing start path'
+    function Update-ODSWslAgentAddress { param($Identity); [pscustomobject]@{mode='wsl-nat-bridge';changed=$true} }
+    function Start-ODSWslAgentRelay { param($Identity); $script:transport+=[pscustomobject]@{distro=$Identity.distro;arguments=@('relay');asRoot=$false} }
+    $script:transport=@()
+    $null=Invoke-ODSWslStack $a start
+    Check ($script:transport[1].arguments[0] -ceq 'relay' -and $script:transport[2].arguments[2] -ceq 'compose-start') 'managed relay starts before Compose'
+    Check (@($script:transport|Where-Object {$_.asRoot -and $_.arguments[2] -ceq 'ods-host-agent.service'}).Count -eq 1) 'changed WSL address restarts the host agent once'
+    function Update-ODSWslAgentAddress { param($Identity); [pscustomobject]@{mode='unmanaged';changed=$false} }
     $script:plan.action='stop';$script:unitState='inactive';$script:transport=@()
     $null=Invoke-ODSWslStack $a stop
     Check (@($script:transport|Where-Object {$_.arguments[2] -ceq 'ods-host-agent.service'}).Count -eq 0) 'stop never restarts or stops the host agent'
@@ -302,6 +311,7 @@ try {
     function Get-ODSWslLifetimeStatus { param($Identity); [pscustomobject]@{state='stopped';distroRunning=$script:targetRunning} }
     function Stop-ODSWslLifetime { param($Identity); $script:events+='release'; [pscustomobject]@{state='stopped'} }
     function Start-ODSWslLifetime { param($Identity); $script:events+='hold'; [pscustomobject]@{state='running'} }
+    function Stop-ODSWslAgentRelay { param($Identity) }
     function Enable-ODSWslStartup { param($Identity) }
     function Invoke-ODSWslStack { param($Identity,$Action); $script:events+=$Action; if($script:stopFail){throw 'drain failed'} }
     $script:targetRunning=$false
@@ -324,3 +334,7 @@ try {
         Remove-Item -LiteralPath $resolved -Recurse -Force
     }
 }
+
+# The relay has independent caller-lifetime and cancellation contracts.
+& (Join-Path $PSScriptRoot 'test-wsl-relay-lifetime.ps1')
+& (Join-Path $PSScriptRoot 'test-wsl-json-sharing.ps1')

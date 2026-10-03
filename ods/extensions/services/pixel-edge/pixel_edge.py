@@ -26,6 +26,7 @@ from aiohttp import web, ClientSession, UnixConnector, TCPConnector, ClientTimeo
 from transition_gate import TransitionGate, GateError, strict_json, valid_binding
 from runtime_identity import project_runtime_identity, unknown_runtime_identity
 from chat_context import project_context, valid_history_snapshot
+from image_admission import ImageWorkBudget
 from access_mode import (public_status as public_access_status, valid_change as valid_access_change,
                          valid_model_control, public_model_control)
 
@@ -200,6 +201,8 @@ _HOP_BY_HOP = frozenset({
 })
 
 _MAX_BODY = 8 * 1024 * 1024          # Full history envelope; ingress validates 4 MiB text
+_MAX_IMAGE_BODY = 16 * 1024 * 1024  # Encoded envelope, not an extra text allowance
+_IMAGE_BODY_TIMEOUT = 30
 _MAX_CANCEL_BODY = 256
 _MAX_RESPONSE_BYTES = 2 * 1024 * 1024  # 2 MiB non-stream response cap
 _MAX_CANCEL_RESPONSE_BYTES = 1024
@@ -218,7 +221,7 @@ _MAX_SSE_PENDING_LINES = 4096
 _UPSTREAM_REWRITE = "openclaw/default"
 _SAFE_CHAT_ID = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 _PREVIEW_SITE_ID = re.compile(r"^site-[a-f0-9]{24}$")
-_PREVIEW_PATH_COMPONENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+_PREVIEW_PATH_COMPONENT = re.compile(r"^(?!__ods_)(?!__pycache__$)[A-Za-z0-9_\[][A-Za-z0-9._\[\]-]{0,127}$")
 _ARTIFACT_DRAFT_PREFIX = re.compile(
     r"^\s*(?:please\s+)?(?:build|write|draft|document|compose|create|edit|update|"
     r"refactor|implement|generate)\b",
@@ -335,6 +338,7 @@ _CHAT_ACTIVITY_KEY = web.AppKey("pixel_chat_activity", dict)
 _ACTIVE_REQUESTS_KEY = web.AppKey("pixel_active_requests", set)
 _COMPACTIONS_KEY = web.AppKey("pixel_compactions", dict)
 _TRANSITION_GATE_KEY = web.AppKey("pixel_transition_gate", TransitionGate)
+_IMAGE_WORK_KEY = web.AppKey("pixel_image_work", ImageWorkBudget)
 
 
 def _validate_config() -> str:
@@ -488,8 +492,6 @@ def _workspace_mutation_positions(text: str) -> set[int]:
         r"\u201c[^\u201d]*(?:\u201d|$)|(?<!\w)\u2018[^\u2019]*(?:\u2019|$)",
         mask_content, text,
     )
-    if not _WORKSPACE_MUTATION_SCOPE.search(instructions):
-        return set()
     negated = re.compile(
         r"^\s*(?:please\s+)?(?:do\s+not|don['\u2019]t|never|must\s+not|"
         r"should\s+not|avoid|skip|omit|exclude|no)\b", re.IGNORECASE,
@@ -507,7 +509,9 @@ def _workspace_mutation_positions(text: str) -> set[int]:
         instructions, re.IGNORECASE,
     ):
         value = clause.group("clause")
-        if not negated.search(value):
+        # A file mentioned in an earlier read-only clause does not turn a
+        # later "write the answer" directive into a workspace mutation.
+        if _WORKSPACE_MUTATION_SCOPE.search(value) and not negated.search(value):
             positions.update(clause.start("clause") + match.start("verb")
                              for match in directive.finditer(value))
     return positions
@@ -956,6 +960,38 @@ async def handle_chat_context(request: web.Request):
             request.app[_COMPACTIONS_KEY][identity] = (token, task)
 
 
+async def handle_chat_images_delete(request: web.Request):
+    fail = _check_auth(request)
+    if fail is not None:
+        return fail
+    if request.content_type != "application/json" or request.query_string:
+        return web.json_response({"error": "invalid image deletion request"}, status=400)
+    try:
+        data = strict_json(await _read_bounded(request.content, 512))
+        if (not isinstance(data, dict) or set(data) != {"user"}
+                or not isinstance(data["user"], str) or not _SAFE_CHAT_ID.fullmatch(data["user"])):
+            raise ValueError("invalid request")
+    except (ValueError, TypeError, UnicodeError, RecursionError):
+        return web.json_response({"error": "invalid image deletion request"}, status=400)
+    if request.app[_CANCEL_EVENTS_KEY].get(data["user"]) or any(user == data["user"] for user, _ in request.app[_COMPACTIONS_KEY]):
+        return web.json_response({"error": "conversation_busy"}, status=409)
+    try:
+        async with ClientSession(connector=UnixConnector(path=_SOCKET_PATH), timeout=ClientTimeout(total=18)) as session:
+            async with session.post("http://pixel-upstream/v1/chat/images-delete", json=data,
+                                    headers={"Content-Type": "application/json", "Accept": "application/json"}) as upstream:
+                if upstream.status in {409, 423, 429}:
+                    return web.json_response({"error": "conversation_busy"}, status=upstream.status)
+                if upstream.status != 200 or "application/json" not in upstream.headers.get("Content-Type", "").lower():
+                    raise ValueError("invalid deletion receipt")
+                receipt = strict_json(await _read_bounded(upstream.content, 256))
+                if (receipt != {"schemaVersion": 1, "deleted": True}
+                        or type(receipt.get("schemaVersion")) is not int or receipt.get("deleted") is not True):
+                    raise ValueError("invalid deletion receipt")
+        return web.json_response(receipt, headers={"Cache-Control": "no-store"})
+    except Exception:
+        return web.json_response({"error": "conversation image deletion unconfirmed; retry"}, status=503)
+
+
 def _finish_chat_activity(app, chat_id, cancel_event, terminal):
     active = app[_CANCEL_EVENTS_KEY].get(chat_id)
     if active is None:
@@ -1114,27 +1150,171 @@ async def handle_chat_completions(request: web.Request):
         return web.json_response({"error": "Content-Type must be application/json"},
                                  status=415)
 
-    if request.content_length and request.content_length > _MAX_BODY:
+    encodings = request.headers.getall("Content-Encoding", [])
+    if encodings and [value.strip().lower() for value in encodings] != ["identity"]:
+        return web.json_response({"error": "compressed chat requests are not supported"}, status=415)
+    flags = request.headers.getall("X-ODS-Image-Turn", [])
+    if flags not in ([], ["1"]):
+        return web.json_response({"error": "invalid image envelope"}, status=400)
+    image_turn = bool(flags)
+    limit = _MAX_IMAGE_BODY if image_turn else _MAX_BODY
+    if request.content_length and request.content_length > limit:
         return web.json_response({"error": "request too large"}, status=413)
+    lease = request.app[_IMAGE_WORK_KEY].acquire() if image_turn else None
+    if image_turn and lease is None:
+        return web.json_response({"error": "image processing busy; retry shortly"}, status=429,
+                                 headers={"Retry-After": "1", "Cache-Control": "no-store"})
+    reservation = [lease]
+    try:
+        return await _handle_admitted_chat(request, image_turn, reservation, limit)
+    finally:
+        if reservation[0] is not None:
+            reservation[0].release()
+
+
+def _has_current_images(data):
+    messages = data.get("messages") if isinstance(data, dict) else None
+    return isinstance(messages, list) and any(
+        isinstance(message, dict) and ("images" in message or (
+            isinstance(message.get("content"), list) and any(
+                isinstance(part, dict) and part.get("type") == "image_url"
+                for part in message["content"]))) for message in messages)
+
+
+class ImageEnvelopeComplexity(ValueError):
+    pass
+
+
+def _check_image_structure(body):
+    # 2000 history messages with four two-field references each require fewer
+    # than 80000 delimiters. 128 Ki leaves room for the envelope and current
+    # message while bounding object/list amplification before JSON allocation.
+    structural = depth = 0
+    quoted = escaped = False
+    for character in body:
+        if quoted:
+            if escaped:
+                escaped = False
+            elif character == '\\':
+                escaped = True
+            elif character == '"':
+                quoted = False
+        elif character == '"':
+            quoted = True
+        elif character in '{}[],:':
+            structural += 1
+            if character in '{[':
+                depth += 1
+            elif character in '}]':
+                depth -= 1
+            if structural > 128 * 1024 or depth > 32:
+                raise ImageEnvelopeComplexity('image envelope structure limit')
+    # Syntax, escapes, duplicate keys and schema remain the JSON decoder's job.
+
+
+def _parse_image_envelope(body):
+    _check_image_structure(body)
+    data = strict_json(body)
+    del body  # Release encoded source before decoding/hash-checking images.
+    route = data.get("image_route") if isinstance(data, dict) else None
+    snapshot = data.get("history_snapshot") if isinstance(data, dict) else None
+    messages = data.get("messages") if isinstance(data, dict) else None
+    if (not isinstance(route, dict) or set(route) != {"routeFingerprint", "unknownConsent"}
+            or not valid_binding(route.get("routeFingerprint")) or type(route.get("unknownConsent")) is not bool
+            or not isinstance(snapshot, dict) or snapshot.get("schemaVersion") != 2
+            or not isinstance(messages, list) or not messages
+            or not isinstance(messages[-1], dict) or not messages[-1].get("images")
+            or any(_has_current_images({"messages": [message]}) for message in messages[:-1])
+            or not valid_history_snapshot(data)):
+        raise ValueError("invalid image envelope")
+    return data
+
+
+def _parse_owned_image_envelope(holder):
+    # Transfer the sole encoded-source reference to the worker. The HTTP
+    # coroutine and executor argument tuple must not retain it during hashing.
+    return _parse_image_envelope(holder.pop())
+
+
+async def _encoded_image_envelope(data):
+    # Avoid materializing a full JSON string plus its UTF-8 copy alongside the
+    # decoded image/history envelope. Each encoded output chunk stays bounded.
+    for token in json.JSONEncoder().iterencode(data):
+        for start in range(0, len(token), 32768):
+            yield token[start:start + 32768].encode("utf-8")
+        await asyncio.sleep(0)
+
+
+async def _read_image_envelope(content, limit):
+    # The internal API uses ensure_ascii=True. Keeping the JSON source ASCII
+    # avoids a single literal emoji widening an entire base64 envelope to four
+    # bytes per character. JSON escapes still preserve arbitrary Unicode text.
+    chunks = []
+    pending = bytearray()
+    size = 0
+    async for chunk in content.iter_any():
+        size += len(chunk)
+        if size > limit:
+            raise ValueError("request too large")
+        for offset in range(0, len(chunk), 65536):
+            pending.extend(chunk[offset:offset + 65536])
+            if len(pending) >= 65536:
+                chunks.append(pending.decode("ascii"))
+                pending.clear()
+    if pending:
+        chunks.append(pending.decode("ascii"))
+    return "".join(chunks)
+
+
+async def _handle_admitted_chat(request, image_turn, reservation, limit):
 
     try:
         # Enforce this route's cap for both Content-Length and chunked bodies.
         # Request.read() otherwise applies aiohttp's default 1 MiB cap first.
-        body = await _read_bounded(request.content, _MAX_BODY)
+        if image_turn:
+            async with asyncio.timeout(_IMAGE_BODY_TIMEOUT):
+                body = await _read_image_envelope(request.content, limit)
+        else:
+            body = await _read_bounded(request.content, limit)
+    except UnicodeDecodeError:
+        return web.json_response({"error": "image envelope requires ASCII-escaped JSON"}, status=400)
     except ValueError:
         return web.json_response({"error": "request too large"}, status=413)
+    except TimeoutError:
+        return web.json_response({"error": "image request timed out"}, status=408)
     except Exception:
         return web.json_response({"error": "bad request"}, status=400)
 
     try:
-        data = json.loads(body)
+        if image_turn:
+            source_holder = [body]
+            del body
+            data = await reservation[0].run(_parse_owned_image_envelope, source_holder)
+        else:
+            data = json.loads(body)
+    except ImageEnvelopeComplexity:
+        return web.json_response({"error": "image envelope structure limit"}, status=413)
     except (json.JSONDecodeError, ValueError, RecursionError):
         return web.json_response({"error": "invalid JSON"}, status=400)
 
     if not isinstance(data, dict):
         return web.json_response({"error": "JSON object required"}, status=400)
-    if not valid_history_snapshot(data):
+    # Image bytes cannot evade their resource slot by omitting the explicit
+    # envelope header. Old text/history-only requests retain their 8 MiB cap.
+    if not image_turn and _has_current_images(data):
+        if data.get('history_snapshot') is not None or any(
+                isinstance(message, dict) and 'images' in message for message in data['messages']):
+            return web.json_response({"error": "image envelope required"}, status=400)
+        # Preserve the existing small OpenAI multimodal surface without giving
+        # it the larger, reference-bound Portal envelope allowance.
+        reservation[0] = request.app[_IMAGE_WORK_KEY].acquire()
+        if reservation[0] is None:
+            return web.json_response({"error": "image processing busy; retry shortly"}, status=429,
+                                     headers={"Retry-After": "1", "Cache-Control": "no-store"})
+    if not image_turn and not valid_history_snapshot(data):
         return web.json_response({"error": "invalid conversation history"}, status=400)
+    if not image_turn:
+        del body  # Do not retain a second full encoded envelope through streaming.
 
     req_model = data.get("model", "")
     if req_model not in _ALLOWED_MODELS:
@@ -1153,6 +1333,9 @@ async def handle_chat_completions(request: web.Request):
 
     fwd_headers = _sanitize_headers(dict(request.headers))
     fwd_headers["Content-Type"] = "application/json"
+    if image_turn:
+        # Never forward an unvalidated caller-supplied image-header value.
+        fwd_headers["X-ODS-Image-Turn"] = "1"
 
     try:
         await request.app[_TRANSITION_GATE_KEY].admit(request_token)
@@ -1173,8 +1356,14 @@ async def handle_chat_completions(request: web.Request):
                                 sock_connect=_CONNECT_TIMEOUT,
                                 sock_read=_SOCK_READ_TIMEOUT)
         async with ClientSession(connector=connector, timeout=timeout) as session:
+            payload = ({"data": _encoded_image_envelope(upstream_data)} if image_turn
+                       else {"json": upstream_data})
             async with session.post("http://pixel-upstream/v1/chat/completions",
-                                    json=upstream_data, headers=fwd_headers) as resp:
+                                    **payload, headers=fwd_headers) as resp:
+                if image_turn:
+                    # Request encoding owns its data until sending finishes;
+                    # the response stream needs none of the image/history tree.
+                    del payload, upstream_data, data
                 ctype = resp.headers.get("Content-Type", "").lower()
 
                 if resp.status >= 400:
@@ -1243,7 +1432,8 @@ async def handle_chat_cancel(request: web.Request):
         return web.json_response({"error": "invalid cancellation request"}, status=400)
 
     connector = UnixConnector(path=_SOCKET_PATH)
-    timeout = ClientTimeout(total=6, sock_connect=2, sock_read=5)
+    # Outlive the ingress's 16 s harness + managed-project cancellation budget.
+    timeout = ClientTimeout(total=20, sock_connect=2, sock_read=18)
     try:
         async with ClientSession(connector=connector, timeout=timeout) as session:
             async with session.post(
@@ -1465,12 +1655,14 @@ def _preview_upstream_path(site_id: str, tail: str) -> str | None:
         return None
     if not tail:
         return f"/{site_id}/"
-    # Exact host-generated metadata endpoint; no other underscore-prefixed
-    # paths, queries, or live workspace access are admitted.
+    # Exact host-generated metadata endpoints; other __ods_ names remain
+    # reserved. Framework underscore assets still select immutable files only.
     if tail in {"__ods_manifest__.json", "__ods_view__.html"}:
         return f"/{site_id}/{tail}"
     if re.fullmatch(r"__ods_changes__/(?:initial|site-[a-f0-9]{24})\.json", tail):
         return f"/{site_id}/{tail}"
+    if re.fullmatch(r'__ods_source__/source-[a-f0-9]{24}\.json', tail):
+        return f'/{site_id}/{tail}'
     # Match the host static server: a directory URL selects its index file.
     if tail.endswith("/"):
         tail += "index.html"
@@ -1550,6 +1742,11 @@ async def handle_preview(request: web.Request):
         "X-Content-Type-Options": "nosniff",
         "X-Preview-SHA256": digest,
     }
+    if '/__ods_source__/' in upstream_path:
+        headers.pop('Access-Control-Allow-Origin', None)
+        headers['Cross-Origin-Resource-Policy'] = 'same-origin'
+        headers['Content-Security-Policy'] = "sandbox; default-src 'none'; frame-ancestors 'none'"
+        headers['Content-Type'] = 'application/json; charset=utf-8'
     return web.Response(status=200, body=body, headers=headers)
 
 
@@ -1562,7 +1759,12 @@ async def handle_not_found(_request: web.Request):
 # ---------------------------------------------------------------------------
 
 def create_app() -> web.Application:
-    app = web.Application()
+    # Transport inflation happens before route body limits. The internal API
+    # sends uncompressed JSON; do not allow a compressed body to bypass caps.
+    app = web.Application(handler_args={"auto_decompress": False})
+    # The 128 MiB Edge budget permits one decoded image envelope at a time.
+    # Text, health and cancellation do not queue behind this image-only lease.
+    app[_IMAGE_WORK_KEY] = ImageWorkBudget(1)
     app[_CANCEL_EVENTS_KEY] = {}
     app[_CHAT_ACTIVITY_KEY] = {}
     app[_ACTIVE_REQUESTS_KEY] = set()
@@ -1601,6 +1803,7 @@ def create_app() -> web.Application:
     app.router.add_post("/v1/chat/cancel", handle_chat_cancel)
     app.router.add_post("/v1/chat/activity", handle_chat_activity)
     app.router.add_post("/v1/chat/context", handle_chat_context)
+    app.router.add_post("/v1/chat/images-delete", handle_chat_images_delete)
     app.router.add_post("/v1/chat/compact", handle_chat_context)
     # Catch-all registered last: unmatched paths AND unmatched methods → 404.
     app.router.add_route("*", "/{tail:.*}", handle_not_found)

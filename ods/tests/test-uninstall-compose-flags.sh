@@ -19,9 +19,8 @@ pass() {
 make_stub_bin() {
     local stub_dir="$1"
 
-    # The discovery fallback feeds these listings straight into `docker rm -f`
-    # and `docker volume rm`, so the stub reports unrelated names that merely
-    # contain "ods" next to this project's own.
+    # Include unrelated same-prefix resources, as well as native Pixel archives.
+    # None of these names may be passed to a name-based cleanup fallback.
     cat > "$stub_dir/docker" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "${DOCKER_LOG:?}"
@@ -44,14 +43,35 @@ emit_filtered() {
 }
 
 if [[ "${1:-}" == "ps" ]]; then
-    NAMES="ods-litellm ods-llama-server kube-pods-proxy methods-runner ods-pixel-retired-0123456789abcdef"
+    [[ " $* " == *" label=com.docker.compose.project="* ]] && exit 0
+    NAMES="ods-litellm ods-llama-server ods-download-test-sentinel ods-inspection-blocked-test-sentinel kube-pods-proxy methods-runner ods-pixel-retired-0123456789abcdef"
     emit_filtered "$@"
     exit 0
 fi
 if [[ "${1:-}" == "volume" && "${2:-}" == "ls" ]]; then
-    NAMES="ods_perplexica-data ods-legacy-cache k3s_pods methods_cache"
+    [[ " $* " == *" label=com.docker.compose.project="* ]] && exit 0
+    NAMES="ods_perplexica-data ods-legacy-cache ods_download_test_data ods-download-test-volume k3s_pods methods_cache"
     emit_filtered "$@"
     exit 0
+fi
+if [[ "${1:-}" == "compose" && -n "${DOCKER_GID_EXPECTED:-}" ]]; then
+    [[ "${PIXEL_INGRESS_GID:-}" == "$DOCKER_GID_EXPECTED" ]] || {
+        printf 'Compose interpolation GID mismatch\n' >&2
+        exit 1
+    }
+    cmp -s "$INSTALL_DIR/.env" "$DOCKER_GID_ENV_COPY" || {
+        printf 'Cleanup interpolation changed installed environment\n' >&2
+        exit 1
+    }
+    printf 'gid=%s %s\n' "$PIXEL_INGRESS_GID" "$*" >> "$DOCKER_LOG"
+fi
+if [[ "${1:-}" == "compose" && " $* " == *" config --format json "* ]]; then
+    printf '{"name":"ods","volumes":{}}\n'
+    exit 0
+fi
+if [[ "${1:-}" == "compose" && " $* " == *" down "* ]]; then
+    [[ "${DOCKER_DOWN_EXIT_CODE:-0}" == "0" ]] || printf 'fixture Compose diagnostic\n' >&2
+    exit "${DOCKER_DOWN_EXIT_CODE:-0}"
 fi
 exit 0
 EOF
@@ -79,7 +99,8 @@ EOF
     cat > "$stub_dir/id" <<'EOF'
 #!/usr/bin/env bash
 case "${1:-}" in
-    -u|-g) printf '1000\n' ;;
+    -u) printf '1000\n' ;;
+    -g) printf '%s\n' "${ID_PRIMARY_GROUP-1000}"; exit "${ID_PRIMARY_EXIT-0}" ;;
     -un) printf 'fixture-owner\n' ;;
     *) exit 1 ;;
 esac
@@ -114,6 +135,7 @@ make_install() {
     cp "$ROOT_DIR/lib/system-uninstall.sh" "$install_dir/lib/system-uninstall.sh"
     mkdir -p "$install_dir/scripts"
     cp "$ROOT_DIR/scripts/compose-cache-policy.py" "$install_dir/scripts/"
+    cp "$ROOT_DIR/scripts/uninstall-compose-volumes.py" "$install_dir/scripts/"
     cp "$ROOT_DIR/scripts/resolve-compose-stack.sh" "$install_dir/scripts/"
     mkdir -p "$install_dir/installers/macos/lib"
     cp "$ROOT_DIR/installers/macos/lib/pixel-native-uninstall.py" "$install_dir/installers/macos/lib/"
@@ -136,12 +158,27 @@ run_uninstall() {
     DOCKER_LOG="${DOCKER_LOG:?}" \
     SUDO_LOG="${SUDO_LOG:?}" \
     SUDO_VALIDATE_EXIT_CODE="${SUDO_VALIDATE_EXIT_CODE:-0}" \
+    DOCKER_DOWN_EXIT_CODE="${DOCKER_DOWN_EXIT_CODE:-0}" \
+    DOCKER_GID_EXPECTED="${DOCKER_GID_EXPECTED:-}" \
+    DOCKER_GID_ENV_COPY="${DOCKER_GID_ENV_COPY:-}" \
+    PIXEL_INGRESS_GID="${PIXEL_INGRESS_GID-}" \
+    ID_PRIMARY_GROUP="${ID_PRIMARY_GROUP-1000}" \
+    ID_PRIMARY_EXIT="${ID_PRIMARY_EXIT-0}" \
     ODS_UNINSTALL_SYSTEMD_DIR="$install_dir/systemd" \
         bash "$install_dir/ods-uninstall.sh" --force "$@" >/dev/null
 }
 
+assert_no_name_cleanup() {
+    local docker_log="$1"
+    if grep -Eq '^(rm|container rm)( |$)|^ps .*--filter name=|^volume ls .*--filter name=' "$docker_log"; then
+        fail "uninstall must not discover or remove Docker resources by name"
+    fi
+}
+
 main() {
     [[ -f "$TARGET" ]] || fail "missing $TARGET"
+    # The search text is intentionally literal shell source.
+    # shellcheck disable=SC2016
     if grep -qF 'source "$INSTALL_DIR/.env"' "$TARGET"; then
         fail "uninstall must load .env through lib/safe-env.sh, not source it"
     fi
@@ -186,6 +223,31 @@ main() {
         || fail "missing policy failure must explain recovery"
     pass "missing policy fails closed with a recovery instruction"
 
+    local missing_install="$TMP_DIR/missing-install" missing_home="$TMP_DIR/missing-home"
+    local missing_docker="$TMP_DIR/missing-docker.log" missing_sudo="$TMP_DIR/missing-sudo.log"
+    make_install "$missing_install"
+    mkdir -p "$missing_home"
+    rm "$missing_install/.compose-flags" "$missing_install/docker-compose.base.yml" \
+        "$missing_install/docker-compose.cpu.yml"
+    # Model a resolver that cannot select any Compose files, without touching
+    # Docker or borrowing the test machine's installed stack.
+    printf '#!/bin/bash\nexit 1\n' > "$missing_install/scripts/resolve-compose-stack.sh"
+    printf 'retain owner data\n' > "$missing_install/data/owner.txt"
+    cat > "$missing_install/lib/pixel-uninstall.sh" <<'EOF'
+ods_pixel_uninstall_managed() { touch "$INSTALL_DIR/pixel-retired"; }
+EOF
+    if DOCKER_LOG="$missing_docker" SUDO_LOG="$missing_sudo" \
+        run_uninstall "$missing_install" "$missing_home" "$stub_dir" 2>"$TMP_DIR/missing-error"; then
+        fail "missing Compose flags must block uninstall"
+    fi
+    [[ ! -s "$missing_docker" && ! -s "$missing_sudo" && ! -e "$missing_install/pixel-retired" ]] \
+        || fail "missing Compose flags must be refused before Docker, sudo, or Pixel retirement"
+    [[ -f "$missing_install/ods-uninstall.sh" && -f "$missing_install/data/owner.txt" ]] \
+        || fail "missing Compose flags must preserve installation and owner data"
+    grep -qF 'No Compose files resolved; installation untouched' "$TMP_DIR/missing-error" \
+        || fail "missing Compose flags must explain the refusal"
+    pass "missing Compose flags are refused before uninstall mutation"
+
     if [[ "$(uname -s)" == "Linux" ]]; then
         local changed_install="$TMP_DIR/changed-install" changed_home="$TMP_DIR/changed-home"
         local changed_docker="$TMP_DIR/changed-docker.log"
@@ -206,8 +268,9 @@ EOF
             run_uninstall "$changed_install" "$changed_home" "$stub_dir" 2>"$TMP_DIR/changed-error"; then
             fail "recipe drift before Compose down must abort remaining cleanup"
         fi
-        [[ ! -s "$changed_docker" && -d "$changed_install" ]] \
-            || fail "changed recipes must not reach Compose or data removal"
+        if grep -q ' down ' "$changed_docker" || [[ ! -d "$changed_install" ]]; then
+            fail "changed recipes must not reach Compose down or data removal"
+        fi
         grep -qF 'changed during uninstall' "$TMP_DIR/changed-error" \
             || fail "mid-uninstall drift must explain the partial retirement state"
         pass "recipe drift during retirement is rechecked before Compose down"
@@ -230,6 +293,7 @@ EOF
         fail "--keep-data must not remove compose volumes with -v"
     fi
     pass "uninstall uses saved compose flags and preserves volumes with --keep-data"
+    assert_no_name_cleanup "$log_keep"
     [[ ! -L "$home_keep/.local/bin/ods" ]] \
         || fail "uninstall must remove the user-level ods CLI symlink"
     pass "uninstall removes user-level ods CLI symlink"
@@ -241,9 +305,41 @@ EOF
     make_install "$install_purge"
     DOCKER_LOG="$log_purge" SUDO_LOG="$sudo_log" run_uninstall "$install_purge" "$home_purge" "$stub_dir"
 
-    grep -qF 'compose -f docker-compose.base.yml -f docker-compose.cpu.yml down -v --remove-orphans' "$log_purge" \
-        || fail "normal uninstall must remove compose volumes with -v"
-    pass "normal uninstall removes compose volumes"
+    grep -qF 'compose -f docker-compose.base.yml -f docker-compose.cpu.yml down --remove-orphans' "$log_purge" \
+        || fail "normal uninstall must stop Compose without deleting volumes before custody review"
+    if grep -qF 'down -v' "$log_purge"; then
+        fail "normal uninstall must not let Compose delete volumes before custody review"
+    fi
+    pass "normal uninstall defers volume removal to the custody helper"
+    assert_no_name_cleanup "$log_purge"
+
+    local failed_install="$TMP_DIR/failed-install" failed_home="$TMP_DIR/failed-home"
+    local failed_docker="$TMP_DIR/failed-docker.log" failed_sudo="$TMP_DIR/failed-sudo.log"
+    make_install "$failed_install"
+    mkdir -p "$failed_home/.local/bin"
+    ln -s "$failed_install/ods-cli" "$failed_home/.local/bin/ods"
+    printf 'retain owner data\n' > "$failed_install/data/owner.txt"
+    if DOCKER_LOG="$failed_docker" SUDO_LOG="$failed_sudo" DOCKER_DOWN_EXIT_CODE=37 \
+        run_uninstall "$failed_install" "$failed_home" "$stub_dir" 2>"$TMP_DIR/failed-error"; then
+        fail "Compose down failure must fail uninstall"
+    fi
+    grep -qF 'compose -f docker-compose.base.yml -f docker-compose.cpu.yml down --remove-orphans' "$failed_docker" \
+        || fail "failure fixture must reach the existing Compose down command"
+    assert_no_name_cleanup "$failed_docker"
+    [[ -f "$failed_install/ods-uninstall.sh" && -f "$failed_install/data/owner.txt" && \
+        -L "$failed_home/.local/bin/ods" ]] \
+        || fail "Compose failure must retain remaining installation, data, and CLI link"
+    grep -qF 'Docker Compose cleanup failed; remaining installation retained' "$TMP_DIR/failed-error" \
+        || fail "Compose failure must explain the incomplete uninstall"
+    local diagnostic
+    diagnostic="$(sed -n 's/.*Details: \(.*\)$/\1/p' "$TMP_DIR/failed-error" | tail -n 1)"
+    if [[ ! -f "$diagnostic" ]] || ! grep -qF 'fixture Compose diagnostic' "$diagnostic"; then
+        fail "Compose failure must retain its original diagnostic"
+    fi
+    grep -qF 'Pixel or host services may already be retired' "$TMP_DIR/failed-error" \
+        || fail "Compose failure must disclose the partial retirement state"
+    rm -f -- "$diagnostic"
+    pass "Compose down failure retains remaining installation without a name-based fallback"
 
     mapfile -t sudo_calls < "$sudo_log"
     local sudo_credentials_seen=0
@@ -301,8 +397,9 @@ PY
         || fail "non-interactive uninstall must fail promptly when sudo cannot authenticate (rc=$noninteractive_rc)"
     [[ -d "$install_noninteractive" ]] \
         || fail "failed non-interactive sudo preflight must not mutate the install tree"
-    [[ ! -s "$log_noninteractive" ]] \
-        || fail "failed non-interactive sudo preflight must happen before Docker cleanup"
+    if grep -Eq ' down |^volume rm ' "$log_noninteractive"; then
+        fail "failed non-interactive sudo preflight must happen before Docker cleanup"
+    fi
     grep -qx -- '-n true' "$sudo_noninteractive" \
         || fail "non-interactive uninstall must validate sudo without prompting"
     grep -qF 'Non-interactive uninstall requires cached or passwordless sudo' "$out_noninteractive" \
@@ -324,33 +421,77 @@ EOF
     fi
     pass "uninstall loads .env without executing shell substitutions"
 
-    # Docker's `--filter name=` matches anywhere in the name, so the discovery
-    # fallback must select on the project prefix (containers ods-<service>,
-    # compose volumes ods_<volume>) and leave unrelated names alone.
-    local removed_containers removed_volumes
-    removed_containers="$(grep -E '^rm -f ' "$log_purge" || true)"
-    removed_volumes="$(grep -E '^volume rm ' "$log_purge" || true)"
+    # Exercise real env loading and both Compose config/down, with no real
+    # Docker or privileged commands. Partial installs may not have saved flags.
+    local gid_case gid_install gid_home gid_log gid_env_copy expected_gid
+    for gid_case in missing blank configured; do
+        gid_install="$TMP_DIR/gid-$gid_case"
+        gid_home="$TMP_DIR/gid-home-$gid_case"
+        gid_log="$TMP_DIR/gid-$gid_case.log"
+        gid_env_copy="$TMP_DIR/gid-$gid_case.env"
+        mkdir -p "$gid_home"
+        make_install "$gid_install"
+        rm "$gid_install/.compose-flags"
+        expected_gid=1000
+        case "$gid_case" in
+            blank) printf 'PIXEL_INGRESS_GID=\n' >> "$gid_install/.env" ;;
+            configured)
+                printf 'PIXEL_INGRESS_GID=4242\n' >> "$gid_install/.env"
+                expected_gid=4242 ;;
+        esac
+        cp "$gid_install/.env" "$gid_env_copy"
+        DOCKER_LOG="$gid_log" SUDO_LOG="$sudo_log" \
+            DOCKER_GID_EXPECTED="$expected_gid" DOCKER_GID_ENV_COPY="$gid_env_copy" \
+            PIXEL_INGRESS_GID="$(if [[ "$gid_case" == missing ]]; then printf ''; else printf '989'; fi)" \
+            run_uninstall "$gid_install" "$gid_home" "$stub_dir" --keep-data
+        grep -q "^gid=$expected_gid .* config --format json" "$gid_log" \
+            || fail "$gid_case GID must resolve through actual Compose ownership inspection"
+        grep -q "^gid=$expected_gid .* down --remove-orphans" "$gid_log" \
+            || fail "$gid_case GID must resolve through actual Compose down"
+        pass "$gid_case Pixel GID permits cleanup without changing installed env"
+    done
 
+    # A failed identity lookup must not pass even if it prints a numeric value.
+    local primary_exit primary_value gid_sudo
+    for gid_case in invalid failed; do
+        gid_install="$TMP_DIR/gid-$gid_case"
+        gid_home="$TMP_DIR/gid-home-$gid_case"
+        gid_log="$TMP_DIR/gid-$gid_case.log"
+        gid_sudo="$TMP_DIR/gid-$gid_case-sudo.log"
+        mkdir -p "$gid_home"
+        make_install "$gid_install"
+        printf 'PIXEL_INGRESS_GID=\n' >> "$gid_install/.env"
+        printf 'retained owner data\n' > "$gid_install/data/owner.txt"
+        cat > "$gid_install/lib/pixel-uninstall.sh" <<'EOF'
+ods_pixel_uninstall_managed() { touch "$INSTALL_DIR/pixel-retired"; }
+EOF
+        primary_value=invalid; primary_exit=0
+        if [[ "$gid_case" == failed ]]; then primary_value=1000; primary_exit=1; fi
+        if DOCKER_LOG="$gid_log" SUDO_LOG="$gid_sudo" PIXEL_INGRESS_GID=989 \
+            ID_PRIMARY_GROUP="$primary_value" ID_PRIMARY_EXIT="$primary_exit" \
+            run_uninstall "$gid_install" "$gid_home" "$stub_dir" --keep-data \
+            2>"$TMP_DIR/gid-$gid_case-error"; then
+            fail "$gid_case primary group lookup must refuse cleanup"
+        fi
+        [[ ! -s "$gid_log" && ! -s "$gid_sudo" && ! -e "$gid_install/pixel-retired" \
+            && -f "$gid_install/ods-uninstall.sh" && -f "$gid_install/data/owner.txt" ]] \
+            || fail "$gid_case primary group lookup must stop before mutations"
+        grep -qF 'Cannot determine a numeric group for Compose cleanup' "$TMP_DIR/gid-$gid_case-error" \
+            || fail "$gid_case primary group lookup must explain the refusal"
+        pass "$gid_case primary group lookup preserves the partial installation"
+    done
+
+    # These stubs exercise the removed name fallback, not Docker Compose's
+    # own project selection or the independent native Pixel retirement helper.
     local name
-    for name in ods-litellm ods-llama-server; do
-        [[ "$removed_containers" == *"$name"* ]] \
-            || fail "uninstall must remove project container $name (got: '$removed_containers')"
+    for name in ods-download-test-sentinel ods-inspection-blocked-test-sentinel \
+        kube-pods-proxy methods-runner ods-pixel-retired-0123456789abcdef \
+        ods_download_test_data ods-download-test-volume k3s_pods methods_cache; do
+        if grep -Fq "$name" "$log_purge" "$failed_docker" "$log_keep"; then
+            fail "uninstall must not pass unrelated or archived resource $name to Docker cleanup"
+        fi
     done
-    for name in kube-pods-proxy methods-runner ods-pixel-retired-0123456789abcdef; do
-        [[ "$removed_containers" != *"$name"* ]] \
-            || fail "uninstall must not remove unrelated container $name (got: '$removed_containers')"
-    done
-    pass "container discovery stays on the ods- prefix and preserves native sandbox archives"
-
-    for name in ods_perplexica-data ods-legacy-cache; do
-        [[ "$removed_volumes" == *"$name"* ]] \
-            || fail "uninstall must remove project volume $name (got: '$removed_volumes')"
-    done
-    for name in k3s_pods methods_cache; do
-        [[ "$removed_volumes" != *"$name"* ]] \
-            || fail "uninstall must not remove unrelated volume $name (got: '$removed_volumes')"
-    done
-    pass "volume discovery stays on the ods project prefix"
+    pass "same-prefix resources and native sandbox archives are excluded from name-based cleanup"
 }
 
 main "$@"

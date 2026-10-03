@@ -1,9 +1,12 @@
+// Team recovery uses a synthetic receipt; origin handshake has dedicated transport/browser coverage.
+vi.mock('../lib/useVerifiedPreview',()=>({default:(_preview,access)=>access}))
 import {fireEvent,screen,waitFor} from '@testing-library/react'
 import {render} from '../test/test-utils'
 import Pixel from './Pixel'
 import * as portalTeams from '../lib/portalTeams'
 import {saveConversation,readConversations,SELECT_EVENT} from '../lib/pixelConversations'
 import {conversationProject} from '../lib/conversationProjects'
+import {previewManifestResponse} from '../test/previewFixtures'
 
 beforeEach(()=>{localStorage.clear();sessionStorage.clear()})
 afterEach(()=>{vi.unstubAllGlobals();vi.restoreAllMocks()})
@@ -17,7 +20,7 @@ it('delivers a confirmed team preview, persists it and does not reopen it on eve
   saveConversation({schema:1,chatId:'team-preview',messages:[{role:'user',content:'Build game'},{role:'assistant',teamId:id,content:'Working'}]})
   let controller={teams:[team],busy:false,error:'',selected:null,select:vi.fn()}
   vi.spyOn(portalTeams,'usePortalTeams').mockImplementation(()=>controller)
-  vi.stubGlobal('fetch',vi.fn(async()=>({ok:true,json:async()=>({available:true})})))
+  vi.stubGlobal('fetch',vi.fn(async url=>url.includes('__ods_manifest__')?previewManifestResponse(publication):({ok:true,json:async()=>({available:true})})))
   const view=render(<Pixel/> )
   expect(await screen.findByTitle('Interactive Portal preview')).toHaveAttribute('src',`/pixel-preview/${siteId}/__ods_view__.html`)
   await waitFor(()=>expect(readConversations()[0].messages[1].publication).toEqual(publication))
@@ -169,3 +172,10 @@ it('runs /goal through the durable controller, answers inline and exposes stop',
   expect(fetcher.mock.calls.filter(([url])=>url.endsWith('/agents/start'))).toHaveLength(1)
   expect(fetcher.mock.calls.some(([url])=>url.includes('/chat/stream'))).toBe(false)
 })
+
+// These suites exercise conversation/publication selection, not manifest transport.
+// Workspace and artifact suites cover missing, corrupt and delayed manifests.
+vi.mock('../lib/pixelArtifacts',async importOriginal=>({
+  ...await importOriginal(),
+  loadSnapshotFiles:vi.fn(async preview=>[{path:'index.html',bytes:preview.bytes,sha256:preview.entrySha256}]),
+}))

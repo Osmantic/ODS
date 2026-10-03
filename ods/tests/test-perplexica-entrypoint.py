@@ -30,6 +30,14 @@ ENTRYPOINT = SERVICE_DIR / "docker-entrypoint.sh"
 SYNC_SCRIPT = SERVICE_DIR / "sync-model-config.js"
 SEARCH_SYNC_SCRIPT = SERVICE_DIR / "sync-search-config.js"
 WHISPER_COMPOSE = ROOT / "extensions" / "services" / "whisper" / "compose.yaml"
+
+
+def _apply_config_post(state: dict, payload: dict) -> None:
+    target = state
+    parts = payload["key"].split(".")
+    for part in parts[:-1]:
+        target = target[int(part)] if isinstance(target, list) else target[part]
+    target[parts[-1]] = payload["value"]
 BRAVE_DIR = ROOT / "extensions" / "services" / "brave-search"
 HEALTH_PHASE = ROOT / "installers" / "phases" / "12-health.sh"
 SUMMARY_PHASE = ROOT / "installers" / "phases" / "13-summary.sh"
@@ -93,6 +101,11 @@ def test_compose_uses_ods_entrypoint() -> None:
     assert "LEMONADE_MODEL=${LEMONADE_MODEL:-}" in compose
     assert "sync-model-config.js:/app/ods-sync-model-config.js:ro" in compose
     assert "sync-search-config.js:/app/ods-sync-search-config.js:ro" in compose
+    assert "patch-client-citations.js:/app/ods-patch-client-citations.js:ro" in compose
+    assert "citation-renderer.js:/app/citation-renderer.js:ro" in compose
+    windows_copy = (ROOT / "installers" / "windows" / "phases" / "06-directories.ps1").read_text(encoding="utf-8")
+    assert r"extensions\services\perplexica\patch-client-citations.js" in windows_copy
+    assert r"extensions\services\perplexica\citation-renderer.js" in windows_copy
     assert "SEARXNG_API_URL=http://searxng:8080" in compose
     assert "PERPLEXICA_SEARXNG_API_URL=${PERPLEXICA_SEARXNG_API_URL:-}" in compose
 
@@ -166,6 +179,12 @@ def test_entrypoint_patches_scrape_url_result_content() -> None:
     # Vane 1.12.2 moved the app root from /home/perplexica to /home/vane.
     assert 'for app_root in "$PWD" /home/vane /home/perplexica; do' in script
     assert 'search_root="/home/perplexica/.next/server"' not in script
+
+
+def test_client_citation_patch_runs_before_vane_server() -> None:
+    script = ENTRYPOINT.read_text(encoding="utf-8")
+    assert script.count("node /app/ods-patch-client-citations.js") == 1
+    assert script.index("node /app/ods-patch-client-citations.js") < script.index('exec docker-entrypoint.sh "$@"')
 
 
 # The scrape_url action objects from the minified .next/server/chunks/641.js of
@@ -436,7 +455,7 @@ def test_sync_script_persists_exact_lemonade_route() -> None:
         def do_POST(self):
             length = int(self.headers.get("Content-Length", "0"))
             payload = json.loads(self.rfile.read(length))
-            state[payload["key"]] = payload["value"]
+            _apply_config_post(state, payload)
             body = b"{}"
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -514,7 +533,7 @@ def test_sync_script_uses_stable_alias_when_switchboard_enabled() -> None:
         def do_POST(self):
             length = int(self.headers.get("Content-Length", "0"))
             payload = json.loads(self.rfile.read(length))
-            state[payload["key"]] = payload["value"]
+            _apply_config_post(state, payload)
             body = b"{}"
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -590,7 +609,7 @@ def test_sync_script_falls_back_to_extra_gguf_when_exact_lemonade_id_is_absent()
         def do_POST(self):
             length = int(self.headers.get("Content-Length", "0"))
             payload = json.loads(self.rfile.read(length))
-            state[payload["key"]] = payload["value"]
+            _apply_config_post(state, payload)
             body = b"{}"
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -662,7 +681,7 @@ def test_sync_script_normalizes_base_url_without_v1_suffix() -> None:
         def do_POST(self):
             length = int(self.headers.get("Content-Length", "0"))
             payload = json.loads(self.rfile.read(length))
-            state[payload["key"]] = payload["value"]
+            _apply_config_post(state, payload)
             body = b"{}"
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -955,6 +974,7 @@ if __name__ == "__main__":
     test_search_adapter_config_and_secret_contracts()
     test_bind_mounted_entrypoints_do_not_require_executable_bit()
     test_entrypoint_patches_scrape_url_result_content()
+    test_client_citation_patch_runs_before_vane_server()
     test_scrape_patch_disables_and_caps_legacy_and_vane_bundles_idempotently()
     test_patched_scrape_url_is_never_offered_and_opens_no_url()
     test_scrape_patch_fails_closed_on_unknown_shapes()

@@ -7,6 +7,10 @@ on:
       - 'ods/extensions/services/pixel-agent/**'
       - 'ods/extensions/services/pixel-edge/**'
       - 'ods/extensions/services/dashboard/src/pages/Pixel.jsx'
+      - 'ods/extensions/services/dashboard/src/lib/previewOrigin.js'
+      - 'ods/extensions/services/dashboard/src/lib/useVerifiedPreview.js'
+      - 'ods/extensions/services/dashboard/src/components/PortalWorkspace.jsx'
+      - 'ods/extensions/services/dashboard/src/components/PixelPreviewViewport.jsx'
       - 'ods/installers/**'
       - '.github/workflows/portal-runtime.yml'
   workflow_dispatch:
@@ -26,13 +30,13 @@ jobs:
         with:
           node-version: '22'
       - name: Install pinned browser test runtime
-        run: npm install --prefix "$RUNNER_TEMP/preview-browser" --ignore-scripts --no-audit --no-fund --registry=https://registry.npmjs.org playwright@1.62.1
+        run: npm install --prefix "$RUNNER_TEMP/preview-browser" --ignore-scripts --no-audit --no-fund --registry=https://registry.npmjs.org playwright@1.62.1 esbuild@0.27.7 @noble/hashes@2.4.0
       - name: Install Chromium and operating-system dependencies
         run: node "$RUNNER_TEMP/preview-browser/node_modules/playwright/cli.js" install --with-deps chromium
       - name: Verify preview interactions and isolation in Chromium
         env:
           NODE_PATH: ${{ runner.temp }}/preview-browser/node_modules
-        run: node --test --test-timeout=120000 ods/extensions/services/pixel-agent/tests/preview_browser.test.cjs
+        run: node --test --test-timeout=120000 ods/extensions/services/pixel-agent/tests/preview_browser.test.cjs ods/extensions/services/pixel-agent/tests/preview_origin_browser.test.cjs
   compaction-lock:
     strategy:
       fail-fast: false
@@ -77,7 +81,23 @@ jobs:
         shell: bash
         env:
           OPENCLAW_PACKAGE_DIR: ${{ runner.temp }}/read-runtime/node_modules/openclaw
-        run: node --test ods/extensions/services/pixel-agent/tests/runtime_compaction_abort.integration.mjs ods/extensions/services/pixel-agent/tests/runtime_compaction_lock.integration.mjs
+        run: node --test ods/extensions/services/pixel-agent/tests/runtime_compaction_abort.integration.mjs ods/extensions/services/pixel-agent/tests/runtime_compaction_lock.integration.mjs ods/extensions/services/pixel-agent/tests/runtime_compaction_context.integration.mjs ods/extensions/services/pixel-agent/tests/runtime_compaction_no_work.integration.mjs ods/extensions/services/pixel-agent/tests/runtime_hook_provenance.integration.mjs
+      - name: Verify deferred delegation through the real gateway and Portal ingress
+        shell: bash
+        env:
+          OPENCLAW_PACKAGE_DIR: ${{ runner.temp }}/read-runtime/node_modules/openclaw
+          ODS_HOOK_EVIDENCE_PATH: ${{ runner.temp }}/portal-delegation-evidence/delegation
+        run: |
+          mkdir -p "$RUNNER_TEMP/portal-delegation-evidence"
+          node --test ods/extensions/services/pixel-agent/tests/runtime_delegation_delivery_hooks.integration.mjs
+      - name: Preserve native delegation diagnostics
+        if: always()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: portal-delegation-evidence-${{ matrix.os }}
+          path: ${{ runner.temp }}/portal-delegation-evidence/delegation.*
+          if-no-files-found: ignore
+          retention-days: 7
       - name: Verify capability bootstrap with the actual pinned runtime
         shell: bash
         env:
@@ -119,6 +139,12 @@ jobs:
         env:
           OPENCLAW_PACKAGE: ${{ runner.temp }}/read-runtime/node_modules/openclaw
         run: node --test ods/extensions/services/pixel-agent/tests/runtime_diagnostic_stream_writes.integration.mjs
+      - name: Verify image lifecycle and failed command attempt presentation with pinned native SDK
+        if: runner.os != 'Windows'
+        shell: bash
+        env:
+          OPENCLAW_PACKAGE: ${{ runner.temp }}/read-runtime/node_modules/openclaw
+        run: node --test ods/extensions/services/pixel-agent/tests/runtime_image_lifecycle.integration.mjs ods/extensions/services/pixel-agent/tests/runtime_command_attempt_warning.integration.mjs
       - name: Verify imported history survives native session startup with real Pixel runtime
         if: runner.os != 'Windows'
         shell: bash
@@ -138,6 +164,7 @@ jobs:
           python3 ods/extensions/services/pixel-agent/host/openclaw_tool_recovery.py \
             --openclaw-bin "$OPENCLAW_PACKAGE/openclaw.mjs" --state-dir "$RUNNER_TEMP/pixel-completion-repair" --completion-recovery
           node --test ods/extensions/services/pixel-agent/tests/runtime_progress_finalization.integration.mjs \
+            ods/extensions/services/pixel-agent/tests/runtime_blocked_diagnostic.integration.mjs \
             ods/extensions/services/pixel-agent/tests/runtime_stop_synthesis.integration.mjs \
             ods/extensions/services/pixel-agent/tests/runtime_owner_visible_reply.integration.mjs
   runtime:

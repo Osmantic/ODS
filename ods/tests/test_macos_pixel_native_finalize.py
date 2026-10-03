@@ -128,7 +128,7 @@ def test_update_publication_is_atomic_and_replayable(tmp_path, monkeypatch, faul
 
 
 @pytest.mark.parametrize('cached', [True, False])
-@pytest.mark.parametrize('fault', [None, 'socket', 'flags', 'project', 'missing', 'legacy-map',
+@pytest.mark.parametrize('fault', [None, 'socket', 'flags', 'project', 'missing-dashboard', 'no-webui', 'legacy-map',
     'legacy-list', 'start', 'probe', 'escape', 'unsafe-recipe', 'recipe-alias'])
 def test_refresh_clients_uses_native_stack_and_verifies_from_dashboard(tmp_path, monkeypatch, fault, cached):
     installed = tmp_path / 'ods'
@@ -170,7 +170,8 @@ def test_refresh_clients_uses_native_stack_and_verifies_from_dashboard(tmp_path,
     monkeypatch.setenv('DOCKER_CERT_PATH', '/remote/cert')
     document = dict(name='wrong' if fault == 'project' else 'ods',
         services={'dashboard-api': {}, 'open-webui': {}})
-    if fault == 'missing': del document['services']['open-webui']
+    if fault == 'missing-dashboard': del document['services']['dashboard-api']
+    if fault == 'no-webui': del document['services']['open-webui']
     if fault == 'legacy-map': document['services']['dashboard-api']['extra_hosts'] = {'pixel-edge': 'host-gateway'}
     if fault == 'legacy-list': document['services']['open-webui']['extra_hosts'] = ['Pixel-Edge=host-gateway']
     calls = []
@@ -194,7 +195,7 @@ def test_refresh_clients_uses_native_stack_and_verifies_from_dashboard(tmp_path,
             raise subprocess.CalledProcessError(1, command)
         return SimpleNamespace(stdout=json.dumps(document))
     monkeypatch.setattr(module.subprocess, 'run', run)
-    if fault:
+    if fault and fault != 'no-webui':
         with pytest.raises((ValueError, subprocess.CalledProcessError)): module.refresh_clients(installed)
         if fault not in ('start', 'probe'): assert not any('up' in call for call in calls)
         if fault in ('unsafe-recipe', 'recipe-alias'):
@@ -202,8 +203,12 @@ def test_refresh_clients_uses_native_stack_and_verifies_from_dashboard(tmp_path,
     else:
         module.refresh_clients(installed)
         assert len(calls) == 3
-        assert calls[1][-8:] == ['up', '-d', '--no-deps', '--wait', '--wait-timeout', '120',
-            'dashboard-api', 'open-webui']
+        if fault == 'no-webui':
+            assert calls[1][-7:] == ['up', '-d', '--no-deps', '--wait', '--wait-timeout',
+                '120', 'dashboard-api']
+        else:
+            assert calls[1][-8:] == ['up', '-d', '--no-deps', '--wait', '--wait-timeout',
+                '120', 'dashboard-api', 'open-webui']
         assert calls[2][-6:-1] == ['exec', '-T', 'dashboard-api', 'python3', '-c']
         assert 'http://pixel-edge:9595/health' in calls[2][-1]
     assert len(resolutions) == (0 if cached or fault == 'socket' else 1)

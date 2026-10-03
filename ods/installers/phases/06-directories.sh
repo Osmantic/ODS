@@ -249,23 +249,49 @@ else
         _ods_pixel_source_transition_required \
             "$_phase06_pixel_owner" "$_phase06_pixel_home" "$_phase06_requested_pixel_ref" "$SCRIPT_DIR" \
             || _phase06_pixel_source_transition=$?
+        if [[ "$_phase06_pixel_source_transition" == 0 || "$_phase06_pixel_source_transition" == 1 ]] \
+            && ods_sudo test -d /var/lib/ods-pixel-access/source-upgrade; then
+            _phase06_source_status="$(_ods_pixel_source_upgrade status "$_phase06_pixel_owner")" || return 1
+            if jq -e '.pending == true and .phase == "complete"' <<<"$_phase06_source_status" >/dev/null; then
+                _ods_pixel_source_upgrade finish "$_phase06_pixel_owner" || return 1
+            elif jq -e '.pending == true' <<<"$_phase06_source_status" >/dev/null; then
+                _phase06_pixel_source_transition=0
+            fi
+            unset _phase06_source_status
+        fi
         case "$_phase06_pixel_source_transition" in
             0)
-                if ! declare -F ods_pixel_uninstall_managed >/dev/null 2>&1; then
-                    # shellcheck source=../../lib/pixel-uninstall.sh
-                    source "$SCRIPT_DIR/lib/pixel-uninstall.sh"
-                fi
                 _phase06_step "rebind-pixel-source"
-                ai "Retiring the verified prior Pixel source before applying the new immutable source..."
+                ai "Preparing the verified Pixel source upgrade while preserving its access mode..."
                 if ! _ods_pixel_restore_transition_source \
                     "$_phase06_pixel_owner" "$_phase06_pixel_home" "$_phase06_requested_pixel_ref" >/dev/null; then
-                    error "Could not verify the prior Pixel checkout for safe retirement. Restore its local backup before retrying; no private repository was contacted."
+                    error "Could not verify the prior Pixel checkout for safe upgrade. Restore its local backup before retrying; no private repository was contacted."
                     return 1
                 fi
-                if ! ods_pixel_uninstall_managed "$INSTALL_DIR" "$_phase06_pixel_home"; then
-                    error "Could not safely retire the prior ODS-managed Pixel source."
+                if ! _ods_pixel_source_upgrade stage "$_phase06_pixel_owner" \
+                    "$SCRIPT_DIR" "$_phase06_requested_pixel_ref"; then
+                    error "Could not stage the exact Pixel source upgrade; the active source and access state were left intact."
                     return 1
                 fi
+                _phase06_pixel_binary="$(_ods_pixel_openclaw_bin "$_phase06_pixel_owner" "$_phase06_pixel_home")" || return 1
+                # Install the source-release guard in the protected controller
+                # before taking its hold. The helper journals every mirror
+                # replacement first and keeps the actual installation binding.
+                _phase06_source_status="$(_ods_pixel_source_upgrade status "$_phase06_pixel_owner")" || return 1
+                if jq -e '.transaction == null and .phase == "staged"' <<<"$_phase06_source_status" >/dev/null; then
+                    _ods_pixel_install_access_service "$_phase06_pixel_owner" \
+                        "$_phase06_pixel_binary" false true "$SCRIPT_DIR" || return 1
+                fi
+                unset _phase06_source_status
+                ODS_PIXEL_SOURCE_TRANSACTION="$(_ods_pixel_source_upgrade hold "$_phase06_pixel_owner")" || return 1
+                [[ "$ODS_PIXEL_SOURCE_TRANSACTION" =~ ^[a-f0-9]{64}$ ]] || return 1
+                export ODS_PIXEL_SOURCE_TRANSACTION
+                _ods_pixel_source_upgrade copy "$_phase06_pixel_owner" || return 1
+                # Everything after this boundary can update Compose/env/data
+                # and native services. Recovery must resume this same candidate;
+                # a source-only rollback would no longer restore the installer.
+                _ods_pixel_source_upgrade downstream "$_phase06_pixel_owner" || return 1
+                unset _phase06_pixel_binary
                 ;;
             1) ;;
             *)
@@ -328,7 +354,7 @@ else
     mkdir -p "$INSTALL_DIR"/config/{n8n,litellm,openclaw,searxng}
 
     _phase06_repair_host_path() {
-        local target="$1" description="$2"
+        local target="$1" description="$2" target_parent
 
         if $_phase06_rootless; then
             local relative="${target#"$INSTALL_DIR"/}"
@@ -340,8 +366,30 @@ else
             return 0
         fi
         if ! ods_sudo_available; then
-            error "Cannot repair $description without privileged access: $target. Fix its ownership manually, then re-run ODS."
-            return 1
+            # A rootful Docker daemon can repair a container-owned ODS path
+            # through an exact bind mount without granting host sudo. Never
+            # follow a replaced top-level directory or an arbitrary path.
+            target_parent="${target%/}"
+            target_parent="${target_parent%/*}"
+            if [[ "$target_parent" != "$INSTALL_DIR/data" \
+               && "$target_parent" != "$INSTALL_DIR/config" ]] \
+               || [[ ! -d "$target" || -L "${target%/}" \
+                   || -L "$target_parent" || -L "$INSTALL_DIR" ]]; then
+                error "Refusing unsafe $description repair: $target"
+                return 1
+            fi
+            _ods_rootless_ensure_helper_image || return 1
+            if ! docker_run run --rm --network none --user 0:0 \
+                --mount "type=bind,src=${target%/},dst=/data" \
+                "$ODS_ROOTLESS_HELPER_IMAGE" chown -h -R "$(id -u):$(id -g)" /data; then
+                error "Could not repair $description with scoped Docker access: $target"
+                return 1
+            fi
+            [[ -w "$target" ]] || {
+                error "Repaired $description is still not writable: $target"
+                return 1
+            }
+            return 0
         fi
         if ! ods_sudo chown -R "$(id -u):$(id -g)" "$target" 2>/dev/null; then
             error "Failed to repair $description: $target"
@@ -358,18 +406,26 @@ else
         && [[ "${ENABLE_HERMES:-false}" == "true" && -d "$INSTALL_DIR/data/hermes" ]]; then
         _hermes_metadata=$(stat -c '%u:%g:%a' "$INSTALL_DIR/data/hermes" 2>/dev/null || true)
         if [[ "$_hermes_metadata" != "$_phase06_compose_uid:$_phase06_compose_gid:700" ]]; then
-            if ! ods_sudo_available; then
-                error "Hermes requires data/hermes ownership $_phase06_compose_uid:$_phase06_compose_gid and mode 700 with a rootful runtime. Grant privileged access or disable Hermes, then re-run ODS."
-                return 1
+            # A fresh no-sudo install creates this directory as the invoking
+            # user, often with mode 755/775. That user can make it private
+            # directly; privileged repair is only needed for foreign owners.
+            if [[ "${_hermes_metadata%:*}" == "$_phase06_compose_uid:$_phase06_compose_gid" ]] \
+                && chmod 700 "$INSTALL_DIR/data/hermes" 2>/dev/null; then
+                :
+            else
+                if ! ods_sudo_available; then
+                    error "Hermes requires data/hermes ownership $_phase06_compose_uid:$_phase06_compose_gid and mode 700 with a rootful runtime. Grant privileged access or disable Hermes, then re-run ODS."
+                    return 1
+                fi
+                ods_sudo chown -R "$_phase06_compose_uid:$_phase06_compose_gid" "$INSTALL_DIR/data/hermes" 2>/dev/null || {
+                    error "Failed to restore data/hermes ownership to $_phase06_compose_uid:$_phase06_compose_gid"
+                    return 1
+                }
+                ods_sudo chmod 700 "$INSTALL_DIR/data/hermes" 2>/dev/null || {
+                    error "Failed to preserve private mode 700 on data/hermes"
+                    return 1
+                }
             fi
-            ods_sudo chown -R "$_phase06_compose_uid:$_phase06_compose_gid" "$INSTALL_DIR/data/hermes" 2>/dev/null || {
-                error "Failed to restore data/hermes ownership to $_phase06_compose_uid:$_phase06_compose_gid"
-                return 1
-            }
-            ods_sudo chmod 700 "$INSTALL_DIR/data/hermes" 2>/dev/null || {
-                error "Failed to preserve private mode 700 on data/hermes"
-                return 1
-            }
         fi
         unset _hermes_metadata
     fi
@@ -381,6 +437,12 @@ else
             [[ "${ENABLE_HERMES:-false}" == "true" && "$_data_dir" == "$INSTALL_DIR/data/hermes/" ]] && continue
             # Private retained chat results belong to Dashboard UID 1000.
             [[ "$_data_dir" == "$INSTALL_DIR/data/pixel-chat-results/" ]] && continue
+            # Token Spy's persistent directory intentionally belongs to its
+            # container UID 1000; phase 06 verifies that identity below.
+            [[ "$_data_dir" == "$INSTALL_DIR/data/token-spy/" ]] && continue
+            # APE's private governance state/audit directory intentionally
+            # belongs to the APE container UID; phase 06 prepares it below.
+            [[ "$_data_dir" == "$INSTALL_DIR/data/ape/" ]] && continue
             if [[ -d "$_data_dir" ]] && ! [[ -w "$_data_dir" ]]; then
                 _phase06_repair_host_path "$_data_dir" "container-owned data directory" || return 1
             fi
@@ -402,6 +464,8 @@ else
             for _d in "$INSTALL_DIR/$_root"/*/; do
                 [[ "${ENABLE_HERMES:-false}" == "true" && "$_d" == "$INSTALL_DIR/data/hermes/" ]] && continue
                 [[ "$_d" == "$INSTALL_DIR/data/pixel-chat-results/" ]] && continue
+                [[ "$_d" == "$INSTALL_DIR/data/token-spy/" ]] && continue
+                [[ "$_d" == "$INSTALL_DIR/data/ape/" ]] && continue
                 [[ -d "$_d" ]] && ! [[ -w "$_d" ]] && _cant_write="$_cant_write ${_d#"$INSTALL_DIR"/}"
             done
         done
@@ -424,10 +488,24 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
             return 1
         }
         # Ensure scripts are executable
-        chmod +x "$INSTALL_DIR"/*.sh "$INSTALL_DIR"/scripts/*.sh "$INSTALL_DIR"/ods-cli 2>>"$LOG_FILE" || warn "Some scripts may not be executable — verify after install"
+        if [[ -n "${ODS_PIXEL_SOURCE_TRANSACTION:-}" ]]; then
+            # Protected source modes were installed from the exact staged
+            # inventory; do not mutate them after hashing, including custom
+            # scripts retained from the previous installation.
+            chmod +x "$INSTALL_DIR"/*.sh "$INSTALL_DIR"/ods-cli 2>>"$LOG_FILE" || warn "Some scripts may not be executable — verify after install"
+        else
+            chmod +x "$INSTALL_DIR"/*.sh "$INSTALL_DIR"/scripts/*.sh "$INSTALL_DIR"/ods-cli 2>>"$LOG_FILE" || warn "Some scripts may not be executable — verify after install"
+        fi
         ai_ok "Source files installed"
     else
         log "Running in-place (source == install dir), skipping file copy"
+    fi
+
+    if declare -F _ods_apply_deferred_feature_state >/dev/null; then
+        _ods_apply_deferred_feature_state || {
+            error "Deferred feature reconciliation failed; resume the same installer candidate."
+            return 1
+        }
     fi
 
     # A Windows-mounted WSL checkout can surface every source entry as 0777.
@@ -438,8 +516,10 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
         "$INSTALL_DIR/bin" \
         "$INSTALL_DIR/lib" \
         "$INSTALL_DIR/scripts" \
+        "$INSTALL_DIR/installers" \
         "$INSTALL_DIR/config" \
-        "$INSTALL_DIR/extensions"
+        "$INSTALL_DIR/extensions" \
+        "$INSTALL_DIR/vendor"
     do
         [[ -d "$_installed_code_root" && ! -L "$_installed_code_root" ]] \
             || error "Missing or unsafe installed code tree: $_installed_code_root"
@@ -454,6 +534,16 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
     [[ -d "$INSTALL_DIR" && ! -L "$INSTALL_DIR" ]] || error "Unsafe installed root"
     chmod go-w "$INSTALL_DIR" || error "Could not secure installed root"
     unset _installed_code_root
+
+    # Source staging under umask 077 makes the two public policy bind mounts
+    # unreadable to APE and remote-provider-egress, which run as non-root.
+    # Normalize them on fresh and retained installs before Compose starts.
+    _phase06_step "prepare-public-policy-mounts"
+    if ! bash "$INSTALL_DIR/scripts/prepare-public-policy-mounts.sh" "$INSTALL_DIR" \
+        >> "$LOG_FILE" 2>&1; then
+        error "Could not prepare public policy mounts for non-root services. See $LOG_FILE for details."
+        return 1
+    fi
 
     # Windows-mounted WSL checkouts commonly present every copied file as
     # mode 0777 even when Git records a narrower executable bit. Pixel refuses
@@ -597,12 +687,76 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
         _token_spy_chown=(chown -R 1000:1000 "$INSTALL_DIR/data/token-spy")
         if ods_sudo_available; then
             _token_spy_chown=(ods_sudo "${_token_spy_chown[@]}")
+        elif [[ "$(id -u)" != 1000 ]]; then
+            # Docker access can perform this scoped repair without host sudo.
+            [[ -d "$INSTALL_DIR/data/token-spy" && ! -L "$INSTALL_DIR/data/token-spy" ]] || {
+                error "Cannot safely prepare data/token-spy: expected a real directory."
+                return 1
+            }
+            _ods_rootless_ensure_helper_image || return 1
+            _token_spy_chown=(docker_run run --rm --network none --user 0:0
+                --mount "type=bind,src=$INSTALL_DIR/data/token-spy,dst=/data"
+                "$ODS_ROOTLESS_HELPER_IMAGE" chown -h -R 1000:1000 /data)
         fi
         if ! "${_token_spy_chown[@]}"; then
             error "Cannot prepare data/token-spy for container UID 1000. Grant privileged access or repair its ownership, then re-run the installer."
             return 1
         fi
         unset _token_spy_chown
+    fi
+
+    # APE (Agent Policy Engine) persists private governance state and the
+    # audit log to the data/ape bind mount. Its image runs as the system user
+    # created by `adduser --system --no-create-home ape`, which on the pinned
+    # python:3.12-slim base resolves to UID 100 / GID 65534 (nogroup),
+    # independently of the installer owner. A rootful install would otherwise
+    # leave data/ape owned by the invoking account under the invoking umask, so
+    # the container cannot create state.json/audit.jsonl and crash-loops with
+    # PermissionError. Prepare the private state directory for the APE
+    # container UID/GID without a broad chmod 777 and without following
+    # symlinks (chown -h so a link is never dereferenced; no -R across a
+    # symlinked ancestor because install, data, and ape must be physical directories).
+    # Scope: only data/ape. This block is a no-op on rootless installs, which
+    # ods_fix_rootless_ownership prepares separately.
+    if ! $_phase06_rootless \
+        && [[ -f "$INSTALL_DIR/extensions/services/ape/compose.yaml" ]] \
+        && grep -Eq '^[[:space:]]*-?[[:space:]]*(\./)?data/ape:/data/ape(:[^[:space:]]*)?[[:space:]]*$' \
+            "$INSTALL_DIR/extensions/services/ape/compose.yaml"; then
+        _ape_uid=100
+        _ape_gid=65534
+        # These IDs match the pinned image and the rootless repair contract.
+        # Refuse links in the bind source and its install-owned ancestry before
+        # privileged recursive ownership changes.
+        [[ -d "$INSTALL_DIR" && ! -L "$INSTALL_DIR" \
+            && -d "$INSTALL_DIR/data" && ! -L "$INSTALL_DIR/data" \
+            && -d "$INSTALL_DIR/data/ape" && ! -L "$INSTALL_DIR/data/ape" ]] || {
+            error "Cannot safely prepare data/ape: expected real install, data, and APE directories."
+            return 1
+        }
+        if ods_sudo_available; then
+            ods_sudo chown -h -R "$_ape_uid:$_ape_gid" "$INSTALL_DIR/data/ape" \
+                && ods_sudo chmod 700 "$INSTALL_DIR/data/ape" || {
+                error "Cannot prepare data/ape for APE container UID $_ape_uid. Grant privileged access or repair its ownership, then re-run the installer."
+                return 1
+            }
+        else
+            _ods_rootless_ensure_helper_image || return 1
+            if ! docker_run run --rm --network none --user 0:0 \
+                --mount "type=bind,src=$INSTALL_DIR/data/ape,dst=/data" \
+                "$ODS_ROOTLESS_HELPER_IMAGE" sh -ec '
+                    chown -h -R "$1:$2" /data
+                    chmod 700 /data
+                ' sh "$_ape_uid" "$_ape_gid"; then
+                error "Cannot prepare data/ape for APE container UID $_ape_uid. Grant privileged access or repair its ownership, then re-run the installer."
+                return 1
+            fi
+        fi
+        _ape_meta=$(stat -c '%u:%g:%a' "$INSTALL_DIR/data/ape" 2>/dev/null || true)
+        if [[ "$_ape_meta" != "$_ape_uid:$_ape_gid:700" ]]; then
+            error "data/ape ownership/mode verification failed: got ${_ape_meta:-unreadable}, expected $_ape_uid:$_ape_gid:700."
+            return 1
+        fi
+        unset _ape_meta _ape_uid _ape_gid
     fi
 
     # ── .env merge logic: preserve user-configured values on re-install ──
@@ -680,6 +834,15 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
         error "OLLAMA_PORT must be a port from 1 to 65535"
         return 1
     fi
+    # Keep the selected SearXNG origin consistent across Compose and Pixel on
+    # a rerun. An explicit port override wins over the retained installed port.
+    SEARXNG_PORT_VALUE="$(_env_get_explicit_first SEARXNG_PORT 8888)"
+    if [[ ! "$SEARXNG_PORT_VALUE" =~ ^[1-9][0-9]{0,4}$ ]] \
+        || (( 10#$SEARXNG_PORT_VALUE > 65535 )); then
+        error "SEARXNG_PORT must be a port from 1 to 65535"
+        return 1
+    fi
+    SEARXNG_PORT="$SEARXNG_PORT_VALUE"
 
     # Secrets: reuse existing values, generate only if missing
     WEBUI_SECRET=$(_phase06_env_hex_secret WEBUI_SECRET 32)
@@ -971,6 +1134,15 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
         OPEN_WEBUI_LLM_API_KEY_VALUE=""
     else
         LLM_API_URL_VALUE=$(_env_get LLM_API_URL "$_default_llm_api_url")
+        # A retained local route cannot serve an external Lemonade install.
+        # Preserve other existing values as operator-selected endpoints.
+        if [[ "$LEMONADE_EXTERNAL_VALUE" == "true" ]]; then
+            case "$LLM_API_URL_VALUE" in
+                http://llama-server:8080|http://llama-server:8080/v1)
+                    LLM_API_URL_VALUE="$_default_llm_api_url"
+                    ;;
+            esac
+        fi
     fi
     if [[ "$EXTERNAL_LLM_ACTIVE" != "true" && "${EXTERNAL_LLM_RESET:-false}" != "true" && "$ODS_MODEL_SWITCHBOARD_VALUE" == "enabled" ]]; then
         OPEN_WEBUI_LLM_BASE_URL_VALUE=$(_env_get OPEN_WEBUI_LLM_BASE_URL "http://litellm:4000")
@@ -1462,7 +1634,7 @@ fi)
 OLLAMA_PORT=$(dotenv_value "${OLLAMA_PORT_VALUE}")
 WEBUI_PORT=3000
 DASHBOARD_API_PORT=$(dotenv_value "${DASHBOARD_API_PORT_VALUE}")
-SEARXNG_PORT=8888
+SEARXNG_PORT=$(dotenv_value "${SEARXNG_PORT_VALUE}")
 PERPLEXICA_PORT=3004
 WHISPER_PORT=$(dotenv_value "${WHISPER_PORT_VALUE}")
 TTS_PORT=8880

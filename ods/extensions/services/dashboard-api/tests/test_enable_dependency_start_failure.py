@@ -33,7 +33,17 @@ def installation(monkeypatch, tmp_path):
     start, hook = Mock(return_value=True), Mock(return_value=True)
     monkeypatch.setattr(extensions, "_call_agent", start)
     monkeypatch.setattr(extensions, "_call_agent_hook", hook)
-    monkeypatch.setattr(extensions, "_call_agent_compose_rename", rename)
+    def select(action, service_ids, expected_sha256=None):
+        assert action == "enable"
+        assert set(expected_sha256) == set(service_ids)
+        for name in service_ids:
+            if (bundled / name / "compose.yaml.disabled").exists():
+                rename("activate", name)
+        return {"action": "enabled", "service_ids": service_ids}
+
+    monkeypatch.setattr(extensions, "_select_extensions_on_host", select)
+    monkeypatch.setattr(extensions, "request_agent_json",
+                        lambda *args, **kwargs: pytest.fail("unexpected host-agent transport"))
     monkeypatch.setattr(extensions, "_call_agent_invalidate_compose_cache", Mock())
     return tmp_path, start, hook
 

@@ -326,6 +326,20 @@ function Add-ODSPortalAmdArguments([string[]]$LinuxArgs, [System.Collections.IDi
     return @($LinuxArgs + $amdArgs)
 }
 
+function Get-ODSPortalInitProcess([string]$Distro) {
+    $probe = Invoke-ODSPortalWsl -Arguments @('--distribution', $Distro, '--exec', 'cat', '/proc/1/comm')
+    if ($probe.Code -ne 0) {
+        throw ("Cannot read PID 1 in $Distro (wsl exit $($probe.Code)); systemd state is unknown. Resolve the WSL error and rerun setup: $($probe.Output) $($probe.Error)").Trim()
+    }
+    $name = ([string]$probe.Output).Trim()
+    # /proc/1/comm is one process name, limited to 15 bytes by Linux. Empty or
+    # multi-line output is not evidence that systemd is disabled.
+    if ($name -notmatch '^[^\x00-\x1f\x7f]{1,15}$') {
+        throw "Cannot read a valid PID 1 process name in $Distro; systemd state is unknown. Check WSL/distro availability and rerun setup."
+    }
+    return $name
+}
+
 function Invoke-ODSPortalSetup([System.Collections.IDictionary]$Options, [string]$InstallerRoot) {
     $linuxArgs = @(Get-ODSPortalLinuxArguments $Options)
     Assert-ODSPortalStateRoot ([string]$Options['StateRoot'])
@@ -374,13 +388,13 @@ function Invoke-ODSPortalSetup([System.Collections.IDictionary]$Options, [string
     if ($identity.Code -ne 0 -or $identity.Output -notmatch '^\d+$' -or $identity.Output -eq '0') {
         throw "Initialize a normal Linux user and make it the default in $distro. Open Ubuntu to finish account setup, then rerun this command; do not install ODS as root."
     }
-    $init = Invoke-ODSPortalWsl -Arguments @('--distribution', $distro, '--exec', 'cat', '/proc/1/comm')
-    if ($init.Code -eq 0 -and $init.Output.Trim() -ne 'systemd' -and
+    $init = Get-ODSPortalInitProcess $distro
+    if ($init -cne 'systemd' -and
         (Confirm-ODSPortalPreparation "Pixel needs systemd, which is off in $distro. Turn it on now? This restarts $distro, so save work in any open Ubuntu window first." $nonInteractive)) {
         Enable-ODSPortalSystemd $distro
-        $init = Invoke-ODSPortalWsl -Arguments @('--distribution', $distro, '--exec', 'cat', '/proc/1/comm')
+        $init = Get-ODSPortalInitProcess $distro
     }
-    if ($init.Code -ne 0 -or $init.Output.Trim() -ne 'systemd') {
+    if ($init -cne 'systemd') {
         throw "Enable systemd=true under [boot] in /etc/wsl.conf inside Ubuntu (preserve other settings). Then run wsl --terminate $distro from PowerShell, reopen Ubuntu and rerun this command."
     }
     Write-ODSPortalStage 3 'CONTAINER CONNECTION' "Checking Docker Desktop and Compose inside $distro."

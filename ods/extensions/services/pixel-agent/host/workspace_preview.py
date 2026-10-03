@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Snapshot and serve bounded static sites from Pixel's owner workspace.
+"""Snapshot and serve bounded sites or single documents from the owner workspace.
 
-The control socket accepts only one relative workspace directory. Every
+The control socket accepts one relative site directory or document file. Every
 regular file is reopened without symlink traversal, bounded, hashed, and copied
 create-only into a private state directory. A separate loopback HTTP listener
 serves only those immutable snapshots with browser-hardening headers.
@@ -10,7 +10,9 @@ serves only those immutable snapshots with browser-hardening headers.
 from __future__ import annotations
 
 import hashlib
+import fcntl
 import importlib.util
+import itertools
 import difflib
 import http.client
 import http.server
@@ -41,7 +43,9 @@ SOCKET_PATH = pathlib.Path("/run/ods-pixel-preview/control.sock")
 HTTP_SOCKET_PATH = pathlib.Path("/run/ods-pixel-preview/http.sock")
 PROFILE_ID: str | None = None
 PATH_COMPONENT = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
+ASSET_COMPONENT = re.compile(r"(?!__ods_)(?!__pycache__$)[A-Za-z0-9_\[][A-Za-z0-9._\[\]-]{0,127}\Z")
 SITE_ID = re.compile(r"site-[a-f0-9]{24}")
+DOWNLOAD_ONLY_SUFFIXES = frozenset({".pdf", ".zip", ".rar"})
 ALLOWED_SUFFIXES = frozenset(
     {
         ".html", ".htm", ".css", ".js", ".mjs", ".json", ".svg",
@@ -49,7 +53,10 @@ ALLOWED_SUFFIXES = frozenset(
         ".woff", ".woff2", ".ttf", ".txt", ".map", ".csv", ".tsv",
         ".md", ".markdown",
     }
-)
+) | DOWNLOAD_ONLY_SUFFIXES
+ARTIFACT_SUFFIXES = frozenset({'.md', '.markdown', '.txt', '.csv', '.tsv', '.json', '.pdf', '.zip', '.rar', '.docx', '.xlsx', '.pptx'})
+ARTIFACT_KIND = 'ods-pixel-workspace-artifact'
+ARTIFACT_BOUNDARY = 'Create-only single-file snapshot from the configured Pixel workspace; byte integrity only, no execution or document-quality claim.'
 MAX_REQUEST_BYTES = 2048
 MAX_RESPONSE_BYTES = 8192
 MAX_FILES = 128
@@ -71,6 +78,18 @@ VC_METADATA_NAMES = frozenset(
 # directory name like VC metadata: never entered, read, copied or published.
 # Files with these names are still validated normally.
 GENERATED_CACHE_DIRECTORY_NAMES = frozenset({"__pycache__", ".pytest_cache"})
+
+SOURCE_ID = re.compile(r"source-[a-f0-9]{24}")
+SOURCE_SUFFIXES = frozenset({'.html', '.css', '.js', '.mjs', '.cjs', '.jsx', '.ts', '.tsx',
+                             '.vue', '.svelte', '.json', '.md', '.txt', '.py'})
+SOURCE_EXCLUDED_DIRECTORIES = frozenset({'node_modules', 'dist', 'build', 'out', 'coverage',
+                                         '__pycache__', 'venv', 'env', 'ods-builds'})
+SOURCE_SECRET_NAME = re.compile(r'(?:^|[._-])(?:credentials?|secrets?|tokens?|passwords?)(?:[._-]|$)', re.I)
+SOURCE_SECRET_CONTENT = re.compile(r'authorization\s*[:=]|bearer\s+[A-Za-z0-9._-]+|'
+                                   r'(?:api[_-]?key|access[_-]?token|password|secret)\s*[:=]\s*[\"\']?\S|'
+                                   r'BEGIN .*PRIVATE KEY', re.I)
+SOURCE_FILE_BYTES = 256 * 1024
+SOURCE_TOTAL_BYTES = 1024 * 1024
 
 BOUNDARY = (
     "Create-only static-site snapshot from the configured Pixel workspace to a "
@@ -117,6 +136,11 @@ def _profile_fields() -> dict[str, str]:
 
 
 PREVIEW_FAILURE_CODES = {
+    "source review exceeds limit": "source_capture_limit",
+    "source review store quota exceeded": "source_store_full",
+    "source review changed": "source_capture_changed",
+    "source review has no eligible files": "no_eligible_source",
+    "writable preview file": "writable_file",
     "invalid preview JSON artifact": "invalid_json_artifact",
     "unsupported preview file type": "unsupported_file_type",
     "preview requires index.html": "missing_entry",
@@ -162,17 +186,31 @@ def parse_request(payload: bytes) -> dict[str, Any]:
         value = json.loads(payload.decode("utf-8"), object_pairs_hook=_json_object)
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise PreviewError("invalid preview request") from exc
+    if isinstance(value, dict) and value.get('action') == 'publish-artifact':
+        if (set(value) != {'schemaVersion', 'action', 'relativePath'} or PROFILE_ID is not None
+                or type(value.get('schemaVersion')) is not int or value['schemaVersion'] != 1):
+            raise PreviewError('invalid artifact request')
+        parts = _parts(value.get('relativePath'))
+        if pathlib.PurePosixPath(parts[-1]).suffix.lower() not in ARTIFACT_SUFFIXES:
+            raise PreviewError('unsupported preview file type')
+        return value
     if (
         not isinstance(value, dict)
         or not isinstance(value.get("action"), str)
         or set(value) != {"schemaVersion", "action", "relativeDirectory", *_profile_fields(),
-                           *({"siteId", "sha256"} if value.get("action") == "verify-current" else set())}
+                           *({"siteId", "sha256"} if value.get("action") == "verify-current" else set()),
+                           *({'sourceDirectory'} if value.get('action') == 'publish' and 'sourceDirectory' in value else set())}
         or type(value.get("schemaVersion")) is not int or value.get("schemaVersion") != SCHEMA_VERSION
         or value.get("action") not in {"publish", "verify-current"}
         or (PROFILE_ID is not None and value.get("profileId") != PROFILE_ID)
     ):
         raise PreviewError("invalid preview request")
     _parts(value.get("relativeDirectory"))
+    if 'sourceDirectory' in value:
+        _parts(value['sourceDirectory'])
+        if PROFILE_ID is not None or not (value['relativeDirectory'] == value['sourceDirectory']
+                or value['relativeDirectory'].startswith(value['sourceDirectory'] + '/')):
+            raise PreviewError('invalid preview request')
     if value["action"] == "verify-current" and (
         not isinstance(value.get("siteId"), str) or SITE_ID.fullmatch(value["siteId"]) is None
         or not isinstance(value.get("sha256"), str) or re.fullmatch(r"[a-f0-9]{64}", value["sha256"]) is None
@@ -248,7 +286,7 @@ def _source_files(
                 or stat.S_ISLNK(info.st_mode)
                 or info.st_uid != owner_uid
                 or info.st_mode & 0o022
-                or PATH_COMPONENT.fullmatch(directory) is None
+                or ASSET_COMPONENT.fullmatch(directory) is None
             ):
                 raise PreviewError("unsafe preview directory")
         directories[:] = pruned
@@ -262,14 +300,16 @@ def _source_files(
             relative = source.relative_to(current).as_posix()
             if (
                 not stat.S_ISREG(info.st_mode)
+                or name in GENERATED_CACHE_DIRECTORY_NAMES
                 or stat.S_ISLNK(info.st_mode)
                 or info.st_nlink != 1
                 or info.st_uid != owner_uid
-                or info.st_mode & 0o022
                 or not (1 if relative == "index.html" else 0) <= info.st_size <= MAX_FILE_BYTES
-                or any(PATH_COMPONENT.fullmatch(part) is None for part in relative.split("/"))
+                or any(ASSET_COMPONENT.fullmatch(part) is None for part in relative.split("/"))
             ):
                 raise PreviewError("unsafe preview file")
+            if info.st_mode & 0o022:
+                raise PreviewError("writable preview file")
             if pathlib.PurePosixPath(relative).suffix.lower() not in ALLOWED_SUFFIXES:
                 raise PreviewError("unsupported preview file type")
             files.append((relative, source, info))
@@ -333,13 +373,252 @@ def _validate_json_artifact(data: bytes, relative: str) -> None:
         raise JsonArtifactError(relative, None, None) from error
 
 
+def _source_directory_fd(path, owner_uid):
+    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    info = os.fstat(fd)
+    if info.st_uid != owner_uid or info.st_mode & 0o022:
+        os.close(fd)
+        raise PreviewError('unsafe source review directory')
+    return fd
+
+
+def _capture_review_source(workspace, relative_directory, owner_uid, output_directory=None):
+    """Bounded UTF-8 source, distinct from runnable output. Never follow links."""
+    _safe_root(workspace, owner_uid)
+    root = _source_directory_fd(workspace, owner_uid)
+    files, identities, omitted = [], [], {'directories': 0, 'files': 0, 'sensitiveFiles': 0}
+    total = 0
+    visited = 0
+    output = output_directory[len(relative_directory)+1:] if output_directory and output_directory.startswith(relative_directory + '/') else None
+    try:
+        for component in _parts(relative_directory):
+            child = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=root)
+            os.close(root)
+            root = child
+            info = os.fstat(root)
+            if info.st_uid != owner_uid or info.st_mode & 0o022:
+                raise PreviewError('unsafe source review directory')
+        def scan(directory, prefix='', capture=True):
+            nonlocal total, visited
+            observed = []
+            with os.scandir(directory) as entries:
+                names = sorted(entry.name for entry in itertools.islice(entries, 1025))
+            if len(names) > 1024:
+                raise PreviewError('source review exceeds limit')
+            for name in names:
+                visited += 1
+                if visited > 4096:
+                    raise PreviewError('source review exceeds limit')
+                if name.startswith('.'):
+                    if capture:
+                        omitted['files'] += 1
+                    continue
+                if ASSET_COMPONENT.fullmatch(name) is None:
+                    raise PreviewError('unsafe source review path')
+                info = os.stat(name, dir_fd=directory, follow_symlinks=False)
+                path = prefix + name
+                if stat.S_ISDIR(info.st_mode) and (path == output or name.lower() in SOURCE_EXCLUDED_DIRECTORIES or SOURCE_SECRET_NAME.search(name)):
+                    if capture:
+                        omitted['directories'] += 1
+                    continue
+                if (info.st_uid != owner_uid or info.st_mode & 0o022 or stat.S_ISLNK(info.st_mode)):
+                    raise PreviewError('unsafe source review path')
+                identity = (path, info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_mode)
+                observed.append(identity)
+                if len(observed) > 1024 or path.count('/') > 12:
+                    raise PreviewError('source review exceeds limit')
+                if stat.S_ISDIR(info.st_mode):
+                    child = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=directory)
+                    try:
+                        current = os.fstat(child)
+                        if (current.st_dev, current.st_ino) != (info.st_dev, info.st_ino):
+                            raise PreviewError('source review changed')
+                        observed.extend(scan(child, path + '/', capture))
+                    finally:
+                        os.close(child)
+                    if len(observed) > 1024:
+                        raise PreviewError('source review exceeds limit')
+                    continue
+                if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                    raise PreviewError('unsafe source review file')
+                if SOURCE_SECRET_NAME.search(name) or pathlib.PurePosixPath(name).suffix.lower() not in SOURCE_SUFFIXES:
+                    if capture:
+                        omitted['files'] += 1
+                    continue
+                if info.st_size > SOURCE_FILE_BYTES:
+                    raise PreviewError('source review exceeds limit')
+                if not capture:
+                    continue
+                descriptor = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+                try:
+                    before = os.fstat(descriptor)
+                    if (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_mode, before.st_nlink) != (
+                            info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_mode, 1):
+                        raise PreviewError('source review changed')
+                    with os.fdopen(os.dup(descriptor), 'rb') as stream:
+                        data = stream.read(SOURCE_FILE_BYTES + 1)
+                    after = os.fstat(descriptor)
+                    if (after.st_size, after.st_mtime_ns, after.st_mode, after.st_nlink) != (
+                            before.st_size, before.st_mtime_ns, before.st_mode, 1) or len(data) != info.st_size:
+                        raise PreviewError('source review changed')
+                finally:
+                    os.close(descriptor)
+                try:
+                    text = data.decode('utf-8')
+                except UnicodeDecodeError:
+                    omitted['files'] += 1
+                    continue
+                if '\x00' in text or SOURCE_SECRET_CONTENT.search(text):
+                    omitted['sensitiveFiles'] += 1
+                    continue
+                total += len(data)
+                if total > SOURCE_TOTAL_BYTES or len(files) >= MAX_FILES:
+                    raise PreviewError('source review exceeds limit')
+                files.append({'path': path, 'bytes': len(data), 'sha256': hashlib.sha256(data).hexdigest(), 'text': text})
+            return observed
+        identities = scan(root)
+        visited = 0
+        if identities != scan(root, capture=False):
+            raise PreviewError('source review changed')
+    finally:
+        os.close(root)
+    if not files:
+        raise PreviewError('source review has no eligible files')
+    return {'relativeDirectory': relative_directory, 'files': files, 'bytes': total, 'omitted': omitted}
+
+
+def _source_review_store(previews, owner_uid):
+    _safe_root(previews, owner_uid)
+    root = previews / '.review-sources'
+    root.mkdir(mode=0o700, exist_ok=True)
+    fd = _source_directory_fd(root, owner_uid)
+    if stat.S_IMODE(os.fstat(fd).st_mode) != 0o700:
+        os.close(fd)
+        raise PreviewError('unsafe source review store')
+    return root, fd
+
+
+SOURCE_STORE_FILES = 128
+SOURCE_STORE_BYTES = 64 * 1024 * 1024
+
+
+def _source_store_usage(directory, owner_uid):
+    count = total = 0
+    with os.scandir(directory) as entries:
+        for entry in entries:
+            if entry.name == ".quota.lock":
+                continue
+            if not re.fullmatch(r"(?:site-[a-f0-9]{24}-source-[a-f0-9]{24}\.json|\.capture-[a-f0-9]{32})", entry.name):
+                raise PreviewError("unsafe source review store")
+            info = entry.stat(follow_symlinks=False)
+            if (not stat.S_ISREG(info.st_mode) or info.st_uid != owner_uid or info.st_nlink != 1
+                    or stat.S_IMODE(info.st_mode) != 0o400):
+                raise PreviewError("unsafe source review store")
+            count += 1
+            total += info.st_size
+            if count > SOURCE_STORE_FILES or total > SOURCE_STORE_BYTES:
+                raise PreviewError("source review store quota exceeded")
+    return count, total
+
+
+def _publish_review_source(previews, site_id, captured, owner_uid, before_commit=None):
+    document = {'schemaVersion': 1, 'scope': 'captured-project-source', 'siteId': site_id, **captured}
+    body = json.dumps(document, ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode('utf-8')
+    if len(body) > MAX_FILE_BYTES:
+        raise PreviewError('source review exceeds limit')
+    digest = hashlib.sha256(body).hexdigest()
+    identity = 'source-' + digest[:24]
+    _root, directory = _source_review_store(previews, owner_uid)
+    temporary = '.capture-' + os.urandom(16).hex()
+    name = site_id + '-' + identity + '.json'
+    lock = None
+    try:
+        lock = os.open('.quota.lock', os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600, dir_fd=directory)
+        lock_info = os.fstat(lock)
+        if (not stat.S_ISREG(lock_info.st_mode) or lock_info.st_uid != owner_uid
+                or lock_info.st_nlink != 1 or stat.S_IMODE(lock_info.st_mode) != 0o600):
+            raise PreviewError('unsafe source review store')
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            existing = os.stat(name, dir_fd=directory, follow_symlinks=False)
+        except FileNotFoundError:
+            existing = None
+        if existing is None:
+            count, size = _source_store_usage(directory, owner_uid)
+            if count >= SOURCE_STORE_FILES or size + len(body) > SOURCE_STORE_BYTES:
+                raise PreviewError('source review store quota exceeded')
+        else:
+            if _review_source_bytes(previews, site_id, identity, owner_uid) != body:
+                raise PreviewError('source review verification failed')
+            if before_commit is not None:
+                before_commit()
+            return {'schemaVersion': 1, 'sourceId': identity, 'sha256': digest,
+                    'relativeDirectory': captured['relativeDirectory'], 'files': len(captured['files']),
+                    'bytes': captured['bytes'], 'omitted': captured['omitted']}
+        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o400, dir_fd=directory)
+        with os.fdopen(descriptor, 'wb') as target:
+            target.write(body)
+            target.flush()
+            os.fsync(target.fileno())
+        # The source quota is reserved under this lock before output mutation.
+        # A failed output publication leaves no new source capture.
+        if before_commit is not None:
+            before_commit()
+        try:
+            os.link(temporary, name, src_dir_fd=directory, dst_dir_fd=directory, follow_symlinks=False)
+        except FileExistsError:
+            pass
+        os.unlink(temporary, dir_fd=directory)
+        os.fsync(directory)
+    finally:
+        try:
+            os.unlink(temporary, dir_fd=directory)
+        except FileNotFoundError:
+            pass
+        if lock is not None:
+            os.close(lock)
+        os.close(directory)
+    if _review_source_bytes(previews, site_id, identity, owner_uid) != body:
+        raise PreviewError('source review verification failed')
+    return {'schemaVersion': 1, 'sourceId': identity, 'sha256': digest,
+            'relativeDirectory': captured['relativeDirectory'], 'files': len(captured['files']),
+            'bytes': captured['bytes'], 'omitted': captured['omitted']}
+
+
+def _review_source_bytes(previews, site_id, source_id, owner_uid):
+    if not SITE_ID.fullmatch(site_id) or not SOURCE_ID.fullmatch(source_id):
+        raise PreviewError('invalid source review identity')
+    root = previews / '.review-sources'
+    directory = _source_directory_fd(root, owner_uid)
+    try:
+        descriptor = os.open(site_id + '-' + source_id + '.json', os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+        with os.fdopen(descriptor, 'rb') as stream:
+            info = os.fstat(stream.fileno())
+            if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid != owner_uid
+                    or stat.S_IMODE(info.st_mode) != 0o400 or info.st_size > MAX_FILE_BYTES):
+                raise PreviewError('unsafe source review snapshot')
+            body = stream.read(MAX_FILE_BYTES + 1)
+        if len(body) != info.st_size or 'source-' + hashlib.sha256(body).hexdigest()[:24] != source_id:
+            raise PreviewError('source review verification failed')
+        document = json.loads(body)
+        if document.get('siteId') != site_id or document.get('scope') != 'captured-project-source':
+            raise PreviewError('source review verification failed')
+        return body
+    finally:
+        os.close(directory)
+
+
 def publish_snapshot(
     workspace: pathlib.Path,
     previews: pathlib.Path,
     relative_directory: str,
     owner_uid: int,
+    source_directory: str | None = None,
 ) -> dict[str, Any]:
     _safe_root(previews, owner_uid)
+    if source_directory is not None and not (relative_directory == source_directory or relative_directory.startswith(source_directory + '/')):
+        raise PreviewError('invalid preview request')
+    captured_source = _capture_review_source(workspace, source_directory, owner_uid, relative_directory) if source_directory is not None else None
     sources = _source_files(workspace, relative_directory, owner_uid)
     captured: list[tuple[str, bytes]] = []
     digest = hashlib.sha256()
@@ -359,6 +638,16 @@ def publish_snapshot(
         captured.append((relative, data))
     full_digest = digest.hexdigest()
     site_id = f"site-{full_digest[:24]}"
+    if captured_source is None:
+        return _publish_captured_snapshot(previews, site_id, captured, full_digest, total, relative_directory, owner_uid)
+    result = {}
+    def publish_output():
+        result.update(_publish_captured_snapshot(previews, site_id, captured, full_digest, total, relative_directory, owner_uid))
+    source_receipt = _publish_review_source(previews, site_id, captured_source, owner_uid, before_commit=publish_output)
+    return {**result, 'source': source_receipt}
+
+
+def _publish_captured_snapshot(previews, site_id, captured, full_digest, total, relative_directory, owner_uid):
     destination = previews / site_id
     overwritten = False
     if not destination.exists():
@@ -458,6 +747,108 @@ def publish_snapshot(
     }
 
 
+def publish_artifact(workspace, previews, relative_path, owner_uid):
+    """Capture exactly one owner file through descriptor-relative no-link opens."""
+    _safe_root(workspace, owner_uid)
+    _safe_root(previews, owner_uid)
+    parts = _parts(relative_path)
+    filename = parts[-1]
+    if pathlib.PurePosixPath(filename).suffix.lower() not in ARTIFACT_SUFFIXES:
+        raise PreviewError('unsupported preview file type')
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    current = os.open(workspace, directory_flags)
+    try:
+        root_info = os.fstat(current)
+        if root_info.st_uid != owner_uid or root_info.st_mode & 0o022:
+            raise PreviewError('unsafe preview directory')
+        for component in parts[:-1]:
+            child = os.open(component, directory_flags, dir_fd=current)
+            os.close(current)
+            current = child
+            info = os.fstat(current)
+            if info.st_uid != owner_uid or info.st_mode & 0o022:
+                raise PreviewError('unsafe preview directory')
+        descriptor = os.open(filename, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK, dir_fd=current)
+        try:
+            before = os.fstat(descriptor)
+            if (not stat.S_ISREG(before.st_mode) or before.st_uid != owner_uid or before.st_nlink != 1
+                    or before.st_mode & 0o022 or not 0 <= before.st_size <= MAX_FILE_BYTES):
+                raise PreviewError('unsafe preview file')
+            chunks = bytearray()
+            while len(chunks) <= MAX_FILE_BYTES:
+                chunk = os.read(descriptor, min(65536, MAX_FILE_BYTES + 1 - len(chunks)))
+                if not chunk:
+                    break
+                chunks.extend(chunk)
+            after = os.fstat(descriptor)
+            def identity(info):
+                return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns, info.st_mode, info.st_uid, info.st_nlink)
+            if len(chunks) != before.st_size or identity(before) != identity(after):
+                raise PreviewError('preview source changed')
+            data = bytes(chunks)
+            # Some filesystems can retain timestamps across rapid same-size writes.
+            # Re-read the held descriptor rather than accepting a torn first read.
+            os.lseek(descriptor, 0, os.SEEK_SET)
+            with os.fdopen(os.dup(descriptor), 'rb') as stream:
+                repeated = stream.read(MAX_FILE_BYTES + 1)
+            if repeated != data or identity(before) != identity(os.fstat(descriptor)):
+                raise PreviewError('preview source changed')
+        finally:
+            os.close(descriptor)
+    finally:
+        os.close(current)
+    digest = hashlib.sha256()
+    encoded_name = filename.encode('utf-8')
+    digest.update(len(encoded_name).to_bytes(4, 'big'))
+    digest.update(encoded_name)
+    digest.update(len(data).to_bytes(8, 'big'))
+    digest.update(data)
+    full_digest = digest.hexdigest()
+    site_id = 'site-' + full_digest[:24]
+    destination = previews / site_id
+    if not destination.exists():
+        temporary = pathlib.Path(tempfile.mkdtemp(prefix='.artifact-', dir=previews))
+        try:
+            os.chmod(temporary, 0o700)
+            fd = os.open(temporary / filename, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o400)
+            try:
+                view = memoryview(data)
+                while view:
+                    written = os.write(fd, view)
+                    if written <= 0:
+                        raise PreviewError('incomplete preview write')
+                    view = view[written:]
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+            os.rename(temporary, destination)
+        except Exception:
+            shutil.rmtree(temporary, ignore_errors=True)
+            raise
+    root = os.open(destination, directory_flags)
+    try:
+        root_info = os.fstat(root)
+        if root_info.st_uid != owner_uid or stat.S_IMODE(root_info.st_mode) != 0o700 or os.listdir(root) != [filename]:
+            raise PreviewError('unsafe preview snapshot')
+        fd = os.open(filename, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK, dir_fd=root)
+        try:
+            info = os.fstat(fd)
+            if (not stat.S_ISREG(info.st_mode) or info.st_uid != owner_uid or info.st_nlink != 1
+                    or stat.S_IMODE(info.st_mode) != 0o400 or info.st_size != len(data)):
+                raise PreviewError('unsafe preview snapshot')
+            with os.fdopen(os.dup(fd), 'rb') as stream:
+                if stream.read(MAX_FILE_BYTES + 1) != data:
+                    raise PreviewError('preview snapshot verification failed')
+        finally:
+            os.close(fd)
+    finally:
+        os.close(root)
+    return {'schemaVersion': 1, 'kind': ARTIFACT_KIND, 'status': 'succeeded', 'relativePath': relative_path,
+            'siteId': site_id, 'sha256': full_digest,
+            'file': {'path': filename, 'bytes': len(data), 'sha256': hashlib.sha256(data).hexdigest()},
+            'executable': False, 'overwritten': False, 'boundary': ARTIFACT_BOUNDARY}
+
+
 def verify_current_snapshot(workspace, previews, request, owner_uid):
     """Read-only point-in-time equality, never a new publication or execution."""
     manifest = json.loads(snapshot_manifest(previews, request["siteId"]))
@@ -520,7 +911,7 @@ def snapshot_manifest(previews: pathlib.Path, site_id: str) -> bytes:
     """Describe only a rehashed published snapshot, never the live workspace.
 
     The reserved HTTP filename cannot be supplied by a generated site (its
-    leading underscore is excluded by PATH_COMPONENT). Old snapshots work
+    reserved __ods_ prefix is excluded by ASSET_COMPONENT). Old snapshots work
     without migration or adding metadata files to their content hash.
     """
     if SITE_ID.fullmatch(site_id) is None:
@@ -658,6 +1049,15 @@ class PreviewHandler(http.server.BaseHTTPRequestHandler):
         except UnicodeDecodeError:
             return None
         parts = decoded.lstrip("/").split("/")
+        # Framework exports request /_next/... and /games/... from the origin
+        # root. Only a dedicated public snapshot host can bind those requests;
+        # the authenticated internal proxy still requires an explicit site ID.
+        if (parts and SITE_ID.fullmatch(parts[0]) is None and not self.server.internal_proxy):
+            host = self.headers.get('Host', '')
+            suffix = f'.localhost:{self.server.preview_port}'
+            host_site = host[:-len(suffix)] if host.endswith(suffix) else ''
+            if SITE_ID.fullmatch(host_site):
+                parts.insert(0, host_site)
         if len(parts) < 1 or SITE_ID.fullmatch(parts[0]) is None:
             return None
         site_id = parts[0]
@@ -678,6 +1078,16 @@ class PreviewHandler(http.server.BaseHTTPRequestHandler):
                 )
             except (PreviewError, OSError, ValueError):
                 return None
+        if len(parts) == 3 and parts[1] == '__ods_source__' and parts[2].endswith('.json'):
+            # Source text never enters the public, executable preview origin.
+            # Only the authenticated Dashboard -> edge -> private Unix relay.
+            if not self.server.internal_proxy or PROFILE_ID is not None:
+                return None
+            try:
+                return pathlib.Path('source.json'), _review_source_bytes(
+                    self.server.preview_root, site_id, parts[2][:-5], os.getuid())
+            except (PreviewError, OSError, ValueError):
+                return None
         if len(parts) == 3 and parts[1] == "__ods_changes__" and parts[2].endswith(".json"):
             baseline = parts[2][:-5]
             if baseline != "initial" and SITE_ID.fullmatch(baseline) is None:
@@ -692,7 +1102,7 @@ class PreviewHandler(http.server.BaseHTTPRequestHandler):
         styled_view = parts[1:] == ["__ods_view__.html"]
         if styled_view:
             parts[-1] = "index.html"
-        if any(PATH_COMPONENT.fullmatch(part) is None for part in parts[1:]):
+        if any(ASSET_COMPONENT.fullmatch(part) is None for part in parts[1:]):
             return None
         target = self.server.preview_root.joinpath(*parts)  # type: ignore[attr-defined]
         try:
@@ -721,9 +1131,14 @@ class PreviewHandler(http.server.BaseHTTPRequestHandler):
             self.send_error(404)
             return
         target, body = result
-        content_type = _preview_content_type(target, body)
+        download_only = target.suffix.lower() in (DOWNLOAD_ONLY_SUFFIXES | {".docx", ".xlsx", ".pptx"})
+        content_type = "application/octet-stream" if download_only else _preview_content_type(target, body)
         self.send_response(200)
         self.send_header("Content-Type", content_type)
+        if download_only:
+            # Validated snapshot filenames cannot inject header bytes.
+            # Documents/archives are opaque downloads, never rendered or unpacked.
+            self.send_header("Content-Disposition", f'attachment; filename="{target.name}"')
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Security-Policy", CSP)
@@ -777,12 +1192,12 @@ class PreviewUnixHTTPServer(socketserver.ThreadingUnixStreamServer):
         super().__init__(address, PreviewHandler)
 
 
-def _verify_http(port: int, site_id: str, entry_sha256: str) -> None:
+def _verify_http(port: int, site_id: str, entry_sha256: str, filename: str = "") -> None:
     connection = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
     try:
         connection.request(
             "GET",
-            f"/{site_id}/",
+            f"/{site_id}/{filename}",
             headers={"Host": f"{site_id}.localhost:{port}"},
         )
         response = connection.getresponse()
@@ -847,7 +1262,11 @@ def _serve_connection(
             }
         else:
             request = parse_request(raw)
-            if request["action"] == "verify-current":
+            if request['action'] == 'publish-artifact':
+                response = publish_artifact(workspace, previews, request['relativePath'], owner_uid)
+                _verify_http(port, response['siteId'], response['file']['sha256'], response['file']['path'])
+                response.update({'httpStatus': 200, 'readbackVerified': True})
+            elif request["action"] == "verify-current":
                 response = verify_current_snapshot(workspace, previews, request, owner_uid)
             else:
                 response = publish_snapshot(
@@ -855,6 +1274,7 @@ def _serve_connection(
                     previews,
                     request["relativeDirectory"],
                     owner_uid,
+                    source_directory=request.get('sourceDirectory'),
                 )
                 _verify_http(port, response["siteId"], response["entrySha256"])
                 response.update(

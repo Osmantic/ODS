@@ -8,6 +8,7 @@ COPY extensions/services/remote-provider-egress/requirements.lock ./
 RUN pip install --no-cache-dir --require-hashes -r requirements.lock
 COPY extensions/services/remote-provider-egress/app ./app
 COPY bin/remote_provider ./remote_provider
+RUN chmod -R a+rX /srv/remote-provider-egress
 
 USER odsremote
 EXPOSE 8091
