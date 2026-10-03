@@ -2012,6 +2012,8 @@ def _managed_wsl_lemonade(env: dict) -> dict:
     if (str(plan_path) != registration['planPath']
             or not any(item['id'] == registration['modelStoreId'] and item['path'] == store for item in stores)):
         raise RuntimeError('Windows runtime model-store ownership changed; re-run the installer')
+    value = dict(value)
+    value['modelStoreId'] = registration['modelStoreId']
     return value
 
 
@@ -2048,6 +2050,8 @@ def _model_management_snapshot() -> tuple[int, dict]:
             running = managed and value.get('running') is True
             result = (200, {'managed': managed, 'canActivate': running,
                             'canUnload': managed, 'running': running})
+            if managed and isinstance(value.get('modelStoreId'), str):
+                result[1]['modelStoreId'] = value['modelStoreId']
         except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as exc:
             logger.warning('Windows runtime management verification failed: %s', exc)
             result = unavailable
@@ -13321,23 +13325,10 @@ class AgentHandler(BaseHTTPRequestHandler):
             context_length = requested_context_length
         llama_server_image = model.get("llama_server_image")
 
-        # Verify GGUF exists on disk (with path traversal protection)
-        target = _installed_model_file(gguf_file)
-        if target is None:
-            json_response(self, 400, {"error": "Model file not downloaded or empty, ambiguous, or outside registered model stores"})
-            return
-        if wsl_managed.get('managed') is True:
-            try:
-                windows_store = _wsl_lemonade.model_store(INSTALL_DIR, persisted_env, wsl_managed)
-                if target.parent != windows_store:
-                    raise ValueError('Download this model into the registered Windows runtime store before activating it')
-            except (OSError, ValueError):
-                json_response(self, 409, {'error': 'The model is outside the managed Windows runtime store'})
-                return
-        models_dir = target.parent
-        if not _model_file_ready(target):
-            json_response(self, 400, {"error": f"Model file not downloaded or empty: {gguf_file}"})
-            return
+        # The proved runtime store resolves copies without weakening generic ambiguity.
+        target = None
+
+        activation_manifest = None
         if model_from_catalog:
             activation_manifest = _model_download_manifest(model)
             if activation_manifest is None:
@@ -13347,6 +13338,55 @@ class AgentHandler(BaseHTTPRequestHandler):
                     {"error": f"Model catalog integrity manifest is invalid: {model_id}"},
                 )
                 return
+        if wsl_managed.get('managed') is True:
+            try:
+                windows_store = _wsl_lemonade.model_store(INSTALL_DIR, persisted_env, wsl_managed)
+            except (OSError, ValueError):
+                json_response(self, 409, {'error': 'The model is outside the managed Windows runtime store'})
+                return
+            target = _model_stores.safe_artifact(windows_store, gguf_file)
+            missing_catalog_artifacts = model_from_catalog and any(
+                _model_stores.safe_artifact(windows_store, artifact["file"]) is None
+                for artifact in activation_manifest["artifacts"]
+            )
+            if missing_catalog_artifacts:
+                # A prior interrupted copy may have published the main GGUF
+                # already. Resolve one source outside the owned destination
+                # so a retry can complete missing companion artifacts too.
+                sources = {
+                    source
+                    for store in _model_stores.registered_stores(INSTALL_DIR / "data")
+                    if store["path"] != windows_store
+                    if (source := _model_stores.safe_artifact(store["path"], gguf_file)) is not None
+                }
+                if len(sources) != 1:
+                    json_response(self, 400, {"error": "Model artifacts are incomplete and the source is missing or ambiguous"})
+                    return
+                source = next(iter(sources))
+                try:
+                    _wsl_lemonade.stage_catalog_model(
+                        INSTALL_DIR, persisted_env, wsl_managed, source.parent, activation_manifest,
+                    )
+                except _wsl_lemonade.StageError as exc:
+                    json_response(self, 409, {'error': str(exc), 'code': exc.code})
+                    return
+                except (OSError, ValueError) as exc:
+                    json_response(self, 409, {'error': f'Could not stage model into the managed Windows runtime store: {exc}'})
+                    return
+                target = _model_stores.safe_artifact(windows_store, gguf_file)
+            if target is None and not model_from_catalog:
+                json_response(self, 409, {'error': 'The model is outside the managed Windows runtime store'})
+                return
+        else:
+            target = _installed_model_file(gguf_file)
+        if target is None:
+            json_response(self, 400, {"error": "Model file not downloaded or empty, ambiguous, or outside registered model stores"})
+            return
+        models_dir = target.parent
+        if not _model_file_ready(target):
+            json_response(self, 400, {"error": f"Model file not downloaded or empty: {gguf_file}"})
+            return
+        if model_from_catalog:
             manifest_valid, integrity_error = _verify_model_manifest(
                 models_dir,
                 activation_manifest,
@@ -13363,9 +13403,23 @@ class AgentHandler(BaseHTTPRequestHandler):
                 )
                 return
 
-        selected_store = _model_stores.store_for_model(INSTALL_DIR / "data", gguf_file, container=bool(os.environ.get("ODS_HOST_INSTALL_DIR")))
+        container_store = bool(os.environ.get("ODS_HOST_INSTALL_DIR"))
+        if wsl_managed.get('managed') is True:
+            selected_store = next((
+                store for store in _model_stores.registered_stores(INSTALL_DIR / "data", container=container_store)
+                if store["path"] == target.parent and store["id"] == wsl_managed["modelStoreId"]
+            ), None)
+            if selected_store is None:
+                json_response(self, 409, {"error": "The managed Windows model store registration changed; retry activation"})
+                return
+        else:
+            selected_store = _model_stores.store_for_model(INSTALL_DIR / "data", gguf_file, container=container_store)
         try:
-            local_runtime_profile = _model_stores.lemonade_profile(INSTALL_DIR / "data", gguf_file, container=bool(os.environ.get("ODS_HOST_INSTALL_DIR")))
+            local_runtime_profile = (
+                _model_stores.native_profile(selected_store, gguf_file)
+                if wsl_managed.get('managed') is True
+                else _model_stores.lemonade_profile(INSTALL_DIR / "data", gguf_file, container=container_store)
+            )
             if model_from_catalog and not local_runtime_profile:
                 runtime_block = _default_runtime_incompatibility(model, persisted_env)
                 if runtime_block:
