@@ -675,6 +675,15 @@ def main(argv=None):
         except RuntimeError as exc:
             return fail(str(exc))
         if stale:
+            labels = (container.get("Config") or {}).get("Labels") or {}
+            if labels.get("com.docker.compose.project.working_dir") != str(install_dir):
+                return fail("stale recovery container does not belong to the installed root")
+            if state in ("exited", "created", "dead"):
+                # A stopped container has no readable phantom view to back up.
+                # Apply the stopped-repair custody rules in both check and
+                # repair modes, including the ordinary post-Compose retry.
+                if any(not read_only for _src, _dst, read_only in binds):
+                    return fail("stopped recovery cannot preserve an unobserved writable bind view")
             log(f"service {svc} ({name}) stale: {reason}")
             stale_services.append((svc, name, binds, state))
         else:
