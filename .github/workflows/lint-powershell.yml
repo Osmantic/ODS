@@ -100,6 +100,20 @@ jobs:
         shell: powershell
         run: ./tests/contracts/test-windows-portal-amd.ps1
 
+      - name: Windows Managed Lemonade Archive and Upgrade Contracts (PowerShell 7)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          ./tests/contracts/test-windows-managed-lemonade.ps1
+          ./tests/contracts/test-windows-portal-lemonade-upgrade.ps1
+
+      - name: Windows Managed Lemonade Archive and Upgrade Contracts (Windows PowerShell)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          ./tests/contracts/test-windows-managed-lemonade.ps1
+          ./tests/contracts/test-windows-portal-lemonade-upgrade.ps1
+
       - name: WSL Portal Completion Gate
         if: runner.os == 'Linux'
         shell: bash

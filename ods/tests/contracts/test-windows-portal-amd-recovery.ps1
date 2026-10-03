@@ -8,11 +8,11 @@ function Assert-Recovery([bool]$Condition, [string]$Message) {
     Microsoft.PowerShell.Utility\Write-Host "PASS $Message"
 }
 
-foreach ($version in @('10.0.0', '10.6.4', '10.7.0', '10.12.1')) {
+foreach ($version in @('10.0.0', '10.6.4', '10.7.0', '10.12.1', '2026.40.0.0')) {
     Assert-ODSPortalLemonadeVersion ([version]$version)
     Assert-Recovery $true "supported Lemonade $version retains its versioned launch contract"
 }
-foreach ($version in @('9.9.9', '11.0.0')) {
+foreach ($version in @('9.9.9', '11.0.0', '2026.41.0')) {
     $message = ''
     try { Assert-ODSPortalLemonadeVersion ([version]$version) } catch { $message = $_.Exception.Message }
     Assert-Recovery ($message -match 'outside the supported Portal runtime contract') "unsupported Lemonade $version is refused before mutation"

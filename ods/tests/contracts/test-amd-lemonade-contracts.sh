@@ -265,9 +265,15 @@ else
 fi
 if [[ "$(json_get config/backends/amd.json runtime.lemonade.windows_version)" == "10.0.0" ]] \
     && [[ "$(json_get config/backends/amd.json runtime.lemonade.windows_msi_file)" == "lemonade-server-minimal.msi" ]]; then
-    pass "amd.json: Windows Lemonade MSI contract present"
+    pass "amd.json: legacy native Windows Lemonade contract remains separate"
 else
-    fail "amd.json: Windows Lemonade MSI contract missing"
+    fail "amd.json: legacy native Windows Lemonade contract changed"
+fi
+if [[ "$(json_get config/backends/amd.json runtime.lemonade.windows_managed.windows_version)" == "2026.40.0" ]] \
+    && [[ "$(json_get config/backends/amd.json runtime.lemonade.windows_managed.windows_archive_sha256)" == "30acbcc8beea565f0ea69ea92b229c45c7e7c756a6b35573c45840765c599e8f" ]]; then
+    pass "amd.json: WSL Portal managed Windows release is pinned independently"
+else
+    fail "amd.json: WSL Portal managed Windows release pin missing"
 fi
 
 echo "[contract] Windows Lemonade follows the normal per-user install contract"

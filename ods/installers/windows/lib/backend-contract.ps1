@@ -314,9 +314,24 @@ function Get-ODSLemonadeLaunchContract {
         throw "Lemonade 10.7+ requires an admin API key before binding to '$effectiveBind'."
     }
 
+    $managedEmbeddable = [IO.Path]::GetFileName($ExecutablePath) -ieq 'lemond.exe'
+    if ($managedEmbeddable -and $version.ToString(3) -cne '2026.40.0') {
+        throw "Lemonade $version is not the pinned managed Windows release."
+    }
     if ($modern) {
         $argumentList = @("--port", [string]$Port, "--host", $effectiveBind)
         $argumentString = $argumentList -join " "
+        if ($managedEmbeddable) {
+            $local = $env:LOCALAPPDATA
+            if ([string]::IsNullOrWhiteSpace($local)) {
+                $local = [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)
+            }
+            if ([string]::IsNullOrWhiteSpace($local)) { throw 'LOCALAPPDATA is required for managed Lemonade.' }
+            $managedDataDir = Join-Path $local 'ODS\lemonade\managed-data'
+            if ($managedDataDir -match '[\x00\r\n"]') { throw 'Invalid managed Lemonade data directory.' }
+            $argumentList = @($managedDataDir) + $argumentList
+            $argumentString = '"' + $managedDataDir + '" --port ' + $Port + ' --host ' + $effectiveBind
+        }
     } else {
         $escapedModelsDir = ([string]$ModelsDir).Replace('"', '\"')
         $argumentList = @(
@@ -344,6 +359,7 @@ function Get-ODSLemonadeLaunchContract {
         ArgumentList = $argumentList
         ArgumentString = $argumentString
         RequiresRuntimeConfiguration = $modern
+        ManagedEmbeddable = $managedEmbeddable
     }
 }
 
