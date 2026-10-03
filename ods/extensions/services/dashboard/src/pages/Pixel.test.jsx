@@ -142,6 +142,39 @@ describe('Pixel', () => {
     expect(screen.getByRole('button',{name:'Chat only'})).toHaveAttribute('aria-pressed','true')
   })
 
+  it('opens working local chat when Portal was never enabled', async () => {
+    globalThis.fetch.mockResolvedValue(response({available:false, detail:'Portal is not enabled'}))
+    render(<Pixel systemStatus={{services:[
+      {id:'open-webui-preview', name:'Open WebUI Preview', status:'healthy', public_url:'https://preview.example.test'},
+      {id:'open-webui', name:'Open WebUI (Chat)', status:'healthy', port:8080, external_port:3000},
+    ]}} />)
+    const chat = await screen.findByRole('link', {name:'Open local chat'})
+    expect(chat).toHaveAttribute('href', 'http://localhost:3000')
+    expect(screen.getByText(/Portal's owner agent is not enabled/)).toBeVisible()
+    expect(screen.queryByText('Your local ODS owner agent')).toBeNull()
+    expect(screen.queryByRole('textbox', {name:'Portal is unavailable'})).toBeNull()
+  })
+
+  it('does not offer a dead chat link while native Core chat is unhealthy', async () => {
+    globalThis.fetch.mockResolvedValue(response({available:false, detail:'Portal is not enabled'}))
+    render(<Pixel systemStatus={{services:[{
+      id:'open-webui', status:'unhealthy', port:8080, external_port:3000,
+    }]}} />)
+    expect(await screen.findByText(/Local chat is not ready yet/)).toBeVisible()
+    expect(screen.queryByRole('link', {name:'Open local chat'})).toBeNull()
+    expect(screen.getByRole('link', {name:'View Dashboard'})).toBeVisible()
+  })
+
+  it('does not treat a temporary Portal outage as an uninstalled agent', async () => {
+    globalThis.fetch.mockResolvedValue(response({available:false, detail:'Portal service is unavailable'}))
+    render(<Pixel systemStatus={{services:[{
+      id:'open-webui', status:'healthy', port:8080, external_port:3000,
+    }]}} />)
+    await waitFor(() => expect(screen.getByText('Degraded')).toBeInTheDocument())
+    expect(screen.queryByRole('link', {name:'Open local chat'})).toBeNull()
+    expect(screen.getByText('Your local ODS owner agent')).toBeVisible()
+  })
+
   it('keeps prompts clean without copy/reuse controls or inline tool-call summaries',async()=>{
     localStorage.setItem('ods.pixel.chat.v1',JSON.stringify({schema:1,chatId:'clean-chat',messages:[
       {role:'user',content:'A clean prompt'},
