@@ -67,43 +67,80 @@ fn detect_windows() -> GpuInfo {
 // macOS: system_profiler
 // ---------------------------------------------------------------------------
 
+#[cfg(any(target_os = "macos", test))]
+fn parse_macos_gpu(profiler_json: &str, unified_memory_mb: Option<u64>) -> Option<GpuInfo> {
+    let value = serde_json::from_str::<serde_json::Value>(profiler_json).ok()?;
+    let displays = value["SPDisplaysDataType"].as_array()?;
+    let display = displays
+        .iter()
+        .find(|entry| {
+            entry["sppci_model"]
+                .as_str()
+                .map(classify_vendor)
+                .is_some_and(|vendor| vendor == GpuVendor::Apple)
+        })
+        .or_else(|| displays.first())?;
+
+    let name = display["sppci_model"]
+        .as_str()
+        .unwrap_or("Apple GPU")
+        .to_string();
+    let vendor = classify_vendor(&name);
+    let reported_vram = display["spdisplays_vram"]
+        .as_str()
+        .map(parse_vram_string)
+        .unwrap_or(0);
+    let vram_mb = if reported_vram == 0 && vendor == GpuVendor::Apple {
+        unified_memory_mb.map(|memory| memory * 3 / 4).unwrap_or(0)
+    } else {
+        reported_vram
+    };
+
+    Some(GpuInfo {
+        vendor,
+        name,
+        vram_mb,
+        driver_version: None,
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn apple_unified_memory_mb() -> Option<u64> {
+    let output = Command::new("sysctl")
+        .args(["-n", "hw.memsize"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+
+    let bytes = String::from_utf8_lossy(&output.stdout)
+        .trim()
+        .parse::<u64>()
+        .ok()?;
+    Some(bytes / (1024 * 1024))
+}
+
 #[cfg(target_os = "macos")]
 fn detect_macos() -> GpuInfo {
+    let unified_memory_mb = apple_unified_memory_mb();
     let output = Command::new("system_profiler")
         .args(["SPDisplaysDataType", "-json"])
         .output();
 
     if let Ok(out) = output {
         let text = String::from_utf8_lossy(&out.stdout);
-        if let Ok(val) = serde_json::from_str::<serde_json::Value>(&text) {
-            if let Some(displays) = val["SPDisplaysDataType"].as_array() {
-                if let Some(gpu) = displays.first() {
-                    let name = gpu["sppci_model"].as_str().unwrap_or("Apple GPU").to_string();
-                    // Apple Silicon reports unified memory; estimate GPU-available portion
-                    let vram_str = gpu["spdisplays_vram"].as_str().unwrap_or("0");
-                    let vram = parse_vram_string(vram_str);
-                    return GpuInfo {
-                        vendor: GpuVendor::Apple,
-                        name,
-                        vram_mb: vram,
-                        driver_version: None,
-                    };
-                }
-            }
+        if let Some(gpu) = parse_macos_gpu(&text, unified_memory_mb) {
+            return gpu;
         }
     }
 
-    // Fallback: assume Apple Silicon with unified memory via sysctl
-    let mem_output = Command::new("sysctl").args(["-n", "hw.memsize"]).output();
-    if let Ok(out) = mem_output {
-        let text = String::from_utf8_lossy(&out.stdout).trim().to_string();
-        if let Ok(bytes) = text.parse::<u64>() {
-            // Apple Silicon shares ~75% of unified memory with GPU
-            let gpu_share_mb = (bytes / (1024 * 1024)) * 3 / 4;
+    if cfg!(target_arch = "aarch64") {
+        if let Some(memory_mb) = unified_memory_mb {
             return GpuInfo {
                 vendor: GpuVendor::Apple,
                 name: "Apple Silicon".into(),
-                vram_mb: gpu_share_mb,
+                vram_mb: memory_mb * 3 / 4,
                 driver_version: None,
             };
         }
@@ -238,7 +275,7 @@ fn classify_vendor(name: &str) -> GpuVendor {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", test))]
 fn parse_vram_string(s: &str) -> u64 {
     // Apple reports like "16 GB" or "8192 MB"
     let parts: Vec<&str> = s.split_whitespace().collect();
@@ -251,5 +288,58 @@ fn parse_vram_string(s: &str) -> u64 {
         }
     } else {
         0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn apple_silicon_without_dedicated_vram_uses_unified_memory() {
+        let profiler = r#"{
+            "SPDisplaysDataType": [{
+                "sppci_model": "Apple M3 Pro",
+                "spdisplays_vendor": "Apple (0x106b)"
+            }]
+        }"#;
+
+        let gpu = parse_macos_gpu(profiler, Some(16 * 1024)).unwrap();
+
+        assert_eq!(gpu.vendor, GpuVendor::Apple);
+        assert_eq!(gpu.name, "Apple M3 Pro");
+        assert_eq!(gpu.vram_mb, 12 * 1024);
+        assert_eq!(recommend_tier(&gpu), 2);
+    }
+
+    #[test]
+    fn explicit_vram_wins_over_unified_memory_estimate() {
+        let profiler = r#"{
+            "SPDisplaysDataType": [{
+                "sppci_model": "Apple M2 Ultra",
+                "spdisplays_vram": "24 GB"
+            }]
+        }"#;
+
+        let gpu = parse_macos_gpu(profiler, Some(96 * 1024)).unwrap();
+
+        assert_eq!(gpu.vram_mb, 24 * 1024);
+        assert_eq!(recommend_tier(&gpu), 3);
+    }
+
+    #[test]
+    fn apple_gpu_is_preferred_when_profiler_lists_multiple_adapters() {
+        let profiler = r#"{
+            "SPDisplaysDataType": [
+                {"sppci_model": "External Display Adapter", "spdisplays_vram": "1 GB"},
+                {"sppci_model": "Apple M4 Max"}
+            ]
+        }"#;
+
+        let gpu = parse_macos_gpu(profiler, Some(64 * 1024)).unwrap();
+
+        assert_eq!(gpu.name, "Apple M4 Max");
+        assert_eq!(gpu.vram_mb, 48 * 1024);
+        assert_eq!(recommend_tier(&gpu), 4);
     }
 }
