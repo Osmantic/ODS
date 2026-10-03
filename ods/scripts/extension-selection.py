@@ -840,8 +840,10 @@ def _image_providers(path: Path) -> set[str]:
             if isinstance(definition, dict) and ("image" in definition or "build" in definition)}
 
 
-def _base_compose_services(install_dir: Path, compose_flags: str) -> tuple[set[str], set[str]]:
-    """Reserve services in the selected non-extension Compose overlays only."""
+def _base_compose_services(
+    install_dir: Path, compose_flags: str,
+) -> tuple[set[str], set[str], dict[str, set[str]], dict[str, set[str]]]:
+    """Reserve base services and attribute selected extension overlays."""
     try:
         flags = shlex.split(compose_flags)
     except ValueError as exc:
@@ -865,6 +867,8 @@ def _base_compose_services(install_dir: Path, compose_flags: str) -> tuple[set[s
         raise SelectionError("Invalid current Compose flags")
     services: set[str] = set()
     providers: set[str] = set()
+    extension_overlays: dict[str, set[str]] = {}
+    extension_providers: dict[str, set[str]] = {}
     selected_base = False
     for name in flags[1::2]:
         path = Path(name)
@@ -877,6 +881,13 @@ def _base_compose_services(install_dir: Path, compose_flags: str) -> tuple[set[s
             raise SelectionError(f"Selected Compose file is outside the install: {path}")
         parts = path.relative_to(root).parts
         if parts[:2] == ("extensions", "services") or parts[:2] == ("data", "user-extensions"):
+            # A service such as ComfyUI has an empty compose.yaml marker and
+            # declares its container only in a selected GPU overlay. Attribute
+            # that service to its extension for disable/stop accounting.
+            if len(parts) == 4 and path.name != "compose.yaml" and SERVICE_ID.fullmatch(parts[2]):
+                names, _ = _compose_details(path)
+                extension_overlays.setdefault(parts[2], set()).update(names)
+                extension_providers.setdefault(parts[2], set()).update(_image_providers(path))
             continue
         selected_base = True
         fragment_services, _ = _compose_details(path)
@@ -884,7 +895,7 @@ def _base_compose_services(install_dir: Path, compose_flags: str) -> tuple[set[s
         providers.update(_image_providers(path))
     if not selected_base:
         raise SelectionError("Current Compose flags contain no base overlay")
-    return services, services - providers
+    return services, services - providers, extension_overlays, extension_providers
 
 
 def restore_preset(
@@ -964,7 +975,8 @@ def restore_preset(
         # extension is removed would interrupt Core.
         if compose_flags is None:
             raise SelectionError("Preset restore requires current Compose flags")
-        base_services, base_needs_provider = _base_compose_services(install_dir, compose_flags)
+        (base_services, base_needs_provider, extension_overlays,
+         extension_providers) = _base_compose_services(install_dir, compose_flags)
         selected_fragments = {
             service_id: _compose_details(directories[service_id] / "compose.yaml")[0]
             for service_id in current_graph
@@ -973,6 +985,9 @@ def restore_preset(
             service_id: _image_providers(directories[service_id] / "compose.yaml")
             for service_id in current_graph
         }
+        for service_id in current_graph:
+            selected_fragments[service_id].update(extension_overlays.get(service_id, set()))
+            selected_providers[service_id].update(extension_providers.get(service_id, set()))
         disable_order = [service_id for service_id in reversed(_dependency_order(current_graph))
                          if current[service_id] and not desired[service_id]]
         enable_order = [service_id for service_id in _dependency_order(desired_graph)

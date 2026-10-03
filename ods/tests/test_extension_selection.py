@@ -795,6 +795,55 @@ def test_preset_does_not_stop_shared_core_service(tmp_path, monkeypatch):
                       "--service", "langfuse"]]
 
 
+def test_preset_stops_comfyui_declared_only_in_selected_gpu_overlay(tmp_path, monkeypatch):
+    (tmp_path / "data" / "user-extensions").mkdir(parents=True)
+    (tmp_path / "docker-compose.base.yml").write_text("services: {}\n", encoding="utf-8")
+    target = extension(tmp_path, "comfyui")
+    (target / "compose.yaml").write_text("services: {}\n", encoding="utf-8")
+    (target / "compose.nvidia.yaml").write_text(
+        "services:\n  comfyui:\n    build: .\n", encoding="utf-8",
+    )
+    helper = tmp_path / "scripts" / "stop-owned-containers.py"
+    helper.parent.mkdir()
+    helper.write_text("", encoding="utf-8")
+    preset = tmp_path / "extensions.list"
+    preset.write_text("disabled:comfyui\n", encoding="utf-8")
+    calls = []
+
+    def record(command, **kwargs):
+        calls.append(command)
+        assert (target / "compose.yaml").is_file()
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(selection.subprocess, "run", record)
+    flags = "-f docker-compose.base.yml -f extensions/services/comfyui/compose.nvidia.yaml"
+    assert restore(tmp_path, preset, compose_flags=flags) == (0, 1, [])
+    assert calls == [[sys.executable, str(helper), "--install-dir", str(tmp_path),
+                      "--preserve-restart-policy", "--service", "comfyui"]]
+    assert (target / "compose.yaml.disabled").is_file()
+
+
+def test_preset_keeps_base_owned_service_when_extension_overlay_is_removed(tmp_path, monkeypatch):
+    (tmp_path / "data" / "user-extensions").mkdir(parents=True)
+    (tmp_path / "docker-compose.base.yml").write_text(
+        "services:\n  comfyui:\n    image: example:latest\n", encoding="utf-8",
+    )
+    target = extension(tmp_path, "comfyui")
+    (target / "compose.yaml").write_text("services: {}\n", encoding="utf-8")
+    (target / "compose.nvidia.yaml").write_text(
+        "services:\n  comfyui: {}\n", encoding="utf-8",
+    )
+    preset = tmp_path / "extensions.list"
+    preset.write_text("disabled:comfyui\n", encoding="utf-8")
+    monkeypatch.setattr(selection.subprocess, "run", lambda *_args, **_kwargs: pytest.fail(
+        "a base-owned ComfyUI service must not be stopped",
+    ))
+
+    flags = "-f docker-compose.base.yml -f extensions/services/comfyui/compose.nvidia.yaml"
+    assert restore(tmp_path, preset, compose_flags=flags) == (0, 1, [])
+    assert (target / "compose.yaml.disabled").is_file()
+
+
 def test_preset_stops_local_litellm_despite_inactive_external_overlay(tmp_path, monkeypatch):
     (tmp_path / "data" / "user-extensions").mkdir(parents=True)
     (tmp_path / "docker-compose.base.yml").write_text(
