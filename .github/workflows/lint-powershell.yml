@@ -77,6 +77,10 @@ jobs:
         shell: powershell
         run: ./tests/contracts/test-windows-comfyui-standalone.ps1
 
+      - name: Desktop Portal completion receipts
+        shell: pwsh
+        run: python tests/test-desktop-portal-receipt.py -v
+
       - name: Windows Portal Setup Contracts (Windows PowerShell)
         if: runner.os == 'Windows'
         shell: powershell

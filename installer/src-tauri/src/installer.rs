@@ -1,4 +1,4 @@
-use crate::state::{InstallPhase, InstallState};
+use crate::state::{valid_portal_url, InstallPhase, InstallState};
 use serde::Serialize;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
@@ -37,6 +37,12 @@ pub fn run_install(
     tier: u8,
     features: Vec<String>,
 ) -> Result<(), String> {
+    // A receipt from a previous attempt must never survive a new installation.
+    {
+        let mut state = state.lock().unwrap();
+        state.portal_url = None;
+        state.save()?;
+    }
     // Phase 1: Clone the repo
     update_progress(&state, "Downloading ODS", 5);
 
@@ -130,11 +136,17 @@ pub fn run_install(
         })
     });
 
+    let mut portal_url = None;
     // Parse stdout for progress updates
     if let Some(stdout) = child.stdout.take() {
         let reader = BufReader::new(stdout);
         for line in reader.lines() {
             if let Ok(line) = line {
+                if let Some(url) = line.strip_prefix("ODS_PORTAL_URL=") {
+                    if valid_portal_url(url) {
+                        portal_url = Some(url.to_string());
+                    }
+                }
                 if let Some(progress) = parse_progress_line(&line) {
                     update_progress(&state, &progress.message, progress.percent);
                 }
@@ -153,7 +165,8 @@ pub fn run_install(
         update_progress(&state, "Installation complete!", 100);
         let mut s = state.lock().unwrap();
         s.phase = InstallPhase::Complete;
-        let _ = s.save();
+        s.portal_url = portal_url;
+        s.save()?;
         Ok(())
     } else {
         let detail = stderr_lines
@@ -369,6 +382,105 @@ pub fn default_install_dir() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn successful_installer_receipt_persists_configured_portal() {
+        let root = std::env::temp_dir().join(format!("ods-portal-test-{}", std::process::id()));
+        let profile = root.join("profile");
+        let checkout = root.join("checkout");
+        std::fs::create_dir_all(checkout.join("ods")).unwrap();
+        let keys = ["LOCALAPPDATA", "HOME", "XDG_DATA_HOME"];
+        let previous = keys.map(|key| (key, std::env::var_os(key)));
+        struct Cleanup {
+            root: PathBuf,
+            previous: [(&'static str, Option<std::ffi::OsString>); 3],
+        }
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                for (key, value) in &self.previous {
+                    match value {
+                        Some(v) => std::env::set_var(key, v),
+                        None => std::env::remove_var(key),
+                    }
+                }
+                let _ = std::fs::remove_dir_all(&self.root);
+            }
+        }
+        let _cleanup = Cleanup {
+            root: root.clone(),
+            previous,
+        };
+        for key in keys {
+            std::env::set_var(key, &profile);
+        }
+        assert!(Command::new("git")
+            .arg("init")
+            .arg(&checkout)
+            .output()
+            .unwrap()
+            .status
+            .success());
+        assert!(Command::new("git")
+            .arg("-C")
+            .arg(&checkout)
+            .args(["remote", "add", "origin", DEFAULT_REPO_URL])
+            .output()
+            .unwrap()
+            .status
+            .success());
+        let state = Arc::new(Mutex::new(InstallState::default()));
+        let write_fixture = |receipt: &str, code: i32| {
+            #[cfg(target_os = "windows")]
+            std::fs::write(
+                checkout.join("install.ps1"),
+                format!(
+                    "param([switch]$NonInteractive,[string]$Tier)\nWrite-Output '{receipt}'\nexit {code}\n"
+                ),
+            )
+            .unwrap();
+            #[cfg(not(target_os = "windows"))]
+            std::fs::write(
+                checkout.join("ods/install.sh"),
+                format!("#!/bin/sh\nprintf '%s\\n' '{receipt}'\nexit {code}\n"),
+            )
+            .unwrap();
+        };
+        write_fixture("ODS_PORTAL_URL=http://localhost:4321/pixel", 0);
+        run_install(state.clone(), checkout.clone(), 1, vec![]).unwrap();
+        assert_eq!(
+            serde_json::to_value(InstallState::load().unwrap()).unwrap()["portal_url"],
+            "http://localhost:4321/pixel"
+        );
+        write_fixture("ODS_PORTAL_URL=http://localhost:5555/pixel", 7);
+        assert!(run_install(state.clone(), checkout.clone(), 1, vec![]).is_err());
+        assert!(serde_json::to_value(InstallState::load().unwrap()).unwrap()["portal_url"].is_null());
+        write_fixture("ODS_PORTAL_URL=http://example.com:4321/pixel", 0);
+        run_install(state.clone(), checkout.clone(), 1, vec![]).unwrap();
+        assert!(serde_json::to_value(InstallState::load().unwrap()).unwrap()["portal_url"].is_null());
+        write_fixture("No endpoint receipt (legacy installer)", 0);
+        run_install(state.clone(), checkout.clone(), 1, vec![]).unwrap();
+        assert!(serde_json::to_value(InstallState::load().unwrap()).unwrap()["portal_url"].is_null());
+        #[cfg(target_os = "macos")]
+        let state_directory = profile.join("Library/Application Support/ods");
+        #[cfg(not(target_os = "macos"))]
+        let state_directory = profile.join("ods");
+        // Refuse to start work if the old receipt cannot be invalidated durably.
+        std::fs::create_dir(state_directory.join("installer-state.json.tmp")).unwrap();
+        #[cfg(target_os = "windows")]
+        std::fs::write(
+            checkout.join("install.ps1"),
+            "param([switch]$NonInteractive,[string]$Tier)\nSet-Content -LiteralPath (Join-Path $PSScriptRoot 'started') -Value yes\n",
+        )
+        .unwrap();
+        #[cfg(not(target_os = "windows"))]
+        std::fs::write(
+            checkout.join("ods/install.sh"),
+            "#!/bin/sh\ntouch ../started\n",
+        )
+        .unwrap();
+        assert!(run_install(state, checkout.clone(), 1, vec![]).is_err());
+        assert!(!checkout.join("started").exists());
+    }
 
     fn fnv1a64(bytes: &[u8]) -> u64 {
         bytes.iter().fold(0xcbf29ce484222325, |hash, byte| {

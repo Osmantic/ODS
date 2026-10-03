@@ -268,29 +268,44 @@ pub fn get_install_state() -> InstallState {
     InstallState::default()
 }
 
+// The displayed and opened endpoint share the same persisted completion receipt.
+#[tauri::command]
+pub fn get_portal_url() -> Option<String> {
+    if INSTALL_IN_PROGRESS.load(Ordering::Acquire) {
+        return None;
+    }
+    let state = get_install_state();
+    if state.phase != InstallPhase::Complete {
+        return None;
+    }
+    state
+        .portal_url
+        .filter(|url| crate::state::valid_portal_url(url))
+}
+
 // ---- Open ODS ----
 
 #[tauri::command]
 pub fn open_ods() -> Result<(), String> {
-    let url = "http://localhost:3000";
+    let url = get_portal_url().ok_or_else(|| "Portal address is unavailable. Check the installer output for the installed Portal URL.".to_string())?;
     #[cfg(target_os = "windows")]
     {
         std::process::Command::new("cmd")
-            .args(["/C", "start", url])
+            .args(["/C", "start", &url])
             .spawn()
             .map_err(|e| format!("Failed to open browser: {}", e))?;
     }
     #[cfg(target_os = "macos")]
     {
         std::process::Command::new("open")
-            .arg(url)
+            .arg(&url)
             .spawn()
             .map_err(|e| format!("Failed to open browser: {}", e))?;
     }
     #[cfg(target_os = "linux")]
     {
         std::process::Command::new("xdg-open")
-            .arg(url)
+            .arg(&url)
             .spawn()
             .map_err(|e| format!("Failed to open browser: {}", e))?;
     }

@@ -256,8 +256,14 @@ if ($installerExitCode -eq 0 -and $lifetimeRequired -and '--pixel' -cin $Passthr
             Write-Warning 'Use the Windows Portal setup entry point to enable verified sign-in recovery.'
         }
     }
+    if ($installerExitCode -eq 0) {
+        $portalUrl = @($verifyOutput | ForEach-Object {
+            if ($_ -match '^ODS_PORTAL_URL=(http://localhost:([0-9]{1,5})/pixel)$' -and
+                [int]$Matches[2] -ge 1 -and [int]$Matches[2] -le 65535) { $Matches[1] }
+        } | Select-Object -Last 1)
+        if ($portalUrl.Count -eq 1) { Write-Output "ODS_PORTAL_URL=$($portalUrl[0])" }
+    }
     if ($installerExitCode -eq 0 -and $OpenPortal) {
-        $portalUrl = @($verifyOutput | ForEach-Object { if ($_ -match '^ODS_PORTAL_URL=(http://localhost:[0-9]{1,5}/pixel)$') { $Matches[1] } } | Select-Object -Last 1)
         if ($portalUrl.Count -eq 1) {
             $desktopFolder = [Environment]::GetFolderPath('Desktop')
             if ($desktopFolder) {

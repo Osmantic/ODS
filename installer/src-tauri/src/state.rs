@@ -14,6 +14,8 @@ pub struct InstallState {
     pub progress_pct: u8,
     pub progress_message: String,
     pub reboot_pending: bool,
+    #[serde(default)]
+    pub portal_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -59,6 +61,7 @@ impl Default for InstallState {
             progress_pct: 0,
             progress_message: String::new(),
             reboot_pending: false,
+            portal_url: None,
         }
     }
 }
@@ -118,5 +121,54 @@ fn dirs_next() -> PathBuf {
                 let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
                 PathBuf::from(home).join(".local/share")
             })
+    }
+}
+
+/// Accept only the local Portal endpoint emitted by the installer completion gate.
+pub fn valid_portal_url(url: &str) -> bool {
+    let Some(port) = url
+        .strip_prefix("http://localhost:")
+        .and_then(|rest| rest.strip_suffix("/pixel"))
+    else {
+        return false;
+    };
+    !port.is_empty()
+        && port.len() <= 5
+        && port.bytes().all(|b| b.is_ascii_digit())
+        && port.parse::<u16>().map(|p| p != 0).unwrap_or(false)
+}
+
+#[cfg(test)]
+mod portal_tests {
+    use super::*;
+    #[test]
+    fn legacy_state_without_endpoint_remains_readable() {
+        let mut value = serde_json::to_value(InstallState::default()).unwrap();
+        value.as_object_mut().unwrap().remove("portal_url");
+        let loaded: InstallState = serde_json::from_value(value).unwrap();
+        assert!(loaded.portal_url.is_none());
+    }
+    #[test]
+    fn portal_endpoint_accepts_local_ports_and_rejects_other_destinations() {
+        for url in [
+            "http://localhost:1/pixel",
+            "http://localhost:3001/pixel",
+            "http://localhost:65535/pixel",
+        ] {
+            assert!(valid_portal_url(url));
+        }
+        for url in [
+            "http://localhost:0/pixel",
+            "http://localhost:65536/pixel",
+            "http://localhost:-1/pixel",
+            "http://localhost:3001/",
+            "https://localhost:3001/pixel",
+            "http://example.com:3001/pixel",
+            "http://localhost:3001/pixel?x=1",
+            "http://localhost:3001/pixel\n",
+            "http://localhost:3001/pixel&calc",
+        ] {
+            assert!(!valid_portal_url(url), "{url}");
+        }
     }
 }

@@ -586,3 +586,6 @@ except BaseException:
 print(f"[INFO] Wrote installer summary JSON: {out_file}")
 PY
 fi
+
+# Windows emits its own receipt after its additional WSL readiness gate.
+ods_portal_receipt "${ENABLE_PIXEL_RUNTIME:-false}" "${SERVICE_PORTS[dashboard]:-3001}" "$DRY_RUN"
