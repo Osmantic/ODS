@@ -424,6 +424,16 @@ if command -v docker &>/dev/null; then
         exit 1
     fi
     rm -f -- "$compose_error_log"
+    # Compose can return success while a stopped container from an older
+    # selected stack survives. Check all project containers against the same
+    # exact installation-path proof used before cleanup, including bind-only
+    # containers that the volume postflight cannot see. Keep the installation
+    # tree for recovery if any remain, even with --keep-data.
+    if ! python3 "$SCRIPT_DIR/scripts/uninstall-compose-volumes.py" postflight-containers \
+        "$INSTALL_DIR" "$volume_snapshot" "$SCRIPT_DIR"; then
+        log_error "Docker container cleanup is incomplete after Pixel or host-service retirement; installation files and data retained for recovery."
+        exit 1
+    fi
     if [[ "$KEEP_DATA" != "true" ]] &&
         ! python3 "$SCRIPT_DIR/scripts/uninstall-compose-volumes.py" complete \
             "$INSTALL_DIR" "$volume_snapshot" "$SCRIPT_DIR"; then
