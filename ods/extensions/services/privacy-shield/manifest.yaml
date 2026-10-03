@@ -19,7 +19,9 @@ service:
   gpu_backends: [all]
   compose_file: compose.yaml
   category: optional
-  depends_on: [llama-server]
+  # Managed local inference adds llama-server in compose.local.yaml. External
+  # model routes must not start a dormant local model when Shield is added.
+  depends_on: []
   llm:
     consumes: true
     route: direct

@@ -103,6 +103,37 @@ def test_perplexica_external_plan_omits_managed_llama_dependency():
     }
 
 
+def test_privacy_shield_addback_keeps_external_route_without_managed_llama():
+    ods_root = Path(__file__).resolve().parents[4]
+    service_dir = ods_root / 'extensions' / 'services' / 'privacy-shield'
+    manifest = yaml.safe_load((service_dir / 'manifest.yaml').read_text(encoding='utf-8'))
+    catalog = json.loads((ods_root / 'config' / 'extensions-catalog.json').read_text(encoding='utf-8'))
+    catalog_entry = next(entry for entry in catalog['extensions'] if entry['id'] == 'privacy-shield')
+    assert manifest['service']['depends_on'] == catalog_entry['depends_on'] == []
+    assert catalog_entry['catalog_source'] == 'builtin'
+
+    graph = {
+        'privacy-shield': manifest['service'],
+        'llama-server': service('llama-server'),
+    }
+    entries = [
+        {'id': 'privacy-shield', 'status': 'disabled', 'installable': True},
+        {'id': 'llama-server', 'status': 'not_installed', 'installable': False},
+    ]
+    result = build_install_plan(
+        'privacy-shield', entries, graph.__getitem__, lambda key: False, {'llama-server'},
+    )
+    assert result['blocked'] is False
+    assert [(step['extensionId'], step['action']) for step in result['steps']] == [
+        ('privacy-shield', 'enable'),
+    ]
+
+    local_overlay = yaml.safe_load((service_dir / 'compose.local.yaml').read_text(encoding='utf-8'))
+    assert local_overlay['services']['privacy-shield']['depends_on']['llama-server'] == {
+        'condition': 'service_healthy',
+    }
+
+
 def test_plan_endpoint_uses_installed_manifest_and_only_configuration_presence(tmp_path, monkeypatch):
     roots = [tmp_path / name for name in ['user', 'builtin', 'library']]
     for key, root in zip(['USER_EXTENSIONS_DIR', 'EXTENSIONS_DIR', 'EXTENSIONS_LIBRARY_DIR'], roots):
