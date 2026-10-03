@@ -865,17 +865,14 @@ shutil.copyfile(path, dest_path)
                             proc.kill()
                         except (OSError, AttributeError):
                             pass
-                    try:
-                        current = part_tmp.stat().st_size if part_tmp.exists() else 0
-                    except OSError:
-                        current = 0
                     _write_model_status(
                         status_path,
                         "downloading",
                         label,
-                        current,
-                        part_total,
+                        0,
+                        0,
                         status_message,
+                        progress_kind="indeterminate",
                     )
                     stop_status.wait(heartbeat_seconds)
 
@@ -12567,6 +12564,8 @@ class AgentHandler(BaseHTTPRequestHandler):
                         # Progress polling: update status by checking .part file size.
                         # Also kills the active curl process when cancel is requested.
                         _stop_progress = threading.Event()
+                        _fallback_active = threading.Event()
+                        _progress_mode_lock = threading.Lock()
 
                         def _poll_progress():
                             while not _stop_progress.is_set():
@@ -12577,12 +12576,14 @@ class AgentHandler(BaseHTTPRequestHandler):
                                             proc_ref.kill()
                                         except (OSError, AttributeError):
                                             pass
-                                try:
-                                    if part_tmp.exists():
-                                        current = part_tmp.stat().st_size
-                                        _write_model_status(status_path, "downloading", part_label, current, part_total)
-                                except OSError:
-                                    pass
+                                with _progress_mode_lock:
+                                    if not _fallback_active.is_set():
+                                        try:
+                                            if part_tmp.exists():
+                                                current = part_tmp.stat().st_size
+                                                _write_model_status(status_path, "downloading", part_label, current, part_total)
+                                        except OSError:
+                                            pass
                                 _stop_progress.wait(2)  # Poll every 2 seconds
 
                         progress_thread = threading.Thread(target=_poll_progress, daemon=True)
@@ -12602,6 +12603,8 @@ class AgentHandler(BaseHTTPRequestHandler):
                                     _model_download_cancel.wait(5)
                                     if _model_download_cancel.is_set():
                                         break
+                                with _progress_mode_lock:
+                                    _fallback_active.clear()
                                 proc = subprocess.Popen(
                                     ["curl", "-fSL", "-sS", "-C", "-", "--connect-timeout", "30",
                                      "-o", str(part_tmp), part_url],
@@ -12629,14 +12632,17 @@ class AgentHandler(BaseHTTPRequestHandler):
                                 if not downloaded:
                                     curl_error = _format_curl_download_error(proc.returncode, stderr_text)
                                     if _parse_huggingface_resolve_url(part_url) is not None:
-                                        _write_model_status(
-                                            status_path,
-                                            "downloading",
-                                            part_label,
-                                            0,
-                                            part_total,
-                                            f"Retry {attempt}/3: {curl_error}; trying Hugging Face Hub fallback",
-                                        )
+                                        with _progress_mode_lock:
+                                            _fallback_active.set()
+                                            _write_model_status(
+                                                status_path,
+                                                "downloading",
+                                                part_label,
+                                                0,
+                                                0,
+                                                f"Retry {attempt}/3: {curl_error}; trying Hugging Face Hub fallback",
+                                                progress_kind="indeterminate",
+                                            )
                                         hub_ok, hub_error = _download_huggingface_artifact(
                                             part_url,
                                             part_tmp,
@@ -20700,7 +20706,7 @@ def _recreate_llama_server(env: dict, override_image: str = ""):
     logger.info("llama-server container created successfully")
 
 
-def _write_model_status(path: Path, status: str, model: str, downloaded: int, total: int, error: str = ""):
+def _write_model_status(path: Path, status: str, model: str, downloaded: int, total: int, error: str = "", *, progress_kind: str = ""):
     """Write model download status JSON atomically."""
     data = {
         "status": status,
@@ -20711,6 +20717,8 @@ def _write_model_status(path: Path, status: str, model: str, downloaded: int, to
     }
     if error:
         data["error"] = error
+    if progress_kind:
+        data["progressKind"] = progress_kind
     tmp = path.with_name(f"{path.name}.{threading.get_ident()}.tmp")
     try:
         with _model_status_lock:

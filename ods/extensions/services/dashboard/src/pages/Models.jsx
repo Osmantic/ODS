@@ -1437,16 +1437,24 @@ function DownloadProgressBar({ progress, helpers, onRetry }) {
               {progress.status === 'verifying' ? 'Verifying' : 'Downloading'} {progress.model}
             </p>
             <p className="text-sm text-theme-text-muted">
-              {formatBytes(progress.bytesDownloaded)} / {formatBytes(progress.bytesTotal)}
-              {progress.speedMbps > 0 && ` - ${progress.speedMbps.toFixed(1)} MB/s`}
-              {progress.eta && ` - ETA: ${formatEta(progress.eta)}`}
+              {progress.indeterminate ? 'Download active; progress is unavailable' : (
+                <>
+                  {formatBytes(progress.bytesDownloaded)} / {formatBytes(progress.bytesTotal)}
+                  {progress.speedMbps > 0 && ` - ${progress.speedMbps.toFixed(1)} MB/s`}
+                  {progress.eta && ` - ETA: ${formatEta(progress.eta)}`}
+                </>
+              )}
             </p>
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-3">
-          <span className="text-lg font-bold text-theme-accent">
-            {progress.percent?.toFixed(0) || 0}%
-          </span>
+          {progress.indeterminate ? (
+            <Loader2 aria-label="Transfer active" size={20} className="animate-spin text-theme-accent" />
+          ) : (
+            <span className="text-lg font-bold text-theme-accent">
+              {progress.percent?.toFixed(0) || 0}%
+            </span>
+          )}
           <button
             type="button"
             onClick={cancelDownload}
@@ -1473,8 +1481,8 @@ function DownloadProgressBar({ progress, helpers, onRetry }) {
 
       <div className="h-2.5 overflow-hidden rounded-full bg-theme-border">
         <div
-          className="h-full rounded-full bg-theme-accent transition-all duration-300"
-          style={{ width: `${progress.percent || 0}%` }}
+          className={`h-full rounded-full bg-theme-accent ${progress.indeterminate ? 'w-1/3 animate-pulse' : 'transition-all duration-300'}`}
+          style={progress.indeterminate ? undefined : { width: `${progress.percent || 0}%` }}
         />
       </div>
     </div>
