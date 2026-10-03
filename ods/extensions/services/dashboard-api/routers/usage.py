@@ -455,7 +455,9 @@ def _extract_llama_cpp_prometheus_counters(metrics_text: str, url: str) -> dict[
     request_count_note = None
     if not request_metric_available:
         observed = _observe_runtime_request_delta(
-            key=f"llama.cpp:{service}:{_runtime_model_name()}",
+            # Multiple runtimes can share a hostname (different ports or paths).
+            # Keep observation baselines scoped to the configured endpoint.
+            key=f"llama.cpp:{url}:{_runtime_model_name()}",
             input_tokens=input_tokens,
             output_tokens=output_tokens,
         )
