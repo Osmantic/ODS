@@ -101,6 +101,11 @@ def test_compose_uses_ods_entrypoint() -> None:
     assert "LEMONADE_MODEL=${LEMONADE_MODEL:-}" in compose
     assert "sync-model-config.js:/app/ods-sync-model-config.js:ro" in compose
     assert "sync-search-config.js:/app/ods-sync-search-config.js:ro" in compose
+    assert "patch-client-citations.js:/app/ods-patch-client-citations.js:ro" in compose
+    assert "citation-renderer.js:/app/citation-renderer.js:ro" in compose
+    windows_copy = (ROOT / "installers" / "windows" / "phases" / "06-directories.ps1").read_text(encoding="utf-8")
+    assert r"extensions\services\perplexica\patch-client-citations.js" in windows_copy
+    assert r"extensions\services\perplexica\citation-renderer.js" in windows_copy
     assert "SEARXNG_API_URL=http://searxng:8080" in compose
     assert "PERPLEXICA_SEARXNG_API_URL=${PERPLEXICA_SEARXNG_API_URL:-}" in compose
 
@@ -174,6 +179,12 @@ def test_entrypoint_patches_scrape_url_result_content() -> None:
     # Vane 1.12.2 moved the app root from /home/perplexica to /home/vane.
     assert 'for app_root in "$PWD" /home/vane /home/perplexica; do' in script
     assert 'search_root="/home/perplexica/.next/server"' not in script
+
+
+def test_client_citation_patch_runs_before_vane_server() -> None:
+    script = ENTRYPOINT.read_text(encoding="utf-8")
+    assert script.count("node /app/ods-patch-client-citations.js") == 1
+    assert script.index("node /app/ods-patch-client-citations.js") < script.index('exec docker-entrypoint.sh "$@"')
 
 
 # The scrape_url action objects from the minified .next/server/chunks/641.js of
@@ -963,6 +974,7 @@ if __name__ == "__main__":
     test_search_adapter_config_and_secret_contracts()
     test_bind_mounted_entrypoints_do_not_require_executable_bit()
     test_entrypoint_patches_scrape_url_result_content()
+    test_client_citation_patch_runs_before_vane_server()
     test_scrape_patch_disables_and_caps_legacy_and_vane_bundles_idempotently()
     test_patched_scrape_url_is_never_offered_and_opens_no_url()
     test_scrape_patch_fails_closed_on_unknown_shapes()

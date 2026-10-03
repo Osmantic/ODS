@@ -23,6 +23,7 @@ import tempfile
 
 MANIFEST = 'bundle.json'
 RELEASE_SELECTION = 'ods-release-selection.json'
+LINK_MODE_POLICY = 'ods-symlink-mode-policy.json'
 MAX_SELECTION = 2 * 1024 * 1024
 SELECTION_KIND = 'ods-pixel-expected-release-selection'
 SELECTION_SCOPE = 'expected-artifacts-not-running'
@@ -65,6 +66,7 @@ SHARED_REPAIRS = (
     ('openclaw-tool-result-projection.json', 'tool-result-truncation-CbxVHy2D.js'),
     ('openclaw-diagnostic-stream-writes.json', 'attempt.model-diagnostic-events-DqqiPQPY.js'),
     ('openclaw-hook-provenance.json', 'hook-agent-context-ugCMMoT5.js'),
+    ('openclaw-announcement-admission.json', 'subagent-announce-origin-XoBlouka.js'),
     ('openclaw-run-id-redaction.json', 'redact-cvFSPoXf.js'),
     ('openclaw-context-usage.json', 'attempt-execution-DnVHak5f.js'),
     ('openclaw-yield-usage.json', 'embedded-agent-CJx-nG3W.js'),
@@ -89,6 +91,11 @@ def _relative(value):
 
 def _encode(value):
     return (json.dumps(value, sort_keys=True, separators=(',', ':'), ensure_ascii=True) + '\n').encode()
+
+
+# This content-addressed marker gives readable-link bundles a new identity.
+# Older published bundles have no marker and remain available for rollback.
+LINK_MODE_POLICY_BODY = _encode({'schemaVersion': 1, 'macosSymlinkMode': '0755'})
 
 
 def _git(root, *args, limit=MAX_SELECTION):
@@ -470,7 +477,8 @@ def _file(root, relative, output=None):
                 before.st_size, checksum.hexdigest()]
 
 
-def inventory(root, *, exclude_manifest=False, normalize_modes=True):
+def inventory(root, *, exclude_manifest=False, normalize_modes=True,
+              allow_legacy_private_links=False):
     root = Path(root)
     if not stat.S_ISDIR(root.lstat().st_mode):
         raise BundleError('bundle-directory-required')
@@ -485,6 +493,11 @@ def inventory(root, *, exclude_manifest=False, normalize_modes=True):
                 continue
             info = path.lstat()
             if stat.S_ISLNK(info.st_mode):
+                if (not normalize_modes and sys.platform == 'darwin'
+                        and stat.S_IMODE(info.st_mode) & 0o005 != 0o005
+                        and not (allow_legacy_private_links
+                            and os.geteuid() == 0 and stat.S_IMODE(info.st_mode) == 0o700)):
+                    raise BundleError('bundle-link-unreadable')
                 target = os.readlink(path)
                 try:
                     resolved = path.resolve(strict=True)
@@ -519,6 +532,12 @@ def _copy_tree(source, target, entries):
             if os.readlink(source / relative) != record[1]:
                 raise BundleError('bundle-source-changed')
             path.symlink_to(record[1])
+            # Darwin applies a private publisher umask to symlink modes. A
+            # root-owned 0700 link cannot be read by the owner-side verifier.
+            if sys.platform == 'darwin':
+                os.lchmod(path, 0o755)
+                if stat.S_IMODE(path.lstat().st_mode) != 0o755:
+                    raise BundleError('bundle-link-mode-unavailable')
         else:
             with path.open('xb') as output:
                 actual = _file(source, relative, output)
@@ -531,8 +550,11 @@ def _copy_tree(source, target, entries):
         raise BundleError('bundle-copy-mismatch')
 
 
-def verify(root, *, expected_digest=None):
+def verify(root, *, expected_digest=None, allow_legacy_private_links=False):
     root = Path(root).resolve(strict=True)
+    if allow_legacy_private_links and (sys.platform != 'darwin' or os.geteuid() != 0
+            or root.parent != INSTALL_ROOT or root.name != expected_digest):
+        raise BundleError('legacy-bundle-root-verifier-required')
     path = root / MANIFEST
     if (not stat.S_ISREG(path.lstat().st_mode) or path.stat().st_size > MAX_MANIFEST):
         raise BundleError('invalid-bundle-manifest')
@@ -550,8 +572,20 @@ def verify(root, *, expected_digest=None):
     checksum = hashlib.sha256(body).hexdigest()
     if expected_digest is not None and checksum != expected_digest:
         raise BundleError('bundle-manifest-changed')
-    if inventory(root, exclude_manifest=True, normalize_modes=False) != value['entries']:
+    if allow_legacy_private_links and LINK_MODE_POLICY in value['entries']:
+        raise BundleError('legacy-bundle-required')
+    if inventory(root, exclude_manifest=True, normalize_modes=False,
+            allow_legacy_private_links=allow_legacy_private_links) != value['entries']:
         raise BundleError('bundle-content-changed')
+    if LINK_MODE_POLICY in value['entries']:
+        expected = ['file', 0o644, len(LINK_MODE_POLICY_BODY),
+                    hashlib.sha256(LINK_MODE_POLICY_BODY).hexdigest()]
+        if value['entries'][LINK_MODE_POLICY] != expected:
+            raise BundleError('invalid-bundle-link-policy')
+        if sys.platform == 'darwin':
+            for relative, record in value['entries'].items():
+                if record[0] == 'link' and stat.S_IMODE((root / relative).lstat().st_mode) != 0o755:
+                    raise BundleError('bundle-link-mode-changed')
     if (value['entries'].get('node', [None])[0] != 'file'
             or value['entries']['node'][1] != 0o755
             or value['entries'].get('runtime/openclaw.mjs', [None])[0] != 'file'
@@ -775,6 +809,9 @@ def build(*, node, runtime, destination, plugins=(), expected_version='2026.6.33
         (staged / 'plugins').chmod(0o755)
         for index, (source, entries) in enumerate(zip(plugins, snapshots[1:])):
             _copy_tree(source, staged / 'plugins' / str(index), entries)
+        policy = staged / LINK_MODE_POLICY
+        policy.write_bytes(LINK_MODE_POLICY_BODY)
+        policy.chmod(0o644)
         if services_digest is not None:
             binding = staged / 'ods-service-binding.json'
             binding.write_bytes(_encode({'schemaVersion': 1, 'serviceBundleDigest': services_digest}))
@@ -860,6 +897,81 @@ def publish(source, *, expected_digest, install_root=INSTALL_ROOT):
             return destination
         finally:
             shutil.rmtree(temporary)
+
+
+def repair_legacy_link_modes(expected_digest):
+    """Resume a narrow, journaled mode repair of a verified active legacy bundle.
+
+    This never changes the manifest, link targets, bundle digest or active
+    selection. The caller must separately prove that this digest is selected.
+    """
+    if sys.platform != 'darwin' or os.geteuid() != 0:
+        raise BundleError('root-macos-link-repair-required')
+    if (type(expected_digest) is not str
+            or not re.fullmatch('[a-f0-9]{64}', expected_digest)):
+        raise BundleError('approved-bundle-digest-required')
+    sys.path.insert(0, str(Path(__file__).resolve().parents[3] / 'bin'))
+    from pixel_macos_custody import protected_bytes, protected_directory, protected_tree_metadata
+    destination = INSTALL_ROOT / expected_digest
+    journal_name = '.link-mode-repair-' + expected_digest + '.json'
+    journal_path = INSTALL_ROOT / journal_name
+    with protected_directory(INSTALL_ROOT) as parent:
+        fcntl.flock(parent, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        protected_tree_metadata(destination)
+        manifest, _ = verify(destination, expected_digest=expected_digest,
+                             allow_legacy_private_links=True)
+        if os.path.lexists(journal_path):
+            journal = json.loads(protected_bytes(journal_path, limit=MAX_SELECTION))
+            if (type(journal) is not dict or set(journal) != {'schemaVersion', 'digest', 'links'}
+                    or journal['schemaVersion'] != 1 or journal['digest'] != expected_digest
+                    or type(journal['links']) is not list):
+                raise BundleError('invalid-link-repair-journal')
+            links = journal['links']
+        else:
+            links = [[relative, 0o700] for relative, record in manifest['entries'].items()
+                     if record[0] == 'link'
+                     and stat.S_IMODE((destination / relative).lstat().st_mode) == 0o700]
+            if not links:
+                verify(destination, expected_digest=expected_digest)
+                return {'digest': expected_digest, 'linksRepaired': 0}
+            body = _encode({'schemaVersion': 1, 'digest': expected_digest, 'links': links})
+            if len(body) > MAX_SELECTION:
+                raise BundleError('link-repair-journal-too-large')
+            fd = os.open(journal_name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                         0o600, dir_fd=parent)
+            try:
+                with os.fdopen(fd, 'wb') as output:
+                    output.write(body)
+                    output.flush()
+                    os.fsync(output.fileno())
+            except BaseException:
+                os.unlink(journal_name, dir_fd=parent)
+                raise
+            os.fsync(parent)
+        if (len(links) > MAX_ENTRIES or len({item[0] for item in links if type(item) is list
+                and len(item) == 2}) != len(links)):
+            raise BundleError('invalid-link-repair-journal')
+        for item in links:
+            if (type(item) is not list or len(item) != 2 or type(item[0]) is not str
+                    or item[0] not in manifest['entries']
+                    or manifest['entries'][item[0]][0] != 'link'
+                    or type(item[1]) is not int or item[1] != 0o700):
+                raise BundleError('invalid-link-repair-journal')
+            path = destination / item[0]
+            mode = stat.S_IMODE(path.lstat().st_mode)
+            if mode not in (0o700, 0o755):
+                raise BundleError('link-repair-mode-changed')
+        for relative, _ in links:
+            path = destination / relative
+            if stat.S_IMODE(path.lstat().st_mode) == 0o700:
+                os.lchmod(path, 0o755)
+            if stat.S_IMODE(path.lstat().st_mode) != 0o755:
+                raise BundleError('bundle-link-mode-unavailable')
+        protected_tree_metadata(destination)
+        verify(destination, expected_digest=expected_digest)
+        os.unlink(journal_name, dir_fd=parent)
+        os.fsync(parent)
+        return {'digest': expected_digest, 'linksRepaired': len(links)}
 
 
 def main():

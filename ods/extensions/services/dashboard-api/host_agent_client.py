@@ -241,9 +241,10 @@ async def _async_request(
     payload: Any = None,
     params: dict[str, Any] | None = None,
     timeout: float,
+    retry: bool = True,
 ) -> httpx.Response:
     method = method.upper()
-    stale_connection_retries = 1 if method == "GET" else 0
+    stale_connection_retries = 1 if method == "GET" and retry else 0
     connect_retry_index = 0
     while True:
         try:
@@ -259,7 +260,7 @@ async def _async_request(
             raise AgentTimeout(f"Host agent {method} {path} timed out") from exc
         except httpx.ConnectError as exc:
             if (
-                _is_transient_route_connect_error(exc)
+                retry and _is_transient_route_connect_error(exc)
                 and connect_retry_index < len(_CONNECT_RETRY_DELAYS_SECONDS)
             ):
                 await asyncio.sleep(_CONNECT_RETRY_DELAYS_SECONDS[connect_retry_index])
@@ -308,9 +309,10 @@ async def async_request_json(
     payload: Any = None,
     params: dict[str, Any] | None = None,
     timeout: float = 5.0,
+    retry: bool = True,
 ) -> dict[str, Any]:
     response = await _async_request(
-        method, path, payload=payload, params=params, timeout=timeout
+        method, path, payload=payload, params=params, timeout=timeout, retry=retry
     )
     _raise_for_status(response)
     return _decode_json(response)

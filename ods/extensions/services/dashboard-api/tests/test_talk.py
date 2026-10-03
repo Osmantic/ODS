@@ -184,6 +184,43 @@ def test_talk_status_requires_session(talk_client, monkeypatch):
     assert data["capabilities"]["live_mic_requires_secure_context"] is True
 
 
+@pytest.mark.parametrize(
+    ("states", "expected_audio", "expected_tts"),
+    [
+        ({"hermes": "healthy", "whisper": "healthy", "tts": "down"}, True, False),
+        ({"hermes": "down", "whisper": "healthy", "tts": "healthy"}, False, True),
+        ({"hermes": "healthy", "whisper": "down", "tts": "healthy"}, False, True),
+    ],
+)
+def test_talk_audio_capability_matches_hermes_and_whisper(
+    talk_client, monkeypatch, states, expected_audio, expected_tts,
+):
+    async def service_state(service_id):
+        return {"configured": True, "status": states[service_id], "id": service_id}
+
+    monkeypatch.setattr("routers.talk._service_state", service_state)
+    capabilities = talk_client.get("/api/talk/status").json()["capabilities"]
+
+    assert capabilities["audio_message"] is expected_audio
+    assert capabilities["tts"] is expected_tts
+
+
+def test_talk_audio_capability_requires_compatible_model(talk_client, monkeypatch):
+    async def service_state(service_id):
+        return {"configured": True, "status": "healthy", "id": service_id}
+
+    async def incompatible_model():
+        return {"hermesTalk": {"status": "unsupported_until_revalidated"}}
+
+    monkeypatch.setattr("routers.talk._service_state", service_state)
+    monkeypatch.setattr("routers.talk._active_model_app_compatibility", incompatible_model)
+    capabilities = talk_client.get("/api/talk/status").json()["capabilities"]
+
+    assert capabilities["text_chat"] is False
+    assert capabilities["audio_message"] is False
+    assert capabilities["tts"] is True
+
+
 def test_talk_status_disables_text_chat_for_incompatible_active_model(talk_client, monkeypatch):
     async def fake_state(service_id):
         return {"configured": True, "status": "healthy", "id": service_id}

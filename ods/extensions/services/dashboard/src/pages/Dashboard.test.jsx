@@ -553,6 +553,14 @@ describe('Dashboard system overview', () => {
         requirements: { servicesAll: ['hermes', 'hermes-proxy', 'dashboard-api'], servicesMissing: [] },
       },
       {
+        id: 'voice',
+        name: 'ODS Talk',
+        description: 'Speak with your local agent',
+        icon: 'Mic',
+        status: 'enabled',
+        requirements: { servicesAll: ['hermes', 'whisper', 'tts'], servicesMissing: [] },
+      },
+      {
         id: 'remote-access',
         name: 'Remote Access',
         description: 'Tailscale remote access status',
@@ -577,6 +585,7 @@ describe('Dashboard system overview', () => {
     expect(await screen.findByRole('link', { name: /AI Chat/ })).toHaveAttribute('href', 'https://chat.example.test')
     expect(screen.getByRole('link', { name: /Hermes Agent/ })).toHaveAttribute('href', 'https://hermes.example.test')
     expect(screen.getByRole('link', { name: /Hermes Single Sign-On/ })).toHaveAttribute('href', '/invites')
+    expect(screen.getByRole('link', { name: /ODS Talk/ })).toHaveAttribute('href', '/talk')
     expect(screen.queryByRole('link', { name: /Remote Access/ })).not.toBeInTheDocument()
     expect(screen.getByText('Remote Access')).toBeInTheDocument()
   })

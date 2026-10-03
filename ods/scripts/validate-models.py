@@ -235,7 +235,12 @@ def main() -> int:
     else:
         results.append(("Primary LLM", None, f"Skipped: {reason}"))
 
-    voice_enabled = service_enabled(root, WHISPER_COMPOSE, ("ENABLE_VOICE",))
+    whisper_keys = (
+        ("ENABLE_WHISPER",)
+        if env_value(root, "ENABLE_WHISPER")
+        else ("ENABLE_VOICE",)
+    )
+    voice_enabled = service_enabled(root, WHISPER_COMPOSE, whisper_keys)
     if voice_enabled:
         ok, detail = check_hf_model(
             root, "data/whisper", "AUDIO_STT_MODEL", DEFAULT_STT_MODEL
@@ -244,7 +249,10 @@ def main() -> int:
     else:
         results.append(("Whisper STT model", None, "Skipped: service is not active"))
 
-    if service_enabled(root, TTS_COMPOSE, ("ENABLE_VOICE",)):
+    tts_keys = (
+        ("ENABLE_TTS",) if env_value(root, "ENABLE_TTS") else ("ENABLE_VOICE",)
+    )
+    if service_enabled(root, TTS_COMPOSE, tts_keys):
         results.append(
             ("Kokoro TTS voice", None, "Bundled with the pinned TTS image")
         )

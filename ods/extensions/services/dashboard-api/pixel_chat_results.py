@@ -74,6 +74,12 @@ class ChatResultStore:
                 PRIMARY KEY(owner, chat, attempt, sequence),
                 FOREIGN KEY(owner, chat, attempt) REFERENCES attempts(owner, chat, attempt) ON DELETE CASCADE);
         """)
+        # Older receipts predate the explicit text-chat route. Their attempts
+        # used Pixel Edge, so the migration must retain agent cancellation.
+        columns = {row[1] for row in self.db.execute("PRAGMA table_info(attempts)")}
+        if "mode" not in columns:
+            self.db.execute("ALTER TABLE attempts ADD COLUMN mode TEXT NOT NULL DEFAULT 'agent'")
+            self.db.commit()
 
     def close(self):
         self.db.close()
@@ -87,14 +93,16 @@ class ChatResultStore:
             result["state"] = "unresolved"
         return result
 
-    def reserve(self, key, fingerprint):
+    def reserve(self, key, fingerprint, *, mode="agent"):
         """Commit identity before upstream submission; duplicate POSTs never run twice."""
+        if mode not in {"agent", "chat"}:
+            raise ValueError("Invalid chat route")
         with self.db:
             self.db.execute("BEGIN IMMEDIATE")
             self.db.execute("DELETE FROM attempts WHERE state NOT IN ('active','unresolved') AND created < ?", (time.time() - RETENTION_SECONDS,))
             previous = self.get(key)
             if previous is not None:
-                if previous["fingerprint"] != fingerprint:
+                if previous["fingerprint"] != fingerprint or previous["mode"] != mode:
                     raise ResultConflict("Attempt identity was already used for different input")
                 return False
             if self.has_pending(key[:2]):
@@ -106,8 +114,8 @@ class ChatResultStore:
             ).fetchone()
             if count >= MAX_RECORDS or active >= MAX_ACTIVE or allocation + MAX_RESULT_BYTES > MAX_STORE_BYTES:
                 raise ResultCapacity("Chat result storage is full; existing results were preserved")
-            self.db.execute("INSERT INTO attempts(owner,chat,attempt,fingerprint,instance,state,created) VALUES(?,?,?,?,?,'active',?)",
-                            (*key, fingerprint, self.instance, time.time()))
+            self.db.execute("INSERT INTO attempts(owner,chat,attempt,fingerprint,instance,state,created,mode) VALUES(?,?,?,?,?,'active',?,?)",
+                            (*key, fingerprint, self.instance, time.time(), mode))
         return True
 
     def append(self, key, data, *, terminal=False):

@@ -111,7 +111,7 @@ M1_EOF
     # We can't pre-download from HuggingFace directly in Phase 9 without a
     # huggingface_hub Python dep, so surface the requirement loudly here and
     # point users at the 'ods stt download' CLI (added in the same PR).
-    if [[ "$ENABLE_VOICE" == "true" ]]; then
+    if [[ "${ENABLE_WHISPER:-${ENABLE_VOICE:-false}}" == "true" ]]; then
         ai_warn "Offline mode + voice enabled: Whisper STT model is NOT pre-downloaded by Phase 9"
         log "  The installer's Phase 12 will still attempt the download while online,"
         log "  but if you go offline before it completes, STT will 404 on first use."
