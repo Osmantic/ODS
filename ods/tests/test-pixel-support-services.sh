@@ -82,7 +82,7 @@ for switchboard_case in "${switchboard_cases[@]}"; do
             expected_gateway=false
             expected_search=false
             if ((mask & 35)) || [[ "$mode" == enabled ]]; then expected_gateway=true; fi
-            if ((mask & 29)); then expected_search=true; fi
+            if ((mask & 21)); then expected_search=true; fi
             [[ "${selected[litellm]:-missing}" == "$expected_gateway" ]] || {
                 echo "FAIL: LiteLLM selection for mask $mask with switchboard $switchboard_case ($mode)"; exit 1;
             }
@@ -114,6 +114,20 @@ done
     [[ "${selected[searxng]:-missing}" == true && "$ENABLE_SEARXNG" == true &&
        "$PIXEL_RESOLVED_WEB_SEARCH_PROVIDER" == searxng ]] || {
         echo 'FAIL: Pixel SearXNG provider must select local search'; exit 1;
+    }
+)
+# A previously selected SearXNG remains selected without another consumer.
+(
+    INSTALL_DIR="$tmp_dir/retained-searxng"
+    mkdir -p "$INSTALL_DIR"
+    ODS_MODEL_SWITCHBOARD=legacy EXTERNAL_LLM_URL=""
+    ENABLE_RECOMMENDED=false ENABLE_PIXEL_RUNTIME=false ENABLE_PERPLEXICA=false
+    ENABLE_HERMES=true ENABLE_OPENCLAW=false ENABLE_SEARXNG=true
+    declare -A selected=()
+    _sync_extension_compose() { selected["$2"]="$1"; }
+    source /dev/stdin <<< "$block"
+    [[ "${selected[searxng]:-missing}" == true && "$ENABLE_WEB_SEARCH" == true ]] || {
+        echo 'FAIL: retained SearXNG was disabled on Hermes rerun'; exit 1;
     }
 )
 # Literal whitespace and hashes inside quotes are not valid routing modes.

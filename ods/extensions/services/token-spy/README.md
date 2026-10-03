@@ -2,6 +2,20 @@
 
 Authenticated LLM API proxy that captures per-turn token usage, cost, latency, and session health. It sits between your application and upstream providers (Anthropic, OpenAI, Moonshot, local models), logs every turn, and streams responses through without buffering.
 
+## ODS Library
+
+Fresh Core installs leave Token Spy off. Add it from Dashboard Library, then
+open the ODS Usage page from its card. The ODS model router and LiteLLM send
+best-effort usage events to Token Spy without moving Portal chat traffic
+through its proxy. Collection begins after Add; it cannot reconstruct earlier
+turns. Disable stops the service and retains `data/token-spy` for a later Add.
+
+Token Spy also exposes an authenticated proxy for applications that explicitly
+choose to route through it. Library Add does not change any application's API
+endpoint or enable that proxy path automatically. Its standalone `/dashboard`
+asks for the separate Token Spy API key; the ODS Usage page uses the existing
+Dashboard session.
+
 ## How It Works
 
 ```

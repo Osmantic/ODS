@@ -6,6 +6,7 @@ import hashlib
 import json
 import logging
 import os
+import platform
 import re
 import shutil
 import stat
@@ -373,8 +374,58 @@ def _is_one_shot_extension(ext: dict) -> bool:
     return ext.get("port") == 0 and ext.get("startup_check", False) is False
 
 
+def _comfyui_overlay_available() -> bool:
+    """Only advertise ComfyUI when its selected GPU overlay defines a service."""
+    if GPU_BACKEND not in {"amd", "nvidia"}:
+        return False
+    overlay = EXTENSIONS_DIR / "comfyui" / f"compose.{GPU_BACKEND}.yaml"
+    try:
+        info = overlay.lstat()
+        if not stat.S_ISREG(info.st_mode) or info.st_size > 1024 * 1024:
+            return False
+        data = yaml.safe_load(overlay.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, yaml.YAMLError):
+        return False
+    services = data.get("services") if isinstance(data, dict) else None
+    service = services.get("comfyui") if isinstance(services, dict) else None
+    return isinstance(service, dict) and bool(service.get("build") or service.get("image"))
+
+
+def _qdrant_runtime_compatible() -> bool:
+    """Check the container's kernel page size for the pinned arm64 image.
+
+    Docker Desktop and Colima may use a VM kernel with a different page size
+    from the physical host; the image runs against the container's kernel.
+    """
+    if platform.machine().lower() not in {"arm64", "aarch64"}:
+        return True
+    try:
+        page_size = os.sysconf("SC_PAGE_SIZE")
+        return isinstance(page_size, int) and 0 < page_size <= 4096
+    except (AttributeError, OSError, ValueError):
+        return False
+
+
+def _embeddings_runtime_compatible() -> bool:
+    """The pinned amd64 TEI image also runs on Apple Silicon via Rosetta."""
+    architecture = platform.machine().lower()
+    return architecture in {"amd64", "x86_64"} or (
+        GPU_BACKEND == "apple" and architecture in {"arm64", "aarch64"}
+    )
+
+
+def _builtin_runtime_compatible(service_id: str) -> bool:
+    if service_id == "comfyui":
+        return _comfyui_overlay_available()
+    if service_id == "qdrant":
+        return _qdrant_runtime_compatible()
+    if service_id == "embeddings":
+        return _embeddings_runtime_compatible()
+    return True
+
+
 def _qualified_builtin_selection(service_id: str) -> dict:
-    """Expose Add controls only for individually qualified built-in services."""
+    """Expose Add only when qualified; retain Disable for selected services."""
     if service_id not in LIBRARY_MANAGEABLE_BUILTINS or service_id in ALWAYS_ON_SERVICES:
         return {}
     directory = EXTENSIONS_DIR / service_id
@@ -392,6 +443,8 @@ def _qualified_builtin_selection(service_id: str) -> dict:
     except OSError:
         return {}
     if states.count(True) != 1:
+        return {}
+    if not states[0] and not _builtin_runtime_compatible(service_id):
         return {}
     return {"library_manageable": True, "library_selected": states[0]}
 
@@ -428,7 +481,7 @@ def _opencode_extension_status(svc) -> str:
 
 
 def _opencode_catalog_fields(status: str) -> dict:
-    """Library affordances for OpenCode: Linux setup and the app page."""
+    """Library affordances for OpenCode: host setup and the app page."""
     from helpers import get_opencode_lifecycle  # noqa: PLC0415 - avoid import cycle
 
     lifecycle = get_opencode_lifecycle() or {}
@@ -461,9 +514,18 @@ def _compute_extension_status(ext: dict, services_by_id: dict) -> str:
     ext_id = ext["id"]
     if ext_id == "opencode" and ext_id in SERVICES:
         return _opencode_extension_status(services_by_id.get(ext_id))
+    # A user directory shadows the built-in. Keep an active built-in marker
+    # visible even when the current runtime can no longer start its service;
+    # the owner still needs a safe Disable path that preserves its data.
+    builtin = ext.get("catalog_source") == "builtin" and not (USER_EXTENSIONS_DIR / ext_id).is_dir()
+    selection = _qualified_builtin_selection(ext_id) if builtin else {}
+    # A runtime that cannot start the service must not offer Retry for an old
+    # progress error. A selected marker still remains visible for Disable.
+    if builtin and not _builtin_runtime_compatible(ext_id):
+        return "incompatible"
     one_shot = _is_one_shot_extension(ext)
 
-    # Check for in-flight install operations (progress files take priority)
+    # On a compatible runtime, show in-flight install progress before health.
     progress = _read_progress(ext_id)
     if progress:
         ps = progress.get("status", "")
@@ -484,10 +546,14 @@ def _compute_extension_status(ext: dict, services_by_id: dict) -> str:
             if one_shot:
                 return 'cli_installed' if progress.get('exit_verified') is True else 'stopped'
             # Container was started by the installer. If the progress is
-            # recent (<5 min), the healthcheck may still be running â€”
+            # recent, the healthcheck may still be running â€”
             # show "installing". If older, the user likely stopped the
             # container afterwards â€” fall through to normal status logic.
-            if not _is_stale(progress.get("updated_at", ""), max_age_seconds=300):
+            # TEI allows 600 seconds for its first model download plus health
+            # retries. Its grace period matches the 15-minute progress cleanup.
+            grace_seconds = (900 if ext_id == "embeddings"
+                             and ext.get("catalog_source") == "builtin" else 300)
+            if not _is_stale(progress.get("updated_at", ""), max_age_seconds=grace_seconds):
                 # Long-running services still need an observed healthy state.
                 svc = services_by_id.get(ext_id)
                 if not (svc and svc.status == "healthy"):
@@ -497,7 +563,6 @@ def _compute_extension_status(ext: dict, services_by_id: dict) -> str:
     # activated this optional fragment. Use the current selection plus the
     # polled health result so Add/Retry/Disable remain truthful without an API
     # restart. Error/install progress above still takes precedence.
-    selection = _qualified_builtin_selection(ext_id)
     if selection:
         if not selection["library_selected"]:
             return "disabled"
@@ -963,10 +1028,15 @@ def _compose_policy_service_problems(name, service, *, own_services, accelerator
         if str(opt).strip().lower() not in _COMPOSE_POLICY_SECURITY_OPTS:
             problems.append(f"service '{name}' uses dangerous security_opt '{opt}'")
     groups = _compose_policy_list(name, "group_add", service.get("group_add"), problems) or []
-    if groups and accelerator != "amd":
+    remote_provider_group = (
+        builtin and name in {"remote-provider-egress", "remote-provider-ssh-tunnel"}
+        and groups == ["${REMOTE_PROVIDER_DATA_GID:-1000}"]
+    )
+    if groups and accelerator != "amd" and not remote_provider_group:
         problems.append(f"service '{name}' adds supplementary groups (group_add); only a curated "
                         f"recipe's compose.amd.yaml may add the GPU video/render groups")
-    elif any(not isinstance(group, str) or group not in _COMPOSE_POLICY_GPU_GROUPS for group in groups):
+    elif not remote_provider_group and any(
+            not isinstance(group, str) or group not in _COMPOSE_POLICY_GPU_GROUPS for group in groups):
         problems.append(f"service '{name}' adds groups other than the GPU video/render groups")
     if service.get("sysctls"):
         problems.append(f"service '{name}' declares sysctls")
@@ -1547,6 +1617,48 @@ def _call_agent_compose_rename(action: str, service_id: str) -> bool:
         return False
 
 
+_SELECTION_VISIBILITY_TIMEOUT_SECONDS = 10.0
+
+
+def _selection_markers_visible(action: str, service_ids: list[str]) -> bool:
+    """Observe the committed host selection through the API's shared mount."""
+    selected_name, other_name = (
+        ("compose.yaml", "compose.yaml.disabled") if action == "enable"
+        else ("compose.yaml.disabled", "compose.yaml")
+    )
+    for service_id in service_ids:
+        try:
+            directory = _resolve_extension_dir(service_id)
+            if not stat.S_ISREG((directory / selected_name).lstat().st_mode):
+                return False
+            try:
+                (directory / other_name).lstat()
+            except FileNotFoundError:
+                pass
+            else:
+                return False
+        except (OSError, RuntimeError, HTTPException):
+            return False
+    return True
+
+
+def _wait_for_selection_visibility(action: str, service_ids: list[str]) -> None:
+    # A host rename can remain visible under both names in a VM shared mount.
+    # Never acknowledge a settled selection from that stale container view.
+    deadline = time.monotonic() + _SELECTION_VISIBILITY_TIMEOUT_SECONDS
+    while not _selection_markers_visible(action, service_ids):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "Host extension selection was committed, but the Dashboard "
+                    "view has not caught up. Refresh status before retrying."
+                ),
+            )
+        time.sleep(min(0.25, remaining))
+
+
 def _select_extensions_on_host(
     action: str, service_ids: list[str],
     expected_sha256: dict[str, str] | None = None,
@@ -1576,6 +1688,7 @@ def _select_extensions_on_host(
     expected = {"enabled", "already_enabled"} if action == "enable" else {"disabled"}
     if result.get("action") not in expected or result.get("service_ids") != service_ids:
         raise HTTPException(status_code=502, detail="Host agent returned an invalid selection result")
+    _wait_for_selection_visibility(action, service_ids)
     return result
 
 
@@ -1849,11 +1962,15 @@ async def extensions_catalog(
             "depends_on": ext.get("depends_on", []),
             "dependents": [],
             "dependency_status": {},
-            **_qualified_builtin_selection(ext_id),
+            **(_qualified_builtin_selection(ext_id) if source == "core" else {}),
             **update_state,
         }
         if ext_id == "opencode" and ext_id in SERVICES:
             enriched.update(_opencode_catalog_fields(status))
+        if ext_id == "token-spy" and source == "core":
+            # ODS Usage already authenticates to Token Spy. The standalone
+            # dashboard requires a separate API key.
+            enriched["app_path"] = "/usage"
         llm_contract = _llm_contract_for_extension(ext)
         if llm_contract is not None:
             enriched["llm"] = llm_contract
@@ -3287,7 +3404,8 @@ async def extension_detail(
         "error_message": error_message,
         "source": source,
         "installable": installable,
-        **_qualified_builtin_selection(service_id),
+        **(_qualified_builtin_selection(service_id) if source == "core" else {}),
+        **({"app_path": "/usage"} if service_id == "token-spy" and source == "core" else {}),
         "llm": llm_contract,
         "public_url": public_url,
         "integration": integration,
@@ -4415,6 +4533,28 @@ def _activate_service(service_id: str) -> dict:
     upstream by _get_missing_deps_transitive.
     """
     ext_dir = _resolve_extension_dir(service_id)
+    if (service_id == "comfyui"
+            and ext_dir.is_relative_to(EXTENSIONS_DIR.resolve())
+            and not _comfyui_overlay_available()):
+        raise HTTPException(
+            status_code=409,
+            detail="ComfyUI requires a compatible NVIDIA or AMD GPU overlay",
+        )
+
+    # Recheck at activation even if the catalog was read before a host change.
+    if (service_id == "qdrant" and ext_dir.is_relative_to(EXTENSIONS_DIR.resolve())
+            and not _qdrant_runtime_compatible()):
+        raise HTTPException(
+            status_code=409,
+            detail="Qdrant's pinned arm64 image requires 4 KiB kernel pages",
+        )
+
+    if (service_id == "embeddings" and ext_dir.is_relative_to(EXTENSIONS_DIR.resolve())
+            and not _embeddings_runtime_compatible()):
+        raise HTTPException(
+            status_code=409,
+            detail="The bundled embeddings image requires amd64 or Apple Silicon emulation",
+        )
 
     disabled_compose = ext_dir / "compose.yaml.disabled"
     enabled_compose = ext_dir / "compose.yaml"

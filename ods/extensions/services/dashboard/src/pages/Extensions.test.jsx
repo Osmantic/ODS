@@ -137,18 +137,59 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
-it('offers Add for qualified bundled n8n while keeping other built-ins managed by ODS', async () => {
+it('offers Add for qualified bundled services while keeping the Dashboard protected', async () => {
   installFetchMock({agent_available:true,extensions:[
     {id:'n8n',name:'n8n (Workflows)',source:'core',status:'disabled',library_manageable:true,library_selected:false,features:[baseFeature]},
-    {id:'hermes',name:'Hermes',source:'core',status:'disabled',features:[baseFeature]},
+    {id:'hermes',name:'Hermes',source:'core',status:'disabled',library_manageable:true,library_selected:false,features:[baseFeature]},
+    {id:'hermes-proxy',name:'Hermes Auth Proxy',source:'core',status:'disabled',library_manageable:true,library_selected:false,features:[baseFeature]},
     {id:'dashboard',name:'Dashboard',source:'core',status:'enabled',features:[baseFeature]},
-  ],summary:baseSummary({total:3})})
+  ],summary:baseSummary({total:4})})
   render(<Extensions compact />)
   fireEvent.click(await screen.findByRole('button',{name:'Add n8n (Workflows)'}))
   expect(screen.getByRole('dialog',{name:'Confirm action'})).toHaveTextContent('Enable n8n (Workflows)?')
-  expect(screen.queryByRole('button',{name:'Add Hermes'})).toBeNull()
-  expect(screen.queryByRole('button',{name:'Enable Hermes'})).toBeNull()
+  expect(screen.getByRole('button',{name:'Add Hermes'})).toBeVisible()
+  expect(screen.getByRole('button',{name:'Add Hermes Auth Proxy'})).toBeVisible()
   expect(screen.queryByRole('button',{name:'Disable Dashboard'})).toBeNull()
+})
+
+it('offers Whisper and Kokoro separately while WebUI keeps its own control', async () => {
+  installFetchMock({agent_available:true,extensions:[
+    {id:'whisper',name:'Whisper (STT)',source:'core',status:'disabled',library_manageable:true,library_selected:false,features:[baseFeature]},
+    {id:'tts',name:'Kokoro (TTS)',source:'core',status:'disabled',library_manageable:true,library_selected:false,features:[]},
+    {id:'open-webui',name:'Open WebUI',source:'core',status:'disabled',features:[]},
+  ],summary:baseSummary({total:3})})
+  render(<Extensions compact />)
+  expect(await screen.findByRole('button',{name:'Add Whisper (STT)'})).toBeVisible()
+  expect(screen.getByRole('button',{name:'Add Kokoro (TTS)'})).toBeVisible()
+  expect(screen.queryByRole('button',{name:'Add Open WebUI'})).toBeNull()
+})
+
+it('opens bundled Token Spy through the authenticated Dashboard Usage page', async () => {
+  installFetchMock({agent_available:true,extensions:[
+    {id:'token-spy',name:'Token Spy (Usage Monitor)',source:'core',status:'enabled',
+      library_manageable:true,library_selected:true,app_path:'/usage',
+      external_port:3005,ui_path:'/dashboard',features:[baseFeature]},
+  ],summary:baseSummary({total:1,installed:1})})
+  render(<Extensions compact />)
+  expect(await screen.findByText('Token Spy (Usage Monitor)')).toBeVisible()
+  expect(screen.getByRole('link',{name:'Open'})).toHaveAttribute('href','/usage')
+  expect(screen.queryByRole('link',{name:':3005'})).toBeNull()
+})
+
+it('keeps selected incompatible built-ins visible for Disable without offering Add', async () => {
+  installFetchMock({agent_available:true,extensions:[
+    {id:'qdrant',name:'Qdrant',source:'core',status:'incompatible',compatible:false,
+      library_manageable:true,library_selected:true,features:[]},
+    {id:'embeddings',name:'Embeddings',source:'core',status:'incompatible',compatible:false,
+      features:[]},
+  ],summary:baseSummary({total:2})})
+  render(<Extensions compact />)
+  expect(await screen.findByRole('button',{name:'Disable Qdrant'})).toBeVisible()
+  expect(screen.queryByRole('button',{name:'Add Qdrant'})).toBeNull()
+  expect(screen.queryByRole('button',{name:'Retry Qdrant'})).toBeNull()
+  expect(screen.queryByText('Embeddings')).toBeNull()
+  fireEvent.click(screen.getByRole('button',{name:'Disable Qdrant'}))
+  expect(screen.getByRole('dialog',{name:'Confirm action'})).toHaveTextContent('Disable Qdrant?')
 })
 
 it('shows bundled Perplexica in Available and asks before adding SearXNG', async () => {
@@ -188,6 +229,48 @@ it('shows bundled Perplexica in Available and asks before adding SearXNG', async
   fireEvent.click(await screen.findByRole('button',{name:'Enable All'}))
   await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
     '/api/extensions/perplexica/enable?auto_enable_deps=true',
+    expect.objectContaining({method:'POST'}),
+  ))
+})
+
+it('names SearXNG and Hermes before enabling the Hermes proxy', async () => {
+  const catalog = {agent_available:true,extensions:[
+    {id:'hermes',name:'Hermes',source:'core',status:'disabled',
+      library_manageable:true,library_selected:false,features:[baseFeature]},
+    {id:'hermes-proxy',name:'Hermes Auth Proxy',source:'core',status:'disabled',
+      library_manageable:true,library_selected:false,features:[baseFeature]},
+    {id:'searxng',name:'SearXNG',source:'core',status:'disabled',
+      library_manageable:true,library_selected:false,features:[baseFeature]},
+  ],summary:baseSummary({total:3})}
+  const fetchMock = vi.fn(async (url, options = {}) => {
+    const target = String(url)
+    if (target === '/api/extensions/catalog') return makeJsonResponse(catalog)
+    if (target === '/api/webui/selection') return makeJsonResponse({enabled:false,supported:false})
+    if (target === '/api/templates') return makeJsonResponse({templates:[]})
+    if (target === '/api/extensions/hermes-proxy/enable' && options.method === 'POST') {
+      return makeJsonResponse({detail:{missing_dependencies:['searxng','hermes']}}, {ok:false,status:400})
+    }
+    if (target === '/api/extensions/hermes-proxy/enable?auto_enable_deps=true' && options.method === 'POST') {
+      return makeJsonResponse({enabled_services:['searxng','hermes','hermes-proxy'],failed_services:[]})
+    }
+    throw new Error(`Unmocked fetch: ${target}`)
+  })
+  vi.stubGlobal('fetch', fetchMock)
+  render(<Extensions compact />)
+  fireEvent.click(await screen.findByRole('button',{name:'Add Hermes Auth Proxy'}))
+  fireEvent.click(screen.getByRole('button',{name:'Enable'}))
+  const dependencies = await screen.findByRole('dialog',{name:'Enable dependencies'})
+  expect(dependencies).toHaveTextContent('searxng')
+  expect(dependencies).toHaveTextContent('hermes')
+  fireEvent.click(screen.getByRole('button',{name:'Cancel'}))
+  expect(fetchMock).not.toHaveBeenCalledWith(
+    '/api/extensions/hermes-proxy/enable?auto_enable_deps=true', expect.anything(),
+  )
+  fireEvent.click(screen.getByRole('button',{name:'Add Hermes Auth Proxy'}))
+  fireEvent.click(screen.getByRole('button',{name:'Enable'}))
+  fireEvent.click(await screen.findByRole('button',{name:'Enable All'}))
+  await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
+    '/api/extensions/hermes-proxy/enable?auto_enable_deps=true',
     expect.objectContaining({method:'POST'}),
   ))
 })

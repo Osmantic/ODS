@@ -70,11 +70,19 @@ if $INTERACTIVE && ! $DRY_RUN; then
         # which only *set* the flag to true when the answer wasn't N and
         # never set it to false; combined with all defaults being true from
         # install-core.sh, pressing 'n' was a no-op.
-        _phase03_prompt_bool ENABLE_VOICE "Enable voice (Whisper STT + Kokoro TTS)?"
+        [[ "${WHISPER_EXPLICIT:-false}" == true ]] || _phase03_prompt_bool ENABLE_WHISPER "Enable Whisper speech recognition?"
+        [[ "${TTS_EXPLICIT:-false}" == true ]] || _phase03_prompt_bool ENABLE_TTS "Enable Kokoro speech playback?"
         _phase03_prompt_bool ENABLE_WORKFLOWS "Enable n8n workflow automation?"
         _phase03_prompt_bool ENABLE_RAG "Enable Qdrant vector database (for RAG)?"
         # Explicit agent flags also take precedence over the Custom menu.
-        [[ "${HERMES_EXPLICIT:-false}" == true ]] || _phase03_prompt_bool ENABLE_HERMES "Enable Hermes Agent?"
+        if [[ "${HERMES_EXPLICIT:-false}" != true ]]; then
+            _phase03_hermes_before="$ENABLE_HERMES"
+            _phase03_prompt_bool ENABLE_HERMES "Enable Hermes Agent?"
+            if [[ "$ENABLE_HERMES" != "$_phase03_hermes_before" ]]; then
+                ENABLE_HERMES_PROXY="$ENABLE_HERMES"
+            fi
+            unset _phase03_hermes_before
+        fi
         [[ "${OPENCLAW_EXPLICIT:-false}" == true ]] || _phase03_prompt_bool ENABLE_OPENCLAW "Enable OpenClaw AI agent framework (DEPRECATED - Hermes replaces it)?"
         _phase03_prompt_bool ENABLE_OPENCODE "Enable the OpenCode browser IDE extension?"
         [[ "${DEVTOOLS_EXPLICIT:-false}" == true ]] || _phase03_prompt_bool ENABLE_DEVTOOLS "Install Claude Code and Codex CLI on this host?"
@@ -98,6 +106,13 @@ else
         ai "Using feature selections from flags and installer defaults."
     fi
 fi
+
+# This aggregate means the full two-service voice feature is selected. Later
+# installer phases use the concrete flags for images, ports, health, and STT.
+ENABLE_WHISPER="${ENABLE_WHISPER:-${ENABLE_VOICE:-false}}"
+ENABLE_TTS="${ENABLE_TTS:-${ENABLE_VOICE:-false}}"
+ENABLE_VOICE=false
+[[ "${ENABLE_WHISPER:-${ENABLE_VOICE:-false}}" == true && "${ENABLE_TTS:-${ENABLE_VOICE:-false}}" == true ]] && ENABLE_VOICE=true
 
 # Tier safety net: disable ComfyUI on Tier 0/1 in non-interactive mode.
 # Interactive mode has its own tier checks in the menu — this catches --non-interactive.
@@ -157,7 +172,7 @@ export PIXEL_AGENT_MODE ENABLE_PIXEL_RUNTIME ENABLE_PIXEL
 
 # Fresh ordinary installs use Portal as chat when Pixel is qualified. Delay
 # this choice until Pixel resolution so unsupported hosts keep WebUI, and
-# retain WebUI for features that still rely on its voice, RAG, or LAN proxy.
+# retain WebUI for RAG or the LAN proxy when selected.
 # Existing installs and explicit CLI selections remain authoritative.
 if ods_should_default_portal_chat \
       "${ODS_EXISTING_INSTALL:-false}" "${WEBUI_EXPLICIT:-false}" \
@@ -420,6 +435,11 @@ _ods_apply_deferred_feature_state() {
     fi
 }
 
+if [[ "${ENABLE_HERMES_PROXY:-false}" == true && "${ENABLE_HERMES:-false}" != true ]]; then
+    error "Hermes proxy requires Hermes; select Hermes or disable its proxy first."
+    return 1 2>/dev/null || exit 1
+fi
+
 if ! $DRY_RUN; then
     ENABLE_EMBEDDINGS="${ENABLE_EMBEDDINGS:-${ENABLE_RAG:-false}}"
     ENABLE_QDRANT="${ENABLE_QDRANT:-${ENABLE_RAG:-false}}"
@@ -492,14 +512,15 @@ if ! $DRY_RUN; then
             return 1 2>/dev/null || exit 1
         }
     fi
-    # SearXNG backs Pixel only when its selected provider needs it; Perplexica
-    # and the other agent tools retain their independent search dependency.
+    # SearXNG backs Pixel only when its selected provider needs it. Hermes can
+    # be added without a bundled search server; web search requires a separate
+    # backend selection. Preserve an already enabled SearXNG on installer reruns.
     # It is not only a recommended extra — --no-recommended with Perplexica
     # still needs the search backend.
-    if [[ "${ENABLE_RECOMMENDED:-false}" == "true" ||
+    if [[ "${ENABLE_SEARXNG:-false}" == "true" ||
+          "${ENABLE_RECOMMENDED:-false}" == "true" ||
           "$PIXEL_RESOLVED_WEB_SEARCH_PROVIDER" == "searxng" ||
           "${ENABLE_PERPLEXICA:-false}" == "true" ||
-          "${ENABLE_HERMES:-false}" == "true" ||
           "${ENABLE_OPENCLAW:-false}" == "true" ]]; then
         ENABLE_SEARXNG=true
     else
@@ -509,20 +530,19 @@ if ! $DRY_RUN; then
     _sync_extension_compose "${ENABLE_SEARXNG:-}"     searxng    "SearXNG"       "web search backend not required" || return 1
     _sync_extension_compose "${ENABLE_RECOMMENDED:-}" token-spy  "Token Spy"     "recommended services not enabled" || return 1
     unset _pixel_support_services
-    _sync_extension_compose "${ENABLE_VOICE:-}"      whisper    "Whisper (STT)" "voice not enabled" || return 1
-    _sync_extension_compose "${ENABLE_VOICE:-}"      tts        "Kokoro (TTS)"  "voice not enabled" || return 1
+    _sync_extension_compose "${ENABLE_WHISPER:-${ENABLE_VOICE:-false}}" whisper "Whisper (STT)" "Whisper not enabled" || return 1
+    _sync_extension_compose "${ENABLE_TTS:-${ENABLE_VOICE:-false}}"     tts     "Kokoro (TTS)"  "Kokoro not enabled" || return 1
     _sync_extension_compose "${ENABLE_WORKFLOWS:-}"  n8n        "n8n"           "workflows not enabled" || return 1
     # RAG = qdrant (vector store) + embeddings (TEI). Both default from
     # ENABLE_RAG, then host-specific guards above may disable the concrete
     # service when an upstream image cannot run on this machine.
     _sync_extension_compose "${ENABLE_QDRANT:-${ENABLE_RAG:-false}}" qdrant "Qdrant" "RAG not enabled or unsupported on this host" || return 1
     _sync_extension_compose "${ENABLE_EMBEDDINGS:-${ENABLE_RAG:-false}}" embeddings "Embeddings (TEI)" "RAG not enabled or unsupported on this host" || return 1
-    # Hermes is the default agent as of 2026-05-12. hermes-proxy is the
-    # auth gate in front of it (magic-link cookie verification) and is
-    # not separately toggleable — without the proxy, Hermes's dashboard
-    # is exposed on the LAN with no auth. Same flag drives both.
+    # Hermes serves ODS Talk internally. Its optional proxy is a separate
+    # Library selection for the LAN-facing Hermes dashboard. Preserve that
+    # choice on installer reruns instead of collapsing it into Hermes state.
     _sync_extension_compose "${ENABLE_HERMES:-}"     hermes        "Hermes Agent"  "Hermes agent not enabled" || return 1
-    _sync_extension_compose "${ENABLE_HERMES:-}"     hermes-proxy  "Hermes proxy"  "Hermes agent not enabled" || return 1
+    _sync_extension_compose "${ENABLE_HERMES_PROXY:-${ENABLE_HERMES:-false}}" hermes-proxy "Hermes proxy" "Hermes proxy not enabled" || return 1
     _sync_extension_compose "${ENABLE_PIXEL_RUNTIME:-false}" pixel-edge "Pixel edge" "Pixel host not qualified" || return 1
     _sync_extension_compose "${ENABLE_PIXEL_RUNTIME:-false}" pixel-model-relay "Pixel model relay" "Pixel host not qualified" || return 1
     _sync_extension_compose "${ENABLE_OPENCLAW:-}"   openclaw   "OpenClaw"      "agent framework not enabled" || return 1

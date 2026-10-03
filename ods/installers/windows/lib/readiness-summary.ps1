@@ -54,7 +54,7 @@ function Write-ODSInstallReadinessSummary {
         [object[]]$Checks,
         [string]$StatusCommand = ".\ods.ps1 status",
         [string]$LogPath = "",
-        [string]$DashboardUrl = "http://localhost:3001",
+        [string]$ChatUrl = "http://localhost:3000",
         [switch]$PassThru
     )
 
@@ -109,7 +109,7 @@ function Write-ODSInstallReadinessSummary {
         foreach ($line in $attention) { Write-Host "  [!!] $line" -ForegroundColor Yellow }
     }
     Write-Host "Next:"
-    Write-Host "  - Open dashboard: $DashboardUrl"
+    Write-Host "  - Open model chat: $ChatUrl"
     Write-Host "  - Check status: $StatusCommand"
     if ($LogPath) { Write-Host "  - Logs: $LogPath" }
     Write-Host ""
