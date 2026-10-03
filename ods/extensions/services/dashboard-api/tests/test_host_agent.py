@@ -705,6 +705,24 @@ def test_extension_stop_preserves_single_service_behavior_without_fragment(monke
     monkeypatch.setattr(_mod, '_find_ext_dir', lambda _: None)
     assert _mod._extension_stop_targets('legacy') == ['legacy']
 
+def test_comfyui_stop_accepts_its_empty_selected_marker(tmp_path, monkeypatch):
+    (tmp_path / 'compose.yaml').write_text('services: {}\n', encoding='utf-8')
+    monkeypatch.setattr(_mod, '_find_ext_dir', lambda _: tmp_path)
+    assert _mod._extension_stop_targets('comfyui') == ['comfyui']
+
+
+def test_comfyui_stop_recovers_orphan_after_library_disable(tmp_path, monkeypatch):
+    (tmp_path / 'compose.yaml.disabled').write_text('services: {}\n', encoding='utf-8')
+    monkeypatch.setattr(_mod, '_find_ext_dir', lambda _: tmp_path)
+    monkeypatch.setattr(_mod, 'resolve_compose_flags', lambda: ['-f', 'docker-compose.base.yml'])
+    calls = []
+    monkeypatch.setattr(_mod, '_stop_verified_owned_extension', lambda service: calls.append(service))
+    monkeypatch.setattr(_mod.subprocess, 'run', lambda *_a, **_k: pytest.fail(
+        'disabled ComfyUI is absent from the current Compose graph'))
+    assert _mod.docker_compose_action('comfyui', 'stop') == (True, '')
+    assert calls == ['comfyui']
+
+
 _parse_mem_value = _mod._parse_mem_value
 
 
