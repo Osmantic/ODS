@@ -154,6 +154,31 @@ try {
     $ownedProcess.Refresh();Check $ownedProcess.HasExited 'exact owned process handle is released'
     $ownedProcess.Dispose();$ownedProcess=$null
 
+    # A controller can exit while the slower CIM lookup is in flight. Model
+    # that boundary without replacing the actual identity reader.
+    & {
+        $script:identityRace='live'
+        function Get-Process { param($Id,$ErrorAction)
+            $script:identityProcess=[pscustomobject]@{Handle=1;StartTime=[datetime]'2026-01-01T00:00:00Z';HasExited=$false;Disposed=$false}
+            $script:identityProcess|Add-Member ScriptMethod Dispose { $this.Disposed=$true }
+            if ($script:identityRace -eq 'exited-before-read') { $script:identityProcess.StartTime=$null; $script:identityProcess.HasExited=$true }
+            $script:identityProcess
+        }
+        function Get-CimInstance { param($ClassName,$Filter)
+            if ($script:identityRace -eq 'exited-during-cim') { $script:identityProcess.StartTime=$null; $script:identityProcess.HasExited=$true }
+            [pscustomobject]@{ExecutablePath='fixture.exe';CommandLine='fixture'}
+        }
+        foreach ($scenario in @('exited-before-read','exited-during-cim')) {
+            $script:identityRace=$scenario
+            Check ($null -eq (Get-ODSProcessIdentity 123)) "process exit $scenario yields no identity instead of a shutdown error"
+            Check $script:identityProcess.Disposed 'identity reader releases the process handle after exit'
+        }
+        $script:identityRace='live'
+        $record=Get-ODSProcessIdentity 123
+        Check ($record.pid -eq 123 -and $record.commandLine -ceq 'fixture' -and $record.startTicks -ceq ([datetime]'2026-01-01T00:00:00Z').ToUniversalTime().Ticks.ToString()) 'live process retains its captured start time and command identity'
+        Check $script:identityProcess.Disposed 'identity reader releases the process handle after success'
+    }
+
     $script:running=@('docker-desktop','Unrelated-Ubuntu')
     $script:listCalls=0
     function Get-ODSWslRunningDistributions { $script:listCalls++; $script:running }
