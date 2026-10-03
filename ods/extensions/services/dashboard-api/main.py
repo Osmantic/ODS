@@ -38,6 +38,7 @@ from pixel_edge_read_client import edge_read_client_lifespan
 from env_values import parse_env_value, quote_env_value
 from config import (
     SERVICES, DATA_DIR, INSTALL_DIR, SIDEBAR_ICONS, MANIFEST_ERRORS, ALWAYS_ON_SERVICES,
+    EXTENSIONS_DIR, GPU_BACKEND, LIBRARY_MANAGEABLE_BUILTINS, load_extension_manifests,
     AGENT_HOST, AGENT_PORT, AGENT_URL, ODS_AGENT_KEY,
     _detect_container_default_gateway, _running_inside_container,
     _read_env_from_file,
@@ -1714,8 +1715,26 @@ async def service_tokens():
 @app.get("/api/external-links")
 async def get_external_links(api_key: str = Depends(verify_api_key)):
     """Return sidebar-ready external links derived from service manifests."""
+    # SERVICES is the API startup snapshot. Library Add/Disable changes a
+    # built-in's Compose marker without restarting this process, so use the
+    # same live selection that the health poll uses before offering a link.
+    live_services = dict(SERVICES)
+    try:
+        selected, _, _ = await asyncio.to_thread(
+            load_extension_manifests, EXTENSIONS_DIR, GPU_BACKEND,
+            only_service_ids=LIBRARY_MANAGEABLE_BUILTINS,
+        )
+    except OSError as exc:
+        logger.warning("Could not refresh Library application links: %s", exc)
+        # A stale startup link could point at a service disabled since boot.
+        selected = {}
+    for sid in LIBRARY_MANAGEABLE_BUILTINS:
+        if sid in selected:
+            live_services[sid] = selected[sid]
+        else:
+            live_services.pop(sid, None)
     links = []
-    for sid, cfg in SERVICES.items():
+    for sid, cfg in live_services.items():
         ext_port = cfg.get("external_port", cfg.get("port", 0))
         if not ext_port or sid == "dashboard-api" or cfg.get("external_link") is False:
             continue
