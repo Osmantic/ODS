@@ -1,4 +1,4 @@
-import { fireEvent, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, screen, waitFor } from '@testing-library/react'
 import { render } from '../test/test-utils'
 import ODSTalk from './ODSTalk' // eslint-disable-line no-unused-vars
 
@@ -612,6 +612,7 @@ describe('ODSTalk', () => {
         return {
           ok: true,
           status: 200,
+          body: {},
           blob: async () => new globalThis.Blob(['audio'], { type: 'audio/mpeg' }),
         }
       }
@@ -632,6 +633,224 @@ describe('ODSTalk', () => {
       '/api/talk/speak',
       expect.objectContaining({ method: 'POST' }),
     ))
+  })
+
+  test('reports speech failure while keeping the completed text reply', async () => {
+    window.localStorage.setItem('ods-talk-spoken-replies', '0')
+    const fetchMock = vi.fn(async (url) => {
+      if (url === '/api/talk/status') return response({
+        capabilities: { text_chat: true, tts: true, audio_message: false },
+      })
+      if (url === '/api/talk/message/stream') return sseResponse([
+        { type: 'session', session_id: 'sid' },
+        { type: 'delta', text: 'Text still works.' },
+        { type: 'complete', session_id: 'sid', text: 'Text still works.', status: 'ok' },
+        { type: 'done' },
+      ])
+      if (url === '/api/talk/speak') return { ok: false, status: 503, body: {} }
+      throw new Error(`unexpected request: ${url}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    render(<ODSTalk />)
+    expect(await screen.findByText('Ready')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Turn spoken replies on' }))
+    fireEvent.change(screen.getByPlaceholderText('Message ODS'), { target: { value: 'hello' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
+    expect(await screen.findByText('Text still works.')).toBeInTheDocument()
+    expect(await screen.findByRole('alert')).toHaveTextContent('Spoken reply failed')
+  })
+
+  test('an older delayed speech response cannot replace newer playback', async () => {
+    window.localStorage.setItem('ods-talk-spoken-replies', '0')
+    vi.stubGlobal('Audio', class {
+      addEventListener() {}
+      play() { return Promise.resolve() }
+      pause() {}
+    })
+    const createObjectURL = vi.fn(() => 'blob:audio')
+    vi.stubGlobal('URL', { createObjectURL, revokeObjectURL: vi.fn() })
+    let resolveFirstSpeech
+    let speechRequests = 0
+    const audioResponse = { ok: true, status: 200, body: {},
+      blob: async () => new globalThis.Blob(['audio'], { type: 'audio/mpeg' }) }
+    const fetchMock = vi.fn(async (url, options = {}) => {
+      if (url === '/api/talk/status') return response({
+        capabilities: { text_chat: true, tts: true, audio_message: false },
+      })
+      if (url === '/api/talk/message/stream') {
+        const text = JSON.parse(options.body).text
+        return sseResponse([
+          { type: 'session', session_id: text },
+          { type: 'delta', text },
+          { type: 'complete', session_id: text, text, status: 'ok' },
+          { type: 'done' },
+        ])
+      }
+      if (url === '/api/talk/speak') {
+        speechRequests += 1
+        if (speechRequests === 1) return new Promise(resolve => { resolveFirstSpeech = resolve })
+        return audioResponse
+      }
+      throw new Error(`unexpected request: ${url}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    render(<ODSTalk />)
+    expect(await screen.findByText('Ready')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Turn spoken replies on' }))
+    fireEvent.change(screen.getByPlaceholderText('Message ODS'), { target: { value: 'First reply' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
+    await waitFor(() => expect(speechRequests).toBe(1))
+    fireEvent.change(screen.getByPlaceholderText('Message ODS'), { target: { value: 'Second reply' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
+    await waitFor(() => expect(speechRequests).toBe(2))
+    await waitFor(() => expect(createObjectURL).toHaveBeenCalledTimes(1))
+    await act(async () => { resolveFirstSpeech(audioResponse) })
+    expect(createObjectURL).toHaveBeenCalledTimes(1)
+  })
+
+  test('a stale MediaSource append cannot play after a newer reply or speaker-off', async () => {
+    window.localStorage.setItem('ods-talk-spoken-replies', '0')
+    const play = vi.fn(() => Promise.resolve())
+    vi.stubGlobal('Audio', class {
+      addEventListener() {}
+      play() { return play() }
+      pause() {}
+    })
+    vi.stubGlobal('URL', {
+      createObjectURL: vi.fn(() => 'blob:audio'),
+      revokeObjectURL: vi.fn(),
+    })
+    let mediaSourceCount = 0
+    let finishFirstAppend
+    let finishThirdAppend
+    vi.stubGlobal('MediaSource', class {
+      static isTypeSupported() { return true }
+      constructor() {
+        this.index = ++mediaSourceCount
+        this.readyState = 'open'
+      }
+      addEventListener(type, callback) {
+        if (type === 'sourceopen') globalThis.queueMicrotask(callback)
+      }
+      addSourceBuffer() {
+        let finishAppend
+        return {
+          addEventListener(type, callback) {
+            if (type === 'updateend') finishAppend = callback
+          },
+          appendBuffer: () => {
+            if (this.index === 1) finishFirstAppend = finishAppend
+            else if (this.index === 3) finishThirdAppend = finishAppend
+            else globalThis.queueMicrotask(finishAppend)
+          },
+        }
+      }
+      endOfStream() { this.readyState = 'ended' }
+    })
+    const speechResponse = () => {
+      let readCount = 0
+      return {
+        ok: true,
+        status: 200,
+        body: { getReader: () => ({
+          read: async () => readCount++ === 0
+            ? { done: false, value: new Uint8Array([1, 2, 3]) }
+            : { done: true },
+          cancel: async () => {},
+        }) },
+      }
+    }
+    const fetchMock = vi.fn(async (url, options = {}) => {
+      if (url === '/api/talk/status') return response({
+        capabilities: { text_chat: true, tts: true, audio_message: false },
+      })
+      if (url === '/api/talk/message/stream') {
+        const text = JSON.parse(options.body).text
+        return sseResponse([
+          { type: 'session', session_id: text },
+          { type: 'delta', text },
+          { type: 'complete', session_id: text, text, status: 'ok' },
+          { type: 'done' },
+        ])
+      }
+      if (url === '/api/talk/speak') return speechResponse()
+      throw new Error(`unexpected request: ${url}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    render(<ODSTalk />)
+    expect(await screen.findByText('Ready')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Turn spoken replies on' }))
+    fireEvent.change(screen.getByPlaceholderText('Message ODS'), { target: { value: 'First reply' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
+    await waitFor(() => expect(finishFirstAppend).toBeTypeOf('function'))
+    fireEvent.change(screen.getByPlaceholderText('Message ODS'), { target: { value: 'Second reply' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
+    await waitFor(() => expect(play).toHaveBeenCalledTimes(1))
+    await act(async () => { finishFirstAppend() })
+    expect(play).toHaveBeenCalledTimes(1)
+    fireEvent.change(screen.getByPlaceholderText('Message ODS'), { target: { value: 'Third reply' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
+    await waitFor(() => expect(finishThirdAppend).toBeTypeOf('function'))
+    fireEvent.click(screen.getByRole('button', { name: 'Turn spoken replies off' }))
+    await act(async () => { finishThirdAppend() })
+    expect(play).toHaveBeenCalledTimes(1)
+    vi.unstubAllGlobals()
+  })
+
+  test('speaker-off pauses active audio and unmount drops a delayed speech response', async () => {
+    window.localStorage.setItem('ods-talk-spoken-replies', '0')
+    const play = vi.fn(() => Promise.resolve())
+    const pause = vi.fn()
+    vi.stubGlobal('Audio', class {
+      constructor() { this.paused = true }
+      addEventListener() {}
+      play() { this.paused = false; return play() }
+      pause() { this.paused = true; pause() }
+    })
+    const createObjectURL = vi.fn(() => 'blob:audio')
+    vi.stubGlobal('URL', { createObjectURL, revokeObjectURL: vi.fn() })
+    let speechRequests = 0
+    let resolveDelayedSpeech
+    const audioResponse = { ok: true, status: 200, body: {},
+      blob: async () => new globalThis.Blob(['audio'], { type: 'audio/mpeg' }) }
+    const fetchMock = vi.fn(async (url, options = {}) => {
+      if (url === '/api/talk/status') return response({
+        capabilities: { text_chat: true, tts: true, audio_message: false },
+      })
+      if (url === '/api/talk/message/stream') {
+        const text = JSON.parse(options.body).text
+        return sseResponse([
+          { type: 'session', session_id: text },
+          { type: 'delta', text },
+          { type: 'complete', session_id: text, text, status: 'ok' },
+          { type: 'done' },
+        ])
+      }
+      if (url === '/api/talk/speak') {
+        speechRequests += 1
+        if (speechRequests === 2) return new Promise(resolve => { resolveDelayedSpeech = resolve })
+        return audioResponse
+      }
+      throw new Error(`unexpected request: ${url}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const { unmount } = render(<ODSTalk />)
+    expect(await screen.findByText('Ready')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Turn spoken replies on' }))
+    fireEvent.change(screen.getByPlaceholderText('Message ODS'), { target: { value: 'First reply' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
+    await waitFor(() => expect(play).toHaveBeenCalledTimes(1))
+    fireEvent.click(screen.getByRole('button', { name: 'Turn spoken replies off' }))
+    expect(pause).toHaveBeenCalledTimes(1)
+    fireEvent.click(screen.getByRole('button', { name: 'Turn spoken replies on' }))
+    fireEvent.change(screen.getByPlaceholderText('Message ODS'), { target: { value: 'Second reply' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
+    await waitFor(() => expect(speechRequests).toBe(2))
+    unmount()
+    await act(async () => { resolveDelayedSpeech(audioResponse) })
+    expect(createObjectURL).toHaveBeenCalledTimes(1)
+    expect(play).toHaveBeenCalledTimes(1)
+    vi.unstubAllGlobals()
   })
 
   test('renders a tool approval and submits one choice-only response', async () => {

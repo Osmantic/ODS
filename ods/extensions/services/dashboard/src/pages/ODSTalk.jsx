@@ -114,6 +114,7 @@ export default function ODSTalk() {
       return false
     }
   })
+  const [speechError, setSpeechError] = useState('')
   const [voiceState, setVoiceState] = useState({
     tts: false,
     audioMessage: false,
@@ -136,6 +137,7 @@ export default function ODSTalk() {
   // Track the currently-playing TTS state so we can shut down whatever
   // is in flight before starting the next reply's audio.
   const activeSpeechRef = useRef(null)
+  const speechAttemptRef = useRef(0)
   // One persistent Audio element reused across all replies. iOS Safari's
   // audio session model is single-element-per-page; if we create a new
   // Audio() per turn (the obvious React-y pattern), the OS audio router
@@ -244,13 +246,6 @@ export default function ODSTalk() {
     }
   }, [spokenReplies])
 
-  useEffect(() => {
-    return () => {
-      streamControllerRef.current?.abort()
-      streamControllerRef.current = null
-    }
-  }, [])
-
   // Stop whatever speech is in flight before a new turn begins. With the
   // shared-Audio-element pattern we DON'T tear down the audio element
   // itself (that's what was triggering "session busy" on iOS) — we just
@@ -261,6 +256,7 @@ export default function ODSTalk() {
     const prev = activeSpeechRef.current
     activeSpeechRef.current = null
     if (!prev) return
+    prev.cancelled = true
     try { prev.reader?.cancel() } catch { /* already closed */ }
     try {
       if (prev.mediaSource && prev.mediaSource.readyState === 'open') {
@@ -278,12 +274,27 @@ export default function ODSTalk() {
     }
   }, [])
 
+  useEffect(() => {
+    return () => {
+      streamControllerRef.current?.abort()
+      streamControllerRef.current = null
+      speechAttemptRef.current += 1
+      stopActiveSpeech()
+    }
+  }, [stopActiveSpeech])
+
   const speak = useCallback(async (text) => {
     if (!spokenReplies || !voiceState.tts || !text.trim()) return
+    const attempt = ++speechAttemptRef.current
+    const reportSpeechError = (message) => {
+      if (speechAttemptRef.current === attempt) setSpeechError(message)
+    }
+    const isCurrentSpeech = () => speechAttemptRef.current === attempt
     // ALWAYS stop the previous Audio/MediaSource before starting a new
     // one. Even if the previous one is still buffering chunks, the user
     // has clearly moved on (a new reply text has arrived).
     stopActiveSpeech()
+    setSpeechError('')
     try {
       const body = new FormData()
       body.set('text', text)
@@ -292,7 +303,11 @@ export default function ODSTalk() {
         body,
         credentials: 'same-origin',
       })
-      if (!resp.ok || !resp.body) return
+      if (!isCurrentSpeech()) return
+      if (!resp.ok || !resp.body) {
+        reportSpeechError('Spoken reply failed. Your text reply is still available.')
+        return
+      }
 
       // Preferred path: MediaSource API plays MP3 chunks as they arrive
       // from the dashboard-api's streaming /api/talk/speak. Time-to-first-
@@ -372,6 +387,9 @@ export default function ODSTalk() {
               sb.addEventListener('error', reject, { once: true })
               sb.appendBuffer(value)
             })
+            // The next reply may take over while this append is pending.
+            // Never start the old stream on the shared audio element.
+            if (session.cancelled || activeSpeechRef.current !== session) break
             if (!started) {
               started = true
               // play() returns a Promise on modern browsers. If iOS
@@ -380,6 +398,7 @@ export default function ODSTalk() {
               // console rather than failing silently — at least the
               // operator can spot the autoplay-permission case.
               audio.play().catch(err => {
+                reportSpeechError('Spoken reply could not play. Your text reply is still available.')
                 if (err?.name === 'NotAllowedError') {
                   // Autoplay blocked. The speaker toggle in the chat
                   // header is the user-gesture that should grant it,
@@ -389,8 +408,14 @@ export default function ODSTalk() {
               })
             }
           }
+          if (!started && activeSpeechRef.current === session) {
+            reportSpeechError('Spoken reply contained no audio. Your text reply is still available.')
+          }
           if (ms.readyState === 'open') ms.endOfStream()
         } catch {
+          if (activeSpeechRef.current === session) {
+            reportSpeechError('Spoken reply was interrupted. Your text reply is still available.')
+          }
           if (ms.readyState === 'open') {
             try { ms.endOfStream() } catch { /* already closed */ }
           }
@@ -407,6 +432,11 @@ export default function ODSTalk() {
       // The dashboard-api is still streaming on the network — we just
       // wait until it's all here before starting playback.
       const blob = await resp.blob()
+      if (!isCurrentSpeech()) return
+      if (!blob.size) {
+        reportSpeechError('Spoken reply contained no audio. Your text reply is still available.')
+        return
+      }
       const url = URL.createObjectURL(blob)
       const audio = getSharedAudio()
       audio.src = url
@@ -420,7 +450,7 @@ export default function ODSTalk() {
       audio.addEventListener('error', cleanup, { once: true })
       await audio.play()
     } catch {
-      // Audio playback is an enhancement; never interrupt text chat for it.
+      reportSpeechError('Spoken reply failed. Your text reply is still available.')
     }
   }, [spokenReplies, voiceState.tts, stopActiveSpeech])
 
@@ -789,7 +819,7 @@ export default function ODSTalk() {
             <div className="flex items-center gap-1">
               <button
                 type="button"
-                onClick={() => setSpokenReplies(value => !value)}
+                onClick={() => { speechAttemptRef.current += 1; stopActiveSpeech(); setSpeechError(''); setSpokenReplies(value => !value) }}
                 className={`grid h-10 w-10 place-items-center rounded-full border ${
                   spokenReplies ? 'border-emerald-300 bg-emerald-50 text-emerald-700' : 'border-zinc-200 bg-white text-zinc-500'
                 }`}
@@ -810,6 +840,8 @@ export default function ODSTalk() {
             </div>
           </div>
         </header>
+
+        {speechError && <div role="alert" className="mx-4 mt-3 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">{speechError}</div>}
 
         <main className="flex-1 overflow-y-auto px-4 py-4">
           <div className="space-y-3">
