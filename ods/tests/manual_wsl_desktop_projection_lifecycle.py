@@ -110,6 +110,14 @@ def main() -> int:
     image_id = docker("image", "inspect", "--format", "{{.Id}}", args.image)
     if not re.fullmatch(r"sha256:[0-9a-f]{64}", image_id):
         parser.error("the selected image did not resolve to a local image ID")
+    try:
+        image_volumes = json.loads(
+            docker("image", "inspect", "--format", "{{json .Config.Volumes}}", image_id)
+        )
+    except ValueError:
+        parser.error("the selected image has unreadable volume declarations")
+    if image_volumes not in (None, {}):
+        parser.error("the selected image declares volumes outside this bind-only probe")
 
     lock = os.open(LOCK, os.O_CREAT | os.O_RDWR, 0o600)
     try:
@@ -159,6 +167,33 @@ def main() -> int:
         )
         if not re.fullmatch(r"[0-9a-f]{64}", container_id):
             raise RuntimeError("Docker create did not return a full container ID")
+        inspected = json.loads(docker("inspect", container_id))
+        if (
+            not isinstance(inspected, list)
+            or len(inspected) != 1
+            or not isinstance(inspected[0], dict)
+        ):
+            raise RuntimeError("disposable container inspect is malformed")
+        created = inspected[0]
+        host_config = created.get("HostConfig")
+        declared = host_config.get("Mounts") if isinstance(host_config, dict) else None
+        actual = created.get("Mounts")
+        if (
+            not isinstance(declared, list)
+            or len(declared) != 1
+            or not isinstance(declared[0], dict)
+            or declared[0].get("Type") != "bind"
+            or declared[0].get("Source") != str(source)
+            or declared[0].get("Target") != "/probe"
+            or declared[0].get("ReadOnly") is not True
+            or not isinstance(actual, list)
+            or len(actual) != 1
+            or not isinstance(actual[0], dict)
+            or actual[0].get("Type") != "bind"
+            or actual[0].get("Destination") != "/probe"
+            or actual[0].get("RW") is not False
+        ):
+            raise RuntimeError("disposable container has unexpected mounts")
         record["stages"]["after_create"] = snapshot(source)
         docker("start", container_id)
         if docker("inspect", "--format", "{{.State.Running}}", container_id) != "true":
