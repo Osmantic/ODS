@@ -9,12 +9,17 @@ ComfyUI provides a powerful, node-based interface for running Stable Diffusion a
 ## Features
 
 - **Node-based workflow editor**: Build and share custom generation pipelines visually
-- **SDXL Lightning**: Configured for SDXL Lightning 4-step image generation out of the box
+- **SDXL Lightning**: The full installer starts its model download when ComfyUI is selected during installation
 - **Multiple model types**: Supports checkpoints, LoRAs, VAEs, text encoders, and diffusion models
 - **Persistent model storage**: Models stored in `./data/comfyui/models` and survive container rebuilds
 - **Workflow templates**: Pre-loaded workflow JSON files from `./data/comfyui/workflows`
 - **REST API**: Programmatic image generation via HTTP
 - **NVIDIA and AMD GPU support**: Separate optimized images for each GPU vendor
+
+Adding ComfyUI later from the Dashboard Library starts the runtime but does not
+download an image model. To generate an image, first add a compatible model to
+the model directory below. The runtime being healthy does not establish that a
+model is installed or that a particular workflow fits the available GPU memory.
 
 ## GPU Requirements
 

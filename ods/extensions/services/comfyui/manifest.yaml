@@ -24,14 +24,14 @@ service:
 features:
   - id: images
     name: Image Generation
-    description: Generate images with FLUX.1 via ComfyUI
+    description: Build image workflows in ComfyUI; add a model before first generation
     icon: Image
     category: creative
     requirements:
       services: [comfyui]
       vram_gb: 0
     enabled_services_all: [comfyui]
-    setup_time: Ready
+    setup_time: Model setup may be needed
     priority: 5
     launch:
       type: service
