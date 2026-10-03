@@ -40,9 +40,34 @@ function embeddedRenderer(patched) {
 
 function checkCases(render) {
   const cited = (n, url = source[n - 1].metadata.url) => `<citation href="${url}">${n}</citation>`;
+  const many = Array.from({ length: 28 }, (_, i) => ({ metadata: { url: `https://example.test/${i + 1}` } }));
+  const manyCited = (n) => `<citation href="https://example.test/${n}">${n}</citation>`;
   const inline = (value) => `<span class="not-prose"><code style="font-family:monospace;padding:0 .2em;border-radius:.2em;background-color:rgba(127,127,127,.14)">${value}</code></span>`;
   assert.equal(render("See [1] and [1,2].", source), `See ${cited(1)} and ${cited(1)}${cited(2, "https://example.test/two?a=1&amp;b=2")}.`);
   assert.equal(render("See [1, 2].", source), `See ${cited(1)}${cited(2, "https://example.test/two?a=1&amp;b=2")}.`);
+  assert.equal(render("Evidence [12][27] and [13][21].", many),
+    `Evidence ${manyCited(12)}${manyCited(27)} and ${manyCited(13)}${manyCited(21)}.`);
+  assert.equal(render("Evidence [12,13][27].", many),
+    `Evidence ${manyCited(12)}${manyCited(13)}${manyCited(27)}.`);
+  assert.equal(render("Evidence [12][27][13].", many),
+    `Evidence ${manyCited(12)}${manyCited(27)}${manyCited(13)}.`);
+  assert.equal(render("[12][27]", many.map((item, i) => i === 26 ? { metadata: { url: "javascript:alert(1)" } } : item)),
+    "[12][27]");
+  assert.equal(render("[1][2]\n\n[2]: https://example.test/reference", many),
+    "[1][2]\n\n[2]: https://example.test/reference");
+  assert.equal(render("- [12][27]\n\n    [27]: https://example.test/reference", many),
+    "- [12][27]\n\n    [27]: https://example.test/reference");
+  for (const prefix of ["- > ", "- - ", "- > - > ", "> - > - ", "1. > ", "- > ".repeat(8)]) {
+    const markdown = `[12][27]\n\n${prefix}[27]: https://example.test/reference`;
+    assert.equal(render(markdown, many), markdown);
+  }
+  assert.equal(render("[12][27]\n\n- > [28]: https://example.test/reference", many),
+    `${manyCited(12)}${manyCited(27)}\n\n- > [28]: https://example.test/reference`);
+  assert.equal(render("![12][27] and \\[12][27]", many), "![12][27] and \\[12][27]");
+  assert.equal(render("[12](https://x.test) [27]", many),
+    `[12](https://x.test) ${manyCited(27)}`);
+  assert.equal(render("Use `[12][27]` and [12][27].", many),
+    `Use ${inline("[12][27]")} and ${manyCited(12)}${manyCited(27)}.`);
   assert.equal(render("```python\nx = [1,2]\n```\nSee [1].", source), `\`\`\`python\nx = [1,2]\n\`\`\`\nSee ${cited(1)}.`);
   assert.equal(render("~~~python\nx = [1]\n~~~\nSee [1].", source), `~~~python\nx = [1]\n~~~\nSee ${cited(1)}.`);
   assert.equal(render("- ~~~python\n  a = [1]\n  ~~~\nSee [1].", source), `- ~~~python\n  a = [1]\n  ~~~\nSee ${cited(1)}.`);
