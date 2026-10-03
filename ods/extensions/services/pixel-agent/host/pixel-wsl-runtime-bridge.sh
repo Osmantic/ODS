@@ -37,14 +37,11 @@ ods_count_legacy_wsl_mounts() {
 action="${1:-}"
 [[ "$#" -ge 1 && "$#" -le 2 && ( "$action" == ensure || "$action" == remove ) ]] || exit 2
 [[ "$(id -u)" -eq 0 ]] || fail "must run as root"
+# ExecStop is deliberately a no-op. It must still succeed if WSL propagation
+# changed after startup; removal never touches sockets, directories, or mounts.
+[[ "$action" == ensure ]] || exit 0
 grep -qi microsoft /proc/sys/kernel/osrelease || fail "not a WSL kernel"
 [[ "$(findmnt -n -o PROPAGATION -T /mnt/wsl)" == shared ]] || fail "/mnt/wsl is not a shared mount"
-
-# Systemd stops this unit before the service sockets on uninstall. Its stop
-# action must not remove a live socket or a directory Docker may still use.
-# The socket owners unlink their files on shutdown; WSL clears this tmpfs when
-# its VM stops. A separate uninstall step may retire empty directories later.
-[[ "$action" == ensure ]] || exit 0
 
 # A retained install can still have the former forward binds on these exact
 # legacy paths. They multiply in Docker Desktop's shared mount graph. Do not

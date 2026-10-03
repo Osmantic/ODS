@@ -3,6 +3,8 @@ set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 bridge="$root/extensions/services/pixel-agent/host/pixel-wsl-runtime-bridge.sh"
+# The Python contract below reads the unit directly from root.
+# shellcheck disable=SC2034
 unit="$root/extensions/services/pixel-agent/host/pixel-wsl-runtime-bridge.service"
 bash -n "$bridge" "$root/installers/phases/06-directories.sh" \
     "$root/installers/lib/pixel-host-install.sh" "$root/lib/pixel-uninstall.sh"
@@ -83,4 +85,22 @@ assert module.HTTP_SOCKET_PATH == Path('/mnt/wsl/ods-portal-sockets/preview/http
 module.configure_portal('test-profile')
 assert module.HTTP_SOCKET_PATH == Path('/run/ods-portal/preview/http.sock')
 PY
+# ExecStop's remove action must be inert even when the WSL kernel or shared
+# propagation probe becomes unavailable after the unit started.
+scratch="$(mktemp -d)"
+trap 'rm -rf -- "$scratch"' EXIT
+cat > "$scratch/id" <<'SH'
+#!/bin/sh
+printf '0\n'
+SH
+for command_name in grep findmnt stat install mount umount; do
+    cat > "$scratch/$command_name" <<'SH'
+#!/bin/sh
+echo 'remove action reached a host probe or mutation command' >&2
+exit 91
+SH
+done
+chmod 0755 "$scratch"/*
+PATH="$scratch:$PATH" bash "$bridge" remove
+
 echo "Pixel WSL stable socket directory contracts passed"
