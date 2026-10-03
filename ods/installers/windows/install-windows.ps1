@@ -31,6 +31,8 @@
 #   .\install-windows.ps1 --Cloud          # Cloud-only (no local GPU)
 #   .\install-windows.ps1 --DryRun         # Validate without installing
 #   .\install-windows.ps1 --All            # Enable all optional services
+#   .\install-windows.ps1 -DevTools       # Install OpenCode, Claude Code, Codex CLI
+#   .\install-windows.ps1 -NoDevTools     # Disable their login task on a rerun
 #   .\install-windows.ps1 --Hermes         # Enable Hermes Agent
 #   .\install-windows.ps1 -NoHermes        # Disable Hermes Agent
 #   .\install-windows.ps1 -NoBootstrap     # Wait for full model before launch
@@ -57,6 +59,8 @@ param(
     [switch]$Cloud,
     [switch]$Comfyui,
     [switch]$NoComfyui,
+    [switch]$DevTools,
+    [switch]$NoDevTools,
     [switch]$Lan,
     [switch]$Langfuse,
     [switch]$NoLangfuse,
@@ -86,11 +90,13 @@ $LibDir = Join-Path $ScriptDir "lib"
 . (Join-Path $LibDir "detection.ps1")
 . (Join-Path $LibDir "env-generator.ps1")
 . (Join-Path $LibDir "installed-footprint.ps1")
+. (Join-Path $LibDir "installed-selection.ps1")
 . (Join-Path $LibDir "llm-endpoint.ps1")
 . (Join-Path $LibDir "native-llama-args.ps1")
 . (Join-Path $LibDir "opencode-config.ps1")
 . (Join-Path $LibDir "readiness-summary.ps1")
 . (Join-Path $LibDir "service-plan.ps1")
+. (Join-Path $LibDir "devtools-selection.ps1")
 
 # Preserve the caller's Docker client configuration before any installer phase
 # changes location. Docker accepts relative DOCKER_CONFIG values, whose meaning
@@ -125,12 +131,19 @@ $openClawFlag   = $OpenClaw.IsPresent
 $allFlag        = $All.IsPresent
 $comfyuiFlag    = $Comfyui.IsPresent
 $noComfyuiFlag  = $NoComfyui.IsPresent
+$devToolsFlag   = $DevTools.IsPresent
+$noDevToolsFlag = $NoDevTools.IsPresent
 $lanFlag        = $Lan.IsPresent
 $langfuseFlag   = $Langfuse.IsPresent
 $noLangfuseFlag = $NoLangfuse.IsPresent
 $noBootstrapFlag = $NoBootstrap.IsPresent
 $installDir     = $script:ODS_INSTALL_DIR
 $sourceRoot     = $SourceRoot
+$enableDevTools = Resolve-ODSWindowsDevToolsSelection `
+    -ExplicitEnable $devToolsFlag -ExplicitDisable $noDevToolsFlag -All $allFlag `
+    -TaskName $script:OPENCODE_TASK_NAME `
+    -ExpectedLauncher (Join-Path $script:OPENCODE_DIR 'start-opencode.ps1')
+$env:ODS_WINDOWS_DEVTOOLS_SELECTED = if ($enableDevTools) { 'true' } else { 'false' }
 
 # ── Phase dispatcher ──────────────────────────────────────────────────────────
 function Get-UsableWindowsBash {
@@ -200,7 +213,7 @@ Write-ODSBanner
 #
 #  Phase 01 → $preflight_docker (hashtable)
 #  Phase 02 → $gpuInfo, $systemRamGB, $selectedTier, $tierConfig, $llamaServerImage
-#  Phase 03 → $enableVoice, $enableWorkflows, $enableRag, $enableOpenClaw, $openClawConfig
+#  Phase 03 → $enableWhisper, $enableTts, $enableWorkflows, $enableRag, $enableOpenClaw, $openClawConfig
 #  Phase 04 → $requirementsMet
 #  Phase 05 → $dockerComposeCmd
 #  Phase 06 → $envResult (SearxngSecret, OpenclawToken)
@@ -302,6 +315,7 @@ function Set-ODSWindowsHermesRuntimeModel {
 # ============================================================================
 Write-Phase -Phase 8 -Total 13 -Name "LAUNCH" -Estimate "2-30 minutes (model download)"
 
+$useLemonade = $false
 if ($dryRun) {
     if ($tierConfig.GgufUrl) {
         Write-AI "[DRY RUN] Would download: $($tierConfig.GgufFile)"
@@ -424,7 +438,6 @@ if ($dryRun) {
         }
 
         # ── AMD: native inference server (Lemonade preferred, llama-server fallback) ──
-        $useLemonade = $false
         if ($gpuInfo.Backend -eq "amd" -and -not $cloudMode) {
             Write-Chapter "AMD INFERENCE BACKEND"
 
@@ -874,19 +887,9 @@ if ($dryRun) {
                 $envPath = Join-Path $installDir ".env"
                 $nativeModel = $tierConfig.GgufFile
                 if (Test-Path $envPath) {
-                    $envContent = Get-Content $envPath -Raw
-                    $envContent = $envContent -replace "(?m)^ODS_MODE=.*$", "ODS_MODE=local"
-                    $envContent = $envContent -replace "(?m)^LLM_BACKEND=.*$", "LLM_BACKEND=llama-server"
-                    $envContent = $envContent -replace "(?m)^LLM_API_BASE_PATH=.*$", "LLM_API_BASE_PATH=/v1"
-                    $envContent = $envContent -replace "(?m)^AMD_INFERENCE_RUNTIME=.*$", "AMD_INFERENCE_RUNTIME=llama-server"
-                    $envContent = $envContent -replace "(?m)^AMD_INFERENCE_BACKEND=.*$", "AMD_INFERENCE_BACKEND=vulkan"
-                    $envContent = $envContent -replace "(?m)^AMD_INFERENCE_LOCATION=.*$", "AMD_INFERENCE_LOCATION=host"
-                    $envContent = $envContent -replace "(?m)^AMD_INFERENCE_PORT=.*$", "AMD_INFERENCE_PORT=$($script:LEMONADE_PORT)"
-                    $envContent = $envContent -replace "(?m)^AMD_INFERENCE_SUPPORTED_BACKENDS=.*$", "AMD_INFERENCE_SUPPORTED_BACKENDS=vulkan"
-                    $envContent = $envContent -replace "(?m)^AMD_INFERENCE_RUNTIME_MODE=.*$", "AMD_INFERENCE_RUNTIME_MODE=windows-llama-server-fallback"
-                    $envContent = $envContent -replace "(?m)^AMD_INFERENCE_MANAGED=.*$", "AMD_INFERENCE_MANAGED=true"
-                    $envContent = $envContent -replace "(?m)^LEMONADE_MODEL=.*$", "LEMONADE_MODEL="
-                    [System.IO.File]::WriteAllText($envPath, $envContent, (New-Object System.Text.UTF8Encoding($false)))
+                    $envContent = Set-ODSWindowsNativeFallbackEnvFile `
+                        -Path $envPath -NativePort $script:LEMONADE_PORT `
+                        -EnableRecommended $enableRecommended
                     Write-AISuccess "Patched .env for llama-server backend"
 
                     $nativeModel = ([regex]::Match($envContent, "(?m)^GGUF_FILE=([^\r\n]+)\r?$")).Groups[1].Value.Trim().Trim('"').Trim("'")
@@ -979,17 +982,31 @@ litellm_settings:
         $currentBackend = $(if ($cloudMode) { "none" } else { $gpuInfo.Backend })
         $servicePlan = New-ODSWindowsServicePlan `
             -EnableRecommended $enableRecommended `
-            -EnableVoice $enableVoice `
+            -CloudMode $cloudMode `
+            -UseLemonade $useLemonade `
+            -SwitchboardMode (Get-ODSWindowsEffectiveSwitchboardMode -InstallDir $installDir -RequestedMode $env:ODS_MODEL_SWITCHBOARD) `
+            -EnableWhisper $enableWhisper `
+            -EnableTts $enableTts `
             -EnableWorkflows $enableWorkflows `
             -EnableRag $enableRag `
             -EnableHermes $enableHermes `
+            -EnableHermesProxy $enableHermesProxy `
             -EnableOpenClaw $enableOpenClaw `
             -EnableComfyui $enableComfyui `
             -EnableDeepResearch $enableDeepResearch `
             -EnablePrivacyShield $enablePrivacyShield `
+            -EnableLangfuse $enableLangfuse `
             -EnableBraveSearch $enableBraveSearch `
             -EnableODSProxy $enableODSProxy `
             -EnableRemoteAccess $enableRemoteAccess
+        try {
+            $remoteProviderPlan = Get-ODSWindowsRemoteProviderSelections -InstallDir $installDir
+            foreach ($serviceId in $remoteProviderPlan.Keys) {
+                $servicePlan[$serviceId] = $remoteProviderPlan[$serviceId]
+            }
+        } catch {
+            throw "Could not preserve remote-provider services: $($_.Exception.Message)"
+        }
         $enabledExtensionServices = @()
         $skippedExtensionServices = @()
 
@@ -1039,9 +1056,18 @@ litellm_settings:
                     -Category $category `
                     -Plan $servicePlan `
                     -EnableRecommended $enableRecommended
-                $composeEnabled = Set-ODSWindowsExtensionComposeState `
-                    -ComposePath $composePath `
-                    -Enabled $decision.Enabled
+                if ($svcName -in @('remote-provider-egress', 'remote-provider-ssh-tunnel')) {
+                    # Phase 06 already published the canonical recipe under
+                    # the host graph lock. Never replay this earlier plan over
+                    # a Library choice made after that lock was released.
+                    $latestRemotePlan = Get-ODSWindowsRemoteProviderSelections -InstallDir $installDir
+                    $decision = $latestRemotePlan[$svcName]
+                    $composeEnabled = $decision.Enabled -and (Test-Path -LiteralPath $composePath -PathType Leaf)
+                } else {
+                    $composeEnabled = Set-ODSWindowsExtensionComposeState `
+                        -ComposePath $composePath `
+                        -Enabled $decision.Enabled
+                }
                 if (-not $decision.Enabled) {
                     $skippedExtensionServices += "$svcName ($($decision.DisabledReason))"
                     continue
@@ -1098,27 +1124,11 @@ litellm_settings:
             $composeFlags += @("-f", "docker-compose.override.yml")
         }
 
-        # Validate compose files exist before launching
-        for ($fi = 0; $fi -lt $composeFlags.Count; $fi++) {
-            if ($composeFlags[$fi] -eq "-f" -and ($fi + 1) -lt $composeFlags.Count) {
-                $cf = $composeFlags[$fi + 1]
-                $cfPath = $cf
-                if (-not [System.IO.Path]::IsPathRooted($cfPath)) {
-                    $cfPath = Join-Path $installDir $cfPath
-                }
-                if (-not (Test-Path $cfPath)) {
-                    Write-AIError "Compose file not found: $cf"
-                    Write-AI "  Expected path: $cfPath"
-                    Write-AI "  Re-run with --Force or check that $installDir is intact."
-                    exit 1
-                }
-            }
-        }
-
-        # Save compose flags before build/up so ods.ps1 and diagnostics have
-        # the exact selected stack even after a partial install failure.
-        $flagsFile = Join-Path $installDir ".compose-flags"
-        Write-Utf8NoBom -Path $flagsFile -Content ($composeFlags -join " ")
+        # Reconcile remote choices again while publishing the cache under the
+        # host graph lock. A Library toggle after the earlier scan must win.
+        . (Join-Path $sourceRoot 'installers\windows\lib\remote-provider-source-copy.ps1')
+        $composeFlags = @(Write-ODSWindowsRemoteProviderComposeFlags `
+            -InstallDir $installDir -SourceRoot $sourceRoot -ComposeFlags $composeFlags)
 
         function Assert-ODSWindowsComposeCwd {
             param([string]$InstallDir)
@@ -1999,6 +2009,7 @@ litellm_settings:
                 $wrapperContent = @"
 #!/bin/bash
 set -uo pipefail
+export ODS_WINDOWS_DEVTOOLS_SELECTED="$($enableDevTools.ToString().ToLowerInvariant())"
 mkdir -p "`$(dirname "$bashUpgradeLog")"
 echo "`$`$" > "$bashUpgradePidFile"
 exec bash "$bashScript" "$bashInstallDir" "$($fullTierConfig.GgufFile)" "$($fullTierConfig.GgufUrl)" "$($fullTierConfig.GgufSha256)" "$($fullTierConfig.LlmModel)" "$($fullTierConfig.MaxContext)" "$($script:BOOTSTRAP_GGUF_FILE)" > "$bashUpgradeLog" 2> "$bashUpgradeErrLog" < /dev/null
@@ -2088,20 +2099,33 @@ exec bash "$bashScript" "$bashInstallDir" "$($fullTierConfig.GgufFile)" "$($full
 Write-Phase -Phase 9 -Total 13 -Name "VERIFICATION" -Estimate "~30 seconds"
 
 if ($dryRun) {
+    # A dry run cannot know whether a future Lemonade download or health check
+    # will succeed. Show the preferred AMD plan; a real fallback re-plans with
+    # $useLemonade=false after the runtime attempt.
+    $dryRunUseLemonade = ($gpuInfo.Backend -eq "amd" -and -not $cloudMode)
     $_dryRunServicePlan = New-ODSWindowsServicePlan `
         -EnableRecommended $enableRecommended `
-        -EnableVoice $enableVoice `
+        -CloudMode $cloudMode `
+        -UseLemonade $dryRunUseLemonade `
+        -SwitchboardMode (Get-ODSWindowsEffectiveSwitchboardMode -InstallDir $installDir -RequestedMode $env:ODS_MODEL_SWITCHBOARD) `
+        -EnableWhisper $enableWhisper `
+        -EnableTts $enableTts `
         -EnableWorkflows $enableWorkflows `
         -EnableRag $enableRag `
         -EnableHermes $enableHermes `
+        -EnableHermesProxy $enableHermesProxy `
         -EnableOpenClaw $enableOpenClaw `
         -EnableComfyui $enableComfyui `
         -EnableDeepResearch $enableDeepResearch `
         -EnablePrivacyShield $enablePrivacyShield `
+        -EnableLangfuse $enableLangfuse `
         -EnableBraveSearch $enableBraveSearch `
         -EnableODSProxy $enableODSProxy `
         -EnableRemoteAccess $enableRemoteAccess
     Write-AI "[DRY RUN] Would health-check selected services"
+    if ($dryRunUseLemonade) {
+        Write-AI "[DRY RUN] If Lemonade fails, native llama-server fallback omits the observe/legacy LiteLLM gateway."
+    }
     if (Test-ODSWindowsServiceEnabled -ServiceId "perplexica" -Plan $_dryRunServicePlan) {
         Write-AI "[DRY RUN] Would auto-configure Perplexica for $($tierConfig.LlmModel)"
     }
@@ -2111,19 +2135,21 @@ if ($dryRun) {
 }
 
 # ── Service health checks ─────────────────────────────────────────────────────
-$opencodeSync = Sync-WindowsOpenCodeConfigFromEnv -InstallDir $installDir `
-    -GpuBackend $gpuInfo.Backend -UseLemonade:$useLemonade -CloudMode:$cloudMode `
-    -DefaultModelId $tierConfig.GgufFile -DefaultModelName $tierConfig.LlmModel `
-    -DefaultContextLimit ([int]$tierConfig.MaxContext) -SkipIfUnavailable
-switch ($opencodeSync.Status) {
-    "created" {
-        Write-AISuccess "OpenCode config synced to active model (model: $($opencodeSync.ModelName))"
-    }
-    "updated" {
-        Write-AISuccess "OpenCode config synced to active model (model: $($opencodeSync.ModelName))"
-    }
-    "regenerated" {
-        Write-AISuccess "OpenCode config regenerated for active model (model: $($opencodeSync.ModelName))"
+if ($enableDevTools) {
+    $opencodeSync = Sync-WindowsOpenCodeConfigFromEnv -InstallDir $installDir `
+        -GpuBackend $gpuInfo.Backend -UseLemonade:$useLemonade -CloudMode:$cloudMode `
+        -DefaultModelId $tierConfig.GgufFile -DefaultModelName $tierConfig.LlmModel `
+        -DefaultContextLimit ([int]$tierConfig.MaxContext) -SkipIfUnavailable
+    switch ($opencodeSync.Status) {
+        "created" {
+            Write-AISuccess "OpenCode config synced to active model (model: $($opencodeSync.ModelName))"
+        }
+        "updated" {
+            Write-AISuccess "OpenCode config synced to active model (model: $($opencodeSync.ModelName))"
+        }
+        "regenerated" {
+            Write-AISuccess "OpenCode config regenerated for active model (model: $($opencodeSync.ModelName))"
+        }
     }
 }
 
@@ -2155,7 +2181,7 @@ $healthChecks = @(
     @{ Name = $llmEndpoint.Name; Url = $llmEndpoint.HealthUrl }
     @{ Name = "Chat UI (Open WebUI)"; Url = "http://localhost:$webuiHealthPort" }
 )
-if ($enableVoice)     {
+if ($enableWhisper)   {
     $healthWhisperPort = if ($windowsEnvMap.ContainsKey("WHISPER_PORT") -and -not [string]::IsNullOrWhiteSpace($windowsEnvMap["WHISPER_PORT"])) { $windowsEnvMap["WHISPER_PORT"] } else { "9000" }
     $healthChecks += @{ Name = "Whisper (STT)"; Url = "http://localhost:$healthWhisperPort/health" }
 }
@@ -2298,11 +2324,11 @@ function Wait-WindowsSttModelCached {
     return (Test-WindowsSttModelCached -ModelUrl $ModelUrl)
 }
 
-$sttModelReady = (-not $enableVoice)
+$sttModelReady = (-not $enableWhisper)
 $sttModelNameForReadiness = ""
 $sttModelCacheUrl = ""
 $sttRecoveryCmd = ""
-if ($enableVoice) {
+if ($enableWhisper) {
     # Read AUDIO_STT_MODEL and WHISPER_PORT from .env (written by env-generator.ps1).
     # Use ReadAllText with explicit UTF8NoBom encoding so legacy BOM-prefixed
     # .env files (written by old Set-Content -Encoding UTF8) don't break the
@@ -2439,6 +2465,7 @@ function Get-ReadinessPort {
 
 $dashboardPort = Get-ReadinessPort -Name "DASHBOARD_PORT" -Default "3001"
 $webuiPort = Get-ReadinessPort -Name "WEBUI_PORT" -Default "3000"
+$chatUrl = "http://localhost:$webuiPort"
 $dashboardApiPort = Get-ReadinessPort -Name "DASHBOARD_API_PORT" -Default "3002"
 $llmContainer = if ($useLemonade -or $cloudMode -or $gpuInfo.Backend -eq "amd") { "" } else { "ods-llama-server" }
 $readinessChecks = @(
@@ -2459,13 +2486,15 @@ if (Test-ODSWindowsServiceEnabled -ServiceId "token-spy" -Plan $servicePlan) {
     $tokenSpyPort = Get-ReadinessPort -Name "TOKEN_SPY_PORT" -Default "3005"
     $readinessChecks += @{ Name = "Token Spy"; Url = "http://localhost:$tokenSpyPort/health"; Container = "ods-token-spy"; OpenUrl = "http://localhost:$tokenSpyPort" }
 }
-if ($enableVoice) {
+if ($enableWhisper) {
     $whisperPort = Get-ReadinessPort -Name "WHISPER_PORT" -Default "9000"
-    $ttsPort = Get-ReadinessPort -Name "TTS_PORT" -Default "8880"
     $readinessChecks += @{ Name = "Whisper (STT)"; Url = "http://localhost:$whisperPort/health"; Container = "ods-whisper"; OpenUrl = "http://localhost:$whisperPort" }
     if ($sttModelCacheUrl) {
         $readinessChecks += @{ Name = "Whisper STT model cache"; Url = $sttModelCacheUrl; Container = "ods-whisper"; OpenUrl = $sttModelNameForReadiness; Hint = "Run: $sttRecoveryCmd" }
     }
+}
+if ($enableTts) {
+    $ttsPort = Get-ReadinessPort -Name "TTS_PORT" -Default "8880"
     $readinessChecks += @{ Name = "Kokoro (TTS)"; Url = "http://localhost:$ttsPort/health"; Container = "ods-tts"; OpenUrl = "http://localhost:$ttsPort" }
 }
 if ($enableWorkflows) {
@@ -2499,7 +2528,7 @@ if (Test-ODSWindowsServiceEnabled -ServiceId "privacy-shield" -Plan $servicePlan
 $installReadiness = Write-ODSInstallReadinessSummary -Checks $readinessChecks `
     -StatusCommand ".\ods.ps1 status" `
     -LogPath (Join-Path $installDir "logs\install.log") `
-    -DashboardUrl "http://localhost:$dashboardPort" `
+    -ChatUrl $chatUrl `
     -PassThru
 
 # The first post-compose persona render happens as soon as the required core
@@ -2517,37 +2546,38 @@ if ($installReadiness -and $installReadiness.AllReady -and $llmModelReady -and $
 
 # ── Desktop & Start Menu shortcuts ───────────────────────────────────────────
 try {
-    $dashboardUrl  = "http://localhost:3001"
-    $shortcutName  = "ODS"
     $iconPath      = Join-Path $installDir "extensions\services\dashboard\public\osmantic-os.ico"
-    $iconContent   = if (Test-Path -LiteralPath $iconPath) { "IconFile=$iconPath`nIconIndex=0" } else { "IconIndex=0" }
-    $urlContent    = "[InternetShortcut]`nURL=$dashboardUrl`n$iconContent`n"
-
     $desktopDir    = [Environment]::GetFolderPath("Desktop")
-    Write-Utf8NoBom -Path (Join-Path $desktopDir   "$shortcutName.url") -Content $urlContent
-
     $startMenuDir  = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs"
-    Write-Utf8NoBom -Path (Join-Path $startMenuDir "$shortcutName.url") -Content $urlContent
+    Write-ODSWindowsShortcuts -ChatUrl $chatUrl -IconPath $iconPath `
+        -DesktopDir $desktopDir -StartMenuDir $startMenuDir
 
     # Attempt taskbar pin via Shell COM verb (silent no-op on builds that block it)
     try {
         $shell = New-Object -ComObject Shell.Application
         $folder = $shell.Namespace($desktopDir)
-        $item = $folder.ParseName("$shortcutName.url")
+        $item = $folder.ParseName("ODS.url")
         if ($item) {
             $item.Verbs() | Where-Object { $_.Name -match "pin.*taskbar|Taskbar" } |
                 ForEach-Object { $_.DoIt() }
         }
     } catch { }
 
-    Write-AISuccess "Added ODS shortcut to Desktop and Start Menu"
+    Write-AISuccess "Added ODS model chat shortcut to Desktop and Start Menu"
 } catch {
     Write-AIWarn "Could not create shortcuts: $_"
 }
 
+# The managed selection marker means a future rerun may recover optional
+# service choices from the active/disabled Compose filenames. Write it only
+# after this run has finished synchronizing the installed service files.
+if (-not $dryRun) {
+    Write-ODSWindowsManagedComposeSelectionMarker -InstallDir $installDir
+}
+
 # ── Success card ──────────────────────────────────────────────────────────────
 if ($allHealthy) {
-    Write-SuccessCard
+    Write-SuccessCard -WebUIPort $webuiPort -DashboardPort $dashboardPort
 } else {
     Write-Host ""
     Write-AIWarn "Install finished, but one or more services are not ready yet. Check status with:"
@@ -2589,6 +2619,8 @@ if ($SummaryJsonPath) {
         sttModelCached = $sttModelReady
         features   = @{
             voice        = $enableVoice
+            whisper      = $enableWhisper
+            tts          = $enableTts
             workflows    = $enableWorkflows
             rag          = $enableRag
             recommended  = $enableRecommended
@@ -2597,12 +2629,23 @@ if ($SummaryJsonPath) {
             comfyui      = $enableComfyui
             deepResearch = $enableDeepResearch
             privacyShield = $enablePrivacyShield
+            devTools     = $enableDevTools
         }
         healthy    = $allHealthy
         timestamp  = (Get-Date -Format "o")
     }
     Write-Utf8NoBom -Path $SummaryJsonPath -Content ($summary | ConvertTo-Json -Depth 3)
     Write-AI "Summary written to $SummaryJsonPath"
+}
+
+# Commit an explicit opt-out only after installer setup and verification finish.
+# Preflight, model, or Compose failures must leave the existing login task as it was.
+if ($noDevToolsFlag -and -not $dryRun) {
+    if (Disable-ODSWindowsOpenCodeLoginTask `
+        -TaskName $script:OPENCODE_TASK_NAME `
+        -ExpectedLauncher (Join-Path $script:OPENCODE_DIR 'start-opencode.ps1')) {
+        Write-AI 'Disabled the ODS OpenCode login task; existing binaries and sessions remain.'
+    }
 }
 
 $global:LASTEXITCODE = 0

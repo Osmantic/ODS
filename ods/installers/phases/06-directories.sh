@@ -174,6 +174,17 @@ else
         _env_get "$key" "$default"
     }
 
+    # Capture Library markers before source copy or the held Pixel
+    # source transaction can add new disabled fragments alongside them. The
+    # route state may live in the configured external data directory.
+    _phase06_remote_provider_data_dir="$(_env_get ODS_DATA_DIR "$INSTALL_DIR/data")"
+    _phase06_remote_provider_selection="$(python3 \
+        "$SCRIPT_DIR/scripts/remote-provider-compose-selection.py" inspect "$INSTALL_DIR" "$SCRIPT_DIR" \
+        --data-dir "$_phase06_remote_provider_data_dir")" || {
+        error "Could not inspect the retained remote-provider selection."
+        return 1
+    }
+
     _phase06_requested_pixel_url=""
     _phase06_requested_pixel_ref=""
     _phase06_requested_pixel_dir=""
@@ -500,6 +511,15 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
     else
         log "Running in-place (source == install dir), skipping file copy"
     fi
+
+    _phase06_step "reconcile-remote-provider-compose"
+    python3 "$SCRIPT_DIR/scripts/remote-provider-compose-selection.py" apply \
+        "$INSTALL_DIR" "$SCRIPT_DIR" "$_phase06_remote_provider_selection" \
+        --data-dir "$_phase06_remote_provider_data_dir" || {
+        error "Could not reconcile the retained remote-provider selection."
+        return 1
+    }
+    unset _phase06_remote_provider_selection
 
     if declare -F _ods_apply_deferred_feature_state >/dev/null; then
         _ods_apply_deferred_feature_state || {

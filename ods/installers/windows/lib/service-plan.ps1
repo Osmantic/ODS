@@ -24,10 +24,29 @@ function New-ODSWindowsServicePlanEntry {
     }
 }
 
+function Get-ODSWindowsEffectiveSwitchboardMode {
+    param([string]$InstallDir, [string]$RequestedMode = "")
+
+    $mode = $RequestedMode.Trim().ToLowerInvariant()
+    if ($mode -notin @("legacy", "observe", "enabled")) { $mode = "enabled" }
+    $envPath = Join-Path $InstallDir ".env"
+    if (Test-Path -LiteralPath $envPath -PathType Leaf) {
+        $savedMode = Get-Content -LiteralPath $envPath | Where-Object {
+            $_ -match '^ODS_MODEL_SWITCHBOARD='
+        } | Select-Object -First 1
+        if ([string]$savedMode -match '^ODS_MODEL_SWITCHBOARD=(legacy|observe|enabled)\s*$') {
+            $mode = $Matches[1].ToLowerInvariant()
+        }
+    }
+    return $mode
+}
+
 function New-ODSWindowsServicePlan {
     param(
         [bool]$EnableRecommended,
         [bool]$EnableVoice,
+        [bool]$EnableWhisper,
+        [bool]$EnableTts,
         [bool]$EnableWorkflows,
         [bool]$EnableRag,
         [bool]$EnableHermes,
@@ -35,31 +54,46 @@ function New-ODSWindowsServicePlan {
         [bool]$EnableComfyui,
         [bool]$EnableDeepResearch,
         [bool]$EnablePrivacyShield,
+        [bool]$EnableLangfuse = $false,
         [bool]$EnableBraveSearch = $false,
         [bool]$EnableODSProxy = $false,
-        [bool]$EnableRemoteAccess = $false
+        [bool]$EnableRemoteAccess = $false,
+        [bool]$CloudMode = $false,
+        [bool]$UseLemonade = $false,
+        [string]$SwitchboardMode = "enabled",
+        [Nullable[bool]]$EnableHermesProxy = $null
     )
 
     $plan = @{}
+    $proxyEnabled = if ($null -eq $EnableHermesProxy) { $EnableHermes } else { [bool]$EnableHermesProxy }
+    if ($proxyEnabled -and -not $EnableHermes) {
+        throw 'Hermes proxy requires Hermes.'
+    }
 
     $enableSearxng = Test-ODSWindowsSearxngNeeded `
         -EnableRecommended $EnableRecommended `
         -EnableDeepResearch $EnableDeepResearch `
         -EnableHermes $EnableHermes `
         -EnableOpenClaw $EnableOpenClaw
-    $plan["litellm"] = New-ODSWindowsServicePlanEntry "litellm" $EnableRecommended "recommended" "recommended services not enabled"
+    # Native OpenCode and the switchboard readiness check use LiteLLM's host
+    # port. Keep this gateway whenever the stable ods/current route is enabled.
+    # Lemonade's legacy AMD path still feeds opted-in Hermes and Perplexica
+    # through LiteLLM when the switchboard itself is in observe/legacy mode.
+    $needsLiteLlm = ($EnableRecommended -or $CloudMode -or $SwitchboardMode -eq "enabled" -or
+        ($UseLemonade -and ($EnableHermes -or $EnableDeepResearch)))
+    $plan["litellm"] = New-ODSWindowsServicePlanEntry "litellm" $needsLiteLlm "gateway" "LiteLLM gateway not required"
     $plan["searxng"] = New-ODSWindowsServicePlanEntry "searxng" $enableSearxng "search" "web search backend not required"
     $plan["token-spy"] = New-ODSWindowsServicePlanEntry "token-spy" $EnableRecommended "recommended" "recommended services not enabled"
 
-    $plan["whisper"] = New-ODSWindowsServicePlanEntry "whisper" $EnableVoice "voice" "voice not enabled"
-    $plan["tts"] = New-ODSWindowsServicePlanEntry "tts" $EnableVoice "voice" "voice not enabled"
+    $plan["whisper"] = New-ODSWindowsServicePlanEntry "whisper" ($EnableVoice -or $EnableWhisper) "voice" "Whisper not enabled"
+    $plan["tts"] = New-ODSWindowsServicePlanEntry "tts" ($EnableVoice -or $EnableTts) "voice" "Kokoro not enabled"
 
     $plan["n8n"] = New-ODSWindowsServicePlanEntry "n8n" $EnableWorkflows "workflows" "workflows not enabled"
     $plan["qdrant"] = New-ODSWindowsServicePlanEntry "qdrant" $EnableRag "rag" "RAG not enabled"
     $plan["embeddings"] = New-ODSWindowsServicePlanEntry "embeddings" $EnableRag "rag" "RAG not enabled"
 
     $plan["hermes"] = New-ODSWindowsServicePlanEntry "hermes" $EnableHermes "agents" "Hermes agent not enabled"
-    $plan["hermes-proxy"] = New-ODSWindowsServicePlanEntry "hermes-proxy" $EnableHermes "agents" "Hermes agent not enabled"
+    $plan["hermes-proxy"] = New-ODSWindowsServicePlanEntry "hermes-proxy" $proxyEnabled "agents" "Hermes proxy not enabled"
     $plan["openclaw"] = New-ODSWindowsServicePlanEntry "openclaw" $EnableOpenClaw "legacy-agents" "OpenClaw is deprecated and was not explicitly enabled"
     $plan["ape"] = New-ODSWindowsServicePlanEntry "ape" ($EnableHermes -or $EnableOpenClaw) "agents" "agent governance not needed without an enabled agent"
     # Pixel's current trusted host runtime is installed by the Linux installer
@@ -76,6 +110,7 @@ function New-ODSWindowsServicePlan {
     $plan["comfyui"] = New-ODSWindowsServicePlanEntry "comfyui" $EnableComfyui "image" "image generation not enabled"
     $plan["perplexica"] = New-ODSWindowsServicePlanEntry "perplexica" $EnableDeepResearch "research" "deep research not enabled"
     $plan["privacy-shield"] = New-ODSWindowsServicePlanEntry "privacy-shield" $EnablePrivacyShield "privacy" "privacy shield not enabled"
+    $plan["langfuse"] = New-ODSWindowsServicePlanEntry "langfuse" $EnableLangfuse "observability" "Langfuse not enabled"
 
     $plan["brave-search"] = New-ODSWindowsServicePlanEntry "brave-search" $EnableBraveSearch "search" "Brave Search API not configured"
     $plan["ods-proxy"] = New-ODSWindowsServicePlanEntry "ods-proxy" $EnableODSProxy "networking" "LAN web proxy not enabled"
@@ -98,6 +133,80 @@ function Test-ODSWindowsSearxngNeeded {
     )
 
     return [bool]($EnableRecommended -or $EnableDeepResearch -or $EnableHermes -or $EnableOpenClaw)
+}
+
+function Get-ODSWindowsRemoteProviderSelections {
+    <# Preserve Library choices and active routes when the two internal
+       remote-provider services move out of base Compose. #>
+    param([Parameter(Mandatory = $true)][string]$InstallDir)
+
+    $routePath = Join-Path $InstallDir "data\remote-provider\routing-state.json"
+    $transport = ""
+    foreach ($directory in @((Join-Path $InstallDir 'data'), (Join-Path $InstallDir 'data\remote-provider'))) {
+        if (Test-Path -LiteralPath $directory) {
+            $item = Get-Item -LiteralPath $directory -Force
+            if (-not $item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+                throw 'Unsafe remote-provider state directory'
+            }
+        }
+    }
+    if (Test-Path -LiteralPath $routePath) {
+        $routeItem = Get-Item -LiteralPath $routePath -Force
+        if ($routeItem.PSIsContainer -or $routeItem.Length -gt 1048576 -or
+            ($routeItem.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+            throw "Unsafe remote-provider route state"
+        }
+        try {
+            $route = Get-Content -LiteralPath $routePath -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+        } catch {
+            throw "Remote-provider route state is unreadable or invalid"
+        }
+        if ($route.schema -cne "ods.remote-routing-state.v1" -or $route.enabled -isnot [bool]) {
+            throw "Remote-provider route state has an invalid contract"
+        }
+        if ($route.enabled) {
+            $transport = [string]$route.provider.transport
+            if ($transport -cnotin @("direct", "ssh")) {
+                throw "Enabled remote-provider route has an unknown transport"
+            }
+        }
+    }
+
+    $selection = @{}
+    foreach ($serviceId in @("remote-provider-egress", "remote-provider-ssh-tunnel")) {
+        $serviceDir = Join-Path (Join-Path $InstallDir "extensions\services") $serviceId
+        if (Test-Path -LiteralPath $serviceDir) {
+            $directoryItem = Get-Item -LiteralPath $serviceDir -Force
+            if (-not $directoryItem.PSIsContainer -or
+                ($directoryItem.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+                throw "Unsafe remote-provider service directory: $serviceId"
+            }
+        }
+        $active = Join-Path $serviceDir "compose.yaml"
+        $disabled = "$active.disabled"
+        $hasActive = Test-Path -LiteralPath $active
+        $hasDisabled = Test-Path -LiteralPath $disabled
+        foreach ($marker in @($active, $disabled)) {
+            if (Test-Path -LiteralPath $marker) {
+                $item = Get-Item -LiteralPath $marker -Force
+                if ($item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+                    throw "Unsafe remote-provider Compose marker: $serviceId"
+                }
+            }
+        }
+        $required = $transport -ceq "ssh" -or ($transport -ceq "direct" -and $serviceId -ceq "remote-provider-egress")
+        if ($hasActive -and $hasDisabled) {
+            throw "Ambiguous remote-provider Compose markers: $serviceId"
+        }
+        # Source copy preserves both marker names. A genuine disabled choice
+        # must not be mistaken for a newly copied recipe during an upgrade.
+        $enabled = if ($hasActive) { $true } elseif ($hasDisabled) { $false } else { $required }
+        if ($required -and -not $enabled) {
+            throw "Active remote-provider route requires enabled $serviceId"
+        }
+        $selection[$serviceId] = New-ODSWindowsServicePlanEntry $serviceId $enabled "remote-provider" "remote-provider service not selected"
+    }
+    return $selection
 }
 
 function Get-ODSWindowsServicePlanDecision {
