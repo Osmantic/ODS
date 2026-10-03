@@ -585,6 +585,8 @@ ods_pixel_uninstall_managed() {
     local access_probe_base="${ODS_PIXEL_UNINSTALL_ACCESS_PROBE_DIR:-/var/lib/ods-pixel-access-probes}"
     local access_dropin_dir="$systemd_dir/openclaw-gateway.service.d"
     local access_dropin="$access_dropin_dir/90-ods-full-access.conf"
+    local wsl_gateway_socket_dropin="$access_dropin_dir/85-ods-ingress-socket.conf"
+    local wsl_gateway_socket_source="$install_dir/extensions/services/pixel-agent/host/pixel-gateway-wsl-socket.conf"
     local access_relay_key="$etc_dir/pixel-access-relay.key"
     local provider_environment="$etc_dir/pixel-provider.env"
     local provider_dropin="$access_dropin_dir/95-ods-provider.conf"
@@ -652,7 +654,7 @@ ods_pixel_uninstall_managed() {
         "$wsl_bridge_unit" "$wsl_bridge_program" "$wsl_bridge_source" "$wsl_bridge_unit_source" \
         "$system_observer_program" "$access_unit" "$access_program" "$access_config" \
         "$access_source" "$access_state" "$access_probe_base" \
-        "$access_dropin_dir" "$access_dropin"; do
+        "$access_dropin_dir" "$access_dropin" "$wsl_gateway_socket_dropin" "$wsl_gateway_socket_source"; do
         [[ "$path" == /* && "$path" != / ]] || {
             log_error "Refusing Pixel Operations cleanup for an invalid absolute target"
             return 1
@@ -696,6 +698,19 @@ ods_pixel_uninstall_managed() {
     owner_uid="$(id -u)"
     owner_gid="$(id -g)"
     owner_name="$(id -un)"
+    if [[ -e "$wsl_gateway_socket_dropin" || -L "$wsl_gateway_socket_dropin" ]]; then
+        [[ -f "$wsl_gateway_socket_dropin" && ! -L "$wsl_gateway_socket_dropin" \
+            && -f "$wsl_gateway_socket_source" && ! -L "$wsl_gateway_socket_source" \
+            && "$(stat -c '%u:%g:%a' -- "$wsl_gateway_socket_dropin")" == "$root_uid:$root_gid:644" \
+            && "$(stat -c '%u' -- "$wsl_gateway_socket_source")" == "$owner_uid" ]] \
+            && cmp -s -- "$wsl_gateway_socket_source" <(printf '%s\n' \
+                '[Service]' \
+                'Environment=PIXEL_INGRESS_SOCKET=/mnt/wsl/ods-portal-sockets/ingress/pixel-ingress.sock') \
+            && cmp -s -- "$wsl_gateway_socket_source" "$wsl_gateway_socket_dropin" || {
+            log_error "Refusing to remove a changed Pixel WSL gateway socket drop-in"
+            return 1
+        }
+    fi
     if [[ -e "$wsl_bridge_unit" || -L "$wsl_bridge_unit" \
         || -e "$wsl_bridge_program" || -L "$wsl_bridge_program" ]]; then
         [[ -f "$wsl_bridge_unit" && ! -L "$wsl_bridge_unit" \
@@ -2324,6 +2339,7 @@ PY
         || -e "$workspace_preview_unit" || -L "$workspace_preview_unit" \
         || -e "$wsl_bridge_unit" || -L "$wsl_bridge_unit" \
         || -e "$wsl_bridge_program" || -L "$wsl_bridge_program" \
+        || -e "$wsl_gateway_socket_dropin" || -L "$wsl_gateway_socket_dropin" \
         || -e "$workspace_preview_program" || -L "$workspace_preview_program" \
         || -e "$unix_peer_program" || -L "$unix_peer_program" \
         || -e "$system_observer_program" || -L "$system_observer_program" \
@@ -2857,7 +2873,7 @@ PY
             "$extension_manager_unit" "$extension_manager_program" \
             "$artifact_promoter_unit" "$artifact_promoter_program" \
             "$workspace_preview_unit" "$workspace_preview_program" "$unix_peer_program" \
-            "$wsl_bridge_unit" "$wsl_bridge_program" \
+            "$wsl_bridge_unit" "$wsl_bridge_program" "$wsl_gateway_socket_dropin" \
             "$system_observer_program" \
             || ! sudo systemctl daemon-reload; then
             log_error "Could not remove ODS-managed Pixel system artifacts"
@@ -2869,6 +2885,7 @@ PY
             || -e "$artifact_promoter_program" || -e "$workspace_preview_unit" \
             || -e "$workspace_preview_program" || -e "$unix_peer_program" || -e "$system_observer_program" \
             || -e "$wsl_bridge_unit" || -e "$wsl_bridge_program" \
+            || -e "$wsl_gateway_socket_dropin" || -L "$wsl_gateway_socket_dropin" \
             || -e "$workspace_preview_state" || -e "$access_unit" || -L "$access_unit" \
             || -e "$access_program" || -L "$access_program" \
             || -e "$access_config" || -L "$access_config" \

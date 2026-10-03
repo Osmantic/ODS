@@ -4670,6 +4670,9 @@ _ods_pixel_install_ingress() {
     local wsl_bridge=false ingress_socket=/run/ods-pixel/pixel-ingress.sock
     local wsl_bridge_source="$plugin_root/host/pixel-wsl-runtime-bridge.sh"
     local wsl_bridge_unit="$plugin_root/host/pixel-wsl-runtime-bridge.service"
+    local wsl_gateway_socket_source="$plugin_root/host/pixel-gateway-wsl-socket.conf"
+    local wsl_gateway_socket_dir=/etc/systemd/system/openclaw-gateway.service.d
+    local wsl_gateway_socket_dropin="$wsl_gateway_socket_dir/85-ods-ingress-socket.conf"
     local ods_version="${VERSION:-3.0.0}"
     if grep -Fxq 'PIXEL_INGRESS_RUNTIME_DIR=/mnt/wsl/ods-portal-sockets/ingress' "${INSTALL_DIR:?}/.env"; then
         grep -Fxq 'PIXEL_INGRESS_RUNTIME_DIR=/mnt/wsl/ods-portal-sockets/ingress' "$INSTALL_DIR/.env" || return 1
@@ -4830,6 +4833,23 @@ EOF
     ods_sudo cmp -s -- "$rendered_workspace_preview_unit" \
         /etc/systemd/system/pixel-workspace-preview.service
     if "$wsl_bridge"; then
+        [[ -f "$wsl_gateway_socket_source" && ! -L "$wsl_gateway_socket_source" ]] || return 1
+        cmp -s -- "$wsl_gateway_socket_source" <(printf '%s\n' \
+            '[Service]' \
+            'Environment=PIXEL_INGRESS_SOCKET=/mnt/wsl/ods-portal-sockets/ingress/pixel-ingress.sock') \
+            || return 1
+        if [[ -e "$wsl_gateway_socket_dropin" || -L "$wsl_gateway_socket_dropin" ]]; then
+            [[ -f "$wsl_gateway_socket_dropin" && ! -L "$wsl_gateway_socket_dropin" ]] || return 1
+            ods_sudo cmp -s -- "$wsl_gateway_socket_source" "$wsl_gateway_socket_dropin" || return 1
+        fi
+        if [[ ! -e "$wsl_gateway_socket_dir" && ! -L "$wsl_gateway_socket_dir" ]]; then
+            ods_sudo install -d -o root -g root -m 0755 -- "$wsl_gateway_socket_dir" || return 1
+        fi
+        [[ -d "$wsl_gateway_socket_dir" && ! -L "$wsl_gateway_socket_dir" ]] || return 1
+        [[ "$(ods_sudo stat -c '%U:%G:%a' -- "$wsl_gateway_socket_dir")" == root:root:755 ]] || return 1
+        ods_sudo install -o root -g root -m 0644 "$wsl_gateway_socket_source" \
+            "$wsl_gateway_socket_dropin" || return 1
+        ods_sudo cmp -s -- "$wsl_gateway_socket_source" "$wsl_gateway_socket_dropin" || return 1
         ods_sudo install -o root -g root -m 0755 "$wsl_bridge_source" \
             /usr/local/libexec/ods-pixel-wsl-runtime-bridge || return 1
         ods_sudo install -o root -g root -m 0644 "$wsl_bridge_unit" \
@@ -4865,7 +4885,14 @@ PY
     ods_sudo systemctl enable openclaw-gateway.service pixel-ingress.service \
         pixel-extension-manager.service pixel-artifact-promoter.service \
         pixel-workspace-preview.service || return 1
-    ods_sudo systemctl start openclaw-gateway.service || return 1
+    # The WSL drop-in changes the gateway plugins' ingress socket route. A
+    # running gateway must reload that environment before history and image
+    # requests can use the new direct socket.
+    if "$wsl_bridge"; then
+        ods_sudo systemctl restart openclaw-gateway.service || return 1
+    else
+        ods_sudo systemctl start openclaw-gateway.service || return 1
+    fi
     ods_sudo systemctl restart pixel-extension-manager.service || return 1
     ods_sudo systemctl restart pixel-artifact-promoter.service || return 1
     ods_sudo systemctl restart pixel-workspace-preview.service || return 1

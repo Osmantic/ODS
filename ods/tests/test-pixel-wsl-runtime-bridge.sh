@@ -19,6 +19,7 @@ unit = (host / 'pixel-wsl-runtime-bridge.service').read_text()
 ingress = (host / 'pixel-ingress.service').read_text()
 preview = (host / 'pixel-workspace-preview.service').read_text()
 preview_code = (host / 'workspace_preview.py').read_text()
+gateway_socket_dropin = (host / 'pixel-gateway-wsl-socket.conf').read_text()
 phase = (root / 'installers/phases/06-directories.sh').read_text()
 installer = (root / 'installers/lib/pixel-host-install.sh').read_text()
 uninstall = (root / 'lib/pixel-uninstall.sh').read_text()
@@ -47,6 +48,8 @@ assert '-/mnt/wsl/ods-portal-sockets/preview' in preview
 assert 'PIXEL_PREVIEW_HTTP_SOCKET' in preview_code
 assert 'Environment=PIXEL_PREVIEW_HTTP_SOCKET=__PIXEL_PREVIEW_HTTP_SOCKET__' in preview
 assert 'EnvironmentFile=/etc/ods/pixel-agent.env' not in preview
+assert gateway_socket_dropin == ('[Service]\n'
+    'Environment=PIXEL_INGRESS_SOCKET=/mnt/wsl/ods-portal-sockets/ingress/pixel-ingress.sock\n')
 
 # No WSL mount propagation is needed to see a socket replaced within a
 # stable directory. The gateway token and preview control remain under /run.
@@ -57,6 +60,8 @@ assert 'PIXEL_STATUS_FILE=/run/ods-pixel/ods-status.json' in installer
 assert '.replace("__PIXEL_PREVIEW_HTTP_SOCKET__", http_socket)' in installer
 assert 'PIXEL_INGRESS_SOCKET=$ingress_socket' in installer
 assert 'PIXEL_SERVICE_USER=$owner' in installer
+assert '85-ods-ingress-socket.conf' in installer
+assert 'systemctl restart openclaw-gateway.service' in installer
 assert 'systemctl reenable ods-pixel-wsl-runtime-bridge.service' in installer
 assert '_ods_pixel_prepare_wsl_runtime_bridge "$owner"' in installer
 assert installer.index('_ods_pixel_prepare_wsl_runtime_bridge "$owner"') < installer.index('"${pixel_prerequisites[@]}" >>"$LOG_FILE"')
@@ -65,6 +70,7 @@ assert '--unix-socket "$_pixel_ingress_socket"' in health
 assert '--unix-socket "$ingress_socket"' in wsl_health
 assert 'entries.get("PIXEL_INGRESS_SOCKET") not in' in uninstall
 assert 'systemctl disable --now ods-pixel-wsl-runtime-bridge.service' in uninstall
+assert 'wsl_gateway_socket_dropin' in uninstall
 
 os.environ['PIXEL_PREVIEW_HTTP_SOCKET'] = '/mnt/wsl/ods-portal-sockets/preview/http.sock'
 spec = importlib.util.spec_from_file_location('wsl_workspace_preview', host / 'workspace_preview.py')
