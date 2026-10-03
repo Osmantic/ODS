@@ -243,6 +243,15 @@ jobs:
         shell: pwsh
         run: ./tests/test-windows-compose-project-ownership.ps1
 
+      - name: Windows GPU Repair Opt-in Contract
+        shell: pwsh
+        run: ./tests/test-windows-gpu-repair-opt-in.ps1
+
+      - name: Windows GPU Repair Opt-in Contract (PowerShell 5.1)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./tests/test-windows-gpu-repair-opt-in.ps1
+
       - name: Windows Host Agent Python Resolver Contract
         shell: pwsh
         run: ./tests/test-windows-python-resolver.ps1

@@ -37,6 +37,7 @@
 #   .\install-windows.ps1 -NoHermes        # Disable Hermes Agent
 #   .\install-windows.ps1 -NoVoice         # Disable both, including with -All
 #   .\install-windows.ps1 -NoBootstrap     # Wait for full model before launch
+#   .\install-windows.ps1 -RepairGpuWsl    # Opt in to WSL shutdown/toolkit repair on GPU probe failure
 #   .\install-windows.ps1 -InstallDir <path>
 #   .\install-windows.ps1 --NonInteractive # Headless install (defaults)
 #
@@ -67,6 +68,7 @@ param(
     [switch]$Langfuse,
     [switch]$NoLangfuse,
     [switch]$NoBootstrap,
+    [switch]$RepairGpuWsl,
     [string]$InstallDir = "",
     [string]$SummaryJsonPath = ""
 )
@@ -143,6 +145,7 @@ $lanFlag        = $Lan.IsPresent
 $langfuseFlag   = $Langfuse.IsPresent
 $noLangfuseFlag = $NoLangfuse.IsPresent
 $noBootstrapFlag = $NoBootstrap.IsPresent
+$repairGpuWslFlag = $RepairGpuWsl.IsPresent
 $installDir     = $script:ODS_INSTALL_DIR
 $sourceRoot     = $SourceRoot
 $enableDevTools = Resolve-ODSWindowsDevToolsSelection `

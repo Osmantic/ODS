@@ -205,6 +205,9 @@ background.
 # Wait for the full model instead of using bootstrap fast-start
 .\ods\installers\windows\install-windows.ps1 -NoBootstrap
 
+# Opt in to WSL GPU repair if the NVIDIA Docker probe fails
+.\ods\installers\windows\install-windows.ps1 -RepairGpuWsl
+
 # Install runtime files on a specific drive/path
 $installDir = "D:\Apps\ods"
 .\ods\installers\windows\install-windows.ps1 -InstallDir $installDir
@@ -215,6 +218,12 @@ selected only when the ODS OpenCode login task is enabled; a disabled task stays
 disabled. `-NoDevTools` disables that ODS-owned login task without deleting
 binaries or stopping a current session. The ODS host agent remains part of the
 install in either case.
+
+If the NVIDIA Docker GPU probe fails, the native installer continues with
+CPU inference by default. `-RepairGpuWsl` opts into recovery that shuts down
+all running WSL distributions and may install or configure NVIDIA Container
+Toolkit in the default WSL distribution. Stop important WSL workloads and
+check which distribution is the default before using it.
 
 ---
 
