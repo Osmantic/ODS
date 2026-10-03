@@ -15,6 +15,35 @@ log_info() { :; }
 log_ok() { :; }
 log_error() { :; }
 
+if python3 - "$ROOT_DIR" <<'PY'
+import ast
+import pathlib
+import re
+import sys
+
+source = pathlib.Path(sys.argv[1])
+bridge = ast.parse((source / 'bin/pixel_access_bridge.py').read_text(encoding='utf-8'))
+completed = {
+    node.right.value
+    for node in ast.walk(bridge)
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div)
+    and isinstance(node.left, ast.Attribute) and node.left.attr == 'state'
+    and isinstance(node.left.value, ast.Name) and node.left.value.id == 'self'
+    and isinstance(node.right, ast.Constant) and isinstance(node.right.value, str)
+    and node.right.value.endswith('-completed.json')
+}
+consumer = (source / 'lib/pixel-uninstall.sh').read_text(encoding='utf-8')
+limits = ast.parse(re.search(r'^state_limits = (\{.*?^\})', consumer, re.M | re.S)[1], mode='eval').body
+allowed = {ast.literal_eval(key) for key in limits.keys}
+assert completed, 'No completion writers found'
+assert not completed - allowed, 'Uninstall omits bridge completions: ' + ', '.join(sorted(completed - allowed))
+PY
+then
+    pass "uninstall recognizes the bridge's durable completion records"
+else
+    fail "uninstall completion inventory diverged from its producer"
+fi
+
 TEST_ROOT="$(mktemp -d)"
 trap 'rm -rf "$TEST_ROOT"' EXIT
 MOCK_BIN="$TEST_ROOT/bin"
@@ -666,6 +695,10 @@ ENV
     printf '%s\n' '<!doctype html><title>fixture</title>' \
         >"$PREVIEW_STATE/site-0123456789abcdef01234567/index.html"
     chmod 0400 "$PREVIEW_STATE/site-0123456789abcdef01234567/index.html"
+    # The real Review source publisher retains this private writable lock.
+    mkdir -m 0700 "$PREVIEW_STATE/.review-sources"
+    : >"$PREVIEW_STATE/.review-sources/.quota.lock"
+    chmod 0600 "$PREVIEW_STATE/.review-sources/.quota.lock"
 
     printf 'pixel-ops-broker:x:%s:%s:Pixel Operations Broker:%s:/usr/sbin/nologin\n' \
         "$uid" "$gid" "$OPS_STATE" >"$OPS_PASSWD_STATE"
@@ -1520,6 +1553,7 @@ for drift_target in program broker-source-mode public-state-file onboarding-sour
     extension-manager-program extension-manager-unit extension-manager-owner-unit approval-helper \
     artifact-promoter-program artifact-promoter-unit artifact-promoter-owner-unit \
     workspace-preview-program workspace-preview-unit workspace-preview-owner-unit workspace-preview-state \
+    preview-quota-readonly preview-quota-public preview-quota-symlink preview-quota-hardlink preview-quota-wrong-path \
     system-observer-program system-observer-source unix-peer-program unix-peer-ops unix-peer-source \
     unit dropin dropin-source environment policy; do
     write_ops_fixture
@@ -1550,6 +1584,17 @@ PY
         workspace-preview-unit) printf '%s\n' '# drift' >>"$SYSTEMD_DIR/pixel-workspace-preview.service" ;;
         workspace-preview-owner-unit) printf '%s\n' '# drift' >>"$INSTALL_DIR/data/pixel/workspace-preview.service" ;;
         workspace-preview-state) chmod 0600 "$PREVIEW_STATE/site-0123456789abcdef01234567/index.html" ;;
+        preview-quota-readonly) chmod 0400 "$PREVIEW_STATE/.review-sources/.quota.lock" ;;
+        preview-quota-public) chmod 0644 "$PREVIEW_STATE/.review-sources/.quota.lock" ;;
+        preview-quota-symlink)
+            rm "$PREVIEW_STATE/.review-sources/.quota.lock"
+            ln -s "$PREVIEW_STATE/site-0123456789abcdef01234567/index.html" "$PREVIEW_STATE/.review-sources/.quota.lock"
+            ;;
+        preview-quota-hardlink) ln "$PREVIEW_STATE/.review-sources/.quota.lock" "$PREVIEW_STATE/.review-sources/linked.lock" ;;
+        preview-quota-wrong-path)
+            : >"$PREVIEW_STATE/site-0123456789abcdef01234567/.quota.lock"
+            chmod 0600 "$PREVIEW_STATE/site-0123456789abcdef01234567/.quota.lock"
+            ;;
         system-observer-program) printf '%s\n' '# drift' >>"$LIBEXEC_DIR/ods-pixel-system-observe.py" ;;
         system-observer-source) printf '%s\n' '# drift' >>"$INSTALL_DIR/extensions/services/pixel-agent/host/system_observe.py" ;;
         unix-peer-program) printf '%s\n' '# drift' >>"$LIBEXEC_DIR/unix_peer.py" ;;
@@ -2405,16 +2450,44 @@ for scenario in foreign modified_unit modified_program relay_key state_symlink p
 done
 
 write_access_fixture
-for receipt in release-intent release-prepared release-completed; do
+for receipt in release-intent release-prepared release-completed source-overlay-completed; do
     printf '{}\n' > "$ACCESS_STATE/$receipt.json"
     chmod 0600 "$ACCESS_STATE/$receipt.json"
 done
 if ods_pixel_uninstall_managed "$INSTALL_DIR" "$HOME_DIR" \
     && [[ ! -e "$ACCESS_STATE" ]]; then
-    pass "completed release coordinator state permits verified cleanup"
+    pass "completed release and source overlay coordinator state permits verified cleanup"
 else
     fail "completed release coordinator state stranded the installation"
 fi
+
+for scenario in public symlink hardlink oversized invalid-json non-object unknown-file pending; do
+    write_access_fixture
+    overlay="$ACCESS_STATE/source-overlay-completed.json"
+    printf '{"version":1}\n' > "$overlay"
+    chmod 0600 "$overlay"
+    case "$scenario" in
+        public) chmod 0644 "$overlay" ;;
+        symlink)
+            rm "$overlay"
+            ln -s "$ACCESS_STATE/access-before.json" "$overlay"
+            ;;
+        hardlink) ln "$overlay" "$TEST_ROOT/overlay-link" ;;
+        oversized) truncate -s 8193 "$overlay" ;;
+        invalid-json) printf '{\n' > "$overlay" ;;
+        non-object) printf '[]\n' > "$overlay" ;;
+        unknown-file) printf '{}\n' > "$ACCESS_STATE/unrecognized-completed.json" ;;
+        pending) printf '{}\n' > "$ACCESS_STATE/transition.json" ;;
+    esac
+    if ods_pixel_uninstall_managed "$INSTALL_DIR" "$HOME_DIR"; then
+        fail "unsafe source overlay completion accepted: $scenario"
+    else
+        [[ -e "$ACCESS_STATE" && ! -s "$SYSTEMCTL_LOG" && ! -s "$DOCKER_LOG" ]] \
+            && pass "source overlay completion refuses $scenario before mutation" \
+            || fail "source overlay completion lost recovery artifacts on $scenario"
+    fi
+    rm -f "$TEST_ROOT/overlay-link"
+done
 
 write_access_fixture
 printf '{}\n' > "$ACCESS_STATE/access-before.json"

@@ -73,12 +73,18 @@ def retire(install_dir: Path, *, validate_only: bool = False) -> dict:
     if 'ODS_WINDOWS_SYSTEM_DIRECTORY' in values and not values['ODS_WINDOWS_SYSTEM_DIRECTORY']:
         raise ValueError('The registered Windows system directory is empty; restore it before uninstalling')
     managed = None
-    if wsl_lemonade.candidate(values):
-        managed = wsl_lemonade.status(root, values)
+    if registered or wsl_lemonade.candidate(values):
+        # Routing can change to direct/cloud while the owned Windows task
+        # remains registered. Retirement discovers custody from that task's
+        # user, distro, install root and immutable plan, not from the current
+        # inference endpoint. This is a control-only environment; never change
+        # the installation's routing or persist these values into its .env.
+        runtime_values = {key: value for key, value in values.items()
+                          if key in {'ODS_WINDOWS_SYSTEM_DIRECTORY', 'ODS_WSL_STATE_ROOT'}}
+        runtime_values['LEMONADE_HOST_TRANSPORT'] = 'model-router'
+        managed = wsl_lemonade.status(root, runtime_values)
         if not managed['managed'] and registered:
             raise ValueError('The registered Windows runtime no longer belongs to this installation')
-    elif registered:
-        raise ValueError('Restore the registered Windows runtime transport before uninstalling')
     # All Windows ownership checks precede the first mutation. Disable and
     # settle sign-in startup before stopping Lemonade or retiring Pixel, so a
     # boot coordinator cannot restart services during their removal.
@@ -87,7 +93,7 @@ def retire(install_dir: Path, *, validate_only: bool = False) -> dict:
         return {'state': 'validated', 'startup': startup['state']}
     startup = wsl_lemonade.disable_startup(root, values, retire_relay=True)
     if managed and managed['managed']:
-        wsl_lemonade.stop(root, values, managed['planDigest'])
+        wsl_lemonade.stop(root, runtime_values, managed['planDigest'])
     return {'state': 'retired', 'startup': startup['state']}
 
 

@@ -123,14 +123,46 @@ class RetirementTests(unittest.TestCase):
         self.stop.assert_not_called()
         self.assertEqual(self.disable_startup.call_count, 2)
 
-    def test_registered_runtime_cannot_be_hidden_by_a_changed_transport(self):
+    def test_registered_runtime_is_verified_after_routing_changes(self):
         (self.root / 'data').mkdir()
         (self.root / 'data/wsl-lemonade-runtime.json').write_text('{}')
         self.candidate.return_value = False
-        with self.assertRaises(ValueError):
-            helper.retire(self.root, validate_only=True)
+        for transport in ('direct', 'cloud', ''):
+            content = ('LEMONADE_HOST_TRANSPORT=' + transport + '\n'
+                       'ODS_WINDOWS_SYSTEM_DIRECTORY="C:\\Windows\\System32"\n'
+                       'LEMONADE_BASE_URL=\nLEMONADE_CONTAINER_BASE_URL=https://example.com/api\n'
+                       'AMD_INFERENCE_PORT=\n')
+            (self.root / '.env').write_text(content)
+            with self.subTest(transport=transport):
+                self.assertEqual(helper.retire(self.root, validate_only=True)['state'], 'validated')
+                self.status.assert_called_with(self.root, ENV)
+                self.stop.assert_not_called()
+                self.assertEqual(helper.retire(self.root)['state'], 'retired')
+                self.stop.assert_called_once_with(self.root, ENV, 'a' * 64)
+                self.assertEqual((self.root / '.env').read_text(), content)
+                self.stop.reset_mock()
+
+    def test_changed_routing_does_not_allow_unowned_registered_runtime(self):
+        (self.root / 'data').mkdir()
+        (self.root / 'data/wsl-lemonade-runtime.json').write_text('{}')
+        (self.root / '.env').write_text('LEMONADE_HOST_TRANSPORT=direct\n')
+        self.candidate.return_value = False
+        for result in ({'managed': False}, OSError('foreign Windows task')):
+            self.status.side_effect = result if isinstance(result, Exception) else None
+            self.status.return_value = result
+            with self.subTest(result=result), self.assertRaises((ValueError, OSError)):
+                helper.retire(self.root)
+        self.status.assert_called_with(self.root, {'LEMONADE_HOST_TRANSPORT': 'model-router'})
         self.disable_startup.assert_not_called()
         self.stop.assert_not_called()
+
+    def test_retirement_ignores_changed_endpoints_for_owned_runtime_only(self):
+        with (self.root / '.env').open('a') as stream:
+            stream.write('LEMONADE_BASE_URL=https://example.com/api\nAMD_INFERENCE_PORT=\n')
+        helper.retire(self.root)
+        self.status.assert_called_once_with(self.root, ENV)
+        self.stop.assert_called_once_with(self.root, ENV, 'a' * 64)
+        self.assertEqual(self.disable_startup.call_args.args[1]['LEMONADE_BASE_URL'], 'https://example.com/api')
 
     def test_non_wsl_backends_do_not_even_read_configuration(self):
         for system, release in (('Darwin', '25'), ('Windows', '11'), ('Linux', '6.8')):
