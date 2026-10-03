@@ -121,7 +121,7 @@ export default function Extensions({ compact = false }) {
   const [settingValues, setSettingValues] = useState({})
   const [settingsBusy, setSettingsBusy] = useState(false)
   const dialogSeq = useRef(0)
-  const webuiAddInFlight = useRef(false)
+  const webuiSelectionInFlight = useRef(false)
   const settingsSave = useRef(null)
   const [templates, setTemplates] = useState([])
   const [pollingLost, setPollingLost] = useState(false)
@@ -468,9 +468,9 @@ export default function Extensions({ compact = false }) {
     }
   }
 
-  const handleWebuiAdd = async () => {
-    if (webuiAddInFlight.current) return
-    webuiAddInFlight.current = true
+  const handleWebuiSelection = async (enabled) => {
+    if (webuiSelectionInFlight.current) return
+    webuiSelectionInFlight.current = true
     beginCatalogMutation('open-webui')
     setMutating('open-webui')
     setConfirm(null)
@@ -478,20 +478,22 @@ export default function Extensions({ compact = false }) {
       const response = await fetch('/api/webui/selection', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ enabled: true }),
+        body: JSON.stringify({ enabled }),
         signal: AbortSignal.timeout(900000),
       })
       if (!response.ok) {
         const error = await response.json().catch(() => ({}))
-        throw new Error(typeof error.detail === 'string' ? error.detail : 'Could not add Open WebUI')
+        throw new Error(typeof error.detail === 'string' ? error.detail : `Could not ${enabled ? 'add' : 'disable'} Open WebUI`)
       }
       await Promise.all([fetchCatalog(), fetchWebuiSelection()])
-      setToast({ type: 'success', text: 'Open WebUI added. Existing chat data was preserved.' })
+      setToast({ type: 'success', text: enabled
+        ? 'Open WebUI added. Existing chat data was preserved.'
+        : 'Open WebUI disabled. Chats and settings were kept.' })
     } catch (error) {
       await fetchWebuiSelection()
-      setToast({ type: 'error', text: friendlyError(error.message) || 'Could not add Open WebUI. Check its selection before retrying.' })
+      setToast({ type: 'error', text: friendlyError(error.message) || `Could not ${enabled ? 'add' : 'disable'} Open WebUI. Check its selection before retrying.` })
     } finally {
-      webuiAddInFlight.current = false
+      webuiSelectionInFlight.current = false
       setMutating(null)
     }
   }
@@ -499,6 +501,7 @@ export default function Extensions({ compact = false }) {
   const requestAction = (ext, action) => {
     const messages = {
       'add-webui': 'Add Open WebUI? ODS will download and start its chat service. Any existing Open WebUI chats and settings will be reused.',
+      'disable-webui': 'Disable Open WebUI? Its chat service will stop. Existing chats and settings will be kept for later use.',
       install: `Install ${ext.name}? This will download and start the service.`,
       enable: `Enable ${ext.name}? The service will be started.`,
       disable: `Disable ${ext.name}? The service will be stopped.`,
@@ -529,7 +532,9 @@ export default function Extensions({ compact = false }) {
   const confirmAction = async () => {
     const current = confirm
     if (!current || settingsBusy || current.settings?.loading) return
-    const run = () => current.action === 'add-webui' ? handleWebuiAdd() : handleMutation(current.ext.id, current.action, {
+    const run = () => current.action === 'add-webui' ? handleWebuiSelection(true)
+      : current.action === 'disable-webui' ? handleWebuiSelection(false)
+      : handleMutation(current.ext.id, current.action, {
       autoEnableDeps: current.autoEnableDeps === true,
       force: current.action === 'update' && (
         current.ext.locally_modified || ['untracked', 'unknown'].includes(current.ext.update_status)
@@ -772,7 +777,7 @@ export default function Extensions({ compact = false }) {
         <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={() => setConfirm(null)}>
           <div className="bg-theme-card border border-theme-border rounded-xl p-6 max-w-md mx-4 shadow-2xl" onClick={e => e.stopPropagation()} role="dialog" aria-modal="true" aria-label="Confirm action">
             <h3 className="text-base font-semibold text-theme-text mb-2">
-              {confirm.action === 'add-webui' ? 'Add Open WebUI' : `${confirm.action === 'uninstall' ? 'Remove' : confirm.action === 'purge' ? 'Purge Data' : confirm.action.charAt(0).toUpperCase() + confirm.action.slice(1)} Extension`}
+              {confirm.action === 'add-webui' ? 'Add Open WebUI' : confirm.action === 'disable-webui' ? 'Disable Open WebUI' : `${confirm.action === 'uninstall' ? 'Remove' : confirm.action === 'purge' ? 'Purge Data' : confirm.action.charAt(0).toUpperCase() + confirm.action.slice(1)} Extension`}
             </h3>
             <p className="text-[11px] text-theme-text-muted/70 mb-5 leading-relaxed">{confirm.message}</p>
             {confirm.action === 'disable' && confirm.ext.dependents?.length > 0 && (
@@ -811,7 +816,7 @@ export default function Extensions({ compact = false }) {
                 }`}
               >
                 {(() => {
-                  const label = confirm.action === 'add-webui' ? 'Add' : confirm.action === 'uninstall' ? 'Remove' : confirm.action === 'purge' ? 'Purge'
+                  const label = confirm.action === 'add-webui' ? 'Add' : confirm.action === 'disable-webui' ? 'Disable' : confirm.action === 'uninstall' ? 'Remove' : confirm.action === 'purge' ? 'Purge'
                     : confirm.action.charAt(0).toUpperCase() + confirm.action.slice(1)
                   if (settingsBusy) return 'Saving…'
                   return confirm.settings?.fields?.length ? `Save and ${label.toLowerCase()}` : label
@@ -1065,6 +1070,16 @@ function ExtensionCard({ ext, gpuBackend, agentAvailable, onDetails, onConsole, 
               className="flex items-center gap-1.5 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.08em] rounded-lg bg-theme-accent text-white hover:bg-theme-accent-hover transition-colors disabled:opacity-50 shadow-sm shadow-theme-accent/20"
             >
               {isMutating ? <Loader2 size={12} className="animate-spin" /> : <><Download size={12} /> Add Open WebUI</>}
+            </button>
+          )}
+          {ext.id === 'open-webui' && webuiSelection?.disable_supported === true && webuiSelection.enabled === true && (
+            <button
+              disabled={actionDisabled}
+              title={disabledTitle || 'Stop Open WebUI while keeping its chats and settings'}
+              onClick={() => onAction(ext, 'disable-webui')}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.08em] rounded-lg border border-theme-border text-theme-text-muted hover:text-theme-text transition-colors disabled:opacity-50"
+            >
+              {isMutating ? <Loader2 size={12} className="animate-spin" /> : 'Disable Open WebUI'}
             </button>
           )}
           {showInstall && (

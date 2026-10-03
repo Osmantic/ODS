@@ -6420,11 +6420,53 @@ def _webui_selection_state() -> dict:
     env_path = INSTALL_DIR / ".env"
     if not env_path.is_file() or env_path.is_symlink():
         raise RuntimeError("The installed environment is unavailable")
-    selected = load_env(env_path).get("ENABLE_OPEN_WEBUI", "true").strip().lower() == "true"
+    installed = load_env(env_path)
+    selected = installed.get("ENABLE_OPEN_WEBUI", "true").strip().lower() == "true"
     return {
         "enabled": selected,
         "supported": platform.system() in {"Linux", "Darwin"},
+        "disable_supported": _webui_disable_eligible(installed),
     }
+
+
+def _webui_disable_eligible(installed: dict) -> bool:
+    """Keep WebUI when it is the selected chat surface or a dependency."""
+    return (
+        platform.system() == "Linux"
+        and installed.get("PIXEL_AGENT_MODE", "").strip().lower() == "pixel"
+        and installed.get("ODS_GATEWAY_ONLY", "false").strip().lower() != "true"
+        and installed.get("ENABLE_RAG", "false").strip().lower() != "true"
+        and installed.get("ENABLE_ODS_PROXY", "false").strip().lower() != "true"
+        and not _proxy_compose_enabled()
+        and not any(
+            (root / service / "compose.yaml").is_file()
+            for root in (EXTENSIONS_DIR, USER_EXTENSIONS_DIR)
+            for service in ("qdrant", "embeddings")
+        )
+    )
+
+
+def _webui_portal_ready() -> bool:
+    """Require the installed Portal path before stopping an alternate chat UI."""
+    try:
+        if not _capture_container_state("ods-dashboard").get("running"):
+            return False
+        if not _capture_container_state("ods-pixel-edge").get("running"):
+            return False
+        units = subprocess.run(
+            ["systemctl", "is-active", "--quiet", "openclaw-gateway.service", "pixel-ingress.service"],
+            capture_output=True, timeout=10,
+        )
+        if units.returncode != 0:
+            return False
+        ingress = subprocess.run(
+            ["curl", "--fail", "--silent", "--show-error", "--max-time", "5",
+             "--unix-socket", "/run/ods-pixel/pixel-ingress.sock", "http://localhost/health"],
+            capture_output=True, timeout=10,
+        )
+        return ingress.returncode == 0
+    except (OSError, RuntimeError, subprocess.SubprocessError):
+        return False
 
 
 def _enable_webui_selection() -> tuple[int, dict]:
@@ -6533,6 +6575,130 @@ def _enable_webui_selection() -> tuple[int, dict]:
             except (OSError, RuntimeError):
                 return 503, {"code": "reconciliation_required", "error": "Open WebUI startup failed and its prior selection could not be restored"}
         return 502, {"code": "enable_failed", "error": "Open WebUI could not be added; the prior selection was restored", "enabled": False}
+    finally:
+        _model_activate_lock.release()
+        service_lock.release()
+
+
+def _disable_webui_selection() -> tuple[int, dict]:
+    """Stop optional WebUI and retain its data and the bound .env inode."""
+    if platform.system() != "Linux":
+        return 501, {"code": "unsupported_platform", "error": "WebUI disable is unavailable on this platform"}
+    service_lock = _service_locks["open-webui"]
+    if not service_lock.acquire(blocking=False):
+        return 409, {"code": "operation_in_progress", "error": "Open WebUI is being changed"}
+    if not _model_activate_lock.acquire(blocking=False):
+        service_lock.release()
+        return 409, {"code": "configuration_in_use", "error": "ODS configuration is being changed"}
+
+    env_path = INSTALL_DIR / ".env"
+    original = None
+    original_inode = None
+    flags = None
+    compose_env = None
+    stopped = False
+    stop_attempted = False
+    try:
+        if not env_path.is_file() or env_path.is_symlink():
+            return 409, {"code": "missing_install", "error": "The installed environment is unavailable"}
+        original = env_path.read_bytes()
+        original_inode = env_path.stat().st_ino
+        installed = load_env(env_path)
+        if installed.get("ENABLE_OPEN_WEBUI", "true").strip().lower() != "true":
+            if _capture_container_state("ods-webui").get("running"):
+                return 503, {"code": "reconciliation_required", "error": "Open WebUI is running despite its disabled selection"}
+            return 200, {"enabled": False, "action": "already_disabled"}
+        if not _webui_disable_eligible(installed):
+            return 409, {"code": "webui_required", "error": "Open WebUI is required by this installation or a selected feature"}
+        if not _webui_portal_ready():
+            return 409, {"code": "portal_unavailable", "error": "Portal must be ready before Open WebUI can be disabled"}
+        if not _capture_container_state("ods-webui").get("running"):
+            return 503, {"code": "selected_but_stopped", "error": "Open WebUI is selected but not running; inspect its service state"}
+
+        flags = resolve_compose_flags()
+        compose_env = os.environ.copy()
+        compose_env.pop("COMPOSE_PROFILES", None)
+        for selector in (
+            "ENABLE_OPEN_WEBUI", "ODS_GATEWAY_ONLY", "EXTERNAL_LLM_URL",
+            "LEMONADE_EXTERNAL", "AMD_INFERENCE_RUNTIME",
+            "AMD_INFERENCE_MANAGED", "WHISPER_ACCELERATION",
+            "ODS_SKIP_GPU_OVERLAYS", "BIND_ADDRESS", "WEBUI_AUTH", "ENABLE_ODS_PROXY",
+        ):
+            compose_env.pop(selector, None)
+            if selector in installed:
+                compose_env[selector] = installed[selector]
+        compose_env["ENABLE_OPEN_WEBUI"] = "true"
+
+        def compose(*arguments: str):
+            return subprocess.run(
+                ["docker", "compose", *flags, *arguments], cwd=str(INSTALL_DIR),
+                env=compose_env, capture_output=True, text=True,
+                timeout=SUBPROCESS_TIMEOUT_STOP if arguments[0] == "stop" else SUBPROCESS_TIMEOUT_START,
+            )
+
+        configured = compose("config", "--services")
+        if configured.returncode != 0 or "open-webui" not in configured.stdout.splitlines():
+            raise RuntimeError("The selected Compose stack does not expose Open WebUI")
+        recipe = compose("config", "--format", "json")
+        if recipe.returncode != 0:
+            raise RuntimeError("The selected Compose dependencies could not be inspected")
+        parsed_recipe = json.loads(recipe.stdout)
+        services = parsed_recipe.get("services") if isinstance(parsed_recipe, dict) else None
+        if not isinstance(services, dict):
+            raise RuntimeError("The selected Compose dependencies are invalid")
+        for name, service in services.items():
+            if name == "open-webui":
+                continue
+            if not isinstance(service, dict):
+                raise RuntimeError("The selected Compose service is invalid")
+            depends_on = service.get("depends_on", {})
+            if not isinstance(depends_on, (dict, list)):
+                raise RuntimeError("The selected Compose dependencies are invalid")
+            if "open-webui" in depends_on:
+                return 409, {"code": "webui_required", "error": "A selected service depends on Open WebUI"}
+        stop_attempted = True
+        stop = compose("stop", "open-webui")
+        stopped = not _capture_container_state("ods-webui").get("running")
+        if stop.returncode != 0 or not stopped:
+            raise RuntimeError("Could not confirm that Open WebUI stopped")
+
+        updated = _upsert_env_text(original.decode("utf-8"), "ENABLE_OPEN_WEBUI", "false")
+        _write_bound_env_text(env_path, updated)
+        invalidate_compose_cache()
+        if env_path.stat().st_ino != original_inode or env_path.read_bytes() != updated.encode("utf-8"):
+            raise RuntimeError("Open WebUI selection could not be verified")
+        if _capture_container_state("ods-webui").get("running"):
+            raise RuntimeError("Open WebUI restarted while disabling it")
+        return 200, {"enabled": False, "action": "disabled"}
+    except (OSError, UnicodeError, ValueError, RuntimeError, subprocess.SubprocessError) as exc:
+        logger.warning("Open WebUI disable failed: %s", type(exc).__name__)
+        if stop_attempted and not stopped:
+            try:
+                stopped = not _capture_container_state("ods-webui").get("running")
+            except (OSError, RuntimeError, subprocess.SubprocessError):
+                return 503, {"code": "reconciliation_required", "error": "Open WebUI stop outcome could not be verified"}
+        if stopped and original is not None:
+            try:
+                _write_bound_env_bytes(env_path, original)
+                invalidate_compose_cache()
+                if env_path.read_bytes() != original or env_path.stat().st_ino != original_inode:
+                    raise RuntimeError("The prior Open WebUI selection was not restored")
+            except (OSError, RuntimeError):
+                return 503, {"code": "reconciliation_required", "error": "Open WebUI stopped and its prior selection could not be restored"}
+            try:
+                if flags is None or compose_env is None:
+                    raise RuntimeError("The selected Compose stack is unavailable")
+                resumed = subprocess.run(
+                    ["docker", "compose", *flags, "up", "-d", "--no-deps", "open-webui"],
+                    cwd=str(INSTALL_DIR), env=compose_env, capture_output=True, text=True,
+                    timeout=SUBPROCESS_TIMEOUT_START,
+                )
+                if resumed.returncode != 0:
+                    raise RuntimeError("Open WebUI could not be restarted")
+                _wait_for_container_health("ods-webui", attempts=75)
+            except (OSError, RuntimeError, subprocess.SubprocessError):
+                return 503, {"code": "reconciliation_required", "error": "Open WebUI selection was restored but its service needs inspection"}
+        return 502, {"code": "disable_failed", "error": "Open WebUI could not be disabled; its prior selection was restored", "enabled": True}
     finally:
         _model_activate_lock.release()
         service_lock.release()
@@ -11174,10 +11340,10 @@ class AgentHandler(BaseHTTPRequestHandler):
             body = read_json_body(self)
             if body is None:
                 return
-            if not isinstance(body, dict) or set(body) != {"enabled"} or body["enabled"] is not True:
-                json_response(self, 400, {"code": "invalid_request", "error": "Only enabling Open WebUI is supported"}, no_store=True)
+            if not isinstance(body, dict) or set(body) != {"enabled"} or type(body["enabled"]) is not bool:
+                json_response(self, 400, {"code": "invalid_request", "error": "A boolean Open WebUI selection is required"}, no_store=True)
                 return
-            status, result = _enable_webui_selection()
+            status, result = (_enable_webui_selection() if body["enabled"] else _disable_webui_selection())
             json_response(self, status, result, no_store=True)
             return
         try:

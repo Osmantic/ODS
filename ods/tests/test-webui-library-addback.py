@@ -1,6 +1,7 @@
 """WebUI add-back preserves the installed choice and retained user data."""
 
 import importlib.util
+import json
 from pathlib import Path
 import subprocess
 import sys
@@ -36,15 +37,20 @@ def agent(tmp_path, monkeypatch):
     sys.modules.pop(spec.name, None)
 
 
-def compose_responses(agent, monkeypatch, *, fail_at=None, stop_succeeds=True):
+def compose_responses(agent, monkeypatch, *, fail_at=None, stop_succeeds=True,
+                      initial_running=False, dependent_services=None, malformed_recipe=False):
     module, _ = agent
     calls = []
-    state = {"running": False}
+    state = {"running": initial_running}
 
     def run(command, **kwargs):
         calls.append((command, kwargs))
         if command[-2:] == ["config", "--services"]:
             return subprocess.CompletedProcess(command, 1 if fail_at == "config" else 0, stdout="dashboard\nopen-webui\n")
+        if command[-3:] == ["config", "--format", "json"]:
+            services = {"open-webui": {}, "dashboard": {}}
+            services.update(dependent_services or {})
+            return subprocess.CompletedProcess(command, 0, stdout="[]" if malformed_recipe else json.dumps({"services": services}))
         action = "up" if "up" in command else "stop"
         if action == "up":
             state["running"] = True  # Compose can fail after creating a container.
@@ -173,12 +179,13 @@ def test_failed_start_uses_same_installed_selectors_for_rollback(agent, monkeypa
 
 def test_selection_reports_mac_support_and_rejects_windows(agent, monkeypatch):
     module, root = agent
-    assert module._webui_selection_state() == {"enabled": False, "supported": True}
+    assert module._webui_selection_state() == {"enabled": False, "supported": True, "disable_supported": False}
     original = (root / ".env").read_bytes()
     monkeypatch.setattr(module.platform, "system", lambda: "Darwin")
-    assert module._webui_selection_state() == {"enabled": False, "supported": True}
+    assert module._webui_selection_state() == {"enabled": False, "supported": True, "disable_supported": False}
+    assert module._disable_webui_selection()[0] == 501
     monkeypatch.setattr(module.platform, "system", lambda: "Windows")
-    assert module._webui_selection_state() == {"enabled": False, "supported": False}
+    assert module._webui_selection_state() == {"enabled": False, "supported": False, "disable_supported": False}
     assert module._enable_webui_selection()[0] == 501
     assert (root / ".env").read_bytes() == original
 
@@ -290,3 +297,210 @@ def test_stale_add_request_does_not_claim_running_webui(agent, monkeypatch):
 
     assert status == 503 and result["code"] == "selected_but_stopped"
     assert module.load_env(root / ".env")["ENABLE_OPEN_WEBUI"] == "true"
+
+
+def _select_webui_with_portal(module, root, monkeypatch):
+    path = root / ".env"
+    path.write_text(path.read_text(encoding="utf-8").replace(
+        "ENABLE_OPEN_WEBUI=false", "ENABLE_OPEN_WEBUI=true") + "PIXEL_AGENT_MODE=pixel\n",
+        encoding="utf-8")
+    monkeypatch.setattr(module, "_webui_portal_ready", lambda: True)
+    return path
+
+
+def test_portal_readiness_checks_runtime_units_edge_and_private_ingress(agent, monkeypatch):
+    module, _root = agent
+    calls = []
+    monkeypatch.setattr(module, "_capture_container_state", lambda _container: {"running": True})
+
+    def run(command, **_kwargs):
+        calls.append(command)
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(module.subprocess, "run", run)
+    assert module._webui_portal_ready() is True
+    assert any(command[:3] == ["systemctl", "is-active", "--quiet"] for command in calls)
+    assert any("--unix-socket" in command for command in calls)
+
+
+def test_disable_stops_webui_and_keeps_chat_data_and_bound_env(agent, monkeypatch):
+    module, root = agent
+    env_path = _select_webui_with_portal(module, root, monkeypatch)
+    original_inode = env_path.stat().st_ino
+    calls = compose_responses(agent, monkeypatch, initial_running=True)
+
+    assert module._webui_selection_state()["disable_supported"] is True
+    status, result = module._disable_webui_selection()
+
+    assert (status, result) == (200, {"enabled": False, "action": "disabled"})
+    assert env_path.stat().st_ino == original_inode
+    assert module.load_env(env_path)["ENABLE_OPEN_WEBUI"] == "false"
+    assert (root / "data/open-webui/retained-chat.db").read_bytes() == b"private retained chat"
+    assert any(command[-2:] == ["stop", "open-webui"] for command, _ in calls)
+    assert not any("up" in command for command, _ in calls)
+
+
+@pytest.mark.parametrize("dependency", ["ENABLE_RAG=true", "ENABLE_ODS_PROXY=true", "PIXEL_AGENT_MODE=disabled"])
+def test_disable_refuses_when_webui_is_still_required(agent, monkeypatch, dependency):
+    module, root = agent
+    env_path = _select_webui_with_portal(module, root, monkeypatch)
+    if dependency.startswith("PIXEL_AGENT_MODE"):
+        env_path.write_text(env_path.read_text(encoding="utf-8").replace("PIXEL_AGENT_MODE=pixel", dependency), encoding="utf-8")
+    else:
+        with env_path.open("a", encoding="utf-8") as handle:
+            handle.write(dependency + "\n")
+    original = env_path.read_bytes()
+    calls = compose_responses(agent, monkeypatch, initial_running=True)
+
+    status, result = module._disable_webui_selection()
+
+    assert status == 409 and result["code"] == "webui_required"
+    assert env_path.read_bytes() == original
+    assert calls == []
+
+
+def test_disable_refuses_when_portal_is_not_ready(agent, monkeypatch):
+    module, root = agent
+    env_path = _select_webui_with_portal(module, root, monkeypatch)
+    monkeypatch.setattr(module, "_webui_portal_ready", lambda: False)
+    original = env_path.read_bytes()
+    calls = compose_responses(agent, monkeypatch, initial_running=True)
+
+    status, result = module._disable_webui_selection()
+
+    assert status == 409 and result["code"] == "portal_unavailable"
+    assert env_path.read_bytes() == original
+    assert calls == []
+
+
+@pytest.mark.parametrize("service", ["qdrant", "embeddings", "ods-proxy"])
+def test_disable_refuses_active_webui_dependent_extensions(agent, monkeypatch, service):
+    module, root = agent
+    env_path = _select_webui_with_portal(module, root, monkeypatch)
+    extension = root / "extensions/services" / service
+    extension.mkdir(parents=True)
+    (extension / "compose.yaml").write_text("services: {}\n", encoding="utf-8")
+    original = env_path.read_bytes()
+    calls = compose_responses(agent, monkeypatch, initial_running=True)
+
+    status, result = module._disable_webui_selection()
+
+    assert status == 409 and result["code"] == "webui_required"
+    assert env_path.read_bytes() == original
+    assert calls == []
+
+
+def test_disable_refuses_a_selected_custom_service_dependency(agent, monkeypatch):
+    module, root = agent
+    env_path = _select_webui_with_portal(module, root, monkeypatch)
+    original = env_path.read_bytes()
+    calls = compose_responses(agent, monkeypatch, initial_running=True,
+                              dependent_services={"owner-service": {"depends_on": {"open-webui": {"condition": "service_started"}}}})
+
+    status, result = module._disable_webui_selection()
+
+    assert status == 409 and result["code"] == "webui_required"
+    assert env_path.read_bytes() == original
+    assert not any(command[-2:] == ["stop", "open-webui"] for command, _ in calls)
+
+
+def test_disable_refuses_unverifiable_compose_graph_before_stop(agent, monkeypatch):
+    module, root = agent
+    env_path = _select_webui_with_portal(module, root, monkeypatch)
+    original = env_path.read_bytes()
+    calls = compose_responses(agent, monkeypatch, initial_running=True, malformed_recipe=True)
+
+    status, result = module._disable_webui_selection()
+
+    assert status == 502 and result["code"] == "disable_failed"
+    assert env_path.read_bytes() == original
+    assert not any(command[-2:] == ["stop", "open-webui"] for command, _ in calls)
+
+
+def test_disable_partial_env_write_restores_exact_bytes_and_service(agent, monkeypatch):
+    module, root = agent
+    env_path = _select_webui_with_portal(module, root, monkeypatch)
+    original = env_path.read_bytes()
+    original_inode = env_path.stat().st_ino
+    calls = compose_responses(agent, monkeypatch, initial_running=True)
+
+    def fail_after_prefix(path, _text):
+        with path.open("r+b") as handle:
+            handle.write(b"partial")
+            handle.truncate()
+        raise RuntimeError("partial write")
+
+    monkeypatch.setattr(module, "_write_bound_env_text", fail_after_prefix)
+    status, result = module._disable_webui_selection()
+
+    assert status == 502 and result["code"] == "disable_failed"
+    assert env_path.read_bytes() == original
+    assert env_path.stat().st_ino == original_inode
+    assert [command[-4:] for command, _ in calls if "up" in command] == [["up", "-d", "--no-deps", "open-webui"]]
+    assert (root / "data/open-webui/retained-chat.db").read_bytes() == b"private retained chat"
+
+
+def test_disable_stop_failure_does_not_flip_selection(agent, monkeypatch):
+    module, root = agent
+    env_path = _select_webui_with_portal(module, root, monkeypatch)
+    original = env_path.read_bytes()
+    calls = compose_responses(agent, monkeypatch, fail_at="stop", stop_succeeds=False, initial_running=True)
+
+    status, result = module._disable_webui_selection()
+
+    assert status == 502 and result["code"] == "disable_failed"
+    assert env_path.read_bytes() == original
+    assert not any("up" in command for command, _ in calls)
+
+
+def test_disable_recovers_when_stop_state_probe_fails_once(agent, monkeypatch):
+    module, root = agent
+    env_path = _select_webui_with_portal(module, root, monkeypatch)
+    original = env_path.read_bytes()
+    calls = compose_responses(agent, monkeypatch, initial_running=True)
+    probes = 0
+
+    def capture(_container):
+        nonlocal probes
+        probes += 1
+        if probes == 2:
+            raise RuntimeError("Docker inspect timed out after stop")
+        return {"running": probes == 1}
+
+    monkeypatch.setattr(module, "_capture_container_state", capture)
+    status, result = module._disable_webui_selection()
+
+    assert status == 502 and result["code"] == "disable_failed"
+    assert env_path.read_bytes() == original
+    assert any(command[-4:] == ["up", "-d", "--no-deps", "open-webui"] for command, _ in calls)
+
+
+def test_disable_keeps_selection_when_stop_outcome_remains_unknown(agent, monkeypatch):
+    module, root = agent
+    env_path = _select_webui_with_portal(module, root, monkeypatch)
+    original = env_path.read_bytes()
+    compose_responses(agent, monkeypatch, initial_running=True)
+    probes = 0
+
+    def capture(_container):
+        nonlocal probes
+        probes += 1
+        if probes > 1:
+            raise RuntimeError("Docker inspect unavailable")
+        return {"running": True}
+
+    monkeypatch.setattr(module, "_capture_container_state", capture)
+    status, result = module._disable_webui_selection()
+
+    assert status == 503 and result["code"] == "reconciliation_required"
+    assert env_path.read_bytes() == original
+
+
+def test_disable_is_noop_when_unselected_and_stopped(agent, monkeypatch):
+    module, root = agent
+    original = (root / ".env").read_bytes()
+    calls = compose_responses(agent, monkeypatch)
+
+    assert module._disable_webui_selection() == (200, {"enabled": False, "action": "already_disabled"})
+    assert (root / ".env").read_bytes() == original
+    assert calls == []
