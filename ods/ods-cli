@@ -1085,7 +1085,7 @@ _compose_run_with_summary() {
         docker compose --progress quiet "$@" >"$_compose_log" 2>&1 || _rc=$?
     done
 
-    if (( _rc != 0 )) && $_is_compose_up \
+    if (( _rc != 0 )) && $_is_compose_up && ! $_wsl_bind_repair_failed \
        && grep -Eiq 'port is already allocated|Bind for .* failed: port is already allocated' "$_compose_log"; then
         warn "Docker reported a port allocation race; waiting briefly and retrying once."
         sleep "${ODS_COMPOSE_PORT_RETRY_DELAY:-10}"
