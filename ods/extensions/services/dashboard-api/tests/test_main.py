@@ -394,9 +394,10 @@ class TestBuildApiStatus:
 
 class TestReadinessPayload:
 
-    def test_lean_chat_ready_without_unselected_open_webui(self):
+    def test_lean_chat_ready_without_unselected_open_webui(self, monkeypatch):
         from models import BootstrapStatus, ServiceStatus
 
+        monkeypatch.setattr("main.read_live_env_value", lambda key: "false" if key == "ENABLE_OPEN_WEBUI" else "")
         statuses = [
             ServiceStatus(id="llama-server", name="LLM", port=8080, external_port=8080, status="healthy"),
         ]
@@ -419,12 +420,17 @@ class TestReadinessPayload:
         assert "ods restart open-webui" not in result["repairHints"]
 
     @pytest.mark.parametrize(
-        ("webui_status", "required", "readiness"),
-        [("not_deployed", False, "ready"), ("down", True, "blocked")],
+        ("webui_status", "selection", "required", "readiness"),
+        [
+            ("not_deployed", "false", False, "ready"),
+            ("not_deployed", "true", True, "blocked"),
+            ("down", "true", True, "blocked"),
+        ],
     )
-    def test_webui_requirement_tracks_deployment(self, webui_status, required, readiness):
+    def test_webui_requirement_tracks_selection_and_health(self, monkeypatch, webui_status, selection, required, readiness):
         from models import BootstrapStatus, ServiceStatus
 
+        monkeypatch.setattr("main.read_live_env_value", lambda key: selection if key == "ENABLE_OPEN_WEBUI" else "")
         statuses = [
             ServiceStatus(id="llama-server", name="LLM", port=8080, external_port=8080, status="healthy"),
             ServiceStatus(id="open-webui", name="Open WebUI", port=3000, external_port=3000, status=webui_status),

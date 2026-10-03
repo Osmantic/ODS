@@ -329,8 +329,12 @@ def _build_readiness_payload(
     ))
 
     webui_service = _service_by_id(service_statuses, "open-webui")
-    webui_enabled = bool(webui_service and webui_service.status != "not_deployed")
-    webui_ready = bool(webui_enabled and webui_service.status == "healthy")
+    # A selected service can report not_deployed when DNS has not appeared yet.
+    # The retained installer choice is the authority for intentional omission.
+    webui_choice = read_live_env_value("ENABLE_OPEN_WEBUI").strip().lower()
+    webui_enabled = (webui_choice == "true" if webui_choice in {"true", "false"}
+                     else webui_service is not None)
+    webui_ready = bool(webui_enabled and webui_service and webui_service.status == "healthy")
     checks.append(_readiness_check(
         check_id="open-webui",
         name="Open WebUI",
