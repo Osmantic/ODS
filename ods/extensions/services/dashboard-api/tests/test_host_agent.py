@@ -6955,6 +6955,28 @@ class TestPrecreateDataDirs:
 
 
 class TestRootlessDataOwnershipRepair:
+    def test_comfyui_prepares_nvidia_library_data_even_with_rootful_docker(
+            self, tmp_path, monkeypatch):
+        helper = tmp_path / "lib" / "rootless-ownership.sh"
+        helper.parent.mkdir()
+        helper.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+        calls = []
+        monkeypatch.setattr(_mod, "INSTALL_DIR", tmp_path)
+        monkeypatch.setattr(_mod.platform, "system", lambda: "Linux")
+        monkeypatch.setattr(_mod, "_find_usable_bash", lambda: "/bin/bash")
+        monkeypatch.setattr(
+            _mod.subprocess, "run",
+            lambda cmd, **kwargs: calls.append(cmd) or subprocess.CompletedProcess(cmd, 0, "", ""),
+        )
+
+        _mod._repair_rootless_data_ownership("comfyui")
+
+        assert calls == [[
+            "/bin/bash", "-c",
+            'source "$1"; ods_prepare_comfyui_data_ownership "$2"',
+            "ods-comfyui-data", str(helper), str(tmp_path),
+        ]]
+
     def test_whisper_uses_rootful_or_rootless_cache_preparation(self, tmp_path, monkeypatch):
         helper = tmp_path / "lib" / "rootless-ownership.sh"
         helper.parent.mkdir()
