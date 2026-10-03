@@ -177,6 +177,17 @@ def main() -> int:
             raise RuntimeError("no projection was observed; lifecycle is inconclusive")
         docker("stop", "--time", "5", container_id)
         record["stages"]["after_stop"] = snapshot(source)
+        # A retained-install rollback may need to restart an owned container
+        # after a partial transition. Observe that lifecycle separately from
+        # first start; Desktop can retain or recreate a different proxy view.
+        docker("start", container_id)
+        if docker("inspect", "--format", "{{.State.Running}}", container_id) != "true":
+            raise RuntimeError(
+                "disposable container did not remain running after restart"
+            )
+        record["stages"]["after_restart"] = snapshot(source)
+        docker("stop", "--time", "5", container_id)
+        record["stages"]["after_second_stop"] = snapshot(source)
         docker("rm", container_id)  # No -v: never remove any volume.
         container_id = ""
         record["stages"]["after_remove"] = snapshot(source)
