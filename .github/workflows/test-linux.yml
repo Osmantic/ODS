@@ -545,6 +545,7 @@ jobs:
           python3 -m unittest -v tests/test_pixel_native_search.py
           bash tests/test-pixel-compose-wiring.sh
           bash tests/test-pixel-wsl-legacy-mount-guard.sh
+          python3 tests/test_wsl_pixel_mount_plan.py
           bash tests/test-pixel-wsl-runtime-bridge.sh
           bash tests/test-pixel-wsl-runtime-layout.sh
           bash tests/test-pixel-wsl-runtime-prestart.sh
