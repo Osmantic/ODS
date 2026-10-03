@@ -4,6 +4,7 @@ import { ArrowLeft, ChevronLeft, ChevronRight, Grid2X2, Search, Sparkles, Settin
 import { getSidebarExternalLinks, getSidebarNavItems } from '../plugins/registry'
 import { usePortalIdentity } from '../contexts/PortalIdentityContext'
 import { fallbackServiceUrl } from '../lib/serviceUrls'
+import { EXTENSION_CATALOG_CHANGED } from '../lib/extensionCatalogEvents'
 import PixelHandoffApproval from './PixelHandoffApproval'
 import PixelMascot from './PixelMascot'
 import ODSLogo from './ODSLogo'
@@ -33,13 +34,23 @@ export default function Sidebar({ status, collapsed, onToggle }) {
   const [serviceTokens, setServiceTokens] = useState({})
   useEffect(() => {
     let active = true
-    fetch('/api/external-links').then(r => r.ok ? r.json() : []).then(value => {
-      if (active && Array.isArray(value)) setApiLinks(value)
-    }).catch(() => {})
-    fetch('/api/service-tokens').then(r => r.ok ? r.json() : {}).then(value => {
-      if (active && value && typeof value === 'object') setServiceTokens(value)
-    }).catch(() => {})
-    return () => { active = false }
+    let revision = 0
+    const refresh = () => {
+      const request = ++revision
+      fetch('/api/external-links').then(r => r.ok ? r.json() : null).then(value => {
+        if (active && request === revision && Array.isArray(value)) setApiLinks(value)
+      }).catch(() => {})
+      fetch('/api/service-tokens').then(r => r.ok ? r.json() : null).then(value => {
+        if (active && request === revision && value && typeof value === 'object') setServiceTokens(value)
+      }).catch(() => {})
+    }
+    refresh()
+    window.addEventListener(EXTENSION_CATALOG_CHANGED, refresh)
+    return () => {
+      active = false
+      revision += 1
+      window.removeEventListener(EXTENSION_CATALOG_CHANGED, refresh)
+    }
   }, [])
   const applications = getSidebarExternalLinks({ status, getExternalUrl: fallbackServiceUrl, apiLinks })
     .filter(link => link.healthy || link.alwaysVisible || link.visible)
