@@ -88,7 +88,8 @@ class WindowsChatTests(unittest.TestCase):
         self.assertEqual(self.requests[-1][1]["model"], "user.selected")
 
     def test_legacy_lemonade_supports_explicit_server_key(self):
-        self.chat({"LEMONADE_MODEL": "user.selected", "LEMONADE_API_KEY": "fixture-server"})
+        self.chat({"LEMONADE_MODEL": "user.selected", "LEMONADE_API_KEY": "fixture-server",
+                   "LITELLM_LEMONADE_API_KEY": "other-generated-key"})
         self.assertEqual(self.requests[-1][2], "Bearer fixture-server")
 
     def test_missing_lemonade_identity_refuses_implicit_default_load(self):
