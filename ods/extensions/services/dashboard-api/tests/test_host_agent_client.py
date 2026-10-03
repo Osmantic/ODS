@@ -267,6 +267,7 @@ async def test_async_request_and_shutdown_close_both_pools(monkeypatch):
     assert async_client.is_closed
     assert sync_client.is_closed
     assert agent_client._async_client is None
+    assert agent_client._sync_client is None
 
 
 @pytest.mark.asyncio
@@ -287,4 +288,3 @@ async def test_optional_async_get_can_skip_route_backoff(monkeypatch):
         assert calls == 1
     finally:
         await client.aclose()
-    assert agent_client._sync_client is None
