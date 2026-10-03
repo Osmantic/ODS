@@ -62,6 +62,7 @@ export function FeatureDiscoveryBanner({ onDismiss }) {
           <button
             onClick={() => { setDismissed(true); onDismiss?.() }}
             className="p-2 text-theme-text-muted hover:text-theme-text transition-colors"
+            aria-label="Dismiss suggestion"
           >
             <X size={16} />
           </button>
@@ -261,7 +262,7 @@ function EnableInstructions({ featureId, onClose }) {
         <div className="p-6 border-b border-theme-border">
           <div className="flex items-center justify-between">
             <h2 className="text-xl font-bold text-theme-text">Enable {data.name}</h2>
-            <button onClick={onClose} className="text-theme-text-muted hover:text-theme-text">
+            <button onClick={onClose} className="text-theme-text-muted hover:text-theme-text" aria-label="Close">
               <X size={20} />
             </button>
           </div>
