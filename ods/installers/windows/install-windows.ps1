@@ -145,6 +145,7 @@ $lanFlag        = $Lan.IsPresent
 $langfuseFlag   = $Langfuse.IsPresent
 $noLangfuseFlag = $NoLangfuse.IsPresent
 $noBootstrapFlag = $NoBootstrap.IsPresent
+$repairGpuWslFlag = $RepairGpuWsl.IsPresent
 $installDir     = $script:ODS_INSTALL_DIR
 $sourceRoot     = $SourceRoot
 $enableDevTools = Resolve-ODSWindowsDevToolsSelection `
