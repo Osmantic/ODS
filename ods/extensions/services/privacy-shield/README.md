@@ -57,9 +57,20 @@ Environment variables (set in `.env`):
 |----------|---------|-------------|
 | `SHIELD_PORT` | 8085 | Published host port for the Privacy Shield API; the Compose container listens on 8085 |
 | `TARGET_API_URL` | http://llama-server:8080/v1 | Upstream LLM API to proxy |
-| `PII_CACHE_ENABLED` | true | Enable session PII caching |
-| `PII_CACHE_SIZE` | 1000 | Max cached sessions |
-| `PII_CACHE_TTL` | 300 | Session TTL in seconds |
+| `PII_CACHE_ENABLED` | true | Cache scrub results for request text shorter than 1,000 characters |
+| `PII_CACHE_SIZE` | 1000 | Max cached request texts per session |
+| `PII_CACHE_TTL` | 300 | Request result cache TTL in seconds |
+
+The request cache retains original short request text in process memory.
+Expired results cannot be reused, but their storage can remain until a later
+cache mutation cleans it up; TTL is not a guaranteed memory-erasure deadline.
+The cache is owned by the session's detector, so cached tokens retain their
+restoration mapping. Expiring or evicting a cached result
+does not erase that mapping: session restoration state has its own
+`SHIELD_SESSION_TTL` (default 3,600 seconds) and `SHIELD_SESSION_MAXSIZE`
+(default 10,000 sessions). A replacement session starts with a new detector and
+an empty request cache. Disabled caching and longer request text scan on every
+request. No request cache or restoration mapping is persisted to disk.
 
 For example, `SHIELD_PORT=18085` publishes `127.0.0.1:18085` while Docker
 health checks and dashboard requests continue to use `privacy-shield:8085`.

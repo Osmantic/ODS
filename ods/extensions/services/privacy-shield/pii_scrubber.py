@@ -234,12 +234,16 @@ class PrivacyShield:
         self.detector = PIIDetector()
         self.backend = backend_client  # e.g., OpenAI client
 
+    def scrub(self, text: str) -> str:
+        """Scrub outbound text, allowing wrappers to provide a cache."""
+        return self.detector.scrub(text)
+
     def process_request(self, prompt: str) -> Tuple[str, Dict]:
         """
         Process outgoing request - scrub PII.
         Returns (scrubbed_prompt, metadata for restore).
         """
-        scrubbed = self.detector.scrub(prompt)
+        scrubbed = self.scrub(prompt)
         stats = self.detector.get_stats()
 
         metadata = {
