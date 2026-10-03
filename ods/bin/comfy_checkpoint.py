@@ -78,6 +78,30 @@ def catalog() -> dict:
     }
 
 
+def _supported_host() -> bool:
+    return fcntl is not None and hasattr(os, "O_NOFOLLOW") and hasattr(os, "geteuid")
+
+
+def _file_identity(info: os.stat_result) -> dict:
+    return {"dev": info.st_dev, "ino": info.st_ino, "size": info.st_size,
+            "mtime_ns": info.st_mtime_ns, "ctime_ns": info.st_ctime_ns}
+
+
+def _open_dir_chain(root: Path, parts: tuple) -> int:
+    """Hold each fixed directory hop so later container-side renames cannot redirect I/O."""
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    fd = os.open(str(root), flags)
+    try:
+        for part in parts:
+            child_fd = os.open(part, flags, dir_fd=fd)
+            os.close(fd)
+            fd = child_fd
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
 def _existing_dir_no_symlink(root: Path, parts: tuple) -> Path:
     """Resolve only the ODS-owned fixed path, rejecting every symlink hop."""
     current = root
@@ -151,36 +175,50 @@ class CheckpointManager:
             raise CheckpointError("unsupported_gpu_backend")
         return _existing_dir_no_symlink(self.root, _TARGET_PARTS[self.backend])
 
+    def _target_fd(self) -> int:
+        if self.backend not in _TARGET_PARTS:
+            raise CheckpointError("unsupported_gpu_backend")
+        return _open_dir_chain(self.root, _TARGET_PARTS[self.backend])
+
     def _stage(self) -> Path:
         return _private_stage(self.root)
 
     def _status_file(self, stage: Path) -> Path:
         return stage / "status.json"
 
-    def _write(self, stage: Path, state: str, bytes_done: int, error: Optional[str] = None) -> dict:
+    def _write(self, stage: Path, state: str, bytes_done: int,
+               error: Optional[str] = None, verified_file: Optional[dict] = None) -> dict:
         value = {
             "state": state, "model_id": MODEL_ID, "bytes_done": bytes_done,
             "bytes_total": SIZE_BYTES, "sha256_expected": SHA256,
             "resumable": state in ("cancelled", "error", "interrupted") and bytes_done > 0,
             "error": error, "updated_at": int(time.time()),
         }
+        if verified_file is not None:
+            value["verified_file"] = verified_file
         with self._mutex:
             _atomic_json(self._status_file(stage), value)
         return value
 
     def status(self) -> dict:
+        if not _supported_host():
+            return {"state": "unsupported", "model_id": MODEL_ID, "bytes_done": 0,
+                    "bytes_total": SIZE_BYTES, "sha256_expected": SHA256,
+                    "resumable": False, "error": "unsupported_checkpoint_host"}
         stage = self.root / ".ods-comfy-checkpoint"
         if not stage.exists():
             if self.backend in _TARGET_PARTS:
                 try:
-                    final = self._target() / FILENAME
-                    if final.is_symlink():
-                        raise CheckpointError("unsafe_existing_checkpoint")
-                    if final.is_file():
+                    target_fd = self._target_fd()
+                    try:
+                        info = os.stat(FILENAME, dir_fd=target_fd, follow_symlinks=False)
+                    finally:
+                        os.close(target_fd)
+                    if stat.S_ISREG(info.st_mode):
                         return {"state": "existing_unverified", "model_id": MODEL_ID,
-                                "bytes_done": final.stat().st_size, "bytes_total": SIZE_BYTES,
+                                "bytes_done": info.st_size, "bytes_total": SIZE_BYTES,
                                 "sha256_expected": SHA256, "resumable": False, "error": None}
-                except CheckpointError:
+                except (CheckpointError, OSError):
                     pass
             return {"state": "idle", "model_id": MODEL_ID, "bytes_done": 0,
                     "bytes_total": SIZE_BYTES, "sha256_expected": SHA256,
@@ -196,15 +234,20 @@ class CheckpointManager:
                 value = self._write(stage, "interrupted", int(value.get("bytes_done") or 0), "interrupted")
             if value.get("state") == "done":
                 try:
-                    final = self._target() / FILENAME
-                    if final.is_symlink() or not final.is_file() or final.stat().st_size != SIZE_BYTES:
+                    target_fd = self._target_fd()
+                    try:
+                        info = os.stat(FILENAME, dir_fd=target_fd, follow_symlinks=False)
+                    finally:
+                        os.close(target_fd)
+                    if (not stat.S_ISREG(info.st_mode)
+                            or value.get("verified_file") != _file_identity(info)):
                         value = self._write(stage, "error", 0, "checkpoint_missing_or_changed")
-                except CheckpointError:
-                    value = self._write(stage, "error", 0, "checkpoint_directory_missing")
+                except (CheckpointError, OSError):
+                    value = self._write(stage, "error", 0, "checkpoint_missing_or_changed")
             return value
 
     def _acquire(self) -> int:
-        if fcntl is None or not hasattr(os, "O_NOFOLLOW"):
+        if not _supported_host():
             raise CheckpointError("unsupported_checkpoint_host")
         lock_path = self.root / ".sdxl-checkpoint.lock"
         flags = os.O_RDWR | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW
@@ -229,9 +272,16 @@ class CheckpointManager:
         if type(model_id) is not str or model_id != MODEL_ID or (
                 type(acknowledge_size_bytes) is not int or acknowledge_size_bytes != SIZE_BYTES):
             raise CheckpointError("checkpoint_confirmation_required", 400)
-        target = self._target()
+        if not _supported_host():
+            raise CheckpointError("unsupported_checkpoint_host")
+        self._target()
         stage = self._stage()
-        if target.stat().st_dev != stage.stat().st_dev:
+        target_fd = self._target_fd()
+        try:
+            target_device = os.fstat(target_fd).st_dev
+        finally:
+            os.close(target_fd)
+        if target_device != stage.stat().st_dev:
             raise CheckpointError("checkpoint_cross_device")
         with self._mutex:
             if self._running:
@@ -243,7 +293,7 @@ class CheckpointManager:
                 bytes_done = part.stat().st_size if part.is_file() and not part.is_symlink() else 0
                 result = self._write(stage, "downloading", bytes_done)
                 self._running = True
-                self._thread = threading.Thread(target=self._run, args=(stage, target, fd), daemon=True)
+                self._thread = threading.Thread(target=self._run, args=(stage, fd), daemon=True)
                 self._thread.start()
             except (OSError, RuntimeError):
                 self._running = False
@@ -260,23 +310,31 @@ class CheckpointManager:
             result = _read_json(self._status_file(stage)) or self._write(stage, "downloading", 0)
             return {**result, "state": "cancelling"}
 
-    def _run(self, stage: Path, target: Path, lock_fd: int) -> None:
+    def _run(self, stage: Path, lock_fd: int) -> None:
         part = stage / (FILENAME + ".part")
         meta = stage / (FILENAME + ".part.json")
-        final = target / FILENAME
+        target_fd = None
         try:
-            if final.is_symlink():
-                raise CheckpointError("unsafe_existing_checkpoint")
-            if final.exists():
+            target_fd = self._target_fd()
+            try:
+                existing = os.stat(FILENAME, dir_fd=target_fd, follow_symlinks=False)
+            except FileNotFoundError:
+                existing = None
+            if existing is not None:
+                if not stat.S_ISREG(existing.st_mode):
+                    raise CheckpointError("unsafe_existing_checkpoint")
                 try:
-                    self._verify(final, stage)
+                    identity = self._verify(Path(FILENAME), stage, dir_fd=target_fd)
                 except CheckpointError as exc:
                     if exc.code in ("checkpoint_hash_mismatch", "checkpoint_size_mismatch"):
                         raise CheckpointError("existing_checkpoint_invalid") from exc
                     raise
+                if _file_identity(os.stat(
+                        FILENAME, dir_fd=target_fd, follow_symlinks=False)) != identity:
+                    raise CheckpointError("checkpoint_changed_during_verification")
                 part.unlink(missing_ok=True)
                 meta.unlink(missing_ok=True)
-                self._write(stage, "done", SIZE_BYTES)
+                self._write(stage, "done", SIZE_BYTES, verified_file=identity)
                 return
             expected_meta = {"revision": REVISION, "size_bytes": SIZE_BYTES, "sha256": SHA256}
             previous_meta = _read_json(meta)
@@ -297,23 +355,23 @@ class CheckpointManager:
                 if shutil.disk_usage(stage).free < remaining + _RESERVE_BYTES:
                     raise CheckpointError("insufficient_checkpoint_space")
                 self._transfer(part, stage, offset)
-            self._verify(part, stage)
+            verified_identity = self._verify(part, stage)
             if self._cancel.is_set():
                 raise _Cancelled()
+            if _file_identity(part.lstat()) != verified_identity:
+                raise CheckpointError("checkpoint_changed_during_verification")
             os.chmod(part, 0o644)
             source_fd = os.open(str(stage), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
             try:
-                target_fd = os.open(str(target), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-                try:
-                    os.link(part.name, FILENAME, src_dir_fd=source_fd,
-                            dst_dir_fd=target_fd, follow_symlinks=False)
-                finally:
-                    os.close(target_fd)
+                os.link(part.name, FILENAME, src_dir_fd=source_fd,
+                        dst_dir_fd=target_fd, follow_symlinks=False)
                 os.unlink(part.name, dir_fd=source_fd)
             finally:
                 os.close(source_fd)
             meta.unlink(missing_ok=True)
-            self._write(stage, "done", SIZE_BYTES)
+            self._write(stage, "done", SIZE_BYTES,
+                        verified_file=_file_identity(os.stat(
+                            FILENAME, dir_fd=target_fd, follow_symlinks=False)))
         except _Cancelled:
             size = part.stat().st_size if part.is_file() and not part.is_symlink() else 0
             self._write(stage, "cancelled", size)
@@ -327,6 +385,8 @@ class CheckpointManager:
             size = part.stat().st_size if part.is_file() and not part.is_symlink() else 0
             self._write(stage, "error", size, "checkpoint_io_error")
         finally:
+            if target_fd is not None:
+                os.close(target_fd)
             try:
                 os.close(lock_fd)
             except OSError:
@@ -387,15 +447,22 @@ class CheckpointManager:
                 os.fsync(stream.fileno())
             self._write(stage, "downloading", done)
 
-    def _verify(self, path: Path, stage: Path) -> None:
-        if path.is_symlink() or not path.is_file() or path.stat().st_size != SIZE_BYTES:
-            raise CheckpointError("checkpoint_size_mismatch")
+    def _verify(self, path: Path, stage: Path, *, dir_fd: Optional[int] = None) -> dict:
         self._write(stage, "verifying", SIZE_BYTES)
         digest = hashlib.sha256()
-        with path.open("rb") as stream:
+        flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+        fd = os.open(str(path), flags, dir_fd=dir_fd)
+        with os.fdopen(fd, "rb") as stream:
+            before = os.fstat(stream.fileno())
+            if not stat.S_ISREG(before.st_mode) or before.st_size != SIZE_BYTES:
+                raise CheckpointError("checkpoint_size_mismatch")
             for chunk in iter(lambda: stream.read(4 * _CHUNK), b""):
                 if self._cancel.is_set():
                     raise _Cancelled()
                 digest.update(chunk)
+            after = os.fstat(stream.fileno())
+        if _file_identity(before) != _file_identity(after):
+            raise CheckpointError("checkpoint_changed_during_verification")
         if digest.hexdigest() != SHA256:
             raise CheckpointError("checkpoint_hash_mismatch")
+        return _file_identity(after)

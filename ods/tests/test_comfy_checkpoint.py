@@ -78,12 +78,14 @@ class CheckpointTests(unittest.TestCase):
         self.assertFalse(manager._thread.is_alive())
         return manager.status()
 
+    @unittest.skipUnless(os.name == "posix", "requires POSIX no-follow and flock")
     def test_idle_status_does_not_download_or_create_stage(self):
         manager, opener = self.manager()
         self.assertEqual(manager.status()["state"], "idle")
         self.assertFalse((self.root / ".ods-comfy-checkpoint").exists())
         self.assertEqual(opener.requests, [])
 
+    @unittest.skipUnless(os.name == "posix", "requires POSIX no-follow and flock")
     def test_existing_model_is_not_reported_verified_without_hashing(self):
         (self.target / checkpoint.FILENAME).write_bytes(self.payload)
         manager, opener = self.manager()
@@ -109,6 +111,16 @@ class CheckpointTests(unittest.TestCase):
         self.assertFalse((self.root / ".ods-comfy-checkpoint").exists())
         self.assertEqual(opener.requests, [])
 
+    def test_unsupported_host_rejects_valid_confirmation_without_mutation(self):
+        manager, opener = self.manager()
+        with patch.object(checkpoint, "fcntl", None):
+            self.assertEqual(manager.status()["state"], "unsupported")
+            with self.assertRaises(checkpoint.CheckpointError) as failure:
+                manager.start(checkpoint.MODEL_ID, len(self.payload))
+        self.assertEqual(failure.exception.code, "unsupported_checkpoint_host")
+        self.assertFalse((self.root / ".ods-comfy-checkpoint").exists())
+        self.assertEqual(opener.requests, [])
+
     @unittest.skipUnless(os.name == "posix", "requires POSIX no-follow and flock")
     def test_download_verifies_and_promotes_without_touching_chat_status(self):
         manager, opener = self.manager()
@@ -118,6 +130,19 @@ class CheckpointTests(unittest.TestCase):
         self.assertEqual((self.target / checkpoint.FILENAME).read_bytes(), self.payload)
         self.assertEqual(len(opener.requests), 1)
         self.assertFalse((self.root / "data" / "model-download-status.json").exists())
+
+    @unittest.skipUnless(os.name == "posix", "requires POSIX no-follow and flock")
+    def test_same_size_replacement_revokes_verified_status(self):
+        manager, _ = self.manager()
+        manager.start(checkpoint.MODEL_ID, len(self.payload))
+        self.assertEqual(self.finish(manager)["state"], "done")
+        final = self.target / checkpoint.FILENAME
+        replacement = self.target / "replacement.tmp"
+        replacement.write_bytes(b"X" * len(self.payload))
+        os.replace(replacement, final)
+        status = manager.status()
+        self.assertEqual(status["state"], "error")
+        self.assertEqual(status["error"], "checkpoint_missing_or_changed")
 
     @unittest.skipUnless(os.name == "posix", "requires POSIX no-follow and flock")
     def test_wrong_hash_never_promotes(self):
@@ -210,6 +235,19 @@ class CheckpointTests(unittest.TestCase):
         with self.assertRaises(checkpoint.CheckpointError) as failure:
             manager.start(checkpoint.MODEL_ID, len(self.payload))
         self.assertEqual(failure.exception.code, "unsafe_checkpoint_directory")
+
+    @unittest.skipUnless(os.name == "posix", "requires POSIX no-follow and flock")
+    def test_directory_hop_swapped_after_precheck_cannot_redirect_open(self):
+        manager, _ = self.manager()
+        manager._target()
+        models = self.target.parent
+        original = self.root / "original-models"
+        models.rename(original)
+        outside = self.root / "outside"
+        outside.mkdir()
+        models.symlink_to(outside, target_is_directory=True)
+        with self.assertRaises(OSError):
+            manager._target_fd()
 
     def test_redirect_to_non_publisher_host_is_rejected(self):
         redirect = checkpoint._PinnedRedirect()

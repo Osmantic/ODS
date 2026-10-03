@@ -862,6 +862,8 @@ const COMFY_DOWNLOAD_ERRORS = {
   checkpoint_lock_unavailable: 'The model download could not acquire its local lock.',
   checkpoint_range_mismatch: 'The model source sent an unexpected response. You can retry safely.',
   checkpoint_transfer_timeout: 'The model download timed out. You can resume it.',
+  unsupported_checkpoint_host: 'This download action requires ODS running inside Linux or WSL.',
+  checkpoint_changed_during_verification: 'The model file changed during verification. Inspect it before retrying.',
   interrupted: 'The download was interrupted. You can resume it.',
 }
 
@@ -930,14 +932,14 @@ function ComfyCheckpointControl({ agentOffline }) {
   const state = download?.state || 'idle'
   const active = ['downloading', 'verifying', 'cancelling'].includes(state)
   const progress = Math.min(100, Math.floor(100 * (download?.bytes_done || 0) / (catalog?.size_bytes || 1)))
-  const canStart = snapshot?.selected && catalog && !active && state !== 'done' && !agentOffline && !busy
+  const canStart = snapshot?.selected && catalog && !active && state !== 'done' && state !== 'unsupported' && !agentOffline && !busy
 
   return (
     <div className="px-4 py-3 border-t border-theme-border/40 text-[11px] text-theme-text-secondary" aria-live="polite">
       <div className="font-semibold text-theme-text">Image model</div>
       {!snapshot && !error && <p className="mt-1">Checking the optional checkpoint…</p>}
       {snapshot && !snapshot.selected && <p className="mt-1">Add ComfyUI to download an image model. Adding the app does not download it.</p>}
-      {snapshot?.selected && state !== 'done' && state !== 'existing_unverified' && <p className="mt-1">ComfyUI can open without a model. Download SDXL Lightning 4-step only if you want local image generation.</p>}
+      {snapshot?.selected && state !== 'done' && state !== 'existing_unverified' && state !== 'unsupported' && <p className="mt-1">ComfyUI can open without a model. Download SDXL Lightning 4-step only if you want local image generation.</p>}
       {state === 'existing_unverified' && <p className="mt-1">An image model is already present. Verify its integrity before using it.</p>}
       {state === 'done' && <p className="mt-1 text-green-400">SDXL Lightning 4-step is downloaded and verified.</p>}
       {active && (
