@@ -6299,11 +6299,35 @@ def _run_selected_extension_up(
                 ) from exc
             if not stat_mod.S_ISREG(selected_stat.st_mode):
                 raise RuntimeError(f"Invalid selected Compose file: {service_id}")
-            return subprocess.run(
+            deadline = time.monotonic() + SUBPROCESS_TIMEOUT_START
+            result = subprocess.run(
                 ["docker", "compose", *flags, "up", "-d", service_id],
                 cwd=str(INSTALL_DIR), capture_output=True, text=True,
                 timeout=SUBPROCESS_TIMEOUT_START, env=env,
             )
+            if (result.returncode != 0 and platform.system() == "Linux"
+                    and "microsoft" in platform.release().lower()):
+                helper = INSTALL_DIR / "scripts/wsl-bind-recovery.py"
+                remaining = deadline - time.monotonic()
+                if helper.is_file() and not helper.is_symlink() and remaining > 5:
+                    # Keep selection custody through the one bounded recovery.
+                    # A timeout never enters this path. The helper requires a
+                    # stopped, owned container with positive stale-bind proof,
+                    # preserves volumes, and verifies its recreated bind view.
+                    recovered = subprocess.run(
+                        [sys.executable, str(helper), "--install-dir", str(INSTALL_DIR),
+                         "--service", service_id, "--repair-stopped", "--", *flags],
+                        cwd=str(INSTALL_DIR), capture_output=True, text=True,
+                        timeout=min(125, remaining), env=env,
+                    )
+                    if recovered.returncode == 0:
+                        return recovered
+                    if recovered.returncode != 3:
+                        return subprocess.CompletedProcess(
+                            result.args, result.returncode, result.stdout,
+                            (recovered.stderr or "WSL bind recovery failed") + "\n" + result.stderr,
+                        )
+            return result
     except selector.SelectionError as exc:
         raise RuntimeError(str(exc)) from exc
 
@@ -7199,6 +7223,51 @@ def _windows_llm_status() -> dict | None:
         return payload
 
 
+def _owned_library_builtins_from_inspect(rows: list[dict], install_dir: Path) -> list[str]:
+    """Prove prior selection from exact installed Compose container labels.
+
+    Container names, images and volumes are deliberately ignored. A stopped
+    container retains these labels after its Compose fragment is disabled.
+    This is read-only evidence for the Library; it never adopts a container.
+    """
+    root = install_dir.resolve()
+    base_files = {
+        os.path.normcase(os.path.realpath(root / name))
+        for name in ("docker-compose.base.yml", "docker-compose.yml")
+    }
+    allowed = frozenset({"n8n", "perplexica", "searxng"})
+    proven: set[str] = set()
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        config = row.get("Config")
+        labels = config.get("Labels") if isinstance(config, dict) else None
+        if not isinstance(labels, dict):
+            continue
+        service = labels.get("com.docker.compose.service")
+        project = labels.get("com.docker.compose.project")
+        working_dir = labels.get("com.docker.compose.project.working_dir")
+        config_files = labels.get("com.docker.compose.project.config_files")
+        if (not isinstance(service, str) or service not in allowed
+                or not isinstance(project, str)
+                or re.fullmatch(r"[a-z0-9][a-z0-9_-]*", project) is None
+                or not isinstance(working_dir, str) or not os.path.isabs(working_dir)
+                or not isinstance(config_files, str)):
+            continue
+        if os.path.normcase(os.path.realpath(working_dir)) != os.path.normcase(str(root)):
+            continue
+        files = {
+            os.path.normcase(os.path.realpath(value))
+            for value in config_files.split(",") if os.path.isabs(value)
+        }
+        expected = os.path.normcase(os.path.realpath(
+            root / "extensions" / "services" / service / "compose.yaml"
+        ))
+        if files & base_files and expected in files:
+            proven.add(service)
+    return sorted(proven)
+
+
 def _docker_service_health_snapshot() -> dict:
     """Return a cached, read-only Docker lifecycle and healthcheck snapshot."""
     global _service_health_cache
@@ -7219,6 +7288,7 @@ def _docker_service_health_snapshot() -> dict:
             if name.strip().startswith("ods-") or name.strip() in declared_containers
         ]
         containers: list[dict] = []
+        prior_selected_builtins: list[str] = []
         if names:
             inspect_result = subprocess.run(
                 ["docker", "inspect", *names], capture_output=True, text=True, timeout=12,
@@ -7228,6 +7298,7 @@ def _docker_service_health_snapshot() -> dict:
             inspected = json.loads(inspect_result.stdout)
             if not isinstance(inspected, list):
                 raise ValueError("docker inspect returned non-list JSON")
+            prior_selected_builtins = _owned_library_builtins_from_inspect(inspected, INSTALL_DIR)
             for item in inspected:
                 if not isinstance(item, dict):
                     continue
@@ -7248,6 +7319,7 @@ def _docker_service_health_snapshot() -> dict:
         payload = {
             "schema_version": "ods.host-service-health.v1",
             "containers": containers,
+            "prior_selected_builtins": prior_selected_builtins,
             "sampled_at": _iso_now(),
         }
         _service_health_cache = (time.monotonic(), payload)
@@ -19444,6 +19516,19 @@ def _capture_perplexica_config(
     required = ("modelProviders", "preferences")
     if any(key not in values for key in required):
         raise RuntimeError("Perplexica config is missing model provider preferences")
+    # Vane hydrates the official OpenAI catalog into GET responses. That is
+    # not a restorable copy of the persisted chatModels array. An owner route
+    # using this provider is independent of the local ODS model activation.
+    providers = values.get("modelProviders")
+    if isinstance(providers, list):
+        openai_provider = next(
+            (entry for entry in providers if isinstance(entry, dict) and entry.get("type") == "openai"),
+            None,
+        )
+        config = openai_provider.get("config") if isinstance(openai_provider, dict) else None
+        if isinstance(config, dict) and config.get("baseURL") == "https://api.openai.com/v1":
+            logger.info("Preserving owner Perplexica OpenAI route during local model activation")
+            return None
     return {
         "url": url,
         "values": {key: values[key] for key in required},
@@ -19538,10 +19623,12 @@ def _update_perplexica_model(
     preferences = values.get("preferences")
     if not isinstance(providers, list) or not isinstance(preferences, dict):
         raise RuntimeError("Perplexica snapshot is missing routing state")
-    provider = next(
-        (entry for entry in providers if isinstance(entry, dict) and entry.get("type") == "openai"),
+    provider_index = next(
+        (index for index, entry in enumerate(providers)
+         if isinstance(entry, dict) and entry.get("type") == "openai"),
         None,
     )
+    provider = providers[provider_index] if provider_index is not None else None
     if provider is None or not provider.get("id"):
         raise RuntimeError("Perplexica has no configured OpenAI provider")
 
@@ -19560,7 +19647,10 @@ def _update_perplexica_model(
     preferences["defaultChatModel"] = model
     preferences["defaultChatProvider"] = provider["id"]
 
-    _post_perplexica_config(url, "modelProviders", providers)
+    # GET hydrates built-in models. Persist only the selected provider fields;
+    # reposting the whole array repeatedly grows the stored embedding catalog.
+    _post_perplexica_config(url, f"modelProviders.{provider_index}.chatModels", provider["chatModels"])
+    _post_perplexica_config(url, f"modelProviders.{provider_index}.config", provider_config)
     _post_perplexica_config(url, "preferences", preferences)
     verified = _perplexica_http_json(url).get("values")
     if not isinstance(verified, dict) or not _perplexica_config_matches(
@@ -19589,33 +19679,23 @@ def _perplexica_restored_snapshot_matches(verified: dict, expected: dict) -> boo
     ):
         return False
 
-    expected_model = preferences.get("defaultChatModel")
-    expected_provider_id = preferences.get("defaultChatProvider")
-    if not expected_model or not expected_provider_id:
-        return False
-    if (
-        verified_preferences.get("defaultChatModel") != expected_model
-        or verified_preferences.get("defaultChatProvider") != expected_provider_id
-    ):
-        return False
+    for key in ("defaultChatModel", "defaultChatProvider",
+                "defaultEmbeddingModel", "defaultEmbeddingProvider"):
+        if verified_preferences.get(key) != preferences.get(key):
+            return False
 
+    # Activation changes the first OpenAI provider, even when the owner's
+    # former default chat provider is a different/custom provider.
     expected_provider = next(
-        (
-            entry
-            for entry in providers
-            if isinstance(entry, dict)
-            and (
-                entry.get("id") == expected_provider_id
-                or (entry.get("type") == "openai" and entry.get("id") == expected_provider_id)
-            )
-        ),
+        (entry for entry in providers if isinstance(entry, dict) and entry.get("type") == "openai"),
         None,
     )
     verified_provider = next(
         (
             entry
             for entry in verified_providers
-            if isinstance(entry, dict) and entry.get("id") == expected_provider_id
+            if isinstance(entry, dict) and isinstance(expected_provider, dict)
+            and entry.get("id") == expected_provider.get("id")
         ),
         None,
     )
@@ -19631,10 +19711,17 @@ def _perplexica_restored_snapshot_matches(verified: dict, expected: dict) -> boo
     verified_chat_models = verified_provider.get("chatModels")
     if not isinstance(verified_chat_models, list):
         return False
-    return any(
-        isinstance(entry, dict)
-        and (entry.get("key") == expected_model or entry.get("name") == expected_model)
-        for entry in verified_chat_models
+    expected_chat_models = expected_provider.get("chatModels")
+    if not isinstance(expected_chat_models, list):
+        return False
+    return all(
+        isinstance(expected_model, dict) and any(
+            isinstance(entry, dict)
+            and (entry.get("key") == expected_model.get("key")
+                 or entry.get("name") == expected_model.get("name"))
+            for entry in verified_chat_models
+        )
+        for expected_model in expected_chat_models
     )
 
 
@@ -19644,10 +19731,37 @@ def _restore_perplexica_config(snapshot: dict) -> None:
     values = snapshot.get("values")
     if not isinstance(values, dict):
         raise RuntimeError("Perplexica rollback snapshot is invalid")
-    for key in ("modelProviders", "preferences"):
-        if key not in values:
-            raise RuntimeError(f"Perplexica rollback snapshot is missing {key}")
-        _post_perplexica_config(url, key, values[key])
+    providers = values.get("modelProviders")
+    preferences = values.get("preferences")
+    if not isinstance(providers, list) or not isinstance(preferences, dict):
+        raise RuntimeError("Perplexica rollback snapshot is missing routing state")
+    old_provider = next(
+        (entry for entry in providers if isinstance(entry, dict) and entry.get("type") == "openai"),
+        None,
+    )
+    if not isinstance(old_provider, dict) or not old_provider.get("id"):
+        raise RuntimeError("Perplexica rollback snapshot is missing its OpenAI provider")
+    old_config = old_provider.get("config")
+    if isinstance(old_config, dict) and old_config.get("baseURL") == "https://api.openai.com/v1":
+        raise RuntimeError("Perplexica rollback snapshot contains a hydrated OpenAI catalog")
+    current = _perplexica_http_json(url).get("values")
+    current_providers = current.get("modelProviders") if isinstance(current, dict) else None
+    if not isinstance(current_providers, list):
+        raise RuntimeError("Perplexica rollback cannot locate its chat provider")
+    provider_index = next(
+        (index for index, entry in enumerate(current_providers)
+         if isinstance(entry, dict) and entry.get("id") == old_provider["id"]),
+        None,
+    )
+    if provider_index is None:
+        raise RuntimeError("Perplexica rollback cannot locate its OpenAI provider")
+    _post_perplexica_config(
+        url, f"modelProviders.{provider_index}.chatModels", old_provider.get("chatModels", []),
+    )
+    _post_perplexica_config(
+        url, f"modelProviders.{provider_index}.config", old_provider.get("config", {}),
+    )
+    _post_perplexica_config(url, "preferences", preferences)
     verified = _perplexica_http_json(url).get("values")
     if not isinstance(verified, dict) or not _perplexica_restored_snapshot_matches(verified, values):
         raise RuntimeError("Perplexica rollback could not be verified")

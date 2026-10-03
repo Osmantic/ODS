@@ -3868,7 +3868,8 @@ if curl -sf --max-time 3 "${_perplexica_url}/api/config" >/dev/null 2>&1; then
 import os, sys, json, urllib.request
 config = json.load(sys.stdin)["values"]
 providers = config.get("modelProviders", [])
-openai_prov = next((p for p in providers if p["type"] == "openai"), None)
+openai_index = next((i for i, p in enumerate(providers) if p["type"] == "openai"), None)
+openai_prov = providers[openai_index] if openai_index is not None else None
 if not openai_prov:
     sys.exit(0)  # Perplexica has no OpenAI provider configured; skip (non-fatal)
 url = os.environ["PERPLEXICA_URL"] + "/api/config"
@@ -3892,7 +3893,9 @@ prov_config = openai_prov.get("config") or {}
 prov_config["apiKey"] = key
 prov_config["baseURL"] = base_url
 openai_prov["config"] = prov_config
-post("modelProviders", providers)
+# GET includes Vane-built-in models. Write only route fields for this provider.
+post(f"modelProviders.{openai_index}.chatModels", openai_prov["chatModels"])
+post(f"modelProviders.{openai_index}.config", openai_prov["config"])
 prefs = config.get("preferences", {})
 prefs["defaultChatModel"] = model
 prefs["defaultChatProvider"] = openai_prov["id"]

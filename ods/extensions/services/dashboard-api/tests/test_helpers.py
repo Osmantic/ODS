@@ -722,7 +722,7 @@ class TestGetAllServices:
 
         def current_manifests(*args, **kwargs):
             assert kwargs["only_service_ids"] == frozenset({
-                "comfyui", "embeddings", "n8n", "perplexica", "qdrant", "searxng", "token-spy",
+                "comfyui", "embeddings", "n8n", "perplexica", "privacy-shield", "qdrant", "searxng", "token-spy",
                 "remote-provider-egress", "remote-provider-ssh-tunnel",
                 "hermes", "hermes-proxy", "whisper", "tts",
             })

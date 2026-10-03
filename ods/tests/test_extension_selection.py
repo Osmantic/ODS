@@ -140,6 +140,71 @@ def test_remote_route_blocks_preset_before_any_marker_changes(tmp_path):
         restore(tmp_path, preset)
     assert (egress / "compose.yaml").is_file()
     assert (other / "compose.yaml").is_file()
+def test_disable_remembers_prior_selection_without_removing_service_files(tmp_path):
+    (tmp_path / "data").mkdir()
+    target = extension(tmp_path, "perplexica")
+    history = tmp_path / "data" / selection.SELECTION_HISTORY
+
+    assert selection.run("disable", tmp_path, "perplexica") == "disabled"
+    assert (target / "compose.yaml.disabled").is_file()
+    assert json.loads(history.read_text()) == {
+        "schema_version": 1, "ever_selected": ["perplexica"],
+    }
+
+    assert selection.run("enable", tmp_path, "perplexica") == "enabled"
+    assert selection.run("disable", tmp_path, "perplexica") == "disabled"
+    assert json.loads(history.read_text())["ever_selected"] == ["perplexica"]
+
+
+def test_unsafe_history_does_not_block_disable_or_erase_evidence(tmp_path, capsys):
+    (tmp_path / "data").mkdir()
+    target = extension(tmp_path, "perplexica")
+    history = tmp_path / "data" / selection.SELECTION_HISTORY
+    history.write_text("{broken", encoding="utf-8")
+
+    assert selection.run("disable", tmp_path, "perplexica") == "disabled"
+    assert (target / "compose.yaml.disabled").is_file()
+    assert history.read_text(encoding="utf-8") == "{broken"
+    assert "Could not record prior Library selection history" in capsys.readouterr().err
+
+
+def test_unsafe_history_does_not_block_preset_disable(tmp_path, capsys, monkeypatch):
+    (tmp_path / "data" / "user-extensions").mkdir(parents=True)
+    target = extension(tmp_path, "perplexica")
+    history = tmp_path / "data" / selection.SELECTION_HISTORY
+    history.write_text("{broken", encoding="utf-8")
+    preset = tmp_path / "extensions.list"
+    preset.write_text("disabled:perplexica\n", encoding="utf-8")
+    monkeypatch.setattr(selection, "_stop_for_disable", lambda *args, **kwargs: None)
+
+    assert restore(tmp_path, preset) == (0, 1, [])
+    assert (target / "compose.yaml.disabled").is_file()
+    assert history.read_text(encoding="utf-8") == "{broken"
+    assert "Could not record prior Library selection history" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("as_preset", [False, True])
+def test_unreadable_history_metadata_does_not_block_disable(tmp_path, capsys, monkeypatch, as_preset):
+    (tmp_path / "data" / "user-extensions").mkdir(parents=True)
+    target = extension(tmp_path, "perplexica")
+    history = tmp_path / "data" / selection.SELECTION_HISTORY
+    original_lstat = Path.lstat
+
+    def unreadable_history(path):
+        if path == history:
+            raise PermissionError("history ACL denies inspection")
+        return original_lstat(path)
+
+    monkeypatch.setattr(Path, "lstat", unreadable_history)
+    if as_preset:
+        preset = tmp_path / "extensions.list"
+        preset.write_text("disabled:perplexica\n", encoding="utf-8")
+        monkeypatch.setattr(selection, "_stop_for_disable", lambda *args, **kwargs: None)
+        assert restore(tmp_path, preset) == (0, 1, [])
+    else:
+        assert selection.run("disable", tmp_path, "perplexica") == "disabled"
+    assert (target / "compose.yaml.disabled").is_file()
+    assert "Could not record prior Library selection history" in capsys.readouterr().err
 
 
 def test_selected_compose_and_user_shadowing(tmp_path):
@@ -449,7 +514,8 @@ def test_preset_restore_orders_dependents_and_prerequisites(tmp_path, monkeypatc
     monkeypatch.setattr(selection, "_stop_for_disable", lambda *args, **kwargs: None)
 
     def ordered_replace(source, target):
-        moves.append(Path(source).parent.name)
+        if Path(source).parent.name in {"consumer", "search"}:
+            moves.append(Path(source).parent.name)
         if Path(source).parent.name == "search" and Path(target).name.endswith("disabled"):
             assert not (consumer / "compose.yaml").exists()
         if Path(source).parent.name == "consumer" and Path(target).name == "compose.yaml":

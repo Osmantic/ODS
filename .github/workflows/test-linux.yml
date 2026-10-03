@@ -526,6 +526,7 @@ jobs:
         run: |
           python3 tests/contracts/test-wsl-stack.py
           python3 tests/test-wsl-bind-recovery.py
+          python3 tests/test-wsl-stopped-bind-recovery.py
           python3 tests/test-wsl-lemonade-control.py
           python3 tests/test-configure-wsl-model-store.py
           python3 tests/test-retire-wsl-runtime.py
@@ -644,6 +645,7 @@ jobs:
         run: |
           python3 tests/test_wsl_agent_address.py
           bash tests/test-wsl-agent-start.sh
+          bash tests/test-wsl-compose-bind-retry.sh
 
       - name: Issue-to-PR Security Contract Tests
         run: bash tests/test-issue-to-pr-security.sh

@@ -34,6 +34,7 @@ from host_agent_client import (
     AgentHTTPError,
     AgentProtocolError,
     AgentUnavailable,
+    async_request_json as async_request_agent_json,
     request_json as request_agent_json,
     request_text as request_agent_text,
 )
@@ -449,6 +450,62 @@ def _qualified_builtin_selection(service_id: str) -> dict:
     return {"library_manageable": True, "library_selected": states[0]}
 
 
+def _ever_selected_builtin_ids() -> set[str]:
+    """Read the host selector's durable, nonsecret prior-selection receipt."""
+    path = Path(DATA_DIR) / ".extensions-ever-selected.json"
+    descriptor = None
+    try:
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
+        selected = os.fstat(descriptor)
+        if not stat.S_ISREG(selected.st_mode) or selected.st_size > 1024 * 1024:
+            logger.warning("Invalid extension selection history file")
+            return set()
+        raw = os.read(descriptor, 1024 * 1024 + 1)
+    except FileNotFoundError:
+        return set()
+    except OSError:
+        logger.warning("Could not read extension selection history")
+        return set()
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+    if len(raw) > 1024 * 1024:
+        logger.warning("Invalid extension selection history file")
+        return set()
+    try:
+        document = json.loads(raw)
+    except (UnicodeError, json.JSONDecodeError):
+        logger.warning("Could not read extension selection history")
+        return set()
+    ids = document.get("ever_selected") if isinstance(document, dict) and document.get("schema_version") == 1 else None
+    if (not isinstance(ids, list) or len(ids) > 4096
+            or any(not isinstance(item, str) or _SERVICE_ID_RE.fullmatch(item) is None for item in ids)):
+        logger.warning("Invalid extension selection history content")
+        return set()
+    return set(ids)
+
+
+async def _owned_prior_selected_builtin_ids() -> set[str]:
+    """Use read-only, exact-owned stopped-container evidence for legacy picks."""
+    try:
+        # This is optional evidence. A transient host-agent route withdrawal
+        # must not hold the whole Library past the browser's 8-second deadline.
+        snapshot = await asyncio.wait_for(
+            async_request_agent_json("GET", "/v1/service/health", timeout=2,
+                                     retry=False),
+            timeout=2.5,
+        )
+    except (AgentClientError, asyncio.TimeoutError):
+        return set()
+    if not isinstance(snapshot, dict) or snapshot.get("schema_version") != "ods.host-service-health.v1":
+        return set()
+    ids = snapshot.get("prior_selected_builtins")
+    if (not isinstance(ids, list) or len(ids) > len(LIBRARY_MANAGEABLE_BUILTINS)
+            or any(not isinstance(item, str) or item not in LIBRARY_MANAGEABLE_BUILTINS for item in ids)):
+        return set()
+    return set(ids)
+
+
 
 _OPENCODE_EXTENSION_STATUS = {
     "degraded": "installing",
@@ -507,6 +564,15 @@ def _opencode_extension_action(action: str) -> dict:
         ) from exc
     status = body.get("status") if isinstance(body.get("status"), dict) else {}
     return {"id": "opencode", "action": action, "state": status.get("state")}
+
+
+def _runtime_health_for(service_id: str, services_by_id: dict) -> str:
+    """Report the health observation without resolving a failed operation."""
+    service = services_by_id.get(service_id)
+    if service is None or getattr(service, "id", None) != service_id:
+        return "unknown"
+    health = getattr(service, "status", None)
+    return health if health in ("healthy", "unhealthy", "degraded", "down") else "unknown"
 
 
 def _compute_extension_status(ext: dict, services_by_id: dict) -> str:
@@ -1896,6 +1962,9 @@ async def extensions_catalog(
             logger.error("stale-progress cleanup failed: %s", exc, exc_info=exc)
 
     _cleanup_future.add_done_callback(_log_cleanup_error)
+    owned_history_task = asyncio.create_task(
+        _owned_prior_selected_builtin_ids()
+    )
 
     from helpers import get_cached_services, get_all_services
 
@@ -1939,6 +2008,10 @@ async def extensions_catalog(
     ])
     update_states = dict(zip(user_extension_ids, update_results))
 
+    ever_selected_ids, owned_prior_ids = await asyncio.gather(
+        asyncio.to_thread(_ever_selected_builtin_ids),
+        owned_history_task,
+    )
     extensions = []
     for ext in current_catalog:
         status = _compute_extension_status(ext, services_by_id)
@@ -1953,18 +2026,27 @@ async def extensions_catalog(
             "locally_modified": False,
             "rollback_available": False,
         })
+        builtin_selection = _qualified_builtin_selection(ext_id) if source == "core" else {}
         enriched = {
             **ext,
             "status": status,
+            "runtime_health": _runtime_health_for(ext_id, services_by_id),
             "installable": installable,
             "source": source,
             "has_data": has_data,
             "depends_on": ext.get("depends_on", []),
             "dependents": [],
             "dependency_status": {},
-            **(_qualified_builtin_selection(ext_id) if source == "core" else {}),
+            **builtin_selection,
             **update_state,
         }
+        if builtin_selection:
+            # False means no positive history was found, not proof that this
+            # bundled service has never been used on a legacy installation.
+            enriched["library_ever_selected_proven"] = (
+                builtin_selection["library_selected"]
+                or ext_id in ever_selected_ids or ext_id in owned_prior_ids
+            )
         if ext_id == "opencode" and ext_id in SERVICES:
             enriched.update(_opencode_catalog_fields(status))
         if ext_id == "token-spy" and source == "core":
@@ -3401,6 +3483,7 @@ async def extension_detail(
         "name": ext["name"],
         "description": ext.get("description", ""),
         "status": status,
+        "runtime_health": _runtime_health_for(service_id, services_by_id),
         "error_message": error_message,
         "source": source,
         "installable": installable,

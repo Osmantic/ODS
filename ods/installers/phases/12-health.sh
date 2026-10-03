@@ -536,7 +536,8 @@ import sys, json, urllib.request
 
 config = json.load(sys.stdin)["values"]
 providers = config.get("modelProviders", [])
-openai_prov = next((p for p in providers if p["type"] == "openai"), None)
+openai_index = next((i for i, p in enumerate(providers) if p["type"] == "openai"), None)
+openai_prov = providers[openai_index] if openai_index is not None else None
 transformers_prov = next((p for p in providers if p["type"] == "transformers"), None)
 
 if not openai_prov:
@@ -568,7 +569,9 @@ openai_prov["config"] = {
     "apiKey": api_key,
     "baseURL": base_url,
 }
-post("modelProviders", providers)
+# GET includes Vane-built-in models. Write only route fields for this provider.
+post(f"modelProviders.{openai_index}.chatModels", openai_prov["chatModels"])
+post(f"modelProviders.{openai_index}.config", openai_prov["config"])
 
 # Set default providers and models
 post("preferences", {

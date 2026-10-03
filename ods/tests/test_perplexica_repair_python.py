@@ -65,10 +65,11 @@ def test_repair_uses_the_shared_python_choice(tmp_path, override):
         assert result.returncode == 0, result.stderr
         assert result.stdout.strip() == "ok"
         assert marker.exists()
-        assert len(posts) == 3
-        assert posts[0][1]["key"] == "modelProviders"
-        assert posts[1][1]["value"]["defaultChatModel"] == "ods/current"
-        assert posts[2][0] == "/api/config/setup-complete"
+        assert len(posts) == 4
+        assert posts[0][1]["key"] == "modelProviders.0.chatModels"
+        assert posts[1][1]["key"] == "modelProviders.0.config"
+        assert posts[2][1]["value"]["defaultChatModel"] == "ods/current"
+        assert posts[3][0] == "/api/config/setup-complete"
     finally:
         server.shutdown()
         server.server_close()

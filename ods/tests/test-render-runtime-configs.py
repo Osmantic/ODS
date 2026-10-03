@@ -716,6 +716,58 @@ def test_atomic_write_failure_preserves_known_good_config() -> None:
         assert not list(target.parent.glob(f".{target.name}.*.tmp"))
 
 
+def test_identical_switchboard_roundtrip_preserves_bound_inode() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "config/litellm/switchboard.yaml"
+        def render(model):
+            subprocess.run([sys.executable, str(SCRIPT), "--surface", "litellm-switchboard",
+                            "--model", model, "--output-root", tmp, "--write"],
+                           check=True, stdout=subprocess.DEVNULL)
+        render("qwen3.5-9b")
+        before = target.stat()
+        with target.open("rb") as bound:
+            content = bound.read()
+            render("qwen3.5-2b")
+            render("qwen3.5-9b")
+            after = target.stat()
+            assert (before.st_dev, before.st_ino, before.st_mtime_ns) == (after.st_dev, after.st_ino, after.st_mtime_ns)
+            assert target.read_bytes() == content
+            assert os.fstat(bound.fileno()).st_nlink == 1
+
+
+def test_changed_bytes_and_modes_still_replace_atomically() -> None:
+    renderer = load_renderer_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "config"
+        renderer.atomic_write_text(target, "old\n")
+        with target.open("rb") as bound:
+            renderer.atomic_write_text(target, "new\n")
+            assert bound.read() == b"old\n"
+            assert target.read_bytes() == b"new\n"
+        if os.name != "nt":
+            target.chmod(0o600)
+            renderer.atomic_write_text(target, "new\n", file_mode=0o644)
+            assert target.stat().st_mode & 0o777 == 0o644
+
+
+def test_identical_symlink_and_hardlink_do_not_skip_replacement() -> None:
+    if os.name == "nt":
+        return
+    renderer = load_renderer_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        original = Path(tmp) / "original"
+        original.write_text("same\n")
+        target = Path(tmp) / "target"
+        target.symlink_to(original)
+        renderer.atomic_write_text(target, "same\n")
+        assert not target.is_symlink()
+        target.unlink()
+        os.link(original, target)
+        renderer.atomic_write_text(target, "same\n")
+        assert original.stat().st_ino != target.stat().st_ino
+        assert original.read_text() == "same\n"
+
+
 def test_validation_rejects_negative_context_or_invalid_port() -> None:
     proc = subprocess.run(
         [sys.executable, str(SCRIPT), "--context-length", "-10"],
@@ -779,6 +831,9 @@ def main() -> int:
         test_write_mode_writes_under_output_root,
         test_write_cli_defaults_to_secret_free_paths,
         test_atomic_write_failure_preserves_known_good_config,
+        test_identical_switchboard_roundtrip_preserves_bound_inode,
+        test_changed_bytes_and_modes_still_replace_atomically,
+        test_identical_symlink_and_hardlink_do_not_skip_replacement,
         test_validation_rejects_negative_context_or_invalid_port,
         test_validation_rejects_control_characters_in_model_and_key,
     ]
