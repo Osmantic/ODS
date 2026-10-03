@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-10-02T11:12:59Z",
+  "generated_at": "2026-10-03T00:42:31Z",
   "schema_version": "1.0.0",
   "extensions": [
     {
@@ -3598,9 +3598,7 @@
         "all"
       ],
       "compose_file": "compose.yaml",
-      "depends_on": [
-        "searxng"
-      ],
+      "depends_on": [],
       "port": 9119,
       "external_port_default": 0,
       "health_endpoint": "/api/status",
@@ -3618,7 +3616,7 @@
         {
           "key": "SEARXNG_URL",
           "default": "http://searxng:8080",
-          "description": "Hermes web-search backend. Defaults to ODS's bundled SearXNG service."
+          "description": "Optional self-hosted search backend. Add SearXNG separately in Library; Hermes may use an upstream online keyless fallback when it is absent."
         }
       ],
       "tags": [],
@@ -3626,7 +3624,7 @@
         {
           "id": "hermes-agent",
           "name": "Hermes Agent",
-          "description": "Generalist self-improving agent — chat, tools, persistent memory, scheduled tasks",
+          "description": "Generalist agent with chat, tools, memory, and scheduled tasks. Add SearXNG separately for a self-hosted search backend.",
           "icon": "Bot",
           "category": "productivity",
           "requirements": {

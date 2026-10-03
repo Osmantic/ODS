@@ -660,8 +660,6 @@ grep -Fq '"$PIXEL_RESOLVED_WEB_SEARCH_PROVIDER" == "searxng"' "$features_phase" 
   || { echo "[FAIL] ENABLE_SEARXNG derivation must consult Pixel's selected provider"; exit 1; }
 grep -qE 'ENABLE_PERPLEXICA:-false' "$features_phase" \
   || { echo "[FAIL] ENABLE_SEARXNG derivation must consult ENABLE_PERPLEXICA"; exit 1; }
-grep -qE 'ENABLE_HERMES:-false' "$features_phase" \
-  || { echo "[FAIL] ENABLE_SEARXNG derivation must consult ENABLE_HERMES"; exit 1; }
 grep -qE 'ENABLE_OPENCLAW:-false' "$features_phase" \
   || { echo "[FAIL] ENABLE_SEARXNG derivation must consult ENABLE_OPENCLAW"; exit 1; }
 grep -Fq 'ENABLE_WEB_SEARCH="$ENABLE_SEARXNG"' "$features_phase" \

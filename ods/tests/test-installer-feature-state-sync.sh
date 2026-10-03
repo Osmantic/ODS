@@ -12,11 +12,27 @@ run_case() {
     local hermes_selected="${8:-false}" proxy_selected="${9:-false}"
     local expect_invalid="${10:-false}"
     local whisper_selected="${11:-false}" tts_selected="${12:-false}"
+    local retained_searxng="${13:-false}"
+    local searxng_expected=false
+    if [[ "$selected" == true || "$retained_searxng" == true ]]; then
+        searxng_expected=true
+    fi
     local test_root source_root install_root
     test_root="$(mktemp -d)"
     source_root="$test_root/source"
     install_root="$test_root/install"
-    trap 'rm -rf -- "$test_root"' RETURN
+    cleanup_test_root() {
+        trap - RETURN
+        local resolved parent
+        resolved="$(realpath -e "$test_root")" || return 1
+        parent="$(realpath -e "${TMPDIR:-/tmp}")" || return 1
+        [[ "$resolved" == "$parent"/tmp.* ]] || {
+            echo "Refusing to remove unexpected test directory: $resolved" >&2
+            return 1
+        }
+        rm -rf -- "$resolved"
+    }
+    trap cleanup_test_root RETURN
 
     mkdir -p "$source_root/extensions/services/openclaw" \
         "$install_root/extensions/services/openclaw" \
@@ -24,6 +40,8 @@ run_case() {
         "$install_root/extensions/services/comfyui" \
         "$source_root/extensions/services/brave-search" \
         "$install_root/extensions/services/brave-search" \
+        "$source_root/extensions/services/searxng" \
+        "$install_root/extensions/services/searxng" \
         "$source_root/extensions/services/hermes" \
         "$install_root/extensions/services/hermes" \
         "$source_root/extensions/services/hermes-proxy" \
@@ -47,6 +65,12 @@ run_case() {
     printf 'services: {}\n' >"$install_root/extensions/services/comfyui/compose.yaml"
     printf 'services: {}\n' >"$source_root/extensions/services/brave-search/compose.yaml"
     printf 'services: {}\n' >"$install_root/extensions/services/brave-search/compose.yaml"
+    printf 'services: {}\n' >"$source_root/extensions/services/searxng/compose.yaml"
+    if [[ "$retained_searxng" == true ]]; then
+        printf 'services: {}\n' >"$install_root/extensions/services/searxng/compose.yaml"
+    else
+        printf 'services: {}\n' >"$install_root/extensions/services/searxng/compose.yaml.disabled"
+    fi
     printf 'services: {}\n' >"$source_root/extensions/services/hermes/compose.yaml"
     printf 'services: {}\n' >"$source_root/extensions/services/hermes-proxy/compose.yaml"
     if [[ "$hermes_selected" == true ]]; then
@@ -70,6 +94,7 @@ run_case() {
         fi
     done
     if [[ "$hermes_selected" == true || "$proxy_selected" == true \
+        || "$retained_searxng" == true \
         || "$whisper_selected" == true || "$tts_selected" == true ]]; then
         printf 'ODS_MODE=local\n' >"$install_root/.env"
     fi
@@ -114,6 +139,7 @@ run_case() {
         INSTALL_DIR="$install_root"
         ENABLE_HERMES="$(ods_installed_service_default "$INSTALL_DIR" hermes false)"
         ENABLE_HERMES_PROXY="$(ods_installed_service_default "$INSTALL_DIR" hermes-proxy "$ENABLE_HERMES")"
+        ENABLE_SEARXNG="$(ods_installed_service_default "$INSTALL_DIR" searxng false)"
         ENABLE_WHISPER="$(ods_installed_service_default "$INSTALL_DIR" whisper false)"
         ENABLE_TTS="$(ods_installed_service_default "$INSTALL_DIR" tts false)"
         MAX_CONTEXT=4096
@@ -144,6 +170,7 @@ run_case() {
         source "$FEATURES_PHASE" >/dev/null
         printf '%s\n' "$ENABLE_COMFYUI" >"$test_root/comfyui-selection"
         printf '%s\n' "$ENABLE_BRAVE_SEARCH" >"$test_root/brave-selection"
+        printf '%s\n' "$ENABLE_SEARXNG" >"$test_root/searxng-selection"
     )
 
     if [[ "$expect_invalid" == true ]]; then
@@ -184,6 +211,13 @@ run_case() {
             test ! -e "$root/extensions/services/brave-search/compose.yaml"
             test -f "$root/extensions/services/brave-search/compose.yaml.disabled"
         fi
+        if [[ "$searxng_expected" == true ]]; then
+            test -f "$root/extensions/services/searxng/compose.yaml"
+            test ! -e "$root/extensions/services/searxng/compose.yaml.disabled"
+        else
+            test ! -e "$root/extensions/services/searxng/compose.yaml"
+            test -f "$root/extensions/services/searxng/compose.yaml.disabled"
+        fi
         for service in hermes hermes-proxy whisper tts; do
             local hermes_expected="$hermes_selected"
             [[ "$service" == hermes-proxy ]] && hermes_expected="$proxy_selected"
@@ -200,6 +234,10 @@ run_case() {
     done
     [[ "$(cat "$test_root/comfyui-selection")" == "$comfyui_expected" ]]
     [[ "$(cat "$test_root/brave-selection")" == "$brave_expected" ]]
+    [[ "$(cat "$test_root/searxng-selection")" == "$searxng_expected" ]] || {
+        echo 'FAIL: Hermes changed the selected SearXNG service' >&2
+        return 1
+    }
     if [[ "$brave_requested" == true && "$brave_expected" == false ]]; then
         grep -Fq 'Brave Search was skipped because BRAVE_SEARCH_API_KEY is missing' "$test_root/warning"
     fi
@@ -219,5 +257,7 @@ run_case false "" false cpu false false none true true
 run_case false "" false cpu false false none false true true
 run_case false "" false cpu false false none false false false true false
 run_case false "" false cpu false false none false false false false true
+run_case false "" false cpu false false none false false false false false true
+run_case false "" false cpu false false none true false false false false true
 
 echo "PASS: feature selection reconciles source and installed compose states"

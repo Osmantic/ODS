@@ -71,15 +71,12 @@ services:
       # --no-open equivalent: stops Hermes from trying to spawn a browser
       # inside the container.
       - HERMES_DASHBOARD_NO_OPEN=1
-      # Point Hermes's web tools at the bundled SearXNG. Without this,
-      # tools/web_tools.py:_get_backend() falls through paid backends
-      # (Firecrawl / Parallel / Tavily / Exa) — all of which require API
-      # keys we don't ship — and ultimately defaults to "firecrawl",
-      # raising a backend-configuration error on every web_search /
-      # web_extract call. SearXNG is the only backend bundled with the
-      # stack and is always reachable on the ods-network, so it's the
-      # right default. Users wanting Firecrawl/Tavily/etc. still set the
-      # paid backend's API key and it takes priority over SEARXNG_URL.
+      # SearXNG is an optional Library add-back. Keep its stable Docker name
+      # so enabling it later makes Hermes web search usable without changing
+      # Hermes's environment. When SearXNG is absent, the pinned image can
+      # rescue a failed web_search call through an upstream online keyless
+      # provider. That fallback needs Internet access and is not self-hosted.
+      # Hermes chat, memory, and scheduled tasks do not require SearXNG.
       - SEARXNG_URL=${SEARXNG_URL:-http://searxng:8080}
       # Enable the in-browser chat tab. Hermes's chat surface is PTY-
       # backed (it runs a real REPL inside the container and pipes it

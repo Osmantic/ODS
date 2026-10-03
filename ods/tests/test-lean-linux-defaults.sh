@@ -34,10 +34,34 @@ check_defaults() (
         }
     done
     [[ "$ENABLE_OPENCODE" == false && "$ENABLE_OPENCLAW" == false ]]
+    [[ "$ENABLE_SEARXNG" == false ]]
 )
 
 check_defaults false false
 check_defaults true true
+
+check_retained_search() (
+    local dir
+    dir="$(mktemp -d)"
+    trap 'rm -rf -- "$dir"' EXIT
+    INSTALL_DIR="$dir"
+    mkdir -p "$dir/extensions/services/searxng"
+    : > "$dir/.env"
+    : > "$dir/extensions/services/searxng/compose.yaml"
+    eval "$defaults"
+    [[ "$ENABLE_SEARXNG" == true ]] || {
+        echo 'FAIL: retained SearXNG add-back was lost' >&2
+        exit 1
+    }
+    mv "$dir/extensions/services/searxng/compose.yaml" \
+        "$dir/extensions/services/searxng/compose.yaml.disabled"
+    eval "$defaults"
+    [[ "$ENABLE_SEARXNG" == false ]] || {
+        echo 'FAIL: disabled SearXNG add-back was restored' >&2
+        exit 1
+    }
+)
+check_retained_search
 
 # A fresh source layout carries optional compose files for every service but
 # has no INSTALL_DIR/.env yet. Those files must NOT enable optional features:

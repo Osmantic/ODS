@@ -144,6 +144,7 @@ ENABLE_RECOMMENDED="$(ods_installed_service_default "$INSTALL_DIR" token-spy "$O
 # OpenClaw is deprecated and remains explicit opt-in.
 ENABLE_HERMES="$(ods_installed_service_default "$INSTALL_DIR" hermes "$ODS_EXISTING_INSTALL")"
 ENABLE_HERMES_PROXY="$(ods_installed_service_default "$INSTALL_DIR" hermes-proxy "$ENABLE_HERMES")"
+ENABLE_SEARXNG="$(ods_installed_service_default "$INSTALL_DIR" searxng false)"
 ENABLE_PIXEL="${ENABLE_PIXEL:-auto}"
 PIXEL_EXPLICIT=false
 HERMES_EXPLICIT=false

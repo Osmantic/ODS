@@ -421,7 +421,11 @@ _macos_resolve_support_services() {
     ENABLE_LITELLM=true
 
     ENABLE_SEARXNG=false
-    if $ENABLE_RECOMMENDED || $ENABLE_PERPLEXICA || $ENABLE_HERMES || $ENABLE_OPENCLAW; then
+    if [[ -f "${INSTALL_DIR}/.env" &&
+          -f "${INSTALL_DIR}/extensions/services/searxng/compose.yaml" ]]; then
+        ENABLE_SEARXNG=true
+    fi
+    if $ENABLE_RECOMMENDED || $ENABLE_PERPLEXICA || $ENABLE_OPENCLAW; then
         ENABLE_SEARXNG=true
     fi
     if $ENABLE_PIXEL; then
