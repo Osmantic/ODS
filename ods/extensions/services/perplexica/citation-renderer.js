@@ -162,6 +162,10 @@ function renderCitations(message, sources) {
     return output;
   }
 
+  function resumeProse(line, after, base) {
+    return line.slice(0, after) + prose(line.slice(after), base + after);
+  }
+
   let base = 0;
   return message.split("\n").map((line) => {
     const lineBase = base;
@@ -179,16 +183,25 @@ function renderCitations(message, sources) {
       else {
         const { name, literal } = rawTag;
         const selfClosing = /\/\s*$/.test(line.slice(0, tagEnd.end));
-        if (literal && !selfClosing
-          && !new RegExp(`</${name}\\s*>`, "i").test(line.slice(tagEnd.end + 1))) rawElement = name;
         rawTag = null;
+        const afterOpen = tagEnd.end + 1;
+        if (literal && !selfClosing) {
+          const close = new RegExp(`</${name}\\s*>`, "i").exec(line.slice(afterOpen));
+          if (!close) { rawElement = name; return line; }
+          return resumeProse(line, afterOpen + close.index + close[0].length, lineBase);
+        }
+        return resumeProse(line, afterOpen, lineBase);
       }
       return line;
     }
     // Preserve literal HTML code blocks as opaque elements. A '>' inside a
     // quoted attribute does not complete its opening tag.
     if (rawElement) {
-      if (new RegExp(`</${rawElement}\\s*>`, "i").test(line)) rawElement = null;
+      const close = new RegExp(`</${rawElement}\\s*>`, "i").exec(line);
+      if (close) {
+        rawElement = null;
+        return resumeProse(line, close.index + close[0].length, lineBase);
+      }
       return line;
     }
     const rawOpen = /^(?: {0,3}> ?)* {0,3}<([A-Za-z][\w:-]*)(?:\s|\/?>|$)/i.exec(line);
@@ -201,10 +214,14 @@ function renderCitations(message, sources) {
         rawTag = { name, quote: tagEnd.quote, literal };
         return line;
       }
-      const closed = new RegExp(`</${name}\\s*>`, "i").test(line.slice(tagEnd.end + 1));
       const selfClosing = /\/\s*$/.test(line.slice(0, tagEnd.end));
-      if (!closed && literal && !selfClosing) rawElement = name;
-      if (rawElement || literal || voidTag) return line;
+      const afterOpen = tagEnd.end + 1;
+      if (literal && !selfClosing) {
+        const close = new RegExp(`</${name}\\s*>`, "i").exec(line.slice(afterOpen));
+        if (!close) { rawElement = name; return line; }
+        return resumeProse(line, afterOpen + close.index + close[0].length, lineBase);
+      }
+      if (literal || voidTag || selfClosing) return resumeProse(line, afterOpen, lineBase);
     }
     const marker = /^(?: {0,3}> ?)*( {0,3}(?:[-+*]|\d{1,9}[.)]) +)? {0,3}(`{3,}|~{3,})/.exec(line);
     if (marker) {

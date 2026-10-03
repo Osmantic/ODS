@@ -73,6 +73,14 @@ function checkCases(render) {
     "<pre\nclass=x>\n`x`\n</pre>\nUse " + inline("ok"));
   assert.equal(render('<img alt="\n`x`\n">\nUse `ok`', source),
     '<img alt="\n`x`\n">\nUse ' + inline("ok"));
+  assert.equal(render("<code>x</code> See [1]", source),
+    "<code>x</code> See " + cited(1));
+  assert.equal(render("<img src=x> See [1]", source),
+    "<img src=x> See " + cited(1));
+  assert.equal(render('<a title="\nfoo"> See [1]', source),
+    '<a title="\nfoo"> See ' + cited(1));
+  assert.equal(render("<pre>\n`x`\n</pre> See [1]", source),
+    "<pre>\n`x`\n</pre> See " + cited(1));
   assert.equal(render("Use `[1]\n[2]` then [1].", source), `Use \`[1]\n[2]\` then ${cited(1)}.`);
   assert.equal(render(">     values = [1, 2]", source), ">     values = [1, 2]");
   assert.equal(render("An escaped \\` tick; fact [1].", source), "An escaped \\` tick; fact " + cited(1) + ".");
