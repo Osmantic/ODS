@@ -345,7 +345,7 @@ def test_hermes_external_plan_keeps_search_optional_without_managed_llama():
     catalog = json.loads((ODS_ROOT / "config/extensions-catalog.json").read_text(encoding="utf-8"))
     entry = next(item for item in catalog["extensions"] if item["id"] == "hermes")
     assert manifest["service"]["depends_on"] == entry["depends_on"] == []
-    assert "separately selected backend" in entry["features"][0]["description"]
+    assert "Add SearXNG separately" in entry["features"][0]["description"]
     overlay = yaml.safe_load((service_dir / "compose.local.yaml").read_text(encoding="utf-8"))
     assert overlay["services"]["hermes"]["depends_on"]["llama-server"] == {
         "condition": "service_healthy",

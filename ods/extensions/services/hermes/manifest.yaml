@@ -71,7 +71,7 @@ service:
         Hermes uses internally requires the field to be non-empty.
     - key: SEARXNG_URL
       default: "http://searxng:8080"
-      description: Hermes web-search backend. Add SearXNG separately in Library or configure another backend before using web search.
+      description: Optional self-hosted search backend. Add SearXNG separately in Library; Hermes may use an upstream online keyless fallback when it is absent.
     # Note: there is intentionally no HERMES_MODEL_NAME here. The model
     # name lives in /opt/data/config.yaml after first start; an earlier
     # draft exposed an env var, but the upstream image doesn't read it
@@ -81,7 +81,7 @@ service:
 features:
   - id: hermes-agent
     name: Hermes Agent
-    description: Generalist agent with chat, tools, memory, and scheduled tasks. Web search needs a separately selected backend such as SearXNG.
+    description: Generalist agent with chat, tools, memory, and scheduled tasks. Add SearXNG separately for a self-hosted search backend.
     icon: Bot
     category: productivity
     requirements:

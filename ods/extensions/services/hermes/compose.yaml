@@ -73,9 +73,10 @@ services:
       - HERMES_DASHBOARD_NO_OPEN=1
       # SearXNG is an optional Library add-back. Keep its stable Docker name
       # so enabling it later makes Hermes web search usable without changing
-      # Hermes's environment. Until a search backend is enabled or separately
-      # configured, web_search calls may report that the backend is unavailable.
-      # Hermes chat, memory, and scheduled tasks do not require web search.
+      # Hermes's environment. When SearXNG is absent, the pinned image can
+      # rescue a failed web_search call through an upstream online keyless
+      # provider. That fallback needs Internet access and is not self-hosted.
+      # Hermes chat, memory, and scheduled tasks do not require SearXNG.
       - SEARXNG_URL=${SEARXNG_URL:-http://searxng:8080}
       # Enable the in-browser chat tab. Hermes's chat surface is PTY-
       # backed (it runs a real REPL inside the container and pipes it

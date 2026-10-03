@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-10-03T00:08:51Z",
+  "generated_at": "2026-10-03T00:24:23Z",
   "schema_version": "1.0.0",
   "extensions": [
     {
@@ -3616,7 +3616,7 @@
         {
           "key": "SEARXNG_URL",
           "default": "http://searxng:8080",
-          "description": "Hermes web-search backend. Add SearXNG separately in Library or configure another backend before using web search."
+          "description": "Optional self-hosted search backend. Add SearXNG separately in Library; Hermes may use an upstream online keyless fallback when it is absent."
         }
       ],
       "tags": [],
@@ -3624,7 +3624,7 @@
         {
           "id": "hermes-agent",
           "name": "Hermes Agent",
-          "description": "Generalist agent with chat, tools, memory, and scheduled tasks. Web search needs a separately selected backend such as SearXNG.",
+          "description": "Generalist agent with chat, tools, memory, and scheduled tasks. Add SearXNG separately for a self-hosted search backend.",
           "icon": "Bot",
           "category": "productivity",
           "requirements": {

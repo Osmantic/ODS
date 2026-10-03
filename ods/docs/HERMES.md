@@ -101,8 +101,10 @@ The first start takes a minute — image is ~3GB, Hermes runs its `skills_sync.p
 
 Adding Hermes from Dashboard Library or selecting Hermes alone in the Linux or
 macOS installer does not start SearXNG. Chat, memory, and scheduled tasks remain
-available. To use Hermes web search, add SearXNG separately from Library or
-configure another supported Hermes search backend. The Full Stack/recommended
+available. In the pinned image, a failed SearXNG `web_search` call can use an
+upstream online keyless rescue; it requires Internet access and may be
+unavailable or rate limited. Add SearXNG separately from Library for a
+self-hosted search backend, or configure another supported backend. The Full Stack/recommended
 selection still includes SearXNG. Installer reruns retain an already selected
 SearXNG service, including one added through Library.
 
