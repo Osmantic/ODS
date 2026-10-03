@@ -791,6 +791,7 @@ def _download_huggingface_artifact(
         maximum=300,
     )
     code = r'''
+import os
 import shutil
 import sys
 from pathlib import Path
@@ -812,6 +813,7 @@ path = hf_hub_download(
     revision=revision,
     cache_dir=cache_dir,
     local_files_only=False,
+    token=os.environ.get("HF_TOKEN") or False,
 )
 dest_path = Path(dest)
 dest_path.parent.mkdir(parents=True, exist_ok=True)
@@ -829,9 +831,11 @@ shutil.copyfile(path, dest_path)
     ]
     try:
         child_env = os.environ.copy()
-        persisted_hf_token = load_env(INSTALL_DIR / ".env").get("HF_TOKEN", "").strip()
-        if persisted_hf_token and not child_env.get("HF_TOKEN"):
-            child_env["HF_TOKEN"] = persisted_hf_token
+        env_path = INSTALL_DIR / ".env"
+        if env_path.exists():
+            # Settings live-reads HF_TOKEN: rotation and removal must apply to
+            # downloads too, including disabling the Hub's cached login token.
+            child_env["HF_TOKEN"] = load_env(env_path).get("HF_TOKEN", "").strip()
         child_env.setdefault("HF_HUB_ETAG_TIMEOUT", str(response_timeout))
         child_env.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", str(response_timeout))
         logger.info(

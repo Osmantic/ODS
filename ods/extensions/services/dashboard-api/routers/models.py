@@ -60,6 +60,7 @@ from performance_oracle import (
     model_files_dir as model_files_dir,
     read_env_file_value,
     read_env_value,
+    read_persisted_env_value,
 )
 from security import verify_api_key
 
@@ -693,11 +694,7 @@ def _format_size(size_mb: int) -> str:
 
 
 def _hf_token() -> str:
-    return str(
-        read_env_file_value("HF_TOKEN", INSTALL_DIR)
-        or read_env_value("HF_TOKEN", INSTALL_DIR)
-        or ""
-    ).strip()
+    return read_persisted_env_value("HF_TOKEN", INSTALL_DIR).strip()
 
 
 def _hf_cache_identity() -> str:

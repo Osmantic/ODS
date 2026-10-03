@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+import hashlib
 import asyncio
 import json
 import os
@@ -25,6 +26,24 @@ def _hf_sibling(filename: str, size: int, sha: str) -> dict:
         "size": size,
         "lfs": {"size": size, "sha256": sha},
     }
+
+
+@pytest.mark.parametrize("saved", ["hf_rotated", "", None])
+def test_huggingface_saved_token_controls_metadata(monkeypatch, tmp_path, saved):
+    import routers.models as models_router
+
+    monkeypatch.setattr(models_router, "INSTALL_DIR", str(tmp_path))
+    monkeypatch.setenv("HF_TOKEN", "hf_old_process_token")
+    if saved is not None:
+        (tmp_path / ".env").write_text(f'HF_TOKEN="{saved}"\n', encoding="utf-8")
+    expected = saved if saved is not None else "hf_old_process_token"
+    assert models_router._hf_token() == expected
+    assert models_router._hf_headers().get("Authorization") == (
+        f"Bearer {expected}" if expected else None
+    )
+    assert models_router._hf_cache_identity() == (
+        hashlib.sha256(expected.encode()).hexdigest() if expected else "public"
+    )
 
 
 def test_active_model_reader_preserves_unmatched_quote(monkeypatch, tmp_path):
