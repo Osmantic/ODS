@@ -3212,6 +3212,33 @@ PY
     printf '%s\n' "$retired_release"
 }
 
+# A retained WSL install must not write Phase 06's new socket paths while the
+# old shared binds still exist. The migration will replace this refusal only
+# after the owned Edge/container lifecycle and rollback have been proven.
+ods_pixel_admit_wsl_mount_upgrade() {
+    [[ "${ENABLE_PIXEL_RUNTIME:-false}" == true ]] || return 0
+    local kernel_release="${1:-/proc/sys/kernel/osrelease}"
+    [[ -r "$kernel_release" ]] || return 0
+    grep -qi microsoft "$kernel_release" || return 0
+
+    local classifier="${2:-$SCRIPT_DIR/installers/lib/wsl_pixel_mount_plan.py}"
+    [[ -f "$classifier" && ! -L "$classifier" ]] || {
+        ai_bad "Pixel WSL mount admission source is unavailable."
+        return 1
+    }
+    local plan rc=0 status
+    plan="$(ods_sudo /usr/bin/python3 "$classifier")" || rc=$?
+    status="$(jq -er '.status | select(. == "clear" or . == "ordinary" or . == "needs-owned-edge-stop" or . == "refuse")' <<<"$plan")" || {
+        ai_bad "Pixel WSL mount admission did not return a valid result."
+        return 1
+    }
+    if [[ "$rc" -eq 0 && "$status" == clear ]]; then
+        return 0
+    fi
+    ai_bad "Pixel WSL socket migration is required ($status). Installation stopped before Phase 06 changes the retained .env."
+    return 1
+}
+
 ods_pixel_prepare_runtime_identity() {
     [[ "${ENABLE_PIXEL_RUNTIME:-false}" == true ]] || return 0
     ods_sudo_available || {
