@@ -753,6 +753,7 @@ def _extension_directories(install_dir: Path) -> dict[str, Path]:
 def _preset_dependencies(
     install_dir: Path, service_id: str, directory: Path,
     compose_path: Path, directories: dict[str, Path], core_services: set[str],
+    *, require_dependencies: bool,
 ) -> set[str]:
     manifest_deps = _manifest_dependencies(directory)
     fragment_services, compose_deps = _compose_details(compose_path)
@@ -766,7 +767,7 @@ def _preset_dependencies(
             try:
                 (install_dir / "data" / "user-extensions" / dep).lstat()
             except FileNotFoundError:
-                if dep == "open-webui":
+                if dep == "open-webui" and require_dependencies:
                     _assert_open_webui_selected(install_dir, service_id)
                 continue
         if dep in directories:
@@ -793,6 +794,7 @@ def _preset_graph(
             raise SelectionError(f"Missing selected Compose file for {service_id}")
         dependencies = _preset_dependencies(
             install_dir, service_id, directory, compose_path, directories, core_services,
+            require_dependencies=require_dependencies,
         )
         if require_dependencies:
             missing = sorted(dep for dep in dependencies if not states.get(dep, False))
