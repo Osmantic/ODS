@@ -6,9 +6,10 @@ require Internet access to the external provider; this is not offline search.
 Existing onboarding retains its provider, including legacy SearXNG installations.
 An owner can explicitly select `PIXEL_WEB_SEARCH_PROVIDER=searxng` or
 `PIXEL_WEB_SEARCH_PROVIDER=parallel-free` when installing/reconfiguring Pixel.
-On Linux, a Pixel-only `parallel-free` install leaves SearXNG disabled. Hermes,
-OpenClaw, Perplexica, or another selected local-search consumer can still
-require SearXNG independently. The installer checks the owner-private existing
+On Linux, a Pixel-only `parallel-free` install leaves SearXNG disabled. Hermes
+can also be added without SearXNG; its web search needs a separately selected
+backend. OpenClaw, Perplexica, or another selected local-search consumer can
+still require SearXNG independently. The installer checks the owner-private existing
 Pixel choice before selecting services, so legacy SearXNG users retain it.
 
 The installer provisions the official `@openclaw/parallel-plugin` version
