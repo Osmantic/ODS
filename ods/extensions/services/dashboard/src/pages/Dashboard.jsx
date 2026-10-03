@@ -59,7 +59,7 @@ const SERVICE_LINK_ALIASES = {
 
 const FEATURE_LAUNCH_FALLBACKS = {
   chat: { type: 'service', service: 'open-webui' },
-  voice: { type: 'service', service: 'open-webui' },
+  voice: { type: 'internal', path: '/talk' },
   documents: { type: 'service', service: 'open-webui' },
   'hermes-agent': { type: 'service', service: 'hermes-proxy' },
   'hermes-sso': { type: 'internal', path: '/invites' },
