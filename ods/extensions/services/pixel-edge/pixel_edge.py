@@ -492,8 +492,6 @@ def _workspace_mutation_positions(text: str) -> set[int]:
         r"\u201c[^\u201d]*(?:\u201d|$)|(?<!\w)\u2018[^\u2019]*(?:\u2019|$)",
         mask_content, text,
     )
-    if not _WORKSPACE_MUTATION_SCOPE.search(instructions):
-        return set()
     negated = re.compile(
         r"^\s*(?:please\s+)?(?:do\s+not|don['\u2019]t|never|must\s+not|"
         r"should\s+not|avoid|skip|omit|exclude|no)\b", re.IGNORECASE,
@@ -511,7 +509,9 @@ def _workspace_mutation_positions(text: str) -> set[int]:
         instructions, re.IGNORECASE,
     ):
         value = clause.group("clause")
-        if not negated.search(value):
+        # A file mentioned in an earlier read-only clause does not turn a
+        # later "write the answer" directive into a workspace mutation.
+        if _WORKSPACE_MUTATION_SCOPE.search(value) and not negated.search(value):
             positions.update(clause.start("clause") + match.start("verb")
                              for match in directive.finditer(value))
     return positions

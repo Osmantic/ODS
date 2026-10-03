@@ -196,6 +196,36 @@ def test_cli_update_signal_for_proved_pixel_ref_change(installed, monkeypatch):
     assert retain.main() == 0
 
 
+def test_cli_requests_link_repair_only_for_legacy_mode_failure(installed, monkeypatch):
+    root, _, _, _, ref, _, source = installed
+    runtime = retain.helper('pixel-macos-access-install.py')._bundle
+    class BundleError(ValueError):
+        pass
+    runtime.BundleError = BundleError
+    runtime.verify = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+        BundleError('bundle-link-unreadable'))
+    argv = ['pixel-native-retain.py', '--install-dir', str(root),
+            '--ods-source', str(source), '--expected-ref', ref, '--allow-update']
+    monkeypatch.setattr('sys.argv', argv + ['--allow-link-repair'])
+    assert retain.main() == 3
+    monkeypatch.setattr('sys.argv', argv)
+    assert retain.main() == 1
+    runtime.verify = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+        BundleError('bundle-content-changed'))
+    monkeypatch.setattr('sys.argv', argv + ['--allow-link-repair'])
+    assert retain.main() == 1
+
+
+def test_retained_preflight_resumes_leftover_root_link_repair_journal(installed, monkeypatch):
+    root, _, digest, _, ref, _, source = installed
+    journal = root.parent / 'protected' / ('.link-mode-repair-' + digest + '.json')
+    journal.write_text('{}')
+    monkeypatch.setattr('sys.argv', ['pixel-native-retain.py', '--install-dir', str(root),
+        '--ods-source', str(source), '--expected-ref', ref,
+        '--allow-update', '--allow-link-repair'])
+    assert retain.main() == 3
+
+
 def test_retained_update_uses_protected_manifest_not_old_owner_preparation(installed):
     root, preparation, digest, services, ref, checks, source = installed
     (preparation / 'services/services.json').write_bytes(b'old owner preparation\n')
@@ -274,6 +304,60 @@ printf 'update=%s\\n' "$_PIXEL_UPDATE_REQUIRED"
         assert result.returncode == 0
         assert result.stdout.splitlines() == ['/source/lib/pixel-native-retain.py',
                                               'update=' + expected]
+
+
+@pytest.mark.parametrize('next_status, expected_update', [(0, 'false'), (2, 'true')])
+def test_shell_repairs_legacy_links_once_then_reproves_retention(
+        tmp_path, next_status, expected_update):
+    script = SCRIPT.read_text()
+    start = script.index('if $ENABLE_PIXEL && ! $PREFLIGHT_ONLY; then')
+    stop = script.index('\nif ! $OPENCLAW_EXPLICIT; then', start)
+    (tmp_path / 'data/pixel-native').mkdir(parents=True)
+    body = script[start:stop].replace('/usr/bin/python3', 'python_fixture').replace(
+        '/usr/bin/sudo', 'sudo_fixture')
+    shell = '''set -euo pipefail
+calls=0
+python_fixture() {
+    calls=$((calls+1))
+    printf 'retain-%s\n' "$calls"
+    if [[ $calls -eq 1 ]]; then return 3; fi
+    return ''' + str(next_status) + '''
+}
+sudo_fixture() { printf 'protected-repair\n'; }
+ai() { :; }
+''' + body + '''
+printf 'update=%s\n' "$_PIXEL_UPDATE_REQUIRED"
+'''
+    result = subprocess.run(['bash'], input=shell, capture_output=True, text=True,
+        env={**os.environ, 'ENABLE_PIXEL': 'true', 'PREFLIGHT_ONLY': 'false',
+             'NON_INTERACTIVE': 'true', 'DRY_RUN': 'false', 'OPENCLAW_EXPLICIT': 'true',
+             'PIXEL_SOURCE_REF': '', 'INSTALL_DIR': str(tmp_path), 'LIB_DIR': '/source/lib',
+             'SOURCE_ROOT': '/source'})
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.splitlines() == [
+        'retain-1', 'protected-repair', 'retain-2', 'update=' + expected_update]
+
+
+def test_shell_dry_run_refuses_legacy_link_repair(tmp_path):
+    script = SCRIPT.read_text()
+    start = script.index('if $ENABLE_PIXEL && ! $PREFLIGHT_ONLY; then')
+    stop = script.index('\nif ! $OPENCLAW_EXPLICIT; then', start)
+    (tmp_path / 'data/pixel-native').mkdir(parents=True)
+    body = script[start:stop].replace('/usr/bin/python3', 'python_fixture').replace(
+        '/usr/bin/sudo', 'sudo_fixture')
+    shell = '''set -euo pipefail
+python_fixture() { return 3; }
+sudo_fixture() { echo 'unexpected-repair'; }
+ai_err() { echo "$*" >&2; }
+''' + body
+    result = subprocess.run(['bash'], input=shell, capture_output=True, text=True,
+        env={**os.environ, 'ENABLE_PIXEL': 'true', 'PREFLIGHT_ONLY': 'false',
+             'NON_INTERACTIVE': 'true', 'DRY_RUN': 'true', 'OPENCLAW_EXPLICIT': 'true',
+             'PIXEL_SOURCE_REF': '', 'INSTALL_DIR': str(tmp_path), 'LIB_DIR': '/source/lib',
+             'SOURCE_ROOT': '/source'})
+    assert result.returncode == 1
+    assert 'unexpected-repair' not in result.stdout
+    assert 'dry-run left it unchanged' in result.stderr
 
 
 def test_retained_path_does_not_call_initial_setup_after_base_launch():

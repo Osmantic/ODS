@@ -1669,16 +1669,35 @@ if $ENABLE_PIXEL && ! $PREFLIGHT_ONLY; then
     _PIXEL_RETAINED=false
     _PIXEL_UPDATE_REQUIRED=false
     if [[ -e "${INSTALL_DIR}/data/pixel-native" || -L "${INSTALL_DIR}/data/pixel-native" ]]; then
-        if /usr/bin/python3 "${LIB_DIR}/pixel-native-retain.py" "${_pixel_retain_args[@]}" --allow-update; then
-            :
-        else
-            _pixel_retain_status=$?
+        _pixel_link_repair_attempted=false
+        while true; do
+            if /usr/bin/python3 "${LIB_DIR}/pixel-native-retain.py" \
+                    "${_pixel_retain_args[@]}" --allow-update --allow-link-repair; then
+                break
+            else
+                _pixel_retain_status=$?
+            fi
             if [[ $_pixel_retain_status -eq 2 ]]; then
                 _PIXEL_UPDATE_REQUIRED=true
+                break
+            elif [[ $_pixel_retain_status -eq 3 ]] && ! $_pixel_link_repair_attempted && ! $DRY_RUN; then
+                _pixel_link_repair_attempted=true
+                ai "Verifying and repairing legacy native Pixel bundle link modes..."
+                _pixel_repair_cmd=(/usr/bin/sudo)
+                if $NON_INTERACTIVE; then _pixel_repair_cmd+=(-n); fi
+                "${_pixel_repair_cmd[@]}" /usr/bin/python3 \
+                    "${LIB_DIR}/pixel-native-link-repair.py" \
+                    --install-dir "$INSTALL_DIR" --owner-uid "$(id -u)" || {
+                    ai_err "Native Pixel link repair stopped. Keep its state intact for reviewed recovery."
+                    exit 1
+                }
+            elif [[ $_pixel_retain_status -eq 3 ]] && $DRY_RUN; then
+                ai_err "A verified legacy native Pixel link repair is needed; dry-run left it unchanged."
+                exit 1
             else
                 exit 1
             fi
-        fi
+        done
         _PIXEL_RETAINED=true
     else
         /usr/bin/python3 "${LIB_DIR}/pixel-native-install.py" "${_pixel_install_args[@]}" \
