@@ -6,6 +6,7 @@ import io
 import json
 import logging
 import os
+import shlex
 import shutil
 import stat
 import subprocess
@@ -212,7 +213,7 @@ def test_extension_start_and_disable_share_host_graph_lock(tmp_path, monkeypatch
 
 
 def test_host_selection_endpoint_requires_auth_and_preserves_batch(
-    monkeypatch, host_agent_wire_client,
+    monkeypatch, host_agent_wire_client, tmp_path,
 ):
     import threading
     import urllib.error
@@ -223,12 +224,28 @@ def test_host_selection_endpoint_requires_auth_and_preserves_batch(
 
     calls = []
     monkeypatch.setattr(_mod, "AGENT_API_KEY", "selection-wire-secret")
-    monkeypatch.setattr(
-        _mod, "_apply_extension_selection",
-        lambda service_ids, activate, expected_sha256=None: calls.append(
-            (service_ids, activate, expected_sha256)
-        ) or ("enabled" if activate else "disabled"),
-    )
+    user_root = tmp_path / "user-extensions"
+    builtin_root = tmp_path / "builtins"
+    user_root.mkdir()
+    builtin_root.mkdir()
+    monkeypatch.setattr(ext_router, "USER_EXTENSIONS_DIR", user_root)
+    monkeypatch.setattr(ext_router, "EXTENSIONS_DIR", builtin_root)
+    for service_id in ("search", "consumer"):
+        directory = user_root / service_id
+        directory.mkdir()
+        (directory / "compose.yaml.disabled").write_text("services: {}\n")
+
+    def apply_selection(service_ids, activate, expected_sha256=None):
+        # Model the host's committed marker change as well as its wire receipt.
+        calls.append((service_ids, activate, expected_sha256))
+        for service_id in service_ids:
+            directory = user_root / service_id
+            before = "compose.yaml.disabled" if activate else "compose.yaml"
+            after = "compose.yaml" if activate else "compose.yaml.disabled"
+            (directory / before).rename(directory / after)
+        return "enabled" if activate else "disabled"
+
+    monkeypatch.setattr(_mod, "_apply_extension_selection", apply_selection)
     server = HTTPServer(("127.0.0.1", 0), _mod.AgentHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -251,6 +268,8 @@ def test_host_selection_endpoint_requires_auth_and_preserves_batch(
             post(body)
         assert rejected.value.code == 401
         assert calls == []
+        assert all((user_root / sid / "compose.yaml.disabled").is_file()
+                   for sid in ("search", "consumer"))
 
         host_agent_wire_client(server.server_address[1], key="selection-wire-secret")
         result = ext_router._select_extensions_on_host(
@@ -258,6 +277,9 @@ def test_host_selection_endpoint_requires_auth_and_preserves_batch(
         )
         assert result["action"] == "enabled"
         assert result["service_ids"] == ["search", "consumer"]
+        assert all((user_root / sid / "compose.yaml").is_file()
+                   and not (user_root / sid / "compose.yaml.disabled").exists()
+                   for sid in ("search", "consumer"))
         assert calls == [(["search", "consumer"], True, digests)]
 
         with pytest.raises(urllib.error.HTTPError) as rejected:
@@ -683,6 +705,24 @@ def test_extension_stop_rejects_unreadable_ownership_without_running_docker(tmp_
 def test_extension_stop_preserves_single_service_behavior_without_fragment(monkeypatch):
     monkeypatch.setattr(_mod, '_find_ext_dir', lambda _: None)
     assert _mod._extension_stop_targets('legacy') == ['legacy']
+
+def test_comfyui_stop_accepts_its_empty_selected_marker(tmp_path, monkeypatch):
+    (tmp_path / 'compose.yaml').write_text('services: {}\n', encoding='utf-8')
+    monkeypatch.setattr(_mod, '_find_ext_dir', lambda _: tmp_path)
+    assert _mod._extension_stop_targets('comfyui') == ['comfyui']
+
+
+def test_comfyui_stop_recovers_orphan_after_library_disable(tmp_path, monkeypatch):
+    (tmp_path / 'compose.yaml.disabled').write_text('services: {}\n', encoding='utf-8')
+    monkeypatch.setattr(_mod, '_find_ext_dir', lambda _: tmp_path)
+    monkeypatch.setattr(_mod, 'resolve_compose_flags', lambda: ['-f', 'docker-compose.base.yml'])
+    calls = []
+    monkeypatch.setattr(_mod, '_stop_verified_owned_extension', lambda service: calls.append(service))
+    monkeypatch.setattr(_mod.subprocess, 'run', lambda *_a, **_k: pytest.fail(
+        'disabled ComfyUI is absent from the current Compose graph'))
+    assert _mod.docker_compose_action('comfyui', 'stop') == (True, '')
+    assert calls == ['comfyui']
+
 
 _parse_mem_value = _mod._parse_mem_value
 
@@ -3522,8 +3562,26 @@ class TestRemoteProviderLifecycle:
     """Direct host-agent tests for remote-provider lifecycle planning/apply."""
 
     @pytest.fixture(autouse=True)
-    def _auth(self, monkeypatch):
+    def _auth(self, monkeypatch, tmp_path):
         monkeypatch.setattr(_mod, "AGENT_API_KEY", "test-key")
+        # Dashboard's test conftest installs a partial fcntl stub on Windows.
+        # The installed selector must use msvcrt there, as it does in product.
+        if os.name == "nt":
+            monkeypatch.delitem(sys.modules, "fcntl", raising=False)
+        install_dir = tmp_path / "ods-install"
+        (install_dir / "data").mkdir(parents=True)
+        scripts = install_dir / "scripts"
+        scripts.mkdir()
+        shutil.copyfile(_agent_path.parents[1] / "scripts" / "extension-selection.py",
+                        scripts / "extension-selection.py")
+        for service_id in ("remote-provider-egress", "remote-provider-ssh-tunnel"):
+            directory = install_dir / "extensions" / "services" / service_id
+            directory.mkdir(parents=True)
+            (directory / "compose.yaml").write_text(
+                f"services:\n  {service_id}:\n    image: example:latest\n",
+                encoding="utf-8",
+            )
+        monkeypatch.setattr(_mod, "INSTALL_DIR", install_dir)
 
     @pytest.mark.skipif(os.name == "nt", reason="POSIX secret modes")
     def test_repairs_legacy_provider_secret_modes_without_widening_peer_token(
@@ -3622,6 +3680,85 @@ class TestRemoteProviderLifecycle:
                 "sshKnownHosts": "gpu.example.test ssh-ed25519 AAAATEST",
             },
         }
+
+    @pytest.mark.parametrize("transport,disabled_service", [
+        ("direct", "remote-provider-egress"),
+        ("ssh", "remote-provider-egress"),
+        ("ssh", "remote-provider-ssh-tunnel"),
+    ])
+    def test_enabled_route_requires_selected_library_transports(
+        self, monkeypatch, transport, disabled_service,
+    ):
+        install_dir = _mod.INSTALL_DIR
+        monkeypatch.setattr(_mod, "DATA_DIR", install_dir / "data")
+        service_dir = install_dir / "extensions" / "services" / disabled_service
+        (service_dir / "compose.yaml").rename(service_dir / "compose.yaml.disabled")
+        payload = (self._ssh_configure_payload() if transport == "ssh"
+                   else self._configure_payload())
+        plan = _mod._plan_remote_provider_lifecycle_operation(payload)
+        with pytest.raises(RuntimeError, match=f"Enable {disabled_service} in Extensions Library"):
+            _mod._write_selected_remote_provider_route_state(plan)
+        assert not (_mod.DATA_DIR / "remote-provider" / "routing-state.json").exists()
+
+    @pytest.mark.parametrize("transport", ["direct", "ssh"])
+    def test_selected_library_transports_allow_route_publication(
+        self, monkeypatch, transport,
+    ):
+        install_dir = _mod.INSTALL_DIR
+        monkeypatch.setattr(_mod, "DATA_DIR", install_dir / "data")
+        payload = (self._ssh_configure_payload() if transport == "ssh"
+                   else self._configure_payload())
+        plan = _mod._plan_remote_provider_lifecycle_operation(payload)
+        _mod._write_selected_remote_provider_route_state(plan)
+        route = json.loads(
+            (_mod.DATA_DIR / "remote-provider" / "routing-state.json").read_text(
+                encoding="utf-8",
+            )
+        )
+        assert route["enabled"] is True
+        assert route["provider"]["transport"] == transport
+
+    def test_route_publication_holds_graph_lock_through_state_write(
+        self, monkeypatch,
+    ):
+        install_dir = _mod.INSTALL_DIR
+        monkeypatch.setattr(_mod, "DATA_DIR", install_dir / "data")
+        plan = _mod._plan_remote_provider_lifecycle_operation(self._configure_payload())
+        selector = _mod._load_extension_selector()
+        entered_write = threading.Event()
+        release_write = threading.Event()
+        failures = []
+        original_write = _mod._write_remote_provider_route_state
+
+        def held_write(*args, **kwargs):
+            entered_write.set()
+            assert release_write.wait(3), "route writer was not released"
+            return original_write(*args, **kwargs)
+
+        def publish():
+            try:
+                _mod._write_selected_remote_provider_route_state(plan)
+            except Exception as exc:
+                failures.append(exc)
+
+        monkeypatch.setattr(_mod, "_write_remote_provider_route_state", held_write)
+        writer = threading.Thread(target=publish, daemon=True)
+        writer.start()
+        try:
+            assert entered_write.wait(3), "route writer did not acquire graph lock"
+            with pytest.raises(selector.SelectionError, match="Timed out waiting for extensions lock"):
+                selector.run("disable", install_dir, "remote-provider-egress", timeout=0.1,
+                             data_dir=_mod.DATA_DIR)
+        finally:
+            release_write.set()
+            writer.join(timeout=3)
+        assert not writer.is_alive()
+        assert failures == []
+        with pytest.raises(selector.SelectionError, match="Active direct remote-provider route"):
+            selector.run("disable", install_dir, "remote-provider-egress",
+                         data_dir=_mod.DATA_DIR)
+        assert (install_dir / "extensions" / "services" / "remote-provider-egress"
+                / "compose.yaml").is_file()
 
     def _patch_successful_probe(self, monkeypatch):
         probes = []
@@ -6837,6 +6974,82 @@ class TestPrecreateDataDirs:
 
 
 class TestRootlessDataOwnershipRepair:
+    @pytest.mark.parametrize(
+        "selected,stale",
+        [
+            ("compose.nvidia.yaml", "compose.amd.yaml"),
+            ("compose.amd.yaml", "compose.nvidia.yaml"),
+        ],
+    )
+    def test_comfyui_helper_receives_selected_flags_without_cache(
+            self, tmp_path, monkeypatch, selected, stale):
+        helper = tmp_path / "lib" / "rootless-ownership.sh"
+        helper.parent.mkdir()
+        helper.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+        calls = []
+        flags = ["-f", "docker-compose.base.yml", "-f",
+                 f"extensions/services/comfyui/{selected}"]
+        monkeypatch.setenv(
+            "ODS_ROOTLESS_COMPOSE_FLAGS",
+            f"-f extensions/services/comfyui/{stale}",
+        )
+        monkeypatch.setattr(_mod, "INSTALL_DIR", tmp_path)
+        monkeypatch.setattr(_mod.platform, "system", lambda: "Linux")
+        monkeypatch.setattr(_mod, "_find_usable_bash", lambda: "/bin/bash")
+        monkeypatch.setattr(
+            _mod.subprocess, "run",
+            lambda cmd, **kwargs: calls.append((cmd, kwargs)) or subprocess.CompletedProcess(cmd, 0, "", ""),
+        )
+
+        assert not (tmp_path / ".compose-flags").exists()
+        _mod._repair_rootless_data_ownership("comfyui", compose_flags=flags)
+
+        assert calls[0][0] == [
+            "/bin/bash", "-c",
+            'source "$1"; ods_prepare_comfyui_data_ownership "$2"',
+            "ods-comfyui-data", str(helper), str(tmp_path),
+        ]
+        assert calls[0][1]["env"]["ODS_ROOTLESS_COMPOSE_FLAGS"] == shlex.join(flags)
+        assert os.environ["ODS_ROOTLESS_COMPOSE_FLAGS"].endswith(stale)
+
+    def test_comfyui_requires_resolved_flags_before_helper(self, tmp_path, monkeypatch):
+        helper = tmp_path / "lib" / "rootless-ownership.sh"
+        helper.parent.mkdir()
+        helper.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+        monkeypatch.setattr(_mod, "INSTALL_DIR", tmp_path)
+        monkeypatch.setattr(_mod.platform, "system", lambda: "Linux")
+        monkeypatch.setattr(_mod, "_find_usable_bash", lambda: "/bin/bash")
+        monkeypatch.setattr(
+            _mod.subprocess, "run",
+            lambda *args, **kwargs: pytest.fail("helper ran without resolved flags"),
+        )
+        with pytest.raises(RuntimeError, match="requires resolved Compose flags"):
+            _mod._repair_rootless_data_ownership("comfyui")
+
+    def test_comfyui_start_repairs_with_the_flags_used_for_compose(self, monkeypatch):
+        flags = ["-f", "docker-compose.base.yml", "-f",
+                 "extensions/services/comfyui/compose.nvidia.yaml"]
+        calls = []
+        monkeypatch.setattr(_mod, "resolve_compose_flags", lambda: flags)
+        monkeypatch.setattr(_mod, "_precreate_data_dirs", lambda _sid: None)
+        monkeypatch.setattr(
+            _mod, "_repair_rootless_data_ownership",
+            lambda sid, *, compose_flags: calls.append(("repair", sid, compose_flags)),
+        )
+        monkeypatch.setattr(
+            _mod, "_run_selected_extension_up",
+            lambda sid, selected, **_kwargs:
+                calls.append(("compose", sid, selected))
+                or subprocess.CompletedProcess([], 0, "", ""),
+        )
+        monkeypatch.setattr(_mod, "_find_ext_dir", lambda _sid: None)
+
+        assert _mod.docker_compose_action("comfyui", "start") == (True, "")
+        assert calls == [
+            ("repair", "comfyui", flags),
+            ("compose", "comfyui", flags),
+        ]
+
     def test_whisper_uses_rootful_or_rootless_cache_preparation(self, tmp_path, monkeypatch):
         helper = tmp_path / "lib" / "rootless-ownership.sh"
         helper.parent.mkdir()
@@ -6916,7 +7129,7 @@ class TestRootlessDataOwnershipRepair:
         monkeypatch.setattr(
             _mod,
             "_repair_rootless_data_ownership",
-            lambda _sid: (_ for _ in ()).throw(RuntimeError("ownership mismatch")),
+            lambda _sid, **_kwargs: (_ for _ in ()).throw(RuntimeError("ownership mismatch")),
         )
         monkeypatch.setattr(
             _mod.subprocess,
@@ -6963,7 +7176,7 @@ class TestProxyAuthStart:
         )
         monkeypatch.setattr(_mod, "_precreate_data_dirs", lambda _sid: None)
         monkeypatch.setattr(
-            _mod, "_repair_rootless_data_ownership", lambda _sid: None,
+            _mod, "_repair_rootless_data_ownership", lambda _sid, **_kwargs: None,
         )
 
         def fake_run(cmd, **kwargs):
@@ -7035,7 +7248,7 @@ class TestProxyAuthStart:
         )
         monkeypatch.setattr(_mod, "_precreate_data_dirs", lambda _sid: None)
         monkeypatch.setattr(
-            _mod, "_repair_rootless_data_ownership", lambda _sid: None,
+            _mod, "_repair_rootless_data_ownership", lambda _sid, **_kwargs: None,
         )
 
         def fake_run(cmd, **kwargs):
@@ -9445,6 +9658,33 @@ class TestWindowsObservability:
 
 class TestDockerServiceHealthSnapshot:
 
+    def test_prior_selection_proof_requires_installed_compose_root_and_fragment(self, tmp_path):
+        root = tmp_path / "ods"
+        root.mkdir()
+        base = root / "docker-compose.base.yml"
+        fragment = root / "extensions/services/perplexica/compose.yaml"
+
+        def row(**changes):
+            labels = {
+                "com.docker.compose.project": "ods",
+                "com.docker.compose.service": "perplexica",
+                "com.docker.compose.project.working_dir": str(root),
+                "com.docker.compose.project.config_files": f"{base},{fragment}",
+            }
+            labels.update(changes)
+            return {"Name": "/arbitrary-name", "Config": {"Labels": labels}}
+
+        foreign_root = str(tmp_path / "other")
+        foreign_fragment = str(root / "extensions/services/other/compose.yaml")
+        assert _mod._owned_library_builtins_from_inspect([
+            row(**{"com.docker.compose.project.working_dir": foreign_root}),
+            row(**{"com.docker.compose.project.config_files": f"{base},{foreign_fragment}"}),
+            row(**{"com.docker.compose.project": "foreign/project"}),
+            row(**{"com.docker.compose.service": "dashboard"}),
+            {"Name": "/ods-perplexica", "Config": {"Labels": {}}},
+        ], root) == []
+        assert _mod._owned_library_builtins_from_inspect([row()], root) == ["perplexica"]
+
     def test_uses_compose_service_labels_and_caches_snapshot(self, monkeypatch):
         monkeypatch.setattr(_mod, "_service_health_cache", (0.0, None))
         calls = []
@@ -9471,6 +9711,7 @@ class TestDockerServiceHealthSnapshot:
             "state": "running",
             "health": "healthy",
         }]
+        assert first["prior_selected_builtins"] == []
         assert len(calls) == 2
 
 
@@ -9705,6 +9946,7 @@ class TestDarwinSystemMetrics:
         responses = []
         monkeypatch.setattr(_mod, "check_auth", lambda h: True)
         monkeypatch.setattr(_mod, "_darwin_system_metrics", lambda: None)
+        monkeypatch.setattr(_mod, "_wsl_system_metrics", lambda: None)
         monkeypatch.setattr(_mod, "json_response", lambda h, status, data: responses.append(status))
         _mod.AgentHandler._handle_system_metrics(object())
         assert responses == [503]

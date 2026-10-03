@@ -565,8 +565,33 @@ def load_extension_manifests(
             logger.warning("Failed loading manifest %s: %s", path, e)
             errors.append({"file": str(path), "error": str(e)})
 
-    logger.info("Loaded %d extension manifests (%d services, %d features)", loaded, len(services), len(features))
+    logger.log(
+        logging.INFO if only_service_ids is None else logging.DEBUG,
+        "Loaded %d extension manifests (%d services, %d features)",
+        loaded, len(services), len(features),
+    )
     return services, features, errors
+
+
+def load_enabled_service_config(service_id: str) -> dict[str, Any] | None:
+    """Resolve an optional service's current selection without an API restart.
+
+    ``SERVICES`` is a startup snapshot. Library Add/Disable changes the active
+    Compose marker while this process keeps running, so consumer endpoints
+    must read the selected manifest rather than that snapshot.
+    """
+    if not isinstance(service_id, str) or not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", service_id):
+        return None
+    try:
+        services, _, errors = load_extension_manifests(
+            EXTENSIONS_DIR, GPU_BACKEND, only_service_ids=frozenset({service_id}),
+        )
+    except OSError as exc:
+        logger.warning("Could not refresh %s service manifest: %s", service_id, exc)
+        return None
+    if errors:
+        logger.warning("Could not load %s service manifest: %s", service_id, errors)
+    return services.get(service_id)
 
 
 # --- Service Registry ---
@@ -693,13 +718,16 @@ CORE_SERVICE_IDS = _load_core_service_ids()
 # Always-on services defined in docker-compose.base.yml — never manageable via API.
 # Distinct from CORE_SERVICE_IDS (the full built-in service allowlist).
 ALWAYS_ON_SERVICES: frozenset = frozenset({
-    "llama-server", "model-router", "remote-provider-egress",
-    "remote-provider-ssh-tunnel", "open-webui", "dashboard", "dashboard-api",
+    "llama-server", "model-router", "open-webui", "dashboard", "dashboard-api",
 })
 
 # Built-ins qualified for Dashboard Library Add/Disable. The live health poll
 # must refresh this same set after a fragment changes without an API restart.
-LIBRARY_MANAGEABLE_BUILTINS: frozenset = frozenset({"n8n", "perplexica", "searxng"})
+LIBRARY_MANAGEABLE_BUILTINS: frozenset = frozenset({
+    "comfyui", "embeddings", "n8n", "perplexica", "privacy-shield", "qdrant", "searxng", "token-spy",
+    "hermes", "hermes-proxy", "whisper", "tts",
+    "remote-provider-egress", "remote-provider-ssh-tunnel",
+})
 
 
 def load_extension_catalog() -> list[dict]:

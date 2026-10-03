@@ -17,7 +17,11 @@ def installation(monkeypatch, tmp_path):
     for name in ("hermes-proxy", "hermes", "searxng"):
         directory = bundled / name
         directory.mkdir(parents=True)
-        (directory / "manifest.yaml").write_bytes((source / name / "manifest.yaml").read_bytes())
+        manifest = yaml.safe_load((source / name / "manifest.yaml").read_text())
+        if name == "hermes":
+            # Keep the transitive failure path covered for older selections.
+            manifest["service"]["depends_on"] = ["searxng"]
+        (directory / "manifest.yaml").write_text(yaml.safe_dump(manifest))
         (directory / "compose.yaml.disabled").write_text(
             f"services:\n  {name}:\n    image: alpine:3.22\n")
 
@@ -75,6 +79,27 @@ def test_failed_dependency_blocks_transitive_start(test_client, installation, fa
     assert any("hermes" in warning and "searxng" in warning for warning in body["warnings"])
     assert any("hermes-proxy" in warning and "hermes" in warning for warning in body["warnings"])
     assert not any(call.args[0] in {"hermes", "hermes-proxy"} for call in hook.call_args_list)
+
+
+def test_hermes_proxy_add_requests_dependency_consent_before_mutation(
+    test_client, installation,
+):
+    root, start, hook = installation
+
+    response = test_client.post(
+        "/api/extensions/hermes-proxy/enable", headers=test_client.auth_headers,
+    )
+
+    assert response.status_code == 400
+    detail = response.json()["detail"]
+    assert detail["missing_dependencies"] == ["searxng", "hermes"]
+    assert detail["auto_enable_available"] is True
+    start.assert_not_called()
+    hook.assert_not_called()
+    for service in ("searxng", "hermes", "hermes-proxy"):
+        directory = root / "bundled" / service
+        assert (directory / "compose.yaml.disabled").is_file()
+        assert not (directory / "compose.yaml").exists()
 
 
 def test_nonterminal_post_start_warning_does_not_block_dependents(test_client, installation):

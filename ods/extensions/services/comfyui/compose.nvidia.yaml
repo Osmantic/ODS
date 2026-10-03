@@ -4,6 +4,9 @@ services:
       context: ./extensions/services/comfyui
       dockerfile: Dockerfile
     container_name: ods-comfyui
+    # Reap child processes during a busy model load so Docker can stop this
+    # container without leaving a zombie behind.
+    init: true
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
@@ -26,7 +29,10 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              count: 1
+              # An explicit multi-GPU assignment uses its UUID. Lean installs
+              # with an external model have no assignment; GPU 0 is the
+              # deterministic fallback for a later Library add-back.
+              device_ids: ["${COMFYUI_GPU_UUID:-0}"]
               capabilities: [gpu]
     healthcheck:
       test: ["CMD", "wget", "--spider", "--quiet", "http://127.0.0.1:8188"]

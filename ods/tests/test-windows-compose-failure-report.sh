@@ -58,7 +58,10 @@ check '"compose-launch.txt"' "$INSTALL_PS1" "installer records compose launch ar
 check '[Environment]::CurrentDirectory' "$INSTALL_PS1" "installer keeps .NET cwd aligned with install dir"
 check 'Compose working directory: $installDir' "$INSTALL_PS1" "installer logs compose working directory"
 check 'Push-Location $installDir' "$INSTALL_PS1" "installer runs compose build/up from install dir"
-check 'Join-Path $installDir $cfPath' "$INSTALL_PS1" "installer validates relative compose files under install dir"
+# Path validation and cache publication now run in the locked Docker transaction;
+# malformed paths and unchanged-cache behavior are exercised by its Python contract.
+check '$composeFlags = @(Write-ODSWindowsRemoteProviderComposeFlags' "$INSTALL_PS1" "installer uses the validated Compose flags transaction result"
+check '-InstallDir $installDir -SourceRoot $sourceRoot -ComposeFlags $composeFlags)' "$INSTALL_PS1" "installer passes install root and selected files to the Compose flags transaction"
 check 'HERMES_AGENT_IMAGE_FALLBACK' "$INSTALL_PS1" "installer supports Hermes image fallback"
 check 'Validating Hermes Agent image tag before startup' "$INSTALL_PS1" "installer validates Hermes image before compose up"
 check 'ImageEnvName = "LLAMA_SERVER_IMAGE"' "$INSTALL_PS1" "image validation labels override env var"

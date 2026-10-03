@@ -65,6 +65,7 @@ for switchboard_case in "${switchboard_cases[@]}"; do
             unset ODS_MODEL_SWITCHBOARD
             [[ -z "$caller_value" ]] || ODS_MODEL_SWITCHBOARD="$caller_value"
             EXTERNAL_LLM_URL=""
+            LEMONADE_EXTERNAL=false
             if ((mask & 32)); then EXTERNAL_LLM_URL=http://10.0.2.2:18080; fi
             for index in "${!flags[@]}"; do
                 value=false
@@ -82,7 +83,7 @@ for switchboard_case in "${switchboard_cases[@]}"; do
             expected_gateway=false
             expected_search=false
             if ((mask & 35)) || [[ "$mode" == enabled ]]; then expected_gateway=true; fi
-            if ((mask & 29)); then expected_search=true; fi
+            if ((mask & 21)); then expected_search=true; fi
             [[ "${selected[litellm]:-missing}" == "$expected_gateway" ]] || {
                 echo "FAIL: LiteLLM selection for mask $mask with switchboard $switchboard_case ($mode)"; exit 1;
             }
@@ -97,6 +98,28 @@ for switchboard_case in "${switchboard_cases[@]}"; do
         )
     done
     checked=$((checked + 1))
+done
+
+# Lemonade's model route needs LiteLLM even when Pixel is off and the model
+# switchboard is retained in legacy/observe mode. It must not pull optional
+# search or Token Spy into the WSL install.
+for switchboard_mode in legacy observe; do
+    (
+        INSTALL_DIR="$tmp_dir/lemonade-$switchboard_mode"
+        mkdir -p "$INSTALL_DIR"
+        ODS_MODEL_SWITCHBOARD="$switchboard_mode"
+        LEMONADE_EXTERNAL=true EXTERNAL_LLM_URL=""
+        ENABLE_RECOMMENDED=false ENABLE_PIXEL_RUNTIME=false ENABLE_PERPLEXICA=false
+        ENABLE_HERMES=false ENABLE_OPENCLAW=false
+        declare -A selected=()
+        _sync_extension_compose() { selected["$2"]="$1"; }
+        source /dev/stdin <<< "$block"
+        [[ "${selected[litellm]:-missing}" == true &&
+           "${selected[searxng]:-missing}" == false &&
+           "${selected[token-spy]:-missing}" == false ]] || {
+            echo "FAIL: lean Lemonade gateway selection under $switchboard_mode"; exit 1;
+        }
+    )
 done
 
 # Pixel's own local-search choice retains SearXNG even without other consumers.
@@ -114,6 +137,20 @@ done
     [[ "${selected[searxng]:-missing}" == true && "$ENABLE_SEARXNG" == true &&
        "$PIXEL_RESOLVED_WEB_SEARCH_PROVIDER" == searxng ]] || {
         echo 'FAIL: Pixel SearXNG provider must select local search'; exit 1;
+    }
+)
+# A previously selected SearXNG remains selected without another consumer.
+(
+    INSTALL_DIR="$tmp_dir/retained-searxng"
+    mkdir -p "$INSTALL_DIR"
+    ODS_MODEL_SWITCHBOARD=legacy EXTERNAL_LLM_URL=""
+    ENABLE_RECOMMENDED=false ENABLE_PIXEL_RUNTIME=false ENABLE_PERPLEXICA=false
+    ENABLE_HERMES=true ENABLE_OPENCLAW=false ENABLE_SEARXNG=true
+    declare -A selected=()
+    _sync_extension_compose() { selected["$2"]="$1"; }
+    source /dev/stdin <<< "$block"
+    [[ "${selected[searxng]:-missing}" == true && "$ENABLE_WEB_SEARCH" == true ]] || {
+        echo 'FAIL: retained SearXNG was disabled on Hermes rerun'; exit 1;
     }
 )
 # Literal whitespace and hashes inside quotes are not valid routing modes.

@@ -4,6 +4,7 @@ import logging
 
 from fastapi import APIRouter, Depends
 
+from config import load_enabled_service_config
 from security import verify_api_key
 
 logger = logging.getLogger(__name__)
@@ -26,11 +27,9 @@ async def voice_status(api_key: str = Depends(verify_api_key)):
     service health infrastructure. Full voice API is not yet implemented.
     """
     from helpers import check_service_health
-    from config import SERVICES
-
     services_status = {}
     for svc_key, display_name in [("whisper", "stt"), ("tts", "tts")]:
-        cfg = SERVICES.get(svc_key)
+        cfg = load_enabled_service_config(svc_key)
         if cfg:
             try:
                 result = await check_service_health(svc_key, cfg)
@@ -41,8 +40,8 @@ async def voice_status(api_key: str = Depends(verify_api_key)):
         else:
             services_status[display_name] = {"status": NOT_CONFIGURED}
 
-    # LiveKit is optional and not in SERVICES by default
-    livekit_cfg = SERVICES.get("livekit")
+    # LiveKit is optional and may be selected after this API process starts.
+    livekit_cfg = load_enabled_service_config("livekit")
     if livekit_cfg:
         try:
             result = await check_service_health("livekit", livekit_cfg)

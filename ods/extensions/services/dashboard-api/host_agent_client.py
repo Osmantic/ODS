@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import errno
 import json
+import logging
 import threading
 import time
 from typing import Any
@@ -12,6 +13,8 @@ from typing import Any
 import httpx
 
 from config import AGENT_URL, ODS_AGENT_KEY
+
+logger = logging.getLogger(__name__)
 
 
 class AgentClientError(RuntimeError):
@@ -54,6 +57,44 @@ _sync_client: httpx.Client | None = None
 _async_client: httpx.AsyncClient | None = None
 _sync_client_lock = threading.Lock()
 _async_client_lock = threading.Lock()
+
+_TIMEOUT_ROUTE_CLASSES = frozenset({
+    "opencode", "pixel", "service", "model", "llm", "tailscale", "setup",
+    "extension", "privacy", "resources",
+})
+_TIMEOUT_METHODS = frozenset({"GET", "POST", "PUT", "PATCH", "DELETE"})
+
+
+def _timeout_route_class(path: str) -> str:
+    """Return a fixed label, never a URL, query string, or user path segment."""
+    if path == "/health":
+        return "health"
+    segments = path.split("?", 1)[0].split("/")
+    if len(segments) >= 3 and segments[0] == "" and segments[1] == "v1":
+        if segments[2] in _TIMEOUT_ROUTE_CLASSES:
+            return segments[2]
+    return "other"
+
+
+def _timeout_kind(exc: httpx.TimeoutException) -> str:
+    if isinstance(exc, httpx.PoolTimeout):
+        return "pool"
+    if isinstance(exc, httpx.ConnectTimeout):
+        return "connect"
+    if isinstance(exc, httpx.ReadTimeout):
+        return "read"
+    if isinstance(exc, httpx.WriteTimeout):
+        return "write"
+    return "other"
+
+
+def _log_timeout(transport: str, method: str, path: str, exc: httpx.TimeoutException) -> None:
+    logger.warning(
+        "Host agent timeout transport=%s phase=%s method=%s route=%s",
+        transport, _timeout_kind(exc),
+        method if method in _TIMEOUT_METHODS else "other",
+        _timeout_route_class(path),
+    )
 
 # Docker Desktop can briefly withdraw the synthetic host.docker.internal route
 # while native model operations are changing container state.  A connect error
@@ -215,6 +256,7 @@ def _sync_request(
                 timeout=_timeout(timeout),
             )
         except httpx.TimeoutException as exc:
+            _log_timeout("sync", method, path, exc)
             raise AgentTimeout(f"Host agent {method} {path} timed out") from exc
         except httpx.ConnectError as exc:
             if (
@@ -241,9 +283,10 @@ async def _async_request(
     payload: Any = None,
     params: dict[str, Any] | None = None,
     timeout: float,
+    retry: bool = True,
 ) -> httpx.Response:
     method = method.upper()
-    stale_connection_retries = 1 if method == "GET" else 0
+    stale_connection_retries = 1 if method == "GET" and retry else 0
     connect_retry_index = 0
     while True:
         try:
@@ -256,10 +299,11 @@ async def _async_request(
                 timeout=_timeout(timeout),
             )
         except httpx.TimeoutException as exc:
+            _log_timeout("async", method, path, exc)
             raise AgentTimeout(f"Host agent {method} {path} timed out") from exc
         except httpx.ConnectError as exc:
             if (
-                _is_transient_route_connect_error(exc)
+                retry and _is_transient_route_connect_error(exc)
                 and connect_retry_index < len(_CONNECT_RETRY_DELAYS_SECONDS)
             ):
                 await asyncio.sleep(_CONNECT_RETRY_DELAYS_SECONDS[connect_retry_index])
@@ -308,9 +352,10 @@ async def async_request_json(
     payload: Any = None,
     params: dict[str, Any] | None = None,
     timeout: float = 5.0,
+    retry: bool = True,
 ) -> dict[str, Any]:
     response = await _async_request(
-        method, path, payload=payload, params=params, timeout=timeout
+        method, path, payload=payload, params=params, timeout=timeout, retry=retry
     )
     _raise_for_status(response)
     return _decode_json(response)

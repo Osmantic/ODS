@@ -292,7 +292,7 @@ def refresh_clients(install_dir):
     run('exec', '-T', 'dashboard-api', 'python3', '-c', probe)
 
 
-def finalize_update(preparation):
+def finalize_update(preparation, *, non_interactive=False):
     if sys.platform != 'darwin' or os.geteuid() == 0:
         raise ValueError('native-macos-owner-required')
     config, stack = helper('pixel-native-config'), helper('pixel-native-stack')
@@ -310,7 +310,10 @@ def finalize_update(preparation):
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         stack.resolve_files(install_dir, [])
         previous, activation = stack.read_selection(directory)
-        result = subprocess.run(['/usr/bin/sudo', '/usr/bin/python3', str(Path(__file__).resolve()),
+        sudo = ['/usr/bin/sudo']
+        if non_interactive:
+            sudo.append('-n')
+        result = subprocess.run([*sudo, '/usr/bin/python3', str(Path(__file__).resolve()),
             '--verify-protected', '--owner', pwd.getpwuid(os.getuid()).pw_name,
             '--runtime', prepared['runtimeDigest'], '--services', prepared['serviceDigest'],
             '--source-ref', prepared['pixelSourceRef']], stdout=subprocess.PIPE,

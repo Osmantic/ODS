@@ -6,6 +6,7 @@ compatibility:
 service:
   id: whisper
   name: Whisper (STT)
+  description: Speech-to-text service. ODS Talk also needs Hermes and Kokoro.
   aliases: [stt, voice]
   container_name: ods-whisper
   host_env: WHISPER_HOST
@@ -23,17 +24,17 @@ service:
 
 features:
   - id: voice
-    name: Voice Assistant
-    description: Talk to your AI with your voice
+    name: ODS Talk
+    description: Hermes handles the conversation, Whisper accepts audio messages, and Kokoro speaks replies
     icon: Mic
     category: voice
     requirements:
-      services: [whisper, tts, open-webui]
+      services: [whisper, tts, hermes]
       vram_gb: 0
-    enabled_services_all: [whisper, tts, open-webui]
+    enabled_services_all: [whisper, tts, hermes]
     setup_time: ~5 minutes
     priority: 2
     launch:
-      type: service
-      service: open-webui
+      type: internal
+      path: /talk
     gpu_backends: [all]

@@ -182,6 +182,8 @@ def test_host_agent_uses_recovery_only_for_stop(tmp_path):
     source = (ODS / 'bin/ods-host-agent.py').read_text(encoding='utf-8')
     tree = ast.parse(source)
     node = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == 'docker_compose_action')
+    stop_helper = next(node for node in tree.body if isinstance(node, ast.FunctionDef)
+                       and node.name == '_stop_verified_owned_extension')
     (tmp_path / 'scripts').mkdir()
     # The real host action imports the installed helper. No mocked success from
     # the normal resolver can hide bypasses on the start path.
@@ -195,7 +197,7 @@ def test_host_agent_uses_recovery_only_for_stop(tmp_path):
     namespace = {'INSTALL_DIR': tmp_path, 'resolve_compose_flags': refused,
                  '_extension_stop_targets': lambda service: [service, service + '-db'],
                  'importlib': __import__('importlib'), 'subprocess': subprocess}
-    exec(compile(ast.Module(body=[node], type_ignores=[]), '<host-action>', 'exec'), namespace)
+    exec(compile(ast.Module(body=[stop_helper, node], type_ignores=[]), '<host-action>', 'exec'), namespace)
     assert namespace['docker_compose_action']('example', 'start') == (False, 'legacy source is unconfined')
     assert not (tmp_path / 'recovery.json').exists()
     assert namespace['docker_compose_action']('example', 'stop') == (True, '')
