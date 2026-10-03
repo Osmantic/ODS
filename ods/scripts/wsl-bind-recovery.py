@@ -312,6 +312,19 @@ def classify_stopped(container, binds):
     if not err:
         return False, "stopped-no-evidence"
     low = err.lower()
+    if "no such file or directory" in low:
+        match = re.search(r'error mounting "([^"]+)" to rootfs at "([^"]+)"', err)
+        if match:
+            proxy, target = match.groups()
+            declared = [item for item in binds if item[1] == target and item[2]]
+            mounted = [item for item in container.get("Mounts", [])
+                       if item.get("Destination") == target]
+            if (len(declared) == len(mounted) == 1
+                    and mounted[0].get("Type") == "bind"
+                    and mounted[0].get("RW") is False
+                    and mounted[0].get("Source") in (proxy, declared[0][0])
+                    and deleted_desktop_file_bind(declared[0][0], proxy)):
+                return True, "stopped-deleted-desktop-file-bind"
     if "not a directory" not in low and "is a directory" not in low:
         return False, "stopped-no-evidence"
     # Require a declared target as a complete path token. A named-volume,
@@ -320,6 +333,47 @@ def classify_stopped(container, binds):
         if re.search(r"(?<![\w/.-])" + re.escape(dst) + r"(?![\w/.-])", err):
             return True, "stopped-oci-mount-error"
     return False, "stopped-no-evidence"
+
+
+def deleted_desktop_file_bind(source, proxy):
+    """Prove that Desktop still pins a deleted, replaced read-only source file."""
+    prefix = "/run/desktop/mnt/host/wsl/docker-desktop-bind-mounts/"
+    if not proxy.startswith(prefix):
+        return False
+    suffix = proxy[len(prefix):]
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+/[0-9a-f]{64}", suffix):
+        return False
+    local = Path("/mnt/wsl/docker-desktop-bind-mounts") / suffix
+    descriptor = None
+    try:
+        original = Path(source)
+        if original.resolve() != original or local.resolve() != local:
+            return False
+        current = original.lstat()
+        descriptor = os.open(local, os.O_PATH | os.O_NOFOLLOW)
+        old = os.fstat(descriptor)
+        if (not statmod.S_ISREG(current.st_mode) or not statmod.S_ISREG(old.st_mode)
+                or current.st_nlink < 1 or old.st_nlink != 0
+                or current.st_dev != old.st_dev or current.st_ino == old.st_ino):
+            return False
+        fields = dict(line.split(":", 1) for line in
+                      Path(f"/proc/self/fdinfo/{descriptor}").read_text().splitlines())
+        mount_id = fields["mnt_id"].strip()
+        rows = [line.split() for line in Path("/proc/self/mountinfo").read_text().splitlines()
+                if line.split()[0] == mount_id]
+        if len(rows) != 1:
+            return False
+        row = rows[0]
+        def decode(value):
+            return re.sub(r"\\([0-7]{3})", lambda m: chr(int(m[1], 8)), value)
+        return (row[2] == f"{os.major(old.st_dev)}:{os.minor(old.st_dev)}"
+                and decode(row[3]) == source + "//deleted"
+                and decode(row[4]) == str(local))
+    except (OSError, ValueError, KeyError, AttributeError):
+        return False
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
 
 
 def _bounded_tar_stream(container_name, argv, archive_path, deadline):
@@ -511,8 +565,12 @@ def main(argv=None):
     parser.add_argument("--install-dir", required=True)
     parser.add_argument("--service", default="")
     parser.add_argument("--check", action="store_true")
+    parser.add_argument("--repair-stopped", action="store_true",
+                        help="Repair one proven stale stopped service; fail if no repair is needed")
     parser.add_argument("flags", nargs=argparse.REMAINDER)
     args = parser.parse_args(argv)
+    if args.repair_stopped and (not args.service or args.check):
+        return fail("--repair-stopped requires one service and cannot be combined with --check")
 
     install_dir = Path(args.install_dir).resolve()
     if not install_dir.is_dir():
@@ -525,7 +583,7 @@ def main(argv=None):
 
     if not is_wsl_docker_desktop():
         log("not WSL+DockerDesktop; skipping")
-        return 0
+        return 3 if args.repair_stopped else 0
     _deadline = time.monotonic() + RECOVERY_TIMEOUT
 
     if shutil.which("docker") is None:
@@ -568,11 +626,13 @@ def main(argv=None):
             continue
         if labels.get("com.docker.compose.service") != svc:
             continue
+        if args.repair_stopped and labels.get("com.docker.compose.project.working_dir") != str(install_dir):
+            return fail("stopped recovery container does not belong to the installed root")
         candidates.append((svc, name, container))
 
     if not candidates:
         log("no matching ODS containers; nothing to do")
-        return 0
+        return 3 if args.repair_stopped else 0
 
     # Prevalidate ALL bind sources across ALL selected candidates before any
     # classification or mutation. Explicit --service bypasses profile gating
@@ -588,6 +648,8 @@ def main(argv=None):
             return fail(str(exc))
         if not binds:
             continue
+        if args.repair_stopped and any(not read_only for _src, _dst, read_only in binds):
+            return fail("stopped recovery cannot preserve an unobserved writable bind view")
         try:
             prevalidate_binds(binds)
         except RuntimeError as exc:
@@ -602,6 +664,8 @@ def main(argv=None):
             return fail(
                 f"service {svc} ({name}) is paused; refusing to mutate")
         try:
+            if args.repair_stopped and state not in ("exited", "created", "dead"):
+                return fail("stopped recovery refuses an active container")
             if state == "running":
                 stale, reason = classify_running(name, binds)
             elif state in ("exited", "created", "dead"):
@@ -618,7 +682,7 @@ def main(argv=None):
 
     if not stale_services:
         log("all bind views healthy")
-        return 0
+        return 3 if args.repair_stopped else 0
 
     if args.check:
         log(f"check mode: {len(stale_services)} stale service(s)")
