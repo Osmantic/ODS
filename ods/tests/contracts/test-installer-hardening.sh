@@ -778,7 +778,7 @@ echo "01:00.0 VGA compatible controller: NVIDIA Corporation Blackwell"
 LSPCI
 chmod +x "$blackwell_bin/nvidia-smi" "$blackwell_bin/modinfo" "$blackwell_bin/lspci"
 
-if PATH="$blackwell_bin:$PATH" bash -c '
+if PATH="$blackwell_bin:$PATH" ODS_WSL_HOST_OVERRIDE=false bash -c '
   set -euo pipefail
   LOG_FILE=/dev/null
   ai() { :; }
@@ -809,7 +809,7 @@ exit 1
 OPENMOD
 chmod +x "$open_bin/nvidia-smi" "$open_bin/lspci" "$open_bin/modinfo"
 
-PATH="$open_bin:$PATH" bash -c '
+PATH="$open_bin:$PATH" ODS_WSL_HOST_OVERRIDE=false bash -c '
   set -euo pipefail
   LOG_FILE=/dev/null
   ai() { :; }
@@ -820,6 +820,26 @@ PATH="$open_bin:$PATH" bash -c '
   source installers/lib/detection.sh
   validate_nvidia_blackwell_open_modules
 '
+
+echo "[contract] WSL Blackwell uses the Windows driver without Linux module advice"
+PATH="$blackwell_bin:$PATH" ODS_WSL_HOST_OVERRIDE=true bash -c '
+  set -euo pipefail
+  LOG_FILE=/dev/null
+  log() { printf "INFO: %s\n" "$*"; }
+  ai() { :; }
+  ai_ok() { :; }
+  ai_warn() { printf "WARN: %s\n" "$*"; }
+  ai_bad() { :; }
+  error() { echo "$1"; return 42; }
+  source installers/lib/detection.sh
+  nvidia_kernel_module_flavor() { echo "unexpected module probe"; return 42; }
+  validate_nvidia_blackwell_open_modules
+' >"$tmpdir/blackwell-wsl.out"
+assert_contains "$tmpdir/blackwell-wsl.out" 'WSL uses the Windows NVIDIA driver' "WSL did not explain driver ownership"
+if grep -Eq 'nvidia-open|nvidia-driver-\*-open|WARN:|unexpected module probe' "$tmpdir/blackwell-wsl.out"; then
+  echo "[FAIL] WSL Blackwell check gave Linux module advice or probed a Linux module"
+  exit 1
+fi
 
 echo "[contract] NVIDIA DKMS module discovery preserves the kernel release as one path segment"
 assert_contains "installers/lib/detection.sh" 'for mod_path in /lib/modules/"\$\{kver\}"/updates/dkms/nvidia\*\.ko\*' \
