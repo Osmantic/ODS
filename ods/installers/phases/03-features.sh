@@ -457,6 +457,9 @@ if ! $DRY_RUN; then
     _pixel_support_services="${ENABLE_RECOMMENDED:-false}"
     [[ "${ENABLE_PIXEL_RUNTIME:-false}" == "true" ]] && _pixel_support_services=true
     [[ -n "${EXTERNAL_LLM_URL:-}" ]] && _pixel_support_services=true
+    _lemonade_external="${LEMONADE_EXTERNAL:-false}"
+    [[ "${_lemonade_external,,}" == true ]] && _pixel_support_services=true
+    unset _lemonade_external
     # With the default ODS_MODEL_SWITCHBOARD=enabled, phase 06 routes Open WebUI
     # through the gateway (OPEN_WEBUI_LLM_BASE_URL=http://litellm:4000), so it
     # must run even when recommended services are off. Resolve the mode as
