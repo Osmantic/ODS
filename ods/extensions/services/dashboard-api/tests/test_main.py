@@ -1,5 +1,6 @@
 """Tests for main.py — core endpoints and helper functions."""
 
+import asyncio
 import json
 import time
 from unittest.mock import AsyncMock, MagicMock
@@ -393,6 +394,98 @@ class TestBuildApiStatus:
 
 class TestReadinessPayload:
 
+    def test_lean_chat_ready_without_unselected_open_webui(self):
+        from models import BootstrapStatus, ServiceStatus
+
+        statuses = [
+            ServiceStatus(id="llama-server", name="LLM", port=8080, external_port=8080, status="healthy"),
+        ]
+        result = _build_readiness_payload(
+            service_statuses=statuses,
+            loaded_model="Test-32B",
+            context_size=32768,
+            bootstrap_info=BootstrapStatus(active=False),
+            host_agent={"available": True},
+            stt_model_cached=None,
+            stt_model_name="Systran/faster-whisper-base",
+        )
+
+        assert result["ready"] is True
+        assert result["status"] == "ready"
+        assert result["canChat"] is True
+        webui = next(check for check in result["checks"] if check["id"] == "open-webui")
+        assert webui["required"] is False
+        assert webui["status"] == "disabled"
+        assert "ods restart open-webui" not in result["repairHints"]
+
+    @pytest.mark.parametrize(
+        ("webui_status", "required", "readiness"),
+        [("not_deployed", False, "ready"), ("down", True, "blocked")],
+    )
+    def test_webui_requirement_tracks_deployment(self, webui_status, required, readiness):
+        from models import BootstrapStatus, ServiceStatus
+
+        statuses = [
+            ServiceStatus(id="llama-server", name="LLM", port=8080, external_port=8080, status="healthy"),
+            ServiceStatus(id="open-webui", name="Open WebUI", port=3000, external_port=3000, status=webui_status),
+        ]
+        result = _build_readiness_payload(
+            service_statuses=statuses,
+            loaded_model="Test-32B",
+            context_size=32768,
+            bootstrap_info=BootstrapStatus(active=False),
+            host_agent={"available": True},
+            stt_model_cached=None,
+            stt_model_name="Systran/faster-whisper-base",
+        )
+
+        webui = next(check for check in result["checks"] if check["id"] == "open-webui")
+        assert webui["required"] is required
+        assert result["status"] == readiness
+
+    def test_stt_cache_probe_tracks_live_library_selection(self, monkeypatch, tmp_path):
+        import config
+        import main
+
+        monkeypatch.setattr(main, "SERVICES", {})
+        monkeypatch.setattr(config, "EXTENSIONS_DIR", tmp_path)
+        monkeypatch.setattr(config, "GPU_BACKEND", "nvidia")
+        whisper_dir = tmp_path / "whisper"
+        whisper_dir.mkdir()
+        (whisper_dir / "manifest.yaml").write_text(
+            "schema_version: ods.services.v1\n"
+            "service:\n"
+            "  id: whisper\n"
+            "  name: Whisper STT\n"
+            "  type: docker\n"
+            "  compose_file: compose.yaml\n"
+            "  default_host: whisper\n"
+            "  port: 9000\n"
+            "  gpu_backends: [all]\n",
+            encoding="utf-8",
+        )
+        disabled = whisper_dir / "compose.yaml.disabled"
+        enabled = whisper_dir / "compose.yaml"
+        disabled.write_text("services: {}\n", encoding="utf-8")
+        response = MagicMock(status_code=200)
+        client = MagicMock(get=AsyncMock(return_value=response))
+        monkeypatch.setattr(main, "_get_httpx_client", AsyncMock(return_value=client))
+
+        cached, _ = asyncio.run(main._check_stt_model_cached())
+        assert cached is None
+        assert client.get.await_count == 0
+
+        disabled.rename(enabled)
+        cached, _ = asyncio.run(main._check_stt_model_cached())
+        assert cached is True
+        assert client.get.await_count == 1
+        assert client.get.await_args.args[0].startswith("http://whisper:9000/v1/models/")
+
+        enabled.rename(disabled)
+        cached, _ = asyncio.run(main._check_stt_model_cached())
+        assert cached is None
+        assert client.get.await_count == 1
+
     def test_core_ready_with_disabled_voice(self):
         from models import BootstrapStatus, ServiceStatus
 
@@ -487,6 +580,28 @@ class TestReadinessPayload:
         assert result["status"] == "degraded"
         assert result["canUseVoice"] is False
         assert "ods repair voice" in result["repairHints"]
+
+    def test_unknown_stt_cache_state_does_not_claim_model_missing(self):
+        from models import BootstrapStatus, ServiceStatus
+
+        statuses = [
+            ServiceStatus(id="llama-server", name="LLM", port=8080, external_port=8080, status="healthy"),
+            ServiceStatus(id="whisper", name="Whisper", port=8000, external_port=9000, status="healthy"),
+            ServiceStatus(id="tts", name="TTS", port=8880, external_port=8880, status="healthy"),
+        ]
+        result = _build_readiness_payload(
+            service_statuses=statuses,
+            loaded_model="Test-32B",
+            context_size=32768,
+            bootstrap_info=BootstrapStatus(active=False),
+            host_agent={"available": True},
+            stt_model_cached=None,
+            stt_model_name="Systran/faster-whisper-base",
+        )
+
+        voice = next(check for check in result["checks"] if check["id"] == "voice")
+        assert voice["status"] == "needs_repair"
+        assert voice["detail"] == "Whisper STT model cache status is unavailable"
 
     def test_api_readiness_endpoint(self, test_client, monkeypatch):
         from models import BootstrapStatus, ServiceStatus
