@@ -732,3 +732,24 @@ class TestLoadExtensionManifests:
         assert "service.id is required" in errors[0]["error"]
         assert "no-id-svc" in errors[0]["file"]
         assert services == {}
+
+
+@pytest.mark.parametrize("exemption,reason", [("true", "valid reason"), (1, "valid reason"), (True, None), (True, "  "), (True, 12)])
+def test_invalid_switchboard_exemption_is_not_advertised(exemption, reason):
+    from config import normalize_llm_contract
+    raw = {"consumes": True, "route": "direct", "switchboard_exempt": exemption,
+           "switchboard_exempt_reason": reason}
+    result = normalize_llm_contract(raw)
+    assert "switchboard_exempt" not in result
+    assert "switchboard_exempt_reason" not in result
+
+
+def test_valid_switchboard_exemption_is_normalized_without_mutating_manifest():
+    from config import normalize_llm_contract
+    raw = {"consumes": True, "route": "direct", "switchboard_exempt": True,
+           "switchboard_exempt_reason": "  Inspect usage only.  "}
+    result = normalize_llm_contract(raw)
+    assert result["switchboard_exempt"] is True
+    assert result["switchboard_exempt_reason"] == "Inspect usage only."
+    assert raw["switchboard_exempt_reason"] == "  Inspect usage only.  "
+    assert result["swap_safe"] is False
