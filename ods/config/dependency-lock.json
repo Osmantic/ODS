@@ -408,14 +408,14 @@
       "reason": "Qualified Pixel installs enable this host-loopback fragment and build its image from the adjacent Dockerfile."
     },
     {
-      "path": "docker-compose.base.yml",
+      "path": "extensions/services/remote-provider-egress/compose.yaml.disabled",
       "value": "ods-remote-provider-egress:local",
-      "reason": "Core internal egress service image is built from extensions/services/remote-provider-egress/Dockerfile."
+      "reason": "Optional internal egress service image is built from extensions/services/remote-provider-egress/Dockerfile when added from the Library."
     },
     {
-      "path": "docker-compose.base.yml",
+      "path": "extensions/services/remote-provider-ssh-tunnel/compose.yaml.disabled",
       "value": "ods-remote-provider-ssh-tunnel:local",
-      "reason": "Core internal SSH tunnel service image is built from extensions/services/remote-provider-ssh-tunnel/Dockerfile."
+      "reason": "Optional internal SSH tunnel service image is built from extensions/services/remote-provider-ssh-tunnel/Dockerfile when added from the Library."
     },
     {
       "path": "extensions/services/langfuse/compose.yaml.disabled",

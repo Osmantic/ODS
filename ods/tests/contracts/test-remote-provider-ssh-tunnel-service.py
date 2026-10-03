@@ -20,6 +20,7 @@ from remote_provider.ssh_supervisor import SSH_SUPERVISOR_PLAN_SCHEMA  # noqa: E
 
 
 BASE_COMPOSE = ROOT / "docker-compose.base.yml"
+FRAGMENT = ROOT / "extensions" / "services" / "remote-provider-ssh-tunnel" / "compose.yaml.disabled"
 MANIFEST = ROOT / "extensions" / "services" / "remote-provider-ssh-tunnel" / "manifest.yaml"
 DOCKERFILE = ROOT / "extensions" / "services" / "remote-provider-ssh-tunnel" / "Dockerfile"
 APP_MAIN = ROOT / "extensions" / "services" / "remote-provider-ssh-tunnel" / "app" / "main.py"
@@ -138,8 +139,9 @@ def ssh_route_state() -> dict[str, object]:
 
 
 def _compose_block() -> str:
-    compose = read(BASE_COMPOSE)
-    assert_true("  remote-provider-ssh-tunnel:" in compose, "base compose must define remote-provider-ssh-tunnel")
+    assert_true("  remote-provider-ssh-tunnel:" not in read(BASE_COMPOSE), "Core must not start SSH tunnel")
+    compose = read(FRAGMENT)
+    assert_true("  remote-provider-ssh-tunnel:" in compose, "Library fragment must define remote-provider-ssh-tunnel")
     return compose.split("  remote-provider-ssh-tunnel:", 1)[1].split("\n  # ", 1)[0]
 
 
@@ -182,7 +184,7 @@ def _new_fake_supervisor(route_path: Path, secret_dir: Path):
 
 
 def _walk_service_source() -> Iterator[tuple[Path, str]]:
-    for path in (MANIFEST, DOCKERFILE, APP_MAIN, BASE_COMPOSE):
+    for path in (MANIFEST, DOCKERFILE, APP_MAIN, FRAGMENT):
         yield path, read(path)
 
 
@@ -214,8 +216,8 @@ def test_manifest_and_network_policy_mark_no_lan_exposure() -> None:
     exposure = json.loads(read(EXPOSURE_POLICY))
     assert_true("id: remote-provider-ssh-tunnel" in manifest, "manifest must declare service id")
     assert_true("external_port_default: 0" in manifest, "manifest must prevent host URL fallback")
-    assert_true("category: core" in manifest, "SSH tunnel service should be a core internal service")
-    assert_true("compose_file:" not in manifest, "base-stack service manifest must not add an extension overlay")
+    assert_true("category: optional" in manifest, "SSH tunnel service must be optional")
+    assert_true("depends_on: [remote-provider-egress]" in manifest, "SSH tunnel must add egress")
     entry = exposure["services"]["remote-provider-ssh-tunnel"]
     assert_true(entry["lan_exposure"] == "none", "SSH tunnel service must have no LAN exposure")
     assert_true(entry["auth_required"] is True, "SSH tunnel service must require private SSH custody")

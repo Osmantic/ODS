@@ -41,6 +41,7 @@ bash tests/test-windows-missing-service-hints.sh
 "$PYTHON_CMD" tests/contracts/test-remote-provider-egress-policy.py
 "$PYTHON_CMD" tests/contracts/test-remote-provider-egress-service.py
 "$PYTHON_CMD" tests/contracts/test-remote-provider-ssh-tunnel-service.py
+"$PYTHON_CMD" tests/contracts/test-remote-provider-compose-selection.py
 
 echo "[gate] smoke"
 bash tests/smoke/linux-amd.sh

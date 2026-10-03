@@ -990,6 +990,14 @@ litellm_settings:
             -EnableBraveSearch $enableBraveSearch `
             -EnableODSProxy $enableODSProxy `
             -EnableRemoteAccess $enableRemoteAccess
+        try {
+            $remoteProviderPlan = Get-ODSWindowsRemoteProviderSelections -InstallDir $installDir
+            foreach ($serviceId in $remoteProviderPlan.Keys) {
+                $servicePlan[$serviceId] = $remoteProviderPlan[$serviceId]
+            }
+        } catch {
+            throw "Could not preserve remote-provider services: $($_.Exception.Message)"
+        }
         $enabledExtensionServices = @()
         $skippedExtensionServices = @()
 
@@ -1039,9 +1047,18 @@ litellm_settings:
                     -Category $category `
                     -Plan $servicePlan `
                     -EnableRecommended $enableRecommended
-                $composeEnabled = Set-ODSWindowsExtensionComposeState `
-                    -ComposePath $composePath `
-                    -Enabled $decision.Enabled
+                if ($svcName -in @('remote-provider-egress', 'remote-provider-ssh-tunnel')) {
+                    # Phase 06 already published the canonical recipe under
+                    # the host graph lock. Never replay this earlier plan over
+                    # a Library choice made after that lock was released.
+                    $latestRemotePlan = Get-ODSWindowsRemoteProviderSelections -InstallDir $installDir
+                    $decision = $latestRemotePlan[$svcName]
+                    $composeEnabled = $decision.Enabled -and (Test-Path -LiteralPath $composePath -PathType Leaf)
+                } else {
+                    $composeEnabled = Set-ODSWindowsExtensionComposeState `
+                        -ComposePath $composePath `
+                        -Enabled $decision.Enabled
+                }
                 if (-not $decision.Enabled) {
                     $skippedExtensionServices += "$svcName ($($decision.DisabledReason))"
                     continue
@@ -1098,27 +1115,11 @@ litellm_settings:
             $composeFlags += @("-f", "docker-compose.override.yml")
         }
 
-        # Validate compose files exist before launching
-        for ($fi = 0; $fi -lt $composeFlags.Count; $fi++) {
-            if ($composeFlags[$fi] -eq "-f" -and ($fi + 1) -lt $composeFlags.Count) {
-                $cf = $composeFlags[$fi + 1]
-                $cfPath = $cf
-                if (-not [System.IO.Path]::IsPathRooted($cfPath)) {
-                    $cfPath = Join-Path $installDir $cfPath
-                }
-                if (-not (Test-Path $cfPath)) {
-                    Write-AIError "Compose file not found: $cf"
-                    Write-AI "  Expected path: $cfPath"
-                    Write-AI "  Re-run with --Force or check that $installDir is intact."
-                    exit 1
-                }
-            }
-        }
-
-        # Save compose flags before build/up so ods.ps1 and diagnostics have
-        # the exact selected stack even after a partial install failure.
-        $flagsFile = Join-Path $installDir ".compose-flags"
-        Write-Utf8NoBom -Path $flagsFile -Content ($composeFlags -join " ")
+        # Reconcile remote choices again while publishing the cache under the
+        # host graph lock. A Library toggle after the earlier scan must win.
+        . (Join-Path $sourceRoot 'installers\windows\lib\remote-provider-source-copy.ps1')
+        $composeFlags = @(Write-ODSWindowsRemoteProviderComposeFlags `
+            -InstallDir $installDir -SourceRoot $sourceRoot -ComposeFlags $composeFlags)
 
         function Assert-ODSWindowsComposeCwd {
             param([string]$InstallDir)
