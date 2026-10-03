@@ -11,6 +11,27 @@ GPU_COUNT="1"
 ODS_MODE="${ODS_MODE:-local}"
 SKIP_GPU_OVERLAYS="${ODS_SKIP_GPU_OVERLAYS:-${ODS_SKIP_GPU_OVERLAYS_FOR:-}}"
 
+usage() {
+    cat <<'USAGE'
+Usage: resolve-compose-stack.sh [OPTIONS]
+
+Resolve the Docker Compose file stack (base + GPU overlay + enabled
+extension compose files) for the current tier and GPU backend.
+
+Options:
+  --script-dir DIR              Root directory to resolve relative paths against
+  --tier TIER                   Hardware tier (default: 1)
+  --gpu-backend BACKEND         GPU backend: nvidia, amd, apple, cpu (default: nvidia)
+  --profile-overlays LIST       Comma-separated capability-profile overlay files
+  --skip-broken                 Skip extension compose files that fail to resolve
+  --env                         Emit output as shell-sourceable KEY=VALUE pairs
+  --gpu-count N                 Number of GPUs (default: 1)
+  --ods-mode MODE                ODS_MODE override (default: local)
+  --skip-gpu-overlays LIST       Comma-separated GPU overlays to skip (alias: --skip-gpu-overlays-for)
+  -h, --help                     Show this help message and exit
+USAGE
+}
+
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --script-dir)
@@ -48,6 +69,10 @@ while [[ $# -gt 0 ]]; do
         --skip-gpu-overlays|--skip-gpu-overlays-for)
             SKIP_GPU_OVERLAYS="${2:-$SKIP_GPU_OVERLAYS}"
             shift 2
+            ;;
+        -h|--help)
+            usage
+            exit 0
             ;;
         *)
             echo "Unknown argument: $1" >&2
