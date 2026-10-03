@@ -237,6 +237,7 @@ def main() -> int:
             raise RuntimeError("Docker Desktop proxy graph changed outside the probe")
     except (
         OSError,
+        ValueError,
         RuntimeError,
         subprocess.CalledProcessError,
         subprocess.TimeoutExpired,
