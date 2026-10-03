@@ -112,8 +112,12 @@ function Read-ODSWslJson([string]$Path) {
         } catch {
             $cause=$_.Exception.GetBaseException()
             $code=$cause.HResult -band 0xFFFF
+            # Windows PowerShell also wraps this observed Get-Item replacement
+            # miss as generic COR_E_IO. Do not classify other IO errors this way.
+            $providerMissing=$cause -is [IO.IOException] -and $code -eq 5664 -and
+                $_.FullyQualifiedErrorId -ceq 'ItemNotFound,Microsoft.PowerShell.Commands.GetItemCommand'
             $missing=$cause -is [Management.Automation.ItemNotFoundException] -or
-                $cause -is [IO.FileNotFoundException] -or $cause -is [IO.DirectoryNotFoundException]
+                $cause -is [IO.FileNotFoundException] -or $cause -is [IO.DirectoryNotFoundException] -or $providerMissing
             $locked=$cause -is [IO.IOException] -and $code -in @(32,33)
             if (-not ($missing -or $locked)) { throw }
             if ($attempt -ge 39 -or $watch.ElapsedMilliseconds -ge 2000) {

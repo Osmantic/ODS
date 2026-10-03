@@ -25,11 +25,9 @@ public static class OdsLifecycleJsonSharingContract {
             }
         });
     }
-    public static Task Publish(string path, int rounds) {
+    public static Task Publish(string path, string[] prepared) {
         return Task.Run(() => {
-            for(int i=1; i<=rounds; i++) {
-                var temporary=path+"."+Guid.NewGuid().ToString("N")+".tmp";
-                File.WriteAllText(temporary, "{\"generation\":"+i+"}", new UTF8Encoding(false));
+            foreach(var temporary in prepared) {
                 File.Replace(temporary,path,null);
                 Thread.Sleep(2);
             }
@@ -60,6 +58,26 @@ try {
     Initialize-ODSPrivateDirectory $fixture
     $path=Join-Path $fixture 'runtime.json'
     Write-ODSWslJson $path @{generation=0;state='running'}
+    # Reproduce the exact ErrorRecord from an intermittent real PS5 Get-Item
+    # miss; do not replace physical file/ACL/handle tests with generic IO mocks.
+    $realAssert=(Get-Item Function:Assert-ODSPrivatePath).ScriptBlock
+    & {
+        $script:providerMisses=0
+        function Assert-ODSPrivatePath { param($Path,[switch]$Directory)
+            if($script:providerMisses++ -eq 0) {
+                throw [Management.Automation.ErrorRecord]::new([IO.IOException]::new('Fixture replacement miss'),
+                    'ItemNotFound,Microsoft.PowerShell.Commands.GetItemCommand',[Management.Automation.ErrorCategory]::ObjectNotFound,$Path)
+            }
+            & $realAssert $Path -Directory:$Directory
+        }
+        Check ((Read-ODSWslJson $path).generation -eq 0 -and $script:providerMisses -eq 2) 'the observed Get-Item COR_E_IO missing record retries narrowly'
+    }
+    & {
+        function Assert-ODSPrivatePath { param($Path,[switch]$Directory); throw [IO.IOException]::new('Unrelated IO failure') }
+        $watch=[Diagnostics.Stopwatch]::StartNew()
+        Reject { Read-ODSWslJson $path } 'unrelated COR_E_IO is not treated as transient absence'
+        Check ($watch.Elapsed.TotalSeconds -lt 1) 'unrelated IO failure is immediate'
+    }
     $pending=[OdsLifecycleJsonSharingContract]::Hold($path,250,$null)
     $value=Read-ODSWslJson $path
     $pending.GetAwaiter().GetResult();$pending=$null
@@ -107,7 +125,16 @@ try {
     $pending.GetAwaiter().GetResult();$pending=$null
     Check ($null -ne $value -and $value.generation -eq 0) 'a temporary publication gap is not reported as absent metadata'
 
-    $pending=[OdsLifecycleJsonSharingContract]::Publish($path,150)
+    # Match production owner assignment even when CI uses an elevated token:
+    # File.WriteAllText alone can make BUILTIN\Administrators the temp owner.
+    # Only publication is concurrent; every complete input has the real writer's
+    # private ACL and explicit current-user owner before it becomes visible.
+    $prepared=@(foreach($generation in 1..150) {
+        $temporary=Join-Path $fixture ("prepared-$generation.json")
+        Write-ODSWslJson $temporary @{generation=$generation}
+        $temporary
+    })
+    $pending=[OdsLifecycleJsonSharingContract]::Publish($path,[string[]]$prepared)
     $reads=0
     do {
         $watch.Restart()
