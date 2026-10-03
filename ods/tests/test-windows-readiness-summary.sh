@@ -67,7 +67,7 @@ if command -v pwsh >/dev/null 2>&1; then
             @{ Name = "Chat UI"; Url = "http://localhost:3000"; Container = "ods-webui"; OpenUrl = "http://localhost:3000" },
             @{ Name = "Qdrant"; Url = "http://localhost:6333"; Container = "ods-qdrant"; OpenUrl = "http://localhost:6333" }
         )
-        Write-ODSInstallReadinessSummary -Checks $checks -StatusCommand ".\ods.ps1 status" -LogPath "C:\ods\logs\install.log" -DashboardUrl "http://localhost:3001"
+        Write-ODSInstallReadinessSummary -Checks $checks -StatusCommand ".\ods.ps1 status" -LogPath "C:\ods\logs\install.log" -ChatUrl "http://localhost:3000"
     ')"
 
     [[ "$OUTPUT" == *"INSTALL READINESS"* ]] && pass "runtime summary has heading" || fail "runtime summary missing heading"
@@ -75,6 +75,7 @@ if command -v pwsh >/dev/null 2>&1; then
     [[ "$OUTPUT" == *"[OK] Dashboard"* ]] && pass "runtime summary lists ready service" || fail "runtime summary missing ready service"
     [[ "$OUTPUT" == *"[!!] Chat UI"* ]] && pass "runtime summary lists starting service" || fail "runtime summary missing starting service"
     [[ "$OUTPUT" == *"[!!] Qdrant"* ]] && pass "runtime summary lists missing service" || fail "runtime summary missing missing service"
+    [[ "$OUTPUT" == *"Open model chat: http://localhost:3000"* ]] && pass "next action opens model chat" || fail "next action points away from model chat"
 else
     pass "PowerShell runtime behavior skipped (pwsh unavailable)"
 fi

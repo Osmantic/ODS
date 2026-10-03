@@ -555,6 +555,20 @@ function Invoke-ExtractionWithRetry {
     return $false
 }
 
+function Write-ODSWindowsShortcuts {
+    param(
+        [Parameter(Mandatory = $true)][string]$ChatUrl,
+        [Parameter(Mandatory = $true)][string]$IconPath,
+        [Parameter(Mandatory = $true)][string]$DesktopDir,
+        [Parameter(Mandatory = $true)][string]$StartMenuDir
+    )
+
+    $iconContent = if (Test-Path -LiteralPath $IconPath) { "IconFile=$IconPath`nIconIndex=0" } else { "IconIndex=0" }
+    $content = "[InternetShortcut]`nURL=$ChatUrl`n$iconContent`n"
+    Write-Utf8NoBom -Path (Join-Path $DesktopDir "ODS.url") -Content $content
+    Write-Utf8NoBom -Path (Join-Path $StartMenuDir "ODS.url") -Content $content
+}
+
 function Write-SuccessCard {
     param(
         [string]$WebUIPort = "3000",

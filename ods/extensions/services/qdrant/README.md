@@ -2,6 +2,15 @@
 
 Vector database for semantic search and RAG in ODS
 
+Fresh Core installs leave Qdrant off. Add it from the Dashboard Extensions
+Library when you need a vector store; disabling it later leaves
+`./data/qdrant` intact. Qdrant alone does not turn on document RAG: that
+journey also needs an embeddings service and an application configured to use
+both services.
+
+The Library does not offer the pinned Qdrant image on arm64 Linux with kernel
+pages larger than 4 KiB, where that image cannot start.
+
 ## Overview
 
 Qdrant is a high-performance vector database that stores and searches embeddings for Retrieval-Augmented Generation (RAG) workflows. It enables semantic similarity search across your local documents, letting LLMs retrieve relevant context before answering questions.

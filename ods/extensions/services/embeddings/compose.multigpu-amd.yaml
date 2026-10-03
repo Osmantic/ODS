@@ -1,12 +1,3 @@
-# Embeddings — AMD multi-GPU isolation overlay
-# Restricts embeddings to a single GPU via ROCR_VISIBLE_DEVICES.
-services:
-  embeddings:
-    devices:
-      - /dev/kfd:/dev/kfd
-      - /dev/dri:/dev/dri
-    group_add:
-      - "${VIDEO_GID:-44}"
-      - "${RENDER_GID:-992}"
-    environment:
-      ROCR_VISIBLE_DEVICES: "${EMBEDDINGS_GPU_INDEX:-0}"
+# Retained for resolver compatibility. The pinned TEI image is CPU-only, so it
+# does not need ROCm devices or an AMD GPU assignment.
+services: {}

@@ -38,6 +38,8 @@ check 'New-ODSWindowsServicePlan' "$PLAN_LIB" "service-plan constructor exists"
 check 'Get-ODSWindowsServicePlanDecision' "$PLAN_LIB" "service-plan decision function exists"
 check 'Test-ODSWindowsServiceEnabled' "$PLAN_LIB" "service-plan enabled helper exists"
 check 'Set-ODSWindowsExtensionComposeState' "$PLAN_LIB" "service-plan compose-state helper exists"
+check '-EnableSearxng $enableSearxng' "$INSTALL_PS1" "Windows launch plan receives retained search selection"
+check '-EnableSearxng $enableSearxng' "$ROOT_DIR/installers/windows/phases/06-directories.ps1" "Windows env receives retained search selection"
 check 'OpenClaw is deprecated' "$PLAN_LIB" "OpenClaw is documented as opt-in legacy"
 check 'Pixel requires the ODS Linux installer in Ubuntu 24.04 WSL2' "$PLAN_LIB" "native Windows install explains the supported Pixel path"
 check 'elseif ($currentBackend -eq "amd")' "$INSTALL_PS1" "Windows installer has AMD extension overlay branch"
@@ -110,7 +112,7 @@ if command -v pwsh >/dev/null 2>&1; then
 
         Assert-Plan (-not (Test-ODSWindowsServiceEnabled -ServiceId "hermes" -Plan $core)) "Core disables Hermes"
         Assert-Plan (-not (Test-ODSWindowsServiceEnabled -ServiceId "searxng" -Plan $core)) "Core disables SearXNG"
-        Assert-Plan (-not (Test-ODSWindowsServiceEnabled -ServiceId "litellm" -Plan $core)) "Core disables LiteLLM"
+        Assert-Plan (Test-ODSWindowsServiceEnabled -ServiceId "litellm" -Plan $core) "Core keeps required switchboard gateway"
         Assert-Plan (-not (Test-ODSWindowsServiceEnabled -ServiceId "openclaw" -Plan $core)) "Core disables OpenClaw"
         Assert-Plan (-not (Test-ODSWindowsServiceEnabled -ServiceId "pixel-edge" -Plan $core)) "Core does not launch a Pixel edge without a host runtime"
         Assert-Plan (-not (Get-ODSWindowsServicePlanDecision -ServiceId "pixel-model-relay" -Category "core" -Plan $core).Enabled) "Core does not launch a Pixel relay without a host runtime or bearer key"
@@ -136,7 +138,7 @@ if command -v pwsh >/dev/null 2>&1; then
             -EnableDeepResearch $true `
             -EnablePrivacyShield $false
         Assert-Plan (Test-ODSWindowsServiceEnabled -ServiceId "searxng" -Plan $deepResearchOnly) "Deep research without recommended still enables SearXNG"
-        Assert-Plan (-not (Test-ODSWindowsServiceEnabled -ServiceId "litellm" -Plan $deepResearchOnly)) "Deep research without recommended leaves LiteLLM off"
+        Assert-Plan (Test-ODSWindowsServiceEnabled -ServiceId "litellm" -Plan $deepResearchOnly) "Deep research keeps switchboard gateway"
 
         $hermesOnly = New-ODSWindowsServicePlan `
             -EnableRecommended $false `
@@ -148,7 +150,14 @@ if command -v pwsh >/dev/null 2>&1; then
             -EnableComfyui $false `
             -EnableDeepResearch $false `
             -EnablePrivacyShield $false
-        Assert-Plan (Test-ODSWindowsServiceEnabled -ServiceId "searxng" -Plan $hermesOnly) "Hermes without recommended still enables SearXNG"
+        Assert-Plan (-not (Test-ODSWindowsServiceEnabled -ServiceId "searxng" -Plan $hermesOnly)) "Hermes alone leaves SearXNG optional"
+
+        $selectedSearch = New-ODSWindowsServicePlan -EnableHermes $true -EnableSearxng $true
+        Assert-Plan (Test-ODSWindowsServiceEnabled -ServiceId "searxng" -Plan $selectedSearch) "Hermes retains independently selected SearXNG"
+        $searchWithoutHermes = New-ODSWindowsServicePlan -EnableSearxng $true
+        Assert-Plan (Test-ODSWindowsServiceEnabled -ServiceId "searxng" -Plan $searchWithoutHermes) "Selected SearXNG does not depend on Hermes"
+        $recommendedHermes = New-ODSWindowsServicePlan -EnableRecommended $true -EnableHermes $true
+        Assert-Plan (Test-ODSWindowsServiceEnabled -ServiceId "searxng" -Plan $recommendedHermes) "Recommended still selects search with Hermes"
 
         Assert-Plan (-not $unknownOptional.Enabled) "Unknown optional is disabled"
         Assert-Plan ($unknownRecommended.Enabled) "Unknown recommended follows recommended flag"

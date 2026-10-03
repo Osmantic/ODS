@@ -1,14 +1,3 @@
-services:
-  embeddings:
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              device_ids: ["${EMBEDDINGS_GPU_UUID}"]
-              capabilities: [gpu]
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
+# Retained for resolver compatibility. The pinned TEI image is CPU-only, so it
+# must not request a GPU even when ODS has a multi-GPU NVIDIA assignment.
+services: {}
