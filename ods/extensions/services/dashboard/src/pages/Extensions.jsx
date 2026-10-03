@@ -99,6 +99,9 @@ const STATUS_DESCRIPTIONS = {
   error:         'Installation or startup failed \u2014 click for details',
 }
 
+const CATALOG_FETCH_ERROR = 'Failed to load extensions catalog'
+const CATALOG_TIMEOUT_ERROR = 'Request timed out'
+
 export default function Extensions({ compact = false }) {
   const [catalog, setCatalog] = useState(null)
   const [webuiSelection, setWebuiSelection] = useState(null)
@@ -129,6 +132,7 @@ export default function Extensions({ compact = false }) {
   const activePollers = useRef({})
   const pollTokens = useRef({})
   const catalogRequestSeq = useRef(0)
+  const catalogAcceptedSeq = useRef(0)
   const catalogMutationEpoch = useRef(0)
   const catalogRefreshRequest = useRef(0)
   // Per-service recovery tracker: counts consecutive fetch failures and
@@ -207,7 +211,9 @@ export default function Extensions({ compact = false }) {
           if (!catRes.ok) return
           const catData = await catRes.json()
           if (!isCurrent() || request !== catalogRequestSeq.current) return
+          catalogAcceptedSeq.current = request
           setCatalog(catData)
+          setError(previous => (previous === CATALOG_FETCH_ERROR || previous === CATALOG_TIMEOUT_ERROR) ? null : previous)
           const ext = catData.extensions?.find(e => e.id === serviceId)
           if (ext && (ext.status === 'enabled' || ext.status === 'cli_installed')) {
             stopPoller(serviceId)
@@ -328,14 +334,16 @@ export default function Extensions({ compact = false }) {
       setRefreshing(true)
       setError(null)
       const res = await fetchJson('/api/extensions/catalog')
-      if (!isCurrent()) return
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const data = await res.json()
       if (!isCurrent()) return
+      catalogAcceptedSeq.current = request
       setCatalog(data)
     } catch (err) {
-      if (!isCurrent()) return
-      setError(err.name === 'AbortError' ? 'Request timed out' : 'Failed to load extensions catalog')
+      // A later failed or pending poll does not erase a real manual failure.
+      // Only a newer accepted catalog or completed mutation makes it stale.
+      if (epoch !== catalogMutationEpoch.current || request < catalogAcceptedSeq.current) return
+      setError(err.name === 'AbortError' ? CATALOG_TIMEOUT_ERROR : CATALOG_FETCH_ERROR)
       console.error('Extensions fetch error:', err)
     } finally {
       // A newer poll may supersede this data without owning the Refresh
