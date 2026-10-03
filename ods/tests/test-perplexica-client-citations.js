@@ -98,6 +98,13 @@ function checkCases(render) {
     `The Python ${inline("venv")} module uses ${inline("python -m venv &lt;environment_name&gt;")}. See ${cited(1)}.`);
   assert.equal(render("Use ``<environment_name>`` with `venv`.", source),
     `Use ${inline("&lt;environment_name&gt;")} with ${inline("venv")}.`);
+  // A live cited answer put this placeholder in a bash fence. It is code,
+  // not raw HTML that should disable inline-code rendering in later prose.
+  assert.equal(render("Use `venv` [1].\n\n```bash\npython3 -m venv <environment_name>\n```\nThen `activate` [2].", source),
+    `Use ${inline("venv")} ${cited(1)}.\n\n` + "```bash\npython3 -m venv <environment_name>\n```\n" +
+    `Then ${inline("activate")} ${cited(2, "https://example.test/two?a=1&amp;b=2")}.`);
+  assert.equal(render("Use `venv` [1].\n\n    <environment_name>\n\nThen `activate` [2].", source),
+    `Use ${inline("venv")} ${cited(1)}.\n\n    <environment_name>\n\nThen ${inline("activate")} ${cited(2, "https://example.test/two?a=1&amp;b=2")}.`);
   assert.equal(render("Use `[1]\n[2]` then [1].", source), `Use \`[1]\n[2]\` then ${cited(1)}.`);
   assert.equal(render("-     `x`", source), "-     `x`");
   assert.equal(render("1.     `x`", source), "1.     `x`");
