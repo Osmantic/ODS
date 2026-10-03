@@ -191,6 +191,12 @@ jobs:
         shell: pwsh
         run: ./tests/test-windows-llama-spec-type.ps1
 
+      - name: Windows OpenCode Auto-Start Selection Contract
+        shell: pwsh
+        run: |
+          ./tests/test-windows-devtools-env-autostart.ps1
+          ./tests/test-windows-restart-model-preflight.ps1
+
       - name: Windows llama-server Checkpoint Flag Probe Contract
         shell: pwsh
         run: ./tests/test-windows-native-checkpoint-args.ps1

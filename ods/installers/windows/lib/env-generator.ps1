@@ -692,6 +692,23 @@ function New-ODSEnv {
         return $Default
     }
 
+    # The native installer records its Dev Tools choice before phase 06. Keep
+    # that choice across reruns, including when OpenCode binaries are retained.
+    # Older Windows installs had no selection and started OpenCode by default.
+    $devToolsSelection = [string]$env:ODS_WINDOWS_DEVTOOLS_SELECTED
+    if ($devToolsSelection -notin @('', 'true', 'false')) {
+        throw "Invalid ODS_WINDOWS_DEVTOOLS_SELECTED value"
+    }
+    $enableDevTools = if ($devToolsSelection) {
+        $devToolsSelection
+    } else {
+        Get-EnvOrNew "ENABLE_DEVTOOLS" "true"
+    }
+    if ($enableDevTools -notin @('true', 'false')) {
+        throw "Invalid ENABLE_DEVTOOLS value in .env"
+    }
+    $enableDevTools = $enableDevTools.ToLowerInvariant()
+
     $bindAddressDefault = if ($EnableLan) { "0.0.0.0" } else { "127.0.0.1" }
     $bindAddress = if ($EnableLan) {
         # An explicit -Lan rerun must override a stale loopback-only .env.
@@ -1083,6 +1100,7 @@ REMOTE_PROVIDER_DATA_GID=0
 
 #=== LLM Backend Mode ===
 ODS_MODE=$effectiveODSMode
+ENABLE_DEVTOOLS=$enableDevTools
 ODS_MODEL_SWITCHBOARD=$switchboardMode
 LLM_BACKEND=$llmBackend
 LLM_API_URL=$llmApiUrl
