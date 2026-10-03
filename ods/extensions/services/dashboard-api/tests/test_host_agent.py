@@ -6,6 +6,7 @@ import io
 import json
 import logging
 import os
+import shlex
 import shutil
 import stat
 import subprocess
@@ -6973,27 +6974,81 @@ class TestPrecreateDataDirs:
 
 
 class TestRootlessDataOwnershipRepair:
-    def test_comfyui_prepares_nvidia_library_data_even_with_rootful_docker(
-            self, tmp_path, monkeypatch):
+    @pytest.mark.parametrize(
+        "selected,stale",
+        [
+            ("compose.nvidia.yaml", "compose.amd.yaml"),
+            ("compose.amd.yaml", "compose.nvidia.yaml"),
+        ],
+    )
+    def test_comfyui_helper_receives_selected_flags_without_cache(
+            self, tmp_path, monkeypatch, selected, stale):
         helper = tmp_path / "lib" / "rootless-ownership.sh"
         helper.parent.mkdir()
         helper.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
         calls = []
+        flags = ["-f", "docker-compose.base.yml", "-f",
+                 f"extensions/services/comfyui/{selected}"]
+        monkeypatch.setenv(
+            "ODS_ROOTLESS_COMPOSE_FLAGS",
+            f"-f extensions/services/comfyui/{stale}",
+        )
         monkeypatch.setattr(_mod, "INSTALL_DIR", tmp_path)
         monkeypatch.setattr(_mod.platform, "system", lambda: "Linux")
         monkeypatch.setattr(_mod, "_find_usable_bash", lambda: "/bin/bash")
         monkeypatch.setattr(
             _mod.subprocess, "run",
-            lambda cmd, **kwargs: calls.append(cmd) or subprocess.CompletedProcess(cmd, 0, "", ""),
+            lambda cmd, **kwargs: calls.append((cmd, kwargs)) or subprocess.CompletedProcess(cmd, 0, "", ""),
         )
 
-        _mod._repair_rootless_data_ownership("comfyui")
+        assert not (tmp_path / ".compose-flags").exists()
+        _mod._repair_rootless_data_ownership("comfyui", compose_flags=flags)
 
-        assert calls == [[
+        assert calls[0][0] == [
             "/bin/bash", "-c",
             'source "$1"; ods_prepare_comfyui_data_ownership "$2"',
             "ods-comfyui-data", str(helper), str(tmp_path),
-        ]]
+        ]
+        assert calls[0][1]["env"]["ODS_ROOTLESS_COMPOSE_FLAGS"] == shlex.join(flags)
+        assert os.environ["ODS_ROOTLESS_COMPOSE_FLAGS"].endswith(stale)
+
+    def test_comfyui_requires_resolved_flags_before_helper(self, tmp_path, monkeypatch):
+        helper = tmp_path / "lib" / "rootless-ownership.sh"
+        helper.parent.mkdir()
+        helper.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+        monkeypatch.setattr(_mod, "INSTALL_DIR", tmp_path)
+        monkeypatch.setattr(_mod.platform, "system", lambda: "Linux")
+        monkeypatch.setattr(_mod, "_find_usable_bash", lambda: "/bin/bash")
+        monkeypatch.setattr(
+            _mod.subprocess, "run",
+            lambda *args, **kwargs: pytest.fail("helper ran without resolved flags"),
+        )
+        with pytest.raises(RuntimeError, match="requires resolved Compose flags"):
+            _mod._repair_rootless_data_ownership("comfyui")
+
+    def test_comfyui_start_repairs_with_the_flags_used_for_compose(self, monkeypatch):
+        flags = ["-f", "docker-compose.base.yml", "-f",
+                 "extensions/services/comfyui/compose.nvidia.yaml"]
+        calls = []
+        monkeypatch.setattr(_mod, "resolve_compose_flags", lambda: flags)
+        monkeypatch.setattr(_mod, "_precreate_data_dirs", lambda _sid: None)
+        monkeypatch.setattr(
+            _mod, "_repair_rootless_data_ownership",
+            lambda sid, *, compose_flags: calls.append(("repair", sid, compose_flags)),
+        )
+        monkeypatch.setattr(
+            _mod, "_run_selected_extension_up",
+            lambda sid, selected, **_kwargs:
+                calls.append(("compose", sid, selected))
+                or subprocess.CompletedProcess([], 0, "", ""),
+        )
+        monkeypatch.setattr(_mod, "_find_ext_dir", lambda _sid: None)
+
+        assert _mod.docker_compose_action("comfyui", "start") == (True, "")
+        assert calls == [
+            ("repair", "comfyui", flags),
+            ("compose", "comfyui", flags),
+        ]
 
     def test_whisper_uses_rootful_or_rootless_cache_preparation(self, tmp_path, monkeypatch):
         helper = tmp_path / "lib" / "rootless-ownership.sh"
@@ -7074,7 +7129,7 @@ class TestRootlessDataOwnershipRepair:
         monkeypatch.setattr(
             _mod,
             "_repair_rootless_data_ownership",
-            lambda _sid: (_ for _ in ()).throw(RuntimeError("ownership mismatch")),
+            lambda _sid, **_kwargs: (_ for _ in ()).throw(RuntimeError("ownership mismatch")),
         )
         monkeypatch.setattr(
             _mod.subprocess,
@@ -7121,7 +7176,7 @@ class TestProxyAuthStart:
         )
         monkeypatch.setattr(_mod, "_precreate_data_dirs", lambda _sid: None)
         monkeypatch.setattr(
-            _mod, "_repair_rootless_data_ownership", lambda _sid: None,
+            _mod, "_repair_rootless_data_ownership", lambda _sid, **_kwargs: None,
         )
 
         def fake_run(cmd, **kwargs):
@@ -7193,7 +7248,7 @@ class TestProxyAuthStart:
         )
         monkeypatch.setattr(_mod, "_precreate_data_dirs", lambda _sid: None)
         monkeypatch.setattr(
-            _mod, "_repair_rootless_data_ownership", lambda _sid: None,
+            _mod, "_repair_rootless_data_ownership", lambda _sid, **_kwargs: None,
         )
 
         def fake_run(cmd, **kwargs):
