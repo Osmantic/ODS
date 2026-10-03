@@ -10471,13 +10471,16 @@ class AgentHandler(BaseHTTPRequestHandler):
         """Return the last host-agent managed update run status."""
         if not check_auth(self):
             return
-        data = _read_update_status()
         with _update_lock:
+            data = _read_update_status()
             running = _update_thread is not None and _update_thread.is_alive()
-        if running:
-            data = {**data, "status": "running"}
-        else:
-            data = _fail_stale_update_status(data)
+            if running:
+                data = {**data, "status": "running"}
+            else:
+                # The worker can publish its terminal receipt after the first
+                # read and exit before the liveness check. Refresh that receipt
+                # before reconciling stale state, while excluding a new start.
+                data = _fail_stale_update_status(_read_update_status())
         json_response(self, 200, data)
 
     def _handle_update_action(self):
