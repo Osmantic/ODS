@@ -692,9 +692,13 @@ run_automatic() {
   echo -e "  ${GRN}Running topology-aware assignment...${NC}"
   echo ""
 
+  if ! command -v python3 >/dev/null 2>&1; then
+    error "python3 is required for topology-aware GPU assignment but was not found in PATH."
+  fi
+
   local result
   result=$(python3 "$ASSIGN_GPUS_SCRIPT" \
-    --topology "$TOPOLOGY_FILE" --model-size "$LLM_MODEL_SIZE_MB" 2>&1) || {
+    --topology "$TOPOLOGY_FILE" --model-size "${LLM_MODEL_SIZE_MB:-0}" 2>&1) || {
     echo -e "  ${RED}Assignment failed:${NC}\n  $result"
     error "GPU assignment failed: $result"
   }
