@@ -63,6 +63,50 @@ def remote_route(root, *, enabled=True, transport="direct"):
     return path
 
 
+def test_webui_dependent_proxy_cannot_be_selected_after_library_disable(tmp_path):
+    (tmp_path / "data" / "user-extensions").mkdir(parents=True)
+    (tmp_path / ".env").write_text("ENABLE_OPEN_WEBUI=false\n", encoding="utf-8")
+    proxy = extension(tmp_path, "ods-proxy", depends=("open-webui",),
+                      compose_depends=("open-webui",), enabled=False)
+    (tmp_path / "docker-compose.base.yml").write_text(
+        "services:\n  open-webui:\n    image: example:latest\n", encoding="utf-8")
+    preset = tmp_path / "extensions.list"
+    preset.write_text("enabled:ods-proxy\n", encoding="utf-8")
+
+    with pytest.raises(selection.SelectionError, match="Open WebUI is disabled"):
+        selection.restore_preset(tmp_path, preset, core_services={"open-webui"},
+                                 compose_flags="-f docker-compose.base.yml")
+    with pytest.raises(selection.SelectionError, match="Open WebUI is disabled"):
+        selection.run("enable", tmp_path, "ods-proxy", core_services={"open-webui"})
+    assert (proxy / "compose.yaml.disabled").is_file()
+
+    (tmp_path / ".env").write_text("ENABLE_OPEN_WEBUI=true\n", encoding="utf-8")
+    assert selection.restore_preset(tmp_path, preset, core_services={"open-webui"},
+                                    compose_flags="-f docker-compose.base.yml")[:2] == (1, 0)
+    assert (proxy / "compose.yaml").is_file()
+
+
+def test_preset_can_disable_legacy_proxy_left_selected_after_webui_disable(tmp_path, monkeypatch):
+    """Dashboard Disable must be able to repair an already broken selection."""
+    (tmp_path / "data" / "user-extensions").mkdir(parents=True)
+    (tmp_path / ".env").write_text("ENABLE_OPEN_WEBUI=false\n", encoding="utf-8")
+    (tmp_path / "docker-compose.base.yml").write_text(
+        "services:\n  open-webui:\n    image: example:latest\n", encoding="utf-8")
+    proxy = extension(tmp_path, "ods-proxy", depends=("open-webui",),
+                      compose_depends=("open-webui",), enabled=True)
+    helper = tmp_path / "scripts" / "stop-owned-containers.py"
+    helper.parent.mkdir()
+    helper.write_text("", encoding="utf-8")
+    monkeypatch.setattr(selection.subprocess, "run", lambda command, **_kwargs:
+                        subprocess.CompletedProcess(command, 0, "", ""))
+    preset = tmp_path / "extensions.list"
+    preset.write_text("disabled:ods-proxy\n", encoding="utf-8")
+
+    assert selection.restore_preset(tmp_path, preset, core_services={"open-webui"},
+                                    compose_flags="-f docker-compose.base.yml") == (0, 1, [])
+    assert (proxy / "compose.yaml.disabled").is_file()
+
+
 def test_active_direct_remote_route_blocks_egress_disable_under_lock(tmp_path):
     (tmp_path / "data" / "user-extensions").mkdir(parents=True)
     egress = extension(tmp_path, "remote-provider-egress")
