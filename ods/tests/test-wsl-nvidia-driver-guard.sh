@@ -82,11 +82,36 @@ missing_gpu_output="$(ODS_WSL_HOST_OVERRIDE=true bash -c '
 missing_gpu_status=$?
 set -e
 if [[ $missing_gpu_status -eq 0 ]] ||
-   ! grep -qF 'Check the Windows NVIDIA driver and WSL GPU access' <<< "$missing_gpu_output" ||
+   ! grep -qF 'check the Windows NVIDIA driver and WSL GPU access' <<< "$missing_gpu_output" ||
    ! grep -qF 'do not install a Linux NVIDIA driver in the distro' <<< "$missing_gpu_output" ||
    grep -qF 'UNEXPECTED' <<< "$missing_gpu_output"; then
     echo "FAIL: missing WSL GPU reached Linux driver repair or lacked Windows guidance"
     echo "$missing_gpu_output"
+    exit 1
+fi
+
+# WSL commonly hides GPU PCI devices. Even with an empty lspci result, the
+# installer must give conditional Windows-side guidance and avoid Linux repair.
+set +e
+no_pci_output="$(ODS_WSL_HOST_OVERRIDE=true bash -c '
+    set -euo pipefail
+    SCRIPT_DIR="$1"
+    LOG_FILE=/dev/null
+    ai_warn() { printf "WARN: %s\n" "$*"; }
+    lspci() { :; }
+    ods_sudo_available() { echo "UNEXPECTED sudo check"; return 42; }
+    ods_sudo() { echo "UNEXPECTED privileged action: $*"; return 42; }
+    source "$SCRIPT_DIR/installers/lib/detection.sh"
+    fix_nvidia_secure_boot
+' bash "$ODS_ROOT" 2>&1)"
+no_pci_status=$?
+set -e
+if [[ $no_pci_status -eq 0 ]] ||
+   ! grep -qF 'If you expected one, check the Windows NVIDIA driver and WSL GPU access' <<< "$no_pci_output" ||
+   ! grep -qF 'do not install a Linux NVIDIA driver in the distro' <<< "$no_pci_output" ||
+   grep -qF 'UNEXPECTED' <<< "$no_pci_output"; then
+    echo "FAIL: WSL without PCI visibility lacked conditional Windows guidance"
+    echo "$no_pci_output"
     exit 1
 fi
 

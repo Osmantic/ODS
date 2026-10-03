@@ -754,14 +754,15 @@ validate_nvidia_blackwell_open_modules() {
 }
 
 fix_nvidia_secure_boot() {
-    # Step 1: Is there even NVIDIA hardware on this machine?
-    if ! lspci 2>/dev/null | grep -qi 'nvidia'; then
-        return 1  # No hardware — nothing to fix
+    # WSL gets its NVIDIA driver from Windows, and lspci may not expose the GPU.
+    if ods_is_wsl_host; then
+        ai_warn "ODS could not detect an NVIDIA GPU in WSL. If you expected one, check the Windows NVIDIA driver and WSL GPU access; do not install a Linux NVIDIA driver in the distro."
+        return 1
     fi
 
-    if ods_is_wsl_host; then
-        ai_warn "NVIDIA GPU is unavailable in WSL. Check the Windows NVIDIA driver and WSL GPU access; do not install a Linux NVIDIA driver in the distro."
-        return 1
+    # Native Linux can inspect PCI hardware before attempting driver repair.
+    if ! lspci 2>/dev/null | grep -qi 'nvidia'; then
+        return 1  # No hardware — nothing to fix
     fi
 
     ai "NVIDIA GPU hardware detected but driver not responding."
