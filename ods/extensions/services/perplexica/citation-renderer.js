@@ -5,9 +5,10 @@
 function renderCitations(message, sources) {
   if (typeof message !== "string") return message;
   const refs = Array.isArray(sources) ? sources : [];
-  // Raw HTML needs its own parser. Preserve the existing citation behavior
-  // for such answers instead of risking markup changes for a cosmetic fix.
-  const allowInlineCodeHtml = !/<[A-Za-z/!?]/.test(message);
+  // Raw HTML needs its own parser. A tag-shaped placeholder inside Markdown
+  // code is safe to escape as code, but must not disable code rendering for
+  // the entire answer. Keep raw HTML outside code on the conservative path.
+  const allowInlineCodeHtml = !hasRawHtmlOutsideInlineCode(message);
   let fence = null;
   let inline = null;
 
@@ -69,6 +70,29 @@ function renderCitations(message, sources) {
       at = line.indexOf(marker, at + marker.length);
     }
     return -1;
+  }
+
+  function hasRawHtmlOutsideInlineCode(text) {
+    for (const line of text.split("\n")) {
+      let outside = "";
+      for (let i = 0; i < line.length;) {
+        if (line[i] === "`") {
+          let end = i + 1;
+          while (line[end] === "`") end += 1;
+          let escapes = 0;
+          for (let k = i - 1; k >= 0 && line[k] === "\\"; k -= 1) escapes += 1;
+          if (escapes % 2 === 0) {
+            const marker = line.slice(i, end);
+            const close = closingTicks(line, end, marker);
+            if (close !== -1) { i = close + marker.length; continue; }
+          }
+        }
+        outside += line[i];
+        i += 1;
+      }
+      if (/<[A-Za-z/!?]/.test(outside)) return true;
+    }
+    return false;
   }
 
   function inlineCode(value) {
