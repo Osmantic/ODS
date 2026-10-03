@@ -47,6 +47,10 @@ done
 # No daemon: every container probe fails fast and the report still gets written.
 printf '#!/bin/sh\necho "Cannot connect to the Docker daemon" >&2\nexit 1\n' > "$INSTALL/bin/docker"
 chmod +x "$INSTALL/bin/docker"
+# The probe URL checked below is the Linux container path; on macOS the
+# doctor deliberately probes native llama-server on ODS_NATIVE_LLAMA_PORT.
+printf '#!/bin/sh\n[ "$1" = -s ] && { echo Linux; exit 0; }\nexec /usr/bin/uname "$@"\n' > "$INSTALL/bin/uname"
+chmod +x "$INSTALL/bin/uname"
 
 run_doctor() {
     local report="$1"
