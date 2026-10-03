@@ -39,10 +39,13 @@ def docker(*args: str) -> str:
     return result.stdout.strip()
 
 
-def snapshot(source: Path) -> list[dict[str, object]]:
+def snapshot(source: Path) -> dict[str, object]:
     identity = source.stat()
     probe_root = "/" + source.relative_to("/mnt/wsl").as_posix()
     rows = parse_mountinfo(Path("/proc/self/mountinfo").read_text(encoding="utf-8"))
+    proxies = [row for row in rows if row.target.startswith(PROXY_PREFIX)]
+    if len(proxies) > 128:
+        raise RuntimeError("Docker Desktop proxy graph is too large for this probe")
     selected = []
     for row in rows:
         if row.target != str(source) and not row.target.startswith(PROXY_PREFIX):
@@ -70,7 +73,18 @@ def snapshot(source: Path) -> list[dict[str, object]]:
                 "identity_matches": identity_matches,
             }
         )
-    return selected
+    return {
+        "matched": selected,
+        "all_proxy_rows": [
+            {
+                "id": row.mount_id,
+                "root": row.root,
+                "target": row.target,
+                "device": row.device,
+            }
+            for row in proxies
+        ],
+    }
 
 
 def main() -> int:
@@ -122,7 +136,7 @@ def main() -> int:
         record["container"] = name
         record["source"] = str(source)
         record["stages"]["before_create"] = snapshot(source)
-        if record["stages"]["before_create"]:
+        if record["stages"]["before_create"]["matched"]:
             raise RuntimeError("disposable source already has a mount projection")
 
         container_id = docker(
@@ -150,15 +164,31 @@ def main() -> int:
         if docker("inspect", "--format", "{{.State.Running}}", container_id) != "true":
             raise RuntimeError("disposable container did not remain running")
         record["stages"]["after_start"] = snapshot(source)
+        before_proxy_targets = {
+            row["target"] for row in record["stages"]["before_create"]["all_proxy_rows"]
+        }
+        started_proxy_targets = {
+            row["target"] for row in record["stages"]["after_start"]["all_proxy_rows"]
+        }
+        if (
+            started_proxy_targets == before_proxy_targets
+            and not record["stages"]["after_start"]["matched"]
+        ):
+            raise RuntimeError("no projection was observed; lifecycle is inconclusive")
         docker("stop", "--time", "5", container_id)
         record["stages"]["after_stop"] = snapshot(source)
         docker("rm", container_id)  # No -v: never remove any volume.
         container_id = ""
         record["stages"]["after_remove"] = snapshot(source)
-        if record["stages"]["after_remove"]:
+        if record["stages"]["after_remove"]["matched"]:
             raise RuntimeError(
                 "Docker Desktop left a projection after container removal"
             )
+        after_proxy_targets = {
+            row["target"] for row in record["stages"]["after_remove"]["all_proxy_rows"]
+        }
+        if after_proxy_targets != before_proxy_targets:
+            raise RuntimeError("Docker Desktop proxy graph changed outside the probe")
     except (
         OSError,
         RuntimeError,
@@ -199,7 +229,7 @@ def main() -> int:
             if source.exists():
                 try:
                     record["stages"]["after_cleanup"] = snapshot(source)
-                except (OSError, ValueError) as exc:
+                except (OSError, RuntimeError, ValueError) as exc:
                     record["errors"].append(f"final mount snapshot failed: {exc}")
             try:
                 source.rmdir()
