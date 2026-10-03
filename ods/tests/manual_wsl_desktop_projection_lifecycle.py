@@ -202,14 +202,14 @@ def main() -> int:
         before_proxy_targets = {
             row["target"] for row in record["stages"]["before_create"]["all_proxy_rows"]
         }
-        started_proxy_targets = {
-            row["target"] for row in record["stages"]["after_start"]["all_proxy_rows"]
-        }
-        if (
-            started_proxy_targets == before_proxy_targets
-            and not record["stages"]["after_start"]["matched"]
+        if not any(
+            row["target"].startswith(PROXY_PREFIX)
+            for row in record["stages"]["after_start"]["matched"]
         ):
-            raise RuntimeError("no projection was observed; lifecycle is inconclusive")
+            raise RuntimeError(
+                "no source-qualified Docker Desktop projection was observed; "
+                "lifecycle is inconclusive"
+            )
         docker("stop", "--time", "5", container_id)
         record["stages"]["after_stop"] = snapshot(source)
         # A retained-install rollback may need to restart an owned container
