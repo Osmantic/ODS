@@ -570,6 +570,8 @@ jobs:
           bash tests/test-preflight-external-gpu.sh
           bash tests/test-linux-install-preflight.sh
           bash tests/test-preflight-dashboard-port.sh
+          bash tests/test-wsl-windows-port-detection.sh
+          bash tests/test-wsl-whisper-lean-port-preselection.sh
           bash tests/test-wsl-broken-docker-shim.sh
           bash tests/test-wsl-nvidia-driver-guard.sh
 
