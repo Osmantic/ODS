@@ -851,6 +851,8 @@ export default function Extensions({ compact = false }) {
 
 function StatusBadge({ status, statusStyle, ext, gpuBackend, onConsole }) {
   let tooltip = STATUS_DESCRIPTIONS[status] || ''
+  const respondingAfterError = status === 'error' && ext.runtime_health === 'healthy'
+  if (respondingAfterError) tooltip = 'Service is responding; the last action failed.'
   if (status === 'incompatible') {
     tooltip += ext.library_selected === true
       ? ' \u2014 disable its saved selection or restore a compatible runtime'
@@ -864,10 +866,10 @@ function StatusBadge({ status, statusStyle, ext, gpuBackend, onConsole }) {
     </span>
   ) : status === 'error' ? (
     <span
-      className="text-[10px] px-2 py-0.5 rounded-full bg-red-500/20 text-red-300 cursor-pointer"
+      className={`text-[10px] px-2 py-0.5 rounded-full cursor-pointer ${respondingAfterError ? 'bg-amber-500/20 text-amber-300' : 'bg-red-500/20 text-red-300'}`}
       onClick={onConsole}
     >
-      error
+      {respondingAfterError ? 'running · action failed' : 'error'}
     </span>
   ) : (
     <span className={`text-[10px] px-2 py-0.5 rounded-full uppercase tracking-wider cursor-help ${statusStyle}`}>
@@ -1010,6 +1012,11 @@ function ExtensionCard({ ext, gpuBackend, agentAvailable, onDetails, onConsole, 
       )}
       {/* Error message — expandable when long or multiline so docker-compose
           stderr isn't cut off mid-actionable-line. */}
+      {isError && ext.runtime_health === 'healthy' && (
+        <p className="px-4 py-2 border-t border-amber-500/15 text-[10px] text-amber-300 leading-relaxed">
+          Service is responding; the last action failed.
+        </p>
+      )}
       {ext.status === 'error' && progressData?.error && (() => {
         const errorText = progressData.error
         const firstLine = errorText.split('\n')[0]
@@ -1247,8 +1254,12 @@ function DetailModal({ ext, gpuBackend, onClose }) {
                 className={`text-xs px-2 py-0.5 rounded-full ${statusStyle}`}
                 title={isIncompatible ? `Requires ${ext.gpu_backends?.join(' or ') || 'specific GPU'} — your system: ${gpuBackend || 'unknown'}` : ext.source === 'core' ? 'Built-in service — managed by ODS' : undefined}
               >
-                {(ext.status || 'not_installed').replace('_', ' ')}
+                {ext.status === 'error' && ext.runtime_health === 'healthy'
+                  ? 'running · action failed' : (ext.status || 'not_installed').replace('_', ' ')}
               </span>
+              {ext.status === 'error' && ext.runtime_health === 'healthy' && (
+                <p className="mt-1 text-xs text-amber-300">Service is responding; the last action failed.</p>
+              )}
               <div className="mt-1">
                 <LlmSwapBadge llm={ext.llm} />
               </div>

@@ -566,6 +566,15 @@ def _opencode_extension_action(action: str) -> dict:
     return {"id": "opencode", "action": action, "state": status.get("state")}
 
 
+def _runtime_health_for(service_id: str, services_by_id: dict) -> str:
+    """Report the health observation without resolving a failed operation."""
+    service = services_by_id.get(service_id)
+    if service is None or getattr(service, "id", None) != service_id:
+        return "unknown"
+    health = getattr(service, "status", None)
+    return health if health in ("healthy", "unhealthy", "degraded", "down") else "unknown"
+
+
 def _compute_extension_status(ext: dict, services_by_id: dict) -> str:
     """Compute the runtime status of an extension."""
     ext_id = ext["id"]
@@ -2021,6 +2030,7 @@ async def extensions_catalog(
         enriched = {
             **ext,
             "status": status,
+            "runtime_health": _runtime_health_for(ext_id, services_by_id),
             "installable": installable,
             "source": source,
             "has_data": has_data,
@@ -3473,6 +3483,7 @@ async def extension_detail(
         "name": ext["name"],
         "description": ext.get("description", ""),
         "status": status,
+        "runtime_health": _runtime_health_for(service_id, services_by_id),
         "error_message": error_message,
         "source": source,
         "installable": installable,

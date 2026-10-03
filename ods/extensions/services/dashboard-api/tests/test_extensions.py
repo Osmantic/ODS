@@ -5484,3 +5484,33 @@ def test_tcp_native_health_is_not_mistaken_for_installed_cli(monkeypatch, tmp_pa
     ext.update(port=6379, startup_check=False, health_endpoint="")
     states = {} if health is None else {"valkey": SimpleNamespace(status=health)}
     assert extensions._compute_extension_status(ext, states) == expected
+
+
+@pytest.mark.parametrize("endpoint", ["catalog", "demo"])
+@pytest.mark.parametrize("health", ["healthy", "unhealthy", "unknown", None])
+def test_runtime_health_does_not_erase_failed_action(test_client, monkeypatch, tmp_path, endpoint, health):
+    from routers import extensions
+    ext = _make_catalog_ext("demo")
+    _patch_extensions_config(monkeypatch, [ext], services={"demo": {}}, tmp_path=tmp_path)
+    progress = tmp_path / "extension-progress/demo.json"
+    progress.parent.mkdir()
+    # Even a failed revision with an owned operation must remain visible.
+    raw = json.dumps({"service_id": "demo", "status": "error", "error": "Revision failed",
+                      "operation_id": "a" * 32})
+    progress.write_text(raw)
+    services = [] if health is None else [_make_service_status("demo", health)]
+    with patch("helpers.get_cached_services", return_value=services):
+        response = test_client.get(f"/api/extensions/{endpoint}", headers=test_client.auth_headers)
+    assert response.status_code == 200
+    result = response.json()
+    row = next(x for x in result["extensions"] if x["id"] == "demo") if endpoint == "catalog" else result
+    assert row["status"] == "error"
+    assert row["runtime_health"] == (health or "unknown")
+    assert row["error_message"] == "Revision failed"
+    assert progress.read_text() == raw
+
+
+def test_runtime_health_requires_matching_known_observation():
+    from routers.extensions import _runtime_health_for
+    assert _runtime_health_for("demo", {"demo": _make_service_status("other")}) == "unknown"
+    assert _runtime_health_for("demo", {"demo": _make_service_status("demo", "invented")}) == "unknown"
