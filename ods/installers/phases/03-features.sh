@@ -86,9 +86,14 @@ if $INTERACTIVE && ! $DRY_RUN; then
             case "${TIER:-}" in
                 0|1)
                     ai_warn "ComfyUI requires 8GB+ RAM and a dedicated GPU. Your Tier $TIER system may not support it."
-                    read -p "  Continue with image generation enabled? [y/N] " -r < /dev/tty
+                    _comfy_reply=""
+                    if [[ -r /dev/tty ]]; then
+                        read -p "  Continue with image generation enabled? [y/N] " -r _comfy_reply < /dev/tty
+                    else
+                        read -p "  Continue with image generation enabled? [y/N] " -r _comfy_reply || true
+                    fi
                     echo
-                    [[ $REPLY =~ ^[Yy]$ ]] || ENABLE_COMFYUI=false
+                    [[ "$_comfy_reply" =~ ^[Yy]$ ]] || ENABLE_COMFYUI=false
                     ;;
             esac
         fi
