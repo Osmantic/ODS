@@ -180,9 +180,9 @@ def test_shared_repairs_compose_deterministically_only_in_staging(artifacts, sha
     manifest, _ = bundle.verify(root, expected_digest=digest)
     repairs = json.loads((root / 'ods-runtime-repairs.json').read_bytes())
     stream = json.loads((root / 'ods-runtime-patches.json').read_bytes())[0]
-    assert len(repairs) == 19
+    assert len(repairs) == 20
     assert {item["manifest"] for item in repairs}.issuperset({
-        "openclaw-context-usage.json", "openclaw-yield-usage.json", "openclaw-compaction-empty.json", "openclaw-compaction-no-work.json", "openclaw-hook-provenance.json", "openclaw-run-id-redaction.json"})
+        "openclaw-context-usage.json", "openclaw-yield-usage.json", "openclaw-compaction-empty.json", "openclaw-compaction-no-work.json", "openclaw-hook-provenance.json", "openclaw-announcement-admission.json", "openclaw-run-id-redaction.json"})
     assert any(item['module'] == 'payloads-CC0zlj7W.js'
                and item['manifest'] == 'openclaw-command-attempt-warning.json' for item in repairs)
     for receipt, (name, module) in zip(repairs, bundle.SHARED_REPAIRS):
@@ -394,14 +394,115 @@ def test_rejects_unknown_runtime_version(artifacts):
 
 
 def test_private_umask_does_not_change_bundle_modes(artifacts):
+    (artifacts['runtime'] / 'node_modules/alias.js').symlink_to('dependency.js')
     previous = os.umask(0o077)
     try:
-        bundle.build(**artifacts)
+        digest = bundle.build(**artifacts)
     finally:
         os.umask(previous)
     root = artifacts['destination']
     assert stat.S_IMODE((root / 'runtime/node_modules').stat().st_mode) == 0o755
-    bundle.verify(root)
+    link = root / 'runtime/node_modules/alias.js'
+    assert link.is_symlink()
+    assert (root / bundle.LINK_MODE_POLICY).read_bytes() == bundle.LINK_MODE_POLICY_BODY
+    manifest, _ = bundle.verify(root, expected_digest=digest)
+    assert bundle.LINK_MODE_POLICY in manifest['entries']
+    if sys.platform == 'darwin':
+        assert stat.S_IMODE(link.lstat().st_mode) == 0o755
+
+
+@pytest.mark.skipif(sys.platform != 'darwin', reason='Darwin symlink modes are enforced')
+def test_darwin_bundle_verification_rejects_changed_link_mode(artifacts):
+    (artifacts['runtime'] / 'node_modules/alias.js').symlink_to('dependency.js')
+    digest = bundle.build(**artifacts)
+    link = artifacts['destination'] / 'runtime/node_modules/alias.js'
+    os.lchmod(link, 0o777)
+    with pytest.raises(bundle.BundleError, match='bundle-link-mode-changed'):
+        bundle.verify(artifacts['destination'], expected_digest=digest)
+
+
+@pytest.mark.skipif(sys.platform != 'darwin', reason='Darwin symlink modes are enforced')
+def test_legacy_bundle_rollback_rejects_unreadable_links(artifacts):
+    (artifacts['runtime'] / 'node_modules/alias.js').symlink_to('dependency.js')
+    bundle.build(**artifacts)
+    root = artifacts['destination']
+    link = root / 'runtime/node_modules/alias.js'
+    (root / bundle.LINK_MODE_POLICY).unlink()
+    manifest_path = root / bundle.MANIFEST
+    manifest = json.loads(manifest_path.read_bytes())
+    del manifest['entries'][bundle.LINK_MODE_POLICY]
+    body = bundle._encode(manifest)
+    manifest_path.write_bytes(body)
+    legacy_digest = hashlib.sha256(body).hexdigest()
+    bundle.verify(root, expected_digest=legacy_digest)
+    os.lchmod(link, 0o700)
+    with pytest.raises(bundle.BundleError, match='bundle-link-unreadable'):
+        bundle.verify(root, expected_digest=legacy_digest)
+
+
+@pytest.mark.skipif(sys.platform != 'darwin', reason='Darwin symlink modes are enforced')
+def test_root_repairs_only_verified_legacy_link_modes_and_resumes(artifacts, monkeypatch):
+    (artifacts['runtime'] / 'node_modules/alias.js').symlink_to('dependency.js')
+    bundle.build(**artifacts)
+    source = artifacts['destination']
+    (source / bundle.LINK_MODE_POLICY).unlink()
+    manifest_path = source / bundle.MANIFEST
+    manifest = json.loads(manifest_path.read_bytes())
+    del manifest['entries'][bundle.LINK_MODE_POLICY]
+    body = bundle._encode(manifest)
+    manifest_path.write_bytes(body)
+    digest = hashlib.sha256(body).hexdigest()
+    parent = source.parent / 'protected'
+    monkeypatch.setattr(bundle, 'INSTALL_ROOT', parent)
+    monkeypatch.setattr(bundle.os, 'geteuid', lambda: 0)
+    monkeypatch.setattr(custody, '_verify_fd', lambda fd, **_: os.fstat(fd))
+    monkeypatch.setattr(custody, 'protected_tree_metadata', lambda _: None)
+    target = bundle.publish(source, expected_digest=digest, install_root=parent)
+    link = target / 'runtime/node_modules/alias.js'
+    os.lchmod(link, 0o700)
+    with pytest.raises(bundle.BundleError, match='bundle-link-unreadable'):
+        bundle.verify(target, expected_digest=digest)
+    original_lchmod = os.lchmod
+    def interrupted(path, mode):
+        original_lchmod(path, mode)
+        raise OSError('simulated interruption after mode change')
+    monkeypatch.setattr(bundle.os, 'lchmod', interrupted)
+    with pytest.raises(OSError, match='simulated interruption'):
+        bundle.repair_legacy_link_modes(digest)
+    assert (parent / ('.link-mode-repair-' + digest + '.json')).exists()
+    monkeypatch.setattr(bundle.os, 'lchmod', original_lchmod)
+    assert bundle.repair_legacy_link_modes(digest) == {'digest': digest, 'linksRepaired': 1}
+    assert stat.S_IMODE(link.lstat().st_mode) == 0o755
+    assert bundle.verify(target, expected_digest=digest)[1] == digest
+    assert not (parent / ('.link-mode-repair-' + digest + '.json')).exists()
+    assert bundle.repair_legacy_link_modes(digest)['linksRepaired'] == 0
+
+
+@pytest.mark.skipif(sys.platform != 'darwin', reason='Darwin symlink modes are enforced')
+def test_root_repair_refuses_legacy_bundle_content_drift(artifacts, monkeypatch):
+    (artifacts['runtime'] / 'node_modules/alias.js').symlink_to('dependency.js')
+    bundle.build(**artifacts)
+    root = artifacts['destination']
+    (root / bundle.LINK_MODE_POLICY).unlink()
+    manifest_path = root / bundle.MANIFEST
+    manifest = json.loads(manifest_path.read_bytes())
+    del manifest['entries'][bundle.LINK_MODE_POLICY]
+    body = bundle._encode(manifest)
+    manifest_path.write_bytes(body)
+    digest = hashlib.sha256(body).hexdigest()
+    parent = root.parent / 'protected'
+    monkeypatch.setattr(bundle, 'INSTALL_ROOT', parent)
+    monkeypatch.setattr(bundle.os, 'geteuid', lambda: 0)
+    monkeypatch.setattr(custody, '_verify_fd', lambda fd, **_: os.fstat(fd))
+    monkeypatch.setattr(custody, 'protected_tree_metadata', lambda _: None)
+    target = bundle.publish(root, expected_digest=digest, install_root=parent)
+    link = target / 'runtime/node_modules/alias.js'
+    os.lchmod(link, 0o700)
+    (target / 'node').write_bytes(b'tampered')
+    with pytest.raises(bundle.BundleError, match='bundle-content-changed'):
+        bundle.repair_legacy_link_modes(digest)
+    assert stat.S_IMODE(link.lstat().st_mode) == 0o700
+    assert not (parent / ('.link-mode-repair-' + digest + '.json')).exists()
 
 
 def test_manifest_must_match_previously_selected_digest(artifacts):
@@ -439,6 +540,26 @@ def test_publish_verifies_and_reuses_exact_version(publisher):
     assert bundle.publish(source, expected_digest=digest, install_root=parent) == target
     assert target.stat().st_ino == inode
     assert not list(parent.glob('.publishing-*'))
+
+
+@pytest.mark.skipif(sys.platform != 'darwin', reason='Darwin symlink modes are enforced')
+def test_publish_makes_internal_links_owner_readable_under_private_umask(artifacts, monkeypatch):
+    (artifacts['runtime'] / 'node_modules/alias.js').symlink_to('dependency.js')
+    digest = bundle.build(**artifacts)
+    # Exercise publication's copy with a private root-process umask. Custody
+    # is simulated because this fixture runs as the CI user, not as root.
+    monkeypatch.setattr(bundle.os, 'geteuid', lambda: 0)
+    monkeypatch.setattr(custody, '_verify_fd', lambda fd, **_: os.fstat(fd))
+    monkeypatch.setattr(custody, 'protected_tree_metadata', lambda _: None)
+    parent = artifacts['destination'].parent / 'protected'
+    previous = os.umask(0o077)
+    try:
+        target = bundle.publish(artifacts['destination'], expected_digest=digest, install_root=parent)
+    finally:
+        os.umask(previous)
+    link = target / 'runtime/node_modules/alias.js'
+    assert stat.S_IMODE(link.lstat().st_mode) == 0o755
+    assert bundle.verify(target, expected_digest=digest)[1] == digest
 
 
 def test_publish_never_repairs_existing_drift(publisher):

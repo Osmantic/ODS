@@ -68,6 +68,24 @@ jobs:
           }
           if ($failed) { exit 1 }
 
+      - name: Native Windows lean selection (PowerShell 7)
+        shell: pwsh
+        run: ./tests/test-windows-lean-defaults.ps1
+
+      - name: Native Windows lean selection (Windows PowerShell)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./tests/test-windows-lean-defaults.ps1
+
+      - name: Native Windows Core and fallback routes (PowerShell 7)
+        shell: pwsh
+        run: ./tests/test-windows-core-chat-route.ps1
+
+      - name: Native Windows Core and fallback routes (Windows PowerShell)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./tests/test-windows-core-chat-route.ps1
+
       - name: Windows Portal Setup Contracts (PowerShell 7)
         shell: pwsh
         run: ./tests/contracts/test-windows-portal-setup.ps1
@@ -145,6 +163,24 @@ jobs:
         shell: pwsh
         run: ./tests/contracts/test-windows-hermes-config-runtime.ps1
 
+      - name: Windows Hermes Library Selection Contract
+        shell: pwsh
+        run: ./tests/contracts/test-windows-hermes-library-selection.ps1
+
+      - name: Windows Hermes Library Selection Contract (Windows PowerShell)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./tests/contracts/test-windows-hermes-library-selection.ps1
+
+      - name: Windows Voice Library Selection Contract
+        shell: pwsh
+        run: ./tests/contracts/test-windows-voice-library-selection.ps1
+
+      - name: Windows Voice Library Selection Contract (Windows PowerShell)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./tests/contracts/test-windows-voice-library-selection.ps1
+
       - name: Windows Hermes Credential Relock Contract (PowerShell 7)
         if: runner.os == 'Windows'
         shell: pwsh
@@ -191,6 +227,12 @@ jobs:
         shell: pwsh
         run: ./tests/test-windows-llama-spec-type.ps1
 
+      - name: Windows OpenCode Auto-Start Selection Contract
+        shell: pwsh
+        run: |
+          ./tests/test-windows-devtools-env-autostart.ps1
+          ./tests/test-windows-restart-model-preflight.ps1
+
       - name: Windows llama-server Checkpoint Flag Probe Contract
         shell: pwsh
         run: ./tests/test-windows-native-checkpoint-args.ps1
@@ -203,9 +245,35 @@ jobs:
         shell: pwsh
         run: ./tests/test-windows-port-preflight.ps1
 
+      - name: Windows Compose Project Ownership Contract
+        shell: pwsh
+        run: ./tests/test-windows-compose-project-ownership.ps1
+
+      - name: Windows GPU Repair Opt-in Contract
+        shell: pwsh
+        run: ./tests/test-windows-gpu-repair-opt-in.ps1
+
+      - name: Windows GPU Repair Opt-in Contract (PowerShell 5.1)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./tests/test-windows-gpu-repair-opt-in.ps1
+
+      - name: Windows Ollama Preflight Custody Contract
+        shell: pwsh
+        run: ./tests/test-windows-ollama-preflight-custody.ps1
+
+      - name: Windows Ollama Preflight Custody Contract (PowerShell 5.1)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./tests/test-windows-ollama-preflight-custody.ps1
+
       - name: Windows Host Agent Python Resolver Contract
         shell: pwsh
         run: ./tests/test-windows-python-resolver.ps1
+
+      - name: Windows Developer Tools Selection Contract
+        shell: pwsh
+        run: ./tests/test-windows-devtools-selection.ps1
 
       - name: Windows Runtime Recovery Contract
         shell: pwsh
@@ -247,3 +315,36 @@ jobs:
         if: runner.os == 'Windows'
         shell: powershell
         run: ./tests/contracts/test-windows-uninstall-leftovers.ps1
+
+      - name: Windows Remote Provider Selection (PowerShell 7)
+        shell: pwsh
+        run: ./tests/contracts/test-windows-remote-provider-selection.ps1
+
+      - name: Windows Remote Provider Selection (PowerShell 5.1)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./tests/contracts/test-windows-remote-provider-selection.ps1
+
+      - name: Windows Remote Provider CLI Guard (PowerShell 7)
+        shell: pwsh
+        run: ./tests/contracts/test-windows-remote-provider-cli-guard.ps1
+
+      - name: Windows Remote Provider CLI Guard (PowerShell 5.1)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./tests/contracts/test-windows-remote-provider-cli-guard.ps1
+
+      - name: Windows Remote Provider Source Copy (PowerShell 7)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./tests/contracts/test-windows-remote-provider-source-copy.ps1 -AllowMissingDocker
+
+      - name: Windows Remote Provider Linux Transaction
+        if: runner.os == 'Linux'
+        shell: bash
+        run: python3 tests/contracts/test_remote_provider_windows_transaction.py
+
+      - name: Windows Remote Provider Source Copy (PowerShell 5.1)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./tests/contracts/test-windows-remote-provider-source-copy.ps1 -AllowMissingDocker

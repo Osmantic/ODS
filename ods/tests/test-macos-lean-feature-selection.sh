@@ -17,12 +17,16 @@ read_env_value() {
 ai_err() { printf '%s\n' "$*" >&2; }
 ai_ok() { :; }
 log() { :; }
+eval "$(sed -n '/^_macos_capture_gateway_library_selections() {/,/^}/p' "$installer")"
+eval "$(sed -n '/^_macos_gateway_library_selected() {/,/^}/p' "$installer")"
+eval "$(sed -n '/^_macos_retained_optional_state() {/,/^}/p' "$installer")"
 eval "$(sed -n '/^_macos_resolve_support_services() {/,/^}/p' "$installer")"
 eval "$(sed -n '/^_macos_apply_fresh_feature_defaults() {/,/^}/p' "$installer")"
 eval "$(sed -n '/^_macos_set_builtin_compose_state() {/,/^}/p' "$installer")"
 eval "$(sed -n '/^_macos_sync_builtin_compose_states() {/,/^}/p' "$installer")"
 
 NON_INTERACTIVE=true DRY_RUN=false ALL_FEATURES=false
+GATEWAY_ONLY=false _saved_gateway_only=""
 RECOMMENDED_EXPLICIT=false HERMES_EXPLICIT=false
 ENABLE_RECOMMENDED=true ENABLE_HERMES=true
 _macos_apply_fresh_feature_defaults
@@ -53,9 +57,11 @@ _macos_apply_fresh_feature_defaults
 
 reset_features() {
     ENABLE_RECOMMENDED=false ENABLE_PIXEL=true CLOUD_MODE=false
+    _MACOS_RETAINED_SEARXNG=""
     ENABLE_PERPLEXICA=false ENABLE_HERMES=false ENABLE_OPENCLAW=false
     ENABLE_LITELLM=false ENABLE_SEARXNG=false ENABLE_WEB_SEARCH=false
-    ENABLE_VOICE=false ENABLE_WORKFLOWS=false ENABLE_RAG=false
+    ENABLE_VOICE=false ENABLE_WHISPER=false ENABLE_TTS=false
+    ENABLE_WORKFLOWS=false ENABLE_RAG=false
     ENABLE_APE=false ENABLE_PRIVACY_SHIELD=false ENABLE_ODS_PROXY=false
     ENABLE_TAILSCALE=false ENABLE_LANGFUSE=false ENABLE_BRAVE_SEARCH=false
     rm -f "$INSTALL_DIR/.env" "$INSTALL_DIR/data/pixel-native/preparation/onboarding.json"
@@ -117,6 +123,26 @@ _macos_resolve_support_services
 [[ "$ENABLE_SEARXNG" == true ]] \
     || { echo 'FAIL: Perplexica lost SearXNG' >&2; exit 1; }
 
+reset_features
+ENABLE_PIXEL=false ENABLE_HERMES=true
+_macos_resolve_support_services
+[[ "$ENABLE_SEARXNG" == false ]] \
+    || { echo 'FAIL: newly selected Hermes pulled optional SearXNG' >&2; exit 1; }
+
+mkdir -p "$INSTALL_DIR/extensions/services/searxng"
+printf 'ODS_MODE=local\n' > "$INSTALL_DIR/.env"
+printf 'services: {}\n' > "$INSTALL_DIR/extensions/services/searxng/compose.yaml"
+_MACOS_RETAINED_SEARXNG="$(_macos_retained_optional_state searxng)"
+_macos_resolve_support_services
+[[ "$ENABLE_SEARXNG" == true ]] \
+    || { echo 'FAIL: retained SearXNG selection was lost' >&2; exit 1; }
+mv "$INSTALL_DIR/extensions/services/searxng/compose.yaml" \
+    "$INSTALL_DIR/extensions/services/searxng/compose.yaml.disabled"
+_MACOS_RETAINED_SEARXNG="$(_macos_retained_optional_state searxng)"
+_macos_resolve_support_services
+[[ "$ENABLE_SEARXNG" == false ]] \
+    || { echo 'FAIL: disabled SearXNG was restored by Hermes' >&2; exit 1; }
+
 for service in litellm token-spy searxng; do
     mkdir -p "$INSTALL_DIR/extensions/services/$service"
     printf 'services: {}\n' > "$INSTALL_DIR/extensions/services/$service/compose.yaml"
@@ -135,5 +161,12 @@ _macos_sync_builtin_compose_states
 [[ -f "$INSTALL_DIR/extensions/services/token-spy/compose.yaml"
     && -f "$INSTALL_DIR/extensions/services/searxng/compose.yaml" ]] \
     || { echo 'FAIL: selected recommended services were not restored' >&2; exit 1; }
+
+reset_features
+ENABLE_PIXEL=false GATEWAY_ONLY=true _saved_gateway_only=true
+_macos_capture_gateway_library_selections
+_macos_resolve_support_services
+[[ "$ENABLE_SEARXNG" == true && "$ENABLE_WEB_SEARCH" == true ]] \
+    || { echo 'FAIL: retained gateway SearXNG addback was not registered' >&2; exit 1; }
 
 echo 'PASS: Mac gateway and optional search selection'

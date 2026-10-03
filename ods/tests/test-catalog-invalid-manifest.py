@@ -40,7 +40,7 @@ def test_shipped_catalog_preserves_intentional_exclusions(tmp_path):
     assert result.returncode == 0, result.stderr
     ids = {entry["id"] for entry in json.loads(output.read_text(encoding="utf-8"))["extensions"]}
     assert "pixel-agent" in ids
-    assert "privacy-shield" not in ids
+    assert "privacy-shield" in ids
     assert "dify" not in ids
     assert "apache-answer" in ids
     assert "jan" not in ids

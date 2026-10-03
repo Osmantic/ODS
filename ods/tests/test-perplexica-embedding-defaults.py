@@ -19,8 +19,11 @@ FIELDS = ("defaultEmbeddingProvider", "defaultEmbeddingModel")
 
 
 @contextmanager
-def config_server(preferences, providers=None, corrupt=None, writes=None, hydrate_embeddings=None):
-    state = copy.deepcopy({"preferences": preferences, "modelProviders": providers or [CHAT, CPU]})
+def config_server(preferences, providers=None, corrupt=None, writes=None, hydrate_embeddings=None,
+                  setup_calls=None, setup_persists=True):
+    state = copy.deepcopy({"preferences": preferences,
+                           "modelProviders": [CHAT, CPU] if providers is None else providers,
+                           "setupComplete": False})
     wrote_preferences = False
 
     class Handler(BaseHTTPRequestHandler):
@@ -37,6 +40,13 @@ def config_server(preferences, providers=None, corrupt=None, writes=None, hydrat
         def do_POST(self):
             nonlocal wrote_preferences
             payload = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+            if self.path == "/api/config/setup-complete":
+                if setup_calls is not None:
+                    setup_calls.append(self.path)
+                if setup_persists:
+                    state["setupComplete"] = True
+                self.respond({})
+                return
             if writes is not None:
                 writes.append(copy.deepcopy(payload))
             parts = payload["key"].split(".")
@@ -93,6 +103,37 @@ def test_unselected_defaults_use_advertised_local_model_and_do_not_add_providers
             assert state["preferences"]["defaultChatModel"] == "ods/current"
             assert len(state["modelProviders"]) == 2
             assert state["modelProviders"][1] == CPU
+
+
+def test_library_sync_finishes_vane_setup_only_after_route_and_embedding_are_saved():
+    setup_calls = []
+    with config_server({}, setup_calls=setup_calls) as (state, url):
+        assert run_sync(url).returncode == 0
+        assert state["preferences"]["defaultChatModel"] == "ods/current"
+        assert [state["preferences"][key] for key in FIELDS] == ["cpu", KEY]
+        assert state["setupComplete"] is True
+        assert setup_calls == ["/api/config/setup-complete"]
+        assert run_sync(url).returncode == 0
+        assert setup_calls == ["/api/config/setup-complete"], "restart must preserve the completed setup"
+
+
+def test_library_sync_does_not_complete_setup_without_embedding_or_chat_provider():
+    for providers in ([CHAT], [CPU]):
+        setup_calls = []
+        with config_server({}, providers=providers, setup_calls=setup_calls) as (state, url):
+            result = run_sync(url)
+            assert result.returncode == (0 if providers == [CHAT] else 1)
+            assert state["setupComplete"] is False
+            assert setup_calls == []
+
+
+def test_library_sync_retries_when_vane_does_not_persist_setup_completion():
+    setup_calls = []
+    with config_server({}, setup_calls=setup_calls, setup_persists=False) as (state, url):
+        result = run_sync(url)
+        assert result.returncode == 1
+        assert state["setupComplete"] is False
+        assert setup_calls == ["/api/config/setup-complete"]
 
 
 @pytest.mark.parametrize("preferences", [dict(zip(FIELDS, ["owner", "chosen"])),

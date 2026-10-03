@@ -177,6 +177,7 @@ class TestGetBootstrapStatus:
 
         status = get_bootstrap_status()
         assert status.active is False
+        assert status.phase is None
 
     def test_inactive_when_empty_status(self, data_dir):
         status_file = data_dir / "bootstrap-status.json"
@@ -199,6 +200,7 @@ class TestGetBootstrapStatus:
 
         status = get_bootstrap_status()
         assert status.active is True
+        assert status.phase == "downloading"
         assert status.model_name == "Qwen2.5-32B"
         assert status.percent == 42.5
         assert status.eta_seconds == 200  # 3*60 + 20
@@ -270,6 +272,7 @@ class TestGetBootstrapStatus:
 
         status = get_bootstrap_status()
         assert status.active is True
+        assert status.phase == "verifying"
 
     def test_active_during_swapping_even_if_file_exists(self, data_dir):
         models_dir = data_dir / "models"
@@ -284,6 +287,23 @@ class TestGetBootstrapStatus:
 
         status = get_bootstrap_status()
         assert status.active is True
+        assert status.phase == "swapping"
+
+    def test_starting_phase_is_reported_without_changing_reconciliation(self, data_dir):
+        status_file = data_dir / "bootstrap-status.json"
+        status_file.write_text(json.dumps({"status": "starting", "model": "next.gguf", "percent": 0}))
+
+        status = get_bootstrap_status()
+        assert status.active is True
+        assert status.phase == "starting"
+
+    def test_unknown_active_phase_remains_unclassified(self, data_dir):
+        status_file = data_dir / "bootstrap-status.json"
+        status_file.write_text(json.dumps({"status": "stale", "percent": 30}))
+
+        status = get_bootstrap_status()
+        assert status.active is True
+        assert status.phase is None
 
     def test_path_traversal_rejected(self, data_dir):
         status_file = data_dir / "bootstrap-status.json"
@@ -707,6 +727,7 @@ class TestGetAllServices:
     @pytest.mark.asyncio
     @pytest.mark.parametrize("service_id,port", [
         ("n8n", 5678), ("perplexica", 3000), ("searxng", 8080),
+        ("whisper", 8000), ("tts", 8880),
     ])
     async def test_newly_selected_builtin_appears_then_disappears_without_restart(
         self, monkeypatch, service_id, port,
@@ -720,7 +741,11 @@ class TestGetAllServices:
                            "external_port": port, "health": "/healthz"}
 
         def current_manifests(*args, **kwargs):
-            assert kwargs["only_service_ids"] == frozenset({"n8n", "perplexica", "searxng"})
+            assert kwargs["only_service_ids"] == frozenset({
+                "comfyui", "embeddings", "n8n", "perplexica", "privacy-shield", "qdrant", "searxng", "token-spy",
+                "remote-provider-egress", "remote-provider-ssh-tunnel",
+                "hermes", "hermes-proxy", "whisper", "tts",
+            })
             return ({service_id: optional_config} if selected else {}), [], []
 
         async def fake_health(sid, cfg):

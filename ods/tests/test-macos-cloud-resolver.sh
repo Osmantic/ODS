@@ -298,7 +298,7 @@ PYTHON_CMD="$(ods_detect_python_cmd_with_module yaml)"
 
 if $DOCKER_COMPOSE_AVAILABLE; then
     render_state disabled \
-        'dashboard,dashboard-api,litellm,open-webui,qdrant,remote-provider-egress,remote-provider-ssh-tunnel' false
+        'dashboard,dashboard-api,litellm,open-webui,qdrant' false
     pass "Hermes-disabled Apple cloud stack renders with exact selected services and auth"
 fi
 
@@ -310,7 +310,7 @@ assert_selected_bases "$enabled_files" \
     'extensions/services/hermes/compose.yaml,extensions/services/litellm/compose.yaml,extensions/services/qdrant/compose.yaml'
 if $DOCKER_COMPOSE_AVAILABLE; then
     render_state enabled \
-        'dashboard,dashboard-api,hermes,litellm,open-webui,qdrant,remote-provider-egress,remote-provider-ssh-tunnel' true
+        'dashboard,dashboard-api,hermes,litellm,open-webui,qdrant' true
     pass "Hermes-enabled Apple cloud stack renders without missing client auth"
 fi
 
@@ -321,7 +321,7 @@ assert_selected_bases "$reenabled_files" \
     'extensions/services/litellm/compose.yaml,extensions/services/qdrant/compose.yaml'
 if $DOCKER_COMPOSE_AVAILABLE; then
     render_state redisabled \
-        'dashboard,dashboard-api,litellm,open-webui,qdrant,remote-provider-egress,remote-provider-ssh-tunnel' false
+        'dashboard,dashboard-api,litellm,open-webui,qdrant' false
     pass "Hermes re-disable renders cleanly without a partial service"
 else
     echo "[SKIP] docker compose unavailable; resolver selection checks still passed"

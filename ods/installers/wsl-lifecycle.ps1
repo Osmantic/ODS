@@ -178,9 +178,19 @@ function Get-ODSWslRunningDistributions {
 function Get-ODSProcessIdentity([int]$ProcessId) {
     $process = Get-Process -Id $ProcessId -ErrorAction SilentlyContinue
     if (-not $process) { return $null }
-    $native = Get-CimInstance Win32_Process -Filter "ProcessId=$ProcessId"
-    if (-not $native) { return $null }
-    [pscustomobject]@{ pid=$ProcessId; startTicks=$process.StartTime.ToUniversalTime().Ticks.ToString(); executable=$native.ExecutablePath; commandLine=$native.CommandLine }
+    try {
+        # Keep this process instance pinned across the slower CIM query. A
+        # holder can exit during shutdown, and its PID may then be reused.
+        $null = $process.Handle
+        $started = $process.StartTime
+        if (-not $started -or $process.HasExited) { return $null }
+        $native = Get-CimInstance Win32_Process -Filter "ProcessId=$ProcessId"
+        if (-not $native -or $process.HasExited) { return $null }
+        [pscustomobject]@{ pid=$ProcessId; startTicks=$started.ToUniversalTime().Ticks.ToString(); executable=$native.ExecutablePath; commandLine=$native.CommandLine }
+    } catch [System.InvalidOperationException] {
+        # Process properties can become unavailable after an ordinary exit.
+        return $null
+    } finally { $process.Dispose() }
 }
 
 function Test-ODSProcessIdentity($Expected, $Actual) {
@@ -499,18 +509,44 @@ function Assert-ODSWslStartupStillWanted {
     if ((Get-ODSWslUtcNow) -ge $script:ODSWslStartupDeadline) { throw 'WSL startup deadline exceeded; inspect startup-status.json and retry start after Docker is ready' }
 }
 
+function Get-ODSWslLifetimeForRetirement($Identity) {
+    $task=Get-ScheduledTask -TaskName $Identity.taskName -ErrorAction SilentlyContinue
+    if ($task) {
+        $null=Assert-ODSWslTask $Identity
+        $request=Read-ODSWslJson (Join-Path $Identity.directory 'request.json')
+        if (-not $request -or [string]::IsNullOrWhiteSpace($request.generation) -or $request.action -notin @('run','stop')) {
+            throw 'Owned WSL lifetime request is missing or invalid; generation requires recovery before uninstall'
+        }
+        $runtime=Read-ODSWslJson (Join-Path $Identity.directory 'runtime.json')
+        if (-not $runtime -or [string]::IsNullOrWhiteSpace($runtime.generation) -or $runtime.generation -cne $request.generation) {
+            # A Ready task does not prove that a former child exited. Do not
+            # fabricate a stopped record when its ownership proof was lost.
+            throw 'Owned WSL lifetime runtime is missing or inconsistent; child ownership requires recovery before uninstall'
+        }
+    } elseif ((Test-Path -LiteralPath (Join-Path $Identity.directory 'request.json')) -or
+              (Test-Path -LiteralPath (Join-Path $Identity.directory 'runtime.json'))) {
+        throw 'Owned WSL lifetime task is missing; retained lifetime records require recovery before uninstall'
+    }
+    $task
+}
+
 function Disable-ODSWslStartup($Identity,[switch]$ValidateOnly,[switch]$RetireRelay) {
     $task=Get-ScheduledTask -TaskName ($Identity.taskName + '-Startup') -ErrorAction SilentlyContinue
     $relayTask=$null
-    if ($RetireRelay) { $relayTask=Get-ScheduledTask -TaskName ($Identity.taskName + '-Relay') -ErrorAction SilentlyContinue }
+    $lifetimeTask=$null
+    if ($RetireRelay) {
+        $relayTask=Get-ScheduledTask -TaskName ($Identity.taskName + '-Relay') -ErrorAction SilentlyContinue
+        $lifetimeTask=Get-ScheduledTask -TaskName $Identity.taskName -ErrorAction SilentlyContinue
+    }
     if (-not (Test-Path -LiteralPath $Identity.directory)) {
-        if ($task -or $relayTask) { throw 'Windows task exists without its owner manifest; refusing to modify it' }
+        if ($task -or $relayTask -or $lifetimeTask) { throw 'Windows task exists without its owner manifest; refusing to modify it' }
         return [pscustomobject]@{scope='wsl-startup';state='unmanaged';identity=$Identity;relayRetirement='unmanaged'}
     }
     $null=Assert-ODSWslManifest $Identity
     if ($task) { $null=Assert-ODSWslStartupTask $Identity }
     # Uninstall validates every task it will retire before changing startup intent.
     if ($relayTask) { $null=Assert-ODSWslRelayTask $Identity }
+    if ($RetireRelay) { $lifetimeTask=Get-ODSWslLifetimeForRetirement $Identity }
     $null=Get-ODSWslStartupIntent $Identity
     $lock=$null
     try {
@@ -521,6 +557,7 @@ function Disable-ODSWslStartup($Identity,[switch]$ValidateOnly,[switch]$RetireRe
                 $lock=[IO.File]::Open($path,'Open','ReadWrite','None')
             }
             Assert-ODSWslCommandSettled $Identity -ValidateOnly
+            if ($RetireRelay) { $null=Get-ODSWslLifetimeForRetirement $Identity }
             return [pscustomobject]@{scope='wsl-startup';state='validated';identity=$Identity;relayRetirement=$(if ($RetireRelay) { 'validated' } else { 'not-requested' })}
         }
         Set-ODSWslStartupIntent $Identity $false
@@ -529,8 +566,15 @@ function Disable-ODSWslStartup($Identity,[switch]$ValidateOnly,[switch]$RetireRe
         $lock=Open-ODSWslCommandLock $Identity
         Assert-ODSWslCommandSettled $Identity
         # Ordinary login opt-out leaves manually running services alone. Only
-        # explicit uninstall retirement stops the independently owned relay.
-        if ($RetireRelay) { Stop-ODSWslAgentRelay $Identity }
+        # explicit uninstall retirement stops the independently owned relay
+        # and releases this installation's WSL holder, never the distribution.
+        if ($RetireRelay) {
+            # A start holding command.lock first may have registered a holder
+            # after the precheck. Only the settled, locked state decides stop.
+            $lifetimeTask=Get-ODSWslLifetimeForRetirement $Identity
+            Stop-ODSWslAgentRelay $Identity
+            if ($lifetimeTask) { $null=Stop-ODSWslLifetime $Identity }
+        }
         [pscustomobject]@{scope='wsl-startup';state='disabled';identity=$Identity;relayRetirement=$(if ($RetireRelay) { 'stopped' } else { 'not-requested' })}
     } finally { if ($lock) { $lock.Dispose() } }
 }
@@ -986,13 +1030,17 @@ function Invoke-ODSWslStack($Identity,[string]$Action) {
     $units=@($plan.nativeUnits)
     if ($Action -eq 'stop') {
         foreach ($unit in $units) { Invoke-ODSWslNativeUnit $Identity 'stop' $unit }
+    } else {
+        # The native ingress/preview units own the WSL socket target mounts.
+        # Start them before Docker Desktop recreates Edge's bind views. A
+        # stopped stack otherwise gives Compose a plain/stale /pixel-runtime.
+        [Array]::Reverse($units)
+        foreach ($unit in $units) { Invoke-ODSWslNativeUnit $Identity 'start' $unit }
     }
     # Compose always executes as the ordinary Linux owner, never as root.
     Invoke-ODSWslCommand $Identity @('python3',$program,"compose-$Action",$Identity.installRoot)
     if ($Action -eq 'start') {
         if ($plan.hostAgentRestart -or ($agentAddress -and $agentAddress.changed)) { Invoke-ODSWslNativeUnit $Identity 'restart' 'ods-host-agent.service' }
-        [Array]::Reverse($units)
-        foreach ($unit in $units) { Invoke-ODSWslNativeUnit $Identity 'start' $unit }
     }
 }
 

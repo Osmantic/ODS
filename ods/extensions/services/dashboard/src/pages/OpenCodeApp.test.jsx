@@ -156,7 +156,7 @@ describe('OpenCodeApp', () => {
     routes['GET /api/apps/opencode'] = () => response(200, app('stopped', { portInUse: true }))
     render(<OpenCodeApp />)
 
-    expect(await screen.findByText(/port 3003 is answering without verified managed health/)).toBeInTheDocument()
+    expect(await screen.findByText(/port 3003 is occupied without verified managed health/)).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /Start OpenCode/ })).toBeDisabled()
   })
 

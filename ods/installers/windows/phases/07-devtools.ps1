@@ -2,12 +2,13 @@
 # ODS Windows Installer -- Phase 07: Developer Tools
 # ============================================================================
 # Part of: installers/windows/phases/
-# Purpose: Install OpenCode (AI coding IDE), Claude Code CLI, and Codex CLI.
+# Purpose: Optionally install OpenCode, Claude Code CLI, and Codex CLI.
 #          Configures OpenCode to point at the local llama-server and creates
 #          a manual launcher instead of auto-starting it at login.
 #
 # Reads:
 #   $dryRun, $cloudMode         -- from orchestrator context
+#   $enableDevTools             -- explicit choice or retained ODS selection
 #   $installDir                 -- from orchestrator context
 #   $tierConfig                 -- from phase 02 (LlmModel, MaxContext, GgufFile)
 #   $script:OPENCODE_*          -- from lib/constants.ps1
@@ -24,17 +25,22 @@
 Write-Phase -Phase 7 -Total 13 -Name "DEVELOPER TOOLS" -Estimate "~2-5 minutes"
 
 if ($dryRun) {
-    Write-AI "[DRY RUN] Would install OpenCode v$($script:OPENCODE_VERSION) to $($script:OPENCODE_EXE)"
-    Write-AI "[DRY RUN] Would configure OpenCode for local llama-server (model: $($tierConfig.LlmModel))"
-    Write-AI "[DRY RUN] Would register and start $($script:OPENCODE_TASK_NAME) for the OpenCode web app"
-    if (-not $cloudMode) {
-        Write-AI "[DRY RUN] Would check for Node.js and install Claude Code + Codex CLI via npm"
+    if ($enableDevTools) {
+        Write-AI "[DRY RUN] Would install OpenCode v$($script:OPENCODE_VERSION) to $($script:OPENCODE_EXE)"
+        Write-AI "[DRY RUN] Would configure OpenCode for local llama-server (model: $($tierConfig.LlmModel))"
+        Write-AI "[DRY RUN] Would register and start $($script:OPENCODE_TASK_NAME) for the OpenCode web app"
+        if (-not $cloudMode) {
+            Write-AI "[DRY RUN] Would check for Node.js and install Claude Code + Codex CLI via npm"
+        }
+    } else {
+        Write-AI "[DRY RUN] Would skip OpenCode, Node.js, Claude Code, and Codex CLI"
     }
     Write-AI "[DRY RUN] Would start ODS Host Agent on port $($script:ODS_AGENT_PORT)"
     Write-AI "[DRY RUN] Would register $($script:ODS_AGENT_TASK_NAME) scheduled task for login persistence"
     return
 }
 
+if ($enableDevTools) {
 # ── OpenCode ──────────────────────────────────────────────────────────────────
 # Config helpers are sourced from installers/windows/lib/opencode-config.ps1.
 Write-AI "Setting up OpenCode AI coding assistant..."
@@ -116,6 +122,14 @@ exit `$LASTEXITCODE
 
     $_ocTaskArgument = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$($_ocLauncherPath)`""
     $_ocStarted = $false
+    # Selection was checked before the installer phases, but a same-name
+    # task may have changed while earlier phases ran. Check again before
+    # stopping or replacing it.
+    $_existingOpenCodeTask = Get-ODSWindowsOpenCodeTask -TaskName $script:OPENCODE_TASK_NAME
+    if ($_existingOpenCodeTask -and -not (Test-ODSWindowsOpenCodeTaskOwned `
+        -Task $_existingOpenCodeTask -ExpectedLauncher $_ocLauncherPath)) {
+        throw 'A non-ODS scheduled task now uses the OpenCode task name.'
+    }
     try {
         try { Stop-ScheduledTask -TaskName $script:OPENCODE_TASK_NAME -ErrorAction SilentlyContinue } catch { }
         try { Unregister-ScheduledTask -TaskName $script:OPENCODE_TASK_NAME -Confirm:$false -ErrorAction SilentlyContinue } catch { }
@@ -247,6 +261,9 @@ if ($_npmCmd) {
     } else {
         Write-AISuccess "Codex CLI already installed"
     }
+}
+} else {
+    Write-AI "Developer tools not selected; preserving existing binaries."
 }
 
 function Test-ODSHostAgentPythonCandidate {

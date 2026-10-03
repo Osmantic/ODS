@@ -154,6 +154,31 @@ try {
     $ownedProcess.Refresh();Check $ownedProcess.HasExited 'exact owned process handle is released'
     $ownedProcess.Dispose();$ownedProcess=$null
 
+    # A controller can exit while the slower CIM lookup is in flight. Model
+    # that boundary without replacing the actual identity reader.
+    & {
+        $script:identityRace='live'
+        function Get-Process { param($Id,$ErrorAction)
+            $script:identityProcess=[pscustomobject]@{Handle=1;StartTime=[datetime]'2026-01-01T00:00:00Z';HasExited=$false;Disposed=$false}
+            $script:identityProcess|Add-Member ScriptMethod Dispose { $this.Disposed=$true }
+            if ($script:identityRace -eq 'exited-before-read') { $script:identityProcess.StartTime=$null; $script:identityProcess.HasExited=$true }
+            $script:identityProcess
+        }
+        function Get-CimInstance { param($ClassName,$Filter)
+            if ($script:identityRace -eq 'exited-during-cim') { $script:identityProcess.StartTime=$null; $script:identityProcess.HasExited=$true }
+            [pscustomobject]@{ExecutablePath='fixture.exe';CommandLine='fixture'}
+        }
+        foreach ($scenario in @('exited-before-read','exited-during-cim')) {
+            $script:identityRace=$scenario
+            Check ($null -eq (Get-ODSProcessIdentity 123)) "process exit $scenario yields no identity instead of a shutdown error"
+            Check $script:identityProcess.Disposed 'identity reader releases the process handle after exit'
+        }
+        $script:identityRace='live'
+        $record=Get-ODSProcessIdentity 123
+        Check ($record.pid -eq 123 -and $record.commandLine -ceq 'fixture' -and $record.startTicks -ceq ([datetime]'2026-01-01T00:00:00Z').ToUniversalTime().Ticks.ToString()) 'live process retains its captured start time and command identity'
+        Check $script:identityProcess.Disposed 'identity reader releases the process handle after success'
+    }
+
     $script:running=@('docker-desktop','Unrelated-Ubuntu')
     $script:listCalls=0
     function Get-ODSWslRunningDistributions { $script:listCalls++; $script:running }
@@ -262,7 +287,13 @@ try {
     Check (@($script:transport|Where-Object {$_.distro -cne $a.distro}).Count -eq 0) 'every command remains tied to the bound distribution'
     $script:transport=@();$script:plan.action='start';$script:unitState='active'
     $null=Invoke-ODSWslStack $a start
-    Check ($script:transport[1].arguments[2] -eq 'compose-start' -and -not $script:transport[1].asRoot) 'Compose starts before native services as ordinary owner'
+    $rootCalls=@($script:transport|Where-Object asRoot)
+    Check (($rootCalls|ForEach-Object {$_.arguments[2]}) -join ',' -ceq (@($script:plan.nativeUnits)[($script:plan.nativeUnits.Count-1)..0] -join ',')) 'native start uses the fixed reverse order'
+    Check ($script:transport[-1].arguments[2] -eq 'compose-start' -and -not $script:transport[-1].asRoot) 'Compose starts after native sockets as ordinary owner'
+    $script:transport=@();$script:nativeFail=$true
+    Reject { Invoke-ODSWslStack $a start } 'native start failure is propagated'
+    Check (@($script:transport|Where-Object {$_.arguments[2] -ceq 'compose-start'}).Count -eq 0) 'native socket failure prevents Compose start'
+    $script:nativeFail=$false
     $script:transport=@();$script:plan=$complete;$script:unitState='inactive'
     $null=Invoke-ODSWslStack $a stop
     $rootCalls=@($script:transport|Where-Object asRoot)
@@ -277,16 +308,17 @@ try {
 
     $script:nativeFail=$false;$script:unitState='active';$script:plan=$managedPlan;$script:transport=@()
     $null=Invoke-ODSWslStack $a start
-    Check ($script:transport[1].arguments[2] -ceq 'compose-start' -and -not $script:transport[1].asRoot -and
-        ($script:transport[2].arguments -join ' ') -ceq '/usr/bin/systemctl restart ods-host-agent.service' -and $script:transport[2].asRoot) 'owned Compose completes before the fixed root host agent restart'
-    Check (($script:transport[3].arguments -join ' ') -ceq '/usr/bin/systemctl show ods-host-agent.service --property=ActiveState --value' -and
-        -not $script:transport[3].asRoot -and $script:transport[4].arguments[1] -ceq 'start') 'host agent active state is confirmed as owner before any Pixel unit starts'
+    $composeIndex=1+2*$managedPlan.nativeUnits.Count
+    Check ($script:transport[$composeIndex].arguments[2] -ceq 'compose-start' -and -not $script:transport[$composeIndex].asRoot -and
+        ($script:transport[$composeIndex+1].arguments -join ' ') -ceq '/usr/bin/systemctl restart ods-host-agent.service' -and $script:transport[$composeIndex+1].asRoot) 'native sockets precede owner Compose and fixed host agent restart'
+    Check (($script:transport[$composeIndex+2].arguments -join ' ') -ceq '/usr/bin/systemctl show ods-host-agent.service --property=ActiveState --value' -and
+        -not $script:transport[$composeIndex+2].asRoot) 'host agent active state is confirmed after Compose'
     foreach($failure in @('compose','restart','inactive')){
         $script:transport=@();$script:composeFail=$failure -eq 'compose';$script:agentFail=$failure -eq 'restart'
         $script:agentState=if($failure -eq 'inactive'){'inactive'}else{'active'}
         Reject {Invoke-ODSWslStack $a start} "$failure failure propagates from managed startup"
-        Check (@($script:transport|Where-Object {$_.asRoot -and $_.arguments[1] -ceq 'start'}).Count -eq 0) "$failure failure prevents Pixel units starting"
-        if($failure -eq 'compose'){Check (@($script:transport|Where-Object asRoot).Count -eq 0) 'failed Compose performs no root mutation'}
+        Check (@($script:transport|Where-Object {$_.asRoot -and $_.arguments[1] -ceq 'start'}).Count -eq $managedPlan.nativeUnits.Count) "$failure leaves native socket units available for a safe retry"
+        if($failure -eq 'compose'){Check (@($script:transport|Where-Object {$_.arguments[2] -ceq 'ods-host-agent.service'}).Count -eq 0) 'failed Compose prevents host agent restart'}
     }
     $script:composeFail=$false;$script:agentFail=$false;$script:agentState='active'
     $script:plan.hostAgentRestart=$false;$script:transport=@()
@@ -296,7 +328,7 @@ try {
     function Start-ODSWslAgentRelay { param($Identity); $script:transport+=[pscustomobject]@{distro=$Identity.distro;arguments=@('relay');asRoot=$false} }
     $script:transport=@()
     $null=Invoke-ODSWslStack $a start
-    Check ($script:transport[1].arguments[0] -ceq 'relay' -and $script:transport[2].arguments[2] -ceq 'compose-start') 'managed relay starts before Compose'
+    Check ($script:transport[1].arguments[0] -ceq 'relay' -and $script:transport[2+2*$managedPlan.nativeUnits.Count].arguments[2] -ceq 'compose-start') 'managed relay and native sockets start before Compose'
     Check (@($script:transport|Where-Object {$_.asRoot -and $_.arguments[2] -ceq 'ods-host-agent.service'}).Count -eq 1) 'changed WSL address restarts the host agent once'
     function Update-ODSWslAgentAddress { param($Identity); [pscustomobject]@{mode='unmanaged';changed=$false} }
     $script:plan.action='stop';$script:unitState='inactive';$script:transport=@()

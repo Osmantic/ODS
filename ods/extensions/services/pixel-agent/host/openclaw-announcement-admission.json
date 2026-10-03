@@ -1,0 +1,20 @@
+{
+  "version": "2026.6.33",
+  "sourceSha256": "12c3a810f03f21537813949b5039aac3823cbc75d603539d85ac6dd8281822ce",
+  "patchedSha256": "58e527d6749ce0ae0d3d8b0d8718c072fb8b7bc9525b0fe7abf8188ae1f673d4",
+  "previousReplacements": {},
+  "replacements": [
+    [
+      "async function sendSubagentAnnounceDirectly(params) {",
+      "// ODS owner delegation relies on the native announcement run's exact spawn\n// provenance and admission hook. Steering an active owner bypasses that hook\n// and can inject a cancelled child's completion into an unrelated followup.\nfunction requiresOdsAnnouncementAdmission(params) {\n\tconst prefix = `agent:${process.env.PIXEL_AGENT_ID ?? \"pixel\"}:openai-user:`;\n\tconst target = params.targetRequesterSessionKey ?? params.requesterSessionKey;\n\treturn params.sourceTool === \"subagent_announce\" && typeof target === \"string\" &&\n\t\ttarget.startsWith(prefix) && /^ods-[a-f0-9]{64}$/.test(target.slice(prefix.length));\n}\nasync function sendSubagentAnnounceDirectly(params) {"
+    ],
+    [
+      "if (params.expectsCompletionMessage && requesterActivity.sessionId && requesterActivity.isActive) {",
+      "if (!requiresOdsAnnouncementAdmission(params) && params.expectsCompletionMessage && requesterActivity.sessionId && requesterActivity.isActive) {"
+    ],
+    [
+      "steer: async () => await maybeSteerSubagentAnnounce({",
+      "steer: async () => requiresOdsAnnouncementAdmission(params) ? { status: \"none\" } : await maybeSteerSubagentAnnounce({"
+    ]
+  ]
+}

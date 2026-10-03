@@ -24,6 +24,7 @@ import logging
 import math
 import os
 import platform
+import plistlib
 import re
 import secrets
 import shlex
@@ -250,8 +251,7 @@ WINDOWS_WHISPER_CUDA_MIN_DRIVER_MAJOR = 575
 # Always-on services defined in docker-compose.base.yml — never stoppable via API.
 # Distinct from CORE_SERVICE_IDS (which is the allowlist of known service IDs).
 ALWAYS_ON_SERVICES: frozenset = frozenset({
-    "llama-server", "model-router", "remote-provider-egress", "remote-provider-ssh-tunnel",
-    "open-webui", "dashboard", "dashboard-api",
+    "llama-server", "model-router", "open-webui", "dashboard", "dashboard-api",
 })
 USER_EXTENSIONS_DIR: Path = Path()
 EXTENSIONS_DIR: Path = Path()
@@ -4965,6 +4965,51 @@ def _write_remote_provider_route_state(
     )
 
 
+def _write_selected_remote_provider_route_state(
+    plan: dict,
+    *,
+    probe_receipt: dict | None = None,
+    resume: dict | None = None,
+) -> None:
+    """Publish an enabled route with its required Library markers selected.
+
+    The selector holds this same cross-process lock through stop and marker
+    rename. Checking markers and publishing route state inside it makes either
+    operation win cleanly; later activation can proceed without the lock.
+    """
+    route = plan.get("route") if isinstance(plan.get("route"), dict) else {}
+    transport = route.get("transport")
+    if route.get("enabled") is not True or transport not in {"direct", "ssh"}:
+        raise RuntimeError("Invalid enabled remote-provider route")
+    required = ["remote-provider-egress"]
+    if transport == "ssh":
+        required.append("remote-provider-ssh-tunnel")
+    selector = _load_extension_selector()
+    try:
+        with selector._selection_lock(INSTALL_DIR, 15.0):
+            for service_id in required:
+                directory = INSTALL_DIR / "extensions" / "services" / service_id
+                try:
+                    directory_stat = directory.lstat()
+                except OSError as exc:
+                    raise RuntimeError(
+                        f"Enable {service_id} in Extensions Library before configuring this remote route"
+                    ) from exc
+                if not stat_mod.S_ISDIR(directory_stat.st_mode):
+                    raise RuntimeError(f"Invalid remote-provider service directory: {service_id}")
+                if not selector._selection_enabled(directory):
+                    raise RuntimeError(
+                        f"Enable {service_id} in Extensions Library before configuring this remote route"
+                    )
+                if (directory / "compose.yaml").lstat().st_nlink != 1:
+                    raise RuntimeError(f"Invalid remote-provider Compose marker: {service_id}")
+            _write_remote_provider_route_state(
+                plan, probe_receipt=probe_receipt, resume=resume,
+            )
+    except selector.SelectionError as exc:
+        raise RuntimeError(str(exc)) from exc
+
+
 def _write_remote_provider_secret(ref: str, value: str) -> None:
     uid, gid = _remote_provider_secret_owner()
     mode = 0o640 if ref in _REMOTE_PROVIDER_CONTAINER_SECRET_REFS else 0o600
@@ -5217,7 +5262,7 @@ def _apply_remote_provider_lifecycle_operation(payload: dict, plan: dict) -> dic
                 mutation_started = True
             _write_remote_provider_profile(route)
             mutation_started = True
-            _write_remote_provider_route_state(plan, probe_receipt=probe_receipt)
+            _write_selected_remote_provider_route_state(plan, probe_receipt=probe_receipt)
             mutation_started = True
             if ssh_configure:
                 result["staged"] = True
@@ -5231,7 +5276,7 @@ def _apply_remote_provider_lifecycle_operation(payload: dict, plan: dict) -> dic
                     result["activation"] = _activate_remote_provider_route(route)
                 result["applied"] = True
         elif action == "enable":
-            _write_remote_provider_route_state(
+            _write_selected_remote_provider_route_state(
                 plan,
                 probe_receipt=probe_receipt,
                 resume=resume,
@@ -6134,6 +6179,7 @@ def _apply_extension_selection(
                 INSTALL_DIR, preset_path, core_services=set(ALWAYS_ON_SERVICES),
                 compose_flags=shlex.join(flags), strict=True,
                 expected_sha256=expected_sha256,
+                data_dir=DATA_DIR,
             )
         except selector.SelectionError as exc:
             message = str(exc)
@@ -6253,11 +6299,35 @@ def _run_selected_extension_up(
                 ) from exc
             if not stat_mod.S_ISREG(selected_stat.st_mode):
                 raise RuntimeError(f"Invalid selected Compose file: {service_id}")
-            return subprocess.run(
+            deadline = time.monotonic() + SUBPROCESS_TIMEOUT_START
+            result = subprocess.run(
                 ["docker", "compose", *flags, "up", "-d", service_id],
                 cwd=str(INSTALL_DIR), capture_output=True, text=True,
                 timeout=SUBPROCESS_TIMEOUT_START, env=env,
             )
+            if (result.returncode != 0 and platform.system() == "Linux"
+                    and "microsoft" in platform.release().lower()):
+                helper = INSTALL_DIR / "scripts/wsl-bind-recovery.py"
+                remaining = deadline - time.monotonic()
+                if helper.is_file() and not helper.is_symlink() and remaining > 5:
+                    # Keep selection custody through the one bounded recovery.
+                    # A timeout never enters this path. The helper requires a
+                    # stopped, owned container with positive stale-bind proof,
+                    # preserves volumes, and verifies its recreated bind view.
+                    recovered = subprocess.run(
+                        [sys.executable, str(helper), "--install-dir", str(INSTALL_DIR),
+                         "--service", service_id, "--repair-stopped", "--", *flags],
+                        cwd=str(INSTALL_DIR), capture_output=True, text=True,
+                        timeout=min(125, remaining), env=env,
+                    )
+                    if recovered.returncode == 0:
+                        return recovered
+                    if recovered.returncode != 3:
+                        return subprocess.CompletedProcess(
+                            result.args, result.returncode, result.stdout,
+                            (recovered.stderr or "WSL bind recovery failed") + "\n" + result.stderr,
+                        )
+            return result
     except selector.SelectionError as exc:
         raise RuntimeError(str(exc)) from exc
 
@@ -6350,11 +6420,53 @@ def _webui_selection_state() -> dict:
     env_path = INSTALL_DIR / ".env"
     if not env_path.is_file() or env_path.is_symlink():
         raise RuntimeError("The installed environment is unavailable")
-    selected = load_env(env_path).get("ENABLE_OPEN_WEBUI", "true").strip().lower() == "true"
+    installed = load_env(env_path)
+    selected = installed.get("ENABLE_OPEN_WEBUI", "true").strip().lower() == "true"
     return {
         "enabled": selected,
         "supported": platform.system() in {"Linux", "Darwin"},
+        "disable_supported": _webui_disable_eligible(installed),
     }
+
+
+def _webui_disable_eligible(installed: dict) -> bool:
+    """Keep WebUI when it is the selected chat surface or a dependency."""
+    return (
+        platform.system() == "Linux"
+        and installed.get("PIXEL_AGENT_MODE", "").strip().lower() == "pixel"
+        and installed.get("ODS_GATEWAY_ONLY", "false").strip().lower() != "true"
+        and installed.get("ENABLE_RAG", "false").strip().lower() != "true"
+        and installed.get("ENABLE_ODS_PROXY", "false").strip().lower() != "true"
+        and not _proxy_compose_enabled()
+        and not any(
+            (root / service / "compose.yaml").is_file()
+            for root in (EXTENSIONS_DIR, USER_EXTENSIONS_DIR)
+            for service in ("qdrant", "embeddings")
+        )
+    )
+
+
+def _webui_portal_ready() -> bool:
+    """Require the installed Portal path before stopping an alternate chat UI."""
+    try:
+        if not _capture_container_state("ods-dashboard").get("running"):
+            return False
+        if not _capture_container_state("ods-pixel-edge").get("running"):
+            return False
+        units = subprocess.run(
+            ["systemctl", "is-active", "--quiet", "openclaw-gateway.service", "pixel-ingress.service"],
+            capture_output=True, timeout=10,
+        )
+        if units.returncode != 0:
+            return False
+        ingress = subprocess.run(
+            ["curl", "--fail", "--silent", "--show-error", "--max-time", "5",
+             "--unix-socket", "/run/ods-pixel/pixel-ingress.sock", "http://localhost/health"],
+            capture_output=True, timeout=10,
+        )
+        return ingress.returncode == 0
+    except (OSError, RuntimeError, subprocess.SubprocessError):
+        return False
 
 
 def _enable_webui_selection() -> tuple[int, dict]:
@@ -6468,6 +6580,143 @@ def _enable_webui_selection() -> tuple[int, dict]:
         service_lock.release()
 
 
+def _disable_webui_selection() -> tuple[int, dict]:
+    """Serialize WebUI stop with CLI and Library extension selection."""
+    if platform.system() != "Linux":
+        return 501, {"code": "unsupported_platform", "error": "WebUI disable is unavailable on this platform"}
+    service_lock = _service_locks["open-webui"]
+    if not service_lock.acquire(blocking=False):
+        return 409, {"code": "operation_in_progress", "error": "Open WebUI is being changed"}
+    if not _model_activate_lock.acquire(blocking=False):
+        service_lock.release()
+        return 409, {"code": "configuration_in_use", "error": "ODS configuration is being changed"}
+    try:
+        # Order is service -> model configuration -> cross-process extension
+        # graph. Hold the graph lock through stop, selection write, and rollback.
+        selector = _load_extension_selector()
+        try:
+            with selector._selection_lock(INSTALL_DIR, 15.0):
+                return _disable_webui_selection_locked()
+        except selector.SelectionError:
+            return 409, {"code": "extension_selection_busy", "error": "Extension selection is in progress; retry shortly"}
+    except (OSError, RuntimeError):
+        return 503, {"code": "selection_unavailable", "error": "Extension selection could not be verified"}
+    finally:
+        _model_activate_lock.release()
+        service_lock.release()
+
+
+def _disable_webui_selection_locked() -> tuple[int, dict]:
+    """Stop optional WebUI, retaining data and the bound .env inode."""
+
+    env_path = INSTALL_DIR / ".env"
+    original = None
+    original_inode = None
+    flags = None
+    compose_env = None
+    stopped = False
+    stop_attempted = False
+    try:
+        if not env_path.is_file() or env_path.is_symlink():
+            return 409, {"code": "missing_install", "error": "The installed environment is unavailable"}
+        original = env_path.read_bytes()
+        original_inode = env_path.stat().st_ino
+        installed = load_env(env_path)
+        if installed.get("ENABLE_OPEN_WEBUI", "true").strip().lower() != "true":
+            if _capture_container_state("ods-webui").get("running"):
+                return 503, {"code": "reconciliation_required", "error": "Open WebUI is running despite its disabled selection"}
+            return 200, {"enabled": False, "action": "already_disabled"}
+        if not _webui_disable_eligible(installed):
+            return 409, {"code": "webui_required", "error": "Open WebUI is required by this installation or a selected feature"}
+        if not _webui_portal_ready():
+            return 409, {"code": "portal_unavailable", "error": "Portal must be ready before Open WebUI can be disabled"}
+        if not _capture_container_state("ods-webui").get("running"):
+            return 503, {"code": "selected_but_stopped", "error": "Open WebUI is selected but not running; inspect its service state"}
+
+        flags = resolve_compose_flags()
+        compose_env = os.environ.copy()
+        compose_env.pop("COMPOSE_PROFILES", None)
+        for selector in (
+            "ENABLE_OPEN_WEBUI", "ODS_GATEWAY_ONLY", "EXTERNAL_LLM_URL",
+            "LEMONADE_EXTERNAL", "AMD_INFERENCE_RUNTIME",
+            "AMD_INFERENCE_MANAGED", "WHISPER_ACCELERATION",
+            "ODS_SKIP_GPU_OVERLAYS", "BIND_ADDRESS", "WEBUI_AUTH", "ENABLE_ODS_PROXY",
+        ):
+            compose_env.pop(selector, None)
+            if selector in installed:
+                compose_env[selector] = installed[selector]
+        compose_env["ENABLE_OPEN_WEBUI"] = "true"
+
+        def compose(*arguments: str):
+            return subprocess.run(
+                ["docker", "compose", *flags, *arguments], cwd=str(INSTALL_DIR),
+                env=compose_env, capture_output=True, text=True,
+                timeout=SUBPROCESS_TIMEOUT_STOP if arguments[0] == "stop" else SUBPROCESS_TIMEOUT_START,
+            )
+
+        configured = compose("config", "--services")
+        if configured.returncode != 0 or "open-webui" not in configured.stdout.splitlines():
+            raise RuntimeError("The selected Compose stack does not expose Open WebUI")
+        recipe = compose("config", "--format", "json")
+        if recipe.returncode != 0:
+            raise RuntimeError("The selected Compose dependencies could not be inspected")
+        parsed_recipe = json.loads(recipe.stdout)
+        services = parsed_recipe.get("services") if isinstance(parsed_recipe, dict) else None
+        if not isinstance(services, dict):
+            raise RuntimeError("The selected Compose dependencies are invalid")
+        for name, service in services.items():
+            if name == "open-webui":
+                continue
+            if not isinstance(service, dict):
+                raise RuntimeError("The selected Compose service is invalid")
+            depends_on = service.get("depends_on", {})
+            if not isinstance(depends_on, (dict, list)):
+                raise RuntimeError("The selected Compose dependencies are invalid")
+            if "open-webui" in depends_on:
+                return 409, {"code": "webui_required", "error": "A selected service depends on Open WebUI"}
+        stop_attempted = True
+        stop = compose("stop", "open-webui")
+        stopped = not _capture_container_state("ods-webui").get("running")
+        if stop.returncode != 0 or not stopped:
+            raise RuntimeError("Could not confirm that Open WebUI stopped")
+
+        updated = _upsert_env_text(original.decode("utf-8"), "ENABLE_OPEN_WEBUI", "false")
+        _write_bound_env_text(env_path, updated)
+        invalidate_compose_cache()
+        if env_path.stat().st_ino != original_inode or env_path.read_bytes() != updated.encode("utf-8"):
+            raise RuntimeError("Open WebUI selection could not be verified")
+        if _capture_container_state("ods-webui").get("running"):
+            raise RuntimeError("Open WebUI restarted while disabling it")
+        return 200, {"enabled": False, "action": "disabled"}
+    except (OSError, UnicodeError, ValueError, RuntimeError, subprocess.SubprocessError) as exc:
+        logger.warning("Open WebUI disable failed: %s", type(exc).__name__)
+        if stop_attempted and not stopped:
+            try:
+                stopped = not _capture_container_state("ods-webui").get("running")
+            except (OSError, RuntimeError, subprocess.SubprocessError):
+                return 503, {"code": "reconciliation_required", "error": "Open WebUI stop outcome could not be verified"}
+        if stopped and original is not None:
+            try:
+                _write_bound_env_bytes(env_path, original)
+                invalidate_compose_cache()
+                if env_path.read_bytes() != original or env_path.stat().st_ino != original_inode:
+                    raise RuntimeError("The prior Open WebUI selection was not restored")
+            except (OSError, RuntimeError):
+                return 503, {"code": "reconciliation_required", "error": "Open WebUI stopped and its prior selection could not be restored"}
+            try:
+                if flags is None or compose_env is None:
+                    raise RuntimeError("The selected Compose stack is unavailable")
+                resumed = subprocess.run(
+                    ["docker", "compose", *flags, "up", "-d", "--no-deps", "open-webui"],
+                    cwd=str(INSTALL_DIR), env=compose_env, capture_output=True, text=True,
+                    timeout=SUBPROCESS_TIMEOUT_START,
+                )
+                if resumed.returncode != 0:
+                    raise RuntimeError("Open WebUI could not be restarted")
+                _wait_for_container_health("ods-webui", attempts=75)
+            except (OSError, RuntimeError, subprocess.SubprocessError):
+                return 503, {"code": "reconciliation_required", "error": "Open WebUI selection was restored but its service needs inspection"}
+        return 502, {"code": "disable_failed", "error": "Open WebUI could not be disabled; its prior selection was restored", "enabled": True}
 def _proxy_compose_enabled() -> bool:
     """Return whether the current compose stack includes ods-proxy."""
     return any(
@@ -7153,6 +7402,51 @@ def _windows_llm_status() -> dict | None:
         return payload
 
 
+def _owned_library_builtins_from_inspect(rows: list[dict], install_dir: Path) -> list[str]:
+    """Prove prior selection from exact installed Compose container labels.
+
+    Container names, images and volumes are deliberately ignored. A stopped
+    container retains these labels after its Compose fragment is disabled.
+    This is read-only evidence for the Library; it never adopts a container.
+    """
+    root = install_dir.resolve()
+    base_files = {
+        os.path.normcase(os.path.realpath(root / name))
+        for name in ("docker-compose.base.yml", "docker-compose.yml")
+    }
+    allowed = frozenset({"n8n", "perplexica", "searxng"})
+    proven: set[str] = set()
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        config = row.get("Config")
+        labels = config.get("Labels") if isinstance(config, dict) else None
+        if not isinstance(labels, dict):
+            continue
+        service = labels.get("com.docker.compose.service")
+        project = labels.get("com.docker.compose.project")
+        working_dir = labels.get("com.docker.compose.project.working_dir")
+        config_files = labels.get("com.docker.compose.project.config_files")
+        if (not isinstance(service, str) or service not in allowed
+                or not isinstance(project, str)
+                or re.fullmatch(r"[a-z0-9][a-z0-9_-]*", project) is None
+                or not isinstance(working_dir, str) or not os.path.isabs(working_dir)
+                or not isinstance(config_files, str)):
+            continue
+        if os.path.normcase(os.path.realpath(working_dir)) != os.path.normcase(str(root)):
+            continue
+        files = {
+            os.path.normcase(os.path.realpath(value))
+            for value in config_files.split(",") if os.path.isabs(value)
+        }
+        expected = os.path.normcase(os.path.realpath(
+            root / "extensions" / "services" / service / "compose.yaml"
+        ))
+        if files & base_files and expected in files:
+            proven.add(service)
+    return sorted(proven)
+
+
 def _docker_service_health_snapshot() -> dict:
     """Return a cached, read-only Docker lifecycle and healthcheck snapshot."""
     global _service_health_cache
@@ -7173,6 +7467,7 @@ def _docker_service_health_snapshot() -> dict:
             if name.strip().startswith("ods-") or name.strip() in declared_containers
         ]
         containers: list[dict] = []
+        prior_selected_builtins: list[str] = []
         if names:
             inspect_result = subprocess.run(
                 ["docker", "inspect", *names], capture_output=True, text=True, timeout=12,
@@ -7182,6 +7477,7 @@ def _docker_service_health_snapshot() -> dict:
             inspected = json.loads(inspect_result.stdout)
             if not isinstance(inspected, list):
                 raise ValueError("docker inspect returned non-list JSON")
+            prior_selected_builtins = _owned_library_builtins_from_inspect(inspected, INSTALL_DIR)
             for item in inspected:
                 if not isinstance(item, dict):
                     continue
@@ -7202,6 +7498,7 @@ def _docker_service_health_snapshot() -> dict:
         payload = {
             "schema_version": "ods.host-service-health.v1",
             "containers": containers,
+            "prior_selected_builtins": prior_selected_builtins,
             "sampled_at": _iso_now(),
         }
         _service_health_cache = (time.monotonic(), payload)
@@ -11056,10 +11353,10 @@ class AgentHandler(BaseHTTPRequestHandler):
             body = read_json_body(self)
             if body is None:
                 return
-            if not isinstance(body, dict) or set(body) != {"enabled"} or body["enabled"] is not True:
-                json_response(self, 400, {"code": "invalid_request", "error": "Only enabling Open WebUI is supported"}, no_store=True)
+            if not isinstance(body, dict) or set(body) != {"enabled"} or type(body["enabled"]) is not bool:
+                json_response(self, 400, {"code": "invalid_request", "error": "A boolean Open WebUI selection is required"}, no_store=True)
                 return
-            status, result = _enable_webui_selection()
+            status, result = (_enable_webui_selection() if body["enabled"] else _disable_webui_selection())
             json_response(self, status, result, no_store=True)
             return
         try:
@@ -18048,6 +18345,13 @@ def _opencode_route(env: dict) -> tuple[str, str]:
             raise RuntimeError("LITELLM_KEY is required to update the OpenCode switchboard route")
         return f"http://127.0.0.1:{port}/v1", api_key
 
+    if platform.system() == "Darwin" and str(env.get("ODS_MODE") or "").lower() == "cloud":
+        port = str(env.get("LITELLM_PORT") or "4000")
+        api_key = str(env.get("LITELLM_KEY") or "")
+        if not api_key:
+            raise RuntimeError("LITELLM_KEY is required to update the OpenCode Mac cloud route")
+        return f"http://127.0.0.1:{port}/v1", api_key
+
     if _opencode_external_model(env):
         port = str(env.get("LITELLM_PORT") or "4000")
         api_key = str(env.get("LITELLM_KEY") or "")
@@ -18083,6 +18387,8 @@ def _opencode_model_route(env: dict, model_id: str) -> tuple[str, str, str]:
     provider_id = "llama-server"
     if _normal_switchboard_mode(env) == "enabled":
         return provider_id, "ods/current", "ods/current"
+    if platform.system() == "Darwin" and str(env.get("ODS_MODE") or "").lower() == "cloud":
+        return provider_id, "default", "default"
     external_model = _opencode_external_model(env)
     if external_model:
         return provider_id, external_model, external_model
@@ -18429,7 +18735,7 @@ def _restart_managed_opencode(state: dict | None = None) -> bool:
 # selected OpenCode" from "the installed service stopped", so the dashboard
 # used to show a permanent "Offline" entry on installs that never had it.
 # These helpers report the managed lifecycle explicitly and let the dashboard
-# start an installed service or, on Linux, set up the reviewed release.
+# start an installed service or set up the reviewed release on Linux/macOS.
 # ---------------------------------------------------------------------------
 
 _OPENCODE_LINUX_UNIT = "opencode-web.service"
@@ -18448,13 +18754,167 @@ def _opencode_macos_plist_path() -> Path:
     return Path.home() / "Library" / "LaunchAgents" / f"{_OPENCODE_MACOS_LABEL}.plist"
 
 
+_OPENCODE_MACOS_WRAPPER = (
+    'dir="$1"; shift; rm -rf "$dir" && mkdir -p -m 0700 "$dir" '
+    '&& export BUN_TMPDIR="$dir" && exec "$@"'
+)
+
+
+def _opencode_macos_target() -> str:
+    return f"gui/{os.getuid()}/{_OPENCODE_MACOS_LABEL}"
+
+
+def _opencode_macos_bun_tmpdir() -> Path:
+    return Path.home() / "Library" / "Caches" / "ODS" / "opencode-bun-tmp"
+
+
+def _opencode_macos_arguments(binary: Path) -> list[str]:
+    return [
+        "/bin/sh", "-c", _OPENCODE_MACOS_WRAPPER, "ods-opencode-web",
+        str(_opencode_macos_bun_tmpdir()), str(binary), "web", "--port",
+        str(_opencode_port()), "--hostname", "127.0.0.1",
+    ]
+
+
+def _opencode_macos_plist_binary() -> Path | None:
+    """Recognize only the ODS installer's owner-controlled LaunchAgent."""
+    getuid = getattr(os, "getuid", None)
+    if not callable(getuid):
+        raise RuntimeError("OpenCode LaunchAgent ownership requires a Mac user id")
+    path = _opencode_macos_plist_path()
+    try:
+        parent_meta = path.parent.lstat()
+    except FileNotFoundError:
+        return None
+    if (not stat_mod.S_ISDIR(parent_meta.st_mode) or parent_meta.st_uid != getuid()
+            or stat_mod.S_IMODE(parent_meta.st_mode) & 0o022):
+        raise RuntimeError(f"OpenCode LaunchAgents directory is not owner-safe: {path.parent}")
+    try:
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    except FileNotFoundError:
+        return None
+    try:
+        with os.fdopen(descriptor, "rb") as handle:
+            metadata = os.fstat(handle.fileno())
+            if (not stat_mod.S_ISREG(metadata.st_mode) or metadata.st_uid != getuid()
+                    or stat_mod.S_IMODE(metadata.st_mode) & 0o022):
+                raise RuntimeError(f"OpenCode LaunchAgent is not an owner-safe regular file: {path}")
+            content = handle.read(65537)
+        if len(content) > 65536:
+            raise RuntimeError(f"OpenCode LaunchAgent is unexpectedly large: {path}")
+        plist = plistlib.loads(content)
+    except (OSError, ValueError, plistlib.InvalidFileException) as exc:
+        raise RuntimeError(f"OpenCode LaunchAgent is unreadable: {path}") from exc
+    args = plist.get("ProgramArguments") if isinstance(plist, dict) else None
+    if (not isinstance(plist, dict) or plist.get("Label") != _OPENCODE_MACOS_LABEL
+            or not isinstance(args, list) or len(args) != 11
+            or not isinstance(args[5], str)
+            or not Path(args[5]).is_absolute() or Path(args[5]).name != "opencode"
+            or args != _opencode_macos_arguments(Path(args[5]))):
+        raise RuntimeError(f"OpenCode LaunchAgent does not match the ODS service: {path}")
+    return Path(args[5])
+
+
+def _opencode_macos_loaded_output(binary: Path | None) -> str | None:
+    """Return the loaded ODS job, refusing a label claimed by another job."""
+    result = subprocess.run(
+        ["launchctl", "print", _opencode_macos_target()],
+        capture_output=True, text=True, timeout=15,
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").lower()
+        if "could not find service" in detail or "not found" in detail:
+            return None
+        raise RuntimeError(f"Could not inspect OpenCode LaunchAgent: {detail.strip()[:300]}")
+    lines = [line.strip() for line in (result.stdout or "").splitlines()]
+    try:
+        path_index = lines.index(f"path = {_opencode_macos_plist_path()}")
+        start = lines.index("arguments = {", path_index + 1)
+        end = lines.index("}", start + 1)
+    except ValueError:
+        raise RuntimeError("Loaded OpenCode LaunchAgent arguments could not be verified") from None
+    if (binary is None or "program = /bin/sh" not in lines[path_index + 1:start]
+            or lines[start + 1:end] != _opencode_macos_arguments(binary)):
+        raise RuntimeError("Another loaded LaunchAgent uses the ODS OpenCode label")
+    return result.stdout
+
+
+def _opencode_macos_disabled() -> bool:
+    result = subprocess.run(
+        ["launchctl", "print-disabled", f"gui/{os.getuid()}"],
+        capture_output=True, text=True, timeout=15,
+    )
+    if result.returncode != 0:
+        raise RuntimeError("Could not inspect the OpenCode LaunchAgent disabled state")
+    pattern = re.compile(r'^\s*"' + re.escape(_OPENCODE_MACOS_LABEL)
+                         + r'"\s*=>\s*(enabled|disabled)\s*$')
+    for line in (result.stdout or "").splitlines():
+        match = pattern.match(line)
+        if match:
+            return match.group(1) == "disabled"
+        if _OPENCODE_MACOS_LABEL in line:
+            raise RuntimeError("Could not interpret the OpenCode LaunchAgent disabled state")
+    return False
+
+
+def _render_opencode_macos_plist(binary: Path) -> bytes:
+    """Mirror the initial installer's ODS LaunchAgent without sourcing it."""
+    home = Path.home()
+    path_entries = [str(binary.parent), *os.environ.get("PATH", "").split(":"),
+                    "/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"]
+    launch_path = ":".join(dict.fromkeys(
+        entry for entry in path_entries if entry and Path(entry).is_absolute()
+    ))
+    log = home / "Library" / "Logs" / "ODS" / "opencode-web.log"
+    plist = {
+        "Label": _OPENCODE_MACOS_LABEL,
+        "ProgramArguments": _opencode_macos_arguments(binary),
+        "WorkingDirectory": str(INSTALL_DIR),
+        "EnvironmentVariables": {
+            "HOME": str(home), "PATH": launch_path, "OPENCODE_ENABLE_EXA": "1",
+        },
+        "RunAtLoad": True,
+        "KeepAlive": {"SuccessfulExit": False},
+        "StandardOutPath": str(log),
+        "StandardErrorPath": str(log),
+    }
+    return plistlib.dumps(plist, fmt=plistlib.FMT_XML, sort_keys=False)
+
+
+def _create_opencode_macos_plist(path: Path, content: bytes) -> None:
+    """Atomically create a new LaunchAgent without replacing a raced file."""
+    path.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
+    if _opencode_macos_plist_binary() is not None:
+        raise RuntimeError("OpenCode LaunchAgent appeared during setup; try again")
+    descriptor, raw_staging = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    staging = Path(raw_staging)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        staging.chmod(0o644)
+        try:
+            os.link(staging, path)
+        except FileExistsError as exc:
+            raise RuntimeError("OpenCode LaunchAgent appeared during setup; try again") from exc
+    finally:
+        try:
+            staging.unlink(missing_ok=True)
+        except OSError as exc:
+            logger.warning("Could not remove OpenCode plist staging file %s: %s", staging, exc)
+
+
 def _opencode_service_registered(system: str | None = None) -> bool:
     """Return whether ODS registered its managed OpenCode web service."""
     system = system or platform.system()
     if system == "Linux":
         return _opencode_linux_unit_path().is_file()
     if system == "Darwin":
-        return _opencode_macos_plist_path().is_file()
+        try:
+            return _opencode_macos_plist_binary() is not None
+        except (RuntimeError, OSError):
+            return False
     if system == "Windows":
         # The Windows installer always registers ODSOpenCodeWeb together with
         # the managed binary; start falls back to the binary when the task is
@@ -18467,8 +18927,9 @@ def _probe_opencode_web(port: int, timeout: float = 2.0) -> dict:
     """Probe OpenCode's own health route on host loopback.
 
     ``GET /global/health`` returns ``{"healthy": true, "version": ...}``.
-    Anything else answering on the port is reported as reachable but not
-    healthy, so an unrelated process is never presented as OpenCode.
+    Anything else answering or accepting connections on the port is reported
+    as reachable but not healthy, so an unrelated process is never presented
+    as OpenCode or replaced during setup.
     """
     opener = urllib_request.build_opener(urllib_request.ProxyHandler({}))
     started = time.monotonic()
@@ -18487,7 +18948,15 @@ def _probe_opencode_web(port: int, timeout: float = 2.0) -> dict:
         result["reachable"] = True
         exc.close()
     except (OSError, ValueError):
-        pass
+        if not result["reachable"]:
+            # A listener can hold the port without answering HTTP. Confirm a
+            # failed health request with a short TCP connect before allowing
+            # setup or start to claim this port.
+            try:
+                with socket.create_connection(("127.0.0.1", int(port)), timeout=min(timeout, 0.25)):
+                    result["reachable"] = True
+            except (OSError, ValueError):
+                pass
     result["response_time_ms"] = round((time.monotonic() - started) * 1000, 1)
     return result
 
@@ -18498,12 +18967,9 @@ def _opencode_service_active() -> bool | None:
         if platform.system() == "Darwin":
             # A loaded LaunchAgent is not necessarily running; only a live
             # process means OpenCode is still starting rather than stopped.
-            result = subprocess.run(
-                ["launchctl", "print", f"gui/{os.getuid()}/{_OPENCODE_MACOS_LABEL}"],
-                capture_output=True, text=True, timeout=15,
-            )
-            return result.returncode == 0 and re.search(
-                r"^\s*state = running\s*$", result.stdout or "", re.MULTILINE,
+            output = _opencode_macos_loaded_output(_opencode_macos_plist_binary())
+            return output is not None and re.search(
+                r"^\s*state = running\s*$", output, re.MULTILINE,
             ) is not None
         return bool(_capture_managed_opencode_state().get("active"))
     except (RuntimeError, OSError, subprocess.SubprocessError, ValueError):
@@ -18518,6 +18984,32 @@ def _opencode_setup_in_progress() -> bool:
 def _opencode_setup_issue(env: dict, system: str | None = None) -> str | None:
     """Explain why dashboard setup is unavailable, or return None."""
     system = system or platform.system()
+    if system == "Darwin":
+        if shutil.which("launchctl") is None:
+            return "Dashboard setup needs launchctl in the logged-in Mac account."
+        for required in (
+            INSTALL_DIR / "installers" / "lib" / "opencode-runtime.sh",
+            INSTALL_DIR / "installers" / "lib" / "opencode-release.tsv",
+        ):
+            if not required.is_file():
+                return f"This ODS installation is missing {required.name}; update ODS first."
+        try:
+            binary = _opencode_macos_plist_binary()
+            _opencode_macos_loaded_output(binary)
+            if binary is not None:
+                return "OpenCode is already set up; use Start to run its LaunchAgent."
+            _opencode_macos_disabled()
+        except (RuntimeError, OSError, subprocess.SubprocessError) as exc:
+            return str(exc)
+        try:
+            _opencode_route(env)
+        except RuntimeError as exc:
+            return str(exc)
+        if _normal_switchboard_mode(env) != "enabled" and not (
+            _opencode_external_model(env) or str(env.get("LLM_MODEL") or "").strip()
+        ):
+            return "No active model is configured yet. Activate a model, then set OpenCode up."
+        return None
     if system != "Linux":
         return (
             "OpenCode is set up by the ODS installer on this platform. "
@@ -18574,7 +19066,7 @@ def _opencode_app_status(env: dict | None = None) -> dict:
         state = "starting" if active else "stopped"
     setup_issue = None if state == "running" else _opencode_setup_issue(env, system)
     if port_in_use and setup_issue is None:
-        setup_issue = f"Port {port} is answering, but ODS cannot verify it as the managed OpenCode service. Stop it before setup."
+        setup_issue = f"Port {port} is occupied, but ODS cannot verify it as the managed OpenCode service. Stop it before setup."
     return {
         "state": state,
         "platform": system.lower(),
@@ -18587,7 +19079,7 @@ def _opencode_app_status(env: dict | None = None) -> dict:
         "portInUse": port_in_use,
         "version": probe["version"] if managed_healthy else None,
         "responseTimeMs": probe["response_time_ms"],
-        "startSupported": bool(registered),
+        "startSupported": bool(registered and (system != "Darwin" or active is not None)),
         "setupSupported": setup_issue is None and state != "running",
         "setupIssue": setup_issue,
     }
@@ -18609,16 +19101,61 @@ def _start_managed_opencode() -> None:
             capture_output=True, text=True, timeout=60, env=user_env,
         )
     elif system == "Darwin":
-        target = f"gui/{os.getuid()}/{_OPENCODE_MACOS_LABEL}"
-        loaded = subprocess.run(
-            ["launchctl", "print", target], capture_output=True, text=True, timeout=15,
-        ).returncode == 0
-        command = (
-            ["launchctl", "kickstart", target]
-            if loaded
-            else ["launchctl", "bootstrap", f"gui/{os.getuid()}", str(_opencode_macos_plist_path())]
-        )
-        result = subprocess.run(command, capture_output=True, text=True, timeout=30)
+        binary = _opencode_macos_plist_binary()
+        if binary is None:
+            raise RuntimeError("The ODS OpenCode LaunchAgent is missing")
+        target = _opencode_macos_target()
+        loaded = _opencode_macos_loaded_output(binary) is not None
+        prior_disabled = _opencode_macos_disabled()
+        enable_attempted = False
+        bootstrap_attempted = False
+        try:
+            if prior_disabled:
+                enable_attempted = True
+                step = subprocess.run(
+                    ["launchctl", "enable", target], capture_output=True, text=True, timeout=15,
+                )
+                if step.returncode != 0:
+                    raise RuntimeError(f"Could not enable OpenCode: {(step.stderr or step.stdout or '').strip()[:300]}")
+            command = (
+                ["launchctl", "kickstart", target]
+                if loaded
+                else ["launchctl", "bootstrap", f"gui/{os.getuid()}", str(_opencode_macos_plist_path())]
+            )
+            bootstrap_attempted = not loaded
+            step = subprocess.run(command, capture_output=True, text=True, timeout=30)
+            if step.returncode != 0:
+                raise RuntimeError(f"Could not start OpenCode: {(step.stderr or step.stdout or '').strip()[:300]}")
+            if _opencode_macos_loaded_output(binary) is None:
+                raise RuntimeError("OpenCode LaunchAgent did not remain loaded")
+            _wait_for_opencode_health()
+        except (RuntimeError, OSError, subprocess.SubprocessError) as exc:
+            rollback_errors = []
+            if bootstrap_attempted:
+                try:
+                    if _opencode_macos_loaded_output(binary) is not None:
+                        step = subprocess.run(
+                            ["launchctl", "bootout", target],
+                            capture_output=True, text=True, timeout=30,
+                        )
+                        if step.returncode != 0:
+                            rollback_errors.append(f"bootout: {(step.stderr or step.stdout or '').strip()[:300]}")
+                except (RuntimeError, OSError, subprocess.SubprocessError) as rollback_exc:
+                    rollback_errors.append(f"bootout: {rollback_exc}")
+            if enable_attempted:
+                try:
+                    step = subprocess.run(
+                        ["launchctl", "disable", target],
+                        capture_output=True, text=True, timeout=15,
+                    )
+                    if step.returncode != 0:
+                        rollback_errors.append(f"disable: {(step.stderr or step.stdout or '').strip()[:300]}")
+                except (OSError, subprocess.SubprocessError) as rollback_exc:
+                    rollback_errors.append(f"disable: {rollback_exc}")
+            if rollback_errors:
+                raise RuntimeError(f"{exc}; OpenCode start rollback failed: {'; '.join(rollback_errors)}") from exc
+            raise
+        return
     elif system == "Windows":
         if not _run_windows_opencode_control("start"):
             raise RuntimeError("The ODS OpenCode task could not be started")
@@ -18867,9 +19404,164 @@ def _setup_managed_opencode(env: dict) -> None:
     _write_progress(_OPENCODE_PROGRESS_ID, "started", "OpenCode is ready")
 
 
+def _setup_managed_opencode_macos(env: dict) -> None:
+    """Add OpenCode to a retained Mac install without rerunning Pixel setup."""
+    issue = _opencode_setup_issue(env, "Darwin")
+    if issue:
+        raise RuntimeError(issue)
+    try:
+        context_length = int(str(env.get("MAX_CONTEXT") or env.get("CTX_SIZE") or "65536").strip())
+    except ValueError as exc:
+        raise RuntimeError("MAX_CONTEXT must be a number to configure OpenCode") from exc
+    if context_length < 1024:
+        raise RuntimeError("OpenCode requires a context of at least 1024 tokens")
+    model_id = str(env.get("LLM_MODEL") or "").strip() or "ods/current"
+    _opencode_route(env)
+
+    runtime = INSTALL_DIR / "installers" / "lib" / "opencode-runtime.sh"
+    binary = Path.home() / ".opencode" / "bin" / "opencode"
+    plist_path = _opencode_macos_plist_path()
+    config_snapshot = _capture_opencode_config(assume_installed=True)
+    if config_snapshot is None:
+        raise RuntimeError("OpenCode configuration could not be prepared")
+    plist_snapshot = _snapshot_text_file(plist_path)
+    if plist_snapshot["exists"]:
+        raise RuntimeError("OpenCode LaunchAgent appeared during setup; try again")
+    binary_snapshot = _snapshot_managed_opencode_binary()
+    prior_disabled = _opencode_macos_disabled()
+    plist_written = False
+    config_changed = False
+    enabled = False
+    bootstrap_attempted = False
+    try:
+        _write_progress(_OPENCODE_PROGRESS_ID, "pulling", "Downloading the reviewed OpenCode release")
+        candidate = str(binary) if binary_snapshot["exists"] and os.access(binary, os.X_OK) else ""
+        result = subprocess.run(
+            ["bash", "-c", '. "$1" && ods_install_opencode "$2"',
+             "ods-opencode-setup", str(runtime), candidate],
+            capture_output=True, text=True, timeout=900, env=os.environ.copy(),
+        )
+        lines = [line.strip() for line in (result.stdout or "").splitlines() if line.strip()]
+        if result.returncode != 0 or not lines:
+            detail = (result.stderr or "").strip().splitlines()[-1:] or ["no output"]
+            raise RuntimeError(f"OpenCode download or verification failed: {detail[0][:300]}")
+        if Path(lines[-1]) != binary or not binary.is_file() or not os.access(binary, os.X_OK):
+            raise RuntimeError("OpenCode installer did not return the managed executable")
+
+        (Path.home() / "Library" / "Logs" / "ODS").mkdir(parents=True, exist_ok=True)
+        _opencode_macos_bun_tmpdir().parent.mkdir(parents=True, exist_ok=True)
+        _create_opencode_macos_plist(plist_path, _render_opencode_macos_plist(binary))
+        plist_written = True
+        if _opencode_macos_plist_binary() != binary:
+            raise RuntimeError("OpenCode LaunchAgent could not be verified after writing")
+        _write_progress(_OPENCODE_PROGRESS_ID, "starting", "Connecting OpenCode to the active ODS model")
+        config_changed = True  # A failed write may have changed one compatibility file.
+        _update_opencode_config(env, config_snapshot, model_id, context_length, display_name=model_id)
+        # A prior ODS selection may have left a launchd disabled override.
+        if prior_disabled:
+            enabled = True
+            step = subprocess.run(
+                ["launchctl", "enable", _opencode_macos_target()],
+                capture_output=True, text=True, timeout=15,
+            )
+            if step.returncode != 0:
+                raise RuntimeError(f"Could not enable OpenCode: {(step.stderr or step.stdout or '').strip()[:300]}")
+        # Re-check the label at the mutation boundary. Never replace a job
+        # loaded from a different path or with different arguments.
+        if _opencode_macos_loaded_output(binary) is not None:
+            raise RuntimeError("OpenCode LaunchAgent was loaded during setup; try again")
+        _write_progress(_OPENCODE_PROGRESS_ID, "starting", "Starting OpenCode")
+        bootstrap_attempted = True
+        step = subprocess.run(
+            ["launchctl", "bootstrap", f"gui/{os.getuid()}", str(plist_path)],
+            capture_output=True, text=True, timeout=30,
+        )
+        if step.returncode != 0:
+            raise RuntimeError(f"Could not bootstrap OpenCode: {(step.stderr or step.stdout or '').strip()[:300]}")
+        step = subprocess.run(
+            ["launchctl", "kickstart", "-p", _opencode_macos_target()],
+            capture_output=True, text=True, timeout=30,
+        )
+        if step.returncode != 0:
+            raise RuntimeError(f"Could not start OpenCode: {(step.stderr or step.stdout or '').strip()[:300]}")
+        if _opencode_macos_loaded_output(binary) is None:
+            raise RuntimeError("OpenCode LaunchAgent did not remain loaded")
+        _wait_for_opencode_health()
+    except Exception as exc:
+        rollback_errors = []
+        cleanup_safe = True
+        # A concurrent owner may have loaded the plist we just created before
+        # our bootstrap call. It still points to this exact ODS-owned file and
+        # must be unloaded before the transaction removes that file or binary.
+        if bootstrap_attempted or plist_written:
+            try:
+                if _opencode_macos_loaded_output(binary) is not None:
+                    step = subprocess.run(
+                        ["launchctl", "bootout", _opencode_macos_target()],
+                        capture_output=True, text=True, timeout=30,
+                    )
+                    if step.returncode != 0:
+                        rollback_errors.append(
+                            f"bootout: {(step.stderr or step.stdout or '').strip()[:300]}"
+                        )
+                    if _opencode_macos_loaded_output(binary) is not None:
+                        cleanup_safe = False
+                        rollback_errors.append("bootout: OpenCode LaunchAgent remains loaded")
+            except (RuntimeError, OSError, subprocess.SubprocessError) as rollback_exc:
+                cleanup_safe = False
+                rollback_errors.append(f"bootout: {rollback_exc}")
+        if not cleanup_safe:
+            # Keep the running job's config, plist and executable in place.
+            # The old executable hard link remains available for a later repair.
+            raise RuntimeError(
+                f"{exc}; OpenCode rollback failed: {'; '.join(rollback_errors)}; "
+                "retained OpenCode files because launchd unload was not verified"
+            ) from exc
+        if enabled:
+            try:
+                step = subprocess.run(
+                    ["launchctl", "disable", _opencode_macos_target()],
+                    capture_output=True, text=True, timeout=15,
+                )
+                if step.returncode != 0:
+                    rollback_errors.append(
+                        f"disable: {(step.stderr or step.stdout or '').strip()[:300]}"
+                    )
+            except (OSError, subprocess.SubprocessError) as rollback_exc:
+                rollback_errors.append(f"disable: {rollback_exc}")
+        if config_changed:
+            try:
+                _restore_opencode_config(config_snapshot)
+            except (OSError, RuntimeError) as rollback_exc:
+                rollback_errors.append(f"config: {rollback_exc}")
+        if plist_written:
+            try:
+                current_binary = _opencode_macos_plist_binary()
+                if current_binary is not None and current_binary != binary:
+                    raise RuntimeError("OpenCode LaunchAgent changed during setup; refusing to remove it")
+                _restore_text_file(plist_path, plist_snapshot)
+            except (OSError, RuntimeError) as rollback_exc:
+                rollback_errors.append(f"plist: {rollback_exc}")
+        try:
+            _finish_managed_opencode_binary_snapshot(binary_snapshot, restore=True)
+        except (OSError, RuntimeError) as rollback_exc:
+            rollback_errors.append(f"binary: {rollback_exc}")
+        if rollback_errors:
+            raise RuntimeError(f"{exc}; OpenCode rollback failed: {'; '.join(rollback_errors)}") from exc
+        raise
+    try:
+        _finish_managed_opencode_binary_snapshot(binary_snapshot, restore=False)
+    except OSError as exc:
+        logger.warning("OpenCode started, but its old binary backup could not be removed: %s", exc)
+    _write_progress(_OPENCODE_PROGRESS_ID, "started", "OpenCode is ready")
+
+
 def _run_opencode_setup(env: dict) -> None:
     try:
-        _setup_managed_opencode(env)
+        if platform.system() == "Darwin":
+            _setup_managed_opencode_macos(env)
+        else:
+            _setup_managed_opencode(env)
     except Exception as exc:  # noqa: BLE001 - reported to the owner via progress
         logger.warning("OpenCode setup failed: %s", exc)
         try:
@@ -18900,7 +19592,7 @@ def _begin_opencode_setup(env: dict) -> tuple[int, dict]:
             }
         if status["portInUse"]:
             return 409, {
-                "error": f"Port {status['port']} is answering, but ODS cannot verify the managed OpenCode service",
+                "error": f"Port {status['port']} is occupied, but ODS cannot verify the managed OpenCode service",
                 "code": "opencode_port_in_use",
                 "status": status,
             }
@@ -18936,7 +19628,7 @@ def _begin_opencode_start(env: dict) -> tuple[int, dict]:
         }
     if status["portInUse"]:
         return 409, {
-            "error": f"Port {status['port']} is answering, but ODS cannot verify the managed OpenCode service",
+            "error": f"Port {status['port']} is occupied, but ODS cannot verify the managed OpenCode service",
             "code": "opencode_port_in_use",
             "status": status,
         }

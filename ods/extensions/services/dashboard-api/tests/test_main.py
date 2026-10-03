@@ -894,6 +894,20 @@ class TestModelReadiness:
         assert result["context"]["meetsHermesTarget"] is False
         assert any("Full model is still downloading" in issue for issue in result["issues"])
 
+    def test_verifying_phase_is_reported_without_download_copy(self):
+        from models import BootstrapStatus, ModelInfo
+
+        result = _build_model_readiness_payload(
+            model_info=ModelInfo(name="qwen3.5-2b", size_gb=1.5, context_length=65536, quantization="GGUF"),
+            bootstrap_info=BootstrapStatus(active=True, phase="verifying", model_name="full-model.gguf", percent=100.0),
+            loaded_model="qwen3.5-2b",
+            runtime_context=65536,
+        )
+
+        assert result["bootstrap"]["phase"] == "verifying"
+        assert any("Full model is being verified" in issue for issue in result["issues"])
+        assert all("still downloading" not in issue for issue in result["issues"])
+
     def test_context_below_hermes_minimum_blocks_readiness(self):
         from models import BootstrapStatus, ModelInfo
 
@@ -1300,7 +1314,7 @@ class TestBuildApiStatusTiers:
             gpu_backend="nvidia",
         )
         bs = BootstrapStatus(
-            active=True, model_name="Qwen-32B", percent=50.0,
+            active=True, phase="downloading", model_name="Qwen-32B", percent=50.0,
             downloaded_gb=8.0, total_gb=16.0, eta_seconds=120, speed_mbps=100.0,
         )
         monkeypatch.setattr("main.get_gpu_info", lambda: gpu)
@@ -1318,6 +1332,7 @@ class TestBuildApiStatusTiers:
         assert result["bootstrap"]["active"] is True
         assert result["bootstrap"]["model"] == "Qwen-32B"
         assert result["bootstrap"]["percent"] == 50.0
+        assert result["bootstrap"]["phase"] == "downloading"
 
 
 def test_serialize_gpu_preserves_unavailable_sensor_state(monkeypatch):
