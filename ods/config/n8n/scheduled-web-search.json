@@ -2,27 +2,191 @@
   "name": "Scheduled Web Search",
   "nodes": [
     {
-      "parameters": {},
-      "id": "start",
-      "name": "Start",
-      "type": "n8n-nodes-base.manualTrigger",
+      "parameters": {
+        "content": "## Scheduled Web Search\n\nEvery morning at 07:00, run a saved query through your own SearXNG\ninstance and have the local model brief you on what came back.\n\n```\ncron 07:00 -> searxng (JSON) -> llama-server (brief) -> data/n8n/search-briefs/\n```\n\n**Set your query** in the *Search Terms* node — it ships with\n`local AI self-hosting` as a placeholder.\n\n**Change the schedule** on the trigger; it is a plain daily rule at hour\n7, minute 0, in the container timezone (`GENERIC_TIMEZONE`, from\n`TIMEZONE` in `.env`).\n\nSearXNG aggregates the engines listed in `config/searxng/settings.yml`\nand returns JSON because that format is enabled there. No search API key\nand no tracking — the query leaves your box only as an ordinary search,\nand the briefing is written locally.\n\n**Requires** searxng and llama-server.",
+        "height": 620,
+        "width": 540
+      },
+      "id": "note-overview",
+      "name": "How to use this",
+      "type": "n8n-nodes-base.stickyNote",
       "typeVersion": 1,
-      "position": [240, 300]
+      "position": [-120, 20]
     },
     {
       "parameters": {
-        "content": "## Scheduled Web Search\n\nThis is a template workflow for running search queries on a cron schedule, summarizing top results with the LLM, and posting a digest.\n\nCustomize the nodes below to match your setup.",
-        "height": 200,
-        "width": 400
+        "rule": {
+          "interval": [
+            {
+              "field": "days",
+              "triggerAtHour": 7,
+              "triggerAtMinute": 0
+            }
+          ]
+        }
       },
-      "id": "note",
-      "name": "Setup Instructions",
-      "type": "n8n-nodes-base.stickyNote",
-      "typeVersion": 1,
-      "position": [440, 140]
+      "id": "schedule",
+      "name": "Every Morning",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [460, 300]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "q1",
+              "name": "query",
+              "value": "local AI self-hosting",
+              "type": "string"
+            },
+            {
+              "id": "q2",
+              "name": "max_results",
+              "value": 8,
+              "type": "number"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "set-query",
+      "name": "Search Terms",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "http://searxng:8080/search",
+        "sendQuery": true,
+        "specifyQuery": "keypair",
+        "queryParameters": {
+          "parameters": [
+            { "name": "q", "value": "={{ $json.query }}" },
+            { "name": "format", "value": "json" },
+            { "name": "safesearch", "value": "0" }
+          ]
+        },
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "id": "http-searxng",
+      "name": "SearXNG Search",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [920, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// SearXNG returns { query, results: [{ url, title, content, engine }], ... }.\n// Keep the top N, drop anything without a URL, and trim snippets so a\n// long result set cannot overrun the model's context window.\nconst payload = $input.first().json;\nconst wanted = $('Search Terms').first().json.max_results || 8;\nconst results = Array.isArray(payload.results) ? payload.results : [];\n\nconst top = results\n  .filter((r) => r && r.url)\n  .slice(0, wanted)\n  .map((r, i) => ({\n    rank: i + 1,\n    title: (r.title || '').trim(),\n    url: r.url,\n    snippet: (r.content || '').trim().slice(0, 400),\n    engine: r.engine || '',\n  }));\n\nreturn [{\n  json: {\n    query: $('Search Terms').first().json.query,\n    result_count: top.length,\n    results: top,\n    digest_input: top\n      .map((r) => `[${r.rank}] ${r.title}\\n${r.url}\\n${r.snippet}`)\n      .join('\\n\\n'),\n  },\n}];"
+      },
+      "id": "code-shape",
+      "name": "Top Results",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1160, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://llama-server:8080/v1/chat/completions",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: 'local-model', messages: [ { role: 'system', content: 'You write short morning briefings from search results. Summarise only what the snippets say. Cite sources by their [n] number. If the results do not actually address the query, say so plainly instead of padding.' }, { role: 'user', content: 'Query: ' + $json.query + '\\n\\nResults:\\n' + $json.digest_input } ], temperature: 0.3, max_tokens: 900, stream: false }) }}",
+        "options": {
+          "timeout": 180000
+        }
+      },
+      "id": "http-llama",
+      "name": "Write Briefing",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1400, 300]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "b1",
+              "name": "brief",
+              "value": "={{ '# ' + $('Top Results').item.json.query + '\\n\\n_' + $now.toISO() + ' — ' + $('Top Results').item.json.result_count + ' results_\\n\\n' + $json.choices[0].message.content + '\\n\\n## Sources\\n' + $('Top Results').item.json.results.map(r => '[' + r.rank + '] ' + r.title + ' — ' + r.url).join('\\n') + '\\n' }}",
+              "type": "string"
+            },
+            {
+              "id": "b2",
+              "name": "path",
+              "value": "={{ '/home/node/.n8n/search-briefs/' + $now.toFormat('yyyy-LL-dd') + '.md' }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "set-brief",
+      "name": "Compose Brief",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [1640, 300]
+    },
+    {
+      "parameters": {
+        "operation": "toText",
+        "sourceProperty": "brief",
+        "binaryPropertyName": "brief",
+        "options": {
+          "fileName": "={{ $json.path.split('/').pop() }}"
+        }
+      },
+      "id": "convert-text",
+      "name": "Brief To File",
+      "type": "n8n-nodes-base.convertToFile",
+      "typeVersion": 1.1,
+      "position": [1880, 300]
+    },
+    {
+      "parameters": {
+        "operation": "write",
+        "fileName": "={{ $('Compose Brief').item.json.path }}",
+        "dataPropertyName": "brief",
+        "options": {
+          "append": false
+        }
+      },
+      "id": "write-file",
+      "name": "Save Brief",
+      "type": "n8n-nodes-base.readWriteFile",
+      "typeVersion": 1.1,
+      "position": [2120, 300]
     }
   ],
-  "connections": {},
+  "connections": {
+    "Every Morning": {
+      "main": [[{ "node": "Search Terms", "type": "main", "index": 0 }]]
+    },
+    "Search Terms": {
+      "main": [[{ "node": "SearXNG Search", "type": "main", "index": 0 }]]
+    },
+    "SearXNG Search": {
+      "main": [[{ "node": "Top Results", "type": "main", "index": 0 }]]
+    },
+    "Top Results": {
+      "main": [[{ "node": "Write Briefing", "type": "main", "index": 0 }]]
+    },
+    "Write Briefing": {
+      "main": [[{ "node": "Compose Brief", "type": "main", "index": 0 }]]
+    },
+    "Compose Brief": {
+      "main": [[{ "node": "Brief To File", "type": "main", "index": 0 }]]
+    },
+    "Brief To File": {
+      "main": [[{ "node": "Save Brief", "type": "main", "index": 0 }]]
+    }
+  },
   "settings": {
     "executionOrder": "v1"
   },
