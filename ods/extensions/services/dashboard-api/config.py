@@ -869,3 +869,22 @@ def load_templates() -> list[dict]:
 
 
 TEMPLATES = load_templates()
+
+
+# ── config guard: validate_url_scheme ─────────────────────────
+_ALLOWED_SCHEMES = frozenset({"http", "https", "grpc", "grpcs", "ws", "wss"})
+
+def validate_url_scheme(url: Any, allowed: frozenset[str] | None = None) -> bool:
+    """Return True only when *url* has a scheme present in *allowed*.
+
+    Uses ``_ALLOWED_SCHEMES`` when *allowed* is not provided.
+    Returns False for None, non-strings, or URLs with no/wrong scheme.
+    """
+    if not url or not isinstance(url, str):
+        return False
+    schemes = allowed if allowed is not None else _ALLOWED_SCHEMES
+    try:
+        scheme = urlparse(url.strip()).scheme.lower()
+    except Exception:
+        return False
+    return bool(scheme) and scheme in schemes
