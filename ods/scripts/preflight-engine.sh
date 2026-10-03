@@ -15,6 +15,29 @@ STRICT="false"
 ENV_MODE="false"
 DISK_POLICY="${DISK_POLICY:-install}"
 
+usage() {
+    cat <<'USAGE'
+Usage: preflight-engine.sh [OPTIONS]
+
+Simulate a preflight hardware/tier check and write a JSON report.
+
+Options:
+  --report FILE          Output path for the JSON report (default: /tmp/ods-preflight-report.json)
+  --tier TIER            Hardware tier (e.g. T1, T2)
+  --ram-gb GB            System RAM in gigabytes
+  --disk-gb GB           Free disk space in gigabytes
+  --gpu-backend BACKEND  GPU backend (nvidia, amd, apple, cpu)
+  --gpu-vram-mb MB       GPU VRAM in megabytes
+  --gpu-name NAME        GPU model name
+  --platform-id ID       Platform identifier (linux, macos, windows)
+  --compose-overlays LIST  Comma-separated compose overlay files
+  --script-dir DIR       Root directory to resolve relative paths against
+  --strict               Fail on warnings, not just blockers
+  --env                  Emit output as shell-sourceable KEY=VALUE pairs
+  -h, --help             Show this help message and exit
+USAGE
+}
+
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --report)
@@ -72,6 +95,10 @@ while [[ $# -gt 0 ]]; do
         --env)
             ENV_MODE="true"
             shift
+            ;;
+        -h|--help)
+            usage
+            exit 0
             ;;
         *)
             echo "Unknown argument: $1" >&2
