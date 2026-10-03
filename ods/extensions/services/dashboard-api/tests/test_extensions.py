@@ -275,6 +275,39 @@ class TestExtensionsCatalog:
         assert llm["probe"] == {"kind": "custom"}
         assert "swap_safe" not in raw_contract
 
+    @pytest.mark.parametrize("endpoint", ["/api/extensions/catalog", "/api/extensions/token-spy"])
+    @pytest.mark.parametrize("enabled", [False, True])
+    def test_real_token_spy_exemption_survives_contract_normalization(
+            self, test_client, monkeypatch, tmp_path, endpoint, enabled):
+        import json
+        from config import normalize_llm_contract
+
+        shipped = json.loads((Path(__file__).resolve().parents[4] /
+                              "config/extensions-catalog.json").read_text())
+        entries = shipped["extensions"]
+        raw = next(item["llm"] for item in entries if item["id"] == "token-spy")
+        catalog = [{**_make_catalog_ext("token-spy", "Token Spy"),
+                    "catalog_source": "builtin", "llm": raw}]
+        services = {"token-spy": {"llm": normalize_llm_contract(raw)}} if enabled else {}
+        _patch_extensions_config(monkeypatch, catalog, services=services, tmp_path=tmp_path)
+        builtin = tmp_path / "builtin" / "token-spy"
+        builtin.mkdir(parents=True)
+        filename = "compose.yaml" if enabled else "compose.yaml.disabled"
+        (builtin / filename).write_text("services: {token-spy: {image: test/token-spy}}\n")
+        monkeypatch.setattr("routers.extensions.EXTENSIONS_DIR", builtin.parent)
+        statuses = [_make_service_status("token-spy")] if enabled else []
+        with patch("helpers.get_all_services", new_callable=AsyncMock, return_value=statuses), \
+                patch("helpers.get_cached_services", return_value=statuses):
+            response = test_client.get(endpoint, headers=test_client.auth_headers)
+        assert response.status_code == 200
+        payload = response.json()
+        item = payload["extensions"][0] if endpoint.endswith("catalog") else payload
+        llm = item["llm"]
+        assert llm["switchboard_exempt"] is True
+        assert llm["switchboard_exempt_reason"] == raw["switchboard_exempt_reason"]
+        assert llm["swap_safe"] is False
+        assert llm["probe"] == raw["probe"]
+
     def test_catalog_category_filter(self, test_client, monkeypatch, tmp_path):
         """Category filter returns only matching extensions."""
         catalog = [

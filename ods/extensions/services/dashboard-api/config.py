@@ -58,6 +58,14 @@ def normalize_llm_contract(value: Any) -> dict[str, Any] | None:
         "pinning": pinning,
     }
 
+    exemption = value.get("switchboard_exempt")
+    exemption_reason = value.get("switchboard_exempt_reason")
+    if exemption is False:
+        normalized["switchboard_exempt"] = False
+    elif exemption is True and isinstance(exemption_reason, str) and exemption_reason.strip():
+        normalized["switchboard_exempt"] = True
+        normalized["switchboard_exempt_reason"] = exemption_reason.strip()
+
     min_context = value.get("min_context")
     if min_context is not None:
         try:
