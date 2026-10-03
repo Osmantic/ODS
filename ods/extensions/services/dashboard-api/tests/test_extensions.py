@@ -11,7 +11,9 @@ import pytest
 import yaml
 from fastapi import HTTPException
 from models import ServiceStatus
-from routers.extensions import _assert_not_core, _ever_selected_builtin_ids
+from routers.extensions import (
+    _assert_not_core, _ever_selected_builtin_ids, _owned_prior_selected_builtin_ids,
+)
 
 
 # --- Helpers ---
@@ -65,12 +67,25 @@ def _patch_extensions_config(monkeypatch, catalog, services=None,
     monkeypatch.setattr("routers.extensions.USER_EXTENSIONS_DIR", user_dir)
     monkeypatch.setattr("routers.extensions.DATA_DIR",
                         str(tmp_path or "/tmp/nonexistent"))
+    monkeypatch.setattr("routers.extensions._owned_prior_selected_builtin_ids", lambda: set())
 
 
 # --- Catalog endpoint ---
 
 
 class TestExtensionsCatalog:
+
+    def test_owned_prior_selection_accepts_only_valid_host_snapshot(self, monkeypatch):
+        monkeypatch.setattr("routers.extensions.request_agent_json", lambda *args, **kwargs: {
+            "schema_version": "ods.host-service-health.v1",
+            "prior_selected_builtins": ["perplexica"],
+        })
+        assert _owned_prior_selected_builtin_ids() == {"perplexica"}
+        monkeypatch.setattr("routers.extensions.request_agent_json", lambda *args, **kwargs: {
+            "schema_version": "ods.host-service-health.v1",
+            "prior_selected_builtins": ["foreign-service"],
+        })
+        assert _owned_prior_selected_builtin_ids() == set()
 
     def test_untrusted_selection_history_is_not_followed(self, monkeypatch, tmp_path):
         monkeypatch.setattr("routers.extensions.DATA_DIR", str(tmp_path))
@@ -126,6 +141,13 @@ class TestExtensionsCatalog:
         enabled.rename(disabled)
         row = catalog_row([])
         assert row["status"] == "disabled"
+        assert row["library_selected"] is False
+        assert row["library_ever_selected_proven"] is True
+
+        (tmp_path / ".extensions-ever-selected.json").unlink()
+        monkeypatch.setattr("routers.extensions._owned_prior_selected_builtin_ids",
+                            lambda: {service_id})
+        row = catalog_row([])
         assert row["library_selected"] is False
         assert row["library_ever_selected_proven"] is True
 

@@ -431,6 +431,21 @@ def _ever_selected_builtin_ids() -> set[str]:
     return set(ids)
 
 
+def _owned_prior_selected_builtin_ids() -> set[str]:
+    """Use read-only, exact-owned stopped-container evidence for legacy picks."""
+    try:
+        snapshot = request_agent_json("GET", "/v1/service/health", timeout=3)
+    except AgentClientError:
+        return set()
+    if not isinstance(snapshot, dict) or snapshot.get("schema_version") != "ods.host-service-health.v1":
+        return set()
+    ids = snapshot.get("prior_selected_builtins")
+    if (not isinstance(ids, list) or len(ids) > len(LIBRARY_MANAGEABLE_BUILTINS)
+            or any(not isinstance(item, str) or item not in LIBRARY_MANAGEABLE_BUILTINS for item in ids)):
+        return set()
+    return set(ids)
+
+
 
 _OPENCODE_EXTENSION_STATUS = {
     "degraded": "installing",
@@ -1818,6 +1833,9 @@ async def extensions_catalog(
             logger.error("stale-progress cleanup failed: %s", exc, exc_info=exc)
 
     _cleanup_future.add_done_callback(_log_cleanup_error)
+    owned_history_task = asyncio.create_task(
+        asyncio.to_thread(_owned_prior_selected_builtin_ids)
+    )
 
     from helpers import get_cached_services, get_all_services
 
@@ -1861,7 +1879,10 @@ async def extensions_catalog(
     ])
     update_states = dict(zip(user_extension_ids, update_results))
 
-    ever_selected_ids = await asyncio.to_thread(_ever_selected_builtin_ids)
+    ever_selected_ids, owned_prior_ids = await asyncio.gather(
+        asyncio.to_thread(_ever_selected_builtin_ids),
+        owned_history_task,
+    )
     extensions = []
     for ext in current_catalog:
         status = _compute_extension_status(ext, services_by_id)
@@ -1893,7 +1914,8 @@ async def extensions_catalog(
             # False means no positive history was found, not proof that this
             # bundled service has never been used on a legacy installation.
             enriched["library_ever_selected_proven"] = (
-                builtin_selection["library_selected"] or ext_id in ever_selected_ids
+                builtin_selection["library_selected"]
+                or ext_id in ever_selected_ids or ext_id in owned_prior_ids
             )
         if ext_id == "opencode" and ext_id in SERVICES:
             enriched.update(_opencode_catalog_fields(status))
