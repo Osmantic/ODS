@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-30T11:32:07Z",
+  "generated_at": "2026-10-03T18:59:24Z",
   "schema_version": "1.0.0",
   "extensions": [
     {
@@ -1247,7 +1247,7 @@
     {
       "id": "comfyui",
       "name": "ComfyUI (Image Generation)",
-      "description": "Generate images with FLUX.1 via ComfyUI",
+      "description": "Build image workflows in ComfyUI; add a model before first generation",
       "category": "optional",
       "gpu_backends": [
         "amd",
@@ -1264,7 +1264,7 @@
         {
           "id": "images",
           "name": "Image Generation",
-          "description": "Generate images with FLUX.1 via ComfyUI",
+          "description": "Build image workflows in ComfyUI; add a model before first generation",
           "icon": "Image",
           "category": "creative",
           "requirements": {
@@ -1276,7 +1276,7 @@
           "enabled_services_all": [
             "comfyui"
           ],
-          "setup_time": "Ready",
+          "setup_time": "Model setup may be needed",
           "priority": 5,
           "launch": {
             "type": "service",
