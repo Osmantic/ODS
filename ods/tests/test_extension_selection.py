@@ -54,15 +54,31 @@ def test_disable_remembers_prior_selection_without_removing_service_files(tmp_pa
     assert json.loads(history.read_text())["ever_selected"] == ["perplexica"]
 
 
-def test_unsafe_history_refuses_disable_before_marker_change(tmp_path):
+def test_unsafe_history_does_not_block_disable_or_erase_evidence(tmp_path, capsys):
     (tmp_path / "data").mkdir()
     target = extension(tmp_path, "perplexica")
     history = tmp_path / "data" / selection.SELECTION_HISTORY
     history.write_text("{broken", encoding="utf-8")
 
-    with pytest.raises(selection.SelectionError, match="Invalid extension selection history"):
-        selection.run("disable", tmp_path, "perplexica")
-    assert (target / "compose.yaml").is_file()
+    assert selection.run("disable", tmp_path, "perplexica") == "disabled"
+    assert (target / "compose.yaml.disabled").is_file()
+    assert history.read_text(encoding="utf-8") == "{broken"
+    assert "Could not record prior Library selection history" in capsys.readouterr().err
+
+
+def test_unsafe_history_does_not_block_preset_disable(tmp_path, capsys, monkeypatch):
+    (tmp_path / "data" / "user-extensions").mkdir(parents=True)
+    target = extension(tmp_path, "perplexica")
+    history = tmp_path / "data" / selection.SELECTION_HISTORY
+    history.write_text("{broken", encoding="utf-8")
+    preset = tmp_path / "extensions.list"
+    preset.write_text("disabled:perplexica\n", encoding="utf-8")
+    monkeypatch.setattr(selection, "_stop_for_disable", lambda *args, **kwargs: None)
+
+    assert restore(tmp_path, preset) == (0, 1, [])
+    assert (target / "compose.yaml.disabled").is_file()
+    assert history.read_text(encoding="utf-8") == "{broken"
+    assert "Could not record prior Library selection history" in capsys.readouterr().err
 
 
 def test_selected_compose_and_user_shadowing(tmp_path):

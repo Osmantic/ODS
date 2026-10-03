@@ -109,6 +109,16 @@ def _remember_selected(install_dir: Path, service_ids: set[str]) -> None:
                 pass
 
 
+def _remember_selected_best_effort(install_dir: Path, service_ids: set[str]) -> None:
+    """Selection history is UI metadata and must not veto a safe disable."""
+    try:
+        _remember_selected(install_dir, service_ids)
+    except SelectionError:
+        # Preserve an unreadable/corrupt receipt for diagnosis. The catalog
+        # must present missing history as unknown rather than infer absence.
+        print("WARNING: Could not record prior Library selection history", file=sys.stderr)
+
+
 def _read_bounded_file(path: Path) -> bytes:
     """Read a bounded regular file without following its final symlink."""
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
@@ -569,7 +579,7 @@ def run(
             raise SelectionError(f"No Compose selection file for {service_id}")
         if action == "check-disable":
             return "ready"
-        _remember_selected(install_dir, {service_id})
+        _remember_selected_best_effort(install_dir, {service_id})
         if stop_mode is not None:
             _stop_for_disable(install_dir, service_id, stop_mode, compose_flags)
         try:
@@ -883,7 +893,7 @@ def restore_preset(
             raise SelectionError(f"Compose cache is a directory: {cache}")
         operations = [(service_id, False) for service_id in disable_order]
         operations.extend((service_id, True) for service_id in enable_order)
-        _remember_selected(install_dir, set(disable_order))
+        _remember_selected_best_effort(install_dir, set(disable_order))
         if not operations:
             try:
                 cache.unlink(missing_ok=True)
