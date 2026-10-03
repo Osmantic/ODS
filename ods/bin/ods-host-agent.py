@@ -6581,7 +6581,7 @@ def _enable_webui_selection() -> tuple[int, dict]:
 
 
 def _disable_webui_selection() -> tuple[int, dict]:
-    """Stop optional WebUI and retain its data and the bound .env inode."""
+    """Serialize WebUI stop with CLI and Library extension selection."""
     if platform.system() != "Linux":
         return 501, {"code": "unsupported_platform", "error": "WebUI disable is unavailable on this platform"}
     service_lock = _service_locks["open-webui"]
@@ -6590,6 +6590,24 @@ def _disable_webui_selection() -> tuple[int, dict]:
     if not _model_activate_lock.acquire(blocking=False):
         service_lock.release()
         return 409, {"code": "configuration_in_use", "error": "ODS configuration is being changed"}
+    try:
+        # Order is service -> model configuration -> cross-process extension
+        # graph. Hold the graph lock through stop, selection write, and rollback.
+        selector = _load_extension_selector()
+        try:
+            with selector._selection_lock(INSTALL_DIR, 15.0):
+                return _disable_webui_selection_locked()
+        except selector.SelectionError:
+            return 409, {"code": "extension_selection_busy", "error": "Extension selection is in progress; retry shortly"}
+    except (OSError, RuntimeError):
+        return 503, {"code": "selection_unavailable", "error": "Extension selection could not be verified"}
+    finally:
+        _model_activate_lock.release()
+        service_lock.release()
+
+
+def _disable_webui_selection_locked() -> tuple[int, dict]:
+    """Stop optional WebUI, retaining data and the bound .env inode."""
 
     env_path = INSTALL_DIR / ".env"
     original = None
@@ -6699,11 +6717,6 @@ def _disable_webui_selection() -> tuple[int, dict]:
             except (OSError, RuntimeError, subprocess.SubprocessError):
                 return 503, {"code": "reconciliation_required", "error": "Open WebUI selection was restored but its service needs inspection"}
         return 502, {"code": "disable_failed", "error": "Open WebUI could not be disabled; its prior selection was restored", "enabled": True}
-    finally:
-        _model_activate_lock.release()
-        service_lock.release()
-
-
 def _proxy_compose_enabled() -> bool:
     """Return whether the current compose stack includes ods-proxy."""
     return any(

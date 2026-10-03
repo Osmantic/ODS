@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import subprocess
 import sys
+import threading
 
 import pytest
 
@@ -24,6 +25,10 @@ def agent(tmp_path, monkeypatch):
     monkeypatch.setattr(module, "resolve_compose_flags", lambda: ["-f", "base.yml"])
     monkeypatch.setattr(module, "_wait_for_container_health", lambda *_args, **_kwargs: None)
     monkeypatch.delenv("COMPOSE_PROFILES", raising=False)
+    selector_source = path.parents[1] / "scripts/extension-selection.py"
+    selector_target = tmp_path / "scripts/extension-selection.py"
+    selector_target.parent.mkdir()
+    selector_target.write_bytes(selector_source.read_bytes())
     (tmp_path / ".env").write_text(
         "ODS_MODE=local\nENABLE_OPEN_WEBUI=false\n"
         "EXTERNAL_LLM_URL=https://model.example.test/v1\n"
@@ -259,7 +264,7 @@ def test_mac_host_agent_resolver_keeps_native_pixel_selection(agent, monkeypatch
         (root / ".compose-flags").write_text("-f docker-compose.base.yml\n", encoding="utf-8")
     else:
         resolver = root / "scripts/resolve-compose-stack.sh"
-        resolver.parent.mkdir(parents=True)
+        resolver.parent.mkdir(parents=True, exist_ok=True)
         resolver.write_text("fixture", encoding="utf-8")
         monkeypatch.setattr(module, "_find_usable_bash", lambda: "/bin/bash")
     calls = []
@@ -415,6 +420,52 @@ def test_disable_refuses_unverifiable_compose_graph_before_stop(agent, monkeypat
     assert status == 502 and result["code"] == "disable_failed"
     assert env_path.read_bytes() == original
     assert not any(command[-2:] == ["stop", "open-webui"] for command, _ in calls)
+
+
+def test_disable_serializes_concurrent_proxy_selection(agent, monkeypatch):
+    module, root = agent
+    env_path = _select_webui_with_portal(module, root, monkeypatch)
+    proxy = root / "extensions/services/ods-proxy"
+    proxy.mkdir(parents=True)
+    (proxy / "manifest.yaml").write_text(
+        "service:\n  id: ods-proxy\n  depends_on: [open-webui]\n", encoding="utf-8")
+    (proxy / "compose.yaml.disabled").write_text(
+        "services:\n  ods-proxy:\n    image: example:latest\n    depends_on: [open-webui]\n", encoding="utf-8")
+    (root / "docker-compose.base.yml").write_text(
+        "services:\n  open-webui:\n    image: example:latest\n", encoding="utf-8")
+    preset = root / "extensions.list"
+    preset.write_text("enabled:ods-proxy\n", encoding="utf-8")
+    compose_responses(agent, monkeypatch, initial_running=True)
+    fake_run = module.subprocess.run
+    outcome = []
+    started = threading.Event()
+    worker = None
+
+    def enable_proxy():
+        started.set()
+        try:
+            selector = module._load_extension_selector()
+            selector.restore_preset(root, preset, core_services={"open-webui"},
+                                    compose_flags="-f docker-compose.base.yml")
+            outcome.append("enabled")
+        except Exception as exc:
+            outcome.append(str(exc))
+
+    def run(command, **kwargs):
+        nonlocal worker
+        if command[-3:] == ["config", "--format", "json"]:
+            worker = threading.Thread(target=enable_proxy)
+            worker.start()
+            assert started.wait(2)
+        return fake_run(command, **kwargs)
+
+    monkeypatch.setattr(module.subprocess, "run", run)
+    assert module._disable_webui_selection() == (200, {"enabled": False, "action": "disabled"})
+    worker.join(timeout=5)
+    assert not worker.is_alive()
+    assert outcome and "Open WebUI is disabled" in outcome[0]
+    assert (proxy / "compose.yaml.disabled").is_file()
+    assert module.load_env(env_path)["ENABLE_OPEN_WEBUI"] == "false"
 
 
 def test_disable_partial_env_write_restores_exact_bytes_and_service(agent, monkeypatch):

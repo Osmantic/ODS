@@ -138,6 +138,31 @@ def _read_bounded_file(path: Path) -> bytes:
         raise SelectionError(f"Cannot inspect selected file: {path}") from exc
 
 
+def _assert_open_webui_selected(install_dir: Path, service_id: str) -> None:
+    """A selected extension cannot depend on a profiled-out base WebUI."""
+    try:
+        lines = _read_bounded_file(install_dir / ".env").decode("utf-8").splitlines()
+    except UnicodeError as exc:
+        raise SelectionError("Installed WebUI selection is unreadable") from exc
+    selections = []
+    for line in lines:
+        key, separator, value = line.partition("=")
+        if not separator or key.strip() != "ENABLE_OPEN_WEBUI":
+            continue
+        normalized = value.strip()
+        if len(normalized) >= 2 and normalized[0] in {'"', "'"} and normalized[-1] == normalized[0]:
+            normalized = normalized[1:-1]
+        normalized = normalized.lower()
+        if normalized not in {"true", "false"}:
+            raise SelectionError("Installed WebUI selection is invalid")
+        selections.append(normalized)
+    if len(selections) > 1:
+        raise SelectionError("Installed WebUI selection is ambiguous")
+    # Legacy installs without the key use the base Compose default (true).
+    if selections == ["false"]:
+        raise SelectionError(f"Cannot enable {service_id}; Open WebUI is disabled. Add it from the Library first")
+
+
 def _read_yaml(path: Path, *, compose: bool = False) -> object:
     try:
         import yaml
@@ -448,6 +473,8 @@ def _assert_prerequisites_enabled(
             try:
                 (install_dir / "data" / "user-extensions" / dep).lstat()
             except FileNotFoundError:
+                if dep == "open-webui":
+                    _assert_open_webui_selected(install_dir, service_id)
                 continue
         dep_dir = _find_target_dir(install_dir, dep)
         if dep_dir is None:
@@ -739,6 +766,8 @@ def _preset_dependencies(
             try:
                 (install_dir / "data" / "user-extensions" / dep).lstat()
             except FileNotFoundError:
+                if dep == "open-webui":
+                    _assert_open_webui_selected(install_dir, service_id)
                 continue
         if dep in directories:
             dependencies.add(dep)
