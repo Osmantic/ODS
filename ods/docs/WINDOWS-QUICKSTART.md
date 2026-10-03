@@ -86,7 +86,7 @@ Do not run the PowerShell block in Bash.
 
 ## Verify Portal/Pixel
 
-Open the printed dashboard URL, normally **http://localhost:3001**, check availability and send a message. **http://localhost:3000** is separate Open WebUI. Inside Ubuntu:
+Open the printed dashboard URL, normally **http://localhost:3001**, check availability and send a message in Portal. **http://localhost:3000** serves separate Open WebUI only when selected. Inside Ubuntu:
 
 ```bash
 cd ~/ods
