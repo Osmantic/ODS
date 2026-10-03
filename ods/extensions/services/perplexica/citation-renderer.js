@@ -5,11 +5,17 @@
 function renderCitations(message, sources) {
   if (typeof message !== "string") return message;
   const refs = Array.isArray(sources) ? sources : [];
+  const numericCitation = /^\s*\d+(?:\s*,\s*\d+)*\s*$/;
+  const referenceDefinitions = new Set();
+  for (const line of message.split("\n")) {
+    const definition = /^(?: {0,3}> ?)* {0,3}\[([0-9]+(?:\s*,\s*[0-9]+)*)\]:/.exec(line);
+    if (definition) referenceDefinitions.add(definition[1].replace(/\s+/g, ""));
+  }
   let fence = null;
   let inline = null;
 
   function cite(token, inner) {
-    if (!/^\s*\d+(?:\s*,\s*\d+)*\s*$/.test(inner)) return token;
+    if (!numericCitation.test(inner)) return token;
     // Vane removes bare [N] markers when it has no source blocks. Keep that
     // behavior in prose while preserving code and numeric list literals.
     if (refs.length === 0) return /^\[\d+\]$/.test(token) ? "" : token;
@@ -92,16 +98,31 @@ function renderCitations(message, sources) {
       const token = line.slice(i, end + 1);
       const inner = token.slice(1, -1);
       const after = line[end + 1];
+      let escapes = 0;
+      for (let k = i - 1; k >= 0 && line[k] === "\\"; k -= 1) escapes += 1;
       if (after === "(" || after === "[") {
         const linkEnd = after === "(" ? closingParen(line, end + 1) : closingBracket(line, end + 1);
         if (linkEnd !== -1) {
+          if (after === "[" && refs.length > 0 && escapes % 2 === 0 && line[i - 1] !== "!"
+            && numericCitation.test(inner)) {
+            const nextToken = line.slice(end + 1, linkEnd + 1);
+            const nextInner = nextToken.slice(1, -1);
+            const firstCitation = cite(token, inner);
+            if (numericCitation.test(nextInner)
+              && !referenceDefinitions.has(nextInner.replace(/\s+/g, ""))
+              && firstCitation !== token && cite(nextToken, nextInner) !== nextToken) {
+              // Adjacent valid source markers are citations, not a Markdown
+              // reference link. Leave the next marker for the next iteration.
+              output += firstCitation;
+              i = end + 1;
+              continue;
+            }
+          }
           output += line.slice(i, linkEnd + 1);
           i = linkEnd + 1;
           continue;
         }
       }
-      let escapes = 0;
-      for (let k = i - 1; k >= 0 && line[k] === "\\"; k -= 1) escapes += 1;
       output += (escapes % 2 || line[i - 1] === "!" || after === ":" || inner.includes("[") || inner.includes("]"))
         ? token : cite(token, inner);
       i = end + 1;
