@@ -11,6 +11,7 @@ import threading
 import time
 import types
 import httpx
+from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import AsyncMock
 
@@ -1562,6 +1563,70 @@ def test_load_model_noops_lemonade_active_identity_without_chat_probe(
         "model_id": "qwen3.6-35b-a3b-ud-q4",
         "loadedModel": "Qwen3.6-35B-A3B-UD-Q4_K_M",
     }
+
+
+@pytest.mark.parametrize("files", ["registered", "missing", "ambiguous"])
+@pytest.mark.parametrize("portal_active", [False, True])
+def test_load_registered_active_model_requires_unique_installed_artifact(
+    test_client, monkeypatch, tmp_path, files, portal_active,
+):
+    router, install_dir, data_dir = _patch_model_router_paths(monkeypatch, tmp_path)
+    path_exists = Path.exists
+    monkeypatch.setattr(Path, "exists", lambda path:
+                        False if path == Path("/.dockerenv") else path_exists(path))
+    model = {
+        "id": "ssd-model", "name": "SSD model", "gguf_file": "ssd-model.gguf",
+        "llm_model_name": "ssd-model", "context_length": 32768,
+    }
+    _write_model_library(install_dir, [model])
+    store = tmp_path / "ssd-models"
+    store.mkdir()
+    (data_dir / "model-stores.json").write_text(json.dumps({
+        "schemaVersion": 1, "stores": [{
+            "id": "ssd", "hostPath": str(store), "containerPath": "/model-stores/ssd",
+        }],
+    }), encoding="utf-8")
+    if files != "missing":
+        (store / model["gguf_file"]).write_bytes(b"installed-model")
+    if files == "ambiguous":
+        (data_dir / "models" / model["gguf_file"]).write_bytes(b"different-model")
+    (install_dir / ".env").write_text(
+        "ODS_MODE=local\nLLM_BACKEND=llama-server\nODS_ACTIVE_MODEL_STORE=ssd\n"
+        "GGUF_FILE=ssd-model.gguf\nLLM_MODEL=ssd-model\nCTX_SIZE=32768\n",
+        encoding="utf-8",
+    )
+    _write_activation_receipt(data_dir, model["id"], model["gguf_file"])
+    receipt_path = data_dir / "model-activation-receipt.json"
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    receipt.update(contextVerified=True, contextLength=32768)
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+    monkeypatch.setattr(router, "LLM_BACKEND", "llama-server")
+    monkeypatch.setattr(router, "_fetch_loaded_model_sync", lambda: model["gguf_file"])
+    monkeypatch.setattr(router, "pixel_stream_active", lambda: portal_active)
+    monkeypatch.setattr(router, "_bootstrap_upgrade_download_conflict", lambda: None)
+    activations = []
+    def activate(*args, **kwargs):
+        activations.append(args)
+        return {"status": "activated"}
+    monkeypatch.setattr(router, "_call_agent_model", activate)
+
+    response = test_client.post(
+        "/api/models/ssd-model/load", json={"context_length": 32768},
+        headers=test_client.auth_headers,
+    )
+
+    if files == "registered":
+        assert response.status_code == 200
+        assert response.json()["status"] == "already_active"
+        assert activations == []
+    elif portal_active:
+        assert response.status_code == 409
+        assert response.json()["detail"]["code"] == "pixel_chat_active"
+        assert activations == []
+    else:
+        assert response.status_code == 200
+        assert response.json()["status"] == "activated"
+        assert len(activations) == 1
 
 
 def test_get_gpu_vram_returns_none_on_nvml_error(monkeypatch):

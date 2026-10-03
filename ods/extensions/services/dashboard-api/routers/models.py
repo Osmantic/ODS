@@ -547,7 +547,7 @@ def _configured_model_identity_matches(model: dict) -> bool:
     )
     if not (_model_name_tokens(configured_llm) & _catalog_model_tokens(model)):
         return False
-    if not (Path(DATA_DIR) / "models" / gguf_file).exists():
+    if _installed_model_path(gguf_file) is None:
         return False
     return True
 
