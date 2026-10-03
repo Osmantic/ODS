@@ -950,6 +950,130 @@ function LlmSwapBadge({ llm }) {
   )
 }
 
+const COMFY_DOWNLOAD_ERRORS = {
+  insufficient_checkpoint_space: 'Not enough free space for this model download.',
+  checkpoint_network_unavailable: 'The model source is unavailable. You can retry without losing a partial download.',
+  checkpoint_upstream_http: 'The model source rejected the download. Try again later.',
+  checkpoint_hash_mismatch: 'The downloaded model failed its integrity check. Nothing was installed.',
+  checkpoint_size_mismatch: 'The downloaded model had an unexpected size. Nothing was installed.',
+  checkpoint_missing_or_changed: 'The saved model is missing or changed. Inspect it before downloading again.',
+  existing_checkpoint_invalid: 'The existing image model failed verification. Remove or replace that file before retrying.',
+  checkpoint_busy: 'A checkpoint download is already running.',
+  checkpoint_lock_unavailable: 'The model download could not acquire its local lock.',
+  checkpoint_range_mismatch: 'The model source sent an unexpected response. You can retry safely.',
+  checkpoint_transfer_timeout: 'The model download timed out. You can resume it.',
+  checkpoint_incomplete: 'The model transfer stopped early. You can resume it.',
+  unsupported_checkpoint_host: 'This download action requires ODS running inside Linux or WSL.',
+  checkpoint_changed_during_verification: 'The model file changed during verification. Inspect it before retrying.',
+  interrupted: 'The download was interrupted. You can resume it.',
+}
+
+function ComfyCheckpointControl({ agentOffline }) {
+  const [snapshot, setSnapshot] = useState(null)
+  const [error, setError] = useState('')
+  const [confirm, setConfirm] = useState(false)
+  const [busy, setBusy] = useState(false)
+
+  useEffect(() => {
+    let mounted = true
+    let polling = false
+    const load = async () => {
+      if (polling) return
+      polling = true
+      try {
+        const response = await fetchJson('/api/extensions/comfyui/checkpoint', 8000)
+        if (!response.ok) throw new Error('The model status is unavailable.')
+        const value = await response.json()
+        if (mounted) {
+          setSnapshot(value)
+          setError('')
+        }
+      } catch {
+        if (mounted) setError('The model status is unavailable. Try again shortly.')
+      } finally {
+        polling = false
+      }
+    }
+    load()
+    const timer = setInterval(load, 3000)
+    return () => { mounted = false; clearInterval(timer) }
+  }, [])
+
+  const action = async (path, body) => {
+    setBusy(true)
+    setError('')
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), 12000)
+    try {
+      const response = await fetch(path, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body || {}),
+        signal: controller.signal,
+      })
+      const value = await response.json().catch(() => ({}))
+      if (!response.ok) {
+        const code = typeof value.error === 'string' ? value.error
+          : typeof value.detail === 'string' ? value.detail
+            : typeof value.detail?.error === 'string' ? value.detail.error : ''
+        throw new Error(COMFY_DOWNLOAD_ERRORS[code] || 'The model action could not complete.')
+      }
+      setSnapshot(previous => previous ? { ...previous, download: value } : previous)
+      setConfirm(false)
+    } catch (failure) {
+      setError(failure.message || 'The model action could not complete.')
+    } finally {
+      clearTimeout(timer)
+      setBusy(false)
+    }
+  }
+
+  const catalog = snapshot?.catalog
+  const download = snapshot?.download
+  const state = download?.state || 'idle'
+  const active = ['downloading', 'verifying', 'cancelling'].includes(state)
+  const progress = Math.min(100, Math.floor(100 * (download?.bytes_done || 0) / (catalog?.size_bytes || 1)))
+  const canStart = snapshot?.selected && catalog && !active && state !== 'done' && state !== 'unsupported' && !agentOffline && !busy
+
+  return (
+    <div className="px-4 py-3 border-t border-theme-border/40 text-[11px] text-theme-text-secondary" aria-live="polite">
+      <div className="font-semibold text-theme-text">Image model</div>
+      {!snapshot && !error && <p className="mt-1">Checking the optional checkpoint…</p>}
+      {snapshot && !snapshot.selected && <p className="mt-1">Add ComfyUI to download an image model. Adding the app does not download it.</p>}
+      {snapshot?.selected && state !== 'done' && state !== 'existing_unverified' && state !== 'unsupported' && <p className="mt-1">ComfyUI can open without a model. Download SDXL Lightning 4-step only if you want local image generation.</p>}
+      {state === 'existing_unverified' && <p className="mt-1">An image model is already present. Verify its integrity before using it.</p>}
+      {state === 'done' && <p className="mt-1 text-green-400">SDXL Lightning 4-step is downloaded and verified.</p>}
+      {active && (
+        <div className="mt-2">
+          <div>{state === 'verifying' ? 'Verifying the model…' : state === 'cancelling' ? 'Cancelling…' : `Downloading ${progress}%`}</div>
+          <progress className="mt-1 w-full" value={progress} max="100" aria-label="Image model download progress" />
+        </div>
+      )}
+      {download?.error && <p className="mt-1 text-amber-300">{COMFY_DOWNLOAD_ERRORS[download.error] || 'The model download needs attention.'}</p>}
+      {error && <p className="mt-1 text-red-300">{error}</p>}
+      {canStart && !confirm && (
+        <button className="mt-2 rounded-lg bg-theme-accent px-3 py-1.5 text-white disabled:opacity-50" onClick={() => setConfirm(true)}>
+          {state === 'existing_unverified' ? 'Verify image model' : download?.resumable ? 'Resume model download' : 'Download image model'}
+        </button>
+      )}
+      {confirm && catalog && (
+        <div className="mt-2 rounded-lg border border-theme-border p-3">
+          <p>{state === 'existing_unverified' ? 'Verify' : 'Download'} {catalog.name} ({catalog.size_label}, {catalog.size_bytes.toLocaleString()} bytes) on this device? Existing ComfyUI data will be kept.</p>
+          <div className="mt-2 flex gap-2">
+            <button disabled={busy || agentOffline} className="rounded bg-theme-accent px-3 py-1.5 text-white disabled:opacity-50"
+              onClick={() => action('/api/extensions/comfyui/checkpoint/download', {
+                model_id: catalog.model_id, acknowledge_size_bytes: catalog.size_bytes,
+              })}>{state === 'existing_unverified' ? 'Confirm verification' : 'Confirm download'}</button>
+            <button disabled={busy} className="rounded border border-theme-border px-3 py-1.5 disabled:opacity-50" onClick={() => setConfirm(false)}>Cancel</button>
+          </div>
+        </div>
+      )}
+      {active && <button disabled={busy || agentOffline} className="mt-2 rounded border border-theme-border px-3 py-1.5 disabled:opacity-50"
+        onClick={() => action('/api/extensions/comfyui/checkpoint/cancel', {})}>Cancel download</button>}
+    </div>
+  )
+}
+
 function ExtensionCard({ ext, hermesProxy, gpuBackend, agentAvailable, onDetails, onConsole, onAction, webuiSelection, mutating, progressData }) {
   const Icon = extensionIcon(ext)
   const status = ext.status || 'not_installed'
@@ -1050,6 +1174,7 @@ function ExtensionCard({ ext, hermesProxy, gpuBackend, agentAvailable, onDetails
           <span>{progressData?.phase_label || (progressData?.status === 'setup_hook' || status === 'setting_up' ? 'Running setup...' : 'Installing...')}</span>
         </div>
       )}
+      {ext.id === 'comfyui' && <ComfyCheckpointControl agentOffline={agentOffline} />}
       {/* Error message — expandable when long or multiline so docker-compose
           stderr isn't cut off mid-actionable-line. */}
       {isError && ext.runtime_health === 'healthy' && (
