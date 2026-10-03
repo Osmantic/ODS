@@ -3,6 +3,18 @@
 
 set -euo pipefail
 
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+    cat <<'USAGE'
+Usage: check-compatibility.sh
+
+Validate core compatibility contracts declared in manifest.json:
+manifest structure, compose canonical files, workflow catalog path,
+extension schema, ports contract, and OS support-matrix consistency.
+Takes no arguments. Exits non-zero on the first failed contract.
+USAGE
+    exit 0
+fi
+
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 MANIFEST_FILE="${ROOT_DIR}/manifest.json"
 
