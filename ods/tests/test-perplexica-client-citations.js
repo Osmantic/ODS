@@ -53,6 +53,10 @@ function checkCases(render) {
   assert.equal(render("Use ``a ` b`` now.", source), `Use ${inline("a ` b")} now.`);
   assert.equal(render("Use `x < 2 & \"hi\" 'x'`.", source),
     `Use ${inline("x &lt; 2 &amp; &quot;hi&quot; &#39;x&#39;")}.`);
+  assert.equal(render("The Python `venv` module uses `python -m venv <environment_name>`. See [1].", source),
+    `The Python ${inline("venv")} module uses ${inline("python -m venv &lt;environment_name&gt;")}. See ${cited(1)}.`);
+  assert.equal(render("Use ``<environment_name>`` with `venv`.", source),
+    `Use ${inline("&lt;environment_name&gt;")} with ${inline("venv")}.`);
   assert.equal(render("Use `[1]\n[2]` then [1].", source), `Use \`[1]\n[2]\` then ${cited(1)}.`);
   assert.equal(render("-     `x`", source), "-     `x`");
   assert.equal(render("1.     `x`", source), "1.     `x`");
@@ -64,6 +68,10 @@ function checkCases(render) {
     "[label `code`](https://x.test) and " + inline("ok"));
   assert.equal(render("<code>x</code> See [1] and `ok`", source),
     "<code>x</code> See " + cited(1) + " and `ok`");
+  assert.equal(render("<span>Use `python -m venv <env>`</span> See [1]", source),
+    "<span>Use `python -m venv <env>`</span> See " + cited(1));
+  assert.equal(render("Escaped \\`<span>\\` leaves `venv` literal; see [1].", source),
+    "Escaped \\`<span>\\` leaves `venv` literal; see " + cited(1) + ".");
   assert.equal(render("<img src=x> See [1]", source), "<img src=x> See " + cited(1));
   assert.equal(render('<a title="\nfoo > bar\n`x`\n"> See [1]', source),
     '<a title="\nfoo > bar\n`x`\n"> See ' + cited(1));
