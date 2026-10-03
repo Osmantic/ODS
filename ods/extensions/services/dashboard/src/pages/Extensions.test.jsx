@@ -192,6 +192,23 @@ it('shows bundled Perplexica in Available and asks before adding SearXNG', async
   ))
 })
 
+it('keeps a previously selected disabled built-in in Installed with Enable', async () => {
+  installFetchMock({agent_available:true,extensions:[
+    {id:'perplexica',name:'Perplexica (Deep Research)',source:'core',status:'disabled',
+      library_manageable:true,library_selected:false,library_ever_selected:true,features:[baseFeature]},
+    {id:'n8n',name:'n8n (Workflows)',source:'core',status:'disabled',
+      library_manageable:true,library_selected:false,library_ever_selected:false,features:[baseFeature]},
+  ],summary:baseSummary({total:2})})
+  render(<Extensions compact />)
+  fireEvent.click(await screen.findByRole('button',{name:'Installed 1'}))
+  expect(screen.getByRole('button',{name:'Enable Perplexica (Deep Research)'})).toBeVisible()
+  expect(screen.queryByRole('button',{name:'Add Perplexica (Deep Research)'})).toBeNull()
+  expect(screen.queryByText('n8n (Workflows)')).toBeNull()
+  fireEvent.click(screen.getByRole('button',{name:'Available 1'}))
+  expect(screen.getByRole('button',{name:'Add n8n (Workflows)'})).toBeVisible()
+  expect(screen.queryByText('Perplexica (Deep Research)')).toBeNull()
+})
+
 it('refreshes healthy dependency cards after Enable All when progress is idle', async () => {
   let selected = false
   let progressCalls = 0

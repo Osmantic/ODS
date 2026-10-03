@@ -11,7 +11,7 @@ import pytest
 import yaml
 from fastapi import HTTPException
 from models import ServiceStatus
-from routers.extensions import _assert_not_core
+from routers.extensions import _assert_not_core, _ever_selected_builtin_ids
 
 
 # --- Helpers ---
@@ -72,6 +72,17 @@ def _patch_extensions_config(monkeypatch, catalog, services=None,
 
 class TestExtensionsCatalog:
 
+    def test_untrusted_selection_history_is_not_followed(self, monkeypatch, tmp_path):
+        monkeypatch.setattr("routers.extensions.DATA_DIR", str(tmp_path))
+        history = tmp_path / ".extensions-ever-selected.json"
+        history.write_text("{broken", encoding="utf-8")
+        assert _ever_selected_builtin_ids() == set()
+        history.unlink()
+        if can_create_symlinks(tmp_path):
+            history.symlink_to(tmp_path / "symlink-target")
+            assert _ever_selected_builtin_ids() == set()
+
+
     @pytest.mark.parametrize("service_id", ["perplexica", "searxng"])
     def test_builtin_library_addback_tracks_selection_and_health(
             self, test_client, monkeypatch, tmp_path, service_id):
@@ -95,20 +106,28 @@ class TestExtensionsCatalog:
         assert row["status"] == "disabled"
         assert row["library_manageable"] is True
         assert row["library_selected"] is False
+        assert row["library_ever_selected"] is False
 
         disabled.rename(enabled)
         row = catalog_row([])
         assert row["status"] == "stopped"
         assert row["library_selected"] is True
+        assert row["library_ever_selected"] is True
 
         row = catalog_row([_make_service_status(service_id)])
         assert row["status"] == "enabled"
         assert row["library_selected"] is True
+        assert row["library_ever_selected"] is True
 
+        (tmp_path / ".extensions-ever-selected.json").write_text(
+            json.dumps({"schema_version": 1, "ever_selected": [service_id]}),
+            encoding="utf-8",
+        )
         enabled.rename(disabled)
         row = catalog_row([])
         assert row["status"] == "disabled"
         assert row["library_selected"] is False
+        assert row["library_ever_selected"] is True
 
     def test_qualified_builtin_changes_from_addable_to_healthy_without_api_restart(
             self, test_client, monkeypatch, tmp_path):

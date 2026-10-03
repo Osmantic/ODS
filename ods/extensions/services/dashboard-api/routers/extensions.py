@@ -396,6 +396,41 @@ def _qualified_builtin_selection(service_id: str) -> dict:
     return {"library_manageable": True, "library_selected": states[0]}
 
 
+def _ever_selected_builtin_ids() -> set[str]:
+    """Read the host selector's durable, nonsecret prior-selection receipt."""
+    path = Path(DATA_DIR) / ".extensions-ever-selected.json"
+    descriptor = None
+    try:
+        descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
+        selected = os.fstat(descriptor)
+        if not stat.S_ISREG(selected.st_mode) or selected.st_size > 1024 * 1024:
+            logger.warning("Invalid extension selection history file")
+            return set()
+        raw = os.read(descriptor, 1024 * 1024 + 1)
+    except FileNotFoundError:
+        return set()
+    except OSError:
+        logger.warning("Could not read extension selection history")
+        return set()
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+    if len(raw) > 1024 * 1024:
+        logger.warning("Invalid extension selection history file")
+        return set()
+    try:
+        document = json.loads(raw)
+    except (UnicodeError, json.JSONDecodeError):
+        logger.warning("Could not read extension selection history")
+        return set()
+    ids = document.get("ever_selected") if isinstance(document, dict) and document.get("schema_version") == 1 else None
+    if (not isinstance(ids, list) or len(ids) > 4096
+            or any(not isinstance(item, str) or _SERVICE_ID_RE.fullmatch(item) is None for item in ids)):
+        logger.warning("Invalid extension selection history content")
+        return set()
+    return set(ids)
+
+
 
 _OPENCODE_EXTENSION_STATUS = {
     "degraded": "installing",
@@ -1826,6 +1861,7 @@ async def extensions_catalog(
     ])
     update_states = dict(zip(user_extension_ids, update_results))
 
+    ever_selected_ids = await asyncio.to_thread(_ever_selected_builtin_ids)
     extensions = []
     for ext in current_catalog:
         status = _compute_extension_status(ext, services_by_id)
@@ -1840,6 +1876,7 @@ async def extensions_catalog(
             "locally_modified": False,
             "rollback_available": False,
         })
+        builtin_selection = _qualified_builtin_selection(ext_id)
         enriched = {
             **ext,
             "status": status,
@@ -1849,9 +1886,13 @@ async def extensions_catalog(
             "depends_on": ext.get("depends_on", []),
             "dependents": [],
             "dependency_status": {},
-            **_qualified_builtin_selection(ext_id),
+            **builtin_selection,
             **update_state,
         }
+        if builtin_selection:
+            enriched["library_ever_selected"] = (
+                builtin_selection["library_selected"] or ext_id in ever_selected_ids
+            )
         if ext_id == "opencode" and ext_id in SERVICES:
             enriched.update(_opencode_catalog_fields(status))
         llm_contract = _llm_contract_for_extension(ext)

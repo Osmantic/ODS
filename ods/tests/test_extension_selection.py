@@ -38,6 +38,33 @@ def restore(root, preset, *, compose_flags="-f docker-compose.base.yml"):
     return selection.restore_preset(root, preset, compose_flags=compose_flags)
 
 
+def test_disable_remembers_prior_selection_without_removing_service_files(tmp_path):
+    (tmp_path / "data").mkdir()
+    target = extension(tmp_path, "perplexica")
+    history = tmp_path / "data" / selection.SELECTION_HISTORY
+
+    assert selection.run("disable", tmp_path, "perplexica") == "disabled"
+    assert (target / "compose.yaml.disabled").is_file()
+    assert json.loads(history.read_text()) == {
+        "schema_version": 1, "ever_selected": ["perplexica"],
+    }
+
+    assert selection.run("enable", tmp_path, "perplexica") == "enabled"
+    assert selection.run("disable", tmp_path, "perplexica") == "disabled"
+    assert json.loads(history.read_text())["ever_selected"] == ["perplexica"]
+
+
+def test_unsafe_history_refuses_disable_before_marker_change(tmp_path):
+    (tmp_path / "data").mkdir()
+    target = extension(tmp_path, "perplexica")
+    history = tmp_path / "data" / selection.SELECTION_HISTORY
+    history.write_text("{broken", encoding="utf-8")
+
+    with pytest.raises(selection.SelectionError, match="Invalid extension selection history"):
+        selection.run("disable", tmp_path, "perplexica")
+    assert (target / "compose.yaml").is_file()
+
+
 def test_selected_compose_and_user_shadowing(tmp_path):
     (tmp_path / "data" / "user-extensions").mkdir(parents=True)
     extension(tmp_path, "search")
@@ -345,7 +372,8 @@ def test_preset_restore_orders_dependents_and_prerequisites(tmp_path, monkeypatc
     monkeypatch.setattr(selection, "_stop_for_disable", lambda *args, **kwargs: None)
 
     def ordered_replace(source, target):
-        moves.append(Path(source).parent.name)
+        if Path(source).parent.name in {"consumer", "search"}:
+            moves.append(Path(source).parent.name)
         if Path(source).parent.name == "search" and Path(target).name.endswith("disabled"):
             assert not (consumer / "compose.yaml").exists()
         if Path(source).parent.name == "consumer" and Path(target).name == "compose.yaml":
