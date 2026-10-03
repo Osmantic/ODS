@@ -2,32 +2,154 @@
   "name": "LLM Summarizer",
   "nodes": [
     {
-      "parameters": {},
-      "id": "start",
-      "name": "Start",
-      "type": "n8n-nodes-base.manualTrigger",
+      "parameters": {
+        "content": "## LLM Summarizer\n\nPost text, get a summary back from your local model.\n\n**Call it:**\n```bash\ncurl -X POST http://localhost:5678/webhook/ods-summarize \\n  -H 'Content-Type: application/json' \\n  -d '{\"text\": \"<a long article>\", \"style\": \"bullets\", \"max_words\": 120}'\n```\n\n**Body fields**\n- `text` (required) — what to summarize\n- `style` (optional) — `bullets` (default), `paragraph`, or `tldr`\n- `max_words` (optional) — target length, default 150\n\nText longer than 24000 characters is trimmed before the call so a large\npaste cannot blow past the context window and fail the whole request.\nThe response reports whether that happened.",
+        "height": 480,
+        "width": 480
+      },
+      "id": "note-overview",
+      "name": "How to use this",
+      "type": "n8n-nodes-base.stickyNote",
       "typeVersion": 1,
-      "position": [240, 300]
+      "position": [-60, 40]
     },
     {
       "parameters": {
-        "content": "## LLM Summarizer\n\nThis is a template workflow for sending text or URLs to a webhook and getting a concise AI-generated summary.\n\nCustomize the nodes below to match your setup.",
-        "height": 200,
-        "width": 400
+        "httpMethod": "POST",
+        "path": "ods-summarize",
+        "responseMode": "responseNode",
+        "options": {}
       },
-      "id": "note",
-      "name": "Setup Instructions",
-      "type": "n8n-nodes-base.stickyNote",
-      "typeVersion": 1,
-      "position": [440, 140]
+      "id": "webhook-summarize",
+      "name": "Summarize Request",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [460, 300],
+      "webhookId": "c7a4f018-2d95-4e63-8b77-9f0a5c1d2e83"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "a1",
+              "name": "text",
+              "value": "={{ ($json.body.text || '').slice(0, 24000) }}",
+              "type": "string"
+            },
+            {
+              "id": "a2",
+              "name": "truncated",
+              "value": "={{ ($json.body.text || '').length > 24000 }}",
+              "type": "boolean"
+            },
+            {
+              "id": "a3",
+              "name": "style",
+              "value": "={{ ['bullets','paragraph','tldr'].includes($json.body.style) ? $json.body.style : 'bullets' }}",
+              "type": "string"
+            },
+            {
+              "id": "a4",
+              "name": "max_words",
+              "value": "={{ Math.min(Math.max(Number($json.body.max_words) || 150, 20), 800) }}",
+              "type": "number"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "set-inputs",
+      "name": "Read Request",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [680, 300]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $json.text }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-has-text",
+      "name": "Text Present?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [900, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://llama-server:8080/v1/chat/completions",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: 'local-model', messages: [ { role: 'system', content: 'You summarize text faithfully. Never add facts that are not in the source. If the source is truncated, summarize only what you were given.' }, { role: 'user', content: 'Summarize the text below as ' + ($json.style === 'tldr' ? 'a single TL;DR sentence' : $json.style === 'paragraph' ? 'one tight paragraph' : 'concise bullet points') + ', in about ' + $json.max_words + ' words.\n\n---\n' + $json.text } ], temperature: 0.3, max_tokens: 1024, stream: false }) }}",
+        "options": {
+          "timeout": 180000
+        }
+      },
+      "id": "http-llama",
+      "name": "llama-server Summarize",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1140, 200]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ summary: $json.choices[0].message.content, truncated: $('Read Request').item.json.truncated, style: $('Read Request').item.json.style, usage: $json.usage }) }}",
+        "options": {}
+      },
+      "id": "respond-ok",
+      "name": "Return Summary",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [1380, 200]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ error: \"Body must include a non-empty 'text' field.\" }) }}",
+        "options": { "responseCode": 400 }
+      },
+      "id": "respond-bad-request",
+      "name": "Return 400",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [1140, 420]
     }
   ],
-  "connections": {},
-  "settings": {
-    "executionOrder": "v1"
+  "connections": {
+    "Summarize Request": { "main": [[{ "node": "Read Request", "type": "main", "index": 0 }]] },
+    "Read Request": { "main": [[{ "node": "Text Present?", "type": "main", "index": 0 }]] },
+    "Text Present?": {
+      "main": [
+        [{ "node": "llama-server Summarize", "type": "main", "index": 0 }],
+        [{ "node": "Return 400", "type": "main", "index": 0 }]
+      ]
+    },
+    "llama-server Summarize": { "main": [[{ "node": "Return Summary", "type": "main", "index": 0 }]] }
   },
-  "meta": {
-    "templateId": "llm-summarizer"
-  },
+  "settings": { "executionOrder": "v1" },
+  "meta": { "templateId": "llm-summarizer" },
   "tags": []
 }
