@@ -443,6 +443,8 @@ export default function Extensions({ compact = false }) {
         throw new Error((typeof detail === 'string' ? detail : detail?.message) || `Failed to ${action}`)
       }
       const data = await res.json()
+      // Manifest links and ports can change even when service status does not.
+      notifyExtensionCatalogChanged()
 
       if (action === 'enable' && Array.isArray(data.failed_services)
         && data.failed_services.includes(serviceId)) {
