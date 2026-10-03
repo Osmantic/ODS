@@ -6,6 +6,7 @@ import hashlib
 import json
 import logging
 import os
+import platform
 import re
 import shutil
 import stat
@@ -373,9 +374,26 @@ def _is_one_shot_extension(ext: dict) -> bool:
     return ext.get("port") == 0 and ext.get("startup_check", False) is False
 
 
+def _qdrant_runtime_compatible() -> bool:
+    """Check the container's kernel page size for the pinned arm64 image.
+
+    Docker Desktop and Colima may use a VM kernel with a different page size
+    from the physical host; the image runs against the container's kernel.
+    """
+    if platform.machine().lower() not in {"arm64", "aarch64"}:
+        return True
+    try:
+        page_size = os.sysconf("SC_PAGE_SIZE")
+        return isinstance(page_size, int) and 0 < page_size <= 4096
+    except (AttributeError, OSError, ValueError):
+        return False
+
+
 def _qualified_builtin_selection(service_id: str) -> dict:
     """Expose Add controls only for individually qualified built-in services."""
     if service_id not in LIBRARY_MANAGEABLE_BUILTINS or service_id in ALWAYS_ON_SERVICES:
+        return {}
+    if service_id == "qdrant" and not _qdrant_runtime_compatible():
         return {}
     directory = EXTENSIONS_DIR / service_id
     if directory.is_symlink() or not directory.is_dir():
@@ -461,6 +479,9 @@ def _compute_extension_status(ext: dict, services_by_id: dict) -> str:
     ext_id = ext["id"]
     if ext_id == "opencode" and ext_id in SERVICES:
         return _opencode_extension_status(services_by_id.get(ext_id))
+    if (ext_id == "qdrant" and ext.get("catalog_source") == "builtin"
+            and not _qdrant_runtime_compatible()):
+        return "incompatible"
     one_shot = _is_one_shot_extension(ext)
 
     # Check for in-flight install operations (progress files take priority)
@@ -4415,6 +4436,13 @@ def _activate_service(service_id: str) -> dict:
     upstream by _get_missing_deps_transitive.
     """
     ext_dir = _resolve_extension_dir(service_id)
+    # Recheck at activation even if the catalog was read before a host change.
+    if (service_id == "qdrant" and ext_dir.is_relative_to(EXTENSIONS_DIR.resolve())
+            and not _qdrant_runtime_compatible()):
+        raise HTTPException(
+            status_code=409,
+            detail="Qdrant's pinned arm64 image requires 4 KiB kernel pages",
+        )
 
     disabled_compose = ext_dir / "compose.yaml.disabled"
     enabled_compose = ext_dir / "compose.yaml"
