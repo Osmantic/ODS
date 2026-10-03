@@ -547,7 +547,7 @@ export default function Extensions({ compact = false }) {
   const STATUS_LABELS = { all: 'All', enabled: 'Enabled', cli_installed: 'CLI Installed', stopped: 'Stopped', unhealthy: 'Unhealthy', disabled: 'Disabled', installing: 'Installing', setting_up: 'Setting Up', error: 'Error', not_installed: 'Not Installed', incompatible: 'Incompatible' }
 
   // Filter extensions
-  const query = search.toLowerCase()
+  const query = search.trim().toLowerCase()
   const filtered = extensions.filter(ext => {
     if (libraryView === 'installed' && availableForAdd(ext)) return false
     if (libraryView === 'available' && !availableForAdd(ext)) return false
@@ -557,6 +557,12 @@ export default function Extensions({ compact = false }) {
     if (query && !ext.name.toLowerCase().includes(query) && !ext.description?.toLowerCase().includes(query)) return false
     return true
   })
+  if (query) {
+    // A long description can mention another app. Put the app the user named
+    // ahead of those incidental matches, especially on one-row pages.
+    const rank = ext => ext.name.toLowerCase().includes(query) || ext.id.toLowerCase().includes(query) ? 0 : 1
+    filtered.sort((a, b) => rank(a) - rank(b))
+  }
   const collections = templates
     .filter(template => !(template.services || []).some(id => unsupportedIds.has(id)))
     .map(template => ({...template, _status: getTemplateStatus(template, extensions)}))
