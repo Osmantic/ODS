@@ -708,7 +708,7 @@ describe('ODSTalk', () => {
     expect(createObjectURL).toHaveBeenCalledTimes(1)
   })
 
-  test('an older MediaSource append cannot play after a newer reply takes over', async () => {
+  test('a stale MediaSource append cannot play after a newer reply or speaker-off', async () => {
     window.localStorage.setItem('ods-talk-spoken-replies', '0')
     const play = vi.fn(() => Promise.resolve())
     vi.stubGlobal('Audio', class {
@@ -722,6 +722,7 @@ describe('ODSTalk', () => {
     })
     let mediaSourceCount = 0
     let finishFirstAppend
+    let finishThirdAppend
     vi.stubGlobal('MediaSource', class {
       static isTypeSupported() { return true }
       constructor() {
@@ -739,6 +740,7 @@ describe('ODSTalk', () => {
           },
           appendBuffer: () => {
             if (this.index === 1) finishFirstAppend = finishAppend
+            else if (this.index === 3) finishThirdAppend = finishAppend
             else globalThis.queueMicrotask(finishAppend)
           },
         }
@@ -785,6 +787,68 @@ describe('ODSTalk', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
     await waitFor(() => expect(play).toHaveBeenCalledTimes(1))
     await act(async () => { finishFirstAppend() })
+    expect(play).toHaveBeenCalledTimes(1)
+    fireEvent.change(screen.getByPlaceholderText('Message ODS'), { target: { value: 'Third reply' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
+    await waitFor(() => expect(finishThirdAppend).toBeTypeOf('function'))
+    fireEvent.click(screen.getByRole('button', { name: 'Turn spoken replies off' }))
+    await act(async () => { finishThirdAppend() })
+    expect(play).toHaveBeenCalledTimes(1)
+    vi.unstubAllGlobals()
+  })
+
+  test('speaker-off pauses active audio and unmount drops a delayed speech response', async () => {
+    window.localStorage.setItem('ods-talk-spoken-replies', '0')
+    const play = vi.fn(() => Promise.resolve())
+    const pause = vi.fn()
+    vi.stubGlobal('Audio', class {
+      constructor() { this.paused = true }
+      addEventListener() {}
+      play() { this.paused = false; return play() }
+      pause() { this.paused = true; pause() }
+    })
+    const createObjectURL = vi.fn(() => 'blob:audio')
+    vi.stubGlobal('URL', { createObjectURL, revokeObjectURL: vi.fn() })
+    let speechRequests = 0
+    let resolveDelayedSpeech
+    const audioResponse = { ok: true, status: 200, body: {},
+      blob: async () => new globalThis.Blob(['audio'], { type: 'audio/mpeg' }) }
+    const fetchMock = vi.fn(async (url, options = {}) => {
+      if (url === '/api/talk/status') return response({
+        capabilities: { text_chat: true, tts: true, audio_message: false },
+      })
+      if (url === '/api/talk/message/stream') {
+        const text = JSON.parse(options.body).text
+        return sseResponse([
+          { type: 'session', session_id: text },
+          { type: 'delta', text },
+          { type: 'complete', session_id: text, text, status: 'ok' },
+          { type: 'done' },
+        ])
+      }
+      if (url === '/api/talk/speak') {
+        speechRequests += 1
+        if (speechRequests === 2) return new Promise(resolve => { resolveDelayedSpeech = resolve })
+        return audioResponse
+      }
+      throw new Error(`unexpected request: ${url}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const { unmount } = render(<ODSTalk />)
+    expect(await screen.findByText('Ready')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Turn spoken replies on' }))
+    fireEvent.change(screen.getByPlaceholderText('Message ODS'), { target: { value: 'First reply' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
+    await waitFor(() => expect(play).toHaveBeenCalledTimes(1))
+    fireEvent.click(screen.getByRole('button', { name: 'Turn spoken replies off' }))
+    expect(pause).toHaveBeenCalledTimes(1)
+    fireEvent.click(screen.getByRole('button', { name: 'Turn spoken replies on' }))
+    fireEvent.change(screen.getByPlaceholderText('Message ODS'), { target: { value: 'Second reply' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
+    await waitFor(() => expect(speechRequests).toBe(2))
+    unmount()
+    await act(async () => { resolveDelayedSpeech(audioResponse) })
+    expect(createObjectURL).toHaveBeenCalledTimes(1)
     expect(play).toHaveBeenCalledTimes(1)
     vi.unstubAllGlobals()
   })

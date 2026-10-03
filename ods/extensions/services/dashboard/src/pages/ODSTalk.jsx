@@ -246,13 +246,6 @@ export default function ODSTalk() {
     }
   }, [spokenReplies])
 
-  useEffect(() => {
-    return () => {
-      streamControllerRef.current?.abort()
-      streamControllerRef.current = null
-    }
-  }, [])
-
   // Stop whatever speech is in flight before a new turn begins. With the
   // shared-Audio-element pattern we DON'T tear down the audio element
   // itself (that's what was triggering "session busy" on iOS) — we just
@@ -263,6 +256,7 @@ export default function ODSTalk() {
     const prev = activeSpeechRef.current
     activeSpeechRef.current = null
     if (!prev) return
+    prev.cancelled = true
     try { prev.reader?.cancel() } catch { /* already closed */ }
     try {
       if (prev.mediaSource && prev.mediaSource.readyState === 'open') {
@@ -279,6 +273,15 @@ export default function ODSTalk() {
       try { URL.revokeObjectURL(prev.objectUrl) } catch { /* ignore */ }
     }
   }, [])
+
+  useEffect(() => {
+    return () => {
+      streamControllerRef.current?.abort()
+      streamControllerRef.current = null
+      speechAttemptRef.current += 1
+      stopActiveSpeech()
+    }
+  }, [stopActiveSpeech])
 
   const speak = useCallback(async (text) => {
     if (!spokenReplies || !voiceState.tts || !text.trim()) return
@@ -816,7 +819,7 @@ export default function ODSTalk() {
             <div className="flex items-center gap-1">
               <button
                 type="button"
-                onClick={() => { speechAttemptRef.current += 1; setSpeechError(''); setSpokenReplies(value => !value) }}
+                onClick={() => { speechAttemptRef.current += 1; stopActiveSpeech(); setSpeechError(''); setSpokenReplies(value => !value) }}
                 className={`grid h-10 w-10 place-items-center rounded-full border ${
                   spokenReplies ? 'border-emerald-300 bg-emerald-50 text-emerald-700' : 'border-zinc-200 bg-white text-zinc-500'
                 }`}
