@@ -244,7 +244,7 @@ class CheckpointManager:
                         value = self._write(stage, "error", 0, "checkpoint_missing_or_changed")
                 except (CheckpointError, OSError):
                     value = self._write(stage, "error", 0, "checkpoint_missing_or_changed")
-            return value
+            return {key: item for key, item in value.items() if key != "verified_file"}
 
     def _acquire(self) -> int:
         if not _supported_host():
@@ -369,9 +369,11 @@ class CheckpointManager:
             finally:
                 os.close(source_fd)
             meta.unlink(missing_ok=True)
-            self._write(stage, "done", SIZE_BYTES,
-                        verified_file=_file_identity(os.stat(
-                            FILENAME, dir_fd=target_fd, follow_symlinks=False)))
+            final_identity = self._verify(Path(FILENAME), stage, dir_fd=target_fd)
+            if _file_identity(os.stat(
+                    FILENAME, dir_fd=target_fd, follow_symlinks=False)) != final_identity:
+                raise CheckpointError("checkpoint_changed_during_verification")
+            self._write(stage, "done", SIZE_BYTES, verified_file=final_identity)
         except _Cancelled:
             size = part.stat().st_size if part.is_file() and not part.is_symlink() else 0
             self._write(stage, "cancelled", size)
@@ -448,6 +450,8 @@ class CheckpointManager:
                 stream.flush()
                 os.fsync(stream.fileno())
             self._write(stage, "downloading", done)
+            if done != SIZE_BYTES:
+                raise CheckpointError("checkpoint_incomplete", 502)
 
     def _verify(self, path: Path, stage: Path, *, dir_fd: Optional[int] = None) -> dict:
         self._write(stage, "verifying", SIZE_BYTES)

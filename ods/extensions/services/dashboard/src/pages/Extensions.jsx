@@ -862,6 +862,7 @@ const COMFY_DOWNLOAD_ERRORS = {
   checkpoint_lock_unavailable: 'The model download could not acquire its local lock.',
   checkpoint_range_mismatch: 'The model source sent an unexpected response. You can retry safely.',
   checkpoint_transfer_timeout: 'The model download timed out. You can resume it.',
+  checkpoint_incomplete: 'The model transfer stopped early. You can resume it.',
   unsupported_checkpoint_host: 'This download action requires ODS running inside Linux or WSL.',
   checkpoint_changed_during_verification: 'The model file changed during verification. Inspect it before retrying.',
   interrupted: 'The download was interrupted. You can resume it.',

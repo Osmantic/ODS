@@ -145,6 +145,25 @@ class CheckpointTests(unittest.TestCase):
         self.assertEqual(status["error"], "checkpoint_missing_or_changed")
 
     @unittest.skipUnless(os.name == "posix", "requires POSIX no-follow and flock")
+    def test_replacement_during_publication_is_never_reported_verified(self):
+        manager, _ = self.manager()
+        real_link = os.link
+
+        def replace_after_link(*args, **kwargs):
+            real_link(*args, **kwargs)
+            foreign = self.target / "foreign.tmp"
+            foreign.write_bytes(b"X" * len(self.payload))
+            os.replace(foreign, self.target / checkpoint.FILENAME)
+
+        with patch.object(checkpoint.os, "link", side_effect=replace_after_link):
+            manager.start(checkpoint.MODEL_ID, len(self.payload))
+            status = self.finish(manager)
+        self.assertEqual(status["state"], "error")
+        self.assertEqual(status["error"], "checkpoint_hash_mismatch")
+        self.assertNotEqual(status.get("verified_file"), checkpoint._file_identity(
+            (self.target / checkpoint.FILENAME).stat()))
+
+    @unittest.skipUnless(os.name == "posix", "requires POSIX no-follow and flock")
     def test_wrong_hash_never_promotes(self):
         manager, _ = self.manager(FakeResponse(b"X" * len(self.payload)))
         manager.start(checkpoint.MODEL_ID, len(self.payload))
@@ -152,6 +171,16 @@ class CheckpointTests(unittest.TestCase):
         self.assertEqual(status["error"], "checkpoint_hash_mismatch")
         self.assertFalse((self.target / checkpoint.FILENAME).exists())
         self.assertFalse((self.root / ".ods-comfy-checkpoint" / (checkpoint.FILENAME + ".part")).exists())
+
+    @unittest.skipUnless(os.name == "posix", "requires POSIX no-follow and flock")
+    def test_short_response_keeps_verified_resume_offset(self):
+        manager, _ = self.manager(FakeResponse(self.payload[:5]))
+        manager.start(checkpoint.MODEL_ID, len(self.payload))
+        status = self.finish(manager)
+        self.assertEqual(status["error"], "checkpoint_incomplete")
+        self.assertTrue(status["resumable"])
+        self.assertEqual((self.root / ".ods-comfy-checkpoint" /
+                          (checkpoint.FILENAME + ".part")).read_bytes(), self.payload[:5])
 
     @unittest.skipUnless(os.name == "posix", "requires POSIX no-follow and flock")
     def test_resume_uses_range_and_validates_complete_file(self):
