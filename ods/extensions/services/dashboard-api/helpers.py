@@ -840,14 +840,23 @@ async def get_loaded_model() -> Optional[str]:
                 # agent's live observation through the configured transport.
                 observation = await request_agent_json("GET", "/v1/model/external-observation", timeout=6)
                 if not isinstance(observation, dict) or observation.get("status") != "verified":
+                    logger.warning("External Lemonade identity observation was not verified")
                     return None
                 loaded = observation.get("modelId")
-                return loaded.strip() if isinstance(loaded, str) and loaded.strip() else None
+                if not isinstance(loaded, str) or not loaded.strip():
+                    logger.warning("External Lemonade identity observation had no model ID")
+                    return None
+                return loaded.strip()
             status = await request_agent_json("GET", "/v1/llm/status", timeout=6)
             health = status.get("health") or {}
             loaded = health.get("model_loaded")
             return loaded.strip() if health.get("status") == "ok" and isinstance(loaded, str) and loaded.strip() else None
-        except (AgentClientError, OSError, ValueError, KeyError):
+        except (AgentClientError, OSError, ValueError, KeyError) as exc:
+            # Exception text may contain a private origin or token. A class
+            # and numeric HTTP status identify the failed layer safely.
+            status = exc.status_code if isinstance(exc, AgentHTTPError) else None
+            logger.warning("External Lemonade identity observation failed (%s, HTTP %s)",
+                           type(exc).__name__, status if status is not None else "n/a")
             return None
     if "llama-server" not in SERVICES:
         return None

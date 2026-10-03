@@ -378,7 +378,10 @@ export function useModels({observe=true} = {}) {
     ? modelLifecycle.modelId
     : null
   const backendLifecycleBusy = Boolean(modelLifecycle?.active)
-  const pollInterval = pendingActions.some(action => action.kind === 'download' || action.kind === 'delete' || action.kind === 'load') || backendLifecycleBusy
+  // A transient host proof failure must keep controls disabled, but should
+  // receive a fresh readback promptly once the managed runtime recovers.
+  const managementProofUnknown = externalLemonade && modelManagement.managed === null
+  const pollInterval = pendingActions.some(action => action.kind === 'download' || action.kind === 'delete' || action.kind === 'load') || backendLifecycleBusy || managementProofUnknown
     ? PENDING_MODEL_ACTION_POLL_MS
     : DEFAULT_POLL_MS
 
@@ -491,9 +494,18 @@ export function useModels({observe=true} = {}) {
             return
           }
           const activeModelId = conflictActiveModelId(body)
+          const detail = errorMessageFromPayload(body, 'Another model activation is in progress')
+          const code = body?.detail?.code
+          const activationConflict = (
+            (code === 'model_lifecycle_busy' && body?.detail?.activeOperation === 'model_activation') ||
+            (!code && (activeModelId || /activation already in progress/i.test(detail)))
+          )
+          if (!activationConflict) {
+            activationError = detail
+            return
+          }
           if (activeModelId === modelId && !requestedContextLength) return
 
-          const detail = errorMessageFromPayload(body, 'Another model activation is in progress')
           activationError = activeModelId
             ? `${detail} Active target: ${activeModelId}; requested target: ${modelId}.`
             : `${detail} The server did not identify the active target, so this request cannot safely join it.`

@@ -1944,6 +1944,81 @@ def test_load_model_rejects_external_lemonade_before_catalog_lookup(test_client,
     }
 
 
+def test_load_model_delegates_when_dashboard_management_proof_is_unavailable(
+    test_client, monkeypatch, tmp_path,
+):
+    """The mutating host endpoint re-proves ownership before touching state."""
+    models_router, install_dir, data_dir = _patch_model_router_paths(monkeypatch, tmp_path)
+    _write_model_library(install_dir, [{
+        "id": "qwen9b", "name": "Qwen 9B", "gguf_file": "qwen9b.gguf",
+        "size_mb": 5000, "vram_required_gb": 8, "context_length": 65536,
+        "quantization": "Q4_K_M", "specialty": "General",
+        "description": "A downloaded local model.", "llm_model_name": "qwen9b",
+    }])
+    (data_dir / "models" / "qwen9b.gguf").write_text("model", encoding="utf-8")
+    (install_dir / ".env").write_text("ODS_MODE=lemonade\n", encoding="utf-8")
+    monkeypatch.setattr(models_router, "ODS_MODE_EFFECTIVE", "lemonade")
+    monkeypatch.setattr(models_router, "LLM_BACKEND", "lemonade")
+    monkeypatch.setattr(models_router, "_external_lemonade_runtime", lambda: True)
+    monkeypatch.setattr(models_router, "_model_management", lambda: {
+        "managed": None, "canActivate": False, "canUnload": False, "running": False,
+        "reason": "Runtime management could not be verified",
+    })
+    monkeypatch.setattr(models_router, "_already_active_model", lambda *_args: (False, None))
+    monkeypatch.setattr(models_router, "_policy_activation_context", lambda *_args: 65536)
+    monkeypatch.setattr(models_router, "pixel_stream_active", lambda: False)
+    monkeypatch.setattr(models_router, "_bootstrap_upgrade_download_conflict", lambda: None)
+    calls = []
+    monkeypatch.setattr(models_router, "_call_agent_model", lambda path, body, **kwargs: (
+        calls.append((path, body, kwargs)) or {"status": "activated"}
+    ))
+
+    response = test_client.post("/api/models/qwen9b/load", headers=test_client.auth_headers)
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "activated"}
+    assert len(calls) == 1
+    assert calls[0][0] == "/v1/model/activate"
+    assert calls[0][1]["model_id"] == "qwen9b"
+
+    def host_rejects_unmanaged(*_args, **_kwargs):
+        raise models_router.HTTPException(status_code=409, detail={
+            "error": "Externally managed Lemonade cannot use local model activation",
+            "code": "external_runtime_unmanaged",
+            "requestedModelId": "qwen9b",
+        })
+
+    monkeypatch.setattr(models_router, "_call_agent_model", host_rejects_unmanaged)
+    rejected = test_client.post("/api/models/qwen9b/load", headers=test_client.auth_headers)
+    assert rejected.status_code == 409
+    assert rejected.json()["detail"]["code"] == "external_runtime_unmanaged"
+
+
+def test_load_model_does_not_noop_on_unverified_external_runtime(
+    test_client, monkeypatch, tmp_path,
+):
+    models_router, install_dir, _data_dir = _patch_model_router_paths(monkeypatch, tmp_path)
+    (install_dir / ".env").write_text("ODS_MODE=lemonade\n", encoding="utf-8")
+    monkeypatch.setattr(models_router, "ODS_MODE_EFFECTIVE", "lemonade")
+    monkeypatch.setattr(models_router, "LLM_BACKEND", "lemonade")
+    monkeypatch.setattr(models_router, "_external_lemonade_runtime", lambda: True)
+    monkeypatch.setattr(models_router, "_model_management", lambda: {
+        "managed": None, "canActivate": False, "canUnload": False, "running": False,
+    })
+    monkeypatch.setattr(models_router, "_find_loadable_model", lambda _id: {"id": "qwen9b"})
+    monkeypatch.setattr(models_router, "_already_active_model", lambda *_args: (True, "qwen9b"))
+    monkeypatch.setattr(models_router, "_verified_activation_context", lambda _loaded: 65536)
+    monkeypatch.setattr(models_router, "_policy_activation_context", lambda *_args: 65536)
+    monkeypatch.setattr(models_router, "_call_agent_model", lambda *_args, **_kwargs: (
+        _ for _ in ()).throw(AssertionError("unverified no-op reached host mutation"))
+    )
+
+    response = test_client.post("/api/models/qwen9b/load", headers=test_client.auth_headers)
+
+    assert response.status_code == 503
+    assert response.json()["detail"]["code"] == "runtime_management_unverified"
+
+
 def test_download_model_rejects_while_bootstrap_upgrade_active(test_client, monkeypatch, tmp_path):
     models_router, install_dir, _data_dir = _patch_model_router_paths(monkeypatch, tmp_path)
     _write_model_library(install_dir, [

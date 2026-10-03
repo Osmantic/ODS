@@ -40,6 +40,7 @@ def model_runtime(monkeypatch, tmp_path):
     monkeypatch.setattr(router, "get_llama_context_size", AsyncMock(return_value=None))
     monkeypatch.setattr(router, "_verified_activation_context", lambda _model: None)
     monkeypatch.setattr(router, "_get_agent_model_status", lambda: {"status": "idle"})
+    monkeypatch.setattr(router, "_fixture_real_model_paths", router._installed_model_paths, raising=False)
     monkeypatch.setattr(router, "_installed_model_paths", lambda: {})
     monkeypatch.setattr(router, "_load_library", lambda: [])
     monkeypatch.setattr(router, "pixel_stream_active", lambda: False)
@@ -94,23 +95,31 @@ def test_transient_management_failure_is_unknown_and_recovers_without_granting_c
     test_client, model_runtime, monkeypatch,
 ):
     healthy = False
+    activation_attempts = []
 
     def request(method, path, **kwargs):
-        assert method == "GET" and path == "/v1/model/management"
-        if not healthy:
-            raise model_runtime.AgentHTTPError(503, "fixture interop timeout")
-        return MANAGED
-
-    def no_lookup(_model_id):
-        raise AssertionError("Unverified activation reached catalog lookup")
+        if method == "GET" and path == "/v1/model/management":
+            if not healthy:
+                raise model_runtime.AgentHTTPError(503, "fixture interop timeout")
+            return MANAGED
+        assert method == "POST" and path == "/v1/model/activate"
+        activation_attempts.append(kwargs["payload"])
+        raise model_runtime.AgentUnavailable("fixture host unavailable")
 
     monkeypatch.setattr(model_runtime, "request_agent_json", request)
-    monkeypatch.setattr(model_runtime, "_find_loadable_model", no_lookup)
+    monkeypatch.setattr(model_runtime, "_find_loadable_model", lambda _id: {
+        "id": "fixture", "gguf_file": "fixture.gguf",
+    })
+    monkeypatch.setattr(model_runtime, "_already_active_model", lambda *_args: (False, None))
+    monkeypatch.setattr(model_runtime, "_policy_activation_context", lambda *_args: None)
     unavailable = test_client.get("/api/models", headers=test_client.auth_headers)
     assert unavailable.status_code == 200
     assert unavailable.json()["modelManagement"] == UNVERIFIED
     blocked = test_client.post("/api/models/fixture/load", headers=test_client.auth_headers)
-    assert blocked.status_code == 409
+    # A catalog lookup is read-only. The host still owns the mutating proof,
+    # and an unavailable host must reject the activation without a success.
+    assert blocked.status_code == 503
+    assert activation_attempts == [{"model_id": "fixture"}]
 
     healthy = True
     recovered = test_client.get("/api/models", headers=test_client.auth_headers)
@@ -138,7 +147,6 @@ def test_nonexternal_catalog_never_requests_management(test_client, model_runtim
 
 @pytest.mark.parametrize("capability", [
     UNMANAGED,
-    {**MANAGED, "managed": False},
     {**MANAGED, "canActivate": False, "running": False},
 ])
 def test_external_activation_requires_owned_and_available_capability(
@@ -153,6 +161,37 @@ def test_external_activation_requires_owned_and_available_capability(
     response = test_client.post("/api/models/fixture/load", headers=test_client.auth_headers)
     assert response.status_code == 409
     assert response.json()["detail"]["code"] == "external_runtime_unmanaged"
+
+
+def test_malformed_management_requires_host_reproof_before_activation(
+    test_client, model_runtime, monkeypatch,
+):
+    requests = []
+
+    def request(method, path, **_kwargs):
+        requests.append((method, path))
+        if method == "GET":
+            # Inconsistent evidence is projected as unknown, not ownership.
+            return {**MANAGED, "managed": False}
+        assert method == "POST" and path == "/v1/model/activate"
+        raise model_runtime.AgentUnavailable("fixture host unavailable")
+
+    monkeypatch.setattr(model_runtime, "request_agent_json", request)
+    monkeypatch.setattr(model_runtime, "_find_loadable_model", lambda _id: {
+        "id": "fixture", "gguf_file": "fixture.gguf",
+    })
+    monkeypatch.setattr(model_runtime, "_already_active_model", lambda *_args: (False, None))
+    monkeypatch.setattr(model_runtime, "_policy_activation_context", lambda *_args: None)
+
+    assert model_runtime._model_management() == UNVERIFIED
+    requests.clear()
+    response = test_client.post("/api/models/fixture/load", headers=test_client.auth_headers)
+
+    assert response.status_code == 503
+    assert requests == [
+        ("GET", "/v1/model/management"),
+        ("POST", "/v1/model/activate"),
+    ]
 
 
 def test_owned_external_activation_preserves_existing_context_transaction(
@@ -259,3 +298,47 @@ def test_runtime_control_preserves_failure_and_invalidates_status(
     assert response.status_code == status
     assert response.json()["detail"] == detail
     assert invalidated == [True]
+
+
+def test_catalog_keeps_duplicate_copy_available_only_from_verified_managed_store(
+    test_client, model_runtime, monkeypatch, tmp_path,
+):
+    from pathlib import Path
+    from model_stores import resolve_model_file
+    router = model_runtime
+    data = Path(router.DATA_DIR)
+    (data / "models").mkdir()
+    windows = tmp_path / "windows-models"
+    windows.mkdir()
+    (data / "models/model.gguf").write_bytes(b"source-cache")
+    (windows / "model.gguf").write_bytes(b"managed-copy")
+    # The Dashboard container sees containerPath; the registry remains the
+    # authority for its mount mapping, not a path supplied in a request.
+    (data / "model-stores.json").write_text(json.dumps({"schemaVersion": 1, "stores": [{
+        "id": "windows-lemonade", "hostPath": str(windows),
+        "containerPath": "/model-stores/windows-lemonade",
+    }]}))
+    import model_stores
+    original_registry = model_stores.registered_stores
+    monkeypatch.setattr(model_stores, "registered_stores",
+                        lambda directory, **kwargs: original_registry(directory, container=False))
+    monkeypatch.setattr(router, "_installed_model_paths", router._fixture_real_model_paths)
+    observed = []
+    original_builder = router.build_models_payload
+    def build(*args, **kwargs):
+        observed.append(kwargs["downloaded_files_override"])
+        return original_builder(*args, **kwargs)
+    monkeypatch.setattr(router, "build_models_payload", build)
+    monkeypatch.setattr(router, "request_agent_json", lambda *args, **kwargs:
+                        {**MANAGED, "modelStoreId": "windows-lemonade"})
+    response = test_client.get("/api/models", headers=test_client.auth_headers)
+    assert response.status_code == 200
+    assert observed[-1]["model.gguf"] == windows / "model.gguf"
+    assert resolve_model_file(data, "model.gguf") is None
+    monkeypatch.setattr(router, "request_agent_json", lambda *args, **kwargs:
+                        {**UNMANAGED, "modelStoreId": "windows-lemonade"})
+    response = test_client.get("/api/models", headers=test_client.auth_headers)
+    assert response.status_code == 200
+    assert "model.gguf" not in observed[-1]
+    assert (data / "models/model.gguf").read_bytes() == b"source-cache"
+    assert (windows / "model.gguf").read_bytes() == b"managed-copy"

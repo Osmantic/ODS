@@ -73,6 +73,10 @@ if [[ "${1:-}" == "compose" && " $* " == *" down "* ]]; then
     [[ "${DOCKER_DOWN_EXIT_CODE:-0}" == "0" ]] || printf 'fixture Compose diagnostic\n' >&2
     exit "${DOCKER_DOWN_EXIT_CODE:-0}"
 fi
+if [[ "${1:-}" == "inspect" ]]; then
+    printf '[]\n'
+    exit 0
+fi
 exit 0
 EOF
     chmod +x "$stub_dir/docker"
@@ -190,6 +194,63 @@ main() {
     mkdir -p "$stub_dir"
     make_stub_bin "$stub_dir"
 
+    # Docker may still have ODS containers even when its CLI has disappeared
+    # from this shell's PATH. In that state no ownership or completion proof is
+    # possible, so refuse before retiring services or deleting owner data.
+    cat > "$TMP_DIR/hide-docker-cli.sh" <<'EOF'
+ODS_DOCKER_PROBE_COUNT=0
+command() {
+    if [[ "${1:-}" == "-v" && "${2:-}" == "docker" ]]; then
+        ODS_DOCKER_PROBE_COUNT=$((ODS_DOCKER_PROBE_COUNT + 1))
+        if (( ODS_DOCKER_PROBE_COUNT >= ODS_DOCKER_MISSING_AT )); then return 1; fi
+    fi
+    builtin command "$@"
+}
+EOF
+    local missing_at mode
+    for missing_at in 1 2 3; do
+        for mode in purge keep-data; do
+            local no_docker_install="$TMP_DIR/no-docker-$missing_at-$mode-install"
+            local no_docker_home="$TMP_DIR/no-docker-$missing_at-$mode-home"
+            local no_docker_log="$TMP_DIR/no-docker-$missing_at-$mode.log"
+            local no_docker_sudo="$TMP_DIR/no-docker-$missing_at-$mode-sudo.log"
+            make_install "$no_docker_install"
+            mkdir -p "$no_docker_home/.local/bin"
+            ln -s "$no_docker_install/ods-cli" "$no_docker_home/.local/bin/ods"
+            printf 'retain owner data\n' > "$no_docker_install/data/owner.txt"
+            cat > "$no_docker_install/lib/pixel-uninstall.sh" <<'EOF'
+ods_pixel_uninstall_managed() { touch "$INSTALL_DIR/pixel-retired"; }
+EOF
+            : > "$no_docker_log"
+            : > "$no_docker_sudo"
+            local -a no_docker_args=()
+            [[ "$mode" == keep-data ]] && no_docker_args=(--keep-data)
+            if BASH_ENV="$TMP_DIR/hide-docker-cli.sh" ODS_DOCKER_MISSING_AT="$missing_at" \
+                DOCKER_LOG="$no_docker_log" SUDO_LOG="$no_docker_sudo" \
+                run_uninstall "$no_docker_install" "$no_docker_home" "$stub_dir" \
+                    "${no_docker_args[@]}" 2>"$TMP_DIR/no-docker-error"; then
+                fail "uninstall must refuse when Docker CLI disappears at probe $missing_at ($mode)"
+            fi
+            [[ -f "$no_docker_install/ods-uninstall.sh" &&
+               -f "$no_docker_install/data/owner.txt" &&
+               -L "$no_docker_home/.local/bin/ods" ]] ||
+                fail "missing Docker CLI must retain installed files, data, and links ($missing_at/$mode)"
+            if [[ "$missing_at" -lt 3 ]]; then
+                [[ ! -e "$no_docker_install/pixel-retired" && ! -s "$no_docker_sudo" ]] ||
+                    fail "early missing Docker CLI must refuse before Pixel or sudo ($missing_at/$mode)"
+                grep -qiF 'installation untouched' "$TMP_DIR/no-docker-error" ||
+                    fail "early Docker refusal must explain intact installation ($missing_at/$mode)"
+            else
+                grep -qF 'Pixel or host services may already be retired' "$TMP_DIR/no-docker-error" ||
+                    fail "late Docker refusal must disclose partial service retirement ($mode)"
+            fi
+            if grep -Eq ' down |^volume rm ' "$no_docker_log"; then
+                fail "missing Docker CLI must not attempt unverified Docker cleanup ($missing_at/$mode)"
+            fi
+        done
+    done
+    pass "missing Docker CLI refuses purge and keep-data at all three custody gates"
+
     # Refusal must precede every privileged/service cleanup and preserve data.
     local unsafe_install="$TMP_DIR/unsafe-install" unsafe_home="$TMP_DIR/unsafe-home"
     local unsafe_docker="$TMP_DIR/unsafe-docker.log" unsafe_sudo="$TMP_DIR/unsafe-sudo.log"
@@ -287,8 +348,8 @@ EOF
     ln -s "$install_keep/ods-cli" "$home_keep/.local/bin/ods"
     DOCKER_LOG="$log_keep" SUDO_LOG="$sudo_log" run_uninstall "$install_keep" "$home_keep" "$stub_dir" --keep-data
 
-    grep -qF 'compose -f docker-compose.base.yml -f docker-compose.cpu.yml down --remove-orphans' "$log_keep" \
-        || fail "uninstall must use saved .compose-flags for docker compose down"
+    grep -qF 'compose -f docker-compose.base.yml -f docker-compose.cpu.yml --profile * down --remove-orphans' "$log_keep" \
+        || fail "uninstall must use saved .compose-flags and all profiles for docker compose down"
     if grep -qF 'down -v --remove-orphans' "$log_keep"; then
         fail "--keep-data must not remove compose volumes with -v"
     fi
@@ -305,8 +366,8 @@ EOF
     make_install "$install_purge"
     DOCKER_LOG="$log_purge" SUDO_LOG="$sudo_log" run_uninstall "$install_purge" "$home_purge" "$stub_dir"
 
-    grep -qF 'compose -f docker-compose.base.yml -f docker-compose.cpu.yml down --remove-orphans' "$log_purge" \
-        || fail "normal uninstall must stop Compose without deleting volumes before custody review"
+    grep -qF 'compose -f docker-compose.base.yml -f docker-compose.cpu.yml --profile * down --remove-orphans' "$log_purge" \
+        || fail "normal uninstall must stop Compose with all profiles without deleting volumes before custody review"
     if grep -qF 'down -v' "$log_purge"; then
         fail "normal uninstall must not let Compose delete volumes before custody review"
     fi
@@ -323,8 +384,8 @@ EOF
         run_uninstall "$failed_install" "$failed_home" "$stub_dir" 2>"$TMP_DIR/failed-error"; then
         fail "Compose down failure must fail uninstall"
     fi
-    grep -qF 'compose -f docker-compose.base.yml -f docker-compose.cpu.yml down --remove-orphans' "$failed_docker" \
-        || fail "failure fixture must reach the existing Compose down command"
+    grep -qF 'compose -f docker-compose.base.yml -f docker-compose.cpu.yml --profile * down --remove-orphans' "$failed_docker" \
+        || fail "failure fixture must reach the profile-aware Compose down command"
     assert_no_name_cleanup "$failed_docker"
     [[ -f "$failed_install/ods-uninstall.sh" && -f "$failed_install/data/owner.txt" && \
         -L "$failed_home/.local/bin/ods" ]] \
@@ -340,6 +401,74 @@ EOF
         || fail "Compose failure must disclose the partial retirement state"
     rm -f -- "$diagnostic"
     pass "Compose down failure retains remaining installation without a name-based fallback"
+
+    # A surviving owned container (e.g. a profile-disabled service that
+    # `down` did not enumerate) must block install-root deletion and must
+    # not be removed by name.
+    local survivor_install="$TMP_DIR/survivor-install" survivor_home="$TMP_DIR/survivor-home"
+    local survivor_docker="$TMP_DIR/survivor-docker.log" survivor_sudo="$TMP_DIR/survivor-sudo.log"
+    local survivor_stub="$TMP_DIR/survivor-bin"
+    make_install "$survivor_install"
+    mkdir -p "$survivor_home" "$survivor_stub"
+    printf 'retain owner data\n' > "$survivor_install/data/owner.txt"
+    # Override the docker stub to report a surviving owned container after
+    # down, and to fail if any name-based removal is attempted. Use a
+    # separate stub directory so earlier tests are unaffected.
+    cp "$stub_dir/systemctl" "$stub_dir/sudo" "$stub_dir/id" "$stub_dir/pgrep" "$stub_dir/uname" "$survivor_stub/"
+    cat > "$survivor_stub/docker" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${DOCKER_LOG:?}"
+if [[ "${1:-}" == "compose" && " $* " == *" config --format json "* ]]; then
+    printf '{"name":"ods","volumes":{}}\n'
+    exit 0
+fi
+if [[ "${1:-}" == "compose" && " $* " == *" down "* ]]; then
+    exit 0
+fi
+if [[ "${1:-}" == "ps" ]]; then
+    if [[ " $* " == *" label=com.docker.compose.project=ods"* ]]; then
+        printf '%s\n' "$(printf 'a%.0s' {1..64})"
+        exit 0
+    fi
+    exit 0
+fi
+if [[ "${1:-}" == "inspect" ]]; then
+    printf '[{"Id":"%s","Config":{"Labels":{"com.docker.compose.project":"ods","com.docker.compose.service":"llama-server","com.docker.compose.project.working_dir":"%s","com.docker.compose.project.config_files":"%s/docker-compose.base.yml"}},"Mounts":[]}]\n' \
+        "$(printf 'a%.0s' {1..64})" "$SURVIVOR_INSTALL" "$SURVIVOR_INSTALL"
+    exit 0
+fi
+exit 0
+EOF
+    chmod +x "$survivor_stub/docker"
+    if DOCKER_LOG="$survivor_docker" SUDO_LOG="$survivor_sudo" \
+        SURVIVOR_INSTALL="$survivor_install" \
+        run_uninstall "$survivor_install" "$survivor_home" "$survivor_stub" 2>"$TMP_DIR/survivor-error"; then
+        fail "surviving owned container must block uninstall"
+    fi
+    [[ -f "$survivor_install/ods-uninstall.sh" && -f "$survivor_install/data/owner.txt" ]] \
+        || fail "surviving owned container must retain installation and data"
+    grep -qF 'Owned ODS containers remain after Compose down' "$TMP_DIR/survivor-error" \
+        || fail "surviving owned container must explain the refusal"
+    assert_no_name_cleanup "$survivor_docker"
+    pass "surviving owned container blocks uninstall without name-based removal"
+
+    : > "$survivor_docker"
+    if DOCKER_LOG="$survivor_docker" SUDO_LOG="$survivor_sudo" \
+        SURVIVOR_INSTALL="$survivor_install" \
+        run_uninstall "$survivor_install" "$survivor_home" "$survivor_stub" --keep-data 2>"$TMP_DIR/survivor-keep-error"; then
+        fail "--keep-data must still reject a surviving owned container"
+    fi
+    [[ -f "$survivor_install/ods-uninstall.sh" && -f "$survivor_install/data/owner.txt" ]] \
+        || fail "--keep-data survivor refusal must retain installation and data"
+    grep -qF 'Owned ODS containers remain after Compose down' "$TMP_DIR/survivor-keep-error" \
+        || fail "--keep-data must reach the owned-container completion gate"
+    grep -qF -- '--profile * down --remove-orphans' "$survivor_docker" \
+        || fail "--keep-data must request all profiles"
+    if grep -Eq '^volume rm | down -v' "$survivor_docker"; then
+        fail "--keep-data survivor refusal must not remove volumes"
+    fi
+    assert_no_name_cleanup "$survivor_docker"
+    pass "--keep-data still rejects surviving containers and retains data"
 
     mapfile -t sudo_calls < "$sudo_log"
     local sudo_credentials_seen=0

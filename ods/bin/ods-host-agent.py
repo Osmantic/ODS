@@ -1994,11 +1994,14 @@ def _wsl_runtime_registration() -> dict | None:
     return value
 
 
-def _managed_wsl_lemonade(env: dict) -> dict:
+def _managed_wsl_lemonade(env: dict, *, deadline: float | None = None) -> dict:
     """Prove Windows ownership and the installer's exact model-store binding."""
     if not _wsl_lemonade.candidate(env):
         return {'managed': False, 'running': False}
-    value = _wsl_lemonade.status(INSTALL_DIR, env)
+    if deadline is None:
+        value = _wsl_lemonade.status(INSTALL_DIR, env)
+    else:
+        value = _wsl_lemonade.status(INSTALL_DIR, env, deadline=deadline)
     registration = _wsl_runtime_registration()
     if value.get('managed') is not True:
         if registration is not None:
@@ -2006,12 +2009,22 @@ def _managed_wsl_lemonade(env: dict) -> dict:
         return value
     if registration is None:
         raise RuntimeError('Re-run the Windows installer to register its managed model store')
-    store = _wsl_lemonade.model_store(INSTALL_DIR, env, value)
-    plan_path = _wsl_lemonade.plan_path(INSTALL_DIR, env, value)
+    if deadline is not None and time.monotonic() >= deadline:
+        raise TimeoutError('Windows runtime management proof exceeded its deadline')
+    if deadline is None:
+        store = _wsl_lemonade.model_store(INSTALL_DIR, env, value)
+        plan_path = _wsl_lemonade.plan_path(INSTALL_DIR, env, value)
+    else:
+        store = _wsl_lemonade.model_store(INSTALL_DIR, env, value, deadline=deadline)
+        plan_path = _wsl_lemonade.plan_path(INSTALL_DIR, env, value, deadline=deadline)
     stores = _model_stores.registered_stores(INSTALL_DIR / 'data')
+    if deadline is not None and time.monotonic() >= deadline:
+        raise TimeoutError('Windows runtime management proof exceeded its deadline')
     if (str(plan_path) != registration['planPath']
             or not any(item['id'] == registration['modelStoreId'] and item['path'] == store for item in stores)):
         raise RuntimeError('Windows runtime model-store ownership changed; re-run the installer')
+    value = dict(value)
+    value['modelStoreId'] = registration['modelStoreId']
     return value
 
 
@@ -2034,30 +2047,76 @@ def _model_management_snapshot() -> tuple[int, dict]:
     """Coalesce dashboard polling only; mutations always prove ownership fresh."""
     global _model_management_cache
     unavailable = (503, {'error': 'Windows runtime management could not be verified'})
-    if not _model_management_lock.acquire(timeout=19):
+    started = time.monotonic()
+    # Leave time for the host-agent response inside Dashboard's 20-second call.
+    request_deadline = started + 18
+    if not _model_management_lock.acquire(
+            timeout=max(0.0, request_deadline - time.monotonic())):
+        logger.warning('Windows runtime management unavailable reason=lock_timeout elapsed_ms=%d',
+                       max(0, int((time.monotonic() - started) * 1000)))
         return unavailable
     try:
-        env = load_env(INSTALL_DIR / '.env')
-        key = _model_management_key(env)
-        cached = _model_management_cache
-        if cached is not None and cached[0] == key and time.monotonic() < cached[1]:
-            return cached[2], dict(cached[3])
-        try:
-            value = _managed_wsl_lemonade(env)
-            managed = value.get('managed') is True
-            running = managed and value.get('running') is True
-            result = (200, {'managed': managed, 'canActivate': running,
-                            'canUnload': managed, 'running': running})
-        except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as exc:
-            logger.warning('Windows runtime management verification failed: %s', exc)
-            result = unavailable
-        if _model_management_key(load_env(INSTALL_DIR / '.env')) != key:
+        for attempt in range(2):
+            if time.monotonic() >= request_deadline:
+                return unavailable
+            env = load_env(INSTALL_DIR / '.env')
+            key = _model_management_key(env)
+            if attempt and key[1][1] is not None:
+                return unavailable
+            if attempt == 0:
+                cached = _model_management_cache
+                if (cached is not None and cached[0] == key and time.monotonic() < cached[1]
+                        and _model_management_key(load_env(INSTALL_DIR / '.env')) == key):
+                    return cached[2], dict(cached[3])
+            try:
+                # Lock wait and both read-only proofs share Dashboard's budget.
+                value = _managed_wsl_lemonade(env, deadline=request_deadline)
+                managed = value.get('managed') is True
+                running = managed and value.get('running') is True
+                result = (200, {'managed': managed, 'canActivate': running,
+                                'canUnload': managed, 'running': running})
+                if managed and isinstance(value.get('modelStoreId'), str):
+                    result[1]['modelStoreId'] = value['modelStoreId']
+            except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as exc:
+                logger.warning('Windows runtime management unavailable reason=verification_error '
+                               'error_type=%s elapsed_ms=%d', type(exc).__name__,
+                               max(0, int((time.monotonic() - started) * 1000)))
+                result = unavailable
+            current_key = _model_management_key(load_env(INSTALL_DIR / '.env'))
+            if current_key == key:
+                if time.monotonic() >= request_deadline:
+                    result = unavailable
+                # Cache failures as failures too, so concurrent pollers do not
+                # each launch another expensive Windows controller.
+                _model_management_cache = (key, time.monotonic() + 1, *result)
+                return result[0], dict(result[1])
+
             _model_management_cache = None
-            return unavailable  # A completed lifecycle cannot reuse its earlier proof.
-        # Cache failures as failures too, preventing a burst of polls from
-        # launching another expensive controller for each waiting request.
-        _model_management_cache = (key, time.monotonic() + 1, *result)
-        return result[0], dict(result[1])
+            allowed_operations = {
+                'artifact_verification', 'model_activation', 'model_delete',
+                'model_download', 'model_recovery', 'model_runtime',
+                'opencode_setup', 'opencode_start', 'pixel_access_mode',
+                'pixel_open_app', 'pixel_providers', 'pixel_settings',
+                'pixel_startup_reproof', 'system_update',
+            }
+            before, after = key[1], current_key[1]
+            before_operation = (before[1] if before[1] in allowed_operations else
+                                'none' if before[1] is None else 'unknown')
+            after_operation = (after[1] if after[1] in allowed_operations else
+                               'none' if after[1] is None else 'unknown')
+            logger.warning('Windows runtime management unavailable reason=key_drift '
+                           'revision_before=%d revision_after=%d '
+                           'operation_before=%s operation_after=%s route_key_changed=%s '
+                           'elapsed_ms=%d', before[0], after[0], before_operation,
+                           after_operation, key[2] != current_key[2],
+                           max(0, int((time.monotonic() - started) * 1000)))
+            # A completed lifecycle cannot reuse its earlier proof. A stable
+            # route with no active operation may take exactly one fresh proof.
+            if (attempt or result[0] != 200 or key[0] != current_key[0]
+                    or key[2] != current_key[2] or after[1] is not None
+                    or request_deadline - time.monotonic() < 3):
+                return unavailable
+        return unavailable
     finally:
         _model_management_lock.release()
 
@@ -12811,7 +12870,8 @@ class AgentHandler(BaseHTTPRequestHandler):
             code, value = _model_management_snapshot()
             json_response(self, code, value, no_store=True)
         except (OSError, ValueError, RuntimeError, subprocess.TimeoutExpired) as exc:
-            logger.warning('Windows runtime management verification failed: %s', exc)
+            logger.warning('Windows runtime management unavailable reason=verification_error '
+                           'error_type=%s', type(exc).__name__)
             json_response(self, 503, {'error': 'Windows runtime management could not be verified'}, no_store=True)
 
     def _handle_model_runtime(self, operation):
@@ -13321,23 +13381,10 @@ class AgentHandler(BaseHTTPRequestHandler):
             context_length = requested_context_length
         llama_server_image = model.get("llama_server_image")
 
-        # Verify GGUF exists on disk (with path traversal protection)
-        target = _installed_model_file(gguf_file)
-        if target is None:
-            json_response(self, 400, {"error": "Model file not downloaded or empty, ambiguous, or outside registered model stores"})
-            return
-        if wsl_managed.get('managed') is True:
-            try:
-                windows_store = _wsl_lemonade.model_store(INSTALL_DIR, persisted_env, wsl_managed)
-                if target.parent != windows_store:
-                    raise ValueError('Download this model into the registered Windows runtime store before activating it')
-            except (OSError, ValueError):
-                json_response(self, 409, {'error': 'The model is outside the managed Windows runtime store'})
-                return
-        models_dir = target.parent
-        if not _model_file_ready(target):
-            json_response(self, 400, {"error": f"Model file not downloaded or empty: {gguf_file}"})
-            return
+        # The proved runtime store resolves copies without weakening generic ambiguity.
+        target = None
+
+        activation_manifest = None
         if model_from_catalog:
             activation_manifest = _model_download_manifest(model)
             if activation_manifest is None:
@@ -13347,6 +13394,55 @@ class AgentHandler(BaseHTTPRequestHandler):
                     {"error": f"Model catalog integrity manifest is invalid: {model_id}"},
                 )
                 return
+        if wsl_managed.get('managed') is True:
+            try:
+                windows_store = _wsl_lemonade.model_store(INSTALL_DIR, persisted_env, wsl_managed)
+            except (OSError, ValueError):
+                json_response(self, 409, {'error': 'The model is outside the managed Windows runtime store'})
+                return
+            target = _model_stores.safe_artifact(windows_store, gguf_file)
+            missing_catalog_artifacts = model_from_catalog and any(
+                _model_stores.safe_artifact(windows_store, artifact["file"]) is None
+                for artifact in activation_manifest["artifacts"]
+            )
+            if missing_catalog_artifacts:
+                # A prior interrupted copy may have published the main GGUF
+                # already. Resolve one source outside the owned destination
+                # so a retry can complete missing companion artifacts too.
+                sources = {
+                    source
+                    for store in _model_stores.registered_stores(INSTALL_DIR / "data")
+                    if store["path"] != windows_store
+                    if (source := _model_stores.safe_artifact(store["path"], gguf_file)) is not None
+                }
+                if len(sources) != 1:
+                    json_response(self, 400, {"error": "Model artifacts are incomplete and the source is missing or ambiguous"})
+                    return
+                source = next(iter(sources))
+                try:
+                    _wsl_lemonade.stage_catalog_model(
+                        INSTALL_DIR, persisted_env, wsl_managed, source.parent, activation_manifest,
+                    )
+                except _wsl_lemonade.StageError as exc:
+                    json_response(self, 409, {'error': str(exc), 'code': exc.code})
+                    return
+                except (OSError, ValueError) as exc:
+                    json_response(self, 409, {'error': f'Could not stage model into the managed Windows runtime store: {exc}'})
+                    return
+                target = _model_stores.safe_artifact(windows_store, gguf_file)
+            if target is None and not model_from_catalog:
+                json_response(self, 409, {'error': 'The model is outside the managed Windows runtime store'})
+                return
+        else:
+            target = _installed_model_file(gguf_file)
+        if target is None:
+            json_response(self, 400, {"error": "Model file not downloaded or empty, ambiguous, or outside registered model stores"})
+            return
+        models_dir = target.parent
+        if not _model_file_ready(target):
+            json_response(self, 400, {"error": f"Model file not downloaded or empty: {gguf_file}"})
+            return
+        if model_from_catalog:
             manifest_valid, integrity_error = _verify_model_manifest(
                 models_dir,
                 activation_manifest,
@@ -13363,9 +13459,23 @@ class AgentHandler(BaseHTTPRequestHandler):
                 )
                 return
 
-        selected_store = _model_stores.store_for_model(INSTALL_DIR / "data", gguf_file, container=bool(os.environ.get("ODS_HOST_INSTALL_DIR")))
+        container_store = bool(os.environ.get("ODS_HOST_INSTALL_DIR"))
+        if wsl_managed.get('managed') is True:
+            selected_store = next((
+                store for store in _model_stores.registered_stores(INSTALL_DIR / "data", container=container_store)
+                if store["path"] == target.parent and store["id"] == wsl_managed["modelStoreId"]
+            ), None)
+            if selected_store is None:
+                json_response(self, 409, {"error": "The managed Windows model store registration changed; retry activation"})
+                return
+        else:
+            selected_store = _model_stores.store_for_model(INSTALL_DIR / "data", gguf_file, container=container_store)
         try:
-            local_runtime_profile = _model_stores.lemonade_profile(INSTALL_DIR / "data", gguf_file, container=bool(os.environ.get("ODS_HOST_INSTALL_DIR")))
+            local_runtime_profile = (
+                _model_stores.native_profile(selected_store, gguf_file)
+                if wsl_managed.get('managed') is True
+                else _model_stores.lemonade_profile(INSTALL_DIR / "data", gguf_file, container=container_store)
+            )
             if model_from_catalog and not local_runtime_profile:
                 runtime_block = _default_runtime_incompatibility(model, persisted_env)
                 if runtime_block:
@@ -15464,24 +15574,43 @@ def _read_external_lemonade_observation(env: dict, *, include_stats: bool = Fals
     )
     payloads = []
     paths = ["/api/v1/health", "/api/v1/models"]
+    stages = ["health_start", "models"]
     if include_stats:
         paths.append("/api/v1/stats")
+        stages.append("stats")
     paths.append("/api/v1/health")
-    for path in paths:
-        if _lemonade_uses_container_transport(env):
-            payloads.append(json.loads(_lemonade_container_body(env, path.removeprefix("/api/v1"))))
-            continue
-        request = urllib_request.Request(
-            f"{base_url}{path}", headers={"Accept": "application/json"}
-        )
-        with opener.open(request, timeout=5) as response:
-            raw = response.read(4 * 1024 * 1024 + 1)
-        if len(raw) > 4 * 1024 * 1024:
-            raise ValueError("External Lemonade response is too large")
-        payloads.append(json.loads(raw.decode("utf-8")))
-    observed = _verified_external_lemonade_observation(payloads[0], payloads[1])
-    if _verified_external_lemonade_observation(payloads[-1], payloads[1]) != observed:
-        raise ValueError("External Lemonade identity changed during observation")
+    stages.append("health_end")
+    for path, stage in zip(paths, stages):
+        started = time.monotonic()
+        try:
+            if _lemonade_uses_container_transport(env):
+                payload = json.loads(_lemonade_container_body(env, path.removeprefix("/api/v1")))
+            else:
+                request = urllib_request.Request(
+                    f"{base_url}{path}", headers={"Accept": "application/json"}
+                )
+                with opener.open(request, timeout=5) as response:
+                    raw = response.read(4 * 1024 * 1024 + 1)
+                if len(raw) > 4 * 1024 * 1024:
+                    raise ValueError("External Lemonade response is too large")
+                payload = json.loads(raw.decode("utf-8"))
+        except Exception as exc:
+            # Only fixed stage names, duration and exception class reach logs;
+            # the upstream exception may contain a private origin or token.
+            logger.warning("External Lemonade observation %s failed after %d ms (%s)",
+                           stage, int((time.monotonic() - started) * 1000), type(exc).__name__)
+            raise
+        elapsed_ms = int((time.monotonic() - started) * 1000)
+        if elapsed_ms >= 2000:
+            logger.warning("External Lemonade observation %s was slow (%d ms)", stage, elapsed_ms)
+        payloads.append(payload)
+    try:
+        observed = _verified_external_lemonade_observation(payloads[0], payloads[1])
+        if _verified_external_lemonade_observation(payloads[-1], payloads[1]) != observed:
+            raise ValueError("External Lemonade identity changed during observation")
+    except ValueError:
+        logger.warning("External Lemonade observation failed validation")
+        raise
     if include_stats:
         # Lemonade stats belong to its most recently accessed WrappedServer,
         # as does health.model_loaded. Other loaded runtimes could race this

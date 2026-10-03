@@ -269,6 +269,9 @@ if command -v docker >/dev/null 2>&1; then
         log_error "No Compose files resolved; installation untouched. Restore the installation's Compose files, then retry uninstall."
         exit 1
     fi
+else
+    log_error "Docker CLI unavailable; owned containers cannot be verified. Installation untouched. Restore Docker and retry uninstall."
+    exit 1
 fi
 
 # Compose down -v cannot see volumes from disabled extension fragments. Record
@@ -293,6 +296,9 @@ if command -v docker >/dev/null 2>&1; then
             exit 1
         fi
     fi
+else
+    log_error "Docker CLI became unavailable during preflight; installation untouched. Restore Docker and retry uninstall."
+    exit 1
 fi
 
 # Fail before stopping/removing services if models cannot be retained without
@@ -410,7 +416,8 @@ if command -v docker &>/dev/null; then
     # "no configuration file provided" even from the correct install dir.
     # Do not pass -v: Compose would delete selected volumes before our
     # postflight custody check can verify their unchanged identity.
-    compose_down_args=(down --remove-orphans)
+    # Include inactive profiles, such as local inference after a provider switch.
+    compose_down_args=(--profile '*' down --remove-orphans)
 
     validate_uninstall_compose "${compose_args[@]}" || {
         log_error "Saved extension recipes changed during uninstall; remaining installation retained."
@@ -424,6 +431,15 @@ if command -v docker &>/dev/null; then
         exit 1
     fi
     rm -f -- "$compose_error_log"
+
+    # Keep-data preserves volumes, but all owned containers must be gone
+    # before installation files or data can be removed.
+    if ! python3 "$SCRIPT_DIR/scripts/uninstall-compose-volumes.py" containers-complete \
+        "$INSTALL_DIR" "$volume_snapshot" "$SCRIPT_DIR"; then
+        log_error "Owned ODS containers remain after Compose down; installation files and data retained for recovery."
+        exit 1
+    fi
+
     if [[ "$KEEP_DATA" != "true" ]] &&
         ! python3 "$SCRIPT_DIR/scripts/uninstall-compose-volumes.py" complete \
             "$INSTALL_DIR" "$volume_snapshot" "$SCRIPT_DIR"; then
@@ -436,7 +452,8 @@ if command -v docker &>/dev/null; then
     log_ok "Verified Docker cleanup complete"
     log_info "Docker images and shared build cache retained"
 else
-    log_warn "Docker not found — skipping container cleanup"
+    log_error "Docker CLI became unavailable before container cleanup; installation files and data retained for recovery. Pixel or host services may already be retired."
+    exit 1
 fi
 
 # 2. Stop and remove host service definitions

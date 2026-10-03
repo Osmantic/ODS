@@ -1,11 +1,15 @@
 """Read-only completion gate tests; fake commands never contact the live stack."""
 import os
+import importlib.util
+import signal
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 import subprocess
 import tempfile
 import threading
+import time
 import unittest
+from unittest.mock import patch
 
 
 SCRIPT = Path(__file__).resolve().parents[1] / 'installers/verify-wsl-portal.sh'
@@ -14,7 +18,7 @@ SCRIPT = Path(__file__).resolve().parents[1] / 'installers/verify-wsl-portal.sh'
 @unittest.skipUnless(os.name == 'posix', 'requires Bash')
 class PortalReadiness(unittest.TestCase):
     def probe(self, *, service=0, health='{"status":"ok"}', http=0, port='3001', available=True,
-              api_code=200, api_body=None, not_ready_first=0):
+              api_code=200, api_body=None, not_ready_first=0, expected_api_requests=None):
         served = {'count': 0}
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -65,6 +69,8 @@ esac
             result = subprocess.run(['bash', str(SCRIPT), str(root)], env=env,
                                     capture_output=True, text=True, timeout=15)
             self.assertNotIn('do-not-print', result.stdout + result.stderr)
+            if expected_api_requests is not None:
+                self.assertEqual(served['count'], expected_api_requests)
             calls = (root / 'calls').read_text() if (root / 'calls').exists() else ''
             return result, calls
 
@@ -97,14 +103,113 @@ esac
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('Portal API verification failed', result.stderr)
 
-    def test_unavailable_reports_nonsecret_detail(self):
-        result, _ = self.probe(not_ready_first=1)
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn('Model is loading', result.stderr)
-        self.assertIn('model_unavailable', result.stderr)
+    def test_cold_model_proof_retries_with_fresh_status_and_succeeds(self):
+        result, _ = self.probe(not_ready_first=1, expected_api_requests=2)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('Portal API confirms the owner agent is available', result.stdout)
+
+    def test_persistent_model_unavailable_exhausts_budget_without_success(self):
+        spec = importlib.util.spec_from_file_location('verify_portal_api', SCRIPT.parent / 'verify-portal-api.py')
+        verifier = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(verifier)
+        clock = [0.0]
+
+        def sleep(seconds):
+            clock[0] += seconds
+
+        with tempfile.TemporaryDirectory() as directory:
+            Path(directory, '.env').write_text('DASHBOARD_API_KEY=do-not-print\n')
+            response = {"available": False, "state": "model_unavailable", "detail": "Model is loading"}
+            with patch.object(verifier, 'fetch_status', return_value=response) as fetch:
+                with self.assertRaises(verifier.PortalCheckFailed) as failure:
+                    verifier.verify(directory, settle_seconds=5,
+                                    monotonic=lambda: clock[0], sleep=sleep)
+        self.assertEqual(fetch.call_count, 3)
+        self.assertEqual(clock[0], 5)
+        self.assertIn('Model is loading [model_unavailable]', str(failure.exception))
+        self.assertNotIn('do-not-print', str(failure.exception))
+
+    def test_model_unavailable_without_boolean_availability_does_not_retry(self):
+        spec = importlib.util.spec_from_file_location('verify_portal_api', SCRIPT.parent / 'verify-portal-api.py')
+        verifier = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(verifier)
+        with tempfile.TemporaryDirectory() as directory:
+            Path(directory, '.env').write_text('DASHBOARD_API_KEY=do-not-print\n')
+            with patch.object(verifier, 'fetch_status', return_value={
+                    'state': 'model_unavailable', 'detail': 'incomplete status'}) as fetch:
+                with self.assertRaises(verifier.PortalCheckFailed):
+                    verifier.verify(directory, settle_seconds=5,
+                                    monotonic=lambda: 0, sleep=lambda _: self.fail('unexpected retry'))
+        fetch.assert_called_once()
+
+    def test_late_available_response_does_not_pass_the_gate(self):
+        spec = importlib.util.spec_from_file_location('verify_portal_api', SCRIPT.parent / 'verify-portal-api.py')
+        verifier = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(verifier)
+        clock = [0.0]
+
+        def late_status(*_args, **_kwargs):
+            clock[0] = 6.0
+            return {'available': True}
+
+        with tempfile.TemporaryDirectory() as directory:
+            Path(directory, '.env').write_text('DASHBOARD_API_KEY=do-not-print\n')
+            with patch.object(verifier, 'fetch_status', side_effect=late_status) as fetch:
+                with self.assertRaisesRegex(verifier.PortalCheckFailed, 'after the readiness deadline'):
+                    verifier.verify(directory, settle_seconds=5, monotonic=lambda: clock[0])
+        fetch.assert_called_once()
+
+    def test_slow_drip_status_cannot_extend_the_wall_deadline(self):
+        spec = importlib.util.spec_from_file_location('verify_portal_api', SCRIPT.parent / 'verify-portal-api.py')
+        verifier = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(verifier)
+        body = b'{"available":true}'
+
+        class DripHandler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(200)
+                self.send_header('Content-Length', str(len(body)))
+                self.end_headers()
+                for byte in body:
+                    try:
+                        self.wfile.write(bytes([byte]))
+                        self.wfile.flush()
+                    except (BrokenPipeError, ConnectionResetError):
+                        return
+                    time.sleep(0.1)  # below the per-socket inactivity timeout
+
+            def log_message(self, *args):
+                pass
+
+        server = ThreadingHTTPServer(('127.0.0.1', 0), DripHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        previous_handler = signal.getsignal(signal.SIGALRM)
+        try:
+            with tempfile.TemporaryDirectory() as directory:
+                Path(directory, '.env').write_text(
+                    f'DASHBOARD_API_PORT={server.server_port}\nDASHBOARD_API_KEY=do-not-print\n')
+                started = time.monotonic()
+                with self.assertRaisesRegex(verifier.PortalCheckFailed, 'within the readiness deadline'):
+                    verifier.verify(directory, settle_seconds=0.25)
+                self.assertLess(time.monotonic() - started, 1.5)
+                self.assertEqual(signal.getitimer(signal.ITIMER_REAL)[0], 0)
+                self.assertIs(signal.getsignal(signal.SIGALRM), previous_handler)
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    def test_nonpositive_wall_budget_never_starts_network_request(self):
+        spec = importlib.util.spec_from_file_location('verify_portal_api', SCRIPT.parent / 'verify-portal-api.py')
+        verifier = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(verifier)
+        with patch.object(verifier, 'fetch_status') as fetch:
+            with self.assertRaises(verifier.PortalCheckFailed):
+                verifier._fetch_status_before_deadline('3002', 'do-not-print', 0)
+        fetch.assert_not_called()
 
     def test_authentication_failure_names_the_key_without_printing_it(self):
-        result, _ = self.probe(api_code=401)
+        result, _ = self.probe(api_code=401, expected_api_requests=1)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('rejected the installed DASHBOARD_API_KEY', result.stderr)
 

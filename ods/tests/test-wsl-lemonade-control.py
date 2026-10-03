@@ -277,7 +277,7 @@ class ControlTests(unittest.TestCase):
             root = drive.joinpath(*bridge.PureWindowsPath(PLAN["ModelsDir"]).parts[1:])
             root.mkdir(parents=True)
 
-            def translate(path, direction):
+            def translate(path, direction, *, deadline=None):
                 if (path, direction) == ("C:\\", "-u"):
                     return str(drive)
                 if (path, direction) == (str(root), "-w"):
