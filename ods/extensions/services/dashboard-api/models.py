@@ -58,6 +58,7 @@ class ModelInfo(BaseModel):
 
 class BootstrapStatus(BaseModel):
     active: bool
+    phase: Optional[str] = None
     model_name: Optional[str] = None
     percent: Optional[float] = None
     downloaded_gb: Optional[float] = None

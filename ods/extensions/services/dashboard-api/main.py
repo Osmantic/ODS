@@ -284,6 +284,14 @@ def _readiness_check(
     return payload
 
 
+def _bootstrap_activity(phase: Optional[str]) -> str:
+    return {
+        "starting": "being prepared",
+        "verifying": "being verified",
+        "swapping": "being activated",
+    }.get(phase, "still downloading")
+
+
 def _build_readiness_payload(
     *,
     service_statuses: list[ServiceStatus],
@@ -301,7 +309,7 @@ def _build_readiness_payload(
     if chat_ready:
         chat_detail = f"{loaded_model} loaded with {context_size} context"
     elif bootstrap_info.active:
-        chat_detail = "Full model is still downloading; bootstrap mode may be limited"
+        chat_detail = f"Full model is {_bootstrap_activity(bootstrap_info.phase)}; bootstrap mode may be limited"
     elif not llama_healthy:
         chat_detail = "llama-server is not healthy"
     elif not loaded_model:
@@ -566,7 +574,7 @@ def _build_model_readiness_payload(
     if not meets_hermes_minimum:
         issues.append(f"Context is below Hermes minimum ({HERMES_MIN_CONTEXT}).")
     if bootstrap_info.active:
-        issues.append("Full model is still downloading; bootstrap model is serving first-run traffic.")
+        issues.append(f"Full model is {_bootstrap_activity(bootstrap_info.phase)}; bootstrap model is serving first-run traffic.")
 
     if ready and bootstrap_info.active:
         status = "bootstrap"
@@ -587,6 +595,7 @@ def _build_model_readiness_payload(
         } if model_info else None,
         "bootstrap": {
             "active": bootstrap_info.active,
+            "phase": bootstrap_info.phase,
             "model": bootstrap_info.model_name,
             "percent": bootstrap_info.percent,
             "downloadedGb": bootstrap_info.downloaded_gb,
@@ -1632,6 +1641,7 @@ async def _build_api_status() -> dict:
     if bootstrap_info.active:
         bootstrap_data = {
             "active": True, "model": bootstrap_info.model_name or "Full Model",
+            "phase": bootstrap_info.phase,
             "percent": bootstrap_info.percent or 0,
             "bytesDownloaded": int((bootstrap_info.downloaded_gb or 0) * 1024**3),
             "bytesTotal": int((bootstrap_info.total_gb or 0) * 1024**3),
