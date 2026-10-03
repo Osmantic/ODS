@@ -155,6 +155,36 @@ it('disables selected Open WebUI with retained-data copy and an explicit host se
   expect(await screen.findByText('Open WebUI disabled. Chats and settings were kept.')).toBeVisible()
 })
 
+it('puts a matching app name ahead of proxy descriptions in Library search', async () => {
+  installFetchMock({
+    agent_available: true,
+    extensions: [
+      { id: 'ods-proxy', name: 'ODS (Web)', description: 'LAN proxy for Open WebUI', status: 'not_installed', source: 'core', features: [baseFeature] },
+      { id: 'open-webui', name: 'Open WebUI (Chat)', description: 'Optional chat app', status: 'disabled', source: 'core', features: [baseFeature] },
+    ],
+    summary: baseSummary({ total: 2 }),
+  })
+  render(<Extensions compact />)
+  await screen.findByText('Open WebUI (Chat)')
+  fireEvent.change(screen.getByLabelText('Search extensions'), { target: { value: 'WebUI' } })
+  expect([...document.querySelectorAll('.extension-entry h3')].map(node => node.textContent))
+    .toEqual(['Open WebUI (Chat)', 'ODS (Web)'])
+})
+
+it('keeps a service findable by ID when its catalog description is concise', async () => {
+  installFetchMock({
+    agent_available: true,
+    extensions: [
+      { id: 'ods-proxy', name: 'ODS (Web)', description: 'Optional LAN gateway for Dashboard and chat', status: 'not_installed', source: 'core', features: [baseFeature] },
+    ],
+    summary: baseSummary({ total: 1 }),
+  })
+  render(<Extensions compact />)
+  await screen.findByText('ODS (Web)')
+  fireEvent.change(screen.getByLabelText('Search extensions'), { target: { value: 'proxy' } })
+  expect(screen.getByText('ODS (Web)')).toBeVisible()
+})
+
 it('does not offer WebUI add-back when the host does not support it', async () => {
   installFetchMock({
     agent_available: true,
