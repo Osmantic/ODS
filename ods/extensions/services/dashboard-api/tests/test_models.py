@@ -46,6 +46,60 @@ def test_huggingface_saved_token_controls_metadata(monkeypatch, tmp_path, saved)
     )
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["search", "avatar"])
+async def test_huggingface_retry_keeps_original_cache_credentials(monkeypatch, tmp_path, operation):
+    import routers.models as models_router
+
+    env = tmp_path / ".env"
+    env.write_text("HF_TOKEN=\n", encoding="utf-8")
+    monkeypatch.setattr(models_router, "INSTALL_DIR", str(tmp_path))
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+    monkeypatch.setattr(models_router, "_HF_SEARCH_CACHE", {})
+    monkeypatch.setattr(models_router, "_HF_AVATAR_CACHE", {})
+    headers = []
+
+    class Client:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def get(self, url, **kwargs):
+            authorization = kwargs["headers"].get("Authorization")
+            headers.append(authorization)
+            if len(headers) == 1:
+                # Settings rotates credentials while the first attempt waits.
+                env.write_text("HF_TOKEN=hf_new_private_token\n", encoding="utf-8")
+                raise httpx.ReadTimeout("first attempt timed out")
+            identity = "private" if authorization else "public"
+            payload = ([{"id": f"org/{identity}", "private": bool(authorization)}]
+                       if operation == "search" else {"avatarUrl": f"/avatars/{identity}.png"})
+            return httpx.Response(200, json=payload)
+
+    monkeypatch.setattr(models_router.httpx, "AsyncClient", Client)
+
+    async def lookup():
+        if operation == "search":
+            return await models_router.search_huggingface_models(q="model", sort="downloads", limit=20)
+        return await models_router._hf_author_avatar_url("org")
+
+    first = await lookup()
+    env.write_text("HF_TOKEN=\n", encoding="utf-8")
+    second = await lookup()
+    assert headers == [None, None]
+    assert second == first
+    if operation == "search":
+        assert first["authenticated"] is False
+        assert [model["id"] for model in first["models"]] == ["org/public"]
+    else:
+        assert first == "https://huggingface.co/avatars/public.png"
+
+
 def test_active_model_reader_preserves_unmatched_quote(monkeypatch, tmp_path):
     import routers.models as models_router
 
@@ -475,7 +529,7 @@ async def test_huggingface_avatar_resolves_organization_then_user_and_caches(mon
         }, httpx.Headers()
 
     monkeypatch.setattr(models_router, "_HF_AVATAR_CACHE", {})
-    monkeypatch.setattr(models_router, "_hf_cache_identity", lambda: "public")
+    monkeypatch.setattr(models_router, "_hf_cache_identity", lambda *_args: "public")
     monkeypatch.setattr(models_router, "_hf_get_json", profile)
 
     first = await models_router._hf_author_avatar_url("unsloth")
