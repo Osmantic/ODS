@@ -11102,6 +11102,12 @@ class AgentHandler(BaseHTTPRequestHandler):
             logger.warning("env_update rejected: invalid JSON from %s: %s", client_ip, exc)
             json_response(self, 400, {"error": f"Invalid JSON: {exc}"})
             return
+        # read_json_body() rejects non-object JSON; this handler bypasses it
+        # for the larger size limit, so apply the same check here.
+        if not isinstance(body, dict):
+            logger.warning("env_update rejected: JSON body is not an object from %s", client_ip)
+            json_response(self, 400, {"error": "JSON body must be an object"})
+            return
 
         raw_text = body.get("raw_text")
         if not isinstance(raw_text, str) or not raw_text.strip():
