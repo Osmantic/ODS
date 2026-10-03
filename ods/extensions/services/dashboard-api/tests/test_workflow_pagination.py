@@ -17,9 +17,14 @@ from security import verify_api_key
 @pytest.fixture
 def n8n_inventory(monkeypatch):
     cursor = base64.b64encode(json.dumps({"limit": 100, "offset": 100}, separators=(",", ":")).encode()).decode()
-    state = {"cursor": cursor, "seen": [], "status": 200, "repeat": False, "key": "first-key"}
+    state = {"cursor": cursor, "seen": [], "status": 200, "repeat": False, "key": "first-key", "deleted": []}
 
     class Handler(BaseHTTPRequestHandler):
+        def do_DELETE(self):
+            state["deleted"].append((self.path, self.headers.get("X-N8N-API-KEY")))
+            self.send_response(204)
+            self.end_headers()
+
         def do_GET(self):
             query = parse_qs(urlsplit(self.path).query)
             key = self.headers.get("X-N8N-API-KEY")
@@ -90,6 +95,14 @@ def test_repeated_cursor_is_refused(n8n_inventory):
     state["repeat"] = True
     assert client.get("/api/workflows").status_code == 502
     assert len(state["seen"]) == 2
+
+
+def test_remove_finds_later_page_workflow_and_targets_its_id(n8n_inventory):
+    state, client = n8n_inventory
+    response = client.delete("/api/workflows/beta")
+    assert response.status_code == 200
+    assert response.json()["workflowId"] == "beta"
+    assert state["deleted"] == [("/api/v1/workflows/second", state["key"])]
 
 
 @pytest.mark.asyncio
