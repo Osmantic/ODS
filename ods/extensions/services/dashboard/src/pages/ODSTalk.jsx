@@ -131,6 +131,7 @@ export default function ODSTalk() {
   const recorderRef = useRef(null)
   const recordingChunksRef = useRef([])
   const streamControllerRef = useRef(null)
+  const audioMessageControllerRef = useRef(null)
   // React state disables the buttons visibly; this synchronous guard closes
   // the smaller window before that state update paints.
   const approvalRequestsRef = useRef(new Set())
@@ -138,6 +139,10 @@ export default function ODSTalk() {
   // is in flight before starting the next reply's audio.
   const activeSpeechRef = useRef(null)
   const speechAttemptRef = useRef(0)
+  // A send can outlive the render that created it. Its captured speak()
+  // callback must observe the owner's latest speaker choice and mount state.
+  const spokenRepliesRef = useRef(spokenReplies)
+  const mountedRef = useRef(true)
   // One persistent Audio element reused across all replies. iOS Safari's
   // audio session model is single-element-per-page; if we create a new
   // Audio() per turn (the obvious React-y pattern), the OS audio router
@@ -275,16 +280,20 @@ export default function ODSTalk() {
   }, [])
 
   useEffect(() => {
+    mountedRef.current = true
     return () => {
+      mountedRef.current = false
       streamControllerRef.current?.abort()
       streamControllerRef.current = null
+      audioMessageControllerRef.current?.abort()
+      audioMessageControllerRef.current = null
       speechAttemptRef.current += 1
       stopActiveSpeech()
     }
   }, [stopActiveSpeech])
 
   const speak = useCallback(async (text) => {
-    if (!spokenReplies || !voiceState.tts || !text.trim()) return
+    if (!mountedRef.current || !spokenRepliesRef.current || !voiceState.tts || !text.trim()) return
     const attempt = ++speechAttemptRef.current
     const reportSpeechError = (message) => {
       if (speechAttemptRef.current === attempt) setSpeechError(message)
@@ -452,7 +461,7 @@ export default function ODSTalk() {
     } catch {
       reportSpeechError('Spoken reply failed. Your text reply is still available.')
     }
-  }, [spokenReplies, voiceState.tts, stopActiveSpeech])
+  }, [voiceState.tts, stopActiveSpeech])
 
   const submitApproval = useCallback(async (messageId, choice) => {
     if (!['once', 'deny'].includes(choice) || approvalRequestsRef.current.has(messageId)) return
@@ -689,6 +698,9 @@ export default function ODSTalk() {
   const sendAudioFile = useCallback(async (file) => {
     if (!file || sending || status === 'expired') return
     setSending(true)
+    const controller = new AbortController()
+    audioMessageControllerRef.current?.abort()
+    audioMessageControllerRef.current = controller
     const userId = makeId('voice')
     const assistantId = makeId('assistant')
     setMessages(items => [
@@ -704,7 +716,9 @@ export default function ODSTalk() {
         method: 'POST',
         body,
         credentials: 'same-origin',
+        signal: controller.signal,
       })
+      if (!mountedRef.current || controller.signal.aborted) return
       if (resp.status === 401) {
         setStatus('expired')
         setStatusText('Session expired. Scan the owner card again.')
@@ -715,6 +729,7 @@ export default function ODSTalk() {
         throw new Error(await parseError(resp, 'Voice message could not be sent.'))
       }
       const data = await resp.json()
+      if (!mountedRef.current || controller.signal.aborted) return
       const reply = data.text || 'I did not get a response back.'
       setMessages(items => items.map(item => {
         if (item.id === userId) return { ...item, text: data.transcript || 'Voice message', status: 'done' }
@@ -723,13 +738,15 @@ export default function ODSTalk() {
       }))
       speak(reply)
     } catch (err) {
+      if (!mountedRef.current || controller.signal.aborted || err.name === 'AbortError') return
       setMessages(items => items.map(item => {
         if (item.id === userId) return { ...item, status: 'error' }
         if (item.id === assistantId) return { ...item, text: err.message || 'Something went wrong.', status: 'error' }
         return item
       }))
     } finally {
-      setSending(false)
+      if (audioMessageControllerRef.current === controller) audioMessageControllerRef.current = null
+      if (mountedRef.current) setSending(false)
     }
   }, [refreshStatus, sending, speak, status])
 
@@ -819,7 +836,13 @@ export default function ODSTalk() {
             <div className="flex items-center gap-1">
               <button
                 type="button"
-                onClick={() => { speechAttemptRef.current += 1; stopActiveSpeech(); setSpeechError(''); setSpokenReplies(value => !value) }}
+                onClick={() => {
+                  spokenRepliesRef.current = !spokenRepliesRef.current
+                  speechAttemptRef.current += 1
+                  stopActiveSpeech()
+                  setSpeechError('')
+                  setSpokenReplies(spokenRepliesRef.current)
+                }}
                 className={`grid h-10 w-10 place-items-center rounded-full border ${
                   spokenReplies ? 'border-emerald-300 bg-emerald-50 text-emerald-700' : 'border-zinc-200 bg-white text-zinc-500'
                 }`}
