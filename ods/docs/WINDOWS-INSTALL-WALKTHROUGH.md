@@ -111,6 +111,12 @@ files, so Enter keeps the existing enabled services. If that record is missing
 or incomplete on an existing installation, choose a feature set explicitly;
 the installer will not silently treat it as a fresh Core install. Selection
 changes do not delete the optional services' data directories.
+Hermes alone does not select SearXNG. Recommended, Perplexica, and legacy
+OpenClaw still select it; a SearXNG service enabled through Dashboard Library
+is retained on an ordinary installer rerun. Choosing **Core Only** explicitly
+turns it off without deleting its data. `-NoRecommended` leaves an active
+SearXNG selection in place, since older installs did not record which feature
+first enabled it; disable SearXNG in Library if that is no longer wanted.
 
 ### Important: repo checkout vs runtime directory
 
@@ -230,7 +236,9 @@ cd $installDir
 docker compose ps
 ```
 
-You should see containers: `llama-server`, `open-webui`, `searxng`, etc.
+The running containers follow your selected services. A fresh native Core
+install omits optional services such as SearXNG; selecting Hermes alone does
+not add it. Full Stack includes it.
 
 ### Test GPU Access
 

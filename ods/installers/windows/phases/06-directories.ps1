@@ -349,9 +349,9 @@ if ($amdLemonadeRuntime -and $amdLemonadeRuntime.container_image) {
     $_lemonadeServerImage = $amdLemonadeRuntime.container_image
 }
 $_enableWebSearch = Test-ODSWindowsSearxngNeeded `
+    -EnableSearxng $enableSearxng `
     -EnableRecommended $enableRecommended `
     -EnableDeepResearch $enableDeepResearch `
-    -EnableHermes $enableHermes `
     -EnableOpenClaw $enableOpenClaw
 $envResult = New-ODSEnv `
     -InstallDir     $installDir `

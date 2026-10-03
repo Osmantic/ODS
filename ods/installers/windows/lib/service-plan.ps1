@@ -168,6 +168,7 @@ function Resolve-ODSWindowsHermesSelection {
 function New-ODSWindowsServicePlan {
     param(
         [bool]$EnableRecommended,
+        [bool]$EnableSearxng = $false,
         [bool]$EnableVoice,
         [Nullable[bool]]$EnableWhisper = $null,
         [Nullable[bool]]$EnableTts = $null,
@@ -197,9 +198,9 @@ function New-ODSWindowsServicePlan {
     $ttsEnabled = if ($null -eq $EnableTts) { $EnableVoice } else { [bool]$EnableTts }
 
     $enableSearxng = Test-ODSWindowsSearxngNeeded `
+        -EnableSearxng $EnableSearxng `
         -EnableRecommended $EnableRecommended `
         -EnableDeepResearch $EnableDeepResearch `
-        -EnableHermes $EnableHermes `
         -EnableOpenClaw $EnableOpenClaw
     # Native OpenCode and the switchboard readiness check use LiteLLM's host
     # port. Keep this gateway whenever the stable ods/current route is enabled.
@@ -248,17 +249,17 @@ function New-ODSWindowsServicePlan {
 function Test-ODSWindowsSearxngNeeded {
     <#
     .SYNOPSIS
-        SearXNG is required for Open WebUI web search, Perplexica, and agent web tools.
-        It is not only a "recommended" extra.
+        SearXNG is selected independently or by Recommended, Perplexica, and
+        legacy OpenClaw. Hermes can be used without this local search backend.
     #>
     param(
+        [bool]$EnableSearxng = $false,
         [bool]$EnableRecommended = $false,
         [bool]$EnableDeepResearch = $false,
-        [bool]$EnableHermes = $false,
         [bool]$EnableOpenClaw = $false
     )
 
-    return [bool]($EnableRecommended -or $EnableDeepResearch -or $EnableHermes -or $EnableOpenClaw)
+    return [bool]($EnableSearxng -or $EnableRecommended -or $EnableDeepResearch -or $EnableOpenClaw)
 }
 
 function Get-ODSWindowsRemoteProviderSelections {
