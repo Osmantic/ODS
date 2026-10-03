@@ -5529,7 +5529,6 @@ def test_tcp_native_health_is_not_mistaken_for_installed_cli(monkeypatch, tmp_pa
 @pytest.mark.parametrize("endpoint", ["catalog", "demo"])
 @pytest.mark.parametrize("health", ["healthy", "unhealthy", "unknown", None])
 def test_runtime_health_does_not_erase_failed_action(test_client, monkeypatch, tmp_path, endpoint, health):
-    from routers import extensions
     ext = _make_catalog_ext("demo")
     _patch_extensions_config(monkeypatch, [ext], services={"demo": {}}, tmp_path=tmp_path)
     progress = tmp_path / "extension-progress/demo.json"
