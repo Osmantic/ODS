@@ -555,6 +555,16 @@ _macos_apply_fresh_feature_defaults() {
     fi
 }
 
+_macos_include_retained_pixel_compose() {
+    if ! ${ENABLE_PIXEL:-false} || ! ${_PIXEL_RETAINED:-false}; then
+        return 0
+    fi
+    local _resolved
+    _resolved="$(/usr/bin/python3 "$LIB_DIR/pixel-native-stack.py" \
+        --install-dir "$INSTALL_DIR" --flags "${COMPOSE_FLAGS[*]}")" || return 1
+    read -r -a COMPOSE_FLAGS <<< "$_resolved"
+}
+
 _macos_resolve_webui_selection() {
     [[ -f "${INSTALL_DIR}/.env" ]] || return 0
     WEBUI_RETAINED="$(read_env_value "${INSTALL_DIR}/.env" ENABLE_OPEN_WEBUI)"
@@ -3301,6 +3311,16 @@ else
         COMPOSE_FLAGS+=("-f" "$MACOS_CLOUD_AUTH_OVERLAY")
     fi
 
+    # Retained native Pixel: select its fixed Compose fragments before any
+    # validation, planning, or launch. Protected source verification ran earlier; the
+    # resolver preserves the validated selection and any migration volumes.
+    if $ENABLE_PIXEL && $_PIXEL_RETAINED; then
+        if ! _macos_include_retained_pixel_compose; then
+            ai_err "Retained native Pixel Compose selection needs review. Keep its receipts and configuration intact."
+            exit 1
+        fi
+    fi
+
     # ── Validate compose files exist before launching ──
     for ((i=0; i<${#COMPOSE_FLAGS[@]}; i++)); do
         if [[ "${COMPOSE_FLAGS[$i]}" == "-f" ]] && (( i+1 < ${#COMPOSE_FLAGS[@]} )); then
@@ -3544,7 +3564,7 @@ for service in (data.get("services") or {}).values():
     # surface unrelated Dockerfile failures and make a healthy selected stack
     # look broken.
     ai "Rebuilding local-built images..."
-    _macos_candidate_build_services=(dashboard dashboard-api model-router remote-provider-egress remote-provider-ssh-tunnel ape token-spy privacy-shield brave-search pixel-inference langfuse-minio langfuse-minio-init)
+    _macos_candidate_build_services=(dashboard dashboard-api model-router remote-provider-egress remote-provider-ssh-tunnel ape token-spy privacy-shield brave-search pixel-inference pixel-edge pixel-model-relay pixel-workspace-preview langfuse-minio langfuse-minio-init)
     if ! _macos_enabled_services="$(docker compose "${COMPOSE_FLAGS[@]}" config --services 2>>"$ODS_LOG_FILE")"; then
         ai_err "Could not resolve macOS compose services for local image rebuilds."
         ai "Inspect compose config with: cd '$INSTALL_DIR' && docker compose ${COMPOSE_FLAGS[*]} config --services"
@@ -3768,11 +3788,13 @@ for service in (data.get("services") or {}).values():
             fi
             ai_ok "Native Pixel activated for Dashboard/Portal"
         fi
-        COMPOSE_FLAGS+=(
-            -f extensions/services/pixel-model-relay/compose.yaml.disabled
-            -f extensions/services/pixel-edge/compose.yaml.disabled
-            -f installers/macos/pixel-native.compose.yaml.disabled
-        )
+        if ! $_PIXEL_RETAINED; then
+            COMPOSE_FLAGS+=(
+                -f extensions/services/pixel-model-relay/compose.yaml.disabled
+                -f extensions/services/pixel-edge/compose.yaml.disabled
+                -f installers/macos/pixel-native.compose.yaml.disabled
+            )
+        fi
     fi
 
     # Save compose flags for ods-macos.sh
