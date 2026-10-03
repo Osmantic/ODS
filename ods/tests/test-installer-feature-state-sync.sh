@@ -54,6 +54,7 @@ run_case() {
         ENABLE_WORKFLOWS=false
         ENABLE_RAG=false
         ENABLE_HERMES=false
+        ENABLE_PIXEL=false
         ENABLE_OPENCLAW="$selected"
         ENABLE_OPENCODE=false
         ENABLE_COMFYUI="$comfyui_requested"
