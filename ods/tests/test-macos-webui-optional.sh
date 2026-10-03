@@ -56,8 +56,11 @@ printf 'ODS_MODE=local\n' > "$INSTALL_DIR/.env"
 if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
     compose_base=(docker compose -f "$root/docker-compose.base.yml" \
         -f "$root/installers/macos/docker-compose.macos.yml")
-    WEBUI_SECRET=test-placeholder "${compose_base[@]}" config --services \
-        | grep -qx 'open-webui' \
+    # Capture the complete output before grepping. With pipefail, grep -q can
+    # close the pipe after finding WebUI and make Compose fail with SIGPIPE.
+    base_services="$(WEBUI_SECRET=test-placeholder "${compose_base[@]}" config --services)" \
+        || { echo 'Base macOS Compose config failed' >&2; exit 1; }
+    grep -qx 'open-webui' <<< "$base_services" \
         || { echo 'WebUI option omitted its service' >&2; exit 1; }
     lean_services="$(WEBUI_SECRET=test-placeholder "${compose_base[@]}" \
         -f "$root/docker-compose.gateway-only.yml" config --services)"
