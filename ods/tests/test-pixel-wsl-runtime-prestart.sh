@@ -15,11 +15,13 @@ ods_sudo() {
     [[ "${BRIDGE_FAIL:-false}" != true || "$1" != /bin/bash ]]
 }
 write_desktop_env() {
-    printf '%s\n' 'PIXEL_RUNTIME_BIND_PROPAGATION=rshared' \
-        'PIXEL_INGRESS_RUNTIME_DIR=/mnt/wsl/ods-portal-runtime/ingress' \
-        'PIXEL_PREVIEW_RUNTIME_DIR=/mnt/wsl/ods-portal-runtime/preview' > "$INSTALL_DIR/.env"
+    printf '%s\n' 'PIXEL_RUNTIME_BIND_PROPAGATION=rprivate' \
+        'PIXEL_INGRESS_RUNTIME_DIR=/mnt/wsl/ods-portal-sockets/ingress' \
+        'PIXEL_PREVIEW_RUNTIME_DIR=/mnt/wsl/ods-portal-sockets/preview' > "$INSTALL_DIR/.env"
 }
-printf '%s\n' 'PIXEL_RUNTIME_BIND_PROPAGATION=rprivate' > "$INSTALL_DIR/.env"
+printf '%s\n' 'PIXEL_RUNTIME_BIND_PROPAGATION=rprivate' \
+    'PIXEL_INGRESS_RUNTIME_DIR=/run/ods-pixel' \
+    'PIXEL_PREVIEW_RUNTIME_DIR=/run/ods-pixel-preview' > "$INSTALL_DIR/.env"
 _ods_pixel_prepare_wsl_runtime_bridge "$(id -un)"
 [[ ! -e "$calls" ]]
 write_desktop_env
@@ -27,7 +29,7 @@ _ods_pixel_prepare_wsl_runtime_bridge "$(id -un)"
 [[ "$(wc -l < "$calls")" -eq 3 ]]
 grep -Fxq "install -d -o $(id -un) -g ods-pixel -m 0710 /run/ods-pixel" "$calls"
 grep -Fxq "install -d -o $(id -un) -g ods-pixel -m 0750 /run/ods-pixel-preview" "$calls"
-[[ "$(tail -n 1 "$calls")" == "/bin/bash $bridge ensure" ]]
+[[ "$(tail -n 1 "$calls")" == "/bin/bash $bridge ensure $(id -un)" ]]
 export BRIDGE_FAIL=true
 if _ods_pixel_prepare_wsl_runtime_bridge "$(id -un)"; then
     echo 'Bridge failure was ignored' >&2; exit 1

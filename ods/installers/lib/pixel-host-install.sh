@@ -3212,6 +3212,48 @@ PY
     printf '%s\n' "$retired_release"
 }
 
+# A retained WSL install must not write Phase 06's new socket paths while the
+# old shared binds still exist. The migration will replace this refusal only
+# after the owned Edge/container lifecycle and rollback have been proven.
+ods_pixel_admit_wsl_mount_upgrade() {
+    [[ "${ENABLE_PIXEL_RUNTIME:-false}" == true ]] || return 0
+    local kernel_release="${1:-/proc/sys/kernel/osrelease}"
+    [[ -f "$kernel_release" && -r "$kernel_release" ]] || {
+        ai_bad "Pixel could not read the kernel identity for WSL mount admission."
+        return 1
+    }
+    local release
+    release="$(cat -- "$kernel_release")" || {
+        ai_bad "Pixel could not inspect the kernel identity for WSL mount admission."
+        return 1
+    }
+    [[ -n "$release" ]] || {
+        ai_bad "Pixel received an empty kernel identity for WSL mount admission."
+        return 1
+    }
+    case "${release,,}" in
+        *microsoft*) ;;
+        *) return 0 ;;
+    esac
+
+    local classifier="${2:-$SCRIPT_DIR/installers/lib/wsl_pixel_mount_plan.py}"
+    [[ -f "$classifier" && ! -L "$classifier" ]] || {
+        ai_bad "Pixel WSL mount admission source is unavailable."
+        return 1
+    }
+    local plan rc=0 status
+    plan="$(ods_sudo /usr/bin/python3 "$classifier")" || rc=$?
+    status="$(jq -er '.status | select(. == "clear" or . == "ordinary" or . == "needs-owned-edge-stop" or . == "refuse")' <<<"$plan")" || {
+        ai_bad "Pixel WSL mount admission did not return a valid result."
+        return 1
+    }
+    if [[ "$rc" -eq 0 && "$status" == clear ]]; then
+        return 0
+    fi
+    ai_bad "Pixel WSL socket migration is required ($status). Installation stopped before Phase 06 changes the retained .env."
+    return 1
+}
+
 ods_pixel_prepare_runtime_identity() {
     [[ "${ENABLE_PIXEL_RUNTIME:-false}" == true ]] || return 0
     ods_sudo_available || {
@@ -3244,19 +3286,24 @@ ods_pixel_prepare_runtime_identity() {
 }
 
 # Docker Desktop translates bind sources from the WSL client's namespace.
-# Establish the shared projection before Compose starts Pixel Edge, including
-# on a fresh install where the persistent bridge unit is not installed yet.
+# Prepare the stable socket directories before Compose starts Pixel Edge,
+# including on a fresh install before the persistent unit is installed.
 _ods_pixel_prepare_wsl_runtime_bridge() {
     local owner="$1" env_file="${INSTALL_DIR:?}/.env"
-    grep -Fxq 'PIXEL_RUNTIME_BIND_PROPAGATION=rshared' "$env_file" || return 0
-    grep -Fxq 'PIXEL_INGRESS_RUNTIME_DIR=/mnt/wsl/ods-portal-runtime/ingress' "$env_file" || return 1
-    grep -Fxq 'PIXEL_PREVIEW_RUNTIME_DIR=/mnt/wsl/ods-portal-runtime/preview' "$env_file" || return 1
+    if grep -Fxq 'PIXEL_INGRESS_RUNTIME_DIR=/run/ods-pixel' "$env_file"; then
+        grep -Fxq 'PIXEL_PREVIEW_RUNTIME_DIR=/run/ods-pixel-preview' "$env_file" || return 1
+        grep -Fxq 'PIXEL_RUNTIME_BIND_PROPAGATION=rprivate' "$env_file" || return 1
+        return 0
+    fi
+    grep -Fxq 'PIXEL_INGRESS_RUNTIME_DIR=/mnt/wsl/ods-portal-sockets/ingress' "$env_file" || return 1
+    grep -Fxq 'PIXEL_PREVIEW_RUNTIME_DIR=/mnt/wsl/ods-portal-sockets/preview' "$env_file" || return 1
+    grep -Fxq 'PIXEL_RUNTIME_BIND_PROPAGATION=rprivate' "$env_file" || return 1
     local bridge="$INSTALL_DIR/extensions/services/pixel-agent/host/pixel-wsl-runtime-bridge.sh"
     [[ -f "$bridge" && ! -L "$bridge" ]] || return 1
     [[ ! -L /run/ods-pixel && ! -L /run/ods-pixel-preview ]] || return 1
     ods_sudo install -d -o "$owner" -g ods-pixel -m 0710 /run/ods-pixel || return 1
     ods_sudo install -d -o "$owner" -g ods-pixel -m 0750 /run/ods-pixel-preview || return 1
-    ods_sudo /bin/bash "$bridge" ensure
+    ods_sudo /bin/bash "$bridge" ensure "$owner"
 }
 
 _ods_pixel_source_checkout() {
@@ -3760,17 +3807,24 @@ PY
 
 _ods_pixel_write_workspace_preview_unit() {
     local owner="$1" home="$2" output="$3" port="${4:-9437}"
+    local http_socket=/run/ods-pixel-preview/http.sock
+    if grep -Fxq 'PIXEL_PREVIEW_RUNTIME_DIR=/mnt/wsl/ods-portal-sockets/preview' "${INSTALL_DIR:?}/.env"; then
+        http_socket=/mnt/wsl/ods-portal-sockets/preview/http.sock
+    fi
     local source="${INSTALL_DIR:?}/extensions/services/pixel-agent/host/pixel-workspace-preview.service"
     local workspace="$home/.openclaw/workspace-pixel"
     [[ "$port" =~ ^[0-9]+$ ]] && (( port >= 1 && port <= 65535 )) || return 1
 
     ods_pixel_run_as_owner "$owner" "$home" install -d -m 0700 -- "${output%/*}" || return 1
     ods_pixel_run_as_owner "$owner" "$home" python3 - "$source" "$output" \
-        "$owner" "$workspace" "$port" <<'PY'
+        "$owner" "$workspace" "$port" "$http_socket" <<'PY'
 import os, pathlib, re, stat, sys, tempfile
 
 source_path, output_path = map(pathlib.Path, sys.argv[1:3])
-owner, workspace, port = sys.argv[3:6]
+owner, workspace, port, http_socket = sys.argv[3:7]
+if http_socket not in ("/run/ods-pixel-preview/http.sock",
+                       "/mnt/wsl/ods-portal-sockets/preview/http.sock"):
+    raise SystemExit("unsafe Pixel workspace preview socket")
 if re.fullmatch(r"[a-z_][a-z0-9_-]{0,31}", owner) is None:
     raise SystemExit("unsafe Pixel workspace preview owner")
 if (not workspace.startswith("/") or workspace == "/" or len(workspace) > 1024
@@ -3798,7 +3852,8 @@ if output_path.exists():
 text = (source_path.read_text(encoding="utf-8")
         .replace("__PIXEL_SERVICE_USER__", owner)
         .replace("__PIXEL_WORKSPACE__", workspace)
-        .replace("__PIXEL_PREVIEW_PORT__", port))
+        .replace("__PIXEL_PREVIEW_PORT__", port)
+        .replace("__PIXEL_PREVIEW_HTTP_SOCKET__", http_socket))
 if "__PIXEL_" in text:
     raise SystemExit("unresolved Pixel workspace preview systemd placeholder")
 descriptor, temporary = tempfile.mkstemp(prefix=".workspace-preview.", dir=output_path.parent)
@@ -4654,15 +4709,20 @@ _ods_pixel_install_ingress() {
     local operations_service_dropin="$plugin_root/host/pixel-ops-broker-ods.conf"
     local operations_service_dropin_dir="/etc/systemd/system/pixel-ops-broker.service.d"
     local installed_operations_service_dropin="$operations_service_dropin_dir/10-ods-host-observation.conf"
-    local wsl_bridge=false
+    local wsl_bridge=false gateway_socket_route_changed=false ingress_socket=/run/ods-pixel/pixel-ingress.sock
     local wsl_bridge_source="$plugin_root/host/pixel-wsl-runtime-bridge.sh"
     local wsl_bridge_unit="$plugin_root/host/pixel-wsl-runtime-bridge.service"
+    local wsl_gateway_socket_source="$plugin_root/host/pixel-gateway-wsl-socket.conf"
+    local wsl_gateway_socket_dir=/etc/systemd/system/openclaw-gateway.service.d
+    local wsl_gateway_socket_dropin="$wsl_gateway_socket_dir/85-ods-ingress-socket.conf"
     local ods_version="${VERSION:-3.0.0}"
-    if grep -Fxq 'PIXEL_RUNTIME_BIND_PROPAGATION=rshared' "${INSTALL_DIR:?}/.env"; then
-        grep -Fxq 'PIXEL_INGRESS_RUNTIME_DIR=/mnt/wsl/ods-portal-runtime/ingress' "$INSTALL_DIR/.env" || return 1
-        grep -Fxq 'PIXEL_PREVIEW_RUNTIME_DIR=/mnt/wsl/ods-portal-runtime/preview' "$INSTALL_DIR/.env" || return 1
+    if grep -Fxq 'PIXEL_INGRESS_RUNTIME_DIR=/mnt/wsl/ods-portal-sockets/ingress' "${INSTALL_DIR:?}/.env"; then
+        grep -Fxq 'PIXEL_INGRESS_RUNTIME_DIR=/mnt/wsl/ods-portal-sockets/ingress' "$INSTALL_DIR/.env" || return 1
+        grep -Fxq 'PIXEL_PREVIEW_RUNTIME_DIR=/mnt/wsl/ods-portal-sockets/preview' "$INSTALL_DIR/.env" || return 1
+        grep -Fxq 'PIXEL_RUNTIME_BIND_PROPAGATION=rprivate' "$INSTALL_DIR/.env" || return 1
         grep -qi microsoft /proc/sys/kernel/osrelease || return 1
         wsl_bridge=true
+        ingress_socket=/mnt/wsl/ods-portal-sockets/ingress/pixel-ingress.sock
     fi
     [[ "$ods_version" =~ ^[0-9]+(\.[0-9]+){1,3}([-+][A-Za-z0-9.-]+)?$ ]] || return 1
     [[ -f "$token_file" && ! -L "$token_file" ]] || return 1
@@ -4726,7 +4786,8 @@ if "__PIXEL_" in text:
 pathlib.Path(target).write_text(text, encoding="utf-8", newline="\n")
 PY
     cat > "$stage/pixel-agent.env" <<EOF
-PIXEL_INGRESS_SOCKET=/run/ods-pixel/pixel-ingress.sock
+PIXEL_SERVICE_USER=$owner
+PIXEL_INGRESS_SOCKET=$ingress_socket
 PIXEL_CHAT_STATE_DIR=/var/lib/ods-pixel-chat
 PIXEL_ACCESS_OWNER_KEY_FILE=/etc/ods/pixel-access-relay.key
 PIXEL_INGRESS_GID=${PIXEL_INGRESS_GID:?}
@@ -4813,13 +4874,41 @@ EOF
         /etc/systemd/system/pixel-workspace-preview.service
     ods_sudo cmp -s -- "$rendered_workspace_preview_unit" \
         /etc/systemd/system/pixel-workspace-preview.service
+    if [[ -e "$wsl_gateway_socket_dropin" || -L "$wsl_gateway_socket_dropin" ]] \
+        || "$wsl_bridge"; then
+        [[ -f "$wsl_gateway_socket_source" && ! -L "$wsl_gateway_socket_source" ]] || return 1
+        cmp -s -- "$wsl_gateway_socket_source" <(printf '%s\n' \
+            '[Service]' \
+            'Environment=PIXEL_INGRESS_SOCKET=/mnt/wsl/ods-portal-sockets/ingress/pixel-ingress.sock') \
+            || return 1
+        if [[ -e "$wsl_gateway_socket_dropin" || -L "$wsl_gateway_socket_dropin" ]]; then
+            [[ -f "$wsl_gateway_socket_dropin" && ! -L "$wsl_gateway_socket_dropin" ]] || return 1
+            [[ "$(ods_sudo stat -c '%U:%G:%a' -- "$wsl_gateway_socket_dropin")" == root:root:644 ]] \
+                || return 1
+            ods_sudo cmp -s -- "$wsl_gateway_socket_source" "$wsl_gateway_socket_dropin" || return 1
+        fi
+    fi
     if "$wsl_bridge"; then
+        if [[ ! -e "$wsl_gateway_socket_dir" && ! -L "$wsl_gateway_socket_dir" ]]; then
+            ods_sudo install -d -o root -g root -m 0755 -- "$wsl_gateway_socket_dir" || return 1
+        fi
+        [[ -d "$wsl_gateway_socket_dir" && ! -L "$wsl_gateway_socket_dir" ]] || return 1
+        [[ "$(ods_sudo stat -c '%U:%G:%a' -- "$wsl_gateway_socket_dir")" == root:root:755 ]] || return 1
+        ods_sudo install -o root -g root -m 0644 "$wsl_gateway_socket_source" \
+            "$wsl_gateway_socket_dropin" || return 1
+        ods_sudo cmp -s -- "$wsl_gateway_socket_source" "$wsl_gateway_socket_dropin" || return 1
+        gateway_socket_route_changed=true
         ods_sudo install -o root -g root -m 0755 "$wsl_bridge_source" \
             /usr/local/libexec/ods-pixel-wsl-runtime-bridge || return 1
         ods_sudo install -o root -g root -m 0644 "$wsl_bridge_unit" \
             /etc/systemd/system/ods-pixel-wsl-runtime-bridge.service || return 1
         ods_sudo cmp -s -- "$wsl_bridge_source" /usr/local/libexec/ods-pixel-wsl-runtime-bridge || return 1
         ods_sudo cmp -s -- "$wsl_bridge_unit" /etc/systemd/system/ods-pixel-wsl-runtime-bridge.service || return 1
+    elif [[ -e "$wsl_gateway_socket_dropin" ]]; then
+        # A WSL switch from Docker Desktop to a local daemon uses /run again.
+        # Retire only the exact ODS-owned route before starting that gateway.
+        ods_sudo rm -f -- "$wsl_gateway_socket_dropin" || return 1
+        gateway_socket_route_changed=true
     fi
     rm -f -- "$stage/pixel-agent.env" "$stage/pixel-ingress.service"
     rmdir -- "$stage"
@@ -4849,7 +4938,14 @@ PY
     ods_sudo systemctl enable openclaw-gateway.service pixel-ingress.service \
         pixel-extension-manager.service pixel-artifact-promoter.service \
         pixel-workspace-preview.service || return 1
-    ods_sudo systemctl start openclaw-gateway.service || return 1
+    # The WSL drop-in changes the gateway plugins' ingress socket route. A
+    # running gateway must reload that environment before history and image
+    # requests can use the new direct socket.
+    if "$gateway_socket_route_changed"; then
+        ods_sudo systemctl restart openclaw-gateway.service || return 1
+    else
+        ods_sudo systemctl start openclaw-gateway.service || return 1
+    fi
     ods_sudo systemctl restart pixel-extension-manager.service || return 1
     ods_sudo systemctl restart pixel-artifact-promoter.service || return 1
     ods_sudo systemctl restart pixel-workspace-preview.service || return 1
@@ -4858,7 +4954,7 @@ PY
     # the Pixel gateway was already verified above and need not be disturbed.
     ods_sudo systemctl restart pixel-ingress.service || return 1
     if "$wsl_bridge"; then
-        ods_sudo systemctl enable ods-pixel-wsl-runtime-bridge.service || return 1
+        ods_sudo systemctl reenable ods-pixel-wsl-runtime-bridge.service || return 1
         if ! ods_sudo systemctl start ods-pixel-wsl-runtime-bridge.service \
             || ! ods_sudo systemctl is-active --quiet ods-pixel-wsl-runtime-bridge.service; then
             ai_bad "The WSL runtime bridge for Pixel Edge did not start. Its journal:"
@@ -4947,12 +5043,16 @@ PY
 
 _ods_pixel_wait_ingress() {
     local owner="$1" home="$2" attempts="${3:-60}" delay="${4:-1}" response
+    local ingress_socket=/run/ods-pixel/pixel-ingress.sock
+    if grep -Fxq 'PIXEL_INGRESS_RUNTIME_DIR=/mnt/wsl/ods-portal-sockets/ingress' "${INSTALL_DIR:?}/.env"; then
+        ingress_socket=/mnt/wsl/ods-portal-sockets/ingress/pixel-ingress.sock
+    fi
     [[ "$attempts" =~ ^[0-9]+$ && "$attempts" -ge 1 && "$attempts" -le 300 ]] || return 1
     [[ "$delay" =~ ^[0-9]+$ && "$delay" -le 5 ]] || return 1
     local attempt
     for ((attempt = 1; attempt <= attempts; attempt++)); do
         if response="$(ods_pixel_run_as_owner "$owner" "$home" curl --fail --silent --show-error --max-time 10 \
-            --unix-socket /run/ods-pixel/pixel-ingress.sock http://localhost/health 2>/dev/null)" \
+            --unix-socket "$ingress_socket" http://localhost/health 2>/dev/null)" \
             && jq -e '.status == "ok"' <<<"$response" >/dev/null 2>&1; then
             return 0
         fi
@@ -5043,22 +5143,6 @@ PY
         (( attempt < 30 )) && sleep 1
     done
     return 1
-}
-
-_ods_pixel_prepare_wsl_runtime_targets() {
-    local base="${1:-/mnt/wsl/ods-portal-runtime}" target
-    for target in "$base" "$base/ingress" "$base/preview"; do
-        # Existing targets may be bind mounts of the live Pixel directories.
-        # install -d would chown/chmod the source through those mounts and
-        # prevent the unprivileged services from recreating their sockets.
-        if [[ -L "$target" || ( -e "$target" && ! -d "$target" ) ]]; then
-            ai_bad "Pixel runtime target is not a regular directory: $target"
-            return 1
-        fi
-        if [[ ! -d "$target" ]]; then
-            ods_sudo install -d -o root -g root -m 0755 -- "$target" || return 1
-        fi
-    done
 }
 
 ods_pixel_install_default_agent() {
@@ -5195,11 +5279,10 @@ ods_pixel_install_default_agent() {
     if [[ "$web_search_provider" == searxng ]]; then
         pixel_prerequisites+=(searxng)
     fi
-    if grep -Fxq 'PIXEL_RUNTIME_BIND_PROPAGATION=rshared' "${INSTALL_DIR:?}/.env"; then
-        # Pixel Edge starts here, before the WSL runtime bridge is installed.
-        # Create the fixed empty targets on WSL's shared tmpfs so its rshared
-        # binds exist now and receive the bridge mounts when they arrive.
-        _ods_pixel_prepare_wsl_runtime_targets || return 1
+    if grep -Fxq 'PIXEL_INGRESS_RUNTIME_DIR=/mnt/wsl/ods-portal-sockets/ingress' "${INSTALL_DIR:?}/.env"; then
+        # The exact socket directories must still be stable before Pixel Edge
+        # starts, including a retained Docker Desktop container after reboot.
+        _ods_pixel_prepare_wsl_runtime_bridge "$owner" || return 1
     fi
     ai "Starting the ODS model gateway, control API, and search prerequisites for Pixel review..."
     # The scoped extension manager validates its contract against dashboard-api

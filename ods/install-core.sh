@@ -542,6 +542,8 @@ if ! $DRY_RUN; then
     INSTALL_PHASE="model-lifecycle-lock"
     ods_model_lifecycle_lock_acquire "$INSTALL_DIR" "Linux installer model configuration"
     ods_verify_retained_external_model_snapshot || exit 1
+    INSTALL_PHASE="05b-wsl-pixel-mount-admission"
+    ods_pixel_admit_wsl_mount_upgrade || exit 1
 fi
 INSTALL_PHASE="06-directories";  source "$SCRIPT_DIR/installers/phases/06-directories.sh"
 INSTALL_PHASE="07-devtools";     source "$SCRIPT_DIR/installers/phases/07-devtools.sh"

@@ -2027,6 +2027,35 @@ else
         || fail "root artifact drift caused partial cleanup"
 fi
 
+write_fixture
+gateway_socket_source="$INSTALL_DIR/extensions/services/pixel-agent/host/pixel-gateway-wsl-socket.conf"
+gateway_socket_dropin="$SYSTEMD_DIR/openclaw-gateway.service.d/85-ods-ingress-socket.conf"
+cp "$ROOT_DIR/extensions/services/pixel-agent/host/pixel-gateway-wsl-socket.conf" "$gateway_socket_source"
+mkdir -p "${gateway_socket_dropin%/*}"
+cp "$gateway_socket_source" "$gateway_socket_dropin"
+chmod 0644 "$gateway_socket_source" "$gateway_socket_dropin"
+if ods_pixel_uninstall_managed "$INSTALL_DIR" "$HOME_DIR" \
+    && [[ ! -e "$gateway_socket_dropin" && -e "$HOME_DIR/.openclaw/openclaw.json.bak" ]]; then
+    pass "WSL gateway socket route is retired with the managed runtime"
+else
+    fail "WSL gateway socket route survived managed cleanup"
+fi
+
+write_fixture
+cp "$ROOT_DIR/extensions/services/pixel-agent/host/pixel-gateway-wsl-socket.conf" "$gateway_socket_source"
+mkdir -p "${gateway_socket_dropin%/*}"
+cp "$gateway_socket_source" "$gateway_socket_dropin"
+printf '%s\n' '# operator drift' >>"$gateway_socket_dropin"
+chmod 0644 "$gateway_socket_source" "$gateway_socket_dropin"
+if ods_pixel_uninstall_managed "$INSTALL_DIR" "$HOME_DIR"; then
+    fail "drifted WSL gateway socket route was removed"
+else
+    [[ -e "$gateway_socket_dropin" && -e "$HOME_DIR/.config/ods/pixel-managed.json" \
+        && ! -s "$SYSTEMCTL_LOG" ]] \
+        && pass "drifted WSL gateway route fails before any service mutation" \
+        || fail "drifted WSL gateway route caused partial cleanup"
+fi
+
 write_access_fixture
 printf '%s\n' '[Service]' 'Environment=OPERATOR_OWNED=1' \
     > "$SYSTEMD_DIR/openclaw-gateway.service.d/99-operator.conf"
