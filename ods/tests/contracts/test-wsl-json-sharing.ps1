@@ -84,6 +84,12 @@ try {
     $watch.Restart()
     Reject { Read-ODSWslJson $path } 'malformed JSON is never treated as transient locking'
     Check ($watch.Elapsed.TotalSeconds -lt 1) 'malformed JSON fails without a retry delay'
+    foreach($invalid in @(''," `r`n",'null','42','[{"generation":0}]')) {
+        Write-ODSPrivateBytes $path ([Text.UTF8Encoding]::new($false).GetBytes($invalid))
+        $watch.Restart()
+        Reject { Read-ODSWslJson $path } 'existing empty or non-object metadata is never treated as absent'
+        Check ($watch.Elapsed.TotalSeconds -lt 1) 'invalid record shape fails without a retry delay'
+    }
 
     Write-ODSWslJson $path @{generation=0}
     $acl=Get-Acl -LiteralPath $path

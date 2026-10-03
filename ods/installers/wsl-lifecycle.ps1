@@ -103,7 +103,12 @@ function Read-ODSWslJson([string]$Path) {
             $reader=[IO.StreamReader]::new($stream,[Text.UTF8Encoding]::new($false),$true)
             try { $text=$reader.ReadToEnd() } finally { $reader.Dispose() }
             $stream=$null
-            return ($text | ConvertFrom-Json -ErrorAction Stop)
+            # PowerShell otherwise maps empty content and JSON null to the
+            # same null result as an absent file. Lifecycle records are objects.
+            if ($text -notmatch '^\s*\{') { throw 'Lifecycle metadata must be a JSON object' }
+            $value=$text | ConvertFrom-Json -ErrorAction Stop
+            if ($null -eq $value -or $value -isnot [pscustomobject]) { throw 'Lifecycle metadata must be a JSON object' }
+            return $value
         } catch {
             $cause=$_.Exception.GetBaseException()
             $code=$cause.HResult -band 0xFFFF
