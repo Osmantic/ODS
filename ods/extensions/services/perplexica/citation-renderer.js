@@ -8,10 +8,53 @@ function renderCitations(message, sources) {
   const numericCitation = /^\s*\d+(?:\s*,\s*\d+)*\s*$/;
   const referenceDefinitions = new Set();
   const listMarker = /(?:[-+*]|\d{1,9}[.)])[ \t]+/y;
-  for (const line of message.split("\n")) {
+  const openingFence = /^(?: {0,3}> ?)*( {0,3}(?:[-+*]|\d{1,9}[.)]) +)? {0,3}(`{3,}|~{3,})/;
+  const closingFence = /^(?: {0,3}> ?)*([ \t]*)(`+|~+)[ \t]*\r?$/;
+  function commentStartOutsideCode(line) {
+    for (let i = 0; i < line.length;) {
+      if (line[i] === "`") {
+        let end = i + 1;
+        while (line[end] === "`") end += 1;
+        const marker = line.slice(i, end);
+        const close = closingTicks(line, end, marker);
+        if (close !== -1) { i = close + marker.length; continue; }
+      }
+      if (line.startsWith("<!--", i)) return i;
+      i += 1;
+    }
+    return -1;
+  }
+  let referenceFence = null;
+  let htmlComment = false;
+  let listContentIndent = 0;
+  const lines = message.split("\n");
+  for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
+    const line = lines[lineIndex];
+    if (referenceFence) {
+      const close = closingFence.exec(line);
+      if (close && close[1].length <= referenceFence.maxIndent
+        && close[2][0] === referenceFence.marker[0]
+        && close[2].length >= referenceFence.marker.length) referenceFence = null;
+      continue;
+    }
+    if (htmlComment) {
+      if (line.includes("-->")) htmlComment = false;
+      continue;
+    }
+    const commentStart = commentStartOutsideCode(line);
+    if (commentStart !== -1) {
+      htmlComment = line.indexOf("-->", commentStart + 4) === -1;
+      if (!line.slice(0, commentStart).trim()) continue;
+    }
+    const fenceStart = openingFence.exec(line);
+    if (fenceStart) {
+      referenceFence = { marker: fenceStart[2], maxIndent: fenceStart[1] ? fenceStart[1].length + 3 : 3 };
+      continue;
+    }
     // A real Markdown reference can be indented inside repeated list and
-    // blockquote containers. Keep those references rather than citing them.
+    // blockquote containers. Indented code outside a list is not a reference.
     let at = 0;
+    let directList = false;
     for (;;) {
       const start = at;
       while (line[at] === " " || line[at] === "\t") at += 1;
@@ -21,12 +64,39 @@ function renderCitations(message, sources) {
         continue;
       }
       listMarker.lastIndex = at;
-      if (listMarker.test(line)) { at = listMarker.lastIndex; continue; }
+      if (listMarker.test(line)) {
+        at = listMarker.lastIndex;
+        listContentIndent = at;
+        directList = true;
+        continue;
+      }
       at = start;
       break;
     }
-    const definition = /^[ \t]*\[([0-9]+(?:[ \t]*,[ \t]*[0-9]+)*)\]:/.exec(line.slice(at));
-    if (definition) referenceDefinitions.add(definition[1].replace(/\s+/g, ""));
+    const content = line.slice(at);
+    if (!content.trim()) continue;
+    let indent = 0;
+    for (const char of content) {
+      if (char === " ") indent += 1;
+      else if (char === "\t") indent += 4 - (indent % 4);
+      else break;
+    }
+    if (!directList && indent < listContentIndent) listContentIndent = 0;
+    if (indent - (directList ? 0 : listContentIndent) >= 4) continue;
+    const definition = /^[ \t]*\[([0-9]+(?:[ \t]*,[ \t]*[0-9]+)*)\]:[ \t]*(.*)$/.exec(content);
+    if (definition) {
+      // A label and colon alone are paragraph text. A destination may start
+      // on the next line, as in a real CommonMark reference definition.
+      const nextLine = lines[lineIndex + 1] || "";
+      const nextCommentStart = commentStartOutsideCode(nextLine);
+      const nextDestination = !openingFence.test(nextLine)
+        && !(nextCommentStart !== -1 && !nextLine.slice(0, nextCommentStart).trim())
+        ? nextLine.trim() : "";
+      const destination = definition[2].trim() || nextDestination;
+      if (/^(?:<[^<>\r\n]*>|[^\s<>"']+)/.test(destination)) {
+        referenceDefinitions.add(definition[1].replace(/\s+/g, ""));
+      }
+    }
   }
   // Raw HTML needs its own parser. A tag-shaped placeholder inside Markdown
   // code is safe to escape as code, but must not disable code rendering for
@@ -206,9 +276,9 @@ function renderCitations(message, sources) {
     const lineBase = base;
     base += line.length + 1;
     if (inline) return prose(line, lineBase);
-    const marker = /^(?: {0,3}> ?)*( {0,3}(?:[-+*]|\d{1,9}[.)]) +)? {0,3}(`{3,}|~{3,})/.exec(line);
+    const marker = openingFence.exec(line);
     if (fence) {
-      const close = /^(?: {0,3}> ?)*([ \t]*)(`+|~+)[ \t]*\r?$/.exec(line);
+      const close = closingFence.exec(line);
       if (close && close[1].length <= fence.maxIndent && close[2][0] === fence.marker[0]
         && close[2].length >= fence.marker.length) fence = null;
       return line;

@@ -55,6 +55,22 @@ function checkCases(render) {
     "[12][27]");
   assert.equal(render("[1][2]\n\n[2]: https://example.test/reference", many),
     "[1][2]\n\n[2]: https://example.test/reference");
+  assert.equal(render("Evidence [12][27].\n\n```text\n[27]: https://example.test/not-a-reference\n```", many),
+    `Evidence ${manyCited(12)}${manyCited(27)}.\n\n\`\`\`text\n[27]: https://example.test/not-a-reference\n\`\`\``);
+  assert.equal(render("Evidence [12][27].\n\n    [27]: https://example.test/not-a-reference", many),
+    `Evidence ${manyCited(12)}${manyCited(27)}.\n\n    [27]: https://example.test/not-a-reference`);
+  assert.equal(render("Evidence [12][27].\n\n[27]:", many),
+    `Evidence ${manyCited(12)}${manyCited(27)}.\n\n[27]:`);
+  assert.equal(render("Evidence [12][27].\n\n[27]:\n https://example.test/reference", many),
+    "Evidence [12][27].\n\n[27]:\n https://example.test/reference");
+  assert.equal(render("Evidence [12][27].\n\n<!--\n[27]: https://example.test/not-a-reference\n-->", many),
+    `Evidence ${manyCited(12)}${manyCited(27)}.\n\n<!--\n[27]: https://example.test/not-a-reference\n-->`);
+  assert.equal(render("Evidence [12][27].\n\nText <!--\n[27]: https://example.test/not-a-reference\n-->", many),
+    `Evidence ${manyCited(12)}${manyCited(27)}.\n\nText <!--\n[27]: https://example.test/not-a-reference\n-->`);
+  assert.equal(render("Evidence [12][27].\n\nUse `<!--` literally.\n\n[27]: https://example.test/reference", many),
+    `Evidence [12][27].\n\nUse ${inline("&lt;!--")} literally.\n\n[27]: https://example.test/reference`);
+  assert.equal(render("Evidence [12][27].\n\n[27]:\n```text\ncode\n```", many),
+    `Evidence ${manyCited(12)}${manyCited(27)}.\n\n[27]:\n\`\`\`text\ncode\n\`\`\``);
   assert.equal(render("- [12][27]\n\n    [27]: https://example.test/reference", many),
     "- [12][27]\n\n    [27]: https://example.test/reference");
   for (const prefix of ["- > ", "- - ", "- > - > ", "> - > - ", "1. > ", "- > ".repeat(8)]) {
