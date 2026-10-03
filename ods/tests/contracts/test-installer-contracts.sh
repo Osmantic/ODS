@@ -318,6 +318,7 @@ bash tests/test-macos-cli-compose-failure.sh
 
 echo "[contract] macOS Core omits optional Open WebUI"
 bash tests/test-macos-webui-optional.sh
+python3 tests/test_macos_webui_optional_contract.py
 
 echo "[contract] macOS external gateway resolver omits native inference"
 bash tests/test-macos-external-gateway-resolver.sh
