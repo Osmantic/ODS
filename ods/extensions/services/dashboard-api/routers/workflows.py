@@ -5,6 +5,11 @@ import json
 import logging
 import re
 
+try:
+    from asyncio import timeout as _async_timeout
+except ImportError:  # Python 3.10 standalone deployments
+    from async_timeout import timeout as _async_timeout
+
 import aiohttp
 from fastapi import APIRouter, Depends, HTTPException
 
@@ -104,7 +109,7 @@ async def get_n8n_workflows() -> list[dict]:
     try:
         headers = _n8n_headers()
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=5)) as session:
-            async with asyncio.timeout(5):
+            async with _async_timeout(5):
                 return await _read_workflow_pages(session, headers)
     except (aiohttp.ClientError, OSError, asyncio.TimeoutError, json.JSONDecodeError) as e:
         logger.warning(f"Failed to fetch workflows from n8n: {e}")

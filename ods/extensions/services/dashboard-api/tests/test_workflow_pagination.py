@@ -144,11 +144,11 @@ async def test_total_inventory_deadline_closes_session(monkeypatch):
         def get(self, *_args, **_kwargs):
             return Page()
 
-    timeout = asyncio.timeout
+    timeout = workflows._async_timeout
     def short_deadline(seconds):
         assert seconds == 5
         return timeout(0.01)
-    monkeypatch.setattr(workflows.asyncio, "timeout", short_deadline)
+    monkeypatch.setattr(workflows, "_async_timeout", short_deadline)
     monkeypatch.setattr(workflows.aiohttp, "ClientSession", lambda **_kwargs: Session())
     assert await asyncio.wait_for(workflows.get_n8n_workflows(), timeout=0.2) == []
     assert closed == [True]
