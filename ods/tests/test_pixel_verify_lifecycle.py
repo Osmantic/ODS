@@ -256,7 +256,7 @@ _ods_pixel_finish_release_transition fixture /home/fixture /pixel "$token"
     assert lines == proofs + releases
 
 
-@pytest.mark.parametrize("scenario", ["initial", "ready", "active", "foreign", "extra"])
+@pytest.mark.parametrize("scenario", ["initial", "generated", "ready", "active", "foreign", "extra"])
 def test_access_reproof_distinguishes_empty_bootstrap(tmp_path, scenario):
     import json
     source = (ROOT / "installers/lib/pixel-host-install.sh").read_text()
@@ -276,17 +276,30 @@ def test_access_reproof_distinguishes_empty_bootstrap(tmp_path, scenario):
         current = tmp_path / ".local/share/pixel/current"
         current.parent.mkdir(parents=True)
         current.symlink_to(current.parent / "missing-release")
+    if scenario == "generated":
+        config = tmp_path / ".openclaw/openclaw.json"
+        config.parent.mkdir()
+        config.write_text('{}')
     marker.write_text(json.dumps(value))
     script = r'''
 set -eu
 INSTALL_DIR=$1
 ods_pixel_run_as_owner() { shift 2; "$@"; }
 _ods_pixel_install_access_service() { echo unexpected-root-action; return 9; }
-''' + helper + '\n_ods_pixel_reprove_access_marker_if_needed owner "$1" /unused\n'
+''' + helper + '\n_ods_pixel_reprove_access_marker_if_needed owner "$1" ""\n'
     result = subprocess.run(["bash", "-c", script, "test", str(tmp_path)],
                             capture_output=True, text=True)
     assert (result.returncode == 0) == (scenario == "initial"), result.stderr
-    assert "unexpected-root-action" not in result.stdout
+    assert ("unexpected-root-action" in result.stdout) == (scenario == "generated")
+
+
+def test_access_reproof_precedes_config_generating_bootstrap():
+    source = (ROOT / "installers/lib/pixel-host-install.sh").read_text()
+    install = source[source.index("ods_pixel_install_default_agent() {"):]
+    reproof = "_ods_pixel_reprove_access_marker_if_needed \"$owner\" \"$home\""
+    bootstrap = '"$pixel_root/pixel" bootstrap --apply'
+    assert install.count(reproof) == 1
+    assert install.index(reproof) < install.index(bootstrap)
 
 
 @pytest.mark.parametrize("scenario", ["configured-new", "active-link", "attestation", "loaded"])
