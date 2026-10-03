@@ -13,6 +13,8 @@ fail() {
 # Count both former WSL targets and Docker Desktop's projections of those
 # targets. A partial legacy cleanup could leave only the projections visible;
 # allowing the new socket layout then would mix old and new socket routes.
+# A projection's mountinfo root can name the old WSL target or its original
+# /run source, depending on which bind Docker Desktop projected.
 # Keep the input argument for a pure mountinfo fixture; the systemd path always
 # reads the executing namespace's /proc/self/mountinfo.
 ods_count_legacy_wsl_mounts() {
@@ -21,7 +23,9 @@ ods_count_legacy_wsl_mounts() {
         $5 == "/mnt/wsl/ods-portal-runtime/ingress" \
             || $5 == "/mnt/wsl/ods-portal-runtime/preview" { count++; next }
         ($4 == "/ods-portal-runtime/ingress" \
-            || $4 == "/ods-portal-runtime/preview") \
+            || $4 == "/ods-portal-runtime/preview" \
+            || $4 == "/ods-pixel" || $4 == "/ods-pixel-preview" \
+            || $4 == "/run/ods-pixel" || $4 == "/run/ods-pixel-preview") \
             && $5 ~ /^\/mnt\/wsl\/docker-desktop-bind-mounts\// { count++ }
         END { print count + 0 }
     ' "$mountinfo"
