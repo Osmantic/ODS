@@ -41,6 +41,11 @@ if [[ "${1:-}" == "compose" ]]; then
     exit 0
 fi
 if [[ "${1:-}" == "ps" ]]; then exit 0; fi
+# This fixture has no ods-hermes container. cmd_restart's post-#4215 Hermes
+# readiness wait is skipped when `docker inspect ods-hermes` fails, so report
+# the container as absent instead of hanging the wait for its full 180s
+# timeout on an empty inspect result.
+if [[ "${1:-}" == "inspect" ]]; then exit 1; fi
 exit 0
 DOCKER
 

@@ -31,8 +31,17 @@ pass "Compose files present"
 
 # ===== Test 2: Compose is valid =====
 info "Test 2: Validating compose..."
-# Try docker compose (plugin) first, then docker-compose (standalone)
-if command -v docker &> /dev/null && docker compose version &> /dev/null 2>&1; then
+# The resolved docker-compose.yml is generated at install time. A bare
+# checkout ships only docker-compose.base.yml, which cannot be validated
+# standalone: it requires install-time secrets (e.g. `WEBUI_SECRET`, declared
+# with `${WEBUI_SECRET:?...}` and no default), so `config` errors out. Only
+# validate the resolved stack when it is present; otherwise skip, exactly like
+# the no-docker branch below, so a pre-install checkout does not report a false
+# "Invalid compose configuration".
+# Try docker compose (plugin) first, then docker-compose (standalone).
+if [[ ! -f "docker-compose.yml" ]]; then
+    info "Resolved docker-compose.yml not present (pre-install checkout); skipping compose validation"
+elif command -v docker &> /dev/null && docker compose version &> /dev/null 2>&1; then
     docker compose -f docker-compose.yml config > /dev/null 2>&1 || fail "Invalid compose configuration"
 elif command -v docker-compose &> /dev/null; then
     docker-compose -f docker-compose.yml config > /dev/null 2>&1 || fail "Invalid compose configuration"
