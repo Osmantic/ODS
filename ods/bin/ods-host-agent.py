@@ -6253,11 +6253,35 @@ def _run_selected_extension_up(
                 ) from exc
             if not stat_mod.S_ISREG(selected_stat.st_mode):
                 raise RuntimeError(f"Invalid selected Compose file: {service_id}")
-            return subprocess.run(
+            deadline = time.monotonic() + SUBPROCESS_TIMEOUT_START
+            result = subprocess.run(
                 ["docker", "compose", *flags, "up", "-d", service_id],
                 cwd=str(INSTALL_DIR), capture_output=True, text=True,
                 timeout=SUBPROCESS_TIMEOUT_START, env=env,
             )
+            if (result.returncode != 0 and platform.system() == "Linux"
+                    and "microsoft" in platform.release().lower()):
+                helper = INSTALL_DIR / "scripts/wsl-bind-recovery.py"
+                remaining = deadline - time.monotonic()
+                if helper.is_file() and not helper.is_symlink() and remaining > 5:
+                    # Keep selection custody through the one bounded recovery.
+                    # A timeout never enters this path. The helper requires a
+                    # stopped, owned container with positive stale-bind proof,
+                    # preserves volumes, and verifies its recreated bind view.
+                    recovered = subprocess.run(
+                        [sys.executable, str(helper), "--install-dir", str(INSTALL_DIR),
+                         "--service", service_id, "--repair-stopped", "--", *flags],
+                        cwd=str(INSTALL_DIR), capture_output=True, text=True,
+                        timeout=min(125, remaining), env=env,
+                    )
+                    if recovered.returncode == 0:
+                        return recovered
+                    if recovered.returncode != 3:
+                        return subprocess.CompletedProcess(
+                            result.args, result.returncode, result.stdout,
+                            (recovered.stderr or "WSL bind recovery failed") + "\n" + result.stderr,
+                        )
+            return result
     except selector.SelectionError as exc:
         raise RuntimeError(str(exc)) from exc
 
