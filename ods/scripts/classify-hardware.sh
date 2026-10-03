@@ -22,6 +22,27 @@ GPU_NAME=""
 CPU_NAME=""
 RAM_MB="0"
 
+usage() {
+    cat <<'USAGE'
+Usage: classify-hardware.sh [OPTIONS]
+
+Classify GPU/CPU hardware into an ODS tier using the GPU database.
+
+Options:
+  --platform-id ID     Platform identifier (e.g. linux, macos, windows)
+  --gpu-vendor VENDOR   GPU vendor (nvidia, amd, apple, unknown)
+  --memory-type TYPE    Memory type (e.g. gddr6, unified)
+  --vram-mb MB           VRAM size in megabytes
+  --device-id ID         PCI device ID for exact GPU database lookup
+  --gpu-name NAME        GPU model name for pattern-based lookup
+  --cpu-name NAME        CPU model name
+  --ram-mb MB            System RAM size in megabytes
+  --env                  Emit output as shell-sourceable KEY=VALUE pairs
+  --db PATH              Path to gpu-database.json (default: config/gpu-database.json)
+  -h, --help             Show this help message and exit
+USAGE
+}
+
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --platform-id) PLATFORM_ID="${2:-$PLATFORM_ID}"; shift 2 ;;
@@ -34,6 +55,7 @@ while [[ $# -gt 0 ]]; do
         --ram-mb)      RAM_MB="${2:-0}"; shift 2 ;;
         --env)         ENV_MODE="true"; shift ;;
         --db)          GPU_DB="${2:-$GPU_DB}"; shift 2 ;;
+        -h|--help)     usage; exit 0 ;;
         *)
             echo "Unknown argument: $1" >&2
             exit 1
