@@ -4555,17 +4555,18 @@ _ods_pixel_write_onboarding() {
 
 _ods_pixel_wait_extension_manager_probe() {
     local program="$1" extension_id="$2" attempts="${3:-30}" delay="${4:-1}"
-    local manager_probe attempt
+    local manager_probe attempt request_exit=0
     [[ "$program" == /* && -f "$program" && ! -L "$program" \
         && "$extension_id" =~ ^[a-z0-9][a-z0-9._-]{0,63}$ \
         && "$extension_id" != *. \
         && "$attempts" =~ ^[0-9]+$ && "$attempts" -ge 1 && "$attempts" -le 60 \
         && "$delay" =~ ^[0-9]+$ && "$delay" -le 5 ]] || return 1
     for ((attempt = 1; attempt <= attempts; attempt++)); do
-        if manager_probe="$(ods_sudo -u pixel-ops-broker /usr/bin/python3 \
+        request_exit=0
+        manager_probe="$(ods_sudo -u pixel-ops-broker /usr/bin/python3 \
             "$program" client /run/ods-pixel-manager/extension-manager.sock \
-            inspect "$extension_id" 2>/dev/null)" \
-            && jq -e --arg id "$extension_id" '.schemaVersion == 1
+            inspect "$extension_id" 2>/dev/null)" || request_exit=$?
+        if (( request_exit == 0 )) && jq -e --arg id "$extension_id" '.schemaVersion == 1
                 and .kind == "ods-pixel-extension-lifecycle"
                 and .action == "inspect" and .extensionId == $id
                 and (.outcome == "inspected" or .outcome == "blocked")
@@ -4575,60 +4576,77 @@ _ods_pixel_wait_extension_manager_probe() {
                 and (.missingConfiguration | type == "array")
                 and .rollback == {"attempted": false, "succeeded": null}
                 and .boundary == "Scoped ODS extension lifecycle proxy; it grants no Docker, shell, credential, arbitrary HTTP, or data-purge authority."' \
-                <<<"$manager_probe" >/dev/null; then
+                <<<"$manager_probe" >/dev/null 2>&1; then
             return 0
         fi
         if (( attempt < attempts && delay > 0 )); then
             sleep "$delay"
         fi
     done
+    if (( request_exit != 0 )); then
+        printf 'Pixel extension-manager readiness failed after %s attempt(s): last probe command exited %s.\n' "$attempts" "$request_exit" >&2
+    else
+        printf 'Pixel extension-manager readiness failed after %s attempt(s): last probe receipt did not match the required contract.\n' "$attempts" >&2
+    fi
     return 1
 }
 
 _ods_pixel_wait_artifact_promoter_probe() {
     local owner="$1" home="$2" program="$3" attempts="${4:-30}" delay="${5:-1}"
-    local response attempt
+    local response attempt request_exit=0
     [[ "$program" == /* && -f "$program" && ! -L "$program" \
         && "$attempts" =~ ^[0-9]+$ && "$attempts" -ge 1 && "$attempts" -le 60 \
         && "$delay" =~ ^[0-9]+$ && "$delay" -le 5 ]] || return 1
     for ((attempt = 1; attempt <= attempts; attempt++)); do
-        if response="$(ods_pixel_run_as_owner "$owner" "$home" /usr/bin/python3 \
-            "$program" health /run/ods-pixel-artifact-promoter/promoter.sock 2>/dev/null)" \
-            && jq -e '.schemaVersion == 1
+        request_exit=0
+        response="$(ods_pixel_run_as_owner "$owner" "$home" /usr/bin/python3 \
+            "$program" health /run/ods-pixel-artifact-promoter/promoter.sock 2>/dev/null)" || request_exit=$?
+        if (( request_exit == 0 )) && jq -e '.schemaVersion == 1
                 and .kind == "ods-pixel-download-promotion"
                 and .status == "ok"
                 and .boundary == "Verified create-only promotion from Pixel Operations quarantine into the configured owner workspace; no arbitrary source, overwrite, execution, or path traversal authority."' \
-                <<<"$response" >/dev/null; then
+                <<<"$response" >/dev/null 2>&1; then
             return 0
         fi
         if (( attempt < attempts && delay > 0 )); then
             sleep "$delay"
         fi
     done
+    if (( request_exit != 0 )); then
+        printf 'Pixel artifact-promoter readiness failed after %s attempt(s): last probe command exited %s.\n' "$attempts" "$request_exit" >&2
+    else
+        printf 'Pixel artifact-promoter readiness failed after %s attempt(s): last probe receipt did not match the required contract.\n' "$attempts" >&2
+    fi
     return 1
 }
 
 _ods_pixel_wait_workspace_preview_probe() {
     local owner="$1" home="$2" program="$3" port="${4:-9437}" attempts="${5:-30}" delay="${6:-1}"
-    local response attempt
+    local response attempt request_exit=0
     [[ "$program" == /* && -f "$program" && ! -L "$program" \
         && "$port" =~ ^[0-9]+$ && "$port" -ge 1 && "$port" -le 65535 \
         && "$attempts" =~ ^[0-9]+$ && "$attempts" -ge 1 && "$attempts" -le 60 \
         && "$delay" =~ ^[0-9]+$ && "$delay" -le 5 ]] || return 1
     for ((attempt = 1; attempt <= attempts; attempt++)); do
-        if response="$(ods_pixel_run_as_owner "$owner" "$home" /usr/bin/python3 \
-            "$program" health /run/ods-pixel-preview/control.sock 2>/dev/null)" \
-            && jq -e --argjson port "$port" '.schemaVersion == 1
+        request_exit=0
+        response="$(ods_pixel_run_as_owner "$owner" "$home" /usr/bin/python3 \
+            "$program" health /run/ods-pixel-preview/control.sock 2>/dev/null)" || request_exit=$?
+        if (( request_exit == 0 )) && jq -e --argjson port "$port" '.schemaVersion == 1
                 and .kind == "ods-pixel-workspace-preview"
                 and .status == "ok" and .port == $port
                 and .boundary == "Create-only static-site snapshot from the configured Pixel workspace to a dedicated loopback preview origin; no arbitrary host path, network destination, server process, overwrite, or execution authority."' \
-                <<<"$response" >/dev/null; then
+                <<<"$response" >/dev/null 2>&1; then
             return 0
         fi
         if (( attempt < attempts && delay > 0 )); then
             sleep "$delay"
         fi
     done
+    if (( request_exit != 0 )); then
+        printf 'Pixel workspace-preview readiness failed after %s attempt(s): last probe command exited %s.\n' "$attempts" "$request_exit" >&2
+    else
+        printf 'Pixel workspace-preview readiness failed after %s attempt(s): last probe receipt did not match the required contract.\n' "$attempts" >&2
+    fi
     return 1
 }
 
@@ -4867,18 +4885,39 @@ PY
             return 1
         fi
     fi
-    ods_sudo systemctl is-active --quiet openclaw-gateway.service pixel-ingress.service \
+    if ! ods_sudo systemctl is-active --quiet openclaw-gateway.service pixel-ingress.service \
         pixel-extension-manager.service pixel-artifact-promoter.service \
-        pixel-workspace-preview.service || return 1
+        pixel-workspace-preview.service; then
+        printf '%s\n' 'Pixel ingress setup failed at active-services.' >&2
+        return 1
+    fi
     local extension_id
-    extension_id="$(jq -er '.matches[0].id | select(type == "string")' \
-        <<<"$extension_probe")" || return 1
-    [[ "$extension_id" =~ ^[a-z0-9][a-z0-9._-]{0,63}$ && "$extension_id" != *. ]] || return 1
-    _ods_pixel_wait_extension_manager_probe "$installed_extension_manager" "$extension_id" || return 1
-    _ods_pixel_wait_artifact_promoter_probe "$owner" "$home" "$system_artifact_promoter" || return 1
-    _ods_pixel_wait_workspace_preview_probe "$owner" "$home" "$system_workspace_preview" \
-        "$preview_port" || return 1
-    _ods_pixel_install_preview_inspection "$owner" "$home" "$plugin_root/host"
+    if ! extension_id="$(jq -er '.matches[0].id | select(type == "string")' \
+        <<<"$extension_probe")"; then
+        printf '%s\n' 'Pixel ingress setup failed at extension-probe-id.' >&2
+        return 1
+    fi
+    if [[ ! "$extension_id" =~ ^[a-z0-9][a-z0-9._-]{0,63}$ || "$extension_id" == *. ]]; then
+        printf '%s\n' 'Pixel ingress setup failed at extension-probe-id.' >&2
+        return 1
+    fi
+    if ! _ods_pixel_wait_extension_manager_probe "$installed_extension_manager" "$extension_id"; then
+        printf '%s\n' 'Pixel ingress setup failed at extension-manager-readiness.' >&2
+        return 1
+    fi
+    if ! _ods_pixel_wait_artifact_promoter_probe "$owner" "$home" "$system_artifact_promoter"; then
+        printf '%s\n' 'Pixel ingress setup failed at artifact-promoter-readiness.' >&2
+        return 1
+    fi
+    if ! _ods_pixel_wait_workspace_preview_probe "$owner" "$home" "$system_workspace_preview" \
+        "$preview_port"; then
+        printf '%s\n' 'Pixel ingress setup failed at workspace-preview-readiness.' >&2
+        return 1
+    fi
+    if ! _ods_pixel_install_preview_inspection "$owner" "$home" "$plugin_root/host"; then
+        printf '%s\n' 'Pixel ingress setup failed at preview-inspection-install.' >&2
+        return 1
+    fi
 }
 
 _ods_pixel_install_preview_inspection() {
