@@ -1367,7 +1367,9 @@ check grep -F "RuntimeDirectoryMode=0750" "$workspace_preview_unit"
 check grep -F "BindReadOnlyPaths=\"$home/.openclaw/workspace-pixel\"" "$workspace_preview_unit"
 check grep -F "RestrictAddressFamilies=AF_UNIX AF_INET" "$workspace_preview_unit"
 check grep -F "IPAddressAllow=localhost" "$workspace_preview_unit"
-check grep -F 'HTTP_SOCKET_PATH = pathlib.Path("/run/ods-pixel-preview/http.sock")' \
+check grep -F 'Environment=PIXEL_PREVIEW_HTTP_SOCKET=/run/ods-pixel-preview/http.sock' \
+    "$workspace_preview_unit"
+check grep -F '"PIXEL_PREVIEW_HTTP_SOCKET", "/run/ods-pixel-preview/http.sock"' \
     "$INSTALL_DIR/extensions/services/pixel-agent/host/workspace_preview.py"
 check python3 -c '
 import importlib.util,json,sys

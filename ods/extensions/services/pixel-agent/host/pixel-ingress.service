@@ -63,7 +63,7 @@ CapabilityBoundingSet=
 # receives access to the source home path or any neighboring owner state.
 BindReadOnlyPaths=__PIXEL_GATEWAY_TOKEN_SOURCE__:__PIXEL_GATEWAY_TOKEN_FILE__
 ReadOnlyPaths=/etc/ods/pixel-agent.env
-ReadWritePaths=/run/ods-pixel /var/lib/ods-pixel-chat
+ReadWritePaths=/run/ods-pixel /var/lib/ods-pixel-chat -/mnt/wsl/ods-portal-sockets/ingress
 # Docker socket is NOT mounted into the service; the status projection probes
 # docker only if the CLI is available on the host PATH.
 PrivateMounts=true

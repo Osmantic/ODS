@@ -110,9 +110,9 @@ _phase06_pixel_runtime_layout() {
     # Use this distro's path. Docker Desktop's WSL proxy translates bind
     # sources from the calling distro; the daemon's own name for this tmpfs
     # is resolved inside this distro instead and fails as "not a shared mount".
-    PIXEL_INGRESS_RUNTIME_DIR_VALUE=/mnt/wsl/ods-portal-runtime/ingress
-    PIXEL_PREVIEW_RUNTIME_DIR_VALUE=/mnt/wsl/ods-portal-runtime/preview
-    PIXEL_RUNTIME_BIND_PROPAGATION_VALUE=rshared
+    PIXEL_INGRESS_RUNTIME_DIR_VALUE=/mnt/wsl/ods-portal-sockets/ingress
+    PIXEL_PREVIEW_RUNTIME_DIR_VALUE=/mnt/wsl/ods-portal-sockets/preview
+    PIXEL_RUNTIME_BIND_PROPAGATION_VALUE=rprivate
 }
 
 if $DRY_RUN; then

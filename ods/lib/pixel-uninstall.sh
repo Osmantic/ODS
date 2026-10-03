@@ -90,7 +90,10 @@ for line in path.read_text(encoding="utf-8").splitlines():
         raise SystemExit("invalid Pixel ingress environment")
     entries[key] = item
 if (
-    entries.get("PIXEL_INGRESS_SOCKET") != "/run/ods-pixel/pixel-ingress.sock"
+    entries.get("PIXEL_INGRESS_SOCKET") not in {
+        "/run/ods-pixel/pixel-ingress.sock",
+        "/mnt/wsl/ods-portal-sockets/ingress/pixel-ingress.sock",
+    }
     or entries.get("PIXEL_GATEWAY_TOKEN_FILE") != "/run/ods-pixel/openclaw.json"
     or entries.get("PIXEL_STATUS_FILE") != "/run/ods-pixel/ods-status.json"
 ):

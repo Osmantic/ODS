@@ -1,16 +1,16 @@
 [Unit]
-Description=ODS Pixel socket bridge for WSL Docker Desktop
+Description=ODS Pixel socket directories for WSL Docker Desktop
 ConditionVirtualization=wsl
-After=pixel-ingress.service pixel-workspace-preview.service
-BindsTo=pixel-ingress.service pixel-workspace-preview.service
+Before=pixel-ingress.service pixel-workspace-preview.service
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
+EnvironmentFile=/etc/ods/pixel-agent.env
 ExecStart=/usr/local/libexec/ods-pixel-wsl-runtime-bridge ensure
 ExecStop=/usr/local/libexec/ods-pixel-wsl-runtime-bridge remove
 TimeoutStartSec=20
 TimeoutStopSec=20
 
 [Install]
-WantedBy=multi-user.target pixel-ingress.service pixel-workspace-preview.service
+RequiredBy=pixel-ingress.service pixel-workspace-preview.service

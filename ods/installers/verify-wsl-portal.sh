@@ -2,6 +2,10 @@
 # Read-only final gate for the Windows -> WSL Portal installation.
 set -euo pipefail
 install_root="${1:?Expected the resolved Linux install directory}"
+ingress_socket=/run/ods-pixel/pixel-ingress.sock
+if grep -Fxq 'PIXEL_INGRESS_RUNTIME_DIR=/mnt/wsl/ods-portal-sockets/ingress' "$install_root/.env"; then
+    ingress_socket=/mnt/wsl/ods-portal-sockets/ingress/pixel-ingress.sock
+fi
 for unit in openclaw-gateway.service pixel-ingress.service; do
     if ! systemctl is-active --quiet "$unit"; then
         printf 'Pixel service is not active: %s. Inspect: sudo journalctl -u %s -n 80 --no-pager\n' "$unit" "$unit" >&2
@@ -9,7 +13,7 @@ for unit in openclaw-gateway.service pixel-ingress.service; do
     fi
 done
 if ! curl --fail --silent --show-error --max-time 15 \
-    --unix-socket /run/ods-pixel/pixel-ingress.sock http://localhost/health \
+    --unix-socket "$ingress_socket" http://localhost/health \
     | python3 -c 'import json,sys; sys.exit(0 if json.load(sys.stdin).get("status") == "ok" else 1)'; then
     printf '%s\n' 'Pixel ingress is not healthy or accessible to this Ubuntu user. Inspect pixel-ingress.service and ods-pixel group membership.' >&2
     exit 1

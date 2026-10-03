@@ -1,67 +1,83 @@
 #!/usr/bin/env bash
-# Docker Desktop and the owner's WSL distro have different /run filesystems.
-# Bind the two fixed Pixel runtime directories into WSL's shared tmpfs so the
-# edge can reach their sockets without exposing any broader host directory.
+# Prepare fixed WSL tmpfs directories for the two sockets consumed by Pixel
+# Edge. The host services create the sockets there directly. No bind mount is
+# needed: Docker Desktop can bind a stable directory before or after the host
+# services start, and socket replacement remains visible through that inode.
 set -euo pipefail
 
-# Every refusal names its reason: systemd records stderr in the journal, and a
-# bare exit status there cannot be diagnosed on a user's machine.
 fail() {
     echo "ods-pixel-wsl-runtime-bridge: $*" >&2
     exit 1
 }
 
 action="${1:-}"
-[[ "$#" -eq 1 && "$action" == ensure || "$#" -eq 1 && "$action" == remove ]] || exit 2
+[[ "$#" -ge 1 && "$#" -le 2 && ( "$action" == ensure || "$action" == remove ) ]] || exit 2
 [[ "$(id -u)" -eq 0 ]] || fail "must run as root"
 grep -qi microsoft /proc/sys/kernel/osrelease || fail "not a WSL kernel"
 [[ "$(findmnt -n -o PROPAGATION -T /mnt/wsl)" == shared ]] || fail "/mnt/wsl is not a shared mount"
-wsl_device="$(stat -Lc '%d' /mnt/wsl)"
 
-bridge() {
-    local source="$1" target="$2" source_inode target_inode
-    [[ -d "$source" && ! -L "$source" ]] || fail "$source is missing or not a real directory"
+# Systemd stops this unit before the service sockets on uninstall. Its stop
+# action must not remove a live socket or a directory Docker may still use.
+# The socket owners unlink their files on shutdown; WSL clears this tmpfs when
+# its VM stops. A separate uninstall step may retire empty directories later.
+[[ "$action" == ensure ]] || exit 0
+
+# A retained install can still have the former forward binds on these exact
+# legacy paths. They multiply in Docker Desktop's shared mount graph. Do not
+# start new services in a namespace carrying that stack or mutate those mounts
+# here; the retained-upgrade migration must retire them under an owner lock.
+legacy_layers="$(awk '
+    $5 == "/mnt/wsl/ods-portal-runtime/ingress" \
+        || $5 == "/mnt/wsl/ods-portal-runtime/preview" { count++ }
+    END { print count + 0 }
+' /proc/self/mountinfo)"
+(( legacy_layers == 0 )) || fail "legacy Pixel runtime mounts remain ($legacy_layers); complete the guarded WSL mount migration before retrying"
+
+owner="${2:-${PIXEL_SERVICE_USER:-}}"
+[[ "$owner" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] || fail "invalid Pixel service owner"
+owner_uid="$(id -u "$owner" 2>/dev/null)" || fail "Pixel service owner does not exist"
+[[ "$owner_uid" -ne 0 ]] || fail "Pixel service owner must not be root"
+getent group ods-pixel >/dev/null || fail "ods-pixel group does not exist"
+
+base=/mnt/wsl/ods-portal-sockets
+[[ ! -L "$base" ]] || fail "$base is a symlink"
+[[ ! -e "$base" || -d "$base" ]] || fail "$base is not a directory"
+! mountpoint -q -- "$base" || fail "$base is mounted"
+install -d -o root -g root -m 0755 -- "$base"
+wsl_device="$(stat -Lc '%d' /mnt/wsl)"
+[[ "$(stat -Lc '%d' "$base")" == "$wsl_device" ]] || fail "$base is not on /mnt/wsl"
+
+prepare() {
+    local target="$1" mode="$2" expected_root="$3" allowed_name="$4"
+    local mount_rows entry count bad
     [[ ! -L "$target" ]] || fail "$target is a symlink"
-    source_inode="$(stat -Lc '%d:%i' -- "$source")"
-    target_inode="$(stat -Lc '%d:%i' -- "$target")"
-    if [[ "$target_inode" == "$source_inode" ]]; then
-        if [[ "$action" == remove ]]; then
-            umount -- "$target"
-        fi
-        return
+    [[ ! -e "$target" || -d "$target" ]] || fail "$target is not a directory"
+    if [[ -d "$target" ]]; then
+        [[ "$(stat -Lc '%d' -- "$target")" == "$wsl_device" ]] \
+            || fail "$target still has the old bind mount; stop Pixel Edge and retire that mount before retrying"
     fi
-    # systemd recreates a runtime directory when its service stops, so a bind
-    # of the previous directory can remain here. It is ours: drop it.
-    if mountpoint -q -- "$target" && [[ "${target_inode%%:*}" == "${source_inode%%:*}" ]]; then
-        umount -- "$target"
-        target_inode="$(stat -Lc '%d:%i' -- "$target")"
+    # Docker Desktop may leave a self-bind of this exact directory. Refuse an
+    # unrelated same-device bind or a pathological stack before changing modes.
+    mount_rows="$(awk -v path="$target" -v root="$expected_root" '
+        $5 == path { count++; if ($4 != root) bad = 1 }
+        END { print count + 0, bad + 0 }
+    ' /proc/self/mountinfo)"
+    read -r count bad <<<"$mount_rows"
+    [[ "$bad" == 0 ]] || fail "$target is bound from an unexpected directory"
+    (( count <= 8 )) || fail "$target has too many mount layers ($count); refusing to amplify them"
+    if [[ -d "$target" ]]; then
+        shopt -s nullglob dotglob
+        for entry in "$target"/*; do
+            [[ "${entry##*/}" == "$allowed_name" && -S "$entry" && ! -L "$entry" ]] \
+                || fail "$target contains an unexpected entry"
+        done
+        shopt -u nullglob dotglob
     fi
-    [[ "$action" == remove ]] && return 0
-    # The target may be a plain directory or Docker Desktop's own bind of it
-    # (its WSL proxy mounts a bind source onto itself). Both live on the
-    # shared /mnt/wsl tmpfs; bind the runtime on top, never over anything else.
-    [[ "${target_inode%%:*}" == "$wsl_device" ]] \
-        || fail "$target is mounted from another directory than $source ($target_inode, expected $source_inode or /mnt/wsl)"
-    [[ -z "$(find "$target" -mindepth 1 -maxdepth 1 -print -quit)" ]] || fail "$target is not empty"
-    mount --bind -- "$source" "$target"
-    [[ "$(stat -Lc '%d:%i' -- "$target")" == "$source_inode" ]] || fail "$target does not show $source after binding"
-    # Stacked on Docker's own bind, findmnt lists every mount here; ours is last.
-    [[ "$(findmnt -n -o PROPAGATION -T "$target" | tail -n 1)" == shared ]] || fail "$target bind is not shared"
+    install -d -o "$owner" -g ods-pixel -m "$mode" -- "$target"
+    [[ "$(stat -Lc '%d' -- "$target")" == "$wsl_device" ]] || fail "$target left /mnt/wsl"
+    [[ "$(stat -Lc '%u:%G:%a' -- "$target")" == "$owner_uid:ods-pixel:$mode" ]] \
+        || fail "$target has incorrect ownership or mode"
 }
 
-base=/mnt/wsl/ods-portal-runtime
-[[ ! -L "$base" ]] || fail "$base is a symlink"
-! mountpoint -q -- "$base" || fail "$base is mounted"
-if [[ "$action" == ensure ]]; then
-    install -d -o root -g root -m 0755 -- "$base"
-    for target in "$base/ingress" "$base/preview"; do
-        [[ ! -L "$target" ]] || fail "$target is a symlink"
-        # A mounted target is the owner's runtime directory. Do not chown or
-        # chmod through the projection when ensure is called again.
-        if ! mountpoint -q -- "$target"; then
-            install -d -o root -g root -m 0755 -- "$target"
-        fi
-    done
-fi
-bridge /run/ods-pixel "$base/ingress"
-bridge /run/ods-pixel-preview "$base/preview"
+prepare "$base/ingress" 710 /ods-portal-sockets/ingress pixel-ingress.sock
+prepare "$base/preview" 750 /ods-portal-sockets/preview http.sock

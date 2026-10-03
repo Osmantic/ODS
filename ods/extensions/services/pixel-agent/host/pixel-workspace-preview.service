@@ -20,6 +20,7 @@ RuntimeDirectoryPreserve=yes
 StateDirectory=ods-pixel-preview
 StateDirectoryMode=0700
 UMask=0077
+Environment=PIXEL_PREVIEW_HTTP_SOCKET=__PIXEL_PREVIEW_HTTP_SOCKET__
 
 NoNewPrivileges=true
 PrivateDevices=true
@@ -37,7 +38,7 @@ ProcSubset=pid
 PrivateMounts=true
 BindReadOnlyPaths="__PIXEL_WORKSPACE__"
 ReadOnlyPaths=/usr/local/libexec/ods-pixel-workspace-preview.py
-ReadWritePaths=/run/ods-pixel-preview /var/lib/ods-pixel-preview
+ReadWritePaths=/run/ods-pixel-preview /var/lib/ods-pixel-preview -/mnt/wsl/ods-portal-sockets/preview
 IPAddressDeny=any
 IPAddressAllow=localhost
 RemoveIPC=true

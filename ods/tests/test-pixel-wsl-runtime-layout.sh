@@ -96,15 +96,15 @@ expect_layout 'explicit local Unix Docker host uses native WSL mounts' \
 unset DOCKER_HOST
 
 export MOCK_DIRECT_DENY=false MOCK_DOCKER_OS='Docker Desktop' MOCK_PROPAGATION=shared
-expect_layout 'Docker Desktop uses shared WSL bridge' \
-    /mnt/wsl/ods-portal-runtime/ingress \
-    /mnt/wsl/ods-portal-runtime/preview rshared
+expect_layout 'Docker Desktop uses private binds of stable WSL socket directories' \
+    /mnt/wsl/ods-portal-sockets/ingress \
+    /mnt/wsl/ods-portal-sockets/preview rprivate
 
 DOCKER_CMD='sudo docker'
 export MOCK_DIRECT_DENY=true
-expect_layout 'Docker Desktop via resolved sudo command still uses shared bridge' \
-    /mnt/wsl/ods-portal-runtime/ingress \
-    /mnt/wsl/ods-portal-runtime/preview rshared
+expect_layout 'Docker Desktop via resolved sudo command uses stable WSL socket directories' \
+    /mnt/wsl/ods-portal-sockets/ingress \
+    /mnt/wsl/ods-portal-sockets/preview rprivate
 DOCKER_CMD=docker
 export MOCK_DIRECT_DENY=false
 

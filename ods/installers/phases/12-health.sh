@@ -601,11 +601,15 @@ fi
 if [[ "${ENABLE_PIXEL_RUNTIME:-false}" == "true" ]]; then
     _pixel_owner="${PIXEL_SERVICE_USER:-$(ods_pixel_install_owner 2>/dev/null || true)}"
     _pixel_home=""
+    _pixel_ingress_socket=/run/ods-pixel/pixel-ingress.sock
+    if [[ "${PIXEL_INGRESS_RUNTIME_DIR:-}" == /mnt/wsl/ods-portal-sockets/ingress ]]; then
+        _pixel_ingress_socket=/mnt/wsl/ods-portal-sockets/ingress/pixel-ingress.sock
+    fi
     [[ -n "$_pixel_owner" ]] && _pixel_home="$(ods_pixel_owner_home "$_pixel_owner" 2>/dev/null || true)"
     if [[ -z "$_pixel_home" ]] \
         || ! systemctl is-active --quiet openclaw-gateway.service pixel-ingress.service \
         || ! ods_pixel_run_as_owner "$_pixel_owner" "$_pixel_home" curl --fail --silent --show-error --max-time 10 \
-            --unix-socket /run/ods-pixel/pixel-ingress.sock http://localhost/health >/dev/null; then
+            --unix-socket "$_pixel_ingress_socket" http://localhost/health >/dev/null; then
         ai_warn "Pixel gateway or private host ingress did not pass its health check."
         HEALTH_FAILURES=$((HEALTH_FAILURES + 1))
     else
