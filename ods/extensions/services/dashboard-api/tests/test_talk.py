@@ -390,10 +390,7 @@ def test_talk_speak_streams_audio(talk_client, monkeypatch):
 
 
 def test_talk_speak_handles_empty_stream(talk_client, monkeypatch):
-    """If Kokoro errors before any audio is produced, the streaming
-    response should close cleanly with empty body — the SPA's `if (!resp.ok
-    || !resp.body)` short-circuit then suppresses playback without
-    interrupting the text chat."""
+    """A failed first Kokoro request must not look like successful audio."""
     async def fake_stream(text):
         # Kokoro upstream failure: nothing to yield.
         if False:
@@ -402,8 +399,8 @@ def test_talk_speak_handles_empty_stream(talk_client, monkeypatch):
     monkeypatch.setattr("routers.talk._stream_speech", fake_stream)
 
     resp = talk_client.post("/api/talk/speak", data={"text": "silent"})
-    assert resp.status_code == 200
-    assert resp.content == b""
+    assert resp.status_code == 503
+    assert resp.json()["detail"] == "Speech audio is unavailable right now."
 
 
 # ----------------------------------------------------------------------
