@@ -60,7 +60,7 @@ async function update() {
   const providerIndex = values.modelProviders.findIndex((entry) => entry && entry.type === "openai");
   const provider = values.modelProviders[providerIndex];
   if (!provider || !provider.id) {
-    return;
+    throw new Error("OpenAI provider is not ready");
   }
   const chatModels = [{ key: model, name: model }];
   const providerConfig = provider.config || {};
@@ -128,6 +128,23 @@ async function update() {
   for (const key of ["defaultEmbeddingProvider", "defaultEmbeddingModel"]) {
     if (verified.preferences[key] !== preferences[key]) {
       throw new Error("embedding preferences did not persist");
+    }
+  }
+  // Library installs use this startup sync rather than the installer's
+  // one-time repair path. Finish Vane's own setup only after its saved chat
+  // route and a real embedding model are both available. An incomplete owner
+  // choice remains in the setup UI for the owner to resolve.
+  const embedding = (verified.modelProviders || []).find((entry) =>
+    entry?.id === verified.preferences.defaultEmbeddingProvider);
+  const embeddingReady = Boolean(
+    embedding && Array.isArray(embedding.embeddingModels) &&
+    embedding.embeddingModels.some((entry) =>
+      entry?.key === verified.preferences.defaultEmbeddingModel));
+  if (verified.setupComplete !== true && embeddingReady) {
+    const setupUrl = `${configUrl.replace(/\/+$/, "")}/setup-complete`;
+    await request(setupUrl, {});
+    if ((await request(configUrl)).values?.setupComplete !== true) {
+      throw new Error("setup completion did not persist");
     }
   }
   process.stdout.write(`${model}\n`);

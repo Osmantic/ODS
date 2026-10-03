@@ -106,6 +106,9 @@ Environment variables (set in `.env`):
 > advertises it. Existing or partly configured owner selections are preserved.
 > If the built-in model is unavailable or a selection is incomplete, choose a
 > provider and embedding model in Perplexica Settings before delegating research.
+> Library add-back completes Vane's first-use setup after the saved chat route
+> and an advertised embedding model have been verified. A missing or incomplete
+> embedding choice keeps the setup screen available for the owner.
 
 ## Architecture
 
