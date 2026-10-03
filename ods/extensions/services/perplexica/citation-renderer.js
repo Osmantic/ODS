@@ -7,8 +7,8 @@ function renderCitations(message, sources) {
   const refs = Array.isArray(sources) ? sources : [];
   let fence = null;
   let inline = null;
-  let rawHtmlTag = false;
-  let rawLiteral = null;
+  let rawTag = null;
+  let rawElement = null;
 
   function cite(token, inner) {
     if (!/^\s*\d+(?:\s*,\s*\d+)*\s*$/.test(inner)) return token;
@@ -80,8 +80,29 @@ function renderCitations(message, sources) {
   }
 
   function insideHtmlTag(line, index) {
-    const open = line.lastIndexOf("<", index);
-    return open > line.lastIndexOf(">", index) && /^<\/?[A-Za-z]/.test(line.slice(open));
+    let open = line.indexOf("<");
+    while (open !== -1 && open <= index) {
+      if (/^<\/?[A-Za-z]/.test(line.slice(open))) {
+        const end = htmlTagEnd(line, open, null).end;
+        if (end === -1 || end >= index) return true;
+        open = line.indexOf("<", end + 1);
+      } else open = line.indexOf("<", open + 1);
+    }
+    return false;
+  }
+
+  function htmlTagEnd(line, from, initialQuote) {
+    let quote = initialQuote;
+    for (let i = from; i < line.length; i += 1) {
+      if (quote) {
+        if (line[i] === quote) quote = null;
+      } else if (line[i] === '"' || line[i] === "'") {
+        quote = line[i];
+      } else if (line[i] === ">") {
+        return { end: i, quote: null };
+      }
+    }
+    return { end: -1, quote };
   }
 
   function prose(line, base) {
@@ -152,25 +173,38 @@ function renderCitations(message, sources) {
         && close[2].length >= fence.marker.length) fence = null;
       return line;
     }
-    // An inline HTML tag can span lines. Do not inject another tag into its
-    // attributes, or into raw HTML elements that contain literal code text.
-    if (rawHtmlTag) {
-      if (line.includes(">")) rawHtmlTag = false;
+    if (rawTag) {
+      const tagEnd = htmlTagEnd(line, 0, rawTag.quote);
+      if (tagEnd.end === -1) rawTag.quote = tagEnd.quote;
+      else {
+        const { name, literal } = rawTag;
+        const selfClosing = /\/\s*$/.test(line.slice(0, tagEnd.end));
+        if (literal && !selfClosing
+          && !new RegExp(`</${name}\\s*>`, "i").test(line.slice(tagEnd.end + 1))) rawElement = name;
+        rawTag = null;
+      }
       return line;
     }
-    if (rawLiteral) {
-      if (new RegExp(`</${rawLiteral}\\s*>`, "i").test(line)) rawLiteral = null;
+    // Preserve literal HTML code blocks as opaque elements. A '>' inside a
+    // quoted attribute does not complete its opening tag.
+    if (rawElement) {
+      if (new RegExp(`</${rawElement}\\s*>`, "i").test(line)) rawElement = null;
       return line;
     }
-    const rawOpen = /^(?: {0,3}> ?)* {0,3}<(pre|code|script|style|textarea)(?:\s|>)/i.exec(line);
+    const rawOpen = /^(?: {0,3}> ?)* {0,3}<([A-Za-z][\w:-]*)(?:\s|\/?>|$)/i.exec(line);
     if (rawOpen) {
       const name = rawOpen[1].toLowerCase();
-      if (!new RegExp(`</${name}\\s*>`, "i").test(line)) rawLiteral = name;
-      return line;
-    }
-    if (/^(?: {0,3}> ?)* {0,3}<\/?[A-Za-z][\w:-]*(?:\s|$)[^>]*$/.test(line)) {
-      rawHtmlTag = true;
-      return line;
+      const literal = /^(?:pre|code|script|style|textarea)$/.test(name);
+      const voidTag = /^(?:area|base|br|col|embed|hr|img|input|link|meta|param|source|track|wbr)$/.test(name);
+      const tagEnd = htmlTagEnd(line, line.indexOf("<"), null);
+      if (tagEnd.end === -1) {
+        rawTag = { name, quote: tagEnd.quote, literal };
+        return line;
+      }
+      const closed = new RegExp(`</${name}\\s*>`, "i").test(line.slice(tagEnd.end + 1));
+      const selfClosing = /\/\s*$/.test(line.slice(0, tagEnd.end));
+      if (!closed && literal && !selfClosing) rawElement = name;
+      if (rawElement || literal || voidTag) return line;
     }
     const marker = /^(?: {0,3}> ?)*( {0,3}(?:[-+*]|\d{1,9}[.)]) +)? {0,3}(`{3,}|~{3,})/.exec(line);
     if (marker) {

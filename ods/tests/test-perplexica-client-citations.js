@@ -55,6 +55,8 @@ function checkCases(render) {
     `Use ${inline("&lt;img src=x onerror=alert(1)&gt; &amp; &quot;hi&quot; &#39;x&#39;")}.`);
   assert.equal(render('<span title="`raw`">x</span> and `ok`', source),
     '<span title="`raw`">x</span> and ' + inline("ok"));
+  assert.equal(render('<span title="foo > `raw`">x</span> and `ok`', source),
+    '<span title="foo > `raw`">x</span> and ' + inline("ok"));
   assert.equal(render("[label `code`](https://x.test) and `ok`", source),
     "[label `code`](https://x.test) and " + inline("ok"));
   assert.equal(render("-     `x`", source), "-     `x`");
@@ -63,6 +65,14 @@ function checkCases(render) {
     "<pre>\n`x`\n</pre>\nUse " + inline("ok"));
   assert.equal(render('<a title="\n`x`\n">link</a>\nUse `ok`', source),
     '<a title="\n`x`\n">link</a>\nUse ' + inline("ok"));
+  assert.equal(render('<a title="\nfoo > bar\n`x`\n">link</a>\nUse `ok`', source),
+    '<a title="\nfoo > bar\n`x`\n">link</a>\nUse ' + inline("ok"));
+  assert.equal(render('<a title="</a>\n`x`\n">link</a>\nUse `ok`', source),
+    '<a title="</a>\n`x`\n">link</a>\nUse ' + inline("ok"));
+  assert.equal(render("<pre\nclass=x>\n`x`\n</pre>\nUse `ok`", source),
+    "<pre\nclass=x>\n`x`\n</pre>\nUse " + inline("ok"));
+  assert.equal(render('<img alt="\n`x`\n">\nUse `ok`', source),
+    '<img alt="\n`x`\n">\nUse ' + inline("ok"));
   assert.equal(render("Use `[1]\n[2]` then [1].", source), `Use \`[1]\n[2]\` then ${cited(1)}.`);
   assert.equal(render(">     values = [1, 2]", source), ">     values = [1, 2]");
   assert.equal(render("An escaped \\` tick; fact [1].", source), "An escaped \\` tick; fact " + cited(1) + ".");
