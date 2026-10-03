@@ -834,6 +834,12 @@ sync_windows_opencode_config() {
         *) return 0 ;;
     esac
 
+    # The model upgrade can outlive the installer. Carry its explicit DevTools
+    # choice so a Core-only install never rewrites an existing user profile.
+    case "${ODS_WINDOWS_DEVTOOLS_SELECTED:-}" in
+        false|0) return 0 ;;
+    esac
+
     local sync_script="$INSTALL_DIR/scripts/update-windows-opencode-config.ps1"
     [[ -f "$sync_script" ]] || return 0
 
@@ -3897,7 +3903,8 @@ elif is_windows_bash; then
         log "WARNING: Could not resolve the Windows ODS CLI path for host agent restart (non-fatal)"
     else
         log "Restarting ods-host-agent (Windows)..."
-        "$_windows_agent_ps" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass \
+        ODS_HOME="$(windows_path "$INSTALL_DIR")" \
+            "$_windows_agent_ps" -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass \
             -File "$_windows_agent_cli_arg" agent restart 2>&1 || \
             log "WARNING: Could not restart host agent (non-fatal)"
     fi

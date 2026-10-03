@@ -907,7 +907,18 @@ fix_nvidia_secure_boot() {
     #     automatically after reboot (user doesn't have to re-run manually)
     local svc_name="ods-install-resume"
     local resume_args="--force --non-interactive"
-    $ENABLE_VOICE && resume_args="$resume_args --voice"
+    # A mixed Library selection must survive the reboot resume. --voice would
+    # silently enable the missing service, so encode both choices explicitly.
+    if [[ "${ENABLE_WHISPER:-${ENABLE_VOICE:-false}}" == true ]]; then
+        resume_args="$resume_args --whisper"
+    else
+        resume_args="$resume_args --no-whisper"
+    fi
+    if [[ "${ENABLE_TTS:-${ENABLE_VOICE:-false}}" == true ]]; then
+        resume_args="$resume_args --tts"
+    else
+        resume_args="$resume_args --no-tts"
+    fi
     $ENABLE_WORKFLOWS && resume_args="$resume_args --workflows"
     $ENABLE_RAG && resume_args="$resume_args --rag"
     $ENABLE_HERMES && resume_args="$resume_args --hermes"

@@ -6,7 +6,7 @@
 #          non-interactive / headless installs.
 #
 # Reads:
-#   $voiceFlag, $workflowsFlag, $ragFlag, $recommendedFlag, $hermesFlag,
+#   $voiceFlag, $noVoiceFlag, $workflowsFlag, $ragFlag, $recommendedFlag, $hermesFlag,
 #   $openClawFlag, $allFlag
 #   $noRecommendedFlag, $comfyuiFlag, $noHermesFlag, $noComfyuiFlag
 #   $nonInteractive  -- suppress menus (use flag defaults)
@@ -16,11 +16,13 @@
 #   $cloudMode       -- true when external/cloud LLM mode is selected
 #
 # Writes:
-#   $enableVoice      -- bool: enable Whisper + Kokoro TTS
+#   $enableWhisper, $enableTts -- independent installed voice services
+#   $enableVoice      -- bool: either voice service is enabled
 #   $enableWorkflows  -- bool: enable n8n workflow automation
 #   $enableRag        -- bool: enable Qdrant + embeddings (RAG)
 #   $enableRecommended -- bool: enable recommended web/API support services
 #   $enableHermes     -- bool: enable Hermes agent framework
+#   $enableHermesProxy -- bool: enable its separately retained proxy
 #   $enableOpenClaw   -- bool: enable deprecated OpenClaw agent framework
 #   $enableComfyui    -- bool: enable ComfyUI image generation
 #   $openClawConfig   -- string: tier-appropriate OpenClaw config filename
@@ -34,17 +36,33 @@
 Write-Phase -Phase 3 -Total 13 -Name "FEATURE SELECTION" -Estimate "interactive"
 
 # ── Defaults from CLI flags ────────────────────────────────────────────────────
-$enableVoice         = $voiceFlag -or $allFlag
-$enableWorkflows     = $workflowsFlag -or $allFlag
-$enableRag           = $ragFlag -or $allFlag
-$enableRecommended   = (-not $noRecommendedFlag) -and ($recommendedFlag -or $allFlag -or (-not $nonInteractive))
-if ($nonInteractive -and -not $noRecommendedFlag) { $enableRecommended = $true }
-$enableHermes        = (-not $noHermesFlag) -and ($hermesFlag -or $allFlag -or (-not $nonInteractive))
-if ($nonInteractive -and -not $noHermesFlag) { $enableHermes = $true }
-$enableOpenClaw      = $openClawFlag
-$enableComfyui       = -not $noComfyuiFlag
-$enableDeepResearch  = $true
-$enablePrivacyShield = $true
+$installedSelection = Get-ODSWindowsInstalledFeatureSelection -InstallDir $installDir
+$legacyIntentRequired = $installedSelection.Kind -eq "intent-required"
+if ($legacyIntentRequired -and $recommendedFlag -and $noRecommendedFlag) {
+    throw "Pass either -Recommended or -NoRecommended for legacy LiteLLM-only recovery, not both."
+}
+$explicitRecommendedIntent = $recommendedFlag -xor $noRecommendedFlag
+if ($legacyIntentRequired -and ($nonInteractive -or $dryRun) -and
+    -not ($explicitRecommendedIntent -or $allFlag)) {
+    throw "Legacy LiteLLM-only selection needs an explicit Recommended choice. Pass -Recommended or -NoRecommended; other installed features will be preserved."
+}
+$priorFeatures = if ($installedSelection.Kind -eq "preserved" -or $legacyIntentRequired) {
+    $installedSelection.Features
+} else { @{} }
+if ($installedSelection.Kind -eq "unknown" -and ($nonInteractive -or $dryRun) -and -not $allFlag) {
+    throw "Existing ODS feature selection is unknown ($($installedSelection.Reason)). Choose Full Stack or Core Only interactively, or pass -All."
+}
+$enableWhisper       = $voiceFlag -or $allFlag -or [bool]$priorFeatures.Whisper
+$enableTts           = $voiceFlag -or $allFlag -or [bool]$priorFeatures.Tts
+$enableWorkflows     = $workflowsFlag -or $allFlag -or [bool]$priorFeatures.Workflows
+$enableRag           = $ragFlag -or $allFlag -or [bool]$priorFeatures.Rag
+$enableRecommended   = (-not $noRecommendedFlag) -and ($recommendedFlag -or $allFlag -or [bool]$priorFeatures.Recommended)
+$enableHermes        = (-not $noHermesFlag) -and ($hermesFlag -or $allFlag -or [bool]$priorFeatures.Hermes)
+$enableHermesProxy   = (-not $noHermesFlag) -and ($hermesFlag -or $allFlag -or [bool]$priorFeatures.HermesProxy)
+$enableOpenClaw      = $openClawFlag -or [bool]$priorFeatures.OpenClaw
+$enableComfyui       = (-not $noComfyuiFlag) -and ($comfyuiFlag -or $allFlag -or [bool]$priorFeatures.Comfyui)
+$enableDeepResearch  = $allFlag -or [bool]$priorFeatures.DeepResearch
+$enablePrivacyShield = $allFlag -or [bool]$priorFeatures.PrivacyShield
 $enableBraveSearch   = $false
 $enableODSProxy    = $false
 $enableRemoteAccess  = $false
@@ -52,26 +70,53 @@ $enableRemoteAccess  = $false
 # stack adds ~500MB baseline memory. Opt in via -Langfuse, -All, the Custom
 # menu, or post-install `ods enable langfuse`. -NoLangfuse is honored as an
 # explicit override so a -All run can still suppress Langfuse.
-$enableLangfuse   = ($langfuseFlag -or $allFlag) -and (-not $noLangfuseFlag)
+$enableLangfuse   = ($langfuseFlag -or $allFlag -or [bool]$priorFeatures.Langfuse) -and (-not $noLangfuseFlag)
+
+function Read-ODSWindowsFeatureChoice {
+    param([string]$Prompt, [bool]$Default)
+    $suffix = if ($Default) { '[Y/n]' } else { '[y/N]' }
+    $answer = Read-Host "  $Prompt $suffix"
+    if ($answer -match '^[yY]') { return $true }
+    if ($answer -match '^[nN]') { return $false }
+    return $Default
+}
 
 # ── Interactive menu (skipped in non-interactive / dry-run / --All mode) ──────
+$choice = ""
 if (-not $nonInteractive -and -not $allFlag -and -not $dryRun) {
     Write-Host ""
     Write-Host "  Choose your ODS configuration:" -ForegroundColor White
     Write-Host ""
     Write-Host "  [1] Full Stack   -- Voice + Workflows + RAG + Hermes + research tools" -ForegroundColor Green
-    Write-Host "  [2] Core Only    -- Chat + LLM inference (lean, fastest startup)" -ForegroundColor White
+    Write-Host "  [2] Core Only    -- Local model chat; no Dashboard agent" -ForegroundColor White
     Write-Host "  [3] Custom       -- Choose each feature individually" -ForegroundColor White
+    if ($installedSelection.Kind -eq "preserved") {
+        Write-Host "  [4] Keep current -- Preserve installed service choices" -ForegroundColor White
+    }
     Write-Host ""
 
-    $choice = Read-Host "  Selection [1/2/3] (default: 1)"
+    $defaultChoice = switch ($installedSelection.Kind) {
+        "preserved" { "4" }
+        "fresh" { "2" }
+        default { "" }
+    }
+    if ($installedSelection.Kind -eq "unknown" -or $legacyIntentRequired) {
+        Write-AIWarn "Existing selection needs a choice: $($installedSelection.Reason). Choose Full Stack, Core Only, or Custom explicitly."
+    }
+    $choice = Read-Host "  Selection [1/2/3/4] (default: $defaultChoice)"
+    if ([string]::IsNullOrWhiteSpace($choice)) { $choice = $defaultChoice }
     switch ($choice) {
+        "4" {
+            if ($installedSelection.Kind -ne "preserved") { throw "No installed feature selection is available to keep." }
+        }
         "2" {
-            $enableVoice     = $false
+            $enableWhisper   = $false
+            $enableTts       = $false
             $enableWorkflows = $false
             $enableRag       = $false
             $enableRecommended = $false
             $enableHermes    = $false
+            $enableHermesProxy = $false
             $enableOpenClaw  = $false
             $enableComfyui   = $false
             $enableDeepResearch = $false
@@ -80,16 +125,21 @@ if (-not $nonInteractive -and -not $allFlag -and -not $dryRun) {
         }
         "3" {
             Write-Host ""
-            $enableVoice     = (Read-Host "  Enable Voice (Whisper STT + Kokoro TTS)?  [y/N]") -match "^[yY]"
-            $enableWorkflows = (Read-Host "  Enable Workflows (n8n, 400+ integrations)? [y/N]") -match "^[yY]"
-            $enableRag       = (Read-Host "  Enable RAG (Qdrant vector DB + embeddings)? [y/N]") -match "^[yY]"
-            $enableRecommended = (Read-Host "  Enable recommended web/API support (LiteLLM + SearXNG + Token Spy)? [Y/n]") -notmatch "^[nN]"
-            $enableHermes    = (Read-Host "  Enable Hermes Agent (default AI agent)? [Y/n]") -notmatch "^[nN]"
-            $enableOpenClaw  = (Read-Host "  Enable OpenClaw (DEPRECATED; Hermes replaces it)? [y/N]") -match "^[yY]"
-            $enableComfyui   = (Read-Host "  Enable image generation (ComfyUI + SDXL Lightning, ~6.5GB)? [y/N]") -match "^[yY]"
-            $enableDeepResearch = (Read-Host "  Enable Perplexica deep research? [Y/n]") -notmatch "^[nN]"
-            $enablePrivacyShield = (Read-Host "  Enable Privacy Shield PII protection? [Y/n]") -notmatch "^[nN]"
-            $enableLangfuse  = (Read-Host "  Enable Langfuse (LLM observability, ~500MB)? [y/N]") -match "^[yY]"
+            $enableWhisper = Read-ODSWindowsFeatureChoice 'Enable Whisper speech-to-text?' $enableWhisper
+            $enableTts = Read-ODSWindowsFeatureChoice 'Enable Kokoro text-to-speech?' $enableTts
+            $enableWorkflows = Read-ODSWindowsFeatureChoice 'Enable Workflows (n8n, 400+ integrations)?' $enableWorkflows
+            $enableRag = Read-ODSWindowsFeatureChoice 'Enable RAG (Qdrant + embeddings)?' $enableRag
+            $enableRecommended = Read-ODSWindowsFeatureChoice 'Enable recommended web/API support?' $enableRecommended
+            $hermesBeforeChoice = $enableHermes
+            $enableHermes = Read-ODSWindowsFeatureChoice 'Enable Hermes Agent?' $enableHermes
+            if ($enableHermes -ne $hermesBeforeChoice) {
+                $enableHermesProxy = $enableHermes
+            }
+            $enableOpenClaw = Read-ODSWindowsFeatureChoice 'Enable deprecated OpenClaw?' $enableOpenClaw
+            $enableComfyui = Read-ODSWindowsFeatureChoice 'Enable image generation (ComfyUI, ~6.5GB)?' $enableComfyui
+            $enableDeepResearch = Read-ODSWindowsFeatureChoice 'Enable Perplexica deep research?' $enableDeepResearch
+            $enablePrivacyShield = Read-ODSWindowsFeatureChoice 'Enable Privacy Shield?' $enablePrivacyShield
+            $enableLangfuse = Read-ODSWindowsFeatureChoice 'Enable Langfuse observability?' $enableLangfuse
 
             # Warn on low-tier
             if ($enableComfyui -and ($selectedTier -eq "0" -or $selectedTier -eq "1")) {
@@ -97,13 +147,14 @@ if (-not $nonInteractive -and -not $allFlag -and -not $dryRun) {
                 $enableComfyui = (Read-Host "  Continue with image generation enabled? [y/N]") -match "^[yY]"
             }
         }
-        default {
-            # "" (Enter) and "1" both select Full Stack
-            $enableVoice     = $true
+        "1" {
+            $enableWhisper   = $true
+            $enableTts       = $true
             $enableWorkflows = $true
             $enableRag       = $true
             $enableRecommended = $true
             $enableHermes    = $true
+            $enableHermesProxy = $true
             $enableOpenClaw  = $false
             $enableComfyui   = $true
             $enableDeepResearch = $true
@@ -117,15 +168,68 @@ if (-not $nonInteractive -and -not $allFlag -and -not $dryRun) {
                 Write-AI "  You can enable it later with: ods enable comfyui"
             }
         }
+        default { throw "Choose a valid feature selection (1, 2, 3, or 4 when available)." }
     }
 }
 
+# Explicit CLI selections win over menu choices and preserved state.
+if ($voiceFlag) { $enableWhisper = $true; $enableTts = $true }
+if ($workflowsFlag) { $enableWorkflows = $true }
+if ($ragFlag) { $enableRag = $true }
+if ($recommendedFlag) { $enableRecommended = $true }
+if ($hermesFlag) { $enableHermes = $true; $enableHermesProxy = $true }
+if ($openClawFlag) { $enableOpenClaw = $true }
+if ($comfyuiFlag) { $enableComfyui = $true }
+if ($langfuseFlag) { $enableLangfuse = $true }
 if ($noHermesFlag) {
     $enableHermes = $false
+    $enableHermesProxy = $false
 }
+if ($enableHermesProxy -and -not $enableHermes) {
+    throw 'Hermes proxy requires Hermes.'
+}
+
+# Preserve separate Library selections before Phase 06 copies source fragments
+# over the installed tree. CLI and an explicit menu choice keep their paired
+# meaning; Enter on an existing install retains its prior Hermes/proxy choice.
+$computedHermesProxy = $null
+if (Get-Variable -Name enableHermesProxy -Scope Local -ErrorAction SilentlyContinue) {
+    $computedHermesProxy = [Nullable[bool]]$enableHermesProxy
+}
+$hermesSelection = Resolve-ODSWindowsHermesSelection `
+    -InstallDir $installDir `
+    -ComputedHermes $enableHermes `
+    -ComputedProxy $computedHermesProxy `
+    -CliEnable $hermesFlag `
+    -CliDisable $noHermesFlag `
+    -All $allFlag `
+    -MenuExplicit ($choice -in @("1", "2", "3"))
+$enableHermes = [bool]$hermesSelection.Hermes
+$enableHermesProxy = [bool]$hermesSelection.Proxy
+
+# A Library toggle changes each Compose marker independently. An ordinary
+# rerun preserves both choices unless the owner made an explicit paired CLI
+# or menu choice. Read markers before Phase 06 refreshes installed source.
+$voiceSelection = Resolve-ODSWindowsVoiceSelection `
+    -InstallDir $installDir `
+    -ComputedWhisper $enableWhisper `
+    -ComputedTts $enableTts `
+    -CliEnable $voiceFlag `
+    -CliDisable $noVoiceFlag `
+    -All $allFlag `
+    -MenuExplicit ($choice -in @("1", "2", "3"))
+$enableWhisper = [bool]$voiceSelection.Whisper
+$enableTts = [bool]$voiceSelection.Tts
+$enableVoice = ($enableWhisper -or $enableTts)
 
 if ($noRecommendedFlag) {
     $enableRecommended = $false
+}
+if ($noComfyuiFlag) {
+    $enableComfyui = $false
+}
+if ($noLangfuseFlag) {
+    $enableLangfuse = $false
 }
 
 # Tier safety net: disable ComfyUI on Tier 0/1 or CLOUD in non-interactive mode.
@@ -197,13 +301,20 @@ if ($enableHermes -and -not $cloudMode) {
 }
 
 # ── Feature summary ───────────────────────────────────────────────────────────
+$enableVoice = $enableWhisper -or $enableTts
 Write-Host ""
 Write-AI "Feature configuration:"
-Write-InfoBox "  Voice (Whisper + Kokoro):" $(if ($enableVoice)     { "enabled" } else { "disabled" })
+Write-InfoBox "  Whisper (STT):" $(if ($enableWhisper) { "enabled" } else { "disabled" })
+Write-InfoBox "  Kokoro (TTS):"  $(if ($enableTts) { "enabled" } else { "disabled" })
 Write-InfoBox "  Workflows (n8n):"          $(if ($enableWorkflows) { "enabled" } else { "disabled" })
 Write-InfoBox "  RAG (Qdrant + embeddings):" $(if ($enableRag)      { "enabled" } else { "disabled" })
 Write-InfoBox "  Recommended web/API:"       $(if ($enableRecommended) { "enabled" } else { "disabled" })
 Write-InfoBox "  Agents (Hermes):"           $(if ($enableHermes)   { "enabled" } else { "disabled" })
+Write-InfoBox "  Hermes proxy:"              $(if ($enableHermesProxy) { "enabled" } else { "disabled" })
+if (-not $enableHermes -and -not $enableOpenClaw) {
+    Write-AI "This native Windows selection provides model chat without an action-capable Dashboard agent."
+    Write-AI "For Pixel in Portal, run .\install.ps1 from the ODS repository root to use the supported Windows/WSL2 path."
+}
 Write-InfoBox "  Legacy OpenClaw:"           $(if ($enableOpenClaw) { "enabled (DEPRECATED)" } else { "disabled" })
 Write-InfoBox "  Image gen (ComfyUI):"        $(if ($enableComfyui)  { "enabled" } else { "disabled" })
 Write-InfoBox "  Deep research:"              $(if ($enableDeepResearch) { "enabled" } else { "disabled" })
