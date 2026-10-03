@@ -3,19 +3,19 @@ model_list:
     litellm_params:
       model: openai/ods/current
       api_base: http://model-router:9099/v1
-      api_key: no-key
+      api_key: os.environ/ODS_ROUTER_INTERNAL_KEY
 
   - model_name: local
     litellm_params:
       model: openai/ods/current
       api_base: http://model-router:9099/v1
-      api_key: no-key
+      api_key: os.environ/ODS_ROUTER_INTERNAL_KEY
 
   - model_name: default
     litellm_params:
       model: openai/ods/current
       api_base: http://model-router:9099/v1
-      api_key: no-key
+      api_key: os.environ/ODS_ROUTER_INTERNAL_KEY
 
   - model_name: cloud
     litellm_params:
@@ -38,7 +38,7 @@ model_list:
     litellm_params:
       model: openai/ods/current
       api_base: http://model-router:9099/v1
-      api_key: no-key
+      api_key: os.environ/ODS_ROUTER_INTERNAL_KEY
 
 general_settings:
   master_key: os.environ/LITELLM_MASTER_KEY

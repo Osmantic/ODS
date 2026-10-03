@@ -19,6 +19,11 @@ services:
       - ODS_MODEL_SWITCHBOARD=${ODS_MODEL_SWITCHBOARD:-enabled}
       - TOKEN_SPY_URL=${TOKEN_SPY_URL:-http://token-spy:8080}
       - TOKEN_SPY_API_KEY=${TOKEN_SPY_API_KEY:-}
+      # Presented to model-router on the switchboard route. Mirrors the
+      # router's own resolution order (app/main.py: ODS_ROUTER_INTERNAL_KEY
+      # first, DASHBOARD_API_KEY second) so both sides land on the same value
+      # without introducing a new generated secret.
+      - ODS_ROUTER_INTERNAL_KEY=${ODS_ROUTER_INTERNAL_KEY:-${DASHBOARD_API_KEY:-}}
     volumes:
       - ./config/litellm/${ODS_MODE:-local}.yaml:/app/config.yaml:ro,z
       - ./config/litellm/switchboard.yaml:/app/switchboard.yaml:ro,z
