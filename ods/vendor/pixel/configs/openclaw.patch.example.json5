@@ -1,0 +1,56 @@
+// Rendered by scripts/render-config.mjs. This example contains no credentials.
+{
+  models: {
+    mode: "merge",
+    providers: {
+      local: {
+        baseUrl: "http://127.0.0.1:8000/v1",
+        apiKey: "local-no-auth",
+        api: "openai-completions",
+        models: [{
+          id: "assistant-model",
+          name: "Local Assistant Model",
+          reasoning: false,
+          input: ["text"],
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+          contextWindow: 131072,
+          maxTokens: 4096,
+        }],
+      },
+    },
+  },
+  agents: {
+    defaults: {
+      sandbox: {
+        mode: "all", scope: "agent", workspaceAccess: "rw",
+        docker: { image: "openclaw-sandbox:bookworm-slim", network: "none", readOnlyRoot: true },
+      },
+      memorySearch: {
+        enabled: true,
+        provider: "local",
+        model: "embeddinggemma-300m-qat-Q8_0.gguf",
+        local: { modelCacheDir: "/var/lib/openclaw/models/embed-cache" },
+        extraPaths: ["daily-notes", "context", "library", "reflections"],
+      },
+      bootstrapMaxChars: 32000,
+      bootstrapTotalMaxChars: 96000,
+    },
+    list: [{
+      id: "pixel",
+      name: "Pixel",
+      workspace: "/home/agent/.openclaw/workspace-pixel",
+      heartbeat: { every: "0m" },
+      tools: { deny: ["discord", "message"] },
+    }],
+  },
+  tools: { web: { search: { provider: "searxng" } } },
+  plugins: {
+    entries: {
+      searxng: { enabled: true, config: { webSearch: { baseUrl: "http://127.0.0.1:8890" } } },
+      "llama-cpp": { enabled: true },
+      "pixel-source-broker": { enabled: true },
+    },
+    allow: ["searxng", "llama-cpp", "pixel-source-broker"],
+    load: { paths: ["/opt/pixel/plugin"] },
+  },
+}

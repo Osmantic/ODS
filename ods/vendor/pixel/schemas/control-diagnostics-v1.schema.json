@@ -1,0 +1,99 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/control-diagnostics-v1.schema.json",
+  "title": "Pixel content-free local diagnostics v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "generatedAt", "summary", "incidents", "limits", "privacy", "boundary"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "generatedAt": {"type": "string", "format": "date-time"},
+    "summary": {"$ref": "#/$defs/summary"},
+    "incidents": {
+      "type": "array", "maxItems": 20,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["incidentId", "category", "severity", "status", "detectedAt", "failureMode", "nextActionCode", "privateEvidenceAvailable", "privateDataProjected", "credentialsProjected"],
+        "properties": {
+          "incidentId": {"type": "string", "pattern": "^incident-[a-f0-9]{24}$"},
+          "category": {"enum": ["deployment", "health", "update", "backup", "operations-containment", "frontier-containment", "deep-work-containment", "deep-work-recovery", "deep-work-authoring"]},
+          "severity": {"enum": ["warning", "critical"]},
+          "status": {"enum": ["open", "resolved"]},
+          "detectedAt": {"type": "string", "format": "date-time"},
+          "failureMode": {"enum": ["nonzero-exit", "execution-error", "interrupted"]},
+          "nextActionCode": {"enum": ["none", "inspect-private-deployment-log", "inspect-private-health-log", "inspect-private-update-log", "inspect-private-backup-log", "inspect-private-deep-work-draft-log", "inspect-private-deep-work-resume-log", "keep-operations-paused", "keep-frontier-paused", "contain-deep-work-from-terminal", "cancel-deep-work-from-terminal"]},
+          "privateEvidenceAvailable": {"type": "boolean"},
+          "privateDataProjected": {"const": false},
+          "credentialsProjected": {"const": false}
+        },
+        "allOf": [
+          {"if": {"properties": {"status": {"const": "resolved"}}, "required": ["status"]}, "then": {"properties": {"nextActionCode": {"const": "none"}}}},
+          {"if": {"properties": {"status": {"const": "open"}}, "required": ["status"]}, "then": {"properties": {"nextActionCode": {"enum": ["inspect-private-deployment-log", "inspect-private-health-log", "inspect-private-update-log", "inspect-private-backup-log", "inspect-private-deep-work-draft-log", "inspect-private-deep-work-resume-log", "keep-operations-paused", "keep-frontier-paused", "contain-deep-work-from-terminal", "cancel-deep-work-from-terminal"]}}}},
+          {"if": {"properties": {"severity": {"const": "critical"}}, "required": ["severity"]}, "then": {"properties": {"category": {"enum": ["operations-containment", "frontier-containment", "deep-work-containment"]}}}},
+          {"if": {"properties": {"category": {"enum": ["deployment", "health", "update", "backup", "deep-work-recovery", "deep-work-authoring"]}}, "required": ["category"]}, "then": {"properties": {"severity": {"const": "warning"}}}},
+          {"if": {"properties": {"category": {"enum": ["operations-containment", "frontier-containment", "deep-work-containment"]}}, "required": ["category"]}, "then": {"properties": {"severity": {"const": "critical"}}}},
+          {"if": {"properties": {"category": {"const": "deployment"}, "status": {"const": "open"}}, "required": ["category", "status"]}, "then": {"properties": {"nextActionCode": {"const": "inspect-private-deployment-log"}}}},
+          {"if": {"properties": {"category": {"const": "health"}, "status": {"const": "open"}}, "required": ["category", "status"]}, "then": {"properties": {"nextActionCode": {"const": "inspect-private-health-log"}}}},
+          {"if": {"properties": {"category": {"const": "update"}, "status": {"const": "open"}}, "required": ["category", "status"]}, "then": {"properties": {"nextActionCode": {"const": "inspect-private-update-log"}}}},
+          {"if": {"properties": {"category": {"const": "backup"}, "status": {"const": "open"}}, "required": ["category", "status"]}, "then": {"properties": {"nextActionCode": {"const": "inspect-private-backup-log"}}}},
+          {"if": {"properties": {"category": {"const": "operations-containment"}, "status": {"const": "open"}}, "required": ["category", "status"]}, "then": {"properties": {"nextActionCode": {"const": "keep-operations-paused"}}}},
+          {"if": {"properties": {"category": {"const": "frontier-containment"}, "status": {"const": "open"}}, "required": ["category", "status"]}, "then": {"properties": {"nextActionCode": {"const": "keep-frontier-paused"}}}},
+          {"if": {"properties": {"category": {"const": "deep-work-containment"}, "status": {"const": "open"}}, "required": ["category", "status"]}, "then": {"properties": {"nextActionCode": {"enum": ["contain-deep-work-from-terminal", "cancel-deep-work-from-terminal"]}}}},
+          {"if": {"properties": {"category": {"const": "deep-work-recovery"}, "status": {"const": "open"}}, "required": ["category", "status"]}, "then": {"properties": {"nextActionCode": {"const": "inspect-private-deep-work-resume-log"}}}},
+          {"if": {"properties": {"category": {"const": "deep-work-authoring"}, "status": {"const": "open"}}, "required": ["category", "status"]}, "then": {"properties": {"nextActionCode": {"const": "inspect-private-deep-work-draft-log"}}}},
+          {"if": {"properties": {"failureMode": {"const": "interrupted"}}, "required": ["failureMode"]}, "then": {"properties": {"privateEvidenceAvailable": {"const": false}}}}
+        ]
+      }
+    },
+    "limits": {
+      "type": "object", "additionalProperties": false,
+      "required": ["returned", "maxReturned", "maxRetained"],
+      "properties": {
+        "returned": {"type": "integer", "minimum": 0, "maximum": 20},
+        "maxReturned": {"const": 20},
+        "maxRetained": {"const": 100}
+      }
+    },
+    "privacy": {
+      "type": "object", "additionalProperties": false,
+      "required": ["privateDataProjected", "credentialsProjected", "actionIdentitiesProjected", "localPathsProjected", "privateEvidenceHashesProjected"],
+      "properties": {
+        "privateDataProjected": {"const": false},
+        "credentialsProjected": {"const": false},
+        "actionIdentitiesProjected": {"const": false},
+        "localPathsProjected": {"const": false},
+        "privateEvidenceHashesProjected": {"const": false}
+      }
+    },
+    "boundary": {"const": "Content-free local action diagnosis only; private logs, action identities, paths, prompts, accounts, and credentials are not projected."}
+  },
+  "allOf": [
+    {"if": {"properties": {"summary": {"properties": {"state": {"const": "unavailable"}}, "required": ["state"]}}, "required": ["summary"]}, "then": {"properties": {"incidents": {"maxItems": 0}, "limits": {"properties": {"returned": {"const": 0}}}}}}
+  ],
+  "$defs": {
+    "summary": {
+      "type": "object", "additionalProperties": false,
+      "required": ["state", "openIncidents", "criticalIncidents", "retainedIncidents", "latestDetectedAt", "receiptCoverageComplete"],
+      "properties": {
+        "state": {"enum": ["clear", "attention", "containment", "unavailable"]},
+        "openIncidents": {"oneOf": [{"type": "integer", "minimum": 0, "maximum": 100}, {"type": "null"}]},
+        "criticalIncidents": {"oneOf": [{"type": "integer", "minimum": 0, "maximum": 100}, {"type": "null"}]},
+        "retainedIncidents": {"oneOf": [{"type": "integer", "minimum": 0, "maximum": 100}, {"type": "null"}]},
+        "latestDetectedAt": {"oneOf": [{"type": "string", "format": "date-time"}, {"type": "null"}]},
+        "receiptCoverageComplete": {"type": "boolean"}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"state": {"const": "unavailable"}}, "required": ["state"]},
+          "then": {"properties": {"openIncidents": {"const": null}, "criticalIncidents": {"const": null}, "retainedIncidents": {"const": null}, "latestDetectedAt": {"const": null}, "receiptCoverageComplete": {"const": false}}},
+          "else": {"properties": {"openIncidents": {"type": "integer"}, "criticalIncidents": {"type": "integer"}, "retainedIncidents": {"type": "integer"}, "receiptCoverageComplete": {"const": true}}}
+        },
+        {"if": {"properties": {"state": {"const": "clear"}}, "required": ["state"]}, "then": {"properties": {"openIncidents": {"const": 0}, "criticalIncidents": {"const": 0}}}},
+        {"if": {"properties": {"state": {"const": "attention"}}, "required": ["state"]}, "then": {"properties": {"openIncidents": {"type": "integer", "minimum": 1}, "criticalIncidents": {"const": 0}}}},
+        {"if": {"properties": {"state": {"const": "containment"}}, "required": ["state"]}, "then": {"properties": {"openIncidents": {"type": "integer", "minimum": 1}, "criticalIncidents": {"type": "integer", "minimum": 1}}}},
+        {"if": {"properties": {"retainedIncidents": {"const": 0}}, "required": ["retainedIncidents"]}, "then": {"properties": {"latestDetectedAt": {"const": null}}}},
+        {"if": {"properties": {"retainedIncidents": {"type": "integer", "minimum": 1}}, "required": ["retainedIncidents"]}, "then": {"properties": {"latestDetectedAt": {"type": "string", "format": "date-time"}}}}
+      ]
+    }
+  }
+}

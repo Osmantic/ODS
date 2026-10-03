@@ -68,14 +68,67 @@ Or change `BIND_ADDRESS` to `0.0.0.0` in the Dashboard Settings tab, then restar
 ods restart
 ```
 
-This binds all services to all network interfaces. Use firewall rules to
-restrict access to your local subnet:
+This publishes the authenticated Dashboard and Open WebUI on the selected
+interface. Backend APIs, native inference and extension ports remain bound to
+`127.0.0.1`; `--lan` does not authorize publishing them. Use firewall rules to
+restrict the UI ports to your local subnet:
 
 ```bash
 sudo ufw allow from 192.168.0.0/24 to any port 3000  # WebUI
 sudo ufw allow from 192.168.0.0/24 to any port 3001  # Dashboard
-sudo ufw allow from 192.168.0.0/24 to any port 8080  # LLM API
 ```
+
+For other services, use an explicitly configured authenticated reverse proxy
+or private tunnel. The optional ODS proxy enforces the Dashboard owner session
+before forwarding LAN requests to Hermes. A local Open WebUI install that was
+created with sign-in disabled must enable `WEBUI_AUTH=true` before exposure;
+the supported installer and restart commands enforce this transition.
+
+**Upgrade note:** older user-extension recipes with interpolated host bindings
+(such as `${BIND_ADDRESS:-127.0.0.1}`) no longer pass validation. A safe default
+can be overridden by the environment. Reinstall a curated recipe from the
+updated library, or review and republish a custom recipe with literal
+`127.0.0.1` host bindings. ODS does not silently rewrite approved recipe bytes.
+Source-built recipes additionally require the sandbox described below.
+
+### Source extension sandbox
+
+GitHub source recipes run as a numeric non-root user with all capabilities
+dropped, `no-new-privileges`, a read-only root filesystem, bounded memory/CPU/
+processes, and their own internal Docker network. The generated default gives
+them 2 GiB, two CPUs, 256 PIDs and a writable 64 MiB `/tmp`.
+
+This runtime does not have internet or ODS backend access. Install build-time
+dependencies in the Dockerfile. Applications that need persistence must declare
+reviewed extension-owned storage with permissions for their runtime UID. An
+application that requires external APIs or privileged ODS access needs a
+separately reviewed integration; removing the sandbox is not an automatic
+fallback. Docker still shares the host kernel, so this is defense in depth,
+not a guarantee that hostile native code is safe.
+
+### Dashboard Sign-in
+
+The dashboard manages the whole install, so it only opens without a password
+for a browser on the ODS machine itself (`http://localhost:3001`). Any other
+route needs a one-time sign-in per browser, remembered for 30 days:
+
+- LAN mode (`--lan` or `BIND_ADDRESS=0.0.0.0`) — port 3001 stays on this
+  machine's loopback and opens without sign-in. Network port 3011 requires it.
+- ODS proxy (`dashboard.<device>.local`), a reverse proxy, or Tailscale Serve
+  in front of `localhost`.
+
+Choose a memorable dashboard password on the ODS computer. Local-only users
+can choose **Not now** and continue; network access remains protected. The
+password is stored as a salted PBKDF2 hash, never plaintext, in the persistent
+ODS data directory.
+
+Forgotten password: open **Your profile** and choose **Change dashboard password**
+on the ODS computer, or run `ods dashboard-login` there and open its one-time
+link. The link expires after 10 minutes and opens password setup without the
+old password. Saving a replacement revokes other dashboard sessions and unused
+links. No email service or separately saved recovery key is required. Rotating
+`DASHBOARD_API_KEY` also signs every browser out. Magic-link guest invites for chat
+never grant dashboard, ODS Talk or Hermes access.
 
 ### Host Agent Network Binding
 

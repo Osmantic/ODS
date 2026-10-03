@@ -217,7 +217,6 @@ async def feature_enable_instructions(
     webui_url = _svc_url("open-webui")
     n8n_url = _svc_url("n8n")
     comfyui_url = _svc_url("comfyui")
-    opencode_url = _svc_url("opencode")
     hermes_url = _svc_url("hermes-proxy")
     ods_proxy_url = _svc_url("ods-proxy")
 
@@ -230,12 +229,19 @@ async def feature_enable_instructions(
             ],
             "links": [{"label": "Open LAN entry", "url": ods_proxy_url}] if ods_proxy_url else [],
         },
-        "chat": {"steps": ["Chat is already enabled if llama-server is running", "Open the Dashboard and click 'Chat' to start"], "links": [{"label": "Open Chat", "url": webui_url}]},
-        "voice": {"steps": [f"Ensure Whisper (STT) is running on port {_svc_port('whisper')}", f"Ensure Kokoro (TTS) is running on port {_svc_port('tts')}", "Open Open WebUI and use its voice controls"], "links": [{"label": "Open Chat", "url": webui_url}]},
+        "chat": {"steps": ["Open the Dashboard to chat with your local AI through Portal", "Open WebUI is optional and can be added from Extensions"], "links": [{"label": "Open Dashboard chat", "url": "/"}]},
+        "voice": {"steps": ["Add Open WebUI, Whisper (STT), and Kokoro (TTS) from Extensions", "If Whisper's transcription model is not cached, run: ods repair voice", "Open WebUI and use its voice controls"], "links": [{"label": "Open Extensions", "url": "/extensions"}]},
         "documents": {"steps": ["Ensure Qdrant vector database is running", "Open Open WebUI and use its document/RAG controls"], "links": [{"label": "Open Chat", "url": webui_url}]},
         "workflows": {"steps": [f"Ensure n8n is running on port {_svc_port('n8n')}", "Open n8n to see and manage available automations"], "links": [{"label": "n8n Dashboard", "url": n8n_url}]},
         "images": {"steps": [f"Ensure ComfyUI is running on port {_svc_port('comfyui')}", "Open ComfyUI to build and run image workflows"], "links": [{"label": "Open ComfyUI", "url": comfyui_url}]},
-        "coding": {"steps": [f"Ensure OpenCode is running on port {_svc_port('opencode')}", "Open OpenCode for the browser-based coding assistant"], "links": [{"label": "Open OpenCode", "url": opencode_url}]},
+        "coding": {
+            "steps": [
+                "Open the OpenCode page to see whether OpenCode is set up and running",
+                "Start it there if it is stopped; on Linux, set it up there if it is not installed yet",
+                f"OpenCode listens only on this machine (port {_svc_port('opencode')}); the page shows how to reach it from another device",
+            ],
+            "links": [{"label": "Open the OpenCode page", "url": "/apps/opencode"}],
+        },
         "hermes-agent": {"steps": [f"Ensure Hermes proxy is running on port {_svc_port('hermes-proxy')}", "Open Hermes for advanced agent access"], "links": [{"label": "Open Hermes", "url": hermes_url}]},
         "hermes-sso": {
             "steps": [

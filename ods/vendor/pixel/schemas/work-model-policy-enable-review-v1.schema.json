@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/work-model-policy-enable-review-v1.schema.json",
+  "title": "Pixel prepared private-policy enablement review v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "operation", "status", "currentPolicySha256", "proposedPolicySha256", "enabledProfiles", "qualificationExpiresAt", "confirmation", "changes", "authority", "boundary"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/work-model-policy-enable-review-v1.schema.json"},
+    "schemaVersion": {"const": 1},
+    "operation": {"const": "pixel-work-model-policy-enable-review"},
+    "status": {"const": "confirmation-required"},
+    "currentPolicySha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "proposedPolicySha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "enabledProfiles": {"type": "array", "minItems": 1, "maxItems": 4, "uniqueItems": true, "items": {"enum": ["scout", "builder", "data-lab", "researcher"]}},
+    "qualificationExpiresAt": {"type": "string", "format": "date-time"},
+    "confirmation": {
+      "type": "object", "additionalProperties": false,
+      "required": ["option", "sha256"],
+      "properties": {
+        "option": {"const": "--confirm-proposed-policy-sha256"},
+        "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+      }
+    },
+    "changes": {
+      "const": {
+        "writesNewPrivatePolicy": true,
+        "enablesDeepWork": true,
+        "enablesProfiles": false,
+        "changesTools": false,
+        "changesBudgets": false,
+        "changesSecurity": false,
+        "startsModel": false,
+        "startsService": false,
+        "routesJob": false
+      }
+    },
+    "authority": {
+      "const": {
+        "grantsExecution": false,
+        "activatesService": false,
+        "grantsNetwork": false,
+        "grantsCredentials": false,
+        "grantsExternalEffects": false,
+        "grantsCompletion": false
+      }
+    },
+    "boundary": {"const": "Trusted-terminal review of one exact prepared policy enablement. Confirmation may write one new enabled private policy with the already-reviewed profiles, tools, budgets, security, runner, and qualified local-model binding unchanged. It does not install the policy, start a model or service, route a job, use credentials or network, perform an external effect, deploy, or claim completion; separately installing the resulting policy makes its enabled profiles eligible for contained execution."}
+  }
+}

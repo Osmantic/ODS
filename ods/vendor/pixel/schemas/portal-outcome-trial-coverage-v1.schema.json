@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/portal-outcome-trial-coverage-v1.schema.json",
+  "title": "Pixel owner-trial product-path coverage ledger v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "operation", "source", "trialCorpusSha256", "productCorpusSha256", "batterySha256", "implementedProfiles", "summary", "journeys", "boundary"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/portal-outcome-trial-coverage-v1.schema.json"},
+    "schemaVersion": {"const": 1},
+    "operation": {"const": "pixel-portal-outcome-trial-coverage"},
+    "source": {
+      "type": "object", "additionalProperties": false,
+      "required": ["sha256", "bytes", "lineCount", "verifiedFromOwnerCopy"],
+      "properties": {
+        "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "bytes": {"type": "integer", "minimum": 1},
+        "lineCount": {"type": "integer", "minimum": 1},
+        "verifiedFromOwnerCopy": {"type": "boolean"}
+      }
+    },
+    "trialCorpusSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "productCorpusSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "batterySha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "implementedProfiles": {
+      "type": "object", "additionalProperties": false,
+      "required": ["pixelProduct", "codexComparison"],
+      "properties": {
+        "pixelProduct": {"$ref": "#/$defs/profileSet"},
+        "codexComparison": {"$ref": "#/$defs/profileSet"}
+      }
+    },
+    "summary": {
+      "type": "object", "additionalProperties": false,
+      "required": ["totalJourneys", "formalProductTaskDefined", "formalProductProofReady", "profileMatchedRehearsalOnly", "surrogateProfileRehearsalOnly", "uncovered", "releaseStatus"],
+      "properties": {
+        "totalJourneys": {"type": "integer", "minimum": 1},
+        "formalProductTaskDefined": {"type": "integer", "minimum": 0},
+        "formalProductProofReady": {"type": "integer", "minimum": 0},
+        "profileMatchedRehearsalOnly": {"type": "integer", "minimum": 0},
+        "surrogateProfileRehearsalOnly": {"type": "integer", "minimum": 0},
+        "uncovered": {"type": "integer", "minimum": 0},
+        "releaseStatus": {"enum": ["ready", "blocked"]}
+      }
+    },
+    "journeys": {
+      "type": "array", "minItems": 1, "maxItems": 256,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["trialJourneyId", "profile", "status", "pixelProductAdapterImplemented", "codexComparisonAdapterImplemented", "formalProductTaskIds", "formalProductProofTaskIds", "profileMatchedRehearsalTaskIds", "surrogateRehearsalTaskIds", "mappings", "blockers"],
+        "properties": {
+          "trialJourneyId": {"type": "string", "pattern": "^[a-z][a-z0-9-]{2,63}$"},
+          "profile": {"$ref": "#/$defs/profile"},
+          "status": {"enum": ["formal-product-proof-ready", "profile-matched-rehearsal-only", "surrogate-profile-rehearsal-only", "uncovered"]},
+          "pixelProductAdapterImplemented": {"type": "boolean"},
+          "codexComparisonAdapterImplemented": {"type": "boolean"},
+          "formalProductTaskIds": {"$ref": "#/$defs/taskIds"},
+          "formalProductProofTaskIds": {"$ref": "#/$defs/taskIds"},
+          "profileMatchedRehearsalTaskIds": {"$ref": "#/$defs/taskIds"},
+          "surrogateRehearsalTaskIds": {"$ref": "#/$defs/taskIds"},
+          "mappings": {
+            "type": "array", "maxItems": 32,
+            "items": {
+              "type": "object", "additionalProperties": false,
+              "required": ["batteryTaskId", "partition", "proofClass", "productJourneyId", "executionProfile", "targetProfile", "profileMatch"],
+              "properties": {
+                "batteryTaskId": {"type": "string", "pattern": "^[a-z][a-z0-9-]{2,79}$"},
+                "partition": {"enum": ["tuning", "held-out"]},
+                "proofClass": {"enum": ["deterministic-non-promotional-rehearsal", "formal-product-path-task"]},
+                "productJourneyId": {"type": "string", "pattern": "^[a-z][a-z0-9-]{2,63}$"},
+                "executionProfile": {"enum": ["assistant", "builder", "controller", "researcher"]},
+                "targetProfile": {"$ref": "#/$defs/profile"},
+                "profileMatch": {"type": "boolean"}
+              }
+            }
+          },
+          "blockers": {
+            "type": "array", "uniqueItems": true,
+            "items": {"enum": ["no-formal-product-proof", "no-rehearsal", "surrogate-profile", "pixel-product-adapter-missing", "codex-comparison-adapter-missing"]}
+          }
+        }
+      }
+    },
+    "boundary": {"const": "Content-free owner-trial coverage ledger only. It binds private source identity, sanitized journeys, product routes, and comparison tasks without reproducing private content. Rehearsal, profile matching, and adapter availability are not product capability proof and grant no execution, provider, external-effect, completion, acceptance, publication, deployment, or promotion authority."}
+  },
+  "$defs": {
+    "profile": {"enum": ["assistant", "builder", "controller", "researcher"]},
+    "profileSet": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/profile"}},
+    "taskIds": {"type": "array", "uniqueItems": true, "items": {"type": "string", "pattern": "^[a-z][a-z0-9-]{2,79}$"}}
+  }
+}

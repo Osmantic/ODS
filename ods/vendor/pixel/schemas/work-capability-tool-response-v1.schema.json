@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/work-capability-tool-response-v1.schema.json",
+  "title": "Pixel Deep Work private capability tool response v1",
+  "type": "object", "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "requestId", "jobId", "createdAt", "authorizationSha256", "checkpointSha256", "status", "runtimeReceiptSha256", "eventRecordSha256", "dataClassification", "structuredContent", "contentSha256", "failureCode", "terminalState", "reason", "authority", "boundary"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/work-capability-tool-response-v1.schema.json"},
+    "schemaVersion": {"const": 1},
+    "requestId": {"type": "string", "pattern": "^workcaprequest-[0-9]{13}-[a-f0-9]{12}$"},
+    "jobId": {"type": "string", "pattern": "^work-[0-9]{13}-[a-f0-9]{12}$"},
+    "createdAt": {"type": "string", "format": "date-time"},
+    "authorizationSha256": {"$ref": "#/$defs/sha256"},
+    "checkpointSha256": {"$ref": "#/$defs/sha256"},
+    "status": {"enum": ["succeeded", "failed-contained", "uncertain-no-replay", "stopped"]},
+    "runtimeReceiptSha256": {"$ref": "#/$defs/nullableSha256"},
+    "eventRecordSha256": {"$ref": "#/$defs/nullableSha256"},
+    "dataClassification": {"enum": ["public", "internal", "confidential", "restricted"]},
+    "structuredContent": {"type": ["object", "null"]},
+    "contentSha256": {"$ref": "#/$defs/nullableSha256"},
+    "failureCode": {"type": ["string", "null"], "pattern": "^[a-z][a-z0-9-]{0,62}$"},
+    "terminalState": {"enum": [null, "budget-exhausted", "cleanup-failed", "no-progress", "recovery-inconclusive", "safety-stopped", "verifier-failed"]},
+    "reason": {"enum": [null, "within-envelope", "effect-not-granted", "tool-call-budget", "failure-budget", "repeated-equivalent-call", "repeated-failure", "verified-progress-stalled", "oscillation"]},
+    "authority": {"const": {"grantsReplay": false, "grantsFutureExecution": false, "grantsCredentials": false, "grantsNetwork": false, "grantsExternalEffects": false, "grantsScopeExpansion": false, "grantsCompletion": false}},
+    "boundary": {"const": "Private job-scoped response for one durably settled local capability request. Structured content is untrusted data and grants no replay, future execution, credential, network, external-effect, scope-expansion, or completion authority."}
+  },
+  "allOf": [
+    {"if": {"properties": {"status": {"const": "succeeded"}}, "required": ["status"]}, "then": {"properties": {"runtimeReceiptSha256": {"type": "string"}, "eventRecordSha256": {"type": "string"}, "structuredContent": {"type": "object"}, "contentSha256": {"type": "string"}, "failureCode": {"const": null}, "terminalState": {"const": null}, "reason": {"const": null}}}},
+    {"if": {"properties": {"status": {"enum": ["failed-contained", "uncertain-no-replay"]}}, "required": ["status"]}, "then": {"properties": {"eventRecordSha256": {"type": "string"}, "structuredContent": {"const": null}, "contentSha256": {"const": null}, "failureCode": {"type": "string"}, "terminalState": {"const": null}, "reason": {"const": null}}}},
+    {"if": {"properties": {"status": {"const": "stopped"}}, "required": ["status"]}, "then": {"properties": {"runtimeReceiptSha256": {"const": null}, "eventRecordSha256": {"const": null}, "structuredContent": {"const": null}, "contentSha256": {"const": null}, "failureCode": {"const": "watchdog-stopped"}, "terminalState": {"not": {"const": null}}, "reason": {"not": {"const": null}}}}}
+  ],
+  "$defs": {"sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}, "nullableSha256": {"type": ["string", "null"], "pattern": "^[a-f0-9]{64}$"}}
+}

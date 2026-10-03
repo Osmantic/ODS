@@ -228,7 +228,16 @@ setup() {
     rm -rf "$tmpdir"
 }
 
+# amd_gpu_name pipes readlink -f through grep -oP. BSD grep (macOS) has no
+# PCRE support, so on such hosts the usage error lands in the captured output
+# and the exact-output assertions below cannot hold. The library only runs on
+# Linux sysfs; skip these cases where the host grep lacks -P.
+require_pcre_grep() {
+    printf 'x\n' | grep -P 'x' >/dev/null 2>&1 || skip "host grep lacks -P (PCRE); amd_gpu_name uses grep -oP on Linux sysfs paths"
+}
+
 @test "amd_gpu_name: skips empty product_name" {
+    require_pcre_grep
     local tmpdir
     tmpdir=$(mktemp -d)
     echo "" > "$tmpdir/product_name"
@@ -242,6 +251,7 @@ setup() {
 }
 
 @test "amd_gpu_name: skips (null) product_name" {
+    require_pcre_grep
     local tmpdir
     tmpdir=$(mktemp -d)
     echo "(null)" > "$tmpdir/product_name"
@@ -254,6 +264,7 @@ setup() {
 }
 
 @test "amd_gpu_name: falls back to device ID format" {
+    require_pcre_grep
     local tmpdir
     tmpdir=$(mktemp -d)
     # No product_name file

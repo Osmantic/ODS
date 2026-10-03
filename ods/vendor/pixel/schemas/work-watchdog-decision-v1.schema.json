@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/work-watchdog-decision-v1.schema.json",
+  "title": "Pixel Deep Work event watchdog decision v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "decisionId", "jobId", "createdAt", "checkpointSha256", "eventHeadSha256", "proposal", "observed", "decision", "terminalState", "reason", "authority", "boundary"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/work-watchdog-decision-v1.schema.json"},
+    "schemaVersion": {"const": 1},
+    "decisionId": {"type": "string", "pattern": "^watchdog-[0-9]{13}-[a-f0-9]{12}$"},
+    "jobId": {"type": "string", "pattern": "^work-[0-9]{13}-[a-f0-9]{12}$"},
+    "createdAt": {"type": "string", "format": "date-time"},
+    "checkpointSha256": {"$ref": "#/$defs/sha256"},
+    "eventHeadSha256": {"$ref": "#/$defs/nullableSha256"},
+    "proposal": {
+      "type": "object", "additionalProperties": false,
+      "required": ["sequence", "tool", "argumentsSha256", "effectClass", "eventFingerprintSha256"],
+      "properties": {
+        "sequence": {"type": "integer", "minimum": 0, "maximum": 1000000},
+        "tool": {"type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_.:-]{0,127}$"},
+        "argumentsSha256": {"$ref": "#/$defs/sha256"},
+        "effectClass": {"enum": ["read-only", "workspace", "brokered-network", "external"]},
+        "eventFingerprintSha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "observed": {
+      "type": "object", "additionalProperties": false,
+      "required": ["eventCount", "toolCalls", "failures", "consecutiveEquivalent", "eventsWithoutVerifiedProgress", "repeatedFailureCount", "oscillationDetected"],
+      "properties": {
+        "eventCount": {"type": "integer", "minimum": 0, "maximum": 1000000},
+        "toolCalls": {"type": "integer", "minimum": 0, "maximum": 1000000},
+        "failures": {"type": "integer", "minimum": 0, "maximum": 1000000},
+        "consecutiveEquivalent": {"type": "integer", "minimum": 1, "maximum": 1000001},
+        "eventsWithoutVerifiedProgress": {"type": "integer", "minimum": 0, "maximum": 1000001},
+        "repeatedFailureCount": {"type": "integer", "minimum": 0, "maximum": 1000000},
+        "oscillationDetected": {"type": "boolean"}
+      }
+    },
+    "decision": {"enum": ["continue", "stop"]},
+    "terminalState": {"enum": [null, "budget-exhausted", "cleanup-failed", "no-progress", "recovery-inconclusive", "safety-stopped", "verifier-failed"]},
+    "reason": {"enum": ["within-envelope", "effect-not-granted", "tool-call-budget", "failure-budget", "repeated-equivalent-call", "repeated-failure", "verified-progress-stalled", "oscillation"]},
+    "authority": {
+      "type": "object", "additionalProperties": false,
+      "required": ["grantsToolCall", "grantsScopeExpansion", "grantsExternalEffects", "grantsCompletion"],
+      "properties": {
+        "grantsToolCall": {"const": false},
+        "grantsScopeExpansion": {"const": false},
+        "grantsExternalEffects": {"const": false},
+        "grantsCompletion": {"const": false}
+      }
+    },
+    "boundary": {"const": "Content-free preflight watchdog decision bound to the checkpoint and normalized proposed event. Continue means only that loop limits have not stopped the call; the exact lease must still authorize it."}
+  },
+  "allOf": [
+    {"if": {"properties": {"decision": {"const": "continue"}}, "required": ["decision"]}, "then": {"properties": {"terminalState": {"const": null}, "reason": {"const": "within-envelope"}}}, "else": {"properties": {"terminalState": {"not": {"const": null}}, "reason": {"not": {"const": "within-envelope"}}}}}
+  ],
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "nullableSha256": {"type": ["string", "null"], "pattern": "^[a-f0-9]{64}$"}
+  }
+}

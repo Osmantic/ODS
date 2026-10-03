@@ -17,6 +17,48 @@
 # ============================================================================
 
 ods_progress 48 "images" "Downloading container images"
+if [[ "${DRY_RUN:-false}" != true ]] && ods_external_lemonade_requested; then
+    [[ -n "${COMPOSE_FLAGS:-}" ]] || {
+        ai_bad "External Lemonade Compose selection is unavailable before image pulls."
+        exit 1
+    }
+    read -ra _external_lemonade_compose_flags <<< "$COMPOSE_FLAGS"
+    if ! ods_external_lemonade_assert_no_managed_llama_before_pixel_identity "${_external_lemonade_compose_flags[@]}" \
+        2>>"$LOG_FILE"; then
+        ai_bad "External Lemonade Compose validation failed before image pulls; inspect $LOG_FILE."
+        exit 1
+    fi
+    unset _external_lemonade_compose_flags
+fi
+if [[ "${ODS_GATEWAY_ONLY:-false}" == true && "${DRY_RUN:-false}" != true ]]; then
+    # Compose merges profile lists from overlays. A caller's inherited
+    # COMPOSE_PROFILES=local-inference can therefore re-enable a managed model
+    # even though the external route normally profiles it out. Fail before
+    # pulling an unnecessary image; Phase 11 rechecks before container launch.
+    [[ -n "${COMPOSE_FLAGS:-}" ]] || {
+        ai_bad "Gateway-only Compose selection is unavailable before image pulls."
+        exit 1
+    }
+    read -ra _gateway_compose_flags <<< "$COMPOSE_FLAGS"
+    if ! ods_gateway_assert_no_managed_inference "${_gateway_compose_flags[@]}" \
+        2>>"$LOG_FILE"; then
+        ai_bad "Gateway-only Compose could start ODS-managed inference; inspect $LOG_FILE and clear COMPOSE_PROFILES."
+        exit 1
+    fi
+    unset _gateway_compose_flags
+fi
+if [[ "${ENABLE_OPEN_WEBUI:-true}" != true && "${DRY_RUN:-false}" != true ]]; then
+    [[ -n "${COMPOSE_FLAGS:-}" ]] || {
+        ai_bad "No-WebUI Compose selection is unavailable before image pulls."
+        exit 1
+    }
+    read -ra _no_webui_compose_flags <<< "$COMPOSE_FLAGS"
+    if ! ods_compose_assert_no_webui_before_pixel_identity "${_no_webui_compose_flags[@]}" 2>>"$LOG_FILE"; then
+        ai_bad "No-WebUI Compose could start Open WebUI; inspect $LOG_FILE and clear COMPOSE_PROFILES."
+        exit 1
+    fi
+    unset _no_webui_compose_flags
+fi
 if [[ "$GPU_BACKEND" == "nvidia" && "${ENABLE_COMFYUI:-}" == "true" ]]; then
     show_phase 4 6 "Downloading Modules" "~5-10 min + ~30 min ComfyUI build"
 else
@@ -26,42 +68,56 @@ fi
 # Build image list with cinematic labels
 # Format: "image|friendly_name"
 PULL_LIST=()
-if [[ "$GPU_BACKEND" == "amd" ]]; then
-    case "${LEMONADE_EXTERNAL:-false}" in
-        true|TRUE|1|yes|YES|on|ON) _lemonade_external=true ;;
-        *) _lemonade_external=false ;;
-    esac
-    if [[ "$_lemonade_external" != "true" ]]; then
-        _lemonade_image="${LEMONADE_SERVER_IMAGE:-${BACKEND_LEMONADE_CONTAINER_IMAGE:-ghcr.io/lemonade-sdk/lemonade-server:v10.2.0}}"
+case "${LEMONADE_EXTERNAL:-false}" in
+    true|TRUE|1|yes|YES|on|ON) _lemonade_external=true ;;
+    *) _lemonade_external=false ;;
+esac
+_lemonade_runtime="${AMD_INFERENCE_RUNTIME:-}"
+_lemonade_managed="${AMD_INFERENCE_MANAGED:-}"
+if [[ "${_lemonade_runtime,,}" == lemonade \
+   && "${_lemonade_managed,,}" == false ]]; then
+    _lemonade_external=true
+fi
+if [[ "${ODS_MODE:-local}" != "cloud" && "$_lemonade_external" != "true" && -z "${EXTERNAL_LLM_URL:-}" ]]; then
+    # Cloud and external routes do not run ODS-managed inference. In WSL the
+    # Linux capability probe can report CPU while Windows owns the model, so
+    # selecting this image from GPU_BACKEND alone wastes time and disk.
+    if [[ "$GPU_BACKEND" == "amd" ]]; then
+        _lemonade_image="${LEMONADE_SERVER_IMAGE:-${BACKEND_LEMONADE_CONTAINER_IMAGE:-ghcr.io/lemonade-sdk/lemonade-server:v10.2.0@sha256:08edbf1128a7fd82b39f1de72c2f70c013f2ecfefac6a99c52bcf58eba532a3a}}"
         PULL_LIST+=("${_lemonade_image}|LEMONADE — downloading the brain (AMD ROCm)")
-    fi
-    [[ "$ENABLE_COMFYUI" == "true" ]] && PULL_LIST+=("ignatberesnev/comfyui-gfx1151:v0.2|COMFYUI — image generation engine (gfx1151)")
-elif [[ "$GPU_BACKEND" == "cpu" ]]; then
-    PULL_LIST+=("${LLAMA_SERVER_IMAGE:-ghcr.io/ggml-org/llama.cpp:server-b8248}|LLAMA-SERVER — downloading the brain (CPU)")
-else
-    PULL_LIST+=("${LLAMA_SERVER_IMAGE:-ghcr.io/ggml-org/llama.cpp:server-cuda-b9014}|LLAMA-SERVER — downloading the brain (NVIDIA CUDA)")
-fi
-PULL_LIST+=("ghcr.io/open-webui/open-webui:v0.7.2|OPEN WEBUI — interface module")
-PULL_LIST+=("itzcrazykns1337/perplexica:slim-latest@sha256:6e399abf4ff587822b0ef0df11f36088fb928e17ac61556fe89beb68d48c378e|PERPLEXICA — deep research engine")
-if [[ "$ENABLE_VOICE" == "true" ]]; then
-    if [[ "$GPU_BACKEND" == "nvidia" ]]; then
-        PULL_LIST+=("ghcr.io/speaches-ai/speaches:0.9.0-rc.3-cuda|WHISPER — ears online (Speaches STT, CUDA)")
+    elif [[ "$GPU_BACKEND" == "intel" ]]; then
+        PULL_LIST+=("${LLAMA_SERVER_IMAGE:-ghcr.io/ggml-org/llama.cpp:server-intel-b9014@sha256:9c7bbaad3663523a3deb8927d3cfbf58d33f00a7634c69843e9eeeda01568c1b}|LLAMA-SERVER — downloading the brain (Intel)")
+    elif [[ "$GPU_BACKEND" == "sycl" ]]; then
+        # The Arc overlay builds ods-llama-sycl:local; there is no remote image to pre-pull.
+        :
+    elif [[ "$GPU_BACKEND" == "cpu" ]]; then
+        PULL_LIST+=("${LLAMA_SERVER_IMAGE:-ghcr.io/ggml-org/llama.cpp:server-b9014@sha256:2e7953dfef88f302bf0683bffa7dc1f8d86ef75910380bc41126ec5b8bedaf53}|LLAMA-SERVER — downloading the brain (CPU)")
     else
-        PULL_LIST+=("ghcr.io/speaches-ai/speaches:0.9.0-rc.3-cpu|WHISPER — ears online (Speaches STT)")
+        PULL_LIST+=("${LLAMA_SERVER_IMAGE:-ghcr.io/ggml-org/llama.cpp:server-cuda-b9014@sha256:fcf285820892e7ce3218379634e3590826fc697e8b6745b9392072462e355c4f}|LLAMA-SERVER — downloading the brain (NVIDIA CUDA)")
     fi
-    PULL_LIST+=("ghcr.io/remsky/kokoro-fastapi-cpu:v0.2.4|KOKORO — voice module")
 fi
-[[ "$ENABLE_WORKFLOWS" == "true" ]] && PULL_LIST+=("n8nio/n8n:2.6.4|N8N — automation engine")
-[[ "${ENABLE_QDRANT:-${ENABLE_RAG:-false}}" == "true" ]] && PULL_LIST+=("qdrant/qdrant:v1.16.3|QDRANT — memory vault")
+[[ "$GPU_BACKEND" == "amd" && "${ENABLE_COMFYUI:-false}" == "true" ]] && PULL_LIST+=("ignatberesnev/comfyui-gfx1151:v0.2@sha256:a38260b56a94fdf5aa9f951a96a73ef1987b70ebcbd4757447708a756a67abc0|COMFYUI — image generation engine (gfx1151)")
+[[ "${ENABLE_OPEN_WEBUI:-true}" != "true" ]] || PULL_LIST+=("ghcr.io/open-webui/open-webui:v0.7.2@sha256:16d9a3615b45f14a0c89f7ad7a3bf151f923ed32c2e68f9204eb17d1ce40774b|OPEN WEBUI — interface module")
+[[ "${ENABLE_PERPLEXICA:-false}" == "true" ]] && PULL_LIST+=("itzcrazykns1337/vane:v1.12.2@sha256:61f2bbf3386ff3df08911fb3de0e1893b04702a4d49ef13fbadbda937b47ab7c|PERPLEXICA — deep research engine")
+if [[ "$ENABLE_VOICE" == "true" ]]; then
+    if [[ "$GPU_BACKEND" == "nvidia" && "${WHISPER_ACCELERATION:-cuda}" == "cuda" ]]; then
+        PULL_LIST+=("ghcr.io/speaches-ai/speaches:0.9.0-rc.3-cuda@sha256:f4eb14d1c53b19c5bd1f76d10ea9fc10288ceaf82dca09506d3f0ef92ee943de|WHISPER — ears online (Speaches STT, CUDA)")
+    else
+        PULL_LIST+=("${WHISPER_IMAGE:-ghcr.io/speaches-ai/speaches:0.9.0-rc.3-cpu@sha256:2163775b6df5e451a71200e8f675fed68dbd8ab184fc604453d549e486f22fd2}|WHISPER — ears online (Speaches STT, CPU)")
+    fi
+    PULL_LIST+=("ghcr.io/remsky/kokoro-fastapi-cpu:v0.2.4@sha256:c8812546d358cbfd6a5c4087a28795b2b001d8e32d7a322eedd246e6bc13cb55|KOKORO — voice module")
+fi
+[[ "$ENABLE_WORKFLOWS" == "true" ]] && PULL_LIST+=("n8nio/n8n:2.6.4@sha256:b962d7f8ba9e990a0c530256d841fdc52312dce32173f29808e29a9430811ad3|N8N — automation engine")
+[[ "${ENABLE_QDRANT:-${ENABLE_RAG:-false}}" == "true" ]] && PULL_LIST+=("qdrant/qdrant:v1.16.3@sha256:0425e3e03e7fd9b3dc95c4214546afe19de2eb2e28ca621441a56663ac6e1f46|QDRANT — memory vault")
 if [[ "$ENABLE_HERMES" == "true" ]]; then
     # Version-pinned upstream image. See extensions/services/hermes/compose.yaml
     # and docs/HERMES.md for the bump process. Hermes-proxy is the auth gate
     # (Caddy) and is pulled alongside Hermes.
-    PULL_LIST+=("${HERMES_AGENT_IMAGE:-nousresearch/hermes-agent:v2026.6.5}|HERMES — default agent (Nous Research)")
-    PULL_LIST+=("caddy:2.11.3-alpine|HERMES PROXY — magic-link auth gate (Caddy)")
+    PULL_LIST+=("${HERMES_AGENT_IMAGE:-nousresearch/hermes-agent:v2026.9.24@sha256:fca358f12efd65bfaaca05884166f15c0e2788375ca30d77061ac1ebc96452b7}|HERMES — default agent (Nous Research)")
+    PULL_LIST+=("caddy:2.11.3-alpine@sha256:86deaf5e3d3408a6ccec08fbb79989783dd26e206ae10bcf78a801dc8c9ab794|HERMES PROXY — magic-link auth gate (Caddy)")
 fi
-[[ "$ENABLE_OPENCLAW" == "true" ]] && PULL_LIST+=("ghcr.io/openclaw/openclaw:2026.3.8|OPENCLAW — agent framework")
-[[ "${ENABLE_EMBEDDINGS:-${ENABLE_RAG:-false}}" == "true" ]] && PULL_LIST+=("ghcr.io/huggingface/text-embeddings-inference:cpu-1.9.1|TEI — embedding engine")
+[[ "$ENABLE_OPENCLAW" == "true" ]] && PULL_LIST+=("ghcr.io/openclaw/openclaw:2026.3.8@sha256:7b1294f6aa2eb05b2070cc614743f79212313fc294e5de221ada8a2969ea52f6|OPENCLAW — agent framework")
+[[ "${ENABLE_EMBEDDINGS:-${ENABLE_RAG:-false}}" == "true" ]] && PULL_LIST+=("ghcr.io/huggingface/text-embeddings-inference:cpu-1.9.1@sha256:b7772cdd9dcbced147b16a7dff17d4aed1ab36333f8d3e686c50d2175e1d2126|TEI — embedding engine")
 
 if command -v ods_compose_external_images >/dev/null 2>&1 && [[ -n "${COMPOSE_FLAGS:-}" ]]; then
     read -ra _phase08_compose_flags_arr <<< "$COMPOSE_FLAGS"

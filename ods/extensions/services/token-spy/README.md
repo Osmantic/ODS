@@ -61,6 +61,10 @@ Use `UPSTREAM_API_KEY` for external Anthropic/OpenAI/Moonshot providers. For loc
 
 See [TOKEN-SPY-GUIDE.md](TOKEN-SPY-GUIDE.md) for all available settings.
 
+For SQLite, set DB_PATH to override the default data/usage.db beside the
+service source. Relative paths (including a filename such as usage.db) are
+resolved from the process working directory; missing parent directories are created.
+
 ## API Endpoints
 
 | Endpoint | Method | Description |
@@ -91,3 +95,16 @@ providers/
 ```
 
 Add new providers by subclassing `LLMProvider` and decorating with `@register_provider("name")`.
+
+### Routed usage token categories
+
+Model-router and the LiteLLM callback convert inclusive provider prompt/input
+counts into disjoint Token Spy categories. Reported cache reads and writes are
+subtracted from input tokens, so input + output + cache reads + cache writes
+matches the provider total. Streaming usage is aggregated before partitioning.
+Invalid cache counts are limited to the available prompt total.
+
+This conversion applies to newly emitted routed events. Historical rows retain
+their original values. Cache fields not yet recognized by a producer remain in
+its input total until that producer adds support for their provider-specific
+mapping.

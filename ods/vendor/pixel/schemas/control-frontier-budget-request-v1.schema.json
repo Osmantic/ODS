@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/control-frontier-budget-request-v1.schema.json",
+  "title": "Pixel local-control Frontier budget proposal request v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "windowSeconds", "maxJobs", "maxInputTokens", "maxOutputTokens", "maxFailures", "maxEstimatedCostMicros"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "windowSeconds": {"type": "integer", "minimum": 60, "maximum": 2678400},
+    "maxJobs": {"type": "integer", "minimum": 1, "maximum": 1000},
+    "maxInputTokens": {"type": "integer", "minimum": 128, "maximum": 10000000},
+    "maxOutputTokens": {"type": "integer", "minimum": 64, "maximum": 2000000},
+    "maxFailures": {"type": "integer", "minimum": 1, "maximum": 100},
+    "maxEstimatedCostMicros": {"type": ["integer", "null"], "minimum": 0, "maximum": 1000000000}
+  }
+}

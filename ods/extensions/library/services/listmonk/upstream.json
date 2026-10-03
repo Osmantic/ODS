@@ -1,0 +1,13 @@
+{
+  "repository": "https://github.com/knadh/listmonk",
+  "license": "AGPL-3.0",
+  "source_ref": "v6.2.0",
+  "image": "listmonk/listmonk:latest@sha256:f535d59e14991337a9f2d570273685378ae86b0d7698c3e00da444e3bc205286",
+  "registry_checked_at": "2026-09-20",
+  "platforms": [
+    "linux/amd64",
+    "linux/arm64"
+  ],
+  "runtime_validation": "pending",
+  "notes": "Digest-pinned latest resolves to 6.2.0. Native idempotent schema installation/migration, initial admin credentials, private PostgreSQL and persistent uploads. No SMTP or recipient imports configured by ODS."
+}

@@ -1,0 +1,34 @@
+{
+  "schemaVersion": 1,
+  "ownerUid": 1000,
+  "pixelWorkUid": 1001,
+  "pixelWorkGid": 1001,
+  "inboxRoot": "/var/lib/pixel-work/inbox",
+  "bundleRoot": "/var/lib/pixel-work/bundles",
+  "runtimePath": "/opt/pixel-release-runtime",
+  "runtimeTreeSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "nodePath": "/usr/bin/node",
+  "systemctlPath": "/usr/bin/systemctl",
+  "systemdAnalyzePath": "/usr/bin/systemd-analyze",
+  "receiptRoot": "/var/lib/pixel-release-operator/receipts",
+  "rebootRoot": "/var/lib/pixel-release-operator/reboot",
+  "brokerBytes": {
+    "backupRoot": "/var/lib/pixel-release-operator/broker-bytes",
+    "limbs": {
+      "source": {
+        "enabled": true,
+        "installDir": "/opt/pixel-source-broker",
+        "directPathEnabled": false
+      },
+      "ops": {
+        "enabled": false,
+        "installDir": "/opt/pixel-ops-broker"
+      },
+      "frontier": {
+        "enabled": false,
+        "installDir": "/opt/pixel-frontier-broker"
+      }
+    }
+  },
+  "readersEnabled": false
+}

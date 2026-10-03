@@ -1,0 +1,24 @@
+[Unit]
+Description=OpenClaw Gateway - Pixel
+After=network-online.target
+Wants=network-online.target
+StartLimitBurst=5
+StartLimitIntervalSec=60
+
+[Service]
+ExecStart=/usr/bin/env openclaw gateway --port 18789
+Restart=always
+RestartSec=5
+RestartPreventExitStatus=78
+TimeoutStopSec=30
+TimeoutStartSec=30
+SuccessExitStatus=0 143
+OOMPolicy=continue
+KillMode=control-group
+Environment=HOME=%h
+Environment=TMPDIR=/tmp
+Environment=PATH=/usr/local/bin:/usr/bin:/bin:%h/.npm-global/bin:%h/.local/bin
+EnvironmentFile=-%h/.config/pixel-agent/gateway.env
+
+[Install]
+WantedBy=default.target

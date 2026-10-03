@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/portal-outcome-model-contract-v1.schema.json",
+  "title": "Pixel private exact shared-model comparison contract v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "operation", "modelId", "artifact", "runtime", "authority", "boundary"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/portal-outcome-model-contract-v1.schema.json"},
+    "schemaVersion": {"const": 1},
+    "operation": {"const": "pixel-portal-outcome-model-contract"},
+    "modelId": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{1,127}$"},
+    "artifact": {
+      "type": "object", "additionalProperties": false,
+      "required": ["kind", "sha256", "bytes", "fileCount", "format", "quantization", "tokenizerSha256", "chatTemplateSha256", "metadataSha256"],
+      "properties": {
+        "kind": {"enum": ["single-file", "directory-manifest"]},
+        "sha256": {"$ref": "#/$defs/hash"}, "bytes": {"type": "integer", "minimum": 1, "maximum": 1099511627776},
+        "fileCount": {"type": "integer", "minimum": 1, "maximum": 4096},
+        "format": {"enum": ["gguf", "safetensors"]},
+        "quantization": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$"},
+        "tokenizerSha256": {"oneOf": [{"$ref": "#/$defs/hash"}, {"type": "null"}]},
+        "chatTemplateSha256": {"oneOf": [{"$ref": "#/$defs/hash"}, {"type": "null"}]},
+        "metadataSha256": {"oneOf": [{"$ref": "#/$defs/hash"}, {"type": "null"}]}
+      },
+      "allOf": [
+        {"if": {"properties": {"kind": {"const": "single-file"}}, "required": ["kind"]}, "then": {"properties": {"fileCount": {"const": 1}, "tokenizerSha256": {"$ref": "#/$defs/hash"}, "chatTemplateSha256": {"$ref": "#/$defs/hash"}, "metadataSha256": {"$ref": "#/$defs/hash"}}}},
+        {"if": {"properties": {"kind": {"const": "directory-manifest"}}, "required": ["kind"]}, "then": {"properties": {"fileCount": {"type": "integer", "minimum": 2}}}}
+      ]
+    },
+    "runtime": {
+      "type": "object", "additionalProperties": false,
+      "required": ["implementation", "imageDigest", "executableSha256", "launchArgumentsSha256", "protocol", "contextWindow", "parallelSlots", "resources", "runtimeIsolation", "restartPolicy", "crossRunStateAllowed"],
+      "properties": {
+        "implementation": {"enum": ["llama.cpp", "vllm"]},
+        "imageDigest": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+        "executableSha256": {"oneOf": [{"$ref": "#/$defs/hash"}, {"type": "null"}]},
+        "launchArgumentsSha256": {"$ref": "#/$defs/hash"},
+        "protocol": {"enum": ["openai-responses-v1", "openai-chat-completions-v1"]},
+        "contextWindow": {"type": "integer", "minimum": 4096, "maximum": 1048576},
+        "parallelSlots": {"type": "integer", "minimum": 1, "maximum": 64},
+        "resources": {
+          "type": "object", "additionalProperties": false,
+          "required": ["acceleratorClass", "acceleratorCount", "cpuCores", "memoryMiB", "sharedMemoryMiB", "tmpfsMiB", "cacheMiB", "pidsLimit"],
+          "properties": {
+            "acceleratorClass": {"enum": ["cpu", "nvidia"]},
+            "acceleratorCount": {"type": "integer", "minimum": 0, "maximum": 8},
+            "cpuCores": {"type": "integer", "minimum": 1, "maximum": 256},
+            "memoryMiB": {"type": "integer", "minimum": 1024, "maximum": 1048576},
+            "sharedMemoryMiB": {"type": "integer", "minimum": 64, "maximum": 1048576},
+            "tmpfsMiB": {"type": "integer", "minimum": 16, "maximum": 1048576},
+            "cacheMiB": {"type": "integer", "minimum": 16, "maximum": 1048576},
+            "pidsLimit": {"type": "integer", "minimum": 64, "maximum": 1048576}
+          },
+          "allOf": [
+            {"if": {"properties": {"acceleratorClass": {"const": "cpu"}}, "required": ["acceleratorClass"]}, "then": {"properties": {"acceleratorCount": {"const": 0}}}},
+            {"if": {"properties": {"acceleratorClass": {"const": "nvidia"}}, "required": ["acceleratorClass"]}, "then": {"properties": {"acceleratorCount": {"type": "integer", "minimum": 1}}}}
+          ]
+        },
+        "runtimeIsolation": {"const": "fresh-per-run"}, "restartPolicy": {"const": "no"}, "crossRunStateAllowed": {"const": false}
+      },
+      "allOf": [
+        {"if": {"properties": {"implementation": {"const": "llama.cpp"}}, "required": ["implementation"]}, "then": {"properties": {"executableSha256": {"$ref": "#/$defs/hash"}}}},
+        {"if": {"properties": {"implementation": {"const": "vllm"}}, "required": ["implementation"]}, "then": {"properties": {"executableSha256": {"$ref": "#/$defs/hash"}, "resources": {"properties": {"sharedMemoryMiB": {"type": "integer", "minimum": 1024}, "cacheMiB": {"type": "integer", "minimum": 1024}}}}}}
+      ]
+    },
+    "authority": {
+      "type": "object", "additionalProperties": false,
+      "required": ["grantsModelStart", "grantsProviderCall", "grantsNetwork", "grantsCredentialUse", "grantsExecution", "grantsCompletion"],
+      "properties": {
+        "grantsModelStart": {"const": false}, "grantsProviderCall": {"const": false},
+        "grantsNetwork": {"const": false}, "grantsCredentialUse": {"const": false},
+        "grantsExecution": {"const": false}, "grantsCompletion": {"const": false}
+      }
+    },
+    "boundary": {"const": "Private exact shared-model identity for controlled harness comparison only. It requires fresh cross-run-isolated runtimes and grants no model start, provider call, network, credential, tool, execution, completion, publication, deployment, acceptance, or promotion authority."}
+  },
+  "$defs": {"hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"}}
+}

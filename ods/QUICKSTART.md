@@ -1,5 +1,7 @@
 # ODS Quick Start
 
+> **Release channel:** the install commands on this page fetch development `main`, which is not signed. A signed-source path is staged in [Verified Install Preview](docs/VERIFIED_INSTALL_PREVIEW.md); it is not active until the first eligible immutable release is published, and historical `v3.0.0` is not eligible.
+
 One command to a running local AI stack. The installer detects your hardware,
 chooses a model, writes the config, starts the services, and leaves you with a
 chat UI plus the `ods` management command.
@@ -71,6 +73,8 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 .\install.ps1
 ```
 
+The Windows command guides Ubuntu/WSL2 preparation and requires Pixel, with no Hermes fallback. It installs missing WSL, Docker Desktop and Ubuntu after asking, continues by itself after the one restart, and opens Portal when done. See [Windows Quickstart](docs/WINDOWS-QUICKSTART.md).
+
 Useful install flags:
 
 | Linux/macOS | Windows | Purpose |
@@ -79,20 +83,22 @@ Useful install flags:
 | `--voice` | `-Voice` | Enable Whisper STT and Kokoro TTS |
 | `--workflows` | `-Workflows` | Enable n8n workflows |
 | `--rag` | `-Rag` | Enable Qdrant and embeddings |
-| `--no-hermes` | `-NoHermes` | Disable the default Hermes agent |
+| `--pixel` | — | Require Pixel on a qualified Linux/systemd host |
+| `--no-pixel` | — | Disable Pixel and use the configured fallback |
+| `--no-hermes` | `-NoHermes` | Disable the Hermes fallback agent |
 | `--no-bootstrap` | `-NoBootstrap` | Wait for the full model instead of fast-start |
 | `--tier 3` | `-Tier 3` | Force a hardware/model tier |
 
 ## Uninstall
 
-Linux/macOS:
+Linux/macOS, or inside Ubuntu for Windows/WSL:
 
 ```bash
 cd ~/ods
 ./ods-uninstall.sh --force
 ```
 
-Windows:
+Legacy native Windows installations only:
 
 ```powershell
 $installDir = "$env:USERPROFILE\ods"
@@ -110,9 +116,11 @@ Bootstrap mode is enabled by default when your selected full model is large.
 ODS downloads a small model first so you can start chatting quickly,
 then downloads and hot-swaps the full model in the background.
 
-Hermes is the default agent. Hermes-enabled installs keep the bootstrap model at
-a 64K context floor, then promote the full local model target to 128K after the
-background swap.
+Pixel is installed automatically on qualified Ubuntu 24.04/26.04 or Debian 12
+PID1-systemd hosts. The Windows entry point explicitly requires Pixel in WSL2 and stops on failure. Other Linux entry points without `--pixel` may use the
+Hermes fallback on unsupported hosts. See [docs/PIXEL.md](docs/PIXEL.md). Hermes-enabled installs
+keep the bootstrap model at a 64K context floor, then promote the full local
+model target to 128K after the background swap.
 
 Check progress:
 
@@ -156,7 +164,7 @@ cd $env:USERPROFILE\ods
 .\ods.ps1 report
 ```
 
-For a lower-level source-tree check on Linux/macOS:
+For a lower-level source-tree check on Linux/macOS, or inside Ubuntu for Windows/WSL:
 
 ```bash
 cd ~/ods

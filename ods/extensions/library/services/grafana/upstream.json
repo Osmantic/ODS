@@ -1,0 +1,13 @@
+{
+  "repository": "https://github.com/grafana/grafana",
+  "license": "AGPL-3.0",
+  "source_ref": "v13.2.2",
+  "image": "grafana/grafana:13.2.2@sha256:ac461fb352abc50da10a51c7d02462e9c05488f11f53f14b3ad79a8145f638a0",
+  "registry_checked_at": "2026-09-20",
+  "platforms": [
+    "linux/amd64",
+    "linux/arm64"
+  ],
+  "runtime_validation": "pending",
+  "notes": "OSS image, persistent SQLite/configuration, separate administrator and encryption secrets. Public signup/anonymous access, reporting/update checks and automatic plugins disabled. No data sources, alert recipients or model connections automatically provisioned."
+}

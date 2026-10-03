@@ -7,6 +7,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 INSTALL_DIR="${INSTALL_DIR:-$HOME/ods}"
+REQUESTED_INSTALL_DIR=""
 
 # Colors
 RED='\033[0;31m'
@@ -19,6 +20,16 @@ log_info()  { echo -e "${BLUE}[INFO]${NC} $*"; }
 log_ok()    { echo -e "${GREEN}[OK]${NC} $*"; }
 log_warn()  { echo -e "${YELLOW}[WARN]${NC} $*"; }
 log_error() { echo -e "${RED}[ERROR]${NC} $*" >&2; }
+
+ods_uninstall_systemctl_user() {
+    local user_uid user_runtime_dir user_bus_address
+    user_uid="$(id -u)"
+    user_runtime_dir="${XDG_RUNTIME_DIR:-/run/user/$user_uid}"
+    user_bus_address="${DBUS_SESSION_BUS_ADDRESS:-unix:path=$user_runtime_dir/bus}"
+    env XDG_RUNTIME_DIR="$user_runtime_dir" \
+        DBUS_SESSION_BUS_ADDRESS="$user_bus_address" \
+        systemctl --user "$@"
+}
 
 SUDO_CREDENTIAL_READY=false
 
@@ -34,10 +45,23 @@ prepare_sudo_credential() {
     fi
 
     log_info "Administrator privileges are required for system-owned ODS files."
-    # Keep the credential prompt attached directly to the terminal. Wrapping an
-    # interactive sudo invocation in `timeout` can prevent sudo from managing
-    # terminal echo correctly on some systems.
-    sudo -v
+    if $NON_INTERACTIVE; then
+        # `sudo -n -v` follows the sudoers `verifypw` policy and can demand a
+        # password even when every command this installer needs is covered by
+        # a user-specific NOPASSWD rule (for example, a user that also belongs
+        # to a passworded `%sudo` group). Probe an actual harmless command so
+        # unattended cleanup tests the authority that later `sudo -n -- ...`
+        # calls will use.
+        if ! sudo -n true; then
+            log_error "Non-interactive uninstall requires cached or passwordless sudo. Run sudo -v in a terminal, then retry."
+            return 1
+        fi
+    else
+        # Keep the credential prompt attached directly to the terminal. Wrapping
+        # an interactive sudo invocation in `timeout` can prevent sudo from
+        # managing terminal echo correctly on some systems.
+        sudo -v
+    fi
     SUDO_CREDENTIAL_READY=true
 }
 
@@ -78,15 +102,62 @@ resolve_compose_flags() {
     printf '%s\n' "$flags"
 }
 
+validate_uninstall_compose() {
+    local policy="$SCRIPT_DIR/scripts/compose-cache-policy.py"
+    if [[ ! -f "$policy" ]] || ! command -v python3 >/dev/null 2>&1; then
+        log_error "Compose security policy or Python 3 is missing; run the uninstaller from a complete current ODS checkout."
+        return 1
+    fi
+    python3 "$policy" --install-dir "$INSTALL_DIR" --arguments "$@" >/dev/null
+}
+
+preserve_model_cache() {
+    MODELS_BACKUP="${INSTALL_DIR%/}.models-backup"
+    python3 "$SCRIPT_DIR/lib/model-cache-custody.py" preserve "$INSTALL_DIR" || return 1
+    log_info "Models preserved at: $MODELS_BACKUP"
+}
+
 KEEP_MODELS=false
 KEEP_DATA=false
 FORCE=false
+NON_INTERACTIVE=false
+
+validate_requested_install_dir() {
+    local target_dir="$1" target_real home_real script_real
+
+    [[ "$target_dir" == /* ]] || return 1
+    [[ -d "$target_dir" && ! -L "$target_dir" ]] || return 1
+    target_real="$(cd -P -- "$target_dir" 2>/dev/null && pwd -P)" || return 1
+    home_real="$(cd -P -- "$HOME" 2>/dev/null && pwd -P)" || return 1
+    script_real="$(cd -P -- "$SCRIPT_DIR" 2>/dev/null && pwd -P)" || return 1
+    [[ "$target_real" != / && "$target_real" != "$home_real" && "$target_real" != "$script_real" ]] || return 1
+    [[ -f "$target_real/.env" && ! -L "$target_real/.env" ]] || return 1
+    [[ -f "$target_real/ods-cli" && ! -L "$target_real/ods-cli" ]] || return 1
+    [[ -f "$target_real/ods-uninstall.sh" && ! -L "$target_real/ods-uninstall.sh" ]] || return 1
+    if [[ -f "$target_real/docker-compose.base.yml" && ! -L "$target_real/docker-compose.base.yml" ]]; then
+        printf '%s\n' "$target_real"
+        return 0
+    fi
+    [[ -f "$target_real/docker-compose.yml" && ! -L "$target_real/docker-compose.yml" ]] || return 1
+    printf '%s\n' "$target_real"
+}
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --keep-models) KEEP_MODELS=true; shift ;;
         --keep-data)   KEEP_DATA=true; shift ;;
         --force)       FORCE=true; shift ;;
+        --non-interactive) NON_INTERACTIVE=true; shift ;;
+        --install-dir)
+            [[ $# -ge 2 && -n "$2" ]] || { log_error "--install-dir requires a path"; exit 1; }
+            REQUESTED_INSTALL_DIR="$2"
+            shift 2
+            ;;
+        --install-dir=*)
+            REQUESTED_INSTALL_DIR="${1#*=}"
+            [[ -n "$REQUESTED_INSTALL_DIR" ]] || { log_error "--install-dir requires a path"; exit 1; }
+            shift
+            ;;
         -h|--help)
             cat << EOF
 ODS Uninstaller
@@ -94,18 +165,28 @@ ODS Uninstaller
 Usage: $(basename "$0") [OPTIONS]
 
 Options:
-    --keep-models   Keep downloaded AI models (saves re-download time)
+    --keep-models   Keep models beside the install in <install>.models-backup
     --keep-data     Keep user data (chat history, n8n workflows, etc.)
     --force         Skip confirmation prompts
+    --non-interactive  Never prompt for sudo; require cached or passwordless sudo
+    --install-dir   Uninstall a separately located, fingerprinted ODS installation
     -h, --help      Show this help
 
 This will remove:
-    - Docker containers, images, and volumes for ODS
+    - ODS service containers
+    - Verified ODS Docker volumes (unless --keep-data)
     - Installation directory ($INSTALL_DIR)
+    - ODS-managed Pixel host services and private configuration
     - Systemd user services (opencode-web, openclaw timers)
+    - Systemd system services (ods-host-agent, ods-mdns)
     - macOS LaunchAgents (com.ods.host-agent, com.ods.opencode-web, legacy agents)
     - CLI symlinks (/usr/local/bin/ods, ~/.local/bin/ods, legacy /usr/local/bin/ods-cli)
     - Backup directory (~/.ods)
+
+Preserved:
+    - Docker images and shared build cache
+    - On macOS, native Pixel recovery archives and stopped, renamed sandboxes
+    - The dedicated macOS Pixel Operations identity, verified before reinstall
 
 EOF
             exit 0
@@ -120,8 +201,12 @@ echo -e "${RED}║         ODS UNINSTALLER                ║${NC}"
 echo -e "${RED}╚══════════════════════════════════════════════════╝${NC}"
 echo ""
 
-# Detect install dir
-if [[ -d "$SCRIPT_DIR" && -f "$SCRIPT_DIR/ods-cli" ]]; then
+# Detect install dir. A candidate bootstrap can explicitly target an older ODS
+# tree, but only after this uninstaller independently validates that target.
+if [[ -n "$REQUESTED_INSTALL_DIR" ]]; then
+    INSTALL_DIR="$(validate_requested_install_dir "$REQUESTED_INSTALL_DIR")" \
+        || { log_error "Refusing unsafe or unrecognized ODS install target: $REQUESTED_INSTALL_DIR"; exit 1; }
+elif [[ -d "$SCRIPT_DIR" && -f "$SCRIPT_DIR/ods-cli" ]]; then
     INSTALL_DIR="$SCRIPT_DIR"
 fi
 
@@ -145,14 +230,175 @@ if [[ -f "$INSTALL_DIR/.env" ]]; then
     fi
 fi
 
+# Partial installs can stop before Pixel's ingress group is recorded in .env.
+# Compose still interpolates group_add for config/down. Use the existing caller
+# group only for this cleanup process; never persist or create a Pixel identity.
+# This must follow env loading, which can replace an inherited GID with blank.
+if [[ -z "${PIXEL_INGRESS_GID:-}" ]]; then
+    if ! _ods_cleanup_gid="$(id -g)" || [[ ! "$_ods_cleanup_gid" =~ ^[0-9]+$ ]]; then
+        log_error "Cannot determine a numeric group for Compose cleanup; installation untouched."
+        exit 1
+    fi
+    export PIXEL_INGRESS_GID="$_ods_cleanup_gid"
+    unset _ods_cleanup_gid
+fi
+
 if [[ "$FORCE" != "true" ]]; then
     echo -e "${YELLOW}This will permanently remove ODS and its components.${NC}"
-    read -rp "Are you sure? Type 'yes' to confirm: " confirm
+    read -rp "Are you sure? Type 'yes' to confirm: " confirm || confirm=""
     if [[ "$confirm" != "yes" ]]; then
         log_info "Uninstall cancelled."
         exit 0
     fi
     echo ""
+fi
+
+# Compose down can execute extension lifecycle hooks. Refuse unsafe saved
+# recipes before retiring Pixel, privileged services, or any installation data.
+compose_flags=""
+compose_args=()
+if command -v docker >/dev/null 2>&1; then
+    compose_flags="$(resolve_compose_flags)"
+    if [[ -n "$compose_flags" ]]; then
+        read -ra compose_args <<< "$compose_flags"
+        validate_uninstall_compose "${compose_args[@]}" || {
+            log_error "Saved extension recipes require review; installation untouched. Run 'ods disable <extension>' for each extension named above (it stops it safely and keeps its data), then retry uninstall."
+            exit 1
+        }
+    else
+        log_error "No Compose files resolved; installation untouched. Restore the installation's Compose files, then retry uninstall."
+        exit 1
+    fi
+fi
+
+# Compose down -v cannot see volumes from disabled extension fragments. Record
+# exact ownership before retiring Pixel or system services. Keep the snapshot
+# outside the install tree so a failed purge can retain that tree for recovery.
+volume_snapshot=""
+if command -v docker >/dev/null 2>&1; then
+    volume_snapshot="$(mktemp "${TMPDIR:-/tmp}/ods-uninstall-volumes.XXXXXXXX")"
+    trap '[[ -z "$volume_snapshot" ]] || rm -f -- "$volume_snapshot"' EXIT
+    # macOS ships Bash 3.2, where expanding an empty array under nounset is
+    # an error. Pass the optional flag through explicit non-empty branches.
+    if $KEEP_DATA; then
+        if ! python3 "$SCRIPT_DIR/scripts/uninstall-compose-volumes.py" preflight \
+            "$INSTALL_DIR" "$volume_snapshot" "$SCRIPT_DIR" --keep-data "${compose_args[@]}"; then
+            log_error "Docker ownership could not be proven; installation untouched. Review the reported resource before retrying."
+            exit 1
+        fi
+    else
+        if ! python3 "$SCRIPT_DIR/scripts/uninstall-compose-volumes.py" preflight \
+            "$INSTALL_DIR" "$volume_snapshot" "$SCRIPT_DIR" "${compose_args[@]}"; then
+            log_error "Docker ownership could not be proven; installation untouched. Review the reported resource before retrying."
+            exit 1
+        fi
+    fi
+fi
+
+# Fail before stopping/removing services if models cannot be retained without
+# crossing filesystems. Recheck immediately before the actual atomic rename.
+if $KEEP_MODELS; then
+    command -v python3 >/dev/null 2>&1 \
+        || { log_error "Python 3 is required for safe model preservation; installation untouched."; exit 1; }
+    python3 "$SCRIPT_DIR/lib/model-cache-custody.py" preflight "$INSTALL_DIR" || exit 1
+fi
+
+# A non-interactive purge must prove that privileged cleanup can run before
+# removing Pixel, stopping containers, or otherwise mutating the installation.
+# Candidate-driven reinstalls rely on this path and must fail promptly instead
+# of waiting forever at a sudo password prompt or leaving a half-uninstalled
+# tree behind.
+if $NON_INTERACTIVE && ! $KEEP_DATA && [[ "$(id -u)" -ne 0 ]] && command -v sudo >/dev/null 2>&1; then
+    prepare_sudo_credential || exit 1
+fi
+
+# Check system-unit custody without stopping a recovery service or removing
+# Pixel. A foreign unit must fail before either independent cleanup begins.
+if [[ "$(uname -s)" == "Linux" && -f "$SCRIPT_DIR/lib/system-uninstall.sh" ]]; then
+    . "$SCRIPT_DIR/lib/system-uninstall.sh"
+    if ! ODS_SYSTEM_UNINSTALL_VALIDATE_ONLY=true \
+        ods_uninstall_system_units "$INSTALL_DIR" "$HOME"; then
+        log_error "System service validation failed; Pixel and installation retained"
+        exit 1
+    fi
+fi
+
+# Verify the ordinary Linux owner and bound Windows tasks before removing
+# Pixel. Never borrow root's or another user's Windows interop authority.
+if [[ "$(uname -s)" == "Linux" && "$(uname -r)" == *[Mm]icrosoft* ]]; then
+    _ods_wsl_retire_helper="$SCRIPT_DIR/scripts/retire-wsl-runtime.py"
+    if [[ ! -f "$_ods_wsl_retire_helper" || -L "$_ods_wsl_retire_helper" ]] ||
+        ! python3 "$_ods_wsl_retire_helper" --install-dir "$INSTALL_DIR" --validate-only; then
+        log_error "Windows startup validation failed; Pixel and installation retained"
+        exit 1
+    fi
+fi
+
+# Disable and settle the bound Windows login startup before removing Pixel:
+# a sign-in coordinator must not restart services during their retirement.
+# Lemonade itself and its model library remain installed.
+if [[ -n "${_ods_wsl_retire_helper:-}" ]]; then
+    if ! python3 "$_ods_wsl_retire_helper" --install-dir "$INSTALL_DIR"; then
+        log_error "Windows startup retirement failed; installation files retained; startup may already be disabled"
+        exit 1
+    fi
+fi
+
+# Validate and remove Pixel before stopping its recovery host-agent or deleting
+# installation files. The helper is bound to this exact installation and fails
+# closed on ambient or drifted Pixel state.
+if [[ "$(uname -s)" == "Linux" ]]; then
+    _ods_pixel_marker="$HOME/.config/ods/pixel-managed.json"
+    if [[ -f "$SCRIPT_DIR/lib/pixel-uninstall.sh" ]]; then
+        # shellcheck source=lib/pixel-uninstall.sh
+        . "$SCRIPT_DIR/lib/pixel-uninstall.sh"
+        if ! ods_pixel_uninstall_managed "$INSTALL_DIR" "$HOME"; then
+            log_error "Pixel cleanup failed; remaining installation retained"
+            if [[ -n "${_ods_wsl_retire_helper:-}" ]]; then
+                log_warn "Windows startup changes already applied for this uninstall remain in effect."
+            fi
+            exit 1
+        fi
+    elif [[ -e "$_ods_pixel_marker" || -L "$_ods_pixel_marker" ]]; then
+        log_error "ODS-managed Pixel marker exists but its uninstall helper is missing"
+        exit 1
+    fi
+    unset _ods_pixel_marker
+fi
+unset _ods_wsl_retire_helper
+
+# Native Pixel owns protected launchd services outside the ODS install tree.
+# Retire those receipt-bound resources before removing that tree; otherwise a
+# forced reinstall deletes its owner data but strands active native services.
+if [[ "$(uname -s)" == "Darwin" ]]; then
+    _ods_native_pixel_helper="$SCRIPT_DIR/installers/macos/lib/pixel-native-uninstall.py"
+    if [[ ! -f "$_ods_native_pixel_helper" || -L "$_ods_native_pixel_helper" ]]; then
+        log_error "Native Pixel retirement helper is missing; installation retained"
+        exit 1
+    fi
+    if ! run_sudo /usr/bin/python3 -I "$_ods_native_pixel_helper" \
+        --install-dir "$INSTALL_DIR" --owner "${SUDO_USER:-$(id -un)}"; then
+        log_error "Native Pixel retirement failed before ODS uninstall mutation"
+        exit 1
+    fi
+    unset _ods_native_pixel_helper
+fi
+
+# A pending Pixel transition must retain its host-agent and other recovery
+# services. Only retire verified system units after Pixel's fail-closed
+# uninstall has succeeded; the old ordering stopped the host agent first and
+# stranded a held model transition when Pixel correctly refused cleanup.
+if [[ "$(uname -s)" == "Linux" ]]; then
+    if [[ -f "$SCRIPT_DIR/lib/system-uninstall.sh" ]]; then
+        . "$SCRIPT_DIR/lib/system-uninstall.sh"
+        if ! ods_uninstall_system_units "$INSTALL_DIR" "$HOME"; then
+            log_error "System service cleanup failed; installation retained"
+            exit 1
+        fi
+    elif [[ -e /etc/systemd/system/ods-host-agent.service || -e /etc/systemd/system/ods-mdns.service ]]; then
+        log_error "System service uninstall helper is missing; installation retained"
+        exit 1
+    fi
 fi
 
 # 1. Stop and remove Docker containers
@@ -162,47 +408,33 @@ if command -v docker &>/dev/null; then
     # Use ODS's resolved compose stack. The repo does not ship a
     # top-level docker-compose.yml, so bare `docker compose down` can fail with
     # "no configuration file provided" even from the correct install dir.
-    compose_flags="$(resolve_compose_flags)"
-    compose_down_args=(down)
-    if [[ "$KEEP_DATA" != "true" ]]; then
-        compose_down_args+=(-v)
-    fi
-    compose_down_args+=(--remove-orphans)
+    # Do not pass -v: Compose would delete selected volumes before our
+    # postflight custody check can verify their unchanged identity.
+    compose_down_args=(down --remove-orphans)
 
-    if [[ -n "$compose_flags" ]]; then
-        read -ra compose_args <<< "$compose_flags"
-        docker compose "${compose_args[@]}" "${compose_down_args[@]}" 2>/dev/null || \
-            log_warn "docker compose cleanup failed; falling back to container/volume discovery"
-    else
-        log_warn "No compose files resolved; falling back to container/volume discovery"
+    validate_uninstall_compose "${compose_args[@]}" || {
+        log_error "Saved extension recipes changed during uninstall; remaining installation retained."
+        exit 1
+    }
+    # Unrelated containers and volumes can share the ods prefix. Never widen
+    # cleanup to name-based discovery, including when Compose reports failure.
+    compose_error_log="$(mktemp "${TMPDIR:-/tmp}/ods-uninstall-compose.XXXXXXXX.log")"
+    if ! docker compose "${compose_args[@]}" "${compose_down_args[@]}" 2>"$compose_error_log"; then
+        log_error "Docker Compose cleanup failed; remaining installation retained. Pixel or host services may already be retired. Details: $compose_error_log"
+        exit 1
     fi
-
-    # Remove any remaining ods-* containers.
-    # Docker's name filter matches anywhere in the name, so filter on the
-    # printed names instead: only this project's ods-<service> containers.
-    ods_containers=$(docker ps -a --format "{{.Names}}" 2>/dev/null | grep -E '^ods-' || true)
-    if [[ -n "$ods_containers" ]]; then
-        log_info "Removing ODS containers..."
-        echo "$ods_containers" | xargs docker rm -f 2>/dev/null || true
-    fi
-
-    # Remove ods-specific Docker volumes unless data preservation was requested.
-    if [[ "$KEEP_DATA" == "true" ]]; then
-        log_info "Keeping Docker volumes (--keep-data)"
-    else
-        # Compose names project volumes ods_<volume> (docker-compose.base.yml
-        # declares `name: ods`); older installs also produced ods-<volume>.
-        # An unanchored "ods" filter would additionally select unrelated
-        # volumes that merely contain it (pods, methods, ...) and this branch
-        # removes what it finds, so anchor on the project prefix.
-        ods_volumes=$(docker volume ls --format "{{.Name}}" 2>/dev/null | grep -E '^ods[_-]' || true)
-        if [[ -n "$ods_volumes" ]]; then
-            log_info "Removing Docker volumes..."
-            echo "$ods_volumes" | xargs docker volume rm 2>/dev/null || true
-        fi
+    rm -f -- "$compose_error_log"
+    if [[ "$KEEP_DATA" != "true" ]] &&
+        ! python3 "$SCRIPT_DIR/scripts/uninstall-compose-volumes.py" complete \
+            "$INSTALL_DIR" "$volume_snapshot" "$SCRIPT_DIR"; then
+        log_error "Docker volume cleanup is incomplete after Pixel or host-service retirement; installation files and data retained for recovery."
+        exit 1
     fi
 
-    log_ok "Docker cleanup complete"
+    [[ "$KEEP_DATA" == "true" ]] && log_info "Keeping Docker volumes (--keep-data)"
+
+    log_ok "Verified Docker cleanup complete"
+    log_info "Docker images and shared build cache retained"
 else
     log_warn "Docker not found — skipping container cleanup"
 fi
@@ -210,17 +442,26 @@ fi
 # 2. Stop and remove host service definitions
 log_info "Removing systemd user services..."
 SYSTEMD_USER_DIR="$HOME/.config/systemd/user"
+# Phase 11 may use a transient user service so a large model download survives
+# a non-interactive SSH installer.  It has no unit file in SYSTEMD_USER_DIR,
+# therefore stop it explicitly before deleting its install tree.
+_ods_uninstall_uid="$(id -u)"
+_ods_uninstall_runtime_dir="/run/user/$_ods_uninstall_uid"
+if [[ -d "$_ods_uninstall_runtime_dir" && -S "$_ods_uninstall_runtime_dir/bus" ]]; then
+    ods_uninstall_systemctl_user stop ods-model-upgrade.service 2>/dev/null || true
+    ods_uninstall_systemctl_user reset-failed ods-model-upgrade.service 2>/dev/null || true
+fi
 for unit in opencode-web.service openclaw-session-cleanup.timer \
             memory-shepherd-workspace.timer memory-shepherd-memory.timer \
             openclaw-session-cleanup.service \
             memory-shepherd-workspace.service memory-shepherd-memory.service \
             ods-host-agent.service; do
     if [[ -f "$SYSTEMD_USER_DIR/$unit" ]]; then
-        systemctl --user disable --now "$unit" 2>/dev/null || true
+        ods_uninstall_systemctl_user disable --now "$unit" 2>/dev/null || true
         rm -f "$SYSTEMD_USER_DIR/$unit"
     fi
 done
-systemctl --user daemon-reload 2>/dev/null || true
+ods_uninstall_systemctl_user daemon-reload 2>/dev/null || true
 
 # 2a. Remove macOS LaunchAgents (#1882). install-macos.sh creates
 # com.ods.host-agent and com.ods.opencode-web as RunAtLoad+KeepAlive agents;
@@ -300,7 +541,7 @@ if command -v pgrep >/dev/null 2>&1; then
         [[ -n "$_pid" ]] && _ods_uninstall_orphan_pids+=("$_pid")
     done < <(pgrep -f "$INSTALL_DIR/bin/ods-macos-llm-bridge.py" 2>/dev/null || true)
 fi
-if (( ${#_ods_uninstall_orphan_pids[@]} > 0 )); then
+if [[ -n "${_ods_uninstall_orphan_pids[0]-}" ]]; then
     log_info "  Sending SIGTERM to ${#_ods_uninstall_orphan_pids[@]} orphan PID(s): ${_ods_uninstall_orphan_pids[*]}"
     for _pid in "${_ods_uninstall_orphan_pids[@]}"; do kill "$_pid" 2>/dev/null || true; done
     sleep 2
@@ -312,23 +553,6 @@ if (( ${#_ods_uninstall_orphan_pids[@]} > 0 )); then
     done
 fi
 unset _ods_uninstall_orphan_pids _pid
-
-# Remove system-mode ods-host-agent unit (migrated from --user mode).
-# Idempotent — no-op if the unit was never installed (e.g. older user-mode installs).
-if systemctl is-enabled ods-host-agent.service >/dev/null 2>&1; then
-    if ! prepare_sudo_credential; then
-        log_warn "sudo is unavailable; ods-host-agent.service was not removed"
-    elif ! timeout 20s sudo -n -- systemctl disable --now ods-host-agent.service 2>/dev/null; then
-        log_warn "ods-host-agent did not stop cleanly; forcing service shutdown"
-        run_sudo systemctl kill -s SIGKILL ods-host-agent.service 2>/dev/null || true
-        timeout 10s sudo -n -- systemctl disable ods-host-agent.service 2>/dev/null || true
-    fi
-fi
-if [[ -e /etc/systemd/system/ods-host-agent.service ]]; then
-    run_sudo rm -f /etc/systemd/system/ods-host-agent.service 2>/dev/null || true
-    run_sudo systemctl daemon-reload 2>/dev/null || true
-fi
-log_ok "Systemd services removed"
 
 # 3. Remove CLI symlinks
 _removed_cli_symlink=false
@@ -361,11 +585,9 @@ fi
 # 5. Remove install directory (with optional data/model preservation)
 log_info "Removing installation directory..."
 INSTALL_DIR_CLEANED=true
-if $KEEP_MODELS && [[ -d "$INSTALL_DIR/data/models" ]]; then
-    MODELS_BACKUP="$HOME/.ods-models-backup"
-    mkdir -p "$MODELS_BACKUP"
-    mv "$INSTALL_DIR/data/models"/* "$MODELS_BACKUP/" 2>/dev/null || true
-    log_info "Models preserved at: $MODELS_BACKUP"
+if $KEEP_MODELS && ! preserve_model_cache; then
+    log_error "Model preservation failed; installation deletion stopped. Keep remaining files in $INSTALL_DIR/data/models and ${INSTALL_DIR%/}.models-backup for recovery."
+    exit 1
 fi
 
 if $KEEP_DATA; then
@@ -418,14 +640,20 @@ if [[ -f "$OPENCODE_CONFIG" ]] && grep -q "llama-server" "$OPENCODE_CONFIG" 2>/d
     log_ok "OpenCode config removed"
 fi
 
+if ! $INSTALL_DIR_CLEANED; then
+    log_error "ODS uninstall was incomplete; the installation directory remains at $INSTALL_DIR"
+    exit 1
+fi
+
 echo ""
 echo -e "${GREEN}╔══════════════════════════════════════════════════╗${NC}"
 echo -e "${GREEN}║     ODS has been uninstalled.           ║${NC}"
 echo -e "${GREEN}╚══════════════════════════════════════════════════╝${NC}"
 echo ""
 if $KEEP_MODELS; then
-    echo "Your models were saved to: $HOME/.ods-models-backup"
-    echo "To reuse them on reinstall, move them back to ~/ods/data/models/"
+    echo "Retained model files: ${INSTALL_DIR%/}.models-backup/models"
+    echo "Restore destination: $INSTALL_DIR/data/models"
+    echo "Keep custody.json beside the retained models for validated recovery; do not overwrite an existing destination."
 fi
 if $KEEP_DATA; then
     echo "Your user data was preserved at: $INSTALL_DIR/data/"

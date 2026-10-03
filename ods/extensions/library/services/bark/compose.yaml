@@ -8,7 +8,7 @@ services:
     security_opt:
       - no-new-privileges:true
     ports:
-      - "${BIND_ADDRESS:-127.0.0.1}:${BARK_PORT:-9200}:9200"
+      - "127.0.0.1:${BARK_PORT:-9200}:9200"
     environment:
       # Use small models (faster, less VRAM) — set to false for full quality
       - SUNO_USE_SMALL_MODELS=${BARK_USE_SMALL_MODELS:-false}

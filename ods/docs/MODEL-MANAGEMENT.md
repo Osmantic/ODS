@@ -1,6 +1,8 @@
 # Model Management
 
-ODS runs local language models as GGUF files from `data/models/`.
+ODS runs local language models as GGUF files from `data/models/` or an
+installer-registered model store. Windows AMD with Portal in WSL uses the
+Windows Lemonade store described below.
 The recommended path is the Dashboard Models page. Manual model swaps are also
 available for headless maintenance and advanced operator workflows.
 
@@ -13,10 +15,10 @@ From there you can:
 - Separate models already installed from the curated ODS catalog.
 - Search compatible GGUF repositories on Hugging Face without leaving ODS.
 - Check approximate model size, VRAM requirement, context length, and specialty.
-- Download a catalog model into `data/models/`.
-- Import an integrity-qualified Hugging Face GGUF into `data/models/`.
+- Download a catalog model into the installation's model store.
+- Import an integrity-qualified Hugging Face GGUF into that store.
 - Load a downloaded model.
-- Load a manually copied single-file GGUF discovered in `data/models/`.
+- Load a manually copied single-file GGUF discovered in the model store.
 - Delete a downloaded catalog model.
 
 The expected user flow is a six-verb chain:
@@ -34,6 +36,40 @@ declares a context floor such as `65536`, models below that floor should be
 shown as gated or warned before the swap. Badges should distinguish downloaded,
 loaded, swap-safe, not-swap-safe, gated, and probe-failed states so a model
 cannot look ready while an enabled app is known to be incompatible.
+
+### Windows AMD with Portal in WSL
+
+The Windows installer can bind its `ODSLemonadeRuntime` task to one WSL
+distribution and ODS runtime directory. With verified task ownership and model
+store registration, **Models** supports catalog and Hugging Face downloads,
+activation and context changes using the existing ODS transaction. Downloads
+go to `%LOCALAPPDATA%\ODS\lemonade\models`, which WSL accesses as a registered
+Windows store. The import registry and download progress remain in the ODS
+runtime's `data/` directory.
+
+Wait for verification after download, choose **Run**, then choose the context.
+Activation updates the owned Windows launcher selection as well as Portal and
+ODS routes. **Configure context** uses the same transaction. The current
+Windows controller accepts 4,096–262,144 tokens; the model, available memory
+and enabled apps must still support the requested value. A Hub listing or a
+verified download alone does not prove runtime or agent compatibility.
+
+**Unload model** stops the owned runtime while preserving its saved model and
+context. Portal admission stays paused while inference is stopped. **Resume
+model** starts and verifies the saved selection before releasing that pause;
+resume before attempting another model or context change.
+
+Older tasks without a WSL installation binding do not gain control from an
+update alone. Rerun the current Windows installer with the same distribution
+and runtime directory to register them. If ownership cannot be verified, the
+controls remain unavailable. Do not manually edit the binding or startup plan.
+
+An independently managed Lemonade server remains external. Change its loaded
+model in Lemonade, then use **Adopt loaded model** to update Portal and ODS
+routes. Adoption does not grant runtime control or change Lemonade's startup
+model. `LEMONADE_EXTERNAL=true` describes the Windows network placement; it is
+not permission to manage a process. Linux, NVIDIA and macOS retain their
+existing model-management paths.
 
 ### Hugging Face imports
 
@@ -69,6 +105,11 @@ retry re-reads the immutable Hub revision and verifies every retained or newly
 downloaded file before the model can become installed. An incomplete or
 cancelled transfer is never eligible for activation.
 
+The import dialog can be closed while its request is pending. If the request
+times out, use **Check download status** to reconcile the selected artifact
+with the catalog and download record. ODS does not automatically resubmit an
+uncertain import; a timeout alone does not mean the download failed.
+
 Imported metadata is stored separately in `data/model-imports.json`, so a
 source update or installer rerun does not modify `config/model-library.json` or
 discard community imports. Deleting a downloaded file keeps the import record,
@@ -76,6 +117,15 @@ allowing the same pinned artifact to be downloaded again.
 The registry and completed model files are also independent of dashboard-api
 and host-agent process lifetime: restarting either service reloads the same
 pinned records and on-disk artifacts.
+
+A routine Linux installer rerun also preserves the valid local model that is
+currently active, including its exact GGUF pin, context, runtime profile, and
+safe llama.cpp tuning. The installer still refreshes its hardware-based
+recommendation separately, so the Models page can offer a better candidate
+without changing the live agent behind the operator's back. Use
+`./install.sh --reselect-model` only when you intentionally want the installer
+to replace the active local model with its current recommendation. Missing,
+incomplete, non-local, or catalog-mismatched state is never adopted.
 
 When a catalog model is loaded, ODS updates the active GGUF settings
 and restarts the local inference service so OpenAI-compatible clients use the
@@ -86,17 +136,57 @@ ods model current
 curl http://localhost:11434/v1/models
 ```
 
-On macOS native Metal and Windows native/Lemonade installs, use
-`http://localhost:8080/v1/models` unless you changed the port.
+On macOS native Metal and native Windows installs, use the configured local
+API port (normally `8080`). For Windows AMD with Portal in WSL, verify the
+loaded model and send a message through Portal: WSL's localhost may differ
+from Windows localhost, and the installer may select another Lemonade port.
 
 Dashboard activation, Unix `ods model swap <tier>`, and Windows
 `.\ods.ps1 model swap <tier>` use the same authenticated host-agent transaction.
 The transaction updates `.env`, `models.ini`, the
 native or container inference runtime, LiteLLM, Hermes, OpenClaw, OpenCode, and
-Perplexica when those consumers are installed. It verifies the new runtime and
-downstream routes before reporting success. A late failure restores the prior
-files, runtime, and persisted app routes and then proves the previous model is
-serving again.
+Perplexica when those consumers are installed. On a qualified ODS-managed
+Pixel installation it also updates Pixel's model ID, context, output limit,
+reasoning and model-family compatibility policy, then restarts and verifies the
+gateway. It verifies the new runtime and downstream routes before reporting
+success. When maintenance ownership is confirmed, a late failure restores the
+prior files, runtime, persisted app routes, and Pixel binding, then proves the
+previous model is serving again. An uncertain acknowledgement stays pending
+instead of assuming that rollback or commit completed.
+
+With the managed Portal/Edge relay configured, `/v1/model/activate` and remote
+route activation acquire both native and Edge admission before changing
+inference. The native coordinator retains
+the exact previous model contract, including a remote route's fingerprint.
+A private `data/pixel-model-transaction.json` journal records the transaction
+ID, phase and configuration hashes before admission; it contains no API keys
+or configuration contents. Standalone native installs without an Edge relay
+retain their existing direct model reconciliation. The Windows
+`/v1/runtime/lemonade/ensure` endpoint is a bootstrap step controlled by launcher
+startup order, outside this model transaction. It must not be used for model
+switching from the chat; use the normal model activation endpoint.
+
+The Portal model menu offers **Recover model switch** when this journal is
+pending. Its authenticated `GET /api/models/recovery` reads journal metadata;
+`POST /api/models/recovery` invokes the host's `POST /v1/model/recover` with an
+empty body. Recovery also runs before a subsequent model activation. It can
+finish an unchanged rejected/partial begin, a fully restored rollback, or an
+already committed model with matching configuration and fresh runtime proof.
+It never loads a different model or repeats inference mutations. An interrupted
+gate release retries only the same native finish operation; the coordinator
+revalidates its ownership and can restore/requalify the gateway contract.
+Configuration changes during proof, missing evidence, or a crash halfway
+through inference changes leave recovery pending and require explicit repair.
+
+An ODS-managed Pixel route supports OpenClaw's 4096-token minimum. Below 16K it
+uses a deliberately constrained adaptive prompt, so complex-task reliability
+still depends on the selected model and available context, but the route is not
+blocked. A requested context below 4K is rejected before activation writes
+files or restarts services. ODS gives Pixel an output ceiling of one quarter
+of the committed context, capped at 8192 tokens. Compaction keeps a
+context-scaled recent tail and uses extra headroom
+for 8K-31K profiles so recovery occurs before a dense tool transcript exhausts
+the model window.
 
 ### Choosing the runtime context
 
@@ -133,6 +223,67 @@ runtime verification decide whether it can be served.
 This selector applies to local inference in `local`, `hybrid`, and `lemonade`
 modes. In `cloud` mode, the remote provider owns its context policy, so ODS
 does not rewrite local runtime or application context from the Models page.
+
+### Activating a remote provider for agents
+
+The Dashboard **Remote Provider** page can move the stable `ods/current` route
+to an OpenAI-compatible provider without giving Pixel a provider URL or
+credential. Enter the provider model ID, context window, maximum output tokens,
+and whether that route supports reasoning. Those limits become Pixel's managed
+runtime contract, so model-family and context changes are explicit instead of
+being guessed from a provider response.
+
+For a direct HTTPS provider, **Configure** first performs a bounded provider
+probe. ODS then writes the private egress credential, renders the cloud
+LiteLLM route, recreates and health-checks LiteLLM, serves a real completion
+through `ods/current`, and reconciles the ODS-managed Pixel gateway. For an SSH
+provider, Configure stages the route; **Test route** completes the same
+consumer activation only after the managed tunnel and egress proof succeed.
+The Dashboard reports the provider as Ready only when the egress path and the
+actual consumer route are both active and proven.
+
+With managed Portal admission, SSH staging requires a verified local model to
+remain active. Disable an active remote provider before configuring or enabling
+its SSH replacement. Staging retains the local model and releases its maintenance
+hold only after proving it again; the later tunnel proof opens a new transaction
+for consumer activation. Direct HTTPS providers can be replaced synchronously,
+including providers that use the same model name at different endpoints.
+
+The status page rechecks the current host-owned Pixel runtime instead of
+trusting an older activation receipt. If the provider is reachable but ODS or
+Pixel has moved to a different model contract, the page reports **Consumer
+drift**, marks inference unavailable, and offers **Reconcile route** in the
+header. Reconcile runs the same fresh proof and transactional activation as
+`ods remote-provider enable`; it reuses the owner-custodied secret and does not
+ask the browser to recover or resubmit it.
+
+The operation is transactional. ODS retains the exact prior mode, LiteLLM
+config, and Pixel model contract in a private recovery record. A failed render,
+container health check, or completion restores that state only while the same
+transaction still owns maintenance and the previous route can be proved. An
+unconfirmed apply or finish retains its recovery record and blocks new work
+until recovery proves the outcome; ODS does not replay the mutation or claim a
+successful rollback from an ambiguous response.
+**Disable** and **Remove** likewise restore and prove the pre-provider route
+before reporting success. Disable is a reversible pause: ODS retains the
+non-secret route metadata in an owner-only, fingerprint-bound profile and keeps
+the existing secret custody, so `ods remote-provider enable` can freshly prove
+and reactivate either a direct or SSH route without asking for the endpoint,
+model, key, or SSH inputs again. A transition from paused or degraded state
+never trusts the prior probe receipt; an exact healthy already-active route is
+an idempotent no-op. An SSH proof failure automatically pauses the staged route
+again. Remove is the intentional clean slate and deletes the saved profile as
+well as the stored secrets. A legacy disabled route that predates saved profiles
+remains disabled and requires `ods remote-provider configure` once. Provider
+credentials remain in the host-owned egress secret store and never enter
+generated LiteLLM YAML, Pixel state, Dashboard responses, or browser logs.
+
+```bash
+ods remote-provider disable       # restore local ODS/Pixel and retain the route
+ods remote-provider status        # shows only whether a saved route is available
+ods remote-provider enable        # fresh proof, then transactional reactivation
+ods remote-provider remove        # delete route profile and secret custody
+```
 
 ### Multi-GPU assignment replanning
 
@@ -212,11 +363,16 @@ Default model directory:
 ~/ods/data/models/
 ```
 
-On Windows installs:
+On native Windows installs:
 
 ```powershell
 $env:USERPROFILE\ods\data\models\
 ```
+
+On Windows AMD with Portal in WSL, the registered Lemonade store is
+`%LOCALAPPDATA%\ODS\lemonade\models`. Catalog and Hugging Face downloads use
+that store automatically; the Ubuntu `~/ods/data/models/` directory is not
+the Windows runtime's model directory.
 
 Each model is normally a single `.gguf` file:
 
@@ -230,7 +386,7 @@ The active model is recorded in `.env`:
 grep -E "^(LLM_MODEL|GGUF_FILE|CTX_SIZE|MAX_CONTEXT)=" ~/ods/.env
 ```
 
-`GGUF_FILE` is the filename ODS should load from `data/models/`.
+`GGUF_FILE` is the filename ODS should load from its selected model store.
 `LLM_MODEL` is the friendly logical model name used by scripts and config.
 `CTX_SIZE` and `MAX_CONTEXT` control context length.
 
@@ -254,7 +410,7 @@ mkdir -p data/models
 
 curl -L \
   -o data/models/Qwen3.5-9B-Q4_K_M.gguf \
-  https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-Q4_K_M.gguf
+  https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/3885219b6810b007914f3a7950a8d1b469d598a5/Qwen3.5-9B-Q4_K_M.gguf
 ```
 
 Then open Dashboard -> Models. If the filename matches a catalog entry, the
@@ -264,7 +420,7 @@ model should appear as downloaded and you can load it from the Dashboard.
 
 For a single local `.gguf`, the normal flow is:
 
-1. Copy the file into `data/models/`.
+1. Copy the file into the installation's model store (normally `data/models/`; see [Where Models Live](#where-models-live)).
 2. Open Dashboard -> Models.
 3. Load the local entry.
 
@@ -273,13 +429,15 @@ runtime routing before restarting the inference service.
 
 On Lemonade installs, loading a model directly inside the Lemonade app only
 changes Lemonade's current runtime state. It does not update ODS's
-`.env` or LiteLLM routing. Open WebUI talks through ODS/LiteLLM, so
-its next chat can ask for the persisted ODS model and Lemonade may
-unload the model you opened manually. Use Dashboard -> Models -> Load when you
-want Open WebUI and other ODS clients to keep using the local GGUF.
+`.env` or routing. For an ODS-managed runtime, use Dashboard -> Models -> Run
+to keep the saved model, startup configuration and ODS clients in sync. For
+an independent external Lemonade service, change the model in Lemonade and
+use **Adopt loaded model** in ODS; that updates the route without changing
+the external service's startup selection.
 
 Use the manual procedure below only if you cannot access the Dashboard or need
-to repair an install by hand.
+to repair an install by hand. It does not update the bound Windows/WSL startup
+plan; use the managed controls or rerun the Windows installer for that path.
 
 1. Download the GGUF into `data/models/`.
 

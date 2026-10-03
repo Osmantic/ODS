@@ -1,0 +1,48 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: 2.6.0
+service:
+  id: go-httpbin
+  name: go-httpbin
+  aliases: []
+  container_name: ods-go-httpbin
+  host_env: GO_HTTPBIN_HOST
+  default_host: go-httpbin
+  port: 8080
+  external_port_env: GO_HTTPBIN_PORT
+  external_port_default: 11044
+  health: /status/200
+  type: docker
+  startup_check: true
+  startup_timeout: 90
+  gpu_backends:
+  - all
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  description: Exercise HTTP clients against local echo, status, redirect, delay and
+    streaming endpoints without sending test payloads to a public service.
+  env_vars: []
+  external_link: false
+tags:
+- development
+- testing
+- local
+- open-source
+features:
+- id: go-httpbin-api
+  name: go-httpbin API
+  description: Exercise HTTP clients against local echo, status, redirect, delay and
+    streaming endpoints without sending test payloads to a public service.
+  icon: Network
+  category: productivity
+  requirements:
+    services:
+    - go-httpbin
+    vram_gb: 0
+  enabled_services_all:
+  - go-httpbin
+  setup_time: Initial image download; see README
+  priority: 48
+  launch:
+    type: none

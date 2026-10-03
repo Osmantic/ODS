@@ -61,6 +61,64 @@ function Resolve-WindowsODSPort {
     return $DefaultPort
 }
 
+function Test-WindowsLemonadeWhisperPortConflict {
+    <#
+    .SYNOPSIS
+        Side-effect-free probe: does any process listening on host port 9000
+        look like a native Lemonade server/router? Scans ALL listeners, not
+        just the first. Never stops processes or prints command lines.
+    #>
+    param([int]$Port = 9000)
+
+    try {
+        $connections = @(Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue)
+    } catch {
+        return $false
+    }
+    if ($connections.Count -eq 0) { return $false }
+
+    $seenPids = @{}
+    foreach ($conn in $connections) {
+        $listenerPid = $conn.OwningProcess
+        if (-not $listenerPid -or $seenPids.ContainsKey($listenerPid)) { continue }
+        $seenPids[$listenerPid] = $true
+        try {
+            $proc = Get-Process -Id $listenerPid -ErrorAction SilentlyContinue
+        } catch {
+            $proc = $null
+        }
+        if (-not $proc) { continue }
+        $name = [string]$proc.ProcessName
+        if ($name -match '^(?i:lemonadeserver|lemonade-server|lemonade-router)$') {
+            return $true
+        }
+    }
+    return $false
+}
+
+function Resolve-WindowsWhisperHostPort {
+    <#
+    .SYNOPSIS
+        Resolve the Whisper host port. Non-9000 configured ports pass through
+        untouched (no probe). Port 9000 moves to 9100 only for managed
+        AMD/lemonade/host installs or an actual Lemonade listener conflict.
+    #>
+    param(
+        [string]$ConfiguredPort = "9000",
+        [string]$GpuBackend = "",
+        [string]$AmdInferenceRuntime = "",
+        [string]$AmdInferenceLocation = ""
+    )
+
+    if ($ConfiguredPort -ne '9000') { return $ConfiguredPort }
+
+    $managedAmd = ($GpuBackend -eq 'amd' -and $AmdInferenceRuntime -eq 'lemonade' -and $AmdInferenceLocation -eq 'host')
+    if ($managedAmd) { return '9100' }
+
+    if (Test-WindowsLemonadeWhisperPortConflict -Port 9000) { return '9100' }
+    return '9000'
+}
+
 function Get-ODSDockerMemoryGB {
     try {
         $raw = (& docker info --format "{{.MemTotal}}" 2>$null | Select-Object -First 1)
@@ -120,6 +178,88 @@ function Write-Utf8NoBom {
     }
     $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
     [System.IO.File]::WriteAllText($Path, $Content, $utf8NoBom)
+}
+
+function Protect-ODSPrivateEnvFile {
+    param([string]$Path)
+    $item = Get-Item -LiteralPath $Path -Force
+    if ($item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+        throw 'The ODS credential file must be a regular file.'
+    }
+    if ($PSVersionTable.PSEdition -eq 'Core') {
+        $acl = [IO.FileSystemAclExtensions]::GetAccessControl($item, [Security.AccessControl.AccessControlSections]::Access)
+    } else {
+        $acl = $item.GetAccessControl([Security.AccessControl.AccessControlSections]::Access)
+    }
+    $acl.SetAccessRuleProtection($true, $false)
+    foreach ($rule in @($acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]))) {
+        $acl.RemoveAccessRuleSpecific($rule)
+    }
+    $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User
+    $acl.SetAccessRule([Security.AccessControl.FileSystemAccessRule]::new($sid, 'FullControl', 'Allow'))
+    if ($PSVersionTable.PSEdition -eq 'Core') {
+        [IO.FileSystemAclExtensions]::SetAccessControl($item, $acl)
+    } else {
+        $item.SetAccessControl($acl)
+    }
+    $verified = Get-Acl -LiteralPath $Path
+    $rules = @($verified.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]))
+    if (-not $verified.AreAccessRulesProtected -or $rules.Count -ne 1 -or
+        $rules[0].IdentityReference -ne $sid -or $rules[0].IsInherited -or
+        $rules[0].AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow -or
+        $rules[0].FileSystemRights -ne [Security.AccessControl.FileSystemRights]::FullControl) {
+        throw 'Could not verify current-user-only access to the ODS credential file.'
+    }
+}
+
+function Write-ODSPrivateEnvFile {
+    param([string]$Path, [string]$Content)
+    if ([Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT) {
+        $parent = Split-Path -Parent $Path
+        New-Item -ItemType Directory -Path $parent -Force | Out-Null
+        $existed = Test-Path -LiteralPath $Path
+        if ($existed) {
+            # File.Replace preserves destination metadata. Verify its private
+            # DACL before publication, but never overwrite the old file's bytes:
+            # tightening a DACL cannot revoke already-open reader handles.
+            Protect-ODSPrivateEnvFile $Path
+        }
+        $temporary = Join-Path $parent ('.ods-private-env-' + [guid]::NewGuid().ToString('N'))
+        $security = [Security.AccessControl.FileSecurity]::new()
+        $security.SetAccessRuleProtection($true, $false)
+        $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User
+        $security.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($sid, 'FullControl', 'Allow'))
+        $stream = $null
+        try {
+            # Supply the DACL at CreateNew so even the empty staging file never
+            # inherits public read access. Keep the handle until payload flush.
+            if ($PSVersionTable.PSEdition -eq 'Core') {
+                $stream = [IO.FileSystemAclExtensions]::Create([IO.FileInfo]::new($temporary),
+                    [IO.FileMode]::CreateNew, [Security.AccessControl.FileSystemRights]::FullControl,
+                    [IO.FileShare]::None, 4096, [IO.FileOptions]::None, $security)
+            } else {
+                $stream = [IO.FileStream]::new($temporary, [IO.FileMode]::CreateNew,
+                    [Security.AccessControl.FileSystemRights]::FullControl,
+                    [IO.FileShare]::None, 4096, [IO.FileOptions]::None, $security)
+            }
+            Protect-ODSPrivateEnvFile $temporary
+            $bytes = [Text.UTF8Encoding]::new($false).GetBytes($Content)
+            $stream.Write($bytes, 0, $bytes.Length)
+            $stream.Flush($true)
+            $stream.Dispose()
+            $stream = $null
+            if ($existed) {
+                [IO.File]::Replace($temporary, $Path, [System.Management.Automation.Language.NullString]::Value)
+            } else {
+                [IO.File]::Move($temporary, $Path)
+            }
+        } finally {
+            if ($null -ne $stream) { $stream.Dispose() }
+            if (Test-Path -LiteralPath $temporary) { Remove-Item -LiteralPath $temporary -Force }
+        }
+        return
+    }
+    Write-Utf8NoBom -Path $Path -Content $Content
 }
 
 function Get-WindowsODSRuntimeConfigRenderer {
@@ -346,12 +486,19 @@ function Write-WindowsODSLemonadeLiteLlmConfig {
         "--gpu-backend", "amd",
         "--lemonade-model-id", $ModelId,
         "--lemonade-api-base", $lemonadeApiBase,
-        "--litellm-key", $ApiKey,
         "--output-root", $InstallDir,
         "--write"
     )
-    $renderOutput = & $python.FilePath @renderArgs 2>&1
-    if ($LASTEXITCODE -ne 0) {
+    $previousRendererKey = [Environment]::GetEnvironmentVariable("ODS_RENDER_LITELLM_KEY", "Process")
+    try {
+        [Environment]::SetEnvironmentVariable("ODS_RENDER_LITELLM_KEY", $ApiKey, "Process")
+        $renderOutput = & $python.FilePath @renderArgs 2>&1
+        $renderExitCode = $LASTEXITCODE
+    }
+    finally {
+        [Environment]::SetEnvironmentVariable("ODS_RENDER_LITELLM_KEY", $previousRendererKey, "Process")
+    }
+    if ($renderExitCode -ne 0) {
         throw "Runtime config renderer failed for Windows Lemonade route: $($renderOutput -join "`n")"
     }
 
@@ -403,7 +550,7 @@ function Set-WindowsODSLemonadeModelConfiguration {
         }
         $envContent += "$assignment$newline"
     }
-    Write-Utf8NoBom -Path $envPath -Content $envContent
+    Write-ODSPrivateEnvFile -Path $envPath -Content $envContent
 
     if ([string]::IsNullOrWhiteSpace($Port)) {
         $portMatch = [regex]::Match($envContent, '(?m)^AMD_INFERENCE_PORT=([^\r\n]*)')
@@ -466,7 +613,7 @@ function ConvertTo-ODSDotenvValue {
         # Bash and Compose disagree about \` inside double-quoted dotenv
         # values. Normalize it only in this apostrophe fallback so both readers
         # receive the same safe text.
-        $text = $text.Replace('`', 'ˋ')
+        $text = $text.Replace('`', [string][char]0x02CB)
         $escaped = $text.Replace('\', '\\').Replace('"', '\"').Replace('$', '\$')
         return '"' + $escaped + '"'
     }
@@ -570,15 +717,15 @@ function New-ODSEnv {
 
     # Lemonade's native Windows router reserves host port 9000 for websockets.
     # Keep Whisper's container port unchanged, but move its host port out of the
-    # way on managed AMD/Lemonade installs. Existing .env choices still win.
-    $whisperPortDefault = "9000"
-    if ($GpuBackend -eq "amd" -and $AmdInferenceRuntime -eq "lemonade" -and $AmdInferenceLocation -eq "host") {
-        $whisperPortDefault = "9100"
-    }
-    $whisperPort = Get-EnvOrNew "WHISPER_PORT" $whisperPortDefault
-    if ($whisperPortDefault -eq "9100" -and $whisperPort -eq "9000") {
-        $whisperPort = "9100"
-    }
+    # way on managed AMD/Lemonade installs or when a Lemonade process actually
+    # listens on 9000 (e.g. Docker publishing Whisper there while an unrelated
+    # LemonadeServer holds loopback 9000). Custom .env ports remain unchanged.
+    $whisperPort = Resolve-WindowsODSPort `
+        -Name "WHISPER_PORT" -DefaultPort 9000 `
+        -ExistingEnv $existingEnv -InstallDir $InstallDir
+    $whisperPort = Resolve-WindowsWhisperHostPort -ConfiguredPort ([string]$whisperPort) `
+        -GpuBackend $GpuBackend -AmdInferenceRuntime $AmdInferenceRuntime `
+        -AmdInferenceLocation $AmdInferenceLocation
 
     function Get-ExistingTokenSpyApiKey {
         $tokenSpyKeyFile = Join-Path $InstallDir "data\token-spy\token-spy-api-key.txt"
@@ -684,14 +831,14 @@ function New-ODSEnv {
     $difySecretKey    = Get-EnvOrNew "DIFY_SECRET_KEY"           (New-SecureHex -Bytes 32)
     $qdrantApiKey     = Get-EnvOrNew "QDRANT_API_KEY"            (New-SecureHex -Bytes 32)
     $opencodePassword = Get-EnvOrNew "OPENCODE_SERVER_PASSWORD"  (New-SecureBase64 -Bytes 16)
-    $switchboardModeDefault = if ([string]::IsNullOrWhiteSpace($SwitchboardMode)) { "observe" } else { $SwitchboardMode.Trim().ToLowerInvariant() }
+    $switchboardModeDefault = if ([string]::IsNullOrWhiteSpace($SwitchboardMode)) { "enabled" } else { $SwitchboardMode.Trim().ToLowerInvariant() }
     if ($switchboardModeDefault -notin @("legacy", "observe", "enabled")) {
-        $switchboardModeDefault = "observe"
+        $switchboardModeDefault = "enabled"
     }
     $switchboardMode = Get-EnvOrNew "ODS_MODEL_SWITCHBOARD" $switchboardModeDefault
     $switchboardMode = $switchboardMode.Trim().ToLowerInvariant()
     if ($switchboardMode -notin @("legacy", "observe", "enabled")) {
-        $switchboardMode = "observe"
+        $switchboardMode = "enabled"
     }
     $cpuBudget = Get-LlamaCpuBudget -GpuBackend $(if ($GpuBackend -eq "none") { "cpu" } else { $GpuBackend })
     $llamaCpuLimit = Select-AutoCpuValue -Key "LLAMA_CPU_LIMIT" -Detected $cpuBudget.Limit
@@ -755,9 +902,19 @@ function New-ODSEnv {
         $llamaMemoryDefault = Get-ODSDefaultNvidiaLlamaMemoryLimit `
             -AvailableRamGB $availableRamGB
         $llamaServerMemoryLimit = Get-EnvOrNew "LLAMA_SERVER_MEMORY_LIMIT" $llamaMemoryDefault
+    } elseif ($GpuBackend -in @("none", "cpu") -and $effectiveODSMode -ne "cloud" -and $TierConfig.LLAMA_SERVER_MEMORY_LIMIT) {
+        # CPU runtime profiles size the container for their model; without
+        # one the CPU compose default (6G) applies as before.
+        $llamaServerMemoryLimit = Get-EnvOrNew "LLAMA_SERVER_MEMORY_LIMIT" $TierConfig.LLAMA_SERVER_MEMORY_LIMIT
     }
     $existingLemonadeModel = Get-EnvOrNew "LEMONADE_MODEL" ""
     $existingGgufFile = Get-EnvOrNew "GGUF_FILE" ""
+    $existingModelStore = ([string](Get-EnvOrNew "ODS_ACTIVE_MODEL_STORE" "default")).Trim().Trim('"').Trim("'")
+    $preservedModelStore = 'default'
+    if ($existingGgufFile.Trim('"').Trim("'") -eq [string]$TierConfig.GgufFile -and
+        $existingModelStore -match '^[a-z][a-z0-9-]{0,47}$') {
+        $preservedModelStore = $existingModelStore
+    }
     $effectiveLemonadeModel = $existingLemonadeModel
     if ($windowsAmdLemonade) {
         $effectiveLemonadeModel = $(if (-not [string]::IsNullOrWhiteSpace($LemonadeModel)) {
@@ -795,17 +952,21 @@ function New-ODSEnv {
         "http://llama-server:8080"
     })
 
-    # Hermes streams through the OpenAI-compatible provider. On Windows AMD
-    # Lemonade, direct streaming against Lemonade can close chunked responses
-    # early; LiteLLM normalizes that path and already fronts the same runtime
-    # for Open WebUI. Match the Linux AMD behavior and authenticate with the
-    # LiteLLM master key whenever Hermes targets LiteLLM.
-    $hermesUsesLiteLlm = ($windowsAmdLemonade -or $ODSMode -eq "cloud")
-    if ($switchboardMode -eq "enabled") {
-        $hermesUsesLiteLlm = $true
-    }
-    $hermesLlmBaseUrl = $(if ($hermesUsesLiteLlm) { "http://litellm:4000/v1" } else { "$llmApiUrl$llmApiBasePath" })
-    $hermesLlmApiKey = $(if ($hermesUsesLiteLlm) { $litellmKey } else { "sk-ods-hermes-local" })
+    # Hermes streams through the OpenAI-compatible provider. Local switchboard
+    # installs use model-router directly so client cancellation reaches the
+    # active backend request; cloud installs still use authenticated LiteLLM.
+    # Windows AMD without the switchboard keeps LiteLLM's Lemonade stream
+    # normalization rather than calling the native runtime directly.
+    $hermesUsesModelRouter = ($switchboardMode -eq "enabled" -and $ODSMode -ne "cloud")
+    $hermesUsesLiteLlm = (-not $hermesUsesModelRouter -and ($windowsAmdLemonade -or $ODSMode -eq "cloud"))
+    $hermesLlmBaseUrl = $(if ($hermesUsesModelRouter) {
+        "http://model-router:9099/v1"
+    } elseif ($hermesUsesLiteLlm) {
+        "http://litellm:4000/v1"
+    } else {
+        "$llmApiUrl$llmApiBasePath"
+    })
+    $hermesLlmApiKey = $(if ($hermesUsesModelRouter) { "no-key" } elseif ($hermesUsesLiteLlm) { $litellmKey } else { "sk-ods-hermes-local" })
     $openWebuiLlmBaseUrl = Get-EnvOrNew "OPEN_WEBUI_LLM_BASE_URL" $(if ($switchboardMode -eq "enabled") { "http://litellm:4000" } else { "" })
     $openWebuiLlmApiKey = Get-EnvOrNew "OPEN_WEBUI_LLM_API_KEY" $(if ($switchboardMode -eq "enabled") { $litellmKey } else { "" })
 
@@ -867,11 +1028,11 @@ function New-ODSEnv {
         $whisperAcceleration = $whisperAccelerationDefault
     }
 
-    $whisperImageDefault = $(if ($whisperAcceleration -eq "cuda") { "" } else { "ghcr.io/speaches-ai/speaches:0.9.0-rc.3-cpu" })
+    $whisperImageDefault = $(if ($whisperAcceleration -eq "cuda") { "" } else { "ghcr.io/speaches-ai/speaches:0.9.0-rc.3-cpu@sha256:2163775b6df5e451a71200e8f675fed68dbd8ab184fc604453d549e486f22fd2" })
     $whisperImage = Get-EnvOrNew "WHISPER_IMAGE" $whisperImageDefault
     if ($whisperAcceleration -eq "cpu" -and
         ([string]::IsNullOrWhiteSpace($whisperImage) -or $whisperImage -match "(?i)cuda")) {
-        $whisperImage = "ghcr.io/speaches-ai/speaches:0.9.0-rc.3-cpu"
+        $whisperImage = "ghcr.io/speaches-ai/speaches:0.9.0-rc.3-cpu@sha256:2163775b6df5e451a71200e8f675fed68dbd8ab184fc604453d549e486f22fd2"
     }
 
     $audioSttModelDefault = $(if ($whisperAcceleration -eq "cuda") { "deepdml/faster-whisper-large-v3-turbo-ct2" } else { "Systran/faster-whisper-base" })
@@ -892,6 +1053,8 @@ function New-ODSEnv {
     if ([string]::IsNullOrWhiteSpace($nGpuLayersDefault)) { $nGpuLayersDefault = "auto" }
     $nGpuLayers = (Get-EnvOrNew "N_GPU_LAYERS" $nGpuLayersDefault).Trim()
     if ([string]::IsNullOrWhiteSpace($nGpuLayers)) { $nGpuLayers = "auto" }
+    # Owner opt-out for the NVIDIA/CPU overlay default; empty keeps ngram-mod implicit.
+    $llamaSpecType = (Get-EnvOrNew "LLAMA_SPEC_TYPE" "").Trim()
 
     # Build .env content (matches Phase 06 format)
     $recommendationSource = ConvertTo-ODSDotenvValue $(if ($TierConfig.RecommendationSource) { $TierConfig.RecommendationSource } else { "installer_tier_map" })
@@ -915,6 +1078,8 @@ ODS_AGENT_HOST=$(Get-EnvOrNew "ODS_AGENT_HOST" "host.docker.internal")
 # The dashboard-api container must call the host agent over Docker Desktop's
 # host gateway. Bearer auth still protects every host-agent endpoint.
 ODS_AGENT_BIND=$(Get-EnvOrNew "ODS_AGENT_BIND" "0.0.0.0")
+# Docker Desktop presents host-owned lifecycle secrets through its root group.
+REMOTE_PROVIDER_DATA_GID=0
 
 #=== LLM Backend Mode ===
 ODS_MODE=$effectiveODSMode
@@ -942,6 +1107,7 @@ MINIMAX_API_KEY=$(Get-EnvOrNew "MINIMAX_API_KEY" "")
 MODEL_PROFILE=$(Get-EnvOrNew "MODEL_PROFILE" "$(if ($TierConfig.ModelProfileRequested) { $TierConfig.ModelProfileRequested } else { "qwen" })")
 LLM_MODEL=$($TierConfig.LlmModel)
 GGUF_FILE=$($TierConfig.GgufFile)
+ODS_ACTIVE_MODEL_STORE=$preservedModelStore
 LEMONADE_MODEL=$effectiveLemonadeModel
 MAX_CONTEXT=$($TierConfig.MaxContext)
 CTX_SIZE=$($TierConfig.MaxContext)
@@ -961,10 +1127,10 @@ MODEL_PERFORMANCE_LABEL=$performanceLabel
 GPU_BACKEND=$GpuBackend
 SYSTEM_RAM_GB=$SystemRamGB
 N_GPU_LAYERS=$nGpuLayers
-$(if ($LlamaServerImage) { "LLAMA_SERVER_IMAGE=$LlamaServerImage" } else { "#LLAMA_SERVER_IMAGE=ghcr.io/ggml-org/llama.cpp:server-cuda" })
-$(if ($llamaServerImageFallback) { "LLAMA_SERVER_IMAGE_FALLBACK=$llamaServerImageFallback" } else { "#LLAMA_SERVER_IMAGE_FALLBACK=ghcr.io/ggml-org/llama.cpp:server-cuda-b9014" })
+$(if ($LlamaServerImage) { "LLAMA_SERVER_IMAGE=$LlamaServerImage" } else { "#LLAMA_SERVER_IMAGE=ghcr.io/ggml-org/llama.cpp:server-cuda-b9014@sha256:fcf285820892e7ce3218379634e3590826fc697e8b6745b9392072462e355c4f" })
+$(if ($llamaServerImageFallback) { "LLAMA_SERVER_IMAGE_FALLBACK=$llamaServerImageFallback" } else { "#LLAMA_SERVER_IMAGE_FALLBACK=ghcr.io/ggml-org/llama.cpp:server-cuda-b9014@sha256:fcf285820892e7ce3218379634e3590826fc697e8b6745b9392072462e355c4f" })
 $(if ($llamaServerMemoryLimit) { "LLAMA_SERVER_MEMORY_LIMIT=$llamaServerMemoryLimit" })
-$(if ($LemonadeServerImage) { "LEMONADE_SERVER_IMAGE=$LemonadeServerImage" } else { "#LEMONADE_SERVER_IMAGE=ghcr.io/lemonade-sdk/lemonade-server:v10.2.0" })
+$(if ($LemonadeServerImage) { "LEMONADE_SERVER_IMAGE=$LemonadeServerImage" } else { "#LEMONADE_SERVER_IMAGE=ghcr.io/lemonade-sdk/lemonade-server:v10.2.0@sha256:08edbf1128a7fd82b39f1de72c2f70c013f2ecfefac6a99c52bcf58eba532a3a" })
 #=== llama.cpp Runtime Tuning ===
 LLAMA_PARALLEL=$(Get-EnvOrNew "LLAMA_PARALLEL" "$(if ($TierConfig.LLAMA_PARALLEL) { $TierConfig.LLAMA_PARALLEL } else { "1" })")
 LLAMA_ARG_FLASH_ATTN=$(Get-EnvOrNew "LLAMA_ARG_FLASH_ATTN" "$(if ($TierConfig.LLAMA_ARG_FLASH_ATTN) { $TierConfig.LLAMA_ARG_FLASH_ATTN } else { "auto" })")
@@ -973,8 +1139,13 @@ LLAMA_ARG_CACHE_TYPE_V=$(Get-EnvOrNew "LLAMA_ARG_CACHE_TYPE_V" "$(if ($TierConfi
 # Optional MoE only. Example for 8-12GB VRAM: LLAMA_ARG_N_CPU_MOE=25
 $(if ($TierConfig.LLAMA_ARG_N_CPU_MOE) { "LLAMA_ARG_N_CPU_MOE=$($TierConfig.LLAMA_ARG_N_CPU_MOE)" })
 $(if ($TierConfig.LLAMA_ARG_NO_CACHE_PROMPT) { "LLAMA_ARG_NO_CACHE_PROMPT=$($TierConfig.LLAMA_ARG_NO_CACHE_PROMPT)" })
-$(if ($TierConfig.LLAMA_ARG_CHECKPOINT_EVERY_N_TOKENS) { "LLAMA_ARG_CHECKPOINT_EVERY_N_TOKENS=$($TierConfig.LLAMA_ARG_CHECKPOINT_EVERY_N_TOKENS)" })
-# Optional MTP speculative decoding only. Requires an MTP-capable GGUF and llama.cpp build.
+$(if ($TierConfig.LLAMA_ARG_CHECKPOINT_EVERY_NT) { "LLAMA_ARG_CHECKPOINT_EVERY_NT=$($TierConfig.LLAMA_ARG_CHECKPOINT_EVERY_NT)" })
+$(if ($TierConfig.LLAMA_ARG_CTX_CHECKPOINTS) { "LLAMA_ARG_CTX_CHECKPOINTS=$($TierConfig.LLAMA_ARG_CTX_CHECKPOINTS)" })
+$(if ($TierConfig.LLAMA_ARG_CACHE_RAM) { "LLAMA_ARG_CACHE_RAM=$($TierConfig.LLAMA_ARG_CACHE_RAM)" })
+# NVIDIA/CPU llama.cpp images default to lossless n-gram speculation (ngram-mod).
+# LLAMA_SPEC_TYPE=none turns it off; unset keeps the default.
+$(if ($llamaSpecType) { "LLAMA_SPEC_TYPE=$llamaSpecType" })
+# Optional per-model MTP speculative decoding. Requires an MTP-capable GGUF and llama.cpp build.
 # LLAMA_ARG_SPEC_TYPE=draft-mtp
 # LLAMA_ARG_SPEC_DRAFT_N_MAX=3
 LLAMA_CPU_LIMIT=$llamaCpuLimit
@@ -1007,6 +1178,7 @@ SEARXNG_PORT=8888
 HERMES_LLM_BASE_URL=$hermesLlmBaseUrl
 HERMES_LLM_API_KEY=$hermesLlmApiKey
 HERMES_LANGUAGE=en
+HERMES_REQUIRE_OWNER_CARD=$(Get-EnvOrNew "HERMES_REQUIRE_OWNER_CARD" $(if ($env:HERMES_REQUIRE_OWNER_CARD) { $env:HERMES_REQUIRE_OWNER_CARD } else { "false" }))
 HERMES_PROXY_PORT=9120
 HERMES_PROXY_UPSTREAM=ods-hermes:9119
 ODS_AUTH_UPSTREAM=ods-dashboard-api:3002
@@ -1036,7 +1208,7 @@ WHISPER_MODEL=base
 # Whisper STT runtime. Windows NVIDIA uses CUDA only when the driver supports
 # the bundled Speaches CUDA image; otherwise Whisper stays on the CPU image.
 WHISPER_ACCELERATION=$whisperAcceleration
-$(if ($whisperImage) { "WHISPER_IMAGE=$whisperImage" } else { "#WHISPER_IMAGE=ghcr.io/speaches-ai/speaches:0.9.0-rc.3-cpu" })
+$(if ($whisperImage) { "WHISPER_IMAGE=$whisperImage" } else { "#WHISPER_IMAGE=ghcr.io/speaches-ai/speaches:0.9.0-rc.3-cpu@sha256:2163775b6df5e451a71200e8f675fed68dbd8ab184fc604453d549e486f22fd2" })
 # Whisper STT model — CUDA uses the larger turbo model, CPU uses base.
 # Open WebUI reads this to request transcription; installer pre-downloads
 # the same model so the first transcription works.
@@ -1089,7 +1261,7 @@ LANGFUSE_INIT_USER_PASSWORD=$langfuseInitUserPassword
         Remove-Item -LiteralPath $envPath -Recurse -Force
         Write-AIWarn "Removed malformed .env directory from a previous partial install."
     }
-    Write-Utf8NoBom -Path $envPath -Content $envContent
+    Write-ODSPrivateEnvFile -Path $envPath -Content $envContent
 
     if ($effectiveODSMode -eq "local") {
         $litellmDir = Join-Path (Join-Path $InstallDir "config") "litellm"
@@ -1162,27 +1334,39 @@ litellm_settings:
     $routerPayload = [ordered]@{ endpoints = $routerEndpoints }
     Write-Utf8NoBom -Path (Join-Path $modelRouterDir "endpoints.json") -Content (($routerPayload | ConvertTo-Json -Depth 6) + "`n")
 
-    # Restrict .env to current user only (Windows ACL equivalent of chmod 600)
-    try {
-        # Retrieve only the DACL (Access) to avoid requiring SeSecurityPrivilege
-        $acl = [System.IO.File]::GetAccessControl($envPath, [System.Security.AccessControl.AccessControlSections]::Access)
-        $acl.SetAccessRuleProtection($true, $false)  # Disable inheritance
-        $currentUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
-        $rule = New-Object System.Security.AccessControl.FileSystemAccessRule(
-            $currentUser, "FullControl", "Allow"
-        )
-        $acl.SetAccessRule($rule)
-        [System.IO.File]::SetAccessControl($envPath, $acl)
-    } catch {
-        # ACL restriction failed -- not fatal, just warn
-        Write-AIWarn "Could not restrict .env permissions: $_"
-    }
-
     return @{
         SearxngSecret  = $searxngSecret
         OpenclawToken  = $openclawToken
         LemonadeModel  = $effectiveLemonadeModel
     }
+}
+
+function Get-SearxngDefaultLanguage {
+    <#
+    .SYNOPSIS
+        Map a culture name (en-US, de-DE, zh-Hant-TW) to a SearXNG locale tag.
+    .DESCRIPTION
+        Mirrors ods_searxng_default_lang in installers/lib/searxng-locale.sh.
+        SearXNG refuses to start when search.default_lang is not one of its
+        locale tags, so only listed tags are returned; anything else is "en".
+    #>
+    param([string]$Locale = (Get-Culture).Name)
+
+    # searxng/searxng:2026.9.25-12f8b6515@sha256:5286edb35782454ab8a102c5eff6b54bff745853191b46aeead95f225aa6dfb6 searx/sxng_locales.py
+    $tags = "af ar ar-SA bg bg-BG ca ca-ES cs cs-CZ cy da da-DK de de-AT de-BE de-CH de-DE el el-GR en en-AU en-CA en-GB en-HK en-IE en-IN en-NZ en-PH en-PK en-SG en-US en-ZA es es-AR es-CL es-CO es-ES es-MX es-PE es-VE et et-EE fa fi fi-FI fil fil-PH fr fr-BE fr-CA fr-CH fr-FR gl hi hi-IN hr hr-HR hu hu-HU id id-ID it it-CH it-IT ja ja-JP ko ko-KR lt lt-LT lv lv-LV mi mi-NZ nb nb-NO nl nl-BE nl-NL nn nn-NO pl pl-PL pt pt-BR pt-PT ro ro-RO ru ru-RU sk sk-SK sl sl-SI sq sv sv-FI sv-SE th th-TH tr tr-TR uk uk-UA vi vi-VN zh zh-CN zh-HK zh-TW" -split ' '
+
+    $raw = (("$Locale" -split '[.@]')[0]) -replace '_', '-'
+    $parts = @($raw -split '-' | Where-Object { $_ })
+    if ($parts.Count -eq 0) { return "en" }
+    $lang = $parts[0].ToLowerInvariant()
+    if ($lang -cnotmatch '^[a-z]{2,3}$') { return "en" }
+    $region = $parts | Select-Object -Skip 1 | Where-Object { $_ -match '^[A-Za-z]{2}$' } | Select-Object -First 1
+    if ($region) {
+        $tag = "$lang-$($region.ToUpperInvariant())"
+        if ($tags -ccontains $tag) { return $tag }
+    }
+    if ($tags -ccontains $lang) { return $lang }
+    return "en"
 }
 
 function New-SearxngConfig {
@@ -1192,11 +1376,26 @@ function New-SearxngConfig {
     #>
     param(
         [string]$InstallDir,
-        [string]$SecretKey
+        [string]$SecretKey,
+        [string]$SearchLanguage = (Get-SearxngDefaultLanguage)
     )
 
     $configDir = Join-Path (Join-Path $InstallDir "config") "searxng"
     New-Item -ItemType Directory -Path $configDir -Force | Out-Null
+
+    # Seznam stays the general-web fallback for when major engines refuse the
+    # household IP; keep its Czech-market .cz shops out unless the owner is
+    # Czech. Mirrors ods_searxng_hostnames_yaml in installers/lib/searxng-locale.sh.
+    $hostnames = ""
+    if (($SearchLanguage -split '-')[0] -ne "cs") {
+        $hostnames = @'
+hostnames:
+  # Seznam (below) is a Czech-market fallback; keep its .cz shops out of
+  # results unless the install locale is Czech.
+  remove:
+    - '\.cz$'
+'@
+    }
 
     $config = @"
 use_default_settings: true
@@ -1207,15 +1406,24 @@ server:
   limiter: false
 search:
   safe_search: 0
+  # Install locale. API clients send no language, so "auto" would mean "all".
+  default_lang: "$SearchLanguage"
   formats:
     - html
     - json
+$hostnames
 engines:
+  - name: bing
+    # Fallback when other general engines are blocked (CAPTCHA/429/access denied).
+    disabled: false
   - name: duckduckgo
     disabled: false
   - name: google
     disabled: false
   - name: brave
+    disabled: false
+  - name: seznam
+    # Independent general-web fallback when major engines block this household IP.
     disabled: false
   - name: wikipedia
     disabled: false

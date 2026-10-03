@@ -727,6 +727,7 @@ def test_huggingface_import_retains_retry_state_after_agent_failure(
         json=request,
     )
     assert first.status_code == 503
+    assert "X-ODS-Import-Started" not in first.headers
     registry_path = tmp_path / "model-imports.json"
     first_registry = json.loads(registry_path.read_text(encoding="utf-8"))
     assert len(first_registry["models"]) == 1
@@ -775,6 +776,23 @@ def test_huggingface_restricted_import_requires_token_before_registry_write(
     assert not (tmp_path / "model-imports.json").exists()
 
 
+def test_huggingface_preparation_failure_is_definitively_not_started(test_client, monkeypatch):
+    import routers.models as models_router
+
+    async def unavailable_metadata(_repo_id):
+        raise OSError("fixture storage failure")
+
+    monkeypatch.setattr(models_router, "_hf_repo_details", unavailable_metadata)
+    monkeypatch.setattr(models_router, "_call_agent_model", lambda *args, **kwargs: pytest.fail("not dispatched"))
+    response = test_client.post(
+        "/api/models/huggingface/import", headers=test_client.auth_headers,
+        json={"repoId": "org/repo", "artifactId": "d" * 20},
+    )
+    assert response.status_code == 500
+    assert response.headers["X-ODS-Import-Started"] == "false"
+    assert "No download was started" in response.json()["detail"]
+
+
 def test_huggingface_import_does_not_overwrite_corrupt_registry(
     test_client, monkeypatch, tmp_path,
 ):
@@ -799,6 +817,103 @@ def test_huggingface_import_does_not_overwrite_corrupt_registry(
     assert response.status_code == 409
     assert "not overwritten" in response.json()["detail"]
     assert registry_path.read_text(encoding="utf-8") == original
+
+
+def test_generic_external_lemonade_fallback_uses_health_not_available_first(monkeypatch):
+    import routers.models as models_router
+
+    seen_urls = []
+
+    class _Response:
+        def __init__(self, payload):
+            self.payload = payload
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self.payload
+
+    class _Client:
+        def __init__(self, timeout):
+            self.timeout = timeout
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def get(self, url):
+            seen_urls.append(url)
+            if url.endswith("/api/v1/health"):
+                return _Response({"status": "ok", "model_loaded": "Qwen3.6-35B-A3B-GGUF"})
+            return _Response({"data": [{"id": "Gemma-4-E2B-it-GGUF"}]})
+
+    monkeypatch.setattr(models_router, "LLM_BACKEND", "external")
+    monkeypatch.setenv("EXTERNAL_LLM_PROVIDER", "openai-compatible")
+    monkeypatch.setenv("LLM_URL", "http://host.docker.internal:8000/v1")
+    monkeypatch.setattr(models_router.httpx, "AsyncClient", _Client)
+
+    loop = asyncio.new_event_loop()
+    try:
+        result = loop.run_until_complete(
+            models_router._fetch_llama_loaded_model("llama-server", 8080, "/v1")
+        )
+    finally:
+        loop.close()
+
+    assert result == "Qwen3.6-35B-A3B-GGUF"
+    assert seen_urls == ["http://host.docker.internal:8000/api/v1/health"]
+
+
+def test_generic_external_fallback_does_not_guess_first_when_health_unavailable(monkeypatch):
+    import routers.models as models_router
+
+    seen_urls = []
+
+    class _Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"data": [{"id": "Gemma-4-E2B-it-GGUF"}]}
+
+    class _Client:
+        def __init__(self, timeout):
+            self.timeout = timeout
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def get(self, url):
+            seen_urls.append(url)
+            if url.endswith("/api/v1/health") or url.endswith("/props"):
+                raise httpx.ConnectError("unavailable")
+            return _Response()
+
+    monkeypatch.setattr(models_router, "LLM_BACKEND", "external")
+    monkeypatch.setenv("EXTERNAL_LLM_PROVIDER", "openai-compatible")
+    monkeypatch.setenv("LLM_URL", "http://host.docker.internal:8000/v1")
+    monkeypatch.setattr(models_router.httpx, "AsyncClient", _Client)
+
+    loop = asyncio.new_event_loop()
+    try:
+        result = loop.run_until_complete(
+            models_router._fetch_llama_loaded_model("llama-server", 8080, "/v1")
+        )
+    finally:
+        loop.close()
+
+    assert result is None
+    assert seen_urls == [
+        "http://host.docker.internal:8000/api/v1/health",
+        "http://host.docker.internal:8000/v1/models",
+        "http://host.docker.internal:8000/props",
+    ]
 
 
 def test_fetch_loaded_model_uses_configured_llm_url(monkeypatch):
@@ -993,6 +1108,30 @@ def test_agent_activation_conflict_preserves_target(monkeypatch):
         models_router._call_agent_model("/v1/model/activate", {"model_id": "phi4-mini-q4"}, timeout=600)
 
     assert exc_info.value.status_code == 409
+    assert exc_info.value.detail == payload
+
+
+def test_agent_activation_preserves_preflight_validation_detail(monkeypatch):
+    import routers.models as models_router
+
+    payload = {
+        "error": "ODS-managed Pixel requires a model context of at least 4096 tokens",
+        "code": "pixel_context_too_small",
+    }
+
+    def invalid(*_args, **_kwargs):
+        raise models_router.AgentHTTPError(400, payload["error"], json.dumps(payload))
+
+    monkeypatch.setattr(models_router, "request_agent_json", invalid)
+
+    with pytest.raises(models_router.HTTPException) as exc_info:
+        models_router._call_agent_model(
+            "/v1/model/activate",
+            {"model_id": "ministral3-8b-instruct-2512-q4", "context_length": 8192},
+            timeout=600,
+        )
+
+    assert exc_info.value.status_code == 400
     assert exc_info.value.detail == payload
 
 
@@ -1497,6 +1636,9 @@ def _patch_model_router_paths(monkeypatch, tmp_path):
     monkeypatch.setattr(models_router, "_MODELS_DIR", data_dir / "models")
     monkeypatch.setattr(models_router, "_ENV_PATH", install_dir / ".env")
     monkeypatch.setattr(models_router, "ODS_MODE_EFFECTIVE", "local")
+    # Hermetic by default: the development host's own GPU must not change
+    # which context a load plans. Tests that need hardware patch it back.
+    monkeypatch.setattr(models_router, "get_gpu_info", lambda: None)
     return models_router, install_dir, data_dir
 
 
@@ -1517,9 +1659,9 @@ def test_model_activation_mode_policy_rejects_external_backend():
         "code": "external_llm_managed",
         "reason": "external_backend_selected",
         "message": (
-            "Local model activation is unavailable while ODS is using an "
-            "external Ollama or LM Studio backend. Re-run the installer with "
-            "--no-external-llm before activating a downloaded local model."
+            "Local model activation is unavailable with a generic external "
+            "model service. Select an ODS-managed backend or a supported "
+            "Lemonade integration before activating downloaded models."
         ),
         "effectiveMode": "local",
         "configuredMode": "local",
@@ -1611,6 +1753,32 @@ def test_load_model_rejects_external_backend_before_lookup_or_agent_call(
     assert detail["requestedModelId"] == "downloaded-model"
 
 
+def test_load_model_refuses_to_interrupt_an_active_pixel_stream(monkeypatch):
+    import routers.models as models_router
+
+    monkeypatch.setattr(models_router, "_model_activation_mode_denial", lambda *_args: None)
+    monkeypatch.setattr(models_router, "_find_loadable_model", lambda _model_id: {"id": "next-model"})
+    monkeypatch.setattr(models_router, "_already_active_model", lambda *_args: (False, None))
+    monkeypatch.setattr(models_router, "pixel_stream_active", lambda: True)
+    monkeypatch.setattr(
+        models_router,
+        "_call_agent_model",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("active Pixel turn reached host-agent activation")
+        ),
+    )
+
+    with pytest.raises(models_router.HTTPException) as exc_info:
+        models_router.load_model("next-model", body=None)
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail == {
+        "code": "pixel_chat_active",
+        "message": "Portal is working. Stop the active response before changing models.",
+        "requestedModelId": "next-model",
+    }
+
+
 def _gpu():
     return GPUInfo(
         name="NVIDIA GeForce RTX 4060",
@@ -1666,6 +1834,114 @@ def test_api_models_returns_full_catalog_without_fake_tokens(test_client, monkey
     assert payload["models"][0]["tokensPerSec"] is None
     assert payload["models"][0]["tokensPerSecEstimate"] == 130
     assert payload["models"][0]["performance"]["source"] == "benchmark_required"
+    assert payload["externalLemonade"] is False
+
+
+def test_api_models_reports_unmatched_external_runtime_without_fake_performance(test_client, monkeypatch, tmp_path):
+    models_router, install_dir, _data_dir = _patch_model_router_paths(monkeypatch, tmp_path)
+    monkeypatch.setattr(models_router, "request_agent_json", lambda *_args, **_kwargs: {
+        "managed": False, "canActivate": False, "canUnload": False, "running": False,
+    })
+    monkeypatch.setattr(models_router, "LLM_BACKEND", "lemonade")
+    monkeypatch.setattr(models_router, "read_live_env_values", lambda _keys: {
+        "LLM_BACKEND": "lemonade",
+        "AMD_INFERENCE_RUNTIME_MODE": "external-lemonade",
+        "AMD_INFERENCE_MANAGED": "false",
+    })
+    _write_model_library(install_dir, [{
+        "id": "qwen3.6-35b-a3b-ud-q4",
+        "name": "Qwen 3.6 35B-A3B",
+        "gguf_file": "Qwen3.6-35B-A3B-UD-Q4_K_M.gguf",
+        "size_mb": 21110,
+        "vram_required_gb": 24,
+        "context_length": 131072,
+        "quantization": "UD-Q4_K_M",
+        "specialty": "Quality",
+        "description": "Catalog quantization, not the observed external runtime.",
+        "llm_model_name": "qwen3.6-35b-a3b",
+    }])
+    runtime_name = "Qwen3.6-35B-A3B-GGUF"
+    recorded = []
+    monkeypatch.setattr(models_router, "get_gpu_info", lambda: _gpu())
+    monkeypatch.setattr(models_router, "get_loaded_model", AsyncMock(return_value=runtime_name))
+    monkeypatch.setattr(models_router, "get_llama_metrics", AsyncMock(return_value={"tokens_per_second": 42}))
+    monkeypatch.setattr(models_router, "get_llama_context_size", AsyncMock(return_value=None))
+    monkeypatch.setattr(models_router, "record_model_performance", lambda *args, **kwargs: recorded.append((args, kwargs)))
+
+    response = test_client.get("/api/models", headers=test_client.auth_headers)
+
+    assert response.status_code == 200
+    payload = response.json()
+    active = [entry for entry in payload["models"] if entry["status"] == "loaded"]
+    assert len(active) == 1
+    assert active[0]["name"] == runtime_name
+    assert active[0]["metadata"]["source"] == "runtime"
+    assert active[0]["sizeGb"] is None
+    assert active[0]["vramRequired"] is None
+    assert active[0]["quantization"] is None
+    assert payload["currentModel"] is None
+    assert payload["activationReadyModel"] is None
+    assert payload["loadedModel"] == runtime_name
+    assert payload["externalLemonade"] is True
+    assert recorded == []
+
+
+@pytest.mark.parametrize(
+    ("backend", "runtime_mode", "managed", "external", "expected"),
+    [
+        ("lemonade", "external-lemonade", "false", "", True),
+        ("lemonade", "windows-legacy-lemonade", "true", "", False),
+        ("lemonade", "", "", "true", True),
+        ("lemonade", "", "false", "", True),
+        ("llama-server", "external-lemonade", "false", "true", True),
+        ("llama-server", "linux-container", "true", "", False),
+    ],
+)
+def test_external_lemonade_runtime_flag(
+    monkeypatch, backend, runtime_mode, managed, external, expected
+):
+    import routers.models as models_router
+
+    monkeypatch.setattr(models_router, "read_live_env_values", lambda _keys: {
+        "LLM_BACKEND": backend,
+        "AMD_INFERENCE_RUNTIME_MODE": runtime_mode,
+        "AMD_INFERENCE_MANAGED": managed,
+        "LEMONADE_EXTERNAL": external,
+    })
+
+    assert models_router._external_lemonade_runtime() is expected
+
+
+def test_load_model_rejects_external_lemonade_before_catalog_lookup(test_client, monkeypatch, tmp_path):
+    models_router, install_dir, _data_dir = _patch_model_router_paths(monkeypatch, tmp_path)
+    monkeypatch.setattr(models_router, "request_agent_json", lambda *_args, **_kwargs: {
+        "managed": False, "canActivate": False, "canUnload": False, "running": False,
+    })
+    (install_dir / ".env").write_text("ODS_MODE=lemonade\n", encoding="utf-8")
+    monkeypatch.setattr(models_router, "ODS_MODE_EFFECTIVE", "lemonade")
+    monkeypatch.setattr(models_router, "LLM_BACKEND", "lemonade")
+    monkeypatch.setattr(models_router, "read_live_env_values", lambda _keys: {
+        "LLM_BACKEND": "lemonade",
+        "LEMONADE_EXTERNAL": "true",
+    })
+    monkeypatch.setattr(
+        models_router,
+        "_find_loadable_model",
+        lambda _model_id: (_ for _ in ()).throw(
+            AssertionError("external Lemonade activation reached catalog lookup")
+        ),
+    )
+
+    response = test_client.post(
+        "/api/models/downloaded-model/load", headers=test_client.auth_headers
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == {
+        "error": "Externally managed Lemonade cannot use local model activation",
+        "code": "external_runtime_unmanaged",
+        "requestedModelId": "downloaded-model",
+    }
 
 
 def test_download_model_rejects_while_bootstrap_upgrade_active(test_client, monkeypatch, tmp_path):
@@ -1877,7 +2153,8 @@ def test_download_model_rejects_stale_active_bootstrap_upgrade_as_retry_pending(
     }
 
 
-def test_api_models_falls_back_to_loaded_model_probe(test_client, monkeypatch, tmp_path):
+@pytest.mark.parametrize("mode", ["generation_interval", "live_output_interval"])
+def test_api_models_falls_back_to_loaded_model_probe(test_client, monkeypatch, tmp_path, mode):
     models_router, install_dir, _data_dir = _patch_model_router_paths(monkeypatch, tmp_path)
     _write_model_library(install_dir, [{
         "id": "qwen3.5-9b-q4",
@@ -1894,17 +2171,66 @@ def test_api_models_falls_back_to_loaded_model_probe(test_client, monkeypatch, t
     monkeypatch.setattr(models_router, "get_gpu_info", lambda: _gpu())
     monkeypatch.setattr(models_router, "get_loaded_model", AsyncMock(return_value=None))
     monkeypatch.setattr(models_router, "_fetch_llama_loaded_model", AsyncMock(return_value="Qwen3.5-9B-Q4_K_M.gguf"))
-    monkeypatch.setattr(models_router, "get_llama_metrics", AsyncMock(return_value={"tokens_per_second": 33.0, "lifetime_tokens": 0}))
+    monkeypatch.setattr(models_router, "get_llama_metrics", AsyncMock(return_value={"tokens_per_second": 33.0, "lifetime_tokens": 0, "throughput_mode": mode, "throughput_state": "measured", "throughput_sampled_at": 1000, "throughput_model": "Qwen3.5-9B-Q4_K_M.gguf"}))
     monkeypatch.setattr(models_router, "get_llama_context_size", AsyncMock(return_value=32768))
     monkeypatch.setattr(models_router, "SERVICES", {"llama-server": {"host": "localhost", "port": 8080}})
 
+    monkeypatch.setattr(models_router, "_last_recorded_throughput_sample", None)
+    recorded = []
+    monkeypatch.setattr(models_router, "record_model_performance", lambda *args, **kwargs: recorded.append((args, kwargs)))
     resp = test_client.get("/api/models", headers=test_client.auth_headers)
+    again = test_client.get("/api/models", headers=test_client.auth_headers)
+    assert again.status_code == 200
+    monkeypatch.setattr(models_router, "get_llama_metrics", AsyncMock(return_value={
+        "tokens_per_second": 33.0, "throughput_state": "retained",
+        "throughput_model": "Qwen3.5-9B-Q4_K_M.gguf", "throughput_sampled_at": 1000,
+    }))
+    held = test_client.get("/api/models", headers=test_client.auth_headers)
+    assert held.status_code == 200
+    assert len(recorded) == (0 if mode == "live_output_interval" else 1)
 
     assert resp.status_code == 200
     payload = resp.json()
     assert payload["currentModel"] == "qwen3.5-9b-q4"
     assert payload["loadedModel"] == "Qwen3.5-9B-Q4_K_M.gguf"
-    assert payload["models"][0]["performance"]["source"] == "measured_local"
+    if mode == "live_output_interval":
+        assert payload["models"][0]["performance"]["source"] != "measured_local"
+    else:
+        assert payload["models"][0]["performance"]["source"] == "measured_local"
+
+
+def test_lemonade_model_probe_uses_physical_backend_not_litellm_alias(monkeypatch, tmp_path):
+    import routers.models as models_router
+
+    values = {
+        "LLM_API_URL": "http://litellm:4000",
+        "LEMONADE_CONTAINER_BASE_URL": "http://192.168.0.166:8080",
+        "LEMONADE_BASE_URL": "http://192.168.0.167:8080",
+    }
+    monkeypatch.setattr(models_router, "INSTALL_DIR", str(tmp_path))
+    monkeypatch.setattr(models_router, "read_env_value", lambda key, _root: values.get(key))
+    monkeypatch.setattr(models_router, "LLM_BACKEND", "lemonade")
+
+    assert models_router._configured_llm_base_url("llama-server", 8080) == "http://192.168.0.166:8080"
+    values.pop("LEMONADE_CONTAINER_BASE_URL")
+    assert models_router._configured_llm_base_url("llama-server", 8080) == "http://192.168.0.167:8080"
+
+    monkeypatch.setattr(models_router, "LLM_BACKEND", "llama-server")
+    assert models_router._configured_llm_base_url("llama-server", 8080) == "http://litellm:4000"
+
+
+def test_external_model_probe_uses_physical_backend_not_litellm_alias(monkeypatch, tmp_path):
+    import routers.models as models_router
+
+    values = {
+        "LLM_API_URL": "http://litellm:4000/v1",
+        "EXTERNAL_LLM_CONTAINER_URL": "http://host.docker.internal:8000",
+    }
+    monkeypatch.setattr(models_router, "INSTALL_DIR", str(tmp_path))
+    monkeypatch.setattr(models_router, "read_env_value", lambda key, _root: values.get(key))
+    monkeypatch.setattr(models_router, "LLM_BACKEND", "external")
+
+    assert models_router._configured_llm_base_url("llama-server", 8080) == "http://host.docker.internal:8000"
 
 
 def test_api_models_marks_installer_configured_model(test_client, monkeypatch, tmp_path):
@@ -2091,6 +2417,62 @@ def test_load_model_reconfigures_active_model_when_context_changes(
     )]
 
 
+@pytest.mark.parametrize("agent_outcome", ["activated", "failed"])
+def test_load_model_expires_status_cached_during_activation(
+    test_client,
+    monkeypatch,
+    tmp_path,
+    agent_outcome,
+):
+    """The confirming poll after the POST must not see the running lifecycle."""
+    models_router, install_dir, data_dir = _patch_model_router_paths(monkeypatch, tmp_path)
+    model = {
+        "id": "qwen3.5-4b-q4",
+        "name": "Qwen 3.5 4B",
+        "gguf_file": "Qwen3.5-4B-Q4_K_M.gguf",
+        "size_mb": 2741,
+        "vram_required_gb": 5,
+        "context_length": 8192,
+        "quantization": "Q4_K_M",
+        "specialty": "Balanced",
+        "description": "Test model.",
+        "llm_model_name": "qwen3.5-4b",
+    }
+    _write_model_library(install_dir, [model])
+    (data_dir / "models" / model["gguf_file"]).write_text("model", encoding="utf-8")
+    (install_dir / ".env").write_text(
+        "ODS_MODE=local\nLLM_MODEL=previous\nGGUF_FILE=previous.gguf\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(models_router, "_fetch_loaded_model_sync", lambda: "previous.gguf")
+    running = {
+        "lifecycle": {"active": True, "operation": "model_activation", "modelId": model["id"]},
+    }
+    settled = {"lifecycle": None}
+    agent_reads = []
+
+    def activate(path, body, timeout=30, **_kwargs):
+        # A dashboard poll during the activation caches the running lifecycle.
+        monkeypatch.setattr(models_router, "_agent_model_status_cache_value", running)
+        monkeypatch.setattr(models_router, "_agent_model_status_cache_at", models_router.time.monotonic())
+        if agent_outcome == "failed":
+            raise models_router.HTTPException(status_code=500, detail="rolled back")
+        return {"status": "activated", "model_id": body["model_id"]}
+
+    monkeypatch.setattr(models_router, "_call_agent_model", activate)
+    monkeypatch.setattr(
+        models_router,
+        "request_agent_json",
+        lambda method, path, **_kwargs: agent_reads.append((method, path)) or settled,
+    )
+
+    resp = test_client.post(f"/api/models/{model['id']}/load", headers=test_client.auth_headers)
+
+    assert resp.status_code == (200 if agent_outcome == "activated" else 500)
+    assert models_router._get_agent_model_status() is settled
+    assert agent_reads == [("GET", "/v1/model/status")]
+
+
 def test_load_model_allows_advanced_context_override_but_rejects_invalid_range(
     test_client,
     monkeypatch,
@@ -2181,13 +2563,19 @@ def test_load_model_reconciles_matching_runtime_without_completion_receipt(
     _write_model_library(install_dir, [model])
     (data_dir / "models" / model["gguf_file"]).write_text("model", encoding="utf-8")
     (install_dir / ".env").write_text(
-        "ODS_MODE=local\nLLM_MODEL=qwen3.5-9b\nGGUF_FILE=Qwen3.5-9B-Q4_K_M.gguf\n",
+        "ODS_MODE=local\n"
+        "LLM_MODEL=qwen3.5-9b\n"
+        "GGUF_FILE=Qwen3.5-9B-Q4_K_M.gguf\n"
+        "CTX_SIZE=65536\n"
+        "MAX_CONTEXT=65536\n",
         encoding="utf-8",
     )
     monkeypatch.setattr(
         models_router,
         "_fetch_loaded_model_sync",
-        lambda: "extra.Qwen3.5-9B-Q4_K_M.gguf",
+        # Switchboard identity is intentionally opaque; the configured GGUF
+        # and active-model record remain the authoritative identity proof.
+        lambda: "ods/current",
     )
     monkeypatch.setattr(models_router, "_loaded_model_backend_ready_sync", lambda _loaded: True)
     calls = []
@@ -2202,7 +2590,66 @@ def test_load_model_reconciles_matching_runtime_without_completion_receipt(
 
     assert resp.status_code == 200
     assert resp.json()["status"] == "activated"
-    assert calls and calls[0][0] == "/v1/model/activate"
+    assert calls == [(
+        "/v1/model/activate",
+        {"model_id": model["id"], "context_length": 65536},
+        2700,
+    )]
+
+
+def test_load_model_preserves_context_when_env_bind_inode_is_stale(
+    test_client,
+    monkeypatch,
+    tmp_path,
+):
+    models_router, install_dir, data_dir = _patch_model_router_paths(monkeypatch, tmp_path)
+    model = {
+        "id": "qwen3.5-9b-q4",
+        "name": "Qwen 3.5 9B",
+        "gguf_file": "Qwen3.5-9B-Q4_K_M.gguf",
+        "size_mb": 5760,
+        "vram_required_gb": 8,
+        "context_length": 32768,
+        "quantization": "Q4_K_M",
+        "specialty": "General",
+        "description": "Balanced default.",
+        "llm_model_name": "qwen3.5-9b",
+    }
+    _write_model_library(install_dir, [model])
+    (data_dir / "models" / model["gguf_file"]).write_text("model", encoding="utf-8")
+    # This is the old inode still visible through the container bind mount.
+    (install_dir / ".env").write_text(
+        "ODS_MODE=local\n"
+        "LLM_MODEL=qwen3.5-2b\n"
+        "GGUF_FILE=Qwen3.5-2B-Q4_K_M.gguf\n"
+        "CTX_SIZE=65536\n"
+        "MAX_CONTEXT=65536\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        models_router,
+        "_fetch_loaded_model_sync",
+        lambda: f"extra.{model['gguf_file']}",
+    )
+    calls = []
+    monkeypatch.setattr(
+        models_router,
+        "_call_agent_model",
+        lambda path, body, timeout=30, **_kwargs: calls.append((path, body, timeout))
+        or {"status": "activated"},
+    )
+
+    resp = test_client.post(
+        f"/api/models/{model['id']}/load",
+        headers=test_client.auth_headers,
+    )
+
+    assert resp.status_code == 200
+    assert calls == [(
+        "/v1/model/activate",
+        {"model_id": model["id"], "context_length": 65536},
+        2700,
+    )]
 
 
 def test_load_model_delegates_when_live_backend_reports_different_model(test_client, monkeypatch, tmp_path):
@@ -2655,3 +3102,199 @@ def test_load_model_rejects_local_gguf_path_separators(test_client, monkeypatch,
     )
 
     assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Switch-time context follows the install policy (one shared function:
+# model_selection.plan_model_context, reached through performance_oracle).
+# ---------------------------------------------------------------------------
+
+def _repo_catalog_entries(*model_ids):
+    from pathlib import Path as _Path
+
+    catalog = json.loads(
+        (_Path(__file__).resolve().parents[4] / "config" / "model-library.json").read_text(encoding="utf-8")
+    )
+    by_id = {entry["id"]: entry for entry in catalog["models"]}
+    return [by_id[model_id] for model_id in model_ids]
+
+
+def _rtx_5090():
+    return GPUInfo(
+        name="NVIDIA GeForce RTX 5090",
+        memory_used_mb=1024,
+        memory_total_mb=32607,
+        memory_percent=3.0,
+        utilization_percent=0,
+        temperature_c=40,
+        gpu_backend="nvidia",
+    )
+
+
+def _tower_env(install_dir, *, llm_model, gguf, ctx):
+    (install_dir / ".env").write_text(
+        "ODS_MODE=local\n"
+        f"LLM_MODEL={llm_model}\n"
+        f"GGUF_FILE={gguf}\n"
+        f"CTX_SIZE={ctx}\n"
+        f"MAX_CONTEXT={ctx}\n"
+        "SYSTEM_RAM_GB=61\n"
+        # Installs before the floor was part of selection recorded the
+        # pre-raise context here (tower1/tower3, build 67cb2ac0).
+        "MODEL_RECOMMENDED_MODEL=qwen3.5-27b\n"
+        "MODEL_RECOMMENDED_GGUF=Qwen3.5-27B-Q4_K_M.gguf\n"
+        "MODEL_RECOMMENDED_CONTEXT=32768\n",
+        encoding="utf-8",
+    )
+
+
+@pytest.mark.parametrize(("target", "loaded_llm", "loaded_gguf"), [
+    # tower3: restoring the installer's pick replayed MODEL_RECOMMENDED_CONTEXT.
+    ("qwen3.5-27b-q4", "qwen3.6-27b", "Qwen3.6-27B-UD-Q4_K_XL.gguf"),
+    # tower1: a switch to the candidate served 32768 and Hermes returned 502.
+    ("qwen3.6-27b-ud-q4-k-xl", "qwen3.5-27b", "Qwen3.5-27B-Q4_K_M.gguf"),
+])
+def test_switch_on_rtx_5090_serves_the_hermes_floor(
+    test_client, monkeypatch, tmp_path, target, loaded_llm, loaded_gguf,
+):
+    models_router, install_dir, data_dir = _patch_model_router_paths(monkeypatch, tmp_path)
+    entries = _repo_catalog_entries("qwen3.5-27b-q4", "qwen3.6-27b-ud-q4-k-xl")
+    _write_model_library(install_dir, entries)
+    for entry in entries:
+        (data_dir / "models" / entry["gguf_file"]).write_text("model", encoding="utf-8")
+    _tower_env(install_dir, llm_model=loaded_llm, gguf=loaded_gguf, ctx=32768)
+    monkeypatch.setattr(models_router, "get_gpu_info", _rtx_5090)
+    monkeypatch.setattr(models_router, "_fetch_loaded_model_sync", lambda: loaded_gguf)
+    calls = []
+    monkeypatch.setattr(
+        models_router, "_call_agent_model",
+        lambda path, body, timeout=30, **_kwargs: calls.append(body) or {"status": "activated"},
+    )
+
+    resp = test_client.post(f"/api/models/{target}/load", headers=test_client.auth_headers)
+
+    assert resp.status_code == 200
+    assert calls == [{"model_id": target, "context_length": 65536}]
+
+
+def test_switch_context_matches_the_listed_context(test_client, monkeypatch, tmp_path):
+    """The context the model list shows is the context a switch serves."""
+    models_router, install_dir, data_dir = _patch_model_router_paths(monkeypatch, tmp_path)
+    entries = _repo_catalog_entries("qwen3.5-27b-q4", "qwen3.6-27b-ud-q4-k-xl", "qwen3.6-35b-a3b-ud-q4")
+    _write_model_library(install_dir, entries)
+    for entry in entries:
+        (data_dir / "models" / entry["gguf_file"]).write_text("model", encoding="utf-8")
+    _tower_env(install_dir, llm_model="qwen3.5-27b", gguf="Qwen3.5-27B-Q4_K_M.gguf", ctx=32768)
+    monkeypatch.setattr(models_router, "get_gpu_info", _rtx_5090)
+    monkeypatch.setattr(models_router, "get_loaded_model", AsyncMock(return_value=None))
+    monkeypatch.setattr(models_router, "get_llama_metrics", AsyncMock(return_value={"tokens_per_second": 0}))
+    monkeypatch.setattr(models_router, "get_llama_context_size", AsyncMock(return_value=None))
+    monkeypatch.setattr(models_router, "_fetch_loaded_model_sync", lambda: None)
+    listed = {
+        entry["id"]: entry["contextLength"]
+        for entry in test_client.get("/api/models", headers=test_client.auth_headers).json()["models"]
+    }
+    calls = []
+    monkeypatch.setattr(
+        models_router, "_call_agent_model",
+        lambda path, body, timeout=30, **_kwargs: calls.append(body) or {"status": "activated"},
+    )
+    for entry in entries:
+        test_client.post(f"/api/models/{entry['id']}/load", headers=test_client.auth_headers)
+
+    served = {body["model_id"]: body["context_length"] for body in calls}
+    assert served == {entry["id"]: listed[entry["id"]] for entry in entries}
+    assert served["qwen3.5-27b-q4"] == 65536
+    assert served["qwen3.6-35b-a3b-ud-q4"] == 131072
+
+
+def test_reload_below_the_floor_repairs_the_running_model(test_client, monkeypatch, tmp_path):
+    models_router, install_dir, data_dir = _patch_model_router_paths(monkeypatch, tmp_path)
+    _write_model_library(install_dir, _repo_catalog_entries("qwen3.5-27b-q4"))
+    (data_dir / "models" / "Qwen3.5-27B-Q4_K_M.gguf").write_text("model", encoding="utf-8")
+    _tower_env(install_dir, llm_model="qwen3.5-27b", gguf="Qwen3.5-27B-Q4_K_M.gguf", ctx=32768)
+    monkeypatch.setattr(models_router, "get_gpu_info", _rtx_5090)
+    monkeypatch.setattr(models_router, "_already_active_model", lambda *_args: (True, "Qwen3.5-27B-Q4_K_M.gguf"))
+    monkeypatch.setattr(models_router, "_verified_activation_context", lambda _loaded: 32768)
+    calls = []
+    monkeypatch.setattr(
+        models_router, "_call_agent_model",
+        lambda path, body, timeout=30, **_kwargs: calls.append(body) or {"status": "activated"},
+    )
+
+    resp = test_client.post("/api/models/qwen3.5-27b-q4/load", headers=test_client.auth_headers)
+
+    assert resp.status_code == 200
+    assert calls == [{"model_id": "qwen3.5-27b-q4", "context_length": 65536}]
+
+
+def test_reload_at_the_floor_stays_idempotent(test_client, monkeypatch, tmp_path):
+    models_router, install_dir, data_dir = _patch_model_router_paths(monkeypatch, tmp_path)
+    _write_model_library(install_dir, _repo_catalog_entries("qwen3.5-27b-q4"))
+    (data_dir / "models" / "Qwen3.5-27B-Q4_K_M.gguf").write_text("model", encoding="utf-8")
+    _tower_env(install_dir, llm_model="qwen3.5-27b", gguf="Qwen3.5-27B-Q4_K_M.gguf", ctx=65536)
+    monkeypatch.setattr(models_router, "get_gpu_info", _rtx_5090)
+    monkeypatch.setattr(models_router, "_already_active_model", lambda *_args: (True, "Qwen3.5-27B-Q4_K_M.gguf"))
+    monkeypatch.setattr(models_router, "_verified_activation_context", lambda _loaded: 65536)
+
+    def fail_agent_call(*_args, **_kwargs):
+        raise AssertionError("an already-active model at the floor must not restart")
+
+    monkeypatch.setattr(models_router, "_call_agent_model", fail_agent_call)
+
+    resp = test_client.post("/api/models/qwen3.5-27b-q4/load", headers=test_client.auth_headers)
+
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "already_active"
+
+
+def test_explicit_context_is_never_replanned(test_client, monkeypatch, tmp_path):
+    models_router, install_dir, data_dir = _patch_model_router_paths(monkeypatch, tmp_path)
+    _write_model_library(install_dir, _repo_catalog_entries("qwen3.5-27b-q4"))
+    (data_dir / "models" / "Qwen3.5-27B-Q4_K_M.gguf").write_text("model", encoding="utf-8")
+    _tower_env(install_dir, llm_model="qwen3.5-9b", gguf="Qwen3.5-9B-Q4_K_M.gguf", ctx=65536)
+    monkeypatch.setattr(models_router, "get_gpu_info", _rtx_5090)
+    monkeypatch.setattr(models_router, "_fetch_loaded_model_sync", lambda: "Qwen3.5-9B-Q4_K_M.gguf")
+    calls = []
+    monkeypatch.setattr(
+        models_router, "_call_agent_model",
+        lambda path, body, timeout=30, **_kwargs: calls.append(body) or {"status": "activated"},
+    )
+
+    test_client.post(
+        "/api/models/qwen3.5-27b-q4/load",
+        headers=test_client.auth_headers,
+        json={"context_length": 32768},
+    )
+
+    assert calls == [{"model_id": "qwen3.5-27b-q4", "context_length": 32768}]
+
+
+def test_listed_talk_verdict_reflects_the_served_context(test_client, monkeypatch, tmp_path):
+    models_router, install_dir, data_dir = _patch_model_router_paths(monkeypatch, tmp_path)
+    entries = _repo_catalog_entries("qwen3.5-27b-q4", "qwen3.6-27b-ud-q4-k-xl")
+    _write_model_library(install_dir, entries)
+    for entry in entries:
+        (data_dir / "models" / entry["gguf_file"]).write_text("model", encoding="utf-8")
+    _tower_env(install_dir, llm_model="qwen3.5-27b", gguf="Qwen3.5-27B-Q4_K_M.gguf", ctx=32768)
+    monkeypatch.setattr(models_router, "get_gpu_info", _rtx_5090)
+    monkeypatch.setattr(models_router, "get_loaded_model", AsyncMock(return_value="Qwen3.5-27B-Q4_K_M.gguf"))
+    monkeypatch.setattr(models_router, "get_llama_metrics", AsyncMock(return_value={"tokens_per_second": 0}))
+    monkeypatch.setattr(models_router, "get_llama_context_size", AsyncMock(return_value=32768))
+
+    models = {
+        entry["id"]: entry
+        for entry in test_client.get("/api/models", headers=test_client.auth_headers).json()["models"]
+    }
+
+    running = models["qwen3.5-27b-q4"]
+    assert running["status"] == "loaded"
+    assert running["contextLength"] == 32768
+    talk = running["appCompatibility"]["hermesTalk"]
+    assert talk["status"] == "unsupported"
+    assert talk["code"] == "context_below_hermes_minimum"
+    assert "64K" in talk["userMessage"] and "32K" in talk["userMessage"]
+    # A model planned at the floor on this card is not blocked by context.
+    candidate = models["qwen3.6-27b-ud-q4-k-xl"]
+    assert candidate["contextLength"] == 65536
+    assert candidate["appCompatibility"]["hermesTalk"].get("code") != "context_below_hermes_minimum"

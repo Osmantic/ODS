@@ -109,6 +109,7 @@ check_markdown_file() {
 check_contributing_workdirs() {
   local command workdir
   while IFS= read -r command; do
+    command="${command%$'\r'}"
     workdir="${command#cd }"
     workdir="${workdir%% &&*}"
     [[ -d "$ROOT_DIR/$workdir" ]] || {

@@ -1,0 +1,17 @@
+* text=auto eol=lf
+*.sh text eol=lf
+pixel text eol=lf
+VERSION text eol=lf
+.node-version text eol=lf
+*.env text eol=lf
+tests/fixtures/bin/* text eol=lf
+deploy/ops-runner/run-test text eol=lf
+*.mjs text eol=lf
+*.py text eol=lf
+*.json text eol=lf
+*.json5 text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.md text eol=lf
+*.example text eol=lf
+Dockerfile text eol=lf

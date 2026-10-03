@@ -1,0 +1,12 @@
+{
+  "repository": "https://github.com/mlflow/mlflow",
+  "license": "Apache-2.0",
+  "image": "ghcr.io/mlflow/mlflow:v3.16.1@sha256:6b6ec62130dd9a273b24e53e905bdc728b915fbd2dfb71f2fb7eff9a22f7fa67",
+  "registry_checked_at": "2026-09-20",
+  "platforms": [
+    "linux/amd64",
+    "linux/arm64"
+  ],
+  "runtime_validation": "pending",
+  "notes": "SQLite metadata and proxied artifacts persist together. Clients use the published tracking URL; no local artifact filesystem is exposed to clients."
+}

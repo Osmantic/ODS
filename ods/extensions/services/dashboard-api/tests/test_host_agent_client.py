@@ -65,6 +65,29 @@ async def test_async_client_is_singleton_with_bounded_limits(monkeypatch):
     assert created[0]["limits"].max_keepalive_connections == 2
 
 
+def test_async_client_is_recreated_after_its_event_loop_closes(monkeypatch):
+    created = []
+
+    class _Client:
+        is_closed = False
+
+    def factory(**_kwargs):
+        client = _Client()
+        created.append(client)
+        return client
+
+    async def get_client():
+        return await agent_client._get_async_client()
+
+    monkeypatch.setattr(agent_client, "_async_client", None)
+    monkeypatch.setattr(agent_client.httpx, "AsyncClient", factory)
+    first = asyncio.run(get_client())
+    second = asyncio.run(get_client())
+
+    assert first is not second
+    assert created == [first, second]
+
+
 def test_get_retries_one_stale_connection_and_uses_split_timeout(monkeypatch):
     calls = []
 

@@ -1,0 +1,127 @@
+name: Signed release source
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: signed-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    if: github.repository == 'Osmantic/ODS' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    outputs:
+      artifact: ods-source-${{ github.run_attempt }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+        with:
+          python-version: '3.11'
+      - name: Verify signed tag and archive only its committed source
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python .github/scripts/release_source.py prepare --output "$RUNNER_TEMP/ods-release"
+      - name: Generate source dependency SBOM
+        uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
+        with:
+          path: ${{ runner.temp }}/ods-release/source
+          format: spdx-json
+          output-file: ${{ runner.temp }}/ods-release/source.spdx.json
+          syft-version: v1.52.0
+          upload-artifact: false
+          upload-release-assets: false
+      - name: Bind source identity, archive hashes and SBOM
+        run: python .github/scripts/release_source.py finalize --output "$RUNNER_TEMP/ods-release"
+      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: ods-source-${{ github.run_attempt }}
+          if-no-files-found: error
+          retention-days: 2
+          path: |
+            ${{ runner.temp }}/ods-release/ODS-*-source.zip
+            ${{ runner.temp }}/ods-release/ODS-*-source.tar.gz
+            ${{ runner.temp }}/ods-release/source.spdx.json
+            ${{ runner.temp }}/ods-release/release-manifest.json
+            ${{ runner.temp }}/ods-release/SHA256SUMS
+
+  attest:
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    outputs:
+      artifact: ods-attested-source-${{ github.run_attempt }}
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ needs.prepare.outputs.artifact }}
+          path: ${{ runner.temp }}/ods-release
+      - name: Check transferred package hashes
+        working-directory: ${{ runner.temp }}/ods-release
+        run: sha256sum --check --strict SHA256SUMS
+      - name: Attest source packages and inventory with GitHub OIDC
+        id: attest
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: |
+            ${{ runner.temp }}/ods-release/ODS-*-source.zip
+            ${{ runner.temp }}/ods-release/ODS-*-source.tar.gz
+            ${{ runner.temp }}/ods-release/source.spdx.json
+            ${{ runner.temp }}/ods-release/release-manifest.json
+            ${{ runner.temp }}/ods-release/SHA256SUMS
+      - name: Preserve the exact attestation bundle
+        env:
+          BUNDLE: ${{ steps.attest.outputs.bundle-path }}
+        run: cp -- "$BUNDLE" "$RUNNER_TEMP/ods-release/provenance.sigstore.jsonl"
+      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: ods-attested-source-${{ github.run_attempt }}
+          if-no-files-found: error
+          retention-days: 2
+          path: ${{ runner.temp }}/ods-release/*
+
+  draft:
+    needs: attest
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: read
+      contents: write
+    # Only this fresh job can create a release. It runs no third-party action,
+    # checked-out source or scripts from the downloaded artifact.
+    steps:
+      - name: Create a new draft; never overwrite or publish an existing release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_ARTIFACT: ${{ needs.attest.outputs.artifact }}
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF#refs/tags/}"
+          [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$ ]]
+          gh run download "$GITHUB_RUN_ID" --repo Osmantic/ODS \
+            --name "$SOURCE_ARTIFACT" --dir "$RUNNER_TEMP/ods-release"
+          cd "$RUNNER_TEMP/ods-release"
+          sha256sum --check --strict SHA256SUMS
+          test -s provenance.sigstore.jsonl
+          python3 -c 'import json,os; m=json.load(open("release-manifest.json")); assert (m["repository"],m["tag"],m["commit"]) == ("Osmantic/ODS",os.environ["GITHUB_REF"].removeprefix("refs/tags/"),os.environ["GITHUB_SHA"])'
+          args=()
+          if [[ "$tag" == *-* ]]; then args+=(--prerelease); fi
+          gh release create "$tag" --repo Osmantic/ODS --verify-tag --draft \
+            --title "$tag" --notes 'Signed source candidate. Maintainer validation and publication required. The SBOM covers source dependencies, not container OS layers or model weights.' \
+            "${args[@]}" "ODS-$tag-source.zip" "ODS-$tag-source.tar.gz" \
+            source.spdx.json release-manifest.json SHA256SUMS provenance.sigstore.jsonl

@@ -1,6 +1,7 @@
 # ODS 2.6.0 Release Notes
 
-Publication status: current stable release. A strict User Green stamp is not
+Publication status: historical 2.6 release; [ODS V3](RELEASE_NOTES_3.0.0.md) is
+the latest published source release. A strict User Green stamp is not
 claimed for this release because the long six-cycle model-management matrix was
 intentionally waived.
 

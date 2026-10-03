@@ -9,7 +9,7 @@
 
 services:
   llama-server:
-    image: hello-world:latest   # Placeholder -- container never runs (replicas: 0)
+    image: hello-world:latest@sha256:5e23090353324d887c48ad5e5c56d294eab81588df9605b07d1afe895f9cc8f8   # Placeholder -- container never runs (replicas: 0)
     deploy:
       replicas: 0    # Disabled -- running natively on Windows host
 

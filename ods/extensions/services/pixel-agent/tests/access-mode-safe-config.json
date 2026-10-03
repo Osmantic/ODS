@@ -1,0 +1,16 @@
+{
+  "agents": {
+    "defaults": {"sandbox": {"mode": "all"}},
+    "list": [
+      {
+        "id": "pixel",
+        "sandbox": {"mode": "all"},
+        "tools": {
+          "exec": {"host": "sandbox", "security": "allowlist", "ask": "on-miss"},
+          "fs": {"workspaceOnly": true}
+        }
+      },
+      {"id": "other", "model": "unchanged-model"}
+    ]
+  }
+}

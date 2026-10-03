@@ -1,6 +1,6 @@
 services:
   label-studio:
-    image: heartexlabs/label-studio:1.22.0
+    image: heartexlabs/label-studio:1.22.0@sha256:86b4e8046e83a16290cb2d1046f0fa94a4c98fdb9c8d42711808f18e25d47be2
     container_name: ods-label-studio
     restart: unless-stopped
     security_opt:
@@ -17,7 +17,7 @@ services:
       - ./media:/label-studio/media:rw
       - ./www:/label-studio/www:rw
     ports:
-      - "${BIND_ADDRESS:-127.0.0.1}:${LABEL_STUDIO_PORT:-8086}:8080"
+      - "127.0.0.1:${LABEL_STUDIO_PORT:-8086}:8080"
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://127.0.0.1:8080/health"]
       interval: 30s

@@ -119,3 +119,33 @@ def test_unmigrated_blocking_verdicts_only_shrink():
         f"shrink from {LEGACY_UNMIGRATED_RATCHET}; found {len(legacy)}: "
         + ", ".join(sorted(legacy))
     )
+
+
+# ``reason`` and ``evidence`` are internal fleet-QA notes and are never shown
+# to users. A verdict may carry an optional ``userNote`` (short, plain-language
+# copy) that the dashboard shows instead of its generic status message; keep
+# QA vocabulary out of it.
+USER_NOTE_MAX_CHARS = 280
+_USER_NOTE_FORBIDDEN = re.compile(
+    r"fleet|harness|revalidat|release coverage|model-ui|cycle-\d|\d{4}-\d{2}-\d{2}T",
+    re.IGNORECASE,
+)
+
+
+def test_user_notes_are_short_plain_user_copy():
+    for model_id, app, verdict in _verdict_rows():
+        for key in ("userNote", "user_note"):
+            if key not in verdict:
+                continue
+            where = f"{model_id}.app_compatibility.{app}.{key}"
+            note = verdict[key]
+            assert isinstance(note, str) and note.strip(), f"{where}: must be a non-empty string"
+            assert len(" ".join(note.split())) <= USER_NOTE_MAX_CHARS, (
+                f"{where}: keep user notes to {USER_NOTE_MAX_CHARS} characters"
+            )
+            assert not _USER_NOTE_FORBIDDEN.search(note), (
+                f"{where}: user notes must not carry fleet/QA details; put those in reason/evidence"
+            )
+            assert note.strip() != str(verdict.get("reason") or "").strip(), (
+                f"{where}: must not copy the internal reason"
+            )

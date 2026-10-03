@@ -1,0 +1,4 @@
+FROM docker.io/danielszabo99/microbin:2.1.0@sha256:34fe4ac99b65cc633975ae72ca6fc84eab15f73a95b2e03b98312374063ee5d7
+USER 0
+RUN mkdir -p /data && chown 65532:65532 /data
+USER 65532:65532

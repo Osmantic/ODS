@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { CheckCircle, Circle, ChevronRight, ChevronLeft, Mic, User, Settings, Play, Shield, Layers } from 'lucide-react'
+import { AlertTriangle, CheckCircle, Circle, ChevronRight, ChevronLeft, Mic, User, Settings, Play, Shield, Layers } from 'lucide-react'
 import { PreFlightChecks } from './PreFlightChecks'
 import { TemplatePicker } from './TemplatePicker'
 import { getTemplateStatus } from '../lib/templates'
@@ -186,8 +186,8 @@ export default function SetupWizard({ onComplete }) {
           {/* Step 1: Preflight */}
           {step === 1 && (
             <div className="text-center max-w-lg mx-auto">
-              <div className="w-20 h-20 bg-amber-500/20 rounded-2xl flex items-center justify-center mx-auto mb-6">
-                <Shield className="w-10 h-10 text-amber-400" />
+              <div className="w-20 h-20 bg-theme-text-secondary/20 rounded-2xl flex items-center justify-center mx-auto mb-6">
+                <Shield className="w-10 h-10 text-theme-text-secondary" />
               </div>
               <h2 className="text-3xl font-bold text-theme-text mb-4">System Check</h2>
               <p className="text-theme-text-secondary mb-8">
@@ -253,8 +253,8 @@ export default function SetupWizard({ onComplete }) {
           {/* Step 4: Name */}
           {step === 4 && (
             <div className="text-center max-w-md mx-auto">
-              <div className="w-20 h-20 bg-purple-500/20 rounded-2xl flex items-center justify-center mx-auto mb-6">
-                <User className="w-10 h-10 text-purple-400" />
+              <div className="w-10 h-10 bg-theme-surface rounded-lg flex items-center justify-center mx-auto mb-6">
+                <User className="w-5 h-5 text-theme-text-secondary" />
               </div>
               <h2 className="text-3xl font-bold text-theme-text mb-4">What should we call you?</h2>
               <p className="text-theme-text-secondary mb-8">
@@ -337,10 +337,10 @@ export default function SetupWizard({ onComplete }) {
               )}
 
               {testStatus.done && (
-                <div className={`mt-4 p-4 rounded-lg ${testStatus.success ? 'bg-green-500/20 text-green-400' : 'bg-amber-500/20 text-amber-400'}`}>
+                <div className={`mt-4 p-4 rounded-lg ${testStatus.success ? 'bg-green-500/20 text-green-400' : 'bg-theme-text-secondary/20 text-theme-text-secondary'}`}>
                   {testStatus.success
                     ? '✓ All systems operational'
-                    : '⚠ Some tests failed — review the log above. You can re-run, or continue anyway and revisit from the Diagnostics tab later.'}
+                    : <><AlertTriangle size={16} className="mr-1 inline" aria-hidden="true" />Some tests failed — review the log above. You can re-run, or continue anyway and revisit from the Diagnostics tab later.</>}
                 </div>
               )}
 
@@ -387,9 +387,9 @@ export default function SetupWizard({ onComplete }) {
                 disabled={!testStatus.done}
                 className={`flex items-center gap-2 px-6 py-2 ${
                   testStatus.success
-                    ? 'bg-green-600 hover:bg-green-700'
-                    : 'bg-amber-600 hover:bg-amber-700'
-                } disabled:bg-zinc-700 disabled:cursor-not-allowed text-white rounded-lg transition-colors`}
+                    ? 'bg-green-600 text-white hover:bg-green-700'
+                    : 'bg-theme-surface-hover text-theme-text hover:bg-theme-card'
+                } disabled:bg-zinc-700 disabled:cursor-not-allowed rounded-lg transition-colors`}
               >
                 <CheckCircle className="w-5 h-5" />
                 {testStatus.success ? 'Complete Setup' : 'Continue Anyway'}

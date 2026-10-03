@@ -147,7 +147,7 @@ while IFS= read -r raw_line || [[ -n "$raw_line" ]]; do
 
   # Must contain '='
   if [[ "$line" != *"="* ]]; then
-    log_warn "Ignoring line $line_no (not KEY=VALUE): $raw_line"
+    log_warn "Ignoring line $line_no (not KEY=VALUE; value omitted)"
     continue
   fi
 
@@ -155,16 +155,20 @@ while IFS= read -r raw_line || [[ -n "$raw_line" ]]; do
   value="$(trim "${line#*=}")"
 
   if [[ ! "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
-    log_warn "Ignoring line $line_no (invalid key '$key')"
+    log_warn "Ignoring line $line_no (invalid key syntax; value omitted)"
     continue
   fi
 
-  # Remove inline comments only when value is unquoted.
-  # Example: FOO=bar # comment
-  # Keep hashes inside quotes.
-  if [[ "$value" != "\""* && "$value" != "'"* ]]; then
-    value="$(trim "${value%%#*}")"
-  fi
+  # Docker Compose's inline-comment rule, so the value validated here is the
+  # value the containers receive: an unquoted value ends at the first " #"
+  # (a '#' without a leading space is data, e.g. a secret or a URL fragment),
+  # and a quoted value may carry a " #..." note after its closing quote.
+  # Hashes inside quotes are kept.
+  case "$value" in
+    \"*) [[ "$value" =~ ^(\"(\\.|[^\"\\])*\")[[:space:]]+# ]] && value="${BASH_REMATCH[1]}" ;;
+    \'*) [[ "$value" =~ ^(\'[^\']*\')[[:space:]]+# ]] && value="${BASH_REMATCH[1]}" ;;
+    *)   value="${value%% #*}" ;;
+  esac
 
   value="$(trim "$value")"
   value="$(unquote "$value")"
@@ -235,19 +239,19 @@ for key in "${schema_keys[@]}"; do
     case "$expected_type" in
         integer)
             if [[ ! "$val" =~ ^-?[0-9]+$ ]]; then
-                type_errors+=("$key: expected integer, got '$val' (line ${ENV_LINE[$key]:-?})")
+                type_errors+=("$key: expected integer (line ${ENV_LINE[$key]:-?})")
                 continue
             fi
             ;;
         number)
             if [[ ! "$val" =~ ^-?[0-9]+([.][0-9]+)?$ ]]; then
-                type_errors+=("$key: expected number, got '$val' (line ${ENV_LINE[$key]:-?})")
+                type_errors+=("$key: expected number (line ${ENV_LINE[$key]:-?})")
                 continue
             fi
             ;;
         boolean)
             if [[ "$val" != "true" && "$val" != "false" ]]; then
-                type_errors+=("$key: expected boolean true/false, got '$val' (line ${ENV_LINE[$key]:-?})")
+                type_errors+=("$key: expected boolean true/false (line ${ENV_LINE[$key]:-?})")
                 continue
             fi
             ;;
@@ -260,7 +264,7 @@ for key in "${schema_keys[@]}"; do
       else
         if ! jq -e --arg k "$key" --arg v "$val" '.properties[$k].enum | index($v) != null' "$SCHEMA_FILE" >/dev/null 2>&1; then
           allowed="$(jq_raw --arg k "$key" '.properties[$k].enum | join(", ")' "$SCHEMA_FILE")"
-          enum_errors+=("$key: invalid value '$val' (allowed: $allowed) (line ${ENV_LINE[$key]:-?})")
+          enum_errors+=("$key: invalid value (allowed: $allowed) (line ${ENV_LINE[$key]:-?})")
         fi
       fi
     fi
@@ -270,13 +274,13 @@ for key in "${schema_keys[@]}"; do
       if jq -e --arg k "$key" '.properties[$k].minimum? != null' "$SCHEMA_FILE" >/dev/null 2>&1; then
         minv="$(jq_raw --arg k "$key" '.properties[$k].minimum' "$SCHEMA_FILE")"
         if awk "BEGIN{exit !($val < $minv)}" 2>/dev/null; then
-          range_errors+=("$key: value $val is < minimum $minv (line ${ENV_LINE[$key]:-?})")
+          range_errors+=("$key: value is < minimum $minv (line ${ENV_LINE[$key]:-?})")
         fi
       fi
       if jq -e --arg k "$key" '.properties[$k].maximum? != null' "$SCHEMA_FILE" >/dev/null 2>&1; then
         maxv="$(jq_raw --arg k "$key" '.properties[$k].maximum' "$SCHEMA_FILE")"
         if awk "BEGIN{exit !($val > $maxv)}" 2>/dev/null; then
-          range_errors+=("$key: value $val is > maximum $maxv (line ${ENV_LINE[$key]:-?})")
+          range_errors+=("$key: value is > maximum $maxv (line ${ENV_LINE[$key]:-?})")
         fi
       fi
     fi

@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "id": "pixel-builder-standard-v1",
+  "tasks": [
+    {"id": "workspace-read", "capability": "read", "required": true, "tool": "read", "operation": "Read fixture.txt and observe PIXEL_READ_TOKEN.", "proof": "proofs/semantic.txt#READ_OK"},
+    {"id": "content-search", "capability": "search", "required": true, "tool": "grep", "operation": "Find PIXEL_SEARCH_TOKEN under nested without a supplied filename.", "proof": "proofs/semantic.txt#SEARCH_OK"},
+    {"id": "file-discovery", "capability": "search", "required": false, "tool": "glob", "operation": "Discover nested/discovery.flag from a wildcard.", "proof": "proofs/semantic.txt#GLOB_OK"},
+    {"id": "file-write", "capability": "write", "required": true, "tool": "write", "operation": "Create proofs/write.txt with WRITE_OK.", "proof": "proofs/write.txt#WRITE_OK"},
+    {"id": "targeted-edit", "capability": "edit", "required": true, "tool": "edit", "operation": "Change the unique EDIT_BEFORE line in edit.txt to EDIT_AFTER.", "proof": "edit.txt#EDIT_AFTER"},
+    {"id": "command-execution", "capability": "execute", "required": true, "tool": "bash", "operation": "Run a local invariant check and create proofs/bash.txt with BASH_OK.", "proof": "proofs/bash.txt#BASH_OK"},
+    {"id": "debugging-repair", "capability": "debug", "required": true, "tool": "debug", "operation": "Launch debug_target.py with debugpy, inspect its stack, and continue it.", "proof": "proofs/debug.txt#DEBUG_OK"},
+    {"id": "language-intelligence", "capability": "lsp", "required": true, "tool": "lsp", "operation": "Obtain semantic hover information for add in app.py.", "proof": "proofs/semantic.txt#LSP_OK"},
+    {"id": "local-evaluation", "capability": "eval", "required": true, "tool": "eval", "operation": "Run a stateful local Python cell and create proofs/eval.txt with EVAL_OK.", "proof": "proofs/eval.txt#EVAL_OK"},
+    {"id": "bounded-subagent", "capability": "subagent", "required": true, "tool": "task", "operation": "Spawn one bounded RetentionAgent for the synthetic coordination assignment.", "proof": "proofs/coordination.txt#SUBAGENT_OK"},
+    {"id": "goal-coordination", "capability": "coordination", "required": true, "tool": "hub", "operation": "Receive PIXEL_HUB_TOKEN from RetentionAgent through the agent hub.", "proof": "proofs/coordination.txt#HUB_OK"}
+  ],
+  "boundary": "Public deterministic synthetic capability operations and external proof selectors only. This corpus contains no client data, private prompt, source content, host path, credential, provider call, or authority."
+}

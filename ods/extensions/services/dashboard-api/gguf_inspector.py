@@ -51,14 +51,16 @@ _STRUCTS = {
 # RecursionError escape this parser's failure contract.
 _MAX_ARRAY_DEPTH = 64
 
+# general.file_type uses llama_ftype / LlamaFileType, not GGML tensor type IDs.
+# https://github.com/ggml-org/llama.cpp/blob/95887577ab5fead779581a7030a83c7752ff3234/include/llama.h#L106-L150
 _FILE_TYPE_LABELS = {
     0: "F32",
     1: "F16",
     2: "Q4_0",
     3: "Q4_1",
-    6: "Q5_0",
-    7: "Q5_1",
-    8: "Q8_0",
+    7: "Q8_0",
+    8: "Q5_0",
+    9: "Q5_1",
     10: "Q2_K",
     11: "Q3_K_S",
     12: "Q3_K_M",
@@ -82,8 +84,8 @@ _FILE_TYPE_LABELS = {
     30: "IQ4_XS",
     31: "IQ1_M",
     32: "BF16",
-    33: "TQ1_0",
-    34: "TQ2_0",
+    36: "TQ1_0",
+    37: "TQ2_0",
 }
 
 
@@ -100,7 +102,9 @@ class _Reader:
         return chunk
 
     def skip(self, size: int) -> None:
-        self.read(size)
+        if self.offset + size > len(self.data):
+            raise ValueError("GGUF metadata ended unexpectedly")
+        self.offset += size
 
     def unpack(self, fmt: str):
         size = struct.calcsize(fmt)
@@ -134,6 +138,9 @@ def _skip_value(reader: _Reader, value_type: int, depth: int = 0) -> None:
             raise ValueError("GGUF array nesting too deep")
         item_type = reader.unpack("<I")
         length = reader.unpack("<Q")
+        if item_type in _STRUCTS:
+            reader.skip(struct.calcsize(_STRUCTS[item_type]) * length)
+            return
         for _ in range(length):
             _skip_value(reader, item_type, depth + 1)
         return
@@ -150,8 +157,14 @@ def _read_array(reader: _Reader, depth: int = 0) -> Any:
 
     sample_limit = 64
     sample = [_read_value(reader, item_type, depth + 1) for _ in range(min(length, sample_limit))]
-    for _ in range(max(length - sample_limit, 0)):
-        _skip_value(reader, item_type, depth + 1)
+    remaining = max(length - sample_limit, 0)
+    if item_type in _STRUCTS:
+        # Tokenizer score/type arrays can contain hundreds of thousands of
+        # entries. Their unused fixed-width tail needs only one bounds check.
+        reader.skip(struct.calcsize(_STRUCTS[item_type]) * remaining)
+    else:
+        for _ in range(remaining):
+            _skip_value(reader, item_type, depth + 1)
 
     if length <= sample_limit:
         return sample
@@ -192,7 +205,7 @@ def _first_value(metadata: dict[str, Any], suffixes: tuple[str, ...]) -> Any:
     return None
 
 
-def inspect_gguf(path: Path | str, max_metadata_bytes: int = 8 * 1024 * 1024) -> dict[str, Any]:
+def inspect_gguf(path: Path | str, max_metadata_bytes: int = 32 * 1024 * 1024) -> dict[str, Any]:
     """Return normalized GGUF metadata, degrading to ``unknown`` on failure."""
     p = Path(path)
     result: dict[str, Any] = {
@@ -248,6 +261,15 @@ def inspect_gguf(path: Path | str, max_metadata_bytes: int = 8 * 1024 * 1024) ->
                 metadata, (".attention.value_length",)
             ),
             "rope_dimension_count": _first_int(metadata, (".rope.dimension_count",)),
+            # Hybrid attention/recurrent layouts (llama.cpp llama-arch.cpp
+            # LLM_KV_FULL_ATTENTION_INTERVAL and LLM_KV_SSM_*): only every
+            # Nth layer of a Qwen3.5/3.6-style model holds a KV cache.
+            "full_attention_interval": _first_int(metadata, (".full_attention_interval",)),
+            "ssm_conv_kernel": _first_int(metadata, (".ssm.conv_kernel",)),
+            "ssm_inner_size": _first_int(metadata, (".ssm.inner_size",)),
+            "ssm_state_size": _first_int(metadata, (".ssm.state_size",)),
+            "ssm_group_count": _first_int(metadata, (".ssm.group_count",)),
+            "ssm_time_step_rank": _first_int(metadata, (".ssm.time_step_rank",)),
             "expert_count": _first_int(metadata, (".expert_count", ".expert.count")),
             "expert_used_count": _first_int(metadata, (".expert_used_count", ".expert.used_count")),
             "model_name": _first_value(metadata, ("general.name",)),

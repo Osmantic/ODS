@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 python3 -m py_compile "$ROOT_DIR/scripts/validate-generated-configs.py"
+python3 "$ROOT_DIR/tests/test-generated-config-backups.py"
 python3 "$ROOT_DIR/scripts/validate-generated-configs.py" "$ROOT_DIR/config/generated-config-contracts.json"
 
 missing_writer_contract="$(mktemp)"

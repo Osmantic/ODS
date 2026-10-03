@@ -1,0 +1,13 @@
+{
+  "repository": "https://github.com/sqlpage/SQLPage",
+  "license": "MIT",
+  "source_ref": "v0.46.3",
+  "image": "lovasoa/sqlpage:v0.46.3@sha256:354c683a50f541be01d427b3b664f1d5b36c28739f45bfb809be14b99b6ff649",
+  "registry_checked_at": "2026-09-20",
+  "platforms": [
+    "linux/amd64",
+    "linux/arm64"
+  ],
+  "runtime_validation": "pending",
+  "notes": "Official image and native SQLPage runtime. Separate persistent web source and SQLite/configuration volumes. Initial page reads actual SQLite schema; no demo records. No authentication or project synchronization claimed; shell execution disabled."
+}

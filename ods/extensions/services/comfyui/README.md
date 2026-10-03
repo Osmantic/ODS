@@ -45,6 +45,17 @@ Environment variables (set in `.env`):
 | `./data/comfyui/output` | `/output` | Generated images output directory |
 | `./data/comfyui/input` | `/input` | Input images for img2img and inpainting |
 | `./data/comfyui/workflows` | `/workflows` | Workflow JSON templates (read-only) |
+| `./data/comfyui/user` | `/user` | Saved workflows and UI settings (persisted across recreates) |
+
+Workflow templates seed missing files in the NVIDIA user directory on startup.
+An existing saved workflow keeps its contents even when its template is newer.
+To use an updated template, import it under a new name in ComfyUI.
+
+When upgrading an older NVIDIA container, export its saved workflows and settings
+before recreating it: files in the old container layer cannot be recovered by the
+new entrypoint. Startup preserves any existing image-side `user/` as
+`user.migration-backup` after copying missing files to the host mount; a copy failure
+stops startup and leaves the original directory intact.
 
 ### AMD
 

@@ -1,0 +1,221 @@
+#!/usr/bin/env bash
+set -euo pipefail
+ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)
+# shellcheck source=scripts/generated/release.env
+source "$ROOT/scripts/generated/release.env"
+[[ -z ${PIXEL_FAKE_DOCKER_LOG:-} ]] || printf '%s\n' "$*" >> "$PIXEL_FAKE_DOCKER_LOG"
+
+image_state_dir=${PIXEL_FAKE_DOCKER_IMAGE_STATE_DIR:-}
+
+fake_docker_die() {
+  echo "fake docker: $*" >&2
+  exit 1
+}
+
+valid_image_state() {
+  local version=$1 uid=$2 user=$3 image_id=$4
+  [[ ${#version} -le 64 && $version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 1
+  [[ ${#uid} -le 10 && $uid =~ ^[1-9][0-9]*$ ]] || return 1
+  [[ ${#user} -le 32 && $user =~ ^[A-Za-z_][A-Za-z0-9_-]*$ ]] || return 1
+  [[ $image_id =~ ^sha256:[a-f0-9]{64}$ ]] || return 1
+}
+
+map_image_ref() {
+  local ref=$1
+  IMAGE_STATE_EXPECTED_VERSION=
+  IMAGE_STATE_EXPECTED_UID=
+  if [[ $ref == "$PIXEL_GENERATED_SANDBOX_IMAGE" ]]; then
+    IMAGE_STATE_FILE=$image_state_dir/shared.state
+    IMAGE_STATE_KIND=shared
+  elif [[ ${#ref} -le 128 && $ref =~ ^pixel-sandbox-candidate:([0-9]+\.[0-9]+\.[0-9]+)-uid-([1-9][0-9]*)$ ]]; then
+    IMAGE_STATE_FILE=$image_state_dir/candidate.state
+    IMAGE_STATE_KIND=candidate
+    IMAGE_STATE_EXPECTED_VERSION=${BASH_REMATCH[1]}
+    IMAGE_STATE_EXPECTED_UID=${BASH_REMATCH[2]}
+  elif [[ ${#ref} -le 128 && $ref =~ ^pixel-sandbox-preserve:([0-9]+\.[0-9]+\.[0-9]+)-uid-([1-9][0-9]*)$ ]]; then
+    IMAGE_STATE_FILE=$image_state_dir/preserve.state
+    IMAGE_STATE_KIND=preserve
+    IMAGE_STATE_EXPECTED_VERSION=${BASH_REMATCH[1]}
+    IMAGE_STATE_EXPECTED_UID=${BASH_REMATCH[2]}
+  else
+    return 1
+  fi
+}
+
+load_image_state_file() {
+  local file=$1
+  local expected_version=${2:-} expected_uid=${3:-}
+  local -a fields=()
+  [[ -f $file && ! -L $file ]] || return 1
+  mapfile -t fields < "$file"
+  [[ ${#fields[@]} == 4 ]] || return 1
+  valid_image_state "${fields[0]}" "${fields[1]}" "${fields[2]}" "${fields[3]}" || return 1
+  [[ -z $expected_version || ${fields[0]} == "$expected_version" ]] || return 1
+  [[ -z $expected_uid || ${fields[1]} == "$expected_uid" ]] || return 1
+  IMAGE_STATE_VERSION=${fields[0]}
+  IMAGE_STATE_UID=${fields[1]}
+  IMAGE_STATE_USER=${fields[2]}
+  IMAGE_STATE_ID=${fields[3]}
+}
+
+load_image_state_ref() {
+  local ref=$1
+  map_image_ref "$ref" || return 1
+  load_image_state_file "$IMAGE_STATE_FILE" "$IMAGE_STATE_EXPECTED_VERSION" "$IMAGE_STATE_EXPECTED_UID"
+}
+
+load_image_state_id() {
+  local wanted=$1 file found=0
+  local found_version='' found_uid='' found_user=''
+  [[ $wanted =~ ^sha256:[a-f0-9]{64}$ ]] || return 1
+  for file in "$image_state_dir/shared.state" "$image_state_dir/candidate.state" "$image_state_dir/preserve.state"; do
+    if load_image_state_file "$file" && [[ $IMAGE_STATE_ID == "$wanted" ]]; then
+      if (( found == 0 )); then
+        found_version=$IMAGE_STATE_VERSION
+        found_uid=$IMAGE_STATE_UID
+        found_user=$IMAGE_STATE_USER
+      else
+        [[ $IMAGE_STATE_VERSION == "$found_version" && $IMAGE_STATE_UID == "$found_uid" && $IMAGE_STATE_USER == "$found_user" ]] || return 1
+      fi
+      found=$((found + 1))
+    fi
+  done
+  (( found > 0 )) || return 1
+  IMAGE_STATE_VERSION=$found_version
+  IMAGE_STATE_UID=$found_uid
+  IMAGE_STATE_USER=$found_user
+  IMAGE_STATE_ID=$wanted
+}
+
+write_image_state_file() {
+  local file=$1 version=$2 uid=$3 user=$4 image_id=$5 tmp
+  valid_image_state "$version" "$uid" "$user" "$image_id" || return 1
+  tmp=$(mktemp "$image_state_dir/.image-state.XXXXXX")
+  printf '%s\n%s\n%s\n%s\n' "$version" "$uid" "$user" "$image_id" > "$tmp"
+  mv -f -- "$tmp" "$file"
+}
+
+if [[ -n $image_state_dir ]]; then
+  mkdir -p -- "$image_state_dir"
+fi
+
+case "${1:-}" in
+  info) exit 0 ;;
+  image)
+    subcommand=${2:-}
+    if [[ "$subcommand" == tag ]]; then
+      [[ $# == 4 ]] || fake_docker_die "image tag requires SOURCE TARGET"
+      source_ref=$3
+      target_ref=$4
+      if [[ -n $image_state_dir ]]; then
+        [[ -z ${PIXEL_FAKE_DOCKER_FAIL_TAG_SOURCE:-} || $source_ref != "$PIXEL_FAKE_DOCKER_FAIL_TAG_SOURCE" ]] || exit 5
+        [[ -z ${PIXEL_FAKE_DOCKER_FAIL_TAG_TARGET:-} || $target_ref != "$PIXEL_FAKE_DOCKER_FAIL_TAG_TARGET" ]] || exit 5
+        if [[ $source_ref == sha256:* ]]; then
+          load_image_state_id "$source_ref" || fake_docker_die "unknown or ambiguous image id: $source_ref"
+        else
+          load_image_state_ref "$source_ref" || fake_docker_die "missing or invalid source image: $source_ref"
+        fi
+        source_version=$IMAGE_STATE_VERSION
+        source_uid=$IMAGE_STATE_UID
+        source_user=$IMAGE_STATE_USER
+        source_id=$IMAGE_STATE_ID
+        map_image_ref "$target_ref" || fake_docker_die "unsupported target image: $target_ref"
+        write_image_state_file "$IMAGE_STATE_FILE" "$source_version" "$source_uid" "$source_user" "$source_id"
+        if [[ $target_ref == "$PIXEL_GENERATED_SANDBOX_IMAGE" \
+           && -n ${PIXEL_FAKE_DOCKER_TAMPER_AFTER_TAG_SOURCE:-} \
+           && $source_ref == "$PIXEL_FAKE_DOCKER_TAMPER_AFTER_TAG_SOURCE" ]]; then
+          tampered_id=${PIXEL_FAKE_DOCKER_TAMPER_AFTER_TAG_ID:?}
+          write_image_state_file "$IMAGE_STATE_FILE" "$source_version" "$source_uid" "$source_user" "$tampered_id"
+        fi
+      else
+        target=${!#}
+        if [[ "$target" == "$PIXEL_GENERATED_SANDBOX_IMAGE" && ${PIXEL_FAKE_DOCKER_FAIL_RESTORE_TAG:-0} == 1 ]]; then exit 5; fi
+        if [[ "$target" == "$PIXEL_GENERATED_SANDBOX_IMAGE" && -n ${PIXEL_FAKE_SANDBOX_VERSION_STATE:-} && -n ${PIXEL_FAKE_SANDBOX_RESTORE_VERSION:-} ]]; then
+          printf '%s\n' "$PIXEL_FAKE_SANDBOX_RESTORE_VERSION" > "$PIXEL_FAKE_SANDBOX_VERSION_STATE"
+        fi
+      fi
+      exit 0
+    fi
+    if [[ "$subcommand" == rm ]]; then
+      [[ -n $image_state_dir ]] || fake_docker_die "legacy image rm is unsupported"
+      [[ $# == 4 && $3 == -- ]] || fake_docker_die "image rm requires -- REF"
+      [[ ${PIXEL_FAKE_DOCKER_FAIL_IMAGE_RM:-0} != 1 ]] || exit 5
+      map_image_ref "$4" || fake_docker_die "unsupported image: $4"
+      [[ -f $IMAGE_STATE_FILE && ! -L $IMAGE_STATE_FILE ]] || fake_docker_die "missing image: $4"
+      rm -f -- "$IMAGE_STATE_FILE"
+      exit 0
+    fi
+    [[ "$subcommand" == inspect ]]
+    reference=${!#}
+    if [[ -n $image_state_dir ]]; then
+      load_image_state_ref "$reference" || exit 1
+      case "$*" in
+        *org.osmantic.pixel.sandbox-version*) echo "$IMAGE_STATE_VERSION" ;;
+        *org.osmantic.pixel.sandbox-uid*) echo "$IMAGE_STATE_UID" ;;
+        *'.Config.User'*) echo "$IMAGE_STATE_USER" ;;
+        *'{{.Id}}'*) echo "$IMAGE_STATE_ID" ;;
+      esac
+    else
+      if [[ "$reference" == pixel-sandbox-preserve:* && ${PIXEL_FAKE_DOCKER_MISSING_PRESERVE:-0} == 1 ]]; then exit 1; fi
+      if [[ "$reference" =~ ^pixel-sandbox-preserve:([0-9]+\.[0-9]+\.[0-9]+)-uid-([1-9][0-9]*)$ ]]; then
+        fake_version=${BASH_REMATCH[1]}
+        fake_uid=${BASH_REMATCH[2]}
+      else
+        fake_version=${PIXEL_FAKE_SANDBOX_VERSION:-$PIXEL_GENERATED_RELEASE_VERSION}
+        [[ -z ${PIXEL_FAKE_SANDBOX_VERSION_STATE:-} || ! -f $PIXEL_FAKE_SANDBOX_VERSION_STATE ]] || fake_version=$(cat "$PIXEL_FAKE_SANDBOX_VERSION_STATE")
+        fake_uid=${PIXEL_FAKE_SANDBOX_UID:-$(id -u)}
+      fi
+      case "$*" in
+        *org.osmantic.pixel.sandbox-version*) echo "$fake_version" ;;
+        *org.osmantic.pixel.sandbox-uid*) echo "$fake_uid" ;;
+        *'.Config.User'*) echo "${PIXEL_FAKE_SANDBOX_USER:-sandbox}" ;;
+        *'{{.Id}}'*) echo "${PIXEL_FAKE_SANDBOX_IMAGE_ID:-sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}" ;;
+      esac
+    fi
+    ;;
+  ps)
+    [[ -n ${PIXEL_FAKE_DOCKER_STATE:-} && -f $PIXEL_FAKE_DOCKER_STATE ]] && cat "$PIXEL_FAKE_DOCKER_STATE"
+    ;;
+  inspect)
+    [[ -n ${PIXEL_FAKE_DOCKER_STATE:-} && -f $PIXEL_FAKE_DOCKER_STATE && ${2:-} == "$(cat "$PIXEL_FAKE_DOCKER_STATE")" ]] || exit 1
+    cat <<JSON
+[{"Id":"$(cat "$PIXEL_FAKE_DOCKER_STATE")","Name":"/pixel-sbx-agent-pixel-fixture","Image":"${PIXEL_FAKE_SANDBOX_CONTAINER_IMAGE:-sha256:fake-current-image}","State":{"Status":"${PIXEL_FAKE_SANDBOX_STATE_STATUS:-running}","Running":${PIXEL_FAKE_SANDBOX_STATE_RUNNING:-true},"Paused":${PIXEL_FAKE_SANDBOX_STATE_PAUSED:-false},"Restarting":${PIXEL_FAKE_SANDBOX_STATE_RESTARTING:-false},"OOMKilled":${PIXEL_FAKE_SANDBOX_STATE_OOM_KILLED:-false},"Dead":${PIXEL_FAKE_SANDBOX_STATE_DEAD:-false},"Pid":${PIXEL_FAKE_SANDBOX_STATE_PID:-1234},"ExitCode":${PIXEL_FAKE_SANDBOX_STATE_EXIT_CODE:-0},"Error":"${PIXEL_FAKE_SANDBOX_STATE_ERROR:-}"},"Config":{"Image":"$PIXEL_GENERATED_SANDBOX_IMAGE","User":"sandbox","Labels":{"openclaw.sandbox":"1","openclaw.sessionKey":"agent:pixel","org.osmantic.pixel.sandbox-version":"${PIXEL_FAKE_SANDBOX_CONTAINER_VERSION:-$PIXEL_GENERATED_RELEASE_VERSION}","org.osmantic.pixel.sandbox-uid":"${PIXEL_FAKE_SANDBOX_CONTAINER_UID:-$(id -u)}"}},"HostConfig":{"NetworkMode":"${PIXEL_FAKE_SANDBOX_NETWORK_MODE:-none}","ReadonlyRootfs":true,"Privileged":false,"CapDrop":["ALL"],"SecurityOpt":["no-new-privileges"],"Devices":[],"RestartPolicy":{"Name":"${PIXEL_FAKE_SANDBOX_RESTART_POLICY:-no}"},"PidMode":"","IpcMode":"","UTSMode":"","CgroupnsMode":"private","PidsLimit":1024,"Memory":1073741824},"Mounts":[]}]
+JSON
+    ;;
+  rm)
+    [[ ${2:-} == -f && ${3:-} == -- && -n ${PIXEL_FAKE_DOCKER_STATE:-} && -f $PIXEL_FAKE_DOCKER_STATE ]]
+    shift 3
+    [[ $# == 1 && $1 == "$(cat "$PIXEL_FAKE_DOCKER_STATE")" ]]
+    rm -f -- "$PIXEL_FAKE_DOCKER_STATE"
+    ;;
+  compose) echo "fake compose: ${*:2}" ;;
+  build)
+    if [[ -n $image_state_dir ]]; then
+      build_target=
+      build_uid=
+      build_args=("$@")
+      for ((i=1; i<${#build_args[@]}; i++)); do
+        if [[ ${build_args[$i]} == -t ]]; then
+          (( i + 1 < ${#build_args[@]} )) || fake_docker_die "build -t requires an argument"
+          build_target=${build_args[$((i + 1))]}
+        elif [[ ${build_args[$i]} == --build-arg ]]; then
+          (( i + 1 < ${#build_args[@]} )) || fake_docker_die "--build-arg requires an argument"
+          case ${build_args[$((i + 1))]} in
+            PIXEL_SANDBOX_UID=*) build_uid=${build_args[$((i + 1))]#PIXEL_SANDBOX_UID=} ;;
+          esac
+        fi
+      done
+      [[ -n $build_target ]] || fake_docker_die "build requires -t"
+      [[ -n $build_uid ]] || fake_docker_die "build requires PIXEL_SANDBOX_UID"
+      map_image_ref "$build_target" || fake_docker_die "unsupported build target: $build_target"
+      [[ $IMAGE_STATE_KIND == candidate ]] || fake_docker_die "build target is not a candidate"
+      build_user=${PIXEL_FAKE_DOCKER_BUILD_USER:-sandbox}
+      build_id=${PIXEL_FAKE_DOCKER_BUILD_IMAGE_ID:-sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc}
+      write_image_state_file "$IMAGE_STATE_FILE" "$PIXEL_GENERATED_RELEASE_VERSION" "$build_uid" "$build_user" "$build_id"
+    else
+      if [[ -n ${PIXEL_FAKE_SANDBOX_VERSION_STATE:-} ]]; then printf '%s\n' "$PIXEL_GENERATED_RELEASE_VERSION" > "$PIXEL_FAKE_SANDBOX_VERSION_STATE"; fi
+    fi
+    exit 0
+    ;;
+  *) echo "fake docker: unsupported arguments: $*" >&2; exit 2 ;;
+esac

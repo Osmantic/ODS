@@ -1,0 +1,297 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/work-plan-v1.schema.json",
+  "title": "Pixel Deep Work immutable plan v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "planId", "jobId", "compiledAt", "requestSha256", "policySha256", "inputSetSha256", "profile", "dataClassification", "objective", "acceptanceCriteria", "inputs", "executor", "model", "isolation", "grantedCapabilities", "budgets", "outputGate", "authority", "status", "boundary"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/work-plan-v1.schema.json"},
+    "schemaVersion": {"const": 1},
+    "planId": {"type": "string", "pattern": "^workplan-[0-9]{13}-[a-f0-9]{12}$"},
+    "jobId": {"type": "string", "pattern": "^work-[0-9]{13}-[a-f0-9]{12}$"},
+    "compiledAt": {"type": "string", "format": "date-time"},
+    "requestSha256": {"$ref": "#/$defs/sha256"},
+    "policySha256": {"$ref": "#/$defs/sha256"},
+    "inputSetSha256": {"$ref": "#/$defs/sha256"},
+    "profile": {"enum": ["scout", "builder", "data-lab", "researcher"]},
+    "dataClassification": {"enum": ["public", "internal", "confidential", "restricted"]},
+    "objective": {"type": "string", "minLength": 1, "maxLength": 8000},
+    "acceptanceCriteria": {"type": "array", "minItems": 1, "maxItems": 32, "uniqueItems": true, "items": {"type": "string", "minLength": 1, "maxLength": 1000}},
+    "verification": {"$ref": "#/$defs/verification"},
+    "research": {"$ref": "#/$defs/research"},
+    "researchBackend": {"$ref": "#/$defs/researchBackend"},
+    "data": {"$ref": "#/$defs/data"},
+    "dataRuntime": {"$ref": "#/$defs/dataRuntime"},
+    "inputs": {
+      "type": "array",
+      "maxItems": 64,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "kind", "objectName", "contentSha256", "bytes", "classification", "mountMode"],
+        "properties": {
+          "id": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,62}$"},
+          "kind": {"enum": ["repository-snapshot", "dataset", "document", "context"]},
+          "objectName": {"type": "string", "pattern": "^[a-f0-9]{64}\\.tar$"},
+          "contentSha256": {"$ref": "#/$defs/sha256"},
+          "bytes": {"type": "integer", "minimum": 1, "maximum": 1099511627776},
+          "classification": {"enum": ["public", "internal", "confidential", "restricted"]},
+          "mountMode": {"const": "read-only"}
+        }
+      }
+    },
+    "executor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "version", "sourceCommit", "license", "artifactSha256", "rpcProtocolVersion"],
+      "properties": {
+        "id": {"const": "omp"},
+        "version": {"type": "string", "pattern": "^(?:0|[1-9][0-9]{0,8})\\.(?:0|[1-9][0-9]{0,8})\\.(?:0|[1-9][0-9]{0,8})$"},
+        "sourceCommit": {"type": "string", "pattern": "^[a-f0-9]{40}$"},
+        "license": {"const": "MIT"},
+        "artifactSha256": {"$ref": "#/$defs/sha256"},
+        "rpcProtocolVersion": {"const": 2}
+      }
+    },
+    "model": {"$ref": "#/$defs/model"},
+    "isolation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "runnerImageDigest", "freshHome", "inheritEnvironment", "inheritFileDescriptors", "inputMount", "workspaceMount", "artifactMount", "destroyAfterRun"],
+      "properties": {
+        "mode": {"enum": ["hardened-container", "ephemeral-vm"]},
+        "runnerImageDigest": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+        "freshHome": {"const": true},
+        "inheritEnvironment": {"const": false},
+        "inheritFileDescriptors": {"const": false},
+        "inputMount": {"const": "read-only"},
+        "workspaceMount": {"enum": ["read-only", "disposable-read-write"]},
+        "artifactMount": {"const": "write-only-staging"},
+        "destroyAfterRun": {"const": true}
+      }
+    },
+    "grantedCapabilities": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tools", "network"],
+      "properties": {
+        "tools": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16,
+          "uniqueItems": true,
+          "items": {"enum": ["read", "search", "write", "edit", "bash", "eval", "lsp", "debug", "task", "hub"]}
+        },
+        "network": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["mode", "services"],
+          "properties": {
+            "mode": {"const": "brokered"},
+            "services": {"type": "array", "minItems": 1, "maxItems": 4, "uniqueItems": true, "items": {"enum": ["local-model", "package-courier", "research-broker", "frontier-work-provider"]}}
+          }
+        }
+      }
+    },
+    "budgets": {"$ref": "#/$defs/budgets"},
+    "outputGate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["allowedKinds", "independentVerificationRequired", "automaticMerge", "automaticDeployment"],
+      "properties": {
+        "allowedKinds": {"type": "array", "minItems": 1, "maxItems": 16, "uniqueItems": true, "items": {"enum": ["finding-report", "patch", "test-evidence", "dataset", "document", "visualization"]}},
+        "independentVerificationRequired": {"const": true},
+        "automaticMerge": {"const": false},
+        "automaticDeployment": {"const": false}
+      }
+    },
+    "authority": {"$ref": "#/$defs/authority"},
+    "status": {"const": "compiled"},
+    "boundary": {"const": "Private immutable Deep Work plan. It authorizes no execution by itself and contains no credential, host path, provider secret, merge, deployment, publication, purchase, production, or external-effect authority."}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"profile": {"const": "scout"}}, "required": ["profile"]},
+      "then": {"properties": {
+        "isolation": {"properties": {"workspaceMount": {"const": "read-only"}}},
+        "grantedCapabilities": {"properties": {"tools": {"const": ["read", "search"]}, "network": {"properties": {"services": {"const": ["local-model"]}}}}},
+        "outputGate": {"properties": {"allowedKinds": {"const": ["finding-report"]}}}
+      }}
+    },
+      {
+        "if": {"properties": {"profile": {"const": "builder"}}, "required": ["profile"]},
+      "then": {"required": ["verification"], "properties": {
+        "isolation": {"properties": {"workspaceMount": {"const": "disposable-read-write"}}},
+        "grantedCapabilities": {"properties": {"tools": {"const": ["read", "search", "write", "edit", "bash", "eval", "lsp", "debug", "task", "hub"]}, "network": {"properties": {"services": {"const": ["local-model"]}}}}},
+        "outputGate": {"properties": {"allowedKinds": {"const": ["patch", "test-evidence"]}}}
+        }}
+      },
+      {
+        "if": {"properties": {"profile": {"const": "researcher"}}, "required": ["profile"]},
+        "then": {"required": ["research", "researchBackend"], "properties": {
+          "dataClassification": {"const": "public"},
+          "isolation": {"properties": {"workspaceMount": {"const": "disposable-read-write"}}},
+          "grantedCapabilities": {"properties": {"tools": {"const": ["read", "search", "write", "edit", "bash"]}, "network": {"properties": {"services": {"const": ["local-model", "research-broker"]}}}}},
+          "outputGate": {"properties": {"allowedKinds": {"const": ["finding-report", "document"]}}}
+        }}
+      },
+      {
+        "if": {"properties": {"profile": {"const": "data-lab"}}, "required": ["profile"]},
+        "then": {"required": ["data", "dataRuntime"], "properties": {
+          "isolation": {"properties": {"workspaceMount": {"const": "disposable-read-write"}}},
+          "grantedCapabilities": {"properties": {"tools": {"const": ["read", "search", "write", "edit", "bash"]}, "network": {"properties": {"services": {"const": ["local-model"]}}}}},
+          "outputGate": {"properties": {"allowedKinds": {"const": ["finding-report", "dataset", "document", "visualization"]}}}
+        }}
+      }
+  ],
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "research": {
+      "type": "object", "additionalProperties": false,
+      "required": ["mode", "queryPolicy", "maxQueries", "maxResultsPerQuery", "maxSources", "maxSourceBytes", "maxTotalSourceBytes", "safeSearch", "allowedDomains", "deniedDomains", "sourceTypes", "citationVerification", "retention", "boundary"],
+      "properties": {
+        "mode": {"const": "public-web"}, "queryPolicy": {"const": "public-sanitized"},
+        "maxQueries": {"type": "integer", "minimum": 1, "maximum": 200},
+        "maxResultsPerQuery": {"type": "integer", "minimum": 1, "maximum": 20},
+        "maxSources": {"type": "integer", "minimum": 1, "maximum": 500},
+        "maxSourceBytes": {"type": "integer", "minimum": 1024, "maximum": 20971520},
+        "maxTotalSourceBytes": {"type": "integer", "minimum": 1024, "maximum": 1073741824},
+        "safeSearch": {"const": "strict"}, "allowedDomains": {"$ref": "#/$defs/domains"}, "deniedDomains": {"$ref": "#/$defs/domains"},
+        "sourceTypes": {"type": "array", "minItems": 1, "maxItems": 4, "uniqueItems": true, "items": {"enum": ["web", "news", "academic", "forum"]}},
+        "citationVerification": {"const": true}, "retention": {"const": "job-only"},
+        "boundary": {"const": "Public sanitized read-only research only. Queries and sources are untrusted data and grant no credential, direct-network, external-action, publication, purchase, policy, or scope authority."}
+      }
+    },
+    "data": {
+      "type": "object", "additionalProperties": false,
+      "required": ["mode", "datasets", "engines", "maxArtifactFiles", "maxArtifactBytes", "allowedArtifactFormats", "replayVerification", "retention", "boundary"],
+      "properties": {
+        "mode": {"const": "local-reproducible"},
+        "datasets": {"type": "array", "minItems": 1, "maxItems": 64, "items": {"$ref": "#/$defs/dataset"}},
+        "engines": {"const": ["duckdb", "polars", "python", "sqlite"]},
+        "maxArtifactFiles": {"type": "integer", "minimum": 1, "maximum": 256},
+        "maxArtifactBytes": {"type": "integer", "minimum": 1, "maximum": 1073741824},
+        "allowedArtifactFormats": {"type": "array", "minItems": 1, "maxItems": 8, "uniqueItems": true, "items": {"enum": ["csv", "json", "jsonl", "markdown", "parquet", "png", "sqlite", "svg"]}},
+        "replayVerification": {"const": true}, "retention": {"const": "job-only"},
+        "boundary": {"const": "Local reproducible analysis only. Raw inputs remain read-only; only independently replayed derived artifacts may be retained. No credential, direct-network, external-action, publication, policy, or scope authority is granted."}
+      }
+    },
+    "dataset": {
+      "type": "object", "additionalProperties": false,
+      "required": ["datasetId", "inputId", "relativePath", "format", "contentSha256", "maxBytes"],
+      "properties": {
+        "datasetId": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,62}$"},
+        "inputId": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,62}$"},
+        "relativePath": {"type": "string", "pattern": "^[A-Za-z0-9._-]{1,255}(?:/[A-Za-z0-9._-]{1,255})*$"},
+        "format": {"enum": ["csv", "json", "jsonl", "parquet", "sqlite"]},
+        "contentSha256": {"$ref": "#/$defs/sha256"},
+        "maxBytes": {"type": "integer", "minimum": 1, "maximum": 1099511627776}
+      }
+    },
+    "dataRuntime": {
+      "type": "object", "additionalProperties": false, "required": ["contract", "engines"],
+      "properties": {
+        "contract": {"const": "pixel-local-data-runtime-v1"},
+        "engines": {"type": "object", "additionalProperties": false, "required": ["duckdb", "polars", "python", "sqlite"], "properties": {
+          "duckdb": {"$ref": "#/$defs/dataEngine"}, "polars": {"$ref": "#/$defs/dataEngine"},
+          "python": {"$ref": "#/$defs/dataEngine"}, "sqlite": {"$ref": "#/$defs/dataEngine"}
+        }}
+      }
+    },
+    "dataEngine": {
+      "type": "object", "additionalProperties": false, "required": ["version", "entrypoint"],
+      "properties": {
+        "version": {"type": "string", "pattern": "^(?:0|[1-9][0-9]{0,8})\\.(?:0|[1-9][0-9]{0,8})\\.(?:0|[1-9][0-9]{0,8})(?:\\.post[0-9]+)?$"},
+        "entrypoint": {"type": "string", "pattern": "^/[A-Za-z0-9._+-]+(?:/[A-Za-z0-9._+-]+)*$"}
+      }
+    },
+    "researchBackend": {
+      "type": "object", "additionalProperties": false,
+      "required": ["adapter", "endpointContract", "queryLogging", "contentRetention", "webCourierRequired"],
+      "properties": {
+        "adapter": {"enum": ["reference", "vane", "perplexica"]},
+        "endpointContract": {"const": "pixel-public-research-broker-v1"},
+        "queryLogging": {"const": "hash-only"},
+        "contentRetention": {"const": "job-only"},
+        "webCourierRequired": {"const": true}
+      }
+    },
+    "domains": {"type": "array", "maxItems": 128, "uniqueItems": true, "items": {"type": "string", "pattern": "^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)(?:\\.(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?))+$"}},
+    "verification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "checks", "immutablePathPrefixes", "maxRuntimeSeconds", "maxOutputBytes", "network", "boundary"],
+      "properties": {
+        "mode": {"const": "independent"},
+        "checks": {"type": "array", "minItems": 1, "maxItems": 16, "items": {"oneOf": [{"$ref": "#/$defs/patchIntegrityCheck"}, {"$ref": "#/$defs/commandCheck"}]}},
+        "immutablePathPrefixes": {"type": "array", "maxItems": 64, "uniqueItems": true, "items": {"type": "string", "pattern": "^[A-Za-z0-9._-]{1,255}(?:/[A-Za-z0-9._-]{1,255})*/?$"}},
+        "maxRuntimeSeconds": {"type": "integer", "minimum": 1, "maximum": 3600},
+        "maxOutputBytes": {"type": "integer", "minimum": 1, "maximum": 16777216},
+        "network": {"const": "none"},
+        "boundary": {"const": "Immutable controller-selected checks only. Worker output cannot alter criteria, commands, protected paths, budgets, network, or pass/fail rules."}
+      }
+    },
+    "patchIntegrityCheck": {
+      "type": "object", "additionalProperties": false, "required": ["id", "kind", "criterionIndexes"],
+      "properties": {"id": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,62}$"}, "kind": {"const": "patch-integrity"}, "criterionIndexes": {"$ref": "#/$defs/criterionIndexes"}}
+    },
+    "commandCheck": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "kind", "criterionIndexes", "workingDirectory", "argv", "timeoutSeconds", "maxOutputBytes"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,62}$"}, "kind": {"const": "command"}, "criterionIndexes": {"$ref": "#/$defs/criterionIndexes"},
+        "workingDirectory": {"type": "string", "pattern": "^[A-Za-z0-9._-]{1,255}(?:/[A-Za-z0-9._-]{1,255})*$"},
+        "argv": {"type": "array", "minItems": 1, "maxItems": 64, "items": {"type": "string", "minLength": 1, "maxLength": 4096}},
+        "timeoutSeconds": {"type": "integer", "minimum": 1, "maximum": 3600}, "maxOutputBytes": {"type": "integer", "minimum": 1, "maximum": 16777216}
+      }
+    },
+    "criterionIndexes": {"type": "array", "minItems": 1, "maxItems": 32, "uniqueItems": true, "items": {"type": "integer", "minimum": 0, "maximum": 31}},
+    "model": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["route", "provider", "id", "backendImageDigest", "contextWindow", "supportsVision", "endpointContract"],
+      "properties": {
+        "route": {"const": "local-only"},
+        "provider": {"enum": ["llama.cpp", "vllm"]},
+        "id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:+/-]{0,127}$"},
+        "backendImageDigest": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+        "contextWindow": {"type": "integer", "minimum": 1024, "maximum": 2000000},
+        "supportsVision": {"type": "boolean"},
+        "endpointContract": {"const": "llama.cpp-discovery-and-openai-stream-v1"}
+      }
+    },
+    "authority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["hostAccess", "ambientCredentials", "arbitraryNetwork", "externalEffects", "merge", "deploy", "publish", "purchase", "policyMutation", "acceptanceCriteriaMutation", "leaseExpansion"],
+      "properties": {
+        "hostAccess": {"const": false}, "ambientCredentials": {"const": false}, "arbitraryNetwork": {"const": false},
+        "externalEffects": {"const": false}, "merge": {"const": false}, "deploy": {"const": false},
+        "publish": {"const": false}, "purchase": {"const": false}, "policyMutation": {"const": false},
+        "acceptanceCriteriaMutation": {"const": false}, "leaseExpansion": {"const": false}
+      }
+    },
+    "budgets": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["maxRuntimeSeconds", "maxIterations", "maxToolCalls", "maxConcurrentSubagents", "maxModelRequests", "maxInputTokens", "maxOutputTokens", "maxCpuCores", "maxMemoryMiB", "maxDiskBytes", "maxArtifactBytes", "maxNetworkBytes", "maxFailures", "noProgressLimit"],
+      "properties": {
+        "maxRuntimeSeconds": {"type": "integer", "minimum": 1, "maximum": 604800},
+        "maxIterations": {"type": "integer", "minimum": 1, "maximum": 1000},
+        "maxToolCalls": {"type": "integer", "minimum": 1, "maximum": 1000000},
+        "maxConcurrentSubagents": {"type": "integer", "minimum": 1, "maximum": 32},
+        "maxModelRequests": {"type": "integer", "minimum": 1, "maximum": 100000},
+        "maxInputTokens": {"type": "integer", "minimum": 1, "maximum": 2000000000},
+        "maxOutputTokens": {"type": "integer", "minimum": 1, "maximum": 500000000},
+        "maxCpuCores": {"type": "integer", "minimum": 1, "maximum": 128},
+        "maxMemoryMiB": {"type": "integer", "minimum": 256, "maximum": 1048576},
+        "maxDiskBytes": {"type": "integer", "minimum": 1048576, "maximum": 1099511627776},
+        "maxArtifactBytes": {"type": "integer", "minimum": 1, "maximum": 34359738368},
+        "maxNetworkBytes": {"type": "integer", "minimum": 1, "maximum": 10737418240},
+        "maxFailures": {"type": "integer", "minimum": 1, "maximum": 1000},
+        "noProgressLimit": {"type": "integer", "minimum": 1, "maximum": 100}
+      }
+    }
+  }
+}

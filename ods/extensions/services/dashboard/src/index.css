@@ -58,7 +58,7 @@
     rgba(229, 220, 255, 0.84),
     rgba(255, 255, 255, 0.96),
     rgba(157, 0, 255, 0.82),
-    rgba(255, 205, 122, 0.72),
+    rgb(var(--theme-text-secondary) / 0.72),
     rgba(255, 255, 255, 0.96),
     rgba(131, 92, 201, 0.82),
     rgba(229, 220, 255, 0.84)
@@ -81,32 +81,32 @@
   --sidebar-inactive: rgba(161,161,170,0.3);
 }
 
-/* Lemonade — warm parchment theme matching lemonade-server.ai branding */
+/* Legacy Lemonade preset — retain saved preference compatibility with a neutral palette. */
 :root[data-theme="lemonade"] {
-  --theme-bg: 240 232 207;
-  --theme-card: 253 251 243;
-  --theme-border: 228 218 187;
+  --theme-bg: 240 241 243;
+  --theme-card: 253 253 254;
+  --theme-border: 218 221 226;
   --theme-text: 38 38 38;
-  --theme-text-secondary: 107 102 92;
-  --theme-text-muted: 138 132 120;
-  --theme-accent: 245 197 24;
-  --theme-accent-hover: 226 178 15;
-  --theme-accent-light: 242 222 136;
-  --theme-surface-hover: 243 233 207;
-  --theme-scrollbar-track: #F6EFD9;
-  --theme-scrollbar-thumb: #E1D4B0;
-  --theme-scrollbar-hover: #D0C4A0;
-  --theme-focus: #E2B20F;
-  --theme-loading-logo: #E2B20F;
-  --theme-gradient-from: rgba(245,197,24,0.15);
-  --theme-gradient-to: rgba(226,178,15,0.15);
-  --theme-sidebar: 239 228 198;
-  --dashboard-shell-base: #f4ecd5;
-  --dashboard-shell-grid: rgba(88, 72, 32, 0.05);
-  --dashboard-shell-depth: rgba(88, 72, 32, 0.03);
-  --dashboard-shell-accent: rgba(245, 197, 24, 0.1);
-  --dashboard-shell-accent-soft: rgba(226, 178, 15, 0.07);
-  --theme-card-shadow: 0 2px 12px rgba(80,60,20,0.08);
+  --theme-text-secondary: 82 89 101;
+  --theme-text-muted: 113 121 133;
+  --theme-accent: 75 85 99;
+  --theme-accent-hover: 55 65 81;
+  --theme-accent-light: 156 163 175;
+  --theme-surface-hover: 232 235 239;
+  --theme-scrollbar-track: #F0F1F3;
+  --theme-scrollbar-thumb: #D1D5DB;
+  --theme-scrollbar-hover: #B7BDC7;
+  --theme-focus: #4B5563;
+  --theme-loading-logo: #4B5563;
+  --theme-gradient-from: rgba(75,85,99,0.15);
+  --theme-gradient-to: rgba(55,65,81,0.15);
+  --theme-sidebar: 235 237 240;
+  --dashboard-shell-base: #f0f1f3;
+  --dashboard-shell-grid: rgba(55, 65, 81, 0.05);
+  --dashboard-shell-depth: rgba(55, 65, 81, 0.03);
+  --dashboard-shell-accent: rgba(75, 85, 99, 0.1);
+  --dashboard-shell-accent-soft: rgba(55, 65, 81, 0.07);
+  --theme-card-shadow: 0 2px 12px rgba(31,41,55,0.08);
   --theme-card-radius: 16px;
   --theme-dark-contrast: #1E2240;
   --liquid-border-size: 1px;
@@ -118,25 +118,25 @@
   --liquid-outline-gradient: conic-gradient(
     from var(--liquid-angle),
     rgba(255,255,255,0.55),
-    rgba(245,197,24,0.28),
+    rgba(75,85,99,0.28),
     rgba(255,255,255,0.48)
   );
-  --liquid-button-fill: linear-gradient(135deg, rgba(245,197,24,0.92), rgba(226,178,15,0.9));
-  --liquid-nav-fill: linear-gradient(135deg, rgba(245,197,24,0.92), rgba(226,178,15,0.88));
+  --liquid-button-fill: linear-gradient(135deg, rgba(75,85,99,0.92), rgba(55,65,81,0.9));
+  --liquid-nav-fill: linear-gradient(135deg, rgba(75,85,99,0.92), rgba(55,65,81,0.88));
   --liquid-progress-track: linear-gradient(180deg, rgba(255,255,255,0.18), rgba(0,0,0,0.04));
-  --sidebar-bg: linear-gradient(180deg, #EFE4C6 0%, #E8DCBA 58%, #E2D5B0 100%);
-  --sidebar-bg-glow: radial-gradient(circle at top left, rgba(245,197,24,0.15), transparent 28%);
-  --sidebar-border: rgba(196,176,120,0.3);
-  --sidebar-accent: #D4A810;
-  --sidebar-accent-soft: #B8920D;
-  --sidebar-text: #3D3626;
-  --sidebar-text-muted: #8A8478;
-  --sidebar-text-secondary: #6B665C;
-  --sidebar-label: #8A8478;
-  --sidebar-active-border: rgba(245,197,24,0.3);
-  --sidebar-active-shadow: 0 12px 28px rgba(180,140,10,0.12);
+  --sidebar-bg: linear-gradient(180deg, #EEF0F3 0%, #E5E8ED 58%, #DCE1E7 100%);
+  --sidebar-bg-glow: radial-gradient(circle at top left, rgba(75,85,99,0.15), transparent 28%);
+  --sidebar-border: rgba(156,163,175,0.3);
+  --sidebar-accent: #4B5563;
+  --sidebar-accent-soft: #6B7280;
+  --sidebar-text: #374151;
+  --sidebar-text-muted: #717985;
+  --sidebar-text-secondary: #525965;
+  --sidebar-label: #717985;
+  --sidebar-active-border: rgba(75,85,99,0.3);
+  --sidebar-active-shadow: 0 12px 28px rgba(55,65,81,0.12);
   --sidebar-hover-bg: rgba(0,0,0,0.03);
-  --sidebar-inactive: rgba(138,132,120,0.4);
+  --sidebar-inactive: rgba(113,121,133,0.4);
 }
 
 /* Light — clean modern futuristic light theme */
@@ -429,7 +429,7 @@ a, button, input, select, textarea,
       transparent 24%,
       rgba(255,255,255,0.015) 34%,
       rgba(255,255,255,0.96) 45%,
-      rgba(255,220,152,0.78) 49%,
+      rgb(var(--theme-text-secondary) / 0.78) 49%,
       rgba(157,0,255,0.22) 54%,
       transparent 66%
     );
@@ -558,7 +558,7 @@ a, button, input, select, textarea,
     rgba(232, 236, 255, 0.96) 0%,
     rgba(255, 255, 255, 0.98) 18%,
     rgba(209, 138, 255, 0.9) 42%,
-    rgba(255, 220, 152, 0.88) 58%,
+    rgb(var(--theme-text-secondary) / 0.88) 58%,
     rgba(255, 255, 255, 0.98) 78%,
     rgba(192, 201, 255, 0.9) 100%
   );
@@ -580,18 +580,18 @@ a, button, input, select, textarea,
 .liquid-metal-progress-fill--warn {
   background-image: linear-gradient(
     90deg,
-    rgba(255, 244, 214, 0.96) 0%,
+    rgb(var(--theme-text) / 0.96) 0%,
     rgba(255, 255, 255, 0.98) 20%,
-    rgba(255, 205, 92, 0.9) 48%,
-    rgba(255, 240, 182, 0.9) 64%,
+    rgb(var(--theme-text-secondary) / 0.9) 48%,
+    rgb(var(--theme-text) / 0.9) 64%,
     rgba(255, 255, 255, 0.98) 82%,
-    rgba(255, 214, 120, 0.9) 100%
+    rgb(var(--theme-text-secondary) / 0.9) 100%
   );
   background-size: 132px 100%;
   background-repeat: repeat-x;
   box-shadow:
     inset 0 1px 0 rgba(255,255,255,0.3),
-    0 0 10px rgba(245, 158, 11, 0.16);
+    0 0 10px rgb(var(--theme-text-secondary) / 0.16);
 }
 
 .liquid-metal-progress-fill--danger {

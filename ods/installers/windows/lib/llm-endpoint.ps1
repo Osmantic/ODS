@@ -219,6 +219,16 @@ function Get-WindowsLocalLlmEndpoint {
     }
 }
 
+function Test-ODSCompletionContent {
+    param([string]$Json)
+    try {
+        $payload = $Json | ConvertFrom-Json -ErrorAction Stop
+        if ($null -ne $payload.error -or @($payload.choices).Count -eq 0) { return $false }
+        $content = $payload.choices[0].message.content
+        return ($content -is [string] -and -not [string]::IsNullOrWhiteSpace($content))
+    } catch { return $false }
+}
+
 function Test-WindowsLlmModelReadiness {
     <#
     .SYNOPSIS
@@ -297,14 +307,34 @@ function Test-WindowsLlmModelReadiness {
     if ([string]::IsNullOrWhiteSpace($modelId)) { $modelId = "default" }
     $result.ModelId = $modelId
 
+    if ($isLemonadeEndpoint -and $result.FileExists) {
+        $envMap = Get-WindowsODSEnvMap -InstallDir $InstallDir
+        $managed = Get-WindowsODSEnvValue -EnvMap $envMap -Keys @("AMD_INFERENCE_MANAGED")
+        $external = Get-WindowsODSEnvValue -EnvMap $envMap -Keys @("LEMONADE_EXTERNAL")
+        $mode = Get-WindowsODSEnvValue -EnvMap $envMap -Keys @("AMD_INFERENCE_RUNTIME_MODE")
+        if ($managed -eq "true" -and $external -ne "true" -and $mode -ne "external-lemonade") {
+            try {
+                $contextSize = [int](Get-WindowsODSEnvValue -EnvMap $envMap -Keys @("CTX_SIZE", "MAX_CONTEXT"))
+                $port = ([Uri]$Endpoint.ChatCompletionsUrl).Port
+                $key = Get-ODSLemonadeAdminApiKey -EnvPath (Join-Path $InstallDir ".env")
+                Set-ODSLemonadeLoadedModel -Port $port -ModelId $modelId `
+                    -ContextSize $contextSize -ApiKey $key -TimeoutSec $TimeoutSec
+            } catch {
+                $result.Detail = "managed Lemonade model/context load failed"
+                return $result
+            }
+        }
+    }
+
     # 3. A minimal completion must actually succeed -- this is the real user path that
     #    a "registered but missing file" install silently fails.
     $body = @{
         model       = $modelId
         messages    = @(@{ role = "user"; content = "hi" })
-        max_tokens  = 1
+        max_tokens  = 64
         temperature = 0
         stream      = $false
+        chat_template_kwargs = @{ enable_thinking = $false }
     } | ConvertTo-Json -Compress -Depth 5
 
     try {
@@ -312,10 +342,10 @@ function Test-WindowsLlmModelReadiness {
             -ContentType "application/json" -Body $body -TimeoutSec $TimeoutSec `
             -UseBasicParsing -ErrorAction Stop
         if ([int]$resp.StatusCode -ge 200 -and [int]$resp.StatusCode -lt 300) {
-            $result.CompletionOk = $true
+            $result.CompletionOk = Test-ODSCompletionContent -Json $resp.Content
         }
-    } catch [System.Net.WebException] {
-        # Narrow I/O-boundary catch: map the failed completion to a meaningful status.
+    } catch {
+        # HTTP exception types differ between Windows PowerShell and PowerShell 7.
         $code = -1
         if ($_.Exception.Response) { $code = [int]$_.Exception.Response.StatusCode }
         $result.Detail = "completion request failed (status=$code)"
@@ -331,4 +361,39 @@ function Test-WindowsLlmModelReadiness {
     }
 
     return $result
+}
+
+function Test-WindowsSwitchboardReadiness {
+    # Only the host agent publishes route proof. Exercise the same public alias
+    # used by consumers, not a backend health endpoint or a fabricated receipt.
+    param([hashtable]$EnvMap, [int]$Attempts = 6, [int]$IntervalSec = 5)
+    if ((Get-WindowsODSEnvValue -EnvMap $EnvMap -Keys @("ODS_MODEL_SWITCHBOARD")) -ne "enabled") {
+        return @{ Ok = $true; Detail = "switchboard disabled" }
+    }
+    $agentKey = Get-WindowsODSEnvValue -EnvMap $EnvMap -Keys @("ODS_AGENT_KEY", "DASHBOARD_API_KEY")
+    $gatewayKey = Get-WindowsODSEnvValue -EnvMap $EnvMap -Keys @("LITELLM_KEY")
+    if (-not $agentKey -or -not $gatewayKey) {
+        return @{ Ok = $false; Detail = "switchboard verification credentials are missing" }
+    }
+    $agentPort = [int](Get-WindowsODSEnvValue -EnvMap $EnvMap -Keys @("ODS_AGENT_PORT") -Default "7710")
+    $gatewayPort = [int](Get-WindowsODSEnvValue -EnvMap $EnvMap -Keys @("LITELLM_PORT") -Default "4000")
+    $body = @{
+        model = "ods/current"; messages = @(@{ role = "user"; content = "Say OK" })
+        max_tokens = 64; temperature = 0; stream = $false
+        chat_template_kwargs = @{ enable_thinking = $false }
+    } | ConvertTo-Json -Compress -Depth 5
+    for ($attempt = 0; $attempt -lt $Attempts; $attempt++) {
+        try {
+            $null = Invoke-WebRequest -Uri "http://127.0.0.1:$agentPort/v1/model/status" `
+                -Headers @{ Authorization = "Bearer $agentKey" } -TimeoutSec 10 -UseBasicParsing -ErrorAction Stop
+            $response = Invoke-WebRequest -Method Post -Uri "http://127.0.0.1:$gatewayPort/v1/chat/completions" `
+                -Headers @{ Authorization = "Bearer $gatewayKey" } -ContentType "application/json" `
+                -Body $body -TimeoutSec 30 -UseBasicParsing -ErrorAction Stop
+            if ([int]$response.StatusCode -eq 200 -and (Test-ODSCompletionContent -Json $response.Content)) {
+                return @{ Ok = $true; Detail = "ods/current returned a completion" }
+            }
+        } catch { } # Never reflect authenticated upstream bodies into install logs.
+        if ($attempt + 1 -lt $Attempts) { Start-Sleep -Seconds $IntervalSec }
+    }
+    return @{ Ok = $false; Detail = "ods/current did not return a verified completion; inspect model status and retry" }
 }

@@ -1,0 +1,45 @@
+{
+  "$schema": "https://osmantic.com/pixel/schemas/work-data-runtime-v1.schema.json",
+  "schemaVersion": 1,
+  "contract": "pixel-local-data-runtime-v1",
+  "platform": "linux-x86_64",
+  "engines": {
+    "duckdb": {"version": "1.5.5", "entrypoint": "/usr/bin/python3"},
+    "polars": {"version": "1.43.2", "entrypoint": "/usr/bin/python3"},
+    "python": {"version": "3.11.2", "entrypoint": "/usr/bin/python3"},
+    "sqlite": {"version": "3.40.1", "entrypoint": "/usr/bin/sqlite3"}
+  },
+  "artifacts": [
+    {
+      "name": "duckdb",
+      "version": "1.5.5",
+      "filename": "duckdb-1.5.5-cp311-cp311-manylinux_2_26_x86_64.manylinux_2_28_x86_64.whl",
+      "sha256": "b9b6f86ed85d4ef5e0211eaebf75d057bd8bb520bba438a95dd0f4e42234bbfe",
+      "bytes": 21477952,
+      "url": "https://files.pythonhosted.org/packages/b5/55/f9641a4eebcc2f4df631287d6c3b9ed2eea3b92644f93acbad825e3972b6/duckdb-1.5.5-cp311-cp311-manylinux_2_26_x86_64.manylinux_2_28_x86_64.whl",
+      "license": "MIT"
+    },
+    {
+      "name": "polars",
+      "version": "1.43.2",
+      "filename": "polars-1.43.2-py3-none-any.whl",
+      "sha256": "22aa0cb92a1ee2d60d6a15a638b2e8e0dd99aea21ac0cd8fb29da8e382e075a9",
+      "bytes": 847150,
+      "url": "https://files.pythonhosted.org/packages/2b/fe/0888040a24e4504098b85d8ad486b14cb01cf6b030bbe479dfc2dcffc2ac/polars-1.43.2-py3-none-any.whl",
+      "license": "MIT"
+    },
+    {
+      "name": "polars-runtime-32",
+      "version": "1.43.2",
+      "filename": "polars_runtime_32-1.43.2-cp310-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+      "sha256": "6d5a7ae004a2723ebf4427f6d6a639f30f86af4cf077075f6b35d04711154fc3",
+      "bytes": 57304599,
+      "url": "https://files.pythonhosted.org/packages/62/60/64deacb3abc70c52e2d88a808a052d1621c86a48fe9194f2c065579ab1cd/polars_runtime_32-1.43.2-cp310-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+      "license": "MIT"
+    }
+  ],
+  "systemPackages": [
+    {"name": "python3", "version": "3.11.2-1+b1"},
+    {"name": "sqlite3", "version": "3.40.1-2+deb12u2"}
+  ]
+}

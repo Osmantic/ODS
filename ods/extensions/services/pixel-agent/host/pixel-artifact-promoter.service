@@ -1,0 +1,53 @@
+[Unit]
+Description=ODS Pixel verified download artifact promoter
+After=pixel-ops-broker.service
+Requires=pixel-ops-broker.service
+
+[Service]
+Type=simple
+User=root
+Group=root
+ExecStart=/usr/bin/python3 /usr/local/libexec/ods-pixel-artifact-promoter.py serve /run/ods-pixel-artifact-promoter/promoter.sock /var/lib/pixel-ops-broker/results /var/lib/pixel-ops-broker/artifacts "__PIXEL_WORKSPACE__" __PIXEL_SERVICE_USER__
+Restart=on-failure
+RestartSec=2
+TimeoutStopSec=30
+RuntimeDirectory=ods-pixel-artifact-promoter
+RuntimeDirectoryMode=0710
+UMask=0077
+
+# Root is retained only to cross from the broker-owned quarantine into the
+# fixed owner workspace. The program has no network family, shell, arbitrary
+# source, overwrite, execution, or destination selector.
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectClock=true
+ProtectControlGroups=true
+ProtectHome=tmpfs
+ProtectHostname=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectSystem=strict
+ProtectProc=invisible
+ProcSubset=pid
+PrivateMounts=true
+BindPaths="__PIXEL_WORKSPACE__"
+ReadOnlyPaths=/usr/local/libexec/ods-pixel-artifact-promoter.py
+ReadOnlyPaths=/var/lib/pixel-ops-broker/results /var/lib/pixel-ops-broker/artifacts
+InaccessiblePaths=/var/lib/pixel-ops-broker/plans /var/lib/pixel-ops-broker/approvals /var/lib/pixel-ops-broker/private /var/lib/pixel-ops-broker/authority /var/lib/pixel-ops-broker/request-archive /var/lib/pixel-ops-broker/requests /var/lib/pixel-ops-broker/cancel /var/lib/pixel-ops-broker/runtime
+ReadWritePaths=/run/ods-pixel-artifact-promoter "__PIXEL_WORKSPACE__"
+RemoveIPC=true
+RestrictAddressFamilies=AF_UNIX
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=CAP_CHOWN CAP_DAC_OVERRIDE
+AmbientCapabilities=
+SystemCallArchitectures=native
+MemoryMax=256M
+TasksMax=32
+
+[Install]
+WantedBy=multi-user.target

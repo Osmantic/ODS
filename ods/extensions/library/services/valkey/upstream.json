@@ -1,0 +1,14 @@
+{
+  "repository": "https://github.com/valkey-io/valkey",
+  "license": "BSD-3-Clause",
+  "image": "valkey/valkey:9.1.2-alpine@sha256:a0dbf4c1d5708782907c10e2c72deff317518518b5288a58416981d9db95d30b",
+  "registry_checked_at": "2026-09-20",
+  "platforms": [
+    "linux/amd64",
+    "linux/arm64",
+    "linux/arm",
+    "linux/ppc64le"
+  ],
+  "runtime_validation": "pending",
+  "notes": "Official image with authenticated ods account, restricted key/channel prefix and DB0; no arbitrary administrative or scripting access. AOF persistence, bounded noeviction data memory, native authenticated PING. No project credentials injected or data seeded."
+}

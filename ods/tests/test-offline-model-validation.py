@@ -227,6 +227,44 @@ def main() -> int:
         (root / "data" / "models" / "model.gguf").write_bytes(b"")
         assert_both(root, 1, "reject empty finalized GGUF")
 
+    # The curated Qwen2.5 7B Q4_K_M is a two-part GGUF. Readiness must
+    # inspect the whole named set, not just its configured first shard.
+    first = "qwen2.5-7b-instruct-q4_k_m-00001-of-00002.gguf"
+    second = "qwen2.5-7b-instruct-q4_k_m-00002-of-00002.gguf"
+    for configured in (True, False):
+        for state in ("missing", "empty", "partial", "wrong-total", "complete"):
+            with temp_root() as root:
+                build_ready_root(root)
+                models = root / "data/models"
+                (models / "model.gguf").unlink()
+                (models / first).write_bytes(b"first shard")
+                env_path = root / ".env"
+                env_path.write_text(env_path.read_text().replace("GGUF_FILE=model.gguf", f"GGUF_FILE={first}" if configured else ""))
+                if state == "empty":
+                    (models / second).touch()
+                elif state == "partial":
+                    (models / (second + ".part")).write_bytes(b"unfinished")
+                elif state == "wrong-total":
+                    (models / second.replace("of-00002", "of-00003")).write_bytes(b"unrelated shard")
+                elif state == "complete":
+                    (models / second).write_bytes(b"second shard")
+                assert_both(root, 0 if state == "complete" else 1,
+                            f"check {state} split GGUF ({'configured' if configured else 'discovered'})")
+                if configured and state != "complete":
+                    result = run_validator(root)
+                    check("missing-shard diagnostic identifies the required file", second in output(result), output(result))
+
+    with temp_root() as root:
+        build_ready_root(root)
+        models = root / "data/models"
+        (models / "model.gguf").unlink()
+        (models / second).write_bytes(b"orphaned second shard")
+        env_path = root / ".env"
+        env_path.write_text(env_path.read_text().replace("GGUF_FILE=model.gguf", ""))
+        assert_both(root, 1, "reject an orphaned non-first shard during discovery")
+        (models / "standalone.gguf").write_bytes(b"complete standalone")
+        assert_both(root, 0, "discover a standalone GGUF alongside an orphaned shard")
+
     with temp_root() as root:
         build_ready_root(root)
         whisper = (

@@ -1,0 +1,15 @@
+{
+  "$schema": "https://osmantic.com/pixel/schemas/work-model-backend-config-v1.schema.json",
+  "schemaVersion": 1,
+  "environmentPath": "/etc/pixel-work/environment.json",
+  "modelSource": {"kind": "directory", "path": "/srv/pixel/models/vllm-model"},
+  "runtimeCacheSeed": {"path": "/srv/pixel/runtime-cache/vllm-seed", "artifactSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "imageDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "cacheFingerprint": "pinned-vllm-runtime-cache-v1", "subtrees": ["vllm", "triton", "sparkinfer", "tilelang"]},
+  "backendNetwork": {"subnet": "172.31.255.0/29"},
+  "containerUser": {"uid": 2000, "gid": 0},
+  "publishLoopbackPort": null,
+  "resources": {"memoryMiB": 196608, "cpuCores": 48, "pids": 4096, "nofile": 65536, "tmpfsMiB": 1024, "cacheMiB": 32768, "sharedMemoryMiB": 32768},
+  "readiness": {"startupTimeoutSeconds": 900, "probeIntervalMilliseconds": 2000},
+  "accelerator": {"class": "nvidia-cuda", "count": 2, "deviceIds": []},
+  "providerOptions": {"provider": "vllm", "imageEntrypoint": "/usr/local/bin/pixel-dsv4-serve", "tensorParallelSize": 2, "maxSequences": 16, "gpuMemoryUtilizationPermille": 984, "dtype": "auto", "enforceEager": false, "reasoningParser": "deepseek_v4", "toolCallParser": "deepseek_v4"},
+  "boundary": "Owner-private contained model backend configuration only. It selects exact local bytes and bounded runtime resources but grants no hashing result, policy mutation, model qualification, execution, container or network creation, image pull, device access, credential, external-effect, or completion authority."
+}

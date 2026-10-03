@@ -123,9 +123,92 @@ ODS_DIR="$FAKE_ODS" RETENTION_COUNT=5 "$ODS_BACKUP" --output "$LIFECYCLE_DIR" --
 [[ -d "$LIFECYCLE_DIR/my-notes" ]] || fail "retention deleted an unrelated directory"
 pass "retention prunes oldest own-format backups and leaves other directories"
 
+info "Creating concurrent backups in the same second"
+CONCURRENT_DIR="$TMP_ROOT/concurrent-backups"
+mkdir -p "$CONCURRENT_DIR"
+CONCURRENT_BIN="$TMP_ROOT/concurrent-bin"
+mkdir -p "$CONCURRENT_BIN"
+cat > "$CONCURRENT_BIN/date" <<'SH'
+#!/usr/bin/env bash
+if [[ "$*" == '+%Y%m%d-%H%M%S' ]]; then
+  echo 20260101-120000
+else
+  exec /bin/date "$@"
+fi
+SH
+chmod +x "$CONCURRENT_BIN/date"
+PATH="$CONCURRENT_BIN:$PATH" ODS_DIR="$FAKE_ODS" "$ODS_BACKUP" --output "$CONCURRENT_DIR" --type config >/dev/null &
+backup_one=$!
+PATH="$CONCURRENT_BIN:$PATH" ODS_DIR="$FAKE_ODS" "$ODS_BACKUP" --output "$CONCURRENT_DIR" --type config >/dev/null &
+backup_two=$!
+wait "$backup_one"
+wait "$backup_two"
+
+concurrent_count=$(find "$CONCURRENT_DIR" -mindepth 1 -maxdepth 1 -type d -name 'backup-*' | wc -l | tr -d ' ')
+[[ "$concurrent_count" == "2" ]] || fail "concurrent backups collided (found $concurrent_count directories)"
+for snapshot in "$CONCURRENT_DIR"/backup-*; do
+  [[ "$snapshot" == *-20260101-120000 ]] || fail "concurrent fixture did not use the fixed clock"
+  ODS_DIR="$FAKE_ODS" "$ODS_BACKUP" --output "$CONCURRENT_DIR" verify "$(basename "$snapshot")" >/dev/null
+done
+pass "concurrent same-second backups receive distinct IDs"
+
 info "Deleting a compressed backup by bare ID"
 (cd "$LIFECYCLE_DIR" && mkdir -p 20260601-120000 && echo x > 20260601-120000/f \
   && tar czf 20260601-120000.tar.gz 20260601-120000 && rm -rf 20260601-120000)
 echo y | ODS_DIR="$FAKE_ODS" "$ODS_BACKUP" --output "$LIFECYCLE_DIR" -d 20260601-120000 >/dev/null
 [[ ! -f "$LIFECYCLE_DIR/20260601-120000.tar.gz" ]] || fail "delete left the compressed backup behind"
 pass "delete removes compressed backups by bare ID"
+
+# CLI timestamps and host-agent labels share one retention pool. Prefixes must
+# not outrank creation dates, even when archive mtimes disagree with their IDs.
+for compressed in false true; do
+  CHRONOLOGY_DIR="$TMP_ROOT/chronology with spaces"$'\t'"and newline"$'\n'"-$compressed"
+  mkdir -p "$CHRONOLOGY_DIR/operator notes"
+  chronological_ids=(
+    "19900110-120000.tar.gz"
+    "a-dashboard--lab-19900109-120000"
+    "19891231-120000"
+    "z-dashboard-old-19880101-120000"
+  )
+  for id in "${chronological_ids[@]}"; do
+    directory_id="${id%.tar.gz}"
+    mkdir -p "$CHRONOLOGY_DIR/$directory_id"
+    echo '{"backup_type": "user-data", "description": "chronology fixture"}' \
+      > "$CHRONOLOGY_DIR/$directory_id/manifest.json"
+    if [[ "$id" == *.tar.gz ]]; then
+      tar czf "$CHRONOLOGY_DIR/$id" -C "$CHRONOLOGY_DIR" "$directory_id"
+      rm -rf "${CHRONOLOGY_DIR:?}/$directory_id"
+    fi
+  done
+  # Copy/extraction times are not the creation timestamp in a backup ID.
+  touch -t 200001010000 "$CHRONOLOGY_DIR/${chronological_ids[0]}"
+  touch "$CHRONOLOGY_DIR/${chronological_ids[3]}"
+
+  list_out=$(ODS_DIR="$FAKE_ODS" "$ODS_BACKUP" --output "$CHRONOLOGY_DIR" --list)
+
+  backup_args=(--type config)
+  [[ "$compressed" == false ]] || backup_args+=(--compress)
+  backup_out=$(ODS_DIR="$FAKE_ODS" RETENTION_COUNT=3 "$ODS_BACKUP" \
+    --output "$CHRONOLOGY_DIR" "${backup_args[@]}")
+  created_id=$(printf '%s\n' "$backup_out" | sed -n 's/.*Backup complete: \([A-Za-z0-9_-]*\).*/\1/p')
+  [[ -n "$created_id" ]] || fail "backup did not report its new ID"
+  created_path="$CHRONOLOGY_DIR/$created_id"
+  [[ "$compressed" == false ]] || created_path+=.tar.gz
+  [[ -e "$created_path" ]] || fail "retention deleted the newly created backup"
+  for id in "${chronological_ids[@]:0:2}"; do
+    [[ -e "$CHRONOLOGY_DIR/$id" ]] || fail "retention deleted a newer snapshot: $id"
+  done
+  for id in "${chronological_ids[@]:2}"; do
+    [[ ! -e "$CHRONOLOGY_DIR/$id" ]] || fail "retention kept an older snapshot: $id"
+  done
+  [[ -d "$CHRONOLOGY_DIR/operator notes" ]] || fail "retention deleted operator data"
+  pass "retention keeps the newest three snapshots (compressed=$compressed)"
+  previous_line=0
+  for id in "${chronological_ids[@]}"; do
+    line=$(printf '%s\n' "$list_out" | awk -v id="$id" '$1 == id {print NR}')
+    [[ "$line" -gt "$previous_line" ]] \
+      || fail "--list orders a prefix ahead of the creation timestamp: $id"
+    previous_line="$line"
+  done
+  pass "--list orders mixed IDs and archives by creation timestamp"
+done

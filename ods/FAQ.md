@@ -27,7 +27,7 @@ ODS is a turnkey local AI stack that runs entirely on your own hardware. It incl
 - NVIDIA GPU with 24GB+ VRAM (RTX 3090/4090)
 - 32GB+ system RAM
 - 100GB+ SSD storage
-- Ubuntu 22.04/24.04 or WSL2 on Windows
+- Ubuntu 22.04/24.04/26.04 or WSL2 on Windows
 
 ### Do I need an internet connection?
 **Initial setup:** Yes, to download models and Docker images.
@@ -217,12 +217,14 @@ cd ODS
 .\ods\installers\windows\ods.ps1 uninstall --force
 ```
 
-If you need to run Docker Compose manually, do not use bare `docker compose down`: ODS does not use a top-level `docker-compose.yml`. Use the saved flags instead:
+On Linux and macOS, use `ods stop` to pause services. It keeps the stopped containers so the uninstaller can verify which Docker volumes belong to this installation. If you need to run Docker Compose manually on those platforms, ODS does not use a top-level `docker-compose.yml`; use the saved flags:
 
 ```bash
 cd ~/ods
-docker compose $(cat .compose-flags) down -v --remove-orphans
+docker compose $(cat .compose-flags) stop
 ```
+
+For a full removal, use `./ods-uninstall.sh --force`. If an older `ods stop` already removed the containers, the uninstaller may refuse to purge volumes it cannot prove belong to this installation. `--keep-data` preserves them; a full purge then needs individual ownership review.
 
 ---
 
@@ -411,16 +413,11 @@ docker compose logs n8n
 In the workflow editor, toggle must be ON (green).
 
 ### Docker volumes taking too much space
-Clean up unused volumes:
-```bash
-docker volume prune
-```
-
-Or remove everything (destructive):
-```bash
-cd ~/ods
-docker compose $(cat .compose-flags) down -v --remove-orphans
-```
+Use the ODS uninstaller with `--keep-data` if you want to remove the
+application while keeping its volumes. For a full ODS removal, run
+`./ods-uninstall.sh --force`; it checks volume ownership before deleting
+data. If it cannot prove ownership, it leaves the volumes for individual
+review. Avoid Docker-wide volume cleanup commands on a host with other apps.
 
 ---
 
@@ -485,7 +482,7 @@ SQLite databases are in Docker volumes:
 
 Access via:
 ```bash
-docker compose exec n8n sqlite3 /home/node/.n8n/database.sqlite
+docker compose exec n8n sqlite3 /tmp/.n8n/database.sqlite
 ```
 
 ### Can I use OpenAI/Anthropic APIs?

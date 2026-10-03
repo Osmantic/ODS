@@ -119,6 +119,53 @@ def test_per_layer_kv_head_counts_are_preserved(tmp_path):
     assert result["attention_head_count_kv"] == [0, 2, 0, 2]
 
 
+def test_hybrid_layout_keys_are_normalized(tmp_path):
+    path = _write(tmp_path, "qwen35.gguf", build_gguf([
+        ("general.architecture", STR, "qwen35"),
+        ("qwen35.block_count", U32, 32),
+        ("qwen35.attention.head_count_kv", U32, 4),
+        ("qwen35.attention.key_length", U32, 256),
+        ("qwen35.attention.value_length", U32, 256),
+        ("qwen35.full_attention_interval", U32, 4),
+        ("qwen35.ssm.conv_kernel", U32, 4),
+        ("qwen35.ssm.inner_size", U32, 4096),
+        ("qwen35.ssm.state_size", U32, 128),
+        ("qwen35.ssm.group_count", U32, 16),
+        ("qwen35.ssm.time_step_rank", U32, 32),
+    ]))
+
+    result = inspect_gguf(path)
+
+    assert result["full_attention_interval"] == 4
+    assert result["ssm_conv_kernel"] == 4
+    assert result["ssm_inner_size"] == 4096
+    assert result["ssm_state_size"] == 128
+    assert result["ssm_group_count"] == 16
+    assert result["ssm_time_step_rank"] == 32
+
+    # An imported hybrid GGUF is charged KV on its attention layers only.
+    from model_memory import estimated_context_kv_gb, kv_layer_count
+
+    assert kv_layer_count(result) == 8
+    assert estimated_context_kv_gb(result, 65536) == 2.0
+
+
+def test_large_tokenizer_header_preserves_architecture_and_mtp_metadata(tmp_path):
+    # Current vocabularies can exceed the old 8 MiB header limit. Keep the
+    # inspection bounded while reading the structural metadata after the vocab.
+    path = _write(tmp_path, "large-vocabulary.gguf", build_gguf([
+        ("general.architecture", STR, "qwen35"),
+        ("tokenizer.ggml.tokens", ARR, (STR, ["x" * (9 * 1024 * 1024)])),
+        ("qwen35.context_length", U32, 262144),
+        ("qwen35.nextn_predict_layers", U32, 1),
+    ]))
+    result = inspect_gguf(path)
+    assert result["readable"] is True
+    assert result["context_length"] == 262144
+    assert result["metadata"]["qwen35.nextn_predict_layers"] == 1
+    assert inspect_gguf(path, max_metadata_bytes=8 * 1024 * 1024)["readable"] is False
+
+
 def test_expert_count_accepts_alternate_suffix(tmp_path):
     # Some exporters use ``.expert.count`` instead of ``.expert_count``.
     path = _write(tmp_path, "moe.gguf", build_gguf([
@@ -226,6 +273,46 @@ def test_deeply_nested_array_degrades_without_recursion_error(tmp_path):
 
 
 # ── file_type / quantization normalization ──────────────────────────────────
+
+@pytest.mark.parametrize(("file_type", "quantization"), [
+    # llama_ftype / LlamaFileType in llama.cpp/include/llama.h. These IDs differ
+    # from GGML tensor types: a Q8_0 file records 7, not tensor type 8.
+    (7, "Q8_0"), (8, "Q5_0"), (9, "Q5_1"),
+    (15, "Q4_K_M"), (32, "BF16"), (36, "TQ1_0"), (37, "TQ2_0"),
+    # Removed file formats must not be relabelled as unrelated live formats.
+    (6, "6"), (33, "33"), (34, "34"), (35, "35"),
+])
+def test_file_type_uses_model_file_enum_not_tensor_enum(tmp_path, file_type, quantization):
+    path = _write(tmp_path, "model.gguf", build_gguf([
+        ("general.architecture", STR, "qwen3"),
+        ("general.file_type", U32, file_type),
+    ]))
+    result = inspect_gguf(path)
+    assert result["readable"] is True
+    assert result["quantization"] == quantization
+
+
+def test_qwen_q8_metadata_reaches_model_library_badge(tmp_path):
+    from performance_oracle import build_models_payload
+
+    filename = "Qwen3-0.6B-Q8_0.gguf"
+    path = _write(tmp_path, filename, build_gguf([
+        ("general.architecture", STR, "qwen3"),
+        ("general.file_type", U32, 7),
+        ("qwen3.context_length", U32, 40960),
+    ]))
+    model = {
+        "id": "hf-qwen3-0.6b", "name": "Qwen3-0.6B-Q8_0", "gguf_file": filename,
+        "quantization": "Q8_0", "context_length": 40960, "source": "huggingface",
+    }
+    payload = build_models_payload(
+        None, None, 0, tmp_path, tmp_path / "data", catalog=[model], evidence=[],
+        downloaded_files_override={filename: path},
+    )
+    entry = next(item for item in payload["models"] if item["id"] == model["id"])
+    assert entry["status"] == "downloaded"
+    assert entry["quantization"] == "Q8_0"
+
 
 def test_unknown_file_type_falls_back_to_stringified_int(tmp_path):
     path = _write(tmp_path, "unk.gguf", build_gguf([

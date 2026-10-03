@@ -8,6 +8,7 @@
 #   AMDGPU_TARGET  — GPU architecture (default: gfx1151 for Strix Halo)
 #   LLAMA_CPP_REF  — llama.cpp git ref to build (default: b8763)
 #   ROCM_VERSION   — ROCm SDK version for builder (default: 7.2)
+#   ROCM_IMAGE_DIGEST — verified builder digest; update together with ROCM_VERSION
 #   LEMONADE_SERVER_IMAGE — Lemonade runtime image tag
 #
 # The custom binary is placed at /opt/llama-custom/ and activated via the
@@ -18,8 +19,9 @@
 # ── Stage 1: Build llama.cpp with ROCm + rocWMMA + patches ──────────────────
 
 ARG ROCM_VERSION=7.2
-ARG LEMONADE_SERVER_IMAGE=ghcr.io/lemonade-sdk/lemonade-server:v10.2.0
-FROM rocm/dev-ubuntu-24.04:${ROCM_VERSION}-complete AS builder
+ARG ROCM_IMAGE_DIGEST=sha256:86e11093b4a7ec2a79b1b6701d10e840a6994f21c7e05929b51eb9be361c683a
+ARG LEMONADE_SERVER_IMAGE=ghcr.io/lemonade-sdk/lemonade-server:v10.2.0@sha256:08edbf1128a7fd82b39f1de72c2f70c013f2ecfefac6a99c52bcf58eba532a3a
+FROM rocm/dev-ubuntu-24.04:${ROCM_VERSION}-complete@${ROCM_IMAGE_DIGEST} AS builder
 
 ARG AMDGPU_TARGET=gfx1151
 ARG LLAMA_CPP_REF=b8763

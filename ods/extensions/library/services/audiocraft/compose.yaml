@@ -15,7 +15,7 @@ services:
       - ./data/audiocraft:/app/outputs:rw
       - ./data/audiocraft/models:/root/.cache/audiocraft:rw
     ports:
-      - "${BIND_ADDRESS:-127.0.0.1}:${AUDIOCRAFT_PORT:-7863}:7860"
+      - "127.0.0.1:${AUDIOCRAFT_PORT:-7863}:7860"
     healthcheck:
       test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:7860/"]
       interval: 30s

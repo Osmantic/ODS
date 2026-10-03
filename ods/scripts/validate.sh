@@ -78,15 +78,16 @@ echo ""
 echo "3. Inference Test"
 echo "─────────────────"
 printf "  %-30s " "Chat completion..."
-RESPONSE=$(curl -sf --max-time 30 "http://127.0.0.1:${LLM_PORT}/v1/chat/completions" \
-    -H "Content-Type: application/json" \
-    -d '{
-        "model": "'"$(curl -sf --max-time 10 "http://127.0.0.1:${LLM_PORT}/v1/models" | jq -r '.data[0].id // "local"')"'",
+if MODEL_ID=$(curl -sf --max-time 10 "http://127.0.0.1:${LLM_PORT}/v1/models" \
+    | jq -er '.data[0].id | strings | select(length > 0)') \
+    && PAYLOAD=$(jq -cn --arg model "$MODEL_ID" '{
+        "model": $model,
         "messages": [{"role": "user", "content": "Say OK"}],
         "max_tokens": 10
-    }' 2>/dev/null) || RESPONSE=""
-
-if echo "$RESPONSE" | grep -q "content"; then
+    }') \
+    && RESPONSE=$(curl -sf --max-time 30 "http://127.0.0.1:${LLM_PORT}/v1/chat/completions" \
+        -H "Content-Type: application/json" -d "$PAYLOAD" 2>/dev/null) \
+    && printf '%s' "$RESPONSE" | jq -e '.choices[0].message.content | strings | select(test("\\S"))' >/dev/null 2>&1; then
     echo -e "${GREEN}✓ PASS${NC}"
     ((PASSED++)) || true
 else

@@ -24,6 +24,52 @@ setup() {
     source "$BATS_TEST_DIRNAME/../../installers/lib/packaging.sh"
 }
 
+@test "package retry returns the final failure and stops at the attempt limit" {
+    export RETRY_CALLS="$BATS_TEST_TMPDIR/retry-calls"
+    export PKG_RETRY_ATTEMPTS=3 PKG_RETRY_DELAY=0
+    _pkg_run() {
+        printf 'attempt\n' >> "$RETRY_CALLS"
+        return "$(($(wc -l < "$RETRY_CALLS") + 20))"
+    }
+    run _pkg_retry fixture-package-manager install fixture
+    assert_equal "$status" 23
+    assert_equal "$(wc -l < "$RETRY_CALLS" | tr -d ' ')" 3
+}
+
+@test "package retry stops immediately after recovery" {
+    export RETRY_CALLS="$BATS_TEST_TMPDIR/retry-calls"
+    export PKG_RETRY_ATTEMPTS=5 PKG_RETRY_DELAY=0
+    _pkg_run() {
+        printf 'attempt\n' >> "$RETRY_CALLS"
+        [[ $(wc -l < "$RETRY_CALLS") -eq 2 ]]
+    }
+    run _pkg_retry fixture-package-manager install fixture
+    assert_success
+    assert_equal "$(wc -l < "$RETRY_CALLS" | tr -d ' ')" 2
+}
+
+@test "package retry preserves exhausted failure under errexit" {
+    run bash -e -c '
+        source "$1"
+        warn() { :; }
+        _pkg_run() { return 42; }
+        PKG_RETRY_ATTEMPTS=1 PKG_RETRY_DELAY=0
+        _pkg_retry fixture-package-manager
+        printf "incorrectly continued after package failure"
+    ' fixture "$BATS_TEST_DIRNAME/../../installers/lib/packaging.sh"
+    assert_equal "$status" 42
+    refute_output --partial "incorrectly continued"
+}
+
+@test "zypper package install propagates exhausted retry failure" {
+    PKG_MANAGER=zypper
+    PKG_RETRY_ATTEMPTS=1 PKG_RETRY_DELAY=0
+    _pkg_configure_zypper_ci_network() { :; }
+    _pkg_run() { return 104; }
+    run pkg_install curl jq rsync
+    assert_equal "$status" 104
+}
+
 # ── pkg_resolve: apt ────────────────────────────────────────────────────────
 
 @test "pkg_resolve: apt passes through generic packages" {

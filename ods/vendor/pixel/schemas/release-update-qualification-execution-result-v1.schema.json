@@ -1,0 +1,381 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/release-update-qualification-execution-result-v1.schema.json",
+  "title": "Pixel qualification execution result v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "status",
+    "operation",
+    "candidateId",
+    "product",
+    "version",
+    "baselineVersion",
+    "relation",
+    "channel",
+    "qualifierIdentity",
+    "sourceCommit",
+    "sourceTree",
+    "host",
+    "envelopeSha256",
+    "stageReceiptSha256",
+    "rehearsalReceiptSha256",
+    "activationReceiptSha256",
+    "activationHash",
+    "activationClaimedAt",
+    "extractedTreeSha256",
+    "rehashedTreeSha256",
+    "rehashedFileCount",
+    "rehashedBytes",
+    "qualificationRootAttestationSha256",
+    "acquisitionMarkerSha256",
+    "harnessRunSha256",
+    "executionTombstoneSha256",
+    "executionClaimSha256",
+    "acquiredAt",
+    "executionSpecSha256",
+    "executionStartSha256",
+    "claimedAt",
+    "observedAt",
+    "outcome",
+    "phase",
+    "reason",
+    "exitCode",
+    "signal",
+    "timedOut",
+    "observedVersion",
+    "success",
+    "candidateCodeExecuted",
+    "executionObserved",
+    "activeDeploymentChanged",
+    "networkUsed",
+    "terminalPromotionEvidence",
+    "publicationAuthority",
+    "productionActivationAuthority",
+    "compatibilityMutationAuthority",
+    "productionStateChanged",
+    "boundary"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "status": {
+      "const": "terminal"
+    },
+    "operation": {
+      "const": "pixel-release-qualification-execution-result"
+    },
+    "candidateId": {
+      "type": "string",
+      "pattern": "^pixel-[0-9]{1,6}\\.[0-9]{1,6}\\.[0-9]{1,6}-[0-9a-f]{64}$"
+    },
+    "product": {
+      "const": "Pixel"
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^[0-9]{1,6}\\.[0-9]{1,6}\\.[0-9]{1,6}$"
+    },
+    "baselineVersion": {
+      "type": "string",
+      "pattern": "^[0-9]{1,6}\\.[0-9]{1,6}\\.[0-9]{1,6}$"
+    },
+    "relation": {
+      "const": "upgrade"
+    },
+    "channel": {
+      "const": "stable"
+    },
+    "qualifierIdentity": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.@+-]{0,127}$"
+    },
+    "sourceCommit": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "sourceTree": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "host": {
+      "$ref": "#/$defs/host"
+    },
+    "envelopeSha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "stageReceiptSha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "rehearsalReceiptSha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "activationReceiptSha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "activationHash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "activationClaimedAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "extractedTreeSha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "rehashedTreeSha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "rehashedFileCount": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 20000
+    },
+    "rehashedBytes": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1073741824
+    },
+    "qualificationRootAttestationSha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "acquisitionMarkerSha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "harnessRunSha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "executionTombstoneSha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "executionClaimSha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "acquiredAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "claimedAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "observedAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "outcome": {
+      "enum": [
+        "success",
+        "failure",
+        "timeout",
+        "signal",
+        "deferred"
+      ]
+    },
+    "phase": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "enum": [
+            "probe",
+            "install",
+            "activate",
+            "cleanup"
+          ]
+        }
+      ]
+    },
+    "reason": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "enum": [
+            "non-zero-exit",
+            "candidate-rejected",
+            "install-contract-deferred",
+            "unsupported-host",
+            "harness-error",
+            "execution-interrupted"
+          ]
+        }
+      ]
+    },
+    "exitCode": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 255
+        }
+      ]
+    },
+    "signal": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "enum": [
+            "SIGTERM",
+            "SIGKILL",
+            "SIGINT",
+            "SIGABRT",
+            "SIGHUP",
+            "SIGQUIT"
+          ]
+        }
+      ]
+    },
+    "timedOut": {
+      "type": "boolean"
+    },
+    "observedVersion": {
+      "anyOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "string",
+          "pattern": "^[0-9]{1,6}\\.[0-9]{1,6}\\.[0-9]{1,6}$"
+        }
+      ]
+    },
+    "success": {
+      "type": "boolean"
+    },
+    "candidateCodeExecuted": {
+      "const": true
+    },
+    "executionObserved": {
+      "const": true
+    },
+    "activeDeploymentChanged": {
+      "const": false
+    },
+    "networkUsed": {
+      "const": false
+    },
+    "terminalPromotionEvidence": {
+      "const": false
+    },
+    "publicationAuthority": {
+      "const": false
+    },
+    "productionActivationAuthority": {
+      "const": false
+    },
+    "compatibilityMutationAuthority": {
+      "const": false
+    },
+    "productionStateChanged": {
+      "const": false
+    },
+    "boundary": {
+      "const": "Content-free immutable qualification execution result; it accurately reports only the bounded candidate execution observed under disposable-host custody and grants no production, publication, compatibility, or promotion authority."
+    },
+    "executionSpecSha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "executionStartSha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    }
+  },
+  "$defs": {
+    "host": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "versionId",
+        "label",
+        "supported"
+      ],
+      "properties": {
+        "id": {
+          "enum": [
+            "ubuntu",
+            "debian"
+          ]
+        },
+        "versionId": {
+          "enum": [
+            "24.04",
+            "12"
+          ]
+        },
+        "label": {
+          "enum": [
+            "Ubuntu 24.04 LTS",
+            "Debian 12"
+          ]
+        },
+        "supported": {
+          "const": true
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "id": {
+                "const": "ubuntu"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "versionId": {
+                "const": "24.04"
+              },
+              "label": {
+                "const": "Ubuntu 24.04 LTS"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "id": {
+                "const": "debian"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "versionId": {
+                "const": "12"
+              },
+              "label": {
+                "const": "Debian 12"
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

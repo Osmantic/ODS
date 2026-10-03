@@ -1,6 +1,6 @@
 services:
   searxng:
-    image: searxng/searxng:2026.3.8-a563127a2
+    image: searxng/searxng:2026.9.25-12f8b6515@sha256:5286edb35782454ab8a102c5eff6b54bff745853191b46aeead95f225aa6dfb6
     container_name: ods-searxng
     restart: unless-stopped
     security_opt:
@@ -11,7 +11,7 @@ services:
     volumes:
       - ./config/searxng:/etc/searxng:rw,z
     ports:
-      - "${BIND_ADDRESS:-127.0.0.1}:${SEARXNG_PORT:-8888}:8080"
+      - "127.0.0.1:${SEARXNG_PORT:-8888}:8080"
     healthcheck:
       test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:8080/healthz"]
       interval: 30s

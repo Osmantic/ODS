@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/release-update-recovery-v1.schema.json",
+  "title": "Pixel release update interruption recovery preview v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "status", "candidateId", "product", "version", "restoreVersion", "activeVersion", "activationHash", "state", "safeAction", "confirmationAvailable", "rollbackMarkerPresent", "candidateCodeWillExecute", "networkWillBeUsed", "boundary", "recoveryHash"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "status": {"enum": ["recoverable", "complete", "manual-review"]},
+    "candidateId": {"type": "string", "pattern": "^pixel-[0-9]{1,6}\\.[0-9]{1,6}\\.[0-9]{1,6}-[0-9a-f]{64}$"},
+    "product": {"const": "Pixel"},
+    "version": {"type": "string", "pattern": "^[0-9]{1,6}\\.[0-9]{1,6}\\.[0-9]{1,6}$"},
+    "restoreVersion": {"type": "string", "pattern": "^[0-9]{1,6}\\.[0-9]{1,6}\\.[0-9]{1,6}$"},
+    "activeVersion": {"type": "string", "pattern": "^[0-9]{1,6}\\.[0-9]{1,6}\\.[0-9]{1,6}$"},
+    "activationHash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "state": {"enum": ["activation-applied-result-missing", "activation-claimed-before-active-change", "activation-complete", "activation-failed", "rollback-result-present", "rollback-restored-result-missing", "rollback-claimed-before-restoration", "rollback-interrupted-manual-review", "rollback-failed", "manual-review"]},
+    "safeAction": {"type": ["string", "null"], "enum": ["finalize-activation-result", "finalize-rollback-result", null]},
+    "confirmationAvailable": {"type": "boolean"},
+    "rollbackMarkerPresent": {"type": "boolean"},
+    "candidateCodeWillExecute": {"const": false},
+    "networkWillBeUsed": {"const": false},
+    "boundary": {"const": "Content-free interruption diagnosis only; exact confirmation may finalize a missing trusted receipt but never executes candidate code or resumes deployment work."},
+    "recoveryHash": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"status": {"const": "recoverable"}}},
+      "then": {"properties": {"confirmationAvailable": {"const": true}, "safeAction": {"type": "string"}, "recoveryHash": {"type": "string", "pattern": "^[0-9a-f]{64}$"}}}
+    },
+    {
+      "if": {"properties": {"confirmationAvailable": {"const": false}}},
+      "then": {"properties": {"safeAction": {"const": null}, "recoveryHash": {"const": null}}}
+    }
+  ]
+}

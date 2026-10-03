@@ -62,7 +62,7 @@ if [[ "$1" == "compose" && "$*" == *"config --format json"* ]]; then
       "image": "docker.io/library/ods-helper:latest"
     },
     "perplexica": {
-      "image": "itzcrazykns1337/perplexica:slim-latest@sha256:6e399abf4ff587822b0ef0df11f36088fb928e17ac61556fe89beb68d48c378e"
+      "image": "itzcrazykns1337/vane:slim-v1.12.2@sha256:d2878cf9c91962aa3fc053b59bc9b89adcbdcaeb7ee36b54906e853464b2c190"
     },
     "duplicate": {
       "image": "caddy:2.11.3-alpine"
@@ -87,7 +87,7 @@ echo ""
 
 assert_contains_line "$out" "ghcr.io/ggml-org/llama.cpp:server-b8248" "discovers remote base image"
 assert_contains_line "$out" "caddy:2.11.3-alpine" "discovers extension remote image"
-assert_contains_line "$out" "itzcrazykns1337/perplexica:slim-latest@sha256:6e399abf4ff587822b0ef0df11f36088fb928e17ac61556fe89beb68d48c378e" "preserves digest-pinned image"
+assert_contains_line "$out" "itzcrazykns1337/vane:slim-v1.12.2@sha256:d2878cf9c91962aa3fc053b59bc9b89adcbdcaeb7ee36b54906e853464b2c190" "preserves digest-pinned image"
 assert_not_contains_line "$out" "ods-dashboard:latest" "skips services with local build image tags"
 assert_not_contains_line "$out" "docker.io/library/ods-helper:latest" "skips generated local ODS image tags"
 

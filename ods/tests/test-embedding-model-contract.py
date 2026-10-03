@@ -97,7 +97,7 @@ def test_installers_write_or_backfill_canonical_model() -> None:
     windows = (ROOT / "installers/windows/lib/env-generator.ps1").read_text(encoding="utf-8")
 
     assert 'EMBEDDING_MODEL_VALUE=$(_env_get EMBEDDING_MODEL "${EMBEDDING_MODEL:-BAAI/bge-base-en-v1.5}")' in linux
-    assert "EMBEDDING_MODEL=${EMBEDDING_MODEL_VALUE}" in linux
+    assert 'EMBEDDING_MODEL=$(dotenv_value "${EMBEDDING_MODEL_VALUE}")' in linux
     assert 'upsert_env_value "$env_path" "EMBEDDING_MODEL" "${EMBEDDING_MODEL:-BAAI/bge-base-en-v1.5}"' in macos
     assert "EMBEDDING_MODEL=${embedding_model}" in macos
     assert '$embeddingModel = Get-EnvOrNew "EMBEDDING_MODEL" $embeddingModelDefault' in windows

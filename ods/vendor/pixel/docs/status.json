@@ -1,0 +1,42 @@
+{
+  "schemaVersion": 1,
+  "generatedFrom": [
+    "VERSION",
+    "RELEASE-MANIFEST.json",
+    "QUALIFICATION-MATRIX.json",
+    "OPENCLAW-COMPATIBILITY.json"
+  ],
+  "repository": {
+    "pixelVersion": "4.3.27",
+    "compatibilityStatus": "candidate",
+    "qualifiedAt": "2026-09-14",
+    "evidenceSourceCommit": "5983c27edb1c41d6e944abd13b6e6f780dd6cb4c",
+    "evidenceDocument": "LIVE-AUDIT-4.3.27.md"
+  },
+  "latestSupportedCompatibility": {
+    "pixelVersion": "4.3.26",
+    "qualifiedAt": "2026-09-03",
+    "evidenceSourceCommit": "5d906c8b2dd29100b5850872b953d2a5d057f204",
+    "evidenceDocument": "LIVE-AUDIT-4.3.26.md"
+  },
+  "documentedHostScope": [
+    "Ubuntu 24.04 LTS",
+    "Debian 12"
+  ],
+  "capabilityProfiles": [
+    "minimal",
+    "chief-of-staff",
+    "research",
+    "engineering-operator"
+  ],
+  "deepWork": {
+    "runtimeEnabled": false,
+    "featureStatus": "development-disabled",
+    "admissionBoundary": "admission-only-no-runtime-no-tool-call-no-network-no-external-effects"
+  },
+  "releaseUpdate": {
+    "channel": "stable",
+    "qualificationAuthority": "verify-only-no-publication-staging-activation",
+    "publicationRequiresAllGates": true
+  }
+}

@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/work-codex-plan-v1.schema.json",
+  "title": "Pixel private Codex work-provider plan v1",
+  "type": "object", "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "planId", "createdAt", "expiresAt", "requestId", "requestSha256", "jobId", "checkpointSha256", "policySha256", "capsuleSha256", "outputSchemaSha256", "taskClass", "egressMode", "classification", "provider", "limits", "dlp", "approval", "capsule", "providerInvoked", "credentialsProjected", "boundary"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/work-codex-plan-v1.schema.json"}, "schemaVersion": {"const": 1},
+    "planId": {"type": "string", "pattern": "^workcodexplan-[0-9]{13}-[a-f0-9]{12}$"}, "createdAt": {"type": "string", "format": "date-time"}, "expiresAt": {"type": "string", "format": "date-time"},
+    "requestId": {"type": "string", "pattern": "^workcodexrequest-[0-9]{13}-[a-f0-9]{12}$"}, "requestSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "jobId": {"type": "string", "pattern": "^work-[0-9]{13}-[a-f0-9]{12}$"}, "checkpointSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}, "policySha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}, "capsuleSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}, "outputSchemaSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "taskClass": {"enum": ["structural-review", "patch-proposal", "failure-triage"]}, "egressMode": {"enum": ["structural-only", "owner-authorized-content"]}, "classification": {"enum": ["public", "internal", "confidential"]},
+    "provider": {"type": "object", "additionalProperties": false, "required": ["kind", "authMode", "model", "billingBoundary", "execution", "transportSha256"], "properties": {"kind": {"const": "codex"}, "authMode": {"enum": ["chatgpt", "api-key"]}, "model": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{1,127}$"}, "billingBoundary": {"enum": ["chatgpt-plan-or-credits-not-api-billing", "separately-billed-api-platform"]}, "execution": {"const": "ephemeral-read-only-no-tools-no-network"}, "transportSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}}},
+    "limits": {"type": "object", "additionalProperties": false, "required": ["estimatedInputTokens", "maxInputTokens", "maxOutputTokens", "timeoutSeconds", "maxInputBytes", "maxOutputBytes", "maxEstimatedCostMicros"], "properties": {"estimatedInputTokens": {"type": "integer", "minimum": 1, "maximum": 250000}, "maxInputTokens": {"type": "integer", "minimum": 256, "maximum": 250000}, "maxOutputTokens": {"type": "integer", "minimum": 64, "maximum": 32768}, "timeoutSeconds": {"type": "integer", "minimum": 30, "maximum": 1800}, "maxInputBytes": {"type": "integer", "minimum": 1024, "maximum": 1048576}, "maxOutputBytes": {"type": "integer", "minimum": 1024, "maximum": 1048576}, "maxEstimatedCostMicros": {"type": ["integer", "null"], "minimum": 1, "maximum": 1000000000}}},
+    "dlp": {"type": "object", "additionalProperties": false, "required": ["status", "scannerVersion", "secretFindings", "placeholderCount", "placeholderKinds", "mappingSha256", "rawContentAuthorized", "credentialsEgress"], "properties": {"status": {"const": "passed"}, "scannerVersion": {"const": "pixel-work-egress-v1"}, "secretFindings": {"const": 0}, "placeholderCount": {"type": "integer", "minimum": 0, "maximum": 4096}, "placeholderKinds": {"type": "array", "maxItems": 12, "uniqueItems": true, "items": {"enum": ["EMAIL", "HOSTNAME", "IDENTIFIER", "IP", "ORGANIZATION", "PATH", "PERSON", "PHONE", "PROJECT", "CUSTOMER", "URL"]}}, "mappingSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}, "rawContentAuthorized": {"type": "boolean"}, "credentialsEgress": {"const": false}}},
+    "approval": {
+      "type": "object", "additionalProperties": false,
+      "required": ["required", "external", "singleUse", "bindsExactPlanSha256", "mode", "issuer", "audience", "trustedKeySha256", "signatureAlgorithm", "primaryFactor", "allowedSecondFactors", "maxAuthenticationAgeSeconds", "maxEvidenceLifetimeSeconds", "credentialsVisibleToPixel"],
+      "properties": {
+        "required": {"const": true}, "external": {"const": true}, "singleUse": {"const": true}, "bindsExactPlanSha256": {"const": true},
+        "mode": {"const": "external-signed-mfa-assertion"}, "issuer": {"type": "string", "pattern": "^[a-z][a-z0-9._-]{1,127}$"}, "audience": {"const": "pixel-work-codex-authorization"},
+        "trustedKeySha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}, "signatureAlgorithm": {"const": "ed25519"}, "primaryFactor": {"const": "password"},
+        "allowedSecondFactors": {"const": ["totp-authenticator-app", "email-one-time-code"]}, "maxAuthenticationAgeSeconds": {"type": "integer", "minimum": 30, "maximum": 300},
+        "maxEvidenceLifetimeSeconds": {"type": "integer", "minimum": 30, "maximum": 300}, "credentialsVisibleToPixel": {"const": false}
+      }
+    },
+    "capsule": {"type": "object"}, "providerInvoked": {"const": false}, "credentialsProjected": {"const": false},
+    "boundary": {"const": "Exact sanitized Codex work preview only. It grants no provider call until one external single-use approval binds the complete plan hash; any policy, capsule, model, billing, limit, checkpoint, or request change invalidates approval."}
+  }
+}

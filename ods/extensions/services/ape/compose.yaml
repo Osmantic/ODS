@@ -17,7 +17,7 @@ services:
       - ./config/ape:/config:ro,z
       - ./data/ape:/data/ape:z
     ports:
-      - "${BIND_ADDRESS:-127.0.0.1}:${APE_PORT:-7890}:7890"
+      - "127.0.0.1:${APE_PORT:-7890}:7890"
     deploy:
       resources:
         limits:

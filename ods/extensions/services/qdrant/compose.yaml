@@ -1,6 +1,6 @@
 services:
   qdrant:
-    image: qdrant/qdrant:v1.16.3
+    image: qdrant/qdrant:v1.16.3@sha256:0425e3e03e7fd9b3dc95c4214546afe19de2eb2e28ca621441a56663ac6e1f46
     container_name: ods-qdrant
     restart: unless-stopped
     security_opt:
@@ -10,8 +10,8 @@ services:
     volumes:
       - ./data/qdrant:/qdrant/storage:z
     ports:
-      - "${BIND_ADDRESS:-127.0.0.1}:${QDRANT_PORT:-6333}:6333"
-      - "${BIND_ADDRESS:-127.0.0.1}:${QDRANT_GRPC_PORT:-6334}:6334"
+      - "127.0.0.1:${QDRANT_PORT:-6333}:6333"
+      - "127.0.0.1:${QDRANT_GRPC_PORT:-6334}:6334"
     healthcheck:
       # perl: only HTTP tool in qdrant/qdrant image (no curl/wget)
       test: ["CMD-SHELL", "perl -MIO::Socket::INET -e 'my $$s = IO::Socket::INET->new(q(127.0.0.1:6333)) or exit 1; print $$s qq(GET / HTTP/1.0\\r\\n\\r\\n); exit(<$$s> =~ /200/ ? 0 : 1)'"]

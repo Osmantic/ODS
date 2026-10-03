@@ -1,42 +1,20 @@
-# Dify
+# Dify — reference entry, not installable
 
-AI workflow and agent platform for building LLM-powered applications. Build and deploy AI agents, chatbots, and automation workflows with a visual editor.
+This entry has no deployable ODS recipe. The catalog and installation API
+already reject entries without `compose.yaml`; neither `ods enable dify` nor
+renaming a disabled template is a supported Dify installation.
 
-## Requirements
+The obsolete template referenced `difyai/dify:0.6.16`, which is not the upstream
+Dify deployment image. It also assumed a single process and SQLite, whereas
+the upstream deployment requires separate API/web/worker services, a database
+and other dependencies. That misleading template has been removed. This change
+does not remove or migrate any installed container, database or user data.
 
-- **GPU:** NVIDIA or AMD (min 4 GB VRAM)
-- **Dependencies:** None
+A future ODS integration must package and validate the complete upstream stack,
+including credentials, network boundaries, persistent storage and migrations;
+substituting only an image name would not produce a working installation.
 
-## Enable / Disable
-
-```bash
-ods enable dify
-ods disable dify
-```
-
-Your data is preserved when disabling. To re-enable later: `ods enable dify`
-
-## Access
-
-- **URL:** `http://localhost:8002`
-
-## First-Time Setup
-
-1. Enable the service: `ods enable dify`
-2. Open `http://localhost:8002`
-3. Create an admin account on first launch
-4. Connect to ODS's LLM via the OpenAI-compatible endpoint
-
-## Configuration
-
-| Variable | Description | Default |
-|----------|------------|---------|
-| `DIFY_SECRET_KEY` | Secret key for API access (auto-generated) | _(required)_ |
-| `DIFY_EXTERNAL_URL` | External URL for API responses and redirects | `http://localhost:8002` |
-| `DIFY_OPENAI_API_BASE` | OpenAI-compatible API endpoint for LLM backend | `http://llama-server:8080/v1` |
-| `DIFY_OPENAI_API_KEY` | API key for OpenAI-compatible endpoint | `dummy-key` |
-| `DIFY_INIT_PASSWORD` | Initial admin password (optional) | _(empty)_ |
-
-## Known Issues
-
-Dify uses separate container images for API and web frontend (`langgenius/dify-api` + `langgenius/dify-web`), making it a complex multi-container setup.
+For a separate deployment, follow the
+[official Dify Docker Compose installation documentation](https://docs.dify.ai/en/self-host/quick-start/docker-compose).
+The [historical 0.6.16 Compose definition](https://github.com/langgenius/dify/blob/0.6.16/docker/docker-compose.yaml)
+documents why the removed single-container template was not deployable.

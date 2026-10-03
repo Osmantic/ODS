@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/nicegui/tauri-v2/main/src-tauri/gen/schemas/desktop-schema.json",
   "productName": "ODS Installer",
-  "version": "0.1.0",
+  "version": "3.0.0",
   "identifier": "ai.ods.installer",
   "build": {
     "frontendDist": "../dist",

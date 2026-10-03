@@ -1,0 +1,29 @@
+{
+  "$schema": "https://osmantic.com/pixel/schemas/work-provider-profile-v1.schema.json",
+  "schemaVersion": 1,
+  "id": "local",
+  "displayName": "Local OpenAI-compatible model",
+  "protocol": "local-openai-compatible",
+  "remote": false,
+  "enabledByDefault": true,
+  "baseUrl": "http://127.0.0.1:8000/v1",
+  "allowedHosts": [],
+  "auth": {
+    "mode": "none",
+    "header": "none"
+  },
+  "defaultModel": "assistant-model",
+  "reasoning": {
+    "mode": "hidden-local",
+    "preserveProviderState": true,
+    "replayCompleteAssistantMessage": false
+  },
+  "budgets": {
+    "maxRequestsPerRun": 200,
+    "maxInputTokensPerRun": 5000000,
+    "maxOutputTokensPerRun": 1000000,
+    "maxOutputTokensPerRequest": 131072
+  },
+  "boundary": "Public provider capability metadata only. Remote use remains disabled until an owner-private policy explicitly enables the exact provider, credential custody, egress hosts, and budgets. This profile grants no provider call, credential, network, tool, external-effect, deployment, publication, or security-testing authority.",
+  "modelSelection": "qualification-pinned"
+}

@@ -11,7 +11,7 @@ services:
       - ./config/sillytavern:/home/node/app/config:rw
       - ./data/sillytavern:/home/node/app/data:rw
     ports:
-      - "${BIND_ADDRESS:-127.0.0.1}:${SILLYTAVERN_PORT:-8001}:8000"
+      - "127.0.0.1:${SILLYTAVERN_PORT:-8001}:8000"
     healthcheck:
       test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:8000/"]
       interval: 30s

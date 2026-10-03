@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/work-capability-tool-catalog-v1.schema.json",
+  "title": "Pixel Deep Work job-scoped OMP capability catalog v1",
+  "type": "object", "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "operation", "createdAt", "expiresAt", "jobId", "authorizationSha256", "planSha256", "leaseSha256", "checkpointSha256", "pack", "dataClassification", "maxSessions", "grantLifetimeMs", "limits", "initialEventHeadSha256", "settledSessions", "tools", "authority", "boundary"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/work-capability-tool-catalog-v1.schema.json"},
+    "schemaVersion": {"const": 1},
+    "operation": {"const": "pixel-work-capability-tool-catalog"},
+    "createdAt": {"type": "string", "format": "date-time"},
+    "expiresAt": {"type": "string", "format": "date-time"},
+    "jobId": {"type": "string", "pattern": "^work-[0-9]{13}-[a-f0-9]{12}$"},
+    "authorizationSha256": {"$ref": "#/$defs/sha256"},
+    "planSha256": {"$ref": "#/$defs/sha256"},
+    "leaseSha256": {"$ref": "#/$defs/sha256"},
+    "checkpointSha256": {"$ref": "#/$defs/sha256"},
+    "pack": {"type": "object", "additionalProperties": false, "required": ["id", "version", "packSha256", "treeSha256"], "properties": {
+      "id": {"type": "string", "pattern": "^[a-z][a-z0-9-]{1,62}$"},
+      "version": {"type": "string", "pattern": "^(?:0|[1-9][0-9]{0,8})\\.(?:0|[1-9][0-9]{0,8})\\.(?:0|[1-9][0-9]{0,8})$"},
+      "packSha256": {"$ref": "#/$defs/sha256"}, "treeSha256": {"$ref": "#/$defs/sha256"}
+    }},
+    "dataClassification": {"enum": ["public", "internal", "confidential", "restricted"]},
+    "maxSessions": {"type": "integer", "minimum": 1, "maximum": 4096},
+    "grantLifetimeMs": {"type": "integer", "minimum": 100, "maximum": 3600000},
+    "limits": {"$ref": "#/$defs/limits"},
+    "initialEventHeadSha256": {"const": null},
+    "settledSessions": {"const": 0},
+    "tools": {"type": "array", "minItems": 1, "maxItems": 16, "items": {"type": "object", "additionalProperties": false, "required": ["name", "exposedName", "title", "description", "effectClass", "inputSchema", "inputSchemaSha256", "outputSchema", "outputSchemaSha256"], "properties": {
+      "name": {"type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_.-]{0,127}$"},
+      "exposedName": {"type": "string", "pattern": "^pixel_cap_[a-z0-9_]{1,54}$"},
+      "title": {"type": "string", "minLength": 1, "maxLength": 100},
+      "description": {"type": "string", "minLength": 1, "maxLength": 500},
+      "effectClass": {"enum": ["read-only", "workspace"]},
+      "inputSchema": {"type": "object"}, "inputSchemaSha256": {"$ref": "#/$defs/sha256"},
+      "outputSchema": {"type": "object"}, "outputSchemaSha256": {"$ref": "#/$defs/sha256"}
+    }}},
+    "authority": {"const": {"grantsToolCall": false, "grantsCredentials": false, "grantsNetwork": false, "grantsExternalEffects": false, "grantsScopeExpansion": false, "grantsCompletion": false}},
+    "boundary": {"const": "Read-only job-scoped OMP catalog derived from one exact authorization and signed pack. It registers only namespaced tools for this worker and grants no call; every request still requires controller and watchdog admission."}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "limits": {"type": "object", "additionalProperties": false, "required": ["maxInputBytes", "maxOutputBytes", "maxRuntimeMs", "maxCalls", "maxMemoryMiB", "maxCpuCores", "maxPids", "maxWorkspaceBytes"], "properties": {
+      "maxInputBytes": {"type": "integer", "minimum": 1, "maximum": 1048576},
+      "maxOutputBytes": {"type": "integer", "minimum": 1, "maximum": 16777216},
+      "maxRuntimeMs": {"type": "integer", "minimum": 100, "maximum": 3600000},
+      "maxCalls": {"const": 1}, "maxMemoryMiB": {"type": "integer", "minimum": 64, "maximum": 8192},
+      "maxCpuCores": {"type": "number", "minimum": 0.1, "maximum": 8},
+      "maxPids": {"type": "integer", "minimum": 16, "maximum": 512},
+      "maxWorkspaceBytes": {"type": "integer", "minimum": 0, "maximum": 34359738368}
+    }}
+  }
+}

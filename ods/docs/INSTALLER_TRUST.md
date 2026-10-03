@@ -8,9 +8,32 @@ intentionally expose services to your LAN.
 
 ## Install Paths
 
-### Public Linux/macOS Bootstrap
+### Verified stable source (release gate)
 
-The canonical one-liner is:
+The [verified installer preview](VERIFIED_INSTALL_PREVIEW.md) is separate from
+the current public quickstart until qualification passes. It verifies an
+immutable stable release archive before extraction or execution, checking the
+annotated tag and its verified signature, then uses GitHub CLI to constrain the attestation to `Osmantic/ODS`,
+the release workflow, the exact tag and full commit on a GitHub-hosted runner.
+The inspectable command bodies are also in `installers/verified-release.sh`
+and `installers/verified-release.ps1`; tests keep them identical to the preview.
+Public HTTP downloads and local bundle verification do not require GitHub login.
+
+**Rollout gate:** the historical `v3.0.0` release has neither those assets nor
+GitHub's immutable-release flag. The verified installer refuses it without
+touching an existing ODS installation. The first eligible release must be
+produced, tested by the implementation team and explicitly authorized for
+publication before advertising this channel as usable.
+See [Signed Source Releases](SIGNED_SOURCE_RELEASES.md).
+
+The main README retains the existing development-main commands, with their
+unsigned-source limitation stated explicitly. Runtime security fixes can be
+reviewed and merged before this channel changes; SEC-005's default-channel
+requirement remains open until real release qualification and activation.
+
+### Current Linux/macOS Bootstrap (development main)
+
+The legacy hosted development one-liner is:
 
 ```bash
 curl -fsSL https://install.osmantic.com/ods.sh | bash
@@ -66,11 +89,12 @@ curl -fsSL https://install.osmantic.com/ods.sh | ODS_REF=main bash
 ```
 
 `ODS_REF` can select only refs that contain the current `ods/` product-tree
-layout used by the sparse checkout. The current stable tag, `v2.6.0`, is
-compatible with that layout:
+layout used by the sparse checkout. The published V3 tag, `v3.0.0`, is
+compatible with that layout. Publication does not imply full fleet qualification;
+see [V3 release notes](RELEASE_NOTES_3.0.0.md). To pin that source snapshot:
 
 ```bash
-curl -fsSL https://install.osmantic.com/ods.sh | ODS_REF=v2.6.0 bash
+curl -fsSL https://install.osmantic.com/ods.sh | ODS_REF=v3.0.0 bash
 ```
 
 Older tags that predate the current layout must be installed through the
@@ -99,11 +123,11 @@ ports and data paths.
 
 ### Manual Source Install
 
-For the stable release tag, clone the known ref and run the installer from the
+For the published release tag, clone the known ref and run the installer from the
 checked-out source:
 
 ```bash
-git clone --depth 1 --branch v2.6.0 https://github.com/Osmantic/ODS.git
+git clone --depth 1 --branch v3.0.0 https://github.com/Osmantic/ODS.git
 cd ODS
 ./install.sh
 ```
@@ -138,7 +162,7 @@ Windows users should install from a normal user PowerShell, not an elevated
 Administrator shell:
 
 ```powershell
-git clone --depth 1 --branch v2.6.0 https://github.com/Osmantic/ODS.git
+git clone --depth 1 --branch v3.0.0 https://github.com/Osmantic/ODS.git
 cd ODS
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 .\install.ps1
@@ -175,7 +199,7 @@ cmp get-ods.sh main-get-ods.sh
 On Windows, clone first and inspect `install.ps1` before running it:
 
 ```powershell
-git clone --depth 1 --branch v2.6.0 https://github.com/Osmantic/ODS.git
+git clone --depth 1 --branch v3.0.0 https://github.com/Osmantic/ODS.git
 cd ODS
 notepad .\install.ps1
 .\install.ps1
@@ -199,6 +223,11 @@ every installer artifact. Users who need strict provenance should install from
 a reviewed tag or internal fork and record the exact commit or release tag.
 
 ## Provenance Roadmap
+
+The [signed source release pipeline](SIGNED_SOURCE_RELEASES.md) defines the
+candidate producer and the separately staged verified consumer. It only creates draft
+releases from new, verified signed tags. First-candidate signing, verification
+and installation tests remain required before this chain can be called complete.
 
 1. Publish checksums for release installer artifacts.
 2. Sign release artifacts and tags with maintainer-controlled signing keys.

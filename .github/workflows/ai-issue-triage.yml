@@ -8,15 +8,17 @@ on:
   issues:
     types: [opened]
 
-concurrency:
-  group: issue-triage-${{ github.event.issue.number }}
-  cancel-in-progress: false
-
 jobs:
   triage:
     name: Triage Issue
     runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # Queue only authorized work; public events cannot replace pending jobs.
+    concurrency:
+      group: issue-triage-budget
+      cancel-in-progress: false
     if: >-
+      contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.issue.author_association) &&
       github.event.issue.user.login != 'github-actions[bot]' &&
       github.event.issue.user.login != 'dependabot[bot]' &&
       github.event.issue.user.login != 'claude[bot]'
@@ -72,13 +74,13 @@ jobs:
 
             Architecture context:
             - ods/installers/ = Bash installer libraries and phases
-            - ods/ods-cli = main CLI tool (~45K lines Bash)
+            - ods/ods-cli = main Bash CLI; inspect current source instead of assuming a line count
             - ods/extensions/services/dashboard-api/ = Python FastAPI backend
             - ods/extensions/services/dashboard/ = React/Vite frontend
             - ods/scripts/ = operational scripts
             - ods/config/ = backend configs (GPU tiers, models)
             - ods/tests/ = shell-based tests (BATS, contracts, smoke)
-            - ods/extensions/services/ = 17 service extensions with manifests
+            - ods/extensions/services/ = built-in service manifests; ods/extensions/library/services/ = additional recipes
 
             Analyze this new issue and apply appropriate labels:
 
@@ -104,3 +106,4 @@ jobs:
             --allowedTools
             "Bash(gh issue edit *),Read,Glob,Grep"
             --max-turns 5
+            --max-budget-usd 2

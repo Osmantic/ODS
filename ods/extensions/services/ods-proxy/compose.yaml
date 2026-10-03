@@ -2,7 +2,7 @@ services:
   ods-proxy:
     # Pinned Caddy 2.x. Same image we use for the Hermes auth proxy — single
     # static binary, ~50MB, native WS/SSE support, simple Caddyfile config.
-    image: caddy:2.11.3-alpine
+    image: caddy:2.11.3-alpine@sha256:86deaf5e3d3408a6ccec08fbb79989783dd26e206ae10bcf78a801dc8c9ab794
     container_name: ods-proxy
     restart: unless-stopped
     depends_on:

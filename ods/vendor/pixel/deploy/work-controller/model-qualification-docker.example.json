@@ -1,0 +1,9 @@
+{
+  "$schema": "https://osmantic.com/pixel/schemas/work-model-qualification-docker-v1.schema.json",
+  "schemaVersion": 1,
+  "backendConfigPath": "/etc/pixel-work/model-backend-vllm.json",
+  "qualificationConfigPath": "/etc/pixel-work/model-qualification-config.json",
+  "runnerImageDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "evidenceRoot": "/var/lib/pixel-work/private/qualification",
+  "boundary": "Owner-private exact local-model qualification inputs only. Configuration grants no model start, container, network, device, credential, external-effect, completion, publication, deployment, acceptance, or promotion authority."
+}

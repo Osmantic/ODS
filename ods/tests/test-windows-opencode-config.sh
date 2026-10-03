@@ -35,6 +35,14 @@ echo ""
 [[ -f "$UPDATE_SCRIPT" ]] && pass "update-windows-opencode-config.ps1 exists" || fail "update-windows-opencode-config.ps1 missing"
 grep -q "function Sync-WindowsOpenCodeConfigFromEnv" "$OPENCODE_LIB" && pass "env sync helper exists" || fail "env sync helper missing"
 grep -q 'config.json' "$OPENCODE_LIB" && pass "config.json sync exists" || fail "config.json sync missing"
+grep -q 'function Get-WindowsOpenCodeOutputLimit' "$OPENCODE_LIB" \
+    && pass "OpenCode output budget is context-aware" \
+    || fail "OpenCode output budget helper missing"
+if grep -Eq 'output = 32768|Name '\''output'\'' -Value 32768' "$OPENCODE_LIB"; then
+    fail "OpenCode output still consumes the entire 32K context"
+else
+    pass "OpenCode output does not exhaust a 32K context"
+fi
 grep -q 'Sync-WindowsOpenCodeConfigFromEnv' "$DEVTOOLS_PS1" && pass "phase 07 uses shared OpenCode sync helper" || fail "phase 07 missing shared OpenCode sync helper"
 grep -q 'opencode-config.ps1' "$INSTALLER_PS1" && pass "installer sources OpenCode helper library" || fail "installer missing OpenCode helper library"
 grep -q 'OpenCode config synced to active model' "$INSTALLER_PS1" && pass "installer resyncs OpenCode after launch" || fail "installer missing active-model OpenCode resync"

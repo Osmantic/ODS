@@ -1,0 +1,97 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/frontier-request-v2.schema.json",
+  "title": "Pixel Frontier adaptive-routing request v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "jobId", "kind", "createdAt", "requester", "classification", "dataCategories", "payload", "maxOutputTokens", "routing", "boundary"],
+  "properties": {
+    "schemaVersion": {"const": 2},
+    "jobId": {"type": "string", "pattern": "^frontier-[0-9]{13}-[a-f0-9]{12}$"},
+    "kind": {"enum": ["plan_review", "failure_triage"]},
+    "createdAt": {"type": "string", "format": "date-time"},
+    "requester": {"type": "string", "pattern": "^[a-z][a-z0-9_-]{1,63}$"},
+    "classification": {"enum": ["public", "internal-derived", "confidential", "restricted"]},
+    "dataCategories": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 16,
+      "uniqueItems": true,
+      "items": {"enum": ["structural", "source-derived", "personal-identifiers", "customer-confidential", "proprietary-code", "security-findings", "credentials", "private-keys", "session-tokens", "authentication-material", "raw-source-bodies", "regulated-records"]}
+    },
+    "payload": {"type": "object"},
+    "maxOutputTokens": {"type": "integer", "minimum": 64, "maximum": 8192},
+    "reason": {"type": "string", "maxLength": 1000},
+    "routing": {"$ref": "#/$defs/localAttempt"},
+    "boundary": {"type": "string", "minLength": 1, "maxLength": 500}
+  },
+  "allOf": [{
+    "if": {"properties": {"kind": {"const": "plan_review"}}, "required": ["kind"]},
+    "then": {"properties": {"payload": {"$ref": "#/$defs/planReviewPayload"}}},
+    "else": {"properties": {"payload": {"$ref": "#/$defs/failureTriagePayload"}}}
+  }],
+  "$defs": {
+    "localAttempt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "receiptId", "observedAt", "localAttemptCount", "localOutcome", "reasonCodes"],
+      "properties": {
+        "schemaVersion": {"const": 1},
+        "receiptId": {"type": "string", "pattern": "^local-[0-9]{13}-[a-f0-9]{12}$"},
+        "observedAt": {"type": "string", "format": "date-time"},
+        "localAttemptCount": {"type": "integer", "minimum": 1, "maximum": 100},
+        "localOutcome": {"enum": ["completed-sufficient", "completed-needs-review", "retryable-failure", "failed-after-retries", "capability-unavailable", "needs-operator-context", "policy-required-review"]},
+        "reasonCodes": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 4,
+          "uniqueItems": true,
+          "items": {"enum": ["local-sufficient", "quality-check", "uncertainty", "complexity", "capability-gap", "repeated-failure", "missing-context", "safety-review", "security-review"]}
+        }
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"localOutcome": {"const": "completed-sufficient"}}, "required": ["localOutcome"]},
+          "then": {"properties": {"reasonCodes": {"const": ["local-sufficient"]}}},
+          "else": {"properties": {"reasonCodes": {"not": {"contains": {"const": "local-sufficient"}}}}}
+        },
+        {
+          "if": {"properties": {"localOutcome": {"enum": ["retryable-failure", "failed-after-retries"]}}, "required": ["localOutcome"]},
+          "then": {"properties": {"reasonCodes": {"contains": {"const": "repeated-failure"}}}}
+        },
+        {
+          "if": {"properties": {"localOutcome": {"const": "capability-unavailable"}}, "required": ["localOutcome"]},
+          "then": {"properties": {"reasonCodes": {"contains": {"const": "capability-gap"}}}}
+        },
+        {
+          "if": {"properties": {"localOutcome": {"const": "needs-operator-context"}}, "required": ["localOutcome"]},
+          "then": {"properties": {"reasonCodes": {"contains": {"const": "missing-context"}}}}
+        }
+      ]
+    },
+    "planReviewPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["objective", "assumptions", "constraints", "localFindings", "acceptanceCriteria"],
+      "properties": {
+        "objective": {"type": "string", "minLength": 3, "maxLength": 4000},
+        "assumptions": {"type": "array", "maxItems": 32, "items": {"type": "string", "maxLength": 4000}},
+        "constraints": {"type": "array", "maxItems": 32, "items": {"type": "string", "maxLength": 4000}},
+        "localFindings": {"type": "array", "maxItems": 32, "items": {"type": "string", "maxLength": 4000}},
+        "acceptanceCriteria": {"type": "array", "maxItems": 32, "items": {"type": "string", "maxLength": 4000}}
+      }
+    },
+    "failureTriagePayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["errorClass", "failure", "attemptedFixes", "constraints", "expectedBehavior"],
+      "properties": {
+        "errorClass": {"type": "string", "minLength": 1, "maxLength": 256},
+        "failure": {"type": "string", "minLength": 1, "maxLength": 12000},
+        "attemptedFixes": {"type": "array", "maxItems": 32, "items": {"type": "string", "maxLength": 4000}},
+        "constraints": {"type": "array", "maxItems": 32, "items": {"type": "string", "maxLength": 4000}},
+        "expectedBehavior": {"type": "string", "maxLength": 4000}
+      }
+    }
+  }
+}

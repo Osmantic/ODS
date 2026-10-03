@@ -46,6 +46,11 @@ scripts/preflight-engine.sh \
   --report /tmp/ods-preflight-report.json
 ```
 
+`--host-arch <uname -m>` is optional. With `--platform-id macos`, `arm64`/`aarch64`
+passes and anything else is a blocker, because the macOS installer requires Apple
+Silicon. Leave it empty or omit it when the caller cannot know the real host
+architecture, for example the Linux CI simulation of `installers/macos.sh`.
+
 For shell integration:
 
 ```bash

@@ -17,7 +17,7 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 TOKEN_KEY = "HERMES_DASHBOARD_SESSION_TOKEN"
-HERMES_IMAGE = "nousresearch/hermes-agent:v2026.6.5"
+HERMES_IMAGE = "nousresearch/hermes-agent:v2026.9.24@sha256:fca358f12efd65bfaaca05884166f15c0e2788375ca30d77061ac1ebc96452b7"
 
 
 def read_env(path: Path) -> dict[str, str]:
@@ -50,6 +50,9 @@ def test_pin_and_compose_contract_are_consistent() -> None:
     lock = json.loads((ROOT / "config/dependency-lock.json").read_text(encoding="utf-8"))
     hermes_pin = next(pin for pin in lock["entries"] if pin.get("id") == "hermes.agent")
     assert hermes_pin["value"] == HERMES_IMAGE
+    release = json.loads((ROOT / "config/hermes-release.json").read_text(encoding="utf-8"))
+    assert release["image"] == HERMES_IMAGE
+    assert set(release["platformManifests"]) == {"linux/amd64", "linux/arm64"}
 
     pin_surfaces = (
         ROOT / ".env.example",
@@ -67,8 +70,8 @@ def test_all_installers_generate_and_persist_token() -> None:
     macos = (ROOT / "installers/macos/lib/env-generator.sh").read_text(encoding="utf-8")
     windows = (ROOT / "installers/windows/lib/env-generator.ps1").read_text(encoding="utf-8")
 
-    assert f"{TOKEN_KEY}=$(_env_get {TOKEN_KEY}" in linux
-    assert f"{TOKEN_KEY}=${{{TOKEN_KEY}}}" in linux
+    assert f"{TOKEN_KEY}=$(_phase06_env_hex_secret {TOKEN_KEY} 32)" in linux
+    assert f'{TOKEN_KEY}=$(dotenv_value "${{{TOKEN_KEY}}}")' in linux
     assert f'read_env_value "$env_path" "{TOKEN_KEY}"' in macos
     assert f'upsert_env_value "$env_path" "{TOKEN_KEY}"' in macos
     assert f"{TOKEN_KEY}=${{hermes_dashboard_session_token}}" in macos
@@ -91,7 +94,10 @@ def test_all_update_clis_backfill_before_compose() -> None:
     ]
 
     assert "_ensure_hermes_dashboard_session_token" in linux_flags
-    assert "ensure_hermes_dashboard_session_token" in macos_flags
+    assert "_get_base_compose_flags" in macos_flags
+    macos_base_start = macos.index("_get_base_compose_flags() {")
+    macos_base = macos[macos_base_start : macos.index("\n}", macos_base_start)]
+    assert "ensure_hermes_dashboard_session_token" in macos_base
     assert "Ensure-HermesDashboardSessionToken" in windows_flags
 
 

@@ -17,9 +17,148 @@ def talk_client(test_client, signed_talk_cookie, monkeypatch):
     async def no_loaded_model():
         return None
 
+    async def no_live_context(model_hint=None):
+        return None
+
     monkeypatch.setattr("routers.talk.get_loaded_model", no_loaded_model)
+    # Never reach a real llama-server /props from the test process.
+    monkeypatch.setattr("routers.talk.get_llama_context_size", no_live_context)
     test_client.cookies.set("ods-session", signed_talk_cookie)
     return test_client
+
+
+TALK_NOT_SUPPORTED_COPY = (
+    "This model isn't supported in ODS Talk yet. Switch to a recommended model to use ODS Talk."
+)
+GRANITE_FLEET_NOTE = (
+    "Fleet model-UI run 2026-07-16T18-10Z on windows-laptop loaded this model successfully and "
+    "the runtime reported granite3.3-2b-instruct-q4, but ODS Talk returned a Hermes websocket "
+    "closed error and then fetch failed during the streamed verification prompt; keep it out of "
+    "ODS Talk release coverage until revalidated."
+)
+
+
+def _talk_catalog():
+    return [
+        {
+            "id": "granite3.3-2b-instruct-q4",
+            "name": "IBM Granite 3.3 2B Instruct",
+            "gguf_file": "granite-3.3-2b-instruct-Q4_K_M.gguf",
+            "app_compatibility": {
+                "agent_viability": {
+                    "status": "not_agent_viable",
+                    "reason": GRANITE_FLEET_NOTE.replace("ODS Talk release", "agent-required release"),
+                    "evidence": "fleet-test/runs/example/model-ui/cycle-003/windows-laptop",
+                },
+                "hermes_talk": {
+                    "status": "unsupported_until_revalidated",
+                    "reason": GRANITE_FLEET_NOTE,
+                    "evidence": "fleet-test/runs/example/model-ui/cycle-003/windows-laptop",
+                },
+            },
+        },
+        {
+            "id": "qwen3.5-9b-q4",
+            "name": "Qwen 3.5 9B",
+            "gguf_file": "Qwen3.5-9B-Q4_K_M.gguf",
+            "app_compatibility": {"hermes_talk": {"status": "verified"}},
+        },
+        {
+            "id": "phi4-mini-q4",
+            "name": "Phi-4 Mini",
+            "gguf_file": "Phi-4-mini-instruct-Q4_K_M.gguf",
+            "app_compatibility": {"agent_viability": {"status": "not_agent_viable"}},
+        },
+    ]
+
+
+def _patch_talk_catalog(monkeypatch, env, catalog=None):
+    async def fake_state(service_id):
+        return {"configured": True, "status": "healthy", "id": service_id}
+
+    async def live_model():
+        return "granite-3.3-2b-instruct-Q4_K_M.gguf"
+
+    entries = catalog if catalog is not None else _talk_catalog()
+    monkeypatch.setattr("routers.talk._service_state", fake_state)
+    monkeypatch.setattr("routers.talk.get_loaded_model", live_model)
+    monkeypatch.setattr("routers.talk.load_model_catalog", lambda _install_dir: entries)
+    monkeypatch.setattr("routers.talk.read_env_file_value", lambda key, _install_dir: env.get(key, ""))
+    monkeypatch.setattr("routers.talk.read_env_value", lambda key, _install_dir: env.get(key, ""))
+    monkeypatch.setattr("routers.talk.model_compatibility_runtime_context", lambda _install_dir: {})
+
+
+def test_talk_status_never_returns_internal_fleet_note(talk_client, monkeypatch):
+    _patch_talk_catalog(monkeypatch, {"MODEL_RECOMMENDED_MODEL": "qwen3.5-9b-q4"})
+
+    resp = talk_client.get("/api/talk/status")
+
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["capabilities"]["text_chat"] is False
+    assert data["reasonCode"] == "model_not_supported"
+    assert data["reason"] == TALK_NOT_SUPPORTED_COPY
+    for marker in ("Fleet", "windows-laptop", "release coverage", "revalidated", "websocket"):
+        assert marker not in data["reason"]
+    hermes_talk = data["modelCompatibility"]["hermesTalk"]
+    # Status semantics and the internal note are unchanged for tooling.
+    assert hermes_talk["status"] == "unsupported_until_revalidated"
+    assert hermes_talk["reason"] == GRANITE_FLEET_NOTE
+    assert hermes_talk["userMessage"] == TALK_NOT_SUPPORTED_COPY
+    assert data["modelCompatibility"]["recommendedModel"] == {
+        "id": "qwen3.5-9b-q4",
+        "name": "Qwen 3.5 9B",
+    }
+
+
+def test_talk_status_skips_recommended_model_that_is_also_blocked(talk_client, monkeypatch):
+    _patch_talk_catalog(monkeypatch, {"MODEL_RECOMMENDED_MODEL": "phi4-mini-q4"})
+
+    data = talk_client.get("/api/talk/status").json()
+
+    assert data["reasonCode"] == "model_not_supported"
+    assert data["modelCompatibility"]["recommendedModel"] is None
+
+
+def test_talk_status_does_not_recommend_the_active_model(talk_client, monkeypatch):
+    _patch_talk_catalog(monkeypatch, {"MODEL_RECOMMENDED_MODEL": "granite3.3-2b-instruct-q4"})
+
+    data = talk_client.get("/api/talk/status").json()
+
+    assert data["modelCompatibility"]["recommendedModel"] is None
+
+
+def test_talk_status_prefers_catalog_user_note(talk_client, monkeypatch):
+    catalog = _talk_catalog()
+    catalog[0]["app_compatibility"]["hermes_talk"]["userNote"] = (
+        "Granite can't keep up with Talk's tools yet. Pick another model for now."
+    )
+    _patch_talk_catalog(monkeypatch, {}, catalog)
+
+    data = talk_client.get("/api/talk/status").json()
+
+    assert data["reason"] == "Granite can't keep up with Talk's tools yet. Pick another model for now."
+
+
+def test_talk_stream_rejects_blocked_model_with_user_copy(talk_client, monkeypatch):
+    _patch_talk_catalog(monkeypatch, {})
+
+    resp = talk_client.post("/api/talk/message/stream", json={"text": "hello"})
+
+    assert resp.status_code == 409, resp.text
+    assert resp.json()["detail"] == TALK_NOT_SUPPORTED_COPY
+
+
+def test_talk_status_ready_model_has_no_reason_code(talk_client, monkeypatch):
+    async def fake_state(service_id):
+        return {"configured": True, "status": "healthy", "id": service_id}
+
+    monkeypatch.setattr("routers.talk._service_state", fake_state)
+    data = talk_client.get("/api/talk/status").json()
+
+    assert data["capabilities"]["text_chat"] is True
+    assert data["reason"] is None
+    assert data["reasonCode"] is None
 
 
 def test_talk_rejects_api_key_without_session(test_client):
@@ -68,7 +207,10 @@ def test_talk_status_disables_text_chat_for_incompatible_active_model(talk_clien
     assert resp.status_code == 200, resp.text
     data = resp.json()
     assert data["capabilities"]["text_chat"] is False
-    assert data["reason"] == "Phi direct chat works, but agent validation failed."
+    # The catalog note is internal fleet QA; Talk only ever gets user copy.
+    assert data["reason"] == TALK_NOT_SUPPORTED_COPY
+    assert data["reasonCode"] == "model_not_supported"
+    assert "revalidated" not in data["reason"]
 
 
 def test_talk_message_rejects_incompatible_model_before_hermes(talk_client, monkeypatch):
@@ -95,7 +237,7 @@ def test_talk_message_rejects_incompatible_model_before_hermes(talk_client, monk
 
     resp = talk_client.post("/api/talk/message", json={"text": "hello"})
     assert resp.status_code == 409, resp.text
-    assert resp.json()["detail"] == "Active model is not agent ready."
+    assert resp.json()["detail"] == TALK_NOT_SUPPORTED_COPY
     assert calls == []
 
 
@@ -175,7 +317,8 @@ def test_talk_status_falls_back_to_configured_model_without_live_runtime(talk_cl
     assert resp.status_code == 200, resp.text
     data = resp.json()
     assert data["capabilities"]["text_chat"] is False
-    assert data["reason"] == "Configured bootstrap model is not agent ready."
+    assert data["reason"] == TALK_NOT_SUPPORTED_COPY
+    assert data["reasonCode"] == "model_not_supported"
     assert data["modelCompatibility"]["activeModel"]["id"] == "qwen3.5-2b-q4"
 
 
@@ -414,6 +557,7 @@ def test_talk_message_stream_cancels_upstream_on_client_disconnect(talk_client, 
 
     bridge_started = _asyncio.Event()
     bridge_cancelled = _asyncio.Event()
+    cleanup_order = []
 
     async def hanging_stream(session_key, text):
         yield {"type": "session", "session_id": "sid-cancel"}
@@ -423,10 +567,16 @@ def test_talk_message_stream_cancels_upstream_on_client_disconnect(talk_client, 
             await _asyncio.sleep(60)
             yield {"type": "complete", "session_id": "sid-cancel", "text": "never", "status": "ok", "warning": None}
         except _asyncio.CancelledError:
+            cleanup_order.append("cancel")
             bridge_cancelled.set()
             raise
 
+    async def fake_interrupt(_session_key):
+        cleanup_order.append("interrupt")
+        return True
+
     monkeypatch.setattr("hermes_bridge.stream_prompt", hanging_stream)
+    monkeypatch.setattr("hermes_bridge.interrupt_active_prompt", fake_interrupt)
 
     # Build a stub Request that reports disconnected after the first poll.
     class StubRequest:
@@ -461,6 +611,155 @@ def test_talk_message_stream_cancels_upstream_on_client_disconnect(talk_client, 
     # And the upstream bridge task must have been cancelled (no hang).
     assert bridge_started.is_set()
     assert bridge_cancelled.is_set()
+    assert cleanup_order == ["interrupt", "cancel"]
+
+
+def test_talk_disconnect_consumes_raced_bridge_timeout(monkeypatch):
+    """A timeout that wins the disconnect cleanup race stays unobserved by
+    the departed client and must not escape from the SSE generator."""
+    import asyncio as _asyncio
+    from routers.talk import _stream_hermes_sse
+
+    monkeypatch.setattr("routers.talk._KEEPALIVE_INTERVAL", 0.01)
+    release_timeout = _asyncio.Event()
+    timeout_raised = _asyncio.Event()
+
+    async def timing_out_stream(_session_key, _text):
+        yield {"type": "session", "session_id": "sid-timeout-race"}
+        await release_timeout.wait()
+        timeout_raised.set()
+        raise _asyncio.TimeoutError
+
+    async def fake_interrupt(_session_key):
+        release_timeout.set()
+        await timeout_raised.wait()
+        return True
+
+    class DisconnectedRequest:
+        async def is_disconnected(self):
+            return True
+
+    monkeypatch.setattr("hermes_bridge.stream_prompt", timing_out_stream)
+    monkeypatch.setattr("hermes_bridge.interrupt_active_prompt", fake_interrupt)
+
+    async def drive():
+        return [
+            chunk
+            async for chunk in _stream_hermes_sse(
+                "k", "hi", DisconnectedRequest()
+            )
+        ]
+
+    chunks = _run_with_one_loop(drive)
+    body = b"".join(chunks).decode("utf-8")
+    assert '"type":"session"' in body
+    assert '"type":"done"' not in body
+
+
+def test_talk_stream_aclose_interrupts_abandoned_upstream(monkeypatch):
+    """ASGI may close an SSE generator without raising CancelledError.
+
+    Closing while a bridge read is pending must still interrupt Hermes before
+    cancelling the local reader; otherwise Hermes detaches the session and the
+    single local model slot remains occupied.
+    """
+    import asyncio as _asyncio
+    from routers.talk import _stream_hermes_sse
+
+    monkeypatch.setattr("routers.talk._KEEPALIVE_INTERVAL", 0.01)
+    bridge_waiting = _asyncio.Event()
+    order = []
+
+    async def hanging_stream(_session_key, _text):
+        yield {"type": "session", "session_id": "sid-aclose"}
+        try:
+            bridge_waiting.set()
+            await _asyncio.sleep(60)
+        except _asyncio.CancelledError:
+            order.append("cancel")
+            raise
+
+    async def fake_interrupt(_session_key):
+        order.append("interrupt")
+        return True
+
+    class ConnectedRequest:
+        async def is_disconnected(self):
+            return False
+
+    monkeypatch.setattr("hermes_bridge.stream_prompt", hanging_stream)
+    monkeypatch.setattr("hermes_bridge.interrupt_active_prompt", fake_interrupt)
+
+    async def drive():
+        stream = _stream_hermes_sse("phone", "hi", ConnectedRequest())
+        first = await stream.__anext__()
+        second = await stream.__anext__()
+        assert b'"type":"session"' in first
+        assert second == b": keepalive\n\n"
+        assert bridge_waiting.is_set()
+        await stream.aclose()
+
+    _run_with_one_loop(drive)
+    assert order == ["interrupt", "cancel"]
+
+
+def test_talk_streaming_response_watches_disconnect_on_asgi_24(monkeypatch):
+    """ASGI 2.4 must still consume http.disconnect and close the Talk body.
+
+    Plain Starlette 0.48 no longer listens to receive() on this ASGI version;
+    waiting only for a future write failure left a quiet model turn detached.
+    """
+    import asyncio as _asyncio
+    from routers.talk import _TalkStreamingResponse, _stream_hermes_sse
+
+    monkeypatch.setattr("routers.talk._KEEPALIVE_INTERVAL", 0.01)
+    order = []
+
+    async def hanging_stream(_session_key, _text):
+        yield {"type": "session", "session_id": "sid-send-failure"}
+        try:
+            await _asyncio.sleep(60)
+        except _asyncio.CancelledError:
+            order.append("cancel")
+            raise
+
+    async def fake_interrupt(_session_key):
+        order.append("interrupt")
+        return True
+
+    class ConnectedRequest:
+        async def is_disconnected(self):
+            return False
+
+    monkeypatch.setattr("hermes_bridge.stream_prompt", hanging_stream)
+    monkeypatch.setattr("hermes_bridge.interrupt_active_prompt", fake_interrupt)
+
+    async def drive():
+        session_sent = _asyncio.Event()
+        response = _TalkStreamingResponse(
+            _stream_hermes_sse("phone", "hi", ConnectedRequest()),
+            media_type="text/event-stream",
+        )
+
+        async def send(message):
+            if (
+                message["type"] == "http.response.body"
+                and b'"type":"session"' in message.get("body", b"")
+            ):
+                session_sent.set()
+
+        async def receive():
+            await session_sent.wait()
+            return {"type": "http.disconnect"}
+
+        await response(
+            {"type": "http", "asgi": {"spec_version": "2.4"}},
+            receive,
+            send,
+        )
+
+    _run_with_one_loop(drive)
+    assert order == ["interrupt", "cancel"]
 
 
 def _run_with_one_loop(coro_factory):
@@ -1184,5 +1483,466 @@ def test_ods_talk_hermes_timeout_is_env_configurable(monkeypatch):
     monkeypatch.setenv("ODS_TALK_HERMES_TIMEOUT", "900")
     assert hermes_bridge._request_timeout() == 900
 
+    monkeypatch.setenv("ODS_TALK_HERMES_TIMEOUT", " 600 ")
+    assert hermes_bridge._request_timeout() == 600
+
     monkeypatch.setenv("ODS_TALK_HERMES_TIMEOUT", "5")
     assert hermes_bridge._request_timeout() == 10
+
+
+class _ApprovalFakeWS:
+    def __init__(self):
+        self.closed = False
+        self.sent = []
+
+    async def send_str(self, data):
+        self.sent.append(data)
+
+    async def close(self):
+        self.closed = True
+
+
+class _ApprovalFakeHTTP:
+    async def close(self):
+        pass
+
+
+def test_bridge_maps_approval_request_and_keeps_authoritative_payload(monkeypatch):
+    import hermes_bridge
+
+    long_command = "x" * 700
+    original = {
+        "command": long_command,
+        "description": "Run the requested code",
+        "pattern_key": "server-owned",
+    }
+
+    async def fake_recv(_ws, _timeout):
+        return {
+            "method": "event",
+            "params": {"type": "approval.request", "payload": original},
+        }
+
+    monkeypatch.setattr("hermes_bridge._recv_json", fake_recv)
+
+    async def main():
+        conn = hermes_bridge._HermesConnection(
+            http_session=_ApprovalFakeHTTP(),
+            ws=_ApprovalFakeWS(),
+            session_id="sid-approval",
+        )
+        stream = hermes_bridge._submit_on_connection(conn, "hello", 10)
+        event = await stream.__anext__()
+        assert conn.pending_approval == original
+        assert conn.pending_approval is not original
+        await stream.aclose()
+        await conn.aclose()
+        return event
+
+    event = _run_with_one_loop(main)
+    assert event == {
+        "type": "approval",
+        "command": long_command[:500],
+        "description": "Run the requested code",
+        "choices": ["once", "deny"],
+    }
+
+
+def test_interrupt_active_prompt_requires_ack_then_evicts_connection(monkeypatch):
+    import asyncio as asyncio
+    import hermes_bridge
+
+    hermes_bridge._CONNECTION_POOL.clear()
+    hermes_bridge._SWEEPER_TASK = None
+
+    async def main():
+        ws = _ApprovalFakeWS()
+        interrupted_sessions = []
+
+        async def acknowledged_interrupt(session_id):
+            interrupted_sessions.append(session_id)
+
+        monkeypatch.setattr(
+            hermes_bridge,
+            "_interrupt_session_with_ack",
+            acknowledged_interrupt,
+        )
+        conn = hermes_bridge._HermesConnection(
+            http_session=_ApprovalFakeHTTP(),
+            ws=ws,
+            session_id="sid-abandoned",
+        )
+        conn.pending_approval = {"command": "server-owned"}
+        await conn.lock.acquire()
+        hermes_bridge._CONNECTION_POOL["phone"] = conn
+        try:
+            interrupted = await hermes_bridge.interrupt_active_prompt("phone")
+        finally:
+            conn.lock.release()
+
+        assert interrupted is True
+        assert "phone" not in hermes_bridge._CONNECTION_POOL
+        assert conn.pending_approval is None
+        assert ws.closed is True
+        assert ws.sent == []
+        return interrupted_sessions
+
+    assert _run_with_one_loop(main) == ["sid-abandoned"]
+
+
+def test_interrupt_session_control_socket_waits_for_matching_ack(monkeypatch):
+    import hermes_bridge
+
+    class ControlHTTP:
+        def __init__(self, **_kwargs):
+            self.closed = False
+
+        async def close(self):
+            self.closed = True
+
+    ws = _ApprovalFakeWS()
+    frames = iter([
+        {"method": "event", "params": {"type": "gateway.ready"}},
+        {"id": "placeholder", "result": {"status": "interrupted"}},
+    ])
+    sessions = []
+
+    def make_session(**kwargs):
+        session = ControlHTTP(**kwargs)
+        sessions.append(session)
+        return session
+
+    async def fake_connect(session):
+        assert session is sessions[0]
+        return ws
+
+    async def fake_recv(_ws, _timeout):
+        frame = next(frames)
+        if frame.get("id") == "placeholder":
+            import json as _json
+            frame["id"] = _json.loads(ws.sent[0])["id"]
+        return frame
+
+    monkeypatch.setattr(hermes_bridge.aiohttp, "ClientSession", make_session)
+    monkeypatch.setattr(hermes_bridge, "_connect_ws", fake_connect)
+    monkeypatch.setattr(hermes_bridge, "_recv_json", fake_recv)
+
+    _run_with_one_loop(lambda: hermes_bridge._interrupt_session_with_ack("sid-live"))
+
+    import json as _json
+    rpc = _json.loads(ws.sent[0])
+    assert rpc["method"] == "session.interrupt"
+    assert rpc["params"] == {"session_id": "sid-live"}
+    assert ws.closed is True
+    assert sessions[0].closed is True
+
+
+def test_interrupt_active_prompt_leaves_idle_or_absent_session_untouched():
+    import hermes_bridge
+
+    hermes_bridge._CONNECTION_POOL.clear()
+    hermes_bridge._SWEEPER_TASK = None
+
+    async def main():
+        assert await hermes_bridge.interrupt_active_prompt("absent") is False
+
+        ws = _ApprovalFakeWS()
+        conn = hermes_bridge._HermesConnection(
+            http_session=_ApprovalFakeHTTP(),
+            ws=ws,
+            session_id="sid-idle",
+        )
+        hermes_bridge._CONNECTION_POOL["phone"] = conn
+
+        assert await hermes_bridge.interrupt_active_prompt("phone") is False
+        assert hermes_bridge._CONNECTION_POOL["phone"] is conn
+        assert ws.closed is False
+        assert ws.sent == []
+
+    _run_with_one_loop(main)
+
+
+def test_approval_response_bypasses_prompt_lock_and_is_single_claim():
+    import asyncio as _asyncio
+    import json as _json
+    import hermes_bridge
+
+    hermes_bridge._CONNECTION_POOL.clear()
+    hermes_bridge._SWEEPER_TASK = None
+
+    async def main():
+        ws = _ApprovalFakeWS()
+        conn = hermes_bridge._HermesConnection(
+            http_session=_ApprovalFakeHTTP(),
+            ws=ws,
+            session_id="sid-live",
+        )
+        conn.pending_approval = {"command": "server-owned"}
+        hermes_bridge._CONNECTION_POOL["phone"] = conn
+
+        async with conn.lock:
+            results = await _asyncio.wait_for(
+                _asyncio.gather(
+                    hermes_bridge.respond_approval("phone", "once"),
+                    hermes_bridge.respond_approval("phone", "deny"),
+                ),
+                timeout=1,
+            )
+
+        assert results.count(True) == 1
+        assert results.count(False) == 1
+        assert len(ws.sent) == 1
+        return _json.loads(ws.sent[0])
+
+    rpc = _run_with_one_loop(main)
+    assert rpc["method"] == "approval.respond"
+    assert rpc["params"]["session_id"] == "sid-live"
+    assert rpc["params"]["choice"] in {"once", "deny"}
+    assert rpc["params"]["all"] is False
+
+
+def test_approval_send_timeout_is_not_retried_or_restored(monkeypatch):
+    import asyncio as _asyncio
+    import hermes_bridge
+
+    hermes_bridge._CONNECTION_POOL.clear()
+    hermes_bridge._SWEEPER_TASK = None
+    monkeypatch.setattr("hermes_bridge._APPROVAL_SEND_TIMEOUT", 0.01)
+
+    class SlowWS(_ApprovalFakeWS):
+        async def send_str(self, data):
+            self.sent.append(data)
+            await _asyncio.sleep(60)
+
+    async def main():
+        ws = SlowWS()
+        conn = hermes_bridge._HermesConnection(
+            http_session=_ApprovalFakeHTTP(),
+            ws=ws,
+            session_id="sid-timeout",
+        )
+        conn.pending_approval = {"command": "server-owned"}
+        hermes_bridge._CONNECTION_POOL["phone"] = conn
+        with pytest.raises(hermes_bridge.HermesBridgeError, match="state is unknown"):
+            await hermes_bridge.respond_approval("phone", "once")
+        assert conn.pending_approval is None
+        assert len(ws.sent) == 1
+
+    _run_with_one_loop(main)
+
+
+def test_talk_approval_endpoint_requires_session(test_client):
+    unauthenticated = test_client.post(
+        "/api/talk/approval",
+        json={"choice": "once"},
+        headers=test_client.auth_headers,
+    )
+    assert unauthenticated.status_code == 401
+
+
+def test_talk_approval_endpoint_is_choice_only(talk_client, monkeypatch):
+    calls = []
+
+    async def fake_respond(session_key, choice):
+        calls.append((session_key, choice))
+        return True
+
+    monkeypatch.setattr("hermes_bridge.respond_approval", fake_respond)
+
+    for payload in ({}, {"choice": "always"}, {"choice": "once", "command": "changed"}):
+        assert talk_client.post("/api/talk/approval", json=payload).status_code == 422
+    assert calls == []
+
+    response = talk_client.post("/api/talk/approval", json={"choice": "once"})
+    assert response.status_code == 200
+    assert response.json() == {"accepted": True, "choice": "once"}
+    assert len(calls) == 1
+    assert calls[0][1] == "once"
+
+    async def no_pending(_session_key, _choice):
+        return False
+
+    monkeypatch.setattr("hermes_bridge.respond_approval", no_pending)
+    assert talk_client.post("/api/talk/approval", json={"choice": "deny"}).status_code == 409
+
+
+def test_sse_disconnect_denies_approval_before_cancelling(monkeypatch):
+    import asyncio as _asyncio
+    from routers.talk import _stream_hermes_sse
+
+    monkeypatch.setattr("routers.talk._KEEPALIVE_INTERVAL", 0.01)
+    order = []
+
+    async def approval_then_hang(_session_key, _text):
+        yield {"type": "session", "session_id": "sid"}
+        yield {
+            "type": "approval",
+            "command": "echo safe",
+            "description": "Run code",
+            "choices": ["once", "deny"],
+        }
+        try:
+            await _asyncio.sleep(60)
+        except _asyncio.CancelledError:
+            order.append("cancel")
+            raise
+
+    async def fake_deny(_session_key):
+        order.append("deny")
+        return True
+
+    async def fake_interrupt(_session_key):
+        order.append("interrupt")
+        return True
+
+    monkeypatch.setattr("hermes_bridge.stream_prompt", approval_then_hang)
+    monkeypatch.setattr("hermes_bridge.deny_pending_approval", fake_deny)
+    monkeypatch.setattr("hermes_bridge.interrupt_active_prompt", fake_interrupt)
+
+    class DisconnectedRequest:
+        async def is_disconnected(self):
+            return True
+
+    async def drive():
+        return [chunk async for chunk in _stream_hermes_sse("phone", "hi", DisconnectedRequest())]
+
+    loop = _asyncio.new_event_loop()
+    try:
+        body = b"".join(loop.run_until_complete(drive())).decode("utf-8")
+    finally:
+        loop.close()
+
+    assert '"type":"approval"' in body
+    assert '"choices":["once","deny"]' in body
+    assert '"type":"done"' not in body
+    assert order == ["deny", "interrupt", "cancel"]
+
+
+def _context_catalog():
+    return [
+        {
+            "id": "qwen3.5-27b-q4",
+            "name": "Qwen 3.5 27B",
+            "gguf_file": "Qwen3.5-27B-Q4_K_M.gguf",
+            "llm_model_name": "qwen3.5-27b",
+            "context_length": 65536,
+            "max_context_length": 262144,
+        },
+        {
+            "id": "phi4-q4",
+            "name": "Phi-4 14B",
+            "gguf_file": "phi-4-Q4_K_M.gguf",
+            "llm_model_name": "phi-4",
+            "context_length": 16384,
+            "max_context_length": 16384,
+        },
+    ]
+
+
+def _patch_context_talk(monkeypatch, *, gguf, env, live_context=None):
+    async def fake_state(service_id):
+        return {"configured": True, "status": "healthy", "id": service_id}
+
+    async def live_model():
+        return gguf
+
+    async def live_n_ctx(model_hint=None):
+        assert model_hint == gguf
+        return live_context
+
+    catalog = _context_catalog()
+    monkeypatch.setattr("routers.talk._service_state", fake_state)
+    monkeypatch.setattr("routers.talk.get_loaded_model", live_model)
+    monkeypatch.setattr("routers.talk.get_llama_context_size", live_n_ctx)
+    monkeypatch.setattr("routers.talk.load_model_catalog", lambda _install_dir: catalog)
+    monkeypatch.setattr("routers.talk.read_env_file_value", lambda key, _install_dir: env.get(key, ""))
+    monkeypatch.setattr("routers.talk.read_env_value", lambda key, _install_dir: env.get(key, ""))
+    monkeypatch.setattr("routers.talk.model_compatibility_runtime_context", lambda _install_dir: {})
+
+
+def test_talk_status_blocks_a_model_served_below_the_hermes_floor(talk_client, monkeypatch):
+    """tower1/tower3: the 27B served at 32K; Hermes then failed every turn with a 502."""
+    _patch_context_talk(monkeypatch, gguf="Qwen3.5-27B-Q4_K_M.gguf", env={"CTX_SIZE": "32768"})
+
+    data = talk_client.get("/api/talk/status").json()
+
+    assert data["capabilities"]["text_chat"] is False
+    assert data["reasonCode"] == "model_not_supported"
+    assert "64K" in data["reason"] and "32K" in data["reason"]
+    assert data["modelCompatibility"]["hermesTalk"]["code"] == "context_below_hermes_minimum"
+
+
+def test_talk_session_is_refused_up_front_below_the_floor(talk_client, monkeypatch):
+    _patch_context_talk(monkeypatch, gguf="Qwen3.5-27B-Q4_K_M.gguf", env={"CTX_SIZE": "32768"})
+
+    async def fail_session(_session_key):
+        raise AssertionError("Hermes must not be reached below the context floor")
+
+    monkeypatch.setattr("hermes_bridge.ensure_session", fail_session)
+
+    resp = talk_client.post("/api/talk/session")
+
+    assert resp.status_code == 409
+    assert "64K" in resp.json()["detail"]
+
+
+def test_talk_status_allows_the_same_model_at_the_floor(talk_client, monkeypatch):
+    _patch_context_talk(monkeypatch, gguf="Qwen3.5-27B-Q4_K_M.gguf", env={"CTX_SIZE": "65536"})
+
+    data = talk_client.get("/api/talk/status").json()
+
+    assert data["capabilities"]["text_chat"] is True
+    assert data["reason"] is None
+
+
+def test_talk_status_names_a_native_context_limit(talk_client, monkeypatch):
+    _patch_context_talk(monkeypatch, gguf="phi-4-Q4_K_M.gguf", env={"CTX_SIZE": "16384"})
+
+    data = talk_client.get("/api/talk/status").json()
+
+    assert data["capabilities"]["text_chat"] is False
+    assert "supports only 16K" in data["reason"]
+
+
+def test_talk_status_uses_the_live_context_over_the_launch_configuration(talk_client, monkeypatch):
+    """The live n_ctx is what Hermes checks, so it decides over the launch
+    configuration. They can disagree: llama.cpp caps a slot at the model's
+    training context whatever CTX_SIZE asks for (#6712: 131072 requested,
+    n_ctx 40960), and below 64K Hermes refuses every turn with a 502."""
+    _patch_context_talk(
+        monkeypatch, gguf="Qwen3.5-27B-Q4_K_M.gguf", env={"CTX_SIZE": "65536"}, live_context=32768,
+    )
+
+    data = talk_client.get("/api/talk/status").json()
+
+    assert data["capabilities"]["text_chat"] is False
+    assert data["modelCompatibility"]["hermesTalk"]["code"] == "context_below_hermes_minimum"
+    assert "runs at 32K" in data["reason"]
+
+
+def test_talk_status_allows_a_live_context_at_the_floor(talk_client, monkeypatch):
+    _patch_context_talk(
+        monkeypatch, gguf="Qwen3.5-27B-Q4_K_M.gguf", env={"CTX_SIZE": "32768"}, live_context=65536,
+    )
+
+    data = talk_client.get("/api/talk/status").json()
+
+    assert data["capabilities"]["text_chat"] is True
+    assert data["reason"] is None
+
+
+def test_talk_status_judges_an_import_on_its_live_context_only(talk_client, monkeypatch):
+    # A model outside the catalog (an import) served below the floor is
+    # reported up front too; without a live value its launch configuration
+    # is not used (a cloud or external backend has none to go by).
+    _patch_context_talk(
+        monkeypatch, gguf="my-import-Q4_K_M.gguf", env={"CTX_SIZE": "32768"}, live_context=32768,
+    )
+    data = talk_client.get("/api/talk/status").json()
+    assert data["modelCompatibility"]["hermesTalk"]["code"] == "context_below_hermes_minimum"
+
+    _patch_context_talk(
+        monkeypatch, gguf="my-import-Q4_K_M.gguf", env={"CTX_SIZE": "32768"}, live_context=None,
+    )
+    data = talk_client.get("/api/talk/status").json()
+    assert data["modelCompatibility"]["hermesTalk"].get("code") != "context_below_hermes_minimum"

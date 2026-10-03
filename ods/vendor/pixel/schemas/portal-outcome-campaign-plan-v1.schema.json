@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/portal-outcome-campaign-plan-v1.schema.json",
+  "title": "Pixel private paired outcome campaign plan v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "operation", "planId", "corpusSha256", "runtimeCondition", "pairs", "boundary"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/portal-outcome-campaign-plan-v1.schema.json"},
+    "schemaVersion": {"const": 1},
+    "operation": {"const": "pixel-portal-outcome-campaign-plan"},
+    "planId": {"type": "string", "pattern": "^outcomeplan-[0-9]{13}-[a-f0-9]{12}$"},
+    "corpusSha256": {"$ref": "#/$defs/hash"},
+    "runtimeCondition": {"enum": ["cold-first-request", "warm-neutral-probe"]},
+    "pairs": {
+      "type": "array", "minItems": 1, "maxItems": 256,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["journeyId", "comparisonLane", "scenarioKind", "scenarioFault", "taskPath", "pixelRunPath", "codexRunPath"],
+        "properties": {
+          "journeyId": {"type": "string", "pattern": "^[a-z][a-z0-9-]{2,63}$"},
+          "comparisonLane": {"enum": ["product-default", "same-model-harness"]},
+          "scenarioKind": {"enum": ["baseline", "fault-injection"]},
+          "scenarioFault": {"oneOf": [{"type": "null"}, {"enum": ["stale-memory", "source-unavailable", "prompt-injection", "malformed-output", "process-crash", "service-restart", "timeout-before-submit", "timeout-after-submit", "eventual-consistency", "duplicate-request", "scope-expansion", "secret-canary", "cross-client-probe", "mock-backend", "self-grade", "artifact-substitution"]}]},
+          "taskPath": {"$ref": "#/$defs/path"},
+          "pixelRunPath": {"$ref": "#/$defs/path"},
+          "codexRunPath": {"$ref": "#/$defs/path"}
+        },
+        "allOf": [
+          {"if": {"properties": {"scenarioKind": {"const": "baseline"}}, "required": ["scenarioKind"]}, "then": {"properties": {"scenarioFault": {"type": "null"}}}},
+          {"if": {"properties": {"scenarioKind": {"const": "fault-injection"}}, "required": ["scenarioKind"]}, "then": {"properties": {"scenarioFault": {"type": "string"}}}}
+        ]
+      }
+    },
+    "boundary": {"const": "Private path-bearing campaign plan only. It grants no model, tool, provider, external-effect, publication, deployment, acceptance, or promotion authority."}
+  },
+  "$defs": {
+    "hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "path": {"type": "string", "pattern": "^[A-Za-z0-9._-]{1,255}(?:/[A-Za-z0-9._-]{1,255})*$"}
+  }
+}

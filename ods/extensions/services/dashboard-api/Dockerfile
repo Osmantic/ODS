@@ -1,7 +1,7 @@
 # ODS Dashboard API
 # Lightweight system status backend for the Dashboard UI
 
-FROM python:3.11-slim
+FROM python:3.11-slim@sha256:e41613d42d4891e4930f79523f93f81bbc7632584ec65e36ab055f41a800b41e
 
 LABEL org.opencontainers.image.source="https://github.com/Osmantic/ODS"
 LABEL org.opencontainers.image.description="ODS Dashboard API"
@@ -14,8 +14,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Python dependencies
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+COPY requirements.lock .
+RUN pip install --no-cache-dir --require-hashes -r requirements.lock
 
 # Copy application
 # Use glob to pick up every top-level .py file. The old explicit list
@@ -27,6 +27,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY *.py ./
 COPY performance_evidence.json ./
 COPY routers/ routers/
+# A strict host umask can make copied source 0600/0700. Only the public code
+# copied into this image needs to be readable by the non-root runtime user.
+RUN chmod -R a+rX /app
 
 # Non-root user
 RUN useradd -m -u 1000 odser

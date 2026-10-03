@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+set -euo pipefail
+while [[ $# -gt 0 && $1 == -* ]]; do
+  case "$1" in
+    -o) shift 2 ;;
+    *) shift ;;
+  esac
+done
+[[ $# -ge 2 ]] || { echo "fake ssh: missing host or command" >&2; exit 2; }
+host=$1
+shift
+[[ "$host" == fake-worker ]] || { echo "fake ssh: unknown host $host" >&2; exit 255; }
+command=$1
+if [[ "$command" == hostname ]]; then
+  printf '%s\n' "${PIXEL_FAKE_SSH_HOSTNAME:-fake-worker}"
+  exit 0
+fi
+if [[ -n "${PIXEL_FAKE_ARTIFACT_RECEIVER:-}" && "$command" == /usr/local/libexec/pixel-ops-receive-artifact\ * ]]; then
+  [[ "${PIXEL_FAKE_TRANSFER_SLEEP:-0}" =~ ^[0-9]+$ ]] || exit 2
+  [[ "${PIXEL_FAKE_TRANSFER_STDERR_BYTES:-0}" =~ ^[0-9]+$ ]] || exit 2
+  if [[ ${PIXEL_FAKE_TRANSFER_SLEEP:-0} -gt 0 ]]; then sleep "$PIXEL_FAKE_TRANSFER_SLEEP"; fi
+  if [[ ${PIXEL_FAKE_TRANSFER_STDERR_BYTES:-0} -gt 0 ]]; then head -c "$PIXEL_FAKE_TRANSFER_STDERR_BYTES" /dev/zero | tr '\0' x >&2; fi
+  command="$(printf '%q' "$PIXEL_FAKE_ARTIFACT_RECEIVER")${command#/usr/local/libexec/pixel-ops-receive-artifact}"
+fi
+exec /bin/bash -lc "$command"

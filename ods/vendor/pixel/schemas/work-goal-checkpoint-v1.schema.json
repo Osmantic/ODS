@@ -1,0 +1,100 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/work-goal-checkpoint-v1.schema.json",
+  "title": "Pixel Deep Work durable goal checkpoint v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "checkpointId", "goalId", "sequence", "createdAt", "previousCheckpointSha256", "goalSha256", "state", "completedMilestones", "active", "observation", "usage", "progress", "failureFingerprintSha256", "authorityExpansionObserved", "externalEffectsObserved", "boundary"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/work-goal-checkpoint-v1.schema.json"},
+    "schemaVersion": {"const": 1},
+    "checkpointId": {"type": "string", "pattern": "^workgoalcheckpoint-[0-9]{13}-[a-f0-9]{12}$"},
+    "goalId": {"type": "string", "pattern": "^workgoal-[0-9]{13}-[a-f0-9]{12}$"},
+    "sequence": {"type": "integer", "minimum": 0, "maximum": 1000000},
+    "createdAt": {"type": "string", "format": "date-time"},
+    "previousCheckpointSha256": {"$ref": "#/$defs/nullableSha256"},
+    "goalSha256": {"$ref": "#/$defs/sha256"},
+    "state": {"enum": ["ready", "running", "waiting-authority", "paused", "recovery-inconclusive", "completed", "failed", "cancelled", "budget-exhausted", "no-progress"]},
+    "completedMilestones": {
+      "type": "array",
+      "maxItems": 64,
+      "uniqueItems": true,
+      "items": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,62}$"}
+    },
+    "active": {
+      "oneOf": [
+        {"type": "null"},
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["milestoneId", "jobId", "jobSha256"],
+          "properties": {
+            "milestoneId": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,62}$"},
+            "jobId": {"type": "string", "pattern": "^work-[0-9]{13}-[a-f0-9]{12}$"},
+            "jobSha256": {"$ref": "#/$defs/sha256"}
+          }
+        }
+      ]
+    },
+    "observation": {
+      "oneOf": [
+        {"type": "null"},
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["milestoneId", "jobId", "jobSha256", "childCheckpointSha256", "childState", "childUsage", "criteriaTotal", "criteriaPassing", "verificationEvidenceSha256"],
+          "properties": {
+            "milestoneId": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,62}$"},
+            "jobId": {"type": "string", "pattern": "^work-[0-9]{13}-[a-f0-9]{12}$"},
+            "jobSha256": {"$ref": "#/$defs/sha256"},
+            "childCheckpointSha256": {"$ref": "#/$defs/sha256"},
+            "childState": {"enum": ["running", "verifying", "verified", "waiting-authority", "cleanup-failed", "recovery-inconclusive", "completed", "failed", "cancelled", "budget-exhausted", "no-progress"]},
+            "childUsage": {"$ref": "#/$defs/usage"},
+            "criteriaTotal": {"type": "integer", "minimum": 1, "maximum": 32},
+            "criteriaPassing": {"type": "integer", "minimum": 0, "maximum": 32},
+            "verificationEvidenceSha256": {"$ref": "#/$defs/nullableSha256"}
+          }
+        }
+      ]
+    },
+    "usage": {"$ref": "#/$defs/usage"},
+    "progress": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["milestonesTotal", "milestonesCompleted", "jobsStarted", "failures"],
+      "properties": {
+        "milestonesTotal": {"type": "integer", "minimum": 1, "maximum": 64},
+        "milestonesCompleted": {"type": "integer", "minimum": 0, "maximum": 64},
+        "jobsStarted": {"type": "integer", "minimum": 0, "maximum": 64},
+        "failures": {"type": "integer", "minimum": 0, "maximum": 64000}
+      }
+    },
+    "failureFingerprintSha256": {"$ref": "#/$defs/nullableSha256"},
+    "authorityExpansionObserved": {"type": "boolean"},
+    "externalEffectsObserved": {"type": "boolean"},
+    "boundary": {"const": "Private hash-chained goal recovery record. It records exact child evidence and aggregate progress but grants no execution, retry, lease, scope expansion, external effect, or completion authority."}
+  },
+  "allOf": [
+    {"if": {"properties": {"sequence": {"const": 0}}, "required": ["sequence"]}, "then": {"properties": {"previousCheckpointSha256": {"const": null}}}, "else": {"properties": {"previousCheckpointSha256": {"$ref": "#/$defs/sha256"}}}},
+    {"if": {"properties": {"state": {"enum": ["running", "waiting-authority"]}}, "required": ["state"]}, "then": {"properties": {"active": {"type": "object"}}}, "else": {"if": {"properties": {"state": {"const": "paused"}}, "required": ["state"]}, "then": {}, "else": {"properties": {"active": {"type": "null"}}}}},
+    {"if": {"properties": {"state": {"const": "completed"}}, "required": ["state"]}, "then": {"properties": {"authorityExpansionObserved": {"const": false}, "externalEffectsObserved": {"const": false}}}}
+  ],
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "nullableSha256": {"type": ["string", "null"], "pattern": "^[a-f0-9]{64}$"},
+    "usage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["runtimeSeconds", "modelRequests", "inputTokens", "outputTokens", "networkBytes", "artifactBytes", "failures"],
+      "properties": {
+        "runtimeSeconds": {"type": "integer", "minimum": 0, "maximum": 31536000},
+        "modelRequests": {"type": "integer", "minimum": 0, "maximum": 6400000},
+        "inputTokens": {"type": "integer", "minimum": 0, "maximum": 128000000000},
+        "outputTokens": {"type": "integer", "minimum": 0, "maximum": 32000000000},
+        "networkBytes": {"type": "integer", "minimum": 0, "maximum": 687194767360},
+        "artifactBytes": {"type": "integer", "minimum": 0, "maximum": 2199023255552},
+        "failures": {"type": "integer", "minimum": 0, "maximum": 64000}
+      }
+    }
+  }
+}

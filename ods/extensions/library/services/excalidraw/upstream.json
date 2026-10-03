@@ -1,0 +1,13 @@
+{
+  "repository": "https://github.com/excalidraw/excalidraw",
+  "license": "MIT",
+  "image": "excalidraw/excalidraw:latest@sha256:f7ee194addd607bf831d2af0f0a34463dd4225e426cf35199ef0b12a803398e9",
+  "registry_checked_at": "2026-09-20",
+  "platforms": [
+    "linux/amd64",
+    "linux/arm64",
+    "linux/arm"
+  ],
+  "runtime_validation": "pending",
+  "notes": "Standalone local editor; drawings use browser storage or file export. This recipe does not provision a collaboration server or claim hosted collaboration features."
+}

@@ -1,0 +1,16 @@
+{
+  "repository": "https://github.com/eclipse-mosquitto/mosquitto",
+  "license": "EPL-2.0 OR BSD-3-Clause",
+  "image": "eclipse-mosquitto:2.0.22@sha256:199ea8ef2e35ec2b1b37e59cfd1dbae538ed4dfa4a2251a121a52215a6248a21",
+  "registry_checked_at": "2026-09-20",
+  "platforms": [
+    "linux/amd64",
+    "linux/arm64",
+    "linux/arm",
+    "linux/386",
+    "linux/ppc64le",
+    "linux/s390x"
+  ],
+  "runtime_validation": "pending",
+  "notes": "Official 2.0.22 image available; upstream 2.1.2 tag had no corresponding official image. Nonroot persistence, fixed local account, hashed password and topic ACL, authenticated read-only MQTT healthcheck. No HTTP readiness endpoint; uses ODS host Docker health evidence. No application messages, bridge, devices or project clients configured."
+}

@@ -62,6 +62,50 @@ pass "rootless config ownership repair rejects symlinks"
 ) || fail "docker-info failure was treated as rootful"
 pass "indeterminate Docker rootless state fails closed"
 
+(
+    source "$LIB"
+    unset ODS_ASSUME_ROOTLESS
+    # A fresh installer process has not inherited its new docker group yet.
+    # Phase 05 has already selected and verified the sudo-backed wrapper.
+    docker() { return 1; }
+    docker_run() {
+        [[ "$*" == "info --format {{json .SecurityOptions}}" ]] || return 1
+        printf '%s\n' '["name=seccomp,profile=builtin"]'
+    }
+    state_rc=0
+    ods_docker_rootless_state || state_rc=$?
+    [[ "$state_rc" -eq 1 ]]
+) || fail "fresh-install Docker detection ignored the selected command"
+pass "fresh-install Docker detection uses the verified installer command"
+
+(
+    source "$LIB"
+    unset ODS_ASSUME_ROOTLESS
+    docker() { return 1; }
+    docker_run() { printf '%s\n' '["name=rootless"]'; }
+    ods_docker_rootless_state
+) || fail "selected-command rootless detection"
+pass "selected-command rootless detection preserves ownership mode"
+
+(
+    source "$LIB"
+    unset ODS_ASSUME_ROOTLESS
+    docker() {
+        # Mirrors the real CLI: an empty template result on stdout, then the
+        # connection error (and a template error) on stderr.
+        echo ""
+        echo "Cannot connect to the Docker daemon at unix:///var/run/docker.sock. Is the docker daemon running?" >&2
+        echo "template: :1:7: executing \"\" at <.Host.Security.Rootless>: can't evaluate field Host in type system.dockerInfo" >&2
+        return 1
+    }
+    state_rc=0
+    probe_err="$(ods_docker_rootless_state 2>&1)" || state_rc=$?
+    [[ "$state_rc" -eq 2 ]] || exit 1
+    [[ "$probe_err" == *"Could not determine whether Docker is running in rootless mode"* ]] || exit 1
+    [[ "$probe_err" == *"docker info: Cannot connect to the Docker daemon"* ]] || exit 1
+) || fail "daemon-unreachable probe did not surface docker's own error"
+pass "indeterminate rootless state reports why docker info failed"
+
 INSTALL_DIR="$TMP_DIR/ods"
 mkdir -p "$INSTALL_DIR/data"/{ape,privacy-shield,token-spy,n8n,whisper,hermes,comfyui}
 mkdir -p "$INSTALL_DIR/data/langfuse"/{postgres,clickhouse}
@@ -92,6 +136,24 @@ pass "only active compose services are repaired"
     uname() { printf 'Linux\n'; }
     _ods_rootless_ensure_helper_image() { return 0; }
     _ods_rootless_fix_directory() {
+        printf '%s|%s|%s\n' "$2" "$3" "$4" >> "$CALLS"
+    }
+    ODS_ROOTLESS_COMPOSE_FLAGS="-f extensions/services/ape/compose.yaml"
+    ods_fix_rootless_ownership "$INSTALL_DIR"
+)
+grep -q '^data/ape|100:65534|ods-ape$' "$CALLS" \
+    || fail "ape state directory was not repaired for its container UID/GID"
+[[ "$(wc -l < "$CALLS" | tr -d ' ')" == "1" ]] \
+    || fail "ape repair modified unrelated directories"
+pass "APE private state is repaired to the container UID 100:GID 65534"
+
+: > "$CALLS"
+(
+    source "$LIB"
+    ods_docker_rootless_state() { return 0; }
+    uname() { printf 'Linux\n'; }
+    _ods_rootless_ensure_helper_image() { return 0; }
+    _ods_rootless_fix_directory() {
         printf '%s|%s\n' "$2" "$3" >> "$CALLS"
     }
     ODS_ROOTLESS_COMPOSE_FLAGS="-f extensions/services/token-spy/compose.yaml"
@@ -102,6 +164,34 @@ grep -q '^data/hermes|10000:10000$' "$CALLS" \
 [[ "$(wc -l < "$CALLS" | tr -d ' ')" == "1" ]] \
     || fail "targeted repair modified unrelated active services"
 pass "targeted repair covers newly enabled service only"
+
+: > "$CALLS"
+(
+    source "$LIB"
+    ods_docker_rootless_state() { return 1; }
+    uname() { printf 'Linux\n'; }
+    id() { [[ "$1" == -g ]] && printf '4242\n'; }
+    _ods_rootless_ensure_helper_image() { return 0; }
+    _ods_rootless_fix_directory() {
+        printf '%s|%s|%s|%s\n' "$2" "$3" "$4" "$5" >> "$CALLS"
+    }
+    ods_prepare_whisper_cache_ownership "$INSTALL_DIR"
+)
+grep -q '^data/whisper|1000:4242|ods-whisper|775$' "$CALLS" \
+    || fail "rootful Library Whisper cache was not prepared for UID 1000"
+pass "rootful Library Whisper add-back prepares its UID 1000 cache"
+
+: > "$CALLS"
+(
+    source "$LIB"
+    ods_docker_rootless_state() { return 0; }
+    uname() { printf 'Linux\n'; }
+    ods_fix_rootless_ownership() { printf '%s|%s\n' "$1" "$2" >> "$CALLS"; }
+    ods_prepare_whisper_cache_ownership "$INSTALL_DIR"
+)
+grep -q "^$INSTALL_DIR|whisper$" "$CALLS" \
+    || fail "rootless Library Whisper cache bypassed namespace repair"
+pass "rootless Library Whisper add-back keeps its namespace repair"
 
 : > "$CALLS"
 (

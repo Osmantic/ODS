@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import uuid
 from typing import Any
 
@@ -68,6 +69,25 @@ def _sanitize_evidence(payload: Any, probe_id: str) -> dict[str, Any]:
         value = payload.get(key)
         if type(value) is int:
             clean[key] = value
+    request_id = payload.get("requestId")
+    try:
+        if isinstance(request_id, str) and str(uuid.UUID(request_id)) == request_id:
+            clean["requestId"] = request_id
+    except ValueError:
+        pass
+    tools = payload.get("offeredTools")
+    if (type(tools) is dict
+            and set(tools) == {"schemaVersion", "boundary", "encoding", "state", "count", "sha256"}
+            and type(tools["schemaVersion"]) is int and tools["schemaVersion"] == 1
+            and tools["boundary"] == "router-forwarded-tools-not-execution-proof"
+            and tools["encoding"] == "json-sort-keys-ascii-v1"):
+        observed = (tools["state"] == "observed" and type(tools["count"]) is int
+                    and 0 <= tools["count"] <= 256 and isinstance(tools["sha256"], str)
+                    and re.fullmatch(r"[a-f0-9]{64}", tools["sha256"]) is not None)
+        unavailable = (tools["state"] == "unavailable" and tools["count"] is None
+                       and tools["sha256"] is None)
+        if observed or unavailable:
+            clean["offeredTools"] = dict(tools)
     return clean
 
 

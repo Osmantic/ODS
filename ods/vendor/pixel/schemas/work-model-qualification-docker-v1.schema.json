@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/work-model-qualification-docker-v1.schema.json",
+  "title": "Pixel private exact local-model Docker qualification configuration v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "backendConfigPath", "qualificationConfigPath", "runnerImageDigest", "evidenceRoot", "boundary"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/work-model-qualification-docker-v1.schema.json"},
+    "schemaVersion": {"const": 1},
+    "backendConfigPath": {"$ref": "#/$defs/path"},
+    "qualificationConfigPath": {"$ref": "#/$defs/path"},
+    "runnerImageDigest": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+    "evidenceRoot": {"$ref": "#/$defs/path"},
+    "boundary": {"const": "Owner-private exact local-model qualification inputs only. Configuration grants no model start, container, network, device, credential, external-effect, completion, publication, deployment, acceptance, or promotion authority."}
+  },
+  "$defs": {
+    "path": {"type": "string", "minLength": 1, "maxLength": 4096, "pattern": "^[^\\u0000\\r\\n]+$"}
+  }
+}

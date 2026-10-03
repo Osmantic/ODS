@@ -54,7 +54,7 @@ set_qwen_tier_config() {
     case "$tier" in
         CLOUD)
             TIER_NAME="Cloud (API)"
-            LLM_MODEL="anthropic/claude-sonnet-4-5-20250514"
+            LLM_MODEL="anthropic/claude-sonnet-4-6"
             GGUF_FILE=""
             GGUF_URL=""
             GGUF_SHA256=""
@@ -62,19 +62,19 @@ set_qwen_tier_config() {
             ;;
         4)
             TIER_NAME="Enterprise"
-            LLM_MODEL="qwen3-30b-a3b"
-            GGUF_FILE="Qwen3-30B-A3B-Q4_K_M.gguf"
-            GGUF_URL="https://huggingface.co/unsloth/Qwen3-30B-A3B-GGUF/resolve/main/Qwen3-30B-A3B-Q4_K_M.gguf"
-            GGUF_SHA256="9f1a24700a339b09c06009b729b5c809e0b64c213b8af5b711b3dbdfd0c5ba48"
+            LLM_MODEL="qwen3.6-35b-a3b"
+            GGUF_FILE="Qwen3.6-35B-A3B-UD-Q4_K_M.gguf"
+            GGUF_URL="https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF/resolve/main/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf"
+            GGUF_SHA256="ac0e2c1189e055faa36eff361580e79c5bd6f8e76bffb4ce547f167d53e31a61"
             MAX_CONTEXT=131072
             ;;
         3)
             TIER_NAME="Pro"
-            LLM_MODEL="qwen3-30b-a3b"
-            GGUF_FILE="Qwen3-30B-A3B-Q4_K_M.gguf"
-            GGUF_URL="https://huggingface.co/unsloth/Qwen3-30B-A3B-GGUF/resolve/main/Qwen3-30B-A3B-Q4_K_M.gguf"
-            GGUF_SHA256="9f1a24700a339b09c06009b729b5c809e0b64c213b8af5b711b3dbdfd0c5ba48"
-            MAX_CONTEXT=32768
+            LLM_MODEL="qwen3.6-35b-a3b"
+            GGUF_FILE="Qwen3.6-35B-A3B-UD-Q4_K_M.gguf"
+            GGUF_URL="https://huggingface.co/unsloth/Qwen3.6-35B-A3B-GGUF/resolve/main/Qwen3.6-35B-A3B-UD-Q4_K_M.gguf"
+            GGUF_SHA256="ac0e2c1189e055faa36eff361580e79c5bd6f8e76bffb4ce547f167d53e31a61"
+            MAX_CONTEXT=131072
             ;;
         2)
             TIER_NAME="Prosumer"
@@ -113,7 +113,7 @@ set_gemma4_tier_config() {
     case "$tier" in
         CLOUD)
             TIER_NAME="Cloud (API)"
-            LLM_MODEL="anthropic/claude-sonnet-4-5-20250514"
+            LLM_MODEL="anthropic/claude-sonnet-4-6"
             GGUF_FILE=""
             GGUF_URL=""
             GGUF_SHA256=""
@@ -123,16 +123,16 @@ set_gemma4_tier_config() {
             TIER_NAME="Enterprise"
             LLM_MODEL="gemma-4-31b-it"
             GGUF_FILE="gemma-4-31B-it-Q4_K_M.gguf"
-            GGUF_URL="https://huggingface.co/ggml-org/gemma-4-31B-it-GGUF/resolve/main/gemma-4-31B-it-Q4_K_M.gguf"
-            GGUF_SHA256=""
+            GGUF_URL="https://huggingface.co/unsloth/gemma-4-31B-it-GGUF/resolve/c1ac76e99d5513b141e8adde7288b85c3f9c32ec/gemma-4-31B-it-Q4_K_M.gguf"
+            GGUF_SHA256="38bd64c852c4b460434cc7162fa9bdcf242faf86502581a754cb72956bb17f84"
             MAX_CONTEXT=65536
             ;;
         3)
             TIER_NAME="Pro"
             LLM_MODEL="gemma-4-26b-a4b-it"
-            GGUF_FILE="gemma-4-26B-A4B-it-Q4_K_M.gguf"
-            GGUF_URL="https://huggingface.co/ggml-org/gemma-4-26B-A4B-it-GGUF/resolve/main/gemma-4-26B-A4B-it-Q4_K_M.gguf"
-            GGUF_SHA256=""
+            GGUF_FILE="gemma-4-26B-A4B-it-UD-Q4_K_M.gguf"
+            GGUF_URL="https://huggingface.co/unsloth/gemma-4-26B-A4B-it-GGUF/resolve/c099eb48e663fd284577b04978a94ffccb261841/gemma-4-26B-A4B-it-UD-Q4_K_M.gguf"
+            GGUF_SHA256="f2c28b3dc4776931ac6f879e11f203dec637ea0f14267a86ec8f6165f63f293f"
             MAX_CONTEXT=16384
             ;;
         2)

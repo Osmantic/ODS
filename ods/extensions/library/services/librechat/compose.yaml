@@ -1,6 +1,6 @@
 services:
   librechat:
-    image: ghcr.io/danny-avila/librechat:v0.7.7
+    image: ghcr.io/danny-avila/librechat:v0.7.7@sha256:8c68abbe1cffeab6fbeec7484e4e9a40d4ad7cb7c30c1cbab0ec58cd33251dea
     container_name: ods-librechat
     restart: unless-stopped
     security_opt:
@@ -55,7 +55,7 @@ services:
       - ./data/librechat/logs:/app/api/logs:rw
       - ./data/librechat/uploads:/app/uploads:rw
     ports:
-      - "${BIND_ADDRESS:-127.0.0.1}:${LIBRECHAT_PORT:-3080}:3080"
+      - "127.0.0.1:${LIBRECHAT_PORT:-3080}:3080"
     depends_on:
       librechat-mongodb:
         condition: service_healthy
@@ -79,7 +79,7 @@ services:
           memory: 512M
 
   librechat-mongodb:
-    image: mongo:7.0.16
+    image: mongo:7.0.16@sha256:c630c59342c1493d50345136df2af14a76b9e827dd5316bfabee07a0880a5f3a
     container_name: ods-librechat-mongodb
     restart: unless-stopped
     security_opt:
@@ -107,7 +107,7 @@ services:
           memory: 256M
 
   librechat-meilisearch:
-    image: getmeili/meilisearch:v1.12.8
+    image: getmeili/meilisearch:v1.12.8@sha256:c9fac23131cca4db95173d41cc50fd5639121ee381795528fdd7522d7978a7b8
     container_name: ods-librechat-meilisearch
     restart: unless-stopped
     security_opt:

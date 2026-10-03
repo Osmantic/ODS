@@ -68,17 +68,132 @@ jobs:
           }
           if ($failed) { exit 1 }
 
+      - name: Windows Portal Setup Contracts (PowerShell 7)
+        shell: pwsh
+        run: ./tests/contracts/test-windows-portal-setup.ps1
+
+      - name: Standalone Windows ComfyUI data isolation
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./tests/contracts/test-windows-comfyui-standalone.ps1
+
+      - name: Windows Portal Setup Contracts (Windows PowerShell)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./tests/contracts/test-windows-portal-setup.ps1
+
+      - name: Windows Portal Prerequisite Contracts (PowerShell 7)
+        shell: pwsh
+        run: ./tests/contracts/test-windows-portal-prereqs.ps1
+
+      - name: Windows Portal Prerequisite Contracts (Windows PowerShell)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./tests/contracts/test-windows-portal-prereqs.ps1
+
+      - name: Windows Portal AMD Contracts (PowerShell 7)
+        shell: pwsh
+        run: ./tests/contracts/test-windows-portal-amd.ps1
+
+      - name: Windows Portal AMD Contracts (Windows PowerShell)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./tests/contracts/test-windows-portal-amd.ps1
+
+      - name: WSL Portal Completion Gate
+        if: runner.os == 'Linux'
+        shell: bash
+        run: python3 tests/test-wsl-portal-readiness.py -v
+
+      - name: WSL Sign-in Recovery Contracts (PowerShell 7)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          ./tests/contracts/test-wsl-startup.ps1
+          ./tests/contracts/test-wsl-lifecycle.ps1
+          ./tests/contracts/test-wsl-lifecycle-output.ps1
+
+      - name: WSL Sign-in Recovery Contracts (Windows PowerShell)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          ./tests/contracts/test-wsl-startup.ps1
+          ./tests/contracts/test-wsl-lifecycle.ps1
+          ./tests/contracts/test-wsl-lifecycle-output.ps1
+
+      - name: Windows AMD Recovery and Model Control Contracts (PowerShell 7)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          ./tests/contracts/test-windows-portal-amd-recovery.ps1
+          ./tests/contracts/test-windows-portal-lemonade-restart.ps1
+          ./tests/contracts/test-windows-portal-model-control.ps1
+
+      - name: Windows AMD Recovery and Model Control Contracts (Windows PowerShell)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          ./tests/contracts/test-windows-portal-amd-recovery.ps1
+          ./tests/contracts/test-windows-portal-lemonade-restart.ps1
+          ./tests/contracts/test-windows-portal-model-control.ps1
+
       - name: Windows Lemonade Task Cleanup Contract
         shell: pwsh
         run: ./tests/contracts/test-windows-lemonade-task-cleanup.ps1
+
+      - name: Windows Hermes Config Runtime Contract
+        shell: pwsh
+        run: ./tests/contracts/test-windows-hermes-config-runtime.ps1
+
+      - name: Windows Hermes Credential Relock Contract (PowerShell 7)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./tests/contracts/test-windows-hermes-config-acl-repeat.ps1
+
+      - name: Windows Hermes Credential Relock Contract (Windows PowerShell)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./tests/contracts/test-windows-hermes-config-acl-repeat.ps1
+
+      - name: Windows Env Credential ACL (PowerShell 7)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./tests/test-windows-env-credential-acl.ps1
+
+      - name: Windows Env Credential ACL (Windows PowerShell)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./tests/test-windows-env-credential-acl.ps1
+
+      - name: Windows Model Store and Reinstall Contract
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./tests/test-windows-model-stores.ps1
+
+      - name: Windows Model Store and Reinstall Contract (Windows PowerShell)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./tests/test-windows-model-stores.ps1
 
       - name: Windows Model Activation Contract
         shell: pwsh
         run: ./tests/test-windows-model-activation.ps1
 
+      - name: Windows Bootstrap Download Handoff Contract
+        shell: pwsh
+        run: ./tests/test-windows-bootstrap-download-handoff.ps1
+
       - name: Windows Dotenv Serializer Contract
         shell: pwsh
         run: ./tests/test-windows-dotenv-serializer.ps1
+
+      - name: Windows llama.cpp Speculative Opt-out Contract
+        shell: pwsh
+        run: ./tests/test-windows-llama-spec-type.ps1
+
+      - name: Windows llama-server Checkpoint Flag Probe Contract
+        shell: pwsh
+        run: ./tests/test-windows-native-checkpoint-args.ps1
 
       - name: Windows Catalog Source Boundary Contract
         shell: pwsh
@@ -96,6 +211,24 @@ jobs:
         shell: pwsh
         run: ./tests/contracts/test-windows-runtime-recovery.ps1
 
+      - name: Windows Install Model Proof
+        shell: pwsh
+        run: ./tests/contracts/test-windows-install-model-proof.ps1
+
+      - name: Windows Install Model Proof (PowerShell 5.1)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./tests/contracts/test-windows-install-model-proof.ps1
+
+      - name: Windows Installer Presentation Contract
+        shell: pwsh
+        run: ./tests/contracts/test-windows-installer-presentation.ps1
+
+      - name: Windows Installer Presentation Contract (PowerShell 5.1)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./tests/contracts/test-windows-installer-presentation.ps1
+
       - name: Windows Installed Footprint Contract
         if: runner.os == 'Windows'
         shell: pwsh
@@ -105,3 +238,12 @@ jobs:
         if: runner.os == 'Windows'
         shell: bash
         run: bash tests/test-atomic-env-writes.sh
+
+      - name: Windows Uninstall Leftover Contract (PowerShell 7)
+        shell: pwsh
+        run: ./tests/contracts/test-windows-uninstall-leftovers.ps1
+
+      - name: Windows Uninstall Leftover Contract (Windows PowerShell)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./tests/contracts/test-windows-uninstall-leftovers.ps1

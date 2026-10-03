@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/work-provider-receipt-v1.schema.json",
+  "title": "Pixel work provider content-free receipt",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "receiptId", "recordedAt", "providerId", "protocol", "phase", "profileSha256", "requestCount", "inputTokens", "outputTokens", "providerContentIncluded", "credentialIncluded", "status", "boundary"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/work-provider-receipt-v1.schema.json"},
+    "schemaVersion": {"const": 1},
+    "receiptId": {"type": "string", "pattern": "^workprovider-[0-9]{13}-[a-f0-9]{12}$"},
+    "recordedAt": {"type": "string", "format": "date-time"},
+    "providerId": {"type": "string", "minLength": 1, "maxLength": 64},
+    "protocol": {"enum": ["anthropic-messages", "local-openai-compatible", "openai-chat-completions", "openai-responses"]},
+    "phase": {"enum": ["admitted", "completed", "failed", "paused"]},
+    "profileSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "requestCount": {"type": "integer", "minimum": 0, "maximum": 1000},
+    "inputTokens": {"type": ["integer", "null"], "minimum": 0},
+    "outputTokens": {"type": ["integer", "null"], "minimum": 0},
+    "providerContentIncluded": {"const": false},
+    "credentialIncluded": {"const": false},
+    "status": {"enum": ["accepted", "denied", "error", "paused", "succeeded"]},
+    "boundary": {"const": "Content-free provider execution evidence only. It records provider identity, protocol, counters, and terminal state without prompt, response, reasoning, tool arguments, credential, account, path, external-effect authority, deployment authority, or security-testing authority."}
+  }
+}

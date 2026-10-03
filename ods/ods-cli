@@ -1,12 +1,20 @@
 #!/usr/bin/env bash
 # ods-cli - Command line interface for ODS
 # Mission: M5 (Clonable ODS Setup Server)
-# Version: 2.0.0 — Registry-driven service resolution
+# Registry-driven service resolution; VERSION below is the product version.
 
 set -euo pipefail
 
 # Require Bash 4+ (associative arrays used by service registry and ods-cli)
 if (( BASH_VERSINFO[0] < 4 )); then
+    # macOS starts env bash with Apple's Bash 3.2 even after Homebrew installs
+    # Bash 4+. Re-exec the installed modern Bash before using associative arrays.
+    for _ods_modern_bash in /opt/homebrew/bin/bash /usr/local/bin/bash; do
+        if [[ -x "$_ods_modern_bash" ]] &&
+            "$_ods_modern_bash" -c '(( BASH_VERSINFO[0] >= 4 ))' >/dev/null 2>&1; then
+            exec "$_ods_modern_bash" "$0" "$@"
+        fi
+    done
     echo -e "\033[0;31m✗\033[0m ods-cli requires Bash 4.0+ (you have $BASH_VERSION)" >&2
     echo "  macOS ships Bash 3.2 due to licensing. Install a modern version:" >&2
     echo "    brew install bash" >&2
@@ -44,7 +52,7 @@ _resolve_cli_install_dir() {
 }
 
 INSTALL_DIR="$(_resolve_cli_install_dir)"
-VERSION="2.6.0"
+VERSION="3.0.0"
 if [[ -f "$INSTALL_DIR/.env" ]]; then
     _v=$(awk -F= '/^ODS_VERSION=/{gsub(/^["'"'"']|["'"'"']$/,"",$2); print $2; exit}' "$INSTALL_DIR/.env" 2>/dev/null) || true
     [[ -n "${_v:-}" ]] && VERSION="$_v"
@@ -117,12 +125,20 @@ hr() {
 # Update or add a key=value in .env
 _env_set() {
     local key="$1" val="$2" file="$INSTALL_DIR/.env"
-    if grep -q "^${key}=" "$file" 2>/dev/null; then
+    # The probe must use the same literal-prefix test as the awk update below:
+    # a regex here treats dots/brackets in the key as wildcards, so a key like
+    # FOO.BAR could "match" FOO_BAR=... and then be silently dropped by awk.
+    if awk -v k="$key" 'index($0, k "=") == 1 { found = 1 } END { exit !found }' "$file" 2>/dev/null; then
         # Use awk to avoid sed delimiter collisions with values containing | / or =
         awk -v k="$key" -v v="$val" '{
             if (index($0, k "=") == 1) print k "=" v; else print
         }' "$file" > "${file}.tmp" && cat "${file}.tmp" > "$file" && rm -f "${file}.tmp"
     else
+        # Appending after a last line that has no newline would join the new
+        # assignment onto that line and corrupt both keys.
+        if [[ -s "$file" && -n "$(tail -c 1 "$file")" ]]; then
+            printf '\n' >> "$file"
+        fi
         echo "${key}=${val}" >> "$file"
     fi
 }
@@ -374,7 +390,13 @@ _ods_cli_reload_model_env() {
 
 _get_host_logical_cpus() {
     local cores
-    cores=$(nproc 2>/dev/null || grep -c '^processor' /proc/cpuinfo 2>/dev/null || echo "1")
+    # nproc and /proc/cpuinfo are Linux-only; on macOS both are absent, so the
+    # old chain always fell through to 1 and starved the CPU budget whenever
+    # Docker's own NCPU was unavailable. Probe sysctl (macOS/BSD) between them.
+    cores=$(nproc 2>/dev/null \
+        || sysctl -n hw.logicalcpu 2>/dev/null \
+        || grep -c '^processor' /proc/cpuinfo 2>/dev/null \
+        || echo "1")
     if [[ "$cores" =~ ^[0-9]+$ ]] && [[ "$cores" -gt 0 ]]; then
         echo "$cores"
     else
@@ -663,7 +685,7 @@ _check_version_compat() {
         if [[ "$force" == "true" ]]; then
             warn "--force specified: proceeding with downgrade."
         else
-            read -p "  Proceed with downgrade? [y/N] " -n 1 -r
+            read -p "  Proceed with downgrade? [y/N] " -n 1 -r || REPLY=""
             echo ""
             if [[ ! $REPLY =~ ^[Yy]$ ]]; then
                 log "Update cancelled."
@@ -716,7 +738,7 @@ _check_version_compat() {
         if [[ "$force" == "true" ]]; then
             warn "--force specified: skipping confirmation."
         else
-            read -p "  Proceed with v${_COMPAT_INSTALLED_VER} → v${_COMPAT_TARGET_VER} anyway? [y/N] " -n 1 -r
+            read -p "  Proceed with v${_COMPAT_INSTALLED_VER} → v${_COMPAT_TARGET_VER} anyway? [y/N] " -n 1 -r || REPLY=""
             echo ""
             if [[ ! $REPLY =~ ^[Yy]$ ]]; then
                 log "Update cancelled."
@@ -768,6 +790,10 @@ _regenerate_compose_flags() {
             rm -f "$INSTALL_DIR/.compose-flags"
             warn "Could not regenerate the compose stack cache. 'ods start' will fail until this is resolved:"
             [[ -n "$resolver_err" ]] && printf '%s\n' "$resolver_err" >&2
+        elif [[ "$resolver_err" == *WARNING:* ]]; then
+            # The stack resolved, but refused extension files (and anything
+            # that depends on them) were left out. Say which, and why.
+            printf '%s\n' "$resolver_err" | grep '^WARNING:' >&2 || true
         fi
     else
         rm -f "$INSTALL_DIR/.compose-flags"
@@ -891,7 +917,7 @@ get_compose_flags() {
                 stale=1
             fi
             if [[ "$_external_lemonade_active" == "true" ]] && \
-               { [[ "$cached" == *"compose.local.yaml"* ]] || [[ "$cached" == *"docker-compose.amd.yml"* ]] || [[ "$cached" != *"docker-compose.cloud.yml"* ]] || [[ "$cached" != *"docker-compose.lemonade-external.yml"* ]]; }; then
+               { [[ "$cached" == *"compose.local.yaml"* ]] || [[ "$cached" == *"docker-compose.amd.yml"* ]] || [[ "$cached" == *"docker-compose.cloud.yml"* ]] || [[ "$cached" != *"docker-compose.lemonade-external.yml"* ]]; }; then
                 stale=1
             fi
             if [[ "$_ods_mode" != "cloud" ]] && [[ "$_external_lemonade_active" != "true" ]] && \
@@ -899,6 +925,16 @@ get_compose_flags() {
                 stale=1
             fi
             if [[ "$stale" == "0" ]]; then
+                if [[ "$cached" == *user-extensions* || -d "$INSTALL_DIR/data/user-extensions" ]]; then
+                    local policy="$INSTALL_DIR/scripts/compose-cache-policy.py"
+                    [[ -f "$policy" ]] || { warn "Saved extensions need the Compose security validator; repair ODS."; return 1; }
+                    local policy_python="${ODS_PYTHON_CMD:-python3}"
+                    if [[ -f "$INSTALL_DIR/lib/python-cmd.sh" ]]; then
+                        policy_python="$(. "$INSTALL_DIR/lib/python-cmd.sh"; ods_detect_python_cmd_with_module yaml)" || return 1
+                    fi
+                    "$policy_python" "$policy" --install-dir "$INSTALL_DIR" --flags="$cached" --format flags
+                    return $?
+                fi
                 echo "$cached"
                 return
             fi
@@ -1048,7 +1084,7 @@ _compose_run_with_summary() {
             _compose_remove_conflicting_ods_containers "$_compose_log" || break
             sleep "${ODS_COMPOSE_NAME_CONFLICT_RETRY_DELAY:-3}"
         elif (( _startup_attempt < _startup_max_attempts )) \
-           && grep -Eiq 'dependency failed to start|No such container|container .* (exited|is unhealthy)|service .* failed to start|failed to start.*container' "$_compose_log"; then
+           && grep -Eiq 'dependency failed to start|No such container|container .* (exited|is unhealthy)|service .* failed to start|failed to start.*container|failed to create task.*OCI runtime create failed|OCI runtime create failed.*message recipient disconnected from message bus' "$_compose_log"; then
             warn "Docker reported a transient service startup failure; waiting briefly and retrying (${_startup_attempt}/${_startup_retries})."
             sleep "${ODS_COMPOSE_STARTUP_RETRY_DELAY:-15}"
             _startup_attempt=$(( _startup_attempt + 1 ))
@@ -1270,6 +1306,36 @@ _ods_cli_pull_external_images() {
 # Commands
 #=============================================================================
 
+_ods_cli_service_health() {
+    local sid="$1" port="$2" health_path="$3"
+    shift 3
+
+    if [[ "${SERVICE_HEALTH_SOURCES[$sid]:-http}" == "container" ]]; then
+        local container_id="" inspect="" state="" container_health=""
+        container_id=$(docker compose "$@" ps -q "$sid" 2>/dev/null || true)
+        if [[ -n "$container_id" ]]; then
+            inspect=$(docker inspect \
+                --format '{{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' \
+                "$container_id" 2>/dev/null || true)
+            read -r state container_health <<<"$inspect"
+        fi
+        if [[ "$state" == "running" && "$container_health" == "healthy" ]]; then
+            printf 'healthy\n'
+        else
+            printf 'unhealthy\n'
+        fi
+        return 0
+    fi
+
+    local url="http://127.0.0.1:${port}${health_path}"
+    local timeout="${SERVICE_HEALTH_TIMEOUTS[$sid]:-5}"
+    if curl -sf --max-time "$timeout" "$url" >/dev/null 2>&1; then
+        printf 'healthy\n'
+    else
+        printf 'unhealthy\n'
+    fi
+}
+
 cmd_status() {
     local json_mode="false"
     while [[ $# -gt 0 ]]; do
@@ -1290,6 +1356,10 @@ cmd_status() {
     cd "$INSTALL_DIR"
     load_env
     sr_load
+    # Only status needs the model-route selector. Keep unrelated CLI commands
+    # usable while repairing a partial install that is missing this library.
+    # shellcheck source=lib/preflight-llm-route.sh
+    . "$SCRIPT_DIR/lib/preflight-llm-route.sh"
 
     local flags_str
     flags_str=$(get_compose_flags)
@@ -1299,8 +1369,11 @@ cmd_status() {
     echo -e "${BLUE}━━━ ODS Status ━━━${NC}"
     echo ""
 
-    # Container status
-    docker compose "${flags[@]}" ps --format "table {{.Name}}\t{{.Status}}\t{{.Ports}}" 2>/dev/null || docker-compose ps
+    # Container status. Let compose's own stderr through: when the daemon is
+    # unreachable the user needs "Cannot connect to the Docker daemon", not a
+    # flag-less fallback complaining about a missing configuration file.
+    docker compose "${flags[@]}" ps --format "table {{.Name}}\t{{.Status}}\t{{.Ports}}" \
+        || warn "Could not list containers (see the docker error above); continuing with health checks."
 
     echo ""
 
@@ -1317,14 +1390,21 @@ cmd_status() {
 
     # Launch parallel health checks
     for sid in "${SERVICE_IDS[@]}"; do
+        # Cloud and external-model installs intentionally do not start the
+        # managed model stack. Report the active LiteLLM gateway instead.
+        if [[ "$sid" == "llama-server" || "$sid" == "model-router" ]] && ods_preflight_uses_litellm; then
+            continue
+        fi
         local health="${SERVICE_HEALTH[$sid]}"
         local port_env="${SERVICE_PORT_ENVS[$sid]}"
         local default_port="${SERVICE_PORTS[$sid]}"
         local name="${SERVICE_NAMES[$sid]:-$sid}"
         local cat="${SERVICE_CATEGORIES[$sid]}"
 
-        # Skip services with no health endpoint or port
-        [[ -z "$health" || "$default_port" == "0" ]] && continue
+        # Container-authoritative internal services have no host port but are
+        # still part of operator status.
+        [[ -z "$health" ]] && continue
+        [[ "$default_port" == "0" && "${SERVICE_HEALTH_SOURCES[$sid]:-http}" != "container" ]] && continue
 
         # Resolve port from env var or default
         local port="$default_port"
@@ -1341,9 +1421,7 @@ cmd_status() {
 
         # Launch health check in background
         (
-            url="http://127.0.0.1:${port}${health}"
-            timeout="${SERVICE_HEALTH_TIMEOUTS[$sid]:-5}"
-            if curl -sf --max-time "$timeout" "$url" > /dev/null 2>&1; then
+            if [[ "$(_ods_cli_service_health "$sid" "$port" "$health" "${flags[@]}")" == "healthy" ]]; then
                 echo "healthy|$name" > "$tmpdir/$sid"
             else
                 echo "unhealthy|$name" > "$tmpdir/$sid"
@@ -1404,6 +1482,8 @@ cmd_status_json() {
     cd "$INSTALL_DIR"
     sr_load
     load_env
+    # shellcheck source=lib/preflight-llm-route.sh
+    . "$SCRIPT_DIR/lib/preflight-llm-route.sh"
 
     local flags_str
     flags_str=$(get_compose_flags)
@@ -1424,14 +1504,19 @@ cmd_status_json() {
     trap 'rm -f "$tmp"' RETURN
 
     for sid in "${SERVICE_IDS[@]}"; do
+        if [[ "$sid" == "llama-server" || "$sid" == "model-router" ]] && ods_preflight_uses_litellm; then
+            continue
+        fi
         local cat="${SERVICE_CATEGORIES[$sid]}"
         local health="${SERVICE_HEALTH[$sid]}"
         local port_env="${SERVICE_PORT_ENVS[$sid]}"
         local default_port="${SERVICE_PORTS[$sid]}"
         local name="${SERVICE_NAMES[$sid]:-$sid}"
 
-        # Skip services with no health endpoint or port configured
-        [[ -z "$health" || "$default_port" == "0" ]] && continue
+        # Container-authoritative internal services have no host port but are
+        # still part of operator status.
+        [[ -z "$health" ]] && continue
+        [[ "$default_port" == "0" && "${SERVICE_HEALTH_SOURCES[$sid]:-http}" != "container" ]] && continue
 
         # Resolve port from env var or default
         local port="$default_port"
@@ -1454,12 +1539,7 @@ cmd_status_json() {
         if [[ "$cat" != "core" && "$container_status" == "stopped" ]]; then
             status="stopped"
         else
-            local url="http://127.0.0.1:${port}${health}"
-            if curl -sf --max-time 5 "$url" > /dev/null 2>&1; then
-                status="healthy"
-            else
-                status="unhealthy"
-            fi
+            status="$(_ods_cli_service_health "$sid" "$port" "$health" "${flags[@]}")"
         fi
 
         jq -n \
@@ -1538,6 +1618,64 @@ cmd_logs() {
     docker compose "${flags[@]}" logs -f --tail "$lines" "$service"
 }
 
+_ods_cli_wait_for_hermes_ready() {
+    local timeout interval attempts state i
+    timeout="${ODS_HERMES_READY_TIMEOUT:-300}"
+    interval="${ODS_HERMES_READY_INTERVAL:-3}"
+    [[ "$timeout" =~ ^[1-9][0-9]*$ ]] || timeout=300
+    [[ "$interval" =~ ^[1-9][0-9]*$ ]] || interval=3
+
+    # Hermes is optional. A restart that does not include it must not acquire
+    # a new product dependency or delay otherwise-healthy installations.
+    docker inspect ods-hermes >/dev/null 2>&1 || return 0
+    log "Waiting for Hermes agent readiness..."
+
+    attempts=$(( (timeout + interval - 1) / interval ))
+    for (( i=1; i<=attempts; i++ )); do
+        state=$(docker inspect --format \
+            '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' \
+            ods-hermes 2>/dev/null || true)
+        case "$state" in
+            healthy)
+                success "Hermes agent — ready"
+                return 0
+                ;;
+            exited|dead)
+                log_error "Hermes agent did not recover after restart (state: $state)."
+                return 1
+                ;;
+        esac
+        (( i < attempts )) && sleep "$interval"
+    done
+
+    log_error "Hermes agent did not become ready within ${timeout}s (last state: ${state:-missing})."
+    return 1
+}
+
+_ods_cli_wait_for_hermes_ready_with_retry() {
+    local flags=("$@")
+    local state
+
+    if _ods_cli_wait_for_hermes_ready; then
+        return 0
+    fi
+
+    state=$(docker inspect --format \
+        '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' \
+        ods-hermes 2>/dev/null || true)
+    [[ "$state" == "unhealthy" ]] || return 1
+
+    # Repeated fleet restart cycles can occasionally leave Hermes in Docker's
+    # explicit unhealthy state even though a clean recreate recovers it. Retry
+    # only that terminal state once; a second failed readiness check remains a
+    # hard restart failure.
+    log "Hermes was unhealthy after restart; recreating it once..."
+    _compose_run_with_summary "Retrying Hermes" \
+        "${flags[@]}" up -d --force-recreate --no-build --pull never hermes
+    _ods_cli_refresh_soul || true
+    _ods_cli_wait_for_hermes_ready
+}
+
 cmd_restart() {
     check_install
     cd "$INSTALL_DIR"
@@ -1609,6 +1747,13 @@ cmd_restart() {
     # needing the Docker Desktop-hostile nested bind mount.
     if [[ "$refresh_soul" == "true" ]]; then
         _ods_cli_refresh_soul || true
+    fi
+
+    # `docker compose up -d` only proves that container creation was accepted.
+    # Do not tell users a full/Hermes restart is done while Dream Talk and the
+    # default agent path can still return a startup error.
+    if [[ -z "$resolved_service" || "$resolved_service" == "hermes" ]]; then
+        _ods_cli_wait_for_hermes_ready_with_retry "${flags[@]}"
     fi
 
     if [[ -z "$resolved_service" || "$resolved_service" == "llama-server" ]]; then
@@ -1716,6 +1861,15 @@ _ods_cli_refresh_soul() {
     return 0
 }
 
+_stop_owned_containers_for_recovery() {
+    local helper="$INSTALL_DIR/scripts/stop-owned-containers.py"
+    local policy_python="${ODS_PYTHON_CMD:-python3}"
+    local -a args=(--install-dir "$INSTALL_DIR")
+    [[ -n "${1:-}" ]] && args+=(--service "$1")
+    warn "Compose validation failed; stopping only existing containers verified as belonging to this installation."
+    "$policy_python" "$helper" "${args[@]}"
+}
+
 cmd_stop() {
     check_install
     cd "$INSTALL_DIR"
@@ -1723,12 +1877,18 @@ cmd_stop() {
 
     local service="${1:-}"
     local flags_str
-    flags_str=$(get_compose_flags)
+    if ! flags_str=$(get_compose_flags); then
+        [[ -n "$service" ]] && service=$(resolve_service "$service")
+        _stop_owned_containers_for_recovery "$service"
+        return $?
+    fi
     local -a flags
     read -ra flags <<< "$flags_str"
 
     if [[ -z "$service" ]]; then
-        _compose_run_with_summary "Stopping all services" "${flags[@]}" down
+        # Keep stopped containers and their Compose install-path labels. A
+        # later uninstall needs those labels to prove which volumes it owns.
+        _compose_run_with_summary "Stopping all services" "${flags[@]}" stop
     else
         service=$(resolve_service "$service")
         _compose_run_with_summary "Stopping $service" "${flags[@]}" stop "$service"
@@ -1754,15 +1914,21 @@ cmd_start() {
 
     # Parse flags vs positional service name
     local rebuild_images="false"
+    local restart_wsl_agent="true"
     local service=""
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --rebuild-images) rebuild_images="true"; shift ;;
+            # The Windows lifecycle controller owns the verified native restart.
+            --defer-wsl-agent-restart) restart_wsl_agent="false"; shift ;;
             --) shift; break ;;
             -*) error "Unknown option: $1" ;;
             *) service="$1"; shift ;;
         esac
     done
+    if [[ "$restart_wsl_agent" == false && -n "$service" ]]; then
+        error "Deferred WSL agent restart requires a complete stack start."
+    fi
 
     local flags_str
     flags_str=$(get_compose_flags)
@@ -1774,6 +1940,14 @@ cmd_start() {
     local resolved_service="$service"
     if [[ -n "$resolved_service" ]]; then
         resolved_service=$(resolve_service "$resolved_service")
+    fi
+
+    if [[ -z "$resolved_service" && -f "$INSTALL_DIR/lib/wsl-agent-address.sh" ]]; then
+        # Refresh only automatically managed NAT addresses after WSL restarts.
+        # shellcheck source=lib/wsl-agent-address.sh
+        . "$INSTALL_DIR/lib/wsl-agent-address.sh"
+        ods_prepare_wsl_agent_address "$INSTALL_DIR" "$restart_wsl_agent" || error "WSL control address could not be prepared; start cancelled."
+        load_env
     fi
 
     if [[ "$resolved_service" == "ods-proxy" ]]; then
@@ -1799,6 +1973,19 @@ cmd_start() {
 
     if ! _ods_cli_repair_rootless_ownership "$resolved_service"; then
         error "Rootless bind-mount ownership is not ready; service start was cancelled."
+    fi
+
+    # WSL-only: recover stale Docker Desktop bind mounts before Compose starts.
+    # The helper itself no-ops on non-WSL and non-Docker-Desktop hosts; the
+    # uname gate here keeps Python from being a hard requirement on plain Linux.
+    if [[ "$(uname -r 2>/dev/null)" == *[Mm]icrosoft* ]]; then
+        local _wsl_bind_recovery="$INSTALL_DIR/scripts/wsl-bind-recovery.py"
+        if [[ ! -f "$_wsl_bind_recovery" ]]; then
+            error "WSL bind-mount recovery helper is missing: $_wsl_bind_recovery. Reinstall or update ODS before starting services."
+        fi
+        if ! "${ODS_PYTHON_CMD:-python3}" "$_wsl_bind_recovery" --install-dir "$INSTALL_DIR" --service "$resolved_service" -- "${flags[@]}"; then
+            error "WSL bind-mount recovery failed; service start was cancelled."
+        fi
     fi
 
     if [[ -z "$resolved_service" ]]; then
@@ -2027,7 +2214,7 @@ cmd_update() {
         fi
     elif [[ -x "$INSTALL_DIR/ods-backup.sh" ]]; then
         log "Creating pre-update backup (${_snap_label})..."
-        if ! "$INSTALL_DIR/ods-backup.sh" "$_snap_label"; then
+        if ! "$INSTALL_DIR/ods-backup.sh" --type user-data --description "$_snap_label"; then
             warn "Pre-update backup failed; proceeding without safety net."
         fi
     else
@@ -2749,12 +2936,12 @@ cmd_enable() {
     done
     _ENABLE_VISITED+=("$service_id")
 
-    # Check built-in extensions first, then dashboard-installed user extensions
-    local ext_dir="$INSTALL_DIR/extensions/services/$service_id"
-    [[ ! -d "$ext_dir" ]] && ext_dir="$INSTALL_DIR/data/user-extensions/$service_id"
+    # Match Dashboard resolution: an installed user extension shadows a
+    # bundled definition with the same id, even when its Compose is disabled.
+    local ext_dir="$INSTALL_DIR/data/user-extensions/$service_id"
+    [[ ! -d "$ext_dir" ]] && ext_dir="$INSTALL_DIR/extensions/services/$service_id"
     [[ -d "$ext_dir" ]] || error "Unknown service: $input"
 
-    local cf="$ext_dir/compose.yaml"
     local disabled="$ext_dir/compose.yaml.disabled"
 
     # Check it's not a core service
@@ -2793,7 +2980,7 @@ cmd_enable() {
             warn "$service_id may not work with GPU backend: $current_backend"
             warn "  Supported backends: $gpu_backends"
             warn "  Current backend: $current_backend"
-            read -p "  Continue anyway? [y/N] " -n 1 -r
+            read -p "  Continue anyway? [y/N] " -n 1 -r || REPLY=""
             echo
             if [[ ! $REPLY =~ ^[Yy]$ ]]; then
                 log "Cancelled."
@@ -2807,9 +2994,10 @@ cmd_enable() {
     if [[ -n "$deps" ]]; then
         local missing=()
         for dep in $deps; do
-            # Check built-in extensions first, then dashboard-installed user extensions
-            local dep_cf="$INSTALL_DIR/extensions/services/$dep/compose.yaml"
-            [[ -f "$dep_cf" ]] || dep_cf="$INSTALL_DIR/data/user-extensions/$dep/compose.yaml"
+            # An installed user extension shadows the bundled definition.
+            local dep_cf="$INSTALL_DIR/data/user-extensions/$dep/compose.yaml"
+            [[ -d "$INSTALL_DIR/data/user-extensions/$dep" ]] || \
+                dep_cf="$INSTALL_DIR/extensions/services/$dep/compose.yaml"
             local dep_cat="${SERVICE_CATEGORIES[$dep]:-optional}"
             # Core services are always available; check extension deps
             if [[ "$dep_cat" != "core" && ! -f "$dep_cf" ]]; then
@@ -2818,31 +3006,43 @@ cmd_enable() {
         done
         if [[ ${#missing[@]} -gt 0 ]]; then
             warn "$service_id depends on disabled services: ${missing[*]}"
-            read -p "  Enable them too? [Y/n] " -n 1 -r
+            read -p "  Enable them too? [Y/n] " -n 1 -r || REPLY=""
             echo
             if [[ ! $REPLY =~ ^[Nn]$ ]]; then
                 for dep in "${missing[@]}"; do
                     cmd_enable "$dep"
                 done
             else
-                warn "Proceeding without dependencies — $service_id may not start correctly."
+                warn "Cancelled enabling $service_id; enable its dependencies first."
+                return 1
             fi
         fi
     fi
 
-    if [[ -f "$cf" ]]; then
-        # An interrupted update can leave the compose fragment active while
-        # the persisted stack still omits it. Treat enable as an idempotent
-        # reconciliation operation on every platform.
-        _regenerate_compose_flags
-        if [[ -f "$disabled" ]]; then
-            rm -f "$disabled"
-            warn "Removed stale disabled marker for $service_id."
-        fi
+    # The helper rechecks on-disk prerequisites and commits selection under
+    # the same cross-process lock as CLI disable and Dashboard selection.
+    # It rebuilds saved flags inside that lock so concurrent writers cannot
+    # repopulate the cache from an outdated selection.
+    local selector="$INSTALL_DIR/scripts/extension-selection.py"
+    [[ -f "$selector" ]] || error "Extension selection guard missing: $selector"
+    local selector_python="${ODS_PYTHON_CMD:-python3}"
+    if [[ -f "$INSTALL_DIR/lib/python-cmd.sh" ]]; then
+        selector_python="$(. "$INSTALL_DIR/lib/python-cmd.sh"; ods_detect_python_cmd_with_module yaml)" || return 1
+    fi
+    local -a core_args=()
+    local sid
+    for sid in "${SERVICE_IDS[@]}"; do
+        [[ "${SERVICE_CATEGORIES[$sid]:-}" == "core" ]] && core_args+=(--core-service "$sid")
+    done
+    local final_state
+    final_state=$("$selector_python" "$selector" enable \
+        --install-dir "$INSTALL_DIR" --service-id "$service_id" \
+        --tier "${TIER:-1}" --gpu-backend "${GPU_BACKEND:-nvidia}" \
+        --gpu-count "${GPU_COUNT:-1}" --ods-mode "${ODS_MODE:-local}" \
+        "${core_args[@]}") || return 1
+    if [[ "$final_state" == "already-enabled" ]]; then
         success "$service_id is already enabled."
-    elif [[ -f "$disabled" ]]; then
-        mv "$disabled" "$cf"
-        _regenerate_compose_flags
+    elif [[ "$final_state" == "enabled" ]]; then
         # Check if service needs a Docker build (has Dockerfile but no image)
         if { [[ -f "$ext_dir/Dockerfile" ]] || [[ -f "$ext_dir/Dockerfile.rust" ]]; } && \
            ! docker image inspect "ods-${service_id}:latest" &>/dev/null; then
@@ -2852,7 +3052,7 @@ cmd_enable() {
             success "$service_id enabled. Run 'ods start $service_id' to launch."
         fi
     else
-        error "$service_id has no compose fragment (core service? already enabled?)"
+        error "Unexpected extension selection result for $service_id: $final_state"
     fi
 }
 
@@ -2868,47 +3068,49 @@ cmd_disable() {
 
     local service_id
     service_id=$(sr_resolve "$input")
-    # Check built-in extensions first, then dashboard-installed user extensions
-    local ext_dir="$INSTALL_DIR/extensions/services/$service_id"
-    [[ ! -d "$ext_dir" ]] && ext_dir="$INSTALL_DIR/data/user-extensions/$service_id"
+    # Match the Dashboard and selection helper's user-first shadowing.
+    local ext_dir="$INSTALL_DIR/data/user-extensions/$service_id"
+    [[ ! -d "$ext_dir" ]] && ext_dir="$INSTALL_DIR/extensions/services/$service_id"
     [[ -d "$ext_dir" ]] || error "Unknown service: $input"
-    local cf="$ext_dir/compose.yaml"
-
     # Check it's not a core service
     local cat="${SERVICE_CATEGORIES[$service_id]:-optional}"
     [[ "$cat" == "core" ]] && error "Cannot disable core service: $service_id"
 
-    # Check for reverse dependents
-    local dependents=()
-    for sid in "${SERVICE_IDS[@]}"; do
-        [[ "$sid" == "$service_id" ]] && continue
-        # Check built-in extensions first, then dashboard-installed user extensions
-        local dep_cf="$INSTALL_DIR/extensions/services/$sid/compose.yaml"
-        [[ -f "$dep_cf" ]] || dep_cf="$INSTALL_DIR/data/user-extensions/$sid/compose.yaml"
-        [[ ! -f "$dep_cf" ]] && continue
-        local deps="${SERVICE_DEPENDS[$sid]:-}"
-        for dep in $deps; do
-            if [[ "$dep" == "$service_id" ]]; then
-                dependents+=("$sid")
-                break
-            fi
-        done
-    done
-    if [[ ${#dependents[@]} -gt 0 ]]; then
-        warn "These enabled extensions depend on $service_id: ${dependents[*]}"
-        read -p "  Continue anyway? [y/N] " -n 1 -r
-        echo
-        [[ ! $REPLY =~ ^[Yy]$ ]] && { log "Cancelled."; return 1; }
+    # A preliminary check avoids resolving Compose with known dependents.
+    # The helper repeats the check and holds its selection lock through the
+    # service stop and rename, so a concurrent enable cannot interleave.
+    local selector="$INSTALL_DIR/scripts/extension-selection.py"
+    [[ -f "$selector" ]] || error "Extension selection guard missing: $selector"
+    local selector_python="${ODS_PYTHON_CMD:-python3}"
+    if [[ -f "$INSTALL_DIR/lib/python-cmd.sh" ]]; then
+        selector_python="$(. "$INSTALL_DIR/lib/python-cmd.sh"; ods_detect_python_cmd_with_module yaml)" || return 1
+    fi
+    local initial_state
+    initial_state=$("$selector_python" "$selector" check-disable \
+        --install-dir "$INSTALL_DIR" --service-id "$service_id") || return 1
+    if [[ "$initial_state" == "already-disabled" ]]; then
+        success "$service_id is already disabled. Data preserved."
+        return 0
     fi
 
-    # Stop if running, then rename
-    local flags_str
-    flags_str=$(get_compose_flags)
-    local -a flags
-    read -ra flags <<< "$flags_str"
-    docker compose "${flags[@]}" stop "$service_id" 2>/dev/null || true
-    [[ -f "$cf" ]] && mv "$cf" "${cf}.disabled"
-    _regenerate_compose_flags
+    local flags_str="" stop_mode=owned
+    if flags_str=$(get_compose_flags); then
+        stop_mode=compose
+    else
+        warn "Compose validation failed; stopping only existing containers verified as belonging to this installation."
+    fi
+    local -a stop_args=(--stop-mode "$stop_mode")
+    if [[ "$stop_mode" == compose ]]; then
+        stop_args+=(--compose-flags="$flags_str")
+    fi
+    local final_state
+    if ! final_state=$("$selector_python" "$selector" disable \
+        --install-dir "$INSTALL_DIR" --service-id "$service_id" \
+        "${stop_args[@]}"); then
+        return 1
+    fi
+    # The helper invalidates .compose-flags under the lock. The next Compose
+    # command resolves the current tree instead of writing a stale cache here.
     local _data_dir="$INSTALL_DIR/data/$service_id"
     if [[ -d "$_data_dir" ]]; then
         local _data_size
@@ -2977,7 +3179,7 @@ cmd_purge() {
     log ""
 
     local _confirm
-    read -p "  Type '$service_id' to confirm deletion: " -r _confirm
+    read -p "  Type '$service_id' to confirm deletion: " -r _confirm || _confirm=""
     if [[ "$_confirm" != "$service_id" ]]; then
         log "Purge cancelled."
         return 0
@@ -3083,9 +3285,9 @@ validate_preset_compatibility() {
     local missing_exts=()
     while IFS=: read -r state sid; do
         [[ -z "$sid" ]] && continue
-        # Check built-in extensions first, then dashboard-installed user extensions
-        local ext_dir="$INSTALL_DIR/extensions/services/$sid"
-        [[ -d "$ext_dir" ]] || ext_dir="$INSTALL_DIR/data/user-extensions/$sid"
+        # Match the selector's user-first shadowing.
+        local ext_dir="$INSTALL_DIR/data/user-extensions/$sid"
+        [[ -d "$ext_dir" ]] || ext_dir="$INSTALL_DIR/extensions/services/$sid"
         if [[ ! -d "$ext_dir" ]]; then
             missing_exts+=("$sid")
         fi
@@ -3127,6 +3329,13 @@ cmd_preset() {
                 local cat="${SERVICE_CATEGORIES[$sid]}"
                 [[ "$cat" == "core" ]] && continue
                 local cf="${SERVICE_COMPOSE[$sid]}"
+                # Match restore and Dashboard: a user extension shadows the
+                # bundled extension with the same service ID.
+                local user_ext_dir="$INSTALL_DIR/data/user-extensions/$sid"
+                [[ -L "$user_ext_dir" ]] && error "Invalid user extension: $sid"
+                if [[ -d "$user_ext_dir" ]]; then
+                    cf="$user_ext_dir/compose.yaml"
+                fi
                 if [[ -n "$cf" && -f "$cf" ]]; then
                     echo "enabled:$sid" >> "$state_file"
                 else
@@ -3168,45 +3377,59 @@ META
                 echo ""
             fi
 
-            read -p "Restore this preset? This will overwrite current .env. [y/N] " -n 1 -r
+            read -p "Restore this preset? This will overwrite current .env. [y/N] " -n 1 -r || REPLY=""
             echo ""
             [[ $REPLY =~ ^[Yy]$ ]] || { log "Cancelled."; return 0; }
 
-            # Restore .env (contains mode, model, and all config)
+            # Restore extension states under the CLI selection lock. The helper
+            # validates the final dependency graph before changing any marker.
+            if [[ -f "$preset_dir/extensions.list" ]]; then
+                local selector="$INSTALL_DIR/scripts/extension-selection.py"
+                [[ -f "$selector" ]] || error "Extension selection guard missing: $selector"
+                local selector_python="${ODS_PYTHON_CMD:-python3}"
+                if [[ -f "$INSTALL_DIR/lib/python-cmd.sh" ]]; then
+                    selector_python="$(. "$INSTALL_DIR/lib/python-cmd.sh"; ods_detect_python_cmd_with_module yaml)" || return 1
+                fi
+                local -a core_args=()
+                local sid
+                for sid in "${SERVICE_IDS[@]}"; do
+                    [[ "${SERVICE_CATEGORIES[$sid]:-}" == "core" ]] && core_args+=(--core-service "$sid")
+                done
+                # Snapshot the current selected overlays before any marker move.
+                # Inactive external-LLM overlays must not shield an optional
+                # local LiteLLM container from the preset's stop operation.
+                local current_flags
+                load_env
+                current_flags=$(get_compose_flags) || error "Could not resolve the current Compose stack"
+                local counts enabled disabled
+                if ! counts=$("$selector_python" "$selector" restore-preset \
+                    --install-dir "$INSTALL_DIR" --preset-file "$preset_dir/extensions.list" \
+                    --compose-flags "$current_flags" \
+                    "${core_args[@]}"); then
+                    warn "Preset extension selection was not fully restored. Resolve the reported issue, then retry 'ods preset load $name'."
+                    return 1
+                fi
+                [[ "$counts" =~ ^[0-9]+\ [0-9]+$ ]] || error "Invalid extension restore result: $counts"
+                read -r enabled disabled <<< "$counts"
+                success "Extensions: $enabled enabled, $disabled disabled"
+            fi
+
+            # Apply environment settings only after extension selection passed.
+            # A malformed preset must not overwrite an otherwise working .env.
             if [[ -f "$preset_dir/env" ]]; then
-                cp "$preset_dir/env" "$INSTALL_DIR/.env"
+                if ! cp "$preset_dir/env" "$INSTALL_DIR/.env"; then
+                    warn "Extensions were selected, but preset .env could not be restored. Resolve the file error and retry 'ods preset load $name'."
+                    return 1
+                fi
+                # The restored mode/config can change the resolved stack even
+                # when no extension marker changes.
+                if ! rm -f "$INSTALL_DIR/.compose-flags"; then
+                    warn "Preset .env was restored, but Compose cache could not be cleared. Repair access to .compose-flags before starting ODS."
+                    return 1
+                fi
                 local restored_mode
                 restored_mode=$(grep "^ODS_MODE=" "$INSTALL_DIR/.env" 2>/dev/null | cut -d= -f2 || true)
                 success "Restored .env (mode: ${restored_mode:-local})"
-            fi
-
-            # Restore extension states
-            if [[ -f "$preset_dir/extensions.list" ]]; then
-                local enabled=0 disabled=0
-                while IFS=: read -r state sid; do
-                    # Check built-in extensions first, then dashboard-installed user extensions
-                    local ext_dir="$INSTALL_DIR/extensions/services/$sid"
-                    [[ -d "$ext_dir" ]] || ext_dir="$INSTALL_DIR/data/user-extensions/$sid"
-                    [[ -d "$ext_dir" ]] || continue
-                    local cf="$ext_dir/compose.yaml"
-                    local cf_dis="$ext_dir/compose.yaml.disabled"
-
-                    # NB: enabled=$((enabled + 1)) not ((enabled++)) — the
-                    # post-increment form evaluates to 0 on the first hit,
-                    # which set -e treats as failure and aborts mid-restore.
-                    if [[ "$state" == "enabled" ]]; then
-                        if [[ -f "$cf_dis" && ! -f "$cf" ]]; then
-                            mv "$cf_dis" "$cf"
-                            enabled=$((enabled + 1))
-                        fi
-                    elif [[ "$state" == "disabled" ]]; then
-                        if [[ -f "$cf" ]]; then
-                            mv "$cf" "$cf_dis"
-                            disabled=$((disabled + 1))
-                        fi
-                    fi
-                done < "$preset_dir/extensions.list"
-                success "Extensions: $enabled enabled, $disabled disabled"
             fi
 
             echo ""
@@ -3245,7 +3468,7 @@ META
             local preset_dir="${PRESETS_DIR}/${name}"
             [[ -d "$preset_dir" ]] || error "Preset not found: $name"
 
-            read -p "Delete preset '${name}'? [y/N] " -n 1 -r
+            read -p "Delete preset '${name}'? [y/N] " -n 1 -r || REPLY=""
             echo ""
             [[ $REPLY =~ ^[Yy]$ ]] || { log "Cancelled."; return 0; }
 
@@ -3273,7 +3496,18 @@ META
 
             # Create archive (relative to presets dir to avoid absolute paths)
             cd "$PRESETS_DIR"
-            if tar czf "$output" "$name" 2>/dev/null; then
+            if (
+                umask 077
+                staged_archive="$(mktemp "${output}.XXXXXX")" || exit 1
+                trap 'rm -f -- "$staged_archive"' EXIT
+                trap 'exit 130' INT
+                trap 'exit 143' TERM
+                # Finish privately before replacing an existing public file.
+                chmod 600 "$staged_archive" || exit 1
+                tar czf "$staged_archive" "$name" 2>/dev/null || exit 1
+                [[ ! -d "$output" ]] || exit 1
+                mv -f -- "$staged_archive" "$output"
+            ); then
                 local size
                 size=$(du -h "$output" 2>/dev/null | cut -f1 || true)
                 success "Preset exported to: $output ($size)"
@@ -3303,7 +3537,7 @@ META
             # Check if preset already exists
             if [[ -d "${PRESETS_DIR}/${archive_name}" ]]; then
                 warn "Preset '${archive_name}' already exists"
-                read -p "Overwrite? [y/N] " -n 1 -r
+                read -p "Overwrite? [y/N] " -n 1 -r || REPLY=""
                 echo ""
                 [[ $REPLY =~ ^[Yy]$ ]] || { log "Cancelled."; return 0; }
                 rm -rf "${PRESETS_DIR}/${archive_name}"
@@ -3546,8 +3780,15 @@ cmd_mode() {
     if [[ "$mode" == "local" ]]; then
         api_url="http://llama-server:8080"
         _env_set "LLM_API_URL" "$api_url"
-        _env_set "HERMES_LLM_BASE_URL" "http://llama-server:8080/v1"
-        _env_set "HERMES_LLM_API_KEY" "sk-ods-hermes-local"
+        local switchboard_mode
+        switchboard_mode=$(grep -m1 "^ODS_MODEL_SWITCHBOARD=" .env 2>/dev/null | cut -d= -f2- | tr -d '"\047\r' || true)
+        if [[ "${switchboard_mode,,}" == "enabled" ]]; then
+            _env_set "HERMES_LLM_BASE_URL" "http://model-router:9099/v1"
+            _env_set "HERMES_LLM_API_KEY" "no-key"
+        else
+            _env_set "HERMES_LLM_BASE_URL" "http://llama-server:8080/v1"
+            _env_set "HERMES_LLM_API_KEY" "sk-ods-hermes-local"
+        fi
     else
         api_url="http://litellm:4000"
         _env_set "LLM_API_URL" "$api_url"
@@ -3713,22 +3954,30 @@ cmd_model() {
 }
 
 _agent_probe_host() {
-    local bind_addr="" gateway=""
+    local bind_addr="" gateway="" kernel_release=""
     bind_addr="$(_env_get_raw ODS_AGENT_BIND)"
     bind_addr="${bind_addr#\"}"; bind_addr="${bind_addr%\"}"
     bind_addr="${bind_addr#\'}"; bind_addr="${bind_addr%\'}"
     bind_addr="$(printf '%s' "$bind_addr" | tr -d '[:space:]')"
 
-    if [[ -z "$bind_addr" && "$(uname -s)" == "Linux" ]] && command -v docker >/dev/null 2>&1; then
-        gateway="$(docker network inspect ods-network \
-            --format '{{range .IPAM.Config}}{{if .Gateway}}{{println .Gateway}}{{end}}{{end}}' \
-            2>/dev/null | sed '/^[[:space:]]*$/d' | head -n1 | tr -d '[:space:]' || true)"
-        if [[ -z "$gateway" ]]; then
-            gateway="$(docker network inspect bridge \
+    if [[ -z "$bind_addr" && "$(uname -s)" == "Linux" ]]; then
+        kernel_release="$(uname -r 2>/dev/null | tr '[:upper:]' '[:lower:]' || true)"
+        if [[ "$kernel_release" == *microsoft* ]]; then
+            # The host agent deliberately binds loopback under WSL because
+            # Docker Desktop forwards host.docker.internal there; its compose
+            # gateway is not a locally bindable host-agent address.
+            bind_addr="127.0.0.1"
+        elif command -v docker >/dev/null 2>&1; then
+            gateway="$(docker network inspect ods-network \
                 --format '{{range .IPAM.Config}}{{if .Gateway}}{{println .Gateway}}{{end}}{{end}}' \
                 2>/dev/null | sed '/^[[:space:]]*$/d' | head -n1 | tr -d '[:space:]' || true)"
+            if [[ -z "$gateway" ]]; then
+                gateway="$(docker network inspect bridge \
+                    --format '{{range .IPAM.Config}}{{if .Gateway}}{{println .Gateway}}{{end}}{{end}}' \
+                    2>/dev/null | sed '/^[[:space:]]*$/d' | head -n1 | tr -d '[:space:]' || true)"
+            fi
+            bind_addr="$gateway"
         fi
-        bind_addr="$gateway"
     fi
 
     case "$bind_addr" in
@@ -3783,7 +4032,7 @@ Usage: ods remote-provider <command> [options]
 Commands:
   status [--json]
       Show sanitized remote-provider route, egress, and action status.
-  plan <configure|test|disable|remove> [options]
+  plan <configure|test|enable|disable|remove> [options]
       Print the redacted lifecycle plan without mutating state.
   configure --base-url URL --model MODEL [secret options]
       Persist an OpenAI-compatible provider route and provider API key.
@@ -3791,8 +4040,10 @@ Commands:
       Probe the configured provider route through the internal egress service.
   test --base-url URL --model MODEL [secret options]
       Probe a provider without writing route state or secrets.
+  enable [--json]
+      Re-prove and reactivate the saved route without re-entering secrets.
   disable
-      Disable the remote-provider route while keeping stored secrets.
+      Pause the remote-provider route while keeping its profile and secrets.
   remove
       Delete remote-provider route state and stored secrets.
   peer-models list [--json]
@@ -3812,6 +4063,9 @@ Provider options for configure/test/plan configure/plan test:
   --transport direct|ssh  Provider transport (default direct)
   --base-url URL          OpenAI-compatible base URL, for example https://gpu.example/v1
   --model MODEL           Provider model id
+  --context-length TOKENS Exact provider context window (default 32768)
+  --max-tokens TOKENS     Exact provider output limit (default 4096)
+  --reasoning true|false  Whether the provider route supports reasoning (default false)
   --ssh-host HOST         SSH server host for ssh transport
   --ssh-user USER         SSH server user for ssh transport
   --ssh-port PORT         SSH server port for ssh transport (default 22)
@@ -3940,6 +4194,7 @@ _remote_provider_write_payload() {
     local action="$1" payload_file="$2"
     shift 2
     local transport="direct" base_url="" model="" json_mode="false"
+    local context_length="32768" max_tokens="4096" reasoning="false"
     local api_key_env="REMOTE_LLM_API_KEY" api_key_env_explicit="false" api_key_file="" api_key_stdin="false"
     local ssh_host="" ssh_user="" ssh_port="22" ssh_inference_host="" ssh_inference_port=""
     local ssh_control_host="" ssh_control_port="" ssh_option_seen="false"
@@ -3961,6 +4216,18 @@ _remote_provider_write_payload() {
                 [[ $# -ge 2 ]] || error "--model requires a value"
                 provider_option_seen="true"
                 model="${2:-}"; shift 2 ;;
+            --context-length)
+                [[ $# -ge 2 ]] || error "--context-length requires a value"
+                provider_option_seen="true"
+                context_length="${2:-}"; shift 2 ;;
+            --max-tokens)
+                [[ $# -ge 2 ]] || error "--max-tokens requires a value"
+                provider_option_seen="true"
+                max_tokens="${2:-}"; shift 2 ;;
+            --reasoning)
+                [[ $# -ge 2 ]] || error "--reasoning requires true or false"
+                provider_option_seen="true"
+                reasoning="${2:-}"; shift 2 ;;
             --ssh-host)
                 [[ $# -ge 2 ]] || error "--ssh-host requires a value"
                 provider_option_seen="true"; ssh_option_seen="true"
@@ -4032,7 +4299,7 @@ _remote_provider_write_payload() {
     done
 
     REMOTE_PROVIDER_JSON_MODE="$json_mode"
-    if [[ "$action" == "disable" || "$action" == "remove" ]]; then
+    if [[ "$action" == "enable" || "$action" == "disable" || "$action" == "remove" ]]; then
         [[ "$provider_option_seen" == "false" && "$secret_option_seen" == "false" ]] || \
             error "remote-provider $action does not accept provider or secret options"
         jq -nc --arg action "$action" '{action: $action}' > "$payload_file" || \
@@ -4047,6 +4314,19 @@ _remote_provider_write_payload() {
     esac
     [[ -n "$base_url" ]] || error "--base-url is required"
     [[ -n "$model" ]] || error "--model is required"
+    [[ "$context_length" =~ ^[1-9][0-9]{0,7}$ ]] || \
+        error "--context-length must be an integer from 16384 to 10000000"
+    (( context_length >= 16384 && context_length <= 10000000 )) || \
+        error "--context-length must be an integer from 16384 to 10000000"
+    [[ "$max_tokens" =~ ^[1-9][0-9]{0,7}$ ]] || \
+        error "--max-tokens must be a positive integer within the context window"
+    (( max_tokens <= context_length )) || \
+        error "--max-tokens must be a positive integer within the context window"
+    reasoning="$(printf '%s' "$reasoning" | tr '[:upper:]' '[:lower:]')"
+    case "$reasoning" in
+        true|false) ;;
+        *) error "--reasoning must be true or false" ;;
+    esac
     if [[ "$transport" == "direct" && "$ssh_option_seen" == "true" ]]; then
         error "direct remote-provider transport does not accept SSH options"
     fi
@@ -4084,6 +4364,9 @@ _remote_provider_write_payload() {
             --arg transport "$transport" \
             --arg base_url "$base_url" \
             --arg model "$model" \
+            --arg context_length "$context_length" \
+            --arg max_tokens "$max_tokens" \
+            --argjson reasoning "$reasoning" \
             --arg ssh_host "$ssh_host" \
             --arg ssh_user "$ssh_user" \
             --arg ssh_port "$ssh_port" \
@@ -4097,7 +4380,10 @@ _remote_provider_write_payload() {
                 provider: {
                     transport: $transport,
                     baseUrl: $base_url,
-                    model: $model
+                    model: $model,
+                    contextLength: ($context_length | tonumber),
+                    maxTokens: ($max_tokens | tonumber),
+                    reasoning: $reasoning
                 },
                 ssh: {
                     host: $ssh_host,
@@ -4125,12 +4411,18 @@ _remote_provider_write_payload() {
         --arg transport "$transport" \
         --arg base_url "$base_url" \
         --arg model "$model" \
+        --arg context_length "$context_length" \
+        --arg max_tokens "$max_tokens" \
+        --argjson reasoning "$reasoning" \
         '{
             action: $action,
             provider: {
                 transport: $transport,
                 baseUrl: $base_url,
-                model: $model
+                model: $model,
+                contextLength: ($context_length | tonumber),
+                maxTokens: ($max_tokens | tonumber),
+                reasoning: $reasoning
             },
             secrets: {
                 apiKey: .
@@ -4143,6 +4435,7 @@ _remote_provider_print_status() {
     jq -r '
         "Remote provider: \(.status // "unknown")",
         "Route: " + (if .routeState.enabled == true then "enabled" else "disabled" end),
+        "Saved route: " + (if .routeState.resumeAvailable == true then "available" else "none" end),
         (if .routeState.enabled == true and .routeState.provider then
             "Provider: \(.routeState.provider.model // "unknown") via \(.routeState.provider.transport // "unknown") at \(.routeState.provider.baseUrl // "unknown")"
          else empty end),
@@ -4319,7 +4612,10 @@ _remote_provider_probe_configured() {
         error "Could not create a remote-provider response file"
     chmod 600 "$response_file"
     trap 'rm -f "$response_file"' INT TERM HUP
-    if http_code="$(_remote_provider_request POST /api/remote-provider/probe "$response_file" "" 20)"; then
+    # A configured probe can activate and reconcile all downstream consumers.
+    # Stay beyond the Dashboard API's 1800-second lifecycle deadline instead
+    # of reporting a false failure while the host transaction is still live.
+    if http_code="$(_remote_provider_request POST /api/remote-provider/probe "$response_file" "" 1860)"; then
         curl_status=0
     else
         curl_status=$?
@@ -4517,11 +4813,11 @@ cmd_remote_provider() {
             ;;
         plan)
             local action="${1:-}"
-            [[ -n "$action" ]] || error "Usage: ods remote-provider plan <configure|test|disable|remove> [options]"
+            [[ -n "$action" ]] || error "Usage: ods remote-provider plan <configure|test|enable|disable|remove> [options]"
             shift || true
             case "$action" in
-                configure|test|disable|remove) ;;
-                *) error "Usage: ods remote-provider plan <configure|test|disable|remove> [options]" ;;
+                configure|test|enable|disable|remove) ;;
+                *) error "Usage: ods remote-provider plan <configure|test|enable|disable|remove> [options]" ;;
             esac
             local payload_file response_file http_code curl_status
             payload_file=$(mktemp "${TMPDIR:-/tmp}/ods-remote-provider-payload.XXXXXX") || \
@@ -4550,12 +4846,51 @@ cmd_remote_provider() {
             jq . "$response_file"
             rm -f "$response_file"; trap - INT TERM HUP
             ;;
+        enable)
+            local json_mode="false" response_file http_code curl_status
+            while [[ $# -gt 0 ]]; do
+                case "$1" in
+                    --json) json_mode="true"; shift ;;
+                    --help|-h) _remote_provider_usage; return 0 ;;
+                    *) error "Unknown remote-provider enable option: $1" ;;
+                esac
+            done
+            response_file=$(mktemp "${TMPDIR:-/tmp}/ods-remote-provider-enable.XXXXXX") || \
+                error "Could not create a remote-provider response file"
+            chmod 600 "$response_file"
+            trap 'rm -f "$response_file"' INT TERM HUP
+            if http_code="$(_remote_provider_request POST /api/remote-provider/enable "$response_file" "" 1860)"; then
+                curl_status=0
+            else
+                curl_status=$?
+            fi
+            if [[ $curl_status -ne 0 ]]; then
+                rm -f "$response_file"; trap - INT TERM HUP
+                error "Remote-provider enable request failed before Dashboard API completed"
+            fi
+            if [[ "$http_code" != "200" ]]; then
+                local detail
+                detail="$(_remote_provider_response_error "$response_file")"
+                rm -f "$response_file"; trap - INT TERM HUP
+                error "Remote-provider enable failed (HTTP $http_code): $detail"
+            fi
+            if [[ "$json_mode" == "true" ]]; then
+                jq . "$response_file"
+            else
+                _remote_provider_print_apply_result "$response_file"
+            fi
+            rm -f "$response_file"; trap - INT TERM HUP
+            ;;
         configure|test|disable|remove)
             if [[ "$subcmd" == "test" ]]; then
                 local use_configured_probe="true" arg
                 for arg in "$@"; do
                     case "$arg" in
-                        --transport|--base-url|--model|--api-key|--api-key-stdin|--api-key-file|--api-key-env)
+                        --transport|--base-url|--model|--context-length|--max-tokens|--reasoning)
+                            use_configured_probe="false"
+                            break
+                            ;;
+                        --api-key|--api-key-stdin|--api-key-file|--api-key-env)
                             use_configured_probe="false"
                             break
                             ;;
@@ -4587,7 +4922,7 @@ cmd_remote_provider() {
             trap 'rm -f "$payload_file" "$response_file"' INT TERM HUP
             REMOTE_PROVIDER_JSON_MODE="false"
             _remote_provider_write_payload "$subcmd" "$payload_file" "$@"
-            if http_code="$(_remote_provider_request POST /api/remote-provider/apply "$response_file" "$payload_file" 20)"; then
+            if http_code="$(_remote_provider_request POST /api/remote-provider/apply "$response_file" "$payload_file" 1860)"; then
                 curl_status=0
             else
                 curl_status=$?
@@ -4614,7 +4949,7 @@ cmd_remote_provider() {
             _remote_provider_usage
             ;;
         *)
-            error "Usage: ods remote-provider <status|plan|configure|test|disable|remove|peer-models>"
+            error "Usage: ods remote-provider <status|plan|configure|test|enable|disable|remove|peer-models>"
             ;;
     esac
 }
@@ -4625,10 +4960,14 @@ cmd_stt() {
 
     # Resolve model and port from .env (with fallback for older installs).
     local model port model_encoded url
-    model=$(_env_get_raw AUDIO_STT_MODEL)
-    [[ -z "$model" ]] && model="Systran/faster-whisper-base"
-    port=$(_env_get_raw WHISPER_PORT)
-    [[ -z "$port" ]] && port="9000"
+    # These settings are dotenv values, including quotes and inline comments.
+    # Keep missing-file/key defaults independent of the caller's environment.
+    local AUDIO_STT_MODEL="" WHISPER_PORT=""
+    if [[ -f "$INSTALL_DIR/.env" ]]; then
+        load_env
+    fi
+    model="${AUDIO_STT_MODEL:-Systran/faster-whisper-base}"
+    port="${WHISPER_PORT:-9000}"
     model_encoded="${model//\//%2F}"
     url="http://127.0.0.1:${port}"
 
@@ -4738,7 +5077,7 @@ cmd_rollback() {
     log "Rolling back to pre-update state${target:+ (snapshot: $target)}..."
     echo ""
     warn "This will restore configuration from before the last update."
-    read -p "Continue with rollback? [y/N] " -n 1 -r
+    read -p "Continue with rollback? [y/N] " -n 1 -r || REPLY=""
     echo ""
 
     if [[ ! $REPLY =~ ^[Yy]$ ]]; then
@@ -4833,12 +5172,16 @@ cmd_agent() {
                         fi
                         rm -f "$pid_file"
                     fi
+                    # Use log_error (not error): callers such as cmd_update run
+                    # this under `cmd_agent restart || warn "...non-fatal"`, and
+                    # error() exits the whole CLI — which would abort an already
+                    # successful update instead of returning to the guard.
                     if ! command -v python3 &>/dev/null; then
-                        error "python3 not found in PATH"
+                        log_error "python3 not found in PATH"
                         return 1
                     fi
                     if [[ ! -f "$agent_script" ]]; then
-                        error "ODS host agent script not found: $agent_script"
+                        log_error "ODS host agent script not found: $agent_script"
                         return 1
                     fi
                     nohup python3 "$agent_script" --pid-file "$pid_file" \
@@ -4856,7 +5199,7 @@ cmd_agent() {
                     done
                     _agent_process_owned "$agent_pid" && kill "$agent_pid" 2>/dev/null || true
                     rm -f "$pid_file"
-                    error "Agent did not become healthy on port ${port}; check $log_file"
+                    log_error "Agent did not become healthy on port ${port}; check $log_file"
                     return 1
                     ;;
             esac
@@ -5812,7 +6155,13 @@ _gpu_reassign() {
             read -r _para
             case "${_para:-tensor}" in
                 tensor|hybrid)
-                    split_mode_m="row"
+                    # NVIDIA: CUDA row split is not fleet-qualified and fails at
+                    # model load from llama.cpp b9890, so use layer split.
+                    if [[ "$backend" == "nvidia" ]]; then
+                        split_mode_m="layer"
+                    else
+                        split_mode_m="row"
+                    fi
                     parallelism_mode_m="tensor"
                     tensor_split_m=$(printf '1,%.0s' $(seq 1 "$llama_gpu_count"))
                     tensor_split_m="${tensor_split_m%,}"
@@ -5987,8 +6336,10 @@ _gpu_reassign() {
 
     local _para_mode
     _para_mode=$(echo "$assignment_json" | jq -r '.gpu_assignment.services.llama_server.parallelism.mode // "none"')
+    # NVIDIA uses layer split for every multi-GPU mode (CUDA row split fails
+    # at model load from llama.cpp b9890). AMD keeps row for tensor/hybrid.
     case "$_para_mode" in
-        tensor|hybrid) split_mode="row" ;;
+        tensor|hybrid) if [[ "$backend" == "nvidia" ]]; then split_mode="layer"; else split_mode="row"; fi ;;
         pipeline)      split_mode="layer" ;;
         *)             split_mode="none" ;;
     esac
@@ -6408,7 +6759,7 @@ ${CYAN}Commands:${NC}
                       Switch between local/cloud/hybrid modes
   model [current|list|swap]
                       View or change the local LLM model tier
-  remote-provider [status|plan|configure|test|disable|remove|peer-models]
+  remote-provider [status|plan|configure|test|enable|disable|remove|peer-models]
                       Configure, test, disable, or inspect remote GPU provider routing
   stt [current|status|download] [MODEL]
                       View Whisper STT model, check cache, or trigger download
@@ -6458,6 +6809,10 @@ ${CYAN}Model Commands:${NC}
   model current       Show current model
   model list          List available tiers
   model swap <tier>   Switch to a different model tier
+
+${CYAN}Dashboard Sign-in:${NC}
+  dashboard-login     Set up or recover your dashboard password with a one-time link
+                      (http://localhost on this machine never asks)
 
 ${CYAN}Remote Provider Commands:${NC}
   remote-provider status [--json]
@@ -6538,6 +6893,7 @@ ${CYAN}Examples:${NC}
                                   # Apply a template (enables services)
   ods audit                     # Audit every extension contract
   ods audit --json whisper      # Audit one service as JSON
+  ods dashboard-login           # Sign in to the dashboard from another device
   ods agent status              # Check host agent health
   ods agent restart             # Restart host agent
   ods repair voice              # Start voice services and cache STT model
@@ -6554,6 +6910,73 @@ Without an override, ods-cli uses the install beside its resolved script or
 symlink target when compose metadata is present, then falls back to ~/ods.
 
 EOF
+}
+
+#=============================================================================
+# Dashboard sign-in
+#=============================================================================
+# A browser on this machine (http://localhost) uses the dashboard without
+# signing in. Any other route - LAN mode, ODS proxy, a reverse proxy or
+# Tailscale Serve - needs a dashboard session. This prints a one-time link
+# that signs a browser in; the token is only valid for 10 minutes and once.
+_dashboard_lan_ip() {
+    if [[ "$(uname -s)" == "Darwin" ]]; then
+        ipconfig getifaddr en0 || ipconfig getifaddr en1
+    else
+        hostname -I | awk '{print $1}'
+    fi
+}
+
+cmd_dashboard_login() {
+    [[ $# -eq 0 ]] || error "Usage: ods dashboard-login"
+    local response_file http_code token port remote_port bind device fragment lan_ip
+    response_file=$(mktemp "${TMPDIR:-/tmp}/ods-dashboard-login.XXXXXX") \
+        || error "Could not create a temporary response file"
+    chmod 600 "$response_file"
+    # _remote_provider_request is the CLI's generic authenticated Dashboard
+    # API call (API key from .env, never on the command line).
+    if ! http_code="$(_remote_provider_request POST /api/auth/dashboard-session/link "$response_file" "" 15)"; then
+        rm -f "$response_file"
+        error "The Dashboard API is not reachable. Check that ODS is running: ods status"
+    fi
+    if [[ "$http_code" != "200" ]]; then
+        rm -f "$response_file"
+        error "The Dashboard API refused the sign-in link request (HTTP $http_code)."
+    fi
+    token="$(jq -r '.token // empty' "$response_file")"
+    rm -f "$response_file"
+    [[ "$token" =~ ^[A-Za-z0-9_-]{16,128}$ ]] || error "The Dashboard API returned an unexpected sign-in token."
+    fragment="#ods-login=${token}"
+
+    port="$(_env_get_raw DASHBOARD_PORT)"
+    [[ "$port" =~ ^[0-9]+$ ]] || port="3001"
+    remote_port="$(_env_get_raw DASHBOARD_REMOTE_PORT)"
+    [[ "$remote_port" =~ ^[0-9]+$ ]] || remote_port="3011"
+    bind="$(_env_get_raw BIND_ADDRESS)"
+    device="$(_env_get_raw ODS_DEVICE_NAME)"
+    [[ "$device" =~ ^[A-Za-z0-9-]+$ ]] || device="ods"
+
+    echo "One-time dashboard recovery link (works once, expires in 10 minutes):"
+    echo "Open the link to choose your own password. No old password is required."
+    echo "  http://localhost:${port}/${fragment}"
+    if _ods_cli_proxy_enabled; then
+        echo "  http://dashboard.${device}.local/${fragment}"
+    fi
+    case "$bind" in
+        ""|127.*|localhost|::1) ;;
+        0.0.0.0|::)
+            if ! lan_ip="$(_dashboard_lan_ip)"; then
+                warn "Could not detect this machine's LAN address; use its IP address below."
+                lan_ip=""
+            fi
+            echo "  http://${lan_ip:-<this-machine-ip>}:${remote_port}/${fragment}"
+            ;;
+        *) echo "  http://${bind}:${remote_port}/${fragment}" ;;
+    esac
+    echo "  Any other address for this ODS: add ${fragment} to the end of the URL."
+    echo ""
+    echo "On this machine, http://localhost:${port} never asks you to sign in."
+    echo "Network dashboard addresses require sign-in once per browser (30 days)."
 }
 
 #=============================================================================
@@ -6589,6 +7012,7 @@ case "${1:-help}" in
     audit)        shift; cmd_audit "$@" ;;
     template|tmpl) shift; cmd_template "$@" ;;
     agent)        shift; cmd_agent "$@" ;;
+    dashboard-login) shift; cmd_dashboard_login "$@" ;;
     help|h|--help|-h) cmd_help ;;
     version|v|--version|-v) echo "ods-cli v${VERSION}" ;;
     *)           error "Unknown command: $1. Run 'ods help' for usage." ;;

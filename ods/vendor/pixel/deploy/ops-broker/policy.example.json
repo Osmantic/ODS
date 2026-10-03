@@ -1,0 +1,109 @@
+{
+  "schemaVersion": 2,
+  "deployment": "example",
+  "maxWorkers": 4,
+  "workflowWorkers": 4,
+  "maxWorkflowSteps": 32,
+  "defaultTimeoutSeconds": 60,
+  "maxTimeoutSeconds": 3600,
+  "maxOutputBytes": 262144,
+  "planTtlMinutes": 30,
+  "identityCacheSeconds": 30,
+  "sshBinary": "/usr/bin/ssh",
+  "download": {
+    "stagingRoot": "/var/lib/pixel-ops-broker/artifacts",
+    "maxBytes": 536870912,
+    "maxRedirects": 5,
+    "allowedDomains": ["github.com", "githubusercontent.com"]
+  },
+  "targets": {
+    "control-host": {
+      "enabled": true,
+      "backend": "local",
+      "environment": "production",
+      "expectedHostname": "REPLACE_WITH_HOSTNAME",
+      "defaultCwd": "/srv/pixel-operations",
+      "allowedRoots": ["/srv/pixel-operations"],
+      "allowRaw": false,
+      "labels": ["control-plane"],
+      "capabilities": ["inspect", "test", "monitor"]
+    },
+    "example-worker": {
+      "enabled": false,
+      "backend": "ssh",
+      "environment": "lab",
+      "sshHost": "example-worker",
+      "expectedHostname": "REPLACE_WITH_REMOTE_HOSTNAME",
+      "dedicatedRunner": true,
+      "defaultCwd": "/var/lib/pixel-runner/jobs",
+      "allowedRoots": ["/var/lib/pixel-runner/jobs"],
+      "allowRaw": false,
+      "labels": ["worker"],
+      "capabilities": ["inspect", "test", "monitor"]
+    }
+  },
+  "actions": {
+    "host.identity": {
+      "description": "Verify and report the target hostname.",
+      "tier": "read",
+      "effect": "observe",
+      "defaultAuthority": "observe",
+      "idempotent": true,
+      "reversible": false,
+      "targets": ["*"],
+      "argv": ["/bin/hostname"],
+      "timeoutSeconds": 10,
+      "exclusiveTarget": false
+    },
+    "host.platform": {
+      "description": "Report the target kernel and architecture.",
+      "tier": "read",
+      "effect": "observe",
+      "defaultAuthority": "observe",
+      "idempotent": true,
+      "reversible": false,
+      "targets": ["*"],
+      "argv": ["/usr/bin/uname", "-a"],
+      "timeoutSeconds": 10,
+      "exclusiveTarget": false
+    },
+    "test.named": {
+      "description": "Run one operator-installed test script by validated name.",
+      "tier": "staging",
+      "effect": "stage",
+      "defaultAuthority": "propose",
+      "idempotent": true,
+      "reversible": true,
+      "targets": ["example-worker"],
+      "parameters": {
+        "suite": {
+          "pattern": "^[a-z][a-z0-9_-]{0,63}$",
+          "maxLength": 64
+        }
+      },
+      "argv": ["/usr/local/libexec/pixel-ops-run-test", "{suite}"],
+      "cwd": "/var/lib/pixel-runner/jobs",
+      "isolation": "dedicated-runner",
+      "timeoutSeconds": 1800,
+      "exclusiveTarget": true
+    }
+  },
+  "authority": {
+    "defaultLevel": "propose",
+    "grants": [
+      {
+        "id": "isolated-named-tests",
+        "level": "bounded-auto",
+        "actions": ["test.named"],
+        "targets": ["example-worker"],
+        "tiers": ["staging"],
+        "environments": ["lab", "test"],
+        "maxExecutions": 100,
+        "windowSeconds": 3600,
+        "maxConcurrent": 2,
+        "maxRuntimeSeconds": 1800,
+        "maxFailures": 5
+      }
+    ]
+  }
+}

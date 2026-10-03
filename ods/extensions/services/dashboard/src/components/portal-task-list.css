@@ -1,0 +1,44 @@
+/* Portal styling for the public plan, inspired by AI CSS's collapsible task list. */
+.portal-task-plan { width:100%; max-width:620px; min-width:0; margin:0 0 16px; padding:10px 12px; border:0; border-radius:12px; background:rgb(var(--theme-card) / .36); color:rgb(var(--theme-text-secondary)); font-size:12px; line-height:1.5; }
+.portal-task-list-toggle { display:flex; align-items:center; width:100%; min-height:28px; gap:8px; padding:0; border:0; background:transparent; color:inherit; text-align:left; }
+.portal-task-list-symbol { display:inline-flex; flex-shrink:0; align-items:center; color:rgb(var(--theme-text-muted)); }
+.portal-task-plan[data-status=completed] .portal-task-list-symbol { color:var(--portal-plan-complete,#65bda0); }
+.portal-task-list-title { font-weight:500; }
+.portal-task-list-count { margin-left:auto; color:rgb(var(--theme-text-muted)); font-variant-numeric:tabular-nums; font-size:11px; }
+.portal-task-list-chevron { flex-shrink:0; color:rgb(var(--theme-text-muted)); transition:transform .18s ease; }
+.portal-task-list-toggle[aria-expanded=false] .portal-task-list-chevron { transform:rotate(-90deg); }
+.portal-task-list-toggle:hover { color:rgb(var(--theme-text)); }
+.portal-task-list-ring { fill:none; stroke:currentColor; stroke-width:1.6; transform:rotate(-90deg); }
+.portal-task-list-track { stroke-dasharray:1.5 3; opacity:.5; }
+.portal-task-list-progress { stroke-linecap:round; transition:stroke-dasharray .3s ease; }
+.portal-task-list-description { margin:5px 0 8px 25px; }
+.portal-task-list-description p { margin:0; overflow-wrap:anywhere; color:rgb(var(--theme-text-secondary)); }
+.portal-task-list-state { display:block; margin-top:2px; color:rgb(var(--theme-text-muted)); font-size:10px; }
+.portal-task-list { list-style:none; margin:0; padding:0; }
+.portal-task-list li { display:flex; align-items:flex-start; gap:9px; min-width:0; padding:6px 0; color:rgb(var(--theme-text-muted)); }
+.portal-task-list-icon { flex-shrink:0; margin-top:1px; }
+.portal-task-list li[data-state=pending] .portal-task-list-icon circle { stroke-dasharray:2 3; }
+.portal-task-list-label { min-width:0; overflow-wrap:anywhere; }
+.portal-task-list li[data-state=completed] .portal-task-list-icon { color:var(--portal-plan-complete,#65bda0); }
+.portal-task-list li[data-state=completed] .portal-task-list-label { text-decoration:line-through; text-decoration-color:rgb(var(--theme-text-muted) / .45); }
+.portal-task-list li[data-state=running] { color:rgb(var(--theme-text)); }
+.portal-task-list li[data-state=blocked] { color:rgb(var(--theme-text-secondary)); }
+.portal-task-list li[data-state=blocked] .portal-task-list-icon { color:var(--portal-plan-attention,#d4b078); }
+.portal-task-list-item-state { position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }
+.portal-task-list-empty { margin:6px 0 10px 25px; color:rgb(var(--theme-text-muted)); }
+.portal-task-list-footer { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px; margin-top:8px; }
+.portal-task-list-footer small { color:rgb(var(--theme-text-muted)); font-size:10px; }
+.portal-task-list-footer button { padding:3px 0; border:0; background:transparent; color:rgb(var(--theme-text-secondary)); font-size:11px; text-decoration:underline; text-underline-offset:3px; }
+.portal-task-list-footer button:hover { color:rgb(var(--theme-text)); }
+.portal-task-list-footer button:disabled { opacity:.45; cursor:not-allowed; }
+.portal-task-plan button:focus-visible { outline:2px solid rgb(var(--theme-text-muted)); outline-offset:3px; border-radius:3px; }
+.portal-task-plan [hidden] { display:none; }
+@supports (background-clip:text) {
+  .portal-task-list li[data-state=running] .portal-task-list-label { background:linear-gradient(100deg,rgb(var(--theme-text-muted)) 15%,rgb(var(--theme-text)) 45%,rgb(var(--theme-text-muted)) 75%); background-size:250% 100%; background-clip:text; -webkit-background-clip:text; color:transparent; animation:portal-task-shine 2.6s linear infinite; }
+}
+@keyframes portal-task-shine { from { background-position:100% 0; } to { background-position:-100% 0; } }
+:root[data-wallpaper] .portal-task-plan { background:#0b10182b; border-color:#ffffff12; backdrop-filter:blur(20px); -webkit-backdrop-filter:blur(20px); }
+@media (pointer:coarse) { .portal-task-list-toggle { min-height:36px; } .portal-task-list-footer button { min-height:36px; } }
+@media (prefers-reduced-motion:reduce) { .portal-task-list-chevron,.portal-task-list-progress { transition:none; } .portal-task-list li[data-state=running] .portal-task-list-label { animation:none; background:none; color:rgb(var(--theme-text)); } }
+@media (prefers-reduced-transparency:reduce) { :root[data-wallpaper] .portal-task-plan { background:rgb(var(--theme-card)); backdrop-filter:none; -webkit-backdrop-filter:none; } }
+@media (forced-colors:active) { .portal-task-plan { border-color:CanvasText; } .portal-task-list li[data-state=running] .portal-task-list-label { animation:none; background:none; color:CanvasText; } .portal-task-list-symbol,.portal-task-list li .portal-task-list-icon { color:CanvasText; } }

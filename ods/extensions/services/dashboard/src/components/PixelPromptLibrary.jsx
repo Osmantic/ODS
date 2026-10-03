@@ -1,0 +1,87 @@
+import {useEffect, useRef, useState} from 'react'
+import { Bookmark } from 'lucide-react'
+import {readSavedPrompts, writeSavedPrompt} from '../lib/pixelSavedPrompts'
+import {appendComposerText} from '../lib/pixelComposerText'
+
+export default function PixelPromptLibrary({input, disabled, onInsert}) {
+  const dialog = useRef(null), trigger = useRef(null), previous = useRef(null)
+  const listOpener = useRef(null), newPrompt = useRef(null)
+  const [items, setItems] = useState([])
+  const [editing, setEditing] = useState(null)
+  const [removing, setRemoving] = useState(null)
+  const [error, setError] = useState('')
+  const [query, setQuery] = useState('')
+  const needle = query.trim().toLocaleLowerCase()
+  const shown = items.filter(item => `${item.title}\n${item.text}`.toLocaleLowerCase().includes(needle))
+  function refresh() {
+    try {setItems(readSavedPrompts()); setError('')}
+    catch {setError('Saved prompts could not be read. Existing browser data has been preserved.')}
+  }
+  useEffect(() => {
+    const update = () => {if (dialog.current?.open) refresh()}
+    window.addEventListener('storage', update)
+    return () => window.removeEventListener('storage', update)
+  }, [])
+  useEffect(() => {
+    if (editing || removing || !listOpener.current || !dialog.current?.open) return
+    // List controls are remounted after an editor/confirmation closes. Resolve
+    // the logical opener after that commit, including filtered or deleted rows.
+    const {id, action} = listOpener.current
+    const opener = [...dialog.current.querySelectorAll('[data-prompt-action]')].find(
+      button => button.dataset.promptId === id && button.dataset.promptAction === action,
+    )
+    listOpener.current = null
+    ;(opener || newPrompt.current)?.focus()
+  }, [editing, removing])
+  function rememberOpener(event) {listOpener.current = {id:event.currentTarget.dataset.promptId, action:event.currentTarget.dataset.promptAction}}
+  function close() {listOpener.current = null; dialog.current?.close(); setEditing(null); setRemoving(null); trigger.current?.focus()}
+  function edit(item) {previous.current = item; setEditing(item || {id:'prompt-'+Date.now().toString(36)+'-'+Math.random().toString(36).slice(2, 10), title:'', text:input}); setError('')}
+  function save(event) {
+    event.preventDefault()
+    try {setItems(writeSavedPrompt({...editing, title:editing.title.trim()}, previous.current)); setEditing(null); setError('')}
+    catch (failure) {setError(failure.message)}
+  }
+  function remove() {
+    try {setItems(writeSavedPrompt(removing, removing, true)); setRemoving(null); setError('')}
+    catch (failure) {setError(failure.message)}
+  }
+  const fieldClass = 'my-2 block w-full rounded border border-theme-border bg-theme-bg p-2 text-theme-text'
+  const buttonClass = 'rounded border border-theme-border px-3 py-2 text-xs hover:bg-theme-surface-hover disabled:opacity-40'
+  return <>
+    <button ref={trigger} type="button" disabled={disabled} aria-label="Saved prompts" title="Saved prompts" onClick={() => {refresh(); dialog.current.showModal()}}><Bookmark size={16}/></button>
+    <dialog ref={dialog} className="chat-delete-dialog" style={{maxHeight:'calc(100dvh - 32px)', overflowY:'auto'}} aria-label="Saved prompts" onCancel={event => {event.preventDefault(); close()}}>
+      <h3>Saved prompts</h3><p>Reusable text stored in this browser. Insert a prompt into your draft, then review it before sending.</p>
+      {error && <p role="alert">{error}</p>}
+      {editing ? <form onSubmit={save}>
+        <label>Prompt name<input autoFocus className={fieldClass} maxLength={80} value={editing.title} onChange={event => setEditing({...editing, title:event.target.value})}/></label>
+        <label>Prompt text<textarea className={fieldClass} rows={6} maxLength={16000} value={editing.text} onChange={event => setEditing({...editing, text:event.target.value})}/></label>
+        <footer><button type="button" onClick={() => {setEditing(null); setError('')}}>Cancel edit</button><button type="submit">Save prompt</button></footer>
+      </form> : removing ? <div>
+        <p>Delete saved prompt “{removing.title}”? Existing conversations are kept.</p>
+        <footer><button type="button" autoFocus onClick={() => setRemoving(null)}>Keep prompt</button><button type="button" onClick={remove}>Delete prompt</button></footer>
+      </div> : <>
+        <button ref={newPrompt} className={buttonClass} type="button" onClick={event => {rememberOpener(event); edit(null)}}>Save a new prompt</button>
+        {!items.length && <p>No saved prompts yet. Start with your current draft or write a new one.</p>}
+        {!!items.length && <div role="search" aria-label="Search prompt library">
+          <input className={fieldClass} type="search" aria-label="Search saved prompts" placeholder="Search names and full prompt text" value={query} onChange={event => setQuery(event.target.value)}/>
+          {query && <button className={buttonClass} type="button" onClick={() => setQuery('')}>Clear prompt search</button>}
+          <p role="status">{shown.length} of {items.length} prompts</p>
+          {!shown.length && <p>No prompts match your search.</p>}
+        </div>}
+        <ul>{shown.map(item => {
+          const fits = appendComposerText(input, item.text).length <= 16384
+          return <li key={item.id} className="my-3 rounded border border-theme-border p-2">
+            <strong>{item.title}</strong><p className="whitespace-pre-wrap break-words">{item.text.slice(0, 160)}{item.text.length > 160 ? '…' : ''}</p>
+            <div className="mt-2 flex flex-wrap gap-2">
+            <button className={buttonClass} type="button" disabled={disabled || !fits} aria-label={`Insert prompt: ${item.title}`} onClick={() => {onInsert(item.text); close()}}>Insert</button>
+            <button className={buttonClass} type="button" data-prompt-id={item.id} data-prompt-action="edit" aria-label={`Edit prompt: ${item.title}`} onClick={event => {rememberOpener(event); edit(item)}}>Edit</button>
+            <button className={buttonClass} type="button" data-prompt-id={item.id} data-prompt-action="delete" aria-label={`Delete prompt: ${item.title}`} onClick={event => {rememberOpener(event); setRemoving(item); setError('')}}>Delete</button>
+            </div>
+            {!fits && <p>Shorten the current draft before inserting this prompt.</p>}
+          </li>
+        })}</ul>
+      </>}
+      <footer><button type="button" onClick={close}>Close prompts</button></footer>
+    </dialog>
+  </>
+}

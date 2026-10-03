@@ -1,0 +1,12 @@
+{
+  "repository": "https://github.com/speaches-ai/speaches",
+  "license": "MIT",
+  "image": "ghcr.io/speaches-ai/speaches:latest-cpu@sha256:21e3df06d842fb7802ab470dd77c25f0e8c0d22950e8d8c6ae886e851af53ef8",
+  "registry_checked_at": "2026-09-20",
+  "platforms": [
+    "linux/amd64",
+    "linux/arm64"
+  ],
+  "runtime_validation": "pending",
+  "notes": "CPU edition. Models download on demand into the persisted cache. Voice/model licenses are separate from the server license; select an appropriate model. This is an audio API, not a chat-model provider. Other ODS services can call http://speaches:8000/v1."
+}

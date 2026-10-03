@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/control-work-service-config-v1.schema.json",
+  "title": "Pixel private Deep Work inactive-service-render configuration v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "serviceDirectory", "installRoot", "nodePath", "flockPath", "serviceUser", "serviceGroup", "dockerGroup", "watchdogSeconds", "maxBundles", "boundary"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/control-work-service-config-v1.schema.json"},
+    "schemaVersion": {"const": 1},
+    "serviceDirectory": {"$ref": "#/$defs/path"},
+    "installRoot": {"$ref": "#/$defs/path"},
+    "nodePath": {"$ref": "#/$defs/path"},
+    "flockPath": {"$ref": "#/$defs/path"},
+    "serviceUser": {"$ref": "#/$defs/account"},
+    "serviceGroup": {"$ref": "#/$defs/account"},
+    "dockerGroup": {"$ref": "#/$defs/account"},
+    "watchdogSeconds": {"type": "integer", "minimum": 10, "maximum": 3600},
+    "maxBundles": {"type": "integer", "minimum": 1, "maximum": 100},
+    "boundary": {"const": "Owner-private fixed paths and identities for inactive Deep Work service rendering only. The browser cannot supply, view, or alter them and gains no installation, scheduling, activation, execution, lease, credential, external-effect, scope-expansion, or completion authority."}
+  },
+  "$defs": {
+    "path": {"type": "string", "pattern": "^/(?!/)(?!.*(?:^|/)\\.{1,2}(?:/|$))[^\\r\\n\\x00]{1,2046}$"},
+    "account": {"type": "string", "pattern": "^(?!root$)[a-z_][a-z0-9_-]{0,31}$"}
+  }
+}

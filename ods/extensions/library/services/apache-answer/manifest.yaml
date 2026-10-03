@@ -1,0 +1,41 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: 2.6.0
+service:
+  id: apache-answer
+  name: Apache Answer
+  aliases: [answer, qa-community]
+  container_name: ods-apache-answer
+  host_env: APACHE_ANSWER_HOST
+  default_host: apache-answer
+  port: 80
+  external_port_env: APACHE_ANSWER_PORT
+  external_port_default: 11147
+  health: /
+  ui_path: /
+  type: docker
+  startup_check: true
+  startup_timeout: 180
+  gpu_backends: [all]
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  env_vars: []
+  description: Local Q&A knowledge base with questions, accepted answers, tags and community moderation. Complete the initial site and administrator setup in its browser wizard.
+tags: [knowledge, community, productivity, open-source]
+features:
+  - id: apache-answer-knowledge
+    name: Q&A knowledge base
+    description: Organize reusable team answers and searchable community knowledge.
+    icon: MessagesSquare
+    category: productivity
+    requirements:
+      services: [apache-answer]
+      vram_gb: 0
+    enabled_services_all: [apache-answer]
+    setup_time: Initial image download and browser setup
+    priority: 48
+    launch:
+      type: service
+      service: apache-answer
+      path: /

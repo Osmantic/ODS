@@ -116,19 +116,25 @@ require_linux() {
 
 require_binaries() {
   local missing=()
-  for bin in hostapd dnsmasq iptables ip nmcli; do
+  for bin in hostapd dnsmasq iptables ip nmcli python3; do
     if ! command -v "$bin" >/dev/null 2>&1; then
       missing+=("$bin")
     fi
   done
   if (( ${#missing[@]} > 0 )); then
     err "missing required binaries: ${missing[*]}"
-    err "install with: apt install hostapd dnsmasq iptables network-manager"
+    err "install with: apt install hostapd dnsmasq iptables network-manager python3"
     return 1
   fi
 }
 
 require_password() {
+  # hostapd counts bytes, not locale-dependent Unicode characters.
+  local LC_ALL=C
+  if [[ "$ODS_AP_PASSWORD" == *$'\n'* || "$ODS_AP_PASSWORD" == *$'\r'* ]]; then
+    err "ODS_AP_PASSWORD must not contain line breaks"
+    return 1
+  fi
   # Open APs are tolerated but called out — for first-boot AP we
   # *strongly* recommend setting a per-device password so the unit
   # doesn't accept random clients during the wizard window.
@@ -139,8 +145,17 @@ require_password() {
     err "ODS_AP_PASSWORD still has the example placeholder value"
     err "set a unique per-device AP password in ${CONF_DIR}/ap-mode.conf"
     return 1
-  elif [[ ${#ODS_AP_PASSWORD} -lt 8 ]]; then
-    err "ODS_AP_PASSWORD must be at least 8 characters (WPA2 minimum)"
+  elif [[ ${#ODS_AP_PASSWORD} -lt 8 || ${#ODS_AP_PASSWORD} -gt 63 ]]; then
+    err "ODS_AP_PASSWORD must be 8–63 bytes (hostapd passphrase limit)"
+    return 1
+  fi
+}
+
+require_ssid() {
+  local LC_ALL=C
+  if [[ ${#ODS_AP_SSID} -lt 1 || ${#ODS_AP_SSID} -gt 32 ||
+        "$ODS_AP_SSID" == *$'\n'* || "$ODS_AP_SSID" == *$'\r'* ]]; then
+    err "ODS_AP_SSID must be 1–32 bytes without line breaks"
     return 1
   fi
 }
@@ -273,22 +288,38 @@ bring_up_interface() {
 
 write_state() {
   local status="$1"
-  cat > "${STATE_FILE}" <<HEREDOC
-{
-  "status": "${status}",
-  "ssid": "${ODS_AP_SSID}",
-  "interface": "${ODS_AP_INTERFACE}",
-  "gateway_ip": "${ODS_AP_GATEWAY_IP}",
-  "since": "$(date -Iseconds)"
-}
-HEREDOC
-  chmod 0644 "${STATE_FILE}"
+  # SSIDs are literal text; shell interpolation is not JSON serialization.
+  python3 - "$status" "$ODS_AP_SSID" "$ODS_AP_INTERFACE" "$ODS_AP_GATEWAY_IP" \
+    "$(date -Iseconds)" "${STATE_FILE}" <<'PY'
+import json
+import os
+import sys
+import tempfile
+
+keys = ("status", "ssid", "interface", "gateway_ip", "since")
+target = sys.argv[6]
+fd, temporary = tempfile.mkstemp(prefix=".state-", suffix=".tmp", dir=os.path.dirname(target))
+try:
+    with os.fdopen(fd, "w", encoding="utf-8") as stream:
+        json.dump(dict(zip(keys, sys.argv[1:6])), stream, indent=2)
+        stream.write("\n")
+        stream.flush()
+        os.fchmod(stream.fileno(), 0o644)
+        os.fsync(stream.fileno())
+    os.replace(temporary, target)
+finally:
+    try:
+        os.unlink(temporary)
+    except FileNotFoundError:
+        pass
+PY
 }
 
 cmd_up() {
   require_linux
   require_root
   require_binaries
+  require_ssid
   require_password
   interface_supports_ap
 
@@ -314,7 +345,11 @@ cmd_up() {
       || { err "dnsmasq failed to start — check ${RUN_DIR}/dnsmasq.log"; cmd_down; return 1; }
   fi
 
-  write_state "active"
+  if ! write_state "active"; then
+    err "could not publish AP state; tearing down the incomplete startup"
+    cmd_down
+    return 1
+  fi
   log "AP up: SSID=${ODS_AP_SSID} gateway=${ODS_AP_GATEWAY_IP}"
   log "  any hostname resolves to ${ODS_AP_GATEWAY_IP} (captive portal)"
   log "  HTTP/HTTPS on ${ODS_AP_INTERFACE} redirected to the gateway"

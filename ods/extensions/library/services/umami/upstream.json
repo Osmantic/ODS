@@ -1,0 +1,12 @@
+{
+  "repository": "https://github.com/umami-software/umami",
+  "license": "MIT",
+  "image": "ghcr.io/umami-software/umami:3.4.0@sha256:85909afc45bdcda1917394594a087421fdbb05610fded0fa9f6fb861abb2f367",
+  "registry_checked_at": "2026-09-20",
+  "platforms": [
+    "linux/amd64",
+    "linux/arm64"
+  ],
+  "runtime_validation": "pending",
+  "notes": "v3.4.0 official image with ordered migration, conditional default-admin password replacement, tracker update and server startup. Separate PostgreSQL volume. Password URL encoding, required session/2FA keys. No site or tracking snippet automatically installed."
+}

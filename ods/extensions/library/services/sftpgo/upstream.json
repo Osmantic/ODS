@@ -1,0 +1,13 @@
+{
+  "repository": "https://github.com/drakkan/sftpgo",
+  "license": "AGPL-3.0-only",
+  "source_ref": "v2.7.6",
+  "image": "drakkan/sftpgo:v2.7.6@sha256:1edd28d80de2a008863fbfc58c8ff7db47b1b410bae48d4e6076192337809b11",
+  "registry_checked_at": "2026-09-20",
+  "platforms": [
+    "linux/amd64",
+    "linux/arm64"
+  ],
+  "runtime_validation": "pending",
+  "notes": "Native first-admin setup protected by required installation code. Separate persistent server state/host keys and user files; no host directories or project synchronization configured automatically."
+}

@@ -142,14 +142,20 @@ def main() -> None:
     assert "installer-backups\\development-footprint" in windows_helper
 
     # The Linux bootstrap remains the baseline: its staged install must omit
-    # the same root directories and non-Markdown developer files.
+    # the same root directories and non-Markdown developer files. Like macOS
+    # and Windows, every pattern is anchored to the product root. Unanchored,
+    # rsync matched these basenames at any depth and stripped files extension
+    # recipes build from (library/services/mapshaper/README.md).
     for directory in DEV_ONLY_DIRS:
-        assert f"--exclude='{directory}/'" in linux
-    assert "--exclude='*.md'" in linux
+        assert f"--exclude='/{directory}/'" in linux
+        assert f"--exclude='{directory}/'" not in linux
+    assert "--exclude='/*.md'" in linux
+    assert "--exclude='*.md'" not in linux
     for filename in DEV_ONLY_FILES:
         if filename.endswith(".md"):
             continue
-        assert f"--exclude='{filename}'" in linux
+        assert f"--exclude='/{filename}'" in linux
+        assert f"--exclude='{filename}'" not in linux
 
     # User/runtime state must never enter the development-only policy.
     protected = {"data", "models", "config", "extensions", ".env"}

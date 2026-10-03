@@ -91,10 +91,12 @@ if not isinstance(data, dict):
 
 for value in data.values():
     if not isinstance(value, dict):
-        continue
+        print("invalid sessions index: each entry must be an object", file=sys.stderr)
+        raise SystemExit(1)
     session_id = value.get("sessionId")
     if not isinstance(session_id, str) or not session_id:
-        continue
+        print("invalid sessions index: each entry requires a non-empty string sessionId", file=sys.stderr)
+        raise SystemExit(1)
     if "\n" in session_id or "\r" in session_id:
         print("invalid sessions index: sessionId contains a line break", file=sys.stderr)
         raise SystemExit(1)

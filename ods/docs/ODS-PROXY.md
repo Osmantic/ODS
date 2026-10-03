@@ -9,8 +9,8 @@ With it, port 80 becomes the single entry point. Caddy answers each subdomain on
 ```
 <device>.local           → 302 → chat.<device>.local
 chat.<device>.local      → Open WebUI            (port 3000)
-dashboard.<device>.local → ODS Dashboard       (port 3001)
-talk.<device>.local      → ODS Talk mobile UI  (port 3001)
+dashboard.<device>.local → ODS Dashboard       (port 3011, sign-in required)
+talk.<device>.local      → ODS Talk mobile UI  (port 3011)
 auth.<device>.local      → dashboard-api         (port 3002, magic-link redemption)
 api.<device>.local       → dashboard-api         (port 3002, admin /api/*)
 hermes.<device>.local    → hermes-proxy          (port 9120, when enabled)
@@ -65,7 +65,7 @@ The installer's first-boot flow handles both. If you're not using the installer,
 
 - `dashboard-api`: API key (`DASHBOARD_API_KEY`)
 - Open WebUI: its own auth (`WEBUI_AUTH=true` is selected when the installer enables this LAN proxy)
-- Dashboard SPA: the React app shows admin features only when the API call succeeds
+- Dashboard: the proxy uses the dashboard's network listener (container port 3011), where the admin API always requires dashboard sign-in. Sign in once per browser (30 days) with your chosen password. Run `ods dashboard-login` on the ODS machine to set up or recover it with a one-time link.
 - ODS Talk: signed `ods-session` cookie from owner-card redemption; no dashboard admin API control
 - `hermes-proxy`: Caddy `forward_auth` against `dashboard-api/api/auth/verify-session` (signed-cookie check)
 

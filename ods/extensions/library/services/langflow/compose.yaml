@@ -1,6 +1,6 @@
 services:
   langflow:
-    image: langflowai/langflow:1.8.0
+    image: langflowai/langflow:1.8.0@sha256:14cdad2f5f275adc2aec50bbf13f1464f25e8980ac641245ce5c13cc485be8ac
     container_name: ods-langflow
     restart: unless-stopped
     security_opt:
@@ -12,7 +12,7 @@ services:
     volumes:
       - ./data/langflow:/app/data
     ports:
-      - "${BIND_ADDRESS:-127.0.0.1}:${LANGFLOW_PORT:-7802}:7860"
+      - "127.0.0.1:${LANGFLOW_PORT:-7802}:7860"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://127.0.0.1:7860/health"]
       interval: 30s

@@ -1,0 +1,10 @@
+{
+  "repository": "https://github.com/lllyasviel/Fooocus",
+  "documentation_commit": "ae05379cc97bc4361ec8b4ec90193dab21be763f",
+  "license": "GPL-3.0",
+  "image": "ghcr.io/lllyasviel/fooocus@sha256:a1c3251054a38c22f783b680600050bedf7fe547d0239a8d772d0d372a98a5ce",
+  "registry_checked_at": "2026-09-21",
+  "platforms": ["linux/amd64"],
+  "runtime_validation": "pending",
+  "notes": "Official published image (created 2024-08-12), independently pinned from the current documentation commit. NVIDIA Docker GPU runtime required. macOS MPS and AMD are not supported by this recipe. Model licenses must be reviewed separately."
+}

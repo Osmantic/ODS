@@ -22,6 +22,7 @@ export default function InstallPromptBanner() {
     <div
       role="dialog"
       aria-label="Add ODS to your home screen"
+      data-composer-focus-ignore
       className="fixed bottom-4 left-4 right-4 md:left-auto md:right-4 md:max-w-sm
                  bg-theme-card border border-theme-accent/40 rounded-xl shadow-2xl
                  p-4 z-40 animate-in slide-in-from-bottom-4 fade-in duration-300"

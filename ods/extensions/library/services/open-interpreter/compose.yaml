@@ -16,7 +16,7 @@ services:
     volumes:
       - ./data/open-interpreter:/app/data:rw
     ports:
-      - "${BIND_ADDRESS:-127.0.0.1}:${OPEN_INTERPRETER_PORT:-7805}:8080"
+      - "127.0.0.1:${OPEN_INTERPRETER_PORT:-7805}:8080"
     working_dir: /app
     command: ["python", "server.py"]
     healthcheck:

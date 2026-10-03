@@ -6,6 +6,7 @@ import os
 
 import aiohttp
 from fastapi import APIRouter, Depends
+from fastapi.responses import JSONResponse
 
 from config import SERVICES
 from host_agent_client import (
@@ -27,8 +28,9 @@ router = APIRouter(tags=["privacy"])
 async def get_privacy_shield_status(api_key: str = Depends(verify_api_key)):
     """Get Privacy Shield status and configuration."""
     _ps = SERVICES.get("privacy-shield", {})
-    shield_port = int(os.environ.get("SHIELD_PORT", str(_ps.get("port", 0))))
-    shield_url = f"http://{_ps.get('host', 'privacy-shield')}:{shield_port}"
+    shield_port = _ps.get("external_port", _ps.get("port", 0))
+    # SHIELD_PORT changes the published host port, not the container listener.
+    shield_url = f"http://{_ps.get('host', 'privacy-shield')}:{_ps.get('port', 0)}"
 
     # Check health directly — no Docker socket needed
     service_healthy = False
@@ -57,20 +59,24 @@ async def toggle_privacy_shield(request: PrivacyShieldToggle, api_key: str = Dep
     action = "start" if request.enable else "stop"
 
     def _call_agent():
-        request_agent_json(
+        return request_agent_json(
             "POST",
             f"/v1/extension/{action}",
             payload={"service_id": "privacy-shield"},
             timeout=30,
         )
-        return True
 
     try:
-        ok = await asyncio.to_thread(_call_agent)
-        if ok:
-            msg = "Privacy Shield started. PII scrubbing is now active." if request.enable else "Privacy Shield stopped."
-            return {"success": True, "message": msg}
-        return {"success": False, "message": f"Host agent returned failure for {action}"}
+        receipt = await asyncio.to_thread(_call_agent)
+        if receipt.get("status") == "retrying":
+            return JSONResponse(status_code=202, content={
+                "success": True,
+                "pending": True,
+                "status": "retrying",
+                "message": "Privacy Shield start retry accepted. Check service status for completion.",
+            })
+        msg = "Privacy Shield started. PII scrubbing is now active." if request.enable else "Privacy Shield stopped."
+        return {"success": True, "message": msg}
     except AgentHTTPError as exc:
         logger.warning(
             "Privacy Shield toggle failed: HTTP %d: %s",
@@ -94,8 +100,7 @@ async def toggle_privacy_shield(request: PrivacyShieldToggle, api_key: str = Dep
 async def get_privacy_shield_stats(api_key: str = Depends(verify_api_key)):
     """Get Privacy Shield usage statistics."""
     _ps = SERVICES.get("privacy-shield", {})
-    shield_port = int(os.environ.get("SHIELD_PORT", str(_ps.get("port", 0))))
-    shield_url = f"http://{_ps.get('host', 'privacy-shield')}:{shield_port}"
+    shield_url = f"http://{_ps.get('host', 'privacy-shield')}:{_ps.get('port', 0)}"
     shield_api_key = os.environ.get("SHIELD_API_KEY", "")
     if not shield_api_key:
         return {"error": "SHIELD_API_KEY not configured", "enabled": False}

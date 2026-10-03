@@ -1,5 +1,6 @@
 """Tests for config.py — manifest loading and service discovery."""
 
+import json
 import logging
 from pathlib import Path
 
@@ -31,6 +32,82 @@ features:
     category: inference
     gpu_backends: [amd, nvidia]
 """
+
+
+def test_apple_native_probes_follow_configured_endpoint_not_container_port():
+    services = {"llama-server": {"host": "host.docker.internal", "port": 8080,
+                                 "external_port": 8081}}
+    _apply_host_native_llm_service_override(services, "apple", {
+        "OLLAMA_URL": "http://host.docker.internal:8081",
+        "LLM_API_URL": "http://model-router:9099",
+    })
+    assert services["llama-server"] == {
+        "host": "host.docker.internal", "port": 8081, "external_port": 8081,
+    }
+
+
+@pytest.mark.parametrize("url", ["", "http://host:bad", "http://host:0", "https://host:8081",
+                                  "file:///tmp/model", "http://user:secret@host:8081",
+                                  "http://host:8081?token=x"])
+def test_apple_native_probes_reject_invalid_endpoint(url):
+    services = {"llama-server": {"host": "original", "port": 8080}}
+    _apply_host_native_llm_service_override(services, "apple", {"OLLAMA_URL": url})
+    assert services["llama-server"] == {"host": "original", "port": 8080}
+
+
+def test_apple_native_probe_override_leaves_external_backend_to_its_resolver():
+    services = {"llama-server": {"host": "original", "port": 8080}}
+    _apply_host_native_llm_service_override(services, "apple", {
+        "LLM_BACKEND": "external", "OLLAMA_URL": "http://host.docker.internal:8081",
+    })
+    assert services["llama-server"] == {"host": "original", "port": 8080}
+
+
+def test_bundled_llama_server_is_discoverable_on_cpu_fallback():
+    manifest_path = Path(__file__).resolve().parents[2] / "llama-server" / "manifest.yaml"
+    manifest = config.yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+
+    assert "cpu" in manifest["service"]["gpu_backends"]
+    assert all("cpu" in feature["gpu_backends"] for feature in manifest["features"])
+
+
+def test_aider_library_extension_is_discoverable_on_cpu_fallback(tmp_path):
+    manifest_path = (
+        Path(__file__).resolve().parents[3]
+        / "library"
+        / "services"
+        / "aider"
+        / "manifest.yaml"
+    )
+    manifest = config.yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+
+    assert "cpu" in manifest["service"]["gpu_backends"]
+    assert "none" in manifest["service"]["gpu_backends"]
+    assert all("cpu" in feature["gpu_backends"] for feature in manifest["features"])
+    catalog_path = Path(__file__).resolve().parents[4] / "config" / "extensions-catalog.json"
+    catalog = json.loads(catalog_path.read_text(encoding="utf-8"))
+    aider = next(ext for ext in catalog["extensions"] if ext["id"] == "aider")
+    assert {"cpu", "none"}.issubset(aider["gpu_backends"])
+
+    installed = tmp_path / "aider"
+    installed.mkdir()
+    (installed / "manifest.yaml").write_text(manifest_path.read_text(encoding="utf-8"))
+    (installed / "compose.yaml").write_text("services:\n  aider:\n    image: test/aider\n")
+    services, features, errors = load_extension_manifests(tmp_path, "cpu")
+    assert errors == []
+    assert "aider" in services
+    assert any(feature["id"] == "ai-pair-programming" for feature in features)
+
+
+def test_manifest_loader_rejects_pathological_nesting(tmp_path):
+    nested = "value: leaf\n"
+    for _ in range(config.MAX_MANIFEST_DEPTH + 2):
+        nested = "value:\n  " + nested.replace("\n", "\n  ")
+    manifest = tmp_path / "deep.yaml"
+    manifest.write_text(nested, encoding="utf-8")
+
+    with pytest.raises(ValueError, match="nesting exceeds"):
+        _read_manifest_file(manifest)
 
 
 @pytest.mark.parametrize(
@@ -140,9 +217,24 @@ class TestHostAgentResolution:
     def test_resolve_agent_host_uses_gateway_inside_container(self, monkeypatch):
         monkeypatch.delenv("ODS_AGENT_HOST", raising=False)
         monkeypatch.setattr(config, "_running_inside_container", lambda: True)
+        monkeypatch.setattr(config, "_running_under_wsl", lambda: False)
         monkeypatch.setattr(config, "_detect_container_default_gateway", lambda: "172.18.0.1")
 
         assert config._resolve_agent_host() == "172.18.0.1"
+
+    def test_resolve_agent_host_uses_desktop_route_under_wsl(self, monkeypatch):
+        monkeypatch.delenv("ODS_AGENT_HOST", raising=False)
+        monkeypatch.setattr(config, "_running_inside_container", lambda: True)
+        monkeypatch.setattr(config, "_running_under_wsl", lambda: True)
+        monkeypatch.setattr(
+            config,
+            "_detect_container_default_gateway",
+            lambda: (_ for _ in ()).throw(
+                AssertionError("WSL must not select Docker Desktop's compose gateway")
+            ),
+        )
+
+        assert config._resolve_agent_host() == "host.docker.internal"
 
     def test_resolve_agent_host_falls_back_outside_container(self, monkeypatch):
         monkeypatch.delenv("ODS_AGENT_HOST", raising=False)
@@ -153,6 +245,26 @@ class TestHostAgentResolution:
 
 
 class TestHostNativeLlmResolution:
+
+    @pytest.mark.parametrize("url_key", ["LEMONADE_CONTAINER_BASE_URL", "LEMONADE_BASE_URL"])
+    def test_wsl_cpu_surface_probes_selected_windows_lemonade(self, url_key):
+        services = {"llama-server": {"host": "llama-server", "port": 8080}}
+        _apply_host_native_llm_service_override(services, "cpu", {
+            "LLM_BACKEND": "lemonade",
+            "AMD_INFERENCE_LOCATION": "host",
+            url_key: "http://192.168.50.1:8181",
+            "OLLAMA_URL": "http://litellm:4000",
+        })
+        assert services["llama-server"] == {"host": "192.168.50.1", "port": 8181}
+
+    def test_container_lemonade_does_not_use_host_endpoint(self):
+        services = {"llama-server": {"host": "llama-server", "port": 8080}}
+        _apply_host_native_llm_service_override(services, "cpu", {
+            "LLM_BACKEND": "lemonade",
+            "AMD_INFERENCE_LOCATION": "container",
+            "LEMONADE_CONTAINER_BASE_URL": "http://192.168.50.1:8181",
+        })
+        assert services["llama-server"] == {"host": "llama-server", "port": 8080}
 
     def test_routes_windows_amd_host_runtime_to_ollama_url(self):
         services = {"llama-server": {"host": "llama-server", "port": 8080}}
@@ -333,6 +445,17 @@ class TestLoadExtensionManifests:
         assert services["open-webui"]["llm"]["probe"]["path"] == "/openai/v1/chat/completions"
         assert services["perplexica"]["llm"]["probe"]["path"] == "/api/search"
         assert services["privacy-shield"]["llm"]["probe"]["path"] == "/v1/chat/completions"
+
+    def test_open_webui_core_consumer_is_discoverable_on_cpu_backend(self):
+        """CPU/external-LLM installs still run Open WebUI through the gateway."""
+        services_dir = Path(__file__).resolve().parents[2]
+
+        services, _, errors = load_extension_manifests(services_dir, "cpu")
+
+        assert errors == []
+        assert services["open-webui"]["category"] == "core"
+        assert services["open-webui"]["llm"]["consumes"] is True
+        assert services["open-webui"]["llm"]["route"] == "gateway"
 
     def test_external_port_default_zero_disables_external_port_fallback(self, tmp_path):
         svc_dir = tmp_path / "internal-service"

@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/work-goal-launch-preparation-v1.schema.json",
+  "title": "Pixel atomic long-horizon launch preparation v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "operation", "preparedAt", "draftId", "goalId", "state", "layout", "bindings", "children", "authority", "nextStep", "boundary"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/work-goal-launch-preparation-v1.schema.json"},
+    "schemaVersion": {"const": 1},
+    "operation": {"const": "pixel-work-goal-launch-prepare"},
+    "preparedAt": {"type": "string", "format": "date-time"},
+    "draftId": {"type": "string", "pattern": "^workdraft-[0-9]{13}-[a-f0-9]{12}$"},
+    "goalId": {"type": "string", "pattern": "^workgoal-[0-9]{13}-[a-f0-9]{12}$"},
+    "state": {"const": "prepared-inactive"},
+    "layout": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["assembly", "compiledJobs"],
+      "properties": {
+        "assembly": {"const": "assembly"},
+        "compiledJobs": {"const": "compiled-jobs"}
+      }
+    },
+    "bindings": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["draftSha256", "assemblySha256", "controllerBundleSha256", "policySha256", "compiledJobsSha256"],
+      "properties": {
+        "draftSha256": {"$ref": "#/$defs/sha256"},
+        "assemblySha256": {"$ref": "#/$defs/sha256"},
+        "controllerBundleSha256": {"$ref": "#/$defs/sha256"},
+        "policySha256": {"$ref": "#/$defs/sha256"},
+        "compiledJobsSha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "children": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 64,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["jobId", "profile", "planSha256", "leaseSha256", "expiresAt"],
+        "properties": {
+          "jobId": {"type": "string", "pattern": "^work-[0-9]{13}-[a-f0-9]{12}$"},
+          "profile": {"enum": ["scout", "builder", "researcher", "data-lab"]},
+          "planSha256": {"$ref": "#/$defs/sha256"},
+          "leaseSha256": {"$ref": "#/$defs/sha256"},
+          "expiresAt": {"type": "string", "format": "date-time"}
+        }
+      }
+    },
+    "authority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["containsExpiringChildLeases", "createsReadyGoalState", "grantsExecution", "grantsScheduling", "grantsServiceActivation", "grantsCredentials", "grantsScopeExpansion", "grantsExternalEffects", "grantsCompletion"],
+      "properties": {
+        "containsExpiringChildLeases": {"const": true},
+        "createsReadyGoalState": {"const": false},
+        "grantsExecution": {"const": false},
+        "grantsScheduling": {"const": false},
+        "grantsServiceActivation": {"const": false},
+        "grantsCredentials": {"const": false},
+        "grantsScopeExpansion": {"const": false},
+        "grantsExternalEffects": {"const": false},
+        "grantsCompletion": {"const": false}
+      }
+    },
+    "nextStep": {"const": "Inspect the published package, then stage it by its exact manifest hash; service rendering and activation remain separate."},
+    "boundary": {"const": "Private atomic launch preparation only. It converts one exact reviewed draft into an inert controller assembly and expiring single-use child leases, but creates no goal ledger, starts no worker or service, and grants no execution, scheduling, activation, credential, scope expansion, external effect, or completion authority."}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/work-codex-egress-policy-v1.schema.json",
+  "title": "Pixel Codex container egress-proxy policy v1",
+  "type": "object", "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "mode", "allowedHosts", "allowedPorts", "denyIpLiterals", "denyPrivateAddressResolution", "denyPlainHttp", "denyConnectToUnlistedHosts", "maxConcurrentTunnels", "maxTunnelBytes", "connectTimeoutSeconds", "idleTimeoutSeconds", "logRequestBodies", "logResponseBodies", "boundary"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/work-codex-egress-policy-v1.schema.json"}, "schemaVersion": {"const": 1},
+    "mode": {"const": "exact-connect-host-allowlist"},
+    "allowedHosts": {"type": "array", "minItems": 1, "maxItems": 2, "uniqueItems": true, "items": {"enum": ["api.openai.com", "chatgpt.com"]}},
+    "allowedPorts": {"const": [443]}, "denyIpLiterals": {"const": true}, "denyPrivateAddressResolution": {"const": true}, "denyPlainHttp": {"const": true},
+    "denyConnectToUnlistedHosts": {"const": true}, "logRequestBodies": {"const": false}, "logResponseBodies": {"const": false},
+    "maxConcurrentTunnels": {"type": "integer", "minimum": 1, "maximum": 16}, "maxTunnelBytes": {"type": "integer", "minimum": 1048576, "maximum": 134217728},
+    "connectTimeoutSeconds": {"type": "integer", "minimum": 1, "maximum": 30}, "idleTimeoutSeconds": {"type": "integer", "minimum": 5, "maximum": 300},
+    "boundary": {"const": "Deployment-private Codex egress proxy policy. The worker has only an internal Docker network and can reach only this proxy; the proxy permits CONNECT to the exact reviewed OpenAI host list on port 443 and stores no request or response body."}
+  }
+}

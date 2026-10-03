@@ -35,7 +35,7 @@ set -u
 printf '%s\n' "$*" >> "$MOCK_DOCKER_CALL_LOG"
 args=" $* "
 case "$args" in
-    *" build --no-cache comfyui "*)
+    *" build comfyui "*)
         printf '%s\n' "$*" >> "$MOCK_COMFYUI_BUILD_LOG"
         count=0
         if [[ -f "$MOCK_COMFYUI_BUILD_COUNT" ]]; then
@@ -91,6 +91,7 @@ export ODS_DOCKER_BUILD_RETRY_DELAY_SECONDS=0
 ai_bad() { printf 'ERROR: %s\n' "$*" >> "$LOG_FILE"; }
 ai() { printf '%s\n' "$*" >> "$LOG_FILE"; }
 ai_warn() { printf 'WARN: %s\n' "$*" >> "$LOG_FILE"; }
+ui_status_line() { printf '[%s] %s\n' "$1" "$2"; }
 spin_task() {
     local pid="$1" rc=0
     wait "$pid" || rc=$?
@@ -114,8 +115,10 @@ unset MOCK_COMFYUI_ALWAYS_FAIL
     || fail "failed ComfyUI build returned success because a stale image existed"
 [[ ! -e "$COMPOSE_UP_MARKER" ]] \
     || fail "compose up ran after a requested local image build failed"
-grep -q 'build --no-cache comfyui' "$CALL_LOG" \
-    || fail "mock did not observe the requested no-cache build"
+grep -q 'build comfyui' "$CALL_LOG" \
+    || fail "mock did not observe the requested local build"
+! grep -q 'build --no-cache' "$CALL_LOG" \
+    || fail "local build discarded reusable Docker layers"
 ! grep -q 'image inspect ods-comfyui' "$CALL_LOG" \
     || fail "failed build should not consult a stale image"
 grep -q 'Required local image build(s) failed: comfyui' "$LOG_FILE" \

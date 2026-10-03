@@ -119,6 +119,13 @@ else
 fi
 
 # Test 14: Functional test - exit code and output
+if grep -q -- "--disk-policy runtime" "$ROOT_DIR/scripts/ods-doctor.sh"; then
+    pass "doctor uses runtime disk policy"
+else
+    fail "doctor must not reapply install disk floor to a running system"
+fi
+
+# Test 15: Functional test - exit code and output
 if command -v python3 &>/dev/null; then
     # Create a mock report with failures
     mock_report=$(mktemp)

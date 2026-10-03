@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/work-capability-pack-operation-v1.schema.json",
+  "title": "Pixel Deep Work capability-pack single-writer operation v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "operation", "kind", "pack", "bindingSha256", "token", "authority", "boundary"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/work-capability-pack-operation-v1.schema.json"},
+    "schemaVersion": {"const": 1},
+    "operation": {"const": "pixel-work-capability-pack-operation"},
+    "kind": {"enum": ["image-admission-inspection", "health-probe", "tool-execution", "image-admission-revocation", "pack-removal"]},
+    "pack": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "version", "packSha256", "treeSha256", "signerIdentity"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[a-z][a-z0-9-]{1,62}$"},
+        "version": {"type": "string", "pattern": "^(?:0|[1-9][0-9]{0,8})\\.(?:0|[1-9][0-9]{0,8})\\.(?:0|[1-9][0-9]{0,8})$"},
+        "packSha256": {"$ref": "#/$defs/sha256"},
+        "treeSha256": {"$ref": "#/$defs/sha256"},
+        "signerIdentity": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.@+-]{0,127}$"}
+      }
+    },
+    "bindingSha256": {"$ref": "#/$defs/sha256"},
+    "token": {"$ref": "#/$defs/sha256"},
+    "authority": {"const": {"grantsExecution": false, "grantsImagePull": false, "grantsToolUse": false, "grantsDataAccess": false, "grantsNetwork": false, "grantsExternalEffects": false, "grantsCompletion": false}},
+    "boundary": {"const": "Private single-writer custody for one exact installed capability-pack operation. It serializes image inspection, explicit health-probe custody, separately granted tool execution, admission revocation, and pack removal but grants no independent execution, image pull, tool use, data access, network, external effect, or completion authority."}
+  },
+  "$defs": {"sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}}
+}

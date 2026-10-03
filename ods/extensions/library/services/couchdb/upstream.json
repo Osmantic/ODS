@@ -1,0 +1,12 @@
+{
+  "repository": "https://github.com/apache/couchdb",
+  "license": "Apache-2.0",
+  "image": "apache/couchdb:3.5.2.1@sha256:078affa27ab6b6f99da17137f6aaabe70f598f1a5b1808ab065874672208f89a",
+  "registry_checked_at": "2026-09-20",
+  "platforms": [
+    "linux/amd64",
+    "linux/arm64"
+  ],
+  "runtime_validation": "pending",
+  "notes": "Official 3.5.2.1 amd64/arm64 image, UID 5984, single-node system database setup, persistent data/local configuration and required initial administrator. HTTP status-only probe uses bundled Bash because curl is removed in upstream final image. Cluster/replication peers not configured."
+}

@@ -1,0 +1,1336 @@
+From 45f0f01b0ac47b5e52390b94cf090e58819fe475 Mon Sep 17 00:00:00 2001
+From: Codex ODS Maintainer <codex-maintainer@local.invalid>
+Date: Tue, 8 Sep 2026 04:05:15 -0400
+Subject: [PATCH 2/2] feat(cron): enforce registered command admission and
+ owned cleanup
+
+Add a generic direct-command lifecycle hook so owner plugins can reserve activity before spawn and retain cleanup until process-group exit is proven. Keep agent cron separate and preserve unmanaged no-hook behavior. Required startup policy and conversation permissions remain enforced.
+
+Qualified in isolated Tower2 candidate: 109 focused tests, core and test typechecks, type-aware lint, formatting, full build and fresh structured review passed. Native Windows and installed ODS integration are not qualified by this commit.
+---
+ docs/plugins/hooks.md                     |  71 ++-
+ src/cron/command-lifecycle.test.ts        | 544 ++++++++++++++++++++++
+ src/cron/command-runner.ts                |  46 +-
+ src/gateway/server-cron.ts                |   1 +
+ src/plugins/command-lifecycle.ts          | 212 +++++++++
+ src/plugins/hook-types.ts                 |  36 ++
+ src/plugins/required-plugins.ts           |  12 +
+ src/process/command-process-state.test.ts |  53 +++
+ src/process/command-process-state.ts      |  86 ++++
+ src/process/exec.ts                       |  71 ++-
+ 10 files changed, 1120 insertions(+), 12 deletions(-)
+ create mode 100644 src/cron/command-lifecycle.test.ts
+ create mode 100644 src/plugins/command-lifecycle.ts
+ create mode 100644 src/process/command-process-state.test.ts
+ create mode 100644 src/process/command-process-state.ts
+
+diff --git a/docs/plugins/hooks.md b/docs/plugins/hooks.md
+index 3a20f24e42e97990c2f021b5d1cacf6e3e7526e1..889982d2b7dcb5c965b8235edf52394075c7acf8 100644
+--- a/docs/plugins/hooks.md
++++ b/docs/plugins/hooks.md
+@@ -59,7 +59,8 @@ keep registration order.
+   handler after the budget elapses and continues with the next one, instead of
+   letting slow setup or recall work consume the caller's configured model
+   timeout. Omit it to use the default observation/decision timeout that the
+-  hook runner applies generically.
++  hook runner applies generically. Decision hooks can fail closed instead;
++  `before_command_run` refuses the command when admission times out.
+ 
+ Operators can also set hook budgets without patching plugin code:
+ 
+@@ -153,9 +154,77 @@ observation-only.
+ - `gateway_start` / `gateway_stop` - start or stop plugin-owned services with the Gateway
+ - `deactivate` - deprecated compatibility alias for `gateway_stop`; use `gateway_stop` in new plugins
+ - `cron_changed` - observe gateway-owned cron lifecycle changes (added, updated, removed, started, finished, scheduled)
++- **`before_command_run`** - admit a direct scheduled OS command and retain its activity until process cleanup is verified
+ - **`before_install`** - inspect staged skill or plugin install material from a loaded
+   plugin runtime
+ 
++## Direct scheduled commands
++
++Use `before_command_run` for cron payloads with `kind: "command"`. These jobs
++execute OS commands without an agent turn, so `before_agent_run`,
++`before_tool_call`, and `agent_end` do not cover them. Scheduled agent turns
++continue through their existing agent hooks. This hook does not grant execution
++permissions, select a sandbox, or change the command's OS account.
++
++Register with `api.on("before_command_run", handler, { timeoutMs })`. External
++plugins need `plugins.entries.<id>.hooks.allowConversationAccess=true` because
++command arguments and input can contain private data. The event is an immutable
++snapshot with `commandId`, `jobId`, `argv`, `cwd`, optional `input`, and `env`.
++`env` contains only explicit command overrides, not inherited Gateway variables.
++This event has no conversation context; the handler's second argument contains
++an admission `signal`, aborted when admission is interrupted or times out.
++
++Every registered handler must return one of these decisions:
++
++- `{ action: "block", reason? }`: refuse execution. The optional reason is not
++  projected into command diagnostics.
++- `{ action: "allow", finish }`: allow execution after atomically reserving
++  activity in the plugin's own admission controller. `finish` is required.
++
++Returning nothing, throwing, timing out, or returning an invalid decision blocks
++the command. Admission defaults to 15 seconds per handler; the normal operator
++hook timeout overrides apply. Earlier reservations are unwound if a later hook
++refuses. A handler that throws after partially reserving activity must unwind
++its own partial reservation. An allow returned after cancellation or timeout
++still receives cleanup, with `inspectProcess()` reporting `not-started`.
++
++Before spawning, the runner rechecks required-plugin policy, configuration,
++load generation, and registered handlers. A reload during admission refuses
++execution; existing reservations keep their original cleanup callbacks.
++Managed launchers must separately require their guard plugin and this hook;
++optional registration alone is not a mandatory startup boundary.
++
++The pinned `finish` callback runs once when command execution settles, including
++errors, and receives `commandId`, `inspectProcess`, and `cancelProcess`. Cleanup
++has its own budget equal to the admission budget. A thrown or timed-out cleanup
++fails the command; it must not be interpreted as an idle state. Cleanup can
++continue after that timeout, but the runner does not call `finish` again.
++
++`inspectProcess()` distinguishes these observations:
++
++- `not-started`: no command process was started; release the reservation.
++- `running`, with `scope: "process-group"` and `pid`: retain activity.
++- `exited`, with `scope: "process-group"` and `pid`: root termination and
++  kernel-observed group absence were confirmed; release the reservation.
++- `unknown`, with `scope: "process-group" | "untracked"` and optional `pid`:
++  retain activity until the owning controller independently reconciles it.
++
++A successful command result does not prove all descendants exited. If `finish`
++observes `running`, retain the inspection handle and reservation until later
++group absence. Do not expire unknown activity merely because a timer elapsed.
++
++`cancelProcess()` requests TERM followed by KILL after a 300 ms grace period for
++the owned POSIX group. It refuses unknown ownership; repeated calls share one
++result. Resolution proves only that the cancellation request completed, not
++that processes exited. The original abort signal and remaining overall command
++deadline remain effective after root exit while a hooked process group survives.
++Commands without this hook retain their previous background-process behavior.
++
++This process-group observation is not universal descendant containment: a
++process that escapes the group is outside its evidence. Native Windows reports
++`unknown/untracked`; it needs a separate process-ownership adapter before a
++controller can claim verified exit or safe permission restoration there.
++
+ ## Debug runtime hooks
+ 
+ Use `before_model_resolve` when a plugin needs to switch the provider or model
+diff --git a/src/cron/command-lifecycle.test.ts b/src/cron/command-lifecycle.test.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..86d06bee449daf40d0a0db36550ea285dbc2713f
+--- /dev/null
++++ b/src/cron/command-lifecycle.test.ts
+@@ -0,0 +1,544 @@
++import fs from "node:fs/promises";
++import os from "node:os";
++import path from "node:path";
++import { setTimeout as delay } from "node:timers/promises";
++import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
++import type { GlobalHookRunnerRegistry } from "../plugins/hook-registry.types.js";
++import type {
++  PluginHookCommandFinish,
++  PluginHookHandlerMap,
++  PluginHookBeforeCommandRunResult,
++} from "../plugins/hook-types.js";
++import type {
++  CommandProcessCancel,
++  CommandProcessInspection,
++} from "../process/command-process-state.js";
++import type { CronJob } from "./types.js";
++
++const live = vi.hoisted(() => ({ registry: null as GlobalHookRunnerRegistry | null }));
++vi.mock("../plugins/hook-runner-global-state.js", () => ({
++  getGlobalHookRunnerRegistry: () => live.registry,
++}));
++vi.mock("../logger.js", () => ({ logError: vi.fn(), logDebug: vi.fn() }));
++
++const policy = { version: 1, plugins: [{ id: "guard", hooks: ["before_command_run"] }] };
++const config = {
++  plugins: { entries: { guard: { enabled: true, hooks: { allowConversationAccess: true } } } },
++};
++let run: typeof import("./command-runner.js").runCronCommandJob;
++let required: typeof import("../plugins/required-plugins.js");
++let admission: typeof import("../plugins/command-lifecycle.js").runWithCommandAdmission;
++let temp: string;
++
++function job(code = "process.stdout.write('hello')"): CronJob {
++  return {
++    id: "command-job",
++    name: "Command job",
++    enabled: true,
++    createdAtMs: 1,
++    updatedAtMs: 1,
++    schedule: { kind: "every", everyMs: 60_000 },
++    sessionTarget: "isolated",
++    wakeMode: "now",
++    state: {},
++    payload: { kind: "command", argv: [process.execPath, "-e", code], timeoutSeconds: 5 },
++  };
++}
++
++function allow(finish: PluginHookCommandFinish) {
++  return { action: "allow" as const, finish };
++}
++
++function register(handler: PluginHookHandlerMap["before_command_run"]) {
++  live.registry = {
++    hooks: [],
++    plugins: [{ id: "guard", status: "loaded" }],
++    typedHooks: [{ pluginId: "guard", hookName: "before_command_run", source: "fixture", handler }],
++  };
++}
++
++beforeEach(async () => {
++  temp = await fs.mkdtemp(path.join(os.tmpdir(), "command-lifecycle-"));
++  vi.resetModules();
++  vi.stubEnv("OPENCLAW_REQUIRED_PLUGINS", JSON.stringify(policy));
++  register(() => allow(() => {}));
++  ({ runCronCommandJob: run } = await import("./command-runner.js"));
++  required = await import("../plugins/required-plugins.js");
++  ({ runWithCommandAdmission: admission } = await import("../plugins/command-lifecycle.js"));
++});
++
++afterEach(async () => {
++  live.registry = null;
++  vi.unstubAllEnvs();
++  vi.restoreAllMocks();
++  vi.resetModules();
++  await fs.rm(temp, { recursive: true, force: true });
++});
++
++describe("direct cron command lifecycle", () => {
++  it.each(["loading", "disabled", "missing-hook", "missing-config"])(
++    "refuses %s before any process effect",
++    async (variant) => {
++      const marker = path.join(temp, "must-not-exist");
++      const finish = vi.fn();
++      const handler = vi.fn(() => allow(finish));
++      register(handler);
++      if (variant === "loading") {
++        required.beginRequiredPluginLoad();
++      }
++      if (variant === "missing-hook") {
++        live.registry!.typedHooks = [];
++      }
++      const getConfig =
++        variant === "disabled" ? () => ({ plugins: { enabled: false } }) : () => config;
++      const result = await run({
++        job: job(`require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'bad')`),
++        ...(variant === "missing-config" ? {} : { getConfig }),
++      });
++      expect(result.status).toBe("error");
++      expect(handler).not.toHaveBeenCalled();
++      expect(finish).not.toHaveBeenCalled();
++      await expect(fs.stat(marker)).rejects.toMatchObject({ code: "ENOENT" });
++    },
++  );
++
++  it.each(["block", "undefined", "throw"])("refuses a %s decision", async (kind) => {
++    register(() => {
++      if (kind === "throw") {
++        throw new Error("owner gate failed");
++      }
++      if (kind === "undefined") {
++        return undefined as unknown as PluginHookBeforeCommandRunResult;
++      }
++      return { action: "block" };
++    });
++    const result = await run({ job: job(), getConfig: () => config });
++    expect(result.status).toBe("error");
++    expect(result.summary).toBeUndefined();
++  });
++
++  it("keeps a reservation while real command work is pending, then proves group exit", async () => {
++    const started = path.join(temp, "started");
++    let active = 0;
++    const finish = vi.fn(({ inspectProcess }: Parameters<PluginHookCommandFinish>[0]) => {
++      const state = inspectProcess();
++      if (process.platform === "win32") {
++        // Native Windows has no group observation adapter yet. A successful
++        // command result must not turn this unknown lease into an idle claim.
++        expect(state).toMatchObject({ state: "unknown", scope: "untracked" });
++      } else {
++        expect(state).toMatchObject({ state: "exited", scope: "process-group" });
++        active -= 1;
++      }
++    });
++    register(() => {
++      active += 1;
++      return allow(finish);
++    });
++    const pending = run({
++      job: job(
++        `require('node:fs').writeFileSync(${JSON.stringify(started)}, 'ready'); setTimeout(() => process.stdout.write('done'), 250)`,
++      ),
++      getConfig: () => config,
++    });
++    await vi.waitFor(async () => expect(await fs.readFile(started, "utf8")).toBe("ready"));
++    expect(active).toBe(1);
++    expect(finish).not.toHaveBeenCalled();
++    expect((await pending).status).toBe("ok");
++    expect(active).toBe(process.platform === "win32" ? 1 : 0);
++    expect(finish).toHaveBeenCalledTimes(1);
++  });
++
++  it("unwinds the original generation and never spawns after a reload during admission", async () => {
++    const oldFinish = vi.fn();
++    const newFinish = vi.fn();
++    register(async () => {
++      const generation = required.beginRequiredPluginLoad();
++      register(() => allow(newFinish));
++      required.completeRequiredPluginLoad(live.registry!, config, generation);
++      return allow(oldFinish);
++    });
++    const result = await run({ job: job(), getConfig: () => config });
++    expect(result.status).toBe("error");
++    expect(result.error).toContain("changed during admission");
++    expect(oldFinish).toHaveBeenCalledTimes(1);
++    expect(oldFinish.mock.calls[0][0].inspectProcess()).toEqual({ state: "not-started" });
++    expect(newFinish).not.toHaveBeenCalled();
++  });
++
++  it("uses the original finish after a registry replacement during execution", async () => {
++    let unblock!: () => void;
++    const entered = new Promise<void>((resolve) => {
++      unblock = resolve;
++    });
++    let complete!: () => void;
++    const pending = new Promise<void>((resolve) => {
++      complete = resolve;
++    });
++    const oldFinish = vi.fn();
++    const newFinish = vi.fn();
++    register(() => allow(oldFinish));
++    const work = admission({
++      event: { commandId: "old-command", jobId: "job", argv: [], cwd: temp, env: {} },
++      getConfig: () => config,
++      execute: async (settled) => {
++        unblock();
++        await pending;
++        settled!(
++          () => ({ state: "not-started" }),
++          async () => {},
++        );
++      },
++    });
++    await entered;
++    register(() => allow(newFinish));
++    complete();
++    await work;
++    expect(oldFinish).toHaveBeenCalledTimes(1);
++    expect(newFinish).not.toHaveBeenCalled();
++  });
++
++  it("unwinds an earlier allowed lease when a later plugin refuses", async () => {
++    const finish = vi.fn();
++    register(() => allow(finish));
++    live.registry!.plugins.push({ id: "second", status: "loaded" });
++    live.registry!.typedHooks.push({
++      pluginId: "second",
++      source: "fixture",
++      hookName: "before_command_run",
++      handler: () => ({ action: "block" }),
++    });
++    expect((await run({ job: job(), getConfig: () => config })).status).toBe("error");
++    expect(finish).toHaveBeenCalledTimes(1);
++    expect(finish.mock.calls[0][0].inspectProcess()).toEqual({ state: "not-started" });
++  });
++
++  it("does not use mutable job argv/env after admission begins", async () => {
++    vi.stubEnv("COMMAND_PRIVATE_GATEWAY_VALUE", "private-fixture");
++    const source = job("process.stdout.write(process.env.COMMAND_FIXTURE_VALUE)");
++    if (source.payload.kind !== "command") {
++      throw new Error("bad fixture");
++    }
++    source.payload.env = { COMMAND_FIXTURE_VALUE: "original" };
++    register((event) => {
++      expect(Object.isFrozen(event)).toBe(true);
++      expect(event.env).not.toHaveProperty("COMMAND_PRIVATE_GATEWAY_VALUE");
++      if (source.payload.kind === "command") {
++        source.payload.argv[2] = "process.stdout.write('changed')";
++        source.payload.env!.COMMAND_FIXTURE_VALUE = "changed";
++      }
++      return allow(() => {});
++    });
++    expect((await run({ job: source, getConfig: () => config })).summary).toBe("original");
++  });
++
++  it("cleans a late allow after abort without starting the command", async () => {
++    const controller = new AbortController();
++    let release!: () => void;
++    const wait = new Promise<void>((resolve) => {
++      release = resolve;
++    });
++    let entered!: () => void;
++    const begun = new Promise<void>((resolve) => {
++      entered = resolve;
++    });
++    const finish = vi.fn();
++    register(async () => {
++      entered();
++      await wait;
++      return allow(finish);
++    });
++    const work = run({ job: job(), getConfig: () => config, abortSignal: controller.signal });
++    await begun;
++    controller.abort();
++    expect((await work).status).toBe("error");
++    expect(finish).not.toHaveBeenCalled();
++    release();
++    await vi.waitFor(() => expect(finish).toHaveBeenCalledTimes(1));
++    expect(finish.mock.calls[0][0].inspectProcess()).toEqual({ state: "not-started" });
++  });
++
++  it("reports failed spawn as not started", async () => {
++    const finish = vi.fn();
++    register(() => allow(finish));
++    const source = job();
++    if (source.payload.kind === "command") {
++      source.payload.argv = [path.join(temp, "missing-executable")];
++    }
++    expect((await run({ job: source, getConfig: () => config })).status).toBe("error");
++    expect(finish.mock.calls[0][0].inspectProcess()).toEqual({ state: "not-started" });
++  });
++
++  it("unwinds a timed-out admission's late allow exactly once", async () => {
++    const finish = vi.fn();
++    let release!: () => void;
++    const pending = new Promise<void>((resolve) => {
++      release = resolve;
++    });
++    register(async () => {
++      await pending;
++      return allow(finish);
++    });
++    live.registry!.typedHooks[0].timeoutMs = 20;
++    expect((await run({ job: job(), getConfig: () => config })).status).toBe("error");
++    expect(finish).not.toHaveBeenCalled();
++    release();
++    await vi.waitFor(() => expect(finish).toHaveBeenCalledTimes(1));
++    expect(finish.mock.calls[0][0].inspectProcess()).toEqual({ state: "not-started" });
++  });
++
++  it("bounds unknown cleanup without calling the owner's finish twice", async () => {
++    let release!: () => void;
++    const pending = new Promise<void>((resolve) => {
++      release = resolve;
++    });
++    const finish = vi.fn(async () => {
++      await pending;
++    });
++    register(() => allow(finish));
++    live.registry!.typedHooks[0].timeoutMs = 20;
++    const result = await run({ job: job(), getConfig: () => config });
++    expect(result.status).toBe("error");
++    expect(result.error).toContain("cleanup failed");
++    expect(finish).toHaveBeenCalledTimes(1);
++    release();
++    await delay(10);
++    expect(finish).toHaveBeenCalledTimes(1);
++  });
++
++  it("observes real aborted-process cleanup independently of the cancellation request", async () => {
++    const started = path.join(temp, "abort-started");
++    const controller = new AbortController();
++    let inspect: CommandProcessInspection | undefined;
++    register(() =>
++      allow(({ inspectProcess }) => {
++        inspect = inspectProcess;
++      }),
++    );
++    const pending = run({
++      job: job(
++        `require('node:fs').writeFileSync(${JSON.stringify(started)}, 'ready'); setTimeout(() => {}, 2000)`,
++      ),
++      getConfig: () => config,
++      abortSignal: controller.signal,
++    });
++    await vi.waitFor(async () => expect(await fs.readFile(started, "utf8")).toBe("ready"));
++    controller.abort();
++    expect((await pending).status).toBe("error");
++    if (process.platform === "win32") {
++      expect(inspect!()).toMatchObject({ state: "unknown", scope: "untracked" });
++    } else {
++      await vi.waitFor(() =>
++        expect(inspect!()).toMatchObject({ state: "exited", scope: "process-group" }),
++      );
++    }
++  });
++
++  it("retains unknown producer cleanup and surfaces finish rejection", async () => {
++    const finish = vi.fn(({ inspectProcess }: Parameters<PluginHookCommandFinish>[0]) => {
++      expect(inspectProcess()).toEqual({ state: "unknown", scope: "untracked" });
++      throw new Error("retain hold");
++    });
++    register(() => allow(finish));
++    await expect(
++      admission({
++        event: { commandId: "unknown-command", jobId: "job", argv: [], cwd: temp, env: {} },
++        getConfig: () => config,
++        execute: async () => {
++          throw new Error("lost transport");
++        },
++      }),
++    ).rejects.toThrow("Command cleanup failed");
++    expect(finish).toHaveBeenCalledTimes(1);
++  });
++
++  it("leaves non-command agent payloads on the original separate path", async () => {
++    const handler = vi.fn(() => allow(() => {}));
++    register(handler);
++    const source = job();
++    source.payload = { kind: "agentTurn", message: "do not invoke a model" };
++    expect((await run({ job: source, getConfig: () => config })).status).toBe("skipped");
++    expect(handler).not.toHaveBeenCalled();
++  });
++
++  it.skipIf(process.platform === "win32")(
++    "retains a real surviving descendant until its owned group is absent",
++    async () => {
++      const childPidFile = path.join(temp, "descendant-pid");
++      const doneFile = path.join(temp, "descendant-done");
++      const descendant = `setTimeout(() => { require('node:fs').writeFileSync(${JSON.stringify(doneFile)}, 'done'); }, 700)`;
++      const parent = `const c = require('node:child_process').spawn(process.execPath, ['-e', ${JSON.stringify(descendant)}], {stdio:'ignore'}); require('node:fs').writeFileSync(${JSON.stringify(childPidFile)}, String(c.pid)); c.unref();`;
++      let inspect: CommandProcessInspection | undefined;
++      let active = 0;
++      register(() => {
++        active += 1;
++        return allow(({ inspectProcess }) => {
++          inspect = inspectProcess;
++          if (inspectProcess().state === "exited") {
++            active -= 1;
++          }
++        });
++      });
++      expect((await run({ job: job(parent), getConfig: () => config })).status).toBe("ok");
++      expect(inspect!()).toMatchObject({ state: "running", scope: "process-group" });
++      expect(active).toBe(1);
++      const descendantPid = Number(await fs.readFile(childPidFile, "utf8"));
++      expect(descendantPid).toBeGreaterThan(0);
++      await vi.waitFor(async () => expect(await fs.readFile(doneFile, "utf8")).toBe("done"), {
++        timeout: 3000,
++      });
++      // Kernel group absence, not the marker or a kill request, permits release.
++      await vi.waitFor(() => expect(inspect!()).toMatchObject({ state: "exited" }), {
++        timeout: 3000,
++      });
++      active -= 1;
++      expect(active).toBe(0);
++      await delay(10);
++      expect(inspect!()).toMatchObject({ state: "exited" });
++    },
++  );
++
++  it.skipIf(process.platform === "win32")(
++    "honors cancellation after the root command exits with a surviving child",
++    async () => {
++      const controller = new AbortController();
++      const code =
++        "const c=require('node:child_process').spawn(process.execPath,['-e','setTimeout(()=>{},2000)'],{stdio:'ignore'}); c.unref();";
++      let inspect: CommandProcessInspection | undefined;
++      register(() =>
++        allow(({ inspectProcess }) => {
++          inspect = inspectProcess;
++        }),
++      );
++      await run({ job: job(code), getConfig: () => config, abortSignal: controller.signal });
++      expect(inspect!()).toMatchObject({ state: "running", scope: "process-group" });
++      controller.abort();
++      try {
++        await vi.waitFor(() => expect(inspect!()).toMatchObject({ state: "exited" }), {
++          timeout: 650,
++        });
++      } finally {
++        // The disposable descendant self-expires even on the retained failing
++        // baseline. Do not erase its evidence while it can still be running.
++        await vi.waitFor(() => expect(inspect!()).toMatchObject({ state: "exited" }), {
++          timeout: 3500,
++        });
++      }
++    },
++  );
++
++  it.skipIf(process.platform === "win32").each(["deadline", "owner", "abort", "observer-error"])(
++    "reaps a TERM-ignoring descendant after root exit via %s",
++    async (mode) => {
++      const ready = path.join(temp, "stubborn-ready");
++      const term = path.join(temp, "stubborn-term");
++      const naturalExit = path.join(temp, "stubborn-natural-exit");
++      const descendant = `const fs=require('node:fs'); process.on('SIGTERM',()=>fs.writeFileSync(${JSON.stringify(term)},'seen')); fs.writeFileSync(${JSON.stringify(ready)},'ready'); setTimeout(()=>{fs.writeFileSync(${JSON.stringify(naturalExit)},'expired');process.exit(0)},4000);`;
++      // The root cannot finish before the child has installed its TERM handler.
++      const rootDelay = mode === "deadline" ? 750 : 0;
++      const code = `const fs=require('node:fs'); const c=require('node:child_process').spawn(process.execPath,['-e',${JSON.stringify(descendant)}],{stdio:'ignore'}); const t=setInterval(()=>{if(fs.existsSync(${JSON.stringify(ready)})){clearInterval(t);setTimeout(()=>c.unref(),${rootDelay})}},5);`;
++      const controller = new AbortController();
++      let inspect: CommandProcessInspection | undefined;
++      let cancel: CommandProcessCancel | undefined;
++      const finish = vi.fn(
++        ({ inspectProcess, cancelProcess }: Parameters<PluginHookCommandFinish>[0]) => {
++          inspect = inspectProcess;
++          cancel = cancelProcess;
++        },
++      );
++      register(() => allow(finish));
++      try {
++        if (mode === "observer-error") {
++          const { runCommandWithTimeout } = await import("../process/exec.js");
++          await expect(
++            runCommandWithTimeout([process.execPath, "-e", code], {
++              timeoutMs: 1000,
++              killProcessTree: true,
++              signal: controller.signal,
++              onProcessSettled: (inspection, cancellation) => {
++                inspect = inspection;
++                cancel = cancellation;
++                throw new Error("observer failed");
++              },
++            }),
++          ).rejects.toThrow("observer failed");
++        } else {
++          const source = job(code);
++          if (source.payload.kind === "command") {
++            source.payload.timeoutSeconds = mode === "deadline" ? 1 : 5;
++          }
++          expect(
++            (await run({ job: source, getConfig: () => config, abortSignal: controller.signal }))
++              .status,
++          ).toBe("ok");
++          expect(finish).toHaveBeenCalledTimes(1);
++        }
++        expect(inspect!()).toMatchObject({ state: "running", scope: "process-group" });
++        if (mode === "owner") {
++          const request = cancel!();
++          expect(cancel!()).toBe(request);
++          await request;
++        } else if (mode === "abort") {
++          controller.abort();
++        }
++        await vi.waitFor(() => expect(inspect!()).toMatchObject({ state: "exited" }), {
++          // Renewing the original one-second timeout at root exit must fail.
++          timeout: mode === "deadline" ? 850 : 2000,
++        });
++        expect(await fs.readFile(term, "utf8")).toBe("seen");
++        await expect(fs.stat(naturalExit)).rejects.toMatchObject({ code: "ENOENT" });
++      } finally {
++        // Natural expiry is failure cleanup only, never the passing assertion.
++        if (inspect) {
++          await vi.waitFor(() => expect(inspect!()).toMatchObject({ state: "exited" }), {
++            timeout: 5500,
++          });
++        }
++      }
++    },
++  );
++
++  it.skipIf(process.platform === "win32")(
++    "preserves unmanaged background work when no command hook is registered",
++    async () => {
++      vi.stubEnv("OPENCLAW_REQUIRED_PLUGINS", undefined);
++      vi.resetModules();
++      live.registry = null;
++      const { runCronCommandJob } = await import("./command-runner.js");
++      const rootPidFile = path.join(temp, "unmanaged-root");
++      const done = path.join(temp, "unmanaged-done");
++      const child = `setTimeout(()=>require('node:fs').writeFileSync(${JSON.stringify(done)},'done'),800)`;
++      const code = `require('node:fs').writeFileSync(${JSON.stringify(rootPidFile)},String(process.pid)); const c=require('node:child_process').spawn(process.execPath,['-e',${JSON.stringify(child)}],{stdio:'ignore'}); c.unref();`;
++      const controller = new AbortController();
++      let group: number | undefined;
++      try {
++        const source = job(code);
++        if (source.payload.kind === "command") {
++          source.payload.timeoutSeconds = 0.3;
++        }
++        expect(
++          (await runCronCommandJob({ job: source, abortSignal: controller.signal })).status,
++        ).toBe("ok");
++        group = Number(await fs.readFile(rootPidFile, "utf8"));
++        expect(Number.isSafeInteger(group) && group > 0).toBe(true);
++        controller.abort();
++        await delay(400);
++        expect(process.kill(-group, 0)).toBe(true);
++        await vi.waitFor(async () => expect(await fs.readFile(done, "utf8")).toBe("done"), {
++          timeout: 2000,
++        });
++      } finally {
++        if (group) {
++          await vi.waitFor(
++            () => {
++              expect(() => process.kill(-group!, 0)).toThrow(
++                expect.objectContaining({ code: "ESRCH" }),
++              );
++            },
++            { timeout: 3500 },
++          );
++        }
++      }
++    },
++  );
++});
+diff --git a/src/cron/command-runner.ts b/src/cron/command-runner.ts
+index fcce31b3996d744fbe6f931fe658b57b7cb88c73..e970cddeb0cd79dc33c0b42a015999dbb039d084 100644
+--- a/src/cron/command-runner.ts
++++ b/src/cron/command-runner.ts
+@@ -1,5 +1,8 @@
++import { randomUUID } from "node:crypto";
+ import { finiteSecondsToTimerSafeMilliseconds } from "@openclaw/normalization-core/number-coercion";
+ import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
++import type { OpenClawConfig } from "../config/types.openclaw.js";
++import { runWithCommandAdmission } from "../plugins/command-lifecycle.js";
+ import { runCommandWithTimeout } from "../process/exec.js";
+ import type { CronRunDiagnostics, CronRunOutcome, CronRunStatus, CronJob } from "./types.js";
+ 
+@@ -89,9 +92,10 @@ export async function runCronCommandJob(params: {
+   job: CronJob;
+   abortSignal?: AbortSignal;
+   nowMs?: () => number;
++  getConfig?: () => OpenClawConfig;
+ }): Promise<CronRunOutcome> {
+   const nowMs = params.nowMs ?? Date.now;
+-  const { payload } = params.job;
++  const payload = structuredClone(params.job.payload);
+   if (payload.kind !== "command") {
+     return {
+       status: "skipped",
+@@ -107,16 +111,38 @@ export async function runCronCommandJob(params: {
+ 
+   const command = formatCommand(payload.argv);
+   const noOutputTimeoutMs = secondsToMs(payload.noOutputTimeoutSeconds);
++  const cwd = payload.cwd || process.cwd();
++  const baseEnv = Object.freeze({ ...process.env });
++  const event = Object.freeze({
++    commandId: randomUUID(),
++    jobId: params.job.id,
++    argv: Object.freeze([...payload.argv]),
++    cwd,
++    ...(payload.input !== undefined ? { input: payload.input } : {}),
++    // Keep inherited gateway credentials private. The immutable spawn baseline
++    // is separate from the explicit command overrides visible to gate hooks.
++    env: Object.freeze({ ...payload.env }),
++  });
+   try {
+-    const result = await runCommandWithTimeout(payload.argv, {
+-      timeoutMs: secondsToMs(payload.timeoutSeconds) ?? DEFAULT_COMMAND_TIMEOUT_MS,
+-      ...(payload.cwd ? { cwd: payload.cwd } : {}),
+-      ...(payload.input !== undefined ? { input: payload.input } : {}),
+-      ...(payload.env ? { env: payload.env } : {}),
+-      ...(noOutputTimeoutMs !== undefined ? { noOutputTimeoutMs } : {}),
+-      ...(payload.outputMaxBytes !== undefined ? { maxOutputBytes: payload.outputMaxBytes } : {}),
+-      ...(params.abortSignal ? { signal: params.abortSignal } : {}),
+-      killProcessTree: true,
++    const result = await runWithCommandAdmission({
++      event,
++      getConfig: params.getConfig ?? (() => undefined),
++      signal: params.abortSignal,
++      execute: (onProcessSettled) =>
++        runCommandWithTimeout(payload.argv, {
++          timeoutMs: secondsToMs(payload.timeoutSeconds) ?? DEFAULT_COMMAND_TIMEOUT_MS,
++          cwd,
++          baseEnv,
++          ...(payload.input !== undefined ? { input: payload.input } : {}),
++          ...(payload.env ? { env: payload.env } : {}),
++          ...(noOutputTimeoutMs !== undefined ? { noOutputTimeoutMs } : {}),
++          ...(payload.outputMaxBytes !== undefined
++            ? { maxOutputBytes: payload.outputMaxBytes }
++            : {}),
++          ...(params.abortSignal ? { signal: params.abortSignal } : {}),
++          killProcessTree: true,
++          onProcessSettled,
++        }),
+     });
+     const ok =
+       result.code === 0 &&
+diff --git a/src/gateway/server-cron.ts b/src/gateway/server-cron.ts
+index 62165956cd3ef70ab6b0739fb28a0f0fc8ec2deb..4a02a88a1cb5d09504b77de083b3f874e6ce8a38 100644
+--- a/src/gateway/server-cron.ts
++++ b/src/gateway/server-cron.ts
+@@ -418,6 +418,7 @@ export function buildGatewayCronService(params: {
+         job,
+         abortSignal,
+         nowMs: Date.now,
++        getConfig: getRuntimeConfig,
+       });
+       const plan = resolveCronDeliveryPlan(job);
+       const deliveryTrace = {
+diff --git a/src/plugins/command-lifecycle.ts b/src/plugins/command-lifecycle.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..5868d9420db8e2835d36e61098f695891f60de9b
+--- /dev/null
++++ b/src/plugins/command-lifecycle.ts
+@@ -0,0 +1,212 @@
++import type { OpenClawConfig } from "../config/types.openclaw.js";
++import { logError } from "../logger.js";
++import type {
++  CommandProcessInspection,
++  CommandProcessCancel,
++} from "../process/command-process-state.js";
++import { clampPositiveTimerTimeoutMs } from "../shared/number-coercion.js";
++import { getGlobalHookRunnerRegistry } from "./hook-runner-global-state.js";
++import type {
++  PluginHookBeforeCommandRunEvent,
++  PluginHookBeforeCommandRunResult,
++  PluginHookCommandFinish,
++  PluginHookRegistration,
++} from "./hook-types.js";
++import { captureRequiredPluginRuntime } from "./required-plugins.js";
++
++const notStarted: CommandProcessInspection = () => Object.freeze({ state: "not-started" });
++const unknownProcess: CommandProcessInspection = () =>
++  Object.freeze({ state: "unknown", scope: "untracked" });
++const noProcessToCancel: CommandProcessCancel = async () => {};
++const unknownCancellation: CommandProcessCancel = async () => {
++  throw new Error("Command process ownership is unknown");
++};
++
++function commandHooks() {
++  const registry = getGlobalHookRunnerRegistry();
++  const loaded = new Set(registry?.plugins.filter((p) => p.status === "loaded").map((p) => p.id));
++  return (
++    (registry?.typedHooks ?? [])
++      .filter(
++        (hook): hook is PluginHookRegistration<"before_command_run"> =>
++          hook.hookName === "before_command_run" && loaded.has(hook.pluginId),
++      )
++      // Snapshot registrations so in-place registry edits cannot rewrite the
++      // admitted generation's handles or defeat the final identity check.
++      // oxlint-disable-next-line oxc/no-map-spread
++      .map((hook) => ({ ...hook }))
++      .toSorted((a, b) => (b.priority ?? 0) - (a.priority ?? 0))
++  );
++}
++
++function isAllow(value: PluginHookBeforeCommandRunResult | undefined): value is {
++  action: "allow";
++  finish: PluginHookCommandFinish;
++} {
++  return value?.action === "allow" && typeof value.finish === "function";
++}
++
++function pinFinish(finish: PluginHookCommandFinish, timeoutMs: number): PluginHookCommandFinish {
++  let completion: Promise<void> | undefined;
++  return (event) => {
++    if (!completion) {
++      completion = (async () => {
++        let timer: ReturnType<typeof setTimeout> | undefined;
++        try {
++          await Promise.race([
++            Promise.resolve().then(() => finish(event)),
++            new Promise<never>((_, reject) => {
++              timer = setTimeout(() => reject(new Error("Command cleanup timed out")), timeoutMs);
++            }),
++          ]);
++        } finally {
++          clearTimeout(timer);
++        }
++      })();
++    }
++    // Preserve the same success or rejection on repeat, never repeat effects or
++    // turn an earlier failed cleanup into a later apparent success.
++    return completion;
++  };
++}
++
++async function admit(
++  hook: PluginHookRegistration<"before_command_run">,
++  event: PluginHookBeforeCommandRunEvent,
++  signal?: AbortSignal,
++): Promise<PluginHookBeforeCommandRunResult> {
++  const controller = new AbortController();
++  let abandoned = false;
++  let timer: ReturnType<typeof setTimeout> | undefined;
++  let onAbort: (() => void) | undefined;
++  const timeoutMs = clampPositiveTimerTimeoutMs(hook.timeoutMs) ?? 15_000;
++  const stop = new Promise<never>((_, reject) => {
++    onAbort = () => {
++      abandoned = true;
++      controller.abort();
++      reject(new Error("Command admission interrupted"));
++    };
++    signal?.addEventListener("abort", onAbort, { once: true });
++    timer = setTimeout(onAbort, timeoutMs);
++  });
++  // A late allow still owns a lease. Unwind its original closure rather than
++  // redispatching through a possibly replaced global registry.
++  const decision = Promise.resolve()
++    .then(() => {
++      if (signal?.aborted || abandoned) {
++        throw new Error("command stopped");
++      }
++      return hook.handler(event, { signal: controller.signal });
++    })
++    .then((value) =>
++      isAllow(value)
++        ? { action: "allow" as const, finish: pinFinish(value.finish, timeoutMs) }
++        : value,
++    );
++  void decision
++    .then(
++      async (value) => {
++        if (abandoned && isAllow(value)) {
++          await value.finish({
++            commandId: event.commandId,
++            inspectProcess: notStarted,
++            cancelProcess: noProcessToCancel,
++          });
++        }
++      },
++      () => {},
++    )
++    .catch(() => logError("Command admission late cleanup failed; activity remains uncertain"));
++  try {
++    return await Promise.race([decision, stop]);
++  } finally {
++    clearTimeout(timer);
++    if (onAbort) {
++      signal?.removeEventListener("abort", onAbort);
++    }
++  }
++}
++
++/** Admission and cleanup share one immutable event and one set of owner closures. */
++export async function runWithCommandAdmission<T>(params: {
++  event: PluginHookBeforeCommandRunEvent;
++  getConfig: () => OpenClawConfig | undefined;
++  signal?: AbortSignal;
++  execute: (
++    settled?: (inspect: CommandProcessInspection, cancel: CommandProcessCancel) => void,
++  ) => Promise<T>;
++}): Promise<T> {
++  const assertRuntime = captureRequiredPluginRuntime(params.getConfig());
++  const hooks = commandHooks();
++  const finishes: PluginHookCommandFinish[] = [];
++  let inspectProcess = notStarted;
++  let cancelProcess = noProcessToCancel;
++  const assertCurrent = () => {
++    if (params.signal?.aborted) {
++      throw new Error("command stopped");
++    }
++    assertRuntime(params.getConfig());
++    const current = commandHooks();
++    if (
++      current.length !== hooks.length ||
++      current.some(
++        (hook, index) =>
++          hook.pluginId !== hooks[index].pluginId ||
++          hook.handler !== hooks[index].handler ||
++          hook.priority !== hooks[index].priority ||
++          hook.timeoutMs !== hooks[index].timeoutMs,
++      )
++    ) {
++      throw new Error("Command hooks changed during admission");
++    }
++  };
++  let failure: unknown;
++  let failed = false;
++  let result: T | undefined;
++  try {
++    for (const hook of hooks) {
++      assertCurrent();
++      const decision = await admit(hook, params.event, params.signal);
++      if (!isAllow(decision)) {
++        throw new Error("Command admission refused");
++      }
++      finishes.push(decision.finish);
++    }
++    assertCurrent();
++    // No await between the final guard and execute's synchronous spawn prefix.
++    // Missing/erroring producer evidence remains unknown, never inferred idle.
++    inspectProcess = unknownProcess;
++    cancelProcess = unknownCancellation;
++    result = await params.execute(
++      hooks.length === 0
++        ? undefined
++        : (inspect, cancel) => {
++            inspectProcess = inspect;
++            cancelProcess = cancel;
++          },
++    );
++  } catch (error) {
++    failure = error;
++    failed = true;
++  }
++  const cleanup = await Promise.allSettled(
++    finishes.map((finish) =>
++      Promise.resolve().then(() =>
++        finish({ commandId: params.event.commandId, inspectProcess, cancelProcess }),
++      ),
++    ),
++  );
++  const cleanupErrors = cleanup.flatMap((entry) =>
++    entry.status === "rejected" ? [entry.reason] : [],
++  );
++  if (cleanupErrors.length > 0) {
++    throw new AggregateError(
++      failed ? [failure, ...cleanupErrors] : cleanupErrors,
++      "Command cleanup failed; activity remains uncertain",
++    );
++  }
++  if (failed) {
++    throw failure;
++  }
++  return result as T;
++}
+diff --git a/src/plugins/hook-types.ts b/src/plugins/hook-types.ts
+index 49e41ae90f545884a13c681f3d38fe6f546dec9d..cf96061ce157c261c33a1789f9a64164f5d61f85 100644
+--- a/src/plugins/hook-types.ts
++++ b/src/plugins/hook-types.ts
+@@ -10,6 +10,10 @@ import type { ChatType } from "../channels/chat-type.js";
+ import type { OpenClawConfig } from "../config/types.openclaw.js";
+ import type { TtsAutoMode } from "../config/types.tts.js";
+ import type { DiagnosticTraceContext } from "../infra/diagnostic-trace-context.js";
++import type {
++  CommandProcessInspection,
++  CommandProcessCancel,
++} from "../process/command-process-state.js";
+ import type {
+   PluginHookBeforeAgentStartEvent,
+   PluginHookBeforeAgentStartResult,
+@@ -123,6 +127,7 @@ export type PluginHookName =
+   | "reply_dispatch"
+   | "before_install"
+   | "before_agent_run"
++  | "before_command_run"
+   | "resolve_exec_env";
+ 
+ export const PLUGIN_HOOK_NAMES = [
+@@ -164,6 +169,7 @@ export const PLUGIN_HOOK_NAMES = [
+   "reply_dispatch",
+   "before_install",
+   "before_agent_run",
++  "before_command_run",
+   "resolve_exec_env",
+ ] as const satisfies readonly PluginHookName[];
+ 
+@@ -231,6 +237,7 @@ export const CONVERSATION_HOOK_NAMES = [
+   "before_agent_finalize",
+   "agent_end",
+   "before_agent_run",
++  "before_command_run",
+ ] as const satisfies readonly PluginHookName[];
+ 
+ export type ConversationHookName = (typeof CONVERSATION_HOOK_NAMES)[number];
+@@ -1069,6 +1076,31 @@ export type PluginHookBeforeAgentRunEvent = {
+ /** Result type for before_agent_run. Returns pass/block or void (= pass). */
+ export type PluginHookBeforeAgentRunResult = InputGateDecision | void;
+ 
++/** Direct scheduled OS command, not an agent turn or a tool authorization. */
++export type PluginHookBeforeCommandRunEvent = {
++  readonly commandId: string;
++  readonly jobId: string;
++  readonly argv: readonly string[];
++  readonly cwd: string;
++  readonly input?: string;
++  /** Explicit command overrides only; inherited gateway environment is private. */
++  readonly env: Readonly<NodeJS.ProcessEnv>;
++};
++
++export type PluginHookCommandFinish = (event: {
++  readonly commandId: string;
++  readonly inspectProcess: CommandProcessInspection;
++  readonly cancelProcess: CommandProcessCancel;
++}) => void | Promise<void>;
++
++/**
++ * An allow decision owns a reservation before returning. Its pinned finish must
++ * retain running/unknown work; a handler that throws owns its partial unwind.
++ */
++export type PluginHookBeforeCommandRunResult =
++  | { action: "allow"; finish: PluginHookCommandFinish }
++  | { action: "block"; reason?: string };
++
+ export type PluginHookResolveExecEnvEvent = {
+   sessionKey?: string;
+   toolName: "exec";
+@@ -1254,6 +1286,10 @@ export type PluginHookHandlerMap = {
+     event: PluginHookBeforeAgentRunEvent,
+     ctx: PluginHookAgentContext,
+   ) => Promise<PluginHookBeforeAgentRunResult> | PluginHookBeforeAgentRunResult;
++  before_command_run: (
++    event: PluginHookBeforeCommandRunEvent,
++    ctx: { readonly signal: AbortSignal },
++  ) => Promise<PluginHookBeforeCommandRunResult> | PluginHookBeforeCommandRunResult;
+   resolve_exec_env: (
+     event: PluginHookResolveExecEnvEvent,
+     ctx: PluginHookResolveExecEnvContext,
+diff --git a/src/plugins/required-plugins.ts b/src/plugins/required-plugins.ts
+index 5e979c0b5e54859e8975e47f543b0763047b81e6..298042a0f1b5e18ad692a8b2057ed9bebbd707c9 100644
+--- a/src/plugins/required-plugins.ts
++++ b/src/plugins/required-plugins.ts
+@@ -140,3 +140,15 @@ export function assertRequiredPluginRuntime(config: OpenClawConfig | undefined):
+   // composed live registry the dispatcher uses, never an individual setter.
+   assertRequiredPluginRegistry(getGlobalHookRunnerRegistry());
+ }
++
++/** Recheck the same required-runtime generation after asynchronous admission. */
++export function captureRequiredPluginRuntime(config: OpenClawConfig | undefined) {
++  assertRequiredPluginRuntime(config);
++  const generation = loadGeneration;
++  return (currentConfig: OpenClawConfig | undefined) => {
++    assertRequiredPluginRuntime(currentConfig);
++    if (generation !== loadGeneration) {
++      throw new Error("Required plugin runtime changed during admission");
++    }
++  };
++}
+diff --git a/src/process/command-process-state.test.ts b/src/process/command-process-state.test.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..794eecb7a84839134577cc9b3ac26ef82ba93425
+--- /dev/null
++++ b/src/process/command-process-state.test.ts
+@@ -0,0 +1,53 @@
++import type { ChildProcess } from "node:child_process";
++import { afterEach, describe, expect, it, vi } from "vitest";
++import { createCommandProcessTracker } from "./command-process-state.js";
++
++afterEach(() => vi.restoreAllMocks());
++
++function child(values: Partial<ChildProcess> = {}): ChildProcess {
++  return { pid: 12345, exitCode: 0, signalCode: null, ...values } as ChildProcess;
++}
++
++describe("owned command process evidence", () => {
++  it("distinguishes no spawn from unsupported ownership", () => {
++    const tracker = createCommandProcessTracker();
++    expect(tracker.inspect()).toEqual({ state: "not-started" });
++    const untracked = createCommandProcessTracker();
++    untracked.spawned(child(), false);
++    expect(untracked.inspect()).toEqual({ state: "unknown", scope: "untracked", pid: 12345 });
++  });
++
++  it("does not infer group exit while root termination remains unobserved", () => {
++    const kill = vi.spyOn(process, "kill").mockImplementation(() => {
++      throw Object.assign(new Error(), { code: "ESRCH" });
++    });
++    const tracker = createCommandProcessTracker();
++    tracker.spawned(child({ exitCode: null }), true);
++    expect(tracker.inspect()).toMatchObject({ state: "running", scope: "process-group" });
++    expect(kill).not.toHaveBeenCalled();
++  });
++
++  it.each(["EPERM", "EACCES", "EIO"])("retains unknown on %s", (code) => {
++    vi.spyOn(process, "kill").mockImplementation(() => {
++      throw Object.assign(new Error(), { code });
++    });
++    const tracker = createCommandProcessTracker();
++    tracker.spawned(child(), true);
++    expect(tracker.inspect()).toMatchObject({ state: "unknown", scope: "process-group" });
++  });
++
++  it("pins kernel-proven absence, not root success or a successful signal probe", () => {
++    const kill = vi.spyOn(process, "kill").mockReturnValue(true);
++    const tracker = createCommandProcessTracker();
++    tracker.spawned(child(), true);
++    expect(tracker.inspect()).toMatchObject({ state: "running" });
++    kill.mockImplementationOnce(() => {
++      throw Object.assign(new Error(), { code: "ESRCH" });
++    });
++    expect(tracker.inspect()).toMatchObject({ state: "exited", scope: "process-group" });
++    const calls = kill.mock.calls.length;
++    expect(tracker.inspect()).toMatchObject({ state: "exited" });
++    expect(kill).toHaveBeenCalledTimes(calls);
++    expect(kill.mock.calls.every(([pid, signal]) => pid === -12345 && signal === 0)).toBe(true);
++  });
++});
+diff --git a/src/process/command-process-state.ts b/src/process/command-process-state.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..9f6b13acde8034269e40903f65262e2eb2b62933
+--- /dev/null
++++ b/src/process/command-process-state.ts
+@@ -0,0 +1,86 @@
++import type { ChildProcess } from "node:child_process";
++import { setTimeout as delay } from "node:timers/promises";
++
++/** Evidence about our execution domain, not containment of escaped OS processes. */
++export type CommandProcessState =
++  | { state: "not-started" }
++  | { state: "running" | "exited"; scope: "process-group"; pid: number }
++  | { state: "unknown"; scope: "process-group" | "untracked"; pid?: number };
++
++export type CommandProcessInspection = () => Readonly<CommandProcessState>;
++/** Requests termination of this domain. Resolution is not proof of exit. */
++export type CommandProcessCancel = () => Promise<void>;
++
++/** The runner exposes inspect only once its own promise has settled. */
++export function createCommandProcessTracker() {
++  let child: ChildProcess | undefined;
++  let ownsGroup = false;
++  let terminal: Readonly<CommandProcessState> | undefined;
++  let cancellation: Promise<void> | undefined;
++  const inspect: CommandProcessInspection = () => {
++    if (terminal) {
++      return terminal;
++    }
++    // Node supplies no pid when spawn failed. No caller gets this observation
++    // while a later spawn is still possible.
++    if (!child || child.pid === undefined) {
++      terminal = Object.freeze({ state: "not-started" });
++      return terminal;
++    }
++    const pid = child.pid;
++    if (!ownsGroup || !Number.isSafeInteger(pid) || pid <= 0) {
++      return Object.freeze({ state: "unknown", scope: "untracked", pid });
++    }
++    if (typeof child.exitCode !== "number" && typeof child.signalCode !== "string") {
++      return Object.freeze({ state: "running", scope: "process-group", pid });
++    }
++    try {
++      process.kill(-pid, 0);
++      return Object.freeze({ state: "running", scope: "process-group", pid });
++    } catch (error) {
++      // EPERM and every other observation failure are unknown, never idle.
++      if ((error as NodeJS.ErrnoException).code !== "ESRCH") {
++        return Object.freeze({ state: "unknown", scope: "process-group", pid });
++      }
++      // Pin proven absence so later PID reuse cannot revive this old domain.
++      terminal = Object.freeze({ state: "exited", scope: "process-group", pid });
++      return terminal;
++    }
++  };
++  const cancel: CommandProcessCancel = () => {
++    if (!cancellation) {
++      cancellation = (async () => {
++        for (const signal of ["SIGTERM", "SIGKILL"] as const) {
++          const current = inspect();
++          if (current.state === "not-started" || current.state === "exited") {
++            return;
++          }
++          if (current.state !== "running") {
++            throw new Error("Command process ownership is unknown");
++          }
++          try {
++            // Never fall back to a positive PID after the group leader exits.
++            process.kill(-current.pid, signal);
++          } catch (error) {
++            if ((error as NodeJS.ErrnoException).code === "ESRCH" && inspect().state === "exited") {
++              return;
++            }
++            throw new Error("Command process-group cancellation failed", { cause: error });
++          }
++          if (signal === "SIGTERM") {
++            await delay(300, undefined, { ref: false });
++          }
++        }
++      })();
++    }
++    return cancellation;
++  };
++  return {
++    spawned(processChild: ChildProcess, detachedGroup: boolean) {
++      child = processChild;
++      ownsGroup = detachedGroup;
++    },
++    inspect,
++    cancel,
++  };
++}
+diff --git a/src/process/exec.ts b/src/process/exec.ts
+index 476dac5c4fb91f16c149ff554fd5b410552bc9f2..277b686c5659202c1a57cc432f9090119bc0ef4b 100644
+--- a/src/process/exec.ts
++++ b/src/process/exec.ts
+@@ -7,13 +7,18 @@ import { promisify } from "node:util";
+ import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
+ import { danger, shouldLogVerbose } from "../globals.js";
+ import { markOpenClawExecEnv } from "../infra/openclaw-exec-env.js";
+-import { resolveTimerTimeoutMs } from "../shared/number-coercion.js";
+ import {
+   decodeWindowsOutputBuffer,
+   resolveWindowsConsoleEncoding,
+ } from "../infra/windows-encoding.js";
+ import { getWindowsSystem32ExePath } from "../infra/windows-install-roots.js";
+ import { logDebug, logError } from "../logger.js";
++import { resolveTimerTimeoutMs } from "../shared/number-coercion.js";
++import {
++  createCommandProcessTracker,
++  type CommandProcessCancel,
++  type CommandProcessInspection,
++} from "./command-process-state.js";
+ import { killProcessTree as terminateProcessTree } from "./kill-tree.js";
+ import { resolveCommandStdio } from "./spawn-utils.js";
+ import {
+@@ -231,6 +236,8 @@ export type CommandOptions = {
+   signal?: AbortSignal;
+   maxOutputBytes?: number;
+   killProcessTree?: boolean;
++  /** Receives a pinned inspection handle after execution settles, including errors. */
++  onProcessSettled?: (inspect: CommandProcessInspection, cancel: CommandProcessCancel) => void;
+ };
+ 
+ const WINDOWS_CLOSE_STATE_SETTLE_TIMEOUT_MS = 250;
+@@ -341,6 +348,67 @@ export function resolveCommandEnv(params: {
+ export async function runCommandWithTimeout(
+   argv: string[],
+   optionsOrTimeout: number | CommandOptions,
++): Promise<SpawnResult> {
++  const tracker = createCommandProcessTracker();
++  const startedAt = performance.now();
++  try {
++    return await runCommandWithTimeoutTracked(argv, optionsOrTimeout, tracker);
++  } finally {
++    // A returned command result is not proof of process-group exit. Consumers
++    // may retain their lease and inspect the same domain after late cleanup.
++    if (typeof optionsOrTimeout !== "number") {
++      if (optionsOrTimeout.onProcessSettled) {
++        retainCommandProcessCancellation(tracker, optionsOrTimeout, startedAt);
++        optionsOrTimeout.onProcessSettled(tracker.inspect, tracker.cancel);
++      }
++    }
++  }
++}
++
++function retainCommandProcessCancellation(
++  tracker: ReturnType<typeof createCommandProcessTracker>,
++  options: CommandOptions,
++  startedAt: number,
++): void {
++  const state = tracker.inspect();
++  if (state.state === "not-started" || state.state === "exited") {
++    return;
++  }
++  // Unsupported domains stay unknown for the owner; do not pretend a native
++  // cancellation adapter exists or signal an unrelated positive PID.
++  if (state.scope !== "process-group") {
++    return;
++  }
++  const cancel = () => {
++    void tracker
++      .cancel()
++      .catch(() => logError("Command process cleanup failed; activity remains uncertain"));
++  };
++  const remainingMs = Math.max(
++    1,
++    resolveTimerTimeoutMs(options.timeoutMs, 1) - (performance.now() - startedAt),
++  );
++  const deadline = setTimeout(cancel, remainingMs);
++  deadline.unref();
++  const poll = setInterval(() => {
++    const current = tracker.inspect();
++    if (current.state === "exited" || current.state === "not-started") {
++      clearInterval(poll);
++      clearTimeout(deadline);
++      options.signal?.removeEventListener("abort", cancel);
++    }
++  }, 100);
++  poll.unref();
++  options.signal?.addEventListener("abort", cancel, { once: true });
++  if (options.signal?.aborted) {
++    cancel();
++  }
++}
++
++async function runCommandWithTimeoutTracked(
++  argv: string[],
++  optionsOrTimeout: number | CommandOptions,
++  tracker: ReturnType<typeof createCommandProcessTracker>,
+ ): Promise<SpawnResult> {
+   const options: CommandOptions =
+     typeof optionsOrTimeout === "number" ? { timeoutMs: optionsOrTimeout } : optionsOrTimeout;
+@@ -381,6 +449,7 @@ export async function runCommandWithTimeout(
+       : {}),
+   });
+   // Spawn with inherited stdin (TTY) so interactive tools stay usable when needed.
++  tracker.spawned(child, killProcessTree === true && process.platform !== "win32");
+   return await new Promise((resolve, reject) => {
+     const stdoutCapture: CapturedOutputBuffers = { chunks: [], bytes: 0, truncatedBytes: 0 };
+     const stderrCapture: CapturedOutputBuffers = { chunks: [], bytes: 0, truncatedBytes: 0 };
+-- 
+2.53.0.windows.2
+

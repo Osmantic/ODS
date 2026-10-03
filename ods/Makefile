@@ -17,40 +17,81 @@ lint: ## Syntax check all shell scripts + Python compile check
 	@echo "All lint checks passed."
 
 test: ## Run unit and contract tests
+	@python3 scripts/verify-pixel-bundle.py
+	@bash tests/test-pixel-bundled-source.sh
 	@echo "=== Install documentation contract ==="
 	@bash tests/test-install-docs.sh
 	@bash tests/test-hosted-bootstrap-verifier.sh
 	@echo ""
 	@echo "=== Tier map tests ==="
 	@bash tests/test-tier-map.sh
+	@python3 tests/test-model-library-pinned-urls.py
 	@bash tests/test-installer-context-parity.sh
 	@bash tests/test-hermes-context-floor.sh
+	@bash tests/test-install-menu-hermes-flag.sh
+	@bash tests/test-custom-menu-agent-flags.sh
+	@bash tests/test-lemonade-external-gpu.sh
+	@bash tests/test-preflight-external-gpu.sh
 	@echo ""
 	@echo "=== Hermes slash worker prune ==="
 	@bash tests/test-hermes-slash-worker-prune.sh
 	@python3 tests/contracts/test-hermes-worker-guardrails.py
 	@echo ""
+	@echo "=== OpenCode managed launchers confine Bun temp copies ==="
+	@bash tests/test-opencode-bun-tmpdir.sh
+	@echo ""
 	@echo "=== Installer contracts ==="
 	@bash tests/contracts/test-installer-contracts.sh
 	@bash tests/test-external-services.sh
+	@bash tests/test-phase11-litellm-reload.sh
 	@bash tests/test-resolve-compose-resilient.sh
 	@bash tests/test-phase03-multigpu-tty.sh
+	@bash tests/test-pixel-support-services.sh
+	@bash tests/test-phase03-no-gpu-assignment-message.sh
 	@bash tests/contracts/test-preflight-fixtures.sh
 	@bash tests/test-preflight-resolver-bug.sh
 	@bash tests/test-linux-cloud-mode.sh
 	@echo ""
 	@echo "=== Linux install preflight ==="
 	@bash tests/test-linux-install-preflight.sh
+	@bash tests/test-phase05-podman-shim.sh
 	@bash tests/test-linux-host-agent-stop.sh
 	@bash tests/test-preflight-dashboard-port.sh
+	@bash tests/test-wsl-broken-docker-shim.sh
+	@bash tests/test-wsl-nvidia-driver-guard.sh
+	@bash tests/test-ui-missing-container-fast-fail.sh
 	@echo ""
 	@echo "=== ods-doctor rootless subordinate IDs ==="
 	@bash tests/test-ods-doctor-rootless-subid.sh
+	@echo "=== ods-test.sh reports HTTP 000 for a failed probe ==="
+	@bash tests/test-ods-test-http-code.sh
+	@echo "=== ods-test.sh completes and reports when checks fail ==="
+	@bash tests/test-ods-test-complete-run.sh
+	@echo "=== phase 10 skips templated system units in the user scope ==="
+	@bash tests/test-phase10-skip-templated-user-units.sh
+	@echo "=== pre-download --tier is non-interactive ==="
+	@bash tests/test-pre-download-tier-noninteractive.sh
+	@echo "=== ods-doctor reads .env through lib/safe-env.sh ==="
+	@bash tests/test-ods-doctor-env-reader.sh
 	@echo "=== Docker rootless bind-mount ownership ==="
 	@bash tests/test-rootless-docker-ownership.sh
+	@echo "=== APE private state bind ownership ==="
+	@bash tests/test-ape-data-ownership.sh
+	@bash tests/test-dashboard-data-permissions.sh
+	@python3 tests/test_dashboard_data_permissions.py
+	@bash tests/test-token-spy-install-owner.sh
+	@bash tests/test-cli-status-docker-error.sh
+	@python3 tests/test-cli-stt-env.py
 	@echo ""
 	@echo "=== AMD/Lemonade contracts ==="
 	@bash tests/contracts/test-amd-lemonade-contracts.sh
+	@bash tests/test-lemonade-host-transport.sh
+	@bash tests/test-wsl-agent-start.sh
+	@python3 tests/test-lemonade-container-transport.py
+	@python3 tests/test-wsl-lemonade-proof.py
+	@python3 tests/test-wsl-lemonade-control.py
+	@python3 tests/test-configure-wsl-model-store.py
+	@python3 tests/test-retire-wsl-runtime.py
 	@bash tests/test-litellm-amd-auth-enforced.sh
 	@bash tests/contracts/test-windows-strix-tier-map.sh
 	@bash tests/contracts/test-windows-llm-model-readiness.sh
@@ -62,11 +103,20 @@ test: ## Run unit and contract tests
 	@echo "=== Overlay/plist contracts ==="
 	@bash tests/contracts/test-overlay-map-coherence.sh
 	@bash tests/contracts/test-plist-log-paths.sh
+	@python3 tests/contracts/test-llama-cpp-compat.py
 	@python3 tests/contracts/test-llama-runtime-tunables.py
+	@python3 tests/contracts/test-llama-spec-default.py
+	@bash tests/test-llama-mtp-args.sh
+	@python3 -m unittest tests/test_macos_runtime_llama_args.py tests/test_macos_checkpoint_args.py
 	@echo ""
 	@echo "=== safe .env loading (quote/CRLF handling) ==="
 	@bash tests/test-safe-env.sh
+	@bash tests/test-env-example-inline-comments.sh
 	@bash tests/test-phase06-secret-generation.sh
+	@bash tests/test-phase06-env-rerun-quoting.sh
+	@echo ""
+	@echo "=== health-check.sh --json output contract ==="
+	@bash tests/test-health-check-json-output.sh
 	@echo ""
 	@echo "=== shared Python interpreter resolver ==="
 	@bash tests/test-python-cmd-resolver.sh
@@ -76,6 +126,7 @@ test: ## Run unit and contract tests
 	@echo ""
 	@echo "=== mode switch status and switching ==="
 	@bash tests/test-mode-switch-status.sh
+	@bash tests/test-env-append-final-newline.sh
 	@echo ""
 	@echo "=== Bind address sweep ==="
 	@bash tests/test-bind-address-sweep.sh
@@ -83,19 +134,31 @@ test: ## Run unit and contract tests
 	@echo ""
 	@echo "=== config migration (version check under set -e) ==="
 	@bash tests/test-migrate-config.sh
+	@echo "=== installer simulation harness records real exit codes ==="
+	@bash tests/test-simulate-installers-exit-codes.sh
 	@echo ""
 	@echo "=== restore refuses empty backup config ==="
 	@bash tests/test-restore-empty-config.sh
+	@bash tests/test-lifecycle-prompts-noninteractive.sh
 	@echo ""
 	@echo "=== atomic .env writes ==="
 	@bash tests/test-atomic-env-writes.sh
 	@echo ""
+	@echo "=== upgrade-model compose stack ==="
+	@bash tests/test-upgrade-model-compose-stack.sh
+	@echo ""
 	@echo "=== brave-search searxng compat contract ==="
 	@bash tests/test-brave-search-searxng-compat.sh
 	@echo ""
+	@echo "=== SearXNG factory config contract ==="
+	@bash tests/test-searxng-config-contract.sh
+	@echo ""
 	@echo "=== ods-cli pipefail tolerance ==="
 	@bash tests/test-ods-cli-pipefail-tolerance.sh
+	@bash tests/test-cli-prompts-noninteractive.sh
+	@bash tests/test-agent-restart-nonfatal.sh
 	@bash tests/test-unix-restart-recreate-env.sh
+	@bash tests/test-ods-cli-host-cpu-fallback.sh
 	@echo ""
 	@echo "=== ods-cli install directory resolution ==="
 	@bash tests/test-cli-install-dir-resolution.sh
@@ -105,6 +168,7 @@ test: ## Run unit and contract tests
 	@echo ""
 	@echo "=== Bash 3.2 guard contracts ==="
 	@bash tests/test-bash32-guards.sh
+	@bash tests/test-ods-doctor-bash32-guard.sh
 	@echo ""
 	@echo "=== CLI update post-verification ==="
 	@bash tests/test-cli-update-verification.sh
@@ -114,23 +178,36 @@ test: ## Run unit and contract tests
 	@echo ""
 	@echo "=== Manifest schema source of truth ==="
 	@bash tests/test-validate-manifest-schema.sh
+	@echo "=== ComfyUI user directory is persisted ==="
+	@bash tests/test-comfyui-user-dir-persisted.sh
 	@echo ""
 	@echo "=== macOS ods config show secret-mask ==="
 	@bash tests/test-macos-config-show-secret-mask.sh
+	@bash tests/test-macos-config-without-docker.sh
 	@echo ""
 	@echo "=== CLI preset restore user extensions ==="
 	@bash tests/test-cli-preset-restore-user-extensions.sh
+	@bash tests/test-preset-export-permissions.sh
 	@echo ""
 	@echo "=== bootstrap OpenClaw compose-guard regression ==="
 	@bash tests/test-bootstrap-openclaw-compose-guard.sh
 	@echo ""
 	@echo "=== ods-update.sh backup command ==="
+	@bash tests/test-update-backup-retention-labels.sh
 	@bash tests/test-update-script-backup.sh
+	@bash tests/test-update-backup-retention-spaces.sh
+	@bash tests/test-update-current-version.sh
+	@bash tests/test-update-rollback-restore-failure.sh
 	@bash tests/test-backup-data-coverage.sh
 	@echo ""
 	@echo "=== backup integrity and restore round-trip ==="
 	@bash tests/test-backup-integrity.sh
 	@bash tests/test-backup-restore-roundtrip.sh
+	@bash tests/test-backup-macos-appledouble.sh
+	@python3 tests/test-rsync-transfer-failures.py
+	@echo ""
+	@echo "=== ods-update.sh rollback picks the newest backup ==="
+	@bash tests/test-update-rollback-latest-backup.sh
 	@echo ""
 	@echo "=== bootstrap-upgrade spawn closes inherited FDs ==="
 	@bash tests/test-bootstrap-upgrade-close-inherited-fds.sh
@@ -138,8 +215,12 @@ test: ## Run unit and contract tests
 	@echo "=== bootstrap-upgrade compose-flags recovery ==="
 	@bash tests/test-bootstrap-upgrade-compose-flags-recovery.sh
 	@echo ""
+	@echo "=== macOS doctor reports honest failure ==="
+	@bash tests/test-macos-doctor-honest-failure.sh
+	@echo ""
 	@echo "=== macOS ods-host-agent bootstrap verification ==="
 	@bash tests/test-macos-host-agent-verification.sh
+	@bash tests/test-macos-intel-preflight-blocker.sh
 	@echo ""
 	@echo "=== desktop host-agent environment contract ==="
 	@bash tests/test-desktop-agent-host-env.sh
@@ -149,9 +230,15 @@ test: ## Run unit and contract tests
 	@echo ""
 	@echo "=== macOS CLI .env quote handling ==="
 	@bash tests/test-macos-env-quote-strip.sh
+	@echo "=== macOS generated .env validates against the schema ==="
+	@bash tests/test-macos-env-schema.sh
+	@echo "=== macOS native llama port is relocatable ==="
+	@bash tests/test-macos-native-llama-port.sh
 	@echo ""
 	@echo "=== macOS uninstall LaunchAgent cleanup ==="
 	@bash tests/test-macos-uninstall-launchagents.sh
+	@echo "=== uninstall removes the ods-mdns systemd unit ==="
+	@bash tests/test-uninstall-mdns-unit.sh
 	@echo ""
 	@echo "=== token-spy session manager active-id extraction ==="
 	@bash tests/test-token-spy-session-manager.sh
@@ -164,6 +251,11 @@ test: ## Run unit and contract tests
 	@echo ""
 	@echo "=== issue-to-pr security check ==="
 	@bash tests/test-issue-to-pr-security.sh
+	@echo ""
+	@echo "=== documented security suites (SECURITY_AUDIT.md) ==="
+	@bash tests/test-secret-security.sh
+	@bash tests/test-openclaw-device-auth-default.sh
+	@bash tests/contracts/test-security-suites-wired.sh
 	@echo ""
 	@echo "=== NVIDIA multi-GPU visibility contract ==="
 	@bash tests/test-multigpu-nvidia-visibility.sh

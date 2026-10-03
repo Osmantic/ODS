@@ -1,0 +1,10 @@
+{
+  "repository": "https://github.com/apache/answer",
+  "license": "Apache-2.0",
+  "release": "v2.0.2",
+  "image": "apache/answer:2.0.2@sha256:a0d71b0e30a5c8d3eda31184abc64dbebccb6dd3e229aab1f7e332b41ade54f7",
+  "registry_checked_at": "2026-09-21",
+  "platforms": ["linux/amd64", "linux/arm64"],
+  "runtime_validation": "pending",
+  "notes": "Official multi-architecture image. Local SQLite storage and browser onboarding use the upstream entrypoint; no administrator password is preset. HTTP health indicates browser availability, not completed onboarding."
+}

@@ -1,0 +1,48 @@
+{
+  "schemaVersion": 1,
+  "repository": "Osmantic/Pixel",
+  "lineageRootCommit": "6a7e42a858cd7607069641981f775e9c3b233ce3",
+  "reviewedBlobsSha256": "61d7a1ff179ceaf1bc972e9509c9d0b18e2807b8bd7a9f4e6e3eb35c3d73e269",
+  "legacyRefs": [
+    {
+      "ref": "refs/pull/1/head",
+      "object": "3078833a61494be5a88ae5b07ff1203b318e7235",
+      "reason": "Pre-Pixel Android agent pull-request history retained by GitHub"
+    },
+    {
+      "ref": "refs/pull/2/head",
+      "object": "6e9a42e72a6a7c2e630d1ac80ed873786c689bb1",
+      "reason": "Immutable source head of the reviewed Pixel repository migration"
+    },
+    {
+      "ref": "refs/pull/3/head",
+      "object": "5eca2581fbfbe7c433ae1c603d685a074beb2977",
+      "reason": "Immutable pre-lineage Pixel deployment pull-request head"
+    },
+    {
+      "ref": "refs/pull/4/head",
+      "object": "f10379167eb2fb39ff20bf60330cc8e0414f2800",
+      "reason": "Immutable pre-lineage Pixel web-navigation pull-request head"
+    },
+    {
+      "ref": "refs/pull/5/head",
+      "object": "5e4c6efb80e7dd892d2c25041ca195770cfa9178",
+      "reason": "Immutable pre-lineage Pixel operations pull-request head"
+    },
+    {
+      "ref": "refs/pull/6/head",
+      "object": "a6d63d385177511adcb4163f100d8d07c7a344b4",
+      "reason": "Immutable pre-lineage Pixel operations-v2 pull-request head"
+    },
+    {
+      "ref": "refs/tags/v1.0.0",
+      "object": "2c6159b2a0c1e5f860d32c7760b29e019783af28",
+      "reason": "Pre-Pixel Android agent release tag"
+    },
+    {
+      "ref": "refs/tags/v1.1.0",
+      "object": "5c316adacbfdea6e53a141277c3a363e81996728",
+      "reason": "Pre-Pixel Android agent release tag"
+    }
+  ]
+}

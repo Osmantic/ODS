@@ -12,11 +12,27 @@ Set via env vars in `docker-compose.base.yml`. These flow into Open WebUI's runt
 | `WEBUI_URL` | empty | Optional public URL Open WebUI uses for share links, OAuth callbacks, and PWA install metadata. Leave empty for traditional localhost usage. Headless/proxy installs should set it to `http://chat.${ODS_DEVICE_NAME}.local` after ods-proxy + mDNS are enabled; tunnels should use their public URL. |
 | `ODS_DEVICE_NAME` | `ods` | The mDNS hostname segment. Drives `${...}.local` and is reused by future remote-access integrations. |
 
-After opening a reachable chat URL, users see "ODS" everywhere instead of "Open WebUI", and adding the PWA to a phone's home screen produces a tile labeled "ODS".
+ODS passes `WEBUI_NAME=ODS` to the pinned Open WebUI v0.7.2 image. That
+version's [name handling](https://github.com/open-webui/open-webui/blob/v0.7.2/backend/open_webui/env.py#L82-L84)
+appends ` (Open WebUI)` to a custom name, so the expected default is
+`ODS (Open WebUI)`. Verify the actual page and PWA on the installed version;
+this setting does not promise that all upstream branding disappears.
+
+## License boundary
+
+The pinned [Open WebUI license](https://github.com/open-webui/open-webui/blob/v0.7.2/LICENSE)
+contains a branding restriction and specific exceptions, including deployments
+or distributions with no more than 50 end users within a rolling 30-day period,
+and certain written-permission or enterprise-license cases. ODS does not grant
+an exception. Retain upstream branding unless the applicable exception or
+written permission has been established. This is especially relevant when
+redistributing an appliance or making a service available to others.
 
 ## What's not branded yet (follow-up work)
 
-Open WebUI's PWA manifest pulls its name from `WEBUI_NAME` (✓) but its icons and theme color from static assets bundled inside the container image. To fully match the ODS brand, a follow-up PR needs to:
+Open WebUI's PWA manifest pulls its name from `WEBUI_NAME` (✓) but its icons and theme color from static assets bundled inside the container image. A future branding change must first establish permission under the pinned
+upstream license and record that evidence in its PR. Only if permitted, the
+technical work could include:
 
 1. **Override `/static/favicon.png`, `/static/splash.png`, `/static/logo.png`** — Open WebUI serves these from `/app/backend/static/`. Mounting a ODS-branded set via a volume mount in the compose service is the cleanest path:
    ```yaml
@@ -57,8 +73,8 @@ Asset production needs design input (ODS logo, brand palette) before this direct
 After this PR merges, on a running ODS:
 
 1. Browse to the reachable chat URL: `http://localhost:3000` for traditional local usage, or `http://chat.ods.local` after enabling ods-proxy + mDNS.
-2. The browser tab should read "ODS" — not "Open WebUI".
-3. On a phone, after adding the page to the home screen, the icon label should read "ODS".
-4. Inside the chat UI, the top-left header should read "ODS".
+2. The default custom browser-tab name should retain the upstream suffix: `ODS (Open WebUI)`.
+3. On a phone, after adding the page to the home screen, verify the installed PWA label and retained upstream attribution.
+4. Inside the chat UI, verify the displayed name and retained upstream attribution.
 
-The icon next to the label still shows Open WebUI's default until the follow-up PR ships the asset overrides.
+Keep the upstream icons unless a reviewed, permitted branding change replaces them.

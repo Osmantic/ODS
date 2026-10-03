@@ -5,7 +5,7 @@ services:
     # unset. The arm64 manifest of speaches ships newer code with built-in
     # vad_filter=, which is handled by the patcher fix in
     # extensions/services/whisper/docker-entrypoint.sh.
-    image: ${WHISPER_IMAGE:-ghcr.io/speaches-ai/speaches:0.9.0-rc.3-cuda}
+    image: ${WHISPER_IMAGE:-ghcr.io/speaches-ai/speaches:0.9.0-rc.3-cuda@sha256:f4eb14d1c53b19c5bd1f76d10ea9fc10288ceaf82dca09506d3f0ef92ee943de}
     deploy:
       resources:
         reservations:

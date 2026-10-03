@@ -1,0 +1,13 @@
+{
+  "repository": "https://github.com/louislam/uptime-kuma",
+  "license": "MIT",
+  "image": "louislam/uptime-kuma:2.5.5-rootless@sha256:c4e17ce033deb811aff8a61a5f8f736f35b1bd937458ddeec46c59ca190f0e03",
+  "registry_checked_at": "2026-09-20",
+  "platforms": [
+    "linux/amd64",
+    "linux/arm64",
+    "linux/arm"
+  ],
+  "runtime_validation": "pending",
+  "notes": "Official rootless 2.5.5 with explicitly selected SQLite in a local named volume. No Docker socket or host mounts. Custom bounded HTTP health check rejects error statuses; monitored targets/notifications are owner-configured."
+}

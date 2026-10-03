@@ -1,0 +1,284 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/control-status-v1.schema.json",
+  "title": "Pixel content-free local control status v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "generatedAt", "product", "attestation", "profiles", "limbs", "reviewPlan", "pending", "frontier", "operatorActions", "reviewViews", "diagnostics", "recentActions", "privacy"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "generatedAt": {"type": "string", "format": "date-time"},
+    "product": {
+      "type": "object", "additionalProperties": false,
+      "required": ["name", "version", "configured", "planned", "installed"],
+      "properties": {
+        "name": {"const": "Pixel"},
+        "version": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?$"},
+        "configured": {"type": "boolean"}, "planned": {"type": "boolean"}, "installed": {"type": "boolean"}
+      }
+    },
+    "attestation": {
+      "type": "object", "additionalProperties": false,
+      "required": ["state", "reasonCode", "verifiedAt", "ageSeconds", "staleAfterSeconds", "source", "qualification", "release", "configuration", "runtime", "profiles", "connectors", "boundary"],
+      "properties": {
+        "state": {"enum": ["verified", "limited", "stale", "mismatch", "unavailable", "not-installed"]},
+        "reasonCode": {"enum": ["verified", "endpoint-checks-skipped", "stale", "identity-mismatch", "installed-drift", "source-drift", "configuration-drift", "source-identity-unavailable", "receipt-unavailable", "receipt-invalid", "not-installed"]},
+        "verifiedAt": {"oneOf": [{"type": "string", "format": "date-time"}, {"type": "null"}]},
+        "ageSeconds": {"oneOf": [{"type": "integer", "minimum": 0, "maximum": 9007199254740991}, {"type": "null"}]},
+        "staleAfterSeconds": {"const": 300},
+        "source": {
+          "type": "object", "additionalProperties": false, "required": ["state", "commit", "tree"],
+          "properties": {
+            "state": {"enum": ["git-clean", "unavailable"]},
+            "commit": {"oneOf": [{"type": "string", "pattern": "^[a-f0-9]{40}$"}, {"type": "null"}]},
+            "tree": {"oneOf": [{"type": "string", "pattern": "^[a-f0-9]{40}$"}, {"type": "null"}]}
+          }
+        },
+        "qualification": {
+          "type": "object", "additionalProperties": false, "required": ["recordStatus", "sourceCommit", "qualifiedAt", "relationship"],
+          "properties": {
+            "recordStatus": {"oneOf": [{"enum": ["supported", "candidate", "blocked", "retired"]}, {"type": "null"}]},
+            "sourceCommit": {"oneOf": [{"type": "string", "pattern": "^[a-f0-9]{40}$"}, {"type": "null"}]},
+            "qualifiedAt": {"oneOf": [{"type": "string", "format": "date"}, {"type": "null"}]},
+            "relationship": {"enum": ["same-source", "qualified-ancestor", "unverified", "unavailable"]}
+          }
+        },
+        "release": {
+          "type": "object", "additionalProperties": false,
+          "required": ["sourceIdentitySha256", "deploymentInputsSha256", "sourceRuntimeSha256", "installManifestSha256", "releaseManifestSha256", "compatibilityManifestSha256", "qualificationMatrixSha256"],
+          "properties": {
+            "sourceIdentitySha256": {"$ref": "#/$defs/hashOrNull"}, "deploymentInputsSha256": {"$ref": "#/$defs/hashOrNull"},
+            "sourceRuntimeSha256": {"$ref": "#/$defs/hashOrNull"}, "installManifestSha256": {"$ref": "#/$defs/hashOrNull"},
+            "releaseManifestSha256": {"$ref": "#/$defs/hashOrNull"}, "compatibilityManifestSha256": {"$ref": "#/$defs/hashOrNull"},
+            "qualificationMatrixSha256": {"$ref": "#/$defs/hashOrNull"}
+          }
+        },
+        "configuration": {
+          "type": "object", "additionalProperties": false, "required": ["generatedDeploymentSha256", "activeOpenClawSha256"],
+          "properties": {"generatedDeploymentSha256": {"$ref": "#/$defs/hashOrNull"}, "activeOpenClawSha256": {"$ref": "#/$defs/hashOrNull"}}
+        },
+        "runtime": {
+          "type": "object", "additionalProperties": false,
+          "required": ["state", "openclaw", "routeClass", "providerIdSha256", "modelIdSha256", "contextWindow", "maxOutputTokens", "reasoning", "endpointChecks"],
+          "properties": {
+            "state": {"enum": ["gateway-verified-model-unproven", "unavailable"]},
+            "openclaw": {"oneOf": [{"type": "string", "pattern": "^[0-9]{4}\\.[0-9]+\\.[0-9]+(?:-[0-9]+)?$"}, {"type": "null"}]},
+            "routeClass": {"oneOf": [{"enum": ["local", "configured"]}, {"type": "null"}]},
+            "providerIdSha256": {"$ref": "#/$defs/hashOrNull"}, "modelIdSha256": {"$ref": "#/$defs/hashOrNull"},
+            "contextWindow": {"oneOf": [{"type": "integer", "minimum": 4096, "maximum": 10000000}, {"type": "null"}]},
+            "maxOutputTokens": {"oneOf": [{"type": "integer", "minimum": 256, "maximum": 1000000}, {"type": "null"}]},
+            "reasoning": {"oneOf": [{"type": "boolean"}, {"type": "null"}]},
+            "endpointChecks": {"oneOf": [{"enum": ["verified", "skipped"]}, {"type": "null"}]}
+          }
+        },
+        "profiles": {
+          "type": "object", "additionalProperties": false, "required": ["deployment", "capability"],
+          "properties": {
+            "deployment": {"oneOf": [{"enum": ["prepared", "reference"]}, {"type": "null"}]},
+            "capability": {"oneOf": [{"enum": ["minimal", "chief-of-staff", "research", "engineering-operator"]}, {"type": "null"}]}
+          }
+        },
+        "connectors": {
+          "type": "array", "minItems": 6, "maxItems": 6,
+          "items": {
+            "type": "object", "additionalProperties": false, "required": ["id", "state"],
+            "properties": {"id": {"enum": ["email", "calendar", "social", "web", "operations", "frontier"]}, "state": {"enum": ["enabled-verified", "disabled-verified", "unavailable"]}}
+          }
+        },
+        "boundary": {"const": "Content-free verification receipt for one observed local deployment. It binds source, installed manifests, configuration, profiles, and connector checks. Model capability remains unproven until a separate exact real-backend qualification receipt exists."}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"state": {"const": "verified"}}, "required": ["state"]},
+          "then": {
+            "properties": {
+              "reasonCode": {"const": "verified"}, "verifiedAt": {"type": "string", "format": "date-time"},
+              "source": {"properties": {"state": {"const": "git-clean"}}},
+              "runtime": {"properties": {"state": {"const": "gateway-verified-model-unproven"}, "endpointChecks": {"const": "verified"}}}
+            }
+          }
+        },
+        {
+          "if": {"properties": {"state": {"const": "limited"}}, "required": ["state"]},
+          "then": {
+            "properties": {
+              "reasonCode": {"const": "endpoint-checks-skipped"}, "verifiedAt": {"type": "string", "format": "date-time"},
+              "source": {"properties": {"state": {"const": "git-clean"}}},
+              "runtime": {"properties": {"state": {"const": "gateway-verified-model-unproven"}, "endpointChecks": {"const": "skipped"}}}
+            }
+          }
+        },
+        {
+          "if": {"properties": {"state": {"const": "stale"}}, "required": ["state"]},
+          "then": {"properties": {"reasonCode": {"const": "stale"}, "verifiedAt": {"type": "string", "format": "date-time"}, "source": {"properties": {"state": {"const": "git-clean"}}}}}
+        },
+        {
+          "if": {"properties": {"state": {"const": "mismatch"}}, "required": ["state"]},
+          "then": {"properties": {"reasonCode": {"enum": ["identity-mismatch", "installed-drift", "source-drift", "configuration-drift"]}}}
+        },
+        {
+          "if": {"properties": {"state": {"const": "unavailable"}}, "required": ["state"]},
+          "then": {"properties": {"reasonCode": {"enum": ["source-identity-unavailable", "receipt-unavailable", "receipt-invalid"]}}}
+        },
+        {
+          "if": {"properties": {"state": {"const": "not-installed"}}, "required": ["state"]},
+          "then": {"properties": {"reasonCode": {"const": "not-installed"}, "verifiedAt": {"type": "null"}, "ageSeconds": {"type": "null"}}}
+        }
+      ]
+    },
+    "profiles": {
+      "type": "object", "additionalProperties": false, "required": ["deployment", "capability"],
+      "properties": {
+        "deployment": {"oneOf": [{"enum": ["prepared", "reference"]}, {"type": "null"}]},
+        "capability": {"oneOf": [{"enum": ["minimal", "chief-of-staff", "research", "engineering-operator"]}, {"type": "null"}]}
+      }
+    },
+    "limbs": {
+      "type": "array", "minItems": 6, "maxItems": 6,
+      "items": {
+        "type": "object", "additionalProperties": false, "required": ["id", "label", "enabled", "boundary"],
+        "properties": {
+          "id": {"enum": ["email", "calendar", "social", "web", "operations", "frontier"]},
+          "label": {"type": "string", "minLength": 1, "maxLength": 32},
+          "enabled": {"type": "boolean"},
+          "boundary": {"type": "string", "minLength": 1, "maxLength": 120}
+        }
+      }
+    },
+    "reviewPlan": {
+      "type": "object", "additionalProperties": false, "required": ["ready", "sha256"],
+      "properties": {
+        "ready": {"type": "boolean"},
+        "sha256": {"oneOf": [{"type": "string", "pattern": "^[a-f0-9]{64}$"}, {"type": "null"}]}
+      }
+    },
+    "pending": {
+      "type": "object", "additionalProperties": false,
+      "required": ["sourceChanges", "operationsApprovals", "frontierApprovals"],
+      "properties": {
+        "sourceChanges": {"type": "integer", "minimum": 0, "maximum": 1000},
+        "operationsApprovals": {"type": "integer", "minimum": 0, "maximum": 1000},
+        "frontierApprovals": {"type": "integer", "minimum": 0, "maximum": 1000}
+      }
+    },
+    "frontier": {
+      "type": "object", "additionalProperties": false,
+      "required": ["available", "state", "providerKind", "authMode", "billingBoundary", "providerSetup", "budgetSource", "costMode", "windowSeconds", "providerCalls", "cacheHits", "avoidedProviderCalls", "finalizedJobs", "qualityCircuitOpen", "used", "limits", "remaining", "browserCanAcceptSecrets"],
+      "properties": {
+        "available": {"type": "boolean"},
+        "state": {"enum": ["disabled", "configured", "active", "unavailable"]},
+        "providerKind": {"oneOf": [{"enum": ["codex", "mock"]}, {"type": "null"}]},
+        "authMode": {"oneOf": [{"enum": ["api-key", "chatgpt", "mock"]}, {"type": "null"}]},
+        "billingBoundary": {"enum": ["none", "chatgpt-plan", "platform-api", "synthetic", "unavailable"]},
+        "providerSetup": {"enum": ["disabled", "external-required", "broker-prepared", "unavailable"]},
+        "budgetSource": {"enum": ["none", "generated-policy", "active-broker", "unavailable"]},
+        "costMode": {"oneOf": [{"enum": ["unavailable", "subscription", "metered"]}, {"type": "null"}]},
+        "windowSeconds": {"oneOf": [{"type": "integer", "minimum": 0, "maximum": 9007199254740991}, {"type": "null"}]},
+        "providerCalls": {"oneOf": [{"type": "integer", "minimum": 0, "maximum": 9007199254740991}, {"type": "null"}]},
+        "cacheHits": {"oneOf": [{"type": "integer", "minimum": 0, "maximum": 9007199254740991}, {"type": "null"}]},
+        "avoidedProviderCalls": {"oneOf": [{"type": "integer", "minimum": 0, "maximum": 9007199254740991}, {"type": "null"}]},
+        "finalizedJobs": {"oneOf": [{"type": "integer", "minimum": 0, "maximum": 9007199254740991}, {"type": "null"}]},
+        "qualityCircuitOpen": {"oneOf": [{"type": "boolean"}, {"type": "null"}]},
+        "used": {"$ref": "#/$defs/frontierBudgetCounters"},
+        "limits": {"$ref": "#/$defs/frontierBudgetCounters"},
+        "remaining": {"$ref": "#/$defs/frontierBudgetCounters"},
+        "browserCanAcceptSecrets": {"const": false}
+      },
+      "allOf": [
+        {"if": {"properties": {"state": {"const": "disabled"}}, "required": ["state"]}, "then": {"properties": {"available": {"const": false}, "providerKind": {"const": null}, "authMode": {"const": null}, "billingBoundary": {"const": "none"}, "providerSetup": {"const": "disabled"}, "budgetSource": {"const": "none"}, "costMode": {"const": null}}}},
+        {"if": {"properties": {"state": {"const": "configured"}}, "required": ["state"]}, "then": {"properties": {"available": {"const": true}, "providerSetup": {"const": "external-required"}, "budgetSource": {"const": "generated-policy"}}}},
+        {"if": {"properties": {"state": {"const": "active"}}, "required": ["state"]}, "then": {"properties": {"available": {"const": true}, "providerSetup": {"const": "broker-prepared"}, "budgetSource": {"const": "active-broker"}}}},
+        {"if": {"properties": {"state": {"const": "unavailable"}}, "required": ["state"]}, "then": {"properties": {"available": {"const": false}, "providerSetup": {"const": "unavailable"}, "budgetSource": {"const": "unavailable"}}}},
+        {"if": {"properties": {"authMode": {"const": "chatgpt"}}, "required": ["authMode"]}, "then": {"properties": {"providerKind": {"const": "codex"}, "billingBoundary": {"const": "chatgpt-plan"}, "costMode": {"const": "subscription"}}}},
+        {"if": {"properties": {"authMode": {"const": "api-key"}}, "required": ["authMode"]}, "then": {"properties": {"providerKind": {"const": "codex"}, "billingBoundary": {"const": "platform-api"}, "costMode": {"enum": ["unavailable", "metered"]}}}},
+        {"if": {"properties": {"authMode": {"const": "mock"}}, "required": ["authMode"]}, "then": {"properties": {"providerKind": {"const": "mock"}, "billingBoundary": {"const": "synthetic"}}}}
+      ]
+    },
+    "operatorActions": {
+      "type": "object", "additionalProperties": false,
+      "required": ["updateCheck", "backupCreate", "operationsPause", "frontierPause", "deepWorkPause", "deepWorkResume", "deepWorkCancel", "deepWorkDraft", "deepWorkPrepare", "deepWorkStage", "deepWorkServiceRender", "resumeInBrowser", "restoreInBrowser"],
+      "properties": {
+        "updateCheck": {"type": "boolean"},
+        "backupCreate": {"type": "boolean"},
+        "operationsPause": {"type": "boolean"},
+        "frontierPause": {"type": "boolean"},
+        "deepWorkPause": {"type": "boolean"},
+        "deepWorkResume": {"type": "boolean"},
+        "deepWorkCancel": {"type": "boolean"},
+        "deepWorkDraft": {"type": "boolean"},
+        "deepWorkPrepare": {"type": "boolean"},
+        "deepWorkStage": {"type": "boolean"},
+        "deepWorkServiceRender": {"type": "boolean"},
+        "resumeInBrowser": {"const": false},
+        "restoreInBrowser": {"const": false}
+      }
+    },
+    "reviewViews": {
+      "type": "object", "additionalProperties": false,
+      "required": ["frontierReviews", "deepWorkSemanticReviews"],
+      "properties": {"frontierReviews": {"type": "boolean"}, "deepWorkSemanticReviews": {"type": "boolean"}}
+    },
+    "diagnostics": {"$ref": "#/$defs/diagnosticsSummary"},
+    "recentActions": {
+      "type": "array", "maxItems": 5,
+      "items": {
+        "type": "object", "additionalProperties": false, "required": ["kind", "status", "finishedAt"],
+        "properties": {
+          "kind": {"enum": ["configure", "plan", "verify", "update-check", "backup-create", "operations-pause", "frontier-pause", "deep-work-pause", "deep-work-resume", "deep-work-cancel", "deep-work-draft", "deep-work-prepare", "deep-work-stage", "deep-work-service-render"]},
+          "status": {"enum": ["succeeded", "failed"]},
+          "finishedAt": {"type": "string", "format": "date-time"}
+        }
+      }
+    },
+    "privacy": {
+      "type": "object", "additionalProperties": false,
+      "required": ["listener", "credentialsExposed", "genericCommandSurface", "browserCanActivateDeployment", "browserCanApprove"],
+      "properties": {
+        "listener": {"const": "loopback-only"},
+        "credentialsExposed": {"const": false},
+        "genericCommandSurface": {"const": false},
+        "browserCanActivateDeployment": {"const": false},
+        "browserCanApprove": {"const": false}
+      }
+    }
+  },
+  "$defs": {
+    "hashOrNull": {"oneOf": [{"type": "string", "pattern": "^[a-f0-9]{64}$"}, {"type": "null"}]},
+    "diagnosticsSummary": {
+      "type": "object", "additionalProperties": false,
+      "required": ["state", "openIncidents", "criticalIncidents", "retainedIncidents", "latestDetectedAt", "receiptCoverageComplete"],
+      "properties": {
+        "state": {"enum": ["clear", "attention", "containment", "unavailable"]},
+        "openIncidents": {"oneOf": [{"type": "integer", "minimum": 0, "maximum": 100}, {"type": "null"}]},
+        "criticalIncidents": {"oneOf": [{"type": "integer", "minimum": 0, "maximum": 100}, {"type": "null"}]},
+        "retainedIncidents": {"oneOf": [{"type": "integer", "minimum": 0, "maximum": 100}, {"type": "null"}]},
+        "latestDetectedAt": {"oneOf": [{"type": "string", "format": "date-time"}, {"type": "null"}]},
+        "receiptCoverageComplete": {"type": "boolean"}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"state": {"const": "unavailable"}}, "required": ["state"]},
+          "then": {"properties": {"openIncidents": {"const": null}, "criticalIncidents": {"const": null}, "retainedIncidents": {"const": null}, "latestDetectedAt": {"const": null}, "receiptCoverageComplete": {"const": false}}},
+          "else": {"properties": {"openIncidents": {"type": "integer"}, "criticalIncidents": {"type": "integer"}, "retainedIncidents": {"type": "integer"}, "receiptCoverageComplete": {"const": true}}}
+        },
+        {"if": {"properties": {"state": {"const": "clear"}}, "required": ["state"]}, "then": {"properties": {"openIncidents": {"const": 0}, "criticalIncidents": {"const": 0}}}},
+        {"if": {"properties": {"state": {"const": "attention"}}, "required": ["state"]}, "then": {"properties": {"openIncidents": {"type": "integer", "minimum": 1}, "criticalIncidents": {"const": 0}}}},
+        {"if": {"properties": {"state": {"const": "containment"}}, "required": ["state"]}, "then": {"properties": {"openIncidents": {"type": "integer", "minimum": 1}, "criticalIncidents": {"type": "integer", "minimum": 1}}}},
+        {"if": {"properties": {"retainedIncidents": {"const": 0}}, "required": ["retainedIncidents"]}, "then": {"properties": {"latestDetectedAt": {"const": null}}}},
+        {"if": {"properties": {"retainedIncidents": {"type": "integer", "minimum": 1}}, "required": ["retainedIncidents"]}, "then": {"properties": {"latestDetectedAt": {"type": "string", "format": "date-time"}}}}
+      ]
+    },
+    "frontierBudgetCounters": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["jobs", "inputTokens", "outputTokens", "failures", "estimatedCostMicros"],
+      "properties": {
+        "jobs": {"oneOf": [{"type": "integer", "minimum": 0, "maximum": 9007199254740991}, {"type": "null"}]},
+        "inputTokens": {"oneOf": [{"type": "integer", "minimum": 0, "maximum": 9007199254740991}, {"type": "null"}]},
+        "outputTokens": {"oneOf": [{"type": "integer", "minimum": 0, "maximum": 9007199254740991}, {"type": "null"}]},
+        "failures": {"oneOf": [{"type": "integer", "minimum": 0, "maximum": 9007199254740991}, {"type": "null"}]},
+        "estimatedCostMicros": {"oneOf": [{"type": "integer", "minimum": 0, "maximum": 9007199254740991}, {"type": "null"}]}
+      }
+    }
+  }
+}

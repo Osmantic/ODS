@@ -1,0 +1,30 @@
+storage: /verdaccio/storage/data
+web:
+  title: ODS Project Packages
+  gravatar: false
+auth:
+  htpasswd:
+    file: /tmp/ods-verdaccio/htpasswd
+    max_users: -1
+    algorithm: bcrypt
+    rounds: 12
+uplinks:
+  npmjs:
+    url: https://registry.npmjs.org/
+packages:
+  '@ods/*':
+    access: $authenticated
+    publish: ods
+    unpublish: ods
+  '**':
+    access: $authenticated
+    publish: []
+    unpublish: []
+    proxy: npmjs
+publish:
+  allow_offline: true
+middlewares:
+  audit:
+    enabled: false
+log: { type: stdout, format: pretty, level: warn }
+max_body_size: 50mb

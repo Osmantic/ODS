@@ -413,6 +413,97 @@ class TestHostAgentWiring:
         # rollback restored the pre-activation env exactly as before PR 2A
         assert env_path.read_text(encoding="utf-8") == before_env
 
+    def test_training_context_cap_reports_cause_and_failed_runtime_log(
+        self, tmp_path, monkeypatch
+    ):
+        import subprocess
+        import test_model_activate as tma
+
+        install_dir, env_path = tma._write_model_activation_fixture(tmp_path)[:2]
+        before_env = env_path.read_text(encoding="utf-8")
+        monkeypatch.setattr(tma._mod, "INSTALL_DIR", install_dir)
+        monkeypatch.delenv("ODS_HOST_INSTALL_DIR", raising=False)
+        monkeypatch.setattr(tma._mod.time, "sleep", lambda _s: None)
+        restarts: list[dict[str, str]] = []
+        monkeypatch.setattr(
+            tma._mod,
+            "_compose_restart_llama_server",
+            lambda env: restarts.append(dict(env)),
+        )
+        new_model_probes: list[str] = []
+        log_reads: list[list[str]] = []
+
+        def staged() -> list[str]:
+            return [env.get("GGUF_FILE", "") for env in restarts]
+
+        def capped_run(cmd, **_kwargs):
+            if list(cmd[:2]) == ["docker", "logs"]:
+                # The staged container is still alive when rollback begins.
+                log_reads.append(staged())
+                return subprocess.CompletedProcess(
+                    cmd,
+                    0,
+                    stdout=(
+                        "print_info: n_ctx_train = 1024\n"
+                        "srv    load_model: the slot context (4096) exceeds the "
+                        "training context of the model (1024) - capping\n"
+                        "main: server is listening on http://0.0.0.0:8080\n"
+                    ),
+                )
+            url = next((str(part) for part in cmd if str(part).startswith("http")), "")
+            serving_new = staged()[-1:] == ["new-model.gguf"]
+            if url.endswith("/v1/models"):
+                if serving_new:
+                    new_model_probes.append(url)
+                    stdout = json.dumps({
+                        "object": "list",
+                        "data": [{
+                            "id": "new-model.gguf",
+                            "object": "model",
+                            "meta": {"n_ctx_train": 1024},
+                        }],
+                    })
+                else:
+                    stdout = tma._llama_identity_response("old-model.gguf")
+            else:
+                stdout = ""
+            return subprocess.CompletedProcess(cmd, 0, stdout=stdout, stderr="")
+
+        monkeypatch.setattr(tma._mod.subprocess, "run", capped_run)
+        # The class isolation pins /props to 65536; this runtime is capped.
+        monkeypatch.setattr(
+            tma._mod,
+            "_llama_runtime_context_length",
+            lambda *_args: 1024 if staged()[-1:] == ["new-model.gguf"] else 2048,
+        )
+        handler = tma._ResponseHandler()
+        tma._mod.AgentHandler._do_model_activate(handler, "target-model")
+
+        assert handler.response_code == 500
+        payload = handler.parse_response()
+        requested = int(restarts[0]["CTX_SIZE"])
+        assert requested > 1024
+        cause = (
+            f"new-model.gguf is loaded but serves a 1024-token context; {requested} "
+            "was requested, above the model's 1024-token training context "
+            "(llama.cpp caps the slot there)"
+        )
+        assert payload["rolled_back"] is True
+        assert payload["error"] == (
+            f"Health check failed — rolled back to previous model. Cause: {cause}"
+        )
+        assert payload["runtime_diagnosis"] == cause
+        assert payload["failure_phase"] == "verify_identity"
+        assert "exceeds the training context of the model (1024) - capping" in (
+            payload["runtime_log_excerpt"]
+        )
+        # One probe proves the cap is final; no multi-minute readiness window.
+        assert len(new_model_probes) == 1
+        # The log was read from the staged runtime, before rollback restarted.
+        assert log_reads == [["new-model.gguf"]]
+        assert staged() == ["new-model.gguf", "old-model.gguf"]
+        assert env_path.read_text(encoding="utf-8") == before_env
+
     def test_completion_failure_detail_survives_successful_rollback(
         self, tmp_path, monkeypatch
     ):

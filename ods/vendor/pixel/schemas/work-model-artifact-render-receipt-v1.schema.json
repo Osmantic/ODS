@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/work-model-artifact-render-receipt-v1.schema.json",
+  "title": "Pixel content-free local-model artifact manifest render receipt v1",
+  "type": "object", "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "operation", "status", "outputName", "artifactMeasurementSha256", "measurement", "changes", "authority", "boundary"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/work-model-artifact-render-receipt-v1.schema.json"},
+    "schemaVersion": {"const": 1},
+    "operation": {"const": "pixel-work-model-artifact-render"},
+    "status": {"const": "private-inert-manifest-written"},
+    "outputName": {"type": "string", "pattern": "^[A-Za-z0-9._-]{1,128}$"},
+    "artifactMeasurementSha256": {"$ref": "#/$defs/sha256"},
+    "measurement": {"const": {"bytesMeasured": true, "stableTreeVerified": true}},
+    "changes": {"const": {"readModelBytes": true, "wrotePrivateArtifactManifest": true, "createdNetwork": false, "startedContainer": false, "pulledImage": false, "changedPolicy": false, "changedAuthority": false}},
+    "authority": {"const": {"grantsExecution": false, "createsNetwork": false, "startsContainer": false, "pullsImage": false, "grantsDevices": false, "grantsCredentials": false, "grantsExternalEffects": false, "grantsCompletion": false}},
+    "boundary": {"const": "Content-free receipt that one new owner-private inert exact-byte model artifact manifest was written after a stable measurement. It exposes no model, path, byte hash, credential, prompt, or response and grants no model trust, qualification, execution, container start, network, device, credential, external-effect, or completion authority."}
+  },
+  "$defs": {"sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}}
+}

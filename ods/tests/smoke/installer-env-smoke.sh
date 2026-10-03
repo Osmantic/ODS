@@ -112,6 +112,8 @@ spin_task() { :; }
 ENV_GENERATED=false
 if bash -c "
     export INSTALL_DIR='$INSTALL_DIR'
+    export HOME='$TMPDIR_SMOKE/home'
+    mkdir -p \"\$HOME\"
     # The tracked source inputs were copied above. Treat that copy as an
     # in-place install so this env-generation smoke does not recopy the whole
     # developer checkout when rsync is unavailable.
@@ -157,10 +159,20 @@ export ENABLE_OPENCLAW=true
     signal() { :; }
     show_phase() { :; }
     sudo() { return 0; }
+    ods_sudo() {
+        case \"\$1\" in
+            chmod) \"\$@\" ;;
+            chgrp) command sudo -n \"\$@\" ;;
+            *) return 0 ;;
+        esac
+    }
 
     docker() {
         if [[ \"\$1\" == \"info\" && \"\${2:-}\" == \"--format\" ]]; then
-            echo 4
+            case \"\${3:-}\" in
+                '{{.MemTotal}}') echo 9349595136 ;;
+                *) echo 4 ;;
+            esac
             return 0
         fi
         command docker \"\$@\"
@@ -168,6 +180,7 @@ export ENABLE_OPENCLAW=true
 
     # Run phase 06 (generates .env, configs)
     source installers/phases/06-directories.sh
+    grep -qx 'TTS_WORKERS=1' \"\$INSTALL_DIR/.env\" || exit 1
 
     # A second installer run must retain the values written by the first run,
     # even when the invoking process now carries different defaults.
@@ -178,6 +191,15 @@ export ENABLE_OPENCLAW=true
     export EMBEDDINGS_MEMORY_LIMIT=8GB
     export HERMES_DASHBOARD_SESSION_TOKEN=replacement-must-not-win
     source installers/phases/06-directories.sh
+    grep -qx 'TTS_WORKERS=1' \"\$INSTALL_DIR/.env\" || exit 1
+
+    # An owner override must survive subsequent installs.
+    sed -i 's/^TTS_WORKERS=.*/TTS_WORKERS=3/' \"\$INSTALL_DIR/.env\"
+    sed -i 's/^DASHBOARD_API_PORT=.*/DASHBOARD_API_PORT=13002/' \"\$INSTALL_DIR/.env\"
+    source installers/phases/06-directories.sh
+    grep -qx 'TTS_WORKERS=3' \"\$INSTALL_DIR/.env\" || exit 1
+    grep -qx 'DASHBOARD_API_PORT=13002' \"\$INSTALL_DIR/.env\" || exit 1
+    [[ \"\$DASHBOARD_API_PORT\" == 13002 ]] || exit 1
 " 2>/dev/null; then
     ENV_GENERATED=true
     pass ".env generation completed"
@@ -240,6 +262,12 @@ if [[ "$ENV_GENERATED" == true && -f "$INSTALL_DIR/.env" ]]; then
         pass "TTS_CPU_LIMIT auto-caps to Docker CPU count"
     else
         fail "TTS_CPU_LIMIT was not auto-capped as expected"
+    fi
+
+    if grep -q '^TTS_WORKERS=3$' "$INSTALL_DIR/.env"; then
+        pass "Small Docker guest defaults to one TTS worker and preserves an explicit override"
+    else
+        fail "TTS worker default or override was not preserved"
     fi
 
     if grep -q '^WHISPER_CPU_LIMIT=4.0$' "$INSTALL_DIR/.env" \

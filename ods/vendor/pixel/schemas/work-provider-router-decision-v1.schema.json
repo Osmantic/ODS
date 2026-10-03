@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/work-provider-router-decision-v1.schema.json",
+  "title": "Pixel content-free work-provider router decision v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "decisionId", "recordedAt", "mode", "selectionKind", "selectedProviderId", "selectedModel", "reasonCode", "counters", "requestSha256", "policySha256", "providerProfileSha256", "privatePolicySha256", "qualificationSha256", "authority", "boundary"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/work-provider-router-decision-v1.schema.json"},
+    "schemaVersion": {"const": 1},
+    "decisionId": {"type": "string", "pattern": "^workproviderdecision-[0-9]{13}-[a-f0-9]{12}$"},
+    "recordedAt": {"type": "string", "format": "date-time"},
+    "mode": {"enum": ["local-only", "explicit-provider", "policy-router"]},
+    "selectionKind": {"enum": ["local", "remote", "reject"]},
+    "selectedProviderId": {"anyOf": [{"enum": ["anthropic", "fireworks", "groq", "local", "moonshot-kimi", "openai", "openrouter", "together"]}, {"const": null}]},
+    "selectedModel": {"anyOf": [{"type": "string", "minLength": 1, "maxLength": 256}, {"const": null}]},
+    "reasonCode": {"enum": ["local-selected", "local-required", "remote-selected", "requested-provider-selected", "explicit-unavailable", "local-incapable", "remote-not-enabled", "remote-unqualified", "remote-expired", "task-class-not-attested", "cost-ceiling-exceeded", "envelope-incompatible", "classification-rejected", "sensitive-data-forced-local", "no-local-provider", "policy-rejected", "request-invalid"]},
+    "counters": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["evaluatedProviders", "localQualified", "remoteQualified", "rejected"],
+      "properties": {
+        "evaluatedProviders": {"type": "integer", "minimum": 0, "maximum": 8},
+        "localQualified": {"type": "integer", "minimum": 0, "maximum": 1},
+        "remoteQualified": {"type": "integer", "minimum": 0, "maximum": 8},
+        "rejected": {"type": "integer", "minimum": 0, "maximum": 8}
+      }
+    },
+    "requestSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "policySha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "providerProfileSha256": {"anyOf": [{"type": "string", "pattern": "^[a-f0-9]{64}$"}, {"const": null}]},
+    "privatePolicySha256": {"anyOf": [{"type": "string", "pattern": "^[a-f0-9]{64}$"}, {"const": null}]},
+    "qualificationSha256": {"anyOf": [{"type": "string", "pattern": "^[a-f0-9]{64}$"}, {"const": null}]},
+    "authority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["execution", "credential", "network", "merge", "deploy", "publish", "externalMessages", "securityTesting", "reroutingOnUncertain"],
+      "properties": {
+        "execution": {"const": false}, "credential": {"const": false}, "network": {"const": false}, "merge": {"const": false},
+        "deploy": {"const": false}, "publish": {"const": false}, "externalMessages": {"const": false},
+        "securityTesting": {"const": false}, "reroutingOnUncertain": {"const": false}
+      }
+    },
+    "boundary": {"const": "Content-free local-first work-provider router decision. It binds the canonical request, policy, provider profile, private policy, and qualification hashes and exposes only reason codes and counters. A decision grants no execution, credential, network, merge, deploy, publish, external-message, security-testing, or rerouting authority; execution must later bind this exact decision and the router itself performs no call."}
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "id": "69ad5d25-7e6e-4a8f-a951-43e49a6e9763",
+  "name": "ODS explicit API test fixture",
+  "request": {
+    "method": "GET",
+    "urlPath": "/ods-example/status"
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "Content-Type": "application/json"
+    },
+    "jsonBody": {
+      "fixture": true,
+      "status": "ready",
+      "description": "Synthetic API test data, not a live service status"
+    }
+  },
+  "persistent": true
+}

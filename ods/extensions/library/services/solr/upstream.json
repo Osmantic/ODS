@@ -1,0 +1,13 @@
+{
+  "repository": "https://github.com/apache/solr",
+  "license": "Apache-2.0",
+  "source_ref": "releases/solr/10.0.0",
+  "image": "solr:latest@sha256:2476a4aecd7629ac853df4139b5864797677f2fe123b92116e18b01b5bf73c08",
+  "registry_checked_at": "2026-09-20",
+  "platforms": [
+    "linux/amd64",
+    "linux/arm64"
+  ],
+  "runtime_validation": "pending",
+  "notes": "Official 10.0.0 user-managed single-node instance, native salted SHA256 BasicAuth and persistent security/index data. No collections, cores or project schemas fabricated."
+}

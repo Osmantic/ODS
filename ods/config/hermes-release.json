@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "version": "0.21.5",
+  "tag": "v2026.9.24",
+  "releaseUrl": "https://github.com/NousResearch/hermes-agent/releases/tag/v2026.9.24",
+  "publishedAt": "2026-09-24T10:09:38Z",
+  "sourceCommit": "f97608f178d1ffeca59860195ab7da295f7c8e5f",
+  "image": "nousresearch/hermes-agent:v2026.9.24@sha256:fca358f12efd65bfaaca05884166f15c0e2788375ca30d77061ac1ebc96452b7",
+  "platformManifests": {
+    "linux/amd64": "sha256:2fd023efbb8d3d2b0ce1a73d028b07370cff34f567cfe0e999553e8c327ea283",
+    "linux/arm64": "sha256:93b4e2877a2f48f4474b6dd2b99386ae32c4c552d32639df1a869b3f13c50b5a"
+  },
+  "verification": "Official GitHub release/tag and Docker registry index/config queried 2026-09-24; both platform OCI revision labels match sourceCommit. This identity receipt does not assert fleet qualification."
+}

@@ -47,6 +47,7 @@ $LibDir = Join-Path $ScriptDir "lib"
 . (Join-Path $LibDir "backend-contract.ps1")
 . (Join-Path $LibDir "detection.ps1")
 . (Join-Path $LibDir "llm-endpoint.ps1")
+. (Join-Path $LibDir "native-llama-args.ps1")
 . (Join-Path $LibDir "model-activation.ps1")
 . (Join-Path $LibDir "install-report.ps1")
 . (Join-Path $LibDir "tier-map.ps1")
@@ -55,6 +56,8 @@ $_resolvedLemonadeExe = Resolve-ODSLemonadeExe
 if ($_resolvedLemonadeExe) { $script:LEMONADE_EXE = $_resolvedLemonadeExe }
 $script:LEMONADE_TASK_NAME = "ODSLemonadeRuntime"
 $script:ODS_MODEL_UPGRADE_TASK_NAME = "ODSModelUpgrade"
+# Registered by install-windows.ps1 for the native llama-server runtime.
+$script:NATIVE_LLAMA_TASK_NAME = "ODSNativeLlamaRuntime"
 
 # ── Resolve install directory ──
 $InstallDir = $script:ODS_INSTALL_DIR
@@ -108,6 +111,26 @@ function Write-ODSUtf8NoBomFile {
     [System.IO.File]::WriteAllText($Path, $Content, $utf8NoBom)
 }
 
+function Resolve-ODSModelStoreComposeFlags {
+    param([string[]]$Flags)
+    $helper = Join-Path $InstallDir 'scripts/model-store-compose-flags.py'
+    if (-not (Test-Path -LiteralPath $helper -PathType Leaf)) {
+        throw 'Registered model-store Compose resolver is missing; repair the ODS installation'
+    }
+    $python = Resolve-ODSHostAgentPython
+    if (-not $python) { throw 'Python 3 is required for registered model-store Compose mounts' }
+    # Windows PowerShell's pipeline encoding can be ASCII, UTF-16 or UTF-8
+    # with a BOM depending on the host/profile. This is a UTF-8 JSON protocol.
+    $OutputEncoding = New-Object System.Text.UTF8Encoding($false)
+    $arguments = @($python.PrefixArgs) + @('-X', 'utf8', $helper, '--install-dir', $InstallDir, '--json-stdin')
+    $inputJson = ConvertTo-Json -InputObject @($Flags) -Compress
+    $output = $inputJson | & $python.FilePath @arguments 2>&1
+    if ($LASTEXITCODE -ne 0) { throw "Registered model-store Compose configuration is unavailable: $(($output | Out-String).Trim())" }
+    try { $resolved = ($output | Out-String) | ConvertFrom-Json -ErrorAction Stop }
+    catch { throw 'Registered model-store Compose resolver returned invalid arguments' }
+    return @($resolved)
+}
+
 function Get-ComposeFlags {
     <#
     .SYNOPSIS
@@ -118,6 +141,10 @@ function Get-ComposeFlags {
     $flagsFile = Join-Path $InstallDir ".compose-flags"
     if (Test-Path $flagsFile) {
         $raw = (Get-Content $flagsFile -Raw).Trim()
+        if (($raw -match 'user-extensions') -or (Test-Path -LiteralPath (Join-Path $InstallDir 'data/user-extensions')) -or (Test-Path -LiteralPath (Join-Path $InstallDir '.model-stores.compose.json')) -or
+            (Test-Path -LiteralPath (Join-Path $InstallDir 'data/model-stores.json'))) {
+            return (Resolve-ODSModelStoreComposeFlags -Flags ($raw -split "\s+"))
+        }
         return ($raw -split "\s+")
     }
 
@@ -130,6 +157,10 @@ function Get-ComposeFlags {
             $raw = ($composeFlagsLine -replace "^compose_flags=", "").Trim()
             if (-not [string]::IsNullOrWhiteSpace($raw)) {
                 Write-AIWarn ".compose-flags is missing; using compose flags from logs\compose-launch.txt"
+                if (($raw -match 'user-extensions') -or (Test-Path -LiteralPath (Join-Path $InstallDir 'data/user-extensions')) -or (Test-Path -LiteralPath (Join-Path $InstallDir '.model-stores.compose.json')) -or
+                    (Test-Path -LiteralPath (Join-Path $InstallDir 'data/model-stores.json'))) {
+                    return (Resolve-ODSModelStoreComposeFlags -Flags ($raw -split "\s+"))
+                }
                 return ($raw -split "\s+")
             }
         }
@@ -164,6 +195,10 @@ function Get-ComposeFlags {
         }
     }
 
+    if ((($flags -join ' ') -match 'user-extensions') -or (Test-Path -LiteralPath (Join-Path $InstallDir 'data/user-extensions')) -or (Test-Path -LiteralPath (Join-Path $InstallDir '.model-stores.compose.json')) -or
+        (Test-Path -LiteralPath (Join-Path $InstallDir 'data/model-stores.json'))) {
+        return (Resolve-ODSModelStoreComposeFlags -Flags $flags)
+    }
     return $flags
 }
 
@@ -183,11 +218,17 @@ function Test-ODSArgumentPresent {
 }
 
 function Test-ODSDockerRunningQuiet {
+    $previousPreference = $ErrorActionPreference
     try {
+        # PowerShell 5.1 turns native stderr warnings into terminating errors
+        # under Stop, even when docker info exits successfully.
+        $ErrorActionPreference = 'Continue'
         $null = & docker info 2>$null
         return ($LASTEXITCODE -eq 0)
     } catch {
         return $false
+    } finally {
+        $ErrorActionPreference = $previousPreference
     }
 }
 
@@ -200,19 +241,21 @@ function Get-ODSDockerProjectResourceNames {
 
     $filter = "label=com.docker.compose.project=ods"
     try {
-        switch ($Kind) {
+        $names = switch ($Kind) {
             "container" {
-                return @(& docker ps -aq --filter $filter 2>$null | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+                @(& docker ps -a --filter $filter --format '{{.Names}}' 2>$null | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
             }
             "network" {
-                return @(& docker network ls -q --filter $filter 2>$null | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+                @(& docker network ls --filter $filter --format '{{.Name}}' 2>$null | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
             }
             "volume" {
-                return @(& docker volume ls -q --filter $filter 2>$null | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+                @(& docker volume ls -q --filter $filter 2>$null | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
             }
         }
+        if ($LASTEXITCODE -ne 0) { throw "Docker could not list $Kind resources." }
+        return @($names)
     } catch {
-        return @()
+        throw "Docker ownership query failed; runtime files were preserved: $_"
     }
 }
 
@@ -257,10 +300,89 @@ function Test-ODSComposeFlagsFilesAvailable {
     return $hasComposeFile
 }
 
-function Remove-ODSDockerProjectByLabel {
+function Assert-ODSDockerProjectOwnership {
     param([switch]$RemoveVolumes)
+    $containers = @(Get-ODSDockerProjectResourceNames -Kind 'container')
+    if (-not $containers.Count) {
+        $orphans = @(Get-ODSDockerProjectResourceNames -Kind 'network') + @(Get-ODSDockerProjectResourceNames -Kind 'volume')
+        if ($orphans.Count) {
+            throw 'ODS_UNINSTALL_OWNERSHIP_UNKNOWN: only orphaned Docker resources remain. Their project label cannot identify the original Windows or WSL installation; nothing was removed.'
+        }
+        return [pscustomobject]@{ Containers = @(); Networks = @(); Volumes = @() }
+    }
+    $expected = [IO.Path]::GetFullPath($InstallDir).TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
+    $ownedVolumes = @{}
+    $verifiedContainerIds = @{}
+    $verifiedNetworkIds = @{}
+    foreach ($name in $containers) {
+        $json = & docker container inspect $name 2>$null
+        if ($LASTEXITCODE -ne 0) { throw "Cannot verify Docker container $name; uninstall stopped before any changes." }
+        $items = @($json | ConvertFrom-Json -ErrorAction Stop)
+        if ($items.Count -ne 1) { throw "Ambiguous Docker ownership for $name; nothing was removed." }
+        $c = $items[0]
+        $labels = $c.Config.Labels
+        $workingDir = [string]$labels.'com.docker.compose.project.working_dir'
+        if ($labels.'com.docker.compose.project' -ne 'ods' -or [string]::IsNullOrWhiteSpace($workingDir) -or
+            -not [IO.Path]::IsPathRooted($workingDir)) {
+            throw "ODS_UNINSTALL_OWNERSHIP_UNKNOWN: $name has no verifiable Compose installation directory; nothing was removed."
+        }
+        $actual = [IO.Path]::GetFullPath($workingDir).TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
+        if (-not [string]::Equals($actual, $expected, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "ODS_UNINSTALL_OTHER_INSTALLATION: $name belongs to '$workingDir', not '$InstallDir'. Use that installation's uninstaller; nothing was removed."
+        }
+        if (-not $c.Id) { throw "ODS_UNINSTALL_OWNERSHIP_UNKNOWN: container '$name' has no identity; nothing was removed." }
+        $verifiedContainerIds[[string]$c.Id] = $true
+        foreach ($mount in @($c.Mounts)) {
+            if ($mount.Type -eq 'volume' -and $mount.Name) { $ownedVolumes[[string]$mount.Name] = $true }
+        }
+        $nets = $c.NetworkSettings.Networks
+        if ($nets) {
+            foreach ($prop in $nets.PSObject.Properties) {
+                $netVal = $prop.Value
+                if ($netVal -and $netVal.NetworkID) { $verifiedNetworkIds[[string]$netVal.NetworkID] = $true }
+            }
+        }
+    }
+    $projectNetworks = @(Get-ODSDockerProjectResourceNames -Kind 'network')
+    $projectNetworkIds = @()
+    foreach ($netName in $projectNetworks) {
+        $netJson = & docker network inspect $netName 2>$null
+        if ($LASTEXITCODE -ne 0) {
+            throw "ODS_UNINSTALL_OWNERSHIP_UNKNOWN: cannot inspect network '$netName'; nothing was removed."
+        }
+        $netItems = @($netJson | ConvertFrom-Json -ErrorAction Stop)
+        if ($netItems.Count -ne 1) {
+            throw "ODS_UNINSTALL_OWNERSHIP_UNKNOWN: ambiguous network ownership for '$netName'; nothing was removed."
+        }
+        $netId = [string]$netItems[0].Id
+        if ([string]::IsNullOrWhiteSpace($netId) -or -not $verifiedNetworkIds.ContainsKey($netId)) {
+            throw "ODS_UNINSTALL_OWNERSHIP_UNKNOWN: network '$netName' ($netId) is not attached to any verified container of this installation. Its project label alone cannot authorize removal; nothing was removed."
+        }
+        foreach ($attachment in @($netItems[0].Containers.PSObject.Properties)) {
+            if (-not $verifiedContainerIds.ContainsKey([string]$attachment.Name)) {
+                throw "ODS_UNINSTALL_OTHER_INSTALLATION: network '$netName' is also used by an unverified container; nothing was removed."
+            }
+        }
+        $projectNetworkIds += $netId
+    }
+    $projectVolumes = @()
+    if ($RemoveVolumes) {
+        $projectVolumes = @(Get-ODSDockerProjectResourceNames -Kind 'volume')
+        foreach ($volume in $projectVolumes) {
+            if (-not $ownedVolumes.ContainsKey($volume)) {
+                throw "ODS_UNINSTALL_OWNERSHIP_UNKNOWN: volume '$volume' is not attached to a verified container of this installation. Its project label alone cannot authorize deleting its data; nothing was removed."
+            }
+        }
+    }
+    return [pscustomobject]@{ Containers = @($verifiedContainerIds.Keys); Networks = $projectNetworkIds; Volumes = $projectVolumes }
+}
 
-    $containers = Get-ODSDockerProjectResourceNames -Kind "container"
+function Remove-ODSDockerProjectByLabel {
+    param([switch]$RemoveVolumes, [Parameter(Mandatory=$true)]$Ownership)
+
+    # @() keeps a single name an array; splatting a bare string would pass
+    # each character to docker as a separate argument.
+    $containers = @($Ownership.Containers)
     if ($containers.Count -gt 0) {
         Write-AI "Removing ODS containers by Docker label..."
         & docker rm -f @containers | Out-Host
@@ -269,7 +391,7 @@ function Remove-ODSDockerProjectByLabel {
         }
     }
 
-    $networks = Get-ODSDockerProjectResourceNames -Kind "network"
+    $networks = @($Ownership.Networks)
     if ($networks.Count -gt 0) {
         Write-AI "Removing ODS Docker networks by label..."
         & docker network rm @networks | Out-Host
@@ -279,7 +401,7 @@ function Remove-ODSDockerProjectByLabel {
     }
 
     if ($RemoveVolumes) {
-        $volumes = Get-ODSDockerProjectResourceNames -Kind "volume"
+        $volumes = @($Ownership.Volumes)
         if ($volumes.Count -gt 0) {
             Write-AI "Removing ODS Docker volumes by label..."
             & docker volume rm @volumes | Out-Host
@@ -383,8 +505,209 @@ function Remove-ODSInstallDirectory {
     Remove-Item -LiteralPath $InstallDir -Recurse -Force
 }
 
+function Test-ODSUninstallPathOwned {
+    param([string]$Path)
+    if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
+    try {
+        if (-not [IO.Path]::IsPathRooted($Path)) { return $false }
+        $root = [IO.Path]::GetFullPath($InstallDir).TrimEnd('\', '/')
+        $actual = [IO.Path]::GetFullPath($Path).TrimEnd('\', '/')
+        return $actual.Equals($root, [StringComparison]::OrdinalIgnoreCase) -or
+            $actual.StartsWith($root + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)
+    } catch { return $false }
+}
+
+function Resolve-ODSUninstallLiteral {
+    param($Node, $Assignments, [int]$Before, [int]$Depth=0)
+    if ($Depth -gt 12) { throw 'Unknown launcher expression' }
+    $next=$Depth+1
+    if ($Node -is [Management.Automation.Language.StringConstantExpressionAst]) { return [string]$Node.Value }
+    if ($Node -is [Management.Automation.Language.VariableExpressionAst]) {
+        $name=$Node.VariablePath.UserPath
+        if (-not $Assignments.ContainsKey($name)) { throw 'Unknown launcher variable' }
+        $assignment=$Assignments[$name]
+        if ($assignment.Right.Extent.EndOffset -ge $Before) { throw 'Ambiguous launcher assignment' }
+        return Resolve-ODSUninstallLiteral $assignment.Right $Assignments $assignment.Extent.StartOffset $next
+    }
+    if ($Node -is [Management.Automation.Language.CommandExpressionAst]) { return Resolve-ODSUninstallLiteral $Node.Expression $Assignments $Before $next }
+    if ($Node -is [Management.Automation.Language.ParenExpressionAst]) { return Resolve-ODSUninstallLiteral $Node.Pipeline $Assignments $Before $next }
+    if ($Node -is [Management.Automation.Language.ArrayExpressionAst]) { return Resolve-ODSUninstallLiteral $Node.SubExpression $Assignments $Before $next }
+    if ($Node -is [Management.Automation.Language.PipelineAst] -and $Node.PipelineElements.Count -eq 1) { return Resolve-ODSUninstallLiteral $Node.PipelineElements[0] $Assignments $Before $next }
+    if ($Node -is [Management.Automation.Language.StatementBlockAst]) {
+        foreach ($statement in $Node.Statements) { Resolve-ODSUninstallLiteral $statement $Assignments $Before $next }
+        return
+    }
+    if ($Node -is [Management.Automation.Language.ArrayLiteralAst]) {
+        foreach ($element in $Node.Elements) { Resolve-ODSUninstallLiteral $element $Assignments $Before $next }
+        return
+    }
+    if ($Node -is [Management.Automation.Language.BinaryExpressionAst] -and $Node.Operator -eq 'Plus' -and
+        $Node.Left -is [Management.Automation.Language.ArrayExpressionAst] -and
+        $Node.Right -is [Management.Automation.Language.ArrayExpressionAst]) {
+        Resolve-ODSUninstallLiteral $Node.Left $Assignments $Before $next
+        Resolve-ODSUninstallLiteral $Node.Right $Assignments $Before $next
+        return
+    }
+    throw 'Unknown launcher expression'
+}
+
+function Test-ODSUninstallCommandOwned {
+    param([string]$CommandLine, [string]$Executable='', [switch]$ArgumentsOnly, [int]$Depth=0)
+    if (-not $CommandLine -or $Depth -gt 2) { return $false }
+    $argv=@([regex]::Matches($CommandLine, '"([^"\r\n]*)"|[^\s"]+') | ForEach-Object { $_.Value.Trim('"') })
+    if (-not $ArgumentsOnly) {
+        if (-not $argv.Count) { return $false }
+        if (-not $Executable) { $Executable=$argv[0] }
+        $argv=@($argv | Select-Object -Skip 1)
+    }
+    $program=($Executable -split '[\\/]')[-1]
+    if ($program -match '^(powershell|pwsh)(\.exe)?$') {
+        for ($index=0; $index -lt $argv.Count; $index++) {
+            $arg=$argv[$index]
+            if ($arg -in @('-File','-f')) {
+                return ($index+1 -lt $argv.Count -and (Test-ODSUninstallPathOwned $argv[$index+1]))
+            }
+            if ($arg -in @('-EncodedCommand','-enc','-e')) {
+                if ($index+1 -ge $argv.Count) { return $false }
+                try {
+                    $text=[Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($argv[$index+1]))
+                    $errors=$null; $tokens=$null
+                    $ast=[Management.Automation.Language.Parser]::ParseInput($text,[ref]$tokens,[ref]$errors)
+                    if ($errors.Count) { return $false }
+                    if ($ast.ParamBlock -or $ast.BeginBlock -or $ast.ProcessBlock -or $ast.EndBlock.Traps.Count) { return $false }
+                    # Recognize the generated launcher without evaluating it.
+                    # Nested/deferred commands, aliases and mixed launchers do
+                    # not establish ownership of the scheduled task.
+                    $assignments=@{}; $launchers=@()
+                    foreach ($statement in $ast.EndBlock.Statements) {
+                        if ($statement -is [Management.Automation.Language.AssignmentStatementAst]) {
+                            if ($statement.Operator -ne 'Equals' -or $statement.Left -isnot [Management.Automation.Language.VariableExpressionAst]) { return $false }
+                            if (@($statement.Right.FindAll({param($node) $node -is [Management.Automation.Language.CommandAst]},$true)).Count) { return $false }
+                            $name=$statement.Left.VariablePath.UserPath
+                            if ($assignments.ContainsKey($name)) { return $false }
+                            $assignments[$name]=$statement
+                            continue
+                        }
+                        if ($statement -isnot [Management.Automation.Language.PipelineAst] -or $statement.PipelineElements.Count -ne 1 -or
+                            $statement.PipelineElements[0] -isnot [Management.Automation.Language.CommandAst]) { return $false }
+                        $command=$statement.PipelineElements[0]
+                        if ($command.GetCommandName() -eq 'Set-Location') { continue }
+                        if ($command.GetCommandName() -ne 'Start-Process') { return $false }
+                        $launchers+=,$command
+                    }
+                    if ($launchers.Count -ne 1) { return $false }
+                    foreach ($command in $launchers) {
+                        $file=$null; $arguments=$null
+                        $elements=$command.CommandElements
+                        for ($i=1; $i -lt $elements.Count; $i++) {
+                            $element=$elements[$i]
+                            if ($element -is [Management.Automation.Language.CommandParameterAst]) {
+                                $value=$element.Argument
+                                if (-not $value -and $i+1 -lt $elements.Count -and $elements[$i+1] -isnot [Management.Automation.Language.CommandParameterAst]) { $value=$elements[$i+1] }
+                                if ($element.ParameterName -eq 'FilePath') { $file=$value }
+                                if ($element.ParameterName -eq 'ArgumentList') { $arguments=$value }
+                            } elseif ($i -eq 1) { $file=$element }
+                        }
+                        if (-not $file -or -not $arguments) { continue }
+                        $exe=@(Resolve-ODSUninstallLiteral $file $assignments $command.Extent.StartOffset)
+                        $values=@(Resolve-ODSUninstallLiteral $arguments $assignments $command.Extent.StartOffset)
+                        if ($exe.Count -ne 1) { continue }
+                        # Start-Process joins ArgumentList verbatim. Adding
+                        # quotes here would invent execution proof for paths
+                        # that the real launcher splits at spaces.
+                        $serialized=$values -join ' '
+                        if (Test-ODSUninstallCommandOwned $serialized $exe[0] -ArgumentsOnly -Depth ($Depth+1)) { return $true }
+                    }
+                } catch { return $false }
+                return $false
+            }
+            if ($arg -in @('-NoProfile','-NoLogo','-NonInteractive','-Sta','-Mta')) { continue }
+            if ($arg -in @('-ExecutionPolicy','-WindowStyle')) { $index++; continue }
+            # Inline commands and unknown switches cannot establish script execution.
+            return $false
+        }
+    } elseif ($program -match '^(python(?:3(?:\.\d+)?)?|pythonw|py)(\.exe)?$') {
+        foreach ($arg in $argv) {
+            if ($arg -in @('-u','-B','-E','-s','-S') -or $arg -match '^-[23](?:\.\d+)?$') { continue }
+            if ($arg.StartsWith('-')) { return $false }
+            return (Test-ODSUninstallPathOwned $arg)
+        }
+    } elseif ($program -match '^(wscript|cscript)(\.exe)?$') {
+        foreach ($arg in $argv) {
+            if ($arg.StartsWith('//')) { continue }
+            return (Test-ODSUninstallPathOwned $arg)
+        }
+    }
+    return $false
+}
+
+function Test-ODSUninstallTaskOwned {
+    param($Task)
+    if (-not $Task -or -not @($Task.Actions).Count) { return $false }
+    foreach ($action in @($Task.Actions)) {
+        if (-not (Test-ODSUninstallPathOwned ([string]$action.Execute)) -and
+            -not (Test-ODSUninstallCommandOwned ([string]$action.Arguments) ([string]$action.Execute) -ArgumentsOnly)) { return $false }
+    }
+    return $true
+}
+
+function Stop-ODSUninstallOwnedHelpers {
+    # Shared executable locations, ports and stale PID files cannot identify
+    # an installation. Only a helper's executable/script path can do that.
+    $processes = @(Get-CimInstance Win32_Process -ErrorAction Stop)
+    $byId = @{}; $ancestors = @{}
+    foreach ($process in $processes) { $byId[[int]$process.ProcessId] = $process }
+    $ancestorId = $PID
+    while ($ancestorId -gt 0 -and -not $ancestors.ContainsKey($ancestorId)) {
+        $ancestors[$ancestorId] = $true
+        if (-not $byId.ContainsKey($ancestorId)) { break }
+        $ancestorId = [int]$byId[$ancestorId].ParentProcessId
+    }
+    $owned=@{}
+    foreach ($process in $processes) {
+        if ($ancestors.ContainsKey([int]$process.ProcessId)) { continue }
+        if ([string]$process.Name -notmatch '^(python(?:3(?:\.\d+)?)?|pythonw|py|powershell|pwsh|wscript|cscript|opencode|llama-server|lemonade-server)(\.exe)?$') { continue }
+        if ((Test-ODSUninstallPathOwned ([string]$process.ExecutablePath)) -or
+            (Test-ODSUninstallCommandOwned ([string]$process.CommandLine) ([string]$process.Name))) {
+            $owned[[int]$process.ProcessId]=$true
+        }
+    }
+    # Native runtimes installed outside ODS can be children of an owned
+    # launcher. The captured parent chain, rather than a shared port or PID
+    # file, establishes their association with this installation.
+    $ordered=@($processes | Where-Object { $owned.ContainsKey([int]$_.ProcessId) })
+    do {
+        $added=$false
+        foreach ($process in $processes) {
+            $id=[int]$process.ProcessId
+            if ($owned.ContainsKey($id) -or $ancestors.ContainsKey($id)) { continue }
+            if ($owned.ContainsKey([int]$process.ParentProcessId)) {
+                $owned[$id]=$true; $ordered+=,$process; $added=$true
+            }
+        }
+    } while ($added)
+    [array]::Reverse($ordered)
+    foreach ($process in $ordered) {
+        try { Stop-Process -Id ([int]$process.ProcessId) -Force -ErrorAction Stop }
+        catch { if (Get-Process -Id ([int]$process.ProcessId) -ErrorAction SilentlyContinue) { throw } }
+    }
+    $startup = [Environment]::GetFolderPath('Startup')
+    if ($startup) {
+        $entry = Join-Path $startup 'ods-host-agent.vbs'
+        if (Test-Path -LiteralPath $entry) {
+            $content=Get-Content -LiteralPath $entry -Raw -ErrorAction Stop
+            $launcher=[regex]::Match($content.Trim(), '(?i)^Set WshShell = CreateObject\("WScript\.Shell"\)\r?\nWshShell\.Run "([^"\r\n]+)", 0, False$')
+            if ($launcher.Success -and (Test-ODSUninstallCommandOwned $launcher.Groups[1].Value)) {
+                Remove-Item -LiteralPath $entry -Force -ErrorAction Stop
+            }
+        }
+    }
+}
+
 function Invoke-Uninstall {
     param([string[]]$UninstallArgs)
+
+    $InstallDir = [IO.Path]::GetFullPath($InstallDir)
 
     $force = Test-ODSArgumentPresent -Arguments $UninstallArgs -Names @("-Force", "--force")
     $keepData = Test-ODSArgumentPresent -Arguments $UninstallArgs -Names @("-KeepData", "--keep-data")
@@ -395,7 +718,7 @@ function Invoke-Uninstall {
     $hasInstallDir = Test-Path -LiteralPath $InstallDir
     $hasProjectContainers = $false
     if ($dockerAvailable) {
-        $hasProjectContainers = ((Get-ODSDockerProjectResourceNames -Kind "container").Count -gt 0)
+        $hasProjectContainers = (@(Get-ODSDockerProjectResourceNames -Kind "container").Count -gt 0)
     }
 
     if (-not $dockerAvailable) {
@@ -404,13 +727,16 @@ function Invoke-Uninstall {
         throw "ODS_UNINSTALL_DOCKER_UNAVAILABLE"
     }
 
+    if ($hasInstallDir) {
+        Assert-ODSInstallDirSafeForRemoval
+    }
+
+    # Check before stopping helpers or compose down -v, not after data is gone.
+    $ownership = Assert-ODSDockerProjectOwnership -RemoveVolumes:$removeVolumes
+
     if (-not $hasInstallDir -and -not $hasProjectContainers) {
         Write-AISuccess "No ODS install found at $InstallDir"
         return
-    }
-
-    if ($hasInstallDir) {
-        Assert-ODSInstallDirSafeForRemoval
     }
 
     if (-not $force) {
@@ -426,62 +752,42 @@ function Invoke-Uninstall {
     }
 
     Write-AI "Stopping ODS host-side helpers..."
-    try { Invoke-Agent -Action "stop" } catch { Write-AIWarn "Host agent stop skipped: $_" }
-    try { Stop-ODSOpenCodeRuntime } catch { Write-AIWarn "OpenCode stop skipped: $_" }
-    try {
-        if ((Get-NativeInferenceBackend) -ne "none") {
-            Stop-NativeInferenceServer
+    Stop-ODSUninstallOwnedHelpers
+
+    foreach ($taskName in @($script:ODS_AGENT_TASK_NAME, $script:ODS_MODEL_UPGRADE_TASK_NAME, $script:LEMONADE_TASK_NAME, $script:OPENCODE_TASK_NAME, $script:NATIVE_LLAMA_TASK_NAME)) {
+        $task = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+        if (-not $task) { continue }
+        if (-not (Test-ODSUninstallTaskOwned $task)) {
+            Write-AIWarn "Scheduled task $taskName has no verified installation ownership; preserving it."
+            continue
         }
-    } catch {
-        Write-AIWarn "Native inference stop skipped: $_"
-    }
-
-    foreach ($taskName in @($script:ODS_AGENT_TASK_NAME, $script:ODS_MODEL_UPGRADE_TASK_NAME, $script:LEMONADE_TASK_NAME, $script:OPENCODE_TASK_NAME)) {
-        try { Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue } catch { }
-        try { Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue } catch { }
-    }
-
-    $composeDownSucceeded = $false
-    if ($hasInstallDir) {
+        # A task left behind keeps a helper running against a deleted runtime,
+        # so a failed removal is reported with the command to finish it.
         try {
-            Push-Location $InstallDir
-            $flags = Get-ComposeFlags
-            if (Test-ODSComposeFlagsFilesAvailable -ComposeFlags $flags) {
-                $downArgs = @("down", "--remove-orphans")
-                if ($removeVolumes) { $downArgs += "-v" }
-                Write-AI "Removing ODS Docker stack with saved compose flags..."
-                $composeArgs = $flags + $downArgs
-                & docker compose @composeArgs
-                $composeDownSucceeded = ($LASTEXITCODE -eq 0)
-                if (-not $composeDownSucceeded) {
-                    Write-AIWarn "docker compose down failed; falling back to label-based cleanup."
-                } else {
-                    Write-AISuccess "Removed ODS Docker stack"
-                }
-            } else {
-                Write-AIWarn "Compose files are unavailable; falling back to label-based cleanup."
-            }
-        } catch {
-            Write-AIWarn "docker compose cleanup failed: $_"
-        } finally {
-            try { Pop-Location } catch { }
+            if ($task.State -eq 'Running') { Stop-ScheduledTask -TaskName $taskName -ErrorAction Stop }
+            Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction Stop
+        } catch [Microsoft.Management.Infrastructure.CimException] {
+            Write-AIWarn "Scheduled task $taskName could not be removed ($($_.Exception.Message)). Remove it with: Unregister-ScheduledTask -TaskName '$taskName' -Confirm:`$false"
         }
     }
 
-    if (-not $composeDownSucceeded -or (Get-ODSDockerProjectResourceNames -Kind "container").Count -gt 0) {
-        Remove-ODSDockerProjectByLabel -RemoveVolumes:$removeVolumes
-    }
-
-    $remainingContainers = (Get-ODSDockerProjectResourceNames -Kind "container").Count
-    $remainingNetworks = (Get-ODSDockerProjectResourceNames -Kind "network").Count
+    # Remove only the resources identified by the ownership preflight. Saved
+    # Compose flags/files can name another project or unrelated volumes, so
+    # they are not deletion authority. IDs also prevent a replacement container
+    # or network with the same name from being swept into this uninstall.
+    Remove-ODSDockerProjectByLabel -RemoveVolumes:$removeVolumes -Ownership $ownership
+    $remainingContainers = @(Get-ODSDockerProjectResourceNames -Kind "container")
+    $remainingNetworks = @(Get-ODSDockerProjectResourceNames -Kind "network")
     $remainingVolumes = if ($removeVolumes) {
-        (Get-ODSDockerProjectResourceNames -Kind "volume").Count
+        @(Get-ODSDockerProjectResourceNames -Kind "volume")
     } else {
-        0
+        @()
     }
-    if ($remainingContainers -gt 0 -or $remainingNetworks -gt 0 -or $remainingVolumes -gt 0) {
+    if ($remainingContainers.Count -gt 0 -or $remainingNetworks.Count -gt 0 -or $remainingVolumes.Count -gt 0) {
         Write-AIError "Docker cleanup is incomplete; runtime files were left in place for recovery."
-        Write-AI "Remaining resources: containers=$remainingContainers networks=$remainingNetworks volumes=$remainingVolumes"
+        Write-AI "Remaining resources: containers=$($remainingContainers.Count) networks=$($remainingNetworks.Count) volumes=$($remainingVolumes.Count)"
+        foreach ($name in @($remainingContainers + $remainingNetworks + $remainingVolumes)) { Write-AI "  still present: $name" }
+        Write-AI "A resource that is still in use by a container outside ODS cannot be removed; stop that container, then rerun uninstall."
         throw "ODS_UNINSTALL_DOCKER_CLEANUP_INCOMPLETE"
     }
 
@@ -1136,6 +1442,66 @@ function Ensure-LlamaCpuBudget {
 
 # ── AMD native inference server management (Lemonade or llama-server) ──
 
+function Get-ODSNativeModelSelection {
+    param([switch]$VerifyArtifacts, [switch]$AllowMissingModel)
+
+    $envMap = Read-ODSEnv
+    $storeId = [string]$envMap['ODS_ACTIVE_MODEL_STORE']
+    if ([string]::IsNullOrWhiteSpace($storeId)) { $storeId = 'default' }
+    $registry = Join-Path $InstallDir 'data/model-stores.json'
+    if ($storeId -eq 'default' -and -not (Test-Path -LiteralPath $registry)) {
+        $filename = [string]$envMap['GGUF_FILE']
+        if ([string]::IsNullOrWhiteSpace($filename)) { $filename = 'Qwen3.5-9B-Q4_K_M.gguf' }
+        if ($filename -match '[/\\\x00\r\n]' -or $filename -in @('.', '..')) {
+            throw 'Invalid configured model filename'
+        }
+        $directory = Join-Path $InstallDir 'data/models'
+        $modelPath = Join-Path $directory $filename
+        if ($VerifyArtifacts -and (-not (Test-Path -LiteralPath $modelPath -PathType Leaf) -or
+            (Get-Item -LiteralPath $modelPath).Length -le 0)) {
+            throw 'The configured native model is missing or empty; the current runtime was not stopped'
+        }
+        return [pscustomobject]@{ schemaVersion = 1; storeId = 'default'; modelsDirectory = $directory;
+            modelPath = $modelPath; profile = $null }
+    }
+    $resolver = Join-Path $InstallDir 'scripts/resolve-model-store.py'
+    if (-not (Test-Path -LiteralPath $resolver -PathType Leaf)) {
+        throw 'Registered model store resolver is missing; repair the ODS installation before starting inference'
+    }
+    $python = Resolve-ODSHostAgentPython
+    if (-not $python) { throw 'Python 3 is required to resolve the registered model store' }
+    $resolverArgs = @($python.PrefixArgs) + @($resolver, '--install-dir', $InstallDir)
+    if ($VerifyArtifacts) { $resolverArgs += '--verify-artifacts' }
+    if ($AllowMissingModel) { $resolverArgs += '--allow-missing-model' }
+    $output = & $python.FilePath @resolverArgs 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        throw "Configured model store is unavailable: $(($output | Out-String).Trim())"
+    }
+    try { $selection = ($output | Out-String) | ConvertFrom-Json -ErrorAction Stop }
+    catch { throw 'Registered model store resolver returned an invalid response' }
+    if ($selection.schemaVersion -ne 1 -or $selection.storeId -ne $storeId -or
+        -not [IO.Path]::IsPathRooted([string]$selection.modelsDirectory) -or
+        -not [IO.Path]::IsPathRooted([string]$selection.modelPath)) {
+        throw 'Registered model store resolver returned an invalid selection'
+    }
+    return $selection
+}
+
+function Get-ODSConfiguredNativeExecutable {
+    $selection = Get-ODSNativeModelSelection -AllowMissingModel
+    if ($selection.profile) { return [string]$selection.profile.executable }
+    return $script:LLAMA_SERVER_EXE
+}
+
+function ConvertTo-ODSNativeArgumentString {
+    param([string[]]$Values)
+    # Start-Process joins ArgumentList without quoting. Preserve SSD paths with
+    # spaces, Unicode, quotes or trailing backslashes using Windows CRT rules.
+    return (@($Values | ForEach-Object {
+        '"' + [regex]::Replace([regex]::Replace([string]$_, '(\\*)"', '$1$1\"'), '(\\+)$', '$1$1') + '"'
+    }) -join ' ')
+}
+
 function Get-NativeInferenceBackend {
     <#
     .SYNOPSIS
@@ -1145,7 +1511,11 @@ function Get-NativeInferenceBackend {
     $env = Read-ODSEnv
     $backend = $env["LLM_BACKEND"]
     if ($backend -eq "lemonade" -and (Test-Path $script:LEMONADE_EXE)) { return "lemonade" }
-    if (Test-Path $script:LLAMA_SERVER_EXE) { return "llama-server" }
+    $configuredExecutable = Get-ODSConfiguredNativeExecutable
+    # A removed external disk must not erase the identity needed to stop an
+    # already-running process. Start verifies the file separately.
+    if ($configuredExecutable -ne $script:LLAMA_SERVER_EXE -or
+        (Test-Path -LiteralPath $configuredExecutable)) { return "llama-server" }
     return "none"
 }
 
@@ -1161,7 +1531,7 @@ function Get-NativeInferenceStatus {
     $result = @{ Running = $false; Pid = 0; Healthy = $false; Backend = $backend; Recovered = $false }
     if ($backend -eq "none") { return $result }
 
-    $expectedExecutable = if ($backend -eq "lemonade") { $script:LEMONADE_EXE } else { $script:LLAMA_SERVER_EXE }
+    $expectedExecutable = if ($backend -eq "lemonade") { $script:LEMONADE_EXE } else { Get-ODSConfiguredNativeExecutable }
     $healthUrl = if ($backend -eq "lemonade") {
         $script:LEMONADE_HEALTH_URL
     } else {
@@ -1493,6 +1863,36 @@ function Start-ODSOpenCodeRuntime {
 
 function Stop-ODSLemonadeRuntime {
     Sync-ODSNativeInferenceConfig
+    # Capture ancestry before terminating the router. Qualified executables can
+    # live outside Lemonade's bin/cache folders; never stop an unrelated process
+    # merely because it uses the same executable.
+    $externalChildren = @()
+    try {
+        $selection = Get-ODSNativeModelSelection -AllowMissingModel
+        if ($selection.profile) {
+            $expected = [string]$selection.profile.executable
+            $processes = @(Get-CimInstance Win32_Process -ErrorAction Stop)
+            $byPid = @{}
+            foreach ($process in $processes) { $byPid[[int]$process.ProcessId] = $process }
+            foreach ($process in $processes) {
+                if (-not $process.ExecutablePath -or
+                    -not ([string]$process.ExecutablePath).Equals($expected, [StringComparison]::OrdinalIgnoreCase)) { continue }
+                $ancestorId = [int]$process.ParentProcessId
+                $visited = @{}
+                for ($depth = 0; $depth -lt 64 -and $byPid.ContainsKey($ancestorId); $depth++) {
+                    if ($visited.ContainsKey($ancestorId)) { break }
+                    $visited[$ancestorId] = $true
+                    $ancestor = $byPid[$ancestorId]
+                    if ($ancestor.ExecutablePath -and
+                        ([string]$ancestor.ExecutablePath).Equals($script:LEMONADE_EXE, [StringComparison]::OrdinalIgnoreCase)) {
+                        $externalChildren += @{ Id = [int]$process.ProcessId; Executable = $expected }
+                        break
+                    }
+                    $ancestorId = [int]$ancestor.ParentProcessId
+                }
+            }
+        }
+    } catch { }
     try { Stop-ScheduledTask -TaskName $script:LEMONADE_TASK_NAME -ErrorAction SilentlyContinue } catch { }
     try { Unregister-ScheduledTask -TaskName $script:LEMONADE_TASK_NAME -Confirm:$false -ErrorAction SilentlyContinue } catch { }
 
@@ -1525,13 +1925,25 @@ function Stop-ODSLemonadeRuntime {
     })) {
         Stop-ODSNativeProcessId -ProcessId ([int]$child.ProcessId)
     }
+    foreach ($child in $externalChildren) {
+        if (Test-ODSNativeProcessExecutable -ProcessId $child.Id -ExpectedExecutable $child.Executable) {
+            Stop-ODSNativeProcessId -ProcessId $child.Id
+        }
+    }
 }
 
 function Start-ODSLemonadeRuntime {
     param([string]$BindAddress)
 
     Sync-ODSNativeInferenceConfig
-    $modelsDir = Join-Path (Join-Path $InstallDir "data") "models"
+    # Resolve and verify before stopping a working runtime. An unplugged SSD
+    # must never silently fall back to a different checkpoint or executable.
+    $selection = Get-ODSNativeModelSelection -VerifyArtifacts
+    $modelsDir = [string]$selection.modelsDirectory
+    $runtimeEnvironment = @{}
+    if ($selection.profile) {
+        $runtimeEnvironment['LEMONADE_LLAMACPP_' + ([string]$selection.profile.backend).ToUpperInvariant() + '_BIN'] = [string]$selection.profile.executable
+    }
     $envPath = Join-Path $InstallDir ".env"
     $contextRaw = Get-ODSEnvValue -Name "CTX_SIZE" -Default (Get-ODSEnvValue -Name "MAX_CONTEXT" -Default "0")
     $contextSize = [long]0
@@ -1545,7 +1957,7 @@ function Start-ODSLemonadeRuntime {
         -BindAddress $BindAddress `
         -ModelsDir $modelsDir `
         -ContextSize $contextSize `
-        -AdminApiKey $adminApiKey
+        -AdminApiKey $adminApiKey -RuntimeEnvironment $runtimeEnvironment
     $diagnosticLog = Join-Path (Join-Path $InstallDir "logs") "lemonade-launch.log"
     $launchMethod = "scheduled task"
     $directProcess = $null
@@ -1671,7 +2083,8 @@ function Wait-ODSLemonadeConfiguredModel {
     $ggufFile = $EnvVars["GGUF_FILE"]
     if ([string]::IsNullOrWhiteSpace($ggufFile)) { return }
 
-    $modelPath = Join-Path (Join-Path $InstallDir "data\models") $ggufFile
+    $selection = Get-ODSNativeModelSelection
+    $modelPath = [string]$selection.modelPath
     if (-not (Test-Path -LiteralPath $modelPath -PathType Leaf)) {
         throw "Configured Lemonade model file is missing: $modelPath"
     }
@@ -1686,6 +2099,22 @@ function Wait-ODSLemonadeConfiguredModel {
     }
     if ([string]::IsNullOrWhiteSpace($modelId)) {
         $modelId = [IO.Path]::GetFileNameWithoutExtension($ggufFile)
+    }
+
+    if ($selection.profile) {
+        $contextSize = [long]$selection.profile.contextLength
+        if ($EnvVars['CTX_SIZE']) { $contextSize = [long]$EnvVars['CTX_SIZE'] }
+        $load = @{ model_name = $modelId; save_options = $false; ctx_size = $contextSize;
+            llamacpp_backend = [string]$selection.profile.backend;
+            llamacpp_args = (@($selection.profile.args) -join ' ') } | ConvertTo-Json -Compress
+        $headers = @{}
+        $key = Get-ODSLemonadeAdminApiKey -EnvPath (Join-Path $InstallDir '.env')
+        if ($key) { $headers.Authorization = "Bearer $key" }
+        $loaded = Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:$($script:LEMONADE_PORT)/api/v1/load" `
+            -Headers $headers -ContentType 'application/json' -Body $load -TimeoutSec 300 -ErrorAction Stop
+        if ([string]$loaded.status -notin @('success', 'ok')) {
+            throw 'Lemonade did not accept the configured model runtime profile'
+        }
     }
 
     $chatUrl = "http://127.0.0.1:$($script:LEMONADE_PORT)/api/v1/chat/completions"
@@ -1799,9 +2228,8 @@ function Start-NativeInferenceServer {
     $backend = Get-NativeInferenceBackend
     $envVars = Read-ODSEnv
 
-    # Honour the unified BIND_ADDRESS knob (PR #964); empty/missing → loopback.
-    $bindAddr = $envVars["BIND_ADDRESS"]
-    if ([string]::IsNullOrWhiteSpace($bindAddr)) { $bindAddr = "127.0.0.1" }
+    # Match the installer's private inference listener across restarts.
+    $bindAddr = "127.0.0.1"
 
     if ($backend -eq "lemonade") {
         if (Invoke-ODSHostAgentConfiguredModelActivation -EnvVars $envVars) {
@@ -1814,27 +2242,30 @@ function Start-NativeInferenceServer {
         $maxWait = 60; $waited = 0
         while ($waited -lt $maxWait) {
             Start-Sleep -Seconds 2; $waited += 2
+            $resp = $null
             try {
                 $resp = Invoke-WebRequest -Uri $script:LEMONADE_HEALTH_URL `
                 -TimeoutSec 3 -UseBasicParsing -ErrorAction SilentlyContinue
-                if ($resp.StatusCode -eq 200) {
-                    Write-AISuccess "Lemonade server healthy"
-                    Wait-ODSLemonadeConfiguredModel -EnvVars $envVars
-                    return
-                }
             } catch { }
+            if ($resp -and $resp.StatusCode -eq 200) {
+                Write-AISuccess "Lemonade server healthy"
+                Wait-ODSLemonadeConfiguredModel -EnvVars $envVars
+                return
+            }
         }
         Write-AIWarn "Lemonade server may still be starting..."
     } elseif ($backend -eq "llama-server") {
+        $selection = Get-ODSNativeModelSelection -VerifyArtifacts
+        $llamaExecutable = if ($selection.profile) { [string]$selection.profile.executable } else { $script:LLAMA_SERVER_EXE }
         $ggufFile = $envVars["GGUF_FILE"]
         $ctxSize  = $envVars["CTX_SIZE"]
         $gpuLayers = $envVars["N_GPU_LAYERS"]
         if (-not $ggufFile) { $ggufFile = "Qwen3.5-9B-Q4_K_M.gguf" }
-        if (-not $ctxSize)  { $ctxSize = "16384" }
+        if (-not $ctxSize) { $ctxSize = if ($selection.profile) { [string]$selection.profile.contextLength } else { "16384" } }
         if (-not $gpuLayers) { $gpuLayers = "auto" }
 
-        $modelPath = Join-Path (Join-Path $InstallDir "data\models") $ggufFile
-        if (-not (Test-Path $modelPath)) {
+        $modelPath = [string]$selection.modelPath
+        if (-not (Test-Path -LiteralPath $modelPath -PathType Leaf)) {
             Write-AIError "Model not found: $modelPath"
             return
         }
@@ -1857,28 +2288,46 @@ function Start-NativeInferenceServer {
             "--port", [string]$script:LEMONADE_PORT,
             "--n-gpu-layers", $gpuLayers,
             "--ctx-size", $ctxSize,
-            "--reasoning-format", $reasoningFmt,
             # llama.cpp keeps /metrics off unless asked. The dashboard's
             # tokens/sec reading and the Usage page's local-runtime counters
             # both scrape that endpoint, so every other launch path passes
             # this too.
             "--metrics"
         )
-        if ($envVars["LLAMA_ARG_FLASH_ATTN"]) { $llamaArgs += @("--flash-attn", $envVars["LLAMA_ARG_FLASH_ATTN"]) }
-        if ($envVars["LLAMA_ARG_CACHE_TYPE_K"]) { $llamaArgs += @("--cache-type-k", $envVars["LLAMA_ARG_CACHE_TYPE_K"]) }
-        if ($envVars["LLAMA_ARG_CACHE_TYPE_V"]) { $llamaArgs += @("--cache-type-v", $envVars["LLAMA_ARG_CACHE_TYPE_V"]) }
-        if ($envVars["LLAMA_ARG_N_CPU_MOE"]) { $llamaArgs += @("--n-cpu-moe", $envVars["LLAMA_ARG_N_CPU_MOE"]) }
-        if ($envVars["LLAMA_PARALLEL"]) { $llamaArgs += @("--parallel", $envVars["LLAMA_PARALLEL"]) }
-        if ($envVars["LLAMA_ARG_CHECKPOINT_EVERY_N_TOKENS"]) { $llamaArgs += @("--checkpoint-every-n-tokens", $envVars["LLAMA_ARG_CHECKPOINT_EVERY_N_TOKENS"]) }
-        if ($envVars["LLAMA_ARG_NO_CACHE_PROMPT"] -and $envVars["LLAMA_ARG_NO_CACHE_PROMPT"] -notin @("0", "false", "off", "no")) { $llamaArgs += @("--no-cache-prompt") }
-        if ($envVars["LLAMA_ARG_SPEC_TYPE"]) { $llamaArgs += @("--spec-type", $envVars["LLAMA_ARG_SPEC_TYPE"]) }
-        if ($envVars["LLAMA_ARG_SPEC_DRAFT_N_MAX"]) { $llamaArgs += @("--spec-draft-n-max", $envVars["LLAMA_ARG_SPEC_DRAFT_N_MAX"]) }
+        if ($selection.profile) {
+            # A registered profile keeps its own qualified argument list.
+            $llamaArgs += @("--reasoning-format", $reasoningFmt)
+            $llamaArgs += @($selection.profile.args)
+        } else {
+            # b9014 has --reasoning and defaults it to auto, which turns
+            # Qwen3.5 thinking on; where the binary has the switch, pass the
+            # mode itself (as Docker does) instead of the format.
+            $llamaArgs += @(Get-ODSNativeReasoningArgs -Executable $llamaExecutable -Mode $reasoning -FallbackFormat $reasoningFmt)
+            if ($envVars["LLAMA_ARG_FLASH_ATTN"]) { $llamaArgs += @("--flash-attn", $envVars["LLAMA_ARG_FLASH_ATTN"]) }
+            if ($envVars["LLAMA_ARG_CACHE_TYPE_K"]) { $llamaArgs += @("--cache-type-k", $envVars["LLAMA_ARG_CACHE_TYPE_K"]) }
+            if ($envVars["LLAMA_ARG_CACHE_TYPE_V"]) { $llamaArgs += @("--cache-type-v", $envVars["LLAMA_ARG_CACHE_TYPE_V"]) }
+            if ($envVars["LLAMA_ARG_N_CPU_MOE"]) { $llamaArgs += @("--n-cpu-moe", $envVars["LLAMA_ARG_N_CPU_MOE"]) }
+            if ($envVars["LLAMA_PARALLEL"]) { $llamaArgs += @("--parallel", $envVars["LLAMA_PARALLEL"]) }
+            # Only when this llama-server still has the flag (removed in
+            # llama.cpp b9310); an unknown flag stops llama-server.
+            $checkpointArgs = Get-ODSNativeCheckpointIntervalArgs -Executable $llamaExecutable -Value $envVars["LLAMA_ARG_CHECKPOINT_EVERY_NT"]
+            if ($checkpointArgs.Warning) { Write-AIWarn $checkpointArgs.Warning }
+            $llamaArgs += @($checkpointArgs.Arguments)
+            if ($envVars["LLAMA_ARG_CTX_CHECKPOINTS"]) { $llamaArgs += @("--ctx-checkpoints", $envVars["LLAMA_ARG_CTX_CHECKPOINTS"]) }
+            if ($envVars["LLAMA_ARG_CACHE_RAM"]) { $llamaArgs += @("--cache-ram", $envVars["LLAMA_ARG_CACHE_RAM"]) }
+            if ($envVars["LLAMA_ARG_NO_CACHE_PROMPT"] -and $envVars["LLAMA_ARG_NO_CACHE_PROMPT"] -notin @("0", "false", "off", "no")) { $llamaArgs += @("--no-cache-prompt") }
+            if ($envVars["LLAMA_ARG_SPEC_TYPE"]) { $llamaArgs += @("--spec-type", $envVars["LLAMA_ARG_SPEC_TYPE"]) }
+            if ($envVars["LLAMA_ARG_SPEC_DRAFT_N_MAX"]) { $llamaArgs += @("--spec-draft-n-max", $envVars["LLAMA_ARG_SPEC_DRAFT_N_MAX"]) }
+            if ($envVars["LLAMA_ARG_SPEC_DRAFT_TYPE_K"]) { $llamaArgs += @("--spec-draft-type-k", $envVars["LLAMA_ARG_SPEC_DRAFT_TYPE_K"]) }
+            if ($envVars["LLAMA_ARG_SPEC_DRAFT_TYPE_V"]) { $llamaArgs += @("--spec-draft-type-v", $envVars["LLAMA_ARG_SPEC_DRAFT_TYPE_V"]) }
+        }
 
         $pidDir = Split-Path $script:INFERENCE_PID_FILE
         New-Item -ItemType Directory -Path $pidDir -Force | Out-Null
 
-        $proc = Start-Process -FilePath $script:LLAMA_SERVER_EXE `
-            -ArgumentList $llamaArgs -WindowStyle Hidden -PassThru
+        $proc = Start-Process -FilePath $llamaExecutable `
+            -ArgumentList (ConvertTo-ODSNativeArgumentString -Values $llamaArgs) `
+            -WorkingDirectory (Split-Path -Parent $llamaExecutable) -WindowStyle Hidden -PassThru
         Set-Content -Path $script:INFERENCE_PID_FILE -Value $proc.Id
 
         Write-AISuccess "Native llama-server started (PID $($proc.Id))"
@@ -2176,6 +2625,19 @@ function Invoke-Start {
     }
 }
 
+function Stop-ODSOwnedContainersForRecovery {
+    param([string]$Service)
+    $python = Resolve-ODSHostAgentPython
+    if (-not $python) { throw 'Python 3 is required to verify ODS container ownership before stopping' }
+    $helper = Join-Path $InstallDir 'scripts/stop-owned-containers.py'
+    if (-not (Test-Path -LiteralPath $helper -PathType Leaf)) { throw 'ODS container recovery helper is missing' }
+    $arguments = @($python.PrefixArgs) + @('-X', 'utf8', $helper, '--install-dir', $InstallDir)
+    if ($Service) { $arguments += @('--service', $Service) }
+    Write-AIWarn 'Compose validation failed; stopping only existing containers verified as belonging to this installation.'
+    & $python.FilePath @arguments
+    if ($LASTEXITCODE -ne 0) { throw 'Could not stop verified ODS containers' }
+}
+
 function Invoke-Stop {
     param([string]$Service)
 
@@ -2205,7 +2667,11 @@ function Invoke-Stop {
     Test-Install
     Push-Location $InstallDir
     try {
-        $flags = Get-ComposeFlags
+        try { $flags = Get-ComposeFlags }
+        catch {
+            Stop-ODSOwnedContainersForRecovery -Service $Service
+            return
+        }
         if ($Service) {
             if (-not (Test-ODSComposeServiceAvailable -ComposeFlags $flags -Service $Service)) {
                 Write-ODSMissingComposeServiceHint -ComposeFlags $flags -Service $Service
@@ -2288,9 +2754,15 @@ function Invoke-Restart {
                 Invoke-HermesSoulRefresh -SyncContainer
             }
         } else {
+            $nativeBackend = Get-NativeInferenceBackend
+            if ($nativeBackend -ne "none") {
+                # An absent SSD or changed qualification must fail before any
+                # working helper or inference process is stopped.
+                $null = Get-ODSNativeModelSelection -VerifyArtifacts
+            }
             Stop-ODSOpenCodeRuntime
             # For AMD, also restart native inference server
-            if ((Get-NativeInferenceBackend) -ne "none") {
+            if ($nativeBackend -ne "none") {
                 Stop-NativeInferenceServer
                 Start-NativeInferenceServer
             }
@@ -2320,6 +2792,10 @@ function Invoke-Restart {
                 Write-ODSComposeDiagnostics -InstallDir $InstallDir -ComposeFlags $flags -Phase "ods.ps1 restart (all)"
                 exit 1
             }
+            # The native host agent reads .env once at process startup. Refresh
+            # it after recreating env-backed containers so dashboard requests do
+            # not use a newer ODS_AGENT_KEY or model state than the agent holds.
+            Invoke-Agent -Action "restart"
             Write-AISuccess "All services restarted"
             $null = Start-ODSOpenCodeRuntime
             if ($hermesInStack) {
@@ -3363,12 +3839,18 @@ function Invoke-Disable {
     $dockerRunning = $false
     try { $null = docker info 2>$null; $dockerRunning = ($LASTEXITCODE -eq 0) } catch { }
     if ($dockerRunning) {
-        $flags = Get-ComposeFlags
-        Write-AI "Stopping $ServiceId..."
-        $prevEAP = $ErrorActionPreference
-        $ErrorActionPreference = "SilentlyContinue"
-        & docker compose @flags stop $ServiceId 2>$null
-        $ErrorActionPreference = $prevEAP
+        try { $flags = Get-ComposeFlags }
+        catch {
+            Stop-ODSOwnedContainersForRecovery -Service $ServiceId
+            $flags = $null
+        }
+        if ($flags) {
+            Write-AI "Stopping $ServiceId..."
+            $prevEAP = $ErrorActionPreference
+            $ErrorActionPreference = "SilentlyContinue"
+            & docker compose @flags stop $ServiceId 2>$null
+            $ErrorActionPreference = $prevEAP
+        }
     } else {
         Write-AIWarn "Docker Desktop is not running -- skipping container stop. $ServiceId will be excluded from the next 'ods start'."
     }
@@ -3425,10 +3907,10 @@ function Invoke-Model {
                 Write-Host '  T0         - qwen3.5-2b (< 8GB RAM, any GPU)'
                 Write-Host '  T1         - qwen3.5-9b (<12GB VRAM)'
                 Write-Host '  T2         - qwen3.5-9b (12-19GB, larger context)'
-                Write-Host '  T3         - qwen3-30b-a3b (20-47GB)'
-                Write-Host '  T4         - qwen3-30b-a3b (48GB+)'
-                Write-Host '  SH         - qwen3-30b-a3b (Strix Halo unified)'
-                Write-Host '  SH_LARGE   - qwen3-coder-next (90GB+ unified)'
+                Write-Host '  T3         - qwen3.5-27b (20-39GB)'
+                Write-Host '  T4         - qwen3.6-35b-a3b (40GB+)'
+                Write-Host '  SH         - qwen3.6-35b-a3b (Strix Halo unified)'
+                Write-Host '  SH_LARGE   - qwen3.6-35b-a3b (90GB+ unified)'
                 Write-Host '  NV_ULTRA   - qwen3-coder-next (amd64) / qwen3.6-35b-a3b (arm64 Spark)'
                 Write-Host ''
                 Write-Host 'Usage: .\ods.ps1 model swap <tier>'

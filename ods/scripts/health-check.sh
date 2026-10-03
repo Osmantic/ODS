@@ -29,6 +29,11 @@ for arg in "$@"; do
         --quiet) QUIET=true ;;
     esac
 done
+# --json is for machines: stdout must be the JSON document and nothing else,
+# so the human banner and per-check lines (all routed through log) are off.
+if $JSON_OUTPUT; then
+    QUIET=true
+fi
 
 # Config (defaults; .env overrides after load_env_file below)
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)" 

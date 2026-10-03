@@ -1,0 +1,13 @@
+{
+  "repository": "https://github.com/FreshRSS/FreshRSS",
+  "license": "AGPL-3.0",
+  "image": "freshrss/freshrss:1.30.0@sha256:258b8edfc8a76a61f60d2d6a14d8f8d12495d78abf38646a2137612dfa264a21",
+  "registry_checked_at": "2026-09-20",
+  "platforms": [
+    "linux/amd64",
+    "linux/arm",
+    "linux/arm64"
+  ],
+  "runtime_validation": "pending",
+  "notes": "Official Debian 1.30.0, persistent data/add-ons, SQLite selected in first-run wizard, scheduled feed refresh. Upstream initialization requires root for Apache/cron/ownership; request workers use www-data. No shell-expanded initial credentials or host mounts."
+}

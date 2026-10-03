@@ -1,0 +1,13 @@
+{
+  "repository": "https://github.com/traccar/traccar",
+  "license": "Apache-2.0",
+  "source_ref": "v6.15.3",
+  "image": "traccar/traccar:6.15.3-alpine@sha256:35346b4af46d57adaeff69a548a7d2cb189a2487fe9c24c99044ee7aa104b5df",
+  "registry_checked_at": "2026-09-20",
+  "platforms": [
+    "linux/amd64",
+    "linux/arm64"
+  ],
+  "runtime_validation": "pending",
+  "notes": "Pinned official Java application with private persistent PostgreSQL, explicit OsmAnd-only protocol, loopback UI/device ports and native first-user setup. No devices, locations or notification recipients preconfigured."
+}

@@ -98,7 +98,7 @@ def test_token_spy_key_wiring() -> None:
         "token-spy compose": "TOKEN_SPY_API_KEY=${TOKEN_SPY_API_KEY:-}" in token_spy_compose,
         "dashboard-api compose": "TOKEN_SPY_API_KEY=${TOKEN_SPY_API_KEY:-}" in dashboard_compose,
         "linux installer generation": "TOKEN_SPY_API_KEY=$(_env_get TOKEN_SPY_API_KEY" in phase06,
-        "linux installer output": "TOKEN_SPY_API_KEY=${TOKEN_SPY_API_KEY}" in phase06,
+        "linux installer output": 'TOKEN_SPY_API_KEY=$(dotenv_value "${TOKEN_SPY_API_KEY}")' in phase06,
         "windows installer generation": "Get-EnvOrNew \"TOKEN_SPY_API_KEY\"" in windows_env,
         "windows preserves token-spy key file": "token-spy-api-key.txt" in windows_env,
         "windows installer output": "TOKEN_SPY_API_KEY=$tokenSpyApiKey" in windows_env,

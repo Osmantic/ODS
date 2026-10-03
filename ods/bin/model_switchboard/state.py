@@ -513,7 +513,18 @@ def migrate_env_identity(env: dict[str, str]) -> dict[str, Any] | None:
     if backend not in _BACKEND_KINDS:
         backend = "unknown"
 
-    catalog_guess = llm_model
+    runtime_mode = str(env.get("AMD_INFERENCE_RUNTIME_MODE") or "").strip().casefold()
+    managed = str(env.get("AMD_INFERENCE_MANAGED") or "").strip().casefold()
+    external_lemonade = (
+        str(env.get("LEMONADE_EXTERNAL") or "").strip().casefold()
+        in {"1", "true", "yes", "on"}
+        or runtime_mode == "external-lemonade"
+        or (
+            managed in {"0", "false", "no", "off"}
+            and backend == "lemonade"
+        )
+    )
+    catalog_guess = lemonade if external_lemonade and lemonade else llm_model
     if not catalog_guess:
         stem = runtime_id[len("extra."):] if runtime_id.startswith("extra.") else runtime_id
         if stem.lower().endswith(".gguf"):

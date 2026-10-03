@@ -36,3 +36,18 @@ curl -X POST http://localhost:8100/tts \
     "language": "en"
   }'
 ```
+
+## Model terms and acceptance
+
+XTTS-v2 weights use the [Coqui Public Model License](https://huggingface.co/coqui/XTTS-v2/blob/main/LICENSE.txt),
+which limits use of the model and its outputs to its defined noncommercial
+purposes unless separately licensed. Review the terms and notice obligations
+before enabling this service. The ODS code license does not replace them.
+
+**Current integration limitation:** the Compose recipe hardcodes
+`COQUI_TOS_AGREED=1`. It therefore supplies upstream's acceptance signal without
+collecting an explicit, recorded choice from the operator. Enabling the service
+is not evidence that such a choice was collected, or that a commercial license
+exists. Do not use the recipe until you have independently established that your
+intended use is permitted. An explicit acceptance flow is a runtime follow-up;
+this documentation update does not change the recipe.

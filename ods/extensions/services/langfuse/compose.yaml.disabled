@@ -1,6 +1,6 @@
 services:
   langfuse:
-    image: langfuse/langfuse:3.159.0
+    image: langfuse/langfuse:3.159.0@sha256:50fcca2e82289d1eeafb3edc16af4da0c30e04ecf12d106eb707165057f1c8b3
     container_name: ods-langfuse-web
     restart: unless-stopped
     security_opt:
@@ -38,7 +38,7 @@ services:
       LANGFUSE_INIT_USER_NAME: "ODS Admin"
       LANGFUSE_INIT_USER_PASSWORD: "${LANGFUSE_INIT_USER_PASSWORD}"
     ports:
-      - "${BIND_ADDRESS:-127.0.0.1}:${LANGFUSE_PORT:-3006}:3000"
+      - "127.0.0.1:${LANGFUSE_PORT:-3006}:3000"
     networks:
       - default
       - langfuse-internal
@@ -74,7 +74,7 @@ services:
         max-file: "3"
 
   langfuse-worker:
-    image: langfuse/langfuse-worker:3.159.0
+    image: langfuse/langfuse-worker:3.159.0@sha256:53a0828a63e71dce6b700ffd784d871ad7e64c4dd7d2614606f6683b70d62962
     container_name: ods-langfuse-worker
     restart: unless-stopped
     security_opt:
@@ -134,7 +134,7 @@ services:
         max-file: "3"
 
   langfuse-postgres:
-    image: postgres:17.9-alpine
+    image: postgres:17.9-alpine@sha256:c7526c0f6c3f30260a563d7bcf8ad778effac59a44f8ffa86678c35418338609
     container_name: ods-langfuse-postgres
     restart: unless-stopped
     security_opt:
@@ -168,7 +168,7 @@ services:
         max-file: "3"
 
   langfuse-clickhouse:
-    image: clickhouse/clickhouse-server:26.2.4.23
+    image: clickhouse/clickhouse-server:26.2.4.23@sha256:51beb66e790213a53ddacacf133d3067106f5aa0c446c5b40b9b0c3ae0cd39fc
     container_name: ods-langfuse-clickhouse
     restart: unless-stopped
     security_opt:
@@ -205,7 +205,7 @@ services:
         max-file: "3"
 
   langfuse-redis:
-    image: redis:7.4.8-alpine
+    image: redis:7.4.8-alpine@sha256:7aec734b2bb298a1d769fd8729f13b8514a41bf90fcdd1f38ec52267fbaa8ee6
     container_name: ods-langfuse-redis
     restart: unless-stopped
     security_opt:
@@ -238,7 +238,10 @@ services:
         max-file: "3"
 
   langfuse-minio:
-    image: minio/minio:RELEASE.2025-09-07T16-13-09Z
+    image: ods-langfuse-minio:RELEASE.2025-09-07T16-13-09Z
+    build:
+      context: ./extensions/services/langfuse
+      dockerfile: Dockerfile.minio
     container_name: ods-langfuse-minio
     restart: unless-stopped
     security_opt:
@@ -273,7 +276,10 @@ services:
         max-file: "3"
 
   langfuse-minio-init:
-    image: minio/mc:RELEASE.2025-08-13T08-35-41Z
+    image: ods-langfuse-mc:RELEASE.2025-08-13T08-35-41Z
+    build:
+      context: ./extensions/services/langfuse
+      dockerfile: Dockerfile.mc
     container_name: ods-langfuse-minio-init
     restart: "no"
     security_opt:

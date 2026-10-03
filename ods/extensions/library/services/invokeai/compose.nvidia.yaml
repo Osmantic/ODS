@@ -1,5 +1,6 @@
 services:
   invokeai:
+    image: ghcr.io/invoke-ai/invokeai:v6.11.1-cuda@sha256:e7f9ec1d25c95eef2fd56ac94e582675fd8ea4a0a8e0a45e536c9cc3a64aab31
     deploy:
       resources:
         reservations:

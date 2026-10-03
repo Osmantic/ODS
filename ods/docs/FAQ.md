@@ -1,5 +1,7 @@
 # ODS FAQ
 
+> **Release channel:** the install commands on this page fetch development `main`, which is not signed. A signed-source path is staged in [Verified Install Preview](VERIFIED_INSTALL_PREVIEW.md); it is not active until the first eligible immutable release is published, and historical `v3.0.0` is not eligible.
+
 Quick answers to common questions.
 
 > **Looking for install/runtime troubleshooting?** See [TROUBLESHOOTING.md](TROUBLESHOOTING.md) and [INSTALL-TROUBLESHOOTING.md](INSTALL-TROUBLESHOOTING.md).
@@ -59,12 +61,10 @@ Still cheaper than cloud API bills at moderate usage.
 ### What can ODS do?
 
 **Out of the box:**
-- 💬 ChatGPT-style web interface (Open WebUI)
-- 🎤 Voice transcription (Whisper)
-- 🔊 Text-to-speech (Kokoro)
-- 📄 Document Q&A with RAG (Qdrant + embeddings)
+- 💬 Dashboard/Portal agent chat on fresh qualified Linux hosts; Open WebUI remains the chat fallback on other hosts
 - 🔗 API integration (OpenAI-compatible endpoints)
-- 🤖 Agent workflows (n8n)
+
+Whisper, Kokoro, RAG, n8n, and Open WebUI on qualified Linux hosts can be added when needed. Existing installations retain their selected services. Use `--with-webui` during a Linux install or add it later from the Extensions Library.
 
 **With voice profile:**
 - 🎙️ Full voice agents (speak in, speak out)
@@ -199,7 +199,7 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 .\install.ps1
 ```
 
-Do not run the `curl ... | bash` installer from Windows PowerShell.
+Do not run the `curl ... | bash` installer from Windows PowerShell. The Windows entry point guides Ubuntu/WSL2 preparation and requires Pixel with Hermes disabled. It installs missing WSL, Docker Desktop and Ubuntu after asking, continues by itself after the one restart, and opens Portal when done; see [Windows Quickstart](WINDOWS-QUICKSTART.md).
 
 The wizard:
 1. Detects your hardware
@@ -370,7 +370,7 @@ When the full model finishes, the system swaps it in automatically — you don't
 
 | Feature | ODS | Ollama |
 |---------|--------------|--------|
-| Web UI | ✅ Built-in (Open WebUI) | ❌ Separate install |
+| Web UI | ✅ Dashboard/Portal on qualified Linux hosts; Open WebUI available in the Library | ❌ Separate install |
 | Voice | ✅ Full pipeline | ❌ Not included |
 | RAG | ✅ Built-in | ❌ Not included |
 | n8n workflows | ✅ Included | ❌ Not included |

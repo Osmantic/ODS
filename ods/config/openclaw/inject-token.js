@@ -398,11 +398,28 @@ function startServer() {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       return res.end(MODELS);
     }
+    let upstream;
     const proxy = http.request({ hostname: '127.0.0.1', port: GATEWAY_PORT, path: req.url, method: req.method, headers: req.headers }, (up) => {
+      upstream = up;
+      if (res.destroyed) return up.destroy();
+      up.on('error', () => res.destroy());
       res.writeHead(up.statusCode, up.headers);
       up.pipe(res);
     });
-    proxy.on('error', () => { res.writeHead(502); res.end('gateway unavailable'); });
+    const stopUpstream = () => {
+      upstream?.destroy();
+      proxy.destroy();
+    };
+    // A completed request body is not cancellation: responses can stream long
+    // after upload finishes. Follow the downstream response socket instead.
+    req.on('aborted', stopUpstream);
+    res.on('close', stopUpstream);
+    proxy.on('error', () => {
+      if (res.destroyed) return;
+      if (res.headersSent) return res.destroy();
+      res.writeHead(502);
+      res.end('gateway unavailable');
+    });
     req.pipe(proxy);
   });
   server.on('error', (err) => {

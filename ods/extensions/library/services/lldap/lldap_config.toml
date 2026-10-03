@@ -1,0 +1,13 @@
+database_url = "sqlite:///data/users.db?mode=rwc"
+ldap_host = "0.0.0.0"
+ldap_port = 3890
+http_host = "0.0.0.0"
+http_port = 17170
+assets_path = "/app/app"
+force_ldap_user_pass_reset = false
+
+[smtp_options]
+enable_password_reset = false
+
+[ldaps_options]
+enabled = false

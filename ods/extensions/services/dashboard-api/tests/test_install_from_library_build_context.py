@@ -21,6 +21,30 @@ def _read(path: Path) -> dict:
         return yaml.safe_load(f)
 
 
+@pytest.mark.parametrize('context', [
+    'https://github.com/example/project.git#' + 'a' * 40 + ':app',
+    'https://example.com/source.tar.gz',
+    'git://github.com/example/project.git#main',
+    'ssh://git@github.com/example/project.git',
+    'git@github.com:example/project.git',
+])
+@pytest.mark.parametrize('short_form', [True, False])
+def test_preserves_remote_context_while_rewriting_local_neighbor(tmp_path, context, short_form):
+    compose = tmp_path / 'compose.yaml'
+    remote = context if short_form else {'context': context, 'dockerfile': 'Dockerfile'}
+    _write(compose, {'services': {
+        'remote': {'build': remote}, 'local': {'build': {'context': '.'}},
+    }})
+    final_dir = tmp_path / 'installed'
+    _rewrite_build_context(compose, final_dir)
+    result = _read(compose)
+    assert result['services']['remote']['build'] == remote
+    assert result['services']['local']['build']['context'] == str(final_dir.resolve())
+    before = compose.read_bytes()
+    _rewrite_build_context(compose, final_dir)
+    assert compose.read_bytes() == before
+
+
 def test_rewrites_relative_dot_context(tmp_path, caplog):
     compose = tmp_path / "compose.yaml"
     final_dir = Path("/var/lib/ods/user-extensions/audiocraft")

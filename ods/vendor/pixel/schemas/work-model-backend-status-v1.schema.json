@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/work-model-backend-status-v1.schema.json",
+  "title": "Pixel content-free contained model backend status v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "operation", "generatedAt", "state", "checks", "nextAction", "privacy", "authority", "boundary"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/work-model-backend-status-v1.schema.json"},
+    "schemaVersion": {"const": 1},
+    "operation": {"const": "pixel-work-model-backend-inspect"},
+    "generatedAt": {"type": "string", "format": "date-time"},
+    "state": {"enum": ["ready", "unavailable", "incompatible"]},
+    "checks": {
+      "type": "object", "additionalProperties": false,
+      "required": ["artifactBound", "launchBound", "dockerReachable", "imageBound", "containerRunning", "identityBound", "acceleratorBound", "filesystemBound", "environmentBound", "resourcesBound", "privateNetworkBound"],
+      "properties": {
+        "artifactBound": {"type": "boolean"}, "launchBound": {"type": "boolean"},
+        "dockerReachable": {"type": "boolean"}, "imageBound": {"type": "boolean"},
+        "containerRunning": {"type": "boolean"}, "identityBound": {"type": "boolean"},
+        "acceleratorBound": {"type": "boolean"}, "filesystemBound": {"type": "boolean"},
+        "environmentBound": {"type": "boolean"}, "resourcesBound": {"type": "boolean"},
+        "privateNetworkBound": {"type": "boolean"}
+      }
+    },
+    "nextAction": {"enum": ["ready", "start-or-repair-private-backend", "inspect-private-backend-configuration"]},
+    "privacy": {"const": {"modelIdentifier": false, "backendIdentifier": false, "acceleratorIdentifier": false, "deviceIdentifiers": false, "paths": false, "hashes": false, "credentials": false, "prompts": false, "responses": false}},
+    "authority": {"const": {"grantsExecution": false, "startsContainer": false, "changesNetwork": false, "pullsImage": false, "grantsDevices": false, "grantsCredentials": false, "grantsExternalEffects": false, "grantsCompletion": false}},
+    "boundary": {"const": "Content-free read-only inspection of one exact measured private local-model artifact, confirmed launch contract, container, image, filesystem, environment, resources, accelerator grant, and internal Docker network. It reveals no model, backend, device, path, hash, credential, prompt, or response and grants no execution, container start, image pull, network or device change, credential, external-effect, or completion authority."}
+  }
+}

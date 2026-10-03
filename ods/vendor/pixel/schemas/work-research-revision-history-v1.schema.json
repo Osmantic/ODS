@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/work-research-revision-history-v1.schema.json",
+  "title": "Pixel append-only Researcher revision history v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "historyId", "jobId", "claimId", "createdAt", "planSha256", "status", "maxRevisionRounds", "revisionRounds", "attempts", "finalReportSha256", "finalVerificationSha256", "finalReviewSha256", "independentlyScored", "backendOutputUsedAsScore", "authority", "boundary"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/work-research-revision-history-v1.schema.json"},
+    "schemaVersion": {"const": 1},
+    "historyId": {"type": "string", "pattern": "^researchrevisionhistory-[0-9]{13}-[a-f0-9]{12}$"},
+    "jobId": {"type": "string", "pattern": "^work-[0-9]{13}-[a-f0-9]{12}$"},
+    "claimId": {"type": "string", "pattern": "^workclaim-[0-9]{13}-[a-f0-9]{12}$"},
+    "createdAt": {"type": "string", "format": "date-time"},
+    "planSha256": {"$ref": "#/$defs/sha256"},
+    "status": {"enum": ["ready-for-independent-evaluation", "revision-budget-exhausted"]},
+    "maxRevisionRounds": {"type": "integer", "minimum": 0, "maximum": 4},
+    "revisionRounds": {"type": "integer", "minimum": 0, "maximum": 4},
+    "attempts": {"type": "array", "minItems": 1, "maxItems": 5, "items": {"$ref": "#/$defs/attempt"}},
+    "finalReportSha256": {"$ref": "#/$defs/sha256"},
+    "finalVerificationSha256": {"$ref": "#/$defs/sha256"},
+    "finalReviewSha256": {"$ref": "#/$defs/sha256"},
+    "independentlyScored": {"const": false},
+    "backendOutputUsedAsScore": {"const": false},
+    "authority": {"const": {"grantsExecution": false, "grantsScore": false, "grantsAcceptance": false, "grantsCompletion": false, "grantsPublication": false, "grantsDeployment": false, "grantsExternalEffects": false, "grantsScopeExpansion": false}},
+    "boundary": {"const": "Append-only public Researcher candidate, deterministic verification, and same-model revision-review history. It preserves attempts but grants no score, semantic truth, completion, publication, deployment, execution, external-effect, policy, or scope authority."}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "attempt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["round", "workerContextIsolationReceiptSha256", "proposal", "report", "verification", "review"],
+      "properties": {
+        "round": {"type": "integer", "minimum": 0, "maximum": 4},
+        "workerContextIsolationReceiptSha256": {"$ref": "#/$defs/sha256"},
+        "proposal": {"type": "object"},
+        "report": {"type": "object"},
+        "verification": {"type": "object"},
+        "review": {"type": "object"}
+      }
+    }
+  }
+}

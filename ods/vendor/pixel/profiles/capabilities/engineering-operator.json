@@ -1,0 +1,5 @@
+{
+  "name": "engineering-operator",
+  "description": "Chief-of-staff sources plus the isolated Operations Broker for fleet work.",
+  "limbs": { "email": true, "calendar": true, "social": false, "web": true, "operations": true, "frontier": false }
+}

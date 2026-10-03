@@ -11,29 +11,42 @@ It never returns catalog tok/s estimates as observed performance.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import platform
 import re
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
-from env_values import strip_matching_quotes
+from env_values import parse_env_value, strip_matching_quotes
 from gguf_inspector import inspect_gguf
-from context_policy import HERMES_MIN_CONTEXT, HERMES_TARGET_CONTEXT
+from model_mtp import mtp_metadata
+from context_policy import HERMES_MIN_CONTEXT, HERMES_TARGET_CONTEXT, PIXEL_MIN_CONTEXT
 from helpers import (
     get_model_performance_samples,
     get_recorded_model_performance,
     is_plausible_single_request_tps,
 )
-from model_memory import required_model_memory_gb
+from model_memory import memory_metadata, required_model_memory_gb
+from model_selection import (
+    POLICY as _SHARED_SELECTOR_POLICY,
+    family_allowed as _shared_family_allowed,
+    hardware_matching_profiles as _shared_hardware_matching_profiles,
+    matching_runtime_profile as _shared_matching_runtime_profile,
+    memory_class as _shared_memory_class,
+    plan_model_context,
+    rank_catalog_models,
+    value_enabled as _value_enabled,
+)
 from models import GPUInfo
 
 
 _EVIDENCE_PATH = Path(__file__).with_name("performance_evidence.json")
 _DEFAULT_RECOMMENDATION_POLICY = "catalog-fit-pre-download"
 _VRAM_FIT_TOLERANCE_GB = 0.25
-_MODEL_SELECTOR_POLICY = "context-aware-largest-capable-general-v1"
+_MODEL_SELECTOR_POLICY = _SHARED_SELECTOR_POLICY
 _RUNTIME_MODEL_PREFIXES = ("extra.", "user.")
 _AGENT_MIN_LOCAL_TOKENS_PER_SEC = 2.0
 _MODEL_PUBLISHERS = (
@@ -143,7 +156,7 @@ def read_env_file_value(key: str, install_dir: str | Path) -> str:
     try:
         for line in env_path.read_text(encoding="utf-8").splitlines():
             if line.startswith(f"{key}="):
-                return strip_matching_quotes(line.split("=", 1)[1])
+                return parse_env_value(line.split("=", 1)[1])
     except OSError:
         pass
     return ""
@@ -172,6 +185,11 @@ def read_context_length(install_dir: str | Path, default: int = 32768) -> int:
 
 def model_files_dir(data_dir: str | Path) -> Path:
     return Path(data_dir) / "models"
+
+
+def installed_model_path(data_dir: str | Path, filename: str) -> Path | None:
+    from model_stores import resolve_model_file
+    return resolve_model_file(Path(data_dir), filename, container=Path("/.dockerenv").exists())
 
 
 def _model_aliases(model: dict[str, Any]) -> set[str]:
@@ -219,6 +237,14 @@ def normalize_catalog_entry(raw: dict[str, Any]) -> dict[str, Any] | None:
     except (TypeError, ValueError):
         context_length = 0
     context_limit_known = raw.get("context_limit_known") is not False
+    # Whether the entry itself states its native maximum (a catalog
+    # max_context_length, or an import's GGUF header value). When it does
+    # not, max_context_length below falls back to context_length for the
+    # context options, and model_selection.declared_max_context must not
+    # treat that fallback as a native ceiling.
+    native_context_declared = context_limit_known and bool(
+        raw.get("max_context_length") or raw.get("maxContextLength")
+    )
     if context_limit_known:
         try:
             max_context_length = int(
@@ -228,6 +254,7 @@ def normalize_catalog_entry(raw: dict[str, Any]) -> dict[str, Any] | None:
             )
         except (TypeError, ValueError):
             max_context_length = context_length
+            native_context_declared = False
     else:
         max_context_length = 0
 
@@ -236,6 +263,7 @@ def normalize_catalog_entry(raw: dict[str, Any]) -> dict[str, Any] | None:
         aliases.add(str(raw["llm_model_name"]))
 
     model = {
+        **memory_metadata(raw),
         "id": str(model_id),
         "name": raw.get("name") or str(model_id),
         "family": raw.get("family"),
@@ -251,6 +279,7 @@ def normalize_catalog_entry(raw: dict[str, Any]) -> dict[str, Any] | None:
         "context_length": context_length,
         "max_context_length": max(max_context_length, context_length) if context_limit_known else 0,
         "context_limit_known": context_limit_known,
+        "native_context_declared": native_context_declared,
         "specialty": raw.get("specialty", "General"),
         "description": raw.get("description", ""),
         "quantization": raw.get("quantization"),
@@ -258,6 +287,9 @@ def normalize_catalog_entry(raw: dict[str, Any]) -> dict[str, Any] | None:
         "active_params_b": raw.get("active_params_b"),
         "tokens_per_sec_estimate": raw.get("tokens_per_sec_estimate"),
         "runtime_profiles": raw.get("runtime_profiles") if isinstance(raw.get("runtime_profiles"), list) else [],
+        "install_recommendation": _value_enabled(raw.get("install_recommendation", True)),
+        "selection": raw.get("selection") if isinstance(raw.get("selection"), dict) else {},
+        "mtp": raw.get("mtp") if isinstance(raw.get("mtp"), dict) else {},
         "app_compatibility": raw.get("app_compatibility") if isinstance(raw.get("app_compatibility"), dict) else {},
         "catalog_source": raw.get("source") or "ods",
         "source_repo": raw.get("source_repo"),
@@ -361,23 +393,151 @@ def _compatibility_scope_matches(raw: Any, runtime_context: Optional[dict[str, A
     return True
 
 
+def _fresh_compatibility_override(raw: dict[str, Any]) -> bool:
+    """Do not promote an undated, malformed, or expired host-specific claim."""
+    expires_at = raw.get("expiresAt")
+    if not isinstance(expires_at, str):
+        return False
+    try:
+        expiry = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    return expiry.tzinfo is not None and expiry > datetime.now(timezone.utc)
+
+
+# User-facing compatibility copy.
+#
+# Catalog ``app_compatibility.<app>.reason`` and ``evidence`` are internal
+# fleet-QA notes (run IDs, host names, harness vocabulary). They stay in the
+# catalog and in API payloads for operators and tooling, but no UI may render
+# them. UIs render ``userMessage`` instead: an optional per-entry catalog
+# ``userNote`` when one is written, otherwise generic copy keyed by app and
+# status. Status values and their semantics are unchanged.
+COMPATIBILITY_BLOCKING_STATUSES = frozenset({
+    "blocked",
+    "incompatible",
+    "not_agent_viable",
+    "not_recommended",
+    "not_supported",
+    "unsupported",
+    "unsupported_until_revalidated",
+})
+_COMPATIBILITY_VERIFIED_STATUSES = frozenset({
+    "agent_viable",
+    "pixel_agent_viable",
+    "supported",
+    "verified",
+})
+_USER_NOTE_MAX_CHARS = 280
+_COMPATIBILITY_USER_COPY = {
+    "hermesTalk": {
+        "blocked": "This model isn't supported in ODS Talk yet. Switch to a recommended model to use ODS Talk.",
+        "verified": "Verified with ODS Talk.",
+        "unknown": "Not yet tested with ODS Talk.",
+    },
+    "agentViability": {
+        "blocked": "Not verified for agent tasks, so responses may fail. Switch to a recommended model for agent features.",
+        "verified": "Verified for agent tasks.",
+        "unknown": "Not yet tested for agent tasks.",
+    },
+    "pixelAgent": {
+        "blocked": "Not verified for Portal agent tasks, so tool use may be unreliable.",
+        "verified": "Verified for Portal agent tasks.",
+        "unknown": "Not yet tested for Portal agent tasks.",
+    },
+    "openaiChat": {
+        "blocked": "This model isn't supported for chat yet. Switch to a recommended model to chat.",
+        "verified": "Verified for chat.",
+        "unknown": "Not yet tested for chat.",
+    },
+}
+_COMPATIBILITY_APP_NAMES = {
+    "litellm": "LiteLLM",
+    "openWebui": "Open WebUI",
+    "openclaw": "OpenClaw",
+    "opencode": "OpenCode",
+    "perplexica": "Perplexica",
+}
+
+
+def _compatibility_status_group(status: Any) -> str:
+    normalized = normalize_key(status).replace("-", "_")
+    if normalized in COMPATIBILITY_BLOCKING_STATUSES:
+        return "blocked"
+    if normalized in _COMPATIBILITY_VERIFIED_STATUSES:
+        return "verified"
+    return "unknown"
+
+
+def _compatibility_app_name(app_key: str) -> str:
+    if app_key in _COMPATIBILITY_APP_NAMES:
+        return _COMPATIBILITY_APP_NAMES[app_key]
+    words = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", str(app_key or "")).split()
+    return " ".join(word[:1].upper() + word[1:] for word in words) or "this app"
+
+
+def compatibility_user_message(app_key: str, status: Any, user_note: Any = None) -> str:
+    """Return end-user copy for one app compatibility verdict.
+
+    ``app_key`` is the camelCase payload key (``hermesTalk``, ``perplexica``).
+    A catalog ``userNote`` wins when present; the internal ``reason`` is never
+    used here.
+    """
+    if isinstance(user_note, str):
+        note = " ".join(user_note.split())
+        if note and len(note) <= _USER_NOTE_MAX_CHARS:
+            return note
+    group = _compatibility_status_group(status)
+    copy = _COMPATIBILITY_USER_COPY.get(app_key)
+    if copy:
+        return copy[group]
+    name = _compatibility_app_name(app_key)
+    if group == "blocked":
+        return f"This model isn't supported in {name} yet. Switch to a recommended model to use {name}."
+    if group == "verified":
+        return f"Verified with {name}."
+    return f"Not yet tested with {name}."
+
+
 def _app_compatibility_entry(
     raw: Any,
     default_label: str,
     runtime_context: Optional[dict[str, Any]] = None,
+    app_key: str = "",
 ) -> dict[str, Any]:
+    if isinstance(raw, dict):
+        # A fresh positive result on one host must not erase an older negative
+        # result on other hosts. Only an explicitly host-scoped override can
+        # replace the default record for a matching runtime context.
+        overrides = raw.get("scopedOverrides")
+        if isinstance(overrides, list):
+            for override in overrides:
+                if (
+                    isinstance(override, dict)
+                    and _scope_values(
+                        override, "hostScope", "host_scope", "fleetHostScope", "fleet_host_scope"
+                    )
+                    and str(override.get("status") or "").strip()
+                    and _fresh_compatibility_override(override)
+                    and _compatibility_scope_matches(override, runtime_context)
+                ):
+                    raw = override
+                    break
     if isinstance(raw, dict) and not _compatibility_scope_matches(raw, runtime_context):
         return {
             "status": "unknown",
             "label": default_label,
             "reason": "",
+            "userMessage": compatibility_user_message(app_key, "unknown"),
         }
 
+    user_note = None
     if isinstance(raw, dict):
         status = str(raw.get("status") or "unknown").strip() or "unknown"
         label = str(raw.get("label") or default_label).strip() or default_label
         reason = str(raw.get("reason") or "").strip()
         evidence = str(raw.get("evidence") or "").strip()
+        user_note = raw.get("userNote", raw.get("user_note"))
     elif isinstance(raw, str) and raw.strip():
         status = raw.strip()
         label = default_label
@@ -389,10 +549,13 @@ def _app_compatibility_entry(
         reason = ""
         evidence = ""
 
+    normalized_status = normalize_key(status).replace("-", "_") or "unknown"
     payload = {
-        "status": normalize_key(status).replace("-", "_") or "unknown",
+        "status": normalized_status,
         "label": label,
+        # Internal fleet-QA note. Kept for operators and tooling; never render.
         "reason": reason,
+        "userMessage": compatibility_user_message(app_key, normalized_status, user_note),
     }
     if evidence:
         payload["evidence"] = evidence
@@ -404,20 +567,21 @@ def _app_compatibility_payload_key(key: Any) -> str:
     if not raw:
         return ""
     aliases = {
-        "agent_viability": "agentViability",
-        "hermes_talk": "hermesTalk",
-        "openai_chat": "openaiChat",
+        "agent-viability": "agentViability",
+        "hermes-talk": "hermesTalk",
+        "openai-chat": "openaiChat",
+        "pixel-agent": "pixelAgent",
     }
     if raw in aliases:
         return aliases[raw]
-    parts = [part for part in raw.split("_") if part]
+    parts = [part for part in raw.split("-") if part]
     if not parts:
         return ""
     return parts[0] + "".join(part[:1].upper() + part[1:] for part in parts[1:])
 
 
 def _app_compatibility_default_label(key: Any) -> str:
-    parts = [part for part in normalize_key(str(key or "")).split("_") if part]
+    parts = [part for part in normalize_key(str(key or "")).split("-") if part]
     if not parts:
         return "App compatibility untested"
     acronyms = {"api": "API", "llm": "LLM", "ui": "UI"}
@@ -439,6 +603,10 @@ def _exact_performance_agent_block(performance: Optional[dict[str, Any]]) -> dic
 
     return {
         "tokensPerSec": round(tokens_per_sec, 1),
+        "userSpeed": (
+            f"{tokens_per_sec:.1f} tokens/sec measured, "
+            f"{_AGENT_MIN_LOCAL_TOKENS_PER_SEC:.0f}+ needed"
+        ),
         "reason": (
             f"Local measured throughput is {tokens_per_sec:.1f} tok/s, below the "
             f"{_AGENT_MIN_LOCAL_TOKENS_PER_SEC:.1f} tok/s floor for ODS Talk and "
@@ -447,17 +615,94 @@ def _exact_performance_agent_block(performance: Optional[dict[str, Any]]) -> dic
     }
 
 
+_TALK_BLOCKING_STATUSES = frozenset({
+    "blocked",
+    "incompatible",
+    "not_agent_viable",
+    "not_recommended",
+    "not_supported",
+    "unsupported",
+    "unsupported_until_revalidated",
+})
+
+
+def _context_k(value: int) -> str:
+    return f"{value / 1024:g}K"
+
+
+def hermes_context_block(
+    model: dict[str, Any],
+    context_length: Optional[int] = None,
+) -> Optional[dict[str, Any]]:
+    """ODS Talk verdict when the context rules Hermes out, else None.
+
+    Hermes refuses a model below :data:`HERMES_MIN_CONTEXT` with an HTTP 502
+    after the model is already loaded. Say so up front instead: either the
+    model's own maximum is below the floor, or ``context_length`` (the
+    context it is served at, or will be served at on this hardware) is.
+    """
+    try:
+        native = int(model.get("max_context_length") or 0)
+    except (TypeError, ValueError):
+        native = 0
+    limit_known = model.get("context_limit_known") is not False
+    if limit_known and 0 < native < HERMES_MIN_CONTEXT:
+        return {
+            "status": "unsupported",
+            "label": "Context too small for ODS Talk",
+            "reason": f"model maximum context {native} is below the Hermes minimum {HERMES_MIN_CONTEXT}",
+            "userMessage": (
+                f"ODS Talk needs at least {_context_k(HERMES_MIN_CONTEXT)} of context; "
+                f"this model supports only {_context_k(native)}."
+            ),
+            "code": "context_below_hermes_minimum",
+        }
+    try:
+        served = int(context_length or 0)
+    except (TypeError, ValueError):
+        served = 0
+    if 0 < served < HERMES_MIN_CONTEXT:
+        return {
+            "status": "unsupported",
+            "label": "Context too small for ODS Talk",
+            "reason": f"served context {served} is below the Hermes minimum {HERMES_MIN_CONTEXT}",
+            "userMessage": (
+                f"ODS Talk needs at least {_context_k(HERMES_MIN_CONTEXT)} of context; this model "
+                f"runs at {_context_k(served)} here. Load it with a {_context_k(HERMES_MIN_CONTEXT)} "
+                "context in Models, or choose a model that fits at that size."
+            ),
+            "code": "context_below_hermes_minimum",
+        }
+    return None
+
+
 def model_app_compatibility(
     model: dict[str, Any],
     performance: Optional[dict[str, Any]] = None,
     runtime_context: Optional[dict[str, Any]] = None,
+    context_length: Optional[int] = None,
 ) -> dict[str, Any]:
+    """App verdicts for ``model``.
+
+    ``context_length`` is the context the model is (or will be) served at;
+    below the Hermes floor it rules ODS Talk out on its own.
+    """
     raw = model.get("app_compatibility") if isinstance(model.get("app_compatibility"), dict) else {}
-    hermes_talk = _app_compatibility_entry(raw.get("hermes_talk"), "ODS Talk untested", runtime_context)
+    hermes_talk = _app_compatibility_entry(
+        raw.get("hermes_talk"), "ODS Talk untested", runtime_context, "hermesTalk"
+    )
+    context_block = hermes_context_block(model, context_length)
+    if context_block and hermes_talk.get("status") not in _TALK_BLOCKING_STATUSES:
+        hermes_talk = context_block
     compatibility = {
-        "openaiChat": _app_compatibility_entry(raw.get("openai_chat"), "Direct chat untested", runtime_context),
+        "openaiChat": _app_compatibility_entry(
+            raw.get("openai_chat"), "Direct chat untested", runtime_context, "openaiChat"
+        ),
         "hermesTalk": hermes_talk,
         "agentViability": _agent_viability_entry(raw.get("agent_viability"), hermes_talk, runtime_context),
+        "pixelAgent": _app_compatibility_entry(
+            raw.get("pixel_agent"), "Portal agent untested", runtime_context, "pixelAgent"
+        ),
     }
     for raw_key, raw_value in raw.items():
         payload_key = _app_compatibility_payload_key(raw_key)
@@ -467,18 +712,31 @@ def model_app_compatibility(
             raw_value,
             _app_compatibility_default_label(raw_key),
             runtime_context,
+            payload_key,
         )
     exact_speed_block = _exact_performance_agent_block(performance)
     if exact_speed_block:
+        speed = exact_speed_block["userSpeed"]
         compatibility["hermesTalk"] = {
             "status": "unsupported_until_revalidated",
             "label": "Too slow for ODS Talk",
             "reason": exact_speed_block["reason"],
+            "userMessage": (
+                f"This model is too slow on this machine for ODS Talk ({speed}). "
+                "Switch to a smaller or faster model to use ODS Talk."
+            ),
         }
         compatibility["agentViability"] = {
             "status": "not_agent_viable",
             "label": "Too slow for agents",
             "reason": exact_speed_block["reason"],
+            "userMessage": f"Too slow on this machine for agent tasks ({speed}).",
+        }
+        compatibility["pixelAgent"] = {
+            "status": "not_agent_viable",
+            "label": "Too slow for Portal",
+            "reason": exact_speed_block["reason"],
+            "userMessage": f"Too slow on this machine for Portal agent tasks ({speed}).",
         }
     return compatibility
 
@@ -489,7 +747,7 @@ def _agent_viability_entry(
     runtime_context: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     if raw:
-        return _app_compatibility_entry(raw, "Agent viability untested", runtime_context)
+        return _app_compatibility_entry(raw, "Agent viability untested", runtime_context, "agentViability")
 
     hermes_status = str((hermes_talk or {}).get("status") or "unknown").strip().lower()
     hermes_reason = str((hermes_talk or {}).get("reason") or "").strip()
@@ -506,6 +764,7 @@ def _agent_viability_entry(
             "status": "not_agent_viable",
             "label": "Agent viability blocked",
             "reason": hermes_reason or "This model is not currently viable for agent-required ODS workflows.",
+            "userMessage": compatibility_user_message("agentViability", "not_agent_viable"),
         }
         if hermes_evidence:
             payload["evidence"] = hermes_evidence
@@ -515,6 +774,7 @@ def _agent_viability_entry(
             "status": "agent_viable",
             "label": "Agent viable",
             "reason": hermes_reason,
+            "userMessage": compatibility_user_message("agentViability", "agent_viable"),
         }
         if hermes_evidence:
             payload["evidence"] = hermes_evidence
@@ -523,6 +783,7 @@ def _agent_viability_entry(
         "status": "unknown",
         "label": "Agent viability untested",
         "reason": "",
+        "userMessage": compatibility_user_message("agentViability", "unknown"),
     }
 
 
@@ -554,6 +815,7 @@ def collect_runtime_flags(install_dir: str | Path) -> dict[str, str]:
         "LLAMA_CACHE_TYPE_V": "cache_type_v",
         "LLAMA_ARG_FLASH_ATTN": "flash_attn",
         "LLAMA_FLASH_ATTN": "flash_attn",
+        "LLAMA_ARG_CHECKPOINT_EVERY_NT": "checkpoint_every_n_tokens",
         "LLAMA_ARG_CHECKPOINT_EVERY_N_TOKENS": "checkpoint_every_n_tokens",
         "LLAMA_CHECKPOINT_EVERY_N_TOKENS": "checkpoint_every_n_tokens",
         "LLAMA_ARG_NO_CACHE_PROMPT": "no_cache_prompt",
@@ -667,43 +929,116 @@ def _selector_required_memory_gb(model: dict[str, Any]) -> float:
     return required_model_memory_gb(model)
 
 
-def _matching_runtime_profile(model: dict[str, Any], gpu_info: Optional[GPUInfo],
-                              system_ram_gb: int | None = None) -> dict[str, Any] | None:
+def _gpu_memory_type(gpu_info: Optional[GPUInfo]) -> str:
     if not gpu_info:
-        return None
+        return "discrete"
     backend = normalize_key(gpu_info.gpu_backend)
-    memory_type = (
+    return (
         "unified"
         if backend == "apple"
         or normalize_key(getattr(gpu_info, "memory_type", "")) == "unified"
         or "strix-halo" in normalize_key(gpu_info.name)
         else "discrete"
     )
-    host_arch = _normalize_host_arch(platform.machine())
-    vram_gb = float(gpu_info.memory_total_mb or 0) / 1024.0
+
+
+def _gpu_memory_class(gpu_info: Optional[GPUInfo]) -> str:
+    if not gpu_info:
+        return "cpu"
+    return _shared_memory_class(gpu_info.gpu_backend, _gpu_memory_type(gpu_info), gpu_info.memory_total_mb)
+
+
+def _hardware_matching_runtime_profiles(model: dict[str, Any], gpu_info: Optional[GPUInfo],
+                                       system_ram_gb: int | None = None) -> list[dict[str, Any]]:
+    """Return profiles anchored to the detected GPU before system-RAM filtering."""
+    if not gpu_info:
+        return []
     ram_gb = system_ram_gb if system_ram_gb is not None else _system_ram_gb()
-    for profile in model.get("runtime_profiles", []) or []:
-        if not isinstance(profile, dict):
-            continue
-        if normalize_key(profile.get("backend")) not in {"", backend}:
-            continue
-        allowed_arches = {_normalize_host_arch(item) for item in _list_value(profile.get("host_arch"))}
-        if allowed_arches and host_arch not in allowed_arches:
-            continue
-        required_memory_type = normalize_key(profile.get("memory_type"))
-        if required_memory_type and required_memory_type != memory_type:
-            continue
-        try:
-            if profile.get("vram_min_gb") is not None and vram_gb < float(profile["vram_min_gb"]):
-                continue
-            if profile.get("vram_max_gb") is not None and vram_gb > float(profile["vram_max_gb"]):
-                continue
-            if profile.get("system_ram_min_gb") is not None and float(ram_gb or 0) < float(profile["system_ram_min_gb"]):
-                continue
-        except (TypeError, ValueError):
-            continue
-        return profile
-    return None
+    return _shared_hardware_matching_profiles(
+        model, gpu_info.gpu_backend, _gpu_memory_type(gpu_info),
+        gpu_info.memory_total_mb or 0, platform.machine(), ram_gb,
+    )
+
+
+def _matching_runtime_profile(model: dict[str, Any], gpu_info: Optional[GPUInfo],
+                              system_ram_gb: int | None = None) -> dict[str, Any] | None:
+    if not gpu_info:
+        return None
+    ram_gb = system_ram_gb if system_ram_gb is not None else _system_ram_gb()
+    return _shared_matching_runtime_profile(
+        model, gpu_info.gpu_backend, _gpu_memory_type(gpu_info),
+        gpu_info.memory_total_mb or 0, ram_gb, platform.machine(),
+    )
+
+
+def planned_model_context(
+    model: dict[str, Any],
+    gpu_info: Optional[GPUInfo],
+    system_ram_gb: int | None = None,
+    *,
+    preferred_context: int | None = None,
+    min_context: int = HERMES_MIN_CONTEXT,
+) -> dict[str, Any]:
+    """The context ``model`` is served at on this machine (install policy).
+
+    The dashboard model list, a model switch (POST /api/models/{id}/load)
+    and a restore of the installer's pick all use this, and it is the same
+    code the installer's selector runs (model_selection.plan_model_context):
+    the Hermes floor when it fits, otherwise the largest context that does.
+    """
+    if gpu_info:
+        ram_gb = system_ram_gb if system_ram_gb is not None else _system_ram_gb()
+        return plan_model_context(
+            model,
+            capacity_gb=_usable_model_memory_gb(gpu_info, ram_gb),
+            backend=gpu_info.gpu_backend,
+            memory_type=_gpu_memory_type(gpu_info),
+            vram_mb=gpu_info.memory_total_mb or 0,
+            ram_gb=ram_gb,
+            host_arch=platform.machine(),
+            min_context=min_context,
+            preferred_context=preferred_context,
+        )
+    # Without hardware information no runtime profile applies and the
+    # historical 4 GB ceiling bounds the plan (see rank_pre_download_models).
+    return plan_model_context(
+        model,
+        capacity_gb=4.0,
+        backend="undetected",
+        memory_type="discrete",
+        vram_mb=0,
+        ram_gb=system_ram_gb or 0,
+        host_arch=platform.machine(),
+        min_context=min_context,
+        preferred_context=preferred_context,
+    )
+
+
+def activation_context_plan(
+    model: dict[str, Any],
+    install_dir: str | Path,
+    gpu_info: Optional[GPUInfo] = None,
+    *,
+    preferred_context: int | None = None,
+) -> Optional[dict[str, Any]]:
+    """:func:`planned_model_context` for a switch on this install.
+
+    Uses the installer-recorded SYSTEM_RAM_GB and, on Windows AMD native
+    runtimes the container cannot inspect, the same GPU surrogate the model
+    list uses. Returns None when the hardware is unknown, so the caller keeps
+    the host agent's default rather than planning for a guessed 4 GB.
+    """
+    try:
+        ram_gb = int(read_env_file_value("SYSTEM_RAM_GB", install_dir) or read_env_value("SYSTEM_RAM_GB", install_dir) or 0)
+    except ValueError:
+        ram_gb = 0
+    if gpu_info is None:
+        gpu_info = _host_amd_runtime_gpu_from_env(install_dir, ram_gb)
+    if gpu_info is None:
+        return None
+    return planned_model_context(
+        model, gpu_info, ram_gb or None, preferred_context=preferred_context,
+    )
 
 
 def _effective_context_length(model: dict[str, Any], runtime_profile: dict[str, Any] | None = None) -> int:
@@ -753,6 +1088,7 @@ def _context_options(
     model: dict[str, Any],
     runtime_profile: dict[str, Any] | None,
     gpu_info: Optional[GPUInfo],
+    system_ram_gb: int | None = None,
 ) -> list[dict[str, Any]]:
     context_limit_known = model.get("context_limit_known") is not False
     try:
@@ -773,7 +1109,7 @@ def _context_options(
         if value <= maximum
     }
     values.update({recommended, maximum})
-    capacity = _usable_model_memory_gb(gpu_info) if gpu_info else 0.0
+    capacity = _usable_model_memory_gb(gpu_info, system_ram_gb) if gpu_info else 0.0
     return [
         {
             "contextLength": value,
@@ -797,13 +1133,17 @@ def _context_options(
     ]
 
 
-def _usable_model_memory_gb(gpu_info: Optional[GPUInfo]) -> float:
+def _usable_model_memory_gb(gpu_info: Optional[GPUInfo], system_ram_gb: int | None = None) -> float:
     if not gpu_info:
         return 0.0
     total_gb = gpu_info.memory_total_mb / 1024
     backend = normalize_key(gpu_info.gpu_backend)
-    if backend == "apple" or "strix-halo" in normalize_key(gpu_info.name):
-        return max(total_gb * 0.55, 2.0)
+    if backend == "apple" or normalize_key(gpu_info.memory_type) == "unified" or "strix-halo" in normalize_key(gpu_info.name):
+        ram_gb = system_ram_gb if system_ram_gb is not None else total_gb
+        return max(ram_gb * 0.55, 2.0)
+    if backend in {"cpu", "none", "unknown"} or total_gb <= 0:
+        ram_gb = system_ram_gb if system_ram_gb is not None else _system_ram_gb()
+        return min(max(ram_gb * 0.35, 3.0), 8.0)
     return total_gb
 
 
@@ -1079,7 +1419,8 @@ def _host_amd_runtime_gpu_from_env(install_dir: str | Path, system_ram_gb: int) 
     )
 
 
-def _catalog_fit_reason(model: dict[str, Any], gpu_info: Optional[GPUInfo], configured: bool) -> str:
+def _catalog_fit_reason(model: dict[str, Any], gpu_info: Optional[GPUInfo], configured: bool,
+                        system_ram_gb: int | None = None) -> str:
     runtime_profile = model.get("_runtime_profile") if isinstance(model.get("_runtime_profile"), dict) else None
     context_k = int(_effective_context_length(model, runtime_profile) / 1024) if _effective_context_length(model, runtime_profile) else 0
     required = _effective_required_memory_gb(model, runtime_profile)
@@ -1093,7 +1434,7 @@ def _catalog_fit_reason(model: dict[str, Any], gpu_info: Optional[GPUInfo], conf
         )
     if gpu_info:
         detected = round(gpu_info.memory_total_mb / 1024, 1)
-        usable = round(_usable_model_memory_gb(gpu_info), 1)
+        usable = round(_usable_model_memory_gb(gpu_info, system_ram_gb), 1)
         if usable < detected:
             basis = f"{usable}GB usable {gpu_info.gpu_backend.upper()} memory ({detected}GB detected)"
         else:
@@ -1118,50 +1459,14 @@ def _model_profile(install_dir: str | Path | None = None, explicit_profile: str 
 
 
 def _family_allowed_for_profile(model: dict[str, Any], profile: str) -> bool:
-    family = normalize_key(model.get("family"))
-    if profile == "gemma4":
-        # Keep the tiny Qwen bootstrap fallback available for the minimum tier,
-        # but otherwise honor the Gemma profile choice.
-        return family == "gemma4" or model.get("id") == "qwen3.5-2b-q4"
     # The default profile is the broad open-model lane. It keeps Gemma out so a
     # user who explicitly wants Gemma does not get a Qwen-family recommendation
-    # and vice versa, while still allowing Phi/DeepSeek entries in the catalog.
-    return family != "gemma4"
+    # and vice versa; the Gemma profile keeps the tiny Qwen bootstrap fallback.
+    return _shared_family_allowed(model, profile)
 
 
-def _recommendation_score(model: dict[str, Any], capacity_gb: float, profile: str) -> float:
-    runtime_profile = model.get("_runtime_profile") if isinstance(model.get("_runtime_profile"), dict) else None
-    required = _effective_required_memory_gb(model, runtime_profile)
-    size_mb = max(float(model.get("size_mb") or 1), 1.0)
-    context = max(_effective_context_length(model, runtime_profile), 8192)
-    specialty = str(model.get("specialty") or "General")
-    family = normalize_key(model.get("family"))
-
-    specialty_weight = {
-        "Code": 4.4,
-        "Quality": 4.1,
-        "General": 3.8,
-        "Balanced": 3.5,
-        "Reasoning": 3.3,
-        "Fast": 2.0,
-        "Bootstrap": 1.0,
-    }.get(specialty, 2.5)
-    family_bonus = 0.35 if (profile == "gemma4" and family == "gemma4") else 0.0
-    family_bonus += 0.25 if (profile in {"qwen", "auto"} and family == "qwen") else 0.0
-    context_bonus = min(context / 32768, 4.0) * 0.18
-    capability = min(size_mb / 1024, 48.0) * 0.24
-
-    # Exact-tier cards are valid, but prefer a little headroom when two models
-    # are otherwise similar. This prevents a 4GB card from picking a 4GB model
-    # over a nearly-equivalent 3GB option while still allowing 8GB-class picks.
-    fit_ratio = required / max(capacity_gb, 1.0)
-    headroom_penalty = 0.0
-    if fit_ratio > 0.98:
-        headroom_penalty = 0.35
-    elif fit_ratio > 0.92:
-        headroom_penalty = 0.15
-
-    return specialty_weight + family_bonus + context_bonus + capability - headroom_penalty
+def _installable(model: dict[str, Any]) -> bool:
+    return bool(model.get("gguf_url")) and _value_enabled(model.get("install_recommendation", True))
 
 
 def rank_pre_download_models(catalog: list[dict[str, Any]], gpu_info: Optional[GPUInfo],
@@ -1169,51 +1474,35 @@ def rank_pre_download_models(catalog: list[dict[str, Any]], gpu_info: Optional[G
                              limit: int = 3, system_ram_gb: int | None = None) -> list[dict[str, Any]]:
     """Rank catalog entries before any model is installed.
 
-    The ranker uses only compatibility metadata from model-library.json and the
-    detected hardware envelope. It intentionally does not turn catalog tok/s
-    estimates into displayed performance.
+    Uses the installer's ranking (model_selection.rank_catalog_models) with
+    the Hermes 64K floor as a soft minimum, so the dashboard recommends what
+    scripts/select-model.py installs on the same hardware. It intentionally
+    does not turn catalog tok/s estimates into displayed performance.
     """
     if not catalog:
         return []
 
     normalized_profile = _model_profile(explicit_profile=profile)
-    capacity_gb = _usable_model_memory_gb(gpu_info) if gpu_info else 4.0
-
-    candidates = []
-    for model in catalog:
-        if installable_only and not model.get("gguf_url"):
-            continue
-        if not _family_allowed_for_profile(model, normalized_profile):
-            continue
-        runtime_profile = _matching_runtime_profile(model, gpu_info, system_ram_gb)
-        candidate_model = {**model, "_runtime_profile": runtime_profile} if runtime_profile else model
-        required = _effective_required_memory_gb(candidate_model, runtime_profile)
-        fits = _fits_declared_vram(required, capacity_gb)
-        if not fits:
-            continue
-        candidates.append({
-            "model": candidate_model,
-            "score": _recommendation_score(candidate_model, capacity_gb or max(required, 1.0), normalized_profile),
-        })
-
-    if not candidates:
-        fallback_pool = [
-            model for model in catalog
-            if (not installable_only or model.get("gguf_url")) and _family_allowed_for_profile(model, normalized_profile)
-        ] or catalog
-        fallback = min(fallback_pool, key=lambda m: float(m.get("vram_required_gb") or 999))
-        candidates = [{"model": fallback, "score": -1.0}]
-
-    ranked = sorted(
-        candidates,
-        key=lambda item: (
-            item["score"],
-            _effective_required_memory_gb(item["model"], item["model"].get("_runtime_profile")),
-            _effective_context_length(item["model"], item["model"].get("_runtime_profile")),
-        ),
-        reverse=True,
+    if normalized_profile == "auto":
+        normalized_profile = "qwen"
+    capacity_gb = _usable_model_memory_gb(gpu_info, system_ram_gb) if gpu_info else 4.0
+    ram_gb = system_ram_gb if system_ram_gb is not None else (_system_ram_gb() if gpu_info else 0)
+    ranked = rank_catalog_models(
+        catalog,
+        capacity_gb=capacity_gb,
+        profile=normalized_profile,
+        installable_only=installable_only,
+        # Without hardware information no runtime profile applies (not even
+        # a CPU one); "undetected" matches no profile backend.
+        backend=gpu_info.gpu_backend if gpu_info else "undetected",
+        memory_type=_gpu_memory_type(gpu_info),
+        vram_mb=(gpu_info.memory_total_mb or 0) if gpu_info else 0,
+        ram_gb=ram_gb,
+        host_arch=platform.machine(),
+        min_context=HERMES_MIN_CONTEXT,
+        installable=_installable,
     )
-    return [item["model"] for item in ranked[:max(limit, 1)]]
+    return [candidate.as_model() for candidate in ranked[:max(limit, 1)]]
 
 
 def select_pre_download_model(catalog: list[dict[str, Any]], gpu_info: Optional[GPUInfo]) -> dict[str, Any] | None:
@@ -1227,8 +1516,9 @@ def select_pre_download_model(catalog: list[dict[str, Any]], gpu_info: Optional[
     return ranked[0] if ranked else None
 
 
-def _recommendation_alternative(model: dict[str, Any], gpu_info: Optional[GPUInfo]) -> dict[str, Any]:
-    runtime_profile = model.get("_runtime_profile") if isinstance(model.get("_runtime_profile"), dict) else _matching_runtime_profile(model, gpu_info)
+def _recommendation_alternative(model: dict[str, Any], gpu_info: Optional[GPUInfo],
+                                system_ram_gb: int | None = None) -> dict[str, Any]:
+    runtime_profile = model.get("_runtime_profile") if isinstance(model.get("_runtime_profile"), dict) else _matching_runtime_profile(model, gpu_info, system_ram_gb)
     context = _effective_context_length(model, runtime_profile)
     vram_required = float(model.get("vram_required_gb") or 0)
     selector_required = _effective_required_memory_gb(model, runtime_profile)
@@ -1242,8 +1532,8 @@ def _recommendation_alternative(model: dict[str, Any], gpu_info: Optional[GPUInf
         "contextLength": context,
         "specialty": model.get("specialty"),
         "runtimeProfile": runtime_profile.get("id") if runtime_profile else None,
-        "fitsVram": _fits_declared_vram(selector_required, _usable_model_memory_gb(gpu_info) if gpu_info else 4.0),
-        "reason": _catalog_fit_reason({**model, "_runtime_profile": runtime_profile} if runtime_profile else model, gpu_info, configured=False),
+        "fitsVram": _fits_declared_vram(selector_required, _usable_model_memory_gb(gpu_info, system_ram_gb) if gpu_info else 4.0),
+        "reason": _catalog_fit_reason({**model, "_runtime_profile": runtime_profile} if runtime_profile else model, gpu_info, configured=False, system_ram_gb=system_ram_gb),
     }
 
 
@@ -1257,11 +1547,60 @@ def _downloaded_catalog_path(model: dict[str, Any], downloaded_files: dict[str, 
         ]
         downloaded = bool(part_paths) and all(part_paths)
         seen = {str(part.get("file", "")).lower() for part in parts if isinstance(part, dict)}
-        return downloaded, part_paths[0] if downloaded else None, seen if downloaded else set()
+        # A shard belongs to this catalog entry even before the whole download
+        # finishes; it must never become a standalone installed-model option.
+        return downloaded, part_paths[0] if downloaded else None, seen
 
     gguf = str(model["gguf"]).lower()
     path = downloaded_files.get(gguf)
     return bool(path), path, {gguf} if path else set()
+
+
+def _measured_native_activation(model, path, data_root, install_dir, gpu_info, system_ram_gb):
+    """Separate a proven native load from the generic all-GPU fit estimate."""
+    if path is None or not gpu_info:
+        return None
+    value = lambda key: read_env_file_value(key, install_dir) or read_env_value(key, install_dir)
+    if (value("AMD_INFERENCE_LOCATION") != "host"
+            or not value("AMD_INFERENCE_RUNTIME_MODE").startswith("windows-")
+            or value("LLM_BACKEND") != "lemonade"
+            or value("AMD_INFERENCE_MANAGED").lower() == "false"
+            or value("LEMONADE_EXTERNAL").lower() == "true"):
+        return None
+    from model_stores import registered_stores, safe_artifact
+    for store in registered_stores(data_root, container=Path("/.dockerenv").exists()):
+        if store["path"].resolve() != path.parent.resolve():
+            continue
+        profiles = store.get("profiles", {})
+        row = profiles.get(path.name) if isinstance(profiles, dict) else None
+        fit = row.get("memoryQualification") if isinstance(row, dict) else None
+        if not isinstance(fit, dict) or fit.get("source") != "measured-native" or fit.get("schemaVersion") != 1:
+            continue
+        if (fit.get("runtimeMode") != "lemonade" or fit.get("gpuLayers") != "99"
+                or fit.get("runtimeBackend") != row.get("backend")
+                or fit.get("qualificationSignature") != row.get("qualificationSignature")
+                or any(not re.fullmatch(r"[0-9a-f]{64}", str(fit.get(key, ""))) for key in ("modelSha256", "runtimeSha256", "executionSignature", "visionProjectorSha256"))
+                or any(fit.get(key) != row.get(key) for key in ("modelSha256", "runtimeSha256", "contextLength", "draftTokens"))
+                or (model.get("gguf_sha256") and model["gguf_sha256"] != fit["modelSha256"])):
+            continue
+        hardware = fit.get("hardware", {})
+        if (not isinstance(hardware, dict) or normalize_key(hardware.get("name")) != normalize_key(gpu_info.name)
+                or hardware.get("backend") != gpu_info.gpu_backend
+                or type(hardware.get("memoryTotalMB")) is not int
+                or gpu_info.memory_total_mb + 256 < hardware["memoryTotalMB"]
+                or type(hardware.get("systemRamGB")) is not int or system_ram_gb < hardware["systemRamGB"]):
+            continue
+        projector = safe_artifact(store["path"], fit.get("visionProjectorFile"))
+        try:
+            if (projector is None or projector.stat().st_size != fit.get("visionProjectorSize")
+                    or abs(projector.stat().st_mtime_ns - int(fit.get("visionProjectorMtimeNs", 0))) > 1_000_000_000):
+                continue
+        except (OSError, TypeError, ValueError):
+            continue
+        return {"available":True, "mode":"native-profile", "source":"measured-native",
+            "contextLength":fit["contextLength"], "label":"Verified native profile",
+            "measuredAt":fit.get("measuredAt")}
+    return None
 
 
 def build_models_payload(gpu_info: Optional[GPUInfo], loaded_model: Optional[str], live_tps: float,
@@ -1306,14 +1645,9 @@ def build_models_payload(gpu_info: Optional[GPUInfo], loaded_model: Optional[str
             for name, value in downloaded_files_override.items()
         }
     else:
-        downloaded_files = {}
-        if models_dir.exists():
-            for p in models_dir.iterdir():
-                try:
-                    if p.is_file() and p.name.lower().endswith(".gguf") and p.stat().st_size > 0:
-                        downloaded_files[p.name.lower()] = p
-                except OSError:
-                    continue
+        from model_stores import scan_model_files
+        downloaded_files = {name.lower(): path for name, path in scan_model_files(
+            data_root, container=Path("/.dockerenv").exists()).items()}
 
     gpu_data = None
     free_gb = 0.0
@@ -1323,6 +1657,7 @@ def build_models_payload(gpu_info: Optional[GPUInfo], loaded_model: Optional[str
         free_gb = max(vram_total - vram_used, 0.0)
         gpu_data = {
             "vramTotal": vram_total,
+            "modelMemoryBudgetGb": round(_usable_model_memory_gb(gpu_info, install_ram_gb or None), 2),
             "vramUsed": vram_used,
             "vramFree": round(free_gb, 1),
             "name": gpu_info.name,
@@ -1342,13 +1677,45 @@ def build_models_payload(gpu_info: Optional[GPUInfo], loaded_model: Optional[str
         if is_loaded:
             current_model_id = model["id"]
         metadata = inspect_gguf(path) if path else {"exists": False, "readable": False, "quantization": model.get("quantization", "unknown")}
+        activation_support = _measured_native_activation(model, path, data_root, install_dir, gpu_info, install_ram_gb) if metadata.get("readable") else None
         runtime_profile = _matching_runtime_profile(model, gpu_info, install_ram_gb or None)
+        profile_ram_ineligible = bool(
+            runtime_profile is None
+            and _hardware_matching_runtime_profiles(model, gpu_info, install_ram_gb or None)
+        )
+        # One policy for the listed context, a switch and a restore of the
+        # installer's pick: the Hermes floor when it fits (see
+        # planned_model_context). The installer's persisted context is only
+        # the starting point, so a pick recorded below the floor is not
+        # replayed below it when the floor fits.
+        context_plan = planned_model_context(
+            model, gpu_info, install_ram_gb or None,
+            preferred_context=recommendation.get("contextLength") if is_configured else None,
+        )
+        if (
+            not runtime_profile
+            and not profile_ram_ineligible
+            and context_plan["fits"]
+            and context_plan["context_length"] != int(model.get("context_length") or 0)
+        ):
+            model = {
+                **model,
+                "max_context_length": model.get("max_context_length") or model.get("context_length"),
+                "context_length": context_plan["context_length"],
+            }
         profile_context = _effective_context_length(model, runtime_profile)
-        configured_context = recommendation.get("contextLength") if is_configured else None
+        configured_context = None
+        if is_configured:
+            configured_context = (
+                context_plan["context_length"]
+                if context_plan["fits"]
+                else recommendation.get("contextLength")
+            )
         actual_context = (
             context_length
             if is_loaded and context_length
             else configured_context
+            or (activation_support["contextLength"] if activation_support else None)
             or profile_context
             or model.get("context_length")
         )
@@ -1365,6 +1732,7 @@ def build_models_payload(gpu_info: Optional[GPUInfo], loaded_model: Optional[str
         memory_model = {**model, **metadata}
         context_model = {
             **memory_model,
+            "context_length": actual_context,
             "max_context_length": max_context_length,
             "context_limit_known": context_limit_known,
         }
@@ -1373,9 +1741,9 @@ def build_models_payload(gpu_info: Optional[GPUInfo], loaded_model: Optional[str
             {**memory_model, "context_length": actual_context}, runtime_profile
         )
         if gpu_info:
-            capacity_gb = _usable_model_memory_gb(gpu_info)
-            fits_total = bool(_fits_declared_vram(selector_required, capacity_gb) or is_loaded)
-            fits_current = bool(_fits_declared_vram(selector_required, free_gb) or is_loaded)
+            capacity_gb = _usable_model_memory_gb(gpu_info, install_ram_gb or None)
+            fits_total = bool((not profile_ram_ineligible and _fits_declared_vram(selector_required, capacity_gb)) or is_loaded)
+            fits_current = bool((not profile_ram_ineligible and _fits_declared_vram(selector_required, free_gb)) or is_loaded)
         else:
             fits_total = bool(_fits_declared_vram(selector_required, 4.0) or is_loaded)
             fits_current = False
@@ -1400,7 +1768,7 @@ def build_models_payload(gpu_info: Optional[GPUInfo], loaded_model: Optional[str
                 **recommendation,
                 "source": recommendation["source"] if is_configured else "catalog_fit_pre_download",
                 "confidence": recommendation["confidence"] if is_configured else "medium",
-                "reason": reason or _catalog_fit_reason({**model, "_runtime_profile": runtime_profile}, gpu_info, is_configured),
+                "reason": reason or _catalog_fit_reason({**model, "_runtime_profile": runtime_profile}, gpu_info, is_configured, install_ram_gb or None),
                 "model": model.get("llm_model_name") or model["id"],
                 "gguf": model.get("gguf"),
                 "contextLength": actual_context,
@@ -1419,7 +1787,7 @@ def build_models_payload(gpu_info: Optional[GPUInfo], loaded_model: Optional[str
             "estimatedRequired": selector_required,
             "contextLength": actual_context,
             "maxContextLength": max_context_length or None,
-            "contextOptions": _context_options(context_model, runtime_profile, gpu_info),
+            "contextOptions": _context_options(context_model, runtime_profile, gpu_info, install_ram_gb or None),
             "specialty": model["specialty"],
             "description": model["description"],
             "tokensPerSecEstimate": model.get("tokens_per_sec_estimate"),
@@ -1429,6 +1797,7 @@ def build_models_payload(gpu_info: Optional[GPUInfo], loaded_model: Optional[str
             "activeParamsB": model.get("active_params_b"),
             "publisher": model_publisher(model),
             "metadata": {
+                "mtp": mtp_metadata(model, metadata),
                 "source": "gguf" if metadata.get("readable") else "catalog",
                 "catalogSource": model.get("catalog_source") or "ods",
                 "sourceRepo": model.get("source_repo"),
@@ -1444,15 +1813,17 @@ def build_models_payload(gpu_info: Optional[GPUInfo], loaded_model: Optional[str
                 "expertUsedCount": metadata.get("expert_used_count"),
             },
             "appCompatibility": model_app_compatibility(
-                model,
+                {**model, "max_context_length": max_context_length, "context_limit_known": context_limit_known},
                 perf,
                 model_compatibility_runtime_context(install_dir, gpu_info, runtime),
+                context_length=actual_context,
             ),
             "status": "loaded" if is_loaded else status_if_not_loaded,
             "recommended": is_recommended,
             "configured": is_configured,
             "recommendation": model_recommendation,
             "fitsVram": fits_total,
+            "activationSupport": activation_support,
             "fitsCurrentVram": fits_current,
             "fitLabel": runtime_profile.get("fit_label") if runtime_profile else ("Fits GPU" if fits_total else "Too large"),
             "runtimeProfile": {
@@ -1490,6 +1861,33 @@ def build_models_payload(gpu_info: Optional[GPUInfo], loaded_model: Optional[str
         }
         append_model(fallback, path, "downloaded")
 
+    if isinstance(loaded_model, str) and loaded_model.strip() and current_model_id is None:
+        # An external runtime can report a model that is neither in our catalog
+        # nor an inspectable local GGUF. Show what is actually running without
+        # borrowing a different quantization's size, fit, or activation claims.
+        response_models.append({
+            "id": f"runtime-{hashlib.sha256(loaded_model.encode('utf-8')).hexdigest()[:12]}",
+            "name": loaded_model,
+            "gguf": None,
+            "downloadUrl": None,
+            "size": None,
+            "sizeGb": None,
+            "vramRequired": None,
+            "estimatedRequired": None,
+            "contextLength": context_length,
+            "specialty": "Runtime",
+            "description": "Reported as loaded by the model runtime; not an ODS catalog or inspected local model.",
+            "metadata": {"source": "runtime", "catalogSource": "runtime", "readable": False},
+            "appCompatibility": {},
+            "status": "loaded",
+            "recommended": False,
+            "configured": False,
+            "fitsVram": None,
+            "activationSupport": None,
+            "fitsCurrentVram": None,
+            "performance": None,
+        })
+
     return {
         "models": response_models,
         "gpu": gpu_data,
@@ -1498,9 +1896,10 @@ def build_models_payload(gpu_info: Optional[GPUInfo], loaded_model: Optional[str
         "configuredModel": configured_model_id,
         "hermesMinimumContext": HERMES_MIN_CONTEXT,
         "hermesTargetContext": HERMES_TARGET_CONTEXT,
+        "pixelMinimumContext": PIXEL_MIN_CONTEXT,
         "recommendationPolicy": recommendation.get("selectionPolicy") or _DEFAULT_RECOMMENDATION_POLICY,
         "recommendationAlternatives": [
-            _recommendation_alternative(model, gpu_info)
+            _recommendation_alternative(model, gpu_info, install_ram_gb or None)
             for model in ranked_recommendations
         ],
     }

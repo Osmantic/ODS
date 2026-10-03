@@ -13,6 +13,12 @@ docker-entrypoint* text eol=lf
 *.env text eol=lf
 *.shellcheckrc text eol=lf
 
+# Source patches are hash-bound build inputs; checkout/archive must preserve LF.
+ods/extensions/services/pixel-agent/runtime-source/*.patch text eol=lf
+
+# Recorded preview snapshots reproduce a published digest byte for byte.
+ods/tests/fixtures/preview-controls/** -text -whitespace
+
 # PowerShell scripts can use CRLF (native Windows)
 *.ps1 text eol=crlf
 *.psm1 text eol=crlf
@@ -22,3 +28,6 @@ docker-entrypoint* text eol=lf
 # (column padding, trailing whitespace from rocm-smi/amd-smi/etc).
 # Don't let `git diff --check` flag intentional whitespace as an error.
 ods/tests/fixtures/amd/*.txt -whitespace
+
+# Recorded preview pages reproduce a published snapshot digest byte for byte.
+ods/tests/fixtures/preview-inspection-laptop-round*.html -text -whitespace

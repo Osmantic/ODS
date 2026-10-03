@@ -1,0 +1,16 @@
+{
+  "repository": "https://github.com/linkwarden/linkwarden",
+  "license": "AGPL-3.0",
+  "image": "ghcr.io/linkwarden/linkwarden:latest@sha256:0664c28a039bda8ffa6663389e8536b2fc717219e329f85b83faca7efed3b144",
+  "companion_images": [
+    "postgres:16-alpine@sha256:3c5c8892d184f738f4fe282d14ddaa613a38f00f4189d2d94725ebe6f2909ddb",
+    "getmeili/meilisearch:v1.13.3@sha256:bed3fb650e62da53145777204891159242f6ea4ce69e215b36223af4aa64a0ae"
+  ],
+  "registry_checked_at": "2026-09-20",
+  "platforms": [
+    "linux/amd64",
+    "linux/arm64"
+  ],
+  "runtime_validation": "pending",
+  "notes": "Official app with PostgreSQL 16 and upstream-pinned Meilisearch 1.13.3; named volumes for archive/database/index. Distinct collaborative bookmark application, not a duplicate repository. Local OpenAI-compatible optional AI route uses ods/current. URL-safe database password required because Prisma receives a connection URI."
+}

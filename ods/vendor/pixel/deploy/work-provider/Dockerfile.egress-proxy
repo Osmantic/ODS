@@ -1,0 +1,35 @@
+ARG SOURCE_DATE_EPOCH=0
+FROM debian:bookworm-slim@sha256:7b140f374b289a7c2befc338f42ebe6441b7ea838a042bbd5acbfca6ec875818
+
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends xz-utils=5.4.1-1+deb12u1 \
+    && rm -rf /var/lib/apt/lists/* /var/cache/* /var/log/*
+
+ADD --checksum=sha256:9749e988f437343b7fa832c69ded82a312e41a03116d766797ac14f6f9eee578 https://nodejs.org/dist/v22.23.1/node-v22.23.1-linux-x64.tar.xz /tmp/node-runtime.tar.xz
+RUN install -d -m 0755 /opt/node /opt/pixel/deploy/work-provider/adapters /opt/pixel/deploy/work-provider/profiles /opt/pixel/scripts/lib /opt/pixel/schemas \
+    && install -d -m 0700 -o 1000 -g 1000 /etc/pixel-provider \
+    && tar -xJf /tmp/node-runtime.tar.xz --strip-components=1 -C /opt/node \
+    && test "$(/opt/node/bin/node --version)" = "v22.23.1" \
+    && rm -f /tmp/node-runtime.tar.xz
+
+COPY --chmod=0444 deploy/work-provider/*.mjs /opt/pixel/deploy/work-provider/
+COPY --chmod=0444 deploy/work-provider/adapters/*.mjs /opt/pixel/deploy/work-provider/adapters/
+COPY --chmod=0444 deploy/work-provider/profiles/*.json /opt/pixel/deploy/work-provider/profiles/
+COPY --chmod=0444 scripts/lib/work-contract.mjs scripts/lib/json-schema.mjs scripts/lib/secure-files.mjs /opt/pixel/scripts/lib/
+COPY --chmod=0444 schemas/*.json /opt/pixel/schemas/
+
+RUN echo '5b88b59d8249b8a116c74bbc355de3f3289a2e585f08c7ee735750696b360cee  /opt/pixel/deploy/work-provider/egress-proxy.mjs' | sha256sum -c - \
+    && /opt/node/bin/node --check /opt/pixel/deploy/work-provider/egress-proxy.mjs \
+    && find /opt/pixel -type d -exec chmod 0555 {} + \
+    && find /opt/pixel -type f -exec chmod 0444 {} +
+
+LABEL org.opencontainers.image.title="Pixel exact-host work-provider egress proxy" \
+      org.opencontainers.image.version="4.3.0-development" \
+      org.opencontainers.image.base.name="debian:bookworm-slim" \
+      org.osmantic.pixel.node-runtime="22.23.1" \
+      org.osmantic.pixel.egress-proxy-sha256="5b88b59d8249b8a116c74bbc355de3f3289a2e585f08c7ee735750696b360cee"
+
+USER 1000:1000
+EXPOSE 3128
+ENTRYPOINT ["/opt/node/bin/node", "/opt/pixel/deploy/work-provider/egress-proxy.mjs"]

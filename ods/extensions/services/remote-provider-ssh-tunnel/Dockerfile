@@ -1,4 +1,4 @@
-FROM python:3.11-slim
+FROM python:3.11-slim@sha256:e41613d42d4891e4930f79523f93f81bbc7632584ec65e36ab055f41a800b41e
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates openssh-client \
@@ -9,6 +9,7 @@ RUN addgroup --gid 10778 odsremote \
 WORKDIR /srv/remote-provider-ssh-tunnel
 COPY extensions/services/remote-provider-ssh-tunnel/app ./app
 COPY bin/remote_provider ./remote_provider
+RUN chmod -R a+rX /srv/remote-provider-ssh-tunnel
 
 USER odsremote
 EXPOSE 18090 18091 18092

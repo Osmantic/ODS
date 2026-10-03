@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/work-goal-stage-v1.schema.json",
+  "title": "Pixel staged long-horizon goal custody v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "stageId", "stagedAt", "goalId", "controllerBundleSha256", "configSha256", "goalSha256", "jobsSha256", "policySha256", "children", "goalCheckpointSha256", "state", "authority", "boundary"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/work-goal-stage-v1.schema.json"},
+    "schemaVersion": {"const": 1},
+    "stageId": {"type": "string", "pattern": "^workgoalstage-[0-9]{13}-[a-f0-9]{12}$"},
+    "stagedAt": {"type": "string", "format": "date-time"},
+    "goalId": {"type": "string", "pattern": "^workgoal-[0-9]{13}-[a-f0-9]{12}$"},
+    "controllerBundleSha256": {"$ref": "#/$defs/sha256"},
+    "configSha256": {"$ref": "#/$defs/sha256"},
+    "goalSha256": {"$ref": "#/$defs/sha256"},
+    "jobsSha256": {"$ref": "#/$defs/sha256"},
+    "policySha256": {"$ref": "#/$defs/sha256"},
+    "children": {
+      "type": "array", "minItems": 1, "maxItems": 64,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["jobId", "planSha256", "leaseSha256", "workspaceSnapshotSha256", "custodyBundleSha256"],
+        "properties": {
+          "jobId": {"type": "string", "pattern": "^work-[0-9]{13}-[a-f0-9]{12}$"},
+          "planSha256": {"$ref": "#/$defs/sha256"},
+          "leaseSha256": {"$ref": "#/$defs/sha256"},
+          "workspaceSnapshotSha256": {"$ref": "#/$defs/sha256"},
+          "custodyBundleSha256": {"$ref": "#/$defs/sha256"}
+        }
+      }
+    },
+    "goalCheckpointSha256": {"$ref": "#/$defs/sha256"},
+    "state": {"const": "staged-inactive"},
+    "authority": {
+      "type": "object", "additionalProperties": false,
+      "required": ["containsExactChildLeases", "createsReadyGoalState", "grantsExecution", "activatesService", "grantsScopeExpansion", "grantsExternalEffects", "grantsCompletion"],
+      "properties": {
+        "containsExactChildLeases": {"const": true},
+        "createsReadyGoalState": {"const": true},
+        "grantsExecution": {"const": false},
+        "activatesService": {"const": false},
+        "grantsScopeExpansion": {"const": false},
+        "grantsExternalEffects": {"const": false},
+        "grantsCompletion": {"const": false}
+      }
+    },
+    "boundary": {"const": "Owner-confirmed dormant goal custody only. Staging stores exact expiring child leases and a ready goal checkpoint but starts no worker, schedules no timer, activates no service, and grants no scope expansion, external effect, or completion authority."}
+  },
+  "$defs": {"sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}}
+}

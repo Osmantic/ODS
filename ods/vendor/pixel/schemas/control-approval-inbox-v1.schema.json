@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/control-approval-inbox-v1.schema.json",
+  "title": "Pixel owner-private exact-action approval inbox v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "state", "generatedAt", "approvals", "privacy", "boundary"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/control-approval-inbox-v1.schema.json"},
+    "schemaVersion": {"const": 1},
+    "state": {"const": "ready"},
+    "generatedAt": {"type": "string", "format": "date-time"},
+    "approvals": {
+      "type": "array",
+      "maxItems": 64,
+      "items": {"$ref": "#/$defs/action"}
+    },
+    "privacy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["parametersExposed", "credentialsExposed", "privateLogsExposed"],
+      "properties": {
+        "parametersExposed": {"const": false},
+        "credentialsExposed": {"const": false},
+        "privateLogsExposed": {"const": false}
+      }
+    },
+    "boundary": {
+      "const": "Owner-private pending exact-action projection. It exposes only the fixed action label, declared effect, expiry, and hash required to approve or deny the proposal; parameters, paths, prompts, credentials, private logs, and hidden policy state are never projected."
+    }
+  },
+  "$defs": {
+    "action": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "actionId", "kind", "label", "effect", "expiresAt", "actionHash", "requiresExactConfirmation"],
+      "properties": {
+        "schemaVersion": {"const": 1},
+        "actionId": {"type": "string", "pattern": "^control-[0-9]{13}-[a-f0-9]{12}$"},
+        "kind": {"enum": ["configure", "plan", "verify", "update-check", "backup-create", "operations-pause", "frontier-pause", "deep-work-pause", "deep-work-resume", "deep-work-cancel", "deep-work-draft", "deep-work-prepare", "deep-work-stage", "deep-work-service-render"]},
+        "label": {"type": "string", "minLength": 1, "maxLength": 120},
+        "effect": {"type": "string", "minLength": 1, "maxLength": 500},
+        "expiresAt": {"type": "string", "format": "date-time"},
+        "actionHash": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "requiresExactConfirmation": {"const": true}
+      }
+    }
+  }
+}

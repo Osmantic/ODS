@@ -1,0 +1,14 @@
+{
+  "repository": "https://github.com/WeblateOrg/weblate",
+  "license": "GPL-3.0-or-later",
+  "source_ref": "weblate-2026.9.1",
+  "image": "weblate/weblate:2026.9.1.1@sha256:dc2d291144a2b750e6455077f1fb1870556c9b03242e69689d95bb4225a953dc",
+  "image_source_ref": "2763ab59b3e9f27585c3cc0e806b3424a818ea7e",
+  "registry_checked_at": "2026-09-20",
+  "platforms": [
+    "linux/amd64",
+    "linux/arm64"
+  ],
+  "runtime_validation": "pending",
+  "notes": "Official native startup with private PostgreSQL/Valkey, persistent data/secret/cache and single Celery worker. x86-64-v2 checked before app startup; no remote repositories, translations or mail credentials provisioned."
+}

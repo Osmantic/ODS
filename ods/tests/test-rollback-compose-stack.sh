@@ -70,6 +70,9 @@ make_install() {
     local dir="$1"
     mkdir -p "$dir/data/backups" "$dir/data"
     cp "$UPDATE_SCRIPT" "$dir/ods-update.sh"
+    # Use the reviewed real guard; synthetic target remains separate from helper code.
+    mkdir -p "$dir/scripts"
+    ln -s "$ROOT_DIR/scripts/source-update-preflight.py" "$dir/scripts/source-update-preflight.py"
     chmod +x "$dir/ods-update.sh"
 
     cat > "$dir/.env" <<'EOF'

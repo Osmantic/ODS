@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/control-work-launch-config-v1.schema.json",
+  "title": "Pixel private Deep Work browser launch-preparation configuration v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "environmentFile", "draftDirectory", "launchDirectory", "maxLaunches", "boundary"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/control-work-launch-config-v1.schema.json"},
+    "schemaVersion": {"const": 1},
+    "environmentFile": {"$ref": "#/$defs/path"},
+    "draftDirectory": {"$ref": "#/$defs/path"},
+    "launchDirectory": {"$ref": "#/$defs/path"},
+    "maxLaunches": {"type": "integer", "minimum": 1, "maximum": 100},
+    "boundary": {"const": "Owner-private fixed paths for exact Deep Work launch preparation only. The browser cannot supply, view, or alter these paths and gains no staging, scheduling, execution, service, credential, external-effect, scope-expansion, or completion authority."}
+  },
+  "$defs": {
+    "path": {"type": "string", "pattern": "^/(?!/)(?!.*(?:^|/)\\.{1,2}(?:/|$))[^\\r\\n\\x00]{1,2046}$"}
+  }
+}

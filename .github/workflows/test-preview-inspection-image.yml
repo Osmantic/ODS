@@ -1,0 +1,58 @@
+name: Preview inspector private-context build
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/test-preview-inspection-image.yml'
+      - 'ods/installers/lib/pixel-preview-inspection.py'
+      - 'ods/extensions/services/pixel-agent/host/Dockerfile.inspection'
+      - 'ods/extensions/services/pixel-agent/host/preview-inspection.requirements.lock'
+      - 'ods/extensions/services/pixel-agent/host/preview_inspection*.py'
+      - 'ods/tests/test_preview_inspection_permissions.py'
+      - 'ods/tests/test_preview_inspection_download.py'
+      - 'ods/tests/test_preview_inspection_blocked.py'
+      - 'ods/extensions/services/pixel-agent/tests/inspection_blocked.test.mjs'
+      - 'ods/extensions/services/pixel-agent/tests/inspection_fill.test.mjs'
+      - 'ods/tests/test_preview_inspection_fill.py'
+      - 'ods/extensions/services/pixel-agent/plugin/workspace-preview-inspect.mjs'
+      - 'ods/extensions/services/pixel-agent/tests/inspection_download.test.mjs'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/test-preview-inspection-image.yml'
+      - 'ods/installers/lib/pixel-preview-inspection.py'
+      - 'ods/extensions/services/pixel-agent/host/Dockerfile.inspection'
+      - 'ods/extensions/services/pixel-agent/host/preview-inspection.requirements.lock'
+      - 'ods/extensions/services/pixel-agent/host/preview_inspection*.py'
+      - 'ods/tests/test_preview_inspection_permissions.py'
+      - 'ods/tests/test_preview_inspection_download.py'
+      - 'ods/tests/test_preview_inspection_blocked.py'
+      - 'ods/extensions/services/pixel-agent/tests/inspection_blocked.test.mjs'
+      - 'ods/extensions/services/pixel-agent/tests/inspection_fill.test.mjs'
+      - 'ods/tests/test_preview_inspection_fill.py'
+      - 'ods/extensions/services/pixel-agent/plugin/workspace-preview-inspect.mjs'
+      - 'ods/extensions/services/pixel-agent/tests/inspection_download.test.mjs'
+
+permissions:
+  contents: read
+
+jobs:
+  private-context:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+        with:
+          python-version: '3.12'
+      - name: Install test runner
+        run: python -m pip install 'pytest>=8,<9'
+      - name: Build via installer under umask 077 and inspect as capsule user
+        env:
+          ODS_INSPECTION_BUILD_TESTS: '1'
+        run: python -m pytest -q ods/tests/test_preview_inspection_permissions.py
+      - name: Verify snapshot downloads with real isolated Chromium
+        run: |
+          docker build --iidfile "$RUNNER_TEMP/inspection-image-id" -f ods/extensions/services/pixel-agent/host/Dockerfile.inspection ods/extensions/services/pixel-agent/host
+          ODS_INSPECTION_TEST_IMAGE="$(cat "$RUNNER_TEMP/inspection-image-id")" python -m pytest -q ods/tests/test_preview_inspection_download.py ods/tests/test_preview_inspection_blocked.py ods/tests/test_preview_inspection_fill.py
+          node --test ods/extensions/services/pixel-agent/tests/inspection_download.test.mjs ods/extensions/services/pixel-agent/tests/inspection_select.test.mjs ods/extensions/services/pixel-agent/tests/inspection_blocked.test.mjs ods/extensions/services/pixel-agent/tests/inspection_fill.test.mjs

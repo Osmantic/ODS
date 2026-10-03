@@ -1,0 +1,12 @@
+{
+  "repository": "https://github.com/optuna/optuna-dashboard",
+  "license": "MIT",
+  "image": "ghcr.io/optuna/optuna-dashboard:v0.21.0@sha256:b64bd33154185814d76aaab52ac175f2d409af79ba5b476a6df1af3b97a3b254",
+  "registry_checked_at": "2026-09-20",
+  "platforms": [
+    "linux/amd64",
+    "linux/arm64"
+  ],
+  "runtime_validation": "pending",
+  "notes": "Official 0.21.0 with nonroot SQLite volume layer and opt-in CPU demonstration. UI/API intentionally local and unauthenticated upstream; no host mounts or inference jobs. Health reads study storage rather than static UI."
+}

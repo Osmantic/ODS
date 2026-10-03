@@ -1,0 +1,246 @@
+#!/usr/bin/env bash
+set -euo pipefail
+export PYTHONDONTWRITEBYTECODE=1
+ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+
+usage() {
+  cat <<'EOF'
+Pixel deployment CLI
+
+Usage: ./pixel <command> [options]
+
+Commands:
+  bootstrap   Verify or install host dependencies (use --apply to install)
+  configure   Generate .env, gateway environment, and client workspace
+  services    Manage reference SearXNG/model services
+  plan        Render, validate, and summarize the proposed deployment
+  apply       Apply the reviewed plan (requires --confirm)
+  verify      Run post-deployment health and policy checks
+  doctor      Show rounded local hardware and model-readiness guidance
+  authorize   Authorize the configured Google Workspace account
+  source-broker Install/refresh the isolated Source Broker (requires --confirm)
+  source-show  Snapshot and inspect one Calendar proposal outside Pixel
+  source-approve Apply one hash-bound Calendar proposal outside Pixel (requires --confirm)
+  source-reconcile Reconcile an indeterminate Calendar create or update without retrying it
+  github-action Apply or reconcile one exact allowlisted GitHub proposal
+  action-journal Inspect or cancel one still-unsent external action journal
+  ops-broker  Install the isolated Operations Broker (requires --confirm)
+  frontier-broker Install the isolated Frontier Broker (requires --confirm)
+  frontier-show Inspect one immutable sanitized Frontier payload and status
+  frontier-approve Approve one exact Frontier payload hash (requires --confirm)
+  frontier-usage Show content-free rolling Frontier usage and routing totals
+  frontier-live-qualify Prepare and explicitly run one fixed synthetic provider check
+  frontier-budget Draft or apply one exact private custom Frontier budget change
+  promotion-status Build a content-free, fail-closed release-readiness index
+  outcome-task-admit Admit one exact private backend-neutral evaluation task
+  outcome-compare Compare exact private Pixel/Codex real-task outcome runs
+  outcome-campaign Require every baseline and declared fault outcome pair
+  qualify-hosts Run the disposable Ubuntu/Debian real-systemd qualification matrix
+  ui          Start the loopback-only local onboarding and status page
+  limb-kit    Generate, sign, verify, and manage constrained customization packs
+  client-kit  Generate or validate a private golden-core/client-overlay contract
+  work-compile Compile one bounded Deep Work job into an exact plan and single-use lease
+  work-model-qualify Run the fixed synthetic benchmark against one exact loopback local model
+  work-model-policy Review, bind, or inspect one exact local-model qualification in a private policy
+  work-model-backend Review/render an inert backend launch or inspect the actual private runtime
+  work-input-pack Snapshot explicitly selected local directories into one inert private input bundle
+  work-goal-draft Turn one guided private brief into reviewable bounded child-job proposals
+  work-goal-assemble Bind one reviewed draft to inert goal and controller bundles
+  work-goal-launch Prepare, inspect, or stage one complete reviewed long-horizon goal
+  work-goal-prepare Derive an inert immutable long-horizon goal from exact child jobs
+  work-goal-controller-prepare Validate and assemble one inert supervised goal controller
+  work-goal-stage Confirm and stage dormant child custody without starting any work
+  work-goal   Control the disabled durable Deep Work goal ledger and scheduling state
+  work-context Create, find, inspect, or fork private checkpoint-bound work sessions
+  work-context-guide Plain-language reviewed creation, forking, and removal of private work sessions
+  work-cycle  Run one supervised, restartable local Deep Work reconciliation cycle
+  work-continuous Run bounded continuous Deep Work while durable progress is occurring
+  work-capability-pack Inspect, install, image-admit, health-probe, revoke, recover, or audit disabled Deep Work tool packs
+  work-knowledge Review and exactly apply disabled local knowledge-vault lifecycle operations
+  work-knowledge-guide Plain-language reviewed local knowledge setup, add, find, remove, rotation, and recovery
+  work-knowledge-restore Deep-audit and safely prepare one offline historical vault for restore
+  work-accept Review or exactly accept one safe Scout/Researcher/Data Lab candidate
+  work-cancel Review and exactly cancel an inactive goal or one with terminal cleanup evidence
+  work-pause  Durably pause future supervised goal steps from one private controller config
+  work-resume Review and exactly resume one durably paused supervised goal
+  work-service Render, inspect, explicitly install, activate, or remove one goal service
+  work-fleet  Inspect, initialize, or run one durable fair turn across a Deep Work goal fleet
+  work-fleet-cleanup Reconcile and release one crash-held fleet turn after exact cleanup
+  work-fleet-host-evidence Generate expiring live capacity evidence for one fleet
+  work-fleet-service Render, inspect, install, activate, or remove one fleet-wide service
+  frontier-authority Inspect, grant, revoke, and audit bounded Frontier authority
+  ops-keygen  Generate the isolated Operations SSH identity (requires --confirm)
+  ops-target  Enroll one verified dedicated runner target (requires --confirm)
+  ops-target-refresh Refresh helpers on one enrolled runner without changing trust
+  ops-target-actions Install private action-pack configuration on one runner (requires --confirm)
+  ops-show    Show one immutable Operations plan and current status
+  ops-approve Approve one exact Operations plan hash (requires --confirm)
+  ops-authority Inspect, grant, revoke, and audit bounded authority
+  ops-policy-migrate Convert one private v1 Operations policy to reviewable v2 output
+  release-manifest-migrate Convert an unversioned release manifest to schema v1
+  upstream    Check registries or prepare a verified OpenClaw candidate
+  ops-policy-tighten Remove reviewed v1 compatibility grants from a v2 policy
+  ops-action-pack Configure one reusable action pack and private target mapping
+  extension-hash Compute a custom gateway extension's approved tree digest
+  ops-pause   Emergency-pause Operations execution (requires --confirm)
+  ops-resume  Resume Operations execution (requires --confirm)
+  frontier-pause Emergency-pause Frontier egress (requires --confirm)
+  frontier-resume Resume Frontier egress (requires --confirm)
+  limbs       Show enabled/disabled modular capability limbs
+  rollback    Restore the preceding Pixel release/configuration
+  backup      Create an age-encrypted private-state backup and checksum
+  restore     Validate, rehearse, or restore an age-encrypted private-state backup
+  rotate      Rotate a credential transactionally (gateway is currently supported)
+  package     Build a versioned, checksummed handoff archive
+  release-sign Sign one validated release-update envelope (requires --confirm)
+  release-qualification-sign Sign one Candidate envelope for qualification only
+  release-qualification-inspect Verify a Candidate qualification signature without update authority
+  release-qualification-prepare Copy one exact Candidate bundle into a disposable qualification root only (requires --confirm)
+  release-qualification-rehearse Extract and parse one qualification-staged candidate without executing it (requires --confirm)
+  release-qualification-activation-preview Derive an exact qualification activation hash without executing candidate code
+  release-qualification-activation-claim Atomically claim one qualification-root-only activation without executing candidate code (requires --confirm)
+  release-qualification-host-run Atomically acquire one private host-run for an already-claimed qualification activation without executing candidate code (requires --confirm)
+  release-qualification-execution-claim Write the durable qualification execution claim before any candidate process may start (requires --confirm)
+  release-qualification-execution-result Record the immutable content-free result of one claimed qualification execution (requires --confirm)
+  release-qualification-execution-interruption-preview Inertly derive the exact terminal interruption hash for one post-start indeterminate qualification execution
+  release-qualification-execution-interruption-record Write the two private immutable terminal interruption artifacts for one post-start indeterminate qualification execution (requires --confirm plus the exact preview hash)
+  release-qualification-host-execute Run one bounded candidate probe under disposable-host custody and emit a content-free observation (requires --confirm)
+  update-inspect Verify one signed release bundle without executing candidate code
+  update-prepare Copy one eligible verified bundle into private staging (requires --confirm)
+  update-rehearse Safely extract and parse one staged candidate (requires --confirm)
+  update-activate Preview or transactionally activate one exact rehearsed candidate
+  update-reactivate Preview or re-activate one exact successfully rolled-back candidate
+  update-reactivation-rollback Preview or roll back one exact reactivated candidate
+  update-reactivation-recover Diagnose or finalize one interrupted reactivation receipt
+  update-rollback Preview or restore one exact activated update (requires --confirm)
+  update-recover Diagnose or finalize one interrupted update receipt (requires --confirm)
+  update-cleanup Reclaim one completed rolled-back update after preserving audit history
+  update-archive Preserve one terminal failed rollback outside bounded staging (requires --confirm)
+  update-reactivation-archive Preserve one terminal no-live-mutation reactivation failure outside bounded staging (requires --confirm)
+  migrate-legacy-clean Review, rehearse, and finalize a terminal-only clean 3.2.2 to 4.2 migration
+  test        Run repository and clean-room workflow tests
+  pressure    Repeatedly fuzz and exercise Operations safety/capability paths
+  help        Show this help
+EOF
+}
+
+command=${1:-help}
+if [[ $# -gt 0 ]]; then shift; fi
+case "$command" in
+  bootstrap) exec bash "$ROOT/scripts/bootstrap.sh" "$@" ;;
+  configure) exec node "$ROOT/scripts/configure.mjs" "$@" ;;
+  services) exec bash "$ROOT/scripts/reference-services.sh" "$@" ;;
+  plan) exec bash "$ROOT/scripts/plan.sh" "$@" ;;
+  apply) exec bash "$ROOT/scripts/apply.sh" "$@" ;;
+  verify) exec bash "$ROOT/scripts/verify.sh" "$@" ;;
+  doctor) exec python3 "$ROOT/scripts/pixel-doctor.py" "$@" ;;
+  authorize) exec bash "$ROOT/scripts/authorize-google.sh" "$@" ;;
+  source-broker) exec bash "$ROOT/scripts/install-source-broker.sh" "$@" ;;
+  source-show) exec bash "$ROOT/scripts/show-source-action.sh" "$@" ;;
+  source-approve) exec bash "$ROOT/scripts/approve-source-action.sh" "$@" ;;
+  source-reconcile) exec bash "$ROOT/scripts/reconcile-source-action.sh" "$@" ;;
+  github-action) exec python3 "$ROOT/deploy/github-broker/broker.py" "$@" ;;
+  action-journal) exec python3 "$ROOT/deploy/action_journal/cli.py" "$@" ;;
+  ops-broker) exec bash "$ROOT/scripts/install-ops-broker.sh" "$@" ;;
+  frontier-broker) exec bash "$ROOT/scripts/install-frontier-broker.sh" "$@" ;;
+  frontier-show) exec bash "$ROOT/scripts/show-frontier-job.sh" "$@" ;;
+  frontier-approve) exec bash "$ROOT/scripts/approve-frontier-job.sh" "$@" ;;
+  frontier-usage) exec bash "$ROOT/scripts/show-frontier-usage.sh" "$@" ;;
+  frontier-live-qualify) exec bash "$ROOT/scripts/frontier-live-qualify.sh" "$@" ;;
+  frontier-budget) exec python3 "$ROOT/scripts/frontier_budget.py" "$@" ;;
+  promotion-status) exec python3 "$ROOT/scripts/promotion_readiness.py" "$@" ;;
+  outcome-task-admit) exec python3 "$ROOT/scripts/portal_outcome_task.py" "$@" ;;
+  outcome-compare) exec python3 "$ROOT/scripts/portal_outcome_evaluation.py" "$@" ;;
+  outcome-campaign) exec python3 "$ROOT/scripts/portal_outcome_campaign.py" "$@" ;;
+  qualify-hosts) exec bash "$ROOT/scripts/run-supported-host-systemd-matrix.sh" "$@" ;;
+  ui) exec python3 "$ROOT/control/server.py" "$@" ;;
+  limb-kit) exec python3 "$ROOT/scripts/limb-kit.py" "$@" ;;
+  client-kit) exec node "$ROOT/scripts/client-kit.mjs" "$@" ;;
+  work-compile) exec node "$ROOT/deploy/work-broker/broker.mjs" "$@" ;;
+  work-model-qualify) exec node "$ROOT/deploy/work-controller/model-qualification-runner.mjs" "$@" ;;
+  work-model-policy) exec node "$ROOT/deploy/work-controller/model-policy-cli.mjs" "$@" ;;
+  work-model-backend) exec node "$ROOT/deploy/work-controller/model-backend-cli.mjs" "$@" ;;
+  work-input-pack) exec node "$ROOT/deploy/work-controller/input-pack-cli.mjs" "$@" ;;
+  work-goal-draft) exec node "$ROOT/deploy/work-controller/goal-draft-cli.mjs" "$@" ;;
+  work-goal-assemble) exec node "$ROOT/deploy/work-controller/goal-assemble-cli.mjs" "$@" ;;
+  work-goal-launch) exec node "$ROOT/deploy/work-controller/goal-launch-prepare-cli.mjs" "$@" ;;
+  work-goal-prepare) exec node "$ROOT/deploy/work-controller/goal-prepare-cli.mjs" "$@" ;;
+  work-goal-controller-prepare) exec node "$ROOT/deploy/work-controller/goal-controller-prepare-cli.mjs" "$@" ;;
+  work-goal-stage) exec node "$ROOT/deploy/work-controller/goal-stage-cli.mjs" "$@" ;;
+  work-goal) exec node "$ROOT/deploy/work-controller/goal-cli.mjs" "$@" ;;
+  work-context) exec node "$ROOT/deploy/work-controller/context-session-cli.mjs" "$@" ;;
+  work-context-guide) exec node "$ROOT/deploy/work-controller/context-session-guide.mjs" "$@" ;;
+  work-cycle) exec node "$ROOT/deploy/work-controller/goal-cycle-cli.mjs" "$@" ;;
+  work-continuous) exec node "$ROOT/deploy/work-controller/goal-continuous-cli.mjs" "$@" ;;
+  work-capability-pack) exec node "$ROOT/deploy/work-controller/capability-pack-cli.mjs" "$@" ;;
+  work-knowledge) exec node "$ROOT/deploy/work-controller/knowledge-vault-cli.mjs" "$@" ;;
+  work-knowledge-guide) exec node "$ROOT/deploy/work-controller/knowledge-vault-guide.mjs" "$@" ;;
+  work-knowledge-restore) exec node "$ROOT/deploy/work-controller/knowledge-vault-restore-cli.mjs" "$@" ;;
+  work-accept) exec node "$ROOT/deploy/work-controller/goal-accept-cli.mjs" "$@" ;;
+  work-cancel) exec node "$ROOT/deploy/work-controller/goal-cancel-cli.mjs" "$@" ;;
+  work-pause) exec node "$ROOT/deploy/work-controller/goal-pause-cli.mjs" "$@" ;;
+  work-resume) exec node "$ROOT/deploy/work-controller/goal-resume-cli.mjs" "$@" ;;
+  work-service) exec node "$ROOT/deploy/work-controller/goal-service-cli.mjs" "$@" ;;
+  work-fleet) exec node "$ROOT/deploy/work-controller/goal-fleet-cycle-cli.mjs" "$@" ;;
+  work-fleet-cleanup) exec node "$ROOT/deploy/work-controller/goal-fleet-cleanup-cli.mjs" "$@" ;;
+  work-fleet-host-evidence) exec node "$ROOT/deploy/work-controller/goal-fleet-host-evidence-cli.mjs" "$@" ;;
+  work-fleet-service) exec node "$ROOT/deploy/work-controller/goal-fleet-service-cli.mjs" "$@" ;;
+  frontier-authority) exec bash "$ROOT/scripts/frontier-authority.sh" "$@" ;;
+  ops-keygen) exec bash "$ROOT/scripts/generate-ops-key.sh" "$@" ;;
+  ops-target) exec bash "$ROOT/scripts/provision-ops-target.sh" "$@" ;;
+  ops-target-refresh) exec bash "$ROOT/scripts/refresh-ops-target.sh" "$@" ;;
+  ops-target-actions) exec bash "$ROOT/scripts/configure-ops-target-actions.sh" "$@" ;;
+  ops-show) exec bash "$ROOT/scripts/show-ops-job.sh" "$@" ;;
+  ops-approve) exec bash "$ROOT/scripts/approve-ops-job.sh" "$@" ;;
+  ops-authority) exec bash "$ROOT/scripts/ops-authority.sh" "$@" ;;
+  ops-policy-migrate) exec node "$ROOT/scripts/migrate-ops-policy.mjs" "$@" ;;
+  release-manifest-migrate) exec node "$ROOT/scripts/migrate-release-manifest.mjs" "$@" ;;
+  upstream) exec node "$ROOT/scripts/upstream.mjs" "$@" ;;
+  ops-policy-tighten) exec node "$ROOT/scripts/tighten-ops-policy.mjs" "$@" ;;
+  ops-action-pack) exec node "$ROOT/scripts/configure-ops-action-pack.mjs" "$@" ;;
+  extension-hash) exec node "$ROOT/scripts/hash-gateway-extension.mjs" "$@" ;;
+  ops-pause) exec bash "$ROOT/scripts/ops-authority.sh" pause "$@" ;;
+  ops-resume) exec bash "$ROOT/scripts/ops-authority.sh" resume "$@" ;;
+  frontier-pause) exec bash "$ROOT/scripts/frontier-authority.sh" pause "$@" ;;
+  frontier-resume) exec bash "$ROOT/scripts/frontier-authority.sh" resume "$@" ;;
+  limbs) exec bash "$ROOT/scripts/limbs.sh" "$@" ;;
+  rollback) exec bash "$ROOT/scripts/rollback.sh" "$@" ;;
+  backup) exec bash "$ROOT/scripts/backup-private-state.sh" "$@" ;;
+  restore) exec bash "$ROOT/scripts/restore-private-state.sh" "$@" ;;
+  rotate)
+    [[ ${1:-} == gateway ]] || pixel_die "Usage: ./pixel rotate gateway --confirm"
+    shift
+    exec bash "$ROOT/scripts/rotate-gateway-token.sh" "$@"
+    ;;
+  package) exec bash "$ROOT/scripts/package-release.sh" "$@" ;;
+  release-sign) exec python3 "$ROOT/scripts/release-update.py" sign "$@" ;;
+  release-qualification-sign) exec python3 "$ROOT/scripts/release-update.py" qualification-sign "$@" ;;
+  release-qualification-inspect) exec python3 "$ROOT/scripts/release-update.py" qualification-inspect "$@" ;;
+  update-inspect) exec python3 "$ROOT/scripts/release-update.py" inspect "$@" ;;
+  update-prepare) exec bash "$ROOT/scripts/prepare-release-update.sh" "$@" ;;
+  update-rehearse) exec bash "$ROOT/scripts/rehearse-release-update.sh" "$@" ;;
+  update-activate) exec bash "$ROOT/scripts/activate-release-update.sh" "$@" ;;
+  update-reactivate) exec bash "$ROOT/scripts/reactivate-release-update.sh" "$@" ;;
+  update-reactivation-rollback) exec bash "$ROOT/scripts/rollback-reactivated-release-update.sh" "$@" ;;
+  update-reactivation-recover) exec bash "$ROOT/scripts/recover-reactivated-release-update.sh" "$@" ;;
+  update-rollback) exec bash "$ROOT/scripts/rollback-release-update.sh" "$@" ;;
+  update-recover) exec bash "$ROOT/scripts/recover-release-update.sh" "$@" ;;
+  update-cleanup) exec bash "$ROOT/scripts/cleanup-release-update.sh" "$@" ;;
+  update-archive) exec bash "$ROOT/scripts/archive-release-update.sh" "$@" ;;
+  update-reactivation-archive) exec bash "$ROOT/scripts/archive-reactivation-failure.sh" "$@" ;;
+  release-qualification-prepare) exec python3 "$ROOT/scripts/release-update.py" qualification-prepare "$@" ;;
+  release-qualification-rehearse) exec python3 "$ROOT/scripts/release-update.py" qualification-rehearse "$@" ;;
+  release-qualification-activation-preview) exec python3 "$ROOT/scripts/release-update.py" qualification-activation-preview "$@" ;;
+  release-qualification-activation-claim) exec python3 "$ROOT/scripts/release-update.py" qualification-activation-claim "$@" ;;
+  release-qualification-host-run) exec python3 "$ROOT/scripts/release-update.py" qualification-host-run "$@" ;;
+  release-qualification-execution-claim) exec python3 "$ROOT/scripts/release-update.py" qualification-execution-claim "$@" ;;
+  release-qualification-execution-result) exec python3 "$ROOT/scripts/release-update.py" qualification-execution-result "$@" ;;
+  release-qualification-execution-interruption-preview) exec python3 "$ROOT/scripts/release-update.py" qualification-execution-interruption-preview "$@" ;;
+  release-qualification-execution-interruption-record) exec python3 "$ROOT/scripts/release-update.py" qualification-execution-interruption-record "$@" ;;
+  release-qualification-host-execute) exec python3 "$ROOT/scripts/qualification-host-execution.py" "$@" ;;
+  migrate-legacy-clean) exec python3 "$ROOT/scripts/migrate-legacy-clean.py" "$@" ;;
+  test) exec bash "$ROOT/tests/run.sh" "$@" ;;
+  pressure) exec bash "$ROOT/security-evals/operations-pressure/run-loop.sh" "$@" ;;
+  help|-h|--help) usage ;;
+  *) echo "Unknown command: $command" >&2; usage >&2; exit 2 ;;
+esac

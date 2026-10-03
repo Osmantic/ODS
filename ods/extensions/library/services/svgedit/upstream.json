@@ -1,0 +1,15 @@
+{
+  "repository": "https://github.com/SVG-Edit/svgedit",
+  "license": "MIT",
+  "image": "nginx:1.28-alpine@sha256:a8b39bd9cf0f83869a2162827a0caf6137ddf759d50a171451b335cecc87d236",
+  "build_image": "node:24.16.0-alpine3.22@sha256:191c9f0080fcbbc6547a85dc0ff7988072214a355aabdc1d2ec55a7dae5eea8a",
+  "registry_checked_at": "2026-09-20",
+  "platforms": [
+    "linux/amd64",
+    "linux/arm64"
+  ],
+  "runtime_validation": "pending",
+  "source_commit": "c44f061d2f9a626d2771cc931298af5a45522d87",
+  "source_sha256": "5e73cbcc0a37c378223664ea76e74feadf92b35837a7d9a683f0e21f51096050",
+  "notes": "Exact master snapshot 2026-08-05, package 7.4.2; latest GitHub release v.7.3.3 dates to 2023. Full upstream workspace build/postbuild, browser-local storage and explicit SVG exports. Alternate cross-domain entry and test harness omitted from served files."
+}

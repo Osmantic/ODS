@@ -1,0 +1,48 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: 2.6.0
+service:
+  id: wiremock
+  name: WireMock
+  aliases: []
+  container_name: ods-wiremock
+  host_env: WIREMOCK_HOST
+  default_host: wiremock
+  port: 8080
+  external_port_env: WIREMOCK_PORT
+  external_port_default: 11035
+  health: /__admin/health
+  type: docker
+  startup_check: true
+  startup_timeout: 90
+  gpu_backends:
+  - all
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  description: Create explicit API test doubles, request matching and failure scenarios
+    for local project integration tests.
+  env_vars: []
+  external_link: false
+tags:
+- development
+- testing
+- local
+- open-source
+features:
+- id: wiremock-api
+  name: WireMock API
+  description: Create explicit API test doubles, request matching and failure scenarios
+    for local project integration tests.
+  icon: Network
+  category: productivity
+  requirements:
+    services:
+    - wiremock
+    vram_gb: 0
+  enabled_services_all:
+  - wiremock
+  setup_time: Initial image download; see README
+  priority: 48
+  launch:
+    type: none

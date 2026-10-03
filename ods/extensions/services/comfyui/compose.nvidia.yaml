@@ -8,12 +8,15 @@ services:
     security_opt:
       - no-new-privileges:true
     ports:
-      - "${BIND_ADDRESS:-127.0.0.1}:${COMFYUI_PORT:-8188}:8188"
+      - "127.0.0.1:${COMFYUI_PORT:-8188}:8188"
     volumes:
       - ./data/comfyui/models:/models:z
       - ./data/comfyui/output:/output:z
       - ./data/comfyui/input:/input:z
       - ./data/comfyui/workflows:/workflows:ro,z
+      # Saved workflows and UI settings. Without this they live only in the
+      # container layer and are lost on every recreate (e.g. `ods update`).
+      - ./data/comfyui/user:/user:z
     shm_size: '8g'
     deploy:
       resources:

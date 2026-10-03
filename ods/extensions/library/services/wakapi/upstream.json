@@ -1,0 +1,13 @@
+{
+  "repository": "https://github.com/muety/wakapi",
+  "license": "MIT",
+  "image": "ghcr.io/muety/wakapi:2.18.0@sha256:9ee43d15009730928ed4c3506bdfb410522d9e6543d364d8c063e1e02348ba78",
+  "registry_checked_at": "2026-09-20",
+  "platforms": [
+    "linux/amd64",
+    "linux/arm64",
+    "linux/arm"
+  ],
+  "runtime_validation": "pending",
+  "notes": "Official 2.18.0 nonroot distroless image with upstream-owned data directory and native healthcheck. Required persistent password pepper, SQLite, explicit editor setup. No cloud dual-write, leaderboard or import enabled."
+}

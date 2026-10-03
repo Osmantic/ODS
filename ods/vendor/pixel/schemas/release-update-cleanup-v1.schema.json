@@ -1,0 +1,96 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/release-update-cleanup-v1.schema.json",
+  "title": "Pixel completed update cleanup tombstone v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "operation", "status", "candidateId", "product", "version", "restoredVersion", "activationHash", "sourceCommit", "sourceTree", "stageReceiptSha256", "rehearsalReceiptSha256", "activationClaimSha256", "activationResultSha256", "rollbackClaimSha256", "rollbackResultSha256", "trees", "deleteScope", "installedReleaseWillBeDeleted", "activeDeploymentWillChange", "auditTombstoneWillBePreserved", "cleanupHash", "cleanedAt", "candidateEvidenceDeleted", "rehearsalEvidenceDeleted", "activationWorkspaceDeleted", "boundary"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "operation": {"const": "pixel-release-update-cleanup"},
+    "status": {"enum": ["deleting", "cleaned"]},
+    "candidateId": {"type": "string", "pattern": "^pixel-[0-9]{1,6}\\.[0-9]{1,6}\\.[0-9]{1,6}-[0-9a-f]{64}$"},
+    "product": {"const": "Pixel"},
+    "version": {"type": "string", "pattern": "^[0-9]{1,6}\\.[0-9]{1,6}\\.[0-9]{1,6}$"},
+    "restoredVersion": {"type": "string", "pattern": "^[0-9]{1,6}\\.[0-9]{1,6}\\.[0-9]{1,6}$"},
+    "activeVersionAtCleanup": {"type": "string", "pattern": "^[0-9]{1,6}\\.[0-9]{1,6}\\.[0-9]{1,6}$"},
+    "activationHash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "sourceCommit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "sourceTree": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "stageReceiptSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "rehearsalReceiptSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "activationClaimSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "activationResultSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "rollbackClaimSha256": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"},
+    "rollbackResultSha256": {"type": ["string", "null"], "pattern": "^[0-9a-f]{64}$"},
+    "terminalOutcome": {"const": "activation-failed"},
+    "trees": {
+      "type": "object", "additionalProperties": false,
+      "required": ["candidate", "rehearsal", "activation"],
+      "properties": {
+        "candidate": {"$ref": "#/$defs/tree"},
+        "rehearsal": {"$ref": "#/$defs/tree"},
+        "activation": {"$ref": "#/$defs/tree"}
+      }
+    },
+    "deleteScope": {"const": ["verified-bundle-copy", "rehearsal-copy", "completed-activation-workspace"]},
+    "installedReleaseWillBeDeleted": {"const": false},
+    "activeDeploymentWillChange": {"const": false},
+    "auditTombstoneWillBePreserved": {"const": true},
+    "cleanupHash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "cleanedAt": {"type": ["string", "null"], "format": "date-time"},
+    "candidateEvidenceDeleted": {"type": "boolean"},
+    "rehearsalEvidenceDeleted": {"type": "boolean"},
+    "activationWorkspaceDeleted": {"type": "boolean"},
+    "boundary": {"enum": ["Completed rolled-back update evidence only; fixed staging copies are quarantined and a content-free audit tombstone is preserved before deletion.", "Completed terminal no-mutation activation failure evidence only; fixed staging copies are quarantined and a content-free audit tombstone is preserved before deletion."]}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"status": {"const": "deleting"}}, "required": ["status"]},
+      "then": {
+        "properties": {
+          "cleanedAt": {"const": null},
+          "candidateEvidenceDeleted": {"const": false},
+          "rehearsalEvidenceDeleted": {"const": false},
+          "activationWorkspaceDeleted": {"const": false}
+        }
+      },
+      "else": {
+        "properties": {
+          "cleanedAt": {"type": "string", "format": "date-time"},
+          "candidateEvidenceDeleted": {"const": true},
+          "rehearsalEvidenceDeleted": {"const": true},
+          "activationWorkspaceDeleted": {"const": true}
+        }
+      }
+    },
+    {
+      "if": {"required": ["terminalOutcome"], "properties": {"terminalOutcome": {"const": "activation-failed"}}},
+      "then": {
+        "properties": {
+          "rollbackClaimSha256": {"const": null},
+          "rollbackResultSha256": {"const": null},
+          "boundary": {"const": "Completed terminal no-mutation activation failure evidence only; fixed staging copies are quarantined and a content-free audit tombstone is preserved before deletion."}
+        }
+      },
+      "else": {
+        "properties": {
+          "rollbackClaimSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "rollbackResultSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+          "boundary": {"const": "Completed rolled-back update evidence only; fixed staging copies are quarantined and a content-free audit tombstone is preserved before deletion."}
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "tree": {
+      "type": "object", "additionalProperties": false,
+      "required": ["shapeSha256", "entries", "regularBytes"],
+      "properties": {
+        "shapeSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "entries": {"type": "integer", "minimum": 1, "maximum": 250000},
+        "regularBytes": {"type": "integer", "minimum": 1, "maximum": 4294967296}
+      }
+    }
+  }
+}

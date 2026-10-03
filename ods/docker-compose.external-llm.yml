@@ -4,6 +4,18 @@
 # host-gateway mappings make that name available on plain Linux Docker Engine
 # as well as Docker Desktop.
 services:
+  litellm:
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - type: bind
+        source: ./config/litellm/external-upstream.key
+        target: /run/secrets/ods-external-llm-api-key
+        read_only: true
+        bind:
+          create_host_path: false
+          selinux: z
+
   llama-server:
     profiles:
       - local-inference
@@ -25,6 +37,10 @@ services:
       - "host.docker.internal:host-gateway"
     environment:
       LLM_BACKEND: external
+      EXTERNAL_LLM_CONTAINER_URL: "${EXTERNAL_LLM_CONTAINER_URL}"
+      EXTERNAL_LLM_PROVIDER: "${EXTERNAL_LLM_PROVIDER:-openai-compatible}"
+      EXTERNAL_LLM_MODEL: "${EXTERNAL_LLM_MODEL:-}"
+      ODS_MODEL_SWITCHBOARD: "${ODS_MODEL_SWITCHBOARD:-observe}"
       LLM_API_BASE_PATH: /v1
       ODS_TALK_VISION_URL: "${EXTERNAL_LLM_CONTAINER_URL}/v1"
       AMD_INFERENCE_RUNTIME: ""

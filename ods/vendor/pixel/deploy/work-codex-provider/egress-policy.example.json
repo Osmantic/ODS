@@ -1,0 +1,18 @@
+{
+  "$schema": "https://osmantic.com/pixel/schemas/work-codex-egress-policy-v1.schema.json",
+  "schemaVersion": 1,
+  "mode": "exact-connect-host-allowlist",
+  "allowedHosts": ["chatgpt.com"],
+  "allowedPorts": [443],
+  "denyIpLiterals": true,
+  "denyPrivateAddressResolution": true,
+  "denyPlainHttp": true,
+  "denyConnectToUnlistedHosts": true,
+  "maxConcurrentTunnels": 4,
+  "maxTunnelBytes": 33554432,
+  "connectTimeoutSeconds": 10,
+  "idleTimeoutSeconds": 60,
+  "logRequestBodies": false,
+  "logResponseBodies": false,
+  "boundary": "Deployment-private Codex egress proxy policy. The worker has only an internal Docker network and can reach only this proxy; the proxy permits CONNECT to the exact reviewed OpenAI host list on port 443 and stores no request or response body."
+}

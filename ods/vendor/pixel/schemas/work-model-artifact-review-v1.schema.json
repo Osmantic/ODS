@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/work-model-artifact-review-v1.schema.json",
+  "title": "Pixel content-free local-model artifact measurement review v1",
+  "type": "object", "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "operation", "status", "artifactMeasurementSha256", "confirmation", "changes", "privacy", "authority", "boundary"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/work-model-artifact-review-v1.schema.json"},
+    "schemaVersion": {"const": 1},
+    "operation": {"const": "pixel-work-model-artifact-review"},
+    "status": {"const": "confirmation-required"},
+    "artifactMeasurementSha256": {"$ref": "#/$defs/sha256"},
+    "confirmation": {
+      "type": "object", "additionalProperties": false,
+      "required": ["option", "sha256"],
+      "properties": {
+        "option": {"const": "--confirm-artifact-measurement-sha256"},
+        "sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "changes": {"const": {"readsModelBytesOnRender": true, "writesPrivateArtifactManifest": true, "createsNetwork": false, "startsContainer": false, "pullsImage": false, "changesPolicy": false, "changesAuthority": false}},
+    "privacy": {"const": {"modelIdentifier": false, "paths": false, "modelByteHashes": false, "credentials": false, "prompts": false, "responses": false}},
+    "authority": {"const": {"grantsExecution": false, "createsNetwork": false, "startsContainer": false, "pullsImage": false, "grantsDevices": false, "grantsCredentials": false, "grantsExternalEffects": false, "grantsCompletion": false}},
+    "boundary": {"const": "Content-free review of one private local-model artifact measurement request. Confirmation may read the selected local-model bytes and write one new owner-private inert exact-byte manifest, but cannot start a model or container, create a network, pull an image, grant a device, qualify a model, change policy, expose a path, model identifier, byte hash, credential, prompt, or response, or grant execution, external-effect, or completion authority."}
+  },
+  "$defs": {"sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}}
+}

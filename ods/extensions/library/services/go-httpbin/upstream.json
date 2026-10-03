@@ -1,0 +1,13 @@
+{
+  "repository": "https://github.com/mccutchen/go-httpbin",
+  "license": "MIT",
+  "image": "ghcr.io/mccutchen/go-httpbin:2.25.0@sha256:20739736d4eb8dc1b998dff701f437b8bd62dcc46492bd0d861e89890ca36500",
+  "build_image": "golang:1.26-alpine@sha256:51a7c389a5ddaf82f527191a1e9bff9928655130a44e4975dd1d7e0acf59f1ae",
+  "registry_checked_at": "2026-09-20",
+  "platforms": [
+    "linux/amd64",
+    "linux/arm64"
+  ],
+  "runtime_validation": "pending",
+  "notes": "Official distroless nonroot server plus bounded static health probe. API-only catalog entry, loopback host binding, request/delay limits and local redirect destinations. No persistent data or external proxy, and no ordinary Portal response interception."
+}

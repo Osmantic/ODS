@@ -1,0 +1,14 @@
+{
+  "repository": "https://github.com/TriliumNext/Trilium",
+  "license": "AGPL-3.0",
+  "image": "ghcr.io/triliumnext/trilium:v0.105.0@sha256:cc6a15edd7ac3df9bb98ad39dd40af8ffda6c1c0bfafe37c26137ddcbecdb7e5",
+  "registry_checked_at": "2026-09-20",
+  "platforms": [
+    "linux/arm64",
+    "linux/arm",
+    "linux/arm",
+    "linux/amd64"
+  ],
+  "runtime_validation": "pending",
+  "notes": "Official 0.105.0 bundle with owned persistent data directory. Direct nonroot main.cjs startup avoids root chown/su on every launch; uses bundled health checker. Initial password setup remains in the app, no external sync or AI configured."
+}

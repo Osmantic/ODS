@@ -23,11 +23,19 @@ $phaseText = Get-Content -LiteralPath $phasePath -Raw
 if ($phaseText -notmatch [regex]::Escape('$env:WEBUI_PORT = "9090"')) {
     throw "Phase 04 does not show valid PowerShell syntax for WEBUI_PORT overrides"
 }
+if ($phaseText -match 'Stop-WindowsODSLemonadePortConflicts|Stop-Process\s+-Id') {
+    throw "Windows preflight must not stop an unrelated native Lemonade process"
+}
+if ($phaseText -notmatch [regex]::Escape('if ($NonInteractive -and -not $Force -and -not $DryRun)')) {
+    throw "Non-interactive Windows preflight must reject occupied selected ports"
+}
 
 foreach ($name in @(
     "Resolve-WindowsLlmPreflightPort",
     "Test-WindowsPortInUse",
-    "Test-WindowsODSLemonadeOwnsPort"
+    "Test-WindowsODSLemonadeOwnsPort",
+    "Get-WindowsODSSelectedPortConflicts",
+    "Assert-WindowsODSSelectedPortAvailability"
 )) {
     $functionAst = $ast.Find({
         param($node)
@@ -291,6 +299,239 @@ try {
     if ($null -eq $savedOllamaPort) { Remove-Item Env:OLLAMA_PORT -ErrorAction SilentlyContinue } else { $env:OLLAMA_PORT = $savedOllamaPort }
     if ($null -eq $savedLlamaPort) { Remove-Item Env:LLAMA_SERVER_PORT -ErrorAction SilentlyContinue } else { $env:LLAMA_SERVER_PORT = $savedLlamaPort }
     if ($null -eq $savedWebuiPort) { Remove-Item Env:WEBUI_PORT -ErrorAction SilentlyContinue } else { $env:WEBUI_PORT = $savedWebuiPort }
+}
+
+# A separate Lemonade runtime may be active without occupying any selected ODS
+# port. Preflight must leave it alone, including for dry-run/non-interactive use.
+$script:mockListeners = @{
+    9000 = @{ InUse = $true; ProcessId = 4242; ProcessName = "LemonadeServer" }
+    13305 = @{ InUse = $true; ProcessId = 4242; ProcessName = "LemonadeServer" }
+}
+function Test-WindowsPortInUse {
+    param([int]$Port)
+    if ($script:mockListeners.ContainsKey($Port)) { return $script:mockListeners[$Port] }
+    return @{ InUse = $false; ProcessId = 0; ProcessName = "" }
+}
+function Stop-Process { throw "Preflight must never stop a process" }
+function Write-AI { param([string]$Message) }
+function Write-AIError { param([string]$Message) }
+function Write-AISuccess { param([string]$Message) }
+
+$selectedPorts = [ordered]@{
+    "Open WebUI (chat)" = 3000
+    "Dashboard" = 3001
+    "llama-server (LLM)" = 11434
+}
+$conflicts = @(Get-WindowsODSSelectedPortConflicts -PortsToCheck $selectedPorts)
+Assert-Equal $conflicts.Count 0 "Unrelated Lemonade ports are not selected-port conflicts"
+Assert-Equal (Assert-WindowsODSSelectedPortAvailability -Conflicts $conflicts -NonInteractive -DryRun) `
+    $true "Dry-run leaves unrelated Lemonade running"
+
+$script:mockListeners[3000] = @{ InUse = $true; ProcessId = 4242; ProcessName = "LemonadeServer" }
+$conflicts = @(Get-WindowsODSSelectedPortConflicts -PortsToCheck $selectedPorts)
+Assert-Equal $conflicts.Count 1 "Actual selected-port collision is detected"
+if ($conflicts[0] -notmatch 'Port 3000 .*LemonadeServer.*PID 4242') {
+    throw "Selected-port conflict did not identify the owner and port"
+}
+$aborted = $false
+try {
+    $null = Assert-WindowsODSSelectedPortAvailability -Conflicts $conflicts -NonInteractive
+} catch {
+    $aborted = ($_.Exception.Message -eq "ODS_INSTALL_ABORTED")
+}
+Assert-Equal $aborted $true "Non-interactive install fails closed on actual selected-port collision"
+Assert-Equal (Assert-WindowsODSSelectedPortAvailability -Conflicts $conflicts -NonInteractive -DryRun) `
+    $false "Dry-run reports actual selected-port collision without stopping the owner"
+
+function Get-WindowsODSLemonadeProcesses {
+    return @([pscustomobject]@{ ProcessId = 4242; Name = "LemonadeServer.exe" })
+}
+$script:mockListeners[8080] = @{ InUse = $true; ProcessId = 4242; ProcessName = "LemonadeServer" }
+$amdPort = [ordered]@{ "Lemonade (LLM)" = 8080 }
+Assert-Equal @(Get-WindowsODSSelectedPortConflicts -PortsToCheck $amdPort -UsesNativeLemonade).Count `
+    0 "Native AMD installation reuses its own Lemonade listener"
+$script:mockListeners[8080] = @{ InUse = $true; ProcessId = 4343; ProcessName = "OtherServer" }
+Assert-Equal @(Get-WindowsODSSelectedPortConflicts -PortsToCheck $amdPort -UsesNativeLemonade).Count `
+    1 "Native AMD installation rejects a foreign listener"
+
+function Remove-VoiceSeedDir {
+    param([string]$Path)
+    $canonical = [IO.Path]::GetFullPath($Path)
+    $prefix = Join-Path ([IO.Path]::GetTempPath()) "ods-voice-seed-"
+    if (-not $canonical.StartsWith($prefix, [StringComparison]::Ordinal) -or
+        (Split-Path -Leaf $canonical) -notmatch '^ods-voice-seed-[a-f0-9]{32}$' -or
+        ((Get-Item -LiteralPath $canonical -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+        throw "Unexpected test cleanup path"
+    }
+    Remove-Item -LiteralPath $canonical -Recurse -Force
+}
+
+$savedVoiceOverride = $env:WHISPER_PORT
+try {
+    Remove-Item Env:WHISPER_PORT -ErrorAction SilentlyContinue
+# ── Voice (Whisper) port parity: phase 04 preflight vs env generator ──────
+$script:voicePass = 0
+$script:voiceCase = 0
+function Assert-VoiceEqual {
+    param($Actual, $Expected, [string]$Label)
+    $script:voiceCase++
+    if ("$Actual" -ceq "$Expected") {
+        $script:voicePass++
+        Write-Host "[PASS] $Label"
+    } else {
+        throw "$Label expected '$Expected', got '$Actual'"
+    }
+}
+
+$script:voiceIfAst = $ast.Find({
+    param($node)
+    $node -is [System.Management.Automation.Language.IfStatementAst] -and
+        $node.Clauses[0].Item1.Extent.Text -match 'enableVoice'
+}, $true)
+if (-not $script:voiceIfAst) { throw "Phase 04 enableVoice block not found" }
+$voiceBlock = [scriptblock]::Create(($script:voiceIfAst.Clauses[0].Item2.Statements.Extent.Text -join "`n"))
+
+function Get-PhaseVoicePort {
+    param([string]$Backend, [bool]$Cloud = $false, [string]$InstallDir = "")
+    $gpuInfo = @{ Backend = $Backend }
+    $cloudMode = $Cloud
+    $installDir = $InstallDir
+    $_usesNativeLemonade = ($Backend -eq "amd" -and -not $Cloud)
+    $_portsToCheck = [ordered]@{}
+    . $voiceBlock
+    return ,$_portsToCheck
+}
+
+# Fake conflict probe: reads $script:mockListeners only; no real sockets.
+function Test-WindowsLemonadeWhisperPortConflict {
+    param([int]$Port = 9000)
+    $listener = $script:mockListeners[$Port]
+    return [bool]($listener -and $listener.InUse -and
+        $listener.ProcessName -match '(?i)lemonade')
+}
+
+function New-VoiceSeedDir {
+    param([string]$Content = "")
+    $dir = Join-Path ([IO.Path]::GetTempPath()) "ods-voice-seed-$([Guid]::NewGuid().ToString('N'))"
+    New-Item -ItemType Directory -Path $dir | Out-Null
+    if ($Content) { Set-Content -LiteralPath (Join-Path $dir ".env") -Value $Content }
+    return $dir
+}
+
+function Get-GeneratorWhisperPort {
+    param(
+        [string]$Backend,
+        [string]$Runtime = "",
+        [string]$Location = "",
+        [string]$SeedEnv = "",
+        [string]$ProcessPort = ""
+    )
+    $dir = New-VoiceSeedDir -Content $SeedEnv
+    $savedWhisper = $env:WHISPER_PORT
+    try {
+        if ($ProcessPort) { $env:WHISPER_PORT = $ProcessPort }
+        function Write-WindowsODSLemonadeLiteLlmConfig {
+            param($InstallDir, $ModelId, $Port, $ApiKey)
+            return (Join-Path $InstallDir "config\\litellm\\lemonade.yaml")
+        }
+        $null = New-ODSEnv -InstallDir $dir -TierConfig $tierConfig -Tier "3" `
+            -GpuBackend $Backend -AmdInferenceRuntime $Runtime `
+            -AmdInferenceLocation $Location
+        $envText = Get-Content -LiteralPath (Join-Path $dir ".env") -Raw
+        if ($envText -notmatch "(?m)^WHISPER_PORT=([^\r\n]+)\r?$") {
+            throw "Generator .env missing WHISPER_PORT"
+        }
+        return $Matches[1].Trim()
+    } finally {
+        if ($null -eq $savedWhisper) {
+            Remove-Item Env:WHISPER_PORT -ErrorAction SilentlyContinue
+        } else { $env:WHISPER_PORT = $savedWhisper }
+        Remove-VoiceSeedDir $dir
+    }
+}
+
+function Assert-VoiceAborts {
+    param([System.Collections.IDictionary]$PortsToCheck, [string]$Label)
+    $conflicts = @(Get-WindowsODSSelectedPortConflicts -PortsToCheck $PortsToCheck)
+    if ($conflicts.Count -eq 0) { throw "$Label expected a selected-port conflict" }
+    $aborted = $false
+    try {
+        $null = Assert-WindowsODSSelectedPortAvailability -Conflicts $conflicts -NonInteractive
+    } catch {
+        $aborted = ($_.Exception.Message -eq "ODS_INSTALL_ABORTED")
+    }
+    Assert-VoiceEqual $aborted $true $Label
+}
+
+# 1. NVIDIA + foreign Lemonade on 9000 -> 9100 (old phase 04 fails here)
+$script:mockListeners[9000] = @{ InUse = $true; ProcessId = 4242; ProcessName = "LemonadeServer" }
+$ports = Get-PhaseVoicePort -Backend "nvidia"
+Assert-VoiceEqual $ports["Whisper (STT)"] 9100 "phase nvidia foreign lemonade 9000 -> 9100"
+Assert-VoiceEqual (Get-GeneratorWhisperPort -Backend "nvidia") "9100" `
+    "generator nvidia foreign lemonade 9000 -> 9100"
+
+Assert-VoiceEqual @(Get-WindowsODSSelectedPortConflicts -PortsToCheck $ports).Count 0 "selected 9100 is free despite foreign 9000"
+
+# 2. Persisted 9100 with a foreign listener still aborts non-interactive installs
+$script:mockListeners[9100] = @{ InUse = $true; ProcessId = 4343; ProcessName = "OtherServer" }
+$seedDir = New-VoiceSeedDir -Content "WHISPER_PORT=9100"
+try {
+    $ports = Get-PhaseVoicePort -Backend "nvidia" -InstallDir $seedDir
+    Assert-VoiceAborts -PortsToCheck $ports "persisted 9100 foreign listener aborts"
+} finally {
+    Remove-VoiceSeedDir $seedDir
+}
+
+# 3. Non-Lemonade listener on default 9000 is rejected
+$script:mockListeners[9000] = @{ InUse = $true; ProcessId = 4343; ProcessName = "nginx" }
+$ports = Get-PhaseVoicePort -Backend "nvidia"
+Assert-VoiceAborts -PortsToCheck $ports "non-lemonade 9000 listener aborts"
+
+# 4. No 9000 listener -> default 9000 everywhere
+$script:mockListeners.Remove(9000)
+$ports = Get-PhaseVoicePort -Backend "nvidia"
+Assert-VoiceEqual $ports["Whisper (STT)"] 9000 "phase free 9000 default"
+Assert-VoiceEqual (Get-GeneratorWhisperPort -Backend "nvidia") "9000" `
+    "generator free 9000 default"
+
+# 5. Managed AMD (lemonade/host) default -> 9100
+$ports = Get-PhaseVoicePort -Backend "amd"
+Assert-VoiceEqual $ports["Whisper (STT)"] 9100 "phase managed amd default 9100"
+Assert-VoiceEqual (Get-GeneratorWhisperPort -Backend "amd" -Runtime "lemonade" -Location "host") "9100" `
+    "generator managed amd default 9100"
+
+# 6. Persisted custom 9182 is preserved
+$seedDir = New-VoiceSeedDir -Content "WHISPER_PORT=9182"
+try {
+    $ports = Get-PhaseVoicePort -Backend "nvidia" -InstallDir $seedDir
+    Assert-VoiceEqual $ports["Whisper (STT)"] 9182 "phase persisted 9182 preserved"
+    Assert-VoiceEqual (Get-GeneratorWhisperPort -Backend "nvidia" -SeedEnv "WHISPER_PORT=9182") "9182" `
+        "generator persisted 9182 preserved"
+
+    # 7. Process override 9282 beats persisted 9182 (old generator fails here)
+    $env:WHISPER_PORT = "9282"
+    $ports = Get-PhaseVoicePort -Backend "nvidia" -InstallDir $seedDir
+    Assert-VoiceEqual $ports["Whisper (STT)"] 9282 "phase process 9282 overrides persisted 9182"
+    Assert-VoiceEqual (Get-GeneratorWhisperPort -Backend "nvidia" `
+        -SeedEnv "WHISPER_PORT=9182" -ProcessPort "9282") "9282" `
+        "generator process 9282 overrides persisted 9182"
+    Remove-Item Env:WHISPER_PORT -ErrorAction SilentlyContinue
+} finally {
+    Remove-VoiceSeedDir $seedDir
+}
+
+# 8. Cached 9000 + Lemonade listener -> 9100
+$script:mockListeners[9000] = @{ InUse = $true; ProcessId = 4242; ProcessName = "LemonadeServer" }
+$ports = Get-PhaseVoicePort -Backend "nvidia"
+Assert-VoiceEqual $ports["Whisper (STT)"] 9100 "phase cached 9000 lemonade -> 9100"
+Assert-VoiceEqual (Get-GeneratorWhisperPort -Backend "nvidia" -SeedEnv "WHISPER_PORT=9000") "9100" `
+    "generator cached 9000 lemonade -> 9100"
+
+Write-Host ("[PASS] Voice port parity: {0}/{1} cases" -f $script:voicePass, $script:voiceCase)
+if ($script:voicePass -ne $script:voiceCase) { $global:LASTEXITCODE = 1; exit 1 }
+
+} finally {
+    if ($null -eq $savedVoiceOverride) { Remove-Item Env:WHISPER_PORT -ErrorAction SilentlyContinue } else { $env:WHISPER_PORT = $savedVoiceOverride }
 }
 
 Write-Host "[PASS] Windows service port preflight and env generation"

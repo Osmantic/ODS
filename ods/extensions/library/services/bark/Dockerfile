@@ -1,7 +1,7 @@
 # Bark TTS — builds a minimal FastAPI server wrapping suno-ai/bark
 # Multi-arch base (amd64 + arm64). Default pip wheels include CUDA support
 # on amd64; the compose.nvidia.yaml overlay provides GPU device access.
-FROM python:3.10-slim
+FROM python:3.10-slim@sha256:31dd4d9529d02d7436659061cb7564cd4733fc90e5e152709a942d53382ec8d0
 
 WORKDIR /app
 

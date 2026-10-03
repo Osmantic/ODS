@@ -1,0 +1,354 @@
+# ODS v3 audit remediation — 2026-09-28
+
+This is the implementation ledger for the eight findings in the audit of
+`v3.0.0` (`bec0c42e7c9885a5aecd419a166a6a81e0d37236`). Changes target current
+`main`; findings about the historical tag are not automatically findings about
+current main. In particular, remote Dashboard session authentication was already
+implemented on main before this work.
+
+**Status: runtime security implementation and automated validation are available
+for review; release provenance is not operationally closed. The public installer
+channel is preserved, so merging the runtime fixes does not require activating
+an unqualified signed release.**
+
+### Rollout separation
+
+The verified commands are now staged in
+[Verified Installer Preview](VERIFIED_INSTALL_PREVIEW.md), with the unchanged
+verification boundary and executable tests. The main README keeps the existing
+development-main installation path and states its unsigned-source limitation.
+This is not a fallback from failed verification: the preview still refuses an
+ineligible release without running any installer.
+
+Recommended review order is producer-only #6882, then security #6859 after
+refreshing its base and confirming CI. The implementation team owns testing;
+Mike owns the requested merges. Real signing/publication needs separate release
+authorization, and qualification of those real artifacts precedes a separate
+public-channel activation change. This removes the release-publication blocker
+from the runtime fixes, but **does not close SEC-005's default-channel finding**.
+
+The separated preview passed all 12 consumer contracts on Windows PowerShell
+5.1 and all 12 on Linux locally, including real archive extraction with fixture
+installers and rejection before mutation. Linux used the Ubuntu unzip package
+extracted into the test user's cache, without changing the live ODS or installing
+a system package. Documentation checks found no new broken links; the existing
+103-link baseline remains. CI must confirm this follow-up before review status
+changes; the earlier 80 passed checks describe the preceding implementation.
+
+### Current evidence (supersedes earlier pending CI notes below)
+
+At commit `da9e2198b0ae4906be5ccbf79fa706fa3d811be4`,
+[runtime security run 36482083471](https://github.com/Osmantic/ODS/actions/runs/36482083471)
+passed all 15 jobs. These include the nine real production Dockerfile builds,
+locked dependency audits, real-container source confinement/recovery/library
+build tests, private-port and workflow policies, and saved-stack/verified
+consumer checks on Windows, Linux and macOS. Native macOS migration cases use
+controlled Docker/launchd fixtures, even when run on a macOS runner.
+
+The same commit's [Dashboard run 36482083683](https://github.com/Osmantic/ODS/actions/runs/36482083683)
+passed the complete API job and frontend jobs on Windows, Linux and macOS.
+The broad integration job then exposed an incomplete bootstrap rollback test
+installation: it omitted the now-required `compose-cache-policy.py`, so the
+operation correctly stopped before reaching the rollback scenario. The
+rollback, recovered-flags and Windows native-model fixtures now include the
+actual policy helper; all three pass locally without bypassing the gate.
+The complete installer contract script also passes against an isolated Git
+archive with those three fixture changes applied. This uses committed source
+line endings; running the same grep-based contracts directly against a Windows
+checkout with CRLF template files produces an unrelated end-of-line mismatch.
+The follow-up changes test fixtures and this ledger, not production behavior;
+the broad integration workflow must confirm the corrected fixture.
+
+Producer-only PR #6882 at `ebef61fa848aba44bb72b0f90982e28b75a57eca`
+passed [run 36482081414](https://github.com/Osmantic/ODS/actions/runs/36482081414)
+on all three operating systems. Its 13 tests include packaging the complete
+committed repository with its actual `.gitattributes`; API signature responses
+remain fixtures and do not establish real OIDC signing.
+
+The public latest-release API was checked again: `v3.0.0` has `immutable: false`
+and no release assets. It is not eligible for the new consumer. First-release
+publication and end-to-end verification therefore remain required, regardless
+of the passing source-contract CI. No tag, release or running installation was
+modified. The later chronological notes retain earlier failures and their
+resolutions; they are not a claim that those resolved failures remain open.
+
+| Finding | Implemented in this branch | Remaining verification/work |
+| --- | --- | --- |
+| SEC-001: LAN exposure | Private Compose ports and native inference stay loopback-bound; authenticated UI entrypoints retain LAN access; Hermes LAN proxy requires an owner session; new recipes cannot interpolate host binds. | Automated port, route, upgrade and migration coverage passed. Physical full-install/GPU coverage is not claimed. |
+| SEC-002: Python advisories | Upgrade FastAPI/Starlette and aiohttp; all nine API/relay Docker builds install complete hash-checked locks; production audits are clean. All nine production Dockerfile builds and in-container pip checks passed CI on `1788236a9`. | Keep final-head dependency and regression checks green. |
+| SEC-003: source containment | Generated source services have numeric non-root UID, no capabilities, no-new-privileges, read-only root, resource limits and an internal network; API publication/re-enable and dynamic resolver enforce the profile. Saved stack arguments are revalidated by the host and platform CLIs, including old receipts; merged recipes cannot override or join source sandboxes. | Real-container and cross-platform saved-stack CI passed. Existing recipes requiring broader permissions need explicit review, not silent migration. |
+| SEC-004: public AI spending | Paid issue triage and review comments require a trusted association; serialized jobs and per-run budgets; unauthorized comments cannot cancel another comment's review. | Workflow contracts passed. This bounds individual runs, not the organization's total monthly provider bill. |
+| SEC-005: provenance | Python locks/hashes and pinned core/library images; local library images require a forced in-recipe build. Signed-tag source packaging, draft-only checksum/SBOM/OIDC workflow, and Windows/POSIX verified consumers are implemented. The verified public-channel change is staged separately from the current main quickstart. | Library and producer CI passed. Verify the first signed immutable candidate end to end, then activate the verified public channel in a separate reviewed change. The default-channel finding remains open. Existing tags have not been changed or retroactively signed. |
+| SEC-006: React Router | Coordinated update to react-router-dom 7.18.4 and its lockfile; production npm audit is clean. | Focused malicious-navigation cases and full frontend jobs on all three hosts passed on the implementation commit above. |
+| SEC-007: local origin trust | State-changing requests require exact Origin/Host agreement; the CORS allowlist no longer grants mutation authority. | Focused authentication/origin cases and the full API job passed on the implementation commit above. |
+| SEC-008: mutable Actions | Remaining twelve Action uses pinned to full commit hashes. | Workflow contracts passed. |
+
+## Validation evidence
+
+- Nine Python production locks: `pip-audit --require-hashes` reports no known
+  vulnerabilities for each; the Dashboard lock also installed successfully in
+  a clean Linux virtual environment.
+- Dashboard frontend: 210 files / 1,773 tests passed; build and lint passed
+  (lint retained pre-existing warnings). Production npm audit: zero findings.
+  Development-tool advisories are not included in that production-only result.
+- Eight additional navigation cases now cover malicious query destinations,
+  protocol-relative/encoded/script URLs, redirect history replacement and
+  external tab isolation. Forty focused App/Sidebar/registry/settings tests
+  passed. The new cases exercise existing production behavior with the upgraded
+  router; they do not introduce new navigation behavior. ESLint reports zero
+  errors and the existing JSX unused-variable warning pattern.
+- API authentication/origin tests: 35 passed.
+- Focused recipe/API suite on Linux: 679 passed, two skipped. A subsequent
+  policy/source run passed 272, with 134 platform-gated skips. Windows policy
+  tests passed 713; one Bash integration case failed because Windows selected
+  the WSL launcher in a restricted test environment. That integration case
+  passed in the Linux run.
+- Native model launch and Lemonade tests on Windows: 142 passed. The LAN bind
+  test covers Windows, Linux and Darwin branches using mocked process launch;
+  this is not a physical macOS/GPU validation.
+- macOS bridge shell contracts passed, including loopback inference and bridge
+  restoration with IPv4/IPv6 LAN settings. Network exposure contracts passed
+  15 cases; the private-port sweep covers core and community Compose files.
+- Source recipe compiler: eight tests passed. Pixel edge: 155 passed; model
+  relay: nine passed with the upgraded aiohttp.
+- The earlier full Linux API run passed 5,953, skipped 138, failed nine.
+  A library-staging race while files were being edited passed on rerun.
+  Darwin metrics and WSL-to-Windows PowerShell fixtures still require baseline
+  comparison/triage. Do not label the full suite green.
+- Runtime security CI run `36463490433` passed on commit `1a9e126fce`:
+  all nine locked Python environments installed and passed dependency checks
+  and audits, frontend production audit and policy checks passed, and the
+  source sandbox passed with real Docker containers and a canary service.
+  Docker Desktop remained stopped locally; the live ODS stack was not used.
+- Saved-stack policy and model-store integration: 39 tests passed on Linux,
+  including actual shell entrypoints and dynamic resolution. Windows PowerShell
+  5.1 passed the native saved-stack/model-store integration. Host-agent Compose
+  tests: ten passed. Symlink aliases, changed receipts, unsafe overlays and
+  cross-extension network attachment are rejected without rewriting approvals.
+- The full API CI on the first PR commit passed 6,116 tests and failed two
+  assertions still expecting native inference to follow the UI bind address.
+  Both expectations now require private loopback and all three related cases
+  pass locally. A smoke assertion expecting interpolated OpenClaw ports was
+  updated to require literal loopback; its six contracts passed. Await new CI
+  before claiming the entire suite passed.
+- Image pin update: dependency inventory check and ten dependency contracts
+  passed; Whisper CPU/CUDA selection passed 13 cases and Dashboard ownership
+  contracts passed. Pins use each tag's top-level descriptor, preserving the
+  platform set instead of selecting only an amd64 child manifest.
+- Earlier registry checks encountered Docker Hub rate limits and an unavailable
+  generic InvokeAI tag. The follow-up resolved the frontend/base images and
+  verified all three upstream InvokeAI variants: CPU, CUDA and ROCm. The
+  earlier inventory did not include the ROCm tag; it exists and is now pinned.
+
+- A later registry pass resolved 18 more tag descriptors, including references
+  duplicated in disabled Langfuse fragments. Those defaults now carry their
+  top-level digest, including Node, nginx, CUDA/ROCm, Lemonade, Qdrant, Tailscale,
+  Aider and the Dockerfile frontend. Installer prefetch and backend metadata use
+  the same references. This preserves each image's existing platform set; it
+  does not assert GPU compatibility beyond the upstream image.
+- The core dependency checker now rejects any external image without a full
+  sha256 digest, including malformed hashes and allowlisted mutable tags.
+  Twelve dependency contracts passed. Linux AMD contracts passed; the Windows
+  run exposed two stale mocks (JSON is now UTF-8 bytes and launch prefers
+  installed PowerShell 7), which were corrected to match existing production
+  behavior. All 65 AMD contracts then passed in native Windows/Git Bash.
+- Runtime security run `36471971155` on `d7aea8ae9` passed all nine locked
+  environments/audits, real-container confinement and saved-stack/verified
+  bootstrap tests on Windows, Linux and macOS. Full API and frontend Windows/
+  macOS jobs passed too. The Ubuntu frontend failed an unsaved-name test that
+  passed locally. Subsequent commit `1788236a9` passed every executed PR check,
+  including all three frontend hosts and the full API suite. Runtime security
+  run `36473239829` also passed the nine actual production Dockerfile builds
+  and in-container dependency checks. This supersedes the earlier pending CI.
+
+The image reader now handles Dockerfile heredocs, logical continuations,
+global build arguments, local stages and frontend syntax directives. Python
+`from` statements inside the AudioCraft heredoc are no longer mistaken for
+registry images. Seventeen dependency contracts pass, including malformed input
+rejection and the library boundary. The current library inventory contains 357
+references: 253 external references with complete digests and 104 local-build
+references across 102 recipes. Local tags require `pull_policy: build` and a
+Dockerfile confined to the recipe; a matching `ods/` name alone is insufficient.
+This prevents normal Compose startup from trusting a pre-existing/pulled tag
+instead of rebuilding the reviewed source. Build cache remains available.
+
+InvokeAI's CPU/CUDA/ROCm indexes were verified anonymously with `docker buildx
+imagetools inspect`. Each currently publishes Linux amd64, not native Metal or
+arm64. Actual Compose rendering selects the expected backend, private port and
+`/api/v1/app/version` readiness URL. The AMD entrypoint receives the render GID.
+These checks do not claim physical GPU execution or image-generation success.
+
+The Dify and Jan placeholders were already excluded from the deployable catalog
+and refused by the install API. Their unverified disabled Compose templates are
+removed; reference documentation explains the unsupported integration and links
+to upstream. No installed data is deleted and the generated catalog still has
+200 entries. Dify is not being claimed as a newly working integration.
+
+Locally, 338 library staging/resolver cases, 17 dependency contracts, three
+actual Compose backend renders and two retired-entry rejection tests passed.
+A new disposable Docker CI test seeds an unreviewed local tag and verifies the
+shipped pull policy rebuilds the reviewed source. Runtime security run
+`36477433876` on `b983b1268` passed all jobs: 22 recovery cases and four library
+cases, including the actual forced-build container test, all nine production
+image builds and saved-stack checks on Windows, Linux and macOS.
+Runtime security run `36476143179` on `4471122f9` passed all jobs, including the
+UTF-8 recovery correction; this precedes the library update.
+
+These results refer to the relevant focused changes, not to every combination
+of installer, GPU and operating system. The PR remains draft until the remaining
+items above and CI are resolved.
+
+### Regression review following installer concerns
+
+The `install-macos.sh` loopback change is intentional, not a claim of unchanged
+network behavior: native OpenCode connects to the host's published LiteLLM port
+or native llama port. Both listeners remain private even when the UI is exposed
+to the LAN. The Colima bridge is a separate container-to-host route.
+
+An additional 30 cases execute the actual installer route-selection block and
+config writer for switchboard, cloud and native modes, five IPv4/IPv6 UI bind
+settings, and default/custom ports. Custom-port cases make an actual loopback
+HTTP request using the generated URL, key and model; upgrade fixtures verify
+that unrelated user settings survive. These are fixture endpoints, not model
+inference, launchd or a full macOS installation. The test also runs on macOS CI.
+
+The latest completed checks on the preceding commit exposed a PowerShell 5.1
+UTF-8 BOM handling error, a Linux-only shell fixture running under macOS Bash
+3.2, and an outdated SearXNG locale image-reference comment. The remediation
+accepts one optional UTF-8 BOM while rejecting invalid/oversized input, selects
+Bash 4+ only for the Linux fixture, and aligns the comment with the pinned image.
+Native macOS shell cases continue to run with the system Bash. Final-head CI
+must confirm these changes before any merge recommendation.
+
+The subsequent Windows CI confirmed both native checks passed, but propagated
+the deliberately failing helper's exit code from the rejection test. The test
+now exits successfully only after all assertions and cleanup complete. The
+integration run reached the macOS CLI suite and found older expectations for
+LAN-bound model traffic; these now require loopback while preserving custom
+ports and cloud credentials, consistent with the new listener policy.
+
+Release producer contracts pass on Windows and Linux (12 cases each), covering
+signature-response rejection, moved tags, unmerged commits, source-only
+packaging, reproducibility and symlink refusal. GitHub is the actual signature
+verifier; mocked API responses exercise the gate but do not prove production
+OIDC signing or published asset verification. No release workflow was dispatched.
+
+Verified consumer contracts exercise the actual PowerShell 5.1/POSIX command
+bodies, real archive extraction and fixture installer execution. They constrain
+repository, workflow, ref, commit and runner identity before extraction; failed
+metadata, tag or attestation checks preserve an existing installation. Paths
+include spaces and accented/CJK characters. HTTP and the verifier are controlled
+fixtures: real OIDC acceptance remains a first-release gate. Public downloads
+avoid GitHub CLI login requirements; only bundle verification invokes `gh`.
+The preview bodies are checked against the executable scripts to avoid drift.
+
+Rollout must stage the producer before switching public onboarding to the
+verified channel. This draft includes producer and preview for review, but the current
+published release is not eligible and no successful new-user installation of
+an eligible signed artifact has yet been demonstrated. This gates public-channel
+activation, not merging the independently tested runtime fixes. It is not a
+reason to add an unsigned fallback to the verified consumer.
+
+Producer-only draft PR #6882 provides the independent prerequisite without
+changing the public installer command or runtime. Its initial source contracts
+passed on Linux, Windows and macOS in run `36481643159`. A follow-up contract
+also packages the full committed repository and checks installer contents using
+the committed `.gitattributes` line-ending policy; all 13 producer tests passed
+locally on Windows. This proves source packaging compatibility, not acceptance
+of a real signed tag or OIDC attestation. Maintainer publication is still needed.
+
+## Upgrade behavior to review
+
+When a legacy recipe fails current Compose validation, stop/disable operations
+now have a recovery path that never evaluates that recipe. Docker's existing
+container IDs and Compose labels must match the exact installation directory,
+base Compose file and requested service. A shared project name such as `ods`
+alone does not authorize stopping another installation. Recovery disables the
+matched containers' automatic restart, then stops them without deleting data
+or containers. Repair and recreate the reviewed recipe before starting again.
+Start and restart operations still reject invalid recipes.
+
+Uninstall also checks the saved stack before retiring Pixel/system services or
+deleting data, then rechecks immediately before Compose down (which can execute
+extension lifecycle hooks). Unsafe recipes and a missing validator fail closed
+with instructions to use safe shutdown and review the recipe. Drift after the
+initial check stops remaining cleanup and reports that retirement may already
+have started. Tests exercise the real uninstaller in temporary directories with
+Docker, sudo and service-control substitutes: unsafe input, missing policy,
+mid-retirement drift, normal removal and `--keep-data` behavior all pass.
+macOS LaunchAgent removal fixtures and 35 system/native retirement cases also
+pass. These tests never uninstall the running ODS or start Docker Desktop.
+
+Background model upgrades now revalidate saved Compose fragments before each
+service recreation, including retries, Hermes/OpenClaw companions, Lemonade
+cleanup and Windows launch-log recovery. An already populated argument array
+does not skip validation. The policy CLI accepts explicit argv so spaces and
+Unicode are preserved. Missing policy/runtime support stops the operation;
+rejected recipes are never passed to Compose or persisted as recovered flags.
+Behavioral fixtures execute the production shell functions with real policy
+validation and a recording Compose substitute, covering valid confined sources,
+legacy unsafe sources and a recipe changed between retry attempts.
+
+This follow-up passed 68 combined saved-stack/model-store cases on Linux and
+44 saved-stack cases on Windows (19 POSIX-only skips). Existing hot-swap,
+OpenClaw guard, reinstall ownership and model lifecycle lock contracts passed.
+`test-cli-bootstrap-compose-wait.sh` still fails because its Docker fixture
+does not provide Hermes readiness; the identical failure was reproduced from
+the base `main` revision `e3b3c89b4`. This is not evidence of a successful real
+model swap. Docker Desktop was not started for these fixtures.
+
+The legacy `upgrade-model.sh` helper also validates before stopping/starting
+Compose services and before changing the model in `.env`. Its read-only service
+lookup no longer renders Compose merely to return the fixed `llama-server`
+name. A refused restart cannot be reported as a successful rollback.
+
+Native macOS activation, rollback preparation, Docker handover and consumer
+refresh now use the same saved-recipe policy. Validation happens before
+configuration writes and before each Compose command, preserving both original
+and resolved paths so symlink aliases cannot erase a recipe's untrusted origin.
+The digest-verified rollback snapshot still restores the already-running core
+infrastructure without rebuilding a rejected extension.
+
+Validation for this follow-up: 159 saved-stack/legacy-helper/native migration
+cases, 66 native finalization cases and 203 native Compose/install/stack cases
+passed locally in Linux fixtures.
+Existing GPU-overlay selection and atomic `.env` write contracts passed, as did
+the configured Ruff rules and workflow security tests. CI now explicitly runs
+the migration/activation/finalization fixtures on Linux and macOS. These tests
+mock Docker/launchd and do not claim a physical Mac migration or GPU benchmark.
+
+Recovery tests cover Linux/macOS CLI delegation, PowerShell 5.1 stop/disable,
+host-agent stop-only recovery, ownership mismatches, malformed Docker metadata,
+and preserving recipe files when stopping fails. The dedicated real-container
+CI test verifies that another installation with the same project and service
+names remains running with its restart policy unchanged. Runtime security CI
+`36475219401` on `b6d40a9aa` passed: 21 recovery cases including real containers,
+all three saved-stack platform jobs and all nine production image builds.
+The local combined cache/recovery run passed 66 cases (one Docker-only skip),
+and native PowerShell 5.1 stop/disable passed. Docker Desktop remains stopped
+locally. Broader PR checks were still running when this evidence was recorded.
+Docker metadata is decoded explicitly as UTF-8 so accented/CJK ownership paths
+do not depend on the Windows code page. A real subprocess decoding regression
+test forces a legacy default encoding and verifies the path is preserved.
+
+The follow-up lifecycle review also found native background model upgrades still
+reading the dashboard's LAN bind, and the macOS doctor probing that address.
+Those paths now preserve loopback through model replacement and recovery.
+Production argument assembly is tested with LAN/IPv6 settings, custom ports,
+model paths containing spaces and GPU/cache options; the Windows restart fixture
+and doctor diagnostics also pass. These are controlled runtime fixtures, not
+physical Windows GPU or macOS Metal validation.
+
+LAN clients use authenticated UI/gateway routes. Direct inference and extension
+ports no longer inherit the UI LAN preference. Applications requiring remote
+access need an explicitly configured authenticated proxy or private tunnel.
+
+Older extension recipes with interpolated host binds or without source
+confinement must be reviewed again. Approved recipe bytes are not silently
+rewritten. Curated recipes can be refreshed from the updated library; custom
+recipes must declare literal loopback binds and the required sandbox. A source
+application requiring runtime internet access is not silently granted access
+to the shared ODS network.
+
+Most changed Compose files contain the same one-line host-binding correction.
+Most added dependency lines are generated wheel hashes, not application logic.

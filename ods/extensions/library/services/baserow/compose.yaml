@@ -1,6 +1,6 @@
 services:
   baserow:
-    image: baserow/baserow:2.1.4
+    image: baserow/baserow:2.1.4@sha256:ef0cfc74b77eaec3678e3aa6ef4e6480d99acbe88a74a353c5e2174aa384be7e
     container_name: ods-baserow
     restart: unless-stopped
     security_opt:
@@ -35,7 +35,7 @@ services:
     volumes:
       - ./data/baserow:/baserow/data:rw
     ports:
-      - "${BIND_ADDRESS:-127.0.0.1}:${BASEROW_PORT:-3007}:80"
+      - "127.0.0.1:${BASEROW_PORT:-3007}:80"
     networks:
       - ods-network
     healthcheck:

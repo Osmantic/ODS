@@ -101,17 +101,19 @@ write_local_env
 : > "$CURL_LOG"
 run_cli chat "local route" >/dev/null
 assert_log_contains "$CURL_LOG" \
-    'http://192.168.106.1:9090/v1/chat/completions' \
-    "local chat did not use the configured native bind and port"
+    'http://127.0.0.1:9090/v1/chat/completions' \
+    "local chat did not use private inference at the configured native port"
 assert_log_excludes "$CURL_LOG" 'Authorization: Bearer' \
     "local native chat unexpectedly sent a LiteLLM credential"
-pass "local chat follows the configured native bind"
+assert_log_excludes "$CURL_LOG" 'http://192.168.106.1:' \
+    "local chat sent model traffic to the UI LAN address"
+pass "local chat keeps inference private with UI LAN access enabled"
 
 write_cloud_env
 : > "$CURL_LOG"
 run_cli chat "cloud route" >/dev/null
 assert_log_contains "$CURL_LOG" \
-    'http://192.168.106.1:4010/v1/chat/completions' \
+    'http://127.0.0.1:4010/v1/chat/completions' \
     "cloud chat did not use the host-published LiteLLM port"
 assert_log_contains "$CURL_LOG" 'Authorization: Bearer sk-test-cloud-key' \
     "cloud chat did not authenticate with LITELLM_KEY"
@@ -129,14 +131,14 @@ pass "cloud chat fails before transport when authentication is unavailable"
 write_local_env
 : > "$CURL_LOG"
 run_cli status >/dev/null
-assert_log_contains "$CURL_LOG" 'http://192.168.106.1:9090/health' \
-    "local status did not probe the configured native bind"
+assert_log_contains "$CURL_LOG" 'http://127.0.0.1:9090/health' \
+    "local status did not probe private inference at the configured native port"
 pass "local status probes the configured native inference route"
 
 write_cloud_env
 : > "$CURL_LOG"
 cloud_status="$(run_cli status)"
-assert_log_contains "$CURL_LOG" 'http://192.168.106.1:4010/v1/models' \
+assert_log_contains "$CURL_LOG" 'http://127.0.0.1:4010/v1/models' \
     "cloud status did not probe authenticated LiteLLM"
 assert_log_contains "$CURL_LOG" 'Authorization: Bearer sk-test-cloud-key' \
     "cloud status did not authenticate its LiteLLM probe"

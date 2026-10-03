@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/work-capability-retention-evidence-v1.schema.json",
+  "title": "Pixel Builder capability-retention evidence v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "operation", "status", "sourceCommit", "sourceTree", "sourceArchiveSha256", "startedAt", "finishedAt", "executor", "runner", "corpus", "baseline", "contained", "comparison", "privacy", "authority", "boundary"],
+  "properties": {
+    "$schema": {"const": "./schemas/work-capability-retention-evidence-v1.schema.json"},
+    "schemaVersion": {"const": 1},
+    "operation": {"const": "pixel-builder-capability-retention"},
+    "status": {"const": "pass"},
+    "sourceCommit": {"type": "string", "pattern": "^[a-f0-9]{40}$"},
+    "sourceTree": {"type": "string", "pattern": "^[a-f0-9]{40}$"},
+    "sourceArchiveSha256": {"$ref": "#/$defs/hash"},
+    "startedAt": {"type": "string", "format": "date-time"},
+    "finishedAt": {"type": "string", "format": "date-time"},
+    "executor": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "version", "artifactSha256"],
+      "properties": {
+        "id": {"const": "omp"}, "version": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"},
+        "artifactSha256": {"$ref": "#/$defs/hash"}
+      }
+    },
+    "runner": {
+      "type": "object", "additionalProperties": false,
+      "required": ["imageDigest", "builderContractSha256"],
+      "properties": {"imageDigest": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"}, "builderContractSha256": {"$ref": "#/$defs/hash"}}
+    },
+    "corpus": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "sha256", "tasks"],
+      "properties": {"id": {"const": "pixel-builder-standard-v1"}, "sha256": {"$ref": "#/$defs/hash"}, "tasks": {"const": 11}}
+    },
+    "baseline": {"$ref": "#/$defs/lane"},
+    "contained": {"$ref": "#/$defs/lane"},
+    "comparison": {
+      "type": "object", "additionalProperties": false,
+      "required": ["eligibleBaselinePasses", "retainedPasses", "retentionPermille", "thresholdPermille", "requiredCapabilitiesRetained", "sameTaskSet", "sameExecutor", "sameRunner", "oneJobAuthorization", "midJobPrompts"],
+      "properties": {
+        "eligibleBaselinePasses": {"type": "integer", "minimum": 1, "maximum": 11},
+        "retainedPasses": {"type": "integer", "minimum": 1, "maximum": 11},
+        "retentionPermille": {"type": "integer", "minimum": 900, "maximum": 1000},
+        "thresholdPermille": {"const": 900},
+        "requiredCapabilitiesRetained": {"const": true}, "sameTaskSet": {"const": true},
+        "sameExecutor": {"const": true}, "sameRunner": {"const": true},
+        "oneJobAuthorization": {"const": true}, "midJobPrompts": {"const": 0}
+      }
+    },
+    "privacy": {"const": {"providerCalls": 0, "credentialInputs": 0, "directNetworkRequests": 0, "clientDataInputs": 0, "productionDeploymentsTouched": 0}},
+    "authority": {"const": {"grantsExecution": false, "grantsCredentials": false, "grantsNetwork": false, "grantsExternalEffects": false, "grantsCompletion": false, "grantsRelease": false}},
+    "boundary": {"const": "Credential-free paired OMP execution-capability evidence only. Baseline and Pixel lanes run the same synthetic objective in disposable outer sandboxes; external checks, not worker claims or elapsed time, determine success. This evidence grants no provider, credential, network, external-effect, completion, deployment, or release authority."}
+  },
+  "$defs": {
+    "hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "lane": {
+      "type": "object", "additionalProperties": false,
+      "required": ["mode", "outerSandboxed", "network", "promptCount", "midJobPrompts", "externallyVerified", "taskSetSha256", "passed", "total", "results"],
+      "properties": {
+        "mode": {"enum": ["direct-omp", "pixel-builder"]}, "outerSandboxed": {"const": true},
+        "network": {"const": "local-model-only"}, "promptCount": {"const": 1}, "midJobPrompts": {"const": 0},
+        "externallyVerified": {"const": true}, "taskSetSha256": {"$ref": "#/$defs/hash"},
+        "passed": {"type": "integer", "minimum": 0, "maximum": 11}, "total": {"const": 11},
+        "results": {"type": "array", "minItems": 11, "maxItems": 11, "items": {"$ref": "#/$defs/result"}}
+      }
+    },
+    "result": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "status", "verification"],
+      "properties": {
+        "id": {"enum": ["workspace-read", "content-search", "file-discovery", "file-write", "targeted-edit", "command-execution", "debugging-repair", "language-intelligence", "local-evaluation", "bounded-subagent", "goal-coordination"]},
+        "status": {"enum": ["pass", "fail"]}, "verification": {"const": "external-fixture"}
+      }
+    }
+  }
+}

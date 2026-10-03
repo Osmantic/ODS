@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/work-provider-router-qualification-v1.schema.json",
+  "title": "Pixel hash-bound work-provider router qualification v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "qualificationId", "providerId", "model", "attestedAt", "expiresAt", "attestationKind", "capability", "evidenceSha256", "qualificationSha256", "boundary", "pricing"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/work-provider-router-qualification-v1.schema.json"},
+    "schemaVersion": {"const": 1},
+    "qualificationId": {"type": "string", "pattern": "^workproviderqualification-[0-9]{13}-[a-f0-9]{12}$"},
+    "providerId": {"enum": ["anthropic", "fireworks", "groq", "local", "moonshot-kimi", "openai", "openrouter", "together"]},
+    "model": {"type": "string", "minLength": 1, "maxLength": 256},
+    "attestedAt": {"type": "string", "format": "date-time"},
+    "expiresAt": {"type": "string", "format": "date-time"},
+    "attestationKind": {"enum": ["connectivity-smoke", "semantic-capability"]},
+    "capability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["taskClasses", "contextNeed", "toolsNeed", "visionNeed", "inputTokenMax", "outputTokenMax", "costMicrosPerRunMax"],
+      "properties": {
+        "taskClasses": {"type": "array", "minItems": 1, "maxItems": 16, "uniqueItems": true, "items": {"enum": ["structural-review", "patch-proposal", "failure-triage"]}},
+        "contextNeed": {"enum": ["none", "workspace", "codebase"]},
+        "toolsNeed": {"enum": ["none", "standard", "compute"]},
+        "visionNeed": {"type": "boolean"},
+        "inputTokenMax": {"type": "integer", "minimum": 1, "maximum": 100000000},
+        "outputTokenMax": {"type": "integer", "minimum": 1, "maximum": 10000000},
+        "costMicrosPerRunMax": {"type": "integer", "minimum": 1, "maximum": 1000000000}
+      }
+    },
+    "pricing": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["inputMicrosPerMillionTokens", "outputMicrosPerMillionTokens", "fixedMicrosPerRun"],
+      "properties": {
+        "inputMicrosPerMillionTokens": {"type": "integer", "minimum": 0, "maximum": 1000000000},
+        "outputMicrosPerMillionTokens": {"type": "integer", "minimum": 0, "maximum": 1000000000},
+        "fixedMicrosPerRun": {"type": "integer", "minimum": 0, "maximum": 1000000000}
+      }
+    },
+    "evidenceSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "qualificationSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "boundary": {"const": "Content-free hash-bound provider capability qualification evidence. It attests an exact capability envelope and expiry for one provider without prompt, response, reasoning, tool arguments, credential, path, or execution authority. connectivity-smoke attests transport reachability only and is never semantic task qualification."}
+  }
+}

@@ -257,6 +257,8 @@ try {
 
     function Sync-ODSNativeInferenceConfig { }
     function Get-NativeInferenceBackend { return $script:MockBackend }
+    function Get-ODSConfiguredNativeExecutable { return $script:LLAMA_SERVER_EXE }
+    function Get-ODSNativeModelSelection { return [pscustomobject]@{ profile = $null } }
     function Invoke-WebRequest {
         param($Uri, $TimeoutSec, [switch]$UseBasicParsing, $ErrorAction)
         $script:LastHealthUrl = [string]$Uri

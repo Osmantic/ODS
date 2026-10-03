@@ -39,6 +39,8 @@ rsync_with_progress() {
         rsync -a --info=progress2 "$src" "$dest"
     else
         # Fallback: use --progress for older rsync versions
-        rsync -a --progress "$src" "$dest" 2>/dev/null || rsync -a "$src" "$dest"
+        # A transfer failure is not evidence that --progress is unsupported.
+        # Preserve its diagnostic and status instead of silently copying again.
+        rsync -a --progress "$src" "$dest"
     fi
 }

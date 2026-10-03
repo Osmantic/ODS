@@ -1,0 +1,13 @@
+{
+  "repository": "https://github.com/lldap/lldap",
+  "license": "GPL-3.0",
+  "image": "lldap/lldap:v0.6.3@sha256:2a8454b668c1aba7157e832eab0e242e1e7eb5fb7591d7e7774ba05286511ca8",
+  "registry_checked_at": "2026-09-20",
+  "platforms": [
+    "linux/amd64",
+    "linux/arm64",
+    "linux/arm"
+  ],
+  "runtime_validation": "pending",
+  "notes": "Official multiarch image, own nonroot bootstrap avoids root-only chown/gosu wrapper. SQLite directory data, required persistent JWT/key seed and initial password, native health command. No automatic LDAP consumers, SMTP, LDAPS or host authentication changes."
+}

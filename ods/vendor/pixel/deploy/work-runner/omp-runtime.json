@@ -1,0 +1,27 @@
+{
+  "$schema": "https://osmantic.com/pixel/schemas/work-omp-runtime-v1.schema.json",
+  "schemaVersion": 1,
+  "contract": "pixel-omp-linux-x64-runtime-v1",
+  "executor": {
+    "id": "omp",
+    "version": "17.2.12",
+    "sourceCommit": "45e12e5bb758198a920c6070e7e64cb33b21beac",
+    "sha256": "6c75331bf09d5a9e9433bd592b3ee993d751a15d5b7450c1a334cc0684996f30"
+  },
+  "platform": "linux-x86_64",
+  "probe": {
+    "operation": "rpc-read-tool",
+    "failureCeilingMiB": 1040,
+    "successFloorMiB": 1048,
+    "testedThroughMiB": 2048
+  },
+  "safetyHeadroomMiB": 488,
+  "minimumWorkerMemoryMiB": 1536,
+  "profileMinimumMemoryMiB": {
+    "scout": 1536,
+    "builder": 2048,
+    "data-lab": 1536,
+    "researcher": 1536
+  },
+  "boundary": "Measured OMP process memory admission floor plus conservative operating headroom. This receipt establishes only a minimum worker container budget; it grants no execution, model, data, network, credential, external-effect, or completion authority."
+}

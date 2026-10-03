@@ -1,0 +1,27 @@
+name: Documentation hygiene
+
+on:
+  pull_request:
+    paths:
+      - '**/*.md'
+      - '.github/scripts/check-doc-links.py'
+      - '.github/scripts/test_doc_links.py'
+      - '.github/doc-link-baseline.json'
+      - '.github/workflows/docs-hygiene.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  document-links:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+      - name: Check scanner behavior
+        run: python3 -m unittest discover -s .github/scripts -p test_doc_links.py
+      - name: Check all tracked Markdown file links
+        run: python3 .github/scripts/check-doc-links.py

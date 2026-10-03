@@ -1,0 +1,13 @@
+{
+  "repository": "https://github.com/kiwix/kiwix-tools",
+  "license": "GPL-3.0-or-later",
+  "source_ref": "3.8.2",
+  "image": "ghcr.io/kiwix/kiwix-serve:3.8.2@sha256:e478554a9920412eeb5ce1d73f24e4b28445ebed233187cdd03c623c32be46a5",
+  "registry_checked_at": "2026-09-20",
+  "platforms": [
+    "linux/amd64",
+    "linux/arm64"
+  ],
+  "runtime_validation": "pending",
+  "notes": "Native kiwix-manage library generated from owner-imported ZIM files; no archives downloaded, no cloud/model connection. Official UID 1001, persistent named volume and loopback web reader. Content licenses remain separate."
+}

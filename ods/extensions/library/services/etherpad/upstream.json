@@ -1,0 +1,12 @@
+{
+  "repository": "https://github.com/ether/etherpad",
+  "license": "Apache-2.0",
+  "image": "etherpad/etherpad:3.3.5@sha256:a6d531c512c0442b89865e2882aa030d19fef2ee967298656f1cb966400d04d8",
+  "registry_checked_at": "2026-09-20",
+  "platforms": [
+    "linux/amd64",
+    "linux/arm64"
+  ],
+  "runtime_validation": "pending",
+  "notes": "Official native nonroot Node/tsx runtime, dedicated PostgreSQL and persistent var/plugins. First-run settings template copied once into persistent var. Required passwords and OAuth client secrets; authenticated pad access, local issuer URLs, no seeded content or automatic plugin installation. Updater notify-only."
+}

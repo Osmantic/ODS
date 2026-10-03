@@ -74,17 +74,28 @@ _ods_report_redact_stream() {
             out = $0
             lowered = tolower(out)
             if (lowered ~ secret_re && match(out, /[:=][[:space:]]*/)) {
-                out = substr(out, 1, RSTART + RLENGTH - 1) "[REDACTED]"
+                print substr(out, 1, RSTART + RLENGTH - 1) "[REDACTED]"
+                next
             }
-            for (i = 1; i <= sensitive_count; i++) {
-                value = sensitive_values[i]
-                pos = index(out, value)
-                while (pos > 0) {
-                    out = substr(out, 1, pos - 1) "[REDACTED]" substr(out, pos + length(value))
+            # Consume original text only. A secret can itself be REDACTED
+            # or part of the marker; scanning inserted markers never finishes.
+            redacted = ""
+            while (length(out)) {
+                first = 0
+                width = 0
+                for (i = 1; i <= sensitive_count; i++) {
+                    value = sensitive_values[i]
                     pos = index(out, value)
+                    if (pos && (!first || pos < first || (pos == first && length(value) > width))) {
+                        first = pos
+                        width = length(value)
+                    }
                 }
+                if (!first) break
+                redacted = redacted substr(out, 1, first - 1) "[REDACTED]"
+                out = substr(out, first + width)
             }
-            print out
+            print redacted out
         }
     '
 }
@@ -141,7 +152,9 @@ write_compose_failure_report() {
         fi
         echo ""
         echo "Port checks"
-        _ods_report_port_line "llama-server" "$(_ods_report_env_value "$env_file" OLLAMA_PORT "11434")"
+        local llama_port
+        llama_port="$(_ods_report_env_value "$env_file" LLAMA_SERVER_PORT "$(_ods_report_env_value "$env_file" LLM_PORT "$(_ods_report_env_value "$env_file" OLLAMA_PORT "11434")")")"
+        _ods_report_port_line "llama-server" "$llama_port"
         _ods_report_port_line "open-webui" "$(_ods_report_env_value "$env_file" WEBUI_PORT "3000")"
         _ods_report_port_line "dashboard" "$(_ods_report_env_value "$env_file" DASHBOARD_PORT "3001")"
         _ods_report_port_line "dashboard-api" "$(_ods_report_env_value "$env_file" DASHBOARD_API_PORT "3002")"

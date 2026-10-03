@@ -32,6 +32,14 @@ ods-host-agent (HTTP server on host, root)
 
 The container can't run `nmcli` directly — it needs root and access to the host's NetworkManager D-Bus. Routing through the host-agent is the same pattern we already use for `.env` writes and Docker recreates.
 
+The host agent runs these `nmcli` commands with child-only `LC_ALL=C.UTF-8` and
+`LANGUAGE=C` overrides
+so parsed state names and error classifications do not depend on the host's
+language. Other environment values, including the D-Bus address, are preserved;
+the host locale and user-provided network names are unchanged. The UTF-8 C locale
+retains non-ASCII names while fixing message language. This follows
+[NetworkManager's scripting guidance](https://networkmanager.dev/docs/api/latest/nmcli.html).
+
 ## API surface
 
 All endpoints require the standard dashboard-api Bearer token (auth handled at the dashboard-api edge; the host-agent has its own API key for the inner hop).
@@ -49,7 +57,7 @@ Returns nearby Wi-Fi networks, strongest signal first.
 }
 ```
 
-The endpoint triggers a fresh rescan (best-effort) then returns nmcli's cached list. Duplicate SSIDs (multiple BSSIDs of the same network) are collapsed.
+The endpoint triggers a fresh rescan (best-effort) then returns nmcli's cached list. Duplicate SSIDs (multiple BSSIDs of the same network) are collapsed. Signal and security describe the strongest observed BSSID; `in_use` is true if any BSSID for that SSID is connected, even when it has a weaker signal.
 
 ### `POST /api/setup/wifi-connect`
 
@@ -104,6 +112,14 @@ Deletes a saved NetworkManager connection profile.
 ```json
 { "connection": "OldNetwork" }
 ```
+
+## Operation deadlines
+
+The dashboard's host-agent read budget includes every sequential NetworkManager step plus response overhead. Network status uses one 5-second status query and one 5-second address query for all interfaces, with a 15-second API budget. Adding interfaces does not add subprocess waits. If address collection fails, connection state is still returned with empty addresses and the host logs the reason.
+
+Forgetting Wi-Fi allows a 10-second profile-type check followed by a 15-second delete, within a 30-second API budget. This keeps a valid deletion from completing after the dashboard has already reported an unreachable host. The existing Wi-Fi-only guard and host timeout/error responses remain in effect; the API does not retry a mutation. These are bounded I/O waits, not a guarantee during arbitrary host scheduling stalls or a lost network connection.
+
+The batch address query uses NetworkManager's documented [`nmcli device show` behavior](https://networkmanager.dev/docs/api/latest/nmcli.html): omitting an interface examines all devices.
 
 ## Security notes
 

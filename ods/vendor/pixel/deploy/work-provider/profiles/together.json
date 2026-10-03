@@ -1,0 +1,31 @@
+{
+  "$schema": "https://osmantic.com/pixel/schemas/work-provider-profile-v1.schema.json",
+  "schemaVersion": 1,
+  "id": "together",
+  "displayName": "Together AI",
+  "protocol": "openai-chat-completions",
+  "remote": true,
+  "enabledByDefault": false,
+  "baseUrl": "https://api.together.xyz/v1",
+  "allowedHosts": [
+    "api.together.xyz:443"
+  ],
+  "auth": {
+    "mode": "bearer-api-key",
+    "header": "Authorization"
+  },
+  "defaultModel": "meta-llama/Llama-3.3-70B-Instruct-Turbo",
+  "reasoning": {
+    "mode": "provider-dependent",
+    "preserveProviderState": true,
+    "replayCompleteAssistantMessage": true
+  },
+  "budgets": {
+    "maxRequestsPerRun": 40,
+    "maxInputTokensPerRun": 1000000,
+    "maxOutputTokensPerRun": 200000,
+    "maxOutputTokensPerRequest": 32768
+  },
+  "boundary": "Public provider capability metadata only. Remote use remains disabled until an owner-private policy explicitly enables the exact provider, credential custody, egress hosts, and budgets. This profile grants no provider call, credential, network, tool, external-effect, deployment, publication, or security-testing authority.",
+  "modelSelection": "owner-pinned"
+}

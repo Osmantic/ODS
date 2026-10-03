@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/frontier-request-v1.schema.json",
+  "title": "Pixel Frontier request v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "jobId", "kind", "createdAt", "requester", "classification", "dataCategories", "payload", "maxOutputTokens", "boundary"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "jobId": {"type": "string", "pattern": "^frontier-[0-9]{13}-[a-f0-9]{12}$"},
+    "kind": {"enum": ["plan_review", "failure_triage"]},
+    "createdAt": {"type": "string", "format": "date-time"},
+    "requester": {"type": "string", "pattern": "^[a-z][a-z0-9_-]{1,63}$"},
+    "classification": {"enum": ["public", "internal-derived", "confidential", "restricted"]},
+    "dataCategories": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 16,
+      "uniqueItems": true,
+      "items": {"enum": ["structural", "source-derived", "personal-identifiers", "customer-confidential", "proprietary-code", "security-findings", "credentials", "private-keys", "session-tokens", "authentication-material", "raw-source-bodies", "regulated-records"]}
+    },
+    "payload": {"type": "object"},
+    "maxOutputTokens": {"type": "integer", "minimum": 64, "maximum": 8192},
+    "reason": {"type": "string", "maxLength": 1000},
+    "routing": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["localAttemptCount", "localOutcome", "reasonCodes"],
+      "properties": {
+        "localAttemptCount": {"type": "integer", "minimum": 1, "maximum": 100},
+        "localOutcome": {"enum": ["completed-needs-review", "failed-after-retries", "capability-unavailable", "policy-required-review"]},
+        "reasonCodes": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 4,
+          "uniqueItems": true,
+          "items": {"enum": ["quality-check", "uncertainty", "complexity", "capability-gap", "repeated-failure", "safety-review", "security-review"]}
+        }
+      }
+    },
+    "boundary": {"type": "string", "minLength": 1, "maxLength": 500}
+  }
+}

@@ -1,0 +1,5 @@
+{
+  "name": "minimal",
+  "description": "Core conversational agent with every external capability limb disabled.",
+  "limbs": { "email": false, "calendar": false, "social": false, "web": false, "operations": false, "frontier": false }
+}

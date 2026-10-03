@@ -19,11 +19,12 @@ from typing import Any, AsyncIterator
 import httpx
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import StreamingResponse
+from starlette.requests import ClientDisconnect
 
 import hermes_bridge
 import session_signer
 from config import INSTALL_DIR, SERVICES
-from helpers import check_service_health, get_loaded_model
+from helpers import check_service_health, get_llama_context_size, get_loaded_model
 from performance_oracle import (
     find_catalog_model,
     load_model_catalog,
@@ -81,6 +82,19 @@ _TALK_BLOCKING_COMPATIBILITY_STATUSES = {
 }
 
 
+def _configured_context_length() -> int | None:
+    """The context llama-server was launched with (CTX_SIZE, else MAX_CONTEXT)."""
+    for key in ("CTX_SIZE", "MAX_CONTEXT"):
+        for reader in (read_env_file_value, read_env_value):
+            try:
+                value = int(str(reader(key, INSTALL_DIR) or "").strip())
+            except (TypeError, ValueError):
+                continue
+            if value > 0:
+                return value
+    return None
+
+
 async def _active_model_app_compatibility() -> dict[str, Any]:
     catalog = load_model_catalog(INSTALL_DIR)
     loaded_model = await get_loaded_model()
@@ -91,31 +105,98 @@ async def _active_model_app_compatibility() -> dict[str, Any]:
         model_name = read_env_file_value("LLM_MODEL", INSTALL_DIR) or read_env_value("LLM_MODEL", INSTALL_DIR)
         gguf = read_env_file_value("GGUF_FILE", INSTALL_DIR) or read_env_value("GGUF_FILE", INSTALL_DIR)
     entry = find_catalog_model(catalog, model_name, gguf)
+    runtime_context = model_compatibility_runtime_context(INSTALL_DIR)
+    # The served context decides ODS Talk before Hermes does: below the
+    # Hermes floor Hermes answers every turn with an HTTP 502, so report the
+    # block (with the reason) here instead. The live llama-server n_ctx is
+    # what Hermes sees, so it wins; the launch configuration is the fallback
+    # for catalog models while the runtime cannot answer. A model outside the
+    # catalog is judged on the live value only (a cloud or external backend
+    # has no local launch context to go by).
+    served_context = await get_llama_context_size(model_hint=loaded_model) if loaded_model else None
+    if served_context is None and entry:
+        served_context = _configured_context_length()
     compatibility = model_app_compatibility(
         entry or {},
-        runtime_context=model_compatibility_runtime_context(INSTALL_DIR),
+        runtime_context=runtime_context,
+        context_length=served_context,
     )
     compatibility["activeModel"] = {
         "id": entry.get("id") if entry else None,
         "model": model_name or None,
         "gguf": gguf or None,
     }
+    compatibility["recommendedModel"] = _talk_recommended_model(catalog, entry, runtime_context)
     return compatibility
 
 
-def _hermes_talk_block_reason(compatibility: dict[str, Any]) -> str | None:
-    agent_viability = compatibility.get("agentViability") if isinstance(compatibility, dict) else {}
-    agent_status = str((agent_viability or {}).get("status") or "unknown").strip().lower()
-    if agent_status in _TALK_BLOCKING_COMPATIBILITY_STATUSES:
-        reason = str((agent_viability or {}).get("reason") or "").strip()
-        return reason or "The active model is not currently viable for ODS agent workflows."
+def _talk_recommended_model(
+    catalog: list[dict[str, Any]],
+    active_entry: dict[str, Any] | None,
+    runtime_context: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Installer-recommended model to suggest when the active one can't run Talk.
 
-    hermes_talk = compatibility.get("hermesTalk") if isinstance(compatibility, dict) else {}
-    status = str((hermes_talk or {}).get("status") or "unknown").strip().lower()
-    if status not in _TALK_BLOCKING_COMPATIBILITY_STATUSES:
+    Only offered when it differs from the active model and is not itself
+    blocked for ODS Talk on this runtime.
+    """
+    model_name = (
+        read_env_file_value("MODEL_RECOMMENDED_MODEL", INSTALL_DIR)
+        or read_env_value("MODEL_RECOMMENDED_MODEL", INSTALL_DIR)
+    )
+    gguf = (
+        read_env_file_value("MODEL_RECOMMENDED_GGUF", INSTALL_DIR)
+        or read_env_value("MODEL_RECOMMENDED_GGUF", INSTALL_DIR)
+    )
+    recommended = find_catalog_model(catalog, model_name, gguf)
+    if not recommended or not recommended.get("id"):
         return None
-    reason = str((hermes_talk or {}).get("reason") or "").strip()
-    return reason or "The active model is not currently compatible with ODS Talk."
+    if active_entry and active_entry.get("id") == recommended.get("id"):
+        return None
+    if _hermes_talk_block_reason(model_app_compatibility(recommended, runtime_context=runtime_context)):
+        return None
+    return {
+        "id": recommended["id"],
+        "name": str(recommended.get("name") or recommended["id"]),
+    }
+
+
+# Shown when the active model is blocked for ODS Talk. The catalog ``reason``
+# on each compatibility entry is an internal fleet-QA note (run IDs, harness
+# vocabulary) and must never be returned to Talk users; only ``userMessage``
+# or this copy is.
+TALK_MODEL_NOT_SUPPORTED_MESSAGE = (
+    "This model isn't supported in ODS Talk yet. Switch to a recommended model to use ODS Talk."
+)
+TALK_MODEL_NOT_SUPPORTED_CODE = "model_not_supported"
+
+
+def _compatibility_status(entry: Any) -> str:
+    if not isinstance(entry, dict):
+        return "unknown"
+    return str(entry.get("status") or "unknown").strip().lower()
+
+
+def _hermes_talk_block_reason(compatibility: dict[str, Any]) -> str | None:
+    """Return user-facing copy when the active model blocks ODS Talk, else None.
+
+    Blocking is unchanged: either ``agentViability`` or ``hermesTalk`` in a
+    blocking status disables Talk.
+    """
+    if not isinstance(compatibility, dict):
+        return None
+    hermes_talk = compatibility.get("hermesTalk")
+    hermes_blocked = _compatibility_status(hermes_talk) in _TALK_BLOCKING_COMPATIBILITY_STATUSES
+    agent_blocked = (
+        _compatibility_status(compatibility.get("agentViability")) in _TALK_BLOCKING_COMPATIBILITY_STATUSES
+    )
+    if not (hermes_blocked or agent_blocked):
+        return None
+    if hermes_blocked:
+        message = str(hermes_talk.get("userMessage") or "").strip()
+        if message:
+            return message
+    return TALK_MODEL_NOT_SUPPORTED_MESSAGE
 
 
 async def _require_hermes_talk_compatible() -> dict[str, Any]:
@@ -201,6 +282,8 @@ async def _stream_vision_chat(image_bytes: bytes, content_type: str, prompt_text
     yield _sse_event("session", {"session_id": "vision-oneshot"})
 
     accumulated: list[str] = []
+    completed = False
+    warning = None
     timeout = httpx.Timeout(connect=10.0, read=180.0, write=30.0, pool=10.0)
     headers = {"Content-Type": "application/json", "Accept": "text/event-stream"}
     key = _vision_backend_key()
@@ -225,18 +308,37 @@ async def _stream_vision_chat(image_bytes: bytes, content_type: str, prompt_text
                         continue
                     payload_str = raw[5:].strip()
                     if payload_str == "[DONE]":
+                        completed = True
                         break
                     try:
                         chunk = json.loads(payload_str)
                     except json.JSONDecodeError:
                         continue
+                    if isinstance(chunk, dict) and chunk.get("error") is not None:
+                        yield _sse_event("error", {"status_code": 502, "detail": "The vision model returned an error before completing."})
+                        yield _sse_event("done", {})
+                        return
                     delta = chunk.get("choices", [{}])[0].get("delta", {})
                     text = delta.get("content")
                     if isinstance(text, str) and text:
                         accumulated.append(text)
                         yield _sse_event("delta", {"text": text})
+                    finish_reason = chunk.get("choices", [{}])[0].get("finish_reason")
+                    if finish_reason in ("stop", "length"):
+                        completed = True
+                        if finish_reason == "length":
+                            warning = "The vision answer reached its token limit and may be incomplete."
+                    elif finish_reason is not None:
+                        yield _sse_event("error", {"status_code": 502, "detail": "The vision model stopped without a completed text answer."})
+                        yield _sse_event("done", {})
+                        return
     except (httpx.ReadTimeout, httpx.ConnectError, httpx.HTTPError) as exc:
         yield _sse_event("error", {"status_code": 502, "detail": f"Vision model unavailable: {exc}"})
+        yield _sse_event("done", {})
+        return
+
+    if not completed:
+        yield _sse_event("error", {"status_code": 502, "detail": "The vision response ended before completing. Please try again."})
         yield _sse_event("done", {})
         return
 
@@ -245,7 +347,7 @@ async def _stream_vision_chat(image_bytes: bytes, content_type: str, prompt_text
         "session_id": "vision-oneshot",
         "text": final_text,
         "status": "ok",
-        "warning": None,
+        "warning": warning,
     })
     yield _sse_event("done", {})
 
@@ -398,6 +500,45 @@ _SSE_KEEPALIVE = b": keepalive\n\n"
 _KEEPALIVE_INTERVAL = 5.0
 
 
+class _TalkStreamingResponse(StreamingResponse):
+    """StreamingResponse that actively watches for an HTTP disconnect.
+
+    Starlette 0.48 stops listening to the ASGI receive channel when the server
+    advertises ASGI 2.4 and relies only on a later socket-write failure.  A
+    quiet Talk stream can therefore keep its Hermes/model request alive long
+    after the client has gone.  Race body streaming against the real
+    ``http.disconnect`` signal on every ASGI version, then close the iterator
+    so its Hermes-interrupt cleanup runs immediately.
+    """
+
+    async def __call__(self, scope, receive, send) -> None:
+        stream_task = asyncio.create_task(self.stream_response(send))
+        disconnect_task = asyncio.create_task(self.listen_for_disconnect(receive))
+        try:
+            done, _pending = await asyncio.wait(
+                {stream_task, disconnect_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if stream_task in done:
+                try:
+                    await stream_task
+                except OSError as exc:
+                    raise ClientDisconnect from exc
+        finally:
+            for task in (stream_task, disconnect_task):
+                if not task.done():
+                    task.cancel()
+            for task in (stream_task, disconnect_task):
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await task
+            close = getattr(self.body_iterator, "aclose", None)
+            if close is not None:
+                with contextlib.suppress(Exception):
+                    await close()
+        if self.background is not None:
+            await self.background()
+
+
 # Hermes tool name → human-readable spinner caption. We map by exact name
 # first, then by a few well-known prefixes. The fallback is a literal "Using
 # `<name>`…" so an unrecognised tool still produces something honest rather
@@ -465,14 +606,42 @@ async def _stream_hermes_sse(session_key: str, text: str, request: Request):
     bridge_iter = hermes_bridge.stream_prompt(session_key, text).__aiter__()
     pending: asyncio.Task | None = None
     emit_done = True
+    upstream_complete = False
+    approval_pending = False
+    approval_denied = False
+
+    async def deny_before_cancel() -> None:
+        nonlocal approval_denied
+        if not approval_pending or approval_denied:
+            return
+        approval_denied = True
+        with contextlib.suppress(Exception):
+            await hermes_bridge.deny_pending_approval(session_key)
 
     async def cancel_pending() -> None:
         nonlocal pending
-        if pending is not None and not pending.done():
-            pending.cancel()
-            with contextlib.suppress(asyncio.CancelledError, StopAsyncIteration):
+        if pending is not None:
+            if not pending.done():
+                pending.cancel()
+            # Interrupt cleanup closes the pooled Hermes WebSocket before this
+            # task is cancelled. Consume either outcome so a raced connection-
+            # closed exception cannot become an unobserved task warning.
+            with contextlib.suppress(
+                asyncio.CancelledError,
+                asyncio.TimeoutError,
+                StopAsyncIteration,
+                hermes_bridge.HermesBridgeError,
+            ):
                 await pending
         pending = None
+
+    async def interrupt_before_cancel() -> None:
+        # Hermes detaches sessions when a WebSocket disappears. Explicitly use
+        # its session-scoped abort RPC first; otherwise the abandoned agent can
+        # keep the only local llama-server slot occupied long after the phone
+        # or fleet client has gone away.
+        with contextlib.suppress(Exception):
+            await hermes_bridge.interrupt_active_prompt(session_key)
 
     try:
         while True:
@@ -482,14 +651,12 @@ async def _stream_hermes_sse(session_key: str, text: str, request: Request):
                 done_set, _ = await asyncio.wait({pending}, timeout=_KEEPALIVE_INTERVAL)
             except asyncio.CancelledError:
                 emit_done = False
-                await cancel_pending()
                 raise
             if not done_set:
                 # No bridge event in the keepalive window; check disconnect
                 # before sending more bytes, then emit a keepalive comment.
                 if await request.is_disconnected():
                     emit_done = False
-                    await cancel_pending()
                     return
                 yield _SSE_KEEPALIVE
                 continue
@@ -497,6 +664,7 @@ async def _stream_hermes_sse(session_key: str, text: str, request: Request):
             try:
                 event = pending.result()
             except StopAsyncIteration:
+                upstream_complete = True
                 pending = None
                 break
             except hermes_bridge.HermesUnavailable as exc:
@@ -544,14 +712,44 @@ async def _stream_hermes_sse(session_key: str, text: str, request: Request):
                     "tool": None,
                     "detail": None,
                 })
+            elif et == "approval":
+                approval_pending = True
+                yield _sse_event("approval", {
+                    "command": str(event.get("command") or "")[:500],
+                    "description": str(event.get("description") or "")[:500],
+                    "choices": ["once", "deny"],
+                })
             elif et == "complete":
+                # Mark the upstream turn complete before yielding.  ASGI may
+                # close the response generator as soon as this frame reaches
+                # the client, before it resumes us to emit ``done``.
+                upstream_complete = True
+                approval_pending = False
                 yield _sse_event("complete", {
                     "session_id": event.get("session_id", ""),
                     "text": event.get("text", ""),
                     "status": event.get("status") or "ok",
                     "warning": event.get("warning"),
                 })
+    except GeneratorExit:
+        # StreamingResponse may close an abandoned body iterator with
+        # ``aclose()``.  Yielding the normal terminal frame while handling
+        # GeneratorExit raises "async generator ignored GeneratorExit" and,
+        # more importantly, used to bypass the explicit disconnect branches.
+        emit_done = False
+        raise
     finally:
+        await deny_before_cancel()
+        # Starlette can close a streaming response with ``aclose()`` /
+        # GeneratorExit rather than injecting CancelledError.  The explicit
+        # disconnect branches above therefore cannot be the only place that
+        # interrupts Hermes: cancelling just the local reader detaches the
+        # Hermes session and leaves its provider request running.  Interrupt
+        # every abandoned turn before cancelling the reader task.  A normal
+        # message.complete path stays pooled and is not interrupted.
+        if not upstream_complete:
+            logger.info("ods-talk: interrupting abandoned Hermes turn for %s", session_key[:8])
+            await interrupt_before_cancel()
         await cancel_pending()
         if emit_done:
             yield _sse_event("done", {})
@@ -584,7 +782,9 @@ async def talk_status(request: Request) -> dict[str, Any]:
             "audio_message": voice_ready,
             "live_mic_requires_secure_context": True,
         },
+        # User-facing copy (never the catalog's internal fleet note).
         "reason": talk_block_reason,
+        "reasonCode": TALK_MODEL_NOT_SUPPORTED_CODE if talk_block_reason else None,
     }
 
 
@@ -653,11 +853,27 @@ async def talk_message_stream(payload: dict[str, Any], request: Request) -> Stre
         "X-Accel-Buffering": "no",
         "Connection": "keep-alive",
     }
-    return StreamingResponse(
+    return _TalkStreamingResponse(
         _stream_hermes_sse(session_key, text, request),
         media_type="text/event-stream",
         headers=headers,
     )
+
+
+@router.post("/api/talk/approval")
+async def talk_approval(payload: dict[str, Any], request: Request) -> dict[str, Any]:
+    """Answer the one pending Hermes tool approval for this Talk session."""
+    session_key, _expires_at = _require_session(request)
+    if set(payload) != {"choice"} or payload.get("choice") not in {"once", "deny"}:
+        raise HTTPException(status_code=422, detail="Choice must be 'once' or 'deny'.")
+
+    try:
+        accepted = await hermes_bridge.respond_approval(session_key, payload["choice"])
+    except hermes_bridge.HermesBridgeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    if not accepted:
+        raise HTTPException(status_code=409, detail="No pending approval for this session.")
+    return {"accepted": True, "choice": payload["choice"]}
 
 
 def _classify_attachment(file: UploadFile) -> str:
@@ -759,7 +975,7 @@ async def talk_attachment(
         f"```\n{content}\n```\n\n"
         f"{caption or 'Take a look at this and let me know what you think.'}"
     )
-    return StreamingResponse(
+    return _TalkStreamingResponse(
         _stream_hermes_sse(session_key, prompt, request),
         media_type="text/event-stream",
         headers={

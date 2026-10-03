@@ -1,0 +1,14 @@
+Radicale==3.8.0
+libpass==1.9.3
+pika==1.4.4
+vobject==0.9.9
+python-dateutil==2.9.0.post0
+six==1.17.0
+bcrypt==5.0.0
+defusedxml==0.7.1
+pytz==2026.3.post1
+requests==2.34.2
+charset-normalizer==3.5.1
+idna==3.20
+urllib3==2.8.0
+certifi==2026.7.22

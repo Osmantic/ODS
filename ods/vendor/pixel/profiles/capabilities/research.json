@@ -1,0 +1,5 @@
+{
+  "name": "research",
+  "description": "Public web research without private source or machine access.",
+  "limbs": { "email": false, "calendar": false, "social": false, "web": true, "operations": false, "frontier": false }
+}

@@ -1,0 +1,15 @@
+{
+  "repository": "https://github.com/MengTo/threeui",
+  "license": "MIT",
+  "image": "nginx:1.28-alpine@sha256:a8b39bd9cf0f83869a2162827a0caf6137ddf759d50a171451b335cecc87d236",
+  "build_image": "node:24.16.0-alpine3.22@sha256:191c9f0080fcbbc6547a85dc0ff7988072214a355aabdc1d2ec55a7dae5eea8a",
+  "registry_checked_at": "2026-09-20",
+  "platforms": [
+    "linux/amd64",
+    "linux/arm64"
+  ],
+  "runtime_validation": "pending",
+  "source_commit": "68802d5428071ada5c20db8094b1649e6bb770ed",
+  "source_sha256": "7ee319263e09816fb05e70b11a68e2956be610eb4cfcca30a306f44c0e910bd1",
+  "notes": "Community 1.2.0: MIT code/assets, OFL fonts, upstream public-boundary audits retained in build. Source-built React package served locally. Remote previews/CDN resources remain upstream references, not redistributed or declared offline."
+}

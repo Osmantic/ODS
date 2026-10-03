@@ -14,7 +14,7 @@ services:
       - ./data/forge/models:/opt/stable-diffusion-webui-forge/models:rw
       - ./data/forge/outputs:/opt/stable-diffusion-webui-forge/outputs:rw
     ports:
-      - "${BIND_ADDRESS:-127.0.0.1}:${FORGE_PORT:-7861}:7861"
+      - "127.0.0.1:${FORGE_PORT:-7861}:7861"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://127.0.0.1:7861/"]
       interval: 30s

@@ -1,0 +1,13 @@
+{
+  "repository": "https://github.com/owncast/owncast",
+  "license": "MIT",
+  "source_ref": "v0.3.0",
+  "image": "owncast/owncast:0.3.0@sha256:0f35b568b1098d2badbde2dbf3c73a902009c95eb687c647edea04d6da079a78",
+  "registry_checked_at": "2026-09-20",
+  "platforms": [
+    "linux/amd64",
+    "linux/arm64"
+  ],
+  "runtime_validation": "pending",
+  "notes": "Official image with FFmpeg, native authentication flags before serving, nonroot persistent data. HTTP and RTMP loopback; no encoder, stream, public ingress or directory registration configured by ODS. CPU transcoding only."
+}

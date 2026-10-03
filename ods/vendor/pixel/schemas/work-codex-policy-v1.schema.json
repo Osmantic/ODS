@@ -1,0 +1,115 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/work-codex-policy-v1.schema.json",
+  "title": "Pixel separately governed Codex work-provider policy v1",
+  "type": "object", "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "deployment", "enabled", "provider", "authorization", "credentialCustody", "transport", "taskClasses", "dataPolicy", "execution", "retention", "boundary"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/work-codex-policy-v1.schema.json"},
+    "schemaVersion": {"const": 1},
+    "deployment": {"type": "string", "pattern": "^[a-z][a-z0-9_-]{1,63}$"},
+    "enabled": {"type": "boolean"},
+    "provider": {
+      "type": "object", "additionalProperties": false,
+      "required": ["kind", "authMode", "model", "codexBinary", "timeoutSeconds", "maxInputBytes", "maxOutputBytes", "billing"],
+      "properties": {
+        "kind": {"const": "codex"}, "authMode": {"enum": ["chatgpt", "api-key"]},
+        "model": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{1,127}$"},
+        "codexBinary": {"const": "/usr/local/bin/codex"},
+        "timeoutSeconds": {"type": "integer", "minimum": 30, "maximum": 1800},
+        "maxInputBytes": {"type": "integer", "minimum": 1024, "maximum": 1048576},
+        "maxOutputBytes": {"type": "integer", "minimum": 1024, "maximum": 1048576},
+        "billing": {"oneOf": [{"$ref": "#/$defs/subscriptionBilling"}, {"$ref": "#/$defs/meteredBilling"}]}
+      }
+    },
+    "authorization": {
+      "type": "object", "additionalProperties": false,
+      "required": ["mode", "issuer", "audience", "trustedKeySha256", "signatureAlgorithm", "primaryFactor", "allowedSecondFactors", "maxAuthenticationAgeSeconds", "maxEvidenceLifetimeSeconds", "credentialsVisibleToPixel"],
+      "properties": {
+        "mode": {"const": "external-signed-mfa-assertion"}, "issuer": {"type": "string", "pattern": "^[a-z][a-z0-9._-]{1,127}$"},
+        "audience": {"const": "pixel-work-codex-authorization"}, "trustedKeySha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}, "signatureAlgorithm": {"const": "ed25519"},
+        "primaryFactor": {"const": "password"}, "allowedSecondFactors": {"const": ["totp-authenticator-app", "email-one-time-code"]},
+        "maxAuthenticationAgeSeconds": {"type": "integer", "minimum": 30, "maximum": 300}, "maxEvidenceLifetimeSeconds": {"type": "integer", "minimum": 30, "maximum": 300},
+        "credentialsVisibleToPixel": {"const": false}
+      }
+    },
+    "credentialCustody": {
+      "type": "object", "additionalProperties": false,
+      "required": ["mode", "credentialId", "maxBytes", "mutableRefresh", "runtimeAccess", "materialProjectedToPixel", "ambientEnvironment"],
+      "properties": {
+        "mode": {"enum": ["broker-private-chatgpt-auth-cache", "broker-private-api-key-file"]},
+        "credentialId": {"enum": ["codex-chatgpt-auth", "codex-api-key"]}, "maxBytes": {"type": "integer", "minimum": 64, "maximum": 262144},
+        "mutableRefresh": {"type": "boolean"}, "runtimeAccess": {"enum": ["broker-owned-codex-home", "stdin-only-ephemeral-login"]},
+        "materialProjectedToPixel": {"const": false}, "ambientEnvironment": {"const": false}
+      }
+    },
+    "transport": {
+      "type": "object", "additionalProperties": false,
+      "required": ["mode", "runnerImageRef", "runnerImageId", "codexVersion", "codexBinarySha256", "entrypointSha256", "proxyImageDigest", "proxyPolicySha256", "allowedHosts", "proxyPort", "maxMemoryMiB", "maxCpuCores", "maxPids"],
+      "properties": {
+        "mode": {"const": "outer-container-internal-network-egress-proxy"},
+        "runnerImageRef": {"type": "string", "pattern": "^[a-z0-9][a-z0-9._/-]{1,255}@sha256:[a-f0-9]{64}$"},
+        "runnerImageId": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+        "codexVersion": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:[-+][A-Za-z0-9.-]+)?$", "maxLength": 64},
+        "codexBinarySha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}, "entrypointSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "proxyImageDigest": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"}, "proxyPolicySha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "allowedHosts": {"type": "array", "minItems": 1, "maxItems": 2, "uniqueItems": true, "items": {"enum": ["api.openai.com", "chatgpt.com"]}},
+        "proxyPort": {"type": "integer", "minimum": 1024, "maximum": 65535}, "maxMemoryMiB": {"type": "integer", "minimum": 256, "maximum": 4096},
+        "maxCpuCores": {"type": "integer", "minimum": 1, "maximum": 4}, "maxPids": {"type": "integer", "minimum": 16, "maximum": 256}
+      }
+    },
+    "taskClasses": {
+      "type": "object", "additionalProperties": false,
+      "required": ["structural-review", "patch-proposal", "failure-triage"],
+      "properties": {
+        "structural-review": {"$ref": "#/$defs/taskClass"},
+        "patch-proposal": {"$ref": "#/$defs/taskClass"},
+        "failure-triage": {"$ref": "#/$defs/taskClass"}
+      }
+    },
+    "dataPolicy": {
+      "type": "object", "additionalProperties": false,
+      "required": ["allowedClassifications", "neverEgress", "requireExactApproval", "maxSensitiveTerms", "maxDocuments", "maxDocumentBytes", "maxTotalDocumentBytes"],
+      "properties": {
+        "allowedClassifications": {"type": "array", "minItems": 1, "maxItems": 3, "uniqueItems": true, "items": {"enum": ["public", "internal", "confidential"]}},
+        "neverEgress": {"const": ["authentication-material", "credentials", "private-keys", "raw-source-bodies", "regulated-records", "session-tokens"]},
+        "requireExactApproval": {"const": true},
+        "maxSensitiveTerms": {"type": "integer", "minimum": 1, "maximum": 256},
+        "maxDocuments": {"type": "integer", "minimum": 1, "maximum": 32},
+        "maxDocumentBytes": {"type": "integer", "minimum": 256, "maximum": 262144},
+        "maxTotalDocumentBytes": {"type": "integer", "minimum": 1024, "maximum": 1048576}
+      }
+    },
+    "execution": {"const": {"ephemeral": true, "ignoreUserConfig": true, "ignoreRules": true, "sandbox": "read-only", "approvalPolicy": "never", "tools": false, "network": false, "plugins": false, "apps": false, "multiAgent": false, "structuredOutputOnly": true}},
+    "retention": {
+      "type": "object", "additionalProperties": false,
+      "required": ["privateRequestMinutes", "planMinutes", "resultDays"],
+      "properties": {"privateRequestMinutes": {"type": "integer", "minimum": 1, "maximum": 1440}, "planMinutes": {"type": "integer", "minimum": 5, "maximum": 10080}, "resultDays": {"type": "integer", "minimum": 1, "maximum": 90}}
+    },
+    "boundary": {"const": "Separately governed sanitized Codex work only. Every provider turn requires an exact external plan approval; no credential, tool, network, merge, deployment, publication, message, purchase, production, policy, scope-expansion, or completion authority enters the provider."}
+  },
+  "$defs": {
+    "taskClass": {
+      "type": "object", "additionalProperties": false,
+      "required": ["enabled", "allowedEgressModes", "maxInputTokens", "maxOutputTokens"],
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "allowedEgressModes": {"type": "array", "minItems": 1, "maxItems": 2, "uniqueItems": true, "items": {"enum": ["structural-only", "owner-authorized-content"]}},
+        "maxInputTokens": {"type": "integer", "minimum": 256, "maximum": 250000},
+        "maxOutputTokens": {"type": "integer", "minimum": 64, "maximum": 32768}
+      }
+    },
+    "subscriptionBilling": {"type": "object", "additionalProperties": false, "required": ["mode", "boundary"], "properties": {"mode": {"const": "subscription"}, "boundary": {"const": "Eligible ChatGPT plan or credits; this is not OpenAI API Platform billing."}}},
+    "meteredBilling": {
+      "type": "object", "additionalProperties": false,
+      "required": ["mode", "boundary", "currency", "inputMicrosPerMillionTokens", "outputMicrosPerMillionTokens", "source", "asOf", "maxEstimatedCostMicros"],
+      "properties": {
+        "mode": {"const": "metered"}, "boundary": {"const": "Separately billed OpenAI API Platform usage; ChatGPT subscription access does not cover this route."},
+        "currency": {"const": "USD"}, "inputMicrosPerMillionTokens": {"type": "integer", "minimum": 0, "maximum": 1000000000000},
+        "outputMicrosPerMillionTokens": {"type": "integer", "minimum": 0, "maximum": 1000000000000},
+        "source": {"type": "string", "pattern": "^https://", "maxLength": 500}, "asOf": {"type": "string", "format": "date"},
+        "maxEstimatedCostMicros": {"type": "integer", "minimum": 1, "maximum": 1000000000}
+      }
+    }
+  }
+}

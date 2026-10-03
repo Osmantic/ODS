@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/release-update-reactivation-rollback-result-v1.schema.json",
+  "title": "Pixel reactivation-bound rollback result receipt v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "operation", "status", "candidateId", "product", "version", "restoredVersion", "activeVersion", "originalActivationHash", "reactivationHash", "rollbackHash", "rollbackClaimSha256", "executionPhase", "completedAt", "trustedControllerExecuted", "activeDeploymentRestored", "rollbackMarkerConsumed", "recoveryRequired", "boundary"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "operation": {"const": "pixel-release-reactivation-rollback-result"},
+    "status": {"enum": ["rolled-back", "failed"]},
+    "candidateId": {"type": "string", "pattern": "^pixel-[0-9]{1,6}\\.[0-9]{1,6}\\.[0-9]{1,6}-[0-9a-f]{64}$"},
+    "product": {"const": "Pixel"},
+    "version": {"$ref": "#/$defs/version"},
+    "restoredVersion": {"type": ["string", "null"], "pattern": "^[0-9]{1,6}\\.[0-9]{1,6}\\.[0-9]{1,6}$"},
+    "activeVersion": {"$ref": "#/$defs/version"},
+    "originalActivationHash": {"$ref": "#/$defs/hash"},
+    "reactivationHash": {"$ref": "#/$defs/hash"},
+    "rollbackHash": {"$ref": "#/$defs/hash"},
+    "rollbackClaimSha256": {"$ref": "#/$defs/hash"},
+    "executionPhase": {"enum": ["rollback", "record"]},
+    "completedAt": {"type": "string", "format": "date-time"},
+    "trustedControllerExecuted": {"const": true},
+    "activeDeploymentRestored": {"type": "boolean"},
+    "rollbackMarkerConsumed": {"type": "boolean"},
+    "recoveryRequired": {"type": "boolean"},
+    "boundary": {"const": "Trusted controller reactivation rollback finished; this content-free receipt records whether the preceding Pixel version is active and recovery is required."}
+  },
+  "allOf": [
+    {"if": {"properties": {"status": {"const": "rolled-back"}}}, "then": {"properties": {"restoredVersion": {"type": "string"}, "executionPhase": {"const": "record"}, "activeDeploymentRestored": {"const": true}, "rollbackMarkerConsumed": {"const": true}, "recoveryRequired": {"const": false}}}},
+    {"if": {"properties": {"activeDeploymentRestored": {"const": false}}}, "then": {"properties": {"restoredVersion": {"const": null}}}}
+  ],
+  "$defs": {
+    "hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "version": {"type": "string", "pattern": "^[0-9]{1,6}\\.[0-9]{1,6}\\.[0-9]{1,6}$"}
+  }
+}

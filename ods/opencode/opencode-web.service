@@ -13,10 +13,24 @@ RestartSec=5
 # Environment
 Environment=HOME=__HOME__
 Environment=PATH=__OPENCODE_BIN_DIR__:/usr/local/bin:/usr/bin:/bin
+# Upstream requires this flag to expose websearch for local model providers.
+# Search uses Exa's public MCP endpoint; normal OpenCode permission checks apply.
+Environment=OPENCODE_ENABLE_EXA=1
+# Do not set OPENCODE_WEBSEARCH_PROVIDER: upstream defaults to enabled Exa,
+# preserving a user's explicit provider override in the service environment.
 # Do not import ODS's full .env here. OpenCode treats
 # OPENCODE_SERVER_PASSWORD as a Basic Auth password when present, but this
 # localhost-only web UI should be reachable without a login prompt.
 UnsetEnvironment=OPENCODE_SERVER_PASSWORD
+# OpenCode 1.18.x embeds Bun 1.3.14, which copies bundled native libraries to
+# a new randomly named temp file on every load and never deletes them
+# (anomalyco/opencode#42700, #49283). Keep those copies in an ODS-owned
+# directory that is emptied before each start and removed after stop.
+# BUN_TMPDIR leaves TMPDIR for OpenCode's tools unchanged.
+Environment="BUN_TMPDIR=__HOME__/.cache/ods/opencode-bun-tmp"
+ExecStartPre=rm -rf "__HOME__/.cache/ods/opencode-bun-tmp"
+ExecStartPre=mkdir -p -m 0700 "__HOME__/.cache/ods/opencode-bun-tmp"
+ExecStopPost=rm -rf "__HOME__/.cache/ods/opencode-bun-tmp"
 
 # Hardening
 NoNewPrivileges=true

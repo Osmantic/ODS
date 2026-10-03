@@ -7,8 +7,8 @@ directly covered:
     stale so a corrupt file can never wedge the UI in a spinning state.
 
   * _is_one_shot_extension — decides whether a catalog entry is a one-shot
-    CLI/setup tool, preferring the explicit ``startup_check`` flag and
-    falling back to ``port == 0`` for older catalogs.
+    CLI/setup tool with no port. Disabling HTTP startup checks alone does
+    not turn a TCP service into a CLI.
 """
 
 from __future__ import annotations
@@ -66,8 +66,9 @@ def test_empty_timestamp_is_stale():
 # ---------------------------------------------------------------------------
 
 
-def test_startup_check_false_marks_one_shot():
-    assert _is_one_shot_extension({"startup_check": False, "port": 8080}) is True
+def test_startup_check_false_requires_a_portless_tool():
+    assert _is_one_shot_extension({"startup_check": False, "port": 8080}) is False
+    assert _is_one_shot_extension({"startup_check": False, "port": 0}) is True
 
 
 def test_startup_check_true_is_not_one_shot():

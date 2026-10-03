@@ -65,11 +65,18 @@ GPU1    PHB      X      PHB
 GPU2    PHB     PHB      X
 EOF
         ;;
+    *"--query-gpu=mig.mode.current"*)
+        if [[ "${NVIDIA_MIG_ENABLED:-0}" == "1" ]]; then
+            printf '%s\n' Enabled Disabled '[N/A]'
+        else
+            printf '%s\n' Disabled Disabled '[N/A]'
+        fi
+        ;;
     "-q")
         if [[ "${NVIDIA_MIG_ENABLED:-0}" == "1" ]]; then
-            echo "MIG Mode : Enabled"
+            printf '%s\n' '    MIG Mode' '        Current : Enabled' '        Pending : Enabled'
         else
-            echo "MIG Mode : Disabled"
+            printf '%s\n' '    MIG Mode' '        Current : Disabled' '        Pending : Disabled'
         fi
         ;;
     *) exit 1 ;;
@@ -200,7 +207,9 @@ echo "$assignment" | jq -e '
     and .gpu_assignment.services.comfyui.gpus == ["GPU-ti-2"]
     and .gpu_assignment.services.embeddings.gpus == ["GPU-1080"]
 ' >/dev/null
-[[ "$(env_value LLAMA_ARG_SPLIT_MODE)" == "row" ]]
+# NVIDIA tensor assignments use layer split: CUDA row split fails at model
+# load from llama.cpp b9890 and is not fleet-qualified.
+[[ "$(env_value LLAMA_ARG_SPLIT_MODE)" == "layer" ]]
 [[ "$(env_value LLAMA_ARG_TENSOR_SPLIT)" == "1,1" ]]
 [[ "$(env_value EMBEDDINGS_GPU_UUID)" == "GPU-1080" ]]
 

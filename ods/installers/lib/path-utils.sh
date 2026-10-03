@@ -31,15 +31,18 @@ normalize_path() {
     fi
     
     # Resolve symlinks and normalize (remove .., ., //)
-    if command -v realpath &>/dev/null; then
-        # GNU realpath (Linux)
-        realpath -m "$path" 2>/dev/null || echo "$path"
-    elif command -v grealpath &>/dev/null; then
+    if command -v grealpath &>/dev/null; then
         # GNU realpath via Homebrew (macOS)
         grealpath -m "$path" 2>/dev/null || echo "$path"
+    elif command -v realpath &>/dev/null && realpath -m / &>/dev/null; then
+        # GNU realpath (Linux)
+        realpath -m "$path" 2>/dev/null || echo "$path"
+    elif command -v python3 &>/dev/null; then
+        python3 -c 'import os, sys; print(os.path.normpath(sys.argv[1]))' "$path" 2>/dev/null || echo "$path"
+    elif command -v python &>/dev/null; then
+        python -c 'import os, sys; print(os.path.normpath(sys.argv[1]))' "$path" 2>/dev/null || echo "$path"
     else
         # Fallback: basic normalization without external dependencies
-        # This handles most cases but doesn't resolve all edge cases
         echo "$path"
     fi
 }
@@ -106,6 +109,7 @@ validate_install_path() {
         # Use df -Pk (POSIX) which returns KB, then convert to GB
         local avail_kb
         avail_kb=$(df -Pk "$parent_dir" 2>/dev/null | tail -1 | awk '{print $4}' || echo "0")
+        [[ "$avail_kb" =~ ^[0-9]+$ ]] || avail_kb=0
         avail_gb=$((avail_kb / 1048576))  # KB to GB (1024*1024)
         if [[ "$avail_gb" -lt "$required_gb" ]]; then
             echo "WARNING: Low disk space. Available: ${avail_gb}GB, Required: ${required_gb}GB" >&2

@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Portal Cloud</title>
+<style>
+  body { margin:0; background:#17191c; color:#e8eef8; font:15px system-ui; }
+  main { max-width:1000px; margin:auto; padding:32px 24px; }
+  h1 { font-size:24px; font-weight:500; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:16px; margin-top:24px; }
+  .cloud-state { border-bottom:1px solid #373b40; padding:20px; text-align:center; }
+  .cloud { display:block; width:140px; height:140px; max-width:100%; margin:auto; cursor:pointer; }
+  .cloud svg { width:100%; height:100%; overflow:visible; }
+  button { background:transparent; color:inherit; border:0; padding:0; }
+  button:focus-visible { outline:2px solid #b9d7fa; outline-offset:4px; }
+  a { color:#b9d7fa; }
+</style>
+<main>
+  <h1>Portal</h1>
+  <div class="grid">
+    <div class="cloud-state"><button class="cloud" data-state="idle" data-pixel-interactive aria-label="Idle cloud"></button><p>Idle</p></div>
+    <div class="cloud-state"><button class="cloud" data-state="thinking" data-pixel-interactive aria-label="Thinking cloud"></button><p>Thinking</p></div>
+    <div class="cloud-state"><button class="cloud" data-state="working" data-pixel-interactive aria-label="Working cloud"></button><p>Working</p></div>
+    <div class="cloud-state"><button class="cloud" data-state="waiting" data-pixel-interactive aria-label="Waiting cloud"></button><p>Waiting</p></div>
+    <div class="cloud-state"><button class="cloud" data-state="blocked" data-pixel-interactive aria-label="Attention cloud"></button><p>Attention</p></div>
+    <div class="cloud-state"><button class="cloud" data-state="done" data-pixel-interactive aria-label="Done cloud"></button><p>Done</p></div>
+    <div class="cloud-state"><button class="cloud" data-state="sleeping" data-pixel-interactive aria-label="Sleeping cloud"></button><p>Sleeping</p></div>
+  </div>
+  <p><a href="/">Portal</a></p>
+</main>
+<script src="./pixel-mascot.js"></script>
+<script src="./portal-cloud.js"></script>
+</html>

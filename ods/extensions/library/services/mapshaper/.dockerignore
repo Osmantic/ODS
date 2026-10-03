@@ -1,0 +1,8 @@
+*
+!Dockerfile
+!basemap.js
+!nginx.conf
+!compose.yaml
+!manifest.yaml
+!upstream.json
+!README.md

@@ -4,6 +4,7 @@ M3: API Privacy Shield - HTTP Proxy (ODS Integration)
 FastAPI-based proxy with connection pooling and PII caching.
 """
 
+import codecs
 import logging
 import os
 import re
@@ -139,6 +140,8 @@ class CachedPrivacyShield(PrivacyShield):
 
     def scrub(self, text: str) -> str:
         """Scrub with optional caching."""
+        if not isinstance(text, str):
+            raise TypeError("PII scrub requires text")
         if CACHE_ENABLED and len(text) < 1000:  # Only cache small texts
             return self._scrub_cached(text)
         return self._scrub_impl(text)
@@ -354,7 +357,7 @@ async def proxy(request: Request, path: str):
             "X-Privacy-Shield": "active",
             "X-PII-Scrubbed": str(metadata.get("pii_count", 0)),
             "X-Processing-Time-Ms": f"{overhead_ms:.2f}",
-            "Content-Type": content_type,
+            "content-type": content_type,
         }
     )
 
@@ -377,39 +380,32 @@ async def proxy(request: Request, path: str):
                 yield raw
 
     async def body_iter():
-        # One iterator for the whole response. httpx response streams are
-        # single-consumption, so the oversized-text cutover must keep draining
-        # *this same* generator (switching mode to raw passthrough and
-        # re-emitting the chunk that crossed the cap) rather than calling
-        # raw_chunks() a second time — re-iterating the httpx response would
-        # drop the remainder of a large text body.
+        # One iterator and one codec state for the whole response. Stopping PII
+        # restoration must not split a multibyte character or insert a new BOM.
         chunks = raw_chunks()
         try:
             if do_restore:
                 # do_restore is only true when the body is uncompressed text,
                 # so raw bytes == decoded bytes here and stay byte-exact.
                 restorer = StreamRestorer(shield.detector, charset)
+                encoder = codecs.getincrementalencoder(charset)(errors="replace")
+                emitted = False
                 seen = 0
+                restoring = True
                 async for chunk in chunks:
                     seen += len(chunk)
                     if seen > RESTORE_MAX_BYTES:
-                        # Exceeded cap mid-stream: stop restoring, flush what
-                        # we held, then pass the rest through untouched.
-                        # Continue draining the SAME iterator — do NOT
-                        # re-iterate the upstream response.
-                        tail = restorer.finalize()
-                        if tail:
-                            yield tail.encode(charset, "replace")
-                        yield chunk
-                        async for rest in chunks:
-                            yield rest
-                        return
-                    out = restorer.feed(chunk)
+                        # No more token matching or substitution past the cap.
+                        # Continue bounded incremental transcoding so the decoder
+                        # and encoder can finish their pending code units safely.
+                        restoring = False
+                    out = restorer.feed(chunk, restore=restoring)
                     if out:
-                        yield out.encode(charset, "replace")
-                tail = restorer.finalize()
-                if tail:
-                    yield tail.encode(charset, "replace")
+                        yield encoder.encode(out)
+                        emitted = True
+                tail = restorer.finalize(restore=restoring)
+                if tail or emitted:
+                    yield encoder.encode(tail, final=True)
             else:
                 # Transparent byte-for-byte passthrough (compressed/binary):
                 # raw bytes preserve the original transport encoding.

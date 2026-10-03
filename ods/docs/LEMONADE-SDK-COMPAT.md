@@ -89,9 +89,11 @@ service.
 
 ## Model Selection
 
-ODS auto-detects the first model id returned by Lemonade's
-`/api/v1/models` endpoint that does not look like an image-generation model
-and writes it to `LEMONADE_MODEL`.
+When `LEMONADE_MODEL` is not set, ODS selects a downloaded, chat-capable model
+from Lemonade's `/api/v1/models` response. It prefers tool-capable models and
+then larger models; the first listed model is **not** necessarily loaded or
+appropriate for chat. ODS writes the selected id to `LEMONADE_MODEL` and
+verifies a real chat completion before reporting installation success.
 
 Set `LEMONADE_MODEL` only if you want ODS to use a specific served
 model:
@@ -110,6 +112,13 @@ curl http://localhost:13305/api/v1/models
 Use a text/chat model for `LEMONADE_MODEL`. Image models such as Flux, SDXL, or
 Stable Diffusion can appear in Lemonade's model list, but they are not valid for
 ODS's chat/completions route.
+
+For an existing host-managed Lemonade installation, change the loaded model in
+Lemonade itself, then use **Models → Adopt loaded model** in ODS to update its
+chat route. Downloading a GGUF into ODS's model library does not install it
+into the separately managed Lemonade store. To see which model Lemonade has
+actually loaded, check `/api/v1/health` and its `model_loaded` field rather
+than assuming the first `/api/v1/models` entry is active.
 
 Phase 12 verifies the selected model with a real chat completion through
 LiteLLM. If Lemonade is reachable from the host but not from Docker containers,

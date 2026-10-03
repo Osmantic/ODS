@@ -42,6 +42,8 @@ read_env_value() {
 # shellcheck source=../../../lib/dotenv-quote.sh
 _ODS_MACOS_ENV_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 . "$_ODS_MACOS_ENV_ROOT/lib/dotenv-quote.sh"
+# shellcheck source=../../lib/searxng-locale.sh
+. "$_ODS_MACOS_ENV_ROOT/installers/lib/searxng-locale.sh"
 unset _ODS_MACOS_ENV_ROOT
 
 env_key_exists() {
@@ -75,11 +77,46 @@ upsert_env_value() {
     local env_path="$1"
     local key="$2"
     local value="$3"
-    if grep -qE "^${key}=" "$env_path" 2>/dev/null; then
-        sed -i '' "s|^${key}=.*|${key}=${value}|" "$env_path"
-    else
-        printf '%s=%s\n' "$key" "$value" >> "$env_path"
-    fi
+    # The live file may be bind-mounted, so retain its inode. Stage and back up
+    # private copies before opening it for writing; a recoverable copy failure
+    # can then be rolled back without leaving a truncated or exposed .env.
+    (
+        umask 077
+        [[ ! -L "$env_path" && ( ! -e "$env_path" || -f "$env_path" ) ]] || return 1
+        stage_dir="$(mktemp -d "${env_path}.stage.XXXXXX")" || return 1
+        staged="$stage_dir/next"
+        backup=""
+        found=false
+        trap 'rm -f "$staged"; if [[ -n "$backup" ]]; then rm -f "$backup"; fi; rmdir "$stage_dir"' EXIT
+        if [[ -f "$env_path" ]]; then
+            backup="$stage_dir/previous"
+            cp "$env_path" "$backup" || return 1
+            : > "$staged" || return 1
+            while IFS= read -r line || [[ -n "$line" ]]; do
+                if [[ "$line" == "$key="* ]]; then
+                    printf '%s=%s\n' "$key" "$value" || return 1
+                    found=true
+                else
+                    printf '%s\n' "$line" || return 1
+                fi
+            done < "$env_path" > "$staged" || return 1
+            if [[ "$found" == false ]]; then
+                printf '%s=%s\n' "$key" "$value" >> "$staged" || return 1
+            fi
+            if ! cat "$staged" > "$env_path" || ! cmp -s "$staged" "$env_path"; then
+                cp "$backup" "$env_path" || {
+                    echo "ERROR: failed to restore $env_path after an incomplete write" >&2
+                    return 1
+                }
+                return 1
+            fi
+        else
+            printf '%s=%s\n' "$key" "$value" > "$staged" || return 1
+            # A hard link publishes the private file without replacing a path
+            # that another process created while we were staging it.
+            ln "$staged" "$env_path" || return 1
+        fi
+    )
 }
 
 cap_cpu_value() {
@@ -171,9 +208,9 @@ detect_timezone() {
 }
 
 normalize_ods_model_switchboard() {
-    case "${1:-observe}" in
+    case "${1:-enabled}" in
         legacy|observe|enabled) printf '%s\n' "$1" ;;
-        *) printf '%s\n' "observe" ;;
+        *) printf '%s\n' "enabled" ;;
     esac
 }
 
@@ -239,6 +276,10 @@ generate_ods_env() {
         comfyui_cpu_reservation="$(select_env_service_cpu_reservation "$env_path" "COMFYUI_CPU_RESERVATION" "2.0" "$comfyui_cpu_limit")"
         upsert_env_value "$env_path" "TTS_CPU_LIMIT" "$tts_cpu_limit"
         upsert_env_value "$env_path" "TTS_CPU_RESERVATION" "$tts_cpu_reservation"
+        local tts_workers
+        tts_workers="$(read_env_value "$env_path" "TTS_WORKERS")"
+        [[ "$tts_workers" =~ ^[1-9][0-9]*$ ]] || tts_workers=1
+        upsert_env_value "$env_path" "TTS_WORKERS" "$tts_workers"
         upsert_env_value "$env_path" "WHISPER_CPU_LIMIT" "$whisper_cpu_limit"
         upsert_env_value "$env_path" "WHISPER_CPU_RESERVATION" "$whisper_cpu_reservation"
         upsert_env_value "$env_path" "HERMES_CPU_LIMIT" "$hermes_cpu_limit"
@@ -258,10 +299,15 @@ generate_ods_env() {
         fi
         upsert_env_value "$env_path" "ODS_UID" "$compose_uid"
         upsert_env_value "$env_path" "ODS_GID" "$compose_gid"
+        # The image home is accessible only to its built-in node user.
+        # Docker Desktop translates bind-mount ownership independently of macOS IDs.
+        if ! env_key_exists "$env_path" "N8N_RUN_USER"; then
+            upsert_env_value "$env_path" "N8N_RUN_USER" "node"
+        fi
 
         local _switchboard_mode
         _switchboard_mode="$(read_env_value "$env_path" "ODS_MODEL_SWITCHBOARD")"
-        [[ -n "$_switchboard_mode" ]] || _switchboard_mode="${ODS_MODEL_SWITCHBOARD:-observe}"
+        [[ -n "$_switchboard_mode" ]] || _switchboard_mode="${ODS_MODEL_SWITCHBOARD:-enabled}"
         _switchboard_mode="$(normalize_ods_model_switchboard "$_switchboard_mode")"
         upsert_env_value "$env_path" "ODS_MODEL_SWITCHBOARD" "$_switchboard_mode"
         if [[ "$_switchboard_mode" == "enabled" ]]; then
@@ -269,8 +315,8 @@ generate_ods_env() {
             _litellm_key="$(read_env_value "$env_path" "LITELLM_KEY")"
             upsert_env_value "$env_path" "OPEN_WEBUI_LLM_BASE_URL" "http://litellm:4000"
             upsert_env_value "$env_path" "OPEN_WEBUI_LLM_API_KEY" "$_litellm_key"
-            upsert_env_value "$env_path" "HERMES_LLM_BASE_URL" "http://litellm:4000/v1"
-            upsert_env_value "$env_path" "HERMES_LLM_API_KEY" "$_litellm_key"
+            upsert_env_value "$env_path" "HERMES_LLM_BASE_URL" "http://model-router:9099/v1"
+            upsert_env_value "$env_path" "HERMES_LLM_API_KEY" "no-key"
         fi
 
         # Upsert ODS_AGENT_KEY when missing (pre-PR-#979 upgrade path)
@@ -416,9 +462,9 @@ generate_ods_env() {
     opencode_password=$(new_secure_base64 16)
     local searxng_secret
     searxng_secret=$(new_secure_hex 32)
-    # Langfuse (LLM Observability)
-    # NOTE: macOS env-generator always regenerates secrets (no merge logic).
-    # If reinstalling with existing Langfuse data, run: rm -rf data/langfuse/
+    # Langfuse (LLM Observability). A forced reinstall may regenerate other
+    # secrets, but data-bound Langfuse credentials must stay paired with its
+    # persisted PostgreSQL, ClickHouse, Redis, and MinIO state.
     local langfuse_nextauth_secret
     langfuse_nextauth_secret=$(new_secure_hex 32)
     local langfuse_salt
@@ -443,27 +489,55 @@ generate_ods_env() {
     langfuse_init_project_id=$(new_secure_hex 16)
     local langfuse_init_user_password
     langfuse_init_user_password=$(new_secure_hex 16)
+    if [[ -f "${install_dir}/data/langfuse/postgres/PG_VERSION" ]]; then
+        local langfuse_key
+        for langfuse_key in \
+            LANGFUSE_NEXTAUTH_SECRET LANGFUSE_SALT LANGFUSE_ENCRYPTION_KEY \
+            LANGFUSE_DB_PASSWORD LANGFUSE_CLICKHOUSE_PASSWORD LANGFUSE_REDIS_PASSWORD \
+            LANGFUSE_MINIO_ACCESS_KEY LANGFUSE_MINIO_SECRET_KEY \
+            LANGFUSE_PROJECT_PUBLIC_KEY LANGFUSE_PROJECT_SECRET_KEY \
+            LANGFUSE_INIT_PROJECT_ID LANGFUSE_INIT_USER_PASSWORD; do
+            if [[ -z "$(read_env_value "$env_path" "$langfuse_key")" ]]; then
+                printf 'Existing Langfuse database requires %s in the previous .env; refusing to rotate persisted credentials.\n' "$langfuse_key" >&2
+                return 1
+            fi
+        done
+        langfuse_nextauth_secret=$(read_env_value "$env_path" LANGFUSE_NEXTAUTH_SECRET)
+        langfuse_salt=$(read_env_value "$env_path" LANGFUSE_SALT)
+        langfuse_encryption_key=$(read_env_value "$env_path" LANGFUSE_ENCRYPTION_KEY)
+        langfuse_db_password=$(read_env_value "$env_path" LANGFUSE_DB_PASSWORD)
+        langfuse_clickhouse_password=$(read_env_value "$env_path" LANGFUSE_CLICKHOUSE_PASSWORD)
+        langfuse_redis_password=$(read_env_value "$env_path" LANGFUSE_REDIS_PASSWORD)
+        langfuse_minio_access_key=$(read_env_value "$env_path" LANGFUSE_MINIO_ACCESS_KEY)
+        langfuse_minio_secret_key=$(read_env_value "$env_path" LANGFUSE_MINIO_SECRET_KEY)
+        langfuse_project_public_key=$(read_env_value "$env_path" LANGFUSE_PROJECT_PUBLIC_KEY)
+        langfuse_project_secret_key=$(read_env_value "$env_path" LANGFUSE_PROJECT_SECRET_KEY)
+        langfuse_init_project_id=$(read_env_value "$env_path" LANGFUSE_INIT_PROJECT_ID)
+        langfuse_init_user_password=$(read_env_value "$env_path" LANGFUSE_INIT_USER_PASSWORD)
+    fi
     # Colima's user-mode host.docker.internal route can become unreachable
     # under load. The orchestrator enables its private vmnet address first;
     # bridge loopback-only host services through that scoped interface.
     local macos_llm_bridge_enabled="false"
     local macos_host_agent_bridge_enabled="false"
-    local native_llama_port="8080"
+    # Host port the native Metal llama-server binds. Honour a pre-set value so
+    # an operator whose 8080 is taken can relocate ODS; every derived URL and
+    # the container readiness probe below follow this one variable.
+    local native_llama_port="${ODS_NATIVE_LLAMA_PORT:-8080}"
     local macos_host_gateway=""
     local macos_vm_ip=""
     local agent_host="host.docker.internal"
-    local llm_api_url="http://host.docker.internal:8080"
+    local llm_api_url="http://host.docker.internal:${native_llama_port}"
     local switchboard_mode
-    switchboard_mode="$(normalize_ods_model_switchboard "${ODS_MODEL_SWITCHBOARD:-observe}")"
+    switchboard_mode="$(normalize_ods_model_switchboard "${ODS_MODEL_SWITCHBOARD:-enabled}")"
     if [[ "${DOCKER_BACKEND:-unknown}" == "colima" ]]; then
         macos_llm_bridge_enabled="true"
         macos_host_agent_bridge_enabled="true"
-        native_llama_port="8080"
         macos_host_gateway="${COLIMA_HOST_IP:-}"
         macos_vm_ip="${COLIMA_VM_IP:-}"
         if [[ -n "$macos_host_gateway" ]]; then
             agent_host="$macos_host_gateway"
-            llm_api_url="http://${macos_host_gateway}:8080"
+            llm_api_url="http://${macos_host_gateway}:${native_llama_port}"
         fi
     fi
 
@@ -488,8 +562,8 @@ generate_ods_env() {
     local open_webui_llm_base_url=""
     local open_webui_llm_api_key=""
     if [[ "$switchboard_mode" == "enabled" ]]; then
-        hermes_llm_base_url="http://litellm:4000/v1"
-        hermes_llm_api_key="$litellm_key"
+        hermes_llm_base_url="http://model-router:9099/v1"
+        hermes_llm_api_key="no-key"
         open_webui_llm_base_url="http://litellm:4000"
         open_webui_llm_api_key="$litellm_key"
     fi
@@ -510,6 +584,24 @@ generate_ods_env() {
     fi
 
     # Build .env content (matches Phase 06 format)
+    # Regenerating secrets must not move an unchanged selected checkpoint from
+    # its registered SSD to data/models. A newly chosen model starts in default.
+    local active_model_store=default previous_store previous_gguf
+    previous_store="$(read_env_value "$env_path" ODS_ACTIVE_MODEL_STORE)"
+    previous_gguf="$(read_env_value "$env_path" GGUF_FILE)"
+    previous_store="${previous_store//\"/}"; previous_store="${previous_store//\'/}"
+    case "$previous_gguf" in
+        \"*\") previous_gguf="${previous_gguf:1:${#previous_gguf}-2}" ;;
+        \'*\') previous_gguf="${previous_gguf:1:${#previous_gguf}-2}" ;;
+    esac
+    if [[ -n "$previous_store" && "$previous_store" != default && "$previous_gguf" == "$GGUF_FILE" ]]; then
+        if [[ ! "$previous_store" =~ ^[a-z][a-z0-9-]{0,47}$ ]] \
+            || ! python3 "$install_dir/scripts/resolve-model-store.py" --install-dir "$install_dir" --verify-artifacts >/dev/null; then
+            echo "The current SSD model could not be verified; .env was not regenerated." >&2
+            return 1
+        fi
+        active_model_store="$previous_store"
+    fi
     cat > "$env_path" << ENVEOF
 # ODS Configuration -- ${TIER_NAME} Edition
 # Generated by macOS installer v${ODS_VERSION} on ${timestamp}
@@ -526,13 +618,14 @@ HOST_LAN_IP=${host_lan_ip}
 ODS_DEVICE_NAME=${device_name}
 # Container route to the loopback-only host agent (private Colima bridge or Docker Desktop helper).
 ODS_AGENT_HOST=${ODS_AGENT_HOST:-${agent_host}}
+# Docker Desktop preserves the installation owner's data group on bind mounts.
+REMOTE_PROVIDER_DATA_GID=$(id -g 2>/dev/null || echo 20)
 
 #=== LLM Backend Mode ===
 ODS_MODE=local
 ODS_MODEL_SWITCHBOARD=${switchboard_mode}
 LLM_BACKEND=llama-server
 LLM_API_URL=${llm_api_url}
-LLM_BACKEND=llama-server
 
 #=== Cloud API Keys ===
 ANTHROPIC_API_KEY=
@@ -550,6 +643,7 @@ MODEL_PROFILE=${MODEL_PROFILE_REQUESTED:-${MODEL_PROFILE:-qwen}}
 # Effective model profile for this hardware: ${MODEL_PROFILE_EFFECTIVE:-qwen}
 LLM_MODEL=${LLM_MODEL}
 GGUF_FILE=${GGUF_FILE}
+ODS_ACTIVE_MODEL_STORE=${active_model_store}
 MAX_CONTEXT=${MAX_CONTEXT}
 CTX_SIZE=${MAX_CONTEXT}
 MODEL_RECOMMENDED_MODEL=${LLM_MODEL}
@@ -570,6 +664,20 @@ $(if [[ -n "${LLAMA_SERVER_IMAGE:-}" ]]; then echo "LLAMA_SERVER_IMAGE=${LLAMA_S
 LLAMA_ARG_FLASH_ATTN=${LLAMA_ARG_FLASH_ATTN:-auto}
 LLAMA_ARG_CACHE_TYPE_K=${LLAMA_ARG_CACHE_TYPE_K:-f16}
 LLAMA_ARG_CACHE_TYPE_V=${LLAMA_ARG_CACHE_TYPE_V:-f16}
+# Optional native hybrid-model cache tuning; requires matching runtime --help support.
+# Empty/unset preserves runtime defaults; registered model profiles own their arguments.
+# LLAMA_ARG_CHECKPOINT_EVERY_NT=1024
+# Newer runtimes use minimum spacing instead of the legacy interval; never set both.
+# LLAMA_ARG_CHECKPOINT_MIN_SPACING_NT=1024
+# Prompt checkpoints per slot. Unset uses 32 (about 50 MiB each for Qwen3.5-9B);
+# lower it, or set 0, to save memory.
+# LLAMA_ARG_CTX_CHECKPOINTS=32
+# LLAMA_ARG_CACHE_RAM=512
+# Lossless n-gram speculation (--spec-type ngram-mod) is on by default when the
+# installed llama-server supports it (b8955+; ODS pins b9014). Turn it off with:
+# LLAMA_SPEC_TYPE=none
+# Optional idle unloading: saves RAM between sessions, but loses prompt cache on sleep.
+# LLAMA_ARG_SLEEP_IDLE_SECONDS=120
 # Optional MoE only. Example for 8-12GB VRAM: LLAMA_ARG_N_CPU_MOE=25
 # Optional MTP speculative decoding only. Requires an MTP-capable GGUF and llama.cpp build.
 # LLAMA_ARG_SPEC_TYPE=draft-mtp
@@ -580,6 +688,7 @@ LLAMA_CPU_RESERVATION=${detected_cpu_reservation}
 #=== Bundled Service CPU Budgets ===
 TTS_CPU_LIMIT=${tts_cpu_limit}
 TTS_CPU_RESERVATION=${tts_cpu_reservation}
+TTS_WORKERS=1
 WHISPER_CPU_LIMIT=${whisper_cpu_limit}
 WHISPER_CPU_RESERVATION=${whisper_cpu_reservation}
 HERMES_CPU_LIMIT=${hermes_cpu_limit}
@@ -591,9 +700,10 @@ COMFYUI_CPU_RESERVATION=${comfyui_cpu_reservation}
 # Docker Compose reads these from .env without colliding with Bash's readonly UID.
 ODS_UID=${host_uid}
 ODS_GID=${host_gid}
+N8N_RUN_USER=node
 
 #=== Ports ===
-OLLAMA_PORT=8080
+OLLAMA_PORT=${native_llama_port}
 WEBUI_PORT=3000
 SEARXNG_PORT=8888
 PERPLEXICA_PORT=3004
@@ -612,6 +722,7 @@ LANGFUSE_PORT=3006
 HERMES_LLM_BASE_URL=${hermes_llm_base_url}
 HERMES_LLM_API_KEY=${hermes_llm_api_key}
 HERMES_LANGUAGE=en
+HERMES_REQUIRE_OWNER_CARD=${HERMES_REQUIRE_OWNER_CARD:-false}
 HERMES_PROXY_PORT=9120
 HERMES_PROXY_UPSTREAM=ods-hermes:9119
 ODS_AUTH_UPSTREAM=ods-dashboard-api:3002
@@ -656,6 +767,7 @@ EMBEDDINGS_MEMORY_LIMIT=${embeddings_memory_limit}
 
 #=== Web UI Settings ===
 # Loopback installs open directly. Network-bound installs require a login.
+ENABLE_OPEN_WEBUI=${ENABLE_OPEN_WEBUI:-false}
 WEBUI_AUTH=${webui_auth}
 ENABLE_WEB_SEARCH=${ENABLE_WEB_SEARCH:-true}
 WEB_SEARCH_ENGINE=searxng
@@ -668,10 +780,7 @@ N8N_WEBHOOK_URL=http://localhost:5678
 TIMEZONE=${tz}
 
 #=== Langfuse (LLM Observability) ===
-# NOTE: this value is only written on first install or --force (the macOS
-# env-generator early-returns when .env already exists). Users who re-run
-# ./install-macos.sh --langfuse on an existing install should instead use
-# post-install: 'ods enable langfuse'.
+# Existing Langfuse state keeps its data-bound secrets even with --force.
 LANGFUSE_ENABLED=${ENABLE_LANGFUSE:-false}
 LANGFUSE_NEXTAUTH_SECRET=${langfuse_nextauth_secret}
 LANGFUSE_SALT=${langfuse_salt}
@@ -711,6 +820,10 @@ generate_searxng_config() {
         return 0
     fi
 
+    # Terminal sessions usually export LANG; otherwise use the macOS locale.
+    local search_lang
+    search_lang="$(ods_searxng_default_lang "${LC_ALL:-${LC_MESSAGES:-${LANG:-$(defaults read -g AppleLocale 2>/dev/null || true)}}}")"
+
     cat > "$settings_path" << SEARXEOF
 use_default_settings: true
 server:
@@ -720,15 +833,24 @@ server:
   limiter: false
 search:
   safe_search: 0
+  # Install locale. API clients send no language, so "auto" would mean "all".
+  default_lang: "${search_lang}"
   formats:
     - html
     - json
+$(ods_searxng_hostnames_yaml "$search_lang")
 engines:
+  - name: bing
+    # Fallback when other general engines are blocked (CAPTCHA/429/access denied).
+    disabled: false
   - name: duckduckgo
     disabled: false
   - name: google
     disabled: false
   - name: brave
+    disabled: false
+  - name: seznam
+    # Independent general-web fallback when major engines block this household IP.
     disabled: false
   - name: wikipedia
     disabled: false

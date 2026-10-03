@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/release-update-reactivation-archive-v1.schema.json",
+  "title": "Pixel terminal no-live-mutation reactivation archive result v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "operation", "status", "candidateId", "product", "version", "activeVersion", "archiveHash", "archiveClaimSha256", "manifestSha256", "initialCandidateCount", "finalCandidateCount", "archivedAt", "installedReleaseMoved", "activeDeploymentChanged", "failedReceiptsPreserved", "boundary"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "operation": {"const": "pixel-release-update-reactivation-archive-result"},
+    "status": {"const": "archived"},
+    "candidateId": {"type": "string", "pattern": "^pixel-[0-9]{1,6}\\.[0-9]{1,6}\\.[0-9]{1,6}-[0-9a-f]{64}$"},
+    "product": {"const": "Pixel"},
+    "version": {"type": "string", "pattern": "^[0-9]{1,6}\\.[0-9]{1,6}\\.[0-9]{1,6}$"},
+    "activeVersion": {"type": "string", "pattern": "^[0-9]{1,6}\\.[0-9]{1,6}\\.[0-9]{1,6}$"},
+    "archiveHash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "archiveClaimSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "manifestSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "initialCandidateCount": {"const": 8},
+    "finalCandidateCount": {"const": 7},
+    "archivedAt": {"type": "string", "format": "date-time"},
+    "installedReleaseMoved": {"const": false},
+    "activeDeploymentChanged": {"const": false},
+    "failedReceiptsPreserved": {"const": true},
+    "boundary": {"const": "Terminal no-live-mutation reactivation failure evidence only; fixed staging copies are archived byte-for-byte and a content-free receipt records the no-active-deployment-change outcome."}
+  }
+}

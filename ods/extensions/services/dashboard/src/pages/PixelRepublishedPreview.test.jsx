@@ -1,0 +1,39 @@
+// Conversation/review state tests isolate the asynchronous origin handshake.
+// Its real transport, timeout and stale-receipt behavior is covered in previewOrigin.test.jsx.
+vi.mock('../lib/useVerifiedPreview',()=>({default:(_preview,access)=>access}))
+import {render} from '../test/test-utils'
+import {screen} from '@testing-library/react'
+import Pixel from './Pixel'
+import {saveConversation} from '../lib/pixelConversations'
+import {previewManifestResponse} from '../test/previewFixtures'
+
+function publication(digit) {
+  const sha256 = digit.repeat(64), siteId = 'site-' + sha256.slice(0,24)
+  return {schemaVersion:1,kind:'ods-pixel-workspace-preview',relativeDirectory:'demo',siteId,sha256,
+    entrySha256:'f'.repeat(64),files:1,bytes:20,port:9437,url:`http://${siteId}.localhost:9437/${siteId}/`}
+}
+afterEach(() => {vi.unstubAllGlobals(); localStorage.clear()})
+
+it('treats a republished older snapshot as the latest retained publication', async () => {
+  localStorage.clear()
+  const a = publication('a'), b = publication('b')
+  saveConversation({schema:1,chatId:'republished',messages:[
+    {role:'user',content:'Build A'}, {role:'assistant',content:'A',publication:a},
+    {role:'user',content:'Change to B'}, {role:'assistant',content:'B',publication:b},
+    {role:'user',content:'Restore A'}, {role:'assistant',content:'A restored',publication:a},
+  ], preview:a, workspaceOpen:true})
+  vi.stubGlobal('fetch',vi.fn(async url=>url.includes('__ods_manifest__')?previewManifestResponse(a):({ok:true,json:async()=>({available:true,model:'pixel/default'})})))
+  render(<Pixel/> )
+  await screen.findByText('Available')
+  expect(screen.queryByLabelText('Published version')).toBeNull()
+  expect(screen.queryByRole('button',{name:'Show latest publication'})).toBeNull()
+  expect(await screen.findByTitle('Interactive Portal preview')).toHaveAttribute('src',`/pixel-preview/${a.siteId}/__ods_view__.html`)
+  expect(fetch.mock.calls.some(([url]) => url === '/api/pixel/chat/stream')).toBe(false)
+})
+
+// These suites exercise conversation/publication selection, not manifest transport.
+// Workspace and artifact suites cover missing, corrupt and delayed manifests.
+vi.mock('../lib/pixelArtifacts',async importOriginal=>({
+  ...await importOriginal(),
+  loadSnapshotFiles:vi.fn(async preview=>[{path:'index.html',bytes:preview.bytes,sha256:preview.entrySha256}]),
+}))

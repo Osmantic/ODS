@@ -1,0 +1,14 @@
+{
+  "$schema": "https://osmantic.com/pixel/schemas/control-work-service-config-v1.schema.json",
+  "schemaVersion": 1,
+  "serviceDirectory": "/var/lib/pixel-work-controller/service-bundles",
+  "installRoot": "/opt/pixel",
+  "nodePath": "/usr/bin/node",
+  "flockPath": "/usr/bin/flock",
+  "serviceUser": "pixel-work",
+  "serviceGroup": "pixel-work",
+  "dockerGroup": "docker",
+  "watchdogSeconds": 30,
+  "maxBundles": 32,
+  "boundary": "Owner-private fixed paths and identities for inactive Deep Work service rendering only. The browser cannot supply, view, or alter them and gains no installation, scheduling, activation, execution, lease, credential, external-effect, scope-expansion, or completion authority."
+}

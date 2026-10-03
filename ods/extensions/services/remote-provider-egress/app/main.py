@@ -20,6 +20,7 @@ from remote_provider.egress import (
     DEFAULT_MAX_BODY_BYTES,
     DEFAULT_SECRET_PATH,
     EgressError,
+    connection_header_names,
     load_route_state,
     prepare_upstream_request,
     provider_secret_status,
@@ -28,6 +29,7 @@ from remote_provider.egress import (
     validate_direct_provider_resolution,
 )
 from remote_provider.egress_probe import probe_route_response
+from remote_provider.telemetry import CompletionObservation, route_fingerprint
 from remote_provider.policy import DEFAULT_POLICY_PATH, load_policy
 from remote_provider.probe import (
     DEFAULT_PROBE_TIMEOUT_SECONDS,
@@ -94,7 +96,10 @@ def _safe_route_summary(route: dict[str, Any]) -> dict[str, Any]:
 
 def _load_route() -> dict[str, Any]:
     policy = load_policy(POLICY_PATH)
-    return route_from_state(load_route_state(ROUTE_PATH), policy=policy)
+    state = load_route_state(ROUTE_PATH)
+    route = route_from_state(state, policy=policy)
+    route['routeFingerprint'] = route_fingerprint(state)
+    return route
 
 
 def _http_client(connection_key: str = "") -> httpx.AsyncClient:
@@ -142,10 +147,11 @@ def _probe_error_response(exc: ProbeError) -> JSONResponse:
 
 
 def _response_headers(headers: Mapping[str, str]) -> dict[str, str]:
+    excluded = _HOP_BY_HOP_RESPONSE_HEADERS | connection_header_names(headers)
     return {
         name: value
         for name, value in headers.items()
-        if name.lower() not in _HOP_BY_HOP_RESPONSE_HEADERS
+        if name.lower() not in excluded
     }
 
 
@@ -327,6 +333,18 @@ async def probe() -> Response:
     return JSONResponse(payload)
 
 
+@app.get('/telemetry')
+async def completion_telemetry() -> Response:
+    try:
+        route = _load_route()
+    except EgressError:
+        return JSONResponse({'sample': None}, headers={'Cache-Control': 'no-store'})
+    sample = getattr(app.state, 'completion_sample', None)
+    if not route.get('enabled') or not sample or sample['routeFingerprint'] != route.get('routeFingerprint'):
+        sample = None
+    return JSONResponse({'sample': sample}, headers={'Cache-Control': 'no-store'})
+
+
 @app.api_route(
     "/{full_path:path}",
     methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS", "CONNECT"],
@@ -346,7 +364,7 @@ async def forward(full_path: str, request: Request) -> Response:
         upstream_request = prepare_upstream_request(
             method=request.method,
             path=path,
-            headers=dict(request.headers),
+            headers=request.headers,
             body=await request.body(),
             route=route,
             provider_secret=secret,
@@ -368,6 +386,7 @@ async def forward(full_path: str, request: Request) -> Response:
         "X-ODS-Requested-Model": upstream_request.requested_model,
         "X-ODS-Provider-Model": upstream_request.provider_model,
     }
+    observation = CompletionObservation(route)
     try:
         if upstream_request.stream:
             req = client.build_request(
@@ -383,15 +402,21 @@ async def forward(full_path: str, request: Request) -> Response:
             async def stream_body() -> AsyncIterator[bytes]:
                 try:
                     async for chunk in upstream.aiter_bytes():
+                        if 200 <= upstream.status_code < 300:
+                            observation.feed(chunk)
                         yield chunk
+                    sample = observation.result()
+                    if sample:
+                        app.state.completion_sample = sample
                 finally:
                     await upstream.aclose()
 
+            response_headers = _response_headers(upstream.headers)
             return StreamingResponse(
                 stream_body(),
                 status_code=upstream.status_code,
-                media_type=upstream.headers.get("content-type", "text/event-stream"),
-                headers={**_response_headers(upstream.headers), **ods_headers},
+                media_type=response_headers.get("content-type", "text/event-stream"),
+                headers={**response_headers, **ods_headers},
             )
 
         req = client.build_request(
@@ -415,16 +440,28 @@ async def forward(full_path: str, request: Request) -> Response:
                 f"remote provider unavailable: {exc}",
             )
         )
+    response_headers = _response_headers(upstream.headers)
+    if 200 <= upstream.status_code < 300 and len(upstream.content) <= 16 * 1024 * 1024:
+        try:
+            observation.payload(upstream.json())
+            observation.complete = True
+            sample = observation.result()
+            if sample:
+                app.state.completion_sample = sample
+        except (ValueError, RecursionError):
+            # A provider body that is not bounded JSON is not a usable sample.
+            observation.invalid = True
     return Response(
         content=upstream.content,
         status_code=upstream.status_code,
-        media_type=upstream.headers.get("content-type", "application/json"),
-        headers={**_response_headers(upstream.headers), **ods_headers},
+        media_type=response_headers.get("content-type", "application/json"),
+        headers={**response_headers, **ods_headers},
     )
 
 
 @app.on_event("startup")
 async def _startup() -> None:
+    app.state.completion_sample = None
     app.state.http = httpx.AsyncClient(follow_redirects=False, trust_env=False)
     app.state.direct_http_clients = {}
 

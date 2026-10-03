@@ -19,8 +19,11 @@ for f in "${sh_files[@]}"; do
 done
 
 echo "[gate] compatibility + claims"
+"$PYTHON_CMD" scripts/verify-pixel-bundle.py
+bash tests/test-pixel-bundled-source.sh
 bash scripts/check-compatibility.sh
 "$PYTHON_CMD" scripts/check-version-consistency.py
+"$PYTHON_CMD" tests/test-version-consistency.py
 bash scripts/check-release-claims.sh
 "$PYTHON_CMD" scripts/validate-golden-paths.py
 "$PYTHON_CMD" scripts/validate-generated-configs.py
@@ -50,6 +53,10 @@ bash scripts/simulate-installers.sh
 "$PYTHON_CMD" scripts/validate-sim-summary.py artifacts/installer-sim/summary.json
 
 echo "[gate] update rollback"
+"$PYTHON_CMD" tests/test-cli-legacy-update-backup.py
+"$PYTHON_CMD" tests/test-generated-config-backups.py
 bash tests/test-update-rollback-contract.sh
+bash tests/test-update-quoted-compose.sh
+"$PYTHON_CMD" -m pytest -q tests/test_source_update_preflight.py tests/test_native_backup_guard.py tests/test_native_rollback_preflight.py
 
 echo "[PASS] release gate"

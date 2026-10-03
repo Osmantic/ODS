@@ -1,0 +1,44 @@
+{
+  "$schema": "https://osmantic.com/pixel/schemas/work-codex-policy-v1.schema.json",
+  "schemaVersion": 1,
+  "deployment": "example",
+  "enabled": false,
+  "provider": {
+    "kind": "codex", "authMode": "chatgpt", "model": "gpt-5.6-terra", "codexBinary": "/usr/local/bin/codex",
+    "timeoutSeconds": 300, "maxInputBytes": 262144, "maxOutputBytes": 262144,
+    "billing": {"mode": "subscription", "boundary": "Eligible ChatGPT plan or credits; this is not OpenAI API Platform billing."}
+  },
+  "authorization": {
+    "mode": "external-signed-mfa-assertion", "issuer": "example-identity-provider", "audience": "pixel-work-codex-authorization",
+    "trustedKeySha256": "0000000000000000000000000000000000000000000000000000000000000000", "signatureAlgorithm": "ed25519",
+    "primaryFactor": "password", "allowedSecondFactors": ["totp-authenticator-app", "email-one-time-code"],
+    "maxAuthenticationAgeSeconds": 300, "maxEvidenceLifetimeSeconds": 300, "credentialsVisibleToPixel": false
+  },
+  "credentialCustody": {
+    "mode": "broker-private-chatgpt-auth-cache", "credentialId": "codex-chatgpt-auth", "maxBytes": 262144,
+    "mutableRefresh": true, "runtimeAccess": "broker-owned-codex-home", "materialProjectedToPixel": false, "ambientEnvironment": false
+  },
+  "transport": {
+    "mode": "outer-container-internal-network-egress-proxy",
+    "runnerImageRef": "ghcr.io/osmantic/pixel-codex-runner@sha256:0000000000000000000000000000000000000000000000000000000000000000",
+    "runnerImageId": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+    "codexVersion": "0.0.0-unqualified", "codexBinarySha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "entrypointSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "proxyImageDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+    "proxyPolicySha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "allowedHosts": ["chatgpt.com"], "proxyPort": 3128, "maxMemoryMiB": 1024, "maxCpuCores": 1, "maxPids": 64
+  },
+  "taskClasses": {
+    "structural-review": {"enabled": false, "allowedEgressModes": ["structural-only"], "maxInputTokens": 24000, "maxOutputTokens": 4096},
+    "patch-proposal": {"enabled": false, "allowedEgressModes": ["structural-only", "owner-authorized-content"], "maxInputTokens": 48000, "maxOutputTokens": 8192},
+    "failure-triage": {"enabled": false, "allowedEgressModes": ["structural-only", "owner-authorized-content"], "maxInputTokens": 32000, "maxOutputTokens": 4096}
+  },
+  "dataPolicy": {
+    "allowedClassifications": ["public", "internal", "confidential"],
+    "neverEgress": ["authentication-material", "credentials", "private-keys", "raw-source-bodies", "regulated-records", "session-tokens"],
+    "requireExactApproval": true, "maxSensitiveTerms": 128, "maxDocuments": 16, "maxDocumentBytes": 131072, "maxTotalDocumentBytes": 262144
+  },
+  "execution": {"ephemeral": true, "ignoreUserConfig": true, "ignoreRules": true, "sandbox": "read-only", "approvalPolicy": "never", "tools": false, "network": false, "plugins": false, "apps": false, "multiAgent": false, "structuredOutputOnly": true},
+  "retention": {"privateRequestMinutes": 60, "planMinutes": 1440, "resultDays": 30},
+  "boundary": "Separately governed sanitized Codex work only. Every provider turn requires an exact external plan approval; no credential, tool, network, merge, deployment, publication, message, purchase, production, policy, scope-expansion, or completion authority enters the provider."
+}

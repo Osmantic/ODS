@@ -53,14 +53,59 @@ def model_provider_by_id(settings: dict[str, object], provider_id: str) -> dict[
     raise AssertionError(f"missing model provider {provider_id}")
 
 
+def test_external_model_uses_authenticated_gateway_without_vendor_impersonation() -> None:
+    result = run_renderer("--surface", "litellm-external", "--model", "owner/model-q4",
+                          "--llm-base-url", "http://10.0.2.2:18080")
+    rendered = file_by_surface(result, "litellm-external")
+    assert rendered["path"] == "config/litellm/local.yaml"
+    config = rendered["content"]
+    assert 'model_name: "ods/current"' in config
+    assert config.count('model: "openai/owner/model-q4"') == 4
+    assert config.count('api_base: "http://10.0.2.2:18080/v1"') == 4
+    assert "master_key: os.environ/LITELLM_MASTER_KEY" in config
+    assert "enable_thinking" not in config  # Do not invent backend-specific capabilities.
+    assert config.count("api_key: not-needed") == 4
+
+
+def test_external_gateway_rejects_credentialed_or_malformed_bases() -> None:
+    for base in ("file:///tmp/model", "http://user:secret@host/v1", "http://host?key=x",
+                 "http://host:99999", "http://host/v1#fragment", "http://host\n/v1"):
+        result = subprocess.run([sys.executable, str(SCRIPT), "--surface", "litellm-external",
+                                 "--llm-base-url", base], capture_output=True, text=True)
+        assert result.returncode != 0, base
+    result = run_renderer("--surface", "litellm-external", "--model", 'owner/"model',
+                          "--llm-base-url", "http://[::1]:18080/v1")
+    content = file_by_surface(result, "litellm-external")["content"]
+    assert 'model: ' + json.dumps('openai/owner/"model') in content
+
+
+def test_external_gateway_uses_runtime_key_reference_when_authenticated() -> None:
+    result = run_renderer(
+        "--surface", "litellm-external", "--model", "test-model",
+        "--llm-base-url", "https://upstream.example/v1",
+        "--external-llm-authenticated",
+    )
+    config = file_by_surface(result, "litellm-external")["content"]
+    assert config.count("api_key: os.environ/EXTERNAL_LLM_API_KEY") == 4
+    assert "api_key: not-needed" not in config
+    assert "test-secret-123" not in config
+
+
 def test_all_surfaces_render() -> None:
     payload = run_renderer("--surface", "all")
     surfaces = {item["surface"] for item in payload["files"]}
     assert surfaces == {
         "env", "opencode", "litellm-local", "perplexica", "hermes",
-        "model-router-endpoints",
+        "model-router-endpoints", "litellm-switchboard",
     }
     assert payload["mode"] == "dry-run"
+
+
+def test_fresh_default_uses_stable_switchboard_alias() -> None:
+    payload = run_renderer("--surface", "all")
+    assert payload["inputs"]["switchboard_mode"] == "enabled"
+    switchboard = file_by_surface(payload, "litellm-switchboard")["content"]
+    assert "api_base: http://model-router:9099/v1" in switchboard
 
 
 def test_switchboard_surface_gated_on_enabled_mode() -> None:
@@ -78,6 +123,20 @@ def test_switchboard_surface_gated_on_enabled_mode() -> None:
     assert switchboard["content"].count("http://model-router:9099/v1") == 4
 
 
+def test_local_profiles_allow_long_agent_streams() -> None:
+    local = run_renderer("--surface", "litellm-local")
+    local_config = file_by_surface(local, "litellm-local")["content"]
+    assert "request_timeout: 900" in local_config
+    assert "stream_timeout: 900" in local_config
+    assert local_config.count("enable_thinking: false") == 3
+
+    hybrid = run_renderer("--surface", "litellm-hybrid", "--ods-mode", "hybrid")
+    hybrid_config = file_by_surface(hybrid, "litellm-hybrid")["content"]
+    assert "request_timeout: 900" in hybrid_config
+    assert "stream_timeout: 900" in hybrid_config
+    assert hybrid_config.count("enable_thinking: false") == 3
+
+
 def test_all_selects_one_mode_config() -> None:
     expected = {
         "local": "litellm-local",
@@ -90,6 +149,8 @@ def test_all_selects_one_mode_config() -> None:
         payload = run_renderer("--surface", "all", "--ods-mode", mode)
         surfaces = {item["surface"] for item in payload["files"]}
         assert surfaces & all_mode_surfaces == {expected_surface}
+        mode_config = file_by_surface(payload, expected_surface)["content"]
+        assert "model_name: ods/current" in mode_config
 
 
 def test_cloud_enabled_never_renders_local_switchboard() -> None:
@@ -261,6 +322,7 @@ def test_native_local_projection_uses_host_route_and_concrete_model() -> None:
         "http://host.docker.internal:13306/v1",
     )
     content = file_by_surface(payload, "litellm-local-native")["content"]
+    assert "model_name: ods/current" in content
     assert "model: openai/Native-Model.gguf" in content
     assert "api_base: http://host.docker.internal:13306/v1" in content
     assert "enable_thinking: false" in content
@@ -376,6 +438,7 @@ def test_lemonade_disables_thinking_and_uses_extra_alias() -> None:
         "sk-test",
     )
     content = file_by_surface(payload, "litellm-lemonade")["content"]
+    assert "model_name: ods/current" in content
     assert "model: openai/extra.Model.gguf" in content
     assert "api_key: sk-test" in content
     assert "enable_thinking: false" in content
@@ -406,6 +469,8 @@ def test_exact_lemonade_id_propagates_to_every_runtime_surface() -> None:
     payload = run_renderer(
         "--surface",
         "all",
+        "--switchboard-mode",
+        "observe",
         "--ods-mode",
         "lemonade",
         "--gpu-backend",
@@ -450,6 +515,8 @@ def test_hermes_uses_lemonade_model_id_for_amd() -> None:
     payload = run_renderer(
         "--surface",
         "hermes",
+        "--switchboard-mode",
+        "observe",
         "--ods-mode",
         "lemonade",
         "--gpu-backend",
@@ -472,6 +539,8 @@ def test_perplexica_default_model_matches_route() -> None:
     payload = run_renderer(
         "--surface",
         "perplexica",
+        "--switchboard-mode",
+        "observe",
         "--ods-mode",
         "lemonade",
         "--gpu-backend",
@@ -502,6 +571,8 @@ def test_write_mode_writes_under_output_root() -> None:
                 "--output-root",
                 tmp,
                 "--write",
+                "--format",
+                "json",
             ],
             cwd=ROOT,
             text=True,
@@ -517,6 +588,104 @@ def test_write_mode_writes_under_output_root() -> None:
         if os.name != "nt":
             assert target.stat().st_mode & 0o777 == 0o644
         assert not list(target.parent.glob(f".{target.name}.*.tmp"))
+
+
+def test_model_router_allowlist_mount_is_readable_after_private_source_staging() -> None:
+    if os.name == "nt":
+        return  # POSIX host modes are the contract Docker bind mounts preserve.
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        endpoint_dir = root / "config" / "model-router"
+        endpoint_dir.mkdir(parents=True)
+        endpoint = endpoint_dir / "endpoints.json"
+        endpoint.write_text('{"endpoints": []}\n', encoding="utf-8")
+        endpoint_dir.chmod(0o700)
+        endpoint.chmod(0o600)
+        private_dir = root / "config" / "private"
+        private_dir.mkdir()
+        private_file = private_dir / "key.txt"
+        private_file.write_text("private\n", encoding="utf-8")
+        private_dir.chmod(0o700)
+        private_file.chmod(0o600)
+
+        for _ in range(2):  # Activation re-renders the same mounted path.
+            run_renderer("--surface", "model-router-endpoints", "--output-root",
+                         tmp, "--write", "--format", "json")
+            assert endpoint_dir.stat().st_mode & 0o777 == 0o711
+            assert endpoint.stat().st_mode & 0o777 == 0o644
+            assert json.loads(endpoint.read_text(encoding="utf-8"))["endpoints"][0]["id"] == "llama-server-default"
+            assert private_dir.stat().st_mode & 0o777 == 0o700
+            assert private_file.stat().st_mode & 0o777 == 0o600
+            endpoint_dir.chmod(0o700)
+            endpoint.chmod(0o600)
+
+
+def test_model_router_allowlist_rejects_embedded_credentials_before_public_write() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        proc = subprocess.run(
+            [sys.executable, str(SCRIPT), "--surface", "model-router-endpoints",
+             "--llm-base-url", "http://user:secret@localhost:8080/v1",
+             "--output-root", tmp, "--write"],
+            cwd=ROOT, text=True, capture_output=True,
+        )
+        assert proc.returncode != 0
+        assert "secret" not in proc.stderr
+        assert not (Path(tmp) / "config" / "model-router" / "endpoints.json").exists()
+
+
+def test_model_router_allowlist_does_not_widen_symlinked_directory() -> None:
+    if os.name == "nt":
+        return
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        private = root / "private"
+        private.mkdir(mode=0o700)
+        config = root / "config"
+        config.mkdir()
+        (config / "model-router").symlink_to(private, target_is_directory=True)
+        proc = subprocess.run(
+            [sys.executable, str(SCRIPT), "--surface", "model-router-endpoints",
+             "--output-root", tmp, "--write"], cwd=ROOT, text=True,
+            capture_output=True,
+        )
+        assert proc.returncode != 0
+        assert private.stat().st_mode & 0o777 == 0o700
+        assert not (private / "endpoints.json").exists()
+
+
+def test_write_cli_defaults_to_secret_free_paths() -> None:
+    secret = "renderer-secret-must-not-reach-output"
+    with tempfile.TemporaryDirectory() as tmp:
+        env = os.environ.copy()
+        env["ODS_RENDER_LITELLM_KEY"] = secret
+        proc = subprocess.run(
+            [
+                sys.executable,
+                str(SCRIPT),
+                "--surface",
+                "litellm-lemonade",
+                "--ods-mode",
+                "lemonade",
+                "--gpu-backend",
+                "amd",
+                "--gguf-file",
+                "Private.gguf",
+                "--output-root",
+                tmp,
+                "--write",
+            ],
+            cwd=ROOT,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=True,
+        )
+        combined = proc.stdout + proc.stderr
+        target = Path(tmp) / "config" / "litellm" / "lemonade.yaml"
+        assert secret not in combined
+        assert proc.stdout.strip() == "config/litellm/lemonade.yaml"
+        assert secret in target.read_text(encoding="utf-8")
 
 
 def test_atomic_write_failure_preserves_known_good_config() -> None:
@@ -547,10 +716,47 @@ def test_atomic_write_failure_preserves_known_good_config() -> None:
         assert not list(target.parent.glob(f".{target.name}.*.tmp"))
 
 
+def test_validation_rejects_negative_context_or_invalid_port() -> None:
+    proc = subprocess.run(
+        [sys.executable, str(SCRIPT), "--context-length", "-10"],
+        cwd=ROOT,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    assert proc.returncode != 0
+    assert "context length must be positive" in proc.stderr
+
+    proc = subprocess.run(
+        [sys.executable, str(SCRIPT), "--opencode-port", "70000"],
+        cwd=ROOT,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    assert proc.returncode != 0
+    assert "opencode port must be between 1 and 65535" in proc.stderr
+
+
+def test_validation_rejects_control_characters_in_model_and_key() -> None:
+    proc = subprocess.run(
+        [sys.executable, str(SCRIPT), "--model", "qwen\ninjected=true"],
+        cwd=ROOT,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    assert proc.returncode != 0
+    assert "cannot contain control characters or newlines" in proc.stderr
+
+
 def main() -> int:
     tests = [
+        test_external_model_uses_authenticated_gateway_without_vendor_impersonation,
+        test_external_gateway_rejects_credentialed_or_malformed_bases,
         test_all_surfaces_render,
         test_switchboard_surface_gated_on_enabled_mode,
+        test_local_profiles_allow_long_agent_streams,
         test_all_selects_one_mode_config,
         test_cloud_enabled_never_renders_local_switchboard,
         test_remote_cloud_projection_uses_internal_egress_and_state_receipt,
@@ -571,7 +777,10 @@ def main() -> int:
         test_hermes_uses_lemonade_model_id_for_amd,
         test_perplexica_default_model_matches_route,
         test_write_mode_writes_under_output_root,
+        test_write_cli_defaults_to_secret_free_paths,
         test_atomic_write_failure_preserves_known_good_config,
+        test_validation_rejects_negative_context_or_invalid_port,
+        test_validation_rejects_control_characters_in_model_and_key,
     ]
     for test in tests:
         test()

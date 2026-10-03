@@ -15,6 +15,9 @@
 #   ./install-macos.sh --all            # Enable all optional services
 #   ./install-macos.sh --non-interactive # Headless install (defaults)
 #   ./install-macos.sh --no-bootstrap   # Wait for the full model before launch
+#   ./install-macos.sh --preflight-only # Phase 1 environment checks only, no
+#                                       # changes (get-ods.sh --force runs this
+#                                       # before removing an existing install)
 #
 # ============================================================================
 
@@ -98,10 +101,17 @@ ENABLE_VOICE=false
 ENABLE_WORKFLOWS=false
 ENABLE_RAG=false
 ENABLE_RECOMMENDED=true
+RECOMMENDED_EXPLICIT=false
 # Hermes Agent is the new default agent as of 2026-05-12. OpenClaw is
 # deprecated and gates behind --openclaw for the deprecation release.
 ENABLE_HERMES=true
+HERMES_EXPLICIT=false
 ENABLE_OPENCLAW=false
+ENABLE_OPENCODE=false
+OPENCODE_ENABLE_EXPLICIT=false
+OPENCODE_DISABLE_EXPLICIT=false
+OPENCODE_DISABLE_SELECTED=false
+ENABLE_PIXEL=true
 ENABLE_BRAVE_SEARCH=false
 ENABLE_APE=true
 ENABLE_PERPLEXICA=false
@@ -110,6 +120,11 @@ ENABLE_ODS_PROXY=false
 ENABLE_TAILSCALE=false
 ENABLE_SEARXNG=false
 ENABLE_WEB_SEARCH=false
+ENABLE_LITELLM=false
+ENABLE_OPEN_WEBUI=false
+WEBUI_ENABLE_EXPLICIT=false
+WEBUI_DISABLE_EXPLICIT=false
+WEBUI_RETAINED=""
 # Langfuse defaults OFF because its clickhouse + postgres + minio stack adds
 # ~500MB baseline memory. Enable via --langfuse, --all, or post-install
 # `ods enable langfuse`. --no-langfuse honored as explicit override so a
@@ -120,23 +135,31 @@ OPENCLAW_EXPLICIT=false
 ALL_FEATURES=false
 CLOUD_MODE=false
 NO_BOOTSTRAP=false
+PREFLIGHT_ONLY=false
 HERMES_CONTEXT_SIZE=65536
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --dry-run)       DRY_RUN=true; shift ;;
+        --preflight-only) PREFLIGHT_ONLY=true; shift ;;
         --force)         FORCE=true; shift ;;
         --non-interactive) NON_INTERACTIVE=true; shift ;;
         --tier)          TIER_OVERRIDE="${2:-}"; shift 2 ;;
         --voice)         ENABLE_VOICE=true; shift ;;
         --workflows)     ENABLE_WORKFLOWS=true; shift ;;
         --rag)           ENABLE_RAG=true; shift ;;
-        --recommended)   ENABLE_RECOMMENDED=true; shift ;;
-        --no-recommended) ENABLE_RECOMMENDED=false; shift ;;
-        --hermes)        ENABLE_HERMES=true; shift ;;
-        --no-hermes)     ENABLE_HERMES=false; shift ;;
+        --recommended)   ENABLE_RECOMMENDED=true; RECOMMENDED_EXPLICIT=true; shift ;;
+        --no-recommended) ENABLE_RECOMMENDED=false; RECOMMENDED_EXPLICIT=true; shift ;;
+        --hermes)        ENABLE_HERMES=true; HERMES_EXPLICIT=true; shift ;;
+        --no-hermes)     ENABLE_HERMES=false; HERMES_EXPLICIT=true; shift ;;
         --openclaw)      ENABLE_OPENCLAW=true; OPENCLAW_EXPLICIT=true; shift ;;
         --no-openclaw)   ENABLE_OPENCLAW=false; OPENCLAW_EXPLICIT=true; shift ;;
+        --opencode)     ENABLE_OPENCODE=true; OPENCODE_ENABLE_EXPLICIT=true; shift ;;
+        --no-opencode)  ENABLE_OPENCODE=false; OPENCODE_DISABLE_EXPLICIT=true; shift ;;
+        --with-webui)   ENABLE_OPEN_WEBUI=true; WEBUI_ENABLE_EXPLICIT=true; shift ;;
+        --no-webui)     ENABLE_OPEN_WEBUI=false; WEBUI_DISABLE_EXPLICIT=true; shift ;;
+        --pixel)        ENABLE_PIXEL=true; shift ;;
+        --no-pixel)     ENABLE_PIXEL=false; shift ;;
         --langfuse)      ENABLE_LANGFUSE=true; shift ;;
         --no-langfuse)   ENABLE_LANGFUSE=false; NO_LANGFUSE_EXPLICIT=true; shift ;;
         --all)           ALL_FEATURES=true; shift ;;
@@ -145,6 +168,15 @@ while [[ $# -gt 0 ]]; do
         *)               echo "Unknown option: $1"; exit 1 ;;
     esac
 done
+
+if $OPENCODE_ENABLE_EXPLICIT && $OPENCODE_DISABLE_EXPLICIT; then
+    echo "--opencode and --no-opencode cannot be used together" >&2
+    exit 1
+fi
+if $WEBUI_ENABLE_EXPLICIT && $WEBUI_DISABLE_EXPLICIT; then
+    echo "--with-webui and --no-webui cannot be used together" >&2
+    exit 1
+fi
 
 if $ALL_FEATURES; then
     ENABLE_VOICE=true
@@ -156,10 +188,12 @@ if $ALL_FEATURES; then
     # in the next release.
     ENABLE_HERMES=true
     $OPENCLAW_EXPLICIT || ENABLE_OPENCLAW=false
+    $OPENCODE_DISABLE_EXPLICIT || ENABLE_OPENCODE=true
     ENABLE_APE=true
     ENABLE_PERPLEXICA=true
     ENABLE_PRIVACY_SHIELD=true
     ENABLE_ODS_PROXY=true
+    $WEBUI_DISABLE_EXPLICIT || ENABLE_OPEN_WEBUI=true
     # --all enables Langfuse unless the user explicitly passed --no-langfuse.
     $NO_LANGFUSE_EXPLICIT || ENABLE_LANGFUSE=true
 fi
@@ -171,13 +205,18 @@ SOURCE_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 # ── Source libraries ──
 LIB_DIR="${SCRIPT_DIR}/lib"
 source "${LIB_DIR}/constants.sh"
+source "${LIB_DIR}/opencode-selection.sh"
 source "${LIB_DIR}/ui.sh"
+macos_apply_presentation_mode
 source "${LIB_DIR}/bridge-manager.sh"
+source "${LIB_DIR}/native-model.sh"
+source "${LIB_DIR}/native-runtime-download.sh"
 source "${LIB_DIR}/tier-map.sh"
 source "${LIB_DIR}/detection.sh"
 source "${LIB_DIR}/preflight-fs.sh"
 source "${LIB_DIR}/env-generator.sh"
 source "${LIB_DIR}/installed-footprint.sh"
+source "${LIB_DIR}/host-agent-listener.sh"
 if [[ -f "${SOURCE_ROOT}/installers/lib/compose-failure-report.sh" ]]; then
     source "${SOURCE_ROOT}/installers/lib/compose-failure-report.sh"
 fi
@@ -186,6 +225,7 @@ if [[ -f "${SOURCE_ROOT}/lib/python-cmd.sh" ]]; then
     source "${SOURCE_ROOT}/lib/python-cmd.sh"
 fi
 source "${SOURCE_ROOT}/installers/lib/readiness-summary.sh"
+source "${SOURCE_ROOT}/installers/lib/secure-log.sh"
 
 # ── File-local helpers ──
 _close_inherited_fds_for_daemon() {
@@ -273,7 +313,7 @@ _macos_set_builtin_compose_state() {
 }
 
 _macos_sync_builtin_compose_states() {
-    _macos_set_builtin_compose_state litellm "$ENABLE_RECOMMENDED"
+    _macos_set_builtin_compose_state litellm "$ENABLE_LITELLM"
     _macos_set_builtin_compose_state searxng "$ENABLE_SEARXNG"
     _macos_set_builtin_compose_state token-spy "$ENABLE_RECOMMENDED"
     _macos_set_builtin_compose_state whisper "$ENABLE_VOICE"
@@ -293,6 +333,60 @@ _macos_sync_builtin_compose_states() {
     _macos_set_builtin_compose_state brave-search "${ENABLE_BRAVE_SEARCH:-false}"
 }
 
+_macos_resolve_support_services() {
+    # The gateway serves the base chat UI, Portal and cloud mode. Selecting it
+    # must not pull the optional recommended support bundle.
+    ENABLE_LITELLM=true
+
+    ENABLE_SEARXNG=false
+    if $ENABLE_RECOMMENDED || $ENABLE_PERPLEXICA || $ENABLE_HERMES || $ENABLE_OPENCLAW; then
+        ENABLE_SEARXNG=true
+    fi
+    if $ENABLE_PIXEL; then
+        # Match native onboarding: the installed environment wins, then
+        # retained private answers, then the fresh parallel-free default.
+        local provider
+        provider="$(read_env_value "${INSTALL_DIR}/.env" PIXEL_WEB_SEARCH_PROVIDER)"
+        provider="${provider#\"}"; provider="${provider%\"}"
+        provider="${provider#\'}"; provider="${provider%\'}"
+        if [[ -z "$provider" ]]; then
+            local answers="${INSTALL_DIR}/data/pixel-native/preparation/onboarding.json"
+            provider="$(/usr/bin/python3 "${SOURCE_ROOT}/extensions/services/pixel-agent/host/native_search.py" \
+                --answers-file "$answers")" || return 1
+        fi
+        case "$provider" in
+            searxng) ENABLE_SEARXNG=true ;;
+            parallel-free) ;;
+            *) ai_err "Unsupported Pixel search provider: ${provider}"; return 1 ;;
+        esac
+    fi
+    ENABLE_WEB_SEARCH=$ENABLE_SEARXNG
+}
+
+_macos_apply_fresh_feature_defaults() {
+    # Unattended and dry-run fresh installs should match the interactive Core
+    # default. An existing installation and explicit selections keep their
+    # previous behavior; the native Pixel lifecycle guard still owns reruns.
+    if [[ ! -f "${INSTALL_DIR}/.env" ]] && ! $ALL_FEATURES \
+        && { $NON_INTERACTIVE || $DRY_RUN; }; then
+        $RECOMMENDED_EXPLICIT || ENABLE_RECOMMENDED=false
+        $HERMES_EXPLICIT || ENABLE_HERMES=false
+    fi
+}
+
+_macos_resolve_webui_selection() {
+    [[ -f "${INSTALL_DIR}/.env" ]] || return 0
+    WEBUI_RETAINED="$(read_env_value "${INSTALL_DIR}/.env" ENABLE_OPEN_WEBUI)"
+    case "$WEBUI_RETAINED" in
+        "") WEBUI_RETAINED=true ;;  # Older Mac installs always selected WebUI.
+        true|false) ;;
+        *) ai_err "Invalid retained ENABLE_OPEN_WEBUI selection"; return 1 ;;
+    esac
+    if ! $WEBUI_ENABLE_EXPLICIT && ! $WEBUI_DISABLE_EXPLICIT && ! $ALL_FEATURES; then
+        ENABLE_OPEN_WEBUI="$WEBUI_RETAINED"
+    fi
+}
+
 _macos_patch_hermes_persisted_config() {
     local model_name="$1" base_url="$2" context_length="$3"
     local state hermes_image helper_image project_image selected_image persisted_config candidate
@@ -310,7 +404,7 @@ _macos_patch_hermes_persisted_config() {
         project_image="$(basename "$INSTALL_DIR" | tr '[:upper:]' '[:lower:]')-dashboard-api:latest"
         hermes_image="$(docker inspect --format '{{.Config.Image}}' ods-hermes 2>/dev/null || true)"
         [[ -n "$hermes_image" ]] || hermes_image="$(read_env_value "${INSTALL_DIR}/.env" "HERMES_AGENT_IMAGE")"
-        [[ -n "$hermes_image" ]] || hermes_image="nousresearch/hermes-agent:v2026.6.5"
+        [[ -n "$hermes_image" ]] || hermes_image="nousresearch/hermes-agent:v2026.9.24@sha256:fca358f12efd65bfaaca05884166f15c0e2788375ca30d77061ac1ebc96452b7"
 
         # The Hermes runtime image is not guaranteed to include PyYAML. Probe
         # candidates instead of treating a cached image as a usable migrator.
@@ -452,6 +546,9 @@ model_name = os.environ["ODS_OPENCODE_MODEL"]
 base_url = os.environ["ODS_OPENCODE_BASE_URL"]
 api_key = os.environ["ODS_OPENCODE_API_KEY"]
 context = int(os.environ["ODS_OPENCODE_CONTEXT"])
+if context < 1024:
+    raise SystemExit("OpenCode requires at least 1024 context tokens")
+output_limit = min(32768, context // 4)
 provider_id = "llama-server"
 provider = data.setdefault("provider", {}).setdefault(provider_id, {})
 provider.update({
@@ -461,7 +558,7 @@ provider.update({
     "models": {
         model_name: {
             "name": model_name,
-            "limit": {"context": context, "output": min(32768, context)},
+            "limit": {"context": context, "output": output_limit},
         }
     },
 })
@@ -719,9 +816,14 @@ _macos_native_llama_pid_is_owned() {
     [[ "$pid" =~ ^[1-9][0-9]*$ ]] || return 1
     process_name="$(ps -ww -p "$pid" -o comm= 2>/dev/null || true)"
     command_line="$(ps -ww -p "$pid" -o command= 2>/dev/null || true)"
-    [[ "${process_name##*/}" == "llama-server" ]] || return 1
+    [[ "${process_name##*/}" == "llama-server" || "${process_name##*/}" == "${LLAMA_SERVER_BIN##*/}" ]] || return 1
+    [[ "$command_line" == *"${INSTALL_DIR}/bin/llama-server"* ]] && return 0
     if [[ -n "${LLAMA_SERVER_BIN:-}" && "$command_line" == *"$LLAMA_SERVER_BIN"* ]]; then
-        return 0
+        # A registered runtime can be shared by multiple installs. Its path
+        # alone is no longer ownership proof; the launcher anchors its cwd.
+        process_cwd="$(lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -1)"
+        _macos_native_llama_cwd_is_owned "$process_cwd"
+        return
     fi
     case "$command_line" in
         ./bin/llama-server*|bin/llama-server*)
@@ -735,6 +837,10 @@ _macos_native_llama_pid_is_owned() {
 _macos_stop_install_owned_native_llama() {
     local reason="${1:-Stopping install-owned native llama-server}" pid attempt
     local -a candidates=() remaining=()
+    if [[ -f "$INSTALL_DIR/installers/macos/lib/native-llama-service.sh" ]]; then
+        bash "$INSTALL_DIR/installers/macos/lib/native-llama-service.sh" stop \
+            "$INSTALL_DIR" "$LLAMA_SERVER_BIN" "$LLAMA_SERVER_PID_FILE" || return 1
+    fi
     if [[ -f "$LLAMA_SERVER_PID_FILE" ]]; then
         pid="$(tr -dc '0-9' < "$LLAMA_SERVER_PID_FILE" 2>/dev/null || true)"
         _macos_native_llama_pid_is_owned "$pid" && candidates+=("$pid")
@@ -819,6 +925,51 @@ _verify_macos_dashboard_host_agent() {
 COLIMA_VM_IP=""
 COLIMA_HOST_IP=""
 COLIMA_PRIVATE_ROUTE_PREFERRED=false
+COLIMA_PROFILE=""
+
+_resolve_active_colima_profile() {
+    local context endpoint candidate=""
+
+    context="$(docker context show 2>>"$ODS_LOG_FILE" || true)"
+    [[ -n "$context" ]] || return 1
+    case "$context" in
+        colima)
+            candidate="default"
+            ;;
+        colima-*)
+            candidate="${context#colima-}"
+            ;;
+        *)
+            endpoint="$(docker context inspect "$context" \
+                --format '{{.Endpoints.docker.Host}}' 2>>"$ODS_LOG_FILE" || true)"
+            if [[ "$endpoint" =~ /\.colima/([^/]+)/docker\.sock$ ]]; then
+                candidate="${BASH_REMATCH[1]}"
+            fi
+            ;;
+    esac
+
+    # Colima profile names become filesystem and Docker-context components.
+    # Fail closed rather than passing an ambiguous value back to the CLI.
+    [[ "$candidate" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || return 1
+    COLIMA_PROFILE="$candidate"
+}
+
+_active_colima() {
+    local subcommand="$1"
+    shift
+    [[ -n "$COLIMA_PROFILE" ]] || return 1
+    if [[ "$COLIMA_PROFILE" == "default" ]]; then
+        command colima "$subcommand" "$@"
+    else
+        command colima "$subcommand" --profile "$COLIMA_PROFILE" "$@"
+    fi
+}
+
+_active_colima_hint_args() {
+    if [[ -n "$COLIMA_PROFILE" && "$COLIMA_PROFILE" != "default" ]]; then
+        printf ' --profile %s' "$COLIMA_PROFILE"
+    fi
+}
 
 _detect_colima_private_network() {
     local status_json interface_name colima_config preferred_route
@@ -826,7 +977,7 @@ _detect_colima_private_network() {
     COLIMA_HOST_IP=""
     COLIMA_PRIVATE_ROUTE_PREFERRED=false
 
-    status_json="$(colima status --json 2>>"$ODS_LOG_FILE" || true)"
+    status_json="$(_active_colima status --json 2>>"$ODS_LOG_FILE" || true)"
     [[ -n "$status_json" ]] || return 1
     COLIMA_VM_IP="$(printf '%s' "$status_json" | /usr/bin/python3 -c '
 import json, sys
@@ -852,7 +1003,7 @@ valid = vm.version == 4 and host.version == 4 and host != vm and host in network
 raise SystemExit(0 if valid else 1)
 ' >/dev/null 2>&1 || return 1
 
-    colima_config="${COLIMA_HOME:-$HOME/.colima}/default/colima.yaml"
+    colima_config="${COLIMA_HOME:-$HOME/.colima}/${COLIMA_PROFILE}/colima.yaml"
     preferred_route="$(awk '
         /^network:/ { in_network=1; next }
         in_network && /^[^[:space:]]/ { in_network=0 }
@@ -868,6 +1019,11 @@ _ensure_colima_private_network() {
         ai_err "Docker is using Colima, but the colima CLI is not on PATH."
         return 1
     fi
+    if ! _resolve_active_colima_profile; then
+        ai_err "Could not map the active Docker context to a safe Colima profile."
+        ai "  Select a Colima context (for example: docker context use colima) and re-run."
+        return 1
+    fi
 
     if _detect_colima_private_network && [[ "$COLIMA_PRIVATE_ROUTE_PREFERRED" == "true" ]]; then
         ai_ok "Colima private host bridge ready (${COLIMA_HOST_IP} <-> ${COLIMA_VM_IP})"
@@ -878,13 +1034,19 @@ _ensure_colima_private_network() {
         ai "[DRY RUN] Would restart Colima with private vmnet as the preferred route"
         return 0
     fi
+    if $PREFLIGHT_ONLY; then
+        ai "The installer will restart Colima with private vmnet as the preferred route"
+        return 0
+    fi
 
     ai_warn "Colima needs a preferred private VM route; restarting its VM to configure one."
     ai_warn "Running non-ODS containers will restart with the Colima VM. Container data is preserved."
-    if ! colima stop >>"$ODS_LOG_FILE" 2>&1 \
-       || ! colima start --network-address --network-preferred-route >>"$ODS_LOG_FILE" 2>&1; then
+    if ! _active_colima stop >>"$ODS_LOG_FILE" 2>&1 \
+       || ! _active_colima start --network-address --network-preferred-route >>"$ODS_LOG_FILE" 2>&1; then
         ai_err "Could not enable Colima private networking."
-        ai "  Run: colima stop && colima start --network-address --network-preferred-route"
+        local profile_args
+        profile_args="$(_active_colima_hint_args)"
+        ai "  Run: colima stop${profile_args} && colima start${profile_args} --network-address --network-preferred-route"
         return 1
     fi
 
@@ -960,40 +1122,15 @@ _find_opencode_bin() {
 
 _install_opencode() {
     OPENCODE_BIN="$(_find_opencode_bin 2>/dev/null || true)"
-    if [[ -n "$OPENCODE_BIN" ]]; then
-        ai_ok "OpenCode already installed ($OPENCODE_BIN)"
-        return 0
-    fi
-
-    if command -v brew >/dev/null 2>&1; then
-        ai "Installing OpenCode with Homebrew..."
-        if brew install opencode >> "$ODS_LOG_FILE" 2>&1; then
-            OPENCODE_BIN="$(_find_opencode_bin 2>/dev/null || true)"
-            if [[ -n "$OPENCODE_BIN" ]]; then
-                ai_ok "OpenCode installed with Homebrew ($OPENCODE_BIN)"
-                return 0
-            fi
-            ai_warn "Homebrew reported success but opencode was not found on PATH"
-        else
-            ai_warn "Homebrew OpenCode install failed — falling back to upstream installer"
-        fi
-    fi
-
-    ai "Installing OpenCode with upstream installer..."
-    local tmpfile
-    tmpfile=$(mktemp /tmp/opencode-install.XXXXXX.sh)
-    if curl -fsSL --max-time 300 https://opencode.ai/install -o "$tmpfile" 2>/dev/null \
-       && bash "$tmpfile" >> "$ODS_LOG_FILE" 2>&1; then
-        OPENCODE_BIN="$(_find_opencode_bin 2>/dev/null || true)"
-        if [[ -n "$OPENCODE_BIN" ]]; then
-            ai_ok "OpenCode installed ($OPENCODE_BIN)"
-        else
-            ai_warn "OpenCode installer completed but opencode was not found"
-        fi
+    # shellcheck source=../lib/opencode-runtime.sh
+    . "$SCRIPT_DIR/../lib/opencode-runtime.sh"
+    if OPENCODE_BIN="$(ods_install_opencode "$OPENCODE_BIN")"; then
+        ai_ok "Reviewed OpenCode release installed ($OPENCODE_BIN)"
     else
-        ai_warn "OpenCode install failed — install later with: brew install opencode"
+        OPENCODE_BIN=""
+        ai_warn "OpenCode upgrade failed; existing binary/configuration preserved. Re-run after resolving the download or binary error."
+        return 1
     fi
-    rm -f "$tmpfile"
 }
 
 _require_docker_cpu_budget() {
@@ -1011,8 +1148,10 @@ _require_docker_cpu_budget() {
         ai_err "Docker daemon only has ${docker_ncpu} CPU(s); ODS's ${workload} pins limits up to ${max_pin} CPUs per service and needs at least ${min_cpus} to avoid 'range of CPUs is from 0.01 to N' compose failures."
         case "${DOCKER_BACKEND:-unknown}" in
             colima)
+                local profile_args
+                profile_args="$(_active_colima_hint_args)"
                 ai "Stop and re-create the Colima VM with more CPUs:"
-                ai "    colima stop && colima start --cpu ${min_cpus} --memory 12 --disk 60"
+                ai "    colima stop${profile_args} && colima start${profile_args} --cpu ${min_cpus} --memory 12 --disk 60"
                 ai "Then re-run this installer."
                 ;;
             desktop)
@@ -1048,6 +1187,21 @@ _set_installer_python_cmd() {
     fi
 }
 
+_ensure_macos_agent_python() {
+    local bootstrap_python="$1"
+    local venv_dir="${INSTALL_DIR}/.venv/host-agent"
+    local runtime="${venv_dir}/bin/python"
+    if [[ ! -x "$runtime" ]]; then
+        "$bootstrap_python" -m venv "$venv_dir" >>"$ODS_LOG_FILE" 2>&1 || return 1
+    fi
+    if ! "$runtime" -c 'import yaml, huggingface_hub, hf_xet' >/dev/null 2>&1; then
+        "$runtime" -m pip install --quiet pyyaml 'huggingface_hub[hf_xet]>=0.27' \
+            >>"$ODS_LOG_FILE" 2>&1 || return 1
+    fi
+    "$runtime" -c 'import yaml, huggingface_hub, hf_xet' >/dev/null 2>&1 || return 1
+    AGENT_PYTHON="$runtime"
+}
+
 _ensure_macos_pyyaml() {
     local pycmd=""
     if declare -f ods_detect_python_cmd >/dev/null 2>&1; then
@@ -1070,6 +1224,10 @@ _ensure_macos_pyyaml() {
 
     if $DRY_RUN; then
         ai_warn "PyYAML is not importable by $pycmd (dry-run: would create installer Python venv)."
+        return 0
+    fi
+    if $PREFLIGHT_ONLY; then
+        ai "PyYAML is not importable by $pycmd; the installer will create its Python venv."
         return 0
     fi
 
@@ -1102,6 +1260,54 @@ _ensure_macos_pyyaml() {
 
 # Resolve install directory
 INSTALL_DIR="${ODS_INSTALL_DIR}"
+_macos_apply_fresh_feature_defaults
+_macos_resolve_webui_selection || exit 1
+if ! $OPENCODE_ENABLE_EXPLICIT && ! $OPENCODE_DISABLE_EXPLICIT && ! $ALL_FEATURES; then
+    if ods_macos_opencode_retained "$OPENCODE_PLIST" "$OPENCODE_PLIST_LABEL" \
+        "$OPENCODE_BUN_TMPDIR" "$(id -u)"; then
+        ENABLE_OPENCODE=true
+    fi
+fi
+if $ENABLE_OPENCODE && [[ -e "$OPENCODE_PLIST" || -L "$OPENCODE_PLIST" ]] \
+    && ! ods_macos_opencode_plist_owned "$OPENCODE_PLIST" "$OPENCODE_PLIST_LABEL" "$OPENCODE_BUN_TMPDIR"; then
+    ai_err "The OpenCode LaunchAgent path is not an ODS-owned plist; refusing to replace it."
+    exit 1
+fi
+if $ENABLE_OPENCODE && launchctl print "gui/$(id -u)/${OPENCODE_PLIST_LABEL}" >/dev/null 2>&1 \
+    && ! ods_macos_opencode_loaded_owned "$OPENCODE_PLIST" "$OPENCODE_PLIST_LABEL" \
+        "$OPENCODE_BUN_TMPDIR" "$(id -u)"; then
+    ai_err "The loaded OpenCode service is not backed by an ODS-owned plist; refusing to stop it."
+    exit 1
+fi
+
+# --preflight-only runs while get-ods.sh --force still has the installation it
+# is about to replace on disk. installers/reinstall-preflight.sh measures what
+# removing it returns to this filesystem; any other run ignores the value.
+PREFLIGHT_RECLAIMABLE_GB=0
+if $PREFLIGHT_ONLY && [[ "${ODS_PREFLIGHT_RECLAIMABLE_KB:-}" =~ ^[0-9]+$ ]]; then
+    PREFLIGHT_RECLAIMABLE_GB=$(( ODS_PREFLIGHT_RECLAIMABLE_KB / 1048576 ))
+fi
+
+# Both Pixel checks inspect the installation's own native Pixel state. During
+# --preflight-only that is the installation being replaced, which the
+# candidate uninstaller retires; the real install run checks the new tree.
+if ! $PREFLIGHT_ONLY && ! $ENABLE_PIXEL && [[ -e "${INSTALL_DIR}/data/pixel-native" || -L "${INSTALL_DIR}/data/pixel-native" ]]; then
+    ai_err "Existing native Pixel installation detected. The base installer cannot migrate it or disable it safely."
+    ai "Your configuration is unchanged. Keep data/pixel-native; use the qualified native migration/update path when available."
+    exit 1
+fi
+
+if $ENABLE_PIXEL && ! $PREFLIGHT_ONLY; then
+    _pixel_install_args=(--install-dir "$INSTALL_DIR")
+    if ! $NON_INTERACTIVE && ! $DRY_RUN; then
+        _pixel_install_args+=(--prompt-for-sudo)
+    fi
+    /usr/bin/python3 "${LIB_DIR}/pixel-native-install.py" "${_pixel_install_args[@]}" \
+        --preflight-only || exit 1
+    ENABLE_HERMES=false
+    ENABLE_OPENCLAW=false
+    OPENCLAW_EXPLICIT=true
+fi
 
 if ! $OPENCLAW_EXPLICIT; then
     _existing_openclaw=false
@@ -1121,15 +1327,23 @@ if ! $OPENCLAW_EXPLICIT; then
     unset _existing_openclaw
 fi
 
-# Initialize log file
-mkdir -p "$(dirname "$ODS_LOG_FILE")"
-: > "$ODS_LOG_FILE"
+# Reuse the same private-log guard as Linux. In particular, an existing log
+# under macOS /tmp must be privatized before any diagnostic can append to it.
+ods_prepare_install_log "$ODS_LOG_FILE" || exit 1
 
 # ============================================================================
 # PHASE 1 -- PREFLIGHT CHECKS
 # ============================================================================
-show_ods_banner
-show_phase 1 6 "PREFLIGHT CHECKS" "30 seconds"
+# With --preflight-only this phase is the whole run: every check below that
+# can stop the install runs, steps that would change the host only report
+# what the installer will do, and the script exits after the last check.
+if $PREFLIGHT_ONLY; then
+    show_phase 1 6 "PREFLIGHT CHECKS (preflight only)" "30 seconds"
+    ai "Checking this host before an existing installation is replaced. No changes are made."
+else
+    show_ods_banner
+    show_phase 1 6 "PREFLIGHT CHECKS" "30 seconds"
+fi
 
 # macOS version
 get_macos_version
@@ -1208,7 +1422,9 @@ _require_docker_cpu_budget "$_docker_cpu_min" "$_docker_cpu_max_pin" "$_docker_c
 # install, because the helper is only meaningful with Docker Desktop.
 if [[ "${DOCKER_BACKEND:-unknown}" != "desktop" ]] && test_stale_docker_creds_store; then
     ai_warn "Found stale \`credsStore: desktop\` in ~/.docker/config.json — incompatible with backend=${DOCKER_BACKEND:-unknown}."
-    if command -v python3 >/dev/null 2>&1; then
+    if $PREFLIGHT_ONLY && command -v python3 >/dev/null 2>&1; then
+        ai "The installer will strip credsStore=desktop from ~/.docker/config.json"
+    elif command -v python3 >/dev/null 2>&1; then
         python3 -c 'import json,sys,os
 p=os.path.expanduser("~/.docker/config.json")
 d=json.load(open(p))
@@ -1263,11 +1479,16 @@ if ! $DOCKER_SHARE_OK; then
 fi
 ai_ok "Docker Desktop file sharing OK"
 
-# Disk space
-test_disk_space "$INSTALL_DIR" 30
-info_box "Disk free:" "${DISK_FREE_GB} GB"
+# Disk space. A --preflight-only run also counts the space that removing the
+# installation being replaced returns (0 for every other run).
+test_disk_space "$INSTALL_DIR" 30 "$PREFLIGHT_RECLAIMABLE_GB"
+if [[ "$DISK_RECLAIMABLE_GB" -gt 0 ]]; then
+    info_box "Disk free:" "${DISK_FREE_GB} GB now, ${DISK_AVAILABLE_GB} GB once the existing installation is removed"
+else
+    info_box "Disk free:" "${DISK_FREE_GB} GB"
+fi
 if ! $DISK_SUFFICIENT; then
-    ai_err "At least ${DISK_REQUIRED_GB} GB free space required. Found ${DISK_FREE_GB} GB."
+    ai_err "At least ${DISK_REQUIRED_GB} GB free space required. Found ${DISK_AVAILABLE_GB} GB."
     exit 1
 fi
 ai_ok "Disk space OK"
@@ -1278,6 +1499,11 @@ ai_ok "Disk space OK"
 # `pip --user` can fail under PEP 668. Keep the resolver dependency in a
 # ODS-owned venv and point shared Python helpers at that interpreter.
 _ensure_macos_pyyaml
+
+if $PREFLIGHT_ONLY; then
+    ai_ok "Preflight passed; no changes were made."
+    exit 0
+fi
 
 # Ollama conflict detection
 check_ollama_conflict
@@ -1323,12 +1549,11 @@ for port_check in "${_conflict_ports[@]}"; do
     fi
 done
 
-# macOS AirPlay Receiver uses port 9000 (Monterey 12.0+, enabled by default).
-# It cannot be killed — it's a system service. Auto-reassign Whisper to 9100.
-if check_port_conflict 9000; then
+# macOS AirPlay Receiver and other resident services commonly use port 9000.
+# Auto-reassign Whisper to 9100 instead of shadowing an existing listener.
+if check_port_conflict 9000 "existing listener"; then
     export WHISPER_PORT=9100
-    ai_ok "Port 9000 in use (AirPlay Receiver) -- Whisper reassigned to port ${WHISPER_PORT}"
-    ai "  To disable AirPlay Receiver: System Settings > General > AirDrop & Handoff > AirPlay Receiver"
+    ai_ok "Port 9000 in use by ${PORT_CONFLICT_PROC} -- Whisper reassigned to port ${WHISPER_PORT}"
 fi
 
 # ============================================================================
@@ -1388,6 +1613,10 @@ if [[ "${ODS_DISABLE_CATALOG_MODEL_SELECTOR:-false}" != "true" && "$SELECTED_TIE
             fi
         fi
         if [[ -n "$_selector_python" ]]; then
+            _selector_status=0
+            # The tier map's size is a preference the Hermes re-select below
+            # applies too (the selector drops it when nothing fits under it).
+            _selector_max_size_mb="${LLM_MODEL_SIZE_MB:-0}"
             _selector_env="$("$_selector_python" "$_selector_script" \
                 --catalog "$_selector_catalog" \
                 --backend "apple" \
@@ -1396,10 +1625,15 @@ if [[ "${ODS_DISABLE_CATALOG_MODEL_SELECTOR:-false}" != "true" && "$SELECTED_TIE
                 --ram-gb "${SYSTEM_RAM_GB:-0}" \
                 --profile "${MODEL_PROFILE_EFFECTIVE:-${MODEL_PROFILE:-qwen}}" \
                 --tier "$SELECTED_TIER" \
-                --max-size-mb "${LLM_MODEL_SIZE_MB:-0}" \
+                --max-size-mb "$_selector_max_size_mb" \
                 --host-arch "$(uname -m 2>/dev/null || echo unknown)" \
                 --installable-only \
-                --env 2>>"$ODS_LOG_FILE" || true)"
+                --min-context "$HERMES_CONTEXT_SIZE" \
+                --env 2>>"$ODS_LOG_FILE")" || _selector_status=$?
+            if [[ "$_selector_status" -eq 2 ]]; then
+                ai_warn "No catalog model fits the detected memory and selected profile. Choose a smaller model profile or use cloud mode; refusing an unsafe tier-map fallback."
+                exit 1
+            fi
             if [[ -n "$_selector_env" ]]; then
                 load_model_selector_env_from_output <<< "$_selector_env"
                 ai "Model selector: ${MODEL_RECOMMENDATION_REASON:-$LLM_MODEL}"
@@ -1459,27 +1693,36 @@ if ! $NON_INTERACTIVE && ! $ALL_FEATURES && ! $DRY_RUN; then
     echo -e "  ${WHT}[3]${NC} Custom       -- Choose individually"
     echo ""
 
-    read -r -p "  Selection (1/2/3): " feature_choice < /dev/tty
-    case "${feature_choice:-1}" in
+    _macos_feature_default=2
+    [[ -f "${INSTALL_DIR}/.env" ]] && _macos_feature_default=1
+    read -r -p "  Selection (1/2/3) [${_macos_feature_default}]: " feature_choice < /dev/tty
+    case "${feature_choice:-$_macos_feature_default}" in
         1)
             ENABLE_VOICE=true; ENABLE_WORKFLOWS=true
             ENABLE_RAG=true; ENABLE_HERMES=true
             ENABLE_RECOMMENDED=true
             ENABLE_OPENCLAW=false  # deprecated; Hermes is the default
+            if [[ -n "$feature_choice" ]] && ! $OPENCODE_DISABLE_EXPLICIT; then ENABLE_OPENCODE=true; fi
             ENABLE_APE=true
             ENABLE_PERPLEXICA=true
             ENABLE_PRIVACY_SHIELD=true
             ENABLE_LANGFUSE=true
+            ENABLE_OPEN_WEBUI=true
             ;;
         2)
             ENABLE_VOICE=false; ENABLE_WORKFLOWS=false
             ENABLE_RAG=false; ENABLE_RECOMMENDED=false
             ENABLE_HERMES=false
             ENABLE_OPENCLAW=false
+            if ! $OPENCODE_ENABLE_EXPLICIT; then
+                ENABLE_OPENCODE=false
+                OPENCODE_DISABLE_SELECTED=true
+            fi
             ENABLE_APE=false
             ENABLE_PERPLEXICA=false
             ENABLE_PRIVACY_SHIELD=false
             ENABLE_LANGFUSE=false
+            ENABLE_OPEN_WEBUI=false
             ;;
         3)
             read -r -p "  Enable Voice (Whisper + Kokoro)? [y/N] " yn < /dev/tty
@@ -1488,14 +1731,25 @@ if ! $NON_INTERACTIVE && ! $ALL_FEATURES && ! $DRY_RUN; then
             [[ "$yn" =~ ^[yY] ]] && ENABLE_WORKFLOWS=true
             read -r -p "  Enable RAG (Qdrant + embeddings)? [y/N] " yn < /dev/tty
             [[ "$yn" =~ ^[yY] ]] && ENABLE_RAG=true
-            read -r -p "  Enable recommended support (LiteLLM + SearXNG + Token Spy)? [Y/n] " yn < /dev/tty
+            read -r -p "  Enable extra support (SearXNG + Token Spy)? [Y/n] " yn < /dev/tty
             [[ "$yn" =~ ^[nN] ]] && ENABLE_RECOMMENDED=false || ENABLE_RECOMMENDED=true
             read -r -p "  Enable Hermes Agent (default AI agent)? [Y/n] " yn < /dev/tty
             [[ "$yn" =~ ^[nN] ]] && ENABLE_HERMES=false || ENABLE_HERMES=true
             read -r -p "  Enable OpenClaw (DEPRECATED — Hermes replaces it)? [y/N] " yn < /dev/tty
             [[ "$yn" =~ ^[yY] ]] && ENABLE_OPENCLAW=true
+            if ! $OPENCODE_ENABLE_EXPLICIT && ! $OPENCODE_DISABLE_EXPLICIT; then
+                read -r -p "  Enable OpenCode browser IDE? [y/N] " yn < /dev/tty
+                if [[ "$yn" =~ ^[yY] ]]; then
+                    ENABLE_OPENCODE=true
+                else
+                    ENABLE_OPENCODE=false
+                    OPENCODE_DISABLE_SELECTED=true
+                fi
+            fi
             read -r -p "  Enable Perplexica deep research? [y/N] " yn < /dev/tty
             [[ "$yn" =~ ^[yY] ]] && ENABLE_PERPLEXICA=true
+            read -r -p "  Add Open WebUI alongside Portal? [y/N] " yn < /dev/tty
+            [[ "$yn" =~ ^[yY] ]] && ENABLE_OPEN_WEBUI=true || ENABLE_OPEN_WEBUI=false
             read -r -p "  Enable Privacy Shield? [y/N] " yn < /dev/tty
             [[ "$yn" =~ ^[yY] ]] && ENABLE_PRIVACY_SHIELD=true
             read -r -p "  Enable Langfuse (LLM observability, ~500MB)? [y/N] " yn < /dev/tty
@@ -1506,37 +1760,116 @@ if ! $NON_INTERACTIVE && ! $ALL_FEATURES && ! $DRY_RUN; then
             ENABLE_RAG=true; ENABLE_HERMES=true
             ENABLE_RECOMMENDED=true
             ENABLE_OPENCLAW=false  # deprecated; Hermes is the default
+            $OPENCODE_DISABLE_EXPLICIT || ENABLE_OPENCODE=true
             ENABLE_APE=true
             ENABLE_PERPLEXICA=true
             ENABLE_PRIVACY_SHIELD=true
             ENABLE_LANGFUSE=true
+            ENABLE_OPEN_WEBUI=true
             ;;
     esac
+    unset _macos_feature_default
 fi
 
-if $CLOUD_MODE && ! $ENABLE_RECOMMENDED; then
-    ai "Cloud mode requires the LiteLLM gateway; enabling recommended support"
-    ENABLE_RECOMMENDED=true
+if [[ -z "${feature_choice:-}" && -n "$WEBUI_RETAINED" ]] \
+    && ! $WEBUI_ENABLE_EXPLICIT && ! $WEBUI_DISABLE_EXPLICIT && ! $ALL_FEATURES; then
+    ENABLE_OPEN_WEBUI="$WEBUI_RETAINED"
+fi
+$WEBUI_DISABLE_EXPLICIT && ENABLE_OPEN_WEBUI=false
+$WEBUI_ENABLE_EXPLICIT && ENABLE_OPEN_WEBUI=true
+if $ENABLE_ODS_PROXY && ! $ENABLE_OPEN_WEBUI; then
+    ai_err "ODS proxy requires Open WebUI; choose --with-webui or omit --no-webui."
+    exit 1
+fi
+
+$OPENCODE_DISABLE_EXPLICIT && ENABLE_OPENCODE=false
+$OPENCODE_ENABLE_EXPLICIT && ENABLE_OPENCODE=true
+
+if $ENABLE_PIXEL; then
+    ENABLE_HERMES=false
+    ENABLE_OPENCLAW=false
 fi
 if ! $ENABLE_HERMES && ! $ENABLE_OPENCLAW; then
     ENABLE_APE=false
 fi
 
-# SearXNG backs Open WebUI web search, Perplexica, and agent web tools.
-if $ENABLE_RECOMMENDED || $ENABLE_PERPLEXICA || $ENABLE_HERMES || $ENABLE_OPENCLAW; then
-    ENABLE_SEARXNG=true
-else
-    ENABLE_SEARXNG=false
-fi
-ENABLE_WEB_SEARCH=$ENABLE_SEARXNG
+# SearXNG backs optional search consumers. Native Pixel defaults to its own
+# keyless provider; a retained SearXNG choice remains authoritative.
+_macos_resolve_support_services || exit 1
 
+# Hermes needs 64K context; the raise grows the KV cache, so it is re-checked
+# with the selector against the same unified-memory budget (see
+# installers/phases/03-features.sh for the Linux flow): raise when the pick
+# fits at 64K, otherwise re-select a model that does, otherwise keep the
+# largest context that fits and say ODS Talk is unavailable.
+HERMES_CONTEXT_BELOW_FLOOR=false
 if $ENABLE_HERMES && ! $CLOUD_MODE; then
     if [[ "${MAX_CONTEXT:-0}" =~ ^[0-9]+$ ]] && (( MAX_CONTEXT < HERMES_CONTEXT_SIZE )); then
-        ai_warn "Hermes enabled: increasing macOS llama context from ${MAX_CONTEXT} to ${HERMES_CONTEXT_SIZE} (64K floor)."
-        if [[ -n "${MODEL_RECOMMENDATION_REASON:-}" ]]; then
-            MODEL_RECOMMENDATION_REASON="${MODEL_RECOMMENDATION_REASON} Hermes requires at least 64K context, so runtime context was raised to ${HERMES_CONTEXT_SIZE}."
+        _hermes_floor_action="raise-unverified"
+        if [[ -n "${_selector_python:-}" && -f "${_selector_script:-}" && -f "${_selector_catalog:-}" \
+            && "${ODS_DISABLE_CATALOG_MODEL_SELECTOR:-false}" != "true" ]]; then
+            _hermes_selector_args=(
+                --catalog "$_selector_catalog"
+                --backend "apple"
+                --memory-type "unified"
+                --vram-mb "0"
+                --ram-gb "${SYSTEM_RAM_GB:-0}"
+                --profile "${MODEL_PROFILE_EFFECTIVE:-${MODEL_PROFILE:-qwen}}"
+                --tier "$SELECTED_TIER"
+                --host-arch "$(uname -m 2>/dev/null || echo unknown)"
+            )
+            _hermes_profile_args=()
+            [[ -n "${MODEL_RUNTIME_PROFILE:-}" ]] && _hermes_profile_args=(--runtime-profile "$MODEL_RUNTIME_PROFILE")
+            _hermes_fit_status=0
+            "$_selector_python" "$_selector_script" "${_hermes_selector_args[@]}" \
+                --check-fit --model-id "${GGUF_FILE:-${LLM_MODEL:-}}" --context "$HERMES_CONTEXT_SIZE" \
+                ${_hermes_profile_args[@]+"${_hermes_profile_args[@]}"} \
+                >>"$ODS_LOG_FILE" 2>&1 || _hermes_fit_status=$?
+            case "$_hermes_fit_status" in
+                0) _hermes_floor_action="raise" ;;
+                3)
+                    _hermes_env="$("$_selector_python" "$_selector_script" "${_hermes_selector_args[@]}" \
+                        --max-size-mb "${_selector_max_size_mb:-0}" --installable-only \
+                        --min-context "$HERMES_CONTEXT_SIZE" --require-min-context \
+                        --env 2>>"$ODS_LOG_FILE")" || _hermes_env=""
+                    if [[ -n "$_hermes_env" ]]; then
+                        _hermes_previous="${LLM_MODEL:-} at ${MAX_CONTEXT}"
+                        # Drop the previous pick's llama-server settings (the
+                        # LLAMA_ARG_* set installers/phases/03-features.sh
+                        # clears); the loader omits unset optional values.
+                        unset MODEL_RUNTIME_PROFILE MODEL_RUNTIME_PROFILE_LABEL MODEL_RUNTIME_PROFILE_SOURCE
+                        unset LLAMA_ARG_CACHE_TYPE_K LLAMA_ARG_CACHE_TYPE_V LLAMA_ARG_FLASH_ATTN
+                        unset LLAMA_ARG_N_CPU_MOE LLAMA_ARG_NO_CACHE_PROMPT LLAMA_ARG_CHECKPOINT_EVERY_NT
+                        unset LLAMA_ARG_SPEC_TYPE LLAMA_ARG_SPEC_DRAFT_N_MAX
+                        unset LLAMA_ARG_CTX_CHECKPOINTS LLAMA_ARG_CACHE_RAM
+                        load_model_selector_env_from_output <<< "$_hermes_env"
+                        ai_warn "Hermes needs 64K context: ${_hermes_previous} cannot serve 64K here, so ${LLM_MODEL} was selected at ${MAX_CONTEXT}."
+                        _hermes_floor_action="reselected"
+                        unset _hermes_previous
+                    else
+                        _hermes_floor_action="cap"
+                    fi
+                    unset _hermes_env
+                    ;;
+            esac
+            unset _hermes_selector_args _hermes_profile_args _hermes_fit_status
         fi
-        MAX_CONTEXT="$HERMES_CONTEXT_SIZE"
+        case "$_hermes_floor_action" in
+            raise|raise-unverified)
+                ai_warn "Hermes enabled: increasing macOS llama context from ${MAX_CONTEXT} to ${HERMES_CONTEXT_SIZE} (64K floor)."
+                if [[ -n "${MODEL_RECOMMENDATION_REASON:-}" ]]; then
+                    MODEL_RECOMMENDATION_REASON="${MODEL_RECOMMENDATION_REASON} Hermes requires at least 64K context, so runtime context was raised to ${HERMES_CONTEXT_SIZE}."
+                fi
+                MAX_CONTEXT="$HERMES_CONTEXT_SIZE"
+                ;;
+            cap)
+                HERMES_CONTEXT_BELOW_FLOOR=true
+                ai_warn "Hermes needs at least 64K context, but ${LLM_MODEL:-this model} runs at ${MAX_CONTEXT} in this Mac's memory budget (64K does not fit or exceeds its native context)."
+                ai_warn "ODS Talk stays unavailable (the Dashboard says why) until you choose a model that fits 64K in Models."
+                MODEL_RECOMMENDATION_REASON="${MODEL_RECOMMENDATION_REASON:-} Hermes requires 64K context, which does not fit here; ODS Talk is unavailable with this model."
+                ;;
+        esac
+        unset _hermes_floor_action
     fi
 fi
 
@@ -1544,9 +1877,13 @@ ai "Features:"
 info_box "  Voice:" "$(if $ENABLE_VOICE; then echo enabled; else echo disabled; fi)"
 info_box "  Workflows:" "$(if $ENABLE_WORKFLOWS; then echo enabled; else echo disabled; fi)"
 info_box "  RAG:" "$(if $ENABLE_RAG; then echo enabled; else echo disabled; fi)"
-info_box "  Recommended:" "$(if $ENABLE_RECOMMENDED; then echo enabled; else echo disabled; fi)"
+info_box "  SearXNG search:" "$(if $ENABLE_SEARXNG; then echo enabled; else echo disabled; fi)"
+info_box "  Token Spy:" "$(if $ENABLE_RECOMMENDED; then echo enabled; else echo disabled; fi)"
+info_box "  LiteLLM gateway:" "$(if $ENABLE_LITELLM; then echo enabled; else echo disabled; fi)"
 info_box "  Hermes:" "$(if $ENABLE_HERMES; then echo enabled; else echo disabled; fi)"
+info_box "  Portal (native):" "$(if $ENABLE_PIXEL; then echo enabled; else echo disabled; fi)"
 info_box "  OpenClaw:" "$(if $ENABLE_OPENCLAW; then echo "enabled (DEPRECATED)"; else echo disabled; fi)"
+info_box "  OpenCode:" "$(if $ENABLE_OPENCODE; then echo enabled; else echo disabled; fi)"
 info_box "  Perplexica:" "$(if $ENABLE_PERPLEXICA; then echo enabled; else echo disabled; fi)"
 info_box "  Privacy Shield:" "$(if $ENABLE_PRIVACY_SHIELD; then echo enabled; else echo disabled; fi)"
 info_box "  Langfuse:" "$(if $ENABLE_LANGFUSE; then echo enabled; else echo disabled; fi)"
@@ -1574,6 +1911,13 @@ if $DRY_RUN; then
     $ENABLE_HERMES && ai "[DRY RUN] Would configure Hermes Agent (data: ${INSTALL_DIR}/data/hermes)"
     $ENABLE_OPENCLAW && ai "[DRY RUN] Would configure OpenClaw"
     $ENABLE_LANGFUSE && ai "[DRY RUN] Would enable Langfuse (LLM observability)"
+    $ENABLE_OPENCODE && ai "[DRY RUN] Would install and start OpenCode"
+    if ! $ENABLE_OPENCODE; then
+        ai "[DRY RUN] Would skip OpenCode download and LaunchAgent"
+        if $OPENCODE_DISABLE_EXPLICIT || $OPENCODE_DISABLE_SELECTED; then
+            ai "[DRY RUN] Would disable future ODS OpenCode login starts when owned"
+        fi
+    fi
 else
     # Create directory structure
     mkdir -p "${INSTALL_DIR}/config/searxng"
@@ -1597,6 +1941,7 @@ else
     mkdir -p "${INSTALL_DIR}/data/langfuse/clickhouse"
     mkdir -p "${INSTALL_DIR}/data/langfuse/redis"
     mkdir -p "${INSTALL_DIR}/data/langfuse/minio"
+    mkdir -p "${INSTALL_DIR}/data/remote-provider/secrets"
     mkdir -p "${INSTALL_DIR}/bin"
     ai_ok "Created directory structure"
 
@@ -1730,10 +2075,35 @@ else
     _previous_llm_bind="$(read_env_value "${INSTALL_DIR}/.env" "BIND_ADDRESS")"
     _previous_macos_gateway="$(read_env_value "${INSTALL_DIR}/.env" "ODS_MACOS_HOST_GATEWAY")"
     generate_ods_env "$INSTALL_DIR" "$SELECTED_TIER" "$FORCE"
+    # generate_ods_env preserves existing .env without --force. Persist an
+    # explicit addback or opt-out there too, so cache rebuilds keep the choice.
+    upsert_env_value "${INSTALL_DIR}/.env" "ENABLE_OPEN_WEBUI" "$ENABLE_OPEN_WEBUI"
+    # Reinstalls preserve .env, including an earlier AirPlay port remap.
+    # Use that same port for Compose, model downloads and readiness checks.
+    WHISPER_PORT="$(read_env_value "$INSTALL_DIR/.env" "WHISPER_PORT")"
+    WHISPER_PORT="${WHISPER_PORT//\"/}"
+    WHISPER_PORT="${WHISPER_PORT//\'/}"
+    export WHISPER_PORT="${WHISPER_PORT:-9000}"
+    _MACOS_EXTERNAL_MODEL_READY=false
+    _macos_active_store="$(read_env_value "${INSTALL_DIR}/.env" "ODS_ACTIVE_MODEL_STORE")"
+    _macos_active_store="${_macos_active_store//\"/}"
+    _macos_active_store="${_macos_active_store//\'/}"
+    if ! $CLOUD_MODE && [[ "$_previous_ods_mode" != cloud && -n "$_macos_active_store" && "$_macos_active_store" != default ]]; then
+        # A retained SSD selection owns the runtime contract, not this tier's
+        # recommendation. Verify it before any native listener is replaced.
+        macos_resolve_native_model "$INSTALL_DIR" "$LLAMA_SERVER_BIN" \
+            "$(read_env_value "${INSTALL_DIR}/.env" "CTX_SIZE")" true || exit 1
+        _MACOS_EXTERNAL_MODEL_READY=true
+        GGUF_FILE="$(basename "$MACOS_NATIVE_MODEL_PATH")"
+        LLM_MODEL="$(read_env_value "${INSTALL_DIR}/.env" "LLM_MODEL")"
+        LLM_MODEL="${LLM_MODEL:-$GGUF_FILE}"
+        MAX_CONTEXT="${MACOS_NATIVE_CONTEXT:-65536}"
+        GGUF_URL=""
+    fi
     _macos_switchboard_mode="$(read_env_value "${INSTALL_DIR}/.env" "ODS_MODEL_SWITCHBOARD")"
-    case "${_macos_switchboard_mode:-observe}" in
+    case "${_macos_switchboard_mode:-enabled}" in
         legacy|observe|enabled) ;;
-        *) _macos_switchboard_mode="observe" ;;
+        *) _macos_switchboard_mode="enabled" ;;
     esac
     upsert_env_value "${INSTALL_DIR}/.env" "ODS_MODEL_SWITCHBOARD" "$_macos_switchboard_mode"
     _macos_agent_bind_raw="$(read_env_value "${INSTALL_DIR}/.env" "ODS_AGENT_BIND")"
@@ -1756,7 +2126,7 @@ else
 
     _macos_llm_bridge_enabled="false"
     if [[ "${DOCKER_BACKEND:-unknown}" == "colima" ]]; then
-        _macos_llm_bind="$(read_env_value "${INSTALL_DIR}/.env" "BIND_ADDRESS")"
+        _macos_llm_bind="127.0.0.1"
         [[ -n "$_macos_llm_bind" ]] || _macos_llm_bind="127.0.0.1"
         _macos_llm_bridge_enabled="true"
         _macos_agent_bridge_enabled="true"
@@ -1767,7 +2137,7 @@ else
         upsert_env_value "${INSTALL_DIR}/.env" "ODS_MACOS_HOST_AGENT_BRIDGE_ENABLED" "$_macos_agent_bridge_enabled"
         upsert_env_value "${INSTALL_DIR}/.env" "ODS_AGENT_HOST" "$COLIMA_HOST_IP"
         upsert_env_value "${INSTALL_DIR}/.env" "ODS_MACOS_LLM_BRIDGE_ENABLED" "$_macos_llm_bridge_enabled"
-        upsert_env_value "${INSTALL_DIR}/.env" "ODS_NATIVE_LLAMA_PORT" "8080"
+        upsert_env_value "${INSTALL_DIR}/.env" "ODS_NATIVE_LLAMA_PORT" "${ODS_NATIVE_LLAMA_PORT:-8080}"
         unset _macos_llm_bind _macos_agent_bridge_enabled
     else
         upsert_env_value "${INSTALL_DIR}/.env" "ODS_MACOS_HOST_AGENT_BRIDGE_ENABLED" "false"
@@ -1775,7 +2145,7 @@ else
         upsert_env_value "${INSTALL_DIR}/.env" "ODS_AGENT_HOST" "host.docker.internal"
         upsert_env_value "${INSTALL_DIR}/.env" "ODS_MACOS_HOST_GATEWAY" ""
         upsert_env_value "${INSTALL_DIR}/.env" "ODS_MACOS_VM_IP" ""
-        upsert_env_value "${INSTALL_DIR}/.env" "ODS_NATIVE_LLAMA_PORT" "8080"
+        upsert_env_value "${INSTALL_DIR}/.env" "ODS_NATIVE_LLAMA_PORT" "${ODS_NATIVE_LLAMA_PORT:-8080}"
     fi
     if $CLOUD_MODE; then
         _macos_litellm_key="$(read_env_value "${INSTALL_DIR}/.env" "LITELLM_KEY")"
@@ -1793,6 +2163,7 @@ else
         upsert_env_value "${INSTALL_DIR}/.env" "OPEN_WEBUI_LLM_API_KEY" "$_macos_litellm_key"
         upsert_env_value "${INSTALL_DIR}/.env" "LLM_MODEL" "$LLM_MODEL"
         upsert_env_value "${INSTALL_DIR}/.env" "GGUF_FILE" ""
+        upsert_env_value "${INSTALL_DIR}/.env" "ODS_ACTIVE_MODEL_STORE" "default"
         upsert_env_value "${INSTALL_DIR}/.env" "MAX_CONTEXT" "$MAX_CONTEXT"
         upsert_env_value "${INSTALL_DIR}/.env" "CTX_SIZE" "$MAX_CONTEXT"
     else
@@ -1800,17 +2171,18 @@ else
         upsert_env_value "${INSTALL_DIR}/.env" "LLM_BACKEND" "llama-server"
         upsert_env_value "${INSTALL_DIR}/.env" "HERMES_LLM_API_KEY" "sk-ods-hermes-local"
         if [[ "$_previous_ods_mode" == "cloud" ]]; then
+            upsert_env_value "${INSTALL_DIR}/.env" "ODS_ACTIVE_MODEL_STORE" "default"
             upsert_env_value "${INSTALL_DIR}/.env" "LLM_MODEL" "$LLM_MODEL"
             upsert_env_value "${INSTALL_DIR}/.env" "GGUF_FILE" "$GGUF_FILE"
             upsert_env_value "${INSTALL_DIR}/.env" "MAX_CONTEXT" "$MAX_CONTEXT"
             upsert_env_value "${INSTALL_DIR}/.env" "CTX_SIZE" "$MAX_CONTEXT"
         fi
         if [[ "${DOCKER_BACKEND:-unknown}" == "colima" ]]; then
-            upsert_env_value "${INSTALL_DIR}/.env" "LLM_API_URL" "http://${COLIMA_HOST_IP}:8080"
-            upsert_env_value "${INSTALL_DIR}/.env" "HERMES_LLM_BASE_URL" "http://${COLIMA_HOST_IP}:8080/v1"
+            upsert_env_value "${INSTALL_DIR}/.env" "LLM_API_URL" "http://${COLIMA_HOST_IP}:${ODS_NATIVE_LLAMA_PORT:-8080}"
+            upsert_env_value "${INSTALL_DIR}/.env" "HERMES_LLM_BASE_URL" "http://${COLIMA_HOST_IP}:${ODS_NATIVE_LLAMA_PORT:-8080}/v1"
         else
-            upsert_env_value "${INSTALL_DIR}/.env" "LLM_API_URL" "http://host.docker.internal:8080"
-            upsert_env_value "${INSTALL_DIR}/.env" "HERMES_LLM_BASE_URL" "http://host.docker.internal:8080/v1"
+            upsert_env_value "${INSTALL_DIR}/.env" "LLM_API_URL" "http://host.docker.internal:${ODS_NATIVE_LLAMA_PORT:-8080}"
+            upsert_env_value "${INSTALL_DIR}/.env" "HERMES_LLM_BASE_URL" "http://host.docker.internal:${ODS_NATIVE_LLAMA_PORT:-8080}/v1"
         fi
         if [[ "$_macos_switchboard_mode" == "enabled" ]]; then
             _macos_litellm_key="$(read_env_value "${INSTALL_DIR}/.env" "LITELLM_KEY")"
@@ -1818,8 +2190,8 @@ else
                 ai_err "Switchboard mode requires the generated LiteLLM master key, but LITELLM_KEY is empty."
                 exit 1
             fi
-            upsert_env_value "${INSTALL_DIR}/.env" "HERMES_LLM_BASE_URL" "http://litellm:4000/v1"
-            upsert_env_value "${INSTALL_DIR}/.env" "HERMES_LLM_API_KEY" "$_macos_litellm_key"
+            upsert_env_value "${INSTALL_DIR}/.env" "HERMES_LLM_BASE_URL" "http://model-router:9099/v1"
+            upsert_env_value "${INSTALL_DIR}/.env" "HERMES_LLM_API_KEY" "no-key"
             upsert_env_value "${INSTALL_DIR}/.env" "OPEN_WEBUI_LLM_BASE_URL" "http://litellm:4000"
             upsert_env_value "${INSTALL_DIR}/.env" "OPEN_WEBUI_LLM_API_KEY" "$_macos_litellm_key"
         fi
@@ -1837,8 +2209,9 @@ else
         _previous_llm_bind _previous_macos_gateway _macos_llm_bridge_enabled \
         _macos_litellm_key
     CONTAINER_LLM_URL="$(read_env_value "${INSTALL_DIR}/.env" "LLM_API_URL")"
-    [[ -n "$CONTAINER_LLM_URL" ]] || CONTAINER_LLM_URL="http://host.docker.internal:8080"
+    [[ -n "$CONTAINER_LLM_URL" ]] || CONTAINER_LLM_URL="http://host.docker.internal:${ODS_NATIVE_LLAMA_PORT:-8080}"
     _macos_runtime_renderer="${ODS_PYTHON_CMD:-python3}"
+    _macos_renderer_key="$(read_env_value "${INSTALL_DIR}/.env" "LITELLM_KEY")"
     if [[ ! -f "${INSTALL_DIR}/scripts/render-runtime-configs.py" ]] \
         || ! command -v "$_macos_runtime_renderer" >/dev/null 2>&1; then
         ai_err "Model router config renderer is unavailable"
@@ -1851,13 +2224,13 @@ else
         --model "${LLM_MODEL:-}"
         --gguf-file "${GGUF_FILE:-}"
         --llm-base-url "${CONTAINER_LLM_URL}"
-        --litellm-key "$(read_env_value "${INSTALL_DIR}/.env" "LITELLM_KEY")"
         --context-length "${MAX_CONTEXT:-65536}"
         --output-root "$INSTALL_DIR"
         --write
     )
     for _macos_router_surface in model-router-endpoints; do
-        if ! "$_macos_runtime_renderer" "${INSTALL_DIR}/scripts/render-runtime-configs.py" \
+        if ! ODS_RENDER_LITELLM_KEY="$_macos_renderer_key" \
+            "$_macos_runtime_renderer" "${INSTALL_DIR}/scripts/render-runtime-configs.py" \
             --surface "$_macos_router_surface" "${_macos_router_args[@]}" >> "$ODS_LOG_FILE" 2>&1; then
             ai_err "Failed to render required ${_macos_router_surface} config"
             exit 1
@@ -1865,12 +2238,13 @@ else
     done
     if [[ "$_macos_switchboard_mode" == "enabled" ]] \
        && [[ "$(read_env_value "${INSTALL_DIR}/.env" "ODS_MODE")" != "cloud" ]] \
-       && ! "$_macos_runtime_renderer" "${INSTALL_DIR}/scripts/render-runtime-configs.py" \
+       && ! ODS_RENDER_LITELLM_KEY="$_macos_renderer_key" \
+            "$_macos_runtime_renderer" "${INSTALL_DIR}/scripts/render-runtime-configs.py" \
             --surface litellm-switchboard "${_macos_router_args[@]}" >> "$ODS_LOG_FILE" 2>&1; then
         ai_err "Failed to render required litellm-switchboard config"
         exit 1
     fi
-    unset _macos_runtime_renderer _macos_router_args _macos_router_surface
+    unset _macos_runtime_renderer _macos_renderer_key _macos_router_args _macos_router_surface
     if $env_existed && ! $FORCE; then
         ai_ok "Preserved existing .env (use --force to regenerate secrets)"
     else
@@ -1933,13 +2307,19 @@ if $DRY_RUN; then
     ai "[DRY RUN] Would download llama-server (Metal build)"
     ai "[DRY RUN] Would start native llama-server on port 8080"
     ai "[DRY RUN] Would run: docker compose up -d --remove-orphans --no-build --pull never"
+    if $ENABLE_OPEN_WEBUI; then
+        ai "[DRY RUN] Would include Open WebUI alongside Dashboard/Portal"
+    else
+        ai "[DRY RUN] Would skip Open WebUI image and container; retain its data"
+    fi
+    $ENABLE_PIXEL && ai "[DRY RUN] Would prepare and activate native Pixel after the base stack"
 else
     # Change to install directory for docker compose
     cd "$INSTALL_DIR"
 
     # ── Bootstrap fast-start ──────────────────────────────────────────────
     _BOOTSTRAP_ACTIVE=false
-    if bootstrap_needed "$SELECTED_TIER" "$INSTALL_DIR" "$GGUF_FILE"; then
+    if [[ "${_MACOS_EXTERNAL_MODEL_READY:-false}" != true ]] && bootstrap_needed "$SELECTED_TIER" "$INSTALL_DIR" "$GGUF_FILE"; then
         _BOOTSTRAP_ACTIVE=true
         FULL_GGUF_FILE="$GGUF_FILE"
         FULL_GGUF_URL="$GGUF_URL"
@@ -2018,7 +2398,8 @@ else
     # it later, and persisted /opt/data/config.yaml wins over the template.
     _hermes_tpl="${INSTALL_DIR}/extensions/services/hermes/cli-config.yaml.template"
     if [[ -f "$_hermes_tpl" ]]; then
-            _hermes_base_url="${CONTAINER_LLM_URL%/}/v1"
+            _hermes_base_url="$(read_env_value "${INSTALL_DIR}/.env" "HERMES_LLM_BASE_URL")"
+            [[ -n "$_hermes_base_url" ]] || _hermes_base_url="${CONTAINER_LLM_URL%/}/v1"
             _hermes_model="$GGUF_FILE"
             $CLOUD_MODE && _hermes_model="default"
             _hermes_patcher="${INSTALL_DIR}/scripts/patch-hermes-config.py"
@@ -2087,86 +2468,22 @@ else
     if ! $CLOUD_MODE; then
         chapter "NATIVE LLAMA-SERVER (METAL)"
 
-        # Download llama.cpp Metal build
-        LLAMA_ZIP="/tmp/${LLAMA_CPP_MACOS_ASSET}"
-        if [[ ! -x "$LLAMA_SERVER_BIN" ]]; then
-            if [[ ! -f "$LLAMA_ZIP" ]]; then
-                download_with_progress "$LLAMA_CPP_MACOS_URL" "$LLAMA_ZIP" \
-                    "Downloading llama-server (Metal)" || {
-
-                    # Fallback: try Homebrew
-                    ai_warn "Pre-built binary download failed. Trying Homebrew..."
-                    if command -v brew >/dev/null 2>&1; then
-                        brew install llama.cpp 2>&1 | tail -5
-                        BREW_LLAMA=$(command -v llama-server 2>/dev/null || true)
-                        if [[ -n "$BREW_LLAMA" ]]; then
-                            mkdir -p "$LLAMA_SERVER_DIR"
-                            cp "$BREW_LLAMA" "$LLAMA_SERVER_BIN"
-                            chmod +x "$LLAMA_SERVER_BIN"
-                            ai_ok "Installed llama-server via Homebrew"
-                        else
-                            ai_err "Could not install llama-server. Install manually:"
-                            ai "  brew install llama.cpp"
-                            exit 1
-                        fi
-                    else
-                        ai_err "llama-server download failed and Homebrew not available."
-                        ai "Install Homebrew: https://brew.sh"
-                        ai "Then: brew install llama.cpp"
-                        exit 1
-                    fi
-                }
-            fi
-
-            if [[ -f "$LLAMA_ZIP" ]] && [[ ! -x "$LLAMA_SERVER_BIN" ]]; then
-                # Extract
-                ai "Extracting llama-server..."
-                mkdir -p "$LLAMA_SERVER_DIR"
-                TEMP_EXTRACT="/tmp/llama-extract-$$"
-                mkdir -p "$TEMP_EXTRACT"
-                # Format-aware extraction (handles .tar.gz and .zip)
-                if [[ "$LLAMA_ZIP" == *.tar.gz ]] || [[ "$LLAMA_ZIP" == *.tgz ]]; then
-                    tar xzf "$LLAMA_ZIP" -C "$TEMP_EXTRACT"
-                else
-                    unzip -o -q "$LLAMA_ZIP" -d "$TEMP_EXTRACT"
-                fi
-
-                # Find llama-server binary (may be in a subdirectory)
-                FOUND_BIN=$(find "$TEMP_EXTRACT" -name "llama-server" -type f -print -quit)
-                if [[ -n "$FOUND_BIN" ]]; then
-                    cp "$FOUND_BIN" "$LLAMA_SERVER_BIN"
-                    chmod +x "$LLAMA_SERVER_BIN"
-
-                    # Also copy any companion dylibs and Metal libraries
-                    FOUND_DIR=$(dirname "$FOUND_BIN")
-                    find "$FOUND_DIR" -name "*.dylib" -exec cp {} "$LLAMA_SERVER_DIR/" \; 2>/dev/null || true
-                    find "$FOUND_DIR" -name "*.metal" -exec cp {} "$LLAMA_SERVER_DIR/" \; 2>/dev/null || true
-
-                    ai_ok "Extracted llama-server"
-                else
-                    ai_err "llama-server binary not found in archive."
-                    ai "Try: brew install llama.cpp"
-                    rm -rf "$TEMP_EXTRACT"
-                    exit 1
-                fi
-                rm -rf "$TEMP_EXTRACT"
-            fi
-
-            # Remove quarantine attribute (macOS Gatekeeper)
-            xattr -rd com.apple.quarantine "$LLAMA_SERVER_BIN" 2>/dev/null || true
-            xattr -rd com.apple.quarantine "$LLAMA_SERVER_DIR"/*.dylib 2>/dev/null || true
-        else
-            ai_ok "llama-server already present"
+        if [[ "${_MACOS_EXTERNAL_MODEL_READY:-false}" != true ]]; then
+            macos_resolve_native_model "$INSTALL_DIR" "$LLAMA_SERVER_BIN" "$MAX_CONTEXT" true || exit 1
         fi
+        LLAMA_SERVER_BIN="$MACOS_NATIVE_BINARY"
+        LLAMA_SERVER_DIR="$(dirname "$LLAMA_SERVER_BIN")"
+        MAX_CONTEXT="$MACOS_NATIVE_CONTEXT"
+
+        # Fresh private download/extraction; authenticate executable bytes first.
+        macos_install_native_llama "$LLAMA_SERVER_BIN" "$LLAMA_CPP_RELEASE_TAG" \
+            "$LLAMA_CPP_MACOS_ASSET" "$LLAMA_CPP_MACOS_URL" || exit 1
 
         # Start native llama-server with Metal
         ai "Starting native llama-server (Metal)..."
-        MODEL_FULL_PATH="${INSTALL_DIR}/data/models/${GGUF_FILE}"
+        MODEL_FULL_PATH="$MACOS_NATIVE_MODEL_PATH"
 
         mkdir -p "$(dirname "$LLAMA_SERVER_PID_FILE")"
-
-        _macos_stop_install_owned_native_llama \
-            "Stopping prior install-owned native inference before replacement..."
 
         # Read reasoning mode from .env (default off to prevent thinking models
         # from consuming the entire token budget on internal reasoning)
@@ -2179,10 +2496,8 @@ else
             *)    _reasoning_fmt="$_reasoning" ;;
         esac
 
-        # Honour the unified BIND_ADDRESS knob (PR #964) so --lan / dashboard
-        # toggle / manual edit reach the native llama-server too. Falls back
-        # to loopback when unset (default-secure).
-        _bind=$(grep '^BIND_ADDRESS=' "$INSTALL_DIR/.env" 2>/dev/null | cut -d= -f2 | tr -d '"' || echo "")
+        # LAN access is limited to authenticated UIs; inference stays private.
+        _bind="127.0.0.1"
         [[ -z "$_bind" ]] && _bind="127.0.0.1"
         _native_llama_port=$(read_env_value "$INSTALL_DIR/.env" "ODS_NATIVE_LLAMA_PORT")
         [[ "$_native_llama_port" =~ ^[0-9]+$ ]] || _native_llama_port="8080"
@@ -2195,28 +2510,35 @@ else
         _gpu_layers=$(grep '^N_GPU_LAYERS=' "$INSTALL_DIR/.env" 2>/dev/null | cut -d= -f2 | tr -d '"' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' || echo "")
         [[ -z "$_gpu_layers" ]] && _gpu_layers="auto"
         _spec_type=$(grep '^LLAMA_ARG_SPEC_TYPE=' "$INSTALL_DIR/.env" 2>/dev/null | cut -d= -f2 | tr -d '"' || echo "")
-        _spec_draft_n_max=$(grep '^LLAMA_ARG_SPEC_DRAFT_N_MAX=' "$INSTALL_DIR/.env" 2>/dev/null | cut -d= -f2 | tr -d '"' || echo "")
         _llama_args=(
             --host "$_bind" --port "$_native_llama_port"
             --model "$MODEL_FULL_PATH"
             --ctx-size "$MAX_CONTEXT"
             --n-gpu-layers "$_gpu_layers"
-            --reasoning-format "$_reasoning_fmt"
             --metrics
         )
+        if [[ "$MACOS_NATIVE_PROFILE" == true ]]; then
+            _llama_args+=(--reasoning-format "$_reasoning_fmt" "${MACOS_NATIVE_PROFILE_ARGS[@]}")
+        else
+        _parallel="$(read_env_value "$INSTALL_DIR/.env" "LLAMA_PARALLEL")"
+        _llama_args+=(--parallel "${_parallel:-1}")
         [[ -n "$_flash_attn" ]] && _llama_args+=(--flash-attn "$_flash_attn")
         [[ -n "$_cache_type_k" ]] && _llama_args+=(--cache-type-k "$_cache_type_k")
         [[ -n "$_cache_type_v" ]] && _llama_args+=(--cache-type-v "$_cache_type_v")
         [[ -n "$_n_cpu_moe" ]] && _llama_args+=(--n-cpu-moe "$_n_cpu_moe")
         [[ -n "$_spec_type" ]] && _llama_args+=(--spec-type "$_spec_type")
-        [[ -n "$_spec_draft_n_max" ]] && _llama_args+=(--spec-draft-n-max "$_spec_draft_n_max")
+        # Draft flags, --ctx-checkpoints 32, the ngram-mod default and the
+        # reasoning flags (--reasoning on b9014, else this --reasoning-format)
+        # are spelled for, and only added when supported by, this runtime.
+        macos_resolve_checkpoint_args "$INSTALL_DIR" "$LLAMA_SERVER_BIN" "$_reasoning_fmt" || exit 1
+        _llama_args+=(${MACOS_NATIVE_CHECKPOINT_ARGS[@]+"${MACOS_NATIVE_CHECKPOINT_ARGS[@]}"})
+        fi
 
-        (
-            cd "$INSTALL_DIR" || exit 1
-            exec "$LLAMA_SERVER_BIN" "${_llama_args[@]}"
-        ) > "$LLAMA_SERVER_LOG" 2>&1 &
-        LLAMA_PID=$!
-        echo "$LLAMA_PID" > "$LLAMA_SERVER_PID_FILE"
+        _macos_stop_install_owned_native_llama \
+            "Stopping prior install-owned native inference before replacement..."
+        bash "$INSTALL_DIR/installers/macos/lib/native-llama-service.sh" start \
+            "$INSTALL_DIR" "$LLAMA_SERVER_BIN" "$LLAMA_SERVER_PID_FILE" "${_llama_args[@]}"
+        LLAMA_PID="$(cat "$LLAMA_SERVER_PID_FILE")"
 
         # Wait for health endpoint
         ai "Waiting for llama-server to load model..."
@@ -2281,6 +2603,9 @@ else
         # Normal macOS mode: native llama-server
         COMPOSE_FLAGS+=("-f" "installers/macos/docker-compose.macos.yml")
     fi
+    if ! $ENABLE_OPEN_WEBUI; then
+        COMPOSE_FLAGS+=("-f" "docker-compose.gateway-only.yml")
+    fi
 
     # Discover enabled extension compose fragments via manifests
     EXT_DIR="${INSTALL_DIR}/extensions/services"
@@ -2325,7 +2650,8 @@ else
             # Check feature flags
             SKIP=false
             case "$SVC_NAME" in
-                litellm|token-spy) $ENABLE_RECOMMENDED || SKIP=true ;;
+                litellm)       $ENABLE_LITELLM || SKIP=true ;;
+                token-spy)     $ENABLE_RECOMMENDED || SKIP=true ;;
                 searxng)       $ENABLE_SEARXNG || SKIP=true ;;
                 whisper|tts)   $ENABLE_VOICE || SKIP=true ;;
                 n8n)           $ENABLE_WORKFLOWS || SKIP=true ;;
@@ -2396,9 +2722,10 @@ else
     launchctl bootout "gui/$(id -u)/${ODS_AGENT_PLIST_LABEL}" 2>/dev/null || true
     launchctl bootout "gui/$(id -u)/${HOST_AGENT_BRIDGE_PLIST_LABEL}" 2>/dev/null || true
     rm -f "$HOST_AGENT_BRIDGE_PLIST" 2>/dev/null || true
-    launchctl bootout "gui/$(id -u)/${OPENCODE_PLIST_LABEL}" 2>/dev/null || true
+    if $ENABLE_OPENCODE; then
+        launchctl bootout "gui/$(id -u)/${OPENCODE_PLIST_LABEL}" 2>/dev/null || true
+    fi
     for _legacy_plist_label in \
-        com.ods.llama-server \
         com.ods.full-model-download; do
         launchctl bootout "gui/$(id -u)/${_legacy_plist_label}" 2>/dev/null || true
         rm -f "$HOME/Library/LaunchAgents/${_legacy_plist_label}.plist" 2>/dev/null || true
@@ -2588,7 +2915,7 @@ for service in (data.get("services") or {}).values():
     # surface unrelated Dockerfile failures and make a healthy selected stack
     # look broken.
     ai "Rebuilding local-built images..."
-    _macos_candidate_build_services=(dashboard dashboard-api model-router remote-provider-egress remote-provider-ssh-tunnel ape token-spy privacy-shield brave-search)
+    _macos_candidate_build_services=(dashboard dashboard-api model-router remote-provider-egress remote-provider-ssh-tunnel ape token-spy privacy-shield brave-search pixel-inference langfuse-minio langfuse-minio-init)
     if ! _macos_enabled_services="$(docker compose "${COMPOSE_FLAGS[@]}" config --services 2>>"$ODS_LOG_FILE")"; then
         ai_err "Could not resolve macOS compose services for local image rebuilds."
         ai "Inspect compose config with: cd '$INSTALL_DIR' && docker compose ${COMPOSE_FLAGS[*]} config --services"
@@ -2731,7 +3058,9 @@ for service in (data.get("services") or {}).values():
         fi
 
         _hermes_live_verified=false
-        for _hermes_wait_i in $(seq 1 90); do
+        # First boot can spend several minutes fixing image ownership before
+        # creating config.yaml, especially under Docker Desktop emulation.
+        for _hermes_wait_i in $(seq 1 600); do
             _hermes_patch_rc=0
             _macos_patch_hermes_persisted_config \
                 "$_hermes_model" "$_hermes_base_url" "$MAX_CONTEXT" \
@@ -2789,6 +3118,26 @@ for service in (data.get("services") or {}).values():
         fi
     fi
 
+    if $ENABLE_PIXEL; then
+        ai "Preparing native Pixel and its Docker services..."
+        _pixel_install_args+=(--ods-source "$INSTALL_DIR")
+        [[ -z "${PIXEL_SOURCE_REF:-}" ]] || _pixel_install_args+=(--ref "$PIXEL_SOURCE_REF")
+        for ((_pixel_i=0; _pixel_i<${#COMPOSE_FLAGS[@]}; _pixel_i+=2)); do
+            [[ "${COMPOSE_FLAGS[_pixel_i]}" == -f ]] || { ai_err "Unexpected Compose selection"; exit 1; }
+            _pixel_install_args+=(--compose-file "$INSTALL_DIR/${COMPOSE_FLAGS[_pixel_i+1]}")
+        done
+        if ! /usr/bin/python3 "$LIB_DIR/pixel-native-install.py" "${_pixel_install_args[@]}"; then
+            ai_err "Native Pixel setup stopped. Keep data/pixel-native and its private receipts for diagnosis."
+            exit 1
+        fi
+        COMPOSE_FLAGS+=(
+            -f extensions/services/pixel-model-relay/compose.yaml.disabled
+            -f extensions/services/pixel-edge/compose.yaml.disabled
+            -f installers/macos/pixel-native.compose.yaml.disabled
+        )
+        ai_ok "Native Pixel activated for Dashboard/Portal"
+    fi
+
     # Save compose flags for ods-macos.sh
     echo "${COMPOSE_FLAGS[*]}" > "${INSTALL_DIR}/.compose-flags"
 
@@ -2821,21 +3170,38 @@ for service in (data.get("services") or {}).values():
         fi
     fi
 
-    # ── Install & start OpenCode (native host binary) ──
+    # ── Install & start OpenCode only when selected ──
+    if $OPENCODE_DISABLE_EXPLICIT || $OPENCODE_DISABLE_SELECTED; then
+        if ods_macos_opencode_plist_owned \
+            "$OPENCODE_PLIST" "$OPENCODE_PLIST_LABEL" "$OPENCODE_BUN_TMPDIR"; then
+            if launchctl print "gui/$(id -u)/${OPENCODE_PLIST_LABEL}" >/dev/null 2>&1 \
+                && ! ods_macos_opencode_loaded_owned "$OPENCODE_PLIST" "$OPENCODE_PLIST_LABEL" \
+                    "$OPENCODE_BUN_TMPDIR" "$(id -u)"; then
+                ai_warn "A foreign OpenCode service uses the ODS label; leaving it untouched."
+            else
+                launchctl disable "gui/$(id -u)/${OPENCODE_PLIST_LABEL}" || {
+                    ai_err "Could not disable the ODS OpenCode login service."
+                    exit 1
+                }
+                ai "Disabled future OpenCode login starts; any current session remains running."
+            fi
+        fi
+    fi
+    if $ENABLE_OPENCODE; then
     chapter "OPENCODE (AI CODING IDE)"
 
-    _install_opencode
+    _install_opencode || true  # Optional IDE failure is reported; do not start an old/unverified version.
 
     # OpenCode is native, so cloud mode uses LiteLLM's published host port while
     # local mode follows the actual native llama bind and port.
     if [[ -n "$OPENCODE_BIN" && -x "$OPENCODE_BIN" ]]; then
         mkdir -p "$OPENCODE_CONFIG_DIR"
         _opencode_switchboard_mode="$(read_env_value "$INSTALL_DIR/.env" "ODS_MODEL_SWITCHBOARD")"
-        if [[ "${_opencode_switchboard_mode:-observe}" == "enabled" ]]; then
+        if [[ "${_opencode_switchboard_mode:-enabled}" == "enabled" ]]; then
             _opencode_model="ods/current"
             _opencode_port="$(read_env_value "$INSTALL_DIR/.env" "LITELLM_PORT")"
             [[ "$_opencode_port" =~ ^[0-9]+$ ]] || _opencode_port="4000"
-            _opencode_bind="$(read_env_value "$INSTALL_DIR/.env" "BIND_ADDRESS")"
+            _opencode_bind="127.0.0.1"
             _opencode_host="$(macos_bind_probe_host "${_opencode_bind:-127.0.0.1}")"
             _opencode_base_url="http://${_opencode_host}:${_opencode_port}/v1"
             _opencode_api_key="$(read_env_value "$INSTALL_DIR/.env" "LITELLM_KEY")"
@@ -2843,7 +3209,7 @@ for service in (data.get("services") or {}).values():
             _opencode_model="default"
             _opencode_port="$(read_env_value "$INSTALL_DIR/.env" "LITELLM_PORT")"
             [[ "$_opencode_port" =~ ^[0-9]+$ ]] || _opencode_port="4000"
-            _opencode_bind="$(read_env_value "$INSTALL_DIR/.env" "BIND_ADDRESS")"
+            _opencode_bind="127.0.0.1"
             _opencode_host="$(macos_bind_probe_host "${_opencode_bind:-127.0.0.1}")"
             _opencode_base_url="http://${_opencode_host}:${_opencode_port}/v1"
             _opencode_api_key="$(read_env_value "$INSTALL_DIR/.env" "LITELLM_KEY")"
@@ -2851,7 +3217,7 @@ for service in (data.get("services") or {}).values():
             _opencode_model="$LLM_MODEL"
             _opencode_port="$(read_env_value "$INSTALL_DIR/.env" "ODS_NATIVE_LLAMA_PORT")"
             [[ "$_opencode_port" =~ ^[0-9]+$ ]] || _opencode_port="8080"
-            _opencode_bind="$(read_env_value "$INSTALL_DIR/.env" "BIND_ADDRESS")"
+            _opencode_bind="127.0.0.1"
             _opencode_host="$(macos_bind_probe_host "${_opencode_bind:-127.0.0.1}")"
             _opencode_base_url="http://${_opencode_host}:${_opencode_port}/v1"
             _opencode_api_key="no-key"
@@ -2885,6 +3251,15 @@ for service in (data.get("services") or {}).values():
     <string>${OPENCODE_PLIST_LABEL}</string>
     <key>ProgramArguments</key>
     <array>
+        <!-- OpenCode 1.18.x (Bun 1.3.14) copies bundled native libraries to a
+             new temp file on every load and never deletes them
+             (anomalyco/opencode#42700, #49283). Empty the ODS-owned
+             BUN_TMPDIR on every start, then exec OpenCode itself. -->
+        <string>/bin/sh</string>
+        <string>-c</string>
+        <string>dir="\$1"; shift; rm -rf "\$dir" &amp;&amp; mkdir -p -m 0700 "\$dir" &amp;&amp; export BUN_TMPDIR="\$dir" &amp;&amp; exec "\$@"</string>
+        <string>ods-opencode-web</string>
+        <string>${OPENCODE_BUN_TMPDIR}</string>
         <string>${OPENCODE_BIN}</string>
         <string>web</string>
         <string>--port</string>
@@ -2900,6 +3275,9 @@ for service in (data.get("services") or {}).values():
         <string>${HOME}</string>
         <key>PATH</key>
         <string>${OPENCODE_LAUNCHD_PATH}</string>
+        <key>OPENCODE_ENABLE_EXA</key>
+        <string>1</string>
+        <!-- Preserve inherited OPENCODE_WEBSEARCH_PROVIDER; Exa is the default. -->
     </dict>
     <key>RunAtLoad</key>
     <true/>
@@ -2919,6 +3297,10 @@ PLIST_EOF
         # Unload existing (if any) and load new plist. bootout legitimately
         # errors when no service is loaded, so we keep that suppressed; the
         # bootstrap call surfaces real failures (e.g. launchd throttle EIO).
+        launchctl enable "gui/$(id -u)/${OPENCODE_PLIST_LABEL}" || {
+            ai_err "Could not enable the ODS OpenCode login service."
+            exit 1
+        }
         launchctl bootout "gui/$(id -u)/${OPENCODE_PLIST_LABEL}" >/dev/null 2>&1 || true
         _opencode_bootstrap_err="$(launchctl bootstrap "gui/$(id -u)" "$OPENCODE_PLIST" 2>&1)" && _opencode_bootstrap_rc=0 || _opencode_bootstrap_rc=$?
         if [[ $_opencode_bootstrap_rc -eq 0 ]]; then
@@ -2927,6 +3309,7 @@ PLIST_EOF
             ai_warn "OpenCode LaunchAgent failed (rc=${_opencode_bootstrap_rc}): ${_opencode_bootstrap_err}"
             ai_warn "Start manually: ${OPENCODE_BIN} web --port 3003"
         fi
+    fi
     fi
 fi
 
@@ -2946,14 +3329,13 @@ if [[ -f "${INSTALL_DIR}/bin/ods-host-agent.py" ]] && [[ -n "$AGENT_PYTHON" ]]; 
     if ! command -v docker >/dev/null 2>&1; then
         ai_warn "docker not found on PATH at install time — host agent will fail to start until Docker Desktop is launched and 'docker' resolves on your shell PATH"
     fi
-    if ! "$AGENT_PYTHON" -c "import huggingface_hub, hf_xet" >/dev/null 2>&1; then
-        ai "Installing ODS host-agent model downloader dependencies..."
-        if "$AGENT_PYTHON" -m pip install --user -q "huggingface_hub[hf_xet]>=0.27" 2>&1 | tee -a "$ODS_LOG_FILE" >/dev/null; then
-            ai_ok "ODS host-agent Hugging Face downloader ready"
-        else
-            ai_warn "Could not install huggingface_hub[hf_xet]; model manager downloads may fail on Xet-backed Hugging Face models."
-        fi
+    ai "Preparing isolated ODS host-agent Python runtime..."
+    if ! _ensure_macos_agent_python "$AGENT_PYTHON"; then
+        ai_err "Could not prepare host-agent Python dependencies. See $ODS_LOG_FILE."
+        exit 1
     fi
+    ODS_AGENT_PORT="$(read_env_value "$INSTALL_DIR/.env" "ODS_AGENT_PORT")"
+    ODS_AGENT_PORT="${ODS_AGENT_PORT:-7710}"
     cat > "$ODS_AGENT_PLIST" <<AGENT_PLIST_EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
@@ -2996,6 +3378,10 @@ if [[ -f "${INSTALL_DIR}/bin/ods-host-agent.py" ]] && [[ -n "$AGENT_PYTHON" ]]; 
 AGENT_PLIST_EOF
 
     launchctl bootout "gui/$(id -u)/${ODS_AGENT_PLIST_LABEL}" >/dev/null 2>&1 || true
+    if ! macos_retire_owned_host_agent_listener "$_agent_probe_host" "$ODS_AGENT_PORT" "$INSTALL_DIR"; then
+        ai_err "Port ${ODS_AGENT_PORT} still has a listener that cannot be safely retired as this ODS host agent."
+        exit 1
+    fi
     _agent_bootstrap_err="$(launchctl bootstrap "gui/$(id -u)" "$ODS_AGENT_PLIST" 2>&1)" && _agent_bootstrap_rc=0 || _agent_bootstrap_rc=$?
     if [[ $_agent_bootstrap_rc -eq 0 ]]; then
         # `launchctl bootstrap` can succeed (definition loaded) while launchd
@@ -3071,21 +3457,23 @@ CLOUD_REQUIRED_HEALTHY=true
 # services wait on `docker inspect ... .State.Health.Status == healthy`;
 # host-native services fall back to an HTTP probe on 127.0.0.1.
 if $CLOUD_MODE; then
-    HEALTH_NAMES=("LiteLLM gateway" "Chat UI (Open WebUI)")
-    HEALTH_URLS=("http://127.0.0.1:4000/health/readiness" "http://127.0.0.1:3000")
-    HEALTH_CONTAINERS=("ods-litellm" "ods-webui")
+    HEALTH_NAMES=("LiteLLM gateway")
+    HEALTH_URLS=("http://127.0.0.1:4000/health/readiness")
+    HEALTH_CONTAINERS=("ods-litellm")
 else
-    _health_bind="$(read_env_value "$INSTALL_DIR/.env" "BIND_ADDRESS")"
+    _health_bind="127.0.0.1"
     _health_llama_host="$(macos_bind_probe_host "${_health_bind:-127.0.0.1}")"
     _health_llama_port="$(read_env_value "$INSTALL_DIR/.env" "ODS_NATIVE_LLAMA_PORT")"
     [[ "$_health_llama_port" =~ ^[0-9]+$ ]] || _health_llama_port="8080"
-    HEALTH_NAMES=("LLM (llama-server)" "Chat UI (Open WebUI)")
-    HEALTH_URLS=("http://${_health_llama_host}:${_health_llama_port}/health" "http://127.0.0.1:3000")
-    HEALTH_CONTAINERS=("" "ods-webui")
+    HEALTH_NAMES=("LLM (llama-server)")
+    HEALTH_URLS=("http://${_health_llama_host}:${_health_llama_port}/health")
+    HEALTH_CONTAINERS=("")
 fi
-$ENABLE_VOICE && HEALTH_NAMES+=("Whisper (STT)") && HEALTH_URLS+=("http://127.0.0.1:9000/health") && HEALTH_CONTAINERS+=("ods-whisper")
+$ENABLE_OPEN_WEBUI && HEALTH_NAMES+=("Chat UI (Open WebUI)") \
+    && HEALTH_URLS+=("http://127.0.0.1:3000") && HEALTH_CONTAINERS+=("ods-webui")
+$ENABLE_VOICE && HEALTH_NAMES+=("Whisper (STT)") && HEALTH_URLS+=("http://127.0.0.1:${WHISPER_PORT:-9000}/health") && HEALTH_CONTAINERS+=("ods-whisper")
 $ENABLE_WORKFLOWS && HEALTH_NAMES+=("n8n (Workflows)") && HEALTH_URLS+=("http://127.0.0.1:5678/healthz") && HEALTH_CONTAINERS+=("ods-n8n")
-[[ -x "$OPENCODE_BIN" ]] && HEALTH_NAMES+=("OpenCode (IDE)") && HEALTH_URLS+=("http://127.0.0.1:${OPENCODE_PORT}") && HEALTH_CONTAINERS+=("")
+$ENABLE_OPENCODE && [[ -x "$OPENCODE_BIN" ]] && HEALTH_NAMES+=("OpenCode (IDE)") && HEALTH_URLS+=("http://127.0.0.1:${OPENCODE_PORT}") && HEALTH_CONTAINERS+=("")
 
 for ((idx=0; idx<${#HEALTH_NAMES[@]}; idx++)); do
     NAME="${HEALTH_NAMES[$idx]}"
@@ -3137,7 +3525,7 @@ done
 
 if $CLOUD_MODE; then
     _cloud_health_key="$(read_env_value "$INSTALL_DIR/.env" "LITELLM_KEY")"
-    _cloud_health_bind="$(read_env_value "$INSTALL_DIR/.env" "BIND_ADDRESS")"
+    _cloud_health_bind="127.0.0.1"
     _cloud_health_host="$(macos_bind_probe_host "${_cloud_health_bind:-127.0.0.1}")"
     _cloud_health_port="$(read_env_value "$INSTALL_DIR/.env" "LITELLM_PORT")"
     [[ "$_cloud_health_port" =~ ^[0-9]+$ ]] || _cloud_health_port="4000"
@@ -3181,7 +3569,7 @@ if [[ "$ENABLE_VOICE" == "true" ]]; then
                 | cut -d= -f2- | tr -d '"' | tr -d '\r' || true)
     [[ -z "$STT_MODEL" ]] && STT_MODEL="Systran/faster-whisper-base"
     STT_MODEL_ENCODED="${STT_MODEL//\//%2F}"
-    # macOS reassigns Whisper to 9100 if port 9000 is in use (AirPlay Receiver).
+    # macOS reassigns Whisper to 9100 if another service owns port 9000.
     WHISPER_PORT_RESOLVED="${WHISPER_PORT:-9000}"
     WHISPER_URL="http://127.0.0.1:${WHISPER_PORT_RESOLVED}"
     STT_MODEL_URL="${WHISPER_URL}/v1/models/${STT_MODEL_ENCODED}"
@@ -3263,7 +3651,7 @@ if $ENABLE_PERPLEXICA; then
     PERPLEXICA_API_KEY="no-key"
     PERPLEXICA_BASE_URL="${CONTAINER_LLM_URL:-http://host.docker.internal:8080}"
     _perplexica_switchboard_mode="$(read_env_value "$INSTALL_DIR/.env" "ODS_MODEL_SWITCHBOARD")"
-    if [[ "${_perplexica_switchboard_mode:-observe}" == "enabled" ]]; then
+    if [[ "${_perplexica_switchboard_mode:-enabled}" == "enabled" ]]; then
         PERPLEXICA_MODEL="ods/current"
         PERPLEXICA_API_KEY="$(read_env_value "$INSTALL_DIR/.env" "LITELLM_KEY")"
         PERPLEXICA_BASE_URL="http://litellm:4000"
@@ -3311,17 +3699,19 @@ fi
 
 {
     printf 'Dashboard|http://127.0.0.1:3001|ods-dashboard|http://localhost:3001\n'
-    printf 'Chat UI (Open WebUI)|http://127.0.0.1:3000|ods-webui|http://localhost:3000\n'
+    $ENABLE_OPEN_WEBUI && printf 'Chat UI (Open WebUI)|http://127.0.0.1:3000|ods-webui|http://localhost:3000\n'
     if $CLOUD_MODE; then
         printf 'LiteLLM|http://127.0.0.1:4000/health/readiness|ods-litellm|http://localhost:4000\n'
     else
         printf 'llama-server|http://%s:%s/health||http://localhost:%s/v1\n' "$_health_llama_host" "$_health_llama_port" "$_health_llama_port"
     fi
     printf 'Dashboard API|http://127.0.0.1:3002/health|ods-dashboard-api|http://localhost:3002\n'
-    printf 'Perplexica|http://127.0.0.1:3004|ods-perplexica|http://localhost:3004\n'
+    $ENABLE_PERPLEXICA && printf 'Perplexica|http://127.0.0.1:3004|ods-perplexica|http://localhost:3004\n'
     $ENABLE_VOICE && printf 'Whisper (STT)|http://127.0.0.1:%s/health|ods-whisper|http://localhost:%s\n' "${WHISPER_PORT:-9000}" "${WHISPER_PORT:-9000}"
     $ENABLE_WORKFLOWS && printf 'n8n|http://127.0.0.1:5678/healthz|ods-n8n|http://localhost:5678\n'
-    [[ -x "$OPENCODE_BIN" ]] && printf 'OpenCode (IDE)|http://127.0.0.1:%s||http://localhost:%s\n' "$OPENCODE_PORT" "$OPENCODE_PORT"
+    if $ENABLE_OPENCODE && [[ -x "$OPENCODE_BIN" ]]; then
+        printf 'OpenCode (IDE)|http://127.0.0.1:%s||http://localhost:%s\n' "$OPENCODE_PORT" "$OPENCODE_PORT"
+    fi
 } | ods_readiness_summary "./ods-macos.sh status" "$ODS_LOG_FILE" "http://localhost:3001"
 
 show_success_card

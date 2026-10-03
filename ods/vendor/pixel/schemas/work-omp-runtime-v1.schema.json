@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/work-omp-runtime-v1.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "contract", "executor", "platform", "probe", "safetyHeadroomMiB", "minimumWorkerMemoryMiB", "profileMinimumMemoryMiB", "boundary"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/work-omp-runtime-v1.schema.json"},
+    "schemaVersion": {"const": 1},
+    "contract": {"const": "pixel-omp-linux-x64-runtime-v1"},
+    "executor": {
+      "type": "object", "additionalProperties": false,
+      "required": ["id", "version", "sourceCommit", "sha256"],
+      "properties": {
+        "id": {"const": "omp"},
+        "version": {"const": "17.2.12"},
+        "sourceCommit": {"const": "45e12e5bb758198a920c6070e7e64cb33b21beac"},
+        "sha256": {"const": "6c75331bf09d5a9e9433bd592b3ee993d751a15d5b7450c1a334cc0684996f30"}
+      }
+    },
+    "platform": {"const": "linux-x86_64"},
+    "probe": {
+      "type": "object", "additionalProperties": false,
+      "required": ["operation", "failureCeilingMiB", "successFloorMiB", "testedThroughMiB"],
+      "properties": {
+        "operation": {"const": "rpc-read-tool"},
+        "failureCeilingMiB": {"const": 1040},
+        "successFloorMiB": {"const": 1048},
+        "testedThroughMiB": {"const": 2048}
+      }
+    },
+    "safetyHeadroomMiB": {"const": 488},
+    "minimumWorkerMemoryMiB": {"const": 1536},
+    "profileMinimumMemoryMiB": {
+      "type": "object", "additionalProperties": false,
+      "required": ["scout", "builder", "data-lab", "researcher"],
+      "properties": {
+        "scout": {"const": 1536},
+        "builder": {"const": 2048},
+        "data-lab": {"const": 1536},
+        "researcher": {"const": 1536}
+      }
+    },
+    "boundary": {"type": "string", "minLength": 80, "maxLength": 1024}
+  }
+}

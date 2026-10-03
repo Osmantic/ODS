@@ -1,0 +1,70 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/work-lease-consumption-v1.schema.json",
+  "title": "Pixel Deep Work single-use lease consumption v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "claimId", "jobId", "leaseId", "claimedAt", "planSha256", "leaseSha256", "policySha256", "inputSetSha256", "workspaceSha256", "executor", "model", "runnerImageDigest", "singleUse", "status", "externalEffects", "authority", "boundary"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/work-lease-consumption-v1.schema.json"},
+    "schemaVersion": {"const": 1},
+    "claimId": {"type": "string", "pattern": "^workclaim-[0-9]{13}-[a-f0-9]{12}$"},
+    "jobId": {"type": "string", "pattern": "^work-[0-9]{13}-[a-f0-9]{12}$"},
+    "leaseId": {"type": "string", "pattern": "^worklease-[0-9]{13}-[a-f0-9]{12}$"},
+    "claimedAt": {"type": "string", "format": "date-time"},
+    "planSha256": {"$ref": "#/$defs/sha256"},
+    "leaseSha256": {"$ref": "#/$defs/sha256"},
+    "policySha256": {"$ref": "#/$defs/sha256"},
+    "inputSetSha256": {"$ref": "#/$defs/sha256"},
+    "workspaceSha256": {"$ref": "#/$defs/sha256"},
+    "executor": {"$ref": "#/$defs/executor"},
+    "model": {"$ref": "#/$defs/model"},
+    "runnerImageDigest": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+    "singleUse": {"const": true},
+    "status": {"const": "consumed"},
+    "externalEffects": {"const": false},
+    "authority": {"$ref": "#/$defs/authority"},
+    "boundary": {"const": "Private immutable tombstone proving one lease was consumed once. It grants no replay, retry, scope expansion, credential, network, host, merge, deployment, publication, purchase, or external-effect authority."}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "executor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "version", "sourceCommit", "license", "artifactSha256", "rpcProtocolVersion"],
+      "properties": {
+        "id": {"const": "omp"},
+        "version": {"type": "string", "pattern": "^(?:0|[1-9][0-9]{0,8})\\.(?:0|[1-9][0-9]{0,8})\\.(?:0|[1-9][0-9]{0,8})$"},
+        "sourceCommit": {"type": "string", "pattern": "^[a-f0-9]{40}$"},
+        "license": {"const": "MIT"},
+        "artifactSha256": {"$ref": "#/$defs/sha256"},
+        "rpcProtocolVersion": {"const": 2}
+      }
+    },
+    "model": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["route", "provider", "id", "backendImageDigest", "contextWindow", "supportsVision", "endpointContract"],
+      "properties": {
+        "route": {"const": "local-only"},
+        "provider": {"enum": ["llama.cpp", "vllm"]},
+        "id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:+/-]{0,127}$"},
+        "backendImageDigest": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+        "contextWindow": {"type": "integer", "minimum": 1024, "maximum": 2000000},
+        "supportsVision": {"type": "boolean"},
+        "endpointContract": {"const": "llama.cpp-discovery-and-openai-stream-v1"}
+      }
+    },
+    "authority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["hostAccess", "ambientCredentials", "arbitraryNetwork", "externalEffects", "merge", "deploy", "publish", "purchase", "policyMutation", "acceptanceCriteriaMutation", "leaseExpansion"],
+      "properties": {
+        "hostAccess": {"const": false}, "ambientCredentials": {"const": false}, "arbitraryNetwork": {"const": false},
+        "externalEffects": {"const": false}, "merge": {"const": false}, "deploy": {"const": false},
+        "publish": {"const": false}, "purchase": {"const": false}, "policyMutation": {"const": false},
+        "acceptanceCriteriaMutation": {"const": false}, "leaseExpansion": {"const": false}
+      }
+    }
+  }
+}

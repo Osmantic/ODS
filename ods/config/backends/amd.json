@@ -8,7 +8,7 @@
   "provider_url": "http://llama-server:8080/api/v1",
   "runtime": {
     "lemonade": {
-      "container_image": "ghcr.io/lemonade-sdk/lemonade-server:v10.2.0",
+      "container_image": "ghcr.io/lemonade-sdk/lemonade-server:v10.2.0@sha256:08edbf1128a7fd82b39f1de72c2f70c013f2ecfefac6a99c52bcf58eba532a3a",
       "windows_version": "10.0.0",
       "windows_msi_file": "lemonade-server-minimal.msi",
       "windows_executable": "lemonade-server.exe",

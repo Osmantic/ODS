@@ -24,8 +24,12 @@ pass() {
 make_stub_bin() {
     local stub_dir="$1"
 
-    cat > "$stub_dir/docker" <<'EOF'
+cat > "$stub_dir/docker" <<'EOF'
 #!/usr/bin/env bash
+printf 'docker %s\n' "$*" >> "${UNINSTALL_COMMAND_LOG:?}"
+if [[ "${1:-}" == compose && "$*" == *" config --format json" ]]; then
+    printf '%s\n' '{"name":"ods","volumes":{}}'
+fi
 exit 0
 EOF
     cat > "$stub_dir/systemctl" <<'EOF'
@@ -35,8 +39,14 @@ if [[ "${1:-}" == "is-enabled" ]]; then
 fi
 exit 0
 EOF
-    cat > "$stub_dir/sudo" <<'EOF'
+cat > "$stub_dir/sudo" <<'EOF'
 #!/usr/bin/env bash
+case "$*" in
+    *pixel-native-uninstall.py*)
+        printf 'native-retire\n' >> "${UNINSTALL_COMMAND_LOG:?}"
+        exit "${RETIRE_EXIT_CODE:-0}"
+        ;;
+esac
 exit 0
 EOF
     cat > "$stub_dir/pgrep" <<'EOF'
@@ -80,6 +90,15 @@ make_install() {
     mkdir -p "$install_dir/lib"
     cp "$TARGET" "$install_dir/ods-uninstall.sh"
     cp "$ROOT_DIR/lib/safe-env.sh" "$install_dir/lib/safe-env.sh"
+    cp "$ROOT_DIR/lib/system-uninstall.sh" "$install_dir/lib/system-uninstall.sh"
+    mkdir -p "$install_dir/scripts"
+    cp "$ROOT_DIR/scripts/compose-cache-policy.py" "$install_dir/scripts/"
+    cp "$ROOT_DIR/scripts/uninstall-compose-volumes.py" "$install_dir/scripts/"
+    cp "$ROOT_DIR/scripts/resolve-compose-stack.sh" "$install_dir/scripts/"
+    touch "$install_dir/docker-compose.base.yml"
+    printf '%s\n' '-f docker-compose.base.yml' > "$install_dir/.compose-flags"
+    mkdir -p "$install_dir/installers/macos/lib"
+    cp "$ROOT_DIR/installers/macos/lib/pixel-native-uninstall.py" "$install_dir/installers/macos/lib/"
     touch "$install_dir/ods-cli"
 }
 
@@ -99,10 +118,13 @@ run_uninstall() {
     local stub_dir="$3"
     local out_file="$4"
 
+    ODS_UNINSTALL_SYSTEMD_DIR="$TMP_DIR/systemd" \
     HOME="$home_dir" \
     INSTALL_DIR="$install_dir" \
     PATH="$stub_dir:$PATH" \
     LAUNCHCTL_LOG="${LAUNCHCTL_LOG:?}" \
+    UNINSTALL_COMMAND_LOG="$out_file.commands" \
+    RETIRE_EXIT_CODE="${RETIRE_EXIT_CODE:-0}" \
     UNAME_S="${UNAME_S:-Darwin}" \
     LOADED_LABELS="${LOADED_LABELS:-}" \
     BOOTOUT_FAIL="${BOOTOUT_FAIL:-}" \
@@ -116,7 +138,7 @@ main() {
     trap 'chmod -R u+w "$TMP_DIR" 2>/dev/null; rm -rf "$TMP_DIR"' EXIT
 
     local stub_dir="$TMP_DIR/bin"
-    mkdir -p "$stub_dir"
+    mkdir -p "$stub_dir" "$TMP_DIR/systemd"
     make_stub_bin "$stub_dir"
     local uid
     uid="$(id -u)"
@@ -128,7 +150,12 @@ main() {
     make_home_with_plists "$home1" $CURRENT_LABELS $LEGACY_LABELS
     LAUNCHCTL_LOG="$TMP_DIR/launchctl1.log" LOADED_LABELS="$CURRENT_LABELS" \
         run_uninstall "$install1" "$home1" "$stub_dir" "$TMP_DIR/out1.log" \
-        || fail "normal macOS uninstall exited non-zero"
+        || {
+            cat "$TMP_DIR/out1.log" >&2
+            [[ ! -f "$TMP_DIR/out1.log.commands" ]] \
+                || cat "$TMP_DIR/out1.log.commands" >&2
+            fail "normal macOS uninstall exited non-zero"
+        }
 
     local label
     for label in $CURRENT_LABELS; do
@@ -140,6 +167,11 @@ main() {
             || fail "uninstall must remove ${label}.plist"
     done
     pass "macOS uninstall boots out loaded agents and removes all ODS plists (incl. legacy)"
+    local retire_line down_line
+    retire_line="$(grep -n '^native-retire$' "$TMP_DIR/out1.log.commands" | head -n 1 | cut -d: -f1)"
+    down_line="$(grep -n '^docker compose .* down --remove-orphans$' "$TMP_DIR/out1.log.commands" | head -n 1 | cut -d: -f1)"
+    [[ -n "$retire_line" && -n "$down_line" && "$retire_line" -lt "$down_line" ]] \
+        || fail "native retirement must precede destructive Docker cleanup"
 
     # ── Scenario 2: nothing installed — tolerated, no bootout, no warnings ──
     local install2="$TMP_DIR/install2" home2="$TMP_DIR/home2"
@@ -191,6 +223,22 @@ main() {
     [[ ! -s "$TMP_DIR/launchctl5.log" ]] \
         || fail "Linux uninstall must never invoke launchctl"
     pass "Linux uninstall path never touches launchctl"
+
+    # Native retirement must fail before deleting the install or stopping recovery services.
+    local install6="$TMP_DIR/install6" home6="$TMP_DIR/home6"
+    make_install "$install6"
+    make_home_with_plists "$home6" com.ods.host-agent
+    if LAUNCHCTL_LOG="$TMP_DIR/launchctl6.log" RETIRE_EXIT_CODE=1 \
+        run_uninstall "$install6" "$home6" "$stub_dir" "$TMP_DIR/out6.log"; then
+        fail "rejected native retirement must abort uninstall"
+    fi
+    [[ -d "$install6" && -f "$home6/Library/LaunchAgents/com.ods.host-agent.plist" ]] \
+        || fail "rejected retirement must retain the installation and recovery agent"
+    [[ ! -s "$TMP_DIR/launchctl6.log" ]] || fail "rejected retirement stopped recovery services"
+    if grep -qE '^docker (compose .* down|volume rm)' "$TMP_DIR/out6.log.commands"; then
+        fail "rejected retirement must not mutate Docker resources"
+    fi
+    pass "native retirement failure retains the install, agents and Docker resources"
 }
 
 main "$@"

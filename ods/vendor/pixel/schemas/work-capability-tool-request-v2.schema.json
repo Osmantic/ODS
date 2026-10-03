@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/work-capability-tool-request-v2.schema.json",
+  "title": "Pixel Deep Work broad-tools capability tool request v2 (admission-only foundation)",
+  "type": "object", "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "requestId", "jobId", "createdAt", "authorizationSha256", "planSha256", "leaseSha256", "checkpointSha256", "pack", "tool", "effectClass", "bindingSummary", "arguments", "dataClassification", "limits", "expectedEventHeadSha256", "authority", "boundary"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/work-capability-tool-request-v2.schema.json"},
+    "schemaVersion": {"const": 2},
+    "requestId": {"type": "string", "pattern": "^workcaprequest-[0-9]{13}-[a-f0-9]{12}$"},
+    "jobId": {"type": "string", "pattern": "^work-[0-9]{13}-[a-f0-9]{12}$"},
+    "createdAt": {"type": "string", "format": "date-time"},
+    "authorizationSha256": {"$ref": "#/$defs/sha256"},
+    "planSha256": {"$ref": "#/$defs/sha256"},
+    "leaseSha256": {"$ref": "#/$defs/sha256"},
+    "checkpointSha256": {"$ref": "#/$defs/sha256"},
+    "pack": {"type": "object", "additionalProperties": false, "required": ["id", "version", "packSha256", "treeSha256", "schemaVersion"], "properties": {"id": {"type": "string", "pattern": "^[a-z][a-z0-9-]{1,62}$"}, "version": {"type": "string", "pattern": "^(?:0|[1-9][0-9]{0,8})\\.(?:0|[1-9][0-9]{0,8})\\.(?:0|[1-9][0-9]{0,8})$"}, "packSha256": {"$ref": "#/$defs/sha256"}, "treeSha256": {"$ref": "#/$defs/sha256"}, "schemaVersion": {"const": 2}}},
+    "tool": {"type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_.-]{0,127}$"},
+    "effectClass": {"enum": ["read-only", "workspace", "brokered-network", "external"]},
+    "bindingSummary": {"$ref": "#/$defs/bindingSummary"},
+    "arguments": {"type": "object"},
+    "dataClassification": {"enum": ["public", "internal", "confidential", "restricted"]},
+    "limits": {"type": "object", "additionalProperties": false, "required": ["maxInputBytes", "maxOutputBytes", "maxRuntimeMs", "maxCalls", "maxMemoryMiB", "maxCpuCores", "maxPids", "maxWorkspaceBytes"], "properties": {"maxInputBytes": {"type": "integer", "minimum": 1, "maximum": 1048576}, "maxOutputBytes": {"type": "integer", "minimum": 1, "maximum": 16777216}, "maxRuntimeMs": {"type": "integer", "minimum": 100, "maximum": 3600000}, "maxCalls": {"const": 1}, "maxMemoryMiB": {"type": "integer", "minimum": 64, "maximum": 8192}, "maxCpuCores": {"type": "number", "minimum": 0.1, "maximum": 8}, "maxPids": {"type": "integer", "minimum": 16, "maximum": 512}, "maxWorkspaceBytes": {"type": "integer", "minimum": 0, "maximum": 34359738368}}},
+    "expectedEventHeadSha256": {"type": ["string", "null"], "pattern": "^[a-f0-9]{64}$"},
+    "authority": {"const": {"directExecution": false, "credentials": false, "network": false, "externalEffects": false, "scopeExpansion": false, "completion": false}},
+    "boundary": {"const": "Private untrusted request for one exact v2 broad-tools capability declaration. Arguments remain job-scoped data; this request grants no execution, credential, network, external-effect, scope-expansion, or completion authority and v2 runtime is not enabled."}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "bindingSummary": {"type": "object", "additionalProperties": false, "required": ["targetClass", "inputClassification", "outputClassification"], "properties": {
+      "targetClass": {"enum": ["public-api", "private-lan", "local-filesystem", "local-process", "ssh", "browser", "mailbox", "download", "file", "api", "shell"]},
+      "inputClassification": {"enum": ["public", "internal", "confidential", "restricted"]},
+      "outputClassification": {"enum": ["public", "internal", "confidential", "restricted"]}
+    }}
+  }
+}

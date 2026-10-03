@@ -1,6 +1,6 @@
 services:
   flowise:
-    image: flowiseai/flowise:2.2.7
+    image: flowiseai/flowise:2.2.7@sha256:aa511ea7601f11fbdce4236bff996d40d4134e08e87b6cb8873c4eb4b40276a9
     container_name: ods-flowise
     restart: unless-stopped
     security_opt:
@@ -20,7 +20,7 @@ services:
     volumes:
       - ./data/flowise:/root/.flowise:rw
     ports:
-      - "${BIND_ADDRESS:-127.0.0.1}:${FLOWISE_PORT:-7801}:3000"
+      - "127.0.0.1:${FLOWISE_PORT:-7801}:3000"
     healthcheck:
       test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:3000/api/v1/ping"]
       interval: 30s

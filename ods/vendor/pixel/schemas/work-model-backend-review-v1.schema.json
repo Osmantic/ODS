@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/work-model-backend-review-v1.schema.json",
+  "title": "Pixel content-free contained model backend review v1",
+  "type": "object", "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "operation", "status", "artifact", "launchBundleSha256", "confirmation", "changes", "privacy", "authority", "boundary"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/work-model-backend-review-v1.schema.json"},
+    "schemaVersion": {"const": 1}, "operation": {"const": "pixel-work-model-backend-review"}, "status": {"const": "confirmation-required"},
+    "artifact": {"const": {"measured": true, "matchesPolicy": true}},
+    "launchBundleSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "confirmation": {
+      "type": "object", "additionalProperties": false, "required": ["option", "sha256"],
+      "properties": {"option": {"const": "--confirm-launch-bundle-sha256"}, "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}}
+    },
+    "changes": {"const": {"writesPrivateLaunchBundle": true, "createsNetwork": false, "startsContainer": false, "pullsImage": false, "changesPolicy": false, "enablesDeepWork": false, "changesAuthority": false}},
+    "privacy": {"const": {"modelIdentifier": false, "backendIdentifier": false, "acceleratorIdentifier": false, "deviceIdentifiers": false, "paths": false, "hashesExceptConfirmation": false, "credentials": false, "prompts": false, "responses": false}},
+    "authority": {"const": {"grantsExecution": false, "createsNetwork": false, "startsContainer": false, "pullsImage": false, "grantsDevices": false, "grantsCredentials": false, "grantsExternalEffects": false, "grantsCompletion": false}},
+    "boundary": {"const": "Content-free review of one exact private contained-model launch bundle after measuring the selected model bytes. Confirmation may write one new private inert bundle but cannot create a network or container, pull an image, grant a device, qualify a model, change policy, enable Deep Work, expose content, or grant execution, credential, external-effect, or completion authority."}
+  }
+}

@@ -57,8 +57,9 @@ services:
       - ./data/my-service:/app/data
 
     ports:
-      # External port (user-facing) : Internal port (container)
-      - "${BIND_ADDRESS:-127.0.0.1}:${MY_SERVICE_PORT:-1234}:1234"
+      # Host port : container port. Extension ports must bind the literal
+      # loopback address 127.0.0.1; ODS rejects ${BIND_ADDRESS} and 0.0.0.0.
+      - "127.0.0.1:${MY_SERVICE_PORT:-1234}:1234"
 
     deploy:
       resources:

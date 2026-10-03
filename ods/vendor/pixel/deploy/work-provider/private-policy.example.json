@@ -1,0 +1,27 @@
+{
+  "$schema": "https://osmantic.com/pixel/schemas/work-provider-private-policy-v1.schema.json",
+  "schemaVersion": 1,
+  "policyId": "workproviderpolicy-1787328000000-000000000000",
+  "createdAt": "2026-08-21T16:00:00Z",
+  "providerId": "moonshot-kimi",
+  "enabled": false,
+  "credentialCustody": {"credentialId": "moonshot-test", "fileName": "moonshot-kimi-key", "maxBytes": 8192},
+  "transport": {
+    "allowedHosts": ["api.moonshot.ai:443"], "proxyRequired": true, "directNetworkAllowed": false,
+    "denyIpLiterals": true, "denyPrivateAddressResolution": true, "denyPlainHttp": true,
+    "logRequestBodies": false, "logResponseBodies": false
+  },
+  "dataPolicy": {
+    "allowedClassifications": ["internal-source", "owner-approved-source", "public"],
+    "neverEgressCategories": ["authentication-material", "credentials", "private-keys", "regulated-records", "session-tokens", "unapproved-owner-data"]
+  },
+  "budgets": {
+    "maxRequestsPerRun": 4, "maxInputTokensPerRun": 50000, "maxOutputTokensPerRun": 10000,
+    "maxNetworkBytesPerRun": 16777216, "maxRequestSeconds": 120,
+    "maxEstimatedCostMicrosPerRun": 5000000, "maxEstimatedCostMicrosPerDay": 20000000
+  },
+  "fallback": {"mode": "local-only", "cloudToCloudAllowed": false, "reconcileBeforeRetry": true},
+  "verification": {"independentLocalVerifierRequired": true, "verifierMayBeWorker": false, "failClosedIfUnavailable": true},
+  "authority": {"merge": false, "push": false, "deploy": false, "publish": false, "externalMessages": false, "productionCredentials": false, "securityTesting": false},
+  "boundary": "Owner-private remote work-provider policy. It may enable only the exact selected provider, credential custody, egress hosts, data classes, and budgets; it grants no merge, push, deployment, publication, external-message, production-credential, cloud-fallback, policy-mutation, verifier-selection, completion, or security-testing authority."
+}

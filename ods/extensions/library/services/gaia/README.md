@@ -17,13 +17,17 @@ This ODS entry is intentionally conservative:
   best native acceleration, use AMD's desktop/native GAIA installer and point
   ODS tools at that endpoint where appropriate.
 
-## Enable
+## Install
 
-```bash
-cp -r ods/extensions/library/services/gaia ods/extensions/services/gaia
-ods enable gaia
-ods start gaia
-```
+Install **AMD GAIA** from the dashboard's Extensions page. ODS copies this
+recipe to `data/user-extensions/gaia`, builds the image from that directory,
+prepares `data/gaia` for the container user (uid 10001) on Linux and starts
+the service. Stop, restart or remove it from the same page.
+
+Do not copy this directory into `extensions/services/`. Built-in extension
+Compose files resolve relative build contexts against the install root, so
+the recipe's `build.context: .` would point at the wrong directory and the
+image build fails.
 
 Open the UI at:
 

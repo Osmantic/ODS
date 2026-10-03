@@ -49,13 +49,13 @@ fi
 # ---------------------------------------------------------------------------
 # 3. The helper must verify the requested model/base URL after writing.
 # ---------------------------------------------------------------------------
-if grep -Fq 'default: ".*"\r?$' "$PHASE" \
-   && grep -Fq 'base_url: ".*"\r?$' "$PHASE" \
+if grep -Fq 'default:\s*(?:"[^"]*"|[^\r\n#]+)' "$PHASE" \
+   && grep -Fq 'base_url:\s*(?:"[^"]*"|[^\r\n#]+)' "$PHASE" \
    && grep -q '\.Contains("  default: `"\$Model`"")' "$PHASE" \
    && grep -q '\.Contains("  base_url: `"\$BaseUrl`"")' "$PHASE"; then
-    pass "Hermes config patching is CRLF-tolerant and verifies model/base_url after write"
+    pass "Hermes config patching accepts template/live YAML and verifies model/base_url after write"
 else
-    fail "Hermes config patching must handle CRLF YAML and verify model/base_url after write"
+    fail "Hermes config patching must handle quoted/unquoted CRLF YAML and verify model/base_url after write"
 fi
 
 # ---------------------------------------------------------------------------
@@ -108,6 +108,35 @@ if grep -q 'ODS_MODEL_SWITCHBOARD' "$PHASE" \
     pass "Windows Hermes config patching uses the stable switchboard alias"
 else
     fail "Windows Hermes config patching must use ods/current when switchboard mode is enabled"
+fi
+
+# ---------------------------------------------------------------------------
+# 6c. Hermes provider=custom ignores OPENAI_API_KEY unless model.api_key is
+#     persisted in config.yaml. Windows must patch the generated key into both
+#     template and live configs or authenticated LiteLLM calls fail at runtime.
+# ---------------------------------------------------------------------------
+if grep -q '\[string\]\$ApiKey = ""' "$PHASE" \
+   && grep -q 'api_key: `"\$ApiKey`"' "$PHASE" \
+   && grep -q -- '-ApiKey \$_hermesApiKey' "$PHASE" \
+   && grep -q -- '-ApiKey \$hermesApiKey' "$MONO" \
+   && grep -q 'SetAccessRuleProtection(\$true, \$false)' "$PHASE" \
+   && grep -q 'RemoveAccessRuleSpecific' "$PHASE" \
+   && grep -q 'AreAccessRulesProtected' "$PHASE"; then
+    pass "Windows persists and ACL-restricts the Hermes custom-provider API key"
+else
+    fail "Windows Hermes config patching must persist and ACL-restrict HERMES_LLM_API_KEY"
+fi
+
+# ---------------------------------------------------------------------------
+# 6d. Windows must converge to the same conservative Talk compression values
+#     as the canonical template and Linux patcher.
+# ---------------------------------------------------------------------------
+if grep -q 'threshold: 0.75' "$PHASE" \
+   && grep -q 'target_ratio: 0.50' "$PHASE" \
+   && grep -q 'protect_last_n: 40' "$PHASE"; then
+    pass "Windows Hermes compression defaults match the canonical patcher"
+else
+    fail "Windows Hermes compression defaults must match the canonical patcher"
 fi
 
 # ---------------------------------------------------------------------------

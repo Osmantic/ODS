@@ -1,0 +1,127 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/frontier-policy-v1.schema.json",
+  "title": "Pixel Frontier policy v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "deployment", "provider", "taskClasses", "dataPolicy", "authority", "budgets", "retention"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "deployment": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"},
+    "provider": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "model", "timeoutSeconds", "maxInputBytes", "maxOutputBytes"],
+      "properties": {
+        "kind": {"enum": ["codex", "mock"]},
+        "authMode": {"enum": ["api-key", "chatgpt"]},
+        "model": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"},
+        "codexBinary": {"type": "string", "pattern": "^/"},
+        "timeoutSeconds": {"type": "integer", "minimum": 5, "maximum": 1800},
+        "maxInputBytes": {"type": "integer", "minimum": 1024, "maximum": 1048576},
+        "maxOutputBytes": {"type": "integer", "minimum": 1024, "maximum": 1048576}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"kind": {"const": "codex"}}, "required": ["kind"]},
+          "then": {"required": ["codexBinary"]},
+          "else": {"allOf": [{"not": {"required": ["codexBinary"]}}, {"not": {"required": ["authMode"]}}]}
+        }
+      ]
+    },
+    "taskClasses": {
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 1,
+      "properties": {
+        "plan_review": {"$ref": "#/$defs/taskClass"},
+        "failure_triage": {"$ref": "#/$defs/taskClass"}
+      }
+    },
+    "dataPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["allowedClassifications", "approvalRequired", "neverEgress", "maxStringLength", "maxArrayItems"],
+      "properties": {
+        "allowedClassifications": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"enum": ["public", "internal-derived", "confidential"]}},
+        "approvalRequired": {"type": "array", "uniqueItems": true, "items": {"enum": ["public", "internal-derived", "confidential"]}},
+        "neverEgress": {"type": "array", "minItems": 6, "uniqueItems": true, "items": {"enum": ["structural", "source-derived", "personal-identifiers", "customer-confidential", "proprietary-code", "security-findings", "credentials", "private-keys", "session-tokens", "authentication-material", "raw-source-bodies", "regulated-records"]}, "allOf": [{"contains": {"const": "credentials"}}, {"contains": {"const": "private-keys"}}, {"contains": {"const": "session-tokens"}}, {"contains": {"const": "authentication-material"}}, {"contains": {"const": "raw-source-bodies"}}, {"contains": {"const": "regulated-records"}}]},
+        "maxStringLength": {"type": "integer", "minimum": 64, "maximum": 65536},
+        "maxArrayItems": {"type": "integer", "minimum": 1, "maximum": 256}
+      }
+    },
+    "authority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["defaultLevel", "planTtlMinutes", "grants"],
+      "properties": {
+        "defaultLevel": {"enum": ["disabled", "preview", "propose"]},
+        "planTtlMinutes": {"type": "integer", "minimum": 1, "maximum": 1440},
+        "grants": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "allOf": [
+              {"$ref": "#/$defs/grant"},
+              {"properties": {"expiresAt": false, "source": false}}
+            ]
+          }
+        }
+      }
+    },
+    "budgets": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["windowSeconds", "maxJobs", "maxInputTokens", "maxOutputTokens", "maxFailures"],
+      "properties": {
+        "windowSeconds": {"type": "integer", "minimum": 60, "maximum": 2678400},
+        "maxJobs": {"type": "integer", "minimum": 1, "maximum": 100000},
+        "maxInputTokens": {"type": "integer", "minimum": 128, "maximum": 1000000000},
+        "maxOutputTokens": {"type": "integer", "minimum": 64, "maximum": 1000000000},
+        "maxFailures": {"type": "integer", "minimum": 1, "maximum": 100000}
+      }
+    },
+    "retention": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["privateRequestMinutes", "planMinutes", "resultDays"],
+      "properties": {
+        "privateRequestMinutes": {"type": "integer", "minimum": 1, "maximum": 1440},
+        "planMinutes": {"type": "integer", "minimum": 1, "maximum": 10080},
+        "resultDays": {"type": "integer", "minimum": 1, "maximum": 365}
+      }
+    }
+  },
+  "$defs": {
+    "taskClass": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled", "allowedClassifications", "maxInputTokens", "maxOutputTokens", "rehydrate"],
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "allowedClassifications": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"enum": ["public", "internal-derived", "confidential"]}},
+        "maxInputTokens": {"type": "integer", "minimum": 128, "maximum": 262144},
+        "maxOutputTokens": {"type": "integer", "minimum": 64, "maximum": 8192},
+        "rehydrate": {"type": "boolean"}
+      }
+    },
+    "grant": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "level", "taskClasses", "classifications", "maxExecutions", "windowSeconds", "maxInputTokens", "maxOutputTokens", "maxFailures"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[a-z][a-z0-9_.-]{1,127}$"},
+        "level": {"const": "bounded-auto"},
+        "taskClasses": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"enum": ["plan_review", "failure_triage"]}},
+        "classifications": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"enum": ["public", "internal-derived"]}},
+        "maxExecutions": {"type": "integer", "minimum": 1, "maximum": 100000},
+        "windowSeconds": {"type": "integer", "minimum": 60, "maximum": 2678400},
+        "maxInputTokens": {"type": "integer", "minimum": 128, "maximum": 262144},
+        "maxOutputTokens": {"type": "integer", "minimum": 64, "maximum": 8192},
+        "maxFailures": {"type": "integer", "minimum": 1, "maximum": 100000},
+        "expiresAt": {"type": "string", "format": "date-time"},
+        "source": {"enum": ["standing", "lease"]}
+      }
+    }
+  }
+}

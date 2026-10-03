@@ -1,0 +1,13 @@
+{
+  "repository": "https://github.com/axllent/mailpit",
+  "license": "MIT",
+  "image": "ghcr.io/axllent/mailpit:v1.31.2@sha256:74d609a42ec279aa63c6b4622a6fa9b5408d1ad5b1d76a1c4be40a265ce0863d",
+  "registry_checked_at": "2026-09-20",
+  "platforms": [
+    "linux/386",
+    "linux/amd64",
+    "linux/arm64"
+  ],
+  "runtime_validation": "pending",
+  "notes": "Official v1.31.2 image with nonroot persistent data layer. Required separate UI and SMTP credentials. Loopback UI/SMTP, native readyz, bounded messages. No relay/forward destination, real message or application SMTP config created."
+}

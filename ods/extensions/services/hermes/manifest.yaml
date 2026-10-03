@@ -11,7 +11,7 @@ service:
   default_host: hermes
   # Hermes's own dashboard listens on 9119 inside the container.
   # Internal-only — there is intentionally no host-port binding here.
-  # End users reach Hermes via hermes-proxy on :9120 (auth-gated entry
+  # End users reach Hermes via hermes-proxy on :9120 (optionally session-gated entry
   # point); see HERMES-SSO.md. The compose file declares this port
   # under `expose:` so other containers on the bridge network (notably
   # hermes-proxy) can talk to ods-hermes:9119.
@@ -33,7 +33,9 @@ service:
   gpu_backends: [all]
   compose_file: compose.yaml
   category: recommended
-  depends_on: [llama-server, searxng]
+  # Managed local inference adds the llama health gate in compose.local.yaml.
+  # External gateway installs must not plan or pull a managed model for Hermes.
+  depends_on: [searxng]
   llm:
     consumes: true
     route: gateway
@@ -47,7 +49,7 @@ service:
     Hermes Agent (Nous Research) — a self-improving generalist agent with
     persistent memory, autonomous skill creation, and 70+ built-in tools.
     ODS runs the upstream image pinned by version, points it at the
-    local LLM (llama-server), and ships no messaging-platform adapters
+    selected model route, and ships no messaging-platform adapters
     (Telegram / Discord / Slack / etc.) since the web dashboard is the
     surface we ship. The container runs `hermes gateway run` with the
     dashboard embedded (HERMES_DASHBOARD=1) so the scheduler that fires

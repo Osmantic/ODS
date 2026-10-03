@@ -52,7 +52,7 @@ Utility scripts for diagnostics, testing, validation, and operations.
 
 | Script | Description |
 |--------|-------------|
-| `healthcheck.py` | Container health check helper |
+| `healthcheck.py` | Container health check helper; [first-response redirect checks](../docs/HEALTHCHECK-REDIRECTS.md) |
 | `validate-models.py` | Validate model file integrity |
 | `validate-sim-summary.py` | Validate simulation summary output |
 

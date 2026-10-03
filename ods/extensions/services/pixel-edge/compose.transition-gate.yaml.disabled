@@ -1,0 +1,13 @@
+# Explicit opt-in override. Provision the durable directory before adding this
+# file to the qualified Pixel compose invocation; see README.md. Do not use a
+# tmpfs or ephemeral container directory. The model sandbox receives no mount.
+services:
+  pixel-edge:
+    environment:
+      PIXEL_TRANSITION_STATE_DIR: /pixel-transition-state
+    volumes:
+      - type: bind
+        source: ${PIXEL_TRANSITION_STATE_DIR:?Set the provisioned durable owner directory}
+        target: /pixel-transition-state
+        bind:
+          create_host_path: false

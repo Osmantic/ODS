@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/work-context-session-input-v1.schema.json",
+  "title": "Pixel Deep Work context session input v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "summary", "decisions", "unresolvedRisks", "artifacts"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/work-context-session-input-v1.schema.json"},
+    "schemaVersion": {"const": 1},
+    "summary": {"type": "string", "minLength": 1, "maxLength": 16384},
+    "decisions": {"type": "array", "maxItems": 32, "items": {"$ref": "#/$defs/contextItem"}},
+    "unresolvedRisks": {"type": "array", "maxItems": 32, "items": {"$ref": "#/$defs/contextItem"}},
+    "artifacts": {
+      "type": "array",
+      "maxItems": 256,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "sha256", "bytes", "verified", "verificationEvidenceSha256"],
+        "properties": {
+          "path": {"type": "string", "pattern": "^[A-Za-z0-9._+-]+(?:/[A-Za-z0-9._+-]+)*$", "maxLength": 512},
+          "sha256": {"$ref": "#/$defs/sha256"},
+          "bytes": {"type": "integer", "minimum": 0, "maximum": 34359738368},
+          "verified": {"type": "boolean"},
+          "verificationEvidenceSha256": {"oneOf": [{"$ref": "#/$defs/sha256"}, {"type": "null"}]}
+        }
+      }
+    }
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "contextItem": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "statement", "evidenceSha256"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,63}$"},
+        "statement": {"type": "string", "minLength": 1, "maxLength": 4096},
+        "evidenceSha256": {"$ref": "#/$defs/sha256"}
+      }
+    }
+  }
+}

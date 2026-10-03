@@ -13,6 +13,7 @@ COMPOSE_OVERLAYS="${COMPOSE_OVERLAYS:-}"
 SCRIPT_DIR="${SCRIPT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 STRICT="false"
 ENV_MODE="false"
+DISK_POLICY="${DISK_POLICY:-install}"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -56,6 +57,14 @@ while [[ $# -gt 0 ]]; do
             SCRIPT_DIR="${2:-$SCRIPT_DIR}"
             shift 2
             ;;
+        --host-arch)
+            HOST_ARCH="${2:-}"
+            shift 2
+            ;;
+        --disk-policy)
+            DISK_POLICY="${2:-$DISK_POLICY}"
+            shift 2
+            ;;
         --strict)
             STRICT="true"
             shift
@@ -80,8 +89,18 @@ elif command -v python >/dev/null 2>&1; then
     PYTHON_CMD="python"
 fi
 
-"$PYTHON_CMD" - "$REPORT_FILE" "$TIER" "$RAM_GB" "$DISK_GB" "$GPU_BACKEND" "$GPU_VRAM_MB" "$GPU_NAME" "$PLATFORM_ID" "$COMPOSE_OVERLAYS" "$SCRIPT_DIR" "$ENV_MODE" "$STRICT" <<'PY'
+HOST_ARCH="${HOST_ARCH:-}"
+case "$DISK_POLICY" in
+    install|runtime) ;;
+    *)
+        echo "Invalid --disk-policy: $DISK_POLICY (expected install or runtime)" >&2
+        exit 1
+        ;;
+esac
+
+"$PYTHON_CMD" - "$REPORT_FILE" "$TIER" "$RAM_GB" "$DISK_GB" "$GPU_BACKEND" "$GPU_VRAM_MB" "$GPU_NAME" "$PLATFORM_ID" "$COMPOSE_OVERLAYS" "$SCRIPT_DIR" "$ENV_MODE" "$STRICT" "$HOST_ARCH" "$DISK_POLICY" <<'PY'
 import json
+import os
 import pathlib
 import sys
 from datetime import datetime, timezone
@@ -99,6 +118,8 @@ from datetime import datetime, timezone
     script_dir,
     env_mode,
     strict_mode,
+    host_arch,
+    disk_policy,
 ) = sys.argv[1:]
 
 env_mode = env_mode == "true"
@@ -140,9 +161,13 @@ min_ram_map = {
     "CLOUD": 4,
     "T0": 4,
     "1": 16,
+    "T1": 16,
     "2": 32,
+    "T2": 32,
     "3": 48,
+    "T3": 48,
     "4": 64,
+    "T4": 64,
     "SH_COMPACT": 64,
     "SH_LARGE": 96,
 }
@@ -154,9 +179,13 @@ min_disk_map = {
     "CLOUD": 25,
     "T0": 15,
     "1": 30,
+    "T1": 30,
     "2": 50,
+    "T2": 50,
     "3": 80,
+    "T3": 80,
     "4": 150,
+    "T4": 150,
     "SH_COMPACT": 80,
     "SH_LARGE": 120,
 }
@@ -197,6 +226,26 @@ else:
         f"Platform '{platform_id}' is not yet supported by install-core.sh.",
         "Use Linux/WSL path for now or run platform-specific installer once implemented.",
     )
+
+# Host architecture check (macOS). The macOS installer requires Apple Silicon.
+# Callers that cannot know the real host architecture (e.g. the Linux CI
+# simulation of installers/macos.sh) pass an empty value and skip this check.
+host_arch = (host_arch or "").strip().lower()
+if platform_id == "macos" and host_arch:
+    if host_arch in {"arm64", "aarch64"}:
+        add_check(
+            "host-arch",
+            "pass",
+            f"Apple Silicon host detected ({host_arch}).",
+            "",
+        )
+    else:
+        add_check(
+            "host-arch",
+            "blocker",
+            f"Intel Mac ({host_arch}) is not supported by the macOS installer; Apple Silicon (arm64) is required.",
+            "Intel Macs have no Metal acceleration for local inference. See docs/COMPATIBILITY-MATRIX.md; use the Linux or Windows+WSL2 path on this hardware.",
+        )
 
 # Compose overlay existence check
 overlays = [o.strip() for o in compose_overlays.split(",") if o.strip()]
@@ -240,6 +289,8 @@ else:
         f"Use a lower tier or increase memory to at least {min_ram}GB.",
     )
 
+runtime_disk_reserve_gb = 10
+
 if disk_gb >= min_disk:
     add_check(
         "disk",
@@ -247,17 +298,53 @@ if disk_gb >= min_disk:
         f"Disk {disk_gb}GB meets tier {tier_key} recommendation ({min_disk}GB).",
         "",
     )
+elif disk_policy == "runtime" and disk_gb >= runtime_disk_reserve_gb:
+    add_check(
+        "disk",
+        "warn",
+        f"Disk {disk_gb}GB is below the tier {tier_key} install recommendation ({min_disk}GB) but above the {runtime_disk_reserve_gb}GB runtime safety reserve.",
+        f"Free at least {min_disk - disk_gb}GB before updates, adding services, or downloading larger models.",
+    )
 else:
+    required_disk = runtime_disk_reserve_gb if disk_policy == "runtime" else min_disk
+    requirement = "runtime safety reserve" if disk_policy == "runtime" else f"required minimum for tier {tier_key}"
     add_check(
         "disk",
         "blocker",
-        f"Disk {disk_gb}GB is below required minimum for tier {tier_key} ({min_disk}GB).",
-        f"Free at least {min_disk - disk_gb}GB or choose a smaller tier.",
+        f"Disk {disk_gb}GB is below the {requirement} ({required_disk}GB).",
+        f"Free at least {required_disk - disk_gb}GB" + ("." if disk_policy == "runtime" else " or choose a smaller tier."),
     )
 
 # GPU checks
 gpu_backend = (gpu_backend or "").lower()
-if gpu_backend == "amd":
+# WSL may expose no local GPU while the selected model runs through Lemonade
+# on Windows. Require the complete external GPU evidence; an external URL or
+# a stale GPU name alone must not hide the CPU fallback warning.
+lemonade_gpu_name = os.environ.get("LEMONADE_GPU_NAME", "").strip()
+lemonade_gpu_vram = os.environ.get("LEMONADE_GPU_VRAM_MB", "0")
+external_gpu = None
+if (
+    os.environ.get("LEMONADE_EXTERNAL", "false").lower() == "true"
+    and os.environ.get("LEMONADE_BASE_URL", "").strip()
+    and lemonade_gpu_name.lower() not in {"", "none", "unknown", "none (cpu-only mode)"}
+    and lemonade_gpu_vram.isascii()
+    and lemonade_gpu_vram.isdecimal()
+    and int(lemonade_gpu_vram) > 0
+):
+    external_gpu = {
+        "provider": "lemonade",
+        "gpu_name": lemonade_gpu_name,
+        "gpu_vram_mb": int(lemonade_gpu_vram),
+    }
+
+if tier_key == "CLOUD":
+    add_check(
+        "gpu-backend",
+        "pass",
+        "Cloud model inference does not require a local GPU.",
+        "",
+    )
+elif gpu_backend == "amd":
     add_check(
         "gpu-backend",
         "pass",
@@ -294,7 +381,14 @@ elif gpu_backend == "apple":
         "Use macOS installer preflight + doctor and run reduced profile set until Tier A parity is complete.",
     )
 elif gpu_backend == "cpu":
-    if platform_id in {"windows", "macos"}:
+    if external_gpu:
+        add_check(
+            "gpu-backend",
+            "pass",
+            f"External Lemonade GPU route configured ({lemonade_gpu_name}, {external_gpu['gpu_vram_mb']}MB VRAM); no local GPU is required for model inference.",
+            "",
+        )
+    elif platform_id in {"windows", "macos"}:
         add_check(
             "gpu-backend",
             "warn",
@@ -329,7 +423,9 @@ report = {
         "gpu_backend": gpu_backend,
         "gpu_vram_mb": gpu_vram_mb,
         "gpu_name": gpu_name,
+        "external_gpu": external_gpu,
         "platform_id": platform_id,
+        "host_arch": host_arch,
         "compose_overlays": overlays,
         "script_dir": script_dir,
     },

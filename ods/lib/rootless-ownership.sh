@@ -1,7 +1,17 @@
 #!/usr/bin/env bash
 # Docker rootless bind-mount ownership helpers for native Linux.
 
-ODS_ROOTLESS_HELPER_IMAGE="${ODS_ROOTLESS_HELPER_IMAGE:-busybox:1.36.1}"
+ODS_ROOTLESS_HELPER_IMAGE="${ODS_ROOTLESS_HELPER_IMAGE:-busybox:1.36.1@sha256:73aaf090f3d85aa34ee199857f03fa3a95c8ede2ffd4cc2cdb5b94e566b11662}"
+
+_ods_rootless_docker_info() {
+    # The installer may have verified sudo-backed Docker before the current
+    # login gains its new docker group. Standalone callers keep their own CLI.
+    if declare -F docker_run >/dev/null; then
+        docker_run info "$@"
+    else
+        docker info "$@"
+    fi
+}
 
 ods_docker_rootless_state() {
     case "${ODS_ASSUME_ROOTLESS:-}" in
@@ -13,22 +23,28 @@ ods_docker_rootless_state() {
     # This field is Docker-specific; the podman "docker" shim does not expose it
     # and the Go template errors out instead of returning empty.
     local security_options
-    if security_options=$(docker info --format '{{json .SecurityOptions}}' 2>/dev/null) \
+    if security_options=$(_ods_rootless_docker_info --format '{{json .SecurityOptions}}' 2>/dev/null) \
        && [[ -n "$security_options" && "$security_options" != "null" ]]; then
         grep -q 'rootless' <<<"$security_options"
         return
     fi
 
     # Podman (invoked through the docker CLI shim) reports rootless via
-    # .Host.Security.Rootless — a plain "true"/"false" boolean.
-    local podman_rootless
-    if podman_rootless=$(docker info --format '{{.Host.Security.Rootless}}' 2>/dev/null) \
-       && [[ -n "$podman_rootless" ]]; then
+    # .Host.Security.Rootless — a plain "true"/"false" boolean. Keep this
+    # probe's stderr: when both probes fail it carries the actual reason
+    # (typically "Cannot connect to the Docker daemon ...").
+    local podman_rootless probe_rc=0
+    podman_rootless=$(_ods_rootless_docker_info --format '{{.Host.Security.Rootless}}' 2>&1) || probe_rc=$?
+    if [[ "$probe_rc" -eq 0 && -n "$podman_rootless" ]]; then
         [[ "$podman_rootless" == "true" ]]
         return
     fi
 
     echo "[error] Could not determine whether Docker is running in rootless mode." >&2
+    # First non-empty line: the CLI prints an empty template result before
+    # its connection error.
+    podman_rootless="${podman_rootless#"${podman_rootless%%[![:space:]]*}"}"
+    [[ -n "$podman_rootless" ]] && echo "[error] docker info: ${podman_rootless%%$'\n'*}" >&2
     return 2
 }
 
@@ -353,7 +369,7 @@ ods_fix_rootless_ownership() {
         _ods_rootless_fix_directory "$install_dir" data/privacy-shield "$service_uid:$service_gid" ods-privacy-shield || failures=$((failures + 1))
     fi
     if _ods_rootless_should_repair ape "$flags" "$target_service"; then
-        _ods_rootless_fix_directory "$install_dir" data/ape 100:100 ods-ape || failures=$((failures + 1))
+        _ods_rootless_fix_directory "$install_dir" data/ape 100:65534 ods-ape || failures=$((failures + 1))
     fi
     if _ods_rootless_should_repair n8n "$flags" "$target_service"; then
         _ods_rootless_fix_directory "$install_dir" data/n8n "$service_uid:$service_gid" ods-n8n || failures=$((failures + 1))
@@ -377,6 +393,29 @@ ods_fix_rootless_ownership() {
         return 1
     fi
     echo "[ods] Rootless ownership is ready."
+}
+
+# The ordinary installer prepares this UID 1000 cache in Phase 11. A lean
+# install omits Whisper there, so a later Library enable must do the same work
+# before Speaches starts. Use Docker's exact bind mount to work without sudo.
+ods_prepare_whisper_cache_ownership() {
+    local install_dir="$1" rootless_state=0 host_gid
+    [[ -n "$install_dir" && "$(uname -s)" == Linux ]] || return 1
+    ods_docker_rootless_state || rootless_state=$?
+    case "$rootless_state" in
+        0) ods_fix_rootless_ownership "$install_dir" whisper; return ;;
+        1) ;;
+        *) return 1 ;;
+    esac
+
+    host_gid=$(id -g) || return 1
+    [[ "$host_gid" =~ ^[0-9]+$ ]] || return 1
+    [[ -d "$install_dir/data/whisper" && ! -L "$install_dir/data/whisper" ]] || {
+        echo "[error] Whisper cache is not a real directory." >&2
+        return 1
+    }
+    _ods_rootless_ensure_helper_image || return 1
+    _ods_rootless_fix_directory "$install_dir" data/whisper "1000:$host_gid" ods-whisper 775
 }
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then

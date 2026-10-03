@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/work-provider-custody-receipt-v1.schema.json",
+  "title": "Pixel work provider credential custody receipt",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "receiptId", "inspectedAt", "policyId", "policySha256", "profileSha256", "providerId", "credentialId", "status", "credentialsProjected", "credentialPathProjected", "credentialContentsHashed", "boundary"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/work-provider-custody-receipt-v1.schema.json"},
+    "schemaVersion": {"const": 1},
+    "receiptId": {"type": "string", "pattern": "^workprovidercustody-[0-9]{13}-[a-f0-9]{12}$"},
+    "inspectedAt": {"type": "string", "format": "date-time"},
+    "policyId": {"type": "string", "pattern": "^workproviderpolicy-[0-9]{13}-[a-f0-9]{12}$"},
+    "policySha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "profileSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "providerId": {"type": "string", "minLength": 1, "maxLength": 64},
+    "credentialId": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,62}$"},
+    "status": {"const": "available"},
+    "credentialsProjected": {"const": false},
+    "credentialPathProjected": {"const": false},
+    "credentialContentsHashed": {"const": false},
+    "boundary": {"const": "Content-free owner-private provider credential custody evidence. It exposes no path, owner, account, key, token, credential bytes or hash, prompt, response, reasoning, tool arguments, external-effect, deployment, or security-testing authority."}
+  }
+}

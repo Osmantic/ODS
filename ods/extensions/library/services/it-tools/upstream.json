@@ -1,0 +1,13 @@
+{
+  "repository": "https://github.com/CorentinTh/it-tools",
+  "license": "GPL-3.0",
+  "image": "corentinth/it-tools:2024.10.22-7ca5933@sha256:8b8128748339583ca951af03dfe02a9a4d7363f61a216226fc28030731a5a61f",
+  "registry_checked_at": "2026-09-20",
+  "platforms": [
+    "linux/amd64",
+    "linux/arm64"
+  ],
+  "runtime_validation": "pending",
+  "notes": "Latest GitHub release v2024.10.22-7ca5933 inspected on 2026-09-20; not a 2026 application release. Official static assets served by separately pinned nginx 1.28 Alpine with nonroot read-only filesystem and SPA routing. Browser preferences only; no server database or model integration.",
+  "runtime_image": "nginx:1.28-alpine@sha256:a8b39bd9cf0f83869a2162827a0caf6137ddf759d50a171451b335cecc87d236"
+}

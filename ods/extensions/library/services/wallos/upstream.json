@@ -1,0 +1,13 @@
+{
+  "repository": "https://github.com/ellite/Wallos",
+  "license": "GPL-3.0",
+  "image": "bellamy/wallos:5.8.1@sha256:0f049dbab45b9f8e8d43b84fd1b77ef9e55909bd1a384a0f4fe8597ab68a1d5d",
+  "registry_checked_at": "2026-09-20",
+  "platforms": [
+    "linux/amd64",
+    "linux/arm64",
+    "linux/arm"
+  ],
+  "runtime_validation": "pending",
+  "notes": "Official PHP/nginx/cron startup preserved, persisted SQLite and logos/avatars, native account setup and scheduler. Read-only database-aware PHP health supplement. No subscriptions, notification destination, banking connection or AI provider configured. Upstream checks GitHub for updates; optional exchange/logo services may access network."
+}

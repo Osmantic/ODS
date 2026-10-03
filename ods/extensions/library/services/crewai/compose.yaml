@@ -40,7 +40,7 @@ services:
       # App data (SQLite DB, crew configs, history) lives under /app in the container
       - ./data/crewai:/app:rw
     ports:
-      - "${BIND_ADDRESS:-127.0.0.1}:${CREWAI_PORT:-8501}:8501"
+      - "127.0.0.1:${CREWAI_PORT:-8501}:8501"
     healthcheck:
       test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8501/')"]
       interval: 30s

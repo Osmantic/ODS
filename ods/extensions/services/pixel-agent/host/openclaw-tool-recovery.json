@@ -1,0 +1,14 @@
+{
+  "sourceSha256": "91675368ff302f0edcda83ded0ead31aee22be02e35935ffd5c7f28a91990ea0",
+  "patchedSha256": "eec6beae1570395bd5cdaccb14c83691c9eaf055e2143847b1357010a90c257a",
+  "replacements": [
+    [
+      "\tconst toolName = (raw.match(/unknown tool[:\\s]+[\"']?([a-z0-9_.-]+)[\"']?/i) ?? raw.match(/tool\\s+[\"']?([a-z0-9_.-]+)[\"']?\\s+(?:not found|is not available)/i))?.[1]?.trim();",
+      "\tconst toolName = (\n\t\traw.match(/unknown tool id:\\s*[\"']?([a-z0-9_][a-z0-9_.:-]*?)(?=[\"'\\s]|\\.(?:\\s|$)|$)/i)\n\t\t?? raw.match(/unknown tool(?!\\s+id\\b)[:\\s]+[\"']?([a-z0-9_][a-z0-9_.:-]*?)(?=[\"'\\s]|\\.(?:\\s|$)|$)/i)\n\t\t?? raw.match(/tool\\s+[\"']?([a-z0-9_][a-z0-9_.:-]*?)[\"']?\\s+(?:not found|is not available)/i)\n\t)?.[1]?.trim();"
+    ],
+    [
+      "\tif (unknownToolStreak.count >= resolvedConfig.unknownToolThreshold) return {",
+      "\tconst requestedToolName = toolName === \"tool_call\"\n\t\t? normalizeOptionalString(params?.id)?.toLowerCase()\n\t\t: normalizeOptionalString(toolName)?.toLowerCase();\n\tif (unknownToolStreak.count >= resolvedConfig.unknownToolThreshold\n\t\t&& requestedToolName === unknownToolStreak.unknownToolName) return {"
+    ]
+  ]
+}

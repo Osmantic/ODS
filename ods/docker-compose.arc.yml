@@ -8,10 +8,12 @@
 #   ARC_LITE tier — Arc A750 8 GB, A380 6 GB
 #
 # Build arguments (customise via .env or shell export):
-#   LLAMA_TAG       llama.cpp git tag (default: b8248)
+#   LLAMA_TAG       llama.cpp git tag (default: b9014)
+#   LLAMA_COMMIT    commit LLAMA_TAG must resolve to (default: b9014's commit);
+#                   set it together with LLAMA_TAG, or empty to skip the check
 #   ONEAPI_VERSION  oneAPI Base Toolkit image tag (default: 2025.0.0-0-devel-ubuntu22.04)
 #   LLAMA_ARC_IMAGE Override to a pre-built image and skip the local build entirely
-#                   e.g. LLAMA_ARC_IMAGE=ghcr.io/ggml-org/llama.cpp:server-intel-b8248
+#                   e.g. LLAMA_ARC_IMAGE=ghcr.io/ggml-org/llama.cpp:server-intel-b9014@sha256:9c7bbaad3663523a3deb8927d3cfbf58d33f00a7634c69843e9eeeda01568c1b
 #
 # First-run note:
 #   The SYCL build compiles llama.cpp with Intel icx/icpx. Allow 10–20 min
@@ -28,7 +30,8 @@ services:
       context: ./images/llama-sycl
       dockerfile: Dockerfile
       args:
-        LLAMA_TAG: ${LLAMA_TAG:-b8248}
+        LLAMA_TAG: ${LLAMA_TAG:-b9014}
+        LLAMA_COMMIT: ${LLAMA_COMMIT-d4b0c22f9e67f0295e91dc1ab4f17c0fb2557fa4}
         ONEAPI_VERSION: ${ONEAPI_VERSION:-2025.0.0-0-devel-ubuntu22.04}
     # Set LLAMA_ARC_IMAGE in .env to skip the local build and pull a pre-built image.
     image: ${LLAMA_ARC_IMAGE:-ods-llama-sycl:local}
@@ -38,10 +41,13 @@ services:
       - "${VIDEO_GID:-44}"
       - "${RENDER_GID:-992}"
     environment:
-      # Level Zero selects the Intel Arc GPU; persistent cache avoids
-      # recompiling SYCL kernels on every container start (~30 s savings).
-      - ONEAPI_DEVICE_SELECTOR=level_zero:gpu
-      - SYCL_CACHE_PERSISTENT=1
+      # Level Zero selects the Intel Arc GPU.
+      # SYCL_CACHE_PERSISTENT is deliberately not set: with the oneAPI 2025.3
+      # runtime in the b9014 image it crashes llama-server (ggml-org/llama.cpp
+      # #21474, #22095; intel/llvm#22853). ONEAPI_DEVICE_SELECTOR can be set in
+      # .env; use level_zero:0 on hosts with more than one Intel GPU
+      # (ggml-org/llama.cpp#21747).
+      - ONEAPI_DEVICE_SELECTOR=${ONEAPI_DEVICE_SELECTOR:-level_zero:gpu}
       # Enable Intel GPU System Management Interface for telemetry
       - ZES_ENABLE_SYSMAN=1
     command:

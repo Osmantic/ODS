@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import json
+import math
 import os
 import re
 import urllib.error
@@ -15,7 +16,8 @@ from pathlib import Path
 from typing import Any
 
 import aiohttp
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, HTTPException
+from usage_timeline import minute_timeline, MAX_EVENTS
 
 from config import EXTENSIONS_DIR, SERVICES, USER_EXTENSIONS_DIR, read_live_env_value
 from helpers import check_service_health, get_cached_services
@@ -45,12 +47,8 @@ def _parse_date(value: str) -> date:
 
 
 def _date_range(start_day: date, end_day: date) -> list[str]:
-    days = []
-    current = start_day
-    while current <= end_day:
-        days.append(current.isoformat())
-        current += timedelta(days=1)
-    return days
+    return [(start_day + timedelta(days=offset)).isoformat()
+            for offset in range((end_day - start_day).days + 1)]
 
 
 def _empty_report(start: str, end: str, status: str = "unavailable", detail: str | None = None) -> dict[str, Any]:
@@ -418,14 +416,14 @@ def _request_text(url: str) -> str:
         return response.read().decode("utf-8", errors="replace")
 
 
-def _metric_value(metrics_text: str, metric_name: str) -> float:
+def _metric_value(metrics_text: str, metric_name: str, *, default: float = 0) -> float:
     match = re.search(rf"^{re.escape(metric_name)}\s+([0-9.eE+-]+)\s*$", metrics_text, flags=re.MULTILINE)
     if not match:
-        return 0
+        return default
     try:
         return float(match.group(1))
     except ValueError:
-        return 0
+        return default
 
 
 def _has_metric(metrics_text: str, metric_name: str) -> bool:
@@ -433,8 +431,17 @@ def _has_metric(metrics_text: str, metric_name: str) -> bool:
 
 
 def _extract_llama_cpp_prometheus_counters(metrics_text: str, url: str) -> dict[str, Any] | None:
-    input_tokens = int(_metric_value(metrics_text, LLAMA_CPP_PROMETHEUS_METRICS["input_tokens"]))
-    output_tokens = int(_metric_value(metrics_text, LLAMA_CPP_PROMETHEUS_METRICS["output_tokens"]))
+    values = {}
+    for field, name in LLAMA_CPP_PROMETHEUS_METRICS.items():
+        value = _metric_value(metrics_text, name, default=math.nan) if _has_metric(metrics_text, name) else 0
+        # An optional exporter must not fail the complete report or reset the
+        # observation baseline with fabricated zeros. Discard this sample;
+        # the next valid scrape can continue from the last valid observation.
+        if not math.isfinite(value) or value < 0:
+            return None
+        values[field] = int(value)
+    input_tokens = values["input_tokens"]
+    output_tokens = values["output_tokens"]
     if input_tokens <= 0 and output_tokens <= 0:
         return None
 
@@ -443,7 +450,7 @@ def _extract_llama_cpp_prometheus_counters(metrics_text: str, url: str) -> dict[
     if service in {"127.0.0.1", "localhost", "host.docker.internal"}:
         service = "local-runtime"
     request_metric_available = _has_metric(metrics_text, LLAMA_CPP_PROMETHEUS_METRICS["requests"])
-    request_count = int(_metric_value(metrics_text, LLAMA_CPP_PROMETHEUS_METRICS["requests"])) if request_metric_available else 0
+    request_count = values["requests"]
     request_count_source = "prometheus_counter" if request_metric_available else "unavailable"
     request_count_note = None
     if not request_metric_available:
@@ -591,3 +598,26 @@ async def usage_report(
     report = await _fetch_token_spy_report(start, end)
     runtime_counters = await _fetch_local_runtime_counters()
     return _merge_local_runtime_counters(report, start_day, end_day, runtime_counters)
+
+
+def _request_token_timeline():
+    headers = {}
+    key = _token_spy_api_key()
+    if key:
+        headers["Authorization"] = f"Bearer {key}"
+    request = urllib.request.Request(f"{TOKEN_SPY_URL.rstrip('/')}/api/usage?hours=24&limit={MAX_EVENTS}", headers=headers)
+    with urllib.request.urlopen(request, timeout=4) as response:
+        raw = response.read(8 * 1024 * 1024 + 1)
+    if len(raw) > 8 * 1024 * 1024:
+        raise ValueError("Telemetry response exceeds limit")
+    return minute_timeline(json.loads(raw))
+
+
+@router.get("/timeline")
+async def usage_timeline(api_key: str = Depends(verify_api_key)):
+    """Today's minute-level completed requests; no prompt text or provider keys."""
+    del api_key
+    try:
+        return await asyncio.to_thread(_request_token_timeline)
+    except (ValueError, TypeError, OSError, urllib.error.URLError):
+        raise HTTPException(status_code=503, detail="Minute-level token telemetry unavailable") from None

@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/release-update-qualification-execution-interruption-marker-v1.schema.json",
+  "title": "Pixel qualification execution interruption marker v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "status",
+    "operation",
+    "candidateId",
+    "activationHash",
+    "executionClaimSha256",
+    "executionInterruptionSha256",
+    "recordedAt",
+    "candidateExecutionState",
+    "terminalPromotionEvidence",
+    "publicationAuthority",
+    "productionActivationAuthority",
+    "compatibilityMutationAuthority",
+    "productionStateChanged",
+    "boundary"
+  ],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "status": {"const": "terminal"},
+    "operation": {"const": "pixel-release-qualification-execution-interruption-marker"},
+    "candidateId": {"type": "string", "pattern": "^pixel-[0-9]{1,6}\\.[0-9]{1,6}\\.[0-9]{1,6}-[0-9a-f]{64}$"},
+    "activationHash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "executionClaimSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "executionInterruptionSha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "recordedAt": {"type": "string", "format": "date-time"},
+    "candidateExecutionState": {"const": "indeterminate"},
+    "terminalPromotionEvidence": {"const": false},
+    "publicationAuthority": {"const": false},
+    "productionActivationAuthority": {"const": false},
+    "compatibilityMutationAuthority": {"const": false},
+    "productionStateChanged": {"const": false},
+    "boundary": {"const": "Qualification-root-only private terminal interruption marker; it binds the immutable interruption artifact to the candidate and activation for deletion/recovery durability, records no observation or result, is not terminal promotion evidence, and grants no production, publication, compatibility, or promotion authority."}
+  }
+}

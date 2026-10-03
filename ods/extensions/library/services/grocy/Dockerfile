@@ -1,0 +1,2 @@
+FROM lscr.io/linuxserver/grocy:latest@sha256:71226f43e18b15836833075c15c9d5d51d81a2a4fc38d56bb1dc05f34970cc80
+RUN command -v curl

@@ -1,0 +1,12 @@
+{
+  "repository": "https://github.com/alam00000/bentopdf",
+  "license": "AGPL-3.0",
+  "image": "ghcr.io/alam00000/bentopdf-simple:2.8.8@sha256:3d62b8f8eece5fe947026ac3925ff08fda245b3d6ba2c3916b94da91e0010c74",
+  "registry_checked_at": "2026-09-20",
+  "platforms": [
+    "linux/amd64",
+    "linux/arm64"
+  ],
+  "runtime_validation": "pending",
+  "notes": "Uses the self-hosted simple image, not the commercial marketing build. Files are processed in the browser. Optional OCR/WASM assets may require a first download."
+}

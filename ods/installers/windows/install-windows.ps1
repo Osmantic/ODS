@@ -87,6 +87,7 @@ $LibDir = Join-Path $ScriptDir "lib"
 . (Join-Path $LibDir "env-generator.ps1")
 . (Join-Path $LibDir "installed-footprint.ps1")
 . (Join-Path $LibDir "llm-endpoint.ps1")
+. (Join-Path $LibDir "native-llama-args.ps1")
 . (Join-Path $LibDir "opencode-config.ps1")
 . (Join-Path $LibDir "readiness-summary.ps1")
 . (Join-Path $LibDir "service-plan.ps1")
@@ -264,19 +265,32 @@ function Set-ODSWindowsHermesRuntimeModel {
     }
     $hermesBaseUrl = Get-WindowsODSEnvValue `
         -EnvMap $runtimeEnv -Keys @("HERMES_LLM_BASE_URL") `
-        -Default $(if ($cloudMode -or $gpuInfo.Backend -eq "amd" -or $switchboardEnabled) {
+        -Default $(if ($cloudMode) {
+            "http://litellm:4000/v1"
+        } elseif ($switchboardEnabled) {
+            "http://model-router:9099/v1"
+        } elseif ($gpuInfo.Backend -eq "amd") {
             "http://litellm:4000/v1"
         } else {
             "http://llama-server:8080/v1"
         })
+    $hermesApiKey = Get-WindowsODSEnvValue `
+        -EnvMap $runtimeEnv -Keys @("HERMES_LLM_API_KEY") `
+        -Default $(if ($switchboardEnabled -and -not $cloudMode) {
+            "no-key"
+        } elseif ($cloudMode -or $gpuInfo.Backend -eq "amd") {
+            Get-WindowsODSEnvValue -EnvMap $runtimeEnv -Keys @("LITELLM_KEY") -Default ""
+        } else {
+            "sk-ods-hermes-local"
+        })
     $hermesTemplate = Join-Path (Join-Path (Join-Path $installDir "extensions") "services\hermes") "cli-config.yaml.template"
     $hermesLive = Join-Path (Join-Path $installDir "data\hermes") "config.yaml"
     $hermesRequestTimeout = $(if ($cloudMode -and -not $switchboardEnabled) { 180 } else { 900 })
-    $templateUpdated = Update-HermesConfigFile -Path $hermesTemplate -Model $ModelId -BaseUrl $hermesBaseUrl -ContextLength ([int]$tierConfig.MaxContext) `
+    $templateUpdated = Update-HermesConfigFile -Path $hermesTemplate -Model $ModelId -BaseUrl $hermesBaseUrl -ApiKey $hermesApiKey -ContextLength ([int]$tierConfig.MaxContext) `
         -RequestTimeoutSeconds $hermesRequestTimeout `
         -LemonadeCompact:($gpuInfo.Backend -eq "amd")
     $liveUpdated = Update-HermesConfigFile `
-        -Path $hermesLive -Model $ModelId -BaseUrl $hermesBaseUrl `
+        -Path $hermesLive -Model $ModelId -BaseUrl $hermesBaseUrl -ApiKey $hermesApiKey `
         -ContextLength ([int]$tierConfig.MaxContext) `
         -RequestTimeoutSeconds $hermesRequestTimeout `
         -LemonadeCompact:($gpuInfo.Backend -eq "amd")
@@ -342,6 +356,20 @@ if ($dryRun) {
                 }
             } elseif (Test-Path $modelPath) {
                 Write-AISuccess "Model already present: $($tierConfig.GgufFile)"
+            }
+
+            if ($needsDownload) {
+                $handoffWait = Get-ODSPositiveIntEnv -Name "ODS_BOOTSTRAP_HANDOFF_WAIT_SECONDS" -Default 7200
+                $handoff = Wait-ODSBootstrapDownloadHandoff `
+                    -InstallDir $installDir `
+                    -ModelFile $tierConfig.GgufFile `
+                    -Destination $modelPath `
+                    -WaitSeconds $handoffWait
+                if ($handoff.TimedOut) {
+                    Write-AIError "Refusing to race the active bootstrap downloader. Re-run the installer after it finishes."
+                    exit 1
+                }
+                $needsDownload = -not (Test-Path -LiteralPath $modelPath -PathType Leaf)
             }
 
             if ($needsDownload) {
@@ -467,19 +495,8 @@ if ($dryRun) {
                 }
             }
 
-            # Honour the unified BIND_ADDRESS knob (PR #964) for native servers.
-            # Phase 06 has already written BIND_ADDRESS to .env (0.0.0.0 with -Lan,
-            # 127.0.0.1 otherwise). Read once and reuse for both Lemonade and
-            # llama.cpp launches below. Empty/missing → loopback.
-            $_envPath = Join-Path $installDir ".env"
+            # LAN enables authenticated UIs, never the unauthenticated model API.
             $bindAddr = "127.0.0.1"
-            if (Test-Path $_envPath) {
-                $_envText = Get-Content $_envPath -Raw
-                if ($_envText -match "(?m)^BIND_ADDRESS=(.*)$") {
-                    $_match = $Matches[1].Trim().Trim('"').Trim("'")
-                    if (-not [string]::IsNullOrWhiteSpace($_match)) { $bindAddr = $_match }
-                }
-            }
 
             function Get-ODSPriorLemonadeTaskName {
                 return (-join ([char[]](
@@ -671,6 +688,18 @@ if ($dryRun) {
                 # ── Fallback: llama-server.exe (Vulkan) ──
                 $llamaZip = Join-Path $env:TEMP $script:LLAMA_CPP_VULKAN_ASSET
                 if (-not (Test-Path $script:LLAMA_SERVER_EXE)) {
+                    # Refuse an unpinned tag before downloading anything, and
+                    # discard a cached archive from an earlier run that does not
+                    # match the pin.
+                    $expectedLlamaSha = $script:LLAMA_CPP_VULKAN_SHA256[$script:LLAMA_CPP_RELEASE_TAG]
+                    if (-not $expectedLlamaSha) {
+                        Write-AIError "No pinned SHA-256 for llama.cpp $($script:LLAMA_CPP_RELEASE_TAG) ($($script:LLAMA_CPP_VULKAN_ASSET)); refusing an unverified llama-server."
+                        exit 1
+                    }
+                    if ((Test-Path $llamaZip) -and ((Get-FileHash -LiteralPath $llamaZip -Algorithm SHA256).Hash.ToLowerInvariant() -ne $expectedLlamaSha)) {
+                        Write-AIWarn "Discarding a cached $($script:LLAMA_CPP_VULKAN_ASSET) that does not match its pinned SHA-256."
+                        Remove-Item $llamaZip -Force -ErrorAction SilentlyContinue
+                    }
                     if (-not (Test-Path $llamaZip)) {
                         $dlOk = Invoke-DownloadWithRetry -Url $script:LLAMA_CPP_VULKAN_URL `
                             -Destination $llamaZip -Label "Downloading llama-server (Vulkan)"
@@ -681,6 +710,12 @@ if ($dryRun) {
                     }
 
                     Write-AI "Validating llama-server archive..."
+                    $actualLlamaSha = (Get-FileHash -LiteralPath $llamaZip -Algorithm SHA256).Hash.ToLowerInvariant()
+                    if ($actualLlamaSha -ne $expectedLlamaSha) {
+                        Remove-Item $llamaZip -Force -ErrorAction SilentlyContinue
+                        Write-AIError "llama-server archive SHA-256 mismatch for $($script:LLAMA_CPP_VULKAN_ASSET): expected $expectedLlamaSha, got $actualLlamaSha. The download was removed; re-run the installer."
+                        exit 1
+                    }
                     $zipValid = Test-ZipIntegrity -Path $llamaZip
                     if (-not $zipValid.Valid) {
                         Write-AIWarn "Archive is corrupt: $($zipValid.ErrorMessage)"
@@ -745,13 +780,22 @@ if ($dryRun) {
                     "on"    { $_reasoningFmt = "deepseek" }
                     default { $_reasoningFmt = $_reasoning }
                 }
-                $llamaArgs += @("--reasoning-format", $_reasoningFmt)
+                # b9014 has --reasoning and defaults it to auto, which turns
+                # Qwen3.5 thinking on; where the binary has the switch, pass
+                # the mode itself (as Docker does) instead of the format.
+                $llamaArgs += @(Get-ODSNativeReasoningArgs -Executable $script:LLAMA_SERVER_EXE -Mode $_reasoning -FallbackFormat $_reasoningFmt)
                 if ($_llamaEnv["LLAMA_ARG_FLASH_ATTN"]) { $llamaArgs += @("--flash-attn", $_llamaEnv["LLAMA_ARG_FLASH_ATTN"]) }
                 if ($_llamaEnv["LLAMA_ARG_CACHE_TYPE_K"]) { $llamaArgs += @("--cache-type-k", $_llamaEnv["LLAMA_ARG_CACHE_TYPE_K"]) }
                 if ($_llamaEnv["LLAMA_ARG_CACHE_TYPE_V"]) { $llamaArgs += @("--cache-type-v", $_llamaEnv["LLAMA_ARG_CACHE_TYPE_V"]) }
                 if ($_llamaEnv["LLAMA_ARG_N_CPU_MOE"]) { $llamaArgs += @("--n-cpu-moe", $_llamaEnv["LLAMA_ARG_N_CPU_MOE"]) }
                 if ($_llamaEnv["LLAMA_PARALLEL"]) { $llamaArgs += @("--parallel", $_llamaEnv["LLAMA_PARALLEL"]) }
-                if ($_llamaEnv["LLAMA_ARG_CHECKPOINT_EVERY_N_TOKENS"]) { $llamaArgs += @("--checkpoint-every-n-tokens", $_llamaEnv["LLAMA_ARG_CHECKPOINT_EVERY_N_TOKENS"]) }
+                # Only when this llama-server still has the flag (removed in
+                # llama.cpp b9310); an unknown flag stops llama-server.
+                $_checkpointArgs = Get-ODSNativeCheckpointIntervalArgs -Executable $script:LLAMA_SERVER_EXE -Value $_llamaEnv["LLAMA_ARG_CHECKPOINT_EVERY_NT"]
+                if ($_checkpointArgs.Warning) { Write-AIWarn $_checkpointArgs.Warning }
+                $llamaArgs += @($_checkpointArgs.Arguments)
+                if ($_llamaEnv["LLAMA_ARG_CTX_CHECKPOINTS"]) { $llamaArgs += @("--ctx-checkpoints", $_llamaEnv["LLAMA_ARG_CTX_CHECKPOINTS"]) }
+                if ($_llamaEnv["LLAMA_ARG_CACHE_RAM"]) { $llamaArgs += @("--cache-ram", $_llamaEnv["LLAMA_ARG_CACHE_RAM"]) }
                 if ($_llamaEnv["LLAMA_ARG_NO_CACHE_PROMPT"] -and $_llamaEnv["LLAMA_ARG_NO_CACHE_PROMPT"] -notin @("0", "false", "off", "no")) { $llamaArgs += @("--no-cache-prompt") }
                 if ($_llamaEnv["LLAMA_ARG_SPEC_TYPE"]) { $llamaArgs += @("--spec-type", $_llamaEnv["LLAMA_ARG_SPEC_TYPE"]) }
                 if ($_llamaEnv["LLAMA_ARG_SPEC_DRAFT_N_MAX"]) { $llamaArgs += @("--spec-draft-n-max", $_llamaEnv["LLAMA_ARG_SPEC_DRAFT_N_MAX"]) }
@@ -1329,7 +1373,7 @@ litellm_settings:
                     $env:DOCKER_BUILDKIT = "0"
                 }
 
-                & docker @DockerClientArgs compose @ComposeFlags build --no-cache $Service *>> $BuildLog
+                & docker @DockerClientArgs compose @ComposeFlags build $Service *>> $BuildLog
                 return $LASTEXITCODE
             } finally {
                 if ($UseLegacyBuilder) {
@@ -1409,7 +1453,7 @@ litellm_settings:
             try {
                 $env:DOCKER_BUILDKIT = "0"
                 Add-Content -LiteralPath $BuildLog -Value "plain docker fallback building $Service as $imageTag from $contextPath"
-                & docker @DockerClientArgs build --no-cache -t $imageTag -f $dockerfilePath @buildArgs $contextPath *>> $BuildLog
+                & docker @DockerClientArgs build -t $imageTag -f $dockerfilePath @buildArgs $contextPath *>> $BuildLog
                 return $LASTEXITCODE
             } finally {
                 if ($hadBuildKit) {
@@ -1692,7 +1736,7 @@ litellm_settings:
             $hasHermesImageOverride = -not [string]::IsNullOrWhiteSpace($envHermesImage)
             $envHermesFallbackImage = Get-ODSEnvValueFromFile -Path $_envCheck -Key "HERMES_AGENT_IMAGE_FALLBACK"
             if ([string]::IsNullOrWhiteSpace($envHermesImage)) {
-                $envHermesImage = "nousresearch/hermes-agent:v2026.6.5"
+                $envHermesImage = "nousresearch/hermes-agent:v2026.9.24@sha256:fca358f12efd65bfaaca05884166f15c0e2788375ca30d77061ac1ebc96452b7"
             }
 
             Write-AI "Validating Hermes Agent image tag before startup..."
@@ -1739,7 +1783,7 @@ litellm_settings:
         # `up -d`. llama-server runs natively on Windows (Lemonade or Vulkan
         # binary) so it is not built here. ComfyUI is only locally built on
         # NVIDIA; the Windows AMD stack uses a prebuilt image overlay.
-        $_buildServices = @("dashboard", "dashboard-api", "model-router", "remote-provider-egress", "remote-provider-ssh-tunnel")
+        $_buildServices = @("dashboard", "dashboard-api", "model-router", "remote-provider-egress", "remote-provider-ssh-tunnel", "pixel-inference", "langfuse-minio", "langfuse-minio-init")
         if (Test-ODSWindowsServiceEnabled -ServiceId "ape" -Plan $servicePlan) {
             $_buildServices += "ape"
         }
@@ -1760,7 +1804,31 @@ litellm_settings:
 
         Push-Location $installDir
         try {
-            Write-AI "Rebuilding local-built images (no-cache)..."
+            $_composeServicesDockerArgs = @($script:ODSWindowsDockerClientArgs)
+            $_enabledComposeServices = @(
+                & docker @_composeServicesDockerArgs compose @composeFlags config --services 2>> $_buildLog
+            )
+            if ($LASTEXITCODE -ne 0) {
+                Write-AIError "Could not resolve Windows compose services before local image rebuilds."
+                Write-AI "Inspect compose config with: cd '$installDir'; docker compose $($composeFlags -join ' ') config --services"
+                exit 1
+            }
+            $_enabledComposeServices = @(
+                $_enabledComposeServices |
+                    ForEach-Object { ([string]$_).Trim() } |
+                    Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+            )
+            $_selectedBuildServices = @()
+            foreach ($_svc in $_buildServices) {
+                if ($_enabledComposeServices -contains $_svc) {
+                    $_selectedBuildServices += $_svc
+                } else {
+                    Write-AI "Skipping local image build for disabled service: $_svc"
+                }
+            }
+            $_buildServices = $_selectedBuildServices
+
+            Write-AI "Building local images (reusing unchanged layers)..."
             $_failedBuildServices = @()
             $_legacyBuilderServices = @()
             $_defaultDockerConfigServices = @()
@@ -1819,7 +1887,7 @@ litellm_settings:
                     Get-Content $_buildLog -Tail 60 | ForEach-Object { Write-Host "  $_" }
                 }
                 Write-ODSComposeDiagnostics -InstallDir $installDir -ComposeFlags $composeFlags `
-                    -ComposeArgs (@("build", "--no-cache") + $_failedBuildServices) `
+                    -ComposeArgs (@("build") + $_failedBuildServices) `
                     -ComposeLogPath $_buildLog `
                     -Phase "install-windows.ps1 local image build" `
                     -NextStep "Fix the local Dockerfile/build error shown above, then re-run .\install-windows.ps1." `
@@ -2160,6 +2228,13 @@ if (-not $cloudMode) {
         }
     }
     if ($llmReady.Ok) {
+        $routeReady = Test-WindowsSwitchboardReadiness -EnvMap (Get-WindowsODSEnvMap -InstallDir $installDir)
+        if (-not $routeReady.Ok) {
+            $llmReady.Ok = $false
+            $llmReady.Detail = $routeReady.Detail
+        }
+    }
+    if ($llmReady.Ok) {
         Write-AISuccess "LLM serving verified (model: $($llmReady.ModelId))"
     } else {
         $allHealthy = $false
@@ -2167,7 +2242,7 @@ if (-not $cloudMode) {
         Write-AIError "LLM not serving: $($llmReady.Detail)"
         if (-not $llmReady.FileExists) {
             Write-Host "    Model file missing: $($llmReady.ModelFile)" -ForegroundColor DarkGray
-            Write-Host "    Re-run the installer to (re)download it: .\install.ps1" -ForegroundColor DarkGray
+            Write-Host "    Re-run the installer to (re)download it: .\ods\installers\windows\install-windows.ps1" -ForegroundColor DarkGray
         }
     }
 }

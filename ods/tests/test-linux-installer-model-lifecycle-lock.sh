@@ -57,14 +57,32 @@ complete_line="$(grep -n 'write_status "complete"' "$UPGRADER" | tail -1 | cut -
     || fail "upgrader must confirm lifecycle ownership before config promotion"
 (( bootstrap_cleanup_line < complete_line )) \
     || fail "upgrader completion must follow bootstrap cleanup"
-grep -q "trap 'release_model_lifecycle_lock; release_upgrade_lock' EXIT" "$UPGRADER" \
-    || fail "upgrader must retain and automatically release both lifecycle locks"
+grep -q "trap 'cleanup_bootstrap_pixel_model_transaction; release_model_router_swap_gate; release_model_lifecycle_lock; release_upgrade_lock' EXIT" "$UPGRADER" \
+    || fail "upgrader must clean up Pixel before automatically releasing the router gate and both lifecycle locks"
 finalization_locks="$(grep -c 'acquire_model_lifecycle_lock || fail "Could not serialize full-model finalization' "$UPGRADER")"
 [[ "$finalization_locks" -ge 3 ]] \
     || fail "every Linux path that publishes a final GGUF must first acquire the lifecycle lock"
 grep -q 'Download interrupted.*release_model_lifecycle_lock; release_upgrade_lock' "$UPGRADER" \
     || fail "interrupted finalization must release both lifecycle locks"
 pass "upgrader locks finalization/activation and retains ownership through cleanup"
+
+# Exercise the installed EXIT trap, including a fail-closed Pixel cleanup result.
+# Pixel may retain its durable hold, but unrelated shell locks must still release.
+python3 - "$UPGRADER" <<'PY'
+import pathlib, re, subprocess, sys
+source = pathlib.Path(sys.argv[1]).read_text()
+trap = re.search(r"^    (trap '[^'\n]*' EXIT)$", source, re.M).group(1)
+expected = ["pixel", "router", "lifecycle", "upgrade"]
+for cleanup_rc in (0, 1):
+    script = "set -uo pipefail\n" + f"cleanup_bootstrap_pixel_model_transaction() {{ echo pixel; return {cleanup_rc}; }}\n"
+    script += "release_model_router_swap_gate() { echo router; }\n"
+    script += "release_model_lifecycle_lock() { echo lifecycle; }\n"
+    script += "release_upgrade_lock() { echo upgrade; }\n"
+    result = subprocess.run(["bash", "-c", script + trap + "\nexit 73\n"], text=True, capture_output=True)
+    assert result.returncode == 73, result
+    assert result.stdout.splitlines() == expected, result
+PY
+pass "actual EXIT trap cleans Pixel first and releases shell locks even if Pixel stays held"
 
 if ! command -v flock >/dev/null 2>&1; then
     echo "[SKIP] flock is unavailable; static lifecycle lock contracts passed, runtime contention test skipped"
@@ -146,3 +164,37 @@ events="$(cat "$tmp/events")"
 [[ ! -e "$install_dir/data/models/Bootstrap.gguf" && -s "$install_dir/data/models/Full.gguf" ]] \
     || fail "serialized handoff did not leave the full model as the final state"
 pass "concurrent download stays parallel while activation waits for installer compose"
+
+# A no-sudo install starts the host agent as a session daemon during phase 07.
+# The daemon must not retain the installer flock after its parent releases it.
+agent_dir="$tmp/agent-install"
+mkdir -p "$agent_dir"
+cat > "$agent_dir/ods-cli" <<'CLI'
+#!/usr/bin/env bash
+sleep 10 >/dev/null 2>&1 &
+printf '%s\n' "$!" > "$ODS_TEST_AGENT_PID_FILE"
+CLI
+chmod +x "$agent_dir/ods-cli"
+awk '/^_ods_start_session_host_agent\(\)/ {copy=1} copy {print} copy && /^}/ {exit}' \
+    "$ROOT_DIR/installers/phases/07-devtools.sh" > "$tmp/session-agent-function.sh"
+[[ -s "$tmp/session-agent-function.sh" ]] || fail "missing session host-agent start function"
+. "$tmp/session-agent-function.sh"
+ai() { :; }
+ai_ok() { :; }
+ai_warn() { :; }
+AGENT_PYTHON=/bin/true
+INSTALL_DIR="$agent_dir"
+LOG_FILE="$tmp/session-agent.log"
+export ODS_TEST_AGENT_PID_FILE="$tmp/session-agent.pid"
+ods_model_lifecycle_lock_acquire "$agent_dir" "test session agent"
+_ods_start_session_host_agent || fail "fixture session agent did not start"
+agent_pid="$(cat "$ODS_TEST_AGENT_PID_FILE")"
+kill -0 "$agent_pid" || fail "fixture session agent did not stay alive"
+ods_model_lifecycle_lock_release
+agent_lock="$(ods_model_lifecycle_lock_file "$agent_dir")"
+exec {agent_probe_fd}>"$agent_lock"
+flock -xn "$agent_probe_fd" || fail "session host agent retained installer model lifecycle lock"
+flock -u "$agent_probe_fd"
+exec {agent_probe_fd}>&-
+kill "$agent_pid" 2>/dev/null || true
+pass "session host agent does not inherit installer lifecycle lock"

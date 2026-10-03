@@ -1,0 +1,14 @@
+{
+  "repository": "https://github.com/neo4j/neo4j",
+  "license": "GPL-3.0",
+  "source_ref": "2026.08.1",
+  "image": "neo4j:community@sha256:d8f4c156caa3af76499134947deb11d13042e471d9733060449f2a01eb7a248e",
+  "image_source_ref": "01da8618a685a3af37b1cb4606ee2396c9fb397d",
+  "registry_checked_at": "2026-09-20",
+  "platforms": [
+    "linux/amd64",
+    "linux/arm64"
+  ],
+  "runtime_validation": "pending",
+  "notes": "Official Community edition only, native startup under UID7474, persisted graph/auth data and logs. Loopback HTTP/Bolt with matching advertised addresses, bounded JVM memory. No plugins or model integration enabled."
+}

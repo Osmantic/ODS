@@ -1,6 +1,6 @@
 services:
   anythingllm:
-    image: mintplexlabs/anythingllm:1.11.1
+    image: mintplexlabs/anythingllm:1.11.1@sha256:0d9124c5ee5f1774dc205ecacab627eeeee630e7ec8fce70e2204a3d67bacac7
     container_name: ods-anythingllm
     restart: unless-stopped
     depends_on:
@@ -27,7 +27,7 @@ services:
     volumes:
       - ./data/anythingllm:/app/server/storage:rw
     ports:
-      - "${BIND_ADDRESS:-127.0.0.1}:${ANYTHINGLLM_PORT:-7800}:3001"
+      - "127.0.0.1:${ANYTHINGLLM_PORT:-7800}:3001"
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://127.0.0.1:3001/api/health"]
       interval: 30s

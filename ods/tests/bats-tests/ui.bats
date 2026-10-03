@@ -25,6 +25,8 @@ setup() {
     export GRN=""
     export BGRN=""
     export DGRN=""
+    export MAG=""
+    export BMAG=""
     export AMB=""
     export WHT=""
     export RED=""
@@ -45,6 +47,47 @@ setup() {
 
     # Source the library under test
     source "$BATS_TEST_DIRNAME/../../installers/lib/ui.sh"
+}
+
+# ── presentation mode ─────────────────────────────────────────────────────
+
+@test "ods_ui_cinematic: non-interactive installs always use plain output" {
+    export ODS_UI_MODE="cinematic"
+    export INTERACTIVE="false"
+    run ods_ui_cinematic
+    assert_failure
+}
+
+@test "ods_ui_cinematic: GUI protocol always uses plain output" {
+    export ODS_UI_MODE="cinematic"
+    export INTERACTIVE="true"
+    export ODS_INSTALLER_GUI="1"
+    run ods_ui_cinematic
+    assert_failure
+}
+
+@test "ods_apply_presentation_mode: non-interactive TTY colors are removed" {
+    export INTERACTIVE="false"
+    RED=x GRN=x BGRN=x DGRN=x MAG=x BMAG=x AMB=x WHT=x DIM=x NC=x
+    ods_apply_presentation_mode
+    [[ -z "$RED$GRN$BGRN$DGRN$MAG$BMAG$AMB$WHT$DIM$NC" ]]
+}
+
+@test "show_stranger_boot: plain output keeps the restored ODS gateway identity" {
+    run show_stranger_boot
+    assert_success
+    assert_output --partial "____   ____    _____"
+    assert_output --partial "O D S G A T E"
+    assert_output --partial "Signal acquired."
+    refute_output --partial $'\033'
+}
+
+@test "ui_status_line: plain output has no cursor redraw or Unicode marker" {
+    run ui_status_line warn "Service still starting"
+    assert_success
+    assert_output "  [WARN] Service still starting"
+    refute_output --partial $'\r'
+    refute_output --partial "⚠"
 }
 
 # ── ai ──────────────────────────────────────────────────────────────────────
@@ -144,6 +187,13 @@ setup() {
     assert_output --partial "FEATURES"
 }
 
+@test "show_phase: retains the six-phase cinematic contract" {
+    run show_phase 4 6 "Downloading Modules" "~5-10 minutes"
+    assert_success
+    assert_output --partial "ODSGATE SEQUENCE"
+    assert_output --partial "PHASE 4/6"
+}
+
 @test "show_phase: includes estimate when provided" {
     run show_phase 1 13 "PREFLIGHT" "~10s"
     assert_success
@@ -229,6 +279,41 @@ setup() {
 }
 
 # ── LORE_MESSAGES ───────────────────────────────────────────────────────────
+
+@test "lore: cloud mode does not claim there is no cloud" {
+    export ODS_MODE="cloud"
+    ods_select_lore_messages
+    run printf '%s\n' "${LORE_MESSAGES[@]}"
+    assert_output --partial "Cloud mode is active"
+    refute_output --partial "No cloud"
+    refute_output --partial "never leaves"
+}
+
+@test "lore: an external endpoint overrides local-mode assurances" {
+    export ODS_MODE="local"
+    export EXTERNAL_LLM_URL="http://model-host.example:8080/v1"
+    ods_select_lore_messages
+    run printf '%s\n' "${LORE_MESSAGES[@]}"
+    assert_output --partial "external inference endpoint"
+    refute_output --partial "Local inference runs"
+}
+
+@test "show_success_card: local mode makes a bounded local-inference statement" {
+    export ODS_MODE="local"
+    run show_success_card "http://localhost:3000" "http://localhost:3001" ""
+    assert_success
+    assert_output --partial "T H E   O D S   G A T E W A Y   I S   O P E N"
+    assert_output --partial "Local inference runs on this machine by default."
+    refute_output --partial "Your data never leaves"
+}
+
+@test "show_success_card: cloud mode discloses provider data flow" {
+    export ODS_MODE="cloud"
+    run show_success_card "http://localhost:3000" "http://localhost:3001" ""
+    assert_success
+    assert_output --partial "configured providers may receive prompts and responses"
+    refute_output --partial "Your data never leaves"
+}
 
 @test "check_service: exits early when managed container has exited" {
     export DRY_RUN="false"
@@ -403,4 +488,72 @@ MOCK
 
     grep -qF "Working" "$rendered"
     ! grep -qF " MB" "$rendered"
+}
+
+@test "spin_task: plain mode preserves the child failure status" {
+    (exit 23) &
+    local task_pid=$!
+    local rendered="$BATS_TEST_TMPDIR/spin-failure.out"
+    local rc=0
+
+    spin_task "$task_pid" "Expected failure" > "$rendered" || rc=$?
+
+    [[ "$rc" -eq 23 ]]
+    grep -qF "Expected failure" "$rendered"
+}
+
+@test "spin_task: cinematic mode preserves the child failure status" {
+    export ODS_UI_MODE="cinematic"
+    export INTERACTIVE="true"
+    (exit 29) &
+    local task_pid=$!
+    local rendered="$BATS_TEST_TMPDIR/spin-cinematic-failure.out"
+    local rc=0
+
+    spin_task "$task_pid" "Expected cinematic failure" > "$rendered" || rc=$?
+
+    [[ "$rc" -eq 29 ]]
+    grep -qF "Expected cinematic failure" "$rendered"
+}
+
+
+@test "spin_task: plain download reports changing bytes before the child exits" {
+    local part="$BATS_TEST_TMPDIR/growing.gguf.part"
+    local rendered="$BATS_TEST_TMPDIR/growing.out"
+    head -c 1048576 /dev/zero > "$part"
+    command sleep 60 &
+    local task_pid=$!
+    local ticks=0
+
+    # Advance polling deterministically while keeping the actual owned child
+    # alive through the heartbeat. No thirty-second wall-clock test delay.
+    sleep() {
+        ticks=$((ticks + 1))
+        if [[ "$ticks" -eq 1 ]]; then
+            head -c 5242880 /dev/zero > "$part"
+        elif [[ "$ticks" -eq 31 ]]; then
+            grep -qF "[00:30] Downloading model.gguf — 5 MB / 10 MB (50%)" "$rendered"
+            kill -TERM "$task_pid"
+            wait "$task_pid" 2>/dev/null || :
+        fi
+    }
+    local rc=0
+    spin_task "$task_pid" "Downloading model.gguf" "$part" 10 > "$rendered" || rc=$?
+    unset -f sleep
+
+    [[ "$rc" -eq 143 ]]
+    grep -qF "1 MB / 10 MB (10%)" "$rendered"
+    grep -qF "[00:30] Downloading model.gguf — 5 MB / 10 MB (50%)" "$rendered"
+    [[ "$(grep -cF 'Downloading model.gguf' "$rendered")" -eq 2 ]]
+    ! grep -q $'\r' "$rendered"
+}
+
+@test "spin_task: plain progress preserves a completed download failure" {
+    local part="$BATS_TEST_TMPDIR/failed.gguf.part"
+    head -c 1048576 /dev/zero > "$part"
+    (exit 23) &
+    local task_pid=$!
+    local rc=0
+    spin_task "$task_pid" "Downloading model.gguf" "$part" 10 > "$BATS_TEST_TMPDIR/failed.out" || rc=$?
+    [[ "$rc" -eq 23 ]]
 }

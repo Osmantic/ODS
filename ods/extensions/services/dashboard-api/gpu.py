@@ -9,7 +9,8 @@ import subprocess
 from pathlib import Path
 from typing import Optional
 
-from env_values import strip_matching_quotes
+from host_metrics import apple_host_metrics, linux_scope, windows_host_metrics
+from env_values import parse_env_value
 from models import GPUInfo, IndividualGPU
 from host_agent_client import AgentClientError, request_json as request_agent_json
 
@@ -180,13 +181,14 @@ def get_gpu_info_nvidia() -> Optional[GPUInfo]:
                     pass
             na_values = ("[N/A]", "[Not Supported]", "N/A", "Not Supported", "")
             # GB10/GB200 unified memory: nvidia-smi reports [N/A] for memory
-            # fields; fall back to /proc/meminfo (mirrors detection.sh).
+            # fields. System RAM can describe capacity, never GPU memory use.
             unified = parts[1] in na_values or parts[2] in na_values
             if unified:
                 fallback = _read_meminfo_mb()
                 if not fallback:
                     continue
-                mem_used, mem_total = fallback
+                _, mem_total = fallback
+                mem_used = 0
                 any_unified = True
             else:
                 mem_used = int(parts[1])
@@ -197,6 +199,7 @@ def get_gpu_info_nvidia() -> Optional[GPUInfo]:
                 "name": parts[0],
                 "mem_used": mem_used,
                 "mem_total": mem_total,
+                "memory_usage_available": not unified,
                 "util": util,
                 "temp": temp,
                 "utilization_available": parts[3] not in na_values,
@@ -222,6 +225,7 @@ def get_gpu_info_nvidia() -> Optional[GPUInfo]:
                 power_w=g["power_w"],
                 memory_type=memory_type,
                 gpu_backend="nvidia",
+                memory_usage_available=g["memory_usage_available"],
                 utilization_available=g["utilization_available"],
                 temperature_available=g["temperature_available"],
             )
@@ -256,6 +260,7 @@ def get_gpu_info_nvidia() -> Optional[GPUInfo]:
             memory_type=memory_type,
             gpu_backend="nvidia",
             gpu_count=len(gpus),
+            memory_usage_available=all(g["memory_usage_available"] for g in gpus),
             utilization_available=all(g["utilization_available"] for g in gpus),
             temperature_available=any(g["temperature_available"] for g in gpus),
         )
@@ -266,7 +271,7 @@ def get_gpu_info_nvidia() -> Optional[GPUInfo]:
 
 
 def get_gpu_info_apple() -> Optional[GPUInfo]:
-    """Get GPU metrics for Apple Silicon via system_profiler (native) or env vars (container)."""
+    """Read Apple counters through the native host agent when containerized."""
     gpu_backend = os.environ.get("GPU_BACKEND", "").lower()
 
     if platform.system() == "Darwin":
@@ -321,46 +326,21 @@ def get_gpu_info_apple() -> Optional[GPUInfo]:
             return None
 
     elif gpu_backend == "apple":
-        # Linux container path (Docker Desktop on macOS): use HOST_RAM_GB env var
-        host_ram_gb_str = os.environ.get("HOST_RAM_GB", "")
-        if not host_ram_gb_str:
+        payload = apple_host_metrics()["gpu"]
+        if payload is None:
             return None
-        try:
-            host_ram_gb_float = float(host_ram_gb_str)
-        except ValueError:
-            return None
-        if host_ram_gb_float <= 0:
-            return None
-        total_mb = int(host_ram_gb_float * 1024)
-        # Use /proc/meminfo for used memory (best available proxy inside container)
-        # Note: used_mb reflects Docker Desktop VM memory pressure, not the host Mac's.
-        # Total is correctly overridden by HOST_RAM_GB. See issue #102 for a future
-        # host-metrics collector that would fix used_mb.
-        used_mb = 0
-        try:
-            with open("/proc/meminfo") as f:
-                meminfo = {}
-                for line in f:
-                    parts = line.split()
-                    if len(parts) >= 2:
-                        meminfo[parts[0].rstrip(":")] = int(parts[1])
-            avail = meminfo.get("MemAvailable", 0)
-            total_kb = meminfo.get("MemTotal", 0)
-            used_mb = (total_kb - avail) // 1024
-        except OSError:
-            pass
+        total_mb = payload["memory_total_mb"]
+        used_mb = payload["memory_used_mb"]
+        utilization = payload["utilization_percent"]
         return GPUInfo(
-            name=f"Apple M-Series ({int(host_ram_gb_float)} GB Unified)",
-            memory_used_mb=used_mb,
+            name=payload["name"],
+            memory_used_mb=int(used_mb or 0),
             memory_total_mb=total_mb,
-            memory_percent=round(used_mb / total_mb * 100, 1) if total_mb > 0 else 0,
-            utilization_percent=0,
-            temperature_c=0,
-            power_w=None,
-            memory_type="unified",
-            gpu_backend="apple",
-            memory_usage_available=False,
-            utilization_available=False,
+            memory_percent=round(used_mb / total_mb * 100, 1) if used_mb is not None else 0,
+            utilization_percent=int(utilization or 0),
+            temperature_c=0, power_w=None, memory_type="unified", gpu_backend="apple",
+            memory_usage_available=used_mb is not None,
+            utilization_available=utilization is not None,
             temperature_available=False,
         )
 
@@ -456,6 +436,31 @@ def get_gpu_info_windows_host_detailed() -> Optional[list[IndividualGPU]]:
     return result or None
 
 
+def get_wsl_gpu_backend() -> str:
+    rows = windows_host_metrics()["gpus"]
+    backends = {row["backend"] for row in rows}
+    return next(iter(backends)) if len(backends) == 1 else "unknown"
+
+
+def get_gpu_info_wsl_host_detailed() -> Optional[list[IndividualGPU]]:
+    """Inventory is independent of a CPU/external inference backend setting."""
+    if platform.system() != "Linux" or linux_scope() != "wsl":
+        return None
+    rows = windows_host_metrics()["gpus"]
+    result = []
+    for index, row in enumerate(rows):
+        total, used, utilization = row["memory_total_mb"], row["memory_used_mb"], row["utilization_percent"]
+        result.append(IndividualGPU(
+            index=index, uuid=row["uuid"], name=row["name"], memory_total_mb=total,
+            memory_used_mb=int(used or 0), memory_percent=round(used / total * 100, 1) if used is not None else 0,
+            utilization_percent=int(utilization or 0), temperature_c=0, power_w=None,
+            memory_type=row["memory_type"], assigned_services=[],
+            memory_usage_available=used is not None, utilization_available=utilization is not None,
+            temperature_available=False,
+        ))
+    return result or None
+
+
 def get_gpu_info() -> Optional[GPUInfo]:
     """Get GPU metrics. Tries the configured backend first, then auto-detects."""
     gpu_backend = os.environ.get("GPU_BACKEND", "").lower()
@@ -492,6 +497,10 @@ def get_gpu_info() -> Optional[GPUInfo]:
         info = get_gpu_info_amd()
         if info:
             return info
+
+    native = get_gpu_info_wsl_host_detailed()
+    if native:
+        return aggregate_gpu_details(native, get_wsl_gpu_backend())
 
     # Auto-detect Apple Silicon if no backend specified and nothing else found
     if platform.system() == "Darwin":
@@ -548,7 +557,7 @@ def _read_env_var_from_file_state(key: str) -> tuple[bool, str]:
     try:
         for line in env_path.read_text().splitlines():
             if line.startswith(f"{key}="):
-                return True, strip_matching_quotes(line[len(key) + 1:])
+                return True, parse_env_value(line[len(key) + 1:])
     except OSError:
         pass
     return False, ""
@@ -654,11 +663,13 @@ def get_gpu_info_nvidia_detailed() -> Optional[list[IndividualGPU]]:
                 except (ValueError, TypeError):
                     pass
             # GB10/GB200 unified memory fallback (see _read_meminfo_mb).
-            if parts[3] in na_values or parts[4] in na_values:
+            unified = parts[3] in na_values or parts[4] in na_values
+            if unified:
                 fallback = _read_meminfo_mb()
                 if not fallback:
                     continue
-                mem_used, mem_total = fallback
+                _, mem_total = fallback
+                mem_used = 0
             else:
                 mem_used = int(parts[3])
                 mem_total = int(parts[4])
@@ -674,6 +685,7 @@ def get_gpu_info_nvidia_detailed() -> Optional[list[IndividualGPU]]:
                 temperature_c=int(parts[6]) if parts[6] not in na_values else 0,
                 power_w=power_w,
                 assigned_services=uuid_service_map.get(uuid, []),
+                memory_usage_available=not unified,
                 utilization_available=parts[5] not in na_values,
                 temperature_available=parts[6] not in na_values,
             ))

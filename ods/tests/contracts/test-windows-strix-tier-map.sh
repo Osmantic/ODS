@@ -91,7 +91,7 @@ if [[ -n "$ps_bin" ]]; then
     '
     OUT="$("$ps_bin" -NoProfile -ExecutionPolicy Bypass -Command "$ps_code" 2>/dev/null || true)"
     if grep -q 'STATIC=qwen3.6-35b-a3b|Qwen3.6-35B-A3B-UD-Q4_K_M.gguf' <<<"$OUT" \
-        && grep -q 'RESOLVED=qwen3.6-35b-a3b|Qwen3.6-35B-A3B-UD-Q4_K_M.gguf|context-aware-largest-capable-general-v1+unified-memory-coder-next-a3b-v1' <<<"$OUT"; then
+        && grep -q 'RESOLVED=qwen3.6-35b-a3b|Qwen3.6-35B-A3B-UD-Q4_K_M.gguf|context-aware-curated-fit-v2+unified-memory-coder-next-a3b-v1' <<<"$OUT"; then
         pass "PowerShell resolver selects Qwen3.6 A3B with unified-memory policy"
     else
         fail "PowerShell resolver should select Qwen3.6 A3B; got: $OUT"

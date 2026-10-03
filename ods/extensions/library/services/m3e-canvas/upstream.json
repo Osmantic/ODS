@@ -1,0 +1,15 @@
+{
+  "repository": "https://github.com/lnkiai/m3e-canvas",
+  "license": "MIT",
+  "image": "nginx:1.28-alpine@sha256:a8b39bd9cf0f83869a2162827a0caf6137ddf759d50a171451b335cecc87d236",
+  "build_image": "node:24.16.0-alpine3.22@sha256:191c9f0080fcbbc6547a85dc0ff7988072214a355aabdc1d2ec55a7dae5eea8a",
+  "registry_checked_at": "2026-09-20",
+  "platforms": [
+    "linux/amd64",
+    "linux/arm64"
+  ],
+  "runtime_validation": "pending",
+  "source_commit": "dea74159d69b09fb6fc2e44ebebf5e62c043e1ce",
+  "source_sha256": "e2cf5777cd336723b399766aa239fa40a2753b4c7d3a9d1b09c2556bb70b8c80",
+  "notes": "Static Next.js export with locked npm dependencies. Browser-local design persistence; explicit JSON/PNG/prompt handoff, no Portal model binding. Optional external AI and Google fonts remain upstream behavior."
+}

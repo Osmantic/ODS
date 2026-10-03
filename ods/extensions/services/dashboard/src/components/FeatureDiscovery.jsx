@@ -38,7 +38,7 @@ export function FeatureDiscoveryBanner({ onDismiss }) {
   if (!topSuggestion || (summary.progress ?? 0) >= 80) return null
 
   return (
-    <div className="liquid-metal-frame mb-6 p-4 bg-gradient-to-r from-theme-accent/10 to-purple-500/10 border border-theme-accent/30 rounded-xl">
+    <div className="mb-6 p-4 bg-theme-card border border-theme-border rounded-xl">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
           <div className="p-2 bg-theme-accent/20 rounded-lg">
@@ -111,7 +111,7 @@ export function FeatureProgress() {
       {/* Progress bar */}
       <div className="h-2 bg-theme-border rounded-full overflow-hidden mb-3">
         <div 
-          className="h-full bg-gradient-to-r from-indigo-500 to-purple-500 transition-all duration-500"
+          className="h-full bg-theme-accent transition-all duration-500"
           style={{ width: `${summary.progress}%` }}
         />
       </div>
@@ -119,11 +119,11 @@ export function FeatureProgress() {
       {/* GPU tier badge */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
-          <Zap size={14} className="text-amber-400" />
+          <Zap size={14} className="text-theme-text-secondary" />
           <span className="text-xs text-theme-text-muted">{gpu.name}</span>
         </div>
         <span className={`text-xs px-2 py-0.5 rounded-full ${
-          gpu.tier === 'Professional' ? 'bg-purple-500/20 text-purple-400' :
+          gpu.tier === 'Professional' ? 'bg-theme-surface text-theme-text-secondary' :
           gpu.tier === 'Prosumer' ? 'bg-theme-accent/20 text-theme-accent' :
           gpu.tier === 'Standard' ? 'bg-blue-500/20 text-blue-400' :
           'bg-theme-border text-theme-text-secondary'
@@ -202,14 +202,14 @@ function FeatureCard({ feature, onClick }) {
   const statusColors = {
     enabled: 'border-green-500/30 bg-green-500/5',
     available: 'border-theme-accent/30 bg-theme-accent/5 hover:border-theme-accent/50',
-    services_needed: 'border-amber-500/30 bg-amber-500/5',
+    services_needed: 'border-theme-border bg-theme-text-secondary/5',
     insufficient_vram: 'border-theme-border bg-theme-card opacity-60'
   }
 
   const statusIcons = {
     enabled: <CheckCircle size={14} className="text-green-400" />,
     available: <Sparkles size={14} className="text-theme-accent" />,
-    services_needed: <AlertCircle size={14} className="text-amber-400" />,
+    services_needed: <AlertCircle size={14} className="text-theme-text-secondary" />,
     insufficient_vram: null
   }
 

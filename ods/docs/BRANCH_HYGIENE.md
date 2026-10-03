@@ -50,8 +50,11 @@ anything:
 python ods/scripts/maintainers/list-stale-branches.py --days 45
 ```
 
-By default the helper excludes `main`, `master`, `develop`, `release/*`,
-`support/*`, and branches backing open PRs when the GitHub CLI is available.
+By default the helper excludes `main`, `master`, `develop`, `public-beta`,
+`release/*`, `support/*`, and the default branch recorded by local `origin/HEAD`.
+It also excludes branches backing open PRs when the GitHub CLI is available.
+`--include-open-prs` only bypasses the PR filter; release/default exclusions
+still apply. The helper does not query GitHub branch-protection rules.
 
 Review the output before deleting anything. When in doubt, leave the branch and
 link it to an issue describing why it should stay.

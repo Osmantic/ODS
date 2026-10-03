@@ -1,0 +1,12 @@
+{
+  "repository": "https://github.com/unclecode/crawl4ai",
+  "license": "Apache-2.0",
+  "image": "unclecode/crawl4ai:0.9.3@sha256:84751dab794259db05d5bd4e5c766a8041a65f0554326e4516e620abdf2fa18b",
+  "registry_checked_at": "2026-09-20",
+  "platforms": [
+    "linux/amd64",
+    "linux/arm64"
+  ],
+  "runtime_validation": "pending",
+  "notes": "Browser sessions and background jobs are ephemeral; callers should save exported results. Basic extraction does not require a paid LLM. Optional LLM extraction is configured per request."
+}

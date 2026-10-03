@@ -1,0 +1,45 @@
+# OpenClaw runtime state is never source code.
+.openclaw/
+**/.openclaw/agents/
+**/.openclaw/credentials/
+**/.openclaw/devices/
+**/.openclaw/identity/
+**/.openclaw/sessions/
+**/*.jsonl
+**/*.jsonl.lock
+
+# Credentials and local operator settings.
+.env
+.env.*
+!.env.example
+# A clean migration keeps the exact pre-restore .env as an armed sibling until commit.
+# Ignore only that fixed restore-owned basename shape; other untracked source remains visible.
+.pixel-restore-.env-*.old
+.pixel-restore-.env-*.new
+.generated/
+.runtime/
+.secrets/
+secrets/
+**/secrets/
+**/client.json
+**/client_secret*.json
+**/token.json
+**/*refresh-token*
+**/*.pem
+**/*.key
+
+# Generated deployment artifacts.
+dist/
+**/node_modules/
+**/.npm/
+*.tar.gz
+*.sha256
+*.log
+__pycache__/
+*.pyc
+
+# Rootless Pixel mesh runtime/generated state is never source code.
+**/.openclaw-mesh/
+**/.config/pixel-mesh/
+**/.local/share/pixel-mesh/
+**/.local/state/pixel-mesh/

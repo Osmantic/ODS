@@ -1,0 +1,15 @@
+{
+  "$schema": "https://osmantic.com/pixel/schemas/portal-outcome-pair-system-v1.schema.json",
+  "schemaVersion": 1,
+  "candidateSourceArchiveSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "pixelSystemConfigPath": "/etc/pixel-outcome/pixel-system.json",
+  "codexRunnerImage": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "codexBoundaryImage": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "codexSurfaceQualificationPath": "/var/lib/pixel-outcome/private/codex-surface-qualification.json",
+  "modelArtifactPath": "/srv/pixel/models/deepseek-v4-flash-0731",
+  "modelArtifactManifestPath": "/etc/pixel-outcome/model-artifact-manifest.json",
+  "launchArgumentsPath": "/etc/pixel-outcome/dsv4-launch-arguments.json",
+  "capabilityRetentionEvidencePath": "/var/lib/pixel-outcome/private/builder-capability-retention.json",
+  "preflightPath": "/var/lib/pixel-outcome/private/pair-preflight.json",
+  "boundary": "Owner-private exact Pixel/Codex pair execution configuration only. It grants no provider, credential, external-effect, merge, deployment, publication, completion, acceptance, or promotion authority."
+}

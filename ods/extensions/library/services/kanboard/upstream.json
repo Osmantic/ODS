@@ -1,0 +1,14 @@
+{
+  "repository": "https://github.com/kanboard/kanboard",
+  "license": "MIT",
+  "image": "kanboard/kanboard:v1.2.54@sha256:8df6c4339134b6c196da9a262daa42ab8ce395f528a48d4a3dd7038c296f34c1",
+  "registry_checked_at": "2026-09-20",
+  "platforms": [
+    "linux/amd64",
+    "linux/arm",
+    "linux/arm",
+    "linux/arm64"
+  ],
+  "runtime_validation": "pending",
+  "notes": "Native SQLite migrations run before HTTP startup, exact versioned initial admin hash source patched to required owner password. Existing users preserved; upstream nginx/PHP/supervisor retained. Data, plugins and internal TLS volumes explicitly named."
+}

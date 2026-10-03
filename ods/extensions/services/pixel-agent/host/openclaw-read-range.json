@@ -1,0 +1,20 @@
+{
+  "version": "2026.6.33",
+  "sourceSha256": "b80c9ab91868acfa54a81472a3c235cbc6b67e94e9de0ac37ff8dd461fdf4730",
+  "patchedSha256": "dbe874156c04af142e69fa6bc63289fe5a4bfc4047acade27d451370b3f11a2f",
+  "replacements": [
+    [
+      "function emptyReadResult() {\n\treturn {\n\t\tcontent: [{\n\t\t\ttype: \"text\",\n\t\t\ttext: \"\"\n\t\t}],\n\t\tdetails: void 0\n\t};\n}",
+      "function offsetBeyondEofReadResult(error) {\n\treturn {\n\t\tisError: true,\n\t\tcontent: [{\n\t\t\ttype: \"text\",\n\t\t\ttext: `${error.message}. Read offset is a 1-based line number. Choose a range within the file; increasing the offset will not return more text.`\n\t\t}],\n\t\tdetails: { status: \"error\", code: \"READ_OFFSET_BEYOND_EOF\" }\n\t};\n}"
+    ],
+    [
+      "if (isOffsetBeyondEof(error, params.args)) return emptyReadResult();",
+      "if (isOffsetBeyondEof(error, params.args)) return offsetBeyondEofReadResult(error);"
+    ],
+    [
+      "\t\tfirstResult ??= pageResult;\n\t\tconst rawText = getToolResultText(pageResult);",
+      "\t\tfirstResult ??= pageResult;\n\t\tif (pageResult.details?.code === \"READ_OFFSET_BEYOND_EOF\") return aggregatedText ? withToolResultText(pageResult, `${aggregatedText}\\n\\n${getToolResultText(pageResult)}`) : pageResult;\n\t\tconst rawText = getToolResultText(pageResult);"
+    ]
+  ],
+  "previousReplacements": {}
+}

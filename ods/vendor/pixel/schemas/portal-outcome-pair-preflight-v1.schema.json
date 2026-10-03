@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/portal-outcome-pair-preflight-v1.schema.json",
+  "title": "Pixel content-free reusable exact paired runtime preflight evidence v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "operation", "status", "profile", "contractSourceTaskSha256", "contractSourceTaskAdmissionSha256", "configurationSha256", "pixelSystemConfigurationSha256", "modelArtifactManifestFileSha256", "launchArgumentsFileSha256", "modelContractSha256", "inferenceContractSha256", "modelArtifactSha256", "launchArgumentsSha256", "capabilityRetentionEvidenceSha256", "codexSurfaceQualificationSha256", "pixelWorkPolicySha256", "pixelTaskCompatibilitySha256", "pixelEnvironmentSha256", "pixelHarnessSha256", "pixelLaunchBundleSha256", "pixelModelQualificationReceiptSha256", "codexHarnessSha256", "images", "checks", "authority", "boundary"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/portal-outcome-pair-preflight-v1.schema.json"},
+    "schemaVersion": {"const": 1},
+    "operation": {"const": "pixel-portal-outcome-pair-preflight"},
+    "status": {"const": "ready"},
+    "profile": {"enum": ["assistant", "builder", "controller", "researcher"]},
+    "contractSourceTaskSha256": {"$ref": "#/$defs/hash"},
+    "contractSourceTaskAdmissionSha256": {"$ref": "#/$defs/hash"},
+    "configurationSha256": {"$ref": "#/$defs/hash"},
+    "pixelSystemConfigurationSha256": {"$ref": "#/$defs/hash"},
+    "modelArtifactManifestFileSha256": {"$ref": "#/$defs/hash"},
+    "launchArgumentsFileSha256": {"$ref": "#/$defs/hash"},
+    "modelContractSha256": {"$ref": "#/$defs/hash"},
+    "inferenceContractSha256": {"$ref": "#/$defs/hash"},
+    "modelArtifactSha256": {"$ref": "#/$defs/hash"},
+    "launchArgumentsSha256": {"$ref": "#/$defs/hash"},
+    "capabilityRetentionEvidenceSha256": {"$ref": "#/$defs/hash"},
+    "codexSurfaceQualificationSha256": {"$ref": "#/$defs/hash"},
+    "pixelWorkPolicySha256": {"$ref": "#/$defs/hash"},
+    "pixelTaskCompatibilitySha256": {"$ref": "#/$defs/hash"},
+    "pixelEnvironmentSha256": {"$ref": "#/$defs/hash"},
+    "pixelHarnessSha256": {"$ref": "#/$defs/hash"},
+    "pixelLaunchBundleSha256": {"$ref": "#/$defs/hash"},
+    "pixelModelQualificationReceiptSha256": {"$ref": "#/$defs/hash"},
+    "codexHarnessSha256": {"$ref": "#/$defs/hash"},
+    "images": {
+      "type": "object", "additionalProperties": false,
+      "required": ["codexRunner", "inferenceBoundary", "pixelRunner", "pixelVerifier", "modelBackend"],
+      "properties": {
+        "codexRunner": {"$ref": "#/$defs/image"}, "inferenceBoundary": {"$ref": "#/$defs/image"},
+        "pixelRunner": {"$ref": "#/$defs/image"}, "pixelVerifier": {"$ref": "#/$defs/image"},
+        "modelBackend": {"$ref": "#/$defs/image"}
+      }
+    },
+    "checks": {
+      "type": "object", "additionalProperties": false,
+      "required": ["sameModelLane", "modelArtifactMeasured", "launchArgumentsBound", "runtimeExecutableBound", "codexSurfaceQualified", "pixelTemplatesPrepared", "modelQualificationCurrent", "pixelTaskCompiles", "containedBuilderCapabilitiesRetained", "allImagesPresent", "temporaryReviewStateRemoved", "modelStarted", "taskExecuted"],
+      "properties": {
+        "sameModelLane": {"const": true}, "modelArtifactMeasured": {"const": true},
+        "launchArgumentsBound": {"const": true}, "runtimeExecutableBound": {"const": true},
+        "codexSurfaceQualified": {"const": true},
+        "pixelTemplatesPrepared": {"const": true}, "modelQualificationCurrent": {"const": true},
+        "pixelTaskCompiles": {"const": true},
+        "containedBuilderCapabilitiesRetained": {"const": true},
+        "allImagesPresent": {"const": true},
+        "temporaryReviewStateRemoved": {"const": true}, "modelStarted": {"const": false},
+        "taskExecuted": {"const": false}
+      }
+    },
+    "authority": {
+      "type": "object", "additionalProperties": false,
+      "required": ["grantsModelStart", "grantsExecution", "grantsNetwork", "grantsProviderCall", "grantsCredentialUse", "grantsExternalEffects", "grantsCompletion"],
+      "properties": {
+        "grantsModelStart": {"const": false}, "grantsExecution": {"const": false},
+        "grantsNetwork": {"const": false}, "grantsProviderCall": {"const": false},
+        "grantsCredentialUse": {"const": false}, "grantsExternalEffects": {"const": false},
+        "grantsCompletion": {"const": false}
+      }
+    },
+    "boundary": {"const": "Content-free read-only readiness evidence for one exact private DSV4 Pixel/Codex comparison runtime. It proves model, current qualification, artifact, launch, inference, image, policy, verifier, configuration, harness, contained Builder capability retention, and exact task-compilation bindings for same-model tasks carrying the admitted contracts, without starting the model or running a task, and grants no execution, container, network, provider, credential, external-effect, completion, publication, deployment, acceptance, or promotion authority."}
+  },
+  "$defs": {
+    "hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "image": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"}
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "cpuPercent": 86,
+  "memoryTotalBytes": 102838435840,
+  "memoryUsedBytes": 36663795712,
+  "gpus": [
+    {
+      "name": "AMD Radeon(TM) 8060S Graphics",
+      "luid": "luid_0x00000000_0x0001696c",
+      "vendor": 4098,
+      "dedicatedTotalBytes": 34359738368,
+      "sharedCapacityBytes": 82270748672,
+      "dedicatedUsedBytes": 26808373248,
+      "utilizationPercent": 24
+    }
+  ]
+}

@@ -577,7 +577,7 @@ def test_public_url_mode_requires_public_url(magic_link_client):
 def test_redeem_sets_cookie_and_redirects(magic_link_client, magic_link_module):
     gen = magic_link_client.post(
         "/api/auth/magic-link/generate",
-        json={"target_username": "alice", "scope": "chat"},
+        json={"target_username": "alice", "scope": "hermes"},
         headers=magic_link_client.auth_headers,
     )
     token = gen.json()["token"]
@@ -607,7 +607,7 @@ def test_redeem_issues_signed_cookie_that_verifies(
 
     gen = magic_link_client.post(
         "/api/auth/magic-link/generate",
-        json={"target_username": "alice"},
+        json={"target_username": "alice", "scope": "hermes"},
         headers=magic_link_client.auth_headers,
     )
     token = gen.json()["token"]
@@ -625,6 +625,74 @@ def test_redeem_issues_signed_cookie_that_verifies(
 
     ok, reason = session_signer.verify(cookie)
     assert ok is True, f"signed cookie did not verify: {reason}"
+
+
+def _set_cookie_names(resp):
+    from http.cookies import SimpleCookie
+
+    cookies = SimpleCookie()
+    for key, value in resp.headers.raw:
+        if key.lower() == b"set-cookie":
+            cookies.load(value.decode("latin1"))
+    return set(cookies)
+
+
+def test_chat_guest_invite_redirects_without_an_ods_session(magic_link_client, magic_link_module):
+    """A chat-only guest lands in Open WebUI, which has its own sign-in. No
+    ods-session is issued, so the invite cannot open ODS Talk or pass the
+    optional Hermes gate (both accept any valid ods-session)."""
+    gen = magic_link_client.post(
+        "/api/auth/magic-link/generate",
+        json={"target_username": "visitor", "scope": "chat", "token_type": "guest"},
+        headers=magic_link_client.auth_headers,
+    )
+    token = gen.json()["token"]
+    magic_link_client.cookies.clear()
+
+    resp = magic_link_client.get(f"/auth/magic-link/{token}", follow_redirects=False)
+
+    assert resp.status_code == 302
+    assert resp.headers["location"].startswith("http://chat.")
+    assert _set_cookie_names(resp) == {"ods-target-user"}
+    magic_link_client.cookies.clear()
+    assert magic_link_client.get("/api/auth/verify-session").status_code == 401
+    assert magic_link_client.post("/api/talk/message", json={"text": "hi"}).status_code == 401
+
+
+def test_chat_guest_invite_does_not_need_session_signing(magic_link_client, magic_link_module):
+    import session_signer
+
+    gen = magic_link_client.post(
+        "/api/auth/magic-link/generate",
+        json={"target_username": "visitor"},
+        headers=magic_link_client.auth_headers,
+    )
+    session_signer._set_secret_for_tests("")
+    resp = magic_link_client.get(f"/magic-link/{gen.json()['token']}", follow_redirects=False)
+    assert resp.status_code == 302, resp.text
+    assert "ods-session" not in _set_cookie_names(resp)
+
+
+@pytest.mark.parametrize("payload", [
+    {"target_username": "owner", "token_type": "owner"},
+    {"target_username": "helper", "scope": "hermes", "token_type": "guest"},
+])
+def test_owner_cards_and_hermes_invites_still_issue_a_session(magic_link_client, magic_link_module, payload):
+    import session_signer
+
+    gen = magic_link_client.post(
+        "/api/auth/magic-link/generate", json=payload, headers=magic_link_client.auth_headers,
+    )
+    assert gen.status_code == 200, gen.text
+    resp = magic_link_client.get(f"/magic-link/{gen.json()['token']}", follow_redirects=False)
+    assert resp.status_code == 302
+    from http.cookies import SimpleCookie
+
+    cookies = SimpleCookie()
+    for key, value in resp.headers.raw:
+        if key.lower() == b"set-cookie":
+            cookies.load(value.decode("latin1"))
+    assert session_signer.verify(cookies["ods-session"].value)[0] is True
 
 
 def test_redeem_redirects_to_chat_subdomain(
@@ -673,9 +741,9 @@ def test_public_chat_redirect_override_wins_over_service_public_url(
 ):
     monkeypatch.setenv("ODS_PUBLIC_URL", "https://ods.example.test")
     monkeypatch.setenv("ODS_CHAT_PUBLIC_URL", "https://chat-override.example.test")
-    magic_link_module.SERVICES["open-webui"] = {
+    monkeypatch.setitem(magic_link_module.SERVICES, "open-webui", {
         "public_url": "https://chat-service.example.test",
-    }
+    })
 
     gen = magic_link_client.post(
         "/api/auth/magic-link/generate",
@@ -697,9 +765,9 @@ def test_public_hermes_redirect_override_wins_over_service_public_url(
 ):
     monkeypatch.setenv("ODS_PUBLIC_URL", "https://ods.example.test")
     monkeypatch.setenv("ODS_HERMES_PUBLIC_URL", "https://hermes-override.example.test")
-    magic_link_module.SERVICES["hermes-proxy"] = {
+    monkeypatch.setitem(magic_link_module.SERVICES, "hermes-proxy", {
         "public_url": "https://hermes-service.example.test",
-    }
+    })
 
     gen = magic_link_client.post(
         "/api/auth/magic-link/generate",
@@ -824,7 +892,7 @@ def test_redeem_sets_cookie_with_configured_domain(
 
     gen = magic_link_client.post(
         "/api/auth/magic-link/generate",
-        json={"target_username": "alice"},
+        json={"target_username": "alice", "scope": "hermes"},
         headers=magic_link_client.auth_headers,
     )
     token = gen.json()["token"]
@@ -846,7 +914,7 @@ def test_redeem_defaults_cookie_domain_to_device_domain(
     monkeypatch.delenv("ODS_COOKIE_DOMAIN", raising=False)
     gen = magic_link_client.post(
         "/api/auth/magic-link/generate",
-        json={"target_username": "alice"},
+        json={"target_username": "alice", "scope": "hermes"},
         headers=magic_link_client.auth_headers,
     )
     token = gen.json()["token"]
@@ -888,7 +956,7 @@ def test_redeem_refuses_when_signing_unconfigured(magic_link_client, magic_link_
     # Generate an invite while the secret is set (fixture state).
     gen = magic_link_client.post(
         "/api/auth/magic-link/generate",
-        json={"target_username": "alice"},
+        json={"target_username": "alice", "scope": "hermes"},
         headers=magic_link_client.auth_headers,
     )
     token = gen.json()["token"]

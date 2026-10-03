@@ -1,0 +1,25 @@
+name: Memory Shepherd archive regression
+
+on:
+  pull_request:
+    paths:
+      - 'ods/memory-shepherd/**'
+      - 'ods/tests/test-memory-shepherd-scratch.py'
+      - '.github/workflows/test-memory-shepherd.yml'
+  push:
+    branches: [main, public-beta]
+    paths:
+      - 'ods/memory-shepherd/**'
+      - 'ods/tests/test-memory-shepherd-scratch.py'
+      - '.github/workflows/test-memory-shepherd.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  scratch-archive:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - name: Archive local and remote final lines before resetting
+        run: sudo python3 ods/tests/test-memory-shepherd-scratch.py

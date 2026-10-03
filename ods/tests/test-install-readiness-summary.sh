@@ -116,6 +116,15 @@ assert_contains "$OUTPUT" "Logs: /tmp/ods-install.log" "summary shows log path"
 assert_contains "$OUTPUT" "Compose launch: $ODS_COMPOSE_LAUNCH_RECORD" "summary shows compose launch record"
 assert_contains "$OUTPUT" "Compose logs: cd '$TMP_DIR' && docker compose logs --tail 200" "summary shows compose logs command"
 
+# The default non-interactive Mac install leaves Perplexica disabled. Its
+# absent container must not turn an otherwise successful install into 5/6.
+MAC_INSTALLER="$ROOT_DIR/installers/macos/install-macos.sh"
+if grep -Fq '$ENABLE_PERPLEXICA && printf '\''Perplexica|' "$MAC_INSTALLER"; then
+    pass "Mac summary includes Perplexica only when selected"
+else
+    fail "Mac summary must omit disabled Perplexica"
+fi
+
 echo ""
 echo "Result: $PASS passed, $FAIL failed"
 [[ $FAIL -eq 0 ]]

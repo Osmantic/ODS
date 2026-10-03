@@ -10,7 +10,8 @@ Fork, branch, build, PR. That's it.
 git checkout -b my-change
 ```
 
-No CLA. No committee. No waiting for permission. If it makes ODS better, send it.
+Original Apache-licensed ODS contributions do not require a CLA. Check the
+[component terms](#license) before contributing to Pixel or third-party material.
 
 If you're adding or extending services, read these first:
 - [docs/EXTENSIONS.md](docs/EXTENSIONS.md) — how to add a new service in 30 minutes
@@ -153,4 +154,10 @@ We're not precious about style, but we have standards:
 
 ## License
 
-[Apache 2.0](LICENSE). Your code stays open. That's the whole point.
+Original ODS code uses [Apache 2.0](LICENSE), subject to the exceptions in
+[LICENSING.md](LICENSING.md). Pixel is source-available under its separate
+[ODS-specific license](vendor/pixel/LICENSE.md); third-party code and assets keep
+their own terms. The Apache contribution promise does not extend to those files.
+Pixel contributions require agreement with maintainers on inbound terms before
+acceptance. Follow the [root contribution policy](../CONTRIBUTING.md#license)
+and include provenance for copied code, artwork, fonts and model artifacts.

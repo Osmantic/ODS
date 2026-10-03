@@ -1,14 +1,24 @@
-# ODS
+# ODS V3 Pre-Release
+
+> **Release channel:** the install commands on this page fetch development `main`, which is not signed. A signed-source path is staged in [Verified Install Preview](docs/VERIFIED_INSTALL_PREVIEW.md); it is not active until the first eligible immutable release is published, and historical `v3.0.0` is not eligible.
 
 **Osmantic Deployment System**
 
-[![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](../LICENSE)
+**Public testing and refinement ahead of the official V3 launch.**
+Try it, share feedback, and help us improve the experience. See the
+[V3 Pre-Release notes](docs/RELEASE_NOTES_3.0.0.md) for current qualification status.
+
+[![License: Apache 2.0 + Pixel ODS-only](https://img.shields.io/badge/License-Apache%202.0%20%2B%20Pixel%20ODS--only-blue.svg)](LICENSING.md)
 [![Docker](https://img.shields.io/badge/Docker-Required-2496ED?logo=docker)](https://docs.docker.com/get-docker/)
 [![NVIDIA](https://img.shields.io/badge/NVIDIA-GPU%20Accelerated-76B900?logo=nvidia)](https://developer.nvidia.com/cuda-toolkit)
 [![AMD](https://img.shields.io/badge/AMD-Strix%20Halo%20ROCm-ED1C24?logo=amd)](https://rocm.docs.amd.com/)
 [![n8n](https://img.shields.io/badge/n8n-Workflows-FF6D5A?logo=n8n)](https://n8n.io)
 
 **Your turnkey local AI stack.** Buy hardware. Run installer. AI running.
+
+Pixel source ships inside ODS with an ODS-only use and distribution grant;
+other ODS code remains Apache-2.0. See [Licensing](LICENSING.md) for the
+boundary and third-party notices.
 
 ---
 
@@ -61,6 +71,11 @@ git clone https://github.com/Osmantic/ODS.git
 cd ODS
 ./install.sh
 ```
+
+On Linux, the Core Only and API-only gateway choices skip the optional Node.js,
+Claude Code, and Codex CLI install. Use `./install.sh --with-devtools` to add
+those host tools; `--no-devtools` skips future installs without removing any
+existing binaries. The Custom menu offers the same separate choice.
 
 The installer auto-detects your GPU, picks the right model, generates secure passwords, and starts everything. Open **http://localhost:3000** and start chatting.
 
@@ -123,13 +138,27 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 .\install.ps1
 ```
 
-Windows installs keep the cloned repo separate from the runtime directory. The
-installer writes `.env`, models, logs, and compose state to
-`$env:USERPROFILE\ods` by default (or `$env:ODS_HOME`). After
-installing, run `.\ods.ps1` or manual `docker compose` commands from that
-runtime directory, not from the source checkout.
+The Windows entry point guides Ubuntu/WSL2 preparation and requires Pixel with
+Hermes disabled. Start in normal PowerShell; feature preparation may request
+administrator approval and a restart. The runtime lives at `~/ods` inside Ubuntu;
+manage it there with `./ods status`. Docker Desktop must expose Docker/Compose
+to that distribution. Existing native Windows installations are not migrated.
 
 See [`docs/WINDOWS-QUICKSTART.md`](docs/WINDOWS-QUICKSTART.md) for details.
+
+### Fresh reinstall with cached models
+
+On Linux, WSL, or native macOS, `get-ods.sh --force --keep-models` replaces an
+existing ODS installation while retaining `data/models`. All other installation
+data, configuration, and runtime files are replaced. Without `--keep-models`,
+`--force` keeps its normal full cleanup behavior. The option requires an
+identified existing installation and is consumed by the bootstrap, not `install.sh`.
+
+Preservation temporarily uses `~/.ods-models-backup`; an existing backup or a
+symlink conflict blocks replacement. Resolve that backup manually before retrying.
+If moving the models fails, remaining files stay in the original model directory
+and/or the backup for recovery. Restored models follow the ordinary installer
+validation and download path; retention does not itself verify their contents.
 
 ### Uninstall
 
@@ -159,13 +188,14 @@ source checkout with `.\ods\installers\windows\ods.ps1 uninstall --force`.
 | Component | Purpose | Port | Backend |
 |-----------|---------|------|---------|
 | **llama-server** | LLM inference engine | Linux Docker: 11434 host / 8080 container; native macOS/Windows: 8080 host | Core GPU backend |
-| **Open WebUI** | Beautiful chat interface | 3000 | Core |
+| **Open WebUI** | Alternative chat interface; add from the Extensions Library on qualified Linux installs | 3000 when enabled | Optional on qualified Linux hosts |
 | **Dashboard** | System status, GPU metrics, service health | 3001 | Core |
 | **Dashboard API** | Backend API for dashboard | 3002 | Core |
 | **LiteLLM** | Multi-model API gateway | 4000 | Recommended |
 | **Token Spy** | Token usage monitor | 3005 | Recommended |
 | **SearXNG** | Self-hosted web search | 8888 | Recommended |
-| **Hermes Agent** | Default local-first autonomous/browser agent | 9120 via auth proxy; 9119 internal | Default agent |
+| **Portal** | Core conversational assistant in Dashboard; default chat on fresh qualified Linux installs | Private Unix socket; no host TCP port | Core feature on qualified hosts |
+| **Hermes Agent** | Independent general-purpose agent | 9120 via auth proxy; 9119 internal | Default |
 | **OpenClaw** | Deprecated legacy autonomous agent, opt-in during migration | 7860 | Deprecated optional |
 | **APE** | Agent Policy Engine for policy/audit controls | 7890 | Optional |
 | **OpenCode** | Browser IDE / coding assistant | 3003 | Optional host service |
@@ -181,11 +211,13 @@ source checkout with `.\ods\installers\windows\ods.ps1 uninstall --force`.
 | **ComfyUI** | Image generation | 8188 | Optional GPU service |
 | **Memory Shepherd** | Agent memory lifecycle management | — | Host/systemd helper |
 
+On a fresh Linux host qualified for Pixel, the standard installer with default feature choices selects Portal chat and skips the Open WebUI image. Existing installations keep their saved WebUI choice. Use `--with-webui` during installation or add Open WebUI later from the Extensions Library. Hosts without a qualified Pixel runtime, and installs that select voice, RAG, or the LAN proxy, keep WebUI so those journeys remain available.
+
 ## Hardware Tiers
 
 The installer **automatically detects your GPU**, assigns a hardware tier, then uses the versioned catalog selector to choose the best installable GGUF for the detected memory envelope. Linux and macOS call `scripts/select-model.py`; Windows uses the PowerShell selector in `installers/windows/lib/tier-map.ps1`. Both read `config/model-library.json`, and the final choice is written to `.env` as `LLM_MODEL`, `GGUF_FILE`, `MAX_CONTEXT`, and `MODEL_RECOMMENDATION_*`.
 
-`MODEL_PROFILE=qwen` is the default non-Gemma catalog profile, so the effective model can be Qwen, Phi, or DeepSeek depending on fit. `MODEL_PROFILE=gemma4` and `MODEL_PROFILE=auto` are also supported where the tier map has Gemma 4 GGUFs available. When Hermes is enabled, installers enforce a 64K minimum context for the active local model, then preserve the model selector's full-model context.
+`MODEL_PROFILE=qwen` is the default non-Gemma catalog profile. The selector ranks installable models by a curated priority for the memory class (discrete GPU, unified memory or CPU), prefers a model that fits at the 64K context Hermes needs, and checks fit with a memory estimate built from each model's attention layout; file size only breaks ties. `MODEL_PROFILE=gemma4` and `MODEL_PROFILE=auto` are also supported where the tier map has Gemma 4 GGUFs available. When Hermes is enabled and the pick is below 64K, the installers re-check the fit at 64K before raising it, pick a model that fits at 64K when the installer chose the model, and otherwise keep the context that fits and report that ODS Talk is unavailable. A Dashboard model switch uses the same rule.
 
 Large-context tiers still use 128K where the selected tier/model supports it.
 
@@ -196,7 +228,7 @@ The examples below are current catalog-selector outputs for common hardware enve
 | Tier / envelope | Current default catalog pick | Context | Example hardware |
 |------|--------------|---------|-----------------|
 | SH_COMPACT / 64GB unified RAM | qwen3.6-35b-a3b | 128K | Ryzen AI MAX+ 395 (64GB) |
-| SH_LARGE / 96GB unified RAM | deepseek-r1-distill-llama-70b | 32K | Ryzen AI MAX+ 395 (96GB) |
+| SH_LARGE / 96GB unified RAM | qwen3.6-35b-a3b | 128K | Ryzen AI MAX+ 395 (96GB) |
 | SH_LARGE / 124GB unified RAM | qwen3.6-35b-a3b | 128K | Ryzen AI MAX+ 395 (128GB class) |
 
 Unified-memory hosts are routed away from qwen3-coder-next when that model would otherwise be selected, because current repo policy documents correctness issues on those backends. Bootstrap mode uses `qwen3.5-2b` for instant startup; the full model downloads in the background via GGUF from HuggingFace.
@@ -207,11 +239,11 @@ Unified-memory hosts are routed away from qwen3-coder-next when that model would
 
 | Tier / envelope | Current default catalog pick | Context | Example GPUs |
 |------|--------------|---------|--------------|
-| 0 / 8GB CPU fallback | qwen3.5-2b | 8K | Low-RAM CPU-only |
-| 1 / 8GB discrete VRAM | qwen3.5-9b | 32K | RTX 4060, RTX 3060 12GB |
-| 2 / 12GB discrete VRAM | phi-4 | 16K | RTX 4070-class cards |
-| 3 / 24GB discrete VRAM | qwen3.5-27b | 32K | RTX 4090, A6000 |
-| 4 / 48GB discrete VRAM | deepseek-r1-distill-llama-70b | 32K | A6000 Ada, L40S |
+| 0 / 8GB CPU fallback | qwen3.5-2b (Q8 KV CPU profile) | 64K | Low-RAM CPU-only |
+| 1 / 8GB discrete VRAM | qwen3.5-9b (Q8 KV profile) | 64K | RTX 4060, RTX 5070 Laptop |
+| 2 / 12-16GB discrete VRAM | qwen3.5-9b | 64K | RTX 4070-class, RTX 4080 |
+| 3 / 24-32GB discrete VRAM | qwen3.5-27b | 64K | RTX 4090, RTX 5090 |
+| 4 / 40-62GB discrete VRAM | qwen3.6-35b-a3b | 128K | A100 40GB, A6000 Ada, L40S |
 | NV_ULTRA / 90GB+ amd64 discrete VRAM | qwen3-coder-next | 128K | Multi-GPU A100/H100 |
 | NV_ULTRA / 90GB+ arm64 unified memory | qwen3.6-35b-a3b | 128K | DGX Spark / GB10-class hosts |
 
@@ -219,19 +251,19 @@ Unified-memory hosts are routed away from qwen3-coder-next when that model would
 
 | Tier / envelope | Current default catalog pick | Context | Example hardware |
 |------|--------------|---------|-----------------|
-| 0 / 8GB unified RAM | phi-4-mini | 128K | M1/M2 base (8GB) |
-| 1 / 16GB unified RAM | qwen3.5-9b | 32K | M4 Mac Mini (16GB) |
-| 2 / 32GB unified RAM | phi-4 | 16K | M4 Pro Mac Mini, M3 Max MacBook Pro |
-| 3 / 48GB unified RAM | qwen3.5-27b | 32K | M4 Pro (48GB), M2 Max (48GB) |
+| 0 / 8GB unified RAM | nvidia-nemotron3-nano-4b | 64K | M1/M2 base (8GB) |
+| 1 / 16GB unified RAM | qwen3.5-9b | 64K | M4 Mac Mini (16GB) |
+| 2 / 24-36GB unified RAM | qwen3.5-9b | 64K | M4 Pro Mac Mini, M3 Max MacBook Pro |
+| 3 / 48GB unified RAM | qwen3.6-35b-a3b | 128K | M4 Pro (48GB), M2 Max (48GB) |
 | 4 / 64GB+ unified RAM | qwen3.6-35b-a3b | 128K | M2 Ultra Mac Studio, M4 Max (64GB+) |
 
 ### Intel Arc (Linux, SYCL)
 
 | Tier / envelope | Current default catalog pick | Context | Example hardware |
 |------|--------------|---------|------------------|
-| ARC_LITE / 6GB discrete VRAM | phi-4-mini | 128K | Arc A380 |
-| ARC_LITE / 8GB discrete VRAM | qwen3.5-9b | 32K | Arc A750 |
-| ARC / 16GB discrete VRAM | phi-4 | 16K | Arc A770 16GB, newer Arc GPUs |
+| ARC_LITE / 6GB discrete VRAM | qwen3.5-4b | 64K | Arc A380 |
+| ARC_LITE / 8GB discrete VRAM | qwen3.5-4b | 64K | Arc A750 |
+| ARC / 16GB discrete VRAM | qwen3.5-9b | 64K | Arc A770 16GB, newer Arc GPUs |
 
 Gemma 4 profile tiers remain in the installer tier maps: E2B on entry hardware, E4B on midrange hardware, 26B-A4B on pro hardware, and 31B on large/ultra hardware. Override with: `./install.sh --tier 3`.
 
@@ -257,8 +289,8 @@ See [docs/HARDWARE-GUIDE.md](docs/HARDWARE-GUIDE.md) for buying recommendations.
 └─────────────────────────────────────────────────┘
          │                              │
 ┌────────▼────────┐            ┌───────▼────────┐
-│ Hermes Agent    │            │    Dashboard    │
-│ (default agent) │            │ (Status :3001)  │
+│ Pixel / Hermes  │            │    Dashboard    │
+│ agent selection │            │ (Pixel toolbar) │
 └─────────────────┘            └────────────────┘
 
 ┌─────────────┐  ┌─────────────┐  ┌─────────────┐
@@ -354,6 +386,7 @@ LLAMA_ARG_FLASH_ATTN=auto                  # auto, on, or off
 LLAMA_ARG_CACHE_TYPE_K=f16                 # f16 or q8_0
 LLAMA_ARG_CACHE_TYPE_V=f16                 # f16 or q8_0
 # LLAMA_ARG_N_CPU_MOE=25                   # Optional MoE-only CPU expert offload
+# LLAMA_SPEC_TYPE=none                     # Turn off the NVIDIA/CPU ngram-mod default
 # LLAMA_ARG_SPEC_TYPE=draft-mtp            # Optional MTP speculative decoding
 # LLAMA_ARG_SPEC_DRAFT_N_MAX=3             # Optional MTP draft token cap
 ```
@@ -436,7 +469,7 @@ ods mode                               # Show current mode
 | Hardware auto-detect + model selection | **NVIDIA + AMD Strix Halo + Apple Silicon + Intel Arc + CPU/cloud fallback** | No | No |
 | AMD APU / unified memory support | **Platform-specific accelerated backend selected by installer** | Partial (Vulkan) | No |
 | Inference engine | **llama-server** (all GPUs) | llama.cpp | llama.cpp |
-| Autonomous AI agent | **Hermes Agent default; OpenClaw legacy opt-in** | No | No |
+| Autonomous AI agent | **Portal on qualified hosts; Hermes alongside it; OpenClaw legacy opt-in** | No | No |
 | Workflow automation | **n8n (400+ integrations)** | No | No |
 | LLM usage monitoring | **Open WebUI built-in** | No | No |
 | Multi-GPU | **Yes** (NVIDIA) | Partial | Partial |
@@ -532,7 +565,9 @@ If we missed anyone, [open an issue](https://github.com/Osmantic/ODS/issues). We
 
 ## License
 
-Apache 2.0 — Use it, modify it, sell it. Just don't blame us.
+ODS code is Apache-2.0 except the bundled Pixel source, which has a separate
+ODS-only use and distribution grant. See [Licensing](LICENSING.md),
+[LICENSE](LICENSE), and [Pixel's license](vendor/pixel/LICENSE.md).
 
 ---
 

@@ -122,8 +122,8 @@ test_file_has_timeout \
     "NodeSource setup script"
 
 test_file_has_timeout \
-    "$ROOT_DIR/installers/phases/07-devtools.sh" \
-    "curl.*opencode.ai/install" \
+    "$ROOT_DIR/installers/lib/opencode-runtime.sh" \
+    "curl.*-fsSL" \
     "--max-time" \
     "OpenCode install script"
 
@@ -237,8 +237,8 @@ test_file_has_timeout \
     "macOS final host-service health checks"
 
 test_file_has_timeout \
-    "$ROOT_DIR/installers/macos/install-macos.sh" \
-    "curl.*opencode.ai/install" \
+    "$ROOT_DIR/installers/lib/opencode-runtime.sh" \
+    "curl.*-fsSL" \
     "--max-time" \
     "macOS OpenCode install"
 

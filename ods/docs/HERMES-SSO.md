@@ -1,16 +1,27 @@
-# Hermes SSO — magic-link gating in front of the Hermes Agent
+# Hermes access and optional owner-card SSO
 
-ODS's `hermes-proxy` extension is a Caddy reverse proxy that fronts the [Hermes Agent container](HERMES.md) and gates advanced Hermes access on ODS's magic-link auth. Owner cards now land normal recipients in ODS Talk first; Hermes remains the advanced backend surface.
+Current ODS installs use Hermes 0.21.5's required dashboard authentication. The dashboard's Hermes link opens `/auth/ods` through `hermes-proxy` on port 9120, validates the existing ODS session, and signs into Hermes with server-held managed credentials. Only allowlisted HttpOnly cookies are returned, without a Domain attribute, and the destination is always `/` on the same origin. Direct visits can use Hermes's native login for operator-configured credentials. See [the current auth contract](HERMES.md#security-posture).
 
-When this extension is enabled:
+Operators who want the additional owner-card gate can set `HERMES_REQUIRE_OWNER_CARD=true` in the installed `.env` and recreate `hermes-proxy`. It defaults to `false` on Linux, Windows, and macOS. Keep direct access limited to a trusted network; enable the gate before publishing Hermes to untrusted users.
+
+ODS Talk still requires its signed session. Dashboard API authentication, owner-card issuance, and invite revocation are unchanged.
+
+Backups retain Hermes configuration and the installation seed in `.env`, but exclude `data/hermes-auth`: its nonsecret policy receipt is regenerated atomically before Hermes starts. After a restore, restart Hermes so that receipt reflects the restored configuration. Missing receipts or receipts for a different seed disable managed login until startup regenerates them; explicit operator authentication remains authoritative.
+
+The dashboard sign-in security update invalidates previously issued ODS session
+cookies, including unexpired chat-only guest cookies. Owners renew through their
+existing owner card or authenticated dashboard; the reusable owner-card links
+remain valid. The current managed launch requires a valid ODS session.
+
+When owner-card gating is explicitly enabled:
 
 - Hermes itself binds **internal-only** (no host port).
 - The proxy binds the LAN-facing port (default `9120`) — that's what users browse to.
 - Every request to the proxy is verified via `forward_auth` against dashboard-api's `/api/auth/verify-session` endpoint — which HMAC-validates the `ods-session` cookie's signature against `ODS_SESSION_SECRET`.
-- Verified (HTTP 200 from the verify endpoint) → traffic is forwarded to `ods-hermes:9119`. Hermes's own [per-process session token model](HERMES.md#security-posture) then handles per-request `/api/` auth.
+- Verified (HTTP 200 from the verify endpoint) → traffic is forwarded to `ods-hermes:9119`. Hermes's own [provider session authentication](HERMES.md#security-posture) then handles per-request API and WebSocket access.
 - Not verified (HTTP 401 — missing cookie, bad signature, or expired) → 303 redirect to a static "you need an owner card" page.
 
-## Why this design
+## Historical original SSO design (before Hermes 0.21.5)
 
 After reading [upstream's web_server.py at our pinned SHA](https://github.com/NousResearch/hermes-agent/blob/dd0923bb89ed2dd56f82cb63656a1323f6f42e6f/hermes_cli/web_server.py), Hermes's auth is **per-PROCESS, not per-user**. The session token is `secrets.token_urlsafe(32)` generated at server start and baked into the SPA HTML — no env-var to pre-seed, no login flow, no user concept.
 
@@ -23,13 +34,14 @@ This extension does NOT try to give you real multi-user. It gives you:
 | Magic-link-authed gateway | ✅ |
 | Anyone with a valid owner card can reach ODS Talk | ✅ |
 | Anyone with a valid advanced Hermes invite can reach Hermes | ✅ |
+| A chat-only guest invite reaches Talk or the Hermes gate | ❌ — it sets no `ods-session`; Open WebUI has its own sign-in |
 | Anyone without a valid invite gets bounced | ✅ |
 | Mom's memories / skills / sessions isolated from Dad's | ❌ — shared |
 | The proxy knows WHO is logged in | ❌ — only that *someone* has a valid invite |
 
 If you need per-user isolation, the path is to run **one Hermes container per user** (each with its own profile), and have the proxy route based on the redeemed user's identity. That's [Option B](#future-option-b--per-user-hermes) below — out of scope for v1.
 
-## Setup
+## Enable optional owner-card gating
 
 ```bash
 # 1. Enable Hermes (the agent itself)
@@ -37,6 +49,9 @@ ods enable hermes
 
 # 2. Enable the auth proxy (this extension)
 ods enable hermes-proxy
+
+# Set HERMES_REQUIRE_OWNER_CARD=true in the installed .env, then:
+ods restart hermes-proxy
 
 # 3. Generate an owner card from the dashboard
 #    -> Browse to http://<device>:3001/invites
@@ -54,7 +69,7 @@ ods enable hermes-proxy
 #    -> Hermes serves the advanced SPA
 ```
 
-If the recipient has not yet redeemed an owner card or guest invite, step 5 lands them on the "you need an owner card" page with instructions.
+If the recipient has not yet redeemed an owner card or Hermes invite, step 5 lands them on the "you need an owner card" page with instructions. Chat-only guest invites never pass this gate: they land in Open WebUI and set no `ods-session`.
 
 ## ODS Talk owner-card flow
 

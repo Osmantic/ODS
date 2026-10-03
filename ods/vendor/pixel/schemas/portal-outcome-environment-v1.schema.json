@@ -1,0 +1,83 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/portal-outcome-environment-v1.schema.json",
+  "title": "Pixel backend-neutral outcome execution environment v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "operation", "platform", "isolation", "limits", "verifier", "authority", "boundary"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/portal-outcome-environment-v1.schema.json"},
+    "schemaVersion": {"const": 1},
+    "operation": {"const": "pixel-portal-outcome-environment"},
+    "platform": {
+      "type": "object", "additionalProperties": false,
+      "required": ["operatingSystem", "architecture", "distribution", "locale", "timeZone"],
+      "properties": {
+        "operatingSystem": {"const": "linux"},
+        "architecture": {"enum": ["amd64", "arm64"]},
+        "distribution": {"const": "debian-12"},
+        "locale": {"const": "C.UTF-8"},
+        "timeZone": {"const": "UTC"}
+      }
+    },
+    "isolation": {
+      "type": "object", "additionalProperties": false,
+      "required": ["workspace", "controlFiles", "directNetwork", "packageInstallation", "inheritedEnvironment", "inheritedFileDescriptors", "crossRunState"],
+      "properties": {
+        "workspace": {"enum": ["fresh-read-only", "fresh-disposable-read-write"]},
+        "controlFiles": {"const": "inert"},
+        "directNetwork": {"const": false},
+        "packageInstallation": {"const": false},
+        "inheritedEnvironment": {"const": false},
+        "inheritedFileDescriptors": {"const": false},
+        "crossRunState": {"const": false}
+      }
+    },
+    "limits": {
+      "type": "object", "additionalProperties": false,
+      "required": ["maxIterations", "maxToolCalls", "maxConcurrentSubagents", "maxCpuCores", "maxMemoryMiB", "maxDiskBytes", "maxNetworkBytes", "maxFailures", "noProgressLimit", "maxPids"],
+      "properties": {
+        "maxIterations": {"type": "integer", "minimum": 1, "maximum": 1000},
+        "maxToolCalls": {"type": "integer", "minimum": 1, "maximum": 1000000},
+        "maxConcurrentSubagents": {"type": "integer", "minimum": 1, "maximum": 32},
+        "maxCpuCores": {"type": "integer", "minimum": 1, "maximum": 128},
+        "maxMemoryMiB": {"type": "integer", "minimum": 256, "maximum": 1048576},
+        "maxDiskBytes": {"type": "integer", "minimum": 1048576, "maximum": 1099511627776},
+        "maxNetworkBytes": {"type": "integer", "minimum": 0, "maximum": 10737418240},
+        "maxFailures": {"type": "integer", "minimum": 1, "maximum": 1000},
+        "noProgressLimit": {"type": "integer", "minimum": 1, "maximum": 100},
+        "maxPids": {"type": "integer", "minimum": 32, "maximum": 1048576}
+      }
+    },
+    "verifier": {
+      "type": "object", "additionalProperties": false,
+      "required": ["imageDigest", "allowedExecutables", "maxChecks", "maxRuntimeSeconds", "maxOutputBytes", "network"],
+      "properties": {
+        "imageDigest": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+        "allowedExecutables": {
+          "type": "array", "minItems": 1, "maxItems": 32, "uniqueItems": true,
+          "items": {"type": "string", "pattern": "^/(?:[A-Za-z0-9._+-]+/)*[A-Za-z0-9._+-]+$"}
+        },
+        "maxChecks": {"type": "integer", "minimum": 1, "maximum": 16},
+        "maxRuntimeSeconds": {"type": "integer", "minimum": 1, "maximum": 3600},
+        "maxOutputBytes": {"type": "integer", "minimum": 1, "maximum": 16777216},
+        "network": {"const": "none"}
+      }
+    },
+    "authority": {
+      "type": "object", "additionalProperties": false,
+      "required": ["grantsHostAccess", "grantsAmbientCredential", "grantsDirectNetwork", "grantsPackageInstallation", "grantsExternalEffect", "grantsMerge", "grantsDeployment", "grantsPolicyMutation"],
+      "properties": {
+        "grantsHostAccess": {"const": false},
+        "grantsAmbientCredential": {"const": false},
+        "grantsDirectNetwork": {"const": false},
+        "grantsPackageInstallation": {"const": false},
+        "grantsExternalEffect": {"const": false},
+        "grantsMerge": {"const": false},
+        "grantsDeployment": {"const": false},
+        "grantsPolicyMutation": {"const": false}
+      }
+    },
+    "boundary": {"const": "Backend-neutral functional execution envelope for one paired outcome task only. It binds isolation, resource, loop, and independent-verifier ceilings but grants no execution, host, credential, direct-network, package-installation, external-effect, merge, deployment, policy, completion, publication, acceptance, or promotion authority."}
+  }
+}

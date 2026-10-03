@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import re
+import shlex
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -20,12 +21,18 @@ ROOT = Path(__file__).resolve().parents[1]
 LOCK_PATH = ROOT / "config" / "dependency-lock.json"
 
 IMAGE_RE = re.compile(r"^\s*image:\s*(?P<value>\S+)")
-ARG_RE = re.compile(r"^\s*ARG\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)(?:=(?P<value>\S+))?")
+ARG_RE = re.compile(r"^\s*ARG\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)(?:=(?P<value>\S+))?", re.IGNORECASE)
 VAR_RE = re.compile(
     r"\$\{(?P<braced>[A-Za-z_][A-Za-z0-9_]*)(?:(?P<op>:-|-)(?P<default>[^}]+))?\}"
     r"|\$(?P<plain>[A-Za-z_][A-Za-z0-9_]*)"
 )
 EPHEMERAL_SHA_TAG_RE = re.compile(r"^sha-[0-9a-f]{7,64}$", re.IGNORECASE)
+DIGEST_RE = re.compile(r"@sha256:[0-9a-f]{64}$")
+# Repositories whose tags upstream does not treat as immutable release names.
+# llama.cpp publishes a build tag for only a fraction of builds, and ODS has
+# already shipped a pin to a tag that never existed, so every llama.cpp image
+# must carry the digest that was verified when the pin was chosen.
+DIGEST_REQUIRED_REPOSITORIES = frozenset({"ghcr.io/ggml-org/llama.cpp"})
 
 
 @dataclass(frozen=True)
@@ -96,10 +103,10 @@ def _compose_image_refs(path: Path, root: Path = ROOT) -> list[ImageRef]:
 
 
 def _dockerfile_from_value(line: str) -> str | None:
-    line = _strip_inline_comment(line).strip()
-    if not line.upper().startswith("FROM "):
+    tokens = line.split()
+    if not tokens or tokens[0].upper() != 'FROM':
         return None
-    tokens = line.split()[1:]
+    tokens = tokens[1:]
     while tokens and tokens[0].startswith("--"):
         tokens.pop(0)
     if not tokens:
@@ -107,24 +114,131 @@ def _dockerfile_from_value(line: str) -> str | None:
     return _clean_value(tokens[0])
 
 
+def _heredoc_delimiters(instruction: str) -> list[tuple[str, bool]]:
+    """Find unquoted shell redirections, not quoted examples or here-strings."""
+    documents: list[tuple[str, bool]] = []
+    quote = ''
+    index = 0
+    word = re.compile(r"(?:'[^']*'|\"[^\"]*\"|\\.|[^\s<>;&|])+")
+    while index < len(instruction):
+        char = instruction[index]
+        if char == '\\' and quote != "'":
+            index += 2
+            continue
+        if char in "'\"":
+            if not quote:
+                quote = char
+            elif char == quote:
+                quote = ''
+        if not quote and instruction.startswith('<<', index):
+            if instruction.startswith('<<<', index):
+                index += 3
+                continue
+            index += 2
+            strip_tabs = instruction[index:index + 1] == '-'
+            if strip_tabs:
+                index += 1
+            while instruction[index:index + 1] in (' ', '\t'):
+                index += 1
+            match = word.match(instruction, index)
+            if not match:
+                raise ValueError('Cannot determine Dockerfile heredoc delimiter')
+            parts = shlex.split(match.group(), comments=False)
+            if len(parts) != 1 or not parts[0]:
+                raise ValueError('Invalid Dockerfile heredoc delimiter')
+            documents.append((parts[0], strip_tabs))
+            index = match.end()
+            continue
+        index += 1
+    return documents
+
+
+def _dockerfile_instructions(path: Path):
+    """Read logical instructions; heredoc bodies are data, never instructions.
+
+    Dockerfile parser directives apply only before the first ordinary comment,
+    blank line or instruction. This reader handles the forms shipped by ODS;
+    truncated continuations/documents fail instead of producing a partial scan.
+    """
+    lines = path.read_text(encoding='utf-8-sig').splitlines()
+    index = 0
+    escape = '\\'
+    directives = True
+    while index < len(lines):
+        line_no = index + 1
+        line = lines[index].lstrip()
+        index += 1
+        directive = re.fullmatch(r'#\s*(syntax|escape|check)\s*=\s*(.+)', line, re.IGNORECASE)
+        if directives and directive:
+            name, value = directive.groups()
+            if name.lower() == 'syntax':
+                yield line_no, 'SYNTAX ' + value.strip()
+            elif name.lower() == 'escape':
+                escape = value.strip()
+                if escape not in ('\\', '`'):
+                    raise ValueError(f'{path}:{line_no}: invalid Dockerfile escape')
+            continue
+        directives = False
+        if not line or line.startswith('#'):
+            continue
+        while line.rstrip().endswith(escape):
+            line = line.rstrip()[:-1]
+            while index < len(lines) and (not lines[index].strip() or lines[index].lstrip().startswith('#')):
+                index += 1
+            if index == len(lines):
+                raise ValueError(f'{path}:{line_no}: unterminated Dockerfile continuation')
+            line += lines[index].lstrip()
+            index += 1
+        parts = line.split(None, 1)
+        opcode, arguments = parts[0], parts[1] if len(parts) == 2 else ''
+        # JSON exec-form RUN strings cannot introduce Dockerfile heredocs.
+        if opcode.upper() in ('RUN', 'COPY', 'ADD') and not arguments.lstrip().startswith('['):
+            for delimiter, strip_tabs in _heredoc_delimiters(arguments):
+                while index < len(lines):
+                    candidate = lines[index].lstrip('\t') if strip_tabs else lines[index]
+                    index += 1
+                    if candidate == delimiter:
+                        break
+                else:
+                    raise ValueError(f'{path}:{line_no}: unterminated Dockerfile heredoc {delimiter}')
+        yield line_no, line
+
+
 def _dockerfile_image_refs(path: Path, root: Path = ROOT) -> list[ImageRef]:
     refs: list[ImageRef] = []
     defaults: dict[str, str] = {}
-    for line_no, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
-        arg_match = ARG_RE.match(_strip_inline_comment(line))
+    stages: set[str] = set()
+    in_stage = False
+    for line_no, line in _dockerfile_instructions(path):
+        arg_match = ARG_RE.match(line) if not in_stage else None
         if arg_match and arg_match.group("value") is not None:
             defaults[arg_match.group("name")] = _clean_value(arg_match.group("value"))
 
-        raw = _dockerfile_from_value(line)
+        tokens = line.split()
+        opcode = tokens[0].upper()
+        source = 'dockerfile from'
+        if opcode == 'SYNTAX':
+            raw = tokens[1]
+            source = 'dockerfile syntax'
+        else:
+            raw = _dockerfile_from_value(line)
         if raw is None:
+            continue
+        value = _resolve_vars(raw, defaults)
+        internal = opcode == 'FROM' and (value.lower() == 'scratch' or value.lower() in stages)
+        if opcode == 'FROM':
+            in_stage = True
+            if len(tokens) >= 4 and tokens[-2].upper() == 'AS':
+                stages.add(tokens[-1].lower())
+        if internal:
             continue
         refs.append(
             ImageRef(
                 path=_rel(path, root),
                 line=line_no,
                 raw=raw,
-                value=_resolve_vars(raw, defaults),
-                source="dockerfile from",
+                value=value,
+                source=source,
             )
         )
     return refs
@@ -189,11 +303,29 @@ def _image_tag(value: str) -> str | None:
 
 
 def _has_digest(value: str) -> bool:
-    return "@sha256:" in value
+    return DIGEST_RE.search(value) is not None
 
 
 def _has_tag_or_digest(value: str) -> bool:
     return _has_digest(value) or _image_tag(value) is not None
+
+
+def _image_repository(value: str) -> str:
+    without_digest = value.split("@", 1)[0]
+    head, _, last_segment = without_digest.rpartition("/")
+    name = last_segment.split(":", 1)[0]
+    return f"{head}/{name}" if head else name
+
+
+def _requires_digest(value: str) -> bool:
+    return _image_repository(value) in DIGEST_REQUIRED_REPOSITORIES
+
+
+def _digest_required_error(location: str, value: str) -> str:
+    return (
+        f"{location}: {_image_repository(value)} images must be pinned by tag and "
+        f"@sha256 digest: {value}"
+    )
 
 
 def _is_variable_ref(value: str) -> bool:
@@ -310,12 +442,20 @@ def validate_refs(refs: Iterable[ImageRef], lock: dict[str, object], root: Path 
         if not _has_tag_or_digest(ref.value):
             errors.append(f"{location}: image ref must include a tag or digest: {ref.value}")
 
+        if not _has_digest(ref.value):
+            errors.append(f"{location}: external image must include a complete @sha256 digest: {ref.value}")
+
         if _image_tag(ref.value) == "latest" and not _has_digest(ref.value):
             if (ref.path, ref.value) not in latest_allow:
                 errors.append(f"{location}: latest tag requires allow_latest: {ref.value}")
 
         if _is_ephemeral_sha_tag(ref.value) and not _has_digest(ref.value):
             errors.append(_ephemeral_sha_tag_error(ref))
+
+        if _requires_digest(ref.value) and not (
+            DIGEST_RE.search(ref.value) and _image_tag(ref.value) is not None
+        ):
+            errors.append(_digest_required_error(location, ref.value))
 
         if (ref.path, ref.value) not in entry_keys and (ref.path, ref.value) not in latest_allow:
             errors.append(f"{location}: image ref is not recorded in dependency-lock.json: {ref.value}")
@@ -335,6 +475,52 @@ def validate_ephemeral_sha_tags(refs: Iterable[ImageRef]) -> list[str]:
     return errors
 
 
+def validate_library_refs(refs: Iterable[ImageRef], root: Path = ROOT) -> list[str]:
+    """Library images are either immutable pulls or forced, in-recipe builds."""
+    import yaml
+
+    errors: list[str] = []
+    documents: dict[str, dict] = {}
+    for ref in refs:
+        if _has_digest(ref.value):
+            continue
+        location = f'{ref.path}:{ref.line}'
+        if ref.source != 'compose image' or not ref.value.startswith('ods/'):
+            errors.append(f'{location}: external library image must include a complete @sha256 digest: {ref.value}')
+            continue
+        recipe = root / ref.path
+        if ref.path not in documents:
+            document = yaml.safe_load(recipe.read_text(encoding='utf-8'))
+            documents[ref.path] = document if isinstance(document, dict) else {}
+        services = documents[ref.path].get('services', {})
+        matches = [service for service in services.values() if isinstance(service, dict)
+                   and service.get('image') == ref.raw] if isinstance(services, dict) else []
+        valid = bool(matches) and not _is_variable_ref(ref.raw)
+        for service in matches:
+            build = service.get('build')
+            build = {'context': build} if isinstance(build, str) else build
+            if (not isinstance(build, dict) or service.get('pull_policy') != 'build'
+                    or build.get('additional_contexts') or build.get('dockerfile_inline')):
+                valid = False
+                break
+            context = build.get('context', '.')
+            dockerfile = build.get('dockerfile', 'Dockerfile')
+            if (not isinstance(context, str) or not isinstance(dockerfile, str)
+                    or '$' in context + dockerfile):
+                valid = False
+                break
+            directory = (recipe.parent / context).resolve()
+            definition = (directory / dockerfile).resolve()
+            if (not directory.is_relative_to(recipe.parent.resolve())
+                    or not definition.is_relative_to(directory)
+                    or not definition.is_file() or not definition.name.startswith('Dockerfile')):
+                valid = False
+                break
+        if not valid:
+            errors.append(f'{location}: local library image requires pull_policy: build and an in-recipe Dockerfile: {ref.value}')
+    return errors
+
+
 def load_lock(path: Path = LOCK_PATH) -> dict[str, object]:
     with path.open(encoding="utf-8") as handle:
         data = json.load(handle)
@@ -347,7 +533,9 @@ def check(path: Path = LOCK_PATH, root: Path = ROOT) -> list[str]:
     lock = load_lock(path)
     errors = _validate_lock_shape(lock, root)
     errors.extend(validate_refs(discover_image_refs(root), lock, root))
-    errors.extend(validate_ephemeral_sha_tags(discover_extension_library_image_refs(root)))
+    library_refs = discover_extension_library_image_refs(root)
+    errors.extend(validate_ephemeral_sha_tags(library_refs))
+    errors.extend(validate_library_refs(library_refs, root))
     return errors
 
 

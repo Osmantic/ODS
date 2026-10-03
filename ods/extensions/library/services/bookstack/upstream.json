@@ -1,0 +1,10 @@
+{
+  "repository": "https://github.com/BookStackApp/BookStack",
+  "license": "MIT",
+  "release": "v26.05.5",
+  "image": "lscr.io/linuxserver/bookstack:version-v26.05.5@sha256:189c796273469115cf810e53f450e15b93184018e4728cd65fcaef8aa93584bc",
+  "registry_checked_at": "2026-09-21",
+  "platforms": ["linux/amd64", "linux/arm64"],
+  "runtime_validation": "pending",
+  "notes": "LinuxServer community packaging, not a BookStack-published image. MariaDB companion is GPL-2.0 and pinned independently. Both image indexes include amd64 and arm64. Default administrator must be changed during onboarding."
+}

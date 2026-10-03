@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/work-goal-bundle-v1.schema.json",
+  "title": "Pixel Deep Work prepared goal bundle manifest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "operation", "goalId", "createdAt", "goalSha256", "jobsSha256", "declarationSha256", "milestones", "authority", "boundary"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/work-goal-bundle-v1.schema.json"},
+    "schemaVersion": {"const": 1},
+    "operation": {"const": "pixel-work-goal-prepare"},
+    "goalId": {"type": "string", "pattern": "^workgoal-[0-9]{13}-[a-f0-9]{12}$"},
+    "createdAt": {"type": "string", "format": "date-time"},
+    "goalSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "jobsSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "declarationSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "milestones": {"type": "integer", "minimum": 1, "maximum": 64},
+    "authority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["grantsExecution", "grantsLease", "grantsRetry", "grantsScheduling", "grantsScopeExpansion", "grantsExternalEffects", "grantsCompletion"],
+      "properties": {
+        "grantsExecution": {"const": false},
+        "grantsLease": {"const": false},
+        "grantsRetry": {"const": false},
+        "grantsScheduling": {"const": false},
+        "grantsScopeExpansion": {"const": false},
+        "grantsExternalEffects": {"const": false},
+        "grantsCompletion": {"const": false}
+      }
+    },
+    "boundary": {"const": "Private atomic immutable goal bundle only. Preparation derives exact job hashes and aggregate ceilings but grants no execution, lease, retry, scheduling, credential, scope expansion, external effect, or completion authority."}
+  }
+}

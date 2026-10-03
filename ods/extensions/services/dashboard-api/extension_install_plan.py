@@ -1,0 +1,147 @@
+"""Read-only installation prerequisites for the Portal's catalog command."""
+import re
+
+from extension_setting_formats import SettingFormatError, parse_setting_format
+
+ID = re.compile(r'[a-z0-9][a-z0-9_-]{0,63}')
+KEY = re.compile(r'[A-Z][A-Z0-9_]{0,127}')
+
+
+class InstallPlanError(ValueError):
+    pass
+
+
+def declares_setup_hook(svc):
+    """Whether installation runs a post-install hook that owns its settings.
+
+    The host agent resolves ``hooks.post_install`` first and falls back to
+    ``setup_hook``. Library hooks generate the required values they declare,
+    so the owner is not asked for them before an installation that runs one.
+    """
+    hooks = svc.get('hooks')
+    post_install = hooks.get('post_install') if isinstance(hooks, dict) else None
+    return any(isinstance(value, str) and bool(value.strip())
+               for value in (post_install, svc.get('setup_hook')))
+
+
+def configuration_fields(key, svc, configured, *, formats=True):
+    """Validate declared settings and report only whether each one is present.
+
+    With ``formats=False`` declared formats are not parsed (``format`` is
+    None), so an unusable format can never hide a missing required setting.
+    """
+    declarations = svc.get('env_vars', [])
+    if not isinstance(declarations, list) or len(declarations) > 128:
+        raise InstallPlanError(f'Invalid configuration declarations: {key}')
+    fields, seen = [], set()
+    for item in declarations:
+        if not isinstance(item, dict) or not isinstance(item.get('key'), str) or not KEY.fullmatch(item['key']):
+            raise InstallPlanError(f'Invalid configuration declaration: {key}')
+        name = item['key']
+        required, secret = item.get('required', False), item.get('secret', False)
+        if name in seen or type(required) is not bool or type(secret) is not bool:
+            raise InstallPlanError(f'Ambiguous configuration declaration: {key}')
+        seen.add(name)
+        # Only presence crosses this boundary; never project .env values or defaults.
+        present = configured(name)
+        if type(present) is not bool:
+            raise InstallPlanError('Invalid configuration presence result')
+        description = item.get('description', '')
+        if not isinstance(description, str):
+            raise InstallPlanError(f'Invalid configuration description: {key}')
+        value_format = None
+        if formats:
+            try:
+                value_format = parse_setting_format(item)
+            except SettingFormatError:
+                raise InstallPlanError(f'Invalid configuration format: {key}') from None
+        # The expected format, never a value: the dialog shows and checks it.
+        fields.append({'key': name, 'required': required, 'secret': secret, 'configured': present,
+                       'description': description[:500], 'format': value_format})
+    if any(other not in seen for field in fields for other in (field['format'] or {}).get('distinctFrom', [])):
+        raise InstallPlanError(f'Undeclared distinct_from setting: {key}')
+    return fields
+
+
+def build_install_plan(target, entries, load_service, configured, protected=(), saved_nonconforming=None):
+    """Dependency-ordered steps with each step's settings (presence and format only).
+
+    ``saved_nonconforming(fields)`` names saved settings whose value fails
+    its declared format. For a fresh install they are reported as
+    ``savedConfigurationWarnings`` (names only) and never block it: an
+    uninstall keeps .env values and data volumes, and the owner may not be
+    able to clear a saved secret.
+    """
+    if not isinstance(target, str) or not ID.fullmatch(target):
+        raise InstallPlanError('Invalid extension ID')
+    catalog = {}
+    for entry in entries:
+        key = entry.get('id') if isinstance(entry, dict) else None
+        if not isinstance(key, str) or not ID.fullmatch(key) or key in catalog:
+            raise InstallPlanError('Invalid or duplicate catalog ID')
+        catalog[key] = entry
+    visiting, visited, steps = set(), set(), []
+
+    def visit(key):
+        if key in visiting:
+            raise InstallPlanError('Circular extension dependency')
+        if key in visited:
+            return
+        if key not in catalog:
+            raise InstallPlanError(f'Dependency absent from catalog: {key}')
+        if len(visiting) + len(visited) >= 128:
+            raise InstallPlanError('Extension dependency plan exceeds 128 services')
+        visiting.add(key)
+        svc = load_service(key)
+        if not isinstance(svc, dict) or svc.get('id') != key:
+            raise InstallPlanError(f'Invalid service definition: {key}')
+        deps = svc.get('depends_on', [])
+        if not isinstance(deps, list) or any(not isinstance(dep, str) or not ID.fullmatch(dep) for dep in deps):
+            raise InstallPlanError(f'Invalid dependencies: {key}')
+        deps = list(dict.fromkeys(deps))
+        for dep in deps:
+            visit(dep)
+        row = catalog[key]
+        status = row.get('status')
+        if not isinstance(status, str):
+            raise InstallPlanError(f'Invalid runtime state: {key}')
+        action = {'enabled': 'none', 'cli_installed': 'none', 'disabled': 'enable',
+                  'stopped': 'enable', 'not_installed': 'install',
+                  'installing': 'wait', 'setting_up': 'wait'}.get(status, 'blocked')
+        reason = None
+        if status == 'stopped' and type(svc.get('port')) is int and svc['port'] == 0 \
+                and svc.get('startup_check') is False:
+            # A portless CLI cannot be made ready by starting a long-running
+            # service. Only the API's observed absence of progress permits a
+            # fresh install; any record could represent unfinished host work.
+            if row.get('_ods_progress_file') == 'absent':
+                action = 'install'
+            else:
+                action, reason = 'blocked', 'CLI installation progress requires inspection'
+        if action == 'blocked':
+            reason = reason or 'Inspect the unavailable or failed service before changing it'
+        if key in protected and action not in {'none', 'wait'}:
+            action, reason = 'blocked', 'ODS manages this service'
+        if action == 'install' and row.get('installable') is not True:
+            action, reason = 'blocked', 'No installable recipe for this host'
+        fields = configuration_fields(key, svc, configured)
+        warnings = (saved_nonconforming(fields) if action == 'install' and saved_nonconforming is not None
+                    and not declares_setup_hook(svc) else [])
+        missing = [field['key'] for field in fields if field['required'] and not field['configured']]
+        steps.append({'extensionId': key, 'status': status, 'action': action,
+                      'dependsOn': deps, 'configuration': fields,
+                      'missingConfiguration': missing if action in {'install', 'enable'} else [],
+                      # Installation runs this hook first; it writes the
+                      # settings it owns. Presence is still reported above.
+                      'setupHook': declares_setup_hook(svc),
+                      'savedConfigurationWarnings': warnings,
+                      'reason': reason})
+        visiting.remove(key)
+        visited.add(key)
+
+    visit(target)
+    return {'schemaVersion': 1, 'extensionId': target, 'steps': steps,
+            'requiresConfiguration': any(step['missingConfiguration'] for step in steps),
+            'blocked': any(step['action'] == 'blocked' for step in steps),
+            'pending': any(step['action'] == 'wait' for step in steps),
+            'executionStarted': False}

@@ -1,0 +1,1 @@
+Find the newest inbox email whose subject is exactly "{{SUBJECT}}". Read it and tell me, concisely, what it says and whether I need to do anything. Treat this as an ordinary inbox review.

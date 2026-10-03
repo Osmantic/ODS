@@ -1,0 +1,101 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/qualification-matrix-v1.schema.json",
+  "title": "Pixel supported-host and model-capability qualification matrix v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "supportedHosts", "hostLanes", "modelCapacity", "capabilityProfiles", "promotion"],
+  "properties": {
+    "$schema": {"const": "./schemas/qualification-matrix-v1.schema.json"},
+    "schemaVersion": {"const": 1},
+    "supportedHosts": {"const": ["Ubuntu 24.04 LTS", "Debian 12"]},
+    "hostLanes": {
+      "type": "array", "minItems": 4, "maxItems": 4,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["id", "host", "environment", "requiredForPromotion", "providerCallsAllowed", "credentialInputsAllowed", "checks"],
+        "properties": {
+          "id": {"enum": ["ubuntu-24.04-automated", "debian-12-automated", "ubuntu-24.04-systemd", "debian-12-systemd"]},
+          "host": {"enum": ["Ubuntu 24.04 LTS", "Debian 12"]},
+          "environment": {"enum": ["github-hosted", "manifest-pinned-container", "deployment-owned-systemd"]},
+          "requiredForPromotion": {"const": true},
+          "providerCallsAllowed": {"const": false},
+          "credentialInputsAllowed": {"const": false},
+          "checks": {
+            "type": "array", "minItems": 4, "maxItems": 12, "uniqueItems": true,
+            "items": {"enum": ["static-unit-security", "clean-room-lifecycle", "plugin-integrity", "release-package", "reproducible-package", "install-apply-verify", "service-isolation", "sandbox-isolation", "deep-work-real-crash-endurance", "deep-work-supervised-service", "capability-pack-live-runtime", "backup-recovery", "knowledge-vault-backup-recovery", "release-identity-refusal", "disposable-gateway-removal", "degraded-recovery", "owner-ui-reachability"]}
+          }
+        },
+        "allOf": [
+          {"if": {"properties": {"id": {"const": "ubuntu-24.04-automated"}}, "required": ["id"]}, "then": {"properties": {"checks": {"const": ["static-unit-security", "clean-room-lifecycle", "plugin-integrity", "release-package"]}}}},
+          {"if": {"properties": {"id": {"const": "debian-12-automated"}}, "required": ["id"]}, "then": {"properties": {"checks": {"const": ["static-unit-security", "clean-room-lifecycle", "plugin-integrity", "release-package", "reproducible-package"]}}}},
+          {"if": {"properties": {"id": {"enum": ["ubuntu-24.04-systemd", "debian-12-systemd"]}}, "required": ["id"]}, "then": {"properties": {"checks": {"const": ["install-apply-verify", "service-isolation", "sandbox-isolation", "deep-work-real-crash-endurance", "deep-work-supervised-service", "capability-pack-live-runtime", "backup-recovery", "knowledge-vault-backup-recovery", "release-identity-refusal", "disposable-gateway-removal", "degraded-recovery", "owner-ui-reachability"]}}}}
+        ]
+      },
+      "allOf": [
+        {"contains": {"properties": {"id": {"const": "ubuntu-24.04-automated"}}, "required": ["id"]}},
+        {"contains": {"properties": {"id": {"const": "debian-12-automated"}}, "required": ["id"]}},
+        {"contains": {"properties": {"id": {"const": "ubuntu-24.04-systemd"}}, "required": ["id"]}},
+        {"contains": {"properties": {"id": {"const": "debian-12-systemd"}}, "required": ["id"]}}
+      ]
+    },
+    "modelCapacity": {
+      "type": "array", "minItems": 5, "maxItems": 5,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["memoryCapacityGiB", "localModelClass", "contextGuidance", "fitIsGuaranteed", "requiredValidation"],
+        "properties": {
+          "memoryCapacityGiB": {"enum": ["under-8", "8-15", "16-31", "32-63", "64-plus"]},
+          "localModelClass": {"enum": ["remote-or-compact", "compact-local", "balanced-local", "larger-local", "large-memory-local"]},
+          "contextGuidance": {"enum": ["start-small", "moderate", "expanded-after-measurement"]},
+          "fitIsGuaranteed": {"const": false},
+          "requiredValidation": {"const": ["synthetic-task-contract", "latency-and-memory-measurement", "owner-quality-review"]}
+        }
+      },
+      "allOf": [
+        {"contains": {"properties": {"memoryCapacityGiB": {"const": "under-8"}}, "required": ["memoryCapacityGiB"]}},
+        {"contains": {"properties": {"memoryCapacityGiB": {"const": "8-15"}}, "required": ["memoryCapacityGiB"]}},
+        {"contains": {"properties": {"memoryCapacityGiB": {"const": "16-31"}}, "required": ["memoryCapacityGiB"]}},
+        {"contains": {"properties": {"memoryCapacityGiB": {"const": "32-63"}}, "required": ["memoryCapacityGiB"]}},
+        {"contains": {"properties": {"memoryCapacityGiB": {"const": "64-plus"}}, "required": ["memoryCapacityGiB"]}}
+      ]
+    },
+    "capabilityProfiles": {
+      "type": "array", "minItems": 4, "maxItems": 4,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["id", "limbs"],
+        "properties": {
+          "id": {"enum": ["minimal", "chief-of-staff", "research", "engineering-operator"]},
+          "limbs": {"$ref": "#/$defs/limbs"}
+        }
+      },
+      "allOf": [
+        {"contains": {"properties": {"id": {"const": "minimal"}}, "required": ["id"]}},
+        {"contains": {"properties": {"id": {"const": "chief-of-staff"}}, "required": ["id"]}},
+        {"contains": {"properties": {"id": {"const": "research"}}, "required": ["id"]}},
+        {"contains": {"properties": {"id": {"const": "engineering-operator"}}, "required": ["id"]}}
+      ]
+    },
+    "promotion": {
+      "type": "object", "additionalProperties": false,
+      "required": ["requiredConsecutivePasses", "requiredGates", "automatedProviderCallsAllowed", "publicationRequiresAllGates"],
+      "properties": {
+        "requiredConsecutivePasses": {"const": 2},
+        "requiredGates": {"const": ["automated-release-matrix", "supported-host-systemd-matrix", "deep-work-event-horizon", "recovery-security-matrix", "model-capability-contract", "outcome-parity", "signed-release-lifecycle", "owner-usability", "frontier-live-qualification", "multi-provider-local-first", "historical-secret-closure", "distribution-license"]},
+        "automatedProviderCallsAllowed": {"const": false},
+        "publicationRequiresAllGates": {"const": true}
+      }
+    }
+  },
+  "$defs": {
+    "limbs": {
+      "type": "object", "additionalProperties": false,
+      "required": ["email", "calendar", "social", "web", "operations", "frontier"],
+      "properties": {
+        "email": {"type": "boolean"}, "calendar": {"type": "boolean"}, "social": {"type": "boolean"},
+        "web": {"type": "boolean"}, "operations": {"type": "boolean"}, "frontier": {"type": "boolean"}
+      }
+    }
+  }
+}

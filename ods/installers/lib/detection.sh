@@ -10,7 +10,8 @@
 #           INTERACTIVE, TIER, OFFLINE_MODE, ENABLE_VOICE, ENABLE_WORKFLOWS,
 #           ENABLE_RAG, ENABLE_OPENCLAW (all used by fix_nvidia_secure_boot),
 #           log/warn/ai/ai_ok/ai_warn/ai_bad helpers
-# Provides: detect_gpu(), load_capability_profile(),
+# Provides: detect_gpu(), load_capability_profile(), ods_is_wsl_host(),
+#           ods_windows_host_port_in_use(),
 #           normalize_profile_tier(), tier_rank(), load_backend_contract(),
 #           fix_nvidia_secure_boot(), MIN_DRIVER_VERSION
 #           Side-effect var on Jetson: JETSON_L4T_RELEASE (e.g. "R36.4.0")
@@ -22,6 +23,50 @@
 
 # Safe env loading (no eval) for script output KEY="value" lines
 [[ -f "${SCRIPT_DIR:-}/lib/safe-env.sh" ]] && . "${SCRIPT_DIR}/lib/safe-env.sh"
+
+# WSL2 forwards Docker-published ports through the Windows host. A port can
+# therefore look free to lsof/ss inside Linux while Docker Desktop still
+# refuses the bind because a native Windows process already owns it. Query the
+# Windows listener table once and cache the numeric ports for the installer
+# run. The override is a test hook; normal detection uses WSL's environment and
+# kernel release witnesses.
+ods_is_wsl_host() {
+    case "${ODS_WSL_HOST_OVERRIDE:-auto}" in
+        true|1|yes|on) return 0 ;;
+        false|0|no|off) return 1 ;;
+    esac
+    [[ -n "${WSL_DISTRO_NAME:-}" ]] && return 0
+    grep -qiE 'microsoft|wsl' /proc/sys/kernel/osrelease 2>/dev/null
+}
+
+ods_windows_host_listening_ports() {
+    ods_is_wsl_host || return 2
+    command -v powershell.exe >/dev/null 2>&1 || return 2
+
+    if [[ "${_ODS_WINDOWS_PORT_CACHE_READY:-false}" != "true" ]]; then
+        local output
+        output=$(powershell.exe -NoLogo -NoProfile -NonInteractive -Command \
+            'Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty LocalPort -Unique | Sort-Object; Write-Output ODS_WINDOWS_PORT_SCAN_OK' \
+            2>/dev/null | tr -d '\r' || true)
+        grep -Fxq 'ODS_WINDOWS_PORT_SCAN_OK' <<< "$output" || return 2
+        output=$(grep -Fvx 'ODS_WINDOWS_PORT_SCAN_OK' <<< "$output" || true)
+        if [[ -n "$output" ]] && grep -qvE '^[[:space:]]*[0-9]+[[:space:]]*$' <<< "$output"; then
+            return 2
+        fi
+        _ODS_WINDOWS_PORT_CACHE="$output"
+        _ODS_WINDOWS_PORT_CACHE_READY=true
+    fi
+
+    return 0
+}
+
+ods_windows_host_port_in_use() {
+    local port="${1:-}"
+    [[ "$port" =~ ^[0-9]+$ ]] && (( port >= 1 && port <= 65535 )) || return 2
+
+    ods_windows_host_listening_ports || return $?
+    grep -Fxq "$port" <<< "${_ODS_WINDOWS_PORT_CACHE:-}"
+}
 
 load_capability_profile() {
     CAP_PROFILE_LOADED="false"
@@ -91,7 +136,7 @@ load_backend_contract() {
 
 get_host_logical_cpus() {
     local cores
-    cores=$(nproc 2>/dev/null || grep -c ^processor /proc/cpuinfo 2>/dev/null || echo "1")
+    cores=$(nproc 2>/dev/null || sysctl -n hw.logicalcpu 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || grep -c ^processor /proc/cpuinfo 2>/dev/null || echo "1")
     if [[ "$cores" =~ ^[0-9]+$ ]] && [[ "$cores" -gt 0 ]]; then
         echo "$cores"
     else
@@ -234,6 +279,7 @@ show_amd_gpu_device_guidance() {
 
 apply_cpu_gpu_fallback() {
     local reason="${1:-AMD GPU runtime devices are unavailable.}"
+    local external="${LEMONADE_EXTERNAL:-false}" managed="${AMD_INFERENCE_MANAGED:-}"
     ai_warn "$reason"
     ai "Using CPU mode so installation can complete without GPU passthrough."
 
@@ -244,7 +290,20 @@ apply_cpu_gpu_fallback() {
     GPU_MEMORY_TYPE="none"
     GPU_DEVICE_ID=""
     HAS_NPU=false
-    [[ "${ODS_MODE:-local}" == "lemonade" ]] && ODS_MODE="local"
+    # A missing GPU device in WSL changes the container backend, not the
+    # Windows-owned Lemonade inference route. Only managed Lemonade needs the
+    # local llama-server CPU fallback.
+    if [[ "${ODS_MODE:-local}" == "lemonade" ]]; then
+        case "${external,,}" in
+            true|1|yes|on) ;;
+            *)
+                if [[ "${AMD_INFERENCE_RUNTIME:-}" != "lemonade" \
+                   || "${managed,,}" != "false" ]]; then
+                    ODS_MODE="local"
+                fi
+                ;;
+        esac
+    fi
     BACKEND_ID="cpu"
     CAP_LLM_BACKEND="cpu"
     CAP_GPU_VENDOR="cpu"
@@ -522,12 +581,85 @@ detect_gpu() {
     GPU_COUNT=0
     GPU_BACKEND="cpu"
     GPU_MEMORY_TYPE="none"
-    warn "No GPU detected. Falling back to CPU-only mode (inference will be slow)."
-    log "CPU-only mode: llama.cpp will use CPU inference. Consider adding a GPU for better performance."
+    if [[ "${LEMONADE_EXTERNAL:-false}" == "true" && -n "${LEMONADE_GPU_NAME:-}" ]]; then
+        # Windows under WSL: the GPU is used by Lemonade on the host, not here.
+        ai "No GPU inside this Linux environment; the model runs on ${LEMONADE_GPU_NAME} through Lemonade."
+        log "Model inference uses the external Lemonade GPU: ${LEMONADE_GPU_NAME}."
+    else
+        warn "No GPU detected. Falling back to CPU-only mode (inference will be slow)."
+        log "CPU-only mode: llama.cpp will use CPU inference. Consider adding a GPU for better performance."
+    fi
     return 1
 }
 
 MIN_DRIVER_VERSION=570
+MIN_WHISPER_CUDA_DRIVER_VERSION=575
+
+# WSL2 receives the NVIDIA driver from Windows through /usr/lib/wsl/lib.
+# Installing a Linux nvidia-driver package inside the distro shadows those
+# libraries and breaks GPU passthrough, and "reboot" inside WSL does not load
+# a Windows driver. An old WSL driver is therefore a Windows-side fix only.
+ods_wsl_nvidia_driver_too_old() {
+    local driver="${1:-unknown}"
+    ai_bad "NVIDIA driver ${driver} comes from Windows and is older than ${MIN_DRIVER_VERSION}."
+    ai "Update the NVIDIA driver on Windows (NVIDIA App or nvidia.com), then run in PowerShell:"
+    ai "  wsl --shutdown"
+    ai "Reopen Ubuntu, confirm nvidia-smi shows driver >= ${MIN_DRIVER_VERSION}, and re-run ODS."
+    ai "Do not install NVIDIA drivers inside WSL; that breaks GPU passthrough."
+    error "NVIDIA driver ${driver} on Windows is below ${MIN_DRIVER_VERSION}."
+}
+
+ods_whisper_cuda_supported() {
+    local backend="${1:-${GPU_BACKEND:-cpu}}"
+    local driver_major="${2:-${DRIVER_VERSION:-0}}"
+    [[ "$backend" == "nvidia" && "$driver_major" =~ ^[0-9]+$ \
+        && "$driver_major" -ge "$MIN_WHISPER_CUDA_DRIVER_VERSION" ]]
+}
+
+_ods_csv_add_unique() {
+    local variable_name="$1" value="$2" current=""
+    current="${!variable_name:-}"
+    case ",$current," in
+        *",$value,"*) ;;
+        *)
+            if [[ -n "$current" ]]; then
+                printf -v "$variable_name" '%s,%s' "$current" "$value"
+            else
+                printf -v "$variable_name" '%s' "$value"
+            fi
+            ;;
+    esac
+}
+
+ods_configure_whisper_acceleration() {
+    local backend="${1:-${GPU_BACKEND:-cpu}}"
+    local driver_major="${2:-${DRIVER_VERSION:-0}}"
+    local requested="${WHISPER_ACCELERATION:-}"
+
+    WHISPER_ACCELERATION_FORCED_CPU=false
+    if ods_whisper_cuda_supported "$backend" "$driver_major"; then
+        case "$requested" in
+            cpu|cuda) WHISPER_ACCELERATION="$requested" ;;
+            *) WHISPER_ACCELERATION="cuda" ;;
+        esac
+    else
+        WHISPER_ACCELERATION="cpu"
+        [[ "$backend" == "nvidia" ]] && WHISPER_ACCELERATION_FORCED_CPU=true
+    fi
+
+    if [[ "$WHISPER_ACCELERATION" == "cpu" ]]; then
+        _ods_csv_add_unique ODS_SKIP_GPU_OVERLAYS whisper
+        if [[ -z "${WHISPER_IMAGE:-}" || "${WHISPER_IMAGE:-}" =~ [Cc][Uu][Dd][Aa] ]]; then
+            WHISPER_IMAGE="ghcr.io/speaches-ai/speaches:0.9.0-rc.3-cpu@sha256:2163775b6df5e451a71200e8f675fed68dbd8ab184fc604453d549e486f22fd2"
+        fi
+        if [[ "${AUDIO_STT_MODEL:-}" =~ ([Ll]arge-v3|[Tt]urbo) ]]; then
+            AUDIO_STT_MODEL="Systran/faster-whisper-base"
+        fi
+    fi
+
+    export WHISPER_ACCELERATION WHISPER_ACCELERATION_FORCED_CPU
+    export ODS_SKIP_GPU_OVERLAYS WHISPER_IMAGE AUDIO_STT_MODEL
+}
 
 nvidia_name_is_blackwell() {
     local name="$1"
@@ -782,6 +914,7 @@ fix_nvidia_secure_boot() {
     $ENABLE_OPENCLAW && resume_args="$resume_args --openclaw"
     [[ -n "$TIER" ]] && resume_args="$resume_args --tier $TIER"
     [[ "$OFFLINE_MODE" == "true" ]] && resume_args="$resume_args --offline"
+    [[ "${ODS_RESELECT_MODEL:-false}" == "true" ]] && resume_args="$resume_args --reselect-model"
 
     ods_sudo tee /etc/systemd/system/${svc_name}.service > /dev/null << SVCEOF
 [Unit]
@@ -803,8 +936,12 @@ StandardError=journal+console
 [Install]
 WantedBy=multi-user.target
 SVCEOF
-    ods_sudo systemctl daemon-reload
-    ods_sudo systemctl enable "${svc_name}.service" 2>>"$LOG_FILE"
+    if ! ods_sudo systemctl daemon-reload; then
+        error "Could not reload systemd after installing the auto-resume unit."
+    fi
+    if ! ods_sudo systemctl enable "${svc_name}.service" 2>>"$LOG_FILE"; then
+        error "Could not enable ${svc_name}.service; installation cannot safely resume after reboot."
+    fi
     log "Auto-resume service installed: ${svc_name}.service"
 
     # --- Show a clean, friendly reboot screen ---

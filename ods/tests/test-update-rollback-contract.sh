@@ -167,6 +167,9 @@ mkdir -p "$ROLLBACK_SRC/lib" "$ROLLBACK_SRC/config" "$ROLLBACK_SRC/data/backups"
 cp "$ROOT_DIR/lib/rsync.sh" "$ROOT_DIR/lib/backup-paths.sh" "$ROLLBACK_SRC/lib/"
 cp "$ROOT_DIR/lib/safe-env.sh" "$ROLLBACK_SRC/lib/safe-env.sh"
 cp "$ROOT_DIR/ods-update.sh" "$ROLLBACK_SRC/ods-update.sh"
+# Use the reviewed real guard; synthetic target remains separate from helper code.
+mkdir -p "$ROLLBACK_SRC/scripts"
+ln -s "$ROOT_DIR/scripts/source-update-preflight.py" "$ROLLBACK_SRC/scripts/source-update-preflight.py"
 chmod +x "$ROLLBACK_SRC/ods-update.sh"
 
 # Mock wait_for_healthy requirements (must be able to find python-cmd.sh)

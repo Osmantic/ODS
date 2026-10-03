@@ -6,7 +6,7 @@ services:
     security_opt:
       - no-new-privileges:true
     ports:
-      - "${BIND_ADDRESS:-127.0.0.1}:${EXT_OLLAMA_PORT:-7804}:11434"
+      - "127.0.0.1:${EXT_OLLAMA_PORT:-7804}:11434"
     volumes:
       - ./data/ollama:/root/.ollama
     environment:

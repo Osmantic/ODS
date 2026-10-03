@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/work-goal-fleet-v1.schema.json",
+  "title": "Pixel Deep Work private host-fleet schedule v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "fleetId", "createdAt", "discipline", "hostCapacity", "goals", "authority", "boundary"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/work-goal-fleet-v1.schema.json"},
+    "schemaVersion": {"const": 1},
+    "fleetId": {"type": "string", "pattern": "^workfleet-[0-9]{13}-[a-f0-9]{12}$"},
+    "createdAt": {"type": "string", "format": "date-time"},
+    "discipline": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "maxConcurrentTurns", "crashPolicy"],
+      "properties": {
+        "mode": {"const": "durable-round-robin"},
+        "maxConcurrentTurns": {"const": 1},
+        "crashPolicy": {"const": "recover-active-before-next"}
+      }
+    },
+    "hostCapacity": {"$ref": "#/$defs/hostCapacity"},
+    "goals": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 64,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["goalId", "goalSha256", "jobsSha256", "controllerConfigSha256", "resourceEnvelope"],
+        "properties": {
+          "goalId": {"type": "string", "pattern": "^workgoal-[0-9]{13}-[a-f0-9]{12}$"},
+          "goalSha256": {"$ref": "#/$defs/sha256"},
+          "jobsSha256": {"$ref": "#/$defs/sha256"},
+          "controllerConfigSha256": {"$ref": "#/$defs/sha256"},
+          "resourceEnvelope": {"$ref": "#/$defs/goalEnvelope"}
+        }
+      }
+    },
+    "authority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["grantsExecution", "grantsLease", "grantsReplay", "grantsScopeExpansion", "grantsExternalEffects", "grantsCompletion"],
+      "properties": {
+        "grantsExecution": {"const": false},
+        "grantsLease": {"const": false},
+        "grantsReplay": {"const": false},
+        "grantsScopeExpansion": {"const": false},
+        "grantsExternalEffects": {"const": false},
+        "grantsCompletion": {"const": false}
+      }
+    },
+    "boundary": {"const": "Private immutable host-fleet schedule. It serializes bounded goal turns against exact resource envelopes but grants no job execution, lease, replay, scope expansion, external effect, or completion authority."}
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "hostCapacity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["maxTurnSeconds", "maxCpuCores", "maxMemoryMiB", "maxDiskBytes", "maxRetainedArtifactBytes"],
+      "properties": {
+        "maxTurnSeconds": {"type": "integer", "minimum": 1, "maximum": 608700},
+        "maxCpuCores": {"type": "integer", "minimum": 1, "maximum": 128},
+        "maxMemoryMiB": {"type": "integer", "minimum": 256, "maximum": 1048576},
+        "maxDiskBytes": {"type": "integer", "minimum": 1048576, "maximum": 1099511627776},
+        "maxRetainedArtifactBytes": {"type": "integer", "minimum": 1, "maximum": 140737488355328}
+      }
+    },
+    "goalEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["maxTurnSeconds", "maxWorkerSeconds", "maxVerifierSeconds", "maxCleanupSeconds", "maxCpuCores", "maxMemoryMiB", "maxDiskBytes", "maxRetainedArtifactBytes"],
+      "properties": {
+        "maxTurnSeconds": {"type": "integer", "minimum": 1, "maximum": 608700},
+        "maxWorkerSeconds": {"type": "integer", "minimum": 1, "maximum": 604800},
+        "maxVerifierSeconds": {"type": "integer", "minimum": 0, "maximum": 3600},
+        "maxCleanupSeconds": {"const": 300},
+        "maxCpuCores": {"type": "integer", "minimum": 1, "maximum": 128},
+        "maxMemoryMiB": {"type": "integer", "minimum": 256, "maximum": 1048576},
+        "maxDiskBytes": {"type": "integer", "minimum": 1048576, "maximum": 1099511627776},
+        "maxRetainedArtifactBytes": {"type": "integer", "minimum": 1, "maximum": 2199023255552}
+      }
+    }
+  }
+}

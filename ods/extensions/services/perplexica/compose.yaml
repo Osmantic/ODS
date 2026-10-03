@@ -2,7 +2,7 @@ services:
   perplexica:
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    image: itzcrazykns1337/perplexica:slim-latest@sha256:6e399abf4ff587822b0ef0df11f36088fb928e17ac61556fe89beb68d48c378e
+    image: itzcrazykns1337/vane:v1.12.2@sha256:61f2bbf3386ff3df08911fb3de0e1893b04702a4d49ef13fbadbda937b47ab7c
     container_name: ods-perplexica
     restart: unless-stopped
     security_opt:
@@ -13,12 +13,14 @@ services:
       - OPENAI_BASE_URL=${HERMES_LLM_BASE_URL:-${LLM_API_URL:-http://llama-server:8080}/v1}
       - OPENAI_API_KEY=${HERMES_LLM_API_KEY:-${LITELLM_KEY:-${OPENAI_API_KEY:-no-key}}}
       - ODS_MODE=${ODS_MODE:-local}
-      - ODS_MODEL_SWITCHBOARD=${ODS_MODEL_SWITCHBOARD:-observe}
+      - ODS_MODEL_SWITCHBOARD=${ODS_MODEL_SWITCHBOARD:-enabled}
       - LLM_BACKEND=${LLM_BACKEND:-llama-server}
       - AMD_INFERENCE_RUNTIME=${AMD_INFERENCE_RUNTIME:-}
       - LLM_MODEL=${LLM_MODEL:-}
       - GGUF_FILE=${GGUF_FILE:-}
       - LEMONADE_MODEL=${LEMONADE_MODEL:-}
+      - EXTERNAL_LLM_URL=${EXTERNAL_LLM_URL:-}
+      - EXTERNAL_LLM_MODEL=${EXTERNAL_LLM_MODEL:-}
       - HOSTNAME=0.0.0.0
       - PERPLEXICA_SCRAPE_URL_MAX_CHARS=${PERPLEXICA_SCRAPE_URL_MAX_CHARS:-30000}
     entrypoint: ["/bin/sh", "-c", "until [ -f /app/ods-entrypoint.sh ]; do sleep 0.5; done; exec /bin/sh /app/ods-entrypoint.sh \"$@\"", "ods-entrypoint"]
@@ -27,13 +29,13 @@ services:
     # the patched entrypoint exits 0 with no app process, restart-looping.
     command: ["node", "server.js"]
     volumes:
-      - perplexica-data:/home/perplexica/data
-      - perplexica-uploads:/home/perplexica/uploads
+      - perplexica-data:/home/vane/data
+      - perplexica-uploads:/home/vane/uploads
       - ./extensions/services/perplexica/docker-entrypoint.sh:/app/ods-entrypoint.sh:ro,z
       - ./extensions/services/perplexica/sync-model-config.js:/app/ods-sync-model-config.js:ro,z
       - ./extensions/services/perplexica/sync-search-config.js:/app/ods-sync-search-config.js:ro,z
     ports:
-      - "${BIND_ADDRESS:-127.0.0.1}:${PERPLEXICA_PORT:-3004}:3000"
+      - "127.0.0.1:${PERPLEXICA_PORT:-3004}:3000"
     deploy:
       resources:
         limits:

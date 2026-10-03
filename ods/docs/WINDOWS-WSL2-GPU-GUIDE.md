@@ -1,9 +1,27 @@
 # Windows WSL2 GPU Guide for ODS
 
-Complete guide for running ODS on Windows with WSL2 and NVIDIA GPU
-passthrough. AMD Strix Halo installs also use Docker Desktop + WSL2 for the
-service stack, but local inference runs through the Windows host accelerated
-path selected by `install.ps1`.
+`install.ps1` installs ODS and Pixel/Portal inside Ubuntu/WSL2. NVIDIA inference
+uses GPU passthrough through Docker Desktop. AMD inference uses Lemonade on
+Windows through the ODS scheduled task; it does not require ROCm inside WSL.
+
+For AMD, follow the [Windows Quickstart](WINDOWS-QUICKSTART.md#gpu-placement).
+The installer binds its Windows task and model store to one WSL distribution
+and ODS runtime directory. After ownership is verified, the Models page can
+download compatible catalog or Hugging Face GGUFs, activate them, change
+context, and unload/resume the runtime. Older unbound ODS tasks need a rerun of
+the current Windows installer for the same installation. Independent Lemonade
+services remain external; endpoint reachability or **Adopt loaded model** does
+not grant control of them.
+
+The checks and troubleshooting below apply to **NVIDIA passthrough**. For AMD,
+verify the Windows runtime and Portal route using the Quickstart instead of
+expecting `nvidia-smi` to succeed. Linux and macOS keep their existing inference
+and model-management paths.
+
+Before the Linux installer starts, `install.ps1` stops with instructions when
+Windows has an NVIDIA driver but it is older than 570, Ubuntu cannot see the
+GPU (`/usr/lib/wsl/lib/nvidia-smi -L`), or Docker Desktop does not expose its
+`nvidia` runtime (`docker info --format '{{json .Runtimes}}'`).
 
 ## Quick Verification
 
@@ -69,11 +87,14 @@ wsl --status
 
 Download latest drivers from https://www.nvidia.com/drivers
 
-**Verify driver includes WSL2 support:**
+**Verify the driver version:**
 ```powershell
-# Driver version 465.21 or later includes WSL2 support
-# Game Ready drivers work fine for compute
+# ODS's CUDA runtime requires driver 570 or newer.
+# Game Ready and Studio drivers both work for compute.
+nvidia-smi --query-gpu=driver_version --format=csv,noheader
 ```
+
+After updating the driver, run `wsl --shutdown` so Ubuntu picks it up.
 
 ### Step 4: Run ODS Installer
 
@@ -98,9 +119,9 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 nvidia-smi
 # If this fails, install NVIDIA drivers on Windows
 
-# Verify WSL2 has GPU support
-wsl cat /proc/driver/nvidia/version
-# Should show driver version
+# Verify WSL2 has GPU support (the driver is provided by Windows)
+wsl /usr/lib/wsl/lib/nvidia-smi -L
+# Should list your GPU. If it does not, run: wsl --update; wsl --shutdown
 ```
 
 ### Issue: GPU works in WSL2 but not in Docker
@@ -211,8 +232,7 @@ processors=8
 swap=4GB
 swapFile=C:\temp\wsl-swap.vhdx
 localhostForwarding=true
-# Disable Windows interoperability if not needed (slight performance gain)
-# interop.enabled=false
+# Keep Windows interoperability enabled for the AMD/Lemonade control path.
 ```
 
 After editing:

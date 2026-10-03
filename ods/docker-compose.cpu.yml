@@ -6,7 +6,8 @@
 
 services:
   llama-server:
-    image: ${LLAMA_SERVER_IMAGE:-ghcr.io/ggml-org/llama.cpp:server-b8248}
+    # b8248 ignores LLAMA_ARG_REASONING from the base service; b9014 honors it.
+    image: ${LLAMA_SERVER_IMAGE:-ghcr.io/ggml-org/llama.cpp:server-b9014@sha256:2e7953dfef88f302bf0683bffa7dc1f8d86ef75910380bc41126ec5b8bedaf53}
     command:
       - --model
       - /models/${GGUF_FILE:-Qwen3.5-9B-Q4_K_M.gguf}
@@ -25,6 +26,11 @@ services:
       - --parallel
       - "${LLAMA_PARALLEL:-1}"
       - --metrics
+    environment:
+      # n-gram speculative decoding; same contract as docker-compose.nvidia.yml.
+      # The pinned b9014 image has the b8955+ ngram-mod implementation. Set
+      # LLAMA_SPEC_TYPE=none in .env to turn it off.
+      - LLAMA_ARG_SPEC_TYPE=${LLAMA_ARG_SPEC_TYPE:-${LLAMA_SPEC_TYPE:-ngram-mod}}
     deploy:
       resources:
         limits:

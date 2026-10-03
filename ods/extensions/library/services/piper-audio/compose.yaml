@@ -1,9 +1,9 @@
 services:
   piper-audio:
-    image: lscr.io/linuxserver/piper:1.6.3
+    image: lscr.io/linuxserver/piper:1.6.3@sha256:faecd532f4a455c79ddc9068921e29de58945d3b68946d6739ff6f9c7acf66b4
     container_name: ods-piper-audio
     ports:
-      - "${BIND_ADDRESS:-127.0.0.1}:${PIPER_PORT:-10200}:10200"
+      - "127.0.0.1:${PIPER_PORT:-10200}:10200"
     volumes:
       - ./data/piper:/config/piper
     environment:

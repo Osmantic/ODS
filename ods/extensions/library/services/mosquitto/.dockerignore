@@ -1,0 +1,5 @@
+*
+!Dockerfile
+!start.sh
+!mosquitto.conf
+!acl

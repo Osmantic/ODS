@@ -1,0 +1,13 @@
+{
+  "repository": "https://github.com/Redocly/redoc",
+  "license": "MIT",
+  "image": "redocly/redoc:v2.5.3@sha256:2e26bb660574c9b85eacd8e67b4e7a78641f5b63252859450688aeec6d918807",
+  "registry_checked_at": "2026-09-20",
+  "platforms": [
+    "linux/amd64",
+    "linux/arm64"
+  ],
+  "runtime_validation": "pending",
+  "runtime_image": "nginx:1.28-alpine@sha256:a8b39bd9cf0f83869a2162827a0caf6137ddf759d50a171451b335cecc87d236",
+  "notes": "Community standalone documentation bundle only. Explicit file/URL selection instead of preset Petstore. Nonroot nginx, read-only filesystem, sanitized descriptions, no account or backend data volume."
+}

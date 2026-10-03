@@ -11,6 +11,78 @@
 
 This guide is the fastest path to extend ODS without editing core internals.
 
+## Installing from the Portal conversation
+
+The catalog contains 200 distinct available extensions. Availability means ODS
+has a configuration or activation path; it does not mean the application has
+been downloaded, configured or started.
+
+- `/extensions @name` selects an exact catalog extension. The installer checks
+  dependencies and required settings, advances one operation at a time, and
+  reports readiness separately from acceptance of an installation request.
+- `/extensions https://github.com/owner/repository` asks the model to inspect
+  that public repository and propose an ODS recipe at an immutable commit.
+  This is research only; accepting a proposal does not start installation.
+- `/extensions install https://github.com/owner/repository` authorizes the
+  managed installation. The model researches and proposes the recipe, and ODS
+  prepares and advances that exact accepted proposal, returning actual receipts.
+  Free text after a URL does not grant automatic installation authority: it may
+  contain conditions or negations. A later installation needs a new explicit
+  install command; a saved research request is never silently promoted.
+- Required secrets are entered into the configuration form, outside the
+  conversation. Saving the missing values resumes the GitHub request without
+  asking the model to create a second recipe.
+
+GitHub proposals support validated Compose recipes with pinned image digests
+or source builds from the selected GitHub repository at an exact commit.
+Source contexts use `https://github.com/OWNER/REPO.git#FULL_COMMIT[:subdir]`;
+the upstream Dockerfile is inspected at that revision before preparation.
+Build settings accept `context`, `dockerfile` and optional `target`; source
+services use `image: ods-source-SERVICE:FULL_COMMIT` and `pull_policy: never`.
+Container restrictions still apply. Open-source license evidence is required.
+For a project without an upstream Dockerfile, the model can research its build
+inputs and propose `dockerfile_inline` instead of `dockerfile` (Compose 2.17+).
+Those bytes are part of the recipe digest and have a separate SHA-256 receipt;
+ODS does not present them as an upstream file. Inline content is limited to
+24 KiB and must escape dollar signs as `$$` to avoid host interpolation.
+Custom installation hooks, build secrets/SSH, additional contexts and unknown licenses require further work;
+they are not silently executed or represented as installed extensions.
+Repository documentation is evidence for the model, never execution authority.
+
+Cancelling or switching conversations stops further automatic advancement. An
+operation already accepted by the host may still finish. ODS preserves uncertain
+operation records instead of repeating a download or start request after a lost
+acknowledgement. Viewing saved conversation history does not start installation.
+
+When a successful current request has an identified Playground project, Portal
+continues with a real model turn to apply the requested integration to existing
+project files. After a reload, a saved pending integration offers **Continue
+integration**: it checks current readiness without replaying installation.
+The continuation has a stable request ID so duplicate tabs use the retained
+chat request boundary. A dispatched continuation is not a claim that project
+code integration succeeded; its model result still needs to be assessed.
+
+For use inside a project, the extension inspection tool exposes documentation
+and declared connection fields from the installed recipe first. These defaults
+do not prove an endpoint is reachable. The model must inspect the actual project
+and runtime before changing application code. A saved project association is
+not proof that the application has been integrated or tested.
+
+See [current expansion readiness](EXTENSION-READINESS.md) for implementation and
+verification limits.
+
+
+For an installation where Windows owns the environment file and the WSL manager
+uses a private credential projection, the service operator can append
+`--credential-source /mnt/<drive>/<installation>/.env` to the manager's `serve`
+command. The destination must already be a private `.env` containing only
+`DASHBOARD_API_KEY`, inside a directory owned by the service user with mode 0700.
+The systemd unit must expose that private directory as a writable bind and the
+source as read-only. This path option is not accepted from model tool requests.
+Before API-bound operations, the manager refreshes only that key atomically;
+invalid, duplicate, symlinked or changing sources cannot replace the valid copy.
+The ordinary native environment reader retains its ownership/mode checks.
+
 ## Extension Directory Structure
 
 Each extension service is a directory under `extensions/services/`:
@@ -383,7 +455,7 @@ AMD ROCm requires additional container configuration compared to NVIDIA:
 - **Device passthrough:** `/dev/dri` (rendering) and `/dev/kfd` (compute)
 - **Group membership:** Container user must be in the host's `video` and `render` groups
 - **GFX version override:** Avoid setting `HSA_OVERRIDE_GFX_VERSION` unless a specific image requires emulation. A wrong value can dispatch incompatible kernels; an empty value is also invalid. Prefer an image that contains kernels for the native `rocminfo` architecture.
-- **Security relaxation:** `cap_add: SYS_PTRACE` and `seccomp:unconfined` may be needed for ROCm profiling
+- **Security relaxation:** `cap_add: SYS_PTRACE` and `seccomp:unconfined` may be needed for ROCm profiling. They are refused in user and library extensions (see the compose policy below); a curated recipe's `compose.amd.yaml` may add only `/dev/kfd`, `/dev/dri` and the `${VIDEO_GID:-44}` / `${RENDER_GID:-992}` groups
 
 ## Compatibility Checklist
 
@@ -428,11 +500,61 @@ When a user installs an extension via the dashboard (`POST /api/extensions/{serv
 
 1. Validates the service ID and confirms it is not a core service
 2. Locates the extension in the **extensions library** (`$ODS_DATA_DIR/extensions-library/<id>/`)
-3. Performs a size check (max 50 MB) and security scan of the compose file (rejects privileged mode, Docker socket mounts, host network, dangerous capabilities, non-localhost port bindings, and other unsafe directives)
+3. Performs a size check (max 50 MB) and security scan of every compose file the recipe ships (the shared compose policy below)
 4. Copies the extension to `$ODS_DATA_DIR/user-extensions/<id>/` atomically via a temp directory on the same filesystem
 5. Calls the host agent to start the container (`POST /v1/extension/start`)
 
 The install uses file locking (`fcntl.flock`) to prevent double-install races.
+
+#### Compose policy
+
+`dashboard-api` (`routers/extensions.py:_scan_compose_content`, at install and
+enable time) and `scripts/resolve-compose-stack.sh`
+(`_scan_user_compose_content`, on every `ods` command) run one rule set: the
+`# >>> shared compose policy >>>` block, kept byte-identical in both files
+(`extensions/services/dashboard-api/tests/test_compose_policy_parity.py`). Values are judged the way Docker
+Compose resolves them, and anything the file alone cannot decide is refused:
+
+- **Parsing:** one YAML document, no duplicate keys, no Compose `!reset` /
+  `!override` tags, no self-referencing anchors.
+- **Booleans:** `privileged` and `use_api_socket` must be absent or an explicit
+  false; Compose casts the strings `true`/`yes`/`y`/`on` to true.
+- **Interpolation:** a guarded value may not use `${VAR}` / `$VAR` (Compose
+  fills it from the owner's environment or the default). The exceptions are
+  the shapes ODS core uses: the `${VIDEO_GID:-44}` / `${RENDER_GID:-992}` GPU
+  groups, `${ODS_UID:-N}:${ODS_GID:-N}` users, `${VAR:-127.0.0.1}` port hosts
+  and NVIDIA `device_ids`.
+- **Other files and containers:** no top-level `include`, `name`, `secrets`,
+  `configs` or `models`; no service `extends`, `env_file`, `label_file`,
+  `volumes_from`, `secrets`, `configs`, `post_start`/`pre_stop` hooks,
+  `develop`, `provider`, `annotations`, `cgroup_parent` or
+  `device_cgroup_rules`.
+- **Namespaces:** no `host` network/PID/IPC/UTS/user/cgroup namespace, and no
+  `container:` or `service:` join outside the extension's own file.
+- **Capabilities and security options:** `cap_add` only from Docker's default
+  set (never `SYS_ADMIN`, `DAC_READ_SEARCH`, `NET_ADMIN`, ...; `CAP_` prefix and
+  case are normalised); `security_opt` only `no-new-privileges`.
+- **Users and groups:** no root user (`root`, `0`, `00`, `+0`); `group_add`
+  only the GPU groups, only in a curated recipe's `compose.amd.yaml`.
+- **Volumes:** no absolute, `~`, Windows or `..` host paths, no Docker socket or
+  named pipe. Relative binds resolve against the ODS install directory (the
+  first `-f` file), so `.`, `./.env` and the whole `./data` / `./config` are
+  refused, and an imported (GitHub) recipe may bind only its own
+  `./data/<id>` and `./config/<id>`. Named volumes and networks may not set a
+  driver, options, `name` or `external` other than joining `ods-network`;
+  services may not set per-network aliases or addresses.
+- **Provenance:** a library recipe is curated unless its `upstream.json`
+  records `origin: github-proposal`. A linked, oversized (over 512 KiB),
+  non-JSON or duplicate-key marker is never curated: staging refuses the
+  install and the resolver treats the recipe as imported.
+- **Refusals do not take the stack down:** the resolver leaves a refused
+  file out with a `WARNING`. Compose rejects the whole project when a service
+  depends on an undefined one, so the resolver also leaves out every user
+  extension that needs (`depends_on`, `links`, `service:` namespaces) a
+  service no remaining file declares, transitively, naming the chain back to
+  the refusal. `ods enable`, `ods disable` and `ods mode` print these
+  warnings. The dashboard's enable/activate re-scan applies the same
+  imported-recipe bind namespace as the install gate.
 
 ### 4. Enable / Disable
 
@@ -466,6 +588,8 @@ If the host agent is unreachable, file-level operations (install, enable, disabl
 ### 7. Uninstall
 
 Uninstalling (`DELETE /api/extensions/{service_id}`) requires the extension to be disabled first (compose file must be renamed to `.disabled`). It then removes the extension directory from `user-extensions/` under file lock.
+
+One state is handled by the endpoint itself: an extension whose last install or start attempt failed (status `error`) still has an enabled `compose.yaml`, so the uninstall performs the disable step first. The host agent must stop the service before the definition is touched (a failed stop returns 502 and nothing is removed), and removal is refused with 409 while any enabled extension depends on it. Running, stopped, starting and unhealthy extensions still return 400 until they are disabled explicitly. Uninstall never deletes service data; purging stays a separate, confirmed request (`DELETE /api/extensions/{service_id}/data`).
 
 ### 8. Dashboard UI Status Polling
 

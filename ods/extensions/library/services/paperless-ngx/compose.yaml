@@ -1,6 +1,6 @@
 services:
   paperless-ngx:
-    image: ghcr.io/paperless-ngx/paperless-ngx:2.14.0
+    image: ghcr.io/paperless-ngx/paperless-ngx:2.14.0@sha256:71e443d2b26ff26056efe22651f25187add3776755e58933cd519327d71273a0
     container_name: ods-paperless
     restart: unless-stopped
     security_opt:
@@ -18,7 +18,7 @@ services:
       - ./data/paperless/export:/usr/src/paperless/export
       - ./data/paperless/media:/usr/src/paperless/media
     ports:
-      - "${BIND_ADDRESS:-127.0.0.1}:${PAPERLESS_PORT:-7807}:8000"
+      - "127.0.0.1:${PAPERLESS_PORT:-7807}:8000"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://127.0.0.1:8000/accounts/login/"]
       interval: 30s
@@ -42,7 +42,7 @@ services:
           memory: 1G
 
   paperless-postgres:
-    image: docker.io/library/postgres:16-alpine
+    image: docker.io/library/postgres:16-alpine@sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea
     container_name: ods-paperless-postgres
     restart: unless-stopped
     security_opt:
@@ -71,7 +71,7 @@ services:
           memory: 512M
 
   paperless-redis:
-    image: docker.io/library/redis:7-alpine
+    image: docker.io/library/redis:7-alpine@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499
     container_name: ods-paperless-redis
     restart: unless-stopped
     security_opt:

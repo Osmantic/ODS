@@ -13,6 +13,18 @@ from .base import LLMProvider
 from .registry import register_provider
 
 
+def cumulative_usage_update(usage: dict) -> dict:
+    """Normalize present counters without resetting omitted/nullable deltas."""
+    names = {
+        "input_tokens": "input_tokens",
+        "output_tokens": "output_tokens",
+        "cache_read_input_tokens": "cache_read_tokens",
+        "cache_creation_input_tokens": "cache_write_tokens",
+    }
+    return {target: usage[source] for source, target in names.items()
+            if usage.get(source) is not None}
+
+
 @register_provider("anthropic")
 class AnthropicProvider(LLMProvider):
     """Anthropic Messages API provider (Claude models)."""
@@ -240,8 +252,7 @@ class AnthropicProvider(LLMProvider):
             delta_usage = data.get("usage", {})
             delta = data.get("delta", {})
 
-            if delta_usage.get("output_tokens") is not None:
-                result["output_tokens"] = delta_usage["output_tokens"]
+            result.update(cumulative_usage_update(delta_usage))
 
             if delta.get("stop_reason"):
                 result["stop_reason"] = delta["stop_reason"]

@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/deep-work-multi-day-soak-evidence-v1.schema.json",
+  "title": "Pixel Deep Work multi-day soak evidence v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "operation", "status", "campaignId", "source", "startedAt", "finishedAt", "schedule", "observed", "result", "privacy", "boundary"],
+  "properties": {
+    "$schema": {"const": "./schemas/deep-work-multi-day-soak-evidence-v1.schema.json"},
+    "schemaVersion": {"const": 1},
+    "operation": {"const": "pixel-deep-work-multi-day-soak-evidence"},
+    "status": {"const": "pass"},
+    "campaignId": {"type": "string", "pattern": "^deepworksoak-[0-9]{13}-[a-f0-9]{12}$"},
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["commit", "tree", "programSha256", "runtimeSnapshotSha256", "configSha256"],
+      "properties": {
+        "commit": {"type": "string", "pattern": "^[a-f0-9]{40}$"},
+        "tree": {"type": "string", "pattern": "^[a-f0-9]{40}$"},
+        "programSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "runtimeSnapshotSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "configSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+      }
+    },
+    "startedAt": {"type": "string", "format": "date-time"},
+    "finishedAt": {"type": "string", "format": "date-time"},
+    "schedule": {"const": {"intervalSeconds": 3600, "minimumGapSeconds": 3300, "maximumGapSeconds": 7200, "minimumElapsedSeconds": 172800, "milestones": 24, "expectedCycles": 49}},
+    "observed": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["completedCycles", "uniqueInvocationIds", "bootSessions", "minimumGapSeconds", "maximumGapSeconds", "elapsedSeconds", "preAdmissionLeaseRefreshes"],
+      "properties": {
+        "completedCycles": {"const": 49},
+        "uniqueInvocationIds": {"const": 49},
+        "bootSessions": {"type": "integer", "minimum": 2, "maximum": 49},
+        "minimumGapSeconds": {"type": "integer", "minimum": 3300, "maximum": 7200},
+        "maximumGapSeconds": {"type": "integer", "minimum": 3300, "maximum": 7200},
+        "elapsedSeconds": {"type": "integer", "minimum": 172800, "maximum": 345600},
+        "preAdmissionLeaseRefreshes": {"const": 24}
+      }
+    },
+    "result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["goalState", "milestonesCompleted", "jobsStarted", "modelRequests", "parentCheckpointRecords", "childCheckpointRecords", "runBundleRecords", "duplicateMilestoneCredit", "duplicateUsageCredit", "replayedChildExecution", "goalCheckpointSha256", "invocationLedgerSha256"],
+      "properties": {
+        "goalState": {"const": "completed"},
+        "milestonesCompleted": {"const": 24},
+        "jobsStarted": {"const": 24},
+        "modelRequests": {"const": 24},
+        "parentCheckpointRecords": {"const": 50},
+        "childCheckpointRecords": {"const": 120},
+        "runBundleRecords": {"const": 72},
+        "duplicateMilestoneCredit": {"const": false},
+        "duplicateUsageCredit": {"const": false},
+        "replayedChildExecution": {"const": false},
+        "goalCheckpointSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "invocationLedgerSha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+      }
+    },
+    "privacy": {"const": {"providerCalls": 0, "credentialInputs": 0, "networkRequests": 0, "externalEffects": 0, "productionDeploymentsTouched": 0}},
+    "boundary": {"const": "Credential-free disposable qualification evidence only. It proves elapsed reconciliation, restart, reboot, lease-refresh, and exact durable accounting behavior but grants no work, provider, deployment, publication, or release authority."}
+  }
+}

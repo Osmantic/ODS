@@ -267,11 +267,14 @@ grep -q 'not owned by ODS' "$agent_output" \
 kill "$unowned_pid" 2>/dev/null || true
 pass "session fallback refuses to stop an unowned stale PID"
 
-python3 - "$ROOT_DIR/installers/phases/01-preflight.sh" <<'PY'
+python3 - "$ROOT_DIR/installers/phases/01-preflight.sh" "$ROOT_DIR/installers/lib/preflight-jq.sh" <<'PY'
 import pathlib
 import sys
 
-text = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")
+phase = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")
+assert 'source "$SCRIPT_DIR/installers/lib/preflight-jq.sh"' in phase
+assert "ods_preflight_require_jq" in phase
+text = pathlib.Path(sys.argv[2]).read_text(encoding="utf-8")
 start = text.index("if ! command -v jq")
 end = text.index('log "jq:', start)
 block = text[start:end]

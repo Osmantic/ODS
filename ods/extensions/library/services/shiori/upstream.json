@@ -1,0 +1,15 @@
+{
+  "repository": "https://github.com/go-shiori/shiori",
+  "license": "MIT",
+  "image": "ghcr.io/go-shiori/shiori:alpine-v1.8.0@sha256:79ca8588c0abc5cc1ccad11ce5ab7f9bab393966b699d60be9c82aa6b356fd3a",
+  "source_commit": "da56f82faac5bf350fc4175e5ff50726cb10d956",
+  "source_archive_sha256": "1815e5995dea0aa0b598de7da61dff34a12263e5c9c1fa858ee31ce3eb5298b0",
+  "registry_checked_at": "2026-09-20",
+  "platforms": [
+    "linux/amd64",
+    "linux/arm64",
+    "linux/arm"
+  ],
+  "runtime_validation": "pending",
+  "notes": "v1.8.0 rebuilt from checksummed source to replace known default initial password with required secret, only for empty account store. Existing accounts are not reset. Official Alpine runtime, nonroot persistent storage, session secret."
+}

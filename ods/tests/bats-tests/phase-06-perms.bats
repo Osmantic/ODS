@@ -36,7 +36,9 @@ teardown() {
 TEST_KEY=test-value
 ENV_EOF
         )
-        stat -c "%a" "'"$INSTALL_DIR"'/.env"
+        # GNU stat -c on Linux; BSD stat -f on macOS.
+        mode_of() { stat -c "%a" "$1" 2>/dev/null || stat -f "%Lp" "$1"; }
+        mode_of "'"$INSTALL_DIR"'/.env"
     '
     assert_success
     assert_output "600"
@@ -51,6 +53,8 @@ ENV_EOF
     # ComfyUI root) could not enter them.
     run bash -c '
         umask 022   # Ambient umask the installer normally inherits
+        # GNU stat -c on Linux; BSD stat -f on macOS.
+        mode_of() { stat -c "%a" "$1" 2>/dev/null || stat -f "%Lp" "$1"; }
         (
             umask 077
             cat > "'"$INSTALL_DIR"'/.env" << ENV_EOF
@@ -67,7 +71,7 @@ ENV_EOF
             "'"$INSTALL_DIR"'/config/searxng" \
             "'"$INSTALL_DIR"'/config/llama-server" \
             "'"$INSTALL_DIR"'/data/comfyui/output"; do
-            mode=$(stat -c "%a" "$d")
+            mode=$(mode_of "$d")
             # Octal world-traverse bit is the 1s digit & 1.
             world_x=$(( 8#$mode & 1 ))
             if [[ $world_x -ne 1 ]]; then

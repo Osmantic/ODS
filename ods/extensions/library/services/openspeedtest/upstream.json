@@ -1,0 +1,13 @@
+{
+  "repository": "https://github.com/openspeedtest/Speed-Test",
+  "license": "MIT",
+  "source_ref": "f4263546f50694a154fdd27a03000390949068df",
+  "source_sha256": "f8d239bc4183c214c0747ec1a1c418fd33773683f82e7ee8327cf734ea6a4987",
+  "registry_checked_at": "2026-09-20",
+  "platforms": [
+    "linux/amd64",
+    "linux/arm64"
+  ],
+  "runtime_validation": "pending",
+  "notes": "Verified upstream archive on digest-pinned nginx/Alpine. Native static test payloads, HTTP/1.1 POST handling and no compression of measurement traffic. No automatic speed test, public ingress, database or fictitious persistence."
+}

@@ -1,6 +1,7 @@
 """Agent monitoring endpoints."""
 
 import html as html_mod
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import HTMLResponse
@@ -39,8 +40,16 @@ async def get_agent_metrics_html(api_key: str = Depends(verify_api_key)):
     failover_safe = esc(failover_text)
     sessions = esc(agent.get("session_count", 0))
     last_update_safe = esc(last_update_time)
-    tp_current = esc(f"{tp.get('current', 0):.1f}")
-    tp_average = esc(f"{tp.get('average', 0):.1f}")
+    current = tp.get("current")
+    tp_current = esc(f"{current:.1f}" if current is not None else "Unavailable")
+    state = tp.get("state", "unavailable")
+    label = ("Last known rate · telemetry unavailable" if state == "unavailable"
+             else "Last run" if state == "retained" else "Measured generation rate")
+    tp_label = esc(label)
+    tp_model = esc(tp.get("model") or "Model unavailable")
+    sampled_at = tp.get("sampled_at")
+    tp_sample = esc(datetime.fromtimestamp(sampled_at, timezone.utc).isoformat()
+                    if sampled_at is not None else "No measurement")
 
     html = f"""
     <div class="grid">
@@ -55,9 +64,10 @@ async def get_agent_metrics_html(api_key: str = Depends(verify_api_key)):
             <p style="margin: 0; font-size: 0.875rem;">Updated: {last_update_safe}</p>
         </article>
         <article class="metric-card">
-            <div class="metric-label">Throughput</div>
+            <div class="metric-label">Runtime Throughput</div>
             <div class="metric-value">{tp_current}</div>
-            <p style="margin: 0; font-size: 0.875rem;">tokens/sec (avg: {tp_average})</p>
+            <p style="margin: 0; font-size: 0.875rem;">tokens/sec · {tp_label}</p>
+            <p style="margin: 0; font-size: 0.875rem;">{tp_model} · {tp_sample}</p>
         </article>
     </div>
     """
@@ -73,5 +83,5 @@ async def get_cluster_status(api_key: str = Depends(verify_api_key)):
 
 @router.get("/api/agents/throughput")
 async def get_throughput(api_key: str = Depends(verify_api_key)):
-    """Get throughput metrics (tokens/sec)."""
+    """Get runtime-wide measured generation rates and their provenance."""
     return throughput.get_stats()

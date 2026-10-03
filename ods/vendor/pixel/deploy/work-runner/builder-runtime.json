@@ -1,0 +1,62 @@
+{
+  "$schema": "https://osmantic.com/pixel/schemas/work-builder-runtime-v1.schema.json",
+  "schemaVersion": 1,
+  "contract": "pixel-builder-code-intelligence-runtime-v1",
+  "platform": "linux-x86_64",
+  "minimumMemoryMiB": 2048,
+  "features": {
+    "gdb": {
+      "package": "gdb",
+      "packageVersion": "13.1-3",
+      "runtimeVersion": "13.1",
+      "entrypoint": "/usr/bin/gdb"
+    },
+    "debugpy": {
+      "package": "python3-debugpy",
+      "packageVersion": "1.6.6+ds-1",
+      "runtimeVersion": "1.6.3+git20221103.a2a3328",
+      "entrypoint": "/usr/bin/python",
+      "module": "debugpy.adapter"
+    },
+    "pyright": {
+      "artifact": "pyright",
+      "runtimeVersion": "1.1.411",
+      "entrypoint": "/usr/local/bin/pyright-langserver"
+    },
+    "pythonCommand": {
+      "package": "python-is-python3",
+      "packageVersion": "3.11.2-1+deb12u1",
+      "runtimeVersion": "3.11.2",
+      "entrypoint": "/usr/bin/python"
+    }
+  },
+  "agentSurface": {
+    "name": "task",
+    "definitionPath": "/opt/pixel/deploy/work-runner/builder-agent.md",
+    "definitionSha256": "1b68145f7c5b589acfa68949dbcce81d5d170078c8f794365497b46f4863e54f",
+    "entrypointPath": "/opt/pixel/deploy/work-runner/builder-entrypoint.sh",
+    "entrypointSha256": "f3ced70f4c3c839a186a846aaaa0e57deb8de95d8edbdd495f86db8d8b95d401",
+    "configurationDirectory": ".pixel-omp",
+    "stateDirectory": "/tmp/agent",
+    "declaredTools": ["read", "grep", "glob", "write", "edit", "bash", "eval", "lsp", "debug", "hub"],
+    "runtimeTools": ["bash", "debug", "edit", "eval", "glob", "grep", "hub", "lsp", "read", "write", "yield"],
+    "blockedTools": ["task", "todo", "web_search"]
+  },
+  "artifacts": [
+    {
+      "name": "pyright",
+      "version": "1.1.411",
+      "filename": "pyright-1.1.411.tgz",
+      "sha256": "bd5c488fc20fa237a944279bf32cae2f986cf10d5d5d9e8705819859daeb2f4a",
+      "integrity": "sha512-03S/vmS5lF1S/tVbKc2WNXCMq8JWCwta/qIYjj1jvqbQhoy+N3NgBzHTSmUlbYD6DJwqQ5XHf108QujoqeURvw==",
+      "bytes": 4139958,
+      "url": "https://registry.npmjs.org/pyright/-/pyright-1.1.411.tgz",
+      "license": "MIT"
+    }
+  ],
+  "systemPackages": [
+    {"name": "gdb", "version": "13.1-3"},
+    {"name": "python-is-python3", "version": "3.11.2-1+deb12u1"},
+    {"name": "python3-debugpy", "version": "1.6.6+ds-1"}
+  ]
+}

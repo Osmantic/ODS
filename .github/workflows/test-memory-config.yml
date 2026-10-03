@@ -1,0 +1,22 @@
+name: Memory Shepherd config parsing
+on:
+  pull_request:
+    paths:
+      - 'ods/memory-shepherd/**'
+      - 'ods/tests/test-memory-shepherd-config.py'
+      - '.github/workflows/test-memory-config.yml'
+  push:
+    branches: [main, public-beta]
+    paths:
+      - 'ods/memory-shepherd/**'
+      - 'ods/tests/test-memory-shepherd-config.py'
+      - '.github/workflows/test-memory-config.yml'
+permissions:
+  contents: read
+jobs:
+  config-eof:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - name: Read final config settings in runtime and installer
+        run: sudo python3 ods/tests/test-memory-shepherd-config.py

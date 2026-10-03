@@ -32,6 +32,29 @@ def parallelism(output):
     return llama(output)["parallelism"]
 
 
+def test_model_size_must_be_finite_and_positive(tmp_path):
+    topology = tmp_path / "small-gpu.json"
+    topology.write_text(json.dumps({"gpu_count": 1, "gpus": [{
+        "index": 0, "uuid": "small-gpu", "name": "4 GB fixture",
+        "memory_gb": 4, "memory_free_gb": 2,
+    }]}))
+    for size in ("0", "-1", "nan", "inf", "-inf"):
+        result = subprocess.run([
+            sys.executable, SCRIPT, "--topology", str(topology),
+            "--model-size=" + size,
+        ], capture_output=True, text=True, timeout=10)
+        assert result.returncode == 1, (size, result.stderr)
+        assert "finite positive number" in result.stderr
+        assert result.stdout == ""
+    # Valid small models still work, but the allocator must respect free VRAM.
+    code, output, error = run(str(topology), 1024, "llama_server")
+    assert code == 0, error
+    assert all_assigned_uuids(output) == {"small-gpu"}
+    code, output, error = run(str(topology), 3072, "llama_server")
+    assert code == 1 and output is None
+    assert "exceeds assignable free VRAM" in error
+
+
 # ── 1 GPU — single ────────────────────────────────────────────────────────────
 
 class TestSingleGpu:

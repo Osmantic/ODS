@@ -1,0 +1,13 @@
+{
+  "repository": "https://github.com/healthchecks/healthchecks",
+  "license": "BSD-3-Clause",
+  "source_ref": "v4.4",
+  "image": "healthchecks/healthchecks:v4.4@sha256:aa08a61b0dcfd83f1332eab195d5cec1b595ae076eb8388cadf8a3d597114f9b",
+  "registry_checked_at": "2026-09-20",
+  "platforms": [
+    "linux/amd64",
+    "linux/arm64"
+  ],
+  "runtime_validation": "pending",
+  "notes": "Native hc user and uWSGI startup with migrations/alert workers preserved. Private PostgreSQL; closed registration; owner creates account explicitly. No checks or notification destinations configured."
+}

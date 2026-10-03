@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/frontier-authority-lease-v1.schema.json",
+  "title": "Pixel Frontier temporary authority lease v1",
+  "allOf": [
+    {"$ref": "frontier-policy-v1.schema.json#/$defs/grant"},
+    {
+      "type": "object",
+      "properties": {
+        "expiresAt": false,
+        "source": false
+      }
+    }
+  ]
+}

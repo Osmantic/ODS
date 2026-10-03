@@ -1,0 +1,15 @@
+{
+  "repository": "https://github.com/kestra-io/kestra",
+  "license": "Apache-2.0",
+  "image": "kestra/kestra:v2.0.2@sha256:bbc3fb322046783489961bdc91a4ee3eeb8e238e5099a56df8d96ee51a16fb53",
+  "companion_images": [
+    "postgres:18-alpine@sha256:6c538e7206ea40ff740ef27883529390a690b6ead6ba96b44c67a9f7c638e8fd"
+  ],
+  "registry_checked_at": "2026-09-20",
+  "platforms": [
+    "linux/amd64",
+    "linux/arm64"
+  ],
+  "runtime_validation": "pending",
+  "notes": "OSS 2.0.2 with PostgreSQL 18 and named-volume storage; no Docker socket or root override. Main and management credentials are configured separately; /ping is listener readiness. Process-runner example avoids host control. JVM/server termination grace is bounded to fit the ODS host stop timeout."
+}

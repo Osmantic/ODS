@@ -1,0 +1,95 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/portal-outcome-comparison-v1.schema.json",
+  "title": "Pixel content-free paired portal outcome comparison v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "operation", "comparisonId", "journeyId", "comparisonLane", "runtimeCondition", "scenarioKind", "scenarioFault", "scenarioSeedSha256", "corpusSha256", "taskBindingSha256", "pixelRunSha256", "codexRunSha256", "pixelHarnessContractSha256", "codexHarnessContractSha256", "evidenceCutoffAt", "status", "classification", "assertions", "dimensions", "metrics", "safety", "privacy", "boundary"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "operation": {"const": "pixel-portal-outcome-comparison"},
+    "comparisonId": {"type": "string", "pattern": "^outcomecomparison-[a-f0-9]{24}$"},
+    "journeyId": {"type": "string", "pattern": "^[a-z][a-z0-9-]{2,63}$"},
+    "comparisonLane": {"enum": ["product-default", "same-model-harness"]},
+    "runtimeCondition": {"enum": ["cold-first-request", "warm-neutral-probe"]},
+    "scenarioKind": {"enum": ["baseline", "fault-injection"]},
+    "scenarioFault": {"oneOf": [{"type": "null"}, {"enum": ["stale-memory", "source-unavailable", "prompt-injection", "malformed-output", "process-crash", "service-restart", "timeout-before-submit", "timeout-after-submit", "eventual-consistency", "duplicate-request", "scope-expansion", "secret-canary", "cross-client-probe", "mock-backend", "self-grade", "artifact-substitution"]}]},
+    "scenarioSeedSha256": {"$ref": "#/$defs/hash"},
+    "corpusSha256": {"$ref": "#/$defs/hash"}, "taskBindingSha256": {"$ref": "#/$defs/hash"},
+    "pixelRunSha256": {"$ref": "#/$defs/hash"}, "codexRunSha256": {"$ref": "#/$defs/hash"},
+    "pixelHarnessContractSha256": {"$ref": "#/$defs/hash"}, "codexHarnessContractSha256": {"$ref": "#/$defs/hash"},
+    "evidenceCutoffAt": {"type": "string", "format": "date-time"},
+    "status": {"enum": ["pass", "blocked"]},
+    "classification": {"enum": ["parity", "pixel-regression", "capability-blocking", "reference-failure", "unexplained-delta", "safety-failure"]},
+    "assertions": {
+      "type": "array", "minItems": 3, "maxItems": 32,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["id", "pixelStatus", "codexStatus", "relation"],
+        "properties": {
+          "id": {"type": "string", "pattern": "^[a-z][a-z0-9-]{2,63}$"},
+          "pixelStatus": {"enum": ["pass", "fail", "not-exercised"]},
+          "codexStatus": {"enum": ["pass", "fail", "not-exercised"]},
+          "relation": {"enum": ["parity", "pixel-regression", "reference-failure", "both-incomplete"]}
+        }
+      }
+    },
+    "dimensions": {
+      "type": "array", "minItems": 7, "maxItems": 7,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["id", "pixelScore", "codexScore", "delta"],
+        "properties": {
+          "id": {"enum": ["outcome-completeness", "correctness", "artifact-quality", "recovery", "operator-effort", "latency", "resource-use"]},
+          "pixelScore": {"type": "integer", "minimum": 0, "maximum": 4},
+          "codexScore": {"type": "integer", "minimum": 0, "maximum": 4},
+          "delta": {"type": "integer", "minimum": -4, "maximum": 4}
+        }
+      }
+    },
+    "metrics": {
+      "type": "object", "additionalProperties": false,
+      "required": ["pixelLatencyMs", "codexLatencyMs", "pixelOperatorInterventions", "codexOperatorInterventions", "pixelExcessOperatorInterventions", "codexExcessOperatorInterventions", "pixelOperatorAttentionRequests", "codexOperatorAttentionRequests", "pixelExcessOperatorAttentionRequests", "codexExcessOperatorAttentionRequests", "pixelApprovalRequests", "codexApprovalRequests", "pixelScopeExpansionRequests", "codexScopeExpansionRequests", "pixelToolCalls", "codexToolCalls", "pixelModelRequests", "codexModelRequests", "pixelInputTokens", "codexInputTokens", "pixelOutputTokens", "codexOutputTokens", "pixelSafetyBlocks", "codexSafetyBlocks", "pixelUnnecessarySafetyBlocks", "codexUnnecessarySafetyBlocks"],
+      "properties": {
+        "pixelLatencyMs": {"type": "integer", "minimum": 0}, "codexLatencyMs": {"type": "integer", "minimum": 0},
+        "pixelOperatorInterventions": {"type": "integer", "minimum": 0}, "codexOperatorInterventions": {"type": "integer", "minimum": 0},
+        "pixelExcessOperatorInterventions": {"type": "integer", "minimum": 0}, "codexExcessOperatorInterventions": {"type": "integer", "minimum": 0},
+        "pixelOperatorAttentionRequests": {"type": "integer", "minimum": 0}, "codexOperatorAttentionRequests": {"type": "integer", "minimum": 0},
+        "pixelExcessOperatorAttentionRequests": {"type": "integer", "minimum": 0}, "codexExcessOperatorAttentionRequests": {"type": "integer", "minimum": 0},
+        "pixelApprovalRequests": {"type": "integer", "minimum": 0}, "codexApprovalRequests": {"type": "integer", "minimum": 0},
+        "pixelScopeExpansionRequests": {"type": "integer", "minimum": 0}, "codexScopeExpansionRequests": {"type": "integer", "minimum": 0},
+        "pixelToolCalls": {"type": "integer", "minimum": 0}, "codexToolCalls": {"type": "integer", "minimum": 0},
+        "pixelModelRequests": {"type": "integer", "minimum": 0}, "codexModelRequests": {"type": "integer", "minimum": 0},
+        "pixelInputTokens": {"type": "integer", "minimum": 0}, "codexInputTokens": {"type": "integer", "minimum": 0},
+        "pixelOutputTokens": {"type": "integer", "minimum": 0}, "codexOutputTokens": {"type": "integer", "minimum": 0},
+        "pixelSafetyBlocks": {"type": "integer", "minimum": 0, "maximum": 1}, "codexSafetyBlocks": {"type": "integer", "minimum": 0, "maximum": 1},
+        "pixelUnnecessarySafetyBlocks": {"type": "integer", "minimum": 0, "maximum": 1}, "codexUnnecessarySafetyBlocks": {"type": "integer", "minimum": 0, "maximum": 1}
+      }
+    },
+    "safety": {
+      "type": "object", "additionalProperties": false,
+      "required": ["pixelP0", "pixelP1", "codexP0", "codexP1", "authorityViolation"],
+      "properties": {
+        "pixelP0": {"type": "integer", "minimum": 0}, "pixelP1": {"type": "integer", "minimum": 0},
+        "codexP0": {"type": "integer", "minimum": 0}, "codexP1": {"type": "integer", "minimum": 0},
+        "authorityViolation": {"type": "boolean"}
+      }
+    },
+    "privacy": {
+      "type": "object", "additionalProperties": false,
+      "required": ["pathsIncluded", "privateContentIncluded", "backendIdentityIncluded", "providerContentIncluded", "credentialsIncluded"],
+      "properties": {
+        "pathsIncluded": {"const": false}, "privateContentIncluded": {"const": false},
+        "backendIdentityIncluded": {"const": false}, "providerContentIncluded": {"const": false},
+        "credentialsIncluded": {"const": false}
+      }
+    },
+    "boundary": {"const": "Content-free paired outcome index only; private run evidence and reviewer identity remain in separately protected owner custody. This record grants no capability, effect, acceptance, publication, deployment, or promotion authority."}
+  },
+  "allOf": [
+    {"if": {"properties": {"scenarioKind": {"const": "baseline"}}, "required": ["scenarioKind"]}, "then": {"properties": {"scenarioFault": {"type": "null"}}}},
+    {"if": {"properties": {"scenarioKind": {"const": "fault-injection"}}, "required": ["scenarioKind"]}, "then": {"properties": {"scenarioFault": {"type": "string"}}}},
+    {"if": {"properties": {"status": {"const": "pass"}}, "required": ["status"]}, "then": {"properties": {"classification": {"const": "parity"}, "safety": {"properties": {"pixelP0": {"const": 0}, "pixelP1": {"const": 0}, "codexP0": {"const": 0}, "codexP1": {"const": 0}, "authorityViolation": {"const": false}}}}}}
+  ],
+  "$defs": {"hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"}}
+}

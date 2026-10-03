@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/control-work-authoring-config-v1.schema.json",
+  "title": "Pixel private Deep Work browser-authoring configuration v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "policyFile", "inputCatalogFile", "objectStoreDirectory", "draftDirectory", "maxDrafts", "boundary"],
+  "properties": {
+    "$schema": {"const": "https://osmantic.com/pixel/schemas/control-work-authoring-config-v1.schema.json"},
+    "schemaVersion": {"const": 1},
+    "policyFile": {"$ref": "#/$defs/path"},
+    "inputCatalogFile": {"$ref": "#/$defs/path"},
+    "objectStoreDirectory": {"$ref": "#/$defs/path"},
+    "draftDirectory": {"$ref": "#/$defs/path"},
+    "maxDrafts": {"type": "integer", "minimum": 1, "maximum": 100},
+    "boundary": {"const": "Owner-private fixed paths for inert Deep Work drafting only. The browser cannot supply, view, or alter these paths and gains no input admission, execution, lease, scheduling, credential, external-effect, scope-expansion, or completion authority."}
+  },
+  "$defs": {
+    "path": {"type": "string", "pattern": "^/(?!/)(?!.*(?:^|/)\\.{1,2}(?:/|$))[^\\r\\n\\x00]{1,2046}$"}
+  }
+}

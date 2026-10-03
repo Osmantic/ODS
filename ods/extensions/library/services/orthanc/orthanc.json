@@ -1,0 +1,16 @@
+{
+  "Name": "ODS Orthanc",
+  "StorageDirectory": "/var/lib/orthanc/db",
+  "IndexDirectory": "/var/lib/orthanc/db",
+  "RemoteAccessAllowed": true,
+  "AuthenticationEnabled": true,
+  "DicomServerEnabled": false,
+  "HttpPort": 8042,
+  "HttpServerEnabled": true,
+  "LuaScripts": [],
+  "ExecuteLuaEnabled": false,
+  "RestApiWriteToFileSystemEnabled": false,
+  "OrthancExplorer2": {
+    "IsDefaultOrthancUI": true
+  }
+}

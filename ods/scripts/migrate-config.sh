@@ -217,7 +217,9 @@ cmd_check() {
                 
                 local mig_cmp=0
                 compare_versions "$migration_version" "$last_migrated" || mig_cmp=$?
-                if [[ $mig_cmp -eq 1 ]]; then
+                local target_cmp=0
+                compare_versions "$migration_version" "$current_version" || target_cmp=$?
+                if [[ $mig_cmp -eq 1 && $target_cmp -ne 1 ]]; then
                     echo "  - $migration_version: $(head -5 "$migration" | grep '^# Description:' | sed 's/# Description://')"
                 fi
             fi
@@ -273,7 +275,11 @@ cmd_migrate() {
             # Check if this migration is needed
             local mig_cmp=0
             compare_versions "$migration_version" "$last_migrated" || mig_cmp=$?
-            if [[ $mig_cmp -eq 1 ]]; then
+            # The script bundle may be newer than the selected installation.
+            # Do not apply future configuration and then stamp an older target.
+            local target_cmp=0
+            compare_versions "$migration_version" "$current_version" || target_cmp=$?
+            if [[ $mig_cmp -eq 1 && $target_cmp -ne 1 ]]; then
                 log_info "Running migration: $migration_version"
                 
                 if bash "$migration"; then

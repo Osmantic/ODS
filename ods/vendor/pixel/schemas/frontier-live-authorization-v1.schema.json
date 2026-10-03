@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://osmantic.com/pixel/schemas/frontier-live-authorization-v1.schema.json",
+  "title": "Pixel deployment-owned Frontier live-qualification authorization v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "schemaVersion", "authorizationId", "purpose", "issuedAt", "expiresAt", "authMode", "maxProviderCalls", "maxInputTokens", "maxOutputTokens", "maxEstimatedCostMicros", "acknowledgements"],
+  "properties": {
+    "$schema": {"const": "./schemas/frontier-live-authorization-v1.schema.json"},
+    "schemaVersion": {"const": 1},
+    "authorizationId": {"type": "string", "pattern": "^liveauth-[0-9]{13}-[a-f0-9]{12}$"},
+    "purpose": {"const": "pixel-frontier-live-qualification"},
+    "issuedAt": {"type": "string", "format": "date-time"},
+    "expiresAt": {"type": "string", "format": "date-time"},
+    "authMode": {"enum": ["chatgpt", "api-key"]},
+    "maxProviderCalls": {"const": 1},
+    "maxInputTokens": {"const": 12000},
+    "maxOutputTokens": {"const": 256},
+    "maxEstimatedCostMicros": {"type": ["integer", "null"], "minimum": 1, "maximum": 1000000},
+    "acknowledgements": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["syntheticOnly", "providerUsageAuthorized", "oneCallOnly", "outputIsUntrusted", "chatgptPlanOrCreditsAuthorized", "apiPlatformBillingAuthorized"],
+      "properties": {
+        "syntheticOnly": {"const": true},
+        "providerUsageAuthorized": {"const": true},
+        "oneCallOnly": {"const": true},
+        "outputIsUntrusted": {"const": true},
+        "chatgptPlanOrCreditsAuthorized": {"type": "boolean"},
+        "apiPlatformBillingAuthorized": {"type": "boolean"}
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"authMode": {"const": "chatgpt"}}, "required": ["authMode"]},
+      "then": {
+        "properties": {
+          "maxEstimatedCostMicros": {"const": null},
+          "acknowledgements": {"properties": {"chatgptPlanOrCreditsAuthorized": {"const": true}, "apiPlatformBillingAuthorized": {"const": false}}}
+        }
+      },
+      "else": {
+        "properties": {
+          "maxEstimatedCostMicros": {"type": "integer", "minimum": 1, "maximum": 1000000},
+          "acknowledgements": {"properties": {"chatgptPlanOrCreditsAuthorized": {"const": false}, "apiPlatformBillingAuthorized": {"const": true}}}
+        }
+      }
+    }
+  ]
+}

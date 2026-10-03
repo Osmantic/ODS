@@ -1,0 +1,47 @@
+schema_version: ods.services.v1
+compatibility:
+  ods_min: 2.6.0
+service:
+  id: languagetool
+  name: LanguageTool
+  aliases: []
+  container_name: ods-languagetool
+  host_env: LANGUAGETOOL_HOST
+  default_host: languagetool
+  port: 8081
+  external_port_env: LANGUAGETOOL_PORT
+  external_port_default: 11086
+  health: /v2/languages
+  type: docker
+  startup_check: true
+  startup_timeout: 180
+  gpu_backends:
+  - all
+  compose_file: compose.yaml
+  category: optional
+  depends_on: []
+  description: Check spelling and grammar through the local open-source LanguageTool
+    HTTP API, including Portuguese.
+  env_vars: []
+  external_link: false
+tags:
+- writing
+- language
+- open-source
+features:
+- id: languagetool-check
+  name: LanguageTool API
+  description: Check spelling and grammar through the local open-source LanguageTool
+    HTTP API, including Portuguese.
+  icon: SpellCheck
+  category: productivity
+  requirements:
+    services:
+    - languagetool
+    vram_gb: 0
+  enabled_services_all:
+  - languagetool
+  setup_time: Initial image download; see README
+  priority: 48
+  launch:
+    type: none

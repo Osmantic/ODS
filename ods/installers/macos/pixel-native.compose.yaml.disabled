@@ -1,0 +1,138 @@
+# Apply after extensions/services/pixel-edge/compose.yaml.disabled.
+# Not auto-enabled: native custody, licensing and preview prerequisites must
+# be qualified by the installer first. Requires Compose supporting !override.
+services:
+  pixel-native-preview-init:
+    image: busybox:1.36.1
+    user: "0:0"
+    network_mode: none
+    read_only: true
+    cap_drop: [ALL]
+    cap_add: [CHOWN, FOWNER]
+    security_opt: [no-new-privileges:true]
+    restart: "no"
+    command: [sh, -ec, 'chmod 0750 /runtime; chmod 0700 /previews; chown "$$1" /runtime /previews', --, "${PIXEL_NATIVE_UID:?Set PIXEL_NATIVE_UID}:${PIXEL_INGRESS_GID:?Set PIXEL_INGRESS_GID}"]
+    volumes:
+      - pixel-native-preview-runtime:/runtime
+      - pixel-native-previews:/previews
+
+  pixel-workspace-preview:
+    build:
+      context: ./extensions/services/pixel-agent/host
+      dockerfile: Dockerfile.preview
+    image: ods-pixel-workspace-preview:local
+    container_name: ods-pixel-workspace-preview
+    user: "${PIXEL_NATIVE_UID:?Set PIXEL_NATIVE_UID}:${PIXEL_INGRESS_GID:?Set PIXEL_INGRESS_GID}"
+    command: [serve-container, /run/ods-pixel-preview/control.sock, /workspace, /previews, "${PIXEL_NATIVE_UID:?Set PIXEL_NATIVE_UID}", "${PIXEL_PREVIEW_PORT:-9437}"]
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 32
+    depends_on:
+      pixel-native-preview-init:
+        condition: service_completed_successfully
+    ports:
+      - "127.0.0.1:${PIXEL_PREVIEW_PORT:-9437}:${PIXEL_PREVIEW_PORT:-9437}"
+    volumes:
+      - pixel-native-preview-runtime:/run/ods-pixel-preview
+      - pixel-native-previews:/previews
+      - type: bind
+        source: ${PIXEL_NATIVE_WORKSPACE:?Set PIXEL_NATIVE_WORKSPACE}
+        target: /workspace
+        read_only: true
+        bind:
+          create_host_path: false
+    healthcheck:
+      test: [CMD, python3, /source/workspace_preview.py, health, /run/ods-pixel-preview/control.sock]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 128M
+          pids: 32
+
+  pixel-native-runtime-init:
+    image: busybox:1.36.1
+    user: "0:0"
+    network_mode: none
+    read_only: true
+    cap_drop: [ALL]
+    cap_add: [CHOWN]
+    security_opt: [no-new-privileges:true]
+    restart: "no"
+    command: [chown, "${PIXEL_NATIVE_UID:?Set PIXEL_NATIVE_UID}:${PIXEL_INGRESS_GID:?Set PIXEL_INGRESS_GID}", /runtime]
+    volumes:
+      - pixel-native-runtime:/runtime
+
+  pixel-native-ingress:
+    image: ${PIXEL_NATIVE_INGRESS_IMAGE:?Set the qualified Pixel ingress Node image}
+    user: "${PIXEL_NATIVE_UID:?Set PIXEL_NATIVE_UID}:${PIXEL_INGRESS_GID:?Set PIXEL_INGRESS_GID}"
+    entrypoint: [node, /source/pixel_ingress.mjs]
+    command: []
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 128
+    depends_on:
+      pixel-native-runtime-init:
+        condition: service_completed_successfully
+    environment:
+      PIXEL_GATEWAY_TRANSPORT: docker-desktop-host
+      PIXEL_GATEWAY_PORT: "${PIXEL_NATIVE_GATEWAY_PORT:-18789}"
+      PIXEL_GATEWAY_TOKEN_FILE: /run/gateway.json
+      PIXEL_INGRESS_SOCKET: /runtime/pixel-ingress.sock
+      PIXEL_INGRESS_GID: "${PIXEL_INGRESS_GID:?Set PIXEL_INGRESS_GID}"
+      PIXEL_STATUS_FILE: /runtime/status.json
+      PIXEL_CHAT_STATE_DIR: /runtime/history
+    volumes:
+      - pixel-native-runtime:/runtime
+      - type: bind
+        source: ./extensions/services/pixel-agent/host
+        target: /source
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${PIXEL_NATIVE_CONFIG_PATH:?Set PIXEL_NATIVE_CONFIG_PATH}
+        target: /run/gateway.json
+        read_only: true
+        bind:
+          create_host_path: false
+    healthcheck:
+      test: [CMD, node, -e, "require('http').get({socketPath:'/runtime/pixel-ingress.sock',path:'/health'},r=>{r.resume();process.exit(r.statusCode===200?0:1)}).on('error',()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 256M
+          pids: 128
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+
+  pixel-edge:
+    environment:
+      PIXEL_ACCESS_TRANSPORT: docker-desktop-host
+      PIXEL_NATIVE_ACCESS_PORT: "${PIXEL_NATIVE_ACCESS_PORT:-18790}"
+    # Replace the Linux host UDS bind with the ingress-owned Docker volume.
+    # Keep preview and transition storage from the shared Edge contract.
+    volumes: !override
+      - pixel-native-runtime:/pixel-runtime:ro
+      - pixel-native-preview-runtime:/pixel-preview-runtime:ro
+      - pixel-transition-state:/pixel-transition-state
+
+volumes:
+  pixel-native-preview-runtime:
+  pixel-native-previews:
+  pixel-native-runtime:

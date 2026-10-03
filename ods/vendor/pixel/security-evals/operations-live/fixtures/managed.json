@@ -1,0 +1,34 @@
+{
+  "schemaVersion": 1,
+  "allowReboot": false,
+  "artifactRoots": ["/var/lib/pixel-runner/jobs/artifacts"],
+  "verifiedArtifactRoot": "/var/lib/pixel-ops-managed/verified",
+  "maxPackageBytes": 16777216,
+  "services": {
+    "pixel-fixture": {
+      "unit": "pixel-ops-fixture.service",
+      "verifyCommand": ["/usr/bin/systemctl", "is-active", "pixel-ops-fixture.service"],
+      "verifyTimeoutSeconds": 30,
+      "rollbackState": "active"
+    }
+  },
+  "deployments": {
+    "client-app": {
+      "releasesRoot": "/opt/pixel-ops-fixture/releases",
+      "currentLink": "/opt/pixel-ops-fixture/current",
+      "previousLink": "/opt/pixel-ops-fixture/previous",
+      "verifyCommand": ["/opt/pixel-ops-fixture/current/bin/healthcheck"],
+      "verifyTimeoutSeconds": 30
+    }
+  },
+  "packages": {
+    "client-agent": {
+      "signatureCommand": ["/usr/bin/test", "-f", "{artifact}"],
+      "installCommand": ["/usr/bin/install", "-o", "root", "-g", "root", "-m", "0644", "{artifact}", "/opt/pixel-ops-fixture/installed/package.bin"],
+      "verifyCommand": ["/usr/bin/test", "-f", "/opt/pixel-ops-fixture/installed/package.bin"],
+      "rollbackCommand": ["/usr/bin/rm", "-f", "/opt/pixel-ops-fixture/installed/package.bin"],
+      "rollbackVerifyCommand": ["/usr/bin/test", "!", "-e", "/opt/pixel-ops-fixture/installed/package.bin"],
+      "installTimeoutSeconds": 120
+    }
+  }
+}
