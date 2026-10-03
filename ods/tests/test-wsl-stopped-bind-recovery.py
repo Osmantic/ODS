@@ -68,7 +68,7 @@ class StoppedRecoveryTests(unittest.TestCase):
         self.assertFalse(H.deleted_desktop_file_bind(str(self.source), '/tmp/elsewhere'))
         self.assertFalse(H.deleted_desktop_file_bind(str(self.source), self.proxy + '/nested'))
 
-    def run_recovery(self, read_only=True):
+    def run_recovery(self, read_only=True, guarded=True, check=False):
         config = {'name': 'fixture', 'services': {'app': {'volumes': [
             {'type': 'bind', 'source': str(self.source), 'target': self.target, 'read_only': read_only}]}}}
         with mock.patch.object(H, 'is_wsl_docker_desktop', return_value=True), \
@@ -79,7 +79,12 @@ class StoppedRecoveryTests(unittest.TestCase):
              mock.patch.object(H, 'recreate') as recreate, \
              mock.patch.object(H, 'verify', return_value=(True, 'ok')), \
              mock.patch.object(H, 'backup_phantom') as backup:
-            rc = H.main(['--install-dir', str(self.root), '--service', 'app', '--repair-stopped', '--', '-f', 'fixture.yml'])
+            args = ['--install-dir', str(self.root), '--service', 'app']
+            if guarded:
+                args.append('--repair-stopped')
+            if check:
+                args.append('--check')
+            rc = H.main([*args, '--', '-f', 'fixture.yml'])
             backup.assert_not_called()
             return rc, recreate.call_count
 
@@ -96,6 +101,24 @@ class StoppedRecoveryTests(unittest.TestCase):
 
     def test_stopped_recovery_refuses_unobserved_writable_bind_data(self):
         self.assertEqual(self.run_recovery(read_only=False), (1, 0))
+
+    def test_ordinary_postfailure_check_and_repair_keep_stopped_guards(self):
+        self.assertEqual(self.run_recovery(guarded=False, check=True), (2, 0))
+        self.assertEqual(self.run_recovery(guarded=False), (0, 1))
+        self.container['Config']['Labels']['com.docker.compose.project.working_dir'] = '/foreign'
+        self.assertEqual(self.run_recovery(guarded=False, check=True), (1, 0))
+        self.assertEqual(self.run_recovery(guarded=False), (1, 0))
+        self.container['Config']['Labels']['com.docker.compose.project.working_dir'] = str(self.root)
+        self.container['State']['Error'] = f'error mounting "{self.proxy}" to rootfs at "{self.target}": not a directory'
+        self.assertEqual(self.run_recovery(read_only=False, guarded=False, check=True), (1, 0))
+        self.assertEqual(self.run_recovery(read_only=False, guarded=False), (1, 0))
+
+    def test_running_stale_foreign_root_is_not_recreated(self):
+        self.container['State']['Status'] = 'running'
+        self.container['Config']['Labels']['com.docker.compose.project.working_dir'] = '/foreign'
+        with mock.patch.object(H, 'classify_running', return_value=(True, 'stale-bind:/app/fixture.js')):
+            self.assertEqual(self.run_recovery(guarded=False, check=True), (1, 0))
+            self.assertEqual(self.run_recovery(guarded=False), (1, 0))
 
 
 if __name__ == '__main__':
