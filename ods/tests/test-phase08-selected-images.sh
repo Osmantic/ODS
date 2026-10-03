@@ -9,7 +9,8 @@ image_plan() (
     export GPU_BACKEND="$1" ODS_MODE="$2" EXTERNAL_LLM_URL="$3"
     export LEMONADE_EXTERNAL="$4" ENABLE_PERPLEXICA="$5" ENABLE_COMFYUI="$6"
     export ENABLE_OPEN_WEBUI="${7:-true}"
-    export ENABLE_VOICE=false ENABLE_WORKFLOWS=false ENABLE_RAG=false
+    export ENABLE_VOICE=false ENABLE_WHISPER="${8:-false}" ENABLE_TTS="${9:-false}"
+    export ENABLE_WORKFLOWS=false ENABLE_RAG=false
     export ENABLE_QDRANT=false ENABLE_EMBEDDINGS=false ENABLE_HERMES=false
     export ENABLE_OPENCLAW=false
     ods_progress() { :; }; show_phase() { :; }; ai() { :; }
@@ -63,5 +64,12 @@ assert_image "$plan" 'LLAMA-SERVER' absent 'local-build Arc'
 plan="$(image_plan amd local '' true false true)"
 assert_image "$plan" 'LEMONADE — downloading the brain' absent 'external Lemonade'
 assert_image "$plan" 'COMFYUI' present 'separately selected AMD ComfyUI'
+
+plan="$(image_plan nvidia local '' false false false true true false)"
+assert_image "$plan" 'WHISPER' present 'Whisper-only add-back'
+assert_image "$plan" 'KOKORO' absent 'Whisper-only add-back'
+plan="$(image_plan nvidia local '' false false false true false true)"
+assert_image "$plan" 'WHISPER' absent 'Kokoro-only add-back'
+assert_image "$plan" 'KOKORO' present 'Kokoro-only add-back'
 
 echo 'PASS: Phase 08 image plans follow the selected route and services'

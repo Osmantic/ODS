@@ -55,6 +55,7 @@ $enableRemoteAccess  = $false
 $enableLangfuse   = ($langfuseFlag -or $allFlag) -and (-not $noLangfuseFlag)
 
 # ── Interactive menu (skipped in non-interactive / dry-run / --All mode) ──────
+$choice = ""
 if (-not $nonInteractive -and -not $allFlag -and -not $dryRun) {
     Write-Host ""
     Write-Host "  Choose your ODS configuration:" -ForegroundColor White
@@ -123,6 +124,24 @@ if (-not $nonInteractive -and -not $allFlag -and -not $dryRun) {
 if ($noHermesFlag) {
     $enableHermes = $false
 }
+
+# Preserve separate Library selections before Phase 06 copies source fragments
+# over the installed tree. CLI and an explicit menu choice keep their paired
+# meaning; Enter on an existing install retains its prior Hermes/proxy choice.
+$computedHermesProxy = $null
+if (Get-Variable -Name enableHermesProxy -Scope Local -ErrorAction SilentlyContinue) {
+    $computedHermesProxy = [Nullable[bool]]$enableHermesProxy
+}
+$hermesSelection = Resolve-ODSWindowsHermesSelection `
+    -InstallDir $installDir `
+    -ComputedHermes $enableHermes `
+    -ComputedProxy $computedHermesProxy `
+    -CliEnable $hermesFlag `
+    -CliDisable $noHermesFlag `
+    -All $allFlag `
+    -MenuExplicit ($choice -in @("1", "2", "3"))
+$enableHermes = [bool]$hermesSelection.Hermes
+$enableHermesProxy = [bool]$hermesSelection.Proxy
 
 if ($noRecommendedFlag) {
     $enableRecommended = $false
