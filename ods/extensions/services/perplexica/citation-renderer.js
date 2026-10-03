@@ -59,14 +59,34 @@ function renderCitations(message, sources) {
     return false;
   }
 
+  function closingTicks(line, from, marker) {
+    let at = line.indexOf(marker, from);
+    while (at !== -1) {
+      if (line[at - 1] !== "`" && line[at + marker.length] !== "`") return at;
+      at = line.indexOf(marker, at + marker.length);
+    }
+    return -1;
+  }
+
+  function inlineCode(value) {
+    const escaped = value.replace(/&/g, "&amp;").replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+    // Vane v1.12.2 renders Markdown codeInline nodes as literal backticks.
+    // Raw HTML avoids that override. not-prose suppresses Typography's own
+    // code::before/after backticks while retaining semantic code markup.
+    return `<span class="not-prose"><code style="font-family:monospace;padding:0 .2em;border-radius:.2em;background-color:rgba(127,127,127,.14)">${escaped}</code></span>`;
+  }
+
+  function insideHtmlTag(line, index) {
+    const open = line.lastIndexOf("<", index);
+    return open > line.lastIndexOf(">", index) && /^<\/?[A-Za-z]/.test(line.slice(open));
+  }
+
   function prose(line, base) {
     let output = "";
     for (let i = 0; i < line.length;) {
       if (inline) {
-        let close = line.indexOf(inline, i);
-        while (close !== -1 && (line[close - 1] === "`" || line[close + inline.length] === "`")) {
-          close = line.indexOf(inline, close + inline.length);
-        }
+        const close = closingTicks(line, i, inline);
         if (close === -1) return output + line.slice(i);
         output += line.slice(i, close + inline.length);
         i = close + inline.length;
@@ -80,7 +100,17 @@ function renderCitations(message, sources) {
         let escapes = 0;
         for (let k = i - 1; k >= 0 && line[k] === "\\"; k -= 1) escapes += 1;
         // Escaped or unmatched backticks are prose, so later [N] can cite.
-        if (escapes % 2 === 0 && hasClosingTicks(base + end, marker)) inline = marker;
+        if (escapes % 2 === 0 && !insideHtmlTag(line, i)) {
+          // Convert only complete same-line spans. Preserve multiline spans
+          // verbatim so their Markdown line structure and citation guard stay.
+          const close = closingTicks(line, end, marker);
+          if (close !== -1) {
+            output += inlineCode(line.slice(end, close));
+            i = close + marker.length;
+            continue;
+          }
+          if (hasClosingTicks(base + end, marker)) inline = marker;
+        }
         output += marker;
         i = end;
         continue;

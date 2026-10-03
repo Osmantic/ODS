@@ -40,6 +40,7 @@ function embeddedRenderer(patched) {
 
 function checkCases(render) {
   const cited = (n, url = source[n - 1].metadata.url) => `<citation href="${url}">${n}</citation>`;
+  const inline = (value) => `<span class="not-prose"><code style="font-family:monospace;padding:0 .2em;border-radius:.2em;background-color:rgba(127,127,127,.14)">${value}</code></span>`;
   assert.equal(render("See [1] and [1,2].", source), `See ${cited(1)} and ${cited(1)}${cited(2, "https://example.test/two?a=1&amp;b=2")}.`);
   assert.equal(render("See [1, 2].", source), `See ${cited(1)}${cited(2, "https://example.test/two?a=1&amp;b=2")}.`);
   assert.equal(render("```python\nx = [1,2]\n```\nSee [1].", source), `\`\`\`python\nx = [1,2]\n\`\`\`\nSee ${cited(1)}.`);
@@ -48,7 +49,14 @@ function checkCases(render) {
   assert.equal(render("1. ```python\n   a = [1]\n   ```\nSee [1].", source), `1. \`\`\`python\n   a = [1]\n   \`\`\`\nSee ${cited(1)}.`);
   assert.equal(render("- ```python\n  a = [1]", source), "- ```python\n  a = [1]");
   assert.equal(render("```python\nx = [1]", source), "```python\nx = [1]");
-  assert.equal(render("Use `[1]` and ``[1,2]``. See [1].", source), `Use \`[1]\` and \`\`[1,2]\`\`. See ${cited(1)}.`);
+  assert.equal(render("Use `[1]` and ``[1,2]``. See [1].", source), `Use ${inline("[1]")} and ${inline("[1,2]")}. See ${cited(1)}.`);
+  assert.equal(render("Use ``a ` b`` now.", source), `Use ${inline("a ` b")} now.`);
+  assert.equal(render("Use `<img src=x onerror=alert(1)> & \"hi\" 'x'`.", source),
+    `Use ${inline("&lt;img src=x onerror=alert(1)&gt; &amp; &quot;hi&quot; &#39;x&#39;")}.`);
+  assert.equal(render('<span title="`raw`">x</span> and `ok`', source),
+    '<span title="`raw`">x</span> and ' + inline("ok"));
+  assert.equal(render("[label `code`](https://x.test) and `ok`", source),
+    "[label `code`](https://x.test) and " + inline("ok"));
   assert.equal(render("Use `[1]\n[2]` then [1].", source), `Use \`[1]\n[2]\` then ${cited(1)}.`);
   assert.equal(render(">     values = [1, 2]", source), ">     values = [1, 2]");
   assert.equal(render("An escaped \\` tick; fact [1].", source), "An escaped \\` tick; fact " + cited(1) + ".");
@@ -57,7 +65,7 @@ function checkCases(render) {
   assert.equal(render("\\[1\\] [1](https://x.test/a) [2][ref] ![1] [1]: ref", source), "\\[1\\] [1](https://x.test/a) [2][ref] ![1] [1]: ref");
   assert.equal(render("[label] [0] [-1] [1.5] [1,3] [9]", source), "[label] [0] [-1] [1.5] [1,3] [9]");
   assert.equal(render("[1,2]", [source[0], { metadata: {} }]), "[1,2]");
-  assert.equal(render("See [1] but `x=[1]` and [1,2].", []), "See  but `x=[1]` and [1,2].");
+  assert.equal(render("See [1] but `x=[1]` and [1,2].", []), `See  but ${inline("x=[1]")} and [1,2].`);
   assert.equal(render("[1]", [{ metadata: { url: "javascript:alert(1)" } }]), "[1]");
   assert.equal(render("```python\nx = [1]\n```", []), "```python\nx = [1]\n```");
 }
