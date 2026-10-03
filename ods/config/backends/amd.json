@@ -12,6 +12,24 @@
       "windows_version": "10.0.0",
       "windows_msi_file": "lemonade-server-minimal.msi",
       "windows_executable": "lemonade-server.exe",
+      "windows_managed": {
+        "windows_version": "2026.40.0",
+        "windows_archive_file": "lemonade-embeddable-2026.40.0-windows-x64.zip",
+        "windows_archive_sha256": "30acbcc8beea565f0ea69ea92b229c45c7e7c756a6b35573c45840765c599e8f",
+        "windows_executable": "lemond.exe",
+        "windows_executable_sha256": "896451bb91955d3a3202cbcaa2169c23474dcca01c7b0a21b4007a0ae9af9b35",
+        "windows_files_sha256": {
+        "lemonade.exe": "ac3781cfd39013bd66fd75d7efc2cad3978cf2f396b92cb910d73b904dd2d285",
+        "lemond.exe": "896451bb91955d3a3202cbcaa2169c23474dcca01c7b0a21b4007a0ae9af9b35",
+        "LICENSE": "81d41bd41eebf93d1d0e3dd8104a022cdbe520bbeceaee8ea30307b228ba46a6",
+        "resources/backend_versions.json": "e91a15204bf278152f3034667f61500ce73012a987fb95fda7721d07be2afe56",
+        "resources/bench_scenarios.json": "9ebb3f181c3e92f2a834a0544f85616db9100c754650b7f2c071aef146076774",
+        "resources/defaults.json": "0facf8edf97966e21d7c8197ecb0e2b0ba40a414ee29837e43460df09b57aae2",
+        "resources/server_models.json": "94f15f26bd269312acdd49f29dca7eb20c1f247b8433ad1f96e909937b34313d",
+        "resources/toolDefinitions.json": "e9fdfb5232760bb91c58dbecbded972ff4cf402f4f073afabf68be9175b9e94b",
+        "resources/vllm_model_config.json": "e404b2d2d2f8ceb3a6121d53fe438d7aa935af78ef6349ba025012ec02b2eb0d"
+        }
+      },
       "api_port": 8080,
       "health_path": "/api/v1/health",
       "linux_backend": "rocm",
