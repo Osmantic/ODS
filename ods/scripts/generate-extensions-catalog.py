@@ -23,7 +23,7 @@ CATALOG_SCHEMA_VERSION = "1.0.0"
 # Dify's legacy non-deployable recipe is retained for compatibility, but its
 # additional license restrictions do not meet this expansion's OSS requirement.
 # Jan is a native desktop app; the retained Docker reference is not an installer.
-EXCLUDED_IDS = {"privacy-shield", "dify", "jan"}
+EXCLUDED_IDS = {"dify", "jan"}
 SERVICE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
 
 

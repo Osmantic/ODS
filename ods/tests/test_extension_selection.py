@@ -2,6 +2,7 @@
 
 import importlib.util
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -12,7 +13,19 @@ import pytest
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "extension-selection.py"
 SPEC = importlib.util.spec_from_file_location("extension_selection", SCRIPT)
 selection = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(selection)
+# Dashboard's Windows test conftest may preinstall a partial POSIX fcntl stub.
+# The standalone host selector must import msvcrt on Windows instead.
+_fcntl_stub = sys.modules.pop("fcntl", None) if os.name == "nt" else None
+try:
+    SPEC.loader.exec_module(selection)
+finally:
+    if _fcntl_stub is not None:
+        sys.modules["fcntl"] = _fcntl_stub
+
+
+@pytest.fixture(autouse=True)
+def _use_install_data_default(monkeypatch):
+    monkeypatch.delenv("ODS_DATA_DIR", raising=False)
 
 
 def extension(root, service_id, *, depends=(), compose_depends=(), enabled=True):
@@ -36,6 +49,220 @@ def restore(root, preset, *, compose_flags="-f docker-compose.base.yml"):
     if not base.exists():
         base.write_text("services: {}\n", encoding="utf-8")
     return selection.restore_preset(root, preset, compose_flags=compose_flags)
+
+
+def remote_route(root, *, enabled=True, transport="direct"):
+    route_dir = root / "data" / "remote-provider"
+    route_dir.mkdir(parents=True, exist_ok=True)
+    path = route_dir / "routing-state.json"
+    path.write_text(json.dumps({
+        "schema": "ods.remote-routing-state.v1",
+        "enabled": enabled,
+        "provider": {"transport": transport} if enabled else None,
+    }), encoding="utf-8")
+    return path
+
+
+def test_active_direct_remote_route_blocks_egress_disable_under_lock(tmp_path):
+    (tmp_path / "data" / "user-extensions").mkdir(parents=True)
+    egress = extension(tmp_path, "remote-provider-egress")
+    tunnel = extension(tmp_path, "remote-provider-ssh-tunnel")
+    remote_route(tmp_path)
+    with pytest.raises(selection.SelectionError, match="Active direct.*requires remote-provider-egress"):
+        selection.run("check-disable", tmp_path, "remote-provider-egress")
+    with pytest.raises(selection.SelectionError, match="Active direct.*requires remote-provider-egress"):
+        selection.run("disable", tmp_path, "remote-provider-egress")
+    assert (egress / "compose.yaml").is_file()
+    assert selection.run("disable", tmp_path, "remote-provider-ssh-tunnel") == "disabled"
+    assert (tunnel / "compose.yaml.disabled").is_file()
+
+
+def test_active_ssh_remote_route_blocks_both_service_disables(tmp_path):
+    (tmp_path / "data" / "user-extensions").mkdir(parents=True)
+    egress = extension(tmp_path, "remote-provider-egress")
+    tunnel = extension(tmp_path, "remote-provider-ssh-tunnel")
+    remote_route(tmp_path, transport="ssh")
+    for service_id in ("remote-provider-egress", "remote-provider-ssh-tunnel"):
+        with pytest.raises(selection.SelectionError, match=f"Active ssh.*requires {service_id}"):
+            selection.run("disable", tmp_path, service_id)
+    assert (egress / "compose.yaml").is_file()
+    assert (tunnel / "compose.yaml").is_file()
+
+
+def test_remote_route_change_after_preflight_and_invalid_state_fail_closed(tmp_path):
+    (tmp_path / "data" / "user-extensions").mkdir(parents=True)
+    egress = extension(tmp_path, "remote-provider-egress")
+    assert selection.run("check-disable", tmp_path, "remote-provider-egress") == "ready"
+    route = remote_route(tmp_path)
+    with pytest.raises(selection.SelectionError, match="Active direct"):
+        selection.run("disable", tmp_path, "remote-provider-egress")
+    route.write_text('{"enabled": true}', encoding="utf-8")
+    with pytest.raises(selection.SelectionError, match="Invalid remote-provider route state"):
+        selection.run("disable", tmp_path, "remote-provider-egress")
+    assert (egress / "compose.yaml").is_file()
+    remote_route(tmp_path, enabled=False)
+    assert selection.run("disable", tmp_path, "remote-provider-egress") == "disabled"
+
+
+def test_external_data_root_blocks_cli_and_host_disable(tmp_path, monkeypatch):
+    (tmp_path / "data" / "user-extensions").mkdir(parents=True)
+    egress = extension(tmp_path, "remote-provider-egress")
+    external = tmp_path / "external-data"
+    remote_route(external)
+    monkeypatch.setenv("ODS_DATA_DIR", str(external / "data"))
+    with pytest.raises(selection.SelectionError, match="Active direct"):
+        selection.run("disable", tmp_path, "remote-provider-egress")
+    monkeypatch.delenv("ODS_DATA_DIR")
+    with pytest.raises(selection.SelectionError, match="Active direct"):
+        selection.run("disable", tmp_path, "remote-provider-egress",
+                      data_dir=external / "data")
+    assert (egress / "compose.yaml").is_file()
+
+
+def test_stale_data_environment_cannot_hide_default_active_route(tmp_path, monkeypatch):
+    (tmp_path / "data" / "user-extensions").mkdir(parents=True)
+    egress = extension(tmp_path, "remote-provider-egress")
+    remote_route(tmp_path)
+    monkeypatch.setenv("ODS_DATA_DIR", str(tmp_path / "empty-external"))
+    with pytest.raises(selection.SelectionError, match="Active direct"):
+        selection.run("disable", tmp_path, "remote-provider-egress")
+    assert (egress / "compose.yaml").is_file()
+
+
+def test_remote_route_blocks_preset_before_any_marker_changes(tmp_path):
+    (tmp_path / "data" / "user-extensions").mkdir(parents=True)
+    egress = extension(tmp_path, "remote-provider-egress")
+    other = extension(tmp_path, "other-service")
+    remote_route(tmp_path)
+    preset = tmp_path / "extensions.list"
+    preset.write_text("disabled:other-service\ndisabled:remote-provider-egress\n", encoding="utf-8")
+    with pytest.raises(selection.SelectionError, match="Active direct.*requires remote-provider-egress"):
+        restore(tmp_path, preset)
+    assert (egress / "compose.yaml").is_file()
+    assert (other / "compose.yaml").is_file()
+def test_disable_remembers_prior_selection_without_removing_service_files(tmp_path):
+    (tmp_path / "data").mkdir()
+    target = extension(tmp_path, "perplexica")
+    history = tmp_path / "data" / selection.SELECTION_HISTORY
+
+    assert selection.run("disable", tmp_path, "perplexica") == "disabled"
+    assert (target / "compose.yaml.disabled").is_file()
+    assert json.loads(history.read_text()) == {
+        "schema_version": 1, "ever_selected": ["perplexica"],
+    }
+
+    assert selection.run("enable", tmp_path, "perplexica") == "enabled"
+    assert selection.run("disable", tmp_path, "perplexica") == "disabled"
+    assert json.loads(history.read_text())["ever_selected"] == ["perplexica"]
+
+
+def test_unsafe_history_does_not_block_disable_or_erase_evidence(tmp_path, capsys):
+    (tmp_path / "data").mkdir()
+    target = extension(tmp_path, "perplexica")
+    history = tmp_path / "data" / selection.SELECTION_HISTORY
+    history.write_text("{broken", encoding="utf-8")
+
+    assert selection.run("disable", tmp_path, "perplexica") == "disabled"
+    assert (target / "compose.yaml.disabled").is_file()
+    assert history.read_text(encoding="utf-8") == "{broken"
+    assert "Could not record prior Library selection history" in capsys.readouterr().err
+
+
+def test_unsafe_history_does_not_block_preset_disable(tmp_path, capsys, monkeypatch):
+    (tmp_path / "data" / "user-extensions").mkdir(parents=True)
+    target = extension(tmp_path, "perplexica")
+    history = tmp_path / "data" / selection.SELECTION_HISTORY
+    history.write_text("{broken", encoding="utf-8")
+    preset = tmp_path / "extensions.list"
+    preset.write_text("disabled:perplexica\n", encoding="utf-8")
+    monkeypatch.setattr(selection, "_stop_for_disable", lambda *args, **kwargs: None)
+
+    assert restore(tmp_path, preset) == (0, 1, [])
+    assert (target / "compose.yaml.disabled").is_file()
+    assert history.read_text(encoding="utf-8") == "{broken"
+    assert "Could not record prior Library selection history" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("as_preset", [False, True])
+def test_unreadable_history_metadata_does_not_block_disable(tmp_path, capsys, monkeypatch, as_preset):
+    (tmp_path / "data" / "user-extensions").mkdir(parents=True)
+    target = extension(tmp_path, "perplexica")
+    history = tmp_path / "data" / selection.SELECTION_HISTORY
+    original_lstat = Path.lstat
+
+    def unreadable_history(path):
+        if path == history:
+            raise PermissionError("history ACL denies inspection")
+        return original_lstat(path)
+
+    monkeypatch.setattr(Path, "lstat", unreadable_history)
+    if as_preset:
+        preset = tmp_path / "extensions.list"
+        preset.write_text("disabled:perplexica\n", encoding="utf-8")
+        monkeypatch.setattr(selection, "_stop_for_disable", lambda *args, **kwargs: None)
+        assert restore(tmp_path, preset) == (0, 1, [])
+    else:
+        assert selection.run("disable", tmp_path, "perplexica") == "disabled"
+    assert (target / "compose.yaml.disabled").is_file()
+    assert "Could not record prior Library selection history" in capsys.readouterr().err
+def test_preset_accepts_native_windows_compose_flags_before_library_enable(tmp_path):
+    """The installed Windows stack must let the Library enable a dependency pair."""
+    (tmp_path / "data" / "user-extensions").mkdir(parents=True)
+    (tmp_path / ".env").write_text("ODS_MODE=local\n", encoding="utf-8")
+    (tmp_path / "docker-compose.base.yml").write_text(
+        "services:\n  dashboard: {}\n", encoding="utf-8",
+    )
+    (tmp_path / "docker-compose.nvidia.yml").write_text(
+        "services:\n  llama-server: {}\n", encoding="utf-8",
+    )
+    extension(tmp_path, "litellm")
+    search = extension(tmp_path, "searxng", enabled=False)
+    research = extension(tmp_path, "perplexica", depends=("searxng",), enabled=False)
+    preset = tmp_path / "extensions.list"
+    preset.write_text("enabled:searxng\nenabled:perplexica\n", encoding="utf-8")
+    flags = ("--env-file .env -f docker-compose.base.yml "
+             "-f docker-compose.nvidia.yml -f extensions/services/litellm/compose.yaml")
+
+    assert restore(tmp_path, preset, compose_flags=flags) == (2, 0, [])
+    assert (search / "compose.yaml").is_file()
+    assert (research / "compose.yaml").is_file()
+
+
+@pytest.mark.parametrize("prefix", [
+    "--env-file", "--env-file ../.env", "--env-file /tmp/.env",
+    "--env-file .env.local", r"--env-file .\env", '--env-file ".env"',
+    "--env-file .env --env-file .env",
+    "--project-name other", "-f", "-f docker-compose.base.yml --env-file .env",
+])
+def test_preset_rejects_untrusted_native_compose_flags_without_marker_moves(tmp_path, prefix):
+    (tmp_path / "data" / "user-extensions").mkdir(parents=True)
+    (tmp_path / ".env").write_text("ODS_MODE=local\n", encoding="utf-8")
+    target = extension(tmp_path, "searxng", enabled=False)
+    preset = tmp_path / "extensions.list"
+    preset.write_text("enabled:searxng\n", encoding="utf-8")
+
+    with pytest.raises(selection.SelectionError, match="Invalid current Compose flags"):
+        restore(tmp_path, preset, compose_flags=f"{prefix} -f docker-compose.base.yml")
+    assert (target / "compose.yaml.disabled").is_file()
+    assert not (target / "compose.yaml").exists()
+
+
+def test_preset_rejects_symlinked_native_env_file_without_marker_moves(tmp_path):
+    (tmp_path / "data" / "user-extensions").mkdir(parents=True)
+    external = tmp_path / "other.env"
+    external.write_text("ODS_MODE=local\n", encoding="utf-8")
+    try:
+        (tmp_path / ".env").symlink_to(external)
+    except OSError:
+        pytest.skip("symlink creation is unavailable")
+    target = extension(tmp_path, "searxng", enabled=False)
+    preset = tmp_path / "extensions.list"
+    preset.write_text("enabled:searxng\n", encoding="utf-8")
+
+    with pytest.raises(selection.SelectionError, match="Invalid current Compose environment file"):
+        restore(tmp_path, preset, compose_flags="--env-file .env -f docker-compose.base.yml")
+    assert (target / "compose.yaml.disabled").is_file()
+    assert not (target / "compose.yaml").exists()
 
 
 def test_selected_compose_and_user_shadowing(tmp_path):
@@ -345,7 +572,8 @@ def test_preset_restore_orders_dependents_and_prerequisites(tmp_path, monkeypatc
     monkeypatch.setattr(selection, "_stop_for_disable", lambda *args, **kwargs: None)
 
     def ordered_replace(source, target):
-        moves.append(Path(source).parent.name)
+        if Path(source).parent.name in {"consumer", "search"}:
+            moves.append(Path(source).parent.name)
         if Path(source).parent.name == "search" and Path(target).name.endswith("disabled"):
             assert not (consumer / "compose.yaml").exists()
         if Path(source).parent.name == "consumer" and Path(target).name == "compose.yaml":

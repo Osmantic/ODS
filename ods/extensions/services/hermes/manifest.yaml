@@ -35,7 +35,8 @@ service:
   category: recommended
   # Managed local inference adds the llama health gate in compose.local.yaml.
   # External gateway installs must not plan or pull a managed model for Hermes.
-  depends_on: [searxng]
+  # Search is optional. Owners can add SearXNG from Library when they need it.
+  depends_on: []
   llm:
     consumes: true
     route: gateway
@@ -70,7 +71,7 @@ service:
         Hermes uses internally requires the field to be non-empty.
     - key: SEARXNG_URL
       default: "http://searxng:8080"
-      description: Hermes web-search backend. Defaults to ODS's bundled SearXNG service.
+      description: Optional self-hosted search backend. Add SearXNG separately in Library; Hermes may use an upstream online keyless fallback when it is absent.
     # Note: there is intentionally no HERMES_MODEL_NAME here. The model
     # name lives in /opt/data/config.yaml after first start; an earlier
     # draft exposed an env var, but the upstream image doesn't read it
@@ -80,7 +81,7 @@ service:
 features:
   - id: hermes-agent
     name: Hermes Agent
-    description: Generalist self-improving agent — chat, tools, persistent memory, scheduled tasks
+    description: Generalist agent with chat, tools, memory, and scheduled tasks. Add SearXNG separately for a self-hosted search backend.
     icon: Bot
     category: productivity
     requirements:

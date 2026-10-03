@@ -43,9 +43,18 @@ emit_filtered() {
 }
 
 if [[ "${1:-}" == "ps" ]]; then
-    [[ " $* " == *" label=com.docker.compose.project="* ]] && exit 0
+    if [[ " $* " == *" label=com.docker.compose.project="* ||
+          " $* " == *" label=com.docker.compose.project "* ]]; then
+        [[ -z "${DOCKER_RESIDUAL_CONTAINER_ID:-}" ]] || printf '%s\n' "$DOCKER_RESIDUAL_CONTAINER_ID"
+        exit 0
+    fi
     NAMES="ods-litellm ods-llama-server ods-download-test-sentinel ods-inspection-blocked-test-sentinel kube-pods-proxy methods-runner ods-pixel-retired-0123456789abcdef"
     emit_filtered "$@"
+    exit 0
+fi
+if [[ "${1:-}" == "inspect" && -n "${DOCKER_RESIDUAL_CONTAINER_ID:-}" ]]; then
+    printf '[{"Id":"%s","Config":{"Labels":{"com.docker.compose.project":"ods","com.docker.compose.service":"open-webui","com.docker.compose.project.working_dir":"%s","com.docker.compose.project.config_files":"%s/docker-compose.base.yml"}},"Mounts":[{"Type":"bind","Source":"%s/data/open-webui"}]}]\n' \
+        "$DOCKER_RESIDUAL_CONTAINER_ID" "$INSTALL_DIR" "$INSTALL_DIR" "$INSTALL_DIR"
     exit 0
 fi
 if [[ "${1:-}" == "volume" && "${2:-}" == "ls" ]]; then
@@ -159,6 +168,7 @@ run_uninstall() {
     SUDO_LOG="${SUDO_LOG:?}" \
     SUDO_VALIDATE_EXIT_CODE="${SUDO_VALIDATE_EXIT_CODE:-0}" \
     DOCKER_DOWN_EXIT_CODE="${DOCKER_DOWN_EXIT_CODE:-0}" \
+    DOCKER_RESIDUAL_CONTAINER_ID="${DOCKER_RESIDUAL_CONTAINER_ID:-}" \
     DOCKER_GID_EXPECTED="${DOCKER_GID_EXPECTED:-}" \
     DOCKER_GID_ENV_COPY="${DOCKER_GID_ENV_COPY:-}" \
     PIXEL_INGRESS_GID="${PIXEL_INGRESS_GID-}" \
@@ -312,6 +322,24 @@ EOF
     fi
     pass "normal uninstall defers volume removal to the custody helper"
     assert_no_name_cleanup "$log_purge"
+
+    local residual_install="$TMP_DIR/residual-install" residual_home="$TMP_DIR/residual-home"
+    local residual_log="$TMP_DIR/docker-residual.log" residual_sudo="$TMP_DIR/sudo-residual.log"
+    make_install "$residual_install"
+    mkdir -p "$residual_home"
+    printf 'retain owner data\n' > "$residual_install/data/owner.txt"
+    local residual_id="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    if DOCKER_LOG="$residual_log" SUDO_LOG="$residual_sudo" \
+        DOCKER_RESIDUAL_CONTAINER_ID="$residual_id" \
+        run_uninstall "$residual_install" "$residual_home" "$stub_dir" 2>"$TMP_DIR/residual-error"; then
+        fail "a stopped bind-only ODS container must block uninstall completion"
+    fi
+    [[ -f "$residual_install/ods-uninstall.sh" && -f "$residual_install/data/owner.txt" ]] \
+        || fail "container residue must retain installation and owner data"
+    grep -qF "$residual_id" "$TMP_DIR/residual-error" \
+        || fail "container residue must identify the exact surviving container"
+    assert_no_name_cleanup "$residual_log"
+    pass "stopped bind-only ODS container prevents false uninstall success"
 
     local failed_install="$TMP_DIR/failed-install" failed_home="$TMP_DIR/failed-home"
     local failed_docker="$TMP_DIR/failed-docker.log" failed_sudo="$TMP_DIR/failed-sudo.log"

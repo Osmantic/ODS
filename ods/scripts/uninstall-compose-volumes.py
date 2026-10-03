@@ -195,6 +195,35 @@ def project_containers(
     return set(ids), mounted, provenance
 
 
+def install_root_containers(root: Path) -> set[str]:
+    """Find Compose containers still tied to this tree across project renames."""
+    ids = docker(root, "ps", "--all", "--quiet", "--no-trunc", "--filter",
+                 f"label={PROJECT_LABEL}").split()
+    if any(not CONTAINER_RE.fullmatch(value) for value in ids):
+        raise ValueError("Docker returned invalid container identity")
+    base_files = {str((root / name).resolve()) for name in
+                  ("docker-compose.base.yml", "docker-compose.yml")}
+    found = set()
+    for offset in range(0, len(ids), 100):
+        batch = ids[offset:offset + 100]
+        inspected = rows(docker(root, "inspect", *batch), "container")
+        if len(inspected) != len(batch) or {row.get("Id") for row in inspected} != set(batch):
+            raise ValueError("Docker container inspection changed during preflight")
+        for row in inspected:
+            labels = (row.get("Config") or {}).get("Labels") or {}
+            if not isinstance(labels, dict):
+                raise ValueError("Docker returned invalid container labels")
+            working_dir = labels.get("com.docker.compose.project.working_dir")
+            files = labels.get("com.docker.compose.project.config_files")
+            first_file = files.split(",")[0] if isinstance(files, str) else None
+            if ((isinstance(working_dir, str) and os.path.isabs(working_dir)
+                 and os.path.realpath(working_dir) == str(root)) or
+                (first_file is not None and os.path.isabs(first_file)
+                 and os.path.realpath(first_file) in base_files)):
+                found.add(row["Id"])
+    return found
+
+
 def check_volume_consumers(root: Path, names: set[str], owned_ids: set[str]) -> None:
     for name in sorted(names):
         ids = docker(root, "ps", "--all", "--quiet", "--no-trunc", "--filter",
@@ -248,9 +277,14 @@ def preflight(root: Path, snapshot: Path, flags: list[str], keep_data: bool = Fa
     trusted_root = trusted_root or root
     project, selected, external = project_config(root, flags)
     container_ids, mounted, mount_provenance = project_containers(root, project)
+    other_project = install_root_containers(root) - container_ids
+    if other_project:
+        raise ValueError("Compose containers from another project still reference this installation: "
+                         + ", ".join(sorted(other_project)[:3]))
     if keep_data:
         snapshot.write_text(json.dumps({
             "schemaVersion": 1, "installDir": str(root), "project": project,
+            "trustedSource": str(trusted_root), "flags": flags,
             "volumes": {}, "external": {},
         }), encoding="utf-8")
         return
@@ -319,6 +353,28 @@ def preflight(root: Path, snapshot: Path, flags: list[str], keep_data: bool = Fa
         "flags": flags,
     }
     snapshot.write_text(json.dumps(record, sort_keys=True), encoding="utf-8")
+
+
+def postflight_containers(root: Path, snapshot: Path,
+                          trusted_root: Path | None = None) -> None:
+    """Require every container from this exact installation to be gone."""
+    trusted_root = trusted_root or root
+    record = json.loads(snapshot.read_text(encoding="utf-8"))
+    if (not isinstance(record, dict) or record.get("schemaVersion") != 1 or
+            record.get("installDir") != str(root) or
+            record.get("trustedSource") != str(trusted_root) or
+            not isinstance(record.get("project"), str) or
+            not isinstance(record.get("flags"), list) or
+            any(not isinstance(flag, str) for flag in record["flags"])):
+        raise ValueError("Uninstall container snapshot is invalid")
+    project, _, _ = project_config(root, record["flags"])
+    if project != record["project"]:
+        raise ValueError("Compose project changed during uninstall; installation retained")
+    remaining, _, _ = project_containers(root, project)
+    remaining |= install_root_containers(root)
+    if remaining:
+        ids = ", ".join(sorted(remaining)[:3])
+        raise ValueError(f"ODS containers remain after Compose cleanup: {ids}")
 
 
 def complete(root: Path, snapshot: Path, trusted_root: Path | None = None) -> None:
@@ -404,8 +460,8 @@ def complete(root: Path, snapshot: Path, trusted_root: Path | None = None) -> No
 
 
 def main() -> int:
-    if len(sys.argv) < 5 or sys.argv[1] not in ("preflight", "complete"):
-        print("Usage: uninstall-compose-volumes.py preflight|complete INSTALL_DIR SNAPSHOT TRUSTED_SOURCE [COMPOSE_FLAGS...]", file=sys.stderr)
+    if len(sys.argv) < 5 or sys.argv[1] not in ("preflight", "postflight-containers", "complete"):
+        print("Usage: uninstall-compose-volumes.py preflight|postflight-containers|complete INSTALL_DIR SNAPSHOT TRUSTED_SOURCE [COMPOSE_FLAGS...]", file=sys.stderr)
         return 2
     mode, root_arg, snapshot_arg, trusted_arg, *flags = sys.argv[1:]
     try:
@@ -421,6 +477,8 @@ def main() -> int:
                       keep_data, trusted_root)
         elif flags:
             raise ValueError("Unexpected Compose arguments for completion")
+        elif mode == "postflight-containers":
+            postflight_containers(root, snapshot, trusted_root)
         else:
             complete(root, snapshot, trusted_root)
     except (OSError, ValueError, json.JSONDecodeError, subprocess.TimeoutExpired) as error:

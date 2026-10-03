@@ -307,10 +307,11 @@ class TestPausedRefusal(Base):
 
 
 class TestStoppedClassification(Base):
-    def test_failed_oci_start_is_recreated_without_archiving_a_nonrunning_view(self):
-        cfg = fake_config(services={"a": {"volumes": [bind(str(self.host), "/data")]}})
+    def test_failed_read_only_oci_start_is_recreated_without_archiving_a_nonrunning_view(self):
+        cfg = fake_config(services={"a": {"volumes": [bind(str(self.host), "/data", ro=True)]}})
         container = {"State": {"Status": "exited", "Error": 'OCI mount failed at "/data": not a directory'}, "Config": {"Labels": {
-            "com.docker.compose.project": "proj", "com.docker.compose.service": "a"}}}
+            "com.docker.compose.project": "proj", "com.docker.compose.service": "a",
+            "com.docker.compose.project.working_dir": str(self.install)}}}
         with mock.patch.object(H, "is_wsl_docker_desktop", return_value=True), \
              mock.patch.object(H, "compose_config_json", return_value=cfg), \
              mock.patch.object(H, "compose_ps", return_value=[{"Service": "a", "Name": "failed"}]), \
@@ -540,7 +541,8 @@ class TestRecreateFlags(Base):
         names = ("original-1", "original-2")
         rows = [{"Service": "a", "Name": name} for name in names]
         container = {"State": {"Status": "running"}, "Config": {"Labels": {
-            "com.docker.compose.project": "proj", "com.docker.compose.service": "a"}}}
+            "com.docker.compose.project": "proj", "com.docker.compose.service": "a",
+            "com.docker.compose.project.working_dir": str(self.install)}}}
         events = []
         with mock.patch.object(H, "is_wsl_docker_desktop", return_value=True), \
              mock.patch.object(H, "compose_config_json", return_value=cfg), \
