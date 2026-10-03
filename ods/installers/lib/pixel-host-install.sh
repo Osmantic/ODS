@@ -3218,8 +3218,23 @@ PY
 ods_pixel_admit_wsl_mount_upgrade() {
     [[ "${ENABLE_PIXEL_RUNTIME:-false}" == true ]] || return 0
     local kernel_release="${1:-/proc/sys/kernel/osrelease}"
-    [[ -r "$kernel_release" ]] || return 0
-    grep -qi microsoft "$kernel_release" || return 0
+    [[ -f "$kernel_release" && -r "$kernel_release" ]] || {
+        ai_bad "Pixel could not read the kernel identity for WSL mount admission."
+        return 1
+    }
+    local release
+    release="$(cat -- "$kernel_release")" || {
+        ai_bad "Pixel could not inspect the kernel identity for WSL mount admission."
+        return 1
+    }
+    [[ -n "$release" ]] || {
+        ai_bad "Pixel received an empty kernel identity for WSL mount admission."
+        return 1
+    }
+    case "${release,,}" in
+        *microsoft*) ;;
+        *) return 0 ;;
+    esac
 
     local classifier="${2:-$SCRIPT_DIR/installers/lib/wsl_pixel_mount_plan.py}"
     [[ -f "$classifier" && ! -L "$classifier" ]] || {

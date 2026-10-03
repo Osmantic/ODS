@@ -49,6 +49,30 @@ for MOCK_STATUS in ordinary needs-owned-edge-stop refuse malformed; do
     grep -Eq 'mount admission|socket migration' "$scratch/error"
 done
 
+MOCK_STATUS=clear
+: > "$scratch/empty-kernel"
+mkdir "$scratch/not-a-file"
+for kernel in "$scratch/missing-kernel" "$scratch/empty-kernel" "$scratch/not-a-file"; do
+    if ods_pixel_admit_wsl_mount_upgrade "$kernel" "$classifier" 2>"$scratch/error"; then
+        echo "WSL pre-phase admission accepted unavailable kernel identity" >&2
+        exit 1
+    fi
+    grep -q 'kernel identity' "$scratch/error"
+done
+printf 'microsoft\n' > "$scratch/read-error-kernel"
+# The imported guard invokes this test-only stub indirectly.
+# shellcheck disable=SC2317
+cat() {
+    if [[ "${2:-}" == "$scratch/read-error-kernel" ]]; then return 2; fi
+    command cat "$@"
+}
+if ods_pixel_admit_wsl_mount_upgrade "$scratch/read-error-kernel" "$classifier" 2>"$scratch/error"; then
+    echo "WSL pre-phase admission accepted a kernel read error" >&2
+    exit 1
+fi
+grep -q 'kernel identity' "$scratch/error"
+unset -f cat
+
 python3 - "$root/install-core.sh" <<'PY'
 from pathlib import Path
 import sys
