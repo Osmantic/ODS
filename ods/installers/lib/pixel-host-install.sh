@@ -4667,7 +4667,7 @@ _ods_pixel_install_ingress() {
     local operations_service_dropin="$plugin_root/host/pixel-ops-broker-ods.conf"
     local operations_service_dropin_dir="/etc/systemd/system/pixel-ops-broker.service.d"
     local installed_operations_service_dropin="$operations_service_dropin_dir/10-ods-host-observation.conf"
-    local wsl_bridge=false ingress_socket=/run/ods-pixel/pixel-ingress.sock
+    local wsl_bridge=false gateway_socket_route_changed=false ingress_socket=/run/ods-pixel/pixel-ingress.sock
     local wsl_bridge_source="$plugin_root/host/pixel-wsl-runtime-bridge.sh"
     local wsl_bridge_unit="$plugin_root/host/pixel-wsl-runtime-bridge.service"
     local wsl_gateway_socket_source="$plugin_root/host/pixel-gateway-wsl-socket.conf"
@@ -4832,7 +4832,8 @@ EOF
         /etc/systemd/system/pixel-workspace-preview.service
     ods_sudo cmp -s -- "$rendered_workspace_preview_unit" \
         /etc/systemd/system/pixel-workspace-preview.service
-    if "$wsl_bridge"; then
+    if [[ -e "$wsl_gateway_socket_dropin" || -L "$wsl_gateway_socket_dropin" ]] \
+        || "$wsl_bridge"; then
         [[ -f "$wsl_gateway_socket_source" && ! -L "$wsl_gateway_socket_source" ]] || return 1
         cmp -s -- "$wsl_gateway_socket_source" <(printf '%s\n' \
             '[Service]' \
@@ -4840,8 +4841,12 @@ EOF
             || return 1
         if [[ -e "$wsl_gateway_socket_dropin" || -L "$wsl_gateway_socket_dropin" ]]; then
             [[ -f "$wsl_gateway_socket_dropin" && ! -L "$wsl_gateway_socket_dropin" ]] || return 1
+            [[ "$(ods_sudo stat -c '%U:%G:%a' -- "$wsl_gateway_socket_dropin")" == root:root:644 ]] \
+                || return 1
             ods_sudo cmp -s -- "$wsl_gateway_socket_source" "$wsl_gateway_socket_dropin" || return 1
         fi
+    fi
+    if "$wsl_bridge"; then
         if [[ ! -e "$wsl_gateway_socket_dir" && ! -L "$wsl_gateway_socket_dir" ]]; then
             ods_sudo install -d -o root -g root -m 0755 -- "$wsl_gateway_socket_dir" || return 1
         fi
@@ -4850,12 +4855,18 @@ EOF
         ods_sudo install -o root -g root -m 0644 "$wsl_gateway_socket_source" \
             "$wsl_gateway_socket_dropin" || return 1
         ods_sudo cmp -s -- "$wsl_gateway_socket_source" "$wsl_gateway_socket_dropin" || return 1
+        gateway_socket_route_changed=true
         ods_sudo install -o root -g root -m 0755 "$wsl_bridge_source" \
             /usr/local/libexec/ods-pixel-wsl-runtime-bridge || return 1
         ods_sudo install -o root -g root -m 0644 "$wsl_bridge_unit" \
             /etc/systemd/system/ods-pixel-wsl-runtime-bridge.service || return 1
         ods_sudo cmp -s -- "$wsl_bridge_source" /usr/local/libexec/ods-pixel-wsl-runtime-bridge || return 1
         ods_sudo cmp -s -- "$wsl_bridge_unit" /etc/systemd/system/ods-pixel-wsl-runtime-bridge.service || return 1
+    elif [[ -e "$wsl_gateway_socket_dropin" ]]; then
+        # A WSL switch from Docker Desktop to a local daemon uses /run again.
+        # Retire only the exact ODS-owned route before starting that gateway.
+        ods_sudo rm -f -- "$wsl_gateway_socket_dropin" || return 1
+        gateway_socket_route_changed=true
     fi
     rm -f -- "$stage/pixel-agent.env" "$stage/pixel-ingress.service"
     rmdir -- "$stage"
@@ -4888,7 +4899,7 @@ PY
     # The WSL drop-in changes the gateway plugins' ingress socket route. A
     # running gateway must reload that environment before history and image
     # requests can use the new direct socket.
-    if "$wsl_bridge"; then
+    if "$gateway_socket_route_changed"; then
         ods_sudo systemctl restart openclaw-gateway.service || return 1
     else
         ods_sudo systemctl start openclaw-gateway.service || return 1

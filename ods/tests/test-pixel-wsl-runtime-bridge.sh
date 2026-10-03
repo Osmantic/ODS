@@ -62,6 +62,8 @@ assert 'PIXEL_INGRESS_SOCKET=$ingress_socket' in installer
 assert 'PIXEL_SERVICE_USER=$owner' in installer
 assert '85-ods-ingress-socket.conf' in installer
 assert 'systemctl restart openclaw-gateway.service' in installer
+assert "stat -c '%U:%G:%a' -- \"$wsl_gateway_socket_dropin\"" in installer
+assert 'ods_sudo rm -f -- "$wsl_gateway_socket_dropin"' in installer
 assert 'systemctl reenable ods-pixel-wsl-runtime-bridge.service' in installer
 assert '_ods_pixel_prepare_wsl_runtime_bridge "$owner"' in installer
 assert installer.index('_ods_pixel_prepare_wsl_runtime_bridge "$owner"') < installer.index('"${pixel_prerequisites[@]}" >>"$LOG_FILE"')

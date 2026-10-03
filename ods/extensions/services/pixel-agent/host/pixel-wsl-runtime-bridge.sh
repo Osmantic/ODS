@@ -40,11 +40,24 @@ owner_uid="$(id -u "$owner" 2>/dev/null)" || fail "Pixel service owner does not 
 getent group ods-pixel >/dev/null || fail "ods-pixel group does not exist"
 
 base=/mnt/wsl/ods-portal-sockets
+wsl_device="$(stat -Lc '%d' /mnt/wsl)"
 [[ ! -L "$base" ]] || fail "$base is a symlink"
 [[ ! -e "$base" || -d "$base" ]] || fail "$base is not a directory"
 ! mountpoint -q -- "$base" || fail "$base is mounted"
+# An existing directory may contain operator data. Refuse it before install -d
+# can change its owner or mode, even if the path sits on the expected tmpfs.
+if [[ -d "$base" ]]; then
+    [[ "$(stat -Lc '%d' -- "$base")" == "$wsl_device" ]] || fail "$base is not on /mnt/wsl"
+    [[ "$(stat -Lc '%u:%g:%a' -- "$base")" == 0:0:755 ]] \
+        || fail "$base has unexpected ownership or mode"
+    shopt -s nullglob dotglob
+    for entry in "$base"/*; do
+        [[ ( "${entry##*/}" == ingress || "${entry##*/}" == preview ) \
+            && -d "$entry" && ! -L "$entry" ]] || fail "$base contains an unexpected entry"
+    done
+    shopt -u nullglob dotglob
+fi
 install -d -o root -g root -m 0755 -- "$base"
-wsl_device="$(stat -Lc '%d' /mnt/wsl)"
 [[ "$(stat -Lc '%d' "$base")" == "$wsl_device" ]] || fail "$base is not on /mnt/wsl"
 
 prepare() {
