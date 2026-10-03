@@ -720,6 +720,46 @@ class TestExtensionsCatalog:
         assert llm["route"] == "direct"
         assert llm["swap_safe"] is False
 
+    def test_catalog_normalizes_llm_after_library_enable(self, test_client, monkeypatch, tmp_path):
+        """A service enabled after API startup still reports its swap contract."""
+        catalog = [{
+            **_make_catalog_ext("perplexica", "Perplexica"),
+            "catalog_source": "builtin",
+            "llm": {"consumes": True, "route": "gateway", "pinning": "none",
+                    "min_context": 65536},
+        }]
+        # SERVICES was snapshotted before this optional service was enabled.
+        _patch_extensions_config(monkeypatch, catalog, services={}, tmp_path=tmp_path)
+        builtin = tmp_path / "builtin" / "perplexica"
+        builtin.mkdir(parents=True)
+        (builtin / "compose.yaml").write_text(
+            "services: {perplexica: {image: test/perplexica}}\n", encoding="utf-8",
+        )
+        monkeypatch.setattr("routers.extensions.EXTENSIONS_DIR", builtin.parent)
+
+        mock_svc = _make_service_status("perplexica", "healthy")
+        with patch("helpers.get_all_services", new_callable=AsyncMock,
+                   return_value=[mock_svc]), \
+             patch("helpers.get_cached_services", return_value=None):
+            catalog_response = test_client.get(
+                "/api/extensions/catalog", headers=test_client.auth_headers,
+            )
+            detail_response = test_client.get(
+                "/api/extensions/perplexica", headers=test_client.auth_headers,
+            )
+
+        assert catalog_response.status_code == 200
+        assert detail_response.status_code == 200
+        catalog_llm = catalog_response.json()["extensions"][0]["llm"]
+        detail_llm = detail_response.json()["llm"]
+        assert detail_response.json()["status"] == "enabled"
+        assert catalog_llm == detail_llm
+        assert catalog_llm["swap_safe"] is True
+        assert catalog_llm["swapSafe"] is True
+        assert catalog_llm["badge"] == "swap-safe"
+        assert catalog_llm["swap_safe_reason"]
+        assert catalog_llm["min_context"] == 65536
+
     def test_catalog_category_filter(self, test_client, monkeypatch, tmp_path):
         """Category filter returns only matching extensions."""
         catalog = [
