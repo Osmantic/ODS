@@ -6123,6 +6123,10 @@ def _extension_stop_targets(service_id: str) -> list[str]:
     except yaml.YAMLError as exc:
         raise RuntimeError("Invalid extension compose file") from exc
     services = data.get("services") if isinstance(data, dict) else None
+    if service_id == "comfyui" and services == {}:
+        # Its base marker is deliberately empty; the selected GPU overlay
+        # supplies the single ComfyUI service to Compose.
+        return targets
     if not isinstance(services, dict) or service_id not in services:
         raise RuntimeError("Extension compose file does not declare its service")
     for name in services:
@@ -6340,6 +6344,20 @@ def _run_selected_extension_up(
         raise RuntimeError(str(exc)) from exc
 
 
+def _stop_verified_owned_extension(service_id: str) -> None:
+    """Stop only existing containers bearing this installation's labels."""
+    targets = _extension_stop_targets(service_id)
+    helper_path = INSTALL_DIR / "scripts/stop-owned-containers.py"
+    if not helper_path.is_file() or helper_path.is_symlink():
+        raise RuntimeError("Owned-container stop helper is unavailable")
+    spec = importlib.util.spec_from_file_location("_ods_stop_owned", helper_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("Cannot load owned-container stop helper")
+    recovery = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(recovery)
+    recovery.stop_owned_containers(INSTALL_DIR, targets)
+
+
 def docker_compose_action(service_id: str, action: str) -> tuple:
     try:
         flags = resolve_compose_flags()
@@ -6353,15 +6371,29 @@ def docker_compose_action(service_id: str, action: str) -> tuple:
         # An old recipe may no longer qualify to start. Stopping must not
         # evaluate its Compose lifecycle hooks or rely on its container names.
         try:
-            targets = _extension_stop_targets(service_id)
-            helper_path = INSTALL_DIR / "scripts/stop-owned-containers.py"
-            spec = importlib.util.spec_from_file_location("_ods_stop_owned", helper_path)
-            recovery = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(recovery)
-            recovery.stop_owned_containers(INSTALL_DIR, targets)
+            _stop_verified_owned_extension(service_id)
             return True, ""
         except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as recovery_error:
             return False, f"Could not stop verified ODS containers: {recovery_error}"
+    if action == "stop" and service_id == "comfyui":
+        # Older Library disables could move ComfyUI's empty marker without
+        # stopping its overlay-only container. Current flags then omit the
+        # service, so Compose says "no such service". Recover by exact labels.
+        ext_dir = _find_ext_dir(service_id)
+        if ext_dir is not None and not (ext_dir / "compose.yaml").exists():
+            disabled = ext_dir / "compose.yaml.disabled"
+            try:
+                disabled_stat = disabled.lstat()
+            except FileNotFoundError:
+                disabled_stat = None
+            if disabled_stat is not None:
+                if not stat_mod.S_ISREG(disabled_stat.st_mode):
+                    return False, "Invalid disabled ComfyUI selection file"
+                try:
+                    _stop_verified_owned_extension(service_id)
+                    return True, ""
+                except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as exc:
+                    return False, f"Could not stop verified ODS containers: {exc}"
     action_deadline = time.monotonic() + 630
     compose_env = os.environ.copy()
     if action == "start":
