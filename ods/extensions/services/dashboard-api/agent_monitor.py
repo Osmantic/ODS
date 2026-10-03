@@ -9,6 +9,7 @@ import logging
 import math
 from datetime import datetime, timedelta, timezone
 from typing import List
+from pathlib import Path
 import os
 
 import aiohttp
@@ -19,6 +20,18 @@ logger = logging.getLogger(__name__)
 
 TOKEN_SPY_URL = os.environ.get("TOKEN_SPY_URL", "http://token-spy:8080")
 TOKEN_SPY_API_KEY = os.environ.get("TOKEN_SPY_API_KEY", "")
+TOKEN_SPY_KEY_FILE = Path(os.environ.get("TOKEN_SPY_KEY_FILE", "/data/token-spy/token-spy-api-key.txt"))
+
+
+def _token_spy_api_key() -> str:
+    """Use the configured key, or the key generated in Token Spy's data volume."""
+    key = TOKEN_SPY_API_KEY.strip()
+    if key:
+        return key
+    try:
+        return TOKEN_SPY_KEY_FILE.read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeError):
+        return ""
 
 
 class AgentMetrics:
@@ -192,8 +205,9 @@ async def _fetch_token_spy_metrics() -> None:
     logger.debug("Fetching metrics from Token Spy at %s", TOKEN_SPY_URL)
     try:
         headers = {}
-        if TOKEN_SPY_API_KEY:
-            headers["Authorization"] = f"Bearer {TOKEN_SPY_API_KEY}"
+        api_key = _token_spy_api_key()
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
         timeout = aiohttp.ClientTimeout(total=5)
         async with aiohttp.ClientSession(timeout=timeout) as http:
             async with http.get(
