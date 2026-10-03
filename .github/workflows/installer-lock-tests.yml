@@ -1,0 +1,28 @@
+name: Native installer process lock
+
+on:
+  pull_request:
+    paths:
+      - 'installer/src-tauri/src/install_lock.rs'
+      - 'installer/src-tauri/src/commands.rs'
+      - 'installer/src-tauri/Cargo.*'
+      - 'installer/lock-tests/**'
+      - '.github/workflows/installer-lock-tests.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'installer/src-tauri/**'
+      - 'installer/lock-tests/**'
+      - '.github/workflows/installer-lock-tests.yml'
+
+jobs:
+  process-lock:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      - name: Test actual production lock with separate harmless processes
+        run: cargo test --locked --manifest-path installer/lock-tests/Cargo.toml

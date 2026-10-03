@@ -8,10 +8,14 @@ const ALLOWED_FEATURES: &[&str] = &["voice", "workflows", "rag", "image_gen", "a
 
 static INSTALL_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 
-struct InstallPermit;
+struct InstallPermit {
+    lock_file: Option<std::fs::File>,
+}
 
 impl Drop for InstallPermit {
     fn drop(&mut self) {
+        // Close the OS lock before allowing another request in this process.
+        drop(self.lock_file.take());
         INSTALL_IN_PROGRESS.store(false, Ordering::Release);
     }
 }
@@ -19,8 +23,12 @@ impl Drop for InstallPermit {
 fn acquire_install_permit() -> Result<InstallPermit, String> {
     INSTALL_IN_PROGRESS
         .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
-        .map(|_| InstallPermit)
-        .map_err(|_| "An ODS installation is already in progress.".into())
+        .map_err(|_| "An ODS installation is already in progress.".to_string())?;
+    let mut permit = InstallPermit { lock_file: None };
+    permit.lock_file = Some(crate::install_lock::acquire(
+        &state_file_path().with_file_name("installer.lock"),
+    )?);
+    Ok(permit)
 }
 
 // ---- System Check ----
@@ -329,14 +337,101 @@ fn state_file_path() -> std::path::PathBuf {
 mod tests {
     use super::{acquire_install_permit, INSTALL_IN_PROGRESS};
     use std::sync::atomic::Ordering;
+    static TEST_ENVIRONMENT: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    struct TestProfile {
+        root: std::path::PathBuf,
+        previous: Vec<(&'static str, Option<std::ffi::OsString>)>,
+        _guard: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl TestProfile {
+        fn new() -> Self {
+            let guard = TEST_ENVIRONMENT.lock().unwrap();
+            let root = std::env::temp_dir().join(format!(
+                "ods-admission-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            let previous = ["LOCALAPPDATA", "HOME", "XDG_DATA_HOME"]
+                .into_iter()
+                .map(|key| (key, std::env::var_os(key)))
+                .collect();
+            for key in ["LOCALAPPDATA", "HOME", "XDG_DATA_HOME"] {
+                std::env::set_var(key, &root);
+            }
+            Self {
+                root,
+                previous,
+                _guard: guard,
+            }
+        }
+    }
+
+    impl Drop for TestProfile {
+        fn drop(&mut self) {
+            for (key, value) in &self.previous {
+                match value {
+                    Some(value) => std::env::set_var(key, value),
+                    None => std::env::remove_var(key),
+                }
+            }
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+
+    #[test]
+    fn another_process_rejects_an_active_installation() {
+        if std::env::var_os("ODS_QA_LOCK_CHILD").is_some() {
+            assert!(acquire_install_permit().is_err());
+            return;
+        }
+        let _profile = TestProfile::new();
+        let permit = acquire_install_permit().unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "commands::tests::another_process_rejects_an_active_installation",
+                "--nocapture",
+            ])
+            .env("ODS_QA_LOCK_CHILD", "1")
+            .output()
+            .unwrap();
+        drop(permit);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+    }
 
     #[test]
     fn installation_admission_is_single_flight() {
+        let _profile = TestProfile::new();
         INSTALL_IN_PROGRESS.store(false, Ordering::Release);
         let permit = acquire_install_permit().expect("first installation should be admitted");
         assert!(acquire_install_permit().is_err());
         drop(permit);
         assert!(acquire_install_permit().is_ok());
         INSTALL_IN_PROGRESS.store(false, Ordering::Release);
+    }
+
+    #[test]
+    fn lock_io_failure_does_not_poison_admission() {
+        let _profile = TestProfile::new();
+        let lock_path = super::state_file_path().with_file_name("installer.lock");
+        std::fs::create_dir_all(&lock_path).unwrap();
+        assert!(acquire_install_permit()
+            .err()
+            .unwrap()
+            .contains("Cannot open"));
+        assert!(!INSTALL_IN_PROGRESS.load(Ordering::Acquire));
+        std::fs::remove_dir(&lock_path).unwrap();
+        let permit = acquire_install_permit().unwrap();
+        drop(permit);
+        assert!(acquire_install_permit().is_ok());
     }
 }

@@ -1,0 +1,11 @@
+[package]
+name = "ods-installer-lock-tests"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+path = "../src-tauri/src/install_lock.rs"
+
+[dependencies]
+fs2 = "0.4.3"

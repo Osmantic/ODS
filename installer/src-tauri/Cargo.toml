@@ -11,6 +11,7 @@ serde_json = "1"
 tokio = { version = "1", features = ["full"] }
 which = "7"
 sys-info = "0.9"
+fs2 = "0.4.3"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
