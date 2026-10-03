@@ -48,7 +48,11 @@ function Get-ODSWslIdentity([string]$Distro, [string]$InstallRoot) {
 
 function Assert-ODSPrivatePath([string]$Path, [switch]$Directory) {
     $item = Get-Item -LiteralPath $Path -Force
-    if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -or ($Directory -and -not $item.PSIsContainer)) { throw "Unsafe lifecycle path: $Path" }
+    # FileInfo.Attributes becomes -1 if a publisher replaces this name before
+    # its lazy refresh. GetAttributes throws FileNotFound instead of making
+    # that missing-file sentinel look like every attribute (including reparse).
+    $attributes=[IO.File]::GetAttributes($Path)
+    if (($attributes -band [IO.FileAttributes]::ReparsePoint) -or ($Directory -and -not ($attributes -band [IO.FileAttributes]::Directory))) { throw "Unsafe lifecycle path: $Path" }
     $ancestor = if ($item.PSIsContainer) { $item } else { $item.Directory }
     while ($ancestor) { if ($ancestor.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw 'Lifecycle path has a junction ancestor' }; $ancestor=$ancestor.Parent }
     $acl = Get-Acl -LiteralPath $Path
@@ -84,10 +88,51 @@ function Initialize-ODSPrivateDirectory([string]$Path) {
 }
 
 function Read-ODSWslJson([string]$Path) {
-    if (-not (Test-Path -LiteralPath $Path)) { return $null }
-    Assert-ODSPrivatePath $Path
-    if ((Get-Item -LiteralPath $Path).Length -gt 65536) { throw 'Oversized lifecycle metadata' }
-    Get-Content -LiteralPath $Path -Raw -Encoding UTF8 | ConvertFrom-Json
+    $watch=[Diagnostics.Stopwatch]::StartNew()
+    $observed=$false
+    for($attempt=0; $attempt -lt 40; $attempt++) {
+        $stream=$null
+        try {
+            if (Test-Path -LiteralPath $Path) { $observed=$true }
+            Assert-ODSPrivatePath $Path
+            # Publishers replace the file with a complete new copy. Allow that replacement
+            # while retaining a complete old snapshot, but not in-place writes.
+            $stream=[IO.File]::Open($Path,[IO.FileMode]::Open,[IO.FileAccess]::Read,
+                ([IO.FileShare]::Read -bor [IO.FileShare]::Delete))
+            if ($stream.Length -gt 65536) { throw 'Oversized lifecycle metadata' }
+            $reader=[IO.StreamReader]::new($stream,[Text.UTF8Encoding]::new($false),$true)
+            try { $text=$reader.ReadToEnd() } finally { $reader.Dispose() }
+            $stream=$null
+            # PowerShell otherwise maps empty content and JSON null to the
+            # same null result as an absent file. Lifecycle records are objects.
+            if ($text -notmatch '^\s*\{') { throw 'Lifecycle metadata must be a JSON object' }
+            $value=$text | ConvertFrom-Json -ErrorAction Stop
+            if ($null -eq $value -or $value -isnot [pscustomobject]) { throw 'Lifecycle metadata must be a JSON object' }
+            return $value
+        } catch {
+            $cause=$_.Exception.GetBaseException()
+            $code=$cause.HResult -band 0xFFFF
+            # Windows PowerShell also wraps this observed Get-Item replacement
+            # miss as generic COR_E_IO. Do not classify other IO errors this way.
+            $providerMissing=$cause -is [IO.IOException] -and $code -eq 5664 -and
+                $_.FullyQualifiedErrorId -ceq 'ItemNotFound,Microsoft.PowerShell.Commands.GetItemCommand'
+            $missing=$cause -is [Management.Automation.ItemNotFoundException] -or
+                $cause -is [IO.FileNotFoundException] -or $cause -is [IO.DirectoryNotFoundException] -or $providerMissing
+            $locked=$cause -is [IO.IOException] -and $code -in @(32,33)
+            if (-not ($missing -or $locked)) { throw }
+            if ($attempt -ge 39 -or $watch.ElapsedMilliseconds -ge 2000) {
+                if ($missing -and -not $observed) { return $null }
+                throw
+            }
+            # Windows can briefly hide the destination during replacement.
+            # Confirm absence within the same bounded budget as sharing locks;
+            # never turn a lock, invalid ACL, or malformed content into absence.
+            # Revalidate the private path and handle size on every attempt.
+        } finally {
+            if ($stream) { $stream.Dispose() }
+        }
+        Start-Sleep -Milliseconds 50
+    }
 }
 
 function Write-ODSPrivateBytes([string]$Path,[byte[]]$Bytes,[switch]$CreateOnly) {
