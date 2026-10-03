@@ -64,7 +64,10 @@ def atomic_write_text(target: Path, content: str, *, file_mode: int | None = Non
                     after = target.lstat()
                     identity = lambda info: (info.st_dev, info.st_ino, info.st_size,
                                              info.st_mtime_ns, info.st_ctime_ns, info.st_mode, info.st_nlink)
-                    if matches and identity(before) == identity(after) and stat.S_IMODE(after.st_mode) == mode:
+                    # Windows os.stat translates writable files to 0o666; do not fail the
+                    # optimization if a stricter POSIX mode like 0o644 was requested.
+                    mode_matches = (os.name == "nt") or (stat.S_IMODE(after.st_mode) == mode)
+                    if matches and identity(before) == identity(after) and mode_matches:
                         return
     except OSError:
         # Missing/unreadable paths do not qualify for the no-op optimization.
