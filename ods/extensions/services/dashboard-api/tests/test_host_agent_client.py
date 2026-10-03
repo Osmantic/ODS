@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -246,6 +247,76 @@ def test_timeout_is_distinct_from_unavailable(monkeypatch):
             agent_client.request_json("GET", "/health")
     finally:
         client.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("timeout_type", "phase"),
+    [
+        (httpx.PoolTimeout, "pool"),
+        (httpx.ConnectTimeout, "connect"),
+        (httpx.ReadTimeout, "read"),
+        (httpx.WriteTimeout, "write"),
+    ],
+)
+async def test_async_timeout_logs_only_fixed_diagnostic_labels(
+    monkeypatch, caplog, timeout_type, phase
+):
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        raise timeout_type("private upstream detail", request=request)
+
+    client = httpx.AsyncClient(
+        base_url="http://agent", transport=httpx.MockTransport(handler)
+    )
+    monkeypatch.setattr(agent_client, "_async_client", client)
+    try:
+        with caplog.at_level(logging.WARNING, logger=agent_client.__name__):
+            with pytest.raises(agent_client.AgentTimeout):
+                await agent_client.async_request_json(
+                    "POST", "/v1/opencode/start?secret=private-query",
+                    payload={"secret": "private-body"},
+                )
+        assert calls == 1
+        records = [record for record in caplog.records if record.name == agent_client.__name__]
+        assert len(records) == 1
+        assert records[0].getMessage() == (
+            f"Host agent timeout transport=async phase={phase} "
+            "method=POST route=opencode"
+        )
+        assert "private" not in caplog.text
+        assert "http://agent" not in caplog.text
+    finally:
+        await client.aclose()
+
+
+def test_sync_timeout_uses_same_fixed_labels(monkeypatch, caplog):
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.PoolTimeout("private detail", request=request)
+
+    client = httpx.Client(base_url="http://agent", transport=httpx.MockTransport(handler))
+    monkeypatch.setattr(agent_client, "_sync_client", client)
+    try:
+        with caplog.at_level(logging.WARNING, logger=agent_client.__name__):
+            with pytest.raises(agent_client.AgentTimeout):
+                agent_client.request_json("GET", "/v1/pixel/identity?secret=private")
+        assert "Host agent timeout transport=sync phase=pool method=GET route=pixel" in caplog.text
+        assert "private" not in caplog.text
+    finally:
+        client.close()
+
+
+def test_timeout_diagnostic_rejects_unrecognized_method_text(caplog):
+    with caplog.at_level(logging.WARNING, logger=agent_client.__name__):
+        agent_client._log_timeout(
+            "async", "GET private-method", "/v1/opencode/status?secret=private-query",
+            httpx.PoolTimeout("private exception text"),
+        )
+    assert "transport=async phase=pool method=other route=opencode" in caplog.text
+    assert "private" not in caplog.text
 
 
 @pytest.mark.asyncio
