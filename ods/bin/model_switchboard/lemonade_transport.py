@@ -3,14 +3,20 @@
 from __future__ import annotations
 
 import json
+import logging
 import math
 from pathlib import Path
 import re
 import subprocess
+import time
+from typing import Literal
 from urllib.parse import urlsplit
 
 
 _LIMIT = 65536
+_LOG = logging.getLogger(__name__)
+_DockerStage = Literal["ps", "inspect", "exec"]
+_WORKER_DEADLINE_STDERR = b"Lemonade request timed out\n"
 _INSPECT = ('{"Id":{{json .Id}},"Running":{{json .State.Running}},'
             '"Project":{{json (index .Config.Labels "com.docker.compose.project")}},'
             '"Service":{{json (index .Config.Labels "com.docker.compose.service")}},'
@@ -91,12 +97,34 @@ except (OSError, ValueError, KeyError, TypeError) as exc:
 '''
 
 
-def _docker(arguments: list[str], *, timeout: float, data: bytes | None = None) -> bytes:
-    result = subprocess.run(["docker", *arguments], input=data, capture_output=True,
-                            timeout=timeout, check=False)
+def _docker_failure(stage: _DockerStage, reason: str, exit_code: int | None,
+                    started: float) -> None:
+    # Keep log fields fixed and nonsecret. argv, stderr and exception text can
+    # contain an endpoint, token or host-specific path.
+    _LOG.warning("Lemonade transport stage=%s reason=%s exit_code=%s elapsed_ms=%d",
+                 stage, reason, "none" if exit_code is None else exit_code,
+                 max(0, int((time.monotonic() - started) * 1000)))
+
+
+def _docker(arguments: list[str], *, stage: _DockerStage, timeout: float,
+            data: bytes | None = None) -> bytes:
+    started = time.monotonic()
+    try:
+        result = subprocess.run(["docker", *arguments], input=data, capture_output=True,
+                                timeout=timeout, check=False)
+    except subprocess.TimeoutExpired:
+        _docker_failure(stage, "subprocess_timeout", None, started)
+        raise
+    except OSError:
+        _docker_failure(stage, "subprocess_os_error", None, started)
+        raise
     if len(result.stdout) > _LIMIT or len(result.stderr) > _LIMIT:
+        _docker_failure(stage, "output_limit", result.returncode, started)
         raise OSError("Docker Lemonade transport output exceeds 64 KiB")
     if result.returncode:
+        reason = ("worker_wall_deadline" if stage == "exec" and result.returncode == 124
+                  and result.stderr == _WORKER_DEADLINE_STDERR else "nonzero_exit")
+        _docker_failure(stage, reason, result.returncode, started)
         detail = result.stderr.decode("utf-8", errors="replace").strip()[:512]
         raise OSError(f"Docker Lemonade transport failed (exit {result.returncode}): {detail}")
     return result.stdout
@@ -106,12 +134,12 @@ def _owned_router(install_dir: Path, project: str) -> str:
     candidates = _docker(["ps", "--no-trunc", "--quiet", "--filter", "status=running",
                           "--filter", f"label=com.docker.compose.project={project}",
                           "--filter", "label=com.docker.compose.service=model-router"],
-                         timeout=10).decode("ascii").splitlines()
+                         stage="ps", timeout=10).decode("ascii").splitlines()
     if len(candidates) != 1 or not re.fullmatch(r"[0-9a-f]{64}", candidates[0]):
         raise OSError("Expected exactly one running ODS model-router container")
     container_id = candidates[0]
     info = json.loads(_docker(["inspect", "--type", "container", "--format", _INSPECT,
-                              container_id], timeout=10))
+                              container_id], stage="inspect", timeout=10))
     if (not isinstance(info, dict) or info.get("Id") != container_id or info.get("Running") is not True
             or info.get("Project") != project or info.get("Service") != "model-router"):
         raise OSError("ODS model-router ownership or running state changed")
@@ -159,5 +187,5 @@ def request(install_dir: Path, api_base: str, path: str,
         raise ValueError("Lemonade proof request exceeds 64 KiB")
     container_id = _owned_router(install_dir, project)
     body = _docker(["exec", "-i", container_id, "python", "-I", "-S", "-c", _WORKER],
-                   data=data, timeout=timeout + 10)
+                   stage="exec", data=data, timeout=timeout + 10)
     return body.decode("utf-8")
