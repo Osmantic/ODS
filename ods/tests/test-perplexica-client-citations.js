@@ -57,6 +57,12 @@ function checkCases(render) {
     '<span title="`raw`">x</span> and ' + inline("ok"));
   assert.equal(render("[label `code`](https://x.test) and `ok`", source),
     "[label `code`](https://x.test) and " + inline("ok"));
+  assert.equal(render("-     `x`", source), "-     `x`");
+  assert.equal(render("1.     `x`", source), "1.     `x`");
+  assert.equal(render("<pre>\n`x`\n</pre>\nUse `ok`", source),
+    "<pre>\n`x`\n</pre>\nUse " + inline("ok"));
+  assert.equal(render('<a title="\n`x`\n">link</a>\nUse `ok`', source),
+    '<a title="\n`x`\n">link</a>\nUse ' + inline("ok"));
   assert.equal(render("Use `[1]\n[2]` then [1].", source), `Use \`[1]\n[2]\` then ${cited(1)}.`);
   assert.equal(render(">     values = [1, 2]", source), ">     values = [1, 2]");
   assert.equal(render("An escaped \\` tick; fact [1].", source), "An escaped \\` tick; fact " + cited(1) + ".");

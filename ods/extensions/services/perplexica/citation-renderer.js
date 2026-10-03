@@ -7,6 +7,8 @@ function renderCitations(message, sources) {
   const refs = Array.isArray(sources) ? sources : [];
   let fence = null;
   let inline = null;
+  let rawHtmlTag = false;
+  let rawLiteral = null;
 
   function cite(token, inner) {
     if (!/^\s*\d+(?:\s*,\s*\d+)*\s*$/.test(inner)) return token;
@@ -144,19 +146,40 @@ function renderCitations(message, sources) {
     const lineBase = base;
     base += line.length + 1;
     if (inline) return prose(line, lineBase);
-    const marker = /^(?: {0,3}> ?)*( {0,3}(?:[-+*]|\d{1,9}[.)]) +)? {0,3}(`{3,}|~{3,})/.exec(line);
     if (fence) {
       const close = /^(?: {0,3}> ?)*([ \t]*)(`+|~+)[ \t]*\r?$/.exec(line);
       if (close && close[1].length <= fence.maxIndent && close[2][0] === fence.marker[0]
         && close[2].length >= fence.marker.length) fence = null;
       return line;
     }
+    // An inline HTML tag can span lines. Do not inject another tag into its
+    // attributes, or into raw HTML elements that contain literal code text.
+    if (rawHtmlTag) {
+      if (line.includes(">")) rawHtmlTag = false;
+      return line;
+    }
+    if (rawLiteral) {
+      if (new RegExp(`</${rawLiteral}\\s*>`, "i").test(line)) rawLiteral = null;
+      return line;
+    }
+    const rawOpen = /^(?: {0,3}> ?)* {0,3}<(pre|code|script|style|textarea)(?:\s|>)/i.exec(line);
+    if (rawOpen) {
+      const name = rawOpen[1].toLowerCase();
+      if (!new RegExp(`</${name}\\s*>`, "i").test(line)) rawLiteral = name;
+      return line;
+    }
+    if (/^(?: {0,3}> ?)* {0,3}<\/?[A-Za-z][\w:-]*(?:\s|$)[^>]*$/.test(line)) {
+      rawHtmlTag = true;
+      return line;
+    }
+    const marker = /^(?: {0,3}> ?)*( {0,3}(?:[-+*]|\d{1,9}[.)]) +)? {0,3}(`{3,}|~{3,})/.exec(line);
     if (marker) {
       fence = { marker: marker[2], maxIndent: marker[1] ? marker[1].length + 3 : 3 };
       return line;
     }
     const content = line.replace(/^(?: {0,3}> ?)+/, "");
-    if (/^(?: {4}|\t)/.test(content)) return line;
+    if (/^(?: {4}|\t)/.test(content)
+      || /^(?: {0,3}(?:[-+*]|\d{1,9}[.)]) {5,})/.test(content)) return line;
     return prose(line, lineBase);
   }).join("\n");
 }
