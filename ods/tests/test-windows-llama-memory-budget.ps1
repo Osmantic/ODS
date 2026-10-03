@@ -54,8 +54,8 @@ try {
     }
 
     $nvidiaEnv = $nvidiaEnv -replace '(?m)^LLAMA_SERVER_MEMORY_LIMIT=.*$', 'LLAMA_SERVER_MEMORY_LIMIT=7G'
-    $nvidiaEnv = $nvidiaEnv -replace '(?m)^TTS_WORKERS=.*$', 'TTS_WORKERS=2'
-    $nvidiaEnv = $nvidiaEnv -replace '(?m)^TTS_THREADS=.*$', 'TTS_THREADS=2'
+    $nvidiaEnv = $nvidiaEnv -replace '(?m)^TTS_WORKERS=.*$', "TTS_WORKERS='2'"
+    $nvidiaEnv = $nvidiaEnv -replace '(?m)^TTS_THREADS=.*$', 'TTS_THREADS="2"'
     [IO.File]::WriteAllText($nvidiaEnvPath, $nvidiaEnv)
     $script:dockerRamGB = 4
     New-ODSEnv -InstallDir $nvidiaDir -TierConfig $tier -Tier "1" `
@@ -65,7 +65,7 @@ try {
         throw "NVIDIA reinstall discarded the explicit memory-limit override"
     }
     if ($rerunEnv -notmatch '(?m)^TTS_WORKERS=2\r?$' -or $rerunEnv -notmatch '(?m)^TTS_THREADS=2\r?$') {
-        throw "Windows reinstall discarded explicit Kokoro worker or thread overrides"
+        throw "Windows reinstall discarded quoted Kokoro worker or thread overrides"
     }
     $rerunEnv = $rerunEnv -replace '(?m)^TTS_CPU_LIMIT=.*$', 'TTS_CPU_LIMIT=2.0'
     [IO.File]::WriteAllText($nvidiaEnvPath, $rerunEnv)

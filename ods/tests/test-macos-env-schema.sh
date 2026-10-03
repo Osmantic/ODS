@@ -107,14 +107,14 @@ done
 
 tts_override_dir="$TMP_DIR/tts-worker-override"
 generate_env 1 "$tts_override_dir"
-awk '{ if ($0 == "TTS_WORKERS=1") print "TTS_WORKERS=2"; else if ($0 ~ /^TTS_THREADS=/) print "TTS_THREADS=2"; else print }' \
+awk '{ if ($0 == "TTS_WORKERS=1") print "TTS_WORKERS=\0472\047"; else if ($0 ~ /^TTS_THREADS=/) print "TTS_THREADS=\"2\""; else print }' \
     "$tts_override_dir/.env" > "$tts_override_dir/.env.new"
 mv "$tts_override_dir/.env.new" "$tts_override_dir/.env"
 generate_env 1 "$tts_override_dir" false
 grep -qx 'TTS_WORKERS=2' "$tts_override_dir/.env" \
-    || fail 'macOS reinstall did not preserve an explicit TTS worker override'
+    || fail 'macOS reinstall did not preserve a quoted TTS worker override'
 grep -qx 'TTS_THREADS=2' "$tts_override_dir/.env" \
-    || fail 'macOS reinstall did not preserve an explicit TTS thread override'
+    || fail 'macOS reinstall did not preserve a quoted TTS thread override'
 pass 'macOS reinstall preserves explicit TTS worker and thread overrides'
 sed 's/^TTS_WORKERS=2$/TTS_WORKERS=8/' "$tts_override_dir/.env" > "$tts_override_dir/.env.new"
 mv "$tts_override_dir/.env.new" "$tts_override_dir/.env"

@@ -280,9 +280,16 @@ generate_ods_env() {
         upsert_env_value "$env_path" "TTS_CPU_RESERVATION" "$tts_cpu_reservation"
         local tts_workers tts_threads
         tts_workers="$(read_env_value "$env_path" "TTS_WORKERS")"
+        if [[ "$tts_workers" == "'"*"'" || "$tts_workers" == '"'*'"' ]]; then
+            tts_workers="${tts_workers:1:${#tts_workers}-2}"
+        fi
         [[ "$tts_workers" =~ ^[1-9][0-9]*$ ]] || tts_workers=1
         upsert_env_value "$env_path" "TTS_WORKERS" "$tts_workers"
-        tts_threads="$(ods_select_tts_threads "$(read_env_value "$env_path" "TTS_THREADS")" "$tts_cpu_limit" "$tts_workers")"
+        tts_threads="$(read_env_value "$env_path" "TTS_THREADS")"
+        if [[ "$tts_threads" == "'"*"'" || "$tts_threads" == '"'*'"' ]]; then
+            tts_threads="${tts_threads:1:${#tts_threads}-2}"
+        fi
+        tts_threads="$(ods_select_tts_threads "$tts_threads" "$tts_cpu_limit" "$tts_workers")"
         upsert_env_value "$env_path" "TTS_THREADS" "$tts_threads"
         upsert_env_value "$env_path" "WHISPER_CPU_LIMIT" "$whisper_cpu_limit"
         upsert_env_value "$env_path" "WHISPER_CPU_RESERVATION" "$whisper_cpu_reservation"
