@@ -6,6 +6,7 @@ compatibility:
 service:
   id: privacy-shield
   name: Privacy Shield (PII Protection)
+  description: Optional PII redaction proxy for OpenAI-compatible clients. Apps must point at its endpoint; adding it does not automatically reroute Portal. It forwards to the selected LLM route.
   aliases: []
   container_name: ods-privacy-shield
   host_env: PRIVACY_SHIELD_HOST
