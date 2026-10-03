@@ -68,9 +68,9 @@ class StoppedRecoveryTests(unittest.TestCase):
         self.assertFalse(H.deleted_desktop_file_bind(str(self.source), '/tmp/elsewhere'))
         self.assertFalse(H.deleted_desktop_file_bind(str(self.source), self.proxy + '/nested'))
 
-    def run_recovery(self):
+    def run_recovery(self, read_only=True):
         config = {'name': 'fixture', 'services': {'app': {'volumes': [
-            {'type': 'bind', 'source': str(self.source), 'target': self.target, 'read_only': True}]}}}
+            {'type': 'bind', 'source': str(self.source), 'target': self.target, 'read_only': read_only}]}}}
         with mock.patch.object(H, 'is_wsl_docker_desktop', return_value=True), \
              mock.patch.object(H, 'compose_config_json', return_value=config), \
              mock.patch.object(H, 'compose_ps', return_value=[{'Service': 'app', 'Name': 'fixture-app'}]), \
@@ -93,6 +93,9 @@ class StoppedRecoveryTests(unittest.TestCase):
         self.container['State']['Status'] = 'exited'
         self.container['Config']['Labels']['com.docker.compose.project.working_dir'] = '/foreign'
         self.assertEqual(self.run_recovery(), (1, 0))
+
+    def test_stopped_recovery_refuses_unobserved_writable_bind_data(self):
+        self.assertEqual(self.run_recovery(read_only=False), (1, 0))
 
 
 if __name__ == '__main__':

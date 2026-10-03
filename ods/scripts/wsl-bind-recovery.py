@@ -648,6 +648,8 @@ def main(argv=None):
             return fail(str(exc))
         if not binds:
             continue
+        if args.repair_stopped and any(not read_only for _src, _dst, read_only in binds):
+            return fail("stopped recovery cannot preserve an unobserved writable bind view")
         try:
             prevalidate_binds(binds)
         except RuntimeError as exc:
