@@ -463,15 +463,19 @@ detect_gpu() {
             local vendor device
             vendor=$(cat "$card_dir/vendor" 2>/dev/null) || continue
             device=$(cat "$card_dir/device" 2>/dev/null) || continue
-            # Intel vendor ID: 0x8086, Arc device IDs: 0x56a0-0x56c1 (Alchemist), 0x5690-0x569f (DG2)
-            if [[ "$vendor" == "0x8086" ]] && [[ "$device" =~ ^0x(56[a-c][0-9a-f]|569[0-9a-f])$ ]]; then
+            # Intel vendor ID: 0x8086, Arc device IDs: 0x56a0-0x56c1 (Alchemist),
+            # 0x5690-0x569f (DG2), 0xe202/e209/e20b-e20d/e210-e212/e216/e220-e223 (Battlemage)
+            if [[ "$vendor" == "0x8086" ]] && [[ "$device" =~ ^0x(56[a-c][0-9a-f]|569[0-9a-f]|e2(02|09|0[bcd]|1[0-2]|16|2[0-3]))$ ]]; then
                 GPU_BACKEND="intel"
                 GPU_MEMORY_TYPE="discrete"
                 GPU_DEVICE_ID="$device"
                 GPU_COUNT=1
-                # Try to get VRAM size from sysfs (lmem_total_bytes on Arc)
+                # VRAM size from sysfs: lmem_total_bytes (i915, Alchemist/DG2) or
+                # tile0/physical_vram_size_bytes (xe driver, Battlemage)
                 local vram_bytes
-                vram_bytes=$(cat "$card_dir/lmem_total_bytes" 2>/dev/null) || vram_bytes=0
+                vram_bytes=$(cat "$card_dir/lmem_total_bytes" 2>/dev/null) \
+                    || vram_bytes=$(cat "$card_dir/tile0/physical_vram_size_bytes" 2>/dev/null) \
+                    || vram_bytes=0
                 GPU_VRAM=$(( vram_bytes / 1048576 ))  # in MB
                 # Try marketing name from sysfs or lspci
                 if [[ -f "$card_dir/product_name" ]]; then

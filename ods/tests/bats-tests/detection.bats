@@ -189,6 +189,38 @@ MOCK
     [[ "$GPU_NAME" == *"2"* ]]
 }
 
+@test "detect_gpu: detects Intel Arc Battlemage (B-series) GPU" {
+    if [[ "$(uname -s)" == "Darwin" ]]; then
+        skip "detect_gpu uses GNU grep -oP, not available on macOS"
+    fi
+
+    mkdir -p "$BATS_TEST_TMPDIR/bin"
+    cat > "$BATS_TEST_TMPDIR/bin/lspci" << 'MOCK'
+#!/bin/bash
+echo "03:00.0 VGA compatible controller: Intel Corporation Battlemage G21 [Arc B580] (rev 05)"
+MOCK
+    chmod +x "$BATS_TEST_TMPDIR/bin/lspci"
+    # Shadow nvidia-smi so the NVIDIA branch is skipped
+    cat > "$BATS_TEST_TMPDIR/bin/nvidia-smi" << 'MOCK'
+#!/bin/bash
+exit 1
+MOCK
+    chmod +x "$BATS_TEST_TMPDIR/bin/nvidia-smi"
+    export PATH="$BATS_TEST_TMPDIR/bin:$PATH"
+
+    # Battlemage (Arc B580) device ID 0xe20b; the xe driver (not i915) exposes
+    # VRAM under tile0/physical_vram_size_bytes rather than lmem_total_bytes.
+    mkdir -p "$BATS_TEST_TMPDIR/sys/class/drm/card0/device/tile0"
+    echo "0x8086" > "$BATS_TEST_TMPDIR/sys/class/drm/card0/device/vendor"
+    echo "0xe20b" > "$BATS_TEST_TMPDIR/sys/class/drm/card0/device/device"
+    echo $(( 16 * 1073741824 )) > "$BATS_TEST_TMPDIR/sys/class/drm/card0/device/tile0/physical_vram_size_bytes"
+    export ODS_DRM_SYS="$BATS_TEST_TMPDIR/sys/class/drm"
+
+    detect_gpu || true
+    assert_equal "$GPU_BACKEND" "intel"
+    assert_equal "$GPU_VRAM" "16384"
+}
+
 @test "detect_gpu: returns failure when no GPU found" {
     if [[ "$(uname -s)" == "Darwin" ]]; then
         skip "detect_gpu uses GNU grep -oP, not available on macOS"
