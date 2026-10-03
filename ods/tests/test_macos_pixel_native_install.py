@@ -292,9 +292,11 @@ def test_core_feature_selection_keeps_pixel_dependencies_without_heavy_services(
     stop = script.index('ai "Features:"', start)
     resolver_start = script.index('_macos_resolve_support_services() {')
     resolver_stop = script.index('\n}', resolver_start) + 2
+    retained_start = script.index('_macos_retained_optional_state() {')
+    retained_stop = script.index('\n}', script.index('_macos_restore_retained_optional_features() {')) + 2
     shell = '''set -eu
 NON_INTERACTIVE=true; ALL_FEATURES=false; DRY_RUN=false
-CLOUD_MODE=false; ENABLE_RECOMMENDED=false
+CLOUD_MODE=false; ENABLE_RECOMMENDED=false; RECOMMENDED_EXPLICIT=false
 ENABLE_HERMES=false; ENABLE_OPENCLAW=false; ENABLE_APE=false
 ENABLE_PERPLEXICA=false; ENABLE_VOICE=false; ENABLE_RAG=false; ENABLE_WORKFLOWS=false
 ENABLE_OPENCODE=false; OPENCODE_ENABLE_EXPLICIT=false; OPENCODE_DISABLE_EXPLICIT=false
@@ -303,7 +305,7 @@ ENABLE_OPEN_WEBUI=false; WEBUI_RETAINED=""; WEBUI_ENABLE_EXPLICIT=false; WEBUI_D
 ENABLE_ODS_PROXY=false
 read_env_value() { printf '\\n'; }
 ai_err() { printf '%s\\n' "$*" >&2; }
-''' + script[resolver_start:resolver_stop] + '\nENABLE_PIXEL=' + pixel + '\n' + script[start:stop] + '''
+''' + script[resolver_start:resolver_stop] + '\n' + script[retained_start:retained_stop] + '\nENABLE_PIXEL=' + pixel + '\n' + script[start:stop] + '''
 printf '%s %s %s %s %s %s %s %s' "$ENABLE_RECOMMENDED" "$ENABLE_LITELLM" "$ENABLE_SEARXNG" "$ENABLE_HERMES" "$ENABLE_OPENCLAW" "$ENABLE_VOICE" "$ENABLE_RAG" "$ENABLE_WORKFLOWS"
 '''
     result = subprocess.run(['bash'], input=shell, capture_output=True, text=True, check=True,
