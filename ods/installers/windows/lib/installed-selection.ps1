@@ -171,6 +171,7 @@ function Get-ODSWindowsInstalledFeatureSelection {
         Workflows = $selected.Contains("n8n")
         Rag = ($selected.Contains("qdrant") -or $selected.Contains("embeddings"))
         Recommended = $selected.Contains("token-spy")
+        Searxng = $selected.Contains("searxng")
         Hermes = $selected.Contains("hermes")
         HermesProxy = $selected.Contains("hermes-proxy")
         OpenClaw = $selected.Contains("openclaw")

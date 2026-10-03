@@ -988,6 +988,7 @@ litellm_settings:
         $currentBackend = $(if ($cloudMode) { "none" } else { $gpuInfo.Backend })
         $servicePlan = New-ODSWindowsServicePlan `
             -EnableRecommended $enableRecommended `
+            -EnableSearxng $enableSearxng `
             -CloudMode $cloudMode `
             -UseLemonade $useLemonade `
             -SwitchboardMode (Get-ODSWindowsEffectiveSwitchboardMode -InstallDir $installDir -RequestedMode $env:ODS_MODEL_SWITCHBOARD) `
@@ -2111,6 +2112,7 @@ if ($dryRun) {
     $dryRunUseLemonade = ($gpuInfo.Backend -eq "amd" -and -not $cloudMode)
     $_dryRunServicePlan = New-ODSWindowsServicePlan `
         -EnableRecommended $enableRecommended `
+        -EnableSearxng $enableSearxng `
             -CloudMode $cloudMode `
             -UseLemonade $dryRunUseLemonade `
             -SwitchboardMode (Get-ODSWindowsEffectiveSwitchboardMode -InstallDir $installDir -RequestedMode $env:ODS_MODEL_SWITCHBOARD) `

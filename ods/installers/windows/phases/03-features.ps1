@@ -57,6 +57,7 @@ $enableTts           = $voiceFlag -or $allFlag -or [bool]$priorFeatures.Tts
 $enableWorkflows     = $workflowsFlag -or $allFlag -or [bool]$priorFeatures.Workflows
 $enableRag           = $ragFlag -or $allFlag -or [bool]$priorFeatures.Rag
 $enableRecommended   = (-not $noRecommendedFlag) -and ($recommendedFlag -or $allFlag -or [bool]$priorFeatures.Recommended)
+$enableSearxng        = [bool]$priorFeatures.Searxng
 $enableHermes        = (-not $noHermesFlag) -and ($hermesFlag -or $allFlag -or [bool]$priorFeatures.Hermes)
 $enableHermesProxy   = (-not $noHermesFlag) -and ($hermesFlag -or $allFlag -or [bool]$priorFeatures.HermesProxy)
 $enableOpenClaw      = $openClawFlag -or [bool]$priorFeatures.OpenClaw
@@ -115,6 +116,7 @@ if (-not $nonInteractive -and -not $allFlag -and -not $dryRun) {
             $enableWorkflows = $false
             $enableRag       = $false
             $enableRecommended = $false
+            $enableSearxng = $false
             $enableHermes    = $false
             $enableHermesProxy = $false
             $enableOpenClaw  = $false

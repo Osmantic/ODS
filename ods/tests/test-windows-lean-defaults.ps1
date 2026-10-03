@@ -63,7 +63,8 @@ function Invoke-Selection {
     return @{
         Voice = $enableVoice; Whisper = $enableWhisper; Tts = $enableTts
         Workflows = $enableWorkflows; Rag = $enableRag
-        Recommended = $enableRecommended; Hermes = $enableHermes
+        Recommended = $enableRecommended; Searxng = $enableSearxng
+        Hermes = $enableHermes
         HermesProxy = $enableHermesProxy
         OpenClaw = $enableOpenClaw; Comfyui = $enableComfyui
         DeepResearch = $enableDeepResearch; PrivacyShield = $enablePrivacyShield
@@ -132,6 +133,34 @@ try {
         }
     }
 
+    $searchRoot = Join-Path $scratch 'library-searxng'
+    Set-InstalledFixture -Path $searchRoot -Services @('litellm')
+    [IO.File]::WriteAllText((Join-Path $searchRoot '.env'),
+        "ODS_MODE=local`nODS_MODEL_SWITCHBOARD=enabled`nODS_WINDOWS_RECOMMENDED_SELECTED=false`n")
+    foreach ($service in @('searxng','whisper','tts')) {
+        $serviceDir = Join-Path $searchRoot "extensions/services/$service"
+        New-Item -ItemType Directory -Path $serviceDir -Force | Out-Null
+        $suffix = if ($service -eq 'searxng') { '' } else { '.disabled' }
+        [IO.File]::WriteAllText((Join-Path $serviceDir "compose.yaml$suffix"), 'services: {}')
+    }
+    Write-ODSWindowsManagedComposeSelectionMarker -InstallDir $searchRoot
+    Remove-Item -LiteralPath (Join-Path $searchRoot '.compose-flags') -Force
+    $searchData = Join-Path $searchRoot 'data/searxng/retained.txt'
+    New-Item -ItemType Directory -Path (Split-Path -Parent $searchData) -Force | Out-Null
+    [IO.File]::WriteAllText($searchData, 'keep')
+    $searchSelection = Get-ODSWindowsInstalledFeatureSelection -InstallDir $searchRoot
+    $searchRerun = Invoke-Selection -Path $searchRoot
+    $searchPlan = New-ODSWindowsServicePlan -EnableSearxng $searchRerun.Searxng `
+        -EnableHermes $searchRerun.Hermes
+    if ($searchSelection.Kind -ne 'preserved' -or -not $searchRerun.Searxng -or
+        $searchRerun.Hermes -or -not $searchPlan['searxng'].Enabled -or
+        (Get-Content -LiteralPath $searchData -Raw) -cne 'keep') {
+        throw 'Independent SearXNG Library selection or owner data was lost on rerun'
+    }
+    if ((Invoke-Selection -Path $searchRoot -Interactive $true -MenuAnswer '2').Searxng) {
+        throw 'Explicit Core Only retained an optional SearXNG service'
+    }
+
     $hermesOnlyRoot = Join-Path $scratch 'library-hermes-only'
     Set-InstalledFixture -Path $hermesOnlyRoot -Services @('litellm','hermes','hermes-proxy')
     [IO.File]::WriteAllText((Join-Path $hermesOnlyRoot '.env'),
@@ -188,7 +217,7 @@ try {
     }
 
     $prior = Join-Path $scratch 'prior'
-    Set-InstalledFixture -Path $prior -Services @('litellm','token-spy','whisper','tts','n8n',
+    Set-InstalledFixture -Path $prior -Services @('litellm','searxng','token-spy','whisper','tts','n8n',
         'qdrant','embeddings','hermes','hermes-proxy','comfyui','perplexica','privacy-shield','langfuse')
     $retained = Invoke-Selection -Path $prior
     foreach ($name in $retained.Keys) {
@@ -203,7 +232,7 @@ try {
         throw 'Custom menu Enter prompts did not keep installed choices'
     }
     $core = Invoke-Selection -Path $prior -Interactive $true -MenuAnswer '2'
-    if ($core.Hermes -or $core.Comfyui -or $core.DeepResearch) {
+    if ($core.Hermes -or $core.Comfyui -or $core.DeepResearch -or $core.Searxng) {
         throw 'Explicit Core Only did not disable optional services'
     }
     $overridden = Invoke-Selection -Path $prior -All $true -NoHermes $true -NoComfyui $true -NoRecommended $true
