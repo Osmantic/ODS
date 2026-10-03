@@ -65,6 +65,15 @@ class TestParamScaleSources:
         model = {"id": "mystery", "size_mb": 6000}
         assert estimated_param_billions(model) == 10.0
 
+    def test_bit_width_is_not_a_parameter_count(self):
+        assert estimated_param_billions({"id": "mystery-8bit", "size_mb": 6000}) == 10.0
+        assert estimated_param_billions({"id": "awq-4bit", "size_mb": 6000}) == 10.0
+        assert estimated_param_billions({"id": "qwen2.5-7b"}) == 7.0
+        assert estimated_param_billions({
+            "gguf_file": "Llama-4-Scout-17B-16E-Instruct-Q4_K_M.gguf",
+            "size_mb": 65300,
+        }) == 17.0
+
     def test_filename_scale_lowers_the_kv_estimate(self):
         """A 17B model must not be charged the KV cost of a 108B one."""
         model = {
