@@ -144,9 +144,9 @@ it('offers Add for qualified bundled n8n while keeping other built-ins managed b
     {id:'dashboard',name:'Dashboard',source:'core',status:'enabled',features:[baseFeature]},
   ],summary:baseSummary({total:3})})
   render(<Extensions compact />)
-  fireEvent.click(await screen.findByRole('button',{name:'Add n8n (Workflows)'}))
+  fireEvent.click(await screen.findByRole('button',{name:'Turn on n8n (Workflows)'}))
   expect(screen.getByRole('dialog',{name:'Confirm action'})).toHaveTextContent('Enable n8n (Workflows)?')
-  expect(screen.queryByRole('button',{name:'Add Hermes'})).toBeNull()
+  expect(screen.queryByRole('button',{name:'Turn on Hermes'})).toBeNull()
   expect(screen.queryByRole('button',{name:'Enable Hermes'})).toBeNull()
   expect(screen.queryByRole('button',{name:'Disable Dashboard'})).toBeNull()
 })
@@ -174,22 +174,39 @@ it('shows bundled Perplexica in Available and asks before adding SearXNG', async
   vi.stubGlobal('fetch', fetchMock)
   render(<Extensions compact />)
   fireEvent.click(await screen.findByRole('button',{name:'Available 2'}))
-  expect(screen.getByRole('button',{name:'Add Perplexica (Deep Research)'})).toBeVisible()
-  expect(screen.getByRole('button',{name:'Add n8n (Workflows)'})).toBeVisible()
+  expect(screen.getByRole('button',{name:'Turn on Perplexica (Deep Research)'})).toBeVisible()
+  expect(screen.getByRole('button',{name:'Turn on n8n (Workflows)'})).toBeVisible()
   expect(screen.getByRole('button',{name:'Installed 0'})).toBeVisible()
-  fireEvent.click(screen.getByRole('button',{name:'Add Perplexica (Deep Research)'}))
+  fireEvent.click(screen.getByRole('button',{name:'Turn on Perplexica (Deep Research)'}))
   fireEvent.click(screen.getByRole('button',{name:'Enable'}))
   expect(await screen.findByRole('dialog',{name:'Enable dependencies'})).toHaveTextContent('searxng')
   expect(fetchMock).toHaveBeenCalledWith('/api/extensions/perplexica/enable', expect.objectContaining({method:'POST'}))
   fireEvent.click(screen.getByRole('button',{name:'Cancel'}))
   expect(fetchMock).not.toHaveBeenCalledWith('/api/extensions/perplexica/enable?auto_enable_deps=true', expect.anything())
-  fireEvent.click(screen.getByRole('button',{name:'Add Perplexica (Deep Research)'}))
+  fireEvent.click(screen.getByRole('button',{name:'Turn on Perplexica (Deep Research)'}))
   fireEvent.click(screen.getByRole('button',{name:'Enable'}))
   fireEvent.click(await screen.findByRole('button',{name:'Enable All'}))
   await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
     '/api/extensions/perplexica/enable?auto_enable_deps=true',
     expect.objectContaining({method:'POST'}),
   ))
+})
+
+it('keeps a previously selected disabled built-in in Installed with Enable', async () => {
+  installFetchMock({agent_available:true,extensions:[
+    {id:'perplexica',name:'Perplexica (Deep Research)',source:'core',status:'disabled',
+      library_manageable:true,library_selected:false,library_ever_selected_proven:true,features:[baseFeature]},
+    {id:'n8n',name:'n8n (Workflows)',source:'core',status:'disabled',
+      library_manageable:true,library_selected:false,library_ever_selected_proven:false,features:[baseFeature]},
+  ],summary:baseSummary({total:2})})
+  render(<Extensions compact />)
+  fireEvent.click(await screen.findByRole('button',{name:'Installed 1'}))
+  expect(screen.getByRole('button',{name:'Enable Perplexica (Deep Research)'})).toBeVisible()
+  expect(screen.queryByRole('button',{name:'Turn on Perplexica (Deep Research)'})).toBeNull()
+  expect(screen.queryByText('n8n (Workflows)')).toBeNull()
+  fireEvent.click(screen.getByRole('button',{name:'Available 1'}))
+  expect(screen.getByRole('button',{name:'Turn on n8n (Workflows)'})).toBeVisible()
+  expect(screen.queryByText('Perplexica (Deep Research)')).toBeNull()
 })
 
 it('refreshes healthy dependency cards after Enable All when progress is idle', async () => {
@@ -222,7 +239,7 @@ it('refreshes healthy dependency cards after Enable All when progress is idle', 
   })
   vi.stubGlobal('fetch', fetchMock)
   render(<Extensions compact />)
-  fireEvent.click(await screen.findByRole('button', { name: 'Add Perplexica (Deep Research)' }))
+  fireEvent.click(await screen.findByRole('button', { name: 'Turn on Perplexica (Deep Research)' }))
   fireEvent.click(screen.getByRole('button', { name: 'Enable' }))
   fireEvent.click(await screen.findByRole('button', { name: 'Enable All' }))
   expect(await screen.findByRole('button', { name: 'Retry Perplexica (Deep Research)' })).toBeVisible()
@@ -288,7 +305,7 @@ it('reports a failed bundled n8n start and refreshes to a retryable card', async
   })
   vi.stubGlobal('fetch', fetchMock)
   render(<Extensions compact />)
-  fireEvent.click(await screen.findByRole('button',{name:'Add n8n (Workflows)'}))
+  fireEvent.click(await screen.findByRole('button',{name:'Turn on n8n (Workflows)'}))
   fireEvent.click(screen.getByRole('button',{name:'Enable'}))
   expect(await screen.findByText(/was selected but did not start/)).toBeVisible()
   expect(await screen.findByRole('button',{name:'Retry n8n (Workflows)'})).toBeVisible()

@@ -529,7 +529,8 @@ export default function Extensions({ compact = false }) {
   const availableForAdd = ext => ext.status === 'not_installed'
     || (ext.id === 'open-webui' && webuiCanAdd)
     || (ext.source === 'core' && ext.library_manageable === true
-      && ext.library_selected === false && ['disabled', 'error'].includes(ext.status))
+      && ext.library_selected === false && ext.library_ever_selected_proven !== true
+      && ['disabled', 'error'].includes(ext.status))
   const unsupportedIds = new Set(allExtensions.filter(ext => !extensions.includes(ext)).map(ext => ext.id))
   const summary = {
     not_installed: extensions.filter(availableForAdd).length,
@@ -987,7 +988,7 @@ function ExtensionCard({ ext, gpuBackend, agentAvailable, onDetails, onConsole, 
               onClick={() => onAction(ext, 'enable')}
               className="flex items-center gap-1.5 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.08em] rounded-lg bg-theme-accent text-white hover:bg-theme-accent-hover transition-colors disabled:opacity-50 shadow-sm shadow-theme-accent/20"
             >
-              {isMutating ? <Loader2 size={12} className="animate-spin" /> : <><Download size={12} /> {showManagedAdd ? `Add ${ext.name}` : `Retry ${ext.name}`}</>}
+              {isMutating ? <Loader2 size={12} className="animate-spin" /> : <><Download size={12} /> {showManagedAdd ? `${ext.library_ever_selected_proven === true ? 'Enable' : 'Turn on'} ${ext.name}` : `Retry ${ext.name}`}</>}
             </button>
           )}
           {ext.id === 'open-webui' && webuiSelection?.supported && webuiSelection.enabled === false && (
