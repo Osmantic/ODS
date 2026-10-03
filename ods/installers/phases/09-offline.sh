@@ -26,10 +26,21 @@ elif [[ "$OFFLINE_MODE" == "true" ]] && ! $DRY_RUN; then
     # Recreate the marker only after the required asset is validated below.
     rm -f -- "$INSTALL_DIR/.offline-mode"
 
-    # Disable any cloud-dependent features in .env
-    _sed_i 's/^BRAVE_API_KEY=.*/BRAVE_API_KEY=/' "$INSTALL_DIR/.env" 2>/dev/null || true
-    _sed_i 's/^ANTHROPIC_API_KEY=.*/ANTHROPIC_API_KEY=/' "$INSTALL_DIR/.env" 2>/dev/null || true
-    _sed_i 's/^OPENAI_API_KEY=.*/OPENAI_API_KEY=/' "$INSTALL_DIR/.env" 2>/dev/null || true
+    # Disable any cloud-dependent features in .env. This is the one place
+    # in the codebase whose whole job is "make it safe to disconnect from
+    # the internet" — a silently swallowed failure here would still print
+    # "Offline mode configured" below and tell the user it's safe to go
+    # air-gapped while a cloud API key may still be sitting in .env.
+    _offline_cleared_keys=true
+    _sed_i 's/^BRAVE_API_KEY=.*/BRAVE_API_KEY=/' "$INSTALL_DIR/.env" 2>/dev/null \
+        || _offline_cleared_keys=false
+    _sed_i 's/^ANTHROPIC_API_KEY=.*/ANTHROPIC_API_KEY=/' "$INSTALL_DIR/.env" 2>/dev/null \
+        || _offline_cleared_keys=false
+    _sed_i 's/^OPENAI_API_KEY=.*/OPENAI_API_KEY=/' "$INSTALL_DIR/.env" 2>/dev/null \
+        || _offline_cleared_keys=false
+    if ! $_offline_cleared_keys; then
+        ai_warn "Could not clear one or more cloud API keys in .env — check BRAVE_API_KEY, ANTHROPIC_API_KEY, and OPENAI_API_KEY manually before disconnecting for air-gapped operation"
+    fi
 
     # Add offline mode config
     cat >> "$INSTALL_DIR/.env" << 'OFFLINE_EOF'
