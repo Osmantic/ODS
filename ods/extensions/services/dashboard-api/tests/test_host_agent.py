@@ -212,7 +212,7 @@ def test_extension_start_and_disable_share_host_graph_lock(tmp_path, monkeypatch
 
 
 def test_host_selection_endpoint_requires_auth_and_preserves_batch(
-    monkeypatch, host_agent_wire_client,
+    monkeypatch, host_agent_wire_client, tmp_path,
 ):
     import threading
     import urllib.error
@@ -223,12 +223,28 @@ def test_host_selection_endpoint_requires_auth_and_preserves_batch(
 
     calls = []
     monkeypatch.setattr(_mod, "AGENT_API_KEY", "selection-wire-secret")
-    monkeypatch.setattr(
-        _mod, "_apply_extension_selection",
-        lambda service_ids, activate, expected_sha256=None: calls.append(
-            (service_ids, activate, expected_sha256)
-        ) or ("enabled" if activate else "disabled"),
-    )
+    user_root = tmp_path / "user-extensions"
+    builtin_root = tmp_path / "builtins"
+    user_root.mkdir()
+    builtin_root.mkdir()
+    monkeypatch.setattr(ext_router, "USER_EXTENSIONS_DIR", user_root)
+    monkeypatch.setattr(ext_router, "EXTENSIONS_DIR", builtin_root)
+    for service_id in ("search", "consumer"):
+        directory = user_root / service_id
+        directory.mkdir()
+        (directory / "compose.yaml.disabled").write_text("services: {}\n")
+
+    def apply_selection(service_ids, activate, expected_sha256=None):
+        # Model the host's committed marker change as well as its wire receipt.
+        calls.append((service_ids, activate, expected_sha256))
+        for service_id in service_ids:
+            directory = user_root / service_id
+            before = "compose.yaml.disabled" if activate else "compose.yaml"
+            after = "compose.yaml" if activate else "compose.yaml.disabled"
+            (directory / before).rename(directory / after)
+        return "enabled" if activate else "disabled"
+
+    monkeypatch.setattr(_mod, "_apply_extension_selection", apply_selection)
     server = HTTPServer(("127.0.0.1", 0), _mod.AgentHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -251,6 +267,8 @@ def test_host_selection_endpoint_requires_auth_and_preserves_batch(
             post(body)
         assert rejected.value.code == 401
         assert calls == []
+        assert all((user_root / sid / "compose.yaml.disabled").is_file()
+                   for sid in ("search", "consumer"))
 
         host_agent_wire_client(server.server_address[1], key="selection-wire-secret")
         result = ext_router._select_extensions_on_host(
@@ -258,6 +276,9 @@ def test_host_selection_endpoint_requires_auth_and_preserves_batch(
         )
         assert result["action"] == "enabled"
         assert result["service_ids"] == ["search", "consumer"]
+        assert all((user_root / sid / "compose.yaml").is_file()
+                   and not (user_root / sid / "compose.yaml.disabled").exists()
+                   for sid in ("search", "consumer"))
         assert calls == [(["search", "consumer"], True, digests)]
 
         with pytest.raises(urllib.error.HTTPError) as rejected:
@@ -9542,6 +9563,33 @@ class TestWindowsObservability:
 
 class TestDockerServiceHealthSnapshot:
 
+    def test_prior_selection_proof_requires_installed_compose_root_and_fragment(self, tmp_path):
+        root = tmp_path / "ods"
+        root.mkdir()
+        base = root / "docker-compose.base.yml"
+        fragment = root / "extensions/services/perplexica/compose.yaml"
+
+        def row(**changes):
+            labels = {
+                "com.docker.compose.project": "ods",
+                "com.docker.compose.service": "perplexica",
+                "com.docker.compose.project.working_dir": str(root),
+                "com.docker.compose.project.config_files": f"{base},{fragment}",
+            }
+            labels.update(changes)
+            return {"Name": "/arbitrary-name", "Config": {"Labels": labels}}
+
+        foreign_root = str(tmp_path / "other")
+        foreign_fragment = str(root / "extensions/services/other/compose.yaml")
+        assert _mod._owned_library_builtins_from_inspect([
+            row(**{"com.docker.compose.project.working_dir": foreign_root}),
+            row(**{"com.docker.compose.project.config_files": f"{base},{foreign_fragment}"}),
+            row(**{"com.docker.compose.project": "foreign/project"}),
+            row(**{"com.docker.compose.service": "dashboard"}),
+            {"Name": "/ods-perplexica", "Config": {"Labels": {}}},
+        ], root) == []
+        assert _mod._owned_library_builtins_from_inspect([row()], root) == ["perplexica"]
+
     def test_uses_compose_service_labels_and_caches_snapshot(self, monkeypatch):
         monkeypatch.setattr(_mod, "_service_health_cache", (0.0, None))
         calls = []
@@ -9568,6 +9616,7 @@ class TestDockerServiceHealthSnapshot:
             "state": "running",
             "health": "healthy",
         }]
+        assert first["prior_selected_builtins"] == []
         assert len(calls) == 2
 
 
@@ -9802,6 +9851,7 @@ class TestDarwinSystemMetrics:
         responses = []
         monkeypatch.setattr(_mod, "check_auth", lambda h: True)
         monkeypatch.setattr(_mod, "_darwin_system_metrics", lambda: None)
+        monkeypatch.setattr(_mod, "_wsl_system_metrics", lambda: None)
         monkeypatch.setattr(_mod, "json_response", lambda h, status, data: responses.append(status))
         _mod.AgentHandler._handle_system_metrics(object())
         assert responses == [503]

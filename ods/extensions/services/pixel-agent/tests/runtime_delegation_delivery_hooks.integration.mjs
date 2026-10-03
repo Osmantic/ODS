@@ -17,20 +17,26 @@ import {setTimeout as delay} from 'node:timers/promises';
 const installed=process.env.OPENCLAW_PACKAGE_DIR;
 const sha=value=>createHash('sha256').update(value).digest('hex');
 
-for(const interim of ['final','silent','waiting','extra-yield','cancel'])
+for(const interim of ['final','silent','waiting','extra-yield','cancel','cancel-active','active-final'])
 test(`real gateway deferred delegation waits for two children and a verified revised terminal answer: interim=${interim}`,
   {skip:!installed || process.platform==='win32',timeout:120000},async()=>{
   const root=mkdtempSync(join(tmpdir(),'ods-delegation-hooks-'));
   const pkg=join(root,'package'), workspace=join(root,'workspace'), plugin=join(root,'plugin');
   let child, ingress, log='', revision=false, requests=0, askedFinalYield=false;
   const heldChildren=[];
+  const cancelMode=interim==='cancel'||interim==='cancel-active';
+  const activeCancellation=interim==='cancel-active';
+  const activeDelivery=activeCancellation||interim==='active-final';
+  const nativeDeliveryFile=join(root,'native-delivery.jsonl');
+  const deliveryBarrier={started:false,released:false};
+  const readNativeDelivery=()=>existsSync(nativeDeliveryFile)?readFileSync(nativeDeliveryFile,'utf8').trim().split('\n').filter(Boolean).map(JSON.parse):[];
   const prior=[{role:'user',content:'WARMUP_FIXTURE'},{role:'assistant',content:'READY'}];
   const childTexts=['CHILD_VERIFIED_0: ORIGINAL_CART_EVIDENCE_914','CHILD_VERIFIED_1: ORIGINAL_ACCESSIBILITY_EVIDENCE_731'];
   const consolidatedRequests=[],providerTrace=[];
   cpSync(installed,pkg,{recursive:true});
   assert.equal(JSON.parse(readFileSync(join(pkg,'package.json'))).version,'2026.6.33');
   for(const [name,module] of [['hook-provenance','hook-agent-context-ugCMMoT5.js'],['run-id-redaction','redact-cvFSPoXf.js'],
-    ['context-usage','attempt-execution-DnVHak5f.js'],['compaction-budget','selection-BEwSQKM-.js'],['yield-usage','embedded-agent-CJx-nG3W.js'],['compaction-empty','proxy-Bsfwfsp-.js']]) {
+    ['context-usage','attempt-execution-DnVHak5f.js'],['compaction-budget','selection-BEwSQKM-.js'],['yield-usage','embedded-agent-CJx-nG3W.js'],['compaction-empty','proxy-Bsfwfsp-.js'],['announcement-admission','subagent-announce-origin-XoBlouka.js']]) {
     const recipe=JSON.parse(readFileSync(new URL(`../host/openclaw-${name}.json`,import.meta.url)));
     const target=join(pkg,'dist',module);let text=readFileSync(target,'utf8');
     if(sha(text)!==recipe.patchedSha256) {
@@ -40,6 +46,24 @@ test(`real gateway deferred delegation waits for two children and a verified rev
       for(const [before,after] of recipe.replacements){assert.equal(text.split(before).length,2);text=text.replace(before,after);}
       assert.equal(sha(text),recipe.patchedSha256);writeFileSync(target,text);
     }
+  }
+  // Private observers record native transport, never substitute guard results.
+  // A successful steer resolves after enqueue, before transcript commitment.
+  // Direct handoff is observed before the genuine gateway agent call queues.
+  if(activeDelivery) {
+    const selection=join(pkg,'dist','selection-BEwSQKM-.js');
+    let runtime=readFileSync(selection,'utf8');
+    const before="activeSession.steer(text).catch((err) => {";
+    assert.equal(runtime.split(before).length,2);
+    runtime=runtime.replace(before,"activeSession.steer(text).then(() => { fs.appendFileSync("+JSON.stringify(nativeDeliveryFile)+", JSON.stringify({at:new Date().toISOString(),path:'steer-enqueued',sessionId:activeSession.sessionId,announcement:text.includes('Internal task completion event')})+'\\n'); }).catch((err) => {");
+    writeFileSync(selection,runtime);
+    const announce=join(pkg,'dist','subagent-announce-origin-XoBlouka.js');
+    let dispatch=readFileSync(announce,'utf8');
+    const direct="let directAnnounceResponse;";
+    assert.equal(dispatch.split(direct).length,2);
+    dispatch="import {appendFileSync as odsRecordNativeDelivery} from 'node:fs';\n"+dispatch.replace(direct,
+      "odsRecordNativeDelivery("+JSON.stringify(nativeDeliveryFile)+", JSON.stringify({at:new Date().toISOString(),path:'direct-dispatch',sessionKey:canonicalRequesterSessionKey,runId:params.directIdempotencyKey,sourceSessionKey:params.sourceSessionKey,sourceTool:params.sourceTool})+'\\n');\n\t\t"+direct);
+    writeFileSync(announce,dispatch);
   }
   // Reproduce the CI UUID/credential collision deterministically in the private
   // package only; native spawn, tool sanitization and admission remain real.
@@ -93,10 +117,18 @@ test(`real gateway deferred delegation waits for two children and a verified rev
       abortRunAndDrain:(sessionId,sessionKey)=>abortAndDrainAgentHarnessRun({
         sessionId:resolveActiveEmbeddedRunSessionId(sessionKey)||sessionId,sessionKey,settleMs:4000,forceClear:false,reason:'ods_client_disconnect'}),
       execControl:{signal:()=>true}});
+    const announcementInMessage=m=>{
+      const content=m?.content;
+      return typeof content==='string'?content.includes('Internal task completion event')
+        :Array.isArray(content)&&content.some(part=>typeof part?.text==='string'&&part.text.includes('Internal task completion event'));
+    };
     const record=(hook,event,ctx,extra={})=>appendFileSync(${JSON.stringify(eventsFile)},JSON.stringify({
+      at:new Date().toISOString(),
       hook,agentId:ctx.agentId,runId:ctx.runId,sessionId:ctx.sessionId,sessionKey:ctx.sessionKey,trigger:ctx.trigger,
       provenance:ctx.inputProvenance,success:event.success,text:event.lastAssistantMessage,
       messageRoles:event.messages?.map(m=>m.role),
+      eventAnnouncement:event.messages?.some(announcementInMessage)??false,
+      promptAnnouncement:typeof event.prompt==='string'&&event.prompt.includes('Internal task completion event'),
       lastStopReason:[...(event.messages??[])].reverse().find(m=>m.role==='assistant')?.stopReason,
       lastText:[...(event.messages??[])].reverse().find(m=>m.role==='assistant')?.content?.filter(c=>c.type==='text').map(c=>c.text).join(''),...extra})+'\\n');
     export default {id:'delivery-fixture',register(api){
@@ -128,12 +160,13 @@ test(`real gateway deferred delegation waits for two children and a verified rev
         registry.observe(event,ctx);if(${JSON.stringify(interim)}==='cancel')sharedGuard.observeRun(ctx,'pixel');
         record('prompt',event,ctx);return {prependContext:registry.promptContext(ctx)};
       });
-      api.on('before_agent_run',(event,ctx)=>{const decision=registry.admission?.(ctx);record('admission',{},ctx,{decision});return decision;});
+      api.on('before_agent_run',(event,ctx)=>{const decision=registry.admission?.(ctx);record('admission',event,ctx,{decision});return decision;});
       api.registerHttpRoute({path:'/pixel-ods/abort',auth:'gateway',match:'exact',handler:async(req,res)=>{
         const parts=[];for await(const p of req)parts.push(p);const {user}=JSON.parse(Buffer.concat(parts));
+        const stopRequestedAt=new Date().toISOString();
         const delegated=registry.cancel(user),parent=sharedGuard.abortUserRun(user);
         const [d,p]=await Promise.all([delegated,parent]);
-        record('cancel',{}, {},{result:d,parent:p});
+        record('cancel',{}, {},{result:d,parent:p,stopRequestedAt});
         res.writeHead(200,{'content-type':'application/json'});res.end(JSON.stringify({aborted:d.tracked?d.aborted:p}));return true;
       }});
       api.on('before_tool_call',(event,ctx)=>{const decision=registry.blocked(ctx,event);registry.before(event,ctx,decision);record('before-tool',event,ctx,{toolName:event.toolName,toolCallId:ctx.toolCallId,params:event.params,decision});return decision;});
@@ -157,13 +190,34 @@ test(`real gateway deferred delegation waits for two children and a verified rev
       api.on('agent_end',(event,ctx)=>{registry.end(event,ctx);record('end',event,ctx);});
     }};
   `);
+  async function holdOwnerProvider(res) {
+        deliveryBarrier.started=true;deliveryBarrier.holdStartedAt=new Date().toISOString();
+        res.writeHead(200,{'Content-Type':'text/event-stream'});
+        res.write('data: '+JSON.stringify({id:'fixture',object:'chat.completion.chunk',choices:[{index:0,delta:{role:'assistant'},finish_reason:null}]})+'\n\n');
+        for(let i=0;i<400;i++) {
+          const delivery=readNativeDelivery().find(e=>e.at>=deliveryBarrier.holdStartedAt &&
+            (e.path==='steer-enqueued'&&e.announcement || e.path==='direct-dispatch'&&e.sourceTool==='subagent_announce'));
+          if(delivery) {
+            const events=existsSync(eventsFile)?readFileSync(eventsFile,'utf8').trim().split('\n').filter(Boolean).map(JSON.parse):[];
+            const owner=events.filter(e=>e.hook==='prompt'&&e.trigger==='user'&&!e.sessionKey?.includes(':subagent:')).at(-1);
+            Object.assign(deliveryBarrier,{released:true,delivery,owner,ownerEndedBeforeRelease:events.some(e=>e.hook==='end'&&e.runId===owner?.runId)});
+            break;
+          }
+          await delay(25);
+        }
+        deliveryBarrier.releaseAt=new Date().toISOString();
+  }
   const upstream=createServer(async(req,res)=>{
     const chunks=[];for await(const chunk of req)chunks.push(chunk);
     const body=JSON.parse(Buffer.concat(chunks));requests++;
     const all=JSON.stringify(body.messages);
     const currentUser=JSON.stringify(body.messages.filter(m=>m.role==='user').at(-1)?.content);
     const userMessages=body.messages.filter(m=>m.role==='user').map(m=>typeof m.content==='string'?m.content:JSON.stringify(m.content)).join('\n');
-    const trace={request:requests,lastRole:body.messages.at(-1)?.role,childTask:userMessages.includes('CHILD_FIXTURE_TASK'),announcement:userMessages.includes('Internal task completion event'),revision,markers:childTexts.map(value=>all.includes(value))};
+    const userParts=body.messages.filter(m=>m.role==='user').map(m=>typeof m.content==='string'?m.content:JSON.stringify(m.content));
+    const trace={request:requests,at:new Date().toISOString(),messageCount:body.messages.length,
+      lastRole:body.messages.at(-1)?.role,lastUserAnnouncement:userParts.at(-1)?.includes('Internal task completion event')??false,
+      announcementCount:userParts.filter(value=>value.includes('Internal task completion event')).length,
+      childTask:userMessages.includes('CHILD_FIXTURE_TASK'),announcement:userMessages.includes('Internal task completion event'),revision,markers:childTexts.map(value=>all.includes(value))};
     providerTrace.push(trace);if(providerTrace.length>40)providerTrace.shift();
     let delta,finish='stop';
     const deferred=(id,name,args)=>({index:0,id,type:'function',function:{name:'tool_call',arguments:JSON.stringify({id:name,args})}});
@@ -174,11 +228,12 @@ test(`real gateway deferred delegation waits for two children and a verified rev
       trace.branch='warmup';delta={role:'assistant',content:'READY'};
     } else if(userMessages.includes('RECOVER_AFTER_STOP')) {
       trace.branch='recovery';delta={role:'assistant',content:'19'};
+      if(activeCancellation&&!deliveryBarrier.started)await holdOwnerProvider(res);
     } else if(userMessages.includes('HELLO_FIXTURE')) {
       trace.branch='greeting';delta={role:'assistant',content:'HELLO_VERIFIED'};
     } else if(userMessages.includes('CHILD_FIXTURE_TASK')&&!userMessages.includes('Internal task completion event')) {
       trace.branch='child';
-      if(interim==='cancel'){
+      if(cancelMode){
         heldChildren.push(res);res.writeHead(200,{'Content-Type':'text/event-stream'});
         res.write('data: '+JSON.stringify({id:'fixture',object:'chat.completion.chunk',choices:[{index:0,delta:{role:'assistant',content:'CHILD_REVIEW_IN_PROGRESS'},finish_reason:null}]})+'\n\n');return;
       }
@@ -207,11 +262,12 @@ test(`real gateway deferred delegation waits for two children and a verified rev
         delta={role:'assistant',content:evidence.every(Boolean)?(revision||interim==='extra-yield'?'CONSOLIDATED_VERIFIED':'CONSOLIDATED_REVIEW'):'MISSING_SIBLING_EVIDENCE'};revision=true;
       }
     } else if(all.includes('childSessionKey')) {
+      if(interim==='active-final'&&!deliveryBarrier.started)await holdOwnerProvider(res);
       delta={role:'assistant',tool_calls:[deferred('yield-fixture','sessions_yield',{})]};finish='tool_calls';
     } else {
       delta={role:'assistant',content:'Waiting for the review.',tool_calls:[0,1].map((i)=>({...deferred('spawn-fixture-'+i,'sessions_spawn',{task:'CHILD_FIXTURE_TASK '+i+': return CHILD_VERIFIED, no tools.',runtime:'subagent',mode:'run',label:'fixture-review-'+i}),index:i}))};finish='tool_calls';
     }
-    res.writeHead(200,{'Content-Type':'text/event-stream'});
+    if(!res.headersSent)res.writeHead(200,{'Content-Type':'text/event-stream'});
     res.write('data: '+JSON.stringify({id:'fixture',object:'chat.completion.chunk',choices:[{index:0,delta,finish_reason:null}]})+'\n\n');
     res.end('data: '+JSON.stringify({id:'fixture',object:'chat.completion.chunk',choices:[{index:0,delta:{},finish_reason:finish}],usage:{prompt_tokens:500,completion_tokens:30,total_tokens:530}})+'\n\ndata: [DONE]\n\n');
   });
@@ -230,15 +286,15 @@ test(`real gateway deferred delegation waits for two children and a verified rev
     let ready=false;
     for(let i=0;i<250;i++){try{ready=(await fetch(`http://127.0.0.1:${port}/health`,{signal:AbortSignal.timeout(500)})).ok;}catch{}if(ready)break;assert.equal(child.exitCode,null,log);await delay(100);}
     assert.ok(ready,log);
-    ingress=createIngressServer({token:'fixture-only-0123456789abcdef',gatewayPort:port,...interim==='cancel'?{historyLedger:createChatHistoryLedger(join(root,'history-ledger'))}:{}});
+    ingress=createIngressServer({token:'fixture-only-0123456789abcdef',gatewayPort:port,...cancelMode?{historyLedger:createChatHistoryLedger(join(root,'history-ledger'))}:{}});
     await new Promise(resolve=>ingress.listen(0,'127.0.0.1',resolve));
     const ingressPort=ingress.address().port;
-    if(interim==='cancel') {
+    if(cancelMode) {
       const warmup=await fetch(`http://127.0.0.1:${ingressPort}/v1/chat/completions`,{method:'POST',headers:{Authorization:'Bearer fixture-only-0123456789abcdef','Content-Type':'application/json'},body:JSON.stringify({model:'openclaw:pixel',stream:true,user:'delegation-fixture',messages:[prior[0]],request_id:'cancel-warmup',history_snapshot:{schemaVersion:1,messages:[prior[0]]}}),signal:AbortSignal.timeout(30000)});
       assert.ok((await warmup.text()).includes('READY'));
     }
-    const responsePromise=fetch(`http://127.0.0.1:${ingressPort}/v1/chat/completions`,{method:'POST',headers:{Authorization:'Bearer fixture-only-0123456789abcdef','Content-Type':'application/json'},body:JSON.stringify({model:'openclaw:pixel',stream:true,user:'delegation-fixture',messages:[{role:'user',content:'Delegate two read-only reviews, yield, and consolidate the result.'}],...interim==='cancel'?{request_id:'cancel-original',history_snapshot:{schemaVersion:1,messages:[...prior,{role:'user',content:'Delegate two read-only reviews, yield, and consolidate the result.'}]}}:{}}),signal:AbortSignal.timeout(45000)});
-    if(interim==='cancel') {
+    const responsePromise=fetch(`http://127.0.0.1:${ingressPort}/v1/chat/completions`,{method:'POST',headers:{Authorization:'Bearer fixture-only-0123456789abcdef','Content-Type':'application/json'},body:JSON.stringify({model:'openclaw:pixel',stream:true,user:'delegation-fixture',messages:[{role:'user',content:'Delegate two read-only reviews, yield, and consolidate the result.'}],...cancelMode?{request_id:'cancel-original',history_snapshot:{schemaVersion:1,messages:[...prior,{role:'user',content:'Delegate two read-only reviews, yield, and consolidate the result.'}]}}:{}}),signal:AbortSignal.timeout(45000)});
+    if(cancelMode) {
       const initialBody=responsePromise.then(response=>response.text()).catch(error=>{assert.ok(['terminated','AbortError'].includes(error.message)||error.name==='AbortError');return '';});
       const readEvents=()=>existsSync(eventsFile)?readFileSync(eventsFile,'utf8').trim().split('\n').filter(Boolean).map(JSON.parse):[];
       let events=[];
@@ -257,6 +313,13 @@ test(`real gateway deferred delegation waits for two children and a verified rev
       const followup=await fetch(`http://127.0.0.1:${ingressPort}/v1/chat/completions`,{method:'POST',headers:{Authorization:'Bearer fixture-only-0123456789abcdef','Content-Type':'application/json'},body:JSON.stringify({model:'openclaw:pixel',stream:true,user:'delegation-fixture',messages:[{role:'user',content:'RECOVER_AFTER_STOP: do not continue the review or use tools. Answer only 17 + 2.'}],request_id:'cancel-followup',history_snapshot:{schemaVersion:1,messages:[...prior,{role:'user',content:'Delegate two read-only reviews, yield, and consolidate the result.'},{role:'user',content:'RECOVER_AFTER_STOP: do not continue the review or use tools. Answer only 17 + 2.'}]}}),signal:AbortSignal.timeout(30000)});
       const visible=await followup.text().catch(error=>{throw new Error("followup response: "+error.message)});
       assert.equal(followup.status,200,visible);
+      if(activeCancellation) {
+        assert.equal(deliveryBarrier.released,true,'native completion attempted delivery while owner response was held');
+        assert.ok(deliveryBarrier.owner?.runId,'live owner followup identity recorded');
+        assert.equal(deliveryBarrier.ownerEndedBeforeRelease,false,'owner remained active until native delivery');
+        assert.equal(deliveryBarrier.delivery.path,'direct-dispatch','cancelled completion must pass new-run admission');
+        assert.equal(deliveryBarrier.delivery.sessionKey,deliveryBarrier.owner.sessionKey,'completion targets the same owner');
+      }
       const chunks=visible.split('\n').filter(x=>x.startsWith('data: ')&&x!=='data: [DONE]').map(x=>JSON.parse(x.slice(6)));
       assert.equal(chunks.flatMap(c=>c.choices??[]).map(c=>c.delta?.content??'').join(''),'19',visible);
       assert.equal(providerTrace.filter(e=>e.branch==='recovery').length,1,'same-chat owner prompt reaches the actual provider once');
@@ -269,6 +332,7 @@ test(`real gateway deferred delegation waits for two children and a verified rev
       assert.equal(blockedChildren.size,2,JSON.stringify({events,log}));
       for(const key of blockedChildren)assert.ok(events.some(e=>e.hook==='end'&&e.sessionKey===key&&e.lastStopReason==='aborted'&&e.success===false),'both native child runs confirm abortion');
       assert.equal(providerTrace.filter(e=>e.announcement).length,0,'after both late announcements, no announcement reached the model');
+      if(activeCancellation)assert.equal(readNativeDelivery().filter(e=>e.path==='steer-enqueued'&&e.announcement).length,0,'cancelled completion never entered active owner context');
       assert.equal(providerTrace.filter(e=>e.branch==='recovery').length,1,'after draining both late announcements, only the actual owner followup generated');
       assert.equal(requests,6,'warmup + owner spawn/yield + two children + owner followup only');
       assert.equal(providerTrace.filter(e=>e.branch==='parent-announcement').length,0,'cancelled native announcements never reach the provider');
@@ -294,6 +358,13 @@ test(`real gateway deferred delegation waits for two children and a verified rev
     }
     assert.ok(events.some(e=>e.hook==='end'&&e.lastText==='CONSOLIDATED_VERIFIED'),JSON.stringify({body,events,requests,log}));
     const original=events.find(e=>e.hook==='prompt'&&!e.sessionKey?.includes(':subagent:'));
+    if(interim==='active-final') {
+      assert.equal(deliveryBarrier.released,true,'valid child attempted delivery while original owner was active');
+      assert.equal(deliveryBarrier.ownerEndedBeforeRelease,false,'owner stayed active until genuine delivery attempt');
+      assert.equal(deliveryBarrier.owner.runId,original.runId,'live original owner received its own child completion');
+      assert.equal(deliveryBarrier.delivery.path,'direct-dispatch');
+      assert.equal(readNativeDelivery().filter(e=>e.path==='steer-enqueued'&&e.announcement).length,0);
+    }
     const verifiedRun=events.find(e=>e.hook==='finalize'&&e.text===(interim==='extra-yield'?'CONSOLIDATED_VERIFIED':'CONSOLIDATED_REVIEW'))?.runId;
     const announcement=events.find(e=>e.hook==='prompt'&&e.runId===verifiedRun&&e.provenance?.sourceTool==='subagent_announce');
     assert.ok(announcement,JSON.stringify(events));
@@ -368,7 +439,27 @@ test(`real gateway deferred delegation waits for two children and a verified rev
     assert.ok(mirrors.every(message=>message.usage?.totalTokens===530),JSON.stringify(mirrors.map(message=>message.usage)));
     if(process.env.ODS_HOOK_EVIDENCE_PATH)writeFileSync(process.env.ODS_HOOK_EVIDENCE_PATH+'.'+interim,JSON.stringify({requests,body,events,providerTrace,consolidatedRequests},null,2));
   } finally {
+    if(activeDelivery&&process.env.ODS_HOOK_EVIDENCE_PATH)writeFileSync(process.env.ODS_HOOK_EVIDENCE_PATH+'.'+interim+'-barrier',JSON.stringify({deliveryBarrier,nativeDelivery:readNativeDelivery()},null,2));
     if(process.env.ODS_HOOK_EVIDENCE_PATH)writeFileSync(process.env.ODS_HOOK_EVIDENCE_PATH+'.'+interim+'.debug',JSON.stringify({log:log.slice(-131072),events:existsSync(eventsFile)?readFileSync(eventsFile,'utf8').slice(-524288):'',providerTrace,consolidatedRequests},null,2));
+    if(cancelMode&&process.env.ODS_HOOK_EVIDENCE_PATH&&existsSync(eventsFile)){
+      try {
+        const hookEvents=readFileSync(eventsFile,'utf8').trim().split('\n').filter(Boolean).map(JSON.parse);
+        const cancelAt=hookEvents.findLastIndex(e=>e.hook==='cancel');
+        const owner=hookEvents.slice(0,cancelAt<0?undefined:cancelAt)
+          .filter(e=>e.hook==='prompt'&&e.trigger==='user'&&e.sessionId&&!e.sessionKey?.includes(':subagent:')).at(-1);
+        const file=owner&&join(root,'state','agents','pixel','sessions',owner.sessionId+'.jsonl');
+        if(file&&existsSync(file)){
+          const transcript=readFileSync(file,'utf8').trim().split('\n').filter(Boolean).map(JSON.parse);
+          const timeline=transcript.map(e=>({type:e.type,id:e.id,parentId:e.parentId,timestamp:e.timestamp,
+            role:e.message?.role,idempotencyKey:e.message?.idempotencyKey,
+            announcement:JSON.stringify(e.message??{}).includes('Internal task completion event'),
+            recovery:JSON.stringify(e.message??{}).includes('RECOVER_AFTER_STOP')}));
+          writeFileSync(process.env.ODS_HOOK_EVIDENCE_PATH+'.cancel-transcript.debug',JSON.stringify(timeline,null,2));
+        }
+      } catch(error) {
+        try {writeFileSync(process.env.ODS_HOOK_EVIDENCE_PATH+'.cancel-transcript.error',String(error));} catch {}
+      } // A diagnostic failure must not hide the original assertion.
+    }
     if(child&&child.exitCode===null){const done=once(child,'close');process.kill(-child.pid,'SIGTERM');await Promise.race([done,delay(3000)]);if(child.exitCode===null)process.kill(-child.pid,'SIGKILL');}
     if(ingress){ingress.closeAllConnections();await new Promise(resolve=>ingress.close(resolve));}
     upstream.closeAllConnections();await new Promise(resolve=>upstream.close(resolve));

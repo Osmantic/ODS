@@ -35,10 +35,90 @@ except ImportError:  # pragma: no cover - exercised by POSIX CI
 
 MAX_YAML_BYTES = 1024 * 1024
 SERVICE_ID = re.compile(r"[a-z0-9][a-z0-9_-]*\Z")
+SELECTION_HISTORY = ".extensions-ever-selected.json"
 
 
 class SelectionError(Exception):
     """A selection cannot be committed without risking the installed stack."""
+
+
+def _remember_selected(install_dir: Path, service_ids: set[str]) -> None:
+    """Keep prior user selection when a Compose marker is turned off.
+
+    Called under the graph-wide selection lock while these services are still
+    selected. The receipt records only IDs, never credentials or service data.
+    An interrupted disable may leave an extra remembered ID, but that ID was
+    selected at the time of the write, so it is still truthful history.
+    """
+    if not service_ids:
+        return
+    if any(SERVICE_ID.fullmatch(service_id) is None for service_id in service_ids):
+        raise SelectionError("Invalid extension selection history ID")
+    directory = install_dir / "data"
+    try:
+        info = directory.lstat()
+    except OSError as exc:
+        raise SelectionError("Cannot inspect extension selection history directory") from exc
+    if not stat.S_ISDIR(info.st_mode):
+        raise SelectionError("Invalid extension selection history directory")
+    path = directory / SELECTION_HISTORY
+    try:
+        selected = path.lstat()
+    except FileNotFoundError:
+        raw = None
+    except OSError as exc:
+        raise SelectionError("Cannot inspect extension selection history") from exc
+    else:
+        if not stat.S_ISREG(selected.st_mode):
+            raise SelectionError("Invalid extension selection history")
+        raw = _read_bounded_file(path)
+    if raw is not None:
+        try:
+            document = json.loads(raw)
+        except (UnicodeError, json.JSONDecodeError) as exc:
+            raise SelectionError("Invalid extension selection history") from exc
+        old = document.get("ever_selected") if isinstance(document, dict) and document.get("schema_version") == 1 else None
+        if (not isinstance(old, list) or len(old) > 4096
+                or any(not isinstance(item, str) or SERVICE_ID.fullmatch(item) is None for item in old)):
+            raise SelectionError("Invalid extension selection history")
+        remembered = set(old)
+    else:
+        remembered = set()
+    if service_ids <= remembered:
+        return
+    remembered.update(service_ids)
+    payload = json.dumps({"schema_version": 1, "ever_selected": sorted(remembered)}, separators=(",", ":")) + "\n"
+    if len(payload) > MAX_YAML_BYTES:
+        raise SelectionError("Extension selection history is too large")
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", newline="\n",
+                                         prefix=".extensions-ever-selected-", dir=directory,
+                                         delete=False) as stream:
+            temporary = Path(stream.name)
+            stream.write(payload)
+            stream.flush()
+            os.chmod(temporary, 0o644)
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    except OSError as exc:
+        raise SelectionError("Could not save extension selection history; selection unchanged") from exc
+    finally:
+        if temporary is not None:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
+def _remember_selected_best_effort(install_dir: Path, service_ids: set[str]) -> None:
+    """Selection history is UI metadata and must not veto a safe disable."""
+    try:
+        _remember_selected(install_dir, service_ids)
+    except SelectionError:
+        # Preserve an unreadable/corrupt receipt for diagnosis. The catalog
+        # must present missing history as unknown rather than infer absence.
+        print("WARNING: Could not record prior Library selection history", file=sys.stderr)
 
 
 def _read_bounded_file(path: Path) -> bytes:
@@ -561,6 +641,7 @@ def run(
             raise SelectionError(f"No Compose selection file for {service_id}")
         if action == "check-disable":
             return "ready"
+        _remember_selected_best_effort(install_dir, {service_id})
         if stop_mode is not None:
             _stop_for_disable(install_dir, service_id, stop_mode, compose_flags)
         try:
@@ -876,6 +957,7 @@ def restore_preset(
             raise SelectionError(f"Compose cache is a directory: {cache}")
         operations = [(service_id, False) for service_id in disable_order]
         operations.extend((service_id, True) for service_id in enable_order)
+        _remember_selected_best_effort(install_dir, set(disable_order))
         if not operations:
             try:
                 cache.unlink(missing_ok=True)

@@ -707,6 +707,7 @@ class TestGetAllServices:
     @pytest.mark.asyncio
     @pytest.mark.parametrize("service_id,port", [
         ("n8n", 5678), ("perplexica", 3000), ("searxng", 8080),
+        ("whisper", 8000), ("tts", 8880),
     ])
     async def test_newly_selected_builtin_appears_then_disappears_without_restart(
         self, monkeypatch, service_id, port,
@@ -721,8 +722,9 @@ class TestGetAllServices:
 
         def current_manifests(*args, **kwargs):
             assert kwargs["only_service_ids"] == frozenset({
-                "n8n", "perplexica", "searxng",
+                "comfyui", "embeddings", "n8n", "perplexica", "privacy-shield", "qdrant", "searxng", "token-spy",
                 "remote-provider-egress", "remote-provider-ssh-tunnel",
+                "hermes", "hermes-proxy", "whisper", "tts",
             })
             return ({service_id: optional_config} if selected else {}), [], []
 

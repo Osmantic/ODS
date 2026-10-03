@@ -111,6 +111,12 @@ files, so Enter keeps the existing enabled services. If that record is missing
 or incomplete on an existing installation, choose a feature set explicitly;
 the installer will not silently treat it as a fresh Core install. Selection
 changes do not delete the optional services' data directories.
+Hermes alone does not select SearXNG. Recommended, Perplexica, and legacy
+OpenClaw still select it; a SearXNG service enabled through Dashboard Library
+is retained on an ordinary installer rerun. Choosing **Core Only** explicitly
+turns it off without deleting its data. `-NoRecommended` leaves an active
+SearXNG selection in place, since older installs did not record which feature
+first enabled it; disable SearXNG in Library if that is no longer wanted.
 
 ### Important: repo checkout vs runtime directory
 
@@ -187,7 +193,10 @@ background.
 # Specific tier with voice
 .\ods\installers\windows\install-windows.ps1 -Tier 2 -Voice
 
-# Full stack with everything
+# Keep the rest of an -All install, but leave both voice services off
+.\ods\installers\windows\install-windows.ps1 -All -NoVoice
+
+# Full stack with everything (re-enables Library-disabled voice services)
 .\ods\installers\windows\install-windows.ps1 -All
 
 # Add OpenCode, Claude Code, and Codex CLI to an otherwise normal install
@@ -202,6 +211,9 @@ background.
 # Wait for the full model instead of using bootstrap fast-start
 .\ods\installers\windows\install-windows.ps1 -NoBootstrap
 
+# Opt in to WSL GPU repair if the NVIDIA Docker probe fails
+.\ods\installers\windows\install-windows.ps1 -RepairGpuWsl
+
 # Install runtime files on a specific drive/path
 $installDir = "D:\Apps\ods"
 .\ods\installers\windows\install-windows.ps1 -InstallDir $installDir
@@ -212,6 +224,12 @@ selected only when the ODS OpenCode login task is enabled; a disabled task stays
 disabled. `-NoDevTools` disables that ODS-owned login task without deleting
 binaries or stopping a current session. The ODS host agent remains part of the
 install in either case.
+
+If the NVIDIA Docker GPU probe fails, the native installer continues with
+CPU inference by default. `-RepairGpuWsl` opts into recovery that shuts down
+all running WSL distributions and may install or configure NVIDIA Container
+Toolkit in the default WSL distribution. Stop important WSL workloads and
+check which distribution is the default before using it.
 
 ---
 
@@ -227,7 +245,9 @@ cd $installDir
 docker compose ps
 ```
 
-You should see containers: `llama-server`, `open-webui`, `searxng`, etc.
+The running containers follow your selected services. A fresh native Core
+install omits optional services such as SearXNG; selecting Hermes alone does
+not add it. Full Stack includes it.
 
 ### Test GPU Access
 
@@ -304,7 +324,9 @@ docker compose up -d
 | Start ODS | `cd $installDir; .\ods.ps1 start` |
 | View logs | `cd $installDir; .\ods.ps1 logs` |
 | Update | `cd $installDir; .\ods.ps1 update` |
-| Enable voice | Add `-Voice` flag or edit `.env` |
+| Add voice separately | In Dashboard Extensions Library, add Whisper STT or Kokoro TTS |
+| Enable both voice services | Rerun the installer with `-Voice` |
+| Disable both voice services | Rerun the installer with `-NoVoice` |
 | Enable workflows | Add `-Workflows` flag |
 | Support report | `cd $installDir; .\ods.ps1 report` |
 

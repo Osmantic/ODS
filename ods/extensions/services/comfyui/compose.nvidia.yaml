@@ -26,7 +26,10 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              count: 1
+              # An explicit multi-GPU assignment uses its UUID. Lean installs
+              # with an external model have no assignment; GPU 0 is the
+              # deterministic fallback for a later Library add-back.
+              device_ids: ["${COMFYUI_GPU_UUID:-0}"]
               capabilities: [gpu]
     healthcheck:
       test: ["CMD", "wget", "--spider", "--quiet", "http://127.0.0.1:8188"]

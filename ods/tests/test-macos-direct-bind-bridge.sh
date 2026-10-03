@@ -514,7 +514,7 @@ pass "dashboard-api readiness fails closed and never logs the host-agent key"
     grep -Fq "pgrep -f '[/]llama-server'" "$INSTALLER" \
         || fail "cloud transition does not reap install-owned native llama processes"
     stop_line="$(grep -n 'Stopping the old direct native listener before recreating the loopback Colima bridge' "$INSTALLER" | cut -d: -f1)"
-    bridge_line="$(grep -n 'if ! _configure_macos_llm_bridge; then' "$INSTALLER" | cut -d: -f1)"
+    bridge_line="$(grep -n -F 'if ! $GATEWAY_ONLY && ! _configure_macos_llm_bridge; then' "$INSTALLER" | cut -d: -f1)"
     [[ -n "$stop_line" && -n "$bridge_line" && "$stop_line" -lt "$bridge_line" ]] \
         || fail "direct-to-loopback transition recreates the bridge before stopping the old listener"
     grep -Fq 'upsert_env_value "${INSTALL_DIR}/.env" "ODS_AGENT_HOST" "host.docker.internal"' "$INSTALLER" \

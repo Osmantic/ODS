@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-10-02T00:34:26Z",
+  "generated_at": "2026-10-03T00:42:31Z",
   "schema_version": "1.0.0",
   "extensions": [
     {
@@ -3598,9 +3598,7 @@
         "all"
       ],
       "compose_file": "compose.yaml",
-      "depends_on": [
-        "searxng"
-      ],
+      "depends_on": [],
       "port": 9119,
       "external_port_default": 0,
       "health_endpoint": "/api/status",
@@ -3618,7 +3616,7 @@
         {
           "key": "SEARXNG_URL",
           "default": "http://searxng:8080",
-          "description": "Hermes web-search backend. Defaults to ODS's bundled SearXNG service."
+          "description": "Optional self-hosted search backend. Add SearXNG separately in Library; Hermes may use an upstream online keyless fallback when it is absent."
         }
       ],
       "tags": [],
@@ -3626,7 +3624,7 @@
         {
           "id": "hermes-agent",
           "name": "Hermes Agent",
-          "description": "Generalist self-improving agent — chat, tools, persistent memory, scheduled tasks",
+          "description": "Generalist agent with chat, tools, memory, and scheduled tasks. Add SearXNG separately for a self-hosted search backend.",
           "icon": "Bot",
           "category": "productivity",
           "requirements": {
@@ -8855,6 +8853,38 @@
       "configuration_scope": "declared-environment-keys"
     },
     {
+      "id": "privacy-shield",
+      "name": "Privacy Shield (PII Protection)",
+      "description": "Optional PII redaction proxy for OpenAI-compatible clients. Apps must point at its endpoint; adding it does not automatically reroute Portal. It forwards to the selected LLM route.",
+      "category": "optional",
+      "gpu_backends": [
+        "all"
+      ],
+      "compose_file": "compose.yaml",
+      "depends_on": [],
+      "port": 8085,
+      "external_port_default": 8085,
+      "health_endpoint": "/health",
+      "env_vars": [],
+      "tags": [],
+      "features": [],
+      "llm": {
+        "consumes": true,
+        "route": "direct",
+        "switchboard_exempt": true,
+        "switchboard_exempt_reason": "Inline PII-scrubbing proxy that sits in front of the LLM; it terminates the OpenAI request, scrubs, and forwards. It is a gateway-peer, not a stable-alias client, so it addresses the backend directly rather than ods/current.",
+        "pinning": "none",
+        "min_context": 0,
+        "probe": {
+          "kind": "completion",
+          "path": "/v1/chat/completions",
+          "auth": "env:SHIELD_API_KEY"
+        }
+      },
+      "catalog_source": "builtin",
+      "configuration_scope": "declared-environment-keys"
+    },
+    {
       "id": "prometheus",
       "name": "Prometheus",
       "description": "Collect and query local time-series metrics from explicitly configured project endpoints.",
@@ -11477,7 +11507,7 @@
     {
       "id": "whisper",
       "name": "Whisper (STT)",
-      "description": "Talk to your AI with your voice",
+      "description": "Speech-to-text service. ODS Talk also needs Hermes and Kokoro.",
       "category": "optional",
       "gpu_backends": [
         "all"
@@ -11492,28 +11522,28 @@
       "features": [
         {
           "id": "voice",
-          "name": "Voice Assistant",
-          "description": "Talk to your AI with your voice",
+          "name": "ODS Talk",
+          "description": "Hermes handles the conversation, Whisper accepts audio messages, and Kokoro speaks replies",
           "icon": "Mic",
           "category": "voice",
           "requirements": {
             "services": [
               "whisper",
               "tts",
-              "open-webui"
+              "hermes"
             ],
             "vram_gb": 0
           },
           "enabled_services_all": [
             "whisper",
             "tts",
-            "open-webui"
+            "hermes"
           ],
           "setup_time": "~5 minutes",
           "priority": 2,
           "launch": {
-            "type": "service",
-            "service": "open-webui"
+            "type": "internal",
+            "path": "/talk"
           },
           "gpu_backends": [
             "all"

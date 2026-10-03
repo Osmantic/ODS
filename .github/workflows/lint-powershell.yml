@@ -163,6 +163,24 @@ jobs:
         shell: pwsh
         run: ./tests/contracts/test-windows-hermes-config-runtime.ps1
 
+      - name: Windows Hermes Library Selection Contract
+        shell: pwsh
+        run: ./tests/contracts/test-windows-hermes-library-selection.ps1
+
+      - name: Windows Hermes Library Selection Contract (Windows PowerShell)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./tests/contracts/test-windows-hermes-library-selection.ps1
+
+      - name: Windows Voice Library Selection Contract
+        shell: pwsh
+        run: ./tests/contracts/test-windows-voice-library-selection.ps1
+
+      - name: Windows Voice Library Selection Contract (Windows PowerShell)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./tests/contracts/test-windows-voice-library-selection.ps1
+
       - name: Windows Hermes Credential Relock Contract (PowerShell 7)
         if: runner.os == 'Windows'
         shell: pwsh
@@ -220,6 +238,28 @@ jobs:
       - name: Windows Port Preflight Contract
         shell: pwsh
         run: ./tests/test-windows-port-preflight.ps1
+
+      - name: Windows Compose Project Ownership Contract
+        shell: pwsh
+        run: ./tests/test-windows-compose-project-ownership.ps1
+
+      - name: Windows GPU Repair Opt-in Contract
+        shell: pwsh
+        run: ./tests/test-windows-gpu-repair-opt-in.ps1
+
+      - name: Windows GPU Repair Opt-in Contract (PowerShell 5.1)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./tests/test-windows-gpu-repair-opt-in.ps1
+
+      - name: Windows Ollama Preflight Custody Contract
+        shell: pwsh
+        run: ./tests/test-windows-ollama-preflight-custody.ps1
+
+      - name: Windows Ollama Preflight Custody Contract (PowerShell 5.1)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./tests/test-windows-ollama-preflight-custody.ps1
 
       - name: Windows Host Agent Python Resolver Contract
         shell: pwsh

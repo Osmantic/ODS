@@ -30,6 +30,14 @@ ENTRYPOINT = SERVICE_DIR / "docker-entrypoint.sh"
 SYNC_SCRIPT = SERVICE_DIR / "sync-model-config.js"
 SEARCH_SYNC_SCRIPT = SERVICE_DIR / "sync-search-config.js"
 WHISPER_COMPOSE = ROOT / "extensions" / "services" / "whisper" / "compose.yaml"
+
+
+def _apply_config_post(state: dict, payload: dict) -> None:
+    target = state
+    parts = payload["key"].split(".")
+    for part in parts[:-1]:
+        target = target[int(part)] if isinstance(target, list) else target[part]
+    target[parts[-1]] = payload["value"]
 BRAVE_DIR = ROOT / "extensions" / "services" / "brave-search"
 HEALTH_PHASE = ROOT / "installers" / "phases" / "12-health.sh"
 SUMMARY_PHASE = ROOT / "installers" / "phases" / "13-summary.sh"
@@ -436,7 +444,7 @@ def test_sync_script_persists_exact_lemonade_route() -> None:
         def do_POST(self):
             length = int(self.headers.get("Content-Length", "0"))
             payload = json.loads(self.rfile.read(length))
-            state[payload["key"]] = payload["value"]
+            _apply_config_post(state, payload)
             body = b"{}"
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -514,7 +522,7 @@ def test_sync_script_uses_stable_alias_when_switchboard_enabled() -> None:
         def do_POST(self):
             length = int(self.headers.get("Content-Length", "0"))
             payload = json.loads(self.rfile.read(length))
-            state[payload["key"]] = payload["value"]
+            _apply_config_post(state, payload)
             body = b"{}"
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -590,7 +598,7 @@ def test_sync_script_falls_back_to_extra_gguf_when_exact_lemonade_id_is_absent()
         def do_POST(self):
             length = int(self.headers.get("Content-Length", "0"))
             payload = json.loads(self.rfile.read(length))
-            state[payload["key"]] = payload["value"]
+            _apply_config_post(state, payload)
             body = b"{}"
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -662,7 +670,7 @@ def test_sync_script_normalizes_base_url_without_v1_suffix() -> None:
         def do_POST(self):
             length = int(self.headers.get("Content-Length", "0"))
             payload = json.loads(self.rfile.read(length))
-            state[payload["key"]] = payload["value"]
+            _apply_config_post(state, payload)
             body = b"{}"
             self.send_response(200)
             self.send_header("Content-Type", "application/json")

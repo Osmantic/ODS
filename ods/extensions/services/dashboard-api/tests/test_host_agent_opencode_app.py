@@ -4,6 +4,7 @@ import importlib.util
 import io
 import json
 import os
+import plistlib
 import shutil
 import socket
 import subprocess
@@ -129,6 +130,31 @@ def test_probe_reports_closed_port_as_unreachable():
     assert probe["healthy"] is False
 
 
+def test_silent_tcp_listener_blocks_setup_before_mutation(monkeypatch):
+    # A listener holding the port but not answering HTTP must not pass the
+    # admission check and start an avoidable download or LaunchAgent write.
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(8)
+        port = listener.getsockname()[1]
+        probe = _mod._probe_opencode_web(port, timeout=0.1)
+        assert probe["reachable"] is True
+        assert probe["healthy"] is False
+
+        real_probe = _mod._probe_opencode_web
+        monkeypatch.setattr(_mod, "_probe_opencode_web", lambda selected: real_probe(selected, timeout=0.1))
+        monkeypatch.setattr(_mod, "_opencode_port", lambda: port)
+        monkeypatch.setattr(_mod, "_opencode_service_registered", lambda system=None: False)
+        monkeypatch.setattr(_mod, "_opencode_setup_issue", lambda env, system=None: None)
+        status = _mod._opencode_app_status({})
+        assert status["portInUse"] is True
+        assert status["setupSupported"] is False
+        code, body = _mod._begin_opencode_setup({})
+        assert code == 409
+        assert body["code"] == "opencode_port_in_use"
+        assert _mod._opencode_setup_thread is None
+
+
 # --- lifecycle status -----------------------------------------------------------
 
 
@@ -233,12 +259,44 @@ def test_setup_issue_is_reported(monkeypatch):
 ])
 def test_macos_activity_requires_a_running_process(monkeypatch, stdout, returncode, expected):
     monkeypatch.setattr(_mod.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(_mod, "_opencode_macos_plist_binary", lambda: Path("/home/owner/opencode"))
+    monkeypatch.setattr(_mod, "_opencode_macos_loaded_output", lambda binary: stdout if returncode == 0 else None)
+    assert _mod._opencode_service_active() is expected
+
+
+def test_macos_loaded_job_requires_the_exact_argument_vector(monkeypatch):
     monkeypatch.setattr(_mod.os, "getuid", lambda: 501, raising=False)
+    binary = Path.home() / ".opencode" / "bin" / "opencode"
+    args = _mod._opencode_macos_arguments(binary)
+    launch_lines = [
+        f"path = {_mod._opencode_macos_plist_path()}",
+        "program = /bin/sh", "arguments = {", *args, "}", "state = running",
+    ]
+    output = "\n".join(launch_lines)
     monkeypatch.setattr(
         _mod.subprocess, "run",
-        lambda command, **kwargs: subprocess.CompletedProcess(command, returncode, stdout=stdout, stderr=""),
+        lambda command, **kwargs: subprocess.CompletedProcess(command, 0, stdout=output, stderr=""),
     )
-    assert _mod._opencode_service_active() is expected
+    assert _mod._opencode_macos_loaded_output(binary) == output
+    launch_lines[-3] = "--foreign-option"
+    output = "\n".join(launch_lines)
+    with pytest.raises(RuntimeError, match="Another loaded LaunchAgent"):
+        _mod._opencode_macos_loaded_output(binary)
+
+
+def test_macos_plist_creation_preserves_a_raced_foreign_file(monkeypatch, _isolated):
+    path = _mod._opencode_macos_plist_path()
+    path.parent.mkdir(parents=True)
+    foreign = b"foreign launch agent"
+
+    def race():
+        path.write_bytes(foreign)
+        return None
+
+    monkeypatch.setattr(_mod, "_opencode_macos_plist_binary", race)
+    with pytest.raises(RuntimeError, match="appeared during setup"):
+        _mod._create_opencode_macos_plist(path, b"ODS launch agent")
+    assert path.read_bytes() == foreign
 
 
 def test_linux_activity_uses_the_managed_unit_state(monkeypatch):
@@ -253,7 +311,7 @@ def test_linux_activity_uses_the_managed_unit_state(monkeypatch):
     assert _mod._opencode_service_active() is None
 
 
-def test_registration_follows_each_platform_service_manager(_isolated):
+def test_registration_follows_each_platform_service_manager(_isolated, monkeypatch):
     home = _isolated
     assert _mod._opencode_service_registered("Linux") is False
     unit = home / ".config" / "systemd" / "user" / "opencode-web.service"
@@ -264,8 +322,10 @@ def test_registration_follows_each_platform_service_manager(_isolated):
     assert _mod._opencode_service_registered("Darwin") is False
     plist = home / "Library" / "LaunchAgents" / "com.ods.opencode-web.plist"
     plist.parent.mkdir(parents=True)
-    plist.write_text("<plist/>")
-    assert _mod._opencode_service_registered("Darwin") is True
+    plist.write_bytes(_mod._render_opencode_macos_plist(home / ".opencode" / "bin" / "opencode"))
+    plist.chmod(0o644)
+    if os.name != "nt":
+        assert _mod._opencode_service_registered("Darwin") is True
 
     assert _mod._opencode_service_registered("Windows") is False
     exe = home / ".opencode" / "bin" / "opencode.exe"
@@ -302,9 +362,82 @@ def test_setup_is_offered_on_linux_with_a_user_session(tmp_path, monkeypatch):
     assert _mod._opencode_setup_issue({"ODS_MODEL_SWITCHBOARD": "enabled"}, "Linux") is None
 
 
-@pytest.mark.parametrize("system", ["Darwin", "Windows"])
-def test_setup_defers_to_the_installer_off_linux(system):
-    assert "installer" in _mod._opencode_setup_issue({}, system)
+def test_setup_defers_to_the_installer_on_windows():
+    assert "installer" in _mod._opencode_setup_issue({}, "Windows")
+
+
+def test_macos_setup_is_available_without_a_managed_plist(tmp_path, monkeypatch):
+    _setup_ready_install(tmp_path, monkeypatch)
+    monkeypatch.setattr(_mod.os, "getuid", lambda: 501, raising=False)
+    monkeypatch.setattr(_mod, "_opencode_macos_loaded_output", lambda binary: None)
+    monkeypatch.setattr(_mod, "_opencode_macos_disabled", lambda: False)
+    assert _mod._opencode_setup_issue(dict(SETUP_ENV), "Darwin") is None
+
+
+def test_macos_cloud_route_matches_the_initial_installer(monkeypatch):
+    monkeypatch.setattr(_mod.platform, "system", lambda: "Darwin")
+    env = {
+        "ODS_MODEL_SWITCHBOARD": "disabled", "ODS_MODE": "cloud",
+        "LITELLM_PORT": "4400", "LITELLM_KEY": "test-key",
+    }
+    assert _mod._opencode_route(env) == ("http://127.0.0.1:4400/v1", "test-key")
+    assert _mod._opencode_model_route(env, "unused") == ("llama-server", "default", "default")
+    env["ODS_MODEL_SWITCHBOARD"] = "enabled"
+    assert _mod._opencode_route(env) == ("http://127.0.0.1:4400/v1", "test-key")
+    assert _mod._opencode_model_route(env, "unused") == ("llama-server", "ods/current", "ods/current")
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX LaunchAgent ownership and mode")
+def test_macos_setup_refuses_a_foreign_plist(tmp_path, monkeypatch, _isolated):
+    _setup_ready_install(tmp_path, monkeypatch)
+    plist = _mod._opencode_macos_plist_path()
+    plist.parent.mkdir(parents=True)
+    plist.write_bytes(plistlib.dumps({"Label": "com.ods.opencode-web", "ProgramArguments": ["/usr/bin/false"]}))
+    assert "does not match" in _mod._opencode_setup_issue(dict(SETUP_ENV), "Darwin")
+    monkeypatch.setattr(_mod.subprocess, "run", lambda *args, **kwargs: pytest.fail("foreign job was touched"))
+    with pytest.raises(RuntimeError, match="does not match"):
+        _mod._setup_managed_opencode_macos(dict(SETUP_ENV))
+    assert plist.is_file()
+
+
+def test_macos_plist_race_never_rewrites_owner_config(tmp_path, monkeypatch, _isolated):
+    _setup_ready_install(tmp_path, monkeypatch)
+    owner_uid = getattr(os, "getuid", lambda: 0)()
+    monkeypatch.setattr(_mod.os, "getuid", lambda: owner_uid, raising=False)
+    monkeypatch.setattr(_mod, "_opencode_setup_issue", lambda env, system=None: None)
+    monkeypatch.setattr(_mod, "_opencode_macos_disabled", lambda: False)
+    monkeypatch.setattr(_mod, "_write_progress", lambda *args, **kwargs: None)
+
+    def raced_plist(path, content):
+        raise RuntimeError("raced plist")
+
+    monkeypatch.setattr(_mod, "_create_opencode_macos_plist", raced_plist)
+    monkeypatch.setattr(
+        _mod, "_update_opencode_config",
+        lambda *args, **kwargs: pytest.fail("owner config changed before plist custody"),
+    )
+    monkeypatch.setattr(
+        _mod, "_restore_opencode_config",
+        lambda snapshot: pytest.fail("untouched owner config was rewritten"),
+    )
+    config = _isolated / ".config" / "opencode" / "opencode.json"
+    config.parent.mkdir(parents=True)
+    original = '{"model":"owner/cloud-model"}\n'
+    config.write_text(original)
+    binary = _isolated / ".opencode" / "bin" / "opencode"
+
+    def install(command, **kwargs):
+        assert command[0] == "bash"
+        binary.parent.mkdir(parents=True, exist_ok=True)
+        binary.write_bytes(b"reviewed-release-fixture")
+        binary.chmod(0o755)
+        return subprocess.CompletedProcess(command, 0, stdout=f"{binary}\n", stderr="")
+
+    monkeypatch.setattr(_mod.subprocess, "run", install)
+    with pytest.raises(RuntimeError, match="raced plist"):
+        _mod._setup_managed_opencode_macos(dict(SETUP_ENV))
+    assert config.read_text() == original
+    assert not binary.exists()
 
 
 def test_setup_requires_systemctl(tmp_path, monkeypatch):
@@ -457,19 +590,75 @@ def test_linux_start_failure_raises(monkeypatch):
 def test_macos_start_kicks_a_loaded_agent_or_bootstraps_it(monkeypatch, _isolated, loaded, expected):
     monkeypatch.setattr(_mod.platform, "system", lambda: "Darwin")
     monkeypatch.setattr(_mod.os, "getuid", lambda: 501, raising=False)
+    monkeypatch.setattr(_mod, "_opencode_macos_plist_binary", lambda: Path("/home/owner/opencode"))
+    monkeypatch.setattr(_mod, "_opencode_macos_disabled", lambda: True)
+    loaded_state = [loaded]
+    monkeypatch.setattr(_mod, "_opencode_macos_loaded_output", lambda binary: "state = running" if loaded_state[0] else None)
     commands = []
 
     def fake_run(command, **kwargs):
         commands.append(command)
-        code = 0 if command[1] != "print" or loaded else 113
-        return subprocess.CompletedProcess(command, code, stdout="", stderr="")
+        if command[1] == "bootstrap":
+            loaded_state[0] = True
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
 
     monkeypatch.setattr(_mod.subprocess, "run", fake_run)
     monkeypatch.setattr(_mod, "_wait_for_opencode_health", lambda attempts=30: None)
     _mod._start_managed_opencode()
     plist = str(_isolated / "Library" / "LaunchAgents" / "com.ods.opencode-web.plist")
-    assert commands[0] == ["launchctl", "print", "gui/501/com.ods.opencode-web"]
+    assert commands[0] == ["launchctl", "enable", "gui/501/com.ods.opencode-web"]
     assert commands[1] == (expected or ["launchctl", "bootstrap", "gui/501", plist])
+
+
+def test_macos_start_cleans_up_a_partial_owned_bootstrap(monkeypatch):
+    monkeypatch.setattr(_mod.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(_mod.os, "getuid", lambda: 501, raising=False)
+    monkeypatch.setattr(_mod, "_opencode_macos_plist_binary", lambda: Path("/home/owner/opencode"))
+    monkeypatch.setattr(_mod, "_opencode_macos_disabled", lambda: False)
+    loaded = [False]
+    monkeypatch.setattr(_mod, "_opencode_macos_loaded_output", lambda binary: "owned job" if loaded[0] else None)
+    commands = []
+
+    def run(command, **kwargs):
+        commands.append(command)
+        if command[1] == "bootstrap":
+            loaded[0] = True
+            return subprocess.CompletedProcess(command, 1, stdout="", stderr="partial bootstrap")
+        if command[1] == "bootout":
+            loaded[0] = False
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(_mod.subprocess, "run", run)
+    with pytest.raises(RuntimeError, match="Could not start OpenCode"):
+        _mod._start_managed_opencode()
+    assert [command[1] for command in commands] == ["bootstrap", "bootout"]
+    assert loaded == [False]
+
+
+def test_macos_start_does_not_bootout_a_foreign_partial_job(monkeypatch):
+    monkeypatch.setattr(_mod.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(_mod.os, "getuid", lambda: 501, raising=False)
+    monkeypatch.setattr(_mod, "_opencode_macos_plist_binary", lambda: Path("/home/owner/opencode"))
+    monkeypatch.setattr(_mod, "_opencode_macos_disabled", lambda: False)
+    bootstrap_attempted = [False]
+
+    def loaded_output(binary):
+        if bootstrap_attempted[0]:
+            raise RuntimeError("Another loaded LaunchAgent uses the ODS OpenCode label")
+        return None
+
+    commands = []
+
+    def run(command, **kwargs):
+        commands.append(command)
+        bootstrap_attempted[0] = True
+        return subprocess.CompletedProcess(command, 1, stdout="", stderr="foreign label")
+
+    monkeypatch.setattr(_mod, "_opencode_macos_loaded_output", loaded_output)
+    monkeypatch.setattr(_mod.subprocess, "run", run)
+    with pytest.raises(RuntimeError, match="rollback failed"):
+        _mod._start_managed_opencode()
+    assert [command[1] for command in commands] == ["bootstrap"]
 
 
 def test_windows_start_uses_the_scheduled_task_control(monkeypatch):
@@ -508,6 +697,119 @@ SETUP_ENV = {
     "MAX_CONTEXT": "32768",
     "LLM_MODEL": "qwen3-8b",
 }
+
+
+@pytest.mark.parametrize("bootstrap_fails,prior_data,partial_bootstrap,concurrent_load,bootout_mode", [
+    (False, False, False, False, "unloaded"),
+    (True, False, False, False, "unloaded"),
+    (True, True, False, False, "unloaded"),
+    (True, False, True, False, "unloaded"),
+    (False, False, False, True, "unloaded"),
+    (True, True, True, False, "failed"),
+    (True, False, True, False, "persisted"),
+])
+def test_macos_retained_setup_installs_or_rolls_back_without_pixel(
+    tmp_path, monkeypatch, _isolated, bootstrap_fails, prior_data, partial_bootstrap,
+    concurrent_load, bootout_mode,
+):
+    _setup_ready_install(tmp_path, monkeypatch)
+    owner_uid = getattr(os, "getuid", lambda: 0)()
+    monkeypatch.setattr(_mod.os, "getuid", lambda: owner_uid, raising=False)
+    monkeypatch.setattr(_mod, "_opencode_setup_issue", lambda env, system=None: None)
+    monkeypatch.setattr(_mod, "_opencode_macos_disabled", lambda: True)
+    monkeypatch.setattr(_mod, "_wait_for_opencode_health", lambda attempts=30: None)
+    monkeypatch.setattr(_mod, "_write_progress", lambda *args, **kwargs: None)
+    binary = _isolated / ".opencode" / "bin" / "opencode"
+    plist = _mod._opencode_macos_plist_path()
+    config_path = _isolated / ".config" / "opencode" / "opencode.json"
+    prior_config = '{"agent":{"build":{"model":"owner/cloud-model"}}}\n'
+    if prior_data:
+        binary.parent.mkdir(parents=True, exist_ok=True)
+        binary.write_bytes(b"previous-owner-binary")
+        binary.chmod(0o755)
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(prior_config)
+    monkeypatch.setattr(_mod, "_opencode_macos_plist_binary", lambda: binary if plist.exists() else None)
+    loaded = False
+    concurrent_loaded = False
+    commands = []
+
+    def loaded_output(_binary):
+        nonlocal loaded, concurrent_loaded
+        if concurrent_load and plist.exists() and not concurrent_loaded:
+            loaded = True
+            concurrent_loaded = True
+        return "state = running" if loaded else None
+
+    def run(command, **kwargs):
+        nonlocal loaded
+        commands.append(command)
+        if command[0] == "bash":
+            binary.parent.mkdir(parents=True, exist_ok=True)
+            replacement = binary.with_name("opencode.reviewed")
+            replacement.write_bytes(b"reviewed-release-fixture")
+            replacement.chmod(0o755)
+            os.replace(replacement, binary)
+            return subprocess.CompletedProcess(command, 0, stdout=f"{binary}\n", stderr="")
+        if command[1] == "bootstrap":
+            if bootstrap_fails:
+                if partial_bootstrap:
+                    loaded = True
+                return subprocess.CompletedProcess(command, 1, stdout="", stderr="simulated bootstrap failure")
+            loaded = True
+        elif command[1] == "bootout":
+            if bootout_mode == "unloaded":
+                loaded = False
+            elif bootout_mode == "failed":
+                return subprocess.CompletedProcess(command, 1, stdout="", stderr="simulated bootout failure")
+        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(_mod, "_opencode_macos_loaded_output", loaded_output)
+    monkeypatch.setattr(_mod.subprocess, "run", run)
+    if bootstrap_fails or concurrent_load:
+        retained_files = bootout_mode != "unloaded"
+        expected_error = "OpenCode rollback failed" if retained_files else (
+            "OpenCode LaunchAgent was loaded during setup" if concurrent_load
+            else "Could not bootstrap OpenCode"
+        )
+        with pytest.raises(RuntimeError, match=expected_error):
+            _mod._setup_managed_opencode_macos(dict(SETUP_ENV))
+        if retained_files:
+            assert loaded
+            assert binary.read_bytes() == b"reviewed-release-fixture"
+            assert plist.is_file()
+            expected_model = "owner/cloud-model" if prior_data else "llama-server/ods/current"
+            assert json.loads(config_path.read_text())["agent"]["build"]["model"] == expected_model
+            if prior_data:
+                backups = list(binary.parent.glob(".ods-opencode-backup-*/opencode"))
+                assert len(backups) == 1
+                assert backups[0].read_bytes() == b"previous-owner-binary"
+        elif prior_data:
+            assert binary.read_bytes() == b"previous-owner-binary"
+            assert config_path.read_text() == prior_config
+        else:
+            assert not binary.exists()
+            assert not config_path.exists()
+        if not retained_files:
+            assert not plist.exists()
+        expected = ["enable"]
+        if not concurrent_load:
+            expected.append("bootstrap")
+        if partial_bootstrap or concurrent_load:
+            expected.append("bootout")
+        if not retained_files:
+            expected.append("disable")
+        assert [command[1] for command in commands if command[0] == "launchctl"] == expected
+    else:
+        _mod._setup_managed_opencode_macos(dict(SETUP_ENV))
+        assert binary.is_file()
+        assert plistlib.loads(plist.read_bytes())["ProgramArguments"][5] == str(binary)
+        config = json.loads(config_path.read_text())
+        assert config["agent"]["build"]["model"] == "llama-server/ods/current"
+        assert config["agent"]["plan"]["model"] == "llama-server/ods/current"
+        assert [command[1] for command in commands if command[0] == "launchctl"] == [
+            "enable", "bootstrap", "kickstart",
+        ]
 
 
 def _prepare_setup(tmp_path, monkeypatch, home, *, installer_rc=0, fail_action=None,

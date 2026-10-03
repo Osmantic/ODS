@@ -35,7 +35,9 @@
 #   .\install-windows.ps1 -NoDevTools     # Disable their login task on a rerun
 #   .\install-windows.ps1 --Hermes         # Enable Hermes Agent
 #   .\install-windows.ps1 -NoHermes        # Disable Hermes Agent
+#   .\install-windows.ps1 -NoVoice         # Disable both, including with -All
 #   .\install-windows.ps1 -NoBootstrap     # Wait for full model before launch
+#   .\install-windows.ps1 -RepairGpuWsl    # Opt in to WSL shutdown/toolkit repair on GPU probe failure
 #   .\install-windows.ps1 -InstallDir <path>
 #   .\install-windows.ps1 --NonInteractive # Headless install (defaults)
 #
@@ -48,6 +50,7 @@ param(
     [switch]$NonInteractive,
     [string]$Tier = "",
     [switch]$Voice,
+    [switch]$NoVoice,
     [switch]$Workflows,
     [switch]$Rag,
     [switch]$Recommended,
@@ -65,6 +68,7 @@ param(
     [switch]$Langfuse,
     [switch]$NoLangfuse,
     [switch]$NoBootstrap,
+    [switch]$RepairGpuWsl,
     [string]$InstallDir = "",
     [string]$SummaryJsonPath = ""
 )
@@ -121,6 +125,10 @@ $nonInteractive = $NonInteractive.IsPresent
 $cloudMode      = $Cloud.IsPresent
 $tierOverride   = $Tier
 $voiceFlag      = $Voice.IsPresent
+$noVoiceFlag    = $NoVoice.IsPresent
+if ($voiceFlag -and $noVoiceFlag) {
+    throw "-Voice and -NoVoice cannot be used together"
+}
 $workflowsFlag  = $Workflows.IsPresent
 $ragFlag        = $Rag.IsPresent
 $recommendedFlag = $Recommended.IsPresent
@@ -137,6 +145,7 @@ $lanFlag        = $Lan.IsPresent
 $langfuseFlag   = $Langfuse.IsPresent
 $noLangfuseFlag = $NoLangfuse.IsPresent
 $noBootstrapFlag = $NoBootstrap.IsPresent
+$repairGpuWslFlag = $RepairGpuWsl.IsPresent
 $installDir     = $script:ODS_INSTALL_DIR
 $sourceRoot     = $SourceRoot
 $enableDevTools = Resolve-ODSWindowsDevToolsSelection `
@@ -982,6 +991,7 @@ litellm_settings:
         $currentBackend = $(if ($cloudMode) { "none" } else { $gpuInfo.Backend })
         $servicePlan = New-ODSWindowsServicePlan `
             -EnableRecommended $enableRecommended `
+            -EnableSearxng $enableSearxng `
             -CloudMode $cloudMode `
             -UseLemonade $useLemonade `
             -SwitchboardMode (Get-ODSWindowsEffectiveSwitchboardMode -InstallDir $installDir -RequestedMode $env:ODS_MODEL_SWITCHBOARD) `
@@ -1777,6 +1787,10 @@ litellm_settings:
         }
 
         Assert-ODSWindowsComposeCwd -InstallDir $installDir
+        # Recheck immediately before local image work and Compose launch. The
+        # installer may have switched Docker client config since phase 05.
+        $null = Assert-ODSWindowsComposeContainerOwnership -InstallDir $installDir `
+            -DockerClientArgs $script:ODSWindowsDockerClientArgs
         $composeUpArgs = @("up", "-d", "--remove-orphans", "--no-build", "--pull", "never")
         # PS 5.1 treats ANY stderr output from native commands as NativeCommandError.
         # Silence stderr-as-error so $LASTEXITCODE reflects the real compose exit code.
@@ -1934,12 +1948,16 @@ litellm_settings:
             }
 
             Write-AI "Starting services... this may take several minutes."
+            $null = Assert-ODSWindowsComposeContainerOwnership -InstallDir $installDir `
+                -DockerClientArgs $script:ODSWindowsDockerClientArgs
             & docker @script:ODSWindowsDockerClientArgs compose @composeFlags @composeUpArgs *> $_composeLog
             $composeExit = $LASTEXITCODE
             if ($composeExit -ne 0 -and $script:ODSWindowsDockerConfigMode -eq "install-scoped") {
                 Write-AIWarn "Compose service launch failed with the install-scoped Docker config; retrying with the user's Docker config."
                 Add-Content -LiteralPath $_composeLog -Value "`n--- retrying Compose service launch with user's Docker config after install-scoped config failure ---"
                 Use-ODSWindowsUserDockerConfig -Reason "Compose service launch"
+                $null = Assert-ODSWindowsComposeContainerOwnership -InstallDir $installDir `
+                    -DockerClientArgs $script:ODSWindowsDockerClientArgs
                 Write-ODSWindowsComposeLaunchRecord -InstallDir $installDir -ComposeFlags $composeFlags `
                     -ComposeArgs $composeUpArgs -DockerClientArgs $script:ODSWindowsDockerClientArgs
                 & docker @script:ODSWindowsDockerClientArgs compose @composeFlags @composeUpArgs *>> $_composeLog
@@ -2105,9 +2123,10 @@ if ($dryRun) {
     $dryRunUseLemonade = ($gpuInfo.Backend -eq "amd" -and -not $cloudMode)
     $_dryRunServicePlan = New-ODSWindowsServicePlan `
         -EnableRecommended $enableRecommended `
-        -CloudMode $cloudMode `
-        -UseLemonade $dryRunUseLemonade `
-        -SwitchboardMode (Get-ODSWindowsEffectiveSwitchboardMode -InstallDir $installDir -RequestedMode $env:ODS_MODEL_SWITCHBOARD) `
+        -EnableSearxng $enableSearxng `
+            -CloudMode $cloudMode `
+            -UseLemonade $dryRunUseLemonade `
+            -SwitchboardMode (Get-ODSWindowsEffectiveSwitchboardMode -InstallDir $installDir -RequestedMode $env:ODS_MODEL_SWITCHBOARD) `
         -EnableWhisper $enableWhisper `
         -EnableTts $enableTts `
         -EnableWorkflows $enableWorkflows `
@@ -2184,6 +2203,10 @@ $healthChecks = @(
 if ($enableWhisper)   {
     $healthWhisperPort = if ($windowsEnvMap.ContainsKey("WHISPER_PORT") -and -not [string]::IsNullOrWhiteSpace($windowsEnvMap["WHISPER_PORT"])) { $windowsEnvMap["WHISPER_PORT"] } else { "9000" }
     $healthChecks += @{ Name = "Whisper (STT)"; Url = "http://localhost:$healthWhisperPort/health" }
+}
+if ($enableTts) {
+    $healthTtsPort = if ($windowsEnvMap.ContainsKey("TTS_PORT") -and -not [string]::IsNullOrWhiteSpace($windowsEnvMap["TTS_PORT"])) { $windowsEnvMap["TTS_PORT"] } else { "8880" }
+    $healthChecks += @{ Name = "Kokoro (TTS)"; Url = "http://localhost:$healthTtsPort/health" }
 }
 if ($enableWorkflows) { $healthChecks += @{ Name = "n8n (Workflows)";   Url = "http://localhost:5678/healthz" } }
 

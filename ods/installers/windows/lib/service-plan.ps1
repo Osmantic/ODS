@@ -41,15 +41,141 @@ function Get-ODSWindowsEffectiveSwitchboardMode {
     return $mode
 }
 
+function Get-ODSWindowsInstalledServiceSelection {
+    param(
+        [Parameter(Mandatory = $true)][string]$InstallDir,
+        [Parameter(Mandatory = $true)][string]$ServiceId
+    )
+
+    # Read before the installer copies fresh source over the installed tree.
+    if (-not (Test-Path -LiteralPath (Join-Path $InstallDir ".env") -PathType Leaf)) {
+        return $null
+    }
+    $extensions = Join-Path $InstallDir "extensions"
+    $services = Join-Path $extensions "services"
+    $serviceDir = Join-Path $services $ServiceId
+    $active = Join-Path $serviceDir "compose.yaml"
+    $disabled = "$active.disabled"
+    foreach ($path in @($extensions, $services, $serviceDir, $active, $disabled)) {
+        $item = Get-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
+        if ($item -and ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+            throw "Unsafe installed $ServiceId selection path: $path"
+        }
+    }
+    $hasActive = Test-Path -LiteralPath $active -PathType Leaf
+    $hasDisabled = Test-Path -LiteralPath $disabled -PathType Leaf
+    if ($hasActive -and $hasDisabled) {
+        throw "Ambiguous installed $ServiceId selection: both Compose markers exist"
+    }
+    if ($hasActive) { return $true }
+    if ($hasDisabled) { return $false }
+
+    # Older native installs recorded their selected Compose stack in this
+    # flags file before Library actions began renaming per-service fragments.
+    $flagsPath = Join-Path $InstallDir ".compose-flags"
+    $flagsItem = Get-Item -LiteralPath $flagsPath -Force -ErrorAction SilentlyContinue
+    if ($flagsItem) {
+        if ($flagsItem.PSIsContainer -or ($flagsItem.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+            throw "Unsafe installed Compose flags path: $flagsPath"
+        }
+        $tokens = @((Get-Content -LiteralPath $flagsPath -Raw -ErrorAction Stop).Trim() -split '\s+' |
+            Where-Object { $_ })
+        $baseSelected = $false
+        $serviceSelected = $false
+        for ($i = 0; $i -lt $tokens.Count; $i++) {
+            if ($tokens[$i] -ne "-f") { continue }
+            if (++$i -ge $tokens.Count) { throw "Incomplete installed Compose flags: $flagsPath" }
+            $fragment = $tokens[$i] -replace '\\', '/'
+            if ($fragment -eq "docker-compose.base.yml") { $baseSelected = $true }
+            if ($fragment -eq "extensions/services/$ServiceId/compose.yaml") { $serviceSelected = $true }
+        }
+        if (-not $baseSelected) { throw "Installed Compose flags lack base stack: $flagsPath" }
+        return $serviceSelected
+    }
+    return $null
+}
+
+function Resolve-ODSWindowsVoiceSelection {
+    param(
+        [Parameter(Mandatory = $true)][string]$InstallDir,
+        [bool]$ComputedVoice,
+        [Nullable[bool]]$ComputedWhisper = $null,
+        [Nullable[bool]]$ComputedTts = $null,
+        [bool]$CliEnable,
+        [bool]$CliDisable,
+        [bool]$All,
+        [bool]$MenuExplicit
+    )
+
+    # Inspect before source copy even for explicit choices. An unsafe marker
+    # must never be silently overwritten by the later Compose reconciliation.
+    $installedWhisper = Get-ODSWindowsInstalledServiceSelection -InstallDir $InstallDir -ServiceId "whisper"
+    $installedTts = Get-ODSWindowsInstalledServiceSelection -InstallDir $InstallDir -ServiceId "tts"
+    $whisper = if ($null -ne $ComputedWhisper) { [bool]$ComputedWhisper } else { $ComputedVoice }
+    $tts = if ($null -ne $ComputedTts) { [bool]$ComputedTts } else { $ComputedVoice }
+    if ($CliDisable) {
+        $whisper = $false
+        $tts = $false
+    } elseif ($CliEnable -or $All) {
+        $whisper = $true
+        $tts = $true
+    } elseif (-not $MenuExplicit) {
+        if ($null -ne $installedWhisper) { $whisper = [bool]$installedWhisper }
+        if ($null -ne $installedTts) { $tts = [bool]$installedTts }
+    }
+    return [PSCustomObject]@{ Whisper = $whisper; Tts = $tts }
+}
+
+function Resolve-ODSWindowsHermesSelection {
+    param(
+        [Parameter(Mandatory = $true)][string]$InstallDir,
+        [bool]$ComputedHermes,
+        [Nullable[bool]]$ComputedProxy = $null,
+        [bool]$CliEnable,
+        [bool]$CliDisable,
+        [bool]$All,
+        [bool]$MenuExplicit
+    )
+
+    # Validate retained markers before any explicit choice can replace them.
+    $installedHermes = Get-ODSWindowsInstalledServiceSelection -InstallDir $InstallDir -ServiceId "hermes"
+    $installedProxy = Get-ODSWindowsInstalledServiceSelection -InstallDir $InstallDir -ServiceId "hermes-proxy"
+    $hermes = $ComputedHermes
+    $proxy = if ($null -ne $ComputedProxy) { [bool]$ComputedProxy } else { $ComputedHermes }
+    if ($CliDisable) {
+        $hermes = $false
+        $proxy = $false
+    } elseif ($CliEnable) {
+        $hermes = $true
+        $proxy = $true
+    } elseif (-not $All -and -not $MenuExplicit) {
+        if (Test-Path -LiteralPath (Join-Path $InstallDir ".env") -PathType Leaf) {
+            # An existing install with no Hermes fragments has not selected it.
+            # Do not re-enable it from a computed default on a quiet rerun.
+            $hermes = if ($null -ne $installedHermes) { [bool]$installedHermes } else { $false }
+            $proxy = if ($null -ne $installedProxy) { [bool]$installedProxy } else {
+                # Older native installs selected the agent and proxy together.
+                $hermes
+            }
+        }
+    }
+    if ($proxy -and -not $hermes) {
+        throw "Hermes proxy requires Hermes; disable its proxy or enable Hermes first."
+    }
+    return [PSCustomObject]@{ Hermes = $hermes; Proxy = $proxy }
+}
+
 function New-ODSWindowsServicePlan {
     param(
         [bool]$EnableRecommended,
+        [bool]$EnableSearxng = $false,
         [bool]$EnableVoice,
-        [bool]$EnableWhisper,
-        [bool]$EnableTts,
+        [Nullable[bool]]$EnableWhisper = $null,
+        [Nullable[bool]]$EnableTts = $null,
         [bool]$EnableWorkflows,
         [bool]$EnableRag,
         [bool]$EnableHermes,
+        [Nullable[bool]]$EnableHermesProxy = $null,
         [bool]$EnableOpenClaw,
         [bool]$EnableComfyui,
         [bool]$EnableDeepResearch,
@@ -60,8 +186,7 @@ function New-ODSWindowsServicePlan {
         [bool]$EnableRemoteAccess = $false,
         [bool]$CloudMode = $false,
         [bool]$UseLemonade = $false,
-        [string]$SwitchboardMode = "enabled",
-        [Nullable[bool]]$EnableHermesProxy = $null
+        [string]$SwitchboardMode = "enabled"
     )
 
     $plan = @{}
@@ -69,11 +194,13 @@ function New-ODSWindowsServicePlan {
     if ($proxyEnabled -and -not $EnableHermes) {
         throw 'Hermes proxy requires Hermes.'
     }
+    $whisperEnabled = if ($null -eq $EnableWhisper) { $EnableVoice } else { [bool]$EnableWhisper }
+    $ttsEnabled = if ($null -eq $EnableTts) { $EnableVoice } else { [bool]$EnableTts }
 
     $enableSearxng = Test-ODSWindowsSearxngNeeded `
+        -EnableSearxng $EnableSearxng `
         -EnableRecommended $EnableRecommended `
         -EnableDeepResearch $EnableDeepResearch `
-        -EnableHermes $EnableHermes `
         -EnableOpenClaw $EnableOpenClaw
     # Native OpenCode and the switchboard readiness check use LiteLLM's host
     # port. Keep this gateway whenever the stable ods/current route is enabled.
@@ -85,8 +212,8 @@ function New-ODSWindowsServicePlan {
     $plan["searxng"] = New-ODSWindowsServicePlanEntry "searxng" $enableSearxng "search" "web search backend not required"
     $plan["token-spy"] = New-ODSWindowsServicePlanEntry "token-spy" $EnableRecommended "recommended" "recommended services not enabled"
 
-    $plan["whisper"] = New-ODSWindowsServicePlanEntry "whisper" ($EnableVoice -or $EnableWhisper) "voice" "Whisper not enabled"
-    $plan["tts"] = New-ODSWindowsServicePlanEntry "tts" ($EnableVoice -or $EnableTts) "voice" "Kokoro not enabled"
+    $plan["whisper"] = New-ODSWindowsServicePlanEntry "whisper" $whisperEnabled "voice" "Whisper not enabled"
+    $plan["tts"] = New-ODSWindowsServicePlanEntry "tts" $ttsEnabled "voice" "Kokoro not enabled"
 
     $plan["n8n"] = New-ODSWindowsServicePlanEntry "n8n" $EnableWorkflows "workflows" "workflows not enabled"
     $plan["qdrant"] = New-ODSWindowsServicePlanEntry "qdrant" $EnableRag "rag" "RAG not enabled"
@@ -122,17 +249,17 @@ function New-ODSWindowsServicePlan {
 function Test-ODSWindowsSearxngNeeded {
     <#
     .SYNOPSIS
-        SearXNG is required for Open WebUI web search, Perplexica, and agent web tools.
-        It is not only a "recommended" extra.
+        SearXNG is selected independently or by Recommended, Perplexica, and
+        legacy OpenClaw. Hermes can be used without this local search backend.
     #>
     param(
+        [bool]$EnableSearxng = $false,
         [bool]$EnableRecommended = $false,
         [bool]$EnableDeepResearch = $false,
-        [bool]$EnableHermes = $false,
         [bool]$EnableOpenClaw = $false
     )
 
-    return [bool]($EnableRecommended -or $EnableDeepResearch -or $EnableHermes -or $EnableOpenClaw)
+    return [bool]($EnableSearxng -or $EnableRecommended -or $EnableDeepResearch -or $EnableOpenClaw)
 }
 
 function Get-ODSWindowsRemoteProviderSelections {

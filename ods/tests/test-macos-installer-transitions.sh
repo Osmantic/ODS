@@ -43,6 +43,8 @@ ai_err() { echo "[ERROR] $*" >&2; }
 log() { :; }
 
 # Canonical extension state must survive resolver cache invalidation.
+eval "$(extract_installer_function _macos_gateway_library_selected)"
+GATEWAY_ONLY=false
 eval "$(extract_installer_function _macos_set_builtin_compose_state)"
 INSTALL_DIR="$TMP_DIR/state-install"
 mkdir -p "$INSTALL_DIR/extensions/services/hermes"

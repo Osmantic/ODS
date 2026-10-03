@@ -91,7 +91,11 @@ function Get-ODSWindowsInstalledFeatureSelection {
             if ($active -and $disabled) {
                 return [PSCustomObject]@{ Kind = 'unknown'; Features = $null; Reason = "installed $serviceId has both active and disabled Compose files" }
             }
-            if ($serviceId -in @('whisper','tts') -and -not $active -and -not $disabled) {
+            # When Hermes is active, a missing proxy marker is a partial
+            # selection, not permission to infer a newly enabled proxy.
+            $requiredMarker = $serviceId -in @('whisper','tts') -or
+                ($serviceId -eq 'hermes-proxy' -and $selected.Contains('hermes'))
+            if ($requiredMarker -and -not $active -and -not $disabled) {
                 return [PSCustomObject]@{ Kind = 'unknown'; Features = $null; Reason = "installed $serviceId Compose selection is missing" }
             }
             if ($active) { [void]$selected.Add($serviceId) }
@@ -167,6 +171,7 @@ function Get-ODSWindowsInstalledFeatureSelection {
         Workflows = $selected.Contains("n8n")
         Rag = ($selected.Contains("qdrant") -or $selected.Contains("embeddings"))
         Recommended = $selected.Contains("token-spy")
+        Searxng = $selected.Contains("searxng")
         Hermes = $selected.Contains("hermes")
         HermesProxy = $selected.Contains("hermes-proxy")
         OpenClaw = $selected.Contains("openclaw")

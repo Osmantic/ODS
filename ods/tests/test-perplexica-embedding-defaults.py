@@ -19,13 +19,17 @@ FIELDS = ("defaultEmbeddingProvider", "defaultEmbeddingModel")
 
 
 @contextmanager
-def config_server(preferences, providers=None, corrupt=None, writes=None):
+def config_server(preferences, providers=None, corrupt=None, writes=None, hydrate_embeddings=None):
     state = copy.deepcopy({"preferences": preferences, "modelProviders": providers or [CHAT, CPU]})
     wrote_preferences = False
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
             values = copy.deepcopy(state)
+            if hydrate_embeddings:
+                for provider in values["modelProviders"]:
+                    if provider.get("type") == "transformers":
+                        provider["embeddingModels"].extend(copy.deepcopy(hydrate_embeddings))
             if wrote_preferences and corrupt:
                 values["preferences"][corrupt] = "unexpected"
             self.respond({"values": values})
@@ -35,7 +39,11 @@ def config_server(preferences, providers=None, corrupt=None, writes=None):
             payload = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
             if writes is not None:
                 writes.append(copy.deepcopy(payload))
-            state[payload["key"]] = payload["value"]
+            parts = payload["key"].split(".")
+            target = state
+            for part in parts[:-1]:
+                target = target[int(part)] if isinstance(target, list) else target[part]
+            target[parts[-1]] = payload["value"]
             wrote_preferences |= payload["key"] == "preferences"
             self.respond({})
 
@@ -61,12 +69,13 @@ def config_server(preferences, providers=None, corrupt=None, writes=None):
         thread.join(timeout=5)
 
 
-def run_sync(url):
+def run_sync(url, model=None):
     node = shutil.which("node")
     if not node:
         pytest.skip("Node.js is required")
-    env = {**os.environ, "ODS_MODEL_SWITCHBOARD": "enabled", "ODS_MODE": "local",
-           "GGUF_FILE": "irrelevant", "OPENAI_BASE_URL": "http://local/v1",
+    env = {**os.environ, "ODS_MODEL_SWITCHBOARD": "enabled" if model is None else "disabled",
+           "ODS_MODE": "local", "GGUF_FILE": "", "LLM_MODEL": model or "fixture-model",
+           "OPENAI_BASE_URL": "http://local/v1",
            "OPENAI_API_KEY": "fixture-private-key", "PERPLEXICA_CONFIG_URL": url}
     result = subprocess.run([node, str(SCRIPT)], capture_output=True, text=True, env=env, timeout=10)
     assert "fixture-private-key" not in result.stdout + result.stderr
@@ -129,6 +138,32 @@ def test_embedding_setup_does_not_rewrite_hydrated_catalog_or_repeat_writes():
         assert result.returncode == 0, result.stderr
         assert writes == []
         assert state["modelProviders"] == providers
+
+
+def test_route_updates_do_not_persist_get_hydrated_embedding_catalog():
+    # Pinned Vane GET appends built-ins to the persisted provider. The live
+    # retained Windows config had 27 stored entries but returned 30 on GET.
+    built_ins = [{"key": f"builtin-{i}", "name": f"Built-in {i}"} for i in range(3)]
+    stored_cpu = {**CPU, "embeddingModels": built_ins * 9}
+    owner_provider = {"id": "owner", "type": "custom", "embeddingModels": [{"key": "owner-choice"}]}
+    providers = [copy.deepcopy(CHAT), stored_cpu, owner_provider]
+    preferences = {"defaultEmbeddingProvider": "owner", "defaultEmbeddingModel": "owner-choice"}
+    writes = []
+    with config_server(preferences, providers, writes=writes,
+                       hydrate_embeddings=built_ins) as (state, url):
+        for model in ("ods/current", "ods/next", "ods/next"):
+            result = run_sync(url, model)
+            assert result.returncode == 0, result.stderr
+            assert result.stdout.strip() == model
+            assert state["modelProviders"][1] == stored_cpu
+            assert state["modelProviders"][2] == owner_provider
+            assert state["preferences"]["defaultEmbeddingProvider"] == "owner"
+            assert state["preferences"]["defaultEmbeddingModel"] == "owner-choice"
+            assert not any(write["key"] == "modelProviders" for write in writes)
+            assert all(write["key"].startswith("modelProviders.0.")
+                       for write in writes if write["key"].startswith("modelProviders"))
+            writes.clear()
+        assert writes == []
 
 
 @pytest.mark.parametrize("preferences", [{}, dict(zip(FIELDS, ["owner", "chosen"]))])

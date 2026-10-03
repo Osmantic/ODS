@@ -986,13 +986,17 @@ function Invoke-ODSWslStack($Identity,[string]$Action) {
     $units=@($plan.nativeUnits)
     if ($Action -eq 'stop') {
         foreach ($unit in $units) { Invoke-ODSWslNativeUnit $Identity 'stop' $unit }
+    } else {
+        # The native ingress/preview units own the WSL socket target mounts.
+        # Start them before Docker Desktop recreates Edge's bind views. A
+        # stopped stack otherwise gives Compose a plain/stale /pixel-runtime.
+        [Array]::Reverse($units)
+        foreach ($unit in $units) { Invoke-ODSWslNativeUnit $Identity 'start' $unit }
     }
     # Compose always executes as the ordinary Linux owner, never as root.
     Invoke-ODSWslCommand $Identity @('python3',$program,"compose-$Action",$Identity.installRoot)
     if ($Action -eq 'start') {
         if ($plan.hostAgentRestart -or ($agentAddress -and $agentAddress.changed)) { Invoke-ODSWslNativeUnit $Identity 'restart' 'ods-host-agent.service' }
-        [Array]::Reverse($units)
-        foreach ($unit in $units) { Invoke-ODSWslNativeUnit $Identity 'start' $unit }
     }
 }
 
