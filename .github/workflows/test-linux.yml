@@ -501,6 +501,7 @@ jobs:
           bash tests/test-linux-ollama-port-override.sh
           bash tests/test-external-services.sh
           bash tests/test-gateway-only-linux.sh
+          bash tests/test-comfy-checkpoint-integrity.sh
           bash tests/test-portal-no-webui-selection.sh
           bash tests/test-linux-devtools-opt-in.sh
           bash tests/test-dashboard-data-permissions.sh
