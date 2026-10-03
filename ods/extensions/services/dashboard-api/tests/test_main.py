@@ -419,6 +419,29 @@ class TestReadinessPayload:
         assert webui["status"] == "disabled"
         assert "ods restart open-webui" not in result["repairHints"]
 
+    @pytest.mark.parametrize("selection", ["", "unexpected"])
+    def test_unknown_webui_selection_cannot_claim_disabled(self, monkeypatch, selection):
+        from models import BootstrapStatus, ServiceStatus
+
+        monkeypatch.setattr("main.read_live_env_value", lambda key: selection if key == "ENABLE_OPEN_WEBUI" else "")
+        statuses = [
+            ServiceStatus(id="llama-server", name="LLM", port=8080, external_port=8080, status="healthy"),
+        ]
+        result = _build_readiness_payload(
+            service_statuses=statuses,
+            loaded_model="Test-32B",
+            context_size=32768,
+            bootstrap_info=BootstrapStatus(active=False),
+            host_agent={"available": True},
+            stt_model_cached=None,
+            stt_model_name="Systran/faster-whisper-base",
+        )
+
+        webui = next(check for check in result["checks"] if check["id"] == "open-webui")
+        assert webui["required"] is True
+        assert webui["status"] == "blocked"
+        assert result["ready"] is False
+
     @pytest.mark.parametrize(
         ("webui_status", "selection", "required", "readiness"),
         [

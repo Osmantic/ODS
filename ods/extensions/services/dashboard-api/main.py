@@ -330,10 +330,10 @@ def _build_readiness_payload(
 
     webui_service = _service_by_id(service_statuses, "open-webui")
     # A selected service can report not_deployed when DNS has not appeared yet.
-    # The retained installer choice is the authority for intentional omission.
+    # Only an explicit retained false proves intentional omission; a missing or
+    # invalid choice must not silently mark an unknown service as disabled.
     webui_choice = read_live_env_value("ENABLE_OPEN_WEBUI").strip().lower()
-    webui_enabled = (webui_choice == "true" if webui_choice in {"true", "false"}
-                     else webui_service is not None)
+    webui_enabled = webui_choice != "false"
     webui_ready = bool(webui_enabled and webui_service and webui_service.status == "healthy")
     checks.append(_readiness_check(
         check_id="open-webui",
