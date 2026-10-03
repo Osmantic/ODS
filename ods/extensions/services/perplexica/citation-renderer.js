@@ -7,10 +7,26 @@ function renderCitations(message, sources) {
   const refs = Array.isArray(sources) ? sources : [];
   const numericCitation = /^\s*\d+(?:\s*,\s*\d+)*\s*$/;
   const referenceDefinitions = new Set();
+  const listMarker = /(?:[-+*]|\d{1,9}[.)])[ \t]+/y;
   for (const line of message.split("\n")) {
     // Container indentation can put a real Markdown reference definition
-    // beyond three raw spaces. Over-detect definitions to preserve links.
-    const definition = /^(?:[ \t]*>[ \t]*)*[ \t]*(?:(?:[-+*]|\d{1,9}[.)])[ \t]+)?\[([0-9]+(?:[ \t]*,[ \t]*[0-9]+)*)\]:/.exec(line);
+    // beyond three raw spaces. Consume mixed and repeated blockquote/list
+    // markers without recursive regex backtracking; preserve indented links.
+    let at = 0;
+    for (;;) {
+      const start = at;
+      while (line[at] === " " || line[at] === "\t") at += 1;
+      if (line[at] === ">") {
+        at += 1;
+        if (line[at] === " " || line[at] === "\t") at += 1;
+        continue;
+      }
+      listMarker.lastIndex = at;
+      if (listMarker.test(line)) { at = listMarker.lastIndex; continue; }
+      at = start;
+      break;
+    }
+    const definition = /^[ \t]*\[([0-9]+(?:[ \t]*,[ \t]*[0-9]+)*)\]:/.exec(line.slice(at));
     if (definition) referenceDefinitions.add(definition[1].replace(/\s+/g, ""));
   }
   let fence = null;

@@ -56,6 +56,12 @@ function checkCases(render) {
     "[1][2]\n\n[2]: https://example.test/reference");
   assert.equal(render("- [12][27]\n\n    [27]: https://example.test/reference", many),
     "- [12][27]\n\n    [27]: https://example.test/reference");
+  for (const prefix of ["- > ", "- - ", "- > - > ", "> - > - ", "1. > ", "- > ".repeat(8)]) {
+    const markdown = `[12][27]\n\n${prefix}[27]: https://example.test/reference`;
+    assert.equal(render(markdown, many), markdown);
+  }
+  assert.equal(render("[12][27]\n\n- > [28]: https://example.test/reference", many),
+    `${manyCited(12)}${manyCited(27)}\n\n- > [28]: https://example.test/reference`);
   assert.equal(render("![12][27] and \\[12][27]", many), "![12][27] and \\[12][27]");
   assert.equal(render("[12](https://x.test) [27]", many),
     `[12](https://x.test) ${manyCited(27)}`);
