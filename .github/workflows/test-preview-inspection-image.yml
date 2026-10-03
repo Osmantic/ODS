@@ -9,12 +9,14 @@ on:
       - 'ods/extensions/services/pixel-agent/host/preview-inspection.requirements.lock'
       - 'ods/extensions/services/pixel-agent/host/preview_inspection*.py'
       - 'ods/tests/test_preview_inspection_permissions.py'
+      - 'ods/tests/test_preview_required_resources.py'
+      - 'ods/extensions/services/pixel-agent/tests/inspection_resources.test.mjs'
+      - 'ods/extensions/services/pixel-agent/plugin/workspace-preview-inspect.mjs'
       - 'ods/tests/test_preview_inspection_download.py'
       - 'ods/tests/test_preview_inspection_blocked.py'
       - 'ods/extensions/services/pixel-agent/tests/inspection_blocked.test.mjs'
       - 'ods/extensions/services/pixel-agent/tests/inspection_fill.test.mjs'
       - 'ods/tests/test_preview_inspection_fill.py'
-      - 'ods/extensions/services/pixel-agent/plugin/workspace-preview-inspect.mjs'
       - 'ods/extensions/services/pixel-agent/tests/inspection_download.test.mjs'
   push:
     branches: [main]
@@ -25,12 +27,14 @@ on:
       - 'ods/extensions/services/pixel-agent/host/preview-inspection.requirements.lock'
       - 'ods/extensions/services/pixel-agent/host/preview_inspection*.py'
       - 'ods/tests/test_preview_inspection_permissions.py'
+      - 'ods/tests/test_preview_required_resources.py'
+      - 'ods/extensions/services/pixel-agent/tests/inspection_resources.test.mjs'
+      - 'ods/extensions/services/pixel-agent/plugin/workspace-preview-inspect.mjs'
       - 'ods/tests/test_preview_inspection_download.py'
       - 'ods/tests/test_preview_inspection_blocked.py'
       - 'ods/extensions/services/pixel-agent/tests/inspection_blocked.test.mjs'
       - 'ods/extensions/services/pixel-agent/tests/inspection_fill.test.mjs'
       - 'ods/tests/test_preview_inspection_fill.py'
-      - 'ods/extensions/services/pixel-agent/plugin/workspace-preview-inspect.mjs'
       - 'ods/extensions/services/pixel-agent/tests/inspection_download.test.mjs'
 
 permissions:
@@ -56,3 +60,8 @@ jobs:
           docker build --iidfile "$RUNNER_TEMP/inspection-image-id" -f ods/extensions/services/pixel-agent/host/Dockerfile.inspection ods/extensions/services/pixel-agent/host
           ODS_INSPECTION_TEST_IMAGE="$(cat "$RUNNER_TEMP/inspection-image-id")" python -m pytest -q ods/tests/test_preview_inspection_download.py ods/tests/test_preview_inspection_blocked.py ods/tests/test_preview_inspection_fill.py
           node --test ods/extensions/services/pixel-agent/tests/inspection_download.test.mjs ods/extensions/services/pixel-agent/tests/inspection_select.test.mjs ods/extensions/services/pixel-agent/tests/inspection_blocked.test.mjs ods/extensions/services/pixel-agent/tests/inspection_fill.test.mjs
+      - name: Verify required resources with isolated Chromium
+        run: |
+          docker build --iidfile "$RUNNER_TEMP/resource-inspection-image" -f ods/extensions/services/pixel-agent/host/Dockerfile.inspection ods/extensions/services/pixel-agent/host
+          docker run --rm --network none --entrypoint python -e ODS_PREVIEW_BROWSER_TESTS=1 -v "$PWD:/repo:ro" "$(cat "$RUNNER_TEMP/resource-inspection-image")" /repo/ods/tests/test_preview_required_resources.py
+          node --test ods/extensions/services/pixel-agent/tests/inspection_resources.test.mjs
