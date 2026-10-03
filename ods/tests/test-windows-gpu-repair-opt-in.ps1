@@ -88,3 +88,4 @@ try {
     if (-not $absolute.StartsWith($tempRoot, [StringComparison]::OrdinalIgnoreCase)) { throw 'Unsafe fixture cleanup path' }
     Remove-Item -LiteralPath $absolute -Recurse -Force -ErrorAction SilentlyContinue
 }
+exit 0
