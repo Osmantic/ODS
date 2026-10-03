@@ -476,7 +476,8 @@ unset _requested_ods_mode
 
 if [[ "${LEMONADE_EXTERNAL,,}" == "true" ]]; then
     ODS_MODE="lemonade"
-    ENABLE_RECOMMENDED=true
+    # Phase 03 selects LiteLLM for the model route without opting into search
+    # and Token Spy. Preserve explicit and installed optional-service choices.
     # An empty LEMONADE_MODEL still lets phase 06 discover the model.
     export LEMONADE_EXTERNAL LEMONADE_BASE_URL LEMONADE_HOST_TRANSPORT ODS_WINDOWS_SYSTEM_DIRECTORY LEMONADE_API_KEY LEMONADE_MODEL LEMONADE_GPU_NAME LEMONADE_GPU_VRAM_MB
 fi
