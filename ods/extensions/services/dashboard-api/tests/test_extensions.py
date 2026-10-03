@@ -80,6 +80,24 @@ def _patch_extensions_config(monkeypatch, catalog, services=None,
 
 class TestExtensionsCatalog:
 
+    def test_builtin_proxy_catalog_and_detail_use_its_ods_launch_path(
+            self, test_client, monkeypatch, tmp_path):
+        catalog = [{**_make_catalog_ext("hermes-proxy", "Hermes Auth Proxy"),
+                    "catalog_source": "builtin", "external_port_default": 9120}]
+        services = {"hermes-proxy": {"ui_path": "/auth/ods", "external_port": 9120}}
+        _patch_extensions_config(monkeypatch, catalog, services=services, tmp_path=tmp_path)
+        builtin = tmp_path / "builtin" / "hermes-proxy"
+        builtin.mkdir(parents=True)
+        (builtin / "compose.yaml").write_text("services: {}\n", encoding="utf-8")
+        monkeypatch.setattr("routers.extensions.EXTENSIONS_DIR", builtin.parent)
+        with patch("helpers.get_cached_services", return_value=[]):
+            response = test_client.get("/api/extensions/catalog", headers=test_client.auth_headers)
+            detail = test_client.get("/api/extensions/hermes-proxy", headers=test_client.auth_headers)
+        assert response.status_code == detail.status_code == 200
+        row = next(item for item in response.json()["extensions"] if item["id"] == "hermes-proxy")
+        assert row["ui_path"] == "/auth/ods"
+        assert detail.json()["ui_path"] == "/auth/ods"
+
     @pytest.mark.parametrize("gpu_backend,overlay,expected_status,addable", [
         ("nvidia", True, "disabled", True),
         ("amd", True, "disabled", True),

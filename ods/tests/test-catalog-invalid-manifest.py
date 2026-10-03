@@ -38,10 +38,13 @@ def test_shipped_catalog_preserves_intentional_exclusions(tmp_path):
         capture_output=True, text=True,
     )
     assert result.returncode == 0, result.stderr
-    ids = {entry["id"] for entry in json.loads(output.read_text(encoding="utf-8"))["extensions"]}
+    entries = json.loads(output.read_text(encoding="utf-8"))["extensions"]
+    ids = {entry["id"] for entry in entries}
     assert "pixel-agent" in ids
     assert "privacy-shield" in ids
     assert "dify" not in ids
     assert "apache-answer" in ids
     assert "jan" not in ids
     assert "bookstack" in ids
+    proxy = next(entry for entry in entries if entry["id"] == "hermes-proxy")
+    assert proxy["ui_path"] == "/auth/ods"
