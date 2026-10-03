@@ -6,6 +6,19 @@ ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 OUTPUT_FILE=""
 ENV_MODE="false"
 
+usage() {
+    cat <<'USAGE'
+Usage: build-capability-profile.sh [OPTIONS]
+
+Build the host capability profile (OS, GPU, memory, disk, etc.).
+
+Options:
+  --output FILE   Write the profile as JSON to FILE
+  --env           Emit output as shell-sourceable KEY=VALUE pairs
+  -h, --help      Show this help message and exit
+USAGE
+}
+
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --output)
@@ -15,6 +28,10 @@ while [[ $# -gt 0 ]]; do
         --env)
             ENV_MODE="true"
             shift
+            ;;
+        -h|--help)
+            usage
+            exit 0
             ;;
         *)
             echo "Unknown argument: $1" >&2
