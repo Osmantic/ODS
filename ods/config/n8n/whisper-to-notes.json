@@ -1,28 +1,165 @@
 {
-  "name": "Whisper Transcription to Notes",
+  "name": "Whisper to Notes",
   "nodes": [
     {
-      "parameters": {},
-      "id": "start",
-      "name": "Start",
-      "type": "n8n-nodes-base.manualTrigger",
+      "parameters": {
+        "content": "## Whisper to Notes\n\nDrop in a recording, get structured meeting notes back — transcription\nand summarisation both on your own hardware.\n\n```\naudio -> whisper (transcribe) -> llama-server (structure) -> JSON notes\n```\n\n**Call it:**\n```bash\ncurl -X POST http://localhost:5678/webhook/ods-notes \\\n  -F 'file=@standup.m4a' -F 'title=Monday standup'\n```\n\nOptional form fields: `title`, `stt_model`.\n\nReturns `summary`, `decisions`, `action_items` and `open_questions`, plus\nthe full `transcript` so nothing is lost to summarisation.\n\nThe model is asked for JSON and the workflow parses it defensively — if\nit answers with prose instead, you still get the transcript and the raw\nreply rather than a failed execution.",
+        "height": 560,
+        "width": 520
+      },
+      "id": "note-overview",
+      "name": "How to use this",
+      "type": "n8n-nodes-base.stickyNote",
       "typeVersion": 1,
-      "position": [240, 300]
+      "position": [-100, 20]
     },
     {
       "parameters": {
-        "content": "## Whisper Transcription to Notes\n\nThis is a template workflow for uploading audio, transcribing with Whisper, extracting action items with LLM, and saving structured markdown notes.\n\nCustomize the nodes below to match your setup.",
-        "height": 200,
-        "width": 400
+        "httpMethod": "POST",
+        "path": "ods-notes",
+        "responseMode": "responseNode",
+        "options": {}
       },
-      "id": "note",
-      "name": "Setup Instructions",
-      "type": "n8n-nodes-base.stickyNote",
-      "typeVersion": 1,
-      "position": [440, 140]
+      "id": "webhook-notes",
+      "name": "Recording Upload",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [440, 320],
+      "webhookId": "4f7d2c19-8e35-4b60-9a72-1d8c3e5f7b26"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $binary?.file?.fileName || $binary?.file?.mimeType }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-has-audio",
+      "name": "Recording Attached?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [660, 320]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://whisper:8000/v1/audio/transcriptions",
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "parameterType": "formBinaryData",
+              "name": "file",
+              "inputDataFieldName": "file"
+            },
+            {
+              "name": "model",
+              "value": "={{ $json.body?.stt_model || 'Systran/faster-whisper-base' }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 600000
+        }
+      },
+      "id": "http-whisper",
+      "name": "Whisper Transcribe",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [900, 220]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://llama-server:8080/v1/chat/completions",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: 'local-model', messages: [ { role: 'system', content: 'You turn meeting transcripts into structured notes. Reply with JSON only, no prose and no code fences, matching exactly: {\"summary\": string, \"decisions\": string[], \"action_items\": [{\"owner\": string, \"task\": string}], \"open_questions\": string[]}. Use only what the transcript says. If a section has nothing, return an empty array. If no owner is named for a task, use \"unassigned\".' }, { role: 'user', content: 'Meeting: ' + ($('Recording Upload').item.json.body?.title || 'untitled') + '\\n\\nTranscript:\\n' + ($json.text || '').slice(0, 24000) } ], temperature: 0.2, max_tokens: 1500, stream: false }) }}",
+        "options": {
+          "timeout": 300000
+        }
+      },
+      "id": "http-llama",
+      "name": "Structure Notes",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1140, 220]
+    },
+    {
+      "parameters": {
+        "jsCode": "// The model was asked for JSON. Parse it defensively: a model that\n// wraps its answer in a code fence, or answers in prose, must not turn\n// a good transcription into a failed execution.\nconst raw = $input.first().json.choices[0].message.content || '';\nconst transcript = $('Whisper Transcribe').first().json.text || '';\nconst title = $('Recording Upload').first().json.body?.title || 'untitled';\n\nconst stripped = raw.replace(/^\\s*```(?:json)?/i, '').replace(/```\\s*$/, '').trim();\nconst start = stripped.indexOf('{');\nconst end = stripped.lastIndexOf('}');\n\nlet notes = null;\nif (start !== -1 && end > start) {\n  try {\n    notes = JSON.parse(stripped.slice(start, end + 1));\n  } catch (e) {\n    notes = null;\n  }\n}\n\nconst asArray = (v) => (Array.isArray(v) ? v : []);\n\nreturn [{\n  json: {\n    title,\n    parsed: notes !== null,\n    summary: notes?.summary ?? '',\n    decisions: asArray(notes?.decisions),\n    action_items: asArray(notes?.action_items),\n    open_questions: asArray(notes?.open_questions),\n    raw_reply: notes === null ? raw : undefined,\n    transcript,\n  },\n}];"
+      },
+      "id": "code-parse",
+      "name": "Parse Notes",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1380, 220]
+    },
+    {
+      "parameters": {
+        "respondWith": "firstIncomingItem",
+        "options": {}
+      },
+      "id": "respond-ok",
+      "name": "Return Notes",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [1620, 220]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ error: \"Send a recording as multipart form data, e.g. curl -F 'file=@standup.m4a'.\" }) }}",
+        "options": {
+          "responseCode": 400
+        }
+      },
+      "id": "respond-bad-request",
+      "name": "Return 400",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [900, 460]
     }
   ],
-  "connections": {},
+  "connections": {
+    "Recording Upload": {
+      "main": [[{ "node": "Recording Attached?", "type": "main", "index": 0 }]]
+    },
+    "Recording Attached?": {
+      "main": [
+        [{ "node": "Whisper Transcribe", "type": "main", "index": 0 }],
+        [{ "node": "Return 400", "type": "main", "index": 0 }]
+      ]
+    },
+    "Whisper Transcribe": {
+      "main": [[{ "node": "Structure Notes", "type": "main", "index": 0 }]]
+    },
+    "Structure Notes": {
+      "main": [[{ "node": "Parse Notes", "type": "main", "index": 0 }]]
+    },
+    "Parse Notes": {
+      "main": [[{ "node": "Return Notes", "type": "main", "index": 0 }]]
+    }
+  },
   "settings": {
     "executionOrder": "v1"
   },
