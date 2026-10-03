@@ -10,6 +10,26 @@ fail() {
     exit 1
 }
 
+# Count both former WSL targets and Docker Desktop's projections of those
+# targets. A partial legacy cleanup could leave only the projections visible;
+# allowing the new socket layout then would mix old and new socket routes.
+# Keep the input argument for a pure mountinfo fixture; the systemd path always
+# reads the executing namespace's /proc/self/mountinfo.
+ods_count_legacy_wsl_mounts() {
+    local mountinfo="${1:-/proc/self/mountinfo}"
+    awk '
+        $5 == "/mnt/wsl/ods-portal-runtime/ingress" \
+            || $5 == "/mnt/wsl/ods-portal-runtime/preview" { count++; next }
+        ($4 == "/ods-portal-runtime/ingress" \
+            || $4 == "/ods-portal-runtime/preview") \
+            && $5 ~ /^\/mnt\/wsl\/docker-desktop-bind-mounts\// { count++ }
+        END { print count + 0 }
+    ' "$mountinfo"
+}
+
+# Tests source this file to exercise the exact parser without root or WSL.
+[[ "${BASH_SOURCE[0]}" == "$0" ]] || return 0
+
 action="${1:-}"
 [[ "$#" -ge 1 && "$#" -le 2 && ( "$action" == ensure || "$action" == remove ) ]] || exit 2
 [[ "$(id -u)" -eq 0 ]] || fail "must run as root"
@@ -26,11 +46,7 @@ grep -qi microsoft /proc/sys/kernel/osrelease || fail "not a WSL kernel"
 # legacy paths. They multiply in Docker Desktop's shared mount graph. Do not
 # start new services in a namespace carrying that stack or mutate those mounts
 # here; the retained-upgrade migration must retire them under an owner lock.
-legacy_layers="$(awk '
-    $5 == "/mnt/wsl/ods-portal-runtime/ingress" \
-        || $5 == "/mnt/wsl/ods-portal-runtime/preview" { count++ }
-    END { print count + 0 }
-' /proc/self/mountinfo)"
+legacy_layers="$(ods_count_legacy_wsl_mounts)"
 (( legacy_layers == 0 )) || fail "legacy Pixel runtime mounts remain ($legacy_layers); complete the guarded WSL mount migration before retrying"
 
 owner="${2:-${PIXEL_SERVICE_USER:-}}"
