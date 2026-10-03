@@ -6052,7 +6052,8 @@ _ROOTLESS_BIND_OWNERSHIP_SERVICES = {
 }
 
 
-def _repair_rootless_data_ownership(service_id: str) -> None:
+def _repair_rootless_data_ownership(
+        service_id: str, *, compose_flags: list[str] | None = None) -> None:
     """Prepare built-in bind mounts before a container starts."""
     if platform.system() != "Linux" or service_id not in _ROOTLESS_BIND_OWNERSHIP_SERVICES:
         return
@@ -6065,6 +6066,7 @@ def _repair_rootless_data_ownership(service_id: str) -> None:
         raise RuntimeError("Bash is required for Docker rootless ownership repair")
 
     command = [bash, str(helper), str(INSTALL_DIR), service_id]
+    env = os.environ.copy()
     if service_id == "whisper":
         # A lean install skips Phase 11's UID 1000 cache preparation. The
         # Library add-back must prepare it for rootful as well as rootless Docker.
@@ -6073,8 +6075,14 @@ def _repair_rootless_data_ownership(service_id: str) -> None:
             "ods-whisper-cache", str(helper), str(INSTALL_DIR),
         ]
     elif service_id == "comfyui":
+        if (not compose_flags or any(not isinstance(flag, str) or not flag
+                                     for flag in compose_flags)):
+            raise RuntimeError("ComfyUI ownership repair requires resolved Compose flags")
         # The base fragment is only `services: {}`. NVIDIA bind mounts live in
         # an overlay, so generic pre-creation misses them on a lean Library add.
+        # Use the exact flags selected for the subsequent Compose start, even
+        # when .compose-flags is absent or the agent inherited a stale override.
+        env["ODS_ROOTLESS_COMPOSE_FLAGS"] = shlex.join(compose_flags)
         # Prepare UID 1000 data for rootful Docker too, before Compose starts.
         command = [
             bash, "-c", 'source "$1"; ods_prepare_comfyui_data_ownership "$2"',
@@ -6084,7 +6092,7 @@ def _repair_rootless_data_ownership(service_id: str) -> None:
         result = subprocess.run(
             command,
             cwd=str(INSTALL_DIR),
-            env=os.environ.copy(),
+            env=env,
             capture_output=True,
             text=True,
             timeout=SUBPROCESS_TIMEOUT_START,
@@ -6383,7 +6391,7 @@ def docker_compose_action(service_id: str, action: str) -> tuple:
                 return False, error
         _precreate_data_dirs(service_id)
         try:
-            _repair_rootless_data_ownership(service_id)
+            _repair_rootless_data_ownership(service_id, compose_flags=flags)
         except RuntimeError as exc:
             return False, str(exc)
         cmd = ["docker", "compose"] + flags + ["up", "-d", service_id]
@@ -12328,7 +12336,7 @@ class AgentHandler(BaseHTTPRequestHandler):
                         return
                 _precreate_data_dirs(service_id)
                 try:
-                    _repair_rootless_data_ownership(service_id)
+                    _repair_rootless_data_ownership(service_id, compose_flags=flags)
                 except RuntimeError as exc:
                     _write_progress(
                         service_id,
