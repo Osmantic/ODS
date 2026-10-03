@@ -15464,24 +15464,43 @@ def _read_external_lemonade_observation(env: dict, *, include_stats: bool = Fals
     )
     payloads = []
     paths = ["/api/v1/health", "/api/v1/models"]
+    stages = ["health_start", "models"]
     if include_stats:
         paths.append("/api/v1/stats")
+        stages.append("stats")
     paths.append("/api/v1/health")
-    for path in paths:
-        if _lemonade_uses_container_transport(env):
-            payloads.append(json.loads(_lemonade_container_body(env, path.removeprefix("/api/v1"))))
-            continue
-        request = urllib_request.Request(
-            f"{base_url}{path}", headers={"Accept": "application/json"}
-        )
-        with opener.open(request, timeout=5) as response:
-            raw = response.read(4 * 1024 * 1024 + 1)
-        if len(raw) > 4 * 1024 * 1024:
-            raise ValueError("External Lemonade response is too large")
-        payloads.append(json.loads(raw.decode("utf-8")))
-    observed = _verified_external_lemonade_observation(payloads[0], payloads[1])
-    if _verified_external_lemonade_observation(payloads[-1], payloads[1]) != observed:
-        raise ValueError("External Lemonade identity changed during observation")
+    stages.append("health_end")
+    for path, stage in zip(paths, stages):
+        started = time.monotonic()
+        try:
+            if _lemonade_uses_container_transport(env):
+                payload = json.loads(_lemonade_container_body(env, path.removeprefix("/api/v1")))
+            else:
+                request = urllib_request.Request(
+                    f"{base_url}{path}", headers={"Accept": "application/json"}
+                )
+                with opener.open(request, timeout=5) as response:
+                    raw = response.read(4 * 1024 * 1024 + 1)
+                if len(raw) > 4 * 1024 * 1024:
+                    raise ValueError("External Lemonade response is too large")
+                payload = json.loads(raw.decode("utf-8"))
+        except Exception as exc:
+            # Only fixed stage names, duration and exception class reach logs;
+            # the upstream exception may contain a private origin or token.
+            logger.warning("External Lemonade observation %s failed after %d ms (%s)",
+                           stage, int((time.monotonic() - started) * 1000), type(exc).__name__)
+            raise
+        elapsed_ms = int((time.monotonic() - started) * 1000)
+        if elapsed_ms >= 2000:
+            logger.warning("External Lemonade observation %s was slow (%d ms)", stage, elapsed_ms)
+        payloads.append(payload)
+    try:
+        observed = _verified_external_lemonade_observation(payloads[0], payloads[1])
+        if _verified_external_lemonade_observation(payloads[-1], payloads[1]) != observed:
+            raise ValueError("External Lemonade identity changed during observation")
+    except ValueError:
+        logger.warning("External Lemonade observation failed validation")
+        raise
     if include_stats:
         # Lemonade stats belong to its most recently accessed WrappedServer,
         # as does health.model_loaded. Other loaded runtimes could race this

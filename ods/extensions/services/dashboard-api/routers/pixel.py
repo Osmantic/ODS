@@ -50,6 +50,10 @@ _CLIENT_CANCEL_TIMEOUT_SECONDS = 27.0
 _MAX_KEY_LENGTH = 4096
 _MAX_STATUS_BYTES = 64 * 1024
 _READINESS_PROBE_SECONDS = 4.0
+# The host-model helper allows six seconds for its read-only Lemonade identity
+# observation. Give that request room to finish during cold startup while
+# keeping a separate, finite outer deadline. A timeout still blocks Portal.
+_MODEL_IDENTITY_PROBE_SECONDS = 8.0
 _MAX_SSE_LINE_BYTES = 1024 * 1024
 _MAX_MESSAGE_CHARS = 16 * 1024
 _MAX_TOTAL_MESSAGE_BYTES = 256 * 1024
@@ -508,13 +512,17 @@ async def _model_readiness_issue_for_status(status: object) -> tuple[str, str] |
             or read_live_env_value("LLM_BACKEND").strip().casefold() != "lemonade"):
         return None
     try:
-        loaded = await asyncio.wait_for(get_loaded_model(), timeout=3.0)
+        loaded = await asyncio.wait_for(get_loaded_model(), timeout=_MODEL_IDENTITY_PROBE_SECONDS)
     except Exception as exc:
         # Probe failures cannot validate a recorded external route. Do not log
         # exception text; it may contain the private backend origin or key.
         logger.warning("Pixel Lemonade identity probe failed (%s)", type(exc).__name__)
         return "model_unavailable", _MODEL_IDENTITY_DETAIL
+    if loaded is None:
+        logger.warning("Pixel Lemonade identity probe returned no verified model")
+        return "model_unavailable", _MODEL_IDENTITY_DETAIL
     if not (_model_identity_tokens(runtime["model"]) & _model_identity_tokens(loaded)):
+        logger.warning("Pixel Lemonade identity probe did not match the recorded model")
         return "model_unavailable", _MODEL_IDENTITY_DETAIL
     return None
 
