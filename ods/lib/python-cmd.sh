@@ -69,7 +69,8 @@ _ods_python_windows_candidates() {
     local candidate
     for candidate in \
         "$local_appdata"/Programs/Python/Python*/python.exe \
-        "$local_appdata"/Python/bin/python.exe
+        "$local_appdata"/Python/bin/python.exe \
+        "$local_appdata"/Python/pythoncore-*/python.exe
     do
         [[ -e "$candidate" ]] && printf '%s\n' "$candidate"
     done
