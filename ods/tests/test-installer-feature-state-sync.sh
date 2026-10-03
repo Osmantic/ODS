@@ -9,6 +9,11 @@ run_case() {
     local selected="$1" source_state="$2" comfyui_requested="${3:-false}"
     local gpu_backend="${4:-cpu}" comfyui_expected="${5:-false}"
     local brave_requested="${6:-false}" brave_key_mode="${7:-none}"
+    local hermes_requested="${8:-false}" retained_searxng="${9:-false}"
+    local searxng_expected=false
+    if [[ "$selected" == true || "$retained_searxng" == true ]]; then
+        searxng_expected=true
+    fi
     local test_root source_root install_root
     test_root="$(mktemp -d)"
     source_root="$test_root/source"
@@ -53,7 +58,8 @@ run_case() {
         ENABLE_VOICE=false
         ENABLE_WORKFLOWS=false
         ENABLE_RAG=false
-        ENABLE_HERMES=false
+        ENABLE_HERMES="$hermes_requested"
+        ENABLE_SEARXNG="$retained_searxng"
         ENABLE_OPENCLAW="$selected"
         ENABLE_OPENCODE=false
         ENABLE_COMFYUI="$comfyui_requested"
@@ -97,6 +103,7 @@ run_case() {
         source "$FEATURES_PHASE" >/dev/null
         printf '%s\n' "$ENABLE_COMFYUI" >"$test_root/comfyui-selection"
         printf '%s\n' "$ENABLE_BRAVE_SEARCH" >"$test_root/brave-selection"
+        printf '%s\n' "$ENABLE_SEARXNG" >"$test_root/searxng-selection"
     )
 
     local expected_suffix unexpected_suffix brave_expected=false
@@ -132,6 +139,10 @@ run_case() {
     done
     [[ "$(cat "$test_root/comfyui-selection")" == "$comfyui_expected" ]]
     [[ "$(cat "$test_root/brave-selection")" == "$brave_expected" ]]
+    [[ "$(cat "$test_root/searxng-selection")" == "$searxng_expected" ]] || {
+        echo 'FAIL: Hermes changed the selected SearXNG service' >&2
+        return 1
+    }
     if [[ "$brave_requested" == true && "$brave_expected" == false ]]; then
         grep -Fq 'Brave Search was skipped because BRAVE_SEARCH_API_KEY is missing' "$test_root/warning"
     fi
@@ -146,5 +157,7 @@ run_case false "" false cpu false true none
 run_case false "" false cpu false true env
 run_case false "" false cpu false true file
 run_case false "" false cpu false true empty-override
+run_case false "" false cpu false false none true false
+run_case false "" false cpu false false none true true
 
 echo "PASS: feature selection reconciles source and installed compose states"

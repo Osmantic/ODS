@@ -17,7 +17,11 @@ def installation(monkeypatch, tmp_path):
     for name in ("hermes-proxy", "hermes", "searxng"):
         directory = bundled / name
         directory.mkdir(parents=True)
-        (directory / "manifest.yaml").write_bytes((source / name / "manifest.yaml").read_bytes())
+        manifest = yaml.safe_load((source / name / "manifest.yaml").read_text())
+        if name == "hermes":
+            # Keep the transitive failure path covered for older selections.
+            manifest["service"]["depends_on"] = ["searxng"]
+        (directory / "manifest.yaml").write_text(yaml.safe_dump(manifest))
         (directory / "compose.yaml.disabled").write_text(
             f"services:\n  {name}:\n    image: alpine:3.22\n")
 
