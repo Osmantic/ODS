@@ -2664,6 +2664,32 @@ ods_pixel_reconcile_promoted_model() {
     return 1
 }
 
+_ods_pixel_initial_unconfigured_marker() {
+    local owner="$1" home="$2"
+    [[ -f "$home/.config/ods/pixel-managed.json" && ! -L "$home/.config/ods/pixel-managed.json" ]] || return 1
+    ods_pixel_run_as_owner "$owner" "$home" python3 - \
+        "$home/.config/ods/pixel-managed.json" "$home/.openclaw/openclaw.json" \
+        "${INSTALL_DIR:?}" "$home" "${PIXEL_SOURCE_REF:?}" <<'PY'
+import json, os, pathlib, re, sys
+marker = json.load(open(sys.argv[1]))
+initial = (
+    set(marker) == {"schema_version", "manager", "state", "initial_active_state",
+                    "install_dir", "pixel_source_ref"}
+    and marker.get("schema_version") == 2 and marker.get("manager") == "ods"
+    and marker.get("state") == "installing" and marker.get("initial_active_state") == "absent"
+    and marker.get("install_dir") == sys.argv[3]
+    and isinstance(marker.get("pixel_source_ref"), str)
+    and re.fullmatch(r"[0-9a-f]{40}", marker["pixel_source_ref"])
+    and marker["pixel_source_ref"] == sys.argv[5]
+)
+raise SystemExit(0 if initial and not os.path.lexists(sys.argv[2]) and not any(
+    os.path.lexists(pathlib.Path(sys.argv[4]) / ".local/share/pixel" / name)
+    for name in ("current", "runtime-attestation.json", ".ods-uninstall-current",
+                 ".ods-uninstall-runtime-attestation")
+) else 1)
+PY
+}
+
 _ods_pixel_reprove_access_marker_if_needed() {
     if [[ -n "${ODS_PIXEL_SOURCE_TRANSACTION:-}" ]]; then
         _ods_pixel_check_source_transaction "$1"
@@ -5065,7 +5091,7 @@ ods_pixel_install_default_agent() {
     [[ "${ENABLE_PIXEL_RUNTIME:-false}" == true ]] || return 0
     local owner home source_root pixel_root plugin_root answers operations_policy extension_catalog extension_manager_unit artifact_promoter_unit workspace_preview_unit openclaw_bin plugin_digest contract_sha256 runtime_budget_status gateway_alias pixel_log
     local candidate_runtime_status reuse_active=false same_verified_source=false same_source_resume=false pixel_gateway_port gateway_port_status
-    local web_search_provider parallel_path="" parallel_digest="" apply_attempt="" prebootstrap_openclaw_bin=""
+    local web_search_provider parallel_path="" parallel_digest="" apply_attempt="" initial_access_reproved=false
     # The access coordinator's proof ceremony inspects Pixel Edge's durable
     # transition gate. Start the edge before the host ingress is installed;
     # its transition endpoint is independent of upstream chat readiness, and
@@ -5245,13 +5271,16 @@ ods_pixel_install_default_agent() {
             return 1
         fi
     fi
-    # Reprove any retained access mode before bootstrap can create or replace
-    # openclaw.json. A fresh bootstrap has an initial marker and no config yet;
-    # checking afterward mistakes its newly generated config for prior state.
-    prebootstrap_openclaw_bin="$(_ods_pixel_openclaw_bin "$owner" "$home")" || prebootstrap_openclaw_bin=""
-    if ! _ods_pixel_reprove_access_marker_if_needed "$owner" "$home" "$prebootstrap_openclaw_bin" >>"$pixel_log" 2>&1; then
-        ai_bad "Pixel's existing access mode could not be reverified before upgrade. See $pixel_log."
-        return 1
+    # Only a proven first install may reprove before bootstrap creates its
+    # initial config. Retained and partial releases must resume their durable
+    # transition below before access-mode reproof, as they did previously.
+    if [[ -z "${ODS_PIXEL_SOURCE_TRANSACTION:-}" ]] \
+        && _ods_pixel_initial_unconfigured_marker "$owner" "$home" >>"$pixel_log" 2>&1; then
+        if ! _ods_pixel_reprove_access_marker_if_needed "$owner" "$home" "" >>"$pixel_log" 2>&1; then
+            ai_bad "Pixel's initial access marker could not be verified before bootstrap. See $pixel_log."
+            return 1
+        fi
+        initial_access_reproved=true
     fi
     if ! ods_pixel_run_as_owner "$owner" "$home" "$pixel_root/pixel" bootstrap --apply >>"$pixel_log" 2>&1; then
         ai_bad "Pixel bootstrap failed. See $pixel_log for the exact Pixel error."
@@ -5306,6 +5335,12 @@ ods_pixel_install_default_agent() {
     if ! _ods_pixel_resume_completed_release "$owner" "$home" "$pixel_root" "$contract_sha256" >>"$pixel_log" 2>&1; then
         ai_bad "Pixel has a pending update that could not be reverified safely. See $pixel_log before retrying."
         return 1
+    fi
+    if [[ "$initial_access_reproved" != true ]]; then
+        if ! _ods_pixel_reprove_access_marker_if_needed "$owner" "$home" "$openclaw_bin" >>"$pixel_log" 2>&1; then
+            ai_bad "Pixel's existing access mode could not be reverified before upgrade. See $pixel_log."
+            return 1
+        fi
     fi
     if _ods_pixel_managed_contract_matches "$owner" "$home" "$contract_sha256"; then
         reuse_active=true
