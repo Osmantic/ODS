@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-09-30T11:32:07Z",
+  "generated_at": "2026-10-03T17:43:01Z",
   "schema_version": "1.0.0",
   "extensions": [
     {
@@ -7368,7 +7368,7 @@
     {
       "id": "ods-proxy",
       "name": "ODS (Web)",
-      "description": "Caddy reverse proxy fronting ODS's web surface on port 80 with host-based routing. Without this extension, the dashboard / chat / API services bind to 127.0.0.1 by default, so `http://<device>.local` doesn't resolve to anything. With it, each surface gets its own subdomain on the mDNS hostname:\n    <device>.local           → 302 redirect to chat\n    chat.<device>.local      → Open WebUI (root-mounted)\n    dashboard.<device>.local → ODS Dashboard (operator UI)\n    auth.<device>.local      → dashboard-api (magic-link redemption)\n    api.<device>.local       → dashboard-api (admin /api/*)\n    hermes.<device>.local    → hermes-proxy (when enabled)\n    talk.<device>.local      → dashboard /talk (mobile owner portal)\nPer-subdomain routing means every backend stays root-mounted (no subpath gymnastics) and the ods-session cookie can be Domain-scoped to <device>.local so SSO works across all of them.\n",
+      "description": "Optional LAN gateway that gives ODS Dashboard, chat, API, and Talk separate .local addresses. See README.md for routing and cookie details.\n",
       "category": "optional",
       "gpu_backends": [
         "all"

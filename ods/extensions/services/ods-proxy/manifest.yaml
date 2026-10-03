@@ -29,21 +29,8 @@ service:
   # for operators/dependency-graph tooling.
   depends_on: [dashboard, dashboard-api, open-webui]
   description: >
-    Caddy reverse proxy fronting ODS's web surface on port 80
-    with host-based routing. Without this extension, the dashboard / chat
-    / API services bind to 127.0.0.1 by default, so `http://<device>.local`
-    doesn't resolve to anything. With it, each surface gets its own
-    subdomain on the mDNS hostname:
-        <device>.local           → 302 redirect to chat
-        chat.<device>.local      → Open WebUI (root-mounted)
-        dashboard.<device>.local → ODS Dashboard (operator UI)
-        auth.<device>.local      → dashboard-api (magic-link redemption)
-        api.<device>.local       → dashboard-api (admin /api/*)
-        hermes.<device>.local    → hermes-proxy (when enabled)
-        talk.<device>.local      → dashboard /talk (mobile owner portal)
-    Per-subdomain routing means every backend stays root-mounted (no
-    subpath gymnastics) and the ods-session cookie can be Domain-scoped
-    to <device>.local so SSO works across all of them.
+    Optional LAN gateway that gives ODS Dashboard, chat, API, and Talk
+    separate .local addresses. See README.md for routing and cookie details.
 
   env_vars:
     - key: ODS_PROXY_PORT
