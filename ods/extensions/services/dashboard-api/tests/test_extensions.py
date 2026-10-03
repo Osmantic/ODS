@@ -527,7 +527,7 @@ class TestExtensionsCatalog:
 
 
     @pytest.mark.parametrize("service_id", [
-        "embeddings", "hermes", "hermes-proxy", "perplexica",
+        "embeddings", "hermes", "hermes-proxy", "perplexica", "privacy-shield",
         "qdrant", "searxng", "token-spy", "whisper", "tts",
     ])
     def test_builtin_library_addback_tracks_selection_and_health(

@@ -699,7 +699,7 @@ ALWAYS_ON_SERVICES: frozenset = frozenset({
 # Built-ins qualified for Dashboard Library Add/Disable. The live health poll
 # must refresh this same set after a fragment changes without an API restart.
 LIBRARY_MANAGEABLE_BUILTINS: frozenset = frozenset({
-    "comfyui", "embeddings", "n8n", "perplexica", "qdrant", "searxng", "token-spy",
+    "comfyui", "embeddings", "n8n", "perplexica", "privacy-shield", "qdrant", "searxng", "token-spy",
     "hermes", "hermes-proxy", "whisper", "tts",
     "remote-provider-egress", "remote-provider-ssh-tunnel",
 })
