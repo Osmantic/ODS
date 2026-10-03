@@ -39,6 +39,7 @@ from env_values import parse_env_value, quote_env_value
 from config import (
     SERVICES, DATA_DIR, INSTALL_DIR, SIDEBAR_ICONS, MANIFEST_ERRORS, ALWAYS_ON_SERVICES,
     EXTENSIONS_DIR, GPU_BACKEND, LIBRARY_MANAGEABLE_BUILTINS, load_extension_manifests,
+    load_enabled_service_config,
     AGENT_HOST, AGENT_PORT, AGENT_URL, ODS_AGENT_KEY,
     _detect_container_default_gateway, _running_inside_container,
     _read_env_from_file,
@@ -327,15 +328,22 @@ def _build_readiness_payload(
         repair="ods restart llama-server" if not chat_ready and not bootstrap_info.active else None,
     ))
 
-    webui_ready = _service_is_healthy(service_statuses, "open-webui")
+    webui_service = _service_by_id(service_statuses, "open-webui")
+    # A selected service can report not_deployed when DNS has not appeared yet.
+    # Only an explicit retained false proves intentional omission; a missing or
+    # invalid choice must not silently mark an unknown service as disabled.
+    webui_choice = read_live_env_value("ENABLE_OPEN_WEBUI").strip().lower()
+    webui_enabled = webui_choice != "false"
+    webui_ready = bool(webui_enabled and webui_service and webui_service.status == "healthy")
     checks.append(_readiness_check(
         check_id="open-webui",
         name="Open WebUI",
-        required=True,
+        required=webui_enabled,
         ready=webui_ready,
-        status="ready" if webui_ready else "blocked",
-        detail="Open WebUI is reachable" if webui_ready else "Open WebUI is not healthy",
-        repair="ods restart open-webui" if not webui_ready else None,
+        status="disabled" if not webui_enabled else ("ready" if webui_ready else "blocked"),
+        detail=("Open WebUI is not enabled in this stack" if not webui_enabled
+                else "Open WebUI is reachable" if webui_ready else "Open WebUI is not healthy"),
+        repair="ods restart open-webui" if webui_enabled and not webui_ready else None,
     ))
 
     checks.append(_readiness_check(
@@ -402,6 +410,8 @@ def _build_readiness_payload(
             voice_detail = f"Whisper model {stt_model_name} cached and TTS is healthy"
         elif not whisper_ready:
             voice_detail = "Whisper STT is not healthy"
+        elif stt_model_cached is None:
+            voice_detail = "Whisper STT model cache status is unavailable"
         elif not model_ready:
             voice_detail = f"Whisper STT model {stt_model_name} is not cached"
         else:
@@ -437,7 +447,8 @@ def _build_readiness_payload(
 
 async def _check_stt_model_cached() -> tuple[Optional[bool], str]:
     model_name = os.environ.get("AUDIO_STT_MODEL") or _read_env_from_file("AUDIO_STT_MODEL") or "Systran/faster-whisper-base"
-    whisper_cfg = SERVICES.get("whisper")
+    # Whisper may be added or disabled from Library while Dashboard API stays up.
+    whisper_cfg = await asyncio.to_thread(load_enabled_service_config, "whisper")
     if not whisper_cfg:
         return None, model_name
 
