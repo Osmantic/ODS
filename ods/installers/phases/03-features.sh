@@ -492,14 +492,15 @@ if ! $DRY_RUN; then
             return 1 2>/dev/null || exit 1
         }
     fi
-    # SearXNG backs Pixel only when its selected provider needs it; Perplexica
-    # and the other agent tools retain their independent search dependency.
+    # SearXNG backs Pixel only when its selected provider needs it. Hermes can
+    # be added without a bundled search server; web search requires a separate
+    # backend selection. Preserve an already enabled SearXNG on installer reruns.
     # It is not only a recommended extra — --no-recommended with Perplexica
     # still needs the search backend.
-    if [[ "${ENABLE_RECOMMENDED:-false}" == "true" ||
+    if [[ "${ENABLE_SEARXNG:-false}" == "true" ||
+          "${ENABLE_RECOMMENDED:-false}" == "true" ||
           "$PIXEL_RESOLVED_WEB_SEARCH_PROVIDER" == "searxng" ||
           "${ENABLE_PERPLEXICA:-false}" == "true" ||
-          "${ENABLE_HERMES:-false}" == "true" ||
           "${ENABLE_OPENCLAW:-false}" == "true" ]]; then
         ENABLE_SEARXNG=true
     else

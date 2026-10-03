@@ -117,6 +117,24 @@ _macos_resolve_support_services
 [[ "$ENABLE_SEARXNG" == true ]] \
     || { echo 'FAIL: Perplexica lost SearXNG' >&2; exit 1; }
 
+reset_features
+ENABLE_PIXEL=false ENABLE_HERMES=true
+_macos_resolve_support_services
+[[ "$ENABLE_SEARXNG" == false ]] \
+    || { echo 'FAIL: newly selected Hermes pulled optional SearXNG' >&2; exit 1; }
+
+mkdir -p "$INSTALL_DIR/extensions/services/searxng"
+printf 'ODS_MODE=local\n' > "$INSTALL_DIR/.env"
+printf 'services: {}\n' > "$INSTALL_DIR/extensions/services/searxng/compose.yaml"
+_macos_resolve_support_services
+[[ "$ENABLE_SEARXNG" == true ]] \
+    || { echo 'FAIL: retained SearXNG selection was lost' >&2; exit 1; }
+mv "$INSTALL_DIR/extensions/services/searxng/compose.yaml" \
+    "$INSTALL_DIR/extensions/services/searxng/compose.yaml.disabled"
+_macos_resolve_support_services
+[[ "$ENABLE_SEARXNG" == false ]] \
+    || { echo 'FAIL: disabled SearXNG was restored by Hermes' >&2; exit 1; }
+
 for service in litellm token-spy searxng; do
     mkdir -p "$INSTALL_DIR/extensions/services/$service"
     printf 'services: {}\n' > "$INSTALL_DIR/extensions/services/$service/compose.yaml"

@@ -339,12 +339,13 @@ def test_hermes_persona_repairs_empty_mount_directory_without_deleting_owner_dat
     assert (output / "owner.txt").read_text(encoding="utf-8") == "keep"
 
 
-def test_hermes_external_plan_keeps_search_without_managed_llama():
+def test_hermes_external_plan_keeps_search_optional_without_managed_llama():
     service_dir = ODS_ROOT / "extensions/services/hermes"
     manifest = yaml.safe_load((service_dir / "manifest.yaml").read_text(encoding="utf-8"))
     catalog = json.loads((ODS_ROOT / "config/extensions-catalog.json").read_text(encoding="utf-8"))
     entry = next(item for item in catalog["extensions"] if item["id"] == "hermes")
-    assert manifest["service"]["depends_on"] == entry["depends_on"] == ["searxng"]
+    assert manifest["service"]["depends_on"] == entry["depends_on"] == []
+    assert "separately selected backend" in entry["features"][0]["description"]
     overlay = yaml.safe_load((service_dir / "compose.local.yaml").read_text(encoding="utf-8"))
     assert overlay["services"]["hermes"]["depends_on"]["llama-server"] == {
         "condition": "service_healthy",

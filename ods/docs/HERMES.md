@@ -99,6 +99,13 @@ xdg-open http://localhost:9120
 
 The first start takes a minute — image is ~3GB, Hermes runs its `skills_sync.py` bootstrap, and llama-server may cold-load the model on Hermes's first request. Subsequent starts are fast.
 
+Adding Hermes from Dashboard Library or selecting Hermes alone in the Linux or
+macOS installer does not start SearXNG. Chat, memory, and scheduled tasks remain
+available. To use Hermes web search, add SearXNG separately from Library or
+configure another supported Hermes search backend. The Full Stack/recommended
+selection still includes SearXNG. Installer reruns retain an already selected
+SearXNG service, including one added through Library.
+
 ## Defaults ODS applies
 
 - **Provider:** `custom` (OpenAI-compatible) pointing at `llama-server:8080/v1`
