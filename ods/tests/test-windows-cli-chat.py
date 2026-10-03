@@ -19,12 +19,14 @@ POWERSHELL = shutil.which("powershell.exe")
 class WindowsChatTests(unittest.TestCase):
     def setUp(self):
         self.requests = []
+        self.catalog = {"data": [{"id": "user.selected", "checkpoint": "selected.gguf"}]}
         seen = self.requests
+        fixture = self
 
         class Handler(BaseHTTPRequestHandler):
             def do_GET(self):
                 seen.append((self.path, None, self.headers.get("Authorization")))
-                self.reply({"data": [{"id": "user.selected", "checkpoint": "selected.gguf"}]})
+                self.reply(fixture.catalog)
 
             def do_POST(self):
                 body = self.rfile.read(int(self.headers["Content-Length"]))
@@ -84,6 +86,21 @@ class WindowsChatTests(unittest.TestCase):
         self.chat({"GGUF_FILE": "selected.gguf"})
         self.assertEqual(self.requests[0][0], "/api/v1/models")
         self.assertEqual(self.requests[-1][1]["model"], "user.selected")
+
+    def test_legacy_lemonade_supports_explicit_server_key(self):
+        self.chat({"LEMONADE_MODEL": "user.selected", "LEMONADE_API_KEY": "fixture-server"})
+        self.assertEqual(self.requests[-1][2], "Bearer fixture-server")
+
+    def test_missing_lemonade_identity_refuses_implicit_default_load(self):
+        output = self.chat({})
+        self.assertEqual(self.requests, [])
+        self.assertIn(b"LEMONADE_MODEL", output)
+
+    def test_missing_catalog_match_does_not_send_completion(self):
+        self.catalog = {"data": []}
+        self.chat({"GGUF_FILE": "selected.gguf"})
+        self.assertEqual(len(self.requests), 1)
+        self.assertEqual(self.requests[0][0], "/api/v1/models")
 
     def test_legacy_llama_retains_default_model(self):
         self.chat({"GPU_BACKEND": "nvidia", "LLM_BACKEND": "llama-server",

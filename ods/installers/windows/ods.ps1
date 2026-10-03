@@ -2910,7 +2910,7 @@ function Invoke-Chat {
                 if (-not $ggufFile) { throw "Configure LEMONADE_MODEL or GGUF_FILE in .env before chatting." }
                 $modelId = Resolve-ODSLemonadeModelId -Port ([int]$llmEndpoint.Port) -GgufFile $ggufFile
             }
-            $key = Get-ODSLemonadeAdminApiKey -EnvPath (Join-Path $InstallDir '.env')
+            $key = Get-WindowsODSEnvValue -EnvMap $envMap -Keys @("LITELLM_LEMONADE_API_KEY", "LEMONADE_API_KEY")
             if ($key) { $headers.Authorization = "Bearer $key" }
         }
         $body = @{
