@@ -1911,39 +1911,43 @@ async def webui_selection(api_key: str = Depends(verify_api_key)):
     if (not isinstance(result, dict) or type(result.get("enabled")) is not bool
             or type(result.get("supported")) is not bool):
         raise HTTPException(status_code=502, detail="Open WebUI selection could not be verified")
-    return JSONResponse({"enabled": result["enabled"], "supported": result["supported"]},
+    return JSONResponse({"enabled": result["enabled"], "supported": result["supported"],
+                         "disable_supported": result.get("disable_supported") is True},
                         headers={"Cache-Control": "no-store"})
 
 
 @router.post("/api/webui/selection")
 async def enable_webui_from_library(request: Request, api_key: str = Depends(verify_api_key)):
-    """Add WebUI through its dedicated host-owned selection path."""
+    """Change WebUI through its dedicated host-owned selection path."""
     try:
         payload = await request.json()
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid Open WebUI selection") from None
-    if not isinstance(payload, dict) or set(payload) != {"enabled"} or payload["enabled"] is not True:
-        raise HTTPException(status_code=400, detail="Only adding Open WebUI is supported")
+    if not isinstance(payload, dict) or set(payload) != {"enabled"} or type(payload["enabled"]) is not bool:
+        raise HTTPException(status_code=400, detail="A boolean Open WebUI selection is required")
+    enabled = payload["enabled"]
+    verb = "Adding" if enabled else "Disabling"
     try:
         result = await asyncio.to_thread(request_agent_json, "POST", "/v1/webui/selection",
-                                         payload={"enabled": True}, timeout=900)
+                                         payload={"enabled": enabled}, timeout=900)
     except AgentHTTPError as exc:
         code = exc.status_code
         if code == 501:
-            detail = "Adding Open WebUI from the Library is unavailable on this platform"
+            detail = f"{verb} Open WebUI from the Library is unavailable on this platform"
         elif code == 409:
-            detail = "Open WebUI selection is currently unavailable or another operation is in progress"
+            detail = "Open WebUI is required by this installation, Portal is unavailable, or another operation is in progress"
         elif code == 503:
             detail = "Open WebUI requires inspection before another change"
         else:
-            code, detail = 502, "Open WebUI could not be added; inspect its selection before retrying"
+            code, detail = 502, f"Open WebUI could not be {'added' if enabled else 'disabled'}; inspect its selection before retrying"
         raise HTTPException(status_code=code, detail=detail) from None
     except AgentClientError:
         raise HTTPException(status_code=503, detail="Open WebUI result could not be confirmed") from None
-    if (not isinstance(result, dict) or result.get("enabled") is not True
-            or result.get("action") not in {"enabled", "already_selected"}):
+    accepted_actions = {"enabled", "already_selected"} if enabled else {"disabled", "already_disabled"}
+    if (not isinstance(result, dict) or result.get("enabled") is not enabled
+            or result.get("action") not in accepted_actions):
         raise HTTPException(status_code=502, detail="Open WebUI result could not be verified")
-    return JSONResponse({"enabled": True, "action": result["action"]},
+    return JSONResponse({"enabled": enabled, "action": result["action"]},
                         headers={"Cache-Control": "no-store"})
 
 

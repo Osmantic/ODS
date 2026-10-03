@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { fireEvent, screen, waitFor } from '@testing-library/react'
+import { fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { render } from '../test/test-utils'
 import Extensions from './Extensions' // eslint-disable-line no-unused-vars
 
@@ -124,6 +124,35 @@ it('adds Open WebUI from the available library without offering generic core con
   fireEvent.click(screen.getByRole('button', { name: 'Add' }))
   await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/webui/selection', expect.objectContaining({ method: 'POST' })))
   await waitFor(() => expect(screen.getByRole('button', { name: 'Available 0' })).toBeVisible())
+})
+
+it('disables selected Open WebUI with retained-data copy and an explicit host selection', async () => {
+  const catalog = {
+    agent_available: true,
+    extensions: [{ id: 'open-webui', name: 'Open WebUI', source: 'core', status: 'running', features: [baseFeature], description: 'Chat service' }],
+    summary: baseSummary({ total: 1, installed: 1 }),
+  }
+  let enabled = true
+  const fetchMock = vi.fn(async (url, options = {}) => {
+    const target = String(url)
+    if (target === '/api/extensions/catalog') return makeJsonResponse(catalog)
+    if (target === '/api/webui/selection' && options.method === 'POST') {
+      expect(JSON.parse(options.body)).toEqual({ enabled: false })
+      enabled = false
+      return makeJsonResponse({ enabled: false, action: 'disabled' })
+    }
+    if (target === '/api/webui/selection') return makeJsonResponse({ enabled, supported: true, disable_supported: true })
+    if (target === '/api/templates') return makeJsonResponse({ templates: [] })
+    throw new Error(`Unmocked fetch: ${target}`)
+  })
+  vi.stubGlobal('fetch', fetchMock)
+  render(<Extensions compact />)
+  fireEvent.click(await screen.findByRole('button', { name: 'Disable Open WebUI' }))
+  const dialog = screen.getByRole('dialog', { name: 'Confirm action' })
+  expect(dialog).toHaveTextContent('Existing chats and settings will be kept')
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Disable' }))
+  await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/webui/selection', expect.objectContaining({ method: 'POST' })))
+  expect(await screen.findByText('Open WebUI disabled. Chats and settings were kept.')).toBeVisible()
 })
 
 it('does not offer WebUI add-back when the host does not support it', async () => {
