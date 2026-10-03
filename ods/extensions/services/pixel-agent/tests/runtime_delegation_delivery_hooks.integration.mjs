@@ -94,9 +94,12 @@ test(`real gateway deferred delegation waits for two children and a verified rev
         sessionId:resolveActiveEmbeddedRunSessionId(sessionKey)||sessionId,sessionKey,settleMs:4000,forceClear:false,reason:'ods_client_disconnect'}),
       execControl:{signal:()=>true}});
     const record=(hook,event,ctx,extra={})=>appendFileSync(${JSON.stringify(eventsFile)},JSON.stringify({
+      at:new Date().toISOString(),
       hook,agentId:ctx.agentId,runId:ctx.runId,sessionId:ctx.sessionId,sessionKey:ctx.sessionKey,trigger:ctx.trigger,
       provenance:ctx.inputProvenance,success:event.success,text:event.lastAssistantMessage,
       messageRoles:event.messages?.map(m=>m.role),
+      eventAnnouncement:JSON.stringify(event.messages??[]).includes('Internal task completion event'),
+      promptAnnouncement:typeof event.prompt==='string'&&event.prompt.includes('Internal task completion event'),
       lastStopReason:[...(event.messages??[])].reverse().find(m=>m.role==='assistant')?.stopReason,
       lastText:[...(event.messages??[])].reverse().find(m=>m.role==='assistant')?.content?.filter(c=>c.type==='text').map(c=>c.text).join(''),...extra})+'\\n');
     export default {id:'delivery-fixture',register(api){
@@ -128,7 +131,7 @@ test(`real gateway deferred delegation waits for two children and a verified rev
         registry.observe(event,ctx);if(${JSON.stringify(interim)}==='cancel')sharedGuard.observeRun(ctx,'pixel');
         record('prompt',event,ctx);return {prependContext:registry.promptContext(ctx)};
       });
-      api.on('before_agent_run',(event,ctx)=>{const decision=registry.admission?.(ctx);record('admission',{},ctx,{decision});return decision;});
+      api.on('before_agent_run',(event,ctx)=>{const decision=registry.admission?.(ctx);record('admission',event,ctx,{decision});return decision;});
       api.registerHttpRoute({path:'/pixel-ods/abort',auth:'gateway',match:'exact',handler:async(req,res)=>{
         const parts=[];for await(const p of req)parts.push(p);const {user}=JSON.parse(Buffer.concat(parts));
         const delegated=registry.cancel(user),parent=sharedGuard.abortUserRun(user);
@@ -163,7 +166,11 @@ test(`real gateway deferred delegation waits for two children and a verified rev
     const all=JSON.stringify(body.messages);
     const currentUser=JSON.stringify(body.messages.filter(m=>m.role==='user').at(-1)?.content);
     const userMessages=body.messages.filter(m=>m.role==='user').map(m=>typeof m.content==='string'?m.content:JSON.stringify(m.content)).join('\n');
-    const trace={request:requests,lastRole:body.messages.at(-1)?.role,childTask:userMessages.includes('CHILD_FIXTURE_TASK'),announcement:userMessages.includes('Internal task completion event'),revision,markers:childTexts.map(value=>all.includes(value))};
+    const userParts=body.messages.filter(m=>m.role==='user').map(m=>typeof m.content==='string'?m.content:JSON.stringify(m.content));
+    const trace={request:requests,at:new Date().toISOString(),messageCount:body.messages.length,
+      lastRole:body.messages.at(-1)?.role,lastUserAnnouncement:userParts.at(-1)?.includes('Internal task completion event')??false,
+      announcementCount:userParts.filter(value=>value.includes('Internal task completion event')).length,
+      childTask:userMessages.includes('CHILD_FIXTURE_TASK'),announcement:userMessages.includes('Internal task completion event'),revision,markers:childTexts.map(value=>all.includes(value))};
     providerTrace.push(trace);if(providerTrace.length>40)providerTrace.shift();
     let delta,finish='stop';
     const deferred=(id,name,args)=>({index:0,id,type:'function',function:{name:'tool_call',arguments:JSON.stringify({id:name,args})}});
