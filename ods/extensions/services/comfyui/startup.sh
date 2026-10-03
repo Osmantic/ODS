@@ -16,6 +16,16 @@ INPUT_MOUNT="/input"
 WORKFLOWS_MOUNT="/workflows"
 USER_MOUNT="/user"
 
+# The full NVIDIA ODS stack shares its GPU with the model server. ComfyUI's
+# --disable-smart-memory releases loaded models after each completed prompt,
+# leaving room for chat. Standalone ComfyUI does not set this option.
+# Validate before touching any mounted data.
+case "${COMFYUI_DISABLE_SMART_MEMORY:-false}" in
+    true) set -- --disable-smart-memory ;;
+    false) set -- ;;
+    *) echo "[startup] COMFYUI_DISABLE_SMART_MEMORY must be true or false" >&2; exit 2 ;;
+esac
+
 #-----------------------------------------------------------------------------
 # Create model subdirectories in bind mount (idempotent)
 #-----------------------------------------------------------------------------
@@ -111,4 +121,4 @@ elif command -v python >/dev/null 2>&1 && python -c 'import sys; sys.exit(0)' >/
     PYTHON_CMD="python"
 fi
 
-exec "$PYTHON_CMD" main.py --listen 0.0.0.0 --port 8188
+exec "$PYTHON_CMD" main.py --listen 0.0.0.0 --port 8188 "$@"

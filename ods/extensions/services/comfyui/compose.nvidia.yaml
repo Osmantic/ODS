@@ -10,6 +10,10 @@ services:
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
+    environment:
+      # Offload SDXL between prompts so a co-resident model server can use
+      # this GPU. A retained .env override can opt out on a dedicated GPU.
+      COMFYUI_DISABLE_SMART_MEMORY: "${COMFYUI_DISABLE_SMART_MEMORY:-true}"
     ports:
       - "127.0.0.1:${COMFYUI_PORT:-8188}:8188"
     volumes:
