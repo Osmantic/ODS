@@ -43,7 +43,7 @@
 .collection-copy > small { color:#7f8992; font-size:10px; }
 .extension-entry { min-width:0; padding:16px 0; border-bottom:1px solid #292b2c; background:transparent; }
 .extension-heading { gap:12px; flex-wrap:wrap; }
-.extension-heading > div:first-child { min-width:0; flex:1; }
+.extension-heading > div:first-child { min-width:0; flex:1 1 12rem; }
 .extension-heading > div:first-child > div:last-child { min-width:0; }
 .extension-heading h3 { font-size:13px; font-weight:550; overflow-wrap:anywhere; line-height:1.5; }
 .extension-heading h3 + span { text-transform:none; letter-spacing:0; font-size:10px; color:#818a92; }
