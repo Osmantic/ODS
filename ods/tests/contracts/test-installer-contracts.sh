@@ -509,6 +509,10 @@ run_phase03_rag_guard() {
     show_phase() { :; }
     show_install_menu() { :; }
 
+    # Phase 03 calls this shared selector during the real installer run.
+    # Load it here so the isolated RAG fixture exercises the same path.
+    source installers/lib/installed-feature-state.sh
+
     # shellcheck source=/dev/null
     source "$features_phase" >/dev/null
 
