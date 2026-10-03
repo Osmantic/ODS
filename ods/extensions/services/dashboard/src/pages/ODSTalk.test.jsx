@@ -635,6 +635,91 @@ describe('ODSTalk', () => {
     ))
   })
 
+  test('speaker-off before a delayed SSE completion prevents a new speech request', async () => {
+    window.localStorage.setItem('ods-talk-spoken-replies', '0')
+    let releaseCompletion
+    const completionGate = new Promise(resolve => { releaseCompletion = resolve })
+    const encoder = new TextEncoder()
+    let reads = 0
+    const fetchMock = vi.fn(async (url) => {
+      if (url === '/api/talk/status') return response({
+        capabilities: { text_chat: true, tts: true, audio_message: false },
+      })
+      if (url === '/api/talk/message/stream') return {
+        ok: true, status: 200,
+        body: { getReader: () => ({
+          read: async () => {
+            reads += 1
+            if (reads === 1) return { done: false, value: encoder.encode('data: {"type":"session","session_id":"sid"}\n\n') }
+            if (reads === 2) {
+              await completionGate
+              return { done: false, value: encoder.encode('data: {"type":"complete","text":"Late answer."}\n\ndata: {"type":"done"}\n\n') }
+            }
+            return { done: true, value: undefined }
+          },
+        }) },
+      }
+      if (url === '/api/talk/speak') return { ok: false, status: 503, body: {} }
+      throw new Error(`unexpected request: ${url}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    render(<ODSTalk />)
+    expect(await screen.findByText('Ready')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Turn spoken replies on' }))
+    fireEvent.change(screen.getByPlaceholderText('Message ODS'), { target: { value: 'Wait for it' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
+    await waitFor(() => expect(reads).toBe(2))
+    fireEvent.click(screen.getByRole('button', { name: 'Turn spoken replies off' }))
+    await act(async () => { releaseCompletion() })
+    expect(await screen.findByText('Late answer.')).toBeInTheDocument()
+    expect(fetchMock.mock.calls.filter(([url]) => url === '/api/talk/speak')).toHaveLength(0)
+  })
+
+  test('unmount aborts a delayed audio message without starting speech', async () => {
+    window.localStorage.setItem('ods-talk-spoken-replies', '0')
+    Object.defineProperty(window, 'isSecureContext', { configurable: true, value: true })
+    const stopTrack = vi.fn()
+    Object.defineProperty(navigator, 'mediaDevices', {
+      configurable: true,
+      value: { getUserMedia: vi.fn(async () => ({ getTracks: () => [{ stop: stopTrack }] })) },
+    })
+    vi.stubGlobal('MediaRecorder', class {
+      constructor() { this.mimeType = 'audio/webm'; this.state = 'inactive' }
+      start() { this.state = 'recording' }
+      stop() {
+        this.state = 'inactive'
+        this.ondataavailable?.({ data: new Blob(['audio'], { type: 'audio/webm' }) })
+        this.onstop?.()
+      }
+    })
+    let resolveAudioMessage
+    const fetchMock = vi.fn(async (url) => {
+      if (url === '/api/talk/status') return response({
+        capabilities: { text_chat: true, tts: true, audio_message: true },
+      })
+      if (url === '/api/talk/audio-message') {
+        return new Promise(resolve => { resolveAudioMessage = resolve })
+      }
+      if (url === '/api/talk/speak') return { ok: false, status: 503, body: {} }
+      throw new Error(`unexpected request: ${url}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    const { unmount } = render(<ODSTalk />)
+    expect(await screen.findByText('Ready')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Turn spoken replies on' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Record voice' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Stop recording' }))
+    await waitFor(() => expect(resolveAudioMessage).toBeTypeOf('function'))
+    expect(stopTrack).toHaveBeenCalledTimes(1)
+    const audioRequest = fetchMock.mock.calls.find(([url]) => url === '/api/talk/audio-message')
+    unmount()
+    expect(audioRequest[1].signal.aborted).toBe(true)
+    await act(async () => { resolveAudioMessage(response({ text: 'Late audio reply.', transcript: 'Hello' })) })
+    expect(fetchMock.mock.calls.filter(([url]) => url === '/api/talk/speak')).toHaveLength(0)
+  })
+
   test('reports speech failure while keeping the completed text reply', async () => {
     window.localStorage.setItem('ods-talk-spoken-replies', '0')
     const fetchMock = vi.fn(async (url) => {
