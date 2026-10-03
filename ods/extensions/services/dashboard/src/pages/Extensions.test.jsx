@@ -111,6 +111,20 @@ it('puts a matching app name ahead of proxy descriptions in Library search', asy
     .toEqual(['Open WebUI (Chat)', 'ODS (Web)'])
 })
 
+it('keeps a service findable by ID when its catalog description is concise', async () => {
+  installFetchMock({
+    agent_available: true,
+    extensions: [
+      { id: 'ods-proxy', name: 'ODS (Web)', description: 'Optional LAN gateway for Dashboard and chat', status: 'not_installed', source: 'core', features: [baseFeature] },
+    ],
+    summary: baseSummary({ total: 1 }),
+  })
+  render(<Extensions compact />)
+  await screen.findByText('ODS (Web)')
+  fireEvent.change(screen.getByLabelText('Search extensions'), { target: { value: 'proxy' } })
+  expect(screen.getByText('ODS (Web)')).toBeVisible()
+})
+
 it('does not offer WebUI add-back when the host does not support it', async () => {
   installFetchMock({
     agent_available: true,

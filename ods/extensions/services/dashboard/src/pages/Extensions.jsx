@@ -554,7 +554,7 @@ export default function Extensions({ compact = false }) {
     if (libraryView === 'updates' && !ext.update_available) return false
     if (statusFilter !== 'all' && ext.status !== statusFilter) return false
     if (category !== 'all' && !ext.features?.some(f => f.category === category)) return false
-    if (query && !ext.name.toLowerCase().includes(query) && !ext.description?.toLowerCase().includes(query)) return false
+    if (query && !ext.name.toLowerCase().includes(query) && !ext.id.toLowerCase().includes(query) && !ext.description?.toLowerCase().includes(query)) return false
     return true
   })
   if (query) {
