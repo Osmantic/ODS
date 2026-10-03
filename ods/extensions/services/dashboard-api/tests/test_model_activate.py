@@ -2299,6 +2299,41 @@ class TestPerplexicaModelRoute:
 
         assert current == snapshot["values"]
 
+    def test_restore_changes_openai_when_owner_default_was_custom(self, monkeypatch):
+        snapshot = self._snapshot()
+        snapshot["values"]["modelProviders"].append({
+            "id": "owner-chat", "type": "custom", "chatModels": [{"key": "owner-model"}],
+            "config": {"owner": True},
+        })
+        snapshot["values"]["preferences"].update({
+            "defaultChatProvider": "owner-chat", "defaultChatModel": "owner-model",
+        })
+        current = json.loads(json.dumps(snapshot["values"]))
+        current["modelProviders"][0]["chatModels"] = [{"key": "new-model", "name": "new-model"}]
+        current["modelProviders"][0]["config"] = {
+            "baseURL": "http://new/v1", "apiKey": "new-key",
+        }
+        current["preferences"].update({
+            "defaultChatProvider": "openai-provider", "defaultChatModel": "new-model",
+        })
+        posts = []
+
+        def fake_http(_url, payload=None):
+            if payload is None:
+                return {"values": json.loads(json.dumps(current))}
+            posts.append(payload)
+            self._apply_config_post(current, payload)
+            return {}
+
+        monkeypatch.setattr(_mod, "_perplexica_http_json", fake_http)
+
+        _mod._restore_perplexica_config(snapshot)
+
+        assert current == snapshot["values"]
+        assert [post["key"] for post in posts] == [
+            "modelProviders.0.chatModels", "modelProviders.0.config", "preferences",
+        ]
+
 
 class TestDownstreamRouteVerification:
 

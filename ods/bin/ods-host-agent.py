@@ -19666,33 +19666,23 @@ def _perplexica_restored_snapshot_matches(verified: dict, expected: dict) -> boo
     ):
         return False
 
-    expected_model = preferences.get("defaultChatModel")
-    expected_provider_id = preferences.get("defaultChatProvider")
-    if not expected_model or not expected_provider_id:
-        return False
-    if (
-        verified_preferences.get("defaultChatModel") != expected_model
-        or verified_preferences.get("defaultChatProvider") != expected_provider_id
-    ):
-        return False
+    for key in ("defaultChatModel", "defaultChatProvider",
+                "defaultEmbeddingModel", "defaultEmbeddingProvider"):
+        if verified_preferences.get(key) != preferences.get(key):
+            return False
 
+    # Activation changes the first OpenAI provider, even when the owner's
+    # former default chat provider is a different/custom provider.
     expected_provider = next(
-        (
-            entry
-            for entry in providers
-            if isinstance(entry, dict)
-            and (
-                entry.get("id") == expected_provider_id
-                or (entry.get("type") == "openai" and entry.get("id") == expected_provider_id)
-            )
-        ),
+        (entry for entry in providers if isinstance(entry, dict) and entry.get("type") == "openai"),
         None,
     )
     verified_provider = next(
         (
             entry
             for entry in verified_providers
-            if isinstance(entry, dict) and entry.get("id") == expected_provider_id
+            if isinstance(entry, dict) and isinstance(expected_provider, dict)
+            and entry.get("id") == expected_provider.get("id")
         ),
         None,
     )
@@ -19708,10 +19698,17 @@ def _perplexica_restored_snapshot_matches(verified: dict, expected: dict) -> boo
     verified_chat_models = verified_provider.get("chatModels")
     if not isinstance(verified_chat_models, list):
         return False
-    return any(
-        isinstance(entry, dict)
-        and (entry.get("key") == expected_model or entry.get("name") == expected_model)
-        for entry in verified_chat_models
+    expected_chat_models = expected_provider.get("chatModels")
+    if not isinstance(expected_chat_models, list):
+        return False
+    return all(
+        isinstance(expected_model, dict) and any(
+            isinstance(entry, dict)
+            and (entry.get("key") == expected_model.get("key")
+                 or entry.get("name") == expected_model.get("name"))
+            for entry in verified_chat_models
+        )
+        for expected_model in expected_chat_models
     )
 
 
@@ -19725,24 +19722,23 @@ def _restore_perplexica_config(snapshot: dict) -> None:
     preferences = values.get("preferences")
     if not isinstance(providers, list) or not isinstance(preferences, dict):
         raise RuntimeError("Perplexica rollback snapshot is missing routing state")
-    expected_id = preferences.get("defaultChatProvider")
     old_provider = next(
-        (entry for entry in providers if isinstance(entry, dict) and entry.get("id") == expected_id),
+        (entry for entry in providers if isinstance(entry, dict) and entry.get("type") == "openai"),
         None,
     )
-    if not isinstance(old_provider, dict):
-        raise RuntimeError("Perplexica rollback snapshot is missing its chat provider")
+    if not isinstance(old_provider, dict) or not old_provider.get("id"):
+        raise RuntimeError("Perplexica rollback snapshot is missing its OpenAI provider")
     current = _perplexica_http_json(url).get("values")
     current_providers = current.get("modelProviders") if isinstance(current, dict) else None
     if not isinstance(current_providers, list):
         raise RuntimeError("Perplexica rollback cannot locate its chat provider")
     provider_index = next(
         (index for index, entry in enumerate(current_providers)
-         if isinstance(entry, dict) and entry.get("id") == expected_id),
+         if isinstance(entry, dict) and entry.get("id") == old_provider["id"]),
         None,
     )
     if provider_index is None:
-        raise RuntimeError("Perplexica rollback cannot locate its chat provider")
+        raise RuntimeError("Perplexica rollback cannot locate its OpenAI provider")
     _post_perplexica_config(
         url, f"modelProviders.{provider_index}.chatModels", old_provider.get("chatModels", []),
     )
