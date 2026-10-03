@@ -810,6 +810,14 @@ function Read-ODSEnv {
     return Get-WindowsODSEnvMap -InstallDir $InstallDir
 }
 
+function Test-ODSOpenCodeAutoStart {
+    $envMap = Read-ODSEnv
+    # Legacy Windows installs did not persist this selection. They keep their
+    # previous start behavior until the installer records an explicit choice.
+    if (-not $envMap.ContainsKey("ENABLE_DEVTOOLS")) { return $true }
+    return ([string]$envMap["ENABLE_DEVTOOLS"] -eq "true")
+}
+
 function Get-ODSEnvValue {
     param(
         [Parameter(Mandatory = $true)][string]$Name,
@@ -2568,7 +2576,7 @@ function Invoke-Start {
         # Start host agent (if not already running)
         if (-not $Service) {
             Invoke-Agent -Action "start"
-            $null = Start-ODSOpenCodeRuntime
+            if (Test-ODSOpenCodeAutoStart) { $null = Start-ODSOpenCodeRuntime }
         }
 
         $flags = Get-ComposeFlags
@@ -2797,7 +2805,7 @@ function Invoke-Restart {
             # not use a newer ODS_AGENT_KEY or model state than the agent holds.
             Invoke-Agent -Action "restart"
             Write-AISuccess "All services restarted"
-            $null = Start-ODSOpenCodeRuntime
+            if (Test-ODSOpenCodeAutoStart) { $null = Start-ODSOpenCodeRuntime }
             if ($hermesInStack) {
                 Invoke-HermesSoulRefresh -SyncContainer
             }

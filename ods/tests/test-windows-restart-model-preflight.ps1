@@ -5,10 +5,16 @@ $ast = [Management.Automation.Language.Parser]::ParseFile((Join-Path $root 'inst
 if ($errors.Count) { throw $errors[0] }
 $definition = $ast.Find({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Invoke-Restart' }, $true)
 . ([scriptblock]::Create($definition.Extent.Text))
+foreach ($name in @('Invoke-Start', 'Test-ODSOpenCodeAutoStart')) {
+    $definition = $ast.Find({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name }, $true)
+    . ([scriptblock]::Create($definition.Extent.Text))
+}
 $InstallDir = $root
 $script:Calls = @()
 $script:Backend = 'llama-server'
 $script:Failure = ''
+$script:EnvMap = @{}
+function Read-ODSEnv { return $script:EnvMap }
 function Test-Install { }
 function Ensure-LlamaCpuBudget { }
 function Get-ComposeFlags { return @('-f', 'compose.fixture.yml') }
@@ -25,6 +31,7 @@ function Stop-ODSOpenCodeRuntime { $script:Calls += 'stop-opencode' }
 function Start-ODSOpenCodeRuntime { $script:Calls += 'start-opencode'; return $true }
 function Stop-NativeInferenceServer { $script:Calls += 'stop-model' }
 function Start-NativeInferenceServer { $script:Calls += 'start-model' }
+function Invoke-Agent { param($Action) if ($Action -eq 'start') { $script:Calls += 'agent' } }
 function Get-ODSRunningComposeServices { param($ComposeFlags) return @('dashboard') }
 function Invoke-ODSDockerCompose { param($InstallDir, $ComposeFlags, $ComposeArgs) $script:Calls += 'compose'; return 0 }
 function Invoke-BootstrapUpgradeResume { $script:Calls += 'bootstrap' }
@@ -50,4 +57,21 @@ Assert-True ($script:Calls -notcontains 'verify' -and $script:Calls -notcontains
 $script:Backend = 'llama-server'; $script:Calls = @()
 Invoke-Restart -Service 'dashboard'
 Assert-True (($script:Calls -join ',') -eq 'compose') 'An unrelated service restart touched native inference'
-Write-Host '[PASS] Windows restart verifies artifacts before stopping either native backend; container and service branches preserved'
+$script:EnvMap = @{ENABLE_DEVTOOLS='false'}
+Assert-True (-not (Test-ODSOpenCodeAutoStart)) 'Disabled Dev Tools selected OpenCode autostart'
+$script:Backend = 'llama-server'; $script:Failure = ''; $script:Calls = @()
+Invoke-Restart
+Assert-True (($script:Calls -join ',') -eq 'verify,stop-opencode,stop-model,start-model,compose,bootstrap') 'Disabled Dev Tools resurrected OpenCode during restart'
+$script:Backend = 'none'; $script:Calls = @()
+Invoke-Start
+Assert-True (($script:Calls -join ',') -eq 'agent,compose,bootstrap') 'Disabled Dev Tools launched OpenCode during full start'
+$script:Calls = @()
+Invoke-Start -Service 'opencode'
+Assert-True (($script:Calls -join ',') -eq 'start-opencode') 'Explicit OpenCode start was blocked'
+$script:EnvMap = @{ENABLE_DEVTOOLS='invalid'}
+Assert-True (-not (Test-ODSOpenCodeAutoStart)) 'Invalid Dev Tools selection launched OpenCode'
+$script:EnvMap = @{ENABLE_DEVTOOLS='true'}
+Assert-True (Test-ODSOpenCodeAutoStart) 'Selected Dev Tools did not start OpenCode'
+$script:EnvMap = @{}
+Assert-True (Test-ODSOpenCodeAutoStart) 'Legacy Windows install changed default behavior'
+Write-Host '[PASS] Windows restart preflight and OpenCode start selection contracts'
