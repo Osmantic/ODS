@@ -418,6 +418,72 @@ ods_prepare_whisper_cache_ownership() {
     _ods_rootless_fix_directory "$install_dir" data/whisper "1000:$host_gid" ods-whisper 775
 }
 
+# NVIDIA ComfyUI's lean Library path does not run Phase 11, and its base
+# compose.yaml has no volumes. Prepare only its known bind sources from the
+# selected NVIDIA overlay before the UID 1000 container starts. AMD uses a
+# different image and data layout, so this helper leaves it untouched.
+ods_prepare_comfyui_data_ownership() {
+    local install_dir="$1" flags container_state rootless_state=0 owner host_gid
+    local relative target subdir
+    local -a writable=(models output input user)
+    local INSTALL_DIR="$install_dir"
+
+    [[ -n "$install_dir" && "$(uname -s)" == Linux ]] || return 1
+    flags=$(_ods_rootless_compose_flags)
+    if [[ "$flags" != *"extensions/services/comfyui/compose.nvidia.yaml"* \
+        && "$flags" != *"extensions/services/comfyui/compose.multigpu-nvidia.yaml"* ]]; then
+        return 0
+    fi
+    [[ -d "$install_dir/data" && ! -L "$install_dir/data/comfyui" ]] || {
+        echo "[error] ComfyUI data root is missing or is a symlink." >&2
+        return 1
+    }
+    container_state=$(_ods_rootless_container_state ods-comfyui) || return 1
+    if [[ "$container_state" == running ]]; then
+        echo "[error] Stop ComfyUI before repairing its bind-mount ownership." >&2
+        return 1
+    fi
+    # Reject every existing symlink before creating or changing any target.
+    for subdir in "${writable[@]}" workflows; do
+        [[ ! -L "$install_dir/data/comfyui/$subdir" ]] || {
+            echo "[error] Refusing ComfyUI symlink bind source: $subdir" >&2
+            return 1
+        }
+    done
+    ods_docker_rootless_state || rootless_state=$?
+    case "$rootless_state" in
+        0) owner=1000:1000 ;;
+        1)
+            host_gid=$(id -g) || return 1
+            [[ "$host_gid" =~ ^[0-9]+$ ]] || return 1
+            owner="1000:$host_gid"
+            ;;
+        *) return 1 ;;
+    esac
+    _ods_rootless_ensure_helper_image || return 1
+    _ods_rootless_ensure_directory "$install_dir" data/comfyui || return 1
+    for subdir in "${writable[@]}" workflows; do
+        _ods_rootless_ensure_directory "$install_dir" "data/comfyui/$subdir" || return 1
+    done
+    for subdir in "${writable[@]}"; do
+        relative="data/comfyui/$subdir"
+        _ods_rootless_fix_directory "$install_dir" "$relative" "$owner" ods-comfyui 775 || return 1
+        target=$(_ods_rootless_resolve_target "$install_dir" "$relative") || return 1
+        # Match Phase 11 for hosts whose install owner is not UID 1000:
+        # retain group access to existing models, outputs and saved settings.
+        if ! docker run --rm --pull never --user 0:0 --network none \
+            -v "$target:/data" "$ODS_ROOTLESS_HELPER_IMAGE" chmod -R ug+rwX /data; then
+            echo "[error] Could not keep ComfyUI data writable for the install group: $relative" >&2
+            return 1
+        fi
+        if ! docker run --rm --pull never --user 1000:1000 --network none \
+            -v "$target:/data" "$ODS_ROOTLESS_HELPER_IMAGE" sh -ec 'test -w /data'; then
+            echo "[error] ComfyUI UID 1000 cannot write $relative." >&2
+            return 1
+        fi
+    done
+}
+
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
     ods_fix_rootless_ownership "${1:-}" "${2:-}"
 fi

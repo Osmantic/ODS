@@ -288,20 +288,41 @@ def test_external_compose_plan_refuses_stale_local_overlay(tmp_path, monkeypatch
 
 def test_hermes_start_prepares_route_before_compose_up(monkeypatch):
     order = []
-    monkeypatch.setattr(agent, "resolve_compose_flags", lambda: [])
+    selected_flags = (
+        "-f", "docker-compose.base.yml",
+        "-f", "extensions/services/hermes/compose.yaml",
+    )
+    seen_flags = []
+    monkeypatch.setattr(agent, "resolve_compose_flags", lambda: list(selected_flags))
     monkeypatch.setattr(agent, "_hermes_compose_plan_error", lambda flags: "")
     monkeypatch.setattr(agent, "_prepare_hermes_route_for_start", lambda: (order.append("route") or (True, "")))
     monkeypatch.setattr(agent, "_prepare_hermes_persona_for_start", lambda: (order.append("persona") or (True, "")))
     monkeypatch.setattr(agent, "_precreate_data_dirs", lambda service: None)
-    monkeypatch.setattr(agent, "_repair_rootless_data_ownership", lambda service: None)
+
+    def record_ownership(service, *, compose_flags):
+        assert service == "hermes"
+        order.append("ownership")
+        seen_flags.append(("ownership", tuple(compose_flags)))
+
+    monkeypatch.setattr(agent, "_repair_rootless_data_ownership", record_ownership)
     monkeypatch.setattr(agent, "_find_ext_dir", lambda service: None)
-    monkeypatch.setattr(agent, "_run_selected_extension_up", lambda service, flags, **kwargs: (
-        order.append("compose") or subprocess.CompletedProcess([], 0, "", "")))
+
+    def record_compose(service, flags, **kwargs):
+        assert service == "hermes"
+        order.append("compose")
+        seen_flags.append(("compose", tuple(flags)))
+        return subprocess.CompletedProcess([], 0, "", "")
+
+    monkeypatch.setattr(agent, "_run_selected_extension_up", record_compose)
     monkeypatch.setattr(agent.subprocess, "run", lambda command, **kwargs: (
         pytest.fail(f"Unexpected subprocess outside selected start: {command}")))
 
     assert agent.docker_compose_action("hermes", "start") == (True, "")
-    assert order == ["route", "persona", "compose"]
+    assert order == ["route", "persona", "ownership", "compose"]
+    assert seen_flags == [
+        ("ownership", selected_flags),
+        ("compose", selected_flags),
+    ]
 
 
 def test_hermes_persona_repairs_empty_mount_directory_without_deleting_owner_data(tmp_path, monkeypatch):
