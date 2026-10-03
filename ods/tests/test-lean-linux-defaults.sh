@@ -39,6 +39,22 @@ check_defaults() (
 check_defaults false false
 check_defaults true true
 
+# AMD WSL runs the model through Lemonade on Windows. Selecting that route
+# must not silently opt a fresh or explicitly lean install into search and
+# Token Spy; an owner-selected recommended bundle still stays selected.
+lemonade_mode="$(sed -n '/^if \[\[ "${LEMONADE_EXTERNAL,,}" == "true" \]\]; then$/,/^fi$/p' "$ROOT/install-core.sh")"
+[[ -n "$lemonade_mode" ]] || { echo 'FAIL: Lemonade route block missing' >&2; exit 1; }
+check_lemonade_optional_choice() (
+    LEMONADE_EXTERNAL=true ENABLE_RECOMMENDED="$1" ODS_MODE=local
+    eval "$lemonade_mode"
+    [[ "$ODS_MODE" == lemonade && "$ENABLE_RECOMMENDED" == "$1" ]] || {
+        echo "FAIL: Lemonade route changed recommended selection from $1" >&2
+        exit 1
+    }
+)
+check_lemonade_optional_choice false
+check_lemonade_optional_choice true
+
 # A fresh source layout carries optional compose files for every service but
 # has no INSTALL_DIR/.env yet. Those files must NOT enable optional features:
 # only an installed tree (.env present) can express a previous selection.
