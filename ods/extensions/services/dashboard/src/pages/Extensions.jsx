@@ -99,6 +99,9 @@ const STATUS_DESCRIPTIONS = {
   error:         'Installation or startup failed \u2014 click for details',
 }
 
+const CATALOG_FETCH_ERROR = 'Failed to load extensions catalog'
+const CATALOG_TIMEOUT_ERROR = 'Request timed out'
+
 export default function Extensions({ compact = false }) {
   const [catalog, setCatalog] = useState(null)
   const [webuiSelection, setWebuiSelection] = useState(null)
@@ -127,6 +130,11 @@ export default function Extensions({ compact = false }) {
   const [pollingLost, setPollingLost] = useState(false)
   const installProgressRef = useRef(null)
   const activePollers = useRef({})
+  // Manual refreshes and install polls may fetch the same catalog concurrently.
+  // Only the latest request may publish data; a real manual failure remains
+  // visible until a newer catalog response is accepted.
+  const catalogRequestSeq = useRef(0)
+  const catalogAcceptedSeq = useRef(0)
   // Per-service recovery tracker: counts consecutive fetch failures and
   // fires onThresholdReached/onRecovered to drive the polling-lost banner.
   // Keyed by serviceId because multiple installs can be polling concurrently.
@@ -175,10 +183,14 @@ export default function Extensions({ compact = false }) {
           // Refresh catalog — if it shows "enabled" (long-running service)
           // or "cli_installed" (one-shot CLI tool whose container exits
           // after init), we're done.
+          const request = ++catalogRequestSeq.current
           const catRes = await fetchJson('/api/extensions/catalog')
-          if (!catRes.ok) return
+          if (request !== catalogRequestSeq.current || !catRes.ok) return
           const catData = await catRes.json()
+          if (request !== catalogRequestSeq.current) return
+          catalogAcceptedSeq.current = request
           setCatalog(catData)
+          setError(previous => (previous === CATALOG_FETCH_ERROR || previous === CATALOG_TIMEOUT_ERROR) ? null : previous)
           const ext = catData.extensions?.find(e => e.id === serviceId)
           if (ext && (ext.status === 'enabled' || ext.status === 'cli_installed')) {
             clearInterval(activePollers.current[serviceId])
@@ -211,6 +223,7 @@ export default function Extensions({ compact = false }) {
       .then(d => setTemplates(d.templates || []))
       .catch(() => {})
     return () => {
+      catalogRequestSeq.current += 1
       Object.values(activePollers.current).forEach(clearInterval)
       activePollers.current = {}
       recoveryTrackers.current = {}
@@ -285,15 +298,24 @@ export default function Extensions({ compact = false }) {
   const openDialog = dialog => setConfirm({ ...dialog, id: ++dialogSeq.current })
 
   const fetchCatalog = async () => {
+    const request = ++catalogRequestSeq.current
     try {
       if (!catalog) setLoading(true)
       setRefreshing(true)
       setError(null)
       const res = await fetchJson(`/api/extensions/catalog`)
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
-      setCatalog(await res.json())
+      if (request !== catalogRequestSeq.current) return
+      const data = await res.json()
+      if (request !== catalogRequestSeq.current) return
+      catalogAcceptedSeq.current = request
+      setCatalog(data)
+      setError(previous => (previous === CATALOG_FETCH_ERROR || previous === CATALOG_TIMEOUT_ERROR) ? null : previous)
     } catch (err) {
-      setError(err.name === 'AbortError' ? 'Request timed out' : 'Failed to load extensions catalog')
+      // A later failed or pending poll does not erase a real manual failure.
+      // Only a newer accepted catalog makes this error stale.
+      if (request < catalogAcceptedSeq.current) return
+      setError(err.name === 'AbortError' ? CATALOG_TIMEOUT_ERROR : CATALOG_FETCH_ERROR)
       console.error('Extensions fetch error:', err)
     } finally {
       setLoading(false)
