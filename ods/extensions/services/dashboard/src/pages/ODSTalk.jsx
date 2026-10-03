@@ -384,6 +384,9 @@ export default function ODSTalk() {
               sb.addEventListener('error', reject, { once: true })
               sb.appendBuffer(value)
             })
+            // The next reply may take over while this append is pending.
+            // Never start the old stream on the shared audio element.
+            if (session.cancelled || activeSpeechRef.current !== session) break
             if (!started) {
               started = true
               // play() returns a Promise on modern browsers. If iOS

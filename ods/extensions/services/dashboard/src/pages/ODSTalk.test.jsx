@@ -708,6 +708,87 @@ describe('ODSTalk', () => {
     expect(createObjectURL).toHaveBeenCalledTimes(1)
   })
 
+  test('an older MediaSource append cannot play after a newer reply takes over', async () => {
+    window.localStorage.setItem('ods-talk-spoken-replies', '0')
+    const play = vi.fn(() => Promise.resolve())
+    vi.stubGlobal('Audio', class {
+      addEventListener() {}
+      play() { return play() }
+      pause() {}
+    })
+    vi.stubGlobal('URL', {
+      createObjectURL: vi.fn(() => 'blob:audio'),
+      revokeObjectURL: vi.fn(),
+    })
+    let mediaSourceCount = 0
+    let finishFirstAppend
+    vi.stubGlobal('MediaSource', class {
+      static isTypeSupported() { return true }
+      constructor() {
+        this.index = ++mediaSourceCount
+        this.readyState = 'open'
+      }
+      addEventListener(type, callback) {
+        if (type === 'sourceopen') globalThis.queueMicrotask(callback)
+      }
+      addSourceBuffer() {
+        let finishAppend
+        return {
+          addEventListener(type, callback) {
+            if (type === 'updateend') finishAppend = callback
+          },
+          appendBuffer: () => {
+            if (this.index === 1) finishFirstAppend = finishAppend
+            else globalThis.queueMicrotask(finishAppend)
+          },
+        }
+      }
+      endOfStream() { this.readyState = 'ended' }
+    })
+    const speechResponse = () => {
+      let readCount = 0
+      return {
+        ok: true,
+        status: 200,
+        body: { getReader: () => ({
+          read: async () => readCount++ === 0
+            ? { done: false, value: new Uint8Array([1, 2, 3]) }
+            : { done: true },
+          cancel: async () => {},
+        }) },
+      }
+    }
+    const fetchMock = vi.fn(async (url, options = {}) => {
+      if (url === '/api/talk/status') return response({
+        capabilities: { text_chat: true, tts: true, audio_message: false },
+      })
+      if (url === '/api/talk/message/stream') {
+        const text = JSON.parse(options.body).text
+        return sseResponse([
+          { type: 'session', session_id: text },
+          { type: 'delta', text },
+          { type: 'complete', session_id: text, text, status: 'ok' },
+          { type: 'done' },
+        ])
+      }
+      if (url === '/api/talk/speak') return speechResponse()
+      throw new Error(`unexpected request: ${url}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    render(<ODSTalk />)
+    expect(await screen.findByText('Ready')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Turn spoken replies on' }))
+    fireEvent.change(screen.getByPlaceholderText('Message ODS'), { target: { value: 'First reply' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
+    await waitFor(() => expect(finishFirstAppend).toBeTypeOf('function'))
+    fireEvent.change(screen.getByPlaceholderText('Message ODS'), { target: { value: 'Second reply' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
+    await waitFor(() => expect(play).toHaveBeenCalledTimes(1))
+    await act(async () => { finishFirstAppend() })
+    expect(play).toHaveBeenCalledTimes(1)
+    vi.unstubAllGlobals()
+  })
+
   test('renders a tool approval and submits one choice-only response', async () => {
     let resolveApproval
     const approvalResponse = new Promise(resolve => {
