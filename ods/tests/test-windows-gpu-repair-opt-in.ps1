@@ -8,6 +8,9 @@ if ($errors.Count) { throw $errors[0] }
 if (-not ($installerAst.ParamBlock.Parameters | Where-Object { $_.Name.VariablePath.UserPath -eq 'RepairGpuWsl' })) {
     throw 'Native installer does not expose -RepairGpuWsl'
 }
+if ($installerAst.Extent.Text -notmatch '\$repairGpuWslFlag\s*=\s*\$RepairGpuWsl\.IsPresent') {
+    throw 'Native installer does not pass the switch to Phase 05'
+}
 $tokens = $null; $errors = $null
 $phaseAst = [Management.Automation.Language.Parser]::ParseFile($phasePath, [ref]$tokens, [ref]$errors)
 if ($errors.Count) { throw $errors[0] }
@@ -41,7 +44,7 @@ try {
     New-Item -ItemType Directory -Path $fixture -Force | Out-Null
     $env:TEMP = $fixture
 
-    $RepairGpuWsl = $false
+    $repairGpuWslFlag = $false
     $script:dockerExitCodes = @(1)
     $script:dockerCalls = 0
     $script:wslCalls = @()
@@ -53,7 +56,7 @@ try {
         throw 'Default GPU failure wrote a toolkit installer'
     }
 
-    $RepairGpuWsl = $false
+    $repairGpuWslFlag = $false
     $script:dockerExitCodes = @(0)
     $script:dockerCalls = 0
     $script:wslCalls = @()
@@ -62,7 +65,7 @@ try {
         throw 'Successful GPU probe changed behavior'
     }
 
-    $RepairGpuWsl = $true
+    $repairGpuWslFlag = $true
     $script:dockerExitCodes = @(1, 1, 1)
     $script:dockerCalls = 0
     $script:wslCalls = @()
