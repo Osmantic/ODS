@@ -1890,7 +1890,9 @@ async def extensions_catalog(
             **update_state,
         }
         if builtin_selection:
-            enriched["library_ever_selected"] = (
+            # False means no positive history was found, not proof that this
+            # bundled service has never been used on a legacy installation.
+            enriched["library_ever_selected_proven"] = (
                 builtin_selection["library_selected"] or ext_id in ever_selected_ids
             )
         if ext_id == "opencode" and ext_id in SERVICES:

@@ -66,6 +66,8 @@ def _remember_selected(install_dir: Path, service_ids: set[str]) -> None:
         selected = path.lstat()
     except FileNotFoundError:
         raw = None
+    except OSError as exc:
+        raise SelectionError("Cannot inspect extension selection history") from exc
     else:
         if not stat.S_ISREG(selected.st_mode):
             raise SelectionError("Invalid extension selection history")

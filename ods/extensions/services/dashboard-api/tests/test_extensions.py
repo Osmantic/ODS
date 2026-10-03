@@ -106,18 +106,18 @@ class TestExtensionsCatalog:
         assert row["status"] == "disabled"
         assert row["library_manageable"] is True
         assert row["library_selected"] is False
-        assert row["library_ever_selected"] is False
+        assert row["library_ever_selected_proven"] is False
 
         disabled.rename(enabled)
         row = catalog_row([])
         assert row["status"] == "stopped"
         assert row["library_selected"] is True
-        assert row["library_ever_selected"] is True
+        assert row["library_ever_selected_proven"] is True
 
         row = catalog_row([_make_service_status(service_id)])
         assert row["status"] == "enabled"
         assert row["library_selected"] is True
-        assert row["library_ever_selected"] is True
+        assert row["library_ever_selected_proven"] is True
 
         (tmp_path / ".extensions-ever-selected.json").write_text(
             json.dumps({"schema_version": 1, "ever_selected": [service_id]}),
@@ -127,7 +127,7 @@ class TestExtensionsCatalog:
         row = catalog_row([])
         assert row["status"] == "disabled"
         assert row["library_selected"] is False
-        assert row["library_ever_selected"] is True
+        assert row["library_ever_selected_proven"] is True
 
     def test_qualified_builtin_changes_from_addable_to_healthy_without_api_restart(
             self, test_client, monkeypatch, tmp_path):

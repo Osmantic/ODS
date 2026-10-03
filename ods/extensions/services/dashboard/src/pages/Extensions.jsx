@@ -529,7 +529,7 @@ export default function Extensions({ compact = false }) {
   const availableForAdd = ext => ext.status === 'not_installed'
     || (ext.id === 'open-webui' && webuiCanAdd)
     || (ext.source === 'core' && ext.library_manageable === true
-      && ext.library_selected === false && ext.library_ever_selected !== true
+      && ext.library_selected === false && ext.library_ever_selected_proven !== true
       && ['disabled', 'error'].includes(ext.status))
   const unsupportedIds = new Set(allExtensions.filter(ext => !extensions.includes(ext)).map(ext => ext.id))
   const summary = {
@@ -553,7 +553,7 @@ export default function Extensions({ compact = false }) {
     if (libraryView === 'installed' && availableForAdd(ext)) return false
     if (libraryView === 'available' && !availableForAdd(ext)) return false
     if (libraryView === 'updates' && !ext.update_available) return false
-    if (statusFilter !== 'all' && libraryDisplayStatus(ext) !== statusFilter) return false
+    if (statusFilter !== 'all' && ext.status !== statusFilter) return false
     if (category !== 'all' && !ext.features?.some(f => f.category === category)) return false
     if (query && !ext.name.toLowerCase().includes(query) && !ext.description?.toLowerCase().includes(query)) return false
     return true
@@ -851,18 +851,10 @@ function LlmSwapBadge({ llm }) {
   )
 }
 
-function libraryDisplayStatus(ext) {
-  if (ext.source === 'core' && ext.library_manageable === true
-      && ext.library_selected === false && ext.library_ever_selected !== true
-      && ext.status === 'disabled') return 'not_installed'
-  return ext.status || 'not_installed'
-}
-
 function ExtensionCard({ ext, gpuBackend, agentAvailable, onDetails, onConsole, onAction, webuiSelection, mutating, progressData }) {
   const Icon = extensionIcon(ext)
   const status = ext.status || 'not_installed'
-  const shownStatus = libraryDisplayStatus(ext)
-  const statusStyle = STATUS_STYLES[shownStatus] || STATUS_STYLES.not_installed
+  const statusStyle = STATUS_STYLES[status] || STATUS_STYLES.not_installed
   const isMutating = mutating === ext.id
   const anyMutating = !!mutating
   const agentOffline = agentAvailable === false
@@ -916,7 +908,7 @@ function ExtensionCard({ ext, gpuBackend, agentAvailable, onDetails, onConsole, 
                 {ext.id === 'open-webui' && webuiSelection?.supported && webuiSelection.enabled === false ? 'optional' : 'core'}
               </span>
             ) : (
-              <StatusBadge status={shownStatus} statusStyle={statusStyle} ext={ext} gpuBackend={gpuBackend} onConsole={onConsole} />
+              <StatusBadge status={status} statusStyle={statusStyle} ext={ext} gpuBackend={gpuBackend} onConsole={onConsole} />
             )}
             {isToggleable && (
               <button
@@ -991,7 +983,7 @@ function ExtensionCard({ ext, gpuBackend, agentAvailable, onDetails, onConsole, 
               onClick={() => onAction(ext, 'enable')}
               className="flex items-center gap-1.5 px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.08em] rounded-lg bg-theme-accent text-white hover:bg-theme-accent-hover transition-colors disabled:opacity-50 shadow-sm shadow-theme-accent/20"
             >
-              {isMutating ? <Loader2 size={12} className="animate-spin" /> : <><Download size={12} /> {showManagedAdd ? `${ext.library_ever_selected === true ? 'Enable' : 'Add'} ${ext.name}` : `Retry ${ext.name}`}</>}
+              {isMutating ? <Loader2 size={12} className="animate-spin" /> : <><Download size={12} /> {showManagedAdd ? `${ext.library_ever_selected_proven === true ? 'Enable' : 'Turn on'} ${ext.name}` : `Retry ${ext.name}`}</>}
             </button>
           )}
           {ext.id === 'open-webui' && webuiSelection?.supported && webuiSelection.enabled === false && (
@@ -1171,8 +1163,7 @@ function DetailModal({ ext, gpuBackend, onClose }) {
   const envVars = ext.env_vars || []
   const deps = ext.depends_on || []
   const features = ext.features || []
-  const shownStatus = libraryDisplayStatus(ext)
-  const statusStyle = STATUS_STYLES[shownStatus] || STATUS_STYLES.not_installed
+  const statusStyle = STATUS_STYLES[ext.status] || STATUS_STYLES.not_installed
   const isIncompatible = ext.status === 'incompatible'
 
   return (
@@ -1192,7 +1183,7 @@ function DetailModal({ ext, gpuBackend, onClose }) {
                 className={`text-xs px-2 py-0.5 rounded-full ${statusStyle}`}
                 title={isIncompatible ? `Requires ${ext.gpu_backends?.join(' or ') || 'specific GPU'} — your system: ${gpuBackend || 'unknown'}` : ext.source === 'core' ? 'Built-in service — managed by ODS' : undefined}
               >
-                {shownStatus.replace('_', ' ')}
+                {(ext.status || 'not_installed').replace('_', ' ')}
               </span>
               <div className="mt-1">
                 <LlmSwapBadge llm={ext.llm} />
