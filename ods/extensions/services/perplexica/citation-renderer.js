@@ -166,7 +166,23 @@ function renderCitations(message, sources) {
   }
 
   function hasRawHtmlOutsideInlineCode(text) {
+    let htmlFence = null;
     for (const line of text.split("\n")) {
+      if (htmlFence) {
+        const close = closingFence.exec(line);
+        if (close && close[1].length <= htmlFence.maxIndent
+          && close[2][0] === htmlFence.marker[0]
+          && close[2].length >= htmlFence.marker.length) htmlFence = null;
+        continue;
+      }
+      const marker = openingFence.exec(line);
+      if (marker) {
+        htmlFence = { marker: marker[2], maxIndent: marker[1] ? marker[1].length + 3 : 3 };
+        continue;
+      }
+      const content = line.replace(/^(?: {0,3}> ?)+/, "");
+      if (/^(?: {4}|\t)/.test(content)
+        || /^(?: {0,3}(?:[-+*]|\d{1,9}[.)]) {5,})/.test(content)) continue;
       let outside = "";
       for (let i = 0; i < line.length;) {
         if (line[i] === "`") {
