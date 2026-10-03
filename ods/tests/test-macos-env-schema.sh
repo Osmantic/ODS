@@ -91,6 +91,8 @@ for tier in 1 CLOUD; do
         || fail "tier $tier .env must declare LLM_BACKEND exactly once"
     grep -qx 'TTS_WORKERS=1' "$env_file" \
         || fail "tier $tier macOS install must use one TTS worker"
+    grep -Eq '^TTS_THREADS=[1-4]$' "$env_file" \
+        || fail "tier $tier macOS install must bound Kokoro threads"
     grep -qx 'HERMES_REQUIRE_OWNER_CARD=false' "$env_file" \
         || fail "tier $tier must open Hermes without an owner card by default"
     pass "tier $tier: generated .env assigns every key once"
@@ -105,13 +107,21 @@ done
 
 tts_override_dir="$TMP_DIR/tts-worker-override"
 generate_env 1 "$tts_override_dir"
-awk '{ if ($0 == "TTS_WORKERS=1") print "TTS_WORKERS=2"; else print }' \
+awk '{ if ($0 == "TTS_WORKERS=1") print "TTS_WORKERS=2"; else if ($0 ~ /^TTS_THREADS=/) print "TTS_THREADS=2"; else print }' \
     "$tts_override_dir/.env" > "$tts_override_dir/.env.new"
 mv "$tts_override_dir/.env.new" "$tts_override_dir/.env"
 generate_env 1 "$tts_override_dir" false
 grep -qx 'TTS_WORKERS=2' "$tts_override_dir/.env" \
     || fail 'macOS reinstall did not preserve an explicit TTS worker override'
-pass 'macOS reinstall preserves an explicit TTS worker override'
+grep -qx 'TTS_THREADS=2' "$tts_override_dir/.env" \
+    || fail 'macOS reinstall did not preserve an explicit TTS thread override'
+pass 'macOS reinstall preserves explicit TTS worker and thread overrides'
+sed 's/^TTS_WORKERS=2$/TTS_WORKERS=8/' "$tts_override_dir/.env" > "$tts_override_dir/.env.new"
+mv "$tts_override_dir/.env.new" "$tts_override_dir/.env"
+generate_env 1 "$tts_override_dir" false
+grep -qx 'TTS_THREADS=1' "$tts_override_dir/.env" \
+    || fail 'macOS reinstall did not cap stale TTS threads after a worker increase'
+pass 'macOS reinstall caps TTS threads to the new per-worker CPU budget'
 
 hermes_override_dir="$TMP_DIR/hermes-owner-card-override"
 generate_env 1 "$hermes_override_dir"

@@ -1278,17 +1278,14 @@ Fix with: sudo chown -R \$(id -u):\$(id -g) $INSTALL_DIR/config $INSTALL_DIR/dat
         [[ "$LLAMA_THREADS_VALUE" =~ ^[1-9][0-9]*$ ]] || LLAMA_THREADS_VALUE=""
     fi
 
-    _tts_docker_memory_gb="$(ods_docker_memory_gb 2>/dev/null || true)"
-    _tts_effective_memory_gb="$(ods_effective_container_memory_gb "${RAM_GB:-0}" "$_tts_docker_memory_gb")"
-    _tts_workers_default="$(ods_default_tts_workers "$_tts_effective_memory_gb")"
-    TTS_WORKERS_VALUE="$(_env_get TTS_WORKERS "${TTS_WORKERS:-$_tts_workers_default}")"
+    TTS_WORKERS_VALUE="$(_env_get TTS_WORKERS "${TTS_WORKERS:-1}")"
     if [[ ! "$TTS_WORKERS_VALUE" =~ ^[1-9][0-9]*$ ]]; then
-        TTS_WORKERS_VALUE="$_tts_workers_default"
+        TTS_WORKERS_VALUE=1
     fi
-    unset _tts_docker_memory_gb _tts_effective_memory_gb _tts_workers_default
 
     TTS_CPU_LIMIT=$(_select_service_cpu_limit TTS_CPU_LIMIT "8.0" "$_docker_available_cpus")
     TTS_CPU_RESERVATION=$(_select_service_cpu_reservation TTS_CPU_RESERVATION "2.0" "$TTS_CPU_LIMIT")
+    TTS_THREADS_VALUE="$(ods_select_tts_threads "$(_env_get TTS_THREADS "${TTS_THREADS:-}")" "$TTS_CPU_LIMIT" "$TTS_WORKERS_VALUE")"
     WHISPER_CPU_LIMIT=$(_select_service_cpu_limit WHISPER_CPU_LIMIT "4.0" "$_docker_available_cpus")
     WHISPER_CPU_RESERVATION=$(_select_service_cpu_reservation WHISPER_CPU_RESERVATION "1.0" "$WHISPER_CPU_LIMIT")
     HERMES_CPU_LIMIT=$(_select_service_cpu_limit HERMES_CPU_LIMIT "4.0" "$_docker_available_cpus")
@@ -1577,6 +1574,7 @@ LLAMA_CPU_RESERVATION=${LLAMA_CPU_RESERVATION}
 TTS_WORKERS=$(dotenv_value "${TTS_WORKERS_VALUE}")
 TTS_CPU_LIMIT=${TTS_CPU_LIMIT}
 TTS_CPU_RESERVATION=${TTS_CPU_RESERVATION}
+TTS_THREADS=$(dotenv_value "${TTS_THREADS_VALUE}")
 WHISPER_CPU_LIMIT=${WHISPER_CPU_LIMIT}
 WHISPER_CPU_RESERVATION=${WHISPER_CPU_RESERVATION}
 HERMES_CPU_LIMIT=${HERMES_CPU_LIMIT}

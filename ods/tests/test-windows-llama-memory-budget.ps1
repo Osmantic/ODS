@@ -49,8 +49,13 @@ try {
     if ($nvidiaEnv -notmatch '(?m)^LLAMA_SERVER_MEMORY_LIMIT=5G\r?$') {
         throw "Fresh NVIDIA install did not use Docker's lower 8 GiB memory reading"
     }
+    if ($nvidiaEnv -notmatch '(?m)^TTS_WORKERS=1\r?$' -or $nvidiaEnv -notmatch '(?m)^TTS_THREADS=4\r?$') {
+        throw "Fresh Windows install did not give one Kokoro worker a bounded four-thread budget"
+    }
 
     $nvidiaEnv = $nvidiaEnv -replace '(?m)^LLAMA_SERVER_MEMORY_LIMIT=.*$', 'LLAMA_SERVER_MEMORY_LIMIT=7G'
+    $nvidiaEnv = $nvidiaEnv -replace '(?m)^TTS_WORKERS=.*$', 'TTS_WORKERS=2'
+    $nvidiaEnv = $nvidiaEnv -replace '(?m)^TTS_THREADS=.*$', 'TTS_THREADS=2'
     [IO.File]::WriteAllText($nvidiaEnvPath, $nvidiaEnv)
     $script:dockerRamGB = 4
     New-ODSEnv -InstallDir $nvidiaDir -TierConfig $tier -Tier "1" `
@@ -58,6 +63,17 @@ try {
     $rerunEnv = Get-Content -LiteralPath $nvidiaEnvPath -Raw
     if ($rerunEnv -notmatch '(?m)^LLAMA_SERVER_MEMORY_LIMIT=7G\r?$') {
         throw "NVIDIA reinstall discarded the explicit memory-limit override"
+    }
+    if ($rerunEnv -notmatch '(?m)^TTS_WORKERS=2\r?$' -or $rerunEnv -notmatch '(?m)^TTS_THREADS=2\r?$') {
+        throw "Windows reinstall discarded explicit Kokoro worker or thread overrides"
+    }
+    $rerunEnv = $rerunEnv -replace '(?m)^TTS_CPU_LIMIT=.*$', 'TTS_CPU_LIMIT=2.0'
+    [IO.File]::WriteAllText($nvidiaEnvPath, $rerunEnv)
+    New-ODSEnv -InstallDir $nvidiaDir -TierConfig $tier -Tier "1" `
+        -GpuBackend "nvidia" -ODSMode "local" -SystemRamGB 64 | Out-Null
+    $reducedCpuEnv = Get-Content -LiteralPath $nvidiaEnvPath -Raw
+    if ($reducedCpuEnv -notmatch '(?m)^TTS_CPU_LIMIT=2\.0\r?$' -or $reducedCpuEnv -notmatch '(?m)^TTS_THREADS=1\r?$') {
+        throw "Windows reinstall failed to cap stale Kokoro threads after CPU quota reduction"
     }
 
     foreach ($case in @(

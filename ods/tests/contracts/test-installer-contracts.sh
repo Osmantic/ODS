@@ -416,10 +416,16 @@ grep -A16 -F 'location ~ ^/api/models/.+/load$ {' "$dashboard_nginx" | grep -qF 
 echo "[contract] bundled service CPU limits are env-driven"
 grep -qF "cpus: '\${TTS_CPU_LIMIT:-1.0}'" extensions/services/tts/compose.yaml \
   || { echo "[FAIL] Kokoro TTS CPU limit must be env-driven with safe fallback"; exit 1; }
-grep -qF 'UVICORN_WORKERS=${TTS_WORKERS:-2}' extensions/services/tts/compose.yaml \
-  || { echo "[FAIL] Kokoro TTS must preserve its non-macOS worker default and allow an override"; exit 1; }
+grep -qF 'UVICORN_WORKERS=${TTS_WORKERS:-1}' extensions/services/tts/compose.yaml \
+  || { echo "[FAIL] Kokoro TTS must default to one worker and allow an override"; exit 1; }
+for runtime_key in OMP_NUM_THREADS MKL_NUM_THREADS; do
+  grep -qF "${runtime_key}=\${TTS_THREADS:-1}" extensions/services/tts/compose.yaml \
+    || { echo "[FAIL] Kokoro TTS must bound ${runtime_key} through TTS_THREADS"; exit 1; }
+done
 jq -e '.properties.TTS_WORKERS.type == "integer" and .properties.TTS_WORKERS.minimum == 1' .env.schema.json >/dev/null \
   || { echo "[FAIL] TTS_WORKERS must be a positive integer in the env schema"; exit 1; }
+jq -e '.properties.TTS_THREADS.type == "integer" and .properties.TTS_THREADS.minimum == 1' .env.schema.json >/dev/null \
+  || { echo "[FAIL] TTS_THREADS must be a positive integer in the env schema"; exit 1; }
 grep -qF 'TTS_WORKERS=1' installers/macos/lib/env-generator.sh \
   || { echo "[FAIL] macOS installs must conserve VM memory with one TTS worker"; exit 1; }
 grep -qF 'upsert_env_value "$env_path" "TTS_WORKERS" "$tts_workers"' installers/macos/lib/env-generator.sh \

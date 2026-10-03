@@ -44,6 +44,8 @@ _ODS_MACOS_ENV_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 . "$_ODS_MACOS_ENV_ROOT/lib/dotenv-quote.sh"
 # shellcheck source=../../lib/searxng-locale.sh
 . "$_ODS_MACOS_ENV_ROOT/installers/lib/searxng-locale.sh"
+# shellcheck source=../../lib/llama-memory-budget.sh
+. "$_ODS_MACOS_ENV_ROOT/installers/lib/llama-memory-budget.sh"
 unset _ODS_MACOS_ENV_ROOT
 
 env_key_exists() {
@@ -276,10 +278,12 @@ generate_ods_env() {
         comfyui_cpu_reservation="$(select_env_service_cpu_reservation "$env_path" "COMFYUI_CPU_RESERVATION" "2.0" "$comfyui_cpu_limit")"
         upsert_env_value "$env_path" "TTS_CPU_LIMIT" "$tts_cpu_limit"
         upsert_env_value "$env_path" "TTS_CPU_RESERVATION" "$tts_cpu_reservation"
-        local tts_workers
+        local tts_workers tts_threads
         tts_workers="$(read_env_value "$env_path" "TTS_WORKERS")"
         [[ "$tts_workers" =~ ^[1-9][0-9]*$ ]] || tts_workers=1
         upsert_env_value "$env_path" "TTS_WORKERS" "$tts_workers"
+        tts_threads="$(ods_select_tts_threads "$(read_env_value "$env_path" "TTS_THREADS")" "$tts_cpu_limit" "$tts_workers")"
+        upsert_env_value "$env_path" "TTS_THREADS" "$tts_threads"
         upsert_env_value "$env_path" "WHISPER_CPU_LIMIT" "$whisper_cpu_limit"
         upsert_env_value "$env_path" "WHISPER_CPU_RESERVATION" "$whisper_cpu_reservation"
         upsert_env_value "$env_path" "HERMES_CPU_LIMIT" "$hermes_cpu_limit"
@@ -448,6 +452,7 @@ generate_ods_env() {
     fi
     tts_cpu_limit="$(select_env_service_cpu_limit "$env_path" "TTS_CPU_LIMIT" "8.0" "$docker_available_cpus")"
     tts_cpu_reservation="$(select_env_service_cpu_reservation "$env_path" "TTS_CPU_RESERVATION" "2.0" "$tts_cpu_limit")"
+    tts_threads="$(ods_default_tts_threads "$tts_cpu_limit" 1)"
     whisper_cpu_limit="$(select_env_service_cpu_limit "$env_path" "WHISPER_CPU_LIMIT" "4.0" "$docker_available_cpus")"
     whisper_cpu_reservation="$(select_env_service_cpu_reservation "$env_path" "WHISPER_CPU_RESERVATION" "1.0" "$whisper_cpu_limit")"
     hermes_cpu_limit="$(select_env_service_cpu_limit "$env_path" "HERMES_CPU_LIMIT" "4.0" "$docker_available_cpus")"
@@ -689,6 +694,7 @@ LLAMA_CPU_RESERVATION=${detected_cpu_reservation}
 TTS_CPU_LIMIT=${tts_cpu_limit}
 TTS_CPU_RESERVATION=${tts_cpu_reservation}
 TTS_WORKERS=1
+TTS_THREADS=${tts_threads}
 WHISPER_CPU_LIMIT=${whisper_cpu_limit}
 WHISPER_CPU_RESERVATION=${whisper_cpu_reservation}
 HERMES_CPU_LIMIT=${hermes_cpu_limit}

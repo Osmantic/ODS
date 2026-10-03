@@ -924,6 +924,22 @@ function New-ODSEnv {
     }
     $ttsCpuLimit = Select-ServiceCpuLimit -Key "TTS_CPU_LIMIT" -Desired "8.0" -Available $cpuBudget.Available
     $ttsCpuReservation = Select-ServiceCpuReservation -Key "TTS_CPU_RESERVATION" -Desired "2.0" -Limit $ttsCpuLimit
+    $ttsWorkers = Get-EnvOrNew "TTS_WORKERS" "1"
+    $ttsWorkerNumber = 0
+    if (-not [int]::TryParse($ttsWorkers, [ref]$ttsWorkerNumber) -or $ttsWorkerNumber -lt 1) {
+        $ttsWorkers = "1"
+        $ttsWorkerNumber = 1
+    }
+    $ttsCpuNumber = 0.0
+    if (-not [double]::TryParse($ttsCpuLimit, $style, $culture, [ref]$ttsCpuNumber) -or $ttsCpuNumber -le 0) {
+        $ttsCpuNumber = 1.0
+    }
+    $ttsThreadDefault = [string][int][Math]::Max(1, [Math]::Min(4, [Math]::Floor($ttsCpuNumber / $ttsWorkerNumber)))
+    $ttsThreads = Get-EnvOrNew "TTS_THREADS" $ttsThreadDefault
+    $ttsThreadNumber = 0
+    if (-not [int]::TryParse($ttsThreads, [ref]$ttsThreadNumber) -or $ttsThreadNumber -lt 1 -or $ttsThreadNumber -gt [int]$ttsThreadDefault) {
+        $ttsThreads = $ttsThreadDefault
+    }
     $whisperCpuLimit = Select-ServiceCpuLimit -Key "WHISPER_CPU_LIMIT" -Desired "4.0" -Available $cpuBudget.Available
     $whisperCpuReservation = Select-ServiceCpuReservation -Key "WHISPER_CPU_RESERVATION" -Desired "1.0" -Limit $whisperCpuLimit
     $hermesCpuLimit = Select-ServiceCpuLimit -Key "HERMES_CPU_LIMIT" -Desired "4.0" -Available $cpuBudget.Available
@@ -1234,6 +1250,8 @@ LLAMA_CPU_RESERVATION=$llamaCpuReservation
 #=== Bundled Service CPU Budgets ===
 TTS_CPU_LIMIT=$ttsCpuLimit
 TTS_CPU_RESERVATION=$ttsCpuReservation
+TTS_WORKERS=$ttsWorkers
+TTS_THREADS=$ttsThreads
 WHISPER_CPU_LIMIT=$whisperCpuLimit
 WHISPER_CPU_RESERVATION=$whisperCpuReservation
 HERMES_CPU_LIMIT=$hermesCpuLimit
