@@ -11,6 +11,7 @@
 #   $gpuInfo     -- from phase 02, for GPU passthrough test
 #   $sourceRoot  -- from orchestrator, for compose syntax validation
 #   $dryRun      -- skip live checks
+#   $RepairGpuWsl -- opt in to WSL shutdown and toolkit repair on probe failure
 #   $script:DOCKER_COMPOSE_CMD  -- from constants.ps1 (default: "docker compose")
 #
 # Writes:
@@ -124,9 +125,15 @@ if ($dryRun) {
         if ($gpuTestExit -eq 0) {
             Write-AISuccess "NVIDIA GPU passthrough confirmed in Docker"
             $script:gpuPassthroughFailed = $false
+        } elseif (-not $RepairGpuWsl) {
+            Write-AIWarn "GPU passthrough test failed. No WSL repair attempted."
+            Write-AI "  Continuing with CPU-only inference (slower)."
+            Write-AI "  To allow WSL shutdown and NVIDIA toolkit repair, rerun with -RepairGpuWsl."
+            $script:gpuPassthroughFailed = $true
         } else {
-            # Attempt automatic recovery before falling back to CPU
-            Write-AIWarn "GPU passthrough test failed. Attempting automatic fix..."
+            # This opt-in recovery shuts down all WSL distros and may modify the
+            # default distro's NVIDIA Container Toolkit configuration.
+            Write-AIWarn "GPU passthrough test failed. Attempting requested WSL repair..."
 
             # Step 1: WSL kernel refresh (fixes post-driver-update staleness)
             Write-AI "  Restarting WSL2 kernel..."
