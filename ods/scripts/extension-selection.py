@@ -815,13 +815,26 @@ def _base_compose_services(install_dir: Path, compose_flags: str) -> tuple[set[s
         flags = shlex.split(compose_flags)
     except ValueError as exc:
         raise SelectionError("Invalid current Compose flags") from exc
+    # The native Windows installer saves this explicit environment file before
+    # its Compose overlays.  Keep the exception exact: accepting arbitrary
+    # Compose options here would make the base-service custody check ambiguous.
+    root = install_dir.resolve(strict=True)
+    if flags[:1] == ["--env-file"]:
+        # Inspect the saved spelling too: shlex turns `.\\env` into `.env`,
+        # while Docker would receive a different path.
+        if (len(flags) < 2 or flags[1] != ".env"
+                or re.match(r"\A--env-file[ \t]+\.env[ \t]+", compose_flags) is None):
+            raise SelectionError("Invalid current Compose flags")
+        env_file = root / ".env"
+        if env_file.is_symlink() or not env_file.is_file():
+            raise SelectionError("Invalid current Compose environment file")
+        flags = flags[2:]
     if (not flags or len(flags) % 2
             or any(flag != "-f" for flag in flags[::2])):
         raise SelectionError("Invalid current Compose flags")
     services: set[str] = set()
     providers: set[str] = set()
     selected_base = False
-    root = install_dir.resolve(strict=True)
     for name in flags[1::2]:
         path = Path(name)
         if not path.is_absolute():
