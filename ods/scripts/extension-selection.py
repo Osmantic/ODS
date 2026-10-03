@@ -35,10 +35,90 @@ except ImportError:  # pragma: no cover - exercised by POSIX CI
 
 MAX_YAML_BYTES = 1024 * 1024
 SERVICE_ID = re.compile(r"[a-z0-9][a-z0-9_-]*\Z")
+SELECTION_HISTORY = ".extensions-ever-selected.json"
 
 
 class SelectionError(Exception):
     """A selection cannot be committed without risking the installed stack."""
+
+
+def _remember_selected(install_dir: Path, service_ids: set[str]) -> None:
+    """Keep prior user selection when a Compose marker is turned off.
+
+    Called under the graph-wide selection lock while these services are still
+    selected. The receipt records only IDs, never credentials or service data.
+    An interrupted disable may leave an extra remembered ID, but that ID was
+    selected at the time of the write, so it is still truthful history.
+    """
+    if not service_ids:
+        return
+    if any(SERVICE_ID.fullmatch(service_id) is None for service_id in service_ids):
+        raise SelectionError("Invalid extension selection history ID")
+    directory = install_dir / "data"
+    try:
+        info = directory.lstat()
+    except OSError as exc:
+        raise SelectionError("Cannot inspect extension selection history directory") from exc
+    if not stat.S_ISDIR(info.st_mode):
+        raise SelectionError("Invalid extension selection history directory")
+    path = directory / SELECTION_HISTORY
+    try:
+        selected = path.lstat()
+    except FileNotFoundError:
+        raw = None
+    except OSError as exc:
+        raise SelectionError("Cannot inspect extension selection history") from exc
+    else:
+        if not stat.S_ISREG(selected.st_mode):
+            raise SelectionError("Invalid extension selection history")
+        raw = _read_bounded_file(path)
+    if raw is not None:
+        try:
+            document = json.loads(raw)
+        except (UnicodeError, json.JSONDecodeError) as exc:
+            raise SelectionError("Invalid extension selection history") from exc
+        old = document.get("ever_selected") if isinstance(document, dict) and document.get("schema_version") == 1 else None
+        if (not isinstance(old, list) or len(old) > 4096
+                or any(not isinstance(item, str) or SERVICE_ID.fullmatch(item) is None for item in old)):
+            raise SelectionError("Invalid extension selection history")
+        remembered = set(old)
+    else:
+        remembered = set()
+    if service_ids <= remembered:
+        return
+    remembered.update(service_ids)
+    payload = json.dumps({"schema_version": 1, "ever_selected": sorted(remembered)}, separators=(",", ":")) + "\n"
+    if len(payload) > MAX_YAML_BYTES:
+        raise SelectionError("Extension selection history is too large")
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", newline="\n",
+                                         prefix=".extensions-ever-selected-", dir=directory,
+                                         delete=False) as stream:
+            temporary = Path(stream.name)
+            stream.write(payload)
+            stream.flush()
+            os.chmod(temporary, 0o644)
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    except OSError as exc:
+        raise SelectionError("Could not save extension selection history; selection unchanged") from exc
+    finally:
+        if temporary is not None:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
+def _remember_selected_best_effort(install_dir: Path, service_ids: set[str]) -> None:
+    """Selection history is UI metadata and must not veto a safe disable."""
+    try:
+        _remember_selected(install_dir, service_ids)
+    except SelectionError:
+        # Preserve an unreadable/corrupt receipt for diagnosis. The catalog
+        # must present missing history as unknown rather than infer absence.
+        print("WARNING: Could not record prior Library selection history", file=sys.stderr)
 
 
 def _read_bounded_file(path: Path) -> bytes:
@@ -93,6 +173,64 @@ def _read_json(path: Path) -> object:
         return json.loads(_read_bounded_file(path).decode("utf-8"))
     except (UnicodeError, json.JSONDecodeError) as exc:
         raise SelectionError(f"Cannot inspect selected file: {path}") from exc
+
+
+def _assert_remote_route_allows_disable(
+    install_dir: Path, service_id: str, data_dir: Path | None = None,
+) -> None:
+    """Keep an active remote route's required services selected.
+
+    This check runs under the shared extensions lock for both Dashboard and CLI
+    operations. A configured route is disabled through remote-provider setup,
+    not by stopping its transport underneath LiteLLM.
+    """
+    if service_id not in {"remote-provider-egress", "remote-provider-ssh-tunnel"}:
+        return
+    default_data_dir = install_dir / "data"
+    if data_dir is None:
+        configured = os.environ.get("ODS_DATA_DIR")
+        data_dir = Path(configured) if configured else default_data_dir
+    if not default_data_dir.is_absolute() or not data_dir.is_absolute():
+        raise SelectionError("Invalid remote-provider data directory")
+    # Inspect the default root as well as a configured external root. A stale
+    # process environment must not hide an active route in the installed root.
+    route_roots = ((default_data_dir,) if data_dir == default_data_dir
+                   else (default_data_dir, data_dir))
+    for root in route_roots:
+        route_dir = root / "remote-provider"
+        try:
+            directory = route_dir.lstat()
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            raise SelectionError("Cannot inspect remote-provider route directory") from exc
+        if not stat.S_ISDIR(directory.st_mode):
+            raise SelectionError("Invalid remote-provider route directory")
+        route_path = route_dir / "routing-state.json"
+        try:
+            selected = route_path.lstat()
+        except FileNotFoundError:
+            continue
+        except OSError as exc:
+            raise SelectionError("Cannot inspect remote-provider route state") from exc
+        if not stat.S_ISREG(selected.st_mode) or selected.st_nlink != 1:
+            raise SelectionError("Invalid remote-provider route state")
+        route = _read_json(route_path)
+        if (not isinstance(route, dict)
+                or route.get("schema") != "ods.remote-routing-state.v1"
+                or type(route.get("enabled")) is not bool):
+            raise SelectionError("Invalid remote-provider route state")
+        if not route["enabled"]:
+            continue
+        provider = route.get("provider")
+        transport = provider.get("transport") if isinstance(provider, dict) else None
+        if transport not in {"direct", "ssh"}:
+            raise SelectionError("Invalid remote-provider route transport")
+        if service_id == "remote-provider-egress" or transport == "ssh":
+            raise SelectionError(
+                f"Active {transport} remote-provider route requires {service_id}; "
+                "disable the route first"
+            )
 
 
 def _manifest_dependencies(directory: Path) -> set[str]:
@@ -435,6 +573,7 @@ def run(
     tier: str = "1", gpu_backend: str = "nvidia", gpu_count: str = "1",
     ods_mode: str = "local",
     stop_mode: str | None = None, compose_flags: str = "",
+    data_dir: Path | None = None,
 ) -> str:
     if action not in ("check-disable", "disable", "enable"):
         raise SelectionError("Invalid selection action")
@@ -453,6 +592,7 @@ def run(
         directory = _target_dir(install_dir, service_id)
         if action != "enable":
             _assert_no_dependents(install_dir, service_id)
+            _assert_remote_route_allows_disable(install_dir, service_id, data_dir)
         enabled = directory / "compose.yaml"
         disabled = directory / "compose.yaml.disabled"
         try:
@@ -501,6 +641,7 @@ def run(
             raise SelectionError(f"No Compose selection file for {service_id}")
         if action == "check-disable":
             return "ready"
+        _remember_selected_best_effort(install_dir, {service_id})
         if stop_mode is not None:
             _stop_for_disable(install_dir, service_id, stop_mode, compose_flags)
         try:
@@ -721,6 +862,7 @@ def restore_preset(
     compose_flags: str | None = None,
     strict: bool = False,
     expected_sha256: dict[str, str] | None = None,
+    data_dir: Path | None = None,
 ) -> tuple[int, int, list[str]]:
     """Restore markers from a valid selection, keeping dependencies valid per move."""
     if timeout <= 0 or timeout > 120:
@@ -814,6 +956,7 @@ def restore_preset(
             if desired[service_id]
         ))
         for service_id in disable_order:
+            _assert_remote_route_allows_disable(install_dir, service_id, data_dir)
             missing = (selected_providers[service_id] & base_needs_provider) - retained_providers
             if missing:
                 raise SelectionError(
@@ -827,6 +970,7 @@ def restore_preset(
             raise SelectionError(f"Compose cache is a directory: {cache}")
         operations = [(service_id, False) for service_id in disable_order]
         operations.extend((service_id, True) for service_id in enable_order)
+        _remember_selected_best_effort(install_dir, set(disable_order))
         if not operations:
             try:
                 cache.unlink(missing_ok=True)

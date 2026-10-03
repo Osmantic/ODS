@@ -5,6 +5,7 @@ history. Explicit conversation deletion is the lifecycle boundary.
 """
 
 import hashlib
+import logging
 import os
 from pathlib import Path
 import re
@@ -14,6 +15,9 @@ import time
 import uuid
 
 from pixel_image_input import validate_image
+
+
+logger = logging.getLogger(__name__)
 
 
 MAX_STORE_BYTES = 128 * 1024 * 1024
@@ -35,8 +39,10 @@ class ConversationDeleted(ValueError):
 
 def _scope(owner, chat):
     if not isinstance(owner, str) or not _OWNER.fullmatch(owner):
+        logger.warning("Image store safety rejection: reason=owner_namespace")
         raise ValueError("Invalid attachment owner namespace")
     if not isinstance(chat, str) or not _CHAT.fullmatch(chat):
+        logger.warning("Image store safety rejection: reason=conversation_namespace")
         raise ValueError("Invalid attachment conversation")
 
 
@@ -46,8 +52,16 @@ class ImageStore:
         directory.mkdir(mode=0o700, parents=True, exist_ok=True)
         info = directory.lstat()
         if directory.resolve() != directory or not stat.S_ISDIR(info.st_mode):
+            logger.warning(
+                "Image store safety rejection: reason=directory_type directory=%s",
+                stat.S_ISDIR(info.st_mode),
+            )
             raise ValueError("Invalid image store directory")
         if os.name == "posix" and (info.st_uid != os.geteuid() or info.st_mode & 0o077):
+            logger.warning(
+                "Image store safety rejection: reason=directory_access owner=%s private=%s",
+                info.st_uid == os.geteuid(), not bool(info.st_mode & 0o077),
+            )
             raise ValueError("Image store directory must be private")
         path = directory / "images.sqlite3"
         for suffix in ("", "-journal", "-wal", "-shm"):
@@ -56,6 +70,13 @@ class ImageStore:
                 info = candidate.lstat()
                 if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
                         or os.name == "posix" and (info.st_uid != os.geteuid() or info.st_mode & 0o077)):
+                    logger.warning(
+                        "Image store safety rejection: reason=file_access kind=%s "
+                        "regular=%s single_link=%s owner=%s private=%s",
+                        suffix or "database", stat.S_ISREG(info.st_mode), info.st_nlink == 1,
+                        os.name != "posix" or info.st_uid == os.geteuid(),
+                        os.name != "posix" or not bool(info.st_mode & 0o077),
+                    )
                     raise ValueError("Image store files must be private regular files")
         if not path.exists():
             fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)

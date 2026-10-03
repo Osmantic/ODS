@@ -1,10 +1,11 @@
-"""Exercise the shipped Hermes Proxy -> Hermes -> SearXNG dependency chain."""
+"""Exercise a three-service dependency chain, including retained old layouts."""
 
 import json
 from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
+import yaml
 
 from routers import extensions
 
@@ -16,7 +17,12 @@ def installation(monkeypatch, tmp_path, request):
     for name in ("hermes-proxy", "hermes", "searxng"):
         directory = bundled / name
         directory.mkdir(parents=True)
-        (directory / "manifest.yaml").write_bytes((source / name / "manifest.yaml").read_bytes())
+        manifest = yaml.safe_load((source / name / "manifest.yaml").read_text())
+        if name == "hermes":
+            # Model an older installed Hermes manifest that required SearXNG.
+            # The current shipped add-back deliberately leaves search optional.
+            manifest["service"]["depends_on"] = ["searxng"]
+        (directory / "manifest.yaml").write_text(yaml.safe_dump(manifest))
         filename = "compose.yaml.disabled" if name == "hermes-proxy" and not request.param else "compose.yaml"
         (directory / filename).write_text(f"services:\n  {name}:\n    image: alpine:3.22\n")
 
@@ -63,6 +69,46 @@ def test_disable_search_blocks_enabled_hermes(test_client, installation):
     assert "hermes" in response.json()["detail"]
     start.assert_not_called()
     assert (bundled / "searxng/compose.yaml").is_file()
+
+
+def test_shipped_hermes_can_keep_running_when_search_is_disabled(test_client, installation,
+                                                                monkeypatch):
+    bundled, _ = installation
+    source = Path(__file__).resolve().parents[2]
+    (bundled / "hermes/manifest.yaml").write_bytes(
+        (source / "hermes/manifest.yaml").read_bytes())
+    def select(action, service_ids, expected_sha256=None):
+        assert action == "disable" and service_ids == ["searxng"]
+        (bundled / "searxng/compose.yaml").rename(
+            bundled / "searxng/compose.yaml.disabled")
+        return {"action": "disabled", "service_ids": service_ids}
+    monkeypatch.setattr(extensions, "_select_extensions_on_host", select)
+
+    response = test_client.post("/api/extensions/searxng/disable?include_data_info=false",
+                                headers=test_client.auth_headers)
+    assert response.status_code == 200
+    assert (bundled / "searxng/compose.yaml.disabled").is_file()
+    assert (bundled / "hermes/compose.yaml").is_file()
+
+
+def test_shipped_hermes_addback_does_not_enable_search(test_client, installation, monkeypatch):
+    bundled, _ = installation
+    source = Path(__file__).resolve().parents[2]
+    (bundled / "hermes/manifest.yaml").write_bytes(
+        (source / "hermes/manifest.yaml").read_bytes())
+    for name in ("hermes", "searxng"):
+        (bundled / name / "compose.yaml").rename(bundled / name / "compose.yaml.disabled")
+    def select(action, service_ids, expected_sha256=None):
+        assert action == "enable" and service_ids == ["hermes"]
+        (bundled / "hermes/compose.yaml.disabled").rename(bundled / "hermes/compose.yaml")
+        return {"action": "enabled", "service_ids": service_ids}
+    monkeypatch.setattr(extensions, "_select_extensions_on_host", select)
+
+    response = test_client.post("/api/extensions/hermes/enable?auto_enable_deps=true",
+                                headers=test_client.auth_headers)
+    assert response.status_code == 200
+    assert response.json()["enabled_services"] == ["hermes"]
+    assert (bundled / "searxng/compose.yaml.disabled").is_file()
 
 
 def test_user_file_does_not_shadow_bundled_enabled_dependent(

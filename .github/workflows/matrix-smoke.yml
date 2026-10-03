@@ -284,6 +284,9 @@ jobs:
       - name: macOS OpenCode Selection Contract
         run: /bin/bash tests/test-macos-opencode-selection.sh
 
+      - name: macOS Retained Feature Selection Contract
+        run: /bin/bash tests/test-macos-retained-feature-enter.sh
+
       - name: Native Model Store Restart Tests
         run: /bin/bash tests/test-macos-native-model-store.sh
 

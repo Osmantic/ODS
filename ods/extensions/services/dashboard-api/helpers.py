@@ -1339,6 +1339,7 @@ def get_bootstrap_status() -> BootstrapStatus:
             return BootstrapStatus(active=False)
         if status == "" and not data.get("bytesDownloaded") and not data.get("percent"):
             return BootstrapStatus(active=False)
+        phase = status if status in ("starting", "downloading", "verifying", "swapping") else None
 
         # Reconcile with the filesystem only for non-active states. If the
         # target model file is already present on disk and the status is
@@ -1384,7 +1385,7 @@ def get_bootstrap_status() -> BootstrapStatus:
             bytes_downloaded = max(0, min(bytes_downloaded, bytes_total))
 
         return BootstrapStatus(
-            active=True, model_name=data.get("model"), percent=percent,
+            active=True, phase=phase, model_name=data.get("model"), percent=percent,
             downloaded_gb=bytes_downloaded / (1024**3) if bytes_downloaded else None,
             total_gb=bytes_total / (1024**3) if bytes_total else None,
             speed_mbps=speed_bps / (1024**2) if speed_bps else None,

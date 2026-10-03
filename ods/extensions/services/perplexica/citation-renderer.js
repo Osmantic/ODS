@@ -5,6 +5,9 @@
 function renderCitations(message, sources) {
   if (typeof message !== "string") return message;
   const refs = Array.isArray(sources) ? sources : [];
+  // Raw HTML needs its own parser. Preserve the existing citation behavior
+  // for such answers instead of risking markup changes for a cosmetic fix.
+  const allowInlineCodeHtml = !/<[A-Za-z/!?]/.test(message);
   let fence = null;
   let inline = null;
 
@@ -59,6 +62,23 @@ function renderCitations(message, sources) {
     return false;
   }
 
+  function closingTicks(line, from, marker) {
+    let at = line.indexOf(marker, from);
+    while (at !== -1) {
+      if (line[at - 1] !== "`" && line[at + marker.length] !== "`") return at;
+      at = line.indexOf(marker, at + marker.length);
+    }
+    return -1;
+  }
+
+  function inlineCode(value) {
+    const escaped = value.replace(/&/g, "&amp;").replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+    // Vane v1.12.2 returns literal backticks for Markdown codeInline nodes.
+    // not-prose prevents Typography from adding its own backtick pseudo-text.
+    return `<span class="not-prose"><code style="font-family:monospace;padding:0 .2em;border-radius:.2em;background-color:rgba(127,127,127,.14)">${escaped}</code></span>`;
+  }
+
   function prose(line, base) {
     let output = "";
     for (let i = 0; i < line.length;) {
@@ -80,7 +100,17 @@ function renderCitations(message, sources) {
         let escapes = 0;
         for (let k = i - 1; k >= 0 && line[k] === "\\"; k -= 1) escapes += 1;
         // Escaped or unmatched backticks are prose, so later [N] can cite.
-        if (escapes % 2 === 0 && hasClosingTicks(base + end, marker)) inline = marker;
+        if (escapes % 2 === 0) {
+          if (allowInlineCodeHtml) {
+            const close = closingTicks(line, end, marker);
+            if (close !== -1) {
+              output += inlineCode(line.slice(end, close));
+              i = close + marker.length;
+              continue;
+            }
+          }
+          if (hasClosingTicks(base + end, marker)) inline = marker;
+        }
         output += marker;
         i = end;
         continue;
@@ -126,7 +156,8 @@ function renderCitations(message, sources) {
       return line;
     }
     const content = line.replace(/^(?: {0,3}> ?)+/, "");
-    if (/^(?: {4}|\t)/.test(content)) return line;
+    if (/^(?: {4}|\t)/.test(content)
+      || /^(?: {0,3}(?:[-+*]|\d{1,9}[.)]) {5,})/.test(content)) return line;
     return prose(line, lineBase);
   }).join("\n");
 }

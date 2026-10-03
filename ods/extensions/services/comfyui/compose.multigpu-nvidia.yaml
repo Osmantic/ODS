@@ -1,14 +1,5 @@
-services:
-  comfyui:
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              device_ids: ["${COMFYUI_GPU_UUID}"]
-              capabilities: [gpu]
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
+# Kept as a no-op for installed stacks that still resolve this fragment.
+# Compose appends device reservations across files: adding a UUID reservation
+# here beside compose.nvidia.yaml's count reservation requested two GPUs.
+# The NVIDIA service now has its single selected-device reservation there.
+services: {}
