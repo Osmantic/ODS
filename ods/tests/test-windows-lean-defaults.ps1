@@ -157,6 +157,9 @@ try {
         (Get-Content -LiteralPath $searchData -Raw) -cne 'keep') {
         throw 'Independent SearXNG Library selection or owner data was lost on rerun'
     }
+    if (-not (Invoke-Selection -Path $searchRoot -NoRecommended $true).Searxng) {
+        throw '-NoRecommended removed a separately retained SearXNG selection'
+    }
     if ((Invoke-Selection -Path $searchRoot -Interactive $true -MenuAnswer '2').Searxng) {
         throw 'Explicit Core Only retained an optional SearXNG service'
     }

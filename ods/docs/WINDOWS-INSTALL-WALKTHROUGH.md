@@ -114,7 +114,9 @@ changes do not delete the optional services' data directories.
 Hermes alone does not select SearXNG. Recommended, Perplexica, and legacy
 OpenClaw still select it; a SearXNG service enabled through Dashboard Library
 is retained on an ordinary installer rerun. Choosing **Core Only** explicitly
-turns it off without deleting its data.
+turns it off without deleting its data. `-NoRecommended` leaves an active
+SearXNG selection in place, since older installs did not record which feature
+first enabled it; disable SearXNG in Library if that is no longer wanted.
 
 ### Important: repo checkout vs runtime directory
 
