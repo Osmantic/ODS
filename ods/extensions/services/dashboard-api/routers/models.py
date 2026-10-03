@@ -60,6 +60,7 @@ from performance_oracle import (
     model_files_dir as model_files_dir,
     read_env_file_value,
     read_env_value,
+    read_persisted_env_value,
 )
 from security import verify_api_key
 
@@ -693,22 +694,18 @@ def _format_size(size_mb: int) -> str:
 
 
 def _hf_token() -> str:
-    return str(
-        read_env_file_value("HF_TOKEN", INSTALL_DIR)
-        or read_env_value("HF_TOKEN", INSTALL_DIR)
-        or ""
-    ).strip()
+    return read_persisted_env_value("HF_TOKEN", INSTALL_DIR).strip()
 
 
-def _hf_cache_identity() -> str:
+def _hf_cache_identity(token: str | None = None) -> str:
     """Partition metadata caches without retaining or exposing the token."""
-    token = _hf_token()
+    token = _hf_token() if token is None else token
     return hashlib.sha256(token.encode("utf-8")).hexdigest() if token else "public"
 
 
-def _hf_headers() -> dict[str, str]:
+def _hf_headers(token: str | None = None) -> dict[str, str]:
     headers = {"User-Agent": "ODS-dashboard/2.5 model-library"}
-    token = _hf_token()
+    token = _hf_token() if token is None else token
     if token:
         headers["Authorization"] = f"Bearer {token}"
     return headers
@@ -774,7 +771,8 @@ async def _hf_author_avatar_url(author: str) -> str | None:
     """Resolve an author's uploaded Hub avatar, caching positive and negative results."""
     if not _HF_AUTHOR_RE.fullmatch(author):
         return None
-    cache_key = (author.lower(), _hf_cache_identity())
+    token = _hf_token()
+    cache_key = (author.lower(), _hf_cache_identity(token))
     now = time.monotonic()
     cached = _hf_avatar_cache_get(cache_key)
     if cached and now - cached[0] < _HF_AVATAR_CACHE_TTL_SECONDS:
@@ -784,6 +782,7 @@ async def _hf_author_avatar_url(author: str) -> str | None:
         try:
             payload, _headers = await _hf_get_json(
                 f"/api/{account_type}/{quote(author, safe='')}/overview",
+                token=token,
             )
         except HTTPException as exc:
             if exc.status_code == 404:
@@ -1010,7 +1009,11 @@ async def _hf_get_json(
     params: dict[str, Any] | None = None,
     timeout_seconds: float = 20.0,
     connect_timeout_seconds: float = 8.0,
+    token: str | None = None,
 ) -> tuple[Any, httpx.Headers]:
+    # Freeze credentials before the first await. Settings may rotate or clear
+    # HF_TOKEN while a request waits; retries must retain its cache identity.
+    headers = _hf_headers(token)
     timeout = httpx.Timeout(
         timeout_seconds,
         connect=min(connect_timeout_seconds, timeout_seconds),
@@ -1026,7 +1029,7 @@ async def _hf_get_json(
                 response = await client.get(
                     f"{_HF_API_BASE}{path}",
                     params=params,
-                    headers=_hf_headers(),
+                    headers=headers,
                 )
             break
         except httpx.TimeoutException as exc:
@@ -1247,7 +1250,8 @@ async def search_huggingface_models(
     """Search public/authenticated Hub metadata without exposing the token."""
     query = q.strip()
     sort_key = sort if sort in {"downloads", "likes", "lastModified"} else "downloads"
-    cache_key = (query.lower(), sort_key, limit, _hf_cache_identity())
+    token = _hf_token()
+    cache_key = (query.lower(), sort_key, limit, _hf_cache_identity(token))
     now = time.monotonic()
     cached = _hf_cache_get(cache_key)
     if cached and now - cached[0] < _HF_SEARCH_CACHE_TTL_SECONDS:
@@ -1262,7 +1266,7 @@ async def search_huggingface_models(
     if query:
         params["search"] = query
     try:
-        payload, _headers = await _hf_get_json("/api/models", params=params)
+        payload, _headers = await _hf_get_json("/api/models", params=params, token=token)
     except HTTPException as exc:
         if cached and exc.status_code in {429, 502, 504}:
             return {**cached[1], "stale": True}
@@ -1274,7 +1278,7 @@ async def search_huggingface_models(
         "models": models,
         "query": query,
         "sort": sort_key,
-        "authenticated": bool(_hf_token()),
+        "authenticated": bool(token),
         "source": "huggingface",
     }
     _hf_cache_put(cache_key, response)
