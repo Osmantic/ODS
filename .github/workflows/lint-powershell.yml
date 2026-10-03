@@ -207,6 +207,11 @@ jobs:
         shell: pwsh
         run: ./tests/test-windows-python-resolver.ps1
 
+      - name: Windows CLI chat HTTP contract (PowerShell 5.1)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: python ./tests/test-windows-cli-chat.py
+
       - name: Windows Runtime Recovery Contract
         shell: pwsh
         run: ./tests/contracts/test-windows-runtime-recovery.ps1
