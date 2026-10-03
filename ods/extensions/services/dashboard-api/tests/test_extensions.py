@@ -1,6 +1,7 @@
 """Tests for extensions portal endpoints."""
 
 import contextlib
+import asyncio
 import hashlib
 import json
 import os
@@ -67,7 +68,11 @@ def _patch_extensions_config(monkeypatch, catalog, services=None,
     monkeypatch.setattr("routers.extensions.USER_EXTENSIONS_DIR", user_dir)
     monkeypatch.setattr("routers.extensions.DATA_DIR",
                         str(tmp_path or "/tmp/nonexistent"))
-    monkeypatch.setattr("routers.extensions._owned_prior_selected_builtin_ids", lambda: set())
+    async def no_owned_prior_selection():
+        return set()
+
+    monkeypatch.setattr("routers.extensions._owned_prior_selected_builtin_ids",
+                        no_owned_prior_selection)
 
 
 # --- Catalog endpoint ---
@@ -75,17 +80,35 @@ def _patch_extensions_config(monkeypatch, catalog, services=None,
 
 class TestExtensionsCatalog:
 
-    def test_owned_prior_selection_accepts_only_valid_host_snapshot(self, monkeypatch):
-        monkeypatch.setattr("routers.extensions.request_agent_json", lambda *args, **kwargs: {
+    @pytest.mark.asyncio
+    async def test_owned_prior_selection_accepts_only_valid_host_snapshot(self, monkeypatch):
+        async def valid_snapshot(*args, **kwargs):
+            return {
             "schema_version": "ods.host-service-health.v1",
             "prior_selected_builtins": ["perplexica"],
-        })
-        assert _owned_prior_selected_builtin_ids() == {"perplexica"}
-        monkeypatch.setattr("routers.extensions.request_agent_json", lambda *args, **kwargs: {
+            }
+
+        monkeypatch.setattr("routers.extensions.async_request_agent_json", valid_snapshot)
+        assert await _owned_prior_selected_builtin_ids() == {"perplexica"}
+
+        async def invalid_snapshot(*args, **kwargs):
+            return {
             "schema_version": "ods.host-service-health.v1",
             "prior_selected_builtins": ["foreign-service"],
-        })
-        assert _owned_prior_selected_builtin_ids() == set()
+            }
+
+        monkeypatch.setattr("routers.extensions.async_request_agent_json", invalid_snapshot)
+        assert await _owned_prior_selected_builtin_ids() == set()
+
+    @pytest.mark.asyncio
+    async def test_slow_optional_prior_proof_returns_neutral_before_browser_deadline(self, monkeypatch):
+        async def slow_snapshot(*args, **kwargs):
+            await asyncio.sleep(30)
+
+        monkeypatch.setattr("routers.extensions.async_request_agent_json", slow_snapshot)
+        started = asyncio.get_running_loop().time()
+        assert await _owned_prior_selected_builtin_ids() == set()
+        assert asyncio.get_running_loop().time() - started < 8
 
     def test_untrusted_selection_history_is_not_followed(self, monkeypatch, tmp_path):
         monkeypatch.setattr("routers.extensions.DATA_DIR", str(tmp_path))
@@ -145,8 +168,11 @@ class TestExtensionsCatalog:
         assert row["library_ever_selected_proven"] is True
 
         (tmp_path / ".extensions-ever-selected.json").unlink()
+        async def owned_prior_selection():
+            return {service_id}
+
         monkeypatch.setattr("routers.extensions._owned_prior_selected_builtin_ids",
-                            lambda: {service_id})
+                            owned_prior_selection)
         row = catalog_row([])
         assert row["library_selected"] is False
         assert row["library_ever_selected_proven"] is True

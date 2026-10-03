@@ -267,4 +267,24 @@ async def test_async_request_and_shutdown_close_both_pools(monkeypatch):
     assert async_client.is_closed
     assert sync_client.is_closed
     assert agent_client._async_client is None
+
+
+@pytest.mark.asyncio
+async def test_optional_async_get_can_skip_route_backoff(monkeypatch):
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        raise httpx.ConnectError("Network is unreachable", request=request)
+
+    client = httpx.AsyncClient(base_url="http://agent", transport=httpx.MockTransport(handler))
+    monkeypatch.setattr(agent_client, "_async_client", client)
+    try:
+        with pytest.raises(agent_client.AgentUnavailable):
+            await agent_client.async_request_json("GET", "/v1/service/health",
+                                                  timeout=2, retry=False)
+        assert calls == 1
+    finally:
+        await client.aclose()
     assert agent_client._sync_client is None

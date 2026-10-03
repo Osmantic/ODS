@@ -33,6 +33,7 @@ from host_agent_client import (
     AgentHTTPError,
     AgentProtocolError,
     AgentUnavailable,
+    async_request_json as async_request_agent_json,
     request_json as request_agent_json,
     request_text as request_agent_text,
 )
@@ -431,11 +432,17 @@ def _ever_selected_builtin_ids() -> set[str]:
     return set(ids)
 
 
-def _owned_prior_selected_builtin_ids() -> set[str]:
+async def _owned_prior_selected_builtin_ids() -> set[str]:
     """Use read-only, exact-owned stopped-container evidence for legacy picks."""
     try:
-        snapshot = request_agent_json("GET", "/v1/service/health", timeout=3)
-    except AgentClientError:
+        # This is optional evidence. A transient host-agent route withdrawal
+        # must not hold the whole Library past the browser's 8-second deadline.
+        snapshot = await asyncio.wait_for(
+            async_request_agent_json("GET", "/v1/service/health", timeout=2,
+                                     retry=False),
+            timeout=2.5,
+        )
+    except (AgentClientError, asyncio.TimeoutError):
         return set()
     if not isinstance(snapshot, dict) or snapshot.get("schema_version") != "ods.host-service-health.v1":
         return set()
@@ -1834,7 +1841,7 @@ async def extensions_catalog(
 
     _cleanup_future.add_done_callback(_log_cleanup_error)
     owned_history_task = asyncio.create_task(
-        asyncio.to_thread(_owned_prior_selected_builtin_ids)
+        _owned_prior_selected_builtin_ids()
     )
 
     from helpers import get_cached_services, get_all_services
