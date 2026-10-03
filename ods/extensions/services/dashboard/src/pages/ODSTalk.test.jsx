@@ -612,6 +612,7 @@ describe('ODSTalk', () => {
         return {
           ok: true,
           status: 200,
+          body: {},
           blob: async () => new globalThis.Blob(['audio'], { type: 'audio/mpeg' }),
         }
       }
@@ -632,6 +633,31 @@ describe('ODSTalk', () => {
       '/api/talk/speak',
       expect.objectContaining({ method: 'POST' }),
     ))
+  })
+
+  test('reports speech failure while keeping the completed text reply', async () => {
+    window.localStorage.setItem('ods-talk-spoken-replies', '0')
+    const fetchMock = vi.fn(async (url) => {
+      if (url === '/api/talk/status') return response({
+        capabilities: { text_chat: true, tts: true, audio_message: false },
+      })
+      if (url === '/api/talk/message/stream') return sseResponse([
+        { type: 'session', session_id: 'sid' },
+        { type: 'delta', text: 'Text still works.' },
+        { type: 'complete', session_id: 'sid', text: 'Text still works.', status: 'ok' },
+        { type: 'done' },
+      ])
+      if (url === '/api/talk/speak') return { ok: false, status: 503, body: {} }
+      throw new Error(`unexpected request: ${url}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    render(<ODSTalk />)
+    expect(await screen.findByText('Ready')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Turn spoken replies on' }))
+    fireEvent.change(screen.getByPlaceholderText('Message ODS'), { target: { value: 'hello' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
+    expect(await screen.findByText('Text still works.')).toBeInTheDocument()
+    expect(await screen.findByRole('alert')).toHaveTextContent('Spoken reply failed')
   })
 
   test('renders a tool approval and submits one choice-only response', async () => {
