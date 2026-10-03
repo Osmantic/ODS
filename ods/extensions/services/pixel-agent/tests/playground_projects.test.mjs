@@ -177,6 +177,27 @@ test('category words inside file operands do not turn ordinary writes into new p
   assert.equal(requestsNewPlaygroundProject('Create a game in snake-game/index.html.'),true);
 });
 
+test('using a file tool after a standalone file request does not create a project',t=>{
+  const {root,call}=fixture(t);
+  for(const intent of [
+    'Create a text file named notes.txt, then read it with a file tool.',
+    'Create a text file named notes.txt and use a file tool to read it.',
+    'Write a standalone file, then verify it using the file tool.',
+  ]) {
+    assert.equal(requestsNewPlaygroundProject(intent),false,intent);
+    assert.equal(call('write',{path:'notes.txt',content:'hello'},{state:{},intent}),undefined,intent);
+  }
+  assert.equal(fs.existsSync(path.join(root,'Playground')),false);
+
+  for(const intent of [
+    'Create a file tool that reads text files.',
+    'Build a weather tool using a file tool to inspect assets.',
+    'Create a calculator app, then read it with a file tool.',
+  ]) assert.equal(requestsNewPlaygroundProject(intent),true,intent);
+  const routed=call('write',{path:'main.py',content:'print(1)'},{state:{},intent:'Create a calculator app.'});
+  assert.equal(routed?.block,true,'new applications still require a descriptive Playground folder');
+});
+
 test('complete hook chain refuses inferred parent mutation and preserves explicit project file operations',t=>{
   for (const tool of ['exec','tool_call']) {
     for (const native of [false,true]) {
