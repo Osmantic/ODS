@@ -645,6 +645,7 @@ jobs:
         run: |
           python3 tests/test_wsl_agent_address.py
           bash tests/test-wsl-agent-start.sh
+          bash tests/test-wsl-compose-bind-retry.sh
 
       - name: Issue-to-PR Security Contract Tests
         run: bash tests/test-issue-to-pr-security.sh
