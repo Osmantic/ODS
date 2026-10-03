@@ -23,7 +23,7 @@ export function SuccessValidation({ status, onAllPassed }) {
         icon: MessageSquare,
         status: serviceMap['llama-server (LLM Inference)'] === 'healthy' ? 'passed' : 'pending',
         service: 'llama-server (LLM Inference)',
-        action: 'Try chatting at localhost:3000',
+        action: `Try chatting at ${window.location.hostname}:3000`,
         testUrl: '/api/test/llm'
       },
       {
@@ -55,7 +55,7 @@ export function SuccessValidation({ status, onAllPassed }) {
         icon: Zap,
         status: serviceMap['n8n (Workflows)'] === 'healthy' ? 'passed' : 'pending',
         service: 'n8n (Workflows)',
-        action: 'Visit localhost:5678',
+        action: `Visit ${window.location.hostname}:5678`,
         testUrl: '/api/test/workflows'
       }
     ])
