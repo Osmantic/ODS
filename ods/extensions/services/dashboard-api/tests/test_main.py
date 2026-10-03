@@ -557,6 +557,11 @@ class TestExternalLinks:
         })
         # Also patch the SERVICES imported in main module
         monkeypatch.setattr("main.SERVICES", config.SERVICES)
+        # n8n is currently selected, so the live Library scan retains it.
+        monkeypatch.setattr(
+            "main.load_extension_manifests",
+            lambda *args, **kwargs: ({"n8n": config.SERVICES["n8n"]}, [], []),
+        )
 
         resp = test_client.get("/api/external-links", headers=test_client.auth_headers)
         assert resp.status_code == 200
@@ -607,6 +612,67 @@ class TestExternalLinks:
         link_ids = [link["id"] for link in data]
         assert "open-webui" in link_ids
         assert "litellm" not in link_ids
+
+    def test_tracks_library_proxy_enabled_after_api_start(self, test_client, monkeypatch, tmp_path):
+        """A newly selected browser proxy appears without restarting Dashboard API."""
+        import main
+
+        # Dashboard API started while the optional proxy was disabled.
+        monkeypatch.setattr(main, "SERVICES", {})
+        monkeypatch.setattr(main, "EXTENSIONS_DIR", tmp_path)
+        monkeypatch.setattr(main, "GPU_BACKEND", "nvidia")
+        monkeypatch.setattr(
+            main, "LIBRARY_MANAGEABLE_BUILTINS", frozenset({"hermes-proxy"}),
+        )
+        proxy_dir = tmp_path / "hermes-proxy"
+        proxy_dir.mkdir()
+        (proxy_dir / "manifest.yaml").write_text(
+            "schema_version: ods.services.v1\n"
+            "service:\n"
+            "  id: hermes-proxy\n"
+            "  name: Hermes Auth Proxy\n"
+            "  type: docker\n"
+            "  compose_file: compose.yaml\n"
+            "  port: 9120\n"
+            "  external_port_default: 9120\n"
+            "  ui_path: /auth/ods\n"
+            "  gpu_backends: [all]\n",
+            encoding="utf-8",
+        )
+        disabled = proxy_dir / "compose.yaml.disabled"
+        enabled = proxy_dir / "compose.yaml"
+        disabled.write_text("services: {}\n", encoding="utf-8")
+
+        def links():
+            response = test_client.get("/api/external-links", headers=test_client.auth_headers)
+            assert response.status_code == 200
+            return {item["id"]: item for item in response.json()}
+
+        assert "hermes-proxy" not in links()
+        disabled.rename(enabled)
+        assert links()["hermes-proxy"]["ui_path"] == "/auth/ods"
+        enabled.rename(disabled)
+        assert "hermes-proxy" not in links()
+
+    def test_manifest_scan_failure_does_not_offer_stale_proxy(self, test_client, monkeypatch):
+        import main
+
+        monkeypatch.setattr(main, "SERVICES", {
+            "hermes-proxy": {
+                "name": "Hermes Auth Proxy", "port": 9120, "external_port": 9120,
+            },
+        })
+        monkeypatch.setattr(
+            main, "LIBRARY_MANAGEABLE_BUILTINS", frozenset({"hermes-proxy"}),
+        )
+
+        def unavailable(*args, **kwargs):
+            raise OSError("manifest directory temporarily unavailable")
+
+        monkeypatch.setattr(main, "load_extension_manifests", unavailable)
+        response = test_client.get("/api/external-links", headers=test_client.auth_headers)
+        assert response.status_code == 200
+        assert "hermes-proxy" not in {item["id"] for item in response.json()}
 
 
 # --- /api/storage ---
