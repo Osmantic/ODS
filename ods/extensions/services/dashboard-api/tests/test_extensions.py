@@ -1,6 +1,7 @@
 """Tests for extensions portal endpoints."""
 
 import contextlib
+import asyncio
 import hashlib
 import json
 import os
@@ -11,7 +12,9 @@ import pytest
 import yaml
 from fastapi import HTTPException
 from models import ServiceStatus
-from routers.extensions import _assert_not_core
+from routers.extensions import (
+    _assert_not_core, _ever_selected_builtin_ids, _owned_prior_selected_builtin_ids,
+)
 
 
 # --- Helpers ---
@@ -65,6 +68,11 @@ def _patch_extensions_config(monkeypatch, catalog, services=None,
     monkeypatch.setattr("routers.extensions.USER_EXTENSIONS_DIR", user_dir)
     monkeypatch.setattr("routers.extensions.DATA_DIR",
                         str(tmp_path or "/tmp/nonexistent"))
+    async def no_owned_prior_selection():
+        return set()
+
+    monkeypatch.setattr("routers.extensions._owned_prior_selected_builtin_ids",
+                        no_owned_prior_selection)
 
 
 # --- Catalog endpoint ---
@@ -477,6 +485,47 @@ class TestExtensionsCatalog:
         assert "library_manageable" not in detail.json()
         assert "app_path" not in detail.json()
 
+    @pytest.mark.asyncio
+    async def test_owned_prior_selection_accepts_only_valid_host_snapshot(self, monkeypatch):
+        async def valid_snapshot(*args, **kwargs):
+            return {
+            "schema_version": "ods.host-service-health.v1",
+            "prior_selected_builtins": ["perplexica"],
+            }
+
+        monkeypatch.setattr("routers.extensions.async_request_agent_json", valid_snapshot)
+        assert await _owned_prior_selected_builtin_ids() == {"perplexica"}
+
+        async def invalid_snapshot(*args, **kwargs):
+            return {
+            "schema_version": "ods.host-service-health.v1",
+            "prior_selected_builtins": ["foreign-service"],
+            }
+
+        monkeypatch.setattr("routers.extensions.async_request_agent_json", invalid_snapshot)
+        assert await _owned_prior_selected_builtin_ids() == set()
+
+    @pytest.mark.asyncio
+    async def test_slow_optional_prior_proof_returns_neutral_before_browser_deadline(self, monkeypatch):
+        async def slow_snapshot(*args, **kwargs):
+            await asyncio.sleep(30)
+
+        monkeypatch.setattr("routers.extensions.async_request_agent_json", slow_snapshot)
+        started = asyncio.get_running_loop().time()
+        assert await _owned_prior_selected_builtin_ids() == set()
+        assert asyncio.get_running_loop().time() - started < 8
+
+    def test_untrusted_selection_history_is_not_followed(self, monkeypatch, tmp_path):
+        monkeypatch.setattr("routers.extensions.DATA_DIR", str(tmp_path))
+        history = tmp_path / ".extensions-ever-selected.json"
+        history.write_text("{broken", encoding="utf-8")
+        assert _ever_selected_builtin_ids() == set()
+        history.unlink()
+        if can_create_symlinks(tmp_path):
+            history.symlink_to(tmp_path / "symlink-target")
+            assert _ever_selected_builtin_ids() == set()
+
+
     @pytest.mark.parametrize("service_id", [
         "embeddings", "hermes", "hermes-proxy", "perplexica",
         "qdrant", "searxng", "token-spy", "whisper", "tts",
@@ -503,11 +552,13 @@ class TestExtensionsCatalog:
         assert row["status"] == "disabled"
         assert row["library_manageable"] is True
         assert row["library_selected"] is False
+        assert row["library_ever_selected_proven"] is False
 
         disabled.rename(enabled)
         row = catalog_row([])
         assert row["status"] == "stopped"
         assert row["library_selected"] is True
+        assert row["library_ever_selected_proven"] is True
 
         row = catalog_row([_make_service_status(service_id)])
         assert row["status"] == "enabled"
@@ -520,11 +571,27 @@ class TestExtensionsCatalog:
                     "/api/extensions/token-spy", headers=test_client.auth_headers)
             assert detail.status_code == 200
             assert detail.json()["app_path"] == "/usage"
+        assert row["library_ever_selected_proven"] is True
 
+        (tmp_path / ".extensions-ever-selected.json").write_text(
+            json.dumps({"schema_version": 1, "ever_selected": [service_id]}),
+            encoding="utf-8",
+        )
         enabled.rename(disabled)
         row = catalog_row([])
         assert row["status"] == "disabled"
         assert row["library_selected"] is False
+        assert row["library_ever_selected_proven"] is True
+
+        (tmp_path / ".extensions-ever-selected.json").unlink()
+        async def owned_prior_selection():
+            return {service_id}
+
+        monkeypatch.setattr("routers.extensions._owned_prior_selected_builtin_ids",
+                            owned_prior_selection)
+        row = catalog_row([])
+        assert row["library_selected"] is False
+        assert row["library_ever_selected_proven"] is True
 
     def test_qualified_builtin_changes_from_addable_to_healthy_without_api_restart(
             self, test_client, monkeypatch, tmp_path):

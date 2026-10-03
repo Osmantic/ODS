@@ -7223,6 +7223,51 @@ def _windows_llm_status() -> dict | None:
         return payload
 
 
+def _owned_library_builtins_from_inspect(rows: list[dict], install_dir: Path) -> list[str]:
+    """Prove prior selection from exact installed Compose container labels.
+
+    Container names, images and volumes are deliberately ignored. A stopped
+    container retains these labels after its Compose fragment is disabled.
+    This is read-only evidence for the Library; it never adopts a container.
+    """
+    root = install_dir.resolve()
+    base_files = {
+        os.path.normcase(os.path.realpath(root / name))
+        for name in ("docker-compose.base.yml", "docker-compose.yml")
+    }
+    allowed = frozenset({"n8n", "perplexica", "searxng"})
+    proven: set[str] = set()
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        config = row.get("Config")
+        labels = config.get("Labels") if isinstance(config, dict) else None
+        if not isinstance(labels, dict):
+            continue
+        service = labels.get("com.docker.compose.service")
+        project = labels.get("com.docker.compose.project")
+        working_dir = labels.get("com.docker.compose.project.working_dir")
+        config_files = labels.get("com.docker.compose.project.config_files")
+        if (not isinstance(service, str) or service not in allowed
+                or not isinstance(project, str)
+                or re.fullmatch(r"[a-z0-9][a-z0-9_-]*", project) is None
+                or not isinstance(working_dir, str) or not os.path.isabs(working_dir)
+                or not isinstance(config_files, str)):
+            continue
+        if os.path.normcase(os.path.realpath(working_dir)) != os.path.normcase(str(root)):
+            continue
+        files = {
+            os.path.normcase(os.path.realpath(value))
+            for value in config_files.split(",") if os.path.isabs(value)
+        }
+        expected = os.path.normcase(os.path.realpath(
+            root / "extensions" / "services" / service / "compose.yaml"
+        ))
+        if files & base_files and expected in files:
+            proven.add(service)
+    return sorted(proven)
+
+
 def _docker_service_health_snapshot() -> dict:
     """Return a cached, read-only Docker lifecycle and healthcheck snapshot."""
     global _service_health_cache
@@ -7243,6 +7288,7 @@ def _docker_service_health_snapshot() -> dict:
             if name.strip().startswith("ods-") or name.strip() in declared_containers
         ]
         containers: list[dict] = []
+        prior_selected_builtins: list[str] = []
         if names:
             inspect_result = subprocess.run(
                 ["docker", "inspect", *names], capture_output=True, text=True, timeout=12,
@@ -7252,6 +7298,7 @@ def _docker_service_health_snapshot() -> dict:
             inspected = json.loads(inspect_result.stdout)
             if not isinstance(inspected, list):
                 raise ValueError("docker inspect returned non-list JSON")
+            prior_selected_builtins = _owned_library_builtins_from_inspect(inspected, INSTALL_DIR)
             for item in inspected:
                 if not isinstance(item, dict):
                     continue
@@ -7272,6 +7319,7 @@ def _docker_service_health_snapshot() -> dict:
         payload = {
             "schema_version": "ods.host-service-health.v1",
             "containers": containers,
+            "prior_selected_builtins": prior_selected_builtins,
             "sampled_at": _iso_now(),
         }
         _service_health_cache = (time.monotonic(), payload)

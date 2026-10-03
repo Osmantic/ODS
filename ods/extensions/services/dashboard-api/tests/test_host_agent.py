@@ -9563,6 +9563,33 @@ class TestWindowsObservability:
 
 class TestDockerServiceHealthSnapshot:
 
+    def test_prior_selection_proof_requires_installed_compose_root_and_fragment(self, tmp_path):
+        root = tmp_path / "ods"
+        root.mkdir()
+        base = root / "docker-compose.base.yml"
+        fragment = root / "extensions/services/perplexica/compose.yaml"
+
+        def row(**changes):
+            labels = {
+                "com.docker.compose.project": "ods",
+                "com.docker.compose.service": "perplexica",
+                "com.docker.compose.project.working_dir": str(root),
+                "com.docker.compose.project.config_files": f"{base},{fragment}",
+            }
+            labels.update(changes)
+            return {"Name": "/arbitrary-name", "Config": {"Labels": labels}}
+
+        foreign_root = str(tmp_path / "other")
+        foreign_fragment = str(root / "extensions/services/other/compose.yaml")
+        assert _mod._owned_library_builtins_from_inspect([
+            row(**{"com.docker.compose.project.working_dir": foreign_root}),
+            row(**{"com.docker.compose.project.config_files": f"{base},{foreign_fragment}"}),
+            row(**{"com.docker.compose.project": "foreign/project"}),
+            row(**{"com.docker.compose.service": "dashboard"}),
+            {"Name": "/ods-perplexica", "Config": {"Labels": {}}},
+        ], root) == []
+        assert _mod._owned_library_builtins_from_inspect([row()], root) == ["perplexica"]
+
     def test_uses_compose_service_labels_and_caches_snapshot(self, monkeypatch):
         monkeypatch.setattr(_mod, "_service_health_cache", (0.0, None))
         calls = []
@@ -9589,6 +9616,7 @@ class TestDockerServiceHealthSnapshot:
             "state": "running",
             "health": "healthy",
         }]
+        assert first["prior_selected_builtins"] == []
         assert len(calls) == 2
 
 
