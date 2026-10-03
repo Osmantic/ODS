@@ -207,10 +207,54 @@ it('offers Turn on for unproven bundled services while keeping the Dashboard pro
   render(<Extensions compact />)
   fireEvent.click(await screen.findByRole('button',{name:'Turn on n8n (Workflows)'}))
   expect(screen.getByRole('dialog',{name:'Confirm action'})).toHaveTextContent('Enable n8n (Workflows)?')
-  expect(screen.getByRole('button',{name:'Turn on Hermes'})).toBeVisible()
+  expect(screen.getByRole('button',{name:'Add Hermes with web access'})).toBeVisible()
   expect(screen.getByRole('button',{name:'Turn on Hermes Auth Proxy'})).toBeVisible()
   expect(screen.queryByRole('button',{name:'Enable Hermes'})).toBeNull()
   expect(screen.queryByRole('button',{name:'Disable Dashboard'})).toBeNull()
+})
+
+it('adds Hermes and browser access together without selecting optional search', async () => {
+  const catalog = {agent_available:true,extensions:[
+    {id:'hermes',name:'Hermes Agent',source:'core',status:'disabled',
+      library_manageable:true,library_selected:false,external_port_default:0,features:[baseFeature]},
+    {id:'hermes-proxy',name:'Hermes Auth Proxy',source:'core',status:'disabled',
+      library_manageable:true,library_selected:false,external_port_default:9120,ui_path:'/auth/ods',features:[baseFeature]},
+    {id:'searxng',name:'SearXNG',source:'core',status:'disabled',
+      library_manageable:true,library_selected:false,features:[baseFeature]},
+  ],summary:baseSummary({total:3})}
+  const fetchMock = vi.fn(async (url, options = {}) => {
+    const target = String(url)
+    if (target === '/api/extensions/catalog') return makeJsonResponse(catalog)
+    if (target === '/api/webui/selection') return makeJsonResponse({enabled:false,supported:false})
+    if (target === '/api/templates') return makeJsonResponse({templates:[]})
+    if (target === '/api/extensions/hermes-proxy/enable?auto_enable_deps=true' && options.method === 'POST') {
+      return makeJsonResponse({enabled_services:['hermes','hermes-proxy'],failed_services:[]})
+    }
+    throw new Error(`Unmocked fetch: ${target}`)
+  })
+  vi.stubGlobal('fetch', fetchMock)
+  render(<Extensions compact />)
+  fireEvent.click(await screen.findByRole('button',{name:'Add Hermes with web access'}))
+  expect(screen.getByRole('dialog',{name:'Confirm action'})).toHaveTextContent('Hermes Agent and its browser access')
+  fireEvent.click(screen.getByRole('button',{name:'Enable'}))
+  await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
+    '/api/extensions/hermes-proxy/enable?auto_enable_deps=true', expect.objectContaining({method:'POST'}),
+  ))
+  expect(fetchMock).not.toHaveBeenCalledWith('/api/extensions/hermes/enable', expect.anything())
+  expect(fetchMock).not.toHaveBeenCalledWith('/api/extensions/searxng/enable', expect.anything())
+})
+
+it('opens enabled Hermes through its ODS authenticated proxy entry', async () => {
+  installFetchMock({agent_available:true,extensions:[
+    {id:'hermes',name:'Hermes Agent',source:'core',status:'enabled',
+      library_manageable:true,library_selected:true,external_port_default:0,features:[baseFeature]},
+    {id:'hermes-proxy',name:'Hermes Auth Proxy',source:'core',status:'enabled',
+      library_manageable:true,library_selected:true,external_port:9120,ui_path:'/auth/ods',features:[baseFeature]},
+  ],summary:baseSummary({total:2,installed:2})})
+  render(<Extensions compact />)
+  const agentCard = (await screen.findByRole('heading',{name:'Hermes Agent'})).closest('article')
+  expect(within(agentCard).getByRole('link',{name:':9120'})).toHaveAttribute(
+    'href','http://localhost:9120/auth/ods')
 })
 
 it('offers Whisper and Kokoro separately while WebUI keeps its own control', async () => {
