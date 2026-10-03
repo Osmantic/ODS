@@ -65,6 +65,7 @@ def test_installer_keeps_host_model_reachable_across_lan_modes(tmp_path, endpoin
     # Simulate an upgrade from a LAN-bound route; unrelated owner settings stay.
     (config / 'opencode.json').write_text(json.dumps({
         'custom': {'preserve': True},
+        'agent': {'build': {'model': 'owner/cloud-model', 'temperature': 0.2}},
         'provider': {'llama-server': {'options': {'baseURL': 'http://192.0.2.1:8080/v1'}}},
     }), encoding='utf-8')
     values = [f'BIND_ADDRESS={bind}',
@@ -96,6 +97,8 @@ def test_installer_keeps_host_model_reachable_across_lan_modes(tmp_path, endpoin
     assert data == json.loads((config / 'config.json').read_text(encoding='utf-8'))
     assert data['custom'] == {'preserve': True}
     assert data['model'] == 'llama-server/' + expected_model
+    assert data['agent']['build'] == {'model': 'owner/cloud-model', 'temperature': 0.2}
+    assert data['agent']['plan']['model'] == 'llama-server/' + expected_model
     options = data['provider']['llama-server']['options']
     assert options == {'baseURL': f'http://127.0.0.1:{expected_port}/v1', 'apiKey': expected_key}
     if custom_port:
@@ -107,6 +110,39 @@ def test_installer_keeps_host_model_reachable_across_lan_modes(tmp_path, endpoin
             assert json.load(response)['choices'][0]['message']['content'] == 'route verified'
         assert requests == [('/v1/chat/completions', 'Bearer ' + expected_key,
                              {'model': expected_model, 'messages': []})]
+
+
+def test_macos_opencode_agent_defaults_follow_the_ods_route(tmp_path):
+    config = tmp_path / 'opencode.json'
+    script = 'set -eu\n' + function(MAC / 'install-macos.sh', '_write_macos_opencode_config')
+    script = script.replace('/usr/bin/python3', '"$ODS_TEST_PYTHON"')
+    script += '\n_write_macos_opencode_config "$1" "$2" "$3" "$4" "$5"\n'
+    env = dict(os.environ, ODS_TEST_PYTHON=sys.executable)
+
+    def write(model):
+        result = subprocess.run(
+            ['bash', '-s', '--', str(config), model, 'http://127.0.0.1:4000/v1',
+             'fixture-only-key', '32768'],
+            input=script, text=True, capture_output=True, env=env, timeout=15,
+        )
+        assert result.returncode == 0, result.stderr
+        assert 'fixture-only-key' not in result.stdout
+        return json.loads(config.read_text(encoding='utf-8'))
+
+    fresh = write('ods/current')
+    assert fresh['agent']['build']['model'] == 'llama-server/ods/current'
+    assert fresh['agent']['plan']['model'] == 'llama-server/ods/current'
+
+    fresh['agent']['plan'] = {'model': 'owner/plan-model', 'temperature': 0.1}
+    fresh['agent']['reviewer'] = {'model': 'owner/review-model'}
+    fresh['provider']['owner-cloud'] = {'name': 'Owner cloud'}
+    config.write_text(json.dumps(fresh), encoding='utf-8')
+    upgraded = write('new-model')
+    assert upgraded['agent']['build']['model'] == 'llama-server/new-model'
+    assert upgraded['agent']['plan'] == {'model': 'owner/plan-model', 'temperature': 0.1}
+    assert upgraded['agent']['reviewer'] == {'model': 'owner/review-model'}
+    assert upgraded['provider']['owner-cloud'] == {'name': 'Owner cloud'}
+    assert upgraded == json.loads((tmp_path / 'config.json').read_text(encoding='utf-8'))
 
 
 @pytest.mark.parametrize('bind', ['0.0.0.0', '::', '192.168.106.1'])
