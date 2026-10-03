@@ -9851,6 +9851,7 @@ class TestDarwinSystemMetrics:
         responses = []
         monkeypatch.setattr(_mod, "check_auth", lambda h: True)
         monkeypatch.setattr(_mod, "_darwin_system_metrics", lambda: None)
+        monkeypatch.setattr(_mod, "_wsl_system_metrics", lambda: None)
         monkeypatch.setattr(_mod, "json_response", lambda h, status, data: responses.append(status))
         _mod.AgentHandler._handle_system_metrics(object())
         assert responses == [503]
