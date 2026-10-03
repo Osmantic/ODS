@@ -286,6 +286,7 @@ export default function ODSTalk() {
     const reportSpeechError = (message) => {
       if (speechAttemptRef.current === attempt) setSpeechError(message)
     }
+    const isCurrentSpeech = () => speechAttemptRef.current === attempt
     // ALWAYS stop the previous Audio/MediaSource before starting a new
     // one. Even if the previous one is still buffering chunks, the user
     // has clearly moved on (a new reply text has arrived).
@@ -299,6 +300,7 @@ export default function ODSTalk() {
         body,
         credentials: 'same-origin',
       })
+      if (!isCurrentSpeech()) return
       if (!resp.ok || !resp.body) {
         reportSpeechError('Spoken reply failed. Your text reply is still available.')
         return
@@ -424,6 +426,7 @@ export default function ODSTalk() {
       // The dashboard-api is still streaming on the network — we just
       // wait until it's all here before starting playback.
       const blob = await resp.blob()
+      if (!isCurrentSpeech()) return
       if (!blob.size) {
         reportSpeechError('Spoken reply contained no audio. Your text reply is still available.')
         return
