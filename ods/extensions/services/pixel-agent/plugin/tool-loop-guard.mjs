@@ -159,6 +159,9 @@ export const CODING_LOOP_ABORT_REASON =
 export const VISIBLE_REPLY_REQUIRES_FINAL_REASON =
   "Do not use a tool to deliver the reply and do not send a message to this same session. End the turn now with the requested text as the normal assistant response.";
 
+export const OWNER_NO_TOOLS_REASON =
+  "The owner explicitly requested no tools for this turn. No tool was run. Answer directly from the information already available; do not call another tool.";
+
 export const EDIT_CREATE_REQUIRES_WRITE_REASON =
   "edit cannot create a new file because every edit replacement requires a non-empty oldText copied from existing content. Use the visible tool_call control now with id write and args containing the same path plus the exact newText as content. Do not retry edit.";
 
@@ -4605,6 +4608,24 @@ function ownerLaneText(text) {
       value => /\s/.test(value.slice(1, -1)) ? ' ' : value);
 }
 
+function ownerForbidsTools(text) {
+  const instruction = ownerLaneText(text);
+  const ban = /\b(?:(?:do\s+not|don['’]t|never|must\s+not|should\s+not)\s+(?:use|call|invoke|run)|without\s+(?:using|calling|invoking|running))\s+(?:any\s+tools?|(?:the\s+)?tools)\b/gi;
+  for (const match of instruction.matchAll(ban)) {
+    const prefix = instruction.slice(0, match.index);
+    if (!/^without\b/i.test(match[0]) &&
+        !/(?:^|[.!?;,\n]\s*|\b(?:and|but|so|then)\s+)(?:please\s+|you\s+)?$/i.test(prefix)) continue;
+    const qualifier = instruction.slice(match.index + match[0].length);
+    // A ban on a named subset of tools still permits other tools. The
+    // blanket boundary applies only to an unqualified no-tools directive.
+    if (/^\s+(?:that|which|except|besides|unless|other\s+than)\b/i.test(qualifier) ||
+        /^\s+to\s+(?:change|edit|write|modify|delete|create|remove|mutate)\b/i.test(qualifier) ||
+        /^\s+for\s+(?:file|writing|editing|modifying|changing|mutation)\b/i.test(qualifier)) continue;
+    return true;
+  }
+  return false;
+}
+
 function ownerWorkspaceLaneRequested(text, workspaceRequested) {
   if (workspaceRequested) return true;
   // Repository investigation named within an extension slash route belongs to
@@ -7603,6 +7624,7 @@ export function createToolLoopGuard({
       block: true,
       blockReason: "Pixel could not recover the owner's request for this subagent continuation. Start a fresh owner message; child results cannot authorize tools.",
     };
+    if (state?.ownerNoTools) return {block:true, blockReason:OWNER_NO_TOOLS_REASON};
     // Every tool stays blocked after the budget stops the response. Until the
     // model has seen the finalization instruction, the refusal carries it; a
     // tool call during the answer turn ends the run at this boundary (the
@@ -9617,6 +9639,7 @@ export function createToolLoopGuard({
         artifactContext.trigger == null ? 'trigger-unavailable' : 'owner-session-required';
       state.completionAssurance.begin(currentOwnerIntentText(event?.messages, event?.prompt), event);
       const ownerIntent=currentOwnerIntentText(event?.messages,event?.prompt);
+      if (ownerIntent && state.ownerNoTools === undefined) state.ownerNoTools=ownerForbidsTools(ownerIntent);
       if (ownerIntent) state.extensionCompletionGate ??= createExtensionCompletionGate(ownerIntent);
       if (ownerIntent) state.githubExtensionRequest = /^\s*(?:\/goal\s+)?\/extensions?\s+(?:(?:install|inspect|research)\s+)?https:\/\/github\.com\//i.test(ownerIntent);
       if (capabilities !== undefined) state.preparationExecutionHost = capabilities.executionHost;
