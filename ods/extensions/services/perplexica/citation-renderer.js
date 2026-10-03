@@ -8,7 +8,9 @@ function renderCitations(message, sources) {
   const numericCitation = /^\s*\d+(?:\s*,\s*\d+)*\s*$/;
   const referenceDefinitions = new Set();
   for (const line of message.split("\n")) {
-    const definition = /^(?: {0,3}> ?)* {0,3}\[([0-9]+(?:\s*,\s*[0-9]+)*)\]:/.exec(line);
+    // Container indentation can put a real Markdown reference definition
+    // beyond three raw spaces. Over-detect definitions to preserve links.
+    const definition = /^(?:[ \t]*>[ \t]*)*[ \t]*(?:(?:[-+*]|\d{1,9}[.)])[ \t]+)?\[([0-9]+(?:[ \t]*,[ \t]*[0-9]+)*)\]:/.exec(line);
     if (definition) referenceDefinitions.add(definition[1].replace(/\s+/g, ""));
   }
   let fence = null;

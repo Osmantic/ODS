@@ -54,6 +54,8 @@ function checkCases(render) {
     "[12][27]");
   assert.equal(render("[1][2]\n\n[2]: https://example.test/reference", many),
     "[1][2]\n\n[2]: https://example.test/reference");
+  assert.equal(render("- [12][27]\n\n    [27]: https://example.test/reference", many),
+    "- [12][27]\n\n    [27]: https://example.test/reference");
   assert.equal(render("![12][27] and \\[12][27]", many), "![12][27] and \\[12][27]");
   assert.equal(render("[12](https://x.test) [27]", many),
     `[12](https://x.test) ${manyCited(27)}`);
