@@ -403,12 +403,20 @@ dry_run_preview() {
 stop_containers() {
     log_step "Stopping containers..."
 
-    local projects
+    local projects project=""
     if ! projects=$(docker compose ls --quiet); then
         log_error "Cannot determine running containers; refusing to restore."
         return 1
     fi
-    if ! printf '%s\n' "$projects" | grep -Fxq "$(basename "$ODS_DIR")"; then
+    # Compose names the project from docker-compose.base.yml (`name: ods`),
+    # not from the install directory. Matching the directory name made an
+    # install anywhere other than .../ods look stopped, so data was restored
+    # under a running stack.
+    if [[ -f "$ODS_DIR/docker-compose.base.yml" ]]; then
+        project=$(sed -n 's/^name:[[:space:]]*//p' "$ODS_DIR/docker-compose.base.yml" | head -n 1 | tr -d "\"' \r")
+    fi
+    [[ -n "$project" ]] || project=$(basename "$ODS_DIR")
+    if ! printf '%s\n' "$projects" | grep -Fxq "$project"; then
         log_info "No running containers found"
         return 0
     fi
