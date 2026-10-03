@@ -2,6 +2,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import textwrap
 import unittest
@@ -9,7 +10,10 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = REPO_ROOT / "scripts" / "bootstrap-upgrade.sh"
-BASH = shutil.which("bash")
+GIT_BASH = Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "Git/bin/bash.exe"
+BASH = os.environ.get("ODS_TEST_BASH") or (
+    str(GIT_BASH) if os.name == "nt" and GIT_BASH.is_file() else shutil.which("bash")
+)
 
 FUNCS = [
     "write_status",
@@ -18,6 +22,10 @@ FUNCS = [
     "start_download_monitor",
     "stop_download_monitor",
 ]
+
+
+def write_lf(path, content):
+    path.write_bytes(content.encode("utf-8"))
 
 
 def extract_function(text, name):
@@ -36,12 +44,13 @@ def build_harness(tmpdir):
         parts.append(extract_function(text, name))
         parts.append("\n")
     harness = Path(tmpdir) / "harness.sh"
-    harness.write_text("".join(parts))
+    write_lf(harness, "".join(parts))
     return harness
 
 
 def run_bash(harness, script, env=None, timeout=30):
     full_env = os.environ.copy()
+    full_env["TEST_PYTHON"] = Path(sys.executable).as_posix()
     if env:
         full_env.update(env)
     return subprocess.run(
@@ -95,11 +104,11 @@ class BootstrapStatusChecksumTests(unittest.TestCase):
             writer=$!
             for i in $(seq 1 200); do
               if [[ -f "$STATUS_FILE" ]]; then
-                python3 -c "import json,sys; json.load(open(sys.argv[1]))" "$STATUS_FILE" || exit 1
+                "$TEST_PYTHON" -c "import json,sys; json.load(open(sys.argv[1]))" "$STATUS_FILE" || exit 1
               fi
             done
             wait $writer
-            python3 -c "import json,sys; json.load(open(sys.argv[1]))" "$STATUS_FILE"
+            "$TEST_PYTHON" -c "import json,sys; json.load(open(sys.argv[1]))" "$STATUS_FILE"
         ''')
         r = run_bash(self.harness, script, timeout=60)
         self.assertEqual(r.returncode, 0, r.stderr)
@@ -122,7 +131,7 @@ class BootstrapStatusChecksumTests(unittest.TestCase):
             sleep 0.1
             stop_download_monitor
             write_status "verifying" 100 100 100 0 ""
-            python3 -c "import json,sys; d=json.load(open(sys.argv[1])); assert d['status']=='verifying', d" "$STATUS_FILE"
+            "$TEST_PYTHON" -c "import json,sys; d=json.load(open(sys.argv[1])); assert d['status']=='verifying', d" "$STATUS_FILE"
         ''')
         r = run_bash(self.harness, script, timeout=30)
         self.assertEqual(r.returncode, 0, r.stderr)
@@ -184,13 +193,13 @@ class BootstrapStatusChecksumTests(unittest.TestCase):
         expected = "5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03"
         bin_dir = self.tmp / "bin"
         bin_dir.mkdir()
-        (bin_dir / "uname").write_text("#!/usr/bin/env bash\necho MINGW64_NT-10.0\n")
+        write_lf((bin_dir / "uname"), "#!/usr/bin/env bash\necho MINGW64_NT-10.0\n")
         (bin_dir / "uname").chmod(0o755)
-        (bin_dir / "cygpath").write_text(
+        write_lf((bin_dir / "cygpath"),
             "#!/usr/bin/env bash\nprintf 'C:\\\\fake\\\\%s\\n' \"$(basename \"$1\")\"\n"
         )
         (bin_dir / "cygpath").chmod(0o755)
-        (bin_dir / "powershell.exe").write_text(
+        write_lf((bin_dir / "powershell.exe"),
             "#!/usr/bin/env bash\nprintf '%s\\r\\n' \"$(echo '" + expected.upper() + "')\"\n"
         )
         (bin_dir / "powershell.exe").chmod(0o755)
@@ -208,13 +217,13 @@ class BootstrapStatusChecksumTests(unittest.TestCase):
         target.write_bytes(b"hello\n")
         bin_dir = self.tmp / "bin"
         bin_dir.mkdir()
-        (bin_dir / "uname").write_text("#!/usr/bin/env bash\necho MSYS_NT-10.0\n")
+        write_lf((bin_dir / "uname"), "#!/usr/bin/env bash\necho MSYS_NT-10.0\n")
         (bin_dir / "uname").chmod(0o755)
-        (bin_dir / "cygpath").write_text(
+        write_lf((bin_dir / "cygpath"),
             "#!/usr/bin/env bash\nprintf 'C:\\\\fake\\\\%s\\n' \"$(basename \"$1\")\"\n"
         )
         (bin_dir / "cygpath").chmod(0o755)
-        (bin_dir / "powershell.exe").write_text(
+        write_lf((bin_dir / "powershell.exe"),
             "#!/usr/bin/env bash\nprintf 'not-a-hash\\r\\n'\n"
         )
         (bin_dir / "powershell.exe").chmod(0o755)
@@ -235,13 +244,13 @@ class BootstrapStatusChecksumTests(unittest.TestCase):
         target.write_bytes(b"hello\n")
         bin_dir = self.tmp / "bin"
         bin_dir.mkdir()
-        (bin_dir / "uname").write_text("#!/usr/bin/env bash\necho CYGWIN_NT-10.0\n")
+        write_lf((bin_dir / "uname"), "#!/usr/bin/env bash\necho CYGWIN_NT-10.0\n")
         (bin_dir / "uname").chmod(0o755)
-        (bin_dir / "cygpath").write_text(
+        write_lf((bin_dir / "cygpath"),
             "#!/usr/bin/env bash\nprintf 'C:\\\\fake\\\\%s\\n' \"$(basename \"$1\")\"\n"
         )
         (bin_dir / "cygpath").chmod(0o755)
-        (bin_dir / "powershell.exe").write_text(
+        write_lf((bin_dir / "powershell.exe"),
             "#!/usr/bin/env bash\necho 'boom' >&2\nexit 1\n"
         )
         (bin_dir / "powershell.exe").chmod(0o755)
@@ -287,7 +296,7 @@ class BootstrapStatusChecksumTests(unittest.TestCase):
         }
         for name, body in scripts.items():
             tool = tools / name
-            tool.write_text(f"#!{BASH}\n{body}\n")
+            write_lf(tool, f"#!/bin/bash\n{body}\n")
             tool.chmod(0o755)
         path_receipt = self.tmp / "path.txt"
         arg_receipt = self.tmp / "args.txt"
