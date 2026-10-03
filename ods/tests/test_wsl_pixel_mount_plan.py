@@ -13,8 +13,8 @@ sys.modules[spec.name] = plan
 spec.loader.exec_module(plan)
 
 
-def row(mount_id, root, target, device="0:106"):
-    return f"{mount_id} 345 {device} {root} {target} rw,nosuid,nodev shared:47 - tmpfs none rw"
+def row(mount_id, root, target, device="0:106", shared="shared:47"):
+    return f"{mount_id} 345 {device} {root} {target} rw,nosuid,nodev {shared} - tmpfs none rw"
 
 
 ORDINARY = "\n".join(
@@ -87,6 +87,26 @@ class MountPlanTests(unittest.TestCase):
             row(5, "/ods-pixel", plan.PROXY_PREFIX + "Ubuntu-24.04/hash"), {}, True
         )
         self.assertEqual(result["status"], "refuse")
+
+    def test_projection_requires_same_shared_group_as_owned_target(self):
+        identities = dict(IDENTITIES)
+        identities[PROXY_INGRESS] = identities["/run/ods-pixel"]
+        identities[PROXY_PREVIEW] = identities["/run/ods-pixel-preview"]
+        for propagation in ("shared:48", "master:47", "shared:"):
+            contents = (
+                ORDINARY
+                + "\n"
+                + row(10, "/ods-pixel", PROXY_INGRESS, shared=propagation)
+            )
+            contents += "\n" + row(11, "/ods-pixel-preview", PROXY_PREVIEW)
+            result = plan.classify(contents, identities, True)
+            self.assertEqual(result["status"], "refuse")
+            self.assertTrue(
+                any(
+                    "projection propagation differs" in reason
+                    for reason in result["reasons"]
+                )
+            )
 
     def test_partial_or_foreign_target_refused(self):
         self.assertEqual(

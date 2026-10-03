@@ -100,6 +100,13 @@ def parse_mountinfo(contents: str) -> list[Mount]:
     return rows
 
 
+def _shared_id(row: Mount) -> str | None:
+    matches = [
+        field for field in row.optional if re.fullmatch(r"shared:[1-9][0-9]*", field)
+    ]
+    return matches[0] if len(matches) == 1 else None
+
+
 def classify(
     contents: str,
     identities: dict[str, tuple[int, int, str]] | None,
@@ -146,7 +153,7 @@ def classify(
                 row.root != root
                 or row.fstype != "tmpfs"
                 or row.source != "none"
-                or not any(field.startswith("shared:") for field in row.optional)
+                or _shared_id(row) is None
             ):
                 reasons.append(f"unexpected mount identity at {target}")
             source_identity = (identities or {}).get(source)
@@ -182,6 +189,18 @@ def classify(
             source = ACTIVE_PROXY_ROOTS.get(row.root)
             source_identity = (identities or {}).get(source) if source else None
             proxy_identity = (identities or {}).get(row.target)
+            target = next(
+                (
+                    target
+                    for target, (_, expected_source) in EXPECTED.items()
+                    if expected_source == source
+                ),
+                None,
+            )
+            target_row = next(
+                (candidate for candidate in selected if candidate.target == target),
+                None,
+            )
             if (
                 source_identity is None
                 or proxy_identity is None
@@ -193,6 +212,14 @@ def classify(
             ):
                 reasons.append(
                     f"Docker Desktop projection identity unavailable at {row.target}"
+                )
+            if (
+                target_row is None
+                or _shared_id(row) is None
+                or _shared_id(row) != _shared_id(target_row)
+            ):
+                reasons.append(
+                    f"Docker Desktop projection propagation differs at {row.target}"
                 )
     if reasons:
         status = "refuse"
