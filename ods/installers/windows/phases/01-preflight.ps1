@@ -310,30 +310,18 @@ if ($_ollamaProc) {
     Write-AI "  causing 'model not found' errors in OpenCode and other host tools."
     Write-Host ""
     if (-not $nonInteractive) {
-        $ollamaChoice = Read-Host "  Stop Ollama for this session? [Y/n]"
-        if ($ollamaChoice -notmatch "^[nN]") {
+        Write-AI "  Stopping Ollama interrupts any active Ollama work."
+        $ollamaChoice = Read-Host "  Stop all Ollama processes for this session? [y/N]"
+        if ($ollamaChoice -match "^(y|yes)$") {
             Stop-Process -Name "ollama" -Force -ErrorAction SilentlyContinue
             Start-Sleep -Seconds 2
             $_ollamaStill = Get-Process -Name "ollama" -ErrorAction SilentlyContinue
             if ($_ollamaStill) {
-                Write-AIWarn "Ollama restarted automatically (likely in Windows Startup)."
-                # Remove the startup shortcut so it does not respawn on next login
-                $_lnk = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\Startup\Ollama.lnk"
-                if (Test-Path $_lnk) {
-                    Remove-Item $_lnk -Force -ErrorAction SilentlyContinue
-                    Stop-Process -Name "ollama" -Force -ErrorAction SilentlyContinue
-                    Start-Sleep -Seconds 2
-                    if (-not (Get-Process -Name "ollama" -ErrorAction SilentlyContinue)) {
-                        Write-AISuccess "Ollama stopped and removed from Windows Startup"
-                    } else {
-                        Write-AIWarn "Could not fully stop Ollama. Port conflicts may occur."
-                        Write-AI "  Fix: Settings > Apps > Startup > disable Ollama"
-                    }
-                } else {
-                    Write-AIWarn "Remove Ollama from Startup: Settings > Apps > Startup"
-                }
+                Write-AIWarn "Ollama restarted automatically; ODS left Windows Startup unchanged."
+                Write-AI "  To disable its startup yourself: Settings > Apps > Startup > Ollama."
+                Write-AI "  Port conflicts may still occur."
             } else {
-                Write-AISuccess "Ollama stopped"
+                Write-AISuccess "Ollama stopped for this session"
             }
         } else {
             Write-AIWarn "Ollama left running. Open WebUI may prefer it over llama-server."
