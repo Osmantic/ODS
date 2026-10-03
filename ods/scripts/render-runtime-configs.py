@@ -47,6 +47,30 @@ def atomic_write_text(target: Path, content: str, *, file_mode: int | None = Non
         except OSError:
             pass
 
+    # Docker Desktop can retain the old inode behind a file bind. Do not
+    # invalidate that view when a render changes neither bytes nor mode.
+    # A symlink, special file, hardlink or changed target still takes the
+    # existing atomic replacement path, including permission repair.
+    try:
+        before = target.lstat()
+        expected = content.encode("utf-8")
+        if stat.S_ISREG(before.st_mode) and before.st_nlink == 1 and before.st_size == len(expected):
+            flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+            with os.fdopen(os.open(target, flags), "rb") as existing:
+                opened = os.fstat(existing.fileno())
+                same_file = (before.st_dev, before.st_ino) == (opened.st_dev, opened.st_ino)
+                if same_file and stat.S_ISREG(opened.st_mode):
+                    matches = existing.read(len(expected) + 1) == expected
+                    after = target.lstat()
+                    identity = lambda info: (info.st_dev, info.st_ino, info.st_size,
+                                             info.st_mtime_ns, info.st_ctime_ns, info.st_mode, info.st_nlink)
+                    if matches and identity(before) == identity(after) and stat.S_IMODE(after.st_mode) == mode:
+                        return
+    except OSError:
+        # Missing/unreadable paths do not qualify for the no-op optimization.
+        # Preserve the original write and its normal error handling below.
+        pass
+
     fd, tmp_name = tempfile.mkstemp(
         prefix=f".{target.name}.",
         suffix=".tmp",
