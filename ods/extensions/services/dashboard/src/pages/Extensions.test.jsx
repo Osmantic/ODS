@@ -164,6 +164,34 @@ it('offers Whisper and Kokoro separately while WebUI keeps its own control', asy
   expect(screen.queryByRole('button',{name:'Add Open WebUI'})).toBeNull()
 })
 
+it('opens bundled Token Spy through the authenticated Dashboard Usage page', async () => {
+  installFetchMock({agent_available:true,extensions:[
+    {id:'token-spy',name:'Token Spy (Usage Monitor)',source:'core',status:'enabled',
+      library_manageable:true,library_selected:true,app_path:'/usage',
+      external_port:3005,ui_path:'/dashboard',features:[baseFeature]},
+  ],summary:baseSummary({total:1,installed:1})})
+  render(<Extensions compact />)
+  expect(await screen.findByText('Token Spy (Usage Monitor)')).toBeVisible()
+  expect(screen.getByRole('link',{name:'Open'})).toHaveAttribute('href','/usage')
+  expect(screen.queryByRole('link',{name:':3005'})).toBeNull()
+})
+
+it('keeps selected incompatible built-ins visible for Disable without offering Add', async () => {
+  installFetchMock({agent_available:true,extensions:[
+    {id:'qdrant',name:'Qdrant',source:'core',status:'incompatible',compatible:false,
+      library_manageable:true,library_selected:true,features:[]},
+    {id:'embeddings',name:'Embeddings',source:'core',status:'incompatible',compatible:false,
+      features:[]},
+  ],summary:baseSummary({total:2})})
+  render(<Extensions compact />)
+  expect(await screen.findByRole('button',{name:'Disable Qdrant'})).toBeVisible()
+  expect(screen.queryByRole('button',{name:'Add Qdrant'})).toBeNull()
+  expect(screen.queryByRole('button',{name:'Retry Qdrant'})).toBeNull()
+  expect(screen.queryByText('Embeddings')).toBeNull()
+  fireEvent.click(screen.getByRole('button',{name:'Disable Qdrant'}))
+  expect(screen.getByRole('dialog',{name:'Confirm action'})).toHaveTextContent('Disable Qdrant?')
+})
+
 it('shows bundled Perplexica in Available and asks before adding SearXNG', async () => {
   const catalog = {agent_available:true,extensions:[
     {id:'perplexica',name:'Perplexica (Deep Research)',source:'core',status:'disabled',

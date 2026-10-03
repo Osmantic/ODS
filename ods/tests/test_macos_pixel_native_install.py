@@ -155,7 +155,7 @@ def test_shell_preflight_prompt_policy(noninteractive, dryrun, prompt):
     block = source[start:stop].replace('/usr/bin/python3', 'fixture_python')
     script = '''
 set -eu
-LIB_DIR=/fixture; INSTALL_DIR=/fixture/ods
+LIB_DIR=/fixture; INSTALL_DIR=/fixture/ods; SOURCE_ROOT=/fixture
 fixture_python() { printf '%s\n' "$@"; }
 ''' + f'NON_INTERACTIVE={noninteractive}; DRY_RUN={dryrun}\n' + block
     result = subprocess.run(['bash'], input=script, text=True, capture_output=True, check=True)
@@ -294,9 +294,11 @@ def test_core_feature_selection_keeps_pixel_dependencies_without_heavy_services(
     resolver_stop = script.index('\n}', resolver_start) + 2
     validator_start = script.index('_macos_validate_hermes_selection() {')
     validator_stop = script.index('\n}', validator_start) + 2
+    retained_start = script.index('_macos_retained_optional_state() {')
+    retained_stop = script.index('\n}', script.index('_macos_restore_retained_optional_features() {')) + 2
     shell = '''set -eu
 NON_INTERACTIVE=true; ALL_FEATURES=false; DRY_RUN=false
-CLOUD_MODE=false; GATEWAY_ONLY=false; ENABLE_RECOMMENDED=false
+CLOUD_MODE=false; GATEWAY_ONLY=false; ENABLE_RECOMMENDED=false; RECOMMENDED_EXPLICIT=false
 ENABLE_HERMES=false; ENABLE_HERMES_PROXY=false; ENABLE_OPENCLAW=false; ENABLE_APE=false
 HERMES_EXPLICIT=false; HERMES_EXPLICIT_VALUE=""; HERMES_RETAINED=""; HERMES_PROXY_RETAINED=""
 ENABLE_PERPLEXICA=false; ENABLE_VOICE=false; ENABLE_RAG=false; ENABLE_WORKFLOWS=false
@@ -308,7 +310,7 @@ ENABLE_OPEN_WEBUI=false; WEBUI_RETAINED=""; WEBUI_ENABLE_EXPLICIT=false; WEBUI_D
 ENABLE_ODS_PROXY=false
 read_env_value() { printf '\\n'; }
 ai_err() { printf '%s\\n' "$*" >&2; }
-''' + script[resolver_start:resolver_stop] + '\n' + script[validator_start:validator_stop] + '\nENABLE_PIXEL=' + pixel + '\n' + script[start:stop] + '''
+''' + script[resolver_start:resolver_stop] + '\n' + script[validator_start:validator_stop] + '\n' + script[retained_start:retained_stop] + '\nENABLE_PIXEL=' + pixel + '\n' + script[start:stop] + '''
 printf '%s %s %s %s %s %s %s %s' "$ENABLE_RECOMMENDED" "$ENABLE_LITELLM" "$ENABLE_SEARXNG" "$ENABLE_HERMES" "$ENABLE_OPENCLAW" "$ENABLE_VOICE" "$ENABLE_RAG" "$ENABLE_WORKFLOWS"
 '''
     result = subprocess.run(['bash'], input=shell, capture_output=True, text=True, check=True,
