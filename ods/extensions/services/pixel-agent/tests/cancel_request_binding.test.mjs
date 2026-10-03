@@ -286,7 +286,7 @@ test('#6680: an aborted signal ends the host reads at once and verifies nothing'
 // a rotated session ID, the cancelled older run must not take the new run's
 // transcript messages.
 test('#6683: a partial answer binds to the newest run of the chat, never to the cancelled one', async () => {
-  const guard = createToolLoopGuard({abortRun: () => true, abortRunAndDrain: async () => ({aborted: true})});
+  const guard = createToolLoopGuard({abortRun: () => true, abortRunAndDrain: async () => ({aborted: true, drained: true})});
   guard.observeRun(context(RUN_A, {sessionId: 'session-before-rotation'}), 'pixel', {prompt: RESEARCH + PORTAL});
   assert.equal(await guard.abortUserRun(USER), true);
   const ctx = context(RUN_B, {sessionId: 'session-after-rotation'});

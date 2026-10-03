@@ -58,6 +58,7 @@ bash tests/test-windows-restart-recreate-env.sh
 
 echo "[contract] external Lemonade compose overlay readiness"
 bash tests/contracts/test-external-lemonade-contracts.sh
+bash tests/contracts/test-external-lemonade-cpu-fallback.sh
 
 echo "[contract] bootstrap hot-swap force-recreate"
 bash tests/test-bootstrap-upgrade-hotswap-contract.sh
@@ -317,6 +318,7 @@ bash tests/test-macos-cli-compose-failure.sh
 
 echo "[contract] macOS Core omits optional Open WebUI"
 bash tests/test-macos-webui-optional.sh
+python3 tests/test_macos_webui_optional_contract.py
 
 echo "[contract] macOS .env upsert preserves secrets and recovers from write failure"
 bash tests/test-macos-env-upsert.sh

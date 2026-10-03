@@ -340,7 +340,8 @@ test('owner cancellation during the answer turn discards the answer', async () =
   const user = 'ods-' + 'c'.repeat(64);
   const cancelled = {...context, sessionKey: `agent:pixel:openai-user:${user}`};
   const aborts = [];
-  const guard = createToolLoopGuard({abortRun: id => { aborts.push(id); return true; }});
+  const guard = createToolLoopGuard({abortRun: id => { aborts.push(id); return true; },
+    abortRunAndDrain: async id => { aborts.push(id); return {aborted: true, drained: true}; }});
   guard.observeRun(cancelled, 'pixel', {prompt: RESEARCH_PROMPT});
   for (let i = 0; i < RUN_PROGRESS_LIMITS.consecutiveFailures; i++) guard.toolResultPersist({toolCallId: `c-${i}`,
     message: {role: 'toolResult', toolName: 'web_fetch', toolCallId: `c-${i}`, isError: true, content: []}}, {...cancelled, toolCallId: `c-${i}`});

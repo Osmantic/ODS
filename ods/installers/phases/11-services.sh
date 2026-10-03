@@ -422,7 +422,8 @@ else
         external="${LEMONADE_EXTERNAL:-$(_phase11_env_get LEMONADE_EXTERNAL false)}"
         managed="${AMD_INFERENCE_MANAGED:-$(_phase11_env_get AMD_INFERENCE_MANAGED "")}"
         mode="${ODS_MODE:-$(_phase11_env_get ODS_MODE local)}"
-        [[ "${external,,}" == "true" ]] || [[ "${mode,,}" == "lemonade" && "${managed,,}" == "false" ]]
+        case "${external,,}" in true|1|yes|on) return 0 ;; esac
+        [[ "${mode,,}" == "lemonade" && "${managed,,}" == "false" ]]
     }
 
     _phase11_external_llm() {
@@ -462,6 +463,14 @@ else
             log "CPU fallback tier selected: $TIER"
         fi
 
+        _phase11_env_set GPU_BACKEND "cpu"
+        if _phase11_external_lemonade; then
+            # The Linux container cannot use the GPU, but the selected model
+            # is served by Windows. Keep its persisted route and model values.
+            ai_ok "Retained external Lemonade inference during CPU device fallback"
+            return 0
+        fi
+
         load_backend_contract "cpu" || true
         LLM_HEALTHCHECK_URL="${BACKEND_PUBLIC_HEALTH_URL:-http://localhost:8080/health}"
         LLM_PUBLIC_API_PORT="${BACKEND_PUBLIC_API_PORT:-8080}"
@@ -470,7 +479,6 @@ else
         resolve_tier_config
         GPU_BACKEND="cpu"
 
-        _phase11_env_set GPU_BACKEND "$GPU_BACKEND"
         _phase11_env_set ODS_MODE "local"
         _phase11_env_set LLM_API_URL "http://llama-server:8080"
         _phase11_env_set LLM_MODEL "$LLM_MODEL"
@@ -1325,6 +1333,12 @@ MODELS_INI_EOF
         exit 1
     fi
     ai_ok "Compose configuration valid"
+
+    if _phase11_external_lemonade &&
+       ! ods_external_lemonade_assert_no_managed_llama "${COMPOSE_FLAGS_ARR[@]}" 2>>"$LOG_FILE"; then
+        ai_bad "External Lemonade Compose could start ODS-managed llama-server; inspect $LOG_FILE and clear COMPOSE_PROFILES."
+        exit 1
+    fi
 
     if [[ "${ENABLE_OPEN_WEBUI:-true}" != true ]] &&
        ! ods_compose_assert_no_webui "${COMPOSE_FLAGS_ARR[@]}" 2>>"$LOG_FILE"; then

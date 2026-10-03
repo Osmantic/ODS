@@ -17,6 +17,19 @@
 # ============================================================================
 
 ods_progress 48 "images" "Downloading container images"
+if [[ "${DRY_RUN:-false}" != true ]] && ods_external_lemonade_requested; then
+    [[ -n "${COMPOSE_FLAGS:-}" ]] || {
+        ai_bad "External Lemonade Compose selection is unavailable before image pulls."
+        exit 1
+    }
+    read -ra _external_lemonade_compose_flags <<< "$COMPOSE_FLAGS"
+    if ! ods_external_lemonade_assert_no_managed_llama_before_pixel_identity "${_external_lemonade_compose_flags[@]}" \
+        2>>"$LOG_FILE"; then
+        ai_bad "External Lemonade Compose validation failed before image pulls; inspect $LOG_FILE."
+        exit 1
+    fi
+    unset _external_lemonade_compose_flags
+fi
 if [[ "${ODS_GATEWAY_ONLY:-false}" == true && "${DRY_RUN:-false}" != true ]]; then
     # Compose merges profile lists from overlays. A caller's inherited
     # COMPOSE_PROFILES=local-inference can therefore re-enable a managed model
@@ -59,6 +72,12 @@ case "${LEMONADE_EXTERNAL:-false}" in
     true|TRUE|1|yes|YES|on|ON) _lemonade_external=true ;;
     *) _lemonade_external=false ;;
 esac
+_lemonade_runtime="${AMD_INFERENCE_RUNTIME:-}"
+_lemonade_managed="${AMD_INFERENCE_MANAGED:-}"
+if [[ "${_lemonade_runtime,,}" == lemonade \
+   && "${_lemonade_managed,,}" == false ]]; then
+    _lemonade_external=true
+fi
 if [[ "${ODS_MODE:-local}" != "cloud" && "$_lemonade_external" != "true" && -z "${EXTERNAL_LLM_URL:-}" ]]; then
     # Cloud and external routes do not run ODS-managed inference. In WSL the
     # Linux capability probe can report CPU while Windows owns the model, so

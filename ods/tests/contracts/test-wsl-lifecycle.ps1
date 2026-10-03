@@ -337,3 +337,4 @@ try {
 
 # The relay has independent caller-lifetime and cancellation contracts.
 & (Join-Path $PSScriptRoot 'test-wsl-relay-lifetime.ps1')
+& (Join-Path $PSScriptRoot 'test-wsl-json-sharing.ps1')
